@@ -1,9 +1,9 @@
-// core/diag/log.c — JSON & plain-text structured logger.
+// core/diag/log.c - JSON & plain-text structured logger.
 //
 // Output goes to stderr so stdout stays usable for stand-alone messages
 // (e.g. the smoke-test exit line). Per-subsystem level filters are parsed
 // once at init and stored as a small linked list:
-//   "cd:debug,gpu:trace,*:info"  →  cd→DEBUG, gpu→TRACE, default→INFO
+//   "cd:debug,gpu:trace,*:info"  ->  cd->DEBUG, gpu->TRACE, default->INFO
 
 #include "openpete_log.h"
 
@@ -33,7 +33,7 @@ static char g_spec[128];   /* last applied level spec, for display */
 #endif
 
 /* ANSI colour for the plain-text log, only when stderr is an interactive
- * terminal (piped/redirected output — grep, files, the oracle — stays clean). */
+ * terminal (piped/redirected output - grep, files, the oracle - stays clean). */
 static int g_tty = -1;
 
 /* Pinned by the stderr mirror before it replaces fd 2 with a pipe. */

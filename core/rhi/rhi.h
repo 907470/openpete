@@ -2,7 +2,7 @@
 #define OPENPETE_RHI_H
 
 /*
- * openpete RHI — thin Render Hardware Interface.
+ * openpete RHI - thin Render Hardware Interface.
  *
  * A minimal, opaque-handle GPU abstraction sized to exactly what the
  * native Spyro renderer needs, so Vulkan (the first backend) can later be
@@ -440,7 +440,7 @@ const char *rhi_driver_version(const rhi_device *dev);
 
 /* Present-path block time, for the pacing log. Under the host thread split
  * the presenting thread is also the sim thread, so time blocked here is time
- * the tick did not run — which makes "which call blocked, and for how long"
+ * the tick did not run - which makes "which call blocked, and for how long"
  * a pacing quantity rather than a rendering one. Read-and-clear: each call
  * returns the nanoseconds accumulated since the previous one. */
 enum { RHI_BLOCK_FENCE = 0, RHI_BLOCK_ACQUIRE, RHI_BLOCK_PRESENT,
@@ -579,10 +579,10 @@ bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
 
 /* ---- buffers, pipelines, draws ------------------------------------ */
 
-/* Native vertex format — one fixed layout for all renderer geometry, so a
+/* Native vertex format - one fixed layout for all renderer geometry, so a
  * single vertex buffer format feeds every pipeline: position, color, and
  * uv for the PSX sampler. The per-draw texture
- * page / CLUT / bpp ride a push constant (one material per draw batch — a
+ * page / CLUT / bpp ride a push constant (one material per draw batch - a
  * native renderer sorts by material), so the packed per-vertex `tex` field
  * is currently unused/reserved (PSX-era per-vertex tpage packing would only
  * return if mixed-material batching is ever needed). */
@@ -596,12 +596,12 @@ typedef struct {
                          * contest off. POSITIVE: the face both EMITS its
                          * flat key into the key image (terrain_key.vert)
                          * and CONTESTS it (psx_scene_key.frag et al).
-                         * NEGATIVE (|koff| = key): CONTEST-ONLY — near-band
+                         * NEGATIVE (|koff| = key): CONTEST-ONLY - near-band
                          * terrain, whose huge under-camera footprints must
                          * never stamp the image. Stored depth stays TRUE
-                         * view-Z — faithfulness lives in the fragment
+                         * view-Z - faithfulness lives in the fragment
                          * SELECT, never in the depth value.                 */
-    float    sx, sy;    /* PSX screen coord (location 3) — the textured shadow
+    float    sx, sy;    /* PSX screen coord (location 3) - the textured shadow
                          * decal's depth-pre-pass lookup rides here, because its
                          * u,v are the sprite texel (unlike the untextured Spyro
                          * decal, which parks the screen coord in u,v). Ignored
@@ -634,11 +634,11 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * bits3-4: corner slot within the sub-quad
                                  * (0..3 in [TL,TR,BL,BR] order);
                                  * bits5-11: scroll tile id (flat: Tiledef,
-                                 * HQ: record id); bit12: tile id valid —
+                                 * HQ: record id); bit12: tile id valid -
                                  * the vertex stage adds the globals' per-tile
                                  * fractional V-scroll offset;
                                  * bit13: SECOND emitted tri of the (sub-)quad
-                                 * — the vertex belongs to half 2 / sub-tri 2,
+                                 * - the vertex belongs to half 2 / sub-tri 2,
                                  * so per-emitted-tri verdicts (the portal
                                  * inner-rim cull) can rebuild their own tri  */
     uint8_t  uvf_u, uvf_v;      /* far-tile (LQ) texel coords, page-relative */
@@ -677,9 +677,9 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
 /* Anim chunks only (poly-anim and env-anim colour sectors): previous-tick
  * twin of the animated fields, a PARALLEL array in the anim arenas' prev
  * buffer (vertex binding 1). The vertex stage lerps prev->cur in fp64 at the
- * build's sub-tick alpha —
+ * build's sub-tick alpha -
  * position for flat/LP verts, parent corners for everything corner-derived
- * (HQ nodes, fog ladder, NCLIP) — mirroring tsc_vanim_lerp's
+ * (HQ nodes, fog ladder, NCLIP) - mirroring tsc_vanim_lerp's
  * float(p + (c-p)*a) cast exactly. A sector whose banks jumped (keyframe
  * reset) or has no prev bank yet bakes prev == cur (the CPU snap rule). */
 typedef struct rhi_terrain_prev {
@@ -714,9 +714,9 @@ typedef struct rhi_terrain_nearctx {
  * record, drawn by the terrain_cells vertex stages). A tier-4-eligible HQ face
  * (the near drain's 5x5 node grid, 16 cells, each textured from a 16x16 tile,
  * the near drain's tier-4 pass) carries its parent corners and raw near
- * colours once, beside the cell tiles; the vertex stage derives each cell vertex from the record and gl_VertexIndex — node
+ * colours once, beside the cell tiles; the vertex stage derives each cell vertex from the record and gl_VertexIndex - node
  * position, colour (the drain's halving order over the four near colours),
- * tile UV and material — so no per-vertex cell data is stored.
+ * tile UV and material - so no per-vertex cell data is stored.
  *
  * A record holds EIGHT of the face's 16 cells (one half, row-major cells 0-7
  * or 8-15): the whole face would need 16 cell attributes beside the face
@@ -773,9 +773,9 @@ typedef struct rhi_terrain_cell_anim {
 #define RHI_TERRAIN_CELL_VERTS_ANIM 48u
 
 /* RHI_BLEND_SUBTRACT = PSX ABR mode 2 (dst = B - F): reverse-subtract, src ONE,
- * dst ONE — used by shadows (subtractive darkening). */
+ * dst ONE - used by shadows (subtractive darkening). */
 /* RHI_BLEND_ADD_QUARTER = PSX ABR mode 3 (dst = B + F/4): add with the source
- * scaled by a constant quarter — glass and other faint overlays, which full
+ * scaled by a constant quarter - glass and other faint overlays, which full
  * additive blows out and reverse-subtract turns black. */
 typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
                RHI_BLEND_ADD_QUARTER } rhi_blend_mode;
@@ -783,15 +783,15 @@ typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRAC
 /* Stencil role of a pipeline (the aperture mask; the depth
  * attachment is a combined depth+stencil format, stencil cleared to 0 at every
  * pass begin):
- *  - MARK: rasterize a mask — where the fragment passes the DEPTH test, write
+ *  - MARK: rasterize a mask - where the fragment passes the DEPTH test, write
  *    stencil=1 (depth-fail leaves 0, so world geometry in front punches the
  *    mask out). Pair with color_write_off for an invisible mask pass.
  *  - TEST: draw only where stencil==1 (inside the mask); stencil not written.
  *  - TEST_ZERO: draw only where stencil==0 (OUTSIDE the mask); stencil not
  *    written. The hole-fill role: geometry that must paint only the
  *    pixels a prior MARK pass did NOT cover (e.g. the terrain LP backing layer
- *    filling LP↔HP T-junction seams without ever poking through the HP).
- * Reference is fixed at 1 — per-object isolation is done by rhi_clear_stencil
+ *    filling LP<->HP T-junction seams without ever poking through the HP).
+ * Reference is fixed at 1 - per-object isolation is done by rhi_clear_stencil
  * between mask groups, not by reference juggling. */
 typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST,
                RHI_STENCIL_TEST_ZERO } rhi_stencil_mode;
@@ -823,9 +823,9 @@ typedef struct {
                                  * evicts an occluder from exactly the pixels
                                  * some geometry covers (the dragon-rescue
                                  * front pass). Note the depth TEST must stay
-                                 * enabled to write at all — Vulkan disables
+                                 * enabled to write at all - Vulkan disables
                                  * depth writes whenever depthTestEnable is
-                                 * false — hence compare ALWAYS rather than
+                                 * false - hence compare ALWAYS rather than
                                  * "write without testing". */
     bool           depth_bias;  /* enable the hardware polygon offset (decal
                                  * tie-break) with DYNAMIC factors. Vulkan
@@ -840,7 +840,7 @@ typedef struct {
                                  * device's tables (rhi_depth_class). A
                                  * FORWARD pipeline draws only into a FORWARD
                                  * render target.                             */
-    rhi_stencil_mode stencil;   /* NONE (default) / MARK / TEST — see enum docs */
+    rhi_stencil_mode stencil;   /* NONE (default) / MARK / TEST - see enum docs */
     bool           color_write_off; /* rasterize without writing colour (an
                                  * invisible stencil-mask pass)               */
     int            texel_stp_select; /* fragment spec constant 5 (STP_SELECT,
@@ -859,12 +859,12 @@ typedef struct {
                                  * statically accesses need no binding at
                                  * draw.                                       */
     bool           uses_vram4;  /* fourth sampler at set 3 (the MOBY og-key
-                                 * image — split from the terrain keys so the
+                                 * image - split from the terrain keys so the
                                  * near-band embed rule applies to moby keys
                                  * only). Implies uses_vram3.                  */
     bool           uses_vram5;  /* fifth sampler at set 4 (the moby og-RANK
                                  * image: per-pixel winning paint rank +
-                                 * present-local moby ordinal, RGBA8 — the
+                                 * present-local moby ordinal, RGBA8 - the
                                  * same-moby painter select). Implies
                                  * uses_vram4.                                 */
     bool           set1_vram_depth; /* set 1 holds two samplers: binding 0 a
@@ -879,11 +879,11 @@ typedef struct {
                                  * above and implies sets 0..2.               */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
-                                 * triangle from gl_VertexIndex — pair with the
+                                 * triangle from gl_VertexIndex - pair with the
                                  * embedded postfx_fs.vert), sets 0..2 = one
                                  * sampler each (prev pass / depth / prev frame),
                                  * set 3 = the 2-binding dynamic UBO layout
-                                 * (engine block, mod block — rhi_ubo_bind).
+                                 * (engine block, mod block - rhi_ubo_bind).
                                  * uses_vram/uses_vram2 are ignored.           */
     bool           mod_pipeline; /* mod custom-draw layout: the STANDARD
                                  * rhi_vertex input + the postfx 4-set layout
@@ -908,7 +908,7 @@ typedef struct {
                                  * sets = {0: VRAM sampler, 1/2: og key images,
                                  * 3: the material contract's UBO pair,
                                  * 4: HD-replacement atlas sampler,
-                                 * 5: TerrainGlobals, 6: TerrainSectors — both
+                                 * 5: TerrainGlobals, 6: TerrainSectors - both
                                  * single-binding via rhi_ubo_bind_at},
                                  * push constants visible to VERTEX|FRAGMENT
                                  * (the per-draw clip affine + class select).
@@ -1242,7 +1242,7 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
  * Bind attaches set 3 of a postfx pipeline.
  *
  * rhi_ubo_bind_at attaches ONE block through a single-binding layout at
- * an arbitrary set index instead. Set 3 is the shader-contract set — its
+ * an arbitrary set index instead. Set 3 is the shader-contract set - its
  * binding 0 is the engine block and its binding 1 is the MOD's block, and
  * a descriptor set can only view one buffer per binding, so an engine
  * subsystem with uniforms of its own has to put them somewhere a mod
@@ -1300,7 +1300,7 @@ void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
 /* ---- offscreen-as-input (the COMPOSITE postfx point) ----------------
  * rhi_bind_offscreen_tex: bind off_image as the sampler at `set` (inside a
  * pass, after the pipeline bind). resume_attachment: the return barrier
- * before re-beginning the offscreen pass (fragment reads → color writes) for
+ * before re-beginning the offscreen pass (fragment reads -> color writes) for
  * a chain's final pass, whose off_rp end restores TRANSFER_SRC for the
  * present blit. */
 /** @brief Transition off_image from TRANSFER_SRC to SHADER_READ_ONLY so a postfx pass can sample the composed frame.
@@ -1456,7 +1456,7 @@ rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height);
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
 /* Sub-rect uploads from TIGHT per-rect source buffers (pixels = w*h*4 RGBA8
- * bytes each) — the HD-atlas append path. Same in-frame/one-shot semantics
+ * bytes each) - the HD-atlas append path. Same in-frame/one-shot semantics
  * as rhi_update_rgba8; rects that overflow the staging slot are dropped
  * (re-queue them next frame). At most 96 rects per call. */
 typedef struct { const void *pixels; int x, y, w, h; } rhi_tex_rect_src;
@@ -1875,11 +1875,11 @@ uint32_t rhi_draw_calls(rhi_device *dev);
  *
  * Zones MAY nest (begin/end pair like a stack): a zone begun while another is
  * open becomes its child, and the result carries a `depth`. `name` must be a
- * string literal or otherwise outlive the frame — it is stored by pointer and
+ * string literal or otherwise outlive the frame - it is stored by pointer and
  * handed back in results a few presents later.
  * Results are harvested by rhi_begin_frame after the slot's fence wait
  * (never blocks; frame-lagged by RHI_FRAMES_IN_FLIGHT presents) and fetched
- * with rhi_gpu_zone_results — returns the zone count; each result has elapsed
+ * with rhi_gpu_zone_results - returns the zone count; each result has elapsed
  * µs (timestampPeriod applied), `start_us` (µs from the frame's first GPU
  * timestamp, for laying zones out on a timeline), and nesting `depth`.
  * rhi_gpu_frame_token tags the current frame with a caller id (e.g. the
@@ -1947,14 +1947,14 @@ uint64_t rhi_gpu_results_token(const rhi_device *dev);
  *
  * render_pass is the offscreen pass (off_rp). It IS destroyed+recreated on a
  * swapchain rebuild, but always with identical attachment formats (the
- * color format is fixed, independent of the swapchain's) — and a
+ * color format is fixed, independent of the swapchain's) - and a
  * VkPipeline only uses its creation render pass for compatibility, so a
  * pipeline built against the old pass stays valid under the new one (the
  * renderer's own pipelines rely on the same rule). No re-init needed on
  * resize/vsync changes.
  *
  * command_buffer() is the frame's open command buffer, valid only between
- * rhi_begin_frame and rhi_end_frame — the dev UI records its draw data into
+ * rhi_begin_frame and rhi_end_frame - the dev UI records its draw data into
  * the offscreen pass, alongside the other overlays. */
 typedef struct {
     void    *instance;         /* VkInstance */

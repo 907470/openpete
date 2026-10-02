@@ -4,7 +4,7 @@
    ((w1>>3)&0x1F), HP OT bias ((w3>>3)&0x7), per level + global.
 2. Admission <-> LP-OT-bias correlation (joint table + Pearson).
 3. Coplanar-overlay census: same-tier faces within a sector sharing the exact
-   corner-position multiset — the set that ties exactly under true depth and
+   corner-position multiset - the set that ties exactly under true depth and
    relied on same-slot FIFO order in the .s (the Toasty-walkway class).
 """
 import collections, glob, math, sys

@@ -1,5 +1,5 @@
 #pragma once
-/* openpete_hook.h — the OPENPETE_HOOK decomp seam.
+/* openpete_hook.h - the OPENPETE_HOOK decomp seam.
  *
  * Once a Spyro function is decompiled to matching C, its render->gameplay
  * interception can no longer be an address-keyed recompiler substitution
@@ -16,7 +16,7 @@
  *
  *   - MATCHING / decomp build (OPENPETE_BUILD undefined): expands to a
  *     no-op expression statement, so the compiled object code is
- *     byte-identical to the un-hooked source — the spyro-1 match is
+ *     byte-identical to the un-hooked source - the spyro-1 match is
  *     preserved. (Same conditional shape as the existing
  *     -DOPENPETE_SKIP_DECOMP gating.)
  *

@@ -1,6 +1,6 @@
-/* raw-probe — PoC: raw-tier override, cpu-context register access.
+/* raw-probe - PoC: raw-tier override, cpu-context register access.
  *
- * Target: func_80023AC4 — Spyro's renderer (hand-written asm in the
+ * Target: func_80023AC4 - Spyro's renderer (hand-written asm in the
  * original, un-decompiled, so no natural signature exists). We hook it
  * by bare vaddr, read the MIPS register file straight off the cpu
  * context, and pass through with base(). Fires every frame once a level

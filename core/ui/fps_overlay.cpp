@@ -1,4 +1,4 @@
-// core/ui/fps_overlay.cpp — top-left FPS counter, drawn via direct
+// core/ui/fps_overlay.cpp - top-left FPS counter, drawn via direct
 // OpenGL during PsyCross's post-render hook.
 //
 // Wired up via `g_psyx_postRenderOverlay` (PsyX_public.h). PsyX_EndScene
@@ -22,7 +22,7 @@
 #include <cstdio>
 #include <cstring>
 
-/* 5x7 bitmap font. Each byte is one row (top → bottom); low 5 bits used,
+/* 5x7 bitmap font. Each byte is one row (top -> bottom); low 5 bits used,
  * bit 4 = leftmost pixel. We only define the glyphs we need: digits, ' ',
  * ':', and the letters 'F'/'P'/'S'. Anything else falls through to blank. */
 static const uint8_t s_glyph_space[7] = {0, 0, 0, 0, 0, 0, 0};
@@ -107,7 +107,7 @@ static GLuint compile_shader(GLenum type, const char *src)
  * what was built, and leaves s_initialised at 0, so the next emit retries. */
 static void init_gl_resources(void)
 {
-    /* Pixel-space → NDC vertex shader. u_screen = (window_w, window_h). */
+    /* Pixel-space -> NDC vertex shader. u_screen = (window_w, window_h). */
     static const char *vs_src =
         "#version 330 core\n"
         "layout(location=0) in vec2 a_pos;\n"
@@ -257,7 +257,7 @@ extern "C" void openpete_fps_overlay_emit(void)
 #if defined(__EMSCRIPTEN__)
     /* The overlay draws through PsyCross's glad-loaded desktop-GL3.3
      * function pointers, which are never initialised on the Emscripten
-     * (RENDERER_OGLES / WebGL2) path — calling them traps with a WASM
+     * (RENDERER_OGLES / WebGL2) path - calling them traps with a WASM
      * call_indirect signature mismatch. It's a non-gameplay presentation
      * feature; no-op it here until a WebGL2/GLES3 overlay path is written.
      * (Disabling it cannot perturb gameplay-readable state.) */
@@ -286,8 +286,8 @@ extern "C" void openpete_fps_overlay_emit(void)
     char text[16];
     std::snprintf(text, sizeof(text), "FPS:%d", fps_display);
 
-    /* Save every GL knob we're about to touch — including those touched by
-     * lazy init — so nothing leaks back into PsyCross's pipeline. */
+    /* Save every GL knob we're about to touch - including those touched by
+     * lazy init - so nothing leaks back into PsyCross's pipeline. */
     GLint prev_program = 0, prev_vao = 0, prev_vbo = 0;
     GLint prev_vp[4] = {0, 0, 0, 0};
     GLboolean prev_blend, prev_depth, prev_cull, prev_scissor;

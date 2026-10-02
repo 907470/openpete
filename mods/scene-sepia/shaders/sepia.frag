@@ -4,7 +4,7 @@
 #include "openpete_shader_api.glsl"
 
 /* SCENE-point demo: sepia-tint the 3D scene. The HUD is drawn AFTER
- * this pass, so it stays full-colour and crisp — the property that
+ * this pass, so it stays full-colour and crisp - the property that
  * distinguishes the SCENE point from COMPOSITE (which would tint the
  * HUD too). Depth-independent, so the effect is unmistakable on any
  * frame. op_scene_depth is wired at set 1 (the WORLD-opaque pre-pass)

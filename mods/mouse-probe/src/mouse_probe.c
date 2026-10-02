@@ -1,5 +1,5 @@
 /*
- * mouse-probe — the host mouse as a mod sees it.
+ * mouse-probe - the host mouse as a mod sees it.
  *
  * Two readers with separate delta markers: the tick hook (sim worker, once
  * per game tick) and the UI section (present thread, once per present).

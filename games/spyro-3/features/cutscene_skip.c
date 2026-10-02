@@ -1,4 +1,4 @@
-// games/spyro-3/features/cutscene_skip.c — `--skip-to-cutscene` for Spyro 3.
+// games/spyro-3/features/cutscene_skip.c - `--skip-to-cutscene` for Spyro 3.
 //
 // Spyro 3 starts every story cutscene through WarpToLevel func_800584BC(6,
 // id), id 61..80 (72 unused): it stores game.state 5, loadStage 0 and

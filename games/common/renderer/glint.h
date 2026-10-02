@@ -1,4 +1,4 @@
-// games/common/renderer/glint.h — the gem-glint feeder's sub-tick entry point.
+// games/common/renderer/glint.h - the gem-glint feeder's sub-tick entry point.
 #ifndef OPENPETE_GLINT_H
 #define OPENPETE_GLINT_H
 

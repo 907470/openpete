@@ -1,4 +1,4 @@
-/* sfx_pack — drop-in sound-effect replacement, the texture pack's twin.
+/* sfx_pack - drop-in sound-effect replacement, the texture pack's twin.
  *
  * Sources (later wins): the base dir (`--sfxpack-dir` / OPENPETE_SFXPACK_DIR
  * / <exe>/assets/sfx), the user's data-dir assets/sfx, then one source
@@ -17,7 +17,7 @@
  * entry table and the decode results.
  *
  * Identity at runtime is a (generation, address) cache filled on miss
- * by hashing the sample straight out of SPU RAM — the level bank blast
+ * by hashing the sample straight out of SPU RAM - the level bank blast
  * bumps the generation, and any other SPU write invalidates the cached
  * addresses it overlaps (dragon speech lands mid-level). */
 #ifndef OPENPETE_SFX_PACK_H
@@ -100,7 +100,7 @@ void sfx_pack_generation_bump(void);
 void sfx_pack_invalidate_range(uint32_t addr, uint32_t len);
 
 /* Game hook: the base pitch the game will keep refreshing voice `voice`
- * with (its ActiveSound pitch — the def's, or the per-play override).
+ * with (its ActiveSound pitch - the def's, or the per-play override).
  * <= 0 = unknown; tagged files then cannot match. */
 typedef int (*sfx_pack_pitch_reader_fn)(int voice);
 /** @brief Install the hook that reports a voice's base pitch to the matcher.

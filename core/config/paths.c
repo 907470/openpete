@@ -1,4 +1,4 @@
-/* paths.c — portable-vs-user data layout. See openpete_paths.h. */
+/* paths.c - portable-vs-user data layout. See openpete_paths.h. */
 
 #include "openpete_paths.h"
 #include "openpete_log.h"
@@ -77,7 +77,7 @@ void openpete_paths_join(char* out, size_t cap, const char* dir, const char* lea
 static int dir_exists(const char* p) {
     OPP_STAT_T st;
     if (OPP_STAT(p, &st) != 0) return 0;
-    /* The file-type field is an enum packed into st_mode, not a bitmask —
+    /* The file-type field is an enum packed into st_mode, not a bitmask -
      * a plain `& S_IFDIR` also matches other types whose code shares that
      * bit. Mask to the field first. */
     return (st.st_mode & S_IFMT) == S_IFDIR;
@@ -275,7 +275,7 @@ int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create
     }
     if (create) {
         /* Only worth saying when this session is about to start writing
-         * here — a report that merely named the directory has not moved
+         * here - a report that merely named the directory has not moved
          * anything, so there is nothing to explain. */
         if (portable) hint_legacy_state(leaf, dir);
         (void)OPP_MKDIR(dir);

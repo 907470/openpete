@@ -1,4 +1,4 @@
-// games/spyro-1/recomp_attach_static.c — static-linkage module attach.
+// games/spyro-1/recomp_attach_static.c - static-linkage module attach.
 //
 // The module objects are linked into this exe (the <tag>_recomp_module
 // OBJECT library), so attaching is just registering the built-in

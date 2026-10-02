@@ -1,4 +1,4 @@
-// games/common/renderer/native_gte.c — see native_gte.h. The one
+// games/common/renderer/native_gte.c - see native_gte.h. The one
 // implementation of the GTE mirror math shared by every native feeder; a
 // change here moves every feeder.
 
@@ -127,7 +127,7 @@ void ngte_screen_gte(double m1, double m2, double m3,
     double ir1 = m1 < -32768.0 ? -32768.0 : (m1 > 32767.0 ? 32767.0 : m1);
     double ir2 = m2 < -32768.0 ? -32768.0 : (m2 > 32767.0 ? 32767.0 : m2);
     /* SZ3 = MAC3 saturated to [0,0xFFFF]; the divide caps at 0x1FFFF when
-     * SZ3 <= H/2 — the GTE's H (H_canon), so the regime does not move with
+     * SZ3 <= H/2 - the GTE's H (H_canon), so the regime does not move with
      * --fov. The capped quotient scales with the view (H_eff/sz3 =
      * s·H_canon/sz3), so the cap is NGTE_DIV_CAP·s: one arithmetic form
      * on both sides of the regime boundary. The SXY bound is applied to

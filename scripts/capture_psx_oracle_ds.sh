@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/capture_psx_oracle_ds.sh — capture a .psxtrace from DuckStation.
+# scripts/capture_psx_oracle_ds.sh - capture a .psxtrace from DuckStation.
 #
 # DuckStation supersedes PCSX-Redux as the openpete oracle: real Sony
 # SCPH1001 BIOS, runs Spyro past the cyclorama (where PCSX-Redux chokes
@@ -193,7 +193,7 @@ rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$
 
 echo "[capture-ds] capturing $FRAMES records @ PC=$ANCHOR_PC hit=$HIT -> $OUT"
 # DuckStation's Mesa GL TLS-destructor SIGABRTs on thread shutdown after
-# we've already exited cleanly — psxtrace records are written before the
+# we've already exited cleanly - psxtrace records are written before the
 # crash. Run inside a wrapper sh that swallows the abort entirely so
 # bash's job-control "Aborted" line doesn't leak into the wrapper's
 # output.

@@ -781,9 +781,9 @@ static int on_zap_draw(CPUState* cpu, uint32_t addr) {
  * camera from the tick's record, so a sub-tick present that re-feeds them
  * draws the ribbon where the tick drew it: neither the camera's motion nor the
  * record's own reaches it. The rebase measures each end's screen displacement
- * as the difference of two projections — the world point the present shows
+ * as the difference of two projections - the world point the present shows
  * under the staged camera, against the point the tick drew under the tick's
- * camera — and moves every corner by the pair blended at its own position
+ * camera - and moves every corner by the pair blended at its own position
  * along the chain. At the end of the tick's interval the displaced points and
  * the staged camera are the tick's, so both projections take identical inputs
  * through identical arithmetic and every term is exactly zero; the replay then
@@ -884,7 +884,7 @@ static void zap_rebase_all(CPUState* cpu, double alpha) {
  * tail carry the ribbon's two ends, every corner between them moves by the
  * pair blended at its own position along the chain, and each widened corner's
  * offset from its chain point scales by the change in half-width. The jitter is not
- * re-derived — the routine draws and stores a fresh random halfword per point
+ * re-derived - the routine draws and stores a fresh random halfword per point
  * inside its own call (:2673-2685), and this replay re-feeds the tick's
  * primitives, so a sub-tick present shows the tick's jitter rather than a new
  * one. The rebase runs only inside the tick's interval; at its end the replay

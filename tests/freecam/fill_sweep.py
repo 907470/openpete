@@ -5,14 +5,14 @@ Per pose (tests/freecam/fill-sweep-poses.manifest), five headless legs:
   M        native vk, --lod extended, all fill mechanisms off, with the
            OPENPETE_TERRAIN_FACEMAP per-LP-face footprint dump on stderr
   MO       native vk, --lod original, all fill mechanisms off (the handoff
-           drops in-band LP whose sparse HP never covers the footprint —
+           drops in-band LP whose sparse HP never covers the footprint -
            a MODE-dependent need the two-og mask cannot see)
   BLANK-vk native vk, --render-paths none        (pure background)
   OG       PsyCross,  terrain-only               (the game's own terrain)
   OGSAT    PsyCross,  terrain-only, m_LodDistance doubled (pure-HP reference)
   BLANK-og PsyCross,  --render-paths none
 
-Masks (blank-leg method — never detect the background by colour; the native
+Masks (blank-leg method - never detect the background by colour; the native
 clear is the per-level draw-env colour and screen corners can be covered):
   unc       = M  == BLANK-vk          nothing native drew
   ogc       = OG != BLANK-og          the game draws terrain here
@@ -25,7 +25,7 @@ Tag rule per pose, unioned across poses per (level, sector, face):
   AUTO tier:   secdraw==0, not fully-fogged, |footprint ∩ need_data| >= MIN_OV
   REVIEW tier: secdraw==0, fully-fogged,     |footprint ∩ need_data| >= MIN_OV
     (fully-fogged need is genuinely two-faced: level-boundary channels must
-     fill while LP silhouette fringes over HP islands must not — a pixel
+     fill while LP silhouette fringes over HP islands must not - a pixel
      threshold would be a tuned constant, so these rank for human review.)
 
 Fully-fogged: every corner m3 >= (fogRefBase + fogbias*0x2000)/4, walk units.
@@ -82,7 +82,7 @@ def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
     elif leg == "OGSAT":
         rend, lod = "psycross", "original"
         # 2x the authored 0x8000: far beyond anything visible through fog, but
-        # inside the .s frame prim budget — >=4x makes the big swamp levels
+        # inside the .s frame prim budget - >=4x makes the big swamp levels
         # (misty_bog/beast_makers/ice_cavern) exhaust it and hang, crash, or
         # render empty. Validated pixel-equal (mod far-fog palette rows) to
         # full saturation on the levels that tolerate both.
@@ -98,7 +98,7 @@ def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
             "--screenshot-output", f"{outdir}/{tag}-{{n}}.png",
             "--frame-limit", str(frame + 10), "--max-runtime-seconds", "380"]
     if pose != "default":
-        # "default" = the canonical load-in camera (no freecam) — one
+        # "default" = the canonical load-in camera (no freecam) - one
         # og-maximally-valid region view per level for free
         x, y, z, yaw, pitch = pose.split(",")
         args += ["--freecam-pose", f"pos=({x}, {y}, {z}) yaw={yaw} pitch={pitch}"]
@@ -268,7 +268,7 @@ def main():
     auto = {k: v for k, v in tags.items() if v["tier"] == "auto"}
     review = {k: v for k, v in tags.items() if v["tier"] == "review"}
     with open(out, "w") as f:
-        f.write("# terrain fill-face tags, derived by fill_sweep.py — do not hand-edit\n")
+        f.write("# terrain fill-face tags, derived by fill_sweep.py - do not hand-edit\n")
         f.write("# tier level sector face total-need-px gf-classifier poses\n")
         for tier, d in (("auto", auto), ("review", review)):
             for (lv, s, fc), v in sorted(d.items(), key=lambda kv: -kv[1]["ov"]):

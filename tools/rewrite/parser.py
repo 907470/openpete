@@ -4,7 +4,7 @@ Locates a usable libclang shared object, configures Index, and parses a
 single .c file from spyro-1/src/ with the matching-decomp include path.
 
 Targeted at mipsel-elf so libclang reports ILP32 sizes (sizeof(long) == 4,
-sizeof(void*) == 4) — this lets the PSX layout calculator validate against
+sizeof(void*) == 4) - this lets the PSX layout calculator validate against
 clang's own type metrics on primitives where the host happens to disagree
 (LP64 long, void*).
 """

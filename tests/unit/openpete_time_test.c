@@ -1,8 +1,8 @@
-/* tests/unit/openpete_time_test.c — verify openpete_time.c contract:
+/* tests/unit/openpete_time_test.c - verify openpete_time.c contract:
  *   1. op_now() is monotonically non-decreasing across calls.
  *   2. op_sleep_until(t) wakes at or after t (never undershoots).
  *   3. Overshoot is small on a quiet host (sanity bound, not a hard
- *      SLA — CI runners are noisy, so the bound is generous; the
+ *      SLA - CI runners are noisy, so the bound is generous; the
  *      `pacing_quality` slow target is where we gate real numbers).
  *   4. op_pacer_slack_ns honours OPENPETE_PACER_SLACK_US.
  *   5. The exact NTSC period arithmetic (op_period_t / op_deadline_t):
@@ -11,7 +11,7 @@
  *      every --record-cfr subdivision reconstitutes the tick exactly.
  *
  * Compiled directly from the .c source (no openpete_core link) per the
- * pattern in psx_region_test.c — keeps the test binary SDL-free. */
+ * pattern in psx_region_test.c - keeps the test binary SDL-free. */
 
 #include "../../core/include/openpete_time.h"
 
@@ -45,7 +45,7 @@ static int test_sleep_reaches_deadline(void) {
              (int64_t)deadline, (int64_t)after,
              (int64_t)(after - deadline));
     }
-    /* Generous overshoot bound — 10 ms — to survive CI scheduler noise.
+    /* Generous overshoot bound - 10 ms - to survive CI scheduler noise.
      * The real number on a quiet Linux dev box is < 100 µs. The
      * `pacing_quality` slow CTest target asserts the tight bound. */
     op_time_t overshoot = after - deadline;
@@ -150,7 +150,7 @@ static int test_ntsc_periods_are_exact(void) {
     if (check_grid("tick", tick, OP_VBL_HZ_DEN,
                    OP_VBL_HZ_NUM / OP_TICK_VBLS, 1000000)) return 1;
 
-    /* Two VBLs must land exactly on one tick — the sim and the interp
+    /* Two VBLs must land exactly on one tick - the sim and the interp
      * denominator would otherwise drift apart. */
     op_deadline_t a, b;
     op_deadline_anchor(&a, 0);
@@ -166,7 +166,7 @@ static int test_ntsc_periods_are_exact(void) {
 }
 
 /* A multi-step advance must land where the same number of single steps
- * would — the slip clamp advances by `skip` periods at once. */
+ * would - the slip clamp advances by `skip` periods at once. */
 static int test_multi_step_matches_single(void) {
     const op_period_t p = OP_VBL_PERIOD();
     for (op_time_t skip = 1; skip <= 64; ++skip) {
@@ -184,7 +184,7 @@ static int test_multi_step_matches_single(void) {
 }
 
 /* --record-cfr divides a tick into `mult` presents. Every divisor must stay
- * exact, and `mult` of them must reconstitute the tick precisely — otherwise
+ * exact, and `mult` of them must reconstitute the tick precisely - otherwise
  * an offline capture's presents-per-tick drifts over a long recording. */
 static int test_cfr_subdivisions_are_exact(void) {
     const op_period_t tick = OP_TICK_PERIOD();

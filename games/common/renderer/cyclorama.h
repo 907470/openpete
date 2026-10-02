@@ -1,4 +1,4 @@
-/* cyclorama.h — the shared sky-dome feeder's exports to the orchestrator and
+/* cyclorama.h - the shared sky-dome feeder's exports to the orchestrator and
  * the transition feeder. The feeder (games/common/renderer/cyclorama.c) reads
  * every address from game_layout.cyc, .cam, .fog and .db. */
 #ifndef OPENPETE_COMMON_RENDERER_CYCLORAMA_H

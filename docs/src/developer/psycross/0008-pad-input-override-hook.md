@@ -1,4 +1,4 @@
-# 0008 — Pad input override hook
+# 0008 - Pad input override hook
 
 Adds `g_PsyX_Pad_InputOverride` so the host can replace SDL keyboard /
 gamepad input with a scripted bitfield per frame. Used to implement
@@ -11,12 +11,12 @@ The existing `--press FRAME:KEY,...` path (`core/runtime/run.c`) writes
 into `SDL_GetKeyboardState`. That works for a handful of menu
 confirmations but has three structural problems:
 
-1. **Loses pad fidelity** — only the buttons bound in
+1. **Loses pad fidelity** - only the buttons bound in
    `g_cfg_keyboardMapping` round-trip; L2/R2 separately from L1/R1, L3,
    R3, and analog axes are unreachable.
-2. **Drift surface** — three layers of translation (script → SDL state →
-   keyboard mapping → PSX bitfield) that each can change.
-3. **Conflicts with real input** — a real plugged-in gamepad's bits get
+2. **Drift surface** - three layers of translation (script -> SDL state ->
+   keyboard mapping -> PSX bitfield) that each can change.
+3. **Conflicts with real input** - a real plugged-in gamepad's bits get
    ANDed in alongside our override, polluting the script.
 
 The hook short-circuits all three: when the host writes a bitfield to

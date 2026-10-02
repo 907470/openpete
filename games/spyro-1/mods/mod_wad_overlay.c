@@ -1,4 +1,4 @@
-// games/spyro-1/mods/mod_wad_overlay.c — the asset overlay's level-segment
+// games/spyro-1/mods/mod_wad_overlay.c - the asset overlay's level-segment
 // namespace.
 //
 // Spyro's loader pulls everything from WAD.WAD by sector range, so the
@@ -9,7 +9,7 @@
 // and every CdRead that lands inside that entry is served the mod's
 // bytes instead of the disc's. Overlay overrides must match the stock
 // size (code loads into a fixed buffer); DATA overrides may be any size
-// — the serve range follows the file, and a resizing mod declares the
+// - the serve range follows the file, and a resizing mod declares the
 // new length in the guest WAD TOC so the game actually streams it. The
 // highest-priority ENABLED mod wins, same single priority truth as
 // every other namespace.
@@ -23,13 +23,13 @@
 // lazily on first use.
 //
 // Live enable/disable: the winning override is resolved against the
-// current enabled set, but only ONCE PER LEVEL LOAD — see the latch in
+// current enabled set, but only ONCE PER LEVEL LOAD - see the latch in
 // mod_wad_apply(). A toggle therefore lands at the next level load and
 // can never splice stock and override bytes into one level image.
 //
 // Legal posture note: mods may NOT ship derived game data. This
 // namespace exists for (a) locally-derived blobs (generated on the
-// user's machine from their own disc — the CI fixtures do exactly this)
+// user's machine from their own disc - the CI fixtures do exactly this)
 // and (b) genuinely novel content (custom levels).
 
 #include "mods/mod_wad_overlay.h"
@@ -54,7 +54,7 @@
 /* One servable WAD segment (a level's Overlay or Data entry). Data
  * overrides may be a DIFFERENT size than the stock entry: the serve
  * range extends to the override file (a level-resize mod patches the
- * guest TOC length so the game actually asks for it — the overlay just
+ * guest TOC length so the game actually asks for it - the overlay just
  * answers whatever span the game reads). Overlay overrides stay
  * same-size (code loaded into a fixed-size buffer). */
 typedef struct {
@@ -71,7 +71,7 @@ typedef struct {
 
 /* Guest-side words the latch consults (Spyro 1). The in-RAM WAD TOC is
  * the serving CONTRACT: a segment serves the override of whichever
- * LOGICAL level id is streaming it — a registered level slot's cloned
+ * LOGICAL level id is streaming it - a registered level slot's cloned
  * entry points at its donor's sectors, so the same physical range can
  * be one level stock and another level modded. */
 #define GVA_NEXT_LEVEL 0x800758B4u
@@ -224,7 +224,7 @@ static int wad_find_override(int id, const char* kind, uint32_t want_len,
         if ((uint32_t)st.st_size != want_len) {
             if (getenv("OPENPETE_WADMOD_TRACE"))
                 OPL_INFO_F("wadmod", "%s: level %d %s is %ld bytes, guest "
-                           "TOC declares %u — not serving", owner, id, kind,
+                           "TOC declares %u - not serving", owner, id, kind,
                            (long)st.st_size, want_len);
             continue;
         }
@@ -315,7 +315,7 @@ static void wad_init(void) {
         }
     }
     /* Boot summary: count override FILES present for any level id the
-     * roots ship (any size — whether one serves is decided per load
+     * roots ship (any size - whether one serves is decided per load
      * against the guest TOC). Purely informational. */
     int overrides = 0;
     for (int id = 10; id <= 69; id++) {
@@ -356,7 +356,7 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
         int lid = level_index_to_id(i >> 1);
         if (!L->present) continue;
         /* Serve range: an override may be LARGER than the stock entry
-         * (a level-resize mod patched the guest TOC length) — once one
+         * (a level-resize mod patched the guest TOC length) - once one
          * is latched, its file size defines the range the game may read. */
         uint32_t range = L->n_sectors;
         if (L->latched && L->live_root >= 0 && L->serve_len > L->length)
@@ -374,8 +374,8 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
          * per read would splice stock and mod bytes into one level image
          * whenever an enable/disable landed between two of them. Resolve
          * once instead, at the read that starts at the entry's FIRST
-         * sector — the level-header read that begins every load of that
-         * level — and hold it for every later read of the entry. A read
+         * sector - the level-header read that begins every load of that
+         * level - and hold it for every later read of the entry. A read
          * that lands mid-entry with nothing latched (savestate restore,
          * level-slot clone) latches there. */
         char path[1088];
@@ -385,7 +385,7 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
              * guest: the id in flight (g_NextLevelId during a load,
              * g_LevelId for in-level re-reads) names a TOC entry, and
              * that entry pointing its offset at THIS segment makes it
-             * the identity of the load — a registered slot's cloned
+             * the identity of the load - a registered slot's cloned
              * entry aims at its donor's sectors, so the same range can
              * be one level stock and another level modded. The entry's
              * length is the serve contract. Falls back to the retail

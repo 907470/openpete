@@ -1,4 +1,4 @@
-/* Same-moby paint rank — see moby_rank.h. The key table, its evaluator and
+/* Same-moby paint rank - see moby_rank.h. The key table, its evaluator and
  * the integer RTPS / NCLIP mirror the rows read. */
 
 #include "renderer/moby_rank.h"

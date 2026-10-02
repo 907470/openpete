@@ -4,7 +4,7 @@ WSL interop does not hand the Linux environment to a Windows child process.
 Only the names listed in WSLENV cross the boundary, and a missing name raises
 nothing: the exe starts, reads the knob as unset, and runs a DIFFERENT
 configuration from the one the harness asked for. Every number it then produces
-is real, internally consistent, and about the wrong thing — the exact failure
+is real, internally consistent, and about the wrong thing - the exact failure
 shape this project keeps re-walking.
 
 It has bitten twice. The standing pacing gate ran its whole Windows path with
@@ -46,7 +46,7 @@ KNOB = re.compile(r"""
 
 # Only an actual USE clears a file, never a mention. An earlier version
 # accepted the string "WSLENV" anywhere, so a comment explaining the hazard
-# exempted the very file that had it — the exemption has to be as concrete as
+# exempted the very file that had it - the exemption has to be as concrete as
 # the thing it excuses.
 SANCTIONED = re.compile(r"""
       \bwslenv_forward\b            # sourced the shell helper and called it

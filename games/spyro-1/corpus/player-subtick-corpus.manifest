@@ -1,4 +1,4 @@
-# player-subtick-corpus.manifest — rows of tests/harness/check_player_subtick.sh.
+# player-subtick-corpus.manifest - rows of tests/harness/check_player_subtick.sh.
 #   <bk2> | <lo>-<hi>[,<lo>-<hi>...]
 #   bk2    a movie under games/spyro-1/bk2
 #   span   a range of intermediate-present VBLs, two apart; every VBL of it

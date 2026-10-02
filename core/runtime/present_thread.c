@@ -566,7 +566,7 @@ static int present_thread_main(void *unused)
              * deactivation (interpolation toggled off) sees busy == 0,
              * returns at once, and the sim thread starts inline presents
              * on the same swapchain and queue while this thread is still
-             * inside the blocking vkAcquireNextImageKHR — a fault in the
+             * inside the blocking vkAcquireNextImageKHR - a fault in the
              * driver after a handful of toggles. */
             s_pt.busy = 1;
             SDL_UnlockMutex(s_pt.mx);
@@ -610,7 +610,7 @@ static int present_thread_main(void *unused)
              * deep-queue equilibrium, not load: after a stall (a swapchain
              * rebuild is ~40 ms) the backlog goes out back-to-back,
              * stacking presents with no vblank between, and a FIFO queue
-             * that deep never drains on its own — the blocking acquire
+             * that deep never drains on its own - the blocking acquire
              * then eats a whole refresh per frame, and from then on
              * presents run a slot late in a stable alternating pattern
              * (one a slot late, the next fired at once). Because it
@@ -726,7 +726,7 @@ void openpete_present_thread_set_active(int on)
          * (interpolation toggled in play). */
         if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
         SDL_UnlockMutex(s_pt.mx);
-        /* This thread owns the display from here (seam fence) — including
+        /* This thread owns the display from here (seam fence) - including
          * for the release below, which touches the swapchain. */
         openpete_native_display_claim();
         openpete_native_present_stage_release();

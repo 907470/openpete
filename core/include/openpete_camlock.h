@@ -1,9 +1,9 @@
 #pragma once
-/* openpete_camlock.h — host-side state for the render camera lock (G key).
+/* openpete_camlock.h - host-side state for the render camera lock (G key).
  *
  * The lock is the PRESENTATION-side sibling of the gameplay freecam (F key).
  * The freecam freezes the game's camera-follow / player-update functions and
- * writes g_Camera on the game fiber — an intentional gameplay-state
+ * writes g_Camera on the game fiber - an intentional gameplay-state
  * divergence, and inert during cutscenes (whose cameras never run the
  * follow function it intercepts). The lock instead overrides the camera
  * INSIDE the sub-tick re-extract bracket: the bytes are saved, overwritten
@@ -11,16 +11,16 @@
  * state is byte-identical whether the lock is on or off (the bracket-
  * integrity self-check covers the writes). That makes it the tool for
  * render-only inspection: a cutscene or flyby keeps playing underneath
- * while the view holds still or flies free — e.g. parking a close-up on an
+ * while the view holds still or flies free - e.g. parking a close-up on an
  * animated moby to judge sub-pixel flicker that is invisible from the
  * authored camera distance.
  *
  * This is the GENERIC half: the on/off toggle, the flown pose (world
  * position + game angle units, 4096 per turn), and pose integration from
- * the freecam's shared input axes (WASD/sticks — one set of fly controls
+ * the freecam's shared input axes (WASD/sticks - one set of fly controls
  * for both cameras; run.c keeps the two mutually exclusive). The
- * game-specific half — latching the initial pose from the live camera and
- * writing the bracketed g_Camera bytes/matrices — lives in the game's
+ * game-specific half - latching the initial pose from the live camera and
+ * writing the bracketed g_Camera bytes/matrices - lives in the game's
  * re-extract orchestrator.
  *
  * Scripted use: OPENPETE_CAMLOCK=1 engages at the first present;

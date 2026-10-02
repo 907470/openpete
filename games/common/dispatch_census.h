@@ -1,4 +1,4 @@
-/* games/common/dispatch_census.h — host half of the overlay dispatch census.
+/* games/common/dispatch_census.h - host half of the overlay dispatch census.
  *
  * overlay_dispatch.c is compiled into the recomp module, whose first-boot
  * build sees no libc headers; it classifies each dispatch into the overlay

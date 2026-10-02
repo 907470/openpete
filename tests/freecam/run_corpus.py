@@ -7,7 +7,7 @@ OFF, and asserts the expectations.  Software-Vulkan (llvmpipe) is forced
 when available so results are deterministic across machines.
 
 Exit codes: 0 = all PASS, 1 = a check FAILed, 64 = SKIP (binary/disc/
-prereqs missing — mirrors tests/harness/check_psx_oracle.sh).
+prereqs missing - mirrors tests/harness/check_psx_oracle.sh).
 """
 import argparse, concurrent.futures, os, re, subprocess, sys, tempfile
 
@@ -36,7 +36,7 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
     # that is a mask rather than a boolean names its shipped value as ab_on.
     on_off = (str(case.get("ab_on", "1")), str(case.get("ab_off", "0")))
     env[case.get("ab_env", "OPENPETE_TERRAIN_GAPFILL")] = on_off[0] if gapfill else on_off[1]
-    # pin_env: fixed KEY=VALUE pairs applied to BOTH runs of the pair — for
+    # pin_env: fixed KEY=VALUE pairs applied to BOTH runs of the pair - for
     # isolating one mechanism when two independently produce the same pixels
     # (e.g. the actor-front pass vs the moby OT-bias pull).
     for k, v in case.get("pin_env", {}).items():

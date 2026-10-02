@@ -1,4 +1,4 @@
-// games/spyro-1/features/crash_demo_woah.h — title-screen Crash demo cheat.
+// games/spyro-1/features/crash_demo_woah.h - title-screen Crash demo cheat.
 
 #ifndef SPYRO1_CRASH_DEMO_WOAH_H
 #define SPYRO1_CRASH_DEMO_WOAH_H

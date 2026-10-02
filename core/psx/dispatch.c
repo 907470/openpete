@@ -1,4 +1,4 @@
-// core/psx/dispatch.c — psx_runtime.h glue not provided by generated C.
+// core/psx/dispatch.c - psx_runtime.h glue not provided by generated C.
 //
 // The recompiled C calls into a small surface declared in psx_runtime.h:
 // `call_by_address` (jump-register dispatch), `psx_override_dispatch`
@@ -34,7 +34,7 @@ static int recomp_unregistered_dispatch(CPUState* cpu, uint32_t addr) {
     (void)cpu;
     fprintf(stderr,
             "openpete: dispatch to 0x%08X before a recomp module was "
-            "registered — game main must call openpete_recomp_register()\n",
+            "registered - game main must call openpete_recomp_register()\n",
             addr);
     abort();
 }
@@ -109,7 +109,7 @@ static void note_miss(uint32_t addr, uint32_t ra, uint32_t sp) {
         s_miss[empty].addr = addr;
         s_miss[empty].hits = 1u;
         OPL_WARN_F("dispatch",
-                   "stub miss 0x%08X (#1) ra=0x%08X sp=0x%08X — likely overlay/untranslated",
+                   "stub miss 0x%08X (#1) ra=0x%08X sp=0x%08X - likely overlay/untranslated",
                    addr, ra, sp);
     } else if (!s_miss_overflow) {
         s_miss_overflow = 1;
@@ -300,7 +300,7 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
     fflush(stdout);
     fflush(stderr);
     openpete_log_file_sync();
-    /* Bypass the host-fiber teardown — we just want a clean exit with the
+    /* Bypass the host-fiber teardown - we just want a clean exit with the
      * dump on disk. The host loop's normal exit path requires yielding back
      * through SDL/PsyCross which can hang under headless GL on WSL. */
     _Exit(0);
@@ -310,11 +310,11 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * entry, so it sees roughly the full call sequence the game fiber walks
  * each frame. Because the host/game fibers are cooperatively scheduled in
  * one OS thread (libco), an infinite loop in the game fiber blocks the
- * host fiber too — no host-side timer can fire. Watching `openpete_vbl`
+ * host fiber too - no host-side timer can fire. Watching `openpete_vbl`
  * here lets the game fiber notice it hasn't called VSync(0) in a long time
  * and dump where it's been before we lose the trace. (We key off vbl rather
- * than `openpete_frame` so fast-boot iterations — which advance vbl but not
- * frame — don't look like hangs.)
+ * than `openpete_frame` so fast-boot iterations - which advance vbl but not
+ * frame - don't look like hangs.)
  *
  * On trip: write three rings of (addr, ra, sp) to `OPENPETE_HANG_TRACE`
  * (default hang-trace.bin in the logs state directory, beside the log
@@ -331,7 +331,7 @@ static struct hang_entry s_hang_ring[HANG_RING];
 static uint32_t s_hang_head = 0u;
 /* Snapshot of the ring at the last frame-boundary tick. Tight loops fill the
  * primary ring with their own entries, hiding what was happening *before* the
- * loop began — the snapshot preserves it. */
+ * loop began - the snapshot preserves it. */
 static struct hang_entry s_hang_ring_prev[HANG_RING];
 static uint32_t s_hang_head_prev = 0u;
 /* The two rings above hold the FIRST HANG_RING dispatches of an interval, so a
@@ -408,7 +408,7 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
     }
     OPL_ERROR_F("watchdog",
                 "hang detected: %u dispatch entries since openpete_vbl=%u "
-                "(trip addr=0x%08X), wrote trace=%s ram=%s — exiting",
+                "(trip addr=0x%08X), wrote trace=%s ram=%s - exiting",
                 s_hang_calls_since_tick, s_hang_last_vbl, trip_addr,
                 path, rampath);
     char msg[2600];
@@ -504,11 +504,11 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
 }
 
 void psx_syscall(CPUState* cpu, uint32_t code) {
-    OPL_WARN_F("dispatch", "syscall code=0x%X (ra=0x%08X) — ignored",
+    OPL_WARN_F("dispatch", "syscall code=0x%X (ra=0x%08X) - ignored",
                code, cpu ? cpu->ra : 0u);
 }
 
-/* MMIO trace toggle — referenced by generated C indirectly via the runtime
+/* MMIO trace toggle - referenced by generated C indirectly via the runtime
  * header. No-op in the slim runner; real MMIO tracing belongs in PsyCross. */
 void psx_mmio_trace_enable(int enable) { (void)enable; }
 

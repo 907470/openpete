@@ -1,4 +1,4 @@
-/* psx_key_contest.glsl — the per-pixel painter verdicts of the original
+/* psx_key_contest.glsl - the per-pixel painter verdicts of the original
  * renderer, as pure functions. Included by the engine halves of the
  * material contract; not a mod-facing interface.
  *
@@ -393,9 +393,9 @@ float op_key_store(float kv)
  *
  * The key rides the ACTOR key image in a reserved value band instead of a
  * sixth image: its slot index is encoded linearly from OP_PKEY_BASE in
- * steps of OP_PKEY_STEP. The band sits below every reachable real key —
+ * steps of OP_PKEY_STEP. The band sits below every reachable real key -
  * a key is floored at one world unit, which stores at 2.4e-4, five times
- * the band's top — so the depth test that composes the image resolves a
+ * the band's top - so the depth test that composes the image resolves a
  * pixel both classes cover to the PLAYER, and every reader that is not
  * the aura contest filters the band out through op_akey_contest() rather
  * than decoding it as an impossibly near key. The key feed carries a band
@@ -451,7 +451,7 @@ float op_akey_contest(float stored)
  * a flat billboard inserted at its own view-Z bucket and it writes no
  * depth, so it occludes nothing: the only question is which of the two the
  * table paints last. Both sides carry their ordering-table slot, so the
- * verdict is the table's own — the fan loses a pixel whose actor or player
+ * verdict is the table's own - the fan loses a pixel whose actor or player
  * key sits in its bucket or nearer, and keeps it otherwise. Terrain is not
  * consulted: the fan's stored depth is true, and true depth is what decides
  * it against the ground.
@@ -540,7 +540,7 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
              * than a bucket is no difference at all. The moby pass is
              * submitted before the terrain pass, so a terrain face in the
              * same bucket is appended after an actor face and paints over
-             * it — the actor loses a tie, the terrain keeps one (a terrain
+             * it - the actor loses a tie, the terrain keeps one (a terrain
              * fragment must never lose to its own key). */
             float own_slot = floor((koff - 0.5) / OP_KEY_SLOT);
             float t_slot   = op_key_bucket(tkey);

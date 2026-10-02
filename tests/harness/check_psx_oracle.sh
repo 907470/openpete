@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# tests/harness/check_psx_oracle.sh — run openpete --psxtrace-verify against a
+# tests/harness/check_psx_oracle.sh - run openpete --psxtrace-verify against a
 # DuckStation (real SCPH1001 BIOS) baseline trace. The trace's per-tick
 # oracle hashes (one per gameplay-state region) are value-equality
 # compared against openpete's live hashes; first mismatch = first leak.
@@ -27,7 +27,7 @@
 #
 # Anything after `--` is forwarded verbatim to the openpete binary, so the
 # same golden can be used to prove a feature with a game-side producer is
-# gameplay-neutral — run openpete WITH the feature flag against the STOCK
+# gameplay-neutral - run openpete WITH the feature flag against the STOCK
 # golden; a PASS means the flag perturbed no gameplay-state region vs real
 # hardware:
 #   tests/harness/check_psx_oracle.sh -- --no-lod
@@ -41,11 +41,11 @@
 #
 # Defaults (from games/SLUG/oracle.conf):
 #   trace-path: tests/golden/spyro-1/psxtrace-demo-20k.bin (20k-tick
-#               attract-demo soak — 4+ level loads + gameplay)
+#               attract-demo soak - 4+ level loads + gameplay)
 #   binary:     build/linux-release/games/spyro-1/openpete-spyro1
 #   disc:       env $OPENPETE_DISC or the recipe's
 #
-# Sibling artifacts (auto-detected — produced by pcsx-redux-trace.lua):
+# Sibling artifacts (auto-detected - produced by pcsx-redux-trace.lua):
 #   <trace>.seed.ram   passed to openpete via --seed-ram (RAM at trace t0)
 #   <trace>.seed.cpu   passed via --seed-cpu (528B 'CSv1' CPU state at t0)
 #   <trace>.bk2        passed via --bk2 so openpete replays the same input
@@ -61,10 +61,10 @@
 #                         the run paces to the display, and with
 #                         `-- --render-fps N` above the tick rate so
 #                         intermediate presents are planned at all
-#   OPENPETE_FRAME_LIMIT (default 200000 — safety belt; psxtrace-eof exits
+#   OPENPETE_FRAME_LIMIT (default 200000 - safety belt; psxtrace-eof exits
 #                         first; a smaller value makes a smoke run that
 #                         cannot PASS as a full run)
-#   OPENPETE_ORACLE_RECORDS (default 20000) — the record count the golden
+#   OPENPETE_ORACLE_RECORDS (default 20000) - the record count the golden
 #                         must carry and the run must consume for a PASS
 #   PSXTRACE_KEEP_GOING=1   diff every frame, don't stop on first mismatch
 #   OPENPETE_ORACLE_ALLOW_KNOBS=<reason> admits OPENPETE_PSXTRACE_HEAL_WINDOW
@@ -75,13 +75,13 @@
 # Exit codes:
 #   0   bit-identical hashes for every traced frame
 #   2   divergence (openpete ran fine but a hash mismatched)
-#   64  prerequisites missing (trace / binary / disc) — ctest treats as SKIP
+#   64  prerequisites missing (trace / binary / disc) - ctest treats as SKIP
 #   *   build/runtime error
 set -euo pipefail
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set here rather than at
 # each invocation because this script builds its argument list in more than one
 # place, and a flag appended to the wrong one is a silent miss.
@@ -136,7 +136,7 @@ if [[ ! -f "$TRACE" ]]; then
     }
 fi
 if [[ ! -x "$BIN" ]]; then
-    echo "[psx-oracle] binary missing: $BIN — run cmake --build --preset linux-release" >&2
+    echo "[psx-oracle] binary missing: $BIN - run cmake --build --preset linux-release" >&2
     exit 64
 fi
 if [[ ! -f "$DISC" ]]; then
@@ -214,7 +214,7 @@ PASSTHRU=("${RUN_ARGS[@]}" "${PASSTHRU[@]}")
 [[ ${#PASSTHRU[@]} -gt 0 ]] && \
     echo "[psx-oracle] openpete flags: ${PASSTHRU[*]}"
 
-# Safety belt only — psxtrace-eof exits first. The 20k-tick demo reaches
+# Safety belt only - psxtrace-eof exits first. The 20k-tick demo reaches
 # EOF at ~37k openpete frames, so the default must clear that comfortably.
 LIMIT="${OPENPETE_FRAME_LIMIT:-200000}"
 # Full console log, captured so the exit-time music summary can be checked;

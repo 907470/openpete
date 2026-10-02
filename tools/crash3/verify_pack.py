@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""verify_pack.py — offline self-check of crash3_s1pack.bin.
+"""verify_pack.py - offline self-check of crash3_s1pack.bin.
 
 Parses every model in the pack through bit-exact mirrors of the Spyro 1
 renderer's walks (the vertex-stream literal decode and the fresh-face
 record walk from moby.c), checks every index against the header
-counts, and renders the ENCODED model — vertices from the stream, faces
-from the faceblock, texels from the atlas PNGs — so what is verified is
+counts, and renders the ENCODED model - vertices from the stream, faces
+from the faceblock, texels from the atlas PNGs - so what is verified is
 what the game will read, not the converter's intermediate mesh.
 
 Run before any in-game test; exit 1 on any error.

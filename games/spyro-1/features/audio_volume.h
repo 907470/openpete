@@ -1,5 +1,5 @@
 #pragma once
-/* audio_volume.h — --sfx / --music: preset Spyro 1's own in-game
+/* audio_volume.h - --sfx / --music: preset Spyro 1's own in-game
  * volume sliders, and make the music slider audible.
  *
  * Two jobs, both driven from one tick hook (see audio_volume.c):

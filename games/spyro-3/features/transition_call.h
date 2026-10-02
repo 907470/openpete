@@ -1,5 +1,5 @@
 #pragma once
-/* transition_call.h — one queue for host-requested calls into the game's own
+/* transition_call.h - one queue for host-requested calls into the game's own
  * transition functions (WarpToLevel func_800584BC, EnterSubArea
  * func_80052918), made in guest context at the entry of Draw
  * func_8001E638, after the tick's whole Update, as the game's own triggers

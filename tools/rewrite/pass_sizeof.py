@@ -1,7 +1,7 @@
-"""Pass 3 — sizeof verification.
+"""Pass 3 - sizeof verification.
 
 After Pass 1's struct relayout, every game-defined struct's host size should
-equal its PSX size — pointer / long fields are now ``uint32_t`` slots. This
+equal its PSX size - pointer / long fields are now ``uint32_t`` slots. This
 pass confirms it: walk every ``sizeof(T)`` in the TU body, look up T's PSX
 layout, and emit a ``_Static_assert(sizeof(T) == N, ...)`` for each unique
 type into the rewritten-source prologue.
@@ -34,7 +34,7 @@ from .types import StructLayout, layout_struct, type_diverges
 class SizeofCheck:
     type_name: str       # spelling used in the static_assert
     psx_size: int        # expected sizeof under PSX layout
-    location: str        # "<file>:<line>" — diagnostic only
+    location: str        # "<file>:<line>" - diagnostic only
 
 
 @dataclass
@@ -78,7 +78,7 @@ def run(tu_cursor: ci.Cursor, main_path: str) -> SizeofResult:
     for c in tu_cursor.walk_preorder():
         # libclang surfaces sizeof / alignof / vec_step under
         # CXX_UNARY_EXPR. The argument is either a type (UNEXPOSED) or
-        # an expression — both work via cursor.type once we restrict to
+        # an expression - both work via cursor.type once we restrict to
         # the operator's operand.
         if c.kind != ci.CursorKind.CXX_UNARY_EXPR:
             continue
@@ -108,7 +108,7 @@ def run(tu_cursor: ci.Cursor, main_path: str) -> SizeofResult:
                 # `struct Foo`, `Foo[3]`, etc.
                 spelling = " ".join(t.spelling for t in toks[2:-1])
                 seen_skipped.add(spelling)
-                result.skipped.append((spelling, "sizeof(type) — type not "
+                result.skipped.append((spelling, "sizeof(type) - type not "
                                                   "exposed via libclang AST"))
             continue
 
@@ -124,7 +124,7 @@ def run(tu_cursor: ci.Cursor, main_path: str) -> SizeofResult:
             layout = layout_struct(decl)
         except ValueError:
             continue
-        # Only emit guards for types that Pass 1 actually relaid — skipping
+        # Only emit guards for types that Pass 1 actually relaid - skipping
         # PSX-identical structs keeps the static_assert block tight.
         if not layout.diverges:
             continue

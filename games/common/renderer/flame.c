@@ -1,4 +1,4 @@
-// games/common/renderer/flame.c — the player's fire-breath ribbon, re-derived
+// games/common/renderer/flame.c - the player's fire-breath ribbon, re-derived
 // from gamestate in float, and its numerical A/B harness. An ADDITIVE-blend
 // consumer (ABR mode 1).
 //
@@ -26,7 +26,7 @@
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
-#include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
+#include "openpete_log.h"  /* OPL_ERROR_F - ABR/blend FIXME runtime alarms */
 #include "game_layout.h"
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
@@ -35,7 +35,7 @@
 #include "openpete_subtick_view.h"  /* the host-only staged view of the flame span */
 #include "openpete_psx.h"           /* the PSX-to-host pointer fallback */
 #include "renderer/interp_lerp.h"   /* lerp_vec3 / lerp_matrix for the bracket */
-#include "renderer/env_knob.h"      /* env_frame_range_t — the census window */
+#include "renderer/env_knob.h"      /* env_frame_range_t - the census window */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
 #include <math.h>
@@ -43,7 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern unsigned openpete_frame;
 
@@ -361,13 +361,13 @@ static void flame_read_cross(CPUState* cpu, uint32_t p,
         int X1 = s16(w0b >> 16), Z1 = s16(w0b & 0xFFFF), i1 = s16(w1b & 0xFFFF);
         int s1 = (int)((w1b >> 15) & 0x1FEu);
         int dZ = Z1 - Z0;
-        if (dZ >= 0 && dZ < 200) {          /* continuous spine — lerp */
+        if (dZ >= 0 && dZ < 200) {          /* continuous spine - lerp */
             X0 += (int)((X1 - X0) * f + (X1 >= X0 ? 0.5 : -0.5));
             Z0 += (int)(dZ * f + 0.5);
             i0 += (int)((i1 - i0) * f + (i1 >= i0 ? 0.5 : -0.5));
             int ds = s1 - s0; if (ds > 256) ds -= 512; else if (ds < -256) ds += 512;
             s0 = (s0 + (int)(ds * f + (ds >= 0 ? 0.5 : -0.5))) & 0x1FE;
-        }   /* else: discontinuity (crossed into next strand) — keep record[p] */
+        }   /* else: discontinuity (crossed into next strand) - keep record[p] */
     }
     *Xraw = X0; *Z = Z0; *idx = i0; *sIdx = s0;
 }
@@ -416,12 +416,12 @@ typedef struct {
 #define MAX_FQUAD 1024
 static fquad s_fquad[MAX_FQUAD]; static int s_fquad_n;
 
-/* native cap tris (G3 untextured opaque) — the first-cell flame base */
+/* native cap tris (G3 untextured opaque) - the first-cell flame base */
 typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; } fcap;
 #define MAX_FCAP 1024
 static fcap s_fcap[MAX_FCAP]; static int s_fcap_n;
 
-/* strands whose counter was live on the last walk — the census's engagement
+/* strands whose counter was live on the last walk - the census's engagement
  * count, separating "no flame this present" from "a flame that emitted none". */
 static int s_strands_live;
 
@@ -566,7 +566,7 @@ static void flame_build_strip(CPUState* cpu) {
         uint32_t s7 = s6 + (((conn >> 24) << 3) & 0x7F8u);
         uint32_t s5b = s6 + (uint32_t)len * 8u;
         uint32_t v1b = s6 + stride;
-        /* First-cell bounds (line 125-128): these gate the CAPS only — on
+        /* First-cell bounds (line 125-128): these gate the CAPS only - on
          * failure the .s sets gp=0 and jumps to .L8005920C, which still runs
          * the strip (just with the amplitude forced to 8). So never skip the
          * whole strand here; only the caps. (Skipping the strand dropped the
@@ -595,7 +595,7 @@ static void flame_build_strip(CPUState* cpu) {
         int mode = (int)((uv1w >> 23) & 3), bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
         /* ABR-FIXME: the flame-strip draw hardcodes blend=2 (ABR1
          * additive); the strip tpage's ABR is data-driven (assumed additive, not
-         * statically proven). If a flame ever ships a non-additive tpage this fires —
+         * statically proven). If a flame ever ships a non-additive tpage this fires -
          * derive blend from the captured ABR instead of hardcoding. */
         if (((uv1w >> 21) & 3) != 1)
             OPL_ERROR_F("native", "ABR-FIXME flame strip tpage ABR=%d (feeder hardcodes "
@@ -644,7 +644,7 @@ static void flame_build_strip(CPUState* cpu) {
             prev0 = c0; prev1 = c1; have_prev = 1;
             /* counter (.L80059298): the bgtz AND the blez both carry an
              * `addi t8,-1` in their branch-delay slot, and a delay slot runs
-             * whether or not its branch is taken — so EACH counter pass drops
+             * whether or not its branch is taken - so EACH counter pass drops
              * byte2 by 2, not 1. (Getting this wrong doubled the quad count.)
              * The s7+=8 / s4,s5 final-step swap happens only on the fall-through
              * (the second test failed). */
@@ -890,10 +890,10 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
      * ribbon's window into the static cross-section spine (one 8-byte
      * record per step); write the FLOOR of the interpolated counter as
      * the window and hand the fractional part to the flame feeder as a
-     * SUB-KEYFRAME slide (record[p]→record[p+8] lerp) so the ribbon
-     * animates below the keyframe grid — as smooth as the avatar's anim
-     * lerp, not stepping one record at a time. SNAP on a large jump —
-     * the flame periodically reseeds (the counter wraps 30→0), and
+     * SUB-KEYFRAME slide (record[p]->record[p+8] lerp) so the ribbon
+     * animates below the keyframe grid - as smooth as the avatar's anim
+     * lerp, not stepping one record at a time. SNAP on a large jump -
+     * the flame periodically reseeds (the counter wraps 30->0), and
      * lerping across that collapses the ribbon through zero. |Δ|<8
      * separates the continuous advance/retract (g_DeltaTime 2..4) from
      * the wrap (~30). The advance is the same for every (non-snapped)
@@ -908,7 +908,7 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
             int v = (int)ffloor; if (v < 0) v = 0;
             fl[FL_CNT + st] = (uint8_t)v;
             if (*subframe == 0.0 && d > 0) *subframe = fadv - ffloor;
-        }   /* else keep curr (wrap/reseed — already in fl) */
+        }   /* else keep curr (wrap/reseed - already in fl) */
     }
     return 1;
 }

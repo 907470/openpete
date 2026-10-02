@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fence: every reader of the moby frame word's 21-bit stream field is
-substituted — no more, no fewer, and at the instruction it claims.
+substituted - no more, no fewer, and at the instruction it claims.
 
 An animation frame word packs the vertex-stream address into bits 0-20.
 Every reader in the game decodes it with one idiom:
@@ -15,19 +15,19 @@ live outside the first 2 MB, and it is only correct if it covers EVERY
 reader: a missed site reads a handle as a byte address into the kernel area
 and walks garbage vertices, silently.
 
-This fence censuses the GENERATED C — PSX.EXE_full.c and every overlay's
-_full.c — because the decomp asm has no overlay code at all. It decodes the
+This fence censuses the GENERATED C - PSX.EXE_full.c and every overlay's
+_full.c - because the decomp asm has no overlay code at all. It decodes the
 opcode word in each line's trailing comment (`/* 0xPC: 0xOPCODE */`), not
 the C text: after substitution the line no longer contains `>> 11`, so a
 textual census would find nothing and flag every manifest row. It refuses:
 
   - a site the census finds that the manifest does not list;
   - a manifest row naming a PC that is not an srl-by-11|10 following an
-    sll-by-11 on the same register (a drifted or mistyped address — the
+    sll-by-11 on the same register (a drifted or mistyped address - the
     recompiler's anchor check is opcode-agnostic for replace_call, so it
     would substitute an unrelated instruction without complaint);
   - a row whose hook does not match the shift (moby for 11, halved for 10);
-  - a manifest row whose generated line lacks the substitution — a stale
+  - a manifest row whose generated line lacks the substitution - a stale
     regen, which would run the stock decode at that site.
 
 Run: python3 scripts/fences/vstream_sites.py [repo root]
@@ -148,7 +148,7 @@ def main():
             bad.append(f"  0x{pc:08X}: a shift's source is rt and its destination rd "
                        f"(row has operand={row.get('operand')!r} dest={row.get('dest')!r})")
         if "channel replace_call" not in line or want not in line:
-            bad.append(f"  0x{pc:08X}: generated line carries no substitution — stale regen "
+            bad.append(f"  0x{pc:08X}: generated line carries no substitution - stale regen "
                        f"(run OPENPETE_REGEN_SCOPE=main_exe scripts/regen-recomp.sh)")
 
     if bad:
@@ -156,7 +156,7 @@ def main():
               file=sys.stderr)
         print("\n".join(bad), file=sys.stderr)
         return 67
-    print(f"fence (vstream_sites): clean — {len(rows)} sites substituted, "
+    print(f"fence (vstream_sites): clean - {len(rows)} sites substituted, "
           f"{len(census)} found across {len(files)} generated files")
     return 0
 

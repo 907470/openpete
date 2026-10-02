@@ -1,12 +1,12 @@
 # windows-mingw-shared: windows-mingw + shared recomp module.
-# Mod sources are staged but NOT pre-compiled —
+# Mod sources are staged but NOT pre-compiled -
 # this exe's mods dir is the first-boot-compile validation surface.
-# NOTE: no LTO here — GNU LTO DCEs the .def-exported psyq_* thunks
+# NOTE: no LTO here - GNU LTO DCEs the .def-exported psyq_* thunks
 # (DEP crash); games/spyro-1/CMakeLists.txt also forces it off on the
 # exe target as a guard.
 include(${CMAKE_CURRENT_LIST_DIR}/windows-mingw.cmake)
 # Dist hygiene: __FILE__/assert strings are referenced .rdata that
-# package-time stripping can't remove — without this they leak the build
+# package-time stripping can't remove - without this they leak the build
 # machine's username/layout. Debug info gets the same mapping (and is
 # stripped at package time anyway).
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=openpete -ffile-prefix-map=${CMAKE_BINARY_DIR}=openpete-build")
@@ -18,6 +18,6 @@ openpete_preset_default(OPENPETE_ENABLE_RECORD OFF)
 # Marks a distributed build: core/CMakeLists.txt refuses a GPL static
 # FFmpeg under it. Not a knob, so set unconditionally.
 set(OPENPETE_DIST_PRESET ON)
-# Distributed build: --help lists only the user-facing flags. Display-only —
+# Distributed build: --help lists only the user-facing flags. Display-only -
 # every debug flag still parses and works here.
 openpete_preset_default(OPENPETE_HIDE_DEBUG_FLAGS ON)

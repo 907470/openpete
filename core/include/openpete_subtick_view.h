@@ -1,4 +1,4 @@
-/* core/include/openpete_subtick_view.h — read-only address view for the
+/* core/include/openpete_subtick_view.h - read-only address view for the
  * sub-tick present path.
  *
  * PROBLEM. Sub-tick (intermediate) presents show interpolated state, and the
@@ -14,13 +14,13 @@
  *     intermediate runs (cull verdicts, segment scratch).
  *
  * That works, but it means a *display* path mutates gameplay-readable memory,
- * on a path the state-hash gates never execute — so a missed restore is
+ * on a path the state-hash gates never execute - so a missed restore is
  * silent. It also makes concurrent extraction impossible: the writes race
  * whatever else looks at guest RAM.
  *
  * THIS VIEW. For the duration of an intermediate present the CPU's memory
  * read callbacks are swapped for view-aware ones, so every read a feeder
- * makes — whether through cpu->read_word() or openpete_subtick_host_ptr() —
+ * makes - whether through cpu->read_word() or openpete_subtick_host_ptr() -
  * resolves against staged bytes where a span covers the address and against
  * real memory everywhere else. The feeder sees the value the presenter wants
  * it to see, and staged bytes never reach guest memory.
@@ -34,7 +34,7 @@
  * the view that no staged span covers is counted and still performed.
  *
  * NOT a replacement for openpete_psx_to_host_ptr(). Recompiled guest code
- * must keep resolving against real memory — only the display-side feeders
+ * must keep resolving against real memory - only the display-side feeders
  * resolve through the view.
  */
 

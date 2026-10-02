@@ -1,4 +1,4 @@
-/* games/common/state_regions_none.h — the region table of a game whose
+/* games/common/state_regions_none.h - the region table of a game whose
  * manifest directory carries no gameplay_state_regions.toml. Same symbols
  * as the generated gameplay_state_regions.gen.h, at count 0; the
  * registration TU passes the table as a pointer, so a NULL table and a

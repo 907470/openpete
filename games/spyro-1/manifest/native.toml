@@ -11,25 +11,25 @@
 # internals, libc/CRT names, etc.).
 #
 # Top-of-file because TOML scopes top-level keys after `[[table]]`
-# headers into that table — keep this above the array-of-tables blocks.
+# headers into that table - keep this above the array-of-tables blocks.
 alias_globals_skip = []
 
 # Names whose host-side thunk is already hand-written, or whose source-
 # level call resolves directly to a PsyCross symbol (no thunk needed).
 # Suppressed from gen_thunks's auto-emitted output:
 #
-#   CdReadCallback — psyq_thunks.cpp's hand-written bridge registers a
+#   CdReadCallback - psyq_thunks.cpp's hand-written bridge registers a
 #                    host-side native callback (not a recomp dispatch
 #                    back into PSX). Auto-thunk shape is wrong.
-#   CdInit         — cd.c's `CdInit()` link-resolves directly to
+#   CdInit         - cd.c's `CdInit()` link-resolves directly to
 #                    PsyCross's CdInit; no rename is in flight, so the
 #                    auto thunk would just be dead code.
-#   CdIntToPos     — native callers (music.c / spu.c) pass a stack-local
+#   CdIntToPos     - native callers (music.c / spu.c) pass a stack-local
 #                    CdlLOC*; the auto thunk's `host_to_psx(p)` returns 0
 #                    for stack pointers and the host call dereferences
 #                    NULL. PsyCross's CdIntToPos signature matches the
-#                    native call exactly — no PSX-vaddr round-trip needed
-#                    — so the native source link-resolves directly.
+#                    native call exactly - no PSX-vaddr round-trip needed
+#                    - so the native source link-resolves directly.
 outbound_psyq_skip = ["CdReadCallback", "CdInit", "CdIntToPos"]
 outbound_recomp_skip = []
 
@@ -48,10 +48,10 @@ extra_flags = """\
 -DCdSync=openpete_CdSync\
 """
 
-# Tiny, self-contained — two helpers around libc rand(). Stresses Pass 6
+# Tiny, self-contained - two helpers around libc rand(). Stresses Pass 6
 # discovery (RandRange / RandRangeSigned both end up as [[dispatch]]
 # entries) and confirms the no-globals / no-GTE migration path. The
-# source-level rand() resolves to libc rand at link time — see the
+# source-level rand() resolves to libc rand at link time - see the
 # `rand` entry in `outbound_recomp_skip` above for why the auto-thunk
 # is suppressed.
 [[native_source]]
@@ -65,15 +65,15 @@ c_name = "RandRange"
 name = "RandRangeSigned"
 c_name = "RandRangeSigned"
 
-# Stresses Pass 1 (Moby has many void* fields — relayout exercises the
+# Stresses Pass 1 (Moby has many void* fields - relayout exercises the
 # header rewriter on a wide struct) + Pass 6 outbound discovery (VecCopy /
-# Memcpy fall out as recomp callees). No hand `[[dispatch]]` entry —
+# Memcpy fall out as recomp callees). No hand `[[dispatch]]` entry -
 # Pass 6 auto-discovers `CheckpointSave` from the source file with the
 # right args via libclang param introspection.
 [[native_source]]
 file = "src/checkpoint.c"
 
-# Single empty `func_80037E98(Moby*)` — exercises the func_<ADDR> native
+# Single empty `func_80037E98(Moby*)` - exercises the func_<ADDR> native
 # rename path (gen_renames.py class 3): the native body collides at link
 # with PSX.EXE_full.c's recompiled `func_80037E98`, so native_renames.h
 # rewrites the source to `spyro_native_func_80037E98` and Pass 6's
@@ -118,18 +118,18 @@ file = "src/cheats.c"
 [[native_source]]
 file = "src/hud.c"
 
-# gamepad.c — Pass 2 now rewrites `g_DemoDataPtr++` / `++g_DemoDataPtr` at
+# gamepad.c - Pass 2 now rewrites `g_DemoDataPtr++` / `++g_DemoDataPtr` at
 # the UnaryOperator level into a comma-expression that advances the PSX
 # storage slot transactionally and yields the appropriate vaddr.
 [[native_source]]
 file = "src/gamepad.c"
 
-# camera.c — deferred. Builds (after the __maspsx_include_asm_hack_*
+# camera.c - deferred. Builds (after the __maspsx_include_asm_hack_*
 # Pass 6 skip fix), boots, hits titlescreen and the level_11 swap, but
 # SIGSEGVs during demo gameplay (~frame 5500). Camera is a hot-path
-# update called every frame; the crash class is correctness — Pass 1
+# update called every frame; the crash class is correctness - Pass 1
 # coverage on Camera/Spyro structs, ABI mismatch on a recomp call, or
-# similar — and not a quick bisect.
+# similar - and not a quick bisect.
 #[[native_source]]
 #file = "src/camera.c"
 
@@ -142,8 +142,8 @@ file = "src/overlay_pointers.c"
 [[native_source]]
 file = "src/moby_helpers.c"
 
-# pete.c — deferred. Pass 5c's INCLUDE_ASM splice deletion comes out
-# corrupted in the rewritten file (`m_RotY += t.y;E4);` — last 4 chars of
+# pete.c - deferred. Pass 5c's INCLUDE_ASM splice deletion comes out
+# corrupted in the rewritten file (`m_RotY += t.y;E4);` - last 4 chars of
 # the spliced func_8003DAE4 macro call survive). Only one edit in that
 # range per the diagnostic, so a write-detection pass is generating an
 # edit with a wrong extent that overwrites Pass 5c's deletion. Real
@@ -151,20 +151,20 @@ file = "src/moby_helpers.c"
 #[[native_source]]
 #file = "src/pete.c"
 
-# loaders.c — migrated via textual fallback passes for nested-macro
+# loaders.c - migrated via textual fallback passes for nested-macro
 # argument cursors that libclang's token recovery can't reach.
 # rewrite_tu.py runs two textual post-passes after the AST stages:
 # (1) chain-wrap fallback in pass_struct_relayout for unwrapped
 # `<chain>->FIELD[idx]->IDENT` (where FIELD is a relaid array-of-
-# pointer field) — wrapped forms produced by the AST renderer
+# pointer field) - wrapped forms produced by the AST renderer
 # contain `]))->`, so a `]->` regex is idempotent; (2) bare-ref
 # fallback in pass_bare_globals for unrewritten redirected names
-# inside macro args — substitutes the scalar read-wrap form, with
+# inside macro args - substitutes the scalar read-wrap form, with
 # `(?<![A-Za-z0-9_])` for word boundary so `__psx_<name>` matches
 # don't recurse.
 # Re-deferred. Pass 1/4 sentinel-cast suppression cleared the
 # PatchMobyModelPointers crash, but downstream demo runs surface
-# non-deterministic crashes (different RIP each run — SoundsUpdate
+# non-deterministic crashes (different RIP each run - SoundsUpdate
 # slot 11 with m_Moby=0x0e11e96d junk vaddr; PutDrawEnv(NULL); ...)
 # indicating memory corruption from a write site somewhere in the
 # rewritten output that's not localized to a single Pass. Needs a
@@ -172,13 +172,13 @@ file = "src/moby_helpers.c"
 #[[native_source]]
 #file = "src/loaders.c"
 
-# initialization.c + completion.c — re-enable currently held.
+# initialization.c + completion.c - re-enable currently held.
 #
 # A speculative re-enable with VSync outbound_psyq
-# routing reaches further into Initialize than before — boots through
-# the 5 CDLoadSync calls (titlescreen → universal logo) and ~210
+# routing reaches further into Initialize than before - boots through
+# the 5 CDLoadSync calls (titlescreen -> universal logo) and ~210
 # frames of VSync wait, then hangs silently somewhere in the
-# Memset → for-loop → LoadCutscene path. No watchdog fires (we're in
+# Memset -> for-loop -> LoadCutscene path. No watchdog fires (we're in
 # native code, not recomp), no crash.
 #
 # A whole-tree libclang scan (Pass 5 guard) confirms there are *zero*
@@ -190,7 +190,7 @@ file = "src/moby_helpers.c"
 #     them the calls execute on PsyCross's host renderer state and
 #     desynchronize from the recomp-side game state.
 #   - func_80017F24(&g_SonyImage, ...) reads g_SonyImage's bytes
-#     through the recomp body's gp+offset path — Pass 1 should make
+#     through the recomp body's gp+offset path - Pass 1 should make
 #     the host bytes match PSX layout, but the relayout coverage on
 #     SonyImage hasn't been verified.
 # Revisit by re-attempting the speculative re-enable + bisecting the
@@ -210,12 +210,12 @@ file = "src/moby_helpers.c"
 # comes from manifest/symbols.toml (parsed psx.map), args come from
 # the C signature in spyro-1/include/<name>.h. To override, set
 # `args = [...]` explicitly. Supported tokens:
-#   "u32"           — pass cpu->aN directly
-#   "u8"            — pass (uint8_t)(cpu->aN & 0xFF)
-#   "ptr"           — openpete_psx_to_host_ptr(cpu->aN)
-#   "stack_u32:OFF" — cpu->read_word(cpu->sp + OFF)
+#   "u32"           - pass cpu->aN directly
+#   "u8"            - pass (uint8_t)(cpu->aN & 0xFF)
+#   "ptr"           - openpete_psx_to_host_ptr(cpu->aN)
+#   "stack_u32:OFF" - cpu->read_word(cpu->sp + OFF)
 #
-# `psyq_main = true` runs psyq___main(cpu) before the body — needed for
+# `psyq_main = true` runs psyq___main(cpu) before the body - needed for
 # main() so the C runtime crt0 fires.
 [[dispatch]]
 name = "main"
@@ -246,7 +246,7 @@ c_name = "CDLoadAsync"
 #c_name = "CalculateCompletion"
 #args = []
 
-# Outbound — native code calling into still-recompiled MIPS. Used when a
+# Outbound - native code calling into still-recompiled MIPS. Used when a
 # native TU references a function whose body hasn't been migrated yet
 # (e.g. main() calls Initialize/GamestateUpdate, cd.c calls SoundsUpdate
 # / CDMusicUpdate). The thunk packs args from host-ABI into cpu->aN and
@@ -261,15 +261,15 @@ name = "GamestateUpdate"
 [[outbound_recomp]]
 name = "GamestateDraw"
 
-# SoundsUpdate now has a native body in src/spu.c — Pass 6 picks it
+# SoundsUpdate now has a native body in src/spu.c - Pass 6 picks it
 # up as a [[dispatch]] entry. Same situation as CDMusicUpdate below.
 
-# CDMusicUpdate now has a native body in src/music.c — Pass 6 picks it
+# CDMusicUpdate now has a native body in src/music.c - Pass 6 picks it
 # up as a [[dispatch]] entry. Direct callers from other native TUs link
 # to the native body; the recomp body remains as a fallback if dispatch
 # misses.
 
-# init.c-only outbound entries — gated with init.c's re-enable.
+# init.c-only outbound entries - gated with init.c's re-enable.
 #[[outbound_recomp]]
 #name = "SpuInitialize"
 #[[outbound_recomp]]
@@ -296,18 +296,18 @@ name = "GamestateDraw"
 #[[outbound_recomp]]
 #name = "PadVSync"
 
-# Outbound — native code calling PSYQ-compatible wrappers. Used when
+# Outbound - native code calling PSYQ-compatible wrappers. Used when
 # cd.c calls Cd*; we route through psyq_<NAME>(cpu) (psyq_thunks.cpp)
 # rather than PsyCross's raw entry, because the psyq_* layer carries
 # Spyro-specific enhancements (XA streaming arm in psyq_CdControl,
 # XA pump in psyq_CdSync, etc.). Signatures from PsyCross libcd.h.
 
-# `outbound_psyq_hand` — entries whose openpete_<NAME> thunk is
+# `outbound_psyq_hand` - entries whose openpete_<NAME> thunk is
 # hand-written in psyq_thunks.cpp. gen_renames still emits the
 # `#define <NAME> openpete_<NAME>` redirect; gen_thunks does NOT
 # emit a body (the hand-written one wins at link). Used when the
 # auto thunk's host_to_psx round-trip would lose information that
-# matters — e.g. CdControl's `param`/`result` are often stack-local
+# matters - e.g. CdControl's `param`/`result` are often stack-local
 # u_char buffers, host_to_psx returns 0, and the recomp pumped
 # psyq_CdControl gets NULL. The hand thunk takes host pointers
 # directly and runs the same Spyro-specific bookkeeping
@@ -324,13 +324,13 @@ c_name = "openpete_CdRead"
 psyq_name = "CdSync"
 c_name = "openpete_CdSync"
 
-# CdIntToPos — see outbound_psyq_skip above. Native callers
+# CdIntToPos - see outbound_psyq_skip above. Native callers
 # (music.c / spu.c) pass a stack-local CdlLOC*; the auto thunk's
 # host_to_psx returns 0 for stack pointers and the host call
 # dereferences NULL. Native source link-resolves directly to
 # PsyCross's CdIntToPos.
 
-# CdMix + VSync — gated with init.c re-enable.
+# CdMix + VSync - gated with init.c re-enable.
 # CdMix: PsyCross declares but doesn't define; psyq_thunks.cpp's
 #        psyq_CdMix is the load-bearing wrapper.
 # VSync: PsyCross's host VSync(0) calls PsyX_WaitForTimestep(1) which

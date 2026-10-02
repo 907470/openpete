@@ -1,11 +1,11 @@
 # Freecam-spot regression corpus for the terrain LP fill-tag mechanism
 # (games/spyro-1/renderer/terrain.c tsc_tag_gapfill: the frozen,
-# measurement-derived fill-face table in terrain_fill_tags.h — regenerate
+# measurement-derived fill-face table in terrain_fill_tags.h - regenerate
 # with scripts/gen-fill-tags.py from tests/freecam/fill-tags.verdicts).
 #
-# Each case boots headless (software Vulkan — deterministic), jumps the
+# Each case boots headless (software Vulkan - deterministic), jumps the
 # freecam to a recorded pose, screenshots at `frame`, and asserts metric
-# expectations — never golden images, so unrelated renderer changes don't
+# expectations - never golden images, so unrelated renderer changes don't
 # break it.  Check kinds (A/B knob = `ab_env`, default OPENPETE_TERRAIN_GAPFILL;
 # the ON and OFF legs set it to `ab_on` / `ab_off`, default "1" / "0"):
 #   ab-identical  ON vs OFF must differ by <= max_px (in bbox if set)
@@ -20,7 +20,7 @@
 # list, so there is no threshold left that could admit a face nobody reviewed.
 # The dozen gapfill ab-identical "must not paint here" spots that guarded the
 # v1-v12 classifier against exactly that are gone.  A wrongly-added ROW can
-# still punch LP through HP — that is now the presentation golden's job, and it
+# still punch LP through HP - that is now the presentation golden's job, and it
 # does it better: the golden named the two artisans s7 wedges by tile, which no
 # threshold spot had caught.  Add spots here for fill that must HAPPEN; adjudicate
 # fill that must not against the og reference.
@@ -46,7 +46,7 @@ mode  = "terrain"
   bbox   = [330, 200, 620, 340]
   max_px = 200
 
-# Yaw 284: the other side of the historic 1-unit pop — same hole region
+# Yaw 284: the other side of the historic 1-unit pop - same hole region
 # must be filled (fill verdict is pose-stable).
 [[case]]
 name  = "artisans-yaw284-stable"
@@ -71,7 +71,7 @@ mode  = "full"
 
 # gnorc_cove water plane (z=1088 LP grid over sparse HP): the fills that
 # shrink the water wedge must stay active.  (The residual
-# small notch is a DIFFERENT, pre-existing fog-boundary class — see the
+# small notch is a DIFFERENT, pre-existing fog-boundary class - see the
 # investigation doc.)
 [[case]]
 name  = "gnorc-water-fills-active"
@@ -145,7 +145,7 @@ mode  = "terrain"
   max_px = 100
 
 # cliff_town crest strip: the v9 near-floor fill backstop that served it is
-# retired — the strip's sightlines measured as COVERED by authored HP in the
+# retired - the strip's sightlines measured as COVERED by authored HP in the
 # pure-HP og reference (og with m_LodDistance doubled), i.e. the visible gap
 # is a native HP coverage deficit, not missing LP. Tracked as a renderer bug,
 # not a fill concern.
@@ -189,7 +189,7 @@ pin_env = { OPENPETE_TERRAIN_CACHE_FORCE = "1" }
 # bbox; the full-frame ON/OFF diff equals the bbox diff).
 # NOTE (moby OT-bias): the game's own m_DepthOffset OT pull (mirrored as a
 # 128-world-unit-per-slot depth bias, OPENPETE_MOBY_OTBIAS) now paints the wing
-# over the tower on its own — in the default config the actor-front pass is
+# over the tower on its own - in the default config the actor-front pass is
 # redundant at this frame and its ON/OFF delta collapses to ~0.  Pin the pull
 # OFF here so this case keeps guarding the actor-front MACHINERY in isolation;
 # the sibling case below guards the pull itself.
@@ -211,7 +211,7 @@ pin_env = { OPENPETE_MOBY_OTBIAS = "0" }
 # disc), and the LP hole-fill used to read those pixels as uncovered and paint
 # the LP backing OVER the disc. Fixed structurally: ACTOR opaques stencil-MARK
 # coverage and the fill draws after them. Guard: fill on/off must be
-# pixel-identical over the disc — the fill may never paint on the moby. A
+# pixel-identical over the disc - the fill may never paint on the moby. A
 # regression (fill before actors / marks dropped) re-eats the disc and fires
 # this. (Judge in plain vk: the ab pane's lagged path still shows the strip.)
 [[case]]
@@ -226,11 +226,11 @@ ab_env = "OPENPETE_TERRAIN_HOLEFILL"
   bbox   = [400, 190, 640, 340]
 
 # Moby OT-bias pull (m_DepthOffset, record w0 bits 16-23): the .s keys every
-# regular/specular moby prim into the world OT at (TR.z_raw>>5) − offset —
-# one slot = 128 full-world view-Z units, default offset 4 — so a moby paints
+# regular/specular moby prim into the world OT at (TR.z_raw>>5) − offset -
+# one slot = 128 full-world view-Z units, default offset 4 - so a moby paints
 # over terrain up to ~512 units nearer.  The subject is the gold chest beside
 # the dragon: toggling the pull flips its edge-vs-tower occlusion band
-# (~380 px, solid, >12/channel).  The DRAGON cannot be the subject — cutscene
+# (~380 px, solid, >12/channel).  The DRAGON cannot be the subject - cutscene
 # actors are ACTOR_FRONT-tagged (category 13) and og-key emission gates on
 # category ACTOR, so no pull ever fires for the wing; its wing-over-tower
 # look comes from the front pass (townsquare-delvin-wing-front guards that),
@@ -257,7 +257,7 @@ pin_env = { OPENPETE_ACTOR_FRONT = "0" }
 # against g_DragonCutscene) and clear depth just within THEIR screen bbox
 # (rhi_clear_depth_rect_ndc), so every other moby keeps true terrain occlusion.
 # Guard: with --lod extended, toggling OPENPETE_ACTOR_FRONT leaves the CRITTER
-# region (outside the dragon bbox) pixel-identical — the front pass no longer
+# region (outside the dragon bbox) pixel-identical - the front pass no longer
 # reaches it.  A regression to the whole-frame clear re-leaks ~311 px here (the
 # dragon's own front-pass delta sits at x>=446, outside this bbox).  Companion to
 # townsquare-delvin-wing-front, which proves the pass still fires (the wing draws

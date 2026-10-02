@@ -1,4 +1,4 @@
-// games/common/game_extras_default.c — the game_extras entries whose body is
+// games/common/game_extras_default.c - the game_extras entries whose body is
 // the same for every game, parameterised by the engine-layout descriptor.
 //
 // A game keeps an entry in its own games/<game>/game_extras_impl.c only when

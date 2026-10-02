@@ -1,4 +1,4 @@
-/* core/include/openpete_psxtrace.h — streaming .psxtrace v2 oracle verifier.
+/* core/include/openpete_psxtrace.h - streaming .psxtrace v2 oracle verifier.
  *
  * Opens a trace produced by scripts/pcsx-redux-trace.lua and on each
  * advance() reads the next per-frame record's hash array, computes the
@@ -40,7 +40,7 @@ typedef struct {
     uint32_t    region_count;
     uint32_t    records_consumed;
 
-    /* PC of the first record — captured during open() by peeking +
+    /* PC of the first record - captured during open() by peeking +
      * rewinding. This is the PC the trace was anchored at; the verifier
      * uses it as the default for openpete_psxtrace_anchor_pc, so the
      * caller doesn't have to thread a per-game constant through core/. */
@@ -81,7 +81,7 @@ typedef struct {
     /* The gate verdict. Set when a region that is NOT cd_load_transient
      * diverges, OR a cd_load_transient region diverges and fails to
      * re-converge within `heal_window` ticks (or is still diverging at
-     * EOF). This — not `diverged` — drives the process exit code and the
+     * EOF). This - not `diverged` - drives the process exit code and the
      * non-keep-going early abort. A run whose only divergences are
      * healing CD-load transients leaves hard_failed == 0. */
     int      hard_failed;

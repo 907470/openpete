@@ -6,12 +6,12 @@
  *
  * Two correctness points the previous vkCmdBlitImage(VK_FILTER_LINEAR) path
  * got wrong at N>=3:
- *   1. FOOTPRINT — a linear blit takes a single 2x2 tap regardless of the
+ *   1. FOOTPRINT - a linear blit takes a single 2x2 tap regardless of the
  *      downscale ratio, so most supersampled texels were discarded. This
  *      averages the FULL NxN block (a true box filter).
- *   2. GAMMA — the stored values are perceptual (sRGB-ish in a UNORM target);
+ *   2. GAMMA - the stored values are perceptual (sRGB-ish in a UNORM target);
  *      averaging them directly darkens edges. This decodes each sample to
- *      linear light, averages, then re-encodes — gamma-correct downsampling. */
+ *      linear light, averages, then re-encodes - gamma-correct downsampling. */
 
 layout(set = 0, binding = 0) uniform sampler2D uSrc;   /* supersampled scene */
 

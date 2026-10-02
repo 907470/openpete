@@ -1,4 +1,4 @@
-// games/spyro-1/renderer/tracer.c — native gamestate re-derivation of the additive "tracer/beam"
+// games/spyro-1/renderer/tracer.c - native gamestate re-derivation of the additive "tracer/beam"
 // renderer (func_800189F0 -> func_800189F8), e.g. the dream-weavers fireball's
 // glowing streak. Re-derived in FLOAT from the tracer-point gamestate (no
 // capture of the .s's already-projected int16 prims), so it has true per-vertex
@@ -12,7 +12,7 @@
 //   0x8007596C             = g_LevelId (==63 Gnasty Gnorc boss: width>>2 + R<->G
 //                            colour swap, i.e. the white->red gradient -> green)
 //   each point = 28-byte record: world XYZ @+0/+4/+8, fade @+24
-//     (+12/+16/+20 are the .s's int16 SX/SY/viewZ — we re-project instead).
+//     (+12/+16/+20 are the .s's int16 SX/SY/viewZ - we re-project instead).
 //
 // Algorithm (mirrors func_800189F8, all float):
 //   project each point via func_80017B48's permuted/negated axes
@@ -45,7 +45,7 @@
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "spyro1_symbols.gen.h"
 #include "renderer/tracer_snapshot.h"
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */
 extern unsigned openpete_frame;
@@ -143,7 +143,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
         /* The .s ribbon loop runs s6 = 0..count-2 (block_80018A9C requires
          * count>=2; block_80018EB4 continues while s6 < count-1). The last
          * point (count-1) is projected in the pre-pass but only consumed as the
-         * direction target for point count-2's segment — never drawn. Point
+         * direction target for point count-2's segment - never drawn. Point
          * count-2 takes width 0 (the tip pinch), so the final segment tapers to
          * a point. Iterating to count-1 here would emit an extra full-width
          * segment whose reversed neighbour direction crosses over past the tip. */

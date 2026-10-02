@@ -1,4 +1,4 @@
-// games/spyro-2/skip_to_level.c — --skip-to-level for Spyro 2: Ripto's Rage!
+// games/spyro-2/skip_to_level.c - --skip-to-level for Spyro 2: Ripto's Rage!
 //
 // Loads directly into a level by inducing the title screen's own
 // demo-timeout transition, seeded so it loads the target instead of the next
@@ -158,7 +158,7 @@ static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
         ? spyro2_cutscene_skip_released(cpu, eng, sizeof eng)
         : s_phase == SKIP_PICKED && spyro2_skip_gameplay_live(cpu);
     if (playable) {
-        fprintf(stderr, "[skip-to-level] level playable — presents resume "
+        fprintf(stderr, "[skip-to-level] level playable - presents resume "
                         "at frame=%u%s\n", (unsigned)frame_counter, eng);
     } else if (frame_counter > s_ffwd_deadline) {
         fprintf(stderr, "[skip-to-level] fail-safe release (no playable "

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_zap_subtick.sh — sub-tick interpolation of Zoe's zap.
+# check_zap_subtick.sh - sub-tick interpolation of Zoe's zap.
 #
 # The zap routine links its own triangles into the 3D ordering table and the
 # feeder reads them back out of the polybuf, so what a sub-tick present has to
@@ -51,8 +51,8 @@
 # Input: games/<slug>/corpus/zap-subtick-corpus.manifest, rows
 #   <source> | <V> | <key>=<value> ...
 # <source> is a movie under games/<slug>/bk2, or any name not ending in .bk2,
-# which is the plain boot — the title screen and the attract demo, which need
-# no input — replayed with no movie. V is the canonical VBL whose primitives
+# which is the plain boot - the title screen and the attract demo, which need
+# no input - replayed with no movie. V is the canonical VBL whose primitives
 # the intermediate present at V+1 replays; V-2 opens the interval. Keys:
 #   tol=<px>     bound on each endpoint, default 0.5
 #   step=<px>    floor on the larger endpoint's canonical motion over the

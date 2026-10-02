@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/check_controller_db.sh — prove the controller-mapping precedence
+# scripts/check_controller_db.sh - prove the controller-mapping precedence
 # chain, unattended.
 #
 # What decides which physical button reaches the game is the mapping SDL
 # resolves for a pad's GUID. That is what this checks, per leg, from the
-# resolved mapping string the boot log prints — not from "a file was read",
+# resolved mapping string the boot log prints - not from "a file was read",
 # which is a claim about openpete rather than about SDL's table.
 #
 # Legs:
@@ -44,8 +44,8 @@ DISC="$PG_DISC"
 FRAMES="${OPENPETE_FRAME_LIMIT:-500}"
 OUT="${TMPDIR:-/tmp}/openpete_controllerdb"
 
-[[ -x "$EXE"  ]] || { echo "[controllerdb] no binary at $EXE — SKIP" >&2; exit 64; }
-[[ -f "$DISC" ]] || { echo "[controllerdb] no disc at $DISC — SKIP" >&2; exit 64; }
+[[ -x "$EXE"  ]] || { echo "[controllerdb] no binary at $EXE - SKIP" >&2; exit 64; }
+[[ -f "$DISC" ]] || { echo "[controllerdb] no disc at $DISC - SKIP" >&2; exit 64; }
 
 rm -rf "$OUT"                       # never read a previous run's logs
 mkdir -p "$OUT/home/.config/openpete"
@@ -76,7 +76,7 @@ run base || exit 1
 base_map=$(resolved base)
 # Engagement: with no pad reported there is no mapping to compare,
 # and every leg below would agree with every other by reporting nothing.
-[[ -n "$base_map" ]] || { echo "[controllerdb] no pad reported — the virtual pad" \
+[[ -n "$base_map" ]] || { echo "[controllerdb] no pad reported - the virtual pad" \
                                "did not attach, so nothing was measured" >&2; exit 1; }
 grep -q "mappings: shipped" "$OUT/base.log" \
     || bad "the shipped database did not load"

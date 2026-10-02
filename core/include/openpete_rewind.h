@@ -1,4 +1,4 @@
-/* core/include/openpete_rewind.h — rewind keyframe ring.
+/* core/include/openpete_rewind.h - rewind keyframe ring.
  *
  * A ring of in-memory snapshots (openpete_state_mem_t) captured every
  * OPENPETE_REWIND_KF_VBLS while gameplay is live, paired with the
@@ -13,9 +13,9 @@
  * the log per VBL -> co_switch to target -> truncate log + drop_after.
  *
  * Scope: same level only. Keyframes are cleared whenever gameplay
- * liveness drops (level transition/loading — the mem snapshot excludes
+ * liveness drops (level transition/loading - the mem snapshot excludes
  * VRAM/SPU-RAM by contract) and on any real savestate load (via the
- * discontinuity broadcast — a loaded state is a different timeline).
+ * discontinuity broadcast - a loaded state is a different timeline).
  * Memory: ~3.1 MiB per keyframe plus the mod arena's watermark, one
  * keyframe per second of window plus one. */
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_carry_subtick.sh — identity of the 2D-UI carry across sub-tick presents.
+# check_carry_subtick.sh - identity of the 2D-UI carry across sub-tick presents.
 #
 # The 2D-UI layer (dialogue panels, HUD glyphs, the fade overlay) is not
 # re-derivable by the sub-tick re-extract; it is captured at each canonical
@@ -39,8 +39,8 @@
 #   far=<n>     cap on far_both over the row: lerped tris more than 2 px from
 #               both brackets, for a window in which nothing moves more than
 #               4 px a tick, so any such tri was slid between two sprites
-# A row whose first field does not end in .bk2 is the plain boot — the title
-# screen and the attract demo, which need no input — and replays with no movie,
+# A row whose first field does not end in .bk2 is the plain boot - the title
+# screen and the attract demo, which need no input - and replays with no movie,
 # the same movie-less row the presentation corpus takes.
 #
 # Instrument (stderr), OPENPETE_CARRY_CENSUS=1, one line per present:

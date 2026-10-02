@@ -1,6 +1,6 @@
 #!/bin/bash
 # Terrain field census across all levels: one boot per level (sectors decode only at
-# a render, so the census needs a present — the screenshot forces one).
+# a render, so the census needs a present - the screenshot forces one).
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="${FIELD_CENSUS_CACHE:-$REPO/build/field-census}"; mkdir -p "$S"; S="$(cd "$S" && pwd)"

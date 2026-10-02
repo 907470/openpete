@@ -1,4 +1,4 @@
-# sfx-replace-probe — CI fixture: sfx_replace leaves the sound's end tick
+# sfx-replace-probe - CI fixture: sfx_replace leaves the sound's end tick
 # stock.
 #
 # Registers, from code, a replacement for one sound-table slot: a

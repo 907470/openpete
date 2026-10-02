@@ -1,11 +1,11 @@
-# 0005 — MinGW: include MSVC-implicit headers explicitly
+# 0005 - MinGW: include MSVC-implicit headers explicitly
 
 PsyCross builds clean under MSVC because two of its system-header pulls
 drag in transitively-included declarations that MinGW's headers do not.
 The cross-compile under `gcc-mingw-w64-x86-64` (verified against GCC 10
 with the `windows-mingw` preset) breaks at compile time without these.
 
-## 1. `src/PsyX_main.cpp` — `<windows.h>`
+## 1. `src/PsyX_main.cpp` - `<windows.h>`
 
 The `Spew_*` console-color helpers (added under `#ifdef _DEBUG`) reference
 `WORD`, `BACKGROUND_INTENSITY`, `InitializeCriticalSection`,
@@ -24,12 +24,12 @@ Fix: explicitly `#include <windows.h>` immediately before `<pla.h>`. The
 ordering doesn't matter under MSVC (idempotent) and is required under
 MinGW.
 
-## 2. `src/render/PsyX_render.cpp` — `<math.h>`
+## 2. `src/render/PsyX_render.cpp` - `<math.h>`
 
 `GR_Perspective3D` calls `sinf` / `cosf`. These are declared in
-`<math.h>`. Original code never explicitly includes `<math.h>` — under
-MSVC they reach the user via `<windows.h>` → CRT chain or via
-`<assert.h>` → `<float.h>` chain (varies by compiler version).
+`<math.h>`. Original code never explicitly includes `<math.h>` - under
+MSVC they reach the user via `<windows.h>` -> CRT chain or via
+`<assert.h>` -> `<float.h>` chain (varies by compiler version).
 
 MinGW's `<assert.h>` doesn't pull in `<math.h>`, so `sinf`/`cosf` are
 undeclared. GCC's "did you mean sinF" diagnostic flagged the local
@@ -39,9 +39,9 @@ Fix: `#include <math.h>` next to the other system-header includes.
 
 ## Files changed
 
-- `src/PsyX_main.cpp` — explicit `#include <windows.h>` inside the
+- `src/PsyX_main.cpp` - explicit `#include <windows.h>` inside the
   existing `#ifdef _WIN32` block.
-- `src/render/PsyX_render.cpp` — explicit `#include <math.h>` next to
+- `src/render/PsyX_render.cpp` - explicit `#include <math.h>` next to
   `<assert.h>` / `<string.h>`.
 
 ## Upstream consideration

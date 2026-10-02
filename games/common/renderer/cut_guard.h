@@ -1,4 +1,4 @@
-/* games/common/renderer/cut_guard.h — the sub-tick discontinuity guard the
+/* games/common/renderer/cut_guard.h - the sub-tick discontinuity guard the
  * re-extract bodies share: the camera-cut predicate, the hold verdict, the
  * census, and the whole camera bracket for a body that needs no more than the
  * linear lerp.
@@ -7,7 +7,7 @@
  * jumped or spun, or the two ticks came from different simulation regimes.
  * The interval between the two ticks shows tick N-1 and reaches tick N at
  * alpha 1, so a guard holds N-1 for every present below alpha 1 and lets N
- * show at alpha 1 — the discontinuity lands on the present where every
+ * show at alpha 1 - the discontinuity lands on the present where every
  * interpolated channel reaches its canonical N value. A guard with no previous
  * state to hold (no open interval, no staging arena, no prev snapshot) snaps
  * to N instead and the census counts the reason. */

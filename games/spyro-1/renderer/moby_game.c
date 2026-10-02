@@ -1,4 +1,4 @@
-/* games/spyro-1/renderer/moby_game.c — Spyro 1's half of the shared moby
+/* games/spyro-1/renderer/moby_game.c - Spyro 1's half of the shared moby
  * feeder: the two stream decoders, the cull-record reader, the model-kind
  * test, the object identity the interp ring keys on, the classifications the
  * walk consults, and the addresses that live outside game_layout.moby.
@@ -208,7 +208,7 @@ static int s1_model_is_animated(CPUState* cpu, uint32_t model) {
 /* ---- the cutscene actor set ----------------------------------------
  * g_DragonCutscene holds the rescued dragon and the cutscene Spyro/dragon
  * mobys. These are EXACTLY what func_8001CFDC draws during states 1..6, so
- * matching a moby pointer against them is the game's own selector — no class
+ * matching a moby pointer against them is the game's own selector - no class
  * or heuristic. m_CutsceneSpyro @+0x88, m_CutsceneDragon @+0x8C,
  * m_RescuedDragonMoby @+0x90, anchored off m_State @D_80077058 == base+0x28. */
 #define G_DRAGONCUTSCENE_CUTSPYRO   0x800770B8u
@@ -330,7 +330,7 @@ static int s1_hud_under_player(CPUState* cpu) {
  * (m_State >= 0x80). The update-list builder (80052040) auto-includes any
  * moby whose m_WasDrawn is set, ahead of its m_UpdateDistance path, so
  * canonically "drawn" implies "updated next tick" and such an instance is on
- * screen for at most the single tick that admits it — never long enough to be
+ * screen for at most the single tick that admits it - never long enough to be
  * intended as scenery.
  *
  * Two display bugs follow. The extended-LOD reveal must not write m_WasDrawn
@@ -344,8 +344,8 @@ static int s1_hud_under_player(CPUState* cpu) {
  *
  * Identity is the level author's own spawn parameter: m_Props (+0x00) points
  * at a per-instance block whose word at +0x04 selects the class's behaviour
- * variant. Jacques' fools ship four instances at variant 6 — the ones that
- * only set a moving platform's height — against eight at variants 0/1/2, the
+ * variant. Jacques' fools ship four instances at variant 6 - the ones that
+ * only set a moving platform's height - against eight at variants 0/1/2, the
  * ordinary hopping fools. Nothing in the Moby record itself distinguishes
  * them: an ordinary fool sits at m_State 0 with a zero rotation matrix and
  * animation frame 0 exactly like an unreached run-once one, and stays at
@@ -489,8 +489,8 @@ const moby_game_t moby_game = {
     .colour_scratch  = G_SCRATCH + 0x1100u,  /* per-vertex depth-cued RGB (.s DPCS output) */
     .shaded_list     = G_SCRATCH + 0x2400u,  /* shaded renderer: flat Moby* array (stride 4) */
     .shaded_colour   = G_SCRATCH + 0x2A00u,  /* shaded per-vertex lit colours (block_80023258) */
-    /* The specular pass rebuilds the record queue with the specular set —
-     * including specular-only mobys the regular pass did not draw — and
+    /* The specular pass rebuilds the record queue with the specular set -
+     * including specular-only mobys the regular pass did not draw - and
      * overwrites the colour scratch, so the regular snapshot cannot reproduce
      * them. The window is the colour rows [0x1100,0x1600) plus the FULL record
      * region [0x1600,0x2400): the records are stride 0x38, so record 14 spills

@@ -1,4 +1,4 @@
-# games/spyro-3/manifest/ram_diff_expect.toml — what a whole-RAM diff against
+# games/spyro-3/manifest/ram_diff_expect.toml - what a whole-RAM diff against
 # the DuckStation reference is expected to show at this game's anchors
 # (scripts/check_ram_diff.sh, tools/ram_diff.py).
 #

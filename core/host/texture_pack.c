@@ -1,4 +1,4 @@
-/* texture_pack.c — see texture_pack.h.
+/* texture_pack.c - see texture_pack.h.
  *
  * Registry model: one entry per live upload rect. A new load that overlaps a
  * live entry kills it (exact-rect re-upload replaces in place, keeping the
@@ -6,7 +6,7 @@
  * kill covered entries. CLUTs are ordinary entries (their rects are CLUT
  * rows); the texture<->CLUT pairing happens at resolve time, where the full
  * palette row is hashed from the live native VRAM model (authoritative by
- * construction — the draw samples that same model) on each resolve-cache
+ * construction - the draw samples that same model) on each resolve-cache
  * miss; results are cached against the registry generation.
  *
  * Hashing: XXH3-64 (vendored third_party/xxhash). The texture hash covers
@@ -20,7 +20,7 @@
 #include "openpete_native_vram.h"
 #include "openpete_profile.h"
 
-#include "PsyX/PsyX_public.h"  /* PsyX_VRAM_Snapshot — restore-time rescan */
+#include "PsyX/PsyX_public.h"  /* PsyX_VRAM_Snapshot - restore-time rescan */
 
 #include <ctype.h>
 #include <stdio.h>
@@ -49,7 +49,7 @@ static SDL_Mutex *reg_mx(void) { if (!s_reg_mx) s_reg_mx = SDL_CreateMutex(); re
 #define STBI_ONLY_PNG
 #include "stb_image.h"
 
-#include <SDL3/SDL.h>  /* SDL_GetBasePath — same discovery music_override uses */
+#include <SDL3/SDL.h>  /* SDL_GetBasePath - same discovery music_override uses */
 #include "openpete_paths.h" /* the writable user pack root */
 #include "mod_vec.h"
 #include <dirent.h>
@@ -90,21 +90,21 @@ static int      s_inited = 0;
 /* ---- replacement pack state ---------------------------------------------- */
 /* The pack INDEX is built at init by parsing every PNG filename in the dir
  * (identity is fully encoded in the name); images load lazily on first
- * match. Matching is containment-based — see texture_pack.h. */
+ * match. Matching is containment-based - see texture_pack.h. */
 /* Entries the first block holds; the table grows by whole blocks. */
 #define TP_PACK_BLOCK 8192
 typedef struct {
     uint64_t thash, phash;
     int bpp;
     int bx, by, bw, bh;            /* the file's upload-relative texel box */
-    int symbolic;                  /* named asset file (<asset>.png) — matched by
+    int symbolic;                  /* named asset file (<asset>.png) - matched by
                                     * the game layer's texture_pack_annotate name;
                                     * covers the FULL upload */
     unsigned char *px;             /* decoded by the worker; read only once
                                     * px_state is TP_PX_READY */
     int w, h;
     int load_failed;
-    SDL_AtomicInt px_state;        /* TP_PX_* — publishes px across threads */
+    SDL_AtomicInt px_state;        /* TP_PX_* - publishes px across threads */
     unsigned char urgent;          /* a draw is waiting on this one */
     unsigned char src;             /* index into s_srcs (0 = base pack dir) */
     char name[96];                 /* filename; for symbolic: asset name (no .png) */
@@ -138,7 +138,7 @@ static int  s_repl_active = 0;
 /* Layered sources (asset-overlay v1): [0] = the base pack dir; then one
  * per enabled mod with an assets/textures/ dir, in enabled order. A
  * later source shipping the SAME identity replaces the earlier
- * entry at scan time (last-writer-wins — the overlay's single priority
+ * entry at scan time (last-writer-wins - the overlay's single priority
  * truth), logged for the resolved-asset assert. */
 #define TP_SRC_BLOCK 17
 typedef struct {
@@ -207,7 +207,7 @@ static void tp_poll_modset(void) {
         if (grew) {
             s_gen++;
             s_repl_active = pack_count() > 0;
-            /* A mod's pack arrives here, not through tp_repl_scan — this is
+            /* A mod's pack arrives here, not through tp_repl_scan - this is
              * the activation path that matters in practice, so it is the one
              * that must start the prefetch. */
             tp_decode_prefetch_all();
@@ -377,8 +377,8 @@ static int tp_add_root_source(int r)
 /* ---- Background replacement decode ---------------------------------------
  *
  * Decoding a replacement is a blocking PNG read off disk. Doing it inline in
- * texture_pack_match is doing it during draw-time texture resolve — on the
- * game fiber, inside the tick — so the host loop stops for as long as the
+ * texture_pack_match is doing it during draw-time texture resolve - on the
+ * game fiber, inside the tick - so the host loop stops for as long as the
  * read takes. A level's worth arriving at once (first render of a scene the
  * pack covers) has stalled it for 228-275 ms, far past the pacer's slip
  * clamp, which silently discards that much wall-clock from the game clock.
@@ -398,7 +398,7 @@ static int tp_add_root_source(int r)
 #define TP_PX_READY  2
 #define TP_PX_FAILED 3
 
-/* Decoded-pixel ceiling for *prefetch*. On-demand decodes ignore it — a
+/* Decoded-pixel ceiling for *prefetch*. On-demand decodes ignore it - a
  * texture a draw is actually waiting for is always worth the memory. */
 #define TP_PREFETCH_BUDGET ((size_t)256 * 1024 * 1024)
 
@@ -591,7 +591,7 @@ static int tp_decode_request(int ei, int urgent) {
     int st = SDL_GetAtomicInt(&e->px_state);
     if (st != TP_PX_NONE) return 0;            /* ready, failed, or queued */
     if (!s_dec.th) tp_decode_start();
-    if (!s_dec.th) {                           /* no worker — decode inline */
+    if (!s_dec.th) {                           /* no worker - decode inline */
         tp_decode_one(ei);
         return 0;
     }
@@ -616,7 +616,7 @@ static int tp_decode_request(int ei, int urgent) {
  * outstanding. */
 static void tp_decode_prefetch_all(void) {
     if (!s_repl_active) return;
-    /* OPENPETE_TEXPACK_PREFETCH=0 leaves every entry on the on-demand path —
+    /* OPENPETE_TEXPACK_PREFETCH=0 leaves every entry on the on-demand path -
      * a diagnostic leg for pricing the prefetch against the contention it
      * causes while it runs. */
     const char *pf = getenv("OPENPETE_TEXPACK_PREFETCH");
@@ -677,7 +677,7 @@ static void tp_repl_scan(void)
         snprintf(base_src->label, sizeof base_src->label, "base pack");
         tp_scan_dir(0);
     }
-    /* The shipped pack sits inside the install, which may be read-only —
+    /* The shipped pack sits inside the install, which may be read-only -
      * so the user's own drop-in dir is a SECOND base root, not a
      * replacement, and outranks the shipped one. An explicit
      * --texpack-dir / OPENPETE_TEXPACK_DIR names exactly one directory
@@ -729,7 +729,7 @@ static void texture_pack_on_restore_locked(void) {
     unsigned bytes = PsyX_VRAM_GetSize();
     uint16_t *snap = (uint16_t *)malloc(bytes);
     if (!snap || PsyX_VRAM_Snapshot(snap, bytes) != 0) {
-        /* Can't verify — kill everything rather than risk serving a stale
+        /* Can't verify - kill everything rather than risk serving a stale
          * replacement over restored content. */
         free(snap);
         int killed = 0;
@@ -880,7 +880,7 @@ static void texture_pack_on_move_locked(int src_x, int src_y, int w, int h,
     s_gen++;
     /* Kill identities the destination overwrites, then duplicate any entry
      * fully contained in the source rect, translated. (Partial moves shear a
-     * texture — no stable identity; those entries just die at the dest.) */
+     * texture - no stable identity; those entries just die at the dest.) */
     for (int i = 0; i < s_ent_n; i++)
         if (tp_overlap(&s_ent[i], dst_x, dst_y, w, h)) s_ent[i].alive = 0;
     int n = s_ent_n;                       /* don't walk entries we add */
@@ -1264,7 +1264,7 @@ int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *r
      * Stale-generation slots MUST be reusable: s_gen bumps on every VRAM
      * upload, so each epoch would otherwise strand a fresh slot per live key
      * and never reclaim it. Once all eight filled, the lookup fell through
-     * with no slot at all and every call re-ran the full per-texel fit — a
+     * with no slot at all and every call re-ran the full per-texel fit - a
      * permanent cliff on this path, which runs per replaced draw per frame. */
     tp_fit_slot *sl = NULL, *empty = NULL, *stale = NULL;
     uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
@@ -1272,7 +1272,7 @@ int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *r
         tp_fit_slot *c = &s_fit[(base + (uint64_t)pr) & (TP_FIT_SLOTS - 1)];
         if (c->key == key && c->gen == s_gen) { sl = c; break; }
         if (c->state == 0) { if (!empty) empty = c; }
-        /* Prefer evicting this key's own stale slot — it is the one entry in
+        /* Prefer evicting this key's own stale slot - it is the one entry in
          * the window guaranteed not to be some other texture's live fit. */
         else if (c->gen != s_gen && (!stale || c->key == key)) stale = c;
     }
@@ -1386,7 +1386,7 @@ static void tp_census_report(void)
     int n = 0, multi_cat = 0, multi_tag = 0;
     for (int i = 0; i < TP_CENSUS_SLOTS; i++) if (s_census[i].key) n++;
     fprintf(stderr, "\n[texpack/census] %d distinct identities%s\n",
-            n, s_census_full ? " (TABLE FULL — counts truncated)" : "");
+            n, s_census_full ? " (TABLE FULL - counts truncated)" : "");
 
     /* Per-category coverage. Without this a "0 multi-category" result is
      * ambiguous: it can mean no overlap, or that only one category ever ran. */
@@ -1428,7 +1428,7 @@ static void tp_census_report(void)
     fprintf(stderr, "[texpack/census] identities drawn under >1 category: %d\n", multi_cat);
     fprintf(stderr, "[texpack/census] identities drawn under >1 tag:      %d\n", multi_tag);
 
-    /* CLUT fan-out — distinct palettes per texel box, and whether the
+    /* CLUT fan-out - distinct palettes per texel box, and whether the
      * variants of one box ever span categories. */
     int boxes = 0, worst = 0, fan_total = 0;
     for (int i = 0; i < TP_CENSUS_SLOTS; i++) {
@@ -1503,8 +1503,8 @@ int stbi_write_png(const char *filename, int w, int h, int comp,
  * whatever page content lies between them (a 160x64 dump holding grass +
  * foliage + rock). Boxes therefore merge only on strict OVERLAP, transitively
  * as new ones arrive, and each connected component writes its own file.
- * Clipped fragments of one tile still coalesce — they all overlap the eventual
- * full-tile draw — and the LP full-tile box still absorbs its HP 2x2 sub-quad
+ * Clipped fragments of one tile still coalesce - they all overlap the eventual
+ * full-tile draw - and the LP full-tile box still absorbs its HP 2x2 sub-quad
  * boxes, which containment matching depends on. Adjacent-but-disjoint tiles
  * stay separate. */
 #define TP_UNION_SLOTS 16384   /* power of 2 */
@@ -1605,7 +1605,7 @@ void texture_pack_dump_draw(const texture_pack_id *id,
 
     /* Decode the union box. This draw anchors page<->upload coords:
      * page coord of union origin = query page origin - (query - union) box
-     * offset. u may walk beyond this tpage's 256-texel window — that is
+     * offset. u may walk beyond this tpage's 256-texel window - that is
      * correct: pages are x-offsets into the same VRAM rows, and the upload
      * is contiguous there. */
     int pu0 = u0 - (id->box_x - u->bx);

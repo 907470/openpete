@@ -13,8 +13,8 @@
 #
 # moby-crossfade: two mobys, named at the positions the tick at V drew them.
 # (201.6,206.5) is the one that moves, 4.3 px across the interval while its
-# mask grows 624 px to 788 px — the scale cell. (321.6,90.7) barely moves and
-# barely resizes, and its mean colour steps 26 levels over the interval — the
+# mask grows 624 px to 788 px - the scale cell. (321.6,90.7) barely moves and
+# barely resizes, and its mean colour steps 26 levels over the interval - the
 # keyframe colour crossfade the movie is named for.
 moby-crossfade.bk2 | 1801 | blob=201.6,206.5 blob=321.6,90.7 tol=1.0 step=4
 #

@@ -12,10 +12,10 @@ Notes:
     present cadence (includes pacing/vsync waits).
   * rex.* scopes are children of rex_total; compose/* GPU zones are children of
     compose. Per-scope share% is of the kind's total present_busy and will sum
-    to >100% because of that nesting — it's a breakdown, not a partition.
+    to >100% because of that nesting - it's a breakdown, not a partition.
   * [sim.split] breaks the sim tick down: each fiber hook's inclusive cost
     (hook.<feature>), the guest renderer it calls (<feature>.srend), and the
-    remainder — openpete's own extraction on the game fiber. The bottom
+    remainder - openpete's own extraction on the game fiber. The bottom
     "unattributed" row is sim_tick minus every hook, i.e. guest game logic plus
     whatever fiber-side work is still uninstrumented.
 """
@@ -284,7 +284,7 @@ def render_text(s):
     L.append("# presents=%d canonical=%d intermediate=%d"
              % (s["presents_total"], ncanon, ninter))
     if s.get("transients_excluded"):
-        L.append("# excluded %d load-transient present(s) >%dms (%.0f ms total — level "
+        L.append("# excluded %d load-transient present(s) >%dms (%.0f ms total - level "
                  "loads / CD stalls)" % (s["transients_excluded"],
                  s["transient_ms_threshold"], s["transients_total_ms"]))
     ck = s["kinds"].get("canonical", {})
@@ -302,7 +302,7 @@ def render_text(s):
                  % (gf["frames"], gf["zones_total"], gf["zones_per_frame_min"],
                     gf["zones_per_frame_p50"], gf["zones_per_frame_max"]))
     else:
-        L.append("# gpu frames=0 — no GPU zone records in this trace "
+        L.append("# gpu frames=0 - no GPU zone records in this trace "
                  "(OPENPETE_GPU_TIMERS unset, or a headless run, which has no "
                  "render thread and no timer pool)")
 

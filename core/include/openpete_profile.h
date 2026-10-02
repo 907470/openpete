@@ -1,4 +1,4 @@
-/* openpete_profile.h — empirical CPU+GPU performance trace (--profile-out PATH)
+/* openpete_profile.h - empirical CPU+GPU performance trace (--profile-out PATH)
  *
  * A performance trace that attributes CPU scope time to presents, keyed by
  * (present_index, canon_tick, kind), and GPU zone time to rendered frames,
@@ -8,8 +8,8 @@
  * summary (scripts/profile-to-trace.py, scripts/profile-summary.py).
  *
  * Relationship to the OPPT phase timers (openpete_native_render.h): the profiler
- * REUSES the existing OPPT/OPPC call sites — openpete_phase_add()/set_count()
- * forward to op_prof automatically when a trace is open — so the 9 phase scopes
+ * REUSES the existing OPPT/OPPC call sites - openpete_phase_add()/set_count()
+ * forward to op_prof automatically when a trace is open - so the 9 phase scopes
  * and 4 census counters appear with zero new call sites. New finer scopes use
  * OP_PROF_SCOPE()/op_prof_begin()/op_prof_end() directly, or
  * OP_PROF_ACCUM_SCOPE() when the region is entered many times per tick.
@@ -113,7 +113,7 @@ void op_prof_count(int name_id, uint64_t value);
 
 /* ---- accumulating scopes ---------------------------------------------------
  * For regions entered many times per tick (dispatch hooks fire once per hooked
- * guest call — the 2D addPrim chokepoint runs hundreds of times a tick), one
+ * guest call - the 2D addPrim chokepoint runs hundreds of times a tick), one
  * SPAN record per entry would bloat the trace and put an fwrite in the hot path.
  * op_prof_accum() instead sums into a per-name bucket; the present boundary
  * emits ONE span per non-empty bucket, carrying the per-present call count in
@@ -121,8 +121,8 @@ void op_prof_count(int name_id, uint64_t value);
  *
  * Emitted spans are depth 0 and anchored at the bucket's FIRST entry this
  * present (t0 = first entry, dur = summed time), so the interval stays inside
- * whatever real scope contained the entries and present_busy_us() — a union of
- * span intervals — is not inflated by the synthetic timestamp.
+ * whatever real scope contained the entries and present_busy_us() - a union of
+ * span intervals - is not inflated by the synthetic timestamp.
  *
  * Buckets are FLAT, not nested: a bucket that measures a region inside another
  * bucket's region (e.g. "terrain.srend", the guest renderer call inside

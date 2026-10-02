@@ -1,4 +1,4 @@
-/* core/renderer/subtick_view.c — see openpete_subtick_view.h.
+/* core/renderer/subtick_view.c - see openpete_subtick_view.h.
  *
  * Lookup is on the hot path: every guest read a feeder makes during an
  * intermediate present goes through it, and the per-object pools stage on the
@@ -210,7 +210,7 @@ void openpete_subtick_view_report_writes(void)
 
 /* Lifetime count of presents this view was opened for. An A/B that leaves it
  * at zero never exercised the view, and a neutral result from such a run says
- * nothing — the view resolves every address to real memory until a producer
+ * nothing - the view resolves every address to real memory until a producer
  * stages a span, so "no pixels changed" is its expected output either way. */
 static uint32_t s_opens;
 
@@ -495,14 +495,14 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
         enabled = (e && *e) ? (*e != '0') : 1;
         if (!enabled)
             OPL_WARN_F("subtick-view", "%s",
-                       "DISABLED — producers write guest RAM directly (legacy path)");
+                       "DISABLED - producers write guest RAM directly (legacy path)");
     }
     if (!enabled) return NULL;
     if (!s_active || !len) return NULL;
 
     /* Already covered: hand back the existing copy so several producers can
      * refine one region without each getting a private (and divergent) one.
-     * Only exact-prefix coverage is safe to reuse — a partial overlap would
+     * Only exact-prefix coverage is safe to reuse - a partial overlap would
      * hand back a buffer shorter than the caller intends to write. */
     int hit = sv_find(addr);
     if (hit >= 0) {
@@ -514,7 +514,7 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
         return NULL;   /* caller keeps the value canonical rather than guessing */
     }
 
-    /* Real bytes, deliberately not via the view — staging seeds from
+    /* Real bytes, deliberately not via the view - staging seeds from
      * canonical memory, and a span never seeds from another span. */
     const void* live = openpete_psx_to_host_span(addr, len);
     if (!live) { s_stat_stage_fail++; return NULL; }
@@ -524,7 +524,7 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
         if (!s_warned_full) {
             s_warned_full = 1;
             OPL_WARN_F("subtick-view",
-                       "staging exhausted (%u spans, %u/%u bytes) — regions past "
+                       "staging exhausted (%u spans, %u/%u bytes) - regions past "
                        "this point stay canonical this present",
                        s_span_count, s_arena_used, (unsigned)SV_ARENA_BYTES);
         }
@@ -696,7 +696,7 @@ static void sv_segv(int sig, siginfo_t* si, void* uc)
         s_guard_hits++;
         OPL_WARN_F("subtick-view",
                    "GUEST RAM WRITTEN during a sub-tick present: [%08x] "
-                   "(host %p) — a producer is still publishing through "
+                   "(host %p) - a producer is still publishing through "
                    "gameplay memory",
                    OPENPETE_PSX_KSEG0_BASE + (uint32_t)(fa - ram), (void*)fa);
         /* Let it through: the point is to enumerate every writer in one run,

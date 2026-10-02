@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# check_presentation_golden.sh — the presentation-golden CTest gate.
+# check_presentation_golden.sh - the presentation-golden CTest gate.
 #
 # Captures the native -vk presentation corpus at the current (default) depth
 # encoding and compares each tile's verdict digest (decoded RGB payload, mode
@@ -173,8 +173,8 @@ pg_manifest_load "$PG_CORPUS_MANIFEST" pipe
 pg_manifest_dry_run_exit
 
 # The candidate images OUTLIVE the run, in a stable per-build path. A capture is
-# ~24 minutes; discarding it on exit meant that adjudicating a divergence — or
-# promoting a single tile — cost a full re-capture, and the temp dir was already
+# ~24 minutes; discarding it on exit meant that adjudicating a divergence - or
+# promoting a single tile - cost a full re-capture, and the temp dir was already
 # gone by the time the diff had been read. One fixed directory (rather than a
 # fresh mktemp each run) keeps exactly the last run without accumulating.
 # PRESENTATION_GOLDEN_OUT overrides; PRESENTATION_GOLDEN_KEEP=0 restores the old
@@ -206,7 +206,7 @@ vr_census() {
   compared="${census##*matched=}"
   echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured compared=$compared golden=$goldrows"
   if [[ $captured -eq 0 ]]; then
-    echo "[presentation-golden] VACUOUS: $GAME captured 0 rows — nothing was rendered,"
+    echo "[presentation-golden] VACUOUS: $GAME captured 0 rows - nothing was rendered,"
     echo "  so nothing was verified. Populate $PG_CORPUS_MANIFEST"
     [[ -n "$PG_FREECAM_MANIFEST" ]] && echo "  (or $PG_FREECAM_MANIFEST)"
     echo "  and bless rows into $PG_BLESSED."
@@ -314,7 +314,7 @@ vr_verdict() {
     echo "[presentation-golden] FAIL: candidate diverged from golden."
     echo "  Candidate images kept in: $OUT"
     echo "  If this is an INTENDED visual change, adjudicate reference-first, then"
-    echo "  promote from the images ALREADY CAPTURED above — no re-capture needed:"
+    echo "  promote from the images ALREADY CAPTURED above - no re-capture needed:"
     echo "    ${TIER_ENV}tests/harness/presentation-corpus-promote.sh $OUT --game $GAME <tile-or-substring>...   # selective"
     echo "    ${TIER_ENV}tests/harness/presentation-corpus-promote.sh $OUT --game $GAME --all                    # whole corpus"
     vr_finish 1
@@ -381,7 +381,7 @@ if [[ $BLESS -eq 1 ]]; then
     || { echo "[presentation-golden] FAIL: promote refused; identity baseline left as is"; exit 1; }
   python3 tests/harness/presentation-ident-check.py "$OUT" --bless --game "$GAME" --baseline "$PG_IDENT_BASELINE" "${ACCEPT_ARG[@]}" || exit 1
   git add -- "$PG_IDENT_BASELINE"
-  echo "[presentation-golden] blessed — review 'git diff --cached --stat' and commit"
+  echo "[presentation-golden] blessed - review 'git diff --cached --stat' and commit"
   exit 0
 fi
 

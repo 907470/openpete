@@ -1,4 +1,4 @@
-// games/spyro-1/psyq_hooks.cpp — what Spyro 1 supplies to the shared PSYQ thunk
+// games/spyro-1/psyq_hooks.cpp - what Spyro 1 supplies to the shared PSYQ thunk
 // layer.
 //
 // The thunk layer is game-neutral; everything here is not. Three kinds of
@@ -160,7 +160,7 @@ extern "C" void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t
      * (pointers to actuator buffers, byte masks, status caches). PsyCross's
      * libpad implementation tracks state host-side and never writes those
      * PSX-side bytes, so they are written here. The values are replayed
-     * verbatim — function pointers are PSYQ code (not
+     * verbatim - function pointers are PSYQ code (not
      * relocated), the buffer addresses come from a0/a1. */
 
     /* Pad-state dispatch table @ 0x800751BC (10 PSYQ fnptrs), then the two
@@ -281,7 +281,7 @@ extern "C" void psyq_game_music_route(int sector, psyq_music_route_t* out) {
      * level id at the moment it starts the stream. Prefer g_NextLevelId
      * (same rule as the WAD overlay's latch): the level's first start
      * fires inside LoadLevelScene, where the slot's donor alias has
-     * g_LevelId temporarily swapped to the DONOR — g_NextLevelId still
+     * g_LevelId temporarily swapped to the DONOR - g_NextLevelId still
      * names the slot. Loop restarts fire outside the alias, where both
      * agree. */
     int32_t level_id = 0;
@@ -298,7 +298,7 @@ extern "C" void psyq_game_music_route(int sector, psyq_music_route_t* out) {
      * keep the guest's loop bookkeeping sane for a custom song. The
      * track keeps the DONOR's number (inherited at slot claim), but its
      * m_MusicTable end is stretched to the WAV's length so the guest
-     * re-issues its loop ReadS when the song actually ends — 150
+     * re-issues its loop ReadS when the song actually ends - 150
      * group-sectors per second (37.8 kHz stereo XA = 18.75 audio
      * sectors/s under the 8-sector interleave). Restored to stock the
      * next time the track starts without a custom song. The stock end is

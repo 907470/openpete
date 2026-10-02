@@ -2,7 +2,7 @@
 #define OPENPETE_KEYMAP_H
 
 /*
- * The keymap — every key and pad button openpete reads, in one table.
+ * The keymap - every key and pad button openpete reads, in one table.
  *
  * Three input surfaces used to be hardcoded in three places: the PSX pad
  * in PsyCross's PsyX_Sys_InitialiseInput, ~30 host hotkeys as raw
@@ -13,8 +13,8 @@
  * Bindings resolve through the same layered scope ladder as the rest of
  * the config (openpete_config.h): defaults < global < [game.<id>] <
  * [disc.<serial>] < [disc.<sha>] < [saved], and exe-dir < user-dir
- * within a tier. Merge is PER ACTION — a scope that names one action
- * leaves every other one alone — and WITHIN an action a scope replaces
+ * within a tier. Merge is PER ACTION - a scope that names one action
+ * leaves every other one alone - and WITHIN an action a scope replaces
  * the whole source list rather than appending, which is what makes
  * `fillpick = "none"` able to unbind something a lower scope bound.
  *
@@ -64,8 +64,8 @@ typedef struct {
                             * KM_MOUSE_* */
     /* Which player's device the source reads, 1-based; 0 means UNQUALIFIED.
      * The distinction matters inside a [keys.padN] block, where an
-     * unqualified "pad:" reads that block's own player — so player 2's cross
-     * can be written "pad:south" rather than forcing "pad2:" on every row —
+     * unqualified "pad:" reads that block's own player - so player 2's cross
+     * can be written "pad:south" rather than forcing "pad2:" on every row -
      * while an explicit "padM:" still cross-wires deliberately. For host
      * actions, unqualified means player 1, as it always did.
      * Meaningless for KM_SRC_KEY: there is one keyboard. */
@@ -85,9 +85,9 @@ typedef enum { KM_DIGITAL = 0, KM_AXIS } km_kind_t;
 
 /* Which input context owns the binding. The conflict scan only reports a
  * clash between actions whose contexts can be live at the same moment,
- * so the collisions the port has always had — WASD as both the pad's
+ * so the collisions the port has always had - WASD as both the pad's
  * left stick (GAMEPLAY) and the freecam's fly axes (FREECAM), arrows as
- * both the d-pad and menu nav — stay quiet, while a genuine double-bind
+ * both the d-pad and menu nav - stay quiet, while a genuine double-bind
  * inside one context gets named. */
 typedef enum {
     KM_CTX_ALWAYS = 0,   /* overlaps everything */
@@ -127,7 +127,7 @@ typedef enum {
  *
  * `default_binding` is spelled in the TOML vocabulary, not as
  * SDL_SCANCODE_*, so --keys-report prints defaults and overrides in one
- * spelling and so every default is itself parsed at init — a typo fails
+ * spelling and so every default is itself parsed at init - a typo fails
  * loudly at boot instead of silently never matching. */
 
 #define OPENPETE_KEYMAP_HOST_ACTIONS(X)                                        \
@@ -137,7 +137,7 @@ typedef enum {
   X(DEVUI,     "devui",     KM_DIGITAL, KM_CTX_ALWAYS,   KM_DEV,               \
         "M",              "open/close the dev config overlay")                 \
   /* The d-pad AND the left stick drive menu nav, and cross doubles as
-   * "increase" — the analog fallbacks matter because the settings menu is
+   * "increase" - the analog fallbacks matter because the settings menu is
    * reachable on a pad with no keyboard attached. */                          \
   X(MENU_UP,   "menu_up",   KM_DIGITAL, KM_CTX_MENU,     KM_REQUIRED,          \
         "Up,pad:dpup,pad:-lefty",    "settings menu: previous row")            \
@@ -150,7 +150,7 @@ typedef enum {
         "settings menu: increase value")                                       \
   X(MENU_CLOSE,"menu_close",KM_DIGITAL, KM_CTX_MENU,     KM_LEVEL,                    \
         "pad:start,pad:east", "settings menu: close (on release)")             \
-  /* Activates ACTION rows (EXIT GAME), which ignore left/right entirely —
+  /* Activates ACTION rows (EXIT GAME), which ignore left/right entirely -
    * cycling a value must never be able to fire a button. Cross doubles as
    * "increase value" on the ordinary rows; the two never contend, because a
    * row is either a value or an action, never both. */                        \
@@ -176,8 +176,8 @@ typedef enum {
         "Tab",            "hold to run unlocked (fast-forward)")               \
   X(FULLSCREEN, "fullscreen",      KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
         "none",           "toggle fullscreen (Alt+Enter always works too)")    \
-  /* Deliberately NOT KM_REQUIRED: unbinding this is a supported choice —
-   * the window close button and the OS still quit — and warning about it
+  /* Deliberately NOT KM_REQUIRED: unbinding this is a supported choice -
+   * the window close button and the OS still quit - and warning about it
    * would nag exactly the person who asked for it. */                         \
   X(QUIT,       "quit",            KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
         "Escape",         "quit the game")                                     \
@@ -298,7 +298,7 @@ typedef enum {
   X(RIGHT_Y,  "right_y",  KM_AXIS, KM_CTX_GAMEPLAY, 0,                         \
         "pad:righty",     "PSX pad: right stick Y")
 
-/* Action ids. HOST first, then one pad block per player — the enum and the
+/* Action ids. HOST first, then one pad block per player - the enum and the
  * registry are generated from the same lists so they cannot drift. */
 #define KM_ENUM_HOST(sym, id, k, c, f, d, p)  OPK_##sym,
 #define KM_ENUM_PAD(sym, id, k, c, f, d, p)   OPK_PAD_##sym,
@@ -349,7 +349,7 @@ void openpete_keymap_set_lookup(openpete_keymap_name_to_code_fn to_code,
  * same reason as the lookups: it keeps the store, the edge latch and the
  * deadzone logic in this SDL-free TU (so the unit test can drive them
  * with fake input) and leaves keymap_sdl.c as pure glue. All three may
- * be NULL — every query then reads as "not held", which is what a
+ * be NULL - every query then reads as "not held", which is what a
  * headless run wants. */
 typedef struct {
     int (*key_down)(int scancode);     /* 0/1 */

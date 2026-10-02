@@ -1,4 +1,4 @@
-// core/include/openpete_recomp_module.h — the recomp-module descriptor.
+// core/include/openpete_recomp_module.h - the recomp-module descriptor.
 //
 // The ROM-derived recompiled code (generated *_full.c / *_dispatch.c +
 // dispatch_chain.c) reaches the runtime through psx_runtime.h; the runtime

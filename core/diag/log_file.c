@@ -1,4 +1,4 @@
-// core/diag/log_file.c — mirror stderr into a rotating log file.
+// core/diag/log_file.c - mirror stderr into a rotating log file.
 //
 // A GUI launch has no terminal attached: a double-clicked AppImage, a
 // .desktop entry, a file manager's "Open with". Everything the runtime
@@ -7,7 +7,7 @@
 //
 // The sink is an fd-level tee rather than a hook inside openpete_logf()
 // on purpose: when the game fails to start at all, the messages that
-// explain why are the ones we do NOT emit ourselves — the Vulkan loader
+// explain why are the ones we do NOT emit ourselves - the Vulkan loader
 // finding no driver, SDL failing to open a display, the dynamic linker's
 // own complaints. A logger-level tee would capture none of them.
 //

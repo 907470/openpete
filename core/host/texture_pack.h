@@ -1,4 +1,4 @@
-/* texture_pack — VRAM-region registry for HD texture replacement.
+/* texture_pack - VRAM-region registry for HD texture replacement.
  *
  * The identity core of the texture-replacement feature: every VRAM
  * upload is recorded at the native-VRAM op seam with its destination
@@ -9,7 +9,7 @@
  *
  * Game-agnostic: fed by core/renderer/native_vram.c; optional symbolic asset
  * names arrive from the game layer (games/spyro-1/) as (rect -> name)
- * annotations. Renderer-agnostic: this module never touches the RHI — the
+ * annotations. Renderer-agnostic: this module never touches the RHI - the
  * native renderer's bind path queries it.
  *
  * Determinism: read-only observer of upload traffic. Writes nothing to PSX

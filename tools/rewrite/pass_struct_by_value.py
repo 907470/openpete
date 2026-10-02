@@ -1,4 +1,4 @@
-"""Pass 5 — struct-by-value boundary guard.
+"""Pass 5 - struct-by-value boundary guard.
 
 A native function calling a recomp/PSYQ thunk that takes (or returns) a
 struct *by value* runs into an ABI shear: the host LP64/LLP64 calling
@@ -8,11 +8,11 @@ site still has to marshal those bytes through a0..a3 / stack slots.
 
 The full rewrite for this case is to allocate a g_ram scratch
 slot, memcpy the host struct into it, and pass the PSX vaddr in
-``cpu->aN`` instead — symmetric for return values. That's a real chunk
+``cpu->aN`` instead - symmetric for return values. That's a real chunk
 of work and only worth landing once a real call site needs it.
 
 A scan across every TU in ``spyro-1/src/`` reports **zero** struct-by-value
-arg sites and zero struct-by-value return sites today — Spyro's
+arg sites and zero struct-by-value return sites today - Spyro's
 matching-decomp consistently passes structs by pointer. Pass 5 is the
 guard: hard-error the first time a future migration surfaces either
 case, so the wrong-marshalling failure can't go silent.
@@ -45,7 +45,7 @@ class StructByValueResult:
 
 
 def _is_record_value(ty: ci.Type) -> bool:
-    """True if the type is a struct/union passed *by value* — not a
+    """True if the type is a struct/union passed *by value* - not a
     pointer to one, and not an array."""
     canon = ty.get_canonical()
     return canon.kind == ci.TypeKind.RECORD
@@ -109,11 +109,11 @@ def format_violations(result: StructByValueResult) -> str:
     lines = ["Pass 5: struct-by-value boundary guard tripped:"]
     for v in result.violations:
         if v.kind == "arg":
-            lines.append(f"  {v.location}: call to {v.callee}() — "
+            lines.append(f"  {v.location}: call to {v.callee}() - "
                          f"arg {v.arg_index} passed by value "
                          f"({v.type_spelling})")
         else:
-            lines.append(f"  {v.location}: call to {v.callee}() — "
+            lines.append(f"  {v.location}: call to {v.callee}() - "
                          f"returns by value ({v.type_spelling})")
         lines.append("    needs a g_ram scratch copy-in/out shim")
     return "\n".join(lines)

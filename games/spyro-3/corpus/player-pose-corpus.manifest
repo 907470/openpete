@@ -1,4 +1,4 @@
-# player-pose-corpus.manifest — (level, player pose) tuples for a Spyro 3
+# player-pose-corpus.manifest - (level, player pose) tuples for a Spyro 3
 # corpus captured under pad control with the follow camera, the counterpart
 # of freecam-corpus.manifest for scenes the freecam cannot reach (a placement
 # triggers the cutscene or the actor the row demonstrates).

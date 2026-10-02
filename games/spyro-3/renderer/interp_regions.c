@@ -1,4 +1,4 @@
-/* games/spyro-3/renderer/interp_regions.c — Spyro 3's render-side
+/* games/spyro-3/renderer/interp_regions.c - Spyro 3's render-side
  * interpolation region table, captured per tick into the openpete_interp ring
  * so intermediate presents can lerp the camera transform.
  *

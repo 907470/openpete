@@ -1,4 +1,4 @@
-/* games/spyro-2/renderer/reextract.c — Spyro 2's sub-tick re-extract
+/* games/spyro-2/renderer/reextract.c - Spyro 2's sub-tick re-extract
  * orchestrator: on every present between two canonical ticks it installs the
  * camera transform interpolated between the interp ring's prev and curr
  * snapshots (region 0) into the sub-tick view, and re-runs the sky, terrain,

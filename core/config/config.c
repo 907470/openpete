@@ -1,12 +1,12 @@
 /*
- * core/config/config.c — openpete.toml: load, resolve, materialize.
+ * core/config/config.c - openpete.toml: load, resolve, materialize.
  *
  * The precedence chain and the reason flattening is required (rather than
  * splicing every layer and letting each consumer's own CLI-beats-env rule
  * decide) are documented in openpete_config.h. Read that first.
  *
- * Runs before the logger is configured — --log-level and --log-format are
- * themselves config knobs — so diagnostics here go straight to stderr,
+ * Runs before the logger is configured - --log-level and --log-format are
+ * themselves config knobs - so diagnostics here go straight to stderr,
  * the same convention options.c uses.
  *
  * Deliberately SDL-free: directories come from openpete_paths.h, which
@@ -193,7 +193,7 @@ static int toml_scalar_to_string(toml_raw_t raw, char *out, size_t cap,
     }
     double d = 0;
     if (toml_rtod(raw, &d) == 0) {
-        /* %g keeps 0.5 as "0.5" and 100 as "100" — the spellings a user
+        /* %g keeps 0.5 as "0.5" and 100 as "100" - the spellings a user
          * would have typed on the command line. */
         snprintf(out, cap, "%g", d);
         return 0;
@@ -594,7 +594,7 @@ static int harvest_keys(const toml_table_t *keys, int tier, int file,
             return -1;
     }
 
-    /* [keys.mod.<id>] — one more level, and the ids are not knowable
+    /* [keys.mod.<id>] - one more level, and the ids are not knowable
      * here (mods are discovered after the config is read), so these are
      * forwarded by name without validation. */
     const toml_table_t *mods = toml_table_in(keys, "mod");
@@ -630,14 +630,14 @@ static int harvest_keys(const toml_table_t *keys, int tier, int file,
     }
 
     /* Anything else under [keys] is a typo. Silence here is how the
-     * scoping got lost for [args]/[env] in the docs — name it instead. */
+     * scoping got lost for [args]/[env] in the docs - name it instead. */
     for (int i = 0;; i++) {
         const char *key = toml_key_in(keys, i);
         if (!key) break;
         if (!strcmp(key, "pad") || !strcmp(key, "pad2") ||
             !strcmp(key, "pad3") || !strcmp(key, "pad4") ||
             !strcmp(key, "host") || !strcmp(key, "mod")) continue;
-        fprintf(stderr, "openpete: config: %s: unknown [keys.%s] — expected "
+        fprintf(stderr, "openpete: config: %s: unknown [keys.%s] - expected "
                         "pad, pad2, pad3, pad4, host or mod.<id>\n", where, key);
         return -1;
     }
@@ -696,8 +696,8 @@ static int load_toml(int file) {
     s_doc[file] = doc;
     s_file_present[file] = 1;
 
-    /* A portable install keeps everything it writes — this file's [saved]
-     * zone, memory cards, savestates — next to the exe. Files load in
+    /* A portable install keeps everything it writes - this file's [saved]
+     * zone, memory cards, savestates - next to the exe. Files load in
      * ascending precedence, so a user-dir directive beats the shipped one,
      * matching how the rest of the layering resolves. */
     toml_raw_t p = toml_raw_in(doc, "portable");
@@ -769,7 +769,7 @@ static int harvest_disc_sha(int file) {
         if (strncmp(key, s_scope_sha, klen) != 0) continue;
         if (match) {
             fprintf(stderr, "openpete: config: %s: [disc.%s] and [disc.%s] both "
-                            "match the running image — use a longer prefix\n",
+                            "match the running image - use a longer prefix\n",
                     s_file_path[file], match, key);
             return -1;
         }
@@ -797,8 +797,8 @@ static int harvest_saved(int file) {
     if (harvest_base(tab, TIER_SAVED, file, "saved", where, 0) != 0) return -1;
 
     /* [saved.keys.*] reads like any other scope, so the ladder has no
-     * hole at its top. Nothing WRITES it yet — the managed-zone writer is
-     * knob-id keyed and there is no rebind UI — and note that anything
+     * hole at its top. Nothing WRITES it yet - the managed-zone writer is
+     * knob-id keyed and there is no rebind UI - and note that anything
      * hand-written below the managed marker is regenerated away on the
      * next menu save, so a hand-edited binding belongs in a normal scope
      * (global, [game.*], [disc.*]) rather than here. */
@@ -807,13 +807,13 @@ static int harvest_saved(int file) {
         return -1;
 
     /* A managed zone in a file that outranks the write target would beat
-     * everything the menus save from here on — the settings screen would
+     * everything the menus save from here on - the settings screen would
      * appear to do nothing. Ranks are fixed by file (user-dir beats
      * exe-dir), so this can only happen when the layout puts the target in
      * the lower-ranked file; say so rather than let saves vanish. */
     if (file > s_write_file)
         fprintf(stderr, "openpete: config: %s has a [saved] section that "
-                        "outranks the save target %s — settings saved from "
+                        "outranks the save target %s - settings saved from "
                         "the menus will not take effect until it is removed\n",
                 s_file_path[file], s_file_path[s_write_file]);
 
@@ -1204,13 +1204,13 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
         explicit_path = NULL;
     }
 
-    /* The environment as the user actually exported it — captured before a
+    /* The environment as the user actually exported it - captured before a
      * single [env] line is applied, so tier 8 can be told apart from the
      * file's own variables. */
     scan_real_env();
 
     /* argv already carries the bk2 sidecar (spliced by the caller), whose
-     * tokens sit left of the typed ones — so the typed arguments are the
+     * tokens sit left of the typed ones - so the typed arguments are the
      * last typed_argc-1 entries. */
     int typed_from = argc - (typed_argc - 1);
     if (typed_from < 1) typed_from = 1;
@@ -1288,7 +1288,7 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
         snprintf(s_save_path, sizeof s_save_path, "%s", s_file_path[s_write_file]);
 
     /* Every [keys] layer is in; pick winners and run the conflict +
-     * reachability scans. Never fails a boot — a clash is a warning, and
+     * reachability scans. Never fails a boot - a clash is a warning, and
      * an unreachable control is the user's call to make. */
     (void)openpete_keymap_resolve();
 
@@ -1343,7 +1343,7 @@ void openpete_config_report(FILE *out) {
 
     /* Where the things openpete writes go, which the knob table below
      * never shows: they are directories, not knobs. Worth printing in
-     * full because the answer moves with the layout — "where did my disc
+     * full because the answer moves with the layout - "where did my disc
      * library go?" should be answerable without reading the source. */
     {
         char dir[CFG_PATH_MAX];

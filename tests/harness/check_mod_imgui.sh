@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_mod_imgui.sh — the mod ImGui containment, proved in a window.
+# check_mod_imgui.sh - the mod ImGui containment, proved in a window.
 #
 # Everything the table guards runs only inside a mod UI section body, and a
 # body runs only while the dev overlay is open. Headless never opens it, so
@@ -56,7 +56,7 @@ set -uo pipefail
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0
@@ -91,7 +91,7 @@ COMPOSITE_MOD="mods/crt-beans"
 # Window size, and the cursor coordinate that lands on the always window's
 # "hover me" button. The fixture pins that window at x=16, 68px up from the
 # bottom edge, with no title bar and a 200x36 button one window padding (8px)
-# in — so the button spans x 24..224, y 420..456 in a 640x480 window and its
+# in - so the button spans x 24..224, y 420..456 in a 640x480 window and its
 # centre is (124, 438). Below the dev config panel, which ends 96px short of
 # the bottom, so the button stays hoverable while the panel is up.
 WIN_W=640
@@ -104,7 +104,7 @@ HOVER_XY="124,438"
 [[ -f "$DISC" ]] || { echo "SKIP: missing disc $DISC" >&2; exit 64; }
 [[ -d "$FIXTURE" ]] || { echo "SKIP: missing fixture $FIXTURE" >&2; exit 64; }
 [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] || {
-    echo "SKIP: no display — the dev overlay exists only in a windowed run" >&2
+    echo "SKIP: no display - the dev overlay exists only in a windowed run" >&2
     exit 64; }
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; then
     [[ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ]] || {
@@ -136,7 +136,7 @@ verdict() {  # verdict LEG PASS|FAIL detail...
     [[ "$res" == PASS ]] || fails=$((fails + 1))
 }
 
-# run_leg NAME [KEY=VALUE ...] — one session with the fixture configured by
+# run_leg NAME [KEY=VALUE ...] - one session with the fixture configured by
 # the given config.toml rows. Leaves the log at $OUT_DIR/<name>.log.
 # LEG_OPEN (default 1) drives --devui-open; LEG_MODS (default imgui-panel)
 # the enabled modset; LEG_INJECT, when non-empty, OPENPETE_DEVUI_INJECT_MOUSE.
@@ -248,13 +248,13 @@ else
     verdict closed FAIL "session did not produce a usable log"
 fi
 
-# ── leg 5: the same cursor, overlay open — the positive control ───────────
+# ── leg 5: the same cursor, overlay open - the positive control ───────────
 if LEG_INJECT="$HOVER_XY" run_leg hover; then
     read -r hov pres <<< "$(hover_tally "$OUT_DIR/hover.log")"
     if [[ -n "${hov:-}" && "$hov" -gt 0 ]]; then
         verdict hover PASS "hovered $hov/$pres presents with the overlay open"
     else
-        verdict hover FAIL "the parked cursor ($HOVER_XY) never hovered the always window's button with the overlay open (saw ${hov:-none}/${pres:-none}); the closed leg's zero would be vacuous — see $OUT_DIR/hover.log"
+        verdict hover FAIL "the parked cursor ($HOVER_XY) never hovered the always window's button with the overlay open (saw ${hov:-none}/${pres:-none}); the closed leg's zero would be vacuous - see $OUT_DIR/hover.log"
     fi
 else
     verdict hover FAIL "session did not produce a usable log"

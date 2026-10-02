@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""eager-ab — does producing the span ahead of the tick fill the tick hole?
+"""eager-ab - does producing the span ahead of the tick fill the tick hole?
 
 The pull model extracts each intermediate scene on the sim thread at the
 moment the pacer decides it is due, so the slots that fall inside the tick's
@@ -12,7 +12,7 @@ Reports, per mode, medians over reps: motion presents per second, the gap
 the display sees after a tick (p50/p99 and the count of doubled slots per
 tick), the animation error at the tick boundary, the sim-side phase, sheds,
 and the eager ladder's own census (level, cuts, late picks). Every figure is
-read from the child's own summaries or from pace.py cadence over its log —
+read from the child's own summaries or from pace.py cadence over its log -
 never from a number this script computes itself.
 """
 import argparse

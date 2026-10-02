@@ -2,10 +2,10 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
 
-/* Retained-terrain KEY-pass fragment stage — the psx_key_cutout.frag
+/* Retained-terrain KEY-pass fragment stage - the psx_key_cutout.frag
  * counterpart for terrain.vert's pass_sel==2 output: rasterise the flat og
  * OT key as depth, with TEXTURED faces stamping only the pixels their
- * opaque texels paint (og OT occupancy — a fence lattice must not
+ * opaque texels paint (og OT occupancy - a fence lattice must not
  * key-discard what its holes show). Untextured faces raster full-footprint.
  * The material comes from the vMat varying (the vertex stage already ran
  * the near-tile / CLUT-ladder select), not a push constant. A face with a

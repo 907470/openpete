@@ -2,23 +2,23 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
 
-/* Textured depth-aware shadow decal — the MOBY drop-shadows.
+/* Textured depth-aware shadow decal - the MOBY drop-shadows.
  *
  * Combines the PSX VRAM sprite decode (psx_scene.frag) with the depth-aware
- * occlusion of shadow_decal.frag — the same fix Spyro's silhouette shadow got.
+ * occlusion of shadow_decal.frag - the same fix Spyro's silhouette shadow got.
  * Draws depth-test OFF; per pixel it reconstructs the opaque terrain's world
  * height from the shared WORLD-opaque depth pre-pass and rejects the occluder
  * classes a flat fan can't separate with a plain depth test/bias:
- *   (1) HEIGHT — terrain standing more than wall_height ABOVE the shadow's
+ *   (1) HEIGHT - terrain standing more than wall_height ABOVE the shadow's
  *       ground plane (a wall/ledge); bumps/ramps/pits near ground stay shadowed.
- *   (2) STEEPNESS (opt-in) — a wall FACE by surface orientation (small up-normal).
- *   (3) RAISED-IN-FRONT — a curb/platform nearer than the fan yet above its plane.
+ *   (2) STEEPNESS (opt-in) - a wall FACE by surface orientation (small up-normal).
+ *   (3) RAISED-IN-FRONT - a curb/platform nearer than the fan yet above its plane.
  * This stops the flat textured fan clipping through slanted floors (the old
  * depth-test path Z-fought the slope) and painting up wall bases.
  *
  * Ground plane: unlike the single Spyro shadow (one plane fed as a push
  * constant), many mobys sit at many heights, so the plane is recovered PER PIXEL
- * from the fan's OWN gl_FragCoord.z — the fan sits on the ground it is cast on,
+ * from the fan's OWN gl_FragCoord.z - the fan sits on the ground it is cast on,
  * so its interpolated depth reconstructs the local ground world-height, which is
  * then differenced against the terrain (both through the same camera inverse, so
  * systematic reconstruction error cancels). gl_FragCoord.z is the NDC depth,
@@ -103,7 +103,7 @@ float viewz_from_scene_depth(float d)
 {
     return DEPTH_REVERSED ? 1.0 / max(d, 1e-12) : 1.0 / max(1.0 - d, 1e-9);
 }
-/* pre-pass curve (prepass.vert): z = 1 - 1/vz — TRUE perspective (planar-exact). */
+/* pre-pass curve (prepass.vert): z = 1 - 1/vz - TRUE perspective (planar-exact). */
 float viewz_from_prepass_depth(float d) { return 1.0 / max(1.0 - d, 1e-9); }
 
 vec2 screen_of_texel(ivec2 t)
@@ -112,7 +112,7 @@ vec2 screen_of_texel(ivec2 t)
                 ((float(t.y) + 0.5) / pc.pvh - pc.vby) / pc.vay);
 }
 /* camera-relative world position at a pre-pass texel (constant camera-position
- * terms omitted — used only differentially, for the surface normal). */
+ * terms omitted - used only differentially, for the surface normal). */
 vec3 world_of_texel(ivec2 t)
 {
     float vz = viewz_from_prepass_depth(texelFetch(uOpaqueDepth, t, 0).r);
@@ -143,7 +143,7 @@ void main()
     vec4 c = decode555(sample_word(int(vUV.x), int(vUV.y)));
     if (c.a == 0.0) discard;
 
-    /* Depth-aware occlusion — mirror shadow_decal.frag. This fragment's own PSX
+    /* Depth-aware occlusion - mirror shadow_decal.frag. This fragment's own PSX
      * screen position comes from its window coordinate through the pass's
      * inverse affine (scene_fragcoord_affine), exact per fragment. */
     vec2  sOwn = vec2(pc.fax * gl_FragCoord.x + pc.fbx,

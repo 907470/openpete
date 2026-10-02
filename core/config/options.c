@@ -1,27 +1,27 @@
-// core/config/options.c — command-line flag parser.
+// core/config/options.c - command-line flag parser.
 //
 // Unknown flags exit with OPENPETE_EXIT_SETUP_ERROR (3).
 
 #include "openpete.h"
-#include "openpete_config.h"  /* openpete.toml — the layered config file */
-#include "openpete_keymap.h"  /* [keys] — install the SDL name lookups */
+#include "openpete_config.h"  /* openpete.toml - the layered config file */
+#include "openpete_keymap.h"  /* [keys] - install the SDL name lookups */
 #include "openpete_overlay_anchor.h"  /* --perf-position / --osd-position spellings */
 #include "openpete_osd.h"             /* OPENPETE_OSD_TIMEOUT_MAX_MS */
 #include "openpete_log.h"
-#include "openpete_time.h"  /* OP_TICK_HZ — --record-cfr NTSC-multiple snap */
+#include "openpete_time.h"  /* OP_TICK_HZ - --record-cfr NTSC-multiple snap */
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
                            * game_validate_cheats_arg (--cheats names) */
 
 #include "openpete_paths.h" /* where --bk2-record output is allowed to live */
 
-#include <SDL3/SDL.h>     /* SDL_CreateDirectory — --bk2-record output dir */
+#include <SDL3/SDL.h>     /* SDL_CreateDirectory - --bk2-record output dir */
 
-#include <ctype.h>      /* tolower — case-insensitive disc-image extensions */
-#include <math.h>       /* lround/fabs — --record-cfr NTSC-multiple validation */
+#include <ctype.h>      /* tolower - case-insensitive disc-image extensions */
+#include <math.h>       /* lround/fabs - --record-cfr NTSC-multiple validation */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>       /* time/localtime/strftime — default --bk2-record filename */
+#include <time.h>       /* time/localtime/strftime - default --bk2-record filename */
 
 /** @brief Fetch the token after argv[i] as the value of flag, or report it missing.
  *
@@ -195,7 +195,7 @@ static int splice_args_file(const char* path, const char* label,
     if (ntoks < 0) { free(buf); free(tokens); return -1; }
     if (ntoks == 0) {
         free(buf); free(tokens);
-        return 0; /* empty/comments-only — nothing to splice */
+        return 0; /* empty/comments-only - nothing to splice */
     }
 
     int new_argc = argc + ntoks;
@@ -211,7 +211,7 @@ static int splice_args_file(const char* path, const char* label,
             label, path, ntoks);
 
     free(tokens);
-    /* buf is intentionally retained — token pointers reference it. */
+    /* buf is intentionally retained - token pointers reference it. */
 
     *out_argc = new_argc;
     *out_argv = new_argv;
@@ -256,7 +256,7 @@ static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_
  * When --bk2-record captures a session, we drop a "<bk2>.args" sidecar
  * mirroring the launch flags so `--bk2 <recording>` re-applies the same
  * scenario (see expand_bk2_sidecar). The captured flags come from the
- * *original* argv — before the openpete.toml / bk2-sidecar splices — so
+ * *original* argv - before the openpete.toml / bk2-sidecar splices - so
  * only what the user typed on the command line is recorded, not the
  * machine-local persistent defaults. Every --bk2* flag is filtered out:
  * they control recording/replay, not the scenario. Re-emitting
@@ -432,7 +432,7 @@ static char* resolve_default_bk2_record_path(void) {
         if (!dir) return NULL;
         strcpy(dir, resolved);
     } else {
-        dir = (char*)malloc(4);  /* "bk2" + NUL — relative to CWD */
+        dir = (char*)malloc(4);  /* "bk2" + NUL - relative to CWD */
         if (!dir) return NULL;
         memcpy(dir, "bk2", 4);
     }
@@ -535,7 +535,7 @@ static void print_help(const char* display_name, const char* argv0,
         "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
         "                             ~2 MiB RAM per second of window; same-level only)\n"
         "  --runahead N               lead the presented timeline by N sim ticks (default 0 = off).\n"
-        "                             1 recommended: cancels the interpolation tick exactly — real-\n"
+        "                             1 recommended: cancels the interpolation tick exactly - real-\n"
         "                             PSX input feel with high-fps motion, every animation frame\n"
         "                             shown. 2 = sub-console latency but input edges skip one\n"
         "                             animation onset frame (reads as 'uncanny'). Costs ~N extra\n"
@@ -567,7 +567,7 @@ static void print_help(const char* display_name, const char* argv0,
         "                             smooth; depth/UVs untouched. Native renderer only. Display-only.\n"
         "  --raster-quantize N        point-resample the 3D scene (pre-HUD) to N x the PSX raster (1 =\n"
         "                             authentic 512x240 grid, of which the 224 visible lines span the\n"
-        "                             screen — the letterband rows are trimmed, so on-screen this is\n"
+        "                             screen - the letterband rows are trimmed, so on-screen this is\n"
         "                             512x224 as on a real TV; every N stays aligned with the\n"
         "                             --vertex-precision integer grid). 0 = off. Default: 1 under\n"
         "                             --vertex-precision integer, else off. Display-only.\n"
@@ -676,8 +676,8 @@ static void print_help(const char* display_name, const char* argv0,
         "                             With no PATH, records to <exe_dir>/bk2/<timestamp>.bk2. Also writes a\n"
         "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n",
         display_name, argv0,
-        default_renderer == OPENPETE_RENDERER_VK       ? " — default" : "",
-        default_renderer == OPENPETE_RENDERER_PSYCROSS ? " — default" : "");
+        default_renderer == OPENPETE_RENDERER_VK       ? " - default" : "",
+        default_renderer == OPENPETE_RENDERER_PSYCROSS ? " - default" : "");
 
     /* The --record family only exists where libav* could be linked. Without
      * OPENPETE_HAS_LIBAV record.c is the warn-and-ignore stub, so listing these
@@ -786,7 +786,7 @@ static void print_help(const char* display_name, const char* argv0,
         "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
         "  --freecam-pose STR         engage the debug free camera at a pose once the level is\n"
         "                             live (same format as the freecam log: \"pos=(x, y, z) yaw=N\n"
-        "                             pitch=N\"). CLI twin of OPENPETE_FREECAM_POSE — env vars don't\n"
+        "                             pitch=N\"). CLI twin of OPENPETE_FREECAM_POSE - env vars don't\n"
         "                             cross the WSL->Windows interop boundary.\n"
         "  --player-pose STR          place the player once gameplay is live and under pad control:\n"
         "                             \"x,y,z[,yaw]\" or the exit pose line (\"pos=(x, y, z) yaw=N\",\n"
@@ -802,7 +802,7 @@ static void print_help(const char* display_name, const char* argv0,
         "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
         "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
         "                             gameplay-state region (games/<game>/manifest/gameplay_state_regions.toml).\n"
-        "                             Primary determinism gate — see check_aspect_determinism.sh\n"
+        "                             Primary determinism gate - see check_aspect_determinism.sh\n"
         "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n"
         "  --pace-log PATH            write the unified pacing event log (every VBL + present, one timebase) for scripts/pacing/\n"
         "  --profile-out PATH         stream a binary .opp perf trace (CPU scopes + GPU zones + census,\n"
@@ -1008,7 +1008,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             }
             opts->osd_position = an;
         } else if (strcmp(a, "--osd-timeout") == 0) {
-            /* Seconds in, milliseconds out — the ONE conversion point. */
+            /* Seconds in, milliseconds out - the ONE conversion point. */
             const char *v = (i + 1 < argc) ? argv[++i] : "";
             char *end = NULL;
             double secs = strtod(v, &end);
@@ -1530,7 +1530,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             double mult = rate / OP_TICK_HZ;
             long   k    = lround(mult);
             /* Relative tolerance so the rounded spellings people actually type
-             * — 30, 60, 120 — all land on their NTSC neighbour, while a genuine
+             * - 30, 60, 120 - all land on their NTSC neighbour, while a genuine
              * non-multiple like 45 is refused. 60 sits 0.29 % above 2x (the
              * true tick rate is 29.913, not 30), so the window has to clear
              * that; 0.5 % does, and still rejects 45 (50 % out) and 61 (2 %). */
@@ -1729,7 +1729,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else if (a[0] != '-' && !opts->ingest_path && !opts->disc_path
                    && !opts->exe_path && arg_is_disc_image(a)) {
-            /* A bare path to a disc image — what a desktop file's %f, a
+            /* A bare path to a disc image - what a desktop file's %f, a
              * file manager's "Open with" and a drag onto the icon all
              * deliver. Same meaning as --ingest: the library dedups by
              * content, so re-opening an already-installed disc just boots
@@ -1774,7 +1774,7 @@ static int finish_bk2_record(openpete_options_t* opts, int orig_argc,
         fprintf(stderr, "openpete: --bk2-record: recording to %s\n", def);
     }
     opts->bk2_record_args = build_bk2_record_args(orig_argc, orig_argv);
-    /* NULL (OOM) just means no sidecar — the recording itself still works. */
+    /* NULL (OOM) just means no sidecar - the recording itself still works. */
     /* The sidecar carries argv, not the environment: a placement given
      * only as OPENPETE_PLAYER_POSE would be missing from the replay, which
      * then runs the movie's input from the spawn instead. */
@@ -1821,7 +1821,7 @@ static int apply_env_spellings(openpete_options_t* opts) {
      *
      * The env spelling exists for scripted launches. A gate or bench harness
      * needs one line it can put at the top of the file, not an argument
-     * threaded into however many invocation sites it builds — and an argument
+     * threaded into however many invocation sites it builds - and an argument
      * appended to the wrong one of those is a silent miss, which for this knob
      * means a controller buzzing on someone's desk for the length of a corpus
      * run. (Under WSL an env knob only reaches a Windows .exe if WSLENV names
@@ -1878,15 +1878,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     if (sidecar_rc == 1) { argc = sidecar_argc; argv = sidecar_argv; }
 
     /* openpete.toml. Resolves every configured layer, applies the winning
-     * [env] entries to the environment — which must happen before ANY
+     * [env] entries to the environment - which must happen before ANY
      * getenv consumer, since features lazy-cache their env reads on first
-     * use — and hands back the winning flags to splice.
+     * use - and hands back the winning flags to splice.
      *
      * Spliced after the bk2 splice and so left of it, giving the argv
      * order [config][sidecar][typed]: left is parsed first and the last
      * write wins, which is the file < sidecar < CLI half of the chain.
      * The other half (which of two config layers wins, and args-vs-env)
-     * was already decided inside the resolver — see openpete_config.h. */
+     * was already decided inside the resolver - see openpete_config.h. */
     /* Give the keymap its SDL-backed name lookups before the config runs:
      * openpete_config_apply seeds the registry defaults, and parsing them
      * needs the lookup live. Pure string tables in SDL, so this is safe
@@ -1923,7 +1923,7 @@ int openpete_options_require_exe_source(const openpete_options_t* opts) {
     if (opts->test_recomp_segv) return OPENPETE_EXIT_OK;
     if (opts->disc_path || opts->exe_path) return OPENPETE_EXIT_OK;
     fprintf(stderr,
-            "openpete: no game found — pass --disc PATH (or --exe-path), or "
+            "openpete: no game found - pass --disc PATH (or --exe-path), or "
             "install a disc into the library with --ingest PATH\n");
     return OPENPETE_EXIT_SETUP_ERROR;
 }

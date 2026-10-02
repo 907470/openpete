@@ -1,4 +1,4 @@
-/* games/common/renderer/cut_guard.c — see cut_guard.h. */
+/* games/common/renderer/cut_guard.c - see cut_guard.h. */
 #include "renderer/cut_guard.h"
 
 #include "renderer/interp_lerp.h"

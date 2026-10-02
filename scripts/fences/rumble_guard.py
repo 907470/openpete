@@ -4,19 +4,19 @@ Vibration ships ON by default, which is right for a player and wrong for every
 other way this binary starts. Harnesses, capture scripts, gate batteries and
 bench runs are machine-driven; a human is not holding the pad, and often is not
 even at the desk. A background window buzzing a controller for ten minutes
-while someone works is a real cost, and it is invisible in every log — the run
+while someone works is a real cost, and it is invisible in every log - the run
 still passes, the numbers are still right, so nothing ever surfaces it.
 
 Two layers already handle the common cases in code: headless never arms the
 motors at all, and the pump-side apply gates on window focus, so an unfocused
 window is silent whatever the config says. What those do not cover is a
-windowed, focused, scripted run — a visual check, a screenshot capture that
+windowed, focused, scripted run - a visual check, a screenshot capture that
 brings a window up, a perf bench the author is watching. That is what this
 fence is for.
 
 The rule is one setting: an unattended launcher silences vibration, either
 with `--vibration 0` on the invocation or `OPENPETE_VIBRATION=0` for the whole
-script. The env spelling is usually the better of the two here — a harness
+script. The env spelling is usually the better of the two here - a harness
 builds its argument list in several places, and a flag appended to the wrong
 one of them is a silent miss.
 
@@ -38,14 +38,14 @@ import re
 import sys
 
 # A file only matters if it names the game binary. Matching a bare `$EXE`
-# swept in icon converters and a toolchain wrapper — a fence whose output
+# swept in icon converters and a toolchain wrapper - a fence whose output
 # nobody can read is a fence nobody runs.
 LAUNCH = re.compile(r"openpete-spyro1|openpete_spyro1")
 
 # ...and only the UNATTENDED launchers are in scope. A machine-driven run is
 # the hazard: nobody is holding the pad, often nobody is at the desk, and the
 # run passes either way so the buzzing never surfaces in any log. An
-# interactive one-off a human typed is not this fence's business — they are
+# interactive one-off a human typed is not this fence's business - they are
 # right there.
 #
 # The other two layers cover the rest and are enforced in code, not here:
@@ -138,7 +138,7 @@ def main():
         "line, covers every invocation it builds), or `--vibration 0` on the "
         "launch itself. A script that launches the WINDOWS build with the env "
         "spelling must also forward it through scripts/lib/wslenv.sh, or it "
-        "never arrives — wslenv_guard.py enforces that half. If the script is "
+        "never arrives - wslenv_guard.py enforces that half. If the script is "
         "a deliberate hands-on feel check, or never launches the game, add "
         "the marker `rumble-guard: intentional` or `rumble-guard: "
         "no-launch`.\n")

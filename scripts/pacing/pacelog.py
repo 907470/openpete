@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pacelog.py — reader for the unified pacing event log (--pace-log PATH).
+"""pacelog.py - reader for the unified pacing event log (--pace-log PATH).
 
 The shared parsing layer for scripts/pacing/. Everything downstream reads a
 log through `read()`, so there is exactly one place that knows the binary
@@ -10,7 +10,7 @@ the parser rather than in each subcommand, because two subcommands that
 disagree about which VBLs count produce numbers nobody can compare, and the
 disagreement is invisible in both outputs.
 
-Run the suite via scripts/pacing/pace.py — this module has no CLI.
+Run the suite via scripts/pacing/pace.py - this module has no CLI.
 """
 import argparse
 import struct
@@ -23,7 +23,7 @@ HEADER_FIXED = 64
 RECORD_BYTES = 64
 # v1 records had four payload slots and no `e`. The size comes from the header,
 # so an older log still parses; its `e` reads as absent (None), which callers
-# must distinguish from a real zero — `e` carries a latch identity where zero
+# must distinguish from a real zero - `e` carries a latch identity where zero
 # is a meaningful value, not a missing one.
 RECORD_LAYOUT = {48: ("<BBHIqqqqq", 1), 64: ("<BBHIqqqqqqq", 2)}
 
@@ -51,7 +51,7 @@ KIND_NAME = {CANONICAL: "canonical   ", INTERMEDIATE: "intermediate",
 
 # `latched_seq` sentinels (openpete_pace_log.h). Publish sequences are even and
 # step by 2, so odd values are free to name the reasons a VBL consumed no host
-# sample — reasons a bare zero would conflate.
+# sample - reasons a bare zero would conflate.
 LATCH_NONE, LATCH_CLAIMED = 0, 1
 
 # PAD_READ flag: the read happened in a fiber run that was not the VBL the
@@ -117,7 +117,7 @@ class Record:
 
     @property
     def latched_seq(self):
-        """Which published input sample this VBL consumed — identity, not a
+        """Which published input sample this VBL consumed - identity, not a
         timestamp. None on a v1 log (the field did not exist), LATCH_NONE if
         this path never latches, LATCH_CLAIMED if another writer owned the pad,
         else an even publish sequence."""
@@ -169,7 +169,7 @@ class Record:
     @property
     def span_extract_ns(self): return self.c
 
-    # HOST_PUMP accessors — one iteration of the window-owning thread.
+    # HOST_PUMP accessors - one iteration of the window-owning thread.
     # `hp_active` is the part that is a COST: the park before it is the loop
     # idling, and charging it as time spent would report a healthy pump as a
     # thread that is busy ~100% of the time.
@@ -189,7 +189,7 @@ class Record:
 
     # HOST_PUMP summary accessors (flags & HP_SUMMARY). Its totals cover every
     # iteration of the window, including the ones that also got their own
-    # record — `hp_long` is how many those were, not a separate population.
+    # record - `hp_long` is how many those were, not a separate population.
     @property
     def hp_iters(self): return self.index
     @property
@@ -216,7 +216,7 @@ class Record:
     @property
     def wake_behind_ns(self):
         """How far past the target the loop already was when it asked to
-        sleep — the loop running behind, which is a different defect from the
+        sleep - the loop running behind, which is a different defect from the
         OS being late and points at a different system."""
         return self.c
 
@@ -236,7 +236,7 @@ class Record:
     @property
     def phase_err_ns(self):
         """Start-phase error: how late the tick began against its grid
-        point. Signed — an early start is a different defect from a late one."""
+        point. Signed - an early start is a different defect from a late one."""
         return self.exec_start_ns - self.deadline_ns
 
 
@@ -278,7 +278,7 @@ class Log:
         Excluded: unpaced VBLs (no deadline was in force), transients
         (paused / stepped / rewound / world-not-live / first tick after a
         clamp), and a warmup span measured from the first VBL that is both
-        paced and live — a run's opening seconds are load, allocation and
+        paced and live - a run's opening seconds are load, allocation and
         cache-cold work, and including them prices the steady state wrongly.
 
         Returns (kept, excluded) where excluded maps reason -> count."""
@@ -300,7 +300,7 @@ class Log:
 
     def windows(self):
         """WINDOW records paired into (id, begin_ns, end_ns) spans. An
-        unterminated span ends at the last record — a run killed inside an
+        unterminated span ends at the last record - a run killed inside an
         unlock still describes it."""
         open_at, spans = {}, []
         for r in self.of(WINDOW):
@@ -316,15 +316,15 @@ class Log:
     # The environment splits into three parts, and conflating them is what
     # made the baseline archive unreadable:
     #
-    #   MACHINE — what the numbers were taken ON. Files the baseline.
-    #   REGIME  — what the run WAS. Two runs differing here are two different
+    #   MACHINE - what the numbers were taken ON. Files the baseline.
+    #   REGIME  - what the run WAS. Two runs differing here are two different
     #             questions, and subtracting them compares nothing.
-    #   BUILD   — what is being MEASURED. It must never be a reason to refuse
+    #   BUILD   - what is being MEASURED. It must never be a reason to refuse
     #             a comparison: a baseline that only matches the build that
     #             produced it can never gate a later one, which is precisely
     #             why nothing ever read these files back.
-    # The compositor sits directly in the measured path — it owns the
-    # swapchain's release cadence — so two runs under different compositors
+    # The compositor sits directly in the measured path - it owns the
+    # swapchain's release cadence - so two runs under different compositors
     # are not the same machine however identical the silicon.
     MACHINE_FIELDS = ("platform", "cpu", "cpu_count", "governor", "gpu",
                       "driver", "refresh_mhz", "compositor")
@@ -353,7 +353,7 @@ class Log:
         return self.machine_key() + self.regime_key()
 
     def build_id(self):
-        """The build the run was taken on — reported, never a refusal."""
+        """The build the run was taken on - reported, never a refusal."""
         return self.env.get("build", "?")
 
 
@@ -377,7 +377,7 @@ def read(path: Path) -> Log:
               f"parsing its {rec_bytes}-byte records", file=sys.stderr)
     elif version != layout_version:
         raise SystemExit(f"{path}: version {version} with {rec_bytes}-byte "
-                         f"records — header is inconsistent")
+                         f"records - header is inconsistent")
 
     env = {}
     for line in data[HEADER_FIXED:HEADER_FIXED + env_bytes].decode(
@@ -390,7 +390,7 @@ def read(path: Path) -> Log:
     # A run killed mid-write leaves a partial trailing record; truncate rather
     # than refuse, so a SIGKILLed soak run is still readable.
     # Truncate to the size THIS log's header declares, not the current
-    # build's. Using the module constant silently refuses every older log —
+    # build's. Using the module constant silently refuses every older log -
     # the one thing a format bump must not do, since a log is evidence nobody
     # can regenerate.
     body = body[: (len(body) // rec_bytes) * rec_bytes]
@@ -422,7 +422,7 @@ def fmt_record(r, epoch_ns):
     if r.type == PAD_READ:
         if r.flags & PR_UNATTRIBUTED:
             return (f"{t:10.4f} PADREAD #{r.index:<7} "
-                    f"speculative/replayed — not this VBL")
+                    f"speculative/replayed - not this VBL")
         off = r.read_offset_ns
         age = r.read_age_ns
         return (f"{t:10.4f} PADREAD #{r.index:<7} read {r.read_ordinal} "
@@ -461,7 +461,7 @@ def fmt_record(r, epoch_ns):
             f"index {r.index} {r.a} {r.b} {r.c} {r.d}")
 
 
-# The CLI lives in pace.py — one entry point, so `summary` and `diff` cannot
+# The CLI lives in pace.py - one entry point, so `summary` and `diff` cannot
 # drift apart in what they consider analysable. cmd_verify stays here because
 # it is a statement about the FORMAT, which is this module's subject.
 if __name__ == "__main__":

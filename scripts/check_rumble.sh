@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# scripts/check_rumble.sh — the controller-vibration gate.
+# scripts/check_rumble.sh - the controller-vibration gate.
 #
 # Vibration has no pixels and no gameplay-state bytes, so the presentation
 # golden, the oracle and the determinism batteries are all structurally blind
@@ -9,8 +9,8 @@
 #
 # HOW IT SEES ANYTHING. SDL's virtual joystick descriptor carries a Rumble
 # callback, so OPENPETE_INPUT_VGAMEPAD attaches a pad that records every motor
-# command delivered to it. That covers the whole chain — guest actuator write ->
-# libpad registration -> per-tick sample -> pump-side apply -> SDL -> device —
+# command delivered to it. That covers the whole chain - guest actuator write ->
+# libpad registration -> per-tick sample -> pump-side apply -> SDL -> device -
 # with no hardware and no window.
 #
 # WHY IT CANNOT REPORT A VACUOUS PASS. Three separate zeros would otherwise all
@@ -51,7 +51,7 @@
 
 set -euo pipefail
 
-# rumble-guard: intentional — this gate's whole purpose is to make the motors
+# rumble-guard: intentional - this gate's whole purpose is to make the motors
 # fire, and the only device that can receive them is the virtual pad it
 # attaches itself. No human's controller is reachable from here: the actuator
 # path lifts its headless/focus refusals for that one device id and re-checks
@@ -92,7 +92,7 @@ BK2="$PG_BK2_DIR/${MOVIE}.bk2"
 
 # A frame limit is mandatory, not a speed optimization: the game does not stop
 # when a movie's input runs out, it keeps playing with a neutral pad. Left
-# unbounded a leg runs until something kills it, which is both slow and a lie —
+# unbounded a leg runs until something kills it, which is both slow and a lie -
 # whatever it eventually reports would cover an arbitrary amount of gameplay
 # nobody chose. 4000 VBLs clears the first rumble events of this movie (the
 # earliest lands near VBL 1800) with room to spare.
@@ -141,7 +141,7 @@ for leg in fixed legacy; do
     # reaches the actuator path, so every count below would be a zero about
     # the harness rather than about the code.
     if grep -q "does not expose it as a gamepad" "$log"; then
-        note "FAIL ($leg): SDL would not expose the virtual pad as a gamepad —"
+        note "FAIL ($leg): SDL would not expose the virtual pad as a gamepad -"
         note "            this platform cannot host the oracle; not a code result"
         fail=1; continue
     fi
@@ -153,7 +153,7 @@ for leg in fixed legacy; do
 
     if [[ "$live" != "1" ]]; then
         note "FAIL ($leg): the rumble recorder never saw its own self-probe."
-        note "            Every motor count from this leg is meaningless — a"
+        note "            Every motor count from this leg is meaningless - a"
         note "            zero here reads the same as a recorder that was"
         note "            never wired, which is the failure this gate exists"
         note "            to refuse."
@@ -187,7 +187,7 @@ fi
 if [[ "$FIXED_NZ" -eq 0 ]]; then
     note "FAIL (vacuous): the fixed leg delivered no non-zero motor command."
     note "      Either the actuator path is broken, or '$MOVIE' never triggers"
-    note "      vibration — check the 'actuator bytes' lines in $FIXED_LOG"
+    note "      vibration - check the 'actuator bytes' lines in $FIXED_LOG"
     note "      before believing the first of those."
     exit 1
 fi
@@ -196,7 +196,7 @@ fi
 # the fix had been reverted, because it would only ever have looked at one leg.
 if [[ "$LEGACY_NZ" -ne 0 ]]; then
     note "FAIL: the legacy (one-shot PadSetAct) leg delivered $LEGACY_NZ motor"
-    note "      command(s). It is supposed to deliver none — that is the bug"
+    note "      command(s). It is supposed to deliver none - that is the bug"
     note "      this work fixed. Either the A/B knob no longer isolates the"
     note "      hook, or the gate is measuring something other than the fix."
     exit 1

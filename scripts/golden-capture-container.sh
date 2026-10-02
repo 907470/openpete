@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/golden-capture-container.sh — run the presentation-golden capture
+# scripts/golden-capture-container.sh - run the presentation-golden capture
 # legs inside the pinned capture image (docs/linux-capture.Dockerfile).
 #
 #   scripts/golden-capture-container.sh image            # build the image

@@ -1,19 +1,19 @@
 /*
- * M-key dev config overlay — ImGui panel over the knob registry.
+ * M-key dev config overlay - ImGui panel over the knob registry.
  *
  * One window, sections as collapsing headers, a text filter, per-row source
  * tag (cli/env/default + edited + the winning openpete.toml layer), tooltips
  * carrying each knob's help text and flag spellings, a Save bar that writes
  * the session's edits into the config file's managed [saved] block, and a
  * right-click context menu (reset to boot / copy as CLI flag / copy as env
- * line — the copy items move a setting to ANOTHER machine, or across the
- * WSL→Windows boundary env vars don't cross).
+ * line - the copy items move a setting to ANOTHER machine, or across the
+ * WSL->Windows boundary env vars don't cross).
  *
  * Rendering: records into the offscreen pass (off_rp) at the live-present
- * compose point, after the SSAA resolve — so the panel is always at 1x window
+ * compose point, after the SSAA resolve - so the panel is always at 1x window
  * resolution and never reaches screenshot composes (the caller gates
  * on s_overlay_live). The Vulkan backend rides volk's loaded pointers
- * (IMGUI_IMPL_VULKAN_USE_VOLK); its pipeline is built against off_rp once —
+ * (IMGUI_IMPL_VULKAN_USE_VOLK); its pipeline is built against off_rp once -
  * swapchain rebuilds recreate off_rp with identical formats, which keeps the
  * pipeline valid (render-pass compatibility), so no re-init on resize/vsync.
  */
@@ -148,7 +148,7 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
     s_open   = openpete_devui_open_requested(opts) != 0;
     s_boot_reveal = s_open;
     OPL_INFO_F("devui", "dev config overlay ready (M toggles)%s",
-               s_open ? " — open at boot (--devui-open)" : "");
+               s_open ? " - open at boot (--devui-open)" : "");
     return 1;
 }
 
@@ -176,7 +176,7 @@ int openpete_devui_toggle(void)
 }
 
 /* Event queue: the pump and the imgui frame do not necessarily run on the
- * same thread, and imgui is single-threaded — ProcessEvent mutates the same
+ * same thread, and imgui is single-threaded - ProcessEvent mutates the same
  * IO state NewFrame consumes. So the pump only *queues* here, and the events
  * are fed to imgui on the thread that records its frame.
  *
@@ -226,7 +226,7 @@ static void devui_drain_events(void)
 /* imgui's IO capture flags are published rather than read live: they belong to
  * the imgui frame's thread, but the pump needs them too (to decide whether a
  * double-click is the overlay's or the window's). One frame stale by
- * construction, which is what a capture flag is anyway — it describes the
+ * construction, which is what a capture flag is anyway - it describes the
  * frame that was drawn. */
 static SDL_AtomicInt s_wants_kb;
 static SDL_AtomicInt s_wants_text;
@@ -460,7 +460,7 @@ static void draw_row(knob_desc_t *k)
     case KNOB_INT: {
         double live = k->get_num ? k->get_num(k) : k->stored_num;
         int v = (int)((s_edit_row == k) ? s_edit_val : live);
-        /* Commit on deactivate, not per keystroke — a half-typed value must
+        /* Commit on deactivate, not per keystroke - a half-typed value must
          * not hit a setter with an apply cost (rewind clears its history). */
         ImGui::InputInt("##v", &v);
         if (ImGui::IsItemActive()) { s_edit_row = k; s_edit_val = v; }
@@ -619,7 +619,7 @@ static void draw_save_bar(void) {
 /* Mods panel                                                         */
 /* ------------------------------------------------------------------ */
 
-/* The SDK's openpete_mod_ui_t widget vtable, implemented over imgui —
+/* The SDK's openpete_mod_ui_t widget vtable, implemented over imgui -
  * mods draw their section through these and never see imgui types.
  * Callbacks run inside the mod's section under the render-purity guard
  * (openpete_mods_ui_draw for the tree node, openpete_mods_ui_draw_always
@@ -758,7 +758,7 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
  * The engine draws each mod's settings from its manifest schema; edits
  * buffer here (per mod id) and commit through openpete_mods_cfg_apply,
  * which writes config.toml and queues a reload so the mod's entry
- * re-reads the values. Nothing applies until the user hits Apply — a
+ * re-reads the values. Nothing applies until the user hits Apply - a
  * half-dragged slider never half-configures a mod. */
 
 struct mod_cfg_edit_value {
@@ -954,7 +954,7 @@ static void mod_body_error_cb(ImGuiContext *, void *user_data,
  * them runs a given mod's body: for an always section the node pass draws
  * ui_status lines and nothing else, so a shared counter would see a clean
  * bracket from that pass every present and reset a streak the always pass
- * was accumulating — the refusal would never fire. */
+ * was accumulating - the refusal would never fire. */
 static std::vector<int> s_mod_body_err_streak[2];
 
 /** @brief Draw one mod's UI section inside the error-recovery bracket and count its errors.
@@ -1078,7 +1078,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
 
         /* The checkbox queues through the live-toggle path; the loader
          * applies it at the next tick boundary and the row reads the
-         * applied state back — no local shadow to go stale. Grayed while
+         * applied state back - no local shadow to go stale. Grayed while
          * the mod owns the level the player is inside (a disable would
          * strand them; the loader would defer it anyway). */
         const bool busy =
@@ -1253,7 +1253,7 @@ static void draw_panel(void)
 
     /* The Mods section (each mod's node hosts its own UI and custom-level
      * rows) renders between the config sections and the Debug* ones (or
-     * last, when no Debug section is visible — hidden debug builds, or a
+     * last, when no Debug section is visible - hidden debug builds, or a
      * filter that empties them). */
     bool mods_drawn = false;
 
@@ -1314,7 +1314,7 @@ static void draw_panel(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* LP fill-tag inspector (P) — see openpete_fillpick.h                 */
+/* LP fill-tag inspector (P) - see openpete_fillpick.h                 */
 /* ------------------------------------------------------------------ */
 
 /** @brief Draw the fill-tag inspector's crosshair at the window centre, the pick point.

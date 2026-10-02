@@ -1,4 +1,4 @@
-/* core/input/host_rumble.c — the actuator path openpete owns.
+/* core/input/host_rumble.c - the actuator path openpete owns.
  *
  * See openpete_rumble.h for why this exists at all (libpad registers a buffer;
  * PsyCross one-shotted it, so the only command ever sent was a zero at boot).
@@ -12,8 +12,8 @@
  * The published pair is a single 32-bit atomic rather than a seqlock: it is
  * two u16s that are only ever written together, so packing them into one word
  * makes "both halves belong to the same tick" a property of the type instead
- * of a protocol. That matters because the alternative failure — a large-motor
- * value from one tick paired with a small-motor value from the next — is
+ * of a protocol. That matters because the alternative failure - a large-motor
+ * value from one tick paired with a small-motor value from the next - is
  * exactly the kind of thing nobody would ever notice by feel.
  */
 
@@ -62,7 +62,7 @@ static SDL_AtomicInt s_pair;
 /* The harness's own virtual pad, when one is attached (OPENPETE_INPUT_VGAMEPAD).
  *
  * The headless and focus refusals below exist to protect a HUMAN's controller,
- * and a virtual device attached by a test harness is not one — nobody is
+ * and a virtual device attached by a test harness is not one - nobody is
  * holding it. Left as an unconditional refusal, headless would also blind the
  * only instrument that can observe this path at all, and the vibration oracle
  * would be reduced to testing a mock of the code instead of the code.
@@ -70,7 +70,7 @@ static SDL_AtomicInt s_pair;
  * So the refusals are lifted for exactly the devices the harness attached:
  * virtual pads, identified by instance id and re-checked against the handle
  * actually being driven. If a real controller is also plugged in and has taken
- * a slot, its id is not in the set and the normal gates apply — a diagnostic
+ * a slot, its id is not in the set and the normal gates apply - a diagnostic
  * run must not buzz a pad on the desk just because a test flag is set.
  *
  * A set rather than one id, because the harness attaches one pad per slot and
@@ -198,11 +198,11 @@ void openpete_rumble_sample(void)
 
 /* ---- pump side ----------------------------------------------------------- */
 
-/* SDL's own maximum is 65535 ms ("never expires"). We pass a bounded duration and refresh it every pump iteration
- * instead, which makes the effect a dead-man switch: if the sim thread stalls
- * or the process wedges, the motors stop on their own within a second rather
- * than running until someone unplugs the pad. Refreshing is free — an
- * unchanged pair never reaches the driver, it only pushes the expiry out. */
+/* SDL's maximum duration is 65535 ms ("never expires"). The drive passes a
+ * bounded duration instead and refreshes it every pump iteration, so if the
+ * sim thread stalls or the process wedges the motors stop on their own within
+ * a second. A refresh with an unchanged pair never reaches the driver; it
+ * only pushes the expiry out. */
 #define RUMBLE_DURATION_MS 1000u
 
 /** @brief Send one motor pair to player one's pad with the RUMBLE_DURATION_MS expiry and record it.
@@ -297,7 +297,7 @@ void openpete_rumble_apply(void)
         rumble_apply_mod_slot(slot);
 
     /* Headless, focus and pause: see rumble_gates_block. Headless is a
-     * refusal, not a default — a run with no window has no player at the desk,
+     * refusal, not a default - a run with no window has no player at the desk,
      * and every gate battery and scripted capture is one. Focus is the layer
      * that protects a human from a background window buzzing a pad on their
      * desk, polled rather than tracked through FOCUS_LOST / FOCUS_GAINED so
@@ -311,7 +311,7 @@ void openpete_rumble_apply(void)
     low  = (uint16_t)(pair & 0xFFFFu);
     high = (uint16_t)(pair >> 16);
 
-    /* Unconditional — see the header for why a change gate deadlocks against
+    /* Unconditional - see the header for why a change gate deadlocks against
      * the stop paths above. */
     rumble_drive(low, high);
 }

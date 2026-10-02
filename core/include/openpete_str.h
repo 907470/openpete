@@ -1,4 +1,4 @@
-/* openpete_str.h — small string helpers with no libc portability traps.
+/* openpete_str.h - small string helpers with no libc portability traps.
  *
  * Why this exists rather than <strings.h>: the tree carries more than a
  * dozen headers of its own named strings.h: one per Spyro overlay under

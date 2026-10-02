@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tgeo.py — decode a Crash 3 model (TGEO) posed by one animation frame
+"""tgeo.py - decode a Crash 3 model (TGEO) posed by one animation frame
 (SVTX) into a plain triangle mesh, and render a textured preview of it.
 
 Everything here is a port of the format reference (cbhacks/CrashEdit:
@@ -367,7 +367,7 @@ def decode_pose(lib, model_entry, anim_entry, frame_idx=0):
     off = [c / 4.0 for c in fr.offset]
     scl = [c / MODEL_SCALE for c in m.scale]
     # CrashEdit: (v.X, v.Z, v.Y) + (XOffset, YOffset, ZOffset)/4, then the
-    # per-axis scale — ported as-is.
+    # per-axis scale - ported as-is.
     for v in verts:
         if v is None:
             mesh.verts.append(None)

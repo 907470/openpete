@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_cache_walk_ab.sh — retained-terrain GPU cache vs CPU terrain walk,
+# check_cache_walk_ab.sh - retained-terrain GPU cache vs CPU terrain walk,
 # pixel-exact, headless on llvmpipe.
 #
 # The retained cache draws a static sector from a persistent vertex buffer and

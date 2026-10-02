@@ -1,5 +1,5 @@
 """
-.psxtrace — per-frame PSX gameplay-state oracle capture (v2).
+.psxtrace - per-frame PSX gameplay-state oracle capture (v2).
 
 The trace is a stream of FNV-1a-64 hashes (one per gameplay-state region as
 defined by games/<game>/manifest/gameplay_state_regions.toml) computed from PCSX-Redux,
@@ -47,7 +47,7 @@ Layout (little-endian throughout):
 
 The frame stream ends at EOF.
 
-V1 (raw 2 MB only, no hashes) was retired before any baseline shipped —
+V1 (raw 2 MB only, no hashes) was retired before any baseline shipped -
 no migration path needed.
 """
 

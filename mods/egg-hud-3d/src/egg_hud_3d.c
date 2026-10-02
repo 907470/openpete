@@ -1,14 +1,14 @@
-/* egg-hud-3d — replace the collected-egg flipbook sprite with the game's own
+/* egg-hud-3d - replace the collected-egg flipbook sprite with the game's own
  * 3D dragon egg, rendered through the game's HUD billboard path so the
  * engine's sub-tick interpolation spins it smoothly. See mod.toml.
  *
  * Two hooks:
- *   func_8001919C(RECT*, Tiledef*, ColorInt*) — the only builder of the egg
+ *   func_8001919C(RECT*, Tiledef*, ColorInt*) - the only builder of the egg
  *     sprite prim. A live egg (colour NULL, Tiledef one of the nine egg
  *     cells) is recorded and NOT passed to the original: no prim, no sprite.
  *     The inventory's dark "uncollected" marks (colour given, always cell 1,
  *     static) and every other sprite pass straight through.
- *   func_80022A2C — the shaded-moby renderer, the one call every screen
+ *   func_80022A2C - the shaded-moby renderer, the one call every screen
  *     (gameplay, pause, inventory) makes. Before it runs, one egg Moby per
  *     recorded sprite is appended to its render list at the sprite's
  *     position, rotated by the sprite's cell. Records are consumed here, so
@@ -62,7 +62,7 @@ typedef struct {
 static record_t s_rec[SLOTS];
 
 /* Spin. The flipbook advances one cell per tick (g_Hud+0x40, the game's own
- * frame cursor, wraps mod 9), and egg i shows cell (cursor + i) % 9 — so an
+ * frame cursor, wraps mod 9), and egg i shows cell (cursor + i) % 9 - so an
  * egg's phase is (accumulated cursor advances + i). The angle is that phase
  * times a configurable step: the nine cells span far less than a turn (the
  * cell-to-cell motion measures ~12°), so 360°/9 per tick spun visibly fast. */

@@ -1,4 +1,4 @@
-# core/rhi — game-agnostic Render Hardware Interface (thin) + Vulkan backend.
+# core/rhi - game-agnostic Render Hardware Interface (thin) + Vulkan backend.
 #
 # The native renderer's foundation. Lives under core/ because it is both
 # game-agnostic and platform-agnostic (windowing/surface via SDL, never a
@@ -7,7 +7,7 @@
 # Vulkan is loaded dynamically via volk (third_party/volk): it dlopens
 # libvulkan.so.1 / LoadLibrary("vulkan-1.dll") at runtime, so NO Vulkan
 # loader import library is linked on any platform and the Windows
-# cross-build needs no Vulkan SDK — only the vendored headers
+# cross-build needs no Vulkan SDK - only the vendored headers
 # (third_party/vulkan-headers). The rhi.h seam keeps Metal/WebGPU additive.
 
 set(VULKAN_HEADERS_INC ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include)
@@ -112,10 +112,10 @@ endforeach()
 # Embed the compiled .spv into the binary: a build-time `cmake -P` step turns
 # the SPIR-V into a generated C source (byte arrays + a name->blob table),
 # which is compiled into the library. The renderer then loads shaders from
-# memory — the binary is self-contained, no loose shaders/ dir ships. Pure
+# memory - the binary is self-contained, no loose shaders/ dir ships. Pure
 # CMake (file(READ ... HEX)); see embed_shaders.cmake. (A dev/modding file override via
-# OPENPETE_SHADER_DIR still reads loose .spv from disk — e.g. this build's
-# ${RHI_SHADER_OUT_DIR} — without a relink.)
+# OPENPETE_SHADER_DIR still reads loose .spv from disk - e.g. this build's
+# ${RHI_SHADER_OUT_DIR} - without a relink.)
 set(RHI_EMBED_C ${CMAKE_CURRENT_BINARY_DIR}/rhi_shaders_embedded.c)
 string(REPLACE ";" "|" RHI_SHADER_SPV_ARG "${RHI_SHADER_SPV}")
 add_custom_command(
@@ -150,7 +150,7 @@ set_target_properties(openpete_rhi PROPERTIES
 )
 # The embedded-shader source (RHI_EMBED_C) carries its own dependency on the
 # .spv via the custom command above, which in turn depends on the glslang
-# outputs — so building openpete_rhi compiles shaders and regenerates the
+# outputs - so building openpete_rhi compiles shaders and regenerates the
 # embed as needed. No explicit shader target/dependency required.
 
 # RHI smoke test: a standalone Vulkan window that draws three quads sampled

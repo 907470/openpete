@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""ident-audit-summary.py — corpus summary over ident-audit.sh's per-row TSVs.
+"""ident-audit-summary.py - corpus summary over ident-audit.sh's per-row TSVs.
 
 One row per bk2: how many ticks were audited, how many were pixel-exact, the
 median and worst differing-pixel counts, and the VBL the worst tick landed on.
 Rows are sorted by their worst tick, so the scene with the largest residual is
-read off the top. The last line is the corpus-wide exact-tick fraction — the
+read off the top. The last line is the corpus-wide exact-tick fraction - the
 single number that says how much of the spine is an identity.
 
 The argument is either a directory of TSVs or a file listing the TSV paths to

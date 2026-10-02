@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup_mingw_ffmpeg.sh — cross-build static x264 + FFmpeg for the windows-mingw
+# setup_mingw_ffmpeg.sh - cross-build static x264 + FFmpeg for the windows-mingw
 # target, so the Windows build can link --record video capture (runtime/record.c).
 #
 # WHY this exists: the windows-mingw preset is a cross-compile, and no prebuilt
@@ -12,7 +12,7 @@
 #
 # Output prefix: third_party/ffmpeg-mingw/{lib,include}  (gitignored; ~30 MB).
 # Re-run is idempotent-ish (it re-clones/re-extracts into the build dir). The
-# libs are STATIC + GPL (x264) — the resulting openpete-spyro1.exe is GPL.
+# libs are STATIC + GPL (x264) - the resulting openpete-spyro1.exe is GPL.
 #
 # Requires: x86_64-w64-mingw32-gcc toolchain, nasm, git, curl, tar.
 set -euo pipefail
@@ -71,5 +71,5 @@ echo
 echo "Reconfigure the windows-mingw preset to pick these up:"
 echo "  cmake --preset windows-mingw"
 # The knob named below is a compile definition, not a child environment
-# variable — wslenv-guard: no-launch.
+# variable - wslenv-guard: no-launch.
 echo "Then build; --record will be enabled (OPENPETE_HAS_LIBAV=1)."

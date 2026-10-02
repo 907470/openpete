@@ -1,4 +1,4 @@
-/* openpete_profile.c — see openpete_profile.h.
+/* openpete_profile.c - see openpete_profile.h.
  *
  * Streams a compact binary `.opp` trace: an interned name table plus fixed
  * 32-byte records for presents, CPU spans, GPU zones, and census counts.

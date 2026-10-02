@@ -1,7 +1,7 @@
-/* openpete_fb_snapshot.h — framebuffer-window snapshots.
+/* openpete_fb_snapshot.h - framebuffer-window snapshots.
  *
  * A game screen can copy a rect of its draw buffer to a VRAM scratch page with
- * MoveImage and then re-display that copy every frame as a textured quad — a
+ * MoveImage and then re-display that copy every frame as a textured quad - a
  * window onto the frame as it stood when the copy was taken. The quad's texels
  * come from the emulated framebuffer, which the native renderer never writes:
  * under a native-only run nothing rasterizes into it, the copy is zeros, and a

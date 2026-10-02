@@ -1,4 +1,4 @@
-# 0002 — Stub stateless CD commands (CdlSetmode + state mgmt + CdlReadS in CdControlB)
+# 0002 - Stub stateless CD commands (CdlSetmode + state mgmt + CdlReadS in CdControlB)
 
 Spyro the Dragon stalls during the title-screen load sequence because
 PsyCross's `CdControl` / `CdControlB` only handle a small subset of the
@@ -20,7 +20,7 @@ checks rely on the 1-on-success convention.
 
 In `src/psx/LIBCD.C`:
 
-1. `CdControl` now also accepts `CdlSetmode` (silently — sector-size mode
+1. `CdControl` now also accepts `CdlSetmode` (silently - sector-size mode
    bits aren't honoured but the command no longer returns failure) and
    stateless commands `CdlNop / CdlPause / CdlStandby / CdlStop /
    CdlMute / CdlDemute`. The function now returns 1 from the success
@@ -29,7 +29,7 @@ In `src/psx/LIBCD.C`:
    the read mode, same as `CdControl`'s `CdlReadS`) and the stateless
    commands listed above. The `CdlSetmode` `eprinterr` was removed (the
    no-op is intentional, not an error worth logging every time).
-3. `CdControlB`'s `CdlSetfilter` arm now also returns 1 (was 0 — the
+3. `CdControlB`'s `CdlSetfilter` arm now also returns 1 (was 0 - the
    command is accepted-as-no-op, the existing TODO covers the actual
    XA/CDDA work).
 
@@ -37,7 +37,7 @@ In `src/psx/LIBCD.C`:
 
 PsyCross only emulates 2048-byte data-sector reads from a backing
 .bin/.cue. The mode bits the game tries to set (sector size, double-
-speed, ADPCM) don't change anything we model — accepting the command
+speed, ADPCM) don't change anything we model - accepting the command
 silently lets the game's command pipeline advance.
 
 When PsyCross gains real CD-XA / variable-sector support, this case

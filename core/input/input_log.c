@@ -1,4 +1,4 @@
-/* core/input/input_log.c — see openpete_input_log.h. */
+/* core/input/input_log.c - see openpete_input_log.h. */
 
 #include "openpete_input_log.h"
 #include "openpete_log.h"

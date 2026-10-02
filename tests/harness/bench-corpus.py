@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bench-corpus.py — replay the bk2 corpus through the profiler and produce
+"""bench-corpus.py - replay the bk2 corpus through the profiler and produce
 per-movie + rollup performance reports, with optional regression compare.
 
 For each games/spyro-1/bk2/*.bk2 (its .args sidecar is auto-spliced by --bk2)
@@ -9,7 +9,7 @@ summarizes each trace via profile-summary.py. A rollup aggregates every movie;
 --baseline compares against a blessed rollup and fails on regressions.
 
 Platform note: on WSL/llvmpipe the CPU scopes are valid but the GPU numbers are
-a software rasterizer — real GPU measurement needs the windows-mingw .exe
+a software rasterizer - real GPU measurement needs the windows-mingw .exe
 (pass it with --exe; path args are wslpath-translated automatically).
 
 Usage:
@@ -37,7 +37,7 @@ import bench_guard
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set in the environment
 # rather than at each invocation because this script builds its argument list
 # in more than one place, and a flag appended to the wrong one is a silent
@@ -67,7 +67,7 @@ def run_movie(exe, movie_path, opp_path, args, log_path):
     disc = wslpath_w(DISC) if is_win else DISC
     bk2 = wslpath_w(movie_path) if is_win else movie_path
     opp = wslpath_w(opp_path) if is_win else opp_path
-    # NOTE: do NOT also pass --frame-time-log — a second concurrent file open
+    # NOTE: do NOT also pass --frame-time-log - a second concurrent file open
     # collides with --profile-out's fopen on the Windows exe and leaks stderr
     # into the .opp. fps comes from the trace's own present cadence anyway.
     cmd = [
@@ -182,7 +182,7 @@ def compare_baseline(roll, baseline_path, thr_pct, thr_us):
         base = json.load(f)
     bp, cp = base["platform"]["tag"], roll["platform"]["tag"]
     if bp != cp:
-        print("[bench] baseline platform %s != current %s — refusing cross-platform "
+        print("[bench] baseline platform %s != current %s - refusing cross-platform "
               "compare" % (bp, cp), file=sys.stderr)
         return EXIT_SKIP
     bmap = {(r["group"], r["kind"], r["scope"]): r for r in base["scopes"]}

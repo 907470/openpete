@@ -1,11 +1,11 @@
-// games/spyro-1/renderer/transition.c — native feeders for the level
+// games/spyro-1/renderer/transition.c - native feeders for the level
 // transition presentation layer: the balloonist / level-exit cross-fade backdrop
 // (func_8004F000) and the GS_ExitLevel grayscale freeze (func_8001C694).
 //
 // func_8004F000 ("cross-fade"): during a level transition or a balloonist
 // take-off (GS_Balloonist func_8001E24C, and GS_ExitLevel func_8001C694) the
 // game draws the g_Cyclorama dome with every sector colour run through a GTE
-// DPCS fade toward D_BLEND_TARGET by D_FOG_FACTOR — the soft dreamy gradient
+// DPCS fade toward D_BLEND_TARGET by D_FOG_FACTOR - the soft dreamy gradient
 // backdrop behind the balloon and the "ENTERING <world>" text. It is the same
 // dome geometry the main sky renderer (func_8004EBA8) draws, so this feeder
 // RE-DERIVES it from gamestate via cyclorama_native_extract_faded rather than
@@ -14,7 +14,7 @@
 // at the 4:3 edges and a Hor+ frame was left on background clear beyond them.
 //
 // The real renderer still runs first (it owns the gameplay verdict and the
-// g_SonyImage scratch), and its polybuf interval is still bracketed — that
+// g_SonyImage scratch), and its polybuf interval is still bracketed - that
 // range drives the --render-paths OT filter and the RP_TRANSITION liveness
 // latch. Only the pixels come from the native extraction.
 //
@@ -22,7 +22,7 @@
 // g_Camera, so no gameplay-readable byte moves.
 //
 // func_8001C694 (GS_ExitLevel): case 0 is the green-tinted grayscale freeze of
-// the level being exited — the SAME effect as the pause/inventory freeze
+// the level being exited - the SAME effect as the pause/inventory freeze
 // backdrop, reproduced from the native renderer's own last world frame via
 // openpete_native_scene_set_freeze_backdrop (its FT4s go through the unhooked
 // world-OT add func_800168A0, so native never showed them); case 1 is the
@@ -41,13 +41,13 @@
 #include <string.h>
 #include "spyro1_symbols.gen.h"
 #include "game_layout.h"
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_8004F000(CPUState* cpu);   /* the real cross-fade renderer */
 extern void     func_8001C694(CPUState* cpu);   /* the real GS_ExitLevel screen */
 extern unsigned openpete_frame;
 
-/* D_800758B8: func_8001C694's case selector — 0 = the green-tinted grayscale
+/* D_800758B8: func_8001C694's case selector - 0 = the green-tinted grayscale
  * freeze of the level being exited; 1 = the colour cross-fade (-> func_8004F000,
  * already fed). (The decomp names it "pause text rotation ticks"; reused here.) */
 /* D_8007568C: the per-case fade tick, 0..31 (func_8002E084 increments it each tick,
@@ -55,9 +55,9 @@ extern unsigned openpete_frame;
  * (setRECT width 32-tick), fading the frozen level to black. */
 /* g_Cyclorama.m_BackgroundColor (g_Cyclorama @0x80078A40 + 0x10): the destination
  * homeworld's flat background colour. In case 1 the game clears the framebuffer to
- * ColorLerp(bg, 0, D_8007575C) = bg*(tick/32) — a linear fade-in from black, drawn
+ * ColorLerp(bg, 0, D_8007575C) = bg*(tick/32) - a linear fade-in from black, drawn
  * BEHIND the cyclorama dome. */
-/* func_8001C694's address span [start, next fn) — to tell the exit-level's nested
+/* func_8001C694's address span [start, next fn) - to tell the exit-level's nested
  * func_8004F000 call (ra inside this range) from the balloonist's standalone one. */
 
 #define CRED   "\033[1;31m"
@@ -72,7 +72,7 @@ static int  s_cross_n;
  * clear. Behind the dome we draw (1) a flat full-panel quad in the dome's
  * average colour (catches any area beyond its bbox at extreme aspects), then
  * (2) a bilinear gradient quad spanning the dome's bbox with its four CORNER
- * colours — so the fill matches the dome seamlessly where its silhouette cuts
+ * colours - so the fill matches the dome seamlessly where its silhouette cuts
  * a corner. */
 static uint32_t s_cross_corner[4];   /* TL, TR, BL, BR (PSX 0xBBGGRR) */
 static uint32_t s_cross_avg;
@@ -80,7 +80,7 @@ static float    s_cross_bbox[4];     /* minx, miny, maxx, maxy */
 static int      s_cross_have_bg;
 /* Flat backdrop override for the GS_ExitLevel cyclorama fade (case 1). The dome
  * corner colours the backdrop grid is built from are the DPCS-faded cyclorama,
- * near-black early in the fade — so the grid covers the lerped clear and the
+ * near-black early in the fade - so the grid covers the lerped clear and the
  * homeworld bg appears too late. For the exit-level the true backdrop IS flat
  * (the game clears to ColorLerp(cyclorama_bg, 0)=bg*tick/32), so override the grid
  * with that colour. Bit 31 = set; low 24 = PSX 0xBBGGRR. 0 (balloonist) = use the
@@ -171,7 +171,7 @@ static void crossfade_feed_native(void) {
      * The centre cell spans the dome's bbox with the real 4-corner gradient (so
      * it continues seamlessly where the dome silhouette cuts a corner); the 8
      * outer cells repeat the nearest edge/corner colour, so the gradient fills a
-     * frame of ANY width — including super-ultrawide (96:9) — with no flat block
+     * frame of ANY width - including super-ultrawide (96:9) - with no flat block
      * and no background-clear leak beyond the dome's reach. */
     if (s_cross_have_bg) {
         const float BIGX = 16384.0f, BIGY = 4096.0f;
@@ -294,7 +294,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     /* Balloonist take-off (standalone func_8004F000, ra outside func_8001C694) uses
-     * the dome-corner backdrop grid, not the exit-level's flat cyclorama bg —
+     * the dome-corner backdrop grid, not the exit-level's flat cyclorama bg -
      * clear any stale override left from a prior GS_ExitLevel. The exit-level's
      * nested call (ra inside func_8001C694) keeps the override on_8001C694 just set. */
     if (cpu->ra < GS_EXIT_FN_LO || cpu->ra >= GS_EXIT_FN_HI) s_cross_bg_flat = 0;
@@ -305,7 +305,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     /* Record the emitted polybuf range: feeds the OT-walk isolation filter
-     * AND the canon-drawn mask — the staleness gate the sub-tick replay reads
+     * AND the canon-drawn mask - the staleness gate the sub-tick replay reads
      * (render_path_canon_drawn(RP_TRANSITION), latched once per canonical
      * present by the shared render_paths commit; empty ranges are dropped, so
      * a frame where the cross-fade emitted nothing reads "not drawn"). */
@@ -380,7 +380,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
 
     /* Case 1 backdrop: the game clears to ColorLerp(g_Cyclorama.m_BackgroundColor,
      * 0, D_8007575C). D_8007575C = (0x20-tick)*0x80, and ColorLerp (GTE DPCS toward
-     * far-colour 0) gives bg*(1 - D_8007575C/0x1000) = bg*(tick/32) — a linear fade-
+     * far-colour 0) gives bg*(1 - D_8007575C/0x1000) = bg*(tick/32) - a linear fade-
      * in from black. Set the flat backdrop BEFORE the nested func_8004F000 feed so
      * the cyclorama dome sits over the lerped homeworld bg (not the near-black
      * faded dome corners), making the bg appear as early as the reference. */

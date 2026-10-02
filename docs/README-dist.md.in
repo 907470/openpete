@@ -1,4 +1,4 @@
-# OpenPete — Spyro the Dragon PC port (@VERSION@, @PLATFORM@)
+# OpenPete - Spyro the Dragon PC port (@VERSION@, @PLATFORM@)
 
 OpenPete plays Spyro the Dragon (PSX, 1998) natively on your PC: widescreen,
 high framerate, supersampling, HD texture packs and mods, with gameplay state
@@ -96,7 +96,7 @@ openpete.toml         your settings
 gamecontrollerdb.txt  controller mappings (see below)
 cards/                memory cards (the game's own saves)
 states/               savestate slots
-logs/                 openpete.log — attach to a bug report
+logs/                 openpete.log - attach to a bug report
 library/              your ingested disc and its compiled code
 mods/                 drop-in mods
 assets/               your own texture packs, sounds and music
@@ -114,7 +114,7 @@ program itself:
 ~/.config/openpete/gamecontrollerdb.txt   your controller mappings (see below)
 ~/.local/state/openpete/cards/     memory cards (the game's own saves)
 ~/.local/state/openpete/states/    savestate slots
-~/.local/state/openpete/logs/      openpete.log — attach to a bug report
+~/.local/state/openpete/logs/      openpete.log - attach to a bug report
 ~/.local/share/openpete/library/   your ingested disc and its compiled code
 ~/.local/share/openpete/mods/      drop-in mods
 ~/.local/share/openpete/assets/    your own texture packs, sounds and music

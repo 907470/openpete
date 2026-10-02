@@ -1,4 +1,4 @@
-# NOTICE — third-party attributions
+# NOTICE - third-party attributions
 
 OpenPete's own code is licensed under **PolyForm Noncommercial 1.0.0** (see
 `LICENSE`). It bundles or depends on the third-party projects below; each
@@ -8,7 +8,7 @@ ships this file and, under `licences/`, the upstream license text of each
 component below that the archive carries; `docs/licences/manifest.tsv` maps
 each row to its text, and packaging fails on a row with no text.
 
-## Linked into the distributed binary — permissive (attribution required)
+## Linked into the distributed binary - permissive (attribution required)
 
 | Component                            | License                                        | Upstream                                                                                    |
 | ------------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -26,11 +26,11 @@ each row to its text, and packaging fails on a row with no text.
 | glad 0.1.36 (GL loader, generated, vendored in PsyCross) | MIT                        | https://github.com/Dav1dde/glad                                                             |
 | volk (Vulkan loader)                 | MIT                                            | https://github.com/zeux/volk                                                                |
 | Vulkan-Headers 1.3.204               | Apache-2.0                                     | https://github.com/KhronosGroup/Vulkan-Headers                                              |
-| libstdc++ / libgcc (static)          | GPL-3.0 **with GCC Runtime Library Exception** | GCC — the exception explicitly permits distributing the compiled binary in proprietary form |
+| libstdc++ / libgcc (static)          | GPL-3.0 **with GCC Runtime Library Exception** | GCC - the exception explicitly permits distributing the compiled binary in proprietary form |
 | MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows) | Zlib / BSD / public domain (permissive) | https://www.mingw-w64.org                                                          |
 | OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`) | LGPL v2 | https://github.com/kcat/openal-soft                                                  |
 
-## Bundled data — shipped alongside the binary
+## Bundled data - shipped alongside the binary
 
 Data files copied into every release archive. Not linked into
 `openpete-spyro1`; read at runtime.
@@ -41,7 +41,7 @@ Data files copied into every release archive. Not linked into
 
 Refreshed with `scripts/update_gamecontrollerdb.sh`.
 
-## Bundled first-boot toolchain — mere aggregation
+## Bundled first-boot toolchain - mere aggregation
 
 Shipped as separate executables under `recomp/tools/`, invoked as
 subprocesses to recompile the user's disc at first boot. Not linked into
@@ -49,7 +49,7 @@ subprocesses to recompile the user's disc at first boot. Not linked into
 
 | Component                                | License                                                          | Notes                                                      |
 | ---------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------- |
-| llvm-mingw (LLVM/Clang, lld, llvm-ar, …) | Apache-2.0 **with LLVM exception** (+ MinGW-w64 CRT, permissive) | Windows archive; ship LLVM `LICENSE.TXT` in the bundle     |
+| llvm-mingw (LLVM/Clang, lld, llvm-ar, ...) | Apache-2.0 **with LLVM exception** (+ MinGW-w64 CRT, permissive) | Windows archive; ship LLVM `LICENSE.TXT` in the bundle     |
 | LLVM/Clang 18.1.8 + lld (llvm.org build) | Apache-2.0 **with LLVM exception**                               | Linux AppImage; ship LLVM `LICENSE.TXT` in the bundle      |
 | PSXRecomp (psxrecomp)                    | PolyForm Noncommercial License 1.0.0                             | static recompiler; build tool, not shipped-linked          |
 
@@ -59,7 +59,7 @@ import no symbol from it, so an empty stub with the expected version node
 satisfies the loader without shipping a terminal library (see
 `scripts/setup_linux_clang.sh`).
 
-## Mod SDK example mods — bundled under `sdk/examples/`
+## Mod SDK example mods - bundled under `sdk/examples/`
 
 Present only in archives packaged with the mod SDK. Each example is a
 separate directory the loader compiles or reads at boot; none is linked
@@ -71,7 +71,7 @@ into `openpete-spyro1`.
 
 The other examples are original to this project and carry the root licence.
 
-## Linux AppImage — bundled at runtime
+## Linux AppImage - bundled at runtime
 
 Every library under `usr/lib/` ships its notice as
 `usr/licences/<soname>.txt`; packaging fails on a bundled library with no
@@ -86,7 +86,7 @@ notice.
 | AppImage type-2 runtime                | MIT                                  | the launcher stub prepended to the squashfs                        |
 
 Graphics, display-server and audio-device libraries are deliberately **not**
-bundled — they must bind to the host's drivers. sndio is bundled despite
+bundled - they must bind to the host's drivers. sndio is bundled despite
 being an audio library because it is a client of the `sndiod` daemon rather
 than of a device: with no daemon running, OpenAL falls through to its ALSA
 or PulseAudio backend, both of which still resolve against the host. ALSA

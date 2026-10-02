@@ -1,4 +1,4 @@
-"""psyq_types.py — the PSYQ SDK types the decomp's game structs embed.
+"""psyq_types.py - the PSYQ SDK types the decomp's game structs embed.
 
 One definition serves two consumers: probe_struct_layout.py writes these
 as the stub PSYQ headers for its MIPS compile of the original decomp

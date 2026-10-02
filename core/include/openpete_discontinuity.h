@@ -1,8 +1,8 @@
-/* core/include/openpete_discontinuity.h — guest-state discontinuity broadcast.
+/* core/include/openpete_discontinuity.h - guest-state discontinuity broadcast.
  *
  * Fired whenever guest state (CPU regs + RAM + scratch + VRAM) is REPLACED
- * out from under the running process — savestate load today; rewind restore
- * and runahead rollback later — rather than advanced by the sim. Host-side
+ * out from under the running process - savestate load today; rewind restore
+ * and runahead rollback later - rather than advanced by the sim. Host-side
  * state DERIVED from guest RAM subscribes a resync action here so it never
  * carries pre-replacement snapshots across the jump (e.g. the interp
  * prev/curr tables, which would otherwise lerp a full-scene smear).
@@ -13,7 +13,7 @@
  *     (CPU + RAM + scratch + VRAM + mod participation blobs).
  *   - Do the CHEAPEST correct action. Content-keyed caches that self-verify
  *     against live RAM per lookup (moby faceblock cache, terrain sector
- *     cache) must NOT subscribe a blanket clear — same-level restores are
+ *     cache) must NOT subscribe a blanket clear - same-level restores are
  *     zero-cost by design and that property is what keeps high-rate restore
  *     (rewind/runahead) affordable.
  *   - No ordering guarantees between subscribers.

@@ -1,4 +1,4 @@
-/* terrain_shade.glsl — fragment shading for the retained terrain mesh.
+/* terrain_shade.glsl - fragment shading for the retained terrain mesh.
  * Included by the material contract's terrain half; not a mod-facing
  * interface.
  *

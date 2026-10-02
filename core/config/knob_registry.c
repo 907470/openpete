@@ -1,14 +1,14 @@
 /*
- * Knob registry — the table behind the M-key dev config overlay.
+ * Knob registry - the table behind the M-key dev config overlay.
  *
  * One row per config knob. LIVE rows write through the same public setters
- * the O-menu uses (renderer/host state only — never gameplay-readable RAM);
+ * the O-menu uses (renderer/host state only - never gameplay-readable RAM);
  * RESTART_ONLY rows are display-only until each is individually audited and
  * given a proper live channel (a single boot-latched consumer is enough to
  * keep a row read-only: cf. the fog-scale latch history in no_lod.h).
  *
  * Adding a permanent CLI flag or OPENPETE_* env var? Add its row here in the
- * same change — the overlay doubles as the living catalog of every knob.
+ * same change - the overlay doubles as the living catalog of every knob.
  */
 
 #include "openpete_knobs.h"
@@ -689,7 +689,7 @@ static int logfmt_set(knob_desc_t *k, double v) {
  *  - FRESH consumers call getenv per use, so setenv IS their live channel
  *    (editable, KNOB_LIVE);
  *  - CACHED consumers latch the value into a function-local static on first
- *    use — setenv would silently do nothing, so those rows stay display-only
+ *    use - setenv would silently do nothing, so those rows stay display-only
  *    (KNOB_RESTART_ONLY) until the latch is converted to an accessor.
  *    Promoting one is a per-knob audited change, not an overlay tweak. */
 
@@ -1262,7 +1262,7 @@ static const knob_desc_t g_builtin[] = {
 
     /* Last row of the section on purpose: the game module contributes one
      * button row per cheat through openpete_knob_add, and those land after
-     * the section's last built-in — directly under this launch summary. */
+     * the section's last built-in - directly under this launch summary. */
     { "cheats", "Cheats at launch", "Gameplay", "--cheats", NULL,
       "Built-in cheat codes this run starts each session with. The rows below "
       "fire the same cheats on demand; this one only shows the launch "
@@ -2012,7 +2012,7 @@ int openpete_knob_bind_str(const char *id,
         if (set_str) { ks[i].set_str = set_str; ks[i].mut = KNOB_LIVE; }
         return 0;
     }
-    return -1;   /* row absent (compiled out) — nothing to bind */
+    return -1;   /* row absent (compiled out) - nothing to bind */
 }
 
 int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap) {

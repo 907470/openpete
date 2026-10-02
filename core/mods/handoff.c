@@ -1,20 +1,20 @@
-// core/mods/handoff.c — process handoff: checkpoint → exec → restore.
+// core/mods/handoff.c - process handoff: checkpoint -> exec -> restore.
 //
 // Binary-shape operations (install/uninstall a site-hook mod, SDK
 // regen) need a NEW process image; the handoff carries the live session
 // across it in seconds: at the run loop's quiescent point (game fiber
-// yielded — the same guarantees as the savestate hotkeys) the engine
+// yielded - the same guarantees as the savestate hotkeys) the engine
 // saves the full session to a handoff file (engine snapshot + per-mod
 // participation blobs), exec()s its own image with the original argv
 // plus --resume-handoff, and the fresh process restores the file at its
-// FIRST quiescent point — RAM, CPU, frame counter, and mod state all
+// FIRST quiescent point - RAM, CPU, frame counter, and mod state all
 // continue.
 //
 // v1 scope, stated plainly:
 //   - POSIX exec (Windows spawn+exit rides distribution D-track, which
 //     owns the Windows process story).
 //   - Same-binary exec is fully supported (savestates are build-hash
-//     gated; the CROSS-build handoff — the re-link case — additionally
+//     gated; the CROSS-build handoff - the re-link case - additionally
 //     needs a gate override once the rebuild flow exists to drive it;
 //     the mechanism here is the seam it will ride).
 //   - Triggers: OPENPETE_HANDOFF_AT=<frame> (CI/dev) and
@@ -73,7 +73,7 @@ static void handoff_path(char* out, size_t cap) {
 
 void openpete_handoff_poll(CPUState* cpu) {
     /* Resume leg: first quiescent point of the fresh process. Consumes
-     * any env trigger too — the schedule fired in the PREVIOUS image;
+     * any env trigger too - the schedule fired in the PREVIOUS image;
      * without this the resumed frame counter (>= the trigger) would
      * re-fire it every quiescent pass, exec-looping forever. */
     if (s_resume_path && !s_resume_done) {
@@ -86,7 +86,7 @@ void openpete_handoff_poll(CPUState* cpu) {
             remove(s_resume_path);
             OPL_INFO_F("handoff", "session resumed at frame %u", frame);
         } else {
-            OPL_ERROR_F("handoff", "resume load failed (%s) — continuing "
+            OPL_ERROR_F("handoff", "resume load failed (%s) - continuing "
                         "as a fresh session", s_resume_path);
         }
         return;
@@ -106,7 +106,7 @@ void openpete_handoff_poll(CPUState* cpu) {
     char path[1280];
     handoff_path(path, sizeof path);
     if (openpete_state_save_file(path, cpu, openpete_frame) != 0) {
-        OPL_ERROR_F("handoff", "checkpoint save failed — handoff aborted");
+        OPL_ERROR_F("handoff", "checkpoint save failed - handoff aborted");
         return;
     }
 

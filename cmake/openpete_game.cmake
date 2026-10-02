@@ -1,4 +1,4 @@
-# cmake/openpete_game.cmake — one game's targets from its directory.
+# cmake/openpete_game.cmake - one game's targets from its directory.
 #
 # openpete_add_game(<id>
 #     [MAIN <file>]                   # entry TU; default games/common/game_main.cpp

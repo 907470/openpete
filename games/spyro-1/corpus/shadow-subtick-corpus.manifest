@@ -16,6 +16,6 @@
 #
 # The bound is 1.2 px rather than the other manifest's 1.0 because this row's
 # residual is the size channel at its widest: the decal's mask grows by a third
-# across the interval — 646 px at 1821 against 847 px at 1823 — while the
+# across the interval - 646 px at 1821 against 847 px at 1823 - while the
 # radius word stays the newest tick's, and the visible centroid moves with it.
 artisans-rescue-argus.bk2 | 1823 | blob=222.6,304.3 tol=1.2 engage=0

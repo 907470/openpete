@@ -299,7 +299,7 @@ def match_og_prims(prims, ident, vert_tris, grid, tris):
     inside the radius). The prim is identified by the FED TRI whose exact
     3-vert set is formed by one candidate per vert (either quad diagonal),
     minimising total snap distance. 'hole': >=2 og verts have fed-vert
-    neighbours but no fed tri owns the prim — geometry the feed knows, face
+    neighbours but no fed tri owns the prim - geometry the feed knows, face
     it did not emit. 'other': a non-terrain prim (moby, sky, HUD)."""
     out = {}
     for idx, xy in prims:
@@ -474,7 +474,7 @@ def main():
     # (sec,face), so the union of a face's tri verts contains the parent's
     # corners. Used to resolve og's near-band OT prims: the visible pixels
     # there come from subdivided HQ twins DrawPrim'd under mask-bit
-    # protection, and the OT carries only the UNSUBDIVIDED copies — which
+    # protection, and the OT carries only the UNSUBDIVIDED copies - which
     # exact-tri matching can never hit.
     face_verts = collections.defaultdict(set)
     face_tris2d = collections.defaultdict(list)
@@ -524,7 +524,7 @@ def main():
         """Same surface iff every og corner sits on (or within snap noise of)
         the face's fed footprint. Handles both subdivision asymmetries: an og
         parent over native children, and og OT children (midpoint verts) over
-        a native parent — the near band's mask-bit HQ twin pattern. Known
+        a native parent - the near band's mask-bit HQ twin pattern. Known
         limit: an UNFED nearer face lying wholly inside the winner's
         footprint would false-agree; such holes are only counted where they
         straddle the winner's silhouette."""
@@ -537,7 +537,7 @@ def main():
             return True
         # Reverse direction: the native winner face is a subdivision CHILD
         # of the og prim (its own face record, distinct id), so the og
-        # parent's corners straddle sibling children — but every child vert
+        # parent's corners straddle sibling children - but every child vert
         # sits inside the parent's footprint. Near-band mask-twin regime:
         # the OT carries the unsubdivided fallback; visible og pixels come
         # from the DrawPrim'd HQ twins, so footprint identity is the best
@@ -598,7 +598,7 @@ def main():
                             og_prim_on_face(o - 1, (tris[n]['sec'],
                                                     tris[n]['face']))):
                         # og's unsubdivided OT copy of the face whose subdivided
-                        # twin wins natively — same surface, agree.
+                        # twin wins natively - same surface, agree.
                         cls[y, x] = 1; C['agree'] += 1
                         C[f'agree/{band_of(natq[y, x])}'] += 1
                         continue
@@ -647,7 +647,7 @@ def main():
     # protection, and the OT carries fallback tessellations that can
     # cross-cut the native subdivision (neither footprint contains the
     # other). The near band carries no authored offsets in either
-    # tier, so no stored-depth change acts there — the GATE metric is the
+    # tier, so no stored-depth change acts there - the GATE metric is the
     # mid+far population, where the offsets actually live.
     gm = {k: C.get(f'{k}/mid', 0) + C.get(f'{k}/far', 0)
           for k in ('agree', 'intra-tier', 'cross-tier', 'og-hole')}

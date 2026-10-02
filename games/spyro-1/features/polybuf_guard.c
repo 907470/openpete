@@ -1,4 +1,4 @@
-// games/spyro-1/features/polybuf_guard.c — polygon-buffer overflow detector.
+// games/spyro-1/features/polybuf_guard.c - polygon-buffer overflow detector.
 //
 // The game bump-allocates display primitives out of a polygon buffer whose
 // cursor lives at D_800757B0 and whose end is D_800756FC. Nothing tests the
@@ -13,7 +13,7 @@
 // Primitives then land on OT buckets. The OT tail-insert in the world
 // renderer (r_environment.s 0x800270C8) reads a bucket for "the previous
 // primitive in this bucket" and writes a 24-bit link through it without
-// checking it — so primitive bytes get dereferenced as a pointer, and three
+// checking it - so primitive bytes get dereferenced as a pointer, and three
 // bytes are written to a effectively arbitrary address. Observed consequences
 // include model vertex streams being scribbled (animated models then decode
 // displaced vertices and visibly spike) and, once a write lands on a Moby's
@@ -25,12 +25,12 @@
 //
 // This module is read-only and always falls through. It samples at
 // BuildOrderTable (0x80016784), which runs once per frame after every
-// renderer has queued its primitives — so the cursor is at its peak for the
+// renderer has queued its primitives - so the cursor is at its peak for the
 // frame. Reporting is edge-triggered: one line when the buffer first
 // overflows, a rate-limited line while it stays overflowed, and a summary
 // when it recovers.
 //
-// OFF by default — this is a diagnostic, and the overflow it reports is
+// OFF by default - this is a diagnostic, and the overflow it reports is
 // original-game behaviour rather than a regression, so it would otherwise
 // log during ordinary play. Enable with OPENPETE_POLYBUF_GUARD=1, or
 // =verbose to also log the per-frame high-water while the buffer is healthy
@@ -119,7 +119,7 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
     if (slack >= 0) {
         if (s_overflowing) {
             OPL_WARN_F("polybuf",
-                       "RECOVERED @f%u — episode lasted %u frames, peak %u bytes "
+                       "RECOVERED @f%u - episode lasted %u frames, peak %u bytes "
                        "(%u prims) past the end",
                        frame, frame - s_first_frame,
                        s_worst_over, s_worst_over / PRIM_BYTES);
@@ -129,7 +129,7 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
         if (slack < s_min_headroom) s_min_headroom = slack;
         if (mode == GUARD_VERBOSE) {
             OPL_INFO_F("polybuf",
-                       "f%u ok — %d bytes free (%d prims), closest ever %d",
+                       "f%u ok - %d bytes free (%d prims), closest ever %d",
                        frame, slack, slack / PRIM_BYTES, s_min_headroom);
         }
         return 0;
@@ -157,7 +157,7 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
          * assuming the worst. */
         if (cursor >= ot) {
             OPL_ERROR_F("polybuf",
-                        "OVERFLOW #%u @f%u level=%u — cursor %08X is %u bytes "
+                        "OVERFLOW #%u @f%u level=%u - cursor %08X is %u bytes "
                         "(%u prims) PAST end %08X, and %u bytes INTO g_WorldOT "
                         "%08X: primitives are overwriting OT buckets, so the "
                         "OT tail-insert will dereference primitive bytes as a "
@@ -166,7 +166,7 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
                         end, cursor - ot, ot, cx, cy, cz);
         } else {
             OPL_WARN_F("polybuf",
-                       "OVERFLOW #%u @f%u level=%u — cursor %08X is %u bytes "
+                       "OVERFLOW #%u @f%u level=%u - cursor %08X is %u bytes "
                        "(%u prims) PAST end %08X, but still %u bytes short of "
                        "g_WorldOT %08X: scribbling whatever follows the buffer, "
                        "not yet OT buckets. camera=(%d, %d, %d)",
@@ -179,7 +179,7 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
     if (frame >= s_report_at) {
         s_report_at = frame + REPEAT_EVERY;
         OPL_WARN_F("polybuf",
-                   "still overflowing @f%u — %u bytes (%u prims) past the end, "
+                   "still overflowing @f%u - %u bytes (%u prims) past the end, "
                    "peak %u this episode",
                    frame, over, over / PRIM_BYTES, s_worst_over);
     }

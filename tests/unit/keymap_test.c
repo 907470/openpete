@@ -1,4 +1,4 @@
-/* tests/unit/keymap_test.c — the keymap registry, parser and resolver.
+/* tests/unit/keymap_test.c - the keymap registry, parser and resolver.
  *
  * SDL-free: keymap.c reaches SDL only through the lookup/input seams, so
  * this test installs a tiny fake name table and a fake input state. That
@@ -179,7 +179,7 @@ static void test_dev_unbound_by_default(void) {
           "fillpick should be bindable from config");
 }
 
-/* Player 2 is a valid namespace but defaults to unbound — giving it P1's
+/* Player 2 is a valid namespace but defaults to unbound - giving it P1's
  * keys would make every row collide with its P1 twin. */
 static void test_pad2_unbound(void) {
     openpete_keymap_init();
@@ -335,7 +335,7 @@ static void test_unbind(void) {
     CHECK(n_sources(OPK_TELEPORT) == 0, "lower scope must not override");
 }
 
-/* Within an action a scope REPLACES rather than appends — otherwise
+/* Within an action a scope REPLACES rather than appends - otherwise
  * unbinding could never be expressed. */
 static void test_replace_not_append(void) {
     openpete_keymap_init();
@@ -435,7 +435,7 @@ static void test_conflict_detection(void) {
           "context-disjoint sharing must stay quiet");
 }
 
-/* KM_REQUIRED warns only when EVERY source is gone — a pad-only player
+/* KM_REQUIRED warns only when EVERY source is gone - a pad-only player
  * unbinding the keyboard half of cross is legitimate. */
 static void test_required_warns_only_when_fully_unbound(void) {
     openpete_keymap_init();
@@ -475,7 +475,7 @@ static void test_edge_latch(void) {
     openpete_keymap_poll();
     CHECK(openpete_key_pressed(OPK_MENU), "re-press fires again");
 
-    /* An unbound action can never produce an edge — no stuck latch. */
+    /* An unbound action can never produce an edge - no stuck latch. */
     fake_reset();
     openpete_keymap_poll();
     openpete_keymap_poll();
@@ -565,7 +565,7 @@ static void test_quit_binding(void) {
     CHECK(set1("host", "quit", "none", 100, "global") == 0, "unbind quit");
     CHECK(!openpete_keymap_key_binds(OPK_QUIT, esc),
           "quit = \"none\" must stop Escape quitting");
-    /* Unbinding quit must NOT warn — it is a supported choice, and the
+    /* Unbinding quit must NOT warn - it is a supported choice, and the
      * window close button still quits. */
     CHECK(openpete_keymap_resolve() == 0,
           "unbinding quit must not warn (it is not KM_REQUIRED)");
@@ -606,7 +606,7 @@ static void test_consume_key(void) {
     /* Press 2, menu now OPEN. This is the reported bug: the filter
      * dismisses and swallows the EVENT, but the poll still sees a fresh
      * rising edge in SDL's key state and toggles the menu straight back
-     * open. The consume is what has to stop it — and note this only
+     * open. The consume is what has to stop it - and note this only
      * reproduces on a fresh press, which is why the edge matters. */
     g_keys[esc] = 1;
     openpete_keymap_consume_key(esc);      /* what the filter does */

@@ -1,4 +1,4 @@
-// games/spyro-1/mods/mod_moby_ops.c — Spyro 1 game ops for the mod content registry
+// games/spyro-1/mods/mod_moby_ops.c - Spyro 1 game ops for the mod content registry
 // (core/mods/mod_registry.c) and the SFX definition service.
 //
 // Ground truth (cross-checked include/moby.h + asm/42CC4.s +

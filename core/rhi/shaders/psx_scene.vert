@@ -3,7 +3,7 @@
 #include "psx_unorm8.glsl"
 #include "psx_viewz.glsl"
 
-/* Scene textured vertex stage — PERSPECTIVE-CORRECT UV/colour with
+/* Scene textured vertex stage - PERSPECTIVE-CORRECT UV/colour with
  * CLIP-INVARIANT depth.
  *
  * The CPU feeds post-projection 2D screen coordinates (already in clip space
@@ -18,7 +18,7 @@
  * The homogeneous position MUST use W == vzo. gl_Position's (zc, W) pair is
  * linearly interpolated by the hardware CLIPPER; only a matched pair keeps
  * window depth screen-linear through clipping. An earlier version emitted
- * W = inW with zc built from vzo — exact per vertex, but any partially
+ * W = inW with zc built from vzo - exact per vertex, but any partially
  * off-screen shifted triangle got its clip-vertex depth perspective-mixed
  * toward the near vertex, which could pull a distant face in FRONT of
  * everything (a screen-huge lake face with one near-camera vertex covered
@@ -27,7 +27,7 @@
  * UV/colour still interpolate perspective-correct in inW, exactly: emit
  * attr*q with q = vzo/inW plus the scalar q itself. The rasterizer divides
  * varyings by W=vzo, so attr*q/vzo == attr/inW and q/vzo == 1/inW are both
- * screen-linear; the fragment stage recovers attr = (attr*q)/q — identical
+ * screen-linear; the fragment stage recovers attr = (attr*q)/q - identical
  * to hardware W=inW interpolation on unclipped triangles, and exact on
  * clipped ones. */
 
@@ -35,7 +35,7 @@ layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = ordering vi
 layout(location = 1) in vec2 inUV;    /* texel coords within the texture page */
 layout(location = 2) in vec4 inColor; /* R8G8B8A8_UNORM -> 0..1 modulate */
 /* True view-Z (equal to inPos.z unless the feeder shifted z to encode OT
- * ordering). The depth WRITTEN always follows inPos.z — only the UV/colour
+ * ordering). The depth WRITTEN always follows inPos.z - only the UV/colour
  * interpolation basis changes. */
 layout(location = 4) in float inW;
 /* Terrain og OT key (rhi_vertex.koff): the face's ABSOLUTE .s insertion key
@@ -62,7 +62,7 @@ layout(location = 4) flat out vec2 vRank;
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* PSX-affine interpolation (--texture-mapping affine, spec-constant 1): emit
- * w=1 so the rasterizer interpolates UV/colour SCREEN-LINEARLY — the PSX GPU
+ * w=1 so the rasterizer interpolates UV/colour SCREEN-LINEARLY - the PSX GPU
  * had no perspective divide, and this is its authentic texture swim/warp.
  * Screen position is inPos.xy either way, and the window depth is the same
  * value the perspective path's hardware divide produces, so depth

@@ -1,4 +1,4 @@
-/* games/common/renderer/player_game_spyro23.c — the per-game half of the
+/* games/common/renderer/player_game_spyro23.c - the per-game half of the
  * shared player feeder for the two games whose player draw is the same
  * handwritten routine: the skeleton's per-part transform, the seam that hangs
  * the head off the body, the vertex count field, and the face and colour
@@ -20,7 +20,7 @@
  * The one unit that is neither moby unit: the translation is the raw
  * camera-relative world delta rotated by the camera matrix at cam.base+0x00
  * and stored UNSHIFTED (spyrodraw.s:207-234,262-267), so it and every vertex
- * added to it are in full world units — where the animated moby kind's are
+ * added to it are in full world units - where the animated moby kind's are
  * world >> AnimationHeader+2 and the static kind's are world/2.
  */
 
@@ -269,14 +269,14 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
             out->TR[i] = (PM[i][0]*IR1 + PM[i][1]*IR2 + PM[i][2]*IR3) / 4096.0;
         s23_compose_euler(cpu, PM, cpu->read_word(PL.base + PL.rot_off[0]), out->M, 0);
         /* The mirrored copy (spyrodraw.s:283-302): with the gate set the draw
-         * negates the composed matrix's second column in place — the high half
+         * negates the composed matrix's second column in place - the high half
          * of the record word at +0x10, the low half of +0x18 and the high half
-         * of +0x1C, which are m01, m11 and m21 — and writes the three GTE
+         * of +0x1C, which are m01, m11 and m21 - and writes the three GTE
          * rotation registers those halves live in. The reflection is in the
          * model's own second axis; the driver has already moved the avatar's
          * world Z to twice its height below the surface. */
         /* OPENPETE_PLAYER_VERIFY_NOMIRROR: the negative control of that
-         * reflection — the copy is drawn from the unreflected matrix, leaving
+         * reflection - the copy is drawn from the unreflected matrix, leaving
          * every other mirrored-pass difference in place. */
         static int s_neg = -1;
         if (s_neg < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_NOMIRROR");
@@ -450,8 +450,8 @@ static int s23_face_depth_keep(CPUState* cpu, const player_xform_t* root,
  * either sign). Each vertex's distance is that constant less the second row of
  * the matrix at g_Spyro+0x30 applied to the decoded model vertex in the
  * routine's (Y, Z, X) register order (spyrodraw.s:847-854). The part's own
- * world origin — the three words at draw scratch + 0x1478 + 16*part, negated
- * in the first two components — goes through the same row as the GTE
+ * world origin - the three words at draw scratch + 0x1478 + 16*part, negated
+ * in the first two components - goes through the same row as the GTE
  * translation of that pass (spyrodraw.s:817-840), so it truncates on its own
  * before the vertex term is added to it.
  *

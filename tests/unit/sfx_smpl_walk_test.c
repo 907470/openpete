@@ -1,4 +1,4 @@
-/* tests/unit/sfx_smpl_walk_test.c — the WAV `smpl` chunk walk ends on a
+/* tests/unit/sfx_smpl_walk_test.c - the WAV `smpl` chunk walk ends on a
  * chunk size that runs past the file, and refuses loop points whose sum
  * leaves int.
  *

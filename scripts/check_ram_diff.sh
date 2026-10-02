@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/check_ram_diff.sh — whole-RAM diff, DuckStation vs openpete, at a
+# scripts/check_ram_diff.sh - whole-RAM diff, DuckStation vs openpete, at a
 # translated function's entry.
 #
 # Usage:

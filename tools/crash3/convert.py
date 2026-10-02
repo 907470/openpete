@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""convert.py — Crash 3 demo models → a Spyro 1 animated-moby-model pack.
+"""convert.py - Crash 3 demo models -> a Spyro 1 animated-moby-model pack.
 
 Reads the demo NSFs off the disc (nsf.py), poses every model on one
 animation frame (tgeo.py), and encodes each as a complete Spyro 1
@@ -8,7 +8,7 @@ animation frame (tgeo.py), and encodes each as a complete Spyro 1
 (`textures/own/<hexid>.png`).
 
 Per model:
-  1. CrashEdit viewer space (x, y-up, z) → S1 moby space (-x, -y, z),
+  1. CrashEdit viewer space (x, y-up, z) -> S1 moby space (-x, -y, z),
      scaled so the model stands `--height` world units tall on y = 0;
      x/z clamped to the literal field (±1023). The x flip is the
      handedness difference between the two spaces: without it the
@@ -46,7 +46,7 @@ Pack (little-endian), `CR3P` v1:
             src_verts u16, pose_frame u16, pose_anim u32,
             reloc_words_off u32, n_reloc_words u32,
             reloc_frames_off u32, n_reloc_frames u32}
-  relocs  : u32 offsets RELATIVE TO THE MODEL BLOB — absolute-vaddr words
+  relocs  : u32 offsets RELATIVE TO THE MODEL BLOB - absolute-vaddr words
             (add the park vaddr) and frame words whose 21-bit field is a
             stream offset (exchange for a stream handle)
   payload : model blobs, 16-aligned, linked at base 0
@@ -490,7 +490,7 @@ def encode_model(mesh, atlas, args, report):
     e.pose_anim, e.pose_frame = mesh.pose_anim_eid, mesh.pose_frame
     ntex = sum(1 for _, tw in hp_recs if tw)
     report.append(
-        f"{name:6s} @ {mesh.pose:9s}: {src_verts:3d}→{nverts:3d} verts (LP {n_lp:3d}), "
+        f"{name:6s} @ {mesh.pose:9s}: {src_verts:3d}->{nverts:3d} verts (LP {n_lp:3d}), "
         f"{len(hp_recs):3d} HP / {len(lp_recs):3d} LP faces ({ntex} tex), "
         f"{ncol:3d} cols, k={k:7.2f}, ext x{ext[0][0]:.0f}..{ext[0][1]:.0f} "
         f"y{ext[1][0]:.0f}..{ext[1][1]:.0f} z{ext[2][0]:.0f}..{ext[2][1]:.0f}, "
@@ -579,15 +579,15 @@ def main():
         else:
             a, f = default_pose(lib, me)
         if a is None:
-            print(f"{nm}: no animation poses it — skipped", file=sys.stderr); continue
+            print(f"{nm}: no animation poses it - skipped", file=sys.stderr); continue
         mesh = decode_pose(lib, me, a, f)
         if not mesh.tris:
-            print(f"{nm}: no triangles — skipped", file=sys.stderr); continue
+            print(f"{nm}: no triangles - skipped", file=sys.stderr); continue
         mesh.pose_anim_eid, mesh.pose_frame = a.eid, f
         nused = mesh.stats["used_verts"]
         if args.skip_over_ceiling and nused > args.budget and \
                 (nused - args.budget) / nused > 0.40:
-            print(f"{nm}: {nused} verts, over-ceiling — skipped", file=sys.stderr); continue
+            print(f"{nm}: {nused} verts, over-ceiling - skipped", file=sys.stderr); continue
         for t in mesh.tris:
             if t["tex"]:
                 atlas.tile(t["tex"])           # register every tile first

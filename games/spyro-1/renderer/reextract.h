@@ -1,15 +1,15 @@
-/* games/spyro-1/renderer/reextract.h — Spyro 1's sub-tick re-feed
+/* games/spyro-1/renderer/reextract.h - Spyro 1's sub-tick re-feed
  * orchestrator.
  *
  * On each intermediate (sub-tick) present the core spine
  * (openpete_native_register_reextract) calls our orchestrator, which:
  *   1. queries the interp ring for prev/curr camera + alpha,
- *   2. brackets g_Camera (save → write the interpolated camera → restore),
+ *   2. brackets g_Camera (save -> write the interpolated camera -> restore),
  *      entirely on the host fiber so the next sim tick reads canonical RAM,
  *   3. rebuilds the native scene by calling each feeder's extract-only
  *      re-extract entry (NO game render call, NO verdict writes).
  *
- * Feeders that read g_Camera directly (terrain, …) interpolate for free via
+ * Feeders that read g_Camera directly (terrain, ...) interpolate for free via
  * the bracket; feeders that bake the camera get converted to re-derive from
  * g_Camera incrementally. Determinism is by the restore discipline + the
  * oracle gate.

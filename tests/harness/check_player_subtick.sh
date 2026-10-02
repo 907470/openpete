@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_player_subtick.sh — sub-tick continuity of the player model.
+# check_player_subtick.sh - sub-tick continuity of the player model.
 #
 # An intermediate present at VBL F shows the player between the previous
 # canonical tick's pose (alpha 0) and the current one's (alpha 1). Two

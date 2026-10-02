@@ -1,4 +1,4 @@
-/* games/common/renderer/reextract_view.c — see renderer/reextract_view.h. */
+/* games/common/renderer/reextract_view.c - see renderer/reextract_view.h. */
 
 #include "renderer/reextract_view.h"
 

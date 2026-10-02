@@ -32,11 +32,11 @@ void main()
     vec4 c = texture(u_hd, clamp(t, 0.0, 1.0));
     if (c.a < 0.004) discard;
     /* Terrain fog: unreplaced draws get it from a greyer palette row, which a
-     * host RGBA replacement has no way to reach — so re-apply it here as the
+     * host RGBA replacement has no way to reach - so re-apply it here as the
      * affine transform derived from that texture's own two CLUT rows. Applied
      * before the vertex modulate, matching the palette-swap ordering. The
      * continuous fogAN/fogLad model is cutout-pipe-only (see hd_tex_cutout):
-     * ladder-eligible faces are opaque terrain and never route here — the
+     * ladder-eligible faces are opaque terrain and never route here - the
      * fields exist so both pipes share one push layout. */
     c.rgb = clamp(c.rgb * pc.fogA.rgb + pc.fogB.rgb, 0.0, 1.0);
     vec3 rgb = clamp(c.rgb * vColor.rgb * (255.0 / 128.0), 0.0, 1.0);

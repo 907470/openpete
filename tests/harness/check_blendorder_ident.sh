@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_blendorder_ident.sh — the blended-world draw order's identity check.
+# check_blendorder_ident.sh - the blended-world draw order's identity check.
 #
 # The blended world classes draw in emission order, because the guest links
 # them into the ordering table interleaved and the blend equations do not
@@ -9,7 +9,7 @@
 # time, in the order its body calls them, which the producers' data
 # dependencies fix. Where the two orders differ the replay composites a picture
 # the canonical present never drew, and the pixels that carry it are exactly the
-# ones where two non-commuting classes overlap — a handful, anywhere on screen.
+# ones where two non-commuting classes overlap - a handful, anywhere on screen.
 #
 # Instrument: the draw order itself, not the pixels. OPENPETE_BWDRAWORDER
 # prints the blended-world block of a present as the ordered pass will draw it,
@@ -26,14 +26,14 @@
 # dumps are matched by leg, not by label.
 #
 # Pass criterion, per row: the two run sequences are identical. VACUOUS (exit 1)
-# when either leg dumps no run at all — a row whose tick draws nothing blended
+# when either leg dumps no run at all - a row whose tick draws nothing blended
 # measures nothing.
 #
 # Input: games/<slug>/corpus/blendorder-ident-corpus.manifest, rows
 #   <source> | <V>
 # <source> is a movie under games/<slug>/bk2, or any name not ending in .bk2,
-# which is the plain boot — the title screen and the attract demo, which need no
-# input — replayed with no movie, the same movie-less row form the presentation
+# which is the plain boot - the title screen and the attract demo, which need no
+# input - replayed with no movie, the same movie-less row form the presentation
 # corpus takes.
 #
 # Verdict line per row:

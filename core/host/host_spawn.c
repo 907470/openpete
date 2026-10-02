@@ -1,4 +1,4 @@
-// core/host/host_spawn.c — see host_spawn.h.
+// core/host/host_spawn.c - see host_spawn.h.
 #include "host_spawn.h"
 
 #include <stdio.h>
@@ -106,7 +106,7 @@ static int spawn_line(wchar_t* line, const char* log_path, char* capture, size_t
         if (wr == INVALID_HANDLE_VALUE) return -1;
     } else if (capture) {
         if (!CreatePipe(&rd, &wr, &sa, 0)) return -1;
-        /* The read end stays with us — keep it out of the child. */
+        /* The read end stays with us - keep it out of the child. */
         SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
     }
 

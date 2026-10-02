@@ -1,4 +1,4 @@
-/* games/common/renderer/interp_lerp.h — the sub-tick interpolation primitives
+/* games/common/renderer/interp_lerp.h - the sub-tick interpolation primitives
  * the re-extract paths share.
  *
  * lerp16/lerp32 round half away from zero, so a value held constant across the

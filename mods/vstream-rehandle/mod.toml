@@ -1,4 +1,4 @@
-# vstream-rehandle — CI fixture: every animated model's vertex streams
+# vstream-rehandle - CI fixture: every animated model's vertex streams
 # routed through stream handles.
 #
 # After each model-install pass, walks g_Models and rewrites the 21-bit

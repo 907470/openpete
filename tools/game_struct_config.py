@@ -1,4 +1,4 @@
-"""game_struct_config.py — per-game inputs to the struct-layout probe.
+"""game_struct_config.py - per-game inputs to the struct-layout probe.
 
 One probe (tools/probe_struct_layout.py) and one generator
 (tools/gen_game_structs.py) serve every game; everything that differs
@@ -131,7 +131,7 @@ GAMES = {
         "bss_globals": True,
         "known_slack": {
             # PsyqPad is the 8 bytes pad.h models; the .bss reserves 0x24,
-            # annotated "7 ints after this?" — the rest of the libpad
+            # annotated "7 ints after this?" - the rest of the libpad
             # buffer, which the decomp has not typed.
             "D_800718DC": 0x1C,
         },

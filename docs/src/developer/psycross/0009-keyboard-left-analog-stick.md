@@ -1,4 +1,4 @@
-# 0009 — Keyboard-driven left analog stick (WASD)
+# 0009 - Keyboard-driven left analog stick (WASD)
 
 Maps **W/A/S/D** to the PSX left analog stick when the keyboard is the
 active controller. Holding any of the four keys flips the pad into
@@ -9,7 +9,7 @@ path) get real movement out of the keyboard.
 ## Why
 
 Out of the box PsyCross only exposes digital buttons over the keyboard
-path — the arrow keys are wired to the d-pad and the keyboard branch
+path - the arrow keys are wired to the d-pad and the keyboard branch
 in `PsyX_Pad_InternalPadUpdates` actively forces `pad->id = 0x41`
 (digital), zeroing the analog axes regardless of what the gamepad
 sub-poll wrote. For Spyro that means keyboard-only play can't aim
@@ -40,7 +40,7 @@ Defaults `kc_axis_left_up/down/left/right` to `W/S/A/D` in
   existing forward decls).
 - Defines `PsyX_Pad_UpdateKeyboardLeftStick`: samples the four WASD
   scancodes and produces 0/128/255 values for LX/LY (full deflection
-  per axis; diagonals are corner deflections — keyboard is binary).
+  per axis; diagonals are corner deflections - keyboard is binary).
   Returns whether any axis key is currently held.
 - Rewrites the keyboard branch in `PsyX_Pad_InternalPadUpdates`:
   - Drops the `kbInputs != 0xffff` gate so the branch runs even when
@@ -48,7 +48,7 @@ Defaults `kc_axis_left_up/down/left/right` to `W/S/A/D` in
   - When WASD is held, switches the pad to analog mode (`id = 0x73`)
     and writes `pad->analog[2..3]`.
   - Suppresses the existing "force back to `0x41`" path while WASD is
-    held — otherwise the digital-button branch would clobber the
+    held - otherwise the digital-button branch would clobber the
     analog mode we just enabled and leave the stick values stranded.
   - Digital button ANDing (`pad->buttons &= kbInputs`) still runs
     whenever any non-axis key is pressed, so face buttons / d-pad /
@@ -63,6 +63,6 @@ Defaults `kc_axis_left_up/down/left/right` to `W/S/A/D` in
 - Order is W=up, S=down, A=left, D=right with U/D and L/R held
   simultaneously cancelling to centre on that axis (last wins is
   avoided by checking both).
-- Analog values are full-on/off (0 / 255) rather than partial — there's
+- Analog values are full-on/off (0 / 255) rather than partial - there's
   no per-frame ramp. If smooth ramping is needed later it should be
   layered on top here, not in game code.

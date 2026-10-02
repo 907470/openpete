@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""inject-sweep.py — locate the canonical-present cliff.
+"""inject-sweep.py - locate the canonical-present cliff.
 
 `OPENPETE_PACE_INJECT_CANON_US` makes the one present that CANNOT be shed
 expensive, which is the fault a fast machine never produces. A first pass at
@@ -138,13 +138,13 @@ def main():
                   f"(gate {a.late_per_1000:g} per 1000)")
         else:
             print(f"\nlate-rate cliff: at or below {hi:g} ms, and the rate is "
-                  f"NOT monotonic in the dose — read the table, not a bracket")
+                  f"NOT monotonic in the dose - read the table, not a bracket")
     elif bad:
         print(f"\nlate-rate cliff: at or below the lowest dose run "
-              f"({min(r['dose_ms'] for r in rows):g} ms) — sweep lower")
+              f"({min(r['dose_ms'] for r in rows):g} ms) - sweep lower")
     else:
         print(f"\nlate-rate cliff: above the highest dose run "
-              f"({max(r['dose_ms'] for r in rows):g} ms) — sweep higher")
+              f"({max(r['dose_ms'] for r in rows):g} ms) - sweep higher")
 
     for key, what, why in (
             ("slips", "sim slip onset",
@@ -159,7 +159,7 @@ def main():
             first = min(r["dose_ms"] for r in hit)
             below = [r["dose_ms"] for r in rows if r["dose_ms"] < first]
             prev = f"{max(below):g} ms" if below else "the lowest dose run"
-            print(f"{what}: between {prev} and {first:g} ms — {why}")
+            print(f"{what}: between {prev} and {first:g} ms - {why}")
         else:
             print(f"{what}: not reached at any dose run")
 
@@ -169,7 +169,7 @@ def main():
     for r in rows:
         if r["canonical"] < 0.9 * ticks:
             print(f"note: {r['dose_ms']:g} ms displayed {r['canonical']} "
-                  f"canonical presents against ~{ticks:.0f} ticks — the phase "
+                  f"canonical presents against ~{ticks:.0f} ticks - the phase "
                   f"numbers on that row are about a run that stopped "
                   f"displaying frames")
     return 0

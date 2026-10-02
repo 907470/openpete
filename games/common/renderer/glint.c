@@ -1,4 +1,4 @@
-// games/common/renderer/glint.c — the gem-glint feeder: a handwritten routine
+// games/common/renderer/glint.c - the gem-glint feeder: a handwritten routine
 // (Spyro 2 func_8004AC78 / mobyfunc.s:2192-2489, Spyro 3 func_8002F098 /
 // mobyfunc.s:2195-2507; the same 297 instructions but for constants and
 // symbols) that draws one screen-facing four-point star per live record of a
@@ -428,8 +428,8 @@ static void glint_pair_depths(CPUState* cpu, const ngte_view* v) {
  * The far cross is fed at its own projected depth, with no ordering-table pull
  * applied: the routine keys it on the same view-Z the depth comes from, so the
  * depth test reproduces the ordering the routine asked for. Where world
- * geometry stands between the camera and the gem, the cross is covered — in
- * the ordering table and under the depth test alike — and where nothing does,
+ * geometry stands between the camera and the gem, the cross is covered - in
+ * the ordering table and under the depth test alike - and where nothing does,
  * it draws.
  * @return The mode, at least 0. */
 static int glint_feed_mode(void) {
@@ -449,8 +449,8 @@ static int glint_feed_mode(void) {
  * every star at the pixels the tick drew: neither the camera's motion nor the
  * record's own reaches them, and neither do the spin and the size. The rebase
  * measures the record's screen displacement as the difference of two
- * projections — the position the present shows under the staged camera,
- * against the position the tick drew under the tick's camera — moves the
+ * projections - the position the present shows under the staged camera,
+ * against the position the tick drew under the tick's camera - moves the
  * primitive by it, rotates the corner offsets about the projected point by the
  * change in spin phase and scales them by the change in extent. At the end of
  * the tick's own interval the displaced position, the shown phase and the

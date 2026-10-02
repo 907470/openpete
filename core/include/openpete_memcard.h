@@ -1,13 +1,13 @@
-/* openpete_memcard.h — host-backed PlayStation memory card.
+/* openpete_memcard.h - host-backed PlayStation memory card.
  *
  * Spyro reaches the memory card only through the PSYQ libmcrd MemCard*
  * wrappers, which openpete intercepts as psyq_MemCard* thunks
  * (games/common/psyq/psyq_thunks.cpp). Those thunks marshal the MIPS ABI and
  * call into this module, which owns two real 128 KiB PSX memory-card
  * images (.mcr) persisted to disk in a `cards` directory beside the
- * `states` one the save-states use — in the game folder for a portable
+ * `states` one the save-states use - in the game folder for a portable
  * install, under the per-user state dir otherwise (openpete_paths.h). The
- * images are standard raw cards — portable to DuckStation / PCSX / real
+ * images are standard raw cards - portable to DuckStation / PCSX / real
  * hardware.
  */
 #ifndef OPENPETE_MEMCARD_H

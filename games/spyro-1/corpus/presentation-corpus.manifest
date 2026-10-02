@@ -22,7 +22,7 @@
 #             without input; the row's length is then its last pin.
 #   interval  optional base VBL spacing (default 100).
 #   freeze    optional 4th field: any non-empty value (e.g. "freeze") enables
-#             --screenshot-freeze-backdrop for this row — needed for bk2s that
+#             --screenshot-freeze-backdrop for this row - needed for bk2s that
 #             reach a pause / flight-results / level-exit state so the green
 #             frozen-world backdrop is captured instead of a dark clear. Renders
 #             an extra frame per present, so set it ONLY on freeze-reaching bk2s.
@@ -32,14 +32,14 @@
 #             routinely misses the frame a defect was actually observed at; a pin names
 #             that frame. A pin is captured on BOTH legs at the SAME frame (canon@F and
 #             inter@F), unlike a grid sample whose intermediate sits at F+interval/2.
-#             Pins are additive — the grid's own samples keep the numbers they have, so
+#             Pins are additive - the grid's own samples keep the numbers they have, so
 #             adding one leaves every existing golden tile untouched.
 #   launch    optional 6th field: whitespace-separated tokens applied to every
 #             leg (canon, inter, ident) of this row and to no other row. A token
 #             spelled KEY=VALUE with an upper-case key is an environment entry;
 #             every other token is a command-line argument appended to the run.
-#             It holds a mode the plain row cannot reach — a renderer option, or
-#             an env knob a capture needs — so the row measures that mode's own
+#             It holds a mode the plain row cannot reach - a renderer option, or
+#             an env knob a capture needs - so the row measures that mode's own
 #             pixels. Rows without the field launch byte-identically to before.
 #             PRESENTATION_LEG_TIMEOUT=N is the harness's token: it raises the
 #             row's per-leg bound to N seconds for a row that outruns the

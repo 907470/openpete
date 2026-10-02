@@ -1,4 +1,4 @@
-# double-gems — every gem pickup counts double.
+# double-gems - every gem pickup counts double.
 #
 # The event-detection idiom: a post-hook on CollectItem diffs the gem total
 # around base() and writes the doubled total back through api->guest. This
@@ -12,4 +12,4 @@ version = "0.1.0"
 game    = "spyro-1"
 api     = 1
 state    = "none"      # counters only; nothing world-derived
-runahead = "host-fx"   # logs on pickup — suppressible
+runahead = "host-fx"   # logs on pickup - suppressible

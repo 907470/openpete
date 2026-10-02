@@ -1,4 +1,4 @@
-// core/renderer/widescreen.c — the canonical-SX q16 FIFO.
+// core/renderer/widescreen.c - the canonical-SX q16 FIFO.
 //
 // Verdict machinery for the particle / sparkle render->gameplay channels:
 // gte.cpp's RTPS stashes every projection here and

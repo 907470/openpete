@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_tercache_gpu_holes.sh — retained-terrain GPU cache hole census on a
+# check_tercache_gpu_holes.sh - retained-terrain GPU cache hole census on a
 # real GPU, windowed.
 #
 # The retained cache draws a static sector's faces from a persistent vertex
@@ -27,7 +27,7 @@
 #
 # Metric: pixels the two legs render differently where the cached leg shows
 # the framebuffer clear and the reference leg does not. The clear
-# colour is not hard-coded — it is read from the engine's own draw-env census
+# colour is not hard-coded - it is read from the engine's own draw-env census
 # line (OPENPETE_LOAD_CENSUS=1, `[census f=<VBL> CLEAR] rgb=<rgba>`), which
 # reports the value openpete_native_set_clear_color latched from the PSX
 # DRAWENV struct the game presents the scene under. Hole pixels are grouped

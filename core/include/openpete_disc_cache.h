@@ -1,4 +1,4 @@
-/* core/include/openpete_disc_cache.h — the disc image resident in host memory.
+/* core/include/openpete_disc_cache.h - the disc image resident in host memory.
  *
  * PsyCross reads the disc through a VFILE; on the file path every guest
  * CdRead drain, every XA pump and CdInit's re-open is an fread on the sim

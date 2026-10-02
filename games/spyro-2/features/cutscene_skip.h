@@ -1,4 +1,4 @@
-// games/spyro-2/features/cutscene_skip.h — `--skip-to-cutscene` for Spyro 2
+// games/spyro-2/features/cutscene_skip.h - `--skip-to-cutscene` for Spyro 2
 // (cutscene_skip.c).
 #ifndef SPYRO2_CUTSCENE_SKIP_H
 #define SPYRO2_CUTSCENE_SKIP_H

@@ -1,4 +1,4 @@
-# openpete ↔ PCSX-Redux single-shot RAM diff
+# openpete <-> PCSX-Redux single-shot RAM diff
 
 Run PCSX-Redux to a chosen PC and capture its 2 MB main RAM plus CPU
 state; run openpete from the same seed to the same PC; byte-diff the two
@@ -233,9 +233,9 @@ a `PsxStackPush` array. `ra` is mandatory and takes the dedicated
 
 ## Files
 
-- `scripts/pcsx-redux-ram-dump.lua` — capture script
-- `core/runtime/run.c` — `load_cpu_seed`, seed-ram block
-- `core/psx/dispatch.c` — halt-at-pc hook in `psx_override_dispatch`
-- `core/config/options.c` — flag parsing
-- `core/include/openpete.h` — option fields
-- `games/common/psyq/psyq_thunks.cpp` — thunk bodies, `psyq_mirror_stack_frame`
+- `scripts/pcsx-redux-ram-dump.lua` - capture script
+- `core/runtime/run.c` - `load_cpu_seed`, seed-ram block
+- `core/psx/dispatch.c` - halt-at-pc hook in `psx_override_dispatch`
+- `core/config/options.c` - flag parsing
+- `core/include/openpete.h` - option fields
+- `games/common/psyq/psyq_thunks.cpp` - thunk bodies, `psyq_mirror_stack_frame`

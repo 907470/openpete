@@ -11,14 +11,14 @@ is shared by the Spyro 2 and Spyro 3 ports.
 The documentation source is under `docs/src/`, one directory per section.
 Preview it with `mkdocs serve -f docs/mkdocs.yml`.
 
-- [User](docs/src/user/index.md) — installing, playing, settings, the
+- [User](docs/src/user/index.md) - installing, playing, settings, the
   config file, key bindings, texture, music and sound packs.
-- [Modding](https://openpete.com/docs/modding/) — writing mods against the
+- [Modding](https://openpete.com/docs/modding/) - writing mods against the
   SDK; source under `docs/modding/`.
-- [Developer](docs/src/developer/README.md) — architecture,
+- [Developer](docs/src/developer/README.md) - architecture,
   [building](docs/src/developer/building.md), unattended runs, the oracle,
   and the recompiler and renderer notes.
-- [Spyro](docs/src/spyro/index.md) — the game's level format and code
+- [Spyro](docs/src/spyro/index.md) - the game's level format and code
   overlays.
 
 ## Building

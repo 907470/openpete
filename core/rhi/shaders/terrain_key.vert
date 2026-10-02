@@ -8,11 +8,11 @@
  * the depth image the scene fragments contest against
  * (psx_scene_key.frag / quad_key.frag / hd_tex_cutout.frag).
  *
- * The image is PRIVATE, so the encoding is free — and it must be the
+ * The image is PRIVATE, so the encoding is free - and it must be the
  * canonical hyperbolic map z = kv/(kv+4096), NOT the affine 1 - 1/kv:
  * near z==1 the D32 image quantises at ~2^-24 absolute, so an affine-coded
  * key decodes with error ~kv^2 * 2^-25 world units, which crosses the
- * contest's 64-world tie margin at kv ~= 46k — beyond that distance faces
+ * contest's 64-world tie margin at kv ~= 46k - beyond that distance faces
  * failed their OWN key test and whole faces vanished. The canonical map's
  * decode error is (kv+4096)^2/4096 * 2^-25 (~4096x finer at range), <64
  * out past kv ~= 3e6. Keys are FLAT per face (all three verts carry the
@@ -39,7 +39,7 @@ layout(location = 3) out float vQ;
 layout(location = 4) flat out float vDrain;   /* the drain record tag */
 layout(location = 5) flat out float vKv;      /* the flat key view-Z */
 
-/* PSX-affine UV (--texture-mapping affine, spec-constant 1) — must track the
+/* PSX-affine UV (--texture-mapping affine, spec-constant 1) - must track the
  * SCENE stages' selection: the cutout fragment's texel lookups have to land on
  * the same texels the scene draw samples, or a key raster stamps where the
  * face's own paint discards (a one-texel hole to the backdrop). The position W

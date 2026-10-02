@@ -1,4 +1,4 @@
-/* core/record/bk2_movie.c — see bk2_movie.h.
+/* core/record/bk2_movie.c - see bk2_movie.h.
  *
  * Format reference (Octoshock 2.9.1):
  *
@@ -11,7 +11,7 @@
  *
  * The LogKey line declares two segments. Segment 0 (system bus) holds the
  * disc-select int + 3 buttons; we ignore it. Segment 1 (P1) holds 4 analog
- * ints (LX, LY, RX, RY — default 128) then 17 digital chars in this order:
+ * ints (LX, LY, RX, RY - default 128) then 17 digital chars in this order:
  *   Up, Down, Left, Right, Select, Start,
  *   Square, Triangle, Circle, Cross,
  *   L1, R1, L2, R2, L3, R3, MODE
@@ -35,7 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* P1-segment digital position → PSX pad bitmask (released-when-set). */
+/* P1-segment digital position -> PSX pad bitmask (released-when-set). */
 static const uint16_t kBk2P1DigitalMask[16] = {
     0x0010, /* 0  Up      */
     0x0040, /* 1  Down    */
@@ -53,7 +53,7 @@ static const uint16_t kBk2P1DigitalMask[16] = {
     0x0200, /* 13 R2      */
     0x0002, /* 14 L3      */
     0x0004, /* 15 R3      */
-    /* index 16 is MODE — not a PSX bit; handled by stopping the loop at 16. */
+    /* index 16 is MODE - not a PSX bit; handled by stopping the loop at 16. */
 };
 
 /** @brief Decode one player segment of an input line into a bk2_frame_t.
@@ -90,7 +90,7 @@ static int bk2_decode_port(const char* seg, size_t seg_len, bk2_frame_t* out) {
         out->axes[a] = (uint8_t)val;
     }
 
-    /* Digital tail — 16 buttons, then MODE at index 16. */
+    /* Digital tail - 16 buttons, then MODE at index 16. */
     size_t tail_len = (size_t)(end - p);
     if (tail_len < 16) return -1;
 
@@ -101,7 +101,7 @@ static int bk2_decode_port(const char* seg, size_t seg_len, bk2_frame_t* out) {
         }
     }
     out->buttons = bits;
-    /* MODE column (index 16) is ignored — the pad is always replayed analog. */
+    /* MODE column (index 16) is ignored - the pad is always replayed analog. */
     return 0;
 }
 
@@ -130,7 +130,7 @@ static int bk2_decode_frame(const char* line, size_t line_len,
     }
     if (out_ports) *out_ports = 0;
 
-    /* Walk the pipe-delimited segments — bounded scan, no NUL assumption. */
+    /* Walk the pipe-delimited segments - bounded scan, no NUL assumption. */
     if (line_len < 3 || line[0] != '|') return -1;
     size_t pos = 1;
     const char* seg[3];

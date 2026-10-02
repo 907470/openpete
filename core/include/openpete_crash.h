@@ -1,4 +1,4 @@
-/* openpete_crash.h — per-thread setup for the crash handler
+/* openpete_crash.h - per-thread setup for the crash handler
  * (core/diag/crash.c; the installer is declared in openpete_psx.h). */
 #ifndef OPENPETE_CRASH_H
 #define OPENPETE_CRASH_H

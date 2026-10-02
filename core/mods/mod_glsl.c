@@ -1,4 +1,4 @@
-/* mod_glsl.c — the mod GLSL front end (see mod_glsl.h).
+/* mod_glsl.c - the mod GLSL front end (see mod_glsl.h).
  *
  * Mods ship GLSL source; the engine compiles it to SPIR-V with in-process
  * glslang, the same compiler and dialect (vulkan1.0) that builds the
@@ -164,7 +164,7 @@ size_t openpete_mod_glsl_compile(const char* src, int stage,
     input.language = GLSLANG_SOURCE_GLSL;
     input.stage = (glslang_stage_t)stage;
     input.client = GLSLANG_CLIENT_VULKAN;
-    /* vulkan1.0 — matches the engine's own `glslangValidator -V` builds */
+    /* vulkan1.0 - matches the engine's own `glslangValidator -V` builds */
     input.client_version = GLSLANG_TARGET_VULKAN_1_0;
     input.target_language = GLSLANG_TARGET_SPV;
     input.target_language_version = GLSLANG_TARGET_SPV_1_0;

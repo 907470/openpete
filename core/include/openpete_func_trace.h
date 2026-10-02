@@ -1,4 +1,4 @@
-/* openpete_func_trace.h — opt-in per-function CPU tracing of the recompiled
+/* openpete_func_trace.h - opt-in per-function CPU tracing of the recompiled
  * game code (function-level drill-down; see openpete_profile.h for the
  * profiler's named scopes).
  *
@@ -16,7 +16,7 @@
  * option is OFF the generated TU carries no instrumentation, the hooks are
  * never called, and everything here is inert (the symtab weak-refs to empty).
  *
- * Timing perturbs no gameplay state — the hooks only read the clock — so an
+ * Timing perturbs no gameplay state - the hooks only read the clock - so an
  * OPENPETE_FUNC_TRACE build must still pass the oracle gate.
  */
 #ifndef OPENPETE_FUNC_TRACE_H

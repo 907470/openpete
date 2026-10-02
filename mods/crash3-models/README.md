@@ -26,7 +26,7 @@ ceiling, 255), `--lp-faces`, `--double-sided`.
 Format facts the converter rests on live in its docstrings; the Crash side
 is a port of the cbhacks/CrashEdit loaders (TGEO poly-item strip state
 machine, SVTX bit-packed frames, texture records, GOOL vertex groups for
-the animation→model link).
+the animation->model link).
 
 ## Config (`config.toml`)
 

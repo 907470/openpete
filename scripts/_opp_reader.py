@@ -59,7 +59,7 @@ class Present:
 
 class Trace:
     """names: {id: str}. presents: [Present]. funcs: [dict].
-    gpu_frames: {frame_serial: [(depth, name, t0_rel_us, dur_us, tid)]} — one
+    gpu_frames: {frame_serial: [(depth, name, t0_rel_us, dur_us, tid)]} - one
     entry per frame that actually rendered. threads: sorted tid list."""
     __slots__ = ("names", "presents", "funcs", "gpu_frames", "threads",
                  "present_tids", "version")
@@ -95,7 +95,7 @@ def present_busy_us(present):
 
 def partition_transients(presents, threshold_us):
     """Split presents into (steady, transients) where a transient is any present
-    whose CPU busy-time exceeds threshold_us — i.e. a level-load / CD-stall spike
+    whose CPU busy-time exceeds threshold_us - i.e. a level-load / CD-stall spike
     (~1.4s) rather than a steady-state frame (~1-9ms). threshold_us<=0 disables."""
     if threshold_us <= 0:
         return presents, []

@@ -1,4 +1,4 @@
-/* core/include/bk2_movie.h — BizHawk (.bk2) movie reader.
+/* core/include/bk2_movie.h - BizHawk (.bk2) movie reader.
  *
  * Octoshock PSX core, ports 1 and 2. For each port the digital buttons and
  * the 4 analog axes (LStick X/Y, RStick X/Y) are decoded; a second port's
@@ -8,7 +8,7 @@
  * same "released = 1, pressed = 0" convention PsyCross's
  * PsyX_Pad_UpdateKeyboardInput returns (so the host loop can drop it
  * straight into the keyboard-override slot) plus the 4 analog axis bytes
- * (128 = centre). The pad is always replayed in analog mode (id 0x73) —
+ * (128 = centre). The pad is always replayed in analog mode (id 0x73) -
  * Spyro behaves identically in digital vs analog mode except that analog
  * actually drives the stick, so legacy digital-only movies (axes = 128)
  * replay unchanged.
@@ -32,7 +32,7 @@ typedef struct {
     bk2_frame_t* frames;
     /* Player 2, one entry per frame, neutral where the movie declares only
      * one port. `players` says whether any frame actually carried a second
-     * segment — a movie can only declare its port count for its whole
+     * segment - a movie can only declare its port count for its whole
      * length, since the format has no per-frame connect column. */
     bk2_frame_t* p2_frames;
     int          players;        /* 2 when any frame decoded a second port, else 0 */

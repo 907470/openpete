@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# scripts/setup_linux_clang.sh — fetch and trim the Linux clang that the
+# scripts/setup_linux_clang.sh - fetch and trim the Linux clang that the
 # AppImage bundles for the first-boot module compile.
 #
 # Produces .tools/clang/ (gitignored), which package-dist.sh stages as
-# recomp/tools/clang — where find_cc (games/spyro-1/dist/recomp_build.cpp) looks before the
+# recomp/tools/clang - where find_cc (games/spyro-1/dist/recomp_build.cpp) looks before the
 # system compiler.
 #
 # Version choice: 18.1.8 is the NEWEST llvm.org release whose Linux
@@ -30,14 +30,14 @@
 #   LICENSE.TXT               Apache-2.0 with LLVM exception (NOTICE.md)
 #
 # libtinfo: the upstream binaries carry a DT_NEEDED on libtinfo.so.5,
-# which no current distribution ships — but they import NOT ONE SYMBOL
+# which no current distribution ships - but they import NOT ONE SYMBOL
 # from it (verified below), so it is a stale link-time dependency. An
 # empty stub with the expected version node satisfies the loader; both
 # binaries already have RUNPATH=$ORIGIN/../lib, so dropping it in lib/
 # resolves without any LD_LIBRARY_PATH that could leak into the game
 # process and shadow a host library.
 #
-# Idempotent — re-running with the tree already present verifies and exits.
+# Idempotent - re-running with the tree already present verifies and exits.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -48,7 +48,7 @@ URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${VERSION}/$
 MAJOR="${VERSION%%.*}"
 DEST=".tools/clang"
 # The binary tarball carries only a pointer to the license, not its text,
-# and Apache-2.0 requires the text to accompany a binary distribution —
+# and Apache-2.0 requires the text to accompany a binary distribution -
 # so fetch the canonical file from the same tag.
 LIC_URL="https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-${VERSION}/llvm/LICENSE.TXT"
 LIC_SHA256="8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee"
@@ -87,7 +87,7 @@ undef=$(nm -D --undefined-only "$DEST/bin/clang-$MAJOR" "$DEST/bin/lld" \
         | awk '{print $2}' | grep -E '^(setupterm|tigetnum|tigetstr|tigetflag|tputs|tparm|del_curterm|set_curterm|cur_term)$' || true)
 [[ -z "$undef" ]] || {
     echo "[setup-clang] the bundled binaries DO use libtinfo ($undef);" \
-         "an empty stub is not safe — bundle a real ncurses instead" >&2
+         "an empty stub is not safe - bundle a real ncurses instead" >&2
     exit 1; }
 stub=$(mktemp -d); trap 'rm -rf "$stub"' EXIT
 echo 'static int openpete_libtinfo_stub;' > "$stub/stub.c"

@@ -1,5 +1,5 @@
 #pragma once
-/* skip_to_area.h — --skip-to-area <level>:<area> for Spyro 3: the level by
+/* skip_to_area.h - --skip-to-area <level>:<area> for Spyro 3: the level by
  * --skip-to-level, then the sub-area by the game's EnterSubArea
  * func_80052918, called through the transition queue with the level's
  * area-0 portal pair. See skip_to_area.c. */

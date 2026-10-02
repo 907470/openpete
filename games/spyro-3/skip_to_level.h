@@ -1,4 +1,4 @@
-// games/spyro-3/skip_to_level.h — --skip-to-level for Spyro 3 (skip_to_level.c).
+// games/spyro-3/skip_to_level.h - --skip-to-level for Spyro 3 (skip_to_level.c).
 #ifndef SPYRO3_SKIP_TO_LEVEL_H
 #define SPYRO3_SKIP_TO_LEVEL_H
 

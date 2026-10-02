@@ -2,7 +2,7 @@
 #define OPENPETE_CONFIG_SCHEMA_H
 
 /*
- * The config schema — every knob that openpete.toml can name with a
+ * The config schema - every knob that openpete.toml can name with a
  * friendly bare key, and the CLI / env spellings that mean the same knob.
  *
  * This table exists for ONE job: telling the resolver that two spellings
@@ -10,7 +10,7 @@
  * knob only needs a row when it could be spelled two ways (a flag and an
  * env var) or when we want a bare key for it. The ~150 debug-only
  * OPENPETE_* vars have neither a flag twin nor a bare key, so they need
- * no rows and flow through [env] untouched — matching the standing rule
+ * no rows and flow through [env] untouched - matching the standing rule
  * that temporary debug vars stay out of the knob registry.
  *
  * Kept a separate translation unit from knob_registry.c deliberately:
@@ -42,7 +42,7 @@ typedef struct {
     cfg_type_t  type;
 
     /* CFG_ENUM: NULL-terminated list of accepted spellings, which are the
-     * CLI's own vocabulary — `lod = "extended"`, never `lod = 1`. */
+     * CLI's own vocabulary - `lod = "extended"`, never `lod = 1`. */
     const char *const *vocab;
 
     /* A flag that means this knob at a fixed value ("--no-lod" ==

@@ -2,7 +2,7 @@
 """Tiny C-prototype parser over spyro-1/include/.
 
 Just enough to map function names to argument-type lists for the
-dispatch + thunks generators. Not a full C parser — it ignores
+dispatch + thunks generators. Not a full C parser - it ignores
 function pointers, typedef'd callbacks, and multi-line declarations.
 Anything it can't parse comes back as `None`, and the generator falls
 back to the hand-written `args` field in native.toml.
@@ -26,7 +26,7 @@ _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _PREPROC_RE = re.compile(r"^\s*#.*$", re.MULTILINE)
 
 # Per-statement matcher. Caller splits the file on `;` so each candidate
-# is at most one declaration. Anchored, no nested ambiguity → linear time.
+# is at most one declaration. Anchored, no nested ambiguity -> linear time.
 #   "  extern  CdlLOC * foo (int x, void *y) "
 #                ^^^^^^^^^   ^^^   ^^^^^^^^^^^^^^^^
 #                ret_tokens  name  params
@@ -35,7 +35,7 @@ _PROTO_RE = re.compile(
     ^\s*
     (?P<ret>[\w\s*]+?)              # one-or-more type/storage tokens (lazy)
     \b(?P<name>[A-Za-z_]\w*)\s*     # function name
-    \(\s*(?P<params>[^()]*?)\s*\)   # ( params ) — no nested parens (no fn-ptrs)
+    \(\s*(?P<params>[^()]*?)\s*\)   # ( params ) - no nested parens (no fn-ptrs)
     \s*$
     """,
     re.VERBOSE | re.DOTALL,
@@ -54,7 +54,7 @@ class Signature:
         """Convert params to dispatch/thunks marshalling tokens.
 
         First 4 params land in a0..a3; everything beyond that goes on the
-        stack at sp+16, sp+20, sp+24, … (PSYQ MIPS ABI: 4-byte slots
+        stack at sp+16, sp+20, sp+24, ... (PSYQ MIPS ABI: 4-byte slots
         regardless of declared width)."""
         out: list[str] = []
         for idx, (ty, _name) in enumerate(self.params):
@@ -63,7 +63,7 @@ class Signature:
                 out.append(tok)
             else:
                 offset = stack_offset_base + (idx - 4) * 4
-                # u8/u16 widen to 32-bit on the stack — same as register.
+                # u8/u16 widen to 32-bit on the stack - same as register.
                 # We only emit `stack_u32` since that's all the dispatch
                 # generator handles today.
                 out.append(f"stack_u32:{offset}")
@@ -76,14 +76,14 @@ _U16_TYPES = {"short", "u_short", "ushort", "uint16_t", "int16_t"}
 
 
 def type_to_marshal_token(c_type: str) -> str:
-    """Heuristic C type → 'u32' | 'u8' | 'ptr'.
+    """Heuristic C type -> 'u32' | 'u8' | 'ptr'.
 
     Rules:
-      - Any '*' or '[' in the declarator → ptr
-      - Bare 'char'/'u_char'/'uint8_t'/etc → u8
-      - Bare 'short'/'uint16_t'/etc → u16-ish, returned as u32 today
+      - Any '*' or '[' in the declarator -> ptr
+      - Bare 'char'/'u_char'/'uint8_t'/etc -> u8
+      - Bare 'short'/'uint16_t'/etc -> u16-ish, returned as u32 today
         (the dispatch generator only knows u32/u8/ptr)
-      - Anything else → u32
+      - Anything else -> u32
     """
     t = c_type.strip()
     if "*" in t or "[" in t:
@@ -93,7 +93,7 @@ def type_to_marshal_token(c_type: str) -> str:
         tok for tok in t.replace("const", "").replace("volatile", "").split()
         if tok
     ]
-    # Take the rightmost type token — handles `unsigned char`.
+    # Take the rightmost type token - handles `unsigned char`.
     if not tokens:
         return "u32"
     last = tokens[-1]
@@ -127,7 +127,7 @@ _TYPE_KEYWORDS = frozenset({
 
 
 def _parse_params(raw: str) -> list[tuple[str, str]]:
-    """`int sector, void *buf, int size` → [('int','sector'),('void *','buf'),...].
+    """`int sector, void *buf, int size` -> [('int','sector'),('void *','buf'),...].
 
     Returns [] for `void` or empty params. Each element is the raw type
     token string plus the param name (may be empty for unnamed params)."""
@@ -164,14 +164,14 @@ def _parse_params(raw: str) -> list[tuple[str, str]]:
 def parse_file(path: Path) -> list[Signature]:
     text = _strip_comments_and_preproc(path.read_text(errors="replace"))
     sigs: list[Signature] = []
-    # Split on `;` so each candidate is one statement — keeps the regex
+    # Split on `;` so each candidate is one statement - keeps the regex
     # bounded and linear, dodges catastrophic backtracking.
     for stmt in text.split(";"):
         stmt = stmt.strip()
         if not stmt or "(" not in stmt:
             continue
         # Reject statements with nested parens (function pointers,
-        # complex declarators) — out of scope for the heuristic parser.
+        # complex declarators) - out of scope for the heuristic parser.
         if stmt.count("(") != 1 or stmt.count(")") != 1:
             continue
         # Reject obvious non-declarations: assignments, control flow.
@@ -184,8 +184,8 @@ def parse_file(path: Path) -> list[Signature]:
         if name in {"if", "while", "for", "switch", "return", "sizeof"}:
             continue
         ret = m.group("ret").strip()
-        # Strip storage-class specifiers from the return type — `extern`,
-        # `static`, etc. — they're not part of the function's host C++
+        # Strip storage-class specifiers from the return type - `extern`,
+        # `static`, etc. - they're not part of the function's host C++
         # signature when we render `T name(args)` later.
         ret = re.sub(r"\b(extern|static|inline)\b\s*", "", ret).strip()
         if not ret:
@@ -202,7 +202,7 @@ def parse_file(path: Path) -> list[Signature]:
 def load_signatures(include_dir: Path) -> dict[str, Signature]:
     """Walk include_dir/**/*.h and collect every prototype we can parse.
 
-    Later definitions override earlier ones — Spyro's headers are
+    Later definitions override earlier ones - Spyro's headers are
     consistent, so duplicates here would be an actual ODR-style mismatch
     we'd want to surface, but for now last-wins is fine."""
     out: dict[str, Signature] = {}

@@ -4,8 +4,8 @@ The ImGui escape hatch (`openpete_imgui.h`) driving a real panel. The
 eleven-widget vtable in `openpete_mod_ui.h` is the simple path; this mod is
 what the other path looks like.
 
-A tick hook — an override on `GamestateUpdate`, which runs every tick from
-the title screen on — walks the level moby array, counts the live mobys
+A tick hook - an override on `GamestateUpdate`, which runs every tick from
+the title screen on - walks the level moby array, counts the live mobys
 into a host-side ring and copies the ten nearest to Spyro. The UI section
 then draws that copy with the full C API: `ImGui_PlotLines` over the ring,
 an `ImGui_BeginTable` of the ten nearest, an `ImGui_ColorEdit3`, and a

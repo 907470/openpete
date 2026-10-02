@@ -1,13 +1,13 @@
-/* core/include/openpete_interp_objs.h — per-object prev-state snapshot table.
+/* core/include/openpete_interp_objs.h - per-object prev-state snapshot table.
  *
  * The singleton
  * interp ring (openpete_interp.h) snapshots fixed DIRECT regions (g_Camera,
  * g_Spyro). This table is its INDIRECT counterpart: a per-object,
  * double-buffered snapshot keyed by a stable object identity (for Spyro 1,
- * the Moby's vaddr in the g_LevelMobys array — slot-stable across ticks).
+ * the Moby's vaddr in the g_LevelMobys array - slot-stable across ticks).
  *
  * Contract per tick (called from run.c after a successful sim tick, same
- * point as openpete_interp_capture — read-only against PSX RAM):
+ * point as openpete_interp_capture - read-only against PSX RAM):
  *
  *   begin_tick()                  // mark every tracked object unseen
  *   for each live object:
@@ -19,11 +19,11 @@
  *
  *   const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
  *   if (o && o->have_prev)  display lerp(o->prev, o->curr, alpha);
- *   else                    snap  (use curr / live RAM)   // spawn → no prev
+ *   else                    snap  (use curr / live RAM)   // spawn -> no prev
  *
  * `have_prev` is the per-object pairing verdict: it is 0 on the first tick
  * an object appears (spawn), and reset to 0 if the object despawns and its
- * slot is later reused — so a feeder never lerps across a spawn/despawn gap.
+ * slot is later reused - so a feeder never lerps across a spawn/despawn gap.
  *
  * Determinism: this TU never writes PSX RAM. The blob bytes are copied out
  * of host-mapped PSX RAM; nothing is written back. Capture is gated by the
@@ -39,7 +39,7 @@
 #define OPENPETE_INTERP_OBJS_H
 
 #include <stdint.h>
-#include "openpete_time.h"   /* op_time_t — per-object distinct-roll timestamps */
+#include "openpete_time.h"   /* op_time_t - per-object distinct-roll timestamps */
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,7 +49,7 @@ extern "C" {
  * capacity (open addressing, power of two) and the per-object blob size. The
  * blob must hold one whole object record, so a consumer reads fields at their
  * natural offsets (the moby position, animation state and rotation) with no
- * remapping — which makes it a per-game size, since it is that game's record
+ * remapping - which makes it a per-game size, since it is that game's record
  * stride. The capacity covers a few hundred live objects at load factor < 0.5.
  * A game that registers no sizes gets these. */
 #define OPENPETE_INTERP_OBJ_SLOTS       4096u
@@ -60,9 +60,9 @@ typedef struct {
     uint8_t  have_prev;  /* 1 iff prev[] holds the previous distinct state's blob */
     uint8_t  seen;       /* 1 iff captured this tick (despawn eviction) */
     uint8_t  have_prev2; /* 1 iff prev2[] holds the DISTINCT tick before prev
-                          * (two back from curr) — enables cubic/pred1 interp
+                          * (two back from curr) - enables cubic/pred1 interp
                           * with a centered start-tangent, else fall back to
-                          * the linear prev→curr lerp. */
+                          * the linear prev->curr lerp. */
     uint16_t blob_len;   /* valid bytes in prev/curr/prev2 (<= the registered size) */
     /* The three blobs, each the registered blob size, carved out of the
      * table's own allocation: the entry never owns storage, so its slot owns
@@ -71,7 +71,7 @@ typedef struct {
     uint8_t* curr;
     uint8_t* prev2;
     /* Tick stamp (openpete_interp_tick_stamp) when curr/prev were last ROLLED
-     * — i.e. when each DISTINCT state was captured (unchanged ticks dedupe
+     * - i.e. when each DISTINCT state was captured (unchanged ticks dedupe
      * and do NOT update these). A consumer interpolates with alpha = (now - curr_ns)/period,
      * clamped, where `period` is (curr_ns - prev_ns) CAPPED AT ONE NOMINAL TICK:
      * a steady object interpolates over its one-tick interval, and one
@@ -93,7 +93,7 @@ typedef struct {
 /* Per-tick capture callback supplied by the game. Invoked once per sim tick
  * (after the DIRECT-region capture) iff capture is enabled. The callback
  * must bracket its per-object capture() calls with begin_tick()/end_tick()
- * itself — core does not auto-bracket, so a game with several object pools
+ * itself - core does not auto-bracket, so a game with several object pools
  * can capture them all inside one begin/end pair. NULL disables it. */
 typedef void (*openpete_interp_obj_capture_fn)(void);
 /** @brief Register the game's per-tick object capture callback and size the table.
@@ -181,7 +181,7 @@ const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key);
  * store pins prev to the last distinct state. An object whose state advances
  * slower than the tick therefore carries a denominator of two or three tick
  * periods, and one nominal period past the ring's curr stamp leaves it at
- * t = 1/2 or 2/3 — mid-blend, not at the pose the canonical dump draws. This
+ * t = 1/2 or 2/3 - mid-blend, not at the pose the canonical dump draws. This
  * returns the largest o->curr_ns + (o->curr_ns - o->prev_ns) over the tracked
  * objects, floored at one nominal period past the ring's curr stamp, so the
  * slowest live gap saturates and every faster consumer clamps at 1.
@@ -200,14 +200,14 @@ op_time_t openpete_interp_identity_present_ns(void);
 void openpete_interp_objs_stats(int* tracked, int* paired,
                                 int* spawned, int* despawned);
 
-/* One sim tick in WALL time — the interp denominator cap shared by every
+/* One sim tick in WALL time - the interp denominator cap shared by every
  * sub-tick consumer (the DIRECT ring's interp_period_ns and the per-object
  * phase lerps). Defaults to one NTSC tick (37609/1125000 s = 29.9130527 Hz,
- * rounded to whole ns — this is an alpha denominator, not a deadline the
+ * rounded to whole ns - this is an alpha denominator, not a deadline the
  * pacer steps, so the fractional 2/9 ns is far below any alpha's
  * resolution); run.c rescales it
  * by 1/tick_scale at startup so --tick-scale slow-motion stretches every
- * alpha denominator with the real tick cadence — a hardcoded NTSC cap makes
+ * alpha denominator with the real tick cadence - a hardcoded NTSC cap makes
  * phase sweeps run 1/tick_scale× too fast and pin at the clamp for the rest
  * of each tick (at 0.5, every animation channel sweeps in half a tick and
  * freezes the other half). */

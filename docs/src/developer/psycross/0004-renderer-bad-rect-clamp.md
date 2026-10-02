@@ -1,4 +1,4 @@
-# 0004 — Renderer bad-rect clamp (don't abort on degenerate VRAM upload)
+# 0004 - Renderer bad-rect clamp (don't abort on degenerate VRAM upload)
 
 `PsyX_render.cpp::GR_CopyRGBAFramebufferToVRAM` originally asserted
 `x >= 0`, `y >= 0`, `x + w <= VRAM_WIDTH`, `y + h <= VRAM_WIDTH`. The
@@ -18,7 +18,7 @@ In Spyro 1 we observed two failure modes that aborted with this assertion:
    into `activeDispEnv`). The root cause turned out to be missing forced
    entry points in psxrecomp's main-EXE pass (`0x80024054` is a computed-
    jump target inside `r_pete`, `0x80032AB0` is a small util only reached
-   from the titlescreen overlay) — those were added as `--forced-entry=`
+   from the titlescreen overlay) - those were added as `--forced-entry=`
    flags in the regen step. But even with the underlying recomp gap fixed,
    we keep this clamp as a generic safety net: **a degenerate rect should
    skip-and-warn, not abort**, so any future codegen / state-machine
@@ -30,7 +30,7 @@ which is what we want for the no-update path.
 
 ## Files changed
 
-- `src/render/PsyX_render.cpp` — replace the four `assert(...)` calls in
+- `src/render/PsyX_render.cpp` - replace the four `assert(...)` calls in
   `GR_CopyRGBAFramebufferToVRAM` with a single early-return guard that
   also rejects `w <= 0` / `h <= 0` (originally allowed by the asserts but
   meaningless: `malloc(0 * 0)` then a no-op double loop).

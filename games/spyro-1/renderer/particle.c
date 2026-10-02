@@ -1,8 +1,8 @@
-// games/spyro-1/renderer/particle.c — the PARTICLE renderer family
+// games/spyro-1/renderer/particle.c - the PARTICLE renderer family
 // (func_800573C8 particles + func_800580F4 glows + func_800584C4 sparkles /
 // r_particles.s) re-derived from gamestate in float + its numerical A/B
 // harness. It covers 7 particle sprite classes (FT4 billboards, dots/tiles,
-// F2 lines), additive glow rings, and twinkle sparkle quads — a mix of GPU
+// F2 lines), additive glow rings, and twinkle sparkle quads - a mix of GPU
 // primitive types over one polybuf.
 //
 // The .s writes Particle.m_03 (drawn stamp, read next tick -> conditional
@@ -13,9 +13,9 @@
 // native path only mirrors the GEOMETRY in float.
 //
 // Three sub-renderers hooked, one render path each (RP_PARTICLES, RP_GLOW,
-// RP_SPARKLE): the game calls them independently — a dragon-rescue cutscene
+// RP_SPARKLE): the game calls them independently - a dragon-rescue cutscene
 // renders particles every tick but never calls the glow or sparkle renderer,
-// while their pools keep active records — so the sub-tick spine must gate each
+// while their pools keep active records - so the sub-tick spine must gate each
 // feeder on ITS renderer having drawn, not on the family. func_800573C8 is
 // called ~9x/frame (one per occlusion/gamestate pass); glows+sparkles
 // once/frame. Each call brackets the polybuf cursor and appends to the native
@@ -40,7 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_800573C8(CPUState* cpu);  /* RenderParticles  */
 extern void     func_800580F4(CPUState* cpu);  /* RenderGlows      */
@@ -195,7 +195,7 @@ static void dump_pools(CPUState* cpu) {
 static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t end) {
     fprintf(stderr, "\n=== [%s-dump f=%u] polybuf [%08X,%08X) %u bytes, %d prims ===\n",
             tag, openpete_frame, start, end, end - start, s_prim_n);
-    /* linear raw dump (4 words/row) — the only reliable view of non-polygon prims */
+    /* linear raw dump (4 words/row) - the only reliable view of non-polygon prims */
     fprintf(stderr, "  RAW words:\n");
     int rows = 0;
     for (uint32_t p = start; p < end && rows < 40; p += 16, rows++) {
@@ -247,7 +247,7 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
  * scene_viewz + the terrain/actor depths use. Scale cz up by 4 at the build
  * sites (where the class is known) so they sort against terrain instead of
  * always being ~4x too near and drawing THROUGH it. HUD bursts (sel 4/5, direct
- * view-space) and glows (raw-cam, full-world) are already full-scale — not
+ * view-space) and glows (raw-cam, full-world) are already full-scale - not
  * touched. cz is feed-only (culls use the raw view-Z), so scaling it is safe. */
 #define PART_VZ_WORLD4 4.0f
 
@@ -269,31 +269,31 @@ static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 
 
 /* ---- sub-tick CHANNEL-PHASE interpolation (pool-wide) ---------------------- *
  * The g_Particles position bracket (reextract.c) lerps only X/Y/Z;
- * every other per-tick-animated channel — billboard SPIN (B byte3) and SIZE
+ * every other per-tick-animated channel - billboard SPIN (B byte3) and SIZE
  * (B byte2), sel-3 rect half-extents, sel-1/4 line FAR endpoints (B.hi + word C)
- * — was read raw-curr and stepped at 29.913 Hz while the position glided (same
+ * - was read raw-curr and stepped at 29.913 Hz while the position glided (same
  * class as the gem-sparkle twinkle phase). When the re-extract
  * pass is active (s_phase_now latched by particle_reextract) the build
  * walks lerp those channels between the slot's prev/curr interp-objs snapshots
  * at FLOAT precision. Line/tile COLOURS (+0x0C/+0x10/+0x14 rgb) are HELD at
- * curr, not lerped — colour ramps can encode palette cycling where a linear rgb
+ * curr, not lerped - colour ramps can encode palette cycling where a linear rgb
  * sweep is wrong; revisit if a stepped colour is ever visible.
  * Canonical inline feeds (hook time, s_phase_now==0) stay integer/byte-exact
  * for the A/B harnesses. Render-side only: particle RAM is never written here. */
 static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
                                      * (latched in particle_reextract) */
-/* One sim tick in WALL time — the per-slot alpha denominator cap, same global
+/* One sim tick in WALL time - the per-slot alpha denominator cap, same global
  * as TICK_PERIOD_NS in reextract.c (--tick-scale aware: run.c
  * rescales it, else slow-motion sweeps the phase in tick_scale of a tick and
  * freezes the rest). */
 #define PART_TICK_PERIOD_NS g_openpete_tick_period_ns
-/* Phase-alpha floor — the SAME slightly-negative allowance the spine's
+/* Phase-alpha floor - the SAME slightly-negative allowance the spine's
  * position/rotation alpha uses (reextract.c: alpha >= -0.35).
  * The canonical present + first intermediates of a tick fire a few ms BEFORE
  * that tick's PLL grid stamp, so their raw alpha is slightly negative;
  * clamping the phase at 0 while positions extrapolate backward freezes the
  * twinkle for those presents and delivers the clipped tail as a jump at
- * every roll — a 29.913 Hz hitch riding an otherwise smooth sweep, sized by
+ * every roll - a 29.913 Hz hitch riding an otherwise smooth sweep, sized by
  * the (machine-dependent) present-clock-vs-stamp skew. Backward
  * extrapolation on the pair's slope is continuous across the roll by
  * construction. Never above 1 (the future is unsimulated). */
@@ -335,7 +335,7 @@ static void streak_log(const char* fam, uint32_t slot,
 /* The prev and curr interp-obj words A/B/C (+0x04, +0x08, +0x0C) of a
  * g_Particles slot and the slot's sub-tick alpha. */
 typedef struct { uint32_t A, B, C;      /* table-PREV words */
-                 uint32_t cA, cB, cC;   /* table-CURR words — the forward
+                 uint32_t cA, cB, cC;   /* table-CURR words - the forward
                                           * endpoint. NEVER live RAM: under
                                           * runahead live = committed tick ≈
                                           * table-prev, degenerating every
@@ -359,13 +359,13 @@ typedef struct { uint32_t A, B, C;      /* table-PREV words */
 static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     if (!s_phase_now) return 0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(pp);
-    if (!o || !o->have_prev) return 0;                 /* spawn → snap */
+    if (!o || !o->have_prev) return 0;                 /* spawn -> snap */
     uint32_t ph, ch;
     memcpy(&ph, o->prev + 0x00, 4);
     memcpy(&ch, o->curr + 0x00, 4);
-    if ((ph & 0xFFFFu) != (ch & 0xFFFFu)) return 0;    /* m_Class/sel changed → reuse */
+    if ((ph & 0xFFFFu) != (ch & 0xFFFFu)) return 0;    /* m_Class/sel changed -> reuse */
     uint8_t plife = (uint8_t)(ph >> 16), clife = (uint8_t)(ch >> 16);
-    if (clife < plife) return 0;                       /* life reset → reuse */
+    if (clife < plife) return 0;                       /* life reset -> reuse */
     uint32_t pA, pB, pC, cA, cB, cC;
     memcpy(&pA, o->prev + 0x04, 4); memcpy(&pB, o->prev + 0x08, 4);
     memcpy(&pC, o->prev + 0x0C, 4);
@@ -379,13 +379,13 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
      * full-world, with a tighter 300 only for the stalled-life class):
      * under runahead the pair can span two prediction BRANCHES (the led
      * timeline re-forks whenever the held input differs from what the
-     * committed tick latches), and pool churn differs between branches —
+     * committed tick latches), and pool churn differs between branches -
      * slot reuse across branches passes the class + life-increase tests
      * (no same-timeline ordering to reset the life byte), and anything
      * under the old ceiling lerped as a screen-crossing streak. 300
      * world/4 per tick == 1200 full-world == ~20x Spyro's run speed: a
      * REAL particle faster than that crosses the screen in a couple of
-     * ticks, so snapping it loses nothing visible — beyond this, lerping
+     * ticks, so snapping it loses nothing visible - beyond this, lerping
      * only ever paints streaks. */
     if (d2 > 300.0*300.0) return 0;
     op_time_t per = o->curr_ns - o->prev_ns;
@@ -484,7 +484,7 @@ static void proj_view(double ofx, double ofy, const ngte_view* v,
  * @param o Receives the screen position and MAC1..MAC3. */
 static void proj2(const int R[3][3], double ofx, double ofy, const ngte_view* v,
                   double vx, double vy, double vz, projres* o) {
-    ngte_proj r;   /* shared pipeline, NO ±1024 SXY saturation — float,
+    ngte_proj r;   /* shared pipeline, NO ±1024 SXY saturation - float,
                     * widescreen reveal needs the true X */
     ngte_project_gte(R, NULL, vx, vy, vz, ofx, ofy, v, 0, &r);
     o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
@@ -722,7 +722,7 @@ static void particle_build(CPUState* cpu) {
             double a2, a3;                               /* corner extents (sub-pixel) */
             part_prev_t pv;                              /* sub-tick spin/size sweep */
             if (part_phase_prev(pp, &pv)) {
-                /* angle channel = B byte3 (angIdx == (byte3+32 entries) — the
+                /* angle channel = B byte3 (angIdx == (byte3+32 entries) - the
                  * bit-23 term is cleared by the &0x1FE); wrap-lerp it, then
                  * float sin/cos. Identical to the integer path at alpha=1. */
                 double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
@@ -757,7 +757,7 @@ static void particle_build(CPUState* cpu) {
             double eS, eC;                               /* corner extents (sub-pixel) */
             part_prev_t pv;                              /* sub-tick spin/size sweep */
             if (part_phase_prev(pp, &pv)) {
-                /* angle channel = B byte3 (angIdx == byte3 entries — bit 23 is
+                /* angle channel = B byte3 (angIdx == byte3 entries - bit 23 is
                  * cleared by the &0x1FE); wrap-lerp + float sin/cos. */
                 double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
                 double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha);
@@ -792,7 +792,7 @@ static void particle_build(CPUState* cpu) {
             if (screen_rect_cull(c.sx, c.sy)) continue;
             int lod = (int)((B >> 16) & 0xFF);
             if (((sz3 >> 5) - lod - 2) <= 0) continue;  /* depth-cue LOD cull (s3=2) */
-            /* The .s emits this as a LINE_F from (SX,SY) to (SX+1,SY) — a
+            /* The .s emits this as a LINE_F from (SX,SY) to (SX+1,SY) - a
              * 2px-wide x 1px-tall horizontal footprint (PSX plots both line
              * endpoints). A 1px-wide quad renders as a tall sliver because PSX
              * pixels are tall (512x224 framebuffer shown at 4:3 ~ 0.583:1 px);
@@ -821,7 +821,7 @@ static void particle_build(CPUState* cpu) {
                 /* The FAR endpoint needs its own physics ceiling: the
                  * part_phase_prev teleport guard covers only the BASE
                  * position (A word), so a cross-branch pair with a stable
-                 * base but divergent far endpoint still lerped — and this
+                 * base but divergent far endpoint still lerped - and this
                  * class decodes UNSIGNED, so a pair straddling any wrap
                  * sweeps the LONG way across the coordinate space,
                  * painting a line to a consistent screen side. Over the
@@ -851,14 +851,14 @@ static void particle_build(CPUState* cpu) {
             l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
             l->rgb0 = col0 & 0xFFFFFF; l->rgb1 = col1 & 0xFFFFFF;
             l->cz = (float)e0.m3 * PART_VZ_WORLD4;         /* world/4 -> full-world */
-            l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 → opaque */
+            l->blend = ((col0 >> 24) & 0x02) ? 1 : 0;     /* code 0x50 -> opaque */
             l->sel = 1;
             if (streak_dbg()) streak_log("line1", pp, e0.sx, e0.sy, e1.sx, e1.sy);
         } else if (sel == 4 && s_pline_n < MAX_PLINE) {  /* HUD egg-burst LINE_G (block_80057954) */
             /* VALIDATED vs egg.bk2 (egg-collection HUD burst, level_11 f3579): 32/32
              * count-exact, endpoint NN ~0.6-1.1px mean / ~2px worst. A gouraud LINE_G
              * between two VIEW-SPACE points (HUD particle: the .s sets the GTE TR to
-             * the stored coords with vertex=(0,0,0), so they project directly — NO
+             * the stored coords with vertex=(0,0,0), so they project directly - NO
              * camera swizzle). EP0=(s16 A.lo, A.hi, B.lo); EP1=(s16 B.hi, C.lo, C.hi). */
             uint32_t C = cpu->read_word(pp + 0x0C);
             int X0=(int)(int16_t)(A&0xFFFF), Y0=(int)(int16_t)(A>>16), Z0=(int)(int16_t)(B&0xFFFF);
@@ -869,7 +869,7 @@ static void particle_build(CPUState* cpu) {
             if (part_phase_prev(pp, &pv)) {
                 /* Same far-endpoint ceiling as sel-1 (signed decode here):
                  * the base-position guard doesn't cover these words. Over
-                 * the ceiling → snap to table-curr. */
+                 * the ceiling -> snap to table-curr. */
                 double pX1 = (double)(int16_t)(pv.B >> 16),    cX1s = (double)(int16_t)(pv.cB >> 16);
                 double pY1 = (double)(int16_t)(pv.C & 0xFFFF), cY1s = (double)(int16_t)(pv.cC & 0xFFFF);
                 double pZ1 = (double)(int16_t)(pv.C >> 16),    cZ1s = (double)(int16_t)(pv.cC >> 16);
@@ -890,7 +890,7 @@ static void particle_build(CPUState* cpu) {
             if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
             if (screen_rect_cull(e0.sx, e0.sy)) continue;
             /* (sz3>>5)-(col1>>24) is a LOD-LEVEL index (clamped to 0 when negative,
-             * block_80057A30 falls through — NOT a cull); it selects a colour-table
+             * block_80057A30 falls through - NOT a cull); it selects a colour-table
              * entry, not visibility. The line endpoints are already fixed. */
             pline* l = &s_pline[s_pline_n++];
             l->ax=(float)e0.sx; l->ay=(float)e0.sy; l->bx=(float)e1.sx; l->by=(float)e1.sy;
@@ -999,7 +999,7 @@ static void particle_compare(CPUState* cpu) {
     if (getenv("OPENPETE_PARTICLE_DEBUG")) fprintf(stderr, "   [sel] nat sel2=%d sel3=%d sel5=%d sel6=%d line1=%d line4=%d\n", ns2, ns3, ns5, ns6, npl1, npl4);
     int nat_sel0 = 0; for (int q = 0; q < s_fq_n; q++) if (s_fq[q].sel == 0) nat_sel0++;
     /* sel-0 GEOMETRY (closes the count-only blind spot that hid the 1px-sliver
-     * bug): the .s emits each sel-0 as a LINE_F (code 0x40), kept raw — vertex0
+     * bug): the .s emits each sel-0 as a LINE_F (code 0x40), kept raw - vertex0
      * is raw[2] packed (Y<<16)|X. NN-match each native sel-0 quad anchor
      * (sx[0],sy[0]) to the nearest .s line vertex0 and report the distance. */
     int prim_line = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x40) prim_line++;
@@ -1016,7 +1016,7 @@ static void particle_compare(CPUState* cpu) {
         }
         if (bp >= 0) {
             t0sum += best; if (best > t0worst) t0worst = best; t0n++;
-            /* FOOTPRINT check — the 1px-sliver bug was a WIDTH error at the
+            /* FOOTPRINT check - the 1px-sliver bug was a WIDTH error at the
              * correct position, which a position NN alone misses. Compare the
              * native quad's covered-pixel extent to the .s line's: line covers
              * pixels v0..v1 inclusive = |Δ|+1; the native quad covers sx[1]-sx[0]
@@ -1114,8 +1114,8 @@ static void particle_feed_native(CPUState* cpu) {
     }
     openpete_native_scene_set_tag(0);
     if (s_fq_n <= 0) return;
-    /* OPENPETE_PARTICLE_MATDBG=<frame>: one line per emitted quad — sel/blend/
-     * rgb/texture — to attribute a missing-or-wrong-blend particle (e.g. the
+    /* OPENPETE_PARTICLE_MATDBG=<frame>: one line per emitted quad - sel/blend/
+     * rgb/texture - to attribute a missing-or-wrong-blend particle (e.g. the
      * dragon-fragment smoke puffs) to its material decode. */
     { static long s_mdbg = -2;
       if (s_mdbg < -1) { const char* e = getenv("OPENPETE_PARTICLE_MATDBG");
@@ -1162,17 +1162,17 @@ static void particle_feed_native(CPUState* cpu) {
     openpete_native_scene_set_tag(0);
 }
 
-/* ---- glow rings (func_800580F4) — native float walk + feed + A/B ----------- *
+/* ---- glow rings (func_800580F4) - native float walk + feed + A/B ----------- *
  * Decoded from the recompiled C (generated/PSX.EXE_full.c block_800580F4). Each
  * active glow (D_80078800[16], stride 0x24) is a gouraud TRIANGLE FAN: a bright
  * centre (the glow colour) fading to BLACK at a perspective-scaled ring, drawn
  * ADDITIVE (the .s emits a 0xE1000220 draw-mode packet = ABR mode 1, then N-1
  * G3-STP tris, code 0x32). The ring template (unk_0x04, default D_8006E308) is a
- * static 17-point ellipse (96 wide x 60 tall — pre-compensated for tall PSX
+ * static 17-point ellipse (96 wide x 60 tall - pre-compensated for tall PSX
  * pixels, so ~circular on the 4:3 display); unk_0x00 is the ring point count.
  *
  * Differences from the particle/sparkle swizzle: the glow uses RAW camera world
- * coords (NO >>2 — MobyPos is full-scale world units), and a per-glow LOD shift
+ * coords (NO >>2 - MobyPos is full-scale world units), and a per-glow LOD shift
  * that cancels out of SX/SY and persize, so the float walk skips it (the int16
  * floor it introduces is exactly what we're improving on). All gamestate-derived
  * (pool + static ring template + colour); determinism-safe by construction (the
@@ -1229,7 +1229,7 @@ static void glow_build(CPUState* cpu) {
          * interp-objs snapshots (captured in interp_regions.c). The Sparx
          * aura RAMPS size +32/tick over ~18 ticks on spawn (censused) and
          * stepped at 29.913 Hz. Guards: same owner (+0x08),
-         * template (+0x04) and ring count — a slot reused for a different glow
+         * template (+0x04) and ring count - a slot reused for a different glow
          * snaps. Colour is additive light, so a per-byte linear lerp is safe. */
         double sizef = (double)size;
         double offxf = (double)offx, offyf = (double)offy, offzf = (double)offz;
@@ -1248,7 +1248,7 @@ static void glow_build(CPUState* cpu) {
                 memcpy(&ctmpl2, o->curr + 0x04, 4);
                 memcpy(&cmpp2,  o->curr + 0x08, 4);
                 /* Guards + forward endpoints from the TABLE pair (see the
-                 * sparkle note): prev→table-curr, never prev→live. */
+                 * sparkle note): prev->table-curr, never prev->live. */
                 if (pcnt == ccnt2 && (int32_t)ccnt2 > 0 && ptmpl == ctmpl2 &&
                     pmpp == cmpp2 && per > 0) {
                     double a = (double)(s_phase_now - o->curr_ns) / (double)per;
@@ -1282,10 +1282,10 @@ static void glow_build(CPUState* cpu) {
             }
         }
 
-        /* OPENPETE_GLOW_ANIM_DBG: census — does the game ANIMATE glow records
+        /* OPENPETE_GLOW_ANIM_DBG: census - does the game ANIMATE glow records
          * per tick (size/colour/offset pulse)? Logs RAW values on CHANGE only;
          * a change stream at ~tick rate = a stepping channel (the Sparx
-         * aura size ramps +32/tick on spawn — hence the phase lerp
+         * aura size ramps +32/tick on spawn - hence the phase lerp
          * above). */
         if (glow_anim_dbg()) {
             static uint32_t s_glast[16][6]; static int s_gseen[16];
@@ -1309,8 +1309,8 @@ static void glow_build(CPUState* cpu) {
         double depthidx = mac3 / 128.0 + bias;        /* the .s OT-depth cull (a3<=0) */
         if (depthidx <= 0.0) continue;
         double persize = sizef * 4096.0 / mac3;       /* IR0 = size*4096/Z */
-        /* GTE IR0 saturates at 0x1000 on hardware — without the clamp a
-         * near-camera glow (mac3 → small) spikes its ring across the
+        /* GTE IR0 saturates at 0x1000 on hardware - without the clamp a
+         * near-camera glow (mac3 -> small) spikes its ring across the
          * screen where the PSX caps it at template scale. Runahead makes
          * the near pass MORE common: the committed camera trails the led
          * Sparx by N extra ticks, so he crosses the camera plane closer. */
@@ -1403,10 +1403,10 @@ static void glow_compare(CPUState* cpu) {
             openpete_frame, s_gtri_n, prim_g3, nn?sum/nn:0, worst);
 }
 
-/* ---- sparkle twinkles (func_800584C4) — native float walk + feed + A/B ----- *
+/* ---- sparkle twinkles (func_800584C4) - native float walk + feed + A/B ----- *
  * Decoded from the recompiled C (block_800584C4). Each live sparkle (g_Sparkles[8],
  * stride 0x18) is a "twinkle cross" = TWO LINE_F prims (code 0x40, opaque white):
- * T0→T3 and T1→T2, the two diagonals. Tips (view space, VZ=0):
+ * T0->T3 and T1->T2, the two diagonals. Tips (view space, VZ=0):
  *   T0=(-ec,-es) T1=(es,-ec) T2=(-es,ec) T3=(ec,es),
  *   ec=(scaledFade·cos[ang])>>19, es=(scaledFade·sin[ang])>>19,
  *   ang=m_0x0E (the spin seed), scaledFade=(256−fade8)·m_Fade,
@@ -1414,10 +1414,10 @@ static void glow_compare(CPUState* cpu) {
  * They are transformed by a uniform matrix diag(a3,a3,a3), a3=max(centreMAC3,4096),
  * TR = centre·2 (the centre's view-space MAC), then projected.
  *
- * VERDICT-SAFE by construction: the `.s` ran headless (realfn) — it decremented
+ * VERDICT-SAFE by construction: the `.s` ran headless (realfn) - it decremented
  * m_Life and killed off-screen/expired sparkles by writing m_Life=0. So we read
  * the pool AFTER the `.s` and **render exactly the sparkles with post-`.s`
- * m_Life>0** (which is `newLife` — the value the `.s` used for the fade), no
+ * m_Life>0** (which is `newLife` - the value the `.s` used for the fade), no
  * separate cull needed. The native lines are emitted as thin quads (the scene is
  * triangles-only), like the sel-0 line footprint. */
 typedef struct {
@@ -1429,7 +1429,7 @@ typedef struct {
 static sline s_sline[MAX_SLINE]; static int s_sline_n;
 
 /* Sparkle STYLE channel: the pad byte after m_Color's rgb (+0x13) is
- * written by nothing in the game — a mod that hooks the spawner
+ * written by nothing in the game - a mod that hooks the spawner
  * (SpawnMobySparkle) can stamp a style id there per sparkle and the
  * NATIVE renderer restyles it (the PSX path still draws the stock
  * cross, same posture as mod textures). Byte layout: low nibble =
@@ -1439,7 +1439,7 @@ static sline s_sline[MAX_SLINE]; static int s_sline_n;
  * star through the SAME centre/pulse/spin pipeline, additive blend.
  * With no hue: white-hot core fading to m_Color at the tips (legacy).
  * With a hue: the full S3 two-mode glint (traced from SCUS-94467
- * func_8002F098) — S3 does NOT lerp; it switches prim style at
+ * func_8002F098) - S3 does NOT lerp; it switches prim style at
  * viewZ 0x4000: far = the plain cross, pale-tinted (word0, opaque);
  * near = the additive gouraud star, pale core (word0) -> deep hue at
  * the spike tips (word1) -> near-black at the waists (word2, S3's
@@ -1503,7 +1503,7 @@ static void sparkle_build(CPUState* cpu) {
         uint32_t sp = G_SPARKLES + (uint32_t)i*0x18;
         uint32_t w3 = cpu->read_word(sp + 0x0C);
         int newLife = (int)(w3 & 0xFF);              /* post-.s m_Life (== newLife) */
-        if (newLife <= 0) continue;                  /* killed/expired by the .s → skip */
+        if (newLife <= 0) continue;                  /* killed/expired by the .s -> skip */
         int speed = (int)((w3 >> 8) & 0xFF);
         if (speed <= 0) continue;
         uint32_t w5 = cpu->read_word(sp + 0x14);
@@ -1517,23 +1517,23 @@ static void sparkle_build(CPUState* cpu) {
         projres c; proj2(R, ofx, ofy, v, VXg, VYg, VZg, &c);
         if (c.m3 <= 0.0) continue;
 
-        /* SCALE: fade8 = |m_Speed − newLife|·256/m_Speed → scaledFade pulses the
+        /* SCALE: fade8 = |m_Speed − newLife|·256/m_Speed -> scaledFade pulses the
          * twinkle. ANGLE: indexed by the animated m_0x0E seed (+0xE), which the
-         * .s increments ~3·dt/frame for a smooth spin (NOT fade8 — that only
+         * .s increments ~3·dt/frame for a smooth spin (NOT fade8 - that only
          * scales). Read post-.s m_0x0E (the value the .s used + wrote). */
         int angIdx = (int)((w3 >> 16) & 0xFF);       /* m_0x0E (spin angle) */
         /* Sub-tick phase: lerp life + spin between this slot's prev/curr
          * interp-objs snapshots (see s_phase_now above). Guards: same slot
-         * identity (position + m_Speed unchanged) and life non-increasing —
-         * a respawn re-arms m_Life upward → snap, never lerp across it. */
+         * identity (position + m_Speed unchanged) and life non-increasing -
+         * a respawn re-arms m_Life upward -> snap, never lerp across it. */
         double lifef = (double)newLife, angf = (double)angIdx;
         int phase_interp = 0;
         if (s_phase_now) {
             const openpete_interp_obj_t* o = openpete_interp_objs_find(sp);
             if (o && o->have_prev) {
                 /* Endpoints + identity guards from the TABLE pair (prev AND
-                 * curr) — live RAM is the committed tick under runahead
-                 * (≈ table-prev): lerping prev→live degenerated the twinkle
+                 * curr) - live RAM is the committed tick under runahead
+                 * (≈ table-prev): lerping prev->live degenerated the twinkle
                  * back to 30 Hz, and prev-vs-LIVE-pos identity would
                  * false-snap at N>=2. */
                 uint32_t pw3, pp0, pp1, pp2, cw3, cp0, cp1, cp2;
@@ -1561,7 +1561,7 @@ static void sparkle_build(CPUState* cpu) {
                 }
             }
         }
-        /* OPENPETE_SPARKLE_INTERP_DBG: per-present phase trace for slot 0 —
+        /* OPENPETE_SPARKLE_INTERP_DBG: per-present phase trace for slot 0 -
          * fractional lifef/angf between the byte grid prove the sub-tick sweep. */
         {
             static int s_sdbg = -1;
@@ -1581,7 +1581,7 @@ static void sparkle_build(CPUState* cpu) {
             scaledFade = (256.0 - fade8f) * (double)fade;
             ngte_sincos_f(cpu, angf, &sinv, &cosv);
         } else {
-            /* canonical integer path — byte-exact for the A/B harness */
+            /* canonical integer path - byte-exact for the A/B harness */
             int df = speed - newLife; if (df < 0) df = -df;
             int fade8 = speed ? (df * 256) / speed : 0;
             if (fade8 < 0) fade8 = 0; else if (fade8 > 255) fade8 = 255;
@@ -1603,14 +1603,14 @@ static void sparkle_build(CPUState* cpu) {
         /* S3 two-mode switch: a hued glint beyond the near threshold is
          * drawn as the plain cross. S3's far path colours its lines
          * with word0 (asm: t2+0x06000000 at 0x8002F4D8), but that pale
-         * tint on a 1px PSX line READS white — on our crisp native
+         * tint on a 1px PSX line READS white - on our crisp native
          * lines it reads salmon/green/etc. Perceptual fidelity wins: far cross stays stock white. */
         if (style == 1 && hue > 0 && c.m3 >= S3_GLINT_NEAR_M3)
             style = 0;
         if (style == 1 && s_sstar_n < MAX_SSTAR) {
             /* 4-point star flare: tips = the stock cross's 4 diagonal
              * endpoints (same pulse+spin), waist points 45° between at
-             * ~0.21R — a filled concave star instead of two lines. */
+             * ~0.21R - a filled concave star instead of two lines. */
             double wc = (ec - es) * 0.2121, ws = (es + ec) * 0.2121;
             double P[8][2] = {
                 { ec,  es}, { wc,  ws}, {-es,  ec}, {-ws,  wc},
@@ -1637,7 +1637,7 @@ static void sparkle_build(CPUState* cpu) {
             sx[k] = ofx + clamp16(m1)*qd;
             sy[k] = ofy + clamp16(m2)*qd;
         }
-        /* line 1 = T0→T3, line 2 = T1→T2 */
+        /* line 1 = T0->T3, line 2 = T1->T2 */
         sline* l0 = &s_sline[s_sline_n++];
         l0->ax=(float)sx[0]; l0->ay=(float)sy[0]; l0->bx=(float)sx[3]; l0->by=(float)sy[3];
         l0->cz=(float)c.m3 * PART_VZ_WORLD4; l0->rgb=color;   /* world/4 -> full-world */
@@ -1657,8 +1657,8 @@ static void sparkle_build(CPUState* cpu) {
  * Pull sparkle depth by a fixed distance that clears typical source
  * bodies (gems ~250, chests ~300, statue parts more). This is a
  * deliberate carve-out from the true-stored-depth rule: the og behaviour
- * is same-bucket APPEND ORDER — the sparkle beats its source regardless
- * of body size — which no sub-slot tie pull can express; the pull must
+ * is same-bucket APPEND ORDER - the sparkle beats its source regardless
+ * of body size - which no sub-slot tie pull can express; the pull must
  * span the source body, not one OT slot. Residual vs PSX: geometry
  * BETWEEN sparkle and camera within this margin is overdrawn (PSX's own
  * pierce bound was its ~128-unit bucket); transient 5px glints make that
@@ -1690,7 +1690,7 @@ static void sparkle_feed_native(CPUState* cpu) {
             /* S3 near-star gouraud (func_8002F098): centre = word0
              * (pale, white-hot under additive), spike tips = word1
              * (deep hue), waists = word2 (S3's near-black ring). The
-             * hue IS the gradient — additive falloff along each arm. */
+             * hue IS the gradient - additive falloff along each arm. */
             core   = k_s3_glint[st->hue - 1][0];
             tipc   = k_s3_glint[st->hue - 1][1];
             waistc = k_s3_glint[st->hue - 1][2];
@@ -1786,7 +1786,7 @@ static void sparkle_compare(CPUState* cpu) {
             openpete_frame, s_sline_n, prim_line, nn?sum/nn:0, worst);
 }
 
-/* ---- dragon-rescue star flash (func_80058864) — float walk + feed + A/B ---- *
+/* ---- dragon-rescue star flash (func_80058864) - float walk + feed + A/B ---- *
  * The "free a dragon" 8-point star sparkle (e.g. Nestor in Artisans). Unlike the
  * particle/glow/sparkle pools this is a SINGLE gamestate record D_80076248,
  * decoded from the recompiled C (block_80058864) cross-checked against the
@@ -1884,7 +1884,7 @@ static void dragonstar_build(CPUState* cpu) {
         int idx   = m * 16;
         int sinv  = rd_s16(cpu, D_SIN_TABLE        + (uint32_t)idx*2);
         int cosv  = rd_s16(cpu, D_SIN_TABLE + 0x80 + (uint32_t)idx*2);
-        /* spoke radius: even points >>12, odd >>10 — kept as FLOAT division (not
+        /* spoke radius: even points >>12, odd >>10 - kept as FLOAT division (not
          * the .s integer arithmetic shift) so the spoke length carries sub-pixel
          * precision. The native renderer's whole point is no positional
          * quantization; the int floor is the .s artefact we improve on. */
@@ -1924,7 +1924,7 @@ static void dragonstar_feed_native(CPUState* cpu) {
     /* g_HudOT overlay: the PSX links this into the HUD OT, drawn OVER the whole 3D
      * scene. blend=2 puts it in the native additive group (drawn last, over the
      * player); view-Z 1 (the near plane) so the depth test never rejects a
-     * spike that crosses nearer ground/Spyro — the additive pipe is
+     * spike that crosses nearer ground/Spyro - the additive pipe is
      * depth_write_off, so this is an on-top additive overlay, mirroring the PSX
      * HUD-OT order. One depth for the whole overlay: W is constant. */
     float depth = 1.0f;
@@ -2283,7 +2283,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract (high-FPS spine): reproduce particles, glows and
- * sparkles from the current g_Particles pool — extract-only (no render_fn, no
+ * sparkles from the current g_Particles pool - extract-only (no render_fn, no
  * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
  * stay present on intermediates. */
 void particle_reextract(CPUState* cpu) {
@@ -2299,7 +2299,7 @@ void particle_reextract(CPUState* cpu) {
     const int spar = render_path_enabled(RP_SPARKLE)   && render_path_canon_drawn(RP_SPARKLE);
     if (!part && !glow && !spar) return;
     /* Channel-phase interp on for the re-extract feeds only (every present when
-     * the sub-tick spine is active — canonical-lag leg + intermediates); reset
+     * the sub-tick spine is active - canonical-lag leg + intermediates); reset
      * so the canonical inline hook feeds stay integer/byte-exact for the A/Bs.
      * Covers particle spin/size/extents + line far endpoints + sparkle
      * life/spin (see the s_phase_now block). */

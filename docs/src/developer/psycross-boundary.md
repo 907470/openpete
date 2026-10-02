@@ -24,7 +24,7 @@ type is 4 bytes on PSX and 8 on both host models. `tools/rewrite/types.py`
 classifies a composite as divergent if any transitive leaf field is one of
 these.
 
-A `u_long *` parameter is therefore not by itself a hazard — the hazard is
+A `u_long *` parameter is therefore not by itself a hazard - the hazard is
 an implementation that strides the buffer as host `unsigned long`. PsyCross
 routines that byte-walk or cast to `unsigned short *` / `unsigned char *`
 are safe with a PSX-laid buffer.
@@ -41,7 +41,7 @@ are safe with a PSX-laid buffer.
 | `ClearOTag`, `ClearOTagR` | `LIBGPU.C:197`, `:219` | `(OT_TAG *)ot`, then `setaddr`/`setlen` per element | host-strided, see §3 |
 | `DrawOTag`, `DrawOTagEnv` | `LIBGPU.C:433`, `:427` | walks the chain as host `OT_TAG` | host-strided, see §3 |
 | `BreakDraw`, `FntFlush`, `KanjiFntFlush` | `LIBGPU.C:839`, `:669`, `:663` | no `u_long *` parameter (`u_long *` is the return type) | not a boundary |
-| `OpenTIM`, `OpenTMD`, `DrawOTag2`, `DumpOTag`, `CheckPrim`, `Krom2Tim` | declared in `libgpu.h`, no definition in the submodule | — | a call is a link error |
+| `OpenTIM`, `OpenTMD`, `DrawOTag2`, `DumpOTag`, `CheckPrim`, `Krom2Tim` | declared in `libgpu.h`, no definition in the submodule | - | a call is a link error |
 
 Among the TUs currently enabled in `games/spyro-1/manifest/native.toml`,
 `cd.c`'s three `CdRead` calls are the only `u_long *` boundary crossings.
@@ -98,8 +98,8 @@ called an OT-tag API would need a per-call copy shim; no enabled TU does.
 (`libgpu.h:730`) is `DECLARE_P_ADDR` plus `u_int code[15]`, so it is 72
 bytes on x86_64 against 64 on the PSX, and the `uintptr_t` forces 8-byte
 alignment, moving the field itself from offset 28 to offset 32. Everything
-ahead of it — `clip`, `ofs`, `tw`, `tpage`, `dtd`, `dfe`, `isbg`,
-`r0`/`g0`/`b0` — agrees with PSX layout byte for byte.
+ahead of it - `clip`, `ofs`, `tw`, `tpage`, `dtd`, `dfe`, `isbg`,
+`r0`/`g0`/`b0` - agrees with PSX layout byte for byte.
 
 `g_DB` is aliased into `g_ram` by a linker `--defsym` (`gen_defsyms.py`, via
 `scripts/regen-manifest.sh`). That alias is only sound because access to it
@@ -126,8 +126,8 @@ surfaces the boundary explicitly instead of mis-striding silently.
 Two known limitations:
 
 - The guard filters call sites to those whose location file equals the TU's
-  main file. Calls inside a textually included body — `flight.inc.h` calls
-  `LoadImage` and `StoreImage` — are invisible to it. Both are on the safe
+  main file. Calls inside a textually included body - `flight.inc.h` calls
+  `LoadImage` and `StoreImage` - are invisible to it. Both are on the safe
   list, so nothing is currently missed, but the filter is a hole, not a
   policy.
 - `SAFE_PSYQ_API` lists `OpenTIM` and `OpenTMD`, which have no definition
@@ -146,7 +146,7 @@ For each hit, read the definition under `third_party/PsyCross/src/psx/` and
 classify the stride: a cast to `unsigned char *`, `unsigned short *` or
 `uint32_t *` is safe; a cast to `OT_TAG *` or any prim struct is host-laid.
 
-Find the callers that matter — the TUs enabled in
+Find the callers that matter - the TUs enabled in
 `games/spyro-1/manifest/native.toml`, not the whole decomp corpus:
 
 ```sh

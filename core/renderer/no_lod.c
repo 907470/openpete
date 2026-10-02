@@ -1,10 +1,10 @@
-// core/renderer/no_lod.c — see no_lod.h.
+// core/renderer/no_lod.c - see no_lod.h.
 //
 // --no-lod is a native-renderer display policy with no game-side producer:
 // the native feeders derive full detail from gamestate (moby far-record
 // builder + zsf4/tier neutralization, terrain HQ classifier, portal
 // always-dome, fog default). In PsyCross reference mode the flag warns and
-// is ignored — the reference renders canonical PSX detail.
+// is ignored - the reference renders canonical PSX detail.
 
 #include "no_lod.h"
 
@@ -19,7 +19,7 @@ int openpete_no_lod = 0;
 float openpete_fog_scale = 1.0f;
 
 /* Explicit --fog-scale from the CLI: a live toggle (settings menu) passes
- * fog_scale < 0 meaning "the mode default" — but a user-chosen curve must
+ * fog_scale < 0 meaning "the mode default" - but a user-chosen curve must
  * survive toggling draw distance, so remember it and let it keep winning. */
 static float s_cli_fog_scale = -1.0f;
 
@@ -29,7 +29,7 @@ static float s_cli_fog_scale = -1.0f;
 #define FOG_OFF_SCALE 100.0f
 
 /* Set once the user sets fog directly (the menu FOG row). From then on the
- * LOD toggle stops moving the fog scale to the mode default — an explicit
+ * LOD toggle stops moving the fog scale to the mode default - an explicit
  * fog choice survives draw-distance changes, like an explicit --fog-scale. */
 static int s_fog_touched = 0;
 
@@ -37,8 +37,8 @@ int no_lod_apply_options(const openpete_options_t* opts) {
     openpete_no_lod = 0;
     /* Resolve the fog-distance multiplier before the no-lod early-out:
      * explicit --fog-scale wins; otherwise --no-lod defaults to fog
-     * effectively off (100x) — extended LOD draws the far detail, so the
-     * default reveals it rather than fogging it away — and stock to the
+     * effectively off (100x) - extended LOD draws the far detail, so the
+     * default reveals it rather than fogging it away - and stock to the
      * authentic PSX curve. */
     int extended = opts && opts->lod == OPENPETE_LOD_EXTENDED;
     if (opts) {
@@ -52,7 +52,7 @@ int no_lod_apply_options(const openpete_options_t* opts) {
         OPL_WARN_F("no-lod", "%s",
                    "--no-lod is native-renderer-only (the game-side "
                    "producer stack was retired); the PsyCross reference "
-                   "renders canonical PSX detail — flag ignored");
+                   "renders canonical PSX detail - flag ignored");
         return 0;
     }
 
@@ -65,7 +65,7 @@ int no_lod_apply_options(const openpete_options_t* opts) {
 
 void openpete_no_lod_set(int on, float fog_scale) {
     openpete_no_lod = on ? 1 : 0;
-    /* Fog follows the LOD mode (ORIGINAL → authentic curve, EXTENDED →
+    /* Fog follows the LOD mode (ORIGINAL -> authentic curve, EXTENDED ->
      * effectively off) ONLY while fog is still on autopilot: an explicit
      * --fog-scale or a manual FOG toggle (s_fog_touched) keeps winning. */
     if (fog_scale > 0.0f)
@@ -85,7 +85,7 @@ void openpete_fog_scale_set(float scale) {
     if (isnan(scale)) return;   /* NaN passes both clamps below */
     if (scale < 0.25f) scale = 0.25f;
     if (scale > FOG_OFF_SCALE) scale = FOG_OFF_SCALE;
-    /* A manual value takes fog off autopilot, same as openpete_fog_set —
+    /* A manual value takes fog off autopilot, same as openpete_fog_set -
      * a later LOD switch must not clobber it. Terrain re-resolves the
      * scale every walk, so this is live with no latch to poke. */
     s_fog_touched = 1;

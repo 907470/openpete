@@ -1,4 +1,4 @@
-/* chain-duo-b — proves stacking + order semantics (see
+/* chain-duo-b - proves stacking + order semantics (see
  * chain-duo-a). Logs the nesting once: "B>" before base(), "<B" after. */
 
 #include <openpete_mod_api.h>

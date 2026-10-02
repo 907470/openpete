@@ -1,4 +1,4 @@
-/* wav_loader — thin SDL3 SDL_LoadWAV wrapper returning an interleaved
+/* wav_loader - thin SDL3 SDL_LoadWAV wrapper returning an interleaved
  * int16 PCM blob, used by the music WAV override, mod sounds and the mod
  * registry's custom-level music probe. */
 #ifndef OPENPETE_WAV_LOADER_H

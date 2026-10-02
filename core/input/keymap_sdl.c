@@ -1,9 +1,9 @@
-/* core/input/keymap_sdl.c — the SDL half of the keymap.
+/* core/input/keymap_sdl.c - the SDL half of the keymap.
  *
  * keymap.c owns the registry, the layering and the edge latches and is
  * deliberately SDL-free so it links into console unit tests. Everything
- * that needs SDL — turning a binding name into a code, turning it back
- * for the report, and reading whether a source is held — lives here and
+ * that needs SDL - turning a binding name into a code, turning it back
+ * for the report, and reading whether a source is held - lives here and
  * is installed through the two seams at boot.
  *
  * Unqualified gamepad reads use slot 0 of the published input snapshot:
@@ -99,8 +99,8 @@ static int km_sdl_mouse_owned(void) {
     return openpete_host_mouse_owned();
 }
 
-/* SDL's own button vocabulary is still the mapping-database spelling —
- * "a", "b", "x", "y" — which names the four face buttons by an Xbox
+/* SDL's own button vocabulary is still the mapping-database spelling -
+ * "a", "b", "x", "y" - which names the four face buttons by an Xbox
  * layout rather than by position, so "pad:a" means different physical
  * buttons to different readers. SDL3 renamed the enum to SOUTH/EAST/
  * WEST/NORTH for exactly that reason; these aliases give the config file
@@ -177,8 +177,8 @@ static const char* km_sdl_code_to_name(int kind, int code) {
     switch (kind) {
     case KM_SRC_KEY:     return SDL_GetScancodeName((SDL_Scancode)code);
     case KM_SRC_PADBTN:
-        /* Report the positional name for the four face buttons — the
-         * alias table's first entry for each — so the report and the
+        /* Report the positional name for the four face buttons - the
+         * alias table's first entry for each - so the report and the
          * config file speak the same vocabulary. */
         switch ((SDL_GamepadButton)code) {
         case SDL_GAMEPAD_BUTTON_SOUTH: return "south";

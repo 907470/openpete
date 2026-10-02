@@ -1,11 +1,11 @@
-/* tests/unit/psx_region_test.c — verify PSX RAM virtualization region
+/* tests/unit/psx_region_test.c - verify PSX RAM virtualization region
  * table behaves correctly: registration, lookup, overlap rejection,
  * unregister, resolve_region. The table backs cold-path memory
  * resolvers (cpu.c mem_ptr / openpete_psx_to_host_ptr); a regression
  * here would silently corrupt presentation buffers or leak gameplay
  * accesses into renderer-only memory.
  *
- * Standalone — only compiles psx_region.c, doesn't pull in cpu.c or
+ * Standalone - only compiles psx_region.c, doesn't pull in cpu.c or
  * the rest of openpete_core. */
 
 #include "../../third_party/psxrecomp/runner/include/psx_runtime.h"
@@ -100,7 +100,7 @@ static int test_resolve_with_null_outparams(void) {
     static uint8_t buf[4096];
     int rc = psx_runtime_register_region(0x80400000u, sizeof(buf), buf);
     CHECK(rc == 0, "register succeeds");
-    /* Both NULL — should still report hit/miss correctly. */
+    /* Both NULL - should still report hit/miss correctly. */
     int hit = psx_runtime_resolve_region(0x80400500u, NULL, NULL);
     CHECK(hit == 1, "resolve with NULL outparams reports hit");
     hit = psx_runtime_resolve_region(0x80500000u, NULL, NULL);

@@ -1,9 +1,9 @@
-/* render_paths.c — per-path render isolation registry. See render_paths.h. */
+/* render_paths.c - per-path render isolation registry. See render_paths.h. */
 
 #include "renderer/render_paths.h"
 #include "renderer/ui_game.h"      /* retained freeze backdrop commit */
 #include "feature_registry.h"
-#include "psx_runtime_internal.h"   /* CPUState, read_word — for the path brackets */
+#include "psx_runtime_internal.h"   /* CPUState, read_word - for the path brackets */
 #include "openpete.h"
 #include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */
@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "openpete_fiber.h"   /* openpete_frame — for the ivdump env probe */
+#include "openpete_fiber.h"   /* openpete_frame - for the ivdump env probe */
 #include "renderer/env_knob.h"
 
 static const char* const k_names[RP_COUNT] = {
@@ -50,7 +50,7 @@ void render_paths_init(const char* spec) {
     fprintf(stderr, "[render-paths] isolating:");
     for (int i = 0; i < RP_COUNT; i++)
         if (s_mask & (1u << i)) fprintf(stderr, " %s", k_names[i]);
-    fprintf(stderr, "%s\n", s_mask ? "" : " (none matched — nothing will render)");
+    fprintf(stderr, "%s\n", s_mask ? "" : " (none matched - nothing will render)");
 }
 
 bool render_paths_active(void) { return s_active; }
@@ -58,7 +58,7 @@ bool render_paths_active(void) { return s_active; }
 void render_paths_set(const char* spec) {
     render_paths_init(spec);
     /* In isolation an empty native scene must show the background, not the
-     * unfiltered PSX VRAM framebuffer — same sync as boot. */
+     * unfiltered PSX VRAM framebuffer - same sync as boot. */
     openpete_native_set_isolation(render_paths_active());
 }
 
@@ -84,7 +84,7 @@ bool render_path_enabled(render_path_t p) {
  * intervals per frame.
  *
  * Two banks: the game submits DrawOTag at the START of a VBL, before that
- * VBL's render functions record any intervals — so at walk time the current
+ * VBL's render functions record any intervals - so at walk time the current
  * table describes the OT being BUILT, not the one being DRAWN. The commit
  * (once per canonical present) rolls current -> previous instead of
  * discarding, and the OT-walk filter consults current first, then previous.
@@ -131,11 +131,11 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     s_iv_n++;
 }
 
-/* "Canon drawn" mask — latched from the per-frame intervals once per canonical
+/* "Canon drawn" mask - latched from the per-frame intervals once per canonical
  * render (before frame_reset clears them). A path is "drawn" iff it recorded at
  * least one non-empty polybuf interval this frame; render_path_record already
  * drops empty ranges, so a path that ran its render fn but emitted nothing (fully
- * culled / suppressed during a transition) reads as NOT drawn — which is what the
+ * culled / suppressed during a transition) reads as NOT drawn - which is what the
  * spine wants (reproduce only what the canonical frame actually painted). */
 static uint32_t s_canon_mask = 0;
 
@@ -280,7 +280,7 @@ static void render_paths_commit(void) {
      * re-extracts that follow. */
     spyro_native_canon_epoch_commit();
     /* Sync the native background clear from g_CurDB->m_DrawEnv (the env the
-     * game's DrawOTag will apply to the scene being presented) — the PutDrawEnv
+     * game's DrawOTag will apply to the scene being presented) - the PutDrawEnv
      * thunk latch trails the OT build by one VSync and flashed the stale
      * homeworld clear at the portal-entry transition boundary. */
     cyclorama_native_env_clear_commit();
@@ -296,7 +296,7 @@ bool render_path_addr_visible(uint32_t addr) {
             return render_path_enabled(s_iv[i].path);
     }
     /* The walked OT was built on the PREVIOUS render VBL (DrawOTag submits at
-     * the start of a VBL, before this VBL's records) — its intervals live in
+     * the start of a VBL, before this VBL's records) - its intervals live in
      * the rolled bank. */
     for (int i = 0; i < s_iv_prev_n; i++) {
         if (addr >= s_iv_prev[i].start && addr < s_iv_prev[i].end)
@@ -362,7 +362,7 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
      * loop (renderer-agnostic), not psyq_DrawOTag (future-removed). */
     openpete_native_register_commit(render_paths_commit);
     /* Attach the live channel to the dev overlay's row (absent in dist
-     * builds — ignore the miss). */
+     * builds - ignore the miss). */
     (void)openpete_knob_bind_str("render_paths", rp_knob_get, rp_knob_set);
 }
 

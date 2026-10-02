@@ -1,4 +1,4 @@
-/* core/ui/imgui_guard.c — body-active state behind the mod ImGui table
+/* core/ui/imgui_guard.c - body-active state behind the mod ImGui table
  * guard wrappers. See openpete_imgui_guard.h. */
 
 #include "openpete_imgui_guard.h"
@@ -130,7 +130,7 @@ void openpete_imgui_guard_refused(const char* fn)
         t_seen_count++;
     }
     OPL_ERROR_F("mods", "%s: %s called outside the mod's UI section "
-                        "(from a present or tick hook) — dropped",
+                        "(from a present or tick hook) - dropped",
                 (owner && owner[0]) ? owner
                                     : openpete_imgui_guard_mod_id(idx), fn);
 }
@@ -144,7 +144,7 @@ int openpete_imgui_bind(const void* desc, const char* mod_id,
     if (d->magic != 0x4F504947u || !d->slot) {
         OPL_ERROR_F("mods", "%s: %s exports a malformed ImGui "
                     "descriptor (magic 0x%08x); rebuild the mod against "
-                    "this SDK — disabled",
+                    "this SDK - disabled",
                     mod_id, path, (unsigned)d->magic);
         return 0;
     }
@@ -161,8 +161,8 @@ int openpete_imgui_bind(const void* desc, const char* mod_id,
                     "%u (table %u bytes) and this engine has " IMGUI_VERSION
                     " (version %u, %u bytes)%s; a mod bound to a table "
                     "whose slots have moved calls the wrong function on "
-                    "its first widget — rebuild the mod against this SDK "
-                    "— disabled",
+                    "its first widget - rebuild the mod against this SDK "
+                    "- disabled",
                     mod_id, path, (unsigned)d->imgui_version_num,
                     (unsigned)d->table_size, (unsigned)IMGUI_VERSION_NUM,
                     (unsigned)sizeof(openpete_imgui_table_t),

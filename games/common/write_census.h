@@ -1,4 +1,4 @@
-/* games/common/write_census.h — address-range write attribution.
+/* games/common/write_census.h - address-range write attribution.
  *
  * OPENPETE_WRITE_CENSUS=lo..hi[,lo..hi] (hex, inclusive) installs wrappers
  * over the five store hooks at boot and appends one row per store that lands

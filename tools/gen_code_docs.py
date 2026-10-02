@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gen_code_docs.py — generate the codebase reference pages (markdown).
+"""gen_code_docs.py - generate the codebase reference pages (markdown).
 
 Writes docs/src/developer/reference/ for the documentation site
 (docs/mkdocs.yml) from the function corpus of the documentation ratchet

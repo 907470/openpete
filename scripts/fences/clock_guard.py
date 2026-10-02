@@ -28,7 +28,7 @@ leg runs the deterministic branch. So the rule becomes mechanical:
 
   In the scene-producer files below, a wall-clock read (op_now(),
   SDL_GetTicks*, SDL_GetPerformanceCounter, clock_gettime) is refused
-  unless its line carries the marker `clock-guard: wall` — a written-down
+  unless its line carries the marker `clock-guard: wall` - a written-down
   decision that this read is about wall time (a timing span, an input-rate
   integration, a diagnostic that prints both clocks), not an animation
   instant.

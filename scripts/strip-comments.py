@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""strip-comments.py — remove C comments from the shipped recomp source kit.
+"""strip-comments.py - remove C comments from the shipped recomp source kit.
 
 The recomp/src kit is compiled on the user's machine at first boot, so it
 ships as readable C. Its comments, however, are internal engineering notes

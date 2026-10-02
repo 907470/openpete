@@ -1,4 +1,4 @@
-/* openpete_atomic_file.h — replace a file so a reader sees the old or the new
+/* openpete_atomic_file.h - replace a file so a reader sees the old or the new
  * content, never a mix.
  *
  * The new content is written to a temporary file in the target's own

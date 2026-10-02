@@ -1,4 +1,4 @@
-/* openpete_time.c — high-resolution monotonic clock + hybrid waiter.
+/* openpete_time.c - high-resolution monotonic clock + hybrid waiter.
  * See openpete_time.h for API contract. */
 
 /* Need Vista+ headers for GetTickCount64 + CreateWaitableTimerExW
@@ -119,7 +119,7 @@ static HANDLE thread_timer(void) {
 #endif
 
 /* Monotonicity guard. clock_gettime is monotonic by definition, but
- * QueryPerformanceCounter can — extremely rarely — go backwards by a few
+ * QueryPerformanceCounter can - extremely rarely - go backwards by a few
  * ticks across cores in pathological cases. Keep the prior return and
  * clamp. The variable is shared without synchronization by every thread
  * that calls op_now (sim, present, host loop): the clamp orders calls on one
@@ -275,11 +275,11 @@ void op_time_wake_pending_sleeps(void) {
 #if defined(_WIN32)
     if (!s_initialized) return;
     {
-        /* SetWaitableTimer with a 0 due time fires immediately — a thread
+        /* SetWaitableTimer with a 0 due time fires immediately - a thread
          * in WaitForSingleObject(timer, INFINITE) wakes and returns. The
          * spin-tail then notices op_now() >= deadline (or its own caller's
          * exit predicate is true) and unwinds. CancelWaitableTimer would NOT
-         * signal waiters, only the next SetWaitableTimer would — so we set
+         * signal waiters, only the next SetWaitableTimer would - so we set
          * with a 0 time instead, on every thread's timer. */
         LARGE_INTEGER due;
         due.QuadPart = 0;
@@ -365,7 +365,7 @@ op_time_t op_now(void) {
     }
     ns = (op_time_t)ts.tv_sec * OP_NS_PER_SEC + (op_time_t)ts.tv_nsec;
 #endif
-    /* Monotonicity clamp — see s_last_now comment. */
+    /* Monotonicity clamp - see s_last_now comment. */
     if (ns < s_last_now) ns = s_last_now;
     s_last_now = ns;
     return ns;
@@ -409,7 +409,7 @@ static void sleep_until_win(op_time_t deadline_ns) {
         }
     } else {
         /* Coarse Sleep with timeBeginPeriod(1). Sleep is in integer ms,
-         * round DOWN so we always undershoot — the spin tail covers
+         * round DOWN so we always undershoot - the spin tail covers
          * the remainder. */
         DWORD ms = (DWORD)(delay_ns / OP_NS_PER_MS);
         if (ms > 0) Sleep(ms);
@@ -447,7 +447,7 @@ static void sleep_until_posix(op_time_t deadline_ns) {
 #endif
 
 void op_sleep_until(op_time_t deadline_ns) {
-    /* Virtual clock: the deadline IS the next instant. Never block — the
+    /* Virtual clock: the deadline IS the next instant. Never block - the
      * caller's schedule advances, wall time doesn't enter into it. */
     if (s_virtual_on) {
         if (deadline_ns > s_virtual_ns) s_virtual_ns = deadline_ns;
@@ -463,7 +463,7 @@ void op_sleep_until(op_time_t deadline_ns) {
      * then rewinds back here). Always yield at least one turn even when
      * the deadline has passed (unlock / fast-forward re-anchors deadlines
      * to now), so a tight host loop never starves the page. Sub-ms
-     * precision isn't available and isn't needed — requestAnimationFrame
+     * precision isn't available and isn't needed - requestAnimationFrame
      * and the 60 Hz present cadence pace the actual frame output. */
     op_time_t now_em = op_now();
     int ms = (now_em < deadline_ns)
@@ -492,7 +492,7 @@ void op_sleep_until(op_time_t deadline_ns) {
 
     /* Stage 2: spin until deadline. cpu_relax keeps the spin cheap on
      * SMT cores; sched_yield once early gives co-runners a chance, but
-     * we don't yield inside the inner loop — yielding while the slack
+     * we don't yield inside the inner loop - yielding while the slack
      * budget is sub-ms tends to oversleep on Linux. */
 #if !defined(_WIN32)
     sched_yield();

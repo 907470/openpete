@@ -1,4 +1,4 @@
-/* openpete_hook_test.c — verifies the OPENPETE_HOOK decomp-seam macro's two
+/* openpete_hook_test.c - verifies the OPENPETE_HOOK decomp-seam macro's two
  * invariants:
  *   - matching build (OPENPETE_BUILD undefined): the macro is a no-op, so a
  *     function carrying it behaves identically to the un-hooked source (the
@@ -6,7 +6,7 @@
  *   - openpete build (OPENPETE_BUILD defined): the macro calls the named host
  *     hook with its arguments.
  *
- * Built TWICE by CMake — once with -DOPENPETE_BUILD and once without — so a
+ * Built TWICE by CMake - once with -DOPENPETE_BUILD and once without - so a
  * single source asserts both expansions. See tests/unit/CMakeLists.txt.
  */
 #include "openpete_hook.h"

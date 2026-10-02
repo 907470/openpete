@@ -1,4 +1,4 @@
-/* games/spyro-1/renderer/tracer_snapshot.c — see tracer_snapshot.h. */
+/* games/spyro-1/renderer/tracer_snapshot.c - see tracer_snapshot.h. */
 #include "renderer/tracer_snapshot.h"
 
 int tracer_snapshot_take(CPUState* cpu, uint32_t count_va, uint32_t cnttab_va,

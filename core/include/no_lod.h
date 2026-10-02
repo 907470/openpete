@@ -1,4 +1,4 @@
-// core/include/no_lod.h — `--no-lod` feature module.
+// core/include/no_lod.h - `--no-lod` feature module.
 //
 // --no-lod is a native-renderer display policy owned by the native feeders;
 // there is no game-side producer.
@@ -27,7 +27,7 @@ extern int openpete_no_lod;
  * no_lod_apply_options (explicit --fog-scale wins; else 100.0 = effectively
  * off under extended LOD, 1.0 otherwise). 1.0 = the authentic PSX curve; N scales
  * every channel of the fog model together (DPCS vertex curve, CLUT-row
- * palette ladder, near-tile select, fog-saturation LP handoff — see
+ * palette ladder, near-tile select, fog-saturation LP handoff - see
  * games/common/renderer/terrain.c). Always > 0 after boot. */
 extern float openpete_fog_scale;
 

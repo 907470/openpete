@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# probe_egg_hud_keying.sh — egg-hud-3d's parked eggs keep a stable
+# probe_egg_hud_keying.sh - egg-hud-3d's parked eggs keep a stable
 # per-object interpolation identity.
 #
 # The engine keys per-object interpolation by moby ADDRESS outside the HUD
@@ -8,7 +8,7 @@
 # instrument is OPENPETE_INTERP_OBJS_KEYLOG, one line per interp-object
 # SPAWN with its key; per-object capture only runs when presents outpace
 # the sim (--render-fps above the tick rate), which headless never does, so
-# this is a WINDOWED run — llvmpipe is fine, no pixels are judged.
+# this is a WINDOWED run - llvmpipe is fine, no pixels are judged.
 #
 # Verdict: every spawn keyed into the arena (0x807xxxxx) is an egg slot;
 # a slot that spawns MORE than once while live would mean its key changed
@@ -40,9 +40,9 @@ log = open(sys.argv[1], errors="replace").read()
 spawns = collections.Counter(m.group(1) for m in re.finditer(r"\[interp-objs\] spawn key=(807[0-9a-f]{5})", log))
 armed = "egg-hud-3d: armed" in log
 if not armed:
-    print("egg keying: mod never armed — VACUOUS"); sys.exit(2)
+    print("egg keying: mod never armed - VACUOUS"); sys.exit(2)
 if not spawns:
-    print("egg keying: no arena-keyed spawn observed — capture never ran (windowed --render-fps > tick?) VACUOUS"); sys.exit(2)
+    print("egg keying: no arena-keyed spawn observed - capture never ran (windowed --render-fps > tick?) VACUOUS"); sys.exit(2)
 multi = {k: n for k, n in spawns.items() if n > 1}
 print(f"egg keying: {len(spawns)} egg slots spawned, {sum(spawns.values())} spawns, "
       f"{len(multi)} slots spawned more than once")

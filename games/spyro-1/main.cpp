@@ -1,7 +1,7 @@
-// games/spyro-1/main.cpp — Spyro 1 binary entry point.
+// games/spyro-1/main.cpp - Spyro 1 binary entry point.
 //
 // Tiny wrapper: parse opts, set the display name, hand off to core's run loop.
-// SDL3's SDL_main.h re-#defines main → SDL_main and supplies the platform
+// SDL3's SDL_main.h re-#defines main -> SDL_main and supplies the platform
 // entry shim (links SDL3::SDL3main); must be included by the TU with main().
 
 #include <SDL3/SDL_main.h>
@@ -22,9 +22,9 @@
 #include <cstdio>
 /* Distribution Windows builds link as a GUI subsystem app (-mwindows) so
  * no console window pops up when an end user double-clicks. But when the
- * exe is launched from a terminal or with redirected output — cmd.exe, a
+ * exe is launched from a terminal or with redirected output - cmd.exe, a
  * `> log` redirect, or WSL2 interop (which passes inherited *pipe*
- * handles, not a console) — we still want logs to flow. So: attach to a
+ * handles, not a console) - we still want logs to flow. So: attach to a
  * parent console if there is one, then bind the C stdio streams to
  * whatever the standard OS handles actually point at (console, pipe, or
  * file). Harmless no-op for console-subsystem (dev) builds. */
@@ -34,8 +34,8 @@ static void reconnect_std(DWORD which, FILE* stream) {
     int target = _fileno(stream);
 
     /* Leave a stream that is ALREADY wired to this handle alone. A
-     * console-subsystem build — and any build whose CRT inherited its
-     * handles, which is every WSL-interop launch — arrives here with
+     * console-subsystem build - and any build whose CRT inherited its
+     * handles, which is every WSL-interop launch - arrives here with
      * working stdio, and "reconnecting" it is destructive: _open_osfhandle
      * takes a SECOND CRT reference to the same HANDLE, then _dup2 closes
      * the destination fd first, which shuts that one handle for both
@@ -80,12 +80,12 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap);
 extern "C" void game_state_regions_register(void);
-/* Mod SDK name→vaddr table, generated from manifest/symbols.toml by
+/* Mod SDK name->vaddr table, generated from manifest/symbols.toml by
  * tools/gen_mod_sdk.py into the build dir (sdk_symbols_table.c). */
 extern "C" {
 extern const openpete_sdk_symbol_t openpete_sdk_symbols[];
 extern const size_t                openpete_sdk_symbol_count;
-/* Draw-service text rasterizer (renderer/text_moby.c — that header
+/* Draw-service text rasterizer (renderer/text_moby.c - that header
  * has no C++ guards, so declare the one symbol we need directly). */
 int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
@@ -161,10 +161,10 @@ int main(int argc, char** argv) {
     openpete_attach_parent_console();
 
     /* MinGW buffers stderr when it isn't a TTY (true for `>file 2>&1`
-     * and for WSL2 interop pipes). abort() — which the PSYQ stubs use to
-     * surface unimplemented-surface hits — doesn't flush, so otherwise
+     * and for WSL2 interop pipes). abort() - which the PSYQ stubs use to
+     * surface unimplemented-surface hits - doesn't flush, so otherwise
      * useful diagnostics get dropped right before exit. Unbuffer once at
-     * startup. Linux behaviour is unchanged (line-buffered → unbuffered
+     * startup. Linux behaviour is unchanged (line-buffered -> unbuffered
      * is fine for stderr). */
     setvbuf(stderr, NULL, _IONBF, 0);
 
@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
 
     /* Bring the logger and its file mirror up before the recomp module is
      * attached. First boot builds that module, and a build that fails is
-     * exactly the report we need a file for — opening the sink inside
+     * exactly the report we need a file for - opening the sink inside
      * openpete_run() would be too late to record it. */
     openpete_log_init(opts.log_format, opts.log_level_spec);
     if (openpete_log_file_open(opts.log_file) == 0)
@@ -197,16 +197,16 @@ int main(int argc, char** argv) {
     openpete_mods_set_symbol_table(openpete_sdk_symbols,
                                    openpete_sdk_symbol_count);
     /* ...and the draw service's text rasterizer (Spyro's 3D gold
-     * text-moby glyphs — the same font as the FPS overlay). */
+     * text-moby glyphs - the same font as the FPS overlay). */
     openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
     /* ...and the content registries' game ops (moby classes, level slots). */
     spyro1_moby_ops_register();
     spyro1_level_ops_register();
     /* Level-segment asset overlay: needs the disc image to read
-     * the WAD TOC (lazy — first CdRead). */
+     * the WAD TOC (lazy - first CdRead). */
     spyro1_mod_wad_configure(opts.disc_path);
 
-    /* Standalone extraction stage — carve PSX.EXE +
+    /* Standalone extraction stage - carve PSX.EXE +
      * overlay blobs from the disc and exit (also the first stage of the
      * first-boot pipeline). Runs before module attach: extraction must
      * work when no module exists yet. */
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
     }
 
     /* Build-time mod compile (--compile-mods): compile every mod in the
-     * resolved mods dir against <exe>/sdk and exit — the cmake
+     * resolved mods dir against <exe>/sdk and exit - the cmake
      * `spyro1_mods` step for native presets; also pre-warms a dist
      * install's compile-on-boot cache. Needs no disc/library/window. */
     if (opts.compile_mods)
@@ -227,7 +227,7 @@ int main(int argc, char** argv) {
      * level files) and exit. Needs a disc, which is the library's most
      * recent entry unless --disc names one: opts.disc_path is empty until
      * the library resolves it, and walking an empty path yields an empty
-     * census. The splash stays off — this is a batch command and must not
+     * census. The splash stays off - this is a batch command and must not
      * open a window to ask which version to census. */
     if (opts.dump_sfx_pack_dir) {
         if (!opts.disc_path && !opts.exe_path) {
@@ -293,7 +293,7 @@ int main(int argc, char** argv) {
 
     /* Mod compile-on-boot: compile any
      * stale enabled source mods behind the splash while it is still
-     * alive — run_task lazy-opens the window only if there is real work,
+     * alive - run_task lazy-opens the window only if there is real work,
      * so a boot with nothing stale never flashes it. Loading stays in
      * openpete_run(); this pass only warms the build cache. */
     openpete_mods_prepare(&opts, spyro1_splash_progress,
@@ -302,9 +302,9 @@ int main(int argc, char** argv) {
     /* In-process continuation: the splash's job ends where the game
      * window begins. Every windowed run ADOPTS the splash window
      * (native_render retitles + reuses it) so the window never closes and
-     * reopens — both renderer modes display through the native window, so
+     * reopens - both renderer modes display through the native window, so
      * both want the handover. Headless closes it. Progress is unhooked
-     * either way — nothing may lazy-reopen a splash window mid-game. */
+     * either way - nothing may lazy-reopen a splash window mid-game. */
     spyro1_progress_cb = NULL;
     if (!opts.headless)
         opts.adopted_window = spyro1_splash_detach_window();
@@ -315,7 +315,7 @@ int main(int argc, char** argv) {
      * happen before openpete_run() so openpete_interp_init() (called
      * from inside the run loop) sees the regions. Explicit registration
      * instead of the weak-symbol pattern used by openpete_state_regions
-     * — MinGW's PE/COFF linker mis-resolves weak overrides in this
+     * - MinGW's PE/COFF linker mis-resolves weak overrides in this
      * configuration. */
     game_interp_register();
     /* Same explicit-registration rationale as game_interp_register()

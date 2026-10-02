@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_dist_first_boot.sh — the distribution gate.
+# check_dist_first_boot.sh - the distribution gate.
 #
 # Proves the SHIPPED artifact works: package it, put it somewhere clean,
 # --ingest the reference disc, let first boot extract+recompile+link the
@@ -24,13 +24,13 @@
 # pays a 12 s+ recompile), and no driver/display library may be bundled.
 #
 # Both variants run against a scratch HOME/XDG, because a fresh install
-# writes to the per-user directories (openpete_paths) — the gate must not
+# writes to the per-user directories (openpete_paths) - the gate must not
 # read or write the developer's real ones.
 #
 # The glibc floor is asserted here too: a release-base artifact
 # must not require symbols newer than the floor, or it fails to
 # start on the distributions it claims to support, with a loader error the
-# user cannot act on. Building on a dev box legitimately exceeds it — set
+# user cannot act on. Building on a dev box legitimately exceeds it - set
 # OPENPETE_DIST_ALLOW_GLIBC_FLOOR=1 to downgrade that to a loud warning.
 #
 # Exit 0 = PASS; 2 = failure; 64 = prerequisites missing.
@@ -38,7 +38,7 @@ set -euo pipefail
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set here rather than at
 # each invocation because this script builds its argument list in more than one
 # place, and a flag appended to the wrong one is a silent miss.
@@ -56,12 +56,12 @@ if [[ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]]; then
     for sock in "$XDG_RUNTIME_DIR"/wayland-*; do
         [[ -S "$sock" ]] || continue
         export XDG_RUNTIME_DIR WAYLAND_DISPLAY="${sock##*/}"
-        echo "[dist-gate] no display in the environment — adopting $WAYLAND_DISPLAY"
+        echo "[dist-gate] no display in the environment - adopting $WAYLAND_DISPLAY"
         break
     done
     if [[ -z "${WAYLAND_DISPLAY:-}" && -S /tmp/.X11-unix/X0 ]]; then
         export DISPLAY=:0
-        echo "[dist-gate] no display in the environment — adopting DISPLAY=:0"
+        echo "[dist-gate] no display in the environment - adopting DISPLAY=:0"
     fi
 fi
 
@@ -143,7 +143,7 @@ GLIBC_MAX=$GLIBC_MAX GLIBCXX_MAX=$GLIBCXX_MAX scripts/check_glibc_floor.sh "$app
     | sed "s|$appdir|<payload>/|; s|^|[dist-gate]   |" || floor_ok=0
 if [[ $floor_ok -eq 0 ]]; then
     if [[ -n "${OPENPETE_DIST_ALLOW_GLIBC_FLOOR:-}" ]]; then
-        echo "[dist-gate]   WARNING: floor exceeded — this artifact will NOT" \
+        echo "[dist-gate]   WARNING: floor exceeded - this artifact will NOT" \
              "start on the oldest supported distributions. Tolerated because" \
              "OPENPETE_DIST_ALLOW_GLIBC_FLOOR is set; a release must be built" \
              "in the Debian 11 container." >&2
@@ -194,7 +194,7 @@ if [[ $APPIMAGE -eq 1 ]]; then
           --ingest "$DISC_ABS" --max-runtime-seconds 900 \
           > "$WORK/first-boot.log" 2>&1 \
         || { echo "[dist-gate] FAIL: first boot did not complete with an" \
-                  "empty PATH — the image is not self-contained" >&2;
+                  "empty PATH - the image is not self-contained" >&2;
              tail -20 "$WORK/first-boot.log" >&2; exit 2; }
     grep -q "cc=.*recomp/tools/clang/bin/clang" "$WORK/first-boot.log" \
         || { echo "[dist-gate] FAIL: first boot did not use the bundled" \
@@ -209,8 +209,8 @@ else
 fi
 
 # A GUI launch has no terminal, so the log file is the only thing a user
-# can attach to a report. Assert the first boot — the run most likely to
-# go wrong on a stranger's machine — actually left one, and that it
+# can attach to a report. Assert the first boot - the run most likely to
+# go wrong on a stranger's machine - actually left one, and that it
 # carries the build it did rather than an empty shell.
 LOGF="$XDG_STATE_HOME/openpete/logs/openpete.log"
 [[ -s "$LOGF" ]] \
@@ -253,7 +253,7 @@ if [[ $APPIMAGE -eq 1 ]]; then
         || { echo "[dist-gate] FAIL: warm boot did not complete" >&2;
              tail -20 "$WORK/warm-boot.log" >&2; exit 2; }
     ! grep -q "first-boot module build" "$WORK/warm-boot.log" \
-        || { echo "[dist-gate] FAIL: warm boot rebuilt the module — the cache" \
+        || { echo "[dist-gate] FAIL: warm boot rebuilt the module - the cache" \
                   "key is not independent of the mount path" >&2; exit 2; }
     [[ "$(stat -c %Y "$module")" == "$module_stamp_before" ]] \
         || { echo "[dist-gate] FAIL: warm boot rewrote the cached module" >&2; exit 2; }
@@ -269,7 +269,7 @@ fi
 
 # An update that changes what the recompiler emits must re-key the module
 # cache. Keying on the PSXRecomp binary alone did NOT: a shipped manifest
-# change (a new funcs list, a channel-site update — the most common kind
+# change (a new funcs list, a channel-site update - the most common kind
 # of change between releases) silently handed the user the previous
 # version's module, with no crash and nothing that looked stale.
 echo "[dist-gate] an emission-input change re-keys the module cache..."
@@ -285,7 +285,7 @@ done
 after=$(ls "$DATA"/library/*/modules/*/spyro1-recomp.so 2>/dev/null | wc -l)
 (( after >= 2 )) \
     || { echo "[dist-gate] FAIL: a manifest change did not re-key the module" \
-              "cache — an upgrading user would keep running the previous" \
+              "cache - an upgrading user would keep running the previous" \
               "version's generated code" >&2; exit 2; }
 grep -q "building the recomp module from your disc" "$WORK/upgrade.log" \
     || { echo "[dist-gate] FAIL: the module was re-keyed but no rebuild ran" >&2;
@@ -331,4 +331,4 @@ grep -q "loaded hello-anchor" "$WORK/mod-boot.log" \
          tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
 
 what=$([[ $APPIMAGE -eq 1 ]] && echo AppImage || echo tarball)
-echo "[dist-gate] PASS — $what: unpack → ingest → self-build → oracle-clean → mod drop-in"
+echo "[dist-gate] PASS - $what: unpack -> ingest -> self-build -> oracle-clean -> mod drop-in"

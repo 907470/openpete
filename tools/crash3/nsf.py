@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nsf.py — read the Crash Bandicoot 3 demo's NSF archives straight off
+"""nsf.py - read the Crash Bandicoot 3 demo's NSF archives straight off
 the Spyro 1 disc image and expose the entries a model converter needs.
 
 The Spyro 1 disc (SCUS-94228) ships a Crash 3 demo under S0/: CRASH.EXE
@@ -13,7 +13,7 @@ NSF layout (Crash 2/3 engine; format reference: cbhacks/CrashEdit):
     0 = entry chunk, 1 = texture page, 3 = sound chunk.
   * Entry chunk: u32 entry count at +8, entry offsets from +16. Entry:
     u32 magic 0x100FFFF, eID, type, item count, then count+1 item offsets
-    (entry-relative) — item k spans [off[k], off[k+1]).
+    (entry-relative) - item k spans [off[k], off[k+1]).
     Types: 1 = SVTX (animation frames), 2 = TGEO (model), 7 = zone,
     11 = GOOL (object code + frame groups), 12 = sound.
   * Texture page chunk: EID at +4; the whole 64 KiB is raw VRAM bytes,
@@ -23,7 +23,7 @@ NSF layout (Crash 2/3 engine; format reference: cbhacks/CrashEdit):
 GOOL entries matter here only for their frame groups (item 5): a
 VertexGroup3 record {u16 1, u16 frames, u32 lerp, u32 number, u32 model
 eID, u32 anim eID} is the ONLY link from an SVTX animation to the TGEO
-model it poses — Crash 3 frames carry no model eID of their own.
+model it poses - Crash 3 frames carry no model eID of their own.
 """
 import struct
 from pathlib import Path

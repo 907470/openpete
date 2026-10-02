@@ -16,7 +16,7 @@ HEADER_FMT = "<III20x"  # magic, version, record_sz, 20 reserved
 HEADER_SZ = struct.calcsize(HEADER_FMT)
 assert HEADER_SZ == 32
 
-# struct openpete_vtrace_batch_t — 72 bytes
+# struct openpete_vtrace_batch_t - 72 bytes
 RECORD_FMT = (
     "<"      # little-endian
     "q"      # op_now_ns                int64
@@ -48,7 +48,7 @@ def read_records(path):
         if magic != 0x56545243:
             sys.exit(f"bad magic 0x{magic:08x} (expected 0x56545243 'VTRC')")
         if version != 2:
-            sys.exit(f"vtrace version {version} not supported — this script "
+            sys.exit(f"vtrace version {version} not supported - this script "
                      f"reads v2 (delta_sxy / interpolation model). Re-capture "
                      f"the trace with the current build.")
         if record_sz != RECORD_SZ:
@@ -118,7 +118,7 @@ def main():
 
         # Reconstruct the in-engine applied position. Interpolation
         # model: applied = from + alpha * delta_sxy (delta is the KNOWN
-        # [from→to] span, not a prediction).
+        # [from->to] span, not a prediction).
         if matched and not is_ui:
             dx, dy = apply_clamp(dsx * alpha, dsy * alpha)
             applied_sx = sx + dx
@@ -201,7 +201,7 @@ def main():
     for oid, rids in obj_renders.items():
         if len(rids) < 2: continue
         # Re-scan trace to collect this object's applied positions
-        # (For performance, only do this in a second pass — skip for now.)
+        # (For performance, only do this in a second pass - skip for now.)
     # Instead, sample: scan again with object-id tracking
     last_pos_by_oid = {}
     last_render_by_oid = {}
@@ -247,7 +247,7 @@ def main():
         print(f"\n  top 8 worst jumps (> 64 px):")
         for r, frame, oid, lsx, lsy, asx, asy, d in big_jumps[:8]:
             print(f"    render={r} frame={frame} obj={oid} "
-                  f"({lsx:.0f},{lsy:.0f}) → ({asx:.0f},{asy:.0f})  dist={d:.1f}")
+                  f"({lsx:.0f},{lsy:.0f}) -> ({asx:.0f},{asy:.0f})  dist={d:.1f}")
 
 
 if __name__ == "__main__":

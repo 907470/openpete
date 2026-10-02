@@ -1,4 +1,4 @@
-// games/spyro-1/feature_list.c — Spyro 1's registered feature modules.
+// games/spyro-1/feature_list.c - Spyro 1's registered feature modules.
 
 #include "feature_registry.h"
 
@@ -45,7 +45,7 @@ const feature_module_t* const openpete_features[] = {
      * (ABR mode 1) consumer. Hooks Spyro's flame renderer 0x80058D64 only when
      * OPENPETE_FLAME_VERIFY or a native renderer mode (--renderer vk) is
      * set; inert otherwise. Records the RP_FLAME polybuf range itself (so the
-     * render_paths thin bracket for flame is retired — see render_paths.c). */
+     * render_paths thin bracket for flame is retired - see render_paths.c). */
     &flame_module,
     /* Native-renderer SHADOWS: moby shadows (0x80059F8C, textured
      * FT3 fan, ABR mode 0) + Spyro silhouette shadow (0x80059A48, untextured
@@ -53,10 +53,10 @@ const feature_module_t* const openpete_features[] = {
      * only under OPENPETE_SHADOW_VERIFY or a native renderer mode; inert
      * otherwise. Records the RP_MOBY_SHADOW and RP_SHADOW polybuf ranges
      * itself (so the
-     * render_paths thin brackets for shadow are retired — see render_paths.c). */
+     * render_paths thin brackets for shadow are retired - see render_paths.c). */
     &shadow_module,
     &shadow_spyro_module,
-    /* Native-renderer PARTICLES: the particle family — particles
+    /* Native-renderer PARTICLES: the particle family - particles
      * (0x800573C8, 7 sprite classes), glows (0x800580F4, additive rings) and
      * sparkles (0x800584C4, twinkle quads). VERDICT-CRITICAL: the .s runs
      * headless (writes m_03 + Sparkle m_Life) and we only mirror geometry.
@@ -74,7 +74,7 @@ const feature_module_t* const openpete_features[] = {
      * func_8002B9CC (-> func_800258F0 world renderer) only under
      * OPENPETE_TERRAIN_VERIFY or a native renderer mode; inert otherwise.
      * Records the RP_TERRAIN polybuf range itself (so the render_paths thin
-     * bracket on func_8002B9CC is retired — see render_paths.c). */
+     * bracket on func_8002B9CC is retired - see render_paths.c). */
     &terrain_module,
     /* 2D-from-OT native UI: hooks func_800168DC (the 2D addPrim chokepoint) to
      * feed the title logo / "PRESS START" / HUD text sprites into the native
@@ -98,7 +98,7 @@ const feature_module_t* const openpete_features[] = {
      * present-commit (after portal's) for the sub-tick staleness latch. */
     &transition_module,
     /* --cheats: parse the selection at startup (apply_options only; the
-     * effects are written from game_on_frame_pre once a level is live —
+     * effects are written from game_on_frame_pre once a level is live -
      * see features/cheats.c). Inert without the flag. */
     &cheats_module,
     /* --skip-to-cutscene: intro (New Game's branch from a GamestateDraw
@@ -128,7 +128,7 @@ const feature_module_t* const openpete_features[] = {
      * per frame at BuildOrderTable, when the cursor is at its frame peak.
      * Overrunning the buffer walks primitives into g_WorldOT, which sits
      * immediately after it, and the OT tail-insert then dereferences primitive
-     * bytes as a node pointer — arbitrary 3-byte writes. Always falls through;
+     * bytes as a node pointer - arbitrary 3-byte writes. Always falls through;
      * Off by default; OPENPETE_POLYBUF_GUARD=1 enables it, =verbose also logs
      * per-frame headroom. */
     &polybuf_guard_module,

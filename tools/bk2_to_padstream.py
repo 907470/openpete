@@ -1,5 +1,5 @@
 """
-bk2_to_padstream.py — convert a BizHawk .bk2 movie to a flat padstream.
+bk2_to_padstream.py - convert a BizHawk .bk2 movie to a flat padstream.
 
 Output format (text, designed for Lua-side consumption):
 
@@ -12,13 +12,13 @@ Output format (text, designed for Lua-side consumption):
 
 Each non-comment line: `<frame_no> <pad1_hex> <pad2_hex>`. Pad words use the
 PSX convention (released-when-set; 0xFFFF = nothing pressed). pad2 is
-emitted as ffff today — the bk2 LogKey we read only carries P1.
+emitted as ffff today - the bk2 LogKey we read only carries P1.
 
 Companion: scripts/pcsx-redux-bk2-replay.lua loads this stream and drives
 PCSX-Redux's pad-override API so
 the openpete <-> PCSX-Redux oracle can run from the same input source.
 
-The decode logic mirrors core/record/bk2_movie.c — keep them in sync if
+The decode logic mirrors core/record/bk2_movie.c - keep them in sync if
 the bk2 dialect changes.
 """
 
@@ -30,7 +30,7 @@ import sys
 import zipfile
 from typing import List
 
-# bk2 P1 digital order → PSX pad bit *index* (not mask). Same table as in
+# bk2 P1 digital order -> PSX pad bit *index* (not mask). Same table as in
 # core/record/bk2_movie.c, just keyed by index instead of OR-mask.
 BK2_P1_DIGITAL_BIT = [
     4,   # 0  Up
@@ -49,7 +49,7 @@ BK2_P1_DIGITAL_BIT = [
     9,   # 13 R2
     1,   # 14 L3
     2,   # 15 R3
-    # index 16 = MODE — analog-toggle key, not a PSX bit; we stop at 16.
+    # index 16 = MODE - analog-toggle key, not a PSX bit; we stop at 16.
 ]
 
 
@@ -96,7 +96,7 @@ def parse_bk2(path: str) -> List[int]:
         if not line:
             continue
         if line.startswith(b"|") and not line.startswith(b"|["):
-            # Skip the LogKey header — that line starts with "LogKey:" so
+            # Skip the LogKey header - that line starts with "LogKey:" so
             # it's filtered above. Frame lines start with '|'.
             frames.append(decode_frame(line))
     return frames

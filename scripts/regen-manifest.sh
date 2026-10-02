@@ -5,14 +5,14 @@
 #   GAME=spyro-2 bash scripts/regen-manifest.sh
 #
 # Inputs:
-#   games/<game>/<game>/build/psx.map — parsed for symbol addresses
-#   games/<game>/manifest/native.toml — hand-curated native config
+#   games/<game>/<game>/build/psx.map - parsed for symbol addresses
+#   games/<game>/manifest/native.toml - hand-curated native config
 #
 # Outputs (all under games/<game>/):
-#   manifest/symbols.toml         — auto from psx.map
-#   manifest/globals.toml         — auto from psx.map
-#   generated/native_aliases.cmake — --defsym block
-#   generated/native_dispatch.c   — psx_override_dispatch_game switch
+#   manifest/symbols.toml         - auto from psx.map
+#   manifest/globals.toml         - auto from psx.map
+#   generated/native_aliases.cmake - --defsym block
+#   generated/native_dispatch.c   - psx_override_dispatch_game switch
 #
 # Run after `make` in the decomp submodule or after editing native.toml. Equivalent
 # to the regen-recomp.sh role for the recompiled-overlay pipeline.
@@ -30,7 +30,7 @@ GENERATED_DIR="games/$GAME/generated"
 REWRITTEN_DIR="$GENERATED_DIR/rewritten"
 
 if [[ ! -f "$PSX_MAP" ]]; then
-    echo "regen-manifest: $PSX_MAP not found — build the $GAME decomp first" >&2
+    echo "regen-manifest: $PSX_MAP not found - build the $GAME decomp first" >&2
     exit 1
 fi
 
@@ -41,14 +41,14 @@ python3 tools/build_manifest.py "$PSX_MAP" "$MANIFEST_DIR"
 # through the recompiler. The AST rewriter has nothing to do, and the four
 # generators below emit empty artifacts from an empty manifest.
 if [[ ! -f "$MANIFEST_DIR/native.toml" ]]; then
-    echo "regen-manifest: no $MANIFEST_DIR/native.toml — $GAME is fully recompiled,"
+    echo "regen-manifest: no $MANIFEST_DIR/native.toml - $GAME is fully recompiled,"
     echo "                symbols.toml and globals.toml written, nothing else to do."
     exit 0
 fi
 
 # Run the AST rewriter for every native source. Each TU emits
 # <stem>.rewritten.c (compiled by host CMake instead of the original) plus
-# <stem>.redirects.txt (Pass 2 bare-global slots — gen_defsyms.py merges
+# <stem>.redirects.txt (Pass 2 bare-global slots - gen_defsyms.py merges
 # them into the linker --defsym block below).
 mkdir -p "$REWRITTEN_DIR"
 # Wipe per-TU artifacts (discovered.toml / redirects.txt / rewritten.c)
@@ -69,7 +69,7 @@ for ns in cfg.get('native_source', []):
 
 # Pass 6 (auto-manifest discovery) needs the union of function names
 # defined by *other* native TUs in this domain, so it can suppress
-# same-domain native→native calls from the outbound_recomp set. Build
+# same-domain native->native calls from the outbound_recomp set. Build
 # that list per-TU by parsing each TU's exported FUNCTION_DECLs once;
 # we approximate cheaply with a grep over `^<retty> name(` patterns.
 NATIVE_FN_NAMES_FILE="$REWRITTEN_DIR/.native_fn_names.txt"
@@ -102,7 +102,7 @@ done
 
 # Auto-manifest (Pass 6): cross-check the discovered entries against the
 # hand-curated [[outbound_recomp]] / [[outbound_psyq]] / [[dispatch]] in
-# native.toml. Diagnostic-only — discrepancies don't fail the build, but
+# native.toml. Diagnostic-only - discrepancies don't fail the build, but
 # make it visible when the rewriter has caught up to (or surpassed) the
 # hand-list.
 python3 tools/diff_discovered_manifest.py "$MANIFEST_DIR" "$REWRITTEN_DIR" \

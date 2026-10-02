@@ -1,4 +1,4 @@
-// games/spyro-2/features/levelwarp.c — jump to any level from the dev
+// games/spyro-2/features/levelwarp.c - jump to any level from the dev
 // overlay (M key), from anywhere.
 //
 // --skip-to-level only works at boot: it hijacks the title screen's demo-
@@ -221,7 +221,7 @@ void spyro2_levelwarp_on_tick(CPUState* cpu) {
         return;
     }
 
-    /* The loader has the wheel and these phases write nothing more — they
+    /* The loader has the wheel and these phases write nothing more - they
      * only report status and keep a second warp from stacking. The level the
      * warp left is still live on the tick the transition is entered, so
      * arrival is only read once it has gone; then it waits for the next

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_glitch_mark.sh — the glitch-mark rings as a standing check.
+# check_glitch_mark.sh - the glitch-mark rings as a standing check.
 #
 # The glitch mark keeps the last N presents and the last N terrain walks in
 # two lock-free rings and writes them to a file on request, so a one-present
@@ -8,7 +8,7 @@
 #
 #   SWING       a walk whose terrain triangle count differs from BOTH
 #               neighbours by more than the threshold while the neighbours
-#               agree with each other — geometry that left and came back
+#               agree with each other - geometry that left and came back
 #   STAMP-BACK  a present that composed an OLDER terrain build than the
 #               present before it
 #   GAP         a skipped serial or ordinal, so the rows either side of it
@@ -20,8 +20,8 @@
 # current build: every flag it reports is a change of behaviour, not a
 # property of the scene.
 #
-# A headless run composes no presents at all — render_frame_common's callers
-# both early-return headless — so the present ring is empty here and only the
+# A headless run composes no presents at all - render_frame_common's callers
+# both early-return headless - so the present ring is empty here and only the
 # walk ring carries rows. STAMP-BACK is a present-ring flag and therefore
 # cannot fire in this mode; the walk ring's SWING and GAP are what this row
 # actually measures. The run still needs ONE screenshot request: headless
@@ -31,7 +31,7 @@
 # Engagement: the dump must carry a full DEPTH walk rows with none lost to
 # ring recycling. Fewer rows means the mark fired before the ring filled, or
 # the walk never ran, and the flag counts would then be a property of the
-# short window rather than of the build — refused as VACUOUS.
+# short window rather than of the build - refused as VACUOUS.
 #
 # Verdict line:
 #   [glitch-mark] game=<g> bk2=<b> at=w<n> depth=<n> walks=<n> presents=<n>
@@ -58,7 +58,7 @@ pg_resolve "$GAME"
 # Per game: the bk2, the walk ordinal the mark fires on, the ring depth, and
 # the VBL the screenshot request lands on. The ordinal names the END of the
 # window: the dump holds walks MARK_ORD-DEPTH+1 .. MARK_ORD. For spyro-1 that
-# is walks 701..1300 of artisans-bridge, VBLs 1781..2979 — wholly inside the
+# is walks 701..1300 of artisans-bridge, VBLs 1781..2979 - wholly inside the
 # loaded level, and clear of the three swings the earlier walks carry (two on
 # the title screen, one at the load itself).
 case "$GAME" in

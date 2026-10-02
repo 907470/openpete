@@ -1,7 +1,7 @@
 """PSX (ILP32) type-layout helper.
 
 Because parser.py runs libclang against the `mipsel-unknown-elf` target,
-clang itself returns ILP32 sizes/offsets — `sizeof(long) == 4`,
+clang itself returns ILP32 sizes/offsets - `sizeof(long) == 4`,
 `sizeof(void *) == 4`, struct field offsets laid out per MIPS R3000 ABI.
 We therefore lean on clang's own type metrics rather than re-implementing
 the layout algorithm. This module's job is to *classify* types from a
@@ -10,8 +10,8 @@ and host (LP64 / LLP64), so Pass 1 (struct relayout) and Pass 2 (bare
 globals) know what to rewrite.
 
 Width-divergent primitives:
-  long / unsigned long / u_long      —  4 (PSX) vs 8 (LP64), 4 (LLP64)
-  any pointer type                   —  4 (PSX) vs 8 (LP64 + LLP64)
+  long / unsigned long / u_long      -  4 (PSX) vs 8 (LP64), 4 (LLP64)
+  any pointer type                   -  4 (PSX) vs 8 (LP64 + LLP64)
 
 Composite types diverge if they contain any width-divergent leaf field
 (transitively through nested structs / arrays).
@@ -107,7 +107,7 @@ def type_diverges(t: ci.Type, _seen: Optional[set] = None) -> bool:
     # Pointers always diverge: PSX 4, host 8 (LP64 / LLP64).
     if _is_pointer_kind(canon):
         return True
-    # long / u_long: 4 PSX, 8 LP64 (4 LLP64). Treat as divergent — we
+    # long / u_long: 4 PSX, 8 LP64 (4 LLP64). Treat as divergent - we
     # normalize to int32 either way to avoid host-ABI sensitivity.
     if _is_long_family(t):
         return True
@@ -136,7 +136,7 @@ def type_diverges(t: ci.Type, _seen: Optional[set] = None) -> bool:
 def layout_struct(decl: ci.Cursor) -> StructLayout:
     """Build a StructLayout from a clang RecordDecl cursor.
 
-    The cursor must be a DEFINITION — forward decls have no offsets.
+    The cursor must be a DEFINITION - forward decls have no offsets.
     Uses clang's mipsel-target metrics for size/align/offsets.
     """
     if decl.kind not in (ci.CursorKind.STRUCT_DECL, ci.CursorKind.UNION_DECL):
@@ -156,7 +156,7 @@ def layout_struct(decl: ci.Cursor) -> StructLayout:
             continue
         offset_bits = t.get_offset(fld.spelling)
         if offset_bits < 0:
-            # Bitfield without a stable offset, or anonymous member — skip.
+            # Bitfield without a stable offset, or anonymous member - skip.
             continue
         ft = fld.type
         canon = ft.get_canonical()

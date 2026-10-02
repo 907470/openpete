@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_pacing.sh — the standing pacing gate.
+# check_pacing.sh - the standing pacing gate.
 #
 # Proves two things about the sim clock, in order:
 #
@@ -20,7 +20,7 @@
 #      bound was a centre estimate, so a fifth of presents overran it.
 #   4. Optionally (--tier-b), that a press entering the OS reaches the tick it
 #      should. That leg is opt-in because it needs a focused window on a real
-#      desktop and takes the foreground for the duration — a visible action on
+#      desktop and takes the foreground for the duration - a visible action on
 #      someone's machine, not a measurement detail. It SKIPS rather than passes
 #      wherever it cannot run.
 #
@@ -110,7 +110,7 @@ run_leg() {   # name, mode(headless|windowed), extra env assignments...
   echo "[pacing] leg $name ($mode, ${SECONDS_PER_LEG}s)"
   # Forward the knobs through WSLENV: a Windows .exe launched from WSL does
   # not inherit the Linux environment, and a knob that fails to arrive is
-  # silent — the run proceeds with the default and reports numbers about a
+  # silent - the run proceeds with the default and reports numbers about a
   # configuration nobody asked for.
   wslenv_forward "$@"
   if ! env "${WSLENV_ARGS[@]}" "$EXE" --disc "$DISC" --frame-limit "$VBLS" \
@@ -128,18 +128,18 @@ run_leg() {   # name, mode(headless|windowed), extra env assignments...
 # boundary unless WSLENV carries it (scripts/lib/wslenv.sh, applied to exactly
 # this array). An export here would look right, silently not arrive, and leave
 # a controller buzzing through a windowed pacing leg.
-# (Unattended launcher — scripts/fences/rumble_guard.py.)
+# (Unattended launcher - scripts/fences/rumble_guard.py.)
 COMMON=(OPENPETE_FORCE_PACING=1 OPENPETE_VIBRATION=0)
 
 # The grid leg is HEADLESS on purpose. It asks whether the clock holds its
 # own grid, and presents are exactly the interference that question is not
-# about — a windowed leg measures the display as much as the pacer, and on a
+# about - a windowed leg measures the display as much as the pacer, and on a
 # software rasterizer it measures llvmpipe.
 run_leg grid headless "${COMMON[@]}" || exit 2
 
 # The shed contract needs presents, which headless does not produce: only 16
 # intermediates in a 60 s headless run, against thousands windowed. Run it
-# windowed, and SKIP rather than pass if there is no display — a contract
+# windowed, and SKIP rather than pass if there is no display - a contract
 # that cannot execute has not been demonstrated.
 shed_possible=1
 if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ "$PLATFORM" != windows ]; then
@@ -181,7 +181,7 @@ drift_rc=$?
 #
 # Everything above measures the clock against itself. This measures it against
 # something outside the process, which is the only way to see the OS and pump
-# time ahead of the publish instant — and the only way to drive a KNOWN arrival
+# time ahead of the publish instant - and the only way to drive a KNOWN arrival
 # phase, which is what a latch-window claim needs.
 tierb_rc=0
 tierb_skipped=1
@@ -225,7 +225,7 @@ if [ $level_possible -eq 0 ]; then
   echo "[pacing] about pacing outside the attract demo."
 else
   # Gated on the RATE of late ticks, not on p99. In a level the tail is
-  # sparse — 10-25 VBLs over the goal out of ~2500 — so p99 falls among those
+  # sparse - 10-25 VBLs over the goal out of ~2500 - so p99 falls among those
   # few events and moves with their count: five runs of one unchanged build
   # measured 44.7, 81.9, 92.6, 256.3 and 256.4 us, straddling a 250 us gate.
   # The same runs' rate spanned 4.7-10.8 per 1000. A gate that flaps 40 % of
@@ -263,7 +263,7 @@ spans_i = li.of(pacelog.PRESENT_SPAN)
 
 fail = []
 if not ki:
-    fail.append("injected leg has no analysable VBL — VACUOUS")
+    fail.append("injected leg has no analysable VBL - VACUOUS")
 
 # The injector must actually have made presents expensive, or the leg proves
 # nothing about shedding.
@@ -286,11 +286,11 @@ if spans_i:
             f"for, so the two legs are the same configuration and nothing "
             f"here is a demonstration of anything")
 else:
-    fail.append("injected leg recorded no present spans — the path never ran")
+    fail.append("injected leg recorded no present spans - the path never ran")
 
 # A predicate that shed every intermediate would score perfectly on phase
 # error while destroying interpolation. Nothing below would have caught it:
-# every other check here rewards shedding. Measured for real — a candidate
+# every other check here rewards shedding. Measured for real - a candidate
 # margin rule left 16 intermediate presents in a run instead of ~16000.
 inter_b = sum(1 for r in lb.of(pacelog.PRESENT) if r.flags)
 inter_i = sum(1 for r in li.of(pacelog.PRESENT) if r.flags)
@@ -302,16 +302,16 @@ if inter_b > 100 and inter_i < inter_b // 10:
 
 print(f"sheds: {sheds_b} baseline -> {sheds_i} injected")
 if sheds_i == 0:
-    fail.append("shedding never engaged — the predicate is not firing, so "
+    fail.append("shedding never engaged - the predicate is not firing, so "
                 "nothing here demonstrates that presents are shed before "
                 "ticks slip")
 elif sheds_i <= sheds_b:
     # A machine whose presents are ALREADY too expensive sheds at the same
     # rate injected or not, because the baseline is saturated. That is a
-    # degenerate comparison, not a failure of the mechanism — engagement is
+    # degenerate comparison, not a failure of the mechanism - engagement is
     # still demonstrated. Say which case this is rather than pass silently.
     print("note: baseline already saturated (sheds did not rise with "
-          "injection) — engagement is shown, the differential is not. "
+          "injection) - engagement is shown, the differential is not. "
           "Run this leg on a machine where an uninjected present fits.")
 
 # The contract: under present pressure the TICK keeps its phase.
@@ -327,7 +327,7 @@ if ki:
           f"uninjected")
     if p99 > max(p99b * 3, p99_goal_us * 1000 * 4):
         fail.append(f"ticks did NOT hold phase under present pressure: "
-                    f"p99 {p99/1e3:.1f}us against {p99b/1e3:.1f}us baseline — "
+                    f"p99 {p99/1e3:.1f}us against {p99b/1e3:.1f}us baseline - "
                     f"presents are not being shed fast enough to protect them")
 
 for f in fail:

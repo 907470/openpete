@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/setup_duckstation.sh — bootstrap the vendored DuckStation regtest
+# scripts/setup_duckstation.sh - bootstrap the vendored DuckStation regtest
 # build that powers the openpete .psxtrace oracle.
 #
 # DuckStation lives as a submodule at third_party/duckstation, tracking
@@ -10,7 +10,7 @@
 #
 # Usage: scripts/setup_duckstation.sh
 #
-# Idempotent — safe to re-run. Skips steps already complete.
+# Idempotent - safe to re-run. Skips steps already complete.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

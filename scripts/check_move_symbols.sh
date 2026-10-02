@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# scripts/check_move_symbols.sh — the move-completeness gate for a
+# scripts/check_move_symbols.sh - the move-completeness gate for a
 # reorganization commit. A TU dropped from a CMake source list while its
 # file moves still builds, tests and renders identically when nothing links
 # its symbols; the only trace is the symbol set of the built artifacts. This
@@ -128,11 +128,11 @@ check|accept)
         done < <(declared_renames "$renames")
     fi
     if ! diff_out=$(diff "$expected" "$now"); then
-        echo "check_move_symbols: FAIL — the built symbol set differs from the record after $n_renames declared rename(s):" >&2
+        echo "check_move_symbols: FAIL - the built symbol set differs from the record after $n_renames declared rename(s):" >&2
         echo "$diff_out" | grep '^[<>]' | sed 's/^</  missing:/; s/^>/  extra:  /' >&2
         exit 3
     fi
-    echo "check_move_symbols: PASS — $(wc -l < "$now") symbols match the record after $n_renames declared rename(s)"
+    echo "check_move_symbols: PASS - $(wc -l < "$now") symbols match the record after $n_renames declared rename(s)"
     if [ "$cmd" = accept ]; then
         cp "$now" "$RECORD"
         echo "check_move_symbols: record updated"

@@ -1,4 +1,4 @@
-// core/ui/camlock.c — host-side state for the render camera lock (G).
+// core/ui/camlock.c - host-side state for the render camera lock (G).
 // See openpete_camlock.h. Generic, address-free; the g_Camera bracket write
 // lives in the game's re-extract orchestrator.
 
@@ -25,7 +25,7 @@
 #define CL_PITCH_LIMIT 992.0   /* 0x3E0 */
 
 /* Per-TICK move (world units) / turn (angle units) magnitudes per speed
- * step — the freecam's tables (the Spyro 1 freecam descriptor); the shared speed index
+ * step - the freecam's tables (the Spyro 1 freecam descriptor); the shared speed index
  * selects the row so both cameras feel identical at a given step. */
 static const double s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 500, 800 };
 static const double s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
@@ -115,10 +115,10 @@ void openpete_camlock_toggle(void) {
         s_pose_valid = false;
         s_moved      = false;
         OPL_INFO_F("camlock",
-                   "ON — view locked; WASD move, arrows look, Space/LShift "
+                   "ON - view locked; WASD move, arrows look, Space/LShift "
                    "up/down, [ ] speed. Sim continues underneath (render-only).");
     } else {
-        OPL_INFO_F("camlock", "OFF — camera returned to the game");
+        OPL_INFO_F("camlock", "OFF - camera returned to the game");
     }
 }
 

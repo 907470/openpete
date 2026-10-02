@@ -1,9 +1,9 @@
-# 0013 — Tear down GL before destroying the SDL window
+# 0013 - Tear down GL before destroying the SDL window
 
 ## Symptom
 
-Under an EGL-backed context the game runs to completion — all frames render,
-the exit line prints — and then segfaults during shutdown. The faulting
+Under an EGL-backed context the game runs to completion - all frames render,
+the exit line prints - and then segfaults during shutdown. The faulting
 address equals RIP and is a plausible-looking mapped-range address rather than
 0, and the backtrace is unambiguous:
 
@@ -13,7 +13,7 @@ address equals RIP and is a plausible-looking mapped-range address rather than
 #2  PsyX_Shutdown() at src/PsyX_main.cpp:1153
 ```
 
-`PsyX_render.cpp:451` is the first statement of `GR_Shutdown` —
+`PsyX_render.cpp:451` is the first statement of `GR_Shutdown` -
 `glDeleteVertexArrays`.
 
 ## Root cause
@@ -22,7 +22,7 @@ address equals RIP and is a plausible-looking mapped-range address rather than
 `GR_Shutdown()`. Destroying the last window makes SDL drop the GL context and
 unload the GL library. Under EGL nothing else holds that library open, so the
 `dlclose` actually unmaps it and every entry point resolved into it is left
-dangling — `GR_Shutdown`'s first `glDelete*` jumps into an unmapped page.
+dangling - `GR_Shutdown`'s first `glDelete*` jumps into an unmapped page.
 
 Under GLX the identical ordering survives only by luck: the library stays
 mapped because something else still references it. The ordering was always

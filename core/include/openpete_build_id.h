@@ -1,4 +1,4 @@
-// core/include/openpete_build_id.h — what this build calls itself.
+// core/include/openpete_build_id.h - what this build calls itself.
 //
 // One source for the version string: `git describe --tags --always --dirty`
 // at configure time, overridden by OPENPETE_DIST_VERSION, which is also what

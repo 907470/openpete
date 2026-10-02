@@ -1,9 +1,9 @@
-"""paceleg — running one paced leg of the game, and finding the binary.
+"""paceleg - running one paced leg of the game, and finding the binary.
 
 Every pacing harness needs the same three things: the right binary for the
 platform, a log destroyed before the run rather than after it, and knobs that
 actually reach the child. They live here so a second harness cannot drift into
-a third answer for any of them — in particular the WSLENV forwarding, which
+a third answer for any of them - in particular the WSLENV forwarding, which
 fails silently and yields a real, internally consistent measurement of a
 configuration nobody asked for.
 """
@@ -25,7 +25,7 @@ def exe_for(platform):
     else:
         p = REPO / "build/linux-release/games/spyro-1/openpete-spyro1"
     if not p.exists():
-        sys.exit(f"no binary at {p} — build the preset first")
+        sys.exit(f"no binary at {p} - build the preset first")
     return p
 
 

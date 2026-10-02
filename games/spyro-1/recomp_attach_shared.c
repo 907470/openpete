@@ -1,4 +1,4 @@
-// games/spyro-1/recomp_attach_shared.c — shared-linkage module attach.
+// games/spyro-1/recomp_attach_shared.c - shared-linkage module attach.
 //
 // The ROM-derived code lives in spyro1-recomp.{so,dll}, built from the
 // same sources as the static OBJECT library. This TU is the host half
@@ -16,7 +16,7 @@
 // resolve at link; here each is a forwarder through a pointer filled
 // at attach. The list is SELF-ENFORCING: a feature referencing a new
 // func_* compiles in static mode but fails THIS build's exe link with
-// an undefined symbol — add the symbol here (it is exported by the
+// an undefined symbol - add the symbol here (it is exported by the
 // module automatically; nothing else to update).
 #include "recomp_attach.h"
 #include "openpete_recomp_module.h"
@@ -129,9 +129,9 @@ static int file_readable(const char* p) {
 extern int spyro1_recomp_build_module(const char* disc_path,
                                       const char* out_module_path);
 
-/* First-boot build as a splash worker task: the extract → recomp →
- * compile → link pipeline must not run on the UI thread (a window drag
- * would freeze it — see spyro1_splash_run_task). */
+/* First-boot build as a splash worker task: the extract -> recomp ->
+ * compile -> link pipeline must not run on the UI thread (a window drag
+ * would freeze it - see spyro1_splash_run_task). */
 struct build_task { const char* disc; const char* out; };
 static int build_task_fn(void* p) {
     struct build_task* t = (struct build_task*)p;
@@ -140,7 +140,7 @@ static int build_task_fn(void* p) {
 
 /* Load the module at `path` and bind everything the host needs from it.
  * Returns the descriptor, or NULL with the handle closed again and
- * `*why` naming what was wrong — a caller holding a disc can rebuild and
+ * `*why` naming what was wrong - a caller holding a disc can rebuild and
  * retry rather than give up. The module must be CLOSED on failure: a
  * second dlopen of a path already mapped hands back the same stale
  * image, so a rebuild would appear not to have taken. */
@@ -189,8 +189,8 @@ int spyro1_recomp_attach(const char* module_path_override,
 
     if (!desc && allow_build && disc_path) {
         /* Either first boot, or an upgrade left a module this build
-         * cannot use. Both are the same job — recompile from the disc
-         * (extract -> recomp -> compile -> link) — and both are
+         * cannot use. Both are the same job - recompile from the disc
+         * (extract -> recomp -> compile -> link) - and both are
          * recoverable without the user doing anything, so say what is
          * happening rather than failing at them.
          *
@@ -201,13 +201,13 @@ int spyro1_recomp_attach(const char* module_path_override,
         if (!strcmp(why, "is not there"))
             /* Deliberately does NOT say "first boot". Since the codegen
              * stamp covers the emission inputs, an update that changes
-             * them lands on a fresh stamp and arrives here too — with a
+             * them lands on a fresh stamp and arrives here too - with a
              * library the user has been playing for weeks. */
             fprintf(stderr, "openpete: building the recomp module from your "
-                            "disc — this happens on first boot and after an "
+                            "disc - this happens on first boot and after an "
                             "update that changes the generated code\n");
         else
-            fprintf(stderr, "openpete: the recomp module %s — rebuilding it "
+            fprintf(stderr, "openpete: the recomp module %s - rebuilding it "
                             "from your disc\n", why);
         struct build_task bt = { disc_path, path };
         why = NULL;

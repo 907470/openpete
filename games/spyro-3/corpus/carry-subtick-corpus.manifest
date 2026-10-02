@@ -1,4 +1,4 @@
-# carry-subtick-corpus.manifest — rows for tests/harness/check_carry_subtick.sh.
+# carry-subtick-corpus.manifest - rows for tests/harness/check_carry_subtick.sh.
 #
 # <bk2> | <lo>-<hi> | lerps=<floor on the interpolated carry triangles>
 #

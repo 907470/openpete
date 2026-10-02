@@ -1,13 +1,13 @@
-/* psx_dither.frag — engine SCENE pass (`--dither`): PS1 15-bit colour.
+/* psx_dither.frag - engine SCENE pass (`--dither`): PS1 15-bit colour.
  *
  * The PS1 GPU shades gouraud/modulated prims at 8-bit internal precision but
  * stores an RGB555 framebuffer. To mask the 5-bit banding it adds a fixed 4x4
  * ordered matrix (-4..+3, indexed [y&3][x&3] of the framebuffer pixel) to each
- * channel before truncating, gated per prim by tpage bit 9 — which this game
+ * channel before truncating, gated per prim by tpage bit 9 - which this game
  * sets on effectively every 3D prim. Both halves together are the authentic
  * look: banding where the console banded, crosshatch where it dithered, the
  * two cancelling into smooth gradients at viewing distance. (Dither without
- * the truncation is just noise — the offset exists to straddle the 8->5 bit
+ * the truncation is just noise - the offset exists to straddle the 8->5 bit
  * quantisation boundary.)
  *
  * The dither lattice is the PSX 512x240 FRAMEBUFFER grid, not the window
@@ -16,12 +16,12 @@
  * 224), so the 4x4 cells stay chunky and authentic at any window size and
  * tile continuously into the Hor+ widescreen margins (negative cell indices
  * wrap via two's-complement &3). The --raster-quantize N multiplier is
- * deliberately ignored — hardware had exactly one framebuffer lattice.
+ * deliberately ignored - hardware had exactly one framebuffer lattice.
  *
  * Approximation vs hardware, accepted: the console dithers+truncates at
  * EVERY prim write (blend chains quantise per write; raw-texture SPRT writes
  * truncate without dithering), while this pass quantises the final composed
- * pixel once — exact for the visible opaque surface, approximate under blend
+ * pixel once - exact for the visible opaque surface, approximate under blend
  * stacks, and it dithers raw-sprite HUD pixels hardware would only truncate. */
 #version 450
 
@@ -30,7 +30,7 @@ layout(location = 0) out vec4 op_color;
 
 layout(set = 0, binding = 0) uniform sampler2D op_prev_pass;
 
-/* Engine frame state — must stay layout-identical to op_engine_ubo in
+/* Engine frame state - must stay layout-identical to op_engine_ubo in
  * openpete_shader_api.glsl (std140; only the fields this pass reads are
  * named past the header). */
 layout(set = 3, binding = 0, std140) uniform op_engine_ubo {

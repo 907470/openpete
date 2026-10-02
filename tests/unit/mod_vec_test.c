@@ -1,4 +1,4 @@
-// tests/unit/mod_vec_test.c — the mod surface's two growable tables
+// tests/unit/mod_vec_test.c - the mod surface's two growable tables
 // (core/mods/mod_vec.c): growth past one block, address stability, the
 // order-preserving remove, clear keeping storage, the no-ops on a zeroed
 // table, the flat table's contiguity, and the census line format.

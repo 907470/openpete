@@ -1,5 +1,5 @@
 # windows-mingw: Windows x64 cross dev build (run via WSL2 interop).
-# -march is pinned to the x86-64 baseline (not left implicit — toolchains vary
+# -march is pinned to the x86-64 baseline (not left implicit - toolchains vary
 # in what they default to) so the distributable runs on any x86-64 CPU. Raising
 # the floor to x86-64-v3 (AVX2/FMA/BMI2) buys nothing measurable: the hot path
 # is the recompiled game, scalar integer code with no vectorizable loops, and

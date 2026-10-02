@@ -1,4 +1,4 @@
-# arena-canary — CI fixture: proves guest_alloc memory is timeline state.
+# arena-canary - CI fixture: proves guest_alloc memory is timeline state.
 #
 # Holds one mutable arena block and mirrors the game's tick counter into
 # it from a tick hook. Savestate load, rewind, runahead rollback and the

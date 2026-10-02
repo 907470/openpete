@@ -1,5 +1,5 @@
 /*
- * rhi_smoketest — standalone RHI verification.
+ * rhi_smoketest - standalone RHI verification.
  *
  * Opens a Vulkan window and, over a cycling clear color, draws:
  *   - three quads sampled from a synthetic PSX VRAM test pattern
@@ -32,7 +32,7 @@
 #define VRAM_H 512
 #define TS       64   /* test texture size (texels per side) */
 
-/* Per-draw PSX material — must match the push_constant block in
+/* Per-draw PSX material - must match the push_constant block in
  * shaders/psx_sample.frag (five tightly-packed 32-bit ints). */
 typedef struct {
     int32_t tpage_x, tpage_y; /* texture page origin (VRAM 16-bit-pixel units) */

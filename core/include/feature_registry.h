@@ -1,7 +1,7 @@
-// feature_registry.h — generic glue for openpete presentation features.
+// feature_registry.h - generic glue for openpete presentation features.
 //
 // Each feature (Hor+ widescreen, internal-resolution upscale, FPS unlock,
-// …) provides a `feature_module_t` and gets listed in the per-game
+// ...) provides a `feature_module_t` and gets listed in the per-game
 // `feature_list.c`. The registry walks that list at boot to apply
 // command-line options and at every translated-function entry to
 // dispatch per-vaddr overrides.
@@ -38,7 +38,7 @@ typedef struct {
     uint32_t            overlay;
 } feature_dispatch_entry_t;
 
-/* Forward declarations dropped above — `openpete_options_t` comes
+/* Forward declarations dropped above - `openpete_options_t` comes
  * from openpete.h, `CPUState` from the typedef above. */
 
 typedef struct {

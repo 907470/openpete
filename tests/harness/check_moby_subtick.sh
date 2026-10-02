@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_moby_subtick.sh — sub-tick continuity of the animated mobys.
+# check_moby_subtick.sh - sub-tick continuity of the animated mobys.
 #
 # An intermediate present shows each moby between the pose the previous
 # canonical tick drew (alpha 0) and the pose the current one drew (alpha 1).
@@ -30,8 +30,8 @@
 #
 # A third bin is the facing reversal: an interval whose moby turns 0x40 byte
 # angles (90 degrees) or more on an euler axis while its keyframe pair
-# changes. The two channels the sub-tick pass interpolates — the per-vertex
-# model-space shape lerp and the euler sweep — cancel each other at the tick
+# changes. The two channels the sub-tick pass interpolates - the per-vertex
+# model-space shape lerp and the euler sweep - cancel each other at the tick
 # instant and not between: the shape lerp between a pose and its mirror image
 # has in-plane extent proportional to |1 - 2a| and collapses onto the flip's
 # invariant axis at alpha 0.5. No pose exists between the two, so the interval

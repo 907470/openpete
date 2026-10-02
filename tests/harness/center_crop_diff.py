@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""center_crop_diff.py — pixel-identity check on the central 4:3 region.
+"""center_crop_diff.py - pixel-identity check on the central 4:3 region.
 
 Both inputs must share the same height. The candidate is wider than (or
 equal to) the baseline; we center-crop both to the requested CROP_W x
@@ -37,7 +37,7 @@ def main() -> int:
                     help="if set, count pixels whose max-channel diff exceeds "
                          "this value and require count <= --max-divergent. "
                          "More stable than --tolerance: a single anti-aliased "
-                         "edge pixel can flip 0→255 across aspects, saturating "
+                         "edge pixel can flip 0->255 across aspects, saturating "
                          "the worst-per-channel metric.")
     ap.add_argument("--max-divergent", type=int, default=0,
                     help="max # pixels with diff > --diff-threshold")

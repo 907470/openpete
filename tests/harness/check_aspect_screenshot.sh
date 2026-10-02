@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_aspect_screenshot.sh — pixel-identity gate on the central 4:3 region.
+# check_aspect_screenshot.sh - pixel-identity gate on the central 4:3 region.
 #
 # Hor+ widescreen widens the GTE projection symmetrically: extra content
 # fills in to the left and right of the canonical PSX 4:3 frustum, while
@@ -33,9 +33,9 @@
 #     [--max-divergent=N]          max # pixels exceeding threshold
 #
 # Exit codes:
-#   0 — every aspect's central 4:3 region matches the baseline within tolerance
-#   1 — at least one aspect diverged
-#   2 — setup error (missing binary / disc / python deps)
+#   0 - every aspect's central 4:3 region matches the baseline within tolerance
+#   1 - at least one aspect diverged
+#   2 - setup error (missing binary / disc / python deps)
 
 set -uo pipefail
 
@@ -52,7 +52,7 @@ BASELINE="4:3"
 OUT_DIR="/tmp/aspect-screenshot"
 # Diff-count gate: pass when at most MAX_DIVERGENT[aspect] pixels in
 # the central 4:3 region have per-channel abs diff > DIFF_THRESHOLD.
-# Per-aspect ceilings — each ratchets the inherent integer-GTE
+# Per-aspect ceilings - each ratchets the inherent integer-GTE
 # precision floor for that aspect (the irrational-Δ-OFX silhouette
 # jitter).
 # Sub-pixel edge jitter trivially saturates a worst-per-channel
@@ -74,7 +74,7 @@ declare -A MAX_DIVERGENT_BY_ASPECT=(
     ["32:9"]=8000
 )
 # Used for any aspect not listed above (e.g. user-supplied via
-# --aspects=…). Loose so unknown aspects don't silently fail; tighten
+# --aspects=...). Loose so unknown aspects don't silently fail; tighten
 # by adding entries to MAX_DIVERGENT_BY_ASPECT.
 MAX_DIVERGENT_FALLBACK=20000
 
@@ -125,7 +125,7 @@ window_w_for() {
     local label="$1"
     local w h
     w="${label%:*}"; h="${label#*:}"
-    # Window height fixed at 720 ⇒ host:PSX = 3.0 vertically. Width
+    # Window height fixed at 720 => host:PSX = 3.0 vertically. Width
     # = 720 * W/H. We require an even integer (any AR with H not
     # dividing 720*W must be approximated, breaking pixel identity).
     python3 -c "

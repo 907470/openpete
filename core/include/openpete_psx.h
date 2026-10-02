@@ -1,4 +1,4 @@
-// core/include/openpete_psx.h — slim PSX runtime public API.
+// core/include/openpete_psx.h - slim PSX runtime public API.
 //
 // Replaces psxrecomp's bundled (Tomba-shaped) runner with a
 // minimal layer. We keep psxrecomp's CPUState definition (so generated
@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* CPUState lives in psxrecomp's psx_runtime.h — vendored, untouched. */
+/* CPUState lives in psxrecomp's psx_runtime.h - vendored, untouched. */
 #include "psx_runtime_internal.h"
 
 #ifdef __cplusplus
@@ -39,7 +39,7 @@ int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len);
  * Plain PSX hardware values, named so core/ doesn't carry bare hex
  * literals that the purity grep would mistake for game-specific
  * addresses. KSEG0 = cached unmapped, KSEG1 = uncached unmapped, KUSEG
- * = user — all alias the same 2MB RAM in this emulator. */
+ * = user - all alias the same 2MB RAM in this emulator. */
 #define OPENPETE_PSX_KSEG0_BASE     0x80000000u
 #define OPENPETE_PSX_KSEG1_BASE     0xA0000000u
 #define OPENPETE_PSX_SCRATCH_BASE   0x9F800000u
@@ -113,7 +113,7 @@ typedef struct {
      *
      *   mask_per_element=0: offsets are absolute into the region
      *                       (length-bounded; e.g. g_Spyro 0x2A0).
-     *   mask_per_element=1: offsets repeat per element_size — for
+     *   mask_per_element=1: offsets repeat per element_size - for
      *                       INDIRECT_ARRAY pools, masks every
      *                       element's offset N (e.g. Moby+0x54).
      * mask_count==0 means hash everything.
@@ -140,7 +140,7 @@ typedef struct {
      * because the region holds presentation-only state (e.g. particle
      * drawn-flags) that no gameplay path consumes. The audit obligation
      * is discharged by keeping the DOWNSTREAM regions any real coupling
-     * would flow through (psyq_rand_seed, g_Spyro, g_Sparx, …) fully
+     * would flow through (psyq_rand_seed, g_Spyro, g_Sparx, ...) fully
      * tracked: if this region ever did affect gameplay, those would
      * trip. Same spirit as the 0x80071xxx moby-render-queue removal, but
      * keeps the region visible in per-region diagnostics rather than
@@ -264,19 +264,19 @@ void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
 /* --- Dispatch ------------------------------------------------------------ */
 
 /* The recompiled-code dispatch entry lives behind the recomp-module
- * descriptor (openpete_recomp_module.h) — core carries no link-time
+ * descriptor (openpete_recomp_module.h) - core carries no link-time
  * reference to generated code. Game code that needs to re-enter the
  * recompiled world uses openpete_recomp_module_get()->dispatch. */
 
 /* Call a PSX function by vaddr from native C/C++ code. Used by the source
  * rewriter for `(*FN_PTR_GLOBAL)(args...)` call sites in matching-decomp,
  * where FN_PTR_GLOBAL stores a PSX vaddr. Routes through call_by_address
- * — tries the native dispatch table first, falls back to compiled, then
+ * - tries the native dispatch table first, falls back to compiled, then
  * to MIPS interpretation for overlay code. Saves/restores the caller's
  * cpu scratch slots. Pointer args must already be converted to PSX
  * vaddrs (use openpete_host_to_psx); int args pass through as uint32_t.
  * Up to 4 register args (a0..a3); 5+ args not yet supported. Returns
- * cpu->v0 — caller casts to int / pointer / etc. as appropriate. */
+ * cpu->v0 - caller casts to int / pointer / etc. as appropriate. */
 uint32_t openpete_psx_call_fnptr(uint32_t vaddr,
                                  uint32_t a0, uint32_t a1,
                                  uint32_t a2, uint32_t a3);
@@ -323,7 +323,7 @@ void openpete_psx_install_crash_handler(void);
  * both faults land on the fiber's stack. */
 void openpete_crash_test(void);
 
-/* --- EXE loader (BIN/CUE → bytes) ---------------------------------------- */
+/* --- EXE loader (BIN/CUE -> bytes) ---------------------------------------- */
 
 /** @brief Read the game's EXE out of a disc image.
  *

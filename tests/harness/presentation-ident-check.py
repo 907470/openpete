@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""presentation-ident-check.py — the sub-tick spine's identity check.
+"""presentation-ident-check.py - the sub-tick spine's identity check.
 
 The corpus captures an `ident` leg: the intermediate re-extract phased onto the
 newest tick's stamp (OPENPETE_INTERMEDIATE_ALPHA=1) on every canonical frame, the

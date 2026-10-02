@@ -1,4 +1,4 @@
-# modtest.toml — CI declaration for tools/modtest.py.
+# modtest.toml - CI declaration for tools/modtest.py.
 [test]
 frames     = 2400
 args       = "--skip-to-level town_square"

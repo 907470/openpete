@@ -1,4 +1,4 @@
-/* pace_log.c — unified pacing event log + always-on pacing census.
+/* pace_log.c - unified pacing event log + always-on pacing census.
  * See openpete_pace_log.h for the format and the reasoning behind it.
  */
 
@@ -25,8 +25,8 @@
 /* writer                                                             */
 /* ------------------------------------------------------------------ */
 
-/* Records arrive from two threads under the host split — the sim worker emits
- * VBL/PRESENT/SLIP, main emits INPUT_EDGE and the resize windows — so the
+/* Records arrive from two threads under the host split - the sim worker emits
+ * VBL/PRESENT/SLIP, main emits INPUT_EDGE and the resize windows - so the
  * append is locked. At ~500 records/s the mutex is far below the noise floor
  * of what is being measured; a lock-free ring would buy nothing but a class of
  * bug the instrument cannot afford. */
@@ -62,8 +62,8 @@ static openpete_pace_census_t s_census;
 
 const int64_t openpete_pace_hist_edges_ns[OP_PACE_HIST_BUCKETS] = {
     0,          /* early: started before the deadline                     */
-    100000,     /* 100 µs — the target band                               */
-    250000,     /* 250 µs — the p99 start-phase goal                      */
+    100000,     /* 100 µs - the target band                               */
+    250000,     /* 250 µs - the p99 start-phase goal                      */
     500000,
     1000000,
     2000000,
@@ -87,7 +87,7 @@ static void pace_flush_locked(void)
             /* Disk full or a closed pipe. Say so once and stop: silently
              * dropping records would leave a short log that still parses,
              * and a truncated pacing log reads as a clean short run. */
-            OPL_ERROR_F("pace", "write failed after %llu record(s) — closing",
+            OPL_ERROR_F("pace", "write failed after %llu record(s) - closing",
                         (unsigned long long)s_written);
             fclose(s_fp);
             s_fp = NULL;
@@ -381,8 +381,8 @@ static void maybe_clocksample(int64_t caller_ns)
      * HERE.
      *
      * Both must be sampled at the same instant. The caller's timestamp is a
-     * tick body older than this call — fiber, presents and captures happened
-     * in between — so pairing it with a fresh wall read would put a variable,
+     * tick body older than this call - fiber, presents and captures happened
+     * in between - so pairing it with a fresh wall read would put a variable,
      * load-correlated offset into every sample, which is indistinguishable
      * from clock drift in the very fit this record exists to feed. */
     const int64_t mono_ns = op_now();
@@ -509,9 +509,9 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
 
     const int paced = !(flags & OP_PACE_F_UNLOCK) && deadline_ns != 0;
 
-    /* A VBL whose grid was legitimately abandoned — paused, single-stepped,
+    /* A VBL whose grid was legitimately abandoned - paused, single-stepped,
      * rewound, running while the world is not live (CD load, level
-     * transition), or the first tick after a clamp discarded wall time — is
+     * transition), or the first tick after a clamp discarded wall time - is
      * not evidence about pacing. Its lateness is still reported (in the
      * transient max, and for a clamp in the slip ledger as well), just kept
      * out of the headline distribution: the boot stall otherwise sets the max
@@ -525,7 +525,7 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
     if (paced) {
         s_census.vbls_paced++;
         /* The start-phase error, the headline metric: how late the tick
-         * actually started against the grid point it was paced to. Signed —
+         * actually started against the grid point it was paced to. Signed -
          * an early start is a different defect from a late one and must not
          * average away. */
         const int64_t err = exec_start_ns - deadline_ns;
@@ -541,7 +541,7 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
             /* Only a VBL that actually CONSUMED a host sample contributes.
              * A claimed iteration leaves the previous publish instant
              * standing, and charging that age to a tick which never looked at
-             * the channel grows the bound without bound on a bk2 run — a
+             * the channel grows the bound without bound on a bk2 run - a
              * number about nothing, in the shape of a measurement. */
             if (latch_ns && latched_seq >= 2u) {
                 const int64_t off = exec_start_ns - latch_ns;
@@ -731,7 +731,7 @@ void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns)
     r.a = (int64_t)id;
     /* How long the wait actually blocked. A near-zero wait means the flip had
      * ALREADY happened and t_ns is when we asked, not when the display
-     * changed — the analysis must drop those rather than average them in. */
+     * changed - the analysis must drop those rather than average them in. */
     r.b = waited_ns;
     pace_emit(&r);
 }
@@ -809,7 +809,7 @@ void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
  * stopped publishing input for at least one whole iteration period, which is
  * the smallest stall worth a record of its own. */
 #define PACE_HOST_PUMP_FLOOR_NS   ((int64_t)1000000)
-/* The same, for the PARK — and it needs its own floor because a stall can
+/* The same, for the PARK - and it needs its own floor because a stall can
  * land on either side of the wait's return and only one of them is a cost.
  * A Win32 modal size/move loop runs the OS's loop INSIDE the wait, so the
  * iteration parks for the whole drag and does no work at all: judged on
@@ -944,7 +944,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
          * so no phase error is defined; the line reports VBL, present and
          * slip counts instead. */
         SDL_snprintf(buf, buf_bytes,
-            "unpaced (%llu VBL, %llu present) — no deadline was in force; "
+            "unpaced (%llu VBL, %llu present) - no deadline was in force; "
             "slips sim %llu/%llu render %llu/%llu",
             (unsigned long long)c->vbls,
             (unsigned long long)(c->presents[0] + c->presents[1]
@@ -957,7 +957,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     }
 
     /* Fraction of clean paced VBLs that started within the 250 µs
-     * start-phase goal — the one number worth reading at a glance. Buckets
+     * start-phase goal - the one number worth reading at a glance. Buckets
      * 0..2 are (early, <100 µs, <250 µs); bucket 0 is early starts, which
      * the loop cannot produce today (sim_due gates on now >= deadline) but
      * which a future pacer change could, and an early start is as much a
@@ -995,8 +995,8 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
 
     /* Three distinguishable states, because two of them are absences: no
      * probe wired (unmeasured), a probe that never fired (a real and alarming
-     * finding — the game stopped reading its pad), and a measurement. */
-    /* Reads by fiber runs that were not the VBL they landed in — speculation
+     * finding - the game stopped reading its pad), and a measurement. */
+    /* Reads by fiber runs that were not the VBL they landed in - speculation
      * under runahead, rewind replay. Real reads, excluded from the phase
      * distribution, and named rather than dropped so "exactly one per VBL"
      * cannot quietly mean "one per VBL plus some others we ignored". */
@@ -1027,7 +1027,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
      * not hide inside a healthy-looking line. */
     /* The pumping thread. Absent under the single-threaded path, where the
      * pump shares the sim's thread and its cost is already inside the VBL
-     * bracket — printing a zero there would claim a measurement that was
+     * bracket - printing a zero there would claim a measurement that was
      * never taken. */
     char pump[160];
     if (c->host_pump_iters)
@@ -1096,7 +1096,7 @@ int64_t openpete_pace_inject_present(void)
         s_us = (e && *e) ? strtoll(e, NULL, 10) : 0;
         if (s_us > 0)
             OPL_WARN_F("pace",
-                       "INJECTING %lld us into every intermediate present — "
+                       "INJECTING %lld us into every intermediate present - "
                        "shed-predicate fault injection, never a play path",
                        (long long)s_us);
     }
@@ -1116,7 +1116,7 @@ int64_t openpete_pace_inject_canonical(void)
         s_us = (e && *e) ? strtoll(e, NULL, 10) : 0;
         if (s_us > 0)
             OPL_WARN_F("pace",
-                       "INJECTING %lld us into every CANONICAL present — "
+                       "INJECTING %lld us into every CANONICAL present - "
                        "a present that cannot be shed; fault injection, "
                        "never a play path",
                        (long long)s_us);
@@ -1146,14 +1146,14 @@ int64_t openpete_pace_inject(int paced)
             }
             if (s_us > 0)
                 OPL_WARN_F("pace",
-                           "INJECTING a %lld us stall every %lld paced VBL — "
+                           "INJECTING a %lld us stall every %lld paced VBL - "
                            "instrument calibration only, never a play path",
                            (long long)s_us, (long long)s_every);
         }
     }
     if (s_us <= 0 || !paced) return 0;
     /* The spin below waits on op_now, which the virtual clock advances only
-     * from op_sleep_until — so spinning on it there never terminates. */
+     * from op_sleep_until - so spinning on it there never terminates. */
     if (op_virtual_clock_active()) return 0;
     if ((s_seen++ % (uint64_t)s_every) != 0) return 0;
 

@@ -1,25 +1,25 @@
-// core/record/savestate.c — save/load of openpete game state to slot files.
+// core/record/savestate.c - save/load of openpete game state to slot files.
 //
 // v3 file layout (little-endian throughout, no padding inside the header
 // thanks to fixed-size fields):
 //
 //   uint32_t  magic         = 'OSv1' (0x3176534F LE)
 //   uint32_t  version       = 3
-//   char      ident[32]     — content identity, see ident_fill()
-//   uint32_t  frame         — openpete_frame (VBL counter) at save
+//   char      ident[32]     - content identity, see ident_fill()
+//   uint32_t  frame         - openpete_frame (VBL counter) at save
 //   uint32_t  cpu_bytes
 //   uint32_t  ram_bytes
 //   uint32_t  scratch_bytes
-//   uint32_t  vram_bytes    (1 MiB — VRAM_WIDTH * VRAM_HEIGHT * 2)
-//   uint32_t  vbl           — openpete_vbl (guest-visible VSync counter);
+//   uint32_t  vram_bytes    (1 MiB - VRAM_WIDTH * VRAM_HEIGHT * 2)
+//   uint32_t  vbl           - openpete_vbl (guest-visible VSync counter);
 //                             restored so post-load wait loops don't see a
 //                             wild delta (a one-VBL timeline skew)
-//   uint32_t  spu_state_bytes  — PsyX SPU voice mirror + cursors
-//   uint32_t  spu_mem_bytes    — SPU sample RAM
-//   uint32_t  cd_state_bytes   — PsyCross CD head-position globals
-//   uint32_t  game_extra_bytes — opaque per-game host blob (game_extras)
-//   uint32_t  modset_tag_bytes — enabled-modset tag string (no NUL)
-//   uint32_t  arena_bytes      — mod arena section (ledger rows + used bytes)
+//   uint32_t  spu_state_bytes  - PsyX SPU voice mirror + cursors
+//   uint32_t  spu_mem_bytes    - SPU sample RAM
+//   uint32_t  cd_state_bytes   - PsyCross CD head-position globals
+//   uint32_t  game_extra_bytes - opaque per-game host blob (game_extras)
+//   uint32_t  modset_tag_bytes - enabled-modset tag string (no NUL)
+//   uint32_t  arena_bytes      - mod arena section (ledger rows + used bytes)
 //   uint32_t  reserved[3]   = 0 (DRAWENV/DISPENV later)
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
@@ -42,23 +42,23 @@
 // small fidelity gain.
 //
 // The CPU portion is exactly the prefix of CPUState that comes before its
-// memory-callback function pointers — those point at host code and must
+// memory-callback function pointers - those point at host code and must
 // not survive a save/load roundtrip.
 //
 // Identity gating (v3): ident = sha256("stateabi:<N>|cg:<codegen_stamp>|
 // rom:<rom_sha256>") hex-truncated to 30 chars. This covers what actually
-// varies between installations — the recomp module (boot-compiled per
-// machine under the distribution model) and the ROM — and pins the state
+// varies between installations - the recomp module (boot-compiled per
+// machine under the distribution model) and the ROM - and pins the state
 // LAYOUT via the curated OPENPETE_STATE_ABI number (bump it whenever any
 // section layout changes). Unlike the old __DATE__/__TIME__ hash, dev
 // rebuilds with unchanged layout keep their slots (the section-size checks
 // below still catch gross drift). Residual dev-only risk: a layout-only
-// change under an unbumped ABI on a "dev-static" codegen stamp — accepted,
+// change under an unbumped ABI on a "dev-static" codegen stamp - accepted,
 // same curation contract as OPENPETE_RECOMP_ABI_VERSION.
 
 #include "openpete_state.h"
 #include "openpete_discontinuity.h"
-#include "openpete_fiber.h"  /* openpete_vbl — saved/restored via hdr.vbl */
+#include "openpete_fiber.h"  /* openpete_vbl - saved/restored via hdr.vbl */
 #include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h" /* openpete_psx_bios_seed_ram */
@@ -130,7 +130,7 @@ extern int g_cdXaStartVBL;
  * 8 = SPUALVoiceState carries the voice head (consumed_dec_fp). */
 #define OPENPETE_STATE_ABI 8u
 
-/* Just the register file — the function-pointer tail of CPUState is
+/* Just the register file - the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
 #define CPU_REG_BYTES ((uint32_t)offsetof(CPUState, read_word))
 
@@ -161,7 +161,7 @@ typedef struct {
     int32_t num_frames;
     int32_t cd_com;
     int32_t read_done;
-    int32_t xa_start_lba;   /* virtual music-head anchor (LIBCD.C) — the */
+    int32_t xa_start_lba;   /* virtual music-head anchor (LIBCD.C) - the */
     int32_t xa_start_vbl;   /* GetlocP reply is a pure function of these */
 } state_cd_t;
 
@@ -336,7 +336,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     /* Guest-visible VBL counter (VSync(-1) reads it; Spyro's wait loops
      * compare it against counters stored in the SAVED guest RAM). Without
      * restoring it, the first post-load wait loop sees a wild delta and
-     * exits early — a one-VBL timeline skew (measured: post-load hash
+     * exits early - a one-VBL timeline skew (measured: post-load hash
      * timeline leads the post-save one by exactly one row). */
     hdr.vbl              = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     hdr.spu_state_bytes  = PsyX_SPUAL_StateSize();
@@ -349,7 +349,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     openpete_mods_arena_immutable_check("file save");
     hdr.arena_bytes      = openpete_mods_arena_state_size();
 
-    /* Snapshot the host-side mirrors into heap buffers before writing —
+    /* Snapshot the host-side mirrors into heap buffers before writing -
      * keeps them stable across the (potentially slow) disk I/O even
      * though the game fiber is yielded right now. */
     void* vram_snap  = malloc(hdr.vram_bytes);
@@ -473,7 +473,7 @@ static int state_header_check(FILE* fp, const char* path, const openpete_state_h
         memcpy(hh, hdr->ident,  OPENPETE_STATE_HASH_LEN); hh[OPENPETE_STATE_HASH_LEN] = '\0';
         memcpy(wh, want_ident, OPENPETE_STATE_HASH_LEN); wh[OPENPETE_STATE_HASH_LEN] = '\0';
         OPL_ERROR_F("savestate",
-                    "%s: identity mismatch (file=%s, this build=%s) — "
+                    "%s: identity mismatch (file=%s, this build=%s) - "
                     "state was made against a different ROM / recomp module "
                     "/ state ABI",
                     path, hh, wh);
@@ -582,7 +582,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     fclose(fp);
 
     /* PRE-COMMIT verdict: the arena ledger must pass BEFORE any guest
-     * byte is touched — a refused load leaves the timeline untouched. */
+     * byte is touched - a refused load leaves the timeline untouched. */
     if (rc == 0 && openpete_mods_arena_state_verdict(arena_buf,
                                                      hdr.arena_bytes) != 0)
         rc = -1;
@@ -590,7 +590,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     if (rc != 0) {
         free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
         free(extra_buf); free(arena_buf); free(tag_buf);
-        OPL_ERROR_F("savestate", "%s: load refused — running state untouched",
+        OPL_ERROR_F("savestate", "%s: load refused - running state untouched",
                     path);
         return -1;
     }
@@ -605,8 +605,8 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         if (!now_tag) now_tag = "";
         if (strcmp(now_tag, tag_buf) != 0) {
             OPL_ERROR_F("savestate",
-                        "%s: MODSET MISMATCH — state saved under [%s], "
-                        "running [%s]; load refused — running state "
+                        "%s: MODSET MISMATCH - state saved under [%s], "
+                        "running [%s]; load refused - running state "
                         "untouched. Enable the same mods (and versions) "
                         "the state was saved with.",
                         path, tag_buf, now_tag);
@@ -616,7 +616,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         }
     }
 
-    /* Commit. Only the register file is overwritten on cpu — the
+    /* Commit. Only the register file is overwritten on cpu - the
      * function-pointer tail (read_word/write_word/...) keeps its host
      * bindings from openpete_psx_runtime_init. */
     memcpy(cpu,                        cpu_buf,     CPU_REG_BYTES);
@@ -644,7 +644,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * a wild delta and the timeline leads by one VBL. */
     SDL_SetAtomicInt(&openpete_vbl, (int)hdr.vbl);
 
-    /* Per-game post-load resync — restores any host-side state that
+    /* Per-game post-load resync - restores any host-side state that
      * mirrors RAM (e.g. Spyro's active-overlay dispatcher pointer). */
     game_on_state_loaded(cpu);
 
@@ -655,7 +655,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     free(extra_buf);
 
     /* Arena apply (verdict passed pre-commit): restore the arena bytes
-     * and re-anchor both cursors before anything downstream — a mod's
+     * and re-anchor both cursors before anything downstream - a mod's
      * next tick hook may re-park against the restored layout. */
     openpete_mods_arena_state_apply(arena_buf, hdr.arena_bytes);
     free(arena_buf);
@@ -696,12 +696,12 @@ struct openpete_state_mem {
     state_cd_t cd;
     /* CD transport (command queue + drain-mode flags) and the game's
      * extra host-state blob. A speculative/rewound tick can run
-     * load-transition code — CD commands enqueued, the WAD cursor moved,
-     * the overlay dispatcher flipped — and restoring guest RAM without
+     * load-transition code - CD commands enqueued, the WAD cursor moved,
+     * the overlay dispatcher flipped - and restoring guest RAM without
      * these leaves the host machinery on the abandoned timeline: phantom
      * queued commands detonate the next CdSync drain, and a flipped
      * dispatcher routes overlay calls into the wrong level's functions.
-     * cdq holds host pointers → in-memory snapshots only, never disk. */
+     * cdq holds host pointers -> in-memory snapshots only, never disk. */
     uint8_t*   cdq;        /* PsyX_CD_QueueStateSize() */
     uint32_t   cdq_bytes;
     uint8_t*   gx;         /* game_state_extra_size() (may be 0) */
@@ -709,7 +709,7 @@ struct openpete_state_mem {
     /* VRAM: a speculative tick that crosses into a transition uploads
      * fade/loading graphics (LoadImage) into VRAM, and the committed
      * entry then reads VRAM back into gameplay RAM (the framebuffer-
-     * capture StoreImage the crossfade uses) — so VRAM is gameplay-
+     * capture StoreImage the crossfade uses) - so VRAM is gameplay-
      * READABLE state at transitions and must roll back with guest RAM.
      * Restored via the row-delta path: a tick whose speculation never
      * touched VRAM costs one compare, no GPU traffic. */
@@ -717,7 +717,7 @@ struct openpete_state_mem {
     uint32_t   vram_bytes;
     /* Mod arena: the used prefix [0, watermark). The watermark only
      * grows, so the buffer is realloc'd grow-only at save time (the
-     * ARENA itself is never realloc'd — only this snapshot copy). */
+     * ARENA itself is never realloc'd - only this snapshot copy). */
     uint8_t*   arena;
     uint32_t   arena_cap;
     uint32_t   arena_used;
@@ -809,7 +809,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     PsyX_CD_QueueRestore(m->cdq);
     /* Runs on the QUIET path too (runahead's per-tick rollback): a
      * speculative tick that crossed into a load moved the WAD cursor or
-     * flipped the overlay dispatcher — host state the committed timeline
+     * flipped the overlay dispatcher - host state the committed timeline
      * must never inherit from an abandoned branch. Cheap and change-only
      * (the dispatcher setter no-ops when the id already matches). */
     if (m->gx_bytes) game_state_extra_load(m->gx, m->gx_bytes);

@@ -1,4 +1,4 @@
-/* games/spyro-2/psyq_game_provides.h — the PSYQ hooks this game defines.
+/* games/spyro-2/psyq_game_provides.h - the PSYQ hooks this game defines.
  *
  * Naming a hook here suppresses its inert default in
  * games/common/psyq/psyq_game_hooks_default.c, so exactly one definition of it

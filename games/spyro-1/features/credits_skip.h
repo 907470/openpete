@@ -1,5 +1,5 @@
 #pragma once
-/* credits_skip.h — `--skip-to-cutscene` for Spyro 1.
+/* credits_skip.h - `--skip-to-cutscene` for Spyro 1.
  *
  * Five targets. `intro` enters from the title through New Game's branch;
  * `ending` and `ending_loot` enter from Gnasty's Lair (63) and Gnasty's Loot

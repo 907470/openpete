@@ -1,4 +1,4 @@
-// core/ui/openpete_menu.c — in-game settings menu state + logic.
+// core/ui/openpete_menu.c - in-game settings menu state + logic.
 // See openpete_menu.h.
 //
 // PURE PRESENTATION: every row maps to a native-renderer / host-pacer setter
@@ -35,8 +35,8 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
        ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
-        * compiled — the case labels below, the mod enumeration, s_fog_idx,
-        * openpete_fog_set/enabled and the LOD→fog autopilot coupling in
+        * compiled - the case labels below, the mod enumeration, s_fog_idx,
+        * openpete_fog_set/enabled and the LOD->fog autopilot coupling in
         * no_lod.c (LOD switches still move the fog scale). Move a row back
         * before ROW_COUNT (and restore its ROW_LABEL entry) to re-show it. */
        ROW_MODSEL, ROW_MODEN, ROW_FOG };
@@ -49,7 +49,7 @@ static const char* const ROW_LABEL[ROW_COUNT] = {
 
 /* OSD coalescing key per row. NAMED, not indexed, because the hotkeys that
  * front the same settings (L, F, Alt+Enter) raise their toasts from run.c and
- * native_render.c and must land on the SAME toast — a player who flips LOD
+ * native_render.c and must land on the SAME toast - a player who flips LOD
  * with the key and then with the row should see one toast repaint, not two
  * stack. */
 static const char* const ROW_OSD_KEY[ROW_COUNT] = {
@@ -70,7 +70,7 @@ static int s_quit_armed;
 
 /* SETTINGS is an action row, not a value: each left/right step picks SAVE or
  * CLEAR SAVED and applies it at once (openpete_menu_adjust). Persisting is
- * explicit — closing the menu must never rewrite the user's config file
+ * explicit - closing the menu must never rewrite the user's config file
  * behind them. */
 enum { SAVE_IDLE, SAVE_DO, SAVE_CLEAR };
 static int s_save_idx;      /* SAVE_* */
@@ -99,14 +99,14 @@ static const struct { const char* label; float wh; } s_aspect[] = {
  * @return 0 for the game's projection, else FOV_MIN + (idx - 1) * FOV_STEP. */
 static float fov_val(int idx) { return idx <= 0 ? 0.0f : (float)(FOV_MIN + (idx - 1) * FOV_STEP); }
 
-/* Ladder stops at OPENPETE_SSAA_MAX — 8X/16X ask for more render-target VRAM
+/* Ladder stops at OPENPETE_SSAA_MAX - 8X/16X ask for more render-target VRAM
  * than an 8GB card has (see openpete.h). 3X is a genuine rung, not a
  * power-of-two gap-filler: the resolve pass box-filters the exact NxN source
  * block, so an odd factor is as well defined as an even one, and 3X costs
  * ~44% less render-target area than 4X.
  *
  * Factor 1 reads OFF, not "1X": it is not a supersampling amount but the
- * absence of one — no supersampled target, no resolve pass. (The PIXELATION
+ * absence of one - no supersampled target, no resolve pass. (The PIXELATION
  * ladder below spells its own no-op step the same way, where 1X IS a
  * setting.) */
 static const int   s_ssaa_vals[]   = { 1, 2, 3, 4 };
@@ -115,8 +115,8 @@ static const char* s_ssaa_labels[] = { "OFF", "2X", "3X", "4X" };
 
 /* The PS1-look pair is two independent rows, each driving one setter, so the
  * menu offers the whole space the CLI knobs do:
- *   WOBBLE     — the integer-grid vertex snap (--vertex-precision), ON/OFF.
- *   PIXELATION — the scene point-resample (--raster-quantize N), OFF or a
+ *   WOBBLE     - the integer-grid vertex snap (--vertex-precision), ON/OFF.
+ *   PIXELATION - the scene point-resample (--raster-quantize N), OFF or a
  *                multiplier of the 512x240 PSX raster.
  * Snapping without quantizing leaves the snap's residual hairline cracks
  * visible; quantizing without snapping is a pixelated image with smooth
@@ -130,7 +130,7 @@ static const char* s_pix_labels[] = { "OFF", "1X", "2X", "4X", "8X", "16X" };
 /* FPS ladder, built from the monitor refresh at init. The final entry is an
  * UNLIMITED sentinel: a render-fps so high the wall-clock pacer never sleeps on
  * the render deadline, so presenting is GPU-bound (uncapped). It's a normal
- * render-fps value to the pacer — the sim still ticks at its fixed ~29.913 Hz;
+ * render-fps value to the pacer - the sim still ticks at its fixed ~29.913 Hz;
  * only presentation is uncapped (subject to vsync). Displayed as "UNLIMITED". */
 #define FPS_UNLIMITED 1000000
 static int s_fps_vals[16];
@@ -142,16 +142,16 @@ static int s_cursor     = 0;
 static int s_aspect_idx = 0;   /* AUTO     */
 static int s_fov_idx    = 0;   /* default  */
 static int s_fps_idx    = 0;   /* first ladder entry (30) */
-static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
+static int s_showfps_idx = 1;  /* ON - mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
-static int s_wobble_idx = 0;   /* OFF — re-synced from the live snap on open */
-static int s_pixel_idx  = 0;   /* OFF — re-synced from the live quantize on open */
-static int s_texmap_idx = 0;   /* CORRECT (perspective) — re-synced from the live mode on open */
-static int s_dither_idx = 0;   /* OFF — re-synced from the live flag on open */
+static int s_wobble_idx = 0;   /* OFF - re-synced from the live snap on open */
+static int s_pixel_idx  = 0;   /* OFF - re-synced from the live quantize on open */
+static int s_texmap_idx = 0;   /* CORRECT (perspective) - re-synced from the live mode on open */
+static int s_dither_idx = 0;   /* OFF - re-synced from the live flag on open */
 static int s_lod_idx    = 0;   /* ORIGINAL */
-static int s_fog_idx    = 1;   /* ON — re-seeded from the resolved scale at init */
-static int s_freecam_idx = 0;  /* OFF — re-synced from the live state on open */
+static int s_fog_idx    = 1;   /* ON - re-seeded from the resolved scale at init */
+static int s_freecam_idx = 0;  /* OFF - re-synced from the live state on open */
 static unsigned s_tick  = 0;   /* wobble/shimmer phase (draw step) */
 
 /* --- helpers ------------------------------------------------------------- */
@@ -232,7 +232,7 @@ static void build_fps_list(int refresh) {
 /* Mod menu rows: MOD cycles the loaded-mod selection;
  * MOD ENABLED shows + live-toggles the selected mod (applied at the
  * next tick boundary by the loader). Data comes straight from the
- * loader enumeration — zero mods shows NONE and the rows no-op. */
+ * loader enumeration - zero mods shows NONE and the rows no-op. */
 static int s_modsel_idx = 0;
 
 /** @brief Spell a row's current value for the glyph builder, the OSD, and the log.
@@ -247,8 +247,8 @@ static int s_modsel_idx = 0;
  * @return A static string or @p buf. */
 static const char* value_str(int row, char* buf, int buflen) {
     switch (row) {
-    /* DISPLAY reads the LIVE window state each frame (no shadow index) — like
-     * MOD ENABLED — so Alt+Enter / a double-click can never leave it stale. */
+    /* DISPLAY reads the LIVE window state each frame (no shadow index) - like
+     * MOD ENABLED - so Alt+Enter / a double-click can never leave it stale. */
     case ROW_DISPLAY:
         return openpete_native_fullscreen_active() ? "FULLSCREEN" : "WINDOWED";
     case ROW_ASPECT: return s_aspect[s_aspect_idx].label;
@@ -356,7 +356,7 @@ static void apply_row(int row) {
     case ROW_LOD:
         openpete_no_lod_set(s_lod_idx, -1.0f);
         /* Fog follows the LOD mode unless the user owns it (explicit
-         * --fog-scale / a manual FOG toggle — no_lod.c decides); mirror
+         * --fog-scale / a manual FOG toggle - no_lod.c decides); mirror
          * whatever the setter resolved so the FOG row never shows stale. */
         s_fog_idx = openpete_fog_enabled();
         break;
@@ -399,8 +399,8 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     if (!opts) return;
 
     /* Aspect: nearest FIXED preset to an explicit launch --aspect (the i=1
-     * start skips the AUTO entry — its 0.0 sentinel isn't a ratio); unset /
-     * `--aspect auto` → AUTO (follow the window, the default). */
+     * start skips the AUTO entry - its 0.0 sentinel isn't a ratio); unset /
+     * `--aspect auto` -> AUTO (follow the window, the default). */
     if (opts->aspect_w_over_h > 0.0f) {
         int best = 1; float bestd = -1.0f;
         for (int i = 1; i < N_ASPECT; i++) {
@@ -420,10 +420,10 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
         s_fov_idx = 0;
     }
 
-    /* FPS: exact/nearest in the ladder, seeded from the LIVE pacer target —
+    /* FPS: exact/nearest in the ladder, seeded from the LIVE pacer target -
      * run.c resolves the --render-fps default (display refresh when unset,
      * windowed) into s_render_fps before this init, so opts->render_fps may
-     * still hold the -1 sentinel. 0 = legacy match-sim → the 30 entry. */
+     * still hold the -1 sentinel. 0 = legacy match-sim -> the 30 entry. */
     {
         int live_fps = openpete_get_render_fps();
         s_fps_idx = nearest_idx(s_fps_vals, s_fps_count,
@@ -443,7 +443,7 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
 
     /* WOBBLE / PIXELATION: the native renderer has already resolved
      * --vertex-precision and the --raster-quantize auto default (which pairs
-     * with the snap when unset) — read each live value. */
+     * with the snap when unset) - read each live value. */
     s_wobble_idx = wobble_idx_from_live();
     s_pixel_idx  = pixel_idx_from_live();
 
@@ -457,7 +457,7 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     s_lod_idx = (opts->lod == OPENPETE_LOD_EXTENDED) ? 1 : 0;
 
     /* FOG: read the scale no_lod_apply_options already resolved (it runs
-     * before this init) — reflects --fog-scale and the LOD-mode default. */
+     * before this init) - reflects --fog-scale and the LOD-mode default. */
     s_fog_idx = openpete_fog_enabled();
 
     s_cursor = 0;
@@ -693,8 +693,8 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
      * pause-menu-tuned pitch was, so the list shortens with the glyphs instead
      * of thinning them. */
     const float spacing   = 0.0442f;   /* row-to-row, 1.49 x row_cap */
-    const float top_pad   = 0.055f;   /* panel top → title top, panel bottom → EXIT bottom */
-    const float title_gap = 0.070f;   /* title top → first row (larger header needs more) */
+    const float top_pad   = 0.055f;   /* panel top -> title top, panel bottom -> EXIT bottom */
+    const float title_gap = 0.070f;   /* title top -> first row (larger header needs more) */
     out->title_cap_h = title_cap;
     out->title_y     = out->panel_y0 + top_pad + title_cap * 0.5f;
     out->row_cap_h   = row_cap;
@@ -712,7 +712,7 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
         out->row_y[ROW_QUIT] = out->panel_y1 - top_pad - drawn * 0.5f;
     }
     /* Split point (labels right-align to label_x, values left-align at value_x).
-     * Kept left of centre — reduces the left padding and gives the widest row's
+     * Kept left of centre - reduces the left padding and gives the widest row's
      * value ("EXTENDED") room before the right border. */
     out->label_x = 0.300f;   /* label RIGHT-edge column */
     out->value_x = 0.335f;   /* value LEFT column        */
@@ -766,7 +766,7 @@ void openpete_menu_adjust(int dx) {
          * resulting live state back (nothing to apply below).
          *
          * The toast notify_row raises below therefore shows the state BEFORE
-         * the flip — it is a request, not a change. It self-corrects: the
+         * the flip - it is a request, not a change. It self-corrects: the
          * toggle announces on the same key when it actually runs, a frame or
          * two later, and repaints this toast with the truth. */
         openpete_native_request_fullscreen_toggle();
@@ -799,14 +799,14 @@ void openpete_menu_adjust(int dx) {
     case ROW_MODEN: {
         /* Queue the flip of the SELECTED mod; the loader applies it at
          * the next tick boundary and records the state the value_str
-         * reads back — no local shadow index to go stale. */
+         * reads back - no local shadow index to go stale. */
         const char* id = openpete_mods_id(s_modsel_idx);
         if (id)
             (void)openpete_mods_set_mod_enabled(
                 id, !openpete_mods_is_enabled(id));
         break;
     }
-    /* Action rows have no value to cycle — left/right are inert on them.
+    /* Action rows have no value to cycle - left/right are inert on them.
      * openpete_menu_activate() is the only way in. */
     case ROW_QUIT: return;
     default: break;

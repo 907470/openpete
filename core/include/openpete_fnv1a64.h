@@ -1,7 +1,7 @@
 #ifndef OPENPETE_FNV1A64_H
 #define OPENPETE_FNV1A64_H
 
-/* FNV1a-64 — used by the determinism harness to hash the
+/* FNV1a-64 - used by the determinism harness to hash the
  * gameplay-state regions per frame. Header-only so the unit test
  * can verify the implementation against published vectors without
  * pulling the whole runtime. */

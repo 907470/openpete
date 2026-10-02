@@ -1,4 +1,4 @@
-# Frozen terrain fill-face list — the reviewed LP faces that may back-fill
+# Frozen terrain fill-face list - the reviewed LP faces that may back-fill
 # sightlines no authored HP covers (water planes, level-boundary channels).
 # One row per FILL face; the columns are
 #     FILL <level> <sector> <face> <need-px> <provenance>
@@ -6,19 +6,19 @@
 #
 # MEMBERSHIP IS THE VERDICT. The runtime consults a static list generated from
 # this file (scripts/gen-fill-tags.py -> terrain_fill_tags.h), so a face that is
-# absent simply does not fill — there is nothing for a rejected row to guard
+# absent simply does not fill - there is nothing for a rejected row to guard
 # against, and the rejected-candidate rows the threshold classifiers needed are
 # gone. Every candidate the sweep raises still has to be reviewed before it is
 # written here; that review just leaves no residue when the answer is no.
 #
 # Two sanctioned ways to reach this file, both ending in a reviewed verdict:
 #   1. the coverage sweep (scripts/terrain-fill-sweep.sh) + a per-face strip
-#      review — the origin of every measured need-px row below;
+#      review - the origin of every measured need-px row below;
 #   2. the in-game inspector (P key):
 #      aim at a face, read its identity and whether authored HP covers that
 #      sightline, flip the verdict live, then fold the session file in with
 #      scripts/fill-tags-apply.py. Rows it adds carry provenance `pick` and
-#      need-px 0 — judged against the live scene, not a pixel measurement.
+#      need-px 0 - judged against the live scene, not a pixel measurement.
 # NEVER hand-edit a row in without one of those.
 FILL   artisans 43 0 4991 water-y283:1558,water-y284:1528,water-y260:1905
 FILL   artisans 43 2 8019 water-y283:2701,water-y284:2732,water-y260:2586

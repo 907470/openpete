@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bench-topdown.py — per-level whole-level-visible perf sweep.
+"""bench-topdown.py - per-level whole-level-visible perf sweep.
 
 For every Spyro 1 level this skips straight in, engages the freecam at the
 computed whole-level top-down pose (`--freecam-pose topdown`: centre of the
@@ -37,7 +37,7 @@ import bench_guard
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set in the environment
 # rather than at each invocation because this script builds its argument list
 # in more than one place, and a flag appended to the wrong one is a silent
@@ -50,7 +50,7 @@ DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
 DEFAULT_EXE = os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1")
 EXIT_SKIP = 64
 
-# games/spyro-1/features/levelwarp.c k_levels — every warpable level.
+# games/spyro-1/features/levelwarp.c k_levels - every warpable level.
 LEVELS = [
     "artisans", "stone_hill", "dark_hollow", "town_square", "toasty",
     "sunny_flight",
@@ -89,7 +89,7 @@ def run_level(exe, level, args, out_dir):
         # An active HD texture pack (a mod can carry one) rides the fold
         # into the retained cache these days, but it still costs pack
         # machinery (resolve/intern, atlas uploads) and enabled mods run
-        # their hooks — point --mods-dir at an empty dir to bench the
+        # their hooks - point --mods-dir at an empty dir to bench the
         # vanilla pipeline; benching WITH the play dir's enabled mods is
         # the pack-cost leg, not a baseline.
     ] + (["--terrain-cache", str(args.terrain_cache)]
@@ -213,7 +213,7 @@ def main():
                   lv, row.get("fps"), row.get("low1"), row.get("tris"),
                   row.get("rex_ter"), row.get("ter_feed"),
                   row.get("compose"), row.get("sim"),
-                  run["pose"] or "(no pose — level never went live?)"))
+                  run["pose"] or "(no pose - level never went live?)"))
 
     with open(os.path.join(out_dir, "rollup.json"), "w") as f:
         json.dump({"lod": args.lod, "extract_threads": args.extract_threads,

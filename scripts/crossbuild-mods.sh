@@ -93,7 +93,7 @@ if [[ -z "$SDK_DIR" ]]; then
 fi
 [[ -n "$SDK_DIR" ]] || die "no staged Windows SDK found under build/windows-mingw*/games/spyro-1/sdk; build a windows-mingw preset or pass --sdk DIR" 64
 [[ -f "$SDK_DIR/openpete_mod_abi.c" ]] \
-    || die "$SDK_DIR has no openpete_mod_abi.c — not a staged SDK" 64
+    || die "$SDK_DIR has no openpete_mod_abi.c - not a staged SDK" 64
 SDK_DIR=$(cd -- "$SDK_DIR" && pwd)
 
 # --- compiler -------------------------------------------------------------

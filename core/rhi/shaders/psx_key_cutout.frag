@@ -4,11 +4,11 @@
 
 /* TEXTURED key-pass fragment stage: alpha-aware og-key rasterisation.
  *
- * A keyed face's og OT occupancy exists only where its OPAQUE texels land —
+ * A keyed face's og OT occupancy exists only where its OPAQUE texels land -
  * the PSX p==0 sentinel is fully transparent on every prim, so whatever sits
  * behind those texels stays visible in the original painter. Rasterising a
  * textured face's key across its full footprint (the untextured key pipe's
- * behaviour) lets a mostly-transparent face — a cloak edge, a fence lattice —
+ * behaviour) lets a mostly-transparent face - a cloak edge, a fence lattice -
  * stamp a near key over its whole quad and key-discard everything behind the
  * holes, leaving nothing to draw there but the backdrop.
  *
@@ -31,7 +31,7 @@ layout(push_constant) uniform PsxMaterial {
     int bpp;
 } pc;
 
-layout(location = 1) in vec2 vUV;   /* u/w — see terrain_key.vert */
+layout(location = 1) in vec2 vUV;   /* u/w - see terrain_key.vert */
 layout(location = 3) in float vQ;   /* 1/w */
 layout(location = 4) flat in float vDrain; /* drain record tag */
 layout(location = 5) flat in float vKv;    /* flat key view-Z */

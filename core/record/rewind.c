@@ -1,4 +1,4 @@
-/* core/record/rewind.c — see openpete_rewind.h. */
+/* core/record/rewind.c - see openpete_rewind.h. */
 
 #include "openpete_rewind.h"
 #include "openpete_discontinuity.h"
@@ -61,7 +61,7 @@ void openpete_rewind_on_iter(const CPUState* cpu, unsigned frame, int live) {
     if (!s_ring_n) return;
     if (!live) {
         /* Level transition / loading: the mem snapshot excludes the
-         * sections that mutate here — rewinding across is undefined. */
+         * sections that mutate here - rewinding across is undefined. */
         openpete_rewind_clear();
         return;
     }

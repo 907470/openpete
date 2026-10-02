@@ -1,16 +1,16 @@
-// games/spyro-1/features/crash_demo_woah.c — the Crash 3 demo cheat, ported
+// games/spyro-1/features/crash_demo_woah.c - the Crash 3 demo cheat, ported
 // as an easter egg.
 //
 // Holding L1+Triangle on the title screen's "PRESS START" state makes the
 // original game shut the engine down (display mask, pad comms, callbacks)
-// and LoadExec cdrom:\S0\CRASH.EXE — a Crash Bandicoot 3 demo shipped on the
+// and LoadExec cdrom:\S0\CRASH.EXE - a Crash Bandicoot 3 demo shipped on the
 // Spyro disc. openpete cannot host a second EXE (LoadExec is a no-op thunk),
 // so unintercepted the guest returns from CrashDemoLaunch into the engine it
 // just tore down: masked display, dead pad, black screen.
 //
 // Instead the cheat becomes a sound: Crash's "woah!" plays in place of the
 // UI blip the branch fires, and the title screen carries on untouched. The
-// sample is the player's own — decoded out of the demo's level data on the
+// sample is the player's own - decoded out of the demo's level data on the
 // mounted disc image (S0/S000000D.NSF), never staged on disk; nothing ships
 // in the binary.
 //
@@ -18,28 +18,28 @@
 // branch tests (titlescreen overlay, substate 3, combo held), so every other
 // use of these functions is untouched:
 //
-//   KillSoundsAndMusic() — the branch's first act. On hardware it is moot
+//   KillSoundsAndMusic() - the branch's first act. On hardware it is moot
 //   (the program is about to be replaced); here it stops the title track for
 //   good and, worse, the branch then spins in a busy-wait until the CD has
 //   fully stopped, which costs a visible hitch every tick the combo is held.
 //   Swallowed. Its wait loop tests g_CdMusic.m_Flags for the SILENT bit, so
 //   the bit is spoofed for the handful of instructions between the swallow
-//   and CrashDemoLaunch and restored there — the loop falls straight
+//   and CrashDemoLaunch and restored there - the loop falls straight
 //   through, the CD is never stopped, and there is nothing to restart.
 //
-//   TitlescreenPlaySound(9) — the back/cancel blip. Left to run, with a
+//   TitlescreenPlaySound(9) - the back/cancel blip. Left to run, with a
 //   one-shot sample substitution armed underneath it (sfx_pack_arm_oneshot),
 //   so the game's own voice plays the woah: correct mixing, volume and mute
 //   for free, and no second audio path. Later ticks of the same held press
 //   are suppressed so the woah is not retriggered every frame.
 //
-//   CrashDemoLaunch() — swallowed whole; its body's shutdown sequence
+//   CrashDemoLaunch() - swallowed whole; its body's shutdown sequence
 //   assumes LoadExec never returns.
 //
 // The NSF is 2.5 MB and is read straight off the disc image, outside the
 // guest's CD path and its cache, so the decode runs on a worker thread
-// started when the title screen becomes resident — seconds before the combo
-// can be pressed — rather than inside the frame that presses it.
+// started when the title screen becomes resident - seconds before the combo
+// can be pressed - rather than inside the frame that presses it.
 //
 // NSF format (Crash 2/3 engine): a sequence of 64 KiB chunks, u16 magic
 // 0x1234 + u16 type at +2 (type 3 = sound chunk; Spyro 1's demo NSFs are all
@@ -332,7 +332,7 @@ static int on_titlescreen_play_sound(CPUState* cpu, uint32_t addr) {
     }
     s_press_handled = 1;
     if (!SDL_GetAtomicInt(&s_ready))
-        return 0;  /* woah not decoded (yet, or at all) — the blip stands in */
+        return 0;  /* woah not decoded (yet, or at all) - the blip stands in */
     sfx_pack_arm_oneshot(s_pcm, (int)s_pcm_frames, WOAH_RATE);
     s_arm_ticks = 0;
     OPL_INFO_F("game", "crash demo cheat: suppressing LoadExec teardown, playing"

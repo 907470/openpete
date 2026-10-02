@@ -1,4 +1,4 @@
-// core/runtime/run.c — openpete_run: boot the PSX EXE, optionally smoke-test
+// core/runtime/run.c - openpete_run: boot the PSX EXE, optionally smoke-test
 // one recompiled function, then run the host loop that drives the game fiber
 // (input, tick, present, pacing, logs and captures). Under the thread split
 // main pumps the window and a worker runs the loop; a build without PsyCross
@@ -49,7 +49,7 @@
 #include "openpete_glitch_mark.h"
 #include "openpete_freecam.h"
 #include "openpete_fillpick.h"
-#include "openpete_keymap.h"  /* [keys] — every host hotkey below */
+#include "openpete_keymap.h"  /* [keys] - every host hotkey below */
 #include "openpete_osd.h"     /* toast the changes the player makes */
 #include "feature_registry.h"
 #include "openpete_mods.h"
@@ -91,7 +91,7 @@
 #define CLEAR_G 0x14
 #define CLEAR_B 0x20
 
-/* 1 while the canonical present's lagged re-extract (lag_re) is running —
+/* 1 while the canonical present's lagged re-extract (lag_re) is running -
  * lets feeder-side diagnostics tag which present leg produced a sample. */
 int g_openpete_canon_lag_leg = 0;
 
@@ -165,11 +165,11 @@ static void vp_set_present_target(void) {
     openpete_interp_set_present_target(s_clk);
 }
 
-/* PCSX-Redux trace state — file-static so the dispatch hook (which has
+/* PCSX-Redux trace state - file-static so the dispatch hook (which has
  * to be a plain function pointer with no closure) can find it. There's
  * only ever one open trace per run. */
 static openpete_psxtrace_t* s_psxtrace_active = NULL;
-/* Set during host init, consumed by the host loop — which run on different
+/* Set during host init, consumed by the host loop - which run on different
  * threads under the split, so this cannot stay a local. Written once before
  * the worker exists and read-only thereafter. */
 static openpete_psxtrace_t* psxtrace = NULL;
@@ -193,12 +193,12 @@ int openpete_psxtrace_skip_current_to(uint32_t rec) {
 static void openpete_psxtrace_on_anchor(uint32_t addr) {
     (void)addr;
     if (!s_psxtrace_active) return;
-    /* EOF (1) and error (3) are terminal — stop advancing. Divergence (2)
+    /* EOF (1) and error (3) are terminal - stop advancing. Divergence (2)
      * is sticky for the host loop's exit-decision but the verifier keeps
      * comparing every subsequent frame so --psxtrace-keep-going can
      * surface ALL leaks across the trace, not just the first. Only a HARD
      * failure (non-transient mismatch, or a CD-load transient that didn't
-     * heal in the window) trips status 2 — a healing CD-load transient
+     * heal in the window) trips status 2 - a healing CD-load transient
      * leaves hard_failed clear so the run continues to EOF. */
     if (s_psxtrace_active->terminal_status == 1 ||
         s_psxtrace_active->terminal_status == 3) return;
@@ -214,7 +214,7 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
 /* Does the PsyCross GL renderer still rasterize the ordering table this run?
  * Computed once at boot (after the native renderer's bring-up). When the native
  * Vulkan renderer is the sole display (pure --renderer vk, windowed) PsyCross
- * does NOT walk/submit the OT — psyq_DrawOTag skips the GL rasterization (keeping
+ * does NOT walk/submit the OT - psyq_DrawOTag skips the GL rasterization (keeping
  * only the sim-tick timing pin) and PsyX_EndScene auto-no-ops via begin_scene_flag,
  * so there's no redundant GL draw and no second vsync swap on the hidden window.
  * It STAYS true (PsyCross renders) whenever the native renderer isn't the display
@@ -255,7 +255,7 @@ static SDL_AtomicInt g_native_fs_toggle_request;
 
 /* Player screenshot pending (the `screenshot` binding). Raised where the
  * bindings are sampled, consumed at the capture site below in the same
- * host-loop iteration — both on this thread, so a plain int is enough. */
+ * host-loop iteration - both on this thread, so a plain int is enough. */
 static int s_screenshot_request = 0;
 
 /* Raises g_native_fs_toggle_request; documented at the declaration. */
@@ -270,11 +270,11 @@ void openpete_native_request_fullscreen_toggle(void)
  * PsyCross's handlers (controller hotplug, resize, its debug keys, text input,
  * Alt tracking) so those keep working without PsyCross draining the queue
  * itself. SDL_PollEvent drains one shared queue, so a second drain does not
- * split the work — it steals events from whichever loop polls second.
+ * split the work - it steals events from whichever loop polls second.
  *
  * Each event goes to openpete_handle_event first, which consumes the ones
- * openpete owns outright — quit, window close, Escape's overlay dismiss, the
- * quit binding — and forwards the rest. Consuming quit/close here is what
+ * openpete owns outright - quit, window close, Escape's overlay dismiss, the
+ * quit binding - and forwards the rest. Consuming quit/close here is what
  * keeps PsyX_Exit (and its exit(0), which hangs on static teardown under
  * WSL+GL+libco) unreachable. */
 /* Guest-execution GPU audit (core/rhi/rhi_gpu_audit.h). Set around every
@@ -484,7 +484,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
         g_shutdown_requested = 1;
         return false;  /* never reaches PsyCross, so PsyX_Exit stays unreachable */
     }
-    /* Double-click toggles native-window fullscreen (see the host loop) —
+    /* Double-click toggles native-window fullscreen (see the host loop) -
      * unless the click landed on the dev overlay, the settings menu is open,
      * a camera or mod has requested capture, or some action binds
      * mouse:left (two quick presses of it are not a window gesture). */
@@ -518,7 +518,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
     if (ev->type == SDL_EVENT_KEY_DOWN) {
         const bool esc = (ev->key.scancode == SDL_SCANCODE_ESCAPE);
 
-        /* Escape dismisses an open overlay whatever `quit` is bound to —
+        /* Escape dismisses an open overlay whatever `quit` is bound to -
          * a UI convention rather than a binding, and it keeps unbinding
          * quit from stranding a panel open. (The open flags are plain
          * cross-thread reads; the menu close is routed through a request
@@ -528,7 +528,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
          * binding on the same key: with `menu` bound to Escape the poll
          * would otherwise still see it held and immediately reopen what
          * this just closed. Consumed until release, so pressing Escape
-         * again reopens — the dismiss and the toggle compose. */
+         * again reopens - the dismiss and the toggle compose. */
         if (esc && openpete_devui_is_open()) {
             openpete_devui_close();
             openpete_keymap_consume_key(ev->key.scancode);
@@ -562,7 +562,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
 static void openpete_on_sigint(int sig) {
     (void)sig;
     if (g_shutdown_requested) {
-        /* Second signal: something is hung in graceful shutdown — escape
+        /* Second signal: something is hung in graceful shutdown - escape
          * hatch so the user isn't stuck. _exit is async-signal-safe. */
         _exit(130);  /* 128 + SIGINT */
     }
@@ -599,11 +599,11 @@ static void position_log_emit(FILE* fp, unsigned frame, int vbl) {
 /* Default-empty fallback for the gameplay-state regions table. Per-game
  * TUs call openpete_state_regions_register() from game main (explicit
  * registration, NOT weak-symbol override: MinGW's PE/COFF linker
- * mis-resolves weak overrides in this configuration — count resolved
+ * mis-resolves weak overrides in this configuration - count resolved
  * strong while the pointer resolved weak-NULL, a NULL deref the moment
  * --psxtrace-verify computed the first hash on Windows). Without
  * registration the hash log is the FNV1a-64 offset basis on every
- * frame — useless but link-safe. */
+ * frame - useless but link-safe. */
 const OpenpeteStateRegion* openpete_state_regions = NULL;
 size_t openpete_state_region_count = 0;
 uint64_t openpete_state_regions_table_hash = 0;
@@ -649,7 +649,7 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
          * only and explicitly excluded from the determinism gate).
          * psx_runtime_canonicalize is `addr & 0x1FFFFF` in release; in
          * debug it asserts the input doesn't fall in a registered
-         * region's band — catching a future state-region manifest
+         * region's band - catching a future state-region manifest
          * mistake before it silently mirrors into g_ram. */
         if (is_indirect) {
             uint32_t ptr_off = psx_runtime_canonicalize(reg->start);
@@ -905,7 +905,7 @@ static int load_cpu_seed(CPUState* cpu, const char* path) {
 
 #ifdef OPENPETE_HAS_PSYCROSS
 /* PsyCross window/GL initialiser. Must be called before any libgpu/libgte
- * call (ResetGraph, SetGeomScreen, etc.) — those touch internal SDL/GL
+ * call (ResetGraph, SetGeomScreen, etc.) - those touch internal SDL/GL
  * state set up here. */
 /* Returns 0 if the window, core or PSX GPU state failed to come up. Ignoring
  * that leaves PsyCross's GL entry points unresolved, and the first libgpu call
@@ -989,7 +989,7 @@ extern int g_skipSwapInterval;
 typedef void (*PsyXPostRenderOverlayFunc)(void);
 extern PsyXPostRenderOverlayFunc g_psyx_postRenderOverlay;
 
-/* PsyCross's GL window — created by PsyX_Initialise. We need it so --headless
+/* PsyCross's GL window - created by PsyX_Initialise. We need it so --headless
  * can hide the window post-init (we keep a real GL driver for the context;
  * SDL's offscreen driver gives back a context with NULL function pointers
  * and we segfault on the first gl* call from GR_InitialisePSX). */
@@ -1082,7 +1082,7 @@ static void stamp_psx_pad_bindings(void) {
                 *(int*)(pad + map[i].pad_off) = code;
             }
         }
-        /* An unbound half must be cleared, not left at PsyCross's default —
+        /* An unbound half must be cleared, not left at PsyCross's default -
          * otherwise `cross = "pad:south"` would silently keep C bound too.
          * Both sentinels are PsyCross's own "NONE" values, the ones
          * PsyX_LookupKeyboardMapping / PsyX_LookupGameControllerMapping
@@ -1565,8 +1565,8 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * instant the old span covers would sit at NEGATIVE alpha of the new
      * bracket, a backward extrapolation the old bracket renders exactly. */
     /* The extension below moves the SLOT ENUMERATION past the instant
-     * production stops at, which is correct — those late instants are shown
-     * through the next tick's execution — but it is not time in which to
+     * production stops at, which is correct - those late instants are shown
+     * through the next tick's execution - but it is not time in which to
      * produce them. `prod_end` is that separate quantity. */
     span_end += s_eager.lag;
     if (s_eager.last_target && s_eager.last_target + period > first) {
@@ -1702,7 +1702,7 @@ static void eager_produce_one(op_time_t t, int canonical)
     if (s_eager.cost_n) {
         const op_time_t d = span > s_eager.cost_ema ? span - s_eager.cost_ema : s_eager.cost_ema - span;
         /* Slower than the mean: the deviation feeds the plan's capacity
-         * verdict, and an 8-sample window is half a tick — short enough that a
+         * verdict, and an 8-sample window is half a tick - short enough that a
          * single costly scene moves the level and starts a limit cycle. */
         s_eager.cost_dev = (s_eager.cost_dev * 31 + d) / 32;
     }
@@ -1820,7 +1820,7 @@ static void game_fiber_entry(void) {
                    g_game.cpu.v0);
     }
     g_game.done = 1;
-    /* Permanent yield — never resume. */
+    /* Permanent yield - never resume. */
     while (1) co_switch((cothread_t)openpete_host_fiber);
 }
 
@@ -1953,7 +1953,7 @@ static void pace_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns)
 static op_time_t s_present_cost_ema;
 /* EMA of |cost - ema|: the WIDTH of the cost distribution, not just its
  * centre. The predicate needs an upper bound on what the next present will
- * cost, and an EMA alone is a centre estimate — on a right-skewed cost
+ * cost, and an EMA alone is a centre estimate - on a right-skewed cost
  * distribution it is exceeded constantly. Measured over 49k recorded presents,
  * the shipped `ema + ema/4` bound was exceeded by **18-19 % of presents**, in
  * the attract demo and in a level alike. */
@@ -1963,7 +1963,7 @@ static int       s_present_shed_run;
 /* Largest remaining-budget seen at an intermediate opportunity, decayed so it
  * tracks the machine instead of latching on one lucky moment. The probe below
  * needs "the moment in the cycle with the most budget"; expressed as a FIXED
- * fraction of a tick that moment does not exist on every machine — measured on
+ * fraction of a tick that moment does not exist on every machine - measured on
  * an Arc 140V laptop, the budget at 11 119 consecutive sheds never once
  * exceeded 9.6 ms against a 16.7 ms requirement, so the probe could not fire
  * and interpolation stayed off for the whole run. */
@@ -2026,8 +2026,8 @@ static void pace_record_present(uint8_t kind)
 /* Slip ledger for the pacer's deadline clamps below. A clamp fires when the
  * loop has fallen more than slip_threshold_ns behind and snaps the deadline
  * forward by whole periods instead of firing catch-up iterations back to
- * back. That is the correct behaviour — a stall must never be repaid as a
- * burst — but it DISCARDS real time, so it must never be silent.
+ * back. That is the correct behaviour - a stall must never be repaid as a
+ * burst - but it DISCARDS real time, so it must never be silent.
  *
  * The two kinds are not equally serious. A render slip is display-only: a
  * present was late, nothing about the game moved. A SIM slip means wall-clock
@@ -2078,7 +2078,7 @@ void openpete_set_render_fps(int fps) {
 /* Live tick-scale (dev overlay). Same dirty-flag shape as render-fps: the
  * host loop re-derives every scaled period (sim, render, tick, slip) at its
  * top-of-iteration quiescent point and re-anchors the deadlines. Pacing
- * only — the sim executes identical ticks, just on a stretched wall clock
+ * only - the sim executes identical ticks, just on a stretched wall clock
  * (headless/unlock ignores the deadlines entirely). */
 static double s_tick_scale       = 1.0;
 static int    s_tick_scale_dirty = 0;
@@ -2101,8 +2101,8 @@ double openpete_get_tick_scale(void) {
 }
 
 /* Live runahead depth (dev overlay). Same dirty-flag shape: the host loop
- * re-arms at its top-of-iteration quiescent point — speculation is fully
- * contained inside one ticked iteration (save → speculate → restore), so
+ * re-arms at its top-of-iteration quiescent point - speculation is fully
+ * contained inside one ticked iteration (save -> speculate -> restore), so
  * there is never in-flight state to tear. s_runahead_live is the applied
  * depth after the mod-capability gate (may be forced 0). */
 static int s_runahead_req   = 0;
@@ -2123,7 +2123,7 @@ int openpete_runahead_get(void) { return SDL_GetAtomicInt(&s_runahead_live); }
 /* Live engine-level mute (dev overlay). Same three gain clamps the boot
  * apply uses; s_mute replaces opts->mute as the baseline the F7 pause
  * exit restores, so a live toggle survives a pause/resume cycle. Host
- * audio only — never gameplay state. (Toggling OFF while paused unmutes
+ * audio only - never gameplay state. (Toggling OFF while paused unmutes
  * the pause silence until resume; harmless dev-tool edge.) */
 static int s_mute = 0;
 /* Transient mute held while the skip-to-level present fast-forward is up:
@@ -2273,7 +2273,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_set_music_volume(opts->music_volume);
 
     /* --vibration: the host-side strength (0..10, -1 = parity), plus the
-     * context gates. Headless is a refusal rather than a default — a run with
+     * context gates. Headless is a refusal rather than a default - a run with
      * no window has no player at the desk, and every gate battery, capture and
      * scripted launch is one.
      *
@@ -2306,7 +2306,7 @@ static int run_host_init(const openpete_options_t* opts) {
             g_PsyX_Pad_ActuatorRegister = openpete_rumble_register;
         else
             OPL_INFO_F("rumble", "actuator registration hook NOT installed "
-                                 "(%s) — PadSetAct keeps its one-shot behaviour",
+                                 "(%s) - PadSetAct keeps its one-shot behaviour",
                        rumble_legacy ? "OPENPETE_RUMBLE_LEGACY"
                                      : "OPENPETE_INPUT_LEGACY");
     }
@@ -2323,7 +2323,7 @@ static int run_host_init(const openpete_options_t* opts) {
 
     /* seed-cpu / seed-ram block. Both run AFTER openpete_psx_boot so the
      * seeds win over the EXE-loader's writes. seed-cpu also short-circuits
-     * the --test-recomp-gp override below — if the user asked us to seed
+     * the --test-recomp-gp override below - if the user asked us to seed
      * the full register set, we do not want a stale --test-recomp-gp value
      * clobbering the seeded gp inside game_fiber_entry. */
     if (opts->seed_cpu_path) {
@@ -2370,7 +2370,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_knob_default_window_set(game_default_window_w(), game_default_window_h());
     /* If --aspect is set but the user didn't pin --window, scale the
      * default window so the *cropped* (post-overscan) src exactly fills
-     * it — otherwise the present blit letterboxes the un-rendered
+     * it - otherwise the present blit letterboxes the un-rendered
      * disp/clip difference. The cropped aspect = requested_aspect ×
      * game_display_crop_factor(), the game's own disp_h/clip_h.
      * An explicit --window always wins. */
@@ -2381,7 +2381,7 @@ static int run_host_init(const openpete_options_t* opts) {
          * modes keep --aspect (window-driven Hor+). */
         OPL_WARN_F("aspect", "--aspect is native-renderer-only (the PsyCross "
                    "Hor+ substitution stack was retired); the PsyCross "
-                   "reference renders canonical 4:3 — flag ignored");
+                   "reference renders canonical 4:3 - flag ignored");
     } else if (opts->aspect_w_over_h > 0.0f &&
         opts->window_w <= 0 && opts->window_h <= 0) {
         const float crop_factor = game_display_crop_factor();
@@ -2450,7 +2450,7 @@ static int run_host_init(const openpete_options_t* opts) {
     g_psyx_present_native_raster = opts->psycross_native_raster ? 1 : 0;
 
     /* Pure vk runs PsyCross as a LIBRARY only (null-GPU
-     * mode — SDL + vblank/intr core + input + SPU + CDFS, but no GL window,
+     * mode - SDL + vblank/intr core + input + SPU + CDFS, but no GL window,
      * no GL context, no PSX GPU state; every GL-touching GR entry point
      * early-returns). Kills the hidden-window GL context AND the per-frame
      * GL tax the libgpu thunks were still paying on it (DrawSync/LoadImage2
@@ -2461,8 +2461,8 @@ static int run_host_init(const openpete_options_t* opts) {
      * behaviour minus the (never-rendered) framebuffer PBO path. */
     /* Null-GPU applies exactly when PsyCross would never rasterize anything:
      * windowed pure-vk with no screenshot requests (the play path). Everything
-     * that needs the PsyCross REFERENCE — the -og screenshot variant,
-     * present-sequence capture — and headless (native
+     * that needs the PsyCross REFERENCE - the -og screenshot variant,
+     * present-sequence capture - and headless (native
      * render disabled there; PsyCross still rasterizes for the oracle) keeps
      * the full GL init. Mirrors the openpete_psycross_renders computation
      * below: if that would be 1, PsyCross needs its GPU. */
@@ -2483,13 +2483,13 @@ static int run_host_init(const openpete_options_t* opts) {
         OPL_INFO_F("devui", "%s", "--devui-open is inert in this run: the "
                    "dev config overlay exists only in a windowed native-vk "
                    "session");
-    /* Headless still uses the real GL driver — SDL's "offscreen" video driver
+    /* Headless still uses the real GL driver - SDL's "offscreen" video driver
      * hands back a context with NULL gl* function pointers, so the first call
      * from GR_InitialisePSX segfaults. A GPU/display backend (X/Wayland/WSLg/
      * WGL) must therefore be present; pure-console CI needs Xvfb. The window
      * is created unmapped via startHidden so it never flashes or steals
-     * focus — GL/FBO rendering works fine without it ever being shown.
-     * (Both apply only when PsyCross's renderer actually initialises —
+     * focus - GL/FBO rendering works fine without it ever being shown.
+     * (Both apply only when PsyCross's renderer actually initialises -
      * PsyCross mode; null-GPU vk creates no window or context at all.) */
     /* PsyCross renders to its FBO only; the native Vulkan window is the
      * display in every mode. What reaches the screen is either the native
@@ -2559,7 +2559,7 @@ static int run_host_init(const openpete_options_t* opts) {
     }
 
     if (opts->headless && g_window) {
-        /* Window was created unmapped (PsyX_Initialise startHidden=1) — no
+        /* Window was created unmapped (PsyX_Initialise startHidden=1) - no
          * hide needed here; just record the driver SDL picked. */
         OPL_INFO_F("boot", "headless: PsyCross window created hidden (driver=%s)",
                    SDL_GetCurrentVideoDriver());
@@ -2568,13 +2568,13 @@ static int run_host_init(const openpete_options_t* opts) {
     /* Wire up the post-render overlay so PsyX_EndScene stamps an FPS counter
      * onto every presented frame. Has to be after PsyX_Initialise (the GL
      * context must exist before the overlay's first emit, but registration
-     * itself doesn't touch GL — it just stores the callback). */
+     * itself doesn't touch GL - it just stores the callback). */
     g_psyx_postRenderOverlay = openpete_fps_overlay_emit;
 
     /* --record: arm gameplay video capture. The encoder is built lazily on
      * the first captured frame (once the present FBO's native dimensions are
      * known); this only stashes the parameters. The FPS overlay is excluded
-     * from the recording — capture fires before PsyX_EndScene (which is where
+     * from the recording - capture fires before PsyX_EndScene (which is where
      * g_psyx_postRenderOverlay stamps), reading the present FBO directly. */
     if (openpete_record_init(opts) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
@@ -2582,10 +2582,10 @@ static int run_host_init(const openpete_options_t* opts) {
     /* --renderer vk: bring up the native Vulkan renderer's window. SDL
      * is already initialized by PsyX_Initialise. Pass the same resolved window
      * size handed to PsyCross so the native window matches the game's. A
-     * bring-up failure is non-fatal — we log and run PsyCross-only. The
+     * bring-up failure is non-fatal - we log and run PsyCross-only. The
      * native path is a pure display consumer; it never touches PSX RAM, so
      * the oracle gate / determinism are unaffected. */
-    /* Create the window before bring-up so it belongs to this thread — the
+    /* Create the window before bring-up so it belongs to this thread - the
      * one that pumps. Bring-up adopts it exactly as it adopts the splash's. */
     openpete_native_precreate_window(opts, win_w, win_h);
     (void)openpete_native_render_init(opts, win_w, win_h);
@@ -2594,7 +2594,7 @@ static int run_host_init(const openpete_options_t* opts) {
      * this the run would present to nothing and look like a hang. */
     if (!opts->headless && !openpete_native_render_enabled() && g_window) {
         SDL_ShowWindow(g_window);
-        OPL_WARN_F("boot", "%s", "native display unavailable — showing "
+        OPL_WARN_F("boot", "%s", "native display unavailable - showing "
                    "PsyCross's own GL window instead");
     }
     openpete_native_set_perf_stats(opts->perf_stats);   /* stats overlay level (O / M menus move it live) */
@@ -2606,8 +2606,8 @@ static int run_host_init(const openpete_options_t* opts) {
     if (opts->mouse_sensitivity >= 0.0f)
         openpete_freecam_set_mouse_sensitivity(opts->mouse_sensitivity);
     /* OPENPETE_OSD_DEMO=N seeds N sample toasts at startup. The OSD is
-     * otherwise driven entirely by live user action — a menu row, a hotkey, a
-     * mod — which a headless or scripted capture cannot perform, so a gate
+     * otherwise driven entirely by live user action - a menu row, a hotkey, a
+     * mod - which a headless or scripted capture cannot perform, so a gate
      * that wants to SEE a toast has no other way to make one exist. The
      * timeout is the maximum so the stack is still up whenever the capture
      * frame lands, and the strings are deliberately different lengths: the
@@ -2626,7 +2626,7 @@ static int run_host_init(const openpete_options_t* opts) {
         for (int i = 0; i < demo_n; i++) {
             /* One bucket each: the per-source rate limit exists to stop a
              * runaway producer, and it would otherwise cap this seed at the
-             * burst of 4 — an eight-toast gate that silently captured four. */
+             * burst of 4 - an eight-toast gate that silently captured four. */
             char src[16];
             snprintf(src, sizeof src, "demo%d", i);
             openpete_osd_notify(src, NULL, OPENPETE_OSD_TIMEOUT_MAX_MS,
@@ -2648,20 +2648,20 @@ static int run_host_init(const openpete_options_t* opts) {
      * Only a pure, successfully-brought-up native vk display with no capture
      * consumer lets us skip the redundant GL submission. Everything else
      * (headless, PsyCross mode, native bring-up failure, --screenshot) keeps
-     * PsyCross rendering. NOTE: --record does NOT force it on for the native display — the
+     * PsyCross rendering. NOTE: --record does NOT force it on for the native display - the
      * native --record path reads the native offscreen directly (rhi_read_offscreen,
      * self-synchronizing), so forcing PsyCross to ALSO render every frame just
      * doubled the GPU work and throttled the capture to ~8 fps. (Headless --record
-     * still uses PsyCross — native is disabled there, so the first term is true.) */
+     * still uses PsyCross - native is disabled there, so the first term is true.) */
     openpete_psycross_renders =
         (!openpete_native_render_enabled()                 /* headless / psycross / bring-up failed */
          /* PsyCross mode: PsyCross IS the rasterizer, so it always renders.
           * Redundant with the term above only while PsyCross mode creates no
-          * native device — keep it stated in its own right, because it is the
+          * native device - keep it stated in its own right, because it is the
           * whole rasterization decision the moment that changes. */
          || opts->renderer == OPENPETE_RENDERER_PSYCROSS
          /* --screenshot-native-only discards the PsyCross reference, so don't pay
-          * the GL OT walk to build it — the native -vk dump reads gamestate. */
+          * the GL OT walk to build it - the native -vk dump reads gamestate. */
          || (opts->screenshot_frame_count > 0 && !opts->screenshot_native_only) /* -og leg */
          || opts->screenshot_presents_start >= 0)          /* present-sequence capture (-og leg) */
         /* null-GPU hard override: no GL context exists, so PsyCross MUST NOT
@@ -2713,8 +2713,8 @@ static int run_host_init(const openpete_options_t* opts) {
     {
         extern uint32_t openpete_pad_read_pc;
         /* OPENPETE_PAD_READ_PC overrides the per-game address. It is how the
-         * probe is falsified — pointed at an address the game never calls,
-         * the census must report NEVER — and how a second game's read site is
+         * probe is falsified - pointed at an address the game never calls,
+         * the census must report NEVER - and how a second game's read site is
          * found before it is written down. */
         const char* pad_pc_env = getenv("OPENPETE_PAD_READ_PC");
         openpete_pad_read_pc = (pad_pc_env && *pad_pc_env)
@@ -2812,7 +2812,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
                           opts->handoff_argv);
 
-    /* Skip fast-forward is windowed-only — headless is already unlocked and
+    /* Skip fast-forward is windowed-only - headless is already unlocked and
      * has nothing to show. Published before the setter below so the boot
      * CLI skip (and every later runtime warp) arms correctly. */
     openpete_skip_ffwd_windowed = opts->headless ? 0 : 1;
@@ -2828,7 +2828,7 @@ static int run_host_init(const openpete_options_t* opts) {
 
     /* Fast-boot gate is on by default (see fiber.c). psyq_DrawOTag clears it
      * the first time real draw commands hit, so host yields engage exactly
-     * when the game starts rendering — no CLI knob needed. */
+     * when the game starts rendering - no CLI knob needed. */
     OPL_INFO_F("boot", "fast-boot: skipping host yields until first DrawOTag");
 
     /* Start the free-running vblank ticker. Skipped under --headless to keep
@@ -2984,7 +2984,7 @@ static void rumble_census_report(void) {
      *
      *   registered/nonzero  the diagnosis. libpad's PadSetAct is a
      *                       registration, so the expected reading is a small
-     *                       number of calls all carrying {0,0} — a NON-zero
+     *                       number of calls all carrying {0,0} - a NON-zero
      *                       registration would mean the game got its buffer
      *                       filled before handing it over, and the one-shot
      *                       reading of PadSetAct was not the whole story.
@@ -3070,8 +3070,8 @@ static int run_host_loop(const openpete_options_t* opts) {
     /* Which half of the input seam this thread owns (see run_host_init). */
     const bool split = openpete_split_applies(opts);
 
-    /* The device was created during init — under the thread split that was
-     * main — but inline presents come from THIS thread; the display's seam
+    /* The device was created during init - under the thread split that was
+     * main - but inline presents come from THIS thread; the display's seam
      * fence needs the ownership stated, not inferred from who created what.
      * Eager's engage/disengage re-claims at every later handoff. */
     openpete_native_display_claim();
@@ -3083,7 +3083,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     game_on_boot(&g_game.cpu);
 
     openpete_host_fiber = co_active();
-    /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
+    /* 8 MB fiber stack - Spyro's deepest reasonable call chain is well under
      * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
     openpete_game_fiber = openpete_fiber_create_guarded(8u * 1024u * 1024u, game_fiber_entry);
     if (!openpete_game_fiber) {
@@ -3096,10 +3096,10 @@ static int run_host_loop(const openpete_options_t* opts) {
     if (opts->debug_triangle) {
         openpete_debug_triangle_init();
         OPL_INFO_F("boot",
-                   "debug-triangle enabled — emitting hardcoded POLY_F3 each frame");
+                   "debug-triangle enabled - emitting hardcoded POLY_F3 each frame");
     }
 
-    /* Don't open a scene here — Spyro is a 30fps game (two PSX vblanks per
+    /* Don't open a scene here - Spyro is a 30fps game (two PSX vblanks per
      * logical frame), so the host loop yields twice per DrawOTag. We let the
      * DrawOTag thunk start the scene on demand via its own PsyX_BeginScene()
      * call, and only EndScene + SwapWindow on host iterations where DrawOTag
@@ -3114,7 +3114,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     const char* exit_reason = "frame-limit";
     int    quit = 0;
 
-    /* Monitor refresh rate (primary display — the window spawns there; 60
+    /* Monitor refresh rate (primary display - the window spawns there; 60
      * when headless / query failure). Feeds the --render-fps default below
      * and the settings menu's FPS ladder before the loop. */
     int refresh_hz = 60;
@@ -3131,8 +3131,8 @@ static int run_host_loop(const openpete_options_t* opts) {
     }
 
     /* Resolve the launch --render-fps target. -1 = unset: windowed runs
-     * default to the display's refresh rate — the wall-clock dual-pacer + transform-interp
-     * path — while headless keeps the legacy match-sim pacer (0): those runs
+     * default to the display's refresh rate - the wall-clock dual-pacer + transform-interp
+     * path - while headless keeps the legacy match-sim pacer (0): those runs
      * are unpaced (unlock) and the oracle/determinism harnesses expect one
      * present per tick. An explicit --render-fps 0 selects the legacy pacer.
      * opts stays const; everything below reads the resolved local, and the
@@ -3151,7 +3151,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      *
      * Period choices:
      *   sim_period    = the PSX 240p VBL, exactly 37609/2250000 s
-     *                   (59.8261054… Hz — see OP_VBL_* in openpete_time.h)
+     *                   (59.8261054... Hz - see OP_VBL_* in openpete_time.h)
      *   render_period = 1/render_fps when --render-fps>0, else
      *                   sim_period (one present per sim tick).
      *
@@ -3168,7 +3168,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     /* --tick-scale F slows/speeds the WHOLE engine by dividing both the sim and
      * the render period by F: sim_rate = F*29.913 Hz, present_rate = F*render_fps,
      * so the count of sub-tick presents PER tick (present_rate/sim_rate) is
-     * invariant — a slow-motion view of the SAME interpolation. Pacing only: the
+     * invariant - a slow-motion view of the SAME interpolation. Pacing only: the
      * sim still executes identical ticks (the interp alpha is wall-clock-derived
      * from the actual tick timestamps, so it auto-stretches), and the deadlines
      * are reset to now under unlock/headless, so this is inert in the oracle.
@@ -3203,7 +3203,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     /* --record-cfr: offline capture. `capture_mult` presents are produced per
      * sim tick, on a clock the pacer advances itself, so the present schedule
-     * is exact no matter how long a frame takes to render — a software
+     * is exact no matter how long a frame takes to render - a software
      * rasterizer and a fast GPU emit the identical frame sequence. That is what
      * makes two captures at different rates cover the same span of game time.
      *
@@ -3211,8 +3211,8 @@ static int run_host_loop(const openpete_options_t* opts) {
      * integer --render-fps: 60 Hz against a 59.826 Hz VBL is a 2.0058 ratio,
      * which hands some ticks two intermediates and others three. Dividing the
      * tick period gives exactly `capture_mult` evenly spaced presents per tick.
-     * op_period_div keeps that division exact — a tick split three ways is
-     * 11143407 + 11/27 ns, which no whole-ns period can express — so the
+     * op_period_div keeps that division exact - a tick split three ways is
+     * 11143407 + 11/27 ns, which no whole-ns period can express - so the
      * capture grid stays even however long the capture runs.
      *
      * A multiplier of 1 wants no sub-tick presents at all, which is precisely
@@ -3239,7 +3239,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     /* Was a deadline in force for the iteration that just ended? The loop's
      * own unlock verdict is not written until the tail, so iteration 1 has
-     * nothing to read — and an unlocked headless run would record its first
+     * nothing to read - and an unlocked headless run would record its first
      * VBL as paced against the pre-boot anchor, printing a paced census for a
      * run that never paced anything and making the refuse-at-zero guard
      * unreachable.
@@ -3253,12 +3253,12 @@ static int run_host_loop(const openpete_options_t* opts) {
     op_time_t     start_ns = op_now();
     /* Set when a clamp discards wall time at the loop tail; consumed by the
      * NEXT VBL record, which is the first tick to run against the re-anchored
-     * grid — the slip belongs to the tick that inherited it. */
+     * grid - the slip belongs to the tick that inherited it. */
     int           pace_slip_pending = 0;
     /* Set when the deadline chain is deliberately re-anchored (a live
      * --render-fps / --tick-scale change, an unlock exit). The next VBL's
      * sleep targeted the OLD grid, so subtracting the NEW anchor would
-     * manufacture a near-zero phase error — flattering, and untrue. That VBL
+     * manufacture a near-zero phase error - flattering, and untrue. That VBL
      * records no deadline instead. */
     int           pace_regrid_pending = 0;
     op_deadline_t next_sim, next_render;
@@ -3308,7 +3308,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * apart) make the forced present target land alpha exactly at 0.5 with no
          * host-pacing dependency. The live sub-tick present stays headless-blocked
          * and the canonical lag leg is gated !headless (below), so enabling capture
-         * here does NOT alter the canonical dump — it only feeds the explicit
+         * here does NOT alter the canonical dump - it only feeds the explicit
          * intermediate capture. */
         if (opts->screenshot_intermediate_count > 0) {
             openpete_interp_set_enabled(1);
@@ -3324,7 +3324,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_rewind_configure(opts->rewind_window);
 
     /* --runahead: seeded into the live-depth request; the in-loop apply
-     * block arms it on the first iteration — the identical path a live
+     * block arms it on the first iteration - the identical path a live
      * dev-overlay change takes (capability gate + snapshot alloc there). */
     int runahead_n = 0;
     openpete_state_mem_t* ra_snap = NULL;
@@ -3335,7 +3335,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
      * blocks on the ticker's condvar until the atomic vbl counter advances,
      * naturally pacing the host loop at ~60 Hz. The previous fractional
-     * SDL_Delay accumulator is gone — pacing is implicit in "wait for
+     * SDL_Delay accumulator is gone - pacing is implicit in "wait for
      * tick", which means a single VSync(0) call (loading-screen flyby)
      * resumes after one tick = 60 fps and a wait-loop body (gameplay)
      * resumes after two ticks = 30 fps without per-game predicates. */
@@ -3381,7 +3381,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                    opts->gameplay_hash_log_path);
     }
 
-    /* Forward-declare the frame-time-log state — opened below after bk2
+    /* Forward-declare the frame-time-log state - opened below after bk2
      * setup so its early-returns don't leak the FILE*. */
     openpete_frame_time_log_t frame_time_log = {0};
     int64_t frame_time_log_target_period_ns = 0;
@@ -3434,7 +3434,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         bk2_offset = opts->bk2_frame_offset_set ? opts->bk2_frame_offset : 0;
         OPL_INFO_F("bk2",
                    "loaded %d frames from %s, first input at bk2-frame=%d, "
-                   "openpete_frame=%d → bk2-frame=openpete_frame-(%d)%s",
+                   "openpete_frame=%d -> bk2-frame=openpete_frame-(%d)%s",
                    bk2.frame_count, opts->bk2_path, bk2.first_input_frame,
                    bk2_offset, bk2_offset,
                    opts->bk2_frame_offset_set ? " (explicit)" : "");
@@ -3444,7 +3444,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * harness. The "deadline" we record against is a pure-ideal
      * cadence:
      *     deadline = start_op_ns + frame * target_period_ns
-     * This is platform-agnostic and pacer-agnostic — it tells us how
+     * This is platform-agnostic and pacer-agnostic - it tells us how
      * the *actual* present time drifts from a perfectly-paced clock,
      * regardless of whether the legacy SDL_AddTimer pacer or a future
      * high-res pacer is driving the loop. The target period is the sim
@@ -3471,7 +3471,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     }
 
     /* --pace-log: the unified pacing event log. Superset of the recorder
-     * above — every VBL as well as every present, on one timebase, so a late
+     * above - every VBL as well as every present, on one timebase, so a late
      * tick can be attributed to the present that blocked it. Opened here, with
      * the renderer already up, because the environment block must record the
      * device and the present mode actually GRANTED. */
@@ -3516,7 +3516,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      *
      * The savestate keys are number-row 1/2/3 by default rather than the
      * F2/F4 they started as, because F4 collides with PsyCross's own
-     * debug binding — it cycles g_activeKeyboardControllers, which
+     * debug binding - it cycles g_activeKeyboardControllers, which
      * silently kicks the keyboard off pad 1 and looks exactly like a
      * save-state regression. */
     unsigned active_slot = 0;
@@ -3524,7 +3524,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     /* Frame-step state. Pause toggles; frame-step advances exactly one
      * game tick (hold to repeat at host-loop rate). While paused the host
      * loop pumps SDL events, sleeps the deadline, and skips the co_switch
-     * into the game fiber — so g_ram / CPUState stay frozen and PsyCross
+     * into the game fiber - so g_ram / CPUState stay frozen and PsyCross
      * keeps presenting the last completed frame. SPU is muted on enter to
      * avoid the held-voice drone (Cubeb runs on its own callback thread;
      * without new SPU register writes voices loop their current sample). */
@@ -3542,7 +3542,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     /* Seed the in-game settings menu from the launch flags, and build its FPS
      * ladder from the monitor refresh queried above (60 if unknown/headless).
-     * Applies nothing — it only makes the menu reflect what the game launched
+     * Applies nothing - it only makes the menu reflect what the game launched
      * with (the FPS row reads the live pacer target, which already holds the
      * resolved render-fps default). */
     openpete_menu_init(opts, refresh_hz);
@@ -3566,12 +3566,12 @@ static int run_host_loop(const openpete_options_t* opts) {
          * (openpete_unlock_fps + g_skipSwapInterval) still happens at the
          * bottom of the loop, AFTER PsyX_UpdateInput has refreshed SDL's
          * keyboard cache and AFTER the present has consumed the previous
-         * iter's swap-interval flag — preserving the original semantics
+         * iter's swap-interval flag - preserving the original semantics
          * the GL present path was tested under. */
         /* The same cached gate the bottom of the loop reads, so the
          * sim-due predicate follows the pacer when measurement mode is on. */
         bool force_pacing = pace_force_pacing() != 0;
-        /* The turbo read here is the PREVIOUS iteration's keymap sample —
+        /* The turbo read here is the PREVIOUS iteration's keymap sample -
          * this peek runs before the poll below. That is what a peek is for;
          * the authoritative unlock write at the bottom of the loop re-reads
          * after the poll, so a press costs at most one iteration of lag. */
@@ -3589,11 +3589,11 @@ static int run_host_loop(const openpete_options_t* opts) {
          * condvar pacer below preserves byte-identical behavior. With
          * --render-fps>0 the wall-clock pacer drives the outer loop at
          * render cadence, and sim_due fires when the sim deadline has
-         * elapsed — or unconditionally under unlock_now so fast-forward
+         * elapsed - or unconditionally under unlock_now so fast-forward
          * actually fast-forwards. */
         /* Live render-fps change (openpete_set_render_fps, e.g. the in-game
          * menu): recompute the period with THIS loop's tick_scale and re-anchor
-         * the deadlines to now so a lower→higher switch doesn't fire a burst of
+         * the deadlines to now so a lower->higher switch doesn't fire a burst of
          * catch-up presents. Also keep interp capture in sync (enabled only when
          * the render rate exceeds the sim rate), matching the startup gate. */
         /* Live tick-scale change: re-derive every scaled period, then fall
@@ -3626,19 +3626,19 @@ static int run_host_loop(const openpete_options_t* opts) {
                 s_modset_epoch = ep;
                 if (openpete_rewind_enabled()) {
                     openpete_rewind_clear();
-                    OPL_INFO_F("rewind", "modset changed — history cleared");
+                    OPL_INFO_F("rewind", "modset changed - history cleared");
                 }
                 if (ra_snap) {
                     openpete_state_mem_free(ra_snap);
                     ra_snap = NULL;
                     OPL_INFO_F("runahead",
-                               "modset changed — re-checking capability gate");
+                               "modset changed - re-checking capability gate");
                 }
                 s_runahead_dirty = 1;
             }
         }
         /* Live runahead re-arm. Arm only when every enabled mod declares a
-         * runahead posture in its manifest (runahead = pure | host-fx) —
+         * runahead posture in its manifest (runahead = pure | host-fx) -
          * speculative re-execution of tick hooks with undeclared host side
          * effects would double-fire them. Arms once and holds ra_snap until
          * the modset epoch above disarms it. */
@@ -3711,7 +3711,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
          * slot. PsyX_Pad_InternalPadUpdates uses it instead of polling SDL.
          * Out-of-range frames (before the offset, or past the movie's end)
-         * fall back to 0xFFFF — i.e. no override — so live keyboard /
+         * fall back to 0xFFFF - i.e. no override - so live keyboard /
          * gamepad input takes over once the movie ends. */
         unsigned bk2_stamped_frame = openpete_frame;  /* see restamp below */
         if (sim_due && bk2_active) {
@@ -3733,7 +3733,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 break;
             }
             {
-                /* Mods' read-only bk2 status (api->bk2_status) — also
+                /* Mods' read-only bk2 status (api->bk2_status) - also
                  * published pre-offset / past-end (overriding = 0). */
                 openpete_mods_bk2_status_t st = {
                     1, bk2_frame, (int)bk2.frame_count, ovr_active };
@@ -3761,7 +3761,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
         /* Settings menu open: neutralise the game pad so the arrow keys drive
          * the menu (not Spyro). Reuses the bk2 override channel (all buttons
-         * released, sticks centred). On the frame the menu closes, clear it —
+         * released, sticks centred). On the frame the menu closes, clear it -
          * unless a bk2 movie is driving the override, in which case bk2 re-stamps
          * on the next sim-due iter. The sim keeps running (input just goes
          * nowhere), so aspect/ssaa/draw-distance changes preview live. */
@@ -3782,7 +3782,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Dev overlay typing: neutralise the pad only while imgui owns the
          * keyboard (a text field / nav focus), so typed characters can't reach
          * the PSX pad through PsyCross's keyboard->pad map. Mouse-only
-         * interaction leaves the game fully playable behind the panel — this
+         * interaction leaves the game fully playable behind the panel - this
          * is a dev tool; watching the live scene while flipping knobs is the
          * point. Same bk2 override channel + clear-once latch as the menu. */
         {
@@ -3827,7 +3827,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
         /* Sample every binding once per iteration; openpete_key_pressed()
          * below reads the edge this computed. Reads SDL's keyboard/gamepad
-         * state caches, which the previous iteration's pump refreshed — so
+         * state caches, which the previous iteration's pump refreshed - so
          * this must run before the first hotkey test, and the turbo peek at
          * the top of the loop deliberately sees the previous sample.
          * openpete_handle_event consumes QUIT/CLOSE/ESC without forwarding
@@ -3852,7 +3852,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
         }
 
-        /* Dev config overlay. Mutually exclusive with the settings menu —
+        /* Dev config overlay. Mutually exclusive with the settings menu -
          * two input-owning overlays with different capture models is
          * complexity with no payoff. */
         if (openpete_key_pressed(OPK_DEVUI)) {
@@ -3887,7 +3887,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             if (openpete_menu_is_open()) {
                 /* Keyboard and pad both drive nav through one binding per
-                 * direction, so holding a direction — key, d-pad or stick —
+                 * direction, so holding a direction - key, d-pad or stick -
                  * steps once until released, the same feel either way. The
                  * pad's own view of these buttons is held neutral while the
                  * menu is open, so this cannot double up with gameplay. */
@@ -3903,7 +3903,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     /* Close on the RELEASE edge of Start/Circle. The game pad
                      * is held neutral only while the menu is open, so closing
                      * on the press would let the still-held button bleed into
-                     * the game next frame (Start → the game's pause menu); by
+                     * the game next frame (Start -> the game's pause menu); by
                      * release it's already up. */
                     openpete_menu_toggle();   /* closes it */
                 } else {
@@ -3921,7 +3921,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
                 /* Freecam axes are level-held and consumed every game tick,
                  * but the latch below is skipped while the menu owns the
-                 * keyboard — hold neutral here so a movement key held at
+                 * keyboard - hold neutral here so a movement key held at
                  * menu-open doesn't keep flying the camera behind the panel. */
                 if (openpete_freecam_active() || openpete_camlock_active()) {
                     openpete_freecam_axes ax = {0};
@@ -3936,16 +3936,16 @@ static int run_host_loop(const openpete_options_t* opts) {
                                            * this iteration's forward tick */
         /* Save-state hotkeys (default 1 quick-save, 2 quick-load, 3 cycle
          * slot). Edge-triggered, one action per press. The game fiber is
-         * yielded right now, so g_game.cpu and g_ram are quiescent — we can
+         * yielded right now, so g_game.cpu and g_ram are quiescent - we can
          * snapshot or restore without racing the recompiled code.
          *
          * Run BEFORE PsyX_UpdateInput so a load that overwrites the pad
          * buffer (which lives in restored g_ram) is immediately followed by
-         * a fresh write of current input — otherwise the game fiber reads
+         * a fresh write of current input - otherwise the game fiber reads
          * stale buttons from the saved RAM and feels like input has stopped
          * registering until the next iter.
          *
-         * Skipped while the settings menu is open — it owns input. The
+         * Skipped while the settings menu is open - it owns input. The
          * keymap latch keeps advancing underneath, so a key held across the
          * close is already latched and cannot misfire on the first iteration
          * after it, and a press made while the menu was up is swallowed
@@ -3993,9 +3993,9 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             /* Savestate stress harnesses (restore-at-yield checks).
              * --state-stress N: every N ticked iterations, in-memory save
-             * + immediate quiet restore — a stressed run must be hash-
+             * + immediate quiet restore - a stressed run must be hash-
              * identical to a clean one. --state-stress-rewind K: save,
-             * run K iterations, restore (the runahead rollback shape) —
+             * run K iterations, restore (the runahead rollback shape) -
              * the repeated window must self-match. */
             if (opts->state_stress > 0 || opts->state_stress_rewind > 0) {
                 static openpete_state_mem_t* sm = NULL;
@@ -4023,12 +4023,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * bit-for-bit; the hash-log self-match check) ->
                      * re-arm at F+K. Armed only in steady-state gameplay:
                      * the mem snapshot excludes boot/load-window sections
-                     * (VRAM, SPU sample RAM) BY CONTRACT — rolling back
+                     * (VRAM, SPU sample RAM) BY CONTRACT - rolling back
                      * across boot is undefined (measured: segfault). */
                     if (armed == 1 && !game_is_gameplay_live(&g_game.cpu)) {
                         /* The window crossed into a transition/load: the
                          * mem snapshot excludes the sections mutating
-                         * there — ABANDON the pending rollback (exactly
+                         * there - ABANDON the pending rollback (exactly
                          * how runahead hard-gates OFF around loads). */
                         armed = 0;
                         it = 0;
@@ -4056,7 +4056,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                         it = 0;
                     } else if (armed == 2 &&
                                it >= (unsigned)opts->state_stress_rewind) {
-                        armed = 0;   /* replay done — re-arm here */
+                        armed = 0;   /* replay done - re-arm here */
                     }
                 }
             }
@@ -4067,7 +4067,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * target with the recorded per-VBL inputs, truncate the
              * future (input log + newer keyframes). Interp stores are
              * reset manually (cheap memsets) so presents SNAP backward
-             * instead of lerping — the full discontinuity broadcast
+             * instead of lerping - the full discontinuity broadcast
              * (texture-pack rescan = 1 MiB copy) is deliberately NOT
              * fired per held iteration. */
             if (!openpete_rewind_enabled()) {
@@ -4077,7 +4077,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 if (!hinted && openpete_key_down(OPK_REWIND)) {
                     hinted = true;
                     OPL_WARN_F("rewind", "the rewind key was pressed but "
-                               "rewind is disabled — launch with --rewind 30 "
+                               "rewind is disabled - launch with --rewind 30 "
                                "to enable a 30 s window");
                 }
             }
@@ -4086,7 +4086,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 openpete_rewind_on_iter(&g_game.cpu, openpete_frame, rw_live);
                 bool rw_k = openpete_key_down(OPK_REWIND);
                 /* Timeline jumps need every enabled code mod to declare
-                 * its host-state posture (mod.toml state=) — an
+                 * its host-state posture (mod.toml state=) - an
                  * undeclared mod's host state desyncs silently when the
                  * world moves under it. */
                 if (rw_k) {
@@ -4104,7 +4104,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                         rw_k = false;
                     }
                 }
-                /* --rewind-hold A:N — headless driver harness: simulate
+                /* --rewind-hold A:N - headless driver harness: simulate
                  * holding Backspace for N iterations once frame A is
                  * reached (the rewind determinism check). */
                 static int rw_held = 0, rw_armed_hold = 0;
@@ -4138,7 +4138,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                         openpete_interp_objs_reset();
                         /* Everything below re-executes ticks that already
                          * happened. Presentation-side announcements and
-                         * per-tick animation phases must sit out the burst —
+                         * per-tick animation phases must sit out the burst -
                          * a held Backspace replays up to a keyframe of ticks
                          * with no present between them. */
                         openpete_replaying = 1;
@@ -4176,7 +4176,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                 g_PsyX_Pad_OverrideActive = 1;
                             }
                             unsigned before = openpete_frame;
-                            /* Same pre-yield hook as the main loop —
+                            /* Same pre-yield hook as the main loop -
                              * per-frame guest mutations (demo-mode clamp,
                              * quirk pokes) are part of the timeline;
                              * skipping them made replay diverge
@@ -4240,7 +4240,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             /* Any op above may have RE-ANCHORED openpete_frame (savestate
              * load, stress rollback, handoff resume). The bk2 override was
-             * stamped for the PRE-jump frame — re-derive it for the new
+             * stamped for the PRE-jump frame - re-derive it for the new
              * one or the very next tick runs with the future frame's
              * input (measured: rollback+replay self-mismatch on movies
              * with an input edge inside the window). Silent twin of the
@@ -4308,7 +4308,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             /* Live toggle of sector LOD original <-> extended (the settings
              * menu's LOD row / --lod flag). Goes through openpete_no_lod_set
-             * so openpete_fog_scale follows the mode — a raw openpete_no_lod
+             * so openpete_fog_scale follows the mode - a raw openpete_no_lod
              * poke would leave the terrain fog latched. The setter logs the
              * new state. Native-renderer display policy; inert under
              * PsyCross. The menu re-syncs its LOD row from openpete_no_lod
@@ -4325,7 +4325,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * under the crosshair each present and tints the fill-tag set, so
              * the frozen list in tests/freecam/fill-tags.verdicts can be
              * audited against the live scene. Preview draws the untagged
-             * candidates too — an under-fill site's covering face is
+             * candidates too - an under-fill site's covering face is
              * invisible until it is tagged. FILL / NOFILL / "no session
              * verdict" record against the picked face and re-render with it
              * immediately; undo steps back. The verdict keys are gated on
@@ -4366,7 +4366,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                     openpete_freecam_active() ? "ON" : "OFF");
             }
 
-            /* Render camera lock (openpete_camlock.h) — holds/flies the
+            /* Render camera lock (openpete_camlock.h) - holds/flies the
              * PRESENTED view while the sim (cutscenes included) continues
              * untouched. Shares the freecam's fly axes and speed step, so the
              * two are mutually exclusive: engaging one disengages the other. */
@@ -4384,7 +4384,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 openpete_freecam_active() || openpete_camlock_active());
 
             /* Drop Spyro at the camera and hand the camera back to the game.
-             * Latched as a one-shot request — the move needs the game fiber, so
+             * Latched as a one-shot request - the move needs the game fiber, so
              * freecam_game applies it (and disengages) on the next tick; the
              * request is dropped if the camera isn't engaged. Edge-tracked out
              * here rather than under the engaged branch so a teleport key
@@ -4394,7 +4394,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             if (openpete_freecam_active() || openpete_camlock_active()) {
                 /* Digital fly/look keys and the analog stick axes are separate
-                 * bindings that SUM (then clamp) — so a key and a stick both
+                 * bindings that SUM (then clamp) - so a key and a stick both
                  * drive the camera, and either can be rebound or unbound
                  * without disturbing the other. */
                 float k_fwd = (float)(openpete_key_down(OPK_FLY_FORWARD)
@@ -4475,7 +4475,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * queries and the Alt gate all read it, so the legacy A/B would
          * otherwise run with every binding reading a never-updated buffer.
          * Legacy pumps inside PsyX_UpdateInput below, so it publishes the
-         * previous pump's state — the same one-iteration lag the polled
+         * previous pump's state - the same one-iteration lag the polled
          * bindings have always had. */
         if (!split) openpete_host_input_publish_sdl();
 
@@ -4483,10 +4483,10 @@ static int run_host_loop(const openpete_options_t* opts) {
          * latch rather than read back later. Under the thread split main
          * republishes on its own ~1 ms pump loop, so by the end of the
          * iteration several newer samples have landed and a late read would
-         * name one the tick never saw — against a staleness of the same
+         * name one the tick never saw - against a staleness of the same
          * order as the error it would introduce. */
         op_time_t pace_latch_ns = 0;
-        /* Which published sample this VBL consumed — identity, not a
+        /* Which published sample this VBL consumed - identity, not a
          * timestamp. OP_PACE_LATCH_NONE on the legacy path (it never latches,
          * so its input phase is unmeasured rather than zero). */
         unsigned  pace_latch_seq = OP_PACE_LATCH_NONE;
@@ -4503,7 +4503,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         } else {
             /* Under the thread split main owns the pump, the SDL-state
              * publish and the pad sample; this thread only consumes what was
-             * published. That asymmetry is the whole point of the seam — the
+             * published. That asymmetry is the whole point of the seam - the
              * consumer never touches SDL. */
             if (!split) {
                 openpete_host_mouse_pump_iteration();
@@ -4524,8 +4524,8 @@ static int run_host_loop(const openpete_options_t* opts) {
             openpete_host_input_parity_check(ovr_claimed);
         }
 
-        /* Stage this tick's input record. Every override writer — bk2
-         * replay, the settings menu, devui, the live host latch — has
+        /* Stage this tick's input record. Every override writer - bk2
+         * replay, the settings menu, devui, the live host latch - has
          * stamped the channel by now, so slot 0's staged bytes are the ones
          * the tick is about to consume, published early enough for a
          * consumer running INSIDE the tick to read them. Slots 1-3 stay
@@ -4598,14 +4598,14 @@ static int run_host_loop(const openpete_options_t* opts) {
          * skip the yield entirely (input is still pumped above; pacer below
          * sleeps to the next deadline). Frame-step adds a second gate:
          * while g_paused the yield only fires when g_step_one was set by
-         * F8 — one tick per held-iter. */
+         * F8 - one tick per held-iter. */
         unsigned frame_before_yield = openpete_frame;
         bool ticked_this_iter = false;
         bool yield_now = sim_due && (!g_paused || g_step_one)
                                  && !rewound_this_iter;
         /* Pacing log, per VBL. The deadline in force for this iteration is
-         * next_sim.at as it stands BEFORE the tail advances it — the grid
-         * point the pacer slept to at the end of the previous iteration — so
+         * next_sim.at as it stands BEFORE the tail advances it - the grid
+         * point the pacer slept to at the end of the previous iteration - so
          * exec_start minus that is the tick's start-phase error.
          *
          * `openpete_unlock_fps` carries the previous iteration's verdict,
@@ -4628,7 +4628,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             /* Start-alignment invariant: an iteration that runs the game
              * fiber must have made its latch decision THIS iteration, before
              * this point. The input window that external injection measures
-             * — one VBL period, grid-aligned — is a property of that
+             * - one VBL period, grid-aligned - is a property of that
              * ordering, so a refactor that moved the latch after the switch,
              * or skipped it on some path, would silently change the window
              * while every phase statistic kept reporting normally. Checked
@@ -4640,7 +4640,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 if (!warned++)
                     OPL_ERROR_F("input",
                                 "ORDERING: VBL %u runs the fiber with no latch "
-                                "decision — input phase is no longer defined "
+                                "decision - input phase is no longer defined "
                                 "by the pump->decode->latch->switch order",
                                 openpete_frame);
             }
@@ -4705,7 +4705,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * with held input (audible SPU muted; external side
                  * effects gated by openpete_speculative), let the interp
                  * captures below snapshot the LED state, then restore
-                 * the real tick after them — everything downstream
+                 * the real tick after them - everything downstream
                  * (hash/position logs, input log, recorders, pacer,
                  * canonical state) sees the real timeline while every
                  * present interpolates one led by ~N ticks. Measured
@@ -4715,12 +4715,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * yield produced a present): the led state only advances
                  * once per game tick, so speculating on the update VBL
                  * too costs a full extra speculation for a capture that
-                 * dedupes away — and that cost lands INSIDE the present-
+                 * dedupes away - and that cost lands INSIDE the present-
                  * critical iteration, dragging the virtual present clock
                  * behind the capture stamps (measured: alpha drifting to
                  * -0.27, motion delivered as 30 Hz steps = the "whole
                  * world jittery" report). Non-speculated ticked
-                 * iterations skip the interp captures entirely — the
+                 * iterations skip the interp captures entirely - the
                  * ring must never see a real-timeline (led-minus-N)
                  * state or it would pair backward. */
                 int ra_want = (runahead_n > 0 && ra_snap &&
@@ -4756,7 +4756,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * prediction (the led branch legitimately changed);
                      * then any prediction targeting THIS committed tick
                      * must match the committed bytes exactly. RAM here is
-                     * the completed committed tick at its yield — the same
+                     * the completed committed tick at its yield - the same
                      * phase the led hash was taken at. */
                     if (ra_pc_on()) {
                         if (openpete_ra_input_edge) ra_pc_invalidate_all();
@@ -4774,8 +4774,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                                 fprintf(stderr, "[ra-predict] MISMATCH f=%u: led "
                                         "prediction != committed state (a read of "
                                         "host state outside the rollback "
-                                        "boundary — neither guest RAM nor the "
-                                        "mod arena — during speculation?)\n",
+                                        "boundary - neither guest RAM nor the "
+                                        "mod arena - during speculation?)\n",
                                         openpete_frame);
                                 if (ra_pc_on() >= 2 && s_ra_pc[i].led) {
                                     /* Dump differing ranges as PSX vaddrs. */
@@ -4810,7 +4810,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * of the rolled-back state: a speculative DrawOTag
                      * leaking present_pending fired EXTRA canonical
                      * presents (measured: canon_tick cadence doubled
-                     * under runahead — every tick-keyed instrument
+                     * under runahead - every tick-keyed instrument
                      * sampled the wrong sim moments). */
                     int      ra_pp    = openpete_present_pending;
                     unsigned ra_prims = openpete_primitives_drawn;
@@ -4835,13 +4835,13 @@ static int run_host_loop(const openpete_options_t* opts) {
                          * the fiber stack is not snapshottable (Windows
                          * libco = opaque OS fibers). Restoring guest
                          * state under the mismatched continuation
-                         * corrupts the game's own VSync pacing — the
+                         * corrupts the game's own VSync pacing - the
                          * committed timeline then runs a full tick's
                          * work every VBL and the load never completes.
                          * So the speculation is ADOPTED instead: these
                          * VBLs become the real timeline (their held
                          * input is exactly what the input log records
-                         * for them — the per-VBL append below covers
+                         * for them - the per-VBL append below covers
                          * every VBL this iteration consumed), and
                          * runahead disengages until gameplay is live
                          * again. Costs at most 2N VBLs of held-input
@@ -4892,12 +4892,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * are the real timeline now. No rollback; predictions
                      * pending against the abandoned branch die; the
                      * presentation drops its pre-adoption pairs and snaps
-                     * (invisible — a fade is starting). */
+                     * (invisible - a fade is starting). */
                     ra_speculated = false;             /* skip the rollback below */
                     ra_pc_invalidate_all();
                     openpete_ra_input_edge = 0;
                     /* Presentation-only reset (NOT the guest-discontinuity
-                     * broadcast — the timeline is continuous forward, and
+                     * broadcast - the timeline is continuous forward, and
                      * the broadcast would finalize an in-progress bk2
                      * recording): drop the pre-adoption interp pairs so
                      * the next present snaps instead of sweeping a lerp
@@ -4917,18 +4917,18 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * Stamp with a PLL-SMOOTHED VBL clock, not raw op_now(): the
                  * raw completion time of a tick jitters by milliseconds with
                  * sim/render load, and every snapshot ROLL resets the sub-tick
-                 * alpha mapping against its stamp — jittery stamps make shown
+                 * alpha mapping against its stamp - jittery stamps make shown
                  * interp time advance 0.05..1.4 ticks between evenly-generated
                  * presents (measured on the titlescreen flyby: fast movers
                  * judder ±half a tick at ANY --render-fps while the slow
                  * background looks fine). Locking stamps to the ideal VBL grid
                  * (proportional 1/32 nudge tracks real cadence; full resync on
-                 * a stall/jump, e.g. CD loads) keeps the present-time → shown-
+                 * a stall/jump, e.g. CD loads) keeps the present-time -> shown-
                  * time mapping continuous across rolls. */
                 if (!ra_skip_capture) {
                     static op_time_t s_vclk = 0;
                     static unsigned  s_vclk_f = 0;
-                    /* Ideal VBL step in WALL time — scaled so --tick-scale keeps
+                    /* Ideal VBL step in WALL time - scaled so --tick-scale keeps
                      * the stamps on the (stretched) grid; an unscaled step makes
                      * the pred err exceed the resync bound every tick and stamps
                      * degrade to raw jittery completion times. */
@@ -4946,12 +4946,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                     /* Display-phase bias: the canonical present fires a few ms
                      * BEFORE this tick's grid stamp (present latency + PLL lock
                      * to AVERAGE completion), making its alpha slightly NEGATIVE
-                     * — the [0,1] clamp then snaps shown time forward ~0.5 VBL
+                     * - the [0,1] clamp then snaps shown time forward ~0.5 VBL
                      * at every roll and the following intermediates crawl to
                      * compensate (measured: ~24% of all motion delivered as
-                     * 30 Hz jumps — the flyby judder). Biasing the stamp back
+                     * 30 Hz jumps - the flyby judder). Biasing the stamp back
                      * by a fixed phase keeps every present's alpha inside
-                     * (0,1): the mapping now−→shown-time stays linear through
+                     * (0,1): the mapping now−->shown-time stays linear through
                      * the roll. Costs that many ms of extra display latency.
                      * OPENPETE_INTERP_PHASE_MS overrides (default 10). */
                     {
@@ -4973,23 +4973,23 @@ static int run_host_loop(const openpete_options_t* opts) {
                         openpete_interp_capture(openpete_frame, stamp);
                         extern op_time_t g_openpete_tick_stamp;   /* objs capture shares the stamp */
                         /* openpete_interp_capture grids the DIRECT ring's stamp under
-                         * deterministic capture (fixed 0,P,2P,… grid); mirror that for the
+                         * deterministic capture (fixed 0,P,2P,... grid); mirror that for the
                          * objs ring so per-object sub-tick interps (moby positions/rotation,
                          * particles, sparkles, HUD icons, dragon-stars) pair the pinned
                          * present clock against a GRIDDED object timestamp instead of wall
-                         * time — else those tiles flake run-to-run on the intermediate leg. */
+                         * time - else those tiles flake run-to-run on the intermediate leg. */
                         g_openpete_tick_stamp = openpete_interp_deterministic()
                                               ? openpete_interp_curr_tick_ns() : stamp;
                     }
                 }
 
-                /* Per-object (indirect) snapshot — walks the game's
+                /* Per-object (indirect) snapshot - walks the game's
                  * object pools (g_LevelMobys) into the keyed prev/curr
                  * table for sub-tick lerp. Same read-only, same
                  * --render-fps>sim gate. No-op if no game callback. */
                 if (!ra_skip_capture) openpete_interp_objs_run_capture();
 
-                /* Runahead: captures done at the led head — roll back to
+                /* Runahead: captures done at the led head - roll back to
                  * the committed tick before anything else observes RAM. */
                 if (ra_speculated) {
                     unsigned ra_lf = openpete_frame;
@@ -5007,7 +5007,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
         }
 
-        /* Position log fires after each yield (post-fast-boot — address
+        /* Position log fires after each yield (post-fast-boot - address
          * holds garbage before BSS init). Frame counter is openpete_frame,
          * vbl is the synchronous yield-driven counter; both are
          * deterministic across runs by construction. */
@@ -5024,13 +5024,13 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* --bk2-record: one bk2 frame per openpete_frame so replay timing
          * matches recording 1:1. Sampled AFTER the yield because PsyX folds
          * keyboard/gamepad/--bk2 override into pad->buttons inside the
-         * game's PadVSync handler — pre-yield the value would still be
+         * game's PadVSync handler - pre-yield the value would still be
          * stale from the previous frame. Also skip iterations where the
          * frame counter didn't advance (gated event pumps, no-tick yields
          * from dispatch stubs), which would otherwise inflate the movie
          * length. */
         if (ticked_this_iter) {
-            /* Per-VBL input log — ALWAYS on: one entry
+            /* Per-VBL input log - ALWAYS on: one entry
              * per VBL the fiber consumed this iteration, all carrying the
              * tick-latched bits (the same expansion the bk2 recorder used
              * before the lift-out, so recorded movies stay byte-identical).
@@ -5088,14 +5088,14 @@ static int run_host_loop(const openpete_options_t* opts) {
 
         if (sim_due && opts->debug_triangle) {
             /* Re-issue the static triangle so it's drawn over whatever the
-             * game queued — guarantees a non-black on-screen pixel even
+             * game queued - guarantees a non-black on-screen pixel even
              * when the title-screen overlay is a stub. Gated on sim_due so
              * render-only iterations under --render-fps>0 don't pollute the
              * next tick's OT. */
             openpete_debug_triangle_emit();
         }
 
-        /* Game yielded. Only present if the iter actually drew — see the
+        /* Game yielded. Only present if the iter actually drew - see the
          * note above the pre-loop block. Screenshot fires BEFORE SwapWindow
          * so it captures the just-rendered backbuffer (post-swap, GL_BACK
          * holds rotated-in stale content that doesn't match the window).
@@ -5107,14 +5107,14 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* True once a REAL game frame has been presented this iter.
          * The intermediate block must key off THIS, not
          * openpete_present_pending, which the block below clears to 0
-         * before the intermediate gate runs — keying off the cleared
+         * before the intermediate gate runs - keying off the cleared
          * flag double-presented (game frame + a spurious alpha≈0
          * interpolated frame) on every draw iter (the "+30 fps"). */
         bool did_present_this_iter = false;
         /* World-liveness stamp: virtual-clock time of the most recent CANONICAL
          * present. During a CD load / level transition the game fiber stops
          * rendering (busy in CdRead/VSync waits) while the virtual clock keeps
-         * ticking — the sub-tick spine must FREEZE then (present the last
+         * ticking - the sub-tick spine must FREEZE then (present the last
          * composed scene) instead of re-deriving from RAM that the incoming
          * level is actively overwriting (the "mobys across the whole level
          * visible during the load" bug: half-loaded moby pools re-extracted
@@ -5133,7 +5133,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         if (openpete_present_pending && !openpete_skip_present_until_level) {
             /* Canonical draw-tick counter: the Nth increment is the same sim
              * moment in every run (tick-deterministic sim), unlike
-             * openpete_frame whose VBL↔tick mapping drifts with host timing.
+             * openpete_frame whose VBL<->tick mapping drifts with host timing.
              * Keys --screenshot-on-tick (here and the native-variant dump
              * below). */
             openpete_canon_tick++;
@@ -5244,8 +5244,8 @@ static int run_host_loop(const openpete_options_t* opts) {
              * openpete_native_render_frame below captures the on-screen frame,
              * so a vk recording holds the native SSAA/widescreen frame. In
              * PsyCross display mode the offscreen holds a blit that update_layout
-             * has already aspect-fitted into the window — letterboxed, and
-             * downscaled wherever the window is not the reference extent — so
+             * has already aspect-fitted into the window - letterboxed, and
+             * downscaled wherever the window is not the reference extent - so
              * recording it would be strictly worse than reading the present FBO
              * here at internal resolution, bars-free. */
             if (!openpete_native_scene_enabled())
@@ -5262,7 +5262,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * moment it is not: on a GPU-limited machine the shed predicate
              * declines nearly every intermediate (measured: 16 admitted against
              * 3704 shed), so what remains on the sim thread is the canonical
-             * present — the one cost shedding can never avoid, and the one the
+             * present - the one cost shedding can never avoid, and the one the
              * log could not name. Worse, the intermediate figure is a SELECTED
              * sample: the predicate only admits a present it expects to fit, so
              * quoting it as "present cost" understates by construction. */
@@ -5273,8 +5273,8 @@ static int run_host_loop(const openpete_options_t* opts) {
             /* Per-canonical-frame commit: the game latches which render paths this
              * frame drew (the "canon drawn" mask the sub-tick spine gates each
              * reextract feeder on) and clears its per-frame interval table for the
-             * next frame. Driven here — once per canonical present, renderer-
-             * agnostic — via a registered callback rather than psyq_DrawOTag, so it
+             * next frame. Driven here - once per canonical present, renderer-
+             * agnostic - via a registered callback rather than psyq_DrawOTag, so it
              * does not depend on the PsyCross OT submission. The game
              * fiber's DrawOTag (which ran before this host-loop iteration) already
              * consumed the intervals via the OT-walk filter; the feeder hooks that
@@ -5289,9 +5289,9 @@ static int run_host_loop(const openpete_options_t* opts) {
             /* Sub-tick spine: lag the CANONICAL native present too. The game's
              * render just built s_scene at the LATEST pose (tick N), but the
              * intermediates that follow present the 1-tick-lagged interpolation
-             * (prev→curr). Showing the un-lagged canonical frame between lagged
+             * (prev->curr). Showing the un-lagged canonical frame between lagged
              * intermediates makes every object jump forward one tick at the
-             * canonical present and snap back on the next intermediate → a 30 Hz
+             * canonical present and snap back on the next intermediate -> a 30 Hz
              * strobe / ghosting (terrain AND mobys) whenever the camera moves.
              * Re-extract the canonical present at the same lagged alpha so EVERY
              * present sits on one continuous, 1-tick-lagged timeline. Same gates
@@ -5348,7 +5348,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     const op_time_t now = op_now();
                     op_time_t first = next_render.at;
                     while (first < now) first += period;    /* the next slot not yet gone */
-                    /* The span is anchored on the newest capture's stamp — unless
+                    /* The span is anchored on the newest capture's stamp - unless
                      * that stamp is stale. Captures dedupe when the interpolated
                      * regions do not change (title screen, a cutscene holding
                      * the camera), and a span anchored on a stamp a tick or
@@ -5361,7 +5361,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     eager_plan(now, first, period, span_end > first ? span_end : first,
                                next_sim.at + 2 * sim_period_ns);
                     /* The canonical scene, then as much of the span as fits
-                     * before the update VBL is due — the latter only while
+                     * before the update VBL is due - the latter only while
                      * the world is live (the gate below). */
                     s_eager.world_live = s_last_canon_present_ns != 0 &&
                         (now - s_last_canon_present_ns) <= 6 * sim_period_ns;
@@ -5373,7 +5373,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
                      * 2D-UI sprites/lines) from THIS canonical render's scene before
                      * the re-extract wipes it. Captured on the CANONICAL present only
-                     * — never on sub-ticks, where s_scene holds the already-re-applied
+                     * - never on sub-ticks, where s_scene holds the already-re-applied
                      * carry set (re-capturing it accumulates unbounded). The re-extract
                      * (here and each sub-tick) only re-applies it. */
                     openpete_native_scene_capture_overlay();
@@ -5395,8 +5395,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * it through its explicit re-extract, and the live spine
                      * applies it on the first sub-tick present after unlock
                      * releases. Dropping the accumulation here instead left the
-                     * carry at whatever the last spine-on present captured — the
-                     * title logo, when Tab is held from the title screen — and
+                     * carry at whatever the last spine-on present captured - the
+                     * title logo, when Tab is held from the title screen - and
                      * that set was re-applied over VRAM the level had since
                      * overwritten. This block runs once per game DrawOTag, so
                      * nothing pools across presents. */
@@ -5519,7 +5519,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * readback of the offscreen the present blitted, so it carries the
              * sub-tick scene, mods, postfx and overlays as presented, rather
              * than the reference-aligned recompose the --screenshot-on-frame
-             * variants above need. Native display only — PsyCross is the
+             * variants above need. Native display only - PsyCross is the
              * reference rasterizer, not a display this port ships. The capture
              * logs the file it wrote, so nothing is reported twice here. */
             {   /* A pending glitch mark, from the key or from
@@ -5549,7 +5549,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * compose this present's canonical scene and the alpha-1 re-extract
              * of the same tick, and report their pixel difference. Placed
              * between the two dump blocks so both still see the untouched
-             * canonical scene — the audit restores it before returning. */
+             * canonical scene - the audit restores it before returning. */
             if (openpete_ident_audit_armed()) {
                 const int pt_was = openpete_present_thread_active();
                 if (pt_was) openpete_present_thread_set_active(0);
@@ -5563,7 +5563,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * (alpha 0.5) native capture. Force the present clock to the tick
              * midpoint (curr_tick_ns + period/2) so the re-extract callback
              * interpolates exactly halfway between the two most-recent DISTINCT
-             * ticks, then dump the native -vk. Headless-capable — this drives an
+             * ticks, then dump the native -vk. Headless-capable - this drives an
              * explicit re-extract; the live sub-tick present path is headless-
              * blocked. Keyed on openpete_frame (VBL): fires on the first present
              * at/after each target. Deterministic capture (enabled above) pins the
@@ -5579,7 +5579,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     if (!paired)
                         OPL_WARN_F("screenshot",
                                    "intermediate frame %d: no interp bracket "
-                                   "(spawn/load/static) — capturing canonical pose",
+                                   "(spawn/load/static) - capturing canonical pose",
                                    opts->screenshot_intermediate_frames[si]);
                     op_time_t curr_ns = openpete_interp_curr_tick_ns();
                     /* OPENPETE_INTERMEDIATE_ALPHA=<0..1> (harness): the sub-tick
@@ -5616,7 +5616,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                                     opts->screenshot_intermediate_frames[si],
                                                     0, base, sizeof(base));
                     /* The re-extract built the interpolated scene into the CURRENT
-                     * scene (never pushed to frame history), so compose depth 0 —
+                     * scene (never pushed to frame history), so compose depth 0 -
                      * the normal shot-compose delay reads an empty lagged slot. */
                     openpete_native_render_set_capture_nodelay(1);
                     openpete_native_render_screenshot_all(base);
@@ -5636,7 +5636,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             /* Frame-time recorder: one 32-byte record per
              * actual present. The deadline is computed against a
              * per-PRESENT counter (not openpete_frame, which is the
-             * yield counter at PSX VBlank cadence — typically 2x
+             * yield counter at PSX VBlank cadence - typically 2x
              * present rate for a 30 fps game), so the drift math in
              * scripts/measure-pacing.py compares like with like. The
              * record's `frame` field still carries openpete_frame as
@@ -5667,8 +5667,8 @@ static int run_host_loop(const openpete_options_t* opts) {
          *  - openpete_interp_enabled(): the render rate genuinely exceeds the
          *    sim rate. This is the SAME gate that arms capture (render_hz >
          *    VBL 59.826, kept in sync at startup + on every live render-fps
-         *    change), NOT the weaker s_render_fps > 0. At/below sim parity —
-         *    e.g. render-fps 30 vs the ~29.913 Hz sim — sub-tick interpolation
+         *    change), NOT the weaker s_render_fps > 0. At/below sim parity -
+         *    e.g. render-fps 30 vs the ~29.913 Hz sim - sub-tick interpolation
          *    is degenerate: the near-1:1 ratio duplicates/freezes frames
          *    (mobys "stick") while capture is off and the ring is stale. So
          *    30 fps presents canonical frames only, exactly like 'I'-toggle
@@ -5676,9 +5676,9 @@ static int run_host_loop(const openpete_options_t* opts) {
          *  - No REAL frame presented this iter (did_present_this_iter).
          *    NOT !sim_due (sim_due fires every PSX VBL ~60 Hz but Spyro
          *    draws every other VBL, so ~30 sim-due iters/sec draw
-         *    nothing — !sim_due wrongly made those present NOTHING:
+         *    nothing - !sim_due wrongly made those present NOTHING:
          *    the "render-fps minus 30" deficit). And NOT
-         *    !openpete_present_pending either — the present block clears
+         *    !openpete_present_pending either - the present block clears
          *    that to 0 before this gate, so on draw iters it would read
          *    false and we'd double-present a spurious alpha≈0
          *    interpolated frame right after the game frame (the
@@ -5715,7 +5715,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             !(g_paused && !g_step_one);
         /* Predictive shed: an intermediate present is optional, and a tick is
          * not. If this present would not finish before the sim's next
-         * deadline, skip it — the pacing contract is that presents are shed
+         * deadline, skip it - the pacing contract is that presents are shed
          * before ticks slip, and a display frame nobody was promised is the
          * cheapest thing in the system to give up.
          *
@@ -5734,7 +5734,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * to (a drawing VBL is already excluded by did_present_this_iter).
          *
          * That cost exactly one present slot per tick, invariant to the
-         * present rate — measured 0.84 doubled display gaps per tick at BOTH
+         * present rate - measured 0.84 doubled display gaps per tick at BOTH
          * --render-fps 480 and 240, which is the signature of a fixed
          * per-tick loss rather than of a rate or capacity limit.
          *
@@ -5783,8 +5783,8 @@ static int run_host_loop(const openpete_options_t* opts) {
             /* Lateness budget: how far a present may push the tick's start.
              *
              * The frame refused right before a tick is NOT a duplicate of the
-             * canonical that follows — measured, it sits 0.083 of a tick
-             * behind it against a 0.069 normal step — so the strict rule
+             * canonical that follows - measured, it sits 0.083 of a tick
+             * behind it against a 0.069 normal step - so the strict rule
              * discards real motion at the worst moment, just before the
              * display holds one image for the length of the tick.
              *
@@ -5803,8 +5803,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                 /* A shed produces no measurement, so a predictor that only
                  * learns from presents that RAN stops learning the moment it
                  * starts shedding: the estimate latches at whatever the last
-                 * admitted present cost — a cold start, a shader compile, one
-                 * slow scene — and sheds forever after, with nothing able to
+                 * admitted present cost - a cold start, a shader compile, one
+                 * slow scene - and sheds forever after, with nothing able to
                  * contradict it. Observed doing exactly that: 16 presents
                  * admitted, then every subsequent one shed for the rest of
                  * the run.
@@ -5815,7 +5815,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 /* Probe only where a probe can do least harm: with at least
                  * half the tick period still available. A counter-based probe
                  * admits an expensive present at an arbitrary moment, which
-                 * on slow hardware means one deliberately late tick every N —
+                 * on slow hardware means one deliberately late tick every N -
                  * measured as a 11.7 ms tick p99 on a software rasterizer,
                  * caused entirely by the mechanism meant to protect it.
                  * Choosing the moment with the most budget bounds the damage
@@ -5827,8 +5827,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * tick period: an absolute threshold is a threshold some
                  * machines never reach, and there the probe silently stops
                  * existing. Three quarters of the observed peak keeps the
-                 * "least harm" intent — the probe still waits for a
-                 * near-best moment — while guaranteeing such a moment recurs.
+                 * "least harm" intent - the probe still waits for a
+                 * near-best moment - while guaranteeing such a moment recurs.
                  * Capped at half a tick so a machine with plenty of headroom
                  * behaves exactly as before. */
                 op_time_t probe_at = s_present_budget_peak
@@ -5855,8 +5855,8 @@ static int run_host_loop(const openpete_options_t* opts) {
             openpete_pace_inject_present();   /* fault injection, off by default */
             /* World-liveness gate: only re-derive the scene while canonical
              * presents are FLOWING (the last one within ~3 sim ticks on the
-             * virtual clock). When the world is stuck — CD load, level
-             * transition, any long producer stall — re-extracting reads RAM
+             * virtual clock). When the world is stuck - CD load, level
+             * transition, any long producer stall - re-extracting reads RAM
              * mid-overwrite (see the stamp's comment); hold the last composed
              * scene instead and keep presenting it (a frozen frame, exactly
              * what the legacy saved-OT re-present shows there). Legit "camera
@@ -5991,7 +5991,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     };
                     fwrite(gpr, 4, 32, cfp);
                     /* PC at dump moment is wherever the game fiber
-                     * yielded — typically inside VSync's host yield
+                     * yielded - typically inside VSync's host yield
                      * (PSYQ-side), which means the game's call site of
                      * VSync(). Without a fiber-aware unwinder we can't
                      * know precisely; report 0 so consumers don't
@@ -6096,11 +6096,11 @@ static int run_host_loop(const openpete_options_t* opts) {
             openpete_primitives_drawn = 0u;
         }
 
-        /* No PsyX_BeginScene here — DrawOTag starts the scene on demand. */
+        /* No PsyX_BeginScene here - DrawOTag starts the scene on demand. */
 
         /* The turbo binding drives the host loop's own pacing + the GL
          * swap-interval bypass. vbl is yield-driven so this only affects
-         * wall-clock speed, not game state — fast-forward is invisible to
+         * wall-clock speed, not game state - fast-forward is invisible to
          * BK2 replay determinism. Scheduled --unlock-frames windows (test
          * harness) OR into the same flag. Read from this iteration's
          * keymap poll, so it is a tick newer than the peek at the top of
@@ -6143,7 +6143,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Paused without a step pending: sleep so we don't spin the CPU.
          * The condvar pacer below only waits when ticked_this_iter, and
          * the wall-clock pacer's render deadline does sleep but only at
-         * its own cadence — explicit sleep here keeps the paused idle
+         * its own cadence - explicit sleep here keeps the paused idle
          * cost near-zero regardless of render_fps. */
         if (g_paused && !ticked_this_iter && !unlock_fps) {
             SDL_Delay(16);
@@ -6162,7 +6162,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * (ESC / window close / SIGINT). The pacer's worst-case wait
          * is normally one period (~17 ms), but a Win32 waitable timer
          * that misbehaves could leave us stuck on a multi-second
-         * WaitForSingleObject — the legacy condvar pacer always
+         * WaitForSingleObject - the legacy condvar pacer always
          * checked g_shutdown_requested in its wait loop; mirror that
          * here so ESC closes the window promptly. */
         if (unlock_fps || g_shutdown_requested) {
@@ -6226,7 +6226,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 /* Under eager production the render grid is the present
                  * thread's business: this loop only borrows its PHASE when it
                  * plans a span. Step it silently to the present (no slip
-                 * accounting — nothing was missed) and sleep to the sim
+                 * accounting - nothing was missed) and sleep to the sim
                  * deadline alone, instead of waking once per slot to do
                  * nothing, or spinning flat out at an uncapped --render-fps. */
                 const op_time_t rp = op_period_ns(s_render_period);
@@ -6259,7 +6259,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Guarantee one browser event-loop turn per host iteration. The
          * paced pacer branches already yielded inside op_sleep_until's
          * Asyncify arm, but the unlock / fast-forward branch (and
-         * render-fps=0 no-tick iters) don't call it — without this the tab
+         * render-fps=0 no-tick iters) don't call it - without this the tab
          * would freeze. emscripten_sleep(0) is a single Asyncify
          * unwind/rewind; harmless after an already-yielded paced iter. */
         emscripten_sleep(0);
@@ -6570,7 +6570,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     rumble_census_report();
 
     /* OSD engagement. A capture-based gate reading zero here never composited
-     * a toast, whatever its pixels looked like — reported unconditionally so
+     * a toast, whatever its pixels looked like - reported unconditionally so
      * that cannot pass unnoticed. */
     if (openpete_osd_enabled())
         OPL_INFO_F("osd", "census: %u toast(s) composited",
@@ -6616,7 +6616,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     /* Renderer + PsyCross teardown destroy the window and call SDL_Quit, which
      * belong to the thread that created them. Under the split that is main, so
-     * the worker leaves them alone and main runs them after the join —
+     * the worker leaves them alone and main runs them after the join -
      * tearing the window down from here would hang the process on exit. */
     if (!split) {
         openpete_native_render_shutdown();
@@ -6683,7 +6683,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
 /* Worker entry: the entire host loop and the game fiber. libco fibers are
  * thread-affine, so the fiber must be created and switched on this one thread
- * for its whole life — which is why the loop moves wholesale rather than
+ * for its whole life - which is why the loop moves wholesale rather than
  * having main drive parts of it. */
 static int  s_worker_rc;
 static const openpete_options_t* s_worker_opts;
@@ -6803,7 +6803,7 @@ static int run_split_threaded(const openpete_options_t* opts)
     /* Seed the input seam before the worker exists: its first latch must find
      * a valid snapshot, or pad injection falls back to reading SDL on the
      * worker. Also publish an initial SDL-state snapshot for the same reason
-     * — bindings evaluated on the worker must never reach SDL themselves. */
+     * - bindings evaluated on the worker must never reach SDL themselves. */
     openpete_host_input_seed_neutral();
     openpete_host_input_publish_sdl();
 
@@ -6829,7 +6829,7 @@ static int run_split_threaded(const openpete_options_t* opts)
     SDL_Thread* th = SDL_CreateThreadWithProperties(props);
     SDL_DestroyProperties(props);
     if (!th) {
-        OPL_ERROR_F("boot", "SDL_CreateThread(openpete-sim) failed: %s — "
+        OPL_ERROR_F("boot", "SDL_CreateThread(openpete-sim) failed: %s - "
                             "running single-threaded", SDL_GetError());
         if (s_psyx_gl_ctx)
             SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx);
@@ -6902,7 +6902,7 @@ int openpete_run(const openpete_options_t* opts) {
     /* The stderr mirror is normally already up (main() opens it before
      * attaching the recomp module). Harmless no-op if so; this covers
      * embedders that call openpete_run() directly. Before
-     * atexit(log_frame_on_exit) because atexit runs LIFO — registering the
+     * atexit(log_frame_on_exit) because atexit runs LIFO - registering the
      * sink first makes it close LAST, so the exit lines still land in it. */
     openpete_log_file_open(opts->log_file);
     atexit(log_frame_on_exit);

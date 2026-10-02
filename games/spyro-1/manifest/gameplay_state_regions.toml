@@ -1,4 +1,4 @@
-# games/spyro-1/manifest/gameplay_state_regions.toml — the gameplay-readable
+# games/spyro-1/manifest/gameplay_state_regions.toml - the gameplay-readable
 # bytes the oracle hashes every tick. Generated into the
 # build by tools/gen_state_regions.py (cmake/openpete_game.cmake): the C
 # table the exe registers, the flat table the DuckStation capture module
@@ -51,11 +51,11 @@
 #
 # Carve-outs (commented rows; the ranges are subtracted above):
 #   pad_model       g_PadBuffer 0x800786A0-C4, g_Pad stick calibration
-#                   0x800773BC-0x80077420 — the analog pad's poll answer
-#   music_head      g_CdMusic+0x208..+0x214 — XA stream position bookkeeping
-#   boot_timing     D_80075950 VSync(-1) pair, g_LevelTicks — the boot's VBL
+#                   0x800773BC-0x80077420 - the analog pad's poll answer
+#   music_head      g_CdMusic+0x208..+0x214 - XA stream position bookkeeping
+#   boot_timing     D_80075950 VSync(-1) pair, g_LevelTicks - the boot's VBL
 #                   count; g_UnprocessedFrames is kept as its own row
-#   callback_stack  D_80077DD8+0x24..+0x2C — saved sp/fp of collision.s
+#   callback_stack  D_80077DD8+0x24..+0x2C - saved sp/fp of collision.s
 #                   func_8004AE38's register-save block
 #   irq_dispatch    libetc callback context, ring head/tail, counters
 #                   0x80074B58-0x80074B84
@@ -501,7 +501,7 @@ start  = 0x8007A6A8
 length = 0x390
 class  = "gameplay"
 
-# ─── Pools — indirect rows ─────────────────────────────────────────────
+# ─── Pools - indirect rows ─────────────────────────────────────────────
 # Moby and particle data live in level RAM whose location moves between
 # levels; the rows dereference the head pointer at base_ptr every tick.
 
@@ -510,7 +510,7 @@ name         = "g_Particles_pool"
 kind         = "indirect_array"
 base_ptr     = 0x80075824            # g_Particles head pointer (Particle*)
 element_size = 0x20                  # sizeof(Particle): 4-byte header + 28-byte data
-max_elements = 256                   # 0x2000 bytes total — src/4BEF8.c (m_SharedAnimations - 0x2000)
+max_elements = 256                   # 0x2000 bytes total - src/4BEF8.c (m_SharedAnimations - 0x2000)
 class        = "gameplay"
 # Render-side drawn flag (byte 0x03, cascading to 0x01) flips when a
 # widened renderer consumes more of the shared polybuf before the particle
@@ -529,7 +529,7 @@ kind              = "indirect_array"
 base_ptr          = 0x80075828
 element_size      = 0x58              # sizeof(Moby), include/moby.h:471
 max_elements      = 512
-live_end_ptr_addr = 0x8007573C        # g_MobyAllocPtr — bump cursor; live = *end_ptr - *base_ptr
+live_end_ptr_addr = 0x8007573C        # g_MobyAllocPtr - bump cursor; live = *end_ptr - *base_ptr
 class             = "gameplay"
 description       = "Static-level moby array behind *g_LevelMobys, to the g_MobyAllocPtr bump cursor"
 mask_per_element  = [0x54]

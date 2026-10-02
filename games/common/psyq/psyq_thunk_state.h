@@ -1,4 +1,4 @@
-/* games/common/psyq/psyq_thunk_state.h — the guest-mutated latches of the shared
+/* games/common/psyq/psyq_thunk_state.h - the guest-mutated latches of the shared
  * PSYQ thunk layer, packed for the savestate's game-extra payload.
  *
  * A thunk latch is host state a guest call set and a later guest call or the

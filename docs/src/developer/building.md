@@ -21,7 +21,7 @@ What each is for:
   (`games/spyro-1/CMakeLists.txt`, `core/CMakeLists.txt`), and several
   CTest entries invoke it directly.
 - `glslang-tools`: `core/rhi/CMakeLists.txt:18` does
-  `find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)` — configure
+  `find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)` - configure
   fails without it. The shaders compile to `.spv` on the host, so this is
   identical for native and cross builds.
 - `spirv-tools`: `core/rhi/CMakeLists.txt:45` does
@@ -32,7 +32,7 @@ What each is for:
   vendored prebuilt at `third_party/OpenAL-mingw/` instead
   (`CMakeLists.txt:12-24`).
 - The five `libav*`/`libsw*` packages: a hard dependency of a native build
-  — `core/CMakeLists.txt` runs `pkg_check_modules(LIBAV REQUIRED ...)` over
+  - `core/CMakeLists.txt` runs `pkg_check_modules(LIBAV REQUIRED ...)` over
   `libavformat libavcodec libavutil libswscale libswresample` for `--record`
   video capture. Minimum libav 58 (ffmpeg 4.0). Build without them with
   `-DOPENPETE_ENABLE_RECORD=OFF`, which compiles `--record` down to a
@@ -40,7 +40,7 @@ What each is for:
 
 Not needed: no Vulkan SDK (headers are vendored at
 `third_party/vulkan-headers`, and volk dlopens `libvulkan.so.1` /
-`vulkan-1.dll` at runtime, so no loader import library is linked —
+`vulkan-1.dll` at runtime, so no loader import library is linked -
 `core/rhi/CMakeLists.txt:7-11`); no `libsdl*-dev` (see [SDL](#sdl)).
 
 SDL3 builds from source and detects its Linux video backends from whatever
@@ -201,10 +201,10 @@ Every build sits on two axes: the target (which OS) and the recomp linkage
 `OPENPETE_RECOMP_LINKAGE` (`games/spyro-1/CMakeLists.txt:108`) selects how
 the recompiled module joins the runtime:
 
-- `static` (default) — the dev build. The recompiled C is an OBJECT library
+- `static` (default) - the dev build. The recompiled C is an OBJECT library
   linked straight into the exe. One self-contained binary; run it with
   `--disc` and it boots immediately.
-- `shared` — the distribution build. The recompiled code is not in the exe.
+- `shared` - the distribution build. The recompiled code is not in the exe.
   The exe ships with a recompiler plus a compiler and builds
   `spyro1-recomp.{so,dll}` from the user's disc on first run
   (`games/spyro-1/dist/recomp_build.cpp`), keying the cache on a hash of the
@@ -244,7 +244,7 @@ and native thunks assume one image
 `include()` (`windows-mingw-shared.cmake` includes `windows-mingw.cmake`,
 `linux-release-shared.cmake` includes `linux-release.cmake`). The preset
 files are configure inputs, so editing one auto-reconfigures every build dir
-— every worktree — on its next plain `cmake --build`, and
+- every worktree - on its next plain `cmake --build`, and
 adding/changing/removing a knob never needs a `cmake --preset` re-run.
 
 `openpete_preset_default(VAR VALUE)` applies a knob unless the user
@@ -264,29 +264,29 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 |----------|--------------------|-----|
 | `OPENPETE_SKIP_DECOMP=ON` | `linux-release*`, `windows-mingw*`, `wasm` | full-recompilation mode |
 | `OPENPETE_FUNC_TRACE=OFF` | `linux-release*`, `windows-mingw*` | `-finstrument-functions` per-function tracing is a dev-only drill-down (1-8 ms/tick). Pinned as a tracked knob so no dist build inherits a stale ON; enable in a throwaway dir with `-DOPENPETE_FUNC_TRACE=ON` |
-| `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA (not left implicit — toolchains differ in their default) so the distributable runs on any x86-64 CPU. `x86-64-v3` (AVX2/FMA/BMI2) measures flat: the hot path is the recompiled game's scalar integer code with no vectorizable loops, so the pre-Haswell/Zen1 cutoff would buy nothing |
+| `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA (not left implicit - toolchains differ in their default) so the distributable runs on any x86-64 CPU. `x86-64-v3` (AVX2/FMA/BMI2) measures flat: the hot path is the recompiled game's scalar integer code with no vectorizable loops, so the pre-Haswell/Zen1 cutoff would buy nothing |
 | `-ffile-prefix-map` on source and binary dir | `*-shared` | `__FILE__`/assert strings are referenced `.rdata` that package-time stripping cannot remove; without the mapping they leak the build machine's username and layout |
 | `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:613-614` forces IPO off on the exe target as a guard, and line 150 keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
 | `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis |
 | `OPENPETE_ROM_FREE_ICON=ON` | `*-shared` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record`, dropping the libav dependency |
 | `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-shared` | `--help` shows only the user-facing flag block. Display-only: `core/config/options.c` splits the help text, every flag still parses |
-| `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-shared` | stage mod sources only, no cmake-side DLLs — the dist exe's first-boot mod compile is the validation surface, and pre-seeding `.build/` would mask it. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/` |
+| `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-shared` | stage mod sources only, no cmake-side DLLs - the dist exe's first-boot mod compile is the validation surface, and pre-seeding `.build/` would mask it. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/` |
 | `OPENPETE_BUILD_TESTS=OFF` | `wasm` | trim non-browser components |
 
 Related non-preset knobs, defaults applying everywhere:
-`OPENPETE_COMPILE_MODS=ON` (every `cmake --build` also compiles all mods —
+`OPENPETE_COMPILE_MODS=ON` (every `cmake --build` also compiles all mods -
 native presets by invoking the exe's `--compile-mods` mode, cross presets
 cmake-side) and `OPENPETE_COMPILE_MODS_DIR` (the mods root that tier runs
 over, default `<repo>/mods`).
 
-### Cache variables are sticky — why the preset files exist
+### Cache variables are sticky - why the preset files exist
 
 CMake presets inject `cacheVariables` only on `cmake --preset <p>`. A
 `cmake --build --preset <p>`, or any incremental rebuild, reuses the
 existing `CMakeCache.txt`: it re-runs configure when CMake files change but
 never re-reads `CMakePresets.json`. When presets carried the knobs directly,
-two failure modes followed — an added or changed variable silently did not
+two failure modes followed - an added or changed variable silently did not
 apply until a `cmake --preset` re-run, and a removed variable stayed in the
 cache forever, since `cmake --preset` never unsets anything. The removed-var
 case kept `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` alive in
@@ -296,7 +296,7 @@ code does not touch a poisoned cache, and so read as a toolchain regression.
 Worktrees multiplied the exposure: every build dir configured at a different
 time held a different snapshot.
 
-The `cmake/presets/*.cmake` scheme removes the exposure by construction —
+The `cmake/presets/*.cmake` scheme removes the exposure by construction -
 the only preset-pinned cache entry is a pointer whose value never changes.
 What is still sticky, deliberately:
 
@@ -344,7 +344,7 @@ repo-relative paths resolved against the working directory. An explicit
 touches the first-boot machinery.
 
 Persistent settings come from `openpete.toml`, read from the exe's directory
-and then the per-user config dir (`core/config/config.c:1094-1100`) — never
+and then the per-user config dir (`core/config/config.c:1094-1100`) - never
 from the working directory, and no such file is staged into a dev build dir.
 `--config-report` prints the resolved settings and exits; `--config PATH`
 uses only that file; `--no-config` ignores every config file, which is what
@@ -374,13 +374,13 @@ scripts/package-dist.sh windows --toolchain /path/to/llvm-mingw-ucrt-x86_64
 
 Archives land in `dist/`. Flags:
 
-- `--toolchain DIR`: an unpacked compiler tree to bundle — llvm-mingw (ucrt
+- `--toolchain DIR`: an unpacked compiler tree to bundle - llvm-mingw (ucrt
   x86_64) for Windows, a trimmed llvm.org clang for Linux. Without it the
   Windows zip and the Linux tarball fall back to the user's own compiler.
 - `--appimage` (Linux): additionally emits
   `OpenPete-<ver>-x86_64.AppImage` from the same staged tree as the tarball,
   so the two artifacts cannot drift. The AppImage is the primary Linux
-  download — its squashfs keeps the bundled compiler compressed and never
+  download - its squashfs keeps the bundled compiler compressed and never
   unpacks it, and its read-only mount forces the writable-state split
   (library, mods, user assets and recordings resolve through
   `openpete_paths`). It always bundles a compiler.
@@ -390,7 +390,7 @@ Archives land in `dist/`. Flags:
 - `--sign '<command>'` (Windows): Authenticode hook, invoked once per
   first-party PE with the file path appended; a nonzero exit fails the
   package. The RFC3161 timestamp is not optional with Azure Artifact
-  Signing — its certs live about three days, and only the countersignature
+  Signing - its certs live about three days, and only the countersignature
   keeps a release valid past that.
 
 Extract the archive anywhere and run the exe with no arguments; a bare path
@@ -428,7 +428,7 @@ first run.
 
 SDL3 is built from source from the `third_party/SDL/` submodule, pinned to
 the `release-3.4.x` branch, and statically linked (`libSDL3.a`) on both
-Linux and the MinGW cross build — one self-contained binary, no `SDL3.dll`
+Linux and the MinGW cross build - one self-contained binary, no `SDL3.dll`
 alongside. `CMakeLists.txt:49-55` forces `SDL_STATIC=ON`, `SDL_SHARED=OFF`,
 `SDL_TEST=OFF`, and `SDL_X11_XTEST=OFF` (openpete only polls input, never
 injects it, so disabling XTEST drops the `libXtst-dev` build dependency).
@@ -457,7 +457,7 @@ reference's parse-failures page. It deletes and rewrites
 - A preset knob is not taking effect. Knobs live in
   `cmake/presets/<preset>.cmake` and propagate on any plain build. If one
   does not, the build dir either predates the pointer scheme (run the
-  one-time migration above) or holds a `-D` override — check with
+  one-time migration above) or holds a `-D` override - check with
   `grep <VAR> build/<preset>/CMakeCache.txt`, drop it with
   `cmake --preset <p> -U <VAR>`.
 - `cmake: command not found`, or a version error. Minimum is 3.22.

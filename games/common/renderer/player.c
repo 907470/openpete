@@ -1,4 +1,4 @@
-// games/common/renderer/player.c — the shared player-avatar feeder: the draw
+// games/common/renderer/player.c - the shared player-avatar feeder: the draw
 // hook and its polybuf bracket, the per-call record store, the skeleton decode
 // and projection, the face-stream walk, the scene feed and the sub-tick
 // re-extract. The contract for the per-game half is renderer/player_game.h and
@@ -201,8 +201,8 @@ void player_native_set_player_slot(int k) { s_player_slot = k < 0 ? 0 : k; }
  * near plane, capped so the nearest vertex lands ON the near floor. With N
  * avatars per tick a per-CALL cap flattens each to the floor independently and
  * the z-test interleaves their bodies. The cap is therefore shared across the
- * calls of one tick: the running minimum over the tick's calls so far, and —
- * for the first calls, before the nearest avatar has drawn — the previous
+ * calls of one tick: the running minimum over the tick's calls so far, and -
+ * for the first calls, before the nearest avatar has drawn - the previous
  * tick's all-calls minimum when that tick had more than one call. One call per
  * tick is the call's own minimum. */
 static struct { uint32_t key; int calls; double min; } s_flat_cur = { 0, 0, 1e30 }, s_flat_prev = { 0, 0, 1e30 };
@@ -824,14 +824,14 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
 
     /* The draw keys every part at max(0, (part-origin viewZ >> 7) -
      * sortDepth); one ordering slot is 128 full-world view-Z units. Like the
-     * moby walks' depth offset, sortDepth is an ordering KEY, not geometry —
+     * moby walks' depth offset, sortDepth is an ordering KEY, not geometry -
      * it never enters stored depth, and mirroring it as a world pull would
      * show the avatar through any wall within a constant distance. Per-pixel Z
      * over TRUE depth mirrors the per-face sort; the sub-slot tie pull below
      * resolves coincident surfaces to the avatar (ground contact, and a
      * carrier the rider sits inside).
      *
-     * EXCEPTION: the saturated sentinel is the draw's own "ordering slot 0 —
+     * EXCEPTION: the saturated sentinel is the draw's own "ordering slot 0 -
      * draw in front of everything". That is authored full-front LAYERING, not
      * contact depth: keep the near-plane-capped whole-model pull for exactly
      * that value. OPENPETE_MOBY_OTBIAS=0 disables both. */
@@ -1343,7 +1343,7 @@ void player_reextract_record(CPUState* cpu, int mirror) {
             memcpy(s_sproj_prev, s_sproj, (size_t)pn * sizeof(s_sproj[0]));
             memcpy(h, s_seg_curr, block_len);           /* pass 2: CURR rendered pose */
             player_project_all(cpu);
-            if (s_sproj_n == pn) {                      /* index-matched → lerp shape */
+            if (s_sproj_n == pn) {                      /* index-matched -> lerp shape */
                 double a = s_anim_alpha;
                 for (int i = 0; i < pn; i++) {
                     s_sproj[i].sx = (float)(s_sproj_prev[i].sx + (s_sproj[i].sx - s_sproj_prev[i].sx) * a);
@@ -1508,7 +1508,7 @@ static void observe(int feeder) {
 
 int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_end) {
     /* Runahead lookahead: the hook fires on speculative ticks too. Those fires
-     * are not the canonical epoch — they build the led list, the lerp source
+     * are not the canonical epoch - they build the led list, the lerp source
      * of the committed records at commit. */
     rec_list_t* L = openpete_speculative ? &s_led : &s_list;
     if (openpete_speculative) led_open();
@@ -1719,7 +1719,7 @@ void player_records_epoch_commit(void) {
     s_latched_ring_ns = ns;
     if (!curr) s_no_ring++;
 
-    /* Pairing-only record: no hook observed the ring's tick-end position — the
+    /* Pairing-only record: no hook observed the ring's tick-end position - the
      * avatar was not drawn this tick (hidden, blink) or the epoch had no call
      * at all. Appended last, never rendered; shadow and flame records bind to
      * it and the next drawn record pairs with it. */

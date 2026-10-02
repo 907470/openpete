@@ -8,9 +8,9 @@
 # Sheila kicks a rock across the ledge over these two ticks. Each row names two
 # shadows: the rock's, which moves through the world, and a second shadow near
 # (397,315) whose moby stands still, so its whole canonical step is the
-# camera's. The second is the control — a shadow the moby's own translation
+# camera's. The second is the control - a shadow the moby's own translation
 # cannot reach, which stayed inside 0.25 px of the lerp while the rock's stood
-# a whole tick step away — and it is also the reason the engagement leg asks
+# a whole tick step away - and it is also the reason the engagement leg asks
 # only that one of a row's blobs hold its tick pose under
 # OPENPETE_SHADOW_INTERP=0: the static one cannot.
 #

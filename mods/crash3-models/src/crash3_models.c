@@ -1,18 +1,18 @@
-/* crash3-models — a Crash Bandicoot 3 demo model installed over a Spyro 1
+/* crash3-models - a Crash Bandicoot 3 demo model installed over a Spyro 1
  * moby class. See mod.toml.
  *
  *  1. entry: read assets/crash3_s1pack.bin (tools/crash3/convert.py),
  *     find the configured model in the pack table, park ITS blob with
  *     guest_alloc, relocate the blob's absolute words to the park and
  *     exchange its frame words' stream offset for one stream handle
- *     (vstream_handle) — once, so the ledger replays identically.
+ *     (vstream_handle) - once, so the ledger replays identically.
  *  2. PatchMobyModelPointers post-hook: whenever the game has just
  *     installed a level's stock model on the target row (row holds
  *     neither 0 nor our vaddr), copy the per-level bytes the pack cannot
  *     know (m_Sounds, m_CollisionModels) from the stock header, widen our
- *     header to the stock model's shape — numAnims and the largest frame
+ *     header to the stock model's shape - numAnims and the largest frame
  *     count, both into pre-filled reserve slots that all alias the one
- *     pose — and point the row at the park. The row is nulled and
+ *     pose - and point the row at the park. The row is nulled and
  *     re-installed on every level load, so this re-fires per level and is
  *     idempotent within one.
  *
@@ -204,7 +204,7 @@ static void on_patch_models(CPUState* cpu)
 
     park_host = g_api->guest(s_park);
     if (!park_host) { g_api->log(g_self, OP_MOD_LOG_ERROR, "park unmapped"); return; }
-    /* Fresh level: the arena may have been restored or never filled —
+    /* Fresh level: the arena may have been restored or never filled -
      * compare a window the game never writes (the vertex stream tail). */
     {
         uint32_t w = s_row.blob_size < 64u ? s_row.blob_size : 64u;
@@ -252,7 +252,7 @@ static void on_patch_models(CPUState* cpu)
     publish_status();
 }
 
-/* debug.dump: the live mobys of the target class, once per level — the
+/* debug.dump: the live mobys of the target class, once per level - the
  * calibration for placing a freecam pose on the installed model. Hooked
  * on the specular-moby renderer, which runs every gameplay frame once
  * mobys exist. */

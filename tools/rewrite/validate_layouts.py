@@ -7,7 +7,7 @@ symbol in psx.map.
 
 A *match* means our computed size <= map gap (gap may include unlabeled
 trailing globals; we accept gap >= computed). A *mismatch* (computed > gap)
-fails the validator — that means the struct is too big to fit, so layout
+fails the validator - that means the struct is too big to fit, so layout
 disagrees with PSX.
 
 Run:
@@ -98,7 +98,7 @@ def label_gap(labels: List[Tuple[int, str]], name: str) -> Optional[Tuple[int, i
 
 
 # ---------------------------------------------------------------------------
-# Resolve a global's declared type → (struct_name, array_count)
+# Resolve a global's declared type -> (struct_name, array_count)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -140,7 +140,7 @@ def find_global_layout(parsed_cursor: ci.Cursor,
             type_spell = tt.spelling.replace("const ", "").strip()
             layout = layouts.get(type_spell)
         if layout is None:
-            # Anonymous inline struct (`} g_Foo;` form) — compute from
+            # Anonymous inline struct (`} g_Foo;` form) - compute from
             # the var's record decl directly.
             decl = elem.get_declaration()
             if decl is not None and decl.is_definition():

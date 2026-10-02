@@ -1,4 +1,4 @@
-/* renderer/moby.h — the shared moby (3D actor) feeder's entries.
+/* renderer/moby.h - the shared moby (3D actor) feeder's entries.
  *
  * The walk lives in games/common/renderer/moby.c and reads every engine
  * address from game_layout.moby; the per-game stream formats and the data a
@@ -23,9 +23,9 @@ struct CPUState;
 /** @brief Sub-tick moby rotation interpolation toggle.
  *
  * When on, the moby euler composer renders each moby's rotation at float
- * precision — shortest-arc interpolating the byte euler (256/circle) between
+ * precision - shortest-arc interpolating the byte euler (256/circle) between
  * the moby's prev/curr interp-objs snapshots at its per-object alpha, with the
- * sin/cos sampled by linear interpolation of the in-RAM table — instead of the
+ * sin/cos sampled by linear interpolation of the in-RAM table - instead of the
  * byte-quantized angle. Removes the 1.4°/step stair-stepping on slowly-rotating
  * mobys (gems, idle dragons, HUD icons). Set by the orchestrator around the
  * feeder re-extract; reset (off) so the canonical inline render stays

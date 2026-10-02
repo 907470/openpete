@@ -1,4 +1,4 @@
-# arena-probe — CI fixture: guest_alloc round trip.
+# arena-probe - CI fixture: guest_alloc round trip.
 #
 # Allocates in the arena, writes through the host view, reads back through
 # the guest path, and stays oracle-exact: the arena is host-backed, so

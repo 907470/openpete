@@ -2,7 +2,7 @@
 
 This directory holds BizHawk movie (`.bk2`) inputs that drive
 openpete's headless harness for regression testing. Each file is a
-sealed reproduction of a gameplay scenario — same input every run,
+sealed reproduction of a gameplay scenario - same input every run,
 forever.
 
 The determinism matrix harness (`tests/harness/check_determinism_matrix.sh`,
@@ -21,7 +21,7 @@ The harness has three modes:
 
 Soak mode (ctest target `determinism_soak`, label `soak`) is the
 mode for catching channel leaks that only surface deep into a
-movie — drift accumulators, animation state that diverges slowly,
+movie - drift accumulators, animation state that diverges slowly,
 or a moby that wanders into a divergent sector after thousands of
 frames. It excludes `tas` + `frame-time-test` by default
 (`--exclude=tas,frame-time-test`); override the exclude list to
@@ -30,8 +30,8 @@ broaden or narrow.
 ## Corpus discipline
 
 **Capture every gameplay scenario you exercise manually.** If you
-boot the game to investigate something — a bug, a feature, a render
-question — and you press buttons to reach the state you want, that
+boot the game to investigate something - a bug, a feature, a render
+question - and you press buttons to reach the state you want, that
 is a regression-fixture worth saving. Five seconds of pad input now
 prevents a future "I can't reproduce that" hour.
 
@@ -44,31 +44,31 @@ build/linux-release/games/spyro-1/openpete-spyro1 \
 ```
 
 Use kebab-case names that read as a goal, not a fix
-(`stone-hill-entry.bk2` good; `fixes-issue-42.bk2` bad — the issue
+(`stone-hill-entry.bk2` good; `fixes-issue-42.bk2` bad - the issue
 will rot, the goal won't). Keep them small (< 30 sec gameplay; a
 few KB on disk).
 
 `--bk2-record` also drops a `<name>.bk2.args` sidecar (see below)
-capturing the flags you *typed* — minus every `--bk2*` flag and
-anything inherited from `openpete.toml` — so a later `--bk2 <name>.bk2`
+capturing the flags you *typed* - minus every `--bk2*` flag and
+anything inherited from `openpete.toml` - so a later `--bk2 <name>.bk2`
 reproduces the scenario without re-typing `--skip-to-level`, `--no-lod`,
 etc. Committing the `.args` next to the `.bk2` is what makes the fixture
 self-contained.
 
 Passing `--bk2-record` with **no path** records to
-`<exe_dir>/bk2/<timestamp>.bk2` (the `bk2/` dir is created if needed) —
+`<exe_dir>/bk2/<timestamp>.bk2` (the `bk2/` dir is created if needed) -
 a zero-argument "capture what I'm doing right now" for quick throwaway
 repros; move + rename into this corpus if one is worth keeping.
 
 To extend an existing movie with new input, combine `--bk2` with
-`--bk2-record` — replays the movie and appends live input from
+`--bk2-record` - replays the movie and appends live input from
 where it ends.
 
 ## Per-BK2 args sidecar
 
 A movie can ship with a sidecar file `<name>.bk2.args` that supplies
 extra CLI flags whenever `--bk2 <name>.bk2` is passed. Useful for
-scenarios that need a non-default startup flag to be reproducible —
+scenarios that need a non-default startup flag to be reproducible -
 e.g. an Artisans-only movie that should always boot via
 `--skip-to-level 10` instead of relying on title-screen input timing.
 
@@ -88,15 +88,15 @@ not an error; it's the common case.
 The sidecar sits near the top of the precedence ladder: every
 `openpete.toml` layer < exported environment variables < this
 `.bk2.args` sidecar < explicit CLI. So a sidecar overrides the machine's
-own settings — deliberately, since a movie's scenario must not shift with
-whoever's config it replays under — but yields to anything typed on the
+own settings - deliberately, since a movie's scenario must not shift with
+whoever's config it replays under - but yields to anything typed on the
 command line. See the "Config file" section of the top-level `README.md`.
 
 ## Current corpus
 
 | BK2                          | What it exercises                                          |
 | ---------------------------- | ---------------------------------------------------------- |
-| `artisans-bridge.bk2`        | Artisans bridge→hill junction (terrain GT3 UV orientation) |
+| `artisans-bridge.bk2`        | Artisans bridge->hill junction (terrain GT3 UV orientation) |
 | `demo.bk2`                   | Full run through of demo mode (no inputs)                  |
 | `frame-time-test.bk2`        | Frame-pacing under variable input                          |
 | `inventory.bk2`              | Inventory open/close, gem/dragon/life HUD reads            |
@@ -105,21 +105,21 @@ command line. See the "Config file" section of the top-level `README.md`.
 | `missing-world.bk2`          | Level-overlay translation edge case                        |
 | `moby-culling-16-9.bk2`      | Cone-cull at 16:9 (m_WasDrawn channel exemplar)            |
 | `portal-cyclorama-issue.bk2` | Cyclorama clip-X widening (gated channel exemplar)         |
-| `skip-to-artisans.bk2`       | Title → first level transition                             |
+| `skip-to-artisans.bk2`       | Title -> first level transition                             |
 | `stone-hill-entry.bk2`       | Stone Hill entry sequence (longest deterministic baseline) |
 | `tas.bk2`                    | Multi-minute TAS-style input (broad coverage)              |
-| `titlescreen-menu.bk2`       | Title → memory-card menu (2D sprite mirror/flip; frame 450)|
+| `titlescreen-menu.bk2`       | Title -> memory-card menu (2D sprite mirror/flip; frame 450)|
 
 ## When the matrix harness fails on a BK2
 
 Read the failure tag, then:
 
-- **expected-red** — the BK2 surfaces an `open` channel; not a
+- **expected-red** - the BK2 surfaces an `open` channel; not a
   regression. Open channels are tracked in
   `games/spyro-1/manifest/render_channels.toml`.
-- **REGRESSION** — a `gated` channel diverged. The classifier
+- **REGRESSION** - a `gated` channel diverged. The classifier
   output names which channel and which state region; cross-
   reference with `code_generator.cpp` substitution sites for that
   channel.
-- **BROKEN (no hash log)** — openpete crashed or hung; check
+- **BROKEN (no hash log)** - openpete crashed or hung; check
   `/tmp/determinism-matrix/log-*.txt` (rerun with `--keep-logs`).

@@ -2,7 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_viewz.glsl"
 
-/* Textured shadow-decal vertex stage — the MOBY drop-shadows.
+/* Textured shadow-decal vertex stage - the MOBY drop-shadows.
  *
  * Perspective-correct sprite UV/colour (identical to psx_scene.vert: the
  * homogeneous W is the fed true view-Z). The fragment stage's
@@ -19,7 +19,7 @@ layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vColor;
 layout(location = 2) flat out float vKoff;
 
-/* Scene depth convention (RHI spec constant 0) — see psx_scene.vert. */
+/* Scene depth convention (RHI spec constant 0) - see psx_scene.vert. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 void main()

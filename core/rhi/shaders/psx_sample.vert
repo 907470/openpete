@@ -3,7 +3,7 @@
 /* PSX VRAM sampler, vertex stage.
  *
  * Passthrough of the fixed native vertex layout (position / uv / color).
- * UVs are in TEXEL units within the texture page (0..w, 0..h) — the PSX
+ * UVs are in TEXEL units within the texture page (0..w, 0..h) - the PSX
  * sampler indexes VRAM by integer texel, exactly like the hardware. The
  * per-draw texture page / CLUT / bpp ride a push constant (one material per
  * draw batch), not the packed per-vertex `tex` field: a native renderer

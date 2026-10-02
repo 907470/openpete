@@ -1,4 +1,4 @@
-// core/include/openpete_record.h — `--record <path>` gameplay video capture.
+// core/include/openpete_record.h - `--record <path>` gameplay video capture.
 //
 // True-VFR capture: one encoded frame per game-presented frame, timestamped
 // with the wall-clock instant of capture, so the output plays back at real
@@ -7,7 +7,7 @@
 // nominal frame rate.
 //
 // Frames are read from PsyCross's present FBO at internal resolution, cropped
-// to the canonical PSX visible region (no letter/pillarbox bars) — the same
+// to the canonical PSX visible region (no letter/pillarbox bars) - the same
 // source the native-resolution screenshot path uses. Capture dimensions are
 // therefore window-independent; they are locked on the first captured frame.
 

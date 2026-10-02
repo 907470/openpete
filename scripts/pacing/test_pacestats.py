@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_pacestats.py — synthetic fixtures for the pacing statistics.
+"""test_pacestats.py - synthetic fixtures for the pacing statistics.
 
 Every check here feeds an input whose answer is known by construction and
 asserts the statistic recovers it. That is the whole point: these numbers will
@@ -27,7 +27,7 @@ FAILURES = []
 
 
 def check(name, cond, detail=""):
-    print(f"  {'PASS' if cond else 'FAIL'}  {name}{'  — ' + detail if detail else ''}")
+    print(f"  {'PASS' if cond else 'FAIL'}  {name}{'  - ' + detail if detail else ''}")
     if not cond:
         FAILURES.append(name)
 
@@ -86,7 +86,7 @@ def test_summary():
 def test_drift():
     print("drift")
     # A grid running exactly 50 ppm fast, which over a two-hour run is ~0.36 s
-    # of RTA error — material, and invisible to every percentile.
+    # of RTA error - material, and invisible to every percentile.
     ppm_true = 50.0
     period = VBL_NS * (1 + ppm_true / 1e6)
     idx = list(range(20000))
@@ -148,7 +148,7 @@ def test_drift():
           f"OLS {r_ols:.4f} ppm vs block {r_blk:.4f} ppm")
 
     # CUSUM: an undeclared re-anchor is a STEP in the mean. No percentile
-    # notices it — the run is tight before and tight after.
+    # notices it - the run is tight before and tight after.
     rng = random.Random(7)
     quiet = [rng.gauss(0, 1_000) for _ in range(500)]
     stepped = quiet + [v + 200_000 for v in (rng.gauss(0, 1_000)
@@ -163,7 +163,7 @@ def test_drift():
     # The case that matters, and that a clean-Gaussian fixture cannot reach:
     # a needle with heavy tails, which is the measured shape of real pacing
     # data. A deviation-based CUSUM scaled by a robust sigma fires on every
-    # outlier here — observed as 60 spurious change points in a run whose
+    # outlier here - observed as 60 spurious change points in a run whose
     # segment medians were identical.
     rng_h = random.Random(31)
     heavy = []
@@ -212,7 +212,7 @@ def test_stability():
 
     # Per-run spread. The pooled curve sums squared differences across every
     # run as though they were one process, so three runs of visibly different
-    # stability must still be separable when asked one at a time — otherwise a
+    # stability must still be separable when asked one at a time - otherwise a
     # curve averaged over unlike stretches reports a stability nobody has.
     t_mix, idx_mix = [], []
     for r in range(3):
@@ -285,7 +285,7 @@ def test_stability():
           f"{naive[0][1]:.3e} vs {truth[tau0]:.3e} at tau={tau0:.3f}s")
     check("...while its slope still looks like white phase noise",
           ps.adev_slope(naive, 0.5, 1.0) < -0.5,
-          f"slope {ps.adev_slope(naive, 0.5, 1.0):.3f} — a slope check misses it")
+          f"slope {ps.adev_slope(naive, 0.5, 1.0):.3f} - a slope check misses it")
     check("carrying the VBL index instead reproduces the gap-free curve",
           approx(fixed[0][1], truth[tau0], truth[tau0] * 0.05),
           f"{fixed[0][1]:.3e} vs {truth[tau0]:.3e}")
@@ -325,7 +325,7 @@ def test_baseline_compare():
     """The baseline gate's read side: reading a blessed baseline back.
 
     A baseline nothing compares against is an archive, not a gate. These cases
-    pin the four verdicts it must be able to reach — including SKIP, because a
+    pin the four verdicts it must be able to reach - including SKIP, because a
     gate with no baseline that prints nothing is indistinguishable from one
     that passed."""
     print("baseline comparison")
@@ -532,7 +532,7 @@ def test_log_format():
     """A format bump must not orphan the logs already on disk.
 
     The record size comes from each log's own header, never from this build's
-    constant. Getting that wrong refuses every older log with a struct error —
+    constant. Getting that wrong refuses every older log with a struct error -
     which is indistinguishable from corruption, and a pacing log is evidence
     nobody can regenerate. It happened: the v2 bump truncated v1 bodies to a
     multiple of 64, and last night's matrix logs became unreadable."""
@@ -580,7 +580,7 @@ def test_log_format():
 def test_slip_recovery():
     """A slip clamp snaps the grid forward while the loop still carries the
     backlog. The ticks that follow start late and converge, and OLS reads that
-    converging phase as the period being SHORT — a frequency error that is
+    converging phase as the period being SHORT - a frequency error that is
     really a transient. This is not hypothetical: on the Windows gate it turned
     +0.05 ppm into -3.14 ppm from 30 VBL out of 6917."""
     print("slip recovery")
@@ -603,7 +603,7 @@ def test_slip_recovery():
 
     # The mirror: a segment that ends with the loop progressively falling
     # behind (which is what trips the clamp in the first place) is a RISING
-    # ramp, read as a LONG period. Same defect, opposite sign — and it is why
+    # ramp, read as a LONG period. Same defect, opposite sign - and it is why
     # trimming only the segment head left a +2.95 ppm gate failure standing.
     ys_tail = [i * nominal + (0.0 if i < n - lead else 300_000.0 * (i - (n - lead)))
                for i in xs]

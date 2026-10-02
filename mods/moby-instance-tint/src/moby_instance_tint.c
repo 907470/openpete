@@ -1,12 +1,12 @@
-/* moby-instance-tint — the refine callback, made visible.
+/* moby-instance-tint - the refine callback, made visible.
  *
  * The selector picks the audience (every moby). The callback runs once per
  * candidate instance during extraction and returns that instance's uniform
  * block, so each moby renders a distinct stable colour. That is the whole
  * middle layer of the seam in one file.
  *
- * A real mod keys the callback on GAMEPLAY state — "class 42, but only
- * while it is burning" — and scopes the selector as tightly as it can
+ * A real mod keys the callback on GAMEPLAY state - "class 42, but only
+ * while it is burning" - and scopes the selector as tightly as it can
  * first. This one hashes the guest address instead, because a hash makes
  * the per-instance-ness impossible to miss: if every moby came out the
  * same colour, the callback would not be running per instance.
@@ -15,7 +15,7 @@
 #include <openpete_mod_ui.h>
 
 /* Tint curve the callback evaluates: channel = floor + spread * hash.
- * Host-side only — the widgets below retune it live, and the next
+ * Host-side only - the widgets below retune it live, and the next
  * canonical extraction pass picks the new values up. */
 static float g_floor  = 0.3f;
 static float g_spread = 0.6f;
@@ -53,7 +53,7 @@ static void ui_draw(const openpete_mod_ui_t* ui) {
      * interned, and a channel that later banks geometry across presents
      * re-resolves from identity instead of calling back. So this number
      * measures the engine's memoization, not how many mobys are on
-     * screen — and it will change meaning under the engine, silently, if
+     * screen - and it will change meaning under the engine, silently, if
      * you read it as a scene statistic. */
     ui->tooltip("Invocations, NOT instances drawn: the engine promises the "
                 "verdict your callback gave, not how often it asks for it. "
@@ -75,12 +75,12 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     if (api->api_version < 4u) return -1;   /* material_register_refine */
     int fs = api->shader_register(self, "shaders/tint.frag");
     if (fs < 0) {
-        api->log(self, OP_MOD_LOG_ERROR, "tint.frag failed — selector inert");
+        api->log(self, OP_MOD_LOG_ERROR, "tint.frag failed - selector inert");
         return 0;
     }
     openpete_mod_material_selector_t sel = openpete_mod_material_sel_any();
     sel.channel = OP_CHAN_MOBY;
     if (api->material_register_refine(self, &sel, fs, refine) < 0)
-        api->log(self, OP_MOD_LOG_ERROR, "material refused — selector inert");
+        api->log(self, OP_MOD_LOG_ERROR, "material refused - selector inert");
     return 0;
 }

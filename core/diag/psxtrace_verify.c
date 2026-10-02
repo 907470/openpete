@@ -1,4 +1,4 @@
-/* core/diag/psxtrace_verify.c — consumer for the .psxtrace v2 oracle. */
+/* core/diag/psxtrace_verify.c - consumer for the .psxtrace v2 oracle. */
 
 #include "openpete_psxtrace.h"
 #include "openpete_cdrom_mmio.h"
@@ -103,7 +103,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     }
     if (t->version != PSXTRACE_VERSION) {
         OPL_ERROR_F("psxtrace",
-                    "%s: unsupported version %u (wanted %u — rebuild trace)",
+                    "%s: unsupported version %u (wanted %u - rebuild trace)",
                     path, t->version, PSXTRACE_VERSION);
         goto fail;
     }
@@ -113,7 +113,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         goto fail;
     }
     if (t->region_count == 0) {
-        OPL_ERROR_F("psxtrace", "%s: region_count 0 — a trace over no regions verifies nothing",
+        OPL_ERROR_F("psxtrace", "%s: region_count 0 - a trace over no regions verifies nothing",
                     path);
         goto fail;
     }
@@ -195,7 +195,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     }
     if (t->vbl_policy_exact && !t->has_vbl_stamps) {
         OPL_ERROR_F("psxtrace", "%s: OPENPETE_PSXTRACE_VBL_POLICY=exact but the trace "
-                    "carries no VBL stamps — recapture", path);
+                    "carries no VBL stamps - recapture", path);
         goto fail;
     }
     if (t->flags & PSXTRACE_FLAG_HAS_RAM) {
@@ -212,7 +212,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
      * the per-region hash columns won't line up. */
     if ((uint32_t)openpete_state_region_count != t->region_count) {
         OPL_ERROR_F("psxtrace",
-                    "%s: trace region_count=%u but openpete has %zu — "
+                    "%s: trace region_count=%u but openpete has %zu - "
                     "manifest mismatch (rebuild trace from same manifest)",
                     path, t->region_count, openpete_state_region_count);
         goto fail;
@@ -225,7 +225,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         if (strcmp(t->region_names[r], want) != 0) {
             OPL_ERROR_F("psxtrace",
                         "%s: region %u is \"%s\" in the trace but \"%s\" in the "
-                        "registered table — manifest differs from capture",
+                        "registered table - manifest differs from capture",
                         path, r, t->region_names[r], want);
             goto fail;
         }
@@ -236,14 +236,14 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     if (!(t->flags & PSXTRACE_FLAG_TABLE_HASH)) {
         OPL_ERROR_F("psxtrace",
                     "%s: no table-hash block (captured before the module "
-                    "read its table from the manifest) — recapture",
+                    "read its table from the manifest) - recapture",
                     path);
         goto fail;
     }
     if (t->table_hash != openpete_state_regions_table_hash) {
         OPL_ERROR_F("psxtrace",
                     "%s: table hash 0x%016llx but the registered table is "
-                    "0x%016llx — manifest differs from capture",
+                    "0x%016llx - manifest differs from capture",
                     path, (unsigned long long)t->table_hash,
                     (unsigned long long)openpete_state_regions_table_hash);
         goto fail;
@@ -348,7 +348,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             t->per_region_change_count[r]++;
         t->prev_oracle_per[r] = oracle_per[r];
     }
-    /* Optional RAM payload — read it before the diff so the file pointer
+    /* Optional RAM payload - read it before the diff so the file pointer
      * advances regardless of whether we use it. */
     if (t->flags & PSXTRACE_FLAG_HAS_RAM) {
         uint32_t n = 0;
@@ -499,7 +499,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
          * the hardware. Both are treated as a transient with an INFINITE
          * heal window: the divergence is counted for diagnostics but never
          * trips hard_failed. Any real gameplay coupling surfaces in the
-         * tracked downstream regions (psyq_rand_seed, g_Spyro, …). */
+         * tracked downstream regions (psyq_rand_seed, g_Spyro, ...). */
         const int neutral   = in_range ? (openpete_state_regions[r].gameplay_neutral
                                           || openpete_state_regions[r].host_precision) : 0;
         const int transient = neutral
@@ -584,7 +584,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
         }
     }
     if (total_op != total_oracle && !any_mism) {
-        /* Total mismatched but no per-region did — region traversal
+        /* Total mismatched but no per-region did - region traversal
          * disagreement (manifest skew, NULL-ptr deref differences). Not a
          * CD-load transient; treat as a hard failure. */
         if (!t->diverged) {
@@ -610,9 +610,9 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
 
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     /* A transient burst still open when the WHOLE trace was consumed never
-     * re-converged → hard fail. But if the run was cut short (frame-limit,
+     * re-converged -> hard fail. But if the run was cut short (frame-limit,
      * crash, fast smoke) before the trace's end, an open burst is merely
-     * unverified, not a failure — only promote when we actually hit EOF. */
+     * unverified, not a failure - only promote when we actually hit EOF. */
     int eof_reached = (t->records_consumed >= t->frame_count);
     /* Ratchet: a tolerated row's divergence count over the full run may
      * not exceed the baseline its manifest row records. */
@@ -667,7 +667,7 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
         } else {
             OPL_INFO_F("psxtrace",
                        "run ended early (%u/%u records) with region=%u (%s) "
-                       "mid-transient (opened tick %lld) — unverified, not a failure",
+                       "mid-transient (opened tick %lld) - unverified, not a failure",
                        t->records_consumed, t->frame_count, r, t->region_names[r],
                        (long long)t->transient_open_frame[r]);
         }

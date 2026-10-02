@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""modtest.py — the mod test runner ([test] block in modtest.toml).
+"""modtest.py - the mod test runner ([test] block in modtest.toml).
 
 The modtest harness:
 a mod declares its own regression test in its manifest; this runner
@@ -16,9 +16,9 @@ modtest.toml schema (CI-side, next to mod.toml):
     frames = 8000              # run window (--frame-limit)
     expect_oracle = "pass"     # "pass" | "fail" | "skip" (default skip)
                                #   pass: PSX-oracle byte-exact (observer
-                               #         mods — the neutrality gate)
+                               #         mods - the neutrality gate)
                                #   fail: oracle MUST diverge (gameplay
-                               #         mods — expected divergence)
+                               #         mods - expected divergence)
                                #   skip: plain headless run, log
                                #         assertions only
     expect_log = ["..."]       # substrings that must appear in the log
@@ -34,7 +34,7 @@ The fixture is composed automatically: the mod + its hard-dependency
 closure (deps resolved as sibling directories), enabled in
 dependency-first order.
 
-Env: OPENPETE_BIN, OPENPETE_DISC — same defaults as check_mods.sh.
+Env: OPENPETE_BIN, OPENPETE_DISC - same defaults as check_mods.sh.
 Exit 0 = all executed [test] blocks green; 1 = any failure, or
 no [test] block executed at all.
 """
@@ -55,7 +55,7 @@ ARR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 def strip_comment(line: str) -> str:
     """Cut a trailing # comment, respecting quoted strings ('#' inside
-    quotes is content — e.g. expect_log = ["call #1"])."""
+    quotes is content - e.g. expect_log = ["call #1"])."""
     out = []
     in_str = False
     escape = False
@@ -145,7 +145,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
     mid = man["id"]
     if test is None:
         reason = "no [test] block"
-        print(f"[modtest] {mid}: SKIP — {reason}")
+        print(f"[modtest] {mid}: SKIP - {reason}")
         return "skip", reason
 
     # A test whose inputs are derived locally (converted from a disc) and
@@ -154,7 +154,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
     for req in test["requires"]:
         if not (REPO / req).exists():
             reason = f"missing input {req}"
-            print(f"[modtest] {mid}: SKIP — {reason}")
+            print(f"[modtest] {mid}: SKIP - {reason}")
             return "skip", reason
 
     with tempfile.TemporaryDirectory(prefix="openpete-modtest-") as tmp:
@@ -191,7 +191,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
         # name rather than counted green.
         if mode in ("pass", "fail") and r.returncode == 64:
             reason = "psx oracle prerequisites missing (exit 64)"
-            print(f"[modtest] {mid}: SKIP — {reason}")
+            print(f"[modtest] {mid}: SKIP - {reason}")
             return "skip", reason
 
         ok = True
@@ -203,22 +203,22 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
         # checks below carry the engagement proof there.
         if mode not in ("pass", "fail"):
             if r.returncode != 0:
-                print(f"[modtest] {mid}: FAIL — run exited {r.returncode}")
+                print(f"[modtest] {mid}: FAIL - run exited {r.returncode}")
                 ok = False
             elif "openpete-exit: reason=" not in out:
-                print(f"[modtest] {mid}: FAIL — "
+                print(f"[modtest] {mid}: FAIL - "
                       "run printed no openpete-exit line")
                 ok = False
         if mode == "pass" and "verdict: PASS" not in out:
-            print(f"[modtest] {mid}: FAIL — oracle did not PASS")
+            print(f"[modtest] {mid}: FAIL - oracle did not PASS")
             ok = False
         if mode == "fail" and "verdict: FAIL" not in out:
-            print(f"[modtest] {mid}: FAIL — oracle did not FAIL "
+            print(f"[modtest] {mid}: FAIL - oracle did not FAIL "
                   "(expected divergence missing)")
             ok = False
         for needle in test["expect_log"]:
             if needle not in out:
-                print(f"[modtest] {mid}: FAIL — log missing: {needle!r}")
+                print(f"[modtest] {mid}: FAIL - log missing: {needle!r}")
                 ok = False
         if ok:
             print(f"[modtest] {mid}: PASS ({mode}, {frames} frames, "
@@ -252,17 +252,17 @@ def main():
             failed.append(mod_dir.name)
 
     n = len(args.mods)
-    print(f"[modtest] summary: {n} mod(s) — {len(passed)} passed, "
+    print(f"[modtest] summary: {n} mod(s) - {len(passed)} passed, "
           f"{len(skipped)} skipped, {len(failed)} failed")
     for mid, reason in skipped:
-        print(f"[modtest]   skipped: {mid} — {reason}")
+        print(f"[modtest]   skipped: {mid} - {reason}")
     for mid in failed:
         print(f"[modtest]   failed: {mid}")
 
     # A run that executed nothing proves nothing: report it as a failure
     # rather than as a green gate.
     if not passed and not failed:
-        print("[modtest] no [test] block executed — VACUOUS")
+        print("[modtest] no [test] block executed - VACUOUS")
         return 1
     return 1 if failed else 0
 

@@ -2,10 +2,10 @@
 #define OPENPETE_CONFIG_H
 
 /*
- * openpete.toml — the single layered config file, and the only place a
+ * openpete.toml - the single layered config file, and the only place a
  * persistent setting is written.
  *
- * PRECEDENCE (ascending — later wins):
+ * PRECEDENCE (ascending - later wins):
  *
  *    0  built-in defaults
  *    1  openpete.toml   global scope
@@ -19,7 +19,7 @@
  *    9  an in-game edit (a live mutation, not a layer)
  *
  * Tiers 1-4 subdivide by FILE (exe-dir < user-dir) and then by SPELLING
- * (bare keys < [env] < [args]) — scope is the major sort key, notation
+ * (bare keys < [env] < [args]) - scope is the major sort key, notation
  * the minor one, and in-file spellings rank as their real-world
  * counterparts do so that moving a line between the file and the shell
  * never changes which of two settings wins.
@@ -28,7 +28,7 @@
  * a knob's winning layer is decided here, and only that one spelling is
  * materialized (an argv token or a setenv). Splicing and setenv-ing every
  * layer would hand the args-vs-env tiebreak back to each knob's own
- * sentinel-unset consumer, which is blind to scope — a low-specificity
+ * sentinel-unset consumer, which is blind to scope - a low-specificity
  * [args] would beat a high-specificity [env].
  */
 
@@ -74,7 +74,7 @@ void openpete_config_set_game_id(const char* id);
 /* How the [disc.*] scopes get their keys. openpete_config_apply calls this
  * hook once it knows which image will boot, to learn that image's serial
  * and/or content hash. Cheap by contract: an ISO serial read, or a library
- * entry's already-recorded hash — never an image hash, which would mean
+ * entry's already-recorded hash - never an image hash, which would mean
  * digesting ~500 MB on every launch. Fills `serial` / `sha` with "" for
  * whatever it cannot resolve; returns 0 if it resolved anything.
  *

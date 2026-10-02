@@ -1,4 +1,4 @@
-/* terrain.h — the shared terrain feeder's exports to a game's orchestrator.
+/* terrain.h - the shared terrain feeder's exports to a game's orchestrator.
  * The feeder itself (renderer/terrain.c) registers as the feature module
  * `terrain_module`; these entries are called by the sub-tick re-extract
  * orchestrator and the debug-camera pose helpers. */

@@ -1,9 +1,9 @@
-/* music_override — play user-supplied PCM WAVs from assets/music/ in
+/* music_override - play user-supplied PCM WAVs from assets/music/ in
  * place of the game's XA-ADPCM music streams. The XA pump never reads
  * the disc image while an override is active.
  *
  * Game-agnostic: the caller supplies the track index (read from game
- * RAM at the game layer — core/ carries no game addresses). */
+ * RAM at the game layer - core/ carries no game addresses). */
 #ifndef OPENPETE_MUSIC_OVERRIDE_H
 #define OPENPETE_MUSIC_OVERRIDE_H
 

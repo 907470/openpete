@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# ident-audit.sh — sweep the sub-tick spine's identity residual over the bk2 corpus.
+# ident-audit.sh - sweep the sub-tick spine's identity residual over the bk2 corpus.
 #
 # The canonical dump at VBL F composes the current scene: the newest tick's feed.
 # The explicit sub-tick re-extract phased onto that same tick's stamp (alpha 1)
@@ -10,7 +10,7 @@
 # The presentation corpus's `ident` leg tests that on a handful of sampled frames
 # by diffing PNGs. This runs the in-binary audit (OPENPETE_IDENT_AUDIT) instead,
 # which composes both scenes on EVERY canonical present and reports their pixel
-# difference as one line per tick — so a whole movie is swept without writing
+# difference as one line per tick - so a whole movie is swept without writing
 # thousands of images, and the residual can be read as a distribution rather than
 # a handful of samples.
 #
@@ -59,7 +59,7 @@ OUTDIR="build/ident-audit"
 # The LOD band each row is swept at. One run per row by default; set to
 # "original extended" to sweep both, as the presentation corpus does.
 CAP_LODS="${OPENPETE_CAP_LODS:-original}"
-# Capture aspect — 16:9 like the corpus, so the audit sees the Hor+ reveal too.
+# Capture aspect - 16:9 like the corpus, so the audit sees the Hor+ reveal too.
 CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
 
 pg_manifest "$MANIFEST" pipe
@@ -115,7 +115,7 @@ run_one() {  # name start frame_limit lodmode freeze
 
 # The rows THIS invocation ran. build/ident-audit accumulates TSVs across
 # filtered runs, so the summary is scoped to this list rather than to whatever
-# the directory holds — a TSV left by an earlier run of a different binary would
+# the directory holds - a TSV left by an earlier run of a different binary would
 # otherwise be reported as part of this verdict.
 RUNLIST="$(mktemp)"
 trap 'rm -f "$RUNLIST"' EXIT

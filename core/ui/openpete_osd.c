@@ -1,4 +1,4 @@
-/* core/ui/openpete_osd.c — the OSD's toast ring. See openpete_osd.h.
+/* core/ui/openpete_osd.c - the OSD's toast ring. See openpete_osd.h.
  *
  * State only: no drawing, no glyphs, no renderer. What lives here is the ring,
  * the coalescing rule, the rate limit, the animation state machine and the two
@@ -36,7 +36,7 @@ typedef enum { ST_FREE = 0, ST_RISING, ST_HOLD, ST_FALLING } toast_state_t;
 
 typedef struct {
     uint32_t      id;          /* 0 = free slot                              */
-    uint32_t      seq;         /* monotonic post order — the age sort key    */
+    uint32_t      seq;         /* monotonic post order - the age sort key    */
     char          key[OPENPETE_OSD_KEY_MAX];
     char          text[OPENPETE_OSD_TEXT_MAX];
     uint32_t      ttl_ms;
@@ -78,7 +78,7 @@ void openpete_osd_set_enabled(int on) {
     /* Turning notifications OFF drops whatever is up. Leaving them in the ring
      * would strand them: the builder stops publishing geometry, so nothing
      * starts their timers, and they would all reappear the moment the player
-     * turned notifications back on — announcements of things that happened
+     * turned notifications back on - announcements of things that happened
      * minutes ago. */
     if (was && !s_enabled) openpete_osd_reset();
 }
@@ -163,7 +163,7 @@ void openpete_osd_notify(const char *source, const char *key,
     if (!s_enabled || !fmt) return;
     /* Speculative ticks are rolled back and replayed ticks are re-executed: a
      * notification from either announces something that never committed, or
-     * announces it a second time. Read outside the lock — plain cross-thread
+     * announces it a second time. Read outside the lock - plain cross-thread
      * ints, the same relaxed idiom their other consumers use. */
     if (openpete_speculative || openpete_replaying) return;
 
@@ -183,13 +183,13 @@ void openpete_osd_notify(const char *source, const char *key,
         /* Repaint. The id is KEPT deliberately: a new id would be absent from
          * the geometry the sim thread has already published, so the toast
          * would vanish for up to a tick before reappearing. Keeping it shows
-         * one tick of stale text at the restarted timer instead — correct, and
+         * one tick of stale text at the restarted timer instead - correct, and
          * invisible. The timer restarts on the REPAINT's timeout, so a
          * recurring notification can lengthen its own dwell without abandoning
          * its key (and so its slot). */
         memcpy(t->text, text, sizeof text);
         t->ttl_ms  = timeout_ms;
-        t->repaint = 1;   /* the present thread rewinds the hold — it owns the clock */
+        t->repaint = 1;   /* the present thread rewinds the hold - it owns the clock */
         SDL_UnlockMutex(osd_mx());
         return;
     }
@@ -326,7 +326,7 @@ int openpete_osd_present_update(op_time_t now,
         toast_t *t = live[i];
         const float h = ready_height(ready, n_ready, t->id);
         if (h < 0.0f) continue;   /* no geometry yet: skip it, and leave the
-                                   * timer unstarted — a toast posted before
+                                   * timer unstarted - a toast posted before
                                    * the glyph font cached is late, never
                                    * lost. Drawing its slot anyway would draw
                                    * some OTHER toast's glyphs. */
@@ -383,7 +383,7 @@ int openpete_osd_present_update(op_time_t now,
 
         /* Stack glide: a toast appearing snaps to its slot (there is nothing
          * to glide FROM), an existing one eases toward its new home when
-         * something above it retires — so the stack settles instead of
+         * something above it retires - so the stack settles instead of
          * jumping. */
         if (!t->y_seeded) { t->y = stack; t->y_seeded = 1; }
         else               t->y += (stack - t->y) * glide;

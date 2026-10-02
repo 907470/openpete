@@ -1,4 +1,4 @@
-// core/mods/mod_chain.c — per-address override chains + base() fallthrough.
+// core/mods/mod_chain.c - per-address override chains + base() fallthrough.
 //
 // The ONE override primitive of the modding framework: N mods stack on a guest
 // function; the highest-priority override runs first; base() calls the
@@ -6,11 +6,11 @@
 //
 // Mechanism: every recompiled function's prologue calls
 // psx_override_dispatch(cpu, addr) (emitted by the recompiler for all
-// functions — the freecam freeze rides the same chokepoint), which
+// functions - the freecam freeze rides the same chokepoint), which
 // reaches openpete_mods_dispatch() below. To fall through to the real
 // body, base() re-calls the function through call_by_address() with a
 // one-shot bypass armed for that addr, so the prologue's mod arm returns
-// 0 and the recompiled body runs — the generalization of the in-tree
+// 0 and the recompiled body runs - the generalization of the in-tree
 // re-entrancy-guard pattern in game_extras_impl.c (func_80023AC4 trace).
 //
 // Chain contents are runtime data: registering and
@@ -30,8 +30,8 @@
 #include "mod_vec.h"
 #include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 
-#include <stdio.h>  /* snprintf — owner-state table */
-#include <stdlib.h> /* getenv — timer dump toggle */
+#include <stdio.h>  /* snprintf - owner-state table */
+#include <stdlib.h> /* getenv - timer dump toggle */
 #include <string.h>
 
 /* Recompiler runtime: dispatch-by-address (psx_runtime.h). */
@@ -50,7 +50,7 @@ typedef struct {
     openpete_mod_override_fn fn;
     const char*              owner_id; /* for diagnostics/attribution */
     int                      disabled; /* live toggle: skipped, not removed
-                                        * — re-enable restores in place */
+                                        * - re-enable restores in place */
 } mod_link_t;
 
 typedef struct {
@@ -90,7 +90,7 @@ static mod_link_t* link_at(const mod_chain_t* c, int i) {
  * a build with no chains at all: one branch, no table scan, no re-entry
  * through call_by_address. openpete_mods_active deliberately STAYS set
  * (it is also the gate other subsystems read for "a mod could be live
- * this session", and a re-enable must be seen) — this counter is what
+ * this session", and a re-enable must be seen) - this counter is what
  * makes the all-disabled hot path free. */
 static int s_live_links = 0;
 
@@ -102,8 +102,8 @@ static int s_live_links = 0;
  *     flag must be seeded from its owner, never inherited from whatever
  *     link previously sat at the head (which may belong to an unrelated,
  *     toggled-off mod).
- * Owners never toggled — including engine-internal ones like the content
- * registry's driver link — default to enabled. */
+ * Owners never toggled - including engine-internal ones like the content
+ * registry's driver link - default to enabled. */
 /* Owners the state table allocates up front; it grows past this. */
 #define MOD_OWNER_STATE_INIT 32
 #define MOD_OWNER_ID_MAX    64 /* mirrors the loader's MOD_ID_MAX */
@@ -152,7 +152,7 @@ static void owner_state_set(const char* owner_id, int disabled) {
                       MOD_OWNER_STATE_INIT);
     slot = (owner_state_t*)mod_fvec_push(&s_owner_state);
     if (!slot) {
-        OPL_ERROR_F("mods", "override owner-state allocation failed — "
+        OPL_ERROR_F("mods", "override owner-state allocation failed - "
                     "\"%s\" will re-register its links ENABLED after a "
                     "reload", owner_id);
         return;
@@ -166,7 +166,7 @@ static void owner_state_set(const char* owner_id, int disabled) {
 typedef struct {
     mod_chain_t* chain;
     int          link;
-    op_time_t    child_ns; /* time spent in base() descent — subtracted
+    op_time_t    child_ns; /* time spent in base() descent - subtracted
                             * so the instrument reports SELF time */
 } mod_frame_t;
 
@@ -206,14 +206,14 @@ static mod_chain_t* chain_find(uint32_t addr) {
  * @param chain the chain.
  * @param idx the first link index to consider. */
 static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
-    /* Live toggle: disabled links are transparent — base() descends
+    /* Live toggle: disabled links are transparent - base() descends
      * straight past them. */
     while (idx < link_count(chain) && link_at(chain, idx)->disabled) idx++;
     const op_time_t t0 = op_now();
     if (idx < link_count(chain)) {
         if (s_frame_depth >= MOD_FRAME_STACK_MAX) {
             OPL_ERROR_F("mods", "override frame stack overflow at 0x%08X "
-                        "(recursion through %d chained calls?) — running "
+                        "(recursion through %d chained calls?) - running "
                         "original body", chain->addr, s_frame_depth);
         } else {
             mod_frame_t* f = &s_frames[s_frame_depth++];
@@ -275,7 +275,7 @@ void openpete_mods_chain_remove_owner(const char* owner_id) {
 }
 
 /* Live toggle: flip every link owned by owner_id. Chain STRUCTURE is
- * untouched (order, base() nesting) — a re-enabled mod is exactly where
+ * untouched (order, base() nesting) - a re-enabled mod is exactly where
  * it was. Call only at a tick boundary (the loader's apply point). */
 void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on) {
     if (!owner_id) return;
@@ -295,7 +295,7 @@ void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on) {
  * Accumulates SELF time per owner across tick hooks (chain links, fed by
  * run_link above) and present hooks (mod_draw.c). Reported + reset every
  * ~17 s of sim by the present flush: always WARNS when a mod's average
- * tick cost exceeds the budget (names the slow mod — the sim-thread
+ * tick cost exceeds the budget (names the slow mod - the sim-thread
  * contract made socially enforceable); full dump under
  * OPENPETE_MOD_TIMERS=1. */
 
@@ -324,7 +324,7 @@ void openpete_mods_time_add(const char* owner, op_time_t ns, int is_present) {
                           "mod_time", MOD_TIME_INIT);
         t = (mod_time_slot_t*)mod_fvec_push(&s_times);
         if (!t) {
-            OPL_ERROR_F("mods", "timer table allocation failed — %s is "
+            OPL_ERROR_F("mods", "timer table allocation failed - %s is "
                         "absent from the time report", owner);
             return;
         }
@@ -345,7 +345,7 @@ void openpete_mods_time_report(unsigned ticks_elapsed) {
                        / (double)ticks_elapsed;
         if (tick_ms > MOD_TICK_BUDGET_MS)
             OPL_WARN_F("mods", "%s: %.2f ms/tick average over the last "
-                       "window (budget %.1f) — this mod is slowing the "
+                       "window (budget %.1f) - this mod is slowing the "
                        "sim thread", t->owner, tick_ms, MOD_TICK_BUDGET_MS);
         else if (s_dump) /* dump 0-call windows too: a live-toggled-off
                           * mod's silence is exactly the signal */
@@ -372,7 +372,7 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
     /* Every link toggled off: run the recompiled body IN PLACE. Entering
      * run_link here would still produce the right result (it bottoms out
      * on the original), but only by re-calling the function through
-     * call_by_address — a second pass over every dispatch arm of the
+     * call_by_address - a second pass over every dispatch arm of the
      * prologue (freecam freeze, native decomp, feature registry) for a
      * call no mod is servicing. */
     if (idx >= link_count(chain)) return 0;
@@ -394,7 +394,7 @@ void openpete_mods_base(CPUState* cpu) {
         return;
     }
     if (s_frame_depth <= 0) {
-        OPL_ERROR_F("mods", "base() called outside an override — ignored");
+        OPL_ERROR_F("mods", "base() called outside an override - ignored");
         return;
     }
     mod_frame_t f = s_frames[s_frame_depth - 1];
@@ -436,7 +436,7 @@ int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                           "chains", MOD_CHAIN_BLOCK);
         chain = (mod_chain_t*)mod_cvec_push(&s_chains);
         if (!chain) {
-            OPL_ERROR_F("mods", "override chain table allocation failed — "
+            OPL_ERROR_F("mods", "override chain table allocation failed - "
                         "cannot hook 0x%08X for %s", addr,
                         owner_id ? owner_id : "?");
             return -1;
@@ -449,7 +449,7 @@ int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
      * priority order and the last registration is the highest. */
     if (!mod_fvec_push(&chain->links)) {
         OPL_ERROR_F("mods", "override chain at 0x%08X: link allocation "
-                    "failed — cannot add %s", addr,
+                    "failed - cannot add %s", addr,
                     owner_id ? owner_id : "?");
         return -1;
     }

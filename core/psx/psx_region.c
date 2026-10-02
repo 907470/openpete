@@ -1,16 +1,16 @@
-/* core/psx/psx_region.c — PSX RAM virtualization (presentation-side
+/* core/psx/psx_region.c - PSX RAM virtualization (presentation-side
  * region table).
  *
  * Strategy: substitute-only at hot paths, region table at cold paths.
  * The hot recompiler-emitted `g_ram[addr & 0x1FFFFF]` accesses are NOT
- * routed through this table — consumers redirect those via psxrecomp
+ * routed through this table - consumers redirect those via psxrecomp
  * instruction substitutions. This file backs:
  *   - cpu.c's mem_ptr / openpete_psx_to_host_ptr (cold-path resolvers)
  *   - psx_runtime_canonicalize debug guard
  *   - tooling that wants to inspect a region (savestate, harness)
  *
  * Region storage: small static array (cap MAX_REGIONS). Linear scan is
- * fine — we expect single-digit registrations. Bases are stored as
+ * fine - we expect single-digit registrations. Bases are stored as
  * physical addresses (vaddr & 0x1FFFFFFFu) so KSEG0/KSEG1 mirrors of
  * the same buffer resolve to the same region. */
 

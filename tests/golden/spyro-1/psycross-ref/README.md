@@ -13,7 +13,7 @@ captured **before** PsyCross is retired. Two purposes:
 ## What these are (and aren't)
 
 - `*-og.png` is the **PsyCross present FBO** (`openpete_psyx_take_screenshot`),
-  captured **headless** — under `--headless` PsyCross rasterizes through SDL
+  captured **headless** - under `--headless` PsyCross rasterizes through SDL
   software GL, so this is deterministic and needs no GPU/display.
 - They are **not** pixel-identical to the native renderer. Native uses float
   raster + optional SSAA and legitimately differs. Any gate comparing native
@@ -22,7 +22,7 @@ captured **before** PsyCross is retired. Two purposes:
 
 ## Corpus
 
-Deterministic attract demo, sim-frame → scene:
+Deterministic attract demo, sim-frame -> scene:
 
 | File | Frame | Scene |
 |------|-------|-------|
@@ -36,7 +36,7 @@ Deterministic attract demo, sim-frame → scene:
 | `freeze-1185-og.png`| 1185  | pause freeze backdrop (green tint), via `bk2/pause-menu.bk2` |
 
 Frames were chosen from a scout sweep (every 1000 frames) to be visually
-**distinct** — the title recurs between demo segments; frames 8000/13000 are
+**distinct** - the title recurs between demo segments; frames 8000/13000 are
 loading/fade (near-black) and were excluded.
 
 ## Regenerate

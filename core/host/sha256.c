@@ -1,4 +1,4 @@
-// core/host/sha256.c — minimal SHA-256 (FIPS 180-4). See sha256.h.
+// core/host/sha256.c - minimal SHA-256 (FIPS 180-4). See sha256.h.
 #include "sha256.h"
 
 #include <string.h>

@@ -1,4 +1,4 @@
-/* raster_quantize.frag — engine SCENE-point pass (`--raster-quantize N`):
+/* raster_quantize.frag - engine SCENE-point pass (`--raster-quantize N`):
  * resample the composed 3D scene on the 512Nx240N virtual PSX raster, taking
  * ONE POINT SAMPLE per cell with a DEPTH-VOTED choice of tap. The base grid
  * comes from op_scene_rect/op_scene_grid and N is an integer MULTIPLIER of it,
@@ -7,7 +7,7 @@
  *
  * Point sampling is the authentic half: the PSX GPU rasterized exactly one
  * sample per output pixel and had no downsample filter, so box-averaging a
- * cell would add an antialias pass hardware never ran — it softens every
+ * cell would add an antialias pass hardware never ran - it softens every
  * texture and every polygon edge the snap was supposed to make hard.
  *
  * The vote is the seam treatment: the integer snap opens sub-PSX-pixel slivers
@@ -19,7 +19,7 @@
  * that owns the cell rather than merely diluted, while genuine edges resolve to
  * whichever surface dominates: hard pixel edges, as hardware drew them.
  * Depth comes from the WORLD-opaque pre-pass (op_scene_depth), addressed
- * through its own PSX-screen->uv affine (rq_od_affine) — the pre-pass
+ * through its own PSX-screen->uv affine (rq_od_affine) - the pre-pass
  * rasterizes a sub-rect of a grow-only allocation, so plain screen uv reads
  * outside it (all-far). Slivers read far there too (the pre-pass draws the same
  * snapped geometry), which is exactly what the vote needs. Cells are non-square
@@ -32,7 +32,7 @@ layout(location = 0) out vec4 op_color;
 layout(set = 0, binding = 0) uniform sampler2D op_prev_pass;
 layout(set = 1, binding = 0) uniform sampler2D op_scene_depth;
 
-/* Engine frame state — must stay layout-identical to op_engine_ubo in
+/* Engine frame state - must stay layout-identical to op_engine_ubo in
  * openpete_shader_api.glsl (std140; only the fields this pass reads are
  * named past the header). */
 layout(set = 3, binding = 0, std140) uniform op_engine_ubo {
@@ -57,11 +57,11 @@ layout(set = 3, binding = 1, std140) uniform rq_params {
 };
 
 /* The pre-pass stores d = 1 - 1/viewZ (viewZ in FULL-WORLD units), so
- * absolute-d thresholds are meaningless at distance — decode viewZ and
+ * absolute-d thresholds are meaningless at distance - decode viewZ and
  * split on the RATIO instead, which is scale-invariant: cell-interior
  * spread of a smooth surface stays near 1x while a leak-through sliver
  * or a real silhouette jumps well past the threshold (the far-clear
- * sentinel decodes to ~1e7). Steep near slopes can false-trigger —
+ * sentinel decodes to ~1e7). Steep near slopes can false-trigger -
  * harmless: the centre tap is on the winning side of a smooth gradient
  * almost always, so the cell keeps its own centre colour. */
 const float RQ_VZ_RATIO = 1.3;
@@ -120,9 +120,9 @@ void main() {
 
         if (dmax > dmin * RQ_VZ_RATIO) {
             /* Depth discontinuity: NEAR-BIASED vote (geometric split matches
-             * the ratio clustering). A leak sliver can dominate its cell —
+             * the ratio clustering). A leak sliver can dominate its cell -
              * inside a wedge between two near surfaces even an all-far cell is
-             * still a hole — so any small near quorum wins the cell, not the
+             * still a hole - so any small near quorum wins the cell, not the
              * majority. True silhouettes shift by at most ~1 cell (one PSX
              * pixel) toward the far side; leaks lose everywhere the near
              * surface has a foothold. */
@@ -131,7 +131,7 @@ void main() {
             for (int n = 0; n < 16; n++) if (dep[n] < mid) nearCnt++;
             bool keepNear = nearCnt >= 3;
 
-            /* Keep the centre when it already belongs to the winning side —
+            /* Keep the centre when it already belongs to the winning side -
              * that is the no-shift case and covers every cell interior. */
             if ((rq_view_z((c0 + pick) / k) < mid) != keepNear) {
                 float best = 1.0e9;

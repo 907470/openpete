@@ -1,20 +1,20 @@
-// core/mods/mod_draw.c — the mod-facing screen-space draw service.
+// core/mods/mod_draw.c - the mod-facing screen-space draw service.
 //
 // The native draw/overlay service, vk-renderer-first: mods
 // draw HUD text through the native renderer, never guest-side, so
 // an observer/HUD mod stays sim-neutral by construction (zero guest-RAM
-// writes; guest prim injection provably leaks — the 16:9
+// writes; guest prim injection provably leaks - the 16:9
 // particle_drawn_flag regression).
 //
 // Two submission contexts:
 //   - sim-tick hooks (inside overrides): commands land in a staging
 //     buffer; the canonical present commits it for display across ALL of
-//     that tick's presents (immediate mode per tick — draw every tick or
+//     that tick's presents (immediate mode per tick - draw every tick or
 //     it disappears).
 //   - present hooks (OPENPETE mod api register_present_hook): run once
 //     per present on the host fiber with {tick, alpha, dt, aspect};
 //     commands live for that present only. Mods evaluate their own
-//     curves at alpha — the engine never interpolates mod visuals.
+//     curves at alpha - the engine never interpolates mod visuals.
 //
 // Render-purity is enforced by API shape: while a present hook runs,
 // openpete_mods_in_present is set and the loader's guest/call/override
@@ -22,7 +22,7 @@
 // count/timing; sim-affecting work belongs in tick hooks).
 //
 // Text is rasterized by a GAME-registered emitter (Spyro: the 3D gold
-// text-moby glyphs via text_moby_native_emit — digits, A-Z, limited
+// text-moby glyphs via text_moby_native_emit - digits, A-Z, limited
 // punctuation). Coordinates: overlay space = window-height fractions,
 // origin top-left, +y down, x spans [0, aspect].
 
@@ -37,7 +37,7 @@
 #include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 #include "mod_vec.h"
 
-#include <SDL3/SDL.h>   /* SDL_GetCurrentThreadID — the single-owner check */
+#include <SDL3/SDL.h>   /* SDL_GetCurrentThreadID - the single-owner check */
 
 #include <stdio.h>
 #include <string.h>
@@ -108,7 +108,7 @@ static void assert_one_owner(void) {
     if (tid != s_owner_tid && !s_reported) {
         s_reported = 1;
         OPL_ERROR_F("mods", "draw service: tick buffers exchanged from a "
-                    "second thread (owner %llu, now %llu) — a mod's text "
+                    "second thread (owner %llu, now %llu) - a mod's text "
                     "can be lost or double-freed",
                     (unsigned long long)s_owner_tid,
                     (unsigned long long)tid);
@@ -149,7 +149,7 @@ static present_hook_t* phook_at(int i) {
 }
 static int            s_any_draw = 0; /* fast bail for modless runs */
 
-/* Last present's ctx (tick/alpha/canonical) — the postfx engine UBO
+/* Last present's ctx (tick/alpha/canonical) - the postfx engine UBO
  * reads these through openpete_mods_present_ctx (same source as the
  * present-hook ctx, so mods and shaders can never disagree on phase). */
 static uint32_t s_pctx_tick;
@@ -216,7 +216,7 @@ int openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                       "present_hooks", PRESENT_HOOKS_INIT);
     h = (present_hook_t*)mod_fvec_push(&s_phooks);
     if (!h) {
-        OPL_ERROR_F("mods", "present-hook table allocation failed — cannot "
+        OPL_ERROR_F("mods", "present-hook table allocation failed - cannot "
                     "add %s", owner_id ? owner_id : "?");
         return -1;
     }
@@ -247,7 +247,7 @@ void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
                                                         : "draw_text_tick_b"));
     t = (cmd_text_t*)mod_fvec_push(&b->texts);
     if (!t) {
-        OPL_ERROR_F("mods", "draw service: text list allocation failed — "
+        OPL_ERROR_F("mods", "draw service: text list allocation failed - "
                     "\"%.32s\" dropped", str);
         return;
     }
@@ -280,7 +280,7 @@ static void warn_glyph_overflow(const char* owner) {
     if (s_warned_n < (int)(sizeof s_warned / sizeof s_warned[0]))
         s_warned[s_warned_n++] = owner;
     OPL_WARN_F("mods", "draw service: %s filled the overlay vertex budget "
-               "(%d verts) — the rest of its text this present is dropped",
+               "(%d verts) - the rest of its text this present is dropped",
                id, MOD_DRAW_VERTS_MAX);
 }
 
@@ -295,7 +295,7 @@ static void warn_glyph_overflow(const char* owner) {
 static int emit_buf(const cmd_buf_t* b, int n) {
     /* A text that laid out no glyphs at all is the drop this reports. The
      * emitter refuses a glyph only when the remaining budget cannot hold
-     * it, so once the budget is full every later text writes nothing —
+     * it, so once the budget is full every later text writes nothing -
      * but it writes nothing for a missing font too, which is why the
      * report waits until some text in this flush has laid out glyphs.
      * The one text straddling the boundary keeps the glyphs that fit and
@@ -319,13 +319,13 @@ static int emit_buf(const cmd_buf_t* b, int n) {
 
 void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     /* Per-mod time report window: every 512 sim ticks (~17 s at 29.913),
-     * counted at the canonical commit. ABOVE the draw gates — tick-hook
+     * counted at the canonical commit. ABOVE the draw gates - tick-hook
      * timing must report in headless runs too.
      *
      * Gate on mods LOADED, not openpete_mods_active (= a chain is
      * registered): the tick boundary drains the live-toggle queue, and
      * under deferred-entry load-all the very first enable can happen
-     * while no mod owns a chain yet — an active-gated boundary would
+     * while no mod owns a chain yet - an active-gated boundary would
      * never drain the queue, bricking every toggle. Zero mods loaded
      * still skips everything (pristine modless run). */
     if (canonical && openpete_mods_count() > 0) {
@@ -342,7 +342,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
 
     /* Commit the tick buffer once per canonical present: the sim tick
      * that just ran wrote staging; it becomes the displayed set for this
-     * tick's presents (and clears — immediate mode per tick).
+     * tick's presents (and clears - immediate mode per tick).
      *
      * ABOVE the renderer gate, so staging drains even when nothing
      * consumes it (--renderer og, or any run without a native renderer).
@@ -353,7 +353,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      *
      * Live toggle: the apply above runs BEFORE this commit, so a mod
      * disabled at this boundary still displays the tick it drew while
-     * enabled — then goes quiet. Its hooks no longer run, staging stays
+     * enabled - then goes quiet. Its hooks no longer run, staging stays
      * empty, and the next canonical commit clears the display set;
      * nothing of a disabled mod survives past that one tick. */
     if (canonical) {
@@ -367,7 +367,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     if (!openpete_native_render_enabled()) return;
 
     /* Present hooks: render-pure by API shape (see header comment). The
-     * ctx is computed unconditionally — the postfx engine UBO reads the
+     * ctx is computed unconditionally - the postfx engine UBO reads the
      * same values through openpete_mods_present_ctx, hooks or not. */
     buf_clear(&s_present);
     {
@@ -382,12 +382,12 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         ctx.aspect = openpete_native_overlay_aspect();
         s_prev_present_ns = now;
 
-        /* Sub-tick phase between the last two sim snapshots — the same
+        /* Sub-tick phase between the last two sim snapshots - the same
          * query the high-fps spine uses. 0 on canonical presents / when
          * interpolation isn't running. */
         double a = 0.0;
         const openpete_interp_snapshot_t *prev, *curr;
-        /* The canonical tick period, matching what run.c paces to — never a
+        /* The canonical tick period, matching what run.c paces to - never a
          * local literal, or a mod's alpha drifts against the engine's. */
         const op_time_t sim_period = g_openpete_tick_period_ns;
         if (!canonical &&

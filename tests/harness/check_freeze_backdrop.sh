@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# check_freeze_backdrop.sh — the freeze backdrop has a source frame to freeze.
+# check_freeze_backdrop.sh - the freeze backdrop has a source frame to freeze.
 #
 # Pause, the inventory and the level-exit screens draw the frozen world behind
 # their panels. That backdrop is not re-rendered: the live compose path picks
 # one presented frame as the freeze source, snapshots it, and every later
 # present of the frozen state samples that snapshot. The picking is a
-# predicate over the presented scene — the game's own triangles, the freeze bit
+# predicate over the presented scene - the game's own triangles, the freeze bit
 # clear, world geometry present, terrain from either the selected retained
 # state or non-host-added WORLD triangles in the scene. When the predicate
 # rejects every present of a run, nothing is ever snapshotted and the freeze
@@ -39,7 +39,7 @@
 # the build: the same build on one machine spans a factor of four between runs.
 # So the floors are set several times below the lowest measurement of the row,
 # not near it. What separates a defective build is structural rather than
-# marginal — its predicate rejects every present, so its count is zero however
+# marginal - its predicate rejects every present, so its count is zero however
 # many presents the host managed.
 #
 # Instrument (stderr), OPENPETE_FREEZE_DBG=1, one line per composed present:

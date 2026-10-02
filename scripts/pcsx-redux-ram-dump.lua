@@ -14,7 +14,7 @@
 --   1. Launch pcsx-redux with --debugger and --iso /path/to/SCUS-94228.cue
 --      (or load disc via the GUI; breakpoints fire only under
 --      --debugger).
---   2. Open the Lua console, paste this file (or use File > Open Lua…),
+--   2. Open the Lua console, paste this file (or use File > Open Lua...),
 --      hit Enter to arm.
 --   3. Boot the game. Once main is entered + the configured number of
 --      VSyncs have ticked, dump lands at CFG.output_path, emulator quits.
@@ -25,7 +25,7 @@
 --   PCSXR_DUMP_PC       hex PC, e.g. "0x80012204"
 --   PCSXR_DUMP_OUT      RAM output path (2 MB binary)
 --   PCSXR_DUMP_CPU      CPU output path (528-byte binary, 'CSv1' format
---                       consumed by openpete's --seed-cpu). Optional —
+--                       consumed by openpete's --seed-cpu). Optional -
 --                       omit to skip CPU dump.
 --   PCSXR_DUMP_VSYNCS   integer count (default 0 = immediate)
 local function envnum(name, default)

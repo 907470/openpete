@@ -1,4 +1,4 @@
-/* openpete_frame_time_log.h — binary frame-time recorder.
+/* openpete_frame_time_log.h - binary frame-time recorder.
  *
  * Off by default;
  * activated by `--frame-time-log PATH`. Writes one 32-byte record per

@@ -1,4 +1,4 @@
-/* games/spyro-1/renderer/interp_regions.c — Spyro 1's render-side
+/* games/spyro-1/renderer/interp_regions.c - Spyro 1's render-side
  * interpolation region table. Captured per tick into the openpete_interp
  * ring so intermediate presents can lerp transforms: the DIRECT singleton
  * regions below (camera, player, flame, shadow, game state) plus the
@@ -37,34 +37,34 @@
 #include "spyro1_symbols.gen.h"
 #include "game_layout.h"
 
-/* DIRECT singleton regions — captured whole into the interp ring each tick.
+/* DIRECT singleton regions - captured whole into the interp ring each tick.
  * The camera row is added at registration (its span is a literal, not the
  * cam.base..xform_end descriptor span the generator's other users compute);
  * these are the plain-global rows.
- *   g_Spyro  (0x2A4): the player avatar — position/rotation/anim for the
+ *   g_Spyro  (0x2A4): the player avatar - position/rotation/anim for the
  *                     lerp + animation-clock feeders. Singleton, so it lives
  *                     here rather than in the per-object (indirect) table. */
 static const game_interp_row_t s_spyro_interp_rows[] = {
     { "g_Spyro",  0x80078A58, 0x2A4 },
     /* g_SpyroFlame (0xD0 captured): the flame-breath struct. The ribbon is
      * rigidly attached to Spyro's mouth/head via m_Position (+0x00) and the
-     * flame-attach matrix (+0xB8), both updated at the tick rate — captured so
+     * flame-attach matrix (+0xB8), both updated at the tick rate - captured so
      * the sub-tick spine can lerp the flame POSE to track the (also-interpolated)
      * Spyro instead of snapping each tick. Read-only; rendered only while
      * breathing fire. */
     { "g_SpyroFlame", 0x800786C8, 0xD0 },
     /* SpyroShadow (0x28 captured): the player's drop-shadow scratch. Its ground
      * anchor (m_Position @ +0x10, int32 x/y/z) is computed each tick by the
-     * canonical shadow render and tracks Spyro's ground projection — captured so
+     * canonical shadow render and tracks Spyro's ground projection - captured so
      * the sub-tick spine can lerp it to follow the (interpolated) Spyro instead of
      * stepping at the tick rate. (Moby shadows need no capture: they re-derive from each
      * moby's already-interpolated m_Position.) Read-only. */
     { "g_SpyroShadow", 0x8007AA10, 0x28 },
-    /* g_GameState (4 bytes): which simulation regime produced the tick —
+    /* g_GameState (4 bytes): which simulation regime produced the tick -
      * gameplay, level transition, cutscene, pause. A pair whose two ticks
      * came from different regimes is a discontinuity for the presentation
      * bracket: the camera re-targets on the edge (entering a portal turns it
-     * ~20° and moves it ~500 units in one tick — a real cut, but under the
+     * ~20° and moves it ~500 units in one tick - a real cut, but under the
      * 90°/5000-unit thresholds that catch teleports), so the re-extract snaps
      * instead of lerping the chord of the swing. Committed timeline, like the
      * camera it gates: a led copy could flip a tick before the camera pair it
@@ -85,15 +85,15 @@ static const game_interp_row_t s_spyro_interp_rows[] = {
  * real ceiling. Doubles as the pool-membership test: g_LevelMobys lives
  * ~150 KB below the pool top, far outside this span. */
 #define HUD_POOL_MAX   256u
-#define G_HUD_POOL_TOP  0x800756FCu  /* D_800756FC — pool top; entries bump DOWN */
+#define G_HUD_POOL_TOP  0x800756FCu  /* D_800756FC - pool top; entries bump DOWN */
 #define G_TRANS_HUD     0x800756B0u  /* g_LevelTransHudActive */
-#define G_TRANS_GEMS    0x8007571Cu  /* g_LevelTransGems — TransGem[64] @ g_SonyImage+0x2800 */
-#define G_RECENT_GEMS   0x80077DB8u  /* g_RecentGemsCollected[32] — u_char class per gem */
+#define G_TRANS_GEMS    0x8007571Cu  /* g_LevelTransGems - TransGem[64] @ g_SonyImage+0x2800 */
+#define G_RECENT_GEMS   0x80077DB8u  /* g_RecentGemsCollected[32] - u_char class per gem */
 #define TRANS_GEM_MAX   32u          /* both the fly-out update and the draw loop stop at 32 */
 #define G_GAMESTATE     0x800757D8u  /* g_Gamestate */
 #define G_CREDITS_STAGE 0x80075704u  /* g_CreditsStage: <99 = the overlay's letter roll */
-#define G_CREDITS_RECS  0x8007589Cu  /* D_8007589C — CreditsLetter[] (overlay space) */
-#define G_CREDITS_COUNT 0x800756E4u  /* D_800756E4 — records in use */
+#define G_CREDITS_RECS  0x8007589Cu  /* D_8007589C - CreditsLetter[] (overlay space) */
+#define G_CREDITS_COUNT 0x800756E4u  /* D_800756E4 - records in use */
 #define CREDITS_REC_STRIDE 0x1Cu
 #define CREDITS_REC_STATE  0x04u     /* 1 flying in, 2 settled, 0 departing (= free for reuse) */
 #define CREDITS_REC_MAX    128u
@@ -197,7 +197,7 @@ static uint32_t hud_same_class_ordinal(uint32_t top, uint32_t ord, uint16_t cls)
 
 /* Identities tried in the order renderer/interp_regions.h lists them. */
 uint32_t game_interp_moby_key(uint32_t m) {
-    /* Credits letters: (class, record index, generation) — see
+    /* Credits letters: (class, record index, generation) - see
      * credits_track_generations. */
     {
         uint32_t top = rd32(G_HUD_POOL_TOP);
@@ -213,8 +213,8 @@ uint32_t game_interp_moby_key(uint32_t m) {
     }
 
     /* Text glyphs first: a glyph emitted by func_80017FE4 / func_800181AC has a
-     * real provenance identity — "the Nth character of the Mth call from
-     * callsite C" — recorded by text_moby_id.c. It beats every position-derived
+     * real provenance identity - "the Nth character of the Mth call from
+     * callsite C" - recorded by text_moby_id.c. It beats every position-derived
      * key here because it is blind to unrelated HUD-pool traffic: the inventory
      * page's blinking navigation arrows change the pool ordinal of every glyph
      * behind them twice a second, which renamed ~100 glyphs mid-menu and made
@@ -229,7 +229,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
      * collected gems flying to the chest; the shaded pass stages a moby COPY
      * per active gem into the double-buffered polybuf, in
      * source-index order. When a gem finishes and DEACTIVATES the copies COMPACT
-     * (every later copy shifts a slot), so no copy-address / slot key is stable —
+     * (every later copy shifts a slot), so no copy-address / slot key is stable -
      * the copies mispair across ticks and the gems jiggle under --render-fps.
      *
      * The game itself keeps a STABLE source array: g_LevelTransGems[i]
@@ -237,11 +237,11 @@ uint32_t game_interp_moby_key(uint32_t m) {
      * gem's slot i is a permanent identity for the whole animation, and draw.c
      * copies g_LevelTransGems[i].rot (+0x0A) VERBATIM into the copy's m_Rotation
      * (+0x44). rot.x/rot.y are random-per-gem constants set once at spawn
-     * (update.c) — an EXACT per-gem fingerprint (rot.z spins; included for extra
+     * (update.c) - an EXACT per-gem fingerprint (rot.z spins; included for extra
      * bits, matched live). So recover i by matching the copy's 3 rotation bytes
      * to the live source and key by i: prev/curr then pair as the same gem across
      * ticks AND the buffer swap, with no threshold. Runs for every gem class
-     * (GEM_1..GEM_25, 0x53..0x57 — the copy's class is g_RecentGemsCollected[i],
+     * (GEM_1..GEM_25, 0x53..0x57 - the copy's class is g_RecentGemsCollected[i],
      * so the tally is whatever mix the player picked up) while
      * g_LevelTransHudActive (0x800756B0). OPENPETE_GEM_FLYOUT_KEY=0 reverts.
      *
@@ -270,7 +270,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
                     if (recent && recent[i] != (uint8_t)cls0) continue;
                     return 0xA0000000u | (i & 0x3Fu);             /* stable per-gem key */
                 }
-                /* no active source match (transient staging) → fall through */
+                /* no active source match (transient staging) -> fall through */
             }
         }
     }
@@ -278,7 +278,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
     /* Everything else in the HUD pool: key by (class, ordinal among entries of
      * the SAME class). The pool bump-allocates DOWN from D_800756FC in draw
      * order and is rebuilt from scratch every tick, so an entry's ABSOLUTE
-     * ordinal is not an identity — anything emitted earlier that appears or
+     * ordinal is not an identity - anything emitted earlier that appears or
      * disappears renames every entry behind it. A level exit does that on every
      * single tick: the tally despawns a gem as it lands in the chest, and the
      * counter text loses a digit as it counts down. An absolute ordinal
@@ -289,7 +289,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
      * Counting only same-class predecessors makes the ordinal blind to that
      * traffic: the chest is "the only class-473", a lone GEM_5 "the only 0x55",
      * whatever else the tally emits. It is the strongest identity available
-     * without a per-object source array — same-class entries still shift among
+     * without a per-object source array - same-class entries still shift among
      * themselves, which is exactly the case the gem fingerprint above covers.
      * Class stays folded into the key so a class change is a clean snap rather
      * than a blend between two different objects.
@@ -338,10 +338,10 @@ static void spyro_interp_extra_pools(void) {
     credits_track_generations();
     game_interp_hud_batch_begin();   /* HUD pool keys below read one table */
 
-    /* Static 3D HUD icons (g_Hud.m_Mobys[12]) — stride-0x58 Mobys OUTSIDE
+    /* Static 3D HUD icons (g_Hud.m_Mobys[12]) - stride-0x58 Mobys OUTSIDE
      * g_LevelMobys. They spin (m_Rotation @ +0x44); capture them so the sub-tick
      * spine can lerp the spin (else it steps at the tick rate while the rest is smooth).
-     * Always present (no sentinel) — capture all 12; inactive ones don't render. */
+     * Always present (no sentinel) - capture all 12; inactive ones don't render. */
     for (uint32_t i = 0; i < G_HUD_COUNT; ++i) {
         uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
         const void* host = openpete_psx_to_host_span(m, openpete_interp_objs_blob_bytes());
@@ -352,7 +352,7 @@ static void spyro_interp_extra_pools(void) {
      * elsewhere): a stride-0x20 array behind a pointer. Capture each ACTIVE slot
      * keyed by its PSX address so the sub-tick spine can lerp particle positions.
      * Particles spawn into INACTIVE slots, so a fresh particle gets have_prev=0
-     * (snap, no streak); despawned slots go unseen → evicted. NOT glows (derive
+     * (snap, no streak); despawned slots go unseen -> evicted. NOT glows (derive
      * from their owner moby); g_Sparkles is captured separately below (phase-only
      * interp). Capture 0x20 = the full record (pos @ +0x04 X/Y, +0x08 Z). */
     uint32_t ppool = rd32(G_PARTICLES);
@@ -370,31 +370,31 @@ static void spyro_interp_extra_pools(void) {
     }
 
     /* g_Sparkles pool (gem/chest/statue twinkles): a FIXED Sparkle[8] array,
-     * stride 0x18. A sparkle's POSITION is static for its whole life — what
+     * stride 0x18. A sparkle's POSITION is static for its whole life - what
      * steps at the tick rate is the twinkle ANIMATION phase: m_Life
      * (pulse scale, decremented per tick by the .s renderer) and m_0x0E (spin,
      * +~3·dt per tick). Capture live slots so the native feeder (sparkle_build,
      * particle.c) can lerp the PHASE sub-tick at float precision; without
      * it gem sparkles animate at the tick rate regardless of --render-fps.
      * Render-side only: nothing is written back to the pool (the
-     * reextract RAM-writeback still carves g_Sparkles out — its rand()-seeded
+     * reextract RAM-writeback still carves g_Sparkles out - its rand()-seeded
      * respawns must never be simulated host-side). A slot reused by a respawn
      * pairs with m_Life INCREASING, which the feeder detects and snaps on;
-     * a slot dead for a tick goes unseen → evicted → fresh spawn (no pair). */
+     * a slot dead for a tick goes unseen -> evicted -> fresh spawn (no pair). */
     for (uint32_t i = 0; i < 8u; ++i) {
         uint32_t sa = G_SPARKLES + i * 0x18u;
         const void* host = openpete_psx_to_host_span(sa, 0x18u);
         if (!host) break;
         uint32_t w3; memcpy(&w3, (const uint8_t*)host + 0x0C, 4);
-        if ((w3 & 0xFFu) == 0) continue;        /* m_Life==0 → dead slot */
+        if ((w3 & 0xFFu) == 0) continue;        /* m_Life==0 -> dead slot */
         openpete_interp_objs_capture(sa, host, 0x18u);
     }
 
-    /* Glow pool (D_80078800 Glow[16], stride 0x24 — Sparx aura, torch glows):
+    /* Glow pool (D_80078800 Glow[16], stride 0x24 - Sparx aura, torch glows):
      * the ring CENTRE rides the owner moby's bracket-lerped position, but the
-     * record's own animated channels — size (+0x10, ramping +32/tick
+     * record's own animated channels - size (+0x10, ramping +32/tick
      * on the Sparx aura spawn), colour (+0x0C) and the position offset
-     * (+0x14/18/1C) — stepped at the sim rate. Capture live slots (count>0)
+     * (+0x14/18/1C) - stepped at the sim rate. Capture live slots (count>0)
      * so glow_build can lerp them sub-tick (phase-only; nothing written back). */
     for (uint32_t i = 0; i < 16u; ++i) {
         uint32_t ga = D_GLOWS + i * 0x24u;
@@ -405,7 +405,7 @@ static void spyro_interp_extra_pools(void) {
         openpete_interp_objs_capture(ga, host, 0x24u);
     }
 
-    /* SHADED render list (G_SCRATCH+0x2400 — flat Moby*[256] the .s shaded
+    /* SHADED render list (G_SCRATCH+0x2400 - flat Moby*[256] the .s shaded
      * renderer walks): capture EVERY listed moby. Mostly a dedup-overwrite of
      * the g_LevelMobys walk above, but load-screen props (the level-transition
      * tally gems/chest, which otherwise step at the tick rate) live in
@@ -423,8 +423,8 @@ static void spyro_interp_extra_pools(void) {
      * the same dedup-overwrite idea as the shaded list above, for the mobys the
      * g_LevelMobys walk can't reach. The balloonist copies the balloon into the
      * render scratch on arrival and draws it from there for the descent, so
-     * without this it is the one object in the scene with no prev/curr snapshot —
-     * no position, rotation or keyframe interp — while the camera it fills the
+     * without this it is the one object in the scene with no prev/curr snapshot -
+     * no position, rotation or keyframe interp - while the camera it fills the
      * screen in interpolates around it. */
     {
         const uint32_t* drawn = NULL;
@@ -437,14 +437,14 @@ static void spyro_interp_extra_pools(void) {
         }
     }
 
-    /* Dragon-star record (D_DRAGONSTAR — the circling damage stars around
+    /* Dragon-star record (D_DRAGONSTAR - the circling damage stars around
      * Spyro): a SINGLE gamestate record the producer (func_8002F3E4) animates
-     * per tick — +0x04 world position, +0x10 per-effect rotation SHORTMATRIX,
+     * per tick - +0x04 world position, +0x10 per-effect rotation SHORTMATRIX,
      * +0x24 spoke size, +0x2B colour. The feeder (dragonstar_feed_native)
      * re-reads it on every sub-tick present, so without a snapshot the stars
      * circle at the tick rate regardless of --render-fps.
      * Capture the 0x2C-byte record when
-     * ACTIVE (+0x00 gate); inactive → unseen → evicted (a re-trigger snaps). */
+     * ACTIVE (+0x00 gate); inactive -> unseen -> evicted (a re-trigger snaps). */
     {
         const void* host = openpete_psx_to_host_span(D_DRAGONSTAR, 0x2Cu);
         uint32_t gate = 0; if (host) memcpy(&gate, host, 4);

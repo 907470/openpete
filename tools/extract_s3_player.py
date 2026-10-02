@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""extract_s3_player.py — carve the Spyro 3 (SCUS-94467) player model
+"""extract_s3_player.py - carve the Spyro 3 (SCUS-94467) player model
 blob out of the user's own Year of the Dragon disc image.
 
 The triangle-flutter mod's hover-animation upgrade renders Spyro 3's
 hover cels through the native actor render service; the S3 player model
-(mesh + boot animation set, ~136 KiB) is Activision/Insomniac data, so —
-same legal posture as every openpete asset tool — mods never SHIP it:
+(mesh + boot animation set, ~136 KiB) is Activision/Insomniac data, so -
+same legal posture as every openpete asset tool - mods never SHIP it:
 this tool derives it locally from a disc the user supplies:
 
     tools/extract_s3_player.py \
@@ -107,7 +107,7 @@ def main():
     num_anims = struct.unpack_from("<I", model, 0)[0]
     total = struct.unpack_from("<I", model, 0x34)[0]
     if num_anims != 62:
-        raise SystemExit(f"expected 62 player anims, found {num_anims} — "
+        raise SystemExit(f"expected 62 player anims, found {num_anims} - "
                          "not the SCUS-94467 player model?")
     model = model[:total]
     anim_off = struct.unpack_from("<i", model, 0x3C + HOVER_ANIM * 4)[0]

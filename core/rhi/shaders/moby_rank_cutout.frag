@@ -1,7 +1,7 @@
 #version 450
 
 /* TEXTURED moby RANK pass fragment stage: alpha-aware rank rasterisation.
- * A face's og paint occupancy exists only where its OPAQUE texels land —
+ * A face's og paint occupancy exists only where its OPAQUE texels land -
  * the PSX p==0 sentinel is fully transparent on every prim, so a textured
  * face (dragon eyes, cloak edges) must not stamp rank over texels its own
  * paint discards (see psx_key_cutout.frag for the terrain-key precedent).
@@ -17,7 +17,7 @@ layout(push_constant) uniform PsxMaterial {
 } pc;
 
 layout(location = 0) flat in vec2 vRank;  /* x = rank (>=1), y = ordinal */
-layout(location = 1) in vec2 vUV;   /* u/w — see moby_rank.vert */
+layout(location = 1) in vec2 vUV;   /* u/w - see moby_rank.vert */
 layout(location = 2) in float vQ;   /* 1/w */
 layout(location = 3) in float vVz;  /* TRUE view-Z (owner-depth encode) */
 

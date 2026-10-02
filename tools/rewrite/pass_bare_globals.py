@@ -1,4 +1,4 @@
-"""Pass 2 — bare-global redirects.
+"""Pass 2 - bare-global redirects.
 
 Top-level globals whose declared type diverges between PSX (ILP32) and host
 (LP64 / LLP64) get redirected through a uint32_t storage slot so that
@@ -12,12 +12,12 @@ Scope of this pass (MVP):
   - Writes: `name = expr;` becomes `__psx_<name> = openpete_host_to_psx(expr);`
     for pointer types, or `__psx_<name> = (int32_t)(expr);` for long.
   - Address-of: `&name` is unsupported in this pass (the storage *has* an
-    address — `&__psx_<name>` — but it's `uint32_t*`, not the original
+    address - `&__psx_<name>` - but it's `uint32_t*`, not the original
     pointer type the source expected). Flag as a manual-review error.
 
 Out of scope:
   - Array globals (`extern T *name[N];`, `extern u_long name[N];`).
-  - Struct globals containing diverging fields — that's Pass 1 territory.
+  - Struct globals containing diverging fields - that's Pass 1 territory.
   - Function-pointer globals.
 
 Output:
@@ -100,7 +100,7 @@ def _classify_global(decl: ci.Cursor) -> GlobalRedirect | None:
         if not (elem_is_ptr or elem_is_long):
             return None
         if elem_is_ptr and _is_function_ptr(elem):
-            # Array of function pointers — same Phase-4 deferral as
+            # Array of function pointers - same Phase-4 deferral as
             # function-pointer struct fields. Skip; warn upstream.
             return None
         return GlobalRedirect(
@@ -150,7 +150,7 @@ def _classify_global(decl: ci.Cursor) -> GlobalRedirect | None:
 
 def _is_assignment_lhs(ref: ci.Cursor) -> Tuple[bool, ci.Cursor | None]:
     """If `ref` is the immediate LHS of `lhs = rhs`, return (True, parent BinOp)."""
-    parent = ref.semantic_parent  # not what we want — we need lexical parent
+    parent = ref.semantic_parent  # not what we want - we need lexical parent
     # libclang doesn't expose lexical parent directly; we walk operator children.
     # Instead, the caller passes the BinaryOperator and we test if `ref` is its
     # first child.
@@ -315,7 +315,7 @@ def collect_redirects(tu_cursor: ci.Cursor) -> Dict[str, GlobalRedirect]:
     libpsyq we never use), and that have at least one non-address-of
     reference (linker-defined boundary symbols like `main_BSS_END` are
     declared as pointer-typed but only ever address-of'd to obtain the
-    symbol's link-time address — they have no PSX storage to alias)."""
+    symbol's link-time address - they have no PSX storage to alias)."""
     decls: Dict[str, GlobalRedirect] = {}
     referenced: Set[str] = set()
     addr_of_only: Dict[str, int] = {}  # name -> outstanding non-addr-of count
@@ -340,7 +340,7 @@ def collect_redirects(tu_cursor: ci.Cursor) -> Dict[str, GlobalRedirect]:
             if red is not None and red.name not in decls:
                 decls[red.name] = red
             # A file-scope DEFINITION of the global in the main TU also
-            # counts as a "reference" — Pass 2 needs to elide that def
+            # counts as a "reference" - Pass 2 needs to elide that def
             # (otherwise its initializer pulls in linker-only symbols
             # like `&main_BSS_END` and the host link fails). The defsym
             # emitter sees the redirect and aliases the symbol to g_ram.
@@ -380,7 +380,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
 
     ``vaddr_form_offsets`` (Pass 4 output) is the set of read DeclRefExpr
     offsets whose replacement should be the bare ``__psx_<name>`` storage
-    instead of the host-pointer round-trip — used at sites where the
+    instead of the host-pointer round-trip - used at sites where the
     operand sits inside ``(IntT)<global>``, where the cast already expresses
     the desired narrowing.
     """
@@ -445,10 +445,10 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
             addr_of_offsets.add(ref.extent.start.offset)
             result.address_of_errors.append(
                 f"&{rd.spelling} at {ref.location.file}:{ref.location.line} "
-                f"— bare-globals pass cannot redirect address-of (storage "
+                f"- bare-globals pass cannot redirect address-of (storage "
                 f"is uint32_t*, not original type)")
 
-    # File-scope definitions of redirected globals — `void *g_X = &init;`
+    # File-scope definitions of redirected globals - `void *g_X = &init;`
     # or `int g_X = 5;`. The defsym alias provides the linker symbol, and
     # the storage lives in g_ram populated by the EXE-load step. The C
     # initializer is dead code on host (the `#define name __opete_unused_*`
@@ -470,11 +470,11 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         if c.spelling not in redirects:
             continue
         # Only strip true definitions (have an initializer or no `extern`
-        # storage class). Bare `extern T name;` decls stay — they don't
+        # storage class). Bare `extern T name;` decls stay - they don't
         # produce host storage and don't have initializers.
         if c.storage_class == ci.StorageClass.EXTERN and \
                 not list(c.get_children()):
-            # Forward `extern T name;` — leave it.
+            # Forward `extern T name;` - leave it.
             continue
         # Find the trailing semicolon to extend the cut to the end of the
         # statement. Tokens up to and including the first `;` after the
@@ -498,7 +498,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
             start=c.extent.start.offset,
             end=end,
             replacement=(f"/* file-scope def of redirected global "
-                         f"{c.spelling} elided — storage in g_ram */"),
+                         f"{c.spelling} elided - storage in g_ram */"),
             file=main_file_resolved,
             note=f"elide file-scope def of {c.spelling}",
         ))
@@ -581,11 +581,11 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
                 break
         return False
 
-    # Array-redirect subscript pass. For `T *arr[N]` → `uint32_t arr[N]`
+    # Array-redirect subscript pass. For `T *arr[N]` -> `uint32_t arr[N]`
     # storage, an access `arr[i]` reads the i'th vaddr and we must
     # convert it to a host pointer before any further dereferencing.
     # Symmetric to Pass 1's array-of-pointer-field handling at the
-    # subscript level (cannot cast to `T *[N]` — that's invalid C).
+    # subscript level (cannot cast to `T *[N]` - that's invalid C).
     array_sub_skip_offsets: Set[int] = set()
     array_sub_edits: Dict[Tuple[int, int], Edit] = {}
     for sub in tu_cursor.walk_preorder():
@@ -618,8 +618,8 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
             continue
         # Macro-expansion artifact: an ARRAY_SUBSCRIPT_EXPR whose source
         # extent doesn't contain `[` (e.g. `SPYRO_MODEL` expanding to
-        # `(g_Models[0])` — the cursor extent is at the SPYRO_MODEL
-        # token in source, not the literal subscript). Skip — the
+        # `(g_Models[0])` - the cursor extent is at the SPYRO_MODEL
+        # token in source, not the literal subscript). Skip - the
         # macro definition itself is the right rewrite target (handled
         # via shadow-header redef).
         sub_extent_text = bytes_slice(sub)
@@ -636,7 +636,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         # (== `s`). Promote those to array-write rewrites here, and
         # mark the binop range so the DeclRefExpr loop later skips it.
         sub_text = bytes_slice(sub)
-        # Index expression text — substitute redirected globals AND
+        # Index expression text - substitute redirected globals AND
         # Pass 1's relaid field-accesses nested inside the index inline,
         # so `g_Models[g_LevelMobys[i].m_Class]` renders both the outer
         # array-redirect and the inner relayed `m_Class` field correctly.
@@ -652,7 +652,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         # Build the per-element read form. base text becomes __psx_arr.
         elem_access = f"{red.psx_storage_name}[{idx_text}]"
         if (s, e) in vaddr_form_array_sub_extents:
-            # Pass 4: subscript site sits inside `(IntT)arr[i]` — the outer
+            # Pass 4: subscript site sits inside `(IntT)arr[i]` - the outer
             # cast already narrows; expose the PSX vaddr directly.
             replacement = elem_access
         elif red.is_pointer:
@@ -764,7 +764,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
             # Bare-array DeclRefExpr inside an ARRAY_SUBSCRIPT_EXPR we
             # already rewrote at the subscript level.
             continue
-        # Skip DeclRefExpr inside any array-subscript-rewrite range —
+        # Skip DeclRefExpr inside any array-subscript-rewrite range -
         # the array-sub edit's replacement text uses raw bytes_slice on
         # the index expression, but the original index text already has
         # the source-level identifier; emitting our own edit here would
@@ -790,7 +790,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         # Macro-expansion artifact #2: cursor extent points at a macro
         # use in source whose text doesn't contain the symbol's
         # spelling (e.g. `SPYRO_MODEL` expanding to `(g_Models[0])`).
-        # Skip — shadow-header redef is the right rewrite target.
+        # Skip - shadow-header redef is the right rewrite target.
         if ref_decl.spelling not in bytes_slice(c):
             continue
         if off in seen_read_offsets and off not in writes:
@@ -798,16 +798,16 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         seen_read_offsets.add(off)
         # If Pass 1 already covers this ref (the ref is inside a relaid
         # field-access expression), Pass 1 has rendered the redirect form
-        # inline — emitting our own edit here would overlap.
+        # inline - emitting our own edit here would overlap.
         if off not in writes and _inside_pass1(off, c.extent.end.offset):
             continue
-        # Likewise for Pass 2's own write rewrites — a ref inside the
+        # Likewise for Pass 2's own write rewrites - a ref inside the
         # write's RHS gets folded into the write's replacement text.
         if off not in writes and _inside_pass2_write(off, c.extent.end.offset, -1):
             continue
 
         if off in writes:
-            # Write site: rewrite `name = ...` → `__psx_name = host_to_psx(...)`
+            # Write site: rewrite `name = ...` -> `__psx_name = host_to_psx(...)`
             binop, lhs, _r = writes[off]
             rhs_children = list(binop.get_children())
             rhs = rhs_children[1]
@@ -832,7 +832,7 @@ def rewrite_bare_globals(tu_cursor: ci.Cursor,
         else:
             # Read site: substitute the identifier with a converting expression.
             if off in vaddr_form_offsets:
-                # Pass 4: site sits inside `(IntT)<global>` — the outer cast
+                # Pass 4: site sits inside `(IntT)<global>` - the outer cast
                 # already narrows; we just expose the PSX vaddr directly.
                 replacement = red.psx_storage_name
             elif red.is_pointer:
@@ -880,9 +880,9 @@ def apply_textual_bare_ref_fallback(
     forms contain `__psx_<name>` so a negative lookbehind makes the
     pass idempotent.
 
-    Scalar pointer:  `name`     → `((TYPE)openpete_psx_to_host_ptr(__psx_name))`
-    Scalar long:     `name`     → `(int32_t)__psx_name` / `(uint32_t)__psx_name`
-    Array pointer:   `name`     → element-position scalar form is unsafe
+    Scalar pointer:  `name`     -> `((TYPE)openpete_psx_to_host_ptr(__psx_name))`
+    Scalar long:     `name`     -> `(int32_t)__psx_name` / `(uint32_t)__psx_name`
+    Array pointer:   `name`     -> element-position scalar form is unsafe
                                   without subscript; only the per-element
                                   Pass 2 emitter handles arrays. Skip.
     """
@@ -929,7 +929,7 @@ def prologue_for(redirects: Dict[str, GlobalRedirect]) -> str:
     in via a header re-include.
     """
     lines = [
-        "/* generated by tools/rewrite — bare-globals redirects */",
+        "/* generated by tools/rewrite - bare-globals redirects */",
         "#include <stdint.h>",
         "extern void* openpete_psx_to_host_ptr(uint32_t);",
         "extern uint32_t openpete_host_to_psx(const void*);",

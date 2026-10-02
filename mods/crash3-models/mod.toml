@@ -1,4 +1,4 @@
-# crash3-models — a Crash Bandicoot 3 demo model on a Spyro 1 moby class.
+# crash3-models - a Crash Bandicoot 3 demo model on a Spyro 1 moby class.
 #
 # The Spyro 1 disc ships a Crash 3 demo (S0/*.NSF). tools/crash3/convert.py
 # decodes its models and encodes each as a Spyro 1 animated-moby Model

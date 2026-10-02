@@ -1,4 +1,4 @@
-# crt-filter — a config-driven CRT post-process pass.
+# crt-filter - a config-driven CRT post-process pass.
 #
 # Ships GLSL source that the engine compiles on load; the [[config]] rows
 # drive the pass's uniform block. Post-process only: reads the composed
@@ -13,7 +13,7 @@ state    = "none"      # GPU-only postfx
 runahead = "pure"      # no tick hooks
 sim_mutative = false  # writes no guest RAM: outside the save modset tag
 
-# Settings schema — the engine renders these rows in the Mods panel and
+# Settings schema - the engine renders these rows in the Mods panel and
 # writes committed edits back into config.toml (comments preserved);
 # the mod reloads so entry re-reads them through api->config_float.
 [[config]]

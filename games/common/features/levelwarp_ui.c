@@ -1,4 +1,4 @@
-// games/common/features/levelwarp_ui.c — the dev-overlay level warp's
+// games/common/features/levelwarp_ui.c - the dev-overlay level warp's
 // game-independent half: the dropdown, the Jump button, the click queue and
 // the scripted driver. See levelwarp_ui.h for the contract.
 
@@ -14,15 +14,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Host-side UI state — deliberately NOT in any savestate. A click is the
+/* Host-side UI state - deliberately NOT in any savestate. A click is the
  * user's intent right now; restoring an older pending flag over it (the
  * quiet rewind/runahead path reloads the blob every tick) would either eat a
  * fresh click or resurrect a stale one.
- *   s_sel         — dropdown index into the descriptor's table
- *   s_sel_touched — the user has picked something, so stop auto-following
+ *   s_sel         - dropdown index into the descriptor's table
+ *   s_sel_touched - the user has picked something, so stop auto-following
  *                   the level they are in
- *   s_pending     — a click waiting for the next non-speculative tick
- *   s_route       — cached "what would Jump do right now", for the gate and
+ *   s_pending     - a click waiting for the next non-speculative tick
+ *   s_route       - cached "what would Jump do right now", for the gate and
  *                   the status line */
 static const levelwarp_ui_desc_t* s_desc;
 static int s_sel         = 0;

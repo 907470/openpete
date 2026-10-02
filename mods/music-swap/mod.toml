@@ -1,4 +1,4 @@
-# music-swap — one replacement music track, no code.
+# music-swap - one replacement music track, no code.
 #
 # Ships assets/music/track_20.wav (the title theme becomes a 440 Hz tone).
 # Mod roots outrank the base assets/music/ directory, so this wins even

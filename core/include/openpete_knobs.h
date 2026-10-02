@@ -2,10 +2,10 @@
 #define OPENPETE_KNOBS_H
 
 /*
- * Knob registry — the table behind the M-key dev config overlay.
+ * Knob registry - the table behind the M-key dev config overlay.
  *
  * One row per config knob (CLI flag and/or OPENPETE_* env var): what it is,
- * where its boot value came from (CLI beats env beats default — the same
+ * where its boot value came from (CLI beats env beats default - the same
  * per-knob sentinel-unset precedence the consumers implement), and, for the
  * knobs proven runtime-safe, how to read/write the live value.
  *
@@ -16,7 +16,7 @@
  *
  * Mutability contract (enforced here):
  *  - KNOB_LIVE rows route every write through a public setter that touches
- *    renderer/host state only — never gameplay-readable RAM (north-star).
+ *    renderer/host state only - never gameplay-readable RAM (north-star).
  *  - KNOB_RESTART_ONLY rows have set_num/set_str == NULL and render disabled;
  *    they still display the resolved boot value + source. Promoting one to
  *    LIVE requires auditing every consumer for boot-time latching first
@@ -40,14 +40,14 @@ typedef enum {
     KNOB_ACTION    /* one-shot: a button, not a value (see below) */
 } knob_type_t;
 
-/* KNOB_ACTION rows carry no value — they fire something once (apply a cheat,
+/* KNOB_ACTION rows carry no value - they fire something once (apply a cheat,
  * reset a counter). The row renders as a button captioned `action_label`
  * ("Apply" when NULL), and:
  *   set_num(k, 1)  fires it; returns 0 when the request was accepted.
  *   get_num        optional gate: 0 => the action can't run right now and the
  *                  button renders disabled (e.g. "not in a level yet").
  *   get_str        optional short status shown beside the button.
- * An action that touches gameplay state must not write it from here — the UI
+ * An action that touches gameplay state must not write it from here - the UI
  * runs outside the sim. Queue a request and let the game's own per-tick hook
  * perform the write at a tick boundary (north-star: gameplay state changes
  * only on the sim's schedule). */
@@ -83,7 +83,7 @@ typedef struct knob_desc {
     /* Live value plumbing. Numeric types use get_num/set_num (ENUM = index);
      * strings use get_str/set_str. set_* NULL == not editable (RESTART_ONLY).
      * get_num should read LIVE state where a getter exists (a knob can also
-     * change via its host hotkey — L, F, Alt+Enter…), else the registry's
+     * change via its host hotkey - L, F, Alt+Enter...), else the registry's
      * stored copy. set_* returns 0 on success. */
     double (*get_num)(const struct knob_desc *k);
     int    (*set_num)(struct knob_desc *k, double v);
@@ -99,15 +99,15 @@ typedef struct knob_desc {
     double stored_num;
 
     /* Built-in default as a display string (env rows: what an unset var
-     * resolves to — shown as "(unset - <def>)"). NULL/empty = unknown. */
+     * resolves to - shown as "(unset - <def>)"). NULL/empty = unknown. */
     const char *def_str;
 
     /* KNOB_ACTION only: button caption ("Apply" when NULL). */
     const char *action_label;
 
     /* Optional: 0 = leave this row out of the overlay for this run. For knobs
-     * that act on something the run does not have — a capture that was never
-     * started, a device that is absent — where a disabled row would just be a
+     * that act on something the run does not have - a capture that was never
+     * started, a device that is absent - where a disabled row would just be a
      * question the user has to answer twice. The row still exists everywhere
      * else (--config-report, the config schema, saving), so this is display
      * only. NULL = always shown. A section whose rows are all hidden emits no
@@ -210,7 +210,7 @@ void knob_registry_late_stamp(void);
  * module attaches them here (apply-options time) and the row flips to
  * KNOB_LIVE. Either pointer may be NULL to keep the row's own. Returns 0 if
  * the id was found (it won't be when the row is compiled out, e.g. Debug
- * rows under OPENPETE_HIDE_DEBUG_FLAGS — callers just ignore that). */
+ * rows under OPENPETE_HIDE_DEBUG_FLAGS - callers just ignore that). */
 /** @brief Append a row the core table cannot name, such as a game module's cheats or toggles.
  *
  * The row is copied, so the caller's knob_desc_t may be a stack temporary,

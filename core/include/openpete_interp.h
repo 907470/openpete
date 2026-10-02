@@ -1,4 +1,4 @@
-/* core/include/openpete_interp.h — render-side state interpolation ring.
+/* core/include/openpete_interp.h - render-side state interpolation ring.
  *
  * Captures gameplay-transform state once per VBL the guest advanced so the
  * render path can lerp between the two newest distinct states and present
@@ -10,13 +10,13 @@
  * `prev.tick_ns + alpha * sim_period`, accepting
  * one tick of latency in exchange for never extrapolating. prev2 is kept
  * so the render side can build a cubic (Hermite) interpolant with a
- * centered start-tangent — halving the velocity discontinuity at tick
- * boundaries vs the linear prev→curr chord (see openpete_interp_query3).
+ * centered start-tangent - halving the velocity discontinuity at tick
+ * boundaries vs the linear prev->curr chord (see openpete_interp_query3).
  *
  * Scope (this ring): the capture API, the dedupe predicate, and the
  * prev2/prev/curr query (openpete_interp_query3). The lerped re-emission
- * itself — the save-canonical → write-lerped → restore bracket around the
- * sub-tick present — is built GAME-SIDE (e.g. reextract.c), NOT
+ * itself - the save-canonical -> write-lerped -> restore bracket around the
+ * sub-tick present - is built GAME-SIDE (e.g. reextract.c), NOT
  * here: core stays address-free, and the game owns which regions/feeders it
  * brackets plus its own restore discipline (see the game's bracket-integrity
  * self-check, OPENPETE_BRACKET_CHECK). Capturing here is read-only against
@@ -24,7 +24,7 @@
  *
  * This DIRECT ring drives the camera/Spyro alpha. Per-OBJECT (indirect pool)
  * state uses a parallel store (openpete_interp_objs.h) with its OWN per-object
- * alpha — intentionally independent of this ring's alpha, so an object that
+ * alpha - intentionally independent of this ring's alpha, so an object that
  * advanced on a tick the camera didn't (idle-homeworld dragon under a static
  * camera, and vice-versa) still interpolates. The two can differ by up to ~1
  * VBL on the same present; that is correct, not a bug.
@@ -51,7 +51,7 @@ extern "C" {
 #define OPENPETE_INTERP_MAX_SNAPSHOT_BYTES  (32u * 1024u)
 
 /* Region descriptor. Kept narrower than OpenpeteStateRegion: the interp
- * ring only handles DIRECT regions in v1 — moby pools (indirect arrays)
+ * ring only handles DIRECT regions in v1 - moby pools (indirect arrays)
  * land in task #59 with their own descriptor variant. */
 typedef struct {
     const char* name;       /* diagnostic */
@@ -61,7 +61,7 @@ typedef struct {
      * after the driver rolls guest RAM back from the led speculation head,
      * openpete_interp_recapture_committed() re-reads flagged regions into
      * the ring's newest slot, replacing the led bytes. Use for regions
-     * where a misprediction is catastrophic and latency is cheap — the
+     * where a misprediction is catastrophic and latency is cheap - the
      * follow-camera is the canonical case: showing it led means every
      * input-edge un-shows N ticks of mispredicted pan (the R2 release
      * snap), while showing it committed merely adds N ticks of follow-lag

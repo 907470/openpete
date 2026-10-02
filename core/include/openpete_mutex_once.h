@@ -1,4 +1,4 @@
-/* core/include/openpete_mutex_once.h — a mutex created on first use without
+/* core/include/openpete_mutex_once.h - a mutex created on first use without
  * a creation race.
  *
  * A `static SDL_Mutex* m; if (!m) m = SDL_CreateMutex();` accessor reached

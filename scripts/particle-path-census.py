@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""particle-path-census.py — pool-active-but-not-drawn ticks per particle renderer.
+"""particle-path-census.py - pool-active-but-not-drawn ticks per particle renderer.
 
 The particle, glow, sparkle and dragon-star pools outlive their .s renderers.
 A tick where a pool holds active records but the renderer was not called or

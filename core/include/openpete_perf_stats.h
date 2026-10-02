@@ -1,9 +1,9 @@
-/* openpete_perf_stats.h — the on-screen performance-stats overlay's numbers.
+/* openpete_perf_stats.h - the on-screen performance-stats overlay's numbers.
  *
  * Three levels, because the two audiences want different things: level 1 is
  * the FPS counter a player glances at, level 2 is the pacing readout used
  * while working on the sim-tick/present seam (scripts/pacing/ answers the
- * same questions offline, in far more detail — this is the live view).
+ * same questions offline, in far more detail - this is the live view).
  *
  * Everything here is derived from the pacing census, which is compiled into
  * every build and counts unconditionally, so the overlay costs a subtraction
@@ -16,8 +16,8 @@
  * last sampling window.
  *
  * Rates, not near-threshold quantiles. `late_per_1000` counts VBLs that
- * started more than 250 µs after their deadline. The obvious alternative — a
- * windowed p99 of the phase error — is unstable exactly where it matters:
+ * started more than 250 µs after their deadline. The obvious alternative - a
+ * windowed p99 of the phase error - is unstable exactly where it matters:
  * when few VBLs sit above the threshold, the quantile is decided by a handful
  * of events and swings several-fold between identical runs. A rate over the
  * same population does not.
@@ -40,7 +40,7 @@ enum {
 
 /* Longest line the overlay emits, and the most lines any level produces.
  * The glyph font has digits, letters, '%', '/', '.', '+', '^', '\'' and a
- * faked ':' — no minus sign, so no figure below is ever signed. */
+ * faked ':' - no minus sign, so no figure below is ever signed. */
 #define OPENPETE_PERF_LINE_MAX  40
 #define OPENPETE_PERF_MAX_LINES 4
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""terrain-claim-census.py — the retained-terrain claim census report.
+"""terrain-claim-census.py - the retained-terrain claim census report.
 
 Runs the presentation corpus's bk2 rows and freecam poses headless with the
 retained terrain cache ON and harvests one [tgpu-cen] line per row (the
@@ -11,10 +11,10 @@ into the shader.
 The two corpora are aggregated SEPARATELY: bk2 rows replay real gameplay
 cameras and are the honest ratchet; freecam poses force-draw every decoded
 sector and near-claim behind-camera sectors (negative view-Z), which inflates
-the `near` reason — their table is level-coverage colour, not the metric.
+the `near` reason - their table is level-coverage colour, not the metric.
 
 A row with NO census line is a hard failure, not a zero: it means the cache
-never engaged (usable() false — on llvmpipe that is the missing
+never engaged (usable() false - on llvmpipe that is the missing
 OPENPETE_TERRAIN_CACHE_FORCE=1 trap), and treating it as "no claims" would
 read as perfect coverage.
 
@@ -44,23 +44,23 @@ REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
 # `sel` (a mod material selector claiming its sectors back) is GONE, not
 # zero: a material is baked into the face as a bucket and drawn from the
 # cache, so there is no longer a reason code for it. Its absence is part of
-# what --mods-dir now proves — a run with a selector armed produces the same
+# what --mods-dir now proves - a run with a selector armed produces the same
 # reasons, not the same reasons plus a zero.
 # nearb is a SUB-BUCKET of near (whole bounding sphere behind the near
-# threshold -> the CPU walk emits nothing), not an additional claim reason —
+# threshold -> the CPU walk emits nothing), not an additional claim reason -
 # always 0 now that the no-draw verdict is unconditional (the fully-behind
 # case never reaches the near claim). nodraw counts the
 # sectors the no-draw verdict owns (neither walked nor drawn); the report
 # treats them as covered. prim/pcov are SUB-BUCKETS of portal (rim-broadphase
-# candidate / blended-face over an outline); both are structurally 0 now —
+# candidate / blended-face over an outline); both are structurally 0 now -
 # the rim cull and the blended-face transparent-cover drop both run in the
-# terrain vertex stage — so any nonzero portal count is the claim-all /
+# terrain vertex stage - so any nonzero portal count is the claim-all /
 # no-refinement degenerate (planes momentarily unavailable, or the plane
 # provider disabled). arena is the build-failure
 # backstop bucket (true arena exhaustion / host OOM): the sectors it used
 # to report were actually the OPTC_SLOT_DEAD decode-slot sentinel, which
 # tsc_get now never populates. slot (decode-slot contest) is likewise
-# structurally 0 — eviction skips GPU-owned slots; only a window with 17+
+# structurally 0 - eviction skips GPU-owned slots; only a window with 17+
 # owned sectors can still contest. Rows where a decode-cache eviction
 # conflict forced the prepass's serial fallback double-counted every
 # column (the retried walk summed into the same census line): baselines
@@ -110,7 +110,7 @@ def run_row(kind, slug, args, target_frame, lod, outdir, mods_dir=""):
     if os.path.exists(lvp):
         env.setdefault("VK_ICD_FILENAMES", lvp)
     # Headless runs engage the native feed (and therefore the terrain hook)
-    # only when a native capture is requested — without the screenshot flags
+    # only when a native capture is requested - without the screenshot flags
     # the run is flat-out sim with no census lines at all.
     shots = os.path.join(outdir, "shots")
     os.makedirs(shots, exist_ok=True)
@@ -125,7 +125,7 @@ def run_row(kind, slug, args, target_frame, lod, outdir, mods_dir=""):
     # A mods dir arms whatever selectors it holds. The point of running the
     # corpus with one is the terrain-material gate: an all-terrain selector
     # must leave every row's sector and claim counts exactly where they were
-    # with no mods — on every row, not just the one pose it was developed
+    # with no mods - on every row, not just the one pose it was developed
     # against, which is how the blend carve-out survived its first review.
     cmd += ["--mods-dir", mods_dir] if mods_dir else ["--mods", ""]
     try:
@@ -223,7 +223,7 @@ def main():
             slug2, d = fut.result()
             if d is None:
                 fails.append((kind, slug))
-                print(f"  FAIL {kind} {slug} (no census line — cache never engaged?)")
+                print(f"  FAIL {kind} {slug} (no census line - cache never engaged?)")
             else:
                 results[kind].append((slug, d))
                 print(f"  ok   {kind} {slug}: secs={d['secs']} claims={d['claims']}")
@@ -239,12 +239,12 @@ def main():
                 w.writerow([kind, slug, d["frame"], d["secs"], d["claims"]] +
                            [d[r] for r in REASONS])
 
-    lines = [f"# Terrain claim census — lod={opts.lod}", ""]
+    lines = [f"# Terrain claim census - lod={opts.lod}", ""]
     if fails:
-        lines += ["**FAILED ROWS (no engagement — investigate before trusting the rest):** " +
+        lines += ["**FAILED ROWS (no engagement - investigate before trusting the rest):** " +
                   ", ".join(f"{k}/{s}" for k, s in fails), ""]
     for kind, title, caveat in (
-            ("bk2", "bk2 movie legs (real gameplay cameras — THE ratchet)", ""),
+            ("bk2", "bk2 movie legs (real gameplay cameras - THE ratchet)", ""),
             ("freecam", "freecam poses (level coverage; near= is INFLATED by "
                         "behind-camera force-draw)", "")):
         if not results[kind]:
@@ -267,7 +267,7 @@ def main():
             if r == "near" and a["nearb"]:
                 extra = (f" (of which {a['nearb']} = "
                          f"{100.0 * a['nearb'] / a['near']:.0f}% fully "
-                         f"BEHIND the near plane — no-draw candidates)")
+                         f"BEHIND the near plane - no-draw candidates)")
             if r == "portal" and (a["prim"] or a["pcov"]):
                 extra = (f" (rim-cand {a['prim']}, blended-cover {a['pcov']}, "
                          f"degenerate {a['portal'] - a['prim'] - a['pcov']})")

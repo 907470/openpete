@@ -4,23 +4,23 @@
  *
  * Renders into the small (grid_w × grid_h) occlusion RT; each output pixel is
  * one grid cell. Gathers its FULL source block of the WORLD-opaque depth
- * pre-pass and keeps the FARTHEST depth (max — the pre-pass encodes
+ * pre-pass and keeps the FARTHEST depth (max - the pre-pass encodes
  * d = 1 - 1/viewZ, monotonic increasing with distance). "Farthest" is the
  * conservative reduction for occlusion: a cell only reports "occluder at
  * depth d" if EVERY covered texel is at least that near, so any sky / gap /
  * far texel in the block prevents culling behind that cell. Block bounds are
  * computed by integer flooring so the union of all cells covers every source
- * texel exactly once (no sampling grid — a skipped far texel would over-cull).
+ * texel exactly once (no sampling grid - a skipped far texel would over-cull).
  *
  * Output packs the max depth as 24-bit fixed point into RGB (R = high byte),
  * decoded CPU-side after the ring readback: q/16777215 -> viewZ = 1/(1-d).
  * 24 bits keeps the decode error under ~100 world units at viewZ 40k (16 bits
- * would be ~6000 — useless against a ~1500-unit slack). */
+ * would be ~6000 - useless against a ~1500-unit slack). */
 
 layout(set = 0, binding = 0) uniform sampler2D uDepth;  /* pre-pass depth (depth-aspect view) */
 
 /* gw/gh = grid extent; pvw/pvh = the pre-pass VIEWPORT extent (the rasterized
- * region — the RT allocation may be larger and holds clear-far outside it). */
+ * region - the RT allocation may be larger and holds clear-far outside it). */
 layout(push_constant) uniform PC { int gw; int gh; int pvw; int pvh; } pc;
 
 layout(location = 0) in vec2 vUV;      /* unused (cell comes from gl_FragCoord) */

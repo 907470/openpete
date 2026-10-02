@@ -1,4 +1,4 @@
-/* renderer/player_game.h — the per-game half of the shared player feeder.
+/* renderer/player_game.h - the per-game half of the shared player feeder.
  *
  * The walk in renderer/player.c owns everything the games share: the hook and
  * its polybuf bracket, the per-call record store and its epoch pairing, the
@@ -50,7 +50,7 @@ typedef struct player_faces {
 } player_faces_t;
 
 /* One part's transform record: the words the walk reads out of the block the
- * draw builds in its render scratch — the flags word (blend weight, the two
+ * draw builds in its render scratch - the flags word (blend weight, the two
  * streams' form bits, the vertex count) and the two keyframes' cursor triples.
  *
  * A draw that leaves that block intact for the whole call needs no slot and

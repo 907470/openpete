@@ -1,5 +1,5 @@
 #pragma once
-/* levelwarp_ui.h — the game-independent half of the dev-overlay level warp
+/* levelwarp_ui.h - the game-independent half of the dev-overlay level warp
  * (M key): the level dropdown, the Jump button, the click queue and the
  * scripted driver.
  *
@@ -10,7 +10,7 @@
  * probe the descriptor supplies.
  *
  * A game supplies a levelwarp_ui_desc_t: its level table, the route its
- * current guest state allows, and the two things only it can do — start the
+ * current guest state allows, and the two things only it can do - start the
  * in-level route and report an in-flight warp. The title-screen route is the
  * same for every game (game_set_skip_to_level), so this module owns it. */
 

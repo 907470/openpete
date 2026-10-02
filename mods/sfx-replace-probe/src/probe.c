@@ -1,7 +1,7 @@
-/* sfx-replace-probe — registers a two-second synthesized buzz over one
+/* sfx-replace-probe - registers a two-second synthesized buzz over one
  * game sound through the sfx_replace verb. The body is built here as
  * raw SPU-ADPCM: filter 0, shift 0, so every 4-bit nibble decodes to
- * nibble << 12 — a coarse square wave is exactly representable, and no
+ * nibble << 12 - a coarse square wave is exactly representable, and no
  * disc-derived audio is involved. Log-only otherwise: sim-neutral. */
 
 #include <openpete_mod_api.h>

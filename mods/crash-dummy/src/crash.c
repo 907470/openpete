@@ -1,4 +1,4 @@
-/* crash-dummy — deliberate segfault inside an override, so the
+/* crash-dummy - deliberate segfault inside an override, so the
  * crash handler's attribution line can be asserted. See mod.toml. */
 
 #include <openpete_mod_api.h>
@@ -10,7 +10,7 @@ static openpete_mod_t*           g_self;
 static unsigned                  g_calls;
 
 /* Host-side controls published by the overlay section, consumed inside
- * the override — attribution only names the mod when the fault happens
+ * the override - attribution only names the mod when the fault happens
  * on the chain frame, so the UI never dereferences anything itself. */
 static int g_auto_armed = 1;
 static int g_crash_held;
@@ -33,14 +33,14 @@ static void publish_status(void) {
 
 static void crash_now(const char* why) {
     g_api->log(g_self, OP_MOD_LOG_WARN,
-               "dereferencing NULL on purpose — %s", why);
+               "dereferencing NULL on purpose - %s", why);
     *(volatile int*)0 = 1; /* boom */
 }
 
 static void on_camera_update(CPUState* cpu) {
     int down;
     g_calls++;
-    /* Crash on the binding's press edge — a held key must not re-fault
+    /* Crash on the binding's press edge - a held key must not re-fault
      * a recovering process. */
     down = g_api->binding_down(g_self, "crash");
     if (down && !g_crash_held) {

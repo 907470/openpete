@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# bench-fps.sh — measure native-Vulkan present FPS over the attract demo.
+# bench-fps.sh - measure native-Vulkan present FPS over the attract demo.
 #
 # Runs the recompiled game (no bk2 => the built-in attract/demo, same content
 # as the 20k oracle golden) with --frame-time-log, then summarizes the present
-# cadence with scripts/measure-pacing.py. Every actual present is logged —
-# canonical sim-tick AND high-FPS sub-tick — so the reported rate is the true
+# cadence with scripts/measure-pacing.py. Every actual present is logged -
+# canonical sim-tick AND high-FPS sub-tick - so the reported rate is the true
 # achieved present FPS at --render-fps>30.
 #
 # Usage:
@@ -56,7 +56,7 @@ echo "bench-fps: exe=$EXE  fps=$FPS  frames=$FRAMES  log=$LOG"
 # --vibration 0: unattended bench, nobody is holding a pad. The FLAG rather
 # than the env spelling because this script is routinely pointed at the
 # Windows .exe, and an exported knob does not cross that boundary without
-# WSLENV — an argument cannot be dropped that way.
+# WSLENV - an argument cannot be dropped that way.
 # (scripts/fences/rumble_guard.py enforces that this is here.)
 # --input-lock: the bench window ignores the host keyboard, mouse and pads, so
 # input at the desk cannot open a menu or end the run mid-measurement. A flag

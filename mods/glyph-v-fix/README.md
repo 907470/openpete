@@ -4,14 +4,14 @@ Restores the missing end-cap face on the 3D letter `V`.
 
 ## The defect
 
-The game draws its gold 3D text — dragon-rescue names, `DEMO MODE`, the
-pause and inventory menus, the gem and life counters — with one moby
+The game draws its gold 3D text - dragon-rescue names, `DEMO MODE`, the
+pause and inventory menus, the gem and life counters - with one moby
 class per character, `A`-`Z` at `426 + (c - 'A')`. Each glyph is a
 SimpleModel.
 
 The `V` model (class 447) carries 18 vertices and 17 faces: six front,
 six back, and five side walls. The right arm has all three of the walls
-an arm needs — outer edge, top end cap, inner edge — and the left arm
+an arm needs - outer edge, top end cap, inner edge - and the left arm
 has only two. The quad closing the left arm's top is absent, so the
 top-left of every 3D `V` opens into the glyph's unlit interior.
 
@@ -21,8 +21,8 @@ identically.
 
 ## The fix
 
-The face stream cannot grow where it lies — the `W` model header begins
-at the byte after the last `V` face — so the mod copies the 17 faces to
+The face stream cannot grow where it lies - the `W` model header begins
+at the byte after the last `V` face - so the mod copies the 17 faces to
 the mod arena, appends the missing quad, and points the model header's
 face count and stream pointer at the copy.
 

@@ -272,7 +272,7 @@ def emit_macros(entries, out_path):
              " * cannot take the address of an ImGui_* function; it reads the",
              " * table slot instead.",
              " *",
-             " * Not in the table, and so not redefined here — a call to one",
+             " * Not in the table, and so not redefined here - a call to one",
              " * fails at the mod's own compile with an undefined reference:"]
     for line in DENY_DOC:
         lines.append(" *   - " + line)

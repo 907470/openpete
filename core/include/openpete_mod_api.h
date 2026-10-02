@@ -17,8 +17,8 @@
  * appended, never moved, retyped or removed, and the loader refuses a
  * prebuilt object built against an earlier api. The manifest `api = N`
  * pin is the minimum version the mod needs; check `api_version < N`,
- * never `!=`. The two extension headers — the widget vtable (openpete_mod_ui.h) and
- * the ImGui escape hatch (openpete_imgui.h) — are versioned
+ * never `!=`. The two extension headers - the widget vtable (openpete_mod_ui.h) and
+ * the ImGui escape hatch (openpete_imgui.h) - are versioned
  * separately and carry no stability promise. Each entry states the
  * version it appeared in with `@since`.
  *
@@ -103,8 +103,8 @@ typedef struct openpete_mod_mouse {
  * replay, the rewind burst and runahead speculation.
  *
  * `vbl` is the VBL index that record was staged for. A speculative tick
- * re-executes on the last committed tick's record — held input, the same
- * prediction player 1 gets — and carries that tick's `vbl`. `buttons` is
+ * re-executes on the last committed tick's record - held input, the same
+ * prediction player 1 gets - and carries that tick's `vbl`. `buttons` is
  * the PSX pad bitfield, 1 = released. `axes` is LX, LY, RX, RY with 128
  * centred. `libpad` is the eight bytes libpad reports in a PADRAW buffer:
  * `00, 73`, low button byte, high button byte, RX, RY, LX, LY.
@@ -969,7 +969,7 @@ typedef struct openpete_mod_api {
      * call and do nothing: those timelines were never lived, and buzzing
      * for them is a side effect escaping the re-execution. A tick hook
      * therefore needs no speculation test of its own. The host's own
-     * refusals still apply at drive time — headless, an unfocused window,
+     * refusals still apply at drive time - headless, an unfocused window,
      * pause, a strength of 0.
      *
      * To carry a swapped-in player's rumble, decode that player's timers

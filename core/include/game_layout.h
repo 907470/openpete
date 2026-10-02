@@ -1,4 +1,4 @@
-// game_layout.h — the engine-layout descriptor: where a game keeps the RAM
+// game_layout.h - the engine-layout descriptor: where a game keeps the RAM
 // the presentation feeders read.
 //
 // Each game defines one `game_layout` (games/<game>/renderer/layout.c) from

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# presentation-corpus-promote.sh — re-bless the presentation golden.
+# presentation-corpus-promote.sh - re-bless the presentation golden.
 #
 # Rewrites the tier's blessed.tsv rows for the promoted candidate tiles (verdict
 # digest, blessed revision, recomp identity, origin), files those tiles into the
@@ -74,4 +74,4 @@ python3 scripts/presentation-blessed.py promote "$GAME" --tier "$PG_TIER" \
 if [[ "$(git hash-object "$PG_BLESSED")" == "$before" ]]; then exit 0; fi
 
 git add -- "$PG_BLESSED"
-echo "[presentation-promote] $GAME: staged $PG_BLESSED — review 'git diff --cached' and commit"
+echo "[presentation-promote] $GAME: staged $PG_BLESSED - review 'git diff --cached' and commit"

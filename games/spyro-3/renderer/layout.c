@@ -1,4 +1,4 @@
-// games/spyro-3/renderer/layout.c — the Spyro 3 engine layout. Bases come
+// games/spyro-3/renderer/layout.c - the Spyro 3 engine layout. Bases come
 // from the drift-checked symbol aliases (manifest/spyro3_symbols.toml, each
 // row carrying its evidence). An offset is `offsetof` against the typed
 // structs header (openpete_game_structs.h, pinned to the probed MIPS layout
@@ -27,7 +27,7 @@ static uint32_t flame_cap_colour_off(CPUState* cpu) {
 const game_layout_t game_layout = {
     .display = {
         /* warp.c func_80059038: SetDefDrawEnv(..., 0, 12, 512, 216) paired with
-         * SetDefDispEnv(..., 0, 0, 512, 240) — 12 undrawn rows per side. */
+         * SetDefDispEnv(..., 0, 0, 512, 240) - 12 undrawn rows per side. */
         .disp_w = 512, .disp_h = 240, .clip_h = 216,
     },
     .sin_table = G_SIN,     /* g_Sin (psx.map); cos = g_Cos 0x80065920 at +0x80.
@@ -90,7 +90,7 @@ const game_layout_t game_layout = {
      * +4 and a u16 accumulator at +6; on a keyframe advance
      * (0x80021034-0x800210B8) the walker adds the keyframe's signed int8
      * delta, masks the accumulator to 7 bits and commits whole texels into the
-     * 48-byte tiledef entry at (g_Environment+0x20 table) + index*48 —
+     * 48-byte tiledef entry at (g_Environment+0x20 table) + index*48 -
      * acc>>2 and acc>>2+31 into the V bytes of both LQ halves (+1/+5, +9/+13),
      * acc>>1 and that +31 into the first two HQ sub-tiles (+17/+21, +25/+29),
      * and ((acc>>1)+32)&0x3F with its +31 into the last two (+33/+37,

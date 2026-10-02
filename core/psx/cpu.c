@@ -1,4 +1,4 @@
-// core/psx/cpu.c — PSX memory map + CPUState callback bindings.
+// core/psx/cpu.c - PSX memory map + CPUState callback bindings.
 //
 // Game-agnostic. Implements the small slice of the PSX bus that the
 // recompiled C touches: 2MB main RAM (KSEG0/KSEG1/KUSEG aliases),
@@ -127,7 +127,7 @@ uint32_t openpete_host_to_psx(const void* host_ptr) {
         return OPENPETE_PSX_SCRATCH_BASE | (uint32_t)(p - g_scratch);
     }
     /* Integer-cast-to-pointer fallback: matching-decomp source occasionally
-     * computes a "pointer" by arithmetic on a vaddr literal — e.g.
+     * computes a "pointer" by arithmetic on a vaddr literal - e.g.
      *   levelVram = (char *)0x80200000 - _stacksize - 0x40000;
      * On the host this evaluates to a uintptr whose low 32 bits hold the
      * intended PSX vaddr but whose value lies outside g_ram. If those low
@@ -327,7 +327,7 @@ void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size) {
     uint32_t phys = addr & 0x1FFFFFFFu;
     uint32_t avail = (phys < RAM_SIZE) ? (RAM_SIZE - phys) : 0u;
     if (size > avail) {
-        OPL_WARN_F("boot", "psx_load: clamped %u→%u bytes at 0x%08X", size, avail, addr);
+        OPL_WARN_F("boot", "psx_load: clamped %u->%u bytes at 0x%08X", size, avail, addr);
         size = avail;
     }
     memcpy(p, data, size);

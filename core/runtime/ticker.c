@@ -1,4 +1,4 @@
-// core/runtime/ticker.c — host-loop pacing clock lifecycle.
+// core/runtime/ticker.c - host-loop pacing clock lifecycle.
 //
 // The host loop is self-paced: it advances phase-locked absolute
 // integer-ns deadlines and sleeps to them via op_sleep_until, whose
@@ -12,8 +12,8 @@
 //
 // Determinism contract: pacing changes the *timing* of host-loop
 // iterations, never the count or order of game-fiber co_switches.
-// openpete_vbl is advanced synchronously by psyq_VSync(0) — exactly one
-// increment per yield — because BK2 input replay relies on
+// openpete_vbl is advanced synchronously by psyq_VSync(0) - exactly one
+// increment per yield - because BK2 input replay relies on
 // yields-per-logical-frame being deterministic regardless of pacing.
 
 #include "openpete_ticker.h"

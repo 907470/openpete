@@ -1,4 +1,4 @@
-/* openpete_time.h — high-resolution monotonic clock + hybrid waiter.
+/* openpete_time.h - high-resolution monotonic clock + hybrid waiter.
  *
  * Leaf module: no SDL, no openpete dependencies. The pacer (ticker.c, run.c dual-pacer) builds
  * on this. The point of the abstraction is that *every* time source in
@@ -6,7 +6,7 @@
  * platform-specific knobs (Win32 waitable timer, Linux clock_nanosleep,
  * spin-tail granularity, env-overridable slack) live in exactly one TU.
  *
- * Sources are always monotonic — never wall clock — so daylight-saving
+ * Sources are always monotonic - never wall clock - so daylight-saving
  * jumps, ntpd corrections, and `date -s` cannot disturb pacing.
  *
  *   op_now()                      monotonic time in ns
@@ -38,23 +38,23 @@ typedef int64_t op_time_t; /* nanoseconds since arbitrary monotonic epoch */
  * The rate the console's video output actually locks to, derived from the
  * NTSC colour subcarrier:
  *
- *     fsc = 315/88 MHz             = 3 579 545.4545… Hz
- *     fH  = fsc * 2/455            = 15 734.26573… Hz  (line rate)
- *     VBI = fH / 263 lines         = 2 250 000/37 609 Hz = 59.8261054… Hz
+ *     fsc = 315/88 MHz             = 3 579 545.4545... Hz
+ *     fH  = fsc * 2/455            = 15 734.26573... Hz  (line rate)
+ *     VBI = fH / 263 lines         = 2 250 000/37 609 Hz = 59.8261054... Hz
  *
  * 263 lines because Spyro runs 240p: the GPU emits a full frame of 263
  * scanlines and never drops the half-line that produces the familiar 59.94.
- * That figure is the *interlaced* (480i) field rate — 262.5 lines — and does
+ * That figure is the *interlaced* (480i) field rate - 262.5 lines - and does
  * not apply here. Using it ran the engine 0.19 % fast (~6.9 s/hour).
  *
  * A tick is two VBLs: the game calls VSync(2), so gameplay advances at
- * 1 125 000/37 609 Hz = 29.9130527… Hz.
+ * 1 125 000/37 609 Hz = 29.9130527... Hz.
  *
  * Both decimals repeat with period 37 608, so the rational is the only
- * lossless spelling — hence op_period_t below carries num/den rather than
+ * lossless spelling - hence op_period_t below carries num/den rather than
  * collapsing to a double.
  *
- * Neither period is a whole number of nanoseconds — a VBL is
+ * Neither period is a whole number of nanoseconds - a VBL is
  * 16 715 111 + 1/9 ns. op_vbl_step()/op_tick_step() carry that ninth in an
  * integer accumulator, so a deadline chain stays exact indefinitely instead
  * of shedding 0.11 ns per step.
@@ -71,9 +71,9 @@ typedef int64_t op_time_t; /* nanoseconds since arbitrary monotonic epoch */
 
 /* Canonical rates as doubles, for logging and for consumers that genuinely
  * need a float (mod time bases, encoder rate reports). Never step a deadline
- * with these — use op_period_t below, which does not round. */
-#define OP_VBL_HZ   (2250000.0 / 37609.0)   /* 59.8261054… */
-#define OP_TICK_HZ  (1125000.0 / 37609.0)   /* 29.9130527… */
+ * with these - use op_period_t below, which does not round. */
+#define OP_VBL_HZ   (2250000.0 / 37609.0)   /* 59.8261054... */
+#define OP_TICK_HZ  (1125000.0 / 37609.0)   /* 29.9130527... */
 
 /* ---- exact periodic deadlines -------------------------------------------
  *
@@ -84,7 +84,7 @@ typedef int64_t op_time_t; /* nanoseconds since arbitrary monotonic epoch */
  * (a plain integer-ns VBL period loses 0.11 ns per VBL).
  *
  * This matters beyond the VBL itself: --record-cfr divides a tick into
- * `mult` presents, and 33 430 222 + 2/9 over 3 is 11 143 407 + 11/27 — a
+ * `mult` presents, and 33 430 222 + 2/9 over 3 is 11 143 407 + 11/27 - a
  * denominator the VBL's ninth cannot express. Hence the general rational
  * rather than a fixed carry.
  *

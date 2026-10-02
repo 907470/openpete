@@ -1,4 +1,4 @@
-/* games/spyro-2/renderer/interp_regions.c — Spyro 2's render-side
+/* games/spyro-2/renderer/interp_regions.c - Spyro 2's render-side
  * interpolation region table, captured per tick into the openpete_interp ring
  * so intermediate presents can lerp the camera transform and the avatar.
  *

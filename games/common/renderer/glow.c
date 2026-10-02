@@ -1,4 +1,4 @@
-// games/common/renderer/glow.c — the glow-ring feeder: a handwritten routine
+// games/common/renderer/glow.c - the glow-ring feeder: a handwritten routine
 // (Spyro 2 func_8004A8D4 / mobyfunc.s:1936-2146, Spyro 3 func_8002ECA8 /
 // mobyfunc.s:1920-2166; the same 208 instructions but for constants and
 // symbols) that draws one screen-facing polygon per live record of a pool and
@@ -27,8 +27,8 @@
 //     brightest at its middle and fades out (:2110-2126).
 //
 // The geometry is the guest's own int16 output, read back out of the polybuf,
-// not a second projection. What the primitives do not carry is depth — the PSX
-// orders them by ordering-table bucket — so each fan's depth comes from the key
+// not a second projection. What the primitives do not carry is depth - the PSX
+// orders them by ordering-table bucket - so each fan's depth comes from the key
 // its own pool record links at (glow_record_depth), paired to the fan through
 // the routine's own bookkeeping: each accepted record emits exactly one draw-mode packet, so the
 // draw-mode packets delimit the fans in pool order, and the record walk here
@@ -39,8 +39,8 @@
 // Spyro 1's own glow renderer is fed by a float re-derivation in
 // games/spyro-1/renderer/particle.c: its records carry a moby-position pointer
 // and its ring is a perspective-scaled radius, a different routine over a
-// different record shape. What the two share — the hook bracket, the polybuf
-// walk, the primitive decode and the projection helpers — is already shared and
+// different record shape. What the two share - the hook bracket, the polybuf
+// walk, the primitive decode and the projection helpers - is already shared and
 // is reused here unchanged.
 //
 // Out of scope: the same routine reached from the pause screen's own draw,
@@ -393,9 +393,9 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
  * camera from the tick's pool, so a present that re-feeds them draws every
  * ring at the pixels the tick drew: neither the camera's motion nor the
  * record's reaches them. The rebase measures the record's screen displacement
- * as the difference of two projections — the position the present shows under
+ * as the difference of two projections - the position the present shows under
  * the staged camera, against the position the tick drew under the tick's
- * camera — and moves the fan by it. Every corner of a fan shares the record's
+ * camera - and moves the fan by it. Every corner of a fan shares the record's
  * view Z and its perspective divide, so one displacement carries the fan. At
  * the end of the tick's own interval the shown position and the staged camera
  * are both the tick's, so the two projections take identical inputs through

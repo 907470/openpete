@@ -134,7 +134,7 @@ See [Reporting a bug](reporting-a-bug.md): attach `openpete.log` and the
 
 ## By error id
 
-This table lists the error ids (`OP-E-…`) that error messages print, each
+This table lists the error ids (`OP-E-...`) that error messages print, each
 with its cause and fix. No message prints an id yet.
 
 | Id | Message | Cause | Fix |

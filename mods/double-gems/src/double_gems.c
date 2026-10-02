@@ -1,9 +1,9 @@
-/* double-gems — PoC: typed guest-RAM write, real divergence.
+/* double-gems - PoC: typed guest-RAM write, real divergence.
  *
  * Post-hook + state-diff (the framework's event-detection idiom): let
  * CollectItem run, diff g_GemTotal across base(), and add the delta
  * again. No need to know WHICH item was collected or re-implement any
- * game logic — the state change IS the event.
+ * game logic - the state change IS the event.
  */
 
 #include <openpete_mod_api.h>

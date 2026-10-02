@@ -1,14 +1,14 @@
-// core/mods/mod_config.c — per-mod user configuration (config.toml).
+// core/mods/mod_config.c - per-mod user configuration (config.toml).
 //
 // Grown out of the spyro3 mod merge: one mod carrying several features
 // (gems, chests, per-feature SFX/collision) needs a USER-editable
 // on/off surface that isn't the manifest (mod.toml describes what the
 // mod IS; config.toml describes what the user WANTS from it) and isn't
-// env vars (they don't cross the WSL→Windows interop boundary — the
+// env vars (they don't cross the WSL->Windows interop boundary - the
 // .flame flag-file hack this replaces).
 //
 // Model: mods/<id>/config.toml, optional, parsed by the loader right
-// before the mod's entry runs (boot AND hot reload — so a config edit
+// before the mod's entry runs (boot AND hot reload - so a config edit
 // in dev mode re-enters the mod with fresh values; the loader watches
 // the file's content hash alongside the sources). Keys are addressed
 // with dotted paths ("chests.collision" = key `collision` in table
@@ -111,7 +111,7 @@ static void flatten(cfg_slot_t* s, const toml_table_t* tab,
         toml_table_t* sub = toml_table_in(tab, k);
         if (sub) { flatten(s, sub, full, log_tag); continue; }
         if (toml_array_in(tab, k)) {
-            OPL_WARN_F(log_tag, "config.toml: \"%s\" is an array — "
+            OPL_WARN_F(log_tag, "config.toml: \"%s\" is an array - "
                        "unsupported, ignored", full);
             continue;
         }
@@ -132,14 +132,14 @@ static void flatten(cfg_slot_t* s, const toml_table_t* tab,
             free(v.u.s);
         } else {
             OPL_WARN_F(log_tag, "config.toml: \"%s\" has an unsupported "
-                       "value type — ignored", full);
+                       "value type - ignored", full);
             continue;
         }
         {
             cfg_entry_t* slot = (cfg_entry_t*)mod_fvec_push(&s->e);
             if (!slot) {
                 OPL_ERROR_F(log_tag, "config.toml: key table allocation "
-                            "failed — \"%s\" and the rest ignored", full);
+                            "failed - \"%s\" and the rest ignored", full);
                 return;
             }
             *slot = tmp;
@@ -165,7 +165,7 @@ void openpete_mods_config_load(openpete_mod_t* mod, const char* mod_dir,
     toml_table_t* root = toml_parse_file(fp, errbuf, sizeof errbuf);
     fclose(fp);
     if (!root) {
-        OPL_ERROR_F(log_tag, "config.toml parse error: %s — all keys "
+        OPL_ERROR_F(log_tag, "config.toml parse error: %s - all keys "
                     "fall back to defaults", errbuf);
         return;
     }
@@ -196,7 +196,7 @@ int openpete_mods_config_bool(openpete_mod_t* self, const char* key,
     const cfg_entry_t* e = find(self, key);
     if (!e) return def;
     if (e->type == 'b' || e->type == 'i') return e->i != 0;
-    OPL_WARN_F("mods", "config key \"%s\" is not a bool — default used",
+    OPL_WARN_F("mods", "config key \"%s\" is not a bool - default used",
                key);
     return def;
 }
@@ -206,7 +206,7 @@ int64_t openpete_mods_config_int(openpete_mod_t* self, const char* key,
     const cfg_entry_t* e = find(self, key);
     if (!e) return def;
     if (e->type == 'i' || e->type == 'b' || e->type == 'd') return e->i;
-    OPL_WARN_F("mods", "config key \"%s\" is not a number — default used",
+    OPL_WARN_F("mods", "config key \"%s\" is not a number - default used",
                key);
     return def;
 }
@@ -216,7 +216,7 @@ double openpete_mods_config_float(openpete_mod_t* self, const char* key,
     const cfg_entry_t* e = find(self, key);
     if (!e) return def;
     if (e->type == 'd' || e->type == 'i' || e->type == 'b') return e->d;
-    OPL_WARN_F("mods", "config key \"%s\" is not a number — default used",
+    OPL_WARN_F("mods", "config key \"%s\" is not a number - default used",
                key);
     return def;
 }
@@ -230,20 +230,20 @@ int openpete_mods_config_str(openpete_mod_t* self, const char* key,
         return 1;
     }
     if (e)
-        OPL_WARN_F("mods", "config key \"%s\" is not a string — default "
+        OPL_WARN_F("mods", "config key \"%s\" is not a string - default "
                    "used", key);
     snprintf(buf, (size_t)cap, "%s", def ? def : "");
     return 0;
 }
 
 /* ── Comment-preserving writer (the Mods panel's Apply path) ─────────
- * config.toml is the USER's file — hand-written comments document what
+ * config.toml is the USER's file - hand-written comments document what
  * each key means, so a rewrite that drops them is unacceptable. This
  * writer edits the file as text: for each edit it finds the dotted
  * path's section header and the `leaf = value` line inside it, and
  * replaces only the value span, keeping indentation and any trailing
  * comment. Missing keys append at the end of their section; missing
- * sections append at EOF. Scalars only — exactly the shapes the
+ * sections append at EOF. Scalars only - exactly the shapes the
  * [[config]] schema can declare. */
 
 /* Headroom one edit can add to the text: a section header, the key and
@@ -266,7 +266,7 @@ static void cfgw_format_value(char* out, size_t cap,
     case 'i': snprintf(out, cap, "%lld", (long long)e->ival); break;
     case 'd':
         snprintf(out, cap, "%g", e->fval);
-        /* TOML requires a float to carry '.' or an exponent — "%g" of
+        /* TOML requires a float to carry '.' or an exponent - "%g" of
          * 2.0 prints "2", which would silently retype the key. */
         if (!strpbrk(out, ".eE") && strlen(out) + 2 < cap)
             strcat(out, ".0");
@@ -452,7 +452,7 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
         if (fp) fclose(fp);
         mod_fvec_free(&buf);
         OPL_ERROR_F(log_tag, "config.toml: edit buffer allocation failed "
-                    "— file left unchanged");
+                    "- file left unchanged");
         return -1;
     }
     text = (char*)mod_fvec_data(&buf);
@@ -465,7 +465,7 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
     for (int i = 0; i < n; i++) {
         if (cfgw_apply_one(text, &len, cap, &e[i]) != 0) {
             mod_fvec_free(&buf);
-            OPL_ERROR_F(log_tag, "config.toml: failed to write \"%s\" — "
+            OPL_ERROR_F(log_tag, "config.toml: failed to write \"%s\" - "
                         "file left unchanged", e[i].key);
             return -1;
         }
@@ -474,7 +474,7 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
     int rc = op_atomic_write_file(path, text, len);
     mod_fvec_free(&buf);
     if (rc != 0) {
-        OPL_ERROR_F(log_tag, "config.toml: write failed — original kept");
+        OPL_ERROR_F(log_tag, "config.toml: write failed - original kept");
         return -1;
     }
     OPL_INFO_F(log_tag, "config.toml: %d key(s) written", n);

@@ -4,7 +4,7 @@
 
 There's no clean external seam in PsyCross for openpete to draw on top of
 the just-finished scene before it's presented. We need this for the host's
-FPS counter (`core/ui/fps_overlay.cpp`) — text rendered via direct GL
+FPS counter (`core/ui/fps_overlay.cpp`) - text rendered via direct GL
 on the GL backbuffer, sitting above the game's rasterised output, drawn
 once per `PsyX_EndScene` regardless of game state.
 
@@ -24,9 +24,9 @@ Add a function-pointer hook `g_psyx_postRenderOverlay` (declared in
 `PsyX_public.h`, defined in `PsyX_main.cpp`), invoked inside
 `PsyX_EndScene` at exactly one spot:
 
-- AFTER `GR_StoreFrameBuffer` — the VRAM mirror snapshot is taken first,
+- AFTER `GR_StoreFrameBuffer` - the VRAM mirror snapshot is taken first,
   so the overlay never bleeds into the game's emulated VRAM.
-- BEFORE `GR_SwapWindow` — the overlay lands on the backbuffer that's
+- BEFORE `GR_SwapWindow` - the overlay lands on the backbuffer that's
   about to be presented.
 
 Default value is `NULL`, so the hook is opt-in and a no-op for any
@@ -42,7 +42,7 @@ Spyro 1, NTSC, openpete linux-release.
 - Observe "FPS:60" in the top-left of the GL window in yellow.
   Screenshot at frame 893 (Insomniac splash) confirms the overlay
   is rendered into the presented backbuffer.
-- Disable hook (set `g_psyx_postRenderOverlay = NULL`) and rebuild —
+- Disable hook (set `g_psyx_postRenderOverlay = NULL`) and rebuild -
   game renders identically to pre-patch behaviour, no overlay drawn.
   Confirmed bit-identical render path when callback is unset.
 
@@ -54,5 +54,5 @@ Spyro 1, NTSC, openpete linux-release.
   blend/depth/cull/scissor enables) and restores them before returning,
   so PsyCross's next frame `BeginScene` / `DrawAllSplits` sees an
   untouched pipeline.
-- This is a generic extension point — any PsyCross consumer can register
+- This is a generic extension point - any PsyCross consumer can register
   its own overlay (debug HUDs, frame-time graphs, watermarks).

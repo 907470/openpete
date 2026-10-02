@@ -1,4 +1,4 @@
-// games/spyro-1/sfx_census.cpp — the sfx pack's offline census.
+// games/spyro-1/sfx_census.cpp - the sfx pack's offline census.
 //
 // Walks every sample the game can key, straight from the disc's WAD (and
 // any custom-level Data files handed over), and writes each distinct one
@@ -8,7 +8,7 @@
 // run over the WAD bytes here, so a file's name and PCM are exactly what
 // the runtime computes for the sample at key-on.
 //
-// Sample sources — the game plays from four kinds, only the first of
+// Sample sources - the game plays from four kinds, only the first of
 // which is a def array:
 //   1. A level (or cutscene) entry's SoundDefinition array: the last
 //      component of its Data blob is {int size; u_char table[256]; int
@@ -19,7 +19,7 @@
 //      is uploaded mid-level to 0x80000 - len and keyed through the
 //      one-entry cutscene def.
 //   3. Cutscene entries and the intro: the cutscene def's m_Addr is a
-//      literal per site — bank start with g_CutscenePitchTable[idx], and
+//      literal per site - bank start with g_CutscenePitchTable[idx], and
 //      0x262D0 for the post-demo intro (keyed from the titlescreen bank).
 //   4. Titlescreen: ten samples at g_TitlescreenSPUOffsets[i] + 0x1010 at
 //      pitch 0x800.
@@ -252,7 +252,7 @@ bool walk_entry(const EntryReader& er, const std::string& name, bool cutscene,
     LevelHeader lh;
     std::memcpy(&lh, hdr.data(), sizeof lh);
     if (lh.vram_sram_size <= (int32_t)kSpuTop || lh.data_size <= 0) {
-        OPL_WARN_F("sfxdump", "%s: no SRAM bank (vram_sram_size=%d) — skipped",
+        OPL_WARN_F("sfxdump", "%s: no SRAM bank (vram_sram_size=%d) - skipped",
                    name.c_str(), lh.vram_sram_size);
         return true;
     }

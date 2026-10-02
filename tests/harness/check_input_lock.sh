@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# tests/harness/check_input_lock.sh — the --input-lock gate.
+# tests/harness/check_input_lock.sh - the --input-lock gate.
 #
 # The lock's effect is an absence: keys, pointer motion and pads that do
 # nothing. An absence is only evidence when the same input demonstrably does

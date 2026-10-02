@@ -1,11 +1,11 @@
-// core/mods/mod_registry.c — namespaced content registries.
+// core/mods/mod_registry.c - namespaced content registries.
 //
 // Namespaces: LEVEL SLOTS (a new level id cloned from a donor level) and
 // CUSTOM LEVELS (a mod-supplied WAD/OVL served over a slot), plus the
 // per-level event hooks both ride.
 //
 // Inertness: the per-tick chain link is added lazily on the FIRST
-// registration — nothing registered means no hook, no guest reads, no
+// registration - nothing registered means no hook, no guest reads, no
 // behavior change. All registry guest writes are gameplay-divergent by
 // design (content mods), gated behind mods being loaded at all.
 
@@ -22,7 +22,7 @@
 #include <sys/stat.h>
 
 /* Chain plumbing (defined in mod_chain.c; deliberately not in the public
- * header — the registry is the one engine-internal chain client). */
+ * header - the registry is the one engine-internal chain client). */
 int  openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                              const char* owner_id);
 void openpete_mods_base(CPUState* cpu);
@@ -35,14 +35,14 @@ static int s_hooked = 0;
 static int s_level  = -1;
 
 /* Level id of an in-flight transition INTO a registered slot (0 = none).
- * The transition window is invisible to s_level — the game ops report
- * level 0 for every non-GS_Playing tick — yet it is exactly when the
+ * The transition window is invisible to s_level - the game ops report
+ * level 0 for every non-GS_Playing tick - yet it is exactly when the
  * id-keyed loader functions run, so the busy query below needs it. */
 static int s_slot_entering = 0;
 
 /* Last level that was LIVE, regardless of the current gamestate. The
- * ops report level 0 for every non-GS_Playing tick — pause, demo
- * rollover, level teardown — which are exactly the windows where the
+ * ops report level 0 for every non-GS_Playing tick - pause, demo
+ * rollover, level teardown - which are exactly the windows where the
  * id-keyed loaders may still run against the old id, so residency only
  * moves when a DIFFERENT level goes live. The busy query keys on this,
  * never on the instantaneous playing-state view. */
@@ -51,8 +51,8 @@ static int s_resident_level = 0;
 /* ── Level-ready event (api->on_level) ───────────────────────────────
  * Fires each hook once per level, on the first master-update tick with
  * gameplay live (level_id > 0): the model table is installed, the CD
- * stream is idle, and — because the anchor is the master update, not a
- * camera function — the event is immune to freecam freezes (the trap
+ * stream is idle, and - because the anchor is the master update, not a
+ * camera function - the event is immune to freecam freezes (the trap
  * that killed two generations of spyro3's per-level SFX re-staging).
  * Tick context: guest reads/writes and call_addr are legal inside. */
 /* Hooks the table allocates up front; it grows past this. */
@@ -85,7 +85,7 @@ void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
  * Which classes a level loaded is a fact about guest RAM, but its consumer
  * is a mod's UI section, which runs inside a present where guest access is
  * refused. So the engine walks it at the tick boundary and mods read this
- * copy — the same shape as openpete_mods_set_level. */
+ * copy - the same shape as openpete_mods_set_level. */
 static uint16_t s_moby_classes[OPENPETE_MOBY_CLASSES_MAX];
 static int      s_moby_class_count;
 
@@ -151,7 +151,7 @@ static void registry_tick(CPUState* cpu) {
     custom_tick(cpu);
     /* After custom_tick, not inside it: the warp path returns early on
      * several branches, and a claim made this tick must reach the tables
-     * this tick — the all-gems test reads them before the next one. */
+     * this tick - the all-gems test reads them before the next one. */
     counts_tick(cpu);
 
     int lvl = s_ops->level_id(cpu);
@@ -241,7 +241,7 @@ int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
     }
     snprintf(h->mod_id, sizeof h->mod_id, "%s", mod_id);
     h->fn = fn;
-    h->fired_level = 0; /* fires on the next live tick — including for a
+    h->fired_level = 0; /* fires on the next live tick - including for a
                          * level already in progress (hot reload) */
     OPL_INFO_F(log_tag, "level-ready hook registered");
     return 0;
@@ -306,7 +306,7 @@ int openpete_mods_level_register(const char* mod_id, const char* name,
                       "level_slots", LEVEL_SLOTS_INIT);
     level_slot_t* s = (level_slot_t*)mod_fvec_push(&s_levels);
     if (!s) {
-        OPL_ERROR_F(log_tag, "level slot allocation failed — \"%s\" "
+        OPL_ERROR_F(log_tag, "level slot allocation failed - \"%s\" "
                     "skipped", name);
         return -1;
     }
@@ -332,16 +332,16 @@ int openpete_mods_level_slot_id(const char* mod_id, const char* name) {
 int openpete_mods_level_enter(CPUState* cpu, int level_id) {
     if (!s_level_ops || !cpu || level_id <= 0) return -1;
     /* Entering a slot commits the session to a level its owner defines.
-     * With the owner disabled the id still loads — the donor alias that
+     * With the owner disabled the id still loads - the donor alias that
      * services the id-keyed load functions is engine-owned, not mod-owned
-     * — but it arrives stripped of the mod's content and of any load-path
+     * - but it arrives stripped of the mod's content and of any load-path
      * hooks the mod installs, i.e. as a bare clone of the donor. Refuse
      * the warp instead of shipping the player a half-level. Retail ids
      * match no slot row and pass straight through. */
     for (int i = 0; i < level_slot_count(); i++) {
         if (level_slot_at(i)->slot_id != level_id) continue;
         if (level_slot_at(i)->disabled) {
-            OPL_ERROR_F("mods", "level %d belongs to disabled mod \"%s\" — "
+            OPL_ERROR_F("mods", "level %d belongs to disabled mod \"%s\" - "
                         "entry refused", level_id, level_slot_at(i)->mod_id);
             return -1;
         }
@@ -361,7 +361,7 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
 
 /* ── Declarative custom levels ([[level]] manifest blocks) ───────────
  * Hand-authored level mods with no C: the loader registers each block
- * here, and this driver owns everything the guest needs — the shared
+ * here, and this driver owns everything the guest needs - the shared
  * slot (claim/retarget to the row's donor), the guest TOC length
  * declaration for the row's data file, replace-mode declarations on a
  * donor's own entry, and warps. The WAD overlay asks
@@ -477,11 +477,11 @@ static void custom_apply_counts(custom_level_t* r, int replace,
     int idx = replace ? (r->donor_id / 10 - 1) * 6 + r->donor_id % 10 : -1;
     if (idx >= 0 && idx < EGG_TABLE_ROWS) return;
     if (idx < 0)
-        OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — a "
+        OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped - a "
                    "slot-mode level has no row in the %d-entry egg table",
                    name, r->counts.eggs, EGG_TABLE_ROWS);
     else
-        OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — donor "
+        OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped - donor "
                    "index %d is outside the %d-entry egg table",
                    name, r->counts.eggs, idx, EGG_TABLE_ROWS);
     r->counts.eggs = -1;
@@ -509,7 +509,7 @@ static void custom_probe_assets(custom_level_t* r, const char* music,
                        ? (uint32_t)st.st_size
                        : 0;
     if (!r->data_size)
-        OPL_WARN_F(log_tag, "level \"%s\": %s missing — listed but not "
+        OPL_WARN_F(log_tag, "level \"%s\": %s missing - listed but not "
                    "playable until derived", r->name, p);
     snprintf(r->title, sizeof r->title, "%s",
              title && title[0] ? title : "");
@@ -519,7 +519,7 @@ static void custom_probe_assets(custom_level_t* r, const char* music,
     snprintf(r->music, sizeof r->music, "%s/music/%s", r->dir, music);
     r->music_sec = op_wav_probe_seconds(r->music);
     if (r->music_sec > 0.0) return;
-    OPL_WARN_F(log_tag, "level \"%s\": music %s missing/unreadable — "
+    OPL_WARN_F(log_tag, "level \"%s\": music %s missing/unreadable - "
                "donor's track plays until derived", r->name, r->music);
     r->music[0] = '\0';
 }
@@ -557,7 +557,7 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
         donor_id = s_level_ops->resolve_name(donor ? donor : "");
     if (donor_id < 10 || donor_id > 64) {
         OPL_ERROR_F(log_tag, "level \"%s\": donor \"%s\" is not a retail "
-                    "level (lower_snake name or id) — skipped", name,
+                    "level (lower_snake name or id) - skipped", name,
                     donor ? donor : "");
         return -1;
     }
@@ -568,7 +568,7 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     }
     custom_level_t* r = (custom_level_t*)mod_fvec_push(&s_customs);
     if (!r) {
-        OPL_ERROR_F(log_tag, "custom-level table allocation failed — "
+        OPL_ERROR_F(log_tag, "custom-level table allocation failed - "
                     "\"%s\" skipped", name);
         return -1;
     }
@@ -582,10 +582,10 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     r->declared_replace = 0;
     custom_apply_counts(r, replace, counts, name, log_tag);
     custom_probe_assets(r, music, title, log_tag);
-    /* The per-tick driver does all the work — make sure it's armed. */
+    /* The per-tick driver does all the work - make sure it's armed. */
     (void)ensure_hooked(log_tag);
     if (!mod_fvec_push(&s_custom_order)) {
-        OPL_ERROR_F(log_tag, "custom-level order allocation failed — "
+        OPL_ERROR_F(log_tag, "custom-level order allocation failed - "
                     "\"%s\" skipped", name);
         mod_fvec_truncate(&s_customs, (size_t)row);
         return -1;
@@ -705,7 +705,7 @@ static int custom_row_live(const custom_level_t* r) {
     return r->data_size && openpete_mods_is_enabled(r->mod_id);
 }
 
-/* Bytes the count reconcile has written this session — the engagement
+/* Bytes the count reconcile has written this session - the engagement
  * counter a gate needs to tell a passing run from one that never ran. */
 static unsigned long s_counts_writes = 0;
 
@@ -738,7 +738,7 @@ static int counts_declarer_for(int level_id) {
         if (!r->counts_clash_logged) {
             r->counts_clash_logged = 1;
             OPL_WARN_F("mods", "custom level \"%s\" and \"%s\" both "
-                       "replace level %d — \"%s\" declares its target "
+                       "replace level %d - \"%s\" declares its target "
                        "totals", custom_at(found)->name, r->name,
                        level_id, custom_at(found)->name);
         }
@@ -897,7 +897,7 @@ static void custom_tick(CPUState* cpu) {
     if (!s_custom_slot_id) {
         int got = s_level_ops->claim_slot(cpu, r->donor_id);
         if (!got) return; /* TOC not read yet, or the slot is another
-                           * mod's — keep retrying quietly */
+                           * mod's - keep retrying quietly */
         s_custom_slot_id = got;
     } else if (s_custom_active != s_custom_warp) {
         if (!s_level_ops->retarget_slot ||

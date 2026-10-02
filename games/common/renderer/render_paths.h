@@ -1,11 +1,11 @@
-/* render_paths.h — per-path render isolation registry (--render-paths debug).
+/* render_paths.h - per-path render isolation registry (--render-paths debug).
  *
  * Lets a debugging session restrict rendering to a chosen set of render paths
  * (cyclorama, Spyro, mobys, ...) in BOTH renderers, so a single path can be
  * compared native-vs-PsyCross in isolation (no occlusion noise from paths that
  * native doesn't draw yet). The native side gates its feed on the selection;
  * the PsyCross side drops the other paths' geometry prims during the OT walk
- * (psyq_DrawOTag). It is presentation-only — it never writes game RAM (the OT
+ * (psyq_DrawOTag). It is presentation-only - it never writes game RAM (the OT
  * filter just doesn't *submit* a prim), so gameplay state is unaffected.
  *
  * Mechanism: each render path brackets the polybuf range it emits each frame
@@ -34,7 +34,7 @@ typedef enum {
                    * shadow routine */
     RP_FLAME,     /* Spyro's flame breath (func_80058D64) */
     RP_PARTICLES, /* particle systems (func_800573C8) */
-    RP_TRACER,    /* additive tracer/beam (func_800189F0) — charge streak, fireball trail */
+    RP_TRACER,    /* additive tracer/beam (func_800189F0) - charge streak, fireball trail */
     RP_TRANSITION,/* level-exit / balloonist cross-fade backdrop (func_8004F000) */
     RP_PORTAL,    /* portal skybox previews (func_80050BE0 RenderPortals) */
     RP_GLOW,      /* additive glow rings (func_800580F4); a separate .s renderer the game
@@ -46,7 +46,7 @@ typedef enum {
     RP_COUNT
 } render_path_t;
 
-/* Note: there is no separate HUD path — HUD content is copied into the shaded
+/* Note: there is no separate HUD path - HUD content is copied into the shaded
  * moby list (CopyHudMobysToShaded) and rendered through the moby pipeline, so it
  * is part of RP_MOBY, not separately isolatable via a dispatch bracket. */
 

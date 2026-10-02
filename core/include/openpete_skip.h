@@ -1,4 +1,4 @@
-// core/include/openpete_skip.h — plumbing shared by the games' skip modules
+// core/include/openpete_skip.h - plumbing shared by the games' skip modules
 // (--skip-to-level, --skip-to-cutscene, --skip-to-area release blocks).
 
 #ifndef OPENPETE_SKIP_H

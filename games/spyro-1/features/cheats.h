@@ -1,5 +1,5 @@
 #pragma once
-/* cheats.h — Spyro-1 half of --cheats (auto-applied built-in cheats).
+/* cheats.h - Spyro-1 half of --cheats (auto-applied built-in cheats).
  *
  * The CLI/registry half lives in core (options.c parses --cheats and hands
  * the spec to the feature module's apply_options); this half owns the cheat

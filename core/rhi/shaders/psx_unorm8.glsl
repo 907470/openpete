@@ -1,10 +1,10 @@
-/* psx_unorm8.glsl — the exact 8-bit vertex-colour grid.
+/* psx_unorm8.glsl - the exact 8-bit vertex-colour grid.
  *
  * A UNORM8 vertex colour reaches a shader as the implementation's conversion
  * of the stored byte, which equals c/255 only to within one ULP: a driver
  * that multiplies by the float32 reciprocal of 255 lands one ULP above the
  * correctly rounded quotient for 126 of the 256 byte values. Stages that must
- * agree on a colour do not all reach it through that conversion — the walked
+ * agree on a colour do not all reach it through that conversion - the walked
  * scene feeds the byte as an attribute, while the retained terrain mesh
  * resolves several of its colours as integers in the vertex stage and
  * divides. Operands one ULP apart modulate the same texel to products that

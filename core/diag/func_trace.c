@@ -1,4 +1,4 @@
-/* func_trace.c — see openpete_func_trace.h.
+/* func_trace.c - see openpete_func_trace.h.
  *
  * The __cyg_profile_func_enter/exit hooks fire around every function in a TU
  * compiled with -finstrument-functions (only PSX.EXE_full.c, under
@@ -7,7 +7,7 @@
  * per-function bin resolved from the build-generated symtab. At shutdown the
  * aggregate is emitted to the perf trace and printed.
  *
- * The hooks themselves must never be instrumented (they'd recurse infinitely) —
+ * The hooks themselves must never be instrumented (they'd recurse infinitely) -
  * this whole TU is compiled WITHOUT the flag, and the hooks carry
  * no_instrument_function as belt-and-suspenders.
  */
@@ -21,7 +21,7 @@
 #include <SDL3/SDL.h>
 
 /* The generated symtab (tools/gen_func_trace_symtab.py) registers itself here at
- * startup via a constructor — portable across ELF/PE, and no weak symbols (which
+ * startup via a constructor - portable across ELF/PE, and no weak symbols (which
  * mingw won't pull from an archive to satisfy an undefined ref). NULL until a
  * FUNC_TRACE build registers a table; the tracer stays inert otherwise. */
 static const op_func_sym_t *s_symtab = NULL;
@@ -41,7 +41,7 @@ static uint64_t *s_calls       = NULL;
 static int       s_nfuncs      = 0;
 static int       s_active      = 0;   /* a hook has fired at least once */
 
-/* ---- pointer → index open-addressed hash ----------------------------------- */
+/* ---- pointer -> index open-addressed hash ----------------------------------- */
 static int     *s_hash = NULL;        /* -1 empty, else symtab index */
 static uint32_t s_hash_mask = 0;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gen-terrain-arena-caps.py — per-level terrain-arena capacities, generated.
+"""gen-terrain-arena-caps.py - per-level terrain-arena capacities, generated.
 
 The retained terrain cache allocates fifteen vertex arenas and eight
 cell-record arenas per level. Sizing

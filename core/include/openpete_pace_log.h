@@ -1,7 +1,7 @@
-/* openpete_pace_log.h — unified pacing event log + always-on pacing census.
+/* openpete_pace_log.h - unified pacing event log + always-on pacing census.
  *
  * One binary file, one timebase (op_now), typed fixed-size records. Every VBL
- * and every present is logged — never sampled, because a throttled trace picks
+ * and every present is logged - never sampled, because a throttled trace picks
  * lucky phases and hides exactly the races this exists to find. Raw timestamps
  * only; statistics are computed offline by scripts/pacing/.
  *
@@ -20,7 +20,7 @@
  *
  * Version 2 added the payload slots `e` and `f` (v1 records were 48 B with
  * neither). The reader takes the record size from the header rather than
- * assuming it, so a v1 log stays readable — the slots read as absent.
+ * assuming it, so a v1 log stays readable - the slots read as absent.
  *
  * Multi-byte fields are written in host byte order. Every target this ships
  * on is little-endian; the reader assumes it rather than negotiating.
@@ -34,7 +34,7 @@
  * file: pacing health is reported in the end-of-run summary of every run, the
  * way the determinism gates are ambient. It refuses to report phase-error
  * statistics for a run that was never paced (headless fast-forward, Tab
- * unlock) — a grid nobody followed has no error worth quoting.
+ * unlock) - a grid nobody followed has no error worth quoting.
  */
 
 #ifndef OPENPETE_PACE_LOG_H
@@ -80,7 +80,7 @@ enum {
     /* The iteration was recorded for its PARK, not its work: the wait held
      * the thread far past the timeout it asked for. On Win32 this is the
      * modal size/move loop, which runs inside the wait and does no work at
-     * all — the quietest iteration of the run by active time, while input
+     * all - the quietest iteration of the run by active time, while input
      * publication has stopped for the length of the drag. */
     OP_PACE_HP_PARKED  = 1u << 2
 };
@@ -216,12 +216,12 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
 
 /* `latched_seq` values, in the record's `e` slot. Publish sequences are even
  * and step by 2, so the odd values are free to name the two different reasons
- * a VBL consumed no host sample — reasons a bare zero would conflate, leaving
+ * a VBL consumed no host sample - reasons a bare zero would conflate, leaving
  * a bk2 replay's input statistics indistinguishable from a live run's. */
 #define OP_PACE_LATCH_NONE    0u   /* no latch on this path (legacy input)  */
 #define OP_PACE_LATCH_CLAIMED 1u   /* bk2 / menu / devui owned the pad      */
 
-/* `latched_bits` — the pad bits of that same sample.
+/* `latched_bits` - the pad bits of that same sample.
  *
  * The sequence alone answers "was this exact sample read", which is NOT the
  * question. The producer republishes far faster than the consumer latches, so
@@ -530,7 +530,7 @@ typedef struct {
     /* Display cadence, which is what a viewer perceives and what a shed count
      * cannot show: a shed is only a defect if it left a hole. `gaps_mid_long`
      * counts holes of more than two present slots that end at an INTERMEDIATE
-     * present — the schedule's own doing. Holes ending at a canonical present
+     * present - the schedule's own doing. Holes ending at a canonical present
      * are the tick executing on the presenting thread, unreachable by any
      * schedule, so they are reported separately as `hold_ema_ns` rather than
      * mixed into a count that then never goes to zero. */

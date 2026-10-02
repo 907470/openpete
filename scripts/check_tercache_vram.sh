@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_tercache_vram.sh — the terrain arenas under real device-memory
+# check_tercache_vram.sh - the terrain arenas under real device-memory
 # exhaustion, on a real GPU.
 #
 # rhi_create_vertex_buffer_device attempts each arena on every host-visible,
@@ -13,8 +13,8 @@
 # arenas meet is the driver's, with the driver's code.
 #
 # The balloon runs after the RHI's own images, buffers and staging rings are
-# resident, so the renderer comes up and only what it allocates afterwards —
-# the terrain arenas at level load — meets the filled heap.
+# resident, so the renderer comes up and only what it allocates afterwards -
+# the terrain arenas at level load - meets the filled heap.
 #
 # Legs (--leg selects one; all run by default):
 #   probe          no balloon. Dumps the device's memory table
@@ -62,7 +62,7 @@
 # report SKIP while the census line carries no svc= field.
 #
 # Engagement: every leg prints the MiB its balloon holds and FAILS
-# at 0 — a leg whose balloon allocated nothing refused nothing and measured
+# at 0 - a leg whose balloon allocated nothing refused nothing and measured
 # nothing.
 #
 # Usage:

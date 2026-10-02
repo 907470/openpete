@@ -1,16 +1,16 @@
-// games/common/renderer/ui_sprite.c — native renderer feed for the 2D UI
+// games/common/renderer/ui_sprite.c - native renderer feed for the 2D UI
 // sprite/text layer (2D-from-OT).
 //
-// The 3D scene (terrain, mobys, the player avatar, particles, …) is
-// re-derived from gamestate by the other native feeders. The 2D UI — the
+// The 3D scene (terrain, mobys, the player avatar, particles, ...) is
+// re-derived from gamestate by the other native feeders. The 2D UI - the
 // title logo, "PRESS START", HUD sprites, dialog boxes, the level-name
-// banner — is a separate layer the game builds as screen-space primitives
+// banner - is a separate layer the game builds as screen-space primitives
 // (no GTE), linking each into the shared ordering table through ONE helper
 // (ui_game.ot_insert; a0 = primitive pointer). The 3D renderers use an
 // INLINED insert, so that helper is the clean 2D chokepoint.
 //
 // This module hooks it, decodes each 2D primitive it inserts, and feeds it to
-// the native scene's HUD overlay layer (OPENPETE_SCENE_HUD — screen-space,
+// the native scene's HUD overlay layer (OPENPETE_SCENE_HUD - screen-space,
 // depth-test off, on top of the world). Textures sample the per-frame VRAM
 // mirror the native renderer already uploads, so the font/logo art is
 // available for free. Determinism-safe: the hook runs the real routine
@@ -39,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
 
 extern unsigned openpete_frame;
@@ -631,18 +631,18 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
     xyw[2]=cpu->read_word(p+0x10); xyw[3]=cpu->read_word(p+0x14);
     for (int k=0;k<4;k++){ sx[k]=(int16_t)(xyw[k]&0xFFFF); sy[k]=(int16_t)(xyw[k]>>16); }
     /* Widescreen: a FULL-SCREEN bar (the cutscene letterbox) is authored at the PSX
-     * 4:3 width (x 0..512), which scene_to_clip maps to the centred 4:3 inset — so
+     * 4:3 width (x 0..512), which scene_to_clip maps to the centred 4:3 inset - so
      * in a wide window the bars stop at the inset and the revealed side strips show
      * the world at top/bottom. Widen such a bar about screen-centre 256 by the Hor+
      * factor F so x 0->xlo and 512->xhi map to the full panel [-1,+1] (same vertical
-     * extent — the widened bar stays continuous with the central one). No-op at 4:3
+     * extent - the widened bar stays continuous with the central one). No-op at 4:3
      * (F=1). Vertical bars are unchanged.
      *
      * Over-extend each side edge a few PSX px past the content rect: the exact
      * widened edge lands sub-pixel-precisely on clip ±1, where the rasteriser drops
      * a 1px sliver along the window border, leaving the letterbox short of the
      * edge. The scene scissor clips the overshoot, so the bleed is never visible
-     * beyond the edge — it only guarantees the border column is covered. */
+     * beyond the edge - it only guarantees the border column is covered. */
     if (full_width) {
         float F = openpete_native_widescreen_factor();
         if (F > 1.0f) for (int k=0;k<4;k++) {
@@ -995,7 +995,7 @@ static int      s_in_fade = 0;        /* set across the fade emitter's real-func
                                        * the chokepoint hook can tell the fade's 0x2A F4 from
                                        * a dark panel's (both go through the chokepoint) */
 static int      s_last_abr = 0;       /* semi-transparency rate (ABR) of the most recent
-                                       * DR_MODE seen — the GPU draw-mode in effect for the
+                                       * DR_MODE seen - the GPU draw-mode in effect for the
                                        * next semi-transparent F4 (the game links a box's
                                        * DR_MODE immediately before its 0x2A F4). PSX ABR:
                                        * 0 (B+F)/2, 1 B+F, 2 B-F, 3 B+F/4. */

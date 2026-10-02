@@ -1,4 +1,4 @@
-# wslenv.sh — forward environment knobs to a Windows .exe launched from WSL.
+# wslenv.sh - forward environment knobs to a Windows .exe launched from WSL.
 #
 # WSL interop does not pass the Linux environment to a Windows child. Only the
 # names listed in WSLENV cross, and a name that is missing produces no error:

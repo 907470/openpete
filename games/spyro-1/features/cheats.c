@@ -1,9 +1,9 @@
-// games/spyro-1/features/cheats.c — --cheats: auto-apply Spyro 1's
+// games/spyro-1/features/cheats.c - --cheats: auto-apply Spyro 1's
 // own built-in cheat codes.
 //
 // The game ships a pad-code cheat table (spyro-1/src/cheats.c). Matching a
 // code calls CheatApplyEffect(), and two of its cases have PERSISTENT
-// effects — plain writes into gameplay globals:
+// effects - plain writes into gameplay globals:
 //
 //   cheat 3, "LEVELS OPEN"  ->  g_VisitedFlags[0..31] = 1
 //                               D_800758D0[0..5]      = 2  (homeworlds)
@@ -16,20 +16,20 @@
 //
 // Two ways in, one write path: --cheats picks the cheats a session starts
 // with, and the dev overlay's Gameplay section carries a button per cheat that
-// fires it on demand (re-clickable — "99 lives" tops the counter back up after
+// fires it on demand (re-clickable - "99 lives" tops the counter back up after
 // dying). The overlay runs outside the sim, so a click only queues a request;
 // every guest write happens in the per-tick hook below.
 //
 // TIMING. The globals live in BSS and are rewritten by whichever path starts
-// a session — New Game resets progress/lives, SaveLoad fills them from the
-// card — so a boot-time write would just be overwritten. Instead the cheats
+// a session - New Game resets progress/lives, SaveLoad fills them from the
+// card - so a boot-time write would just be overwritten. Instead the cheats
 // are applied on the first tick of live gameplay and re-armed whenever the
 // title screen is showing, which is what makes them survive a quit-to-menu
 // followed by New Game (each session gets them once, exactly as if the code
 // had been entered by hand). One application per session is also what keeps
 // "99 lives" a cheat rather than infinite lives: dying still costs one.
 //
-// Intentional, opt-in gameplay-state divergence — like the debug free camera,
+// Intentional, opt-in gameplay-state divergence - like the debug free camera,
 // and unlike a presentation flag. OFF by default (zero writes), so a default
 // run stays oracle-clean.
 //
@@ -113,10 +113,10 @@ static int      s_armed = 1;
  * write at a tick boundary. Plain ints, like the other host-side toggles the
  * UI drives (freecam, fullscreen): each is a single word, and the worst a lost
  * race costs is applying one tick later.
- *   s_pending — cheats requested from the overlay, not yet written
- *   s_applied — cheats written during THIS session (status text; cleared when
+ *   s_pending - cheats requested from the overlay, not yet written
+ *   s_applied - cheats written during THIS session (status text; cleared when
  *               the title screen starts a new one)
- *   s_live    — cached "a level is up and it's the player's session", so the
+ *   s_live    - cached "a level is up and it's the player's session", so the
  *               overlay can gray the button without reading guest RAM */
 static uint32_t s_pending = 0;
 static uint32_t s_applied = 0;
@@ -275,7 +275,7 @@ static void cheats_apply_options(const openpete_options_t* opts) {
 
     for (size_t i = 0; i < CHEAT_COUNT; i++)
         if (s_mask & k_cheats[i].bit)
-            OPL_INFO_F("cheats", "%s armed — %s",
+            OPL_INFO_F("cheats", "%s armed - %s",
                        k_cheats[i].name, k_cheats[i].help);
 }
 
@@ -304,7 +304,7 @@ static void cheats_apply(CPUState* cpu, uint32_t mask) {
 
 void spyro1_cheats_on_tick(CPUState* cpu) {
     /* Runahead: a speculative tick's guest writes are rolled back, but the
-     * latches here are host state that would not be — the cheat would be
+     * latches here are host state that would not be - the cheat would be
      * dropped. Let the real tick do it. */
     if (openpete_speculative) return;
 
@@ -326,7 +326,7 @@ void spyro1_cheats_on_tick(CPUState* cpu) {
     if (!s_live) return;
 
     /* First live tick of a session: queue whatever --cheats asked for. From
-     * here on both entry points share one route — the queue the overlay's
+     * here on both entry points share one route - the queue the overlay's
      * buttons write into, drained below. */
     if (s_armed) {
         s_armed    = 0;

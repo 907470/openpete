@@ -69,7 +69,7 @@ def gpu_tree_for_frame(gpuz):
     return roots
 
 
-# ---- folded → nested tree for rendering ------------------------------------
+# ---- folded -> nested tree for rendering ------------------------------------
 def folded_to_tree(acc):
     root = {"name": "all", "value": 0, "children": {}}
     for path, val in acc.items():
@@ -142,7 +142,7 @@ def render_svg(root, title, subtitle):
             label = name
             maxc = int((w - 6) / 6.2)
             if len(label) > maxc:
-                label = label[:max(1, maxc - 1)] + "…"
+                label = label[:max(1, maxc - 1)] + "..."
             parts.append('<text x="%.2f" y="%d" fill="#111">%s</text>'
                          % (x + 3, y + 13, html.escape(label)))
     parts.append("</svg>")
@@ -200,7 +200,7 @@ def main():
     root = folded_to_tree(acc)
 
     total_ms = root["value"] / 1000.0
-    title = args.title or ("%s flamegraph — %s" %
+    title = args.title or ("%s flamegraph - %s" %
                            (args.which.upper(), os.path.basename(args.trace)))
     if args.which == "func":
         sub = ("%.0f ms total game-logic self-time across the run; width = per-"

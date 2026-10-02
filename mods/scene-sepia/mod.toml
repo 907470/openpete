@@ -1,4 +1,4 @@
-# scene-sepia — a SCENE-point post-process pass.
+# scene-sepia - a SCENE-point post-process pass.
 #
 # Sepia-tones the 3D scene, then draws a HUD marker from a present hook.
 # The marker stays full-colour because the SCENE point runs under the HUD;

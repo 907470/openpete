@@ -1,4 +1,4 @@
-// games/spyro-3/features/skip_to_area.c — --skip-to-area <level>:<area>.
+// games/spyro-3/features/skip_to_area.c - --skip-to-area <level>:<area>.
 //
 // Boots into a level's sub-area (the skate parks, the sub-levels behind a
 // level's portals) the way the game enters one: --skip-to-level loads the

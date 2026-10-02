@@ -1,4 +1,4 @@
-# raw-probe — CI fixture: an override by raw address.
+# raw-probe - CI fixture: an override by raw address.
 #
 # Hooks a bare vaddr (an un-decompiled func_XXXXXXXX) and reads its
 # arguments from cpu->a0..a3. Raw addresses are pinned to this binary and
@@ -11,5 +11,5 @@ version = "0.1.0"
 game    = "spyro-1"
 api     = 1
 state    = "none"      # counters + last-seen registers
-runahead = "host-fx"   # periodic logs — suppressible
+runahead = "host-fx"   # periodic logs - suppressible
 sim_mutative = false  # writes no guest RAM: outside the save modset tag

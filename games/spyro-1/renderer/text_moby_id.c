@@ -1,4 +1,4 @@
-// text_moby_id.c — provenance identity for HUD "text moby" glyphs. See
+// text_moby_id.c - provenance identity for HUD "text moby" glyphs. See
 // text_moby_id.h for what problem this solves and why pool position can't.
 //
 // Both emitters walk their string and, for every character that is not a
@@ -9,7 +9,7 @@
 // so the addresses a call is about to consume are fully determined at its
 // ENTRY by (g_HudMobys, the string): the j-th emitted glyph lands at
 // g_HudMobys - (j+1)*sizeof(Moby). That lets one read-only entry hook record
-// the whole call — no exit hook, no writes, nothing the emitter can see.
+// the whole call - no exit hook, no writes, nothing the emitter can see.
 //
 // Identity per glyph = (callsite, call ordinal at that callsite this tick,
 // glyph index in the string, character). The callsite is the caller's return
@@ -20,8 +20,8 @@
 //
 // Tick boundary: the pool drains at the end of each draw (func_80018880 walks
 // it back to D_800756FC), so the first emit of the next tick sees the pool
-// pointer jump back UP. That reset — or a change of pool base, which happens
-// when the polybuf double-buffer flips — starts a new generation and clears
+// pointer jump back UP. That reset - or a change of pool base, which happens
+// when the polybuf double-buffer flips - starts a new generation and clears
 // the table. A draw that emits no text at all (the credits roll allocates its
 // letters directly) never reaches that check, so the drain is hooked too: the
 // first drain after an emit closes the generation, and a second drain with no
@@ -39,7 +39,7 @@
 #include "renderer/text_moby_id.h"
 
 /* g_HudMobys (bump-down pool cursor) and D_800756FC (the pool's base for this
- * tick — the sentinel func_80018880 drains back to). */
+ * tick - the sentinel func_80018880 drains back to). */
 #define HUD_MOBYS_PTR   0x80075710u
 #define HUD_POOL_BASE   0x800756FCu
 #define MOBY_STRIDE     0x58u
@@ -47,20 +47,20 @@
 
 /* Sized for the worst observed layout (the inventory page: ~110 glyphs) with
  * room to spare; a full table drops the overflow to the pool-ordinal key
- * rather than mis-keying it. Power of two — the probe masks with SLOTS-1. */
+ * rather than mis-keying it. Power of two - the probe masks with SLOTS-1. */
 #define TEXT_ID_SLOTS   512u
 
 typedef struct {
     uint32_t moby;      /* PSX vaddr of the glyph, 0 = empty slot */
     uint32_t key;       /* provenance key handed to the interp store */
-    uint16_t cls;       /* m_Class the emitter will write — staleness guard */
+    uint16_t cls;       /* m_Class the emitter will write - staleness guard */
 } text_id_ent_t;
 
 static text_id_ent_t s_tbl[TEXT_ID_SLOTS];
 static uint32_t      s_used;
 
 /* Per-generation callsite ordinals: how many calls each return address has
- * made since the table was cleared. Linear scan — a layout uses a handful of
+ * made since the table was cleared. Linear scan - a layout uses a handful of
  * distinct callsites, and this runs once per emitter call, not per glyph. */
 #define TEXT_ID_CALLSITES 64u
 static struct { uint32_t ra; uint32_t n; } s_calls[TEXT_ID_CALLSITES];
@@ -227,7 +227,7 @@ static int text_emit_entry(CPUState* cpu, int spaced) {
 
     /* Generation boundary. Either the pool base moved (the polybuf double
      * buffer flipped, so this is a new tick's draw) or the cursor jumped back
-     * up (func_80018880 drained the pool — the last thing a draw does, and
+     * up (func_80018880 drained the pool - the last thing a draw does, and
      * the point past which the previous generation's records describe mobys
      * that are about to be overwritten). */
     if (base != s_last_base || cur > s_last_ptr) text_id_clear();
@@ -301,9 +301,9 @@ static int on_80018880_drain(CPUState* cpu, uint32_t addr) {
 }
 
 static const feature_dispatch_entry_t text_moby_id_dispatch[] = {
-    { 0x80017FE4u, on_80017FE4_text },   /* func_80017FE4 — plain text */
-    { 0x800181ACu, on_800181AC_text },   /* func_800181AC — spacing-aware */
-    { 0x80018880u, on_80018880_drain },  /* func_80018880 — pool drain */
+    { 0x80017FE4u, on_80017FE4_text },   /* func_80017FE4 - plain text */
+    { 0x800181ACu, on_800181AC_text },   /* func_800181AC - spacing-aware */
+    { 0x80018880u, on_80018880_drain },  /* func_80018880 - pool drain */
     { 0u, NULL },
 };
 

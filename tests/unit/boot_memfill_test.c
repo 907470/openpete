@@ -1,4 +1,4 @@
-/* tests/unit/boot_memfill_test.c — the EXE header's memfill range is bounded
+/* tests/unit/boot_memfill_test.c - the EXE header's memfill range is bounded
  * without a 32-bit sum that can wrap.
  *
  * Boots a crafted EXE whose memfill_start + memfill_size wraps below 2 MiB

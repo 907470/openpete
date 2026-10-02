@@ -1,4 +1,4 @@
-/* mod_shader_compile_test — compiles every shipped mod shader against the
+/* mod_shader_compile_test - compiles every shipped mod shader against the
  * staged mod SDK, through the compile-on-boot front end (core/mods/
  * mod_glsl.c): the same glslang settings, the same include resolution
  * (<sdk>/shaders, then the shader's own dir) and the same profiles (every
@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
     printf("mod_shader_compile: material mods:%s\n",
            material_mods[0] ? material_mods : " (none)");
     if (materials == 0) {
-        printf("FAIL: VACUOUS — no material fragment found under %s\n", mods_dir);
+        printf("FAIL: VACUOUS - no material fragment found under %s\n", mods_dir);
         return 1;
     }
     return failed ? 1 : 0;

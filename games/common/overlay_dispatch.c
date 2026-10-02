@@ -1,7 +1,7 @@
-// games/common/overlay_dispatch.c — overlay-aware dispatch.
+// games/common/overlay_dispatch.c - overlay-aware dispatch.
 //
 // `psx_dispatch_compiled` fans out to per-binary dispatchers. Only the overlay
-// whose bytes are actually resident may match — every overlay of a game shares
+// whose bytes are actually resident may match - every overlay of a game shares
 // one vaddr, so dispatching them concurrently would run code that isn't there.
 //
 // The id-to-dispatcher mapping lives in the auto-generated
@@ -48,7 +48,7 @@ const spyro_overlay_entry_t* spyro_overlay_find(uint32_t magic) {
 
 void spyro_set_active_overlay_by_magic(uint32_t magic) {
     const spyro_overlay_entry_t* e = spyro_overlay_find(magic);
-    if (!e) return;          /* unknown id — leave current active alone */
+    if (!e) return;          /* unknown id - leave current active alone */
     if (e == s_active) return;
     openpete_logf(DISPATCH_LOG_INFO, "dispatch", "active overlay: %s -> %s",
                   s_active ? s_active->name : "none", e->name);

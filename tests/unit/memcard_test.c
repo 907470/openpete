@@ -1,4 +1,4 @@
-/* memcard_test — the host memory card's persistence against failed and
+/* memcard_test - the host memory card's persistence against failed and
  * interrupted writes and against card files it did not create.
  *
  * Cases, each on a fresh card directory under the path given as argv[1]

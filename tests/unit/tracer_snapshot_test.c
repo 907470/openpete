@@ -1,4 +1,4 @@
-/* tests/unit/tracer_snapshot_test.c — the tracer set copy trusts the guest
+/* tests/unit/tracer_snapshot_test.c - the tracer set copy trusts the guest
  * set count only up to the game's four-entry tables.
  *
  * A fake bus serves a set count of 0xFFFFFFFF over zeroed tables; the copy

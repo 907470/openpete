@@ -114,7 +114,7 @@ api 11; guard late entries with `if (api->api_version >= N)`, never `!=`.
 
 config.toml is parsed once before entry runs. Read config in entry. Panel
 Apply rewrites the file (comments preserved) and reloads the mod at the next
-tick boundary; entry re-runs. Coercion: bool→0/1 via int/float; int via
+tick boundary; entry re-runs. Coercion: bool->0/1 via int/float; int via
 float; float truncates via int; string never coerces. Missing file/key/type
 mismatch returns the passed default; parse error logs and returns defaults.
 
@@ -188,9 +188,9 @@ design; display-only reads belong in present hooks.
 
 ### Guest memory
 
-- `api->guest(vaddr)` → host pointer (NULL for unmapped, including 0 and
+- `api->guest(vaddr)` -> host pointer (NULL for unmapped, including 0 and
   physical < 0x10000). Accepts 0x00/0x80/0xA0 forms; game pointers use 0x80.
-- `api->guest_addr(host)` → vaddr (0 if outside guest memory).
+- `api->guest_addr(host)` -> vaddr (0 if outside guest memory).
 - Little-endian on every host: typed reads through the pointer are the
   game's values. Pointer fields in guest structs are vaddrs: translate before
   deref; write vaddrs from `guest_addr`, never host pointers.
@@ -256,9 +256,9 @@ keeps the running instance.
 | Replace game sound | `sfx_replace(self, "soundName", adpcm_body, len, pitch)`; raw SPU-ADPCM, no VAG header; pitch 0x1000 = 44.1 kHz, 0 = game's | tick | no |
 | Other level's data | `read_level_data(self, level_id, buf, cap)`; NULL buf sizes | tick | no |
 | Fog retarget | `texpack_fog_shift(self, scale_rgb, offset_rgb 0..255)`; NULL,NULL = stock | tick | no |
-| Files | `data_dir(self)` → absolute path | any | no |
+| Files | `data_dir(self)` -> absolute path | any | no |
 | Custom panel | `openpete_mod_ui.h` widget vtable via `OPENPETE_MOD_UI_SECTION(fn)` at file scope in one TU; separately versioned (`OPENPETE_MOD_UI_ABI`), no stability promise; body runs in present context | present | no |
-| Beyond the eleven widgets | `openpete_imgui.h`: the whole ImGui C API, opted into with `OPENPETE_MOD_IMGUI()` at file scope in one TU. Calls are legal only inside a section body — anywhere else they are dropped and logged; lifecycle and input-injection calls are absent from the table and fail the mod's compile. See pages/imgui.md | present | no |
+| Beyond the eleven widgets | `openpete_imgui.h`: the whole ImGui C API, opted into with `OPENPETE_MOD_IMGUI()` at file scope in one TU. Calls are legal only inside a section body - anywhere else they are dropped and logged; lifecycle and input-injection calls are absent from the table and fail the mod's compile. See pages/imgui.md | present | no |
 
 ### Timing landmarks (cold boot into the attract demo)
 
@@ -275,7 +275,7 @@ uniforms, nothing flows back. A mod shades what the engine draws; it cannot
 add draws. To ship without source: `<path>.spv` + `<path>.spv.ihash`
 sidecar matching the current interface hash (a stale sidecar refuses).
 
-`api->shader_register(self, "shaders/x.frag")` → handle or -1; extension
+`api->shader_register(self, "shaders/x.frag")` -> handle or -1; extension
 picks the stage. Reserved for the engine: push constants, every descriptor
 set except set 3 binding 1, input locations.
 
@@ -351,7 +351,7 @@ Selector keys (manifest row or `openpete_mod_material_selector_t`; omitted
 
 C tier (api 3+): `sel = openpete_mod_material_sel_any();` then assign
 (never zero-init: that means channel 0 class 0). `material_register(self,
-&sel, frag)` (tick context; refused in present/UI section) →
+&sel, frag)` (tick context; refused in present/UI section) ->
 `material_set_params(self, mat, &blk, len ≤ 256)`, `material_enable`,
 `material_set_selector` (re-key a live material; from present/UI applies at
 next tick), `moby_classes(self, out, cap)` (classes the current level
@@ -405,7 +405,7 @@ at each level load. `OPENPETE_SFXPACK_LOG=1` logs uncovered samples;
 loads into a fixed buffer), ID = logical level id. Disc-derived: generate on
 the player's machine.
 
-**Custom levels** `[[level]]`: `files` stem → `assets/levels/<stem>.WAD`
+**Custom levels** `[[level]]`: `files` stem -> `assets/levels/<stem>.WAD`
 (+ optional `.OVL`, donor's stock size; omit = stock overlay), `donor` =
 lower_snake name or id 10..64 whose code the level targets, `replace = true`
 serves over the donor slot (portal preview shows the custom sky), `music =
@@ -455,8 +455,8 @@ openpete-spyro1 --disc <game>.cue --mods-dir mods --mods my-mod \
   gnastys_loot 64). Level live from VBL ~1700. `--cheats 99_lives,unlock_all_levels`.
 - **Screenshots** (headless-capable, native renderer): `--screenshot-on-tick
   N[,N2]` (same sim moment every run; prefer over `--screenshot-on-frame`,
-  whose VBL↔tick mapping drifts) `--screenshot-native-only
-  --screenshot-output shot_{n}.png` → `shot_<n>-vk.png`. Present hooks and
+  whose VBL<->tick mapping drifts) `--screenshot-native-only
+  --screenshot-output shot_{n}.png` -> `shot_<n>-vk.png`. Present hooks and
   postfx run on these presents. `--screenshot-intermediate-on-frame N` =
   alpha 0.5 sub-tick captures. `--screenshot-freeze-backdrop` for
   pause/results screens. `--screenshot-presents-start N
@@ -503,7 +503,7 @@ openpete-spyro1 --disc <game>.cue --mods-dir mods --mods my-mod \
   or `config.toml`; the splash shows COMPILING MODS on a source change.
   Check `.build/compile.log` and `.build/shaders/*.log` on silence. Force a
   full compile of every `src/` mod without booting: `--compile-mods
-  --mods-dir mods` (fails on any error). Env knobs do not cross WSL→Windows;
+  --mods-dir mods` (fails on any error). Env knobs do not cross WSL->Windows;
   use the CLI twins or `WSLENV`.
 - **Headless test recipe** (what a `modtest` declares): run N VBLs with
   `--frame-limit`, optional `--bk2`, assert expected substrings in the log,

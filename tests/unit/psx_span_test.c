@@ -1,4 +1,4 @@
-/* tests/unit/psx_span_test.c — the span form of the guest-pointer resolver
+/* tests/unit/psx_span_test.c - the span form of the guest-pointer resolver
  * and the width-checked bus accessors at the ends of main RAM and the
  * scratchpad.
  *

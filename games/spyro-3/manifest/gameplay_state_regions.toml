@@ -1,4 +1,4 @@
-# games/spyro-3/manifest/gameplay_state_regions.toml — the gameplay-readable
+# games/spyro-3/manifest/gameplay_state_regions.toml - the gameplay-readable
 # bytes the oracle hashes every tick. Generated into the
 # build by tools/gen_state_regions.py (cmake/openpete_game.cmake): the C
 # table the exe registers, the flat table the DuckStation capture module

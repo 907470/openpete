@@ -1,4 +1,4 @@
-// games/spyro-1/game_extras_impl.c — Spyro 1's per-game hooks.
+// games/spyro-1/game_extras_impl.c - Spyro 1's per-game hooks.
 //
 // Identity is generated from recomp.conf (game_identity.c); this file holds
 // the behavioural hooks: overlay handling, runtime quirks, the per-tick
@@ -34,7 +34,7 @@
 #include <string.h>
 
 uint32_t game_get_pad_read_pc(void) {
-    /* PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68 — the game's once-per-
+    /* PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68 - the game's once-per-
      * VSync consumption of g_PadBuffer: it reads status, size_type, inputs[]
      * and sticks and folds them into g_Pad. Every other reader in the game
      * works from g_Pad, so this entry is where the host's latched sample
@@ -60,7 +60,7 @@ void game_on_overlay_init(CPUState* cpu) {
     /* No work: no code calls this hook. */
 }
 
-/* mods/mod_level_ops.c — same private-decl pattern main.cpp uses. */
+/* mods/mod_level_ops.c - same private-decl pattern main.cpp uses. */
 void spyro1_mod_level_capture_stock_counts(CPUState* cpu);
 
 void game_on_boot(CPUState* cpu) {
@@ -157,14 +157,14 @@ static int s_skip_to_level    = 0;
 static int s_skip_applied     = 0;
 /* Present fast-forward stop cap, set relative to arming (a boot skip arms
  * near frame 0, a runtime title-screen warp arms tens of thousands of
- * frames in — an absolute cap would clear the latter instantly). */
+ * frames in - an absolute cap would clear the latter instantly). */
 static uint32_t s_skip_ffwd_deadline = 0;
 
 void game_set_skip_to_level(int level_id) {
     s_skip_to_level = level_id;
     s_skip_applied  = 0;
     /* Fast-forward presents to the level for runtime warps exactly as for
-     * the boot CLI flag — the dev levelwarp's title route and the
+     * the boot CLI flag - the dev levelwarp's title route and the
      * custom-level menu both come through here. */
     if (level_id > 0 && openpete_skip_ffwd_windowed) {
         openpete_skip_present_until_level = 1;
@@ -241,7 +241,7 @@ static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
         ? spyro1_cutscene_skip_released(cpu, eng, sizeof eng)
         : s_skip_applied && cpu->read_word(0x800757D8u) == 0u; /* GS_Playing */
     if (playable) {
-        fprintf(stderr, "[skip-to-level] level playable — presents resume "
+        fprintf(stderr, "[skip-to-level] level playable - presents resume "
                         "at frame=%u%s\n", (unsigned)frame_counter, eng);
     } else if (frame_counter > s_skip_ffwd_deadline) {
         fprintf(stderr, "[skip-to-level] fail-safe release (no playable "
@@ -278,7 +278,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     freecam_player_pose_maybe_apply(cpu);
     freecam_maybe_autoengage(cpu);
 
-    /* The fill-tag inspector engages on the same "level is live" gate — a
+    /* The fill-tag inspector engages on the same "level is live" gate - a
      * scripted pick run sets OPENPETE_FILLPICK=1 alongside
      * OPENPETE_FREECAM_POSE and reads the [fillpick] lines off stderr. */
     {
@@ -311,7 +311,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* --vibration: hold the game's own vibration setting at the requested
      * state (re-stamped over the title screen's and a save load's reseeds,
      * released when the player toggles that row by hand). Inert without the
-     * flag; the host half — motor strength, and the headless / focus gates —
+     * flag; the host half - motor strength, and the headless / focus gates -
      * lives in core/input/host_rumble.c. */
     spyro1_vibration_on_tick(cpu);
 
@@ -321,8 +321,8 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     spyro1_levelwarp_on_tick(cpu);
 
 
-    /* Advance the gold shimmer — SpecularUpdate's travelling light, reproduced
-     * host-side — once per tick, BEFORE the builders below, so the settings
+    /* Advance the gold shimmer - SpecularUpdate's travelling light, reproduced
+     * host-side - once per tick, BEFORE the builders below, so the settings
      * menu and the OSD's toasts are lit by the same instant of it. */
     text_moby_native_shimmer_tick();
 
@@ -372,7 +372,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
             uint32_t tsm_sub  = cpu->read_word(0x80078D78u + 0x10u);
             if (gs == 13u && tsm_mode == 0u /*TSM_Init*/ && tsm_sub == 3u) {
                 /* Refuse targets whose guest WAD TOC entry is empty (data
-                 * len 0) — loading one chases garbage and crashes. The
+                 * len 0) - loading one chases garbage and crashes. The
                  * free slot (id 65) only gains an entry once a custom
                  * level's warp claims it, so it can't be skip targeted
                  * cold; use OPENPETE_CUSTOM_WARP instead. */
@@ -383,12 +383,12 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
                                     12u)) {
                     fprintf(stderr,
                             "[skip-to-level] level=%d has no WAD TOC data "
-                            "(unclaimed slot?) — refusing; for a custom "
+                            "(unclaimed slot?) - refusing; for a custom "
                             "level use OPENPETE_CUSTOM_WARP\n",
                             s_skip_to_level);
                     s_skip_to_level = 0;
                     /* A refused skip never induces, so the playable-edge
-                     * clear below can't fire — drop the fast-forward now
+                     * clear below can't fire - drop the fast-forward now
                      * rather than leaving a black window to the cap. */
                     openpete_skip_present_until_level = 0;
                     s_skip_ffwd_deadline = 0;
@@ -412,7 +412,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
              * to TSD_Level. TSS_Setup uses TSD_DemoLevel to call
              * func_8001277C() (free progress/lives reset), but the
              * tick-384 hand-off code (gamestates/update.c:770) gates
-             * `g_DemoMode = DEMO_MODE_PLAY` on TSD_DemoLevel — leaving it
+             * `g_DemoMode = DEMO_MODE_PLAY` on TSD_DemoLevel - leaving it
              * set means LoadLevel's stage-13 pass runs the demo-input
              * playback path (loaders.c:672). Switching DemoType to
              * TSD_Level once Setup is done sidesteps both. g_DemoMode is
@@ -454,14 +454,14 @@ int game_is_gameplay_live(CPUState* cpu) {
 }
 
 /* Game-side extra savestate payload. Host-side state that mirrors or
- * gates guest execution and must travel with every snapshot — including
+ * gates guest execution and must travel with every snapshot - including
  * the per-tick runahead/rewind mem snapshots, whose speculative ticks can
  * run load/transition code (CdlSetloc moves the WAD cursor, an overlay
  * CdRead flips the dispatcher) that the rollback must undo. Bump the
  * version word when fields are added; core treats the blob as opaque, so
  * the layout is defined here.
  *   v1: WAD-overlay disc cursor (mods/mod_wad_overlay.c).
- *   v2: + active-overlay magic — restoring by saved id instead of the RAM
+ *   v2: + active-overlay magic - restoring by saved id instead of the RAM
  *       marker word survives cutscene-style loads that clobber the marker.
  *   v3: + guest-mutated thunk latches (CD-ready / VSync callback vaddrs,
  *       XA arm + filter): CdlSetmode flips the XA route and load code
@@ -501,7 +501,7 @@ void game_state_extra_save(void* dst) {
 }
 
 void game_state_extra_load(const void* src, uint32_t size) {
-    if (size < 8u) return;   /* older/foreign blob — leave live state alone */
+    if (size < 8u) return;   /* older/foreign blob - leave live state alone */
     const uint8_t* p = (const uint8_t*)src;
     uint32_t ver, cur;
     memcpy(&ver, p + 0, 4);
@@ -591,7 +591,7 @@ static int srend_noop_hit(uint32_t addr) {
         const char* e = getenv("OPENPETE_NOOP_SREND");
         s_mask = e ? (int)strtol(e, NULL, 0) : 0;
         if (s_mask) {
-            fprintf(stderr, "[noop-srend] mask=%d — renderers suppressed; "
+            fprintf(stderr, "[noop-srend] mask=%d - renderers suppressed; "
                             "geometry and gameplay state are NOT faithful\n", s_mask);
         }
     }
@@ -602,7 +602,7 @@ static int srend_noop_hit(uint32_t addr) {
     case 0x8001F798u:                        /* regular material renderer   */
         /* Bits 16/32 take the two material EMIT passes separately: they build
          * prims and write no gameplay-readable byte (the cull passes own
-         * m_WasDrawn), so suppressing them leaves every verdict in place —
+         * m_WasDrawn), so suppressing them leaves every verdict in place -
          * the "stub the moby renderer" ceiling. Bit 2 additionally takes the
          * cull passes, which the game cannot survive. */
         if (s_mask & 16) return 1;
@@ -643,7 +643,7 @@ static int srend_noop_hit(uint32_t addr) {
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     /* Debug free camera (F): while engaged, drive the camera in place of
      * CameraFollowSpyro (on this game fiber) and suppress it + UpdateSpyro so
-     * nothing overwrites the camera and Spyro holds still. Inactive → returns
+     * nothing overwrites the camera and Spyro holds still. Inactive -> returns
      * 0 (the hot path is one bool test), so the normal build is unaffected. */
     if (freecam_should_freeze(cpu, addr)) {
         return 1;
@@ -681,7 +681,7 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
      * declined) and is the call this suppresses. So the feeds keep running and
      * only the guest-side prim math goes away.
      *
-     * MEASUREMENT ONLY — the renderers also write gameplay-readable state
+     * MEASUREMENT ONLY - the renderers also write gameplay-readable state
      * (sector visibility, m_WasDrawn, the moby render queue), so a run with any
      * bit set is not gameplay-faithful and its geometry will thin out.
      *   1  world/terrain (func_800258F0)

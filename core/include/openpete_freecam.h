@@ -1,24 +1,24 @@
 #pragma once
-/* openpete_freecam.h — host-side state for the debug free camera (F key).
+/* openpete_freecam.h - host-side state for the debug free camera (F key).
  *
  * This is the GENERIC half: it owns the on/off toggle, the per-axis input
  * intent latched from the keyboard each host iteration, and the discrete
  * speed step. It carries NO Spyro addresses or camera-struct knowledge, so
  * it lives in core alongside the other host input handling (run.c). The
- * game-specific half — reading g_Camera, applying the motion, and freezing
- * the game's camera-follow / player-update functions while active — lives in
+ * game-specific half - reading g_Camera, applying the motion, and freezing
+ * the game's camera-follow / player-update functions while active - lives in
  * games/common/freecam_game.c behind a per-game descriptor
  * (games/<game>/features/freecam.c) and reads this state each tick.
  *
  * Ported from C0mposer's Spyro-1-Practice-Rom (src/freecam.c): freeze the
- * follow logic, then drive the camera position/angle directly. Debug tool —
+ * follow logic, then drive the camera position/angle directly. Debug tool -
  * OFF by default (zero effect, oracle-clean); ON is an intentional,
  * opt-in gameplay-state divergence for inspecting a level.
  */
 
 #include <stdbool.h>
 
-/* Discrete speed steps (slowest → fastest). The per-step move/turn magnitudes
+/* Discrete speed steps (slowest -> fastest). The per-step move/turn magnitudes
  * live game-side (the freecam descriptor), keyed by this index. */
 #define OPENPETE_FREECAM_SPEED_STEPS 5
 
@@ -33,10 +33,10 @@
  *   move_fwd     W / S             left stick Y
  *   move_strafe  D / A             left stick X
  *   move_up      Space / LShift    R1 / L1
- *   look_yaw     → / ←             right stick X
+ *   look_yaw     -> / <-             right stick X
  *   look_pitch   ↑ / ↓             right stick Y
  *
- * T (teleport the player to the camera) is not an axis — it's a one-shot
+ * T (teleport the player to the camera) is not an axis - it's a one-shot
  * request; see openpete_freecam_request_teleport below.
  */
 typedef struct openpete_freecam_axes {

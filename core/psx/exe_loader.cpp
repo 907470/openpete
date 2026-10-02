@@ -1,4 +1,4 @@
-// core/psx/exe_loader.cpp — fetch PSX EXE bytes from disc or path.
+// core/psx/exe_loader.cpp - fetch PSX EXE bytes from disc or path.
 //
 // Two routes:
 //   1. --exe-path PATH       : read PSX EXE directly (boot bring-up;

@@ -1,4 +1,4 @@
-/* games/spyro-3/renderer/reextract.c — Spyro 3's sub-tick re-extract
+/* games/spyro-3/renderer/reextract.c - Spyro 3's sub-tick re-extract
  * orchestrator: on every present between two canonical ticks it installs the
  * camera transform interpolated between the interp ring's prev and curr
  * snapshots (region 0) into the sub-tick view, and re-runs the terrain
@@ -169,7 +169,7 @@ static uint32_t s_recs_len;
  *
  * Two slots, not one: the hook captures the part records and the pre-blend
  * colour table in the same tick, and a single slot would leave one of them
- * unstaged. An unstaged span is not merely stale — the replay's two-pass
+ * unstaged. An unstaged span is not merely stale - the replay's two-pass
  * decode writes each rendered pose into the block it reads, and outside the
  * sub-tick view that host pointer is live PSX RAM, so the present would edit
  * gameplay memory. Slots are keyed by the scratch offset the hook named. */

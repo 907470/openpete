@@ -1,4 +1,4 @@
-/* openpete_handoff.h — process handoff (checkpoint → exec → restore).
+/* openpete_handoff.h - process handoff (checkpoint -> exec -> restore).
  * See core/mods/handoff.c for scope + contracts. */
 #ifndef OPENPETE_HANDOFF_H
 #define OPENPETE_HANDOFF_H

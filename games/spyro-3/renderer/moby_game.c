@@ -1,4 +1,4 @@
-/* games/spyro-3/renderer/moby_game.c — the addresses and the one behavioural
+/* games/spyro-3/renderer/moby_game.c - the addresses and the one behavioural
  * switch Spyro 3's moby draw does not share with the other game that runs the
  * same three handwritten routines. The decoders, the cull-record reader, the
  * second model kind's pass and the moby_game provider itself are

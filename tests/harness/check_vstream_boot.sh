@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# check_vstream_boot.sh — vertex-stream field resolution on a stock boot.
+# check_vstream_boot.sh - vertex-stream field resolution on a stock boot.
 #
 # A moby's animation frame word carries either a PSX address (a stock stream)
 # or a handle a mod bound when it replaced the stream. The reader classifies
 # each frame word it decodes: `stock` when the field names an address,
 # `handle` when it names a bound handle, `unresolved` when the field is below
-# the handle bound with no handle bound to it — a stream the draw would read
+# the handle bound with no handle bound to it - a stream the draw would read
 # from address 0.
 #
 # On a stock boot nothing binds a handle, so every field must classify as
 # stock. An `unresolved` there is not a mod defect: it is the moby walk
-# decoding a record the game never queued — a record queue read past its
-# terminator, or a pointer taken from memory the game has not written — and
+# decoding a record the game never queued - a record queue read past its
+# terminator, or a pointer taken from memory the game has not written - and
 # the frame word is then read from an unmapped address, where the read
 # returns 0 and 0 is below the handle bound. The count is the instrument for
 # that whole class, and it fires at boot, before any level is up, where the
@@ -25,7 +25,7 @@
 #   [vstream] stock=<n> handle=<n> unresolved=<n> first=<addr>
 #
 # Pass criterion: unresolved = 0. VACUOUS (exit 1) when stock = 0 or the line
-# is absent — the reader decoded no field, so a zero count proves nothing.
+# is absent - the reader decoded no field, so a zero count proves nothing.
 #
 # Verdict line:
 #   [vstream-boot] game=<g> stock=<n> handle=<n> unresolved=<n> first=<addr>

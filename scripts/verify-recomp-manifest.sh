@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-recomp-manifest.sh — prove the committed converged manifests
+# verify-recomp-manifest.sh - prove the committed converged manifests
 # reproduce the multi-pass regen output with a SINGLE psxrecomp pass per
 # binary.
 #
@@ -20,7 +20,7 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/openpete-manifest-verify.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
 [[ -x "$PSXRECOMP" ]] || { echo "[verify-manifest] PSXRecomp not built" >&2; exit 64; }
-[[ -f "$MAN/manifest.toml" ]] || { echo "[verify-manifest] no manifest — run scripts/emit-recomp-manifest.sh" >&2; exit 64; }
+[[ -f "$MAN/manifest.toml" ]] || { echo "[verify-manifest] no manifest - run scripts/emit-recomp-manifest.sh" >&2; exit 64; }
 
 fail=0
 
@@ -74,7 +74,7 @@ PYEOF
 )
 
 if [[ $fail -ne 0 ]]; then
-    echo "[verify-manifest] FAIL — manifest does not reproduce the regen output"
+    echo "[verify-manifest] FAIL - manifest does not reproduce the regen output"
     exit 2
 fi
-echo "[verify-manifest] PASS — single-pass ≡ multi-pass for every binary"
+echo "[verify-manifest] PASS - single-pass ≡ multi-pass for every binary"

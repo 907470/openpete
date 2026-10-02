@@ -1,6 +1,6 @@
-// core/host/sha256.h — minimal SHA-256 (FIPS 180-4) for content
+// core/host/sha256.h - minimal SHA-256 (FIPS 180-4) for content
 // addressing: disc-library ingest keys, retail-hash identification,
-// release stamps. Not a crypto library — no HMAC, no side-channel
+// release stamps. Not a crypto library - no HMAC, no side-channel
 // hardening; identity hashing only.
 #ifndef OPENPETE_SHA256_H
 #define OPENPETE_SHA256_H

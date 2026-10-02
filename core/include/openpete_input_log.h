@@ -1,9 +1,9 @@
-/* core/include/openpete_input_log.h — per-VBL input log, the single source
+/* core/include/openpete_input_log.h - per-VBL input log, the single source
  * of truth for "what pad state was latched at VBL index i of this session".
  *
  * Producer: the host loop (run.c) appends once per VBL the game fiber
  * consumed on a ticked iteration (the same `ticks`-copies expansion the
- * bk2 recorder used before the lift-out — both VBLs of a gameplay tick
+ * bk2 recorder used before the lift-out - both VBLs of a gameplay tick
  * carry the tick-latched bits, preserving the tick-quantized semantics the
  * bk2 corpus was validated under). Always on; one record per VBL carries
  * every pad slot, sizeof(openpete_input_rec_t) = 32 bytes (4 ports of 8 bytes,
@@ -13,18 +13,18 @@
  *   - bk2_record: serializes entries [begin_idx, count) into the movie.
  *   - rewind driver: replays entries forward from a
  *     keyframe, and truncates the log after a restore (it KNOWS its
- *     restores rewind this session's own timeline — that's why truncation
+ *     restores rewind this session's own timeline - that's why truncation
  *     is an explicit API and NOT an openpete_discontinuity subscriber: an
  *     arbitrary savestate load is a foreign timeline, where truncating
  *     would fabricate a bogus input history; bk2_record's finalize-on-load
  *     guard handles that case instead).
  *   - runahead driver: source of held-input for speculative ticks.
  *
- * Entries use bk2 axis order (LX, LY, RX, RY) — the recorder's storage
+ * Entries use bk2 axis order (LX, LY, RX, RY) - the recorder's storage
  * order, converted from the PSX readback order by the producer.
  *
  * Indices are absolute append counts for the process lifetime (no sliding
- * window yet). If a window is ever needed, add a base offset then — the
+ * window yet). If a window is ever needed, add a base offset then - the
  * rewind keyframe ring will define the retention policy.
  */
 
@@ -64,7 +64,7 @@ void input_port_clear(openpete_input_port_t* p);
  * The record for the tick that is ABOUT to run. Producers fill it before the
  * yield; `input_log_append_staged` commits it after. It exists because the
  * log entry for tick T is appended once T has already executed, so a
- * consumer running INSIDE T cannot read T's entry — it reads the staged
+ * consumer running INSIDE T cannot read T's entry - it reads the staged
  * record instead, and gets the same bytes the log will carry. That identity
  * is what makes a slot read reproduce under record, replay, rewind and
  * runahead alike.

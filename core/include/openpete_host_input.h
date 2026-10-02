@@ -16,8 +16,8 @@
  * loop's worker thread; the snapshot is the only handoff between them, and
  * the consumer never reads SDL.
  *
- * Decode itself is PsyX_Pad_DecodeP1 — the same merge the non-override path
- * uses — so host-decoded bits are identical to PsyCross-decoded bits by
+ * Decode itself is PsyX_Pad_DecodeP1 - the same merge the non-override path
+ * uses - so host-decoded bits are identical to PsyCross-decoded bits by
  * construction rather than by comparison.
  */
 
@@ -306,8 +306,8 @@ int openpete_host_input_pulse_hold_us(void);
  * bytes, so this is the only instrument that can see it at all.
  *
  * `_live` is the gate on believing any of the others. A zero motor count means
- * nothing on its own — it reads the same whether nothing rumbled or the
- * recorder was never wired — so a self-probe issues one deliberate non-zero
+ * nothing on its own - it reads the same whether nothing rumbled or the
+ * recorder was never wired - so a self-probe issues one deliberate non-zero
  * pair at attach and asserts it arrived. Check `_live` before treating a zero
  * as evidence; a harness that skips it is reporting a vacuous pass.
  *

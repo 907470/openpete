@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# check_native_visual.sh — native Vulkan renderer visual-regression gate.
+# check_native_visual.sh - native Vulkan renderer visual-regression gate.
 #
-# Renders the native `-vk` frame HEADLESS — surfaceless Vulkan through the
-# software rasterizer (lavapipe/llvmpipe), no GPU and no display — at seven
+# Renders the native `-vk` frame HEADLESS - surfaceless Vulkan through the
+# software rasterizer (lavapipe/llvmpipe), no GPU and no display - at seven
 # attract-demo draw-ticks, and compares each tile's verdict digest (decoded RGB
 # payload, mode and size; scripts/presentation-blessed.py) against its row of
 # games/spyro-1/native-tick-corpus.manifest. The capture is byte-deterministic
@@ -31,9 +31,9 @@
 #     [--ticks=T1,T2,...]           a subset of the rows (compared as a subset)
 #
 # Exit codes:
-#   0  — every captured tick matches its row
-#   1  — a tick diverged, a row was not captured, or the manifest is absent
-#   64 — skipped: outside the capture image without podman/docker or the image,
+#   0  - every captured tick matches its row
+#   1  - a tick diverged, a row was not captured, or the manifest is absent
+#   64 - skipped: outside the capture image without podman/docker or the image,
 #        or a missing binary / disc / python+PIL / Vulkan loader
 #        (the oracle/record convention, so ctest SKIP_RETURN_CODE 64 works)
 
@@ -56,7 +56,7 @@ OUT_DIR="build/native-visual-candidate"
 TICKS="1001,2194,2694,4888,7581,9775,10275"
 ALL_TICKS="$TICKS"
 # Runaway bound only (VBL units, so it needs headroom over the last tick's
-# nominal VBL ~19000 — a drifted mapping must not clip the capture).
+# nominal VBL ~19000 - a drifted mapping must not clip the capture).
 FRAME_LIMIT=21000
 
 for arg in "$@"; do
@@ -90,7 +90,7 @@ DISC="$PG_DISC"
 [[ -f "$DISC" ]] || { echo "SKIP: missing disc $DISC" >&2; exit 64; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not on PATH" >&2; exit 64; }
 python3 -c 'import PIL' 2>/dev/null || { echo "SKIP: Pillow (python3-pil) required" >&2; exit 64; }
-# A Vulkan loader must exist for the surfaceless device (real GPU not required —
+# A Vulkan loader must exist for the surfaceless device (real GPU not required -
 # a software rasterizer is enough and is what we force below).
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; then
     [[ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ]] || {

@@ -1,4 +1,4 @@
-/* psx_clut.glsl — the PSX texel decode and the fogged-CLUT row mix, shared by
+/* psx_clut.glsl - the PSX texel decode and the fogged-CLUT row mix, shared by
  * the walked scene fragment stages (psx_scene.frag, psx_scene_key.frag) and
  * the scene half of the mod material contract (openpete_psx_material.glsl).
  * The functions take the VRAM image (R16_UINT 1024x512) as an argument, since

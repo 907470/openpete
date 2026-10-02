@@ -1,4 +1,4 @@
-/* games/common/psyq/psyq_thunk_state.c — the savestate game-extra payload for a
+/* games/common/psyq/psyq_thunk_state.c - the savestate game-extra payload for a
  * game whose only extra state is the shared thunk layer's latch pack.
  *
  * A game with more to carry defines the three functions itself, names

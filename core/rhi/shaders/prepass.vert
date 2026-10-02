@@ -6,11 +6,11 @@
  *   z_ndc = 1 - 1/vz    (affine in 1/vz)
  * emitted as gl_Position.z = W - 1 with W = vz, so the fixed-function divide
  * yields it and the rasterizer's screen-linear interpolation of z_clip is
- * EXACT for planar surfaces — unlike the canonical scene curve
+ * EXACT for planar surfaces - unlike the canonical scene curve
  * vz/(vz+4096), which is NOT affine in 1/vz: interpolating it screen-linearly
  * across a large terrain triangle keeps the VALUE error small but distorts
  * the local GRADIENT by up to the hyperbola's slope ratio (~70x over a
- * near-to-far floor tri) — which made shadow_decal.frag's neighbour-texel
+ * near-to-far floor tri) - which made shadow_decal.frag's neighbour-texel
  * NORMAL reconstruction read flat floors as fronto-parallel (ny ~ 0.08).
  * The pre-pass depth target is PRIVATE to the decal, so its encoding is free
  * to differ from the main scene depth; shadow_decal.frag decodes it with
@@ -29,7 +29,7 @@ void main()
 {
     /* TRUE view-Z, both as the depth encoding and the homogeneous W. The
      * decal reconstructs world geometry from this image, so it must encode
-     * the surface's real distance — NOT the OT-shifted ordering value the
+     * the surface's real distance - NOT the OT-shifted ordering value the
      * visible scene sorts by (a slot-shifted floor read as thousands of
      * units deeper drapes the shadow onto phantom ground). And the (z, W)
      * pair must be matched or the clipper corrupts the depth of partially

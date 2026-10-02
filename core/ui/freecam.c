@@ -1,4 +1,4 @@
-// core/ui/freecam.c — host-side state for the debug free camera (F).
+// core/ui/freecam.c - host-side state for the debug free camera (F).
 // See openpete_freecam.h. Generic, address-free; the camera drive and
 // function-freeze live in games/common/freecam_game.c behind each game's
 // descriptor (games/<game>/features/freecam.c).
@@ -50,11 +50,11 @@ bool openpete_freecam_toggle(void) {
     s_teleport_req = false;
     if (s_active) {
         OPL_INFO_F("freecam",
-                   "ON — WASD move, arrows look, Space/LShift up/down, "
+                   "ON - WASD move, arrows look, Space/LShift up/down, "
                    "[ ] speed (step %d/%d), T teleport Spyro here",
                    s_speed_index, OPENPETE_FREECAM_SPEED_STEPS - 1);
     } else {
-        OPL_INFO_F("freecam", "OFF — camera returned to the game");
+        OPL_INFO_F("freecam", "OFF - camera returned to the game");
     }
     return true;
 }

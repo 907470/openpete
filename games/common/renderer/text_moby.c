@@ -37,7 +37,7 @@
 #include "openpete_menu.h"          /* menu state/layout for the settings-menu text */
 #include "openpete_perf_stats.h"    /* the overlay's levels + line text */
 #include "openpete_overlay_anchor.h" /* per-line alignment inside an anchored block */
-#include "openpete_osd.h"          /* toast ring — the OSD builder below */
+#include "openpete_osd.h"          /* toast ring - the OSD builder below */
 #include "openpete_build_id.h"     /* the version line below */
 #include "openpete_fiber.h"        /* speculative / replayed ticks skip the shimmer */
 #include "openpete_paths.h"        /* the per-user state directory */
@@ -91,7 +91,7 @@ static float txt_depth_vz(float d)
  * and only the grazing edges fall back toward the base. */
 
 /* Selected-menu-row wobble: peak yaw about the glyph's vertical axis. The PSX
- * pause menu uses COSINE_8((tick*8+i*12)&0xFF)*3>>9 → peak 24/256 turn ≈ ±33.75°
+ * pause menu uses COSINE_8((tick*8+i*12)&0xFF)*3>>9 -> peak 24/256 turn ≈ ±33.75°
  * ≈ ±0.589 rad. Phase advances 8/frame, +12 per letter (a ripple along the row). */
 #define TXT_WOBBLE_AMP 0.589f
 
@@ -102,7 +102,7 @@ static float txt_depth_vz(float d)
  * and OSD builders install the rotating ellipse.
  *
  * light_signed: 0 (FPS) = add-only, faces range base..base+add. 1 (menu/OSD) =
- * signed — faces turned away darken below base, giving metal contrast. */
+ * signed - faces turned away darken below base, giving metal contrast. */
 
 /* ---- glyph cache (snapshot of the model geometry, immune to later unload) ---
  * One entry per slot; the largest glyph seen is ~62 verts / 67 faces, and a
@@ -130,7 +130,7 @@ _Static_assert(sizeof FONT.punct / sizeof FONT.punct[0] == 8, "slot table sized 
 
 static glyph_cache_t s_glyph[NGLYPH];
 static int s_cache_ready = 0;
-/* Common advance for '0'-'9' (model units) — see cache_finish. */
+/* Common advance for '0'-'9' (model units) - see cache_finish. */
 static int s_digit_adv = 0;
 /* Where the snapshot came from: 0 none, 1 guest RAM, 2 the cache file. */
 static int s_cache_source = 0;
@@ -650,7 +650,7 @@ static int font_file_load(void) {
 void text_moby_native_cache(CPUState* cpu) {
     if (s_cache_ready) return;
     if (FONT.form == GAME_FONT_CLASS_PER_GLYPH) {
-        /* Gate on digit '0' being a loaded simple model with real geometry — the
+        /* Gate on digit '0' being a loaded simple model with real geometry - the
          * whole font asset loads together, so this means the rest are in too. */
         uint32_t m0 = cpu->read_word(FONT.model_table + (uint32_t)FONT.digit_base * 4u);
         if (m0 == 0u) return;
@@ -699,9 +699,9 @@ int text_moby_native_ready(void) { return s_cache_ready; }
 
 /* ---- emit (works purely from the cache) --------------------------------- */
 
-/* Emission state, per call rather than per file. Every emitter — the stats
+/* Emission state, per call rather than per file. Every emitter - the stats
  * overlay and settings menu, the mod draw service at scene production, the
- * OSD every tick a toast is live — writes through one of these, so no two
+ * OSD every tick a toast is live - writes through one of these, so no two
  * emissions share an output cursor, glyph scratch or light direction. (A
  * torn out/cap pair would defeat push_tri's bounds check and write past the
  * caller's buffer; a light overwritten mid-string would tear the shimmer
@@ -799,8 +799,8 @@ static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y
     int vcount = g->vcount, fcount = g->fcount, vxmin = g->vxmin, vxmax = g->vxmax;
     if (vcount > TXT_MAX_GLYPH_V) vcount = TXT_MAX_GLYPH_V;
     /* Selected-row wobble: yaw about the glyph's own vertical axis (its mid-X), so
-     * it turns left↔right revealing the extrusion; the normals rotate too (below)
-     * so the directional highlight sweeps. yaw==0 → the original front-facing glyph
+     * it turns left<->right revealing the extrusion; the normals rotate too (below)
+     * so the directional highlight sweeps. yaw==0 -> the original front-facing glyph
      * (cs=1, sn=0 leaves X/Z untouched). The advance width is the un-yawed width,
      * so letters keep their slots and just rock in place. */
     const float cs = cosf(yaw), sn = sinf(yaw);
@@ -830,7 +830,7 @@ static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y
         else                { if (t <  0.0f) t =  0.0f; else if (t >  1.0f) t =  1.0f; }
         uint32_t rgba = lit_colour(baseR, baseG, baseB, t);
         /* Draw front AND back faces; the depth test keeps the (nearer) front and
-         * the edge-on side walls have ~zero area — so no winding cull is needed. */
+         * the edge-on side walls have ~zero area - so no winding cull is needed. */
         if (i2 == i3) {
             push_tri(cx, i0, i1, i2, rgba);                   /* tri */
         } else if (i3 < vcount) {
@@ -868,7 +868,7 @@ static int emit_string(emit_ctx_t* cx, const char* str,
     const float center_y = origin_y + cap_h * 0.5f;
     const int   period   = glyph_slot('.');
     float cursor = origin_x;
-    int gi = 0;   /* non-space glyph index — drives the wobble ripple */
+    int gi = 0;   /* non-space glyph index - drives the wobble ripple */
 
     for (int i = 0; str[i]; i++) {
         char c = str[i];
@@ -956,7 +956,7 @@ static void glyph_census(int consumer, int nverts, int glyph_verts) {
 #define PERF_LINE_STEP 0.030f   /* cap height + a line's worth of leading */
 /* Region WIDTH is a per-level constant, deliberately not measured from the live
  * text: the readout's digits change twice a second, and a content-measured
- * width would resize the renderer's supersample target that often — every
+ * width would resize the renderer's supersample target that often - every
  * resize idles the device. The slack is absorbed by per-line alignment
  * instead, so a right-anchored block still sits flush against the edge. */
 #define PERF_REGION_W        0.30f
@@ -966,7 +966,7 @@ static openpete_hud_vert s_perf_buf[PERF_OVL_MAX];
 
 /* What the buffer currently holds. This runs once per tick, and the readout
  * only moves twice a second, so re-emitting every tick would spend the glyph
- * builder's whole cost ~15× over for identical geometry — on the thread that
+ * builder's whole cost ~15× over for identical geometry - on the thread that
  * owns the tick deadline, which is precisely what the detailed level exists
  * to measure. Rebuild only when the text (or the layout it was built for)
  * actually changes. */
@@ -998,7 +998,7 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
      * one-line counter doesn't reserve four lines of screen (and four lines of
      * supersample target); width is the per-level constant above. The renderer
      * reads this back for the supersample target, the composite quad and the
-     * anchor ledger's claim — one owner, no third place to disagree. */
+     * anchor ledger's claim - one owner, no third place to disagree. */
     const float region_w = (level >= OPENPETE_PERF_DETAIL) ? PERF_REGION_W_DETAIL
                                                            : PERF_REGION_W;
     const float region_h = 2.0f * PERF_ORIGIN_Y + PERF_CAP_H
@@ -1009,7 +1009,7 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
      * the block alone would leave a right-anchored readout with a ragged right
      * edge against the screen edge it is hugging. */
     /* Right-aligned and centred text derives its origin from the MEASURED
-     * string, so the origin moves whenever the readout does — and the readout
+     * string, so the origin moves whenever the readout does - and the readout
      * changes twice a second. Unsnapped, that lands the glyphs at a different
      * sub-pixel phase every update, which reads as the counter softening and
      * crawling rather than simply changing value. Left-aligned text never had
@@ -1100,7 +1100,7 @@ void text_moby_native_version(CPUState* cpu) {
  * open, and a counter that only advanced while the menu was open would leave
  * every toast lit by a frozen light.
  *
- * Advanced at the game's LOGIC rate — every other call, since this runs once
+ * Advanced at the game's LOGIC rate - every other call, since this runs once
  * per sim tick (paced per VBL, ~59.826 Hz) while the PSX bumps its rotation
  * once per DRAWN frame (draw.c ++D_800758B8). Speculative and replayed ticks
  * sit it out: those are rolled back or re-executed, and letting them advance
@@ -1176,9 +1176,9 @@ static void glyph_hash_probe(void) {
 
 /* ---- in-game settings menu text (labels / values / title) --------------- */
 #define MENU_TXT_MAX    OPENPETE_MENU_GLYPH_MAX
-/* Mid-tone gold BASE — the signed light swings faces both ways around it (lit →
- * white-gold, shadowed → dark), so base is the average, not the floor. The game's
- * HUD/menu gold is R==G with a low B (measured (96,96,0)→(214,214,118)); R>G is
+/* Mid-tone gold BASE - the signed light swings faces both ways around it (lit ->
+ * white-gold, shadowed -> dark), so base is the average, not the floor. The game's
+ * HUD/menu gold is R==G with a low B (measured (96,96,0)->(214,214,118)); R>G is
  * what read as ORANGE, so keep R==G. The uniform white light add preserves R==G. */
 #define MENU_TXT_TINT   0x96962Au   /* mid yellow-gold (R150,G150,B42) */
 #define MENU_TITLE_TINT 0xB4B43Eu   /* brighter for the title (R180,G180,B62) */
@@ -1193,9 +1193,9 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
  * MENU_BORDER_BT); each perimeter vertex carries an outward RADIAL normal in the
  * overlay XY plane (z=0, same convention as the glyph normals), so a specular
  * glint sweeps around the frame in lock-step with the text shimmer. Colour is
- * per-vertex and interpolates along the perimeter → a smooth travelling
- * highlight, not a per-edge on/off. Mid-gold BASE (R==G, low B — same rationale
- * as the text tint) so the signed light swings it dark↔bright-gold either side. */
+ * per-vertex and interpolates along the perimeter -> a smooth travelling
+ * highlight, not a per-edge on/off. Mid-gold BASE (R==G, low B - same rationale
+ * as the text tint) so the signed light swings it dark<->bright-gold either side. */
 #define MENU_BORDER_R   190
 #define MENU_BORDER_G   190
 #define MENU_BORDER_B    80
@@ -1361,7 +1361,7 @@ void text_moby_native_menu(CPUState* cpu) {
         return;
     }
     /* Advance the wobble at the game's LOGIC rate (~29.913 Hz). This builder runs
-     * once per sim tick — which openpete paces per-VBL (~59.826 Hz) — but the PSX
+     * once per sim tick - which openpete paces per-VBL (~59.826 Hz) - but the PSX
      * pause menu bumps its rotation tick once per *drawn* frame (30 fps, draw.c
      * ++D_800758B8). So advance every other call to match the game's speed. */
     static unsigned s_menu_call = 0;
@@ -1392,7 +1392,7 @@ void text_moby_native_menu(CPUState* cpu) {
     }
     /* Uniform row font: shrink EVERY row (labels + values; the SETTINGS title
      * keeps its own cap) to the size the widest value needs to fit its column
-     * — "FULLSCREEN" — so no single row reads smaller than its neighbours.
+     * - "FULLSCREEN" - so no single row reads smaller than its neighbours.
      * Measured from the FIXED reference string, not the live values, so the
      * size never breathes as a value toggles (WINDOWED <-> FULLSCREEN).
      * measure_string is linear in cap_h, so one proportional shrink is exact.
@@ -1440,7 +1440,7 @@ void text_moby_native_menu(CPUState* cpu) {
      * pointer resting on it wobbles it like the row under the cursor. */
     menu_close_anchor(&cx, cx.n, &L,
                       openpete_menu_close_hovered() ? phase : -1);
-    /* Gold frame — same rotating light as the rows above (cx still carries it). */
+    /* Gold frame - same rotating light as the rows above (cx still carries it). */
     cx.n += emit_lit_border(&cx, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1,
                             MENU_BORDER_BT, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);
     if (cx.dropped) {
@@ -1465,8 +1465,8 @@ void text_moby_native_menu(CPUState* cpu) {
  * geometry built once and reused would show a frozen glint on a live toast.
  * The settings menu already does exactly this while it is open.
  *
- * Geometry is emitted in TARGET-LOCAL overlay space — slot i's box starts at
- * y = i * slot_h — and the slot table tells the compositor which toast landed
+ * Geometry is emitted in TARGET-LOCAL overlay space - slot i's box starts at
+ * y = i * slot_h - and the slot table tells the compositor which toast landed
  * where and how much of its slot it filled. Text and table are published in
  * one call, so the compositor can never resolve an id through a table that
  * describes different geometry. */
@@ -1474,7 +1474,7 @@ void text_moby_native_menu(CPUState* cpu) {
 #define OSD_CAP_H       0.030f  /* toast glyph height, overlay units          */
 #define OSD_PAD_X       0.022f
 #define OSD_PAD_Y       0.014f
-#define OSD_BORDER_BT   0.0035f /* frame thickness — the menu's, so the two read as one set */
+#define OSD_BORDER_BT   0.0035f /* frame thickness - the menu's, so the two read as one set */
 #define OSD_TINT        0x96962Au   /* the menu's mid yellow-gold */
 
 static openpete_hud_vert s_osd_buf[OSD_TXT_MAX];

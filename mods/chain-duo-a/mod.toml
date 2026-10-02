@@ -1,4 +1,4 @@
-# chain-duo-a — CI fixture: one of two mods overriding CameraUpdate.
+# chain-duo-a - CI fixture: one of two mods overriding CameraUpdate.
 #
 # With chain-duo-b, checks that enabled-list order sets chain priority:
 # the mod listed later runs first and base() descends toward the earlier
@@ -12,4 +12,4 @@ version = "0.1.0"
 game    = "spyro-1"
 api     = 1
 state    = "none"      # call counter only
-runahead = "host-fx"   # nesting logs — suppressible
+runahead = "host-fx"   # nesting logs - suppressible

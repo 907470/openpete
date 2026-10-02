@@ -5,11 +5,11 @@ The watchdog in core/psx/dispatch.c writes hang-trace.bin when a vbl
 interval runs past OPENPETE_HANG_THRESHOLD dispatch entries. The file holds
 three rings of (addr, ra, sp):
 
-  interval   the first entries of the interval that tripped — the path INTO
+  interval   the first entries of the interval that tripped - the path INTO
              whatever is spinning
   previous   the same ring as it stood at the last vbl boundary, which
              survives a loop that fills the interval ring with its own body
-  recent     the most recent entries, written on every dispatch — the loop
+  recent     the most recent entries, written on every dispatch - the loop
              itself, and the only ring that shows a loop entered late
 
 For each ring this prints the most frequent addresses and, for `recent`, the

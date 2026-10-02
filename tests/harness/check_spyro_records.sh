@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_spyro_records.sh — the multi-Spyro sub-tick harness.
+# check_spyro_records.sh - the multi-Spyro sub-tick harness.
 #
 # The spyro-coop mod draws extra dragons by calling the game's own player
 # renderers once per player with the player's state swapped into g_Spyro.
@@ -110,7 +110,7 @@ while IFS='|' read -r name src players frame em es ef pairs note extra; do
   # Optional 10th field: extra launch args (a --runahead N row exercises the
   # led lists; its staged positions lead the canonical ones by up to N ticks,
   # so the B/2 bound scales by 1+2N, and the summary must report led_match
-  # >= 1 with led_miss <= 1 — the level-entry tick draws the player twice
+  # >= 1 with led_miss <= 1 - the level-entry tick draws the player twice
   # and has no led counterpart of that shape).
   ra=$(sed -n 's/.*--runahead \([0-9]*\).*/\1/p' <<<"${extra:-}")
   rc=$(run_leg "$name" canon "$src" "$players" "$frame" "${extra:-}")
@@ -150,7 +150,7 @@ while IFS='|' read -r name src players frame em es ef pairs note extra; do
   [[ "${sum_rr:-0}" -ge 1 ]] && recroll=1
   [[ "$got_m" -ge 2 ]] && engaged=1
   if [[ $verdict != ok ]]; then echo "FAIL     $name (canon f=$frame): $verdict"; fail=1; continue; fi
-  echo "ok       $name (canon f=$frame): calls m/s/f=$got_m/$got_s/$got_f mm=$mm — $note"
+  echo "ok       $name (canon f=$frame): calls m/s/f=$got_m/$got_s/$got_f mm=$mm - $note"
 
   # Intermediate leg: run-wide staging checks, then the per-record asserts.
   rc=$(run_leg "$name" inter "$src" "$players" "$frame" "${extra:-}")

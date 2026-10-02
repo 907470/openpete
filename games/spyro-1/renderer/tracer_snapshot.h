@@ -1,4 +1,4 @@
-/* games/spyro-1/renderer/tracer_snapshot.h — copy of the tracer/beam sets the
+/* games/spyro-1/renderer/tracer_snapshot.h - copy of the tracer/beam sets the
  * game renderer (func_800189F0) drains each tick.
  *
  * The set count, per-set point counts and per-set point bases are guest data;

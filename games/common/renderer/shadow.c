@@ -1,4 +1,4 @@
-// games/common/renderer/shadow.c — the MOBY DROP-SHADOW renderer re-derived
+// games/common/renderer/shadow.c - the MOBY DROP-SHADOW renderer re-derived
 // from gamestate in float, plus its A/B harness. Every engine address and
 // every decode switch comes from game_layout.shadow; the game's own shadow
 // draw runs through the recomp module dispatch at game_layout.shadow.hook.
@@ -43,7 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "game_layout.h"
-#include "openpete_profile.h"       /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"       /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
 
 extern unsigned openpete_frame;
@@ -199,7 +199,7 @@ static void shadow_moby_dump(CPUState* cpu) {
 }
 
 /* ===========================================================================
- *  NATIVE WALK — re-derive the moby shadows from gamestate in float.
+ *  NATIVE WALK - re-derive the moby shadows from gamestate in float.
  *  Reproduces the per-moby ground-point projection, the oriented-quad matrix
  *  assembly (two MVMVA passes per packed orientation index), the 4 fan corners
  *  and the distance fade, projecting in float so the geometry carries
@@ -961,7 +961,7 @@ static void shadow_moby_compare(CPUState* cpu) {
      * that agrees exactly still reads ~0.5 px off per axis. `floor_x` counts
      * vertices whose floored X is the captured X (the walk agrees to the
      * truncation), and `floor_y1` those whose floored Y is within one row of
-     * the captured Y — the row the .s's nearest/farthest corner nudge moves. */
+     * the captured Y - the row the .s's nearest/farthest corner nudge moves. */
     int floor_x = 0, floor_y1 = 0;
     for (int p = 0; p < s_gte_n && qi < n; p++) {
         shadow_prim* pr = &s_gte[p];

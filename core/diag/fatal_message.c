@@ -1,4 +1,4 @@
-/* fatal_message.c — the player-facing half of a fatal exit. See
+/* fatal_message.c - the player-facing half of a fatal exit. See
  * openpete_fatal.h. */
 
 #include "openpete_fatal.h"

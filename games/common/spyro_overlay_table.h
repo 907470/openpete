@@ -1,4 +1,4 @@
-// games/common/spyro_overlay_table.h — registry of a game's recompiled overlays.
+// games/common/spyro_overlay_table.h - registry of a game's recompiled overlays.
 //
 // scripts/regen-recomp.sh emits generated/spyro_overlay_table.c with one entry
 // per overlay it translated, mapping the overlay-id stored at the head of the

@@ -1,4 +1,4 @@
-/* tests/unit/fnv1a64_test.c — verify openpete_fnv1a64.h against
+/* tests/unit/fnv1a64_test.c - verify openpete_fnv1a64.h against
  * published FNV1a-64 test vectors and confirm streaming-update
  * equals one-shot hashing. The determinism harness's per-frame
  * gameplay-state hash is built on top; a wrong hash here would
@@ -28,7 +28,7 @@ static int check_vector(const char* s, uint64_t expected) {
 }
 
 int main(void) {
-    /* Published vectors — see http://www.isthe.com/chongo/src/fnv/test_fnv.c */
+    /* Published vectors - see http://www.isthe.com/chongo/src/fnv/test_fnv.c */
     if (check_vector("",       0xcbf29ce484222325ULL)) return 1;
     if (check_vector("a",      0xaf63dc4c8601ec8cULL)) return 1;
     if (check_vector("foobar", 0x85944171f73967e8ULL)) return 1;

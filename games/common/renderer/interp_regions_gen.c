@@ -1,4 +1,4 @@
-/* games/common/renderer/interp_regions_gen.c — the interp region table
+/* games/common/renderer/interp_regions_gen.c - the interp region table
  * generator. See renderer/interp_regions_gen.h. */
 
 #include "renderer/interp_regions_gen.h"

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# check_glibc_floor.sh — the glibc / libstdc++ symbol floor of every ELF file
+# check_glibc_floor.sh - the glibc / libstdc++ symbol floor of every ELF file
 # in a release payload.
 #
 #   scripts/check_glibc_floor.sh PATH...          # directories and/or files
 #   scripts/check_glibc_floor.sh some.AppImage    # extracted to a temp dir first
 #
 # A release must start on the oldest distribution it claims (Debian 11,
-# glibc 2.31 / GLIBCXX 3.4.28): every ELF it ships — the exe, the bundled
-# PSXRecomp, the libraries under usr/lib — is checked, since any one of them
+# glibc 2.31 / GLIBCXX 3.4.28): every ELF it ships - the exe, the bundled
+# PSXRecomp, the libraries under usr/lib - is checked, since any one of them
 # failing to load stops first boot with a loader error the user cannot act
 # on. Prints one line per ELF with the newest GLIBC_ / GLIBCXX_ version it
 # requires, then a verdict.

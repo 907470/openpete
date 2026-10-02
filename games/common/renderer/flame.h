@@ -1,4 +1,4 @@
-/* flame.h — the player's fire-breath ribbon producer (renderer/flame.c).
+/* flame.h - the player's fire-breath ribbon producer (renderer/flame.c).
  *
  * The producer hooks the game's flame emitter (game_layout.flame.hook), runs
  * it once, and re-derives the same ribbon from gamestate in float for the

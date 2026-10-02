@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check_regions_containment.py — prove a new flat region table hashes every
+"""check_regions_containment.py - prove a new flat region table hashes every
 byte the old one hashed.
 
     tools/check_regions_containment.py OLD.flat NEW.flat

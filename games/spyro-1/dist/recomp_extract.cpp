@@ -1,8 +1,8 @@
-// games/spyro-1/dist/recomp_extract.cpp — carve the recomp pipeline's inputs
+// games/spyro-1/dist/recomp_extract.cpp - carve the recomp pipeline's inputs
 // out of the user's disc.
 //
 // Extracts PSX.EXE (iso9660 file lookup) and every code overlay
-// (WAD.WAD carve) to a directory — the first stage of the first-boot
+// (WAD.WAD carve) to a directory - the first stage of the first-boot
 // pipeline, exposed standalone via --extract-recomp-inputs DIR for the
 // carve-equivalence gate (scripts/check_carve_equivalence.sh proves the
 // carved bytes == the decomp's build outputs that regen consumes).
@@ -71,7 +71,7 @@ OffsetLength read_entry(const uint8_t* hdr, size_t off) {
 bool open_disc(PS1::ISOReader& reader, const char* cue_path) {
     if (reader.Open(cue_path)) return true;
     /* Same fallback as exe_loader.cpp: the CUE's FILE line sometimes
-     * mismatches the on-disc bin name — try sibling .bin files. */
+     * mismatches the on-disc bin name - try sibling .bin files. */
     std::filesystem::path dir = std::filesystem::path(cue_path).parent_path();
     std::error_code ec;
     for (auto& e : std::filesystem::directory_iterator(dir, ec)) {

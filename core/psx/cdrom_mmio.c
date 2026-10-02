@@ -1,4 +1,4 @@
-/* cdrom_mmio.c — the CD-ROM controller's registers, 0x1F801800..0x1F801803,
+/* cdrom_mmio.c - the CD-ROM controller's registers, 0x1F801800..0x1F801803,
  * for a game that drives the controller itself instead of through libcd.
  *
  * libcd's calls are thunked (games/common/psyq/psyq_thunks.cpp) and never reach

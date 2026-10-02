@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# presentation-corpus.sh — capture the native -vk presentation corpus.
+# presentation-corpus.sh - capture the native -vk presentation corpus.
 #
 # For every bk2 in the manifest (filtered), boot the game headless under
 # software Vulkan (llvmpipe, deterministic) and capture two legs on the
@@ -37,14 +37,14 @@
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
 #           the corpus manifest is missing (the message names the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing),
-#       65 = no rows (the manifest holds none, or the filter matched none) —
+#       65 = no rows (the manifest holds none, or the filter matched none) -
 #            the caller decides whether an empty corpus is a skip or a
 #            vacuous run.
 set -u
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set here rather than at
 # each invocation because this script builds its argument list in more than one
 # place, and a flag appended to the wrong one is a silent miss.
@@ -71,7 +71,7 @@ MAX_SAMPLES="${OPENPETE_MAX_SAMPLES:-5}"
 # the 4:3 view can't show; override for a 4:3 spot-check if ever needed.
 CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
 
-# LOD modes swept per bk2/leg — both by default (original = authentic PSX band,
+# LOD modes swept per bk2/leg - both by default (original = authentic PSX band,
 # extended = --no-lod full detail). Override to one mode for a faster spot-check.
 CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
 
@@ -121,7 +121,7 @@ echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_A
 # The golden filename encodes the LOD mode: `original` (the authentic PSX band)
 # stays UNTAGGED so its golden is unchanged, `extended` (--no-lod, full detail at
 # any distance) gets a `lodext__` tag between the bk2 name and the leg. Extended
-# LOD pulls in far terrain / moby tiers the original band culls — an
+# LOD pulls in far terrain / moby tiers the original band culls - an
 # independently-regressable surface the depth work is most likely to disturb.
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
@@ -149,7 +149,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   # A freeze-marked row (a bk2 that reaches a pause / flight-results / level-exit
   # state) needs the green freeze backdrop maintained during capture, else the
   # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
-  # elsewhere — it renders an extra frame per present.
+  # elsewhere - it renders an extra frame per present.
   local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
   # A row with no movie file is the plain boot: the title screen and the attract
   # demo, which need no input. Everything else about the row is the same.
@@ -157,7 +157,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   # The identity leg is the intermediate re-extract phased onto the newest tick's
   # stamp (alpha 1), which must reproduce the canonical dump of the same frame.
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
-  # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts —
+  # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts -
   # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
   # headless native-only capture honors --aspect (openpete_native_widescreen_factor
   # surfaces the fixed aspect when there is no window) and renders the widened
@@ -191,7 +191,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
 }
 
 # Authoritative movie length = the number of input-frame lines ('|'-prefixed) in
-# the bk2's Input Log.txt — matches the binary's own bk2-end frame exactly. The
+# the bk2's Input Log.txt - matches the binary's own bk2-end frame exactly. The
 # frame-limit is one cycle past that (render the last input's result, then stop),
 # and the sample grid runs up to it, so nothing is hardcoded to a bk2's length.
 bk2_frames() {
@@ -210,7 +210,7 @@ PY
 # grid steps by `interval` from `start`, extended one point PAST the movie end so
 # the final settled frame is captured. With MAX_SAMPLES>0 the canonical points are
 # then subsampled to at most MAX_SAMPLES EVENLY-SPACED frames (first and last kept)
-# — broad within-movie coverage without one dense golden per bk2. The intermediate
+# - broad within-movie coverage without one dense golden per bk2. The intermediate
 # leg is each kept canonical frame + interval/2 (the +half offset that lands the
 # deterministic alpha=0.5 present between snapshot stamps).
 #
@@ -277,7 +277,7 @@ while IFS='|' read -r name start interval freeze pins launch; do
   # MAX_SAMPLES keeps us well under that, but guard anyway (never silently truncate).
   if [[ "$ncanon" -gt 64 || "$ninter" -gt 64 ]]; then
     echo "  FAIL row $name: $ncanon canon / $ninter inter samples exceed the 64-frame"
-    echo "        screenshot cap — lower OPENPETE_MAX_SAMPLES or raise this row's interval."
+    echo "        screenshot cap - lower OPENPETE_MAX_SAMPLES or raise this row's interval."
     fail=1; continue; fi
   ran=$((ran+1))
   echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}${launch:+  launch=$launch}"
@@ -292,6 +292,6 @@ cj_wait || fail=1
 
 if [[ $fail -ne 0 ]]; then echo "[presentation-corpus] FAIL: missing captures"; exit 1; fi
 if [[ $ran -eq 0 ]]; then
-  echo "[presentation-corpus] $GAME: no manifest rows matched '$FILTER' — 0 rows"; exit 65; fi
+  echo "[presentation-corpus] $GAME: no manifest rows matched '$FILTER' - 0 rows"; exit 65; fi
 echo "[presentation-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images across $ran bk2"
 exit 0

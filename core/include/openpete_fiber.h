@@ -1,4 +1,4 @@
-// core/include/openpete_fiber.h — cooperative scheduler globals.
+// core/include/openpete_fiber.h - cooperative scheduler globals.
 //
 // The recompiled game runs on `openpete_game_fiber`. PSYQ thunks that need to
 // "wait for vblank" (VSync(0), VSync busy waits) call `openpete_yield_to_host`
@@ -50,23 +50,23 @@ int openpete_fiber_guard_contains(uintptr_t addr);
  * iterations where the host fiber is never resumed. This is the value
  * `psyq_VSync` returns to the game (libetc's "vbl counter" contract).
  * The game's busy-waits like `int s = VSync(-1); while (VSync(-1) - s < N) VSync(0);`
- * key off this. Advanced only by psyq_VSync — one increment per logical
- * frame waited — plus absolute restores from the savestate path. */
+ * key off this. Advanced only by psyq_VSync - one increment per logical
+ * frame waited - plus absolute restores from the savestate path. */
 extern SDL_AtomicInt openpete_vbl;
 
 /* Host-facing render-frame counter. Stays at 0 until the first DrawOTag
  * (i.e. until the game actually starts rendering), then increments on each
- * VSync(0) yield. Every host-side consumer — frame-limit, screenshot/RAM-dump
- * gates, hang detector, dump windows in dump tools, traces — uses this so
+ * VSync(0) yield. Every host-side consumer - frame-limit, screenshot/RAM-dump
+ * gates, hang detector, dump windows in dump tools, traces - uses this so
  * "frame N" means the same thing across runs regardless of disc-seek timing
  * during the splash sequence. */
 extern unsigned openpete_frame;
 
 /* Canonical-present counter: increments exactly once per CANONICAL game
  * draw (the host loop's `openpete_present_pending` block), i.e. once per
- * game draw-tick. Unlike `openpete_frame` — a VBL/yield counter whose
+ * game draw-tick. Unlike `openpete_frame` - a VBL/yield counter whose
  * mapping to sim ticks drifts run-to-run with host timing (CD-load VSync
- * spins, audio backend) — the Nth canonical present is the SAME sim
+ * spins, audio backend) - the Nth canonical present is the SAME sim
  * moment in every run of a tick-deterministic sim, so tick-keyed triggers
  * (`--screenshot-on-tick`) sample identical game states across sessions.
  * (Frame-keyed captures fork at session-dependent points even while the
@@ -85,7 +85,7 @@ extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed b
  * host-thread thunk code reads it. */
 extern int openpete_speculative;
 
-/* 1 while the host is REPLAYING committed guest ticks — the rewind driver
+/* 1 while the host is REPLAYING committed guest ticks - the rewind driver
  * re-executing the input log from a keyframe toward its target, and any
  * state-load fast-forward that re-runs game_on_frame_pre. Distinct from
  * openpete_speculative, deliberately: speculative ticks are ROLLED BACK,
@@ -98,13 +98,13 @@ extern int openpete_speculative;
  * live play (a savestate load, --state-stress-rewind): those frames resume the
  * normal loop and are indistinguishable from first-time ones.
  *
- * Plain int, read cross-thread — the same relaxed idiom as
+ * Plain int, read cross-thread - the same relaxed idiom as
  * openpete_speculative, and for the same reason: a one-present skew either way
  * on a purely presentational suppression is not worth an atomic. */
 extern int openpete_replaying;
 
 /* 1 for the duration of a runahead tick whose speculation input DIFFERS
- * from the previous tick's — the led pair crosses prediction branches, so
+ * from the previous tick's - the led pair crosses prediction branches, so
  * presentation-side consumers may REBASE their interpolation at the last
  * SHOWN state instead of the stale mispredicted prev (converts the
  * correction snap into a one-tick glide). Written by the runahead driver;
@@ -113,7 +113,7 @@ extern int openpete_ra_input_edge;
 
 /* Fast-boot gate. While set, psyq_VSync(0) bumps `openpete_vbl` without
  * yielding to the host fiber, so the game's Initialize() busy-waits run as
- * fast as the CPU allows (nothing is rendered during them anyway — the
+ * fast as the CPU allows (nothing is rendered during them anyway - the
  * Sony+Universal splashes are intentional VSync(-1) spins). Cleared on the
  * first call to psyq_DrawOTag, which is the natural signal that the game
  * has progressed from boot init to issuing real draw commands. */
@@ -129,13 +129,13 @@ extern int      openpete_cd_load_delay;
  * presents AND the frame pacer (like fast-boot, but AFTER the first DrawOTag),
  * so the logos / title / loading / level-load all fast-forward with a black
  * window instead of playing out at 60 Hz for ~25 s. Unlike fast-boot, the game
- * still yields each frame, so `openpete_frame` advances normally — bk2 input
+ * still yields each frame, so `openpete_frame` advances normally - bk2 input
  * timing and frame-keyed captures are unaffected. Armed by
  * game_set_skip_to_level() whenever a skip target is set while
- * openpete_skip_ffwd_windowed says presents exist — the boot CLI flag and
+ * openpete_skip_ffwd_windowed says presents exist - the boot CLI flag and
  * runtime title-screen warps (dev levelwarp, custom-level menu) alike; the
  * game side (game_on_frame_pre) clears it the moment the level becomes
- * playable (g_Gamestate == GS_Playing — past the black "THE ADVENTURE
+ * playable (g_Gamestate == GS_Playing - past the black "THE ADVENTURE
  * BEGINS" flyby), or on a frame-cap fail-safe relative to arming so a
  * mis-induced skip can never leave a permanently black window. */
 extern int      openpete_skip_present_until_level;

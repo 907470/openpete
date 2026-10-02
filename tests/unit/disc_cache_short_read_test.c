@@ -1,4 +1,4 @@
-/* tests/unit/disc_cache_short_read_test.c — a chunk the loader cannot read
+/* tests/unit/disc_cache_short_read_test.c - a chunk the loader cannot read
  * whole is never served as uninitialised heap bytes.
  *
  * disc_cache.c is compiled into this TU with fread and malloc replaced: the

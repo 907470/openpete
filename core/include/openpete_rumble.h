@@ -6,7 +6,7 @@
  * Real PSYQ libpad treats PadSetAct(port, table, len) as a REGISTRATION: the
  * game hands libpad the address of a small actuator buffer once, and libpad
  * reads that buffer and ships its bytes to the pad every vsync, forever. The
- * game never calls PadSetAct again — it just writes new bytes into its own
+ * game never calls PadSetAct again - it just writes new bytes into its own
  * buffer.
  *
  * PsyCross implemented it as an immediate one-shot rumble command instead,

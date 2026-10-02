@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""derive_state_regions.py — print the link-map-derived direct rows of a
+"""derive_state_regions.py - print the link-map-derived direct rows of a
 game's gameplay_state_regions.toml.
 
 The rows are the main image's .data/.sdata/.sbss/.bss extents (psx.map

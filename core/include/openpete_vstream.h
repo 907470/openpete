@@ -1,4 +1,4 @@
-// core/include/openpete_vstream.h — moby vertex-stream address resolver.
+// core/include/openpete_vstream.h - moby vertex-stream address resolver.
 //
 // Each animation frame word packs the vertex-stream address into bits
 // 0-20 (a byte address for moby frames; halved for Spyro's own, whose
@@ -11,7 +11,7 @@
 // Stock words never address below 0x10000: the executable loads there
 // and every level's model data sits above it. So a field value below
 // VSTREAM_HANDLE_BOUND cannot be a stream, and the resolver treats it
-// as a HANDLE — an index into an engine table of full 32-bit vaddrs —
+// as a HANDLE - an index into an engine table of full 32-bit vaddrs -
 // which is how a stream parked anywhere (the mod arena past 2 MB, say)
 // is reachable through a 21-bit field. Handles are the raw field value
 // in both encodings, so one table serves both; the halved encoding's

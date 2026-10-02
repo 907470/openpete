@@ -1,4 +1,4 @@
-// core/include/mod_vec.h — the two growable tables (mod surface, renderer scene buffers).
+// core/include/mod_vec.h - the two growable tables (mod surface, renderer scene buffers).
 //
 // Tables on the mod surface, and the renderer's triangle and vertex
 // buffers, are sized by their content. Two containers cover every

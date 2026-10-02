@@ -1,6 +1,6 @@
 """Fence: the display seam has one owner, and source outside it may not present.
 
-The display — swapchain, queue, frame lifecycle — is owned by exactly one
+The display - swapchain, queue, frame lifecycle - is owned by exactly one
 thread at a time: the present thread while eager production is active, the
 host loop otherwise, with openpete_present_thread_set_active() as the only
 handoff. Every defect in this family (a frozen display after a resize, a
@@ -19,7 +19,7 @@ A. The frame/present entry points (rhi_begin_frame*, rhi_end_frame*,
 
 B. openpete_native_toggle_fullscreen() may be CALLED only from run.c (the
    host loop, which routes it to the window-owning thread). Everything
-   else raises openpete_native_request_fullscreen_toggle() — on Win32 a
+   else raises openpete_native_request_fullscreen_toggle() - on Win32 a
    cross-thread SDL_SetWindowFullscreen SendMessages into a pump that may
    be busy, or silently misdelivers the resize.
 
@@ -28,7 +28,7 @@ C. SDL_SetWindowFullscreen / SDL_SetWindowSize are window ops and belong
    loops) only.
 
 A file that legitimately joins the display owner declares it with a marker
-comment `seam-guard: display-owner` — a decision someone wrote down, not a
+comment `seam-guard: display-owner` - a decision someone wrote down, not a
 pattern that quietly matched.
 
 The runtime half of this fence lives in rhi_vulkan.c (rhi_display_claim +

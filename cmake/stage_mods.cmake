@@ -1,6 +1,6 @@
 # Mirror the repo's mods/ tree into the cross build's <exe>/mods/ so
 # `cmake --build` refreshes staged mod *sources* the same way it
-# refreshes staged DLLs (games/spyro-1/CMakeLists.txt cross branch) —
+# refreshes staged DLLs (games/spyro-1/CMakeLists.txt cross branch) -
 # closing the staged-source-rot gap where a hand-copied mod's src/
 # drifted from the repo. Overlay rules, per repo mod <SRC>/<id>/:
 #   - exact mirror (copy-if-different + prune deleted files), EXCEPT:
@@ -8,7 +8,7 @@
 #     copied, never pruned;
 #   - config.toml is user-owned (hot-reload watched; the player tunes
 #     the staged copy): copied only if missing.
-# Staged mod dirs with no repo counterpart are left alone — that's
+# Staged mod dirs with no repo counterpart are left alone - that's
 # where a user drops third-party mods next to the exe. enabled.txt is
 # user-owned play state: copied only if missing.
 # Usage: cmake -DSRC=<repo mods dir> -DDST=<build mods dir> -P stage_mods.cmake

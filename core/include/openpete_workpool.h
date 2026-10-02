@@ -1,4 +1,4 @@
-// core/include/openpete_workpool.h — data-parallel extraction worker pool.
+// core/include/openpete_workpool.h - data-parallel extraction worker pool.
 //
 // A persistent pool of worker threads for fan-out over independent items
 // (terrain sectors, compose buckets). Contracts:

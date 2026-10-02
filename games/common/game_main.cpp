@@ -1,4 +1,4 @@
-// games/common/game_main.cpp — the entry point of a game with no host-side
+// games/common/game_main.cpp - the entry point of a game with no host-side
 // services of its own.
 //
 // Parse options, register the recompiled module, hand off to core's run loop.

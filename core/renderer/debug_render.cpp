@@ -1,7 +1,7 @@
-// core/renderer/debug_render.cpp — the `--debug-triangle` infra-triangle.
+// core/renderer/debug_render.cpp - the `--debug-triangle` infra-triangle.
 //
 // Issues a single hard-coded POLY_F3 through PsyCross every frame to verify
-// the BeginScene → DrawOTag → EndScene → SwapWindow → SDL window pipeline
+// the BeginScene -> DrawOTag -> EndScene -> SwapWindow -> SDL window pipeline
 // end-to-end without depending on game content. Toggled with
 // `--debug-triangle` so it doesn't pollute the real-game render path.
 //
@@ -77,7 +77,7 @@ extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
                                                  int* out_w, int* out_h) {
     if (out_w) *out_w = 0;
     if (out_h) *out_h = 0;
-    /* PsyCross in null-GPU library mode has no GL context — every gl* pointer
+    /* PsyCross in null-GPU library mode has no GL context - every gl* pointer
      * is unloaded and GR_PresentCroppedToWindow/glReadPixels would segfault.
      * The -og reference screenshot simply doesn't exist in that mode. */
     if (g_psyx_null_gpu) {
@@ -95,7 +95,7 @@ extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
     unsigned char* pixels = nullptr;
 
     /* Capture the rendered scene at its native internal resolution, cropped
-     * to the canonical PSX visible region — read straight from the present
+     * to the canonical PSX visible region - read straight from the present
      * FBO, NOT the window backbuffer. The backbuffer carries letter/pillarbox
      * bars whenever the window aspect doesn't match the content, and the
      * screenshot fires before PsyX_EndScene (when the scene still lives in
@@ -140,7 +140,7 @@ extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
     const char* out_path = path ? path : "SCREENSHOT.BMP";
     if (is_png) {
         /* Force every pixel opaque before encoding. glReadPixels returns
-         * the framebuffer's blended scene alpha (typically 0x80..0xFF —
+         * the framebuffer's blended scene alpha (typically 0x80..0xFF -
          * only ~1/6 of pixels are fully opaque), which is meaningless for
          * a flat screenshot but makes image viewers alpha-composite the
          * PNG over their transparency checkerboard. The live window is
@@ -150,7 +150,7 @@ extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
             pixels[i * 4u + 3u] = 0xFFu;
         stbi_write_png(out_path, w, h, 4, pixels, (int)pitch);
     } else {
-        /* glReadPixels(GL_BGRA, GL_UNSIGNED_BYTE) stores bytes B,G,R,A —
+        /* glReadPixels(GL_BGRA, GL_UNSIGNED_BYTE) stores bytes B,G,R,A -
          * the 32-bit little-endian value 0xAARRGGBB, i.e. ARGB8888. */
         SDL_Surface* surface = SDL_CreateSurfaceFrom(
             w, h, SDL_PIXELFORMAT_ARGB8888, pixels, (int)pitch);
@@ -191,12 +191,12 @@ extern "C" void openpete_debug_triangle_emit(void) {
     if (!s_initialised) openpete_debug_triangle_init();
 
     /* Force our own draw env each frame so the triangle has a known clip
-     * rect and clear color — Spyro's draw env may not yet be set. */
+     * rect and clear color - Spyro's draw env may not yet be set. */
     PutDrawEnv(&s_drawenv);
 
     /* Hand-build a single-prim OT. PsyCross's ClearOTag has a quirk where
      * its initialisation loop overwrites the terminator entry; safer to
-     * build the chain ourselves: s_ot[0] (head, len=0) → s_tri → terminator.
+     * build the chain ourselves: s_ot[0] (head, len=0) -> s_tri -> terminator.
      * `addPrim` modifies its prim's tag-address, so we re-issue both the
      * head and the prim's link target every frame. */
     setlen(&s_ot[0], 0);

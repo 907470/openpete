@@ -1,4 +1,4 @@
-/* openpete_shader_api.glsl — the postfx shader contract.
+/* openpete_shader_api.glsl - the postfx shader contract.
  *
  * Include after the #version line:
  *

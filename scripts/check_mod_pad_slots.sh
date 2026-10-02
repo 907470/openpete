@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# check_mod_pad_slots.sh — api->pad_read against the synthetic pad stream.
+# check_mod_pad_slots.sh - api->pad_read against the synthetic pad stream.
 #
 # The mods/pad-probe fixture reads slots 0-3 once per tick and recomputes,
 # from each record's own VBL, the bytes the engine's synthetic pad stream
-# defines for that VBL and slot. The formula exists twice — once in
-# core/runtime/run.c, once in the mod, which links no engine symbol — so a
+# defines for that VBL and slot. The formula exists twice - once in
+# core/runtime/run.c, once in the mod, which links no engine symbol - so a
 # mismatch means the record a mod reads is not the record the log carries.
 # The expected slot set is the fixture's `expect` config row, written per
 # leg into the leg's own copy of the mod directory.
@@ -41,7 +41,7 @@
 # record during a transition, which the probe also counts as a repeat.
 #
 # Usage: scripts/check_mod_pad_slots.sh [--game SLUG]   (repo root)
-# Env:   OPENPETE_BIN / OPENPETE_DISC — forwarded through scripts/lib/game.sh.
+# Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded through scripts/lib/game.sh.
 # Exit:  0 all legs PASS, 1 any leg FAIL, 64 wrong game.
 
 set -u
@@ -202,11 +202,11 @@ d_present1="$(slot_field "$WORK/d.log" 1 present)"
 if [ "$d_present1" -gt 0 ]; then
     ok "leg d: slot 1 present on $d_present1 read(s) off the movie"
 else
-    bad "leg d: slot 1 never present — the movie carried no second player"
+    bad "leg d: slot 1 never present - the movie carried no second player"
 fi
 
 # ── e. negative control: the same replay against a one-player movie ────
-say "leg e: negative control — one-player movie, slot 1 still expected"
+say "leg e: negative control - one-player movie, slot 1 still expected"
 capture "$WORK/rec1.log" "$WORK/one.bk2" OPENPETE_SYNTH_PADS=0 -- \
     "${SYNTH_ARGS[@]}" --bk2-record "$WORK/one.bk2" --frame-limit $FRAMES
 fixture "$WORK/e" "1"
@@ -225,7 +225,7 @@ fi
 
 # ── rumble legs ────────────────────────────────────────────────────────
 #
-# rumble-guard: intentional — leg f measures motor commands arriving at a
+# rumble-guard: intentional - leg f measures motor commands arriving at a
 # device, so it is the one leg here that must NOT silence vibration. The only
 # device reachable from it is the virtual pad the run attaches itself: the
 # actuator path lifts its headless and focus refusals for exactly the ids in
@@ -278,7 +278,7 @@ f_ok="$(sed -n 's/.*pad-probe: rumble: .* ok=\([0-9]*\).*/\1/p' "$WORK/f.log" | 
 if [ "$f_live0" = "1" ] && [ "$f_live1" = "1" ]; then
     ok "leg f: both virtual pad recorders live (self-probe ok)"
 else
-    bad "leg f: recorder live pad0=$f_live0 pad1=$f_live1 — counts below prove nothing"
+    bad "leg f: recorder live pad0=$f_live0 pad1=$f_live1 - counts below prove nothing"
 fi
 if [ "${f_ok:-0}" -ge 1 ] && [ "$f_cmds" -ge 1 ]; then
     ok "leg f: ${f_ok:-0} accepted pad_rumble call(s), $f_cmds motor command(s) on slot 1"
@@ -308,7 +308,7 @@ rumble_run "$WORK/g.log" OPENPETE_INPUT_VGAMEPAD=0 -- \
 g_cmds="$(census "$WORK/g.log" 'mod slot 1: \([0-9]*\) motor command')"
 g_ok="$(sed -n 's/.*pad-probe: rumble: .* ok=\([0-9]*\).*/\1/p' "$WORK/g.log" | tail -1)"
 if [ "${g_ok:-0}" -ge 1 ] && [ "$g_cmds" -eq 0 ]; then
-    ok "leg g: ${g_ok:-0} accepted call(s), 0 motor commands — no device, nothing driven"
+    ok "leg g: ${g_ok:-0} accepted call(s), 0 motor commands - no device, nothing driven"
 else
     bad "leg g: accepted calls=${g_ok:-0} motor commands=$g_cmds (expected calls, no commands)"
 fi
@@ -324,7 +324,7 @@ rm -f "$WORK/h.log"
 h_nz1="$(census "$WORK/h.log" 'recorder: pad 1 live=[0-9]*, [0-9]* callback(s), \([0-9]*\) non-zero')"
 h_cmds="$(census "$WORK/h.log" 'mod slot 1: \([0-9]*\) motor command')"
 if [ "$h_cmds" -ge 1 ] && [ "$h_nz1" -eq 0 ]; then
-    ok "leg h: $h_cmds command(s) issued, 0 non-zero — the strength setting is not bypassable"
+    ok "leg h: $h_cmds command(s) issued, 0 non-zero - the strength setting is not bypassable"
 else
     bad "leg h: commands=$h_cmds non-zero on pad 1=$h_nz1 (strength 0 did not silence)"
 fi

@@ -1,4 +1,4 @@
-/* core/record/bk2_record.c — see bk2_record.h.
+/* core/record/bk2_record.c - see bk2_record.h.
  *
  * Output schema mirrors what BizHawk Octoshock 2.9.1 writes (the same
  * dialect bk2_movie.c parses). At finalize, one Input Log line is written
@@ -14,7 +14,7 @@
  *   by 16 digital chars + 1 MODE char, always '.'. A two-player movie
  *   repeats this segment for port 2.
  * - Each digital char is '.' when released, the BizHawk display
- *   letter when pressed (U/D/L/R/s/S/Q/T/O/X/l/r/L/R/L/R) — only the
+ *   letter when pressed (U/D/L/R/s/S/Q/T/O/X/l/r/L/R/L/R) - only the
  *   '.'-vs-non-'.' distinction matters to bk2_movie_load, but the
  *   letters mean the file round-trips through BizHawk too.
  */
@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* PSX pad bit → digital-position index (matches kBk2P1DigitalMask in
+/* PSX pad bit -> digital-position index (matches kBk2P1DigitalMask in
  * bk2_movie.c). Position 16 (MODE) is never set. */
 static const struct { uint16_t mask; char letter; } kButtonChars[16] = {
     { 0x0010, 'U' }, { 0x0040, 'D' }, { 0x0080, 'L' }, { 0x0020, 'R' },
@@ -45,7 +45,7 @@ static const struct { uint16_t mask; char letter; } kButtonChars[16] = {
 
 static struct {
     char*        path;
-    char*        args;       /* .args sidecar content, or NULL — written at finalize */
+    char*        args;       /* .args sidecar content, or NULL - written at finalize */
     int          start_idx;  /* input_log index of the movie's first frame */
     int          active;
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
@@ -61,7 +61,7 @@ static struct {
 static void bk2_record_on_guest_discontinuity(void) {
     if (!s_rec.active) return;
     OPL_ERROR_F("bk2-record",
-                "guest state replaced (savestate load) at frame %d — "
+                "guest state replaced (savestate load) at frame %d - "
                 "finalizing movie here; frames after the load are NOT recorded",
                 input_log_count() - s_rec.start_idx);
     (void)bk2_record_finalize();
@@ -163,7 +163,7 @@ static int format_port(char* out, const openpete_input_port_t* p) {
                     p->axes[0], p->axes[1], p->axes[2], p->axes[3]);
     for (int i = 0; i < 16; i++)
         out[n++] = (p->bits & kButtonChars[i].mask) ? '.' : kButtonChars[i].letter;
-    out[n++] = '.';   /* MODE column — replay is always analog, no toggle */
+    out[n++] = '.';   /* MODE column - replay is always analog, no toggle */
     out[n++] = '|';
     return n;
 }
@@ -223,7 +223,7 @@ static int format_log_key(char* out, size_t cap, int players) {
  * A movie whose log key declares two ports only parses against a core
  * configured for two, so the player count has to travel with the movie.
  * Octoshock takes it from this lump: DualShock (2) in each of the PSX's two
- * real controller ports, which are Devices8 slots 0 and 4 — slots 1-3 and
+ * real controller ports, which are Devices8 slots 0 and 4 - slots 1-3 and
  * 5-7 exist only behind a multitap, and Spyro never used one. Memcards
  * matches the core's own default so nothing else about the session shifts. */
 static const char* const kSyncSettings2P =

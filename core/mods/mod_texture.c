@@ -1,27 +1,27 @@
-/* mod_texture.c — mod-owned RGBA8 textures for the native renderer.
+/* mod_texture.c - mod-owned RGBA8 textures for the native renderer.
  *
  * The stress-test gap this closes: mods can REPLACE existing texture
- * uploads (HD pack) but had no way to introduce NEW texture content —
+ * uploads (HD pack) but had no way to introduce NEW texture content -
  * every VRAM rect belongs to the game (levels upload a full 512x512
  * image over the whole right half, so there is no safely claimable
  * rect; the spyro3-chests first cut proved it by corrupting terrain).
  *
  * Mechanism: the mod registers RGBA8 pixels under a mod-chosen 16-bit
  * id. Model faces select the texture with a PSX-RESERVED Tiledef
- * encoding — tpage MODE bits (attr>>7 & 3) == 3 — carrying the id in
+ * encoding - tpage MODE bits (attr>>7 & 3) == 3 - carrying the id in
  * the CLUT u16. The native renderer resolves the id here and binds the
  * texture through the HD-replacement pipe (draw_tex_runs); UVs are raw
  * texel coords into the registered image. Native-renderer-only by
  * design: the PSX path samples VRAM noise for such faces (mode 3 does
  * not exist on hardware), which the og/debug panes show as garbage.
- * Host-side only — guest RAM, VRAM and the oracle are untouched.
+ * Host-side only - guest RAM, VRAM and the oracle are untouched.
  *
  * Live modset toggle. A registration OUTLIVES its owner's disable and
  * keeps resolving. That is deliberate, and the reasoning is the mode-3
  * encoding itself: it exists nowhere in stock game data, so every face
  * that selects a mod texture was written into guest memory by a mod
  * (patched faceblocks, repointed model rows). Those guest bytes are the
- * mod's to undo — from its toggle hook, or at its next install pass —
+ * mod's to undo - from its toggle hook, or at its next install pass -
  * and until it does, the geometry is on screen either way. Blanking the
  * texture would not remove one face; it would only strip the art off
  * still-live mod geometry, and since the renderer draws NOTHING for a
@@ -47,7 +47,7 @@
 #include <string.h>
 #include <dirent.h>
 
-/* Static PNG-only decoder instance, same pattern as texture_pack.c —
+/* Static PNG-only decoder instance, same pattern as texture_pack.c -
  * the stb implementation is file-local in each consumer. */
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -84,7 +84,7 @@ static mod_cvec s_tex;   /* mod_texture_t */
  * texture uploaded from the OLD image and the new pixels would never
  * appear. Freeing a superseded buffer puts its address straight back in
  * the allocator's fast bins, where the very next same-sized
- * registration picks it up — the failure mode is a second hot reload
+ * registration picks it up - the failure mode is a second hot reload
  * rendering the FIRST build's image. Retiring instead of freeing makes
  * the pointer identity monotone for the session. (The GPU texture the
  * old buffer keyed is retained by the same cache anyway.)
@@ -120,9 +120,9 @@ static int s_retired_n;
 static void tex_retire(unsigned char* px) {
     retired_px* r = (retired_px*)malloc(sizeof *r);
     if (r) { r->px = px; r->next = s_retired; s_retired = r; }
-    /* No node: the buffer simply leaks untracked — still never recycled. */
+    /* No node: the buffer simply leaks untracked - still never recycled. */
     if (++s_retired_n == MOD_TEXTURE_RETIRE_WARN)
-        OPL_WARN_F("mods", "texture: %d superseded images retained — "
+        OPL_WARN_F("mods", "texture: %d superseded images retained - "
                    "register textures at entry, not per tick",
                    s_retired_n);
 }
@@ -226,7 +226,7 @@ int openpete_mods_texture_scan_root(const char* dir, const char* owner) {
         stem[sl] = '\0';
         if (sscanf(stem, "%4x%c", &id, &tail) != 1 || id > 0xFFFFu) {
             OPL_WARN_F("mods", "texture: %s/%s: filename is not a 16-bit "
-                       "hex id — skipped", path, de->d_name);
+                       "hex id - skipped", path, de->d_name);
             continue;
         }
         char file[1440];
@@ -234,7 +234,7 @@ int openpete_mods_texture_scan_root(const char* dir, const char* owner) {
         int w = 0, h = 0, comp = 0;
         unsigned char* px = stbi_load(file, &w, &h, &comp, 4);
         if (!px) {
-            OPL_ERROR_F("mods", "texture: %s: PNG decode failed — skipped",
+            OPL_ERROR_F("mods", "texture: %s: PNG decode failed - skipped",
                         file);
             continue;
         }
@@ -256,7 +256,7 @@ const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h) {
         if (t->owner_off && !t->warned) {
             t->warned = 1;
             OPL_INFO_F("mods", "texture: id %#06x still drawn while owner %s "
-                       "is disabled — the faces selecting it are that mod's "
+                       "is disabled - the faces selecting it are that mod's "
                        "guest writes, and revert with them", id, t->owner);
         }
         t->drawn = 1;             /* pixels are now GPU-cache-keyed by address */

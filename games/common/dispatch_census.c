@@ -1,4 +1,4 @@
-/* games/common/dispatch_census.c — see dispatch_census.h. */
+/* games/common/dispatch_census.c - see dispatch_census.h. */
 #include "dispatch_census.h"
 
 #include <stdio.h>

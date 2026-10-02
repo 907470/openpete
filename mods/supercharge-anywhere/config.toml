@@ -2,7 +2,7 @@
 # watches this file).
 
 # Start with supercharge forced on at load. Set false to start disabled
-# and flip it in-game with the toggle key (default G — chosen to avoid
+# and flip it in-game with the toggle key (default G - chosen to avoid
 # PsyCross's keyboard pad map, where V = Circle).
 start_enabled = false
 

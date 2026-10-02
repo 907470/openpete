@@ -1,4 +1,4 @@
-/* games/common/renderer/moby_game_spyro23.c — the per-game half of the shared
+/* games/common/renderer/moby_game_spyro23.c - the per-game half of the shared
  * moby feeder for both games whose moby draw is the same three handwritten
  * routines: the vertex-stream and face-stream decoders, the cull-record
  * reader, the model-kind test, the keyframe patch list and the second model
@@ -28,7 +28,7 @@
 #include "renderer/moby.h"            /* the second kind's shared emit */
 #include "renderer/native_gte.h"       /* ngte_read_matrix, ngte_mac, ngte_mat_mul3, ngte_dpcs_ch */
 #include "game_layout.h"
-#include "no_lod.h"                    /* openpete_no_lod — the extended-LOD clause */
+#include "no_lod.h"                    /* openpete_no_lod - the extended-LOD clause */
 #include "openpete_recomp_module.h"    /* the game's own static draw */
 #include "renderer/interp_regions_gen.h"  /* game_interp_moby_stash_begin/_put */
 
@@ -58,7 +58,7 @@
  *
  * Three forms, chained: bit 0 of the item just consumed picks the next one,
  * and the keyframe word's bit 25 picks the first (mobydraw.s:968,986-988).
- * Bit 0 clear takes the ADJUST form — one byte from the adjust stream whose
+ * Bit 0 clear takes the ADJUST form - one byte from the adjust stream whose
  * (byte >> 1) & 0x7F indexes the 32-bit table; the table word is ADDED to this
  * vertex's static word and the sum unpacked (mobydraw.s:1011-1024). Bit 0 set
  * takes a halfword from the block stream, whose own bit 1 picks between the
@@ -68,7 +68,7 @@
  * static word (mobydraw.s:1010).
  *
  * The unpack of a packed word is Z += w >> 21, X -= (w << 11) >> 21,
- * Y -= (w << 22) >> 21 — an 11-bit Z, an 11-bit X and a 10-bit Y at twice its
+ * Y -= (w << 22) >> 21 - an 11-bit Z, an 11-bit X and a 10-bit Y at twice its
  * stored scale (mobydraw.s:1019-1024).
  *
  * vstream state: litp = the adjust byte cursor, shortp = the block halfword
@@ -246,12 +246,12 @@ int s23_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  * The material word packs three 8-bit colour channels at bits 0-7, 8-15 and
  * 16-23, each widened to the GTE's 12-bit form, plus a scalar in bits 24-27.
  *
- *   mode 0 (mobydraw.s:2215-2262) — the channels are the far colour RFC/GFC/BFC
+ *   mode 0 (mobydraw.s:2215-2262) - the channels are the far colour RFC/GFC/BFC
  *     (mobydraw.s:2073-2076); each vertex depth-cues from BLACK toward it at
  *     IR0 = (the vertex colour's three channels summed) << 3, so the face
  *     grades by its own luminance. Where mode0_ir0_from_colour_sum is 0 the
  *     vertex colour is the source and IR0 is the per-moby value instead.
- *   mode 1 (mobydraw.s:2273-2301) — the same far colour, but one IR0 for the
+ *   mode 1 (mobydraw.s:2273-2301) - the same far colour, but one IR0 for the
  *     whole moby, bits 24-27 << 8 (mobydraw.s:2079), and each vertex depth-cues
  *     from its own colour. IR0 zero leaves the colours alone. This mode also
  *     substitutes a texture: its setup loads the global word at
@@ -261,7 +261,7 @@ int s23_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  *     (mobydraw.s:2296-2299), keeping the face's own UVs. The substitution is
  *     unconditional, so a zero IR0 leaves a face drawn from the substitute page
  *     with the model's own colours.
- *   mode 2 (mobydraw.s:2551-2564) — the specular sheen. The channels are the
+ *   mode 2 (mobydraw.s:2551-2564) - the specular sheen. The channels are the
  *     GTE background colour, bits 24-27 doubled is IR0 (mobydraw.s:2024-2045),
  *     and the light matrix is three copies of one constant vector
  *     (mobydraw.s:2048-2057). The face normal rotates into view by the model
@@ -702,7 +702,7 @@ static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
  * the vector (+0x04 low, +0x08 high, +0x04 high) in IR1/IR2/IR3
  * (mobydraw.s:3946-3952), then doubles the result into the GTE translation
  * (mobydraw.s:4058-4060,4190-4192). The record holds quarter-world units, so
- * the translation — and every model vertex added to it — is in world/2: full
+ * the translation - and every model vertex added to it - is in world/2: full
  * world units are twice the transformed value, which is what this pass hands
  * the shared walk.
  *
@@ -783,7 +783,7 @@ extern unsigned openpete_frame;
  * 0x1F8003F0..0x1F8003FC (mobydraw.s:4360-4363, $gp = 0x1F800000). They are
  * reloaded from the table only for a record whose Moby+0x54 is non-zero
  * (mobydraw.s:4350-4352), so a record with a zero index draws with whatever
- * the previous record — or the previous draw call — left there. Snapshotting
+ * the previous record - or the previous draw call - left there. Snapshotting
  * the words before the game's own draw gives the decode the same entry state
  * that draw started from, and a sub-tick replay the same state again, without
  * ever writing the scratchpad. */
@@ -984,8 +984,8 @@ static int s23_simple_shade_face(const int R[3][3], uint32_t f1, int tri,
 }
 
 /* Where one queue record puts its model: the translation the vertex walk adds,
- * the matrix the moby's own rotations compose onto, the geometry header, and —
- * for the screen-space kind — the projection origin the record names. The two
+ * the matrix the moby's own rotations compose onto, the geometry header, and -
+ * for the screen-space kind - the projection origin the record names. The two
  * kinds part at one branch on the record (mobydraw.s:3915) and rejoin at the
  * shared vertex and face walk (mobydraw.s:4036), so everything between them is
  * here and nothing else in the decode differs. */
@@ -1154,8 +1154,8 @@ static int s23_simple_decode(CPUState* cpu) {
      * staged position equal to the tick's is a no-op bit for bit.
      *
      * A tick camera is installed only for a sub-tick present, so its absence is
-     * what keeps every canonical decode — the inline pass and the canonical lag
-     * leg alike — bit for bit what the cull wrote: no camera delta, no
+     * what keeps every canonical decode - the inline pass and the canonical lag
+     * leg alike - bit for bit what the cull wrote: no camera delta, no
      * per-record own motion and the tick's own rotation word. */
     double dcam[3] = { 0.0, 0.0, 0.0 };
     int32_t tickpos[3];
@@ -1575,7 +1575,7 @@ static int64_t s23_sat(int64_t v, int64_t lo, int64_t hi) {
  * Inside the cull's own distance box neither bound is reachable: the box caps
  * the centre at the render-radius byte scaled by 256, so the shift left 2
  * lands inside an int16 and the size byte is a fraction near unity. Past the
- * box — which is the whole of what this builder composes for — the input bound
+ * box - which is the whole of what this builder composes for - the input bound
  * alone collapses all three axes to the same 1023 and stands the moby on the
  * near plane at the size of the screen. Carrying the rescale at full width is
  * the treatment the centre's own MVMVA already takes, and is identical to the
@@ -1724,15 +1724,15 @@ static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reas
  *
  * An animated model goes to s23_reveal_anim_record. A second-kind model's queue
  * record is built the way the cull composes it (mobydraw.s:604-630): the Moby, the three quarter-world
- * camera deltas — (moby - cam) >> 2 on the first component and (cam - moby)
- * >> 2 on the other two (mobydraw.s:81,87,94) — and the model's animation slot
+ * camera deltas - (moby - cam) >> 2 on the first component and (cam - moby)
+ * >> 2 on the other two (mobydraw.s:81,87,94) - and the model's animation slot
  * at Model + (Moby+0x3C byte 0) * 4. A model-table entry that is KSEG0 is the
  * animated kind and belongs to the other queue (mobydraw.s:116).
  *
  * The deltas also go into the full-width fields, since a revealed moby sits
  * past what the packed halves can hold, and the far-cull distance is -1: a
  * host-built record carries no range limit, which is what extended LOD means.
- * Nothing here writes guest memory — the queue is the host copy taken at the
+ * Nothing here writes guest memory - the queue is the host copy taken at the
  * cull hook, and the moby's own verdict byte stays the cull's.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.

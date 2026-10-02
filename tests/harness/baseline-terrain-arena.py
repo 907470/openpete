@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""baseline-terrain-arena.py — per-level terrain-arena high-water baseline.
+"""baseline-terrain-arena.py - per-level terrain-arena high-water baseline.
 
 The retained terrain cache holds fifteen vertex arenas and eight cell-record
 arenas (CN_*, CA_*: counted in records) whose capacities are
@@ -15,9 +15,9 @@ OPENPETE_TC_INITIAL_CAP past any content this game holds.
 Four row kinds per level, written as `pose` rows of
 baselines/terrain-arena/<level>.tsv:
 
-  spawn    the level's own spawn camera, original LOD — what a player's first
+  spawn    the level's own spawn camera, original LOD - what a player's first
            frames ask of the arenas.
-  topdown  the whole-level-visible freecam pose with extended LOD — the
+  topdown  the whole-level-visible freecam pose with extended LOD - the
            static worst case, every sector of the level in the frustum.
   bk2      the peak over every presentation-golden movie that plays in this
            level. A traversal exceeds both static poses: a camera that moves
@@ -79,7 +79,7 @@ BK2_DIR = os.path.join(ROOT, "games/spyro-1/bk2")
 MANIFEST = corpus_manifest.corpus_manifest(ROOT, "spyro-1", "presentation-corpus.manifest")
 EXIT_SKIP = 64
 
-# games/spyro-1/features/levelwarp.c k_levels — every warpable level, in that
+# games/spyro-1/features/levelwarp.c k_levels - every warpable level, in that
 # table's order, with the level id the game reports at a load.
 LEVELS = [
     ("artisans", 10), ("stone_hill", 11), ("dark_hollow", 12),
@@ -444,7 +444,7 @@ def assert_clean(data, leg):
                     bad.append("%s %s %s: afail=%d (sectors claimed back for want of room)"
                                % (level, pose, name, r["afail"][a]))
                 if leg == "regen" and r["high"][a] and r["high"][a] == r["cap"][a]:
-                    bad.append("%s %s %s: high=%d equals cap — the figure is censored, "
+                    bad.append("%s %s %s: high=%d equals cap - the figure is censored, "
                                "raise OPENPETE_TC_INITIAL_CAP" % (level, pose, name, r["high"][a]))
     return bad
 
@@ -547,7 +547,7 @@ def cmd_bk2corpus(jobs, out_dir=OUT_DIR, quiet=False):
                 if row["afail"][a]:
                     bad.append("%s %s: afail=%d at the raised cap" % (tag, name, row["afail"][a]))
                 if row["high"][a] and row["high"][a] == row["cap"][a]:
-                    bad.append("%s %s: high=%d equals cap — censored" % (tag, name, row["high"][a]))
+                    bad.append("%s %s: high=%d equals cap - censored" % (tag, name, row["high"][a]))
             got = peaks_by_level(log)
             for lid, high in got.items():
                 cur = peaks.setdefault(lid, {"high": [0] * len(ARENAS), "movies": []})
@@ -599,7 +599,7 @@ def read_union_rows(out_dir=OUT_DIR, kinds=None):
     """level -> per-arena maximum `high` over the level's pose rows, every
     row kind or only those named in `kinds`."""
     if not os.path.exists(os.path.join(out_dir, "union.tsv")):
-        die("no committed union.tsv — run `generate` first")
+        die("no committed union.tsv - run `generate` first")
     per_level = {}
     for level, _id in LEVELS:
         lp = os.path.join(out_dir, level + ".tsv")
@@ -635,7 +635,7 @@ def cmd_demo(out_dir=OUT_DIR):
         if rc != 0:
             bad.append("exit %d" % rc)
         if row["edges"] == 0:
-            bad.append("the run log named no level load — every assertion below is vacuous")
+            bad.append("the run log named no level load - every assertion below is vacuous")
         # One arena replacement per level edge. A shortfall is a level whose
         # geometry was baked into the outgoing buffers.
         if row["svc_fulfilled"] != row["edges"]:
@@ -661,7 +661,7 @@ def cmd_demo(out_dir=OUT_DIR):
         print("  segments (one per buffer generation): %s"
               % ", ".join("gen=%d lines=%d" % (s["gen"], s["lines"]) for s in segs))
         if len(segs) < 2:
-            bad.append("only %d census segment(s) — the sawtooth is unmeasured" % len(segs))
+            bad.append("only %d census segment(s) - the sawtooth is unmeasured" % len(segs))
         for i in range(1, len(segs)):
             prev, cur = segs[i - 1], segs[i]
             lv = LEVEL_BY_ID.get(cur["level"])
@@ -671,7 +671,7 @@ def cmd_demo(out_dir=OUT_DIR):
                     continue
                 if prev["peak"][a] and cur["first"][a] >= prev["peak"][a]:
                     bad.append("%s: first mark after the edge into gen %d is %d, not below "
-                               "gen %d's peak of %d — the outgoing level's geometry survived"
+                               "gen %d's peak of %d - the outgoing level's geometry survived"
                                % (name, cur["gen"], cur["first"][a], prev["gen"],
                                   prev["peak"][a]))
 
@@ -736,12 +736,12 @@ def cmd_overflow():
         adopted = sum(tiny["ovf"])
         tail = [sum(c["afail"]) for c in tiny["lines"][-3:]]
         if peak_afail <= 0:
-            bad.append("afail never rose at cap %d — the overflow path never ran (VACUOUS)"
+            bad.append("afail never rose at cap %d - the overflow path never ran (VACUOUS)"
                        % OVERFLOW_CAP)
         if adopted <= 0:
-            bad.append("no overflow buffer was installed (ovf=0) — the claim is permanent")
+            bad.append("no overflow buffer was installed (ovf=0) - the claim is permanent")
         if len(tail) < 2 or len(set(tail)) != 1:
-            bad.append("afail still rising at exit: last census lines %s — the overflow "
+            bad.append("afail still rising at exit: last census lines %s - the overflow "
                        "did not stop the claim-back" % tail)
         if sum(stock["afail"]) != 0:
             bad.append("the generated caps claimed %d sectors back on %s"

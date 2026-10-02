@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Custom-level target totals: assert the three EXE count tables directly.
 #
-# The oracle cannot see these bytes — its regions start at 0x800756C8 and
-# none covers 0x8006F414..0x8006F493 — so correctness is established here,
+# The oracle cannot see these bytes - its regions start at 0x800756C8 and
+# none covers 0x8006F414..0x8006F493 - so correctness is established here,
 # by diffing whole table extents against a no-mods baseline rather than by
 # reading a value back through the same code that wrote it.
 #
@@ -108,7 +108,7 @@ for name, (off, n, w) in T.items():
 ok = True
 hdr = [i for i in range(512) if base[0x6F494+i] != cand[0x6F494+i]]
 if hdr:
-    print(f"    g_MemCardSaveHeader CHANGED at {hdr[:8]} — an egg write "
+    print(f"    g_MemCardSaveHeader CHANGED at {hdr[:8]} - an egg write "
           f"landed past the table")
     ok = False
 if got != want:
@@ -138,11 +138,11 @@ if run "$WORK/rep" "$WORK/rep.bin" "$WORK/rep.log" 600 660; then
     fi
     grep -q 'level 12 target totals' "$WORK/rep.log" \
         && pass "engagement: the write is logged" \
-        || fail "engagement: no write logged — the leg proved nothing"
+        || fail "engagement: no write logged - the leg proved nothing"
     n=$(grep -c 'level 12 target totals' "$WORK/rep.log")
     [ "$n" = "1" ] \
         && pass "idempotent: wrote once across 660 frames" \
-        || fail "wrote $n times — the reconcile is not idempotent"
+        || fail "wrote $n times - the reconcile is not idempotent"
 else
     fail "replace-row run produced no dump"
 fi

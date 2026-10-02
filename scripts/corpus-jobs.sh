@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# corpus-jobs.sh — job-slot helper shared by the corpus capture scripts.
+# corpus-jobs.sh - job-slot helper shared by the corpus capture scripts.
 # SOURCED, not executed.
 #
 # Every corpus capture is an independent headless process writing its own
@@ -10,7 +10,7 @@
 #
 # CORPUS_JOBS caps concurrency (default 3/8 of nproc). The captures render under
 # software Vulkan, which is ITSELF multithreaded, so the useful ceiling is well
-# below core count — past it the jobs just contend and wall-clock stops
+# below core count - past it the jobs just contend and wall-clock stops
 # improving. CORPUS_JOBS=1 restores strictly serial execution, which is the
 # reference any parallel run must reproduce byte-for-byte.
 #
@@ -27,7 +27,7 @@
 #   cj_wait || fail=1                   # drains; non-zero if ANY job failed
 #
 # cj_run backgrounds the call, so a job cannot report failure by assigning to a
-# variable — the caller's `fail=1` would be set in a subshell and lost. Failures
+# variable - the caller's `fail=1` would be set in a subshell and lost. Failures
 # are recorded in a status file instead, and surface from cj_wait.
 
 CORPUS_JOBS="${CORPUS_JOBS:-$(( $(nproc) * 3 / 8 ))}"

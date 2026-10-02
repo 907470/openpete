@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-measure-pacing.py — analyze a binary frame-time log produced by openpete's
+measure-pacing.py - analyze a binary frame-time log produced by openpete's
 `--frame-time-log PATH` option.
 
 Binary format (little-endian, see core/include/openpete_frame_time_log.h):
@@ -95,10 +95,10 @@ def classify_bimodal(deltas_ns):
     Strategy:
       1. Take the median delta. Count the fraction of records that
          fall below 0.75 × median (i.e. clearly belong to a faster
-         mode — for 33 ms median that's < 25 ms).
-      2. If that fraction is < 2 % the distribution is unimodal —
+         mode - for 33 ms median that's < 25 ms).
+      2. If that fraction is < 2 % the distribution is unimodal -
          outliers, not a second mode.
-      3. Otherwise split at 0.75 × median: below → fast, above → slow.
+      3. Otherwise split at 0.75 × median: below -> fast, above -> slow.
 
     Returns a dict: {'unimodal': bool, 'threshold_ns': int or None,
                       'fast': stats|None, 'slow': stats|None,
@@ -120,7 +120,7 @@ def classify_bimodal(deltas_ns):
     slow = [d for d in deltas_ns if d > thresh]
     fast_frac = len(fast) / n
 
-    # Need at least 2 % minority share to call it bimodal — below that
+    # Need at least 2 % minority share to call it bimodal - below that
     # it's just outliers (cd-read stalls, single-frame catch-ups).
     if fast_frac < 0.02:
         return {"unimodal": True, "threshold_ns": None,
@@ -204,7 +204,7 @@ def summarize(log, args):
     total_slips = sum(log["slips"])
 
     # Classify before printing so we can qualify mean-rate / phase-drift
-    # stats — both average across two distributions when the run mixes
+    # stats - both average across two distributions when the run mixes
     # 30 Hz gameplay with 60 Hz flybys (Spyro switches via VSync(N)).
     bm = classify_bimodal(deltas)
 
@@ -218,7 +218,7 @@ def summarize(log, args):
         print(f"rate error:         "
               f"{(achieved_hz - target_hz)/target_hz*100:+.3f} %")
     else:
-        print(f"achieved rate:      [mixed — see bimodal breakdown below]")
+        print(f"achieved rate:      [mixed - see bimodal breakdown below]")
     print(f"delta p50:          {p50/1e6:>10.4f} ms "
           f"({(p50-period_ns)/1e6:+.4f} from target)")
     print(f"delta p99:          {p99/1e6:>10.4f} ms "
@@ -308,7 +308,7 @@ def maybe_plot(log, args):
                label=f"target ({period_ns/1e6:.3f} ms)")
     ax.set_xlabel("inter-present delta (ms)")
     ax.set_ylabel("count")
-    ax.set_title(f"frame-time histogram — {base.name}")
+    ax.set_title(f"frame-time histogram - {base.name}")
     ax.legend()
     out = base.with_suffix(base.suffix + ".deltas.png")
     fig.tight_layout()
@@ -321,7 +321,7 @@ def maybe_plot(log, args):
     ax.axhline(0, color="black", linewidth=0.5)
     ax.set_xlabel("frame")
     ax.set_ylabel("now − deadline (ms)")
-    ax.set_title(f"phase drift — {base.name}")
+    ax.set_title(f"phase drift - {base.name}")
     out = base.with_suffix(base.suffix + ".phase.png")
     fig.tight_layout()
     fig.savefig(out)

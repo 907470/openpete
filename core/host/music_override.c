@@ -29,7 +29,7 @@ enum { MO_DIR_SHIPPED = 0, MO_DIR_USER, MO_DIR_MAX };
 
 static struct {
     int   discovered;
-    char  dir[MO_DIR_MAX][1024];    /* "" → that root is not in play */
+    char  dir[MO_DIR_MAX][1024];    /* "" -> that root is not in play */
     char* manifest[MO_MAX_TRACKS];  /* malloc'd paths relative to a dir */
 
     /* MO_FAILED latches a file whose header was rejected until the modset
@@ -49,7 +49,7 @@ static struct {
     int       sample_rate;
 
     float gain;
-    float forced_gain;              /* >= 0 → overrides `gain` */
+    float forced_gain;              /* >= 0 -> overrides `gain` */
 } s = { .gain = 1.0f, .forced_gain = -1.0f };
 
 /* The streaming worker. A start opens the file and reads its header and
@@ -579,7 +579,7 @@ void music_override_pump(void)
         alSourceQueueBuffers(s.source, 1, &b);
     }
 
-    /* WAV exhausted → ring drains and the source stops. Looping is the
+    /* WAV exhausted -> ring drains and the source stops. Looping is the
      * game's job: it polls CdlGetlocP and re-issues CdlReadS when the
      * head passes the track's end, which restarts us from frame 0. The
      * head is driven by the game layer (psyq_CdSync), not from here, so

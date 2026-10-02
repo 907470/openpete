@@ -1,4 +1,4 @@
-// core/include/screenshot.h — read pixels from the host renderer to PNG.
+// core/include/screenshot.h - read pixels from the host renderer to PNG.
 
 #ifndef OPENPETE_SCREENSHOT_H
 #define OPENPETE_SCREENSHOT_H

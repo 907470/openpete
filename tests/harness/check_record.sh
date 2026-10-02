@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_record.sh — smoke test for `--record` true-VFR video capture.
+# check_record.sh - smoke test for `--record` true-VFR video capture.
 #
 # Boots the headless attract demo with --record and asserts, via ffprobe,
 # that the output is a playable VFR H.264 stream with the expected
@@ -7,21 +7,21 @@
 #
 #   1. Plain 4:3: a single H.264 video stream, even dimensions, the frame
 #      count the runtime reported captured, and strictly-increasing
-#      per-frame PTS with non-uniform deltas (true VFR — not a fixed rate).
+#      per-frame PTS with non-uniform deltas (true VFR - not a fixed rate).
 #   2. Letterbox-freedom: the same 21:9 headless record at two --window
 #      sizes must produce the SAME recorded aspect ratio, and dimensions
-#      that are not the raw window dimensions — the capture scales with the
+#      that are not the raw window dimensions - the capture scales with the
 #      window (present-FBO readback) but its shape is content-derived,
 #      never the window's letterboxed shape. (Headless capture forces the
-#      PsyCross present, which does not aspect-widen — so the recorded aspect is
+#      PsyCross present, which does not aspect-widen - so the recorded aspect is
 #      the PSX-derived present shape, not 21:9; the windowed native record
-#      DOES widen — 21:9 records 1120x448 on a real GPU.)
-#   3. --record-cfr: the opposite of run 1 — an exact NTSC rational rate, a
+#      DOES widen - 21:9 records 1120x448 on a real GPU.)
+#   3. --record-cfr: the opposite of run 1 - an exact NTSC rational rate, a
 #      single PTS delta (perfectly even cadence), exactly --record-frames
 #      frames, and no audio track.
 #
 # Headless runs unpaced, so wall-clock duration reflects host speed, not
-# 30 fps — this test asserts frame *count* + codec + VFR structure, never
+# 30 fps - this test asserts frame *count* + codec + VFR structure, never
 # duration.
 #
 # Usage:
@@ -33,9 +33,9 @@
 # spyro-1).
 #
 # Exit codes:
-#   0  — all assertions passed
-#   1  — an assertion failed
-#  64  — skipped (missing binary / disc / ffprobe) — CTest SKIP_RETURN_CODE
+#   0  - all assertions passed
+#   1  - an assertion failed
+#  64  - skipped (missing binary / disc / ffprobe) - CTest SKIP_RETURN_CODE
 
 set -uo pipefail
 
@@ -85,7 +85,7 @@ pg_capture "$LOG1" "$OUT1" -- \
 
 # A build configured without libav accepts --record and warns that it is
 # ignoring it. Every later assertion would then be about a file that was
-# never written — and Run 3 would never even end, because its stopping
+# never written - and Run 3 would never even end, because its stopping
 # condition is a count of RECORDED frames that stays at zero. Treat it as
 # the missing prerequisite it is, alongside the binary and ffprobe. Checked
 # before the missing output is reported, since that absence is this skip's

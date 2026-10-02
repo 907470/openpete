@@ -1,4 +1,4 @@
-/* text_moby_id_test — the provenance table's generation lifecycle
+/* text_moby_id_test - the provenance table's generation lifecycle
  * (games/spyro-1/renderer/text_moby_id.c) against a fake CPU and RAM.
  *
  * The emitters are driven through the module's own dispatch table, exactly
@@ -60,7 +60,7 @@ static feature_dispatch_fn hook(uint32_t addr) {
 }
 
 /* Emulate one emitter call: run the entry hook, then do what the emitter
- * does — bump the cursor down one moby per non-space character and write
+ * does - bump the cursor down one moby per non-space character and write
  * the class the emitter would write. */
 static void emit(CPUState* cpu, uint32_t ra, const char* text, uint32_t str_addr) {
     memcpy(ram(str_addr), text, strlen(text) + 1);
@@ -97,7 +97,7 @@ int main(void) {
     const uint32_t POOL_A = 0x801A3BB0u, POOL_B = 0x801BFBB0u, STR = 0x80100000u;
     uint32_t key, k0, k1;
 
-    /* Tick 1: one call emits "AB" — glyph j lands at cursor - (j+1)*stride. */
+    /* Tick 1: one call emits "AB" - glyph j lands at cursor - (j+1)*stride. */
     new_tick(POOL_A);
     emit(&cpu, 0x80010000u, "AB", STR);
     uint32_t a1 = POOL_A - 1u * MOBY_STRIDE, b1 = POOL_A - 2u * MOBY_STRIDE;

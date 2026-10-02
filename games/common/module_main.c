@@ -1,4 +1,4 @@
-// games/common/module_main.c — the recomp-module descriptor.
+// games/common/module_main.c - the recomp-module descriptor.
 //
 // Compiled into the module beside the generated *_full.c/*_dispatch.c and
 // overlay_dispatch.c: the single symbol the host resolves to reach recompiled
@@ -9,7 +9,7 @@
 
 #include "openpete_recomp_module.h"
 
-/* overlay_dispatch.c — fans out to psx_dispatch_main_exe + active overlay. */
+/* overlay_dispatch.c - fans out to psx_dispatch_main_exe + active overlay. */
 extern int psx_dispatch_compiled(CPUState* cpu, uint32_t addr);
 
 #ifndef OPENPETE_CODEGEN_STAMP

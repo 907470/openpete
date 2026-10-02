@@ -1,4 +1,4 @@
-# carry-subtick-corpus.manifest — rows for tests/harness/check_carry_subtick.sh.
+# carry-subtick-corpus.manifest - rows for tests/harness/check_carry_subtick.sh.
 # Row grammar and the instrument: see games/spyro-2/corpus/carry-subtick-corpus.manifest.
 #
 # pause-menu: the pause panel and its glyph rows. 33 presents carry 396

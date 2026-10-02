@@ -1,4 +1,4 @@
--- pcsx-redux-bk2-replay.lua — drive PCSX-Redux's pad overrides from a
+-- pcsx-redux-bk2-replay.lua - drive PCSX-Redux's pad overrides from a
 -- padstream produced by tools/bk2_to_padstream.py. Companion to
 -- scripts/pcsx-redux-trace.lua: when both are loaded, the trace is captured
 -- with the same input the openpete --bk2 driver replays, so .psxtrace +
@@ -9,20 +9,20 @@
 --   PCSXR_PADSTREAM_VERBOSE    if set non-empty, log every press/release edge
 --   PCSXR_PADSTREAM_PC         anchor PC; bk2 frame N's input is applied on
 --                              the Nth (1-indexed) hit of this PC. Defaults
---                              to 0x8001ED5C (Spyro 1 GamestateDraw) — the
+--                              to 0x8001ED5C (Spyro 1 GamestateDraw) - the
 --                              same default scripts/pcsx-redux-trace.lua
 --                              uses, so both share an epoch.
 --
 -- Format reference: tools/bk2_to_padstream.py header.
 --
--- Caveat: PCSX-Redux's setOverride is force-press-only — clearOverride
+-- Caveat: PCSX-Redux's setOverride is force-press-only - clearOverride
 -- returns the bit to consulting real input. In `--no-ui` headless, no
 -- input device is attached so the baseline reads as released; pairing
 -- with `--no-ui` is required for clean determinism.
 --
 -- Anchor: rev 1 ticked on GPU::Vsync, which started counting from BIOS
 -- boot. With trace capturing on a per-frame game-function BP, the two
--- counters had different epochs — bk2 frame 0 was BIOS-time, trace
+-- counters had different epochs - bk2 frame 0 was BIOS-time, trace
 -- frame 0 was post-init. Now we anchor on the same BP the trace uses,
 -- so bk2 frame N drives the input that produces trace frame N's RAM
 -- state (same instant in game-time on both engines).
@@ -70,7 +70,7 @@ end
 fp:close()
 print(string.format('[bk2-replay] loaded %d frames from %s', n, PADSTREAM_PATH))
 
--- 16 PSX pad bits — applied per frame. We "double-buffer" by tracking the
+-- 16 PSX pad bits - applied per frame. We "double-buffer" by tracking the
 -- previous frame's word and only emitting set/clearOverride on edges.
 -- Pad word convention: 0xFFFF = all released; bit cleared = pressed.
 local pad = PCSX.SIO0.slots[1].pads[1]
@@ -105,7 +105,7 @@ local function apply_word(new_word)
     prev_word = new_word
 end
 
--- Drive the override on every BP hit at ANCHOR_PC — the same per-frame
+-- Drive the override on every BP hit at ANCHOR_PC - the same per-frame
 -- game function the trace dumper anchors on. PCSX-Redux supports
 -- multiple breakpoints at the same address, so this script and
 -- pcsx-redux-trace.lua coexist; both fire on each hit and share the
@@ -114,7 +114,7 @@ PCSX.addBreakpoint(ANCHOR_PC, 'Exec', 4, 'bk2-replay-anchor',
     function(addr)
         local w = frames[frame_idx + 1]  -- Lua 1-indexed
         if w == nil then
-            -- Past the end of the recorded movie — hold last input.
+            -- Past the end of the recorded movie - hold last input.
             frame_idx = frame_idx + 1
             return true
         end

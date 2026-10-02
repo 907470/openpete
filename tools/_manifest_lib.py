@@ -1,7 +1,7 @@
 """Shared loaders for the manifest pipeline.
 
 build_manifest.py emits symbols.toml + globals.toml from psx.map.
-The generators (gen_defsyms, gen_dispatch, …) load those plus the
+The generators (gen_defsyms, gen_dispatch, ...) load those plus the
 hand-curated native.toml to decide what code/links to emit.
 
 When the rewriter has run (Pass 6 discovery), per-TU ``*.discovered.toml``
@@ -24,7 +24,7 @@ def load_toml(path: Path) -> dict:
 
 def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
     """Fold every ``*.discovered.toml`` under ``rewritten_dir`` into
-    ``native`` in-place. Hand entries win — auto entries with the same
+    ``native`` in-place. Hand entries win - auto entries with the same
     name (or psyq_name) are skipped. New auto entries get appended with
     a sensible default c_name (``openpete_<name>`` for PSYQ wrappers;
     same name for outbound_recomp; same name for dispatch)."""
@@ -40,8 +40,8 @@ def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
 
     # `outbound_psyq_skip` / `outbound_recomp_skip` name PSYQ entry points
     # whose host-side thunk is already hand-written (e.g.
-    # openpete_CdReadCallback in psyq_thunks.cpp bridges native → host cb,
-    # not native → recomp). Auto-discovery sees the call site and would
+    # openpete_CdReadCallback in psyq_thunks.cpp bridges native -> host cb,
+    # not native -> recomp). Auto-discovery sees the call site and would
     # emit a colliding thunk; the skip list suppresses that.
     skip_psyq = set(native.get("outbound_psyq_skip", []))
     skip_recomp = set(native.get("outbound_recomp_skip", []))
@@ -61,7 +61,7 @@ def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
             # `func_<addr>` native bodies collide at link with PSX.EXE_full.c's
             # recompiled body of the same name; gen_renames.py class 3 rewrites
             # the native source to `spyro_native_<name>`, so the dispatch
-            # generator needs to call the renamed symbol — otherwise the
+            # generator needs to call the renamed symbol - otherwise the
             # generated `extern void func_<addr>(...)` resolves to the recomp
             # body (with `(CPUState*)` shape) and the call crashes.
             c_name = f"spyro_native_{n}" if n.startswith("func_") else n
@@ -85,12 +85,12 @@ def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
             #   1. `func_<addr>` names clashing with PSX.EXE_full.c's
             #      recompiled body of the same name.
             #   2. names that overlap host symbols (libc / PsyCross /
-            #      runtime) — e.g. `rand`, `memcpy`, `strcpy`. Without
+            #      runtime) - e.g. `rand`, `memcpy`, `strcpy`. Without
             #      the prefix, the auto-thunk shadows the host symbol
             #      under --allow-multiple-definition and *every* host
             #      caller of that name routes into the recomp dispatcher
             #      (rand crash at frame 1793, fixed by this default).
-            # Hand-curated entries are unaffected — the `n in hand_recomp`
+            # Hand-curated entries are unaffected - the `n in hand_recomp`
             # guard above means a hand entry without `c_name` keeps its
             # bare-name binding (today's PascalCase Initialize / etc.).
             entry = {"name": n, "c_name": f"openpete_{n}"}
@@ -99,7 +99,7 @@ def merge_discovered(native: dict, rewritten_dir: Path | None) -> None:
         # renames driven by tweaks.toml) lands. Source-level `LoadImage(...)`
         # link-resolves to PsyCross's host symbol directly today; an
         # `openpete_LoadImage` thunk would be dead code. Keep the hand list
-        # authoritative for outbound_psyq for now — discovery still
+        # authoritative for outbound_psyq for now - discovery still
         # populates the `*.discovered.toml` so the diagnostic diff surfaces
         # mismatches, but the merge step doesn't fold psyq into the
         # generators' input.

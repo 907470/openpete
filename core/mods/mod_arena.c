@@ -1,7 +1,7 @@
-// core/mods/mod_arena.c — the guest arena (api->guest_alloc) and the
+// core/mods/mod_arena.c - the guest arena (api->guest_alloc) and the
 // stream-handle ledger (api->vstream_handle).
 //
-// Mods need data at a GUEST-addressable vaddr — marshalled calls whose
+// Mods need data at a GUEST-addressable vaddr - marshalled calls whose
 // parameters are guest pointers, model payloads the game chases. openpete
 // owns the memory map, so the arena is a host buffer registered as a
 // psx_runtime region in the >2MB expansion window: guest reads/writes
@@ -21,16 +21,16 @@
 //     backwards). A row marked OP_GALLOC_IMMUTABLE is a promise the
 //     engine checksums at each keyframe and file save.
 //   - Recompiled game sites that canonicalize addresses (mask to 2MB)
-//     cannot see arena data — the same per-site limitation every
+//     cannot see arena data - the same per-site limitation every
 //     relocated buffer has. The
 //     standard accessor paths (cpu->read_*/write_*, api->guest) all
 //     resolve it.
 //   - Arena data readable by gameplay is divergence, as with any guest
-//     write — content mods only; the modset save tag covers the rest.
+//     write - content mods only; the modset save tag covers the rest.
 //
 // Live toggle posture: FREEZE, never tear down. Disabling a mod does not
 // free, unregister, or rewind anything here, and that is a safety
-// requirement rather than laziness — an allocation's vaddr may already be
+// requirement rather than laziness - an allocation's vaddr may already be
 // stored in guest structures (a model row pointing at a parked payload),
 // so dropping the region would turn those into reads of unmapped memory
 // while the game still chases them. So:
@@ -38,7 +38,7 @@
 //   - undoing the guest-side WRITES that point at them is the mod's job,
 //     in its on_toggle hook (the engine cannot know which stock bytes a
 //     mod overwrote unless the mod saved them);
-//   - re-enable reuses the same vaddr the mod already holds — nothing is
+//   - re-enable reuses the same vaddr the mod already holds - nothing is
 //     re-allocated, so a mod must keep its handle across a toggle cycle
 //     rather than allocating per enable, which would walk the bump cursor
 //     forward on every cycle with no way to reclaim.
@@ -75,12 +75,12 @@ static int      s_state = 0; /* 0 unregistered, 1 ok, -1 failed */
  * consumers with one structure and one mismatch semantic:
  *   - the carry gate: which enabled mods hold NON-immutable rows;
  *   - replay on re-entry: a reloaded mod's i-th call with matching
- *     (size, align, flags) is served its existing row — same vaddr,
- *     same view, bytes as last written — so a reload never orphans
+ *     (size, align, flags) is served its existing row - same vaddr,
+ *     same view, bytes as last written - so a reload never orphans
  *     memory or walks the cursor. A mismatching call falls through to
  *     a fresh bump and marks the old row SUPERSEDED;
  *   - the savestate verdict: a file's rows must prefix-match the live
- *     ledger exactly, superseded marks included — a file whose rows
+ *     ledger exactly, superseded marks included - a file whose rows
  *     reference a row the live session has since superseded would
  *     restore bytes into an orphan while the mod's handle points at the
  *     replacement.
@@ -91,7 +91,7 @@ static int      s_state = 0; /* 0 unregistered, 1 ok, -1 failed */
 
 /* Two row kinds share the ledger and its replay/verdict semantics: an
  * ALLOCATION row records (size, align, flags, off); a HANDLE row records
- * a vstream_handle call — `size` holds the stream vaddr requested and
+ * a vstream_handle call - `size` holds the stream vaddr requested and
  * `off` the handle index returned (align and flags are 0). */
 #define ROW_ALLOC  0u
 #define ROW_HANDLE 1u
@@ -177,7 +177,7 @@ static int arena_register(void) {
                                                s_arena) == 0) ? 1 : -1;
         if (s_state < 0)
             OPL_ERROR_F("mods", "guest arena: region registration failed "
-                        "(window overlap?) — allocations disabled");
+                        "(window overlap?) - allocations disabled");
         else
             OPL_INFO_F("mods", "guest arena live @ 0x%08X (%u KiB)",
                        ARENA_BASE, ARENA_SIZE / 1024u);
@@ -198,13 +198,13 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
     arena_owner_t* o = owner_slot(owner, 1);
     if (!o) {
         OPL_ERROR_F("mods", "guest arena: owner table allocation failed "
-                    "— %s refused", owner);
+                    "- %s refused", owner);
         return 0;
     }
     uint32_t call_idx = o->next_call;
 
     /* Replay: an existing live row for this (owner, call) is served as
-     * is when the request matches it — same vaddr, same view, bytes as
+     * is when the request matches it - same vaddr, same view, bytes as
      * last written. A mismatch means the mod's allocation pattern
      * changed (a config-driven size, an order that depends on runtime
      * state): the old row is marked superseded so no savestate written
@@ -226,7 +226,7 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
         }
         r->superseded = 1;
         OPL_WARN_F("mods", "guest arena: %s call #%u changed shape "
-                   "(%s %u B/%u/%#x -> alloc %u B/%u/%#x) — row #%u "
+                   "(%s %u B/%u/%#x -> alloc %u B/%u/%#x) - row #%u "
                    "superseded; savestates written against it are now "
                    "refused", owner, call_idx,
                    r->kind == ROW_HANDLE ? "handle" : "alloc", r->size,
@@ -246,7 +246,7 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
 
     arena_row_t* r = row_push();
     if (!r) {
-        OPL_ERROR_F("mods", "guest arena ledger allocation failed — %s "
+        OPL_ERROR_F("mods", "guest arena ledger allocation failed - %s "
                     "call #%u refused", owner, call_idx);
         return 0;
     }
@@ -297,7 +297,7 @@ uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner) {
     arena_owner_t* o = owner_slot(owner, 1);
     if (!o) {
         OPL_ERROR_F("mods", "vstream_handle: owner table allocation "
-                    "failed — %s refused", owner);
+                    "failed - %s refused", owner);
         return 0;
     }
     uint32_t call_idx = o->next_call;
@@ -313,7 +313,7 @@ uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner) {
         }
         r->superseded = 1;
         OPL_WARN_F("mods", "guest arena: %s call #%u changed shape "
-                   "(%s -> handle for 0x%08X) — row #%u superseded; "
+                   "(%s -> handle for 0x%08X) - row #%u superseded; "
                    "savestates written against it are now refused",
                    owner, call_idx,
                    r->kind == ROW_HANDLE ? "handle" : "alloc", vaddr, i);
@@ -328,7 +328,7 @@ uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner) {
     o->next_call = call_idx + 1;
     arena_row_t* r = row_push();
     if (!r) {
-        OPL_ERROR_F("mods", "guest arena ledger allocation failed — %s "
+        OPL_ERROR_F("mods", "guest arena ledger allocation failed - %s "
                     "vstream_handle call #%u refused", owner, call_idx);
         return 0;
     }
@@ -360,7 +360,7 @@ void openpete_mods_arena_mem_restore(const void* bytes, uint32_t used) {
 
 /* Immutable rows carry a checksum captured the first time they are
  * checked (the first snapshot after the allocating tick). A later
- * mismatch is the mod's promise broken — warned once per row, with the
+ * mismatch is the mod's promise broken - warned once per row, with the
  * owner and call index, so the flag is a falsifiable claim rather than
  * a hint the engine takes on faith. */
 void openpete_mods_arena_immutable_check(const char* when) {
@@ -376,7 +376,7 @@ void openpete_mods_arena_immutable_check(const char* when) {
             r->sum_state = 2;
             OPL_WARN_F("mods", "guest arena: %s call #%u is marked "
                        "IMMUTABLE but its bytes changed (%u B @0x%08X, "
-                       "seen at %s) — the promise is broken; drop the "
+                       "seen at %s) - the promise is broken; drop the "
                        "flag or stop writing the block", r->owner,
                        r->call_idx, r->size, ARENA_BASE + r->off,
                        when ? when : "snapshot");
@@ -389,8 +389,8 @@ void openpete_mods_arena_immutable_check(const char* when) {
  *
  * Section layout (v3):
  *   header
- *   rows [count]           — the ledger, superseded marks included
- *   arena bytes [used]     — the arena's used prefix
+ *   rows [count]           - the ledger, superseded marks included
+ *   arena bytes [used]     - the arena's used prefix
  * Verdict runs PRE-COMMIT: the ledger must prefix-match the live session
  * exactly, or the restored bytes would land under a different layout and
  * every vaddr (and every handle) parked inside them would be garbage. */
@@ -491,7 +491,7 @@ int openpete_mods_arena_state_verdict(const void* src, uint32_t size) {
     int rc = arena_section_parse(src, size, &h, &rows, &bytes);
     if (rc == 0) return 0; /* no section */
     if (rc < 0) {
-        OPL_ERROR_F("mods", "arena ledger: malformed section — REFUSING");
+        OPL_ERROR_F("mods", "arena ledger: malformed section - REFUSING");
         return -1;
     }
     /* Exact prefix, superseded marks included. A saved row the live
@@ -508,7 +508,7 @@ int openpete_mods_arena_state_verdict(const void* src, uint32_t size) {
             !a->superseded && b->superseded) {
             OPL_ERROR_F("mods", "arena ledger: mod \"%s\" %s #%u (%s "
                         "0x%08X) was superseded by a reload after this "
-                        "state was saved — REFUSING the load; load with the "
+                        "state was saved - REFUSING the load; load with the "
                         "same mod config and version the state was saved "
                         "under", b->owner, what, b->call_idx,
                         b->kind == ROW_HANDLE ? "stream" : "bytes @+",
@@ -516,7 +516,7 @@ int openpete_mods_arena_state_verdict(const void* src, uint32_t size) {
             return -1;
         }
         OPL_ERROR_F("mods", "arena ledger: row #%u diverges (saved %s %s "
-                    "#%u %u/0x%08X vs live %s %s #%u %u/0x%08X) — REFUSING "
+                    "#%u %u/0x%08X vs live %s %s #%u %u/0x%08X) - REFUSING "
                     "the load; load with the same mod config and version "
                     "the state was saved under", i,
                     a->owner, a->kind == ROW_HANDLE ? "handle" : "entry",
@@ -534,13 +534,13 @@ void openpete_mods_arena_state_apply(const void* src, uint32_t size) {
         return;
     /* Rows beyond the live count are adopted (the verdict proved the
      * common prefix matches), so a mod's later call at that index replays
-     * the row the file holds — bytes restored below, handles bound here —
+     * the row the file holds - bytes restored below, handles bound here -
      * instead of bumping into a fresh block or a fresh index. */
     for (uint32_t i = row_count(); i < h.count; i++) {
         arena_row_t* r = row_push();
         if (!r) {
             OPL_ERROR_F("mods", "arena ledger: row allocation failed at "
-                        "#%u — the rest of the saved rows are not adopted",
+                        "#%u - the rest of the saved rows are not adopted",
                         i);
             break;
         }

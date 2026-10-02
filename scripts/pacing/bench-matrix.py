@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""bench-matrix.py — the pacing run matrix and baseline archive.
+"""bench-matrix.py - the pacing run matrix and baseline archive.
 
 Runs a fixed set of configurations one at a time, writes a pace log per leg,
 and prints them as one table. Legs are NEVER run concurrently: two paced runs
-on one machine contend, and contention is the very quantity being measured —
+on one machine contend, and contention is the very quantity being measured -
 a matrix that parallelises itself measures its own scheduler.
 
     bench-matrix.py --tier quick                 # 60 s legs, smoke
@@ -18,7 +18,7 @@ with nothing archived says SKIP rather than passing quietly.
 Baselines are filed under the MACHINE (CPU, GPU, driver, refresh, governor)
 and matched per leg on the REGIME (present mode, render-fps, pacer slack,
 thread split, ...). The BUILD is what the comparison measures and is never a
-reason to refuse one — keying the archive on it, as this did originally, is
+reason to refuse one - keying the archive on it, as this did originally, is
 what left it write-only: a baseline that only matches the build that produced
 it can never gate a later build.
 """
@@ -40,7 +40,7 @@ import pacestats as ps                                        # noqa: E402
 # Each leg names what it is FOR, so a table row reads on its own.
 LEGS = {
     "fps0":      (["--render-fps", "0"],
-                  "legacy pacer, one present per tick — the floor"),
+                  "legacy pacer, one present per tick - the floor"),
     "fps60":     (["--render-fps", "60", "--vsync", "1"],
                   "~2 presents/tick, FIFO"),
     "fps120":    (["--render-fps", "120", "--vsync", "1"],
@@ -50,7 +50,7 @@ LEGS = {
     "default":   ([],
                   "shipped default: --render-fps = display refresh, FIFO"),
     "immediate": (["--vsync", "0"],
-                  "display refresh, vsync OFF — isolates FIFO blocking"),
+                  "display refresh, vsync OFF - isolates FIFO blocking"),
     "fps2000":   (["--render-fps", "2000", "--vsync", "0"],
                   "saturation: as many presents as the GPU will take"),
 }
@@ -97,7 +97,7 @@ def analyse(log_path, warmup):
 # What a baseline comparison may GATE on, and what it may only report.
 #
 # The split is not stylistic. Re-running one unchanged configuration five times
-# gave an in-level p99 of 44.7 / 81.9 / 92.6 / 256.3 / 256.4 us — a 5.7x spread
+# gave an in-level p99 of 44.7 / 81.9 / 92.6 / 256.3 / 256.4 us - a 5.7x spread
 # straddling the goal. A gate on p99 would have flagged an unchanged build as a
 # regression more often than not, and a gate that cries wolf gets ignored, which
 # is worse than no gate. Rates and the distribution's CORE are what hold still;
@@ -106,7 +106,7 @@ def analyse(log_path, warmup):
 #   (key, label, direction, tolerance)
 # direction: "lower" = smaller is better, "higher" = larger is better.
 # `tol` for a _ns key is a RELATIVE headroom: current may exceed baseline by
-# tol x baseline, so 0.5 means "may grow by half", not "may reach 1.5x" — the
+# tol x baseline, so 0.5 means "may grow by half", not "may reach 1.5x" - the
 # prose and the arithmetic disagreed here once already (2.0 read as "2x" and
 # meant 3x). For every other key it is an ABSOLUTE difference in that key's
 # own units.
@@ -142,7 +142,7 @@ GATED = [
 # and a 60 s quick leg ~3.6k, so 1.0 per 1000 is ~4 late ticks in the small
 # case: about two sigma on a Poisson count of that size, and the smallest
 # difference a leg of this length can distinguish from luck. Set it any higher
-# and it stops being a floor and starts being the gate — at 3.0 it swallowed
+# and it stops being a floor and starts being the gate - at 3.0 it swallowed
 # 0.6 -> 3.0 per 1000, five times the failure rate, which is precisely the
 # case switching away from `within_250us_pct` was meant to catch.
 RATE_FLOOR = {"late_per_1000": 1.0}
@@ -171,7 +171,7 @@ def gate_delta(key, a_, b_, direction, tol):
     """
     delta = b_ - a_
     # Relative for the ns statistics and the rates, absolute for the
-    # percentages and ratios — a 2% tolerance on "99.76% within 250us" would
+    # percentages and ratios - a 2% tolerance on "99.76% within 250us" would
     # be a tolerance of a quarter of the whole failure budget.
     relative = key.endswith("_ns") or key in RATE_FLOOR
     floor = RATE_FLOOR.get(key, 0.0)
@@ -193,7 +193,7 @@ def gate_delta(key, a_, b_, direction, tol):
 
     if tol == 0.0:
         # A zero-tolerance count (slips) has no tolerance to widen, so an
-        # improvement makes nothing stale — and a run that clamped twice
+        # improvement makes nothing stale - and a run that clamped twice
         # yesterday and not today is noise, not news.
         return (delta > band if direction == "lower" else -delta > band), \
                False, shown
@@ -213,7 +213,7 @@ def compare_to_baseline(results, tier, verbose=True):
     """Diff this matrix against the archived baseline for the same machine.
 
     Returns 0 (within tolerance), 1 (a gated statistic regressed), or 64 when
-    there is nothing to compare against — SKIP, never a silent pass. A gate
+    there is nothing to compare against - SKIP, never a silent pass. A gate
     with no baseline is decoration, and saying so is the difference between
     "verified" and "not checked".
     """
@@ -224,7 +224,7 @@ def compare_to_baseline(results, tier, verbose=True):
             machine_dir([tuple(kv) for kv in first["machine_key"]]) /
             f"{tier}.json")
     if not path.exists():
-        print(f"\nbaseline: SKIP — none archived for this machine at tier "
+        print(f"\nbaseline: SKIP - none archived for this machine at tier "
               f"{tier} ({path.relative_to(REPO)})")
         print("  bless one with --bless; until then this run is measured "
               "against nothing.")
@@ -242,7 +242,7 @@ def compare_to_baseline(results, tier, verbose=True):
     # under test: blaming the candidate for the archive's format is exactly
     # the kind of misattributed red that trains people to ignore a gate.
     if any("regime_key" not in leg for leg in base["legs"].values()):
-        print("  SKIP — archived in a format predating the machine/regime "
+        print("  SKIP - archived in a format predating the machine/regime "
               "split; re-bless it.")
         return 64
 
@@ -253,7 +253,7 @@ def compare_to_baseline(results, tier, verbose=True):
             continue
         old = base["legs"].get(name)
         if not old:
-            print(f"  {name:<11} SKIP — not in the baseline")
+            print(f"  {name:<11} SKIP - not in the baseline")
             continue
         # The regime IS the leg. If the same leg name was taken under a
         # different configuration, the two rows are not the same measurement
@@ -261,7 +261,7 @@ def compare_to_baseline(results, tier, verbose=True):
         ok = [tuple(kv) for kv in old.get("regime_key", [])]
         ck = [tuple(kv) for kv in cur.get("regime_key", [])]
         if ok != ck:
-            print(f"  {name:<11} REFUSED — regime differs from the baseline's")
+            print(f"  {name:<11} REFUSED - regime differs from the baseline's")
             for (k, va), (_, vb) in zip(ok, ck):
                 if va != vb:
                     print(f"                {k}: {va!r} vs {vb!r}")
@@ -279,7 +279,7 @@ def compare_to_baseline(results, tier, verbose=True):
                 if better:
                     stale = True
                     print(f"  {name:<11} IMPROVED {label}: {shown} "
-                          f"— re-bless, the tolerance is measured from the "
+                          f"- re-bless, the tolerance is measured from the "
                           f"old number")
                 elif verbose:
                     print(f"  {name:<11} ok {label}: {shown}")
@@ -347,7 +347,7 @@ def main():
     results = {}
     for name in names:
         flags, why = LEGS[name]
-        print(f"{name} — {why}")
+        print(f"{name} - {why}")
         log = run_leg(exe, a.disc, name, flags, seconds, out, a.headless,
                       a.extra)
         if log:

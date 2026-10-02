@@ -11,8 +11,9 @@
  * Decode is PSX 16-bit "BGR555 + STP": bits 0-4 R, 5-9 G, 10-14 B, 15 STP
  * (semi-transparent). A stored value of 0 is the transparent sentinel
  * (PSX texture convention) and is discarded. 5-bit channels expand to 8-bit
- * via (v<<3)|(v>>2) — the standard faithful expansion, rather than PsyCross's /32 darkening. Pixel exactness
- * here is cosmetic: the oracle proves gameplay state, never pixels. */
+ * via (v<<3)|(v>>2) - the standard faithful expansion, rather than
+ * PsyCross's /32 darkening. Pixel exactness here is cosmetic: the oracle
+ * proves gameplay state, never pixels. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
@@ -44,7 +45,7 @@ vec4 decode555(uint p)
 
 /* Fetch the raw 16-bit color for texel (u,v), resolving CLUT for 4/8bpp.
  * Two 8-bit indices per VRAM word (low byte first); four 4-bit indices per
- * word (low nibble first) — exactly the PSX packing. */
+ * word (low nibble first) - exactly the PSX packing. */
 uint sample_word(int u, int v)
 {
     if (pc.bpp == 16) {

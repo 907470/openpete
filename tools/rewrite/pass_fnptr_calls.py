@@ -1,4 +1,4 @@
-"""Pass 4d — fn-pointer global call dispatch.
+"""Pass 4d - fn-pointer global call dispatch.
 
 Matching-decomp source stores PSX function vaddrs in scalar globals
 (`extern void (*D_800758E4)(int, ...)`, `extern Moby *(*g_SpawnMoby)(...)`)
@@ -10,15 +10,15 @@ and calls them as if they were host function pointers:
 The linker maps the global to its slot inside `g_ram` (4 bytes holding a
 PSX vaddr). The host C declaration reports the pointer as 8-byte fn-ptr
 typed; reading and calling it dereferences a host-aligned 8-byte slot
-that overlays the 4-byte vaddr plus 4 bytes of adjacent storage — a
+that overlays the 4-byte vaddr plus 4 bytes of adjacent storage - a
 garbage host address that SIGSEGVs as soon as you call it.
 
 Pass 4d detects these call sites and rewrites them to dispatch through
-`openpete_psx_call_fnptr(vaddr, a0, a1, a2, a3)` — a runtime helper
+`openpete_psx_call_fnptr(vaddr, a0, a1, a2, a3)` - a runtime helper
 that loads `cpu->aN`, calls `call_by_address`, and returns `cpu->v0`.
 
     (*GLOBAL)(arg1, arg2, arg3, arg4)
-    →
+    ->
     openpete_psx_call_fnptr(
         *(const uint32_t*)&GLOBAL,
         <coerce arg1 to uint32_t>, ..., <coerce arg4>
@@ -51,7 +51,7 @@ from .types import _is_pointer_kind, _is_function_ptr
 
 
 # Trailing 8-hex-digit suffix on a function name encodes its PSX vaddr.
-# Used as a fallback when the function isn't in symbols.toml — every
+# Used as a fallback when the function isn't in symbols.toml - every
 # overlay-defined `func_level_<lvl>_<HEX>` follows this convention.
 _HEX_SUFFIX_RE = re.compile(r"_([0-9A-Fa-f]{8})$")
 
@@ -66,7 +66,7 @@ def _unwrap_callee(callee: ci.Cursor) -> Optional[ci.Cursor]:
         if cur.kind not in (
             ci.CursorKind.UNEXPOSED_EXPR,
             ci.CursorKind.PAREN_EXPR,
-            ci.CursorKind.UNARY_OPERATOR,  # `(*GLOBAL)(...)` — explicit deref
+            ci.CursorKind.UNARY_OPERATOR,  # `(*GLOBAL)(...)` - explicit deref
         ):
             return None
         kids = list(cur.get_children())
@@ -78,7 +78,7 @@ def _unwrap_callee(callee: ci.Cursor) -> Optional[ci.Cursor]:
 
 def _is_fnptr_global(decl: ci.Cursor) -> bool:
     """True if `decl` is a file-scope VAR_DECL whose type is a function
-    pointer (or array of one). Static-storage VAR_DECLs are excluded —
+    pointer (or array of one). Static-storage VAR_DECLs are excluded -
     those have no defsym alias and no PSX-vaddr storage."""
     if decl is None or decl.kind != ci.CursorKind.VAR_DECL:
         return False
@@ -101,7 +101,7 @@ def _resolve_fn_psx_vaddr(rhs: ci.Cursor,
     return the vaddr. Mirrors `_resolve_function_psx_vaddr` in
     pass_struct_relayout for fn-ptr struct fields, but adds the
     name-suffix fallback for overlay funcs that aren't in symbols.toml
-    by index — those still encode their vaddr in the name (e.g.
+    by index - those still encode their vaddr in the name (e.g.
     `func_level_0_80080548`)."""
     cur = rhs
     for _ in range(6):
@@ -133,8 +133,8 @@ def _bytes_slice(file_path: str, start: int, end: int) -> str:
 
 
 def _coerce_arg(arg: ci.Cursor, main_path: str) -> str:
-    """Render `arg` as a uint32_t value: pointer args → host_to_psx,
-    integer args → (uint32_t) cast."""
+    """Render `arg` as a uint32_t value: pointer args -> host_to_psx,
+    integer args -> (uint32_t) cast."""
     text = _bytes_slice(main_path, arg.extent.start.offset, arg.extent.end.offset)
     canon = arg.type.get_canonical()
     if _is_pointer_kind(canon):
@@ -148,7 +148,7 @@ def rewrite_fnptr_global_calls(tu_cursor: ci.Cursor,
     site whose callee resolves to a fn-ptr scalar global, emit an Edit
     that replaces the entire call expression with the dispatch form.
 
-    Skips call sites whose argument count exceeds 4 — those need stack
+    Skips call sites whose argument count exceeds 4 - those need stack
     args and are out of scope for this pass; a warning surfaces upstream.
     """
     edits: List[Edit] = []
@@ -210,7 +210,7 @@ def rewrite_fnptr_global_calls(tu_cursor: ci.Cursor,
         ))
 
     if skipped_too_many_args:
-        # Diagnostic only — the upstream caller decides what to do.
+        # Diagnostic only - the upstream caller decides what to do.
         for msg in skipped_too_many_args:
             print(f"[pass_fnptr_calls] skipped: {msg}")
     return edits
@@ -226,7 +226,7 @@ def rewrite_fnptr_global_writes(tu_cursor: ci.Cursor,
         *(uint32_t*)(uintptr_t)&GLOBAL = <vaddr>u
 
     Without this, the host C code references the function by name, but
-    overlay-defined functions have no host symbol — link fails. Storing
+    overlay-defined functions have no host symbol - link fails. Storing
     the literal vaddr matches what the original PSX EXE has at the
     storage slot.
     """

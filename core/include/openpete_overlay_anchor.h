@@ -1,4 +1,4 @@
-// core/include/openpete_overlay_anchor.h — where chrome goes, and who got
+// core/include/openpete_overlay_anchor.h - where chrome goes, and who got
 // there first.
 //
 // openpete draws two kinds of persistent chrome over the game: the
@@ -13,7 +13,7 @@
 // the FULL window height; the origin is top-left and +y runs down. Keeping x
 // in height units is what makes a glyph square at any aspect.
 //
-// Pure placement arithmetic — no renderer or game state beyond the settings
+// Pure placement arithmetic - no renderer or game state beyond the settings
 // menu's panel rect, which is what the usable-x range exists to dodge.
 
 #ifndef OPENPETE_OVERLAY_ANCHOR_H
@@ -33,7 +33,7 @@ typedef enum {
     OPENPETE_ANCHOR_COUNT
 } openpete_anchor_t;
 
-/* Canonical spellings, indexed by the enum: "top-left" … "bottom-right".
+/* Canonical spellings, indexed by the enum: "top-left" ... "bottom-right".
  * These are the CLI / openpete.toml / knob-registry vocabulary. */
 extern const char *const openpete_anchor_names[OPENPETE_ANCHOR_COUNT];
 

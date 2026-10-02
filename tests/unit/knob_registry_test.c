@@ -1,11 +1,11 @@
-/* knob_registry_test — the M-overlay knob table's non-obvious mechanics:
+/* knob_registry_test - the M-overlay knob table's non-obvious mechanics:
  * module-contributed rows (openpete_knob_add) landing inside their section,
  * capacity refusal, and KNOB_ACTION rows (a button, no value) surviving boot
  * stamping. The overlay itself needs a window, so these are the parts that
  * would otherwise only be testable by eye.
  *
  * knob_registry.c is compiled straight in, with the host/renderer setters it
- * calls stubbed below — linking openpete_core would drag SDL into a console
+ * calls stubbed below - linking openpete_core would drag SDL into a console
  * test (same reason as psx_region_test). */
 
 #include "openpete.h"
@@ -152,7 +152,7 @@ static const knob_desc_t *find_row(const char *id, size_t *idx_out) {
     return NULL;
 }
 
-/* Every section must occupy ONE contiguous run — the overlay emits a header
+/* Every section must occupy ONE contiguous run - the overlay emits a header
  * per run, so a split section would render its name twice. */
 static int sections_contiguous(void) {
     size_t n;
@@ -251,7 +251,7 @@ int main(void) {
     if (strcmp(buf, "applied") != 0) rc |= fail("status string not reported");
 
     /* Rows the run has no use for report themselves hidden, so the overlay
-     * drops them — and, since every Recording row is one of them, drops the
+     * drops them - and, since every Recording row is one of them, drops the
      * section header with them. The predicate reads two things: whether the
      * build can encode at all, and whether this run was launched recording. */
     {
@@ -292,7 +292,7 @@ int main(void) {
     /* A pick made in the O menu must register as an edit. That menu keeps its
      * own row state and calls the renderer's setters directly, so a row that
      * reported a registry-side shadow instead of the renderer's live value
-     * would stay at its boot value forever — and "save edited settings" skips
+     * would stay at its boot value forever - and "save edited settings" skips
      * unedited rows, so the pick would silently never persist. */
     {
         static const struct { const char *id; const char *want; } picks[] = {
@@ -379,7 +379,7 @@ int main(void) {
 
     /* The registry and the config schema are two tables describing the same
      * knobs, and they have to agree or a flag silently loses its
-     * openpete.toml bare key — and, when it also has an env twin, loses the
+     * openpete.toml bare key - and, when it also has an env twin, loses the
      * flattening that keeps the two spellings from fighting.
      *
      * Checked in the direction that catches the mistake people actually
@@ -399,7 +399,7 @@ int main(void) {
             int si = cfg_schema_find_cli(ks[i].cli);
             if (si < 0) {
                 rc |= fail("knob has no config schema row");
-                fprintf(stderr, "       %s (%s) — add it to config_schema.c\n",
+                fprintf(stderr, "       %s (%s) - add it to config_schema.c\n",
                         ks[i].id, ks[i].cli);
             } else if (strcmp(cfg_schema(NULL)[si].id, ks[i].id) != 0) {
                 rc |= fail("schema/registry id mismatch for a flag");
@@ -412,7 +412,7 @@ int main(void) {
         for (size_t i = 0; i < sn; i++) {
             if (!find_row(sch[i].id, NULL)) {
                 rc |= fail("config schema names a knob the registry lacks");
-                fprintf(stderr, "       %s — add its row to knob_registry.c\n",
+                fprintf(stderr, "       %s - add its row to knob_registry.c\n",
                         sch[i].id);
             }
         }

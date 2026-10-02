@@ -1,4 +1,4 @@
-/* games/common/psyq/psyq_thunks.cpp — PSYQ → PsyCross ABI thunks, shared by every
+/* games/common/psyq/psyq_thunks.cpp - PSYQ -> PsyCross ABI thunks, shared by every
  * game.
  *
  * The recompiler emits PSYQ-targeted JALs as `psyq_NAME(cpu)` (with
@@ -7,15 +7,15 @@
  * convention (args in a0..a3 + sp-relative slots, return in v0) and PsyCross's
  * native C signatures.
  *
- * Nothing here is specific to one game. What is — the PSYQ-internal structures
+ * Nothing here is specific to one game. What is - the PSYQ-internal structures
  * a thunk mirrors into PSX RAM at a game's own addresses, the stack frame each
- * real PSYQ function leaves behind, and couplings to a game's own features —
+ * real PSYQ function leaves behind, and couplings to a game's own features -
  * is reached through psyq_game_hooks.h, whose every hook has an inert default.
  * A game supplies only what it has.
  *
  * The auto-generated abort stubs in psyq_stubs.c are weak; these strong
  * definitions override them at link time. Anything *not* thunked here
- * still aborts — that's the development gate for "did Spyro just touch a
+ * still aborts - that's the development gate for "did Spyro just touch a
  * PSYQ surface we don't cover yet?"
  *
  * Compiled as C++ because PsyCross's libgpu.h uses `static_assert` on
@@ -177,7 +177,7 @@ extern "C" {
     void PsyX_SPUAL_SetMasterVolume(float linear_gain);
 }
 
-/* Music WAV override (core/host/) — plays assets/music/track_NN.wav in
+/* Music WAV override (core/host/) - plays assets/music/track_NN.wav in
  * place of the XA stream when present. */
 #include "music_override.h"
 #include "openpete_mods.h"          /* custom-level song lookup + SFX overlay */
@@ -186,7 +186,7 @@ extern "C" {
 /* PsyCross internals shared with the libcd thunks below. */
 extern "C" int g_CD_com;
 extern "C" int readMode;  /* 0=RM_DATA, 1=RM_XA_AUDIO */
-extern "C" int g_cdXaStartLBA;   /* virtual music head anchor — LIBCD.C */
+extern "C" int g_cdXaStartLBA;   /* virtual music head anchor - LIBCD.C */
 extern "C" int g_cdXaStartVBL;
 
 /* Drive state mirrored from the guest's commands, on every entry (CdControl,
@@ -329,14 +329,14 @@ static inline uint32_t psyq_len(uint64_t n) {
 /* Each expansion's lambda is its own type, so its static is a once-flag
  * private to the call site. */
 #define PSYQ_SITE_ONCE() ([]() -> bool* { static bool s_warned; return &s_warned; }())
-/* Guest pointer argument → host pointer valid for len bytes, or NULL. */
+/* Guest pointer argument -> host pointer valid for len bytes, or NULL. */
 #define SPAN(addr, len) psyq_span(__func__, (uint32_t)(addr), psyq_len(len), PSYQ_SITE_ONCE())
 /* A guest NULL must stay NULL without a warning: an optional argument of 0
  * skips the access the PSYQ call makes for it. A nonzero address resolves
  * through SPAN; the site tells a refusal from an absent argument by the
  * address. */
 #define SPAN_OPT(addr, len) ((addr) ? SPAN(addr, len) : nullptr)
-/* Guest C string → host pointer whose bytes to the NUL (or max) lie in one
+/* Guest C string -> host pointer whose bytes to the NUL (or max) lie in one
  * region, or NULL; lenp may be NULL. */
 #define GSTR(addr, max, lenp) psyq_str(__func__, (uint32_t)(addr), (uint32_t)(max), (lenp), PSYQ_SITE_ONCE())
 
@@ -436,10 +436,10 @@ static void psyq_mirror_stack_frame(CPUState* cpu, psyq_frame_site_t site);
  * @param cpu Guest CPU state. */
 void psyq___main(CPUState* cpu) {
     /* libgcc constructor-runner. Real PSYQ __main at 0x8005B988:
-     *   - load *(0x800730BC) — "already initialized" flag
+     *   - load *(0x800730BC) - "already initialized" flag
      *   - if zero: write 1 to it (mark initialized)
      *   - walks __CTOR_LIST__ at 0x80010000 calling each ctor (loop count
-     *     in s1 — Spyro has 0 ctors so the loop is skipped)
+     *     in s1 - Spyro has 0 ctors so the loop is skipped)
      *   - in addition, push ra at sp+12 of __main's own frame (sp -= 16)
      *
      * Without these byte-level effects, --seed-ram + --halt-at-pc
@@ -479,22 +479,22 @@ static uint32_t s_pad_buf0 = 0;          /* the first port's pad buffer (PadInit
  * @param cpu Guest CPU state; a0 is the mode, v0 receives the counter. */
 void psyq_VSync(CPUState* cpu) {
     /* libetc semantics:
-     *   mode  < 0 : query — return current vbl counter, no wait
+     *   mode  < 0 : query - return current vbl counter, no wait
      *   mode == 0 : wait for next vblank, return updated counter
      *   mode  > 0 : wait that many vblanks (Spyro doesn't seem to use this)
      *
      * vbl is yield-driven: each VSync(0) bumps the counter by exactly the
      * wait count and yields once. That keeps Spyro's wait-loop pattern
-     * (`while VSync(-1)-s < 2 VSync(0)`) deterministic — the loop always
+     * (`while VSync(-1)-s < 2 VSync(0)`) deterministic - the loop always
      * exits after exactly 2 yields per logical frame regardless of wall-
      * clock pacing, which is the invariant BK2 replay relies on.
      *
      * Wall-clock pacing lives elsewhere: the host loop (run.c) sleeps to
      * its own phase-locked deadline between game slices, so 1 yield ≈
-     * 16.67 ms. Single-VSync(0) flyby → 1 yield/logical frame = 60 fps;
-     * wait-loop gameplay → 2 yields/logical frame = 30 fps. No per-game
+     * 16.67 ms. Single-VSync(0) flyby -> 1 yield/logical frame = 60 fps;
+     * wait-loop gameplay -> 2 yields/logical frame = 30 fps. No per-game
      * predicate needed. Tab / --headless skip the host-loop wait, which
-     * fast-forwards wall clock without changing yield-per-frame counts —
+     * fast-forwards wall clock without changing yield-per-frame counts -
      * so BK2 state at any frame is identical regardless of pacing. */
     int mode = (int)cpu->a0;
     static uint32_t calls = 0u;
@@ -672,7 +672,7 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
         psyq_pump_pad_card_intr(cpu);
     } else {
-        /* No fiber loop (smoke-test path) — fall back to PsyCross's busy
+        /* No fiber loop (smoke-test path) - fall back to PsyCross's busy
          * wait so audio/timer semantics still match. */
         if (wait == 1) (void)VSync(0);
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
@@ -725,7 +725,7 @@ static void sched_charge_registration(CPUState* cpu) {
  * @param cpu Guest CPU state; a0 is the callback address, 0 to clear. */
 void psyq_VSyncCallback(CPUState* cpu) {
     /* Save the cb address; psyq_VSync invokes it once per call (there is
-     * no real 60Hz timer — VSync()'s thunk fires it when the compiled main
+     * no real 60Hz timer - VSync()'s thunk fires it when the compiled main
      * loop yields). */
     sched_charge_registration(cpu);
     OPL_INFO_F("thunks", "VSyncCallback registered: 0x%08X", cpu->a0);
@@ -930,7 +930,7 @@ static void cd_read_complete(CPUState* cpu) {
                SDL_GetAtomicInt(&openpete_vbl));
     if (g_native_cd_read_cb != nullptr) {
         /* Native registrar (post-rewriter init.c). Fire the host cb
-         * directly — no cpu dispatch round-trip needed. */
+         * directly - no cpu dispatch round-trip needed. */
         g_native_cd_read_cb(/*intr=CdlComplete=*/2u, /*result=*/nullptr);
     } else {
         uint32_t cb = g_cd_read_cb;
@@ -1630,7 +1630,7 @@ void psyq_PutDrawEnv(CPUState* cpu) {
                                        env->ofs[0], env->ofs[1], env->isbg);
     /* The actually-cleared framebuffer background = the gamestate draw-env clear
      * colour (r0,g0,b0) when auto-clear (isbg) is on. This is the faithful bg for
-     * the native renderer in EVERY state — unlike g_Cyclorama.m_BackgroundColor,
+     * the native renderer in EVERY state - unlike g_Cyclorama.m_BackgroundColor,
      * which equals the clear only on frames that draw the cyclorama and goes stale
      * during cyclorama-less states (e.g. the black level-name flyby, where the
      * clear is black but g_Cyclorama still holds the previous level's sky). */
@@ -1641,7 +1641,7 @@ void psyq_PutDrawEnv(CPUState* cpu) {
 
 /* Hor+ widescreen (--aspect) is implemented at the GTE-instruction
  * layer in psxrecomp's gte_ctc2 (third_party/psxrecomp/runner/src/gte.cpp)
- * so EVERY write to OFX picks up the widening — including Spyro's
+ * so EVERY write to OFX picks up the widening - including Spyro's
  * renderer's inline CTC2 stores (which would bypass this thunk). The
  * libgte SetGeomOffset call eventually reaches gte_ctc2 too, so a
  * single widening point handles both routes without double-applying.
@@ -1665,7 +1665,7 @@ void psyq_SetDefDispEnv(CPUState* cpu) {
     SetDefDispEnv(env,
                   (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
                   (int)cpu->read_word(cpu->sp + 0x10));
-    /* Real SetDefDispEnv @0x8005EB4C is a leaf — no stack pushes. */
+    /* Real SetDefDispEnv @0x8005EB4C is a leaf - no stack pushes. */
 }
 
 /** @brief Thunk for libgpu SetDefDrawEnv: PsyCross's SetDefDrawEnv on the guest DRAWENV.
@@ -1690,16 +1690,16 @@ void psyq_SetDefDrawEnv(CPUState* cpu) {
  * runs past its region leaves the primitive unwritten.
  * @param cpu Guest CPU state. */
 void psyq_SetDrawMode(CPUState* cpu) {
-    /* DR_MODE* p, int dfe, int dtd, int tpage, RECT16* tw — five args.
+    /* DR_MODE* p, int dfe, int dtd, int tpage, RECT16* tw - five args.
      *
      * The game's polybuf primitive is native PSX layout (4-byte P_TAG:
      * addr:24 | len:8, then code[] words). PsyCross is built with
      * USE_EXTENDED_PRIM_POINTERS, so calling SetDrawMode directly on the
      * game's memory writes `len` at offset 8 and code[0] at offset 12 (after
-     * the 8-byte host-pointer header) — corrupting the PSX-layout DR_MODE:
+     * the 8-byte host-pointer header) - corrupting the PSX-layout DR_MODE:
      * its tag length stays stale and the mode word lands in the wrong place.
      * The OT walk then sees a garbage-length node, and when the stale code
-     * byte happens to be 0x_1 it mis-runs as DR_MOVE → out-of-bounds VRAM
+     * byte happens to be 0x_1 it mis-runs as DR_MOVE -> out-of-bounds VRAM
      * copy. g4/poly prims are unaffected because the game builds those with
      * inline setXY/setRGB/setcode macros (correct PSX layout); only the
      * *function* call SetDrawMode is layout-wrong.
@@ -1708,7 +1708,7 @@ void psyq_SetDrawMode(CPUState* cpu) {
      * computed length + code words are written back in native PSX 4-byte-tag
      * layout. Only
      * the tag's len byte is touched; the addr/next 24 bits are set later by
-     * the game's addPrim (recompiled inline → already PSX layout). */
+     * the game's addPrim (recompiled inline -> already PSX layout). */
     const uint32_t tw_addr = cpu->read_word(cpu->sp + 0x10);
     RECT16* tw = (RECT16*)SPAN_OPT(tw_addr, sizeof(RECT16));
     if (tw_addr && !tw) return;
@@ -1729,7 +1729,7 @@ void psyq_SetDrawMode(CPUState* cpu) {
  * 4-byte-aligned primitive payloads. PsyCross compiled with
  * USE_EXTENDED_PRIM_POINTERS=1 (the default on x86_64) expects 12-byte P_TAG
  * headers (`uintptr_t addr; uint16_t len; uint16_t pgxp_index`) followed by
- * the same payload — i.e. the payload format is identical, only the header
+ * the same payload - i.e. the payload format is identical, only the header
  * size differs. Walking the PSX chain with PsyCross macros dereferences a
  * 24-bit field as a host pointer and SEGVs.
  *
@@ -1821,7 +1821,7 @@ void psyq_DrawOTag(CPUState* cpu) {
     ui_sprite_ot_verify();
     ui_sprite_ot_draw_begin();
 
-    /* OPENPETE_OT_DUMP_FRAMES=A-B → for openpete_frame in [A,B], dump every
+    /* OPENPETE_OT_DUMP_FRAMES=A-B -> for openpete_frame in [A,B], dump every
      * DrawOTag call's slot list to OPENPETE_OT_DUMP_PATH (default
      * /tmp/ot-dump.txt). One row per slot, with frame as the leading column. */
     static int   s_dump_lo    = -2;
@@ -1916,7 +1916,7 @@ void psyq_DrawOTag(CPUState* cpu) {
      * submitting the OT chain after N slots, keeping exactly OT-dump slots
      * 0..N-1 (the dump's slot column is g_ot_slot_count-1, so the indices
      * line up 1:1 with OPENPETE_OT_DUMP_FRAMES rows). Lets an -og capture
-     * show what the PsyCross walk has painted "so far" at any slot cutoff —
+     * show what the PsyCross walk has painted "so far" at any slot cutoff -
      * the decisive probe for whether a pixel's final color comes from slots
      * before or after the cutoff. */
     static int s_ot_truncate = -2;
@@ -1948,7 +1948,7 @@ void psyq_DrawOTag(CPUState* cpu) {
         }
 
         /* --render-paths: drop geometry prims belonging to a non-selected render
-         * path. Presentation-only — we just don't submit the prim; game RAM is
+         * path. Presentation-only - we just don't submit the prim; game RAM is
          * untouched (the OT itself is never modified), so gameplay state is
          * unaffected. Control/env prims (plen==0, or code 0xE0/0xA0/0x00) always
          * pass so the draw-env / image loads still set up the framebuffer. */
@@ -1983,11 +1983,11 @@ void psyq_DrawOTag(CPUState* cpu) {
          * basePacket + (lenField + P_LEN) * 4`. If lenField doesn't equal the
          * expected primLength for this code, the walker either short-circuits
          * (skipping payload) or overshoots and parses garbage as a fresh
-         * P_TAG — which has crashed runs by interpreting random bytes as a
+         * P_TAG - which has crashed runs by interpreting random bytes as a
          * DR_LOAD (0xA0) and SEGV'ing inside `LoadImage`.
          *
          * Spyro's PSX-side `plen` (high byte of P_TAG) sometimes diverges
-         * from PsyCross's hardcoded primLength — so derive lenField from the
+         * from PsyCross's hardcoded primLength - so derive lenField from the
          * code byte itself, falling back to lenField=0 (anchor / skip) for
          * unknown codes. */
         uint8_t  code_byte = (plen != 0u) ? host[7] : 0u;
@@ -2036,12 +2036,12 @@ void psyq_DrawOTag(CPUState* cpu) {
                     else if ((code_byte & 0x0Cu) == 0x8u) expected_longs = 2u;
                     else if ((code_byte & 0x0Cu) == 0xCu) expected_longs = 3u;
                     break;
-                case 0xA0: /* DR_LOAD — variable; getlen returns slot's lenField */
+                case 0xA0: /* DR_LOAD - variable; getlen returns slot's lenField */
                     expected_longs = (uint16_t)(payload_bytes / 4u);
                     break;
                 case 0xE0: {
                     /* DR_TPAGE / DR_MODE / DR_TWIN / DR_AREA / DR_OFFSET / DR_STP
-                     * — variable-length env packets. PSYQ's macros sometimes
+                     * - variable-length env packets. PSYQ's macros sometimes
                      * over-allocate `plen`: e.g. `setDrawMode` calls
                      * `setlen(p, 3)` while only writing `code[0]=E1xxxxx` and
                      * `code[1]=E2xxxxx` (code[2] is uninitialized memory).
@@ -2123,7 +2123,7 @@ void psyq_DrawOTag(CPUState* cpu) {
 
     /* --render-paths: the per-path polybuf intervals were recorded during this
      * frame's render pass and consumed by the walk above. The "canon drawn" mask
-     * latch + the per-frame interval clear are NOT done here — they live in the
+     * latch + the per-frame interval clear are NOT done here - they live in the
      * host present loop (core/runtime/run.c), once per canonical present, so they
      * survive the planned removal of this PsyCross OT submission (the feeder hooks
      * that record the intervals fire on the render functions, independent of
@@ -2146,9 +2146,9 @@ void psyq_DrawOTag(CPUState* cpu) {
      * Each slot's `len` field is the primitive's PSX-side P_TAG length, which
      * matches the primLength returned by ProcessGouraudPoly/ProcessFlatPoly,
      * so the inner `(primLength + P_LEN) * 4` advance lands cleanly on the
-     * next slot — no over-walk into scratch. */
+     * next slot - no over-walk into scratch. */
     if (g_ot_slot_count > 0) {
-        /* Sizing probe — track high-water marks for OT memory to size
+        /* Sizing probe - track high-water marks for OT memory to size
          * the saved-prev buffers correctly. */
         {
             static int      s_max_slot_count = 0;
@@ -2163,9 +2163,9 @@ void psyq_DrawOTag(CPUState* cpu) {
             }
         }
         /* When the native Vulkan renderer is the sole display (pure --renderer vk),
-         * PsyCross does not rasterize the OT at all — the native renderer draws
+         * PsyCross does not rasterize the OT at all - the native renderer draws
          * everything from gamestate. Skip the GL walk entirely (and don't open a
-         * PsyX scene, so PsyX_EndScene auto-no-ops via begin_scene_flag → no
+         * PsyX scene, so PsyX_EndScene auto-no-ops via begin_scene_flag -> no
          * GR_StoreFrameBuffer, no second vsync swap on the hidden window). */
         extern int openpete_psycross_renders;
         if (openpete_psycross_renders) {
@@ -2498,7 +2498,7 @@ void psyq_CdInit(CPUState* cpu) {
  * starting XA stops the override.
  * @param sector The read's start LBA. */
 static void start_music_stream(int sector) {
-    /* Anchor the VIRTUAL streaming head first — guest-deterministic and
+    /* Anchor the VIRTUAL streaming head first - guest-deterministic and
      * snapshotted, so it runs during speculation too (the game's ReadS
      * command is guest code; only the host-audio half below is
      * speculation-suppressed). The GetlocP override in psyq_CdSync
@@ -2767,7 +2767,7 @@ void psyq_CdControlF(CPUState* cpu) {
     /* PsyCross's CdControlF treats CdlGetlocP as "the caller is starting
      * CDDA/XA streaming" and flips readMode to RM_XA_AUDIO. Spyro's music
      * loop calls CdControlF(CdlGetlocP, NULL) just to poll the current
-     * playback position — it doesn't switch mode. The bogus mode flip
+     * playback position - it doesn't switch mode. The bogus mode flip
      * then makes the next data CdRead read AudioSector-sized chunks
      * (2304B vs 2048B) and overrun the game's buffer. Track g_CD_com
      * ourselves for CdLastCom and skip PsyCross's switch entirely. */
@@ -2789,7 +2789,7 @@ void psyq_CdControlF(CPUState* cpu) {
 }
 
 /* Active-overlay tracker (spyro_overlay_table.h). Each overlay's
- * `LEVEL_BALLOON(id, …)` (overlays.ld) burns the overlay-id as the first
+ * `LEVEL_BALLOON(id, ...)` (overlays.ld) burns the overlay-id as the first
  * word at +0x00 of the game's overlay load address
  * (psyq_game_overlay_vaddr). After a CdRead settles bytes there, the word is
  * read and the dispatch state updated. Cutscene-style loads to the same
@@ -3048,7 +3048,7 @@ void psyq_CdSync(CPUState* cpu) {
     u_char* result = (u_char*)SPAN_OPT(cpu->a1, PSYQ_CD_RESULT_SIZE);
     if (!result) result = scratch;
 
-    /* Pump XA every CdSync — this is Spyro's per-frame music tick. */
+    /* Pump XA every CdSync - this is Spyro's per-frame music tick. */
     PsyX_XA_Pump(0);
     music_override_pump();
 
@@ -3085,7 +3085,7 @@ void psyq_CdSync(CPUState* cpu) {
     /* Native-side spin guard for CDLoadSync's `while (CdSync(1, NULL) !=
      * CdlComplete)` polls. The host hang watchdog in core/psx/dispatch.c
      * only catches recomp dispatches; a fully-native spin via this host
-     * thunk → host C goes undetected. Per-frame counter resets on frame
+     * thunk -> host C goes undetected. Per-frame counter resets on frame
      * advance. Default off; set OPENPETE_PSYQ_CDSYNC_LIMIT to a positive
      * count to enable. */
     static int s_cs_read = 0;
@@ -3106,7 +3106,7 @@ void psyq_CdSync(CPUState* cpu) {
         if (limit && ++cs_calls_this_frame > limit) {
             OPL_ERROR_F("thunks",
                         "psyq_CdSync spin guard: %u calls in frame=%u "
-                        "(rc=%d s0=0x%08X ra=0x%08X) — exiting",
+                        "(rc=%d s0=0x%08X ra=0x%08X) - exiting",
                         cs_calls_this_frame, openpete_frame, rc,
                         cpu->s0, cpu->ra);
             std::fflush(stdout); std::fflush(stderr);
@@ -3120,8 +3120,8 @@ void psyq_CdSync(CPUState* cpu) {
      * MSF.
      *
      * NOT the host decoder's real playhead: that advances on the AUDIO
-     * clock (up to kPumpBatch=8 sectors per pump — ~3x faster than a
-     * real drive — and frozen during runahead speculation, where wall
+     * clock (up to kPumpBatch=8 sectors per pump - ~3x faster than a
+     * real drive - and frozen during runahead speculation, where wall
      * time doesn't pass). Feeding it to the guest makes m_TrackPosition
      * a stealth host-state read: track ends fire early vs PSX, and
      * runahead's led/committed predictions diverge the moment music
@@ -3133,12 +3133,12 @@ void psyq_CdSync(CPUState* cpu) {
      * the textbook 8-channel 37.8 kHz-stereo XA layout. Each matching
      * sector carries 53.3 ms of audio and only 1 sector in 8 matches
      * the filter, so real-time playback burns 150 LBA/s and a real
-     * drive's head — which is what CdlGetlocP reports — covers the
+     * drive's head - which is what CdlGetlocP reports - covers the
      * same 150. At single speed the guest sees a track as twice its
      * true length: the audio runs out mid-track and the decoder walks
      * on into the next XA file's stream on the same channel (which is
      * an unrelated level's theme) until the late loop finally fires.
-     * 150/59.94 = 1001/400 per VBL — deterministic and snapshotted. */
+     * 150/59.94 = 1001/400 per VBL - deterministic and snapshotted. */
     if (g_CD_com == CdlGetlocP && mode == 1 && s_getlocp_ref_valid) {
         /* The reference drive's answer to the last position query, under
          * the golden's controller sidecar: the head's position as the drive
@@ -3154,7 +3154,7 @@ void psyq_CdSync(CPUState* cpu) {
         result[6] = abs.second;
         result[7] = abs.sector;
     }
-    /* Don't log every CdSync — busy-loops would flood. Sample every 2^22
+    /* Don't log every CdSync - busy-loops would flood. Sample every 2^22
      * calls. */
     static uint32_t calls = 0;
     if ((++calls & 0x3FFFFFu) == 1u) {
@@ -3288,7 +3288,7 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
          * carries the level halved; the SPU doubles it on application, so
          * 0x3CCC is applied as 31128 and full scale here is 16384. CD input
          * volume below has no sweep mode and is applied as written, making
-         * it full scale at 32768 — the two are not the same scale. */
+         * it full scale at 32768 - the two are not the same scale. */
         s_spuMainVolume = (float)((l + r) / 2) / 16384.0f;
         PsyX_SPUAL_SetMasterVolume(s_spuMainVolume);
         spyro_apply_music_gain();
@@ -3474,7 +3474,7 @@ static void spu_write_dump(const unsigned char* src, unsigned int len) {
  * @param cpu Guest CPU state. */
 void psyq_SpuWrite(CPUState* cpu) {
     /* The level-load bank blast overwrites all of SPU RAM including any
-     * staged SFX replacements — invalidate them (re-staged lazily). The
+     * staged SFX replacements - invalidate them (re-staged lazily). The
      * sfx pack's identity cache follows the same two-tier rule: a blast
      * is a new generation, any other write (dragon speech lands over the
      * top of the bank mid-level) forgets just the addresses it covers. */
@@ -3813,7 +3813,7 @@ void psyq_exit(CPUState* cpu) {
  * Supported conversions: d, i, u, x, X, o, s, c, p, %. Flags '-' and '0',
  * a decimal width, and a '.precision' are honored; flags '+', ' ' and '#'
  * parse but are ignored. Length modifiers h, l, z, j, t (in any repeat)
- * parse but are ignored — the original PSX ABI passes everything as a
+ * parse but are ignored - the original PSX ABI passes everything as a
  * 32-bit slot anyway. */
 
 namespace {
@@ -3889,7 +3889,7 @@ const char* format_str_arg(uint32_t addr, int precision, size_t* n_out) {
 size_t format_from_mips(char* dst, size_t cap, const char* fmt, MipsArgs& args) {
     size_t pos = 0;
     if (cap == 0) return 0;
-    /* Reserve one byte for NUL — put() guards against pos >= cap-1 below. */
+    /* Reserve one byte for NUL - put() guards against pos >= cap-1 below. */
     size_t writable = cap - 1u;
     auto put = [&](char c) {
         if (pos < writable) dst[pos] = c;
@@ -3992,7 +3992,7 @@ size_t format_from_mips(char* dst, size_t cap, const char* fmt, MipsArgs& args) 
                 break;
             }
             default:
-                /* Unknown — emit the '%' and the conversion char verbatim. */
+                /* Unknown - emit the '%' and the conversion char verbatim. */
                 put('%');
                 if (conv) put(conv);
                 break;

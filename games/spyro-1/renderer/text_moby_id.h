@@ -1,4 +1,4 @@
-/* text_moby_id.h — provenance identity for Spyro's HUD "text moby" glyphs.
+/* text_moby_id.h - provenance identity for Spyro's HUD "text moby" glyphs.
  *
  * Every glyph of Spyro's 3D text (HUD counters, pause/inventory menus,
  * dialogue, cutscene captions) is a throwaway Moby bump-allocated out of
@@ -11,7 +11,7 @@
  * of this tick's glyphs is "the same letter" as one from the previous tick.
  *
  * Pool position cannot answer that. A glyph's slot ordinal shifts by one
- * whenever ANY earlier pool allocation appears or disappears — and the
+ * whenever ANY earlier pool allocation appears or disappears - and the
  * inventory page's blinking left/right page arrows do exactly that, twice a
  * second, renaming all ~100 glyphs behind them. The renamed glyphs then pair
  * with their neighbour's previous position and slide back and forth by one

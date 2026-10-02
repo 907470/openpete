@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_overlay_callbacks.sh — the overlay callback gate.
+# check_overlay_callbacks.sh - the overlay callback gate.
 #
 # Every overlay function the game reaches by a computed jump must be a
 # dispatch entry of the overlay that is resident (a miss stub-returns

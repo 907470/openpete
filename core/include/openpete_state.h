@@ -1,4 +1,4 @@
-// core/include/openpete_state.h — save-state public API.
+// core/include/openpete_state.h - save-state public API.
 //
 // A state file carries the CPUState register file, 2 MiB main RAM, 1 KiB
 // scratchpad, VRAM, the SPU voice mirror and sample RAM, the CD cursors,
@@ -73,7 +73,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
                              unsigned* out_frame);
 
 /* ── In-memory snapshot (rewind keyframes / runahead speculation) ──────
- * Same-process only: no header, no identity gating, no file I/O — pure
+ * Same-process only: no header, no identity gating, no file I/O - pure
  * memcpy of the volatile state (CPU regs + RAM + scratch + SPU
  * deterministic mirror + CD cursors + frame/vbl counters).
  *
@@ -87,10 +87,10 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
  *     gameplay steady-state (runahead is hard-gated OFF during loads).
  *   - the arena LEDGER and its verdicts (same process, same layout).
  *
- * load(quiet=1): speculative restore — deterministic mirrors only; no
+ * load(quiet=1): speculative restore - deterministic mirrors only; no
  * discontinuity broadcast, no game/mod resync, no OpenAL perturbation.
  * The caller is re-running the SAME timeline (runahead rollback, stress).
- * load(quiet=0): user-visible restore — full resync semantics (interp
+ * load(quiet=0): user-visible restore - full resync semantics (interp
  * flush via the discontinuity broadcast, overlay re-sync, AL stops). */
 typedef struct openpete_state_mem openpete_state_mem_t;
 

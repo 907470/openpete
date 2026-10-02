@@ -1,4 +1,4 @@
-/* renderer/player.h — the shared player-avatar feeder's entries.
+/* renderer/player.h - the shared player-avatar feeder's entries.
  *
  * The walk lives in games/common/renderer/player.c and reads every engine
  * address from game_layout.player; the per-game stream formats, the skeleton

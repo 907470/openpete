@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""spyro-records-check.py — the intermediate-leg assert of check_spyro_records.sh.
+"""spyro-records-check.py - the intermediate-leg assert of check_spyro_records.sh.
 
 Reads one OPENPETE_SPYRO_RECDBG log and, for the case frame F, checks the
 per-present record lines ([recdbg present f=F k=K]) against the epoch line
@@ -13,7 +13,7 @@ per-present record lines ([recdbg present f=F k=K]) against the epoch line
     lies between the record's prev and curr, both within B of each other),
   - the shadow record lines ([recdbg shadow f=F j=J]) number the expected
     shadow-call count, each binds to a record of the list, and a shadow whose
-    model record is paired interpolates (lerp=1) — the model's pairing is the
+    model record is paired interpolates (lerp=1) - the model's pairing is the
     shadow's; the exception is a model paired to a record that drew no shadow
     (the shadow appears this tick),
   - the flame record lines ([recdbg flame f=F j=J]) the same way.

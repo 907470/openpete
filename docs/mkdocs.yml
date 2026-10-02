@@ -130,19 +130,19 @@ nav:
       - History: developer/history.md
       - PsyCross changes:
           - developer/psycross/README.md
-          - "0001 — Linux build fixes": developer/psycross/0001-linux-build-fixes.md
-          - "0002 — Stub stateless CD commands (CdlSetmode + state mgmt + CdlReadS in CdControlB)": developer/psycross/0002-cd-stub-stateless-commands.md
-          - "0003 — Disable PGXP (half-float vertex coords)": developer/psycross/0003-disable-pgxp-half-float-verts.md
-          - "0004 — Renderer bad-rect clamp (don't abort on degenerate VRAM upload)": developer/psycross/0004-renderer-bad-rect-clamp.md
-          - "0005 — MinGW: include MSVC-implicit headers explicitly": developer/psycross/0005-mingw-msvc-only-headers.md
+          - "0001 - Linux build fixes": developer/psycross/0001-linux-build-fixes.md
+          - "0002 - Stub stateless CD commands (CdlSetmode + state mgmt + CdlReadS in CdControlB)": developer/psycross/0002-cd-stub-stateless-commands.md
+          - "0003 - Disable PGXP (half-float vertex coords)": developer/psycross/0003-disable-pgxp-half-float-verts.md
+          - "0004 - Renderer bad-rect clamp (don't abort on degenerate VRAM upload)": developer/psycross/0004-renderer-bad-rect-clamp.md
+          - "0005 - MinGW: include MSVC-implicit headers explicitly": developer/psycross/0005-mingw-msvc-only-headers.md
           - "0006: DRAWENV struct PSYQ-alignment": developer/psycross/0006-drawenv-struct-psyq-alignment.md
           - "0007: post-render overlay hook": developer/psycross/0007-post-render-overlay-hook.md
-          - "0008 — Pad input override hook": developer/psycross/0008-pad-input-override-hook.md
-          - "0009 — Keyboard-driven left analog stick (WASD)": developer/psycross/0009-keyboard-left-analog-stick.md
-          - "0010 — Pad GetLastP1Bits accessor": developer/psycross/0010-pad-get-last-p1-bits.md
-          - "0011 — Make the PsyCross log file opt-in": developer/psycross/0011-optional-log-file.md
-          - "0012 — Load GL entry points through SDL, not glad's GLX-only loader": developer/psycross/0012-glad-load-via-sdl-for-egl.md
-          - "0013 — Tear down GL before destroying the SDL window": developer/psycross/0013-gl-shutdown-before-window-destroy.md
+          - "0008 - Pad input override hook": developer/psycross/0008-pad-input-override-hook.md
+          - "0009 - Keyboard-driven left analog stick (WASD)": developer/psycross/0009-keyboard-left-analog-stick.md
+          - "0010 - Pad GetLastP1Bits accessor": developer/psycross/0010-pad-get-last-p1-bits.md
+          - "0011 - Make the PsyCross log file opt-in": developer/psycross/0011-optional-log-file.md
+          - "0012 - Load GL entry points through SDL, not glad's GLX-only loader": developer/psycross/0012-glad-load-via-sdl-for-egl.md
+          - "0013 - Tear down GL before destroying the SDL window": developer/psycross/0013-gl-shutdown-before-window-destroy.md
       - DuckStation oracle: developer/duckstation-oracle.md
       - GTE trace vs reference: developer/gte-trace-vs-reference.md
       - RAM diff vs pcsx-redux: developer/ram-diff-vs-pcsxr.md

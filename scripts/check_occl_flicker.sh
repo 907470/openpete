@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_occl_flicker.sh — terrain occlusion-cull flicker census on a moving
+# check_occl_flicker.sh - terrain occlusion-cull flicker census on a moving
 # camera, windowed on the real GPU.
 #
 # The occluder depth grid advances once per present; the canonical terrain

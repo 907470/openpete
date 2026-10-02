@@ -1,15 +1,15 @@
-/* supercharge-anywhere — every ground charge becomes an instant, authentic
+/* supercharge-anywhere - every ground charge becomes an instant, authentic
  * supercharge (real state, animation, particles, plow-through-enemies) on
  * ANY level, not just the ones with supercharge ramps.
  *
  * TRIGGER (verified against the decomp): the state dispatcher func_80041670
  * already promotes Spyro from the ground-charge state (m_State == 0x14,
  * grounded) to SUPERCHARGE (0x2C == 44) when m_walkingState has bit 0x40
- * set. Nothing in normal play sets that bit — it's a purpose-built trigger.
+ * set. Nothing in normal play sets that bit - it's a purpose-built trigger.
  * We set it every frame Spyro is ground-charging, so every charge becomes a
  * genuine supercharge: authentic anim-speed + sound (func_8003EA68(44)), the
  * plow-through-enemies collision, and the sparkle trail (func_80047B60's
- * state-44 handler spawns it via the shared g_SpawnParticle — on every level,
+ * state-44 handler spawns it via the shared g_SpawnParticle - on every level,
  * no injection).
  *
  * ANIMATION: state 44's body animation is Spyro model animation index 45,
@@ -18,7 +18,7 @@
  * the AUTHENTIC animation without shipping any game data:
  *   - CAPTURE: override PatchInSpyroAnimations; on any level whose model-0
  *     stream carries index 45 (a ramp level), snapshot that record's raw
- *     (pre-rebased) bytes — from the USER's own disc — and cache them (RAM +
+ *     (pre-rebased) bytes - from the USER's own disc - and cache them (RAM +
  *     the mod's data dir, so it persists across sessions).
  *   - INJECT: on levels lacking it, park the captured blob in the guest
  *     arena and replay PatchInSpyroAnimations' own per-record pointer
@@ -95,7 +95,7 @@ static const char* const g_anim_kind_name[] = {
 };
 
 /* Arena park for the injected copy (allocated once, tick context), and the
- * blob with its frame words already carrying stream handles — built once
+ * blob with its frame words already carrying stream handles - built once
  * at the first park, copied per level. */
 static uint32_t g_park_vaddr = 0;
 static void*    g_park_host  = 0;
@@ -104,7 +104,7 @@ static int      g_blob_handled_ok = 0;
 
 /* Host-state posture (manifest: state = "rebuildable"): the only host
  * fact the guest world depends on is the park vaddr, and the park's
- * BYTES live in the low 2MB — canonical RAM, savestate-carried. A
+ * BYTES live in the low 2MB - canonical RAM, savestate-carried. A
  * restored world either matches the cached vaddr (park intact) or the
  * next inject re-parks lazily, so nothing needs a load notification. */
 
@@ -167,7 +167,7 @@ OP_OVERRIDE_IMPL_PatchInSpyroAnimations(sc_capture) {
                     blob_save();
                     g_api->log(g_self, OP_MOD_LOG_INFO,
                         "supercharge-anywhere: captured authentic anim-45 "
-                        "(%u bytes) — real animation now available everywhere",
+                        "(%u bytes) - real animation now available everywhere",
                         len);
                 }
                 break;
@@ -341,7 +341,7 @@ static void on_spyro_update(CPUState* cpu) {
 }
 
 /* "Level ready" the doctrine way: the physics post-hook above diffs
- * g_LevelId under g_Gamestate == GS_Playing (0) — the same gameplay-
+ * g_LevelId under g_Gamestate == GS_Playing (0) - the same gameplay-
  * live condition the engine's old level-ready service keyed on. */
 static void on_level_ready(CPUState* cpu, int level_id) {
     (void)cpu;

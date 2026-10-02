@@ -1,6 +1,6 @@
-/* native_vram.c — see openpete_native_vram.h. The op bodies replicate
+/* native_vram.c - see openpete_native_vram.h. The op bodies replicate
  * PsyCross's GR_CopyVRAM / GR_ClearVRAM semantics (masking, clamp ORDER,
- * stride handling, the clear's b<<11 packing quirk) to the byte — any change
+ * stride handling, the clear's b<<11 packing quirk) to the byte - any change
  * must re-pass the OPENPETE_VRAM_VERIFY memcmp census against PsyCross. */
 
 #include "openpete_native_vram.h"
@@ -112,10 +112,10 @@ void openpete_vram_load(int x, int y, int w, int h, const uint16_t* src)
                 (unsigned long long)tp_fnv1a(src0, w, h, stride));
 }
 
-/* MoveImage: GR_CopyVRAM(NULL, sx,sy, w,h, dx,dy) — source origin masked and
+/* MoveImage: GR_CopyVRAM(NULL, sx,sy, w,h, dx,dy) - source origin masked and
  * clamped FIRST, then the destination (the sequential clamp order matters for
  * edge rects). Rows copied top-down; memmove per row (PsyCross uses memcpy on
- * rows that are disjoint in every real caller — the census would flag any
+ * rows that are disjoint in every real caller - the census would flag any
  * intra-row-overlap divergence). */
 void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y)
 {
@@ -149,7 +149,7 @@ void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y
                 openpete_frame, src_x, src_y, dst_x, dst_y, w, h);
 }
 
-/* ClearImage: GR_ClearVRAM — NO origin masking (only w/h clamp), and the
+/* ClearImage: GR_ClearVRAM - NO origin masking (only w/h clamp), and the
  * b<<11 packing quirk (NOT the PSX's b<<10) replicated as-is: the reference
  * behaviour is PsyCross's, and every game call site passes (0,0,0) anyway.
  * Negative origins (which PsyCross would write out-of-bounds with) are

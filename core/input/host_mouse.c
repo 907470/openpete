@@ -1,4 +1,4 @@
-/* core/input/host_mouse.c — the host mouse channel. See the header. */
+/* core/input/host_mouse.c - the host mouse channel. See the header. */
 
 #include "openpete_host_mouse.h"
 

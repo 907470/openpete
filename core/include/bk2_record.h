@@ -1,4 +1,4 @@
-/* core/include/bk2_record.h — record live pad input into a BizHawk
+/* core/include/bk2_record.h - record live pad input into a BizHawk
  * (.bk2) movie zip. Sister of bk2_movie.{c,h} (replay).
  *
  * The per-VBL input buffer lives in openpete_input_log (always-on, fed by

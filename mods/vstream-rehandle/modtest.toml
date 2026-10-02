@@ -1,4 +1,4 @@
-# modtest.toml — this repo's CI declaration for tools/modtest.py. The
+# modtest.toml - this repo's CI declaration for tools/modtest.py. The
 # pixel-identity check against stock lives in tests/harness/check_mods.sh.
 [test]
 frames        = 3000

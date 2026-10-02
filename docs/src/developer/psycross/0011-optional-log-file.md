@@ -1,4 +1,4 @@
-# 0011 — Make the PsyCross log file opt-in
+# 0011 - Make the PsyCross log file opt-in
 
 ## Symptom
 
@@ -14,7 +14,7 @@ it just clutters whatever directory the game is run from (and was already in
 Gate the log-file creation behind an env var. `PsyX_Log_Initialise()` now
 early-returns (leaving `g_logStream == NULL`) unless `OPENPETE_PSYX_LOG` is
 set. This is safe because the write path already guards the stream:
-`PrintMessageToOutput()` only does `fprintf(g_logStream, …)` when
+`PrintMessageToOutput()` only does `fprintf(g_logStream, ...)` when
 `g_logStream != NULL`, and `PsyX_Log_Finalise` / `PsyX_Log_Flush` already
 null-check it. Console (stdout) logging via `printf` is unaffected in both
 modes.
@@ -32,6 +32,6 @@ PsyCross (e.g. `OPENPETE_RENDER_PROBE`). `getenv` is available via the
 Spyro 1, NTSC, openpete linux-release. Ran headless from a clean scratch
 directory:
 
-- No env var → no `.log` file appears in the cwd.
-- `OPENPETE_PSYX_LOG=1` → `Spyro the Dragon.log` is created (533 bytes) and
+- No env var -> no `.log` file appears in the cwd.
+- `OPENPETE_PSYX_LOG=1` -> `Spyro the Dragon.log` is created (533 bytes) and
   contains the usual PsyX init spew.

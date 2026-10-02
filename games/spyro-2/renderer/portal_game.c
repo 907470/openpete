@@ -1,4 +1,4 @@
-/* games/spyro-2/renderer/portal_game.c — the three addresses Spyro 2's portal
+/* games/spyro-2/renderer/portal_game.c - the three addresses Spyro 2's portal
  * preview feeder reaches. The feeder itself is
  * games/common/renderer/portal_spyro23.c; the contract is
  * renderer/portal_spyro23.h. */

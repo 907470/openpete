@@ -1,10 +1,10 @@
-/* core/ui/openpete_imgui_guard.h — containment for the mod ImGui table.
+/* core/ui/openpete_imgui_guard.h - containment for the mod ImGui table.
  *
  * Every entry of the engine's ImGui table is a generated wrapper
  * (openpete_imgui_guard.cpp, from tools/gen_imgui_table.py) that asks
  * openpete_imgui_body_active() where it was called from. Inside a mod UI
- * section body the call goes through and is counted; anywhere else — a
- * present hook on the extracting thread, a tick hook on the sim thread — it
+ * section body the call goes through and is counted; anywhere else - a
+ * present hook on the extracting thread, a tick hook on the sim thread - it
  * is dropped with a one-shot error and the wrapper returns a zeroed value.
  * The drop is required, not defensive: those call sites run outside
  * NewFrame/Render, where ImGui's own checks are compiled out under NDEBUG

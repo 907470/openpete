@@ -1,4 +1,4 @@
-// games/common/renderer/tracers.c — the tracer ribbon feeders: two handwritten
+// games/common/renderer/tracers.c - the tracer ribbon feeders: two handwritten
 // routines that build textured gouraud quad strips and link them into the 3D
 // ordering table themselves, so none of their primitives reaches the 2D
 // chokepoint the sprite feeder hooks. Both are the same routine in each game
@@ -37,8 +37,8 @@
 // The geometry is the guest's own int16 output, read back out of the polybuf,
 // not a second projection: the primitives are the routine's only product and
 // re-deriving the ribbon's width law and DPCS fade would be a second copy of
-// them. What the primitives do not carry is depth — the PSX orders them by
-// ordering-table bucket — so each one's view-Z is recovered from the producer's
+// them. What the primitives do not carry is depth - the PSX orders them by
+// ordering-table bucket - so each one's view-Z is recovered from the producer's
 // own record:
 //
 //   * the mesh leg replays the routine's own emit test out of the scratchpad
@@ -55,8 +55,8 @@
 // Spyro 1's tracer.c is not made a client of this: its beam is re-derived in
 // float from tracer-point gamestate with its own ribbon-width and colour laws
 // and its primitives are only its A/B oracle, while these routines' primitives
-// are the geometry. What the two share — the hook bracket, the polybuf walk,
-// the primitive decode and the projection helpers — is already shared and is
+// are the geometry. What the two share - the hook bracket, the polybuf walk,
+// the primitive decode and the projection helpers - is already shared and is
 // reused here unchanged.
 //
 // Determinism: never writes PSX RAM. The guest draw runs exactly once through
@@ -105,8 +105,8 @@ extern unsigned openpete_frame;
 
 /* Where one corner of a primitive came from: the point the routine projected
  * to place it, as the sub-tick rebase needs it back. `key` names the point's
- * previous state in the keyed store — the ribbon record, or the mesh vertex's
- * own address — and is 0 on a corner with no source. `age` is the ribbon
+ * previous state in the keyed store - the ribbon record, or the mesh vertex's
+ * own address - and is 0 on a corner with no source. `age` is the ribbon
  * point's place counted back from the record's head. `w` is the point in full
  * world units as the tick drew it and (sx, sy) its screen position under the
  * tick's camera, projected by the same arithmetic the rebase projects the

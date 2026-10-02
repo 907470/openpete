@@ -1,4 +1,4 @@
-/* terrain_game_none.c — the terrain provider of a game with no portal-sky
+/* terrain_game_none.c - the terrain provider of a game with no portal-sky
  * feeder, no fill-tag list and no art corrections. See renderer/terrain_game.h. */
 #include "renderer/terrain_game.h"
 #include <stdio.h>

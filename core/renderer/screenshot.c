@@ -1,4 +1,4 @@
-// core/renderer/screenshot.c — read renderer pixels and save as PNG.
+// core/renderer/screenshot.c - read renderer pixels and save as PNG.
 
 #include "screenshot.h"
 #include "openpete_log.h"
@@ -101,7 +101,7 @@ int openpete_screenshot_user_path(char* out, size_t cap) {
     out[0] = '\0';
 
     /* Screenshots are output, so the directory has to be writable: next to the
-     * exe in a portable install, under the per-user data directory otherwise —
+     * exe in a portable install, under the per-user data directory otherwise -
      * which is also where a read-only install medium (an AppImage mount,
      * Program Files) lands. A relative path is the last resort, so a run whose
      * exe location cannot be determined still saves something. */

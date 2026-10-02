@@ -1,4 +1,4 @@
-# egg-hud-3d — the HUD and inventory egg icon is the game's 3D dragon egg.
+# egg-hud-3d - the HUD and inventory egg icon is the game's 3D dragon egg.
 #
 # The game draws its collected-egg icons as a nine-cell flipbook sprite
 # (a pre-rendered egg rotating, one cell per tick). This mod intercepts
@@ -21,7 +21,7 @@ api     = 1
 state    = "rebuildable"   # the park is re-derived from the game's own egg state every tick
 runahead = "pure"          # tick hooks touch guest state only
 
-# Settings — rendered in the Mods panel; committed edits reload the mod.
+# Settings - rendered in the Mods panel; committed edits reload the mod.
 [[config]]
 key = "spin.degrees_per_tick"
 type = "float"

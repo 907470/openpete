@@ -1,10 +1,10 @@
-/* audio_volume_test — the --sfx / --music slider presets.
+/* audio_volume_test - the --sfx / --music slider presets.
  *
  * The interesting half of features/audio_volume.c is a state machine
  * over guest RAM: when it stamps, when it re-stamps over the game's own
  * reseeds, and when it hands the channel back to the player. All of that is
  * reachable with a fake CPUState over a small RAM array, which is what this
- * does — the alternative is a controller replay through the options menu.
+ * does - the alternative is a controller replay through the options menu.
  *
  * The module is compiled straight in with its host-side channels stubbed. */
 
@@ -47,7 +47,7 @@ int openpete_speculative = 0;
 #define SPU_SFX_RAW     0x80076228u
 #define SPU_SOUND_VOL   0x8007622Cu
 
-/* One page around the globals under test — everything the module touches sits
+/* One page around the globals under test - everything the module touches sits
  * inside 0x80075000..0x80077000. */
 #define RAM_BASE 0x80075000u
 #define RAM_SIZE 0x2000u
@@ -82,7 +82,7 @@ static void game_title_reseed(void) {          /* gamestates/init.c:549,555 */
     fake_write(SPU_MUSIC_VOL, 0x5000);
     fake_write(SPU_CD_VOLUME, 0x50005000u);
 }
-static void game_spu_initialize(void) {        /* spu.c:25-31 — derived only */
+static void game_spu_initialize(void) {        /* spu.c:25-31 - derived only */
     fake_write(SPU_SOUND_VOL, 0x1000);
     fake_write(SPU_MUSIC_VOL, 0x5000);
     fake_write(SPU_CD_VOLUME, 0x50005000u);
@@ -133,7 +133,7 @@ int main(void) {
     expect("sfx slider after title reseed",   SFX_SLIDER,   7);
     expect("music slider after title reseed", MUSIC_SLIDER, 3);
 
-    /* SpuInitialize rewrites the derived fields alone — the sliders still
+    /* SpuInitialize rewrites the derived fields alone - the sliders still
      * read our values, so only a derived-side check catches this. */
     game_spu_initialize();
     tick();
@@ -141,21 +141,21 @@ int main(void) {
            (((7 * 0x3FFF) / 10) * 0x1000) / 0x3FFF);
     expect("m_MusicVolume after SpuInitialize", SPU_MUSIC_VOL, 3u << 11);
 
-    /* Options menu open: the player owns the slider, so no stamping — even
+    /* Options menu open: the player owns the slider, so no stamping - even
      * as the game's menu code moves it. */
     fake_write(OPTIONS_SUBMENU, 1);
     s_writes = 0;
     tick();
     if (s_writes != 0) fail("stamped while the sound options were open");
 
-    /* Leaving it without touching a row keeps the preset — including when the
+    /* Leaving it without touching a row keeps the preset - including when the
      * game reseeds the sliders on the way out (quit to title). */
     fake_write(OPTIONS_SUBMENU, 0);
     game_title_reseed();
     tick();
     expect("sfx slider after an untouched menu visit", SFX_SLIDER, 7);
 
-    /* Moving the MUSIC row by hand hands that channel back for good — and
+    /* Moving the MUSIC row by hand hands that channel back for good - and
      * leaves the SFX preset alone. */
     fake_write(OPTIONS_SUBMENU, 1);
     tick();

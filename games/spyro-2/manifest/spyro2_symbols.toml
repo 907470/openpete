@@ -179,37 +179,37 @@ note = "the word holding the base of the particle pool the renderer walks (parts
 name = "F_UI_OT_INSERT"
 addr = 0x8001B390
 kind = "function"
-note = "func_8001B390 (stdutil.s:87-103) — links a0 into the 2D ordering table whose head word is D_80067000, instruction-for-instruction the other game's func_8004E758 with a different head global; called by drawutil, hud, draw and the level overlays and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
+note = "func_8001B390 (stdutil.s:87-103) - links a0 into the 2D ordering table whose head word is D_80067000, instruction-for-instruction the other game's func_8004E758 with a different head global; called by drawutil, hud, draw and the level overlays and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
 
 [[symbol]]
 name = "F_UI_OT_INSERT_SLOT"
 addr = 0x8001B354
 kind = "function"
-note = "func_8001B354(prim, slot) (stdutil.s:66-82, handwritten) — the slotted form of func_8001B390: it loads the table base from the word at D_80066FFC, adds slot << 3, and runs the same three-store tag splice on that entry instead of on a fixed head word. Eight call sites in five files, all screen emitters in the titlescreen_and_loading and credits overlays and no 3D translation unit, so it is a second chokepoint of the same shape; the title screen's func_titlescreen_and_loading_80079878 links its DR_MODE and its SPRT through it"
+note = "func_8001B354(prim, slot) (stdutil.s:66-82, handwritten) - the slotted form of func_8001B390: it loads the table base from the word at D_80066FFC, adds slot << 3, and runs the same three-store tag splice on that entry instead of on a fixed head word. Eight call sites in five files, all screen emitters in the titlescreen_and_loading and credits overlays and no 3D translation unit, so it is a second chokepoint of the same shape; the title screen's func_titlescreen_and_loading_80079878 links its DR_MODE and its SPRT through it"
 
 [[symbol]]
 name = "F_UI_FADE"
 addr = 0x8004D748
 kind = "function"
-note = "func_8004D748(abrMode, r, g, b) (drawutil/func_8004D748.s:7-56) — the full-screen fade emitter: func_8005A01C(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4 with rgb at +0x10..+0x12, each linked through func_8001B390 and the polybuf cursor D_80067030 advanced 0x24. draw/func_800155A0.s:82,91 drives it from D_80066F68 at ABR 2 and D_80067150 at ABR 1; drawutil/func_8004D810.s:73 is the blocking 16-step variant"
+note = "func_8004D748(abrMode, r, g, b) (drawutil/func_8004D748.s:7-56) - the full-screen fade emitter: func_8005A01C(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4 with rgb at +0x10..+0x12, each linked through func_8001B390 and the polybuf cursor D_80067030 advanced 0x24. draw/func_800155A0.s:82,91 drives it from D_80066F68 at ABR 2 and D_80067150 at ABR 1; drawutil/func_8004D810.s:73 is the blocking 16-step variant"
 
 [[symbol]]
 name = "F_TEXT_SPRT"
 addr = 0x8004A374
 kind = "function"
-note = "func_8004A374 (mobyfunc.s:1538-1690) — handwritten glyph emitter: one 0xC-byte DR_MODE carrying tpage 0x618 (mobyfunc.s:1570) then one 0x14-byte SPRT per glyph with clut 0x4922 (mobyfunc.s:1654), chained tag-to-tag and linked into D_80067000 inline without calling func_8001B390"
+note = "func_8004A374 (mobyfunc.s:1538-1690) - handwritten glyph emitter: one 0xC-byte DR_MODE carrying tpage 0x618 (mobyfunc.s:1570) then one 0x14-byte SPRT per glyph with clut 0x4922 (mobyfunc.s:1654), chained tag-to-tag and linked into D_80067000 inline without calling func_8001B390"
 
 [[symbol]]
 name = "F_TEXT_SPRT_PER_GLYPH"
 addr = 0x8004A59C
 kind = "function"
-note = "func_8004A59C (mobyfunc.s:1692-1851) — the quad-form variant of func_8004A374: one 0x28-byte POLY_FT4 per glyph, command byte 0x2C at packet offset 7 (mobyfunc.s:1822-1823), tpage 0x618 in the packet's own tpage halfword at +0x16 (mobyfunc.s:1722) and clut 0x4922/0x4962 at +0xE (mobyfunc.s:1821), chained tag-to-tag and linked into D_80067000 inline; it carries no DR_MODE"
+note = "func_8004A59C (mobyfunc.s:1692-1851) - the quad-form variant of func_8004A374: one 0x28-byte POLY_FT4 per glyph, command byte 0x2C at packet offset 7 (mobyfunc.s:1822-1823), tpage 0x618 in the packet's own tpage halfword at +0x16 (mobyfunc.s:1722) and clut 0x4922/0x4962 at +0xE (mobyfunc.s:1821), chained tag-to-tag and linked into D_80067000 inline; it carries no DR_MODE"
 
 [[symbol]]
 name = "F_LOADING_SPRT"
 addr = 0x800732D8
 kind = "function"
-note = "func_titlescreen_and_loading_800732D8(otIndex) (overlays/titlescreen_and_loading/leveldata/func_titlescreen_and_loading_800732D8.s:6-62) — the loading-screen image emitter: four iterations, each one 0xC-byte DR_MODE built by func_8005A01C with tpage 0x108 + 2*i (the 128-px-wide pages of the picture in VRAM) then a 0x14-byte SPRT of code word 0x64808080 at x = i << 7, y 0xC, u/v 0, 0x80 x 0xD8, both linked through func_8001B354 rather than the chokepoint func_8001B390, with the polybuf cursor D_80067030 advanced 0x20 per iteration. Lives in the titlescreen_and_loading overlay (id 34), whose vaddr every level overlay shares, so its hook is overlay-qualified"
+note = "func_titlescreen_and_loading_800732D8(otIndex) (overlays/titlescreen_and_loading/leveldata/func_titlescreen_and_loading_800732D8.s:6-62) - the loading-screen image emitter: four iterations, each one 0xC-byte DR_MODE built by func_8005A01C with tpage 0x108 + 2*i (the 128-px-wide pages of the picture in VRAM) then a 0x14-byte SPRT of code word 0x64808080 at x = i << 7, y 0xC, u/v 0, 0x80 x 0xD8, both linked through func_8001B354 rather than the chokepoint func_8001B390, with the polybuf cursor D_80067030 advanced 0x20 per iteration. Lives in the titlescreen_and_loading overlay (id 34), whose vaddr every level overlay shares, so its hook is overlay-qualified"
 
 [[symbol]]
 name = "D_PORTALS"
@@ -230,19 +230,19 @@ note = "the portal pass's parameter block for the preview leaf: +0x00 y-min, +0x
 name = "F_PORTAL_PASS"
 addr = 0x8004C66C
 kind = "function"
-note = "func_8004C66C (drawutil/func_8004C66C.s) — per portal: gates, projects the pentagon with the sky matrix, fills D_PORTAL_BLOCK, calls F_PORTAL_LEAF (:701) with a descending argument, 0 on the last call (:704-711). The same routine as the other game's func_8001EDEC minus its opening animation on the record's +0x43 counter"
+note = "func_8004C66C (drawutil/func_8004C66C.s) - per portal: gates, projects the pentagon with the sky matrix, fills D_PORTAL_BLOCK, calls F_PORTAL_LEAF (:701) with a descending argument, 0 on the last call (:704-711). The same routine as the other game's func_8001EDEC minus its opening animation on the record's +0x43 counter"
 
 [[symbol]]
 name = "F_PORTAL_LEAF"
 addr = 0x800296D0
 kind = "function"
-note = "func_800296D0 (cyclorama.s:382) — draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades. Word-for-word the other game's func_8001C8C8 over all 525 instructions but for 49 addresses"
+note = "func_800296D0 (cyclorama.s:382) - draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades. Word-for-word the other game's func_8001C8C8 over all 525 instructions but for 49 addresses"
 
 [[symbol]]
 name = "F_FLAME_DRAW"
 addr = 0x80048F04
 kind = "function"
-note = "func_80048F04 (mobyfunc.s:157) — the fire-breath ribbon emitter, the other game's func_80058D64 over all 441 instructions but for constants and addresses. One call site, gated on the flame state's +0x98 byte (drawutil/func_8004C534.s:72-77); the flame feeder's hook site"
+note = "func_80048F04 (mobyfunc.s:157) - the fire-breath ribbon emitter, the other game's func_80058D64 over all 441 instructions but for constants and addresses. One call site, gated on the flame state's +0x98 byte (drawutil/func_8004C534.s:72-77); the flame feeder's hook site"
 
 [[symbol]]
 name = "D_FLAME_STATE"

@@ -1,4 +1,4 @@
-# games/spyro-1/CMakeLists.txt — Spyro 1 binary.
+# games/spyro-1/CMakeLists.txt - Spyro 1 binary.
 #
 # The module and executable skeleton come from cmake/openpete_game.cmake;
 # this file adds what only this game has: the native-decomp TUs and their
@@ -22,14 +22,14 @@ option(OPENPETE_SKIP_DECOMP
 
 # Per-function CPU tracing for the perf profiler: instrument the main
 # generated EXE with -finstrument-functions so func_trace.c can attribute
-# self/total time per recompiled func_80XXXXXX. ~1-8 ms/tick overhead — a
+# self/total time per recompiled func_80XXXXXX. ~1-8 ms/tick overhead - a
 # drill-down build, never the baseline. Off by default (zero cost).
 option(OPENPETE_FUNC_TRACE
        "Instrument the generated EXE for per-function CPU tracing"
        OFF)
 
 # Native-decomp TU list. Centralized so OPENPETE_SKIP_DECOMP can drop
-# them in one place — both from add_executable() and from the per-source
+# them in one place - both from add_executable() and from the per-source
 # flag/include loop further down.
 set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/main.rewritten.c
@@ -49,16 +49,16 @@ set(SPYRO_NATIVE_SOURCES
     ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
     ${SPYRO_GENERATED}/rewritten/hud.rewritten.c
     ${SPYRO_GENERATED}/rewritten/gamepad.rewritten.c
-    # camera.rewritten.c — deferred (SIGSEGV during demo gameplay).
+    # camera.rewritten.c - deferred (SIGSEGV during demo gameplay).
     ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
     ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
     ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
-    # pete.rewritten.c — deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c — re-deferred. Pass 1/4 sentinel-cast fix
+    # pete.rewritten.c - deferred (Pass 5c splice corruption).
+    # loaders.rewritten.c - re-deferred. Pass 1/4 sentinel-cast fix
     # cleared the early PatchMobyModelPointers crash but exposed
     # non-deterministic downstream crashes (SoundsUpdate at slot
-    # 11 with m_Moby=0x0e11e96d junk vaddr → psx_to_host_ptr=NULL
-    # → SIGSEGV; PutDrawEnv(NULL) on later runs). State corruption
+    # 11 with m_Moby=0x0e11e96d junk vaddr -> psx_to_host_ptr=NULL
+    # -> SIGSEGV; PutDrawEnv(NULL) on later runs). State corruption
     # from a still-unidentified loaders.c write site; needs deeper
     # debugging beyond this session.
     # initialization.c / completion.c re-enable gated on Pass 4/5
@@ -74,8 +74,8 @@ else()
         ${SPYRO_NATIVE_SOURCES}
         # Generated from manifest/native.toml by tools/gen_dispatch.py +
         # tools/gen_thunks.py. native_dispatch.c is the inbound override
-        # switch (recomp → native); native_thunks.cpp is the outbound side
-        # (native → recomp / native → PSYQ).
+        # switch (recomp -> native); native_thunks.cpp is the outbound side
+        # (native -> recomp / native -> PSYQ).
         ${SPYRO_GENERATED}/native_dispatch.c
         ${SPYRO_GENERATED}/native_thunks.cpp)
 endif()
@@ -84,9 +84,9 @@ endif()
 #
 # OPENPETE_RECOMP_LINKAGE selects how the spyro1_recomp_module built by
 # openpete_add_game reaches the exe:
-#   static — OBJECT library linked straight in (dev default;
+#   static - OBJECT library linked straight in (dev default;
 #            byte-identical link semantics, no archive member pulling).
-#   shared — spyro1-recomp.{so,dll} + dlopen loader (the distribution
+#   shared - spyro1-recomp.{so,dll} + dlopen loader (the distribution
 #            build; the same sources users boot-compile at first run).
 set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
     "Recomp module linkage: static (dev) or shared (distribution)")
@@ -125,10 +125,10 @@ else()
 endif()
 
 # App icon. Two sources:
-#   OPENPETE_ROM_FREE_ICON=OFF (dev default) — decoded from the PSX
+#   OPENPETE_ROM_FREE_ICON=OFF (dev default) - decoded from the PSX
 #     save-file header's CLUT+icon data (save_file.h:39): the authentic
 #     memcard icon, which is GAME BYTES and must not ship.
-#   OPENPETE_ROM_FREE_ICON=ON (dist presets) — original procedural icon
+#   OPENPETE_ROM_FREE_ICON=ON (dist presets) - original procedural icon
 #     from tools/gen_dist_icon.py; also drops the build's dependency on
 #     the private decomp submodule's assets.
 # Either path emits a C source for SDL_SetWindowIcon (Linux/macOS +
@@ -201,7 +201,7 @@ openpete_add_game(spyro-1
         # Native translations of spyro-1/src/*.c compiled via the AST
         # rewriter (tools/rewrite_tu.py). Each native TU is rewritten by
         # scripts/regen-manifest.sh into
-        # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c — Pass 2 redirects
+        # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c - Pass 2 redirects
         # diverging bare globals through __psx_<name> uint32 storage that
         # gen_defsyms.py aliases into g_ram. CMake compiles the rewritten
         # source, never the original. Suppressed when OPENPETE_SKIP_DECOMP=ON.
@@ -238,14 +238,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
         target_link_options(openpete-spyro1 PRIVATE -mconsole)
     endif()
     if(NOT OPENPETE_SKIP_DECOMP)
-        # Disable ASLR — DECOMP MODE ONLY. The native-decomp globals are
+        # Disable ASLR - DECOMP MODE ONLY. The native-decomp globals are
         # link-aliased into g_ram via -Wl,--defsym=name=g_ram+offset. On ELF
         # this produces a PIE-aware relocation; on PE/COFF the MinGW linker
         # can't represent the absolute symbol ("stripping non-representable
-        # symbol …"), so the absolute address gets baked into call sites
+        # symbol ..."), so the absolute address gets baked into call sites
         # with no entry in .reloc. ASLR then moves g_ram at load time, the
         # baked addresses rot, and the first decomp global access faults.
-        # Full-recomp builds (SKIP_DECOMP=ON — every release/dist preset)
+        # Full-recomp builds (SKIP_DECOMP=ON - every release/dist preset)
         # have no defsym aliases, so they keep ASLR (helps the AV/SmartScreen
         # posture).
         target_link_options(openpete-spyro1 PRIVATE
@@ -297,7 +297,7 @@ add_dependencies(openpete-spyro1 spyro1_sfx_names)
 
 
 # --- Mod SDK v0 ---
-# Generate the name→vaddr symbol surface from manifest/symbols.toml:
+# Generate the name->vaddr symbol surface from manifest/symbols.toml:
 # a #define header for mods + a sorted resolve table compiled into the
 # exe. Staged with the API headers into <exe>/sdk/ so the mod loader can
 # compile mods/<id>/src/*.c against it at load time.
@@ -355,7 +355,7 @@ add_dependencies(openpete-spyro1 spyro1_game_structs)
 # global/prototype manifests, typed structs, mod examples) into markdown;
 # scripts/build-mod-docs.sh then builds the mkdocs-material site when
 # mkdocs is installed (notice + green build when it isn't). Stamp-
-# guarded: the docs rebuild exactly when an input changed — "the docs
+# guarded: the docs rebuild exactly when an input changed - "the docs
 # never lie" is a build property, not a policy.
 set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
 # The reference pages cover every game's manifests and decomp headers and
@@ -410,7 +410,7 @@ add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
 # The staged <exe>/sdk/ tree IS the contract mods compile and #include
 # against, so it must never lag the repo. An ALL target rather than a
 # POST_BUILD command: POST_BUILD only fires when the exe relinks, and
-# editing a header or a .glsl does not relink anything — a contract edit
+# editing a header or a .glsl does not relink anything - a contract edit
 # would sit unstaged until some unrelated C change happened to force a
 # link, and every mod would keep building against the old contract with
 # no diagnostic. copy_if_different over a dozen small files is cheap
@@ -464,14 +464,14 @@ add_dependencies(spyro1_sdk_stage openpete-spyro1)
 #    exact source mirror; user-owned config.toml/enabled.txt and staged-
 #    only mod dirs untouched) and cross-compile each one with the
 #    preset's own toolchain into <build>/games/spyro-1/mods/<id>/.build/
-#    <id>.dll, DROPPING the stamp — an unstamped prebuilt is the
+#    <id>.dll, DROPPING the stamp - an unstamped prebuilt is the
 #    loader's designed cross-handoff artifact (build_mod: loads silently
 #    when the host has no compiler, recompiles+stamps once when it
 #    does). DLLs compile from the REPO src/*.c (identical to the staged
 #    mirror), so neither staged sources nor staged DLLs can rot.
 #    OPENPETE_STAGE_MOD_DLLS=OFF (windows-mingw-shared, the distribution
 #    preset) stages sources only, no cmake-side DLLs: that exe's mods
-#    dir is the first-boot-compile validation surface — the bundled
+#    dir is the first-boot-compile validation surface - the bundled
 #    llvm-mingw must build every mod at boot exactly as it would on an
 #    end user's box, so cmake pre-seeding .build/ would mask it.
 option(OPENPETE_COMPILE_MODS "Compile all mods as part of the build" ON)
@@ -481,7 +481,7 @@ set(OPENPETE_COMPILE_MODS_DIR ${CMAKE_SOURCE_DIR}/mods CACHE PATH
     "Mods root the native-preset build-time compile runs over")
 if(OPENPETE_COMPILE_MODS)
     if(CMAKE_CROSSCOMPILING)
-        # Staged-SDK *sources* — mirrors mod_compute_key()'s sdk_inputs
+        # Staged-SDK *sources* - mirrors mod_compute_key()'s sdk_inputs
         # list, so an SDK change re-cross-compiles every staged mod.
         set(_mod_sdk_deps
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
@@ -518,7 +518,7 @@ if(OPENPETE_COMPILE_MODS)
             add_custom_command(OUTPUT ${_dll}
                 COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_build_dir}
                 # Same compile line mod_compile() (core/mods/mod_loader.c)
-                # uses on Windows — keep in sync — plus -static-libgcc:
+                # uses on Windows - keep in sync - plus -static-libgcc:
                 # the exe ships no mingw runtime DLLs (mingw-w64.cmake
                 # links -static), so the mod DLL must be self-contained.
                 COMMAND ${CMAKE_C_COMPILER} -shared -O2 -g
@@ -558,7 +558,7 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared" AND WIN32)
     # GNU LTO does not treat .def exports as liveness roots: with IPO
     # on, the otherwise-unreferenced ABI surface (psyq_* thunks,
     # dispatch, GTE entry points) is dead-code-eliminated and ld
-    # silently emits the exports as absolute-0 — the module's first
+    # silently emits the exports as absolute-0 - the module's first
     # PSYQ import then jumps to image_base+0xC0000000 (DEP crash).
     # Force IPO off for the exe regardless of cache/preset state.
     set_target_properties(openpete-spyro1 PROPERTIES
@@ -617,7 +617,7 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
     endif()
     if(WIN32)
         # The module DLL links against the exe's export implib at first
-        # boot — stage it with the tools.
+        # boot - stage it with the tools.
         add_custom_command(TARGET openpete-spyro1 POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/tools
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -628,19 +628,19 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
 endif()
 # Emscripten / WebAssembly browser link.
 #
-#  ASYNCIFY        — required twice over: (1) libco's emscripten backend
+#  ASYNCIFY        - required twice over: (1) libco's emscripten backend
 #                    maps co_switch onto emscripten_fiber_swap, and (2) the
 #                    host loop yields to the browser via emscripten_sleep
 #                    inside op_sleep_until. Both are Asyncify operations.
-#  STACK_SIZE      — the primary (host) fiber runs on the main C stack; the
+#  STACK_SIZE      - the primary (host) fiber runs on the main C stack; the
 #                    PsyCross render path is deep, so bump well past the
 #                    64 KiB default. The game fiber has its own 8 MiB stack
 #                    (see run.c co_create).
-#  MEMORY GROWTH   — the player's disc (~630 MiB) is streamed into MEMFS, so
+#  MEMORY GROWTH   - the player's disc (~630 MiB) is streamed into MEMFS, so
 #                    we start modest and grow toward the wasm32 ceiling.
-#  INVOKE_RUN=0    — main() is launched from the shell's callMain() only
+#  INVOKE_RUN=0    - main() is launched from the shell's callMain() only
 #                    after the disc has been written into the FS.
-#  FULL_ES2        — PsyCross selects RENDERER_OGLES / OGLES_VERSION 2 under
+#  FULL_ES2        - PsyCross selects RENDERER_OGLES / OGLES_VERSION 2 under
 #                    __EMSCRIPTEN__ (WebGL via GLES2 emulation).
 if(EMSCRIPTEN)
     target_link_options(openpete-spyro1 PRIVATE
@@ -669,7 +669,7 @@ if(EMSCRIPTEN)
         target_link_options(openpete-spyro1 PRIVATE "--profiling-funcs")
     endif()
     # emcc emits openpete-spyro1.js + openpete-spyro1.wasm. Ship the
-    # hand-authored drag-and-drop shell alongside them — NO copyrighted
+    # hand-authored drag-and-drop shell alongside them - NO copyrighted
     # disc data is bundled; the player supplies their own dump at runtime.
     add_custom_command(TARGET openpete-spyro1 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -680,7 +680,7 @@ endif()
 
 # The native renderer's SPIR-V shaders are embedded in the binary (baked at
 # build time by core/rhi/embed_shaders.cmake), so nothing is staged beside the
-# exe — the executable is self-contained. For shader dev/modding without a
+# exe - the executable is self-contained. For shader dev/modding without a
 # relink, point OPENPETE_SHADER_DIR at a dir of loose .spv (e.g. the build's
 # core/rhi/shaders).
 
@@ -705,7 +705,7 @@ if(OPENPETE_FUNC_TRACE)
     set(_functrace_full_flags
         "-w -finstrument-functions -finstrument-functions-exclude-function-list=psx_lwl,psx_lwr,psx_swl,psx_swr,psx_dispatch")
 
-    # Generate the pointer→name symtab func_trace.c resolves the hooks against.
+    # Generate the pointer->name symtab func_trace.c resolves the hooks against.
     set(_functrace_symtab ${CMAKE_CURRENT_BINARY_DIR}/gen/func_trace_symtab.c)
     add_custom_command(
         OUTPUT  ${_functrace_symtab}
@@ -734,8 +734,8 @@ endif()
 #   -std=gnu11 + -include assert.h: PsyCross's libgpu.h uses C11 static_assert
 #   -fcommon: tentative file-scope defs become COMMON so --defsym aliases win
 #   -include psyq_compat.h: bridges PSYQ-renamed types (RECT vs RECT16)
-#   -include native_renames.h: auto-generated symbol redirects (manifest →
-#     openpete_/spyro_native_ prefixes) — see tools/gen_renames.py
+#   -include native_renames.h: auto-generated symbol redirects (manifest ->
+#     openpete_/spyro_native_ prefixes) - see tools/gen_renames.py
 #   -w: mutes matching-decomp warnings (unused decls from gameplay headers)
 set(SPYRO_DECOMP_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx")
@@ -750,7 +750,7 @@ set(SPYRO_DECOMP_BASE_FLAGS
 # originals in spyro-1/include. The shadow trees are populated by
 # tools/rewrite_tu.py during scripts/regen-manifest.sh.
 #
-# Skipped under OPENPETE_SKIP_DECOMP — none of the rewritten TUs are
+# Skipped under OPENPETE_SKIP_DECOMP - none of the rewritten TUs are
 # in the build, native_thunks.cpp is gone, and the --defsym aliases
 # would dangle (the rewritten symbols they alias don't exist).
 if(NOT OPENPETE_SKIP_DECOMP)
@@ -772,7 +772,7 @@ if(NOT OPENPETE_SKIP_DECOMP)
 
     # Link-time aliasing of native-decomp globals into PSX RAM (g_ram + offset).
     # The defsym list is generated from manifest/native.toml + the parsed
-    # psx.map (manifest/globals.toml) by tools/gen_defsyms.py — see
+    # psx.map (manifest/globals.toml) by tools/gen_defsyms.py - see
     # scripts/regen-manifest.sh. g_ram is the public symbol exposed by
     # core/psx/cpu.c.
     include(${SPYRO_GENERATED}/native_aliases.cmake)

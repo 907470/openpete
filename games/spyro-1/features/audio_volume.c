@@ -1,4 +1,4 @@
-// games/spyro-1/features/audio_volume.c — --sfx / --music: preset the
+// games/spyro-1/features/audio_volume.c - --sfx / --music: preset the
 // game's own in-game volume sliders, and give the music slider an effect.
 //
 // Spyro's options menu carries a SOUND EFFECTS and a MUSIC row, each 0 (OFF)
@@ -18,12 +18,12 @@
 // screen (gamestates/init.c func_8002D170), SpuInitialize re-seeds the derived
 // fields alone (spu.c:25-31), and loading a save file restores whatever the
 // card holds (save_file.c). So the preset is re-stamped whenever the guest
-// values drift from it — but only while the player is not in the sound-options
+// values drift from it - but only while the player is not in the sound-options
 // submenu. Moving that slider by hand is how the player takes the channel
 // back: the preset is dropped (host request cleared to -1) and the menu owns
 // it from then on.
 //
-// Every guest write happens here, on the tick hook — the dev overlay's rows
+// Every guest write happens here, on the tick hook - the dev overlay's rows
 // only move the host-side request (core/runtime/run.c), so a UI-thread edit
 // never lands in gameplay RAM off-schedule.
 //
@@ -158,7 +158,7 @@ static vol_channel_t s_music = {
 static void channel_tick(CPUState* cpu, vol_channel_t* ch, int menu_open) {
     int want = ch->get_request();
 
-    /* A new request — the boot seed, or a dev-overlay edit — starts over. */
+    /* A new request - the boot seed, or a dev-overlay edit - starts over. */
     if (want != ch->requested) {
         ch->requested = want;
         ch->stamped   = -1;
@@ -167,7 +167,7 @@ static void channel_tick(CPUState* cpu, vol_channel_t* ch, int menu_open) {
 
     /* While the sound options are open the player owns the slider: stamping
      * would fight their input. Moving it away from our level while they are
-     * in there is them taking the channel back for good — and it is the only
+     * in there is them taking the channel back for good - and it is the only
      * place the slider can move under a hand, since the options menu is the
      * one writer that runs with this submenu open. */
     if (menu_open) {
@@ -229,7 +229,7 @@ static void music_gain_mirror(CPUState* cpu) {
 
 void spyro1_audio_volume_on_tick(CPUState* cpu) {
     /* Runahead: a speculative tick's guest writes roll back, but the latches
-     * here — and a release, which clears the host-side request — would not.
+     * here - and a release, which clears the host-side request - would not.
      * Let the real tick decide. */
     if (openpete_speculative) return;
 

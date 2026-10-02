@@ -1,4 +1,4 @@
-// games/common/game_extras_overlay_resync.c — the boot and savestate-restore
+// games/common/game_extras_overlay_resync.c - the boot and savestate-restore
 // entries for a game whose resident overlay is identified by the id word at
 // the head of the overlay region rather than by the disc read that fetched it.
 //

@@ -1,4 +1,4 @@
-/* openpete_psx_material.glsl — the material shader contract.
+/* openpete_psx_material.glsl - the material shader contract.
  *
  * A material replaces the colour of geometry the engine has already decided
  * to draw. The engine owns main(); the mod supplies one function:
@@ -293,7 +293,7 @@ void main()
     float koff = op_drain_koff(vKoff, vRank.y, op_uv(), op_drain_records);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {
-        /* The additive glow fan (rank -2) runs the aura contest instead —
+        /* The additive glow fan (rank -2) runs the aura contest instead -
          * see psx_key_contest.glsl. */
         if (vRank.x < -1.5) {
             if (op_aura_loses(texelFetch(op_key_actor, ivec2(gl_FragCoord.xy), 0).r,

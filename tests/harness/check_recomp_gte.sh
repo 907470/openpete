@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/harness/check_recomp_gte.sh — recompiler regression test for the GTE
+# tests/harness/check_recomp_gte.sh - recompiler regression test for the GTE
 # data-register side effects (mtc2/lwc2 to $30 recompute LZCR; to $28
 # unpack IR1-3). Assembles tests/recomp/gte_sideeffects/asm_probe.py into
 # a raw binary, recompiles it with PSXRecomp, compiles the emitted C

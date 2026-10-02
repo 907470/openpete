@@ -18,7 +18,7 @@ static void push_strength(void) {
 }
 
 /* Present hook: a cyan HUD text marker drawn AFTER the SCENE pass, so it
- * must stay cyan — a colour a sepia tone cannot produce, the under-HUD
+ * must stay cyan - a colour a sepia tone cannot produce, the under-HUD
  * proof. Overlay space is [0,aspect] × [0,1]; the marker sits in the
  * top-left. */
 static void on_present(const openpete_present_ctx_t* ctx) {

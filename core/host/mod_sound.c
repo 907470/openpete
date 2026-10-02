@@ -1,20 +1,20 @@
-/* mod_sound — one-shot mod sound effects (sfx_play, the modding
+/* mod_sound - one-shot mod sound effects (sfx_play, the modding
  * framework's engine-services contract).
  *
  * HOST-SIDE ADDITIVE audio: OpenAL static buffers played through a small
  * fire-and-forget source pool on the context PsyCross owns (the same
- * piggyback as music_override.c). Never touches the SPU or guest state —
+ * piggyback as music_override.c). Never touches the SPU or guest state -
  * playing a sound from any hook context is sim-neutral by construction,
  * so it is legal from tick AND present hooks (audio is presentation, not
  * render output; the render-purity contract concerns sim effects).
  *
  * These sources sit on PsyCross's AL context but outside its SPU mixer, so
  * the SPU's own mute flag never reaches them. --mute arrives here through
- * openpete_mod_sound_set_mute() instead — the same push music_override
- * takes — and stops whatever is already in flight.
+ * openpete_mod_sound_set_mute() instead - the same push music_override
+ * takes - and stops whatever is already in flight.
  *
  * WAVs load through op_wav_load (PCM int16 mono/stereo) and are cached
- * by path — repeated plays reuse the AL buffer. Callers that already hold
+ * by path - repeated plays reuse the AL buffer. Callers that already hold
  * decoded PCM (a synthesized tone, a sample pulled out of game data) take
  * the _pcm entry point and are cached by a caller-chosen key instead, so
  * nothing has to be staged on disk to be playable. All failures are
@@ -55,7 +55,7 @@ static int snd_init(void) {
     alGetError();
     alGenSources(SND_SOURCES, s_sources);
     if (alGetError() != AL_NO_ERROR) {
-        OPL_WARN_F("mods", "sfx_play: no OpenAL context — mod "
+        OPL_WARN_F("mods", "sfx_play: no OpenAL context - mod "
                    "sounds disabled this session");
         s_inited = -1;
         return s_inited;
@@ -101,7 +101,7 @@ static ALuint snd_cache_upload(const char* key, const int16_t* pcm,
                       "snd_cache", SND_CACHE_INIT);
     snd_cache_t* c = (snd_cache_t*)mod_fvec_push(&s_cache);
     if (!c) {
-        OPL_ERROR_F("mods", "sfx_play: sound cache allocation failed — "
+        OPL_ERROR_F("mods", "sfx_play: sound cache allocation failed - "
                     "%s not cached", key);
         alDeleteBuffers(1, &buf);
         return 0;

@@ -1,4 +1,4 @@
-/* tests/unit/exe_loader_cap_test.cpp — the disc EXE loader refuses a
+/* tests/unit/exe_loader_cap_test.cpp - the disc EXE loader refuses a
  * directory size no PSX EXE can have before it allocates.
  *
  * Writes an 18-sector 2048-byte-sector ISO9660 image whose root directory

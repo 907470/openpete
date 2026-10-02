@@ -2,7 +2,7 @@
 #define OPENPETE_GLITCH_MARK_H
 
 /*
- * The glitch mark — a ring of the last N presents and the last N terrain
+ * The glitch mark - a ring of the last N presents and the last N terrain
  * walks, dumped to a text file on demand.
  *
  * A one-present artifact lasts 2 to 20 ms on a 480 Hz display and is gone

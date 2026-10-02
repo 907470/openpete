@@ -1,4 +1,4 @@
-// openpete_mods.h — ENGINE-facing mod framework API (loader + chains).
+// openpete_mods.h - ENGINE-facing mod framework API (loader + chains).
 //
 // The mod-facing surface lives in openpete_mod_api.h; this header is what
 // the runtime and per-game code call.
@@ -18,7 +18,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h> /* FILE — savestate mods-section hooks */
+#include <stdio.h> /* FILE - savestate mods-section hooks */
 
 #include "openpete.h" /* openpete_options_t */
 
@@ -38,7 +38,7 @@ struct CPUState;
 typedef void (*openpete_mod_level_fn)(struct CPUState* cpu, int level_id);
 
 /* Engine-side spelling of openpete_mod_refine_fn (openpete_mod_api.h,
- * included further down — the struct is forward-declared so the two
+ * included further down - the struct is forward-declared so the two
  * typedefs stay compatible without reordering this header). No
  * CPUState: refine runs in tick context and reads guest RAM through the
  * mod api's own accessors, which keeps an engine-internal type out of
@@ -49,14 +49,14 @@ typedef int (*openpete_mod_material_fn)(
         void* uniform_out, uint32_t cap);
 typedef struct CPUState CPUState;
 
-/* Name→vaddr symbol table (generated from manifest/symbols.toml by
+/* Name->vaddr symbol table (generated from manifest/symbols.toml by
  * tools/gen_mod_sdk.py into sdk_symbols_table.c, game-side). The game's
  * main registers it before openpete_run(). Entries sorted by name. */
 typedef struct {
     const char* name;
     uint32_t    addr;
     uint8_t     legacy; /* 1 = historical raw alias (func_XXXXXXXX for a
-                         * since-renamed function) — resolvable forever
+                         * since-renamed function) - resolvable forever
                          * (decomp promotion contract), but the loader
                          * warns so mods migrate to the stable name. */
 } openpete_sdk_symbol_t;
@@ -207,7 +207,7 @@ void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
 
 /* Guest scratch arena (core/mods/mod_arena.c): session-lifetime bump
  * allocator in the >2MB expansion window, registered as a psx_runtime
- * region — guest-addressable through the standard accessors, host-
+ * region - guest-addressable through the standard accessors, host-
  * addressable via *host_view. flags = OP_GALLOC_*. Every allocation is ledgered by
  * (owner, per-owner call index); the ledger is what the carry gate,
  * re-entry replay and the savestate verdict all consume. Returns the
@@ -249,7 +249,7 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
 void openpete_mods_arena_entry_begin(const char* owner);
 
 /* Snapshot support: the arena's used prefix is timeline state. save
- * copies [0, used); restore is a RE-ANCHOR — bytes allocated after the
+ * copies [0, used); restore is a RE-ANCHOR - bytes allocated after the
  * snapshot keep their contents and the cursor never moves backwards.
  * immutable_check verifies every IMMUTABLE row's checksum (captured on
  * first check) and warns once per broken promise; call it once per
@@ -346,7 +346,7 @@ void openpete_mod_sound_set_mute(int on);
 
 /* Live modset toggle: queue an enable/disable; it applies at the
  * NEXT tick boundary by flipping owner-keyed disabled flags across all
- * registration surfaces (nothing is torn down — re-enable restores the
+ * registration surfaces (nothing is torn down - re-enable restores the
  * mod exactly where it was). Asset overlays follow the toggle at their
  * consumers' own boundaries: textures at the next resolve, music at the
  * next track start, level data at the next level load.
@@ -728,7 +728,7 @@ void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
 int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                                          const char* owner_id);
 
-/* 1 while a present hook is executing on this thread — the loader's
+/* 1 while a present hook is executing on this thread - the loader's
  * guest/call/override entry points refuse during it (render-purity). */
 #ifndef OPENPETE_THREAD_LOCAL
 #  ifdef __cplusplus
@@ -743,7 +743,7 @@ extern OPENPETE_THREAD_LOCAL int openpete_mods_in_present;
  *
  * Namespaced additive content (`modid:entry`): LEVEL SLOTS and the custom
  * levels served over them. Lifts beyond the vanilla table sizes ride
- * openpete-ram-virtualization — acknowledged, not hidden.
+ * openpete-ram-virtualization - acknowledged, not hidden.
  *
  * The registries share one per-tick driver: a chain link on the game's
  * master-update function, added lazily on first registration (nothing
@@ -755,8 +755,8 @@ typedef struct {
     uint32_t update_hook_addr; /* master per-tick update fn (chain anchor) */
     /* Current level id, 0 = none/not in gameplay yet. */
     int (*level_id)(CPUState* cpu);
-    /* Fill `out` with the moby classes the CURRENT LEVEL has loaded — the
-     * classes that can appear at all — ascending, and return the count.
+    /* Fill `out` with the moby classes the CURRENT LEVEL has loaded - the
+     * classes that can appear at all - ascending, and return the count.
      * -1 while the table cannot be trusted (mid-load). Level-scoped, so the
      * answer is stable as the camera moves; it is a superset of the classes
      * with a live instance right now. */
@@ -774,8 +774,8 @@ void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops);
 
 /* Host-side snapshot of the loaded-class set, refreshed once per tick from
  * the ops above. Mods read it through the api's moby_classes, which must be
- * callable from a UI section — i.e. inside a present, where guest access is
- * refused — so the read never touches guest RAM. */
+ * callable from a UI section - i.e. inside a present, where guest access is
+ * refused - so the read never touches guest RAM. */
 #define OPENPETE_MOBY_CLASSES_MAX 512
 /** @brief Refresh the host-side copy of the loaded moby class set from the game ops.
  *
@@ -798,7 +798,7 @@ int  openpete_mods_moby_classes(uint16_t* out, int cap);
 
 /* Level-slot namespace. A registered slot is a NEW level id
  * whose WAD TOC entry is cloned from a donor level; the game ops own
- * the id→behavior aliasing so the slot loads and plays like the donor
+ * the id->behavior aliasing so the slot loads and plays like the donor
  * while keeping its own per-level state index. v1 capacity: the guest
  * tables have exactly ONE free in-bounds slot (index 35 / id 65 in
  * Spyro 1); more slots need larger guest tables. */
@@ -854,7 +854,7 @@ void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
 /* ── Declarative custom levels ([[level]] manifest blocks) ───────────
  * A mod ships assets/levels/<stem>.WAD (+ optional .OVL) and a
  * manifest block; the registry owns slot time-sharing, guest TOC
- * declarations and warps — no mod code involved. Rows sort by NAME
+ * declarations and warps - no mod code involved. Rows sort by NAME
  * (the menu's alphabetical Custom World buckets). */
 /* A level's target totals, as the manifest declared them. Each field is
  * negative when the block did not declare it, which leaves that table on
@@ -1240,7 +1240,7 @@ void openpete_mods_registry_read_unlock(void);
 #define OPENPETE_MATERIAL_PIPE_VARIANTS 6
 #define OPENPETE_MATERIAL_PIPE_DECAL    5
 
-/* Material selectors (declarative and per-instance) — draw-time resolve
+/* Material selectors (declarative and per-instance) - draw-time resolve
  * for the batcher.
  * NULL spv side = keep the stock stage (executor falls back to the
  * embedded psx_scene shaders). uniform_slot > 0 = a per-instance
@@ -1367,7 +1367,7 @@ unsigned openpete_mods_material_terrain_epoch(void);
  * instead: the banked identity of the declarative selector that wins for
  * its face key, 0 = none. The bake stamps it; the vertex stage keeps only
  * the faces whose bucket matches the pass being drawn; the material epoch
- * invalidates the bake. Identity, never an outcome — a slot number would
+ * invalidates the bake. Identity, never an outcome - a slot number would
  * be stale one present later. */
 #define OPENPETE_MATERIAL_TER_VARIANTS 5  /* arena vertex stage: plain/anim/near,
                                           * then the anim/near cell records */

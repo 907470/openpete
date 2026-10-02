@@ -1,4 +1,4 @@
-// games/spyro-3/game_extras_impl.c — Spyro: Year of the Dragon's per-game contract.
+// games/spyro-3/game_extras_impl.c - Spyro: Year of the Dragon's per-game contract.
 //
 // Identity and the address-only PSYQ hooks are generated from recomp.conf
 // (game_identity.c). Bring-up state: the overlay hooks, the CD-load

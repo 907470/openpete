@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""presentation-corpus-diff.py — compare a candidate corpus to the blessed manifest.
+"""presentation-corpus-diff.py - compare a candidate corpus to the blessed manifest.
 
 A golden tile's verdict is one row of the tier's blessed.tsv (tile, verdict
 digest, blessed revision, recomp identity, origin); the reference images are not
@@ -116,7 +116,7 @@ def load_rows(path):
     except ValueError as e:
         return None, f"unparsable manifest: {e}"
     if not m.rows:
-        return None, f"VACUOUS — {path} holds zero rows"
+        return None, f"VACUOUS - {path} holds zero rows"
     return m, None
 
 
@@ -168,7 +168,7 @@ def main():
 
     common = sorted(gset & cset)
     if not common:
-        print("[presentation-diff] FAIL: VACUOUS — no candidate tile has a golden twin")
+        print("[presentation-diff] FAIL: VACUOUS - no candidate tile has a golden twin")
         return 1
 
     digs = pb.digest_files(os.path.join(args.candidate, n) for n in common)
@@ -196,7 +196,7 @@ def main():
     print(f"[presentation-diff] {args.game}: {len(common)} compared, {len(divergent)} divergent, "
           f"{len(missing)} {miss_label}, {len(extra)} extra")
     if divergent:
-        print(f"[presentation-diff] heat diffs in {diff_out}/ — adjudicate reference-first, "
+        print(f"[presentation-diff] heat diffs in {diff_out}/ - adjudicate reference-first, "
               f"then promote with tests/harness/presentation-corpus-promote.sh")
     return 1 if fails else 0
 

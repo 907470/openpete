@@ -1,4 +1,4 @@
-/* psx_bios.c — the PSX BIOS A0/B0/C0 call gates.
+/* psx_bios.c - the PSX BIOS A0/B0/C0 call gates.
  *
  * A game reaches a BIOS service through a fixed trampoline: it loads the
  * table address into $t2 and the function number into $t1, then jumps to
@@ -29,12 +29,12 @@
 /* Event classes and specs from libapi.h. */
 #define EV_CLASS_CARD   0xF0000011u   /* HwCARD */
 #define EV_CLASS_CARD_BU 0xF4000001u  /* the bu driver's own class */
-#define EV_SPEC_IOE     0x0004u       /* EvSpIOE — transfer finished */
+#define EV_SPEC_IOE     0x0004u       /* EvSpIOE - transfer finished */
 #define EV_SPEC_ERROR   0x8000u       /* EvSpERROR */
 #define EV_SPEC_TIMOUT  0x0100u       /* EvSpTIMOUT */
-#define EV_SPEC_NEW     0x2000u       /* EvSpNEW — card newly inserted */
-#define EV_MODE_INTR    0x1000u       /* EvMdINTR — run the handler */
-#define EV_MODE_NOINTR  0x2000u       /* EvMdNOINTR — latch for TestEvent */
+#define EV_SPEC_NEW     0x2000u       /* EvSpNEW - card newly inserted */
+#define EV_MODE_INTR    0x1000u       /* EvMdINTR - run the handler */
+#define EV_MODE_NOINTR  0x2000u       /* EvMdNOINTR - latch for TestEvent */
 
 #define EV_MAX          32
 #define EV_HANDLE_BASE  0xF1000000u

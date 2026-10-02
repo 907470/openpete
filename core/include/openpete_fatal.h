@@ -1,4 +1,4 @@
-/* openpete_fatal.h — tell the player why the program is about to exit. */
+/* openpete_fatal.h - tell the player why the program is about to exit. */
 #ifndef OPENPETE_FATAL_H
 #define OPENPETE_FATAL_H
 

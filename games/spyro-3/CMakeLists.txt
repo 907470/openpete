@@ -1,4 +1,4 @@
-# games/spyro-3/CMakeLists.txt — Spyro: Year of the Dragon binary.
+# games/spyro-3/CMakeLists.txt - Spyro: Year of the Dragon binary.
 #
 # The targets come from cmake/openpete_game.cmake; this game adds its
 # --skip-to-level driver, its freecam descriptor, its engine layout, the

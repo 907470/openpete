@@ -70,25 +70,25 @@ note = "highest ordering-table bucket written: reset to D_OT_BASE + 0x1000 per t
 name = "F_WORLD_DRAW"
 addr = 0x80022378
 kind = "function"
-note = "func_80022378 — the world renderer (environment.s); the terrain hook site"
+note = "func_80022378 - the world renderer (environment.s); the terrain hook site"
 
 [[symbol]]
 name = "F_SKY_DRAW"
 addr = 0x8001C368
 kind = "function"
-note = "func_8001C368 — the dome renderer (cyclorama.s); the cyclorama hook site"
+note = "func_8001C368 - the dome renderer (cyclorama.s); the cyclorama hook site"
 
 [[symbol]]
 name = "F_VISIBILITY"
 addr = 0x8002D0D8
 kind = "function"
-note = "func_8002D0D8(a0) — computes the sector visibility bytes in the scratchpad (a0=0 world at 0x1F800000, a0=1 sky at 0x1F8003C0) from the occlusion data and the camera's +0x34 position copy"
+note = "func_8002D0D8(a0) - computes the sector visibility bytes in the scratchpad (a0=0 world at 0x1F800000, a0=1 sky at 0x1F8003C0) from the occlusion data and the camera's +0x34 position copy"
 
 [[symbol]]
 name = "F_CAMERA_MATRICES"
 addr = 0x8004F6C4
 kind = "function"
-note = "func_8004F6C4 — builds the sky and world matrices from the angles at G_CAMERA+0x44"
+note = "func_8004F6C4 - builds the sky and world matrices from the angles at G_CAMERA+0x44"
 
 [[symbol]]
 name = "G_SIN"
@@ -120,7 +120,7 @@ note = "the player's ground-shadow renderer (asm/mobyfunc.s:622-884), called onc
 name = "F_MOBY_SHADOWS"
 addr = 0x8002DDA8
 kind = "function"
-note = "func_8002DDA8 DrawMobyShadows (asm/mobyfunc.s:887-1229; named in include/mobyfunc.h) — the moby drop-shadow renderer, called fourth by fDrawSpyroAndMobys func_8001EC5C; the shared shadow feeder's hook site"
+note = "func_8002DDA8 DrawMobyShadows (asm/mobyfunc.s:887-1229; named in include/mobyfunc.h) - the moby drop-shadow renderer, called fourth by fDrawSpyroAndMobys func_8001EC5C; the shared shadow feeder's hook site"
 
 [[symbol]]
 name = "D_PORTALS"
@@ -141,13 +141,13 @@ note = "the portal pass's parameter block for the preview leaf: +0x00 y-min, +0x
 name = "F_PORTAL_PASS"
 addr = 0x8001EDEC
 kind = "function"
-note = "func_8001EDEC (fDrawSkyboxPortals) — per portal: gates, projects the pentagon with the sky matrix, fills D_PORTAL_BLOCK, calls F_PORTAL_LEAF with 1 then 0"
+note = "func_8001EDEC (fDrawSkyboxPortals) - per portal: gates, projects the pentagon with the sky matrix, fills D_PORTAL_BLOCK, calls F_PORTAL_LEAF with 1 then 0"
 
 [[symbol]]
 name = "F_PORTAL_LEAF"
 addr = 0x8001C8C8
 kind = "function"
-note = "func_8001C8C8 (cyclorama.s:378) — draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades"
+note = "func_8001C8C8 (cyclorama.s:378) - draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades"
 
 [[symbol]]
 name = "G_MOBYARRAY"
@@ -181,7 +181,7 @@ note = "DrawStaticMobys (asm/mobydraw.s:3862): the second model kind, walked fro
 name = "F_PLAYER_DRAW"
 addr = 0x8003CDA0
 kind = "function"
-note = "DrawSpyro (asm/spyrodraw.s:12): the player avatar's own draw, run twice a tick — the mirrored copy with g_Spyro+0x2C set, then the avatar with it clear; the shared player feeder's hook site"
+note = "DrawSpyro (asm/spyrodraw.s:12): the player avatar's own draw, run twice a tick - the mirrored copy with g_Spyro+0x2C set, then the avatar with it clear; the shared player feeder's hook site"
 
 [[symbol]]
 name = "D_SPYRO_BLEND"
@@ -207,31 +207,31 @@ note = "game.state (globals.toml names the address game; asm/data/game.bss.s), t
 name = "F_UI_OT_INSERT"
 addr = 0x8004E758
 kind = "function"
-note = "func_8004E758 (asm/stdutil.s:84-100) — links a0 into the 2D ordering table at D_8006C638, instruction-for-instruction Spyro 1's func_800168DC with a different head global; called by drawutil, hud and updatepause and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
+note = "func_8004E758 (asm/stdutil.s:84-100) - links a0 into the 2D ordering table at D_8006C638, instruction-for-instruction Spyro 1's func_800168DC with a different head global; called by drawutil, hud and updatepause and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
 
 [[symbol]]
 name = "F_UI_FADE"
 addr = 0x800200A0
 kind = "function"
-note = "func_800200A0(abrMode, r, g, b) (asm/nonmatchings/drawutil/func_800200A0.s:4-55) — the full-screen fade emitter: func_8005C564(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4, each linked through func_8004E758; src/draw.c:121 drives it from D_8006C598"
+note = "func_800200A0(abrMode, r, g, b) (asm/nonmatchings/drawutil/func_800200A0.s:4-55) - the full-screen fade emitter: func_8005C564(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4, each linked through func_8004E758; src/draw.c:121 drives it from D_8006C598"
 
 [[symbol]]
 name = "F_TEXT_SPRT"
 addr = 0x8002E748
 kind = "function"
-note = "func_8002E748(str, x, y, colourIndex, clipRange) (asm/mobyfunc.s:1532-1686) — handwritten glyph emitter: one 0xC-byte DR_MODE word 0xE1000618 then one 0x14-byte SPRT per glyph, chained tag-to-tag and linked into D_8006C638 inline without calling func_8004E758"
+note = "func_8002E748(str, x, y, colourIndex, clipRange) (asm/mobyfunc.s:1532-1686) - handwritten glyph emitter: one 0xC-byte DR_MODE word 0xE1000618 then one 0x14-byte SPRT per glyph, chained tag-to-tag and linked into D_8006C638 inline without calling func_8004E758"
 
 [[symbol]]
 name = "F_TEXT_SPRT_PER_GLYPH"
 addr = 0x8002E970
 kind = "function"
-note = "func_8002E970 (asm/mobyfunc.s:1687-1845) — the quad-form variant of func_8002E748: one 0x28-byte POLY_FT4 per glyph, command byte 0x2C at packet offset 7 (asm/mobyfunc.s:1814-1815) and tpage 0x618 in the packet's own tpage halfword at +0x16 (asm/mobyfunc.s:1714); it carries no DR_MODE and advances 10 or 8 px by the clipRange flag"
+note = "func_8002E970 (asm/mobyfunc.s:1687-1845) - the quad-form variant of func_8002E748: one 0x28-byte POLY_FT4 per glyph, command byte 0x2C at packet offset 7 (asm/mobyfunc.s:1814-1815) and tpage 0x618 in the packet's own tpage halfword at +0x16 (asm/mobyfunc.s:1714); it carries no DR_MODE and advances 10 or 8 px by the clipRange flag"
 
 [[symbol]]
 name = "F_LOADING_SPRT"
 addr = 0x80059358
 kind = "function"
-note = "func_80059358(brightness, otIndex) (src/warp.c:558-579) — the loading-screen image emitter: four DR_MODE (tpage 264 + 2*i, the 128-px-wide pages of the 512x216 picture LoadImage'd to VRAM (512,0)) each followed by a 0x14-byte SPRT of code 100 at x = i*128, y 12, 128x216, rgb set to the fade level, chained in the primitive buffer and linked through func_8004E71C rather than func_8004E758"
+note = "func_80059358(brightness, otIndex) (src/warp.c:558-579) - the loading-screen image emitter: four DR_MODE (tpage 264 + 2*i, the 128-px-wide pages of the 512x216 picture LoadImage'd to VRAM (512,0)) each followed by a 0x14-byte SPRT of code 100 at x = i*128, y 12, 128x216, rgb set to the fade level, chained in the primitive buffer and linked through func_8004E71C rather than func_8004E758"
 
 [[symbol]]
 name = "F_PARTICLES_DRAW"
@@ -298,7 +298,7 @@ note = "D_80070610, the tracer ribbon array (games/spyro-3/spyro-3/include/trace
 name = "F_FLAME_DRAW"
 addr = 0x8002D2C4
 kind = "function"
-note = "func_8002D2C4 (asm/mobyfunc.s:153) — the fire-breath ribbon emitter, the other game's func_80058D64 over all 446 instructions but for constants and addresses. Two call sites in func_8001EC5C, the second only when the game word is 6 (asm/nonmatchings/drawutil/func_8001EC5C.s:81-102); the flame feeder's hook site"
+note = "func_8002D2C4 (asm/mobyfunc.s:153) - the fire-breath ribbon emitter, the other game's func_80058D64 over all 446 instructions but for constants and addresses. Two call sites in func_8001EC5C, the second only when the game word is 6 (asm/nonmatchings/drawutil/func_8001EC5C.s:81-102); the flame feeder's hook site"
 
 [[symbol]]
 name = "D_FLAME_STATE"

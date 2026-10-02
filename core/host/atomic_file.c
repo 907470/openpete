@@ -1,4 +1,4 @@
-/* atomic_file.c — temp-file-and-rename replacement of persisted files. See
+/* atomic_file.c - temp-file-and-rename replacement of persisted files. See
  * openpete_atomic_file.h. */
 
 #include "openpete_atomic_file.h"
@@ -163,7 +163,7 @@ int op_atomic_file_commit(op_atomic_file_t* af) {
     }
     if (why) {
         remove(af->tmp);
-        OPL_ERROR_F("atomic-file", "%s: %s%s%s — previous file kept", af->path, why,
+        OPL_ERROR_F("atomic-file", "%s: %s%s%s - previous file kept", af->path, why,
                     err ? ": " : "", err ? strerror(err) : "");
         return -1;
     }
@@ -174,7 +174,7 @@ int op_atomic_write_file(const char* path, const void* data, size_t n) {
     op_atomic_file_t af;
     if (op_atomic_file_open(&af, path) != 0) return -1;
     if (n && fwrite(data, 1, n, af.f) != n) {
-        OPL_ERROR_F("atomic-file", "%s: short write — previous file kept", path);
+        OPL_ERROR_F("atomic-file", "%s: short write - previous file kept", path);
         op_atomic_file_abort(&af);
         return -1;
     }

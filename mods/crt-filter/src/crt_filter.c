@@ -1,11 +1,11 @@
-/* crt-filter — mod-shader demo: engine-compiled GLSL postfx with
+/* crt-filter - mod-shader demo: engine-compiled GLSL postfx with
  * config-driven parameters through the mod uniform block.
  *
  * config.toml [crt] knobs -> postfx_set_uniforms (std140: four floats,
  * matching crt.frag's crt_params block). Read once at entry: the
  * [[config]] rows in mod.toml render engine-side in the Mods panel,
  * and a committed edit writes config.toml back and reloads the mod,
- * so entry re-runs with the fresh values — config.toml stays the
+ * so entry re-runs with the fresh values - config.toml stays the
  * file-side source of truth. */
 
 #include <openpete_mod_api.h>
@@ -25,9 +25,9 @@ static int          g_fx = -1;     /* postfx handle, -1 = no pass   */
 static int          g_shader_ok;   /* crt.frag compiled             */
 
 /* Repaint the whole status block (ui_status lines persist until the
- * next repaint). Entry is the only writer of the shown state — the
+ * next repaint). Entry is the only writer of the shown state - the
  * shader/postfx outcome and the pushed params are fixed for the life
- * of the load — so it publishes once, after that state is settled. */
+ * of the load - so it publishes once, after that state is settled. */
 static void crt_status_publish(void) {
     if (!g_shader_ok) {
         g_api->ui_status(g_self,
@@ -53,7 +53,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     int frag = api->shader_register(self, "shaders/crt.frag");
     if (frag < 0) {
         api->log(self, OP_MOD_LOG_ERROR,
-                 "crt.frag failed to compile — filter unavailable "
+                 "crt.frag failed to compile - filter unavailable "
                  "(see .build/shaders/)");
         crt_status_publish();
         return 0;   /* stay loaded: a broken shader never bricks a boot */
@@ -63,7 +63,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     int fx = api->postfx_register(self, frag, OP_POSTFX_COMPOSITE, 0);
     if (fx < 0) {
         api->log(self, OP_MOD_LOG_INFO,
-                 "postfx chain not in this engine build — shader "
+                 "postfx chain not in this engine build - shader "
                  "compiled and ready");
         crt_status_publish();
         return 0;

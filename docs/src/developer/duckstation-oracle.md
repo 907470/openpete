@@ -3,7 +3,7 @@
 The oracle is the gate that decides whether a change lands: a
 DuckStation capture of Spyro 1 running on a real Sony SCPH1001 BIOS is the
 project's proxy for hardware, and openpete must reproduce its
-gameplay-state hashes tick for tick. This document covers both halves — the
+gameplay-state hashes tick for tick. This document covers both halves - the
 capture side (the DuckStation fork) and the verify side
 (`tests/harness/check_psx_oracle.sh`).
 
@@ -33,7 +33,7 @@ pinned in `.gitmodules`. The branch carries two commits over upstream
    unconditionally on Linux, which breaks a surfaceless headless build.
 2. Add the psxtrace capture module to `duckstation-regtest`:
    `src/duckstation-regtest/psxtrace_capture.{cpp,h}` plus five CLI flags
-   — `-psxtrace PATH`, `-psxtrace-anchor-pc HEX`
+   - `-psxtrace PATH`, `-psxtrace-anchor-pc HEX`
    (default `0x8001ED5C`, Spyro 1 GamestateDraw), `-psxtrace-anchor-hit N`
    (default 1), `-psxtrace-frames N` (0 = bound by `-frames`), and
    `-dump-ram-at-anchor PATH` (2 MB main-RAM dump on the first armed
@@ -47,9 +47,9 @@ no audio output, and a non-persistent memory card.
 
 The capture module sets an execute breakpoint at the anchor PC.
 Each hit reads main RAM for every region
-— including the indirect-pointer dereference and per-element masking that
+- including the indirect-pointer dereference and per-element masking that
 openpete's `gameplay_hash_compute_ex()` (`core/runtime/run.c:529`) performs
-— hashes it with FNV-1a-64, and appends one `FRMR` record to the v2
+- hashes it with FNV-1a-64, and appends one `FRMR` record to the v2
 `.psxtrace` file. There is no interpreter slowdown and no scripting layer.
 
 The format constants in `psxtrace_capture.cpp` mirror
@@ -350,7 +350,7 @@ read as the trace path.
 | Code | Meaning |
 | --- | --- |
 | 0 | every non-tolerated region matched on every record |
-| 2 | divergence — `OPENPETE_EXIT_DIVERGENCE` (`core/include/openpete.h:22`) |
+| 2 | divergence - `OPENPETE_EXIT_DIVERGENCE` (`core/include/openpete.h:22`) |
 | 64 | trace, binary, or disc missing; ctest `SKIP_RETURN_CODE` |
 | other | build or runtime error |
 
@@ -362,28 +362,28 @@ distinguishable from a flickering one.
 
 ### Environment knobs
 
-- `OPENPETE_BIN`, `OPENPETE_DISC` — binary and disc overrides.
-- `OPENPETE_FRAME_LIMIT` — passed as `--frame-limit`; default 200000. This
+- `OPENPETE_BIN`, `OPENPETE_DISC` - binary and disc overrides.
+- `OPENPETE_FRAME_LIMIT` - passed as `--frame-limit`; default 200000. This
   is a safety belt only, since `psxtrace-eof` ends the run first: the
   20k-record demo reaches EOF at about 37000 openpete frames (VBLs, roughly
   two per tick). Setting `OPENPETE_FRAME_LIMIT=8000` cuts the run to a
   roughly 20-second smoke pass covering about 4000 ticks, which reaches no
   level load and therefore clears nothing.
-- `PSXTRACE_KEEP_GOING=1` — passes `--psxtrace-keep-going`, comparing every
+- `PSXTRACE_KEEP_GOING=1` - passes `--psxtrace-keep-going`, comparing every
   record instead of stopping at the first divergence. Used to census which
   regions diverge and for how long.
-- `OPENPETE_PSXTRACE_HEAL_WINDOW` — CD-load transient tolerance in ticks;
+- `OPENPETE_PSXTRACE_HEAL_WINDOW` - CD-load transient tolerance in ticks;
   see below.
-- `OPENPETE_PSXTRACE_POKE=ADDR:BYTE:FRAME` — negative control. The verifier
+- `OPENPETE_PSXTRACE_POKE=ADDR:BYTE:FRAME` - negative control. The verifier
   writes one byte into guest RAM at the anchor of that frame, before the
   hashes are taken. A run under it must fail at that frame in the region
   holding the address; a PASS means the gate is not looking at that byte.
   For example `OPENPETE_PSXTRACE_POKE=0x8007582C:7:2000` with
   `OPENPETE_FRAME_LIMIT=8000` fails at tick 2000 in `g_SpyroLifeCount`.
-- `OPENPETE_ORACLE_LOG` — keep the run's full console log at this path
+- `OPENPETE_ORACLE_LOG` - keep the run's full console log at this path
   (default: a temp file the script deletes). The script reads the exit-time
   `music: summary:` line from it.
-- `OPENPETE_PSXTRACE_VBL_POLICY=exact|log` — how a per-record VBL-delta
+- `OPENPETE_PSXTRACE_VBL_POLICY=exact|log` - how a per-record VBL-delta
   mismatch is judged (default `log`). Every record carries the reference's
   VBLANK count at the hit (header flag bit 4, in `pad2`); openpete stamps
   its own `openpete_vbl` at the same hit, and the verifier compares the
@@ -392,7 +392,7 @@ distinguishable from a flickering one.
   both deltas named); `log` counts them. The exit summary prints both
   sides' delta histograms (bin `>=16` collects the rest). `exact` refuses
   a trace without stamps.
-- `OPENPETE_ANCHOR_VBL_LOG=PATH` — one `hit vbl` line per anchor hit,
+- `OPENPETE_ANCHOR_VBL_LOG=PATH` - one `hit vbl` line per anchor hit,
   with or without a trace (`--psxtrace-anchor-pc HEX` arms the counter
   alone). `tools/psxtrace_loads.py vbl TRACE PATH` prints both histograms
   and the first mismatching record.
@@ -587,5 +587,5 @@ tripwire for that audit.
 
 ## Related
 
-- `games/spyro-1/manifest/gameplay_state_regions.toml` — the region contract itself, with
+- `games/spyro-1/manifest/gameplay_state_regions.toml` - the region contract itself, with
   the address source and audit note for every region.

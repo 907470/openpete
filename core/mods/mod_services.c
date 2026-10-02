@@ -1,9 +1,9 @@
-// core/mods/mod_services.c — engine services for mods.
+// core/mods/mod_services.c - engine services for mods.
 //
 // v1 surface (the engine-services contract):
 //   - savestate trigger: mods QUEUE a save/load; run.c executes it at
 //     the same quiescent host-loop point as the user's hotkeys (the game
-//     fiber is yielded — snapshot/restore can't race recompiled code).
+//     fiber is yielded - snapshot/restore can't race recompiled code).
 
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
@@ -18,7 +18,7 @@
 /* bk2 status mirror: run.c publishes per sim frame while a movie is
  * loaded; zero-initialized = "no movie" for movie-less sessions. The
  * mirror is owner-free and read-only, so live toggles neither change
- * what it reports nor leave anything to undo — a disabled mod simply
+ * what it reports nor leave anything to undo - a disabled mod simply
  * stops running the hooks that would query it. */
 static openpete_mods_bk2_status_t s_bk2_status;
 
@@ -46,7 +46,7 @@ int openpete_mods_savestate_request(int op, unsigned slot,
         return -1;
     }
     if (s_pending_op != 0) {
-        OPL_WARN_F("mods", "%s: a savestate op is already pending — "
+        OPL_WARN_F("mods", "%s: a savestate op is already pending - "
                    "request dropped", owner ? owner : "?");
         return -1;
     }
@@ -67,7 +67,7 @@ int openpete_mods_pending_state_op(unsigned* out_slot) {
     if (op && owner && openpete_mods_build_key(owner) &&
         !openpete_mods_is_enabled(owner)) {
         OPL_INFO_F("mods", "%s was disabled before its queued savestate "
-                   "%s on slot %u ran — dropped", owner,
+                   "%s on slot %u ran - dropped", owner,
                    op == 1 ? "SAVE" : "LOAD", s_pending_slot);
         return 0;
     }
@@ -84,7 +84,7 @@ int openpete_mods_pending_state_op(unsigned* out_slot) {
  * state: a root outlives its owner's disable so the priority order (and
  * every index derived from it) stays stable, and so a re-enable needs no
  * re-registration. Owner enablement is a CONSUME-TIME question, and each
- * consumer answers it itself — carry the owner returned here alongside
+ * consumer answers it itself - carry the owner returned here alongside
  * the resolved asset, skip it while openpete_mods_is_enabled(owner) is
  * false, and key any memo of the resolution on
  * openpete_mods_toggle_epoch() so a flip invalidates it. A consumer that
@@ -108,7 +108,7 @@ int openpete_mods_register_asset_root(const char* dir, const char* owner) {
                       "asset_roots", ASSET_ROOTS_INIT);
     asset_root_t* r = (asset_root_t*)mod_fvec_push(&s_roots);
     if (!r) {
-        OPL_WARN_F("mods", "asset-root table allocation failed — %s's "
+        OPL_WARN_F("mods", "asset-root table allocation failed - %s's "
                    "assets ignored", owner ? owner : "?");
         return -1;
     }
@@ -118,7 +118,7 @@ int openpete_mods_register_asset_root(const char* dir, const char* owner) {
                owner ? owner : "?");
     /* Declarative own-textures ride the root registration (boot-scoped,
      * like every asset overlay). The owner string passed here is the
-     * loader's session-lifetime id — the registry keeps that pointer. */
+     * loader's session-lifetime id - the registry keeps that pointer. */
     {
         int n = openpete_mods_texture_scan_root(r->dir, r->owner);
         if (n > 0)

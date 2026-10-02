@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_vk_validation.sh — Vulkan validation errors on the boot-to-level path.
+# check_vk_validation.sh - Vulkan validation errors on the boot-to-level path.
 #
 # The Vulkan validation layer reports API misuse the driver is free to tolerate:
 # a fragment shader reading a varying its vertex stage never wrote, an object

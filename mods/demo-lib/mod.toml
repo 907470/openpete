@@ -1,4 +1,4 @@
-# demo-lib — CI fixture: the library half of lib-and-client.
+# demo-lib - CI fixture: the library half of lib-and-client.
 #
 # Clients declare deps = ["demo-lib"]; the dependency sort guarantees this
 # entry point has run before theirs. Log-only.

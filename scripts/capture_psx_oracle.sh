@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# scripts/capture_psx_oracle.sh — produce an aligned .psxtrace + sibling
+# scripts/capture_psx_oracle.sh - produce an aligned .psxtrace + sibling
 # seed/bk2 artifacts for openpete's PCSX-Redux oracle gate.
 #
-# Two-stage capture (one Redux process per stage — can't run both BPs in
+# Two-stage capture (one Redux process per stage - can't run both BPs in
 # the same Redux instance, see pcsx-redux-trace.lua header):
 #
-#   Stage 1: pcsx-redux-ram-dump.lua → <out>.seed.ram + <out>.seed.cpu
+#   Stage 1: pcsx-redux-ram-dump.lua -> <out>.seed.ram + <out>.seed.cpu
 #            One-shot RAM/CPU dump on the Nth hit of the anchor PC.
-#   Stage 2: pcsx-redux-trace.lua    → <out> (the .psxtrace)
+#   Stage 2: pcsx-redux-trace.lua    -> <out> (the .psxtrace)
 #            Streaming per-frame hash records starting at the same anchor.
 #
 # Both stages are deterministic given the same seed input (disc + BIOS +
@@ -75,7 +75,7 @@ PADSTREAM=""
 if [[ -n "$BK2" ]]; then
     [[ -f "$BK2" ]] || { echo "[capture] bk2 missing: $BK2" >&2; exit 1; }
     PADSTREAM="${OUT}.padstream"
-    echo "[capture] converting $BK2 → $PADSTREAM"
+    echo "[capture] converting $BK2 -> $PADSTREAM"
     python3 tools/bk2_to_padstream.py "$BK2" -o "$PADSTREAM" --summary
     cp "$BK2" "${OUT}.bk2"
 fi

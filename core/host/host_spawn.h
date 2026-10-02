@@ -1,4 +1,4 @@
-// core/host/host_spawn.h — silent child-process spawn for host-side
+// core/host/host_spawn.h - silent child-process spawn for host-side
 // build steps (mod compile-on-boot).
 //
 // The child is started from an argument vector, never through a shell, so

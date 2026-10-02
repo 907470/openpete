@@ -1,4 +1,4 @@
-/* games/common/state_regions.c — register this game's gameplay-readable
+/* games/common/state_regions.c - register this game's gameplay-readable
  * region table with the core's hash and .psxtrace paths.
  *
  * The table is generated from games/<game>/manifest/gameplay_state_regions.toml

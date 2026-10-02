@@ -1,6 +1,6 @@
 # The Linux release build base.
 #
-# Debian 11 (bullseye) — glibc 2.31, GLIBCXX 3.4.28 — because the symbol
+# Debian 11 (bullseye) - glibc 2.31, GLIBCXX 3.4.28 - because the symbol
 # floor of a binary is decided by the machine that built it, not by any
 # flag. A dev-box build (Ubuntu 22.04, glibc 2.35) requires GLIBC_2.34
 # and refuses to start on anything older than Ubuntu 22.04 / Debian 12,
@@ -10,14 +10,14 @@
 #
 # Deliberately NOT here: a newer gcc. The base's own gcc 10 compiles the
 # C++17 surface (glslang, imgui, cubeb, games/spyro-1/dist/disc_library.cpp) fine, and using
-# it is what keeps the GLIBCXX floor low for free — a backported compiler
+# it is what keeps the GLIBCXX floor low for free - a backported compiler
 # would raise the floor again. Old X11/Wayland headers are harmless:
 # SDL3 dlopens those clients at runtime, but refuses to configure without
 # at least one of X11 or Wayland present at build time, so the set below
 # mirrors the dev box's (libdecor is absent from bullseye; SDL3 dlopens it
 # too). Vulkan headers are vendored (third_party/vulkan-headers).
 #
-# The bundled clang the image ships is NOT built here — it is the
+# The bundled clang the image ships is NOT built here - it is the
 # llvm.org 18.1.8 ubuntu-18.04 tarball (scripts/setup_linux_clang.sh),
 # whose own floor is lower still.
 #

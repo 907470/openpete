@@ -1,4 +1,4 @@
-/* core/renderer/openpete_interp.c — render-side snapshot ring.
+/* core/renderer/openpete_interp.c - render-side snapshot ring.
  *
  * See openpete_interp.h for the API contract. This TU provides capture +
  * the dedupe predicate + the prev/curr query; the lerped re-emission bracket
@@ -8,7 +8,7 @@
  *   - openpete_interp_capture() runs after ticked_this_iter; the game
  *     fiber is yielded inside VSync(0), so RAM is consistent.
  *   - No write path in THIS TU touches PSX RAM. The lerped-write bracket
- *     (save-canonical → write-lerped → render → restore-canonical) lives
+ *     (save-canonical -> write-lerped -> render -> restore-canonical) lives
  *     game-side and runs entirely on the host fiber, restoring canonical RAM
  *     before the game fiber resumes; core capture stays read-only.
  */
@@ -27,7 +27,7 @@
 /* Game-registered region table. NULL/0 until the game's startup calls
  * openpete_interp_register_regions(); init() short-circuits to no-op
  * capture in that case. Explicit registration avoids relying on
- * cross-toolchain weak-symbol semantics — MinGW's PE/COFF linker mis-
+ * cross-toolchain weak-symbol semantics - MinGW's PE/COFF linker mis-
  * resolves the strong override in some configurations, leaving the
  * weak NULL in place at runtime even though the strong def exists. */
 static const openpete_interp_region_t* s_regions = NULL;
@@ -35,7 +35,7 @@ static size_t                          s_region_count = 0;
 
 /* 3-deep ring: keeps the last THREE distinct ticks (prev2, prev, curr) so the
  * render side can build a cubic (Hermite/pred1) interpolant with a centered
- * start-tangent, not just the linear prev→curr chord. s_head = newest. */
+ * start-tangent, not just the linear prev->curr chord. s_head = newest. */
 static openpete_interp_snapshot_t s_snap[3];
 static int      s_head        = 0;   /* index of the most-recently-written slot */
 static int      s_initialized = 0;
@@ -108,7 +108,7 @@ int openpete_interp_init(void) {
         return 0;
     }
     if (s_region_count > OPENPETE_INTERP_MAX_REGIONS) {
-        /* %u + cast rather than %zu — MinGW's default MSVCRT printf
+        /* %u + cast rather than %zu - MinGW's default MSVCRT printf
          * doesn't reliably understand C99 %zu. */
         OPL_ERROR_F("interp",
                     "region table has %u entries (max %u); bump OPENPETE_INTERP_MAX_REGIONS",
@@ -155,7 +155,7 @@ void openpete_interp_shutdown(void) {
 static uint32_t s_reset_gen = 0;
 void openpete_interp_reset(void) {
     /* Invalidate the ring but keep the region-table config (total_bytes,
-     * region_offsets) computed at init — only the SNAPSHOTS are stale. */
+     * region_offsets) computed at init - only the SNAPSHOTS are stale. */
     for (int i = 0; i < 3; ++i) s_snap[i].valid = 0;
     s_head = 0;
     s_last_tick_seen = 0;
@@ -173,14 +173,14 @@ int openpete_interp_enabled(void) {
     return s_enabled;
 }
 
-/* Virtual present clock — see the header note. */
+/* Virtual present clock - see the header note. */
 static op_time_t s_present_target = 0;
 void openpete_interp_set_present_target(op_time_t t) { s_present_target = t; }
 op_time_t openpete_interp_present_now(void) {
     return s_present_target ? s_present_target : op_now(); /* clock-guard: wall */ /* inline presents: display instant == now */
 }
 
-/* Deterministic capture — see the header note. */
+/* Deterministic capture - see the header note. */
 static int       s_det_mode    = 0;
 static op_time_t s_det_period  = 0;
 static uint64_t  s_det_index   = 0;
@@ -219,20 +219,20 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
         void* host = openpete_psx_to_host_span(reg->psx_addr, reg->length);
         uint32_t off = curr->region_offsets[r];
         if (host) memcpy(s_cap_scratch + off, host, reg->length);
-        else      memset(s_cap_scratch + off, 0, reg->length);   /* unmapped → deterministic */
+        else      memset(s_cap_scratch + off, 0, reg->length);   /* unmapped -> deterministic */
     }
     s_total_captures++;
 
     /* Dedupe AT CAPTURE: Spyro's logic runs at 30 Hz on a 60 Hz VBL fiber, so
-     * the transform-bearing state advances only every OTHER tick — yet this
+     * the transform-bearing state advances only every OTHER tick - yet this
      * capture fires every tick. A naive 2-slot ring (advance + fill every time)
      * then holds two SAME-frame duplicates whenever the camera updated on the
-     * other VBL, so every sub-tick query sees prev==curr and dedupes → the
+     * other VBL, so every sub-tick query sees prev==curr and dedupes -> the
      * interpolation bracket NEVER engages (paired=0 forever, which presents
      * as flicker and judder). By skipping the advance when the candidate is
      * byte-identical to the current head, the ring always holds the two most-
      * recent DISTINCT states, and curr->tick_ns stays pinned to when that state
-     * FIRST appeared — exactly the [prev,curr] bracket alpha spans. A state
+     * FIRST appeared - exactly the [prev,curr] bracket alpha spans. A state
      * held past the cadence is committed as a duplicate (below). */
     const int identical = (curr->valid && total > 0 &&
                            memcmp(s_cap_scratch, curr->data, total) == 0);
@@ -242,8 +242,8 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
          * mid-cadence: commit the duplicate so the ring holds a pair whose
          * endpoints are equal in content and distinct in tick. Interpolating
          * that pair is the identity on the registered regions and leaves the
-         * bracket installed, so everything keyed on it — the world-animation
-         * feeders, the record replays — keeps running on a screen whose camera
+         * bracket installed, so everything keyed on it - the world-animation
+         * feeders, the record replays - keeps running on a screen whose camera
          * and player are held (the debug freecam holds both). Without it the
          * ring keeps the last pair that carried motion, which at a freecam
          * pose is the jump onto the pose: a cut, refused by every consumer,
@@ -253,7 +253,7 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
          * one tick late lands every gap+1 ticks, so the ring's stamps advance
          * on a (gap+1)-tick grid while presents keep running per tick, and
          * every alpha-driven animation cycles against a period that is not the
-         * tick's — the whole-scene judder at a held camera. */
+         * tick's - the whole-scene judder at a held camera. */
         uint32_t held = (tick > curr->tick) ? tick - curr->tick : 0;
         const uint32_t cadence = (s_distinct_gap < INTERP_MIN_DISTINCT_GAP)
                                ? INTERP_MIN_DISTINCT_GAP : s_distinct_gap;
@@ -270,7 +270,7 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
         s_distinct_gap = (g > INTERP_MAX_DISTINCT_GAP) ? INTERP_MAX_DISTINCT_GAP : g;
     }
 
-    /* OPENPETE_CAP_ROLL_DBG: one line per ROLL — which frame, and the first
+    /* OPENPETE_CAP_ROLL_DBG: one line per ROLL - which frame, and the first
      * words of region 0 (the game's camera) before/after. Forensics for
      * degenerate pairs (prev==curr in one region while another rolled). */
     {
@@ -287,7 +287,7 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     }
 
     /* Deterministic capture: override the wall-clock stamp with a fixed grid
-     * point (0, P, 2P, …), so consecutive distinct ticks are exactly `period`
+     * point (0, P, 2P, ...), so consecutive distinct ticks are exactly `period`
      * apart (see the header note). The grid counts DISTINCT states only: a
      * duplicate roll is stamped one period after the state it copies and
      * consumes no grid point, so a tick's absolute stamp depends on the states that preceded it and
@@ -299,7 +299,7 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
         tick_ns = dup_roll ? curr->tick_ns + s_det_period
                            : (op_time_t)(s_det_index++) * s_det_period;
 
-    /* State advanced — commit to the next ring slot. snap[s_head] becomes the
+    /* State advanced - commit to the next ring slot. snap[s_head] becomes the
      * "latest distinct tick"; the two prior slots hold prev and prev2. */
     s_head = (s_head + 1) % 3;
     s_head_is_dup = dup_roll;
@@ -334,7 +334,7 @@ void openpete_interp_recapture_committed(void) {
     if (!openpete_interp_ra_commit_active()) return;
     openpete_interp_snapshot_t* curr = &s_snap[s_head];
     if (!curr->valid) return;
-    /* Overwrite flagged regions of the NEWEST slot in place — even when this
+    /* Overwrite flagged regions of the NEWEST slot in place - even when this
      * tick's capture deduped (no roll): the slot then still holds the last
      * distinct state, and refreshing its committed regions keeps them the
      * freshest committed bytes known. tick/tick_ns stay untouched; the
@@ -375,7 +375,7 @@ int openpete_interp_query(op_time_t now_ns,
      * once the state has held past the logic's cadence (see capture), so the
      * pair describes a static screen rather than a tick the logic skipped, and
      * the lerp across it is the identity. The frozen-pair case the query used
-     * to reject here — a pair that carried motion which has since ended — is
+     * to reject here - a pair that carried motion which has since ended - is
      * held by openpete_interp_curr_is_stale(), which forces alpha 1. */
     /* Alpha is measured from prev->tick_ns. Render shows state at
      * `prev->tick_ns + alpha * sim_period`, so alpha in [0, 1] maps to
@@ -404,7 +404,7 @@ int openpete_interp_query3(op_time_t now_ns,
     int r = openpete_interp_query(now_ns, sim_period_ns, out_alpha, out_prev, out_curr);
     if (out_prev2) {
         /* Two ticks back from curr. NULL until the ring has 3 distinct ticks,
-         * or when the query itself didn't pair — callers fall back to linear. */
+         * or when the query itself didn't pair - callers fall back to linear. */
         const openpete_interp_snapshot_t* p2 = &s_snap[(s_head + 1) % 3];
         *out_prev2 = (r && p2->valid) ? p2 : NULL;
     }

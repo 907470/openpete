@@ -85,7 +85,7 @@ def parse(map_path: Path, psyq_obj: str):
             break
         sm = sym_re.match(line)
         if not sm:
-            # Anything else (e.g. ` build/...(.text)`) — stop.
+            # Anything else (e.g. ` build/...(.text)`) - stop.
             break
         addr = int(sm.group(1), 16)
         name = sm.group(2)

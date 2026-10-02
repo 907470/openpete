@@ -1,4 +1,4 @@
-// games/common/renderer/particles.c — the particle feeder for a game whose
+// games/common/renderer/particles.c - the particle feeder for a game whose
 // particle renderer links its primitives into the 3D ordering table itself.
 //
 // The routine (asm/partsdraw.s) is handwritten: it loads the camera matrix
@@ -12,8 +12,8 @@
 // The geometry is taken from the primitives the routine wrote, not
 // re-derived: the routine's screen positions are already the GTE's int16
 // output, and reading them back costs one polybuf walk instead of a second
-// copy of a six-class projection. What the primitives do not carry is depth —
-// the PSX orders them by ordering-table bucket — so the feeder recovers each
+// copy of a six-class projection. What the primitives do not carry is depth -
+// the PSX orders them by ordering-table bucket - so the feeder recovers each
 // primitive's view-Z by projecting its own record's position, pairing
 // primitives to records through the stamp byte the routine maintains
 // (partsdraw.s:223 clears it when a record's processing starts, :358, :415,
@@ -289,9 +289,9 @@ static int part_feed_enabled(void) {
  * from the tick's pool, so a sub-tick present that re-feeds them shows every
  * particle at the pose the tick drew: neither the camera's motion nor the
  * record's own reaches them. The rebase measures each record point's screen
- * displacement as the difference of two projections — the pool position the
+ * displacement as the difference of two projections - the pool position the
  * present shows under the staged camera, against the position the tick drew
- * under the tick's camera — and moves the primitive by it. At the end of the
+ * under the tick's camera - and moves the primitive by it. At the end of the
  * tick's own interval the displaced position and the staged camera are the
  * tick's, so both projections take identical inputs through identical
  * arithmetic and the displacement is exactly zero. */

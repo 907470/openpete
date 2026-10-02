@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# scripts/update-dear-bindings.sh — refresh third_party/dear_bindings/ from the
+# scripts/update-dear-bindings.sh - refresh third_party/dear_bindings/ from the
 # dear_bindings release that matches the pinned ImGui.
 #
 # dear_bindings publishes its generated output per release, so the engine build
 # needs neither the generator nor its Python dependency (ply). The release is
 # tagged DearBindings_v<bindings>_ImGui_v<imgui>; the ImGui half is read from
 # third_party/imgui/imgui.h, so refreshing after an ImGui bump takes no
-# argument. The release has no all-in-one asset — the four files are fetched
+# argument. The release has no all-in-one asset - the four files are fetched
 # individually.
 #
 # A CMake configure check compares IMGUI_VERSION_NUM in dcimgui.h with the one
@@ -69,6 +69,6 @@ fi
 
 funcs=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["functions"]))' \
         "$DEST/dcimgui.json")
-echo "[dear-bindings] installed $tag — $funcs functions"
+echo "[dear-bindings] installed $tag - $funcs functions"
 echo "[dear-bindings] regenerate the table by rebuilding; review the table diff"
 exit 0

@@ -2,7 +2,7 @@
 #
 # The HUD letter model for 'V' (moby class 447) ships 17 faces where the
 # letter's own symmetry needs 18: the right arm has three side walls
-# (outer edge, top end cap, inner edge) and the left arm has only two —
+# (outer edge, top end cap, inner edge) and the left arm has only two -
 # its top end cap is absent, so the top-left of every 'V' the game draws
 # in 3D text is a hole into the glyph's interior.
 #

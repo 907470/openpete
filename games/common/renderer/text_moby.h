@@ -12,7 +12,7 @@
 // (OPENPETE_FONT_CACHE), loaded at boot by later sessions. Until a snapshot
 // exists, ready() is false and the caller renders nothing.
 //
-// Pure presentation — reads glyph-model geometry from RAM, writes no
+// Pure presentation - reads glyph-model geometry from RAM, writes no
 // gameplay-readable state.
 
 #ifndef OPENPETE_TEXT_MOBY_NATIVE_H

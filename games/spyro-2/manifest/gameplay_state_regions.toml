@@ -1,4 +1,4 @@
-# games/spyro-2/manifest/gameplay_state_regions.toml — the gameplay-readable
+# games/spyro-2/manifest/gameplay_state_regions.toml - the gameplay-readable
 # bytes the oracle hashes every tick. Generated into the
 # build by tools/gen_state_regions.py (cmake/openpete_game.cmake): the C
 # table the exe registers, the flat table the DuckStation capture module
@@ -28,17 +28,17 @@
 #
 # Carve-outs (commented rows; the ranges are subtracted above):
 #   vbl_count   D_80066F9C/D_80066FA0 (VBL counters), D_800682EC (VBLs since
-#               the last CdRead) — the reference spends the load's wall time
+#               the last CdRead) - the reference spends the load's wall time
 #               in VBLs that openpete's synchronous CdRead does not; removed
 #               once openpete charges the reference's VBLs inside each
 #               synchronous read
 #   load_timing D_8006700C (word), D_80067160, title overlay 0x8007F02C, 0x8007F06C-
 #               0x8007F071, 0x8007F090, 0x8007F0EC-0x8007F0F1, 0x8007F14C-
 #               0x8007F169 (step index table), 0x8007F180-0x8007F185 (per-step
-#               flags) — the title sequence sits one step further on the
+#               flags) - the title sequence sits one step further on the
 #               reference at hit 1, its counters 6 VBLs ahead; removed
 #               once openpete charges the pre-anchor reads their VBLs
-#   cd_timing   D_8006830C/D_80068310, D_80068324 — stream-seek countdown and
+#   cd_timing   D_8006830C/D_80068310, D_80068324 - stream-seek countdown and
 #               head position; a stream-seek residual no read model removes
 
 # The arguments tools/derive_state_regions.py derived the direct rows from;

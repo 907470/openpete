@@ -22,7 +22,7 @@ from pathlib import Path
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set in the environment
 # rather than at each invocation because this script builds its argument list
 # in more than one place, and a flag appended to the wrong one is a silent
@@ -127,7 +127,7 @@ def main():
     far = TOTAL_FRAMES + 1_000_000
     never = run_once("never", f"{far}-{far + 10}", out_dir)
 
-    # Always-unlocked: useful canary — should also match baseline because
+    # Always-unlocked: useful canary - should also match baseline because
     # vbl is yield-driven.
     always = run_once("always", f"0-{TOTAL_FRAMES}", out_dir)
 

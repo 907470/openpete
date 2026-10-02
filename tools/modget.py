@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""modget.py — install mods from a decentralized mod-source manifest
+"""modget.py - install mods from a decentralized mod-source manifest
 (the modding framework's distribution piece; OpenGOAL's model).
 
 A mod-source is a JSON file anyone can host:
@@ -17,10 +17,10 @@ A mod-source is a JSON file anyone can host:
     }
 
 `modget.py <source.json|URL> <mod-id>` downloads the zip, VERIFIES the
-sha256 (a mismatch aborts — the hash pins what you get), and drops
+sha256 (a mismatch aborts - the hash pins what you get), and drops
 `<id>.zip` into the mods dir, where the engine's zip loader takes over.
 There is no central registry and no signing; the trust posture is the
-one in mods/README.md — mods are native programs, install only what
+one in mods/README.md - mods are native programs, install only what
 you trust.
 
 Usage:
@@ -67,7 +67,7 @@ def main():
         return 1
     for key in ("url", "sha256"):
         if key not in m:
-            print(f"[modget] ERROR: entry lacks \"{key}\" — refusing "
+            print(f"[modget] ERROR: entry lacks \"{key}\" - refusing "
                   "(the hash pin is not optional)", file=sys.stderr)
             return 1
 
@@ -82,7 +82,7 @@ def main():
     args.mods_dir.mkdir(parents=True, exist_ok=True)
     out = args.mods_dir / f"{args.mod_id}.zip"
     out.write_bytes(blob)
-    print(f"[modget] installed {out} ({len(blob)} bytes, sha256 ok) — "
+    print(f"[modget] installed {out} ({len(blob)} bytes, sha256 ok) - "
           f"add \"{args.mod_id}\" to enabled.txt to activate")
     return 0
 

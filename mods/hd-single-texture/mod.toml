@@ -1,4 +1,4 @@
-# hd-single-texture — one replacement texture, no code.
+# hd-single-texture - one replacement texture, no code.
 #
 # Ships assets/textures/title_ui.png, a symbolic-identity replacement for
 # the 512x256 title-screen UI atlas. The magenta/cyan checker makes the

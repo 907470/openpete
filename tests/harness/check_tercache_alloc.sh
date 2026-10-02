@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_tercache_alloc.sh — the terrain arenas' memory-type allocation legs.
+# check_tercache_alloc.sh - the terrain arenas' memory-type allocation legs.
 #
 # rhi_create_vertex_buffer_device allocates each retained-terrain arena on the
 # first host-visible, host-coherent memory type that accepts it, DEVICE_LOCAL
@@ -11,12 +11,12 @@
 # A software rasteriser advertises one memory type, so no run here can execute
 # a second attempt: the candidate order itself is pinned by the unit test
 # rhi_memtype_candidates_test. What this harness proves is the leg either side
-# of the order — that a refused memory type is reported per attempt and ends
+# of the order - that a refused memory type is reported per attempt and ends
 # in the cache's own init-failure path, and that the unrefused run names the
 # type it allocated on and does not take that path.
 #
 # Two legs of the same binary, one lever between them:
-#   inject   OPENPETE_RHI_FAIL_MEMTYPE=0 — every attempt on memory type 0
+#   inject   OPENPETE_RHI_FAIL_MEMTYPE=0 - every attempt on memory type 0
 #            (llvmpipe's only type) reports VK_ERROR_OUT_OF_DEVICE_MEMORY
 #            without reaching the driver. The variable takes a comma-separated
 #            list of type indices; one index is named here because the device
@@ -30,7 +30,7 @@
 #   inject  at least one `[rhi/vk] device vertex buffer <n> B: type 0 failed`
 #           line (engagement: the count is printed, and a zero count
 #           is VACUOUS, never PASS), the cache's `[ter-gpu] init failed` line,
-#           exit 0, and the screenshot written — the run continues on the CPU
+#           exit 0, and the screenshot written - the run continues on the CPU
 #           terrain walk.
 #   plain   at least one `device vertex buffer <n> B: type 0 flags <x>` line,
 #           no failed attempt, no `init failed`, exit 0, screenshot written.

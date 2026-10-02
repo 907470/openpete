@@ -5,7 +5,7 @@ into a specific source file. The splicer collects edits per file, asserts
 non-overlap, and applies them right-to-left so earlier offsets stay valid.
 
 Comments and whitespace between edited spans are preserved (the splicer
-doesn't reformat — it just substitutes spans).
+doesn't reformat - it just substitutes spans).
 """
 
 from __future__ import annotations

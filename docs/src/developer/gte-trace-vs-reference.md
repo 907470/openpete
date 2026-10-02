@@ -31,14 +31,14 @@ build/linux-release/games/spyro-1/openpete-spyro1 --headless \
 Knobs, all read once on the first COP2 op and parsed in `gte_trace_init()`
 (`third_party/psxrecomp/runner/src/gte.cpp`):
 
-- `OPENPETE_GTE_TRACE` — output CSV path. Unset disables the logger.
-- `OPENPETE_GTE_TRACE_LO` / `_HI` — half-open `openpete_frame` window,
+- `OPENPETE_GTE_TRACE` - output CSV path. Unset disables the logger.
+- `OPENPETE_GTE_TRACE_LO` / `_HI` - half-open `openpete_frame` window,
   `[LO, HI)`. The logger closes the file on the first op at or past `HI`.
   Defaults are 1100 and 1111; those predate the anchoring of
   `openpete_frame` to the first `psyq_DrawOTag` call
   (`core/include/openpete_fiber.h`), which removed the splash VBLs from the
   count, so always set the window explicitly.
-- `OPENPETE_GTE_TRACE_OPS` — comma-separated hex `func` values. Default
+- `OPENPETE_GTE_TRACE_OPS` - comma-separated hex `func` values. Default
   `01,06,30,2D,2E`.
 
 `openpete_frame` is a VBL counter, not a tick counter.
@@ -104,12 +104,10 @@ layout.
 
 Two non-obvious requirements:
 
-1. Pass `--debugger`. Without it
-   breakpoints — Lua or otherwise — silently never fire.
-2. The breakpoint invoker must return `true`. A falsy invoker
-   return is a delete request, so an invoker returning `false` fires
-   exactly once; `nil` is coerced to false at the C boundary and also
-   deletes.
+1. Pass `--debugger`. Without it breakpoints, Lua or otherwise, never
+   fire, and nothing reports it.
+2. The breakpoint invoker must return `true`. A breakpoint whose invoker
+   returns `false` or `nil` fires once and is deleted.
 
 ```sh
 cd .tools/pcsx-redux
@@ -129,8 +127,8 @@ mipsel-linux-gnu-objdump -d games/spyro-1/spyro-1/build/PSX.EXE \
 
 ### Known gap: reaching the cutscene from a fresh boot
 
-OpenBIOS does not implement the pad-poll commands Spyro 1 issues — it logs
-`Unknown command for pad: 43` and ignores them — so the script's scheduled
+OpenBIOS does not implement the pad-poll commands Spyro 1 issues - it logs
+`Unknown command for pad: 43` and ignores them - so the script's scheduled
 `setOverride` Start presses do not advance past the title screen. A real
 SCPH-1001 BIOS handles those commands, but that path SIGSEGVs pcsx-redux on
 `--run`. Neither path reaches the cutscene unattended.

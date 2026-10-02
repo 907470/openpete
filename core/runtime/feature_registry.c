@@ -1,4 +1,4 @@
-// core/runtime/feature_registry.c — see feature_registry.h.
+// core/runtime/feature_registry.c - see feature_registry.h.
 
 #include "feature_registry.h"
 
@@ -10,7 +10,7 @@
 /* Per-module "hook.<name>" trace bucket (--profile-out only). The dispatch fns
  * are the fiber hooks: they run on the game fiber inside the sim tick, and each
  * one is a capture/native-feed wrapper around a call back into the guest
- * renderer — so this bucket is INCLUSIVE of the guest work. The feeders name a
+ * renderer - so this bucket is INCLUSIVE of the guest work. The feeders name a
  * matching "<feature>.srend" bucket around that inner call; the difference is
  * openpete's own extraction cost. Ids are interned on first dispatch of each
  * module and cached by module index. */

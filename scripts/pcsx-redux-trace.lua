@@ -1,6 +1,6 @@
--- pcsx-redux-trace.lua — PCSX-Redux .psxtrace v2 oracle dumper.
+-- pcsx-redux-trace.lua - PCSX-Redux .psxtrace v2 oracle dumper.
 --
--- On every hit of PCSXR_TRACE_PC (default 0x8001ED5C, GamestateDraw entry —
+-- On every hit of PCSXR_TRACE_PC (default 0x8001ED5C, GamestateDraw entry -
 -- once per frame in Spyro 1) computes per-region FNV-1a-64 hashes that
 -- mirror openpete's gameplay_hash_compute_ex(), and writes one record to
 -- PCSXR_TRACE_OUT. Format spec: tools/psxtrace_format.py.
@@ -93,7 +93,7 @@ do
     -- regions path as a *fallback*, but prefer the openpete checkout
     -- inferred from the regions path: regions are built from
     -- <openpete>/build/.../gen/, so the source scripts/ dir is two levels up
-    -- from gen/ → ../../scripts/.
+    -- from gen/ -> ../../scripts/.
     local guesses = {
         script_dir .. '../../scripts/?.lua',
         script_dir .. '../scripts/?.lua',
@@ -120,7 +120,7 @@ local function w32(v)
         bit.band(bit.rshift(v, 16), 0xFF),
         bit.band(bit.rshift(v, 24), 0xFF)))
 end
--- uint64 → 8 LE bytes. Accepts uint64_t cdata.
+-- uint64 -> 8 LE bytes. Accepts uint64_t cdata.
 local function w64(u)
     local hi32 = tonumber(ffi.cast('uint32_t', u / 0x100000000ULL))
     local lo32 = tonumber(ffi.cast('uint32_t', u % 0x100000000ULL))

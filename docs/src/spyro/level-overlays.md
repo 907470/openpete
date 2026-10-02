@@ -1,4 +1,4 @@
-# Level overlays: code ↔ data, and how openpete recompiles them
+# Level overlays: code <-> data, and how openpete recompiles them
 
 `level-format.md` covers the per-level data blob (geometry, textures, object
 placement). This doc covers the per-level code overlay that runs that data, how
@@ -40,13 +40,13 @@ All level overlays load to the same kseg0 virtual address `0x8007AA38`.
 scans `0x8007AA38:0x8008EA38`, a 0x14000-byte window
 (`scripts/regen-recomp.sh`, `--overlay-range`).
 
-`spyro-1/overlays.ld` defines the overlay sections through three macros —
-`LEVEL`, `LEVEL_BALLOON`, `LEVEL_FLIGHT` — each of which emits `LONG(overlay_id)`
+`spyro-1/overlays.ld` defines the overlay sections through three macros -
+`LEVEL`, `LEVEL_BALLOON`, `LEVEL_FLIGHT` - each of which emits `LONG(overlay_id)`
 as the first word of the section, ahead of any code or rodata. At runtime the
 first word at `0x8007AA38` therefore identifies which overlay's bytes are live.
 Sections are padded to a 2048-byte sector boundary.
 
-Filename → section-name → id, as `scripts/regen-recomp.sh` classifies the
+Filename -> section-name -> id, as `scripts/regen-recomp.sh` classifies the
 matching decomp's `build/wad/*.ovl`:
 
 ```
@@ -130,7 +130,7 @@ psxrecomp ingests the raw `.ovl` bytes:
 2 KiB `PS-X EXE` header in memory (`third_party/psxrecomp/recompiler/src/main_psx.cpp`,
 the `raw_bin` branch): magic, `initial_pc` = `initial_load_address` =
 `--load-addr`, `initial_gp` = 0, `file_size` = blob size. The entry point is a
-placeholder — real entry points come from `--forced-entry` and `--extra-funcs`.
+placeholder - real entry points come from `--forced-entry` and `--extra-funcs`.
 `--raw-bin` requires a KSEG0 load address. This replaced an out-of-tree
 `tools/synth_overlay_exe.py` wrapper so the first-boot compile pipeline can
 recompile carved overlay segments without python.
@@ -167,9 +167,9 @@ converges:
 3. Passes 3 and up add cross-piece split targets
    (`tools/extract_split_targets.py`), repeating until no new target appears, at
    most five passes; an unconverged overlay aborts the regen. psxrecomp emits a
-   guest function as several C pieces when a piece boundary is forced — an
+   guest function as several C pieces when a piece boundary is forced - an
    external JAL needs its continuation separately dispatchable, and a forced
-   entry can land mid-range — and writes every transfer across such a boundary
+   entry can land mid-range - and writes every transfer across such a boundary
    as `call_by_address(<target>); return;`. A target with no registered entry
    stub-misses at runtime, and the stub returns instead of transferring, so the
    guest epilogue never runs and `cpu->sp` leaks one stack frame per call until
@@ -226,10 +226,10 @@ bytes have settled: when the read's destination `cpu->a1` is exactly
 `0x8007AA38`, it reads the first word from RAM and calls
 `spyro_set_active_overlay_by_magic(magic)`. An unrecognized id leaves the
 tracker alone, which is what makes cutscene-style loads to the same vaddr safe
-for routing — their first word is never an overlay id. Those loads still clobber
+for routing - their first word is never an overlay id. Those loads still clobber
 the overlay's bytes.
 
-The id → name → dispatcher table is the auto-generated
+The id -> name -> dispatcher table is the auto-generated
 `games/spyro-1/generated/spyro_overlay_table.c`, declared by
 `games/spyro-1/spyro_overlay_table.h`. Savestates carry the active id in the
 game-side extra payload (`game_state_extra_save` in

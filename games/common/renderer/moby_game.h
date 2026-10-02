@@ -1,4 +1,4 @@
-/* renderer/moby_game.h — the per-game half of the shared moby feeder.
+/* renderer/moby_game.h - the per-game half of the shared moby feeder.
  *
  * The walk in renderer/moby.c owns everything the games share: the cull-record
  * iteration, the model->view projection and its near fixup, the OT/depth
@@ -12,8 +12,8 @@
  * function slots here, plus a pair for a second model kind a game may carry
  * (a static geometry list drawn by its own pass, canonically and on a sub-tick
  * replay) and one for the object identity the sub-tick interp ring keys on. The remaining slots are per-game
- * data with no engine address behind it — the HUD/cutscene classifications and
- * the one-shot instance table — and the addresses of scratch windows and
+ * data with no engine address behind it - the HUD/cutscene classifications and
+ * the one-shot instance table - and the addresses of scratch windows and
  * material assets a game keeps outside the descriptor. A NULL function slot or
  * a zero address makes the walk skip the path that would read it; a game with
  * no moby feeder links games/common/renderer/moby_game_none.c. */

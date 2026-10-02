@@ -57,7 +57,7 @@ eggs    = 1                # optional: replace-mode, first three worlds only
   level the donor's own progress row and avoids that; the donor's
   homeworld portal preview then shows the custom level's own skybox,
   parsed from the `.WAD` file.
-- `gems`, `dragons` and `eggs` declare the level's target totals — the
+- `gems`, `dragons` and `eggs` declare the level's target totals - the
   numbers the inventory rows show and the HUD's all-gems test compares
   against. They are optional and independent: a key you omit leaves that
   table on the stock row, which for an own-slot level means zero. Ranges
@@ -72,7 +72,7 @@ eggs    = 1                # optional: replace-mode, first three worlds only
   header, so a level on the shared slot can never show an egg count.
 - The drop happens when the level is registered, which reads `replace`
   from this file. Switching a live level to replace-donor mode from the
-  Mods panel does NOT bring a dropped `eggs` back — the value is already
+  Mods panel does NOT bring a dropped `eggs` back - the value is already
   gone for that session. Set `replace = true` here and restart to make an
   egg count apply.
 - Without `music`, the level plays the donor's track. With it, the engine

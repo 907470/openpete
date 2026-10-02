@@ -1,4 +1,4 @@
-// games/common/renderer/text_sprt.c — native renderer feed for the SPRT text
+// games/common/renderer/text_sprt.c - native renderer feed for the SPRT text
 // chain.
 //
 // Most of a game's 2D layer reaches the shared feeder through the

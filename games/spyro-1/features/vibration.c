@@ -1,4 +1,4 @@
-// games/spyro-1/features/vibration.c — --vibration: preset the game's
+// games/spyro-1/features/vibration.c - --vibration: preset the game's
 // own controller-vibration setting.
 //
 // Spyro's options menu (the sound/options submenu, D_800757C8 == 1) carries a
@@ -12,15 +12,15 @@
 //
 // PRESET. A positive --vibration writes the flag so a launch starts with
 // vibration enabled even if the player's save has it off. A one-shot write at
-// boot would not survive — initialization.c sets it to 1 on its own, and
-// loading a save file restores whatever the memory card holds (save_file.c) —
+// boot would not survive - initialization.c sets it to 1 on its own, and
+// loading a save file restores whatever the memory card holds (save_file.c) -
 // so the preset is re-stamped whenever the guest value drifts, but only while
 // the player is not sitting on that options row. Toggling the row by hand is
 // how the player takes the setting back: the preset is dropped (host request
 // cleared to -1) and the menu owns it from then on.
 //
-// --vibration 0 WRITES NOTHING. Silence is achieved entirely host-side — the
-// strength scale forces both motors to zero — so clearing this flag would be a
+// --vibration 0 WRITES NOTHING. Silence is achieved entirely host-side - the
+// strength scale forces both motors to zero - so clearing this flag would be a
 // second, gameplay-visible effect the goal does not need. It is not free:
 // with the flag clear PadVSync zeroes four timers it would otherwise be
 // counting down, so the guest's RAM stops matching what the same input
@@ -31,7 +31,7 @@
 // oracle failing for a reason nobody would connect to vibration.
 //
 // So the in-game options row keeps reading whatever the player or their save
-// chose, while the motors stay silent. The row is inert in that state —
+// chose, while the motors stay silent. The row is inert in that state -
 // nothing it enables can reach a motor at strength 0.
 //
 // Every guest write happens here, on the tick hook. The dev-overlay and O-menu
@@ -40,7 +40,7 @@
 //
 // One thing deliberately NOT done here: g_ActAvailable (0x800756D8) is left
 // alone. The game derives it from PadInfoMode, which PsyCross answers with a
-// constant, so it reads 1 even with no pad attached — the options row is
+// constant, so it reads 1 even with no pad attached - the options row is
 // offered when nothing can rumble. Deriving it from host controller presence
 // would fix the cosmetic lie by writing host state into gameplay-readable RAM,
 // where it would then feed the four timers PadVSync clears, and diverge from
@@ -86,21 +86,21 @@ void spyro1_vibration_on_tick(CPUState* cpu)
 {
     int want, enabled, menu_open, on_row;
 
-    /* Runahead: a speculative tick's guest writes roll back, but a release —
-     * which clears the host-side request — would not. Let the real tick
+    /* Runahead: a speculative tick's guest writes roll back, but a release -
+     * which clears the host-side request - would not. Let the real tick
      * decide. */
     if (openpete_speculative) return;
 
     want = openpete_get_vibration();
 
-    /* A new request — the boot seed, or a dev-overlay / O-menu edit — starts
+    /* A new request - the boot seed, or a dev-overlay / O-menu edit - starts
      * over, so a re-enable after a release takes effect again. */
     if (want != s_requested) {
         s_requested = want;
         s_stamped   = -1;
     }
     /* -1 = leave the game alone; 0 = host-side silence, also without touching
-     * guest RAM (see the header comment — every unattended launcher sets 0,
+     * guest RAM (see the header comment - every unattended launcher sets 0,
      * and a guest write there would put the gates on a modified game). */
     if (want <= 0) return;
 
@@ -110,7 +110,7 @@ void spyro1_vibration_on_tick(CPUState* cpu)
 
     /* While the player is on the vibration row the setting is theirs: stamping
      * would fight their input. Moving it away from our value while they are
-     * there is them taking it back for good — and that row is the only writer
+     * there is them taking it back for good - and that row is the only writer
      * that runs with this submenu open, so a drift here cannot be the game
      * reseeding.
      *

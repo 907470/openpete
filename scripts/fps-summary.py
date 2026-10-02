@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fps-summary.py — concise present-FPS summary from a --frame-time-log.
+"""fps-summary.py - concise present-FPS summary from a --frame-time-log.
 
 Complements measure-pacing.py (which is tuned for 30/60 Hz gameplay pacing).
 For a uniform high render-fps target this reports the metrics that matter for a

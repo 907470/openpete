@@ -1,8 +1,8 @@
-/* arena-probe — CI proof of the guest scratch arena (op_guest_alloc).
+/* arena-probe - CI proof of the guest scratch arena (op_guest_alloc).
  *
  * Allocates a block, writes a pattern through the HOST view, reads it
  * back through the GUEST path (api->guest over the region cold path),
- * and asserts vaddr<->host consistency — the property marshalled calls
+ * and asserts vaddr<->host consistency - the property marshalled calls
  * with guest-pointer args depend on. The arena is host-backed and no
  * canonical guest RAM is touched, so the run must stay ORACLE-EXACT
  * (expect_oracle = "pass"): an active arena is sim-neutral until a mod
@@ -19,7 +19,7 @@ static uint32_t g_va;          /* vaddr of the 256-byte block */
 static uint32_t g_va2;         /* vaddr of the 64-byte, 64-aligned block */
 static int      g_ok = -1;     /* -1 until the probe has run */
 
-/* Status lines: the probe runs once at entry, so one paint suffices —
+/* Status lines: the probe runs once at entry, so one paint suffices -
  * ui_status lines persist until repainted. */
 static void publish_status(void) {
     if (g_ok < 0) {
@@ -61,7 +61,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     if (!va2 || va2 < va + 256 || (va2 & 63u)) ok = 0;
 
     /* guest_addr is the exact inverse of guest() for arena memory, at the
-     * base AND at an interior byte — the round-trip a mod leans on when it
+     * base AND at an interior byte - the round-trip a mod leans on when it
      * has to store a vaddr into a guest structure. */
     if (api->guest_addr(host) != va) ok = 0;
     if (api->guest_addr((uint8_t*)host + 0x30) != va + 0x30) ok = 0;

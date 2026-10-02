@@ -2,13 +2,13 @@
 #define OPENPETE_PATHS_H
 
 /*
- * openpete_paths.h — where openpete keeps the files it writes: the
+ * openpete_paths.h - where openpete keeps the files it writes: the
  * openpete.toml holding the [saved] zone, memory-card images, savestates,
  * the disc library, drop-in mods, user assets and recordings.
  *
  * Two layouts:
  *
- *   portable  everything in the game folder, next to the exe —
+ *   portable  everything in the game folder, next to the exe -
  *             <exe>/openpete.toml, <exe>/cards/, <exe>/states/,
  *             <exe>/library/, <exe>/mods/, so an install is one directory
  *             the user can see, move, back up or run off a stick, and
@@ -30,7 +30,7 @@
  * game that cannot write its saves at all is worse than one that writes
  * them somewhere less obvious.
  *
- * Deliberately SDL-free — config.c resolves paths before SDL exists, and
+ * Deliberately SDL-free - config.c resolves paths before SDL exists, and
  * links into a console unit test.
  */
 

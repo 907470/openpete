@@ -3,31 +3,31 @@
 #include "psx_key_contest.glsl"
 #include "psx_viewz.glsl"
 
-/* Depth-aware shadow decal (UNTEXTURED) — the Spyro silhouette shadow.
+/* Depth-aware shadow decal (UNTEXTURED) - the Spyro silhouette shadow.
  *
  * On the fan's own surface (term A below) the flat fan's look is unchanged;
  * the depth rule decides keep or discard. The flat fan sits behind the bumpy near-terrain it's cast on, so a pure depth
  * test/band can't separate "my own ground" (keep) from "a wall in front"
- * (discard) — both put terrain nearer than the fan, by the same view-Z. Instead
+ * (discard) - both put terrain nearer than the fan, by the same view-Z. Instead
  * the shader reconstructs the opaque terrain per pixel from the depth pre-pass
  * and rejects two occluder classes:
  *
- *  (1) HEIGHT (shipping default) — terrain standing more than wall_height
+ *  (1) HEIGHT (shipping default) - terrain standing more than wall_height
  *      ABOVE the shadow's ground plane (a tall wall/ledge). Bumps/ramps/pits
  *      near ground height stay shadowed. (Validated: reconstructing the shadow
  *      anchor's world position from its own screen+depth recovers SpyroShadow
  *      exactly.) Carve-out: the bottom wall_height units of a wall face pass
  *      this test (small dark notch at a wall base).
- *  (2) STEEPNESS (opt-in via steep_nup) — the notch pixels differ from
+ *  (2) STEEPNESS (opt-in via steep_nup) - the notch pixels differ from
  *      own-ground by surface ORIENTATION: walkable ground has a large up
  *      normal, a wall face ≈ 0. The normal comes from neighbouring pre-pass
- *      texels (world-position differences — camera position constants
+ *      texels (world-position differences - camera position constants
  *      cancel). Spyro's vertical is the z field/V1, not y/V0; fed terrain
  *      floors reconstruct flat to the unit, so the clause is sound.
  *
  * Reconstruction (the inverse of the game's GTE path, swizzle V=(-dy,-dz,dx)):
  *   viewZ from the pre-pass depth;  MAC1=(SX-ofx)*viewZ/h;  MAC2=(SY-ofy)*viewZ/h
- *   V_j = (pushed_colJ · MAC) / 4096 where pushed_colJ = 4096² · C⁻¹[j] — a TRUE
+ *   V_j = (pushed_colJ · MAC) / 4096 where pushed_colJ = 4096² · C⁻¹[j] - a TRUE
  *   numerical inverse: the Spyro camera matrix is NOT orthonormal (its Y row
  *   bakes a ~0.625 PSX aspect scale), so the orthonormal transpose-inverse
  *   silently under-weights MAC2 terms 2.56×.
@@ -42,8 +42,8 @@
  * gl_FragCoord through this pass's inverse affine (fax..fby, from
  * scene_fragcoord_affine). Carrying that position as an interpolated vertex
  * attribute instead read the wrong texel wherever the rasterizer's
- * interpolation of the attribute disagreed with the fragment's own position —
- * on a triangle clipped to a thin sliver, by 1-2 PSX pixels — and the decal
+ * interpolation of the attribute disagreed with the fragment's own position -
+ * on a triangle clipped to a thin sliver, by 1-2 PSX pixels - and the decal
  * then took a neighbouring surface's normal, so the steep test discarded a
  * 2-3 px band along the clipped edge and left a pale line across the shadow.
  * Both affines are exact and the viewport is the whole pass, so full-extent
@@ -68,7 +68,7 @@
  * and leaves (A) alone.
  *
  * NB (viz mode 2): the pipe blends SUBTRACTIVE, so on screen the viz colours
- * are subtracted from the framebuffer — read them with a diff tool, not eyes.
+ * are subtracted from the framebuffer - read them with a diff tool, not eyes.
  * The viz and census modes mark every hull fragment. */
 
 layout(set = 0, binding = 0) uniform sampler2D uOpaqueDepth; /* WORLD-opaque pre-pass depth */
@@ -118,7 +118,7 @@ layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 /* --texture-mapping affine: the scene pipe interpolates the gouraud screen-
  * linearly (quad.vert), so the fan's re-raster does the same. */
 layout(constant_id = 1) const bool AFFINE_UV = false;
-/* pre-pass curve (prepass.vert): z = 1 - 1/vz — TRUE perspective, so the
+/* pre-pass curve (prepass.vert): z = 1 - 1/vz - TRUE perspective, so the
  * rasterizer's screen-linear interpolation is exact on planes and the
  * neighbour-texel normal reconstruction below is trustworthy. */
 float viewz_from_prepass_depth(float d) { return 1.0 / max(1.0 - d, 1e-9); }
@@ -131,7 +131,7 @@ vec2 screen_of_texel(ivec2 t)
 }
 
 /* Camera-relative world position of the opaque surface at a pre-pass texel
- * (constant camera-position terms omitted — used only differentially). */
+ * (constant camera-position terms omitted - used only differentially). */
 vec3 world_of_texel(ivec2 t)
 {
     float vz = viewz_from_prepass_depth(texelFetch(uOpaqueDepth, t, 0).r);
@@ -210,11 +210,11 @@ bool own_plane_keeps(float viewZ, float fanVz, float height, float nup)
     if (pc.steep_nup > 0.0) {
         /* ORIENTATION-AWARE tests (the default; OPENPETE_SHADOW_STEEP_NY=0
          * selects height-only).
-         * (1) wall face receiver: steep surface — unconditional (the fan
+         * (1) wall face receiver: steep surface - unconditional (the fan
          *     oval can poke THROUGH a wall, putting its near rim in front
          *     of the wall base, so no depth guard);
          * (2) rising occluder, FLATNESS-SCALED: the flatter the receiver,
-         *     the more rise above the shadow plane is forgiven — catches
+         *     the more rise above the shadow plane is forgiven - catches
          *     chamfered wall SKIRTS (nup~0.5 rising 200-340). */
         if (nup < pc.steep_nup) return false;
         float flat01 = clamp((nup - pc.steep_nup) / (0.9 - pc.steep_nup), 0.0, 1.0);
@@ -260,7 +260,7 @@ void main()
     /* Reconstruct the terrain point's world HEIGHT at this pixel. AXIS NOTE:
      * Spyro's vertical world axis is the z FIELD, carried by V1
      * (swizzle V=(-dy,-dz,dx) => slot 1 = -dz). The original decal used V0
-     * (world y — HORIZONTAL), a proximity test that rejected walls
+     * (world y - HORIZONTAL), a proximity test that rejected walls
      * incidentally and left the wall-base notch. */
     float SX   = sOwn.x;
     float SY   = sOwn.y;

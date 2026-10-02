@@ -1,4 +1,4 @@
-/* mod_glsl.h — the mod GLSL front end: the stage a source file names,
+/* mod_glsl.h - the mod GLSL front end: the stage a source file names,
  * include resolution against the staged SDK, and one glslang compile of
  * one profile to SPIR-V (vulkan1.0).
  *

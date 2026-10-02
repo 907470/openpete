@@ -1,4 +1,4 @@
-# core/CMakeLists.txt — game-agnostic OpenPete runtime.
+# core/CMakeLists.txt - game-agnostic OpenPete runtime.
 #
 # Builds a static lib `openpete_core` consumed by per-game targets under
 # games/<game>/. Anything Spyro-specific belongs in games/spyro-1/, not
@@ -45,7 +45,7 @@ add_library(openpete_core STATIC
 
     # Host input.
     # [keys]: the input binding registry. Split the same way and for the
-    # same reason as config.c — keymap.c holds the registry, the layered
+    # same reason as config.c - keymap.c holds the registry, the layered
     # store and the edge latches with no SDL in sight (so it links into
     # tests/unit/keymap_test.c), and keymap_sdl.c is the SDL glue that
     # turns binding names into codes and reads whether they are held.
@@ -69,7 +69,7 @@ add_library(openpete_core STATIC
     # the registration / per-tick sample / per-pump apply seam.
     input/rumble_curve.c
     input/host_rumble.c
-    # Per-VBL input log — single source of truth for "what was pressed at
+    # Per-VBL input log - single source of truth for "what was pressed at
     # VBL i"; shared by bk2_record and the rewind/runahead drivers. See
     # openpete_input_log.h.
     input/input_log.c
@@ -252,7 +252,7 @@ target_sources(openpete_core PRIVATE
 # subtle race: the first thread to call co_active() converts itself and
 # stores its handle, and every LATER thread then sees a non-NULL handle,
 # skips its own ConvertThreadToFiber, and calls SwitchToFiber while not
-# being a fiber at all — an access violation inside the OS fiber
+# being a fiber at all - an access violation inside the OS fiber
 # bookkeeping. Reading the declaration is not enough to rule this out; the
 # variables ARE spelled thread_local, the macro is just empty.
 set_source_files_properties(
@@ -389,7 +389,7 @@ else()
         endif()
     endif()
 endif()
-# Whether this is a shared-recomp build — the linkage the distribution
+# Whether this is a shared-recomp build - the linkage the distribution
 # presets select (cmake/presets/*-shared.cmake set OPENPETE_RECOMP_LINKAGE),
 # and so the only builds that leave this machine. The version line draws on
 # those alone; a locally built static-linkage binary shows nothing. The
@@ -435,10 +435,10 @@ target_compile_definitions(openpete_core
 # headers (and its embedded SPIR-V) reach any downstream renderer TUs.
 target_link_libraries(openpete_core PUBLIC openpete_rhi)
 
-# ImGui (third_party/imgui, pinned release tag) — the M-key dev config
+# ImGui (third_party/imgui, pinned release tag) - the M-key dev config
 # overlay's UI library (ui/devui.cpp). SDL3 + Vulkan backends; the Vulkan
 # backend rides volk's already-loaded function pointers
-# (IMGUI_IMPL_VULKAN_USE_VOLK — openpete_rhi runs volkInitialize/volkLoadInstance
+# (IMGUI_IMPL_VULKAN_USE_VOLK - openpete_rhi runs volkInitialize/volkLoadInstance
 # at rhi_create, and volk.c is compiled ONLY there, so no duplicate symbols).
 set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/third_party/imgui)
 
@@ -506,7 +506,7 @@ target_include_directories(openpete_imgui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/ui)
 # The Linux exe links -rdynamic. Without this, a prebuilt mod object built
-# against raw dcimgui.h — no table, no version check, no guard — would resolve
+# against raw dcimgui.h - no table, no version check, no guard - would resolve
 # ImGui_Begin to the exe at dlopen and drive the context directly, while the
 # same object fails to load on Windows. Hidden on both, so it fails on both.
 set_source_files_properties(
@@ -550,7 +550,7 @@ endif()
 #
 # Cross-compiles (e.g. the MinGW Windows preset) are the exception: host
 # pkg-config resolves the *host* (Linux) libav and injects host include paths
-# (-isystem /usr/include/x86_64-linux-gnu), which poison the cross compile —
+# (-isystem /usr/include/x86_64-linux-gnu), which poison the cross compile -
 # pkg_check_modules does not honor CMAKE_FIND_ROOT_PATH. There is no target
 # libav to link anyway, so when cross-compiling we compile --record out
 # (record.c falls back to a stub that reports the feature unavailable).
@@ -597,7 +597,7 @@ elseif(EXISTS "${OPENPETE_FFMPEG_MINGW_PREFIX}/lib/libavcodec.a")
     message(STATUS "openpete: --record ENABLED for windows-mingw via static FFmpeg "
                    "at ${OPENPETE_FFMPEG_MINGW_PREFIX} (GPL: the .exe becomes GPL)")
 else()
-    message(STATUS "openpete: --record disabled for this cross build — no static "
+    message(STATUS "openpete: --record disabled for this cross build - no static "
                    "FFmpeg at ${OPENPETE_FFMPEG_MINGW_PREFIX} "
                    "(run scripts/setup_mingw_ffmpeg.sh to enable); record.c is a stub")
 endif()
@@ -632,7 +632,7 @@ if(NOT CMAKE_HOST_WIN32)
     #   - openpete_time.c     QPC + waitable timer + timeBeginPeriod
     #   - openpete_frame_time_log.c  FILETIME / GetSystemTimeAsFileTime
     #   - mods/mod_loader.c   LoadLibrary/GetProcAddress (prebuilt mod
-    #                         DLL loading — Windows' dlopen analog)
+    #                         DLL loading - Windows' dlopen analog)
     #   - config/paths.c      GetModuleFileNameA (the exe directory, which
     #                         is the root of the portable data layout)
     #   - host/atomic_file.c  MoveFileExW (replace a file in one step)
@@ -645,7 +645,7 @@ if(NOT CMAKE_HOST_WIN32)
     #
     # The address regex matches Spyro-specific addresses like 0x80012204
     # AND generic PSX bus constants like 0x80000000 (KSEG0 base). We only
-    # care about the former, so allow `#define`d named constants through —
+    # care about the former, so allow `#define`d named constants through -
     # OPENPETE_PSX_KSEG0_BASE etc. live in openpete_psx.h precisely so
     # core/ doesn't carry bare hex literals for them. grep-pipe-grep keeps
     # the check under POSIX bash without needing PCRE lookarounds.
@@ -659,7 +659,7 @@ if(NOT CMAKE_HOST_WIN32)
     # The display seam has ONE owner (the present thread while eager is
     # active, the host loop otherwise). scripts/fences/seam_guard.py refuses
     # new frame/present call sites outside the owner and window ops off the
-    # window's thread — the build-time half of the fence; the runtime half
+    # window's thread - the build-time half of the fence; the runtime half
     # (rhi_display_claim + the per-entry owner check) lives in rhi_vulkan.c.
     add_custom_target(openpete_seam_guard ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking display-seam ownership..."
@@ -672,7 +672,7 @@ if(NOT CMAKE_HOST_WIN32)
     # the scene-producer files unless the line says `clock-guard: wall`: the
     # interpolation alpha is (present clock - tick stamp) / period, and a
     # channel phased by op_now() sits at alpha~0 under eager production and
-    # flakes under deterministic capture — both invisible to every gate.
+    # flakes under deterministic capture - both invisible to every gate.
     add_custom_target(openpete_clock_guard ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking scene-producer clocks..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/clock_guard.py ${CMAKE_SOURCE_DIR}

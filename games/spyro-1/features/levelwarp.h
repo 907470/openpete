@@ -1,5 +1,5 @@
 #pragma once
-/* levelwarp.h — jump to any level from the dev overlay (M key).
+/* levelwarp.h - jump to any level from the dev overlay (M key).
  *
  * Owns the canonical Spyro 1 level table (shared with --skip-to-level), the
  * two dev-overlay rows ("Warp: level" dropdown + "Jump" button), and the

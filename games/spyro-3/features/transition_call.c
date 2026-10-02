@@ -1,4 +1,4 @@
-// games/spyro-3/features/transition_call.c — the drain of host-requested
+// games/spyro-3/features/transition_call.c - the drain of host-requested
 // calls into the game's transition functions. See transition_call.h.
 //
 // The game's triggers (portal mobys, GoToLevel func_80053F50, the title

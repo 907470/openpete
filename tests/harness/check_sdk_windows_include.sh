@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_sdk_windows_include.sh — the mod SDK compiles ahead of <windows.h>.
+# check_sdk_windows_include.sh - the mod SDK compiles ahead of <windows.h>.
 #
 # A Windows mod that pulls in <windows.h> gets windef.h's RECT, which the
 # PSYQ types the SDK carries would collide with. The SDK spells them with a
@@ -44,20 +44,20 @@ if [[ -z "$SDK_DIR" ]]; then
     done
 fi
 if [[ -z "$SDK_DIR" || ! -f "$SDK_DIR/openpete_game_structs.h" ]]; then
-    echo "check-sdk-windows-include: SKIP — no staged SDK (build a game target" \
+    echo "check-sdk-windows-include: SKIP - no staged SDK (build a game target" \
          "or pass --sdk DIR)" >&2
     exit 64
 fi
 
 if [[ -n "$TOOLCHAIN" ]]; then
     CC=$(mingw_driver_in "$TOOLCHAIN") || {
-        echo "check-sdk-windows-include: SKIP — $TOOLCHAIN/bin has no" \
+        echo "check-sdk-windows-include: SKIP - $TOOLCHAIN/bin has no" \
              "x86_64-w64-mingw32-clang or -gcc" >&2
         exit 64
     }
 else
     CC=$(mingw_find_cc "$(mingw_spyro_root "$REPO")") || {
-        echo "check-sdk-windows-include: SKIP — no mingw cross compiler" >&2
+        echo "check-sdk-windows-include: SKIP - no mingw cross compiler" >&2
         exit 64
     }
 fi
@@ -68,9 +68,9 @@ rm -f "$OUT"
 echo "check-sdk-windows-include: cc  $CC"
 echo "check-sdk-windows-include: sdk $SDK_DIR"
 if ! "$CC" -std=c11 -Wall -Wextra -Werror -I "$SDK_DIR" -o "$OUT" "$SRC"; then
-    echo "check-sdk-windows-include: FAIL — the unit did not compile"
+    echo "check-sdk-windows-include: FAIL - the unit did not compile"
     exit 1
 fi
-[[ -f "$OUT" ]] || { echo "check-sdk-windows-include: FAIL — no output"; exit 1; }
+[[ -f "$OUT" ]] || { echo "check-sdk-windows-include: FAIL - no output"; exit 1; }
 rm -f "$OUT"
 echo "check-sdk-windows-include: PASS"

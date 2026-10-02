@@ -1,8 +1,8 @@
-// games/spyro-1/recomp_attach.h — attach the recomp module before boot.
+// games/spyro-1/recomp_attach.h - attach the recomp module before boot.
 //
 // Two implementations, selected by OPENPETE_RECOMP_LINKAGE:
-//   recomp_attach_static.c — registers the linked-in descriptor.
-//   recomp_attach_shared.c — dlopen/LoadLibrary + descriptor lookup +
+//   recomp_attach_static.c - registers the linked-in descriptor.
+//   recomp_attach_shared.c - dlopen/LoadLibrary + descriptor lookup +
 //                            forwarder resolution.
 #ifndef SPYRO1_RECOMP_ATTACH_H
 #define SPYRO1_RECOMP_ATTACH_H

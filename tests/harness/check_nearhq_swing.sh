@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_nearhq_swing.sh — terrain triangle-swing census under --lod original.
+# check_nearhq_swing.sh - terrain triangle-swing census under --lod original.
 #
 # The near/HQ subdivide routes a foreground quad through a 2x2 split, six
 # extra triangles per face. Under --lod original the classifier keeps the

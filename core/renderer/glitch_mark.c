@@ -66,7 +66,7 @@ void openpete_glitch_mark_init(void)
     s_walk = calloc((size_t)n, sizeof *s_walk);
     if (!s_pres || !s_walk) { free(s_pres); free(s_walk); s_pres = NULL; s_walk = NULL; return; }
     s_depth = n;
-    s_t0 = op_now();   /* clock-guard: wall — the mark's age is wall time, not a display instant */
+    s_t0 = op_now();   /* clock-guard: wall - the mark's age is wall time, not a display instant */
 
     const char *at = getenv("OPENPETE_GLITCH_MARK_AT");
     if (at && *at) {

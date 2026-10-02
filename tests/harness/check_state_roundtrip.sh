@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# tests/harness/check_state_roundtrip.sh — savestate restore-at-yield gates.
+# tests/harness/check_state_roundtrip.sh - savestate restore-at-yield gates.
 #
 # For each corpus movie, three headless runs:
-#   clean                       — baseline --gameplay-hash-log
-#   --state-stress 1            — in-memory save + immediate quiet restore
+#   clean                       - baseline --gameplay-hash-log
+#   --state-stress 1            - in-memory save + immediate quiet restore
 #                                 EVERY tick; hash log must be BYTE-identical
 #                                 to clean (restore-at-yield is lossless)
-#   --state-stress-rewind 25    — save, run 25 iters, roll back, replay
+#   --state-stress-rewind 25    - save, run 25 iters, roll back, replay
 #                                 (the runahead rollback shape); replayed
 #                                 frames must self-match pass 1 AND match
 #                                 the clean run
@@ -115,14 +115,14 @@ EOF
 done
 
 # Runahead determinism gate: with --runahead 2 the presented timeline
-# leads, but the COMMITTED timeline must be byte-identical to clean —
+# leads, but the COMMITTED timeline must be byte-identical to clean -
 # gameplay state is never allowed to feel the speculation.
 #
 # The same run carries the PREDICTION-EXACTNESS oracle
 # (OPENPETE_RA_PREDICT_CHECK=1, read-only): the led RAM+scratch hash
 # recorded at each speculation must byte-match the committed state when
 # the real timeline reaches that frame (edge-crossing predictions are
-# invalidated — the branch legitimately changed). This is the
+# invalidated - the branch legitimately changed). This is the
 # anti-stealth-rand() gate: a thunk reading host state that behaves
 # differently under speculation than in the real future corrupts
 # predictions while every determinism gate stays green. A nonzero check
@@ -153,10 +153,10 @@ fi
 # is ADOPTED, not rolled back: the fiber parks at a transition-code yield
 # whose host stack differs structurally from the gameplay yield the
 # snapshot was taken at (the fiber stack is not snapshottable), and
-# restoring under that continuation collapses the game's VSync pacing —
+# restoring under that continuation collapses the game's VSync pacing -
 # the failure mode was a full tick's work every VBL and a level load that
 # never completes. Gate both directions:
-#   - portal entry (walk-in, speculation crosses mid-tick → adoption):
+#   - portal entry (walk-in, speculation crosses mid-tick -> adoption):
 #     the level MUST still load under --runahead 2;
 #   - level exit (crossing lands between ticks, no adoption): committed
 #     timeline MUST stay byte-identical to clean.

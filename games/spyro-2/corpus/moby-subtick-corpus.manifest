@@ -1,4 +1,4 @@
-# moby-subtick-corpus.manifest — rows of tests/harness/check_moby_subtick.sh.
+# moby-subtick-corpus.manifest - rows of tests/harness/check_moby_subtick.sh.
 #   <bk2> | <lo>-<hi> | pairs=<n> class=<n> [dmax=<px>] [| leg|seam <vbl> <moby> <reason>]...
 #   bk2    a movie under games/spyro-2/bk2
 #   span   intermediate-capture VBLs, two apart; exclusions name the VBL the

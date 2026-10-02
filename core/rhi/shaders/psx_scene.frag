@@ -29,7 +29,7 @@ layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) 
 layout(location = 0) out vec4 outColor;
 
 /* Untextured lighting view (rhi_set_notex): replace the texel colour with the
- * modulation-neutral grey (128/255) so out = the raw gouraud vertex colour —
+ * modulation-neutral grey (128/255) so out = the raw gouraud vertex colour -
  * texel alpha/discard keep real silhouettes. */
 layout(constant_id = 2) const bool NOTEX = false;
 

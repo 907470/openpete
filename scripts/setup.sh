@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/setup.sh — first-time setup gate for OpenPete.
+# scripts/setup.sh - first-time setup gate for OpenPete.
 #
 # Runs three checks before allowing the project to build:
 #   1. Disc image exists at the expected location and matches the known SHA256.
 #   2. Each game's matching-decomp submodule has been built at least once
-#      (psx.map produced) — psx.map drives the recompiler manifest.
+#      (psx.map produced) - psx.map drives the recompiler manifest.
 #   3. Submodules are initialized.
 #
 # The PSYQ SDK is a user-supplied developer prerequisite: it is Sony
@@ -142,7 +142,7 @@ else
 fi
 
 check_decomp spyro-1 "make all -j\"\$(nproc)\""
-# `make` alone builds a single object and exits 0 — the Makefile's default goal
+# `make` alone builds a single object and exits 0 - the Makefile's default goal
 # is one .o, not the game. The target that builds everything is `all`.
 check_decomp spyro-2 "make all -j\"\$(nproc)\""
 check_psyq_headers spyro-2 4.7

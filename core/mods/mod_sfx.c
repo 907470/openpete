@@ -1,12 +1,12 @@
-// core/mods/mod_sfx.c — the mod-facing sound replacement verb.
+// core/mods/mod_sfx.c - the mod-facing sound replacement verb.
 //
 // sfx_replace registers, from memory, exactly what a symbolic
 // <name>.wav dropped in the mod's assets/sfx registers from disk: an
 // entry in the sfx pack, substituted inside PsyCross at the voice's PCM
-// upload. Everything the guest can observe — SPU RAM, the voice
+// upload. Everything the guest can observe - SPU RAM, the voice
 // attribute mirror and the one-shot duration the game polls through
 // SpuGetKeyStatus (which frees the sound slot and writes the sound-ref
-// byte on the tick the STOCK sample ends) — stays byte-stock; only the
+// byte on the tick the STOCK sample ends) - stays byte-stock; only the
 // audible buffer changes, and a longer replacement rings out on an
 // orphan source. Routing the verb through the pack rather than
 // re-pointing the voice's address and pitch is what keeps the end tick

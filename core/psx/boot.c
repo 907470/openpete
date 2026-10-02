@@ -1,4 +1,4 @@
-// core/psx/boot.c — PSX EXE boot sequence.
+// core/psx/boot.c - PSX EXE boot sequence.
 //
 // Real hardware runs a small CRT from BIOS that copies .text/.data from
 // the disc-loaded EXE into 2MB RAM, zeroes BSS, sets sp/gp/pc, then
@@ -84,7 +84,7 @@ int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len) {
             memset(ram + phys, 0, h.memfill_size);
         } else {
             OPL_WARN_F("boot",
-                       "memfill range out of bounds: 0x%08X+0x%X — skipping",
+                       "memfill range out of bounds: 0x%08X+0x%X - skipping",
                        h.memfill_start, h.memfill_size);
         }
     }

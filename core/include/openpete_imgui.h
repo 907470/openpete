@@ -8,7 +8,7 @@
  * against the staged SDK, so a bump costs a recompile; a prebuilt object
  * built against a different version is refused at load.
  *
- * openpete_mod_ui.h stays the simple path — eleven widgets, no opt-in. Use
+ * openpete_mod_ui.h stays the simple path - eleven widgets, no opt-in. Use
  * this header for anything beyond them: windows, tables, plots, tree nodes,
  * tabs, popups, colour editors, draw lists, fonts.
  *
@@ -34,8 +34,8 @@
  * the `...Ex` form), and the reference is the comment block on each
  * declaration in `dcimgui.h` plus `ImGui_ShowDemoWindow()`.
  *
- * Lifecycle calls the engine owns — context, frame, allocator, settings,
- * input injection, capture forcing, platform IO, font-atlas mutation — are
+ * Lifecycle calls the engine owns - context, frame, allocator, settings,
+ * input injection, capture forcing, platform IO, font-atlas mutation - are
  * absent from the table; calling one fails at the mod's compile with an
  * undefined reference. The list is at the top of openpete_imgui_macros.h.
  * The denylist protects the frame and the input path, not data reachable

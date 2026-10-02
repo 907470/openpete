@@ -1,4 +1,4 @@
-/* games/common/game_icon_none.c — the icon TU of a game that ships no window
+/* games/common/game_icon_none.c - the icon TU of a game that ships no window
  * icon.
  *
  * The host reads openpete_game_icon_w and skips the icon when it is zero. The

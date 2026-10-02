@@ -1,4 +1,4 @@
-// games/spyro-1/features/levelwarp.c — jump to any level from the
+// games/spyro-1/features/levelwarp.c - jump to any level from the
 // dev overlay (M key), from anywhere.
 //
 // --skip-to-level only works at boot: it hijacks the title screen's demo-
@@ -12,7 +12,7 @@
 //
 // TWO ROUTES, picked from the live gamestate:
 //
-// 1. IN A LEVEL — ride the game's own "exit level" sequence, then retarget
+// 1. IN A LEVEL - ride the game's own "exit level" sequence, then retarget
 //    the load it kicks off. No guest function calls; every step is a plain
 //    write into a global the game already drives:
 //
@@ -28,12 +28,12 @@
 //    The edge is the correct hook point, NOT Spyro's walking-state == 8
 //    ("loading") substate: func_8002C664 CLOBBERS g_NextLevelId and
 //    g_PortalLevelId unconditionally, and walking-state 8 can be reached
-//    ~18 ticks into the sequence — well before the hand-off ~64 ticks in —
+//    ~18 ticks into the sequence - well before the hand-off ~64 ticks in -
 //    so writing the destination there is a race against the clobber.
 //    Retargeting on the gamestate edge happens strictly after it, and the
 //    pre-tick hook runs before gamestate 1 dispatches into LoadLevel.
 //
-// 2. AT THE TITLE SCREEN — hand off to the existing --skip-to-level
+// 2. AT THE TITLE SCREEN - hand off to the existing --skip-to-level
 //    machinery (game_set_skip_to_level), which induces the demo-timeout
 //    transition at the next Press-Start window. That path resets progress
 //    and lives, exactly as a fresh --skip-to-level boot does.
@@ -44,7 +44,7 @@
 // module writes zero guest words, so a default run stays oracle-clean.
 //
 // Mechanism derived from C0mposer's Spyro-1-Practice-Rom (src/levelselect.c),
-// the same source the debug freecam was ported from — its level select is
+// the same source the debug freecam was ported from - its level select is
 // the battle-tested version of route 1. Two deliberate departures:
 //   - It triggers only from the inventory menu, because that is where its
 //     hotkeys live; nothing in the writes needs the inventory, so we arm
@@ -95,7 +95,7 @@
 /* Backstop for a warp that never resolves. Both phases end on a gamestate
  * the game itself reaches, so this only fires if the game parks somewhere we
  * did not anticipate; it must not double as a deadline. Counted in hook
- * calls (one per sim yield), which is a looser unit than it looks — the
+ * calls (one per sim yield), which is a looser unit than it looks - the
  * exit-level hand-off is ~90 calls, but a CD load plus fly-in ran past 3600
  * in a headless free-running session, which is exactly why neither phase
  * leans on this number to decide it is done. */
@@ -153,7 +153,7 @@ static const level_alias_t k_level_aliases[] = {
     { "twilight_harbour", 62 },
 };
 
-/* Display names in table order — the dropdown's enum_values. Built once at
+/* Display names in table order - the dropdown's enum_values. Built once at
  * apply-options time; the registry copies the row but NOT the strings it
  * points at, so this array has to outlive the process (it is static). */
 static const char* s_level_display[LEVEL_COUNT];
@@ -181,7 +181,7 @@ typedef enum {
     WARP_LOADING    /* destination retargeted; waiting for arrival */
 } warp_phase_t;
 
-/* Timeline state — travels with every savestate (see *_state_save/load).
+/* Timeline state - travels with every savestate (see *_state_save/load).
  * A savestate load during an in-flight warp restores the guest RAM the warp
  * had written, so the phase driving those writes has to be restored with it;
  * otherwise a quick-load back to before the warp leaves an armed FSM that
@@ -189,7 +189,7 @@ typedef enum {
  *
  * Rewind and runahead need no separate handling. Both are hard-gated on
  * game_is_gameplay_live() (g_Gamestate == GS_Playing && a level loaded), and
- * arming a warp leaves GS_Playing on its first tick — so the whole in-flight
+ * arming a warp leaves GS_Playing on its first tick - so the whole in-flight
  * window is outside the window they capture or restore in. */
 static uint32_t s_phase  = WARP_IDLE;
 static uint32_t s_target = 0;
@@ -382,13 +382,13 @@ void spyro1_levelwarp_on_tick(CPUState* cpu) {
          * gamestate 1 dispatches later in THIS tick, so writing now lands. */
         if (gs == GS_LEVELTRANSITION) { warp_retarget(cpu); return; }
         /* Anything other than the sequence we started means it is no longer
-         * ours to steer — a savestate load restoring gameplay, a death, a
+         * ours to steer - a savestate load restoring gameplay, a death, a
          * cutscene. Bail rather than retarget someone else's transition. */
         if (gs != GS_EXITLEVEL) warp_abort("left the exit sequence");
         return;
     }
 
-    /* WARP_LOADING: the loader has the wheel and we write nothing more —
+    /* WARP_LOADING: the loader has the wheel and we write nothing more -
      * this phase only reports status and keeps a second warp from stacking.
      * It ends when the game hands back to gameplay, however long the CD load
      * and fly-in take (a fly-in can outlast any tick budget worth setting,

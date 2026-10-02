@@ -1,5 +1,5 @@
 #pragma once
-/* openpete_fillpick.h — host-side state for the LP fill-tag inspector (P key).
+/* openpete_fillpick.h - host-side state for the LP fill-tag inspector (P key).
  *
  * The frozen fill-face list (tests/freecam/fill-tags.verdicts ->
  * games/spyro-1/renderer/terrain_fill_tags.h) decides which LP faces may
@@ -8,13 +8,13 @@
  * identity, learn whether authored HP actually covers that sightline, and flip
  * its verdict and see the result immediately.
  *
- * This is the GENERIC half — the on/off + preview toggles, the hit published
+ * This is the GENERIC half - the on/off + preview toggles, the hit published
  * by the renderer, the session verdict overrides and their file. It carries no
  * game addresses and no knowledge of the tag table; the terrain feeder
  * (games/common/renderer/terrain.c) does the projection-space pick and
  * consults openpete_fillpick_lookup ahead of the frozen table.
  *
- * Debug tool — inert unless engaged. Display-only: it changes which LP faces
+ * Debug tool - inert unless engaged. Display-only: it changes which LP faces
  * the native renderer draws and how they are tinted, and writes no
  * gameplay-readable RAM.
  */
@@ -26,7 +26,7 @@ extern "C" {
 #endif
 
 /* Session verdicts. FILL/NOFILL mirror the verdicts file; NONE means "no
- * override — defer to the frozen table". */
+ * override - defer to the frozen table". */
 #define OPENPETE_FILLPICK_NONE    (-1)
 #define OPENPETE_FILLPICK_NOFILL  0
 #define OPENPETE_FILLPICK_FILL    1
@@ -38,7 +38,7 @@ typedef struct openpete_fillpick_hit {
     int      valid;        /* an LP face lies under the crosshair */
     int      level;        /* g_LevelId (the fill-tag table key) */
     char     level_name[24]; /* verdicts-file spelling, e.g. "artisans" */
-    int      sec, face;    /* LP face identity — the rest of the table key */
+    int      sec, face;    /* LP face identity - the rest of the table key */
     int      verdict;      /* effective verdict: FILL / NOFILL */
     int      overridden;   /* verdict comes from this session, not the frozen table */
     int      quad;

@@ -1,4 +1,4 @@
-// games/spyro-1/renderer/render_decouple.c — Spyro 1 render→gameplay
+// games/spyro-1/renderer/render_decouple.c - Spyro 1 render->gameplay
 // decoupling: the canonical-4:3 cull verdicts that keep gameplay-readable
 // state (m_WasDrawn, particle m_03, sparkle alloc) bit-identical regardless
 // of presentation flags (--aspect / --no-lod).
@@ -9,7 +9,7 @@
 // state). The bespoke verdict math lives here, host-side, instead of in the
 // vendored recompiler, separate from core/renderer/widescreen.c so each
 // feature is siloed in its own CU. No Spyro addresses
-// here — the address anchoring lives in the recompiler + the manifest.
+// here - the address anchoring lives in the recompiler + the manifest.
 //
 // Cross-CU reads (all declared in psx_runtime.h): the canonical-SX side
 // channel (openpete_canonical_sx*_q16) is stashed by the GTE. This TU OWNS
@@ -32,7 +32,7 @@ uint8_t psx_runtime_native_cone_pass = 0;
 /* DISTANCE half of the box-cull verdict. native_dist_pass starts 1 each
  * iteration; the dist-gate hooks clear it if the box cull rejects. (The
  * saturated-vs-canonical mdist_thresh_delta these once subtracted out was
- * retired with the --no-lod producer stack — the .s cull is
+ * retired with the --no-lod producer stack - the .s cull is
  * canonical in every mode now, so the gates replay its own verdict.) */
 uint8_t psx_runtime_native_dist_pass = 1;
 
@@ -40,8 +40,8 @@ uint8_t psx_runtime_native_dist_pass = 1;
 uint8_t psx_runtime_native_part_pass = 0;
 
 /* === Moby cone-X cull verdict (channel m_WasDrawn) ====================
- * Records the canonical (4:3) cone verdict in native_cone_pass — the
- * verdict the m_WasDrawn=1 store gate reads — and returns the canonical
+ * Records the canonical (4:3) cone verdict in native_cone_pass - the
+ * verdict the m_WasDrawn=1 store gate reads - and returns the canonical
  * comparand unchanged (`|MAC1| - radius`; the generated code applies the
  * `4x - 3*(MAC3+bias)` shifts after the call, byte-identical to the .s).
  * The cone-WIDENING terms these hooks used to inject (PsyCross-mode
@@ -131,7 +131,7 @@ int32_t psx_runtime_part_cull_4vert(int32_t v) {
     return v << 16;
 }
 /* Sparkle render-cull left/right clip: substitute $a1 with the canonical SX
- * (q16, re-shifted) so the kill verdict matches canonical 4:3 — keeps the
+ * (q16, re-shifted) so the kill verdict matches canonical 4:3 - keeps the
  * g_Sparkles alloc bookkeeping bit-identical across aspects. */
 int32_t psx_runtime_sparkle_canon_sx(void) {
     return (int32_t)(openpete_canonical_sx2_q16 >> 16) << 16;

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""check_channel_registry.py — reconcile games/spyro-1/manifest/render_channels.toml
+"""check_channel_registry.py - reconcile games/spyro-1/manifest/render_channels.toml
 against the address-keyed substitution table in
 third_party/psxrecomp/recompiler/src/code_generator.cpp.
 
 Three failure modes:
   1. Registry references an address that the recompiler does not
-     substitute — substitution went missing (likely a bad refactor).
-  2. Recompiler substitutes an address no channel claims — orphan
+     substitute - substitution went missing (likely a bad refactor).
+  2. Recompiler substitutes an address no channel claims - orphan
      coupling site, must be filed under a channel.
   3. Two channels claim the same address.
 
@@ -79,7 +79,7 @@ def main() -> int:
     state_region_names = (parse_state_region_names(state_regions_path)
                           if state_regions_path.is_file() else set())
 
-    # registry → address → list of channel names (catches duplicates)
+    # registry -> address -> list of channel names (catches duplicates)
     registry_addrs: dict[int, list[str]] = {}
     # Sites expressed as inline tables with a `kind` are GENERATED into the
     # recompiler from this manifest (tools/gen_channel_sites.py + the
@@ -115,9 +115,9 @@ def main() -> int:
             registry_addrs.setdefault(addr, []).append(name)
         # gated channels with no sites are usually a manifest mistake.
         # Exceptions:
-        #  * gated_via = "<other_channel>" — closure is a side effect of
+        #  * gated_via = "<other_channel>" - closure is a side effect of
         #    another channel's substitutions.
-        #  * verdict_fn set — gating happens openpete-side (e.g. a C-side
+        #  * verdict_fn set - gating happens openpete-side (e.g. a C-side
         #    canonical-mask AND in the env-renderer wrapper) rather than
         #    via a recompiler substitution; sites are intentionally empty.
         gated_via = ch.get("gated_via")
@@ -153,7 +153,7 @@ def main() -> int:
                         f"{sr!r} but no such region in {state_regions_path}"
                     )
 
-    # 1. Missing: registry → recompiler. Generated sites are exempt — they
+    # 1. Missing: registry -> recompiler. Generated sites are exempt - they
     #    are emitted from the manifest, not hardcoded in the .cpp.
     missing = sorted(a for a in registry_addrs
                      if a not in recompiler_sites and a not in generated_addrs)
@@ -164,7 +164,7 @@ def main() -> int:
             f"`addr == 0x{a:08X}` clause found in {cpp_path}"
         )
 
-    # 2. Orphan: recompiler → registry.
+    # 2. Orphan: recompiler -> registry.
     orphan = sorted(a for a in recompiler_sites if a not in registry_addrs)
     for a in orphan:
         errors.append(

@@ -1,4 +1,4 @@
-/* mod_shader.c — the mod GLSL compile service.
+/* mod_shader.c - the mod GLSL compile service.
  *
  * Mods ship GLSL source; the ENGINE compiles it to SPIR-V at load through
  * mod_glsl.c (in-process glslang, the dialect of the engine's own
@@ -7,11 +7,11 @@
  * (mod_loader.c mod_compute_key): stamp removed on failure, object kept.
  * A prebuilt "<path>.spv" beside a MISSING source loads instead
  * (binary-mod parity) but only with a "<path>.spv.ihash" sidecar
- * matching the current interface hash — a stale prebuilt refuses
+ * matching the current interface hash - a stale prebuilt refuses
  * cleanly instead of misrendering.
  *
  * A broken shader is a log line + an unavailable effect, never a
- * bricked boot. Registration is entry/tick context (file IO — refused
+ * bricked boot. Registration is entry/tick context (file IO - refused
  * in present hooks).
  *
  * The postfx pass registry and the material-selector tier (registration,
@@ -108,7 +108,7 @@ typedef struct {
     size_t      spv_words;
     /* The same source compiled for the retained terrain pipelines
      * (OP_PROFILE_TERRAIN). NULL for anything that is not a material
-     * fragment, and for one whose terrain profile failed to compile —
+     * fragment, and for one whose terrain profile failed to compile -
      * terrain draws then stay stock rather than the mod failing. */
     uint32_t*   spv_ter;
     size_t      spv_ter_words;
@@ -209,7 +209,7 @@ static int key_update_file(openpete_sha256_ctx* hc, const char* path) {
 
 /* Every staged file a mod's shader can compile against: the tier contracts
  * and everything they include. All of it keys the build, because a change to
- * any of it changes the SPIR-V a source produces — a cached .spv that
+ * any of it changes the SPIR-V a source produces - a cached .spv that
  * outlives an edit to one of these is a shader lying about its interface. */
 static const char* const k_iface_files[] = {
     "openpete_shader_api.glsl",     /* postfx tier                        */
@@ -416,7 +416,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
                                   "", NULL, log_path, id, path, &words);
         if (n_words == 0) {
             OPL_ERROR_F("mods", "%s: shader %s: compile FAILED (see %s) "
-                        "— effect unavailable", id, path, log_path);
+                        "- effect unavailable", id, path, log_path);
             free(src);
             return -1;
         }
@@ -432,7 +432,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
                                           log_path, id, path, &ter_words);
             if (n_ter_words == 0)
                 OPL_ERROR_F("mods", "%s: shader %s: terrain profile FAILED "
-                            "(see %s) — terrain draws stay stock", id, path,
+                            "(see %s) - terrain draws stay stock", id, path,
                             log_path);
         }
         free(src);
@@ -447,7 +447,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
         char* side = openpete_mod_glsl_read_file(side_path, &side_len);
         if (!side) {
             OPL_ERROR_F("mods", "%s: shader %s: no source and no %s.spv.ihash "
-                        "sidecar — refusing the prebuilt (unverifiable "
+                        "sidecar - refusing the prebuilt (unverifiable "
                         "interface)", id, path, path);
             return -1;
         }
@@ -458,7 +458,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
         interface_hash(want);
         if (strcmp(side, want) != 0) {
             OPL_ERROR_F("mods", "%s: shader %s: prebuilt .spv was built "
-                        "against a DIFFERENT shader interface — refused "
+                        "against a DIFFERENT shader interface - refused "
                         "(re-issue with the current SDK)", id, path);
             free(side);
             return -1;
@@ -621,7 +621,7 @@ static void retire_pipeline(void* pipe) {
                       MOD_POSTFX_BLOCK, "postfx_retired", MOD_POSTFX_BLOCK);
     slot = (void**)mod_fvec_push(&s_retired_pipelines);
     if (!slot) {
-        OPL_ERROR_F("mods", "postfx: retirement list allocation failed — "
+        OPL_ERROR_F("mods", "postfx: retirement list allocation failed - "
                     "a cached pipeline is leaked");
         return;
     }
@@ -728,7 +728,7 @@ static void postfx_truncation_notice(int point, int have, int cap) {
     if (s_said[point]) return;
     s_said[point] = 1;
     OPL_WARN_F("mods", "postfx point %d: %d enabled passes, the renderer "
-               "runs %d — the %d lowest-priority pass(es) are dropped",
+               "runs %d - the %d lowest-priority pass(es) are dropped",
                point, have, cap, have - cap);
 }
 
@@ -829,7 +829,7 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_
 /* material selectors (declarative + per-instance).
  *
  * Declarative: whole-class overrides matched at DRAW time against the
- * provenance tag — extractors stay selector-agnostic. Per-instance: a
+ * provenance tag - extractors stay selector-agnostic. Per-instance: a
  * callback runs at EXTRACTION (the moby walk, cpu
  * available) per matching instance, returns a per-draw uniform block
  * or declines. Its outcome is interned to a small per-present SLOT id
@@ -842,7 +842,7 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_
  * Per-present, not identity-replayed: reextract_record_pass re-walks
  * every present, and the callback reads TICK-STABLE guest RAM (the
  * sub-tick spine interpolates render-side only, never mutating
- * gameplay RAM — the oracle guarantees it), so per-present invocation
+ * gameplay RAM - the oracle guarantees it), so per-present invocation
  * yields identical results across a canonical+intermediates span (no
  * strobing). Canonical-compute + identity-replay would only save the
  * callback cost on intermediates; deferred as a pure optimization. */
@@ -866,7 +866,7 @@ typedef struct {
     /* One built pipeline per draw-state variant this material can be
      * asked for: [0..3] = PSX blend classes, [4] = opaque with depth
      * write off (portal sky), [5] = the DECAL PROFILE (moby shadows:
-     * a different vertex stage, descriptor sets and push block — see
+     * a different vertex stage, descriptor sets and push block - see
      * openpete_psx_decal.glsl). */
     void* pipeline[OPENPETE_MATERIAL_PIPE_VARIANTS];
     void* pipeline_mark;   /* stencil-MARK twin (hole-fill WORLD/ACTOR groups) */
@@ -874,7 +874,7 @@ typedef struct {
      * slot). Separate from `pipeline` because the terrain layout, the
      * vertex input and the engine half of the contract all differ. */
     void* pipeline_ter[OPENPETE_MATERIAL_TER_PIPES];
-    int   user_enabled;    /* material_enable — the mod's own on/off */
+    int   user_enabled;    /* material_enable - the mod's own on/off */
     /* Static uniform block (material_set_params). Declarative materials have
      * no per-instance callback to mint a slot, so the block is interned into
      * one at every frame reset and reused for the whole present. */
@@ -936,7 +936,7 @@ static int view_static_slot(int m) { return s_mat_view ? s_mat_view->static_slot
  * tag fields of differing width, so the table can never outgrow the
  * NARROWEST field that carries an id. Terrain's is the narrowest at 9
  * bits, and its decode masks (tag >> 16) & 0x1FF: an id of 512 would
- * come back as 0, which reads as "defer to declarative resolve" — the
+ * come back as 0, which reads as "defer to declarative resolve" - the
  * wrong material, silently, with no crash and no log. 0x1FF itself is
  * the declined->stock sentinel, so the last usable id is 510. Raising
  * MOD_MATERIAL_SLOTS means widening that field first. */
@@ -947,7 +947,7 @@ typedef char nr_assert_mat_slots_fit_narrowest_tag_field[
  * s_mat_has_instance gates the moby walk's per-instance resolve.
  *
  * Arming keys on REGISTRATION (live), never on the owner's live-toggle
- * state: entry — and therefore material_register — runs before the
+ * state: entry - and therefore material_register - runs before the
  * loader marks a mod enabled, so an enabled-keyed arm would read 0 at
  * boot and never re-arm. A disabled owner's selectors therefore still
  * cost a batch split and a winner scan, but can produce no override:
@@ -955,8 +955,8 @@ typedef char nr_assert_mat_slots_fit_narrowest_tag_field[
 /* The retained terrain cache bakes each face's winning selector into the face
  * itself, so it must re-bake whenever the TERRAIN-relevant selector set moves.
  * This counter is that key, and it is deliberately NARROW: a counter that also
- * moved for moby, sky, flame and particle materials — and for every enable
- * toggle of one — re-baked the whole cache for changes that cannot alter a
+ * moved for moby, sky, flame and particle materials - and for every enable
+ * toggle of one - re-baked the whole cache for changes that cannot alter a
  * single terrain bucket, which cost 2.7x the frame rate while a mod was
  * toggling rows (terrain.build 33% -> 73% of sim_tick). Move it only for
  * changes terrain_winner() could actually see. */
@@ -991,7 +991,7 @@ static void material_rearm_split(void) {
 int openpete_mods_material_has_instance(void) { return s_mat_has_instance; }
 
 unsigned openpete_mods_material_terrain_epoch(void) {
-    /* Sum of two monotonic counters — strictly increases on any change the
+    /* Sum of two monotonic counters - strictly increases on any change the
      * terrain bake cares about; +1 keeps 0 free as the latch's "unset". The
      * mod toggle epoch rides along because terrain_sel_usable() consults
      * openpete_mods_is_enabled(owner). */
@@ -1039,7 +1039,7 @@ static int terrain_winner(int texid, int env, int lp) {
         if (m->per_instance) {
             /* Mirror the winner scans exactly: the untex band resolve keys
              * on OP_SEL_UNTEXTURED + texture=-1, the texture-keyed resolve on
-             * texture==texid with the flag clear — neither reads the
+             * texture==texid with the flag clear - neither reads the
              * env/tier refinements. */
             if (untex ? ((m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == -1)
                       : (!(m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == texid))
@@ -1126,13 +1126,13 @@ static int material_sel_valid(const char* id,
                               const openpete_mod_material_selector_t* sel) {
     if (sel->struct_size != (uint32_t)sizeof *sel) {
         OPL_ERROR_F("mods", "%s: material: selector size %u, engine expects %u "
-                    "— rebuild the mod against this SDK",
+                    "- rebuild the mod against this SDK",
                     id, sel->struct_size, (unsigned)sizeof *sel);
         return 0;
     }
     if (sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN) {
         OPL_ERROR_F("mods", "%s: material: selector carries unknown flag bits "
-                    "%#x — this engine would match wider than you asked",
+                    "%#x - this engine would match wider than you asked",
                     id, sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN);
         return 0;
     }
@@ -1167,7 +1167,7 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
     if (!id || !sel) return -1;
     if (openpete_mods_in_present) {
         OPL_ERROR_F("mods", "%s: material_register refused inside a present "
-                    "hook — register at entry, and retune a live selector "
+                    "hook - register at entry, and retune a live selector "
                     "with material_set_selector", id);
         return -1;
     }
@@ -1363,7 +1363,7 @@ static int material_moby_winner(int cls) {
 }
 
 /* Level id for level-scoped selector keys. The mods layer cannot read it
- * itself — the symbol is game-specific — so the game pushes it while it
+ * itself - the symbol is game-specific - so the game pushes it while it
  * renders. Draw-time resolve and the terrain bucket queries
  * (terrain_sel_usable) consume it, and -1 (nothing has pushed yet) makes
  * every level key inert rather than wrongly matching. */
@@ -1439,7 +1439,7 @@ int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
                                      uint32_t moby_vaddr) {
     if (!s_mat_has_instance) return 0;
     int w = material_moby_winner(moby_class);
-    if (w < 0 || !s_mats[w].per_instance) return 0;   /* declarative → draw-time */
+    if (w < 0 || !s_mats[w].per_instance) return 0;   /* declarative -> draw-time */
 
     (void)cpu;   /* refine reads guest RAM through the mod api's accessors */
     openpete_mod_material_key_t key;
@@ -1451,17 +1451,17 @@ int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
     key.u.moby.moby_class = moby_class;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
     int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
-    if (rc < 0) return OPENPETE_MATERIAL_SLOT_STOCK;   /* declined → stock */
+    if (rc < 0) return OPENPETE_MATERIAL_SLOT_STOCK;   /* declined -> stock */
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
 
     /* Intern (winner, bytes): identical outcomes share a slot so they
-     * stay in ONE batch. Linear scan — the interned set is small. */
+     * stay in ONE batch. Linear scan - the interned set is small. */
     for (int s = 1; s < s_mat_slot_n; s++)
         if (s_mat_slots[s].mat == w && s_mat_slots[s].len == (uint32_t)rc &&
             memcmp(s_mat_slots[s].bytes, buf, (size_t)rc) == 0)
             return s;
     if (s_mat_slot_n >= MOD_MATERIAL_SLOTS)
-        return OPENPETE_MATERIAL_SLOT_STOCK;   /* table full → graceful stock */
+        return OPENPETE_MATERIAL_SLOT_STOCK;   /* table full -> graceful stock */
     int s = s_mat_slot_n++;
     s_mat_slots[s].mat = w;
     s_mat_slots[s].len = (uint32_t)rc;
@@ -1616,7 +1616,7 @@ static int material_fill_gpu(int best, int uniform_slot,
     return best;
 }
 
-/* Draw-time resolve (native_render draw_tex_runs): the run's provenance tag →
+/* Draw-time resolve (native_render draw_tex_runs): the run's provenance tag ->
  * the winning override, or -1. Tag layout: [31:28] path+1; moby class
  * [15:0] + per-instance slot [27:16]; terrain env bit 27 / LP
  * bit 26 + sector [8:0]. Enabled-list priority: the later-loaded mod

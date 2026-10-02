@@ -1,4 +1,4 @@
-/* env_knob.h — the boot-latched OPENPETE_* readers the renderer feeders share.
+/* env_knob.h - the boot-latched OPENPETE_* readers the renderer feeders share.
  *
  * These knobs select a code path, arm a census or inject a fault, so each is
  * read once, at the first call of the getter that owns it, and the value is

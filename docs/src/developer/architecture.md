@@ -9,7 +9,7 @@ presentation layer.
 
 ## Repository layout
 
-- `core/` — game-agnostic runtime; no Spyro-specific address or symbol.
+- `core/` - game-agnostic runtime; no Spyro-specific address or symbol.
   `psx/` (CPU state, dispatch, BIOS, CD-ROM, disc cache), `runtime/` (run
   loop, ticker, present thread), `renderer/` and `rhi/` (native renderer
   over Vulkan), `input/`, `host/` (memory cards, music and sfx overrides),
@@ -17,21 +17,21 @@ presentation layer.
   config file, knob registry), `ui/` (settings menu, dev overlay,
   notifications, free camera), `diag/` (logs, traces, profiling), `mods/`,
   `include/`.
-- `games/<game>/` — one executable per game: `recomp.conf`, `manifest/`,
+- `games/<game>/` - one executable per game: `recomp.conf`, `manifest/`,
   `generated/` (recompiler output, gitignored), `game_extras_impl.c`,
   per-game `features/`, `renderer/` and `corpus/`; `games/<game>/<game>/`
   is the matching-decomp submodule. `games/common/` holds code shared by
   the games (PSYQ thunks, overlay dispatch, the default hooks).
-- `mods/` — shipped and example mods; `mods-attic/` — retired mods.
-- `tests/` — `golden/`, `harness/`, `unit/`, `recomp/`, `bench/`,
+- `mods/` - shipped and example mods; `mods-attic/` - retired mods.
+- `tests/` - `golden/`, `harness/`, `unit/`, `recomp/`, `bench/`,
   `freecam/`, `state-baselines/`.
-- `scripts/` — build, gate and release scripts; `scripts/fences/` holds
+- `scripts/` - build, gate and release scripts; `scripts/fences/` holds
   the mechanical rule checks.
-- `tools/` — code generators and analysis scripts.
-- `third_party/` — vendored dependencies (psxrecomp, libco, glad, stb,
+- `tools/` - code generators and analysis scripts.
+- `third_party/` - vendored dependencies (psxrecomp, libco, glad, stb,
   volk, Vulkan headers, miniz, tomlc99, xxhash, among others) and
   submodules (PsyCross, SDL, cubeb, duckstation, glslang, imgui).
-- `docs/` — this site's source under `docs/src/`, the modding site under
+- `docs/` - this site's source under `docs/src/`, the modding site under
   `docs/modding/`, and the release inputs.
 
 ## Code that runs the game
@@ -42,7 +42,7 @@ model.
 - **Recompiled C.** `third_party/psxrecomp/recompiler` translates `PSX.EXE`
   and each level overlay into C ahead of time; there is no JIT. The main EXE
   emits `games/spyro-1/generated/PSX.EXE_full.c` (the function bodies) and
-  `PSX.EXE_dispatch.c` (the vaddr → function table). Each overlay is
+  `PSX.EXE_dispatch.c` (the vaddr -> function table). Each overlay is
   translated with its own `--func-prefix` into
   `generated/<level>/*.bin_full.c` and `*.bin_dispatch.c` so that overlays
   sharing one PSX load address coexist at link time;
@@ -51,14 +51,14 @@ model.
 - **Rewritten decomp C.** Functions with a matching decompile in the sibling
   `spyro-1/src/` can be compiled directly instead of recompiled. `tools/rewrite_tu.py`
   (passes under `tools/rewrite/`) rewrites a whole translation unit for an
-  LP64/LLP64 host — pointer widths, struct relayout, PSYQ boundary
-  stride — and the result lands in `generated/rewritten/<tu>.rewritten.c`.
+  LP64/LLP64 host - pointer widths, struct relayout, PSYQ boundary
+  stride - and the result lands in `generated/rewritten/<tu>.rewritten.c`.
   Which TUs take this path, and which globals and calls need link-time
   aliasing or dispatch interception, is curated in
   `games/spyro-1/manifest/native.toml`. The unit is the translation unit, not
   the function; there is no per-function `kind` switch.
 - **PsyCross.** `third_party/PsyCross` re-implements the PSYQ system library
-  (`libgpu`, `libcd`, `libspu`, …) on SDL and OpenGL. Its ABI boundary,
+  (`libgpu`, `libcd`, `libspu`, ...) on SDL and OpenGL. Its ABI boundary,
   including the `u_long` and `OT_TAG` width traps, is documented in
   `psycross-boundary.md`; the fork's per-change record is under `psycross/`.
 
@@ -105,8 +105,8 @@ The native renderer extracts scenes from gameplay state and draws them in
 float through openpete's own RHI (`core/rhi/rhi_vulkan.c`), with the
 per-game feeders in `games/spyro-1/renderer/spyro.c`. It reads
 gameplay state, asset data, and the VRAM mirror; it never writes PSX-readable
-RAM. Presentation features that do reach the recompiled path — Hor+
-widescreen, extended LOD — are `feature_module_t` entries registered per game
+RAM. Presentation features that do reach the recompiled path - Hor+
+widescreen, extended LOD - are `feature_module_t` entries registered per game
 (`core/renderer/no_lod.c`, `games/spyro-1/feature_list.c`) and are presumed to leak
 into gameplay state until the oracle clears them.
 
@@ -131,10 +131,10 @@ is under `modding/`.
 How Spyro 1 stores, loads, and runs its levels, reverse-engineered from the
 matching decomp's loader and cross-checked against SpyroEdit:
 
-- [`level-format.md`](../spyro/level-format.md) — on-disc WAD layout, the length-prefixed component
+- [`level-format.md`](../spyro/level-format.md) - on-disc WAD layout, the length-prefixed component
   container format, the environment and scene parsers, and the geometry,
   texture, collision, and object (moby) interiors.
-- [`level-overlays.md`](../spyro/level-overlays.md) — per-level code overlays, how they bind to data via
+- [`level-overlays.md`](../spyro/level-overlays.md) - per-level code overlays, how they bind to data via
   the `SetOverlayPointers` callback slots, and how openpete recompiles
   same-address overlays into co-resident C.
 

@@ -1,4 +1,4 @@
-/* core/input/keymap.c — the action registry, the layered binding store,
+/* core/input/keymap.c - the action registry, the layered binding store,
  * and the resolver. See core/include/openpete_keymap.h for what this is
  * for and why it is SDL-free.
  *
@@ -670,7 +670,7 @@ static int km_overlap_is_intentional(int a, int b, const char** why) {
 static int km_src_same(const km_source_t* a, const km_source_t* b) {
     if (a->kind != b->kind || a->code != b->code) return 0;
     /* Opposite polarities of one axis are the two HALVES of a stick's
-     * throw, not a contested source — that is exactly how a bipolar axis
+     * throw, not a contested source - that is exactly how a bipolar axis
      * drives a pair of directions (menu_up on "pad:-lefty", menu_down on
      * "pad:lefty"). Only the same half of the same axis is a clash. */
     if (a->kind == KM_SRC_PADAXIS) return a->invert == b->invert;
@@ -803,15 +803,15 @@ int openpete_keymap_resolve(void) {
     }
 
     /* Reachability: an action the UI depends on that ended up with NO
-     * source at all. A warning rather than an error — a pad-only player
-     * unbinding the keyboard half of `cross` is legitimate — and it only
+     * source at all. A warning rather than an error - a pad-only player
+     * unbinding the keyboard half of `cross` is legitimate - and it only
      * fires when every source is gone. KM_DEV rows are exempt: being
      * unbound is their whole design. */
     for (int i = 0; i < OPK_ACTION_COUNT; i++) {
         if (!(g_actions[i].flags & KM_REQUIRED)) continue;
         if (g_actions[i].flags & KM_DEV) continue;
         if (g_bind[i].n > 0) continue;
-        OPL_WARN_F("keys", "%s.%s is unbound (%s) — that control is now "
+        OPL_WARN_F("keys", "%s.%s is unbound (%s) - that control is now "
                    "unreachable", km_domain_name(g_actions[i].domain),
                    g_actions[i].id, g_actions[i].purpose);
         warnings++;
@@ -867,7 +867,7 @@ static int           g_suspend_kbd;
  * OPK_ACTION_COUNT for none. */
 static openpete_action_t g_suspend_exempt = OPK_ACTION_COUNT;
 
-/* Past this fraction of full throw an axis counts as a digital press —
+/* Past this fraction of full throw an axis counts as a digital press -
  * generous, because the only digital-from-axis bindings are the analog
  * triggers, where a light rest of the finger should not register. */
 #define KM_AXIS_PRESS  16384
@@ -878,7 +878,7 @@ static openpete_action_t g_suspend_exempt = OPK_ACTION_COUNT;
 
 /* Where a resolution reads from.
  *
- * `rd` NULL means the installed live reads — the host path, unchanged.
+ * `rd` NULL means the installed live reads - the host path, unchanged.
  * A non-NULL reader lets a caller resolve the same bindings against its own
  * snapshot, which is what keeps player 2's pad decode replayable: it is
  * decoded on the producer side from the sample being published, not from
@@ -1321,7 +1321,7 @@ void openpete_keymap_report(FILE* out) {
     }
 
     /* Mod overrides live in their own store (mod ids are not knowable at
-     * config time), but they are bindings too — leaving them out would
+     * config time), but they are bindings too - leaving them out would
      * make this report an incomplete answer to "what does this install
      * respond to?". Printed after a scan of the store so an override for
      * a mod that is not installed still shows up rather than vanishing. */
@@ -1350,7 +1350,7 @@ void openpete_keymap_report(FILE* out) {
             fprintf(out, "    %s.%s + %s.%s%s%s\n",
                     km_domain_name(g_actions[c->a].domain), g_actions[c->a].id,
                     km_domain_name(g_actions[c->b].domain), g_actions[c->b].id,
-                    c->why ? " — intentional: " : "  <-- unintended",
+                    c->why ? " - intentional: " : "  <-- unintended",
                     c->why ? c->why : "");
         }
     }

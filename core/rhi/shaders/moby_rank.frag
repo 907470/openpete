@@ -3,7 +3,7 @@
 /* UNTEXTURED moby RANK pass fragment stage: encode the face's og OT walk
  * rank + present-local moby ordinal into the RGBA8 rank image (bytes:
  * r = rank & 255, g = rank >> 8, b = ordinal, a = the face's TRUE view-Z
- * at this pixel / 128, clamped — the select's near-tie margin input). The
+ * at this pixel / 128, clamped - the select's near-tie margin input). The
  * depth attachment (moby_rank.vert's 1-(rank+1)/65536) already resolved
  * the per-pixel winner to the HIGHEST rank; this stage writes its identity. */
 

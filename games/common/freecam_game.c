@@ -1,4 +1,4 @@
-// games/common/freecam_game.c — game-side body of the debug free camera (F),
+// games/common/freecam_game.c - game-side body of the debug free camera (F),
 // shared by every game target. See freecam_game.h.
 //
 // Technique (from C0mposer's Spyro-1-Practice-Rom, src/freecam.c):
@@ -182,8 +182,8 @@ static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
  *
  * A static pose reveals a whole level in its first frame, so every first-use
  * resource it needs is created at once and nothing is created afterwards. The
- * costs that only *movement* reaches — terrain sector cache eviction and
- * refill, LOD tier crossings, moby extraction churn — are invisible to it.
+ * costs that only *movement* reaches - terrain sector cache eviction and
+ * refill, LOD tier crossings, moby extraction churn - are invisible to it.
  * This flies the camera instead: waypoints are linearly interpolated over
  * `ticks` canonical ticks per segment, and the path loops so a run of any
  * length stays in motion.
@@ -409,7 +409,7 @@ static void freecam_drive(CPUState* cpu) {
         s_pending_pose = NULL;
         freecam_apply_pose(cpu, pose);
     }
-    /* A scripted path owns the camera outright — the interactive axes would
+    /* A scripted path owns the camera outright - the interactive axes would
      * fight it, and a headless run has none to read anyway. */
     if (s_path.active) {
         freecam_path_step(cpu, committed);
@@ -467,7 +467,7 @@ static void freecam_drive(CPUState* cpu) {
         pitch -= (int32_t)mdy;
     }
     /* OPENPETE_FREECAM_SPIN=<yaw-units-per-tick>: scripted continuous yaw
-     * sweep (4096 = full turn), on top of input — lets one run profile every
+     * sweep (4096 = full turn), on top of input - lets one run profile every
      * view direction. */
     {
         static int s_have_spin = -1; static int s_spin;
@@ -518,7 +518,7 @@ static void freecam_drive(CPUState* cpu) {
 
     /* OPENPETE_FREECAM_DRIFT="dx,dy,dz": scripted per-tick camera drift
      * (world units), applied on top of input. Deterministic boundary-crossing
-     * repro for cull/handoff work — headless runs can sweep the camera across
+     * repro for cull/handoff work - headless runs can sweep the camera across
      * an admission edge without a human at the stick. */
     {
         static int32_t s_drift[3]; static int s_have_drift = -1;
@@ -756,7 +756,7 @@ int freecam_should_freeze(CPUState* cpu, uint32_t addr) {
         }
         /* A pending T: move the player up to the camera and hand the camera
          * back. Disengaging here rather than on the host loop keeps the two
-         * halves atomic — the same tick that moves the player is the one
+         * halves atomic - the same tick that moves the player is the one
          * that stops freezing the player update. Returning 0 then lets the
          * real follow run immediately, so it re-derives the follow camera
          * from the player's new position on this very tick and there's no

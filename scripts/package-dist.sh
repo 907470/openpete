@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# package-dist.sh — assemble end-user distribution archives.
+# package-dist.sh - assemble end-user distribution archives.
 #
 # Ships ONLY our own code + tools + facts-metadata. No game bytes: no
 # recomp module (users first-boot-compile it), no disc data, ROM-free
 # icon (the dist presets pin OPENPETE_ROM_FREE_ICON=ON). The knob is a CMake
-# option, never a child's environment — wslenv-guard: no-launch.
+# option, never a child's environment - wslenv-guard: no-launch.
 #
 #   scripts/package-dist.sh linux   [--out DIR] [--toolchain DIR] [--appimage]
 #   scripts/package-dist.sh windows [--out DIR] [--toolchain DIR]
@@ -45,7 +45,7 @@ OUT=dist
 TOOLCHAIN=""
 WITH_MOD_SDK=0
 APPIMAGE=0
-# --sign '<command>' — Authenticode hook, Windows platform only. Invoked
+# --sign '<command>' - Authenticode hook, Windows platform only. Invoked
 # once per first-party PE (openpete-spyro1.exe, PSXRecomp.exe) with the
 # file path appended; a nonzero exit fails the package. Evaluated per
 # file so embedded $(...) (e.g. a fresh az access token) re-runs each
@@ -88,14 +88,14 @@ stage_licences() {  # stage_licences <stage> <dist_compliance.py licences args>.
         || { echo "[package] licence texts incomplete" >&2; exit 1; }
 }
 
-sign_pe() {  # sign_pe <file> — no-op unless --sign was given
+sign_pe() {  # sign_pe <file> - no-op unless --sign was given
     [[ -n "$SIGN_CMD" ]] || return 0
     echo "[package] signing $(basename "$1")"
     eval "$SIGN_CMD \"\$1\"" || { echo "[package] signing FAILED: $1" >&2; exit 1; }
 }
 
 # OPENPETE_DIST_VERSION overrides the derived name, and the CMake configure
-# reads the same variable for the version the build SHOWS on screen — export
+# reads the same variable for the version the build SHOWS on screen - export
 # it before configuring as well as before packaging, or the artifact's name
 # and its version line disagree.
 # OPENPETE_DIST_VERSION overrides the derived name. Test builds handed to
@@ -105,8 +105,8 @@ sign_pe() {  # sign_pe <file> — no-op unless --sign was given
 VERSION="${OPENPETE_DIST_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 # The version is the artifact's name, which is the one thing about a build a
 # stranger reads before running it. A describe that fell through to a commit
-# suffix means this checkout cannot see the tag — the tag lives on another
-# machine, or was never made — and the artifact would carry the PREVIOUS
+# suffix means this checkout cannot see the tag - the tag lives on another
+# machine, or was never made - and the artifact would carry the PREVIOUS
 # release's number. Name that here rather than let it surface as a filename
 # nobody notices until it is published.
 case "$VERSION" in
@@ -128,12 +128,12 @@ stage_common() {  # stage_common <build-game-dir>
     cp -a "$B/recomp/manifest" "$STAGE/recomp/"
     cp -a "$B/recomp/src"      "$STAGE/recomp/"
     # The kit is compiled on the user's machine, so it ships as readable
-    # C — but its comments are engineering notes about the host tree.
+    # C - but its comments are engineering notes about the host tree.
     scripts/strip-comments.py "$STAGE"/recomp/src/*
     if [[ $WITH_MOD_SDK -eq 1 ]]; then
         # Mod SDK: mods ship mod.toml +
         # src/ and compile at boot against <exe>/sdk with the bundled
-        # toolchain. The SDK is a handful of headers, and read-only —
+        # toolchain. The SDK is a handful of headers, and read-only -
         # unlike mods/ it belongs in the install.
         cp -a "$B/sdk" "$STAGE/sdk"
         # The mod-author docs site (mod_docs target; built only when
@@ -146,7 +146,7 @@ stage_common() {  # stage_common <build-game-dir>
             cp -a "$B/moddocs/site" "$STAGE/sdk/docs"
         else
             echo "[package-dist] WARNING: $B/moddocs/site missing (mkdocs" \
-                 "not installed?) — sdk/docs/ not staged" >&2
+                 "not installed?) - sdk/docs/ not staged" >&2
         fi
         mkdir -p "$STAGE/sdk/examples"
         while read -r ex; do
@@ -170,7 +170,7 @@ stage_common() {  # stage_common <build-game-dir>
         # resolve next to the exe. Under the per-user layout (POSIX
         # default, and the only option for a read-only AppImage) the
         # runtime looks in the data directory instead, and a placeholder
-        # shipped here would be a directory nobody's mods are read from —
+        # shipped here would be a directory nobody's mods are read from -
         # worse, it would be mistaken for the real one. README-dist names
         # the per-user path for those platforms.
         if [[ "$PLATFORM" == windows ]]; then
@@ -303,7 +303,7 @@ build_appimage() {  # build_appimage <stage-dir>
     cp -a "$S"/. "$APPDIR/usr/"
 
     # The image must be able to recompile the game on a machine with no
-    # development packages at all — that is the reason it exists. Ship a
+    # development packages at all - that is the reason it exists. Ship a
     # compiler whether or not the tarball stage got one.
     if [[ ! -x "$APPDIR/usr/recomp/tools/clang/bin/clang" ]]; then
         local CC_TREE="${TOOLCHAIN:-.tools/clang}"
@@ -357,7 +357,7 @@ build_appimage() {  # build_appimage <stage-dir>
              "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
              "$APPDIR/usr/share/metainfo"
     cp "$APPDIR/com.openpete.OpenPete.desktop" "$APPDIR/usr/share/applications/"
-    # The ROM-free mark (tools/gen_dist_icon.py) — the authentic memcard
+    # The ROM-free mark (tools/gen_dist_icon.py) - the authentic memcard
     # icon must never ship. Generated here so the image can never pick up
     # a ROM-derived one by accident.
     python3 tools/gen_dist_icon.py --png "$APPDIR/com.openpete.OpenPete.png"
@@ -375,7 +375,7 @@ build_appimage() {  # build_appimage <stage-dir>
     local RT="${OPENPETE_APPIMAGE_RUNTIME:-.tools/appimage-runtime-x86_64}"
     local rt_arg=()
     if [[ -f "$RT" ]]; then rt_arg=(--runtime-file "$RT")
-    else echo "[package] NOTE: no pinned AppImage runtime at $RT —" \
+    else echo "[package] NOTE: no pinned AppImage runtime at $RT -" \
               "appimagetool will fetch one (run scripts/setup_appimagetool.sh)" >&2
     fi
     # --appimage-extract-and-run: the tool is itself an AppImage, and
@@ -393,7 +393,7 @@ linux)
     rm -rf "$STAGE"; mkdir -p "$STAGE"
     cp "$B/openpete-spyro1" "$STAGE/"
     # Strip debug info from the SHIPPED copy only (RelWithDebInfo embeds
-    # thousands of absolute build paths — a username/layout leak). The
+    # thousands of absolute build paths - a username/layout leak). The
     # build-tree exe keeps its symbols for dev debugging. Exports live in
     # .dynsym, which strip preserves, so the first-boot module still binds.
     strip "$STAGE/openpete-spyro1"
@@ -403,7 +403,7 @@ linux)
     # The tarball bundles a compiler only when asked: it is the
     # portable/dev artifact, and a ~320 MB toolchain would quadruple a
     # 3 MB download for users who already have cc. The AppImage always
-    # carries one (build_appimage stages it) — the squashfs keeps it
+    # carries one (build_appimage stages it) - the squashfs keeps it
     # compressed and its whole point is that first boot needs nothing
     # installed. find_cc (games/spyro-1/dist/recomp_build.cpp) prefers
     # recomp/tools/clang/bin/clang over the system cc either way.
@@ -412,7 +412,7 @@ linux)
         mkdir -p "$STAGE/recomp/tools/clang"
         cp -a "$TOOLCHAIN"/. "$STAGE/recomp/tools/clang/"
     else
-        echo "[package] NOTE: no --toolchain — the archive uses the" \
+        echo "[package] NOTE: no --toolchain - the archive uses the" \
              "system cc (README-dist documents this)." >&2
     fi
     [[ -n "$SIGN_CMD" ]] && echo "[package] NOTE: --sign is Windows-only" \
@@ -434,7 +434,7 @@ windows)
     # Strip debug info from the SHIPPED copy only (same rationale as the
     # Linux branch). PE exports live in the export table data directory,
     # not the COFF symbol table, and the first-boot module links against
-    # the staged implib — stripping cannot break either.
+    # the staged implib - stripping cannot break either.
     if [[ $APPIMAGE -eq 1 ]]; then
         echo "[package] --appimage is a Linux format; ignored for windows" >&2
     fi
@@ -457,7 +457,7 @@ windows)
         # refuses the archive when the source tree has none.
         cp "$TOOLCHAIN"/LICENSE.TXT "$T/" 2>/dev/null || true
         stage_licences "$STAGE" --scope toolchain-windows --toolchain-dir "$T"
-        # Upstream llvm-mingw's bin/ is FLAT — every entry is a driver binary,
+        # Upstream llvm-mingw's bin/ is FLAT - every entry is a driver binary,
         # wrapper script or config. Anything that is a directory got there by
         # accident (a build run with its cwd inside the toolchain leaves a whole
         # tree behind, which then rides into the archive: 372MB of stale objects
@@ -471,7 +471,7 @@ windows)
                    llvm-pdbutil* llvm-cov* llvm-profdata* liblldb* 2>/dev/null || true )
         rm -rf "$T"/lib/liblldb* "$T"/lib/libscanbuild "$T"/lib/libear
     else
-        echo "[package] NOTE: no --toolchain given — archive will need" \
+        echo "[package] NOTE: no --toolchain given - archive will need" \
              "\$OPENPETE_CC or a later toolchain drop-in for first boot" >&2
     fi
     # Sign after strip and staging, before archiving. First-party PEs

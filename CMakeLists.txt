@@ -15,7 +15,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     # PsyCross uses `#include <AL/al.h>` form, so point at the parent of
     # AL/ (FindOpenAL.cmake's PATH_SUFFIXES allow either, but the one
     # consumers expect is the prefix that makes the angle-bracket include
-    # legal). Header lookup: <AL/al.h> → ${OPENAL_INCLUDE_DIR}/AL/al.h.
+    # legal). Header lookup: <AL/al.h> -> ${OPENAL_INCLUDE_DIR}/AL/al.h.
     set(OPENAL_INCLUDE_DIR "${_OAL_ROOT}/include"
         CACHE PATH "OpenAL include dir (vendored MinGW prebuilt)" FORCE)
     set(OPENAL_LIBRARY "${_OAL_ROOT}/lib/libOpenAL32.dll.a"
@@ -41,15 +41,15 @@ endif()
 # SDL3 is built from the third_party/SDL submodule, pinned to the
 # release-3.4.x branch (currently the release-3.4.16 tag) rather than to
 # main: the release branch carries the 2026 Steam Controller support the
-# pin was originally taken from main for, and carries it further along —
+# pin was originally taken from main for, and carries it further along -
 # input report formats, touchpads and the rumble fix all landed there
-# after that commit. Static link, no shared lib, no SDL test apps —
+# after that commit. Static link, no shared lib, no SDL test apps -
 # produces the SDL3::SDL3-static target consumed by openpete_core and
 # PsyCross.
 set(SDL_STATIC ON  CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_TEST   OFF CACHE BOOL "" FORCE)
-# XTEST (X11 synthetic-input extension) is not used by openpete — it only
+# XTEST (X11 synthetic-input extension) is not used by openpete - it only
 # polls input, never injects it. Disabling drops the libXtst-dev build
 # dependency so a from-source SDL build needs no extra system packages.
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
@@ -59,7 +59,7 @@ add_subdirectory(third_party/SDL)
 # warns and skips itself, so listing one costs nothing until it is regenerated.
 set(OPENPETE_GAMES "spyro-1;spyro-2;spyro-3" CACHE STRING "Games to build (semicolon-separated)")
 
-# In-process GLSL→SPIR-V for the mod shader compile service. glslang
+# In-process GLSL->SPIR-V for the mod shader compile service. glslang
 # 15.4.0 pinned:
 # C++17 under GCC 10 (the MinGW cross compiler's ceiling), targets
 # vulkan1.0 like the engine's own glslangValidator -V builds. OFF is a
@@ -160,7 +160,7 @@ foreach(game IN LISTS OPENPETE_GAMES)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/CMakeLists.txt")
         add_subdirectory(games/${game})
     else()
-        message(WARNING "OPENPETE_GAMES requested '${game}' but games/${game}/CMakeLists.txt is missing — skipping")
+        message(WARNING "OPENPETE_GAMES requested '${game}' but games/${game}/CMakeLists.txt is missing - skipping")
     endif()
 endforeach()
 
@@ -191,7 +191,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     # ImGui containment gate: the mods fixture proves the table binds
     # headless, but every guard it installs runs only inside a UI section
-    # body, and a body needs an open overlay — so this leg opens one in a
+    # body, and a body needs an open overlay - so this leg opens one in a
     # real window and reads engagement, the error bracket and the
     # out-of-body refusal off the log. Skips (64) with no display.
     add_test(NAME mod_imgui
@@ -206,7 +206,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     # Per-channel material gate: turns every mods/channel-gallery row into
     # an assertion (a row that should paint must, a KNOWN GAP row must
-    # not), plus refine-vs-declarative equivalence — including the
+    # not), plus refine-vs-declarative equivalence - including the
     # many-distinct-outcome case, which is the shape that caught
     # per-instance slots being stamped after their intern table was reset.
     # Neither check_mods nor native_visual_regression runs a mod material
@@ -235,7 +235,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Freecam-corpus gate for the terrain near-LP gapfill classifier —
+    # Freecam-corpus gate for the terrain near-LP gapfill classifier -
     # replays recorded problematic freecam spots (holes that must stay
     # filled, walls/arches the fill must not touch) and asserts metric
     # expectations with the feature on vs off. Slow (boots ~7 headless
@@ -250,7 +250,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Hor+ presentation symmetry — boots the headless demo at 4:3, 16:9
+    # Hor+ presentation symmetry - boots the headless demo at 4:3, 16:9
     # and 21:9, takes a screenshot at the same frame, and pixel-diffs the
     # central 4:3 region. Asserts that widening the GTE projection does
     # not perturb the canonical 4:3 view. Currently RED: cyclorama
@@ -300,9 +300,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64)
 
     # Cross-level accumulation row: the 40,000-VBL attract demo crosses
-    # several level loads. It measures accumulation — one arena replacement
+    # several level loads. It measures accumulation - one arena replacement
     # fulfilled per level load, and, per arena, the first high-water mark
-    # after each edge below that arena's peak in the segment before it —
+    # after each edge below that arena's peak in the segment before it -
     # and reports each arena's exit mark against the union of the visited
     # levels' baseline rows as a demand figure, not an assertion: the demo
     # camera traverses a level while the baseline's two poses are static.
@@ -629,8 +629,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     # Sub-tick interpolation of the gem-glint stars. Per row of
     # games/<slug>/corpus/glint-subtick-corpus.manifest, six headless replays of one
-    # bk2 — the two canonical ticks of an interval and the intermediate present
-    # inside it, each captured with the glint feed on and off — and the
+    # bk2 - the two canonical ticks of an interval and the intermediate present
+    # inside it, each captured with the glint feed on and off - and the
     # leave-one-out mask's per-star centroid compared against
     # (1-alpha)*canon(V-2) + alpha*canon(V). Spyro 1 has no such routine and
     # registers no row. Fails as vacuous when a leg's mask is empty, when a
@@ -738,8 +738,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     # Sub-tick interpolation of the homeworld portal preview's aperture. Per
     # row of games/<slug>/corpus/portal-subtick-corpus.manifest, four headless replays
-    # of one bk2 — the intermediate present at alpha 0, 0.5 and 1, and once
-    # more with the replay's own interpolation suppressed — with the feeder's
+    # of one bk2 - the intermediate present at alpha 0, 0.5 and 1, and once
+    # more with the replay's own interpolation suppressed - with the feeder's
     # emitted aperture polygon read out of each run's census and every named
     # corner required to sit on the alpha blend of the two canonical ticks the
     # same run recorded. The statistic is the polygon rather than a pixel mask:
@@ -794,7 +794,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Capture survival under contention. Runs the presentation golden's own
     # legs at CORPUS_JOBS=nproc for three rounds and keeps each round's log.
     # A golden divergence (exit 1) is a rendering verdict and passes here;
-    # what fails is a leg that died — an exit outside {0,1}, a MISSING tile,
+    # what fails is a leg that died - an exit outside {0,1}, a MISSING tile,
     # or a "capture incomplete" line. Engagement: compared > 0 per round.
     # Registered for the games that have a golden to run.
     foreach(_contention_game spyro-1 spyro-3)
@@ -962,7 +962,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Performance benchmark pipeline smoke — replays a few bk2 movies through
+    # Performance benchmark pipeline smoke - replays a few bk2 movies through
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the
     # baseline regression check (tests/harness/bench-corpus.py --baseline) is a
@@ -984,7 +984,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
-    # Channel registry audit — fast static check (no PSX boot). Cross-
+    # Channel registry audit - fast static check (no PSX boot). Cross-
     # references games/spyro-1/manifest/render_channels.toml against the recompiler's
     # address-keyed substitution table; fails on missing or orphaned
     # substitutions.
@@ -1043,7 +1043,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # PSX oracle gate — verify openpete gameplay-state RAM matches a
+    # PSX oracle gate - verify openpete gameplay-state RAM matches a
     # DuckStation (real SCPH1001) baseline tick-for-tick over the 20k-tick
     # attract-demo soak (4+ level loads + gameplay). The 3 CD-load pool
     # regions are tolerated only while a load transient heals; every other
@@ -1111,7 +1111,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-3/openpete-spyro3;OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=4000")
 
-    # Matrix determinism gate — broaden coverage from one (aspect,
+    # Matrix determinism gate - broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
     # Divergence in an open channel is expected; in a gated or verified
     # channel it is a regression.
@@ -1126,7 +1126,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 1800
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Soak determinism gate — long-replay mode for hunting slow-burn
+    # Soak determinism gate - long-replay mode for hunting slow-burn
     # / late-frame channel leaks the 2000-frame matrix cells miss.
     # Iterates the full BK2 corpus (minus tas/frame-time-test) at
     # 4:3 vs 16:9, default fov, with --bk2-stop-on-end so each cell
@@ -1166,7 +1166,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Sub-tick present gameplay-state gate. The psx oracle replays canonical
     # ticks only, so an intermediate present that writes gameplay-readable RAM
     # and mis-restores it is invisible to it. Per movie, two headless legs of
-    # the same binary — intermediate re-extracts armed vs not — whose
+    # the same binary - intermediate re-extracts armed vs not - whose
     # gameplay-hash logs must be identical, with a per-present bracket check
     # that names the region a leak came from, and the canonical leg compared
     # against the blessed baseline under tests/state-baselines/. Refuses to

@@ -1,10 +1,10 @@
-/* vstream-rehandle — route every animated model's vertex streams through
+/* vstream-rehandle - route every animated model's vertex streams through
  * stream handles (see mod.toml).
  *
  * Model layout, from the game's own headers: a g_Models row with bit 31
  * set is an animated Model (m_NumAnimations at +0, m_Animations[] at
  * +0x38); an AnimationHeader has m_NumFrames at +0, m_IsSpyroAnimation at
- * +4, the vertex counts at +8 (high detail) and +9 (low), and m_Frames at +0x24 —
+ * +4, the vertex counts at +8 (high detail) and +9 (low), and m_Frames at +0x24 -
  * 8-byte AnimationFrame records (word 0 = stream field, word 1 byte 3 =
  * short offset) for mobys, 4-byte SpyroAnimationFrame words (field
  * halved) for Spyro's own model.
@@ -113,7 +113,7 @@ static void rehandle_level(CPUState* cpu) {
     if (frames) {
         g_levels++; g_frames += frames;
         g_api->log(g_self, OP_MOD_LOG_INFO,
-                   "vstream-rehandle: level rehandled — %u frame words (mode %d, %u B copied)",
+                   "vstream-rehandle: level rehandled - %u frame words (mode %d, %u B copied)",
                    frames, g_mode, g_bytes);
     }
 }

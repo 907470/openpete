@@ -1,4 +1,4 @@
-/* openpete_native_vram.h — the natively-owned PSX VRAM model.
+/* openpete_native_vram.h - the natively-owned PSX VRAM model.
  *
  * A 1024x512 uint16 surface written by native implementations of the PSYQ
  * image ops (LoadImage / MoveImage / ClearImage, including the OT-embedded
@@ -10,7 +10,7 @@
  * (OPENPETE_VRAM_VERIFY, native_render.c).
  *
  * While PsyCross exists, framebuffer-copyback content (GL FBO -> vram) is
- * NOT produced natively — those regions are shadow-copied from PsyCross's
+ * NOT produced natively - those regions are shadow-copied from PsyCross's
  * mirror at present time (the dirty-rect path), which also
  * re-shadows op-written rects (byte-identical when the ops are correct).
  * StoreImage (VRAM -> gameplay RAM, canonical) keeps reading PsyCross's

@@ -1,4 +1,4 @@
-// core/diag/crash.c — crash report for SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS
+// core/diag/crash.c - crash report for SIGSEGV/SIGABRT/SIGFPE/SIGILL/SIGBUS
 // (POSIX) and unhandled SEH exceptions (Windows).
 //
 // The report is formatted into a static buffer and written with write()
@@ -43,7 +43,7 @@ static int crash_test_recurse(int depth) {
 void openpete_crash_test(void) {
     const char* what = getenv("OPENPETE_CRASH_TEST");
     if (!what || !*what) return;
-    fprintf(stderr, "openpete: OPENPETE_CRASH_TEST=%s — faulting on purpose\n", what);
+    fprintf(stderr, "openpete: OPENPETE_CRASH_TEST=%s - faulting on purpose\n", what);
     fflush(stderr);
     if (strcmp(what, "segv") == 0) {
         volatile int* volatile p = NULL;
@@ -305,7 +305,7 @@ void openpete_psx_install_crash_handler(void) {
                "alternate stack)");
 }
 
-#else  /* _WIN32 — Win32 SEH unhandled-exception filter */
+#else  /* _WIN32 - Win32 SEH unhandled-exception filter */
 
 #include <windows.h>
 #include <dbghelp.h>
@@ -314,7 +314,7 @@ void openpete_psx_install_crash_handler(void) {
 /* The minidump path, resolved at install so the filter formats nothing. */
 static wchar_t s_dump_path[1100];
 
-/* Thread that installed the handler — i.e. main. Lets the banner say whether
+/* Thread that installed the handler - i.e. main. Lets the banner say whether
  * the fault was on main or a worker without the reader having to guess. */
 static DWORD g_main_tid;
 

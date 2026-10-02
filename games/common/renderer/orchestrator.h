@@ -1,4 +1,4 @@
-/* orchestrator.h — the interface a game's sub-tick re-extract orchestrator
+/* orchestrator.h - the interface a game's sub-tick re-extract orchestrator
  * provides to the shared renderer translation units.
  *
  * A game that runs sub-tick re-extraction defines these; a game that does not

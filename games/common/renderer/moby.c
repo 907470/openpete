@@ -1,4 +1,4 @@
-// games/common/renderer/moby.c — the MOBY (3D actor) renderer, shared across
+// games/common/renderer/moby.c - the MOBY (3D actor) renderer, shared across
 // games.
 //
 // Mobys are the animated, textured actors: enemies, gems, props, HUD icons.
@@ -40,8 +40,8 @@
 #include "openpete_subtick_view.h"            /* openpete_subtick_host_span (SPEC scratch bracket) */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
-#include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
-#include "openpete_interp.h"        /* op_now() — sub-tick clock for rotation interp */
+#include "openpete_log.h"           /* OPL_ERROR_F - ABR/blend FIXME runtime alarms */
+#include "openpete_interp.h"        /* op_now() - sub-tick clock for rotation interp */
 #include "renderer/moby_rank.h"              /* same-moby paint rank (native key) */
 #include "renderer/moby_rank_cal.h"          /* its calibration instrument */
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
@@ -59,7 +59,7 @@
 #include <string.h>
 #include "game_layout.h"          /* game_layout.moby: the engine addresses this walk reads */
 #include "openpete_recomp_module.h"  /* the game's own moby draws, run through the module dispatch */
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern unsigned openpete_frame;
 
@@ -86,7 +86,7 @@ static uint32_t moby_array_head(CPUState* cpu) {
 
 static const char* s_cur_mat = "REG";   /* material tag for the current pass (REG/SPEC) */
 /* Clip-switch crossfade census (OPENPETE_MOBY_ANIMSW_DBG): how often a sub-tick moby
- * shape-lerp spans a clip switch (prev m_Animation != curr) — crossfaded when the two
+ * shape-lerp spans a clip switch (prev m_Animation != curr) - crossfaded when the two
  * clips share vertex count, snapped when they don't. Pure instrument, no behaviour. */
 static long s_animsw_cross = 0, s_animsw_snap = 0, s_animsw_mirror = 0;
 /* Sub-tick previous-pose guard census, counted on presents below alpha 1:
@@ -143,7 +143,7 @@ uint32_t moby_canon_rec_bytes(void) { return game_layout.moby.rec_base_polybuf_o
  * The record list lives in the tick's draw scratch, and the draw pass that
  * follows the cull carves its own per-model vertex and faceblock-patch buffers
  * out of that same scratch. A record the draw has reached therefore holds that
- * draw's own output — packed screen XY and colour words — by the time this
+ * draw's own output - packed screen XY and colour words - by the time this
  * feeder reads the list back after running the draw: its header field is no
  * longer a pointer, the walk stops or drops the record, and the moby is absent
  * from the native scene while the game's own pass drew it.
@@ -315,8 +315,8 @@ void moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]) {
 }
 
 /* Sub-tick second-material scratch snapshot. A game whose second material
- * pass rebuilds the record queue with its own set — including mobys the first
- * pass did not draw — and overwrites the per-vertex colour scratch leaves the
+ * pass rebuilds the record queue with its own set - including mobys the first
+ * pass did not draw - and overwrites the per-vertex colour scratch leaves the
  * first pass's snapshot unable to reproduce them. Capture the window
  * moby_game names at that pass's canonical hook and replay it in the
  * re-extract's second pass. The window must cover the FULL record region, not
@@ -331,7 +331,7 @@ static int     s_canon_spec_valid = 0;
 /** @brief Copies the specular scratch window at the canonical moby hook for the sub-tick SPEC bracket. */
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
     /* Runahead: a speculative fire must not stamp or overwrite the canonical
-     * SPEC capture — the stamp would be the uncommitted epoch and the SPEC
+     * SPEC capture - the stamp would be the uncommitted epoch and the SPEC
      * pass would skip on every intermediate present, strobing specular
      * mobys. */
     if (!spyro_native_canon_capture_open()) return;
@@ -370,7 +370,7 @@ static int s_code_hist[256]; static int s_uncoded_hist[256];
 static ngte_view s_view;
 static ngte_view s_view_shd;
 /* Canonical twins (s = 1.0): the view for records whose screen position the
- * game authored — HUD icons (address-range tagged) and every billboard-path
+ * game authored - HUD icons (address-range tagged) and every billboard-path
  * record. Rebuilt with their source views. */
 static ngte_view s_view_canon;
 static ngte_view s_view_shd_canon;
@@ -483,7 +483,7 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
     while (p < end && guard++ < MAX_PRIMS) {
         uint32_t w0 = cpu->read_word(p);
         uint32_t len = (w0 >> 24) & 0xFF;
-        if (len == 0 || len > 24) break;          /* not a tag / corrupt — stop */
+        if (len == 0 || len > 24) break;          /* not a tag / corrupt - stop */
         uint32_t stride = (len + 1) * 4;
         uint8_t code = (uint8_t)(cpu->read_word(p + 4) >> 24);
 
@@ -532,7 +532,7 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
                 static uint8_t s_uncoded_warned[256];
                 if (!s_uncoded_warned[code & 0xFF]) {
                     s_uncoded_warned[code & 0xFF] = 1;
-                    fprintf(stderr, "native: WARNING undecoded moby prim code 0x%02X (vbl=%u) — polys "
+                    fprintf(stderr, "native: WARNING undecoded moby prim code 0x%02X (vbl=%u) - polys "
                             "dropped from the native feed; add a decoder or explicitly cull\n",
                             code & 0xFF, openpete_frame);
                 }
@@ -729,9 +729,9 @@ static void vstream_next(CPUState* cpu, vstream* s, int first) {
  * The header's own bounding-radius byte is the cull's sphere, authored for the
  * game's cone test and quantized to 16 units; a model whose mesh reaches
  * further than that sphere still draws every one of its vertices. Where a
- * screen-space bound must hold for the whole mesh — the widescreen reveal's
+ * screen-space bound must hold for the whole mesh - the widescreen reveal's
  * lateral gate, which decides whether a moby centred outside the window still
- * paints inside it — the mesh's own extent is the bound and the byte is not.
+ * paints inside it - the mesh's own extent is the bound and the byte is not.
  *
  * The keyframe streams are static model data, so the extent is decoded once
  * per header and cached. The key carries a content signature (the header's
@@ -1138,7 +1138,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
      * (a3 = w0&0xFF != 0 records take the GPF-TR rescale below instead.)
      *
      * TR_frac (host-rebuilt path) carries the moby-centre translation at FLOAT
-     * precision — the camera/moby delta computed as ÷4.0 instead of >>2, so the
+     * precision - the camera/moby delta computed as ÷4.0 instead of >>2, so the
      * moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
      * chunks (the same fix terrain got). Same scale as TR_raw, just fractional;
      * the .s-record path passes NULL and keeps the byte-exact integer TR. */
@@ -1153,9 +1153,9 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     /* .s far-skip [.L8001F888 / spec twin @8002103C]: records with a non-zero
      * w0 low byte (the GPF-TR scale, m_ScaleOverride-derived) run IR0=(w0&0xFF),
      * IR3=(TR.z<<2)>>m_Scale through GPF sf=0 and SKIP the whole record when
-     * MAC3>>5 exceeds 63000 (-31500 twice, .L800208A4) — the game draws NOTHING
+     * MAC3>>5 exceeds 63000 (-31500 twice, .L800208A4) - the game draws NOTHING
      * for them beyond that depth. Mirror it or the native draws mobys the game
-     * popped out. IR3 is an int16 GTE data reg, so the mtc2 truncates — keep
+     * popped out. IR3 is an int16 GTE data reg, so the mtc2 truncates - keep
      * that. w0&0xFF==0 records (the common case) never take this test. Host-
      * built w0 (reveal/sub-tick rebuild) has no low byte; the sub-tick pass
      * re-applies this check from the live record's w0 (reextract_record_pass). */
@@ -1174,7 +1174,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         TR[2] = TR_frac[2] * sc;
         if (gpf) {                 /* fractional flavour of the GPF rescale below;
                                     * gpf_frac >= 0 = the sub-tick-lerped byte
-                                    * (prev→curr m_ScaleOverride, reextract_record_pass)
+                                    * (prev->curr m_ScaleOverride, reextract_record_pass)
                                     * so the on-screen scale animates at present rate
                                     * instead of stepping per canonical tick */
             double g = (gpf_frac >= 0.0) ? gpf_frac : (double)gpf;
@@ -1184,7 +1184,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         }
     } else if (gpf) {
         /* .s GPF-TR path [.L8001F870..F8DC; spec twin @80021024]: when the record's
-         * low byte is set, the PROJECTION translation is GPF-rescaled —
+         * low byte is set, the PROJECTION translation is GPF-rescaled -
          *   TRi = (IR0(=w0&0xFF) × int16((TRi<<2)>>m_Scale)) >> 5   (GPF sf=0, then sra 5)
          * scl/32 > 1 pushes the moby AWAY along the view ray, < 1 pulls it in; the
          * class code animates the byte to scale the moby ON SCREEN by moving it in
@@ -1220,16 +1220,16 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
      * (TR.z_raw>>5) − signext(w0 byte2) [@8001F810..F828; spec twin @80020FB0];
      * the cull packs m_DepthOffset (the top byte of the moby angle word) into
      * record w0 bits 16-23 [@8001F464..F46C]. That bias is an OT ORDERING KEY
-     * (slots, 128 world each), not geometry — per-pixel Z over TRUE depth
+     * (slots, 128 world each), not geometry - per-pixel Z over TRUE depth
      * mirrors the per-face OT sort, so the authored slot pull never enters the
      * stored depth (a 512+-world pull here punched mobys through terrain that
-     * genuinely occludes them). Its authored job — "win the surface I sit
-     * on" — survives as the sub-slot tie pull below, which can only flip
+     * genuinely occludes them). Its authored job - "win the surface I sit
+     * on" - survives as the sub-slot tie pull below, which can only flip
      * pairs the OT calls a tie. */
     static int s_otbias_on = -1;   /* OPENPETE_MOBY_OTBIAS=0 disables the tie pull (A/B) */
     if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
     /* OPENPETE_DEPTHDBG="f0,f1": per-record OT-key inputs (header, w0/dofs,
-     * pull, centre) for frames [f0,f1] — the OT-sort parity forensics
+     * pull, centre) for frames [f0,f1] - the OT-sort parity forensics
      * instrument (pairs with the Spyro-feed line and the moby TRIDBG box). */
     { static int s_dd = -1; static int df0, df1;
       if (s_dd < 0) { const char* e = getenv("OPENPETE_DEPTHDBG");
@@ -1254,8 +1254,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
 
     int s5    = (cpu->read_byte(header + game_layout.moby.anim_shift_off) & 0xFF) + 1;
     /* .s tier-adjusted vertex COUNT [@8001F9D4..FA04 / spec twin @80021178]:
-     * count = [hdr + 8 + (ZSF4>>31)] — hdr+9 is the LP vertex count — and
-     * count == 0 SKIPS the record entirely (bnez → func_80020860 restore +
+     * count = [hdr + 8 + (ZSF4>>31)] - hdr+9 is the LP vertex count - and
+     * count == 0 SKIPS the record entirely (bnez -> func_80020860 restore +
      * advance). Models with NO LP mesh store 0 there, so beyond the LOD band
      * the game draws NOTHING for them; reading the HP count unconditionally
      * would keep drawing them. --no-lod forces the HP
@@ -1328,7 +1328,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
         double fvz = (vzz + vz_bias) * (double)(1 << ds);
-        /* Fed depth is TRUE per-vertex view-Z. The game's OT is per-FACE —
+        /* Fed depth is TRUE per-vertex view-Z. The game's OT is per-FACE -
          * each face inserts at its own average-Z slot minus the authored
          * bias, so one moby's faces bracket other producers' prims in the
          * real walk (the balloonist basket's far wall paints behind the
@@ -1348,8 +1348,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         /* Perspective W = the view-Z the SCREEN PROJECTION divided by, so it
          * excludes both the OT pulls below and the GPF depth restore: sx/sy came
          * from the rescaled TR, and only that vzz makes their UV interpolation
-         * consistent. (Any positive multiple works — interpolation sees ratios
-         * only — so the 1<<ds normalizer just keeps it in depth units.) */
+         * consistent. (Any positive multiple works - interpolation sees ratios
+         * only - so the 1<<ds normalizer just keeps it in depth units.) */
         out[i].tvz = (float)(vzz * (double)(1 << ds));
         /* rotated vertex offset (M.v)/4096 = viewPos-TR -- the specular env-UV input. */
         out[i].ex = (float)((M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0);
@@ -1357,7 +1357,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         out[i].ez = (float)((M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0);
     }
     /* Near-floor: if the pulls pushed this record past the near plane, lift
-     * the WHOLE record uniformly so its nearest vertex sits on the floor —
+     * the WHOLE record uniformly so its nearest vertex sits on the floor -
      * a per-vertex clamp here flattened close-up mobys to one depth and
      * killed their self-occlusion. Uniform lift keeps depth monotonic. */
     if (rec_minfvz < 1.0 && rec_minfvz > -1e29) {
@@ -1394,7 +1394,7 @@ static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
  * derives it (defined with the host record builder below). Every pass that
  * projects a moby reaches the centre through this one call, so the value a
  * record projects through is a function of the present's camera and the
- * moby's position alone — the canonical present and the sub-tick present at
+ * moby's position alone - the canonical present and the sub-tick present at
  * alpha 1 are the same point of the same tick and read the same number by
  * construction, not by two derivations agreeing. */
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
@@ -1412,8 +1412,8 @@ static void moby_centre_census(const char* pass);
  * int16, and the builder A/B compares against the stored value.
  *
  * On a game whose cull stores the final translation (rec_tr_final), that
- * translation also carries the cull's unit scaling — the factor of 4 off the
- * quarter-world grid, the header's shift and the per-moby size rescale — and
+ * translation also carries the cull's unit scaling - the factor of 4 off the
+ * quarter-world grid, the header's shift and the per-moby size rescale - and
  * the decode passes a fractional centre straight to the GTE, so the centre is
  * scaled the same way first (moby_record_centre_final). When neither centre
  * derivation applies, the decode projects the stored TR.
@@ -1458,7 +1458,7 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                                        * this model instead of the record */
                  uint8_t heat;     /* m_SpecularMetalColor byte2 (moby+0x4E),
                                     * snapshotted at capture: the flame-heat
-                                    * level (ApplyFlameHeat*) — consumed by the
+                                    * level (ApplyFlameHeat*) - consumed by the
                                     * mod-texture face red-shift */
                  int M[3][3];      /* model-to-view rotation, Q12: the per-face
                                     * special material rotates a face normal by
@@ -1474,24 +1474,24 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  * (moby_is_shiny). The record is the moby's sole feeder, so
                  * the walk must apply the SPEC per-face treatment (env
                  * reflection / diffuse highlight) that the .s SPEC pass would
-                 * have drawn — the s_cur_mat=='SP' pass gate alone left
+                 * have drawn - the s_cur_mat=='SP' pass gate alone left
                  * revealed metal capes rendering their dark baked base texture
                  * (the cliff_town caped gnorc). A record outside the specular
                  * pass carries a zero material word, which would flatten
                  * every face to 000000. */
                  /* frameA = the record's keyframe (rec+0x08 / f.frameA): the frame
                  * may carry a render-time FACEBLOCK PATCH list (see
-                 * moby_faces_for_record) — 0 = no patch lookup.
+                 * moby_faces_for_record) - 0 = no patch lookup.
                  * frameA_p/header_p/clr_alpha = the PREV drawn keyframe + the pose
                  * crossfade alpha (sub-tick re-extract only; 0 = canonical/no prev):
                  * drives the per-face COLOUR crossfade for patch-animated effects,
                  * whose colour indices step per keyframe (see the FCp block in
                  * build_walk_tris_inner). */
-                 /* env_az = view-space TR azimuth atan2(TR.z,TR.x) — the
+                 /* env_az = view-space TR azimuth atan2(TR.z,TR.x) - the
                  * .s SPEC env per-moby u-bias input (.L800226F8 cfc2 TRZ/TRX octant atan) */  /* metal = m_SpecularMetalColor
                  (rec+0x30) high byte (env flag); mscol = full word (highlight BK + spec byte);
                  moby = Moby* (rec+0x34 for .s records; set directly for host-built reveal records,
-                 whose addr is then 0 — there is no live +0x1600 record behind them);
+                 whose addr is then 0 - there is no live +0x1600 record behind them);
                  zsf4 = per-moby colour fade level (high16 of the cull record's matrix word @+0x2C,
                  cfc2 gte_ctrl[30]); see moby_color_fade_ir0 */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
@@ -1682,7 +1682,7 @@ static int fade_snap_present_z(uint32_t moby, int zsf4, double tz_present, doubl
     return *zf != (double)zsf4;
 }
 
-/* Moby pointers fed by the REGULAR pass this frame — the SPECULAR pass dedups
+/* Moby pointers fed by the REGULAR pass this frame - the SPECULAR pass dedups
  * against this so a moby drawn by BOTH passes (the common case; .s overlaps them
  * at one pose) is fed ONCE (by REGULAR, at its pre-specular-cull pose), while a
  * moby UNIQUE to the specular queue (e.g. the Artisans rescue dragon cls 0xFA,
@@ -1694,7 +1694,7 @@ static uint32_t s_reg_moby[MAX_RECORDS]; static int s_reg_moby_n;
  * their cull records (REGULAR + SPECULAR, deduped).
  *
  * The interp capture and the sub-tick spine's lerp walk both iterate
- * g_LevelMobys, but the game also renders mobys that live OUTSIDE that array —
+ * g_LevelMobys, but the game also renders mobys that live OUTSIDE that array -
  * the balloonist copies the balloon out of g_LevelMobys into the render scratch
  * (g_SonyImage.m_WorldFarQueued[106]) before the level swap and draws it from
  * there for the whole arrival flight. Such a moby has no prev/curr snapshot and
@@ -1712,7 +1712,7 @@ static unsigned s_canon_drawn_frame = ~0u;
 int moby_native_canon_drawn_mobys(const uint32_t** out) {
     *out = s_canon_drawn;
     /* Stale-bound: the game draws every other VBL, so a set older than that is
-     * from before a stall — a CD load or level swap, after which the addresses
+     * from before a stall - a CD load or level swap, after which the addresses
      * name whatever now occupies that memory. Reporting none is correct there:
      * nothing was drawn to interpolate. */
     return (openpete_frame - s_canon_drawn_frame <= 2u) ? s_canon_drawn_n : 0;
@@ -1775,7 +1775,7 @@ static long s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade, s_tier_gpfskip;
 static long s_tier_lpskip;   /* far-tier records skipped by the LP vertex count == 0
                               * (no LP mesh): the .s draws NOTHING for them */
 static long s_shband_cull;   /* SHADED-walk mobys skipped by the .s 3-axis distance-band
-                              * cull mirror (block_80022B40..90 — the distant-gem hide) */
+                              * cull mirror (block_80022B40..90 - the distant-gem hide) */
 static long s_tier_mirror_ok, s_tier_mirror_bad;
 static long s_hold_replayed;   /* Tier-2 hold: moby replays served per census window */
 /** @brief Whether the tier census and extraction timers are on (OPENPETE_MOBY_TIER_DBG).
@@ -1790,8 +1790,8 @@ static int tier_dbg_on(void) {
 }
 
 /* Extraction µs accumulators (printed in the OPENPETE_MOBY_TIER_DBG census):
- * split the moby extraction cost into its two halves — the vertex decode +
- * projection (proj) and the face-stream walk + tri build (walk) — across ALL
+ * split the moby extraction cost into its two halves - the vertex decode +
+ * projection (proj) and the face-stream walk + tri build (walk) - across ALL
  * callers (canonical pass + per-present re-extract + SPEC), so a caching
  * change is measured by the same instrument before and after. */
 static long s_us_proj, s_us_walk, s_us_walk_rex, s_us_calls;
@@ -2058,7 +2058,7 @@ static int project_all_records_inner(CPUState* cpu) {
         int bl = (int)((w0 >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask);  /* INTPL blend 0..4096 */
         if (bl > s_max_blend) s_max_blend = bl;
         int off = s_proj_n;
-        /* ZSF4 verdict BEFORE the projection — the decode's tier-adjusted
+        /* ZSF4 verdict BEFORE the projection - the decode's tier-adjusted
          * vertex-count read ([hdr+8+(ZSF4>>31)], 0 = record skipped) needs it.
          * Snapshotted into fade_snap below, so the sub-tick re-extract
          * inherits the (--no-lod-neutralized) tier too. */
@@ -2113,7 +2113,7 @@ static int project_all_records_inner(CPUState* cpu) {
                     int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8)
                              - (uint32_t)R.TR_raw[2]) & 0xFFFFu);
                     /* --no-lod: the zsf4-store hook neutralized the distance term
-                     * for near-band-at-zero-distance records — mirror that */
+                     * for near-band-at-zero-distance records - mirror that */
                     if (openpete_no_lod && (md << 8) >= 1024) ex = md << 8;
                     if (ex == zsf4) s_tier_mirror_ok++; else s_tier_mirror_bad++;
                 }
@@ -2130,7 +2130,7 @@ static int project_all_records_inner(CPUState* cpu) {
 /* ---- widescreen live-moby reveal (host-built records) ---------------------
  * In widescreen the .s cull (run headless at canonical 4:3) only writes +0x1600
  * records for 4:3-visible mobys, so enemies/fodder/Sparx/gems pop in at the
- * screen edges. We must NOT re-run the cull (it sets m_WasDrawn — a render->
+ * screen edges. We must NOT re-run the cull (it sets m_WasDrawn - a render->
  * gameplay leak). Instead rebuild the per-moby record FIELDS host-side from
  * gamestate, exactly as func_8001F158 does, for the mobys the 4:3 cull skipped,
  * and decode/project them through moby_decode_project (the same core).
@@ -2171,17 +2171,17 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     f->frameB   = pose.frame_b;
     f->w0       = pose.blend << 8;
     /* m_DepthOffset (top byte of the +0x44 word) -> w0 bits 16-23, like the .s
-     * cull [@8001F464..F46C] — the render walk's OT near-pull reads it there. */
+     * cull [@8001F464..F46C] - the render walk's OT near-pull reads it there. */
     f->w0 |= (cpu->read_word(moby + game_layout.moby.angle_off + 0u) >> 24) << 16;
     f->mscol = cpu->read_word(moby + moby_game.spec_colour_off);                 /* m_SpecularMetalColor */
     f->metal = (int)((f->mscol >> 24) & 0xFFu);
-    /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
+    /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) - the SAME euler compose the shaded
      * path uses, from the moby angle bytes. */
     int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
     shaded_compose_euler(cpu, PM, moby, f->M);
     /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
      * IR2=(cz-mz)>>2, IR3=(mx-cx)>>2; MAC=(PM·IR)>>12). NOT scaled by m_Scale or <<1
-     * here — moby_decode_project applies (<<2)>>m_Scale, matching the .s record store. */
+     * here - moby_decode_project applies (<<2)>>m_Scale, matching the .s record store. */
     int32_t cx=(int32_t)s_view.cam_ram[0], cy=(int32_t)s_view.cam_ram[1], cz=(int32_t)s_view.cam_ram[2];
     int32_t mx=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u), my=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u), mz=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
     int32_t Vy=(cy-my)>>2, Vz=(cz-mz)>>2, Vx=(mx-cx)>>2;
@@ -2256,7 +2256,7 @@ static void moby_centre_at(CPUState* cpu, uint32_t moby, const double woff[3], d
       if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; fpos_hit=1; } }
     if (!fpos_hit && woff) { mfx += woff[0]; mfy += woff[1]; mfz += woff[2]; }
     /* OPENPETE_REG_INTERP_MISS: regular/specular mobys with NO fractional position
-     * (not reached by the spine's lerp walk → they step at the sim rate while the
+     * (not reached by the spine's lerp walk -> they step at the sim rate while the
      * camera interpolates around them). The shaded twin is
      * OPENPETE_SHADED_INTERP_MISS. Gated on the CAMERA having a fractional
      * position: that is what marks a sub-tick re-extract, and on the canonical
@@ -2328,7 +2328,7 @@ static void moby_build_validate(CPUState* cpu) {
         openpete_frame, s_nrecs, n, noModel, okHdr, okA, okB, okBl, okM, okTR, worstM, worstTR);
 }
 
-/* Last reveal set — hysteresis stand-in for host-revealed mobys (they never
+/* Last reveal set - hysteresis stand-in for host-revealed mobys (they never
  * get m_WasDrawn set, so the .s +0x200 range hysteresis needs a host mirror;
  * membership = revealed on the previous builder call). */
 static uint32_t s_rev_prev[MAX_RECORDS]; static int s_rev_prev_n;
@@ -2447,7 +2447,7 @@ static int append_revealed_regular(CPUState* cpu) {
 static int append_revealed_regular_inner(CPUState* cpu) {
     /* The reveal rebuilds cull records in the game's own encoding, so it runs
      * only where the game's provider supplies that builder. Without it the walk
-     * feeds exactly the records the cull queued — which is also what a game
+     * feeds exactly the records the cull queued - which is also what a game
      * whose cull writes a gameplay-readable verdict needs, since nothing the
      * host widens may reach that cull. */
     if (!moby_game.host_reveal) return 0;
@@ -2462,22 +2462,22 @@ static int append_revealed_regular_inner(CPUState* cpu) {
      *  - --no-lod (native display policy): mobys BEYOND the canonical draw
      *    range, with no distance ceiling (t4e below). */
     int nl = openpete_no_lod;
-    if (!s_view.extended && !nl) return 0;              /* canonical view, LOD faithful — nothing to reveal */
+    if (!s_view.extended && !nl) return 0;              /* canonical view, LOD faithful - nothing to reveal */
     /* While the rescue cutscene owns the draw it renders its own actor set and
      * no level geometry, so the widened view must add none either. Revealing
      * only the off-window mobys put props in the side strips while the same
      * props inside the 4:3 window were ceded to a queue that does not draw
-     * them — present at the edges, absent from the centre of one scene. The
+     * them - present at the edges, absent from the centre of one scene. The
      * cutscene actors are excluded by the same rule: they are drawn by the
      * cutscene renderer, are depth-punched as ACTOR_FRONT, and their radius
      * exceeds their view-Z through most of the cutscene, so a revealed copy
      * straddles the camera plane and has no valid projection. Applies at every
-     * LOD — extended LOD reaches the cutscene through this builder too. */
+     * LOD - extended LOD reaches the cutscene through this builder too. */
     if (moby_cutscene_owns_draw(cpu)) return 0;
     float xlo = s_view.xlo, xhi = s_view.xhi;
     double ofx = s_view.ofx;
     double H   = s_view.H_eff;
-    /* OPENPETE_REVEAL_DBG=frame — reveal-admission forensics: dumps every
+    /* OPENPETE_REVEAL_DBG=frame - reveal-admission forensics: dumps every
      * builder candidate near the window edge (cls/state/rad/rz/sx/bok) on
      * the target frame, so a missing edge moby can be attributed to its
      * skip gate without a rebuild. */
@@ -2502,20 +2502,20 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             TRC("skip=run-once (retires on its first update)");
             m += game_layout.moby.array_stride; continue;
         }
-        /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus —
-         * on the sub-tick re-extract — occl-culled and hold-replayed mobys, so
+        /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus -
+         * on the sub-tick re-extract - occl-culled and hold-replayed mobys, so
          * a held off-4:3 speck is never double-drawn by the reveal) */
         int dup = 0;
         for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
         if (dup) { TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += game_layout.moby.array_stride; continue; }
         /* SPECULAR-queue mobys are fed by the SPEC pass (its cone cull is not
-         * 4:3 — the native walk draws the whole queue), WITH the per-face
+         * 4:3 - the native walk draws the whole queue), WITH the per-face
          * specular treatment the REG walk lacks. Revealing them here too drew
          * a second coplanar copy without env/highlight faces that z-fought the
          * SPEC copy.
          * The live +0x1600 queue is CLOBBERED at REG-render time (the scratch
          * is reused mid-frame; the spec cull rebuilds it later), so test the
-         * snapshot taken at the last SPEC pass — 1 tick stale at worst. The
+         * snapshot taken at the last SPEC pass - 1 tick stale at worst. The
          * VERDICT is deferred below to the admit_canon gate: on the tick a
          * spec-queued moby crosses OUT of canonical draw range, the stale
          * snapshot still lists it while this tick's spec queue (canonical
@@ -2544,7 +2544,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * the snapshot's curr the led one (no-op on a canonical render). */
         moby_fields_pose_from_snapshot(cpu, m, &f);
         double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
-        /* per-moby radius = AnimationHeader byte[7]<<4 (view units) — the .s
+        /* per-moby radius = AnimationHeader byte[7]<<4 (view units) - the .s
          * cone's X-bias + its behind-camera reject both use it (@8001F2A0) */
         double rr = (double)((int)cpu->read_byte(f.header + game_layout.moby.anim_radius) << 4);
         if (rz + rr <= 0.0) { TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += game_layout.moby.array_stride; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
@@ -2554,7 +2554,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          *   t4 = (m_RenderRadius << 8) + (m_WasDrawn & 1 ? 0x200 : 0)
          *   admit iff every axis: -t4 < (moby[i]-cam[i])>>2 < t4
          * FULL byte (bit7 included, exactly like the lhu path); dist==0
-         * needs no special sentinel — its box is degenerate and never
+         * needs no special sentinel - its box is degenerate and never
          * admits, same as the .s. Hysteresis: canonical mobys carry live
          * m_WasDrawn; host-revealed mobys never get the byte set, so
          * membership in the LAST reveal set stands in for it (same
@@ -2565,17 +2565,17 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         uint8_t rad_byte = cpu->read_byte(m + moby_game.render_radius_off);
         /* Hysteresis, split per consumer. The .s cull widens by 0x200 keyed
          * ONLY on the moby's live m_WasDrawn bit, so the canonical mirror
-         * (t4c / admit_canon) must use exactly that — mixing in reveal_prev
+         * (t4c / admit_canon) must use exactly that - mixing in reveal_prev
          * made "what the .s would admit" depend on what the HOST drew: a
          * boundary moby inside the band (t4, t4+0x200) with m_WasDrawn clear
          * was revealed (hyst 0), which set reveal_prev, which widened t4c,
          * which flipped admit_canon true, which ceded it to a .s queue that
-         * never admits it — one dark tick, reveal_prev cleared, repeat: a
+         * never admits it - one dark tick, reveal_prev cleared, repeat: a
          * period-2 strobe at the --lod original cull distance. reveal_prev
          * stands in for the
          * byte only on the reveal's OWN threshold t4e (host-revealed mobys
          * never get m_WasDrawn set; t4e is where the .s's pop-damping needs
-         * a mirror — the widescreen edge / --no-lod ceiling). */
+         * a mirror - the widescreen edge / --no-lod ceiling). */
         int hyst_canon = (cpu->read_byte(m + game_layout.moby.drawn_off) & 1u) ? 0x200 : 0;
         int hyst = (hyst_canon || reveal_prev_has(m)) ? 0x200 : 0;
         int32_t cx = (int32_t)cpu->read_word(game_layout.cam.position + 0u),
@@ -2588,7 +2588,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         /* Effective threshold. Extended LOD means "draw it wherever it is", so
          * the ceiling is REMOVED rather than raised: saturating m_Distance to
          * 0x7F only bought (0x7F << 8) * 4 ~= 130 K world units, which a camera
-         * high enough above a level clears outright — every moby then failed the
+         * high enough above a level clears outright - every moby then failed the
          * box while terrain (a PVS sector list with no distance term) kept
          * drawing. m_Distance == 0 keeps its canonical meaning: the dormant /
          * unpopulated slot sentinel, whose degenerate box admits nothing. */
@@ -2598,7 +2598,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         else                     t4e = ((int32_t)eff << 8) + hyst;
         #define REVEAL_BOX(t) (d0 > -(t) && d0 < (t) && d1 > -(t) && d1 < (t) && d2 > -(t) && d2 < (t))
         /* the .s pairs the box test with a view-Z cap on the SAME threshold
-         * (@8001F2E8: reject MAC3 >= t4) — mirror both or far-axis mobys the
+         * (@8001F2E8: reject MAC3 >= t4) - mirror both or far-axis mobys the
          * .s rejects get over-admitted */
         int admit_canon = REVEAL_BOX(t4c) && rz < (double)t4c;
         TRC("b51=%02X rad=%02X d=(%d,%d,%d) t4c=%d t4e=%d rz=%.0f admit_canon=%d prev=%d",
@@ -2624,7 +2624,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * it. The window test below uses the effective projection. */
         int central = (sxc >= 0.0 && sxc <= 512.0);
         /* central + canonically-admitted = the .s queue's territory (anything
-         * there and not in the queue was cull-rejected for a non-box reason —
+         * there and not in the queue was cull-rejected for a non-box reason -
          * leave it); central + beyond-canonical is the no-lod clause's NEW
          * coverage. */
         if (central && admit_canon) { TRC("skip=ceded-to-canon sx=%.0f", sx); m += game_layout.moby.array_stride; continue; }
@@ -2632,7 +2632,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         /* Occlusion cull, exactly as the queue pass tests its own records: a
          * moby behind nearer world-opaque depth costs a full decode + walk for
          * pixels the depth test erases. Placed after the admission tests above
-         * so the verdict below is "admitted, but hidden" — extended LOD removes
+         * so the verdict below is "admitted, but hidden" - extended LOD removes
          * the distance ceiling entirely, so this admits every moby in a level
          * from a high vantage and occlusion is the only axis left to cut on.
          * A culled reveal still publishes into the hysteresis set: admission
@@ -2651,7 +2651,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         s_occl_seen++;
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        /* ZSF4 mirrored from the cull's formula (@8001F404) — there is no live
+        /* ZSF4 mirrored from the cull's formula (@8001F404) - there is no live
          * record behind a revealed moby to read the verdict from. Validated by
          * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records.
          * Computed BEFORE the decode: the tier-adjusted vertex-count read
@@ -2663,7 +2663,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * near-band at zero distance */
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
         else if (openpete_no_lod) {
-            /* Sub-near (effect-authored fade) records keep the distance term —
+            /* Sub-near (effect-authored fade) records keep the distance term -
              * but the .s holds the verdict in an int16, which WRAPS once view-Z
              * passes 32767. Canonically unreachable (nothing is drawn that far),
              * but reachable because the reveal has no distance ceiling: a wrapped
@@ -2690,7 +2690,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         /* Sole feeder: the walk applies the SPEC face treatment for this moby,
-         * but only for a moby the specular pass itself renders — everything
+         * but only for a moby the specular pass itself renders - everything
          * else keeps its baked per-vertex colours. */
         s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
         TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
@@ -2719,7 +2719,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
     }
     /* Admitted, not drawn: a present whose every reveal was occlusion-culled
      * still exercised this producer, and the caller's render-path mark keys off
-     * the return — reporting 0 there would retire the sub-tick moby passes for
+     * the return - reporting 0 there would retire the sub-tick moby passes for
      * as long as the wall stands in front of them. */
     return revealed + occl_rev_n;
 }
@@ -2729,8 +2729,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
  * works only where the fields carry this project's Spyro 1 shapes: a keyframe
  * reference that is a pointer, a translation the draw still has to rescale, a
  * draw radius in the byte moby_game.render_radius_off names. A game whose cull
- * writes another encoding supplies two slots instead — the cull's own box
- * threshold and a record builder for its own queue — and this walk drives
+ * writes another encoding supplies two slots instead - the cull's own box
+ * threshold and a record builder for its own queue - and this walk drives
  * them, so the admission is written once.
  *
  * The lateral cull is deliberately not repeated here: the game's own decode
@@ -2769,7 +2769,7 @@ int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f)
     /* The cull's own centre MVMVA over the quarter-world camera delta: IR1 is
      * the Y delta, IR2 the Z, IR3 the X, MAC = (PM . IR) >> 12. Accumulated at
      * 64 bits, since the products reach 4096*|V| and an int32 sum wraps once a
-     * component passes ~175 K view units — reachable under extended LOD,
+     * component passes ~175 K view units - reachable under extended LOD,
      * which has no distance ceiling. */
     const int32_t cx = (int32_t)s_view.cam_ram[0],
                   cy = (int32_t)s_view.cam_ram[1],
@@ -3006,7 +3006,7 @@ static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue
                                         * OPENPETE_SCENE_ACTOR_FRONT so draw_native_scene front-
                                         * passes ONLY the rescue actors (per-pixel depth punch),
                                         * leaving every other moby's terrain occlusion
-                                        * intact — the --lod extended leak fix. */
+                                        * intact - the --lod extended leak fix. */
 /* Per-record emit tags. Thread-local because the face walk fans records out
  * across the extraction worker pool: each worker holds the tags of the record
  * it is walking, and without that separation workers stamp their triangles with
@@ -3042,9 +3042,9 @@ static int moby_cutscene_owns_draw(CPUState* cpu) {
 /* Render-time-animated colour cache (the boundary-barrier shimmer). Identity of
  * each emitted walk tri so the canonical frame can snapshot the .s's transient
  * per-vertex colour by FACE (moby pointer + topology vertex-index triple) and the
- * high-FPS sub-tick re-extract can REPLAY it by identity — instead of re-matching
+ * high-FPS sub-tick re-extract can REPLAY it by identity - instead of re-matching
  * by screen position every present. The old screen-space sub-tick match was both
- * O(walk×prim) per present (the 480→60fps moby regression) and flicker-prone
+ * O(walk×prim) per present (the 480->60fps moby regression) and flicker-prone
  * (interpolated walk vs the stale canonical prim snapshot crossed the match
  * tolerance frame-to-frame, mis-colouring neighbouring mobys). The face key is
  * pure topology (the SXY index triple comes from the face word, identical
@@ -3056,7 +3056,7 @@ static int8_t   s_wtri_dofs[MAX_NTRI]; /* authored OT bias of the emitting moby 
 static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
                                           * coordinate-saturated (sat): the
                                           * SCREEN footprint is not the true
-                                          * projection — never a key emitter */
+                                          * projection - never a key emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
 /* Which per-face special material produced this tri's colours, 0 = none: the
@@ -3222,7 +3222,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
      * reject behind-camera prims; our float project() does a raw H/Z, so a
      * negative Z flips the vertex (sign inverts both screen axes) and hurls it
      * to the top of the view. Without this, a moby that passes behind the camera
-     * — e.g. the gem value-popup the player charges THROUGH — renders inverted
+     * - e.g. the gem value-popup the player charges THROUGH - renders inverted
      * ("upside down") at screen top. Matches the .s (it draws nothing for a
      * fully-behind moby). Cheap whole-triangle cull (no near-plane clipping):
      * mobys rarely straddle the near plane, and a 1-frame early disappear beats
@@ -3231,13 +3231,13 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     /* NEAR-PLANE STRADDLE: a face with a vertex inside the GTE divide-overflow
      * regime got that vertex's screen position from the hardware-clamped path
      * (moby_gte_near_fixup), so it is pinned to the ±1024 SXY window rather
-     * than the true perspective point — the face's shape is no longer the one
+     * than the true perspective point - the face's shape is no longer the one
      * the camera sees. The GPU is what resolves this on hardware: it discards
      * any primitive spanning more than 1023 px horizontally or 511 vertically,
      * which is exactly the class the clamp produces. Mirror that and the
      * straddling face drops, as it does on PSX; without it the face survives
      * with one corner slammed to the window edge and sweeps the frame (mobys
-     * the camera passes through — the 1-frame whole-screen flash).
+     * the camera passes through - the 1-frame whole-screen flash).
      *
      * Gated on the flag so ordinary geometry is untouched: a legitimately huge
      * near face (or a wide face under Hor+ reveal, whose true X exceeds the
@@ -3714,7 +3714,7 @@ static wface_t s_fc_tmp[8192];        /* decode scratch, sized to the decoder's 
  * before that walk ends. Each resolve pass takes a generation; every entry it
  * returns is stamped with it, and an entry stamped with the current generation
  * is not a victim. When both ways of a hash pair are stamped, the decode goes to
- * a private overflow entry instead — outside the cache, so it evicts nothing
+ * a private overflow entry instead - outside the cache, so it evicts nothing
  * and is dropped when the next pass reuses the slot. Without this a third
  * faceblock on one hash pair silently rewrites an entry an earlier record
  * points at, and that record then walks another model's faces and colours. */
@@ -3856,7 +3856,7 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  * fades ENTIRELY through this (each keyframe re-points every strip face's
  * advancing-vertex word + colour-index word onto inner rings / darker colour
  * entries). The native walk reads the faceblock AFTER the .s restore, so
- * without this mirror it decodes the unpatched model — the user-visible
+ * without this mirror it decodes the unpatched model - the user-visible
  * "constant full-size dome".
  *
  * Mirror: patch -> fcache_decode_into -> restore (forward order, like the .s
@@ -4146,7 +4146,7 @@ static int build_walk_tris(CPUState* cpu) {
 }
 /* Faces resolved by the serial prologue, one entry per record. The walk itself
  * must not resolve them: the decode patches guest RAM in place and restores it,
- * and both face caches allocate and evict — none of which is safe to run on
+ * and both face caches allocate and evict - none of which is safe to run on
  * several workers at once. */
 static const fcache_t* s_pre_FC[MAX_RECORDS];
 static const fcache_t* s_pre_FCp[MAX_RECORDS];
@@ -4193,7 +4193,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
     for (int r = r0; r < r1; r++) {
         rec_meta* R = &s_recs[r];
         uint32_t mob = R->moby;   /* set in all paths (==rec+0x34 for .s recs); host-built reveal/re-extract records have addr=0 so reading R->addr+0x34 would miss the dedup */
-        /* SPECULAR dedup: skip a moby the REGULAR pass already fed (overlap → would
+        /* SPECULAR dedup: skip a moby the REGULAR pass already fed (overlap -> would
          * double at a different pose). Specular-only mobys (not in s_reg_moby) feed. */
         if (is_spec) {
             int dup = 0;
@@ -4205,13 +4205,13 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + game_layout.moby.angle_off + 3u) : 0; /* og OT bias */
         /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
          * queued it, and s_reg_moby membership is what the reveal builder and
-         * the occlusion/hold bookkeeping dedup against) — only its triangles
+         * the occlusion/hold bookkeeping dedup against) - only its triangles
          * are dropped, so this is display-side alone: the .s pass still sets
          * m_WasDrawn @8001F4CC, the moby still auto-includes into the next
          * tick's update list, and its one-shot job still runs on schedule. */
         if (mob && moby_run_once_hidden(cpu, mob, s_cur_moby_cls)) continue;
         /* OPENPETE_MOBY_CLASSDBG=1: one line per drawn moby (class + vaddr +
-         * world position) — names the producer when a scene object needs a
+         * world position) - names the producer when a scene object needs a
          * class-keyed treatment (e.g. a mod material selector). */
         {
             static int clsdbg = -1;
@@ -4233,7 +4233,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
                    : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0;
           /* Regular-walk twin of the shaded HUD3D promotion: a UI-range moby
-           * that is a real 3D MODEL self-occludes and needs its own Z pass —
+           * that is a real 3D MODEL self-occludes and needs its own Z pass -
            * the flat HUD layer's per-tri painter can't sort interpenetrating
            * faces (a fly-in body model shows its interior through its far
            * side). Promote by PROJECTED view-Z extent of this
@@ -4295,10 +4295,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         int host_col = (cb_host != NULL) && (farbase == 0 || fb_host != NULL);
         /* Sub-tick COLOUR crossfade (patch-animated effects): the fade of the
          * Gnasty-blast dome/rings is per-KEYFRAME colour-index re-pointing down
-         * a pre-baked ladder (faceblock patches) — the colour block itself is
+         * a pre-baked ladder (faceblock patches) - the colour block itself is
          * static, so colours snap each keyframe (~15Hz). Crossfade per face
          * between the PREV drawn keyframe's colours and the curr ones by the
-         * SAME alpha that lerps the vertex streams — endpoints are exactly the
+         * SAME alpha that lerps the vertex streams - endpoints are exactly the
          * two states the game drew. Only fetched when a patch list is in play
          * (prev==curr faces otherwise makes it a no-op). */
         t_diag->faces  += FC->raw;
@@ -4333,7 +4333,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             /* Backface NCLIP on the precise FLOAT screen coords (NOT the GTE's floored
              * int16): the 1px floor flips a near-zero-area face's sign at grazing angles,
              * culling genuinely front-facing thin-moby tops (Artisans water platforms,
-             * cls 0x12 → waterfall showed THROUGH the disc). Float is exact there, and the
+             * cls 0x12 -> waterfall showed THROUGH the disc). Float is exact there, and the
              * native Z-buffer sorts what survives. (PSX/PsyCross floor here and show gaps.) */
             double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);
             double ncl2 = p3 ? tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy) : -1.0;
@@ -4401,7 +4401,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 c1 = moby_clerp(p1, c1, clr_a);
                 c2 = moby_clerp(p2, c2, clr_a);
                 c3 = moby_clerp(p3v, c3, clr_a);
-                /* OPENPETE_MOBY_CLERP_DBG=1: face-0 ramp per present — must run
+                /* OPENPETE_MOBY_CLERP_DBG=1: face-0 ramp per present - must run
                  * monotonically prev->curr within each keyframe hold */
                 { static int s_cd = -1;
                   if (s_cd < 0) { const char* e = getenv("OPENPETE_MOBY_CLERP_DBG"); s_cd = (e && *e && *e != '0'); }
@@ -4424,7 +4424,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * red-shift (.L80021FE0) on the modulating colours. The stock
              * metal chest's own face flavors get it via the env/highlight
              * branches below, which a replacement model's mod-textured
-             * faces never enter — a flamed spyro3-chests vase stayed cold.
+             * faces never enter - a flamed spyro3-chests vase stayed cold.
              * heat is the per-record moby snapshot (m_SpecularMetalColor
              * byte2); 0 for never-heated mobys -> no-op. */
             if (bpp == 32 && R->heat) {
@@ -4439,12 +4439,12 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             }
             /* Fog-band CLUT-row fog (the texel half of the LOD crossfade,
              * .s @8001FE04-FE08: s2 = (IR0>>9) << 22 is added to every textured
-             * prim's UV word — word bits 22-30 ARE the CLUT y, so the row is
+             * prim's UV word - word bits 22-30 ARE the CLUT y, so the row is
              * biased by IR0>>9 = 0..7 down an 8-row fogged-CLUT ladder; same
              * mechanism as the terrain CLUT-row texel fog). Without it the walk
              * samples the base (unfogged) row at every tier: distant HP mobys
              * get full-bright texels over faded vertex colours. Per-record and view-dependent,
-             * so applied here at emit — never baked into the Tier-1 face cache. */
+             * so applied here at emit - never baked into the Tier-1 face cache. */
             int cly_fog = moby_face_fog_row(&fd, fcc);
             uint8_t tmix = moby_face_fog_mix(&fd, fcc);
             cly += cly_fog;
@@ -4471,7 +4471,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                * armored gnorc's shield rendered its baked base texture instead
                * of the env reflection). Mirror the paint-order semantics in
                * depth: pull the decal 0.2% toward the camera (a few world units
-               * at moby range — far below any real geometry separation). */
+               * at moby range - far below any real geometry separation). */
               hlq[0] = *p0; hlq[1] = *p1; hlq[2] = *p2;
               hlq[0].vz *= 0.998f; hlq[1].vz *= 0.998f; hlq[2].vz *= 0.998f;
               p0 = &hlq[0]; p1 = &hlq[1]; p2 = &hlq[2];
@@ -4592,7 +4592,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * paths .L80020530 / .L8002066C) builds each GPU command word as
              *   code | RGB | ((w1 & 1) << 25)
              * i.e. bit 25 (the GPU ABE / semi-transparency-enable bit) comes from
-             * bit0 of the per-face colour-index word w1 (fp+4) — deliberately the
+             * bit0 of the per-face colour-index word w1 (fp+4) - deliberately the
              * bit the &0x7FC colour-index masks drop. When ABE is set the blend
              * MODE is the texpage ABR field (bits 5-6); untextured ABE faces have
              * no texpage of their own so they take the GPU's default ABR 0 (50%).
@@ -4601,7 +4601,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             int blend = (F->blendbit && !special_tex) ? moby_abr_blend(abr) : 0;
 
             /* OPENPETE_MOBY_FACEDUMP=<moby address, hex>: every face of that
-             * record as the walk emits it — topology, the two flag bits that
+             * record as the walk emits it - topology, the two flag bits that
              * leave the ordinary emit, and the material words. Pairs with the
              * captured prims by the same index triple the emit keys on. */
             {
@@ -4741,7 +4741,7 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
     if (tier_dbg_on()) { s_walk_faces += faces; s_walk_runs++; }
     /* Below a work bound the dispatch costs more than it saves. The pool's
      * floor is a semaphore wake plus a join that waits for every helper it
-     * signalled — including one that finds no work left — so a run costs on the
+     * signalled - including one that finds no work left - so a run costs on the
      * order of 20 us however small it is, while the walk itself runs at ~0.1 us
      * per face (307 faces / 30.6 us and 615 / 66.4 us, two scenes a factor of
      * two apart). Break-even is therefore a few hundred faces, and below it the
@@ -4750,7 +4750,7 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
      * The bound needs no per-machine calibration, because being wrong about it
      * is wildly asymmetric: fanning out a scene that was too small costs a few
      * microseconds, while failing to fan out a heavy one costs more than a
-     * millisecond — a whole-level vista walks ~17600 faces, 1852 us serial
+     * millisecond - a whole-level vista walks ~17600 faces, 1852 us serial
      * against 444 parallel. Only the far side of the bound is expensive, so any
      * bound in this neighbourhood is safe wherever it runs. */
     /* Calibration override: re-derive the bound on other hardware without a
@@ -4984,7 +4984,7 @@ static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
     { /* OPENPETE_MOBY_PRIMBOX="x0,y0,x1,y1": dump every captured .s prim with a
-       * vertex in the PSX-screen box (per-vertex xy+rgb) — the position-matched
+       * vertex in the PSX-screen box (per-vertex xy+rgb) - the position-matched
        * ground truth for the [fface] walk dump. One frame only. */
         static int s_pb = -1; static int px0,py0,px1,py1;
         if (s_pb < 0) { const char* e = getenv("OPENPETE_MOBY_PRIMBOX");
@@ -5008,7 +5008,7 @@ static void compare_walk_vs_prims(void) {
         }
     }
     { /* OPENPETE_MOBY_WALKBOX="x0,y0,x1,y1": the native counterpart of
-       * [pbox] — every walk triangle with a vertex in the same PSX-screen box,
+       * [pbox] - every walk triangle with a vertex in the same PSX-screen box,
        * with the material words the feeder emitted. Diffing a [wbox] line
        * against the [pbox] line at the same position names which word (colour,
        * texture page, CLUT, blend) the two sides disagree on. Latched per
@@ -5112,14 +5112,14 @@ static void compare_walk_vs_prims(void) {
             if(w->textured){ if(ncl<0)mt_n++;else mt_p++; } else { if(ncl<0)mf_n++;else mf_p++; }
             /* Colour compare at POSITION-COINCIDENT vertices: the geometric match
              * is order-independent, so walk vertex 0 may correspond to any prim
-             * corner — comparing rgb[0] vs rgb[0] scored a rotated correspondence
+             * corner - comparing rgb[0] vs rgb[0] scored a rotated correspondence
              * of the same gouraud face as a miss. Pair each walk vertex with the
              * nearest prim vertex (<=2.5px) and compare THERE; faces that still
              * differ carry genuinely wrong colours. */
             uint32_t wc=w->v[0].rgb&0xFFFFFFu, pc=s_ptri[bp].rgb[0]&0xFFFFFFu;
             {
                 /* Corner pairing is only meaningful when the prim's vertices are
-                 * mutually separated by more than the pairing radius — on a tiny
+                 * mutually separated by more than the pairing radius - on a tiny
                  * face every walk vertex is "nearest" to every prim vertex and
                  * the verdict is noise. Skip those (counted as matches). */
                 int unambiguous = 1;
@@ -5160,7 +5160,7 @@ static void compare_walk_vs_prims(void) {
                 }
                 coln++;
                 if (!unambiguous || (paired == 3 && all_ok)) colmatch++;
-                else if (paired < 3) { colmatch++; /* geometric pairing failed — not colour evidence */ }
+                else if (paired < 3) { colmatch++; /* geometric pairing failed - not colour evidence */ }
                 else { /* colour-mismatch forensics: identity + values, cap via env */
                     static int ncd=0; static int cap=-1;
                     if (cap < 0) { const char* e = getenv("OPENPETE_MOBY_COLMISS_DBG"); cap = (e && *e) ? atoi(e) : 16; }
@@ -6499,23 +6499,23 @@ static void push_scene_moby(void) {
         /* og OT key channel, moby twin of the terrain emit: the .s inserts
          * each moby face at its average-Z slot minus the authored
          * m_DepthOffset (the angle word's top byte, which the cull packs into record
-         * w0 bits 16-23 / the shaded walk's rot>>24) — an ordering KEY,
+         * w0 bits 16-23 / the shaded walk's rot>>24) - an ordering KEY,
          * never stored depth. The face's ABSOLUTE key rasters into the
          * MOBY key image (set 1, split from the terrain keys), where the
          * contest scopes the yield by the covering face's own TRUE view-Z
          * (MOBY_TRUESCOPE, psx_scene_key.frag): keyed terrain within the
          * moby's own authored pull yields per-pixel (a pedestal disc set
          * into sloped ground paints complete), while og's pull+push
-         * compound — which paints a chest through the wall lip genuinely
-         * in front of it — is not mirrored: a wall in front keeps
+         * compound - which paints a chest through the wall lip genuinely
+         * in front of it - is not mirrored: a wall in front keeps
          * occluding by TRUE depth. The moby face contests nearer keys
          * symmetrically. Blend/FRONT/HUD classes
-         * stay unkeyed — and so do MANGLED faces (near-plane fixup /
+         * stay unkeyed - and so do MANGLED faces (near-plane fixup /
          * coordinate saturation): their screen footprint is not the true
          * projection, so a flat key stamped across one discards terrain
          * far outside the moby's real silhouette (a right-at-the-camera
          * moby flooded a whole wall away). A genuinely-near moby needs no
-         * key anyway — it is the viewer-side surface and TRUE depth
+         * key anyway - it is the viewer-side surface and TRUE depth
          * already wins its own pixels. */
         { static int s_kob = -1;
           if (s_kob < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS");
@@ -6558,11 +6558,11 @@ static void push_scene_moby(void) {
          * extraction. Slot ids are interned per feed cycle and this loop
          * runs AFTER scene_begin_frame() has reset that table, so a slot
          * captured during the walk names nothing by the time it would be
-         * stamped — and because ids are handed out in first-seen order, a
+         * stamped - and because ids are handed out in first-seen order, a
          * stale one can even name another instance's block. Re-resolving
          * from the banked IDENTITY (moby ptr + class) is the same rule the
          * residency ladder applies everywhere else: bank identity, never
-         * outcomes. Memoized on the moby ptr — the walk emits a moby's
+         * outcomes. Memoized on the moby ptr - the walk emits a moby's
          * faces contiguously, so this is one resolve per moby, not per
          * face. */
         uint16_t matslot = 0;
@@ -6582,7 +6582,7 @@ static void push_scene_moby(void) {
         /* Origin: a record the extended-LOD reveal appended is host-added
          * geometry, and the scene's content and world-frame verdicts are the
          * game's own to make. Memoized on the moby ptr like the material slot
-         * above — the walk emits a moby's faces contiguously. */
+         * above - the walk emits a moby's faces contiguously. */
         openpete_native_scene_set_host_added(moby_walk_tri_host_added(s_wtri_moby[i]));
         openpete_native_scene_add_tri(&t, cat, 0);
     }
@@ -6703,9 +6703,9 @@ static void compare_and_report(int nrec) {
  * counter `--screenshot-on-frame` also keys on, which is the clock every
  * `vbl=` label in this file prints. OPENPETE_MOBY_VERIFY carries the window
  * as `<lo>` or `<lo>-<hi>`, so the VBLs asked for are the VBLs reported. The
- * values `0` and `1` keep their boolean meaning — `1` selects the default
+ * values `0` and `1` keep their boolean meaning - `1` selects the default
  * window plus an every-200-VBL sample, so one boot reports on each level the
- * run loads — and OPENPETE_MOBY_VERIFY_FRAME moves that default window's
+ * run loads - and OPENPETE_MOBY_VERIFY_FRAME moves that default window's
  * start. */
 static unsigned s_verify_lo = 2000u, s_verify_hi = 2012u;
 static int      s_verify_sparse = 1;
@@ -6785,7 +6785,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
 
     render_path_record(RP_MOBY, start, end);  /* polybuf range for the OT filter */
 
-    /* Verify aid: the pass's polybuf window — pairs with the full-OT dump
+    /* Verify aid: the pass's polybuf window - pairs with the full-OT dump
      * (OPENPETE_OT_DUMP_FRAMES prim addresses) to attribute un-fed prims to
      * their producer by allocation range. */
     if (moby_verify_vbl())
@@ -6829,14 +6829,14 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
      * an additive per-face specular highlight (PSX can't bake it into one pass), so
      * the two .s passes OVERLAP at one pose. The native bakes the specular shading
      * per-face in build_walk_tris already, so re-feeding the same moby from the
-     * SPECULAR pass is redundant — AND wrong-pose: the native re-projects AFTER
+     * SPECULAR pass is redundant - AND wrong-pose: the native re-projects AFTER
      * func_80020F34 (and the intervening specular cull) has advanced the per-record
      * keyframe/blend state, so the SPEC feed paints a SECOND, different animation
      * pose over the REGULAR one (the "death animation shows 2 frames at once"
-     * doubling — e.g. a dying moby read blend=3072 in REG, blend=0 in SPEC). So
+     * doubling - e.g. a dying moby read blend=3072 in REG, blend=0 in SPEC). So
      * feed each moby ONCE: the REGULAR pass feeds its whole set and snapshots it
      * (s_reg_moby); the SPECULAR pass feeds ONLY mobys REGULAR did not (build_walk_tris
-     * skips records whose moby is in s_reg_moby) — which keeps specular-ONLY mobys
+     * skips records whose moby is in s_reg_moby) - which keeps specular-ONLY mobys
      * (e.g. the rescue dragon the specular cull adds to a slot a regular moby held at
      * REGULAR-read time; also the disjoint specular queue under --no-lod). */
     int is_spec = (mat && mat[0]=='S' && mat[1]=='P');
@@ -6847,24 +6847,24 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
             s_specq_moby[s_specq_n++] = s_recs[r].moby;
     }
     if (!is_spec) moby_build_validate(cpu);   /* OPENPETE_MOBY_BUILDDBG: host-builder A/B vs the .s records */
-    if (!is_spec) {                           /* REGULAR runs first — snapshot its moby set */
+    if (!is_spec) {                           /* REGULAR runs first - snapshot its moby set */
         s_reg_moby_n = 0;
         for (int r = 0; r < nrec && s_reg_moby_n < MAX_RECORDS; r++)
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
     }
     if (feed) {
         if (!is_spec) {
-            /* Host-built records are native-only — they never reach the .s
+            /* Host-built records are native-only - they never reach the .s
              * polybuf, so a present whose mobys came ENTIRELY from the reveal
              * records no RP_MOBY interval and reads as "canonical drew no
              * mobys". moby_reextract then skips every sub-tick pass and
              * the mobys exist on canonical presents alone: solid at
              * --render-fps 0, flickering-to-absent the moment presents outrun
              * ticks. That is the state past the canonical cull distance, where
-             * the .s queue is empty by construction — so mark the path drawn on
+             * the .s queue is empty by construction - so mark the path drawn on
              * the reveal's own yield. Can only fire when the .s REGULAR render
-             * fn actually ran this tick (this is its hook), so a load screen —
-             * where only the SHADED/text producer runs — still cannot mark it. */
+             * fn actually ran this tick (this is its hook), so a load screen -
+             * where only the SHADED/text producer runs - still cannot mark it. */
             if (append_revealed_regular(cpu) > 0) render_path_mark_drawn(RP_MOBY);
         }
         { OP_PROF_ACCUM_SCOPE("moby.build");
@@ -6883,14 +6883,14 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
          * REGULAR feeds the shared bracket; the SPECULAR pass rebuilds the
          * +0x1600 queue with the specular set (incl. specular-ONLY mobys like
          * the rescue dragon that REGULAR didn't draw), so capture it separately
-         * for the re-extract's SPEC pass — else those mobys vanish on sub-ticks. */
+         * for the re-extract's SPEC pass - else those mobys vanish on sub-ticks. */
         /* colour row is [0x1100,0x1600); the old 0x800 over-capture spilled
          * into the records, which capture_recs covers in full anyway. */
         {
             /* Runahead: the whole capture/invalidate tail is canonical-only.
              * A speculative REGULAR pass clearing s_canon_spec_valid (with
              * the guarded spec capture unable to re-validate) skipped the
-             * SPEC replay on every intermediate — specular mobys strobed. */
+             * SPEC replay on every intermediate - specular mobys strobed. */
             if (spyro_native_canon_capture_open()) {
                 if (!is_spec) {
                     spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
@@ -6901,7 +6901,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
                      * func_80020F34 when there ARE specular mobys to draw; once the last
                      * one goes (e.g. the rescue-dragon CRYSTAL statue, cls 0xFA, whose
                      * moby flips to state 0xFD when the dragon breaks out), the SPEC pass
-                     * stops firing and never re-captures — so without this clear the
+                     * stops firing and never re-captures - so without this clear the
                      * re-extract would replay the last frozen s_canon_spec FOREVER,
                      * leaving the crystal statue drawn on every sub-tick present after the
                      * dragon is freed. The SPEC pass below re-validates it iff it runs
@@ -6993,7 +6993,7 @@ static void moby_reveal_dbg(CPUState* cpu) {
         if (rz - radius >= 0.0) { m += game_layout.moby.array_stride; continue; }  /* beyond render distance */
         double arx = rx < 0 ? -rx : rx;
         /* X-cone (r_moby.s 0x80022C04): cull if 4*(|rx|-102) - 3*S*(rz+77) >= 0;
-         * S=1 → 4:3 (slope 0.75), S=F/s → the view's horizontal half-FOV
+         * S=1 -> 4:3 (slope 0.75), S=F/s -> the view's horizontal half-FOV
          * (Hor+ widens by F, a wider FOV divides H by s). */
         int pass43   = (4.0*(arx-102.0) - 3.0*       (rz+77.0)) < 0.0;
         int passwide = (4.0*(arx-102.0) - 3.0*((double)F / v.s)*(rz+77.0)) < 0.0;
@@ -7161,7 +7161,7 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * declared in moby.h). s_rot_now is the present's
  * openpete_interp_present_now() timestamp, captured once when enabled so every moby composed this present uses
  * one consistent clock (each still gets its OWN per-object alpha from its distinct
- * prev/curr roll timestamps). 0 = inactive → byte-exact path (canonical render,
+ * prev/curr roll timestamps). 0 = inactive -> byte-exact path (canonical render,
  * or --render-fps off where the snapshot table is empty anyway). */
 static op_time_t s_rot_now = 0;
 static void moby_pose_snap_census(void);
@@ -7600,7 +7600,7 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                      * Wobble as a DELTA around the frozen RAM pose: at ph==t0
                      * this IS the RAM euler (seamless seed), and for a SETTLED
                      * gem it equals the canonical formula (RAM +0x44 =
-                     * cos[t0]>>7 + m_RotY). An UNSETTLED far gem (substate 0 —
+                     * cos[t0]>>7 + m_RotY). An UNSETTLED far gem (substate 0 -
                      * never updated since load, base m_RotY/RotZ never written)
                      * wobbles around its placed pose instead of snapping to
                      * uninitialized props bytes (beast-makers). */
@@ -7726,7 +7726,7 @@ static void shaded_verify(CPUState* cpu) {
             gv, near,clean, clean?100.0*near/clean:0.0, near?sum/near:0.0);
 }
 
-/* ---- shaded directional lighting (#2b) — faithful integer GTE mirror -------
+/* ---- shaded directional lighting (#2b) - faithful integer GTE mirror -------
  * Reproduces func_80022A2C's per-normal lighting (gouraud block_80023148 /
  * flat block_80023574) bit-for-bit so the native colour equals the .s
  * renderer's, instead of NN-sampling the .s's emitted prims. Op chain:
@@ -7789,12 +7789,12 @@ static uint32_t shaded_lit_color(const int RT[3][3], int nx, int ny, int nz,
     int32_t rbk = (int32_t)(((uint32_t)base << 4) & 0xFF0u);
     int32_t gbk = (int32_t)(((uint32_t)base >> 4) & 0xFF0u);
     int32_t bbk = (int32_t)(((uint32_t)base >> 12) & 0xFF0u);
-    /* CC step 1 — light_color: LC matrix = light dir broadcast to all 3 rows */
+    /* CC step 1 - light_color: LC matrix = light dir broadcast to all 3 rows */
     int64_t lc = (int64_t)s_shL[0]*ir1 + (int64_t)s_shL[1]*ir2 + (int64_t)s_shL[2]*ir3;
     ir1 = sat_ir_lm((((int64_t)rbk << 12) + lc) >> 12, 1);
     ir2 = sat_ir_lm((((int64_t)gbk << 12) + lc) >> 12, 1);
     ir3 = sat_ir_lm((((int64_t)bbk << 12) + lc) >> 12, 1);
-    /* CC step 2 — color_output: RGBC = white (0xFFFFFF). MAC = (255*IR<<4)>>12 */
+    /* CC step 2 - color_output: RGBC = white (0xFFFFFF). MAC = (255*IR<<4)>>12 */
     int32_t M1 = (int32_t)(((int64_t)255*ir1) >> 8);
     int32_t M2 = (int32_t)(((int64_t)255*ir2) >> 8);
     int32_t M3 = (int32_t)(((int64_t)255*ir3) >> 8);
@@ -7859,14 +7859,14 @@ typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
                  uint32_t ctab; int ctab_len;   /* static baked colour table [model+8] (bytes); 0 len = lit */
                  moby_otk_rec_t otk;            /* the pass's paint key for this moby */
                } shaded_rec;   /* vzspread = model-space Z extent (max-min);
-                 * a large extent means a real 3D model that self-occludes → needs the HUD3D
+                 * a large extent means a real 3D model that self-occludes -> needs the HUD3D
                  * depth pass, vs a thin text/decal overlay that renders fine depth-off.
                  * pvzspread = PROJECTED per-vertex view-Z extent (raw project() mac3,
-                 * pre-vz_scale — same 4096-scale unit as model VZ). Catches what the
+                 * pre-vz_scale - same 4096-scale unit as model VZ). Catches what the
                  * static model measure can't: a thin model the game ROTATES (the
                  * inventory screen's spinning letter/dragon-icon mobys) swings its
                  * large X extent into view-Z, so it self-occludes despite a small
-                 * model-space Z. Either spread ≥ threshold → HUD3D. */
+                 * model-space Z. Either spread ≥ threshold -> HUD3D. */
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
 
 /** @brief The integer translation the shaded pass loads for a 3D moby (r_moby.s 4015-4154).
@@ -7957,25 +7957,25 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * m_RenderRadius (+0x50) as the cull half-width `a0` and keeps it only if
          * -a0 < (mx-camx)>>2 < a0. m_RenderRadius==0 makes that band degenerate
          * (every position fails one side), so the game ALWAYS skips a radius-0 moby
-         * — the mechanism behind in-spawner objects that are dormant until released
+         * - the mechanism behind in-spawner objects that are dormant until released
          * (e.g. cliff-town's cauldron gems, which sit at m_RenderRadius 0 until you
          * flame the cauldron). The list still contains them, so replicate the skip
          * here, else they render as ghost gems beside their spawner. (m_RenderRadius
-         * & 0x80 is the billboard/HUD flag, handled below — nonzero, so it passes.) */
+         * & 0x80 is the billboard/HUD flag, handled below - nonzero, so it passes.) */
         if (cpu->read_byte(m + moby_game.render_radius_off) == 0) continue;
-        /* .s in-walk 3-axis distance-band cull (block_80022B40..80022B90) —
+        /* .s in-walk 3-axis distance-band cull (block_80022B40..80022B90) -
          * NON-BILLBOARD mobys only (the lhu@80022B20 halfword's bit7 <<24 sign
          * branches billboards past it). eff = (m_RenderRadius & 0x7F) << 8,
          * plus 0x200 when the SAME lhu's high byte (m_WasDrawn, +0x51) has
-         * bit0 set — a one-tick hysteresis so boundary mobys don't flicker.
+         * bit0 set - a one-tick hysteresis so boundary mobys don't flicker.
          * The moby is SKIPPED unless (pos−cam)>>2 is STRICTLY inside ±eff on
          * ALL THREE axes (camera = the canonical g_Camera+0x28.. words the
-         * walk stashes at scratch+0x3E0 — the same cx/cy/cz above; axis signs
-         * and >>2 rounding mirrored exactly). This in-WALK test — not the
-         * queue — is what hides distant gems/props on PSX (the SHADED_BASE
+         * walk stashes at scratch+0x3E0 - the same cx/cy/cz above; axis signs
+         * and >>2 rounding mirrored exactly). This in-WALK test - not the
+         * queue - is what hides distant gems/props on PSX (the SHADED_BASE
          * list still contains them); without it native drew every listed
          * moby at any distance (the distant-gem leak).
-         * Extended LOD drops the band outright (the reveal builder's twin —
+         * Extended LOD drops the band outright (the reveal builder's twin -
          * saturating to 0x7F still hid every gem once the camera cleared
          * ~130 K world units). The m_Distance==0 dormant sentinel never
          * reaches here (skipped above), so dropping the test cannot resurrect
@@ -7996,7 +7996,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             }
         }
         uint32_t cls = cpu->read_half(m + game_layout.moby.class_off);
-        uint32_t mraw  = cpu->read_word(game_layout.moby.model_table + cls*4u); /* RAW entry — bit31 is a colour-mode switch */
+        uint32_t mraw  = cpu->read_word(game_layout.moby.model_table + cls*4u); /* RAW entry - bit31 is a colour-mode switch */
         uint32_t model = mraw;                              if (model<0x80000000u) model|=0x80000000u;
         uint32_t vraw  = cpu->read_word(model + 0x4u);
         uint32_t vbase = vraw;                              if (vbase<0x80000000u) vbase|=0x80000000u;
@@ -8006,17 +8006,17 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         /* STATIC-GOURAUD colour mode (.s block_800230EC..80023268):
          * after the vertex loop the .s compares (vbase<<1>>1) against
          * raw_g_Models_entry + 0x10. Equal (entry stored WITHOUT bit31 and verts
-         * inline at model+0x10) → it SKIPS the per-vertex lighting pre-pass and
-         * takes s4 = [model+8] — the model's BAKED colour table — in the branch
+         * inline at model+0x10) -> it SKIPS the per-vertex lighting pre-pass and
+         * takes s4 = [model+8] - the model's BAKED colour table - in the branch
          * delay slot at 0x800230FC. Mode-0 face colour fields are then BYTE
          * OFFSETS into that table (0x00BBGGRR words, emitted verbatim). bit31
-         * SET in the entry makes the compare fail → lit-gouraud (+0x2A00 path).
+         * SET in the entry makes the compare fail -> lit-gouraud (+0x2A00 path).
          * (Lit-gouraud on a static-gouraud model paints it uniform gray.) */
         uint32_t ctab = 0; int ctab_len = 0;
         if (!(mraw & 0x80000000u) && (vraw & 0x7FFFFFFFu) == ((mraw & 0x7FFFFFFFu) + 0x10u)) {
             uint32_t craw = cpu->read_word(model + 0x8u);
             ctab = craw; if (ctab < 0x80000000u) ctab |= 0x80000000u;
-            /* table spans [model+8 ptr, faces ptr) — bound the face-field offsets */
+            /* table spans [model+8 ptr, faces ptr) - bound the face-field offsets */
             ctab_len = (faces > ctab && faces - ctab < 0x2000u) ? (int)(faces - ctab) : 0x800;
         }
         int sv_off = n;
@@ -8025,7 +8025,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         uint32_t rot = cpu->read_word(m + game_layout.moby.angle_off + 0u);   /* m_Rotation (3 euler bytes) */
         /* OT-bias overlay flag: the .s billboard path (block_80022D90) computes the
          * OT index as (pz>>7) - ((int32_t)m_0x44 >> 24) clamped >= 0. A large bias
-         * byte forces the index to 0 — the NEAR OT slot — so the moby draws OVER the
+         * byte forces the index to 0 - the NEAR OT slot - so the moby draws OVER the
          * world/terrain (but still UNDER Spyro, which renders in a later pass). This
          * is how the game keeps HUD icons, the "DEMO MODE" banner, and the level-
          * intro text on top of the scene. Mirror it: such mobys go to the HUD/overlay
@@ -8047,7 +8047,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             int base[3][3]={{4096,0,0},{0,2560,0},{0,0,4096}};
             shaded_compose_euler(cpu, base, m, M);
             /* Billboard position interp: px/py here are SCREEN
-             * coords the game animates per tick (pz = depth) — fed raw, a
+             * coords the game animates per tick (pz = depth) - fed raw, a
              * moving billboard (the level-transition tally gems flying to the
              * chest) stepped at 30 Hz regardless of --render-fps. Prefer the
              * spine's fractional position; else lerp the interp-objs prev/curr
@@ -8064,14 +8064,14 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                     int32_t pp[3], cp[3];
                     memcpy(pp, o->prev + 0x0Cu, 12); memcpy(cp, o->curr + 0x0Cu, 12);
                     double ddx=(double)cp[0]-pp[0], ddy=(double)cp[1]-pp[1], ddz=(double)cp[2]-pp[2];
-                    /* px/py are SCREEN px — a 5000 guard never fires. 64 px/tick
+                    /* px/py are SCREEN px - a 5000 guard never fires. 64 px/tick
                      * is ~4x the tally gem's flight speed; a same-class slot shift
                      * (gem inheriting another gem's slot) jumps farther and snaps.
                      * pz is DEPTH (the billboard's perspective scale) on a
                      * different unit: the credits letters fly in at ~375/tick, so
                      * it stays out of the guard. */
                     /* stale prev = a relaid-out submenu glyph paired with the old
-                     * glyph that last held its pool slot → snap (leave bf at the
+                     * glyph that last held its pool slot -> snap (leave bf at the
                      * canonical curr) so the letter appears in place instead of
                      * swimming from the previous word's position. */
                     if (pcls2 == ccls2 && ddx*ddx + ddy*ddy <= 64.0*64.0 &&
@@ -8093,11 +8093,11 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                             openpete_frame, m, moby_interp_key(m), cls, bfx, bfy, bfz, px, py, pz);
             }
             /* Like the 3D path, TR[2] is HALF the true view-Z (the .s sets the GTE
-             * depth to pz>>1, but orders the prim in the OT by pz>>7 — i.e. the FULL
+             * depth to pz>>1, but orders the prim in the OT by pz>>7 - i.e. the FULL
              * pz). Scale the fed depth back to full-world so billboards (e.g. the
              * level-intro "THE ADVENTURE BEGINS" text, and any sprite moby) sort vs
              * terrain / Spyro / 3D mobys on the same scale. Without this they sit at
-             * half-depth — artificially near — and a billboard wrongly occludes
+             * half-depth - artificially near - and a billboard wrongly occludes
              * actors that are actually in front of it (Spyro drew BEHIND the text). */
             vz_scale = 2.0;
         } else {
@@ -8108,10 +8108,10 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (block_80022B40..80022D18): IR=((cam.y-my)>>2,(cam.z-mz)>>2,(mx-cam.x)>>2)
              * loaded as (IR1,IR2,IR3); MAC=(PM·IR)>>12; TR=MAC<<1; then an optional
              * GPF perspective scale by m_DrawScale (moby+0x57). NOT the naive
-             * PM·(pos-cam) — that swizzle/scale mismatch sinks 3D mobys (gems)
+             * PM·(pos-cam) - that swizzle/scale mismatch sinks 3D mobys (gems)
              * below ground. */
             /* Delta as ÷4.0 (not >>2) so shaded mobys (gems/props) track the smooth
-             * sub-tick camera instead of stepping in 4-world-unit chunks — same fix
+             * sub-tick camera instead of stepping in 4-world-unit chunks - same fix
              * as the regular path + terrain. TR is fractional; scale unchanged.
              * Floor fix: also prefer the FRACTIONAL interpolated moby position so the
              * moby's own motion is continuous (not just the camera component). */
@@ -8119,7 +8119,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             int fpos_hit;
             { double mf[3]; fpos_hit = openpete_native_interp_pos(m, mf); if (fpos_hit) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
             /* OPENPETE_SHADED_INTERP_MISS: shaded mobys with NO fractional
-             * position (not in the spine's lerp walk → they step at 30 Hz). */
+             * position (not in the spine's lerp walk -> they step at 30 Hz). */
             {
                 static int s_smiss = -1;
                 if (s_smiss < 0) { const char* e = getenv("OPENPETE_SHADED_INTERP_MISS"); s_smiss = (e && *e && *e != '0'); }
@@ -8133,7 +8133,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                 }
             }
             /* OPENPETE_SHADED_POSTRACE=frameLo: per-PRESENT fractional position of
-             * every cls-0x53 gem for ~40 frames from frameLo — does the fed
+             * every cls-0x53 gem for ~40 frames from frameLo - does the fed
              * position CHANGE between the presents of one tick? */
             {
                 static int s_ptr0 = -2;
@@ -8149,7 +8149,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double t3=(PM[2][0]*Dy+PM[2][1]*Dz+PM[2][2]*Dx)/4096.0;
             TR[0]=t1*2.0; TR[1]=t2*2.0; TR[2]=t3*2.0;
             uint8_t p57=cpu->read_byte(m + game_layout.moby.size_off);
-            /* Draw-scale (p57): apply to the FRACTIONAL TR directly — no int16 round.
+            /* Draw-scale (p57): apply to the FRACTIONAL TR directly - no int16 round.
              * (An int16 truncation here would re-quantize the fractional TR
              * back to a ~1-unit grid for draw-scaled shaded mobys, undoing the ÷4.0
              * delta. The GTE's IR16 saturation only
@@ -8173,7 +8173,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         /* .s OT bias, SHADED path: the walk subtracts the SIGNED m_Rotation>>24
          * byte from the moby's OT index (0x80022D9C: t9 -= s4>>24; OT slots are
          * 128 world units). Like the regular walk's m_DepthOffset, that bias is
-         * an OT ORDERING KEY, not geometry — it never enters stored depth
+         * an OT ORDERING KEY, not geometry - it never enters stored depth
          * (world-scale pulls punched mobys through genuinely-occluding
          * terrain). Coincident-surface intent (the portal-name text glyphs
          * sitting ON the arch stone, beast-makers-wild-flight-text f3310)
@@ -8209,7 +8209,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             /* Fed depth stays TRUE per-vertex (see the regular walk's twin):
              * the game's OT is per-face, so per-pixel Z over true depth is
              * the faithful mirror; only the sub-slot tie pull shifts depth. */
-            /* One-slot tie pull — see the regular walk's twin above. The
+            /* One-slot tie pull - see the regular walk's twin above. The
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
             if (ot_centre > 0.0) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
             if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
@@ -8240,7 +8240,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
     }
     /* Idle-anim census (~1/s, under OPENPETE_MOBY_TIER_DBG): overridden-gem
      * composes + fresh seeds since the last print. active counts euler composes
-     * (canonical + per-present re-extract), so it scales with render fps —
+     * (canonical + per-present re-extract), so it scales with render fps -
      * nonzero = the override runs. */
     if (moby_idle_on() && tier_dbg_on() && (s_idle_active || s_idle_seeded || s_idle_live)) {
         static unsigned next_idle;
@@ -8320,14 +8320,14 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * chest). The ones that are real 3D MODELS self-occlude and need their own
          * Z-buffer (HUD3D, depth-isolated, on top) or they render inside-out; thin
          * text/decal overlays (small model-space Z extent) are convex enough for
-         * painter's order and stay flat HUD (drawn UNDER the player — keeps the
-         * level-intro/RESCUED text behind Spyro). Static icons are always 3D → HUD3D;
+         * painter's order and stay flat HUD (drawn UNDER the player - keeps the
+         * level-intro/RESCUED text behind Spyro). Static icons are always 3D -> HUD3D;
          * a near-OT/UI billboard is HUD3D only if its model Z-extent is large.
          * ROTATING thin glyphs (the inventory screen spins its letter/dragon-icon
-         * mobys, swinging their width into view-Z — pvzspread measures it) are
+         * mobys, swinging their width into view-Z - pvzspread measures it) are
          * NOT promoted here: promotion would move them over the player (DEMO
          * MODE letters wave at pvzspread 41-95 in ordinary attract gameplay,
-         * where Spyro must cover them — measured via OPENPETE_SHADED_HUDDBG,
+         * where Spyro must cover them - measured via OPENPETE_SHADED_HUDDBG,
          * which falsified a spread-threshold promotion). Their self-occlusion is
          * instead fixed INSIDE the flat HUD layer: its draw sorts tris stably
          * back-to-front by the per-tri z (native_render.c draw_hud_flat_layer),
@@ -8356,7 +8356,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         proj_xy* base = sv + R->sv_off;
         int vc = R->vcount;
         /* Per-vertex gouraud lit colours from the inline normal stream
-         * (model+0x10, 3 signed bytes/vertex: byte0=Nz, byte1=Nx, byte2=Ny —
+         * (model+0x10, 3 signed bytes/vertex: byte0=Nz, byte1=Nx, byte2=Ny -
          * same byte layout as the vertex positions). Computed for every moby;
          * only read for gouraud faces (flat faces light per-face below).
          * STATIC-GOURAUD models (R->ctab set) skip this: their mode-0 colour
@@ -8371,7 +8371,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             }
         /* METAL sub-mode base (word0 bit1): the gem/shiny tint comes from the
          * metal table D_8006E44C[scolor>>21] (8B: word0=base, word1=reflected),
-         * NOT the flat gray table — see shaded_metal_color. Read once per moby. */
+         * NOT the flat gray table - see shaded_metal_color. Read once per moby. */
         uint32_t mscolor = cpu->read_word(R->moby + moby_game.spec_colour_off);
         uint32_t mtab = moby_game.metal_coltab + (uint32_t)((int32_t)mscolor >> 21);
         uint32_t metal_w0 = cpu->read_word(mtab) & 0xFFFFFFu;
@@ -8380,7 +8380,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * colour-table index (m_SpecularMetalColor>>22) is 0 emits its faces
          * semi-transparent (the .s adds 0x02000000 = the GPU ABE bit). Per-moby, not
          * depth-gated. (Metal-face ABE is depth(SZ3>=2048)/NCLIP-keyed and intertwined
-         * with the far-darkening approximation — deferred to a calibrated pass.) */
+         * with the far-darkening approximation - deferred to a calibrated pass.) */
         int flat_abe = (((int32_t)mscolor) >> 22) == 0;
         uint32_t fp = R->faces;
         for (int f = 0; f < R->fcount && s_gout.n < MAX_NTRI; f++, fp += 8u) {
@@ -8391,7 +8391,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             int i2 = (int)((w0 >>  7) & 0x1FCu) >> 2;
             int i3 = (int)( w0        & 0x1FCu) >> 2;
             if (i0 >= vc || i1 >= vc || i2 >= vc) continue;
-            /* Colour: w0 bit0 selects shading MODE — flat (1) lights once from
+            /* Colour: w0 bit0 selects shading MODE - flat (1) lights once from
              * w1's 3-byte face normal; gouraud (0) reads per-vertex colours
              * indexed by w1's colour fields (>>{21,14,7,0}&0x1FC, >>2 = slot). */
             uint32_t c0,c1,c2,c3; uint8_t mode;
@@ -8452,7 +8452,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             }
             s_emit_otk = -1;
             { /* OPENPETE_SHADED_FACEDBG="cls,frameLo": per-face NCLIP forensics for
-               * one class over 2 VBLs — float ncl vs the GTE's integer NCLIP (which
+               * one class over 2 VBLs - float ncl vs the GTE's integer NCLIP (which
                * runs on truncated SXY), to catch sign flips on near-edge-on faces. */
                 static long s_fd_cls = -2, s_fd_f0 = -1;
                 if (s_fd_cls == -2) {
@@ -8484,11 +8484,11 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * flagged as a mismatch by the static recomp read, but it is NOT a visible
          * bug: on a 54-gem demo frame (f3494) the native-vs-PsyCross A/B diff is
          * mean 0.9 with no systematic per-gem divergence (only sub-pixel edge jitter)
-         * and the gems look correct — the unmodelled ABE-removal gate
+         * and the gems look correct - the unmodelled ABE-removal gate
          * clears it for these faces, and any kept additive shimmer is subtle and also
          * dropped by PsyCross. Left opaque; revisit only if a metal moby ever looks
          * wrong. (The earlier per-frame ABR-FIXME alarm here was a false-positive
-         * firehose — it counted every metal-mode face without the ABE-removal gate.) */
+         * firehose - it counted every metal-mode face without the ABE-removal gate.) */
     }
     return s_gout.n;
 }
@@ -8592,7 +8592,7 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
         return 0;
     moby_view_shd_build(cpu);
 
-    if (feed) {                                 /* feed shaded mobys to the scene — fully native */
+    if (feed) {                                 /* feed shaded mobys to the scene - fully native */
         s_cur_mat = "SHD";
         int shd_n = build_shaded_walk_tris(cpu); /* native topology (#2a) + native lighting (#2b) */
         /* Twin of the REG reveal mark: past the canonical band the .s shaded
@@ -8724,7 +8724,7 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
 /* What the sub-tick pass may do with a clip switch, shared by the pass and the
  * census so both read one rule. CROSS: the two clips deform one shared mesh
  * (equal vertex count), so vertex i is the same physical vertex in both and a
- * model-space lerp prev→curr stays on-model. CUTPATH: a cutscene path-follower,
+ * model-space lerp prev->curr stays on-model. CUTPATH: a cutscene path-follower,
  * whose flight clips carry large baked whole-body translation, so crossfading
  * two spatially-distant poses lurches the whole model. COUNTSW: the clips have
  * different vertex counts, so no vertex correspondence exists between them. */
@@ -8905,7 +8905,7 @@ static int moby_hold_schedule(const openpete_interp_obj_t* o, int verdict, doubl
  * @return MOBY_PREV_SNAP, MOBY_PREV_LERP or MOBY_PREV_HOLD. */
 static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr,
                               moby_pose_t* prev, double* alpha) {
-    if (!s_rot_now) return 0;                                  /* interp off → snap */
+    if (!s_rot_now) return 0;                                  /* interp off -> snap */
     /* The prev pose is the decoder's second stream input, so it has to be
      * expressible in the form this game's record uses for a keyframe: a
      * pointer into the model's frame array where the game's provider rebuilds
@@ -8916,7 +8916,7 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     if (!moby_game.host_reveal && !game_layout.moby.rec_frame_is_word) return 0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
-    /* Occupant guard: prev snapshot must be the SAME class as the live moby —
+    /* Occupant guard: prev snapshot must be the SAME class as the live moby -
      * a reused level slot would crossfade another object's anim/frame state
      * (the topology count check below only catches different mesh sizes). */
     {
@@ -8945,24 +8945,24 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
 /* ---- moby occlusion cull (native-side, display-only) ------------------------
  *
  * Skips the sub-tick re-extraction (decode + project + walk + draw) of a moby
- * whose whole screen rect is provably behind nearer WORLD-opaque depth — the
+ * whose whole screen rect is provably behind nearer WORLD-opaque depth - the
  * depth test would erase every pixel of it anyway (the game's canonical cull
  * is a view-cone + distance test with no occlusion knowledge, so enclosed
  * areas queue every moby behind the walls). Reads the occlusion grid via
  * openpete_native_occl_query; the CANONICAL cull pass and its gameplay-
  * readable writes are untouched (determinism-safe by construction).
  *
- * Per-moby cache: the last extraction's projected bounds — PSX-screen rect +
+ * Per-moby cache: the last extraction's projected bounds - PSX-screen rect +
  * nearest FULL-WORLD view-Z, straight off s_proj (so no per-class scale
  * reverse-engineering). A hit older than 2 ticks is ignored (the moby
- * re-extracts, refreshing the cache — so a permanently-hidden moby still
+ * re-extracts, refreshing the cache - so a permanently-hidden moby still
  * pays full extraction every ≤2 ticks, ~15 Hz instead of every present).
  * Staleness within those 2 ticks is absorbed conservatively: the rect
  * inflates with the camera's measured pan speed (set_occl_pan) + a generous
  * own-motion allowance, and the view-Z gets a per-tick translation slack on
  * top of the grid's own OPENPETE_MOBY_OCCL_SLACK. HUD/UI-routed mobys are
- * exempt (drawn depth-off — never depth-occluded). Direct-mapped cache: a
- * collision only evicts (→ that moby extracts normally), never lies. */
+ * exempt (drawn depth-off - never depth-occluded). Direct-mapped cache: a
+ * collision only evicts (-> that moby extracts normally), never lies. */
 typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
                  float mot, mot_vz;      /* measured screen / view-Z motion per VBL (px, world units) */
                  /* Anchor for the extraction-free bounds refresh below: the
@@ -8979,7 +8979,7 @@ typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
 #define OCCL_HASH_N 1024                       /* power of two; ~500 live mobys max */
 static occl_rect_t s_occl_cache[OCCL_HASH_N];
 static float s_occl_pan_px = 0.0f;             /* px/tick pan allowance (orchestrator) */
-/* s_occl_culled / s_occl_seen: census (records, re-extract + reveal passes) —
+/* s_occl_culled / s_occl_seen: census (records, re-extract + reveal passes) -
  * declared above append_revealed_regular, which is also a cull site. */
 
 void moby_native_set_occl_pan(float px_per_tick) { s_occl_pan_px = px_per_tick; }
@@ -9005,23 +9005,23 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
 
 /* ---- extraction-free bounds refresh ---------------------------------------
  * A culled record never reaches occl_cache_update, so its bounds age out and
- * the age test forces a full extraction — decode, project and walk — purely to
+ * the age test forces a full extraction - decode, project and walk - purely to
  * re-derive a screen rect whose only consumer is the cull that then skips it
  * again. That cycle capped the cull's value at one skipped present in three.
  *
  * The rect can be rebuilt without any of it: project the record ORIGIN through
- * the current camera (the TR-only slice — no euler compose, no decode) and
+ * the current camera (the TR-only slice - no euler compose, no decode) and
  * carry the anchor's rect around it, rescaled by the view-Z ratio, unioned with
  * the model's own radius box. The radius bounds every pose and rotation of the
  * model, so the union contains the true projected extent whatever the moby has
- * animated into since. Both bounds are taken conservatively — an over-large
+ * animated into since. Both bounds are taken conservatively - an over-large
  * rect or an over-near view-Z can only fail to cull, never cull something
  * visible.
  *
  * Nothing is written: repeated refreshes re-derive from the same anchor, so
  * they cannot drift, and the measured-motion fields (which compare successive
  * extractions) never see a rect built by this second method. Two guards stand
- * in for the staleness bound that is being removed — m_Class is re-checked
+ * in for the staleness bound that is being removed - m_Class is re-checked
  * because moby slots are recycled and a reused address would otherwise inherit
  * the previous occupant's radius, and the anchor expires outright after
  * OCCL_ANCHOR_MAX_VBL so no rect survives a scene indefinitely. */
@@ -9060,8 +9060,8 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
     *y0 = (float)(ay0 < sy - hr ? ay0 : sy - hr);
     *y1 = (float)(ay1 > sy + hr ? ay1 : sy + hr);
     /* Nearest view-Z. k is world view-Z per TR unit taken from the anchor's
-     * NEAREST vertex, so it under-estimates the origin's own ratio — nearer,
-     * conservative — and a full radius comes off again to bound any rotation.
+     * NEAREST vertex, so it under-estimates the origin's own ratio - nearer,
+     * conservative - and a full radius comes off again to bound any rotation.
      * The anchor rect rescaled is kept as the alternative and the nearer of the
      * two wins. */
     double k   = (double)e->vz_min / (double)e->atrz;
@@ -9087,16 +9087,16 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     if (openpete_ui_moby_is_addr_static(moby) || openpete_ui_moby_is_addr_ui(moby))
         { s_occl_f[0]++; return 0; }                /* HUD/UI: drawn depth-off, never occluded */
     const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
-    if (e->moby != moby) { s_occl_f[1]++; return 0; }   /* no cached bounds → extract (refreshes) */
+    if (e->moby != moby) { s_occl_f[1]++; return 0; }   /* no cached bounds -> extract (refreshes) */
     unsigned age = openpete_frame - e->tick;
     float rx0 = e->x0, ry0 = e->y0, rx1 = e->x1, ry1 = e->y1, rvz = e->vz_min;
     float own;
     if (age > 2u) {
         if (!occl_refresh_bounds(cpu, moby, e, &rx0, &ry0, &rx1, &ry1, &rvz))
-            { s_occl_f[2]++; return 0; }            /* no usable anchor → extract (refreshes) */
+            { s_occl_f[2]++; return 0; }            /* no usable anchor -> extract (refreshes) */
         s_occl_f[3]++;
         /* The refreshed rect is built around the moby's CURRENT origin and hard-
-         * bounded by its model radius, so no own-motion allowance is owed — only
+         * bounded by its model radius, so no own-motion allowance is owed - only
          * the camera's pan across this present. */
         age = 0u;
         own = 0.0f;
@@ -9106,7 +9106,7 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
          * measured at the canonical H and scaled the same way). Camera pan
          * rides s_occl_pan_px (measured per tick).
          * Own-motion allowance: the 256-u/tick model floor OR the moby's MEASURED
-         * screen motion ×1.5, whichever is larger — fast movers (birds ~750 u/tick)
+         * screen motion ×1.5, whichever is larger - fast movers (birds ~750 u/tick)
          * beat the model by 3× and could stay culled ≤3 presents while emerging
          * from cover. */
         float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
@@ -9236,12 +9236,12 @@ static int occl_verify_begin(uint32_t moby) {
  * @param p The record's projected verts.
  * @param n Their count; 0 or less returns without a report. */
 static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
-    if (n <= 0) return;                 /* no verts projected → nothing drawable */
+    if (n <= 0) return;                 /* no verts projected -> nothing drawable */
     float x0, y0, x1, y1, vz;
     occl_proj_bounds(p, n, &x0, &y0, &x1, &y1, &vz);
     if (occl_query_at(x0, y0, x1, y1, vz, s_ver_snap.mot, s_ver_snap.mot_vz)) return;
     /* Classify: a fresh rect fully outside the visible extent produces ZERO
-     * pixels regardless of the verdict — the conservative inflation merely
+     * pixels regardless of the verdict - the conservative inflation merely
      * crossed the boundary. Only on-screen fresh rects are real events. */
     float xlo = s_view.xlo, xhi = s_view.xhi;
     int zeropx = (x1 < xlo || x0 > xhi || y1 < 0.0f || y0 > 224.0f);
@@ -9298,7 +9298,7 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
     occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
     /* Measured motion (px + view-Z per VBL) from the previous bounds of the
      * SAME moby: rect-centre delta over the refresh interval. Slot collision
-     * or first sighting → 0 (the model floor covers it). */
+     * or first sighting -> 0 (the model floor covers it). */
     if (e->moby == moby && openpete_frame != e->tick) {
         float dt = (float)(openpete_frame - e->tick);
         float dx = 0.5f * ((x0 + x1) - (e->x0 + e->x1));
@@ -9337,11 +9337,11 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
  * translated by the delta of the moby ORIGIN's projection (one TR projection
  * through the current interpolated camera vs the captured one) with view-Z
  * rescaled by the TR.z ratio. Translation error across the moby is bounded by
- * its screen size (< the hold threshold) — imperceptible at speck scale, and
+ * its screen size (< the hold threshold) - imperceptible at speck scale, and
  * the pose lerp it skips is equally sub-pixel there. Gates: screen extent
  * from the occl cache (< OPENPETE_MOBY_HOLD_PX, default 10, 0 = off), not
  * HUD/UI (special projection), origin safely in front of the camera, same
- * canonical epoch (a new tick always re-extracts — gameplay state only
+ * canonical epoch (a new tick always re-extracts - gameplay state only
  * changes at ticks, so no discontinuity can hide inside an epoch).
  * Display-only. */
 #define HOLD_TRI_MAX  32768
@@ -9541,9 +9541,9 @@ static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t heade
  * A cull that stores view-space records hands the replay a matrix M = Rt*Rm,
  * the camera rotation times the moby's own (mobydraw.s:355-359), and a
  * translation TR = S*(Rt*d)/4096, where d is the camera-relative moby position
- * in quarter-world units in the GTE's axis order — ((camY-mobyY)/4,
+ * in quarter-world units in the GTE's axis order - ((camY-mobyY)/4,
  * (camZ-mobyZ)/4, (mobyX-camX)/4), mobydraw.s:79-94, transformed and left in
- * the GTE translation at mobydraw.s:125-130,189 — and S is the per-moby size
+ * the GTE translation at mobydraw.s:125-130,189 - and S is the per-moby size
  * rescale the cull folds in before it stores that translation
  * (mobydraw.s:450,485,537,546-550,572). Replayed as stored, the record is
  * fixed in screen space for the whole tick: every other feeder re-reads the
@@ -9910,10 +9910,10 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         /* Occlusion cull: skip the whole record (decode + project + walk +
          * draws) when the moby is provably hidden behind nearer WORLD depth.
          * Display-only skip; the record itself (canonical gameplay state) is
-         * untouched. Culled REG mobys still join the SPEC dedup set below —
+         * untouched. Culled REG mobys still join the SPEC dedup set below -
          * their specular twin is equally hidden. */
         /* OPENPETE_MOBY_INTERP_MISS: name the record mobys with NO interp-objs
-         * snapshot (they present at 30 Hz — the capture walk never saw them).
+         * snapshot (they present at 30 Hz - the capture walk never saw them).
          * Rate-limited; prints the moby addr + class + position. */
         {
             static int s_imiss = -1;
@@ -9945,7 +9945,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             }
         }
         /* Tier-2 hold: a speck-sized moby captured earlier THIS epoch replays
-         * its built tris translated by the origin-projection delta — skipping
+         * its built tris translated by the origin-projection delta - skipping
          * the record rebuild AND decode+project+walk. TR comes from the slim
          * TR-only slice (no euler compose). See the hold block above
          * occl_cache_update. */
@@ -9985,12 +9985,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
           uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           bok = build_moby_record_fields(cpu, mobys[i], &f);
           if (t0) s_us_fields += (long)(openpete_phase_now_us() - t0);
-          if (!bok) continue; }   /* shaded → handled separately */
+          if (!bok) continue; }   /* shaded -> handled separately */
         moby_fields_pose_from_snapshot(cpu, mobys[i], &f);
         /* .s far-skip parity: the host-rebuilt w0 has no low byte (the GPF-TR
          * scale), so moby_decode_project's mirror of .L8001F888 can't fire on
          * sub-ticks. Re-apply the canonical verdict from the LIVE record's w0 +
-         * TR.z (frozen per tick — no sub-tick boundary flicker), else a GPF-far
+         * TR.z (frozen per tick - no sub-tick boundary flicker), else a GPF-far
          * moby the game popped out draws on intermediates only. */
         {
             moby_record_t LR; int lrok = moby_game.read_record(cpu, recs[i], &LR);
@@ -10006,11 +10006,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                  * m_ScaleOverride (moby+0x57, folded into w0 @8001F4A8/F4C4),
                  * animated per tick by effect classes (Gnasty-blast dome).
                  * Frozen per tick the on-screen scale steps at 30Hz under
-                 * --render-fps; lerp prev→curr from the interp snapshots on
+                 * --render-fps; lerp prev->curr from the interp snapshots on
                  * the SAME clock as the pose crossfade (moby_prev_keyframe's
                  * t), so scale stays in phase with the poses. Snap when the
                  * prev byte is 0 or missing: byte==0 takes the .s's non-GPF
-                 * (true-distance) branch — a semantic discontinuity, and the
+                 * (true-distance) branch - a semantic discontinuity, and the
                  * spine never lerps across a discontinuity. */
                 if (s_rot_now) {
                     const openpete_interp_obj_t* og =
@@ -10022,7 +10022,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                             double t = moby_pair_alpha(og);
                             gpf_frac = (double)gprev + ((double)gnow - (double)gprev) * t;
                         }
-                        /* OPENPETE_MOBY_GPF_DBG=1: one line per GPF re-extract —
+                        /* OPENPETE_MOBY_GPF_DBG=1: one line per GPF re-extract -
                          * the ramp must be monotone across presents within a tick */
                         { static int s_gd = -1;
                           if (s_gd < 0) { const char* e = getenv("OPENPETE_MOBY_GPF_DBG"); s_gd = (e && *e && *e != '0'); }
@@ -10037,7 +10037,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         }
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
-        /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend — the
+        /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend - the
          * spine no longer writes m_FrameProgress); add the prev REAL pose and lerp
          * the two in model space. Crossfades within a clip AND across a clip switch
          * when the two animations share vertex topology; snaps to curr (no prev
@@ -10072,7 +10072,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         mrot & 0xFFFFFFu);
             }
         }
-        /* LOD tier from the last canonical pass (sub-tick reuse — the tier is a
+        /* LOD tier from the last canonical pass (sub-tick reuse - the tier is a
          * per-tick verdict, held across intermediates). Miss default 1024 = the
          * near/HP tier, today's behaviour for a moby with no canonical record.
          * Read BEFORE the decode: the tier-adjusted vertex-count read
@@ -10086,7 +10086,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) continue;
-        /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid —
+        /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid -
          * the render-side truth, one step before raster (jitter forensics). */
         {
             static long s_sccls = -2;
@@ -10147,7 +10147,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_reg_moby_n = 0;
         for (int r = 0; r < s_nrecs && s_reg_moby_n < MAX_RECORDS; r++)
             s_reg_moby[s_reg_moby_n++] = s_recs[r].moby;
-        /* Culled REG mobys count as "handled" too — without this, a moby in
+        /* Culled REG mobys count as "handled" too - without this, a moby in
          * BOTH queues would slip past the dedup and draw via SPEC anyway. */
         for (int c = 0; c < culled_n && s_reg_moby_n < MAX_RECORDS; c++)
             s_reg_moby[s_reg_moby_n++] = culled_moby[c];
@@ -10156,11 +10156,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             s_reg_moby[s_reg_moby_n++] = replay_moby[c];
         /* Widescreen reveal on SUB-TICKS too: the render set above is the .s
          * cull-record queue, which never contains the off-4:3 mobys the 4:3
-         * cone cull skipped — the canonical feed host-builds those via
+         * cone cull skipped - the canonical feed host-builds those via
          * append_revealed_regular, so without this they existed ONLY on
          * canonical presents and flickered at high FPS in wide aspects.
          * Same builder, re-projected through the
-         * interpolated g_Camera; dedups vs s_recs (the queue set — an
+         * interpolated g_Camera; dedups vs s_recs (the queue set - an
          * occl-culled off-4:3 queue moby may re-enter here, which is merely
          * redundant draw work, never a wrong pixel). Inert at 4:3. */
         append_revealed_regular(cpu);
@@ -10221,7 +10221,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * them the replayed tris kept whatever stale values these arrays
          * held at their indices, so a held moby lost its mod material on
          * every intermediate present (distant decor flickering stock-bright
-         * at high FPS). The material SLOT is no longer among them — it is
+         * at high FPS). The material SLOT is no longer among them - it is
          * resolved from (moby, class) at stamp time in push_scene_moby,
          * after the per-cycle intern table has been reset, which is the
          * only point where a slot id is meaningful. */
@@ -10288,15 +10288,15 @@ static void moby_reextract_body(CPUState* cpu) {
     }
 
     /* Per-producer freshness (canonical-render epoch): RP_MOBY is shared by
-     * THREE canonical producers — REGULAR (func_8001F798), SPECULAR
-     * (func_80020F34) and SHADED/HUD/text (func_80022A2C) — and a pause menu or
+     * THREE canonical producers - REGULAR (func_8001F798), SPECULAR
+     * (func_80020F34) and SHADED/HUD/text (func_80022A2C) - and a pause menu or
      * portal-load screen runs ONLY the SHADED/text one. Each re-extract pass
      * replays its capture only if ITS producer ran during the last canonical
      * present; otherwise the pass is skipped (the canonical present didn't draw
      * that content, so neither may the sub-ticks). Without this, the load
      * screen's text kept RP_MOBY canon-drawn and the stale REG/SPEC queues from
      * the last gameplay tick painted the previous level's mobys over the frozen
-     * backdrop — the "moby soup" during level transitions (--render-fps only). */
+     * backdrop - the "moby soup" during level transitions (--render-fps only). */
     int reg_fresh  = spyro_native_canon_mobyreg_fresh();
     int spec_fresh = s_canon_spec_valid && spyro_native_canon_epoch_fresh(s_canon_spec_epoch);
     int shd_fresh  = spyro_native_canon_shaded_fresh();
@@ -10350,7 +10350,7 @@ static void moby_reextract_body(CPUState* cpu) {
     }
     spyro_native_prod_camera_leave();
 
-    /* Shaded mobys (gems/props/HUD icons/text) — already re-derive from g_Camera. */
+    /* Shaded mobys (gems/props/HUD icons/text) - already re-derive from g_Camera. */
     if (shd_fresh) {
         s_cur_mat = "SHD";
         spyro_native_prod_camera_enter(SPYRO_PROD_SHADED);

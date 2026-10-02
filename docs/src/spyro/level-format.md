@@ -156,7 +156,7 @@ addresses into `g_ram`. Any host-side scheme that relocates or double-buffers
 level data must re-run the equivalent fix-up or keep the blob at its original
 address.
 
-## 4. `LoadLevelData` — the environment payload
+## 4. `LoadLevelData` - the environment payload
 
 Parsed in order. Each numbered item is one component unless noted. State lands
 in `g_Environment` (`environment.h`), `g_NewCyclorama`, `g_Portals[]`, `g_Spu`.
@@ -202,7 +202,7 @@ in `g_Environment` (`environment.h`), `g_NewCyclorama`, `g_Portals[]`, `g_Spu`.
 `LoadLevelData` returns the first free byte after the sound table; stage 9 makes
 that `g_Buffers.m_ModelData`.
 
-## 5. `LoadLevelScene` — objects, sprites, and animations
+## 5. `LoadLevelScene` - objects, sprites, and animations
 
 Parsed from `g_Buffers.m_LevelScene`. Begins with a fixed header, then seven
 animation components, then object placement.
@@ -230,12 +230,12 @@ transitions adjust it afterwards.
 
 Seven components, each `u32 count` + patched pointer array, in this order:
 
-1. Texture animations — textures that borrow another texture's UVs (supercharge
+1. Texture animations - textures that borrow another texture's UVs (supercharge
    ramps).
-2. Scrolling textures — UVs that scroll per tick (waterfalls).
+2. Scrolling textures - UVs that scroll per tick (waterfalls).
 3. High-poly geometry animations (moving platforms).
 4. Low-poly geometry animations.
-5. Collision animations — mirror the geometry anims on the collision mesh.
+5. Collision animations - mirror the geometry anims on the collision mesh.
 6. High-colour animations.
 7. Low-colour animations.
 
@@ -246,7 +246,7 @@ which nothing reads or writes: dead slots.
 
 `LoadLevelScene(pAnimationsAndSparx)` calls `func_8002B4AC` to initialise the
 animations when the flag is set. When it is clear (a cutscene reload) it zeroes
-five of the seven counts — texture, scrolling, collision, high-colour, and
+five of the seven counts - texture, scrolling, collision, high-colour, and
 low-colour. The two geometry-animation counts are left standing.
 
 ### Object placement (the mobys)
@@ -285,7 +285,7 @@ against `r_environment.s` and decoded by
 |---|---|
 | +0x00 | `u16 centreY` (low) ‖ `u16 centreX` (high) |
 | +0x04 | `u16 (flags & 0xE000 \| radius & 0x1FFF)` (low) ‖ `u16 centreZ` (high) |
-| +0x08 | `u16 originY` (low) ‖ `u16 originX` (high) — sector origin, world/16 |
+| +0x08 | `u16 originY` (low) ‖ `u16 originX` (high) - sector origin, world/16 |
 | +0x0C | `u16 flistId` (low) ‖ `u16 originZ` (high) |
 | +0x10 | LP count word `{b0 numLpVertices, b1 numLpColours, b2 numLpFaces, b3 unused}` |
 | +0x14 | HP word `{b0 numHpVertices, b1 numHpColours, b2 numHpFaces, b3 hpVertsOffset}` |
@@ -374,7 +374,7 @@ triangle emission.
 
 ## 7. Textures
 
-### `Tiledef` (`common.h`) — a UV pair + CLUT/TPage
+### `Tiledef` (`common.h`) - a UV pair + CLUT/TPage
 
 ```c
 typedef struct {
@@ -385,7 +385,7 @@ typedef struct {
 
 8 bytes. `decode_tiledef` (`terrain.c`) unpacks it as
 `tpx = (tpage & 0xF) * 64`, `tpy = ((tpage >> 4) & 1) * 256`,
-`bpp` from `(tpage >> 7) & 3` (0→4, 1→8, else 16),
+`bpp` from `(tpage >> 7) & 3` (0->4, 1->8, else 16),
 `clx = (clut & 0x3F) * 16`, `cly = (clut >> 6) & 0x1FF`, ABR = `(tpage >> 5) & 3`.
 The four spatial corners of a 32×32 tile are `(u0,v0)`, `(u1,v1)`,
 `(u0, v0+0x1F)`, `(u0+0x1F, v0+0x1F)` in TL/TR/BL/BR order.
@@ -406,7 +406,7 @@ parallel-indexed, and the same texture byte names a different texture in each.
 - `m_HQTexturePointer`: a **168-byte record per cell**, indexed
   `(word2 & 0x7F) * 168`, holding 21 8-byte `Tiledef`s. `func_800276A0` (a
   fall-through pass after the main environment renderer) splits a near cell 2×2
-  and textures the four sub-quads from entries `(i+1)*8` of that record —
+  and textures the four sub-quads from entries `(i+1)*8` of that record -
   offsets 8/16/24/32, since entry 0 is the detail-path base.
 
 Cells with higher curvature use a finer-than-2×2 split driven by a per-vertex
@@ -444,7 +444,7 @@ and the bodies live in that file as `glabel`s: `func_8004BE4C` (sphere),
 `func_8004AE38` (segment between two points), `func_8004D5EC` (floor below),
 `func_8004E3C8` (moby collision at a position), `func_8004DF24` (camera
 occlusion group). The byte layout is fully determined by how `func_8004BE4C`
-walks `m_BlockTree` → `m_Blocks` → `m_Triangles`; it has not been hoisted into a
+walks `m_BlockTree` -> `m_Blocks` -> `m_Triangles`; it has not been hoisted into a
 named struct because the reader code is not decompiled. SpyroEdit's
 signature-scanned `spyroCollision` is only partially typed for Spyro 1, so the
 recovery path is the asm.

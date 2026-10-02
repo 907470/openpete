@@ -1,4 +1,4 @@
-/* lib-and-client — the client half of the deps rung: declares a hard
+/* lib-and-client - the client half of the deps rung: declares a hard
  * dependency on demo-lib, so the topo-sort runs demo-lib's entry before
  * this one even when this mod is listed FIRST in enabled.txt. Enabling
  * it WITHOUT demo-lib exercises the missing-dep error UX. */

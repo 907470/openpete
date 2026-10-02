@@ -1,4 +1,4 @@
-/* core/diag/perf_stats.c — see openpete_perf_stats.h for what this is for. */
+/* core/diag/perf_stats.c - see openpete_perf_stats.h for what this is for. */
 
 #include "openpete_perf_stats.h"
 
@@ -81,13 +81,13 @@ static void build_lines(int level, const openpete_pace_census_t *c,
     snprintf(s_lines[s_line_n++], OPENPETE_PERF_LINE_MAX,
              "VBL: %.1f  SLIP: %llu", vbl_hz, (unsigned long long)slips);
 
-    /* `clean` is the paced, non-transient population — the only VBLs whose
+    /* `clean` is the paced, non-transient population - the only VBLs whose
      * phase error means anything. An unpaced stretch (a level load, Tab
      * unlock, headless fast-forward) empties it, and the line says so rather
      * than reporting a perfect 0 late out of nothing. */
-    /* Interpolation share rides on this line: it is over presents MADE — how
+    /* Interpolation share rides on this line: it is over presents MADE - how
      * much of what reached the display was sub-tick motion rather than
-     * canonical frames — and it goes to zero exactly when the spine stops
+     * canonical frames - and it goes to zero exactly when the spine stops
      * working, which is the failure the phase numbers above cannot show. */
     char isha[16];
     put_pct(isha, sizeof isha, "INTERP", share_pct(inter, canon + inter));
@@ -102,14 +102,14 @@ static void build_lines(int level, const openpete_pace_census_t *c,
     /* Display cadence, in place of the shed share this line used to carry.
      *
      * A shed percentage is the fraction of present slots that happened to land
-     * near a tick deadline, so it RISES as the present rate FALLS — measured
+     * near a tick deadline, so it RISES as the present rate FALLS - measured
      * 10.8 % at --render-fps 480 and 16.3 % at 240 for identical underlying
      * behaviour. It reads like a health number while being an artifact of the
      * grid, and a shed that left no hole in the display cost the viewer
      * nothing. What a viewer perceives is the hole.
      *
      * GAP counts holes longer than two present slots that end at an
-     * intermediate present — the schedule's own doing, and the part that can
+     * intermediate present - the schedule's own doing, and the part that can
      * be driven to zero. HOLD is how long one image stays on screen while the
      * tick executes; it is a floor set by the guest's own cost on the
      * presenting thread, so it is shown as a duration to be read, not as a

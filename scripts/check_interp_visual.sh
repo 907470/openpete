@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_interp_visual.sh — automated visual harness for transform
+# check_interp_visual.sh - automated visual harness for transform
 # interpolation.
 #
 # Captures K consecutive presents starting at sim frame N under three
@@ -12,13 +12,13 @@
 #
 #   2. INTERP-FIRING: at fps=60, INTERMEDIATE presents
 #      should differ from canonical presents (interp delta reaches the
-#      GL submit). Adjacent-present diff < canonical→canonical diff at
+#      GL submit). Adjacent-present diff < canonical->canonical diff at
 #      fps=0 (single sim frame vs two-sim-frame gap).
 #
 #   3. 480-DEGENERATION: if fps=480
 #      adjacent-diffs are pixel-identical to fps=60 adjacent-diffs, the
 #      8× sim rate is being clamped somewhere (vsync, pacer, or swap
-#      latency) — not interp itself, but the symptom users report as
+#      latency) - not interp itself, but the symptom users report as
 #      "looks like 30fps."
 #
 # Deterministic attract-mode demo (no --bk2), windowed via WSLg or any
@@ -34,7 +34,7 @@ set -euo pipefail
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set here rather than at
 # each invocation because this script builds its argument list in more than one
 # place, and a flag appended to the wrong one is a silent miss.
@@ -51,7 +51,7 @@ FRAME_LIMIT=$((START + COUNT + 100))
 
 # Extra binary flags (e.g. "--aspect 16:9 --no-lod") so the canonical
 # byte-identity gate can run under the exact presentation config a user
-# plays with — the widescreen OFX paths are active only at non-4:3.
+# plays with - the widescreen OFX paths are active only at non-4:3.
 EXTRA_FLAGS=${OPENPETE_INTERP_VISUAL_EXTRA:-}
 
 mkdir -p "$OUT"
@@ -64,7 +64,7 @@ rm -f "$OUT"/fps*.png
 # writes CRLF, stripped before the grep.
 BIN=${OPENPETE_INTERP_VISUAL_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}
 if [[ ! -x "$BIN" ]]; then
-    echo "openpete binary missing at $BIN — run cmake --build --preset linux-release" >&2
+    echo "openpete binary missing at $BIN - run cmake --build --preset linux-release" >&2
     exit 1
 fi
 . scripts/lib/wslenv.sh
@@ -97,7 +97,7 @@ def diff(a, b):
     return n, len(A)
 
 print()
-print("=== 1. Canonical regression — fps0 vs fps60/480 at same sim frame ===")
+print("=== 1. Canonical regression - fps0 vs fps60/480 at same sim frame ===")
 print("    EXPECTED: 0 pixels differ. Any drift = interp is NOT read-only.")
 fps0 = { int(re.search(r'f(\d+)', f).group(1)): f
          for f in glob.glob(f'{out}/fps0_p*.png') }
@@ -113,22 +113,22 @@ for fps in ['60', '480']:
         if fi not in fps0: continue
         d, _ = diff(fps0[fi], f)
         status = 'PASS' if d == 0 else 'FAIL'
-        print(f"  sim f={fi:>4}: fps0 vs fps{fps} canonical → {d:>6} pixels differ  [{status}]")
+        print(f"  sim f={fi:>4}: fps0 vs fps{fps} canonical -> {d:>6} pixels differ  [{status}]")
         if d != 0: ok = False
 print(f"  Result: {'PASS' if ok else 'FAIL'}")
 
 print()
-print("=== 2. Interp firing — fps60 adjacent-present diff ===")
-print("    EXPECTED: intermediate→canonical and canonical→intermediate")
-print("    differ ~< canonical→canonical at fps0 (single-sim-frame gap).")
+print("=== 2. Interp firing - fps60 adjacent-present diff ===")
+print("    EXPECTED: intermediate->canonical and canonical->intermediate")
+print("    differ ~< canonical->canonical at fps0 (single-sim-frame gap).")
 files60 = sorted(glob.glob(f'{out}/fps60_p*.png'))
 for i in range(len(files60)-1):
     d, t = diff(files60[i], files60[i+1])
-    print(f"  {os.path.basename(files60[i])} → {os.path.basename(files60[i+1])}: "
+    print(f"  {os.path.basename(files60[i])} -> {os.path.basename(files60[i+1])}: "
           f"{100*d/t:5.2f}% differ")
 
 print()
-print("=== 3. 480 degeneration — fps480 vs fps60 byte-identity ===")
+print("=== 3. 480 degeneration - fps480 vs fps60 byte-identity ===")
 print("    BUG SIGNAL: if fps480 frames are byte-identical to fps60")
 print("    frames at the same present index, the 8× sim rate is clamped")
 print("    (vsync/pacer/swap-blocking), not interp itself.")
@@ -147,10 +147,10 @@ for i, f480 in enumerate(files480):
 ratio = 100 * identical_count / max(1, len(files480))
 print(f"  fps480 byte-identical to fps60: {identical_count}/{len(files480)} ({ratio:.0f}%)")
 if ratio >= 80:
-    print("  VERDICT: BUG REPRODUCED — present cadence at --render-fps 480")
+    print("  VERDICT: BUG REPRODUCED - present cadence at --render-fps 480")
     print("           is wall-clock-clamped to the --render-fps 60 rate.")
 elif ratio >= 30:
-    print("  VERDICT: partial clamp — investigate the pacer/vsync interaction.")
+    print("  VERDICT: partial clamp - investigate the pacer/vsync interaction.")
 else:
-    print("  VERDICT: distinct cadence — 480 mode produces unique frames.")
+    print("  VERDICT: distinct cadence - 480 mode produces unique frames.")
 PYEOF

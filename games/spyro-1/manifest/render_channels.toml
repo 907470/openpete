@@ -1,4 +1,4 @@
-# render_channels.toml — registry of every render→gameplay coupling
+# render_channels.toml - registry of every render->gameplay coupling
 # channel openpete knows about. The audit tool
 # (tools/check_channel_registry.py) cross-references this file
 # against the address-keyed substitution table in
@@ -10,17 +10,17 @@
 #     code_generator.cpp MUST appear in at least one channel here.
 #
 # Together those rules turn "we close channels as we find them" into
-# "we know what we don't know" — orphan substitutions and missing
+# "we know what we don't know" - orphan substitutions and missing
 # substitutions both fail the audit.
 #
 # Statuses:
-#   open           — channel identified (RAM-diff / bisect), no
+#   open           - channel identified (RAM-diff / bisect), no
 #                    substitution yet. Aspect harness expected red.
-#   gated          — substitution(s) in place that restore the
+#   gated          - substitution(s) in place that restore the
 #                    canonical PSX verdict. Harness green here.
-#   verified       — gated AND confirmed against the PSX hardware
+#   verified       - gated AND confirmed against the PSX hardware
 #                    oracle. Strongest possible status.
-#   audited_clean  — investigation completed; the candidate region
+#   audited_clean  - investigation completed; the candidate region
 #                    is presentation scratch (no gameplay code reads
 #                    it) so no substitution is needed. The owning
 #                    region was removed from
@@ -38,8 +38,8 @@
 # `state_regions` lists the gameplay-state-region names (matching the
 # `name` field in games/spyro-1/manifest/gameplay_state_regions.toml) that this
 # channel affects. The harness uses this mapping to classify a
-# divergent region back to its owning channel — i.e. "the moby pool
-# diverged → m_WasDrawn channel → status gated → REGRESSION".
+# divergent region back to its owning channel - i.e. "the moby pool
+# diverged -> m_WasDrawn channel -> status gated -> REGRESSION".
 
 [[channel]]
 name        = "m_WasDrawn"
@@ -53,23 +53,23 @@ m_WasDrawn=1 stores on it.
 
 Note: this channel intentionally owns NO state_regions. Its closure
 is verified at substitution-site granularity (the only byte it
-controls is Moby+0x51), not by hashing a whole moby pool — pools
+controls is Moby+0x51), not by hashing a whole moby pool - pools
 contain hundreds of other gameplay-controlled bytes that any
 unrelated render-channel leak can perturb. See
 `moby_pool_state` (open) for the catch-all that owns the pool
 regions."""
 substitution_sites = [
-    # iter-start clear (force-pass billboards) — GENERATED (void replace_call):
+    # iter-start clear (force-pass billboards) - GENERATED (void replace_call):
     # `mwasdrawn_clear_store(cpu, ea, val)` sets the native flags to 1 then stores.
     { addr = 0x8001F1FC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_clear_store" },  # regular
     { addr = 0x800209A8, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_clear_store" },  # specular
     { addr = 0x80022B28, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_clear_store" },  # shaded
-    # m_WasDrawn=1 cull-pass writes — GENERATED (void replace_call):
+    # m_WasDrawn=1 cull-pass writes - GENERATED (void replace_call):
     # `mwasdrawn_store(cpu, ea, val)` writes iff (native_cone_pass && native_dist_pass).
     { addr = 0x8001F4CC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_store" },  # regular
     { addr = 0x80020C7C, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_store" },  # specular
     { addr = 0x80022D98, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_store" },  # shaded
-    # cone-test verdict-compute sites — GENERATED (replace_call): the hook
+    # cone-test verdict-compute sites - GENERATED (replace_call): the hook
     # records native_cone_pass and returns the widened cull comparand. The
     # cone slope math lives in core/renderer/widescreen.c.
     { addr = 0x8001F30C, dest = "rd", operand = "rs,rt,v1,a3", kind = "replace_call", hook = "psx_runtime_cone_widen_permoby" },  # regular
@@ -91,7 +91,7 @@ across the cyclorama / moby / particle / environment renderers,
 substituted with psx_runtime_clip_x_threshold so PsyCross-mode Hor+
 could widen the clip. The native renderer widens at the display/clip
 layer from canonical producers, so no mode widens the game-side cull
-any more — the 20 const_load sites reverted to the hardcoded 512 and
+any more - the 20 const_load sites reverted to the hardcoded 512 and
 the knob was deleted. Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
@@ -113,10 +113,10 @@ state_regions    = []
 name        = "widescreen_ui_moby_tag"
 status      = "audited_clean"
 description = """
-RETIRED (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder - the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-game_interp_moby_key, never by these). Was: per-moby append_call tags at the shaded loop (0x80022B08 moby_loop_tag: obj_id + ui_moby set_current) + cyclorama/Spyro obj_loop_tag sites feeding the cache obj_tag and the (deleted) eff_OFX UI classifier. The ui_moby ADDRESS-RANGE classifier survives (is_addr_ui/is_addr_static — native moby_native consumers). Sites revert to
+game_interp_moby_key, never by these). Was: per-moby append_call tags at the shaded loop (0x80022B08 moby_loop_tag: obj_id + ui_moby set_current) + cyclorama/Spyro obj_loop_tag sites feeding the cache obj_tag and the (deleted) eff_OFX UI classifier. The ui_moby ADDRESS-RANGE classifier survives (is_addr_ui/is_addr_static - native moby_native consumers). Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -126,7 +126,7 @@ state_regions    = []
 name        = "transform_interp_moby_queue"
 status      = "audited_clean"
 description = """
-RETIRED (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder - the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: render-queue iter-top append_calls (0x8001F800/0x80020F9C moby_render_entry_tag) stamping the per-moby obj_tag from the 56-byte queue entry. Sites revert to
@@ -139,7 +139,7 @@ state_regions    = []
 name        = "untagged_renderer_clear"
 status      = "audited_clean"
 description = """
-RETIRED (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder - the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: 6 renderer-entry append_calls clearing the obj_id/world_geo stamps so untagged renderers did not inherit a stale tag. Sites revert to
@@ -157,13 +157,13 @@ the env/terrain renderer) per-vertex transform loads the camera-free
 packed world vertex then CPU-subtracts the camera position before the
 MVMVA. The recompiler substitution at `0x80025A34: lw $a0, 4($s1)`
 appends `openpete_envvert_probe(cpu, v0,a0,s1,s7,t8,t9)` AFTER the
-load — passing the camera-free world vert, vert ptr, and scaled
+load - passing the camera-free world vert, vert ptr, and scaled
 camera position; the probe additionally read-only-reads
 g_Camera.m_ViewMatrix.
 
 READ-ONLY: the probe only fwrites a binary log (gated by env
 OPENPETE_ENVVERT_LOG; no-op when unset) and never writes PSX RAM,
-cpu state, or any gameplay-readable byte — exactly the diag_cone /
+cpu state, or any gameplay-readable byte - exactly the diag_cone /
 ui_moby precedent. Mechanism: the appended call does not alter the
 translated `lw` (the original load is emitted verbatim before it).
 Verified: aspect_determinism bit-identical across 3000 frames with
@@ -183,7 +183,7 @@ state_regions    = []  # read-only diagnostic; no state written
 name        = "world_geo_strip_tag"
 status      = "audited_clean"
 description = """
-RETIRED (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder - the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: terrain strip-head append_calls (dominant xor 0x80026238 + 7 lw loop heads + the cyclorama piece heads) stamping the per-strip WORLD batch identity. Sites revert to
@@ -196,7 +196,7 @@ state_regions    = []
 name        = "world_geo_vertex_src"
 status      = "audited_clean"
 description = """
-RETIRED (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder - the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: the per-vertex source-address FIFO (20 push_vsrc/mark_refine sites across the stream/subdiv/LOD walk variants) giving each terrain vertex a camera-free cross-frame key. Sites revert to
@@ -209,7 +209,7 @@ state_regions    = []
 name        = "moby_shadow_subtag"
 status      = "audited_clean"
 description = """
-RETIRED (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder - the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: the shadow-renderer sub-tag append_call disambiguating shadow prims from their owner moby in the cache identity space. Sites revert to
@@ -242,7 +242,7 @@ Was: r_environment.s per-vertex lateral bound (|MAC1| < 256) widened
 render-pass-only (offset_add knob + env_cell_x_bound_neg companion
 hook) so PsyCross-mode Hor+ admitted off-4:3 env vertices. The native
 terrain feeder derives coverage from the aspect-independent PVS
-sublist, so no mode needs the widened bound — sites reverted to the
+sublist, so no mode needs the widened bound - sites reverted to the
 hardcoded +0x100/-0x200 and the knob + hook were deleted. Entry kept
 for the audit trail."""
 substitution_sites = []
@@ -252,7 +252,7 @@ state_regions    = []
 name        = "widescreen_polybuf_size"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -266,7 +266,7 @@ state_regions    = []
 name        = "widescreen_polybuf_lower"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -288,13 +288,13 @@ the byte at PC 0x80058818 (`sb $zero, 0xC($t8)`).
 
 The cull at 0x80058648 (left edge) and 0x80058658 (right edge) tests
 projected SX after RTPS at 0x80058604. The right-edge threshold is
-hardcoded `lui $t0, 0x0200` (= 512 << 16, NOT widened by openpete) —
+hardcoded `lui $t0, 0x0200` (= 512 << 16, NOT widened by openpete) -
 but the SX itself IS widened (eff_OFX = OFX*factor inside gte.cpp).
 That mismatch means in 16:9, sparkles at canonical SX in
 (-delta_OFX, 0) project to widened SX in (0, delta_OFX), pass widened
-left-clip (blez fails on positive widened SX), survive the kill —
+left-clip (blez fails on positive widened SX), survive the kill -
 even though canonical 4:3 would have killed them. Slot stays
-occupied → next SpawnSparkleAt picks a different slot → cascades
+occupied -> next SpawnSparkleAt picks a different slot -> cascades
 into rotation matrix updates (moby_helpers.c:886's
 UPDATE_PROP_ROTMATRIX call is gated on alloc success), eventually
 diverging Moby pool state.
@@ -303,7 +303,7 @@ Closure: substitute the SX-extract sll at 0x80058648 to load $a1 from
 the canonical_sx_q16 side channel (gte.cpp's openpete_canonical_sx2_q16,
 truncated to int via `>> 16` then re-shifted). The asm's subsequent
 `blez $a1` (left) and `sub $a1, $a1, $t0` + `bgez $a1` (right) then
-test canonical SX instead of widened — kill verdict matches canonical
+test canonical SX instead of widened - kill verdict matches canonical
 4:3 exactly. Sparkles outside canonical bounds get killed the same
 frame canonical does, so allocator bookkeeping stays bit-identical.
 Trade-off: sparkles in widened periphery render for one frame then
@@ -311,7 +311,7 @@ die (matches base game behavior at 4:3).
 
 Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 8000
 frames (hash + position log)."""
-# GENERATED (replace_call): rd = psx_runtime_sparkle_canon_sx() — substitute
+# GENERATED (replace_call): rd = psx_runtime_sparkle_canon_sx() - substitute
 # $a1 with the canonical SX (q16) so the blez/sub-bgez kill verdict matches
 # canonical 4:3, keeping g_Sparkles alloc bookkeeping bit-identical. No-arg.
 substitution_sites = [
@@ -327,11 +327,11 @@ name        = "particle_drawn_flag"
 status      = "gated"
 description = """
 Particle m_03 byte (offset 0x3 of each Particle, =1 iff drawn last
-frame, =0 otherwise) — particle equivalent of m_WasDrawn. Written by
+frame, =0 otherwise) - particle equivalent of m_WasDrawn. Written by
 r_particles.s via the handwritten `sb $s2, -0x1D($ra)` idiom (where
 $ra is pre-incremented to next particle). Read by class-specific
 particle update handlers in level overlays to gate expensive AI work,
-including conditional rand() calls — an unclosed leak drifts the
+including conditional rand() calls - an unclosed leak drifts the
 psyq_rand seed and cascades into moby state.
 
 Closure: canonical-SX side channel populated by gte.cpp's RTPS
@@ -345,11 +345,11 @@ ORs the same test across the FIFO. m_03 stores at 0x80057720 /
 gated on the resulting psx_runtime_native_part_pass flag.
 
 FIFO slot per PC:
-  - 0x80057A04 (class 4): sx1 — 2 RTPSes precede; mfc2 between them
-  - 0x80057B14 (class 3): sx2 — 1 RTPS
-  - 0x80057CB4 (class 2): sx2 — 1 RTPS
-  - 0x80057F28 (class 1): sx1 — 2 RTPSes; mfc2 between them
-  - 0x8005801C (class 0): sx2 — 1 RTPS
+  - 0x80057A04 (class 4): sx1 - 2 RTPSes precede; mfc2 between them
+  - 0x80057B14 (class 3): sx2 - 1 RTPS
+  - 0x80057CB4 (class 2): sx2 - 1 RTPS
+  - 0x80057F28 (class 1): sx1 - 2 RTPSes; mfc2 between them
+  - 0x8005801C (class 0): sx2 - 1 RTPS
   - 0x800576EC (4-vertex strip): OR over sx0|sx1|sx2
 
 Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 8000+
@@ -362,18 +362,18 @@ Open regression (post-cone-clamp): 20k-frame soak
 fails at frame 14590, particle[4].m_03 differs (4:3=0, 16:9=1).
 
 Diagnosis: the leak is NOT in the C8C..CB8 cull chain
-itself — it's in the prim-buffer-full early-exit at PC 0x80057C14
+itself - it's in the prim-buffer-full early-exit at PC 0x80057C14
 (`bgez $v0, 0x8005809C` where $v0 = $t7 - $fp = remaining buffer
 bytes). At frame 14589:
-  4:3:  t7=0x801a37b0, fp=0x80194124, t7-fp = +0xf68c → no exit
-  16:9: t7=0x801a37b0, fp=0x801a37b8, t7-fp = -8     → EXIT
+  4:3:  t7=0x801a37b0, fp=0x80194124, t7-fp = +0xf68c -> no exit
+  16:9: t7=0x801a37b0, fp=0x801a37b8, t7-fp = -8     -> EXIT
        (other widened renderers (cone-cull mobys, cyclorama) consumed
         ~63KB more buffer in 16:9 by the time particles render)
 
 When 16:9 hits the C14 early-exit, the function returns WITHOUT
 processing any particle. m_03 stays at the previous frame's value
 (=1 for particle[4]). 4:3 processes normally: clear m_03 at C3C,
-RTPS at C4C, cull at CB8 → particle[4] fails (canonical SX=533 ≥
+RTPS at C4C, cull at CB8 -> particle[4] fails (canonical SX=533 ≥
 512), m_03 stays cleared.
 
 Result: 4:3=0, 16:9=1 (stale).
@@ -383,11 +383,11 @@ NOT the buffer-full early-exit. Closure paths:
 
   A) Substitute the C14 branch with a "shadow cull" that runs
      canonical-SX cull for all remaining particles when 16:9 exits
-     early — set m_03 per canonical verdict for particles past the
+     early - set m_03 per canonical verdict for particles past the
      buffer-full point. Requires recreating projection math for
      skipped particles since they never reach C4C's RTPS.
 
-  B) Decouple the prim-buffer state from aspect — make widening
+  B) Decouple the prim-buffer state from aspect - make widening
      renderers consume the same buffer bytes as 4:3 would. Per the
      project's North Star ("presentation features must not perturb
      gameplay-readable state"), this is the architecturally clean
@@ -398,15 +398,15 @@ NOT the buffer-full early-exit. Closure paths:
      fp). Non-trivial because intermediate prim writes to the slice
      overwrite real data.
 
-The cone-clamp fix that pushed divergence 8363→14590 is consistent: more mobys passing
-cone cull → more triangles → buffer fills faster.
+The cone-clamp fix that pushed divergence 8363->14590 is consistent: more mobys passing
+cone cull -> more triangles -> buffer fills faster.
 
 Substitution PC for closure: 0x80057C10 (the t7-fp compute) or
 0x80057C14 (the bgez branch). Either site has access to t7/fp/ra
 and can decide whether to take the early exit based on canonical
 state instead of actual buffer state."""
 substitution_sites = [
-    # m_03=1 "drawn"-flag stores — GENERATED (void replace_call):
+    # m_03=1 "drawn"-flag stores - GENERATED (void replace_call):
     # `part_drawn_store(cpu, ea, val)` writes iff native_part_pass.
     { addr = 0x80057720, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
     { addr = 0x80057A10, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
@@ -414,7 +414,7 @@ substitution_sites = [
     { addr = 0x80057CDC, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
     { addr = 0x80057F60, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
     { addr = 0x80058028, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
-    # native_part_pass SETTERS — GENERATED (replace_call): record the canonical
+    # native_part_pass SETTERS - GENERATED (replace_call): record the canonical
     # 0<SX<512 verdict from the canonical-SX side channel, return the original
     # sub/sll value. Math in core/renderer/widescreen.c. sx1 = classes that
     # mfc2 between two RTPSes (A04/F28); sx2 = single-RTPS classes.
@@ -439,31 +439,31 @@ Catch-all channel for any byte of the Moby pools (g_LevelMobys_pool,
 g_DynMobys_pool, g_Sparx_moby) that diverges between aspects without
 a known closed-channel attribution. Mobys carry hundreds of bytes of
 gameplay-controlled state (position, rotation, animation, AI
-counters, props pointers); a leak in *any* render→gameplay channel
+counters, props pointers); a leak in *any* render->gameplay channel
 that AI consumes will surface here.
 
 Root cause (the frame-8363 divergence): the cone-extra
 WIDENING substitutions at 0x8001F30C / 0x80020AB8 / 0x80022C0C
 multiplied (MAC3 + Z_offset) by `psx_runtime_moby_cone_extra_q12`
 without clamping. When the moby straddles or sits behind the camera
-plane, (MAC3 + offset) is negative — the multiply produces a NEGATIVE
+plane, (MAC3 + offset) is negative - the multiply produces a NEGATIVE
 widening term, which TIGHTENS the X-cone in 16:9 instead of widening
 it and culls mobys that 4:3 admits. Slot 81 (class 0x0106) at frame
 8362 had MAC1=84, MAC2=-82, MAC3=-95 (bit-identical between aspects);
 MAC3+77=-18, so the widening flipped the verdict from PASS (-18 < 0)
-to REJECT (+6 >= 0) under widening. Native 4:3 = pass → set m_WasDrawn=1;
-widened 16:9 = unintended reject → m_WasDrawn stays 0 from the clear
+to REJECT (+6 >= 0) under widening. Native 4:3 = pass -> set m_WasDrawn=1;
+widened 16:9 = unintended reject -> m_WasDrawn stays 0 from the clear
 at 0x80022B28.
 
 Fix: clamp (MAC3 + offset) to >= 0 before the widening multiply. The
 X-cone is meaningless when Z is behind the camera plane anyway;
 clamping to 0 reduces to the canonical native test in that regime,
 preserving 4:3-equivalent verdicts. Substitution sites updated; no
-new sites added — fix is a math correction inside the existing
+new sites added - fix is a math correction inside the existing
 cone-extra closures."""
 substitution_sites = []
 verdict_fn         = "shared with m_WasDrawn closure (with the cone clamp)"
-verified_against   = ["aspect_determinism gate: divergence pushed 8363 → 14590"]
+verified_against   = ["aspect_determinism gate: divergence pushed 8363 -> 14590"]
 state_regions      = ["g_LevelMobys_pool", "g_DynMobys_pool", "g_Sparx_moby"]
 
 [[channel]]
@@ -477,10 +477,10 @@ Audited with the env-var write-watcher
 (install_watch_from_env in game_extras_impl.c) + PC tracking. All
 writes to this range come from r_moby.s's GTE per-vertex color
 depth-cueing loop (PC 0x8001FE78: `mfc2 $t1, C2_RGB2; sw $t1, 0x0(\
-$a0)`), targeting `g_SonyImage.u.m_Draw.unk_0x900[]` —
+$a0)`), targeting `g_SonyImage.u.m_Draw.unk_0x900[]` -
 DrawStateSonyBuf prim-packet color scratch (sony_image.h:14). No
 gameplay code reads this address range (confirmed by grep over
-spyro-1/src, include, asm — no references). Hor+ widening
+spyro-1/src, include, asm - no references). Hor+ widening
 legitimately walks more vertices and writes different colors here;
 that is presentation scratch divergence, not a gameplay leak.
 
@@ -496,41 +496,41 @@ state_regions      = []
 name        = "moby_render_queue"
 status      = "audited_clean"
 description = """
-Originally suspected (bisect) of being a render→gameplay channel at
+Originally suspected (bisect) of being a render->gameplay channel at
 0x80071000..0x80071FFF. The bisected sub-range 0x80071800..0x80071F00
 maps to g_SonyImage's m_WorldNearQueued[256] (0x800718F4..0x80071CF4),
 m_WorldFarQueued[256] (0x80071CF4..0x800720F4), and the tail of the
-DrawStateSonyBuf union — all three are render-side prim queues.
+DrawStateSonyBuf union - all three are render-side prim queues.
 
 Audited with the env-var write-watcher (PC tracking
 regen) + decomp-grep:
 
   Writers (recompiled MIPS):
     PC 0x8001691C  Memset inner loop (per-frame queue clears)
-    PC 0x80025B74  r_environment.s: sw $a1, 0x0($s0); addi $s0,4 —
+    PC 0x80025B74  r_environment.s: sw $a1, 0x0($s0); addi $s0,4 -
                    world-cell push, gated by per-cell flag bit
                    andi $t1, 0x8000.
-    PC 0x80025BA4  r_environment.s: sw $a1, 0x0($t7); addi $t7,4 —
+    PC 0x80025BA4  r_environment.s: sw $a1, 0x0($t7); addi $t7,4 -
                    world-cell push, gated by flag bits
                    andi $t1, 0x4000 + 0x100-step distance test.
 
   Readers (decomp grep over spyro-1/{src,include,asm}):
     All in the render module: gamestates/draw.c (m_ShadedMobys walk
     + HUD-moby append in func_80018880, func_80019300,
-    func_80019698, …), include/overlays/flight.inc.h (HUD mobys for
+    func_80019698, ...), include/overlays/flight.inc.h (HUD mobys for
     flight gamestate). Zero asm-level readers outside renderers.
 
   Harness verdict: 3000-frame aspect_determinism (4:3 vs 16:9)
     shows position-log byte-identical. Per-region hash diverges as
-    expected (more world cells visible in 16:9 → different queue
+    expected (more world cells visible in 16:9 -> different queue
     contents) but no propagation to gameplay state.
 
-Caveat — balloonist overlay transplant (include/overlays/balloonist.\
+Caveat - balloonist overlay transplant (include/overlays/balloonist.\
 inc.h:581-583): right before LoadLevel(1), the homeworld balloon's
 Moby is Memcpy'd into &g_SonyImage.m_WorldFarQueued[106] (addr
 0x80071E9C..0x80071EF4) and re-aliased as gameplay state via
 D_800777E8.m_BalloonMoby. This is a transient level-transition
-storage trick, not steady-state coupling — once the destination
+storage trick, not steady-state coupling - once the destination
 level renders, slot 106 may be overwritten by world cells, and the
 balloon Moby is dormant until the return-to-home transition reads
 it back. Original PSX behavior is identical regardless of aspect
@@ -539,7 +539,7 @@ level. Not currently exercised by the BK2 corpus; if a balloonist-
 return scenario is added and shows divergence, this channel
 re-opens.
 
-Removed from gameplay_state_regions.toml — the address range is
+Removed from gameplay_state_regions.toml - the address range is
 render scratch + a transient transplant slot, not steady-state
 gameplay state."""
 substitution_sites = []
@@ -551,7 +551,7 @@ state_regions      = []
 name        = "dedup_flag_table"
 status      = "audited_clean"
 description = """
-Originally suspected (bisect 2026-04-xx) of being an open render→
+Originally suspected (bisect 2026-04-xx) of being an open render->
 gameplay channel at D_80077868 (32 bytes, "func_80051FEC's per-class
 dedup flag table").
 
@@ -564,7 +564,7 @@ tests), and consumes them in a second pass before returning. No
 other code in spyro-1/{src,include,asm} references D_80077868.
 
 Empirically: the matrix harness across title / stone-hill-entry /
-inventory shows zero divergence in this region — the input set
+inventory shows zero divergence in this region - the input set
 (m_WasDrawn is gated; positions are canonical) produces aspect-
 identical contents. Confirmed not a leak channel.
 
@@ -578,7 +578,7 @@ state_regions      = []
 name        = "class_skip_flags"
 status      = "audited_clean"
 description = """
-"Rendered world sectors flags" — D_800771C8, 256 bytes. Written by
+"Rendered world sectors flags" - D_800771C8, 256 bytes. Written by
 r_environment.s at PC 0x80025B50 during the env-renderer's per-sector
 cull pass; read by func_800521C0 (moby_lists.s) which clears
 m_WasDrawn=0 on every moby whose owning sector wasn't rendered.
@@ -590,7 +590,7 @@ openpete's own env-renderer widening (m_ViewMatrix row-0 scale in the
 PsyCross-mode Hor+ arm, traced via MVMVA-trace at PC
 0x80025A68); the closure was a C-side canonical-mask AND in that same
 arm. With the widening arm deleted, every mode runs the canonical
-cull and writes the canonical verdict directly — no interception
+cull and writes the canonical verdict directly - no interception
 needed. The full root-cause + closure history (including the
 delay-slot 19E/32 gotcha in the C replica) lives in git history."""
 substitution_sites = []
@@ -600,7 +600,7 @@ state_regions      = ["render_channel:class_skip_flags"]
 name        = "no_lod_env_queue_offsets"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -629,7 +629,7 @@ state_regions    = []
 name        = "no_lod_moby_face_offset"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -643,7 +643,7 @@ state_regions    = []
 name        = "no_lod_moby_zsf4_distance_neutralize"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -657,7 +657,7 @@ state_regions    = []
 name        = "no_lod_env_texture_tier"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -671,7 +671,7 @@ state_regions    = []
 name        = "no_lod_lod_distance_saturate"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -685,7 +685,7 @@ state_regions    = []
 name        = "no_lod_culling_distance_saturate"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -699,7 +699,7 @@ state_regions    = []
 name        = "no_lod_moby_render_distance_saturate"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -724,7 +724,7 @@ HISTORY: built to close the --no-lod m_Distance-saturation leak (the
 saturated .s cull admitted far mobys -> m_WasDrawn=1 -> AI / rand()
 divergence). The producer stack that created the saturated/canonical
 split is deleted, so the gates now simply replay the .s's
-own canonical verdict (mdist_thresh_delta retired) — kept because they
+own canonical verdict (mdist_thresh_delta retired) - kept because they
 are the m_WasDrawn closure architecture shared by the whole channel
 family, and a future producer perturbation would be caught by them.
 """
@@ -768,7 +768,7 @@ state_regions    = []  # substitution-granularity + oracle verified; see note
 name        = "no_lod_moby_reg_queue"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -782,7 +782,7 @@ state_regions    = []
 name        = "polybuf_hudmoby_canonical"
 status      = "audited_clean"
 description = """
-RETIRED (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted - the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -800,14 +800,14 @@ Not a render->gameplay leak: a FORMAT limit lifted at its readers. Each
 animation frame word packs the vertex-stream address into bits 0-20 (a
 byte address for moby frames; halved for Spyro's own), so a stream must
 sit in the first 2 MB of RAM and mod model data could never live in the
-arena past it. Every reader decodes the field with one idiom —
-`sll r,r,11 ; srl r,r,11|10` — at the 21 sites below (8 functions, main
+arena past it. Every reader decodes the field with one idiom -
+`sll r,r,11 ; srl r,r,11|10` - at the 21 sites below (8 functions, main
 EXE only; the 35 level overlays have none). The `srl` of each pair is
 substituted with a resolver call: a field value >= 0x8000 passes through
 bit-identical (stock), a value below it is a HANDLE into an engine table
 of full 32-bit vaddrs (core/psx/vstream.c). Stock words never
 address below 0x10000 (the kernel area), which is what makes the range
-free — the full-20k oracle census (`[vstream] ... unresolved=0`) is the
+free - the full-20k oracle census (`[vstream] ... unresolved=0`) is the
 evidence. The operand is the shift's `rt` field (a shift is R-type with
 rs = 0); the hook undoes the `sll` and resolves. The `sll` stays as
 emitted, dead once its consumer is replaced.

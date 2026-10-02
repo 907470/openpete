@@ -1,9 +1,9 @@
-// games/spyro-1/renderer/shadow_spyro.c — the SPYRO SILHOUETTE SHADOW
+// games/spyro-1/renderer/shadow_spyro.c - the SPYRO SILHOUETTE SHADOW
 // renderer (func_80059A48 / r_shadows.s) re-derived from gamestate in float,
 // plus its A/B harness. It is a separate renderer from the moby drop-shadows
 // (renderer/shadow.c, shared between games): an untextured gouraud G3 fan
 // (GPU code 0x32) projecting Spyro's silhouette onto the floor, drawn with
-// PSX semi-transparent ABR mode 2 (B-F, SUBTRACTIVE — the shadow grey darkens
+// PSX semi-transparent ABR mode 2 (B-F, SUBTRACTIVE - the shadow grey darkens
 // the ground; the bundled draw-mode word 0xE1000640 carries ABR bits 0b10).
 //
 // STATIC ASM FINDINGS:
@@ -33,7 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_80059A48(CPUState* cpu);  /* the real SPYRO-shadow renderer */
 extern unsigned openpete_frame;
@@ -98,7 +98,7 @@ static void shadow_spyro_dump(CPUState* cpu) {
 }
 
 /* ===========================================================================
- *  SPYRO SILHOUETTE SHADOW — native float walk. Re-derived entirely
+ *  SPYRO SILHOUETTE SHADOW - native float walk. Re-derived entirely
  *  from gamestate (no scratchpad coupling): the silhouette ring is the model's
  *  shadow keyframes A/B (g_Models[0] + g_Spyro selectors) linearly interpolated
  *  by g_Spyro+0x24, doubled to 16 ring points (point + midpoint); each point's
@@ -163,7 +163,7 @@ static void shadow_spyro_build(CPUState* cpu) {
 
     /* Hand the depth-aware shadow decal the camera reconstruction params (so the
      * shader can recover each terrain pixel's world-Y from the depth pre-pass and
-     * discard wall pixels by HEIGHT above the shadow's ground plane — keeping the
+     * discard wall pixels by HEIGHT above the shadow's ground plane - keeping the
      * flat fan's look while fixing wall punch-through). Display-only (never
      * written back to PSX RAM); refreshed every extract incl. the sub-tick
      * re-extract, so it tracks the interpolated camera. cam_col0 = camera matrix
@@ -174,11 +174,11 @@ static void shadow_spyro_build(CPUState* cpu) {
         shadow_push_decal_params(cpu, v, C, ofx, ofy, H, &p);
         /* OPENPETE_SHADOW_DECAL_DEBUG: validate the FULL world reconstruction
          * (all three camera columns + swizzle inverse) CPU-side against the
-         * anchor's known world position — the shader runs the same formulas. */
+         * anchor's known world position - the shader runs the same formulas. */
         static int s_decal_dbg = -1;   /* debug knob: read once */
         if (s_decal_dbg < 0) s_decal_dbg = getenv("OPENPETE_SHADOW_DECAL_DEBUG") != NULL;
         if (s_decal_dbg) {
-            /* Validate with the PUSHED inverse — the same math the shader runs. */
+            /* Validate with the PUSHED inverse - the same math the shader runs. */
             shadow_pt a2; shadow_project(C, ZERO, ofx, ofy, v, avx, avy, avz, &a2);
             double vz = a2.sz;
             double M1 = (a2.sx - ofx) * vz / H, M2 = (a2.sy - ofy) * vz / H, M3 = vz;

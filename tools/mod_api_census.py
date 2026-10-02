@@ -129,14 +129,14 @@ def main() -> int:
     w("| Entry | Calls | Caller mods |")
     w("|---|---:|---|")
     for e, total, callers in entry_rows(api_entries, api_calls):
-        w(f"| `{e}` | {total} | {', '.join(f'`{c}`' for c in callers) or '—'} |")
+        w(f"| `{e}` | {total} | {', '.join(f'`{c}`' for c in callers) or '-'} |")
     w("")
     w(f"## UI vtable entries ({len(ui_entries)})")
     w("")
     w("| Widget | Calls | Caller mods |")
     w("|---|---:|---|")
     for e, total, callers in entry_rows(ui_entries, ui_calls):
-        w(f"| `{e}` | {total} | {', '.join(f'`{c}`' for c in callers) or '—'} |")
+        w(f"| `{e}` | {total} | {', '.join(f'`{c}`' for c in callers) or '-'} |")
     w("")
     w("## Mods")
     w("")
@@ -150,7 +150,7 @@ def main() -> int:
     w("|---|---|")
     for key in ["tier", "[test]", "[[level]]", "[[binding]]"]:
         mods = manifest_keys.get(key, [])
-        w(f"| `{key}` | {', '.join(f'`{m}`' for m in mods) or '—'} |")
+        w(f"| `{key}` | {', '.join(f'`{m}`' for m in mods) or '-'} |")
     w("")
     OUT.write_text("\n".join(lines))
     print(f"wrote {OUT.relative_to(ROOT)} "

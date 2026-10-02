@@ -1,9 +1,9 @@
-/* core/include/openpete_native_render.h — native Vulkan renderer A/B harness.
+/* core/include/openpete_native_render.h - native Vulkan renderer A/B harness.
  *
  * The host-side entry points for openpete's native renderer. The native
  * renderer is a pure *display* consumer: it reads gamestate + asset data +
  * the VRAM mirror and draws into its own Vulkan window. It NEVER writes
- * PSX-readable RAM, so it is determinism-safe by construction — the
+ * PSX-readable RAM, so it is determinism-safe by construction - the
  * original `.s` renderers keep running (here, via PsyCross) as the headless
  * gameplay-verdict producers, and the oracle gate is unaffected.
  *
@@ -452,7 +452,7 @@ int  openpete_native_get_terrain_visibility(void);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
- * so x and y share one scale → digits stay square at any aspect); z is a
+ * so x and y share one scale -> digits stay square at any aspect); z is a
  * view-Z (>= 1, the scene vertex unit) for the overlay's own mini depth pass
  * (smaller = nearer). rgba is byte order R,G,B,A. */
 typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
@@ -607,7 +607,7 @@ void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts)
  * The OSD renders into a FIXED SLOT GRID: one supersample target holding
  * OPENPETE_OSD_MAX stacked slots of identical extent, reallocated only when
  * the window resizes. Content-sized targets were the obvious design and are
- * wrong — every SS target rebuild waits the device idle, and toast arrivals,
+ * wrong - every SS target rebuild waits the device idle, and toast arrivals,
  * expiries and coalescing repaints happen many times a second.
  *
  * The builder emits each toast's border and text into its slot, in
@@ -618,7 +618,7 @@ void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts)
  *
  * The table is keyed by TOAST ID, never by index: the ring is mutated on
  * other threads between this push and the present that consumes it. Geometry
- * and table are published TOGETHER, under one lock — an id-keyed table is
+ * and table are published TOGETHER, under one lock - an id-keyed table is
  * worthless if it can itself be read half-copied. */
 typedef struct {
     uint32_t id;         /* the toast this slot holds                     */
@@ -716,14 +716,14 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
  * OPENPETE_DEPTH_VIEWZ_FAR (always the backdrop); screen-space 2D content
  * passes 1.0. */
 /* u,v are texel coords within the texture page (PSX integer texel space, 0..255)
- * — only meaningful when the tri is textured. */
-/* pvz is the TRUE full-world view-Z of this vertex — the perspective W the
+ * - only meaningful when the tri is textured. */
+/* pvz is the TRUE full-world view-Z of this vertex - the perspective W the
  * rasterizer divides UV/colour by. It is separate from `z` because `z` is an
  * ORDERING quantity: feeders shift it (openpete_worldvz_pull/_bias, the OT-slot
  * mirrors) to reproduce the PSX's per-object OT placement, and a shifted depth
- * implies a wrong W. Where the shift is large — the level-transition flight
+ * implies a wrong W. Where the shift is large - the level-transition flight
  * pulls the whole player 2488 world units so its nearest vertex sits on the
- * near plane — W varies 2:1 across a face that truly spans 1.01:1, smearing one
+ * near plane - W varies 2:1 across a face that truly spans 1.01:1, smearing one
  * texel over the snout. State the real view-Z here and `z` stays free to encode
  * ordering. MANDATORY (> 0): an unshifted feeder states the same value as `z`;
  * screen-space 2D content states 1.0. A vertex that reaches
@@ -743,68 +743,68 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
 /* blend: 0 = opaque; 1 = PSX semi-transparent ABR mode 0 ((B+F)/2) -> alpha blend;
  * 2 = ABR mode 1 (B+F) -> additive blend (flame/glows: src ONE + dst ONE);
  * 3 = ABR mode 2 (B-F) -> subtractive blend (shadows: reverse-subtract,
- * src ONE + dst ONE — the shadow colour darkens the framebuffer). All
+ * src ONE + dst ONE - the shadow colour darkens the framebuffer). All
  * transparent classes are depth_write_off (test vs opaque, never occlude
  * another transparent layer). ABR mode 3 (B+F/4) + back-to-front sort are still
  * TODO (no consumer yet).
  *   TEXTURED tris go through the VRAM sampler (tex*col/128) for every class.
- *   UNTEXTURED gouraud tris support classes 0 (opaque), 1 (alpha — uses the
- * vertex rgba ALPHA byte; set 128 for (B+F)/2), 3 (subtract — reverse-
- * subtracts the vertex colour, alpha ignored) and 2 (additive, B+F — the glow
+ *   UNTEXTURED gouraud tris support classes 0 (opaque), 1 (alpha - uses the
+ * vertex rgba ALPHA byte; set 128 for (B+F)/2), 3 (subtract - reverse-
+ * subtracts the vertex colour, alpha ignored) and 2 (additive, B+F - the glow
  * rings: gouraud fan, bright centre fading to black edge, alpha ignored). */
 /* category: which draw layer an OPAQUE (blend==0) tri belongs to. The opaque
  * pass is split WORLD-opaque -> shadows(subtract) -> ACTOR-opaque so a shadow
  * (a ground decal pulled slightly toward the camera to clear terrain bumps)
- * draws OVER the terrain it falls on but UNDER the actors standing on it — the
+ * draws OVER the terrain it falls on but UNDER the actors standing on it - the
  * PSX draw order (terrain, then shadow, then Spyro on top). Ignored for
  * non-opaque tris (blend!=0 routes by blend). Set by add_tri from its explicit
  * `category` argument; feeders that don't care pass OPENPETE_SCENE_WORLD. */
 #define OPENPETE_SCENE_WORLD 0
-/* ACTOR — regular + shaded mobys (the rescued dragon, level mobys, gems, …). Drawn
+/* ACTOR - regular + shaded mobys (the rescued dragon, level mobys, gems, ...). Drawn
  * after shadows, then the HUD/overlay layer goes ON TOP of them. */
 #define OPENPETE_SCENE_ACTOR 1
-/* HUD/overlay mobys — the elements the PSX forces into the moby OT's NEAR slot:
+/* HUD/overlay mobys - the elements the PSX forces into the moby OT's NEAR slot:
  * the treasure/lives HUD icons, the "DEMO MODE" banner, and the level-intro /
  * "RESCUED <dragon>" text. Drawn with the depth test OFF, in the layer BETWEEN the
  * ACTOR group (regular mobys) and the PLAYER group (Spyro), so they sit on top of
  * the world/terrain AND other mobys (not Z-occluded; the near-OT slot draws over
- * other mobys like the rescued dragon) but write no depth — so the player Spyro,
+ * other mobys like the rescued dragon) but write no depth - so the player Spyro,
  * drawn next, still covers them (Spyro flies in front of the intro text). Mirrors
  * the PSX moby OT: near-slot UI over other mobys, the player rendered on top.
  * WITHIN the layer, untextured tris draw back-to-front by centroid z (stable:
- * equal-z 2D content keeps submission order) — the depth-off analogue of the PSX
+ * equal-z 2D content keeps submission order) - the depth-off analogue of the PSX
  * OT bucket order, so the rotating near-OT mobys (the inventory screen's spinning
  * letters/dragon icons) self-occlude correctly instead of painting inside-out.
  * Routed independently of `blend`. Tagged by the feeder from the UI-moby classifier
  * OR the .s billboard OT-bias (see moby_native near_ot). */
 #define OPENPETE_SCENE_HUD   2
-/* PLAYER — the player Spyro's body. An opaque actor like ACTOR, but drawn AFTER the
+/* PLAYER - the player Spyro's body. An opaque actor like ACTOR, but drawn AFTER the
  * HUD/overlay layer so Spyro covers the near-OT HUD text (the level-intro fly-in),
  * whereas regular mobys (ACTOR) stay UNDER it. The only player feeder is
  * spyro_native; everything else uses ACTOR. */
 #define OPENPETE_SCENE_PLAYER 3
-/* OVERLAY — 2D prims from the HUD ordering table (func_800168DC), which the PSX
+/* OVERLAY - 2D prims from the HUD ordering table (func_800168DC), which the PSX
  * draws ON TOP OF THE ENTIRE 3D scene (a separate OT presented over the scene OT):
  * the cutscene letterbox bars, and any full-screen 2D flat quad. Drawn DEAD LAST
  * with the depth test off, OVER everything incl. the player. (The level-intro /
- * "RESCUED" text is NOT here — that is moby near-OT geometry = HUD, under the
+ * "RESCUED" text is NOT here - that is moby near-OT geometry = HUD, under the
  * player.) Untextured opaque; routed by the feeder. */
 #define OPENPETE_SCENE_OVERLAY 4
-/* HUD_PANEL — a semi-transparent 2D HUD-OT quad that sits UNDER the HUD text/icons
+/* HUD_PANEL - a semi-transparent 2D HUD-OT quad that sits UNDER the HUD text/icons
  * but OVER the world/backdrop: the dim panel behind the pause / inventory menu text
  * (func_8001A40C, setRGB0(64,64,64)) and the "shaded box" behind in-game HUD text
  * (func_8001860C, setRGB0(112,112,112)), both emitted as a POLY_F4 code 0x2A via
  * func_800168DC. Depth-test OFF, drawn at the START of the HUD layer (before the HUD
  * text), so the text reads on top. Distinct from OVERLAY (dead-last, over text) and
- * from the full-screen fade (also a 0x2A F4, but emitted by func_800190D4 — the
+ * from the full-screen fade (also a 0x2A F4, but emitted by func_800190D4 - the
  * feeder excludes that via a re-entry flag). Untextured. The 0x2A code only means
  * "semi-transparent"; the actual ABR RATE comes from the box's DR_MODE (getTPage abr)
- * — BOTH these boxes set ABR mode 2 (B-F subtractive), which DARKENS the framebuffer
- * by the box colour (NOT (B+F)/2 alpha — that washes it toward grey). The feeder reads
+ * - BOTH these boxes set ABR mode 2 (B-F subtractive), which DARKENS the framebuffer
+ * by the box colour (NOT (B+F)/2 alpha - that washes it toward grey). The feeder reads
  * the ABR per-prim into `blend` (3 = subtractive, 1 = alpha), and the HUD-panel draw
  * picks the matching pipe per box. */
 #define OPENPETE_SCENE_HUD_PANEL 5
-/* HUD3D — the in-game 3D HUD icon mobys (g_Hud.m_Mobys: the spinning gem/treasure,
+/* HUD3D - the in-game 3D HUD icon mobys (g_Hud.m_Mobys: the spinning gem/treasure,
  * dragon-head, Spyro-head/lives, key, and number digits). Unlike the flat 2D HUD
  * layer, these are real 3D models, so they need a Z-buffer to sort their own faces
  * (depth-test OFF makes them paint inside-out). Drawn LAST, on top of everything,
@@ -812,7 +812,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * never occluded by world geometry. Only the static g_Hud range routes here
  * (openpete_ui_moby_is_addr_static); the polybuf text mobys stay flat 2D = HUD. */
 #define OPENPETE_SCENE_HUD3D 6
-/* PORTAL_CYCLORAMA — the destination-level cyclorama preview shown inside a homeworld
+/* PORTAL_CYCLORAMA - the destination-level cyclorama preview shown inside a homeworld
  * portal arch (portal.c). It is a far BACKGROUND seen through the arch
  * window: the arch stone must occlude it, but it must never occlude actors or
  * Spyro flying into/through the portal. Drawn in its own pass AFTER the WORLD
@@ -821,39 +821,39 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * by it. This mirrors the PSX OT, where the portal sky occupies one coarse
  * bucket and the player's whole model sorts in front of it (never intersecting
  * it per-pixel the way a shared Z-buffer otherwise would). Untextured only;
- * self-occlusion comes from the feeder's own far→near painter sort. */
+ * self-occlusion comes from the feeder's own far->near painter sort. */
 #define OPENPETE_SCENE_PORTAL_CYCLORAMA 7
-/* PORTAL_MASK — the stencil aperture mask for a portal-sky group. The
+/* PORTAL_MASK - the stencil aperture mask for a portal-sky group. The
  * portal feeder emits each portal's sky FOOTPRINT again under this category
  * (same geometry+z, colour irrelevant): core rasterizes it through an
  * invisible (colour-write-off) depth-TESTED stencil-MARK pass, so the mask is
  * set exactly where the sky is visible past the world depth (the arch stone /
  * a wall in front punches it out). The PORTAL_CYCLORAMA colours then draw
- * depth-FREE, gated on the mask — so dome / flat base / backstop within one
+ * depth-FREE, gated on the mask - so dome / flat base / backstop within one
  * portal composite by submission order (painter) instead of z-arithmetic, and
  * portals are isolated from each other per group (rhi_clear_stencil between
- * groups; groups drawn far→near by their plane depth). Untextured only. */
+ * groups; groups drawn far->near by their plane depth). Untextured only. */
 #define OPENPETE_SCENE_PORTAL_MASK 8
-/* PORTAL_GUARD — near-band terrain PROTECTION (the PSX mask bit).
+/* PORTAL_GUARD - near-band terrain PROTECTION (the PSX mask bit).
  * The .s drains deferred terrain (depthSum < 0x2000 = mean world vz < 8192,
  * minus word3&0x80 faces) via immediate DrawPrim, which the PSX renders with
- * the mask bit SET; every OT prim — including the portal sky — draws with
+ * the mask bit SET; every OT prim - including the portal sky - draws with
  * mask-CHECK and is REJECTED on those pixels. So near-band terrain always
  * beats the portal preview on hardware, regardless of OT order. The terrain
  * feeder re-emits exactly those faces (its face_is_near classifier) under
  * this category when a portal fed sky recently; core re-draws them right
  * AFTER the portal-sky sequence (the sky writes no depth, so the redraw
- * re-wins its own pixels — the depth-buffer realization of the mask).
+ * re-wins its own pixels - the depth-buffer realization of the mask).
  * Opaque only by construction (the defer test excludes ABE faces). */
 #define OPENPETE_SCENE_PORTAL_GUARD 9
-/* SKY — the main cyclorama dome (cyclorama.c). Drawn exactly like WORLD
+/* SKY - the main cyclorama dome (cyclorama.c). Drawn exactly like WORLD
  * (opaque, depth-tested, before everything else) EXCEPT it does not stencil-MARK
  * terrain coverage: the WORLD group's mark defines "pixels real world
  * geometry covered", and the hole-fill LP backing (WORLD_FILL) paints only where
- * that mark is absent — which is precisely where the sky shows through a terrain
+ * that mark is absent - which is precisely where the sky shows through a terrain
  * seam. If the dome marked, every hole would be self-masked and the fill dead. */
 #define OPENPETE_SCENE_SKY 10
-/* WORLD_FILL — the terrain LP backing layer for sectors whose HP is drawn
+/* WORLD_FILL - the terrain LP backing layer for sectors whose HP is drawn
  * (hole-fill). The PSX draws the coarse LP list first and the fine HP
  * over it, so LP shows through wherever HP leaves a T-junction seam against an
  * LP-only neighbour (the artisans distant-water gaps). Natively, drawing LP
@@ -872,13 +872,13 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * Split from plain blend-3 so the SUBTRACT draw group's DECAL special-casing
  * (one shared shadow-sprite material for the whole textured range +
  * shadow_decal_tex.frag's ground-height/wall discard) applies ONLY to real
- * shadows. Genuinely subtractive world content — the dragon-fragment SMOKE
- * PUFFS (particle sel-2 billboards, gray ramp, ABR 2) — stays category WORLD
+ * shadows. Genuinely subtractive world content - the dragon-fragment SMOKE
+ * PUFFS (particle sel-2 billboards, gray ramp, ABR 2) - stays category WORLD
  * and draws through the plain subtractive pipes in the same slot; routing it
  * through the decal path discarded every sky-borne puff (height test) and
  * sampled the wrong texture (the range-uniform shadow sprite material). */
 #define OPENPETE_SCENE_SHADOW 12
-/* ACTOR_FRONT: the dragon-rescue CUTSCENE actors — the mobys the game keeps in
+/* ACTOR_FRONT: the dragon-rescue CUTSCENE actors - the mobys the game keeps in
  * g_DragonCutscene (m_RescuedDragonMoby / m_CutsceneDragon / m_CutsceneSpyro).
  * They render like ACTOR (opaque, depth-tested) EXCEPT during a rescue cutscene,
  * when draw_native_scene front-passes them: a colour-write-off PUNCH pass
@@ -888,33 +888,33 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * self-occlusion. Punching per PIXEL, not over a screen bbox, is what keeps the
  * fix local: every pixel the actors do not cover keeps its true depth, so
  * distant level mobys (--lod extended un-culls statues / chests / the level-end
- * vortex + critters) and semi-transparent terrain — both drawn after — keep
+ * vortex + critters) and semi-transparent terrain - both drawn after - keep
  * true occlusion. The pass runs BEFORE the PLAYER group so Spyro sorts against
  * the dragon by real Z instead of being painted over. Tagged by the moby feeder
- * via pointer match against g_DragonCutscene (the game's own actor set — no
+ * via pointer match against g_DragonCutscene (the game's own actor set - no
  * heuristic). */
 #define OPENPETE_SCENE_ACTOR_FRONT 13
-/* TERRAIN_KEY: RETIRED (number reserved — do not reuse). Formerly the
+/* TERRAIN_KEY: RETIRED (number reserved - do not reuse). Formerly the
  * portal-aperture og-key fan: the sky bucket's key rastered into the
  * HP key image to discard og-covered terrain, plus the WORLD_FILL stencil
  * pre-mark. Replaced by the plane-cover rule: the aperture mask and preview
  * colours test at opening plane − margin, covering everything behind it per
- * pixel — the .s's OT pushes are tier-asymmetric (fan +64 slots, LP +64+8b,
+ * pixel - the .s's OT pushes are tier-asymmetric (fan +64 slots, LP +64+8b,
  * HP only +4b), so the og-key verdict breaks wherever tier and distance
  * decouple. No feeder emits this category any more. */
 #define OPENPETE_SCENE_TERRAIN_KEY 14
 /* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
- * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
+ * before the rebuild and re-applied after - like the OVERLAY/HUD_PANEL carry, but
  * for tris that share a re-derivable category (the 2D-UI sprites/lines live in
  * OPENPETE_SCENE_HUD, which the moby feeder ALSO populates with re-derived near-OT
  * billboards). A category check can't tell them apart; this flag can. Passed as
  * add_tri's explicit `carry` argument (0 unless a feeder opts in). */
-/* The FEEDER-FACING tri: geometry + material only. The routing state —
- * category / carry / portal group — is NOT a struct field: it travels
+/* The FEEDER-FACING tri: geometry + material only. The routing state -
+ * category / carry / portal group - is NOT a struct field: it travels
  * exclusively through the add_tri arguments and lives on the renderer's
  * internal stored tri (native_render.c). A feeder that tries to write
- * `tri.category = …` gets a compile error instead of a silently-ignored
+ * `tri.category = ...` gets a compile error instead of a silently-ignored
  * field. */
 typedef struct {
     openpete_scene_vert v[3];
@@ -924,22 +924,22 @@ typedef struct {
     float koff;  /* og OT KEY: the face's ABSOLUTE .s insertion key in world
                   * units + 0.5 sentinel; sign<0 = near-band contest-only
                   * (|koff| = key), 0 = not keyed. Stored depth (v[].z) is
-                  * TRUE view-Z either way — og's keys select WHICH surface
+                  * TRUE view-Z either way - og's keys select WHICH surface
                   * owns a pixel, they never enter the depth buffer.
                   * Per-face constant.                                     */
-    int prop;    /* authored embedded PROP (pedestal discs, statue bases…):
+    int prop;    /* authored embedded PROP (pedestal discs, statue bases...):
                   * this face additionally rasters TRUE per-vertex depth
                   * into the prop image, and near-band terrain always
-                  * yields to a prop physically within the embed bound —
+                  * yields to a prop physically within the embed bound -
                   * the class-curated "props render on top of the ground
                   * they are set into" divergence.                         */
     float rank;  /* og OT paint RANK (walk order, >=1; 0 = unranked): the
-                  * game paints a moby's faces whole, in OT walk order —
+                  * game paints a moby's faces whole, in OT walk order -
                   * never per-pixel between same-moby faces. Ranked opaque
                   * faces raster (rank, ordinal) into the rank image and a
                   * fragment loses its pixel iff a LATER-ranked face of the
                   * SAME moby covers it. Stored depth stays TRUE per-vertex
-                  * — rank decides WHICH same-moby face exists at a pixel,
+                  * - rank decides WHICH same-moby face exists at a pixel,
                   * never what depth it writes. Cross-moby ordering stays
                   * true per-pixel z (the ordinal gate).                   */
     int mordinal;/* present-local moby ordinal (1..255) identifying "same
@@ -950,7 +950,7 @@ typedef struct {
                   * (0 = none). The face rasters that slot into the ACTOR
                   * key image's player band (psx_key_contest.glsl), where
                   * the additive glow fan is its only reader; the face
-                  * itself contests nothing — its koff stays 0 and its
+                  * itself contests nothing - its koff stays 0 and its
                   * stored depth stays true, so an ordering pull can never
                   * show the avatar through geometry in front of him.     */
 } openpete_scene_tri;
@@ -979,16 +979,16 @@ typedef struct {
  * interpolate exactly in screen space.
  *
  * The feed takes an openpete_worldvz, which can ONLY be built through
- * the unit-claiming constructors below — a bare float is a compile error. A
+ * the unit-claiming constructors below - a bare float is a compile error. A
  * GTE path that produces sub-scaled Z must normalize through _scaled naming
  * its unit. This enforces the "every feeder hands in the SAME absolute scale"
  * invariant whose prose-only form shipped ×4 / ×2^m_scale sorting bugs
  * (world/4 feeders drew through terrain). Known per-feeder units:
- *   terrain            world/16 (camera>>4, verts /16)  → _scaled(vz, 16)
- *   moby shadows       world/4  (cam+pos >>2)           → _scaled(vz, 4)
- *   moby records       world/2^m_scale — normalized at project time; feeds _full
- *   particles (world)  world/4 — normalized at build (PART_VZ_WORLD4); feeds _full
- *   spyro / flame / tracer / portal / glows  full-world  → _full
+ *   terrain            world/16 (camera>>4, verts /16)  -> _scaled(vz, 16)
+ *   moby shadows       world/4  (cam+pos >>2)           -> _scaled(vz, 4)
+ *   moby records       world/2^m_scale - normalized at project time; feeds _full
+ *   particles (world)  world/4 - normalized at build (PART_VZ_WORLD4); feeds _full
+ *   spyro / flame / tracer / portal / glows  full-world  -> _full
  *
  * GPU mirrors of the clamp and the depth curves: core/rhi/shaders/psx_viewz.glsl
  * (included by psx_scene.vert, quad.vert, prepass.vert, terrain_key.vert,
@@ -1109,7 +1109,7 @@ static inline float openpete_native_scene_viewz(openpete_worldvz z) {
  *
  * The Spyro silhouette shadow is a FLAT fan; over uneven near-terrain it sits
  * behind the bumps, so a pure depth test/band can't tell "my own bumpy ground"
- * (keep) from "a wall in front" (discard) — both put terrain nearer than the fan.
+ * (keep) from "a wall in front" (discard) - both put terrain nearer than the fan.
  * The fix keeps the flat fan's LOOK unchanged and only changes the keep/discard
  * decision: per pixel the shadow covers, the shader reconstructs the opaque
  * terrain's world HEIGHT from the depth pre-pass and discards where it sits well
@@ -1118,10 +1118,10 @@ static inline float openpete_native_scene_viewz(openpete_worldvz z) {
  *
  * The reconstruction needs the camera transform, which only the game can read, so
  * the game passes it here each frame (display-only; never written back to PSX RAM).
- * `cam_col0..2` are 4096²·C⁻¹ rows (pushed numerical inverse — the Spyro camera
+ * `cam_col0..2` are 4096²·C⁻¹ rows (pushed numerical inverse - the Spyro camera
  * matrix is NOT orthonormal); the inverse recovers V = C⁻¹·MAC with the Spyro GTE
  * swizzle V=(-Δy,-Δz,Δx). AXIS NOTE: Spyro's VERTICAL world axis is
- * the **z field** — V1 carries -Δz, so world height = cam_pos_up − V1 (cam_col1).
+ * the **z field** - V1 carries -Δz, so world height = cam_pos_up − V1 (cam_col1).
  * The original decal tested cam_pos_y − V0, i.e. HORIZONTAL-Y proximity, which
  * rejected walls incidentally and left the wall-base notch. `ofx/ofy/h` are the
  * GTE projection regs. `ground_up` is the shadow's ground plane (SpyroShadow
@@ -1131,9 +1131,9 @@ static inline float openpete_native_scene_viewz(openpete_worldvz z) {
  * A pure height threshold has one blind band: the BOTTOM wall_height units of a
  * wall rise from ground level, so the fan still painted on a wall's base
  * (dark-hollow f2700 notch). The classifier for that band is surface
- * ORIENTATION — own ground/bumps/slopes are walkable (up-normal large), a wall
+ * ORIENTATION - own ground/bumps/slopes are walkable (up-normal large), a wall
  * face is near-vertical (up-normal ≈ 0). The shader reconstructs the terrain
- * normal from neighbouring pre-pass texels (differential — no camera position
+ * normal from neighbouring pre-pass texels (differential - no camera position
  * needed) and discards steep surfaces IN FRONT of the fan fragment
  * (`steep_nup` = |up normal| below which a surface counts as a wall). */
 typedef struct {
@@ -1306,8 +1306,8 @@ void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
  * @return The number written; 0 when @p out is NULL or @p max is not positive. */
 int openpete_native_scene_collect_2d_prims(uint32_t* out, int max);
 /* Append one screen-space triangle to the current native scene. `category`
- * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/…) and `carry` are passed EXPLICITLY per
- * call — there is NO ambient/global scene category (the old set_category /
+ * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/...) and `carry` are passed EXPLICITLY per
+ * call - there is NO ambient/global scene category (the old set_category /
  * set_carry globals are gone), so a feeder can't leak a stale layer into the
  * next feeder and EVERY emit path (incl. the sub-tick re-extract) is
  * category-correct by construction. `category` is ignored for non-opaque tris
@@ -1432,14 +1432,14 @@ void openpete_native_scene_mark_terrain_feed(void);
  * Sticky per-tri provenance stamped by add_tri until changed (same
  * ambient-state pattern as the terrain feeder's s_emit_* context; set
  * 0 when leaving a tagged emit loop). Carries what the material key
- * LACKS — the batcher already splits on tpage/clut, so texture-level
+ * LACKS - the batcher already splits on tpage/clut, so texture-level
  * selectors ride the material key; the tag adds source identity:
  *
  *   bits 31:28  path (0 = untagged, 1 = moby, 2 = terrain)
  *   moby:       bits 15:0  m_Class
  *   terrain:    bit 27 env-anim member (func_8002A6FC rewrite set),
  *               bit 26 LP tier, bits 8:0 sector id; textured faces add
- *               the Tiledef/texture-record id in [15:9] (word2 & 0x7F —
+ *               the Tiledef/texture-record id in [15:9] (word2 & 0x7F -
  *               the texture-selector key) and a per-present material
  *               slot in [24:16] (texture-keyed per-instance resolve)
  *
@@ -1458,7 +1458,7 @@ void openpete_native_scene_mark_terrain_feed(void);
     (0x20000000u | ((env) ? 0x08000000u : 0u) | ((lp) ? 0x04000000u : 0u) | \
      ((uint32_t)(sec) & 0x1FFu))
 /* Textured terrain face: [15:9] = the face's Tiledef/texture-record id
- * (word2 & 0x7F — the id texture selectors key on), [24:16] = the
+ * (word2 & 0x7F - the id texture selectors key on), [24:16] = the
  * per-present material slot from the texture-keyed per-instance resolve
  * (0 = declarative resolve, 0x1FF = the callback declined -> stock). */
 #define OPENPETE_TAG_TERRAIN_TEX(lp, env, sec, tex, slot) \
@@ -1472,15 +1472,15 @@ void openpete_native_scene_mark_terrain_feed(void);
      (((uint32_t)(slot) & 0x1FFu) << 16))
 
 /* ── The remaining feeder paths ───────────────────────────────────────
- * Every path below copies the MOBY layout exactly — [31:28] path,
- * [27:16] material slot (12 bits), [15:0] source identity (16 bits) —
+ * Every path below copies the MOBY layout exactly - [31:28] path,
+ * [27:16] material slot (12 bits), [15:0] source identity (16 bits) -
  * which fills the word with no spare bits. Copy it for any new feeder
  * rather than inventing a payload: one shared shape keeps the decode
  * and the slot-width reasoning uniform across channels.
  *
  * The identity half is whatever the feeder actually HAS at emit time,
  * which varies sharply by path. Where a feeder has none, the field is
- * 0 and the tag identifies the channel only — that is a real limit,
+ * 0 and the tag identifies the channel only - that is a real limit,
  * not a placeholder to fill in later: a per-element selector cannot be
  * built on a feeder that never knew which element it was drawing.
  * `docs/src/developer/render-channel-census.md` records the per-feeder evidence. */
@@ -1488,27 +1488,27 @@ void openpete_native_scene_mark_terrain_feed(void);
     (((uint32_t)(p) & 0xFu) << 28 | (((uint32_t)(slot) & 0xFFFu) << 16) | \
      ((uint32_t)(ident) & 0xFFFFu))
 
-/* Player (Spyro) — drawn by r_pete.s, NOT the moby pool walk, so no
+/* Player (Spyro) - drawn by r_pete.s, NOT the moby pool walk, so no
  * moby-class selector can ever reach him. The emitted tri carries no
  * sub-model marker (the walk keeps per-vertex indices, not a segment
  * id), so identity is 0 = the whole player; splitting head/body/wing
  * would mean threading the segment through the walk first. */
 #define OPENPETE_TAG_PLAYER(slot)         OPENPETE_TAG_PATH(3u, 0u, (slot))
 /* Flame breath. Identity distinguishes the ADDITIVE ribbon from the
- * OPAQUE G3 caps — one feeder, two blend modes, so a material that
+ * OPAQUE G3 caps - one feeder, two blend modes, so a material that
  * reshades the ribbon must be able to leave the caps alone. */
 #define OPENPETE_TAG_FLAME_RIBBON  0u
 #define OPENPETE_TAG_FLAME_CAPS    1u
 #define OPENPETE_TAG_FLAME(part, slot)    OPENPETE_TAG_PATH(4u, (part), (slot))
 /* Particles. The feeder covers six distinct effects and only two of them
- * carry the game's own `sel` class — glows, flares, sparkle lines and the
+ * carry the game's own `sel` class - glows, flares, sparkle lines and the
  * dragon star are not in that space at all. So identity is a pair:
  * [15:8] a feeder-local KIND naming the effect, [7:0] the game's `sel`
  * where one exists (0 otherwise).
  *
  * Both halves CLASSIFY without IDENTIFYING: the pool stores no slot or
  * pointer and emit order is pool-walk order. Enough for "all smoke
- * puffs", never enough for "this puff" — which is also why the channel
+ * puffs", never enough for "this puff" - which is also why the channel
  * cannot be geometry-cached. */
 #define OPENPETE_TAG_PART_QUAD    0u   /* FT4 billboards (sel-classified) */
 #define OPENPETE_TAG_PART_LINE    1u   /* streak lines (sel-classified) */
@@ -1536,7 +1536,7 @@ void openpete_native_scene_mark_terrain_feed(void);
  * at medium range, the full gouraud dome up close. Anything that restyles
  * one rung and not the others pops as the player walks up.
  *
- * The owning portal is NOT in the tag — it rides the per-tri GROUP id
+ * The owning portal is NOT in the tag - it rides the per-tri GROUP id
  * (the destination skybox pointer), which the portal pass already uses. */
 #define OPENPETE_TAG_PORTAL_FLAT     0u
 #define OPENPETE_TAG_PORTAL_DOME     1u
@@ -2001,18 +2001,18 @@ openpete_native_commit_fn openpete_native_get_commit(void);
  * cell" grid, ring-read-back to the CPU a few presents later. The moby feeder
  * queries it BEFORE re-extracting a cull record: a moby whose whole
  * (conservatively inflated) screen rect is provably behind nearer terrain is
- * skipped — no model walk, no scene tris, no draws — because the depth test
+ * skipped - no model walk, no scene tris, no draws - because the depth test
  * would erase every pixel of it anyway. The CANONICAL cull pass and every
  * gameplay-readable byte it writes are untouched (this only skips native
  * drawing), so it is determinism-safe by construction.
  *
  * openpete_native_occl_query: sx/sy in PSX screen px (the scene_vert space),
  * vz_near = the moby's nearest possible view-Z (centre − radius, full-world
- * units). Returns 1 ⇒ provably occluded (safe to skip), 0 ⇒ visible/unknown.
+ * units). Returns 1 => provably occluded (safe to skip), 0 => visible/unknown.
  * Conservative under grid staleness: rect inflation, view-Z slack
  * (OPENPETE_MOBY_OCCL_SLACK), edge/age refusal. OPENPETE_MOBY_OCCLUSION=0
  * disables. openpete_native_occl_suspend(n) disables culling for the next n
- * presents — the feeder calls it on camera cuts/teleports, where a
+ * presents - the feeder calls it on camera cuts/teleports, where a
  * few-presents-old grid is wrong everywhere.
  *
  * Camera bound: the grid is the reduction of the depth pre-pass of the scene
@@ -2078,7 +2078,7 @@ int  openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, 
 void openpete_native_occl_suspend(int presents);
 /* Query-outcome census (cumulative counters; diagnostics). OFFSCREEN = culled
  * because the rect lies fully outside the visible extent (native frustum cull
- * — the game's cull cone is wider than the screen, so it queues off-screen
+ * - the game's cull cone is wider than the screen, so it queues off-screen
  * mobys that contribute zero pixels); CULLED = culled by the depth grid;
  * MOVED = kept because the caller's camera is outside the grid camera's
  * move/turn bound. */
@@ -2158,7 +2158,7 @@ void     openpete_phase_set_count(int which, int n);
 /* 2D-overlay carry for the sub-tick re-extract: the fade + cutscene-letterbox +
  * menu-panel overlays are produced by the 2D-UI feeder during the game render
  * and can't be re-derived sub-tick. Carried tris are ACCUMULATED at add_tri
- * time (feed-time capture — the live scene is wiped by every sub-tick
+ * time (feed-time capture - the live scene is wiped by every sub-tick
  * re-extract, so scanning it at capture time raced the wipes and dropped any
  * 2D feed an intermediate present landed between; the collected-egg HUD sprite
  * froze/vanished at high --render-fps). capture_overlay() commits the

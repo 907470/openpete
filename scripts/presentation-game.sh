@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# presentation-game.sh — per-game paths for the presentation-golden scripts.
+# presentation-game.sh - per-game paths for the presentation-golden scripts.
 # SOURCED, not executed.
 #
 # The presentation gate and its capture, diff and promote scripts are one

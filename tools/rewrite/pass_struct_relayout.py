@@ -1,14 +1,14 @@
-"""Pass 1 — PSX struct relayout.
+"""Pass 1 - PSX struct relayout.
 
 For every game-defined struct (under spyro-1/include/) that the TU
 references and whose host layout would diverge from PSX layout, rewrite
 its diverging fields in-place inside the *header*:
 
-    void *m_OutBuf;     →   uint32_t m_OutBuf;     (PSX vaddr slot)
-    long  m_Field;      →   int32_t  m_Field;
-    u_long m_Field;     →   uint32_t m_Field;
-    void *m_Cb;         →   uint32_t m_Cb;         (skipped if fn-ptr — see below)
-    void *m_Arr[N];     →   uint32_t m_Arr[N];
+    void *m_OutBuf;     ->   uint32_t m_OutBuf;     (PSX vaddr slot)
+    long  m_Field;      ->   int32_t  m_Field;
+    u_long m_Field;     ->   uint32_t m_Field;
+    void *m_Cb;         ->   uint32_t m_Cb;         (skipped if fn-ptr - see below)
+    void *m_Arr[N];     ->   uint32_t m_Arr[N];
 
 Each rewritten *header* lands in a per-TU shadow tree
 ${SPYRO_GENERATED}/rewritten/<tu>/include/<rel-path>; the TU's compile
@@ -16,15 +16,15 @@ invocation prepends that tree to its include path so the rewritten
 defs win.
 
 Field-access conversions in the .c body:
-    READ:   `obj.m_OutBuf` (used as void*) → `(void*)openpete_psx_to_host_ptr(obj.m_OutBuf)`
-    WRITE:  `obj.m_OutBuf = host_ptr;`     → `obj.m_OutBuf = openpete_host_to_psx(host_ptr);`
-    READ:   `obj.m_LongFld` (used as long) → `(int32_t)obj.m_LongFld`
-    WRITE:  `obj.m_LongFld = expr;`         → `obj.m_LongFld = (int32_t)(expr);`
+    READ:   `obj.m_OutBuf` (used as void*) -> `(void*)openpete_psx_to_host_ptr(obj.m_OutBuf)`
+    WRITE:  `obj.m_OutBuf = host_ptr;`     -> `obj.m_OutBuf = openpete_host_to_psx(host_ptr);`
+    READ:   `obj.m_LongFld` (used as long) -> `(int32_t)obj.m_LongFld`
+    WRITE:  `obj.m_LongFld = expr;`         -> `obj.m_LongFld = (int32_t)(expr);`
 
 Out of scope (deferred):
-  - PSYQ structs (defined under spyro-1/psyq/include/) — see
+  - PSYQ structs (defined under spyro-1/psyq/include/) - see
     docs/src/developer/psycross-boundary.md.
-  - Function-pointer fields — flagged as warnings, not rewritten.
+  - Function-pointer fields - flagged as warnings, not rewritten.
   - sizeof() agreement, struct-by-value, struct-pointer arithmetic.
 """
 
@@ -80,11 +80,11 @@ def _resolve_function_psx_vaddr(rhs: ci.Cursor, symbols: Dict[str, int]) -> Opti
 
 
 # ---------------------------------------------------------------------------
-# Where structs come from — game vs PSYQ vs system
+# Where structs come from - game vs PSYQ vs system
 # ---------------------------------------------------------------------------
 
 def _is_int_to_ptr_cast(cursor: ci.Cursor) -> bool:
-    """True if `cursor` is `(PtrT)(int_expr)` — a C-style cast whose target
+    """True if `cursor` is `(PtrT)(int_expr)` - a C-style cast whose target
     is a pointer type and whose operand has integer kind. Used by Pass 1's
     pointer-field write rendering to skip host_to_psx on literal PSX-vaddr
     integer expressions like `(void*)(0x80200000 - X)`."""
@@ -147,7 +147,7 @@ class FieldRewrite:
     is_function_ptr: bool
     is_array: bool = False           # field type is `T arr[N]` (array)
     elem_orig_type: str = ""         # element type for array fields (e.g. "AnimationHeader *")
-    is_ptr_to_ptr: bool = False      # field type is `T **f` — points to a PSX-laid-out array of vaddrs
+    is_ptr_to_ptr: bool = False      # field type is `T **f` - points to a PSX-laid-out array of vaddrs
     is_opaque_pad: bool = False      # nested non-game record diverges (e.g. PsyCross DRAWENV)
     opaque_pad_size: int = 0         # PSX size to pad to when is_opaque_pad
     opaque_pad_orig_type: str = ""   # original type spelling for diagnostics
@@ -165,7 +165,7 @@ class StructRelayoutResult:
 
 
 # ---------------------------------------------------------------------------
-# Discovery — which struct fields need rewriting
+# Discovery - which struct fields need rewriting
 # ---------------------------------------------------------------------------
 
 def _identifier_token_offset(decl: ci.Cursor) -> Optional[int]:
@@ -186,7 +186,7 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
     """Walk every game-defined struct definition; for each diverging leaf
     field (pointer or long-family scalar / array of those), record a
     FieldRewrite. Fields nested through other structs aren't rewritten
-    here — those structs get their own entries.
+    here - those structs get their own entries.
     """
     rewrites: Dict[FieldKey, FieldRewrite] = {}
     seen_usrs: Set[str] = set()
@@ -194,7 +194,7 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
     # Field-set: keys of game-struct fields whose subfields are accessed
     # anywhere in this TU (`obj.field.subfield` or `(&obj.field)->...`).
     # We skip the opaque-pad rewrite for those, leaving the host's native
-    # layout — same as before this pass landed. Pad only fields with
+    # layout - same as before this pass landed. Pad only fields with
     # zero subfield access in the TU.
     accessed_subfield_keys: Set[Tuple[str, str]] = set()
     for k in tu_cursor.walk_preorder():
@@ -261,10 +261,10 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
             is_fnptr = is_ptr and _is_function_ptr(elem)
             if not (is_ptr or is_long):
                 # Nested-record case: a field whose type is a struct/union
-                # (or array thereof) defined OUTSIDE spyro-1/include/ — i.e.
-                # PsyCross / PSYQ — and whose host vs PSX size diverges
+                # (or array thereof) defined OUTSIDE spyro-1/include/ - i.e.
+                # PsyCross / PSYQ - and whose host vs PSX size diverges
                 # because the foreign struct embeds host pointers (e.g.
-                # DRAWENV's DR_ENV → uintptr_t addr). Replace with a
+                # DRAWENV's DR_ENV -> uintptr_t addr). Replace with a
                 # PSX-sized byte-array pad in the per-TU shadow header so
                 # parent-struct layouts match PSX. Subfield access through
                 # the pad is forbidden and surfaces as a hard error below.
@@ -318,14 +318,14 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
             elem_orig_type = ""
             is_ptr_to_ptr = False
             if is_array and is_ptr and not is_fnptr:
-                # Element type spelling — for `T *m_F[N]` we want `T *`
+                # Element type spelling - for `T *m_F[N]` we want `T *`
                 # so element-access rewrites cast each PSX vaddr back to
                 # the original element pointer type.
                 elem_orig_type = ft.element_type.spelling \
                     if ft.kind == ci.TypeKind.CONSTANTARRAY \
                     else canon.element_type.spelling
             elif is_ptr and not is_array and not is_fnptr:
-                # `T **f` (or `u_long *f`-equivalent) — the field holds a
+                # `T **f` (or `u_long *f`-equivalent) - the field holds a
                 # PSX vaddr to an array of PSX vaddrs. Subscripting must
                 # convert each element through psx_to_host_ptr separately.
                 pointee = elem.get_pointee()
@@ -357,7 +357,7 @@ def collect_field_rewrites(tu_cursor: ci.Cursor) -> Dict[FieldKey, FieldRewrite]
 
 
 # ---------------------------------------------------------------------------
-# Header field rewrites — emit one Edit per diverging field
+# Header field rewrites - emit one Edit per diverging field
 # ---------------------------------------------------------------------------
 
 def emit_header_edits(rewrites: Dict[FieldKey, FieldRewrite],
@@ -372,7 +372,7 @@ def emit_header_edits(rewrites: Dict[FieldKey, FieldRewrite],
         if fr.is_opaque_pad:
             # Replace the entire FIELD_DECL with a byte-array pad sized to
             # match PSX. The foreign nested struct (e.g. PsyCross DRAWENV)
-            # has a bigger host layout — opaque storage on the native side,
+            # has a bigger host layout - opaque storage on the native side,
             # written by the recompiled-PSX side which sees PSX layout.
             replacement = (
                 f"char {fr.field_name}[{fr.opaque_pad_size}]"
@@ -508,7 +508,7 @@ def _render_with_redirects(cursor: ci.Cursor,
     # Per-branch dedupe sets so that subs with the same start offset
     # but different kinds (e.g. ARRAY_SUBSCRIPT and an outer MEMBER_REF
     # whose chain begins with that subscript) both get collected. The
-    # post-sort pruning drops the inner one — relying on a shared
+    # post-sort pruning drops the inner one - relying on a shared
     # `seen` set would silently swallow the outer wrap and leave the
     # rendered text without the relaid-field cast.
     seen_array: Set[int] = set()
@@ -529,7 +529,7 @@ def _render_with_redirects(cursor: ci.Cursor,
             if k.kind != ci.CursorKind.ARRAY_SUBSCRIPT_EXPR:
                 continue
             # Skip the outer cursor itself (caller wants its content
-            # rendered without re-wrapping the cursor — that's what
+            # rendered without re-wrapping the cursor - that's what
             # include_self=False means at the call site, and it also
             # prevents infinite recursion via the recursive call below).
             if not saw_self_array \
@@ -547,7 +547,7 @@ def _render_with_redirects(cursor: ci.Cursor,
             ks = k.extent.start.offset
             ke = k.extent.end.offset
             if ke == ks:
-                # Macro-arg synthetic extent — recover from tokens.
+                # Macro-arg synthetic extent - recover from tokens.
                 try:
                     ktoks = list(k.translation_unit.get_tokens(extent=k.extent))
                 except Exception:
@@ -604,7 +604,7 @@ def _render_with_redirects(cursor: ci.Cursor,
         # Macro-expansion artifact (e.g. SPYRO_MODEL expanding to
         # `(g_Models[0])`): cursor extent points at the macro use in
         # source, which doesn't contain `[` so we can't reconstruct
-        # the subscript. Skip — shadow-header macro redef handles the
+        # the subscript. Skip - shadow-header macro redef handles the
         # site.
         try:
             sub_text = _bytes_slice(main_resolved, ks, ke)
@@ -655,7 +655,7 @@ def _render_with_redirects(cursor: ci.Cursor,
             ks = k.extent.start.offset
             ke = k.extent.end.offset
             if ke == ks:
-                # Macro-arg synthetic extent — recover from tokens.
+                # Macro-arg synthetic extent - recover from tokens.
                 try:
                     ktoks = list(k.translation_unit.get_tokens(extent=k.extent))
                 except Exception:
@@ -668,7 +668,7 @@ def _render_with_redirects(cursor: ci.Cursor,
                 continue
             # Macro-expansion DECL_REF: if the source bytes at the
             # cursor extent don't contain the symbol's spelling (e.g.
-            # `SPYRO_MODEL` expanding to `(g_Models[0])` — extent
+            # `SPYRO_MODEL` expanding to `(g_Models[0])` - extent
             # spans the macro use, which has no `g_Models` text),
             # skip. The macro definition itself is the right rewrite
             # target (handled via shadow-header redef).
@@ -681,7 +681,7 @@ def _render_with_redirects(cursor: ci.Cursor,
             if ks in seen_decl or ks in array_sub_inner_skips:
                 continue
             seen_decl.add(ks)
-            # Array redirect referenced bare (no subscript) — rare;
+            # Array redirect referenced bare (no subscript) - rare;
             # decay to pointer-to-elem.
             if red.is_array:
                 if red.is_pointer:
@@ -706,14 +706,14 @@ def _render_with_redirects(cursor: ci.Cursor,
             fr = rewrites.get(FieldKey(parent.get_usr(), rd.spelling))
             if fr is None or fr.is_function_ptr or fr.is_opaque_pad:
                 continue
-            # Skip array-of-pointer fields here — those are handled at
+            # Skip array-of-pointer fields here - those are handled at
             # the subscript level by the caller, not at the member ref.
             if fr.is_array and fr.is_pointer:
                 continue
             ks = k.extent.start.offset
             ke = k.extent.end.offset
             if ke == ks:
-                # Macro-arg synthetic extent — recover from tokens.
+                # Macro-arg synthetic extent - recover from tokens.
                 try:
                     ktoks = list(k.translation_unit.get_tokens(extent=k.extent))
                 except Exception:
@@ -729,7 +729,7 @@ def _render_with_redirects(cursor: ci.Cursor,
             seen_member.add(ks)
             # Render the member-ref body recursively so any nested
             # relaid pointer-field bases (`obj.field_ptr->next`) get
-            # folded into their host-pointer form first — otherwise
+            # folded into their host-pointer form first - otherwise
             # the outer `->` dereferences a uint32_t.
             inner = _render_with_redirects(k, main_resolved, redirects,
                                            rewrites, include_self=False)
@@ -744,7 +744,7 @@ def _render_with_redirects(cursor: ci.Cursor,
         return text
     # Sort by start asc, then end DESC so that for same-start subs the
     # widest (outermost) lands first. Pruning drops inner subs whose
-    # range is contained in the last pruned — outermost wins. This is
+    # range is contained in the last pruned - outermost wins. This is
     # important because a MEMBER_REF substitution's recursive render
     # already folds inner DECL_REF / ARRAY_SUBSCRIPT subs inline, so
     # applying both subs would corrupt the wrap text.
@@ -884,8 +884,8 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         # macros) OR cover the whole macro CALL (function-like macros
         # like PATCH_POINTER). Both are valid macro-expansion contexts;
         # the lhs being zero-length is the reliable signal.
-        # Walk into the lhs subtree finding any expression — MEMBER_REF
-        # or ARRAY_SUBSCRIPT — that the assignment targets. Record
+        # Walk into the lhs subtree finding any expression - MEMBER_REF
+        # or ARRAY_SUBSCRIPT - that the assignment targets. Record
         # token-recovered extents for both the lhs itself and any
         # immediate child ARRAY_SUBSCRIPT_EXPR (e.g. `m->arr[i] = ...`
         # where lhs is the ARRAY_SUBSCRIPT_EXPR).
@@ -905,10 +905,10 @@ def emit_access_edits(tu_cursor: ci.Cursor,
     # `if ((int)m->m_Animations[i] == -1)` casts a relaid array-of-
     # pointer field to int to compare against 0xFFFFFFFF. Wrapping the
     # array-sub with `(T*)psx_to_host_ptr(...)` first turns the int-
-    # cast into an int→host-ptr→int round trip that loses the sentinel.
+    # cast into an int->host-ptr->int round trip that loses the sentinel.
     # When the array-sub's parent context (skipping paren/unexposed) is
     # a `(int)`-style cast, suppress the wrap and let the bare uint32_t
-    # lvalue source survive — the int cast then operates on the raw
+    # lvalue source survive - the int cast then operates on the raw
     # PSX vaddr, preserving the sentinel.
     int_cast_arraysub_offsets: Set[int] = set()
     int_cast_memberref_offsets: Set[int] = set()
@@ -995,7 +995,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             # The bare uint32_t lvalue form of `m->m_Animations[i]` is
             # already what the source bytes produce (m_Animations is
             # uint32_t[N] post-relayout, so `[i]` yields a uint32_t
-            # lvalue) — no edit needed at the array-sub itself. If
+            # lvalue) - no edit needed at the array-sub itself. If
             # there's an outer relaid MEMBER_REF wrapping this sub
             # (`m->m_Animations[i]->m_Faces`), the main MEMBER_REF
             # loop emits a bare-chain at the whole chain and folds
@@ -1028,7 +1028,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             skip_member_ref_offsets.add(member.extent.start.offset)
             continue
         if fr.is_ptr_to_ptr:
-            # `T **field` — the field holds a vaddr to an array of vaddrs.
+            # `T **field` - the field holds a vaddr to an array of vaddrs.
             # Read `obj.field` as a uint32_t (no cast to T**), then
             # convert to a host `uint32_t*` so subscripting reads PSX-
             # sized elements; convert each element separately.
@@ -1101,7 +1101,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         result.address_of_warnings.append(
             f"&{fr.record_name}.{fr.field_name} at "
             f"{member.location.file}:{member.location.line} "
-            f"— address-of a relayout'd field has no original-type address")
+            f"- address-of a relayout'd field has no original-type address")
 
     # Pre-collect write extents so nested member-refs inside them are
     # suppressed (the write's RHS rendering folds them inline).
@@ -1154,7 +1154,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 continue
         outer_ranges.append((s, e))
     outer_ranges.sort()
-    # Filter to outermost only — drop any range fully inside another.
+    # Filter to outermost only - drop any range fully inside another.
     pruned_outer: List[Tuple[int, int]] = []
     for s, e in sorted(outer_ranges, key=lambda r: (r[0], -r[1])):
         if pruned_outer and s >= pruned_outer[-1][0] and e <= pruned_outer[-1][1]:
@@ -1215,7 +1215,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             # m_Parent / m_Len / m_Index). Pass 1 wrapping the entire
             # call site as a read of the field would produce
             # `((Moby*)psx_to_host_ptr(setMobyLetterProps(...)))`. Skip
-            # — the macro body itself is the right rewrite target.
+            # - the macro body itself is the right rewrite target.
             try:
                 ext_text = _bytes_slice(main_resolved, ext_start, ext_end)
             except Exception:
@@ -1240,7 +1240,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
         # fall through to the regular read-wrap path below.
         if is_macro_arg and (ext_start, ext_end) in macro_write_lhs_extents:
             # Suppress inner refs strictly inside an outer relaid
-            # member-ref — the outer's bare-chain render folds them
+            # member-ref - the outer's bare-chain render folds them
             # inline. (`is_write_lhs` can't be used for this gating
             # because in macro expansions every nested ref shares the
             # binop's zero-length raw offset, so the lhs.extent.end
@@ -1259,7 +1259,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             ))
             continue
         # writes is keyed on lhs.extent.start; only the actual outermost
-        # LHS qualifies — nested member-refs sharing the start are reads.
+        # LHS qualifies - nested member-refs sharing the start are reads.
         # Also try the pre-token-recovery offset (c.extent.start.offset)
         # because `_find_member_writes` uses raw cursor extents that for
         # macro-expanded LHSes are the synthetic zero-length offset, not
@@ -1276,7 +1276,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                     or _lhs.extent.end.offset == raw_off:
                 is_write_lhs = True
         # If this ref sits inside a Pass 1 write extent (and isn't the
-        # write's own LHS), suppress — the write rendering folds it.
+        # write's own LHS), suppress - the write rendering folds it.
         if not is_write_lhs and _inside_write(ext_start, ext_end):
             continue
         # If this ref is strictly nested inside another relaid member-ref,
@@ -1314,7 +1314,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                     raise RuntimeError(
                         f"compound-assign on relaid pointer field "
                         f"{fr.record_name}.{fr.field_name} at "
-                        f"{lhs.location.file}:{lhs.location.line} — "
+                        f"{lhs.location.file}:{lhs.location.line} - "
                         f"pointer arithmetic compound-assign not yet "
                         f"supported (Pass 1)")
                 bare_op = op_str[:-1]  # "+=" -> "+", "<<=" -> "<<"
@@ -1327,7 +1327,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                                f"{lhs_read} {bare_op} ({rhs_text}))")
             elif fr.is_pointer:
                 # If the RHS is a function reference with a known PSX
-                # vaddr, substitute the literal — the host fn-ptr lives
+                # vaddr, substitute the literal - the host fn-ptr lives
                 # outside g_ram, so host_to_psx() would yield 0 and
                 # corrupt the field.
                 fn_addr = (_resolve_function_psx_vaddr(rhs, symbols)
@@ -1335,7 +1335,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 if fn_addr is not None:
                     replacement = f"{lhs_text} = 0x{fn_addr:08X}u"
                 elif _is_int_to_ptr_cast(rhs):
-                    # `field = (PtrT)(int_expr)` — the source intends a
+                    # `field = (PtrT)(int_expr)` - the source intends a
                     # literal PSX vaddr (e.g. `0x80200000 - X`). Storing
                     # via host_to_psx would treat the integer as a host
                     # pointer and yield 0. Skip the round-trip; store the
@@ -1366,7 +1366,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
             access_text = _render_with_redirects(c, main_resolved,
                                                  redirects, rewrites)
             if c.extent.start.offset in int_cast_memberref_offsets:
-                # `(int)obj.relaid_field` — sentinel-style cast. Drop
+                # `(int)obj.relaid_field` - sentinel-style cast. Drop
                 # the host-ptr round-trip; the int cast operates on
                 # the raw uint32_t lvalue.
                 replacement = access_text
@@ -1433,9 +1433,9 @@ def emit_macro_redefs(result: StructRelayoutResult) -> None:
     """Emit header edits on spyro-1/include/{common.h,moby.h} that
     replace original macro definitions with openpete-aware forms.
 
-      - common.h:  PATCH_POINTER / PATCH_POINTER2 — bare uint32_t form,
+      - common.h:  PATCH_POINTER / PATCH_POINTER2 - bare uint32_t form,
                    host_to_psx-converted base.
-      - moby.h:    SPYRO_MODEL — expand to a properly-converted host
+      - moby.h:    SPYRO_MODEL - expand to a properly-converted host
                    pointer using `__psx_g_Models[0]` (the rewriter can't
                    reconstruct the subscript at the macro-use site since
                    the cursor extent points at the SPYRO_MODEL token).

@@ -25,7 +25,7 @@
 const game_layout_t game_layout = {
     .display = {
         /* func_80011BBC: SetDefDrawEnv(a2=0xC, a3=0x200, sp+0x10=0xD8) and
-         * SetDefDispEnv(a3=0x200, sp+0x10=0xF0) (init.s:80011C00-80011C48) —
+         * SetDefDispEnv(a3=0x200, sp+0x10=0xF0) (init.s:80011C00-80011C48) -
          * a 512x216 clip inside a 512x240 display, 12 undrawn rows per side. */
         .disp_w = 512, .disp_h = 240, .clip_h = 216,
     },

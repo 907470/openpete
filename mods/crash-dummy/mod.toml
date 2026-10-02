@@ -1,4 +1,4 @@
-# crash-dummy — CI fixture: crashes the game on purpose.
+# crash-dummy - CI fixture: crashes the game on purpose.
 #
 # Dereferences NULL on the 100th CameraUpdate call so the crash report can
 # be checked for the line naming this mod ("MOD ATTRIBUTION: ... mod

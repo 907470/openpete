@@ -4,10 +4,10 @@
 #include "psx_unorm8.glsl"
 #include "psx_viewz.glsl"
 
-/* Terrain sector-mesh vertex stage — the retained-terrain GPU path
+/* Terrain sector-mesh vertex stage - the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
  *
- * Mirrors — bit-for-bit — what the CPU walk (terrain.c walk_sector +
+ * Mirrors - bit-for-bit - what the CPU walk (terrain.c walk_sector +
  * terrain_feed_native) computes per present for an UNCLAIMED sector: the GTE
  * camera transform (ngte_mac + proj_screen), the per-face verdicts (NCLIP
  * two-half back-face cull with the UNR-overflow regime, the .s LP far-cull
@@ -20,16 +20,16 @@
  *
  * EXACTNESS CONTRACT: the CPU walk does this math in double and rounds each
  * screen coordinate to float ONCE. This stage re-runs the same ops in the
- * same order in fp64 (`precise` — no FMA contraction) and casts at the same
+ * same order in fp64 (`precise` - no FMA contraction) and casts at the same
  * points, so the emitted float positions are identical and the raster is
  * pixel-identical. HQ sub-quad nodes are built by averaging the TRANSFORMED
- * corner values (cv_mid mirrors), never by transforming baked midpoints —
+ * corner values (cv_mid mirrors), never by transforming baked midpoints -
  * the CPU's float rounding differs between the two.
  *
  * Sector ownership is decided on the CPU (sector-params UBO): a claimed
  * sector renders through the unchanged CPU walk and is killed here, so no
  * face is ever drawn by both paths. Claimed sectors include everything that
- * may approach the near plane — an unclaimed vertex is GUARANTEED m3 well
+ * may approach the near plane - an unclaimed vertex is GUARANTEED m3 well
  * in front of the camera, which is what makes the raw H/m3 projection (no
  * near clipping, no straddle handling) safe here. */
 
@@ -47,7 +47,7 @@ layout(location = 8) in ivec4 inC2;       /* c2.z, c3.xyz                 */
 #if defined(TERRAIN_ANIM) && !defined(TERRAIN_CELLS)
 /* Poly-anim chunks (binding 1, rhi_terrain_prev): previous-tick twin of the
  * position + parent corners. Every local coordinate is lerped prev->cur in
- * fp64 at the build's alpha and CAST TO FLOAT before the camera transform —
+ * fp64 at the build's alpha and CAST TO FLOAT before the camera transform -
  * the exact mirror of tsc_vanim_lerp filling cvF (alpha = 1 on canonical
  * builds collapses to cur bit-exactly, ints casting to float losslessly). */
 layout(location = 9)  in ivec4 inPrevPos; /* prev xyz (x4 fixed), pad     */
@@ -61,7 +61,7 @@ layout(location = 13) in uvec2 inPrevCol;
 #if defined(TERRAIN_NEAR) && !defined(TERRAIN_CELLS)
 /* Near-variant chunks (binding 1, rhi_terrain_nearctx): the OTHER two
  * emitted-tri members' attributes, in emit order relative to self
- * (a = self+1, b = self+2 mod 3). Positions need no context — every vertex
+ * (a = self+1, b = self+2 mod 3). Positions need no context - every vertex
  * already carries the parent face corners the whole triangle is built from.
  * With these the vertex stage can resolve all three members' pre-clip colour
  * and UV and re-run the walk's near-plane clip fan. */
@@ -129,13 +129,13 @@ layout(push_constant) uniform TerrainPC {
      * present from the renderer's live snap state rather than baked as a spec
      * constant, so the runtime setter needs no pipeline rebuild, and carried
      * here rather than in the globals UBO because that block is re-uploaded
-     * only when the terrain walk publishes new state — a snap toggled between
+     * only when the terrain walk publishes new state - a snap toggled between
      * publishes would lag the CPU walk by one publish and the two feeds would
      * disagree for those presents. */
     int  snap;
 } pc;
 
-/* scene_to_clip mirror, term for term in float — a fitted affine loses ~5
+/* scene_to_clip mirror, term for term in float - a fitted affine loses ~5
  * subpixel LSBs at the screen edges and flips rasterized edge pixels. */
 vec2 clip_of(vec2 sxy) {
     float nx = sxy.x / pc.cdims.x;
@@ -147,7 +147,7 @@ vec2 clip_of(vec2 sxy) {
 
 /* Mirrored by native_terrain_cache.c's tc_globals_ubo (C natural layout ==
  * std140 there, which the dvec4 runs' 32-byte alignment depends on) and, as a
- * prefix, by terrain.frag — a field added here must land in both. */
+ * prefix, by terrain.frag - a field added here must land in both. */
 layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  mrow0;    /* xyz: M[0][*] (raw int16 values)                    */
     vec4  mrow1;    /* xyz: M[1][*]                                       */
@@ -193,7 +193,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  sdvc[128];     /* per-tile 4x4 near-cell row V offsets (rows 0-3) */
 } g;
 
-/* g.fog.y bits — keep in sync with openpete_terrain_cache.h OPTC_GF_* */
+/* g.fog.y bits - keep in sync with openpete_terrain_cache.h OPTC_GF_* */
 #define GF_NEARHQ    1
 #define GF_CLUTFOG   2
 #define GF_CULLHP    4
@@ -217,7 +217,7 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
     TerrainSector sec[512];
 } s;
 
-/* Sector flag bits — keep in sync with openpete_terrain_cache.h OPTC_SF_* */
+/* Sector flag bits - keep in sync with openpete_terrain_cache.h OPTC_SF_* */
 #define SF_DRAWN      1u
 #define SF_DRAWHP     2u
 #define SF_DRAWLP     4u
@@ -229,7 +229,7 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define SF_LPGRADE    256u
 #define SF_NEARVAR    512u
 
-/* face_flags bits — keep in sync with rhi_terrain_vertex (rhi.h) */
+/* face_flags bits - keep in sync with rhi_terrain_vertex (rhi.h) */
 #define FF_SLOT_MASK  0x1FFu
 #define FF_TIER_LP    (1u << 9)
 #define FF_FOGBIAS    (1u << 10)
@@ -247,7 +247,7 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
                                     * key-only records (OPTC_ARENA_KN / KA) */
 /* admit (LP): bits 19-23; otbias: bits 24-28 */
 
-/* Depth convention + PSX-affine interpolation — the scene stages' spec
+/* Depth convention + PSX-affine interpolation - the scene stages' spec
  * constants (psx_scene.vert), captured at pipeline creation. The cache's
  * pre-pass pipelines are FORWARD-class, so DEPTH_REVERSED is false there and
  * they write the pre-pass image's 1 - 1/vz beside prepass.vert. */
@@ -297,7 +297,7 @@ precise vec2 proj_of(dvec3 m) {
 }
 
 /* Integer vertex-snap mirror (push_tri): the emitted screen point is floored
- * to the PSX integer pixel grid. TRUNCATE, not round — the GTE derives SXY as
+ * to the PSX integer pixel grid. TRUNCATE, not round - the GTE derives SXY as
  * MAC0 >> 16, an arithmetic shift. X/Y only: camera-space Z, the perspective
  * q and the UVs are untouched, so depth and texturing stay unquantised. The
  * grid is display-resolution-independent because this point is pre-normalise
@@ -319,8 +319,8 @@ const int NODEMAP[4][4] = int[4][4](int[4](0, 4, 6, 8),
  * a BOUNDARY MIDPOINT differs: it is placed on the SEGMENT between its two
  * snapped parent corners, at the parameter of the true camera-space
  * midpoint's projection. That keeps the midpoint collinear with the snapped
- * parent edge — the unsubdivided neighbour sharing that edge draws the same
- * line, so no T-junction crack opens — while staying perspective-correct
+ * parent edge - the unsubdivided neighbour sharing that edge draws the same
+ * line, so no T-junction crack opens - while staying perspective-correct
  * along the edge, which a plain screen midpoint would not be (the HQ tiles
  * are attached to these vertices, and a screen-parametric midpoint re-warps
  * near textures the way the subdivide exists to prevent).
@@ -810,7 +810,7 @@ void kill_vert() {
 
 /* ---- portal inner-rim cull (portal_rim_classify mirror) --------------------
  * The CPU feed classifies every emitted tri against the active portal
- * opening planes and DROPS accepted rim faces — they lie in the opening
+ * opening planes and DROPS accepted rim faces - they lie in the opening
  * plane, coincident with the destination-sky preview, and no depth ordering
  * can separate them. Same classifier here, in fp64 `precise`, on the tri
  * rebuilt from the corner attributes (flags16 bit13 = second half/sub-tri).
@@ -923,7 +923,7 @@ bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) 
 /* ---- blended-face portal-cover drop (portal_sky_covers mirror) ------------
  * The CPU feed drops any BLENDED emitted tri whose screen centroid sits
  * inside an active opening's outline polygon with the tri's mean view-Z at
- * or behind the opening plane minus the cover margin — the destination-sky
+ * or behind the opening plane minus the cover margin - the destination-sky
  * preview repaints that whole area, and a blended face cannot be depth-
  * punched out of it the way opaque cover is. Same test here on the rebuilt
  * emitted tri: float32 arithmetic exactly where the CPU's is float (the
@@ -968,7 +968,7 @@ bool cover_dropped(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
  * whenever the clip produced fewer than 4 output vertices.
  *
  * A clip corner carries the position, colour and UV the walk resolved BEFORE
- * the clip — fogging and the LP grade run per parent corner, and the cut
+ * the clip - fogging and the LP grade run per parent corner, and the cut
  * interpolates their OUTPUT, never re-fogs at the cut position. */
 /* os/ov mirror ngte_cvert.osx/osy/oflag: the screen-space override the HQ
  * subdivide installs on its own nodes under the integer snap. A cut vertex
@@ -1009,7 +1009,7 @@ cvx cv_lerp_n(cvx a, cvx b, double zc) {
 vec2 scr_of(cvx v) { return v.ov ? v.os : snap_of(proj_of(v.m)); }
 
 /* Max distance (PSX px) a crossing vertex may project from the screen centre
- * before the whole face is re-clipped at a doubled zc — the walk's own
+ * before the whole face is re-clipped at a doubled zc - the walk's own
  * CLIP_PROJ_LIMIT (crossing projections shrink ~1/zc, so this terminates
  * fast, and everything it trims lies far outside any visible frame). */
 #define CLIP_PROJ_LIMIT 2048.0
@@ -1258,7 +1258,7 @@ void main()
      * Cross products run on DOUBLES OF THE FLOAT screen coords (the CPU's
      * NSAT(sv.sx)); the GTE [-1024,1023] saturation is waived in the UNR
      * divide-overflow regime (any corner m3 < H_canon/8, the GTE's H, so
-     * the regime does not move with --fov — the .s's own SXY there is
+     * the regime does not move with --fov - the .s's own SXY there is
      * pinned garbage, so the TRUE facing is used). */
     vec2 p0f = proj_of(m0), p1f = proj_of(m1), p2f = proj_of(m2), p3f = proj_of(m3c);
     bool unr_ovf = (m0.z < g.dspare.x / 8.0lf) || (m1.z < g.dspare.x / 8.0lf) ||
@@ -1321,7 +1321,7 @@ void main()
             }
         }
         /* (The legacy lpFarOnly fog-corner near gate only exists with
-         * LP_ADMIT=0, which forces the CPU walk — never mirrored here.) */
+         * LP_ADMIT=0, which forces the CPU walk - never mirrored here.) */
     }
 
     /* ---- LOD handoff: .s HP drop (sum of corner SZ3 >= m_LodDistance) ----
@@ -1473,18 +1473,18 @@ void main()
     }
 
     /* ---- portal drops: rebuild THIS vertex's emitted tri and run the two
-     * feed-side portal classifiers on it — the inner-rim cull (all faces)
+     * feed-side portal classifiers on it - the inner-rim cull (all faces)
      * and the blended-face transparent-cover drop (flags16 bit 14).
-     * Triangulation matches the bake exactly — flat LP (i0,i1,i2)+
+     * Triangulation matches the bake exactly - flat LP (i0,i1,i2)+
      * (i1,i2,i3), flat HP (i0,i1,i3)+(i1,i3,i2), HQ sub-quad (c0,c1,c2)+
-     * (c1,c2,c3) — in the walk's own emit corner ORDER ((tl,tr,bl)+
+     * (c1,c2,c3) - in the walk's own emit corner ORDER ((tl,tr,bl)+
      * (tr,bl,br)), which the cover centroid's float sums need for
      * last-ulp identity; the rim classifier's terms are additionally
      * vertex-SET invariant. Screen coords are the feed's push_tri values:
      * the raw float projections, or their snapped form under the integer
      * vertex precision, which is what the ttri the CPU classifies carries.
      * The near variant runs both classifiers after its clip
-     * instead — the feed classifies the tris it actually emits, which for a
+     * instead - the feed classifies the tris it actually emits, which for a
      * clipped face are the CLIPPED ones. ---- */
     bool covTest = (f16 & 0x4000u) != 0u && g.cov_cnt.x > 0;
 #ifndef TERRAIN_NEAR
@@ -1579,7 +1579,7 @@ void main()
     if (!lp && !hqv && (gf & GF_CLUTFOG) != 0 && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
         ladderFace = true;
-        /* per-corner int casts, then sum — the walk's exact quantisation */
+        /* per-corner int casts, then sum - the walk's exact quantisation */
         int szsum = int(m0.z * fogscale) + int(m1.z * fogscale)
                   + int(m2.z * fogscale) + int(m3c.z * fogscale);
         int key = (szsum >> 7) << 5;
@@ -1611,7 +1611,7 @@ void main()
     /* HD-fold entry select: the bake stores one entry id per LOD half in
      * the clut words' upper 16 bits (0 = no replacement); the drawn half's
      * id ships to the fragment stage with the CONT-fog flags (ladder faces
-     * fade on the published ramp; fogbias shifts it — ff bit 10). */
+     * fade on the published ramp; fogbias shifts it - ff bit 10). */
     vHd = 0u;
     if (g.hd_lad.w != 0.0 && (mat0 & (1u << 23)) != 0u) {
         uint hid = (dbg_half == 1u ? (inMat.w >> 16) : (inMat.y >> 16)) & 0xFFFFu;
@@ -1620,7 +1620,7 @@ void main()
                       | (((ff >> 10) & 1u) << 17);
     }
     /* env UV-scroll: per-tile fractional V offset for THIS build. Flat
-     * faces: the LQ dv (both LOD halves share one offset — the game writes
+     * faces: the LQ dv (both LOD halves share one offset - the game writes
      * the same scroll byte into all four V slots); HQ sub-quads: the
      * per-half dv (entries 1-2 vs 3-4 sit half a window apart in the
      * scroll ring). Zero for a tile that is not on the scroller list. */
@@ -1647,7 +1647,7 @@ void main()
     /* ---- own vertex camera-space value ----
      * Flat/LP verts: transform own position (identical ops to the corner
      * transforms). HQ verts: rebuild the sub-quad node from the TRANSFORMED
-     * parent corners (cv_mid mirrors — midpoints averaged in camera space).
+     * parent corners (cv_mid mirrors - midpoints averaged in camera space).
      * The near variant instead rebuilds the WHOLE emitted triangle, clips it
      * against the near plane and becomes one corner of the clipped fan. */
     precise dvec3 mo;
@@ -1859,7 +1859,7 @@ void main()
     ktab.t0 = uvec4(0u); ktab.t1 = uvec4(0u); ktab.kmin = 0.0; ktab.n = 0;
     if ((gf & GF_KEYON) != 0 && !fillPass) {
         /* Foreground (near-band) faces: ALWAYS the canonical classifier
-         * here (LP tests the distance band alone — word3 = 0), independent
+         * here (LP tests the distance band alone - word3 = 0), independent
          * of the NOLOD HQ pin. GF_NBKEYS (game_layout.terrain.nearband_ot_keys)
          * set: the game keys them through the ordinary insert with their
          * authored slots, so they take the far faces' key below. Clear: the

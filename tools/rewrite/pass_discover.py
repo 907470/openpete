@@ -1,17 +1,17 @@
-"""Pass 6 — auto-manifest discovery.
+"""Pass 6 - auto-manifest discovery.
 
 Walks the libclang AST to enumerate, per native TU:
 
-  - [[dispatch]] candidates — functions defined in this TU whose name is in
+  - [[dispatch]] candidates - functions defined in this TU whose name is in
     symbols.toml. The hand-curated ``native.toml`` may carry extras (e.g.
     ``psyq_main = true`` for ``main``) that auto-discovery doesn't generate;
     the merge step in ``regen-manifest.sh`` treats hand entries as overrides.
 
-  - [[outbound_recomp]] candidates — every called function whose definition
+  - [[outbound_recomp]] candidates - every called function whose definition
     is not in this TU and not in any other native TU within the domain, but
     whose name *is* in ``symbols.toml`` (i.e. it's recompiled MIPS).
 
-  - [[outbound_psyq]] candidates — every called function whose declaring
+  - [[outbound_psyq]] candidates - every called function whose declaring
     header lives under ``third_party/PsyCross/include/`` (the host-side PSYQ
     surface).
 
@@ -19,7 +19,7 @@ Emits a per-TU TOML at ``${SPYRO_GENERATED}/rewritten/<stem>.discovered.toml``
 that downstream ``gen_*.py`` tools merge with ``native.toml``. The TOML is
 *advisory*: hand-curated entries always win on conflict.
 
-This pass makes the project goal concrete — the manifest treadmill
+This pass makes the project goal concrete - the manifest treadmill
 shrinks from "hand-list every callee" to "hand-list the policy bits", with
 the address book emerging from the AST itself.
 """
@@ -34,7 +34,7 @@ import clang.cindex as ci
 
 
 def _arg_token(ty: ci.Type, idx: int) -> str:
-    """libclang Type → dispatch marshalling token (u32 / u8 / ptr / stack_u32)."""
+    """libclang Type -> dispatch marshalling token (u32 / u8 / ptr / stack_u32)."""
     canon = ty.get_canonical()
     kind = canon.kind
     if kind in (ci.TypeKind.POINTER, ci.TypeKind.INCOMPLETEARRAY,
@@ -91,7 +91,7 @@ class DiscoverResult:
     outbound_recomp: List[str] = dc_field(default_factory=list)
     # Function names called from this TU declared by PsyCross headers.
     outbound_psyq: List[str] = dc_field(default_factory=list)
-    # Names that aren't classified — diagnostic.
+    # Names that aren't classified - diagnostic.
     unresolved: List[str] = dc_field(default_factory=list)
 
 
@@ -99,10 +99,10 @@ def run(tu_cursor: ci.Cursor,
         main_path: str,
         symbols: Dict[str, int],
         native_function_names: Set[str]) -> DiscoverResult:
-    """Walk the AST. ``symbols`` maps function name → PSX vaddr (parsed from
+    """Walk the AST. ``symbols`` maps function name -> PSX vaddr (parsed from
     symbols.toml). ``native_function_names`` is the union of function names
     defined by all TUs in this domain's native-source set, used to filter
-    same-domain native→native calls out of the recomp list.
+    same-domain native->native calls out of the recomp list.
     """
     result = DiscoverResult()
 
@@ -112,7 +112,7 @@ def run(tu_cursor: ci.Cursor,
     seen_dispatch: Set[str] = set()
 
     for c in tu_cursor.walk_preorder():
-        # --- Function definitions in this TU → dispatch candidates --------
+        # --- Function definitions in this TU -> dispatch candidates --------
         if c.kind == ci.CursorKind.FUNCTION_DECL and c.is_definition():
             if c.location.file is None:
                 continue
@@ -122,7 +122,7 @@ def run(tu_cursor: ci.Cursor,
             if name in seen_dispatch:
                 continue
             # Skip the wrapper-shaped INCLUDE_ASM_REORDER_HACK function
-            # (`__maspsx_include_asm_hack_<NAME>`) — it's defined as a
+            # (`__maspsx_include_asm_hack_<NAME>`) - it's defined as a
             # C function purely to anchor the inline-asm `.globl <NAME>`
             # directive that publishes the real symbol. It shares its
             # address with the wrapped function in symbols.toml, but
@@ -136,7 +136,7 @@ def run(tu_cursor: ci.Cursor,
                 args = _derive_dispatch_args(c)
                 result.dispatch.append((name, addr, args))
 
-        # --- Call sites → outbound classification -------------------------
+        # --- Call sites -> outbound classification -------------------------
         if c.kind == ci.CursorKind.CALL_EXPR:
             callee = c.referenced
             if callee is None or callee.kind != ci.CursorKind.FUNCTION_DECL:
@@ -150,33 +150,33 @@ def run(tu_cursor: ci.Cursor,
             if callee.location.file is not None:
                 decl_path = str(callee.location.file.name)
 
-            # Is it defined here in this TU? — local helper, skip.
+            # Is it defined here in this TU? - local helper, skip.
             defn = callee.get_definition()
             if defn is not None and defn.location.file is not None:
                 defn_path = str(Path(defn.location.file.name).resolve())
                 if defn_path == own:
                     continue
 
-            # Is it defined in another native TU? — skip (direct native call).
+            # Is it defined in another native TU? - skip (direct native call).
             if name in native_function_names and name not in seen_dispatch:
                 # name is provided by another native TU in this domain
                 continue
 
-            # PsyCross-declared → outbound_psyq.
+            # PsyCross-declared -> outbound_psyq.
             if decl_path and _is_psyq_header(decl_path):
                 if name not in seen_psyq:
                     seen_psyq.add(name)
                     result.outbound_psyq.append(name)
                 continue
 
-            # In symbols.toml → outbound_recomp.
+            # In symbols.toml -> outbound_recomp.
             if name in symbols:
                 if name not in seen_recomp:
                     seen_recomp.add(name)
                     result.outbound_recomp.append(name)
                 continue
 
-            # Otherwise — host helper (libc, openpete_*, etc.) — no entry.
+            # Otherwise - host helper (libc, openpete_*, etc.) - no entry.
             if name not in seen_recomp and name not in seen_psyq:
                 # Track unclassified names that *look* game-relevant (skip
                 # libc/compiler builtins by prefix).
@@ -215,7 +215,7 @@ def render_toml(stem: str, result: DiscoverResult) -> str:
         out.append(f'psyq_name = "{name}"')
         out.append("")
     if result.unresolved:
-        out.append("# Callees that don't fit any bucket — review:")
+        out.append("# Callees that don't fit any bucket - review:")
         for name in sorted(set(result.unresolved)):
             out.append(f"#   {name}")
         out.append("")

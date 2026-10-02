@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_feeder_subtick.sh — sub-tick interpolation of a self-linking feeder,
+# check_feeder_subtick.sh - sub-tick interpolation of a self-linking feeder,
 # measured as the screen position of the pixels it paints. Two render paths use
 # it: the gem glint (check_glint_subtick.sh) and the glow ring
 # (check_glow_subtick.sh), which is the form each wrapper names.
@@ -87,9 +87,9 @@
 # the sub-tick replay distinguished by `src=`. The vertices are the feeder's
 # own floats, so no leave-one-out and no clustering are needed: one run per
 # alpha carries the two canonical ticks and the intermediate present together.
-# `--render-paths` cannot isolate this path on its own — the ordering-table
+# `--render-paths` cannot isolate this path on its own - the ordering-table
 # filter drops the portal prims before the drawing-primitive count, so fast
-# boot never ends and no present is reached — and the vertex list is the
+# boot never ends and no present is reached - and the vertex list is the
 # isolation instead. The engagement counter is the fed triangle count per leg.
 #
 # The glint-ext path takes the third statistic: the extent each glint record
@@ -202,13 +202,13 @@
 # visible centroid lands short of canon(V) by the occlusion's shift. With no
 # such blob the knob reached nothing this row can see, the normal legs prove
 # nothing, and the row is VACUOUS. One blob
-# suffices because a row may name a control blob the knob cannot move — a
+# suffices because a row may name a control blob the knob cannot move - a
 # producer already at rest in the world, whose whole step is the camera's.
 #
 # alpha 0 is captured and reported, not judged. The replay is a screen-space
-# rebase of the tick's own primitives, so at alpha 0 it shows the tick's blob —
+# rebase of the tick's own primitives, so at alpha 0 it shows the tick's blob -
 # its size and its outline, which each routine derives from its record's own
-# state — standing where the tick before drew its own, slightly different,
+# state - standing where the tick before drew its own, slightly different,
 # blob. The two masks differ by a pixel or two and the centroid follows, which
 # measures that state's ramp rather than the rebase. Reproducing the previous
 # tick's blob outright needs a second copy of the routine's geometry, which
@@ -217,8 +217,8 @@
 # Input: the path's manifest, rows
 #   <source> | <V> | <key>=<value> ...
 # <source> is a movie under games/<slug>/bk2, or any name not ending in .bk2,
-# which is the plain boot — the title screen and the attract demo, which need
-# no input — replayed with no movie, the same movie-less row form the
+# which is the plain boot - the title screen and the attract demo, which need
+# no input - replayed with no movie, the same movie-less row form the
 # presentation corpus takes. A movie-less row may name `level=<name>` (booted
 # with --skip-to-level) and `pose=<x>,<y>,<z>,<yaw>,<pitch>` (a --freecam-pose
 # held once the level is live), which is how a row reaches a level no movie in
@@ -1340,7 +1340,7 @@ def components(px):
 
 def seg_dist(c, a, b):
     """Distance from a component's centroid to the segment between the two
-    canonical positions — the line the blob's own motion lies on."""
+    canonical positions - the line the blob's own motion lies on."""
     dx, dy = b[0] - a[0], b[1] - a[1]
     n = dx * dx + dy * dy
     t = 0.0 if n == 0 else ((c[0] - a[0]) * dx + (c[1] - a[1]) * dy) / n

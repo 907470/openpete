@@ -1,4 +1,4 @@
-/* core/renderer/openpete_interp_objs.c — per-object prev-state snapshot table.
+/* core/renderer/openpete_interp_objs.c - per-object prev-state snapshot table.
  *
  * See openpete_interp_objs.h for the contract. Open-addressing hash table
  * (linear probe) keyed by object identity. Despawn eviction is done by
@@ -10,13 +10,13 @@
  */
 
 #include "openpete_interp_objs.h"
-#include "openpete_interp.h"   /* openpete_interp_enabled() — shared gate */
-#include "openpete_time.h"     /* op_now() — per-object distinct-roll timestamps */
+#include "openpete_interp.h"   /* openpete_interp_enabled() - shared gate */
+#include "openpete_time.h"     /* op_now() - per-object distinct-roll timestamps */
 
 /* PLL-smoothed VBL stamp shared with the region ring (set in run.c right
  * after openpete_interp_capture; the ring's gridded curr_tick_ns under
  * deterministic capture). Roll timestamps must sit on the ideal VBL
- * grid, not the jittery actual tick-completion time — jittery stamps make the
+ * grid, not the jittery actual tick-completion time - jittery stamps make the
  * per-object alpha mapping discontinuous at every roll (fast movers judder
  * ±half a tick per present). Falls back to op_now() if unset (unit harnesses
  * that drive the objs table without the run loop). */
@@ -177,7 +177,7 @@ static uint32_t probe(uint32_t key, int* found) {
         i = (i + 1u) & (SLOTS - 1u);
     }
     *found = 0;
-    return SLOTS;   /* table full — caller drops rather than corrupt a colliding slot */
+    return SLOTS;   /* table full - caller drops rather than corrupt a colliding slot */
 }
 
 void openpete_interp_objs_begin_tick(void) {
@@ -195,23 +195,23 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
 
     int found;
     uint32_t i = probe(key, &found);
-    if (i >= SLOTS) return;   /* table full — drop rather than corrupt a colliding slot */
+    if (i >= SLOTS) return;   /* table full - drop rather than corrupt a colliding slot */
 
     if (found) {
         /* Dedupe at capture (mirrors openpete_interp_capture): if this object's
          * blob is byte-identical to last tick's curr, the game logic didn't
-         * advance it (30 Hz logic on a 60 Hz VBL → every other tick is static),
-         * so DON'T roll — keep prev pinned to the last DISTINCT state. Otherwise
+         * advance it (30 Hz logic on a 60 Hz VBL -> every other tick is static),
+         * so DON'T roll - keep prev pinned to the last DISTINCT state. Otherwise
          * a static VBL rolls curr into prev, losing the real prev, and the
          * object snaps to curr while the (deduped) camera ring is still
-         * interpolating prev→curr → the object leads the world (ghosting with
+         * interpolating prev->curr -> the object leads the world (ghosting with
          * camera movement). Keeping both rings on the same distinct-tick
          * boundaries makes the shared alpha consistent. */
         if (s_tab[i].blob_len == (uint16_t)len &&
             memcmp(s_tab[i].curr, data, len) == 0) {
             s_tab[i].seen         = 1;
             s_tab[i].curr_seen_ns = objs_tick_stamp();
-            return;                       /* unchanged — keep prev/curr + their roll timestamps */
+            return;                       /* unchanged - keep prev/curr + their roll timestamps */
         }
         /* Existing object that moved: roll prev -> prev2 (for the pred1 centered
          * tangent), then curr -> prev, write curr, and stamp the roll times so
@@ -238,7 +238,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         s_tab[i].curr_ns   = objs_tick_stamp();
         s_stat_spawned++;
         /* OPENPETE_INTERP_OBJS_KEYLOG: one stderr line per spawn, with the
-         * key — the identity instrument for keying tests (a re-keyed object
+         * key - the identity instrument for keying tests (a re-keyed object
          * shows as a spawn every tick it is re-keyed). */
         {
             static int s_keylog = -1;

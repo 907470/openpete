@@ -184,13 +184,13 @@ checkbox, sliders, combo, input text, separator, same-line, tooltip) over
 the engine's overlay; register a body with `OPENPETE_MOD_UI_SECTION(fn)` at
 file scope in one source file and it draws inside the mod's node of the
 Mods section, while that overlay is open. For anything beyond those eleven
-— windows, tables, plots, tree nodes, tabs, popups, colour editors, draw
-lists, fonts — `openpete_imgui.h` hands a mod the whole ImGui C API:
+- windows, tables, plots, tree nodes, tabs, popups, colour editors, draw
+lists, fonts - `openpete_imgui.h` hands a mod the whole ImGui C API:
 see [ImGui](imgui.md).
 
 **Always-on sections.** `OPENPETE_MOD_UI_SECTION_FLAGS(fn,
 OPENPETE_MOD_UI_ALWAYS)` registers a body that runs on every present
-instead, whatever the overlay is doing — a stats readout, a draw-list
+instead, whatever the overlay is doing - a stats readout, a draw-list
 overlay. It runs at top level, not inside the mod's node, so it owns its
 windows: every widget it emits outside an `ImGui_Begin` lands in
 ImGui's default debug window. With the overlay closed its windows take no

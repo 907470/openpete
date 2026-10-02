@@ -1,4 +1,4 @@
-// core/psx/vstream.c — see openpete_vstream.h.
+// core/psx/vstream.c - see openpete_vstream.h.
 
 #include "openpete_vstream.h"
 #include "openpete_log.h"
@@ -22,7 +22,7 @@ static void unresolved(uint32_t masked) {
     if (s_census.unresolved++ == 0) {
         s_census.first_unresolved = masked;
         OPL_ERROR_F("vstream", "frame word field %#x is below the handle "
-                    "bound and no handle is bound to it — a stream the "
+                    "bound and no handle is bound to it - a stream the "
                     "game will read from address 0 (garbage vertices); "
                     "either a mod wrote a handle it never requested, or a "
                     "stock stream sits in the kernel area", masked);

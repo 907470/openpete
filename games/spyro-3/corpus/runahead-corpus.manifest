@@ -7,7 +7,7 @@
 # pixels across those two ticks, which is the row's floor for reading the
 # statistic. VBL 1500, which the presentation corpus pins, is not usable here:
 # the camera pans ~70 units per tick there, and a led capture differs from the
-# canonical one by 218351 pixels of which 128538 differ by less than 8 — a
+# canonical one by 218351 pixels of which 128538 differ by less than 8 - a
 # sub-pixel view offset that swamps the defect.
 #
 # Speculation on this movie is adopted into the real timeline at VBL 1927 (a

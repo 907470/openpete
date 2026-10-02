@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# check_determinism_matrix.sh — broaden the determinism gate from
+# check_determinism_matrix.sh - broaden the determinism gate from
 # "title-screen demo at 4:3 vs 16:9" to a matrix of
 # {scenario × aspect × fov} cells, all asserted bit-identical to the
 # scenario's canonical (4:3, default-fov) cell.
@@ -13,7 +13,7 @@
 # (gate is documented red until those channels are closed); divergence
 # in a `gated`/`verified` channel is a REGRESSION (the harness exits
 # non-zero). We piggyback on tools/classify_hash_divergence.py to make
-# that distinction — any line tagged REGRESSION in any cell fails.
+# that distinction - any line tagged REGRESSION in any cell fails.
 #
 # Defaults are tuned for a "PR-tier" sweep that runs in a handful of
 # minutes locally. For a full nightly-style sweep, pass --full or
@@ -43,10 +43,10 @@
 #     [--keep-logs]                  (don't delete per-cell stdout)
 #
 # Exit codes:
-#   0 — every cell either matches its baseline or diverges only in
+#   0 - every cell either matches its baseline or diverges only in
 #       open-status channels (documented expected red).
-#   1 — at least one cell diverges in a gated/verified channel.
-#   2 — setup error.
+#   1 - at least one cell diverges in a gated/verified channel.
+#   2 - setup error.
 
 set -uo pipefail
 
@@ -115,7 +115,7 @@ fi
 if [[ $SOAK -eq 1 ]]; then
     # Soak: long-replay mode for hunting slow-burn / late-frame channel
     # leaks that 2000-frame PR-tier cells miss. Trade matrix breadth for
-    # per-cell depth — default fov only, default aspect axis, full corpus,
+    # per-cell depth - default fov only, default aspect axis, full corpus,
     # `--bk2-stop-on-end` so each cell exits as soon as its movie ends
     # rather than spinning out to FRAMES.
     [[ "$ASPECTS_CSV" == "4:3,16:9,21:9" ]] && ASPECTS_CSV="4:3,16:9"
@@ -251,7 +251,7 @@ if (( regressions > 0 )); then
     exit 1
 fi
 if (( broken_runs > 0 )); then
-    echo "[$mode_tag] FAIL: $broken_runs cell(s) failed to run — see $OUT_DIR/log-*.txt" >&2
+    echo "[$mode_tag] FAIL: $broken_runs cell(s) failed to run - see $OUT_DIR/log-*.txt" >&2
     exit 1
 fi
 exit 0

@@ -1,19 +1,19 @@
-// games/common/renderer/native_gte.h — the ONE copy of the GTE
+// games/common/renderer/native_gte.h - the ONE copy of the GTE
 // float-mirror math shared by every native feeder of every game.
 //
 // Two projection families exist on purpose:
 //
-//   * ngte_project_raw — unclamped float H/z (moby, cyclorama). More
+//   * ngte_project_raw - unclamped float H/z (moby, cyclorama). More
 //     correct than the GTE for widescreen reveal; callers own their
 //     near-plane policy on the returned view-Z.
-//   * ngte_project_gte / ngte_screen_gte — the GTE-faithful pipeline
+//   * ngte_project_gte / ngte_screen_gte - the GTE-faithful pipeline
 //     (IR16 saturation, SZ3 clamp, 0x1FFFF divide cap, optional ±1024
 //     SXY bound) used where PSX screen positions must be matched to the
-//     unit (spyro, flame, shadow, particle — particle drops the SXY
+//     unit (spyro, flame, shadow, particle - particle drops the SXY
 //     bound: widescreen reveal needs the true X).
 //
 // Near-plane z-floors deliberately stay in the CALLERS: they encode
-// per-feeder policy (moby !=0→1.0, portal >1.0, terrain 1e-9, tracer
+// per-feeder policy (moby !=0->1.0, portal >1.0, terrain 1e-9, tracer
 // reject ≤1.0) and unifying them is a behaviour change, not consolidation.
 
 #ifndef OPENPETE_NATIVE_GTE_H

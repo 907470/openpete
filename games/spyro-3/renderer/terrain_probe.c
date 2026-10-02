@@ -1,4 +1,4 @@
-// games/spyro-3/renderer/terrain_probe.c — the calibrated terrain probe.
+// games/spyro-3/renderer/terrain_probe.c - the calibrated terrain probe.
 //
 // Hooks the world draw, runs it once, brackets the primitives it emitted
 // between the polybuf cursor before and after, walks them by OT tag length,

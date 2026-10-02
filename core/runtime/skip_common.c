@@ -1,4 +1,4 @@
-// core/runtime/skip_common.c — plumbing shared by the games' skip modules.
+// core/runtime/skip_common.c - plumbing shared by the games' skip modules.
 // See core/include/openpete_skip.h.
 
 #include "openpete_skip.h"

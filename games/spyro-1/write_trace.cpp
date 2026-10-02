@@ -1,4 +1,4 @@
-/* games/spyro-1/write_trace.cpp — frame-gated write_word trace for one
+/* games/spyro-1/write_trace.cpp - frame-gated write_word trace for one
  * recompiled function: logs the prim-buffer write stream so a bad and a
  * good openpete_frame can be diffed. Activated by setting:
  *
@@ -44,7 +44,7 @@ void trace_write_word(uint32_t addr, uint32_t value) {
         /* Log addr/value plus the two destination-base registers so we can
          * recover which source line emitted the write. Most writes in the
          * renderer are `write_word(t9 + N, ...)` or `write_word(at + N, ...)`
-         * — diff (addr - t9) or (addr - at) against the source line list. */
+         * - diff (addr - t9) or (addr - at) against the source line list. */
         std::fprintf(g_trace_fp, "%u,%u,0x%08X,0x%08X,0x%08X,0x%08X,0x%08X\n",
                      openpete_frame, g_call_idx, addr, value,
                      g_trace_cpu->t9, g_trace_cpu->at, g_trace_cpu->t8);

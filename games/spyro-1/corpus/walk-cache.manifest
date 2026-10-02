@@ -1,4 +1,4 @@
-# walk-cache.manifest — (level, pose) tuples for the terrain walk-vs-cache check
+# walk-cache.manifest - (level, pose) tuples for the terrain walk-vs-cache check
 # (tests/harness/check_terrain_walk_cache.sh).
 #
 # One row per pose:  <level> | pos=(x, y, z) yaw=Y pitch=P | [lod]

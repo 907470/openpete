@@ -1,4 +1,4 @@
-/* openpete_ident_audit.h — every-tick sub-tick-spine identity audit.
+/* openpete_ident_audit.h - every-tick sub-tick-spine identity audit.
  *
  * The canonical dump at VBL F composes the current scene: the newest tick's
  * feed. The explicit sub-tick re-extract phased onto that same tick's stamp
@@ -8,7 +8,7 @@
  *
  * The corpus's `ident` leg checks that on a handful of sampled frames by
  * diffing PNGs. This audit checks it on EVERY canonical present, in-binary, and
- * emits one line per tick instead of a pair of images — so the whole bk2 corpus
+ * emits one line per tick instead of a pair of images - so the whole bk2 corpus
  * can be swept in one unattended headless run without writing thousands of
  * files.
  *

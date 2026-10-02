@@ -1,4 +1,4 @@
-/* core/psx/disc_cache.c — see openpete_disc_cache.h. */
+/* core/psx/disc_cache.c - see openpete_disc_cache.h. */
 #include "openpete_disc_cache.h"
 #include "openpete_crash.h"
 #include "openpete_log.h"

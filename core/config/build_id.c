@@ -1,4 +1,4 @@
-/* core/config/build_id.c — the configure-time build identity, as accessors.
+/* core/config/build_id.c - the configure-time build identity, as accessors.
  *
  * The macros are PRIVATE compile definitions of openpete_core (core/
  * CMakeLists.txt), so only a core translation unit can read them. The game

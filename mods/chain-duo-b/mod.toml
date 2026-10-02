@@ -1,4 +1,4 @@
-# chain-duo-b — CI fixture: the other half of chain-duo-a.
+# chain-duo-b - CI fixture: the other half of chain-duo-a.
 
 [mod]
 id      = "chain-duo-b"
@@ -7,4 +7,4 @@ version = "0.1.0"
 game    = "spyro-1"
 api     = 1
 state    = "none"      # call counter only
-runahead = "host-fx"   # nesting logs — suppressible
+runahead = "host-fx"   # nesting logs - suppressible

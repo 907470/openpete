@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gen_game_structs.py — typed game structs for the mod SDK.
+"""gen_game_structs.py - typed game structs for the mod SDK.
 
 Emits every top-level `typedef struct` of the matching decomp's include/
 (the layouts are authoritative: they build a byte-identical PSX binary),
@@ -7,7 +7,7 @@ preceded by the PSYQ types they embed (tools/psyq_types.py), rewritten
 for 64-bit hosts viewing 32-bit guest RAM:
 
   - pointer fields and pointer arrays become `uint32_t` guest vaddrs (a
-    host pointer would be 8 bytes and wreck the layout) — the original
+    host pointer would be 8 bytes and wreck the layout) - the original
     type is kept in a comment; dereference via api->guest()
   - PSX-width typedefs (u_char/u_short/u_int/u_long/uint/ushort, and
     `long`, which is 32-bit on MIPS) become fixed-width stdint types
@@ -15,16 +15,16 @@ for 64-bit hosts viewing 32-bit guest RAM:
 
 Every emitted struct is pinned by _Static_asserts on its size and on the
 offset of every non-bitfield member, with the values read from
-manifest/struct_layout.toml — the MIPS o32 layout probed by
-tools/probe_struct_layout.py from the original headers — so the host
+manifest/struct_layout.toml - the MIPS o32 layout probed by
+tools/probe_struct_layout.py from the original headers - so the host
 compile of a mod proves the rewritten layout equals the guest layout.
 The toml carries a hash of the headers it was probed from; a checkout
 whose hash differs is refused with the regen command, as is any
 mismatch between the structs and pins emitted here and those in the
 toml. The game's layout pins (tools/game_struct_config.py), each read
 from its own asm or source, are asserted against the toml as a second
-instrument. Everything that differs between decompilations — header
-globs, PSYQ stub set, pins — comes from that config, keyed by --game.
+instrument. Everything that differs between decompilations - header
+globs, PSYQ stub set, pins - comes from that config, keyed by --game.
 
 Usage: gen_game_structs.py --game <slug> --include <decomp include dir>
                            --layout <struct_layout.toml> --out <header>
@@ -55,7 +55,7 @@ WIDTH_MAP = [
     (re.compile(r"\blong\b"), "int32_t"),
 ]
 
-# `T *name;` and `T *name[N];` — the subscripts survive the rewrite.
+# `T *name;` and `T *name[N];` - the subscripts survive the rewrite.
 PTR_FIELD_RE = re.compile(
     r"^(\s*)((?:struct\s+\w+|\w+)\s*\*+)\s*(\w+)((?:\s*\[[^\]]*\])*)\s*;(.*)$")
 

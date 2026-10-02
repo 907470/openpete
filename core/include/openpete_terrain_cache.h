@@ -1,4 +1,4 @@
-/* openpete_terrain_cache.h — the terrain sector-mesh GPU cache (core side).
+/* openpete_terrain_cache.h - the terrain sector-mesh GPU cache (core side).
  *
  * Renderer-generic half of the retained-terrain path: per-class vertex ARENAS in
  * device-local memory, the terrain pipelines (terrain.vert/.frag), the
@@ -11,7 +11,7 @@
  * games/common/renderer/terrain.c.
  *
  * Ownership contract: a sector is rendered by the GPU path IFF its slot was
- * openpete_tercache_sector_set() this present with OPTC_SF_DRAWN — the CPU
+ * openpete_tercache_sector_set() this present with OPTC_SF_DRAWN - the CPU
  * walk must then skip its face loop entirely. Sector slot 511 is RESERVED as
  * the dead-chunk stamp target and is never drawn (the builder claims it). */
 #ifndef OPENPETE_TERRAIN_CACHE_H
@@ -19,7 +19,7 @@
 
 #include <stdint.h>
 
-/* Forward decls only (full definitions in rhi.h) — this header is included
+/* Forward decls only (full definitions in rhi.h) - this header is included
  * by targets that don't carry the RHI include path (knob registry test), so
  * every RHI type appears here as a plain struct-tag pointer. */
 struct rhi_device;
@@ -29,7 +29,7 @@ struct rhi_terrain_prev;
 struct rhi_terrain_nearctx;
 
 /* Vertex arenas, one per draw class. OPAQUE carries every HP face (textured
- * or flat, incl. HQ-subdivide variants and blend-4 "B+F/4" faces — the scene
+ * or flat, incl. HQ-subdivide variants and blend-4 "B+F/4" faces - the scene
  * clamps blend 4 to opaque); ALPHA/ADD/SUB the ABE blend classes 1..3; LP
  * the untextured low-poly tier (drawn in WORLD and re-drawn stencil-gated in
  * FILL). */
@@ -43,7 +43,7 @@ enum {
      * a PARALLEL rhi_terrain_prev buffer (previous-tick position + corners);
      * drawn with the terrain_anim pipelines, which lerp prev->cur at the
      * build's sub-tick alpha. Anim LP is drawn in WORLD (and PREPASS) but
-     * NEVER in FILL — poly-anim sectors are excluded from the hole-fill
+     * NEVER in FILL - poly-anim sectors are excluded from the hole-fill
      * backing (a stale LP bank must not backstop-fill). */
     OPTC_ARENA_A_OPAQUE,
     OPTC_ARENA_A_ALPHA,
@@ -92,7 +92,7 @@ enum {
 #define OPTC_ARENA_IS_CELL(a) ((a) >= OPTC_ARENA_CN_OPAQUE && (a) < OPTC_ARENA_COUNT)
 #define OPTC_ARENA_IS_CELL_ANIM(a) ((a) >= OPTC_ARENA_CA_OPAQUE && (a) < OPTC_ARENA_COUNT)
 
-/* Draw slots — native_render.c calls these at the matching point of its
+/* Draw slots - native_render.c calls these at the matching point of its
  * draw order. WORLD = opaque arena + LP arena (pass WORLD); FILL = LP arena
  * (pass FILL, stencil TEST_ZERO); ALPHA/ADD/SUB = the blend arenas;
  * PREPASS = depth-only opaque + LP (world & fill) into the occlusion
@@ -109,7 +109,7 @@ enum {
 
 /* Sector flag bits (sector-params UBO; mirrored in terrain.vert).
  * Bits 12-14 carry the slot's chunk GENERATION (the vertex stage draws a
- * chunk only when its baked face_flags generation matches — that is what
+ * chunk only when its baked face_flags generation matches - that is what
  * lets a lagged present keep rendering the pre-rebuild chunk, and what
  * retires the old in-place dead-stamp). */
 #define OPTC_SF_DRAWN      1u
@@ -174,7 +174,7 @@ enum {
 
 /* Camera/projection/fog inputs are DOUBLE on purpose: terrain.vert re-runs
  * the CPU walk's double-precision GTE chain (fp64, `precise`) so the emitted
- * float screen coordinates round identically — float32 inputs alone would
+ * float screen coordinates round identically - float32 inputs alone would
  * already break the pixel-identical gate at the last-ulp level. */
 typedef struct {
     float   mrow[3][3];   /* g_Camera+0x00 projection matrix, raw int16 values */
@@ -225,7 +225,7 @@ typedef struct {
      * minus the cover margin; baked faces carry a blend bit (flags16 bit
      * 14) and the vertex stage kills them by the same float-exact test.
      * cov_n = 0 disables (no active portal, or the transparent-cover drop
-     * lever is off — the feed then keeps such tris too). A plane whose
+     * lever is off - the feed then keeps such tris too). A plane whose
      * screen outline projection failed rides with cov_pn = 0 and never
      * matches, exactly like the CPU test's pn < 3 skip. */
     int32_t cov_n;
@@ -268,7 +268,7 @@ int  openpete_tercache_ready(void);
  * presents the PREVIOUS canonical extraction (the canonical-lag leg), so
  * the retained state is double-buffered to match: a hook (canonical) build
  * STAGES its state (immediate=0) and the previous staged state promotes to
- * LIVE; a re-extracted present's build (immediate=1) writes LIVE directly —
+ * LIVE; a re-extracted present's build (immediate=1) writes LIVE directly -
  * its build is the displayed state. stamp = openpete_frame of the build.
  * frame_begin fills the target state's globals + zeroes its sector flags;
  * sector_set publishes one walked sector's verdicts into it; frame_commit
@@ -696,7 +696,7 @@ void openpete_tercache_present_service(void);
 /* Screen->clip mapping for one draw target: the RAW scene_to_clip inputs,
  * so terrain.vert replicates the CPU's exact float expression term for term
  * (a fitted affine reconstruction loses ~5 subpixel LSBs at the screen
- * edges — enough to flip rasterized edge pixels vs the CPU-fed draws). */
+ * edges - enough to flip rasterized edge pixels vs the CPU-fed draws). */
 typedef struct {
     float x_base, x_span;   /* cx = x_base + nx*x_span, nx = sx/disp_w      */
     float y_base, y_span;   /* cy = y_base - ny*y_span, ny = (sy-band)/clip_h */

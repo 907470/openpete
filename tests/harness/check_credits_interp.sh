@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_credits_interp.sh — sub-tick interpolation of the credits-roll
+# check_credits_interp.sh - sub-tick interpolation of the credits-roll
 # letters (--skip-to-cutscene credits / credits_100, GS_Credits with
 # g_CreditsStage < 99).
 #
@@ -21,7 +21,7 @@
 #             and the rightmost glyph's centroid lies strictly between theirs
 #             (a snapped position equals one neighbour).
 #   keys      OPENPETE_INTERP_OBJS_KEYLOG: a HUD-pool key spawns only when a
-#             line spawns — none in the window after a line lands (a key
+#             line spawns - none in the window after a line lands (a key
 #             renamed on the polybuf flip spawns every other tick).
 #
 # Two cases: the short roll early in its sequence (two lines on screen) and

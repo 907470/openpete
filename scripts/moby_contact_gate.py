@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Moby-vs-terrain CONTACT GATE, ground-truthed on geometry.
 
-Design intent: moby/Spyro-vs-terrain occlusion is TRUE per-pixel geometry —
+Design intent: moby/Spyro-vs-terrain occlusion is TRUE per-pixel geometry -
 a deliberate divergence from the PSX's per-prim painter ordering. og does not
 adjudicate this contest, so the reference is the scene's own geometry: one
 OPENPETE_SCENEDUMP carries, for every scene vertex, both the ORDERING depth
@@ -9,8 +9,8 @@ the rasterizer tests (z, with every authored OT shift baked in) and the TRUE
 view-Z (pvz, 0 = unshifted so z already encodes it).
 
 The gate rasterises the moby/terrain subset twice with the same sampling
-rule — once under the shipped ordering rule (interpolate z, min wins), once
-under the true-geometry rule (re-encode pvz, min wins) — and reports every
+rule - once under the shipped ordering rule (interpolate z, min wins), once
+under the true-geometry rule (re-encode pvz, min wins) - and reports every
 pixel whose WINNER DOMAIN (moby vs terrain) differs. Those pixels are
 exactly where an authored offset (terrain tier offsets, moby
 m_DepthOffset pulls) flips a contact against geometry. The gate is clean

@@ -1,4 +1,4 @@
-// core/include/openpete_osd.h — the on-screen display: transient toast
+// core/include/openpete_osd.h - the on-screen display: transient toast
 // notifications, in the game's own gold-bordered chrome.
 //
 // A ring of at most OPENPETE_OSD_MAX toasts. Anyone host-side posts one with
@@ -10,8 +10,8 @@
 // the SIM thread once per tick (the shimmer is baked into vertex colours at
 // emit time, so it cannot be built once and reused); the layout, alpha and
 // draw run on the PRESENT thread once per present. Neither is a snapshot of
-// the other, so this module hands out two of them — openpete_osd_tick_items()
-// for the builder and openpete_osd_present_update() for the compositor — and
+// the other, so this module hands out two of them - openpete_osd_tick_items()
+// for the builder and openpete_osd_present_update() for the compositor - and
 // correlates them by TOAST ID, never by index. A toast can be evicted or
 // repainted between the tick that emitted its geometry and the present that
 // composites it; an index-keyed design samples the wrong toast at the wrong

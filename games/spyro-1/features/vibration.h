@@ -1,5 +1,5 @@
 #pragma once
-/* vibration.h — --vibration: preset Spyro 1's own controller-vibration
+/* vibration.h - --vibration: preset Spyro 1's own controller-vibration
  * setting.
  *
  * The host half of --vibration (motor amplitude, and the headless / focus

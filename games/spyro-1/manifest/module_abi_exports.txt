@@ -1,4 +1,4 @@
-# module_abi_exports.txt — non-psyq symbols the shared-linkage recomp
+# module_abi_exports.txt - non-psyq symbols the shared-linkage recomp
 # module imports from the exe. One symbol per line;
 # append ` DATA` for data symbols (PE .def needs the distinction).
 #

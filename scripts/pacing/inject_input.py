@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""inject_input.py — external injection: real OS input at scheduled wall times.
+"""inject_input.py - external injection: real OS input at scheduled wall times.
 
 Everything inside the process is downstream of the thing that most needs
 measuring. The pulse source built into openpete (OPENPETE_INPUT_PULSE) fires
@@ -7,7 +7,7 @@ just upstream of the latch, so it validates the log's plumbing and the
 analyzer's arithmetic and NOTHING about the way in: it cannot see the SDL pump,
 event delivery, focus, or a main thread parked in a modal drag loop. Worse,
 during exactly that stall it publishes nothing and its own schedule slides with
-it — it would absolve the hazard the host thread split introduced.
+it - it would absolve the hazard the host thread split introduced.
 
 This injects from a separate process, through the OS, into the game's window.
 It is therefore the only producer permitted to state an end-to-end input
@@ -91,7 +91,7 @@ class WindowsInjector:
         n = self.u32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
         if n != 1:
             raise OSError(f"SendInput refused (error {ctypes.get_last_error()}) "
-                          f"— a non-elevated injector cannot reach an elevated "
+                          f"- a non-elevated injector cannot reach an elevated "
                           f"window (UIPI)")
 
     def press(self):
@@ -231,7 +231,7 @@ def main():
 
             # The check GATES the press. SendInput lands in the foreground
             # window whatever that is, so an injector that checks focus but
-            # presses anyway is typing into someone else's application — and
+            # presses anyway is typing into someone else's application - and
             # the presses that did arrive are then not a sample of the
             # schedule, so the run is unusable in both directions at once.
             title = inj.foreground_title() if a.expect_title else ""
@@ -278,7 +278,7 @@ def main():
         for r in recs:
             f.write(json.dumps(r) + "\n")
     print(f"wrote {len(recs) - skipped} injected pulse(s) to {a.out}"
-          + (f" — {skipped} SKIPPED because the game window did not have "
+          + (f" - {skipped} SKIPPED because the game window did not have "
              f"focus: {thieves}" if skipped else ""))
     return 0
 

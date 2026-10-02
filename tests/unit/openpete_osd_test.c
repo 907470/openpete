@@ -1,16 +1,16 @@
-/* tests/unit/openpete_osd_test.c — the OSD toast ring on a synthetic clock.
+/* tests/unit/openpete_osd_test.c - the OSD toast ring on a synthetic clock.
  *
  * openpete_osd.c makes every timing decision from the `now` handed to
  * openpete_osd_present_update, so the whole state machine is exercisable
  * without a window, a present or a wall clock. What is checked here is the
  * part that is genuinely hard to see live:
  *
- *   1. coalescing — a repeated key repaints one toast instead of stacking,
+ *   1. coalescing - a repeated key repaints one toast instead of stacking,
  *      keeps its id (the two readers correlate on it), and takes the
  *      REPAINT's timeout;
- *   2. the ttl starts on the first present WITH GEOMETRY, not at notify() —
+ *   2. the ttl starts on the first present WITH GEOMETRY, not at notify() -
  *      a toast posted before the glyph font caches must be late, not lost;
- *   3. ID SKEW — a toast evicted between the tick that emitted its geometry
+ *   3. ID SKEW - a toast evicted between the tick that emitted its geometry
  *      and the present that composites it must not hand its slot to whoever
  *      inherited its ring index;
  *   4. eviction names a victim in every state, including "every entry is
@@ -19,7 +19,7 @@
  *   6. the stack glides up when a toast above it retires.
  *
  * SDL's mutex API is faked below so the link line stays SDL-free like every
- * other console test here — the same trick keymap_test uses for its input
+ * other console test here - the same trick keymap_test uses for its input
  * seams. The source under test is compiled unmodified. */
 
 #include "../../core/include/openpete_osd.h"
@@ -30,7 +30,7 @@
 #include <string.h>
 
 /* ---- fakes ------------------------------------------------------------- */
-/* The tests are single-threaded, so a counting no-op lock is enough — and it
+/* The tests are single-threaded, so a counting no-op lock is enough - and it
  * doubles as an assertion that every path leaves the lock balanced. */
 static int s_lock_depth, s_lock_max;
 typedef struct SDL_Mutex SDL_Mutex;
@@ -62,7 +62,7 @@ const char *const openpete_anchor_names[OPENPETE_ANCHOR_COUNT] = {
 #define MS(n) ((op_time_t)(n) * OP_NS_PER_MS)
 #define BOX_H 0.06f
 /* A toast is still DRAWN while it fades out, so "expired" means the timeout
- * plus the fade-out. Padded generously — the tests assert the ordering of
+ * plus the fade-out. Padded generously - the tests assert the ordering of
  * events, not the exact easing durations. */
 #define FADE_OUT_PAD_MS 600
 
@@ -98,7 +98,7 @@ static int test_coalesce(void) {
     if (n != 1) FAIL("first notify produced %d toast(s), want 1\n", n);
     const uint32_t id = v[0].id;
 
-    /* 40 repaints on the same key — well past the burst of 4. A bucket that
+    /* 40 repaints on the same key - well past the burst of 4. A bucket that
      * charged repaints would stop updating the text a quarter second in and
      * leave a STALE value on screen while the menu showed the live one. */
     for (int i = 0; i < 40; i++) {
@@ -131,7 +131,7 @@ static int test_ttl_starts_at_first_geometry(void) {
     openpete_osd_ready_t none = { 0, 0.0f };
 
     openpete_osd_notify("host", NULL, 0, "EARLY");
-    /* Ten seconds of presents with NO geometry — the glyph font has not
+    /* Ten seconds of presents with NO geometry - the glyph font has not
      * cached yet. The toast must neither draw nor age. */
     for (int i = 0; i < 100; i++) {
         int n = openpete_osd_present_update(MS(1000 + 100 * i), &none, 0,
@@ -150,7 +150,7 @@ static int test_ttl_starts_at_first_geometry(void) {
     return 0;
 }
 
-/* ---- 3: id skew — geometry from a tick whose toast is already gone ------ */
+/* ---- 3: id skew - geometry from a tick whose toast is already gone ------ */
 static int test_id_skew(void) {
     openpete_osd_reset();
     openpete_osd_set_default_timeout_ms(1000);
@@ -174,7 +174,7 @@ static int test_id_skew(void) {
     t += MS(16);
 
     /* Present with the STALE slot table. The new toast's id is not in it, so
-     * nothing may draw — in particular the new toast must NOT be drawn into
+     * nothing may draw - in particular the new toast must NOT be drawn into
      * the retired one's slot, which is where an index-keyed design would put
      * it (both are ring index 0). */
     openpete_osd_ready_t stale = { stale_id, BOX_H };
@@ -194,7 +194,7 @@ static int test_evict_all_rising(void) {
     openpete_osd_set_default_timeout_ms(5000);
     openpete_osd_view_t v[OPENPETE_OSD_MAX];
 
-    /* Fill the ring and one more, with no present in between — every entry is
+    /* Fill the ring and one more, with no present in between - every entry is
      * still RISING (indeed unstamped), the state the "oldest non-rising" rule
      * alone cannot resolve. The burst is 4 per source, so spread the posts
      * across sources: the point here is the ring rule, not the rate limit. */

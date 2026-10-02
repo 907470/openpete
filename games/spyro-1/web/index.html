@@ -40,7 +40,7 @@
   <h1>Spyro the Dragon</h1>
   <div id="drop">
     Drop your <strong>SCUS-94228.cue</strong> and <strong>SCUS-94228.bin</strong> here<br>
-    <span style="color:#8a8d99">(or click to choose files — select both)</span>
+    <span style="color:#8a8d99">(or click to choose files - select both)</span>
     <input id="file" type="file" multiple accept=".cue,.bin">
   </div>
 
@@ -63,7 +63,7 @@
   function log(s) { logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; }
   function setProgress(f) { barWrap.style.display = "block"; bar.style.width = (f * 100).toFixed(1) + "%"; }
 
-  // Emscripten Module — runtime is loaded but main() is NOT auto-invoked
+  // Emscripten Module - runtime is loaded but main() is NOT auto-invoked
   // (noInitialRun); we call it ourselves once the disc is in the FS.
   var Module = {
     canvas: canvas,
@@ -71,7 +71,7 @@
     arguments: [],
     print:    (t) => log(t),
     printErr: (t) => log(t),
-    onRuntimeInitialized: () => log("[wasm] runtime ready — drop your disc to boot."),
+    onRuntimeInitialized: () => log("[wasm] runtime ready - drop your disc to boot."),
   };
 
   // Stream a dropped File into MEMFS in chunks so we never hold the whole
@@ -110,14 +110,14 @@
     dropEl.style.display = "none";
 
     try {
-      log(`[fs] streaming ${bin.name} … this is large, please wait.`);
+      log(`[fs] streaming ${bin.name} ... this is large, please wait.`);
       await writeFileStreamed(`${DISC_DIR}/${bin.name}`, bin);
       await writeFileStreamed(`${DISC_DIR}/${cue.name}`, cue);
       barWrap.style.display = "none";
 
       canvas.style.display = "block";
       canvas.focus();
-      log("[boot] launching…");
+      log("[boot] launching...");
       Module.callMain(["--disc", `${DISC_DIR}/${cue.name}`,
                        "--run-recomp", RUN_RECOMP_ADDR]);
     } catch (e) {

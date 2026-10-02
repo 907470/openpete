@@ -1,4 +1,4 @@
-/* terrain_game.h — the per-game data the shared terrain feeder consults.
+/* terrain_game.h - the per-game data the shared terrain feeder consults.
  *
  * The walk in renderer/terrain.c reads every engine address from game_layout;
  * what it cannot read from RAM is a game's own data: the portal-sky opening
@@ -21,7 +21,7 @@ extern "C" {
  * opening plane at pixel (x, y) is a·x + b·y + c (full-world view-Z), valid
  * where the result is > 0 (the plane is in front of the camera along that
  * pixel's ray). x0..y1 is the exact min/max screen bbox of the projected
- * outline (no inflation) — the conformance clamp only considers faces
+ * outline (no inflation) - the conformance clamp only considers faces
  * touching it. When an outline point projects behind the camera the bbox
  * degenerates to full-screen. */
 typedef struct {
@@ -30,7 +30,7 @@ typedef struct {
     double   back_vz;               /* farthest outline view-Z (the sky's behind-
                                      * ring spill depth base) */
     double   ot_vz;                 /* 128 x the sky's mirrored .s OT bucket B
-                                     * (mean outline SZ >> 7, +64 bump) — the
+                                     * (mean outline SZ >> 7, +64 bump) - the
                                      * depth the .s actually inserts the sky at.
                                      * Terrain faces whose OT mean sorts behind
                                      * THIS are drawn before the sky in the walk
@@ -39,12 +39,12 @@ typedef struct {
     double   push_vz;               /* world-unit view-Z push the sky RENDERS
                                      * with (the .s's +64-slot far-bucket bump =
                                      * 8192; 0 for near portals). Sky-relative
-                                     * depth constructions — the conformance
-                                     * sink target — must add it so covered
+                                     * depth constructions - the conformance
+                                     * sink target - must add it so covered
                                      * faces still land just BEHIND the sky. */
     float    x0, y0, x1, y1;        /* outline screen bbox (broadphase) */
     /* The projected outline POLYGON. The conformance sink is confined to
-     * faces whose screen centroid is INSIDE it — that is where the sky
+     * faces whose screen centroid is INSIDE it - that is where the sky
      * actually rasters (fan/dome) and wins; sinking a face outside it just
      * punches a hole to whatever world geometry is behind. */
     float    px[16], py[16];

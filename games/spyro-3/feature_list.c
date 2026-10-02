@@ -1,4 +1,4 @@
-// games/spyro-3/feature_list.c — Spyro 3's registered feature modules.
+// games/spyro-3/feature_list.c - Spyro 3's registered feature modules.
 #include "feature_registry.h"
 #include <stddef.h>
 
@@ -71,7 +71,7 @@ const feature_module_t* const openpete_features[] = {
     &zap_module,
     /* The shared moby feeder: registers the draw hooks game_layout.moby
      * names, then refuses them because this game supplies no moby_game
-     * decoder slots yet — OPENPETE_MOBY_CENSUS prints the reason. */
+     * decoder slots yet - OPENPETE_MOBY_CENSUS prints the reason. */
     &moby_module,
     /* The shared player-avatar feeder: hooks the player draw game_layout.player
      * names; inert unless the native scene is enabled. */

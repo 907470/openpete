@@ -1,4 +1,4 @@
-# lib-and-client — CI fixture: the client half of demo-lib.
+# lib-and-client - CI fixture: the client half of demo-lib.
 #
 # Declares a hard dependency on demo-lib and checks that demo-lib's entry
 # runs first even when this mod is listed before it in enabled.txt, and

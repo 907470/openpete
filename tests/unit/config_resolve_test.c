@@ -1,12 +1,12 @@
-/* tests/unit/config_resolve_test.c — openpete.toml precedence.
+/* tests/unit/config_resolve_test.c - openpete.toml precedence.
  *
  * The resolver's whole job is deciding which of several layers wins and
  * then materializing exactly ONE spelling of it. Prose can't hold that
  * ordering steady across edits; this can. Each case is a synthetic layer
  * stack plus the argv/env it must produce.
  *
- * The assertions are on the MATERIALIZED result — the spliced argv and the
- * process environment — not on the report, because that is what the rest
+ * The assertions are on the MATERIALIZED result - the spliced argv and the
+ * process environment - not on the report, because that is what the rest
  * of the program actually consumes.
  */
 
@@ -201,7 +201,7 @@ static void case_specificity_beats_notation(void) {
 
 /* THE case the whole design exists for. Splicing [args] into argv and
  * setenv-ing [env] would hand this decision to --vsync's own
- * sentinel-unset consumer, which takes the flag whenever one is present —
+ * sentinel-unset consumer, which takes the flag whenever one is present -
  * so the LOW-specificity [args] would beat the HIGH-specificity [env].
  * Flattening must emit the env spelling and no flag at all. */
 static void case_cross_spelling_inversion(void) {
@@ -217,7 +217,7 @@ static void case_cross_spelling_inversion(void) {
 }
 
 /* A launch tier supplies the knob, so the file's copy must not be
- * emitted at all — otherwise the flag parser sees both and argv order,
+ * emitted at all - otherwise the flag parser sees both and argv order,
  * not the hierarchy, decides. */
 static void case_launch_tier_suppresses(void) {
     static const char *const typed[] = { "--lod", "extended", NULL };
@@ -311,7 +311,7 @@ static void case_alias_collapses(void) {
  * openpete writes these files itself (SAVE in the M overlay), so the previous
  * release's saved settings are exactly what a rename breaks: without the
  * mapping the old spelling is an "unknown key" and the boot fails outright.
- * The value has to travel too — `show_fps` was a bool and `perf_stats` is a
+ * The value has to travel too - `show_fps` was a bool and `perf_stats` is a
  * three-level enum, so true means the level the old key could select. */
 static void case_renamed_key(void) {
     run_t r = run("renamed key: true maps to the level it meant",
@@ -341,7 +341,7 @@ static void case_renamed_key(void) {
     CHECK(n == 1, "the old and new spellings should collapse to one flag, got %d", n);
 }
 
-/* An env-only knob spelled as a bare key goes out as its variable — and
+/* An env-only knob spelled as a bare key goes out as its variable - and
  * a false one leaves the variable ABSENT, because several of these
  * consumers only test for presence. */
 static void case_env_only_knob(void) {
@@ -379,7 +379,7 @@ static void case_validation(void) {
 /* A user file overrides the shipped file at the SAME scope, but never
  * reaches above it: scope is still the major key. Exercised through the
  * rank arithmetic rather than two real files, which --config cannot
- * express — see the file-order assertion in the report test below. */
+ * express - see the file-order assertion in the report test below. */
 static void case_scope_beats_file(void) {
     run_t r = run("scope still outranks the file",
         "[game.spyro-1]\n"
@@ -390,7 +390,7 @@ static void case_scope_beats_file(void) {
 }
 
 /* Unregistered flags (no schema row) still layer, and still collapse to
- * one copy — the resolver dedupes rather than trusting argv order,
+ * one copy - the resolver dedupes rather than trusting argv order,
  * because some flags don't parse last-write-wins. */
 static void case_unregistered_flags(void) {
     run_t r = run("unregistered flags dedupe by tier",
@@ -406,8 +406,8 @@ static void case_unregistered_flags(void) {
 
 /* Every knob-registry row with a flag needs a schema row, or it silently
  * loses its bare key (and, if it also has an env twin, its flattening).
- * The registry itself can't be linked here — its rows point into the
- * renderer — so knob_registry_init runs the reverse half of this check at
+ * The registry itself can't be linked here - its rows point into the
+ * renderer - so knob_registry_init runs the reverse half of this check at
  * boot. What we can prove here is that the schema is self-consistent. */
 static void case_schema_sanity(void) {
     g_case = "schema sanity";
@@ -510,14 +510,14 @@ static void case_writer_round_trip(void) {
 /* `keys` is a scope-local sub-table like `env` and `args`, harvested by
  * harvest_scope for EVERY scope. These cases are the reason that is one
  * call site: the failure they exist to catch is a [keys] that quietly
- * works at global scope only — which is exactly how the scoped spelling
+ * works at global scope only - which is exactly how the scoped spelling
  * of [args]/[env] came to be believed missing.
  *
  * Assertions read the keymap store rather than the argv splice: keys
  * never materialize as flags, so the resolved binding IS the result. */
 
 /* keymap.c reaches SDL only through a lookup seam, and this test links no
- * SDL — so stand in a table with just the names these cases use, plus
+ * SDL - so stand in a table with just the names these cases use, plus
  * every name the registry's own defaults are spelled with (they are
  * parsed at init, and an unresolvable default would read as a spurious
  * "unbound"). Codes are arbitrary but stable. */
@@ -592,7 +592,7 @@ static int key_source_count(openpete_action_t a) {
 
 static void case_keys_every_scope(void) {
     /* Each scope in turn must be able to set a binding, and the more
-     * specific one must win — the same ladder the knobs obey. */
+     * specific one must win - the same ladder the knobs obey. */
     run("keys: global scope",
         "[keys.host]\n"
         "teleport = \"F5\"\n", NULL, 0);
@@ -630,7 +630,7 @@ static void case_keys_every_scope(void) {
     CHECK(key_bound_to(OPK_TELEPORT, "F9"),
           "[saved.keys.host] must beat every file scope");
 
-    /* The pad namespace scopes identically — it is the same walk. */
+    /* The pad namespace scopes identically - it is the same walk. */
     run("keys: pad scopes too",
         "[game.spyro-1.keys.pad]\n"
         "cross = \"Space\"\n", NULL, 0);
@@ -639,7 +639,7 @@ static void case_keys_every_scope(void) {
 }
 
 /* Merge is per ACTION. A scope that names one binding must leave every
- * other one alone — the regression this guards is a scope being made to
+ * other one alone - the regression this guards is a scope being made to
  * replace a whole table, which would silently reset 40 bindings. */
 static void case_keys_per_action_merge(void) {
     run("keys: per-action merge",
@@ -719,7 +719,7 @@ static void case_keys_values(void) {
 /* The `portable` directive decides where openpete writes: the game folder
  * or the platform's per-user directories. It is the one top-level word
  * that is a directive rather than a knob, so it appears in no decision
- * table — these assertions are the only thing pinning it down. */
+ * table - these assertions are the only thing pinning it down. */
 static void case_portable_layout(void) {
     char exedir[512], dir[512];
     CHECK(openpete_exe_dir(exedir, sizeof exedir) == 0,

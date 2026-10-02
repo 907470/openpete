@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# psyq_stub_census.sh — which untranslated PSYQ symbols a game actually calls.
+# psyq_stub_census.sh - which untranslated PSYQ symbols a game actually calls.
 #
 # `generated/psyq_stubs.c` emits an abort stub for every PSYQ symbol the
 # recompiled code references; a thunk in the shared PSYQ-to-PsyCross layer
@@ -8,8 +8,8 @@
 # definition in the linked executable is the untranslated surface. That list
 # is static and includes symbols the game may never reach. This script
 # separates the two: it boots the game once per level (--skip-to-level), runs
-# a few seconds of live gameplay under OPENPETE_PSYQ_STUB_CONTINUE=1 — which
-# logs each distinct stub once and returns instead of aborting — and reports
+# a few seconds of live gameplay under OPENPETE_PSYQ_STUB_CONTINUE=1 - which
+# logs each distinct stub once and returns instead of aborting - and reports
 # every stub that was hit, with the levels that hit it, alongside the stubs
 # nothing reached.
 #
@@ -95,7 +95,7 @@ cj_wait || fail=1
 
 SUMMARY="$OUTDIR/summary.txt"
 {
-  echo "psyq stub census — $GAME, ${#LEVELS[@]} level(s) x $FRAMES VBLs"
+  echo "psyq stub census - $GAME, ${#LEVELS[@]} level(s) x $FRAMES VBLs"
   echo
   echo "untranslated surface as linked: $(wc -l < "$OUTDIR/untranslated.txt") symbol(s)"
   echo

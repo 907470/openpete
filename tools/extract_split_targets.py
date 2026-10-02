@@ -14,8 +14,8 @@ expressed as a call, so the generator emits one of:
     call_by_address(cpu, 0x800809B4u); return;  /* j to split (mid-func) */
 
 Each of those addresses needs a registered function entry. Without one the
-runtime stub-misses, and — because the stub returns instead of transferring
-control — the guest function's epilogue never runs: `cpu->sp` leaks one stack
+runtime stub-misses, and - because the stub returns instead of transferring
+control - the guest function's epilogue never runs: `cpu->sp` leaks one stack
 frame per call until it walks out of RAM. (Lofty Castle's 0x800809B4, reached
 by unlocking the chest, leaked 0x280 bytes a call.)
 
@@ -31,8 +31,8 @@ Usage:
         [--binary=<raw-bytes> --load-addr=0xADDR]
 
 Passing the binary enables range filtering, which is what makes convergence
-reachable. Every level overlay opens with a header struct — id word, pointer
-table, dialogue strings — and the fn-pointer harvester can't distinguish the
+reachable. Every level overlay opens with a header struct - id word, pointer
+table, dialogue strings - and the fn-pointer harvester can't distinguish the
 overlay base (the CdRead destination) from a callback, so it forces an entry
 there and psxrecomp decodes the header as MIPS. The resulting branch targets
 land past the end of the image; they can never be resolved and are never
@@ -61,7 +61,7 @@ import sys
 from pathlib import Path
 
 # One alternation per generator site in code_generator.cpp. Keep in sync with
-# the comment strings there — a variant missing here becomes a runtime stub
+# the comment strings there - a variant missing here becomes a runtime stub
 # miss that no gate catches.
 SPLIT_RE = re.compile(
     r"call_by_address\(cpu,\s*0x([0-9A-Fa-f]+)u\);\s*return;\s*/\*\s*"
@@ -129,7 +129,7 @@ def main(argv: list[str]) -> int:
         targets &= emitted
     unresolved = sorted(targets - defined)
     with args.out.open("w", encoding="utf-8") as fh:
-        fh.write("# unresolved split targets — auto-extracted by"
+        fh.write("# unresolved split targets - auto-extracted by"
                  " extract_split_targets.py\n")
         for t in unresolved:
             fh.write(f"0x{t:08X}\n")

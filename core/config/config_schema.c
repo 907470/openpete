@@ -1,4 +1,4 @@
-/* core/config/config_schema.c — see config_schema.h for what this is for. */
+/* core/config/config_schema.c - see config_schema.h for what this is for. */
 
 #include "config_schema.h"
 
@@ -20,7 +20,7 @@ static const char *const v_logfmt[]   = { "plain", "json", NULL };
  * `skip_to_area` are CFG_STRING because their CLI vocabulary is a small
  * language ("auto"/"16:9", "1920x1080", a level or cutscene id or a
  * lower_snake_case name, "level:area"), validated by the flag parser
- * that already owns those messages — re-implementing that here would put
+ * that already owns those messages - re-implementing that here would put
  * the error text in two places. */
 static const cfg_knob_t g_schema[] = {
     /* -------- Display -------- */
@@ -112,8 +112,8 @@ static const char *const g_mutex_screenshot[] = {
     "--screenshot-on-frame", "--screenshot-on-tick", NULL
 };
 /* --show-fps is the deprecated two-state spelling of --perf-stats. It has no
- * schema row of its own — its ON value is not fixed, which is what an alias
- * row requires — so a config file that spells the setting through [args] is
+ * schema row of its own - its ON value is not fixed, which is what an alias
+ * row requires - so a config file that spells the setting through [args] is
  * where the two can collide. Between tiers this group makes the higher one
  * win; a bare key and a command-line flag are already ordered by the tiers
  * themselves (config tokens are emitted ahead of the real argv). */

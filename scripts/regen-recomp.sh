@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# regen-recomp.sh — re-run psxrecomp on one game's PSX.EXE plus every
+# regen-recomp.sh - re-run psxrecomp on one game's PSX.EXE plus every
 # overlay in its matching-decomp's build/wad/. Run whenever you bump
 # psxrecomp, change a forced-entry, or pull a new EXE dump.
 #
@@ -9,13 +9,13 @@
 #   GAME=spyro-2 bash scripts/regen-recomp.sh
 #
 # Inputs (relative to repo root):
-#   third_party/psxrecomp/build/PSXRecomp   — recompiler binary
-#   games/<game>/recomp.conf                — per-game paths and addresses
-#   $PSX_EXE                                — main EXE input
-#   $WAD_DIR/*.ovl                          — overlay binaries
-#   games/<game>/manifest/psyq.toml         — PSYQ symbol manifest
+#   third_party/psxrecomp/build/PSXRecomp   - recompiler binary
+#   games/<game>/recomp.conf                - per-game paths and addresses
+#   $PSX_EXE                                - main EXE input
+#   $WAD_DIR/*.ovl                          - overlay binaries
+#   games/<game>/manifest/psyq.toml         - PSYQ symbol manifest
 #
-# All of a game's overlays share one kseg0 vaddr — only one is in RAM at a
+# All of a game's overlays share one kseg0 vaddr - only one is in RAM at a
 # time, so per-overlay symbol namespaces are disambiguated via
 # --func-prefix. The generated dispatch fn is sed-renamed from
 # `psx_dispatch_compiled` to `psx_dispatch_<name>` so each overlay can
@@ -37,7 +37,7 @@ cd "$(dirname "$0")/.."
 GAME="${GAME:-spyro-1}"
 GAME_CONF="games/$GAME/recomp.conf"
 if [[ ! -f "$GAME_CONF" ]]; then
-    echo "regen-recomp: no $GAME_CONF — is GAME=$GAME right?" >&2
+    echo "regen-recomp: no $GAME_CONF - is GAME=$GAME right?" >&2
     exit 1
 fi
 # shellcheck source=/dev/null
@@ -49,7 +49,7 @@ echo "[regen] game=$GAME  exe=$PSX_EXE  overlays=$WAD_DIR @ $OVERLAY_LOAD_ADDR"
 
 PSXRECOMP="third_party/psxrecomp/build/PSXRecomp"
 if [[ ! -x "$PSXRECOMP" ]]; then
-    echo "psxrecomp not found at $PSXRECOMP — run cmake on third_party/psxrecomp first" >&2
+    echo "psxrecomp not found at $PSXRECOMP - run cmake on third_party/psxrecomp first" >&2
     exit 1
 fi
 
@@ -68,7 +68,7 @@ run_psxrecomp() {
 
 # Optional debug build mode: emits `cpu->pc = X;` before each MIPS insn
 # so write-watchers / state-diff harness can attribute every memory
-# write to a specific instruction. Adds one store per emitted insn —
+# write to a specific instruction. Adds one store per emitted insn -
 # slows runtime ~5-10% and bloats the generated C, so off by default.
 PCTRACK_FLAG=""
 if [[ "${OPENPETE_REGEN_PC_TRACKING:-0}" != "0" ]]; then
@@ -98,13 +98,13 @@ if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then
     python3 tools/gen_channel_sites.py \
         --manifest "$CHANNEL_MANIFEST" --out "$CHANNEL_SITES"
 else
-    echo "[regen] no CHANNEL_MANIFEST for $GAME — recompiling without channel sites"
+    echo "[regen] no CHANNEL_MANIFEST for $GAME - recompiling without channel sites"
     rm -f "$CHANNEL_SITES"
 fi
 
 # Scoped regen: OPENPETE_REGEN_SCOPE=main_exe re-translates only the main
 # EXE (the only binary --channel-sites is passed to), reusing the overlay
-# outputs + external-JAL lists already on disk from the last full regen —
+# outputs + external-JAL lists already on disk from the last full regen -
 # a channel-site edit costs one main-EXE recompile, not the full overlay
 # sweep.
 REGEN_SCOPE="${OPENPETE_REGEN_SCOPE:-full}"
@@ -116,7 +116,7 @@ fi
 # in the manifest. The cmake build links these so any psyq_<name> the
 # recompiled C declares but psyq_thunks.cpp doesn't override resolves to
 # a stub that logs and aborts (rather than failing the link). Same
-# `--external-prefix=psyq_` we pass to PSXRecomp below — change both
+# `--external-prefix=psyq_` we pass to PSXRecomp below - change both
 # together. Inputs are the manifest TOML alone (no recomp output), so
 # this is safe to run before the two-pass recompile.
 echo "[regen] Generating $OUT/psyq_stubs.c"
@@ -128,7 +128,7 @@ python3 tools/gen_psyq_stubs.py --prefix psyq_ \
 # jumptable slots; extract_handwritten_ra_returns.py appends return PCs
 # for callers of handwritten functions that return via `jr <reg>` (the
 # recompiler can't statically prove the target so the return PC has to
-# be a known dispatch entry). Order matters — the ra-return tool merges
+# be a known dispatch entry). Order matters - the ra-return tool merges
 # into the file the first tool wrote.
 echo "[regen] Refreshing $ASM_TARGETS_DIR/"
 mkdir -p "$ASM_TARGETS_DIR"
@@ -138,7 +138,7 @@ python3 tools/extract_handwritten_ra_returns.py \
     "$ASM_DIR" "$ASM_TARGETS_DIR" >/dev/null
 
 # Resolve the asm_dispatch_targets file for a binary, or empty string if
-# none. Overlays share vaddr 0x8007AA38 with different bytes — passing
+# none. Overlays share vaddr 0x8007AA38 with different bytes - passing
 # main-EXE entries to an overlay regen would silently fail psxrecomp's
 # range check (good), but an overlay-A entry passed to overlay-B would
 # pass validation and force psxrecomp to translate garbage. Per-binary
@@ -161,14 +161,14 @@ process_overlay() {
     shift 4
     local extra_args=("$@")
     if [[ ! -f "$ovl_path" ]]; then
-        echo "[regen] $ovl_path missing — skipping $name (build the matching decomp first)"
+        echo "[regen] $ovl_path missing - skipping $name (build the matching decomp first)"
         return 1
     fi
     mkdir -p "$OUT/$name"
     local asm_targets
     asm_targets=$(asm_targets_for "$name")
     local base_args=(
-        # Raw overlay blob straight from the decomp's build/wad — the
+        # Raw overlay blob straight from the decomp's build/wad - the
         # recompiler synthesizes the PS-X EXE header internally
         # (--raw-bin).
         --raw-bin
@@ -219,7 +219,7 @@ process_overlay() {
     # Split-target convergence: promote every cross-piece control transfer
     # to a real entry, re-run, repeat until nothing new appears.
     #
-    # A guest function often can't be emitted as one C function — an external
+    # A guest function often can't be emitted as one C function - an external
     # JAL needs its continuation separately dispatchable, and a forced entry
     # can land inside an existing range. Transfers that cross a piece boundary
     # can only be written as `call_by_address(<target>); return;`, and a target
@@ -347,10 +347,10 @@ fi
 # stub-miss at runtime as multi-entry / fall-through fast-paths.
 #
 # Forced entries:
-#   0x80032AB0 — fast-path entry only reached from the titlescreen
+#   0x80032AB0 - fast-path entry only reached from the titlescreen
 #                  overlay; the new multi-entry pass picks it up too,
 #                  but kept as belt-and-braces.
-#   0x8004F8C8, 0x80050060, 0x800506EC, 0x80038620, 0x8005A7B0 —
+#   0x8004F8C8, 0x80050060, 0x800506EC, 0x80038620, 0x8005A7B0 -
 #                  runtime stub-miss targets observed on level_10 and at
 #                  Stone Hill entry. Re-validated against
 #                  bk2/stone-hill-entry.bk2: byte-identical screenshot
@@ -362,7 +362,7 @@ main_exe_extra="$OUT/main_exe_extra_funcs.txt"
 : > "$main_exe_extra"
 main_exe_targets=$(asm_targets_for main_exe)
 [[ -n "$main_exe_targets" ]] && cat "$main_exe_targets" >> "$main_exe_extra"
-# Hand-curated forced entries (formerly --forced-entry literals here) —
+# Hand-curated forced entries (formerly --forced-entry literals here) -
 # single source of truth shared with the converged-manifest emission.
 # Hand-curated forced entries, if this game has any yet.
 if [[ -f "$FORCED_ENTRIES_DIR/main_exe.txt" ]]; then
@@ -374,25 +374,25 @@ done
 # Two-pass main-EXE recompile.
 #
 # Pass 1 produces $OUT/_main_exe_pass1/PSX.EXE_full.c with no JT-stub
-# forced entries — purely a stub-discovery scratch output. Pass 2
+# forced entries - purely a stub-discovery scratch output. Pass 2
 # reads its `case N: call_by_address(cpu, 0xADDR);` sites for the
 # SetOverlayPointers JT (per-level setup like Toasty's 0x8005A930)
 # and folds them in as forced entries before producing the final
 # $OUT/PSX.EXE_full.c that links into the binary. Without this, level
 # swaps that go through one of those JT cases never re-init their
 # fn-pointer slots, the stale level_N pointers from the previous
-# overlay get jalr'd in level_N+1 → cascading stub misses on overlay
+# overlay get jalr'd in level_N+1 -> cascading stub misses on overlay
 # entry, with the user-visible symptom of demo-mode hanging in
 # level_24 (Dr Shemp) at frame ~8458.
 #
 # The previous design read $OUT/PSX.EXE_full.c (the final output of
 # the last regen) as its bootstrap input, which made the result
-# dependent on whatever was already on disk — a stale or missing
+# dependent on whatever was already on disk - a stale or missing
 # generated/ produced an under-converged stubs file and a hang. This
 # split decouples the two roles into two distinct files, so one
 # invocation is always self-converging:
-#   * PSX.EXE_pass1.c (intermediate, not linked) → stubs.txt
-#   * PSX.EXE_full.c  (final, links into the binary) ← stubs.txt
+#   * PSX.EXE_pass1.c (intermediate, not linked) -> stubs.txt
+#   * PSX.EXE_full.c  (final, links into the binary) <- stubs.txt
 # Pass 1 unconditionally deletes pass 2's outputs so the build can't
 # silently link a stale converged file if pass 2 errors out.
 common_psx_args=(
@@ -409,7 +409,7 @@ mkdir -p "$pass1_dir"
 # incremental builds would handle a DAG node whose inputs changed.
 rm -f "$OUT/PSX.EXE_full.c" "$OUT/PSX.EXE_dispatch.c" \
       "$OUT/main_exe_dispatch_stubs.txt"
-echo "[regen]   pass 1 (stub discovery) → $pass1_dir/"
+echo "[regen]   pass 1 (stub discovery) -> $pass1_dir/"
 run_psxrecomp "$PSX_EXE" \
     --output-dir="$pass1_dir" \
     --extra-funcs="$main_exe_extra" \
@@ -417,7 +417,7 @@ run_psxrecomp "$PSX_EXE" \
 python3 tools/extract_dispatch_call_by_address.py \
     "$pass1_dir/PSX.EXE_full.c" "$OUT/main_exe_dispatch_stubs.txt" 2>&1 | sed 's/^/  /'
 cat "$OUT/main_exe_dispatch_stubs.txt" >> "$main_exe_extra"
-echo "[regen]   pass 2 (final, with $(grep -c '^0x' "$OUT/main_exe_dispatch_stubs.txt") JT-stub forced entries) → $OUT/PSX.EXE_full.c"
+echo "[regen]   pass 2 (final, with $(grep -c '^0x' "$OUT/main_exe_dispatch_stubs.txt") JT-stub forced entries) -> $OUT/PSX.EXE_full.c"
 run_psxrecomp "$PSX_EXE" \
     --output-dir="$OUT" \
     --extra-funcs="$main_exe_extra" \
@@ -440,7 +440,7 @@ run_psxrecomp "$PSX_EXE" \
 #
 # Off for Spyro 1: its one reported target is 0x800661D0, and promoting
 # that reproducibly broke the level_24 demo entry path with stub misses
-# at 0x8005AC40 + 0x8008772C — adding a forced entry there shifts
+# at 0x8005AC40 + 0x8008772C - adding a forced entry there shifts
 # function-boundary detection so pre-existing dispatch entries are lost.
 if [[ "${MAIN_EXE_THIRD_PASS:-0}" != "0" ]]; then
     main_exe_load=$(python3 -c "import struct,sys;print(hex(struct.unpack_from('<I',open(sys.argv[1],'rb').read(),0x18)[0]))" "$PSX_EXE")
@@ -474,7 +474,7 @@ if [[ "$REGEN_SCOPE" != "full" ]]; then
 else
 echo "[regen] Generating $OUT/spyro_overlay_table.c (${#OVERLAY_NAMES[@]} overlays)"
 {
-    echo "/* AUTO-GENERATED by scripts/regen-recomp.sh — do not edit. */"
+    echo "/* AUTO-GENERATED by scripts/regen-recomp.sh - do not edit. */"
     echo "#include \"spyro_overlay_table.h\""
     echo
     for name in "${OVERLAY_NAMES[@]}"; do
@@ -516,13 +516,13 @@ fi
 
 # Snapshot the converged per-binary inputs as committed metadata for the
 # single-pass first-boot pipeline. Skipped in scoped
-# mode — the converged manifest describes the STOCK full-regen state, and
+# mode - the converged manifest describes the STOCK full-regen state, and
 # a mod-site bake is a local dev configuration, not a distribution input.
 # The converged manifest feeds the single-pass first-boot pipeline, which is
 # Spyro 1's distribution path only. A scoped regen describes a local mod-site
 # bake rather than the stock full-regen state, so it emits nothing either.
 if [[ "$GAME" != "spyro-1" ]]; then
-    echo "[regen] converged manifest is spyro-1's distribution path — not emitted for $GAME"
+    echo "[regen] converged manifest is spyro-1's distribution path - not emitted for $GAME"
 elif [[ "$REGEN_SCOPE" != "full" ]]; then
     echo "[regen] SCOPED regen: skipping converged-manifest emission"
 else
@@ -534,4 +534,4 @@ else
     bash scripts/emit-recomp-manifest.sh
 fi
 
-echo "[regen] Done — rebuild the project to pick up the new C output."
+echo "[regen] Done - rebuild the project to pick up the new C output."

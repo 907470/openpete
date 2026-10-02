@@ -1,4 +1,4 @@
-/* vibration_test — controller vibration: the measured motor response,
+/* vibration_test - controller vibration: the measured motor response,
  * and the --vibration preset's state machine over guest RAM.
  *
  * Two halves, and the first is the one that matters most for regressions.
@@ -8,13 +8,13 @@
  * exactly the kind of value a later "it feels too strong / too weak" report
  * gets mis-fixed by scaling. Pinning the reference points here means such a
  * tweak has to be a deliberate, visible divergence rather than a quiet drift.
- * The numbers below are not this code's output written down after the fact —
+ * The numbers below are not this code's output written down after the fact -
  * they are the reference's, and the one that would catch a naive
  * reimplementation is the normal-rumble row: 0.199, where a plausible
  * byte/255 gives 0.471.
  *
- * The PRESET half is a state machine over guest RAM — when it stamps, when it
- * re-stamps over the game's own reseeds, when it hands the setting back — all
+ * The PRESET half is a state machine over guest RAM - when it stamps, when it
+ * re-stamps over the game's own reseeds, when it hands the setting back - all
  * reachable with a fake CPUState over a small array, which is what this does.
  * The alternative is a controller replay through the options menu.
  */
@@ -87,7 +87,7 @@ static const struct {
     { 160, 0, 0.3286, 0.6275, "large motor, 160 = Spyro's DRAGON rumble" },
     { 255, 0, 1.0000, 1.0000, "large motor, full scale" },
     /* The small motor is a single on/off bit, not a magnitude. The old code
-     * multiplied that bit by 255 and floored at 4096, delivering "on" at 6% —
+     * multiplied that bit by 255 and floored at 4096, delivering "on" at 6% -
      * which made the electric-shock effect ({1, 0}: small motor only)
      * effectively silent. */
     { 0,   1, 0.0000, 0.0000, "small motor off" },
@@ -128,7 +128,7 @@ static void test_curve(void) {
     if (openpete_rumble_motor_u16(120, 0, -1) != openpete_rumble_motor_u16(120, 0, 10))
         fail("unset strength (-1) must be parity, i.e. identical to 10");
     {
-        /* Half strength halves the amplitude — the guest toggle has no
+        /* Half strength halves the amplitude - the guest toggle has no
          * intensity of its own, so this scale is the only thing that makes
          * --vibration a level rather than an on/off switch. */
         uint16_t full = openpete_rumble_motor_u16(200, 0, 10);
@@ -154,7 +154,7 @@ static void test_curve(void) {
 
 /* The game's own writers, replayed so the module faces what it faces in a real
  * run. Both reseed the flag to 1 (initialization.c:223; a save-file load
- * restores whatever the card holds — modelled here as the same write). */
+ * restores whatever the card holds - modelled here as the same write). */
 static void game_reseed_on(void)  { fake_write(ACT_ENABLED, 1); }
 static void game_save_load(int v) { fake_write(ACT_ENABLED, (uint32_t)v); }
 
@@ -180,7 +180,7 @@ static void test_preset(void) {
     /* --vibration 0 silences the motors host-side and must write NOTHING. This
      * is the assertion that keeps the gates honest: 0 is the value every
      * unattended launcher sets, so a guest write here would mean the oracle
-     * and determinism batteries were all measuring a quietly modified game —
+     * and determinism batteries were all measuring a quietly modified game -
      * and the failure would surface as an oracle divergence nobody would
      * connect to vibration. */
     s_vib_req = 0;

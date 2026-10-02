@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""psxtrace_loads.py — read the reference's <trace>.loads sidecar and place
+"""psxtrace_loads.py - read the reference's <trace>.loads sidecar and place
 openpete's CD reads against it.
 
 The DuckStation capture module writes one line per CdRead when run with

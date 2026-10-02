@@ -1,4 +1,4 @@
-# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# modtest.toml - this repo's CI declaration for tools/modtest.py.
 # Engine-repo concern, not part of the mod manifest format. The timeline
 # cases (stress-rewind, runahead, save/load, reload) live in
 # tests/harness/check_mods.sh, which drives engine flags per run.

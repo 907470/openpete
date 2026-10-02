@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_tercache_cache_ab.sh — retained-terrain GPU cache vs CPU terrain walk,
+# check_tercache_cache_ab.sh - retained-terrain GPU cache vs CPU terrain walk,
 # whole-frame A/B over a bk2 camera swing, windowed on a real GPU.
 #
 # The retained cache draws a static sector from a persistent vertex buffer

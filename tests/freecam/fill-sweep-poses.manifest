@@ -1,18 +1,18 @@
 # Pose manifest for the terrain fill-tag sweep (tests/freecam/fill_sweep.py).
 # One pose per line: level | x,y,z,yaw,pitch | tag
 #   pose "default" = the canonical load-in camera (no freecam engaged).
-# Optional 4th field: capture frame (default 2101) — for levels that load late.
+# Optional 4th field: capture frame (default 2101) - for levels that load late.
 #
 # Selection rule: canonical-plausible cameras (the load-in view, gameplay-like
 # views, plus the validated gapfill/freecam corpus spots). The og legs are only
 # valid ground truth where the .s occlusion/culling verdicts fire for cameras
 # the game could plausibly have; fully detached orbits under-cover in og and
-# can only ADD candidate faces via views the game never shows — the review
+# can only ADD candidate faces via views the game never shows - the review
 # tier and the stencil gate bound that risk, but prefer plausible poses.
 #
 # Ordering matters for the marginal-new-faces curve: the harness processes
 # poses in file order and reports how many new faces each pose contributes,
-# per level — convergence is REGION-driven (adjacent poses add ~0), so grow
+# per level - convergence is REGION-driven (adjacent poses add ~0), so grow
 # this file by adding REGIONS, not orbit density.
 
 artisans        | default                       | spawn

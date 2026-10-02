@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/setup_appimagetool.sh — fetch the pinned appimagetool used to
+# scripts/setup_appimagetool.sh - fetch the pinned appimagetool used to
 # build the Linux AppImage.
 #
 # The tool is a release artifact, not source we build: pin it by version
@@ -9,7 +9,7 @@
 # Lands in .tools/ (gitignored, like the other fetched dev tools).
 # package-dist.sh picks it up from there, or from $OPENPETE_APPIMAGETOOL.
 #
-# Idempotent — re-running with the tool already present verifies and exits.
+# Idempotent - re-running with the tool already present verifies and exits.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -1,4 +1,4 @@
-/* Paint-rank calibration instrument — see moby_rank_cal.h.
+/* Paint-rank calibration instrument - see moby_rank_cal.h.
  *
  * The game inserts every prim of its render pass into the bucket array
  * `*cal_world_ot`; only at DrawOTag time does its linker join the buckets into

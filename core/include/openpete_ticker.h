@@ -1,4 +1,4 @@
-// core/include/openpete_ticker.h — host-loop pacing clock lifecycle.
+// core/include/openpete_ticker.h - host-loop pacing clock lifecycle.
 //
 // The host loop paces itself: it steps phase-locked absolute integer-ns
 // deadlines and sleeps to them with op_sleep_until (see the pacer at the
@@ -6,7 +6,7 @@
 // header holds the clock's init/teardown pair and the fast-forward flag.
 //
 // `openpete_vbl` is NOT driven from here. It is advanced synchronously
-// by psyq_VSync(0) — exactly one increment per game-fiber yield —
+// by psyq_VSync(0) - exactly one increment per game-fiber yield -
 // because BK2 input replay relies on yields-per-logical-frame being
 // deterministic regardless of pacing. Pacing only affects how fast
 // host-loop iterations happen in wall time, never their count or order.
@@ -20,7 +20,7 @@ extern "C" {
 
 /* Non-zero when the host loop should not pace itself (Tab held,
  * --headless, scheduled fast-forward window). Read by run.c only;
- * psyq_VSync ignores this — vbl is yield-driven and deterministic
+ * psyq_VSync ignores this - vbl is yield-driven and deterministic
  * regardless of fast-forward state. */
 extern int openpete_unlock_fps;
 

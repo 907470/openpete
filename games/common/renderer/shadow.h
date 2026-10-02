@@ -1,4 +1,4 @@
-/* shadow.h — the moby drop-shadow feeder and the pieces a game's own
+/* shadow.h - the moby drop-shadow feeder and the pieces a game's own
  * player-shadow feeder reuses.
  *
  * The moby walk in renderer/shadow.c reads every engine address and every

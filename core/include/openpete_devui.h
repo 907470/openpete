@@ -2,7 +2,7 @@
 #define OPENPETE_DEVUI_H
 
 /*
- * M-key dev config overlay — flat C API over the ImGui panel
+ * M-key dev config overlay - flat C API over the ImGui panel
  * (core/ui/devui.cpp). Everything imgui-typed stays inside the .cpp.
  *
  * Scope: native-vk live presents only. Never initialized headless or under

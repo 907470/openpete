@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# psycross-level-corpus.sh — one PsyCross reference frame per level, per game.
+# psycross-level-corpus.sh - one PsyCross reference frame per level, per game.
 #
 # Spyro 2 and Spyro 3 have no presentation golden and no oracle golden: the
 # whole-game corpus under tests/golden/ is Spyro 1's, and it captures the

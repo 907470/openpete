@@ -1,4 +1,4 @@
-/* games/common/write_census.c — see write_census.h. */
+/* games/common/write_census.c - see write_census.h. */
 #include "write_census.h"
 #include "openpete_fiber.h"
 #include "spyro_overlay_table.h"

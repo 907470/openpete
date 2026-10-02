@@ -2,8 +2,8 @@
  * @file glyph_v_fix.c
  * @brief Restore the missing end-cap face on the 3D letter 'V'.
  *
- * The game draws its gold 3D text — dragon-rescue names, "DEMO MODE",
- * the pause and inventory menus, the gem and life counters — with one
+ * The game draws its gold 3D text - dragon-rescue names, "DEMO MODE",
+ * the pause and inventory menus, the gem and life counters - with one
  * moby class per character, 'A'-'Z' at 426+(c-'A'). Each is a
  * SimpleModel: header byte0 = vertex count, byte1 = face count,
  * +0x04 -> vertex stream (3 bytes/vertex, packed 9-bit signed VZ/VX/VY),
@@ -15,7 +15,7 @@
  *
  * The 'V' model (class 447) carries 18 vertices and 17 faces: six front,
  * six back, and five side walls. The right arm has all three of its
- * walls — outer edge, top end cap, inner edge — and the left arm has
+ * walls - outer edge, top end cap, inner edge - and the left arm has
  * only two. The quad closing the left arm's top, over the four vertices
  * the outer and inner walls already share, is absent, so the top-left of
  * every 'V' opens into the glyph's unlit interior.
@@ -27,8 +27,8 @@
  * hardcoded from the asset: the faces are copied from whatever the game
  * loaded and the new face's normal is computed from the four vertices.
  *
- * The font asset is not permanently resident — it is evicted and
- * reloaded across level and cutscene loads — so the patch is applied
+ * The font asset is not permanently resident - it is evicted and
+ * reloaded across level and cutscene loads - so the patch is applied
  * from a per-tick hook that re-fires whenever a freshly loaded model
  * appears in the row, and is a no-op once the header already points at
  * the arena.
@@ -55,7 +55,7 @@ static openpete_mod_t*           g_self;
  * that meet at the arm's top: V0 and V1 are the inner corner, front and
  * back, and V5 and V4 the outer corner. The order below is the winding
  * the rest of the model uses, under which a face's stored normal is
- * -((P1-P0) x (P2-P0)) — the convention the stock walls satisfy.
+ * -((P1-P0) x (P2-P0)) - the convention the stock walls satisfy.
  * @{
  */
 #define CAP_I0 0u
@@ -130,8 +130,8 @@ static void dump_model(uint32_t model)
  *
  * The normal is derived from the quad's own corners rather than assumed,
  * and scaled to the length of 128 the stock faces use. Its Z component
- * is zero to within rounding — the cap spans the full extrusion depth on
- * both of its edges — and is stored as zero, as the stock side walls do.
+ * is zero to within rounding - the cap spans the full extrusion depth on
+ * both of its edges - and is stored as zero, as the stock side walls do.
  */
 static void build_cap(uint32_t vbase, uint32_t* w0, uint32_t* w1)
 {
@@ -174,8 +174,8 @@ static void build_cap(uint32_t vbase, uint32_t* w0, uint32_t* w1)
  *        the model header at the result.
  *
  * Runs only on a model whose vertex and face counts are the stock 'V's,
- * so a row holding anything else — a partly loaded asset, or another
- * mod's replacement — is left alone.
+ * so a row holding anything else - a partly loaded asset, or another
+ * mod's replacement - is left alone.
  */
 static void patch_model(uint32_t model)
 {

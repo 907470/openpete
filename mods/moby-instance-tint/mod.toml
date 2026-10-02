@@ -1,4 +1,4 @@
-# moby-instance-tint — a refine callback made visible.
+# moby-instance-tint - a refine callback made visible.
 #
 # A selector on all mobys with a refine callback that tints each instance
 # by a hash of its guest address, so every moby renders a distinct stable

@@ -1,4 +1,4 @@
-/* named_target.h — resolve a command-line name or number against a table of
+/* named_target.h - resolve a command-line name or number against a table of
  * named targets, and print the valid names when it does not resolve.
  *
  * `--skip-to-level` and `--skip-to-cutscene` take either an all-digit id or a

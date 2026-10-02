@@ -1,4 +1,4 @@
-/* rhi_memtype_candidates_test — the memory-type preference order for the
+/* rhi_memtype_candidates_test - the memory-type preference order for the
  * host-written, GPU-read vertex arenas (core/rhi/rhi_memtype.c).
  *
  * The order cannot be observed on a software rasteriser: llvmpipe advertises

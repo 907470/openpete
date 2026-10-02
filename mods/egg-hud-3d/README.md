@@ -1,4 +1,4 @@
-# egg-hud-3d — 3D egg icons
+# egg-hud-3d - 3D egg icons
 
 The game draws its collected-egg icons (the HUD row after a pickup, the
 inventory's global row, and the egg marks beside each level name) as a

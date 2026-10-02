@@ -1,4 +1,4 @@
-/* orchestrator_none.c — the inert orchestrator for a game with no sub-tick
+/* orchestrator_none.c - the inert orchestrator for a game with no sub-tick
  * re-extract spine. See renderer/orchestrator.h. */
 
 #include "renderer/orchestrator.h"

@@ -1,4 +1,4 @@
-"""Pass 5e — host-pointer-to-thunk lint.
+"""Pass 5e - host-pointer-to-thunk lint.
 
 When a native function passes a host-allocated pointer (stack local,
 host heap, or a host-defined global) through an outbound thunk, the
@@ -9,17 +9,17 @@ callee then dereferences NULL.
 This pass walks every CallExpr whose callee is a thunked outbound and
 classifies each pointer-typed argument. Clear-bad shapes warn; safe
 shapes pass; ambiguous shapes (function-parameter pass-through, etc.)
-are silent — better to miss than false-positive on every callee.
+are silent - better to miss than false-positive on every callee.
 
 Mitigations:
-  - Flavor A — PsyCross outbound where the host signature matches.
+  - Flavor A - PsyCross outbound where the host signature matches.
     Add to ``outbound_psyq_skip``; source link-resolves to host symbol.
-  - Flavor B — recomp outbound where the callee runs MIPS gp+offset.
+  - Flavor B - recomp outbound where the callee runs MIPS gp+offset.
     Boundary-copy shim materializing a g_ram scratch slot per call.
 
 Surfaced by the windows-mingw smoke gate hitting
-``CdIntToPos(i, &local_pos)`` from music.c / spu.c — stack-local
-``CdlLOC`` ⇒ host_to_psx ⇒ 0 ⇒ NULL deref.
+``CdIntToPos(i, &local_pos)`` from music.c / spu.c - stack-local
+``CdlLOC`` => host_to_psx => 0 => NULL deref.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import clang.cindex as ci
 
 # Function-name spellings that, when seen at the head of a callee chain,
 # indicate the argument was already a PSX vaddr converted to a host
-# pointer — host_to_psx round-trips it back, so it's safe.
+# pointer - host_to_psx round-trips it back, so it's safe.
 _PSX_TO_HOST_FNS = frozenset({
     "openpete_psx_to_host_ptr", "psx_to_host_ptr", "PTR",
 })
@@ -186,7 +186,7 @@ def _classify_pointer_arg(arg: ci.Cursor,
     if _is_call_to(arg, _PSX_TO_HOST_FNS):
         return None
 
-    # Identifier malloc/calloc/realloc/strdup/etc. → host heap. Flag.
+    # Identifier malloc/calloc/realloc/strdup/etc. -> host heap. Flag.
     if arg.kind == ci.CursorKind.CALL_EXPR:
         ref = arg.referenced
         if ref is not None and ref.spelling in (
@@ -197,7 +197,7 @@ def _classify_pointer_arg(arg: ci.Cursor,
                     "or copy into a game-defined buffer")
 
     # Anything else (NULL literal, arithmetic on a vaddr, parameter
-    # pass-through, returned host pointer from another thunk) — silent.
+    # pass-through, returned host pointer from another thunk) - silent.
     return None
 
 
@@ -254,7 +254,7 @@ def run(tu_cursor: ci.Cursor,
         # KIND being expression-like rather than the callee DECL_REF.
         kids = list(c.get_children())
         # libclang's CALL_EXPR children put the callee identifier first
-        # (as UNEXPOSED_EXPR or DECL_REF_EXPR — depends on the version),
+        # (as UNEXPOSED_EXPR or DECL_REF_EXPR - depends on the version),
         # then the arguments in source order. Drop the leading callee
         # by matching its spelling against the resolved function name.
         if kids and kids[0].spelling == callee:
@@ -279,10 +279,10 @@ def run(tu_cursor: ci.Cursor,
 
 
 def format_warnings(res: OutboundLintResult) -> str:
-    """Format warnings for stderr — one per line, prefixed `WARN:`."""
+    """Format warnings for stderr - one per line, prefixed `WARN:`."""
     out: List[str] = []
     for w in res.warnings:
         out.append(
             f"WARN: outbound-thunk {w.callee}(arg{w.arg_index}={w.arg_text}) "
-            f"at {w.file}:{w.line} — {w.classification}; {w.suggestion}")
+            f"at {w.file}:{w.line} - {w.classification}; {w.suggestion}")
     return "\n".join(out)

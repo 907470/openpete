@@ -1,4 +1,4 @@
-// core/mods/mod_vec.c — the two growable tables of the mod surface and
+// core/mods/mod_vec.c - the two growable tables of the mod surface and
 // their exit-time census. See mod_vec.h for the contract.
 
 #include "mod_vec.h"

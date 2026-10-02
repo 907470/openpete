@@ -1,4 +1,4 @@
-/* particles.h — the particle feeder's sub-tick entry.
+/* particles.h - the particle feeder's sub-tick entry.
  *
  * The feeder's geometry is the primitives the guest routine wrote, which exist
  * only during the canonical tick's draw, so the sub-tick re-extract replays the

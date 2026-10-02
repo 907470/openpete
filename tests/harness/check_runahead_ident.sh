@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_runahead_ident.sh — the runahead prediction contract, checked on pixels.
+# check_runahead_ident.sh - the runahead prediction contract, checked on pixels.
 #
 # --runahead N presents the game state N ticks (2N VBLs) ahead of the
 # committed timeline: it saves the committed tick, speculates 2N VBLs with

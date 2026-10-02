@@ -1,7 +1,7 @@
-/* crt.frag — scanlines + slot mask + barrel curvature over the
+/* crt.frag - scanlines + slot mask + barrel curvature over the
  * composed frame (OP_POSTFX_COMPOSITE point).
  *
- * Parameters arrive through the mod uniform block (set 3, binding 1 —
+ * Parameters arrive through the mod uniform block (set 3, binding 1 -
  * bytes from postfx_set_uniforms, fed from config.toml by the C side).
  * std140: four floats, offsets 0/4/8/12. */
 #version 450

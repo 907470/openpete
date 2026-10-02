@@ -1,4 +1,4 @@
-// games/common/renderer/cyclorama.c — the cyclorama/sky renderer
+// games/common/renderer/cyclorama.c - the cyclorama/sky renderer
 // re-derived from gamestate + its autonomous numerical A/B harness. Every
 // engine address comes from game_layout; the game's own sky draw runs
 // through the recomp module dispatch at game_layout.hooks.sky_draw.
@@ -13,8 +13,8 @@
 // Verification (instruments over pixels): hook the dome renderer (Spyro 1
 // func_8004EBA8), capture the *actual* POLY_F3/G3 prims it emits to
 // the polybuf as ground truth, run the native float extraction on the same
-// inputs, and compare screen positions (expect sub-pixel — float is more
-// precise than the GTE's 16.16) + colours (expect exact — gouraud colours
+// inputs, and compare screen positions (expect sub-pixel - float is more
+// precise than the GTE's 16.16) + colours (expect exact - gouraud colours
 // are copied, not projected). All headless, all numerical. Gated by
 // OPENPETE_CYC_VERIFY (off => zero overhead).
 //
@@ -26,7 +26,7 @@
 // SkySectorHeaderS1 / UpdateSky.
 //
 // The same extraction also serves the level-exit / balloonist cross-fade
-// renderer func_8004F000 — the same dome with a DPCS colour fade — via
+// renderer func_8004F000 - the same dome with a DPCS colour fade - via
 // cyclorama_native_extract_faded, which transition.c feeds.
 
 #include "feature_registry.h"
@@ -47,7 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
-#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_8004EBA8(CPUState* cpu);  /* the real dome renderer */
 extern unsigned openpete_frame;
@@ -280,7 +280,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
         if (!S) continue;
 
         /* phase-1 cull: project the representative point with the cull
-         * matrix; visible iff MAC3 > radius. SKIPPED in widescreen — this is a
+         * matrix; visible iff MAC3 > radius. SKIPPED in widescreen - this is a
          * 4:3-frustum range/behind cull that drops side sectors which are
          * partially visible at wide FOV; the near-plane clip + trivial reject
          * confine the kept geometry correctly instead. */
@@ -382,7 +382,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
             uint32_t cc2 = gouraud ? ((k2 < colorCount) ? col[k2] : 0) : cc0;
 
             /* Near-plane CLIP (not reject) so the dome's side/wrap geometry that
-             * straddles the camera renders its in-front part at wide aspect — the
+             * straddles the camera renders its in-front part at wide aspect - the
              * old whole-tri reject dropped it (tuned for 4:3 ±37°). cyc_push_tri
              * applies the widescreen-aware horizontal trivial reject + scissor. */
             ngte_cvert A = { pm1[i0], pm2[i0], pz[i0], cc0 };
@@ -631,7 +631,7 @@ static void push_scene(CPUState* cpu) {
      * (+0x10) before drawing the dome; mirror that so uncovered areas (below
      * the dome / gaps) show it, not black. Same colour conversion as the dome
      * (low 24 = R,G,B; opaque alpha). **The background COLOUR is a scene
-     * property, not part of the cyclorama dome geometry** — set it always (even
+     * property, not part of the cyclorama dome geometry** - set it always (even
      * when `--render-paths` excludes the dome), so an isolated path (e.g.
      * `--render-paths spyro`) renders over the real scene background, matching
      * PsyCross (which always clears to it via the draw-env). Only the dome
@@ -659,7 +659,7 @@ static void push_scene(CPUState* cpu) {
         t.tpage_x = t.tpage_y = t.clut_x = t.clut_y = t.bpp = 0;
         t.blend = 0;      /* opaque */
         /* SKY, not WORLD: drawn identically (opaque, depth-tested,
-         * first) but without the WORLD group's stencil coverage MARK — the sky
+         * first) but without the WORLD group's stencil coverage MARK - the sky
          * showing through a terrain seam is exactly what the LP hole-fill
          * layer must be allowed to repaint. */
         openpete_native_scene_add_tri(&t, OPENPETE_SCENE_SKY, 0);
@@ -676,8 +676,8 @@ static uint32_t s_cyc_a0 = 0xFFFFFFFFu, s_cyc_a1 = 0, s_cyc_a2 = 0;
  * gameplay a1/a2 are g_Camera's own view/projection fields, which the spine's
  * camera bracket interpolates in place, so the live read above is already
  * sub-tick. During the level transition (gamestate 1) the game builds both
- * matrices on its STACK each tick — camera yaw minus a decaying spin, roll,
- * pitch, a 320/512-scaled projection copy — and the stack is neither an
+ * matrices on its STACK each tick - camera yaw minus a decaying spin, roll,
+ * pitch, a 320/512-scaled projection copy - and the stack is neither an
  * interpolated region nor stable memory, so a pointer read there returns
  * one tick's matrices for every present of the interval. The re-extract
  * lerps this pair instead (componentwise, like the camera's lerp_matrix):
@@ -710,7 +710,7 @@ static void cyc_pre(CPUState* cpu, int feed, int verify) {
     if (!game_layout.cyc.hook_args) a1 = a2 = game_layout.cam.proj_matrix;
     s_cyc_a0 = a0; s_cyc_a1 = a1; s_cyc_a2 = a2;   /* for sub-tick re-extract */
     if (openpete_frame != s_cyc_curr_frame) {
-        /* New canonical tick: roll curr→prev. Consecutive = the previous
+        /* New canonical tick: roll curr->prev. Consecutive = the previous
          * capture was one tick (two VBLs) ago; a longer gap (a load stall,
          * the draw loop pausing) breaks the pair and the re-extract snaps. */
         int consecutive = s_cyc_curr_valid && s_cyc_curr_frame != 0xFFFFFFFFu &&

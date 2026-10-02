@@ -1,16 +1,16 @@
-// core/include/openpete_menu.h — in-game settings menu (toggled by `O`).
+// core/include/openpete_menu.h - in-game settings menu (toggled by `O`).
 //
 // A native-renderer overlay that live-changes presentation settings: aspect
 // ratio, target FPS, vsync, SSAA, draw distance, plus a row for the debug
 // free camera. Styled after Spyro 1's pause menu (gold border,
 // semi-transparent panel, 3D gold-glyph text, wobbling selected item).
 // Display-only: every value maps to a
-// native-renderer / host-pacer setter, never gameplay state — except FREECAM,
+// native-renderer / host-pacer setter, never gameplay state - except FREECAM,
 // which fronts the same intentionally-divergent debug toggle as the F key.
 //
 // The host loop (core/runtime/run.c) owns input: it toggles on `O`, feeds arrow
 // keys to nav()/adjust() while open and suppresses the game pad. The native
-// renderer draws the panel from the live vk present. Native-renderer only —
+// renderer draws the panel from the live vk present. Native-renderer only -
 // inert under psycross.
 
 #ifndef OPENPETE_MENU_H
@@ -60,7 +60,7 @@ int  openpete_menu_cursor(void);
 /* Menu layout in the renderer's overlay space: x in units of window HEIGHT, y in
  * [0,1], origin top-left, +y down (same space as the FPS overlay). Shared by the
  * native panel/border draw and the game-side glyph placement, so text lands
- * on the same rows as the panel geometry — one source of truth. */
+ * on the same rows as the panel geometry - one source of truth. */
 typedef struct {
     float panel_x0, panel_y0, panel_x1, panel_y1;  /* panel rect */
     int   row_count;

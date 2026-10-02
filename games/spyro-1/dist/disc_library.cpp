@@ -1,4 +1,4 @@
-// games/spyro-1/dist/disc_library.cpp — the content-addressed disc library.
+// games/spyro-1/dist/disc_library.cpp - the content-addressed disc library.
 //
 //   library/<disc_sha256>/
 //     disc.bin, disc.cue     ingested copy (cue synthesized)
@@ -13,7 +13,7 @@
 // path, library untouched; else the library is scanned and the
 // most-recently-played entry boots, or the splash version selector picks
 // among several. After ingest the user's original file is never needed again
-// — engine updates rebuild the module from the library's own copy.
+// - engine updates rebuild the module from the library's own copy.
 #include "openpete.h"
 #include "openpete_log.h"
 #include "openpete_paths.h" /* library root: portable vs per-user data dir */
@@ -46,7 +46,7 @@ extern "C" {
 void (*spyro1_progress_cb)(const char* stage, int done, int total) = nullptr;
 }
 
-/* Splash selector (splash.c). Weak coupling by declaration only — the
+/* Splash selector (splash.c). Weak coupling by declaration only - the
  * splash TU is always linked into the game exe. */
 extern "C" int spyro1_splash_active(void);
 extern "C" int spyro1_splash_open(void);
@@ -327,7 +327,7 @@ extern "C" int spyro1_config_disc_identity(const char* disc_path,
         /* No disc named: the library will pick the most recently played,
          * so that is the entry whose settings apply. Mirrors the choice
          * spyro1_library_resolve makes below (minus the selector UI, which
-         * has not run yet — a user who picks a different version in the
+         * has not run yet - a user who picks a different version in the
          * splash gets that version's scopes on the NEXT launch). */
         std::vector<Meta> entries;
         std::error_code ec;
@@ -408,7 +408,7 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
         char sha[65];
         std::fprintf(stderr, "[library] copying disc into your library...\n");
         /* Splash worker task: the multi-hundred-MB copy must not run on
-         * the UI thread (a window drag would freeze it — see
+         * the UI thread (a window drag would freeze it - see
          * spyro1_splash_run_task). */
         struct CopyTask {
             const fs::path* src; fs::path dst; char* sha; bool ok;
@@ -424,7 +424,7 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
             fs::remove_all(tmp, ec);
             return -1;
         }
-        /* Entry dirname = first 16 hex of the sha256 (2^64 space — the
+        /* Entry dirname = first 16 hex of the sha256 (2^64 space - the
          * full hash lives in meta.toml). Keeps the deepest module-build
          * paths inside Windows' 260-char budget even under long install
          * prefixes. */
@@ -450,13 +450,13 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
             write_meta(entry, label, bin.filename().string(), sha,
                        (long long)time(nullptr));
             std::fprintf(stderr, "[library] added %s (%s)\n", label.c_str(), sha);
-            /* The library owns this copy from here on — the module is
+            /* The library owns this copy from here on - the module is
              * rebuilt from it, never from wherever the image came from.
              * Worth saying once: the user is otherwise left holding two
              * copies of a ~650 MB image with nothing telling them the
              * first one is now redundant. */
             std::fprintf(stderr,
-                "[library] your original %s is no longer needed — the copy "
+                "[library] your original %s is no longer needed - the copy "
                 "in your library is what OpenPete uses from now on\n",
                 bin.filename().string().c_str());
         }
@@ -503,7 +503,7 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
         }
     } else if (entries.size() > 1) {
         std::fprintf(stderr,
-                     "[library] %zu versions installed — booting most recent "
+                     "[library] %zu versions installed - booting most recent "
                      "'%s'\n", entries.size(), pick->label.c_str());
     }
     return boot_entry(opts, *pick, module_path_out, module_path_cap);

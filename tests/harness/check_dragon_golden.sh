@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# check_dragon_golden.sh — the Spyro 1 dragon-rescue golden tier.
+# check_dragon_golden.sh - the Spyro 1 dragon-rescue golden tier.
 #
 # One row per dragon rescue (80): the launch places Spyro above the statue,
 # the landing triggers the rescue cutscene, and the row samples the dragon

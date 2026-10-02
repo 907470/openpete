@@ -1,4 +1,4 @@
-// games/spyro-2/features/cutscene_skip.c — `--skip-to-cutscene` for Spyro 2.
+// games/spyro-2/features/cutscene_skip.c - `--skip-to-cutscene` for Spyro 2.
 //
 // Two routes start a Spyro 2 cutscene, and every row of the table below
 // takes one of them.

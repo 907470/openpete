@@ -1,4 +1,4 @@
-/* games/common/renderer/interp_regions_gen.h — builds a game's interp region
+/* games/common/renderer/interp_regions_gen.h - builds a game's interp region
  * table from descriptor rows and registers it with the openpete_interp ring.
  *
  * A game describes its plain-global regions as a const array of

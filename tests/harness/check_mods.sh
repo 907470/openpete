@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_mods.sh — the PoC-ladder CI gate (modtest orchestration).
+# check_mods.sh - the PoC-ladder CI gate (modtest orchestration).
 #
 # Single-mod rungs declare their own tests in mod.toml [test] blocks and
 # run through tools/modtest.py (the identical harness third-party modders
@@ -13,8 +13,8 @@
 # plus the tools/modtest.py run over every [test]-block rung.
 #
 # Usage: tests/harness/check_mods.sh [--game SLUG]
-#        (repo root; ~10 min — ctest mod_poc_ladder)
-# Env:   OPENPETE_BIN / OPENPETE_DISC — forwarded to runs + oracle.
+#        (repo root; ~10 min - ctest mod_poc_ladder)
+# Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded to runs + oracle.
 #
 # Every fixture, level name and golden below is Spyro 1's, so --game names
 # the game whose binary and disc are used and refuses every other slug
@@ -24,7 +24,7 @@ set -u
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set here rather than at
 # each invocation because this script builds its argument list in more than one
 # place, and a flag appended to the wrong one is a silent miss.
@@ -94,7 +94,7 @@ run_game() { # run_game <mods_dir> <frames> [extra flags...] -> stdout+stderr
     return $rc
 }
 
-# ── 1+2. chain-duo matrix (order A,B then B,A) — also observer-neutral ──
+# ── 1+2. chain-duo matrix (order A,B then B,A) - also observer-neutral ──
 say "chain-duo matrix: order [a,b] (b outermost)"
 fixture "$WORK/duo1" chain-duo-a chain-duo-b
 out="$(run_game "$WORK/duo1" 5000)"
@@ -117,7 +117,7 @@ else
 fi
 
 # ── 2b. --mods overrides enabled.txt (same order-IS-priority rule) ──────
-say "--mods override: file says [a,b], flag says [b,a] — flag wins"
+say "--mods override: file says [a,b], flag says [b,a] - flag wins"
 fixture "$WORK/duo3" chain-duo-a chain-duo-b
 out="$(run_game "$WORK/duo3" 5000 --mods chain-duo-b,chain-duo-a)"
 seq3="$(printf '%s\n' "$out" | grep -oE 'chain (enter|exit)  ?[<>AB]+' | tr -d ' ' | paste -sd, -)"
@@ -129,7 +129,7 @@ fi
 
 # ── 2c. a final line with no trailing newline is still an id ───────────
 # Editors that don't append a newline are common, and fgets reports that
-# line the same way it reports one that outran the buffer — so the last
+# line the same way it reports one that outran the buffer - so the last
 # mod the user added used to be dropped with a bogus "exceeds 63
 # characters" warning.
 say "enabled.txt: last line without a trailing newline still loads"
@@ -176,7 +176,7 @@ else
 fi
 
 # ── 4. lib-and-client: deps topo-sort ───────────────────────────────────
-say "lib-and-client: client listed FIRST — topo-sort must load lib first"
+say "lib-and-client: client listed FIRST - topo-sort must load lib first"
 fixture "$WORK/libclient" lib-and-client demo-lib
 out="$(run_game "$WORK/libclient" 600)"
 lib_line=$(printf '%s\n' "$out" | grep -n "demo-lib: entry ran" | head -1 | cut -d: -f1)
@@ -188,7 +188,7 @@ else
 fi
 
 
-say "lib-and-client: missing dep — actionable error, run survives"
+say "lib-and-client: missing dep - actionable error, run survives"
 fixture "$WORK/nodep" lib-and-client
 out="$(run_game "$WORK/nodep" 600)"
 if printf '%s\n' "$out" | grep -q 'requires "demo-lib", which is not enabled'; then
@@ -202,7 +202,7 @@ else
     bad "run did not reach the frame limit"
 fi
 
-say "lib-and-client: dependency cycle — both disabled, run survives"
+say "lib-and-client: dependency cycle - both disabled, run survives"
 for m in cycle-x cycle-y; do
     other=cycle-y; [ "$m" = cycle-y ] && other=cycle-x
     mkdir -p "$WORK/cycsrc/$m/src"
@@ -257,7 +257,7 @@ static void fn(CPUState* cpu) {
 }
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     A = api; S = self;
-    /* func_8003B9D4 is CollectItem's historical raw name — the alias
+    /* func_8003B9D4 is CollectItem's historical raw name - the alias
      * table must resolve it forever (with a migrate warning). */
     return api->override_name(self, "func_8003B9D4", fn);
 }
@@ -283,7 +283,7 @@ fi
 # reaches the engine through. Three objects, compiled by hand against the
 # staged SDK: no descriptor at all, a descriptor claiming a newer api, a
 # descriptor from before the layout freeze (its calls would land on
-# shifted slots), and the SDK's own stub — only the last may run.
+# shifted slots), and the SDK's own stub - only the last may run.
 say "prebuilt objects: ABI descriptor refuses stale and future objects"
 SDK="$(dirname "$BIN")/sdk"
 CC_MOD="${OPENPETE_MOD_CC:-cc}"
@@ -306,7 +306,7 @@ cat > "$WORK/abisrc/prefreeze.c" <<'EOF'
 const openpete_mod_abi_t openpete_mod_abi = {
     OPENPETE_MOD_ABI_MAGIC, 10u, (uint32_t)sizeof(openpete_mod_api_t) };
 EOF
-abi_fixture() { # abi_fixture <id> <extra .c or ""> — a binary-only mod dir
+abi_fixture() { # abi_fixture <id> <extra .c or ""> - a binary-only mod dir
     local id="$1" extra="$2"
     local d="$WORK/abi/$id"
     mkdir -p "$d/.build"
@@ -348,7 +348,7 @@ fi
 
 # ── 7c. a failed entry leaves nothing registered ───────────────────────
 # An entry that installs an override and THEN returns nonzero is disabled
-# — and its override must go with it, or a mod the loader reports as
+# - and its override must go with it, or a mod the loader reports as
 # disabled keeps running code on every tick.
 say "failed entry: registrations made before the failure are swept"
 mkdir -p "$WORK/failsrc/entry-fails/src"
@@ -420,7 +420,7 @@ else
     printf '%s\n' "$out" | grep '\[texpack\] entry 512,256' | head -3
 fi
 
-say "asset overlay: two mods collide on one asset — last in order wins"
+say "asset overlay: two mods collide on one asset - last in order wins"
 for m in duel-a duel-b; do
     mkdir -p "$WORK/duelsrc/$m/assets/textures"
     printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\n' "$m" \
@@ -464,12 +464,12 @@ fi
 
 # ── 8b. asset overlay: sound namespace (assets/sfx/) ─────────────────
 # Two declarative mods each ship a symbolic spyroCharge.wav (synthesized
-# tones — Spyro charges constantly in the attract demo, gems are never
+# tones - Spyro charges constantly in the attract demo, gems are never
 # collected there). Asserts: a file replaces a keyed voice; last in order
 # wins with the same log line the texture namespace prints; flipping the
 # order flips the winner. Then the round-trip instrument: a fresh census
 # of the disc loaded unmodified must verify bit-identical at every key-on.
-say "asset overlay: sound namespace — symbolic replacement + last-wins"
+say "asset overlay: sound namespace - symbolic replacement + last-wins"
 for m in sfxduel-a sfxduel-b; do
     mkdir -p "$WORK/sfxsrc/$m/assets/sfx"
     printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\n' "$m" \
@@ -533,15 +533,15 @@ fi
 # memory; the swap happens at the PCM upload below the voice mirror, so
 # the one-shot duration the game polls through SpuGetKeyStatus (and with
 # it the tick it frees the sound slot and writes the sound-ref byte) is
-# the stock sample's. The fixture replaces pickupDing — keyed ~11 times
-# in 6000 VBLs of the attract demo — with a 2 s buzz, ~12x the stock
+# the stock sample's. The fixture replaces pickupDing - keyed ~11 times
+# in 6000 VBLs of the attract demo - with a 2 s buzz, ~12x the stock
 # length. OPENPETE_SFX_END_LOG names every key-on and every ON/RESET
 # transition the guest reads; the two logs must match line for line, and
 # the pack census must show the replacement actually served (a green
 # that did not engage is vacuous). Re-pointing the voice's addr/
-# pitch instead — the route this replaced — moved the end and shifted
+# pitch instead - the route this replaced - moved the end and shifted
 # the voice allocator's later choices from that tick on.
-say "sfx_replace: end-tick neutrality — replaced voices end on the stock tick"
+say "sfx_replace: end-tick neutrality - replaced voices end on the stock tick"
 fixture "$WORK/sfxrep" sfx-replace-probe
 mkdir -p "$WORK/nomods"; : > "$WORK/nomods/enabled.txt"
 stock_keys="$(OPENPETE_SFX_END_LOG=1 run_game "$WORK/nomods" 6000 --mute 0 | grep '^\[sfx-key ' || true)"
@@ -552,7 +552,7 @@ replaced="$(printf '%s\n' "$probe_out" | grep -o '^\[sfxpack\].*replaced=[0-9]*'
 if [ "${n_stock:-0}" -lt 50 ]; then
     bad "end-tick log too short to judge ($n_stock transitions)"
 elif [ "${replaced:-0}" -lt 1 ]; then
-    bad "replacement never served (replaced=${replaced:-0}) — vacuous"
+    bad "replacement never served (replaced=${replaced:-0}) - vacuous"
     printf '%s\n' "$probe_out" | grep -i "sfx" | head -5
 elif [ "$stock_keys" = "$probe_keys" ]; then
     ok "$n_stock key transitions identical with $replaced replaced plays"
@@ -562,7 +562,7 @@ else
 fi
 
 # ── 9. level-segment overlay: CdRead chokepoint ─────────────────────────
-say "wad overlay: byte-identical blob — chokepoint provably transparent"
+say "wad overlay: byte-identical blob - chokepoint provably transparent"
 mkdir -p "$WORK/wadsrc/wad-identity/assets/wad"
 printf '[mod]\nid = "wad-identity"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
     > "$WORK/wadsrc/wad-identity/mod.toml"
@@ -640,7 +640,7 @@ fi
 # DESYNC whenever guest RAM moves back in time without the arena. Every
 # timeline feature must restore both together: the stress-rewind
 # harness, runahead rollback (with the prediction oracle hashing the
-# arena), a file save/load, and the reload cases — an Apply that keeps
+# arena), a file save/load, and the reload cases - an Apply that keeps
 # the allocation shape replays the row and a pre-Apply file restores;
 # an Apply that changes the shape supersedes the row and the pre-Apply
 # file is REFUSED. A modset mismatch refuses too.
@@ -654,7 +654,7 @@ else
     bad "canary never armed or the stress harness never rolled back"
 fi
 if printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
-    bad "stress-rewind: DESYNC — the arena did not roll back with guest RAM"
+    bad "stress-rewind: DESYNC - the arena did not roll back with guest RAM"
 else
     ok "stress-rewind: arena rolled back with guest RAM (no DESYNC)"
 fi
@@ -679,15 +679,15 @@ if ! printf '%s\n' "$out" | grep -q "runahead: armed"; then
 elif ! printf '%s\n' "$out" | grep -q "arena-canary: armed"; then
     bad "runahead over the canary: the canary never armed (no gameplay tick)"
 elif [ -z "$ra_sum" ]; then
-    bad "runahead over the canary: VACUOUS — no [ra-predict] summary; the" \
+    bad "runahead over the canary: VACUOUS - no [ra-predict] summary; the" \
         "prediction oracle was not armed in this binary"
 elif [ "${ra_checked:-0}" -eq 0 ]; then
-    bad "runahead over the canary: VACUOUS — the prediction oracle retired" \
+    bad "runahead over the canary: VACUOUS - the prediction oracle retired" \
         "0 predictions in this window; nothing was compared"
 elif [ "${ra_mismatch:-1}" -ne 0 ]; then
     bad "runahead over the canary: prediction oracle mismatch ($ra_sum)"
 elif printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
-    bad "runahead over the canary: DESYNC — the arena did not roll back" \
+    bad "runahead over the canary: DESYNC - the arena did not roll back" \
         "with guest RAM"
 else
     ok "runahead armed over mutable arena memory; prediction oracle exact" \
@@ -750,7 +750,7 @@ fi
 
 # ── 13b. stream handles: every 21-bit field reader resolves handles ───
 # vstream-rehandle rewrites EVERY animated model's frame words in the level
-# to stream handles — mode 1 bound to the streams in place, mode 2 bound to
+# to stream handles - mode 1 bound to the streams in place, mode 2 bound to
 # arena copies (the total-conversion shape). The rendered frame must equal
 # stock byte-for-byte: the readers are the 21 substituted sites plus the
 # native walks, so a pixel difference is a reader that resolved a handle
@@ -805,7 +805,7 @@ fi
 
 # supercharge-anywhere injects a captured Spyro animation whose frame words
 # are halved-encoding fields: capture on a ramp level, then inject on a
-# level without one — every frame word must carry a handle.
+# level without one - every frame word must carry a handle.
 say "stream handles: supercharge injection carries halved-encoding handles"
 rm -rf "$WORK/sc"; mkdir -p "$WORK/sc"
 cp -r "$MODS_SRC/supercharge-anywhere" "$WORK/sc/supercharge-anywhere"
@@ -883,7 +883,7 @@ fi
 # Whether a mod joins the tag is DERIVED when the manifest is silent: a
 # mod that loads no code object still changes gameplay if it claims a
 # level slot. Contrast two mods of the identical shape (declarative, no
-# .so, no sim_mutative key) whose only difference is [[level]] — the
+# .so, no sim_mutative key) whose only difference is [[level]] - the
 # level mod must be tagged and the asset mod must not.
 fixture "$WORK/ss-level" grim-garden
 fixture "$WORK/ss-assets" music-swap
@@ -893,7 +893,7 @@ mc_run --mods-dir "$WORK/ss-level" --adopt-saves >/dev/null 2>&1
 if grep -q "^grim-garden@" "$CARDS/card1.mcr.modset" 2>/dev/null; then
     ok "custom-level mod joins the tag (derived mutative without code)"
 else
-    bad "level mod absent from the tag — the [[level]] derivation broke"
+    bad "level mod absent from the tag - the [[level]] derivation broke"
 fi
 rm -f "$CARDS/card1.mcr.modset"
 mc_run --mods-dir "$WORK/ss-assets" --adopt-saves >/dev/null 2>&1
@@ -904,8 +904,8 @@ else
 fi
 
 # ── 15. zip mods: folder or zip, identical (build + load) ───────────────
-# hello-anchor zipped, dropped as <id>.zip, loads end-to-end (unpack →
-# content-hash-cached compile → dlopen); a second boot reuses both
+# hello-anchor zipped, dropped as <id>.zip, loads end-to-end (unpack ->
+# content-hash-cached compile -> dlopen); a second boot reuses both
 # caches (no re-extract, no recompile).
 say "zip mods: <id>.zip unpack + content-hash caches"
 mkdir -p "$WORK/zipmods"
@@ -967,7 +967,7 @@ else
     bad "no active window after re-enable"
 fi
 
-# ── 17. process handoff: checkpoint → exec → restore ────────────────────
+# ── 17. process handoff: checkpoint -> exec -> restore ────────────────────
 # OPENPETE_HANDOFF_AT=2000 checkpoints the session and execs the same
 # image mid-run; the fresh process resumes the state and runs to the
 # frame limit. Asserts exactly ONE exec (the resume consumes the
@@ -1001,7 +1001,7 @@ fi
 # A purpose-built mod logs "v1 alive"; its source is edited to v2 while
 # the game runs with OPENPETE_MOD_HOT_RELOAD=1. The watcher (content
 # build key, every 64 canonical ticks) rebuilds, dlopens a fresh object,
-# re-runs entry — "v2 alive" must appear in the SAME session.
+# re-runs entry - "v2 alive" must appear in the SAME session.
 say "hot reload: mid-run source edit goes live in-session"
 mkdir -p "$WORK/hotsrc/hot-greeter/src"
 printf '[mod]\nid = "hot-greeter"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
@@ -1031,7 +1031,7 @@ wait "$hotpid"
 if grep -q "hot-greeter: v1 alive" "$WORK/hot.log" &&
    grep -q "hot reload: hot-greeter live" "$WORK/hot.log" &&
    grep -q "hot-greeter: v2 alive" "$WORK/hot.log"; then
-    ok "v1 ran, reload fired, v2 ran — same session"
+    ok "v1 ran, reload fired, v2 ran - same session"
 else
     bad "hot reload sequence incomplete (see $WORK/hot.log)"
     grep -E "hot" "$WORK/hot.log" | head -5
@@ -1039,7 +1039,7 @@ fi
 
 # ── mod shaders: engine-compiled GLSL postfx visibly present in the
 # headless dump. The headless
-# screenshot path composes native_rtt, which BYPASSES off_image — a
+# screenshot path composes native_rtt, which BYPASSES off_image - a
 # chain wired only into the live path passes a boots-and-screenshots
 # gate vacuously, so this rung asserts CONTENT: the crt scanlines make
 # the adjacent-row luma delta exceed the skip-row delta (alternating
@@ -1053,7 +1053,7 @@ mkdir -p "$WORK/crtoff"; : > "$WORK/crtoff/enabled.txt"
 run_game "$WORK/crtoff" 400 --screenshot-on-frame 350 \
     --screenshot-output "$WORK/crtoff/shot.png" > "$WORK/crtoff.log" 2>&1 || true
 # "crt filter armed" = shader_register succeeded (fresh compile OR
-# cache hit — a hit logs no compile line) AND postfx_register/enable
+# cache hit - a hit logs no compile line) AND postfx_register/enable
 # went through. Grepping for the compile line alone false-fails on
 # every cache-hit run.
 if grep -q "crt filter armed" "$WORK/crt.log"; then
@@ -1064,10 +1064,10 @@ fi
 if [ -f "$WORK/crt/shot-vk.png" ] && [ -f "$WORK/crtoff/shot-vk.png" ] &&
    python3 -c "import PIL" 2>/dev/null; then
     # Two assertions from one image pair:
-    #  1. presence — crt scanlines alternate rows, so the adjacent-row
+    #  1. presence - crt scanlines alternate rows, so the adjacent-row
     #     luma delta exceeds the skip-row delta (~2.5x with the filter,
     #     ~0.6x without);
-    #  2. orientation — the filtered dump's row-luma profile must
+    #  2. orientation - the filtered dump's row-luma profile must
     #     correlate better with the unfiltered dump's profile than with
     #     its vertical REVERSAL (the first crt shot shipped upside down:
     #     the fullscreen triangle ignored the engine's Y-flipped
@@ -1106,7 +1106,7 @@ else
     if [ ! -f "$WORK/crt/shot-vk.png" ]; then
         bad "no shot-vk.png from the crt rung (see $WORK/crt.log)"
     else
-        ok "PIL unavailable — content assertion skipped (compile assert only)"
+        ok "PIL unavailable - content assertion skipped (compile assert only)"
     fi
 fi
 
@@ -1121,7 +1121,7 @@ fi
 # real level (--skip-to-level 10) so the frame has 3D content.
 # NB --skip-to-level fast-forwards presents until the level is playable
 # (~f1700 for the induced Artisans demo), so the recording only spans
-# the in-level tail — size the frame limit past the load and sample
+# the in-level tail - size the frame limit past the load and sample
 # near the END of the video, never at a fixed offset from its start.
 say "mod shaders: SCENE point processes the scene under the HUD"
 if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
@@ -1153,17 +1153,17 @@ print("OK" if cyan >= 20 and scene_sepia else f"BAD cyan_px={cyan} scene={sc}")
 PYEOF
 )
         if [ "$sepia_v" = "OK" ]; then
-            ok "HUD marker crisp cyan over a sepia scene — SCENE runs under the HUD"
+            ok "HUD marker crisp cyan over a sepia scene - SCENE runs under the HUD"
         else
-            bad "SCENE under-HUD not confirmed ($sepia_v — see $WORK/sepia.log)"
+            bad "SCENE under-HUD not confirmed ($sepia_v - see $WORK/sepia.log)"
         fi
     elif grep -qiE "no vulkan|no display|surface|failed to (create|open)" "$WORK/sepia.log"; then
-        ok "no display for the windowed SCENE record — assertion skipped"
+        ok "no display for the windowed SCENE record - assertion skipped"
     else
         bad "recording failed for the SCENE rung (see $WORK/sepia.log)"
     fi
 else
-    ok "ffmpeg/PIL unavailable — SCENE recording assertion skipped"
+    ok "ffmpeg/PIL unavailable - SCENE recording assertion skipped"
 fi
 
 # ── declarative materials: a shader mod with NO C at all ───────────────
@@ -1172,7 +1172,7 @@ fi
 # declarative path (never compiled), its [[material]] rows arm, and the
 # geometry they select actually changes on screen. The pixel leg is a
 # controlled A/B (same frame and seed, mod present vs absent) rather than
-# a colour classifier — "some pixels moved" is the structural claim; which
+# a colour classifier - "some pixels moved" is the structural claim; which
 # colour they moved to is the mod's business, not the gate's.
 say "declarative materials: manifest-only mod arms rows without compiling"
 fixture "$WORK/decl" declarative-reshade
@@ -1184,7 +1184,7 @@ else
     printf '%s\n' "$out" | grep -i "declarative-reshade" | head -3
 fi
 if printf '%s\n' "$out" | grep -q "loaded declarative-reshade .*declarative"; then
-    ok "loaded down the declarative path — nothing was compiled"
+    ok "loaded down the declarative path - nothing was compiled"
 else
     bad "declarative mod did not take the declarative path"
 fi
@@ -1219,7 +1219,7 @@ else
     bad "typo'd channel was not rejected"
 fi
 if printf '%s\n' "$out" | grep -q "typo: material selector armed"; then
-    bad "the refused row armed anyway — it would match every channel"
+    bad "the refused row armed anyway - it would match every channel"
 else
     ok "no selector armed from the refused row"
 fi
@@ -1255,10 +1255,10 @@ PYEOF
             bad "declarative rows armed but changed only ${n_changed:-0} px"
         fi
     else
-        ok "no headless vk capture available — pixel assertion skipped"
+        ok "no headless vk capture available - pixel assertion skipped"
     fi
 else
-    ok "PIL unavailable — declarative pixel assertion skipped"
+    ok "PIL unavailable - declarative pixel assertion skipped"
 fi
 
 # ── table census: every converted table grows past its former cap ──────
@@ -1483,6 +1483,6 @@ echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"
 else
-    echo "[modtest] FAILURES — see above"
+    echo "[modtest] FAILURES - see above"
 fi
 exit $fail

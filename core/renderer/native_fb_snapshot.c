@@ -1,4 +1,4 @@
-/* native_fb_snapshot.c — see openpete_fb_snapshot.h. */
+/* native_fb_snapshot.c - see openpete_fb_snapshot.h. */
 
 #include "openpete_fb_snapshot.h"
 

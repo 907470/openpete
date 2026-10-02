@@ -1,4 +1,4 @@
-/* psx_viewz.glsl — the scene vertex stream's depth unit, shared by every
+/* psx_viewz.glsl - the scene vertex stream's depth unit, shared by every
  * vertex stage that reads it.
  *
  * The CPU feed carries full-world view-Z unencoded: inPos.z is the ORDERING

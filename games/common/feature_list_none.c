@@ -1,4 +1,4 @@
-// games/common/feature_list_none.c — the empty feature registry.
+// games/common/feature_list_none.c - the empty feature registry.
 //
 // A game with no feature modules runs the recompiled code and the PSYQ thunk
 // surface only; core still links these two symbols unconditionally.

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# build-mod-docs.sh — regenerate the mod-author docs.
+# build-mod-docs.sh - regenerate the mod-author docs.
 #
 # Two stages, degrading gracefully:
 #   1. tools/gen_mod_docs.py (stdlib python) extracts the reference
 #      pages into docs/modding/pages/reference/ and the ImGui page into
-#      docs/modding/pages/ — ALWAYS runs.
-#   2. mkdocs builds the HTML site — runs when mkdocs is importable
+#      docs/modding/pages/ - ALWAYS runs.
+#   2. mkdocs builds the HTML site - runs when mkdocs is importable
 #      (pip install mkdocs-material), otherwise prints a notice and
 #      exits 0 so builds on minimal machines stay green (the markdown
 #      is still perfectly readable).
@@ -37,7 +37,7 @@ GEN_ARGS=()
 python3 tools/gen_mod_docs.py "${GEN_ARGS[@]}"
 
 if ! python3 -c "import mkdocs" 2>/dev/null; then
-    echo "[mod-docs] mkdocs not installed — markdown generated, HTML" \
+    echo "[mod-docs] mkdocs not installed - markdown generated, HTML" \
          "skipped (pip install mkdocs-material to build the site)"
     exit 0
 fi

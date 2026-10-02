@@ -1,9 +1,9 @@
-/* openpete_ui_moby.h — HUD/UI moby classifier (address-range form).
+/* openpete_ui_moby.h - HUD/UI moby classifier (address-range form).
  *
  * The game registers the static g_Hud.m_Mobys range at boot
  * (games/spyro-1/game_extras_impl.c); the native renderer classifies
  * moby addresses against it (flat-HUD overlay vs the depth-isolated
- * HUD3D icon pass — see moby.c). Classification is by address range
+ * HUD3D icon pass - see moby.c). Classification is by address range
  * only. */
 
 #ifndef OPENPETE_UI_MOBY_H

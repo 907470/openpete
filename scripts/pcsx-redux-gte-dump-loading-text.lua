@@ -18,7 +18,7 @@ local CFG = {
     frame_hi  = 1320,
     -- pcsx-redux frame numbers count VSyncs from full BIOS+boot. Openpete's
     -- `openpete_frame` is now anchored at the first DrawOTag (post-splash),
-    -- but `openpete_vbl` still counts every VSync from boot — match the
+    -- but `openpete_vbl` still counts every VSync from boot - match the
     -- pcsx-redux numbers below against `openpete_vbl`, not `openpete_frame`.
     -- If the loading-text never appears in the capture, sweep these
     -- forward by 100..400 frames empirically.

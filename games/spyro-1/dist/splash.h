@@ -1,4 +1,4 @@
-// games/spyro-1/dist/splash.h — first-run splash & disc resolver.
+// games/spyro-1/dist/splash.h - first-run splash & disc resolver.
 #ifndef SPYRO1_SPLASH_H
 #define SPYRO1_SPLASH_H
 

@@ -6,7 +6,7 @@ Every key and pad button OpenPete reads is rebindable in
 | Table | Holds |
 | --- | --- |
 | `[keys.pad]` | the PlayStation controller in port 1 |
-| `[keys.pad2]` … `[keys.pad4]` | further controllers; unbound by default |
+| `[keys.pad2]` ... `[keys.pad4]` | further controllers; unbound by default |
 | `[keys.host]` | OpenPete's own keys: menus, [savestates](../help/glossary.md#savestate), pause, [free camera](../help/glossary.md#free-camera), [screenshots](../help/glossary.md#screenshot) |
 | `[keys.mod.<id>]` | keys a mod declares (the mod's documentation names them) |
 
@@ -62,7 +62,7 @@ A controller source takes the `pad:` prefix.
 | stick axes | `pad:leftx` `pad:lefty` `pad:rightx` `pad:righty` |
 
 A `-` before an axis inverts it: `pad:-lefty`. `pad:` means the first
-controller; `pad2:` … `pad4:` name the others. Inside `[keys.pad2]`, a bare
+controller; `pad2:` ... `pad4:` name the others. Inside `[keys.pad2]`, a bare
 `pad:` reads that player's own controller.
 
 ### Mouse

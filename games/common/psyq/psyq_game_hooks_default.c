@@ -1,4 +1,4 @@
-// games/common/psyq/psyq_game_hooks_default.c — the inert default for every
+// games/common/psyq/psyq_game_hooks_default.c - the inert default for every
 // per-game PSYQ hook.
 //
 // A game supplies only the hooks it has and names them in its own

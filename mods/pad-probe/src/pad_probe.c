@@ -1,5 +1,5 @@
 /*
- * pad-probe — api->pad_read per slot, checked against the synthetic stream.
+ * pad-probe - api->pad_read per slot, checked against the synthetic stream.
  *
  * A CameraUpdate pre-hook reads every pad slot once per tick. For a slot
  * named by the `expect` config row it recomputes, from the record's own

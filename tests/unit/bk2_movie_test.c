@@ -1,4 +1,4 @@
-/* tests/unit/bk2_movie_test.c — exercises bk2_movie_parse_log on an
+/* tests/unit/bk2_movie_test.c - exercises bk2_movie_parse_log on an
  * inline Octoshock-style Input Log. Avoids a real .bk2 in CI by skipping
  * the zip layer (bk2_movie_load just unwraps a zip into the same blob). */
 
@@ -16,7 +16,7 @@
     }                                                              \
 } while (0)
 
-/* Same convention as PsyX_Pad_UpdateKeyboardInput — released = bit set. */
+/* Same convention as PsyX_Pad_UpdateKeyboardInput - released = bit set. */
 #define BTN_SELECT  0x0001
 #define BTN_L3      0x0002
 #define BTN_R3      0x0004
@@ -37,7 +37,7 @@
 static int test_basic_parse(void) {
     /* Hand-rolled minimal log: header, LogKey, 4 frames, [/Input].
      * Frame 0: no input.
-     * Frame 1: Start + Cross — matches the first real press in tas.bk2.
+     * Frame 1: Start + Cross - matches the first real press in tas.bk2.
      * Frame 2: D-pad Up.
      * Frame 3: every digital button down (lets us catch a bit-mask typo
      *          without writing 16 separate frames). */
@@ -56,27 +56,27 @@ static int test_basic_parse(void) {
     CHECK(m.frame_count == 4, "expected 4 frames");
     CHECK(m.first_input_frame == 1, "first_input_frame should be 1");
 
-    /* Frame 0 — clean, sticks centred. */
+    /* Frame 0 - clean, sticks centred. */
     CHECK(m.frames[0].buttons == 0xFFFF, "frame 0 should be 0xFFFF");
     CHECK(m.frames[0].axes[0] == 128 && m.frames[0].axes[1] == 128 &&
           m.frames[0].axes[2] == 128 && m.frames[0].axes[3] == 128,
           "frame 0 axes should be centred");
 
-    /* Frame 1 — Start + Cross. Bits cleared = pressed. */
+    /* Frame 1 - Start + Cross. Bits cleared = pressed. */
     uint16_t f1 = m.frames[1].buttons;
     CHECK((f1 & BTN_START) == 0, "frame 1: Start should be pressed");
     CHECK((f1 & BTN_CROSS) == 0, "frame 1: Cross should be pressed");
     CHECK((f1 & BTN_UP) != 0,    "frame 1: Up should NOT be pressed");
     CHECK((f1 & BTN_SELECT) != 0,"frame 1: Select should NOT be pressed");
 
-    /* Frame 2 — Up only. Catches Up/Down/Left/Right ordering. */
+    /* Frame 2 - Up only. Catches Up/Down/Left/Right ordering. */
     uint16_t f2 = m.frames[2].buttons;
     CHECK((f2 & BTN_UP) == 0,   "frame 2: Up should be pressed");
     CHECK((f2 & BTN_DOWN) != 0, "frame 2: Down should NOT be pressed");
     CHECK((f2 & BTN_LEFT) != 0, "frame 2: Left should NOT be pressed");
     CHECK((f2 & BTN_RIGHT) != 0,"frame 2: Right should NOT be pressed");
 
-    /* Frame 3 — all 16 digital buttons (MODE at index 16 ignored). */
+    /* Frame 3 - all 16 digital buttons (MODE at index 16 ignored). */
     uint16_t f3 = m.frames[3].buttons;
     CHECK(f3 == 0x0000, "frame 3: all 16 digital should be pressed");
 
@@ -85,7 +85,7 @@ static int test_basic_parse(void) {
 }
 
 static int test_no_input(void) {
-    /* All-released movie — first_input_frame should equal frame_count. */
+    /* All-released movie - first_input_frame should equal frame_count. */
     const char* log =
         "[Input]\r\n"
         "LogKey:...\r\n"

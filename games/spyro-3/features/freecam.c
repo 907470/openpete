@@ -1,4 +1,4 @@
-// games/spyro-3/features/freecam.c — Spyro 3 descriptor for the debug free
+// games/spyro-3/features/freecam.c - Spyro 3 descriptor for the debug free
 // camera (F). The drive, path and teleport bodies are shared
 // (games/common/freecam_game.c); this file holds the addresses.
 

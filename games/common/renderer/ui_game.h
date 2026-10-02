@@ -1,4 +1,4 @@
-/* ui_game.h — the per-game half of the shared 2D UI feeder.
+/* ui_game.h - the per-game half of the shared 2D UI feeder.
  *
  * The decode in renderer/ui_sprite.c owns everything the games share: the
  * primitive classification, the FT4/F4/LINE_G2/SPRT word layouts, the
@@ -25,8 +25,8 @@ extern "C" {
 
 typedef struct ui_game {
     /* The 2D ordering-table insert (a0 = the primitive being linked). Every
-     * 2D emitter calls it and no 3D draw does — the 3D passes inline the
-     * link — so it is the 2D-vs-3D discriminator. */
+     * 2D emitter calls it and no 3D draw does - the 3D passes inline the
+     * link - so it is the 2D-vs-3D discriminator. */
     uint32_t ot_insert;
 
     /* A second 2D ordering-table insert that takes the depth slot in a1 and

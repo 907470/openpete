@@ -97,7 +97,7 @@ title-demo|500|20||510,2210
 # PSX box x 192..320 y 76..172), its 30 SPRT glyphs (x 208..308 y 80..152) and
 # 5 HUD-class POLY_FT4 (x 128..384 y 65..193); open-atlas draws the whole atlas
 # screen as 290 POLY_FT4 covering x 1..512 y 12..228. The in-game HUD sprites
-# sit at y -28..2 — retracted above the visible band — on every frame of every
+# sit at y -28..2 - retracted above the visible band - on every frame of every
 # other movie in this corpus, so no row shows the HUD extended yet.
 # Both rows are freeze-marked. From VBL 869 the loading screen suppresses the
 # framebuffer clear, and from VBL 1165 so does open-options' save prompt: the

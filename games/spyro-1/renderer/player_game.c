@@ -1,10 +1,10 @@
-/* games/spyro-1/renderer/player_game.c — Spyro 1's half of the shared player
+/* games/spyro-1/renderer/player_game.c - Spyro 1's half of the shared player
  * feeder: the delta-accumulated vertex codec, the face-stream decode, the
  * skeleton's per-part transform and its seam joints, and the game's own draw.
  *
  * The walk itself is games/common/renderer/player.c; the contract is
  * renderer/player_game.h. Three shapes separate this avatar from a moby:
- *   - vertices are DELTA-ACCUMULATED — each one is a signed (dx, dy, dz) added
+ *   - vertices are DELTA-ACCUMULATED - each one is a signed (dx, dy, dz) added
  *     to a running accumulator in a dual 1-byte / 2-byte encoding with a wide
  *     escape, not a random-access packed triple;
  *   - the skeleton is three parts (body, head, tail), each with its own
@@ -133,14 +133,14 @@ static int s1_part_vcount(uint32_t flags, int* cursor) {
  * .L80024290 / .L80024344 for the eulers, D_80024054 for the seam).
  *
  *   TR_body = the swizzled-centre MVMVA: IR1 = cam.y - s.y, IR2 = cam.z - s.z,
- *     IR3 = s.x - cam.x, MAC = (PM . IR) >> 12 (sf = 1, no doubling — unlike a
+ *     IR3 = s.x - cam.x, MAC = (PM . IR) >> 12 (sf = 1, no doubling - unlike a
  *     moby).
  *   M_body  = PM . Ry.Rx.Rz from the body euler word.
  *   M_head / M_tail = M_body . euler(their own word); with a zero word the
  *     part is STICKY and keeps M_body: the routine leaves the body matrix in
  *     the GTE and reloads only when the angle word is non-zero, which is
  *     exactly what sets the part record's flags sign bit. Keying on "the
- *     record's matrix slot is non-zero" instead is wrong — the setup pass can
+ *     record's matrix slot is non-zero" instead is wrong - the setup pass can
  *     leave a stale non-zero matrix there with the sign bit CLEAR.
  *   TR_head / TR_tail = the seam joints below.
  */
@@ -222,8 +222,8 @@ static int s1_part_xform(CPUState* cpu, const ngte_view* v, int part,
         int32_t sy = (int32_t)cpu->read_word(PL.base + PL.pos_off + 4u);
         int32_t sz = (int32_t)cpu->read_word(PL.base + PL.pos_off + 8u);
         /* Prefer the FRACTIONAL interpolated camera and avatar positions and
-         * drop the int16 truncation, so the body's view-space origin — and so
-         * the whole model — is continuous below the one-world-unit grid. At
+         * drop the int16 truncation, so the body's view-space origin - and so
+         * the whole model - is continuous below the one-world-unit grid. At
          * the canonical lockstep the resolver returns 0, the deltas are
          * integers and the derived translation is the same value carried as a
          * double; the int16 path never wrapped, since the camera follows the
@@ -421,7 +421,7 @@ const player_game_t player_game = {
     .part_vcount      = s1_part_vcount,
     .part_faces       = s1_part_faces,
     .decode_faces     = s1_decode_faces,
-    /* The routine's own "ordering slot 0 — in front of everything" sentinel,
+    /* The routine's own "ordering slot 0 - in front of everything" sentinel,
      * saturated during the level-transition flight (r_pete.s 80023F8C). */
     .sort_depth_front = 127,
     /* The strip face's flag bit exempts it from the back-face test, so a

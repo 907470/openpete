@@ -1,4 +1,4 @@
-/* sfx_ident — the sound-effect pack's identity: how a sample's bytes
+/* sfx_ident - the sound-effect pack's identity: how a sample's bytes
  * become a name, how a name becomes a lookup key, and the WAV writer
  * the census dumper and the pack share.
  *

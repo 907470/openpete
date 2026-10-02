@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# check_carve_equivalence.sh — prove disc-carved recomp inputs == the
+# check_carve_equivalence.sh - prove disc-carved recomp inputs == the
 # decomp build outputs regen consumes.
 #
 # Runs the resolved game binary with --extract-recomp-inputs against the
 # reference disc, then byte-compares: PSX.EXE vs the decomp's build/PSX.EXE, and
 # every carved overlay vs build/wad/<wad_file> (mapping from
 # manifest/recomp/SCUS-94228/manifest.toml). The whole first-boot
-# pipeline silently assumes this equivalence — this makes it explicit.
+# pipeline silently assumes this equivalence - this makes it explicit.
 # Usage: scripts/check_carve_equivalence.sh [--game SLUG]
 #
 # Exit 0 = every byte matches; 2 = mismatch; 64 = prerequisites missing.
@@ -66,7 +66,7 @@ PYEOF
 )
 
 if [[ $fail -ne 0 ]]; then
-    echo "[carve] FAIL — carved bytes differ from the decomp build outputs"
+    echo "[carve] FAIL - carved bytes differ from the decomp build outputs"
     exit 2
 fi
-echo "[carve] PASS — disc-carved PSX.EXE + all overlays byte-match the decomp build"
+echo "[carve] PASS - disc-carved PSX.EXE + all overlays byte-match the decomp build"

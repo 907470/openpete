@@ -1,4 +1,4 @@
-# freecam-corpus.manifest — (level, pose) tuples for the debug-freecam golden.
+# freecam-corpus.manifest - (level, pose) tuples for the debug-freecam golden.
 #
 # One row per pose:  <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
 #   level  a --skip-to-level name (artisans, cliff_town, gnorc_cove, ...)
@@ -50,7 +50,7 @@ cliff_town | pos=(138997, 98065, 22037) yaw=1370 pitch=8
 cliff_town | pos=(57191, 104992, 33420) yaw=1726 pitch=698
 cliff_town | pos=(59710, 127007, 17599) yaw=-3825 pitch=148
 # dark_hollow rescue room: per-tick vertex-lighting pulse (secC churn) over
-# textured fogged walls — the animated-colour + CLUT-ladder interaction pose.
+# textured fogged walls - the animated-colour + CLUT-ladder interaction pose.
 dark_hollow | pos=(86434, 27639, 17265) yaw=3048 pitch=243
 # dark_hollow: whole-frame flicker under interpolation on the live window
 # (Windows exe, fullscreen, --render-fps 60). Both legs; the intermediate leg
@@ -67,7 +67,7 @@ gnorc_cove | pos=(36863, 117108, 30800) yaw=1448 pitch=343
 #
 # The knife edge cuts both ways: this pose's golden is the only one in the
 # corpus that has ever needed re-capturing without a code change behind it.
-# Its first PNGs matched no reachable build — three independent binaries
+# Its first PNGs matched no reachable build - three independent binaries
 # (the bless commit's own, a later one, and a second checkout's) agreed
 # byte-for-byte with each other and differed from those PNGs by the same
 # 41/19/78/39 px, while the two sibling gnorc_cove poses matched exactly.
@@ -110,7 +110,7 @@ wizard_peak | pos=(109537, 74800, 18000) yaw=1024 pitch=280
 # renderer: the PSX confines the preview by OT painter order plus a scissor
 # rect, and a depth buffer has to reproduce that silhouette from depth and a
 # stencil aperture instead. Every failure below is a different way that
-# reconstruction goes wrong, and each is ANGLE-dependent — an arch viewed
+# reconstruction goes wrong, and each is ANGLE-dependent - an arch viewed
 # square-on hides all of them, because the defects live on the jamb that
 # recedes away from the camera. Hence exact poses.
 #
@@ -118,13 +118,13 @@ wizard_peak | pos=(109537, 74800, 18000) yaw=1024 pitch=280
 #   1. The sky must not appear anywhere outside the arch opening.
 #   2. The preview's junction with the ground must be a STRAIGHT LINE.
 #      (PsyCross itself gets #2 wrong sometimes, so it is not the arbiter
-#      here — straightness is judged directly.)
+#      here - straightness is judged directly.)
 #
 # NOTE these are captured at both LOD modes by the corpus driver, which
 # matters: the distant-arch row below only misbehaves under extended LOD,
 # where the arch renders at a range the original would have culled.
 
-# Sky escaping PAST the arch — the preview paints over the stone jamb and the
+# Sky escaping PAST the arch - the preview paints over the stone jamb and the
 # wall behind it. Cause: the sky's rect spill carried one constant depth (the
 # farthest outline point), but on an angled arch the jamb OUTSIDE the opening
 # recedes past that depth and loses to it. Broken = a purple/blue wedge sitting
@@ -132,7 +132,7 @@ wizard_peak | pos=(109537, 74800, 18000) yaw=1024 pitch=280
 dream_weavers | pos=(31259, 44935, 13693) yaw=1379 pitch=-66
 # Close on a portal opening with a waterfall directly behind it: the preview
 # fills the frame and the waterfall's ABR-1 faces sit inside the outline. Guards
-# the transparent-terrain sky-cover drop (portal_sky_covers) — the preview draws
+# the transparent-terrain sky-cover drop (portal_sky_covers) - the preview draws
 # depth-test-only, so without it the additive pass blends over the preview.
 dream_weavers | pos=(73050, 69383, 13760) yaw=-1400 pitch=41
 # Close on a portal at a sheer angle, where the arch silhouette cuts the opening.
@@ -140,18 +140,18 @@ dream_weavers | pos=(73050, 69383, 13760) yaw=-1400 pitch=41
 # mask is the outline dilated by the aperture margin while the dome is confined
 # to a rect, so a band can exist that only the flat reaches. Canonically the
 # stone hides it; sub-tick the silhouette shifts and it shows as a bright sliver.
-# The corpus's `inter` leg is what catches this — the canon leg cannot.
+# The corpus's `inter` leg is what catches this - the canon leg cannot.
 dream_weavers | pos=(72461, 66230, 13605) yaw=-2567 pitch=67
 # Far back from a portal arch (d=32000), where the arch's sector has handed its
 # HP tier over to LP. Guards the per-face scoping of the LP depth pull: applied
 # to every LP face the pull is proportional, so at this range it exceeds the
 # ~40 units by which the arch clears the opening plane and the plane-pinned
 # preview eats a face-sized bite out of the jamb. Original-LOD leg is the one
-# that matters — under extended LOD the HP never drops and there is no LP here.
+# that matters - under extended LOD the HP never drops and there is no LP here.
 dream_weavers | pos=(108122, 83001, 15311) yaw=-1794 pitch=9
 
 # Gap between the preview and the arch INTERIOR at close range. Cause: clipping
-# the sky strictly to the authored outline polygon under-covers — the outline
+# the sky strictly to the authored outline polygon under-covers - the outline
 # sits inside the visible opening. Broken = a dark sliver down the inner jamb,
 # between the stone and the preview.
 beast_makers | pos=(120326, 113108, 18243) yaw=-509 pitch=79
@@ -170,7 +170,7 @@ beast_makers | pos=(119196, 113801, 17840) yaw=-669 pitch=246
 
 # Ground junction, PRE-EXISTING defect (present with the portal aperture
 # disabled, and NOT introduced by it). The terrain under the opening bulges up
-# into the preview in a curved hump instead of meeting it flat — the terrain
+# into the preview in a curved hump instead of meeting it flat - the terrain
 # OT-conformance sink failing to flatten those faces to the sky plane. Kept as
 # a row so the eventual fix has a witness; expect it to look wrong today.
 beast_makers | pos=(118535, 113493, 16946) yaw=3397 pitch=104
@@ -180,12 +180,12 @@ beast_makers | pos=(118535, 113493, 16946) yaw=3397 pitch=104
 # opens, so the opening plane moves with the mesh and geometry that is not the
 # static inner rim can go momentarily coplanar with it. By destination levelId:
 # 14 (artisans -> toasty) and 62/63/64 (gnorc_gnexus -> twilight_harbor /
-# gnasty_gnorc / gnastys_loot). This is NOT "boss portals" — doctor_shemp(24),
+# gnasty_gnorc / gnastys_loot). This is NOT "boss portals" - doctor_shemp(24),
 # blowhard(34), metalhead(44) and jacques(54) are ordinary static arches.
 #
 # artisans -> sunny_flight(15) is a different case and is NOT excluded: a wall
 # lowers to reveal it, but the arch mesh itself never changes. Only its capture
-# timing matters — a shot taken right after the level loads frames the wall.
+# timing matters - a shot taken right after the level loads frames the wall.
 
 # Inner rim coincident with the preview. Rims are present on every arch EXCEPT
 # beast_makers/tree_tops(43) and gnorc_gnexus/gnorc_cove(61); dream_weavers
@@ -201,7 +201,7 @@ peace_keepers | pos=(73452, 77502, 55889) yaw=2942 pitch=81
 stone_hill | pos=(163352, 247415, 37632) yaw=1038 pitch=602
 
 # artisans NW water plane, top-down: the far corner of
-# the water LP showed bare backdrop — 17 unswept water-plane quads absent from
+# the water LP showed bare backdrop - 17 unswept water-plane quads absent from
 # the fill-tag table. Guards the tags for the whole NW water cluster
 # (s120/s124/s153/s78/s111/s68).
 artisans | pos=(55555, 118312, 58525) yaw=5120 pitch=992

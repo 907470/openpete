@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """OT-range census, computed analytically (the .s drains its OT into a pure
-prim chain before DrawOTag, so bucket indices never reach a capture — but the
+prim chain before DrawOTag, so bucket indices never reach a capture - but the
 index arithmetic is exact given per-face view-Z + the authored bias fields):
 
   LP index = (sum of 4 corner SZ3_16)>>5 + ((w1>>3)&0x1F)*8 + 0x40
@@ -9,7 +9,7 @@ index arithmetic is exact given per-face view-Z + the authored bias fields):
 
 Inputs: a fardbg log (per-face corner m3, drawn set via [fardbg-drop]) and the
 level's FIELDCENSUS log (bias fields). Reports per-frame LP/HP index ranges,
-the equal-depth separation, and screen-overlapping same/near-slot pairs — the
+the equal-depth separation, and screen-overlapping same/near-slot pairs - the
 FIFO-tie set that decides whether a discard FIFO is needed.
 """
 import collections, sys

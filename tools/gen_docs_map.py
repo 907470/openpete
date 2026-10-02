@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gen_docs_map.py — generate the User docs map docs/src/user/pages.toml.
+"""gen_docs_map.py - generate the User docs map docs/src/user/pages.toml.
 
 The map sends each namespaced id to the guide anchor that documents it,
 `page#anchor` with the page relative to docs/src/user/. It is built from

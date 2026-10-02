@@ -4,7 +4,7 @@
 
 /* HD replacement sampling for OPAQUE (depth-tested, depth-writing) scene
  * geometry: like hd_tex.frag but alpha works as a CUTOUT (discard below 0.5,
- * else opaque) — true alpha blending on opaque groups would break Z ordering.
+ * else opaque) - true alpha blending on opaque groups would break Z ordering.
  * Semi-transparent HD edges harden slightly. */
 
 layout(set = 0, binding = 0) uniform sampler2D u_hd;
@@ -14,7 +14,7 @@ layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key imag
  * terrain key image's set at binding 1. */
 layout(set = 2, binding = 1) uniform usampler2D u_drain;
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
-/* Moby og-RANK image — same-moby painter select; see psx_scene_key.frag. */
+/* Moby og-RANK image - same-moby painter select; see psx_scene_key.frag. */
 layout(set = 4, binding = 0) uniform sampler2D u_mobyrank;
 
 layout(push_constant) uniform HdRect {
@@ -33,7 +33,7 @@ layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = mo
 
 layout(location = 0) out vec4 outColor;
 
-/* gl_FragCoord.z convention — see psx_scene_key.frag. */
+/* gl_FragCoord.z convention - see psx_scene_key.frag. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
@@ -61,7 +61,7 @@ void main()
     }
     /* Terrain KEY-RESOLVE: same contest as psx_scene_key.frag so
      * HD-replaced terrain keeps og's per-pixel face select. Ranked faces
-     * skip the positive-koff contest — see psx_scene_key.frag. */
+     * skip the positive-koff contest - see psx_scene_key.frag. */
     float koff = op_drain_koff(vKoff, vRank.y, vUVq / vQ, u_drain);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {   /* contest rules in psx_scene_key.frag */
@@ -90,7 +90,7 @@ void main()
              * near-band rule's twin): a curated embedded prop within 1024
              * world behind this terrain's TRUE surface wins the pixel.
              * Under the true-depth scope this is what carries the
-             * dofs-0 pedestal discs at mid/far range — og floated them on
+             * dofs-0 pedestal discs at mid/far range - og floated them on
              * the ground's own authored push, which the scope no longer
              * mirrors. */
             if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
@@ -108,12 +108,12 @@ void main()
     /* See hd_tex.frag: re-apply the CLUT-ladder fog a replacement can't get
      * from the palette. This is the pipe that terrain actually draws through.
      * Continuous model (fogAN.a > 0): the game selects ONE fogged palette row
-     * per FACE from the face-mean fog key — on stock art adjacent rows fade
+     * per FACE from the face-mean fog key - on stock art adjacent rows fade
      * gently, but reproduced as per-face affines on replacement art the row
      * steps read as toothed bands marching along the fog contour. Evaluate
      * the same ramp per FRAGMENT instead: fade identity -> the deepest-row
      * affine by t from the true view-Z (decoded from the depth this fragment
-     * wrote — terrain stores TRUE depth), which is the fade the rows
+     * wrote - terrain stores TRUE depth), which is the fade the rows
      * quantize, minus the steps. */
     if (pc.fogAN.a > 0.0) {
         float w = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);

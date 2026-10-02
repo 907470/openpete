@@ -1,4 +1,4 @@
-/* demo-lib — the library half of the deps rung: a dependency whose
+/* demo-lib - the library half of the deps rung: a dependency whose
  * entry must run before any dependent's (the loader topo-sorts deps
  * ahead of the enabled-list order). The log line is the proof a
  * dependent's entry can rely on this mod being live. */

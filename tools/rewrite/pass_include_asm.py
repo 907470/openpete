@@ -1,9 +1,9 @@
-"""Pass 5c — INCLUDE_ASM splice removal.
+"""Pass 5c - INCLUDE_ASM splice removal.
 
 Matching-decomp source uses ``INCLUDE_ASM(folder, name);`` and
 ``INCLUDE_ASM_REORDER_HACK(folder, name);`` to embed not-yet-decompiled
 functions. The macro expands to a file-scope ``__asm__`` block with
-``.include "folder/name.s"`` — fine for the PSX matching toolchain, but
+``.include "folder/name.s"`` - fine for the PSX matching toolchain, but
 the host linker has no ``.s`` file to splice and the inline asm has MIPS
 mnemonics anyway.
 
@@ -14,7 +14,7 @@ overlays). If the same TU's C code calls one of those functions, Pass 6's
 outbound discovery already classifies it as a recomp callee and the
 existing thunk pipeline routes the call through ``psx_dispatch_compiled``.
 
-Detection is textual rather than AST-based — INCLUDE_ASM is a macro that
+Detection is textual rather than AST-based - INCLUDE_ASM is a macro that
 libclang expands away before AST construction, so the AST has only the
 ``__asm__`` blob. The regex below matches both the bare and REORDER_HACK
 forms in the original source. Robust because both macros take exactly

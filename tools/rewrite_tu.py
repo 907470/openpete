@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rewrite_tu.py — drive all rewrite passes over a single matching-decomp TU.
+"""rewrite_tu.py - drive all rewrite passes over a single matching-decomp TU.
 
 Runs every pass (Pass 1 struct relayout through Pass 6 auto-manifest
 discovery) in the order main() lays out.
@@ -64,7 +64,7 @@ def main(argv=None) -> int:
                          "gen_defsyms.py merges these to emit __psx_<name> "
                          "linker aliases pointing into g_ram.")
     ap.add_argument("--symbols-toml", type=Path, default=None,
-                    help="manifest/symbols.toml — used to resolve function "
+                    help="manifest/symbols.toml - used to resolve function "
                          "names to PSX vaddrs when rewriting struct field "
                          "writes whose RHS is a function reference.")
     ap.add_argument("--shadow-include-dir", type=Path, default=None,
@@ -81,14 +81,14 @@ def main(argv=None) -> int:
     ap.add_argument("--native-fn-names", type=Path, default=None,
                     help="File listing function names defined by *other* native "
                          "TUs in this domain (one per line). Pass 6 uses this "
-                         "to suppress same-domain native→native calls from the "
+                         "to suppress same-domain native->native calls from the "
                          "outbound_recomp set.")
     ap.add_argument("--native-toml", type=Path, default=None,
-                    help="manifest/native.toml — used by Pass 5e (host-pointer-"
+                    help="manifest/native.toml - used by Pass 5e (host-pointer-"
                          "to-thunk lint) to enumerate the set of outbound thunks "
                          "to inspect call sites of.")
     ap.add_argument("--globals-toml", type=Path, default=None,
-                    help="manifest/globals.toml — used by Pass 5e to recognize "
+                    help="manifest/globals.toml - used by Pass 5e to recognize "
                          "address-of game globals as safe (--defsym-aliased into "
                          "g_ram).")
     args = ap.parse_args(argv)
@@ -137,7 +137,7 @@ def main(argv=None) -> int:
     # array globals) cover their full extent and fold inner Pass 1
     # member-ref reads inline via _render_with_redirects. Pass 1 must
     # therefore suppress its own member-ref edits whose ranges sit
-    # inside one of these — otherwise the two collide on apply().
+    # inside one of these - otherwise the two collide on apply().
     pass2_write_ranges.extend(
         find_array_read_extents(parsed.cursor, redirects))
 
@@ -193,10 +193,10 @@ def main(argv=None) -> int:
     plan.add_many(bg.edits)
 
     # --- Pass 4b/4c: cast wraps (literal PSX vaddr conversions) -----------
-    # Skip casts that fall inside a Pass 1 or Pass 2 write extent — those
+    # Skip casts that fall inside a Pass 1 or Pass 2 write extent - those
     # rewrites already consume the cast specially. Also skip Pass 4c
     # `ptr->int cast wrap` edits whose site is inside a Pass 4b
-    # `int->ptr cast wrap` edit — Pass 4b folds the host_to_psx
+    # `int->ptr cast wrap` edit - Pass 4b folds the host_to_psx
     # substitution into its replacement text inline.
     # Pass 2 array-of-pointer subscripts and redirected-global reads also
     # cover their full extent; Pass 4c casts wrapping such an operand
@@ -251,7 +251,7 @@ def main(argv=None) -> int:
 
     # --- Pass 5: struct-by-value boundary guard ---------------------------
     # Hard-error if the TU passes (or returns) a struct by value at a call
-    # site — the host LP64/LLP64 calling convention can't marshal those
+    # site - the host LP64/LLP64 calling convention can't marshal those
     # bytes through cpu->aN today. No rewrite path implemented; trips are
     # zero across spyro-1/src/.
     sbv = run_struct_by_value(parsed.cursor, main_path)
@@ -272,7 +272,7 @@ def main(argv=None) -> int:
     # Warn on call sites where a native function passes a host-allocated
     # pointer (stack-local / host-global / host-heap) through an outbound
     # thunk. host_to_psx returns 0 for those and the callee dereferences
-    # NULL — silent on platforms whose smoke gate doesn't reach the call,
+    # NULL - silent on platforms whose smoke gate doesn't reach the call,
     # loud on platforms where it does.
     thunked_fns: set[str] = set()
     game_global_names: set[str] = set()
@@ -284,13 +284,13 @@ def main(argv=None) -> int:
             thunked_fns.add(e["name"])
         for e in nt.get("outbound_psyq", []):
             thunked_fns.add(e["psyq_name"])
-        # Skipped names link directly to host symbols — not thunked.
+        # Skipped names link directly to host symbols - not thunked.
         for n in nt.get("outbound_psyq_skip", []):
             thunked_fns.discard(n)
         for n in nt.get("outbound_recomp_skip", []):
             thunked_fns.discard(n)
         # Hand-written openpete_<NAME> thunks accept host pointers
-        # directly (no host_to_psx round-trip), so they're safe — not
+        # directly (no host_to_psx round-trip), so they're safe - not
         # subject to the lint.
         for e in nt.get("outbound_psyq_hand", []):
             thunked_fns.discard(e["psyq_name"])
@@ -306,7 +306,7 @@ def main(argv=None) -> int:
         print(format_outbound_lint(ol), file=sys.stderr)
 
     # --- Pass 5c: INCLUDE_ASM splice removal ------------------------------
-    # Textual scan over the original source — INCLUDE_ASM expands to inline
+    # Textual scan over the original source - INCLUDE_ASM expands to inline
     # asm that won't link on host; the recompiled body in PSX.EXE_full.c /
     # <overlay>.bin_full.c provides the actual implementation, and Pass 6
     # discovery + outbound thunks route any in-TU call sites correctly.
@@ -314,7 +314,7 @@ def main(argv=None) -> int:
     plan.add_many(ia.edits)
 
     # Surface spliced names to gen_renames.py so it can exclude them from
-    # the native func_* rename set — those functions have no native body
+    # the native func_* rename set - those functions have no native body
     # (we just spliced the only definition), so a rename to spyro_native_*
     # would dangle if anything calls them post-migration.
     if ia.splices:
@@ -334,7 +334,7 @@ def main(argv=None) -> int:
     # --- Pass 1f: textual fallback for nested-macro chain wraps -----------
     # libclang's `get_tokens` returns 0 tokens for MEMBER_REF cursors inside
     # *nested* macro expansions (e.g. `PATCH_POINTER(SPYRO_MODEL->
-    # m_Animations[i]->m_Faces, ..)` — outer PATCH_POINTER + inner
+    # m_Animations[i]->m_Faces, ..)` - outer PATCH_POINTER + inner
     # SPYRO_MODEL macro). Pass 1's AST renderer can't recover an extent for
     # those cursors, so the array-of-pointer chain wrap never fires. Scan
     # the post-AST output for unwrapped `<chain>->FIELD[idx]->IDENT`
@@ -371,7 +371,7 @@ def main(argv=None) -> int:
     # Mirror every spyro-1/include header into the shadow tree, applying
     # edits to the rewritten ones and copying un-rewritten ones verbatim.
     # GCC's quote-include "same directory of including file" rule wins
-    # over -I — so an un-shadowed header (e.g. hud.h) including a shadowed
+    # over -I - so an un-shadowed header (e.g. hud.h) including a shadowed
     # one (moby.h) would otherwise resolve back to spyro-1/include/moby.h
     # and miss Pass 1's relayout. Mirroring keeps every transitive include
     # inside the shadow tree.
@@ -413,7 +413,7 @@ def main(argv=None) -> int:
           f"{len(redirects)} bare-globals, {len(bg.edits)} edits, "
           f"{len(sz.checks)} sizeof asserts, "
           f"{pb.safe_calls} safe u_long* calls, "
-          f"{len(casts.redirected)} ptr→int casts, "
+          f"{len(casts.redirected)} ptr->int casts, "
           f"{len(ia.splices)} INCLUDE_ASM splices")
     return 0
 

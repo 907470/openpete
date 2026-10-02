@@ -1,4 +1,4 @@
-/* core/renderer/native_terrain_cache.c — terrain sector-mesh GPU cache,
+/* core/renderer/native_terrain_cache.c - terrain sector-mesh GPU cache,
  * core side. See openpete_terrain_cache.h for the contract. */
 
 #include "rhi.h"
@@ -115,7 +115,7 @@ typedef struct {
 typedef struct { uint8_t arena, buf; uint32_t first, count, stamp; } tc_defer;
 
 /* std140 globals block (mirrors terrain.vert TerrainGlobals). Camera /
- * projection / fog scalars are DOUBLE — the vertex stage re-runs the CPU
+ * projection / fog scalars are DOUBLE - the vertex stage re-runs the CPU
  * walk's double GTE chain bit-for-bit. C natural layout == std140 here
  * (vec4 x3 = 48 B, then six 16 B-aligned dvec2, then ivec4 at 144). */
 typedef struct {
@@ -180,7 +180,7 @@ _Static_assert(sizeof(tc_globals_ubo) <= 65536 &&
                sizeof(tc_sector_ubo) * OPTC_SLOTS <= 65536,
                "terrain-cache UBO block exceeds the 64 KB UBO-range floor");
 /* The dvec4 runs must land on std140's 32-byte base alignment for C natural
- * layout to keep matching the block the vertex stage reads — otherwise GLSL
+ * layout to keep matching the block the vertex stage reads - otherwise GLSL
  * pads where C does not and EVERY field past the first dvec4 shifts (garbage
  * fog/gflags, all-killed vertices). Any field added above them must therefore
  * be a multiple of 32 bytes wide, not merely 16. */
@@ -189,7 +189,7 @@ _Static_assert(offsetof(tc_globals_ubo, rim_oxyH) % 32 == 0 &&
                "terrain-cache globals: a dvec4 run lost its 32-byte alignment");
 
 /* One build's complete retained frame state. The feeder STAGES the canonical
- * build's state and it PROMOTES to live one build later — the sub-tick
+ * build's state and it PROMOTES to live one build later - the sub-tick
  * spine presents the previous canonical extraction (the canonical-lag leg),
  * and the retained draws must ride the same timeline or animated tiles and
  * moving cameras render one tick ahead of the CPU-fed scene around them.
@@ -281,7 +281,7 @@ static struct {
                                        * present's draws may execute VBLs after
                                        * selection (deferred screenshot
                                        * readback), by which time live has been
-                                       * re-promoted — flushing live at draw
+                                       * re-promoted - flushing live at draw
                                        * time would pair old chunks with a
                                        * fresher camera/fog/colour-generation
                                        * set (rung flips, sub-pixel skew) */
@@ -671,7 +671,7 @@ int openpete_tercache_init(rhi_device *dev)
     d = anim_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     s_tc.pipe_a_fill = rhi_create_pipeline(dev, &d);
     /* Near variants: identical state, the clip-fan vertex stage + the
-     * binding-1 member-context twin. Includes FILL — near sectors keep the
+     * binding-1 member-context twin. Includes FILL - near sectors keep the
      * LP hole-fill backing (unlike poly-anim, which is excluded from it). */
     const rhi_pipeline_desc near_desc = {
         .vert_spv = "terrain_near.vert.spv", .frag_spv = "terrain.frag.spv",
@@ -720,7 +720,7 @@ int openpete_tercache_init(rhi_device *dev)
         atomic_store_explicit(&s_tc.arena[a].n, 1, memory_order_relaxed);
     }
     if (!ok) {
-        fprintf(stderr, "[ter-gpu] init failed (pipeline or arena alloc) — "
+        fprintf(stderr, "[ter-gpu] init failed (pipeline or arena alloc) - "
                         "terrain cache disabled, CPU path stays\n");
         openpete_tercache_shutdown(dev);
         return 0;
@@ -1521,7 +1521,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                                    * object is made from the
                                                    * builder's thread */
     /* STAGE into host structs only: the feeder runs outside the RHI frame,
-     * and an outside-frame rhi_ubo_write fills every ring slot — racing an
+     * and an outside-frame rhi_ubo_write fills every ring slot - racing an
      * in-flight frame's read. The live blocks flush on the present's first
      * draw (inside the frame, current slot only). */
     tc_state *T = tc_begin_state(stamp, immediate);
@@ -1611,8 +1611,8 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
      * terrain must be the same extraction as the CPU tris it composes with:
      * the eager ring first, then live (the lagged screenshot compose and the
      * sub-tick spine's immediate publishes both land here), then staged (a
-     * depth-0 compose — the capture freeze-backdrop snapshot, a spine-off
-     * windowed present — renders the CURRENT scene, whose terrain build sits
+     * depth-0 compose - the capture freeze-backdrop snapshot, a spine-off
+     * windowed present - renders the CURRENT scene, whose terrain build sits
      * in staged until the next build's promote; drawing live there pairs
      * scene N with terrain N-1, and the camera moves between extractions, so
      * the skew bakes a whole-scene rim into the frozen backdrop). No other
@@ -1918,7 +1918,7 @@ static int tc_bind_material(int bucket, int variant, int slot,
             case 2: d.stencil = RHI_STENCIL_TEST_ZERO; break;
             /* A material inherits its group's compositing, so a blend slot's
              * pipeline differs from the stock one only in the fragment
-             * stage — same equation, same depth-write rule. */
+             * stage - same equation, same depth-write rule. */
             case 3: d.blend = RHI_BLEND_ALPHA;    d.depth_write_off = true; break;
             case 4: d.blend = RHI_BLEND_ADD;      d.depth_write_off = true; break;
             case 5: d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true; break;
@@ -1928,7 +1928,7 @@ static int tc_bind_material(int bucket, int variant, int slot,
                                                   mg.frag_spv, mg.frag_words);
         if (!p) {
             fprintf(stderr, "[tercache] material: terrain pipeline build "
-                            "FAILED for %s (variant %d slot %d) — its faces "
+                            "FAILED for %s (variant %d slot %d) - its faces "
                             "draw stock\n", mg.owner ? mg.owner : "?",
                     variant, slot);
             *mg.pipeline_slot = OPENPETE_POSTFX_PIPE_FAILED;
@@ -2088,7 +2088,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
     if (!p) return;
     int snap_now = openpete_native_vertex_snap_active();   /* 0 or 1 */
     {   /* First draw of each RHI FRAME: flush the selected state into this
-         * frame's UBO ring slot (see ubo_flush_serial — one selection can
+         * frame's UBO ring slot (see ubo_flush_serial - one selection can
          * render across several rhi frames), and latch the vertex-snap mode
          * the frame's draws all push. */
         uint64_t fs = rhi_frame_serial(s_tc.dev);
@@ -2108,7 +2108,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
     rhi_bind_pipeline(s_tc.dev, p);
     if (vram) rhi_bind_vram(s_tc.dev, vram);
     /* og key contest inputs (scene slots only; same bind-at-pipe discipline
-     * as bind_scene_pipe — absent images leave vKoff==0 fragments alone). */
+     * as bind_scene_pipe - absent images leave vKoff==0 fragments alone). */
     if (key_hp)   rhi_bind_depth_sampler(s_tc.dev, key_hp, 1);
     if (key_prop) rhi_bind_depth_sampler(s_tc.dev, key_prop, 2);
     {   /* set 4: the HD-fold atlas. terrain.frag references it statically,
@@ -2119,7 +2119,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         if (at) rhi_bind_texture_set(s_tc.dev, at, 4);
     }
     /* Sets 5/6, not the contract set: set 3 binding 1 belongs to a mod's own
-     * uniform block, and a descriptor set views one buffer per binding — so
+     * uniform block, and a descriptor set views one buffer per binding - so
      * the terrain blocks cannot sit beside it. */
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);

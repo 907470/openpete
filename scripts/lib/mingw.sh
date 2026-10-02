@@ -1,4 +1,4 @@
-# mingw.sh — locating a Linux-hosted mingw cross compiler.
+# mingw.sh - locating a Linux-hosted mingw cross compiler.
 #
 # Sourced by the scripts that cross-compile Windows artifacts on a Linux
 # development box (mod DLLs, SDK compile checks). A Linux-hosted llvm-mingw

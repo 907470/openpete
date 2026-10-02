@@ -33,7 +33,7 @@ typedef struct {
     int      src;        /* source index; -1 = registered from code (sfx_replace) */
     char     owner[64];  /* code entries: the registering mod ("" = engine) */
     int      raw;        /* code entries: the sample at `rate` under the game's
-                          * pitch as written — no base-pitch fold */
+                          * pitch as written - no base-pitch fold */
     char     path[640];
     long     mtime;
     long     size;
@@ -733,7 +733,7 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
         else {
             if (s_census.verify_bad < 8)
                 OPL_WARN_F("sfxpack", "verify: %s: stock %d samples (loop %d+%d) "
-                           "vs file %d @ %u Hz — %s", e->path, n, ls, ll, e->count,
+                           "vs file %d @ %u Hz - %s", e->path, n, ls, ll, e->count,
                            rate, !pcm_ok ? (tmp && n == e->count ? "PCM differs"
                                                                 : "length differs")
                                          : "rate off");

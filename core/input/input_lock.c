@@ -1,4 +1,4 @@
-/* core/input/input_lock.c — the host input lock. See the header. */
+/* core/input/input_lock.c - the host input lock. See the header. */
 
 #include "openpete_input_lock.h"
 

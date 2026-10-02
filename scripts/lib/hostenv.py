@@ -1,4 +1,4 @@
-"""child_env — environment knobs that actually reach the child process.
+"""child_env - environment knobs that actually reach the child process.
 
 Two ways a knob silently fails to arrive, both of which yield a real,
 internally consistent result about a configuration nobody asked for:

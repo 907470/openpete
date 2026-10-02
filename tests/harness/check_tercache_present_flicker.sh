@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_tercache_present_flicker.sh — retained-terrain present-to-present
+# check_tercache_present_flicker.sh - retained-terrain present-to-present
 # toggle census at a static freecam pose, windowed on the real GPU.
 #
 # Class: with the terrain cache on, a retained face that every input keeps

@@ -1,9 +1,9 @@
-// core/record/record.c — `--record <path>` true-VFR gameplay video capture.
+// core/record/record.c - `--record <path>` true-VFR gameplay video capture.
 //
 // One encoded frame per game-presented frame, PTS = wall-clock capture time,
 // so playback reflects real game cadence: a load-induced drop to 24 fps shows
 // up as 24 frames in that wall-second, not a re-timed 30. There is no nominal
-// frame rate — the muxer stream time_base is microseconds and each frame
+// frame rate - the muxer stream time_base is microseconds and each frame
 // carries its own PTS.
 //
 // Pipeline:
@@ -17,7 +17,7 @@
 //                                         av_interleaved_write_frame
 //
 // The frame source is the present FBO at internal resolution, cropped to the
-// canonical PSX visible region (no letter/pillarbox bars) — the same source
+// canonical PSX visible region (no letter/pillarbox bars) - the same source
 // the native-resolution screenshot path reads. Dimensions are locked on the
 // first captured frame; a frame from a later window resize that changes the
 // native size is dropped, counted and warned once.
@@ -51,7 +51,7 @@
 #include <string.h>
 
 /* PsyCross present-FBO readers (declared in PsyX/PsyX_render.h, but that
- * header pulls in GL — forward-declare here to keep this TU GL-free). All
+ * header pulls in GL - forward-declare here to keep this TU GL-free). All
  * return 0/NULL when there is no present FBO. Pixel rows are bottom-up.
  *
  * Capture uses the async PBO ring (GR_PresentPBO_*) so the GPU->CPU readback
@@ -153,7 +153,7 @@ static struct {
      * zero means true VFR. Under CFR the encoder time_base is
      * 37609/(1125000*mult), a
      * frame's PTS is simply its ordinal, and the ring applies backpressure
-     * instead of dropping — a dropped frame would silently shift every later
+     * instead of dropping - a dropped frame would silently shift every later
      * frame's game time. */
     int          cfr_mult;
     uint64_t     cfr_next;      /* next CFR ordinal to hand out */
@@ -190,9 +190,9 @@ static int rec_encode_one(const uint8_t* buf, uint64_t pts_us) {
         /* Encode the g_rec.w x g_rec.h sub-rectangle of the native buffer; the
          * row pitch is the *native* width, sws takes only w pixels per row.
          * Bottom-up source (PsyCross GL FBO): start at native row (h-1) and walk
-         * down with a negated stride → reads the bottom h rows top-to-bottom (the
+         * down with a negated stride -> reads the bottom h rows top-to-bottom (the
          * visible region after overscan crop). Top-down source (native Vulkan
-         * offscreen): start at row 0 with a positive stride → reads the top h
+         * offscreen): start at row 0 with a positive stride -> reads the top h
          * rows as-is. */
         const size_t native_pitch = (size_t)g_rec.native_w * 4u;
         const uint8_t* src[4];
@@ -404,7 +404,7 @@ static int rec_thread_main(void* unused) {
         SDL_UnlockMutex(g_rec.mutex);
 
         /* Slot stays counted (producer won't reuse it) until we free it
-         * below — so encoding from `buf` outside the lock is safe. */
+         * below - so encoding from `buf` outside the lock is safe. */
         if (rec_encode_one(buf, pts) < 0)
             g_rec.failed = 1;
 
@@ -451,7 +451,7 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
     g_rec.pbo_pts_tail = 0;
     g_rec.pbo_pts_count = 0;
     /* yuv420p (and h264 generally) needs even dimensions; ultrawide widening
-     * yields odd widths. Floor to even — drops at most one edge row/column. */
+     * yields odd widths. Floor to even - drops at most one edge row/column. */
     const int w = native_w & ~1;
     const int h = native_h & ~1;
     g_rec.w = w;
@@ -501,8 +501,8 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
         /* Exact NTSC rational: one tick is 37609/1125000 s (the PSX 240p VBL
          * halved), split into cfr_mult presents. A frame's PTS is its ordinal,
          * so the cadence is perfectly even by construction and the container
-         * advertises the true rate (29.913052… / 59.826105… / 119.652210…)
-         * rather than a rounded 30 / 60 / 120 — or the 29.97 that belongs to
+         * advertises the true rate (29.913052... / 59.826105... / 119.652210...)
+         * rather than a rounded 30 / 60 / 120 - or the 29.97 that belongs to
          * interlaced NTSC and not to anything this game outputs. */
         g_rec.codec->time_base = (AVRational){ (int)OP_VBL_HZ_DEN,
                                                (int)(OP_VBL_HZ_NUM / OP_TICK_VBLS)
@@ -542,7 +542,7 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
     }
     g_rec.st->time_base = g_rec.codec->time_base;
 
-    /* Add the audio stream (if capture is active) BEFORE write_header — all
+    /* Add the audio stream (if capture is active) BEFORE write_header - all
      * streams must exist first. Non-fatal: falls back to video-only. */
     rec_setup_audio();
 
@@ -911,7 +911,7 @@ int openpete_record_init(const openpete_options_t* opts)
                              "encoder (libav* not available for this target)",
                    opts->record_path);
     }
-    return 0;  /* not a fatal setup error — just unavailable */
+    return 0;  /* not a fatal setup error - just unavailable */
 }
 
 void openpete_record_capture_frame(uint64_t pts_us) { (void)pts_us; }

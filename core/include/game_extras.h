@@ -1,4 +1,4 @@
-// core/include/game_extras.h — the per-game abstraction.
+// core/include/game_extras.h - the per-game abstraction.
 //
 // Every behavior that differs between Spyro 1, 2, 3 (identity, overlay
 // handling, runtime quirks, per-tick hooks, disc layout) is declared here and
@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-// Forward decl — the recompiled CPU state (psx_runtime.h).
+// Forward decl - the recompiled CPU state (psx_runtime.h).
 struct CPUState;
 typedef struct CPUState CPUState;
 
@@ -26,7 +26,7 @@ typedef struct CPUState CPUState;
  * games/<id>/recomp.conf), not by the game's hand-written sources. */
 const char* game_get_exe_filename(void);      /* e.g. "SCUS_942.28" */
 const char* game_get_display_name(void);      /* "Spyro the Dragon" */
-const char* game_get_id(void);                /* "spyro-1" — the [game.<id>] config scope */
+const char* game_get_id(void);                /* "spyro-1" - the [game.<id>] config scope */
 
 /** @brief Guest address of the function through which this game reads its pad buffer.
  *
@@ -262,7 +262,7 @@ void game_set_skip_to_area(int level_id, int area);
  *         else -1. */
 int game_validate_cheats_arg(const char* spec);
 
-/* --no-lod setup is a feature module — see core/include/no_lod.h and
+/* --no-lod setup is a feature module - see core/include/no_lod.h and
  * core/renderer/no_lod.c. */
 
 /* --- Disc layout (each game's WAD/asset structure differs) --- */

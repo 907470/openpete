@@ -9,9 +9,9 @@
  * terrain fragment (vKoff > 0, the face's ABSOLUTE og OT key + 0.5 sentinel)
  * survives only where no strictly-nearer key owns the pixel in the key
  * images (moby keys additionally scoped by the fragment's own TRUE view-Z
- * in free-camera mode — see the contest block). The og key of a
+ * in free-camera mode - see the contest block). The og key of a
  * face is TRUE view-Z + 128*slots (the authored OT offsets); stored depth
- * itself is TRUE view-Z — og's keys decide WHICH terrain surface exists at
+ * itself is TRUE view-Z - og's keys decide WHICH terrain surface exists at
  * a pixel, true geometry decides everything against that surface. The
  * face's own key rides the flat vKoff (exact); only the image side is
  * quantised. Non-terrain fragments (vKoff == 0) never touch the sampler. */
@@ -27,8 +27,8 @@ layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth ima
  * this pixel (max rank wins the raster), b = that face's present-local moby
  * ordinal. Same-moby painter select: og paints a moby's faces in walk order,
  * so a fragment loses its pixel iff a LATER-ranked face of the SAME moby
- * covers it — regardless of true depth. Cross-moby stays true per-pixel z
- * (the ordinal gate). Stored depth is TRUE view-Z either way — the rank
+ * covers it - regardless of true depth. Cross-moby stays true per-pixel z
+ * (the ordinal gate). Stored depth is TRUE view-Z either way - the rank
  * decides WHICH same-moby face exists at a pixel, never what depth it has. */
 layout(set = 4, binding = 0) uniform sampler2D u_mobyrank;
 
@@ -60,7 +60,7 @@ layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 
-/* Untextured lighting view — see psx_scene.frag. */
+/* Untextured lighting view - see psx_scene.frag. */
 layout(constant_id = 2) const bool NOTEX = false;
 
 uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
@@ -85,7 +85,7 @@ vec3 clut_fog_mix(vec3 rgb, vec4 col, int u, int v)
 void main()
 {
     /* Set 2 = TERRAIN og KEYS (keyed WORLD faces as their ABSOLUTE og key
-     * laid flat — og's per-pixel OT occupancy). Set 1 = MOBY og KEYS
+     * laid flat - og's per-pixel OT occupancy). Set 1 = MOBY og KEYS
      * (keyed opaque ACTOR faces, same encoding). Set 3 = PROP TRUE DEPTH
      * (curated embedded-prop faces only). Set 4 = the moby og-RANK raster.
      * The verdicts themselves live in psx_key_contest.glsl. */
@@ -96,14 +96,14 @@ void main()
         discard;
     /* A RANKED face skips the positive-koff painter contest: rank IS og's
      * exact same-moby painter, while the key image holds same-moby per-face
-     * keys with no ordinal — large same-moby faces (jaw vs chin) sit beyond
+     * keys with no ordinal - large same-moby faces (jaw vs chin) sit beyond
      * the 64-world margin, so the contest would kill the rank winner while
      * the select kills everything under it (a hole to the clear). The face
      * still STAMPS its key, so keyed terrain keeps yielding to it. */
     float koff = op_drain_koff(vKoff, vRank.y, vUV / vQ, u_drain);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {
-        /* The additive glow fan (rank -2) runs the aura contest instead —
+        /* The additive glow fan (rank -2) runs the aura contest instead -
          * see psx_key_contest.glsl. */
         if (vRank.x < -1.5) {
             if (op_aura_loses(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,

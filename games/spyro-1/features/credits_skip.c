@@ -1,4 +1,4 @@
-// games/spyro-1/features/credits_skip.c — `--skip-to-cutscene` for Spyro 1.
+// games/spyro-1/features/credits_skip.c - `--skip-to-cutscene` for Spyro 1.
 //
 // Each target is entered through the game's own transition, from a hook
 // that makes only the stores the game's trigger branch makes:

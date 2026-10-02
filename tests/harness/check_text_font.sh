@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_text_font.sh — the 3D glyph text gate.
+# check_text_font.sh - the 3D glyph text gate.
 #
 # The settings menu, the OSD toasts and the performance readout draw with the
 # game's own glyph models (games/common/renderer/text_moby.c). Spyro 1 has its

@@ -1,4 +1,4 @@
--- openpete_state_hash.lua — Lua mirror of core/runtime/run.c's
+-- openpete_state_hash.lua - Lua mirror of core/runtime/run.c's
 -- gameplay_hash_compute_ex(). Hashes each state region the openpete
 -- runtime hashes, with the same FNV-1a-64 polynomial and the same
 -- indirect-pointer dereference logic.
@@ -55,7 +55,7 @@ end
 --
 -- mem      : uint8_t* into 2 MB main RAM (PCSX.getMemPtr()).
 -- regions  : table from openpete_state_regions.gen.lua (require'd).
--- ram_size : 2*1024*1024 (constant — passed in for symmetry with C API).
+-- ram_size : 2*1024*1024 (constant - passed in for symmetry with C API).
 local function compute(mem, regions, ram_size)
     local per = {}
     local total = OFFSET

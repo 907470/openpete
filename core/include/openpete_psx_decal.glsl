@@ -1,4 +1,4 @@
-/* openpete_psx_decal.glsl — the material contract for moby drop-shadows.
+/* openpete_psx_decal.glsl - the material contract for moby drop-shadows.
  *
  * Same mod-facing function as openpete_psx_material.glsl: the engine owns
  * main(), the mod supplies op_material(base).

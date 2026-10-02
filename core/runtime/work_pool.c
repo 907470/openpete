@@ -1,9 +1,9 @@
-// core/runtime/work_pool.c — persistent data-parallel worker pool.
+// core/runtime/work_pool.c - persistent data-parallel worker pool.
 //
 // See openpete_workpool.h for the contracts. Shape: N-1 persistent SDL
 // threads park on a start semaphore; a run publishes the job, wakes them,
 // and the calling thread works the same item stream as worker 0. Items are
-// pulled from one atomic counter (dynamic load balance — sector costs vary
+// pulled from one atomic counter (dynamic load balance - sector costs vary
 // by 100x, a static split would leave workers idle behind one heavy chunk).
 // The done semaphore both joins the run and publishes the workers' writes
 // to the caller.
@@ -161,7 +161,7 @@ void openpete_workpool_run(int nitems, openpete_work_fn fn, void* arg) {
     }
     /* Wake at most one helper per item beyond the caller's own. The join has
      * to wait for every helper it signalled to come back, and a helper with no
-     * item left still costs its full wake latency before it can post done — so
+     * item left still costs its full wake latency before it can post done - so
      * signalling more helpers than there is work for buys nothing and sets the
      * run's floor at the slowest of them. */
     int wake = nitems < n ? nitems : n;

@@ -1,5 +1,5 @@
 #pragma once
-/* freecam_game.h — game-side half of the debug free camera (F key), shared
+/* freecam_game.h - game-side half of the debug free camera (F key), shared
  * by every game target.
  *
  * The host-side half (openpete_freecam.h) owns the toggle, the latched input

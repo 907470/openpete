@@ -10,7 +10,7 @@ int g_openpete_guest_running = 0;
 
 /* The audit asks whether GUEST EXECUTION touched the device. With a present
  * thread running concurrently, a call made on that thread while the guest
- * flag is up is the design working, not the guest reaching the device — so
+ * flag is up is the design working, not the guest reaching the device - so
  * only calls from the guest's own thread count. */
 static SDL_ThreadID s_guest_tid;
 void op_gpu_audit_bind_thread(void) { s_guest_tid = SDL_GetCurrentThreadID(); }

@@ -1,4 +1,4 @@
-// games/common/renderer/shadow_player.c — the PLAYER GROUND-SHADOW leg of the
+// games/common/renderer/shadow_player.c - the PLAYER GROUND-SHADOW leg of the
 // shared shadow feeder, re-derived from gamestate in float, plus its A/B
 // harness. Every engine address comes from game_layout.shadow.player, so a
 // game without the leg leaves `hook` at 0 and never registers this module.

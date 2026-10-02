@@ -1,4 +1,4 @@
-# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# modtest.toml - this repo's CI declaration for tools/modtest.py.
 # Engine-repo concern, not part of the mod manifest format.
 #
 # modtest has no environment field, so this row is the plain live case: no

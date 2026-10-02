@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_terrain_walk_cache.sh — CPU terrain walk vs retained GPU terrain cache,
+# check_terrain_walk_cache.sh - CPU terrain walk vs retained GPU terrain cache,
 # per-pose differing-pixel count against a committed baseline.
 #
 # The walk and the cache are one scene by contract; where they draw different

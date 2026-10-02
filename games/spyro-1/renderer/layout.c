@@ -1,4 +1,4 @@
-// games/spyro-1/renderer/layout.c — the Spyro 1 engine layout. Bases come
+// games/spyro-1/renderer/layout.c - the Spyro 1 engine layout. Bases come
 // from the drift-checked symbol aliases; member offsets from the generated
 // typed header, whose _Static_asserts pin them to the probed MIPS layout.
 
@@ -28,7 +28,7 @@ static uint32_t flame_cap_colour_off(CPUState* cpu) {
 const game_layout_t game_layout = {
     .display = {
         /* initialization.c GraphicsInitialize: SetDefDispEnv(..., 0, 240, 512, 240)
-         * and SetDefDrawEnv(..., 0, 8, 512, 224) — 8 undrawn rows per side. */
+         * and SetDefDrawEnv(..., 0, 8, 512, 224) - 8 undrawn rows per side. */
         .disp_w = 512, .disp_h = 240, .clip_h = 224,
     },
     .sin_table = D_SIN_TABLE,

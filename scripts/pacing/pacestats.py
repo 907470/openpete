@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""pacestats.py — the statistics behind the pacing analysis suite.
+"""pacestats.py - the statistics behind the pacing analysis suite.
 
 Kept separate from the parser and the CLI so the maths can be tested against
 synthetic inputs with known answers (test_pacestats.py). A wrong Allan
 deviation is worse than none: it looks authoritative and nobody re-derives it.
 
-Everything here takes plain sequences and returns plain numbers — no Log
-objects, no I/O — which is what makes it testable in isolation.
+Everything here takes plain sequences and returns plain numbers - no Log
+objects, no I/O - which is what makes it testable in isolation.
 """
 import math
 
@@ -42,15 +42,15 @@ def median(vals):
 def robust_sigma(vals):
     """1.4826 x median-absolute-deviation: the width of the CORE.
 
-    Immune to outliers by construction — over half the samples must move
-    before it does — which is the point. Measured pacing distributions are a
+    Immune to outliers by construction - over half the samples must move
+    before it does - which is the point. Measured pacing distributions are a
     needle with heavy tails, where a plain stdev is carried almost entirely by
     a handful of spikes and reads as a broad distribution that does not exist.
 
     Read it as a scale estimate of the bulk, not as a corrected standard
     deviation: the 1.4826 factor equals sigma only for a normal distribution,
     and this one is not. It discards exactly the tail that causes a visible
-    hitch, so it must never replace p99/max — hence `triple` below."""
+    hitch, so it must never replace p99/max - hence `triple` below."""
     if not vals:
         return 0.0
     med = median(vals)
@@ -60,7 +60,7 @@ def robust_sigma(vals):
 def triple(vals):
     """The phase/interval-error reporting form: (robust sigma, p99, max |x|).
 
-    Three different questions — how tight is normal operation, how bad is a
+    Three different questions - how tight is normal operation, how bad is a
     typical bad tick, what is the worst thing that happened. No one of them
     substitutes for another, and a single stdev answers none of them."""
     return (robust_sigma(vals), percentile(vals, 99),
@@ -108,7 +108,7 @@ def ols_slope_se(xs, ys):
     """Standard error of the OLS slope.
 
     Without it a drift figure is an unqualified point estimate, and over a
-    short span with a wide residual core the estimate is dominated by noise —
+    short span with a wide residual core the estimate is dominated by noise -
     a 5-second window with a 1 ms spread resolves nothing near 1 ppm, but
     still prints a confident number with a verdict attached."""
     n = len(xs)
@@ -141,8 +141,8 @@ def drift_ppm_se(indices, times_ns, nominal_period_ns, blocks=True,
 
     By default via a MOVING-BLOCK BOOTSTRAP of the residuals rather than the
     textbook OLS standard error. The textbook formula assumes independent
-    residuals; pacing phase errors are strongly serially correlated — a busy
-    stretch is late for many consecutive ticks — and under correlation it
+    residuals; pacing phase errors are strongly serially correlated - a busy
+    stretch is late for many consecutive ticks - and under correlation it
     understates the uncertainty badly. Observed: two 55 s runs of the same
     configuration reported -0.20 +/- 0.14 and +2.24 +/- 0.52 ppm, disagreeing
     by far more than either interval allowed. An interval that excludes the
@@ -185,12 +185,12 @@ def cusum(vals, threshold=4.0, min_seg=25, _base=0):
     re-anchor looks like: tight before, tight after, only the reference moved.
     No percentile and no histogram notices it.
 
-    The statistic is a SIGN cumulative sum — sum of sign(v_i - median) — not
+    The statistic is a SIGN cumulative sum - sum of sign(v_i - median) - not
     a cumulative sum of deviations. That distinction is the whole thing on
     this data. Pacing distributions are a needle with heavy tails: the robust
     scale is ~1.6 us while a single scheduler outlier is ~17 ms, ten thousand
     times larger. A deviation-based statistic scaled by a robust sigma is
-    then guaranteed to trip on any one outlier, and it did — 60 spurious
+    then guaranteed to trip on any one outlier, and it did - 60 spurious
     "undeclared re-anchors" in a run that had none, while every segment's
     median was identical to within 0.2 us.
 
@@ -256,7 +256,7 @@ def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=(),
 
       * A GAP in the sequence. The phase is x = t - index*T0, and indexing by
         array POSITION instead of the VBL index renumbers every sample after
-        an excluded one — so each VBL dropped as a transient injects a step of
+        an excluded one - so each VBL dropped as a transient injects a step of
         one whole nominal period. A 7179-VBL gate log excludes 9 of them; at
         16.7 ms each those steps are four orders of magnitude above the 1.4 us
         core this curve is meant to resolve.
@@ -266,7 +266,7 @@ def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=(),
         behind. The slip ledger already reports that as its own quantity.
 
     Either lands at long tau, which is the one part of the curve ADEV exists
-    to report and the one part a histogram cannot show — so a level load would
+    to report and the one part a histogram cannot show - so a level load would
     read as thermal wander. Segment instead, and let the caller say how much
     reach was lost.
 
@@ -313,7 +313,7 @@ def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=(),
 
 # Fewest squared differences a curve point may rest on. Without a floor the
 # longest tau can be computed from one or two triplets, and a reach claim whose
-# endpoint is a single triplet is not a measurement — it is the noise of one
+# endpoint is a single triplet is not a measurement - it is the noise of one
 # sample plotted at the far right of a log axis, where it is read as evidence
 # about the slowest process in the system.
 MIN_ADEV_TERMS = 10
@@ -366,7 +366,7 @@ def adev(times_ns, nominal_period_ns, taus=None, indices=None,
 
     tau is expressed in SAMPLES (m), converted to seconds on return. The
     interesting reading is the SLOPE: white phase noise falls as tau^-1, so a
-    departure at large tau — a flicker floor, thermal wander, a drift ramp —
+    departure at large tau - a flicker floor, thermal wander, a drift ramp -
     is the actionable signal, and it is invisible in any histogram.
 
     `indices` and `breaks_ns` are passed to phase_runs: every triplet is taken
@@ -383,7 +383,7 @@ def mdev(times_ns, nominal_period_ns, taus=None, indices=None,
          breaks_ns=()):
     """Overlapping modified Allan deviation.
 
-    ADEV cannot tell white phase noise from flicker phase noise — both look
+    ADEV cannot tell white phase noise from flicker phase noise - both look
     close to tau^-1. MDEV separates them (tau^-1.5 vs tau^-1), and they call
     for different responses: white is the measurement floor and nothing to
     chase; flicker is a real instability.
@@ -465,8 +465,8 @@ def spectrum(times_ns, vals, oversample=5, f_max_hz=None,
         return []
     # Grid spacing must OVERSAMPLE the natural resolution (1/span), not merely
     # meet it. The lines this exists to find sit at the very bottom of the
-    # band — a 0.06 Hz beat over a 100 s run is the sixth resolvable
-    # frequency — and a coarse linear grid puts them between bins, where they
+    # band - a 0.06 Hz beat over a 100 s run is the sixth resolvable
+    # frequency - and a coarse linear grid puts them between bins, where they
     # vanish entirely rather than merely blurring.
     df = 1.0 / (oversample * span)
     freqs = np.arange(f_min, f_max_hz, df)

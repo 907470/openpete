@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""classify_hash_divergence.py — given two per-region hash CSVs from
+"""classify_hash_divergence.py - given two per-region hash CSVs from
 the determinism harness, find the first divergent region and look up
 the channel that owns it. Turns a raw "hashes differ" signal into
 "channel X (status=open/gated) diverged at frame F via region R".
@@ -7,9 +7,9 @@ the channel that owns it. Turns a raw "hashes differ" signal into
 CSV format:  frame,vbl,fnv1a64,<region_name_0>,<region_name_1>,...
 
 Exit codes:
-   0 — logs are bit-identical
-   1 — logs diverge (classification printed to stdout)
-   2 — setup error
+   0 - logs are bit-identical
+   1 - logs diverge (classification printed to stdout)
+   2 - setup error
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def main() -> int:
     ap.add_argument(
         "--registry",
         default="games/spyro-1/manifest/render_channels.toml",
-        help="render_channels.toml for region→channel lookup",
+        help="render_channels.toml for region->channel lookup",
     )
     args = ap.parse_args()
 
@@ -110,12 +110,12 @@ def main() -> int:
         print(f"  channel {ch_name!r} (status={status}, {tag}): "
               f"{', '.join(regions)}")
     for rname in unowned:
-        print(f"  region {rname!r}: NO CHANNEL CLAIMS THIS — orphan leak; "
+        print(f"  region {rname!r}: NO CHANNEL CLAIMS THIS - orphan leak; "
               "add an entry to games/spyro-1/manifest/render_channels.toml")
     if not diverged_region_idx:
-        # Total hash diverged but no per-region column did — header
+        # Total hash diverged but no per-region column did - header
         # mismatch or stale log.
-        print("  (total hash diverges but no per-region column does — "
+        print("  (total hash diverges but no per-region column does - "
               "header mismatch?)")
 
     return 1

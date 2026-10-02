@@ -5,7 +5,7 @@ and regenerate games/spyro-1/renderer/terrain_fill_tags.h.
 The session file is written by the P-key inspector (core/renderer/fillpick.c);
 each line is `FILL|NOFILL <level> <sector> <face>`. Membership in the verdicts
 file IS the verdict, so the two cases are add and remove: FILL appends a row
-(provenance `pick`, need-px 0 — the picker judges from the live scene, not from
+(provenance `pick`, need-px 0 - the picker judges from the live scene, not from
 a coverage measurement) if the face has none, and NOFILL deletes the face's row
 if it has one. Either is a no-op when the file already agrees.
 
@@ -55,7 +55,7 @@ def main():
 
     session = read_session(args.session)
     if not session:
-        print("session is empty — nothing to apply")
+        print("session is empty - nothing to apply")
         return 0
 
     lines = open(VERDICTS).read().splitlines(keepends=True)

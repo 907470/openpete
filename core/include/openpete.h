@@ -1,4 +1,4 @@
-// core/include/openpete.h — runtime entry point + program options.
+// core/include/openpete.h - runtime entry point + program options.
 //
 // Each game's `main.cpp` is a tiny wrapper that fills in `openpete_options_t`
 // and calls `openpete_run()`. All command-line parsing, window setup,
@@ -23,8 +23,8 @@ extern "C" {
 #define OPENPETE_EXIT_SETUP_ERROR  3  /* disc not found, unknown flag, etc. */
 
 /* Highest accepted --ssaa factor. The supersampled extent drives FIVE
- * device-local render targets — the scene target plus the four key-contest
- * targets (terrain/moby/actor key depth + the moby rank RT) — and each carries
+ * device-local render targets - the scene target plus the four key-contest
+ * targets (terrain/moby/actor key depth + the moby rank RT) - and each carries
  * a colour image AND a depth image, ~60 bytes per supersampled pixel on a
  * D32_SFLOAT_S8_UINT device. Since the factor is PER AXIS, the footprint grows
  * as N²: at 1080p, 4× is ~2.0 GB but 8× is ~8.0 GB, which exceeds an 8 GB card
@@ -47,12 +47,12 @@ typedef enum {
  * path as the sole visible window. AB/DIFF bring up the native window AND keep
  * PsyCross rendering (to its hidden FBO) so the native output can be compared
  * against it:
- *   VK   — native renderer is the sole, full-window display (default).
- *   PSYCROSS — legacy: PsyCross GL drives the single visible window.
- *   AB   — native | PsyCross side-by-side, for visual comparison.
- *   DIFF — native renderer live full-window; --screenshot-on-frame writes a
+ *   VK   - native renderer is the sole, full-window display (default).
+ *   PSYCROSS - legacy: PsyCross GL drives the single visible window.
+ *   AB   - native | PsyCross side-by-side, for visual comparison.
+ *   DIFF - native renderer live full-window; --screenshot-on-frame writes a
  *          per-pixel colour diff of native vs the PsyCross reference.
- * All native modes are pure display consumers — they never perturb gameplay
+ * All native modes are pure display consumers - they never perturb gameplay
  * state. Native modes are ignored under --headless (PsyCross renders instead),
  * so the oracle / determinism gates (which run headless) are unaffected by the
  * default. */
@@ -69,8 +69,8 @@ typedef enum {
  * (the PGXP-equivalent default). INTEGER snaps each 3D-world vertex to the PSX
  * 512x240 integer pixel grid before rasterization, reproducing the original
  * hardware's characteristic polygon "wobble"/jitter (the GTE stored screen X/Y as
- * int16). Display-only: it rounds only the emitted display geometry — never
- * gameplay-readable RAM — and only the 3D-world layers (2D HUD/overlay stays
+ * int16). Display-only: it rounds only the emitted display geometry - never
+ * gameplay-readable RAM - and only the 3D-world layers (2D HUD/overlay stays
  * smooth). Depth and UVs are untouched, so the true Z-buffer and perspective-
  * correct texturing are kept. */
 typedef enum {
@@ -82,7 +82,7 @@ typedef enum {
  * reconstructs the homogeneous W from depth so the rasterizer interpolates
  * UV + gouraud colour perspective-correct (the modern default). AFFINE emits
  * w=1 instead (scene vertex spec-constant 1): the rasterizer interpolates
- * screen-linearly, exactly the PSX GPU's behaviour — the authentic texture
+ * screen-linearly, exactly the PSX GPU's behaviour - the authentic texture
  * swim/warp on large near polygons (the game's own near-terrain subdivide,
  * which existed to tame it, still runs). Display-only; depth values are
  * identical in both modes. Boot-latched (pipelines bake the constant). */
@@ -97,7 +97,7 @@ typedef enum {
  * its high-poly mesh at full quality, out to the cull distance and beyond
  * (the classic "see detail far away" look), and defaults --fog-scale to 100x
  * (fog effectively off, so the extended far detail is actually visible).
- * Native renderer only — the feeders derive detail from gamestate, never
+ * Native renderer only - the feeders derive detail from gamestate, never
  * perturbing gameplay-readable RAM (in PsyCross reference mode EXTENDED warns
  * and is ignored). */
 typedef enum {
@@ -144,13 +144,13 @@ typedef struct openpete_options {
     int render_fps;
 
     /* --tick-scale F (default 1.0): wall-clock SPEED multiplier for the whole
-     * engine — scales the sim cadence AND the render cadence by the same factor,
+     * engine - scales the sim cadence AND the render cadence by the same factor,
      * so the number of interpolated sub-tick presents PER sim tick is invariant.
      * 0.5 = half-speed slow motion (sim 14.985 Hz, present rate halved), 2.0 =
      * double speed. A debug/inspection aid for high-FPS interpolation: slow the
      * world down without changing how many intermediate frames render between
      * ticks, so each interpolated frame is easy to scrutinize. Display/pacing
-     * only — every sim tick still computes byte-identical gameplay state (the
+     * only - every sim tick still computes byte-identical gameplay state (the
      * tick LOGIC and count are unchanged; only their wall-clock spacing scales),
      * so it cannot perturb gameplay vs PSX. Inert under --headless (which runs
      * unpaced) and when there is no window. Must be > 0. */
@@ -160,7 +160,7 @@ typedef struct openpete_options {
      * for Spyro). The window *height* drives the internal render resolution:
      * PsyCross sizes its present FBO from g_windowHeight (× the disp/clip
      * overscan ratio) in GR_BeginScene and rasterizes the GTE-projected
-     * geometry directly into it with a real depth buffer — a taller window
+     * geometry directly into it with a real depth buffer - a taller window
      * genuinely renders the scene at higher resolution, not an upscale
      * (empirically ~5x the edge detail at 4x height). Window width is decoupled:
      * the FBO width is derived from height × aspect, so it only affects the
@@ -174,11 +174,11 @@ typedef struct openpete_options {
      * GTE and every gameplay-readable byte stay canonical. */
     float fov_deg;
 
-    /* Target display aspect ratio (width / height), native renderer only —
+    /* Target display aspect ratio (width / height), native renderer only -
      * the Hor+ widening happens purely at the display layer from canonical
      * 4:3 producers. 0 = auto (`--aspect auto`, the default): the render
      * aspect follows the window / fullscreen shape live, filling it with no
-     * bars (clamped ≥ 4:3 — Hor+ only ADDS world). >0 = fixed (`--aspect
+     * bars (clamped ≥ 4:3 - Hor+ only ADDS world). >0 = fixed (`--aspect
      * W:H`): sizes the launch window to match and letterboxes/pillarboxes
      * whenever the window shape differs. */
     float aspect_w_over_h;
@@ -200,7 +200,7 @@ typedef struct openpete_options {
      * terrain fog model together (DPCS vertex curve, CLUT-row palette ladder,
      * near-tile select, fog-saturation LP handoff): N = 1 is the authentic
      * PSX curve (saturation at the LOD distance), larger N saturates N x
-     * farther — the classic "see detail far away" look; ~100 pushes fog off
+     * farther - the classic "see detail far away" look; ~100 pushes fog off
      * entirely. 0 = auto: 1 under --lod original, 100 under --lod extended. */
     float fog_scale;
 
@@ -211,7 +211,7 @@ typedef struct openpete_options {
     openpete_vertex_precision_t vertex_precision;
 
     /* Raster output quantize (`--raster-quantize N`). N > 0 resamples the
-     * composed 3D scene (pre-HUD) on the virtual PSX raster at N x scale — each
+     * composed 3D scene (pre-HUD) on the virtual PSX raster at N x scale - each
      * 512N x 240N cell takes ONE point sample (N=1 = authentic 240p), matching
      * the hardware rasterizer's single sample per output pixel: no downsample
      * filter, so textures and polygon edges stay hard. An integer MULTIPLIER of
@@ -230,12 +230,12 @@ typedef struct openpete_options {
      * to serial. 0 = auto (logical cores / 2, clamped to [1, 8]); 1 = serial
      * (the pre-pool code path, no threads created). Boot-latched;
      * display-only (workers read guest RAM only inside the extraction
-     * window — see openpete_workpool.h contracts). */
+     * window - see openpete_workpool.h contracts). */
     int extract_threads;
 
     /* PS1 15-bit colour (`--dither 0|1`). 1 = quantise the composed 3D scene
      * to RGB555 with the GPU's 4x4 ordered dither matrix on the PSX 512x240
-     * framebuffer lattice — the authentic banding+crosshatch pair the native
+     * framebuffer lattice - the authentic banding+crosshatch pair the native
      * float pipeline removed. Applied as an engine postfx below any mod chain
      * (a CRT filter sees the dithered image, as composite video did).
      * Display-only; native renderer only. Default 0. */
@@ -250,7 +250,7 @@ typedef struct openpete_options {
     /* Reference-renderer raster (`--psycross-native-raster 0|1`). 1 renders the
      * PsyCross scene at the console's own 512x240 display grid rather than a
      * square-pixel 4:3 grid derived from the window height, so a screenshot or
-     * a --record capture carries one texel per PSX pixel — the authentic
+     * a --record capture carries one texel per PSX pixel - the authentic
      * raster and its aliasing, not a supersampled resample of it. The window
      * blit scales it up, so only the sampling grid changes. Ignored unless
      * PsyCross rasterizes (--renderer psycross). */
@@ -293,8 +293,8 @@ typedef struct openpete_options {
     /* `--screenshot-on-tick N[,...]` fills the same targets but keys them
      * on `openpete_canon_tick` (canonical presents = game draw-ticks)
      * instead of `openpete_frame` (VBL yields). Tick-keyed captures sample
-     * the SAME sim moment run-to-run — the frame↔tick mapping drifts with
-     * host timing (see openpete_fiber.h) — so the visual-regression gates
+     * the SAME sim moment run-to-run - the frame<->tick mapping drifts with
+     * host timing (see openpete_fiber.h) - so the visual-regression gates
      * use ticks. Mutually exclusive with --screenshot-on-frame. */
     bool        screenshot_ticks_keyed;
     const char* screenshot_output;        /* path template; default ./screenshot.png */
@@ -307,18 +307,18 @@ typedef struct openpete_options {
      * `screenshot_on_frame` which fires once per sim frame on the
      * canonical present only. Used to compare alpha-1.0 (canonical) vs
      * alpha<1.0 (intermediate) outputs at different --render-fps
-     * settings — the latter is the only way to observe whether the
+     * settings - the latter is the only way to observe whether the
      * interp delta is reaching the GL submit. */
     int         screenshot_presents_start;  /* -1 = disabled */
     int         screenshot_presents_count;  /* default 1 */
 
-    /* `--screenshot-native-only`: capture the native `-vk` variant ALONE —
+    /* `--screenshot-native-only`: capture the native `-vk` variant ALONE -
      * skip the PsyCross OT rasterization (`openpete_psycross_renders`, which a
      * screenshot request otherwise forces on for the `-og` reference) and the
-     * `-og`/`-vk` composition. Gameplay-neutral (the render→gameplay
+     * `-og`/`-vk` composition. Gameplay-neutral (the render->gameplay
      * channel writes come from the recompiled render funcs, upstream of OT
      * rasterization; this is also the normal windowed pure-vk play path). The
-     * presentation-golden corpus's default capture path — its single biggest
+     * presentation-golden corpus's default capture path - its single biggest
      * speedup, since the discarded reference otherwise costs a full GL OT walk
      * per screenshot frame. */
     bool        screenshot_native_only;
@@ -327,7 +327,7 @@ typedef struct openpete_options {
      * (alpha = 0.5) native captures, headless-capable. At each listed VBL the
      * present clock is forced to the tick midpoint (curr_tick_ns + period/2) and
      * the re-extract callback is invoked once, so the shot lands on the exact
-     * interpolated pose the sub-tick spine would present — reproducibly, with no
+     * interpolated pose the sub-tick spine would present - reproducibly, with no
      * wall-clock pacing. VBL-keyed (openpete_frame), like --screenshot-on-frame.
      * Implies --screenshot-native-only capture. Fills a SEPARATE target list so a
      * run can carry canonical and intermediate legs together. */
@@ -338,20 +338,20 @@ typedef struct openpete_options {
      * pre-freeze WORLD frame into the capture freeze texture so a freeze-frame
      * dump (pause / flight-results / level-exit) shows the green frozen-world
      * backdrop instead of a dark clear (frozen_tex is snapshotted only with a live
-     * window). Off by default — it renders an extra frame per present, so enable
+     * window). Off by default - it renders an extra frame per present, so enable
      * it only for bk2s/poses that reach a freeze state. */
     bool        screenshot_freeze_backdrop;
 
-    /* Main-RAM dump — writes the 2MB g_ram to disk after frame N's game
+    /* Main-RAM dump - writes the 2MB g_ram to disk after frame N's game
      * code yields. Used as the openpete side of the PCSX-Redux comparison
      * loop (see scripts/pcsx-redux-ram-dump.lua). */
     int         ram_dump_on_frame;     /* -1 = disabled */
     const char* ram_dump_output;       /* path; default ./ram.bin */
 
-    /* Scheduled savestate ops — fire once at the savestate quiescent point
+    /* Scheduled savestate ops - fire once at the savestate quiescent point
      * (game fiber yielded) when openpete_frame (a VBL counter) reaches N.
      * Headless-friendly: this is the autonomous test vehicle for the
-     * restore-correctness checks (save→tick→restore→tick hash A/B).
+     * restore-correctness checks (save->tick->restore->tick hash A/B).
      * Load re-anchors openpete_frame exactly like the hotkey path. */
     int         state_save_on_frame;   /* -1 = disabled */
     const char* state_save_output;     /* path; default ./frameN.state */
@@ -359,18 +359,18 @@ typedef struct openpete_options {
     const char* state_load_input;      /* path; required when load armed */
 
     /* Savestate stress harnesses (restore-at-yield checks; headless):
-     * state_stress N       — every N ticked iterations: in-memory save +
+     * state_stress N       - every N ticked iterations: in-memory save +
      *                        immediate quiet restore. A clean run and a
      *                        stressed run must produce identical
      *                        --gameplay-hash-log timelines.
-     * state_stress_rewind K— save, run K more iterations, restore, repeat
+     * state_stress_rewind K- save, run K more iterations, restore, repeat
      *                        (the runahead rollback shape). The repeated
      *                        window's hash rows must self-match pass 1. */
     int         state_stress;          /* 0 = disabled */
     int         state_stress_rewind;   /* 0 = disabled */
 
     /* Rewind. rewind_window: seconds of keyframe ring
-     * (0 = off). rewind_hold_frame/iters: headless harness — simulate
+     * (0 = off). rewind_hold_frame/iters: headless harness - simulate
      * holding the rewind key for N iterations at frame A. */
     int         rewind_window;         /* 0 = disabled */
     int         rewind_hold_frame;     /* -1 = disabled */
@@ -383,7 +383,7 @@ typedef struct openpete_options {
     int         runahead;              /* 0 = disabled; clamped 0..3 */
 
     /* Seed g_ram from a 2 MB file before the recomp dispatches. Used to
-     * pin-prime openpete with PCSX-Redux's RAM at the same instant — gives
+     * pin-prime openpete with PCSX-Redux's RAM at the same instant - gives
      * the recompiler a byte-identical starting state, so any subsequent
      * divergence is purely the recomp's fault, not BIOS / _96_init / heap-
      * init asymmetry between the two engines. NULL = disabled. */
@@ -393,7 +393,7 @@ typedef struct openpete_options {
      * captured by scripts/pcsx-redux-ram-dump.lua. Applied AFTER seed-ram
      * and after the boot's EXE-header init, so it overrides everything.
      * Lets openpete start from the exact register state pcsxr was in at
-     * the same PC — the partner of --seed-ram for register-aligned diffs.
+     * the same PC - the partner of --seed-ram for register-aligned diffs.
      * NULL = disabled. File format: see core/runtime/run.c (load_cpu_seed). */
     const char* seed_cpu_path;
 
@@ -466,7 +466,7 @@ typedef struct openpete_options {
      * OPENPETE_RENDERER_PSYCROSS = the original behavior (PsyCross owns the one
      * window, no native Vulkan window). The other modes open the native
      * renderer's Vulkan window and start PsyCross hidden. Pure display
-     * selection — never perturbs gameplay state; native modes are no-ops under
+     * selection - never perturbs gameplay state; native modes are no-ops under
      * --headless. See openpete_renderer_t above. */
     openpete_renderer_t renderer;
 
@@ -479,7 +479,7 @@ typedef struct openpete_options {
 
     /* In-process continuation from the first-run splash: when non-NULL, an
      * SDL_Window* (void* keeps this header SDL-free) that the windowed vk
-     * renderer adopts — retitle/resize/make-resizable — instead of opening
+     * renderer adopts - retitle/resize/make-resizable - instead of opening
      * a second window, so one OS window carries splash and game. Set by the
      * game's main between splash teardown and openpete_run(); only handed
      * over in any windowed run, since every windowed mode displays through the
@@ -491,7 +491,7 @@ typedef struct openpete_options {
      * axis (N² samples/pixel) and the present blit box-downsamples to the
      * window. 1 = no-op (the offscreen matches the swapchain, a 1:1 blit).
      * Range 1..OPENPETE_SSAA_MAX, further capped to the GPU's max image size
-     * (so a large value degrades gracefully). Display-only — no gameplay effect;
+     * (so a large value degrades gracefully). Display-only - no gameplay effect;
      * under --headless and on --renderer psycross. The native_rtt that backs
      * the -vk screenshots + DIFF mode stays at reference resolution
      * so the A/B-vs-PsyCross comparison stays 1:1 pixel-exact. */
@@ -520,13 +520,13 @@ typedef struct openpete_options {
 
     /* --version-osd 0|1: the release build's two-second version line at the
      * bottom left. A distributed build that is not exactly a release keeps its
-     * line up for the whole session and this does not suppress it — the line
-     * is what names the build in a screenshot of it — and a build that is not
+     * line up for the whole session and this does not suppress it - the line
+     * is what names the build in a screenshot of it - and a build that is not
      * shared-recomp draws none either way. Display-only. */
     int version_osd;
 
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present
-     * locked to the monitor refresh — the default); 0 = a vsync-OFF mode
+     * locked to the monitor refresh - the default); 0 = a vsync-OFF mode
      * (immediate/mailbox) for low latency / uncapped-throughput benchmarking;
      * -1 = unset (defer to the OPENPETE_PRESENT_MODE env, else FIFO). Display-only;
      * ignored under --headless / psycross. */
@@ -541,7 +541,7 @@ typedef struct openpete_options {
     /* --render-paths CSV (debug): restrict rendering to the named render paths
      * (e.g. "cyclorama,spyro") in BOTH renderers, so a path can be compared in
      * isolation. PsyCross drops the other paths' geometry prims during the OT
-     * walk (presentation-only — never writes game RAM, so gameplay state is
+     * walk (presentation-only - never writes game RAM, so gameplay state is
      * unaffected); the native renderer feeds only the selected paths. The path
      * NAMES are game-specific, so core only carries the raw string; the per-game
      * impl parses it. NULL/empty = all paths (no filtering). */
@@ -549,7 +549,7 @@ typedef struct openpete_options {
 
     /* --devui-open 0|1 (debug): open the dev config overlay (the M panel) as
      * soon as it initializes, instead of waiting for the M key. Windowed
-     * native-vk runs only — the overlay is never created headless or under
+     * native-vk runs only - the overlay is never created headless or under
      * --renderer psycross, where the flag logs that it is inert. -1 = unset
      * (defer to the OPENPETE_DEVUI_OPEN env, else closed). Boot-latched:
      * openpete_devui_init reads it once. Display-only. */
@@ -567,7 +567,7 @@ typedef struct openpete_options {
     const char* bk2_path;
 
     /* Map bk2 frame 0 to openpete_frame `bk2_frame_offset`. Negative is
-     * legal — a positive value here means "skip the first N bk2 frames".
+     * legal - a positive value here means "skip the first N bk2 frames".
      * INT_MIN = "unset"; the host loop then auto-picks
      * -bk2.first_input_frame so the first pressed bk2 frame lands at
      * openpete_frame=0 (which is itself anchored to the first DrawOTag,
@@ -583,7 +583,7 @@ typedef struct openpete_options {
      * at the OpenAL layer via PsyX_SPUAL_SetMute + PsyX_XA_ForceGain +
      * music_override_set_forced_gain. Engine-level, so no game-specific
      * globals or per-frame stamping is needed. Defaults to false (audio
-     * on) — the shipping game has sound; pass --mute 1 (or set it in
+     * on) - the shipping game has sound; pass --mute 1 (or set it in
      * openpete.toml) to silence a dev/CI build. Note this only clamps gain
      * on already-created AL sources; it never gates device/context init,
      * so a headless run with no audio device is silent either way. */
@@ -603,7 +603,7 @@ typedef struct openpete_options {
     int music_volume;   /* --music 0..10, -1 = leave the game's slider alone */
 
     /* --vibration: controller rumble, 0 (off) .. 10 (max), -1 = leave the
-     * game's own vibration setting alone (the default, which means ON — the
+     * game's own vibration setting alone (the default, which means ON - the
      * game enables actuators at init and a save file restores the player's
      * choice).
      *
@@ -613,7 +613,7 @@ typedef struct openpete_options {
      * toggle has no intensity of its own, so without the host scale a 3 and a
      * 10 would feel identical.
      *
-     * 0 silences the motors host-side and writes NOTHING to guest RAM — the
+     * 0 silences the motors host-side and writes NOTHING to guest RAM - the
      * game's own vibration setting keeps reading whatever the player chose.
      * That is deliberate: 0 is the value every unattended launcher sets, and a
      * guest write there would leave the oracle and determinism gates measuring
@@ -678,7 +678,7 @@ typedef struct openpete_options {
     /* Position log: every yield where the game is past fast-boot, append
      * one CSV line `frame,vbl,x,y,z` with g_Spyro.m_Position to this
      * path. Used for cross-run determinism diffs. NULL = disabled. The
-     * Spyro address is hardcoded in run.c (game-specific) — when we add
+     * Spyro address is hardcoded in run.c (game-specific) - when we add
      * a second game we'll route this through game_extras. */
     const char* position_log_path;
 
@@ -688,7 +688,7 @@ typedef struct openpete_options {
      * regions are loaded statically (compiled-in copy of the manifest)
      * so the runtime has zero runtime-config requirement. Used by
      * tests/harness/check_determinism_matrix.sh as the primary determinism
-     * gate — the per-position log is a coarse proxy that misses leaks
+     * gate - the per-position log is a coarse proxy that misses leaks
      * not yet propagated to Spyro's m_Position. NULL = disabled. */
     const char* gameplay_hash_log_path;
 
@@ -723,7 +723,7 @@ typedef struct openpete_options {
      * scripts/profile-to-trace.py, scripts/profile-summary.py. */
     const char* profile_out_path;
 
-    /* --record PATH: capture gameplay video. True VFR — one encoded frame
+    /* --record PATH: capture gameplay video. True VFR - one encoded frame
      * per game-presented frame, PTS = wall-clock capture time, so playback
      * matches real game cadence (frame drops show as fewer frames/sec).
      * Frames are read from the present FBO at internal resolution (no
@@ -751,9 +751,9 @@ typedef struct openpete_options {
 
     /* --record-cfr RATE: capture at a constant frame rate instead of true VFR.
      * RATE must be an integer multiple of the NTSC sim-tick rate (1125000/37609
-     * = 29.913052…): 29.913, 59.826, 119.652, ... Any other value is rejected,
+     * = 29.913052...): 29.913, 59.826, 119.652, ... Any other value is rejected,
      * because a non-integer ratio makes the sub-tick interpolator emit an
-     * uneven number of intermediate presents per tick — the very cadence jitter
+     * uneven number of intermediate presents per tick - the very cadence jitter
      * CFR exists to remove. Rounded spellings (30, 60, 120) are accepted and
      * snapped to their true neighbour. 0 = off (VFR).
      *
@@ -797,7 +797,7 @@ typedef struct openpete_options {
      * zero mods and a byte-identical modless run. */
     const char* mods_dir;
 
-    /* --mods ID[,ID...]: enabled modset override — replaces the mods dir's
+    /* --mods ID[,ID...]: enabled modset override - replaces the mods dir's
      * enabled.txt entirely, same semantics (order IS priority, later =
      * higher). An empty list ("--mods \"\"") enables nothing, i.e. a
      * one-flag vanilla run without touching the install. NULL = unset
@@ -805,21 +805,21 @@ typedef struct openpete_options {
      * mods in lexicographic order). */
     const char* mods_enabled;
 
-    /* --compile-mods: utility mode — compile EVERY mod with src/ in the
+    /* --compile-mods: utility mode - compile EVERY mod with src/ in the
      * resolved mods dir (ignoring enabled.txt) against <exe>/sdk through
      * the loader's own key/stamp/compile path, then exit (nonzero if any
      * compile failed). The cmake `spyro1_mods` build step for native
      * presets; also pre-warms a dist install's compile-on-boot cache. */
     int         compile_mods;
 
-    /* --dump-sfx-pack DIR: utility mode — walk every sample on --disc
+    /* --dump-sfx-pack DIR: utility mode - walk every sample on --disc
      * (and the custom-level Data files in --dump-sfx-wads, comma list)
      * and write the sfx pack census (WAVs named by content hash +
      * index.txt) to DIR, then exit. */
     const char* dump_sfx_pack_dir;
     const char* dump_sfx_wads;
 
-    /* openpete.toml utility modes — resolve, do the one thing, exit 0.
+    /* openpete.toml utility modes - resolve, do the one thing, exit 0.
      * Handled by game main alongside --compile-mods, so the whole config
      * stack is already resolved by the time they run. */
     int         config_report;   /* --config-report: print the resolution table */
@@ -828,7 +828,7 @@ typedef struct openpete_options {
     /* Host-backed memory card (save/load). The game reaches the card only
      * through the PSYQ MemCard* wrappers, which openpete backs with real
      * 128 KiB .mcr images in the `cards` directory openpete_paths.h
-     * resolves. Pure host-side save I/O — never touches gameplay-readable
+     * resolves. Pure host-side save I/O - never touches gameplay-readable
      * state. See openpete_memcard.h. */
     const char* card_dir;      /* --card-dir PATH: dir holding cardN.mcr (NULL = the resolved cards dir; env OPENPETE_CARD_DIR) */
     const char* card1_path;    /* --card1 PATH: explicit port-A image (NULL = <card_dir>/card1.mcr) */
@@ -846,7 +846,7 @@ typedef struct openpete_options {
      * screen in TSM_Demo + TSD_Level mode, which loads whatever
      * g_LevelId is set to. We hook that exact moment in the per-game
      * impl, override g_LevelId/g_NextLevelId, and let the state machine
-     * do its normal flyby + load — no state corruption. 0 = disabled.
+     * do its normal flyby + load - no state corruption. 0 = disabled.
      * Spyro 1 level IDs: 10/20/30/40/50/60 are homeworlds, +1..3 are
      * regular levels, +4 is the flight/speedway level, 63 is Gnasty's
      * lair. Splash sequence is auto-skipped (host-yield is bypassed until
@@ -870,7 +870,7 @@ typedef struct openpete_options {
      * entered. The per-game feature module owns the name table and applies
      * the effects once gameplay is live (the globals they write don't exist
      * before a level loads, and New Game / save-load rewrite them). NULL =
-     * none. Deliberately gameplay-affecting — the same class as the debug
+     * none. Deliberately gameplay-affecting - the same class as the debug
      * free camera, not a presentation flag. */
     const char* cheats;
 } openpete_options_t;
@@ -1004,7 +1004,7 @@ void openpete_set_mute(int on);
 int  openpete_get_mute(void);
 
 /* Live in-game volume-slider presets (0..10, -1 = leave the game's slider
- * alone) — the --sfx / --music values, re-settable at runtime. These hold a
+ * alone) - the --sfx / --music values, re-settable at runtime. These hold a
  * host-side REQUEST only: the per-game audio-volume feature reads them on its
  * own tick hook and performs every guest write there, so a UI-thread edit
  * never touches gameplay-readable RAM off-schedule. */

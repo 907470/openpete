@@ -1,7 +1,7 @@
-/* games/spyro-1/decomp/psyq_compat.h — PSYQ/PsyCross type compat shim.
+/* games/spyro-1/decomp/psyq_compat.h - PSYQ/PsyCross type compat shim.
  *
  * Bridges the renaming of PSYQ types in PsyCross. Spyro's matching-decomp
- * source uses original PSYQ identifiers (RECT, …); PsyCross's libgpu.h
+ * source uses original PSYQ identifiers (RECT, ...); PsyCross's libgpu.h
  * uses RECT16 for the same struct (PsyX renamed it because Win32 has its
  * own RECT). This shim is force-included BEFORE every compile of a .c file
  * under spyro-1/src/, so the source can stay identical to the decomp tree.
@@ -30,7 +30,7 @@
  * (CDReadDone) via the PSYQ name CdReadCallback. We route reads through
  * psyq_CdRead in psyq_thunks.cpp (XA pump, overlay-magic detection), so
  * native-side registration must land in psyq_thunks.cpp's host-cb slot
- * — not PsyCross's internal register, which our flow doesn't consult.
+ * - not PsyCross's internal register, which our flow doesn't consult.
  * openpete_CdReadCallback (psyq_thunks.cpp) does that bridge. */
 typedef void (*openpete_native_cd_read_cb_t)(unsigned char intr,
                                              unsigned char* result);

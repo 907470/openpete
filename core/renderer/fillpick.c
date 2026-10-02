@@ -1,4 +1,4 @@
-// core/renderer/fillpick.c — host-side state for the LP fill-tag inspector (P).
+// core/renderer/fillpick.c - host-side state for the LP fill-tag inspector (P).
 // See openpete_fillpick.h. Generic, address-free; the projection-space pick,
 // the tag-table override and the debug tint live in the Spyro terrain feeder
 // (games/common/renderer/terrain.c).
@@ -26,7 +26,7 @@ static openpete_fillpick_hit s_hit;
 
 static fp_entry s_ent[FP_MAX];
 static int      s_ent_n;
-static int      s_order[FP_MAX];   /* record order — undo pops the tail */
+static int      s_order[FP_MAX];   /* record order - undo pops the tail */
 static int      s_order_n;
 
 static char     s_path[1024];
@@ -41,7 +41,7 @@ void openpete_fillpick_set_active(int on) {
     memset(&s_hit, 0, sizeof s_hit);
     if (s_active) {
         OPL_INFO_F("fillpick",
-                   "ON — crosshair picks the LP face under it. "
+                   "ON - crosshair picks the LP face under it. "
                    "H preview all LP faces, Y=FILL N=NOFILL B=clear U=undo. "
                    "session -> %s", openpete_fillpick_session_path());
     } else {
@@ -119,7 +119,7 @@ int openpete_fillpick_save(void) {
         OPL_WARN_F("fillpick", "cannot write %s", path);
         return 0;
     }
-    fprintf(f, "# openpete fill-tag pick session — verdicts recorded in-game "
+    fprintf(f, "# openpete fill-tag pick session - verdicts recorded in-game "
                "with the P-key inspector.\n"
                "# Fold into tests/freecam/fill-tags.verdicts (and regenerate\n"
                "# terrain_fill_tags.h) with:  scripts/fill-tags-apply.py %s\n"

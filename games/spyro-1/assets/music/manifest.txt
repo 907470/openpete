@@ -1,4 +1,4 @@
-# openpete music override manifest — Spyro the Dragon
+# openpete music override manifest - Spyro the Dragon
 # ====================================================
 #
 # Drop PCM WAV files in this directory and they play in place of the
@@ -12,7 +12,7 @@
 #
 # Lines starting with '#' are ignored. If a referenced file is
 # missing, that track quietly falls back to the disc's original XA
-# audio — partial coverage is fine, and you don't need to remove or
+# audio - partial coverage is fine, and you don't need to remove or
 # comment entries whose files don't exist yet.
 #
 # Supported WAV format: PCM int16, mono or stereo, at 11025 / 22050 /
@@ -20,15 +20,15 @@
 #
 #   ffmpeg -i input.flac -ac 2 -ar 44100 -sample_fmt s16 track_00.wav
 #
-# The disc image is still required — this only replaces music.
+# The disc image is still required - this only replaces music.
 #
 # LENGTH MATTERS. The game itself decides when a track loops: it watches
 # the CD head and restarts the stream once it passes the original XA
 # track's end, so the loop period is a property of the ORIGINAL track,
-# not of your file. Author to the length in the table below —
+# not of your file. Author to the length in the table below -
 #
-#   shorter  → your track finishes, then silence until the loop point
-#   longer   → your track is cut off at the original's length
+#   shorter  -> your track finishes, then silence until the loop point
+#   longer   -> your track is cut off at the original's length
 #
 # Trim precisely with ffmpeg (-t takes m:ss.ss directly):
 #

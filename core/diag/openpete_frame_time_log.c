@@ -1,4 +1,4 @@
-/* openpete_frame_time_log.c — see header for format + rationale. */
+/* openpete_frame_time_log.c - see header for format + rationale. */
 
 #include "openpete_frame_time_log.h"
 #include "openpete_log.h"

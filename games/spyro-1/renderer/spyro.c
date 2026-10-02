@@ -1,4 +1,4 @@
-// games/spyro-1/renderer/spyro.c — the numerical harness for Spyro 1's player
+// games/spyro-1/renderer/spyro.c - the numerical harness for Spyro 1's player
 // feeder: capture the primitives the game's own routine emits, decode the same
 // pose natively, and report the difference.
 //
@@ -10,16 +10,16 @@
 // has run and while its scratch is still live.
 //
 // Four independent verdicts, each isolating one failure mode:
-//   * spyro-scratch — per-index screen distance against the routine's own
+//   * spyro-scratch - per-index screen distance against the routine's own
 //     projected SXY block. No nearest-neighbour ambiguity, so a per-axis
 //     decode error shows directly.
-//   * spyro-verify — nearest-neighbour distance from each emitted primitive
+//   * spyro-verify - nearest-neighbour distance from each emitted primitive
 //     vertex to the nearest native vertex, prim to native so an over-decode
 //     cannot inflate it.
-//   * spyro-walk — ordered, index-exact comparison of the native face walk
+//   * spyro-walk - ordered, index-exact comparison of the native face walk
 //     against the emitted primitives: colour and UV agreement per triangle is
 //     the byte-exact topology verdict.
-//   * spyro-mat — the derived per-part matrix and translation against the
+//   * spyro-mat - the derived per-part matrix and translation against the
 //     records the routine built, which hold exactly what it used.
 //
 // Determinism: reads only.
@@ -318,7 +318,7 @@ static void spyro_idx_audit(CPUState* cpu) {
  * 1:1. Rebuild the EXPECTED list from the primitives (with stream indices
  * recovered exactly) and compare element-wise: colour and UV agreement is the
  * byte-exact verdict, since a wrong vertex carries a different model colour or
- * texel. Position is informational only — two of the vertices can share one
+ * texel. Position is informational only - two of the vertices can share one
  * int16 screen position, which makes index recovery ambiguous there. */
 typedef struct { int walk, expected, cnt_ok, n, pos_ok, rgb_ok, uv_ok, first_bad; } walk_stats;
 #define MAX_EXP 8192

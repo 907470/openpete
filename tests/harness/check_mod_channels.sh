@@ -6,7 +6,7 @@
 #
 # Why this exists as its own gate: the gallery's claims were verified by
 # hand, one screenshot at a time, and that is exactly how two real bugs
-# got through — a texturedness filter that silently skipped the whole LP
+# got through - a texturedness filter that silently skipped the whole LP
 # terrain tier, and per-instance material slots that were dead before
 # they were stamped. Both were invisible to check_mods and check_native_
 # visual, because neither runs a mod material at all.
@@ -14,7 +14,7 @@
 # The last rung is the one with teeth: a refine material whose callback
 # returns a DIFFERENT block per instance must repaint exactly what the
 # equivalent DECLARATIVE selector repaints. Same audience, two routes,
-# one number. Note the "different block per instance" — the shared-block
+# one number. Note the "different block per instance" - the shared-block
 # version of that comparison passes straight through the slot bug, which
 # is documented at the rung itself.
 #
@@ -132,7 +132,7 @@ player|flame|1800|4|1500|player (Spyro is not a moby)
 flameribbon|flame|1800|6|10000|flame ribbon (additive, textured)
 particlequad|flame|1800|10|30|particle billboards (textured, blended)
 shadowmoby|artisans-bridge|1986|8|60|moby shadows (DECAL profile: engine keeps the occlusion verdict)
-shadowplayer|artisans-bridge|2000|9|0|player shadow (KNOWN GAP — and it must paint nothing, not paint LESS: this row DELETED the shadow, 3099 px, because deferring a tri removes it from the plain span and this bucket then skipped the spans)
+shadowplayer|artisans-bridge|2000|9|0|player shadow (KNOWN GAP - and it must paint nothing, not paint LESS: this row DELETED the shadow, 3099 px, because deferring a tri removes it from the plain span and this bucket then skipped the spans)
 sky|cyclorama-portal|2000|5|3000|cyclorama sky
 portal|cyclorama-portal|2000|15|3000|portal previews (all three rungs)
 terrainrefine|flame|1794|20|1000|terrain refine callback (untextured band)
@@ -166,7 +166,7 @@ while IFS='|' read -r tag bk2 frame row minpx label; do
         if [ "${n:-0}" -eq 0 ]; then
             ok "row $row paints nothing, as its KNOWN GAP note claims"
         else
-            bad "row $row painted $n px but is documented as a KNOWN GAP — either the engine gained a capability (update the gallery + census) or something else is leaking into this selector"
+            bad "row $row painted $n px but is documented as a KNOWN GAP - either the engine gained a capability (update the gallery + census) or something else is leaking into this selector"
         fi
     elif [ "${n:-0}" -ge "$minpx" ]; then
         ok "row $row repainted $n px (>= $minpx)"
@@ -180,7 +180,7 @@ done <<< "$RUNGS"
 # reaches it and nothing else: a material that returns the stock shading
 # unchanged (strength 0) must be pixel-identical to no material at all.
 #
-# It needs no colour classifier and no judgement about what looks right —
+# It needs no colour classifier and no judgement about what looks right -
 # the mod asked for nothing, so any changed pixel is the ENGINE's stage
 # leaking, not the mod's. That is what makes it worth having: it is the
 # only rung here that can fail because of something nobody wrote.
@@ -219,7 +219,7 @@ for leg in "id_terrain flame 1800 1 terrain (both LOD tiers)" \
     if [ "${n:-999}" -le "$IDTOL" ]; then
         ok "$label: identity material is stock (${n:-?} px <= $IDTOL)"
     else
-        bad "$label: identity material moved ${n:-?} px — the engine's own fragment work is being replaced, not the colour (perspective term? an occlusion contest?)"
+        bad "$label: identity material moved ${n:-?} px - the engine's own fragment work is being replaced, not the colour (perspective term? an occlusion contest?)"
     fi
 done
 
@@ -233,7 +233,7 @@ done
 # why: the gallery's refine row returns ONE shared block, and the
 # stamped-slot bug only bit when a callback produced MANY DISTINCT
 # outcomes. Measured against the buggy engine this pair reads 1586 vs
-# 1586 — a clean pass straight through the defect. The many-outcome rung
+# 1586 - a clean pass straight through the defect. The many-outcome rung
 # below is the one with teeth; this one covers the shared-block path.
 say "refine material claiming everything == declarative all-mobys"
 if run_rows "refine_all" flame 1800 19 $'gallery.class = -1\ngallery.refine_state = -1'; then
@@ -242,7 +242,7 @@ if run_rows "refine_all" flame 1800 19 $'gallery.class = -1\ngallery.refine_stat
     if [ "${nr:-0}" -eq "${nd:-1}" ] && [ "${nr:-0}" -gt 0 ]; then
         ok "refine and declarative both repainted $nr px"
     else
-        bad "refine repainted ${nr:-0} px, declarative ${nd:-0} — a per-instance material is losing (or gaining) instances"
+        bad "refine repainted ${nr:-0} px, declarative ${nd:-0} - a per-instance material is losing (or gaining) instances"
     fi
 else
     bad "no capture for the refine rung (see $WORK/refine_all.log)"
@@ -264,13 +264,13 @@ fi
 # ── retuning a live selector ──────────────────────────────────────────
 # A material can be pointed at a different selector while it is live
 # (material_set_selector), which is how the class picker follows the user's
-# choice. Registering again instead is refused inside a present — where a UI
-# section runs — so the retune is the ONLY path a picker has.
+# choice. Registering again instead is refused inside a present - where a UI
+# section runs - so the retune is the ONLY path a picker has.
 #
 # Reached here through gallery.class_switch, which retunes from a PRESENT
 # hook: the same context the picker uses, and the branch that has to defer to
 # the tick boundary rather than splitting a frame between two keys. Both legs
-# are pinned, because either half can pass alone for the wrong reason — a
+# are pinned, because either half can pass alone for the wrong reason - a
 # retune that silently did nothing still matches the BEFORE class, and one
 # that matched everything would differ from it too.
 #
@@ -299,7 +299,7 @@ fi
 # The rung with teeth. mods/moby-instance-tint's callback returns a
 # DIFFERENT block per instance, so it interns a slot per moby instead of
 # one shared slot. It must still claim exactly the audience the plain
-# all-mobys selector claims — every moby, no more, no fewer.
+# all-mobys selector claims - every moby, no more, no fewer.
 #
 # This is the shape that caught the real bug: slot ids were interned
 # during the extraction walk and stamped into the tag after
@@ -334,7 +334,7 @@ if [ -s "$WORK/tint-1800-vk.png" ]; then
         if [ "${nt:-0}" -eq "${nd2:-1}" ] && [ "${nt:-0}" -gt 0 ]; then
             ok "per-instance blocks reached all $nt px the declarative selector does"
         else
-            bad "per-instance refine repainted ${nt:-0} px, declarative ${nd2:-0} — instances are being lost (check that slot ids are resolved where they are STAMPED, not banked during the walk)"
+            bad "per-instance refine repainted ${nt:-0} px, declarative ${nd2:-0} - instances are being lost (check that slot ids are resolved where they are STAMPED, not banked during the walk)"
         fi
         # Pixel-count equality is necessary but NOT sufficient, and finding
         # that out is why this line exists: a variant where every instance
@@ -348,7 +348,7 @@ if [ -s "$WORK/tint-1800-vk.png" ]; then
         if [ "${peak:-0}" -ge 4 ]; then
             ok "callback produced $peak distinct interned outcomes"
         else
-            bad "only ${peak:-0} distinct outcomes interned from a per-vaddr hash — instances are collapsing onto a shared slot, so they render with each other's parameters"
+            bad "only ${peak:-0} distinct outcomes interned from a per-vaddr hash - instances are collapsing onto a shared slot, so they render with each other's parameters"
         fi
     fi
 else
@@ -361,13 +361,13 @@ fi
 # because it is the only one with two residencies: the CPU walk, and the
 # retained GPU cache that redraws baked arenas without walking.
 #
-# Two legs, same material, same frame, same build — one with the cache on
+# Two legs, same material, same frame, same build - one with the cache on
 # and one with --terrain-cache 0. The number is 0, not "within tolerance":
 # both legs render the same frame.
 #
 # Two things this rung has to get right, and both were learned the hard way.
 #
-# It MUST assert the cache actually engaged, or it passes vacuously — a
+# It MUST assert the cache actually engaged, or it passes vacuously - a
 # terrain material used to claim every sector back to the walk, which would
 # make both legs walk and read 0 px having tested nothing. `secs` counts the
 # sectors the cache is serving and must be nonzero. (There is no longer a
@@ -376,7 +376,7 @@ fi
 #
 # And it must measure the material's residency delta against the STOCK one,
 # not against zero. The cache's fp64 mirror of the walk is a handful of
-# pixels off at 1 LSB even with no mods at all — 10 px at this frame. A
+# pixels off at 1 LSB even with no mods at all - 10 px at this frame. A
 # material that repaints most of the screen HIDES those pixels, so a raw
 # "== 0" reads green for the wide rows and red for narrow ones, which is
 # backwards. What the law actually forbids is a material ADDING residency
@@ -391,11 +391,11 @@ if CACHE=1 run_rows stockret flame 1800 "" "" &&
         # compare. Skip loudly rather than report a green that means nothing.
         ok "SKIPPED: the retained terrain cache did not engage on this device"
     elif [ "${secs:-0}" -eq 0 ]; then
-        bad "the cache served no sectors (secs=0) — both legs walked, so this rung proves nothing"
+        bad "the cache served no sectors (secs=0) - both legs walked, so this rung proves nothing"
     else
         ok "stock residency delta is ${base_delta} px (the cache's own fp64 mirror; the bar to not exceed)"
         # row 1  = declarative, both terrain LOD tiers
-        # row 20 = refine callback on the untextured band — the rung that
+        # row 20 = refine callback on the untextured band - the rung that
         #          says a per-present outcome survives being BAKED, which is
         #          the one thing a retained face cannot carry by itself.
         for leg in "resdecl 1 declarative terrain row" \
@@ -407,11 +407,11 @@ if CACHE=1 run_rows stockret flame 1800 "" "" &&
                 reach=$(diffpx "$WORK/stockret-1800-vk.png" "$WORK/$tag-r-1800-vk.png")
                 n=$(diffpx "$WORK/$tag-r-1800-vk.png" "$WORK/$tag-w-1800-vk.png")
                 if [ "${reach:-0}" -eq 0 ]; then
-                    bad "$label: reached 0 px, so comparing residencies proves nothing — the row is not selecting anything at this frame"
+                    bad "$label: reached 0 px, so comparing residencies proves nothing - the row is not selecting anything at this frame"
                 elif [ "${n:-999}" -le "${base_delta:-0}" ]; then
                     ok "$label: residency delta ${n} px <= stock ${base_delta} px (reached ${reach} px, cache engaged secs=$secs)"
                 else
-                    bad "$label: residency delta ${n} px EXCEEDS the stock ${base_delta} px — the material's reach or output depends on where the face lives, which strobes as the player moves"
+                    bad "$label: residency delta ${n} px EXCEEDS the stock ${base_delta} px - the material's reach or output depends on where the face lives, which strobes as the player moves"
                 fi
             else
                 bad "$label: no capture (see $WORK/$tag-r.log, $WORK/$tag-w.log)"
@@ -426,6 +426,6 @@ echo
 if [ "$fail" -eq 0 ]; then
     echo "[modchan] ALL GREEN"
 else
-    echo "[modchan] FAILURES — see above"
+    echo "[modchan] FAILURES - see above"
 fi
 exit $fail

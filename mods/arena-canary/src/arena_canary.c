@@ -1,11 +1,11 @@
-/* arena-canary — the arena is timeline state, measured.
+/* arena-canary - the arena is timeline state, measured.
  *
  * One mutable arena block holds a mirror of the game's tick counter
  * (g_GameTick, incremented once per game update and zeroed by a level
  * load). Each tick the hook compares the guest counter with the mirror:
  * the guest value may equal the mirror (a tick the game did not
  * advance) or exceed it, but a guest value BELOW the mirror means guest
- * RAM went back in time and the arena did not — a rollback, rewind or
+ * RAM went back in time and the arena did not - a rollback, rewind or
  * load that restored one and not the other. That is logged as DESYNC.
  * Zero is excluded: a level load legitimately resets the counter.
  *
@@ -52,7 +52,7 @@ static void on_camera_update(CPUState* cpu) {
         g_mirror->desyncs++;
         if (g_mirror->desyncs == 1 || (g_mirror->desyncs & 63u) == 0)
             g_api->log(g_self, OP_MOD_LOG_ERROR,
-                       "arena-canary: DESYNC #%u (mirror %u, guest tick %u) — "
+                       "arena-canary: DESYNC #%u (mirror %u, guest tick %u) - "
                        "guest RAM moved back in time, the arena did not",
                        g_mirror->desyncs, g_mirror->last_tick, g);
     }
@@ -76,7 +76,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     }
     g_mirror = (mirror_t*)host;
     /* Replayed on re-entry: the block keeps its bytes, so the mirror
-     * continues rather than restarting — a restart would itself look
+     * continues rather than restarting - a restart would itself look
      * like a rollback to the check above. */
     api->log(self, OP_MOD_LOG_INFO,
              "arena-canary: block 0x%08X (%u B) ticks so far %u", g_va,

@@ -1,4 +1,4 @@
-/* memcard.c — host-backed PlayStation memory card. See openpete_memcard.h.
+/* memcard.c - host-backed PlayStation memory card. See openpete_memcard.h.
  *
  * Two raw 128 KiB card images (.mcr) with the standard PSX directory
  * structure, persisted write-through to disk. The layout / checksum /
@@ -21,9 +21,9 @@
 #include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_paths.h"
-#include "openpete_mods.h" /* openpete_mods_modset_tag — save safety */
+#include "openpete_mods.h" /* openpete_mods_modset_tag - save safety */
 
-extern int openpete_speculative; /* openpete_fiber.h — runahead lookahead */
+extern int openpete_speculative; /* openpete_fiber.h - runahead lookahead */
 
 #include <errno.h>
 #include <stddef.h>
@@ -271,17 +271,17 @@ static void mc_modset_check_open(int slot) {
     }
     if (!tag[0])
         OPL_WARN_F("memcard", "card %d holds VANILLA progress but mods "
-                   "are active (%s) — saving will mix modded progress "
+                   "are active (%s) - saving will mix modded progress "
                    "into it; pass --adopt-saves to accept and tag",
                    slot, cur);
     else if (!cur[0])
         OPL_WARN_F("memcard", "card %d is tagged with modset \"%s\" but "
-                   "no mods are active — its progress may depend on "
+                   "no mods are active - its progress may depend on "
                    "them; pass --adopt-saves to re-tag as vanilla",
                    slot, tag);
     else
         OPL_WARN_F("memcard", "card %d modset MISMATCH: tagged \"%s\", "
-                   "running \"%s\" — pass --adopt-saves to accept",
+                   "running \"%s\" - pass --adopt-saves to accept",
                    slot, tag, cur);
 }
 
@@ -298,7 +298,7 @@ static void mc_modset_on_write(int slot) {
     if (strcmp(tag, cur) == 0) return;
     if (!tag[0] && cur[0]) {
         mc_modset_write_sidecar(slot, cur);
-        OPL_INFO_F("memcard", "card %d: first save under modset \"%s\" — "
+        OPL_INFO_F("memcard", "card %d: first save under modset \"%s\" - "
                    "tagged", slot, cur);
         return;
     }
@@ -306,7 +306,7 @@ static void mc_modset_on_write(int slot) {
         s_ms_write_warned[slot] = 1;
         OPL_WARN_F("memcard", "card %d written under a modset that does "
                    "not match its tag (\"%s\" vs running \"%s\"); tag "
-                   "unchanged — pass --adopt-saves to re-tag",
+                   "unchanged - pass --adopt-saves to re-tag",
                    slot, tag, cur[0] ? cur : "vanilla");
     }
 }
@@ -320,7 +320,7 @@ static int mc_write_refused(int slot)
     if (!s_readonly[slot] && !s_mem_only[slot]) return 0;
     if (!s_refuse_warned[slot]) {
         s_refuse_warned[slot] = 1;
-        OPL_ERROR_F("memcard", "card %d: save refused — %s", slot,
+        OPL_ERROR_F("memcard", "card %d: save refused - %s", slot,
                     s_mem_only[slot] ? "no card file is usable (no card directory "
                                        "resolves, or the file could not be read)"
                                      : "the image is a headered format loaded read-only");
@@ -428,7 +428,7 @@ static int mc_load_container(int slot, FILE* f, long size)
             fread(s_card[slot], 1, MC_CARD_SIZE, f) != MC_CARD_SIZE)
             return 0;
         s_readonly[slot] = 1;
-        OPL_WARN_F("memcard", "card %d: %s is a %s image; loaded read-only — "
+        OPL_WARN_F("memcard", "card %d: %s is a %s image; loaded read-only - "
                    "saves are refused until it is converted to a raw 128 KiB .mcr",
                    slot, s_path[slot], c->name);
         return 1;
@@ -638,7 +638,7 @@ void openpete_memcard_set_adopt(int on)
 void openpete_memcard_startup_check(void)
 {
     /* Spyro only touches the card from its save UI, but the modset
-     * warning is about the LAUNCH configuration — surface it at startup.
+     * warning is about the LAUNCH configuration - surface it at startup.
      * Existing images only: a fresh dir has no progress to protect (the
      * game's first real write birth-tags via mc_flush). */
     for (int slot = 0; slot < 2; slot++) {

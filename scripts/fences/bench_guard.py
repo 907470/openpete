@@ -1,14 +1,14 @@
 """Fence: benchmark preconditions.
 
-Called by the bench entry points before any timed run. Refuses — with the
-failed precondition named — rather than producing a number that measures
+Called by the bench entry points before any timed run. Refuses - with the
+failed precondition named - rather than producing a number that measures
 the wrong thing:
 
   1. Untuned binary: an exe whose build cache says OPENPETE_SKIP_DECOMP=OFF
-     (read from CMakeCache, never set for a child — wslenv-guard: no-launch)
+     (read from CMakeCache, never set for a child - wslenv-guard: no-launch)
      (the -O0 dev hybrid) or that lives outside a linux-release /
      windows-mingw build tree. A dev-build fps figure is not a result.
-  2. Contention: another openpete process already running — machine load
+  2. Contention: another openpete process already running - machine load
      has produced 10-20x phantom "regressions" before.
 
 `--allow-untuned` (the caller passes allow=True) skips check 1 only.
@@ -71,7 +71,7 @@ def check(exe, allow_untuned=False):
             txt = open(cache, errors="replace").read()
             if "OPENPETE_SKIP_DECOMP:BOOL=OFF" in txt:
                 _die("exe's build cache has OPENPETE_SKIP_DECOMP=OFF (dev "
-                     "hybrid, -O0 recomp) — not a benchmark binary. Use "
+                     "hybrid, -O0 recomp) - not a benchmark binary. Use "
                      "build/linux-release or windows-mingw, or pass "
                      "--allow-untuned. cache: %s" % cache)
         if not ("linux-release" in exe or "windows-mingw" in exe):
@@ -79,14 +79,14 @@ def check(exe, allow_untuned=False):
                  "numbers from other builds are not comparable. Pass "
                  "--allow-untuned to override." % exe)
     try:
-        # -x (exact comm match) — a -f full-argv match would catch our own
+        # -x (exact comm match) - a -f full-argv match would catch our own
         # wrapper shell, whose command line contains the exe path as text.
         out = subprocess.run(["pgrep", "-ax", "openpete-spyro1"],
                              capture_output=True, text=True).stdout.strip()
     except OSError:
         out = ""
     if out:
-        _die("another openpete process is running — contention invalidates "
+        _die("another openpete process is running - contention invalidates "
              "the run:\n%s" % out)
 
 

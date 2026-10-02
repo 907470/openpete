@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/check_psx_oracle_all.sh — run every game's oracle gate
+# scripts/check_psx_oracle_all.sh - run every game's oracle gate
 # (tests/harness/check_psx_oracle.sh --game SLUG for each games/*/oracle.conf) in
 # parallel and print one table: game, verdict, records, first divergence.
 #

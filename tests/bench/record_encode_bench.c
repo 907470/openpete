@@ -1,4 +1,4 @@
-// tests/bench/record_encode_bench.c — encode-throughput validation for the
+// tests/bench/record_encode_bench.c - encode-throughput validation for the
 // --record pipeline.
 //
 // Drives the SAME encode path record.c uses (swscale RGBA -> yuv420p ->
@@ -10,7 +10,7 @@
 //
 // Synthetic frames carry spatial gradients + a moving block (not flat color,
 // which would compress trivially and overstate fps; not noise, which is
-// worst-case incompressible and understates it) — a rough stand-in for game
+// worst-case incompressible and understates it) - a rough stand-in for game
 // content's compressibility.
 //
 // Usage:

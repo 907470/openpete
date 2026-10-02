@@ -1,13 +1,13 @@
-// games/spyro-1/dist/splash.c — the first-run splash & disc resolver.
+// games/spyro-1/dist/splash.c - the first-run splash & disc resolver.
 //
 // One screen, four jobs:
-//   DROP mode      — library empty, no --disc/--ingest: drag a .cue/.bin
+//   DROP mode      - library empty, no --disc/--ingest: drag a .cue/.bin
 //                    onto the window (SDL_EVENT_DROP_FILE) to ingest it.
-//   SELECTOR mode  — several library entries: pick with ↑/↓ + Enter.
-//   PROGRESS mode  — the ingest copy + first-boot module build report
+//   SELECTOR mode  - several library entries: pick with ↑/↓ + Enter.
+//   PROGRESS mode  - the ingest copy + first-boot module build report
 //                    through spyro1_progress_cb; the splash renders a
 //                    stage line + bar and keeps the window responsive.
-//   In-process continuation — in the default windowed vk mode the game
+//   In-process continuation - in the default windowed vk mode the game
 //                    ADOPTS the splash window (spyro1_splash_detach_window;
 //                    native_render retitles + reuses it) so one OS window
 //                    carries splash and game; other modes close it and
@@ -106,7 +106,7 @@ static int           s_done, s_total;
 static char          s_drop_path[4096];
 static int           s_req_w, s_req_h;  /* --window override (0 = default) */
 
-/* Logical layout space — matches Spyro 1's default game-window size
+/* Logical layout space - matches Spyro 1's default game-window size
  * (game_default_window_w/h, game_layout.h), so the vk-mode window handoff
  * needs no resize. An explicit
  * --window size is honored via s_req_w/h; SDL's logical presentation
@@ -275,7 +275,7 @@ void spyro1_splash_close(void) {
 void* spyro1_splash_detach_window(void) {
     /* In-process continuation, window flavour: tear down everything the
      * splash owns EXCEPT the OS window, and hand that to the caller (the
-     * native vk renderer adopts it — retitle/resize — instead of closing
+     * native vk renderer adopts it - retitle/resize - instead of closing
      * one window and opening another). The SDL_Renderer must die here:
      * its swapchain has to release the window surface before
      * SDL_Vulkan_CreateSurface can claim it. */
@@ -301,7 +301,7 @@ int spyro1_splash_active(void) { return s_win != NULL; }
  * @param total The total units. */
 static void progress_render(const char* stage, int done, int total) {
     /* Mod compiles ride the same screen as the first-boot disc build
-     * but with their own banner — a warm boot that only recompiles a
+     * but with their own banner - a warm boot that only recompiles a
      * changed mod is neither "first-time" nor about the disc. */
     int mods = strncmp(stage, "COMPILING MODS", 14) == 0;
     frame_begin();
@@ -332,10 +332,10 @@ static void progress_render(const char* stage, int done, int total) {
 }
 
 /* Worker-task plumbing (spyro1_splash_run_task below): the blocking
- * pipeline stages run on an SDL thread so a Windows title-bar drag —
- * which traps the pumping thread in the OS modal move loop — can no
+ * pipeline stages run on an SDL thread so a Windows title-bar drag -
+ * which traps the pumping thread in the OS modal move loop - can no
  * longer stall the compile. s_stage/s_done/s_total double as the
- * worker→UI mailbox, guarded by s_task_lock while a task is active. */
+ * worker->UI mailbox, guarded by s_task_lock while a task is active. */
 static SDL_Mutex*   s_task_lock;
 static int          s_task_active;
 static int          s_task_done;
@@ -346,7 +346,7 @@ void spyro1_splash_progress(const char* stage, int done, int total) {
     if (!s_ui_enabled) return;
     if (s_task_active && s_task_lock
         && SDL_GetCurrentThreadID() != s_ui_tid) {
-        /* Worker context: store only — every SDL video call must stay
+        /* Worker context: store only - every SDL video call must stay
          * on the UI thread; the runner loop renders the update. */
         SDL_LockMutex(s_task_lock);
         snprintf(s_stage, sizeof s_stage, "%s", stage);
@@ -359,7 +359,7 @@ void spyro1_splash_progress(const char* stage, int done, int total) {
 
     /* UI-thread path (no worker task): render directly, as before.
      * Lazy-open: the splash appears only when there is a real wait to
-     * show — cached warm boots never flash a window. */
+     * show - cached warm boots never flash a window. */
     if (!s_win && spyro1_splash_open() != 0) return;
     snprintf(s_stage, sizeof s_stage, "%s", stage);
     s_done = done;
@@ -450,7 +450,7 @@ int spyro1_splash_run_task(spyro1_task_fn fn, void* ud) {
         SDL_UnlockMutex(s_task_lock);
 
         /* Lazy-open on the UI thread, only once the worker has something
-         * to show — warm boots with nothing to build still never flash a
+         * to show - warm boots with nothing to build still never flash a
          * window (the task finishes before any progress arrives). */
         if (have && !s_win && !open_failed && spyro1_splash_open() != 0)
             open_failed = 1;            /* no display: task runs on, blind */

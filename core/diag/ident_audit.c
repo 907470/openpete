@@ -1,4 +1,4 @@
-/* ident_audit.c — every-tick sub-tick-spine identity audit.
+/* ident_audit.c - every-tick sub-tick-spine identity audit.
  * See openpete_ident_audit.h for the contract. */
 
 #include "openpete_ident_audit.h"
@@ -77,7 +77,7 @@ void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
     unsigned char *canon = NULL; int cw = 0, ch = 0;
     if (openpete_native_render_capture_rgba(&canon, &cw, &ch) != 0) return;
 
-    /* (2) The sub-tick re-extract phased onto the identity instant — the same
+    /* (2) The sub-tick re-extract phased onto the identity instant - the same
      * call the --screenshot-intermediate-on-frame block makes at alpha 1, the
      * alpha that makes it an identity. The scene bracket puts the
      * canonical scene back afterwards: the re-extract rebuilds s_scene in
@@ -110,7 +110,7 @@ void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
         if (dm) { diff_px++; if (dm > maxch) maxch = dm; }
     }
 
-    /* (4) One line per tick — the harness's only required output. */
+    /* (4) One line per tick - the harness's only required output. */
     printf("[ident-audit f=%u tick=%u px=%u maxch=%d]\n", vbl, tick, diff_px, maxch);
     fflush(stdout);
 

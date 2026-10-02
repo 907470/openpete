@@ -8,7 +8,7 @@
 #
 # The flame's channel is not translation. It leaves Spyro's mouth, and the
 # camera holds Spyro at the same screen point, so the ribbon's centroid crosses
-# 1.4 px over the interval — below the centroid floor, reported and not judged.
+# 1.4 px over the interval - below the centroid floor, reported and not judged.
 # What moves is its extent: the ribbon grows a strand per tick while the breath
 # lasts, 5048 px at 1687 against 5284 px at 1689. The area cell is the one this
 # row measures.

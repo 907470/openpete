@@ -1,11 +1,11 @@
-// games/spyro-1/mods/mod_level_ops.c — Spyro 1 game ops for the mod
+// games/spyro-1/mods/mod_level_ops.c - Spyro 1 game ops for the mod
 // level-slot registry (core/mods/mod_registry.c).
 //
 // Ground truth (loaders.c / overlay_pointers.c / wad.h /
 // initialization.c):
 //   - g_LevelIndex = (id/10 - 1)*6 + id%10 (loaders.c:1396). Retail ids
 //     10..64 fill indices 0..34; ID 65 -> INDEX 35 is the one free
-//     in-bounds slot — every level-indexed table is sized >= 36
+//     in-bounds slot - every level-indexed table is sized >= 36
 //     (D_80077908[36][8], g_VisitedFlags[36], g_LevelNames[37], ...),
 //     so index 35 reads/writes safely (fresh-slot zeros).
 //   - The WAD TOC lives in guest RAM after a ONE-SHOT boot read:
@@ -15,10 +15,10 @@
 //     the stock async loader then streams the donor's REAL disc sectors.
 //   - SetOverlayPointers (0x8005A470) is a switch(g_LevelId) with NO
 //     default: an unknown id silently keeps the PREVIOUS level's overlay
-//     fn-pointers and disc-scratch buffers — the hard breakage. Fixed by
+//     fn-pointers and disc-scratch buffers - the hard breakage. Fixed by
 //     the DONOR ALIAS: temp-set g_LevelId = donor around the call so the
 //     game's own case body runs (byte-exact slot values), then restore.
-//   - LoadLevelScene (0x8001364C) keys behavior on g_LevelId too —
+//   - LoadLevelScene (0x8001364C) keys behavior on g_LevelId too -
 //     id%10==5 marks a FLIGHT level (65%10==5!), plus per-id special
 //     cases. The same donor alias makes the clone hub-faithful
 //     (g_IsFlightLevel stays 0 for a hub donor).
@@ -66,7 +66,7 @@
 #define ADDR_G_HASLVLTRANS 0x800756D0u
 #define ADDR_G_LOADSTAGE   0x80075864u
 #define ADDR_G_DEMOMODE    0x80075714u /* DEMO_MODE_NONE = 0 */
-/* D_8006EF9C — per-level-index XA track (int[48]). The free slot's row
+/* D_8006EF9C - per-level-index XA track (int[48]). The free slot's row
  * (index 35) ships as track 19 = Gnasty's Loot; a claimed slot plays
  * the DONOR's music instead. */
 #define ADDR_LEVEL_TRACK_TAB 0x8006EF9Cu
@@ -86,7 +86,7 @@ static void inherit_donor_music(CPUState* cpu, int donor_index) {
 #define ADDR_SETOVERLAYPTRS 0x8005A470u
 #define ADDR_LOADLEVELSCENE 0x8001364Cu
 
-/* Chain plumbing (mod_chain.c) — same private-decl pattern as
+/* Chain plumbing (mod_chain.c) - same private-decl pattern as
  * core/mods/mod_registry.c. */
 int  openpete_mods_chain_add(uint32_t addr,
                              void (*fn)(CPUState* cpu),
@@ -139,7 +139,7 @@ static int ops_claim_slot(CPUState* cpu, int donor_level_id) {
      * (Artisans) has a nonzero data length once loaded. */
     if (cpu->read_word(entry_addr(0) + 12u) == 0u) return 0;
     int donor_index = (donor_level_id / 10 - 1) * 6 + donor_level_id % 10;
-    /* Seed the slot's TOC entry from the donor's — the loader then
+    /* Seed the slot's TOC entry from the donor's - the loader then
      * streams the donor's real disc sectors for both overlay and data. */
     for (uint32_t w = 0; w < WAD_LEVELENTRY_SZ; w += 4)
         cpu->write_word(entry_addr(SLOT_INDEX) + w,
@@ -171,7 +171,7 @@ static int ops_claim_slot(CPUState* cpu, int donor_level_id) {
 static int ops_enter_level(CPUState* cpu, int level_id) {
     uint32_t gs = cpu->read_word(ADDR_G_GAMESTATE);
     /* Title screen: the --skip-to-level machinery owns this route (same
-     * hand-off the dev levelwarp uses) — it induces the demo-timeout
+     * hand-off the dev levelwarp uses) - it induces the demo-timeout
      * transition at the next Press-Start window WITH the demo-replay
      * downgrade. The cheat-path writes below would instead load the
      * level in attract-demo mode, whose desynced input replay strobes
@@ -180,7 +180,7 @@ static int ops_enter_level(CPUState* cpu, int level_id) {
         game_set_skip_to_level(level_id);
         return 0;
     }
-    /* Otherwise only from live NON-DEMO gameplay — a mid-load
+    /* Otherwise only from live NON-DEMO gameplay - a mid-load
      * re-trigger would corrupt the load state machine, and the attract
      * demo (GS_Playing with g_DemoMode set) would keep its input
      * replay running inside the new level. Refusal leaves the warp
@@ -267,7 +267,7 @@ static int ops_resolve_name(const char* name) {
 /* ── In-game level titles ─────────────────────────────────────────────
  * g_LevelNames (char*[37] @0x8006F7F0) is the single name source: the
  * inventory rows and entry title cards (func_800181AC: A-Z 0-9 !,?.),
- * and the homeworld portal name arc (A-Z only — anything else renders
+ * and the homeworld portal name arc (A-Z only - anything else renders
  * as an apostrophe there). Custom names live in the mods low-park
  * window (real low guest RAM, savestate-carried). */
 #define ADDR_G_LEVELNAMES 0x8006F7F0u
@@ -288,7 +288,7 @@ static int level_index_of(int level_id) {
 /* The count tables as the EXE shipped them, snapshotted before any guest
  * instruction runs. Capturing lazily on first write instead would read
  * whatever is in RAM at that moment, which a savestate load can have
- * replaced with a previously-declared value — the stock row would then be
+ * replaced with a previously-declared value - the stock row would then be
  * lost for the rest of the session. */
 static uint8_t  s_stock_dragons[COUNT_TABLE_ROWS];
 static uint16_t s_stock_gems[COUNT_TABLE_ROWS];
@@ -439,8 +439,8 @@ static int ops_set_level_name(CPUState* cpu, int level_id,
  * every other character spawns the apostrophe glyph. The digit/period
  * glyph MODELS exist (the inventory/title-card renderer uses them), so
  * for names WE installed this post-pass rebrands the apostrophe mobys
- * the stock function just spawned to the right glyph class — matched by
- * MobyLetterProps {m_Parent @+0, m_Index @+6} — and undoes the
+ * the stock function just spawned to the right glyph class - matched by
+ * MobyLetterProps {m_Parent @+0, m_Index @+6} - and undoes the
  * apostrophe's +256 z lift. Stock names never enter the pass. */
 #define ADDR_LEVELTEXT_FN 0x8003C358u
 #define ADDR_G_LEVELMOBYS 0x80075828u
@@ -504,12 +504,12 @@ static void leveltext_hook(CPUState* cpu) {
         name[len++] = c;
     }
     /* Letter-class transplant. Rebranding straight to the HUD digit
-     * classes (260+) KILLS the moby — their update cases in the homeworld
+     * classes (260+) KILLS the moby - their update cases in the homeworld
      * overlays are HUD-only and self-destruct as level mobys (m_State
-     * 0xFE) — and classes outside the letter family miss the letter pose
+     * 0xFE) - and classes outside the letter family miss the letter pose
      * update (the period rendered flat). So: claim letter classes UNUSED
      * by any portal name in this level, transplant the digit/period
-     * glyph MODEL onto their g_Models rows, and rebrand to those — full
+     * glyph MODEL onto their g_Models rows, and rebrand to those - full
      * letter behavior (alive, posed) with the digit's look. Rows and the
      * claim map are level-scoped. */
     static uint32_t s_claim_level = 0xFFFFFFFFu;
@@ -615,7 +615,7 @@ static void leveltext_hook_install(void) {
  * A homeworld portal's preview dome is a copy of the destination's sky
  * BAKED INTO THE HOMEWORLD'S OWN LEVEL DATA (loaders.c: each Portal
  * carries copyBgColor/copySectorCount/copySectors, pointer-patched at
- * load) — replacing the destination level never touches it. While a
+ * load) - replacing the destination level never touches it. While a
  * replace is declared, this driver parses the custom level's own
  * cyclorama component out of the mod's .WAD data segment (LevelHeader
  * m_DataOffset @+8 -> skip 5 self-sizing components -> cyclorama:
@@ -797,7 +797,7 @@ static void replace_transition_sky(CPUState* cpu, int donor_id,
     if (cpu->read_word(ADDR_G_GAMESTATE) != 1u) return; /* transition? */
     if (cpu->read_word(ADDR_G_NEXTLEVELID) != (uint32_t)donor_id) return;
     /* Portal entries only (D_8007576C = entered-portal index, -1 when
-     * the transition came from a menu/cheat fade — those correctly show
+     * the transition came from a menu/cheat fade - those correctly show
      * the PREVIOUS level's sky, not the destination's). */
     if ((int32_t)cpu->read_word(ADDR_ENTERED_PORTAL) < 0) return;
     const sky_park_t* pk = sky_park_get(dir, stem);

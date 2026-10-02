@@ -1,4 +1,4 @@
-# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# modtest.toml - this repo's CI declaration for tools/modtest.py.
 # Engine-repo concern, not part of the mod manifest format.
 #
 # Headless never opens the overlay, so no section body runs here: this

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# scripts/release-container.sh — build and package the Linux release
+# scripts/release-container.sh - build and package the Linux release
 # inside the Debian 11 base.
 #
 # The symbol floor of the shipped binary is set by the machine that
 # compiles it, so the release build is not a dev-box build with different
-# flags — it is a different machine. This wraps that: same sources, same
+# flags - it is a different machine. This wraps that: same sources, same
 # presets, older libc.
 #
 #   scripts/release-container.sh [package-dist args...]

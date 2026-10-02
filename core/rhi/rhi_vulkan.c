@@ -1,5 +1,5 @@
 /*
- * openpete RHI — Vulkan backend.
+ * openpete RHI - Vulkan backend.
  *
  * Brings up an instance/device/swapchain, an offscreen color target the
  * size of the swapchain, and per-frame: render into the offscreen target,
@@ -13,7 +13,7 @@
  */
 
 #include "rhi.h"
-#include "rhi_embedded_shaders.h" /* g_rhi_embedded_shaders[] — generated */
+#include "rhi_embedded_shaders.h" /* g_rhi_embedded_shaders[] - generated */
 
 #include "volk.h"          /* dynamic Vulkan loader; pulls in vulkan.h with
                             * VK_NO_PROTOTYPES. Must precede SDL_vulkan.h. */
@@ -180,7 +180,7 @@ static bool s_device_lost;
 static void rhi_signal_device_lost(const char *where) {
     if (s_device_lost) return;
     s_device_lost = true;
-    RHI_LOG("FATAL: device lost on %s — requesting shutdown\n", where);
+    RHI_LOG("FATAL: device lost on %s - requesting shutdown\n", where);
     if (s_last_gpu_zone)
         RHI_LOG("device-lost suspect: last GPU zone begun = \"%s\" "
                 "(a runaway mod shader TDRs here)\n", s_last_gpu_zone);
@@ -350,7 +350,7 @@ struct rhi_device {
     VkSwapchainKHR swapchain;
     VkFormat       sc_format;
     VkFormat       depth_format;  /* combined depth+stencil: D32_SFLOAT_S8
-                                   * preferred, D24_UNORM_S8 fallback — picked at
+                                   * preferred, D24_UNORM_S8 fallback - picked at
                                    * device selection (pick_depth_format). */
     /* The depth convention per rhi_depth_class, set with the format
      * (depth_convention_init): the compare op a pipeline of the class
@@ -378,7 +378,7 @@ struct rhi_device {
     /* Depth-sampled RT pass (the shadow-decal depth pre-pass): like rt_rp but the
      * DEPTH attachment is STORED and ends in SHADER_READ_ONLY_OPTIMAL too, so a
      * later pass in the same frame can sample the per-pixel depth. (rt_rp's depth
-     * is storeOp=DONT_CARE — sampling it after the pass would read undefined
+     * is storeOp=DONT_CARE - sampling it after the pass would read undefined
      * memory per spec, even where drivers happen to preserve it.) Attachment
      * formats match rt_rp/off_rp, so all existing pipelines are compatible. */
     VkRenderPass   rt_ds_rp;
@@ -433,7 +433,7 @@ struct rhi_device {
     uint32_t frame;        /* 0..RHI_FRAMES_IN_FLIGHT-1 */
     uint32_t image_index;  /* acquired swapchain image this frame */
     bool     needs_recreate;
-    /* Presents dropped because no swapchain image arrived in time — a live
+    /* Presents dropped because no swapchain image arrived in time - a live
      * resize is the expected cause. Counted so a silent frame drop is
      * visible rather than mysterious. */
     unsigned acquire_timeouts;
@@ -467,7 +467,7 @@ struct rhi_device {
     uint64_t present_id_next;      /* id the NEXT present will carry (from 1) */
     uint64_t present_id_submitted; /* id of the last present actually queued  */
     uint64_t present_id_seen;      /* newest id confirmed DISPLAYED           */
-    /* Set when the caller knows the size change was DISCRETE — one the app
+    /* Set when the caller knows the size change was DISCRETE - one the app
      * caused, arriving in a single step. The settle window exists to absorb a
      * drag's per-pixel walk; applying it to a fullscreen toggle just freezes
      * the display for the length of the window. */
@@ -475,7 +475,7 @@ struct rhi_device {
     bool     frame_active;  /* between begin_frame and end_frame */
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
     VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
-                            * or the bound render target) — for rhi_clear_depth */
+                            * or the bound render target) - for rhi_clear_depth */
 
     float clear[4];
 
@@ -499,7 +499,7 @@ struct rhi_device {
     /* Async readback ring for --record (rhi_cycle_readback): one slot per frame
      * in flight. The copy into slot i rides cmd[i] under fence in_flight[i], so
      * begin_frame's existing wait on in_flight[frame] guarantees slot[frame]'s
-     * previous copy has completed by the time that slot is cycled again — the
+     * previous copy has completed by the time that slot is cycled again - the
      * pixels are retrieved with NO added GPU stall (unlike rhi_read_offscreen's
      * vkDeviceWaitIdle), which is what lets recording run at real speed. */
     struct {
@@ -509,7 +509,7 @@ struct rhi_device {
         uint64_t    tag;       /* opaque caller token (the PTS) for this capture */
     } readback_ring[RHI_FRAMES_IN_FLIGHT];
 
-    /* Second async ring for rhi_cycle_rt_readback (the occlusion-grid RT — a
+    /* Second async ring for rhi_cycle_rt_readback (the occlusion-grid RT - a
      * few-KB color image read back every present). Same fence discipline as
      * readback_ring; single client (one RT per device), so no per-RT rings. */
     struct {
@@ -520,15 +520,15 @@ struct rhi_device {
 
     /* GPU per-pass timestamp zones (OPENPETE_GPU_TIMERS=1): one timestamp
      * query pool per frame in flight, 2 queries per zone. Slot i's results are
-     * harvested in rhi_begin_frame right after slot i's fence wait — the same
+     * harvested in rhi_begin_frame right after slot i's fence wait - the same
      * discipline as readback_ring, so retrieval never blocks (results arrive
      * RHI_FRAMES_IN_FLIGHT presents late; fine for a diagnostic). Both zone
-     * timestamps are BOTTOM_OF_PIPE: elapsed = previous work drained → this
+     * timestamps are BOTTOM_OF_PIPE: elapsed = previous work drained -> this
      * zone's work drained, which attributes correctly on a serial queue and
      * degrades to an approximation where the GPU overlaps passes. */
     /* Mod-shader extensions: 2-binding dynamic-UBO set layout (postfx
      * set 3), per-frame-slot descriptor sets for sampling off_image (the
-     * COMPOSITE postfx input — lazily (re)written when off_gen moves, i.e.
+     * COMPOSITE postfx input - lazily (re)written when off_gen moves, i.e.
      * after every offscreen recreate), and the UBO offset alignment. */
     VkDescriptorSetLayout ubo_set_layout;
     VkDescriptorSetLayout ubo1_set_layout;            /* one dynamic binding    */
@@ -693,8 +693,8 @@ struct rhi_pipeline {
     VkPipeline       pipeline;
     VkPipelineLayout layout;
     /* Rebuild sources (rhi_rebuild_pipelines): the desc plus owned copies of
-     * the shader identities — embedded/loose filenames, or in-memory SPIR-V
-     * for mod shaders — so any pipeline can be re-baked with new vertex
+     * the shader identities - embedded/loose filenames, or in-memory SPIR-V
+     * for mod shaders - so any pipeline can be re-baked with new vertex
      * spec-constant values without its owner's involvement. desc.vert_spv /
      * desc.frag_spv point at the owned name copies (NULL when words given). */
     rhi_pipeline_desc desc;
@@ -705,7 +705,7 @@ struct rhi_pipeline {
     uint64_t         swap_serial;  /* s_frame_serial when a rebuild installed the objects */
     bool             swap_idle;    /* that rebuild ran outside a recording frame */
     VkShaderStageFlags pc_stages; /* stage visibility of the push-constant
-                                   * block (FRAGMENT; terrain: VERTEX too) —
+                                   * block (FRAGMENT; terrain: VERTEX too) -
                                    * rhi_push_constants must match the range */
 };
 
@@ -867,7 +867,7 @@ static bool create_instance(rhi_device *dev, const char *app_name)
         _putenv_s("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1");
 #endif
 
-    /* Windowed: SDL supplies the platform surface extensions. Headless: none —
+    /* Windowed: SDL supplies the platform surface extensions. Headless: none -
      * a surfaceless instance needs no surface extension at all. */
     Uint32 sdl_n = 0;
     char const *const *sdl_ext = NULL;
@@ -1134,7 +1134,7 @@ static bool pick_physical_and_device(rhi_device *dev)
     };
     /* Optional features (enable only what's supported; nothing here is
      * load-bearing): depthBiasClamp lets rhi_set_depth_bias bound the decal
-     * pull — without it the clamp param is forced to 0 (spec
+     * pull - without it the clamp param is forced to 0 (spec
      * VUID-vkCmdSetDepthBias-depthBiasClamp-00790). */
     VkPhysicalDeviceFeatures supported;
     vkGetPhysicalDeviceFeatures(dev->phys, &supported);
@@ -1155,7 +1155,7 @@ static bool pick_physical_and_device(rhi_device *dev)
     /* Optional display-timing pair. present_id tags each present with a
      * monotonically increasing id; present_wait blocks until the present
      * carrying that id has actually been DISPLAYED. Together they are the only
-     * portable way to learn a flip time — every timestamp the engine takes
+     * portable way to learn a flip time - every timestamp the engine takes
      * itself is a SUBMIT time, and under FIFO the display quantises submits to
      * its own refresh, so submit-side spacing can look even while the flips do
      * not (and the reverse). Enabled only when both are present; nothing here
@@ -1177,7 +1177,7 @@ static bool pick_physical_and_device(rhi_device *dev)
 
     /* OFF unless asked for, because enabling it is NOT free: chaining a
      * present id onto every present measured 34.5 / 31.0 / 33.4 late ticks per
-     * 1000 against 11.7 / 12.9 / 15.2 with the pair declined — same leg, same
+     * 1000 against 11.7 / 12.9 / 15.2 with the pair declined - same leg, same
      * binary, complete separation, and the enabled arm fails the standing
      * gate's threshold of 15. An extension that changes what the driver does
      * with the present queue has to be priced before it is switched on for
@@ -1554,11 +1554,11 @@ static bool create_render_pass(rhi_device *dev)
         },
         { /* external -> subpass (WAR): off_image is a SINGLE shared target, so
            * the next frame's color write must wait for the PREVIOUS frame's
-           * transfer reads of it — the blit AND the async --record copy
-           * (rhi_cycle_readback) — to finish, or an in-flight frame would
+           * transfer reads of it - the blit AND the async --record copy
+           * (rhi_cycle_readback) - to finish, or an in-flight frame would
            * overwrite pixels still being read back. The async ring does not
            * drain the device between frames, so the dependency is explicit
-           * and recordings stay tear-free. WAR ⇒ execution dependency. */
+           * and recordings stay tear-free. WAR => execution dependency. */
             .srcSubpass = VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
             .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1582,11 +1582,11 @@ static bool create_render_pass(rhi_device *dev)
 
     /* LOAD variant (SCENE postfx point): identical attachments so it
      * shares off_fb, but the color attachment LOADs its existing contents
-     * (initialLayout COLOR_ATTACHMENT — the caller barriers off_image
-     * TRANSFER_SRC → COLOR before begin) instead of clearing, so HUD draws
+     * (initialLayout COLOR_ATTACHMENT - the caller barriers off_image
+     * TRANSFER_SRC -> COLOR before begin) instead of clearing, so HUD draws
      * land ON TOP of a scene that a SCENE-point chain already post-
      * processed. Depth still CLEARs (HUD self-clears depth anyway; the
-     * scene pass discarded it). Only the external→subpass color-acquire
+     * scene pass discarded it). Only the external->subpass color-acquire
      * dependency differs (LOAD reads the attachment), so keep the same
      * dep set; drop the WAR dep's relevance by keeping it (harmless). */
     color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -1871,7 +1871,7 @@ static bool create_offscreen(rhi_device *dev)
         RHI_LOG("offscreen vkCreateFramebuffer failed\n");
         return false;
     }
-    /* New image/view ⇒ the per-slot off_sampled_set descriptors are stale;
+    /* New image/view => the per-slot off_sampled_set descriptors are stale;
      * rhi_bind_offscreen_tex rewrites a slot's set when its gen lags. */
     dev->off_gen++;
     return true;
@@ -1970,7 +1970,7 @@ static bool create_gpu_timers(rhi_device *dev)
         free(q);
     }
     if (valid_bits == 0 || props.limits.timestampPeriod <= 0.0f) {
-        RHI_LOG("OPENPETE_GPU_TIMERS: no timestamp support on the graphics queue — disabled\n");
+        RHI_LOG("OPENPETE_GPU_TIMERS: no timestamp support on the graphics queue - disabled\n");
         return true;
     }
     dev->gpu_ts_period = props.limits.timestampPeriod;
@@ -2030,7 +2030,7 @@ int rhi_gpu_timers_on(const rhi_device *dev)
 }
 
 /* s_last_gpu_zone (declared beside rhi_signal_device_lost, which prints
- * it): the device-lost suspect — populated only when timers are on. */
+ * it): the device-lost suspect - populated only when timers are on. */
 void rhi_gpu_zone_begin(rhi_device *dev, const char *name)
 {
     if (!dev || !dev->gpu_timers || !dev->frame_active) return;
@@ -2168,7 +2168,7 @@ static bool create_descriptor_infra(rhi_device *dev)
         RHI_LOG("vkCreateSampler failed\n"); return false;
     }
     /* LINEAR variant for high-res replacement art (rhi_texture_set_filter_linear)
-     * — same addressing, filtered mag/min. */
+     * - same addressing, filtered mag/min. */
     si.magFilter = VK_FILTER_LINEAR; si.minFilter = VK_FILTER_LINEAR;
     if (vkCreateSampler(dev->device, &si, NULL, &dev->linear_sampler) != VK_SUCCESS) {
         RHI_LOG("vkCreateSampler (linear) failed\n"); return false;
@@ -2798,7 +2798,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     /* Dynamically load the Vulkan loader (libvulkan.so.1 / vulkan-1.dll);
      * no loader import library is linked on any platform. */
     if (volkInitialize() != VK_SUCCESS) {
-        RHI_LOG("volkInitialize failed — no Vulkan loader found\n");
+        RHI_LOG("volkInitialize failed - no Vulkan loader found\n");
         free(dev);
         return NULL;
     }
@@ -2818,7 +2818,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
         if (!create_swapchain(dev)) goto fail;
     } else {
         /* No swapchain: the offscreen image still needs an extent, the
-         * requested size. sc_count stays 0 → no render_done semaphores, no
+         * requested size. sc_count stays 0 -> no render_done semaphores, no
          * present. */
         dev->sc_format = VK_FORMAT_UNDEFINED;
         dev->sc_extent = (VkExtent2D){ hl_w ? hl_w : 1u, hl_h ? hl_h : 1u };
@@ -2977,7 +2977,7 @@ uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
 
 /* Report any present-path phase that blocks long enough to threaten the sim.
  * Under the thread split the presenting thread is the sim thread, so a stall
- * here is a dropped tick — and "which call blocked" is otherwise invisible. */
+ * here is a dropped tick - and "which call blocked" is otherwise invisible. */
 #define RHI_STALL_REPORT_NS (12ull * 1000ull * 1000ull)
 
 /* Block time per present-path phase, accumulated for the pacing log. The
@@ -3156,7 +3156,7 @@ static bool ensure_swapchain(rhi_device *dev)
     if (dev->needs_recreate && !dev->headless) {
         /* Rate-limit. A live resize reports OUT_OF_DATE on every frame, and
          * each recreate is a vkDeviceWaitIdle plus a full swapchain teardown
-         * and rebuild — doing that per frame stalls the sim for as long as the
+         * and rebuild - doing that per frame stalls the sim for as long as the
          * user drags the edge. Retry on an interval and skip the present in
          * between; the last attempt before the size settles is the one that
          * sticks. */
@@ -3299,7 +3299,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
         rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
     }
 
-    /* This slot's previous submission has fully retired — its timestamp
+    /* This slot's previous submission has fully retired - its timestamp
      * queries are ready for a block-free harvest. */
     if (dev->gpu_timers) gpu_timers_harvest(dev);
 
@@ -3313,7 +3313,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
         dev->acquire_backoff_until_ns = 0;
     }
 
-    /* Headless: no swapchain image to acquire — the command buffer records
+    /* Headless: no swapchain image to acquire - the command buffer records
      * directly into the offscreen / render-target images. */
     if (!dev->headless) {
         /* Bounded, not UINT64_MAX. Under FIFO this normally returns within a
@@ -3348,7 +3348,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     dev->frame_active = true;
     dev->draw_calls = 0;
     if (dev->gpu_timers) {
-        /* Reset must be recorded outside a render pass — here, before any. */
+        /* Reset must be recorded outside a render pass - here, before any. */
         vkCmdResetQueryPool(cb, dev->gpu_qp[dev->frame], 0, RHI_GPU_ZONES_MAX * 2);
         dev->gpu_zone_sp = 0;   /* fresh nesting stack for this frame */
     }
@@ -3395,7 +3395,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
     vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
     /* Belt-only: a defined value if a depth_bias pipeline is somehow bound
-     * first in the pass. NOT a guarantee — binding any static-state pipeline
+     * first in the pass. NOT a guarantee - binding any static-state pipeline
      * invalidates dynamic depth bias, so callers must set it after every
      * depth_bias pipeline bind (see rhi.h). */
     vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
@@ -3877,7 +3877,7 @@ int rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
      * instant return -- keeps the wait that matters on its event path. */
     /* Confirm ids in order, and keep going while they come back INSTANTLY.
      *
-     * Waiting on the newest present is useless — under FIFO it is one to three
+     * Waiting on the newest present is useless - under FIFO it is one to three
      * refreshes from the screen, past any single sleep budget, so it times out
      * nearly every time. Waiting on the oldest unconfirmed one is right, but
      * one confirmation per call is slower than presents are queued (measured
@@ -3886,7 +3886,7 @@ int rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
      *
      * Draining fixes both: an id that has already flipped returns with no
      * blocking, costing a driver call, and the loop stops at the first id that
-     * has NOT — which is the next real flip, and the only one whose return
+     * has NOT - which is the next real flip, and the only one whose return
      * time means anything. The drain is bounded so a long backlog cannot turn
      * one measurement into unbounded work on the sim thread. */
     /* Small: every call costs a driver round-trip even when the id is already
@@ -4046,7 +4046,7 @@ static rhi_buffer *create_host_buffer(rhi_device *dev, size_t bytes,
                           base | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
         RHI_LOG("readback buffer (%zu bytes): %s\n", bytes,
                 mt != UINT32_MAX ? "HOST_CACHED (fast CPU read)"
-                                 : "no HOST_CACHED type — falling back to "
+                                 : "no HOST_CACHED type - falling back to "
                                    "write-combined (slow CPU read)");
     }
     if (mt == UINT32_MAX)
@@ -4411,7 +4411,7 @@ fail:
 rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
 {
     /* R16_UINT: one uint per PSX VRAM pixel, sampled via texelFetch (the PSX
-     * shader does its own integer indexing — no GPU filtering/normalization). */
+     * shader does its own integer indexing - no GPU filtering/normalization). */
     return create_sampled_image(dev, width, height, VK_FORMAT_R16_UINT, 2);
 }
 
@@ -4424,7 +4424,7 @@ rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height)
 
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
 {
-    /* R8G8B8A8_UNORM: bytes laid out R,G,B,A — matches a GL_RGBA readback;
+    /* R8G8B8A8_UNORM: bytes laid out R,G,B,A - matches a GL_RGBA readback;
      * sampled as a normal sampler2D (e.g. another renderer's frame for A/B). */
     return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4);
 }
@@ -4461,7 +4461,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
 {
     if (depth_sampleable) {
         /* SAMPLED_IMAGE is not in the spec's REQUIRED feature set for the
-         * combined depth+stencil formats — verify before building a pipeline
+         * combined depth+stencil formats - verify before building a pipeline
          * around sampling it (universally supported in practice; the caller
          * falls back to a plain depth-tested pipe if this ever trips). */
         VkFormatProperties fp;
@@ -4604,7 +4604,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
                   0, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     if (depth_sampleable) {
-        /* Same for the sampleable DEPTH image (both aspects — a combined
+        /* Same for the sampleable DEPTH image (both aspects - a combined
          * depth+stencil image transitions as a whole without the
          * separateDepthStencilLayouts feature). */
         VkImageMemoryBarrier db = {
@@ -4705,7 +4705,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
     vkCmdSetViewport(dev->cmd[dev->frame], 0, 1, &vp);
     vkCmdSetScissor(dev->cmd[dev->frame], 0, 1, &scissor);
     /* Belt-only: a defined value if a depth_bias pipeline is somehow bound
-     * first in the pass. NOT a guarantee — binding any static-state pipeline
+     * first in the pass. NOT a guarantee - binding any static-state pipeline
      * invalidates dynamic depth bias, so callers must set it after every
      * depth_bias pipeline bind (see rhi.h). */
     vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
@@ -5045,7 +5045,7 @@ void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
 }
 
 /* Sub-rect uploads from TIGHT per-rect source buffers (each rects[i].pixels
- * is w*h*4 bytes) — the atlas-append path. Same staging/in-frame semantics
+ * is w*h*4 bytes) - the atlas-append path. Same staging/in-frame semantics
  * as update_image; payloads are packed into one staging slot and copied in
  * one barrier pair. Rects that don't fit the remaining slot are dropped
  * (the caller re-queues them next frame). */
@@ -5160,7 +5160,7 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
 
     /* The offscreen target is in TRANSFER_SRC_OPTIMAL after a rendered frame
      * (rhi_end_offscreen transitions it, the blit reads it as src). Wait for the
-     * render to finish before copying — without a submission dependency the copy
+     * render to finish before copying - without a submission dependency the copy
      * could race the render's writes to off_image (queue submission order does not
      * guarantee completion order). Keep the device-wait for that correctness; the
      * big per-frame --record cost was the staging buffer allocated+freed EVERY
@@ -5185,7 +5185,7 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
     one_shot_end(dev, cb);
 
     /* The swapchain/offscreen format is B8G8R8A8 (see the format pick); the
-     * caller wants R,G,B,A. rb is dev->readback_buf — persistent; freed in
+     * caller wants R,G,B,A. rb is dev->readback_buf - persistent; freed in
      * rhi_destroy. */
     readback_swizzle(dev, rb->mapped, out, w, h);
     return true;
@@ -5598,9 +5598,9 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
 
 /* Shared pipeline builder: both public entry points store their shader
  * sources on the rhi_pipeline and land in pipeline_compile, which (re)creates
- * the Vulkan objects from those stored sources — the same path
+ * the Vulkan objects from those stored sources - the same path
  * rhi_rebuild_pipelines uses to re-bake live pipelines after a spec-constant
- * change. desc->postfx selects the mod-postfx layout — no vertex input
+ * change. desc->postfx selects the mod-postfx layout - no vertex input
  * (fullscreen triangle from gl_VertexIndex), sets 0..2 = one sampler
  * each, set 3 = the dynamic-UBO pair. */
 /* Specialization constant 0 (`DEPTH_REVERSED`): the pipeline's depth class's
@@ -5611,7 +5611,7 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
  * every stage that decodes gl_FragCoord.z back to view-Z (hd_tex_cutout.frag,
  * quad_key.frag, psx_scene_key.frag, terrain_shade.glsl, shadow_decal.frag,
  * shadow_decal_tex.frag, openpete_psx_material.glsl, openpete_psx_decal.glsl)
- * — the decode must follow the encode, which is why the entry is attached to
+ * - the decode must follow the encode, which is why the entry is attached to
  * BOTH stages below. A stage that declares no spec constant ignores it. */
 bool rhi_depth_reversed(const rhi_device *dev)
 {
@@ -5620,7 +5620,7 @@ bool rhi_depth_reversed(const rhi_device *dev)
 
 /* Vertex-stage specialization constant 1 (`AFFINE_UV`): PSX-affine UV/colour
  * interpolation (--texture-mapping affine). Like DEPTH_AFFINE it is captured
- * at pipeline creation — set it before the pipelines are built, or follow a
+ * at pipeline creation - set it before the pipelines are built, or follow a
  * live change with rhi_rebuild_pipelines to re-bake the existing ones.
  * Declared by psx_scene.vert, quad.vert, terrain.vert, terrain_key.vert and
  * moby_rank.vert: the key and rank stages have to select the same texel
@@ -5651,7 +5651,7 @@ void rhi_depth_report(const rhi_device *dev)
 void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
 
 /* Fragment-stage specialization constant 2 (`NOTEX`): untextured lighting
- * view — the textured scene fragments replace the sampled texel colour with
+ * view - the textured scene fragments replace the sampled texel colour with
  * the modulation-neutral grey (128/255), so the output is the raw gouraud
  * vertex colour while transparency cutouts keep their real texel shapes.
  * Debug view; live toggle via rhi_rebuild_pipelines like the others. */
@@ -5709,7 +5709,7 @@ static VkBool32 pipeline_notex(const rhi_pipeline_desc *desc)
 
 /* Fragment-stage specialization constant 3 (`MOBY_TRUESCOPE`): scopes the
  * key-contest's moby og-key yields by the covering fragment's own TRUE
- * view-Z. Default 1 — og's pull+push OT compounding reads as
+ * view-Z. Default 1 - og's pull+push OT compounding reads as
  * moby-through-terrain punch-through from ordinary gameplay angles too;
  * 0 restores og's painter for A/B. Live toggle via rhi_rebuild_pipelines
  * like the others. */
@@ -5726,7 +5726,7 @@ void rhi_set_slot_contest(int on) { s_fs_slot_contest = on ? VK_TRUE : VK_FALSE;
 
 /* Terrain sector-mesh layout (rhi_terrain_vertex, 64 B): integer-packed
  * retained world-space vertices; see rhi.h for the field/bit contract.
- * SINT/UINT formats — terrain.vert consumes ivec/uvec, no normalization. */
+ * SINT/UINT formats - terrain.vert consumes ivec/uvec, no normalization. */
 #define TERRAIN_VERTEX_ATTRS \
     { .location = 0, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, px) }, \
     { .location = 1, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UINT,     .offset = offsetof(rhi_terrain_vertex, uvf_u) }, \
@@ -5739,7 +5739,7 @@ void rhi_set_slot_contest(int on) { s_fs_slot_contest = on ? VK_TRUE : VK_FALSE;
     { .location = 8, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c2z) }
 static const VkVertexInputAttributeDescription k_terrain_attrs[9] = { TERRAIN_VERTEX_ATTRS };
 /* terrain_anim: cur verts at binding 0 + the prev-tick twin at binding 1
- * (a parallel array, same vertex indexing — see rhi_terrain_prev). */
+ * (a parallel array, same vertex indexing - see rhi_terrain_prev). */
 static const VkVertexInputBindingDescription k_terrain_anim_binds[2] = {
     { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
       .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
@@ -5755,7 +5755,7 @@ static const VkVertexInputAttributeDescription k_terrain_anim_attrs[14] = {
     { .location = 13, .binding = 1, .format = VK_FORMAT_R32G32_UINT,       .offset = offsetof(rhi_terrain_prev, rgb_far) },
 };
 /* terrain_near: cur verts at binding 0 + the emitted-tri member context
- * at binding 1 (a parallel array — see rhi_terrain_nearctx). */
+ * at binding 1 (a parallel array - see rhi_terrain_nearctx). */
 static const VkVertexInputBindingDescription k_terrain_near_binds[2] = {
     { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
       .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
@@ -5771,7 +5771,7 @@ static const VkVertexInputAttributeDescription k_terrain_near_attrs[13] = {
 };
 #undef TERRAIN_VERTEX_ATTRS
 /* terrain_cells: one INSTANCE-rate binding of cell records (rhi_terrain_cell;
- * see rhi.h), no per-vertex binding — the vertex stage derives every cell
+ * see rhi.h), no per-vertex binding - the vertex stage derives every cell
  * vertex from its record and gl_VertexIndex. Locations 0-2 carry the corners
  * in rhi_terrain_vertex's c0x..c3z packing, 3 the face flags + record info,
  * 4 the near colours, 5-12 the eight cell tiles; the anim records append the
@@ -5846,14 +5846,14 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. terrain: set 0 =
  * VRAM sampler, set 3 = the UBO pair (globals + sector params); sets 1/2 are
  * declared for layout continuity but never bound/used, and terrain keeps its
- * own two blocks at 5/6 — set 3 binding 1 is the mod's, and a set views one
+ * own two blocks at 5/6 - set 3 binding 1 is the mod's, and a set views one
  * buffer per binding. set1_vram_depth replaces set 1 with the two-sampler
  * layout; uniform_set2 replaces set 2 with the single dynamic-UBO layout.
  *
  * material: the mod layout PLUS the engine's occlusion inputs, which a
  * material's fragment stage runs before the mod's colour maths. They sit
  * ABOVE the UBO pair (sets 4..6) rather than replacing sets 1/2 so a
- * material's own uniform block stays at set 3 binding 1 — the one part of
+ * material's own uniform block stays at set 3 binding 1 - the one part of
  * the layout mod source actually writes. */
 /** @brief Return the larger of two unsigned 32-bit values.
  *
@@ -5966,7 +5966,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
     /* The vertex STRUCT keeps all fields (stable buffer layout), but a pipeline
-     * only needs to declare the attributes its shaders consume — an attribute
+     * only needs to declare the attributes its shaders consume - an attribute
      * declared here yet not read by a shader merely warns "not consumed", so one
      * superset attribute list serves every pipeline. Location 3 (the moby paint
      * rank/ordinal pair) is read by the scene vertex stages' same-moby painter
@@ -6076,7 +6076,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     /* Stencil roles: MARK writes 1 where the fragment passes the depth
      * test (depth-fail keeps 0, so nearer world geometry punches the mask
      * out); TEST draws only where stencil==1 and never writes it. Reference is
-     * a fixed 1 — per-object isolation is rhi_clear_stencil between groups. */
+     * a fixed 1 - per-object isolation is rhi_clear_stencil between groups. */
     if (desc->stencil == RHI_STENCIL_MARK) {
         VkStencilOpState sop = {
             .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_REPLACE,
@@ -6095,7 +6095,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         dss.front = sop; dss.back = sop;
     } else if (desc->stencil == RHI_STENCIL_TEST_ZERO) {
         /* Pass where stencil != 1, i.e. ==0 (only 0/1 are ever written): the
-         * hole-fill role — paint only pixels the MARK pass left uncovered. */
+         * hole-fill role - paint only pixels the MARK pass left uncovered. */
         VkStencilOpState sop = {
             .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_KEEP,
             .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = VK_COMPARE_OP_NOT_EQUAL,
@@ -6358,7 +6358,7 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
 
     /* Second view of the same buffer through the single-binding layout, so a
      * block can also be bound at a set index outside the contract set. Its
-     * absence is not fatal — rhi_ubo_bind_at simply becomes a no-op. */
+     * absence is not fatal - rhi_ubo_bind_at simply becomes a no-op. */
     if (desc_alloc(dev, dev->ubo1_set_layout, &u->set1, &u->set1_pool)) {
         VkWriteDescriptorSet w1 = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set1,
@@ -6660,7 +6660,7 @@ void rhi_bind_vertex_buffer2(rhi_device *dev, rhi_buffer *buf, rhi_buffer *prev)
 void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex)
 {
     /* Rewrite the texture's (view, sampler) descriptor with the LINEAR
-     * sampler. Only safe while the set is not in flight — call at load time,
+     * sampler. Only safe while the set is not in flight - call at load time,
      * before the texture's first frame. */
     VkDescriptorImageInfo ii = {
         .sampler = dev->linear_sampler,
@@ -6843,7 +6843,7 @@ void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slop
     /* Only consumed by pipelines created with desc.depth_bias (the dynamic
      * state is per-pipeline); setting it with another pipeline bound is legal
      * and inert. Parameter order matches vkCmdSetDepthBias. Without the
-     * depthBiasClamp feature the clamp param MUST be 0.0 (spec 00790) — the
+     * depthBiasClamp feature the clamp param MUST be 0.0 (spec 00790) - the
      * pull is then bounded only by the slope term; acceptable degradation. */
     if (!dev->has_depth_bias_clamp) clamp = 0.0f;
     /* The caller's sign convention is forward: negative pulls toward the

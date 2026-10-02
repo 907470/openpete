@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# freecam-corpus.sh — capture the native -vk debug-freecam presentation corpus.
+# freecam-corpus.sh - capture the native -vk debug-freecam presentation corpus.
 #
 # A second corpus alongside the bk2 set (presentation-corpus.sh): a set of
 # (level, freecam pose) tuples, each a place a rendering bug was once chased.
@@ -51,7 +51,7 @@ set -u
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# for a machine-driven run - nobody is holding the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set here rather than at
 # each invocation because this script builds its argument list in more than one
 # place, and a flag appended to the wrong one is a silent miss.
@@ -182,7 +182,7 @@ while IFS='|' read -r name pose start launch; do
 done < "$MANIFEST"
 cj_wait || fail=1
 
-if [[ $ran -eq 0 ]]; then echo "[freecam-corpus] $GAME: no rows matched '$FILTER' — 0 rows"; exit 0; fi
+if [[ $ran -eq 0 ]]; then echo "[freecam-corpus] $GAME: no rows matched '$FILTER' - 0 rows"; exit 0; fi
 if [[ $fail -ne 0 ]]; then echo "[freecam-corpus] FAIL: missing captures"; exit 1; fi
 echo "[freecam-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images in $OUTDIR across $ran pose(s)"
 exit 0

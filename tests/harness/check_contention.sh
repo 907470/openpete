@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# check_contention.sh — the presentation golden's own legs at full parallelism,
+# check_contention.sh - the presentation golden's own legs at full parallelism,
 # repeated, as a measurement of capture survival under load.
 #
 # The corpus capture forks one game process per leg and caps them at
 # CORPUS_JOBS (default 3/8 of nproc, see scripts/corpus-jobs.sh). Legs have been
 # lost mid-run on a loaded machine: the process disappears, its tiles are
-# never written, and the only trace is a MISSING row in the diff — a symptom
+# never written, and the only trace is a MISSING row in the diff - a symptom
 # that reads like a corpus-shape error rather than like a killed process, and
 # that nothing measures on purpose. This harness makes it measurable: it runs
 # the golden's own legs at CORPUS_JOBS=nproc, the worst case the corpus ever
@@ -104,7 +104,7 @@ done
 
 if (( skipped == ROUNDS )); then
     echo "[contention] game=$GAME rounds=$ROUNDS: every round reported missing" \
-         "prereqs — SKIP"
+         "prereqs - SKIP"
     exit 64
 fi
 echo "[contention] game=$GAME rounds=$ROUNDS jobs=$JOBS killed=$killed" \

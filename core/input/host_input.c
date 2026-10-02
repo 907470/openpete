@@ -27,7 +27,7 @@
  * Bits, axes and the publish instant have to travel together. Read
  * separately they can belong to different samples, and the damage is not
  * symmetric: a tick can be credited with a timestamp from a sample whose
- * BYTES it never consumed, which under-reports input delay — the flattering
+ * BYTES it never consumed, which under-reports input delay - the flattering
  * direction, on the one quantity the thread split is known to have made
  * worse. Worse, the exposure window is one pump period wide and sits exactly
  * at the latch boundary, which is precisely the feature an input-window
@@ -53,7 +53,7 @@ static _Atomic unsigned    s_snap_seq;    /* even = stable, odd = publishing */
 /* Bounded so a producer preempted mid-publish cannot hang the sim thread. The
  * publish itself is a dozen bytes, so a reader normally converges on the first
  * or second try; what does NOT converge quickly is the case where the OS
- * descheduled the producer between the odd and even counts — a ~10 ns window,
+ * descheduled the producer between the odd and even counts - a ~10 ns window,
  * but a preemption landing in it lasts milliseconds. Spinning through the
  * whole bound then takes about a microsecond and gives up on a sample that
  * was moments from being whole, so the reader yields once it is clear this is
@@ -75,7 +75,7 @@ static unsigned                s_latched_seq;
  * The decode itself needs no test: host-decoded bits come from
  * PsyX_Pad_DecodeP1, the same merge the non-override path runs, so the two are
  * identical by construction rather than by comparison. What DOES need proving
- * is the plumbing around it — that the value published this iteration, and not
+ * is the plumbing around it - that the value published this iteration, and not
  * a stale or mis-ordered one, is what reaches the PSX pad buffer, and that the
  * higher-priority override writers still win when they claim the channel.
  *
@@ -97,7 +97,7 @@ static int synth_on(void)
         const char* e = getenv("OPENPETE_INPUT_SYNTH");
         s_synth = (e && *e && *e != '0') ? 1 : 0;
         if (s_synth)
-            OPL_INFO_F("input", "SYNTHETIC input source active — diagnostic only");
+            OPL_INFO_F("input", "SYNTHETIC input source active - diagnostic only");
     }
     return s_synth;
 }
@@ -137,7 +137,7 @@ static void synth_pad(unsigned frame, unsigned short* bits, unsigned char axes[4
     }
 }
 
-/* Timed pulse source — OPENPETE_INPUT_PULSE=<count>.
+/* Timed pulse source - OPENPETE_INPUT_PULSE=<count>.
  *
  * The frame-indexed synth source above cannot answer an input-PHASE question:
  * it changes on a frame boundary, so every edge lands at the same point in the
@@ -148,7 +148,7 @@ static void synth_pad(unsigned frame, unsigned short* bits, unsigned char axes[4
  * It is in-process, just upstream of the latch: it validates the log plumbing
  * and the analyzer's attribution arithmetic, and NOTHING about the OS. It
  * cannot see the SDL pump, event delivery, focus, or a main thread parked in a
- * modal loop — during such a stall it publishes nothing and its own schedule
+ * modal loop - during such a stall it publishes nothing and its own schedule
  * slides with it, so it would absolve exactly the hazard the thread split
  * introduced. Only an external OS-level injector
  * (scripts/pacing/inject_input.py) can see that. Accordingly
@@ -200,7 +200,7 @@ static int pulse_on(void)
         if (s_pulse_n)
             OPL_INFO_F("input",
                        "timed pulse source: %d pulse(s), bit 0x%04X, hold %d us, "
-                       "gap %d us — diagnostic, in-process only",
+                       "gap %d us - diagnostic, in-process only",
                        s_pulse_n, s_pulse_bit,
                        s_pulse_hold_ns / 1000, s_pulse_gap_ns / 1000);
     }
@@ -290,7 +290,7 @@ int openpete_host_input_legacy(void)
  * usable headless but also means it never exercises the real thing: hotplug
  * events reaching PsyCross's controller handlers through the host's pump, and
  * PsyCross's gamepad decode reading actual SDL axes and buttons. Attaching an
- * SDL virtual joystick drives that whole path for real — SDL emits a genuine
+ * SDL virtual joystick drives that whole path for real - SDL emits a genuine
  * SDL_EVENT_GAMEPAD_ADDED, the pump routes it, PsyCross opens the pad, and
  * decode reads it like any other controller. Diagnostic only. */
 /* Virtual pads. Index 0 is the original single pad the rumble recorder
@@ -306,7 +306,7 @@ static int s_vpad_state = -1;   /* -1 unresolved, 0 off, else the pad count */
 /* ---- rumble recorder (the vibration oracle) -----------------------------
  *
  * Vibration has no pixels and no gameplay-state bytes, so the golden, oracle
- * and determinism gates are all structurally blind to it — reading them harder
+ * and determinism gates are all structurally blind to it - reading them harder
  * proves nothing about whether a motor moved. The virtual pad closes that: a
  * virtual joystick's descriptor carries a Rumble callback, so attaching one
  * turns the whole chain (guest write -> registration -> per-tick sample ->
@@ -314,7 +314,7 @@ static int s_vpad_state = -1;   /* -1 unresolved, 0 off, else the pad count */
  *
  * What the recorder must NOT do is let a zero mean two things. A run that
  * records no motor commands looks identical whether the fix is broken or the
- * recorder was never wired up — and the pre-fix baseline is legitimately zero,
+ * recorder was never wired up - and the pre-fix baseline is legitimately zero,
  * because SDL skips the driver entirely when the requested pair matches the
  * current one and a fresh joystick starts at {0,0} (SDL_joystick.c), so the
  * old code's single boot command of {0,0} never reached a callback at all.
@@ -467,16 +467,16 @@ static void vgamepad_maybe_attach(void)
         if (v == 0) id = vid;
     }
     /* Attaching is not the same as being usable: the pad only reaches decode
-     * if SDL exposes it as a *gamepad* (it needs a mapping — on some platforms
+     * if SDL exposes it as a *gamepad* (it needs a mapping - on some platforms
      * a virtual joystick never gets one), and if PsyCross assigns it a slot,
      * which a real controller already occupying slot 0 will prevent. Say so
      * here, or a run that decodes nothing looks like a code failure. */
     if (!SDL_IsGamepad(id))
         OPL_WARN_F("input",
                    "virtual pad (id=%u) attached but SDL does not expose it as a "
-                   "gamepad here — it will not reach decode", (unsigned)id);
+                   "gamepad here - it will not reach decode", (unsigned)id);
     else
-        OPL_INFO_F("input", "VIRTUAL gamepad attached (id=%u) — diagnostic only",
+        OPL_INFO_F("input", "VIRTUAL gamepad attached (id=%u) - diagnostic only",
                    (unsigned)id);
 
     for (int v = 0; v < OPENPETE_PAD_SLOTS; v++)
@@ -510,7 +510,7 @@ static void vpad_selfprobe(int v, SDL_JoystickID id)
 
     if (!SDL_GetAtomicInt(&s_vpad_rumble[v].probe_seen))
         OPL_ERROR_F("input",
-                    "virtual pad %d rumble recorder is NOT live — the probe "
+                    "virtual pad %d rumble recorder is NOT live - the probe "
                     "pair never reached the callback, so a zero motor count "
                     "from this run proves nothing", v);
     else
@@ -614,7 +614,7 @@ static SDL_Gamepad* lock_filter_gamepad(SDL_Gamepad* gp)
  * inline SDL_GAMECONTROLLERCONFIG mappings sit above every file, because SDL
  * gives those PRIORITY_USER while every file load is PRIORITY_API. Among
  * files, SDL overwrites an existing GUID when the incoming priority is equal
- * or higher — so for files, load order alone is the precedence:
+ * or higher - so for files, load order alone is the precedence:
  *
  *   1  SDL's compiled-in database
  *   2  the file named by SDL_HINT_GAMECONTROLLERCONFIG_FILE, if the user
@@ -766,7 +766,7 @@ static void map_log_one(SDL_JoystickID id)
         OPL_INFO_F("input", "pad %s mapping: %.240s", guid, mapping);
         SDL_free(mapping);
     } else {
-        OPL_WARN_F("input", "pad %s \"%s\" has NO mapping — add a line for "
+        OPL_WARN_F("input", "pad %s \"%s\" has NO mapping - add a line for "
                             "this GUID to the user database",
                    guid, name ? name : "?");
     }
@@ -837,11 +837,11 @@ void openpete_host_input_load_mappings(const char* cli_path)
     if (cli_path && *cli_path) map_load_file(cli_path, "--controller-db");
 
     /* Steam exports this for its virtual pad, and SDL ranks inline mappings
-     * above every file — so "my file is ignored" has exactly one explanation
+     * above every file - so "my file is ignored" has exactly one explanation
      * that no amount of file logging would reveal. */
     const char* inline_cfg = SDL_GetHint(SDL_HINT_GAMECONTROLLERCONFIG);
     if (inline_cfg && *inline_cfg)
-        OPL_INFO_F("input", "mappings: SDL_GAMECONTROLLERCONFIG is set — its "
+        OPL_INFO_F("input", "mappings: SDL_GAMECONTROLLERCONFIG is set - its "
                             "inline mappings outrank every file above");
 
     map_log_pads();
@@ -869,7 +869,7 @@ static SDL_Gamepad* host_first_gamepad(void)
  *
  * SDL_GetGamepadFromID resolves only devices somebody has already OPENED as a
  * gamepad, and PsyCross opens at most its own two. A third and fourth
- * controller are therefore invisible to enumeration until opened here — the
+ * controller are therefore invisible to enumeration until opened here - the
  * slots stay empty with the devices sitting right there. openpete owns these
  * handles because it owns those slots; PsyCross's own are never closed here. */
 #define HOST_OWNED_PADS 8
@@ -1306,7 +1306,7 @@ static void keymap_decode_slot(int slot, unsigned short* io_bits,
         io_axes[kAxes[i].idx] = (unsigned char)((v / 256) + 128);
     }
 
-    /* Digital left stick, overriding the analog read only while held — the
+    /* Digital left stick, overriding the analog read only while held - the
      * keyboard-as-stick rule the merge applies for player 1. */
     {
         static const struct { int off; int idx; unsigned char val; } kStick[] = {
@@ -1364,8 +1364,8 @@ void openpete_host_input_sample(bool alt_held)
      * The Alt gate deliberately does NOT extend here. It exists so the Enter
      * of Alt+Enter cannot reach the game as Start, which is a fact about
      * player 1's keyboard; these slots are decoded from their own gamepads.
-     * Gating them would drop every other player's pad — recorded as
-     * disconnected for those VBLs — because player 1 reached for a window
+     * Gating them would drop every other player's pad - recorded as
+     * disconnected for those VBLs - because player 1 reached for a window
      * shortcut. */
     openpete_pad_snapshot_t extra[OPENPETE_PAD_SLOTS - 1];
     memset(extra, 0, sizeof(extra));
@@ -1401,7 +1401,7 @@ void openpete_host_input_sample(bool alt_held)
     const int64_t now_ns = (int64_t)op_now();
     const unsigned seq = pad_publish(bits, axes, extra, now_ns);
 
-    /* Pad edges go to the pacing log from HERE — the producer side — because
+    /* Pad edges go to the pacing log from HERE - the producer side - because
      * the quantity of interest is when the press was seen relative to the
      * tick that consumed it. Logging it at the latch would record the
      * consumer's own cadence and hide exactly the phase being measured. */
@@ -1425,7 +1425,7 @@ void openpete_host_input_seed_neutral(void)
      *
      * Without one, the consumer's first latch finds nothing to stamp, leaves
      * the override inactive, and PsyX_Pad_InternalPadUpdates falls through to
-     * its LIVE path — which calls SDL_PumpEvents (PsyX_pad.cpp). Under the
+     * its LIVE path - which calls SDL_PumpEvents (PsyX_pad.cpp). Under the
      * thread split that consumer is the worker, so this is an SDL event pump
      * from a thread that does not own video: a hard crash on Windows.
      *
@@ -1443,7 +1443,7 @@ void openpete_host_input_latch(bool claimed)
          * latch record rather than leaving the previous one standing is the
          * whole point: a stale publish instant quoted against this tick's
          * exec_start reads as ever-growing input staleness on a channel the
-         * tick never touched — a plausible number about nothing, which on a
+         * tick never touched - a plausible number about nothing, which on a
          * fully-claimed run (bk2) is every number the log reports. */
         s_latched_ns  = 0;
         s_latched_seq = 0;
@@ -1549,14 +1549,14 @@ void openpete_host_input_parity_check(bool claimed)
     /* Reference: what the tick actually LATCHED.
      *
      * The obvious reference is a fresh live decode, and that is what this used
-     * to do — but a live decode reads SDL keyboard and gamepad state, and this
+     * to do - but a live decode reads SDL keyboard and gamepad state, and this
      * runs on the thread that consumes input, not the one that pumps it. Under
      * the thread split that is an SDL read from the non-owning thread: the
      * exact thing the producer/consumer seam exists to forbid, performed by
      * the instrument meant to verify it.
      *
      * The latched sample answers the same question without touching SDL. What
-     * is under test is the PLUMBING — that the value this iteration latched is
+     * is under test is the PLUMBING - that the value this iteration latched is
      * the one that reached the PSX pad buffer, and not a stale sample, a
      * mis-ordered latch, an override writer leaking past its claim, or the
      * analog centre drifting (the override channel and the live decode both
@@ -1570,13 +1570,13 @@ void openpete_host_input_parity_check(bool claimed)
 
     /* Staleness probe: the producer must have published something new since
      * the last latch. Under the split it republishes on its own cadence, so
-     * a repeat means the pump stopped — which is a different finding from a
+     * a repeat means the pump stopped - which is a different finding from a
      * value mismatch and is counted separately, or a parked pump would be
      * reported as a plumbing failure. */
     if (s_latched_seq == s_parity_last_seq) {
         if (s_parity_stale < 16)
             OPL_WARN_F("input",
-                       "parity STALE: latched sample seq %u again — the "
+                       "parity STALE: latched sample seq %u again - the "
                        "producer published nothing new since the last tick",
                        s_latched_seq);
         s_parity_stale++;
@@ -1617,7 +1617,7 @@ int openpete_host_input_parity_report(void)
 
     if (s_parity_engaged == 0) {
         OPL_WARN_F("input",
-                   "parity VACUOUS: %u host-owned frames, 0 carried input — "
+                   "parity VACUOUS: %u host-owned frames, 0 carried input - "
                    "nothing was pressed, so this run proves nothing",
                    s_parity_frames);
         return -1;

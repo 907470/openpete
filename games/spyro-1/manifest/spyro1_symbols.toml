@@ -14,7 +14,7 @@
 #
 # NOT here (deliberately kept local): the PSX hardware scratchpad 0x1F800000,
 # the openpete-invented relocation regions (no_lod.c 0x80300000/0x80600000),
-# and non-address sentinels (PORTAL_RGB_RESOLVE, FPS_TINT) — none are PSX
+# and non-address sentinels (PORTAL_RGB_RESOLVE, FPS_TINT) - none are PSX
 # symbols, so the drift-check can't validate them.
 
 # ---- gameplay structs / pointers (decomp names in the manifest) ----
@@ -92,18 +92,18 @@ note = "g_LevelId; ==63 (Gnasty) -> width>>2 + R<->G swap"
 [[symbol]]
 name = "G_DB"
 addr = 0x80076EE0
-note = "g_DB[2] — DB double-buffer pair, sizeof(DB)=0x84; m_DrawEnv @+0x00 (PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B)"
+note = "g_DB[2] - DB double-buffer pair, sizeof(DB)=0x84; m_DrawEnv @+0x00 (PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B)"
 
 [[symbol]]
 name = "G_CUR_DB"
 addr = 0x80075888
-note = "g_CurDB — DB* of the pass under construction; GamestateDraw flips it at the TOP of every draw pass, so at host-present time it names the pass the live scene came from"
+note = "g_CurDB - DB* of the pass under construction; GamestateDraw flips it at the TOP of every draw pass, so at host-present time it names the pass the live scene came from"
 
 # ---- shared scratch / cursors ----
 [[symbol]]
 name = "G_SCRATCH"
 addr = 0x8006FCF4
-note = "general render scratch — manifest g_SonyImage, named only for its first use (Sony/universal logos); really a shared scratch buffer (moby recs +0x1600, seg matrices +0x1900). was D_SONY/DSONY/D_SCRATCH"
+note = "general render scratch - manifest g_SonyImage, named only for its first use (Sony/universal logos); really a shared scratch buffer (moby recs +0x1600, seg matrices +0x1900). was D_SONY/DSONY/D_SCRATCH"
 
 [[symbol]]
 name = "POLYBUF_CURSOR"
@@ -194,12 +194,12 @@ note = "dragon-rescue star particle table"
 [[symbol]]
 name = "G_HUDMOBYS"
 addr = 0x80075710
-note = "g_HudMobys — bump-down pointer to the per-frame HUD moby pool (double-buffered with the polybuf halves)"
+note = "g_HudMobys - bump-down pointer to the per-frame HUD moby pool (double-buffered with the polybuf halves)"
 
 [[symbol]]
 name = "G_CUTSCENE"
 addr = 0x80075680
-note = "g_CutsceneLayout — pointer to the active cutscene state: +0x00 clock t, +0x08 end t, +0x0C actor count, +0x10 camera record table (24B full-precision), +0x14.. per-actor packed 10:10:10 waypoint paths (func_8002BFE0/func_8002C0EC). Actors are g_LevelMobys[0..count), classes 1..count; path type byte = *(g_Models[cls]+56)+12 (16/21/32/else -> waypoint divisor 8/6/4/2)"
+note = "g_CutsceneLayout - pointer to the active cutscene state: +0x00 clock t, +0x08 end t, +0x0C actor count, +0x10 camera record table (24B full-precision), +0x14.. per-actor packed 10:10:10 waypoint paths (func_8002BFE0/func_8002C0EC). Actors are g_LevelMobys[0..count), classes 1..count; path type byte = *(g_Models[cls]+56)+12 (16/21/32/else -> waypoint divisor 8/6/4/2)"
 
 [[symbol]]
 name = "D_GLOWS"
@@ -280,7 +280,7 @@ note = "gamestate exit tick"
 name = "G_HUD_ICONS"
 base = 0x80077FA8            # g_Hud
 offset = 0x44
-note = "g_Hud.m_Mobys[12] — static 3D HUD icons (stride 0x58)"
+note = "g_Hud.m_Mobys[12] - static 3D HUD icons (stride 0x58)"
 
 [[symbol]]
 name = "G_SKIP_LOWPOLY_WORLD"
@@ -290,12 +290,12 @@ note = "g_SkipLowPolyWorld; r_moby.s parks it in ZSF3 (@8001F7F8/80020F94), >0 g
 [[symbol]]
 name = "D_POLYBUF_CURSOR"
 addr = 0x800757B0
-note = "D_800757B0 — the per-frame primitive allocator's cursor word"
+note = "D_800757B0 - the per-frame primitive allocator's cursor word"
 
 [[symbol]]
 name = "D_POLYBUF_END"
 addr = 0x800756FC
-note = "D_800756FC — the primitive allocator's end word; the HUD moby pool bumps down from it"
+note = "D_800756FC - the primitive allocator's end word; the HUD moby pool bumps down from it"
 
 # ---- function addresses (validated against symbols.toml, not globals.toml) ----
 [[symbol]]
@@ -314,93 +314,93 @@ note = "gamestate-exit fn (hi half)"
 name = "F_WORLD_DRAW"
 addr = 0x800258F0
 kind = "function"
-note = "func_800258F0 — the world renderer; the terrain feeder's hook site"
+note = "func_800258F0 - the world renderer; the terrain feeder's hook site"
 
 [[symbol]]
 name = "F_SKY_DRAW"
 addr = 0x8004EBA8
 kind = "function"
-note = "func_8004EBA8 — the dome renderer; the cyclorama feeder's hook site"
+note = "func_8004EBA8 - the dome renderer; the cyclorama feeder's hook site"
 
 [[symbol]]
 name = "D_HQ_UV_ORI_TABLE"
 addr = 0x8006D058
-note = "D_8006D058 — the HQ tiledef UV-orientation offset table: 8-byte entries of per-corner (du | dv<<8) deltas indexed by tiledef word1 >> 25 (func_800276A0 block_80027EA8)"
+note = "D_8006D058 - the HQ tiledef UV-orientation offset table: 8-byte entries of per-corner (du | dv<<8) deltas indexed by tiledef word1 >> 25 (func_800276A0 block_80027EA8)"
 
 [[symbol]]
 name = "D_HQ_TRI4_NODES"
 addr = 0x8006D0F8
-note = "D_8006D0F8 — the tier-4 triangle drain's 16 sub-triangles: node ids A,B,C in bytes 3,2,1, cell selector bits 2-5, UV orientation bits 0-1 (r_environment.s 0x80029E18)"
+note = "D_8006D0F8 - the tier-4 triangle drain's 16 sub-triangles: node ids A,B,C in bytes 3,2,1, cell selector bits 2-5, UV orientation bits 0-1 (r_environment.s 0x80029E18)"
 
 [[symbol]]
 name = "D_HQ_TRI4_CELLS"
 addr = 0x8006D388
-note = "D_8006D388 — the tier-4 triangle drain's cell byte offsets (cell * 8) by selector + UV rotation (r_environment.s 0x80029E4C-0x80029E58)"
+note = "D_8006D388 - the tier-4 triangle drain's cell byte offsets (cell * 8) by selector + UV rotation (r_environment.s 0x80029E4C-0x80029E58)"
 
 [[symbol]]
 name = "D_HQ_TRI_UV"
 addr = 0x8006D3C8
-note = "D_8006D3C8 — the triangle drains' UV offset table: 4 orientation blocks of 128 bytes, 8-byte entries indexed by tiledef word1 >> 25 & 0x78 (r_environment.s 0x80029E88-0x80029ECC)"
+note = "D_8006D3C8 - the triangle drains' UV offset table: 4 orientation blocks of 128 bytes, 8-byte entries indexed by tiledef word1 >> 25 & 0x78 (r_environment.s 0x80029E88-0x80029ECC)"
 
 [[symbol]]
 name = "D_HQ_TRI2_NODES"
 addr = 0x8006D0E8
-note = "D_8006D0E8 — the tier-2 triangle drain's 4 sub-triangles: node ids 0-5 (A, AB, B, AC, BC, C) in bytes 3,2,1, tile selector bits 2-3, UV orientation bits 0-1 (r_environment.s 0x800283DC-0x80028434)"
+note = "D_8006D0E8 - the tier-2 triangle drain's 4 sub-triangles: node ids 0-5 (A, AB, B, AC, BC, C) in bytes 3,2,1, tile selector bits 2-3, UV orientation bits 0-1 (r_environment.s 0x800283DC-0x80028434)"
 
 [[symbol]]
 name = "D_HQ_TRI2_TILES"
 addr = 0x8006D378
-note = "D_8006D378 — the tier-2 triangle drain's quadrant tile byte offsets (tile * 8 past the record's entry 0) by selector + UV rotation (r_environment.s 0x80028408-0x8002843C)"
+note = "D_8006D378 - the tier-2 triangle drain's quadrant tile byte offsets (tile * 8 past the record's entry 0) by selector + UV rotation (r_environment.s 0x80028408-0x8002843C)"
 
 [[symbol]]
 name = "F_MOBY_SHADOWS"
 addr = 0x80059F8C
 kind = "function"
-note = "func_80059F8C (asm/renderers/r_shadows.s:364) — the moby drop-shadow renderer; the shared shadow feeder's hook site"
+note = "func_80059F8C (asm/renderers/r_shadows.s:364) - the moby drop-shadow renderer; the shared shadow feeder's hook site"
 
 [[symbol]]
 name = "F_PLAYER_DRAW"
 addr = 0x80023AC4
 kind = "function"
-note = "func_80023AC4 (asm/renderers/r_pete.s) — the player-avatar draw; the shared player feeder's hook site"
+note = "func_80023AC4 (asm/renderers/r_pete.s) - the player-avatar draw; the shared player feeder's hook site"
 
 [[symbol]]
 name = "F_MOBY_DRAW_REGULAR"
 addr = 0x8001F798
 kind = "function"
-note = "func_8001F798 (asm/renderers/r_moby.s) — the regular moby material draw; the shared moby feeder's first hook site"
+note = "func_8001F798 (asm/renderers/r_moby.s) - the regular moby material draw; the shared moby feeder's first hook site"
 
 [[symbol]]
 name = "F_MOBY_DRAW_SPECULAR"
 addr = 0x80020F34
 kind = "function"
-note = "func_80020F34 — the specular moby material draw over the same cull-record queue"
+note = "func_80020F34 - the specular moby material draw over the same cull-record queue"
 
 [[symbol]]
 name = "F_MOBY_DRAW_SHADED"
 addr = 0x80022A2C
 kind = "function"
-note = "func_80022A2C — the shaded draw: the second model kind, walked from its own flat Moby* list at g_SonyImage+0x2400"
+note = "func_80022A2C - the shaded draw: the second model kind, walked from its own flat Moby* list at g_SonyImage+0x2400"
 
 [[symbol]]
 name = "D_WORLDOT"
 addr = 0x80075820
-note = "g_WorldOT — the pointer to the ordering-table bucket array DrawOTag resolves; the same-moby paint-rank source walks it"
+note = "g_WorldOT - the pointer to the ordering-table bucket array DrawOTag resolves; the same-moby paint-rank source walks it"
 
 [[symbol]]
 name = "F_UI_OT_INSERT"
 addr = 0x800168DC
 kind = "function"
-note = "func_800168DC (asm/order_table.s:111-127) — links a0 into the 2D ordering table at g_HudOT; every 2D emitter calls it and the 3D draws inline their own insert, so it is the 2D feeder's chokepoint hook site"
+note = "func_800168DC (asm/order_table.s:111-127) - links a0 into the 2D ordering table at g_HudOT; every 2D emitter calls it and the 3D draws inline their own insert, so it is the 2D feeder's chokepoint hook site"
 
 [[symbol]]
 name = "F_UI_FADE"
 addr = 0x800190D4
 kind = "function"
-note = "func_800190D4(abrMode, r, g, b) — the full-screen fade emitter: a DR_MODE carrying the ABR alone, then a full-screen 0x2A POLY_F4; the 2D feeder's fade hook site"
+note = "func_800190D4(abrMode, r, g, b) - the full-screen fade emitter: a DR_MODE carrying the ABR alone, then a full-screen 0x2A POLY_F4; the 2D feeder's fade hook site"
 
 [[symbol]]
 name = "F_FLAME_DRAW"
 addr = 0x80058D64
 kind = "function"
-note = "func_80058D64 (asm/renderers/r_flame.s) — the fire-breath ribbon emitter; the shared flame feeder's hook site"
+note = "func_80058D64 (asm/renderers/r_flame.s) - the fire-breath ribbon emitter; the shared flame feeder's hook site"

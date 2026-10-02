@@ -1,31 +1,31 @@
-// core/mods/mod_loader.c — discover, build, and load mods.
+// core/mods/mod_loader.c - discover, build, and load mods.
 //
 // The mod layout:
 //   mods/<id>/mod.toml     manifest ([mod] id/version/api)
 //   mods/<id>/src/*.c      mod source, compiled on load
 //   mods/enabled.txt       one mod id per line; order IS priority
-//                          (later lines override earlier — S3AIR
+//                          (later lines override earlier - S3AIR
 //                          semantics). Missing file = all discovered
 //                          mods, lexicographic order. --mods (env
 //                          OPENPETE_MODS) overrides the file with a
 //                          comma-separated id list, same semantics.
 //
 // Mods compile against <exe>/sdk/ (openpete_mod_api.h, psx_runtime.h,
-// openpete_sdk_symbols.h — staged there by the build) into
+// openpete_sdk_symbols.h - staged there by the build) into
 // mods/<id>/.build/<id>.so, rebuilt when the CONTENT-HASH build key
 // (api version + compiler identity + SDK headers + sources) differs
-// from the stamped one — mtime churn never forces a rebuild. Mods may
+// from the stamped one - mtime churn never forces a rebuild. Mods may
 // also ship as <id>.zip (unpacked to .unpacked/<id>/, content-stamped;
 // "folder or zip, identical"). The shared object is dlopen'd and its
 // openpete_mod_entry(api, self) is called to register overrides.
 //
 // Failure posture: a mod that fails to parse/build/load is disabled with
-// an error log (compile log at mods/<id>/.build/compile.log) — mods
+// an error log (compile log at mods/<id>/.build/compile.log) - mods
 // never brick a launch. Zero mods loaded leaves the engine byte-
 // identical to a modless build (openpete_mods_active == 0).
 //
 // Platform (openpete-mod-compile-on-boot): every platform compiles
-// src/ mods on load — Windows resolves the bundled llvm-mingw the
+// src/ mods on load - Windows resolves the bundled llvm-mingw the
 // distribution package ships (recomp/tools/llvm-mingw), falling back to
 // a prebuilt mods/<id>/.build/<id>.dll only when no compiler exists. A
 // mod with NO src/ but a prebuilt .build/<id>.{so,dll} is a binary-only
@@ -122,11 +122,11 @@ static void* mod_dlsym(void* h, const char* name) { return dlsym(h, name); }
 static const char* mod_dlerror(void) { return dlerror(); }
 #endif
 
-#include <SDL3/SDL.h> /* SDL_GetBasePath — shipped sdk/ + toolchain */
+#include <SDL3/SDL.h> /* SDL_GetBasePath - shipped sdk/ + toolchain */
 #include "openpete_paths.h" /* mods/ lives with the writable user data */
 
-#include "openpete_psx.h"   /* openpete_psx_get_ram — api->guest() */
-#include "openpete_state.h" /* savestate slots — engine services */
+#include "openpete_psx.h"   /* openpete_psx_get_ram - api->guest() */
+#include "openpete_state.h" /* savestate slots - engine services */
 
 #include "../../third_party/tomlc99/toml.h"
 
@@ -148,7 +148,7 @@ typedef struct {
     char purpose[64]; /* human text for conflict messages / mod menu */
 } mod_binding_t;
 
-/* One [[config]] schema row from mod.toml — what the engine renders in
+/* One [[config]] schema row from mod.toml - what the engine renders in
  * the Mods panel for this mod. Values themselves live in config.toml. */
 /* Rows a [[config]] table declares, and the choices a string row offers.
  * Both are the mod author's content, so both grow; the constants are the
@@ -170,7 +170,7 @@ typedef struct {
     double  def_d;     /* default: float */
     char    def_s[64]; /* default: string */
 } mod_cfg_row_t;
-/* One [[material]] row from mod.toml — the zero-C material tier. Holds
+/* One [[material]] row from mod.toml - the zero-C material tier. Holds
  * exactly what `material_register` takes, in manifest spelling, so a mod
  * that only wants "reshade this channel with this frag" needs no C at
  * all. Rows register BEFORE openpete_mod_entry, so a mixed mod's C code
@@ -200,7 +200,7 @@ static int mod_channel_from_name(const char* s) {
 }
 
 typedef struct {
-    char  frag[128];   /* "shaders/<name>.frag" — relative to the mod dir */
+    char  frag[128];   /* "shaders/<name>.frag" - relative to the mod dir */
     char  vert[128];   /* optional "shaders/<name>.vert" */
     int   channel;     /* OP_CHAN_*; -1 = any */
     int   ident, moby_class, texture, level;   /* -1 = any */
@@ -247,9 +247,9 @@ struct openpete_mod {
     int   raw_warned;  /* raw-tier warning issued (once per mod) */
     char  state_decl;  /* manifest state: 0 undeclared, 'n' none,
                         * 'r' rebuildable (host state re-derives from
-                        * guest RAM) — gates savestate/rewind arming */
+                        * guest RAM) - gates savestate/rewind arming */
     char  ra_decl;     /* manifest runahead: 0 undeclared, 'p' pure,
-                        * 'h' host-fx — gates speculative re-execution */
+                        * 'h' host-fx - gates speculative re-execution */
     int   sim_mutative; /* [mod] sim_mutative: -1 undeclared (the engine
                         * derives it), 0 the mod never writes guest RAM,
                         * 1 it does. Drives the save modset tag. */
@@ -286,10 +286,10 @@ struct openpete_mod {
                           * it instead of compiling */
     char  cfg_key[65];   /* config.toml content hash (hot-reload watch;
                           * a config edit re-enters entry without a
-                          * recompile — the cached object is reused) */
+                          * recompile - the cached object is reused) */
     char  shader_key[65];/* <mod>/shaders/ content hash (hot-reload watch;
                           * a shader-only edit reloads against the cached
-                          * C object — the per-shader .spv stamps decide
+                          * C object - the per-shader .spv stamps decide
                           * what actually recompiles) */
     int   has_src;       /* 0 = binary-only/assets-only: never compiled,
                           * skipped by the hot-reload watch */
@@ -315,7 +315,7 @@ struct openpete_mod {
                           * overlay's top-level always pass on every
                           * present instead of inside the mod's node */
     /* ui_status line block: accumulates within a tick, lazily reset on
-     * the mod's first call in a NEW tick — a one-shot line printed at
+     * the mod's first call in a NEW tick - a one-shot line printed at
      * entry or on a level event persists until repainted. */
     char     status[24][120];
     int      status_n;
@@ -496,26 +496,26 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
     const openpete_mod_abi_t* d =
         (const openpete_mod_abi_t*)mod_dlsym(dl, "openpete_mod_abi");
     if (!d || d->magic != OPENPETE_MOD_ABI_MAGIC) {
-        OPL_ERROR_F("mods", "%s: %s carries no ABI descriptor — it was "
+        OPL_ERROR_F("mods", "%s: %s carries no ABI descriptor - it was "
                     "built without the SDK's openpete_mod_abi.c (add "
                     "<sdk>/openpete_mod_abi.c to the compile line, or let "
-                    "the engine compile the mod from src/) — disabled",
+                    "the engine compile the mod from src/) - disabled",
                     id, path);
         return -1;
     }
     if (d->api_version < MOD_ABI_LAYOUT_FLOOR) {
         OPL_ERROR_F("mods", "%s: %s was built for api %u, but the api "
                     "struct layout changed at api %u (entries before it "
-                    "moved); rebuild the mod against this SDK — disabled",
+                    "moved); rebuild the mod against this SDK - disabled",
                     id, path, d->api_version, MOD_ABI_LAYOUT_FLOOR);
         return -1;
     }
     if (d->api_version > OPENPETE_MOD_API_VERSION ||
         d->api_size > (uint32_t)sizeof(openpete_mod_api_t)) {
         OPL_ERROR_F("mods", "%s: %s was built for api %u (struct %u bytes) "
-                    "but this engine provides api %u (%u bytes) — a newer "
+                    "but this engine provides api %u (%u bytes) - a newer "
                     "object cannot load into an older engine; update "
-                    "openpete or rebuild the mod against this SDK — "
+                    "openpete or rebuild the mod against this SDK - "
                     "disabled", id, path, d->api_version, d->api_size,
                     OPENPETE_MOD_API_VERSION,
                     (unsigned)sizeof(openpete_mod_api_t));
@@ -574,7 +574,7 @@ static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
     if (d->magic != 0x4F505549u || d->abi != OPENPETE_MOD_UI_ABI ||
         !d->body) {
         OPL_ERROR_F("mods", "%s: UI section ABI mismatch (mod built for "
-                    "abi %u, engine has %u) — section refused; the mod "
+                    "abi %u, engine has %u) - section refused; the mod "
                     "itself still runs. Rebuild the mod against the "
                     "current SDK.", mod->id,
                     d->magic == 0x4F505549u ? d->abi : 0u,
@@ -660,7 +660,7 @@ static const openpete_sdk_symbol_t* sym_find(const char* name) {
 static int purity_violation(const char* what) {
     if (!openpete_mods_in_present) return 0;
     OPL_ERROR_F("mods", "%s refused inside a present hook (render-pure "
-                "context) — move sim-affecting work to a tick hook", what);
+                "context) - move sim-affecting work to a tick hook", what);
     return 1;
 }
 
@@ -672,8 +672,8 @@ static int purity_violation(const char* what) {
  * left wondering. True only when native is the sole display (pure vk, windowed);
  * under psycross / ab / diff / headless the PSX path still rasterizes.
  *
- * Scope: the *visual* no-op only. Freezing these can also drop the render→
- * gameplay channel writes (m_WasDrawn etc.) and desync — a separate, sharper
+ * Scope: the *visual* no-op only. Freezing these can also drop the render->
+ * gameplay channel writes (m_WasDrawn etc.) and desync - a separate, sharper
  * concern this advisory deliberately does not cover. */
 static int s_native_hides_psx = 0;   /* set in openpete_mods_init from opts */
 
@@ -742,7 +742,7 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
     if (rc == 0) {
         OPL_INFO_F(self->log_tag, "override registered at 0x%08X", addr);
         /* Raw addresses are region-pinned and drift across decomp
-         * progress — warn from the actual use, once per mod (the old
+         * progress - warn from the actual use, once per mod (the old
          * manifest tier="raw" declaration said the same thing but could
          * lie in either direction). */
         if (!self->raw_warned) {
@@ -780,10 +780,10 @@ static int api_override_name(openpete_mod_t* self, const char* name,
     }
     if (sym->legacy) {
         /* Decomp promotion contract: historical raw names resolve
-         * forever, but say so — the stable name is the durable one. */
+         * forever, but say so - the stable name is the durable one. */
         OPL_WARN_F(self->log_tag,
                    "\"%s\" is a legacy raw alias (function has been "
-                   "renamed) — resolved to 0x%08X; update the mod to the "
+                   "renamed) - resolved to 0x%08X; update the mod to the "
                    "stable name", name, sym->addr);
     }
     int rc = openpete_mods_chain_add(sym->addr, fn, self->id);
@@ -814,7 +814,7 @@ static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
 }
 
 /* Region-table inverse (psx_runtime_internal.h; declared here for the same
- * reason call_by_address is — this file does not pull the runner header in). */
+ * reason call_by_address is - this file does not pull the runner header in). */
 int psx_runtime_region_host_to_vaddr(const void* host, uint32_t* out_vaddr);
 
 /** @brief Translate a guest vaddr to a host pointer for a mod.
@@ -848,7 +848,7 @@ static void* api_guest(uint32_t vaddr) {
         if (!s_warned) {
             s_warned = 1;
             OPL_WARN_F("mods", "guest(0x%08X): the kernel area is the "
-                       "stream-handle range — no mod data may live below "
+                       "stream-handle range - no mod data may live below "
                        "0x10000; refused (NULL)", vaddr);
         }
         return NULL;
@@ -856,7 +856,7 @@ static void* api_guest(uint32_t vaddr) {
     return openpete_psx_to_host_ptr(vaddr);
 }
 
-/* MIPS kseg0 base — architectural, not a game address (the purity check
+/* MIPS kseg0 base - architectural, not a game address (the purity check
  * permits #define'd constants). */
 #define OP_KSEG0_BASE 0x80000000u
 #define OP_KSEG0_SCRATCH 0x9F800000u /* scratchpad's KSEG0 spelling */
@@ -915,7 +915,7 @@ static int api_register_present_hook(openpete_mod_t* self,
 /* Per-mod UI section (api v3): the callback is stored on the mod and
  * invoked by the dev overlay's Mods panel while the mod is enabled.
  * Registration is entry/tick context (the callback itself runs under
- * the render-purity guard — see openpete_mods_ui_draw). */
+ * the render-purity guard - see openpete_mods_ui_draw). */
 
 /* Canonical tick counter mirror for the ui_status lazy reset; advanced
  * by openpete_mods_tick_boundary. */
@@ -1053,7 +1053,7 @@ static int api_host_key_down(const char* key_name) {
     SDL_Scancode sc = SDL_GetScancodeFromName(key_name);
     if (sc == SDL_SCANCODE_UNKNOWN) return 0;
     /* Snapshot, not live SDL: mods call this from their tick, which runs on
-     * the game fiber — not necessarily the thread that pumps events and so
+     * the game fiber - not necessarily the thread that pumps events and so
      * refreshes SDL's keyboard array. */
     return openpete_host_input_key_down((int)sc);
 }
@@ -1117,17 +1117,17 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     if (need_compile) {
         if (!mods_sdk_present(s_sdk_dir)) {
             mods_sdk_missing_notice(s_sdk_dir);
-            OPL_ERROR_F("mods", "%s: reload needs the SDK — keeping the "
+            OPL_ERROR_F("mods", "%s: reload needs the SDK - keeping the "
                         "running object", mod->id);
             return;
         }
 #ifdef _WIN32
         /* The boot-loaded base DLL is file-locked on Windows: compile
-         * straight to the unique .hotN name and skip the stamp — the
+         * straight to the unique .hotN name and skip the stamp - the
          * base DLL goes stale, so the next boot recompiles it once and
          * re-stamps. */
         if (mod_compile(mod->dir, mod->id, s_sdk_dir, key, hot_path, 0) != 0) {
-            OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
+            OPL_ERROR_F("mods", "%s: reload compile failed - keeping the "
                         "running object", mod->id);
             return;
         }
@@ -1136,7 +1136,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
 #else
         static char so_path[MOD_PATH_MAX];
         if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0) {
-            OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
+            OPL_ERROR_F("mods", "%s: reload compile failed - keeping the "
                         "running object", mod->id);
             return;
         }
@@ -1152,7 +1152,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         if (!in || !outf) {
             if (in) fclose(in);
             if (outf) fclose(outf);
-            OPL_ERROR_F("mods", "%s: reload stage copy failed — keeping "
+            OPL_ERROR_F("mods", "%s: reload stage copy failed - keeping "
                         "the running object", mod->id);
             return;
         }
@@ -1165,7 +1165,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     }
     void* dl = mod_dlopen(hot_path);
     if (!dl) {
-        OPL_ERROR_F("mods", "%s: reload dlopen failed: %s — keeping the "
+        OPL_ERROR_F("mods", "%s: reload dlopen failed: %s - keeping the "
                     "running object", mod->id, mod_dlerror());
         return;
     }
@@ -1174,13 +1174,13 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
     if (!entry) {
         OPL_ERROR_F("mods", "%s: reload object has no openpete_mod_entry "
-                    "— keeping the running object", mod->id);
+                    "- keeping the running object", mod->id);
         return;
     }
 
     /* A loadable object exists: now retire the running one. From here a
-     * failure leaves the mod INERT — the old registrations are gone and
-     * the new entry never completed — which the log says in as many
+     * failure leaves the mod INERT - the old registrations are gone and
+     * the new entry never completed - which the log says in as many
      * words. */
     mod_strip_registrations(mod);
     /* Drop every manifest row in place, keeping the storage: the rows
@@ -1191,7 +1191,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     char dir_copy[MOD_PATH_MAX];
     snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
     if (parse_manifest(dir_copy, mod) != 0) {
-        OPL_ERROR_F("mods", "%s: reload manifest parse failed — mod is "
+        OPL_ERROR_F("mods", "%s: reload manifest parse failed - mod is "
                     "now INERT until the next successful reload", mod->id);
         return;
     }
@@ -1201,7 +1201,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
     openpete_mods_arena_entry_begin(mod->id); /* replay its allocations */
     if (entry(&s_api, mod) != 0) {
-        OPL_ERROR_F("mods", "%s: reload entry failed — mod is now INERT",
+        OPL_ERROR_F("mods", "%s: reload entry failed - mod is now INERT",
                     mod->id);
         mod_strip_registrations(mod);
         return;
@@ -1213,7 +1213,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
      * a live-disabled mod must come back disabled, not resurrected. And
      * a reload changes what the active registration set means, so the
      * timeline-derived state (rewind ring, runahead snapshot) is stale
-     * either way — bump the modset epoch. */
+     * either way - bump the modset epoch. */
     openpete_mods_chain_set_owner_enabled(mod->id, mod->enabled);
     openpete_mods_draw_set_owner_enabled(mod->id, mod->enabled);
     openpete_mods_registry_set_owner_enabled(mod->id, mod->enabled);
@@ -1252,7 +1252,7 @@ static void hot_reload_poll(void) {
         if (!mod->build_key[0]) continue;
         /* Key-only recompute (pure hashing, ms); the compile happens
          * inside mod_hot_reload on a real change. config.toml is watched
-         * too — a config-only edit reloads against the cached object, so
+         * too - a config-only edit reloads against the cached object, so
          * entry re-reads the fresh values. */
         char key[65], ckey[65], skey[65];
         if (mod_compute_key(mod->dir, s_sdk_dir, key) != 0)
@@ -1269,7 +1269,7 @@ static void hot_reload_poll(void) {
 /* ── Live modset toggle ──────────────────────────────────────────────
  * enable/disable apply at the NEXT TICK BOUNDARY (the canonical present
  * commit), never mid-tick: requests queue here and the apply flips
- * owner-keyed disabled flags across every registration surface — chain
+ * owner-keyed disabled flags across every registration surface - chain
  * links (skipped transparently, base() nesting preserved), present
  * hooks, and registry rows. Nothing is torn down, so re-enable restores
  * the mod exactly where it was. Asset overlays stay boot-scoped (a toggle
@@ -1467,7 +1467,7 @@ int openpete_mods_ui_refuse_section(int i, const char* why) {
     if (!m->ui_body) return 0;
     m->ui_body = NULL;
     m->imgui_calls = 0;  /* the panel's "last present" count is gone too */
-    OPL_ERROR_F("mods", "%s: UI section refused for this session — %s",
+    OPL_ERROR_F("mods", "%s: UI section refused for this session - %s",
                 m->id, why ? why : "");
     return 0;
 }
@@ -1480,7 +1480,7 @@ int openpete_mods_set_mod_enabled(const char* id, int on) {
     toggle_req_t* r = (toggle_req_t*)mod_fvec_push(&s_toggle_q);
     if (!r) {
         OPL_ERROR_F("mods", "live toggle: request queue allocation failed "
-                    "— \"%s\" not queued", id);
+                    "- \"%s\" not queued", id);
         return -1;
     }
     snprintf(r->id, MOD_ID_MAX, "%s", id);
@@ -1547,8 +1547,8 @@ static void toggle_parse_env(void) {
 
 /* Scheduled config edits (harness): OPENPETE_MODS_CFG_APPLY=
  * "tick:id:key=int[,...]" commits an integer config edit through the
- * same path the Mods panel's Apply uses — config.toml rewritten, reload
- * queued, entry re-run at the next tick boundary — so a headless run can
+ * same path the Mods panel's Apply uses - config.toml rewritten, reload
+ * queued, entry re-run at the next tick boundary - so a headless run can
  * exercise re-entry deterministically. */
 typedef struct {
     unsigned tick;
@@ -1642,7 +1642,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     /* Apply-committed config changes: reload the mod so its entry
      * re-reads the fresh values (build key unchanged, so the compile is
      * a cache hit). A mod that never entered (deferred row / assets-
-     * only) just re-parses the file — entry reads it on first enable. */
+     * only) just re-parses the file - entry reads it on first enable. */
     for (int i = 0; i < mod_count(); i++) {
         struct openpete_mod* mod = mod_at(i);
         if (!mod->cfg_reload_pending) continue;
@@ -1677,7 +1677,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
          * it actually applies. */
         if (!on && openpete_mods_registry_owner_busy(id)) {
             if (!cur.defer_logged) {
-                OPL_INFO_F("mods", "live toggle: \"%s\" deferred — can't "
+                OPL_INFO_F("mods", "live toggle: \"%s\" deferred - can't "
                            "be turned off while inside its level", id);
                 cur.defer_logged = 1;
             }
@@ -1685,7 +1685,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
             continue;
         }
         if (on && !mod->entered && mod_enter_deferred(mod) != 0) {
-            OPL_ERROR_F("mods", "live toggle: \"%s\" failed to start — "
+            OPL_ERROR_F("mods", "live toggle: \"%s\" failed to start - "
                         "staying disabled", id);
             continue;
         }
@@ -1762,8 +1762,8 @@ const char* openpete_mods_modset_tag(void) {
     if (s_tag_built) return s_tag;
     s_tag_built = 1;
     s_tag[0] = '\0';
-    /* Sorted id order → order-independent canonical form. Only mods
-     * whose entry has RUN can have diverged the session — deferred-
+    /* Sorted id order -> order-independent canonical form. Only mods
+     * whose entry has RUN can have diverged the session - deferred-
      * entry load-all rows join the tag at their first enable (the
      * enable path clears s_tag_built; memcard reads the tag per
      * check/write, so later writes carry the grown tag). */
@@ -1944,7 +1944,7 @@ static int api_pad_read(openpete_mod_t* self, uint32_t slot,
         if (!self->pad_present_logged) {
             self->pad_present_logged = 1;
             OPL_ERROR_F(self->log_tag, "pad_read refused inside a present hook: "
-                        "the staged pad record belongs to the tick — read it in "
+                        "the staged pad record belongs to the tick - read it in "
                         "a tick hook and display from your own copy");
         }
         return -1;
@@ -1976,7 +1976,7 @@ static int api_pad_read(openpete_mod_t* self, uint32_t slot,
         if (!(self->pad_absent_logged & (1u << slot))) {
             self->pad_absent_logged |= (1u << slot);
             OPL_INFO_F(self->log_tag,
-                       "pad_read: slot %u absent — no device assigned", slot);
+                       "pad_read: slot %u absent - no device assigned", slot);
         }
     }
     return 0;
@@ -2002,7 +2002,7 @@ static int api_pad_rumble(openpete_mod_t* self, uint32_t slot,
         if (!self->pad_rumble_slot0_logged) {
             self->pad_rumble_slot0_logged = 1;
             OPL_ERROR_F(self->log_tag, "pad_rumble: slot 0 is the game's own "
-                        "actuator table — a second writer would fight it; "
+                        "actuator table - a second writer would fight it; "
                         "drive slots 1..%d", OPENPETE_MOD_PAD_SLOTS - 1);
         }
         return -1;
@@ -2261,7 +2261,7 @@ static int level_count_key(toml_table_t* lt, const char* key, int max,
     if (!d.ok) return -1;
     if (d.u.i < 0 || d.u.i > max) {
         OPL_ERROR_F("mods", "%s: [[level]] \"%s\": %s = %lld is outside "
-                    "0..%d — ignored", path, name, key,
+                    "0..%d - ignored", path, name, key,
                     (long long)d.u.i, max);
         return -1;
     }
@@ -2336,7 +2336,7 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
         if (id.ok && ver.ok)
             OPL_ERROR_F("mods", "%s: [mod] id \"%s\" cannot be a file name "
                         "(no / \\ < > : \" | ? *, control bytes, \"..\", leading "
-                        "dot, trailing dot or space, or device name) — disabled",
+                        "dot, trailing dot or space, or device name) - disabled",
                         path, id.u.s);
         else
             OPL_ERROR_F("mods", "%s: [mod] requires id and version", path);
@@ -2345,11 +2345,11 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
         return -1;
     }
     /* The api struct is append-only, and source mods recompile against
-     * the CURRENT staged SDK regardless — so the manifest pin is the
+     * the CURRENT staged SDK regardless - so the manifest pin is the
      * MINIMUM api the mod's calls need, not an exact build match. Only
      * a mod needing a newer engine refuses. */
     if (api.ok && api.u.i > (int64_t)OPENPETE_MOD_API_VERSION) {
-        OPL_ERROR_F("mods", "%s: mod \"%s\" needs api %lld, engine has %u — "
+        OPL_ERROR_F("mods", "%s: mod \"%s\" needs api %lld, engine has %u - "
                     "disabled", path, id.u.s, (long long)api.u.i,
                     OPENPETE_MOD_API_VERSION);
         free(id.u.s);
@@ -2382,7 +2382,7 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
      * tag without anyone noticing. */
     toml_datum_t sn = toml_bool_in(t, "sim_neutral");
     if (sn.ok) {
-        OPL_WARN_F("mods", "%s: sim_neutral is obsolete — write "
+        OPL_WARN_F("mods", "%s: sim_neutral is obsolete - write "
                    "sim_mutative = %s instead (the sense is inverted)",
                    mod->id, sn.u.b ? "false" : "true");
         if (!sm.ok) mod->sim_mutative = sn.u.b ? 0 : 1;
@@ -2399,7 +2399,7 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
         if (strcmp(st.u.s, "none") == 0)             mod->state_decl = 'n';
         else if (strcmp(st.u.s, "rebuildable") == 0) mod->state_decl = 'r';
         else OPL_ERROR_F("mods", "%s: unknown state = \"%s\" (want "
-                         "\"none\" or \"rebuildable\") — ignored",
+                         "\"none\" or \"rebuildable\") - ignored",
                          mod->id, st.u.s);
         free(st.u.s);
     }
@@ -2408,7 +2408,7 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
         if (strcmp(ra.u.s, "pure") == 0)          mod->ra_decl = 'p';
         else if (strcmp(ra.u.s, "host-fx") == 0)  mod->ra_decl = 'h';
         else OPL_ERROR_F("mods", "%s: unknown runahead = \"%s\" (want "
-                         "\"pure\" or \"host-fx\") — ignored",
+                         "\"pure\" or \"host-fx\") - ignored",
                          mod->id, ra.u.s);
         free(ra.u.s);
     }
@@ -2663,7 +2663,7 @@ static void parse_levels(toml_table_t* root, struct openpete_mod* mod,
             }
         } else {
             OPL_ERROR_F("mods", "%s: [[level]] needs name, files and "
-                        "donor — skipped", path);
+                        "donor - skipped", path);
         }
         if (ln.ok) free(ln.u.s);
         if (lf.ok) free(lf.u.s);
@@ -2690,7 +2690,7 @@ static int parse_material_params(toml_table_t* mt, mod_material_row_t* r,
     int np = toml_array_nelem(pa);
     if (np > MOD_MATERIAL_PARAMS_MAX) {
         OPL_ERROR_F("mods", "%s: [[material]] params has %d floats, max "
-                    "%d — skipped", path, np, MOD_MATERIAL_PARAMS_MAX);
+                    "%d - skipped", path, np, MOD_MATERIAL_PARAMS_MAX);
         return -1;
     }
     for (int k = 0; k < np; k++) {
@@ -2699,7 +2699,7 @@ static int parse_material_params(toml_table_t* mt, mod_material_row_t* r,
         toml_datum_t iv = toml_int_at(pa, k);   /* TOML keeps 1 and 1.0 distinct */
         if (!iv.ok) {
             OPL_ERROR_F("mods", "%s: [[material]] params[%d] is not a "
-                        "number — skipped", path, k);
+                        "number - skipped", path, k);
             return -1;
         }
         r->params[k] = (float)iv.u.i;
@@ -2727,7 +2727,7 @@ static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
         int bad = r->channel == -2;
         if (bad)
             OPL_ERROR_F("mods", "%s: [[material]] unknown channel \"%s\" "
-                        "— skipped", path, d.u.s);
+                        "- skipped", path, d.u.s);
         free(d.u.s);
         if (bad) return -1;
     }
@@ -2744,7 +2744,7 @@ static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
         else if (strcmp(d.u.s, "lp") == 0) r->flags |= OP_SEL_LP_TIER;
         else {
             OPL_ERROR_F("mods", "%s: [[material]] tier must be \"hp\" or "
-                        "\"lp\" (got \"%s\") — skipped", path, d.u.s);
+                        "\"lp\" (got \"%s\") - skipped", path, d.u.s);
             bad = 1;
         }
         free(d.u.s);
@@ -2791,7 +2791,7 @@ static void parse_materials(toml_table_t* root, struct openpete_mod* mod,
             snprintf(r.vert, sizeof r.vert, "%s", d.u.s); free(d.u.s);
         }
         if (!r.frag[0] && !r.vert[0]) {
-            OPL_ERROR_F("mods", "%s: [[material]] needs frag (or vert) — "
+            OPL_ERROR_F("mods", "%s: [[material]] needs frag (or vert) - "
                         "skipped", path);
             continue;
         }
@@ -3051,8 +3051,8 @@ static const char* src_path(const mod_fvec* v, int i) {
  * or real source edit always does. Returns 0 with key_out filled, -1 if
  * the mod has no compilable sources. */
 /* The SDK half of the build key is the same for every mod and is the
- * large half — a few hundred KB of generated headers against a few KB of
- * mod source — so it is hashed once per round and the digest state is
+ * large half - a few hundred KB of generated headers against a few KB of
+ * mod source - so it is hashed once per round and the digest state is
  * cloned per mod. The byte stream fed to the hash is unchanged, so the
  * keys, and every stamp already on disk, are identical to hashing it
  * per mod. The hot-reload watch drops the prefix before each poll round
@@ -3282,7 +3282,7 @@ static int mod_compile(const char* mod_dir, const char* id,
     char cc[MOD_PATH_MAX];
     mods_resolve_cc(cc, sizeof cc);
     if (!cc[0]) {
-        OPL_ERROR_F("mods", "%s: no compiler — expected the bundled "
+        OPL_ERROR_F("mods", "%s: no compiler - expected the bundled "
                     "toolchain at recomp/tools/ next to the exe, or set "
                     "OPENPETE_MOD_CC", id);
         mod_fvec_free(&srcs);
@@ -3328,10 +3328,10 @@ static int mod_compile(const char* mod_dir, const char* id,
                n_srcs == 1 ? "" : "s");
     int rc = openpete_host_spawn_argv(argv, log_path, NULL, 0);
     if (rc != 0) {
-        OPL_ERROR_F("mods", "%s: compile failed (see %s/compile.log) — "
+        OPL_ERROR_F("mods", "%s: compile failed (see %s/compile.log) - "
                     "disabled", id, build_dir);
         /* Remove the STAMP only: nothing may cache-hit a failed build,
-         * but the object file survives — it may be an author-shipped
+         * but the object file survives - it may be an author-shipped
          * prebuilt (cross-build handoff) that a no-compiler boot can
          * still fall back to. Deleting it here destroyed exactly that
          * artifact once; don't repeat it. */
@@ -3377,22 +3377,22 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
             /* No compiler on this box (Windows without the bundled
              * toolchain): fall back to a prebuilt DLL. Verified-stale (a
              * stamp exists and mismatches) loads loudly; an unstamped
-             * DLL (typical for cross-compiled staging) loads silently —
+             * DLL (typical for cross-compiled staging) loads silently -
              * there is nothing trustworthy to compare against. */
             if (file_mtime(so_path) != (time_t)-1) {
                 char stamped[65];
                 mod_read_stamp(mod->dir, mod->id, stamped);
                 if (stamped[0])
                     OPL_WARN_F("mods", "%s: %s was built from DIFFERENT "
-                               "sources/SDK than what is on disk — "
+                               "sources/SDK than what is on disk - "
                                "loading it anyway (rebuild the DLL to "
                                "update)", mod->id, so_path);
                 return 0;
             }
-            OPL_ERROR_F("mods", "%s: no compiler and no prebuilt %s — "
+            OPL_ERROR_F("mods", "%s: no compiler and no prebuilt %s - "
                         "install the packaged toolchain (recomp/tools/), "
                         "set OPENPETE_MOD_CC, or build the DLL with e.g. "
-                        "x86_64-w64-mingw32-gcc -shared -O2 -I<sdk> — "
+                        "x86_64-w64-mingw32-gcc -shared -O2 -I<sdk> - "
                         "disabled", mod->id, so_path);
             return -1;
         }
@@ -3416,14 +3416,14 @@ static int mod_run_entry(struct openpete_mod* mod) {
     mod_entry_fn entry =
         (mod_entry_fn)mod_dlsym(mod->dl, "openpete_mod_entry");
     if (!entry) {
-        OPL_ERROR_F("mods", "%s: no openpete_mod_entry symbol — disabled",
+        OPL_ERROR_F("mods", "%s: no openpete_mod_entry symbol - disabled",
                     mod->id);
         return -1; /* keep the .so resident; it is inert without chains */
     }
     openpete_mods_arena_entry_begin(mod->id);
     int rc = entry(&s_api, mod);
     if (rc != 0) {
-        OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d — disabled",
+        OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d - disabled",
                     mod->id, rc);
         mod_strip_registrations(mod); /* whatever it registered before failing */
         return -1;
@@ -3450,7 +3450,7 @@ static void mod_register_materials(struct openpete_mod* mod) {
             frag = openpete_mods_shader_register(mod, r->frag);
             if (frag < 0) {
                 OPL_ERROR_F("mods", "%s: [[material]] frag \"%s\" failed to "
-                            "build — row skipped", mod->id, r->frag);
+                            "build - row skipped", mod->id, r->frag);
                 continue;
             }
         }
@@ -3458,7 +3458,7 @@ static void mod_register_materials(struct openpete_mod* mod) {
             vert = openpete_mods_shader_register(mod, r->vert);
             if (vert < 0) {
                 OPL_ERROR_F("mods", "%s: [[material]] vert \"%s\" failed to "
-                            "build — row skipped", mod->id, r->vert);
+                            "build - row skipped", mod->id, r->vert);
                 continue;
             }
         }
@@ -3554,7 +3554,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
             mod_register_assets(mod);
             return 0;
         }
-        /* Binary-only mod: the prebuilt object IS the mod — loaded
+        /* Binary-only mod: the prebuilt object IS the mod - loaded
          * as-is, never hashed or compiled, skipped by hot reload. */
         OPL_INFO_F("mods", "%s: binary-only mod (no src/), loading %s "
                    "as-is", mod->id, so_path);
@@ -3564,7 +3564,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
                  mod->dir, mod->id);
         if (file_mtime(so_path) == (time_t)-1) {
             OPL_ERROR_F("mods", "%s: has src/ but no SDK to compile it "
-                        "against and no prebuilt %s — disabled",
+                        "against and no prebuilt %s - disabled",
                         mod->id, so_path);
             return -1;
         }
@@ -3577,7 +3577,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
 
     mod->dl = mod_dlopen(so_path);
     if (!mod->dl) {
-        OPL_ERROR_F("mods", "%s: dlopen failed: %s — disabled", mod->id,
+        OPL_ERROR_F("mods", "%s: dlopen failed: %s - disabled", mod->id,
                     mod_dlerror());
         return -1;
     }
@@ -3686,7 +3686,7 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
     if (int_row(&c->state, i) == TS_BLACK)  return 0;
     if (int_row(&c->state, i) == TS_FAILED) return -1;
     if (int_row(&c->state, i) == TS_GRAY) {
-        OPL_ERROR_F("mods", "dependency cycle through \"%s\" — disabled "
+        OPL_ERROR_F("mods", "dependency cycle through \"%s\" - disabled "
                     "(break the cycle in the mods' mod.toml deps)",
                     pend_at(c->pending, i)->id);
         int_row_set(&c->state, i, TS_FAILED);
@@ -3703,7 +3703,7 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
             else
                 snprintf(where, sizeof where, "the --mods list");
             OPL_ERROR_F("mods", "\"%s\" requires \"%s\", which is not "
-                        "enabled — add it to %s (ahead of "
+                        "enabled - add it to %s (ahead of "
                         "\"%s\") or install it; \"%s\" disabled",
                         pend_at(c->pending, i)->id, dep_id,
                         where, pend_at(c->pending, i)->id, pend_at(c->pending, i)->id);
@@ -3807,7 +3807,7 @@ static int zip_extract_all(mz_zip_archive* zip, const char* dest, size_t wrap_le
         mz_zip_archive_file_stat st;
         if (!mz_zip_reader_file_stat(zip, i, &st)) return 0;
         if (st.m_filename[0] == '/' || strstr(st.m_filename, "..")) {
-            OPL_ERROR_F("mods", "%s.zip: unsafe entry path \"%s\" — "
+            OPL_ERROR_F("mods", "%s.zip: unsafe entry path \"%s\" - "
                         "skipped archive", id, st.m_filename);
             return 0;
         }
@@ -3883,7 +3883,7 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
     mz_zip_archive zip;
     memset(&zip, 0, sizeof zip);
     if (!mz_zip_reader_init_file(&zip, zip_path, 0)) {
-        OPL_ERROR_F("mods", "%s.zip: not a readable zip — skipped", id);
+        OPL_ERROR_F("mods", "%s.zip: not a readable zip - skipped", id);
         return -1;
     }
     char wrap[MOD_PATH_MAX];
@@ -3902,7 +3902,7 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
     mz_zip_reader_end(&zip);
     if (ok && file_mtime(staged_toml) == (time_t)-1) {
         OPL_ERROR_F("mods", "%s.zip: no mod.toml at the archive root "
-                    "(or inside a single wrapper directory) — skipped", id);
+                    "(or inside a single wrapper directory) - skipped", id);
         ok = 0;
     }
     if (!ok) {
@@ -3911,7 +3911,7 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
     }
     if (mod_rmtree(dest) != 0 || rename(staging, dest) != 0) {
         OPL_ERROR_F("mods", "%s.zip: cannot replace %s (a file in it is in "
-                    "use?) — skipped", id, dest);
+                    "use?) - skipped", id, dest);
         (void)mod_rmtree(staging);
         return -1;
     }
@@ -4068,7 +4068,7 @@ static int scan_keep_for_game(const char* mods_dir, const char* id) {
     char shown[112];
     if (want[0]) snprintf(shown, sizeof shown, "game \"%s\"", want);
     else         snprintf(shown, sizeof shown, "no game");
-    OPL_INFO_F("mods", "%s targets %s — skipped (this is %s)",
+    OPL_INFO_F("mods", "%s targets %s - skipped (this is %s)",
                id, shown, game_get_id());
     return 0;
 }
@@ -4111,7 +4111,7 @@ static int mods_scan(const char* mods_dir, mod_fvec* ids) {
         }
         row = (mod_id_row_t*)mod_fvec_push(ids);
         if (!row) {
-            OPL_ERROR_F("mods", "mods scan: id list allocation failed — "
+            OPL_ERROR_F("mods", "mods scan: id list allocation failed - "
                         "\"%s\" skipped", id);
             continue;
         }
@@ -4169,7 +4169,7 @@ static int order_from_mods_flag(const char* list, mod_fvec* order) {
         s = trim_id(item);
         if (strlen(s) >= MOD_ID_MAX)
             OPL_WARN_F("mods", "--mods: id \"%.32s...\" exceeds %d "
-                       "characters — skipped", s, MOD_ID_MAX - 1);
+                       "characters - skipped", s, MOD_ID_MAX - 1);
         else if (*s)
             n += order_push(order, s);
         if (!comma) break;
@@ -4207,11 +4207,11 @@ static int order_from_enabled_txt(FILE* en, mod_fvec* order) {
         if (!*s || *s == '#') continue;
         if (truncated)
             OPL_WARN_F("mods", "enabled.txt: line starting \"%.32s\" is "
-                       "longer than %d characters — skipped",
+                       "longer than %d characters - skipped",
                        s, (int)(sizeof line - 1));
         else if (strlen(s) >= MOD_ID_MAX)
             OPL_WARN_F("mods", "enabled.txt: id \"%.32s...\" exceeds "
-                       "%d characters — skipped", s, MOD_ID_MAX - 1);
+                       "%d characters - skipped", s, MOD_ID_MAX - 1);
         else
             n += order_push(order, s);
     }
@@ -4264,7 +4264,7 @@ static int mods_discover(const openpete_options_t* opts,
 
     /* --mods (env OPENPETE_MODS) replaces enabled.txt wholesale: a
      * comma-separated id list, same order-IS-priority semantics. An
-     * empty list is meaningful — "enable nothing" — so it is checked
+     * empty list is meaningful - "enable nothing" - so it is checked
      * for presence, not truthiness. */
     const char* enabled_override =
         opts && opts->mods_enabled ? opts->mods_enabled
@@ -4289,7 +4289,7 @@ static int mods_discover(const openpete_options_t* opts,
     else                   n_order = order_from_scan(&ids, n_ids, &order);
     if (en) fclose(en);
     if (enabled_override && n_order == 0) {
-        OPL_INFO_F("mods", "--mods lists no mods — none enabled "
+        OPL_INFO_F("mods", "--mods lists no mods - none enabled "
                    "(mods dir: %s)", mods_dir);
         mod_fvec_free(&ids); mod_fvec_free(&order);
         return 0;
@@ -4303,18 +4303,18 @@ static int mods_discover(const openpete_options_t* opts,
         if (!known) {
             /* Say which case it is: a folder missing its manifest, or no
              * folder at all (typical after enabling a mod the deployed
-             * mods dir doesn't have yet — rebuild/stage or copy it in). */
+             * mods dir doesn't have yet - rebuild/stage or copy it in). */
             char d[MOD_PATH_MAX];
             const char* want = id_row(&order, i);
             snprintf(d, sizeof d, "%s/%s", mods_dir, want);
             if (file_mtime(d) == (time_t)-1)
                 OPL_WARN_F("mods", "%s names \"%s\" but there is "
-                           "no mods/%s/ folder (or <id>.zip) here — skipped "
+                           "no mods/%s/ folder (or <id>.zip) here - skipped "
                            "(mods dir: %s)", s_order_src, want, want,
                            mods_dir);
             else
                 OPL_WARN_F("mods", "%s names \"%s\" but mods/%s/ has "
-                           "no mod.toml — skipped", s_order_src, want, want);
+                           "no mod.toml - skipped", s_order_src, want, want);
             continue;
         }
         slot = (mod_ref_t*)mod_fvec_push(out);
@@ -4325,8 +4325,8 @@ static int mods_discover(const openpete_options_t* opts,
     }
 
     /* Deferred-entry load-all (interactive path): every other
-     * discovered mod loads too — compiled and dlopen'd, entry deferred
-     * to its first enable — so the overlay's Mods panel can list and
+     * discovered mod loads too - compiled and dlopen'd, entry deferred
+     * to its first enable - so the overlay's Mods panel can list and
      * enable the whole directory. Scope guard: --mods/OPENPETE_MODS
      * (every harness/CI case) and headless runs keep exact-set
      * semantics; the no-enabled.txt fallback already enables all. */
@@ -4389,7 +4389,7 @@ static void mods_sdk_missing_notice(const char* sdk_dir) {
     if (s_said) return;
     s_said = 1;
     OPL_WARN_F("mods", "no sdk/ next to the exe (%s): this build was "
-               "packaged without the mod SDK — source mods are not "
+               "packaged without the mod SDK - source mods are not "
                "compiled; a prebuilt .build/<id>" MOD_DL_EXT " still "
                "loads as-is", sdk_dir);
 }
@@ -4424,7 +4424,7 @@ static int mods_prepare_task(void* ud) {
         snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
                  r->dir, r->id);
         /* A failure is logged (+ compile.log) and left for init to
-         * report as disabled — prepare never aborts the boot. */
+         * report as disabled - prepare never aborts the boot. */
         (void)mod_compile(r->dir, r->id, c->sdk_dir,
                           ((mod_key_row_t*)mod_fvec_at(&c->keys, (size_t)si))->k,
                           so_path, 1);
@@ -4470,7 +4470,7 @@ int openpete_mods_prepare(const openpete_options_t* opts,
     }
     c.progress = progress;
 
-    /* Pass 1: pure hashing — milliseconds; no window, no compile. */
+    /* Pass 1: pure hashing - milliseconds; no window, no compile. */
     for (int i = 0; i < n_refs; i++) {
         char key[65];
         int* slot;
@@ -4491,7 +4491,7 @@ int openpete_mods_prepare(const openpete_options_t* opts,
     /* Pass 2: compile the stale set as ONE worker task (the splash
      * runner is not reentrant); progress from inside the worker
      * lazy-opens the UI. */
-    OPL_INFO_F("mods", "%d mod%s stale — compiling before boot",
+    OPL_INFO_F("mods", "%d mod%s stale - compiling before boot",
                c.n_stale, c.n_stale == 1 ? "" : "s");
     if (run_task)
         (void)run_task(mods_prepare_task, &c);
@@ -4505,7 +4505,7 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
         char cc[MOD_PATH_MAX];
         mods_resolve_cc(cc, sizeof cc);
         if (!cc[0]) {
-            OPL_ERROR_F("mods", "--compile-mods: no compiler — expected "
+            OPL_ERROR_F("mods", "--compile-mods: no compiler - expected "
                         "the bundled toolchain at recomp/tools/ next to "
                         "the exe, or set OPENPETE_MOD_CC");
             return -1;
@@ -4517,7 +4517,7 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
         return -1;
     }
 
-    /* EVERY candidate in the dir — enabled.txt is a runtime concern;
+    /* EVERY candidate in the dir - enabled.txt is a runtime concern;
      * the build gate wants a disabled mod's breakage surfaced too. */
     mod_fvec ids;
     mod_fvec_init(&ids, sizeof(mod_id_row_t), 64, NULL, 0);
@@ -4614,7 +4614,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
      *
      * Heap, not a local array: struct openpete_mod is ~7 KB (it carries
      * several PATH_MAX buffers plus the [[material]] rows), so one per
-     * discovered mod is hundreds of kilobytes — as a local it overflowed
+     * discovered mod is hundreds of kilobytes - as a local it overflowed
      * the Windows main-thread stack (boot died with
      * EXCEPTION_STACK_OVERFLOW right after the PSX EXE loaded, while
      * Linux's 8 MB stack absorbed it and showed nothing). */
@@ -4649,7 +4649,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
     for (int i = 0; i < n_pending; i++) (void)topo_visit(&tc, i);
 
     /* Entry policy: boot-enabled mods enter at load, and so do their
-     * deps (a library's entry must run before its client's — the dep
+     * deps (a library's entry must run before its client's - the dep
      * enters but stays disabled if it wasn't in the enabled set
      * itself). Every other load-all row defers entry to its first
      * enable. */
@@ -4703,7 +4703,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
         struct openpete_mod* mod =
             (struct openpete_mod*)mod_cvec_push(&s_mods);
         if (!mod) {
-            OPL_ERROR_F("mods", "mod table allocation failed — \"%s\" not "
+            OPL_ERROR_F("mods", "mod table allocation failed - \"%s\" not "
                         "loaded", pend_at(&pending, i)->id);
             break;
         }
@@ -4755,7 +4755,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
         mod_rows_free(pend_at(&pending, i));
 
     /* Declared-bindings conflict scan: two enabled mods claiming the
-     * same host key is legal (reads are non-exclusive) but surprising —
+     * same host key is legal (reads are non-exclusive) but surprising -
      * name both, with purposes, so the user can re-order or rebind.
      *
      * Compares the EFFECTIVE binding, not the declared one: rebinding a
@@ -4794,7 +4794,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
                    enabled == 1 ? "" : "s", mods_dir);
     if (loaded > enabled)
         OPL_INFO_F("mods", "%d more mod%s loaded disabled (entry "
-                   "deferred) — enable via the M-overlay Mods panel or "
+                   "deferred) - enable via the M-overlay Mods panel or "
                    "the O-menu", loaded - enabled,
                    loaded - enabled == 1 ? "" : "s");
     toggle_parse_env();
