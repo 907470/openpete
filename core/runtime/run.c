@@ -6,6 +6,7 @@
 
 #include "openpete.h"
 #include "openpete_crash.h"
+#include "openpete_fatal.h"
 #include "openpete_mutex_once.h"
 #include "openpete_fiber.h"
 #include "openpete_log.h"
@@ -2246,7 +2247,8 @@ int openpete_get_render_fps(void) {
  * applies feature-module knobs and loads mods, resolves the window size
  * from --aspect, sets up PsyCross (null-GPU when nothing would rasterize),
  * input maps and icons, arms --record, brings up the native Vulkan renderer
- * for --renderer vk, arms the pad-read probe, halt-at-pc and the psxtrace
+ * for --renderer vk (a windowed run left with no renderer stops with a
+ * message to the player), arms the pad-read probe, halt-at-pc and the psxtrace
  * verifier, configures the memory card, and starts the VBL ticker unless
  * headless without OPENPETE_FORCE_PACING.
  * @param opts Resolved launch options.
@@ -2664,12 +2666,20 @@ static int run_host_init(const openpete_options_t* opts) {
          || opts->screenshot_presents_start >= 0)          /* present-sequence capture (-og leg) */
         /* null-GPU hard override: no GL context exists, so PsyCross MUST NOT
          * rasterize regardless of the terms above (the reachable case is a
-         * native bring-up failure in a windowed pure-vk run — display is lost
-         * either way, but a black window beats a NULL-gl-pointer segfault). */
+         * native bring-up failure in a windowed pure-vk run, which stops
+         * below instead of reaching a NULL GL proc). */
         && !g_psyx_null_gpu;
-    if (g_psyx_null_gpu && !openpete_native_render_enabled())
-        OPL_WARN_F("boot", "%s", "native renderer unavailable but PsyCross is "
-                   "in null-GPU mode — no display path this run");
+    /* PsyCross skipped its GL init for this run, so a failed native bring-up
+     * leaves no renderer: the game would run with sound and no picture. */
+    if (g_psyx_null_gpu && !openpete_native_render_enabled()) {
+        OPL_ERROR_F("boot", "%s", "native renderer unavailable and PsyCross is "
+                    "in null-GPU mode: no display path, stopping");
+        openpete_fatal_message("OpenPete could not start graphics",
+            "No usable Vulkan graphics device was found. Install the latest "
+            "driver for your graphics card. To run without Vulkan, add "
+            "renderer = \"psycross\" to openpete.toml.");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
     OPL_INFO_F("boot", "PsyCross OT rasterization: %s (renderer=%d native=%d)",
                openpete_psycross_renders ? "ON" : "OFF (the native scene is the picture)",
                (int)opts->renderer, (int)openpete_native_render_enabled());

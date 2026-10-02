@@ -842,7 +842,13 @@ static bool want_validation_layer(void)
 /** @brief Create the Vulkan 1.2 instance with the surface extensions SDL requires, plus validation when requested.
  *
  * Windowed runs enable the extensions SDL_Vulkan_GetInstanceExtensions
- * reports; headless runs enable none. When want_validation_layer() returns
+ * reports; headless runs enable none. On Windows the process environment
+ * gains DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1 unless the variable is
+ * already set, before the loader scans implicit layers: on laptops pairing
+ * an AMD iGPU with an NVIDIA dGPU, an outdated VK_LAYER_AMD_switchable_graphics
+ * makes vkEnumeratePhysicalDevices report no device, and the layer's only
+ * function, choosing between the GPUs, is done by pick_physical_and_device.
+ * When want_validation_layer() returns
  * true, the instance also enables VK_LAYER_KHRONOS_validation and
  * VK_EXT_debug_utils, and a messenger routing warnings and errors to
  * debug_cb is created on dev->debug.
@@ -854,6 +860,14 @@ static bool want_validation_layer(void)
  *         vkCreateInstance fails. */
 static bool create_instance(rhi_device *dev, const char *app_name)
 {
+#ifdef _WIN32
+    /* The loader reads a layer's disable variable when it scans implicit
+     * layers, which want_validation_layer's layer query and vkCreateInstance
+     * both do; a variable the user set, including to 0, is kept. */
+    if (!getenv("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1"))
+        _putenv_s("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1");
+#endif
+
     /* Windowed: SDL supplies the platform surface extensions. Headless: none —
      * a surfaceless instance needs no surface extension at all. */
     Uint32 sdl_n = 0;
@@ -988,6 +1002,33 @@ static void depth_convention_init(rhi_device *dev)
     RHI_LOG("depth format %s\n", depth_format_name(dev->depth_format));
 }
 
+/** @brief List the instance's physical devices into a calloc'd array.
+ *
+ * A VK_INCOMPLETE result keeps the handles the loader wrote and is logged;
+ * an error code or an empty list is logged with its VkResult.
+ * @param instance The Vulkan instance.
+ * @param out_n Receives the number of handles in the returned array.
+ * @return The array, which the caller frees, or NULL when enumeration fails
+ *         or lists no device. */
+static VkPhysicalDevice *enumerate_physical_devices(VkInstance instance, uint32_t *out_n)
+{
+    uint32_t n = 0;
+    VkResult r = vkEnumeratePhysicalDevices(instance, &n, NULL);
+    VkPhysicalDevice *devs = (r >= 0 && n > 0) ? calloc(n, sizeof(*devs)) : NULL;
+    if (devs) r = vkEnumeratePhysicalDevices(instance, &n, devs);
+    if (r < 0 || n == 0) {
+        RHI_LOG("no Vulkan physical devices (vkEnumeratePhysicalDevices: %d, count %u)\n",
+                (int)r, n);
+        free(devs);
+        return NULL;
+    }
+    if (r != VK_SUCCESS)
+        RHI_LOG("vkEnumeratePhysicalDevices returned %d; using the %u devices listed\n",
+                (int)r, n);
+    *out_n = n;
+    return devs;
+}
+
 /** @brief Choose the physical device and queue family and create the logical device and its graphics queue.
  *
  * A device qualifies with a graphics queue family that can also present to
@@ -1007,15 +1048,13 @@ static void depth_convention_init(rhi_device *dev)
  * @param dev Device whose instance, headless flag and surface are read and
  *            whose phys, gfx_family, device, gfx_queue, depth and feature
  *            fields are written.
- * @return false when no physical device exists, none qualifies, or
+ * @return false when no physical device is listed, none qualifies, or
  *         vkCreateDevice fails (each logged); true otherwise. */
 static bool pick_physical_and_device(rhi_device *dev)
 {
     uint32_t n = 0;
-    vkEnumeratePhysicalDevices(dev->instance, &n, NULL);
-    if (n == 0) { RHI_LOG("no Vulkan physical devices\n"); return false; }
-    VkPhysicalDevice *devs = calloc(n, sizeof(*devs));
-    vkEnumeratePhysicalDevices(dev->instance, &n, devs);
+    VkPhysicalDevice *devs = enumerate_physical_devices(dev->instance, &n);
+    if (!devs) return false;
 
     VkPhysicalDevice chosen = VK_NULL_HANDLE;
     uint32_t chosen_family = UINT32_MAX;
