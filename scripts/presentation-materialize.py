@@ -17,12 +17,14 @@ at --at REV. Per blessed revision the rows name:
  1. disc: the main checkout's disc .cue and the .bin the manifest header names
     are hashed and compared against the header; an absent file, a header that
     records no hash, or a differing hash refuses, naming the file.
- 2. worktree: a throwaway worktree at the revision from the script
-    OPENPETE_WORKTREE_SETUP names (<name> --ref REV --no-links) (under --from-archive, `git worktree add` against the archive
-    golden-ref.state names, submodules fetched from their remotes). Every
-    untracked build input that script's `--list-links` names, except the
-    oracle goldens and the DuckStation trees, must be absent there: a link
-    refuses. The game's five inputs are then created as real paths below.
+ 2. worktree: a throwaway worktree at the revision from
+    `scripts/worktree.sh create <name> --ref REV` (under --from-archive,
+    `git worktree add` against the archive golden-ref.state names,
+    submodules fetched from their remotes). Every untracked build input
+    `scripts/worktree.sh inputs` names, except the oracle goldens and the
+    DuckStation trees, must be absent there or a real path inside it: a
+    link refuses. The game's five inputs are then created as real paths
+    below. Teardown is `scripts/worktree.sh remove <name> --force`.
  3. decomp inputs: the decomp's own submodules (tools/maspsx) as worktrees
     of the main checkout's nested module repositories at the decomp's pins,
     and the PSY-Q SDK files the decomp ignores (psyq/include, psyq/lib),
@@ -108,12 +110,11 @@ def main_checkout():
     return os.path.dirname(common.rstrip("/"))
 
 
-def setup_script():
-    """The worktree setup script OPENPETE_WORKTREE_SETUP names."""
-    p = os.environ.get("OPENPETE_WORKTREE_SETUP") or ""
+def worktree_script():
+    """scripts/worktree.sh beside this script; its absence refuses."""
+    p = os.path.join(HERE, "worktree.sh")
     if not os.path.isfile(p):
-        raise Refusal("no worktree setup script at %s (set OPENPETE_WORKTREE_SETUP)"
-                      % p)
+        raise Refusal("no worktree script at %s" % p)
     return p
 
 
@@ -253,9 +254,8 @@ def make_worktree(rev, name, from_archive, logf):
     wt = os.path.join(main, "worktrees", name)
     if not from_archive:
         env = dict(os.environ, OPENPETE_ROOT=main)
-        run(["bash", setup_script(), name, "--ref", rev, "--no-links",
-             "--no-configure"], env=env, logf=logf,
-            what="worktree setup script --no-links")
+        run(["bash", worktree_script(), "create", name, "--ref", rev],
+            env=env, logf=logf, what="worktree.sh create")
         return wt
     arch = pb.read_state().get("archive")
     if not arch or not os.path.isdir(arch):
@@ -289,20 +289,19 @@ def remove_worktree(wt, name, from_archive, logf):
         shutil.rmtree(wt, ignore_errors=True)
         subprocess.run(["git", "-C", arch, "worktree", "prune"])
         return
-    td = os.path.join(os.path.dirname(setup_script()), "worktree-teardown.sh")
-    run(["bash", td, name, "--force"], env=dict(os.environ,
-                                                OPENPETE_ROOT=main_checkout()),
-        logf=logf, what="worktree teardown script")
+    run(["bash", worktree_script(), "remove", name, "--force"],
+        env=dict(os.environ, OPENPETE_ROOT=main_checkout()),
+        logf=logf, what="worktree.sh remove")
 
 
 def input_paths(game):
-    """The untracked build inputs the worktree setup script links, minus the
+    """The untracked build inputs `worktree.sh inputs` names, minus the
     oracle goldens and the DuckStation trees. Returns (all, this game's)."""
-    p = subprocess.run(["bash", setup_script(), "--list-links"],
+    p = subprocess.run(["bash", worktree_script(), "inputs"],
                        env=dict(os.environ, OPENPETE_ROOT=main_checkout()),
                        capture_output=True, text=True)
     if p.returncode != 0:
-        raise Refusal("worktree setup script --list-links exited %d"
+        raise Refusal("worktree.sh inputs exited %d"
                       % p.returncode)
     paths = [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
     paths = [x for x in dict.fromkeys(paths) if not EXCLUDED_LINK_RE.match(x)]
