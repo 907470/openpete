@@ -2675,9 +2675,9 @@ static int run_host_init(const openpete_options_t* opts) {
         OPL_ERROR_F("boot", "%s", "native renderer unavailable and PsyCross is "
                     "in null-GPU mode: no display path, stopping");
         openpete_fatal_message("OpenPete could not start graphics",
-            "No usable Vulkan graphics device was found. Install the latest "
-            "driver for your graphics card. To run without Vulkan, add "
-            "renderer = \"psycross\" to openpete.toml.");
+            "No usable Vulkan graphics device was found.\n\n"
+            "Install the latest driver for your graphics card.\n"
+            "To run without Vulkan, add renderer = \"psycross\" to openpete.toml.");
         return OPENPETE_EXIT_SETUP_ERROR;
     }
     OPL_INFO_F("boot", "PsyCross OT rasterization: %s (renderer=%d native=%d)",
