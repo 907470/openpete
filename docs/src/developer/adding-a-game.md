@@ -64,9 +64,12 @@ with (`--translate` per symbol translated instead of stubbed, among them
 the libgte closure); a regeneration repeats them.
 
 `manifest/` holds `psyq.toml`, `psyq_names.toml`, `forced_entries/` (entry
-points the recompiler's scanner misses), `asm_dispatch_targets/`, and
-`ram_diff_expect.toml` for `scripts/check_ram_diff.sh`. `symbols.toml` and
-`globals.toml` are generated and gitignored, as is `generated/`.
+points the recompiler's scanner misses), `asm_dispatch_targets/`,
+`ram_diff_expect.toml` for `scripts/check_ram_diff.sh`, and
+`disc_boot_order.toml`, the disc cache loader's boot-order profile, generated
+from a boot trace ([disc-io.md](disc-io.md#boot-order-profile)).
+`symbols.toml` and `globals.toml` are generated and gitignored, as is
+`generated/`.
 
 A game that compiles decomp TUs natively adds `manifest/native.toml`; without
 it `regen-manifest.sh` writes the two symbol tables and stops.

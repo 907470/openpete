@@ -1133,10 +1133,11 @@ static const knob_desc_t g_builtin[] = {
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "disc_cache", "Disc cache", "Paths", "--disc-cache", "OPENPETE_DISC_CACHE",
-      "Disc image resident in memory (default on): guest disc reads are a "
-      "memcpy from a host array a background loader fills at boot, so a "
-      "level load never waits on the file (a read over a network share "
-      "costs tens of ms per burst and lands as a late tick). Shows whether "
+      "Disc image resident in memory (default on): a background loader "
+      "fills a host array in the game's boot order; a resident sector is a "
+      "memcpy and a missing one is read from the file at once (a read over "
+      "a network share costs tens of ms per burst and lands as a late tick). "
+      "Shows whether "
       "the cache attached. 0 = read the file per sector (A/B). Boot-latched; "
       "bytes identical either way.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,

@@ -44,14 +44,15 @@ Refreshed with `scripts/update_gamecontrollerdb.sh`.
 ## Bundled first-boot toolchain - mere aggregation
 
 Shipped as separate executables under `recomp/tools/`, invoked as
-subprocesses to recompile the user's disc at first boot. Not linked into
-`openpete-spyro1`; each is an independent program (mere aggregation).
+subprocesses to recompile the user's disc at first boot. Each is an
+independent program (mere aggregation), not linked into `openpete-spyro1`,
+except the PSXRecomp runtime sources its row names.
 
 | Component                                | License                                                          | Notes                                                      |
 | ---------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------- |
 | llvm-mingw (LLVM/Clang, lld, llvm-ar, ...) | Apache-2.0 **with LLVM exception** (+ MinGW-w64 CRT, permissive) | Windows archive; ship LLVM `LICENSE.TXT` in the bundle     |
 | LLVM/Clang 18.1.8 + lld (llvm.org build) | Apache-2.0 **with LLVM exception**                               | Linux AppImage; ship LLVM `LICENSE.TXT` in the bundle      |
-| PSXRecomp (psxrecomp)                    | PolyForm Noncommercial License 1.0.0                             | static recompiler; build tool, not shipped-linked          |
+| PSXRecomp (psxrecomp)                    | PolyForm Noncommercial License 1.0.0                             | static recompiler, a separate executable; its runtime sources `runner/src/gte.cpp`, `runner/include/psx_runtime.h` and `runner/include/psx_runtime_internal.h` are compiled into `openpete-spyro1` until openpete's own replacements land |
 | fmt 9.1.1 (in PSXRecomp)                 | MIT                                                              | https://github.com/fmtlib/fmt; vendored at `third_party/psxrecomp/recompiler/lib/fmt`, statically linked into PSXRecomp |
 | rabbitizer 1.7.10 (in PSXRecomp)         | MIT                                                              | https://github.com/Decompollaborate/rabbitizer; vendored at `third_party/psxrecomp/recompiler/lib/rabbitizer`, statically linked into PSXRecomp |
 

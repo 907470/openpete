@@ -178,6 +178,7 @@ nav:
       - Render channel census: developer/render-channel-census.md
       - Mod API audit: developer/mod-api-audit.md
       - PsyCross boundary: developer/psycross-boundary.md
+      - Disc I/O: developer/disc-io.md
       - History: developer/history.md
       - PsyCross changes:
           - developer/psycross/README.md

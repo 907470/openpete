@@ -10,7 +10,8 @@ presentation layer.
 ## Repository layout
 
 - `core/` - game-agnostic runtime; no Spyro-specific address or symbol.
-  `psx/` (CPU state, dispatch, BIOS, CD-ROM, disc cache), `runtime/` (run
+  `psx/` (CPU state, dispatch, BIOS, CD-ROM, the disc reader and
+  [disc cache](disc-io.md)), `runtime/` (run
   loop, ticker, present thread), `renderer/` and `rhi/` (native renderer
   over Vulkan), `input/`, `host/` (memory cards, music and sfx overrides),
   `record/` (bk2 movies, savestates, rewind, video), `config/` (options,

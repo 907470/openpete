@@ -57,6 +57,9 @@ The level notes are in the Spyro section.
   re-implementation) ABI boundary: `u_long` and pointer-width divergence,
   which APIs are stride-safe, the 12-byte host prim header versus the PSX
   4-byte tag, and the Pass 5b guard.
+- [`disc-io.md`](disc-io.md) - the disc reader every host read path uses,
+  the disc cache behind it, the per-game boot-order profile, the
+  `OPENPETE_DISC_TRACE` row format, and the disc checks.
 
 ## Determinism, oracle and debugging
 

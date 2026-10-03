@@ -67,7 +67,7 @@ enum {
     OP_PACE_PRESENT_SPAN = 9,
     OP_PACE_PAD_READ    = 10,
     OP_PACE_FLIP        = 11,
-    OP_PACE_CD_MISS     = 12,  /* a disc read blocked on the background loader: a = waited ns, b = end offset */
+    OP_PACE_CD_MISS     = 12,  /* a disc cache miss served from the image file: a = file read ns, b = end offset */
     OP_PACE_HOST_PUMP   = 13   /* one iteration of the host pump loop (thread split only) */
 };
 
@@ -366,11 +366,11 @@ void openpete_pace_shed(uint8_t kind, uint16_t reason,
  * @param periods Pacing periods discarded.
  * @param behind_ns How far behind the deadline the host was. */
 void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns);
-/** @brief Record a guest disc read that blocked on the in-memory image's background loader.
+/** @brief Record a disc cache miss served from the image file.
  *
- * The disc cache calls it after the wait. Writes a CD_MISS record only; no
- * census counter; no-op without an open log.
- * @param waited_ns Time the read waited for the range to become resident.
+ * The disc cache calls it after the reader's file read. Writes a CD_MISS
+ * record only; no census counter; no-op without an open log.
+ * @param waited_ns Time the file read took.
  * @param end_offset End byte offset of the requested range. */
 void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset);
 
