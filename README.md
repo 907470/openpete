@@ -1,10 +1,9 @@
 # OpenPete
 
-Cross-platform PC port of *Spyro the Dragon* (PSX, 1998). The game's MIPS
+Cross-platform PC port of the original PSX Spyro trilogy. The games' MIPS
 code is statically recompiled to C at build time, the PSYQ system library
 is replaced by a host re-implementation, and a native Vulkan renderer draws
-the scene from gameplay state. The runtime in `core/` is game-agnostic and
-is shared by the Spyro 2 and Spyro 3 ports.
+the scene from gameplay state.
 
 ## Documentation
 
