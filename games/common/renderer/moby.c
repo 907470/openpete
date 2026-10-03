@@ -1020,9 +1020,11 @@ static int moby_otkey_wanted(void) {
 
 /** @brief An animated record's paint key through the game's record decode.
  *
- * The row is MOBY_OTK_NONE while the key is not wanted or the game mirrors
- * no key (no otkey_record slot), and the game's specular row replaces the
- * decoded row on the specular pass (material tag "SPEC", its re-extract "SP").
+ * Computed on every feed, rank select on or off: moby_coincident_pull reads
+ * it to order exactly coincident faces. The row is MOBY_OTK_NONE when the
+ * game mirrors no key (no otkey_record slot), and the game's specular row
+ * replaces the decoded row on the specular pass (material tag "SPEC", its
+ * re-extract "SP").
  * @param cpu The guest CPU state, read only.
  * @param header Keyframe A's AnimationHeader.
  * @param headerB Keyframe B's AnimationHeader.
@@ -1035,7 +1037,7 @@ static void moby_otk_anim_record(CPUState* cpu, uint32_t header, uint32_t header
     int a = 0;
     moby_otk_row_t row = MOBY_OTK_NONE;
     tr[0] = tr[1] = tr[2] = 0;
-    if (moby_otkey_wanted() && moby_game.otkey_record)
+    if (moby_game.otkey_record)
         row = moby_game.otkey_record(cpu, header, headerB, w0, TR_raw, tr, &a);
     if (row != MOBY_OTK_NONE && moby_game.specular_otkey_row != MOBY_OTK_NONE &&
         s_cur_mat[0] == 'S' && s_cur_mat[1] == 'P')
@@ -3161,6 +3163,7 @@ typedef struct {
     _Alignas(64) int faces;
     int emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearstraddle;
     int align_lo, align_hi, desync;
+    int coinc_pairs, coinc_pulls;   /* moby_coincident_pull: matches, faces pulled */
 } mn_walkdiag;
 /* Slot 0 is the serial walk's, and the slot every parallel run sums into. */
 static mn_walkdiag s_wdiag[MN_MAX_WORKERS];
@@ -4176,6 +4179,124 @@ static int moby_face_otkey(const proj_xy* rec0, const wface_t* F, const proj_xy*
     return moby_otk_face_bucket(&rec0->otk, &f);
 }
 
+/* ---- exactly coincident faces of one moby ---------------------------------
+ * Two faces of one model can carry the same three projected vertices (an
+ * eye decal authored over the head face it sits on). The draw orders them
+ * by its ordering table: func_8001F798 appends each prim at the TAIL of its
+ * local bucket (r_moby.s 1153-1168 and 1190-1221 quads, 1335-1350 and
+ * 1377-1409 triangles: the old tail's link is pointed at the new prim and the
+ * bucket's end word replaced), and the splice links the local buckets from
+ * the highest down (r_moby.s 1553-1599, $a0 from $s5 stepping -8), so the
+ * prim painted last is the one in the lowest bucket and, within one bucket,
+ * the one emitted last. Under the native depth test the pair's depths are
+ * equal and the winner is whatever the rasteriser rounds per winding; the
+ * pass below finds such pairs per record and gives the game's last-painted
+ * member the coplanar-decal pull (vz * 0.998) the special-face path uses. */
+
+/* One coincident-face class: its vertex key, the member the draw paints
+ * last, and the member count. */
+typedef struct { uint32_t key[12]; int top, n; } coinc_slot;
+static _Thread_local coinc_slot* t_coinc;   /* open-addressed table, per worker */
+static _Thread_local int t_coinc_cap;
+
+/** @brief Write a walk triangle's order-free vertex key: (vz, tvz, sx, sy) bit patterns per vertex, sorted.
+ *
+ * Two triangles get equal keys exactly when their three vertices match as a
+ * set, whatever the winding or the starting vertex. vz is part of the key so
+ * a face that already carries a decal pull no longer matches its base.
+ * @param t The triangle.
+ * @param key Receives 12 words. */
+static void coinc_key_of(const ntri_t* t, uint32_t key[12]) {
+    uint32_t v[3][4];
+    for (int q = 0; q < 3; q++) {
+        memcpy(&v[q][0], &t->v[q].vz, 4);  memcpy(&v[q][1], &t->v[q].tvz, 4);
+        memcpy(&v[q][2], &t->v[q].sx, 4);  memcpy(&v[q][3], &t->v[q].sy, 4);
+    }
+    static const int cs[3][2] = { {0, 1}, {1, 2}, {0, 1} };   /* 3-element sorting network */
+    for (int k = 0; k < 3; k++) {
+        uint32_t* a = v[cs[k][0]]; uint32_t* b = v[cs[k][1]];
+        if (memcmp(a, b, sizeof v[0]) > 0) {
+            uint32_t tmp[4]; memcpy(tmp, a, sizeof tmp); memcpy(a, b, sizeof tmp); memcpy(b, tmp, sizeof tmp);
+        }
+    }
+    memcpy(key, v, sizeof v);
+}
+
+/** @brief Whether the draw paints prim i after prim j, i emitted after j, both of one moby.
+ *
+ * With both bucket words known the lower bucket paints last, and within one
+ * bucket the later emission (the draw appends at the bucket's tail). A prim
+ * the draw drops (word -1 while the other is keyed) paints never. With no
+ * key on either side (the draw drops both, or the game mirrors no key) the
+ * pair is taken as one bucket and the later emission paints last.
+ * @param oi Prim i's bucket word.
+ * @param oj Prim j's bucket word.
+ * @return 1 when i paints after j. */
+static int coinc_paints_after(int32_t oi, int32_t oj) {
+    if (oi < 0 || oj < 0) return oi >= 0 || oj < 0;
+    return MOBY_OTK_BUCKET(oi) <= MOBY_OTK_BUCKET(oj);
+}
+
+/** @brief Enter emitted triangle i into the coincidence table, updating its class's last-painted member.
+ *
+ * Under OPENPETE_MOBY_VERIFY each match prints one line on its VBL.
+ * @param O The emit target.
+ * @param i The triangle's index in O.
+ * @param mask The table size less one. */
+static void coinc_insert(mn_out* O, int i, int mask) {
+    uint32_t key[12];
+    coinc_key_of(&O->tri[i], key);
+    uint32_t h = 2166136261u;
+    for (int k = 0; k < 12; k++) h = (h ^ key[k]) * 16777619u;
+    coinc_slot* s = &t_coinc[h & (uint32_t)mask];
+    while (s->n && memcmp(s->key, key, sizeof key) != 0) {
+        h++;
+        s = &t_coinc[h & (uint32_t)mask];
+    }
+    if (!s->n) { memcpy(s->key, key, sizeof key); s->top = i; s->n = 1; return; }
+    t_diag->coinc_pairs++;
+    int j = s->top;
+    if (coinc_paints_after(O->otk[i], O->otk[j])) s->top = i;
+    s->n++;
+    if (moby_verify_vbl())
+        fprintf(stderr, "[moby-coincident vbl=%u] moby=%08X tri=%d,%d otk=%08X,%08X tex=%d,%d "
+                "fkey=%08X,%08X last=%d vz=%.2f,%.2f,%.2f\n",
+                openpete_frame, O->moby[i], j, i, (uint32_t)O->otk[j], (uint32_t)O->otk[i],
+                O->tri[j].textured, O->tri[i].textured, O->fkey[j], O->fkey[i], s->top,
+                (double)O->tri[i].v[0].vz, (double)O->tri[i].v[1].vz, (double)O->tri[i].v[2].vz);
+}
+
+/** @brief Pull toward the camera the last-painted member of every set of exactly coincident triangles one moby record emitted.
+ *
+ * The triangles [start, O->n) are one record's. Keys are hashed into a
+ * thread-local open-addressed table sized to twice the triangle count
+ * (cleared per record); each class keeps the member the game's draw paints
+ * last (coinc_paints_after), and that member alone takes vz * 0.998 on its
+ * three vertices, so the depth test keeps the game's paint order for exactly
+ * coincident faces. Non-coincident triangles are untouched. Matches and
+ * pulls count into t_diag.
+ * @param O The emit target.
+ * @param start The record's first triangle in O. */
+static void moby_coincident_pull(mn_out* O, int start) {
+    int n = O->n - start;
+    if (n < 2) return;
+    int cap = 16;
+    while (cap < 2 * n) cap <<= 1;
+    if (cap > t_coinc_cap) {
+        coinc_slot* nt = (coinc_slot*)realloc(t_coinc, sizeof(coinc_slot) * (size_t)cap);
+        if (!nt) return;
+        t_coinc = nt; t_coinc_cap = cap;
+    }
+    for (int s = 0; s < cap; s++) t_coinc[s].n = 0;
+    for (int i = start; i < O->n; i++) coinc_insert(O, i, cap - 1);
+    for (int s = 0; s < cap; s++) {
+        if (t_coinc[s].n < 2) continue;
+        ntri_t* t = &O->tri[t_coinc[s].top];
+        t->v[0].vz *= 0.998f; t->v[1].vz *= 0.998f; t->v[2].vz *= 0.998f;
+        t_diag->coinc_pulls++;
+    }
+}
+
 /** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
  *
  * Per record: the specular pass skips a moby the regular pass already fed
@@ -4307,6 +4428,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         if      (FC->align == 0) t_diag->align_lo++;
         else if (FC->align == 1) t_diag->align_hi++;
         else                     t_diag->desync++;
+        const int rec_tri0 = t_out->n;   /* this record's first emitted triangle */
         for (int fi = 0; fi < FC->nfaces; fi++) {
             const wface_t* F = &FC->f[fi];
             int fresh = F->fresh, textured = F->textured;
@@ -4643,6 +4765,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 }
             }
         }
+        moby_coincident_pull(t_out, rec_tri0);
     }
 }
 
@@ -4872,6 +4995,7 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         s_wdiag[0].quad += D->quad;   s_wdiag[0].nearstraddle += D->nearstraddle;
         s_wdiag[0].align_lo += D->align_lo; s_wdiag[0].align_hi += D->align_hi;
         s_wdiag[0].desync += D->desync;
+        s_wdiag[0].coinc_pairs += D->coinc_pairs; s_wdiag[0].coinc_pulls += D->coinc_pulls;
     }
 }
 
@@ -5226,14 +5350,15 @@ static void compare_walk_vs_prims(void) {
         "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d nearstraddle=%d} "
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
         "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f "
-        "| special_faces=%ld/%ld/%ld bit4_faces=%ld\n",
+        "| special_faces=%ld/%ld/%ld bit4_faces=%ld coincident=%d/%d\n",
         openpete_frame,
         s_wdiag[0].fresh_g, s_wdiag[0].fresh_t, s_wdiag[0].strip, s_wdiag[0].sprite,
         s_wdiag[0].skip, s_wdiag[0].quad, s_wdiag[0].oor, s_wdiag[0].nearstraddle,
         s_wdiag[0].align_lo, s_wdiag[0].align_hi, s_wdiag[0].desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
         prim_quad, prim_tri, s_wdiag[0].quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0,
-        s_special_faces[0], s_special_faces[1], s_special_faces[2], s_bit4_faces);
+        s_special_faces[0], s_special_faces[1], s_special_faces[2], s_bit4_faces,
+        s_wdiag[0].coinc_pairs, s_wdiag[0].coinc_pulls);
     fprintf(stderr, "[moby-walk-special vbl=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
             openpete_frame, spc_n, spc_n ? (double)spc_sum/(double)spc_n : 0.0, spc_max);
     #undef ONSCR
