@@ -1,8 +1,8 @@
 # NOTICE - third-party attributions
 
-OpenPete's own code is licensed under **PolyForm Noncommercial 1.0.0** (see
-`LICENSE`). It bundles or depends on the third-party projects below; each
-retains its upstream license. This file is the authoritative record of what
+OpenPete's own code is licensed under the MIT License (see `LICENSE`). It
+bundles or depends on the third-party projects below; each retains its
+upstream license. This file is the authoritative record of what
 travels in a distributed build and under which terms. Every release archive
 ships this file and, under `licences/`, the upstream license text of each
 component below that the archive carries; `docs/licences/manifest.tsv` maps

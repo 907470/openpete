@@ -41,9 +41,10 @@ under [Disc image](docs/src/developer/building.md#disc-image).
 
 ## License
 
-Source code is offered under PolyForm Noncommercial 1.0.0 (`LICENSE`). The
-Spyro decompilation submodule, PsyCross, psxrecomp, and other vendored deps
-retain their respective upstream licenses; see `NOTICE.md`.
+Source code is offered under the MIT License (`LICENSE`). The Spyro
+decompilation submodule, PsyCross, psxrecomp, and other vendored deps retain
+their respective upstream licenses; see `NOTICE.md`. Contributions are
+accepted under the Developer Certificate of Origin; see `CONTRIBUTING.md`.
 
 This project is not affiliated with or endorsed by Sony, Insomniac Games,
 or Activision.
