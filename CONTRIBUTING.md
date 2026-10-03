@@ -25,14 +25,47 @@ signed off.
   GTE or the state-region manifest runs `tests/harness/check_psx_oracle.sh`;
   a change to rendering runs `tests/harness/check_presentation_golden.sh`
   for every game that links the changed file; a docs-only change runs
-  `mkdocs build --strict -f docs/mkdocs.yml`. The developer pages describe
-  each gate and how to read its verdict.
+  `scripts/build-docs.sh`. The table under Checks lists what each check
+  needs; the developer pages describe each gate and how to read its
+  verdict.
 - Every C/C++ function carries a doxygen comment opening with a one-line
   `@brief`; the doc ratchet refuses a touched function without one.
 - A comment describes what the code does and the invariant it keeps, not
   who wrote it or when.
 - A commit message states what changed and why; it carries no attribution
   trailer other than the sign-off.
+
+## Checks
+
+`ctest --test-dir build/linux-release -LE slow` runs every CTest row
+without the `slow` label. In that set a row whose game binary, disc or
+other input is missing exits 64, which CTest reports as skipped.
+
+| Needs | Check | Command |
+|---|---|---|
+| Nothing beyond the build | Unit tests (`tests/unit/`), the fence and ratchet checks (label `fence`), `pacing_stats`, `channel_registry_audit`, `channel_signatures`, `mod_shader_compile`, `mod_vec_test` | `ctest --test-dir build/linux-release -LE slow` |
+| The PSXRecomp build (`third_party/psxrecomp/build/PSXRecomp`) | `recomp_gte_sideeffects` | same |
+| A MinGW cross compiler | `sdk_windows_include` | same |
+| The disc | The sub-tick, Vulkan validation, run-ahead and terrain-cache checks (`*_subtick_<game>`, `vk_validation_<game>`, `runahead_ident_<game>`, `terrain_walk_cache_<game>`), `mod_imgui` | same |
+| The disc | Determinism and savestate checks; `determinism_matrix`, `determinism_soak` and `aspect_screenshot_symmetry` fail, not skip, without it | `ctest --test-dir build/linux-release -L determinism` |
+| The disc | Mod ladder | `tests/harness/check_mods.sh` (`ctest -L mods`) |
+| The disc, and podman or docker | Presentation golden, captured inside the image `tests/harness/linux-capture.Dockerfile` | `tests/harness/check_presentation_golden.sh [--game G]` |
+| The disc and the DuckStation fork (`scripts/setup_duckstation.sh`) | Oracle; the first run captures the golden trace (about 15 minutes) | `tests/harness/check_psx_oracle.sh [--game G]` (`ctest -L oracle`) |
+| `mkdocs-material` | Documentation site: runs `tools/gen_mod_docs.py` and `tools/gen_code_docs.py` (the `build/linux-release` compile database), then `mkdocs build --strict`; exits 0 without building the site when mkdocs is not installed | `scripts/build-docs.sh` |
+
+## Code conventions
+
+- An exported function takes the `openpete_` prefix. `rhi_` names the
+  render hardware interface under `core/rhi/`. `op_` names the host
+  utility headers: time and period arithmetic (`openpete_time.h`), the
+  profiler (`openpete_profile.h`), atomic file writes
+  (`openpete_atomic_file.h`), string helpers (`openpete_str.h`), function
+  tracing (`openpete_func_trace.h`), the mod API's guest memory accessors
+  (`openpete_mod_api.h`), WAV loading and sound-effect identity
+  (`core/host/`). Game code under `games/` also uses subsystem prefixes
+  (`moby_`, `player_`, `psyq_`).
+- A new header uses an `#ifndef` include guard; 134 of the 153 headers
+  under `core/` and `games/` do, the other 19 use `#pragma once`.
 
 ## What is not accepted
 

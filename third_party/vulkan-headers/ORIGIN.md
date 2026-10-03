@@ -7,7 +7,7 @@
 - Licence: Apache-2.0 (the SPDX line in each C header; the Apache notice in
   `vk_icd.h`, `vk_layer.h` and `vk_sdk_platform.h`); the C++ headers
   `vulkan*.hpp` are `Apache-2.0 OR MIT`. Copy shipped as
-  `docs/licences/vulkan-headers.txt`.
+  `packaging/licences/vulkan-headers.txt`.
 - Use: compile-time headers for `openpete_rhi` and `openpete_imgui`
   (`core/rhi/CMakeLists.txt:13`, `core/CMakeLists.txt:522`); no Vulkan
   library is linked, volk loads it at runtime.

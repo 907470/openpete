@@ -9,4 +9,4 @@ copy inside PsyCross.
   (`third_party/PsyCross/include/PsyX/common/glad.h:3-17`).
 - Files: `third_party/PsyCross/src/render/glad.c`,
   `third_party/PsyCross/include/PsyX/common/glad.h`.
-- Licence: MIT; copy shipped as `docs/licences/glad.txt`.
+- Licence: MIT; copy shipped as `packaging/licences/glad.txt`.

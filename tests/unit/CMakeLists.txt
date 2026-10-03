@@ -5,10 +5,9 @@
 # game build. Hooked into ctest via enable_testing() in the root list.
 
 # bk2_movie depends on miniz (zip read) + the log macros. Compile those
-# sources directly into the test target instead of linking openpete_core
-# - pulling the full static lib transitively drags SDL2 / SDL2main into
-# the link line, which under MinGW redefines main -> WinMain and the
-# console-style test fails to link with "undefined SDL_main".
+# sources directly into the test target instead of linking openpete_core,
+# whose link interface carries SDL3, OpenAL and every other runtime
+# dependency into a console test that uses none of them.
 add_executable(bk2_movie_test
     bk2_movie_test.c
     ${CMAKE_SOURCE_DIR}/core/record/bk2_movie.c
@@ -78,7 +77,7 @@ add_test(NAME keymap_test COMMAND keymap_test)
 
 # psx_region_test - verifies the PSX RAM virtualization region table
 # (registration / lookup / overlap-rejection). Compiles psx_region.c
-# directly so we don't drag openpete_core's SDL2 dependency into a
+# directly so openpete_core's SDL3 and OpenAL dependencies stay out of a
 # console test binary.
 add_executable(psx_region_test
     psx_region_test.c

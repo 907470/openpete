@@ -52,6 +52,8 @@ subprocesses to recompile the user's disc at first boot. Not linked into
 | llvm-mingw (LLVM/Clang, lld, llvm-ar, ...) | Apache-2.0 **with LLVM exception** (+ MinGW-w64 CRT, permissive) | Windows archive; ship LLVM `LICENSE.TXT` in the bundle     |
 | LLVM/Clang 18.1.8 + lld (llvm.org build) | Apache-2.0 **with LLVM exception**                               | Linux AppImage; ship LLVM `LICENSE.TXT` in the bundle      |
 | PSXRecomp (psxrecomp)                    | PolyForm Noncommercial License 1.0.0                             | static recompiler; build tool, not shipped-linked          |
+| fmt 9.1.1 (in PSXRecomp)                 | MIT                                                              | https://github.com/fmtlib/fmt; vendored at `third_party/psxrecomp/recompiler/lib/fmt`, statically linked into PSXRecomp |
+| rabbitizer 1.7.10 (in PSXRecomp)         | MIT                                                              | https://github.com/Decompollaborate/rabbitizer; vendored at `third_party/psxrecomp/recompiler/lib/rabbitizer`, statically linked into PSXRecomp |
 
 `recomp/tools/clang/lib/libtinfo.so.5` in the Linux bundle is **ours**, not
 ncurses: the llvm.org binaries name that library in their DT_NEEDED but
@@ -112,6 +114,14 @@ archive carries them, so they have no table row and no text under
   refuses the combination at configure (`core/CMakeLists.txt`), and
   `scripts/dist_compliance.py scan` refuses an archive whose binaries carry
   an FFmpeg or x264 marker.
+
+- toml11 3.7.1 and ELFIO 3.11 (`third_party/psxrecomp/recompiler/lib/toml11`,
+  `.../ELFIO`) - MIT (`LICENSE`, `LICENSE.txt`).
+  https://github.com/ToruNiina/toml11, https://github.com/serge1/ELFIO. On
+  PSXRecomp's include path; no PSXRecomp source includes either header.
+- PSXRecomp's runner build (`third_party/psxrecomp/runner/CMakeLists.txt`)
+  fetches GLFW 3.3.8 and fmt 10.1.1 and compiles the vendored glad under
+  `runner/lib/glad`. No openpete CMake file configures that project.
 
 The MinGW OpenAL Soft prebuilt in `third_party/OpenAL-mingw/` (version in
 `VERSION`, licence in `COPYING`) is the import library, headers and

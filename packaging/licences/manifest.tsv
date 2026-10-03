@@ -42,6 +42,8 @@ SDL_GameControllerDB (`gamecontrollerdb.txt`)	all	packaging/licences/gamecontrol
 llvm-mingw (LLVM/Clang, lld, llvm-ar, ...)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt
 LLVM/Clang 18.1.8 + lld (llvm.org build)	toolchain-linux	LICENSE.TXT	LLVM.txt
 PSXRecomp (psxrecomp)	all	third_party/psxrecomp/LICENSE	PSXRecomp.txt
+fmt 9.1.1 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/fmt/LICENSE.rst	fmt.txt
+rabbitizer 1.7.10 (in PSXRecomp)	all	third_party/psxrecomp/recompiler/lib/rabbitizer/LICENSE	rabbitizer.txt
 crt-beans (`sdk/examples/crt-beans`)	sdk	mods/crt-beans/LICENSE	crt-beans.txt
 OpenAL Soft 1.19.1, Debian 11 package (`usr/lib/libopenal.so.1`)	appimage	lib:libopenal	-
 sndio (`usr/lib/libsndio.so.7`)	appimage	lib:libsndio	-
@@ -50,3 +52,5 @@ libmd (`usr/lib/libmd.so.0`)	appimage	lib:libmd	-
 AppImage type-2 runtime	appimage	packaging/licences/appimage-runtime.txt	appimage-runtime.txt
 third_party/cubeb	none	third_party/cubeb/LICENSE	-
 third_party/duckstation	none	third_party/duckstation/LICENSE	-
+third_party/psxrecomp/recompiler/lib/toml11	none	third_party/psxrecomp/recompiler/lib/toml11/LICENSE	-
+third_party/psxrecomp/recompiler/lib/ELFIO	none	third_party/psxrecomp/recompiler/lib/ELFIO/LICENSE.txt	-

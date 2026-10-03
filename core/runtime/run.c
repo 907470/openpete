@@ -3610,8 +3610,9 @@ static int run_host_loop(const openpete_options_t* opts) {
      * loop pumps SDL events, sleeps the deadline, and skips the co_switch
      * into the game fiber - so g_ram / CPUState stay frozen and PsyCross
      * keeps presenting the last completed frame. SPU is muted on enter to
-     * avoid the held-voice drone (Cubeb runs on its own callback thread;
-     * without new SPU register writes voices loop their current sample). */
+     * avoid the held-voice drone (PsyCross's SPU output plays through
+     * OpenAL, whose mixer runs on its own thread; without new SPU register
+     * writes voices loop their current sample). */
     bool g_paused = false;
     bool g_step_one = false;
     bool prev_alt_enter = false;
