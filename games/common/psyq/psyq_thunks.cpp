@@ -264,7 +264,6 @@ static float s_spuMainVolume = 1.0f;
 /* The latch pack these statics and the callback tables below serialize into
  * for the savestate; definitions follow the last table. */
 #include "psyq/psyq_thunk_state.h"
-#include "psx/gtereg.h"
 #include "PsyX/PsyX_public.h"
 
 /* Internal PsyCross helpers we need to reach for the OT thunk. They live
@@ -1641,10 +1640,9 @@ void psyq_PutDrawEnv(CPUState* cpu) {
 
 /* Hor+ widescreen (--aspect) is implemented at the GTE-instruction
  * layer in psxrecomp's gte_ctc2 (third_party/psxrecomp/runner/src/gte.cpp)
- * so EVERY write to OFX picks up the widening - including Spyro's
- * renderer's inline CTC2 stores (which would bypass this thunk). The
- * libgte SetGeomOffset call eventually reaches gte_ctc2 too, so a
- * single widening point handles both routes without double-applying.
+ * so EVERY write to OFX picks up the widening: the renderer's inline CTC2
+ * stores and the recompiled libgte SetGeomOffset's CTC2 stores take the
+ * same route, so a single widening point applies once to both.
  *
  * The DISPENV / DRAWENV stay at their native PSX VRAM widths (typically
  * 512). Widening the VRAM-facing widths would make GR_StoreFrameBuffer
@@ -2216,133 +2214,6 @@ void psyq_DrawOTag(CPUState* cpu) {
         s_total_slots  = 0;
         s_hist_calls   = 0;
     }
-}
-
-/* --- libgte -------------------------------------------------------------- */
-
-/** @brief Copy the recompiler's GTE registers into PsyCross's before a libgte call.
- *
- * GTE state lives in two stores that are not synchronized: psxrecomp's
- * `cpu->gte_data[]` and `cpu->gte_ctrl[]`, which `gte_execute()` uses for
- * COP2 instructions in the recompiled code, and PsyCross's `gteRegs.CP2D`
- * and `gteRegs.CP2C`, which libgte functions such as SetTransMatrix use.
- * Each libgte thunk copies all 32 data and 32 control registers in before
- * the call and back out after it (gte_sync_psyx_to_cpu); without the bridge
- * an RTPS after SetTransMatrix reads a zero translation.
- * @param cpu Guest CPU state. */
-static void gte_sync_cpu_to_psyx(CPUState* cpu) {
-    for (int i = 0; i < 32; i++) {
-        gteRegs.CP2D.p[i].d = cpu->gte_data[i];
-        gteRegs.CP2C.p[i].d = cpu->gte_ctrl[i];
-    }
-}
-/** @brief Copy PsyCross's GTE registers back into the recompiler's after a libgte call.
- *
- * @param cpu Guest CPU state. */
-static void gte_sync_psyx_to_cpu(CPUState* cpu) {
-    for (int i = 0; i < 32; i++) {
-        cpu->gte_data[i] = gteRegs.CP2D.p[i].d;
-        cpu->gte_ctrl[i] = gteRegs.CP2C.p[i].d;
-    }
-}
-
-/** @brief Thunk for libgte InitGeom: PsyCross's InitGeom on the GTE registers.
- *
- * Copies the guest GTE data and control registers into PsyCross's, runs
- * InitGeom, and copies them back.
- * @param cpu Guest CPU state. */
-void psyq_InitGeom(CPUState* cpu) {
-    gte_sync_cpu_to_psyx(cpu);
-    InitGeom();
-    gte_sync_psyx_to_cpu(cpu);
-}
-
-/** @brief Thunk for libgte SetGeomOffset: sets the GTE screen offset OFX and OFY to a0 and a1.
- *
- * Copies the guest GTE registers into PsyCross's, runs SetGeomOffset and
- * copies them back. The widescreen and FOV overrides are applied at
- * projection time in the GTE, not here.
- * @param cpu Guest CPU state. */
-void psyq_SetGeomOffset(CPUState* cpu) {
-    gte_sync_cpu_to_psyx(cpu);
-    SetGeomOffset((int)cpu->a0, (int)cpu->a1);
-    gte_sync_psyx_to_cpu(cpu);
-    /* Hor+ widening / FOV override are applied inside
-     * gte_rtps_internal (third_party/psxrecomp/runner/src/gte.cpp) at
-     * projection time, so EVERY RTPS picks up the override regardless
-     * of whether OFX/H were set via this thunk or via the renderer's
-     * inline CTC2 stores. The thunk itself just forwards the args. */
-}
-
-/** @brief Thunk for libgte SetGeomScreen: sets the GTE projection distance H to a0.
- *
- * Copies the guest GTE registers into PsyCross's, runs SetGeomScreen and
- * copies them back. The FOV override is applied at projection time in the
- * GTE, not here.
- * @param cpu Guest CPU state. */
-void psyq_SetGeomScreen(CPUState* cpu) {
-    gte_sync_cpu_to_psyx(cpu);
-    SetGeomScreen((int)cpu->a0);
-    gte_sync_psyx_to_cpu(cpu);
-    /* --fov override applied inside gte_rtps_internal; see
-     * psyq_SetGeomOffset for the rationale. */
-}
-
-/** @brief Thunk for libgte SetTransMatrix: loads the guest MATRIX's translation into the GTE.
- *
- * A MATRIX span that runs past its region loads nothing.
- * @param cpu Guest CPU state. */
-void psyq_SetTransMatrix(CPUState* cpu) {
-    MATRIX* m = (MATRIX*)SPAN(cpu->a0, sizeof(MATRIX));
-    if (!m) return;
-    gte_sync_cpu_to_psyx(cpu);
-    SetTransMatrix(m);
-    gte_sync_psyx_to_cpu(cpu);
-}
-
-/** @brief Write the sign extension of m[2][2] into the MATRIX's alignment pad, as PSYQ MulMatrix's final `swc2 $11, 0x10(dst)` does.
- *
- * IR3 is a signed 16-bit GTE register but `swc2` stores 32 bits. Bytes
- * 16-17 of a MATRIX hold m[2][2]; bytes 18-19 are the alignment pad before
- * the long t[3] translation triple, which a caller's
- * `Memcpy(SHORTMATRIX, MATRIX, 20)` copies. PSYQ deposits 0xFFFF there when
- * m[2][2] is negative and 0x0000 otherwise; PsyCross's MulMatrix writes
- * m[2][2] as a 16-bit short and leaves the pad untouched, which reaches
- * gameplay state through g_Camera.
- * @param m The result matrix; NULL writes nothing. */
-static inline void psyq_matrix_swc2_sign_extend_pad(MATRIX* m) {
-    if (!m) return;
-    int16_t* pad = ((int16_t*)m) + 9; /* word right after m[2][2] */
-    *pad = (m->m[2][2] < 0) ? (int16_t)-1 : (int16_t)0;
-}
-
-/** @brief Thunk for libgte MulMatrix0: a2 = a0 * a1 on guest MATRIXes, with the result's sign-extension pad.
- *
- * Nothing is computed when any MATRIX span runs past its region.
- * @param cpu Guest CPU state. */
-void psyq_MulMatrix0(CPUState* cpu) {
-    MATRIX* m0 = (MATRIX*)SPAN(cpu->a0, sizeof(MATRIX));
-    MATRIX* m1 = (MATRIX*)SPAN(cpu->a1, sizeof(MATRIX));
-    MATRIX* m2 = (MATRIX*)SPAN(cpu->a2, sizeof(MATRIX));
-    if (!m0 || !m1 || !m2) return;
-    gte_sync_cpu_to_psyx(cpu);
-    MulMatrix0(m0, m1, m2);
-    psyq_matrix_swc2_sign_extend_pad(m2);
-    gte_sync_psyx_to_cpu(cpu);
-}
-
-/** @brief Thunk for libgte MulMatrix: a0 = a0 * a1 on guest MATRIXes, with the result's sign-extension pad.
- *
- * Nothing is computed when either MATRIX span runs past its region.
- * @param cpu Guest CPU state. */
-void psyq_MulMatrix(CPUState* cpu) {
-    MATRIX* m0 = (MATRIX*)SPAN(cpu->a0, sizeof(MATRIX));
-    MATRIX* m1 = (MATRIX*)SPAN(cpu->a1, sizeof(MATRIX));
-    if (!m0 || !m1) return;
-    gte_sync_cpu_to_psyx(cpu);
-    MulMatrix(m0, m1);
-    psyq_matrix_swc2_sign_extend_pad(m0);
-    gte_sync_psyx_to_cpu(cpu);
 }
 
 /* --- libpad -------------------------------------------------------------- */

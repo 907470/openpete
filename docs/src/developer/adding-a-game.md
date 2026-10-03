@@ -59,6 +59,10 @@ python3 tools/gen_psyq_toml.py --exe games/<game>/<game>/build/PSX.EXE \
 GAME=<game> bash scripts/regen-recomp.sh       # generated/: main EXE, overlays, dispatch, stubs
 ```
 
+`psyq.toml`'s second header line records the options it was generated
+with (`--translate` per symbol translated instead of stubbed, among them
+the libgte closure); a regeneration repeats them.
+
 `manifest/` holds `psyq.toml`, `psyq_names.toml`, `forced_entries/` (entry
 points the recompiler's scanner misses), `asm_dispatch_targets/`, and
 `ram_diff_expect.toml` for `scripts/check_ram_diff.sh`. `symbols.toml` and
