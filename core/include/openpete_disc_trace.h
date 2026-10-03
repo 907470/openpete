@@ -3,8 +3,9 @@
  * OPENPETE_DISC_TRACE=PATH writes a tab-separated row for every host read
  * of the disc image, whatever reads it: PsyCross's libcd and XA reads (its
  * read observer), the disc cache loader's chunk reads, and the host paths
- * that open the image themselves (EXE load, disc serial, recomp extract,
- * woah NSF, sfx census, WAD overlay, library ingest). Columns:
+ * that read through disc_image (EXE load, disc serial, recomp extract,
+ * woah NSF, sfx census, WAD overlay, library ingest, mod read_sector).
+ * Columns:
  *
  *   ns      op_now() at the read, monotonic nanoseconds
  *   vbl     openpete_vbl at the read, -1 before the runtime registers it
@@ -30,7 +31,8 @@
 extern "C" {
 #endif
 
-/* Read paths. ISO is an iso_reader file read issued outside any tagged scope. */
+/* Read paths. ISO is a disc_image read issued with no tag outside any
+ * tagged scope; MOD is a mod API read_sector. */
 enum {
     OPENPETE_DISC_TAG_NONE = 0,
     OPENPETE_DISC_TAG_LIBCD,
@@ -44,6 +46,7 @@ enum {
     OPENPETE_DISC_TAG_INGEST,
     OPENPETE_DISC_TAG_CACHE_LOAD,
     OPENPETE_DISC_TAG_ISO,
+    OPENPETE_DISC_TAG_MOD,
     OPENPETE_DISC_TAG_COUNT
 };
 

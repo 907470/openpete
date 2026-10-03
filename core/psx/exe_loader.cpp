@@ -4,15 +4,12 @@
 //   1. --exe-path PATH       : read PSX EXE directly (boot bring-up;
 //                              matches the decomp's build/PSX.EXE).
 //   2. --disc CUE-PATH       : read it out of a BIN/CUE via iso9660 lookup of
-//                              the per-game EXE filename.
-//
-// The disc path leans on psxrecomp's iso_reader (vendored, untouched) so we
-// stay in step with the recompiler's view of disc layout.
+//                              the per-game EXE filename (disc_image).
 
 #include "openpete_psx.h"
 #include "openpete_log.h"
 
-#include "../../third_party/psxrecomp/runner/include/iso_reader.h"
+#include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 
 #include <cctype>
@@ -158,34 +155,17 @@ extern "C" int openpete_psx_resolve_disc_bin(const char* disc_path,
 /* A PSX EXE's body loads into the 2 MiB of main RAM behind its 2048-byte header. */
 #define PSX_EXE_MAX_BYTES (OPENPETE_PSX_RAM_SIZE + 2048u)
 
-/** @brief Read one file out of a disc image, refusing a directory size above max_bytes before allocating.
+/** @brief Read one file out of an open disc image, refusing a directory size above max_bytes before allocating.
  *
- * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
+ * @param img The open image.
  * @param filename iso9660 path of the file.
  * @param max_bytes The largest size the caller accepts.
  * @param out_size Receives the byte count on success.
  * @return The bytes, freed by the caller with free(); NULL on failure. */
-static uint8_t* load_disc_file(const char* cue_path, const char* filename,
+static uint8_t* read_disc_file(disc_image_t* img, const char* filename,
                                uint32_t max_bytes, size_t* out_size) {
-    if (!cue_path || !filename) return nullptr;
-
-    char bin[4096], tried[4096];
-    if (openpete_psx_resolve_disc_bin(cue_path, bin, sizeof bin,
-                                      tried, sizeof tried) != 0) {
-        OPL_ERROR_F("disc", "no disc image at --disc %s (tried: %s)",
-                    cue_path, tried[0] ? tried : "(nothing)");
-        return nullptr;
-    }
-
-    PS1::ISOReader reader;
-    if (!reader.Open(bin)) {
-        OPL_ERROR_F("disc", "ISOReader::Open failed for %s (--disc %s)",
-                    bin, cue_path);
-        return nullptr;
-    }
-
-    PS1::ISOFileEntry entry{};
-    if (!reader.FindFile(filename, entry)) {
+    disc_image_entry_t entry{};
+    if (disc_image_find(img, filename, &entry) != 0 || entry.is_dir) {
         OPL_ERROR_F("disc", "file not found on disc: %s", filename);
         return nullptr;
     }
@@ -196,14 +176,12 @@ static uint8_t* load_disc_file(const char* cue_path, const char* filename,
         return nullptr;
     }
 
-    auto* buf = static_cast<uint8_t*>(std::malloc(entry.size));
+    auto* buf = static_cast<uint8_t*>(std::malloc(entry.size ? entry.size : 1u));
     if (!buf) return nullptr;
 
-    size_t got = reader.ReadFile(filename, buf, entry.size);
-    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_NONE, entry.lba,
-                                (uint32_t)((got + 2047u) / 2048u), OPENPETE_DISC_DIRECT);
+    size_t got = disc_image_read_file(img, &entry, buf, entry.size);
     if (got != entry.size) {
-        OPL_ERROR_F("disc", "ReadFile got %zu/%u bytes", got, entry.size);
+        OPL_ERROR_F("disc", "disc file %s: read %zu/%u bytes", filename, got, entry.size);
         std::free(buf);
         return nullptr;
     }
@@ -212,19 +190,45 @@ static uint8_t* load_disc_file(const char* cue_path, const char* filename,
     return buf;
 }
 
+/** @brief Open a disc image and read one file out of it; see read_disc_file.
+ *
+ * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
+ * @param filename iso9660 path of the file.
+ * @param max_bytes The largest size the caller accepts.
+ * @param tag The OPENPETE_DISC_TAG_* path the reads are traced and steered
+ *        under; OPENPETE_DISC_TAG_NONE takes the thread's trace scope and
+ *        never steers the disc cache loader.
+ * @param out_size Receives the byte count on success.
+ * @return The bytes, freed by the caller with free(); NULL on failure. */
+static uint8_t* load_disc_file(const char* cue_path, const char* filename,
+                               uint32_t max_bytes, int tag, size_t* out_size) {
+    if (!cue_path || !filename) return nullptr;
+    disc_image_t* img = disc_image_open(cue_path, DISC_READ_CACHED, tag);
+    if (!img) return nullptr;
+    uint8_t* bytes = read_disc_file(img, filename, max_bytes, out_size);
+    disc_image_close(img);
+    return bytes;
+}
+
 extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
                                                     const char* filename,
                                                     size_t* out_size) {
-    return load_disc_file(cue_path, filename, DISC_FILE_MAX_BYTES, out_size);
+    return load_disc_file(cue_path, filename, DISC_FILE_MAX_BYTES, OPENPETE_DISC_TAG_NONE,
+                          out_size);
+}
+
+extern "C" uint8_t* openpete_psx_read_exe_from_image(struct disc_image* img,
+                                                     const char* exe_filename,
+                                                     size_t* out_size) {
+    if (!img || !exe_filename) return nullptr;
+    return read_disc_file(img, exe_filename, PSX_EXE_MAX_BYTES, out_size);
 }
 
 extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                                    const char* exe_filename,
                                                    size_t* out_size) {
-    int scope = openpete_disc_trace_scope_begin(OPENPETE_DISC_TAG_EXE);
-    uint8_t* bytes = load_disc_file(cue_path, exe_filename, PSX_EXE_MAX_BYTES, out_size);
-    openpete_disc_trace_scope_end(scope);
-    return bytes;
+    return load_disc_file(cue_path, exe_filename, PSX_EXE_MAX_BYTES, OPENPETE_DISC_TAG_EXE,
+                          out_size);
 }
 
 /* Serial from SYSTEM.CNF's BOOT line; see openpete_psx.h. */
@@ -233,22 +237,18 @@ extern "C" int openpete_psx_read_disc_serial(const char* image_path,
     if (!image_path || !out || out_cap < 12) return -1;
     out[0] = '\0';
 
-    char bin[4096];
-    if (openpete_psx_resolve_disc_bin(image_path, bin, sizeof bin,
-                                      nullptr, 0) != 0)
-        return -1;
+    disc_image_t* img = disc_image_open(image_path, DISC_READ_CACHED, OPENPETE_DISC_TAG_SERIAL);
+    if (!img) return -1;
 
-    PS1::ISOReader reader;
-    if (!reader.Open(bin)) return -1;
-
-    PS1::ISOFileEntry entry{};
-    if (!reader.FindFile("SYSTEM.CNF", entry) || entry.size == 0 ||
-        entry.size > 4096)
+    disc_image_entry_t entry{};
+    if (disc_image_find(img, "SYSTEM.CNF", &entry) != 0 || entry.is_dir ||
+        entry.size == 0 || entry.size > 4096) {
+        disc_image_close(img);
         return -1;
+    }
     std::vector<uint8_t> buf(entry.size + 1, 0);
-    size_t got = reader.ReadFile("SYSTEM.CNF", buf.data(), entry.size);
-    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_SERIAL, entry.lba,
-                                (uint32_t)((got + 2047u) / 2048u), OPENPETE_DISC_DIRECT);
+    size_t got = disc_image_read_file(img, &entry, buf.data(), entry.size);
+    disc_image_close(img);
     if (got != entry.size)
         return -1;
     const char* text = reinterpret_cast<const char*>(buf.data());

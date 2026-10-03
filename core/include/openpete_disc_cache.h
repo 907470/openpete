@@ -1,15 +1,17 @@
 /* core/include/openpete_disc_cache.h - the disc image resident in host memory.
  *
- * PsyCross reads the disc through a VFILE; on the file path every guest
- * CdRead drain, every XA pump and CdInit's re-open is an fread on the sim
- * thread, and the wall-clock cost of that read (tens of ms per level-load
- * burst over a network share) lands as a late tick that no interpolation
- * can hide. This attaches the image as PsyCross's memory image instead,
- * filled by a background thread in file order behind a watermark: a read
- * below the watermark is a memcpy; one above it blocks until the loader
- * passes it and is counted as a miss (logged, and a pacelog CD_MISS event)
- * so the stall is attributed rather than guessed at. Bytes are identical
- * to the file path. */
+ * The cache is disc_image's backing store. On attach it allocates the whole
+ * image and a background thread fills it in 8 MB chunks, in file order
+ * except that the chunk a game or XA read last missed on is loaded next. A
+ * disc_image read of a range in resident chunks is a memcpy (a hit); a read
+ * touching any other chunk is served from the file at once (a miss),
+ * counted with its read path, emitted as a pacelog CD_MISS event, and
+ * logged once per chunk. No read waits on the loader. Bytes are identical
+ * to the file path.
+ *
+ * PsyCross reads the image through openpete_disc_psycross_bind in both
+ * cache modes, so libcd and XA reads take the same path as every host
+ * reader. */
 #ifndef OPENPETE_DISC_CACHE_H
 #define OPENPETE_DISC_CACHE_H
 #include <stddef.h>
@@ -17,45 +19,85 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/** @brief Attach a disc image as PsyCross's memory image and start the background loader.
+struct disc_image;
+
+/** @brief Allocate the image and start the background loader.
  *
- * Allocates the whole image, installs the miss wait with
- * PsyX_CDFS_SetMemWait, hands the buffer to PsyX_CDFS_Init_Mem, and starts
- * the loader thread; when the thread cannot be created the image loads
- * inline before the call returns. A call while already attached changes
- * nothing.
- * @param bin_path Path to the disc image.
- * @return 1 when PsyCross now reads from memory (or already did); 0 when
+ * When the thread cannot be created the image loads inline before the call
+ * returns. A call while already attached changes nothing.
+ * @param bin_path Path to the sector image, as disc_image_bin_path reports
+ *        it; disc_image handles on the same path read through the cache.
+ * @return 1 when the cache is attached (or already was); 0 when
  *         @p bin_path is NULL or the file cannot be opened, sized (larger
- *         than 0x7FFFFFFF bytes) or allocated, and the caller falls back
- *         to PsyX_CDFS_Init. */
+ *         than 0x7FFFFFFF bytes) or allocated, and readers use the file. */
 int  openpete_disc_cache_attach(const char* bin_path);
-/** @brief Report whether an image is attached as PsyCross's memory image.
+/** @brief Report whether the cache is attached.
  *
- * Stays 1 after openpete_disc_cache_shutdown, since PsyCross keeps the buffer.
+ * Stays 1 after openpete_disc_cache_shutdown, since resident chunks still serve.
  * @return 1 after a successful attach, else 0. */
 int  openpete_disc_cache_active(void);
+/** @brief Copy image bytes [offset, offset + len) from resident chunks.
+ *
+ * On a miss the first chunk not resident becomes the loader's next target
+ * for a game read (libcd, EXE, extract, WAD overlay) or an XA read; a host
+ * read (woah NSF, library scan, ingest, sfx census, mods, untagged) steers
+ * nothing. The caller then reads the file and reports it with
+ * openpete_disc_cache_miss_served.
+ * @param bin_path The reader's sector image path.
+ * @param offset First byte.
+ * @param dst Receives @p len bytes on a hit.
+ * @param len Byte count.
+ * @param tag The OPENPETE_DISC_TAG_* path issuing the read.
+ * @return 1 on a hit; 0 on a miss; -1 when the cache is not attached,
+ *         holds another file, or the range passes the end of the image. */
+int  openpete_disc_cache_copy(const char* bin_path, uint64_t offset, void* dst,
+                              size_t len, int tag);
+/** @brief Count a miss the reader served from the file.
+ *
+ * Adds to the miss and file-time totals and the tag's miss count, emits a
+ * pacelog CD_MISS event, and logs a warning on the first miss in the chunk.
+ * @param tag The OPENPETE_DISC_TAG_* path that missed.
+ * @param offset First byte of the read.
+ * @param len Byte count.
+ * @param ns Time the file read took. */
+void openpete_disc_cache_miss_served(int tag, uint64_t offset, size_t len, int64_t ns);
+/** @brief Bind PsyCross's CD image to a disc_image handle; its libcd and XA reads then go through it.
+ *
+ * Installs the read callback with PsyX_CDFS_SetMemRead and declares an
+ * image of the handle's size, with no buffer, through PsyX_CDFS_Init_Mem.
+ * Works in both cache modes; the handle decides between the cache and the
+ * file.
+ * @param img The booted disc's handle, kept for the session.
+ * @return 1 when bound; 0 for a NULL handle or an image larger than
+ *         0x7FFFFFFF bytes. */
+int  openpete_disc_psycross_bind(struct disc_image* img);
 /** @brief Install PsyCross's read observer when OPENPETE_DISC_TRACE is set, so its libcd and XA reads are traced.
  *
- * Covers both modes: a read of the attached image is a hit or a miss, a
- * read of PsyCross's own file handle is direct. Call before the first
+ * A read is traced with the result its disc_image read returned: hit or
+ * miss with the cache attached, direct without it. Call before the first
  * PsyCross read. */
 void openpete_disc_cache_trace_install(void);
-/** @brief Stop the loader, join its thread, and remove the miss wait.
+/** @brief Stop the loader and join its thread.
  *
- * The image buffer stays allocated because PsyCross holds the pointer
- * until the process ends; chunks the loader had not read stay unfilled. No
- * effect when the cache was never attached. */
+ * The image buffer stays allocated and its resident chunks keep serving;
+ * chunks the loader had not read stay misses. No effect when the cache was
+ * never attached. */
 void openpete_disc_cache_shutdown(void);
+/** @brief Report the misses one read path took.
+ *
+ * @param tag An OPENPETE_DISC_TAG_* value.
+ * @return The count; 0 for an unknown tag. */
+uint64_t openpete_disc_cache_tag_misses(int tag);
 /** @brief Report the cache's counters for the exit census.
  *
  * Each output pointer may be NULL.
- * @param misses Receives the number of reads that blocked on the loader.
- * @param waited_ns Receives the total time those reads blocked, in ns.
+ * @param misses Receives the number of reads served from the file while
+ *        the cache was attached.
+ * @param direct_ns Receives the total time those file reads took, in ns.
  * @param bytes Receives the image size in bytes.
  * @param load_ns Receives the loader's wall time from attach to the last
  *        chunk, in ns; 0 until the loader finishes. */
-void openpete_disc_cache_census(uint64_t* misses, int64_t* waited_ns,
+void openpete_disc_cache_census(uint64_t* misses, int64_t* direct_ns,
                                 size_t* bytes, int64_t* load_ns);
 #ifdef __cplusplus
 }

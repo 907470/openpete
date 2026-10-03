@@ -344,7 +344,7 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);
 
 /** @brief The api version this header describes. */
-#define OPENPETE_MOD_API_VERSION 12u
+#define OPENPETE_MOD_API_VERSION 13u
 
 /** @brief The engine's function table, passed to the mod entry point. */
 typedef struct openpete_mod_api {
@@ -1009,6 +1009,21 @@ typedef struct openpete_mod_api {
      * @since api 12
      */
     const char* (*disc_path)(openpete_mod_t* self, int want_bin);
+    /**
+     * @brief Read one raw 2352-byte sector of the booted disc by LBA.
+     *
+     * The engine's own reader: the read is served from the disc cache when
+     * the sector is resident, from the image file otherwise, and never
+     * reorders the cache's loading. Sector 0 is the image's first sector;
+     * a Mode 2 Form 1 sector's 2048 user-data bytes start at byte 24.
+     * Legal from any context.
+     * @param lba The sector.
+     * @param buf Receives 2352 bytes.
+     * @return 0, or -1 when no disc is open, @p buf is NULL or the sector
+     *         lies past the end of the image.
+     * @since api 13
+     */
+    int (*read_sector)(openpete_mod_t* self, uint32_t lba, uint8_t* buf);
     /** @} */
 } openpete_mod_api_t;
 

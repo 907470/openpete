@@ -339,12 +339,29 @@ uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                          const char* exe_filename,
                                          size_t* out_size);
 
+struct disc_image;
+
+/** @brief Read the game's EXE out of an open disc image under its reads' tag.
+ *
+ * The lookup and the 2 MiB + 2048 size cap are
+ * openpete_psx_load_exe_from_disc's.
+ * @param img An image opened with disc_image_open.
+ * @param exe_filename iso9660 path of the EXE.
+ * @param out_size Receives the byte count on success.
+ * @return The bytes, freed by the caller with free(); NULL on failure,
+ *         with the reason logged. */
+uint8_t* openpete_psx_read_exe_from_image(struct disc_image* img,
+                                          const char* exe_filename,
+                                          size_t* out_size);
+
 /** @brief Read one file out of a disc image by iso9660 path.
  *
  * The path is a root file ("SYSTEM.CNF") or one directory level deep
- * ("S0/S000000D.NSF", '/' or '\'), matching psxrecomp's ISOReader; name
+ * ("S0/S000000D.NSF", '/' or '\'), looked up by disc_image_find; name
  * matching is case-insensitive. A directory size above 0x7FFFFFFF bytes
- * is refused before any allocation.
+ * is refused before any allocation. The reads go through the disc cache
+ * when it holds the image, trace under the calling thread's trace scope,
+ * and never steer the cache loader.
  * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
  * @param filename iso9660 path of the file.
  * @param out_size Receives the byte count on success.

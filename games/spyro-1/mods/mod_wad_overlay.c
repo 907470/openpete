@@ -35,6 +35,7 @@
 #include "mods/mod_wad_overlay.h"
 
 #include "game_extras.h"
+#include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "openpete_log.h"
 #include "openpete_str.h"
@@ -49,8 +50,6 @@
 #define WAD_LEVELS      36
 #define WAD_HDR_LEVELS  72   /* byte offset of m_LevelEntry[0] in g_WadHeader */
 #define SEC_DATA        2048
-#define SEC_RAW         2352
-#define SEC_RAW_SKEW    24   /* mode2/form1 user data offset in a raw sector */
 
 /* One servable WAD segment (a level's Overlay or Data entry). Data
  * overrides may be a DIFFERENT size than the stock entry: the serve
@@ -95,8 +94,7 @@ typedef struct {
 static char        s_disc_path[1024];
 static int         s_state = 0;     /* 0 unconfigured, 1 pending, 2 ready, -1 failed */
 static wad_level_t s_levels[WAD_LEVELS];
-static FILE*       s_bin = NULL;
-static int         s_raw = 0;       /* 1 = 2352-byte raw sectors */
+static disc_image_t* s_disc = NULL;
 static uint32_t    s_next_sector = 0;
 static uint32_t    s_wad_sector = 37;
 
@@ -121,38 +119,13 @@ void spyro1_mod_wad_configure(const char* disc_path) {
     s_state = 1;
 }
 
-/** @brief Resolves the configured disc path (cue or bin) to its sector image file.
+/** @brief Reads the 2048-byte user data of one absolute disc sector through the disc reader.
  *
- * Uses the runtime's own disc resolver, so a disc that boots also serves
- * host-side WAD reads. Logs a warning naming the paths tried on failure.
- * @param out Receives the image path.
- * @param cap The capacity of `out`.
- * @return 0 on success, -1 when no image resolves. */
-static int resolve_bin(char* out, size_t cap) {
-    char tried[1200];
-    if (openpete_psx_resolve_disc_bin(s_disc_path, out, cap,
-                                      tried, sizeof tried) != 0) {
-        OPL_WARN_F("wadmod", "no disc image at %s (tried: %s)",
-                   s_disc_path, tried[0] ? tried : "(nothing)");
-        return -1;
-    }
-    return 0;
-}
-
-/** @brief Reads the 2048-byte user data of one absolute disc sector from the open image.
- *
- * A raw (2352-byte) image is addressed at the sector's mode 2 form 1 user
- * data, 24 bytes into the raw sector; a cooked image at sector * 2048.
  * @param sector The absolute disc sector.
  * @param out Receives 2048 bytes.
- * @return 0 on success, -1 on a seek or short read. */
+ * @return 0 on success, -1 on a read past the image or a short read. */
 static int read_sector(uint32_t sector, uint8_t* out) {
-    long off = s_raw ? (long)sector * SEC_RAW + SEC_RAW_SKEW
-                     : (long)sector * SEC_DATA;
-    if (fseek(s_bin, off, SEEK_SET) != 0) return -1;
-    size_t got = fread(out, 1, SEC_DATA, s_bin);
-    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_WAD, sector, 1, OPENPETE_DISC_DIRECT);
-    return got == SEC_DATA ? 0 : -1;
+    return disc_image_read_user(s_disc, sector, out);
 }
 
 /** @brief Maps a WAD TOC index to its logical level id.
@@ -250,9 +223,8 @@ static int wad_find_override(int id, const char* kind, uint32_t want_len,
 /** @brief Parses the disc's WAD TOC into the per-level segment table, once the overlay is pending.
  *
  * Does nothing unless configured and pending, and stays pending while no
- * mod asset root exists. Otherwise opens the disc image, detects raw or
- * cooked sectors from the sync pattern, reads the header sector at the
- * game's wad_sector, and records the sector range and byte length of each
+ * mod asset root exists. Otherwise opens the disc image through the disc
+ * reader (WAD tag), reads the header sector at the game's wad_sector, and records the sector range and byte length of each
  * of 36 levels' data and overlay entries whose offsets are sector aligned.
  * Ends ready (state 2) with a logged entry and override-file count, or
  * failed (state -1) with a warning; a failed parse is not retried. */
@@ -266,23 +238,11 @@ static void wad_init(void) {
 
     s_state = -1; /* until proven otherwise */
 
-    char bin[1200];
-    if (resolve_bin(bin, sizeof bin) != 0) {
-        OPL_WARN_F("wadmod", "cannot resolve disc image from %s",
-                   s_disc_path);
+    s_disc = disc_image_open(s_disc_path, DISC_READ_CACHED, OPENPETE_DISC_TAG_WAD);
+    if (!s_disc) {
+        OPL_WARN_F("wadmod", "cannot open disc image %s", s_disc_path);
         return;
     }
-    s_bin = fopen(bin, "rb");
-    if (!s_bin) {
-        OPL_WARN_F("wadmod", "cannot open disc image %s", bin);
-        return;
-    }
-    /* Raw (2352) vs cooked (2048): raw sectors open with the 12-byte
-     * sync pattern 00 FF*10 00. */
-    uint8_t probe[12] = {0};
-    size_t probed = fread(probe, 1, 12, s_bin);
-    openpete_disc_trace_bytes(OPENPETE_DISC_TAG_WAD, 0, probed, OPENPETE_DISC_DIRECT);
-    s_raw = (probe[0] == 0x00 && probe[1] == 0xFF && probe[11] == 0x00);
 
     const game_disc_layout_t* dl = game_get_disc_layout();
     uint32_t wad_sector = dl ? dl->wad_sector : 37;

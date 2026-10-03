@@ -27,7 +27,7 @@
 // entries and are not walked here (they resolve at runtime like every
 // other key-on; only the authoring dump lacks them).
 #include "openpete_log.h"
-#include "iso_reader.h"
+#include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "sfx_ident.h"
 #include "spyro1_sfx_names.h"
@@ -43,6 +43,7 @@ extern "C" {
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -104,7 +105,7 @@ struct Stats {
  * @param len Byte count.
  * @param out Receives the bytes; its contents are unspecified on failure.
  * @return False when a sector read fails. */
-bool read_span(PS1::ISOReader& r, uint32_t wad_off, uint32_t len,
+bool read_span(disc_image_t* r, uint32_t wad_off, uint32_t len,
                std::vector<uint8_t>& out)
 {
     out.assign(len, 0);
@@ -115,9 +116,7 @@ bool read_span(PS1::ISOReader& r, uint32_t wad_off, uint32_t len,
     /* Offsets are sector-aligned in practice; the skew path keeps a
      * hand-built entry honest. */
     while (done < len) {
-        bool ok = r.ReadSector(lba, sec);
-        openpete_disc_trace_sectors(OPENPETE_DISC_TAG_SFX, lba, 1, OPENPETE_DISC_DIRECT);
-        if (!ok) return false;
+        if (disc_image_read_user(r, lba, sec) != 0) return false;
         uint32_t from = done == 0 ? skew : 0;
         uint32_t n = kSectorSize - from;
         if (n > len - done) n = len - done;
@@ -131,7 +130,7 @@ bool read_span(PS1::ISOReader& r, uint32_t wad_off, uint32_t len,
 /* An entry's bytes, either from the disc (offset into the WAD) or from a
  * file that IS the entry (a custom level's .wad). */
 struct EntryReader {
-    PS1::ISOReader* disc = nullptr;
+    disc_image_t*   disc = nullptr;
     uint32_t        base = 0;
     const std::vector<uint8_t>* file = nullptr;
 
@@ -150,7 +149,7 @@ struct EntryReader {
             out.assign(file->begin() + off, file->begin() + off + len);
             return true;
         }
-        return read_span(*disc, base + off, len, out);
+        return read_span(disc, base + off, len, out);
     }
 };
 
@@ -433,24 +432,6 @@ void dump_banks(const std::vector<Bank>& banks, const std::filesystem::path& out
     }
 }
 
-/** @brief Opens the disc image, falling back to a sibling .bin, .img or .iso.
- *
- * @param reader The reader to open.
- * @param cue_path The disc path as given.
- * @return True when the reader opened either the path or an existing
- *         sibling with one of the fallback extensions. */
-bool open_disc(PS1::ISOReader& reader, const char* cue_path)
-{
-    if (reader.Open(cue_path)) return true;
-    std::filesystem::path dir = std::filesystem::path(cue_path).parent_path();
-    for (const char* ext : { ".bin", ".img", ".iso" }) {
-        std::filesystem::path alt = std::filesystem::path(cue_path).replace_extension(ext);
-        if (std::filesystem::exists(alt) && reader.Open(alt.string())) return true;
-    }
-    (void)dir;
-    return false;
-}
-
 } // namespace
 
 /** @brief Writes the sfx pack census, a WAV per distinct sample plus index.txt, to a directory.
@@ -489,15 +470,14 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
     std::map<SeenKey, Seen> seen;
 
     if (cue_path && cue_path[0]) {
-        PS1::ISOReader reader;
-        if (!open_disc(reader, cue_path)) {
+        disc_image_t* reader = disc_image_open(cue_path, DISC_READ_DIRECT, OPENPETE_DISC_TAG_SFX);
+        if (!reader) {
             OPL_ERROR_F("sfxdump", "cannot open disc: %s", cue_path);
             return -1;
         }
+        std::unique_ptr<disc_image_t, decltype(&disc_image_close)> closer(reader, &disc_image_close);
         uint8_t hdr[kSectorSize];
-        bool hdr_ok = reader.ReadSector(kWadSector, hdr);
-        openpete_disc_trace_sectors(OPENPETE_DISC_TAG_SFX, kWadSector, 1, OPENPETE_DISC_DIRECT);
-        if (!hdr_ok) {
+        if (disc_image_read_user(reader, kWadSector, hdr) != 0) {
             OPL_ERROR_F("sfxdump", "cannot read WAD header at LBA %u", kWadSector);
             return -1;
         }
@@ -505,7 +485,7 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
             OffsetLength d;
             std::memcpy(&d, hdr + kLevelEntryOff + (size_t)f * 16 + 8, sizeof d);
             if (d.length <= 0) continue;
-            EntryReader er; er.disc = &reader; er.base = (uint32_t)d.offset;
+            EntryReader er; er.disc = reader; er.base = (uint32_t)d.offset;
             char name[32];
             std::snprintf(name, sizeof name, "level_%d", (f / 6 + 1) * 10 + (f % 6));
             if (!walk_entry(er, name, false, 0, banks, st)) st.failed++;
@@ -514,7 +494,7 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
             OffsetLength d;
             std::memcpy(&d, hdr + kCutsceneOff + (size_t)c * 8, sizeof d);
             if (d.length <= 0) continue;
-            EntryReader er; er.disc = &reader; er.base = (uint32_t)d.offset;
+            EntryReader er; er.disc = reader; er.base = (uint32_t)d.offset;
             char name[32];
             std::snprintf(name, sizeof name, "cutscene_%d", c);
             if (!walk_entry(er, name, true, c, banks, st)) st.failed++;

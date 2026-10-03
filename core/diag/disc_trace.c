@@ -34,7 +34,7 @@ static dt_row_t s_pend[DT_PENDING];
 
 static const char* const k_tag_names[OPENPETE_DISC_TAG_COUNT] = {
     "none", "libcd", "xa", "exe", "serial", "extract", "woah", "sfx",
-    "wad", "ingest", "cache-load", "iso",
+    "wad", "ingest", "cache-load", "iso", "mod",
 };
 
 static const char* const k_result_names[] = { "hit", "miss", "direct" };
@@ -142,8 +142,8 @@ void openpete_disc_trace_bytes_slow(int tag, uint64_t offset, uint64_t length, i
     }
     dt_row_t* p = pending_slot(th);
     /* A read continues the thread's pending row when it starts where that
-     * row ends, byte for byte or at the next sector (iso_reader and the WAD
-     * overlay read 2048 bytes 24 into each raw sector). */
+     * row ends, byte for byte or at the next sector (a caller that records
+     * a byte range inside each raw sector). */
     int contiguous = p->live && (offset == p->end ||
                      offset / DT_SECTOR == (p->end + DT_SECTOR - 1u) / DT_SECTOR);
     if (contiguous && tag == p->tag && result == p->result && vbl == p->vbl) {

@@ -1,7 +1,7 @@
 /* tests/unit/exe_loader_cap_test.cpp - the disc EXE loader refuses a
  * directory size no PSX EXE can have before it allocates.
  *
- * Writes an 18-sector 2048-byte-sector ISO9660 image whose root directory
+ * Writes a raw (2352-byte Mode 2 sector) ISO9660 image whose root directory
  * lists SCUS_942.28 with size 0xFFFFFFF0; the loader must return NULL. A
  * file one byte over 2 MiB + 2048 whose bytes are all present is refused
  * (the previous loader read it whole); a 4-byte file loads. */
@@ -18,6 +18,17 @@
 /** @brief Logger stub. */
 extern "C" void openpete_logf(openpete_log_level_t level, const char* subsystem, const char* fmt, ...) {
     (void)level; (void)subsystem; (void)fmt;
+}
+
+/** @brief Disc cache stub: no cache holds the image, so every read goes to the file. */
+extern "C" int openpete_disc_cache_copy(const char* bin_path, uint64_t offset, void* dst,
+                                        size_t len, int tag) {
+    (void)bin_path; (void)offset; (void)dst; (void)len; (void)tag;
+    return -1;
+}
+/** @brief Disc cache stub: never reached, since no read misses. */
+extern "C" void openpete_disc_cache_miss_served(int tag, uint64_t offset, size_t len, int64_t ns) {
+    (void)tag; (void)offset; (void)len; (void)ns;
 }
 
 /** @brief Store a both-endian ISO9660 733 field (little-endian half used by the reader). */
@@ -39,6 +50,22 @@ static int dir_record(uint8_t* p, const char* name, uint32_t lba, uint32_t size,
     return len;
 }
 
+/** @brief Write user-data sectors to f as raw 2352-byte Mode 2 Form 1 sectors (sync, header, subheader, data, zeroed EDC/ECC).
+ *
+ * @param f The output file.
+ * @param user The user data, 2048 bytes per sector.
+ * @param sectors Sector count. */
+static void write_raw(FILE* f, const uint8_t* user, size_t sectors) {
+    uint8_t raw[2352];
+    for (size_t i = 0; i < sectors; i++) {
+        std::memset(raw, 0, sizeof raw);
+        std::memset(raw + 1, 0xFF, 10);
+        raw[15] = 2;
+        std::memcpy(raw + 24, user + i * 2048, 2048);
+        std::fwrite(raw, 1, sizeof raw, f);
+    }
+}
+
 /** @brief Write an image at path whose root holds SCUS_942.28;1 of the given directory size at sector 18. */
 static void write_image(const std::string& path, uint32_t exe_size) {
     /* The body sector holds up to 2 MiB + 2049 bytes, so a file one byte over
@@ -54,7 +81,7 @@ static void write_image(const std::string& path, uint32_t exe_size) {
     dir_record(root + o, "SCUS_942.28;1", 18, exe_size, 0);
     std::memcpy(img + 18 * 2048, "EXE!", 4);
     FILE* f = std::fopen(path.c_str(), "wb");
-    std::fwrite(img, 1, sizeof img, f);
+    write_raw(f, img, sizeof img / 2048);
     std::fclose(f);
 }
 
@@ -62,7 +89,7 @@ static void write_image(const std::string& path, uint32_t exe_size) {
  * @return 0 when both pass. */
 int main() {
     const char* tmp = std::getenv("TMPDIR");
-    const std::string path = std::string(tmp && *tmp ? tmp : "/tmp") + "/exe_loader_cap_test.iso";
+    const std::string path = std::string(tmp && *tmp ? tmp : "/tmp") + "/exe_loader_cap_test.bin";
     int fail = 0;
     size_t n = 0;
 

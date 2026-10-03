@@ -15,6 +15,7 @@
 // among several. After ingest the user's original file is never needed again
 // - engine updates rebuild the module from the library's own copy.
 #include "openpete.h"
+#include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "openpete_log.h"
 #include "openpete_paths.h" /* library root: portable vs per-user data dir */
@@ -27,6 +28,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -124,45 +126,51 @@ fs::path locate_bin(const fs::path& given) {
     return {};
 }
 
-/** @brief Copies a file while computing its SHA-256.
+/** @brief Copies a disc image while computing its SHA-256.
  *
- * Reads src in 1 MiB chunks, writing each to dst (created or truncated) and
- * feeding it to the hash. When spyro1_progress_cb is set and the source size
- * is known, it is called with the "COPYING DISC TO YOUR LIBRARY" stage and
- * MiB counts once per 64 MiB copied. The hash is finalized after a read
- * failure too, so it covers only the bytes read.
- * @param src The file to read.
+ * Reads src through disc_image in direct mode (never the disc cache) in
+ * 1 MiB chunks, writing each to dst (created or truncated) and feeding it
+ * to the hash. When spyro1_progress_cb is set, it is called with the
+ * "COPYING DISC TO YOUR LIBRARY" stage and MiB counts once per 64 MiB
+ * copied. The hash is finalized after a read failure too, so it covers
+ * only the bytes read.
+ * @param src The image to read; disc_image_open refuses one that is not
+ *        a whole number of raw 2352-byte sectors.
  * @param dst The file to create or truncate.
  * @param sha_hex Receives 64 hex digits and a NUL; untouched when either file
  *        fails to open.
- * @return true when both files opened and dst's stream state is good after
- *         the last write, else false. */
+ * @return true when both files opened, every byte read, and dst's stream
+ *         state is good after the last write, else false. */
 bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]) {
-    std::ifstream in(src, std::ios::binary);
+    disc_image_t* in = disc_image_open(src.string().c_str(), DISC_READ_DIRECT,
+                                       OPENPETE_DISC_TAG_INGEST);
     if (!in) return false;
+    std::unique_ptr<disc_image_t, decltype(&disc_image_close)> closer(in, &disc_image_close);
     std::ofstream out(dst, std::ios::binary | std::ios::trunc);
     if (!out) return false;
-    std::error_code sec;
-    const uintmax_t total_bytes = fs::file_size(src, sec);
-    uintmax_t seen = 0;
+    const uint64_t total_bytes = disc_image_size(in);
+    uint64_t seen = 0;
+    bool read_ok = true;
     openpete_sha256_ctx c;
     openpete_sha256_init(&c);
     std::vector<char> buf(1 << 20);
-    while (in.read(buf.data(), (std::streamsize)buf.size()) || in.gcount() > 0) {
-        openpete_sha256_update(&c, buf.data(), (size_t)in.gcount());
-        out.write(buf.data(), in.gcount());
-        openpete_disc_trace_bytes(OPENPETE_DISC_TAG_INGEST, (uint64_t)seen,
-                                  (uint64_t)in.gcount(), OPENPETE_DISC_DIRECT);
-        seen += (uintmax_t)in.gcount();
-        if (spyro1_progress_cb && total_bytes && (seen % (64u << 20) < (1u << 20)))
+    while (seen < total_bytes) {
+        size_t n = total_bytes - seen < buf.size() ? (size_t)(total_bytes - seen) : buf.size();
+        int r = disc_image_read_bytes(in, seen, buf.data(), n, OPENPETE_DISC_TAG_INGEST);
+        openpete_disc_trace_bytes(OPENPETE_DISC_TAG_INGEST, seen, n,
+                                  r < 0 ? OPENPETE_DISC_DIRECT : r);
+        if (r < 0) { read_ok = false; break; }
+        openpete_sha256_update(&c, buf.data(), n);
+        out.write(buf.data(), (std::streamsize)n);
+        seen += n;
+        if (spyro1_progress_cb && (seen % (64u << 20) < (1u << 20)))
             spyro1_progress_cb("COPYING DISC TO YOUR LIBRARY",
                                (int)(seen >> 20), (int)(total_bytes >> 20));
-        if (!in) break;
     }
     uint8_t d[32];
     openpete_sha256_final(&c, d);
     openpete_sha256_hex(d, sha_hex);
-    return out.good();
+    return read_ok && out.good();
 }
 
 /** @brief Writes an entry's meta.toml with its label, source, hash and last-played time.

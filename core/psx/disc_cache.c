@@ -1,5 +1,6 @@
 /* core/psx/disc_cache.c - see openpete_disc_cache.h. */
 #include "openpete_disc_cache.h"
+#include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "openpete_crash.h"
 #include "openpete_log.h"
@@ -11,35 +12,40 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The image is filled in chunks. The loader walks them in file order, but
- * a chunk a guest read is blocked on is served next: a boot-time read far
- * into the image (the EXE, the first WAD entries) then waits for one chunk,
- * not for everything before it. */
+/* The image is filled in chunks. The loader walks them in file order, but a
+ * chunk a read missed on is loaded next: the game's own chunk first, then
+ * the XA stream's, then file order. A read never waits on the loader; the
+ * reader serves a miss from the file. */
 #define DC_CHUNK_SHIFT 23u                    /* 8 MB */
 #define DC_CHUNK       ((size_t)1 << DC_CHUNK_SHIFT)
+
+/* Steer slots, in the loader's priority order. Host paths (the woah NSF,
+ * the library scan, the ingest copy, the sfx census, mods) have none: a
+ * host read never reorders the loader ahead of the game. */
+enum { DC_STEER_GAME = 0, DC_STEER_XA, DC_STEER_SLOTS };
 
 static uint8_t*       s_img;
 static size_t         s_size;
 static size_t         s_nchunks;
 static uint8_t*       s_have;          /* per-chunk DC_MISSING / DC_RESIDENT / DC_UNREAD (under s_mx) */
+static uint8_t*       s_logged;        /* per-chunk: a miss on it was logged (under s_mx) */
 static size_t         s_have_n;        /* chunks resident */
-static long           s_want;          /* chunk a reader is blocked on, -1 = none */
+static long           s_want[DC_STEER_SLOTS]; /* chunk each slot steers to, -1 = none */
 static size_t         s_seq;           /* next chunk in file order */
 static SDL_Mutex*     s_mx;
-static SDL_Condition* s_cv;            /* readers wait; loader broadcasts */
-static SDL_Condition* s_cv_loader;     /* never waited on: the loader does not block */
 static int            s_abort;
 static int            s_active;
 static SDL_Thread*    s_thr;
 static FILE*          s_fp;
-static char*          s_path;          /* the image path, for the per-read fallback */
+static char*          s_path;          /* the image path; a reader of the same file is served here */
 static int64_t        s_t0, s_load_ns;
 static uint64_t       s_misses;
-static int64_t        s_waited_ns;
+static uint64_t       s_misses_by_tag[OPENPETE_DISC_TAG_COUNT];
+static int64_t        s_direct_ns;
 
 /* s_have states. A DC_UNREAD chunk came up short in the loader after
- * DC_READ_TRIES attempts; a read touching it re-reads it from the file
- * (dc_fallback), and bytes the file cannot supply read as zero. */
+ * DC_READ_TRIES attempts; it is never served from memory, so every read of
+ * it goes to the file. */
 #define DC_MISSING   0u
 #define DC_RESIDENT  1u
 #define DC_UNREAD    2u
@@ -70,30 +76,23 @@ static int read_chunk(size_t c) {
     return 0;
 }
 
-/** @brief Re-read an unread chunk through a fresh handle on the image, under s_mx.
+/** @brief Pick the loader's next chunk under s_mx: each steer slot's chunk in slot order, then file order.
  *
- * A chunk the file now supplies whole becomes resident. Otherwise it stays
- * DC_UNREAD with its missing bytes zeroed, and an error names the image and
- * the chunk, unless the previous report named the same chunk.
- * @param c Chunk index. */
-static void dc_fallback(size_t c) {
-    FILE* fp = s_path ? fopen(s_path, "rb") : NULL;
-    int ok = fp && read_chunk_from(fp, c);
-    if (fp) fclose(fp);
-    if (ok) { s_have[c] = DC_RESIDENT; s_have_n++; return; }
-    static size_t s_reported = (size_t)-1;
-    if (s_reported != c) {
-        s_reported = c;
-        OPL_ERROR_F("cd", "disc cache: %s: bytes %zu..%zu cannot be read; they read as zero",
-                    s_path ? s_path : "(image)", c << DC_CHUNK_SHIFT,
-                    (c << DC_CHUNK_SHIFT) + DC_CHUNK - 1u);
+ * @return The chunk, or -1 when every chunk is done. */
+static long next_chunk(void) {
+    for (int k = 0; k < DC_STEER_SLOTS; k++) {
+        long w = s_want[k];
+        if (w >= 0 && s_have[w] == DC_MISSING) return w;
+        s_want[k] = -1;
     }
+    while (s_seq < s_nchunks && s_have[s_seq] != DC_MISSING) s_seq++;
+    return s_seq < s_nchunks ? (long)s_seq : -1;
 }
 
-/** @brief Loader thread: read every chunk once, a blocked reader's chunk first, then close the image.
+/** @brief Loader thread: read every chunk once, steered chunks first, then close the image.
  *
  * A chunk that stays short after DC_READ_TRIES attempts is marked DC_UNREAD
- * with its missing bytes zeroed; a later read of it re-reads the file.
+ * with its missing bytes zeroed; reads of it go to the file.
  * @param arg Unused.
  * @return 0. */
 static int loader_main(void* arg) {
@@ -101,25 +100,17 @@ static int loader_main(void* arg) {
     openpete_crash_thread_attach();
     for (;;) {
         SDL_LockMutex(s_mx);
-        long c = -1;
-        if (s_abort) { SDL_UnlockMutex(s_mx); break; }
-        if (s_want >= 0 && s_have[s_want] == DC_MISSING) c = s_want;
-        else {
-            while (s_seq < s_nchunks && s_have[s_seq] != DC_MISSING) s_seq++;
-            if (s_seq < s_nchunks) c = (long)s_seq;
-        }
+        long c = s_abort ? -1 : next_chunk();
         SDL_UnlockMutex(s_mx);
-        if (c < 0) break;                       /* everything resident */
+        if (c < 0) break;                       /* everything resident, or shutting down */
         int ok = read_chunk((size_t)c);
         SDL_LockMutex(s_mx);
         if (ok) { s_have[c] = DC_RESIDENT; s_have_n++; }
         else {
-            OPL_WARN_F("cd", "disc cache: short read of chunk %ld after %d attempts; a read of it "
-                       "re-reads the file", c, DC_READ_TRIES);
-            s_have[c] = DC_UNREAD;             /* done for the loader; mem_wait re-reads it */
+            OPL_WARN_F("cd", "disc cache: short read of chunk %ld after %d attempts; reads of it "
+                       "go to the file", c, DC_READ_TRIES);
+            s_have[c] = DC_UNREAD;
         }
-        if (s_want == c) s_want = -1;
-        SDL_BroadcastCondition(s_cv);
         SDL_UnlockMutex(s_mx);
     }
     fclose(s_fp); s_fp = NULL;
@@ -127,63 +118,6 @@ static int loader_main(void* arg) {
     OPL_INFO_F("cd", "disc cache: %zu MB resident in %.2f s", s_size >> 20,
                (double)s_load_ns / 1e9);
     return 0;
-}
-
-/** @brief Whether the loader has finished every chunk of [b, e); on no, the first chunk it has not.
- *
- * A DC_UNREAD chunk counts as finished: the loader will not return to it.
- * @param b First byte offset.
- * @param e One past the last byte offset.
- * @param first_missing Receives the first DC_MISSING chunk.
- * @return 1 when no chunk of the range is DC_MISSING. */
-static int range_resident(size_t b, size_t e, size_t* first_missing) {
-    size_t c0 = b >> DC_CHUNK_SHIFT, c1 = (e ? e - 1 : 0) >> DC_CHUNK_SHIFT;
-    for (size_t c = c0; c <= c1 && c < s_nchunks; c++)
-        if (s_have[c] == DC_MISSING) { *first_missing = c; return 0; }
-    return 1;
-}
-
-/** @brief Re-read every DC_UNREAD chunk of [b, e) through dc_fallback, under s_mx. */
-static void range_fallback(size_t b, size_t e) {
-    size_t c0 = b >> DC_CHUNK_SHIFT, c1 = (e ? e - 1 : 0) >> DC_CHUNK_SHIFT;
-    for (size_t c = c0; c <= c1 && c < s_nchunks; c++)
-        if (s_have[c] == DC_UNREAD) dc_fallback(c);
-}
-
-/** @brief Block until the image bytes [b, e) are resident; installed as PsyCross's memory-image wait.
- *
- * Runs on the thread that reads the image (the sim thread). A range already
- * resident, or a cache being shut down, returns at once. Otherwise the
- * first missing chunk becomes the loader's next target, the call waits for
- * each broadcast until the range is resident, and the miss is counted,
- * timed, logged, and emitted as a pacelog CD_MISS event. Every chunk of the
- * range the loader could not read whole is re-read from the file first.
- * @param b First byte offset.
- * @param e One past the last byte offset; clamped to the image size. */
-static void mem_wait(size_t b, size_t e) {
-    if (e > s_size) e = s_size;
-    if (b >= e) return;
-    SDL_LockMutex(s_mx);
-    size_t miss;
-    if (range_resident(b, e, &miss) || s_abort) {
-        range_fallback(b, e);
-        SDL_UnlockMutex(s_mx);
-        return;
-    }
-    int64_t t0 = op_now();
-    while (!s_abort && !range_resident(b, e, &miss)) {
-        s_want = (long)miss;                    /* steer the loader here */
-        SDL_BroadcastCondition(s_cv_loader);
-        SDL_WaitCondition(s_cv, s_mx);
-    }
-    range_fallback(b, e);
-    int64_t waited = op_now() - t0;
-    size_t have = s_have_n;
-    s_misses++; s_waited_ns += waited;
-    SDL_UnlockMutex(s_mx);
-    openpete_pace_cd_miss(waited, (uint64_t)e);
-    OPL_WARN_F("cd", "disc cache miss: read [%zu,%zu) waited %.2f ms (%zu/%zu chunks resident)",
-               b, e, (double)waited / 1e6, have, s_nchunks);
 }
 
 int openpete_disc_cache_attach(const char* bin_path) {
@@ -203,64 +137,144 @@ int openpete_disc_cache_attach(const char* bin_path) {
     s_path = (char*)malloc(strlen(bin_path) + 1u);
     if (s_path) memcpy(s_path, bin_path, strlen(bin_path) + 1u);
     s_nchunks = (s_size + DC_CHUNK - 1) >> DC_CHUNK_SHIFT;
-    s_have = (uint8_t*)calloc(s_nchunks, 1); s_have_n = 0; s_want = -1; s_seq = 0;
-    s_mx = SDL_CreateMutex(); s_cv = SDL_CreateCondition(); s_cv_loader = SDL_CreateCondition();
+    s_have = (uint8_t*)calloc(s_nchunks, 1); s_have_n = 0; s_seq = 0;
+    s_logged = (uint8_t*)calloc(s_nchunks, 1);
+    for (int k = 0; k < DC_STEER_SLOTS; k++) s_want[k] = -1;
+    s_mx = SDL_CreateMutex();
     s_t0 = op_now();
-    PsyX_CDFS_SetMemWait(mem_wait);
-    PsyX_CDFS_Init_Mem((const u_int*)img, (int)sz, /*track=*/0, /*sectorSize=*/0);
+    /* Readers consult s_active only after the loader state above exists. */
+    s_active = 1;
     s_thr = SDL_CreateThread(loader_main, "openpete-disc", NULL);
     if (!s_thr) {
         /* No thread: load synchronously so the image is complete before use. */
         OPL_WARN_F("cd", "disc cache: SDL_CreateThread failed (%s); loading inline", SDL_GetError());
         loader_main(NULL);
     }
-    s_active = 1;
     OPL_INFO_F("boot", "disc cache: %s (%zu MB) loading in the background", bin_path, s_size >> 20);
     return 1;
 }
 
 int openpete_disc_cache_active(void) { return s_active; }
 
-void openpete_disc_cache_shutdown(void) {
-    if (!s_active) return;
-    SDL_LockMutex(s_mx); s_abort = 1;
-    SDL_BroadcastCondition(s_cv); SDL_BroadcastCondition(s_cv_loader);
-    SDL_UnlockMutex(s_mx);
-    if (s_thr) { SDL_WaitThread(s_thr, NULL); s_thr = NULL; }
-    PsyX_CDFS_SetMemWait(NULL);
-    /* The image itself stays: PsyCross still holds the pointer until the
-     * process ends, and the OS reclaims it. */
+/** @brief Map a read path to its steer slot.
+ *
+ * @param tag An OPENPETE_DISC_TAG_* value.
+ * @return DC_STEER_GAME for libcd, the EXE, the extract and the WAD
+ *         overlay; DC_STEER_XA for XA; -1 (no steer) for every host path. */
+static int steer_slot(int tag) {
+    switch (tag) {
+    case OPENPETE_DISC_TAG_LIBCD:
+    case OPENPETE_DISC_TAG_EXE:
+    case OPENPETE_DISC_TAG_EXTRACT:
+    case OPENPETE_DISC_TAG_WAD:     return DC_STEER_GAME;
+    case OPENPETE_DISC_TAG_XA:      return DC_STEER_XA;
+    default:                        return -1;
+    }
 }
 
-/* Misses counted when the read observer last ran; a read whose mem_wait
- * raised s_misses was a miss. */
-static uint64_t s_trace_misses;
+int openpete_disc_cache_copy(const char* bin_path, uint64_t offset, void* dst,
+                             size_t len, int tag) {
+    if (!s_active || !s_path || !bin_path || strcmp(bin_path, s_path) != 0) return -1;
+    if (offset >= s_size || len > s_size - offset) return -1;
+    if (len == 0) return 1;
+    size_t c0 = (size_t)(offset >> DC_CHUNK_SHIFT);
+    size_t c1 = (size_t)((offset + len - 1u) >> DC_CHUNK_SHIFT);
+    SDL_LockMutex(s_mx);
+    long miss = -1;
+    for (size_t c = c0; c <= c1; c++)
+        if (s_have[c] != DC_RESIDENT) { miss = (long)c; break; }
+    if (miss >= 0) {
+        int slot = steer_slot(tag);
+        if (slot >= 0 && s_have[miss] == DC_MISSING && !s_abort) s_want[slot] = miss;
+        SDL_UnlockMutex(s_mx);
+        return 0;
+    }
+    SDL_UnlockMutex(s_mx);
+    /* A resident chunk is never written again, and the mutex orders the
+     * loader's fill before its DC_RESIDENT mark. */
+    memcpy(dst, s_img + offset, len);
+    return 1;
+}
 
-/** @brief PsyCross read observer: trace one image read as libcd or xa, a hit or miss with the cache attached, else direct.
+void openpete_disc_cache_miss_served(int tag, uint64_t offset, size_t len, int64_t ns) {
+    if (!s_active) return;
+    size_t c = (size_t)(offset >> DC_CHUNK_SHIFT);
+    if (c >= s_nchunks) return;
+    SDL_LockMutex(s_mx);
+    s_misses++;
+    if (tag >= 0 && tag < OPENPETE_DISC_TAG_COUNT) s_misses_by_tag[tag]++;
+    s_direct_ns += ns;
+    int first = !s_logged[c];
+    s_logged[c] = 1;
+    size_t have = s_have_n;
+    SDL_UnlockMutex(s_mx);
+    openpete_pace_cd_miss(ns, offset + len);
+    if (first)
+        OPL_WARN_F("cd", "disc cache miss: %s read [%llu,%llu) in chunk %zu served from the file "
+                   "in %.2f ms (%zu/%zu chunks resident)", openpete_disc_trace_tag_name(tag),
+                   (unsigned long long)offset, (unsigned long long)(offset + len), c,
+                   (double)ns / 1e6, have, s_nchunks);
+}
+
+void openpete_disc_cache_shutdown(void) {
+    if (!s_active) return;
+    SDL_LockMutex(s_mx); s_abort = 1; SDL_UnlockMutex(s_mx);
+    if (s_thr) { SDL_WaitThread(s_thr, NULL); s_thr = NULL; }
+    /* The image stays: a resident chunk still serves a late read, and the OS
+     * reclaims it at exit. */
+}
+
+/* PsyCross's image reads, bound to one disc_image handle. The result of
+ * the last read is kept for the read observer, which runs right after it
+ * on the same thread. */
+static disc_image_t* s_psx_img;
+static int           s_psx_result = OPENPETE_DISC_DIRECT;
+
+/** @brief PsyCross image read: serve [b, e) into dst through the disc_image handle.
  *
- * Runs on the reading thread after mem_wait, so a miss that read waited
- * on has already been counted in s_misses.
+ * @param dst Receives e - b bytes.
+ * @param b First byte offset.
+ * @param e One past the last byte offset.
+ * @param source PSYX_CDFS_READ_DATA or PSYX_CDFS_READ_XA.
+ * @return 1: the bytes are always served here. */
+static int psycross_read(void* dst, size_t b, size_t e, int source) {
+    int tag = source == PSYX_CDFS_READ_XA ? OPENPETE_DISC_TAG_XA : OPENPETE_DISC_TAG_LIBCD;
+    int r = disc_image_read_bytes(s_psx_img, b, dst, e > b ? e - b : 0, tag);
+    s_psx_result = r < 0 ? OPENPETE_DISC_DIRECT : r;
+    return 1;
+}
+
+int openpete_disc_psycross_bind(disc_image_t* img) {
+    uint64_t size = img ? disc_image_size(img) : 0;
+    if (!size || size > 0x7FFFFFFFu) return 0;   /* PsyX_CDFS_Init_Mem takes an int size */
+    s_psx_img = img;
+    PsyX_CDFS_SetMemRead(psycross_read);
+    PsyX_CDFS_Init_Mem(NULL, (int)size, /*track=*/0, /*sectorSize=*/0);
+    return 1;
+}
+
+/** @brief PsyCross read observer: trace one image read as libcd or xa with the result psycross_read recorded.
+ *
  * @param b First byte offset.
  * @param e One past the last byte offset.
  * @param source PSYX_CDFS_READ_DATA or PSYX_CDFS_READ_XA. */
 static void trace_psycross_read(size_t b, size_t e, int source) {
     int tag = source == PSYX_CDFS_READ_XA ? OPENPETE_DISC_TAG_XA : OPENPETE_DISC_TAG_LIBCD;
-    int result = OPENPETE_DISC_DIRECT;
-    if (s_active || s_img) {
-        result = s_misses != s_trace_misses ? OPENPETE_DISC_MISS : OPENPETE_DISC_HIT;
-        s_trace_misses = s_misses;
-    }
-    openpete_disc_trace_bytes(tag, b, e > b ? e - b : 0, result);
+    openpete_disc_trace_bytes(tag, b, e > b ? e - b : 0, s_psx_result);
 }
 
 void openpete_disc_cache_trace_install(void) {
     if (openpete_disc_trace_enabled()) PsyX_CDFS_SetReadObserver(trace_psycross_read);
 }
 
-void openpete_disc_cache_census(uint64_t* misses, int64_t* waited_ns,
+uint64_t openpete_disc_cache_tag_misses(int tag) {
+    return tag >= 0 && tag < OPENPETE_DISC_TAG_COUNT ? s_misses_by_tag[tag] : 0;
+}
+
+void openpete_disc_cache_census(uint64_t* misses, int64_t* direct_ns,
                                 size_t* bytes, int64_t* load_ns) {
     if (misses)    *misses    = s_misses;
-    if (waited_ns) *waited_ns = s_waited_ns;
+    if (direct_ns) *direct_ns = s_direct_ns;
     if (bytes)     *bytes     = s_size;
     if (load_ns)   *load_ns   = s_load_ns;
 }

@@ -13,8 +13,9 @@
 // entry is {int byte_offset, int byte_length} into the WAD; reads
 // resolve to LBA 37 + offset/2048 (offsets are sector-aligned).
 #include "openpete_log.h"
-#include "iso_reader.h"
+#include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
+#include "openpete_psx.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -22,12 +23,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
-extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
-                                                    const char* exe_filename,
-                                                    size_t* out_size);
 extern "C" const char* game_get_exe_filename(void);
 
 namespace {
@@ -62,28 +61,6 @@ OffsetLength read_entry(const uint8_t* hdr, size_t off) {
     return e;
 }
 
-/** @brief Opens a disc image, falling back to the .bin files beside the cue.
- *
- * Tries cue_path first. When that fails, tries each .bin or .BIN file in the
- * cue's directory in directory order and stops at the first that opens.
- * @param reader Receives the opened image.
- * @param cue_path The .cue path.
- * @return true when an image opened, else false. */
-bool open_disc(PS1::ISOReader& reader, const char* cue_path) {
-    if (reader.Open(cue_path)) return true;
-    /* Same fallback as exe_loader.cpp: the CUE's FILE line sometimes
-     * mismatches the on-disc bin name - try sibling .bin files. */
-    std::filesystem::path dir = std::filesystem::path(cue_path).parent_path();
-    std::error_code ec;
-    for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
-        auto p = e.path();
-        if (p.extension() == ".bin" || p.extension() == ".BIN") {
-            if (reader.Open(p.string())) return true;
-        }
-    }
-    return false;
-}
-
 /** @brief Writes one WAD entry's bytes to a file.
  *
  * Reads ceil(length / 2048) sectors from disc LBA 37 + offset / 2048 and
@@ -94,7 +71,7 @@ bool open_disc(PS1::ISOReader& reader, const char* cue_path) {
  * @param out The output file, created or truncated.
  * @return true when every sector read and the file write succeed, else
  *         false. */
-bool carve(PS1::ISOReader& reader, const OffsetLength& e,
+bool carve(disc_image_t* reader, const OffsetLength& e,
            const std::filesystem::path& out) {
     if (e.length <= 0) return false;
     if (e.offset < 0 || (e.offset % kSectorSize) != 0) {
@@ -106,9 +83,7 @@ bool carve(PS1::ISOReader& reader, const OffsetLength& e,
     const uint32_t nsectors  = ((uint32_t)e.length + kSectorSize - 1) / kSectorSize;
     std::vector<uint8_t> buf(nsectors * kSectorSize);
     for (uint32_t i = 0; i < nsectors; i++) {
-        bool ok = reader.ReadSector(first_lba + i, buf.data() + i * kSectorSize);
-        openpete_disc_trace_sectors(OPENPETE_DISC_TAG_NONE, first_lba + i, 1, OPENPETE_DISC_DIRECT);
-        if (!ok) {
+        if (disc_image_read_user(reader, first_lba + i, buf.data() + i * kSectorSize) != 0) {
             OPL_ERROR_F("extract", "%s: sector read failed at LBA %u",
                         out.filename().string().c_str(), first_lba + i);
             return false;
@@ -124,8 +99,8 @@ bool carve(PS1::ISOReader& reader, const OffsetLength& e,
 
 /** @brief Extracts PSX.EXE and every WAD code overlay of a disc into a directory.
  *
- * Creates out_dir and writes PSX.EXE (loaded through
- * openpete_psx_load_exe_from_disc under the game's executable name). Then
+ * Creates out_dir and writes PSX.EXE (read through
+ * openpete_psx_read_exe_from_image under the game's executable name). Then
  * reads the WAD header at disc LBA 37 and carves each entry with a positive
  * length to <name>.ovl: level_10..15, level_20..25 through level_60..65 (the
  * overlay half of the 36 level entries, at header offset 72 + 16 * slot),
@@ -143,33 +118,28 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
         std::fprintf(stderr, "extract-recomp-inputs: needs --disc and a directory\n");
         return -1;
     }
-    OpenpeteDiscTraceScope trace_scope(OPENPETE_DISC_TAG_EXTRACT);
     std::error_code ec;
     std::filesystem::create_directories(out_dir, ec);
 
-    /* PSX.EXE via the iso9660 path the runtime already uses. */
+    disc_image_t* reader = disc_image_open(cue_path, DISC_READ_CACHED, OPENPETE_DISC_TAG_EXTRACT);
+    if (!reader) {
+        OPL_ERROR_F("extract", "cannot open disc: %s", cue_path);
+        return -1;
+    }
+    std::unique_ptr<disc_image_t, decltype(&disc_image_close)> closer(reader, &disc_image_close);
+
     size_t exe_size = 0;
-    uint8_t* exe = openpete_psx_load_exe_from_disc(
-        cue_path, game_get_exe_filename(), &exe_size);
+    uint8_t* exe = openpete_psx_read_exe_from_image(reader, game_get_exe_filename(), &exe_size);
     if (!exe) return -1;
     {
-        std::ofstream f(std::filesystem::path(out_dir) / "PSX.EXE",
-                        std::ios::binary);
+        std::ofstream f(std::filesystem::path(out_dir) / "PSX.EXE", std::ios::binary);
         f.write(reinterpret_cast<const char*>(exe), (std::streamsize)exe_size);
         std::free(exe);
         if (!f.good()) return -1;
     }
 
-    PS1::ISOReader reader;
-    if (!open_disc(reader, cue_path)) {
-        OPL_ERROR_F("extract", "cannot open disc: %s", cue_path);
-        return -1;
-    }
-
     uint8_t hdr[kSectorSize];
-    bool hdr_ok = reader.ReadSector(kWadSector, hdr);
-    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_NONE, kWadSector, 1, OPENPETE_DISC_DIRECT);
-    if (!hdr_ok) {
+    if (disc_image_read_user(reader, kWadSector, hdr) != 0) {
         OPL_ERROR_F("extract", "cannot read WAD header at LBA %u", kWadSector);
         return -1;
     }

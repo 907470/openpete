@@ -199,8 +199,9 @@ static uint32_t find_woah(const uint8_t* nsf, size_t len, const uint8_t** body) 
 }
 
 /* Decode-once, keep the PCM. ~10 KB held for the session, decoded on a
- * worker thread (the disc read is 2.5 MB and does not go through the
- * guest's CD cache) and published through s_ready. */
+ * worker thread (the disc read is 2.5 MB; it is served by the disc cache
+ * where resident and from the file otherwise, and as a host read it never
+ * reorders the cache's loading) and published through s_ready. */
 static int16_t*      s_pcm;
 static uint32_t      s_pcm_frames;
 static SDL_AtomicInt s_ready;   /* 0 = pending/absent, 1 = s_pcm usable */

@@ -39,6 +39,7 @@
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_input_log.h"
 #include "openpete_psx.h"   /* openpete_psx_resolve_disc_bin */
+#include "openpete_disc_image.h"   /* read_sector */
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
@@ -1039,6 +1040,18 @@ static const char* api_disc_path(openpete_mod_t* self, int want_bin) {
                                s_disc_path, s_disc_bin, sizeof s_disc_bin,
                                NULL, 0) == 0 ? 1 : -1;
     return s_disc_bin_state > 0 ? s_disc_bin : NULL;
+}
+
+/** @brief Read one raw sector of the booted disc through disc_image.
+ *
+ * @param self The calling mod; NULL fails.
+ * @param lba The sector.
+ * @param buf Receives 2352 bytes.
+ * @return 0, or -1 when there is no caller, no disc or no buffer, or the
+ *         read fails. */
+static int api_read_sector(openpete_mod_t* self, uint32_t lba, uint8_t* buf) {
+    if (!self || !buf) return -1;
+    return disc_image_game_read_sector(lba, buf);
 }
 
 /** @brief Report whether the host key with the given SDL name is held.
@@ -2221,8 +2234,9 @@ static const openpete_mod_api_t s_api = {
     /* pillar 9: the host pads (api 12) */
     .pad_read      = api_pad_read,
     .pad_rumble    = api_pad_rumble,
-    /* pillar 9: the booted disc (api 12) */
+    /* pillar 9: the booted disc (disc_path api 12, read_sector api 13) */
     .disc_path     = api_disc_path,
+    .read_sector   = api_read_sector,
     /* declared input bindings */
     .binding_down  = api_binding_down,
     /* pillar 9: game data + texture packs (api 2) */

@@ -268,13 +268,27 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Host disc-read trace: two Spyro 1 boots to VBL 600 (disc cache on and
-    # off) under OPENPETE_DISC_TRACE; every row parses, the exe and libcd
-    # paths appear, and the libcd sector sum equals the CdRead thunk's.
+    # off) under OPENPETE_DISC_TRACE; every row parses, the exe, libcd and
+    # woah paths appear, the woah NSF decodes, and the libcd sector sum
+    # equals the CdRead thunk's.
     # Exit 64 = no binary or disc.
     add_test(NAME disc_trace
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_disc_trace.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(disc_trace PROPERTIES
+        LABELS "disc"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Sfx pack census: --dump-sfx-pack over the Spyro 1 disc through the
+    # disc reader; the counters, the WAV set's name digest and the trace
+    # rows are pinned to the retail disc. Exit 64 = no binary or disc.
+    add_test(NAME sfx_pack
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_sfx_pack.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(sfx_pack PROPERTIES
         LABELS "disc"
         RESOURCE_LOCK openpete_game
         TIMEOUT 900

@@ -25,6 +25,7 @@
 #include "openpete_frame_time_log.h"
 #include "openpete_pace_log.h"
 #include "openpete_disc_trace.h"
+#include "openpete_disc_image.h"
 #include "rhi.h"
 #include "../rhi/rhi_gpu_audit.h"
 #include "openpete_profile.h"
@@ -915,7 +916,6 @@ extern int PsyX_Initialise(char* windowName, int screenWidth,
                            int screenHeight, int fullscreen, int startHidden);
 extern void PsyX_Shutdown(void);
 #include "openpete_disc_cache.h"
-extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize);
 extern char PsyX_BeginScene(void);
 extern void PsyX_EndScene(void);
 extern void PsyX_UpdateInput(void);
@@ -1144,16 +1144,18 @@ static void stamp_psx_pad_bindings(void) {
 }
 #endif
 
-/** @brief Point PsyCross's CD reads at the sector image behind --disc.
+/** @brief Open the sector image behind --disc as the session's disc and attach the disc cache to it.
  *
  * The path may be the cue or the bin; the resolver covers both and the
- * error names every candidate it tried. With --disc-cache the image is read
- * into memory by openpete_disc_cache_attach; when that is off or fails,
- * PsyX_CDFS_Init opens the file.
+ * error names every candidate it tried. With --disc-cache the cache starts
+ * loading here, before the EXE is read, so every later read of the image
+ * (the EXE, PsyCross's libcd and XA, the host paths) goes through it. A
+ * second call changes nothing.
  * @param opts The parsed options; disc_path must be set.
  * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR when no readable
- *         image resolves. */
-static int attach_disc_image(const openpete_options_t* opts) {
+ *         image resolves or disc_image refuses it (a 2048-byte image). */
+static int open_game_disc(const openpete_options_t* opts) {
+    if (disc_image_game()) return OPENPETE_EXIT_OK;
     char bin[4096], tried[4096];
     if (openpete_psx_resolve_disc_bin(opts->disc_path, bin, sizeof bin,
                                       tried, sizeof tried) != 0) {
@@ -1163,21 +1165,65 @@ static int attach_disc_image(const openpete_options_t* opts) {
                     opts->disc_path, tried[0] ? tried : "(nothing)");
         return OPENPETE_EXIT_SETUP_ERROR;
     }
-    openpete_disc_cache_trace_install();
-    if (opts->disc_cache && openpete_disc_cache_attach(bin))
-        return OPENPETE_EXIT_OK;
-    OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
-    PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+    disc_image_t* img = disc_image_open(bin, DISC_READ_CACHED, OPENPETE_DISC_TAG_NONE);
+    if (!img) return OPENPETE_EXIT_SETUP_ERROR;
+    disc_image_set_game(img);
+    if (opts->disc_cache) (void)openpete_disc_cache_attach(disc_image_bin_path(img));
     return OPENPETE_EXIT_OK;
+}
+
+/** @brief Point PsyCross's CD reads at the session's disc image.
+ *
+ * Opens the image first when open_game_disc has not, installs the trace
+ * observer, and binds PsyCross's image to the handle, which reads through
+ * the disc cache when it is attached and the file otherwise.
+ * @param opts The parsed options; disc_path must be set.
+ * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR when no readable
+ *         image resolves or it cannot be bound. */
+static int attach_disc_image(const openpete_options_t* opts) {
+    int rc = open_game_disc(opts);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    openpete_disc_cache_trace_install();
+    if (!openpete_disc_psycross_bind(disc_image_game())) {
+        OPL_ERROR_F("boot", "--disc %s: the image cannot be bound to PsyCross (larger than 2 GiB)",
+                    opts->disc_path);
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+    OPL_INFO_F("boot", "PsyCross CD image: %s (%s)", disc_image_bin_path(disc_image_game()),
+               openpete_disc_cache_active() ? "disc cache" : "file");
+    return OPENPETE_EXIT_OK;
+}
+
+/** @brief Log the disc cache's exit census line, with misses per read path, and stop its loader.
+ *
+ * Logs nothing when the cache was never attached. */
+static void disc_cache_exit_census(void) {
+    uint64_t m; int64_t w, ln; size_t b;
+    openpete_disc_cache_census(&m, &w, &b, &ln);
+    if (openpete_disc_cache_active()) {
+        char tags[256] = "";
+        size_t at = 0;
+        for (int t = 0; t < OPENPETE_DISC_TAG_COUNT && at < sizeof tags; t++) {
+            uint64_t n = openpete_disc_cache_tag_misses(t);
+            if (n) at += (size_t)snprintf(tags + at, sizeof tags - at, " %s=%llu",
+                                          openpete_disc_trace_tag_name(t), (unsigned long long)n);
+        }
+        OPL_INFO_F("cd", "disc cache: %zu MB, loaded in %.2f s, %llu miss(es)%s, %.2f ms read from the file",
+                   b >> 20, (double)ln / 1e9, (unsigned long long)m, tags, (double)w / 1e6);
+    }
+    openpete_disc_cache_shutdown();
 }
 
 /** @brief Read the PSX EXE from --exe-path, else from the disc image under the game's EXE filename.
  *
+ * The disc route first opens the session's disc (open_game_disc), which
+ * attaches the disc cache under --disc-cache.
  * @param opts The parsed options; exe_path takes precedence over disc_path.
  * @param out_bytes Receives a malloc'd copy of the EXE (the caller frees
  *        it), or NULL on failure.
  * @param out_size Receives the EXE size in bytes.
- * @return 0 on success, 1 when neither path is set or the read fails. */
+ * @return 0 on success, 1 when neither path is set, the disc image cannot
+ *         be opened, or the read fails. */
 static int try_load_exe(const openpete_options_t* opts,
                         uint8_t** out_bytes, size_t* out_size) {
     *out_bytes = NULL;
@@ -1189,6 +1235,9 @@ static int try_load_exe(const openpete_options_t* opts,
         return *out_bytes ? 0 : 1;
     }
     if (opts->disc_path) {
+        /* The session's disc, and the cache behind it, open before the EXE
+         * read so that read goes through the cache too. */
+        if (open_game_disc(opts) != OPENPETE_EXIT_OK) return 1;
         OPL_INFO_F("boot", "loading EXE from --disc: %s (%s)",
                    opts->disc_path, game_get_exe_filename());
         *out_bytes = openpete_psx_load_exe_from_disc(
@@ -6611,12 +6660,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                    s_inter_shots, s_inter_shots_bracketed,
                    s_inter_shots - s_inter_shots_bracketed);
 
-    {   uint64_t m; int64_t w, ln; size_t b;
-        openpete_disc_cache_census(&m, &w, &b, &ln);
-        if (openpete_disc_cache_active())
-            OPL_INFO_F("cd", "disc cache: %zu MB, loaded in %.2f s, %llu miss(es), %.2f ms blocked",
-                       b >> 20, (double)ln / 1e9, (unsigned long long)m, (double)w / 1e6);
-        openpete_disc_cache_shutdown(); }
+    disc_cache_exit_census();
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();
 

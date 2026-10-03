@@ -108,6 +108,7 @@ add_library(openpete_core STATIC
     psx/psx_bios.c
     psx/cdrom_mmio.c
     psx/disc_cache.c
+    psx/disc_image.c
     psx/exe_loader.cpp
     psx/psx_region.c
     psx/vstream.c
@@ -230,11 +231,10 @@ add_library(openpete_core STATIC
     # static_assert.
     renderer/debug_render.cpp
 
-    # Vendored psxrecomp pieces kept verbatim: gte.cpp, the memory helpers and
-    # iso_reader. Compiled directly here so
-    # we don't drag the rest of psxrecomp's runtime.c into the build.
+    # Vendored psxrecomp pieces kept verbatim: gte.cpp and the memory
+    # helpers. Compiled directly here so we don't drag the rest of
+    # psxrecomp's runtime.c into the build.
     ${PSXRECOMP_RUNNER}/src/gte.cpp
-    ${PSXRECOMP_RUNNER}/src/iso_reader.cpp
 )
 
 # libco: cooperative single-fiber scheduler. third_party/libco/libco.c
@@ -304,8 +304,6 @@ target_include_directories(openpete_core PRIVATE ${OPENAL_INCLUDE_DIR})
 set_target_properties(openpete_core PROPERTIES
     C_STANDARD 99
     C_STANDARD_REQUIRED ON
-    # iso_reader.cpp uses C++20 ends_with; bump the whole core lib so we
-    # don't need per-source overrides.
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
@@ -664,7 +662,7 @@ if(NOT CMAKE_HOST_WIN32)
     add_custom_target(openpete_core_purity_check ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking core/ purity..."
         COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' | grep -vE '^[^:]+:[[:space:]]*#[[:space:]]*define'"
-        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c' --exclude='atomic_file.c'"
+        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c' --exclude='atomic_file.c' --exclude='disc_image.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)
 

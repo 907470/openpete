@@ -2,11 +2,12 @@
  * whole is never served as uninitialised heap bytes.
  *
  * disc_cache.c is compiled into this TU with fread and malloc replaced: the
- * allocation is filled with 0xCD, and reads of chunk 1 come up short on
- * demand. Case A: the first read of chunk 1 is short and the retry reads it
- * whole; the image matches the file. Case B: every loader read of chunk 1
- * is short; a guest read of it triggers the re-read, and when that is short
- * too the missing bytes read as zero, never 0xCD. */
+ * allocation is filled with 0xCD, and the loader's reads of chunk 1 come up
+ * short on demand. Case A: the first read of chunk 1 is short and the retry
+ * reads it whole; every byte of the image is then served from memory and
+ * matches the file. Case B: every loader read of chunk 1 is short; the chunk
+ * is never served from memory, and a disc_image read of it is a miss whose
+ * bytes come from the file, never 0xCD. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,29 +36,32 @@ static void* dc_test_malloc(size_t n) {
 #undef fread
 #undef malloc
 
-static void (*s_wait)(size_t, size_t);
-static const uint8_t* s_mem;
-
-/** @brief PsyCross stub: records the miss-wait callback. */
-void PsyX_CDFS_SetMemWait(void (*cb)(size_t, size_t)) { s_wait = cb; }
-/** @brief PsyCross stub: records the image pointer. */
+/** @brief PsyCross stub: the read callback is not exercised here. */
+void PsyX_CDFS_SetMemRead(int (*cb)(void*, size_t, size_t, int)) { (void)cb; }
+/** @brief PsyCross stub: the image declaration is not exercised here. */
 void PsyX_CDFS_Init_Mem(const u_int* data, int size, int track, int sector_size) {
-    (void)size; (void)track; (void)sector_size; s_mem = (const uint8_t*)data;
+    (void)data; (void)size; (void)track; (void)sector_size;
 }
 /** @brief PsyCross stub: the read observer is not exercised here. */
 void PsyX_CDFS_SetReadObserver(void (*cb)(size_t, size_t, int)) { (void)cb; }
 /** @brief Pace log stub. */
 void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset) { (void)waited_ns; (void)end_offset; }
+/** @brief Crash handler stub. */
 void openpete_crash_thread_attach(void) {}
 /** @brief Logger stub. */
 void openpete_logf(openpete_log_level_t level, const char* subsystem, const char* fmt, ...) {
     (void)level; (void)subsystem; (void)fmt;
 }
 
+/** @brief Wait for the loader to finish every chunk. */
+static void dc_join(void) {
+    if (s_thr) { SDL_WaitThread(s_thr, NULL); s_thr = NULL; }
+}
+
 /** @brief Resets the module's statics between cases. */
 static void dc_reset(void) {
     openpete_disc_cache_shutdown();
-    s_active = 0; s_img = NULL; s_have = NULL; s_thr = NULL;
+    s_active = 0; s_img = NULL; s_have = NULL; s_thr = NULL; s_misses = 0;
 }
 
 /** @brief Runs the retry case and the persistent short-read case.
@@ -66,38 +70,45 @@ int main(void) {
     const char* tmp = getenv("TMPDIR");
     char path[512];
     snprintf(path, sizeof path, "%s/disc_cache_short_read_test.bin", tmp && *tmp ? tmp : "/tmp");
-    const size_t size = 2u * DC_CHUNK + 4096u;
+    /* A whole number of 2352-byte sectors past two chunks, so disc_image opens it. */
+    const size_t size = ((2u * DC_CHUNK) / 2352u + 4u) * 2352u;
     uint8_t* file = (uint8_t*)calloc(1, size);
+    uint8_t* got = (uint8_t*)calloc(1, size);
     for (size_t i = 0; i < size; i++) file[i] = (uint8_t)(i * 7u + 1u);
     FILE* f = fopen(path, "wb");
     fwrite(file, 1, size, f); fclose(f);
     s_short_at = DC_CHUNK;
     int fail = 0;
 
+    disc_image_t* img = disc_image_open(path, DISC_READ_CACHED, OPENPETE_DISC_TAG_LIBCD);
+    if (!img) { fprintf(stderr, "FAIL open\n"); return 1; }
+
     s_short_left = 1;
-    if (!openpete_disc_cache_attach(path)) { fprintf(stderr, "FAIL attach A\n"); return 1; }
-    s_wait(0, size);
-    if (memcmp(s_mem, file, size) != 0) { fprintf(stderr, "FAIL A: image differs after a retried short read\n"); fail++; }
+    if (!openpete_disc_cache_attach(disc_image_bin_path(img))) { fprintf(stderr, "FAIL attach A\n"); return 1; }
+    dc_join();
+    if (openpete_disc_cache_copy(disc_image_bin_path(img), 0, got, size, OPENPETE_DISC_TAG_LIBCD) != 1)
+        { fprintf(stderr, "FAIL A: image not resident after a retried short read\n"); fail++; }
+    else if (memcmp(got, file, size) != 0)
+        { fprintf(stderr, "FAIL A: image differs after a retried short read\n"); fail++; }
     dc_reset();
 
-    s_short_left = -1;              /* every read of chunk 1 is short */
-    if (!openpete_disc_cache_attach(path)) { fprintf(stderr, "FAIL attach B\n"); return 1; }
-    s_wait(0, size);
-    const size_t half = DC_CHUNK / 2u;
-    if (memcmp(s_mem + DC_CHUNK, file + DC_CHUNK, half) != 0) { fprintf(stderr, "FAIL B: read half wrong\n"); fail++; }
-    size_t cd = 0;
-    for (size_t i = DC_CHUNK + half; i < 2u * DC_CHUNK; i++) cd += (s_mem[i] == 0xCD);
-    int zero = 1;
-    for (size_t i = DC_CHUNK + half; i < 2u * DC_CHUNK && zero; i++) zero = (s_mem[i] == 0);
-    if (cd || !zero) { fprintf(stderr, "FAIL B: unread half not zero (%zu stale 0xCD bytes)\n", cd); fail++; }
-    if (memcmp(s_mem + 2u * DC_CHUNK, file + 2u * DC_CHUNK, 4096u) != 0) { fprintf(stderr, "FAIL B: chunk 2\n"); fail++; }
-
-    s_short_left = 0;               /* the file reads whole again: the re-read recovers */
-    s_wait(DC_CHUNK, DC_CHUNK + 16u);
-    if (memcmp(s_mem + DC_CHUNK, file + DC_CHUNK, DC_CHUNK) != 0) { fprintf(stderr, "FAIL B: re-read did not recover\n"); fail++; }
+    s_short_left = -1;              /* every loader read of chunk 1 is short */
+    if (!openpete_disc_cache_attach(disc_image_bin_path(img))) { fprintf(stderr, "FAIL attach B\n"); return 1; }
+    dc_join();
+    if (s_have[1] != DC_UNREAD) { fprintf(stderr, "FAIL B: chunk 1 state %u\n", s_have[1]); fail++; }
+    if (openpete_disc_cache_copy(disc_image_bin_path(img), DC_CHUNK, got, 16u, OPENPETE_DISC_TAG_LIBCD) != 0)
+        { fprintf(stderr, "FAIL B: an unread chunk was served from memory\n"); fail++; }
+    memset(got, 0xCD, size);
+    int r = disc_image_read_bytes(img, 0, got, size, OPENPETE_DISC_TAG_LIBCD);
+    if (r != OPENPETE_DISC_MISS) { fprintf(stderr, "FAIL B: read result %d, want miss\n", r); fail++; }
+    if (memcmp(got, file, size) != 0) { fprintf(stderr, "FAIL B: bytes differ from the file\n"); fail++; }
+    if (s_misses != 1) { fprintf(stderr, "FAIL B: %llu misses counted, want 1\n", (unsigned long long)s_misses); fail++; }
+    r = disc_image_read_bytes(img, 0, got, 4096u, OPENPETE_DISC_TAG_LIBCD);
+    if (r != OPENPETE_DISC_HIT) { fprintf(stderr, "FAIL B: chunk 0 read result %d, want hit\n", r); fail++; }
     dc_reset();
+    disc_image_close(img);
     remove(path);
-    free(file);
+    free(file); free(got);
     if (fail) return 1;
     printf("disc_cache_short_read_test: OK\n");
     return 0;

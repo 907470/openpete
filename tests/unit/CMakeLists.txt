@@ -364,13 +364,13 @@ set_target_properties(boot_memfill_test PROPERTIES C_STANDARD 11)
 add_test(NAME boot_memfill_test COMMAND boot_memfill_test)
 
 # exe_loader_cap_test - the disc EXE loader refuses a directory size over
-# 2 MiB + 2048 before allocating (crafted ISO9660 image, psxrecomp reader).
+# 2 MiB + 2048 before allocating (crafted ISO9660 image, disc_image reader).
 add_executable(exe_loader_cap_test
     exe_loader_cap_test.cpp
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/src/iso_reader.cpp)
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
 target_include_directories(exe_loader_cap_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
@@ -382,21 +382,47 @@ set_target_properties(exe_loader_cap_test PROPERTIES CXX_STANDARD 20)
 add_test(NAME exe_loader_cap_test COMMAND exe_loader_cap_test)
 
 # disc_cache_short_read_test - a chunk the disc cache loader reads short is
-# retried, re-read on use, and never served as stale heap bytes. The test TU
-# includes disc_cache.c with fread and malloc replaced.
+# retried, then served from the file, and never served as stale heap bytes.
+# The test TU includes disc_cache.c with fread and malloc replaced.
 add_executable(disc_cache_short_read_test
     disc_cache_short_read_test.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
+    ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
     ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
     ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
 target_include_directories(disc_cache_short_read_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include
     ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include)
 target_link_libraries(disc_cache_short_read_test PRIVATE SDL3::SDL3-static)
 if(WIN32)
     target_link_libraries(disc_cache_short_read_test PRIVATE winmm)
 endif()
-set_target_properties(disc_cache_short_read_test PROPERTIES C_STANDARD 11)
+set_target_properties(disc_cache_short_read_test PROPERTIES C_STANDARD 11 CXX_STANDARD 20)
 add_test(NAME disc_cache_short_read_test COMMAND disc_cache_short_read_test)
+
+# disc_image_test - the disc reader on synthetic raw images written by the
+# test: PVD, root and one-subdirectory lookup, ';1' and case folding, the
+# 2048-byte refusal, sector and user-data reads, cache hits and misses
+# against direct reads, and the booted-disc read_sector the mod API forwards
+# to (with the api table's appended slot).
+add_executable(disc_image_test
+    disc_image_test.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_image.c
+    ${CMAKE_SOURCE_DIR}/core/psx/disc_cache.c
+    ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
+    ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
+target_include_directories(disc_image_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include)
+target_link_libraries(disc_image_test PRIVATE SDL3::SDL3-static)
+if(WIN32)
+    target_link_libraries(disc_image_test PRIVATE winmm)
+endif()
+set_target_properties(disc_image_test PROPERTIES C_STANDARD 11 CXX_STANDARD 20)
+add_test(NAME disc_image_test COMMAND disc_image_test)
 
 # sfx_smpl_walk_test - the WAV smpl chunk walk ends on a chunk that runs past
 # the file and refuses loop points outside int range. The test TU includes
