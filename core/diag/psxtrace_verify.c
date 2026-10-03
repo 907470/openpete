@@ -95,9 +95,9 @@ static uint32_t gte_sx16(uint32_t w) { return (uint32_t)(int32_t)(int16_t)(uint1
 
 /** @brief Return the count of leading bits equal to bit 31 (LZCR from LZCS); 32 for 0 and 0xFFFFFFFF. */
 static uint32_t gte_leading_bits(uint32_t v) {
-    const uint32_t x = (v & 0x80000000u) ? ~v : v;
+    const uint32_t x = (v & (UINT32_C(1) << 31)) ? ~v : v;
     uint32_t n = 0;
-    while (n < 32u && !(x & (0x80000000u >> n))) n++;
+    while (n < 32u && !(x & ((UINT32_C(1) << 31) >> n))) n++;
     return n;
 }
 
@@ -130,7 +130,7 @@ static void gte_read_view(const uint32_t d[32], const uint32_t c[32], uint32_t v
     v[15] = d[14];
     v[28] = v[29] = gte_orgb_field(d[9]) | (gte_orgb_field(d[10]) << 5) | (gte_orgb_field(d[11]) << 10);
     v[31] = gte_leading_bits(d[30]);
-    v[63] = (c[31] & 0x7FFFF000u) | ((c[31] & 0x7F87E000u) ? 0x80000000u : 0u);
+    v[63] = (c[31] & 0x7FFFF000u) | ((c[31] & 0x7F87E000u) ? (UINT32_C(1) << 31) : 0u);
 }
 
 /** @brief Fold one 32-bit word into an FNV-1a-64 state (one xor, one multiply per word). */
