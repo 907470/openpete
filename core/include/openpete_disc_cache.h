@@ -35,6 +35,12 @@ int  openpete_disc_cache_attach(const char* bin_path);
  * Stays 1 after openpete_disc_cache_shutdown, since PsyCross keeps the buffer.
  * @return 1 after a successful attach, else 0. */
 int  openpete_disc_cache_active(void);
+/** @brief Install PsyCross's read observer when OPENPETE_DISC_TRACE is set, so its libcd and XA reads are traced.
+ *
+ * Covers both modes: a read of the attached image is a hit or a miss, a
+ * read of PsyCross's own file handle is direct. Call before the first
+ * PsyCross read. */
+void openpete_disc_cache_trace_install(void);
 /** @brief Stop the loader, join its thread, and remove the miss wait.
  *
  * The image buffer stays allocated because PsyCross holds the pointer

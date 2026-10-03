@@ -44,6 +44,8 @@ void PsyX_CDFS_SetMemWait(void (*cb)(size_t, size_t)) { s_wait = cb; }
 void PsyX_CDFS_Init_Mem(const u_int* data, int size, int track, int sector_size) {
     (void)size; (void)track; (void)sector_size; s_mem = (const uint8_t*)data;
 }
+/** @brief PsyCross stub: the read observer is not exercised here. */
+void PsyX_CDFS_SetReadObserver(void (*cb)(size_t, size_t, int)) { (void)cb; }
 /** @brief Pace log stub. */
 void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset) { (void)waited_ns; (void)end_offset; }
 void openpete_crash_thread_attach(void) {}

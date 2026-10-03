@@ -13,6 +13,7 @@
 #include "openpete_log.h"
 
 #include "../../third_party/psxrecomp/runner/include/iso_reader.h"
+#include "openpete_disc_trace.h"
 
 #include <cctype>
 #include <cstdint>
@@ -199,6 +200,8 @@ static uint8_t* load_disc_file(const char* cue_path, const char* filename,
     if (!buf) return nullptr;
 
     size_t got = reader.ReadFile(filename, buf, entry.size);
+    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_NONE, entry.lba,
+                                (uint32_t)((got + 2047u) / 2048u), OPENPETE_DISC_DIRECT);
     if (got != entry.size) {
         OPL_ERROR_F("disc", "ReadFile got %zu/%u bytes", got, entry.size);
         std::free(buf);
@@ -218,7 +221,10 @@ extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
 extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                                    const char* exe_filename,
                                                    size_t* out_size) {
-    return load_disc_file(cue_path, exe_filename, PSX_EXE_MAX_BYTES, out_size);
+    int scope = openpete_disc_trace_scope_begin(OPENPETE_DISC_TAG_EXE);
+    uint8_t* bytes = load_disc_file(cue_path, exe_filename, PSX_EXE_MAX_BYTES, out_size);
+    openpete_disc_trace_scope_end(scope);
+    return bytes;
 }
 
 /* Serial from SYSTEM.CNF's BOOT line; see openpete_psx.h. */
@@ -240,7 +246,10 @@ extern "C" int openpete_psx_read_disc_serial(const char* image_path,
         entry.size > 4096)
         return -1;
     std::vector<uint8_t> buf(entry.size + 1, 0);
-    if (reader.ReadFile("SYSTEM.CNF", buf.data(), entry.size) != entry.size)
+    size_t got = reader.ReadFile("SYSTEM.CNF", buf.data(), entry.size);
+    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_SERIAL, entry.lba,
+                                (uint32_t)((got + 2047u) / 2048u), OPENPETE_DISC_DIRECT);
+    if (got != entry.size)
         return -1;
     const char* text = reinterpret_cast<const char*>(buf.data());
 

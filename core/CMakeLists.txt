@@ -15,8 +15,10 @@ add_library(openpete_core STATIC
     # the sub-tick spine identity audit (OPENPETE_IDENT_AUDIT: composes
     # the canonical scene and the alpha-1 re-extract of the same tick and
     # reports their pixel difference), the per-present frame-time recorder
-    # (--frame-time-log PATH), and the psxtrace schedule and verifier.
+    # (--frame-time-log PATH), the psxtrace schedule and verifier, and the
+    # host disc-read trace (OPENPETE_DISC_TRACE PATH).
     diag/log.c
+    diag/disc_trace.c
     diag/log_file.c
     diag/crash.c
     diag/fatal_message.c

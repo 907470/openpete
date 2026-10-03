@@ -55,6 +55,7 @@
 #include "feature_registry.h"
 
 #include "openpete.h"       /* openpete_options_t */
+#include "openpete_disc_trace.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"   /* openpete_psx_load_file_from_disc */
 #include "psx_runtime_internal.h"    /* CPUState */
@@ -218,7 +219,9 @@ static SDL_Thread*   s_loader;
 static int SDLCALL woah_load_main(void* unused) {
     (void)unused;
     size_t nsf_len = 0;
+    int scope = openpete_disc_trace_scope_begin(OPENPETE_DISC_TAG_WOAH);
     uint8_t* nsf = openpete_psx_load_file_from_disc(s_disc_path, WOAH_NSF, &nsf_len);
+    openpete_disc_trace_scope_end(scope);
     if (!nsf) return 0; /* loader logged why (e.g. a demo-less disc) */
 
     const uint8_t* body = NULL;

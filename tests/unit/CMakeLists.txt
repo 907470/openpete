@@ -368,10 +368,16 @@ add_test(NAME boot_memfill_test COMMAND boot_memfill_test)
 add_executable(exe_loader_cap_test
     exe_loader_cap_test.cpp
     ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
+    ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/src/iso_reader.cpp)
 target_include_directories(exe_loader_cap_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+target_link_libraries(exe_loader_cap_test PRIVATE SDL3::SDL3-static)
+if(WIN32)
+    target_link_libraries(exe_loader_cap_test PRIVATE winmm)
+endif()
 set_target_properties(exe_loader_cap_test PROPERTIES CXX_STANDARD 20)
 add_test(NAME exe_loader_cap_test COMMAND exe_loader_cap_test)
 
@@ -380,6 +386,7 @@ add_test(NAME exe_loader_cap_test COMMAND exe_loader_cap_test)
 # includes disc_cache.c with fread and malloc replaced.
 add_executable(disc_cache_short_read_test
     disc_cache_short_read_test.c
+    ${CMAKE_SOURCE_DIR}/core/diag/disc_trace.c
     ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
 target_include_directories(disc_cache_short_read_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include

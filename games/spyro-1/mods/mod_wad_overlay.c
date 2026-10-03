@@ -35,6 +35,7 @@
 #include "mods/mod_wad_overlay.h"
 
 #include "game_extras.h"
+#include "openpete_disc_trace.h"
 #include "openpete_log.h"
 #include "openpete_str.h"
 #include "openpete_mods.h"
@@ -149,7 +150,9 @@ static int read_sector(uint32_t sector, uint8_t* out) {
     long off = s_raw ? (long)sector * SEC_RAW + SEC_RAW_SKEW
                      : (long)sector * SEC_DATA;
     if (fseek(s_bin, off, SEEK_SET) != 0) return -1;
-    return fread(out, 1, SEC_DATA, s_bin) == SEC_DATA ? 0 : -1;
+    size_t got = fread(out, 1, SEC_DATA, s_bin);
+    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_WAD, sector, 1, OPENPETE_DISC_DIRECT);
+    return got == SEC_DATA ? 0 : -1;
 }
 
 /** @brief Maps a WAD TOC index to its logical level id.
@@ -277,7 +280,8 @@ static void wad_init(void) {
     /* Raw (2352) vs cooked (2048): raw sectors open with the 12-byte
      * sync pattern 00 FF*10 00. */
     uint8_t probe[12] = {0};
-    (void)fread(probe, 1, 12, s_bin);
+    size_t probed = fread(probe, 1, 12, s_bin);
+    openpete_disc_trace_bytes(OPENPETE_DISC_TAG_WAD, 0, probed, OPENPETE_DISC_DIRECT);
     s_raw = (probe[0] == 0x00 && probe[1] == 0xFF && probe[11] == 0x00);
 
     const game_disc_layout_t* dl = game_get_disc_layout();

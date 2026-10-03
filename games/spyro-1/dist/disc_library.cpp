@@ -15,6 +15,7 @@
 // among several. After ingest the user's original file is never needed again
 // - engine updates rebuild the module from the library's own copy.
 #include "openpete.h"
+#include "openpete_disc_trace.h"
 #include "openpete_log.h"
 #include "openpete_paths.h" /* library root: portable vs per-user data dir */
 #include "openpete_psx.h"   /* openpete_psx_read_disc_serial */
@@ -150,6 +151,8 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
     while (in.read(buf.data(), (std::streamsize)buf.size()) || in.gcount() > 0) {
         openpete_sha256_update(&c, buf.data(), (size_t)in.gcount());
         out.write(buf.data(), in.gcount());
+        openpete_disc_trace_bytes(OPENPETE_DISC_TAG_INGEST, (uint64_t)seen,
+                                  (uint64_t)in.gcount(), OPENPETE_DISC_DIRECT);
         seen += (uintmax_t)in.gcount();
         if (spyro1_progress_cb && total_bytes && (seen % (64u << 20) < (1u << 20)))
             spyro1_progress_cb("COPYING DISC TO YOUR LIBRARY",

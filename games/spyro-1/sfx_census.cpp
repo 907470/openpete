@@ -28,6 +28,7 @@
 // other key-on; only the authoring dump lacks them).
 #include "openpete_log.h"
 #include "iso_reader.h"
+#include "openpete_disc_trace.h"
 #include "sfx_ident.h"
 #include "spyro1_sfx_names.h"
 
@@ -114,7 +115,9 @@ bool read_span(PS1::ISOReader& r, uint32_t wad_off, uint32_t len,
     /* Offsets are sector-aligned in practice; the skew path keeps a
      * hand-built entry honest. */
     while (done < len) {
-        if (!r.ReadSector(lba, sec)) return false;
+        bool ok = r.ReadSector(lba, sec);
+        openpete_disc_trace_sectors(OPENPETE_DISC_TAG_SFX, lba, 1, OPENPETE_DISC_DIRECT);
+        if (!ok) return false;
         uint32_t from = done == 0 ? skew : 0;
         uint32_t n = kSectorSize - from;
         if (n > len - done) n = len - done;
@@ -492,7 +495,9 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
             return -1;
         }
         uint8_t hdr[kSectorSize];
-        if (!reader.ReadSector(kWadSector, hdr)) {
+        bool hdr_ok = reader.ReadSector(kWadSector, hdr);
+        openpete_disc_trace_sectors(OPENPETE_DISC_TAG_SFX, kWadSector, 1, OPENPETE_DISC_DIRECT);
+        if (!hdr_ok) {
             OPL_ERROR_F("sfxdump", "cannot read WAD header at LBA %u", kWadSector);
             return -1;
         }

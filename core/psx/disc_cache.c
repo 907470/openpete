@@ -1,5 +1,6 @@
 /* core/psx/disc_cache.c - see openpete_disc_cache.h. */
 #include "openpete_disc_cache.h"
+#include "openpete_disc_trace.h"
 #include "openpete_crash.h"
 #include "openpete_log.h"
 #include "openpete_time.h"
@@ -54,6 +55,7 @@ static int read_chunk_from(FILE* fp, size_t c) {
     size_t want = s_size - at; if (want > DC_CHUNK) want = DC_CHUNK;
     size_t got = 0;
     if (fseek(fp, (long)at, SEEK_SET) == 0) got = fread(s_img + at, 1, want, fp);
+    openpete_disc_trace_bytes(OPENPETE_DISC_TAG_CACHE_LOAD, at, got, OPENPETE_DISC_DIRECT);
     if (got < want) memset(s_img + at + got, 0, want - got);
     return got == want;
 }
@@ -228,6 +230,31 @@ void openpete_disc_cache_shutdown(void) {
     PsyX_CDFS_SetMemWait(NULL);
     /* The image itself stays: PsyCross still holds the pointer until the
      * process ends, and the OS reclaims it. */
+}
+
+/* Misses counted when the read observer last ran; a read whose mem_wait
+ * raised s_misses was a miss. */
+static uint64_t s_trace_misses;
+
+/** @brief PsyCross read observer: trace one image read as libcd or xa, a hit or miss with the cache attached, else direct.
+ *
+ * Runs on the reading thread after mem_wait, so a miss that read waited
+ * on has already been counted in s_misses.
+ * @param b First byte offset.
+ * @param e One past the last byte offset.
+ * @param source PSYX_CDFS_READ_DATA or PSYX_CDFS_READ_XA. */
+static void trace_psycross_read(size_t b, size_t e, int source) {
+    int tag = source == PSYX_CDFS_READ_XA ? OPENPETE_DISC_TAG_XA : OPENPETE_DISC_TAG_LIBCD;
+    int result = OPENPETE_DISC_DIRECT;
+    if (s_active || s_img) {
+        result = s_misses != s_trace_misses ? OPENPETE_DISC_MISS : OPENPETE_DISC_HIT;
+        s_trace_misses = s_misses;
+    }
+    openpete_disc_trace_bytes(tag, b, e > b ? e - b : 0, result);
+}
+
+void openpete_disc_cache_trace_install(void) {
+    if (openpete_disc_trace_enabled()) PsyX_CDFS_SetReadObserver(trace_psycross_read);
 }
 
 void openpete_disc_cache_census(uint64_t* misses, int64_t* waited_ns,

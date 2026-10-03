@@ -24,6 +24,7 @@
 #include "openpete_workpool.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_pace_log.h"
+#include "openpete_disc_trace.h"
 #include "rhi.h"
 #include "../rhi/rhi_gpu_audit.h"
 #include "openpete_profile.h"
@@ -1162,6 +1163,7 @@ static int attach_disc_image(const openpete_options_t* opts) {
                     opts->disc_path, tried[0] ? tried : "(nothing)");
         return OPENPETE_EXIT_SETUP_ERROR;
     }
+    openpete_disc_cache_trace_install();
     if (opts->disc_cache && openpete_disc_cache_attach(bin))
         return OPENPETE_EXIT_OK;
     OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
@@ -6982,8 +6984,14 @@ static int run_split_threaded(const openpete_options_t* opts)
     return s_worker_rc;
 }
 
+/** @brief The disc trace's vbl column: openpete_vbl.
+ *
+ * @return The current VBL count. */
+static int disc_trace_vbl(void) { return SDL_GetAtomicInt(&openpete_vbl); }
+
 int openpete_run(const openpete_options_t* opts) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
+    openpete_disc_trace_set_vbl_source(disc_trace_vbl);
     /* The stderr mirror is normally already up (main() opens it before
      * attaching the recomp module). Harmless no-op if so; this covers
      * embedders that call openpete_run() directly. Before

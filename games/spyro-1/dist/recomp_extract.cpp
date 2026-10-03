@@ -14,6 +14,7 @@
 // resolve to LBA 37 + offset/2048 (offsets are sector-aligned).
 #include "openpete_log.h"
 #include "iso_reader.h"
+#include "openpete_disc_trace.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -105,7 +106,9 @@ bool carve(PS1::ISOReader& reader, const OffsetLength& e,
     const uint32_t nsectors  = ((uint32_t)e.length + kSectorSize - 1) / kSectorSize;
     std::vector<uint8_t> buf(nsectors * kSectorSize);
     for (uint32_t i = 0; i < nsectors; i++) {
-        if (!reader.ReadSector(first_lba + i, buf.data() + i * kSectorSize)) {
+        bool ok = reader.ReadSector(first_lba + i, buf.data() + i * kSectorSize);
+        openpete_disc_trace_sectors(OPENPETE_DISC_TAG_NONE, first_lba + i, 1, OPENPETE_DISC_DIRECT);
+        if (!ok) {
             OPL_ERROR_F("extract", "%s: sector read failed at LBA %u",
                         out.filename().string().c_str(), first_lba + i);
             return false;
@@ -140,6 +143,7 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
         std::fprintf(stderr, "extract-recomp-inputs: needs --disc and a directory\n");
         return -1;
     }
+    OpenpeteDiscTraceScope trace_scope(OPENPETE_DISC_TAG_EXTRACT);
     std::error_code ec;
     std::filesystem::create_directories(out_dir, ec);
 
@@ -163,7 +167,9 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
     }
 
     uint8_t hdr[kSectorSize];
-    if (!reader.ReadSector(kWadSector, hdr)) {
+    bool hdr_ok = reader.ReadSector(kWadSector, hdr);
+    openpete_disc_trace_sectors(OPENPETE_DISC_TAG_NONE, kWadSector, 1, OPENPETE_DISC_DIRECT);
+    if (!hdr_ok) {
         OPL_ERROR_F("extract", "cannot read WAD header at LBA %u", kWadSector);
         return -1;
     }
