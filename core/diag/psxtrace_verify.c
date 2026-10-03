@@ -52,6 +52,272 @@ static int read_u64_le(FILE* fp, uint64_t* out) {
     return 0;
 }
 
+/* ---- GTE hash row ----------------------------------------------------------
+ * The openpete half of the capture's `<trace>.gte` recorder: the same read
+ * view, fold and written-register rule, one interval per record, compared
+ * row by row. Intervals are keyed on the record index, never on a VBL
+ * count, since openpete reaches some records one VBL behind the reference. */
+
+int openpete_gte_hash_on = 0;
+
+#define GTE_HASH_FNV_OFFSET 0xCBF29CE484222325ULL
+#define GTE_HASH_FNV_PRIME  0x100000001B3ULL
+#define GTE_HASH_NO_REC     0xFFFFFFFFu
+
+typedef struct {
+    uint32_t ops;
+    uint64_t hash, written, residue;
+} gte_hash_row_t;
+
+static struct {
+    gte_hash_row_t* rows;      /* the reference's rows, by record index */
+    uint8_t*        have;      /* 1 where the sidecar carries the row */
+    uint32_t        row_count;
+    uint64_t        h, written;
+    uint32_t        ops;
+    uint32_t        last[64];  /* read view after the previous op */
+    uint32_t        open_rec;  /* record whose anchor opened the interval */
+    int             open_ok;   /* that record was compared (not in a load window) */
+    uint64_t        compared, mismatches, ops_hashed, ref_ops, skipped;
+    uint64_t        mism_ops, mism_hash, mism_written;
+    int64_t         first_mismatch;
+    gte_hash_row_t  first_ref, first_op;
+    FILE*           out;       /* OPENPETE_GTE_HASH_OUT: openpete's own rows */
+    FILE*           dump;      /* OPENPETE_GTE_HASH_DUMP=LO-HI:PATH */
+    uint32_t        dump_lo, dump_hi;
+    int             poke;      /* OPENPETE_GTE_HASH_POKE=REC:REG:XOR */
+    uint32_t        poke_rec, poke_reg, poke_xor;
+    int             poke_pending;
+} s_gh = { .open_rec = GTE_HASH_NO_REC, .first_mismatch = -1 };
+
+/** @brief Sign-extend the low 16 bits of a register word to 32 bits. */
+static uint32_t gte_sx16(uint32_t w) { return (uint32_t)(int32_t)(int16_t)(uint16_t)w; }
+
+/** @brief Return the count of leading bits equal to bit 31 (LZCR from LZCS); 32 for 0 and 0xFFFFFFFF. */
+static uint32_t gte_leading_bits(uint32_t v) {
+    const uint32_t x = (v & 0x80000000u) ? ~v : v;
+    uint32_t n = 0;
+    while (n < 32u && !(x & (0x80000000u >> n))) n++;
+    return n;
+}
+
+/** @brief Return one ORGB colour field from an IR register word: clamp(IR >> 7, 0, 0x1F). */
+static uint32_t gte_orgb_field(uint32_t ir) {
+    const int32_t c = (int32_t)gte_sx16(ir) >> 7;
+    return (uint32_t)(c < 0 ? 0 : (c > 0x1F ? 0x1F : c));
+}
+
+/** @brief Compute the hardware read view (the mfc2/cfc2 value) of all 64 GTE registers from their stored words.
+ *
+ * Index 0-31 are data, 32-63 control. Sign-extended 16 bits: data 1, 3, 5
+ * (VZ0-2), 8-11 (IR0-3), control 4, 12, 20 (RT33, L33, LR33), 26 (H), 27
+ * (DQA), 29, 30 (ZSF3/4). Zero-extended 16 bits: data 7 (OTZ), 16-19
+ * (SZ0-3). Data 15 (SXYP) reads data 14; data 28 and 29 read ORGB from
+ * IR1-3; data 31 reads the leading-bit count of data 30; control 31 (FLAG)
+ * reads bits 30-12 with bit 31 the OR of bits 30-23 and 18-13. Every other
+ * register, data 23 (RES1) included, reads its stored word. The capture's
+ * recorder applies the same function to DuckStation's register file.
+ * @param d Stored data registers.
+ * @param c Stored control registers.
+ * @param v Receives the 64 read values. */
+static void gte_read_view(const uint32_t d[32], const uint32_t c[32], uint32_t v[64]) {
+    static const int k_sext[] = {1, 3, 5, 8, 9, 10, 11, 32 + 4, 32 + 12, 32 + 20, 32 + 26, 32 + 27, 32 + 29, 32 + 30};
+    static const int k_zext[] = {7, 16, 17, 18, 19};
+    memcpy(v, d, 32 * sizeof(uint32_t));
+    memcpy(v + 32, c, 32 * sizeof(uint32_t));
+    for (size_t i = 0; i < sizeof(k_sext) / sizeof(k_sext[0]); i++) v[k_sext[i]] = gte_sx16(v[k_sext[i]]);
+    for (size_t i = 0; i < sizeof(k_zext) / sizeof(k_zext[0]); i++) v[k_zext[i]] &= 0xFFFFu;
+    v[15] = d[14];
+    v[28] = v[29] = gte_orgb_field(d[9]) | (gte_orgb_field(d[10]) << 5) | (gte_orgb_field(d[11]) << 10);
+    v[31] = gte_leading_bits(d[30]);
+    v[63] = (c[31] & 0x7FFFF000u) | ((c[31] & 0x7F87E000u) ? 0x80000000u : 0u);
+}
+
+/** @brief Fold one 32-bit word into an FNV-1a-64 state (one xor, one multiply per word). */
+static uint64_t gte_fold(uint64_t h, uint32_t w) { return (h ^ w) * GTE_HASH_FNV_PRIME; }
+
+void openpete_gte_hash_op(uint32_t cmd, uint32_t pc,
+                          const uint32_t pre_data[32], const uint32_t pre_ctrl[32],
+                          const uint32_t post_data[32], const uint32_t post_ctrl[32]) {
+    uint32_t pre[64], post[64];
+    /* The generated call passes the 25-bit command field; the fold and the
+     * dump take the instruction word as executed (COP2, CO bit set). */
+    cmd = (cmd & 0x01FFFFFFu) | 0x4A000000u;
+    gte_read_view(pre_data, pre_ctrl, pre);
+    gte_read_view(post_data, post_ctrl, post);
+    for (uint32_t i = 0; i < 64; i++)
+        if (pre[i] != s_gh.last[i] || post[i] != pre[i]) s_gh.written |= 1ull << i;
+    memcpy(s_gh.last, post, sizeof(post));
+    if (s_gh.open_rec == GTE_HASH_NO_REC) return;
+    if (s_gh.dump && s_gh.open_rec >= s_gh.dump_lo && s_gh.open_rec <= s_gh.dump_hi) {
+        /* Same row layout as the capture's <trace>.gtedump; post is the
+         * unmasked read view. */
+        const uint32_t head[5] = {s_gh.open_rec, pc, cmd, (uint32_t)s_gh.written, (uint32_t)(s_gh.written >> 32)};
+        fwrite(head, 4, 5, s_gh.dump);
+        fwrite(pre, 4, 64, s_gh.dump);
+        fwrite(post, 4, 64, s_gh.dump);
+    }
+    /* Negative control: one post-op register of the interval's first op is
+     * corrupted in the fold only; guest state is untouched. */
+    for (uint32_t i = 0; i < 64; i++)
+        if (!(s_gh.written & (1ull << i))) post[i] = 0u;
+    if (s_gh.poke_pending) {
+        post[s_gh.poke_reg] ^= s_gh.poke_xor;
+        s_gh.poke_pending = 0;
+    }
+    uint64_t h = gte_fold(s_gh.h, cmd);
+    for (uint32_t i = 0; i < 64; i++)
+        h = gte_fold(h, post[i]);
+    s_gh.h = h;
+    s_gh.ops++;
+}
+
+/** @brief Load the reference's `<trace>.gte` rows into s_gh, indexed by record.
+ *
+ * A row is `rec ops hash written residue vbl` (hex for the three 64-bit
+ * fields); `#` lines are comments.
+ * @param path The sidecar's path.
+ * @param records The trace's record count; rows at or past it are ignored.
+ * @return The number of rows loaded, or -1 when the file cannot be read. */
+static long gte_hash_load(const char* path, uint32_t records) {
+    FILE* fp = fopen(path, "r");
+    if (!fp) return -1;
+    s_gh.row_count = records;
+    s_gh.rows = (gte_hash_row_t*)calloc(records ? records : 1u, sizeof(gte_hash_row_t));
+    s_gh.have = (uint8_t*)calloc(records ? records : 1u, 1);
+    long n = 0;
+    char line[256];
+    while (s_gh.rows && s_gh.have && fgets(line, sizeof(line), fp)) {
+        unsigned rec = 0, ops = 0;
+        unsigned long long h = 0, w = 0, r = 0;
+        if (line[0] == '#' || sscanf(line, "%u %u %llx %llx %llx", &rec, &ops, &h, &w, &r) != 5) continue;
+        if (rec >= records) continue;
+        s_gh.rows[rec] = (gte_hash_row_t){ops, h, w, r};
+        s_gh.have[rec] = 1;
+        n++;
+    }
+    fclose(fp);
+    return n;
+}
+
+/** @brief Parse the optional OPENPETE_GTE_HASH_OUT, _DUMP and _POKE knobs into s_gh. */
+static void gte_hash_parse_knobs(void) {
+    const char* e = getenv("OPENPETE_GTE_HASH_OUT");
+    if (e && *e) {
+        s_gh.out = fopen(e, "w");
+        if (s_gh.out) fprintf(s_gh.out, "# psxtrace-gte 1 fold=fnv1a64-u32 view=read\n# rec ops hash written residue vbl\n");
+    }
+    e = getenv("OPENPETE_GTE_HASH_DUMP");
+    char dpath[512];
+    unsigned lo = 0, hi = 0;
+    if (e && *e && sscanf(e, "%u-%u:%511s", &lo, &hi, dpath) == 3) {
+        s_gh.dump = fopen(dpath, "wb");
+        s_gh.dump_lo = lo;
+        s_gh.dump_hi = hi;
+    }
+    e = getenv("OPENPETE_GTE_HASH_POKE");
+    unsigned rec = 0, reg = 0, x = 0;
+    if (e && *e && sscanf(e, "%u:%u:%i", &rec, &reg, (int*)&x) == 3 && reg < 64u && x != 0u) {
+        s_gh.poke = 1;
+        s_gh.poke_rec = rec;
+        s_gh.poke_reg = reg;
+        s_gh.poke_xor = x;
+    }
+}
+
+/** @brief Arm the GTE hash row for a trace when OPENPETE_GTE_HASH=1 and its `.gte` sidecar loads.
+ * @param path The golden trace's path.
+ * @param records The trace's record count. */
+static void gte_hash_open(const char* path, uint32_t records) {
+    const char* e = getenv("OPENPETE_GTE_HASH");
+    if (!(e && strcmp(e, "1") == 0)) return;
+    char side[1024];
+    snprintf(side, sizeof(side), "%s.gte", path);
+    const long n = gte_hash_load(side, records);
+    if (n < 0) {
+        OPL_ERROR_F("psxtrace", "gte: OPENPETE_GTE_HASH=1 but %s is unreadable; row off", side);
+        return;
+    }
+    gte_hash_parse_knobs();
+    openpete_gte_hash_on = 1;
+    OPL_INFO_F("psxtrace", "gte: %ld reference rows from %s%s", n, side,
+               s_gh.poke ? " (negative control armed)" : "");
+}
+
+/** @brief Compare openpete's closed interval with the reference's row for record rec and count the result. */
+static void gte_hash_compare(uint32_t rec) {
+    if (rec >= s_gh.row_count || !s_gh.have[rec]) { s_gh.skipped++; return; }
+    const gte_hash_row_t ref = s_gh.rows[rec];
+    const gte_hash_row_t op = {s_gh.ops, s_gh.h, s_gh.written, 0};
+    s_gh.compared++;
+    s_gh.ops_hashed += op.ops;
+    s_gh.ref_ops += ref.ops;
+    const int d_ops = ref.ops != op.ops, d_hash = ref.hash != op.hash, d_w = ref.written != op.written;
+    s_gh.mism_ops += (uint64_t)d_ops;
+    s_gh.mism_hash += (uint64_t)d_hash;
+    s_gh.mism_written += (uint64_t)d_w;
+    if (!(d_ops || d_hash || d_w)) return;
+    s_gh.mismatches++;
+    if (s_gh.first_mismatch < 0) {
+        s_gh.first_mismatch = rec;
+        s_gh.first_ref = ref;
+        s_gh.first_op = op;
+    }
+}
+
+/** @brief Write openpete's closed interval as a `.gte` row to OPENPETE_GTE_HASH_OUT. */
+static void gte_hash_write_out(uint32_t rec, uint32_t vbl) {
+    uint64_t residue = GTE_HASH_FNV_OFFSET;
+    for (uint32_t i = 0; i < 64; i++)
+        if (!(s_gh.written & (1ull << i))) residue = gte_fold(gte_fold(residue, i), s_gh.last[i]);
+    fprintf(s_gh.out, "%u %u %016llx %016llx %016llx %u\n", rec, s_gh.ops, (unsigned long long)s_gh.h,
+            (unsigned long long)s_gh.written, (unsigned long long)residue, vbl);
+}
+
+/** @brief Close the interval opened at the previous record, compare it when both ends were compared records, and open the next.
+ *
+ * Called once per consumed record. An interval is compared only when it
+ * runs from record k to record k+1 with both records compared; one cut by
+ * a load window or a re-alignment skip is counted as skipped.
+ * @param rec Index of the record being consumed.
+ * @param comparable 1 when this record is compared, 0 inside a load window.
+ * @param vbl openpete's VBL count at the hit, written to the out file. */
+static void gte_hash_on_record(uint32_t rec, int comparable, uint32_t vbl) {
+    static uint32_t s_open_vbl;
+    if (!openpete_gte_hash_on) return;
+    if (s_gh.open_rec != GTE_HASH_NO_REC) {
+        if (s_gh.out) gte_hash_write_out(s_gh.open_rec, s_open_vbl);
+        if (rec == s_gh.open_rec + 1u && s_gh.open_ok && comparable) gte_hash_compare(s_gh.open_rec);
+        else s_gh.skipped++;
+    }
+    s_gh.h = GTE_HASH_FNV_OFFSET;
+    s_gh.ops = 0;
+    s_gh.open_rec = rec;
+    s_gh.open_ok = comparable;
+    s_open_vbl = vbl;
+    s_gh.poke_pending = s_gh.poke && rec == s_gh.poke_rec;
+}
+
+/** @brief Log the GTE hash row's summary line; does nothing when the row is off. */
+static void gte_hash_summary(void) {
+    if (!openpete_gte_hash_on) return;
+    char first[160] = "-";
+    if (s_gh.first_mismatch >= 0)
+        snprintf(first, sizeof(first), "%lld (ops ref=%u op=%u hash ref=%016llx op=%016llx written ref=%016llx op=%016llx)",
+                 (long long)s_gh.first_mismatch, s_gh.first_ref.ops, s_gh.first_op.ops,
+                 (unsigned long long)s_gh.first_ref.hash, (unsigned long long)s_gh.first_op.hash,
+                 (unsigned long long)s_gh.first_ref.written, (unsigned long long)s_gh.first_op.written);
+    OPL_INFO_F("psxtrace",
+               "gte: records=%llu mismatches=%llu ops_hashed=%llu ref_ops=%llu skipped=%llu "
+               "mism_ops=%llu mism_hash=%llu mism_written=%llu first_mismatch=%s",
+               (unsigned long long)s_gh.compared, (unsigned long long)s_gh.mismatches,
+               (unsigned long long)s_gh.ops_hashed, (unsigned long long)s_gh.ref_ops,
+               (unsigned long long)s_gh.skipped, (unsigned long long)s_gh.mism_ops,
+               (unsigned long long)s_gh.mism_hash, (unsigned long long)s_gh.mism_written, first);
+    if (s_gh.out) { fclose(s_gh.out); s_gh.out = NULL; }
+    if (s_gh.dump) { fclose(s_gh.dump); s_gh.dump = NULL; }
+}
+
 int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     memset(t, 0, sizeof(*t));
     t->path = path;
@@ -281,6 +547,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         openpete_sched_set_stamps(t->stamps, n);
     }
     if (save >= 0) fseek(t->fp, save, SEEK_SET);
+    gte_hash_open(path, t->frame_count);
     OPL_INFO_F("psxtrace",
                "opened %s: v%u frames=%u regions=%u flags=0x%x has_ram=%d "
                "anchor_pc=0x%08X table=0x%016llx build=%s",
@@ -458,6 +725,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
      * compared, and the re-alignment at the window's end skips the rest. */
     if (openpete_sched_in_load()) {
         t->records_uncompared++;
+        gte_hash_on_record(t->records_consumed, 0, (uint32_t)SDL_GetAtomicInt(&openpete_vbl));
         t->prev_trace_vbl = pad2;
         t->prev_op_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
         t->frames_compared++;
@@ -603,6 +871,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             t->hard_fail_reason = "total-only";
         }
     }
+    gte_hash_on_record(t->records_consumed, 1, (uint32_t)SDL_GetAtomicInt(&openpete_vbl));
     t->frames_compared++;
     t->records_consumed++;
     return 1;
@@ -674,6 +943,7 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     }
     openpete_sched_summary();
     openpete_cdrom_mmio_summary();
+    gte_hash_summary();
     if (t->hard_failed) {
         int32_t r = t->hard_fail_region;
         OPL_INFO_F("psxtrace",

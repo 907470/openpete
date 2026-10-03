@@ -67,6 +67,9 @@
 #   OPENPETE_ORACLE_RECORDS (default 20000) - the record count the golden
 #                         must carry and the run must consume for a PASS
 #   PSXTRACE_KEEP_GOING=1   diff every frame, don't stop on first mismatch
+#   OPENPETE_ORACLE_GTE_STRICT=1 a GTE hash mismatch fails the run (exit 2);
+#                         without it the GTE row is reported and does not
+#                         decide the verdict
 #   OPENPETE_ORACLE_ALLOW_KNOBS=<reason> admits OPENPETE_PSXTRACE_HEAL_WINDOW
 #                         and OPENPETE_PSXTRACE_VBL_POLICY from the caller's
 #                         environment; otherwise the run refuses them, since
@@ -75,6 +78,8 @@
 # Exit codes:
 #   0   bit-identical hashes for every traced frame
 #   2   divergence (openpete ran fine but a hash mismatched)
+#   3   the GTE hash row is VACUOUS: the golden has a <trace>.gte sidecar
+#       and the run hashed zero GTE instructions or printed no row
 #   64  prerequisites missing (trace / binary / disc) - ctest treats as SKIP
 #   *   build/runtime error
 set -euo pipefail
@@ -213,6 +218,15 @@ BK2="${TRACE}.bk2"
 for _sc in vsync loads srand cdctl cdirq padcmd cdsync sio0 watch; do
     [[ -f "$TRACE.$_sc" ]] && echo "[psx-oracle] schedule: $TRACE.$_sc"
 done
+# The GTE hash row: whenever the golden carries a <trace>.gte sidecar the
+# run folds every gte_execute call per record interval and the verifier
+# compares it with the reference's row (core/diag/psxtrace_verify.c).
+GTE_ROW=0
+if [[ -f "$TRACE.gte" ]]; then
+    GTE_ROW=1
+    export OPENPETE_GTE_HASH=1
+    echo "[psx-oracle] gte hash: $TRACE.gte"
+fi
 
 # The recipe's flags first: a caller's pass-through flag overrides them (the
 # options parser takes the last occurrence).
@@ -292,6 +306,24 @@ if [[ -z "$HDR_PC" || "$HDR_PC" != "$DISP_PC" ]]; then
 fi
 set -e
 echo "[psx-oracle] exit code=$rc"
+
+# GTE hash row engagement: the row counts only when instructions were hashed
+# on compared intervals; zero is VACUOUS (exit 3), not a pass.
+if [[ "$GTE_ROW" == 1 ]]; then
+    GTE_LINE=$(grep -o 'gte: records=.*' "$LOG" | tail -1)
+    GTE_OPS=$(sed -n 's/.* ops_hashed=\([0-9]*\).*/\1/p' <<<"$GTE_LINE")
+    GTE_MISM=$(sed -n 's/.* mismatches=\([0-9]*\).*/\1/p' <<<"$GTE_LINE")
+    if [[ -z "$GTE_LINE" || "${GTE_OPS:-0}" == 0 ]]; then
+        echo "[psx-oracle] gte hash: ${GTE_LINE:-no summary line}; VACUOUS" >&2
+        [[ "$rc" == 0 ]] && rc=3
+    else
+        echo "[psx-oracle] $GTE_LINE"
+        if [[ "${OPENPETE_ORACLE_GTE_STRICT:-0}" != 0 && "${GTE_MISM:-0}" != 0 && "$rc" == 0 ]]; then
+            echo "[psx-oracle] gte hash: $GTE_MISM mismatching record(s) under OPENPETE_ORACLE_GTE_STRICT" >&2
+            rc=2
+        fi
+    fi
+fi
 
 # Windowed engagement: the present thread must have started and
 # presented; a run whose scenes never left the sim thread verified the

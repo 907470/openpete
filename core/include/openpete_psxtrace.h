@@ -491,6 +491,33 @@ int  openpete_sched_failed(const char** reason);
  * Does nothing when the schedule is inactive. */
 void openpete_sched_summary(void);
 
+/* GTE hash row. Under OPENPETE_GTE_HASH=1 with a `<trace>.gte` sidecar
+ * beside the golden, every gte_execute call is folded into one hash per
+ * record interval by the rule the capture's recorder uses (the read view of
+ * the 64 registers after each op plus the instruction word, FNV-1a-64 over
+ * 32-bit words; a register enters as 0 until the game has changed it), and
+ * the verifier compares row k when record k+1 is consumed. Nonzero only
+ * while the fold is armed; gte_execute tests it before calling in. */
+extern int openpete_gte_hash_on;
+
+/** @brief Fold one executed GTE instruction into the open record interval.
+ *
+ * Takes the read view of the registers before and after the op, marks a
+ * register written when its view changed across the op or since the
+ * previous op (a store in between), and folds the instruction word and the
+ * 64 post-op values (0 for an unwritten register) into the interval's
+ * hash. Writes a dump row when the interval's record lies in the
+ * OPENPETE_GTE_HASH_DUMP window.
+ * @param cmd The cop2 instruction word.
+ * @param pc Guest PC of the instruction.
+ * @param pre_data Data registers as stored before the op.
+ * @param pre_ctrl Control registers as stored before the op.
+ * @param post_data Data registers as stored after the op.
+ * @param post_ctrl Control registers as stored after the op. */
+void openpete_gte_hash_op(uint32_t cmd, uint32_t pc,
+                          const uint32_t pre_data[32], const uint32_t pre_ctrl[32],
+                          const uint32_t post_data[32], const uint32_t post_ctrl[32]);
+
 #ifdef __cplusplus
 }
 #endif

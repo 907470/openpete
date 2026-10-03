@@ -61,6 +61,13 @@
 #                                  flip word HEX; 0x80007264 on the SCPH-1001
 #                                  kernel) to <out>.sio0
 #           --no-card              reference boots with no memory card
+#           --gte-dump LO-HI       also write every GTE instruction of records
+#                                  LO..HI to <out>.gtedump ({rec, pc, instr,
+#                                  written bitmap, pre[64], post[64]} in read
+#                                  view) for diagnosing a GTE hash mismatch
+# Every capture writes <out>.gte, one GTE hash row per record interval (the
+# capture's breakpoints keep DuckStation on the interpreter, the path the
+# recorder hooks); a capture that hashed zero instructions is refused.
 #           --disc PATH            (default $OPENPETE_DISC, else Spyro 1's)
 #           --manifest PATH        gameplay_state_regions.toml whose rows
 #                                  are hashed (default
@@ -75,7 +82,7 @@ FRAMES=600
 ANCHOR_PC="0x8001ED5C"
 HIT=1
 MAX_RUNTIME=""
-CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; VSYNC_QUERY_SKIP=""
+CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 MANIFEST="${OPENPETE_REGIONS_MANIFEST:-games/spyro-1/manifest/gameplay_state_regions.toml}"
@@ -121,6 +128,7 @@ while [[ $# -gt 0 ]]; do
         --vsync-query-skip) VSYNC_QUERY_SKIP="$2"; shift 2 ;;
         --cd-read-pc-min) CD_READ_PC_MIN="$2"; shift 2 ;;
         --no-card) NO_CARD=1; shift ;;
+        --gte-dump) GTE_DUMP="$2"; shift 2 ;;
         -h|--help) sed -n 's/^# //p' "$0" | head -70; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
     esac
@@ -185,9 +193,12 @@ for pc in "${VSYNC_CB_PCS[@]}"; do REC_ARGS+=(-psxtrace-vsync-cb-pc "$pc"); done
 [[ -n "$VSYNC_QUERY_SKIP" ]] && REC_ARGS+=(-psxtrace-vsync-query-skip "$VSYNC_QUERY_SKIP")
 [[ -n "$CD_READ_PC_MIN" ]] && REC_ARGS+=(-psxtrace-cd-read-pc-min "$CD_READ_PC_MIN")
 [[ "$NO_CARD" == 1 ]] && REC_ARGS+=(-card1 none)
+REC_ARGS+=(-psxtrace-gte)
+[[ -n "$GTE_DUMP" ]] && REC_ARGS+=(-psxtrace-gte-dump "$GTE_DUMP")
 
 mkdir -p "$(dirname "$OUT")"
-rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0"
+rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" \
+      "$OUT.gte" "$OUT.gtedump"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
 # the worst case (4-vbl-per-game-frame splash logos before the title-
@@ -229,6 +240,17 @@ python3 -m tools.psxtrace_format info "$OUT" | head -4
 python3 -m tools.psxtrace_format info "$OUT" | grep -q "^scm_hash=$DS_BUILD\$" || {
     echo "[capture-ds] FAIL: trace does not carry the build hash $DS_BUILD" >&2; exit 1
 }
+[[ -f "$OUT.gte" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.gte" >&2; exit 1; }
+GTE_OPS="$(sed -n 's/^# rows=[0-9]* ops=\([0-9]*\).*/\1/p' "$OUT.gte")"
+if [[ -z "$GTE_OPS" || "$GTE_OPS" == 0 ]]; then
+    echo "[capture-ds] FAIL: GTE hash recorder folded zero instructions (CPU not on the interpreter?)" >&2
+    exit 1
+fi
+echo "[capture-ds] GTE hash: $(sed -n 's/^# //p' "$OUT.gte" | tail -1) -> $OUT.gte"
+if [[ -n "$GTE_DUMP" ]]; then
+    [[ -s "$OUT.gtedump" ]] || { echo "[capture-ds] FAIL: --gte-dump $GTE_DUMP wrote no rows" >&2; exit 1; }
+    echo "[capture-ds] GTE dump: $(( $(stat -c %s "$OUT.gtedump") / 532 )) rows -> $OUT.gtedump"
+fi
 if [[ -n "$CD_READ_PC" ]]; then
     [[ -f "$OUT.loads" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.loads" >&2; exit 1; }
     READS="$(sed -n 's/^# reads issued=\([0-9]*\).*/\1/p' "$OUT.loads")"

@@ -1,6 +1,7 @@
 #include "gte.h"
 #include "psx_runtime_internal.h"
 #include "automation.h"
+#include "openpete_psxtrace.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -1323,6 +1324,9 @@ extern "C" void gte_execute(CPUState* cpu, uint32_t cmd) {
 
     gte_trace_log_post(func, cmd, pre_data, pre_ctrl,
                        cpu->gte_data, cpu->gte_ctrl);
+    if (openpete_gte_hash_on)
+        openpete_gte_hash_op(cmd, openpete_gte_caller_pc, pre_data, pre_ctrl,
+                             cpu->gte_data, cpu->gte_ctrl);
 
     /* fps-unlock Phase 2 probe — see comment block above. */
     if (render_probe_enabled()) {

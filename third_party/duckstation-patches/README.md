@@ -2,7 +2,8 @@
 
 The openpete project's own changes to DuckStation: the `duckstation-regtest`
 psxtrace capture module and its recorders, which write the reference trace
-the oracle gate (`tests/harness/check_psx_oracle.sh`) replays, plus a
+the oracle gate (`tests/harness/check_psx_oracle.sh`) replays and the
+per-record GTE hash sidecar (`<trace>.gte`, patch 0028) it compares, plus a
 headless EGL build fix and an SPU final-mix WAV dump. Each file is
 `git format-patch` output, one commit per file, applied in the order
 `series` lists.

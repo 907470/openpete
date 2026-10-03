@@ -72,14 +72,17 @@ no audio output, and a non-persistent memory card.
 
 ### Capture mechanism
 
-The capture module sets an execute breakpoint at the anchor PC.
-Each hit reads main RAM for every region
-- including the indirect-pointer dereference and per-element masking that
-openpete's `gameplay_hash_compute_ex()` (`core/runtime/run.c:529`) performs
-- hashes it with FNV-1a-64, and appends one `FRMR` record to the v2
-`.psxtrace` file. There is no interpreter slowdown and no scripting layer.
+The capture module sets an execute breakpoint at the anchor PC. Each hit
+reads main RAM for every region - including the indirect-pointer
+dereference and per-element masking that openpete's
+`gameplay_hash_compute_ex()` (`core/runtime/run.c:529`) performs - hashes
+it with FNV-1a-64, and appends one `FRMR` record to the v2
+`.psxtrace` file. There is no scripting layer. While a breakpoint is armed
+the CPU runs on the interpreter for the whole capture, which the GTE hash
+and VBLANK position recorders rely on; the capture script refuses a run in
+which either recorded nothing.
 
-The format constants in `psxtrace_capture.cpp` mirror
+The format constants in the capture module mirror
 `tools/psxtrace_format.py`, and the hash mirrors
 `core/include/openpete_fnv1a64.h`; a drift in either produces a golden
 openpete can never match.
@@ -224,6 +227,52 @@ minus the fast-boot anchor the log names) diffs row for row against it;
 a record's `pad2` stamp gives the reference window for a hit. A
 difference in an instruction's inputs at the same PC is upstream of the
 GTE; a difference in its outputs on equal inputs is a GTE defect.
+
+### GTE hash row
+
+Every capture writes `<trace>.gte` (`-psxtrace-gte`, passed by
+`capture_psx_oracle_ds.sh` unconditionally): row k folds the GTE
+instructions executed after record k's anchor hit up to record k+1's, so
+the row aligns on the record, not on a VBL count (openpete reaches some
+records one VBL behind the reference). Per instruction the fold takes
+the instruction word and the 64 registers' read view after it, FNV-1a-64
+over 32-bit words. The read view is the value `mfc2`/`cfc2` returns,
+computed from the stored words by the same function on both sides
+(`gte_read_view` in `core/diag/psxtrace_verify.c`, and its counterpart in the
+recorder), because the two engines store register words differently and
+psxrecomp's `gte.cpp` stores some unextended: data 1, 3, 5, 8-11 and
+control 4, 12, 20, 26, 27, 29, 30 sign-extended; data 7, 16-19
+zero-extended; data 15 reads data 14; data 28/29 read ORGB from IR1-3;
+data 31 the leading-bit count of data 30; FLAG bits 30-12 with bit 31
+recomputed; data 23 (RES1) the stored word. A register enters the fold
+as 0 until the game has changed its read view (observed at instruction
+boundaries, BIOS-ROM instructions excluded), so reset residue never
+reaches the hash; each row carries that written bitmap and a hash of the
+unwritten registers. Columns: `rec ops hash written residue vbl`; the
+trailer `# rows= ops= rom_ops= records=`. The capture refuses a run that
+hashed zero instructions.
+
+The gate exports `OPENPETE_GTE_HASH=1` whenever the golden has the
+sidecar; openpete then folds every `gte_execute` call by the same rule
+and the verifier compares row k when it consumes record k+1, skipping an
+interval a load window or a re-alignment cut. The summary line
+`gte: records= mismatches= ops_hashed= ref_ops= skipped= mism_ops=
+mism_hash= mism_written= first_mismatch=` follows the schedule summary;
+the gate exits 3 (VACUOUS) when it is missing or `ops_hashed` is 0, and
+a mismatch fails the gate only under `OPENPETE_ORACLE_GTE_STRICT=1`.
+openpete knobs: `OPENPETE_GTE_HASH_OUT=PATH` writes openpete's own rows
+in the sidecar's format (two runs compare with `python3 -m
+tools.psxtrace_format gte A B`); `OPENPETE_GTE_HASH_POKE=REC:REG:XOR`
+corrupts one register of the first instruction of interval REC in the
+fold only, the negative control, which must fail at REC.
+
+Diagnosis of a mismatching record: `capture_psx_oracle_ds.sh --out
+<scratch> --frames <rec+2> --gte-dump REC-REC` writes the reference's
+instructions of that record to `<out>.gtedump`, and
+`OPENPETE_GTE_HASH_DUMP=REC-REC:PATH` writes openpete's in the same
+532-byte rows (`{rec, pc, instr, written, pre[64], post[64]}`, read
+view); `python3 -m tools.psxtrace_format gtedump-diff REF OP` prints the
+first differing instruction register by register.
 
 ### Build provenance
 

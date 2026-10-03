@@ -25,3 +25,4 @@
 0025-regtest-SIO0-handler-recorder-psxtrace-sio0-word-to-.patch
 0026-regtest-watched-word-rows-carry-the-clock-psxtrace-w.patch
 0027-regtest-psxtrace-vsync-query-skip-LO-HI-drops-a-libr.patch
+0028-regtest-GTE-hash-recorder-psxtrace-gte-psxtrace-gte-.patch

@@ -47,6 +47,26 @@ Layout (little-endian throughout):
 
 The frame stream ends at EOF.
 
+GTE hash sidecar `<trace>.gte` (text; `#` lines are comments, the last one
+`# rows=R ops=K rom_ops=B records=N`). Row k covers the GTE instructions
+executed after record k's anchor hit up to record k+1's:
+
+  rec ops hash written residue vbl
+
+  rec      record index k
+  ops      GTE instructions folded
+  hash     hex u64: FNV-1a-64 over 32-bit words (h ^= w; h *= prime) of
+           each instruction word followed by the 64 registers' read view
+           after it (data 0-31, control 0-31; 0 for an unwritten register)
+  written  hex u64: bit i set once the game has changed register i's read
+           view (observed at instruction boundaries)
+  residue  hex u64: the same fold over (i, value) of every unwritten register
+  vbl      VBLANK count at record k (the writer's own clock)
+
+GTE dump `<trace>.gtedump` (binary, little-endian, 532-byte rows):
+  u32 rec, u32 pc, u32 instr, u32 written_lo, u32 written_hi,
+  u32 pre[64], u32 post[64]   (read view, unmasked)
+
 V1 (raw 2 MB only, no hashes) was retired before any baseline shipped -
 no migration path needed.
 """
@@ -261,6 +281,84 @@ def finalise_frame_count(path: str, count: int) -> None:
         fp.write(struct.pack("<I", count))
 
 
+@dataclass
+class GteRow:
+    rec: int
+    ops: int
+    hash: int
+    written: int
+    residue: int
+    vbl: int
+
+
+def read_gte(path: str) -> List[GteRow]:
+    """Rows of a `.gte` sidecar (the capture's or openpete's
+    OPENPETE_GTE_HASH_OUT), in file order."""
+    rows: List[GteRow] = []
+    with open(path) as fp:
+        for line in fp:
+            if line.startswith("#") or not line.strip():
+                continue
+            f = line.split()
+            if len(f) != 6:
+                raise ValueError(f"gte: bad row {line!r}")
+            rows.append(GteRow(int(f[0]), int(f[1]), int(f[2], 16),
+                               int(f[3], 16), int(f[4], 16), int(f[5])))
+    return rows
+
+
+GTE_DUMP_ROW = struct.Struct("<5I64I64I")
+
+
+@dataclass
+class GteOp:
+    rec: int
+    pc: int
+    instr: int
+    written: int
+    pre: tuple
+    post: tuple
+
+
+def read_gtedump(path: str) -> Iterator[GteOp]:
+    """Rows of a `.gtedump` (capture's -psxtrace-gte-dump or openpete's
+    OPENPETE_GTE_HASH_DUMP)."""
+    with open(path, "rb") as fp:
+        while True:
+            b = fp.read(GTE_DUMP_ROW.size)
+            if not b:
+                return
+            if len(b) != GTE_DUMP_ROW.size:
+                raise ValueError("gtedump: truncated row")
+            v = GTE_DUMP_ROW.unpack(b)
+            yield GteOp(v[0], v[1], v[2], v[3] | (v[4] << 32),
+                        v[5:69], v[69:133])
+
+
+GTE_REG_NAMES = (
+    "VXY0 VZ0 VXY1 VZ1 VXY2 VZ2 RGBC OTZ IR0 IR1 IR2 IR3 SXY0 SXY1 SXY2 SXYP "
+    "SZ0 SZ1 SZ2 SZ3 RGB0 RGB1 RGB2 RES1 MAC0 MAC1 MAC2 MAC3 IRGB ORGB LZCS LZCR "
+    "RT11RT12 RT13RT21 RT22RT23 RT31RT32 RT33 TRX TRY TRZ L11L12 L13L21 L22L23 "
+    "L31L32 L33 RBK GBK BBK LR1LR2 LR3LG1 LG2LG3 LB1LB2 LB3 RFC GFC BFC OFX OFY "
+    "H DQA DQB ZSF3 ZSF4 FLAG").split()
+
+
+def gte_dump_diff(ref_path: str, op_path: str) -> int:
+    """Print the first op whose instruction, pre view or post view differs
+    between two dumps, register by register. Returns 1 on a difference."""
+    for i, (a, b) in enumerate(zip(read_gtedump(ref_path), read_gtedump(op_path))):
+        if a.instr != b.instr or a.pre != b.pre or a.post != b.post:
+            print(f"first difference at op {i}: rec={a.rec} pc ref=0x{a.pc:08x} "
+                  f"op=0x{b.pc:08x} instr ref=0x{a.instr:08x} op=0x{b.instr:08x}")
+            for side, x, y in (("pre", a.pre, b.pre), ("post", a.post, b.post)):
+                for r in range(64):
+                    if x[r] != y[r]:
+                        print(f"  {side} {r:2d} {GTE_REG_NAMES[r]:9s} ref=0x{x[r]:08x} op=0x{y[r]:08x}")
+            return 1
+    print("no difference over the common rows")
+    return 0
+
+
 def main_cli(argv: Optional[list] = None) -> int:
     import argparse
     p = argparse.ArgumentParser(description="psxtrace inspector")
@@ -269,7 +367,27 @@ def main_cli(argv: Optional[list] = None) -> int:
     p_info.add_argument("path")
     p_info.add_argument("--show-frames", type=int, default=0,
                         help="print first N records (default 0)")
+    p_gte = sub.add_parser("gte", help="summarise a .gte sidecar, or compare two")
+    p_gte.add_argument("path")
+    p_gte.add_argument("other", nargs="?")
+    p_gd = sub.add_parser("gtedump-diff", help="first differing op of two .gtedump files")
+    p_gd.add_argument("ref")
+    p_gd.add_argument("op")
     args = p.parse_args(argv)
+    if args.cmd == "gtedump-diff":
+        return gte_dump_diff(args.ref, args.op)
+    if args.cmd == "gte":
+        a = read_gte(args.path)
+        print(f"rows={len(a)} ops={sum(r.ops for r in a)}")
+        if args.other:
+            b = {r.rec: r for r in read_gte(args.other)}
+            common = [r for r in a if r.rec in b]
+            diff = [r for r in common if (r.ops, r.hash, r.written) != (b[r.rec].ops, b[r.rec].hash, b[r.rec].written)]
+            dops = sum(1 for r in common if r.ops != b[r.rec].ops)
+            print(f"common={len(common)} differing={len(diff)} ops_differing={dops} "
+                  f"first={diff[0].rec if diff else '-'}")
+            return 1 if diff else 0
+        return 0
     if args.cmd == "info":
         with open(args.path, "rb") as fp:
             hdr = read_header(fp)
