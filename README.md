@@ -26,17 +26,18 @@ Preview it with `mkdocs serve -f docs/mkdocs.yml`.
 ```bash
 git submodule update --init --recursive
 ./scripts/setup.sh
-cmake --preset linux-release
-cmake --build --preset linux-release
+cmake --preset linux-release -DOPENPETE_GAMES=
+cmake --build --preset linux-release --target openpete_core openpete_rhi
 ```
 
-A fresh clone builds the decompilation and regenerates the recompiled C
-before the first configure;
+These commands build the engine alone. A game executable needs the
+decompilation built, which needs your own copy of the PSYQ SDK headers (4.0; Spyro 2: 4.7),
+and the recompiled C regenerated before the configure;
 [building](docs/src/developer/building.md#step-0-before-the-first-configure)
-lists the prerequisites, those steps, the presets and the Windows cross
-build. Running the game needs the original disc (NTSC-U, SCUS-94228); the
-required image is described under
-[Disc image](docs/src/developer/building.md#disc-image).
+lists the prerequisites, those steps, the unit tests, the presets and the
+Windows cross build. Running the game needs a disc image of your own copy
+of the original disc (NTSC-U, SCUS-94228); the required image is described
+under [Disc image](docs/src/developer/building.md#disc-image).
 
 ## License
 

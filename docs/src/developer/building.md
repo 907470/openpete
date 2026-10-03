@@ -3,11 +3,19 @@
 ## Prerequisites
 
 ### Linux (Ubuntu / Debian-flavored)
+
+The package names are those of Ubuntu 22.04.
+
 ```bash
-sudo apt install build-essential cmake ninja-build python3 glslang-tools spirv-tools \
-                 libopenal-dev \
+sudo apt install git build-essential cmake ninja-build pkg-config python3 \
+                 glslang-tools spirv-tools libopenal-dev \
                  libavformat-dev libavcodec-dev libavutil-dev \
-                 libswscale-dev libswresample-dev
+                 libswscale-dev libswresample-dev \
+                 libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+                 libxss-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
+                 libgl1-mesa-dev
+# The default target of linux-release (the build-time fence checks):
+sudo apt install python3-tomli clang-14 clang-tidy-14 libclang1-14 python3-clang-14
 # Cross-compile to Windows from WSL2:
 sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
 ```
@@ -16,10 +24,27 @@ What each is for:
 
 - `cmake` 3.22 or newer (`cmake_minimum_required(VERSION 3.22)`,
   `CMakeLists.txt:1`) and `ninja` (every preset's generator).
+- `pkg-config`: `core/CMakeLists.txt:577` runs `find_package(PkgConfig
+  REQUIRED)` for libav, and SDL finds Wayland and libdecor through it.
 - `python3`: the build runs generator scripts under `tools/` and fence
   scripts under `scripts/fences/` as custom commands
   (`games/spyro-1/CMakeLists.txt`, `core/CMakeLists.txt`), and several
   CTest entries invoke it directly.
+- The X11, Wayland and GL packages: SDL3 builds from source (see [SDL](#sdl))
+  and its configure stops when it finds neither the X11 nor the Wayland
+  development files, and, with X11 found, on each X11 extension it enables
+  by default and cannot find (Xcursor, XInput2, XScrnSaver). The configure
+  needs them for a `--headless` build as well.
+- The second line serves the fence targets in the default target of a
+  `linux-release` build (`core/CMakeLists.txt:698-768`).
+  `scripts/fences/vstream_sites.py` reads TOML with `tomllib`, which Python
+  3.10 lacks, so it falls back to `tomli`. `complexity_ratchet.py` runs
+  `clang-tidy-14`, and `doc_ratchet.py` loads
+  `/usr/lib/llvm-14/lib/libclang-14.so.1` through the `clang.cindex`
+  bindings (`scripts/fences/ratchet_lib.py:506-520`). Both ratchets also
+  refuse a clone whose git hooks are not armed (`scripts/setup.sh` arms
+  them) unless `OPENPETE_NO_COMMITS=1` is set. A build of named targets
+  (see [Engine only](#engine-only)) runs none of them.
 - `glslang-tools`: `core/rhi/CMakeLists.txt:18` does
   `find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)` - configure
   fails without it. The shaders compile to `.spv` on the host, so this is
@@ -43,12 +68,13 @@ Not needed: no Vulkan SDK (headers are vendored at
 `vulkan-1.dll` at runtime, so no loader import library is linked -
 `core/rhi/CMakeLists.txt:7-11`); no `libsdl*-dev` (see [SDL](#sdl)).
 
-SDL3 builds from source and detects its Linux video backends from whatever
-dev headers are installed at configure time, silently disabling the ones it
-cannot find. Install the X11/Wayland/GL development packages
-(`libx11-dev libxext-dev libxrandr-dev libxkbcommon-dev libwayland-dev
-libdecor-0-dev libgl1-mesa-dev`) for a build that can open a window;
-`--headless` needs none of them. Verify what was detected with
+SDL3 disables, without an error, the optional backends whose headers it
+cannot find, among them its ALSA, PulseAudio, PipeWire and JACK audio
+backends. OpenAL plays the game audio; SDL audio serves only the live
+monitor of a `--record` capture
+(`third_party/PsyCross/src/audio/PsyX_SPUAL.cpp:891-910`), which without
+those backends records with no speaker output. Verify the detected
+video backends with
 `grep -E '^SDL_(X11|WAYLAND|OPENGL|VULKAN):' build/<preset>/CMakeCache.txt`.
 
 ### macOS
@@ -65,48 +91,102 @@ validated; the supported Windows build is the MinGW cross-build from Linux
 
 ## Step 0: before the first configure
 
-The game executables are built from recompiled C under
-`games/<game>/generated/`, which is gitignored (`.gitignore:8`) and produced
-outside CMake. `openpete_add_game` (`cmake/openpete_game.cmake`) lists
+A clone builds at two scopes:
+
+- The engine: `openpete_core`, `openpete_rhi` and the unit tests. It needs
+  the clone (step 1) and the prerequisites above, and no disc image,
+  decompilation build or PSYQ SDK. See [Engine only](#engine-only).
+- A game executable (`openpete-spyro1`, `openpete-spyro2`,
+  `openpete-spyro3`). It is built from recompiled C under
+  `games/<game>/generated/`, which is gitignored (`.gitignore:8`) and
+  produced outside CMake by steps 2 and 3 from the game's decompilation
+  build. Building the decompilation needs your own copy of the PSYQ SDK
+  headers (step 2); running the executable needs a disc image made from
+  your own copy of the game (step 4). The project distributes neither.
+
+`openpete_add_game` (`cmake/openpete_game.cmake`) lists
 `generated/PSX.EXE_full.c`, `PSX.EXE_dispatch.c`, `spyro_overlay_table.c`
 and the globbed `generated/*/*.bin_full.c` overlays as module sources, and
-stops the configure with a `FATAL_ERROR` naming the regeneration command for
-any game in `OPENPETE_GAMES` whose `generated/PSX.EXE_full.c` is absent. This
-holds for every preset, including the `*-shared` distribution ones. The steps
-below run once per clone, in order.
+stops the configure with a `FATAL_ERROR` for any game in `OPENPETE_GAMES`
+whose `generated/PSX.EXE_full.c` is absent
+(`cmake/openpete_game.cmake:76-88`). `OPENPETE_GAMES` defaults to
+`spyro-1;spyro-2;spyro-3` (`CMakeLists.txt:60`), so the first
+`cmake --preset linux-release` on a fresh clone stops with:
+
+```
+spyro-1: no recompiled output in <clone>/games/spyro-1/generated. Run
+`GAME=spyro-1 bash scripts/regen-recomp.sh` from the source directory
+first; ... To configure without this game: -DOPENPETE_GAMES="spyro-2;spyro-3"
+(an empty list configures the core alone).
+```
+
+This holds for every preset, including the `*-shared` distribution ones.
 
 ### 1. Clone with submodules
 
 ```bash
 git clone --recursive <openpete repository URL> openpete
 cd openpete
+./scripts/setup.sh
 ```
 
-Every submodule URL in `.gitmodules` except PsyCross and DuckStation is
-HTTPS. A recursive clone that cannot fetch a submodule retries it once, then
+Every submodule URL in `.gitmodules` is HTTPS. The configure reads four
+submodules: `third_party/SDL`, `third_party/glslang`, `third_party/imgui`
+and `third_party/PsyCross` (the PSYQ library reimplementation, built as
+`psycross_static` under `OPENPETE_BUILD_PSYCROSS`). A game additionally
+reads its decompilation submodule `games/<game>/<game>` and that
+submodule's nested `tools/maspsx`. `third_party/cubeb` is built by no CMake
+target. `third_party/duckstation` is no configure input: it is the
+reference emulator the gameplay oracle (`tests/harness/check_psx_oracle.sh`)
+captures its golden traces from, built by `scripts/setup_duckstation.sh`. Its
+objects, about 160 MB, are the largest of any submodule; a clone without
+`--recursive` followed by the commands below skips it.
+
+A recursive clone that cannot fetch a submodule retries it once, then
 aborts, and leaves the submodules it did fetch at their remote's default
 branch, not at the pinned commit, with their own nested submodules
-uninitialized. Recover
-by initializing each path explicitly; `git submodule status` then shows no
-`+` or `-` prefix on the paths you need:
+uninitialized. Recover by initializing each path explicitly; `git submodule
+status` then shows no `+` or `-` prefix on the paths you need:
 
 ```bash
 git submodule update --init --recursive -- third_party/SDL
 git submodule update --init --recursive -- third_party/glslang
 git submodule update --init --recursive -- third_party/imgui
-git submodule update --init --recursive -- games/spyro-1/spyro-1
 git submodule update --init --recursive -- third_party/PsyCross
+git submodule update --init --recursive -- games/spyro-1/spyro-1   # per game
 ```
 
-`third_party/PsyCross` (the PSYQ library reimplementation, built as
-`psycross_static` by `CMakeLists.txt` under `OPENPETE_BUILD_PSYCROSS`) is a
-fork whose repository is not yet publicly readable; without access, the
-configure fails at its `add_subdirectory`.
+`scripts/setup.sh` arms the tracked git hooks (`core.hooksPath`, the
+`ratchet-tsv` merge driver), which the ratchet checks of a full
+`linux-release` build require, and reports the submodules, the
+decompilation outputs, the PSYQ headers and the disc per game. It exits 3
+only when a configure-input submodule or a decompilation's `tools/maspsx`
+is missing; a missing decompilation build, header set or disc is reported
+as a warning.
 
-`third_party/duckstation` is optional and no configure input. It is the
-reference emulator the gameplay oracle (`tests/harness/check_psx_oracle.sh`)
-captures its golden traces from, built by `scripts/setup_duckstation.sh`; a
-failed fetch of it can be ignored for building and playing.
+### Engine only
+
+```bash
+cmake --preset linux-release -DOPENPETE_GAMES=
+cmake --build --preset linux-release --target openpete_core openpete_rhi \
+    $(ctest --test-dir build/linux-release -N -R _test | sed -n 's/^ *Test *#[0-9]*: //p')
+ctest --test-dir build/linux-release -R _test --output-on-failure
+```
+
+`-DOPENPETE_GAMES=` (empty) configures the core libraries and their unit
+tests with no game executable and no recompiled C; the `bench_corpus_smoke`
+test, which names the `openpete-spyro1` target, is registered only when that
+target exists. Each unit test's CTest name is its executable's target name
+(`tests/unit/CMakeLists.txt`), so the second command builds the libraries and
+every `*_test` executable. Build named targets here: the default target
+also runs the fence checks `openpete_vstream_sites`,
+`openpete_complexity_ratchet` and `openpete_doc_ratchet`
+(`core/CMakeLists.txt:698-768`), and with no game configured they stop the
+build, the first because it finds no recompiled C and the ratchets because
+the game sources have no compile-database entry. The `-DOPENPETE_GAMES=`
+override persists in the build directory; once a game's recompiled C exists,
+reconfigure with `-DOPENPETE_GAMES=<game>` or drop it with
+`cmake --preset linux-release -U OPENPETE_GAMES`.
 
 ### 2. Build the matching decompilation
 
@@ -124,13 +204,14 @@ level overlays) and `build/psx.map` (symbol addresses). Its prerequisites:
   under `tools/gcc2.7.2/`. The decomp's `Dockerfile` installs the toolchain,
   and `docker_env.sh` starts a shell in that image with the checkout
   mounted.
-- PSYQ SDK headers in `games/<game>/<game>/psyq/include` (gitignored in the
-  Spyro 1 and Spyro 2 decomps). The SDK is Sony proprietary and not
-  distributed with either project; supply your own copy. Spyro 1 accepts
-  any PSYQ version after 4.0 (the decomp's `readme.md`); Spyro 2 builds
-  against the 4.7 headers, and `scripts/setup.sh` checks for them and
-  states the expected layout. The Spyro 3 decomp tracks the one PSYQ header
-  its sources include, `psyq/include/libgpu.h`.
+- Your own copy of the PSYQ SDK headers, version 4.0, in
+  `games/<game>/<game>/psyq/include` (gitignored in the Spyro 1 and Spyro 2
+  decomps). The SDK is Sony proprietary; neither this project nor the
+  decompilations distribute it. Spyro 2 builds against the 4.7 headers. The
+  Spyro 3 decomp tracks the one PSYQ header its sources include,
+  `psyq/include/libgpu.h`. `scripts/setup.sh` checks for the Spyro 1 and
+  Spyro 2 headers and states the expected layout. The Spyro 1 decomp
+  tracks its assembly and data, and its build reads no disc.
 
 ```bash
 cd games/spyro-1/spyro-1 && make all -j"$(nproc)"
@@ -141,8 +222,6 @@ Run `make all`, not `make`: the Makefile's first rule is
 bare `make` builds one object and exits 0. `all` builds `PSX.EXE` and every
 overlay and verifies them against `sha256sum.txt`. Spyro 2 builds with
 `make all` as well; Spyro 3 builds with `python3 ./build_multiproc.py`.
-`scripts/setup.sh` reports which decomp outputs, submodules and disc are
-present, per game.
 
 ### 3. Build PSXRecomp and regenerate the recompiled C
 
@@ -163,18 +242,12 @@ also emits the `spyro_overlay_table.c` registry and `psyq_stubs.c`.
 (`PSX_MAP` overrides it); its `symbols.toml` and `globals.toml` are build
 inputs of the symbol-alias header every game compiles.
 
-`OPENPETE_GAMES` defaults to `spyro-1;spyro-2;spyro-3`. Repeat steps 2 and
-3 with `GAME=spyro-2` and `GAME=spyro-3`, or configure only the games you
-regenerated:
+Repeat steps 2 and 3 with `GAME=spyro-2` and `GAME=spyro-3`, or configure
+only the games you regenerated:
 
 ```bash
 cmake --preset linux-release -DOPENPETE_GAMES=spyro-1
 ```
-
-`-DOPENPETE_GAMES=` (empty) configures the core libraries and their unit
-tests with no game executable and no recompiled C; the `bench_corpus_smoke`
-test, which names the `openpete-spyro1` target, is registered only when that
-target exists.
 
 Re-run `regen-recomp.sh` after bumping psxrecomp, changing a forced
 entry, or pulling a new EXE dump. For the Windows distribution build,
@@ -464,6 +537,11 @@ reference's parse-failures page. It deletes and rewrites
   `core/rhi/CMakeLists.txt:18` requires the binary on the host.
 - Configure fails on `SPIRV_OPT-NOTFOUND`. Install `spirv-tools`;
   `core/rhi/CMakeLists.txt:45` requires `spirv-opt` on the host.
+- Configure stops in SDL with `SDL could not find X11 or Wayland
+  development libraries` or `Couldn't find dependency package for
+  XCURSOR` (or `XINPUT`, `XSCRNSAVER`). Install the X11, Wayland and GL
+  packages of the apt line above.
+- Configure fails on `Could NOT find PkgConfig`. Install `pkg-config`.
 - Configure stops with `<game>: no recompiled output in .../generated`. The
   recompiler outputs are gitignored; run Step 0 for that game, or drop it
   from `OPENPETE_GAMES` as the message states.

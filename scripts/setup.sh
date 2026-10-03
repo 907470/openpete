@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# scripts/setup.sh - first-time setup gate for OpenPete.
+# scripts/setup.sh - first-time setup check for OpenPete.
 #
-# Runs three checks before allowing the project to build:
-#   1. Disc image exists at the expected location and matches the known SHA256.
-#   2. Each game's matching-decomp submodule has been built at least once
-#      (psx.map produced) - psx.map drives the recompiler manifest.
-#   3. Submodules are initialized.
+# Arms the tracked git hooks and reports:
+#   1. The submodules the configure reads (hard error when missing).
+#   2. Per game: the decomp submodule, its nested maspsx (hard error when
+#      missing), its build outputs (psx.map drives the recompiler manifest),
+#      and the PSYQ SDK headers its build compiles against.
+#   3. The disc image the development scripts run the game with. The
+#      configure and build do not read it.
 #
-# The PSYQ SDK is a user-supplied developer prerequisite: it is Sony
-# proprietary and is never redistributed with this project. Spyro 2's decomp
-# needs its headers to compile at all, so this script detects their absence and
-# says what to place where; it does not obtain them.
+# The engine (openpete_core, openpete_rhi, the unit tests) needs none of the
+# per-game inputs. The PSYQ SDK is a user-supplied prerequisite of a game
+# build: it is Sony proprietary and is never redistributed with this project,
+# so this script detects the headers' absence and says what to place where;
+# it does not obtain them.
 #
-# Returns exit code 3 (OPENPETE_EXIT_SETUP_ERROR) on any failure.
+# Returns exit code 3 (OPENPETE_EXIT_SETUP_ERROR) on a hard error.
 
 set -uo pipefail
 
@@ -33,27 +36,27 @@ errs=0
 
 echo "==> Disc image"
 if [[ ! -f "$DISC_BIN" ]]; then
-    red "  missing: $DISC_BIN"
-    red "  dump your disc to that path, or override with"
-    red "  OPENPETE_DISC=/path/to/SCUS-94228.bin"
-    errs=$((errs+1))
+    yellow "  missing: $DISC_BIN"
+    yellow "    Running the game needs a disc image made from your own copy;"
+    yellow "    place it at that path or set OPENPETE_DISC=/path/to/SCUS-94228.bin."
+    yellow "    The configure and build do not read it."
 else
     green "  ok: $DISC_BIN"
 fi
 
 echo
-echo "==> Submodules"
+echo "==> Submodules the configure reads"
 required=(
-    games/spyro-1/spyro-1
     third_party/PsyCross
     third_party/SDL
-    third_party/cubeb
+    third_party/glslang
+    third_party/imgui
 )
 for path in "${required[@]}"; do
     if [[ -d "$OPENPETE_ROOT/$path" ]] && [[ -n "$(ls -A "$OPENPETE_ROOT/$path" 2>/dev/null)" ]]; then
         green "  ok: $path"
     else
-        red "  missing or empty: $path  (run: git submodule update --init --recursive)"
+        red "  missing or empty: $path  (run: git submodule update --init --recursive -- $path)"
         errs=$((errs+1))
     fi
 done
@@ -70,7 +73,7 @@ check_decomp() {
     echo "==> $game matching-decomp build artifacts"
     if [[ ! -d "$root" ]] || [[ -z "$(ls -A "$root" 2>/dev/null)" ]]; then
         yellow "  submodule not checked out: games/$game/$game"
-        yellow "    git submodule update --init games/$game/$game"
+        yellow "    git submodule update --init --recursive -- games/$game/$game"
         return
     fi
 
@@ -104,14 +107,15 @@ check_decomp() {
     fi
 }
 
-# Spyro 2 compiles against the PSYQ 4.7 headers. They are Sony proprietary and
-# not distributable, so the decomp cannot build from a clean clone without a
-# copy the developer supplies. Detect and diagnose; never fetch.
+# The Spyro 1 decomp compiles against the PSYQ 4.0 headers and Spyro 2 against
+# 4.7. They are Sony proprietary and not distributable, so neither decomp
+# builds from a clean clone without a copy the developer supplies. Detect and
+# diagnose; never fetch.
 check_psyq_headers() {
     local game="$1" version="$2"
     local inc="$OPENPETE_ROOT/games/$game/$game/psyq/include"
 
-    [[ -d "$OPENPETE_ROOT/games/$game/$game" ]] || return
+    [[ -n "$(ls -A "$OPENPETE_ROOT/games/$game/$game" 2>/dev/null)" ]] || return
     if [[ -f "$inc/libgpu.h" ]]; then
         green "  ok: games/$game/$game/psyq/include (PSYQ $version headers)"
     else
@@ -142,6 +146,7 @@ else
 fi
 
 check_decomp spyro-1 "make all -j\"\$(nproc)\""
+check_psyq_headers spyro-1 4.0
 # `make` alone builds a single object and exits 0 - the Makefile's default goal
 # is one .o, not the game. The target that builds everything is `all`.
 check_decomp spyro-2 "make all -j\"\$(nproc)\""
