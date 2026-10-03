@@ -47,11 +47,11 @@
 #                       the wrapper's `run`, which builds no engine.
 #
 # The verdict is defined over the pinned capture image
-# (docs/linux-capture.Dockerfile). Run outside it, the script re-runs itself
-# inside the image through scripts/golden-capture-container.sh, which builds
-# the engine into build/linux-release-container with the image's toolchain
-# (any --build-dir= is replaced by that directory) and holds a lock on it; this
-# process stays the host-side parent for the whole run. Without a container
+# (tests/harness/linux-capture.Dockerfile). Run outside it, the script
+# re-runs itself inside the image through scripts/golden-capture-container.sh,
+# which builds the engine into build/linux-release-container with the image's
+# toolchain (any --build-dir= is replaced by that directory) and holds a lock
+# on it; this process stays the host-side parent for the whole run. Without a container
 # engine or a current image the run reports SKIP (64) and prints the manifest
 # header's environment beside this machine's. Inside the image every run prints
 # the same comparison for its capture; a bless or promote whose environment

@@ -77,7 +77,7 @@
     },
     {
       "name": "linux-release-container",
-      "displayName": "linux-release inside the capture image (docs/linux-capture.Dockerfile)",
+      "displayName": "linux-release inside the capture image (tests/harness/linux-capture.Dockerfile)",
       "inherits": "linux-release",
       "binaryDir": "${sourceDir}/build/linux-release-container",
       "cacheVariables": {

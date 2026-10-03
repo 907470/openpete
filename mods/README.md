@@ -18,15 +18,19 @@ derives the assets from the player's own disc; `recolored-artisans`
 ## Documentation
 
 The mod-author documentation (guides plus the generated API, function,
-global, and struct reference) builds with the game:
+global, and struct reference) is the Modding section of the documentation
+site, published at https://openpete.com/docs/modding/. It builds with the
+game:
 
 ```
-cmake --build --preset linux-release --target mod_docs
+cmake --build --preset linux-release --target docs
 ```
 
-The site lands in `build/<preset>/games/spyro-1/moddocs/site/index.html`.
-`scripts/build-mod-docs.sh --serve` runs a live preview (needs
-`pip install mkdocs-material`). Sources: `docs/modding/`.
+The site lands in `build/<preset>/games/spyro-1/docs-site/index.html`.
+`scripts/build-docs.sh --serve` runs a live preview (needs
+`pip install mkdocs-material`). Sources: `docs/src/modding/`.
+`AUTHORING.md` is a single-file reference for writing mods against the
+shipped SDK.
 
 ## In-tree mods
 

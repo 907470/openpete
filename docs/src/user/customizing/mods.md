@@ -87,9 +87,9 @@ a different set of mods shows a warning until the save is adopted
 
 ## Making mods
 
-The [Modding site](https://openpete.com/docs/modding/) documents mod
+The [Modding section](../../modding/index.md) documents mod
 authoring: start with
-[Getting started](https://openpete.com/docs/modding/getting-started.html);
+[Getting started](../../modding/getting-started.md);
 the manifest, code, assets, custom levels and shaders each have a page. A
 package that includes the SDK carries working example mods in
 `sdk/examples/`; copy one into the `mods` folder to run it.

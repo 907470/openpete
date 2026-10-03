@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Per-entry caller census of the mod-facing API surface.
 
-Regenerates docs/modding/audit.md from the tree: every function pointer in
-openpete_mod_api_t and openpete_mod_ui_t, with call counts and the mods that
-call it. The counting basis is stated in the emitted document; run from the
+Regenerates docs/src/developer/mod-api-audit.md from the tree: every
+function pointer in openpete_mod_api_t and openpete_mod_ui_t, with call
+counts and the mods that call it. The counting basis is stated in the emitted document; run from the
 repo root with no arguments.
 """
 import re
@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "core/include/openpete_mod_api.h"
 UI_HEADER = ROOT / "core/include/openpete_mod_ui.h"
 MODS = ROOT / "mods"
-OUT = ROOT / "docs/modding/audit.md"
+OUT = ROOT / "docs/src/developer/mod-api-audit.md"
 
 MEMBER_RE = re.compile(r"\(\*\s*(\w+)\s*\)\s*\(")
 

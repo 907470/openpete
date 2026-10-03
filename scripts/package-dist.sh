@@ -136,18 +136,11 @@ stage_common() {  # stage_common <build-game-dir>
         # toolchain. The SDK is a handful of headers, and read-only -
         # unlike mods/ it belongs in the install.
         cp -a "$B/sdk" "$STAGE/sdk"
-        # The mod-author docs site (mod_docs target; built only when
-        # mkdocs is installed) and the example mods named in
-        # mods/examples.txt ride with the SDK, so a zip holder has the
-        # reference and working mods without the repository. Examples
+        # The example mods named in mods/examples.txt ride with the SDK,
+        # so a zip holder has working mods without the repository; the
+        # Modding section of docs/ (below) is their reference. Examples
         # live under sdk/, not mods/: a mod dropped into mods/ is live on
         # the next boot, and an example is copied there on purpose.
-        if [[ -f "$B/moddocs/site/index.html" ]]; then
-            cp -a "$B/moddocs/site" "$STAGE/sdk/docs"
-        else
-            echo "[package-dist] WARNING: $B/moddocs/site missing (mkdocs" \
-                 "not installed?) - sdk/docs/ not staged" >&2
-        fi
         mkdir -p "$STAGE/sdk/examples"
         while read -r ex; do
             [[ -z "$ex" || "$ex" == \#* ]] && continue
@@ -183,6 +176,15 @@ stage_common() {  # stage_common <build-game-dir>
                 > "$STAGE/mods/README.txt"
         fi
     fi
+    # The documentation site (the `docs` CMake target) beside the exe:
+    # User always, Modding with the SDK. The target builds both sets, so a
+    # missing one means mkdocs was absent at build time.
+    local site="$B/docs-site-user"
+    [[ $WITH_MOD_SDK -eq 1 ]] && site="$B/docs-site"
+    [[ -f "$site/index.html" ]] \
+        || { echo "[package-dist] $site/index.html missing: install" \
+                  "mkdocs-material and build the docs target" >&2; exit 1; }
+    cp -a "$site" "$STAGE/docs"
     cp gamecontrollerdb.txt "$STAGE/" 2>/dev/null || true
     cp LICENSE NOTICE.md "$STAGE/"
     local scopes=(--scope all)
@@ -192,14 +194,14 @@ stage_common() {  # stage_common <build-game-dir>
     # Preconfigured settings, so a first run looks the way we intend
     # rather than falling back to bare defaults. Both in-game menus
     # rewrite this file, so anything here is only a starting point.
-    cp docs/openpete-dist.toml "$STAGE/openpete.toml"
+    cp packaging/openpete-dist.toml "$STAGE/openpete.toml"
     # The README template carries both platforms' wording; keep only the
     # blocks for the one being packaged.
     awk -v want="@$PLATFORM" '
         /^<!-- @(windows|linux) -->$/ { skip = ($2 != want); next }
         /^<!-- @end -->$/             { skip = 0; next }
         !skip
-    ' docs/README-dist.md.in \
+    ' packaging/README-dist.md.in \
         | sed -e "s/@VERSION@/$VERSION/g" -e "s/@PLATFORM@/$PLATFORM/g" \
         > "$STAGE/README.md"
 }
@@ -234,9 +236,9 @@ APPIMAGE_HOST_CORE='^(ld-linux[^/]*|libc|libm|libdl|libpthread|librt|libresolv|l
 # does not change with the soname.
 declare -A APPIMAGE_LIB_LICENCE=(
     [libopenal]=third_party/OpenAL-mingw/COPYING
-    [libsndio]=docs/appimage/licences/libsndio.txt
-    [libbsd]=docs/appimage/licences/libbsd.txt
-    [libmd]=docs/appimage/licences/libmd.txt
+    [libsndio]=packaging/appimage/licences/libsndio.txt
+    [libbsd]=packaging/appimage/licences/libbsd.txt
+    [libmd]=packaging/appimage/licences/libmd.txt
 )
 
 # DT_NEEDED name and resolved path of every direct dependency of a file.
@@ -350,8 +352,8 @@ build_appimage() {  # build_appimage <stage-dir>
         echo "[package] driver/display libraries must not be bundled: $bad" >&2
         exit 1; }
 
-    install -m755 docs/appimage/AppRun "$APPDIR/AppRun"
-    install -m644 docs/appimage/com.openpete.OpenPete.desktop \
+    install -m755 packaging/appimage/AppRun "$APPDIR/AppRun"
+    install -m644 packaging/appimage/com.openpete.OpenPete.desktop \
         "$APPDIR/com.openpete.OpenPete.desktop"
     mkdir -p "$APPDIR/usr/share/applications" \
              "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
@@ -364,7 +366,7 @@ build_appimage() {  # build_appimage <stage-dir>
     cp "$APPDIR/com.openpete.OpenPete.png" \
        "$APPDIR/usr/share/icons/hicolor/256x256/apps/"
     sed -e "s/@VERSION@/${VERSION#v}/g" -e "s/@DATE@/$(date -u +%Y-%m-%d)/g" \
-        docs/appimage/com.openpete.OpenPete.appdata.xml \
+        packaging/appimage/com.openpete.OpenPete.appdata.xml \
         > "$APPDIR/usr/share/metainfo/com.openpete.OpenPete.appdata.xml"
 
     local IMG="$OUT/OpenPete-${VERSION}-x86_64.AppImage"

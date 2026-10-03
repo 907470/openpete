@@ -32,8 +32,10 @@ presentation layer.
   Vulkan headers, miniz, tomlc99, xxhash, dear_bindings, the MinGW OpenAL
   prebuilt) and submodules (PsyCross, SDL, cubeb, duckstation, glslang,
   imgui).
-- `docs/` - this site's source under `docs/src/`, the modding site under
-  `docs/modding/`, and the release inputs.
+- `docs/` - this site: `docs/mkdocs.yml` and the source under `docs/src/`.
+- `packaging/` - the release inputs: the shipped README template and
+  configuration, the AppImage metadata, the licence texts and the release
+  container recipe.
 
 ## Code that runs the game
 
@@ -126,7 +128,7 @@ and implemented in `games/<game>/game_extras_impl.c`. `OPENPETE_GAMES`
 `core/include/openpete_mod_api.h`, with services for shaders, textures,
 sound, draw, and configuration. `tools/gen_mod_sdk.py` generates the
 distributable SDK. The shipped mods are under `mods/`; author documentation
-is under `docs/modding/`.
+is the [Modding section](../modding/index.md), source `docs/src/modding/`.
 
 ## Level data
 

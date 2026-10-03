@@ -1,11 +1,15 @@
-# Preview config for the openpete documentation site (User, Modding,
-# Developer, Spyro). No CMake target or packaging step reads it.
-#   mkdocs serve -f docs/mkdocs.yml            live preview
-#   mkdocs build --strict -f docs/mkdocs.yml   build to build/docs-site/
-# Run `python3 tools/gen_code_docs.py` (or the `code_docs` CMake target)
-# first: it writes developer/reference/, which the nav names and git ignores.
-# Modding is a navigation link to the published site; its source stays
-# under docs/modding/ with its own mkdocs.yml.
+# Build config for the openpete documentation site: User, Modding,
+# Developer and Spyro sections under src/, one directory each.
+#   scripts/build-docs.sh            every section, to build/docs-site/
+#   scripts/build-docs.sh --serve    live preview
+#   cmake --build --preset <preset> --target docs
+#                                    the shipped sections, to
+#                                    build/<preset>/games/spyro-1/docs-site/
+# Generated pages, written before mkdocs runs and ignored by git:
+# modding/reference/ and modding/imgui.md (tools/gen_mod_docs.py),
+# developer/reference/ (tools/gen_code_docs.py, the `code_docs` target).
+# OPENPETE_DOCS_SECTIONS (comma-separated section names) builds a subset;
+# ../tools/mkdocs_sections.py applies it.
 
 site_name: openpete
 site_description: Documentation for openpete, the PC port of Spyro the Dragon.
@@ -15,7 +19,7 @@ use_directory_urls: false
 # The docs map is an input of the docs tooling, not a page.
 exclude_docs: |
   user/pages.toml
-# The generated reference links its pages from its own index.
+# The generated codebase reference links its pages from its own index.
 not_in_nav: |
   /developer/reference/**
 
@@ -47,18 +51,28 @@ theme:
     - content.code.copy
     - content.tabs.link
 
-# Opened from disk (file://), the material bundle loads
-# search/search_index.js, which only the offline plugin emits.
+# The packages ship this site as static files opened from disk. Under
+# file:// the material bundle loads search/search_index.js, which only the
+# offline plugin emits; without it the bundle aborts before mounting the
+# sidebar, leaving the nav unsized and clipped at the bottom of the window.
 plugins:
   - search
   - offline
 
-# The offline plugin's search worker shim, vendored (a symlink to the
-# modding site's copy): the plugin points at unpkg.com only when no
-# polyfill path contains "iframe-worker".
+hooks:
+  - ../tools/mkdocs_sections.py
+
 extra:
+  # The offline plugin's search worker shim, vendored with its licence in
+  # src/assets/javascripts/: the plugin points at unpkg.com only when no
+  # polyfill path contains "iframe-worker".
   polyfills:
     - assets/javascripts/iframe-worker-shim.js
+  # A link into a section a subset build leaves out becomes an absolute
+  # URL under published_url when the section is listed in
+  # published_sections, and plain text otherwise.
+  published_url: https://openpete.com/docs/
+  published_sections: [user, modding]
 
 markdown_extensions:
   - admonition
@@ -72,7 +86,7 @@ markdown_extensions:
   - pymdownx.keys
 
 # Anchor links are info-level by default, so a stale #section target would
-# survive --strict.
+# survive --strict. The generated pages link into each other by anchor.
 validation:
   anchors: warn
 
@@ -115,7 +129,37 @@ nav:
           - user/help/reporting-a-bug.md
           - user/help/file-locations.md
           - user/help/glossary.md
-  - Modding: https://openpete.com/docs/modding/
+  - Modding:
+      - modding/index.md
+      - Getting started: modding/getting-started.md
+      - Manifest: modding/manifest.md
+      - Code mods: modding/code.md
+      - ImGui: modding/imgui.md
+      - Assets:
+          - Textures: modding/textures.md
+          - Music: modding/music.md
+          - Sounds: modding/sounds.md
+          - Custom levels: modding/levels.md
+      - Shaders: modding/shaders.md
+      - Iteration and testing: modding/testing-and-iteration.md
+      - Publishing: modding/publishing.md
+      - Glossary: modding/glossary.md
+      - Reference:
+          - API: modding/reference/api.md
+          - CPUState: modding/reference/cpustate.md
+          - Examples: modding/reference/examples.md
+          - Spyro 1:
+              - Functions: modding/reference/spyro-1/functions.md
+              - Globals: modding/reference/spyro-1/globals.md
+              - Game structs: modding/reference/spyro-1/structs.md
+          - Spyro 2:
+              - Functions: modding/reference/spyro-2/functions.md
+              - Globals: modding/reference/spyro-2/globals.md
+              - Game structs: modding/reference/spyro-2/structs.md
+          - Spyro 3:
+              - Functions: modding/reference/spyro-3/functions.md
+              - Globals: modding/reference/spyro-3/globals.md
+              - Game structs: modding/reference/spyro-3/structs.md
   - Developer:
       - developer/README.md
       - Architecture: developer/architecture.md
@@ -126,6 +170,7 @@ nav:
       - Recording video: developer/recording-video.md
       - Adding a game: developer/adding-a-game.md
       - Render channel census: developer/render-channel-census.md
+      - Mod API audit: developer/mod-api-audit.md
       - PsyCross boundary: developer/psycross-boundary.md
       - History: developer/history.md
       - PsyCross changes:

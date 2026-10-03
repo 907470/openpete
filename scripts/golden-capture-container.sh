@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/golden-capture-container.sh - run the presentation-golden capture
-# legs inside the pinned capture image (docs/linux-capture.Dockerfile).
+# legs inside the pinned capture image
+# (tests/harness/linux-capture.Dockerfile).
 #
 #   scripts/golden-capture-container.sh image            # build the image
 #   scripts/golden-capture-container.sh build            # configure + build
@@ -127,7 +128,7 @@ if (( no_build )); then
     fi
 fi
 
-RECIPE_HASH="$(sha256sum "$RECIPE_DIR/docs/linux-capture.Dockerfile" | cut -d' ' -f1)"
+RECIPE_HASH="$(sha256sum "$RECIPE_DIR/tests/harness/linux-capture.Dockerfile" | cut -d' ' -f1)"
 LABEL=org.openpete.capture-recipe
 image_label="$("$ENGINE" image inspect --format "{{index .Labels \"$LABEL\"}}" "$IMAGE" 2>/dev/null || true)"
 if [[ "$image_label" != "$RECIPE_HASH" ]]; then
@@ -142,7 +143,7 @@ if [[ "$image_label" != "$RECIPE_HASH" ]]; then
     fi
     echo "[capture-container] building $IMAGE from recipe ${RECIPE_HASH:0:12}"
     ctx="$(mktemp -d)"
-    cp "$RECIPE_DIR/docs/linux-capture.Dockerfile" "$ctx/Dockerfile"
+    cp "$RECIPE_DIR/tests/harness/linux-capture.Dockerfile" "$ctx/Dockerfile"
     "$ENGINE" build --label "$LABEL=$RECIPE_HASH" -f "$ctx/Dockerfile" -t "$IMAGE" "$ctx"
     rm -rf "$ctx"
 fi

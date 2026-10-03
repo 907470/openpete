@@ -434,7 +434,7 @@ cmake --build build/windows-mingw-shared -j
 This does not produce a playable folder by itself: the shared exe needs its
 recomp inputs staged next to it (manifests, module source kit, PSXRecomp,
 and a bundled compiler). `scripts/package-dist.sh` assembles the shippable
-archive from a `*-shared` build tree, staging `docs/openpete-dist.toml` as
+archive from a `*-shared` build tree, staging `packaging/openpete-dist.toml` as
 the shipped `openpete.toml`.
 
 ```bash

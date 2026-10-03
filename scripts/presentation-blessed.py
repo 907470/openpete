@@ -171,9 +171,9 @@ RECORDED_KEYS = ("image-digest", "libvulkan", "host", "cpu")
 SURFACE_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
                 "disc-bin", "disc-cue")
 # The capture image carries the recipe it was built from at IMAGE_RECIPE
-# (docs/linux-capture.Dockerfile copies itself there), so a process can tell
-# whether it runs inside the image and which recipe built it.
-RECIPE = "docs/linux-capture.Dockerfile"
+# (tests/harness/linux-capture.Dockerfile copies itself there), so a process
+# can tell whether it runs inside the image and which recipe built it.
+RECIPE = "tests/harness/linux-capture.Dockerfile"
 IMAGE_RECIPE = "/etc/openpete/capture.Dockerfile"
 OUTSIDE_IMAGE = "none (outside the capture image)"
 # The capture legs append the engine's Vulkan device line

@@ -5,7 +5,7 @@
 over ssh. The work is split into units, one per (game, tier) pair: the
 presentation tier of spyro-1, spyro-2 and spyro-3, and the dragons tier of
 spyro-1. Each unit is captured on one host inside the pinned capture image
-(`docs/linux-capture.Dockerfile`, run through
+(`tests/harness/linux-capture.Dockerfile`, run through
 `scripts/golden-capture-container.sh`) and decided on that host by the same
 harness with `--verdict-only`, so a fleet verdict is the harness's verdict
 over the same image, binaries and disc bytes. A run never blesses and never
@@ -182,8 +182,8 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    when it must ship), or its golden lock is held. The local host's slots
    are lowered to fit 2 GiB of `MemAvailable` per slot. The run refuses
    (64) when the local capture image was built from a recipe other than
-   the tree's `docs/linux-capture.Dockerfile`. The coordinator takes the
-   local golden lock, runs `clean` on each host and ships the image.
+   the tree's `tests/harness/linux-capture.Dockerfile`. The coordinator
+   takes the local golden lock, runs `clean` on each host and ships the image.
 2. Image shipping. The image is identified by its Id under the tag
    `openpete-linux-capture:fleet`. When a host's `:fleet` Id differs from
    the local image's, `<engine> save` is streamed into

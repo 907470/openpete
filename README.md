@@ -9,12 +9,13 @@ is shared by the Spyro 2 and Spyro 3 ports.
 ## Documentation
 
 The documentation source is under `docs/src/`, one directory per section.
-Preview it with `mkdocs serve -f docs/mkdocs.yml`.
+Build it with `scripts/build-docs.sh`; `scripts/build-docs.sh --serve` runs a
+live preview.
 
 - [User](docs/src/user/index.md) - installing, playing, settings, the
   config file, key bindings, texture, music and sound packs.
-- [Modding](https://openpete.com/docs/modding/) - writing mods against the
-  SDK; source under `docs/modding/`.
+- [Modding](docs/src/modding/index.md) - writing mods against the SDK,
+  published at https://openpete.com/docs/modding/.
 - [Developer](docs/src/developer/README.md) - architecture,
   [building](docs/src/developer/building.md), unattended runs, the oracle,
   and the recompiler and renderer notes.

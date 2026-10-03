@@ -351,62 +351,79 @@ add_custom_target(spyro1_game_structs ALL
 add_dependencies(openpete-spyro1 spyro1_game_structs)
 add_dependencies(openpete_generated_headers spyro1_sfx_names spyro1_game_structs)
 
-# --- Mod-author docs ---
-# tools/gen_mod_docs.py extracts the SDK surface (api header, symbol/
-# global/prototype manifests, typed structs, mod examples) into markdown;
-# scripts/build-mod-docs.sh then builds the mkdocs-material site when
-# mkdocs is installed (notice + green build when it isn't). Stamp-
-# guarded: the docs rebuild exactly when an input changed - "the docs
-# never lie" is a build property, not a policy.
-set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
+# --- Documentation site (docs/mkdocs.yml), shipped sections ---
+# scripts/build-docs.sh runs tools/gen_mod_docs.py, which extracts the SDK
+# surface (api header, symbol/global/prototype manifests, typed structs,
+# mod examples) into the Modding section's markdown, then builds the site
+# with mkdocs when it is installed (notice + green build when it isn't;
+# scripts/package-dist.sh refuses a tree without the site). Two builds,
+# the sets a package ships: docs-site/ holds User and Modding (packages
+# with the mod SDK, and openpete.com), docs-site-user/ holds User alone.
+# Developer and Spyro are not shipped, so this target neither builds them
+# nor runs gen_code_docs.py (`code_docs`; scripts/build-docs.sh with no
+# --sections builds every section). Stamp-guarded: the docs rebuild
+# exactly when an input changed.
+set(_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/docs-site.stamp)
 # The reference pages cover every game's manifests and decomp headers and
 # link each symbol to the decomp checkout at its commit; the reflog is
 # appended on every HEAD move, so it stands in for "the submodule commit
 # changed".
-set(_mod_docs_game_inputs "")
+set(_docs_game_inputs "")
 foreach(_g spyro-1 spyro-2 spyro-3)
     execute_process(
         COMMAND git -C ${CMAKE_SOURCE_DIR}/games/${_g}/${_g} rev-parse --git-path logs/HEAD
         OUTPUT_VARIABLE _head OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET RESULT_VARIABLE _rc)
     if(_rc EQUAL 0 AND EXISTS ${_head})
-        list(APPEND _mod_docs_game_inputs ${_head})
+        list(APPEND _docs_game_inputs ${_head})
     endif()
     file(GLOB _hdrs CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/games/${_g}/${_g}/include/*.h)
-    list(APPEND _mod_docs_game_inputs ${_hdrs}
+    list(APPEND _docs_game_inputs ${_hdrs}
          ${CMAKE_SOURCE_DIR}/games/${_g}/manifest/symbols.toml
          ${CMAKE_SOURCE_DIR}/games/${_g}/manifest/globals.toml)
 endforeach()
-file(GLOB _mod_docs_manifests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
-file(GLOB _mod_docs_pages CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
-# pages/imgui.md is written by the command below, so listing it as an input
-# would make the stamp depend on its own output.
-list(REMOVE_ITEM _mod_docs_pages ${CMAKE_SOURCE_DIR}/docs/modding/pages/imgui.md)
-file(GLOB _mod_docs_assets CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/assets/javascripts/*)
+file(GLOB _docs_manifests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
+# Every source file of the built sections, the top-level pages and the
+# shared assets. modding/imgui.md and modding/reference/ are written by
+# the command below, so listing them as inputs would make the stamp depend
+# on its own output; the Modding glob is one level deep so it never sees
+# reference/.
+file(GLOB_RECURSE _docs_pages CONFIGURE_DEPENDS
+     ${CMAKE_SOURCE_DIR}/docs/src/user/*
+     ${CMAKE_SOURCE_DIR}/docs/src/assets/*)
+file(GLOB _docs_modding CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/src/modding/*.md)
+list(REMOVE_ITEM _docs_modding ${CMAKE_SOURCE_DIR}/docs/src/modding/imgui.md)
+file(GLOB _docs_top CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/src/*.md)
 add_custom_command(
-    OUTPUT  ${_mod_docs_stamp}
-    COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-mod-docs.sh
+    OUTPUT  ${_docs_stamp}
+    COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
+            --sections user,modding
             --structs ${_mod_sdk_gen}/openpete_game_structs.h
-            --site-dir ${CMAKE_CURRENT_BINARY_DIR}/moddocs/site
-    COMMAND ${CMAKE_COMMAND} -E touch ${_mod_docs_stamp}
+            --site-dir ${CMAKE_CURRENT_BINARY_DIR}/docs-site
+    COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
+            --sections user
+            --site-dir ${CMAKE_CURRENT_BINARY_DIR}/docs-site-user
+    COMMAND ${CMAKE_COMMAND} -E touch ${_docs_stamp}
     DEPENDS ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_imgui.h
             ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.h
             ${CMAKE_SOURCE_DIR}/tools/gen_imgui_table.py
-            ${_mod_docs_game_inputs}
+            ${_docs_game_inputs}
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
             ${_mod_sdk_gen}/openpete_game_structs.h
             ${CMAKE_SOURCE_DIR}/tools/gen_mod_docs.py
-            ${CMAKE_SOURCE_DIR}/scripts/build-mod-docs.sh
-            ${CMAKE_SOURCE_DIR}/docs/modding/mkdocs.yml
-            ${_mod_docs_manifests}
-            ${_mod_docs_pages}
-            ${_mod_docs_assets}
+            ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
+            ${CMAKE_SOURCE_DIR}/docs/mkdocs.yml
+            ${CMAKE_SOURCE_DIR}/tools/mkdocs_sections.py
+            ${_docs_manifests}
+            ${_docs_pages}
+            ${_docs_modding}
+            ${_docs_top}
             ${CMAKE_SOURCE_DIR}/mods/examples.txt
-    COMMENT "Building mod-author docs (gen_mod_docs.py + mkdocs)")
-add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
+    COMMENT "Building the documentation site (gen_mod_docs.py + mkdocs)")
+add_custom_target(docs ALL DEPENDS ${_docs_stamp})
 
 # The staged <exe>/sdk/ tree IS the contract mods compile and #include
 # against, so it must never lag the repo. An ALL target rather than a

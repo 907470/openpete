@@ -33,7 +33,7 @@ cd "$(dirname "$0")/.."
 # The image is tagged with a hash of its Dockerfile, so an edited Dockerfile
 # names an image that does not exist yet and is built, rather than silently
 # reusing the one an older Dockerfile made.
-DOCKERFILE=docs/linux-release.Dockerfile
+DOCKERFILE=packaging/linux-release.Dockerfile
 IMAGE="${OPENPETE_RELEASE_IMAGE:-openpete-linux-release:$(sha256sum "$DOCKERFILE" | cut -c1-12)}"
 ENGINE="${OPENPETE_CONTAINER_ENGINE:-}"
 if [[ -z "$ENGINE" ]]; then

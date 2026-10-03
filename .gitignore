@@ -44,9 +44,9 @@ mods/*/data/
 # Derived-locally assets (extract_*.py output - never shipped/committed)
 mods/*/assets/s3/
 
-# Generated mod-docs reference pages (tools/gen_mod_docs.py output)
-docs/modding/pages/reference/
-docs/modding/pages/imgui.md
+# Generated Modding reference pages (tools/gen_mod_docs.py output)
+docs/src/modding/reference/
+docs/src/modding/imgui.md
 # Generated codebase reference pages (tools/gen_code_docs.py output)
 docs/src/developer/reference/
 

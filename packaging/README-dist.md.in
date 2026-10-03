@@ -11,6 +11,14 @@ four-core laptop. After that the original image is never needed again and the
 game starts straight into play. Installing a new OpenPete release recompiles
 once more (12 to 50 seconds), then starts fast again.
 
+The full documentation ships with this build: open `docs/index.html` in a
+browser. It is also at https://openpete.com/docs/.
+<!-- @linux -->
+In the AppImage it sits inside the read-only image: run
+`./OpenPete-*.AppImage --appimage-extract` once and open
+`squashfs-root/usr/docs/index.html`.
+<!-- @end -->
+
 ## Requirements
 
 - Your own Spyro the Dragon (NTSC-U) disc, dumped to a `.bin`/`.cue` pair.
@@ -101,7 +109,8 @@ library/              your ingested disc and its compiled code
 mods/                 drop-in mods
 assets/               your own texture packs, sounds and music
 bk2/                  input recordings
-sdk/                  mod SDK: headers, docs/, examples/ (only when packaged with it)
+docs/                 the documentation: open docs/index.html
+sdk/                  mod SDK: headers, examples/ (only when packaged with it)
 recomp/               the bundled compiler and recompiler
 ```
 <!-- @end -->
@@ -193,14 +202,13 @@ A source mod runs inside the game process with the same privileges as the
 game. There is no sandbox. Install only mods you trust, as you would any other
 program. A mod with no `src/` directory never loads code.
 
-Mod authors: when this build carries the SDK, its documentation is at
-`sdk/docs/index.html` (start at "Getting started") and `sdk/examples/` holds
+Mod authors: when this build carries the SDK, `docs/index.html` includes the
+Modding section (start at "Getting started") and `sdk/examples/` holds
 working example mods. Copy one into the `mods` directory above to run it;
 nothing under `sdk/` loads on its own. In the AppImage both sit inside the
 read-only image: run `./OpenPete-*.AppImage --appimage-extract` once and open
-`squashfs-root/usr/sdk/docs/index.html` and `squashfs-root/usr/sdk/examples/`.
-Without the SDK, the documentation is built from the source tree
-(`cmake --build --preset linux-release --target mod_docs`).
+`squashfs-root/usr/docs/index.html` and `squashfs-root/usr/sdk/examples/`.
+Without the SDK, the Modding section is at https://openpete.com/docs/modding/.
 
 ## Reporting a problem
 

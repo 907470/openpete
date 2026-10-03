@@ -67,4 +67,4 @@ A name identifies the texture by its content, not by where it sits in
 video memory, so one file applies in every level that uses that texture.
 The name forms, the fog blend and textures for new models are documented
 on the Modding site:
-[Textures](https://openpete.com/docs/modding/textures.html).
+[Textures](../../modding/textures.md).

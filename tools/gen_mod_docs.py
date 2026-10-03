@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """gen_mod_docs.py - generate the mod-author reference pages (markdown).
 
-Extracts the SDK surface into docs/modding/pages/reference/ for the
-mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
+Extracts the SDK surface into docs/src/modding/reference/, the Modding
+section of the documentation site (docs/mkdocs.yml, built by
+scripts/build-docs.sh):
 
   api.md        <- core/include/openpete_mod_api.h   (the API contract:
                    struct members with their comment blocks, section
@@ -33,7 +34,7 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
   imgui.md      <- third_party/imgui/imgui.h (the version the engine
                    builds) x tools/gen_imgui_table.py (the denylist that
                    generator applies) - the ImGui page. Written to
-                   pages/, one level above the reference set: it is a
+                   modding/, one level above the reference set: it is a
                    guide, not an extracted catalogue.
 
 Stdlib only, deterministic output (no timestamps): re-running on
@@ -794,7 +795,7 @@ def gen_structs(structs_header: Path, linker: SourceLinker,
     if not structs_header or not structs_header.exists():
         out.append("!!! warning\n    `openpete_game_structs.h` wasn\'t "
                    "found. Build the game target once, then run "
-                   "`scripts/build-mod-docs.sh` again.\n")
+                   "`scripts/build-docs.sh` again.\n")
         return "\n".join(out), 0
 
     src = structs_header.read_text(encoding="utf-8")
@@ -1384,10 +1385,10 @@ def main():
                     default=REPO / "tools/gen_imgui_table.py",
                     type=Path)
     ap.add_argument("--out",
-                    default=REPO / "docs/modding/pages/reference",
+                    default=REPO / "docs/src/modding/reference",
                     type=Path)
     ap.add_argument("--out-pages", dest="out_pages",
-                    default=REPO / "docs/modding/pages",
+                    default=REPO / "docs/src/modding",
                     type=Path,
                     help="where the non-reference generated pages go")
     args = ap.parse_args()

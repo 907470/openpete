@@ -25,7 +25,7 @@ next to the program; among mods, the later one in load order wins.
 
 `assets/music/track_NN.wav` replaces music track NN, a two-digit index
 from `00` to `47` in Spyro 1. The Modding site's
-[Music](https://openpete.com/docs/modding/music.html) page lists which
+[Music](../../modding/music.md) page lists which
 track plays where.
 
 A `manifest.txt` in the same folder maps a track to any file name, one
@@ -82,4 +82,4 @@ the program and your own folder with one folder; mods still apply on top.
 
 The name forms (one sound everywhere, one sound at one pitch, or one role
 such as the gem pickup in every level) are documented on the Modding
-site: [Sounds](https://openpete.com/docs/modding/sounds.html).
+site: [Sounds](../../modding/sounds.md).

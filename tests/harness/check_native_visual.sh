@@ -11,10 +11,11 @@
 # local store for its heat diff (tests/harness/presentation-corpus-diff.py).
 #
 # The verdict is defined over the pinned capture image
-# (docs/linux-capture.Dockerfile). Run outside it, the script re-runs itself
-# inside the image through scripts/golden-capture-container.sh, which builds
-# the engine into build/linux-release-container with the image's toolchain;
-# without a container engine or a current image it reports SKIP (64).
+# (tests/harness/linux-capture.Dockerfile). Run outside it, the script
+# re-runs itself inside the image through scripts/golden-capture-container.sh,
+# which builds the engine into build/linux-release-container with the image's
+# toolchain; without a container engine or a current image it reports SKIP
+# (64).
 #
 # Re-bless (an intended native-render change, adjudicated first): promote the
 # kept candidate inside the image, which rewrites the changed rows, files the

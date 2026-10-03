@@ -9,7 +9,7 @@
 
   dist_compliance.py licences --stage DIR --scope S [--scope S...]
                               [--toolchain-dir DIR]
-      Checks NOTICE.md against docs/licences/manifest.tsv and copies the
+      Checks NOTICE.md against packaging/licences/manifest.tsv and copies the
       text of every component the archive carries into DIR/licences/.
       Exit 1 when a NOTICE.md row has no manifest row, a manifest row has no
       NOTICE.md row, a third_party/*/LICENSE* file is in no manifest row, or
@@ -36,7 +36,7 @@ COPYLEFT_MARKERS = (
     b"libavcodec version",  # libavcodec's av_log version line
 )
 
-MANIFEST = "docs/licences/manifest.tsv"
+MANIFEST = "packaging/licences/manifest.tsv"
 NOTICE = "NOTICE.md"
 
 

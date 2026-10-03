@@ -40,5 +40,5 @@ signed off.
   contain copyrighted game bytes. The repository holds no game content and
   the hooks refuse a tracked image under `tests/golden/`.
 - Third-party code without its licence text: a new dependency adds its
-  row to `NOTICE.md` and `docs/licences/manifest.tsv` in the same change,
+  row to `NOTICE.md` and `packaging/licences/manifest.tsv` in the same change,
   and packaging refuses a row with no text.

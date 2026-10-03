@@ -4,7 +4,7 @@ The golden of the `native_visual_regression` ctest
 (`tests/harness/check_native_visual.sh`): the native Vulkan renderer's output
 at seven attract-demo draw-ticks, captured headless through the software
 rasterizer (surfaceless Vulkan on lavapipe; no GPU, no display) inside the
-pinned capture image (`docs/linux-capture.Dockerfile`).
+pinned capture image (`tests/harness/linux-capture.Dockerfile`).
 
 The verdict is the digest manifest `games/spyro-1/native-tick-corpus.manifest`,
 in the `blessed.tsv` form of the presentation golden (tile, verdict digest,

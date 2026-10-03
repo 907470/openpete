@@ -2769,7 +2769,8 @@ def check_recipe(tree):
         raise FleetError("no local container engine", EXIT_SKIP)
     label = image_inspect(engine, local_image(),
                           '{{index .Labels "org.openpete.capture-recipe"}}')
-    want = sha256_path(os.path.join(tree, "docs", "linux-capture.Dockerfile"))
+    want = sha256_path(os.path.join(tree, "tests", "harness",
+                                    "linux-capture.Dockerfile"))
     if label != want:
         raise FleetError(f"local image {local_image()} was built from recipe "
                          f"{label[:12] or 'none'}, the tree's is {want[:12]}; rebuild it with "

@@ -388,8 +388,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     # The image-side gates below (native_visual_regression, the presentation
     # golden rows and the dragon tier) are defined over the pinned capture
-    # image (docs/linux-capture.Dockerfile). Run from a host build tree, each
-    # re-enters itself through scripts/golden-capture-container.sh, which
+    # image (tests/harness/linux-capture.Dockerfile). Run from a host build
+    # tree, each re-enters itself through scripts/golden-capture-container.sh, which
     # rebuilds this source tree with the image's toolchain into
     # build/linux-release-container, overriding the --build-dir passed here,
     # and captures with that binary; a machine without podman/docker or the

@@ -4,8 +4,9 @@ Self-contained reference for writing openpete (Spyro the Dragon, SCUS-94228)
 mods against the shipped SDK. Assumes no access to engine source. Paths are
 relative to `<exe>`, the directory holding `openpete-spyro1` /
 `openpete-spyro1.exe`. Authoritative sources when this file and the SDK
-disagree: `sdk/openpete_mod_api.h` (contract), `sdk/docs/index.html`
-(generated reference, offline), `sdk/examples/<id>/` (working mods).
+disagree: `sdk/openpete_mod_api.h` (contract), the Modding section of
+`docs/index.html` (generated reference, offline), `sdk/examples/<id>/`
+(working mods).
 
 Game internals beyond the SDK (what a function does, struct fields the
 SDK does not type, `func_XXXXXXXX` bodies, data formats) come from the
@@ -146,7 +147,7 @@ in a `GamestateUpdate` post-hook).
 
 Three registration tiers:
 1. `api->override_name(self, "Name", fn)`: names from
-   `sdk/docs` Functions page; `func_XXXXXXXX` names are unnamed decomp
+   the Modding reference's Functions page; `func_XXXXXXXX` names are unnamed decomp
    functions, resolve forever, loader warns once a stable name exists.
 2. Typed wrappers (prototyped functions only):
    `OP_OVERRIDE_IMPL_CollectItem(my_fn) { ...pMoby... }` declares the body

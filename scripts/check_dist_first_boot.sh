@@ -70,7 +70,7 @@ cd "$(dirname "$0")/.."
 APPIMAGE=0
 [[ "${1:-}" == "--appimage" ]] && APPIMAGE=1
 
-# Debian 11 / bullseye, the release build base (docs/linux-release.Dockerfile).
+# Debian 11 / bullseye, the release build base (packaging/linux-release.Dockerfile).
 GLIBC_MAX=2.31
 GLIBCXX_MAX=3.4.28
 
@@ -307,13 +307,17 @@ grep -q "rebuilding it from your disc" "$WORK/repair.log" \
          exit 2; }
 
 # The staged example is the drop-in: sdk/examples/ sits next to the
-# binary (AppImage: usr/). Its presence with the docs site proves the
-# --with-mod-sdk staging, and the compile proves the example.
+# binary (AppImage: usr/), as does the documentation site docs/. The
+# example and the site's Modding section prove the --with-mod-sdk staging,
+# and the compile proves the example.
 sdkdir="$(dirname "$BIN")/sdk"
+docsdir="$(dirname "$BIN")/docs"
 [[ -f "$sdkdir/examples/hello-anchor/mod.toml" ]] \
     || { echo "[dist-gate] FAIL: $sdkdir/examples/hello-anchor not staged (no mod.toml)" >&2; exit 2; }
-[[ -f "$sdkdir/docs/index.html" ]] \
-    || { echo "[dist-gate] FAIL: $sdkdir/docs/index.html not staged (mkdocs missing at package time?)" >&2; exit 2; }
+[[ -f "$docsdir/index.html" ]] \
+    || { echo "[dist-gate] FAIL: $docsdir/index.html not staged" >&2; exit 2; }
+[[ -f "$docsdir/modding/index.html" ]] \
+    || { echo "[dist-gate] FAIL: $docsdir/modding/index.html not staged (Modding section missing from a --with-mod-sdk package)" >&2; exit 2; }
 echo "[dist-gate] drop-in source mod (from sdk/examples) compiles + loads on boot..."
 mkdir -p "$DATA/mods"
 cp -r "$sdkdir/examples/hello-anchor" "$DATA/mods/"

@@ -114,7 +114,7 @@ pg_resolve() {
 # ---- capture image ---------------------------------------------------------
 #
 # A presentation verdict is defined over the pinned capture image
-# (docs/linux-capture.Dockerfile), which carries its recipe at
+# (tests/harness/linux-capture.Dockerfile), which carries its recipe at
 # PG_IMAGE_RECIPE; pg_in_capture_image is true inside it.
 #
 # pg_enter_capture_image [--no-build] SCRIPT ARGS... runs SCRIPT with ARGS

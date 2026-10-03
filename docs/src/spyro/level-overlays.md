@@ -285,5 +285,5 @@ framework can target overlay behaviour by anchor.
   entries; the split-target loop is enabled for overlays only. The mechanism is
   not understood and the investigation is deferred.
 
-See `level-format.md` for the data side and `docs/modding/pages/levels.md` for how
+See `level-format.md` for the data side and [Custom levels](../modding/levels.md) for how
 custom levels are built and shipped.
