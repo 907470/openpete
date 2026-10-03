@@ -93,7 +93,12 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr);
  * @param code The 20-bit code field of the instruction. */
 void psx_syscall(CPUState* cpu, uint32_t code);
 
-/** @brief GTE coprocessor command. */
+/** @brief GTE coprocessor command.
+ *
+ * Runs the command on cpu->gte_data/gte_ctrl and leaves the register file
+ * in its hardware read form (core/psx/gte.c).
+ * @param cpu CPU state holding the GTE register file.
+ * @param cmd The cop2 command field (the instruction's low 25 bits). */
 void gte_execute(CPUState* cpu, uint32_t cmd);
 
 /**

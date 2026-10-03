@@ -289,7 +289,7 @@ the byte at PC 0x80058818 (`sb $zero, 0xC($t8)`).
 The cull at 0x80058648 (left edge) and 0x80058658 (right edge) tests
 projected SX after RTPS at 0x80058604. The right-edge threshold is
 hardcoded `lui $t0, 0x0200` (= 512 << 16, NOT widened by openpete) -
-but the SX itself IS widened (eff_OFX = OFX*factor inside gte.cpp).
+but the SX itself IS widened (eff_OFX = OFX*factor inside the GTE).
 That mismatch means in 16:9, sparkles at canonical SX in
 (-delta_OFX, 0) project to widened SX in (0, delta_OFX), pass widened
 left-clip (blez fails on positive widened SX), survive the kill -
@@ -300,7 +300,7 @@ UPDATE_PROP_ROTMATRIX call is gated on alloc success), eventually
 diverging Moby pool state.
 
 Closure: substitute the SX-extract sll at 0x80058648 to load $a1 from
-the canonical_sx_q16 side channel (gte.cpp's openpete_canonical_sx2_q16,
+the canonical_sx_q16 side channel (the GTE's openpete_canonical_sx2_q16,
 truncated to int via `>> 16` then re-shifted). The asm's subsequent
 `blez $a1` (left) and `sub $a1, $a1, $t0` + `bgez $a1` (right) then
 test canonical SX instead of widened - kill verdict matches canonical
@@ -334,7 +334,7 @@ particle update handlers in level overlays to gate expensive AI work,
 including conditional rand() calls - an unclosed leak drifts the
 psyq_rand seed and cascades into moby state.
 
-Closure: canonical-SX side channel populated by gte.cpp's RTPS
+Closure: canonical-SX side channel populated by the GTE's RTPS
 (openpete_canonical_sx0/1/2_q16, 3-deep FIFO matching push_sxy
 semantics). Each `sub _, _, $s6` substitution at the right-edge clip
 reads the appropriate FIFO slot, truncates to int16 via `>> 16` to
@@ -355,7 +355,7 @@ FIFO slot per PC:
 Result: title-autoplay 16:9 vs 4:3 PASSES bit-identical across 8000+
 frames (hash + position). Earlier closure attempts using delta_OFX
 math (truncated pixels or Q16) had irreducible 1-pixel boundary
-ambiguity; reading the canonical SX directly from gte.cpp resolves
+ambiguity; reading the canonical SX directly from the GTE resolves
 that exactly.
 
 Open regression (post-cone-clamp): 20k-frame soak

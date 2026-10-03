@@ -1638,11 +1638,8 @@ void psyq_PutDrawEnv(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_PUTDRAWENV);
 }
 
-/* Hor+ widescreen (--aspect) is implemented at the GTE-instruction
- * layer in psxrecomp's gte_ctc2 (third_party/psxrecomp/runner/src/gte.cpp)
- * so EVERY write to OFX picks up the widening: the renderer's inline CTC2
- * stores and the recompiled libgte SetGeomOffset's CTC2 stores take the
- * same route, so a single widening point applies once to both.
+/* Hor+ widescreen (--aspect) and FOV are native-renderer display
+ * policies (core/renderer/native_render.c); no GTE register is widened.
  *
  * The DISPENV / DRAWENV stay at their native PSX VRAM widths (typically
  * 512). Widening the VRAM-facing widths would make GR_StoreFrameBuffer

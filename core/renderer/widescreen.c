@@ -1,14 +1,14 @@
 // core/renderer/widescreen.c - the canonical-SX q16 FIFO.
 //
 // Verdict machinery for the particle / sparkle render->gameplay channels:
-// gte.cpp's RTPS stashes every projection here and
+// the GTE (core/psx/gte.c) stashes every RTPS/RTPT projection here and
 // games/spyro-1/renderer/render_decouple.c reads it. Widescreen and FOV
 // are native-renderer display policies (core/renderer/native_render.c) and
 // never touch the GTE.
 
 #include <stdint.h>
 
-/* Canonical SX values in q16, stashed by gte.cpp's RTPS after each
+/* Canonical SX values in q16, stashed by gte.c's RTPS/RTPT after each
  * projection in a 3-deep FIFO matching push_sxy semantics. sx2_q16 is the
  * latest projection (= what mfc2 C2_SXY2 reads, but in full q16 precision
  * before int16 truncation). Used by the particle cull substitutions in

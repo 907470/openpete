@@ -7,7 +7,7 @@
 // + the camera matrices) in float, instead of replaying the PSX renderer's
 // GPU packets. This module is the game-specific *scene extraction* half:
 // it reads g_Cyclorama, unpacks the packed dome sectors, float-projects
-// them (mirroring the GTE math in runner/src/gte.cpp), and produces a list
+// them (mirroring the GTE math in core/psx/gte.c), and produces a list
 // of screen-space triangles. core/ consumes that list (display only).
 //
 // Verification (instruments over pixels): hook the dome renderer (Spyro 1

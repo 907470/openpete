@@ -6,7 +6,7 @@ between them localizes a GTE math bug to one engine. Two rows per logged op:
 
 | `engine` | source |
 |----------|--------|
-| `rec`    | psxrecomp's GTE (`third_party/psxrecomp/runner/src/gte.cpp`) |
+| `rec`    | openpete's GTE (`core/psx/gte.c`) |
 | `psy`    | PsyCross's GTE (`third_party/PsyCross/src/gte/PsyX_GTE.cpp`) |
 
 A bug shared by both engines survives the diff; the DuckStation fork's
@@ -28,8 +28,8 @@ build/linux-release/games/spyro-1/openpete-spyro1 --headless \
  --frame-limit 265
 ```
 
-Knobs, all read once on the first COP2 op and parsed in `gte_trace_init()`
-(`third_party/psxrecomp/runner/src/gte.cpp`):
+Knobs, all read once on the first COP2 op and parsed in `trace_init()`
+(`core/psx/gte_instruments.cpp`):
 
 - `OPENPETE_GTE_TRACE` - output CSV path. Unset disables the logger.
 - `OPENPETE_GTE_TRACE_LO` / `_HI` - half-open `openpete_frame` window,

@@ -238,10 +238,11 @@ records one VBL behind the reference). Per instruction the fold takes
 the instruction word and the 64 registers' read view after it, FNV-1a-64
 over 32-bit words. The read view is the value `mfc2`/`cfc2` returns,
 computed from the stored words by the same function on both sides
-(`gte_read_view` in `core/diag/psxtrace_verify.c`, and its counterpart in the
-recorder), because the two engines store register words differently and
-psxrecomp's `gte.cpp` stores some unextended: data 1, 3, 5, 8-11 and
-control 4, 12, 20, 26, 27, 29, 30 sign-extended; data 7, 16-19
+(`gte_read_view` in `core/diag/psxtrace_verify.c`, and its counterpart in
+the recorder), because the two engines store register words differently:
+openpete's register arrays hold a game's raw `mtc2`/`ctc2` word until the
+next command rewrites them (`core/psx/gte.c`). The read view, after
+psx-spx "GTE Registers": data 1, 3, 5, 8-11 and control 4, 12, 20, 26, 27, 29, 30 sign-extended; data 7, 16-19
 zero-extended; data 15 reads data 14; data 28/29 read ORGB from IR1-3;
 data 31 the leading-bit count of data 30; FLAG bits 30-12 with bit 31
 recomputed; data 23 (RES1) the stored word. A register enters the fold

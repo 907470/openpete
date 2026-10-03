@@ -7,7 +7,7 @@
 // model's packed vertex stream and per-face material stream, project through
 // the GTE and emit. This module is the scene-extraction half: it reads the
 // records, re-derives the same geometry in float (mirroring
-// runner/src/gte.cpp RTPS, with a real TR translation), and produces
+// core/psx/gte.c RTPS, with a real TR translation), and produces
 // screen-space triangles for the native scene.
 //
 // Every engine address the walk reads comes from game_layout.moby (the moby
@@ -3397,8 +3397,8 @@ static float s_specL[3], s_specLlen;   /* D_800770C8+0xC specular light dir (hig
 
 /** @brief GTE DPCS depth cue of one 8-bit colour channel toward a 12-bit far colour by IR0/4096.
  *
- * Delegates to ngte_dpcs_ch, the bit-exact mirror of the runner's
- * color_depth_cue_finish (gte.cpp):
+ * Delegates to ngte_dpcs_ch, the bit-exact mirror of the GTE's DPCS depth
+ * cue at sf = 1 (gte_depth_cue in core/psx/gte.c):
  *   mac    = c<<16
  *   ir_d   = sat16(((fc<<12) - mac) >> 12)
  *   total  = mac + IR0*ir_d

@@ -113,6 +113,8 @@ add_library(openpete_core STATIC
     psx/psx_region.c
     psx/vstream.c
     psx/fiber.c
+    psx/gte.c
+    psx/gte_instruments.cpp
 
     renderer/openpete_ui_moby.c
 
@@ -230,11 +232,6 @@ add_library(openpete_core STATIC
     # overlay-resident Spyro code. C++ TU because PsyCross's libgpu.h uses
     # static_assert.
     renderer/debug_render.cpp
-
-    # Vendored psxrecomp pieces kept verbatim: gte.cpp and the memory
-    # helpers. Compiled directly here so we don't drag the rest of
-    # psxrecomp's runtime.c into the build.
-    ${PSXRECOMP_RUNNER}/src/gte.cpp
 )
 
 # libco: cooperative single-fiber scheduler. third_party/libco/libco.c
