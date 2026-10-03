@@ -20,6 +20,7 @@
 #include <cstdio>
 
 extern "C" void game_state_regions_register(void);
+extern "C" void game_disc_boot_order_register(void);
 extern "C" const openpete_recomp_module openpete_game_recomp_module;
 
 /** @brief Run a game that has no host-side services of its own.
@@ -62,6 +63,10 @@ int main(int argc, char** argv) {
     /* The gameplay-state region table the oracle hashes (games/common/
      * state_regions.c); explicit, before openpete_run(). */
     game_state_regions_register();
+
+    /* The disc cache loader's boot-order profile (games/common/
+     * disc_boot_order.c); before openpete_run() attaches the cache. */
+    game_disc_boot_order_register();
 
     /* The interp ring's region table and the sub-tick re-extract entry, both
      * before openpete_run() so openpete_interp_init() sees the regions; inert

@@ -1,13 +1,22 @@
 /* core/include/openpete_disc_cache.h - the disc image resident in host memory.
  *
  * The cache is disc_image's backing store. On attach it allocates the whole
- * image and a background thread fills it in 8 MB chunks, in file order
- * except that the chunk a game or XA read last missed on is loaded next. A
- * disc_image read of a range in resident chunks is a memcpy (a hit); a read
- * touching any other chunk is served from the file at once (a miss),
- * counted with its read path, emitted as a pacelog CD_MISS event, and
- * logged once per chunk. No read waits on the loader. Bytes are identical
- * to the file path.
+ * image and a background thread fills it, tracking residency per 2352-byte
+ * sector, in runs of missing sectors: first the chunk (8 MB rounded down to
+ * whole sectors) a game read, then an XA read, last missed on; then the
+ * game's boot-order profile ranges in order (openpete_disc_cache_set_boot_order,
+ * generated from games/<game>/manifest/disc_boot_order.toml); then every
+ * chunk in file order. A disc_image read of resident sectors is a memcpy (a
+ * hit); a read touching any other sector is served from the file at once (a
+ * miss), counted with its read path, emitted as a pacelog CD_MISS event,
+ * and logged once per chunk. No read waits on the loader. Bytes are
+ * identical to the file path.
+ *
+ * Harness knobs, read at attach: OPENPETE_DISC_CACHE_BPS=<bytes per second>
+ * holds each loader run until that many bytes per second of VBL time
+ * (2250000/37609 Hz, counted from VBL 0) cover every byte the loader and
+ * the misses have read; OPENPETE_DISC_BOOT_ORDER=0 drops the profile (file
+ * order).
  *
  * PsyCross reads the image through openpete_disc_psycross_bind in both
  * cache modes, so libcd and XA reads take the same path as every host
@@ -21,6 +30,21 @@ extern "C" {
 #endif
 struct disc_image;
 
+/** One boot-order profile range: @c count sectors from @c lba. */
+typedef struct {
+    uint32_t lba;
+    uint32_t count;
+} openpete_disc_range_t;
+
+/** @brief Install the game's boot-order profile, read by the next attach.
+ *
+ * The loader reads the missing sectors of each range in order after the
+ * steered chunks and before file order. Ranges past the image are skipped.
+ * @param ranges The profile, kept by reference for the session; NULL or
+ *        @p n 0 means file order.
+ * @param n Range count. */
+void openpete_disc_cache_set_boot_order(const openpete_disc_range_t* ranges, size_t n);
+
 /** @brief Allocate the image and start the background loader.
  *
  * When the thread cannot be created the image loads inline before the call
@@ -33,15 +57,16 @@ struct disc_image;
 int  openpete_disc_cache_attach(const char* bin_path);
 /** @brief Report whether the cache is attached.
  *
- * Stays 1 after openpete_disc_cache_shutdown, since resident chunks still serve.
+ * Stays 1 after openpete_disc_cache_shutdown, since resident sectors still serve.
  * @return 1 after a successful attach, else 0. */
 int  openpete_disc_cache_active(void);
-/** @brief Copy image bytes [offset, offset + len) from resident chunks.
+/** @brief Copy image bytes [offset, offset + len) from resident sectors.
  *
- * On a miss the first chunk not resident becomes the loader's next target
- * for a game read (libcd, EXE, extract, WAD overlay) or an XA read; a host
- * read (woah NSF, library scan, ingest, sfx census, mods, untagged) steers
- * nothing. The caller then reads the file and reports it with
+ * On a miss the chunk of the first sector not resident becomes the
+ * loader's next target for a game read (libcd, extract, WAD overlay) or an
+ * XA read; the EXE read and a host read (woah NSF, library scan, ingest,
+ * sfx census, mods, untagged) steer nothing. The caller then reads the
+ * file and reports it with
  * openpete_disc_cache_miss_served.
  * @param bin_path The reader's sector image path.
  * @param offset First byte.
@@ -79,8 +104,8 @@ int  openpete_disc_psycross_bind(struct disc_image* img);
 void openpete_disc_cache_trace_install(void);
 /** @brief Stop the loader and join its thread.
  *
- * The image buffer stays allocated and its resident chunks keep serving;
- * chunks the loader had not read stay misses. No effect when the cache was
+ * The image buffer stays allocated and its resident sectors keep serving;
+ * sectors the loader had not read stay misses. No effect when the cache was
  * never attached. */
 void openpete_disc_cache_shutdown(void);
 /** @brief Report the misses one read path took.
@@ -96,7 +121,7 @@ uint64_t openpete_disc_cache_tag_misses(int tag);
  * @param direct_ns Receives the total time those file reads took, in ns.
  * @param bytes Receives the image size in bytes.
  * @param load_ns Receives the loader's wall time from attach to the last
- *        chunk, in ns; 0 until the loader finishes. */
+ *        run, in ns; 0 until the loader finishes. */
 void openpete_disc_cache_census(uint64_t* misses, int64_t* direct_ns,
                                 size_t* bytes, int64_t* load_ns);
 #ifdef __cplusplus

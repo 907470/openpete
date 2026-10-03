@@ -282,6 +282,27 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Disc boot-order profiles: per game, the committed profile equals the
+    # generator's output over the committed boot trace, and the loader
+    # simulation (tools/disc_boot_order.py) finds the lowest modelled
+    # bandwidth at which file order misses no game read and asserts, one
+    # step below it, that profile order misses none while file order does.
+    # Exit 3 (reported as skipped) = VACUOUS: file order misses nothing even
+    # at the lowest bandwidth. The selftest covers the profile parser and
+    # the generator's determinism.
+    foreach(_dbo_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME disc_boot_order_${_dbo_game}
+                 COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/disc_boot_order.py
+                         check --game ${_dbo_game}
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(disc_boot_order_${_dbo_game} PROPERTIES
+            LABELS "disc"
+            SKIP_RETURN_CODE 3)
+    endforeach()
+    add_test(NAME disc_boot_order_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/test_disc_boot_order.py)
+    set_tests_properties(disc_boot_order_selftest PROPERTIES LABELS "disc")
+
     # Sfx pack census: --dump-sfx-pack over the Spyro 1 disc through the
     # disc reader; the counters, the WAV set's name digest and the trace
     # rows are pinned to the retail disc. Exit 64 = no binary or disc.

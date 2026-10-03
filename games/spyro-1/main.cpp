@@ -80,6 +80,7 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap);
 extern "C" void game_state_regions_register(void);
+extern "C" void game_disc_boot_order_register(void);
 /* Mod SDK name->vaddr table, generated from manifest/symbols.toml by
  * tools/gen_mod_sdk.py into the build dir (sdk_symbols_table.c). */
 extern "C" {
@@ -322,6 +323,9 @@ int main(int argc, char** argv) {
      * (see comment above): the state-region table moved off the
      * weak-symbol pattern too. */
     game_state_regions_register();
+    /* The disc cache loader's boot-order profile (games/common/
+     * disc_boot_order.c); before openpete_run() attaches the cache. */
+    game_disc_boot_order_register();
 
     /* High-FPS spine: register the sub-tick re-feed orchestrator with the
      * native renderer so intermediate presents rebuild the scene against an

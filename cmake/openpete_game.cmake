@@ -226,6 +226,25 @@ function(openpete_add_game GAME_ID)
                              PROPERTIES LABELS "fence;oracle")
     endif()
 
+    # Disc boot-order profile: the sector ranges the disc cache loader
+    # reads first, generated into the C table games/common/disc_boot_order.c
+    # installs. A game without the manifest loads in file order.
+    set(_boot_order_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/disc_boot_order.toml)
+    set(_boot_order_sources)
+    if(EXISTS ${_boot_order_manifest})
+        set(_boot_order_header ${_gen_dir}/disc_boot_order.gen.h)
+        add_custom_command(
+            OUTPUT  ${_boot_order_header}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_gen_dir}
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/disc_boot_order.py header
+                    --manifest ${_boot_order_manifest}
+                    --out      ${_boot_order_header}
+            DEPENDS ${_boot_order_manifest}
+                    ${CMAKE_SOURCE_DIR}/tools/disc_boot_order.py
+            COMMENT "Generating ${GAME_ID} disc_boot_order.gen.h")
+        set(_boot_order_sources ${_boot_order_header})
+    endif()
+
     # Curated PSX symbol aliases: gen/<tag>_symbols.gen.h from the game's
     # alias table, validated by address against globals.toml / symbols.toml
     # (the build fails when an addr is not a manifest symbol start).
@@ -277,8 +296,10 @@ function(openpete_add_game GAME_ID)
         game_extras_impl.c
         ${_identity_c}
         ${_common}/state_regions.c
+        ${_common}/disc_boot_order.c
         ${_common}/game_extras_default.c
         ${_regions_sources}
+        ${_boot_order_sources}
         ${G_FEATURE_LIST}
         ${G_ORCHESTRATOR}
         ${G_INTERP_REGIONS}
@@ -341,7 +362,7 @@ function(openpete_add_game GAME_ID)
     # The region table and symbol aliases as a target of their own, so the
     # source parsers order after them without waiting for the executable.
     add_custom_target(${_tag}_generated_headers
-        DEPENDS ${_regions_sources} ${_symbols_sources})
+        DEPENDS ${_regions_sources} ${_boot_order_sources} ${_symbols_sources})
     add_dependencies(${_exe} ${_tag}_generated_headers)
     add_dependencies(openpete_generated_headers ${_tag}_generated_headers)
 
@@ -355,6 +376,10 @@ function(openpete_add_game GAME_ID)
     if(NOT EXISTS ${_regions_manifest})
         set_source_files_properties(${_common}/state_regions.c PROPERTIES
             COMPILE_DEFINITIONS OPENPETE_STATE_REGIONS_NONE)
+    endif()
+    if(NOT EXISTS ${_boot_order_manifest})
+        set_source_files_properties(${_common}/disc_boot_order.c PROPERTIES
+            COMPILE_DEFINITIONS OPENPETE_DISC_BOOT_ORDER_NONE)
     endif()
     set_target_properties(${_exe} PROPERTIES
         C_STANDARD 99

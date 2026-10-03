@@ -19,7 +19,7 @@
  *   length  bytes from offset to the end of the read
  *
  * Contiguous reads on one thread with the same tag, result and VBL merge
- * into one row; cache-load rows never merge (one per chunk). A row is
+ * into one row; cache-load rows never merge (one per loader read). A row is
  * written when its thread's next read does not continue it, so rows from
  * different threads are not in ns order. One writer, buffered, flushed at
  * exit. Unset, every entry point costs one branch on
@@ -85,6 +85,11 @@ const char* openpete_disc_trace_tag_name(int tag);
  *
  * @param fn Returns the current VBL count; NULL reports -1. */
 void openpete_disc_trace_set_vbl_source(int (*fn)(void));
+
+/** @brief Read the VBL count from the installed source.
+ *
+ * @return The current VBL count; -1 when no source is installed. */
+int openpete_disc_trace_vbl(void);
 
 /** @brief Record a read of image bytes [offset, offset + length).
  *

@@ -124,6 +124,8 @@ int openpete_disc_trace_init(void) {
 
 void openpete_disc_trace_set_vbl_source(int (*fn)(void)) { s_vbl_fn = fn; }
 
+int openpete_disc_trace_vbl(void) { return s_vbl_fn ? s_vbl_fn() : -1; }
+
 void openpete_disc_trace_bytes_slow(int tag, uint64_t offset, uint64_t length, int result) {
     if (!openpete_disc_trace_init()) return;
     if (tag == OPENPETE_DISC_TAG_NONE)
@@ -136,7 +138,7 @@ void openpete_disc_trace_bytes_slow(int tag, uint64_t offset, uint64_t length, i
     dt_row_t row = { 1, ns, vbl, tag, result, th, offset, end };
     SDL_LockSpinlock(&s_lock);
     if (tag == OPENPETE_DISC_TAG_CACHE_LOAD) {
-        emit_row(&row);                 /* one row per chunk */
+        emit_row(&row);                 /* one row per loader read */
         SDL_UnlockSpinlock(&s_lock);
         return;
     }
