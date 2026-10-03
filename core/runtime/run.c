@@ -2307,6 +2307,32 @@ int openpete_get_render_fps(void) {
     return v;
 }
 
+/** @brief Report whether PsyCross runs without a GPU because nothing in the run reads what it rasterizes.
+ *
+ * PsyCross's raster reaches a consumer through the display under
+ * --renderer psycross, the -og screenshot leg, the present-sequence
+ * capture (-og per present), and a headless --record, which encodes
+ * PsyCross's present FBO because the native display is off under
+ * --headless. A windowed --record reads the native offscreen and needs no
+ * PsyCross raster. A windowed run with any screenshot request keeps the GL
+ * path, --screenshot-native-only included. A headless
+ * --screenshot-native-only run reads only the native capture, whose scene
+ * is composed from game state. In every run the CPU VRAM mirror stays
+ * live, so StoreImage reads what LoadImage, MoveImage and ClearImage
+ * wrote; null-GPU mode stops only the copy-back of the PsyCross
+ * framebuffer into the mirror, and a run that rasterizes no OT never
+ * stores a framebuffer rect for that copy-back to read.
+ * @param opts Resolved launch options.
+ * @return true when PsyCross is to open no window, no GL context and no
+ *         PSX GPU state. */
+static bool psycross_raster_unread(const openpete_options_t* opts) {
+    if (opts->renderer != OPENPETE_RENDERER_VK || opts->screenshot_presents_start >= 0)
+        return false;
+    if (!opts->headless)
+        return opts->screenshot_frame_count == 0;
+    return opts->screenshot_native_only && !opts->record_path;
+}
+
 /** @brief Bring up the host side of a run: guest CPU and PSX runtime, knobs, mods, PsyCross, audio, input, windows and the native renderer.
  *
  * Runs before the host loop, on the thread that will pump SDL events (main
@@ -2314,7 +2340,7 @@ int openpete_get_render_fps(void) {
  * the guest CPU and PSX runtime, seeds the CLI knobs (volumes, vibration,
  * mouse, input lock), boots the EXE and applies --seed-cpu / --seed-ram,
  * applies feature-module knobs and loads mods, resolves the window size
- * from --aspect, sets up PsyCross (null-GPU when nothing would rasterize),
+ * from --aspect, sets up PsyCross (null-GPU when nothing reads its raster),
  * input maps and icons, arms --record, brings up the native Vulkan renderer
  * for --renderer vk (a windowed run left with no renderer stops with a
  * message to the player), arms the pad-read probe, halt-at-pc and the psxtrace
@@ -2518,28 +2544,16 @@ static int run_host_init(const openpete_options_t* opts) {
     extern int g_psyx_present_native_raster;
     g_psyx_present_native_raster = opts->psycross_native_raster ? 1 : 0;
 
-    /* Pure vk runs PsyCross as a LIBRARY only (null-GPU
-     * mode - SDL + vblank/intr core + input + SPU + CDFS, but no GL window,
-     * no GL context, no PSX GPU state; every GL-touching GR entry point
-     * early-returns). Kills the hidden-window GL context AND the per-frame
-     * GL tax the libgpu thunks were still paying on it (DrawSync/LoadImage2
-     * texture uploads + framebuffer PBO readbacks). PsyCross mode
-     * need PsyCross's real renderer as the reference and init as before.
-     * The CPU-side vram array stays live in null-GPU mode, so StoreImage
-     * readbacks the game does are byte-identical to the prior hidden-window
-     * behaviour minus the (never-rendered) framebuffer PBO path. */
-    /* Null-GPU applies exactly when PsyCross would never rasterize anything:
-     * windowed pure-vk with no screenshot requests (the play path). Everything
-     * that needs the PsyCross REFERENCE - the -og screenshot variant,
-     * present-sequence capture - and headless (native
-     * render disabled there; PsyCross still rasterizes for the oracle) keeps
-     * the full GL init. Mirrors the openpete_psycross_renders computation
-     * below: if that would be 1, PsyCross needs its GPU. */
+    /* PsyCross opens a GPU exactly when something in the run reads what it
+     * rasterizes (psycross_raster_unread names the readers). Otherwise it
+     * runs as a library in null-GPU mode: SDL, the vblank/interrupt core,
+     * input, SPU and CDFS come up; no window, GL context or PSX GPU state is
+     * created, and every GL-touching GR entry point returns early, so the
+     * libgpu thunks pay no texture upload or framebuffer readback. The
+     * oracle and the determinism runs (headless, no --screenshot-native-only)
+     * keep the GL path: PsyCross rasterizes every OT there. */
     extern int g_psyx_null_gpu;
-    g_psyx_null_gpu = (opts->renderer == OPENPETE_RENDERER_VK
-                       && !opts->headless
-                       && opts->screenshot_frame_count == 0
-                       && opts->screenshot_presents_start < 0) ? 1 : 0;
+    g_psyx_null_gpu = psycross_raster_unread(opts) ? 1 : 0;
     OPL_INFO_F("boot", "PsyX_Initialise: %s (headless=%d)",
                g_psyx_null_gpu ? "null-GPU (library-only: no window/GL)"
                                : "opening window",
@@ -2552,14 +2566,14 @@ static int run_host_init(const openpete_options_t* opts) {
         OPL_INFO_F("devui", "%s", "--devui-open is inert in this run: the "
                    "dev config overlay exists only in a windowed native-vk "
                    "session");
-    /* Headless still uses the real GL driver - SDL's "offscreen" video driver
-     * hands back a context with NULL gl* function pointers, so the first call
-     * from GR_InitialisePSX segfaults. A GPU/display backend (X/Wayland/WSLg/
-     * WGL) must therefore be present; pure-console CI needs Xvfb. The window
-     * is created unmapped via startHidden so it never flashes or steals
-     * focus - GL/FBO rendering works fine without it ever being shown.
-     * (Both apply only when PsyCross's renderer actually initialises -
-     * PsyCross mode; null-GPU vk creates no window or context at all.) */
+    /* A headless run that keeps the GL path uses the real GL driver - SDL's
+     * "offscreen" video driver hands back a context with NULL gl* function
+     * pointers, so the first call from GR_InitialisePSX segfaults. A
+     * GPU/display backend (X/Wayland/WSLg/WGL) must therefore be present;
+     * pure-console CI needs Xvfb. The window is created unmapped via
+     * startHidden so it never flashes or steals focus - GL/FBO rendering
+     * works without it ever being shown. Null-GPU mode creates no window or
+     * context. */
     /* PsyCross renders to its FBO only; the native Vulkan window is the
      * display in every mode. What reaches the screen is either the native
      * scene (--renderer vk) or PsyCross's read-back frame (--renderer
@@ -2568,9 +2582,10 @@ static int run_host_init(const openpete_options_t* opts) {
     int psyx_ok = PsyX_Initialise((char*)opts->display_name, win_w, win_h,
                                   /*fullscreen=*/0,
                                   /*startHidden=*/1);
-    /* --headless still opens a GL context: PsyCross rasterizes the OT for the
-     * oracle, so g_psyx_null_gpu stays 0 and SDL_INIT_VIDEO must succeed. A
-     * session with no display reachable fails here. Stopping now names the
+    /* PsyX_Initialise runs SDL_INIT_VIDEO in every mode, and a headless run
+     * that keeps the GL path (the oracle: PsyCross rasterizes every OT) opens
+     * a GL context. A session with no display reachable fails here. Stopping
+     * now names the
      * cause; continuing would crash at the first ResetGraph with a null GL
      * proc and no explanation. */
     if (!psyx_ok) {

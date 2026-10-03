@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: a34db8b97fff35f0869cf55e201020be66e4240a
+# head: 0fde80642d585aeda409bfed22a42d1c26654a67
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -100,7 +100,7 @@ core/runtime/present_thread.c	present_thread_main	113	0
 core/runtime/run.c	eager_plan	71	0	
 core/runtime/run.c	gameplay_hash_compute_ex	81	0	
 core/runtime/run.c	openpete_run	38	0	
-core/runtime/run.c	run_host_init	101	0	
+core/runtime/run.c	run_host_init	100	0	
 core/runtime/run.c	run_host_loop	1510	0	
 core/runtime/run.c	stamp_psx_pad_bindings	49	0	
 core/ui/devui.cpp	draw_custom_level_rows	26	0	
