@@ -9,7 +9,10 @@
 #          pin recorded in the new worktree's index; third_party/duckstation
 #          is skipped unless --with-duckstation. Idempotent: a second run
 #          adds only what is missing and refuses a submodule checked out at
-#          a commit other than its pin. No symlink, no configure, no build.
+#          a commit other than its pin (for third_party/duckstation, also
+#          other than the patch series head in
+#          third_party/duckstation-patches/applied-head.txt). No symlink, no
+#          configure, no build.
 # remove   Removes the submodule worktrees, then the worktree, then prunes
 #          every registry. Refuses (exit 3) when the worktree or a submodule
 #          carries changes to tracked files, unless --force. Untracked files
@@ -122,7 +125,8 @@ cmd_create() {
         [[ -n "$pin" ]] || fail "submodule $s" "no gitlink in the worktree index"
         if [[ -e "$wt/$s/.git" ]]; then
             have=$(git -C "$wt/$s" rev-parse HEAD 2>/dev/null)
-            [[ "$have" == "$pin" ]] || fail "submodule $s" "checked out at $have, the index pins $pin"
+            [[ "$have" == "$pin" || "$have" == "$(ds_applied_head "$wt" "$s")" ]] \
+                || fail "submodule $s" "checked out at $have, the index pins $pin"
             continue
         fi
         [[ -L "$wt/$s" ]] && fail "submodule $s" "is a symbolic link; git refuses a symlinked submodule path"
@@ -165,6 +169,13 @@ cmd_remove() {
     [[ -f "$wt/.git" ]] || fail check "$wt is not a linked worktree (no .git file)"
 
     dirty=$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null | grep -v '^ *[?!]' || true)
+    # DuckStation checked out at the applied patch series differs from its
+    # upstream pin by design; that difference is not a change.
+    if [[ -e "$wt/third_party/duckstation/.git" \
+          && "$(git -C "$wt/third_party/duckstation" rev-parse HEAD 2>/dev/null)" \
+             == "$(ds_applied_head "$wt" third_party/duckstation)" ]]; then
+        dirty=$(grep -v '^ M third_party/duckstation$' <<< "$dirty" || true)
+    fi
     subs=$(submodules "$wt")
     for s in $subs; do
         [[ -f "$wt/$s/.git" ]] || continue
@@ -213,6 +224,13 @@ cmd_remove() {
         rm -rf "$wt" || fail worktree-remove "rm -rf $wt"
     fi
     note "removed $wt"
+}
+
+# ds_applied_head <worktree> <submodule path>: the head scripts/setup_duckstation.sh
+# records for the DuckStation patch series; empty for any other submodule.
+ds_applied_head() {
+    [[ "$2" == third_party/duckstation ]] || return 0
+    tr -d ' \n' < "$1/third_party/duckstation-patches/applied-head.txt" 2>/dev/null || true
 }
 
 check_name() {

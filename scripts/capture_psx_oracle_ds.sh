@@ -136,26 +136,29 @@ if [[ ! -x "$DS_BIN" ]]; then
 fi
 [[ -f "$DISC" ]] || { echo "[capture-ds] disc missing: $DISC" >&2; exit 1; }
 
-# A golden is evidence only if a rebuild from the pinned fork commit
-# reproduces it: the binary's build stamp must be the commit the
-# submodule pointer names, and that worktree must be clean. The pointer
-# is read from the index: it moves in the same openpete commit as the
-# golden, so at capture time it is staged, not yet committed.
+# A golden is evidence only if a rebuild reproduces it: the binary's build
+# stamp must be the head scripts/setup_duckstation.sh produces by applying
+# third_party/duckstation-patches onto the pinned upstream commit, recorded
+# in applied-head.txt, and that worktree must be clean. The record is read
+# from the worktree file: it changes in the same openpete commit as the
+# series, so at capture time it may be uncommitted.
 DS_DIR="third_party/duckstation"
-DS_PIN="$(git ls-files -s "$DS_DIR" | awk '{print $2}')"
+DS_PIN="$(tr -d ' \n' < third_party/duckstation-patches/applied-head.txt 2>/dev/null || true)"
+[[ "$DS_PIN" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "[capture-ds] refusing: third_party/duckstation-patches/applied-head.txt holds no commit id" >&2; exit 1; }
 DS_HEAD="$(git -C "$DS_DIR" rev-parse HEAD)"
 DS_BUILD="$(strings "$DS_BIN" | grep -E "^[0-9a-f]{40}$" | head -1 || true)"
 if [[ -z "$DS_BUILD" ]]; then
     echo "[capture-ds] refusing: no git hash stamped in $DS_BIN" >&2; exit 1
 fi
 if [[ "$DS_BUILD" != "$DS_HEAD" ]]; then
-    echo "[capture-ds] refusing: binary built from $DS_BUILD, fork checkout is $DS_HEAD (rebuild the fork)" >&2; exit 1
+    echo "[capture-ds] refusing: binary built from $DS_BUILD, DuckStation checkout is $DS_HEAD (run scripts/setup_duckstation.sh)" >&2; exit 1
 fi
 if [[ "$DS_HEAD" != "$DS_PIN" ]]; then
-    echo "[capture-ds] refusing: fork checkout $DS_HEAD is not the pinned submodule commit $DS_PIN" >&2; exit 1
+    echo "[capture-ds] refusing: DuckStation checkout $DS_HEAD is not the applied patch series $DS_PIN (run scripts/setup_duckstation.sh)" >&2; exit 1
 fi
 if [[ -n "$(git -C "$DS_DIR" status --porcelain)" ]]; then
-    echo "[capture-ds] refusing: fork worktree is dirty; commit it and move the submodule pointer first" >&2; exit 1
+    echo "[capture-ds] refusing: DuckStation worktree is dirty; add the change to third_party/duckstation-patches and run scripts/setup_duckstation.sh --record" >&2; exit 1
 fi
 
 # The module hashes the regions the manifest lists at this commit: the

@@ -20,10 +20,10 @@
 #
 # --game SLUG (default spyro-1) sources games/SLUG/oracle.conf: the golden's
 # path, the disc, the openpete binary and the flags the run needs. The
-# golden is derived from the disc and the pinned DuckStation fork and is
+# golden is derived from the disc and the patched DuckStation build and is
 # not committed: when it is missing the script captures it first
 # (scripts/capture_psx_oracle_ds.sh --game SLUG, ~15 min for 20k records)
-# and exits 64 when the fork binary is not built (scripts/setup_duckstation.sh).
+# and exits 64 when DuckStation is not built (scripts/setup_duckstation.sh).
 #
 # Anything after `--` is forwarded verbatim to the openpete binary, so the
 # same golden can be used to prove a feature with a game-side producer is
@@ -117,15 +117,15 @@ BIN="${OPENPETE_BIN:-build/linux-release/games/$GAME/openpete-${GAME//-/}}"
 DISC="${OPENPETE_DISC:-$DISC}"
 
 # The golden is generated, not committed: a missing default golden is
-# captured from the pinned fork here, so a fresh checkout's first gate run
-# produces its own reference. An explicit trace path is never captured.
+# captured from the patched DuckStation build here, so a fresh checkout's
+# first gate run produces its own reference. An explicit trace path is never captured.
 if [[ ! -f "$TRACE" ]]; then
     if [[ "$TRACE" != "$GOLDEN" ]]; then
         echo "[psx-oracle] trace not found: $TRACE" >&2
         exit 64
     fi
     if [[ ! -x third_party/duckstation/build-regtest/bin/duckstation-regtest ]]; then
-        echo "[psx-oracle] golden $TRACE missing and the DuckStation fork is not built" >&2
+        echo "[psx-oracle] golden $TRACE missing and DuckStation is not built" >&2
         echo "[psx-oracle] run scripts/setup_duckstation.sh, then rerun (the golden is captured on the first run)" >&2
         exit 64
     fi
@@ -144,10 +144,16 @@ if [[ ! -f "$DISC" ]]; then
     exit 64
 fi
 
-# The golden names the fork build that captured it; a golden from a commit
-# beside the pinned submodule pointer is evidence no rebuild reproduces.
+# The golden names the DuckStation build that captured it; a golden from a
+# commit other than the patch series applied onto the pinned upstream
+# commit (the head scripts/setup_duckstation.sh produces and records in
+# applied-head.txt) is evidence no rebuild reproduces.
 # OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason> is the declared escape.
-DS_PIN="$(git ls-files -s third_party/duckstation | awk '{print $2}')"
+DS_PIN="$(tr -d ' \n' < third_party/duckstation-patches/applied-head.txt 2>/dev/null || true)"
+if [[ ! "$DS_PIN" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "[psx-oracle] third_party/duckstation-patches/applied-head.txt holds no commit id" >&2
+    exit 64
+fi
 TRACE_BUILD="$(python3 -m tools.psxtrace_format info "$TRACE" | sed -n 's/^scm_hash=//p')"
 if [[ -z "$TRACE_BUILD" ]]; then
     echo "[psx-oracle] golden $TRACE carries no capturing-build hash; recapture" >&2
@@ -158,8 +164,8 @@ if [[ "$TRACE_BUILD" != "$DS_PIN" ]]; then
         echo "[psx-oracle] WARNING: golden captured by fork $TRACE_BUILD, pinned $DS_PIN;" \
              "allowed: $OPENPETE_ORACLE_ALLOW_FORK_DRIFT"
     else
-        echo "[psx-oracle] golden captured by fork build $TRACE_BUILD but the submodule pins $DS_PIN" >&2
-        echo "[psx-oracle] recapture from the pin, or set OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason>" >&2
+        echo "[psx-oracle] golden captured by DuckStation build $TRACE_BUILD but the applied patch series is $DS_PIN" >&2
+        echo "[psx-oracle] recapture (rm $GOLDEN*, rerun after scripts/setup_duckstation.sh), or set OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason>" >&2
         exit 64
     fi
 fi

@@ -4,7 +4,7 @@ The oracle is the gate that decides whether a change lands: a
 DuckStation capture of Spyro 1 running on a real Sony SCPH1001 BIOS is the
 project's proxy for hardware, and openpete must reproduce its
 gameplay-state hashes tick for tick. This document covers both halves - the
-capture side (the DuckStation fork) and the verify side
+capture side (DuckStation with the psxtrace patch series) and the verify side
 (`tests/harness/check_psx_oracle.sh`).
 
 ## Why DuckStation
@@ -21,23 +21,50 @@ DuckStation replaced PCSX-Redux as the capture emulator for two reasons.
    differences. The north star is byte-identity with hardware, so
    the retail BIOS is the correct reference.
 
-## The fork
+## The patch series
 
-DuckStation is a submodule at `third_party/duckstation`, url
-`https://github.com/tyscorp/duckstation.git`, branch `openpete-psxtrace`,
-pinned in `.gitmodules`. The branch carries two commits over upstream
-`stenzek/duckstation`:
+DuckStation is a submodule at `third_party/duckstation` that pins upstream
+`https://github.com/stenzek/duckstation.git` at `e4c55ad0283f`. The
+project's changes are a patch series in `third_party/duckstation-patches/`
+(`git format-patch` files, applied in the order `series` lists), because
+DuckStation's licence, CC BY-NC-ND 4.0, forbids distributing a modified
+DuckStation, and a published fork is such a distribution. The series:
 
-1. Include the EGL context header unconditionally. Upstream includes it
-   only under X11 or Wayland, but the EGL context creation is called
-   unconditionally on Linux, which breaks a surfaceless headless build.
-2. Add the psxtrace capture module to `duckstation-regtest`:
-   `src/duckstation-regtest/psxtrace_capture.{cpp,h}` plus five CLI flags
-   - `-psxtrace PATH`, `-psxtrace-anchor-pc HEX`
+1. Makes the EGL context available on every Linux build, which a
+   surfaceless headless build needs.
+2. Adds the psxtrace capture module to `duckstation-regtest` (source files
+   the series creates) plus its CLI flags - `-psxtrace PATH`,
+   `-psxtrace-anchor-pc HEX`
    (default `0x8001ED5C`, Spyro 1 GamestateDraw), `-psxtrace-anchor-hit N`
    (default 1), `-psxtrace-frames N` (0 = bound by `-frames`), and
    `-dump-ram-at-anchor PATH` (2 MB main-RAM dump on the first armed
-   hit).
+   hit) - and, in later patches, the region table file, the recorders
+   described below, `-card1 none`, and an `OPENPETE_SPU_DUMP` final-mix
+   WAV dump.
+
+`scripts/setup_duckstation.sh` applies the series onto the pin with
+`git am` on a detached HEAD. The committer name and email are constants,
+each committer date is the patch's author date, and system and global git
+configuration, hooks and signing are excluded, so every machine produces
+the same commit ids from the same pin and patch files. The resulting head
+is recorded in `third_party/duckstation-patches/applied-head.txt`; the
+script refuses when the head it produces differs from the record, which
+means the pin or a patch changed without the record. DuckStation's build
+stamps the checkout's HEAD commit into the binary, so the build hash every
+trace header carries is the recorded head. After setup, `git status` in
+the openpete checkout lists `third_party/duckstation` as modified (its
+HEAD is the applied head, not the upstream pin); that path is never
+staged.
+
+openpete text outside the patch series names DuckStation as a tool (its
+binary, the flags openpete passes, the recorders the series adds, the data
+they record) and never by its internals: no upstream source path or line,
+no upstream symbol, no account of how it computes a value. A behaviour of
+the reference is stated as a measurement with its instrument.
+`scripts/fences/provenance_census.py` refuses a staged line (pre-commit)
+or tracked line (the `openpete_provenance_census` build target) carrying a
+listed internal name, or an emulator's name beside an upstream source form,
+outside its allow-list rows.
 
 `duckstation-regtest` is upstream's headless regression-test target. Its
 default settings are already what the oracle needs: software GPU renderer,
@@ -198,15 +225,23 @@ a record's `pad2` stamp gives the reference window for a hit. A
 difference in an instruction's inputs at the same PC is upstream of the
 GTE; a difference in its outputs on equal inputs is a GTE defect.
 
-### Fork provenance
+### Build provenance
 
-A golden is reproducible only from the fork commit the submodule pins.
+A golden is reproducible only from the head recorded in
+`third_party/duckstation-patches/applied-head.txt`.
 `scripts/capture_psx_oracle_ds.sh` refuses when the binary's build stamp
-differs from the fork checkout's HEAD, when that HEAD is not the staged
-submodule pointer, or when the fork worktree is dirty (the stamp cannot
-see dirtiness: `git describe --dirty` finds no tag in the fork). The gate
-refuses a golden whose build hash differs from the pinned commit unless
-`OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason>` names why.
+differs from the DuckStation checkout's HEAD, when that HEAD is not the
+recorded head, or when the DuckStation worktree is dirty (the stamp cannot
+see dirtiness: `git describe --dirty` finds no tag in the checkout). The
+gate refuses a golden whose build hash differs from the recorded head
+unless `OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason>` names why.
+
+A change to a patch, to `series` or to the pin changes the head. Its
+change set regenerates the series (`git format-patch --zero-commit
+--no-signature -N <pin>..`), runs `scripts/setup_duckstation.sh --record`
+to rewrite `applied-head.txt`, and the three games' goldens are deleted
+(`rm tests/golden/<game>/psxtrace-demo-20k.bin*`) and recaptured by the
+next gate run of each game.
 
 ## Setup
 
@@ -214,13 +249,20 @@ refuses a golden whose build hash differs from the pinned commit unless
 scripts/setup_duckstation.sh
 ```
 
-Idempotent, and every step is skipped when already complete. It initialises
-the submodule, downloads the upstream prebuilt-deps tarball
-(`deps-linux-x64.tar.xz`, release pinned in the script, SHA256 verified),
-copies `.tools/pcsx-redux/scph1001.bin` to
-`~/.local/share/duckstation/bios/`, and configures plus builds
-`duckstation-regtest` into `third_party/duckstation/build-regtest`
-(OpenGL on, Vulkan/Wayland/X11 off, Release, Ninja).
+Idempotent. It initialises the submodule; applies the patch series onto
+the pin, or leaves a checkout already at the recorded head as it is; resets
+a checkout at another head to the pin and re-applies, refusing instead when
+the checkout has changes to tracked files or commits on top of the
+recorded head; prints the head; downloads the upstream prebuilt-deps
+tarball (`deps-linux-x64.tar.xz`, release pinned in the script, SHA256
+verified) when absent; copies `.tools/pcsx-redux/scph1001.bin` to
+`~/.local/share/duckstation/bios/`; configures
+`third_party/duckstation/build-regtest` when unconfigured (OpenGL on,
+Vulkan/Wayland/X11 off, Release, Ninja); builds `duckstation-regtest` on
+every run (a no-op when nothing changed); and refuses when the binary's
+build stamp is not the head. `--record` writes the head to
+`applied-head.txt` instead of refusing on a mismatch; `--no-build` stops
+after the series.
 
 DuckStation requires clang-19 system-wide; the script pins `CC=clang-19
 CXX=clang++-19`. Ubuntu 22.04 ships clang-14, so clang-19 comes from
@@ -228,8 +270,8 @@ CXX=clang++-19`. Ubuntu 22.04 ships clang-14, so clang-19 comes from
 
 ## Capturing a golden
 
-A golden is not committed. It is a function of the disc, the pinned fork
-commit, the region manifest and the recipe, and two captures from the
+A golden is not committed. It is a function of the disc, the applied DuckStation
+head, the region manifest and the recipe, and two captures from the
 same inputs are byte-identical (trace and every sidecar), so a checkout
 generates its own: `tests/golden/*/psxtrace-*` is ignored by git, and the
 gate captures a missing golden before verifying against it. Each game's
@@ -260,14 +302,14 @@ four VBLs per tick, while the attract demo itself is 1:1.
 `--anchor-pc` and `--hit` override the anchor; `--max-runtime-frames`
 overrides the cap.
 
-The script checks fork provenance, generates the region file, runs the
+The script checks build provenance, generates the region file, runs the
 capture with software GL (`LIBGL_ALWAYS_SOFTWARE=1`,
 `MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`), asserts the trace exists and
 carries the build hash, deletes a RAM-carrying trace under `tests/golden/`,
 and prints `tools.psxtrace_format info` on it.
 
 Re-blessing a golden (deleting it so the gate recaptures it under a new
-fork pin, manifest or recipe) is only legal for an intentional
+DuckStation head, manifest or recipe) is only legal for an intentional
 gameplay-behaviour change, after reviewing the diff. A golden is
 never blind-overwritten to make a red gate go green.
 
@@ -287,7 +329,7 @@ golden path, the disc (`OPENPETE_DISC` overrides), the binary
 `OPENPETE_BIN` overrides) and the flags the run adds before the caller's
 (Spyro 3: `--no-card`). A missing default golden is captured first, which
 takes about fifteen minutes for 20000 records; the script exits 64 when
-the fork binary is not built. An explicit trace path is never captured.
+DuckStation is not built. An explicit trace path is never captured.
 `OPENPETE_ORACLE_WINDOWED=1` is the windowed row (ctest
 `psx_oracle_windowed`, Spyro 1): the same golden verified with the native
 renderer drawing into a real window under llvmpipe (`VK_ICD_FILENAMES`

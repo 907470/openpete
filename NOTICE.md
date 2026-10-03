@@ -102,10 +102,14 @@ archive carries them, so they have no table row and no text under
 
 - cubeb (`third_party/cubeb`, submodule) - ISC (`third_party/cubeb/LICENSE`).
   https://github.com/mozilla/cubeb. No CMake target builds it.
-- DuckStation fork (`third_party/duckstation`, submodule) - CC BY-NC-ND 4.0
-  (`third_party/duckstation/LICENSE`). https://github.com/stenzek/duckstation.
-  The reference emulator the gameplay oracle captures its golden trace
-  from, built by `scripts/setup_duckstation.sh`; never linked.
+- DuckStation (`third_party/duckstation`, submodule pinning upstream
+  `e4c55ad0283f`) - CC BY-NC-ND 4.0 (`third_party/duckstation/LICENSE`).
+  https://github.com/stenzek/duckstation. The reference emulator the
+  gameplay oracle captures its golden trace from; never linked, never
+  packaged. openpete's own changes to it are the patch series
+  `third_party/duckstation-patches/`, which `scripts/setup_duckstation.sh`
+  applies to the pinned upstream on the developer's machine; no modified
+  DuckStation is distributed.
 - FFmpeg 6.1.1 and x264 (`third_party/ffmpeg-mingw/`, gitignored) - GPL:
   `scripts/setup_mingw_ffmpeg.sh` configures FFmpeg with `--enable-gpl
   --enable-libx264`. https://ffmpeg.org, https://code.videolan.org/videolan/x264.
