@@ -23,21 +23,25 @@ live preview.
 
 ## Building
 
+The recommended build runs in containers (podman or docker) and needs no
+compiler on the host:
+
 ```bash
-git submodule update --init --recursive
-./scripts/setup.sh
-cmake --preset linux-release -DOPENPETE_GAMES=
-cmake --build --preset linux-release --target openpete_core openpete_rhi
+git clone --recursive <openpete repository URL> openpete && cd openpete
+scripts/container.sh engine                    # core libraries + unit tests
+OPENPETE_PSYQ_INCLUDE=/path/to/psyq/include \
+    scripts/container.sh decomp spyro-1        # the decompilation
+scripts/container.sh game spyro-1              # recompile, build, boot check
+scripts/container.sh windows spyro-1           # the Windows cross build
 ```
 
-These commands build the engine alone. A game executable needs the
-decompilation built, which needs your own copy of the PSYQ SDK headers (4.0; Spyro 2: 4.7),
-and the recompiled C regenerated before the configure;
-[building](docs/src/developer/building.md#step-0-before-the-first-configure)
-lists the prerequisites, those steps, the unit tests, the presets and the
-Windows cross build. Running the game needs a disc image of your own copy
-of the original disc (NTSC-U, SCUS-94228); the required image is described
-under [Disc image](docs/src/developer/building.md#disc-image).
+A game build needs your own copy of the PSYQ SDK headers (4.0; Spyro 2:
+4.7) for its decompilation and a disc image of your own copy of the
+original disc (NTSC-U, SCUS-94228; described under
+[Disc image](docs/src/developer/building.md#disc-image)).
+[Building](docs/src/developer/building.md) lists where each input goes, the
+native build and its prerequisites, the presets and each gate's container
+form.
 
 ## License
 

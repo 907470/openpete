@@ -370,6 +370,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(complexity_ratchet PROPERTIES
         LABELS "fence"
+        ENVIRONMENT "OPENPETE_COMPLEXITY_DB=${CMAKE_BINARY_DIR}/compile_commands.json"
         SKIP_RETURN_CODE 64)
     # The fence's own tests: the decision function per rule and the hook end
     # to end in a scratch repo.
@@ -385,6 +386,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(doc_ratchet PROPERTIES
         LABELS "fence"
+        ENVIRONMENT "OPENPETE_DOCS_DB=${CMAKE_BINARY_DIR}/compile_commands.json"
         SKIP_RETURN_CODE 64)
     # The documentation fence's own tests: the decision function per rule,
     # the touched rule, the per-entry merge, the fixture controls (and a

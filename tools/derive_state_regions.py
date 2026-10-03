@@ -54,8 +54,12 @@ SECTIONS = ("DATA", "SDATA", "SBSS", "BSS")
 def read_map(path: Path):
     bounds = {}
     symbols = []  # (addr, name)
-    sym_re = re.compile(r"^\s+0x([0-9a-f]{16})\s+([A-Za-z_][A-Za-z0-9_.]*)\s*$")
-    bound_re = re.compile(r"^\s+0x([0-9a-f]{16})\s+main_(\w+)_(START|END) = \.")
+    # GNU ld prints addresses 16 hex digits wide where its host build is
+    # 64-bit-addressed and 8 wide where the MIPS cross ld is configured for a
+    # 32-bit target only (Debian's mips(el)-linux-gnu binutils).
+    addr = r"0x((?:[0-9a-f]{8}){1,2})"
+    sym_re = re.compile(r"^\s+" + addr + r"\s+([A-Za-z_][A-Za-z0-9_.]*)\s*$")
+    bound_re = re.compile(r"^\s+" + addr + r"\s+main_(\w+)_(START|END) = \.")
     with open(path) as fh:
         for line in fh:
             m = bound_re.match(line)

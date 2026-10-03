@@ -1,24 +1,148 @@
 # Building OpenPete
 
-## Prerequisites
+## Container build
+
+`scripts/container.sh` builds every surface (the engine, each game's
+decompilation, each game, the Windows exe) inside containers from a clone,
+with podman or docker as the only host requirement besides git. It is the
+recommended path; the [native build](#native-build) below needs the
+prerequisite list installed on the host.
+
+### Inputs
+
+```bash
+git clone --recursive <openpete repository URL> openpete
+cd openpete
+```
+
+The project distributes neither the PSYQ SDK headers nor a disc image nor
+the console BIOS; each is your own copy, given to the wrapper as follows:
+
+| Input | Needed by | Where |
+|-------|-----------|-------|
+| PSYQ SDK headers, 4.0 (Spyro 1) or 4.7 (Spyro 2) | `decomp spyro-1`, `decomp spyro-2` | `OPENPETE_PSYQ_INCLUDE=<directory of the headers>`; the wrapper copies its files into `games/<game>/<game>/psyq/include`, keeping files already there (Spyro 3 tracks its one header) |
+| The disc image (`.cue` + `.bin`) | `game <game>` | `games/<game>/<game>/build/` (the name is the basename of `DISC` in `games/<game>/oracle.conf`), or the directory `OPENPETE_DISC_DIR` names; mounted read-only |
+| The SCPH-1001 BIOS | `game <game> --oracle` | `.tools/pcsx-redux/scph1001.bin`, or the file `OPENPETE_BIOS` names; mounted read-only at that path, the one `scripts/setup_duckstation.sh` reads |
+
+### One command per surface
+
+```bash
+scripts/container.sh engine                  # core libraries + unit tests
+scripts/container.sh decomp spyro-1          # PSX.EXE, overlays, psx.map
+scripts/container.sh game spyro-1            # recompile, build, boot check
+scripts/container.sh game spyro-1 --oracle   # ... then the 20k oracle gate
+scripts/container.sh windows spyro-1         # the MinGW cross build
+scripts/container.sh shell                   # interactive shell, set up for commits
+```
+
+- `engine` configures `linux-release` with `-DOPENPETE_GAMES=` (no game),
+  builds the default target, which runs the fence checks, and runs
+  `ctest -R _test --no-tests=error`.
+- `decomp <game>` refuses when `games/<game>/<game>/tools/maspsx` is
+  empty, naming the `git submodule update` that fills it, and when Spyro 1
+  or Spyro 2 has no PSYQ header. It builds the decompilation's own
+  `Dockerfile` into an image and runs its build there (`make all`; Spyro 3:
+  `build_multiproc.py`, then `sha256sum -c sha256sum.txt`, since its own
+  hash check only prints a warning). The outputs stay where the game form
+  reads them, in `games/<game>/<game>/build/`.
+- `game <game>` refuses, naming `decomp <game>`, when
+  `games/<game>/<game>/build/psx.map` is absent. It builds PSXRecomp when
+  `third_party/psxrecomp/build` holds none, runs `regen-manifest.sh` and
+  `regen-recomp.sh` for the game, configures `linux-release` with
+  `-DOPENPETE_GAMES=<game>` and builds it. Its check boots the binary with
+  `--headless --no-config --disc <cue> --frame-limit 600` (plus the game's
+  `RUN_ARGS` from its oracle recipe) and requires exit 0 and the line
+  `openpete-exit: reason=frame-limit`; the hang watchdog's exit 2 fails it.
+  For Spyro 1 it also builds `linux-release-shared` and boots it the same
+  way, which compiles the first-boot recompiled module with the image's
+  `cc`. `--oracle` then runs `scripts/setup_duckstation.sh` and
+  `tests/harness/check_psx_oracle.sh --game <game>` on the container
+  binary.
+- `windows <game>` refuses, naming `game <game>`, until the game's
+  recompiled C exists. It configures `windows-mingw` with
+  `-DOPENPETE_GAMES=<game>` in the image's MinGW stage, and its check reads
+  the exe's import table (`x86_64-w64-mingw32-objdump -p`): every DLL is a
+  Windows system DLL or `OpenAL32.dll`. `--record` compiles as the
+  reports-unavailable stub unless `scripts/setup_mingw_ffmpeg.sh` has run.
+
+The images are built on first use: the developer image from
+`packaging/dev-image.Dockerfile` (stages `developer` and `mingw`, tagged
+`openpete-dev:<hash>` and `openpete-dev-mingw:<hash>` from a hash of the
+recipe files) and each decompilation's image from its `Dockerfile`
+(`openpete-decomp-<game>:<hash>`). The developer image is Ubuntu 22.04
+pinned by digest, its apt packages from `snapshot.ubuntu.com` at a fixed
+timestamp, clang-19 from apt.llvm.org by version and the pip packages by
+version. Builds go to `build/container/<preset>`: the wrapper configures
+with `cmake --preset <preset> -B build/container/<preset>` and builds and
+tests by directory, so the host's `build/<preset>` is never shared with a
+container. HOME and the XDG directories sit under `build/container/home`.
+
+Network: the image builds, `scripts/setup_duckstation.sh` (it initializes
+the DuckStation submodule, downloads its dependencies and builds it) and
+`shell` run with the network; every configure, build, regeneration, test
+and run step runs under `--network=none`. Every form but `shell` sets
+`OPENPETE_NO_COMMITS=1`; every form sets `OPENPETE_VIBRATION=0`. A git
+worktree is mounted at its own path with the main checkout read-only and
+the common git directory writable; the mounts are relabelled (`:z`) when
+SELinux is enforcing. `OPENPETE_CONTAINER_ENGINE` picks the engine (default
+podman, then docker) and `OPENPETE_CONTAINER_JOBS` caps the build
+parallelism.
+
+Rootless podman on a filesystem without overlay support (btrfs) stores
+images with the vfs driver, which the user sets in
+`~/.config/containers/storage.conf` (`driver = "vfs"` under `[storage]`).
+There `podman build` fails, and the wrapper replays each Dockerfile
+instead: a stage's `RUN`, `COPY` and `WORKDIR` steps run in one container
+of its `FROM` image, which is committed with `--change` for every `ENV` and
+`WORKDIR`; any other instruction is refused by name.
+
+### Commits from the container
+
+The commit hooks need clang-tidy 14 and libclang 14, which the image
+carries. Configure every game whose sources the commit stages (`game
+<game>` for each; `engine` for a core-only commit), then commit from
+`scripts/container.sh shell`: it exports `OPENPETE_COMPLEXITY_DB` and
+`OPENPETE_DOCS_DB` as `build/container/linux-release/compile_commands.json`,
+passes the host's `git config user.name` and `user.email` as
+`GIT_AUTHOR_*` and `GIT_COMMITTER_*` (the container's HOME has no
+`.gitconfig`) and runs `scripts/setup.sh` once, which arms the hooks. The
+ratchets read `OPENPETE_GAMES` from the `CMakeCache.txt` beside that
+database: under a partial list, paths under an unconfigured
+`games/<game>/` and under `games/common/` are in the `UNCONFIGURED` bin,
+and the hook refuses a staged path there, naming the configure it needs.
+
+### Gates in the container
+
+| Gate | Native | Container |
+|------|--------|-----------|
+| Oracle | `tests/harness/check_psx_oracle.sh --game <game>` | `scripts/container.sh game <game> --oracle`, or after a `game <game>` build: `scripts/container.sh shell env OPENPETE_BIN=build/container/linux-release/games/<game>/openpete-<spyroN> OPENPETE_DISC=<cue> tests/harness/check_psx_oracle.sh --game <game>` |
+| Unit tests and fences | `ctest --test-dir build/linux-release -L fence` | `scripts/container.sh shell ctest --test-dir build/container/linux-release -L fence` |
+| Presentation golden | `tests/harness/check_presentation_golden.sh --game <game>` | `scripts/golden-capture-container.sh gate -- tests/harness/check_presentation_golden.sh --build-dir=build/linux-release-container --game <game>` (the capture image, the only image a bless or promote is accepted from) |
+| Documentation | `scripts/build-docs.sh` | `scripts/container.sh shell scripts/build-docs.sh` |
+
+`game <game> --oracle` passes `OPENPETE_FRAME_LIMIT` into the container
+when it is set (the reduced smoke run, which has no level-load coverage).
+
+## Native build
 
 ### Linux (Ubuntu / Debian-flavored)
 
-The package names are those of Ubuntu 22.04.
+The package names are those of Ubuntu 22.04, from the developer image's
+package list:
+
+```text
+--8<-- "packaging/dev-image-packages.txt"
+```
 
 ```bash
-sudo apt install git build-essential cmake ninja-build pkg-config python3 \
-                 glslang-tools spirv-tools libopenal-dev \
-                 libavformat-dev libavcodec-dev libavutil-dev \
-                 libswscale-dev libswresample-dev \
-                 libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-                 libxss-dev libxkbcommon-dev libwayland-dev libdecor-0-dev \
-                 libgl1-mesa-dev
-# The default target of linux-release (the build-time fence checks):
-sudo apt install python3-tomli clang-14 clang-tidy-14 libclang1-14 python3-clang-14
+sudo apt install $(packaging/dev-image.sh --list base)
 # Cross-compile to Windows from WSL2:
-sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
+sudo apt install $(packaging/dev-image.sh --list mingw)
 ```
+
+clang-19, which only the DuckStation oracle build uses, comes from
+apt.llvm.org (`llvm-toolchain-jammy-19`); `packaging/dev-image.sh` names
+the version the image pins.
 
 What each is for:
 
@@ -35,16 +159,26 @@ What each is for:
   development files, and, with X11 found, on each X11 extension it enables
   by default and cannot find (Xcursor, XInput2, XScrnSaver). The configure
   needs them for a `--headless` build as well.
-- The second line serves the fence targets in the default target of a
-  `linux-release` build (`core/CMakeLists.txt:698-768`).
+- `python3-tomli`, `clang-14`, `clang-tidy-14`, `libclang1-14` and
+  `python3-clang-14` serve the fence targets in the default target of a
+  `linux-release` build (`core/CMakeLists.txt`, the
+  `openpete_vstream_sites`, `openpete_complexity_ratchet` and
+  `openpete_doc_ratchet` targets).
   `scripts/fences/vstream_sites.py` reads TOML with `tomllib`, which Python
   3.10 lacks, so it falls back to `tomli`. `complexity_ratchet.py` runs
   `clang-tidy-14`, and `doc_ratchet.py` loads
   `/usr/lib/llvm-14/lib/libclang-14.so.1` through the `clang.cindex`
-  bindings (`scripts/fences/ratchet_lib.py:506-520`). Both ratchets also
-  refuse a clone whose git hooks are not armed (`scripts/setup.sh` arms
-  them) unless `OPENPETE_NO_COMMITS=1` is set. A build of named targets
-  (see [Engine only](#engine-only)) runs none of them.
+  bindings (`scripts/fences/ratchet_lib.py`, `libclang`). Both ratchets
+  also refuse a clone whose git hooks are not armed (`scripts/setup.sh`
+  arms them) unless `OPENPETE_NO_COMMITS=1` is set. A build of named
+  targets runs none of them.
+- `libegl-mesa0`, `libgl1-mesa-dri`, `mesa-vulkan-drivers` and
+  `libvulkan1`: a headless run on a machine with no GPU driver. PsyCross
+  opens a GL window even under `--headless`, which SDL's `offscreen` video
+  driver backs with an EGL context on Mesa llvmpipe; the native renderer
+  runs on lavapipe.
+- `libcurl4-openssl-dev` and clang-19: the DuckStation oracle build
+  (`scripts/setup_duckstation.sh`).
 - `glslang-tools`: `core/rhi/CMakeLists.txt:18` does
   `find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)` - configure
   fails without it. The shaders compile to `.spv` on the host, so this is
@@ -168,24 +302,27 @@ as a warning.
 
 ```bash
 cmake --preset linux-release -DOPENPETE_GAMES=
-cmake --build --preset linux-release --target openpete_core openpete_rhi \
-    $(ctest --test-dir build/linux-release -N -R _test | sed -n 's/^ *Test *#[0-9]*: //p')
-ctest --test-dir build/linux-release -R _test --output-on-failure
+cmake --build --preset linux-release
+ctest --test-dir build/linux-release -R _test --no-tests=error --output-on-failure
 ```
 
 `-DOPENPETE_GAMES=` (empty) configures the core libraries and their unit
 tests with no game executable and no recompiled C; the `bench_corpus_smoke`
-test, which names the `openpete-spyro1` target, is registered only when that
-target exists. Each unit test's CTest name is its executable's target name
-(`tests/unit/CMakeLists.txt`), so the second command builds the libraries and
-every `*_test` executable. Build named targets here: the default target
-also runs the fence checks `openpete_vstream_sites`,
-`openpete_complexity_ratchet` and `openpete_doc_ratchet`
-(`core/CMakeLists.txt:698-768`), and with no game configured they stop the
-build, the first because it finds no recompiled C and the ratchets because
-the game sources have no compile-database entry. The `-DOPENPETE_GAMES=`
-override persists in the build directory; once a game's recompiled C exists,
-reconfigure with `-DOPENPETE_GAMES=<game>` or drop it with
+and `mod_shader_compile` tests, which name the `openpete-spyro1` target, are
+registered only when that target exists. Each unit test's CTest name is its
+executable's target name (`tests/unit/CMakeLists.txt`); `--no-tests=error`
+fails the run when the pattern matches no test. The default target runs the
+fence checks: `openpete_vstream_sites` exists only when `spyro-1` is in
+`OPENPETE_GAMES` (it scans Spyro 1's generated C), and the complexity and
+documentation ratchets read `OPENPETE_GAMES` from the `CMakeCache.txt`
+beside the compile database. Under a list other than the full default they
+score core and the configured games, and put the tracked sources and
+baseline rows under an unconfigured `games/<game>/`, under `games/common/`
+and in the `GAME_GATED` table of `scripts/fences/ratchet_lib.py` in an
+`UNCONFIGURED` bin they report by count; `tighten` and `baseline` refuse
+such a configure. The `-DOPENPETE_GAMES=` override persists in the build
+directory; once a game's recompiled C exists, reconfigure with
+`-DOPENPETE_GAMES=<game>` or drop it with
 `cmake --preset linux-release -U OPENPETE_GAMES`.
 
 ### 2. Build the matching decompilation

@@ -629,7 +629,7 @@ def main():
                          "linux-release first\n" % db_path)
         return 1
     try:
-        _, _, _, corpus, _, _, _ = dr.corpus_inputs(root)
+        corpus = dr.corpus_inputs(root)[3]
     except lib.Refusal as exc:
         sys.stderr.write("gen_code_docs: %s\n" % exc)
         return 1

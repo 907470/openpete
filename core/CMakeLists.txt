@@ -694,12 +694,15 @@ if(NOT CMAKE_HOST_WIN32)
     # missed reader walks garbage vertices silently, so the census over the
     # GENERATED C (opcode words, not C text) and the manifest must agree,
     # and every row's line must carry the substitution (a stale regen runs
-    # the stock decode).
-    add_custom_target(openpete_vstream_sites ALL
-        COMMAND ${CMAKE_COMMAND} -E echo "Checking frame-word field readers..."
-        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/vstream_sites.py ${CMAKE_SOURCE_DIR}
-        COMMENT "vstream fence: every 21-bit field reader is substituted, at its srl"
-        VERBATIM)
+    # the stock decode). The census reads Spyro 1's generated C alone, so the
+    # target exists only when spyro-1 is configured.
+    if("spyro-1" IN_LIST OPENPETE_GAMES)
+        add_custom_target(openpete_vstream_sites ALL
+            COMMAND ${CMAKE_COMMAND} -E echo "Checking frame-word field readers..."
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/vstream_sites.py ${CMAKE_SOURCE_DIR}
+            COMMENT "vstream fence: every 21-bit field reader is substituted, at its srl"
+            VERBATIM)
+    endif()
 
     # Launcher hygiene, the two silent-failure defaults. A scripted run must
     # silence the pad (no player is using it, and the buzzing reaches no log),
@@ -729,12 +732,17 @@ if(NOT CMAKE_HOST_WIN32)
     # hook (merge, revert, --no-verify). It runs under linux-release only:
     # that preset's compile database is the one the baseline was scored
     # from, the MinGW database carries another compiler's flags, and the
-    # release container has no clang-tidy.
+    # release container has no clang-tidy. The check reads this build's own
+    # compile database (and the OPENPETE_GAMES of the CMakeCache.txt beside
+    # it), so a build directory outside build/linux-release is scored as
+    # configured.
     get_filename_component(_openpete_bindir_name "${CMAKE_BINARY_DIR}" NAME)
     set(_openpete_complexity_check "")
     if(_openpete_bindir_name STREQUAL "linux-release")
         set(_openpete_complexity_check
-            COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/complexity_ratchet.py check)
+            COMMAND ${CMAKE_COMMAND} -E env
+                    OPENPETE_COMPLEXITY_DB=${CMAKE_BINARY_DIR}/compile_commands.json
+                    python3 ${CMAKE_SOURCE_DIR}/scripts/fences/complexity_ratchet.py check)
     endif()
     add_custom_target(openpete_complexity_ratchet ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking the complexity ratchet..."
@@ -751,7 +759,9 @@ if(NOT CMAKE_HOST_WIN32)
     set(_openpete_doc_check "")
     if(_openpete_bindir_name STREQUAL "linux-release")
         set(_openpete_doc_check
-            COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/doc_ratchet.py check)
+            COMMAND ${CMAKE_COMMAND} -E env
+                    OPENPETE_DOCS_DB=${CMAKE_BINARY_DIR}/compile_commands.json
+                    python3 ${CMAKE_SOURCE_DIR}/scripts/fences/doc_ratchet.py check)
     endif()
     add_custom_target(openpete_doc_ratchet ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking the documentation ratchet..."

@@ -57,6 +57,10 @@ Environment:
   OPENPETE_DOCS_DB     compile database path (default
                        build/linux-release/compile_commands.json).
   OPENPETE_LIBCLANG    libclang shared library (default the LLVM 14 path).
+Configuration: as the complexity ratchet (scripts/fences/ratchet_lib.py,
+Configuration): a partial OPENPETE_GAMES in the CMakeCache.txt beside the
+database puts unconfigured games/<g>/ and games/common/ in the UNCONFIGURED
+bin.
 """
 import json
 import multiprocessing
@@ -1115,6 +1119,8 @@ def mode_hook(root):
     db_path, entries = lib.load_db(root, FENCE)
     if entries is None:
         raise Refusal("no compile database at %s. Run: %s" % (db_path, lib.CONFIGURE))
+    lib.refuse_unconfigured(FENCE, [p for _, a, b in scope for p in (a, b)]
+                            + list(staged_hdrs))
     scorer, version, controls = start_scorer(root)
     try:
         lib.check_unscored(root, entries, FENCE)
@@ -1133,6 +1139,7 @@ def mode_hook(root):
         corpus = merge_results(scorer.score(entry_tasks(root, entries, parse_files)))
     finally:
         scorer.close()
+    drop_unconfigured(corpus)
 
     worktree_dirty = set(git(root, "diff", "--name-only").stdout.split("\n"))
     head_dirty = lib.dirty_paths(root, FENCE) | set(
@@ -1175,6 +1182,9 @@ def mode_hook(root):
             raise Refusal("HEAD's %s was captured under %s, this is %s. Run "
                           "`doc_ratchet.py baseline`." % (TSV, library_line(htext),
                                                           version))
+    # Rows out of configuration leave the decision and return unchanged.
+    before_all = before
+    before, held = lib.split_unconfigured(FENCE.config, before_all)
     for key in before:
         if key_file(lib.carry_key(key, renames)) in acted_files:
             acted.add(lib.carry_key(key, renames))
@@ -1212,7 +1222,9 @@ def mode_hook(root):
         before, corpus.facts, acted, renames, changed,
         lib.wired(entries, present), present, accept,
         staged_files=staged_paths, wdoc=wdoc)
+    new_rows.update(held)
     bins.update(dbins)
+    lib.report_unconfigured(FENCE, [], held)
     say("doc-ratchet: %d entries parsed (%s), %d definitions, %d acted on, %d "
         "controls; baseline source: %s; %d accepted rows; %.1f s" % (
             corpus.scored, "full corpus" if full else "staged TUs",
@@ -1226,7 +1238,7 @@ def mode_hook(root):
         return 1
     for key, row, form in bins["ACCEPTED"]:
         say("doc-ratchet: ACCEPTED  %s  %s  (%s)" % (key, form, accept))
-    if new_rows == before and library_line(source_text) == version and \
+    if new_rows == before_all and library_line(source_text) == version and \
             header_current(source_text):
         text = source_text
     else:
@@ -1239,25 +1251,42 @@ def mode_hook(root):
 # --------------------------------------------------------------------------
 # check / tighten / baseline
 # --------------------------------------------------------------------------
-def corpus_inputs(root, ctest=False):
+def corpus_inputs(root, ctest=False, mode="check"):
+    """-> (entries, version, controls, corpus, present, dirty, stale,
+    unconfigured sources). tighten and baseline refuse a partial configure;
+    the corpus carries no fact or diagnostic out of configuration."""
     db_path, entries = lib.load_db(root, FENCE)
     if entries is None:
         say("doc-ratchet: SKIP, no compile database at %s" % db_path)
         sys.exit(64 if ctest else 0)
+    if mode != "check":
+        lib.refuse_partial(FENCE, mode)
     scorer, version, controls = start_scorer(root)
     try:
-        lib.check_unscored(root, entries, FENCE, complete=True)
+        unconfigured = lib.check_unscored(root, entries, FENCE, complete=True)
         files = [f for f in entries if os.path.isfile(os.path.join(root, f))]
         corpus = merge_results(scorer.score(entry_tasks(root, entries, files)))
     finally:
         scorer.close()
+    drop_unconfigured(corpus)
     if corpus.scored == 0 or corpus.definitions == 0:
         raise Refusal("VACUOUS: %d TUs parsed, %d definitions. No verdict."
                       % (corpus.scored, corpus.definitions))
     present = lib.present_scope_files(root, FENCE)
     dirty = {f for f in lib.dirty_paths(root, FENCE) if f}
     stale = sorted(f for f in entries if not os.path.isfile(os.path.join(root, f)))
-    return entries, version, controls, corpus, present, dirty, stale
+    return entries, version, controls, corpus, present, dirty, stale, unconfigured
+
+
+def drop_unconfigured(corpus):
+    """Remove the facts and -Wdocumentation diagnostics whose path is out of
+    configuration (the bin is keyed by path)."""
+    out = FENCE.config.out_of_config
+    if not FENCE.config.partial:
+        return
+    corpus.facts = {k: v for k, v in corpus.facts.items()
+                    if not out(key_file(k))}
+    corpus.wdoc = type(corpus.wdoc)(w for w in corpus.wdoc if not out(w[0]))
 
 
 def clean_keys(corpus, dirty):
@@ -1316,7 +1345,7 @@ def list_population(root, corpus, before, bins, dirty_keys, nhi):
 def mode_check(root, argv):
     t0 = time.time()
     ctest, listing = "--ctest" in argv, "--list" in argv
-    entries, version, controls, corpus, present, dirty, stale = \
+    entries, version, controls, corpus, present, dirty, stale, unconfigured = \
         corpus_inputs(root, ctest)
     htext = lib.head_tsv(root, TSV)
     if htext is None:
@@ -1326,7 +1355,7 @@ def mode_check(root, argv):
         raise Refusal("HEAD's %s was captured under %s, this is %s. Run "
                       "`doc_ratchet.py baseline`." % (TSV, library_line(htext),
                                                       version))
-    before = parse_tsv(htext)[1]
+    before, held = lib.split_unconfigured(FENCE.config, parse_tsv(htext)[1])
     check_carveouts(root, corpus)
     clean, dirty_keys, dirty_hdr = clean_keys(corpus, dirty)
     verdict, new_rows, bins = full_decide(root, entries, corpus, present,
@@ -1343,6 +1372,7 @@ def mode_check(root, argv):
             len(clean_tus), len(entries), corpus.definitions, meets, controls,
             row_counts(before), macro, filtered,
             sum(1 for v in before.values() if v[1]), time.time() - t0))
+    lib.report_unconfigured(FENCE, unconfigured, held)
     if listing:
         list_population(root, corpus, before, bins, dirty_keys, nhi)
     fail_bins = {"ERROR": ["%s: %s" % (tu, "%s:%s: %s" % corpus.errors[tu][0])
@@ -1369,7 +1399,8 @@ def mode_check(root, argv):
 
 
 def mode_tighten(root):
-    entries, version, controls, corpus, present, dirty, stale = corpus_inputs(root)
+    entries, version, controls, corpus, present, dirty, stale, _ = \
+        corpus_inputs(root, mode="tighten")
     htext = lib.head_tsv(root, TSV)
     if htext is None:
         raise Refusal("HEAD carries no %s. Run `baseline`." % TSV)
@@ -1394,7 +1425,8 @@ def mode_tighten(root):
 
 
 def mode_baseline(root):
-    entries, version, controls, corpus, present, dirty, stale = corpus_inputs(root)
+    entries, version, controls, corpus, present, dirty, stale, _ = \
+        corpus_inputs(root, mode="baseline")
     bad = sorted(f for f in dirty if f != TSV)
     if bad:
         raise Refusal("baseline refuses dirty scored files (the rows would "

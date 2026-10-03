@@ -1,0 +1,79 @@
+# Ubuntu 22.04 (jammy) packages of the developer image
+# (packaging/dev-image.Dockerfile), and the apt line of a native build
+# (docs/src/developer/building.md). `packaging/dev-image.sh --list <stage>`
+# prints one stage's names; a `[stage]` line opens a stage.
+[base]
+# Toolchain and build tools.
+build-essential
+gcc-11
+g++-11
+cmake
+ninja-build
+pkg-config
+make
+git
+curl
+ca-certificates
+gnupg
+file
+xz-utils
+python3
+python3-pip
+# The build-time fences: TOML for vstream_sites.py on Python 3.10;
+# clang-tidy 14 for complexity_ratchet.py; libclang 14 and its bindings
+# for doc_ratchet.py, gen_code_docs.py and tools/rewrite/parser.py.
+python3-tomli
+clang-14
+clang-tidy-14
+libclang1-14
+python3-clang-14
+# Shader compilation (core/rhi/CMakeLists.txt).
+glslang-tools
+spirv-tools
+# OpenAL, the audio backends SDL3 probes, and libav for --record.
+libopenal-dev
+libasound2-dev
+libpulse-dev
+libsndio-dev
+libavformat-dev
+libavcodec-dev
+libavutil-dev
+libswscale-dev
+libswresample-dev
+# SDL3 configures only with X11 or Wayland headers present.
+libx11-dev
+libxext-dev
+libxrandr-dev
+libxcursor-dev
+libxfixes-dev
+libxi-dev
+libxss-dev
+libxkbcommon-dev
+libwayland-dev
+wayland-protocols
+libdecor-0-dev
+libdrm-dev
+libgbm-dev
+libgl-dev
+libgl1-mesa-dev
+libegl-dev
+libgles-dev
+libegl1-mesa-dev
+libdbus-1-dev
+libudev-dev
+libibus-1.0-dev
+# Headless runs: PsyCross opens a GL window on SDL's offscreen driver
+# (Mesa EGL, llvmpipe); the native renderer runs on lavapipe.
+libegl-mesa0
+libgl1-mesa-dri
+mesa-vulkan-drivers
+libvulkan1
+# The DuckStation oracle build (scripts/setup_duckstation.sh); clang-19
+# comes from apt.llvm.org (dev-image.sh).
+libcurl4-openssl-dev
+[mingw]
+# The Windows cross build (cmake/toolchains/mingw-w64.cmake) and
+# scripts/setup_mingw_ffmpeg.sh.
+gcc-mingw-w64-x86-64-posix
+g++-mingw-w64-x86-64-posix
+nasm

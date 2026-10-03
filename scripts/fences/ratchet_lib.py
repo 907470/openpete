@@ -8,6 +8,8 @@ share; each fence supplies its scorer, its decision function, its touched
 rule and its scope roots (`Fence`).
 
   - compile database lookup: exact entries per in-scope TU, entry flags;
+  - the configuration of that database (OPENPETE_GAMES from the
+    CMakeCache.txt beside it) and the UNCONFIGURED bin of a partial one;
   - the UNSCORED list and its self-check;
   - the staged changes (`git diff --cached --name-status -M`), the
     rename carry (identical blob or not), the acted-on paths and the
@@ -61,12 +63,88 @@ UNSCORED = (
     "games/common/renderer/terrain_game_none.c",
 )
 
+# Tracked sources outside games/ that a target compiles only when the named
+# game is configured. Under a partial OPENPETE_GAMES without that game they
+# are out of configuration; with it, the completeness check requires their
+# entry like any other source.
+GAME_GATED = {
+    # TARGET openpete-spyro1: compiles the mods against its staged SDK
+    "tests/unit/mod_shader_compile_test.c": "spyro-1",
+}
+
 OWN_ROOT = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 
 class Refusal(Exception):
     pass
+
+
+class Configuration:
+    """The OPENPETE_GAMES list of the build whose compile database a fence
+    loads, against the list's default (`set(OPENPETE_GAMES ...)` in the
+    top-level CMakeLists.txt), compared as sets.
+
+    Under a partial list, a path under `games/<g>/` for an unconfigured
+    `<g>`, or under `games/common/` (its sources compile only through a
+    game's source list), or a GAME_GATED path whose game is unconfigured,
+    is out of configuration: the database cannot
+    describe it, so its tracked sources and baseline rows fall in the
+    UNCONFIGURED bin, keyed by path."""
+
+    def __init__(self, games, default, source):
+        self.games = frozenset(games)
+        self.default = frozenset(default)
+        self.source = source
+
+    @property
+    def partial(self):
+        return self.games != self.default
+
+    def out_of_config(self, rel):
+        if not self.partial:
+            return False
+        if rel in GAME_GATED:
+            return GAME_GATED[rel] not in self.games
+        m = re.match(r"games/([^/]+)/", rel)
+        return bool(m) and m.group(1) not in self.games
+
+    def describe(self):
+        return "OPENPETE_GAMES=\"%s\" (%s)" % (
+            ";".join(sorted(self.games)), self.source)
+
+
+def default_games(root):
+    """The default OPENPETE_GAMES list of the top-level CMakeLists.txt, or
+    None for a tree that declares none (a fence test's scratch repository)."""
+    try:
+        with open(os.path.join(root, "CMakeLists.txt")) as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    m = re.search(r'^set\(OPENPETE_GAMES\s+"([^"]*)"\s+CACHE', text, re.M)
+    return [g for g in m.group(1).split(";") if g] if m else None
+
+
+def read_configuration(root, db_path):
+    """-> Configuration of the CMakeCache.txt beside db_path; a missing
+    cache, a cache with no OPENPETE_GAMES entry, or a tree with no default
+    list is the full default."""
+    default = default_games(root)
+    if default is None:
+        return Configuration((), (), "no OPENPETE_GAMES default in the tree")
+    cache = os.path.join(os.path.dirname(os.path.abspath(db_path)), "CMakeCache.txt")
+    try:
+        with open(cache) as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return Configuration(default, default, "no %s: full default" % cache)
+    for line in lines:
+        m = re.match(r"OPENPETE_GAMES(?::[A-Z]+)?=(.*)$", line)
+        if m:
+            games = [g for g in m.group(1).split(";") if g]
+            return Configuration(games, default, cache)
+    return Configuration(default, default, "%s has no OPENPETE_GAMES: full default" % cache)
 
 
 class Fence:
@@ -77,6 +155,8 @@ class Fence:
     tsv           baseline path, repo-relative
     scope_roots   path prefixes a scope path starts with
     db_env        env var overriding the compile database path
+    config        Configuration of the loaded database (load_db sets it;
+                  the full default until then)
     """
 
     def __init__(self, name, script, tsv, scope_roots, db_env):
@@ -85,6 +165,7 @@ class Fence:
         self.tsv = tsv
         self.scope_roots = tuple(scope_roots)
         self.db_env = db_env
+        self.config = Configuration((), (), "no database loaded")
 
     def say(self, msg=""):
         say(msg)
@@ -126,10 +207,12 @@ def key_name(key):
 # Compile database
 # --------------------------------------------------------------------------
 def load_db(root, fence):
-    """-> (path, {tu relpath: [entry]}) or (path, None) when absent."""
+    """-> (path, {tu relpath: [entry]}) or (path, None) when absent. Sets
+    fence.config from the CMakeCache.txt beside the database."""
     path = os.environ.get(fence.db_env) or os.path.join(root, DB_DEFAULT)
     if not os.path.isfile(path):
         return path, None
+    fence.config = read_configuration(root, path)
     try:
         with open(path) as fh:
             db = json.load(fh)
@@ -170,17 +253,22 @@ def entry_flags(entry):
 def check_unscored(root, entries, fence, complete=False):
     """The UNSCORED list against the tree. complete (check, tighten,
     baseline): a tracked in-scope source with no entry and no UNSCORED line
-    is refused too; the hook skips that half, since the new path of a staged
-    move has no entry until the source list follows it."""
+    is refused too, unless it is out of configuration; the hook skips that
+    half, since the new path of a staged move has no entry until the source
+    list follows it. -> the out-of-configuration tracked sources with no
+    entry (complete only), sorted."""
     if os.path.realpath(root) != os.path.realpath(OWN_ROOT):
-        return
+        return []
     unscored = [p for p in UNSCORED if fence.in_scope(p)]
+    unconfigured = []
     if complete:
-        missing = sorted(
+        no_entry = sorted(
             f for f in git(root, "ls-files", "--", *fence.root_dirs()
                            ).stdout.split("\n")
             if f and fence.in_scope(f) and not is_header(f) and f not in entries
             and f not in UNSCORED and os.path.isfile(os.path.join(root, f)))
+        unconfigured = [f for f in no_entry if fence.config.out_of_config(f)]
+        missing = [f for f in no_entry if not fence.config.out_of_config(f)]
         if missing:
             raise Refusal(
                 "tracked sources with no compile-database entry and no UNSCORED "
@@ -188,7 +276,12 @@ def check_unscored(root, entries, fence, complete=False):
                 "UNSCORED in scripts/fences/ratchet_lib.py with the "
                 "reason no linux-release target compiles it."
                 % (", ".join(missing), CONFIGURE))
-    tracked = set(git(root, "ls-files", "--", *unscored).stdout.split("\n"))
+    gated = [p for p in GAME_GATED if fence.in_scope(p)]
+    tracked = set(git(root, "ls-files", "--", *(unscored + gated)).stdout.split("\n"))
+    for p in gated:
+        if p not in tracked:
+            raise Refusal("GAME_GATED list is stale: %s is not tracked. Edit "
+                          "GAME_GATED in scripts/fences/ratchet_lib.py." % p)
     for p in unscored:
         if p not in tracked or p in entries:
             raise Refusal("UNSCORED list is stale: %s is %s. Edit UNSCORED in "
@@ -197,6 +290,51 @@ def check_unscored(root, entries, fence, complete=False):
                               else "not tracked"))
     say("%s: UNSCORED (no linux-release entry): %d sources"
         % (fence.name, len(unscored)))
+    return unconfigured
+
+
+def split_unconfigured(config, rows):
+    """-> (rows in configuration, rows out of it), by the key's path. The
+    second set is carried unchanged into a written baseline."""
+    held = {k: v for k, v in rows.items() if config.out_of_config(key_file(k))}
+    return {k: v for k, v in rows.items() if k not in held}, held
+
+
+def report_unconfigured(fence, sources, rows):
+    """Print the UNCONFIGURED bin's counts (nothing under the full default)."""
+    if fence.config.partial:
+        say("%s: UNCONFIGURED under %s: %d sources with no entry, %d rows held"
+            % (fence.name, fence.config.describe(), len(sources), len(rows)))
+
+
+def refuse_unconfigured(fence, paths):
+    """The hook: a staged path out of configuration is refused, naming the
+    configure that covers it (games/common/ needs the full default list)."""
+    bad = sorted({p for p in paths if p and fence.config.out_of_config(p)})
+    if not bad:
+        return
+    need = set(fence.config.games)
+    for p in bad:
+        need.add(GAME_GATED.get(p) or p.split("/")[1])
+    if "common" in need:
+        need = set(fence.config.default)
+    raise Refusal(
+        "staged paths %s lie outside this build's configuration, %s: no database "
+        "entry describes an unconfigured game or games/common/. Configure "
+        "the build directory of that database with -DOPENPETE_GAMES=\"%s\" "
+        "and commit again." % (", ".join(bad), fence.config.describe(),
+                               ";".join(sorted(need))))
+
+
+def refuse_partial(fence, mode):
+    """tighten and baseline rewrite every row; a partial configure would
+    retire or drop the rows of every unconfigured path."""
+    if fence.config.partial:
+        raise Refusal("`%s` needs every game configured; this database is "
+                      "configured with %s. Reconfigure with the full default "
+                      "\"%s\" (`%s -U OPENPETE_GAMES`)." % (
+                          mode, fence.config.describe(),
+                          ";".join(sorted(fence.config.default)), CONFIGURE))
 
 
 def present_scope_files(root, fence):

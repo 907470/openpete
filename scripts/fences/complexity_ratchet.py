@@ -36,6 +36,12 @@ Environment:
                            build/linux-release/compile_commands.json).
   OPENPETE_NO_COMMITS=1    a machine that builds and never commits passes
                            `check --armed` unarmed.
+Configuration:
+  OPENPETE_GAMES is read from the CMakeCache.txt beside the database (none:
+  the full default). Under a partial list, paths under games/<g>/ for an
+  unconfigured <g> and under games/common/ are UNCONFIGURED: their rows are
+  held unchanged, their sources need no entry, the hook refuses a staged
+  path there, and tighten and baseline refuse to run.
 """
 import concurrent.futures
 import json
@@ -472,7 +478,12 @@ def score_corpus(tool, root, entries, moved):
 
 
 def check_unscored(root, entries, complete=False):
-    lib.check_unscored(root, entries, FENCE, complete)
+    return lib.check_unscored(root, entries, FENCE, complete)
+
+def drop_unconfigured(scores):
+    """Scores minus the keys whose path is out of configuration."""
+    return {k: v for k, v in scores.items()
+            if not FENCE.config.out_of_config(key_file(k))}
 
 def present_scope_files(root):
     return lib.present_scope_files(root, FENCE)
@@ -619,6 +630,7 @@ def mode_hook(root):
     db_path, entries = load_db(root)
     if entries is None:
         raise Refusal("no compile database at %s. Run: %s" % (db_path, CONFIGURE))
+    lib.refuse_unconfigured(FENCE, [p for _, a, b in scope for p in (a, b)])
     controls = run_controls(tool)
     check_unscored(root, entries)
 
@@ -653,10 +665,13 @@ def mode_hook(root):
         source_name, source_text, before = "HEAD", htext, parse_tsv(htext)[1]
         if staged_text is not None:
             source_name += " (staged hook-written file discarded)"
+    # Rows out of configuration leave the decision and return unchanged.
+    before_all = before
+    before, held = lib.split_unconfigured(FENCE.config, before_all)
 
     # A header key reported through an includer that failed to parse is
     # unknown, not retired.
-    after = dict(corpus.scores)
+    after = drop_unconfigured(corpus.scores)
     if corpus.errors:
         for key, (score, _) in before.items():
             if is_header(key_file(key)) and key not in after:
@@ -680,8 +695,10 @@ def mode_hook(root):
                 extents[key] = ext
         verdict, new_rows, bins = decide(*args, extents, *rest, accept)
 
+    new_rows.update(held)
     bins.update(cbins)
     bins["DIRTY-HEADER"] = dirty_headers
+    lib.report_unconfigured(FENCE, [], held)
     say("complexity-ratchet: %d TUs scored, %d functions, %d controls; baseline "
         "source: %s; %d markers, %d accepted rows" % (
             corpus.scored, len(corpus.scores), controls, source_name,
@@ -699,11 +716,13 @@ def mode_hook(root):
             say("complexity-ratchet: ACCEPTED  %s  %s -> %d  (%s)" % (
                 key, row if row is not None else "no row", score, accept))
 
-    if new_rows == before and marked_keys(source_text) == {
-            k for k in new_rows if k in markers}:
+    # Held rows keep their marked column as the source file records it.
+    marked = {k for k in new_rows if k in markers and k not in held} | (
+        marked_keys(source_text) & set(held))
+    if new_rows == before_all and marked_keys(source_text) == marked:
         text = source_text
     else:
-        text = render_tsv(new_rows, markers, "hook", head_sha(root))
+        text = render_tsv(new_rows, marked, "hook", head_sha(root))
     lib.write_staged(root, TSV, text, staged_text)
     say("complexity-ratchet: PASS")
     return 0
@@ -715,20 +734,25 @@ def mode_hook(root):
 def dirty_paths(root):
     return lib.dirty_paths(root, FENCE)
 
-def corpus_inputs(root, ctest=False):
+def corpus_inputs(root, ctest=False, mode="check"):
+    """-> (tool, entries, controls, corpus, cbins, present, dirty, clean,
+    unconfigured sources). tighten and baseline refuse a partial configure."""
     db_path, entries = load_db(root)
     if entries is None:
         say("complexity-ratchet: SKIP, no compile database at %s" % db_path)
         sys.exit(64 if ctest else 0)
+    if mode != "check":
+        lib.refuse_partial(FENCE, mode)
     tool = find_tool()
     verify_config(tool)
     controls = run_controls(tool)
-    check_unscored(root, entries, complete=True)
+    unconfigured = check_unscored(root, entries, complete=True)
     corpus, cbins = score_corpus(tool, root, entries, set())
     present = present_scope_files(root)
     dirty = dirty_paths(root)
     clean = {f for f in present | set(entries) if f not in dirty}
-    return tool, entries, controls, corpus, cbins, present, dirty, clean
+    return (tool, entries, controls, corpus, cbins, present, dirty, clean,
+            unconfigured)
 
 
 def clean_after(corpus, before, clean_tus):
@@ -742,13 +766,13 @@ def clean_after(corpus, before, clean_tus):
 
 
 def mode_check(root, ctest):
-    tool, entries, controls, corpus, cbins, present, dirty, clean = \
+    tool, entries, controls, corpus, cbins, present, dirty, clean, unconfigured = \
         corpus_inputs(root, ctest)
     htext = head_tsv(root)
     if htext is None:
         raise Refusal("HEAD carries no %s. Run `complexity_ratchet.py "
                       "baseline` and commit it." % TSV)
-    before = parse_tsv(htext)[1]
+    before, held = lib.split_unconfigured(FENCE.config, parse_tsv(htext)[1])
     clean_tus = [f for f in entries if f in clean
                  and os.path.isfile(os.path.join(root, f))]
     total_tus = [f for f in entries if os.path.isfile(os.path.join(root, f))]
@@ -757,7 +781,8 @@ def mode_check(root, ctest):
     acted |= {key_file(k) for k in before
               if not os.path.exists(os.path.join(root, key_file(k)))}
     markers = find_markers(root, corpus)
-    verdict, _, bins = decide(before, clean_after(corpus, before, clean_tus),
+    verdict, _, bins = decide(before, drop_unconfigured(
+                                  clean_after(corpus, before, clean_tus)),
                               acted, {}, {}, {}, markers,
                               wired(entries, present), present, None,
                               unwired_all=True)
@@ -768,6 +793,7 @@ def mode_check(root, ctest):
         "%d controls, %d rows, %d markers, %d accepted rows" % (
             len(clean_tus), len(total_tus), len(corpus.scores), controls,
             len(before), len(markers), sum(1 for v in before.values() if v[1])))
+    lib.report_unconfigured(FENCE, unconfigured, held)
     if not clean_tus:
         raise Refusal("VACUOUS: no TU is clean against HEAD.")
     quiet = ("MARKED", "DIRTY") if verdict == "PASS" else ("MARKED",)
@@ -795,7 +821,8 @@ def mode_tighten(root, argv):
             i += 3
         else:
             raise Refusal("usage: tighten [--accept <key> \"<reason>\"]...")
-    tool, entries, controls, corpus, cbins, present, dirty, clean = corpus_inputs(root)
+    tool, entries, controls, corpus, cbins, present, dirty, clean, _ = \
+        corpus_inputs(root, mode="tighten")
     htext = head_tsv(root)
     if htext is None:
         raise Refusal("HEAD carries no %s. Run `baseline`." % TSV)
@@ -832,7 +859,8 @@ def mode_tighten(root, argv):
 
 
 def mode_baseline(root):
-    tool, entries, controls, corpus, cbins, present, dirty, clean = corpus_inputs(root)
+    tool, entries, controls, corpus, cbins, present, dirty, clean, _ = \
+        corpus_inputs(root, mode="baseline")
     bad = sorted(f for f in dirty if in_scope(f) and f != TSV)
     if bad:
         raise Refusal("baseline refuses dirty scored files (the rows would "

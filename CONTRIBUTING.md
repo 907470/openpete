@@ -17,10 +17,13 @@ signed off.
 
 ## Before opening a pull request
 
-- Build and run from `docs/src/developer/building.md`; `scripts/setup.sh`
-  arms the tracked git hooks (`githooks/`), which refuse a commit that
-  breaks the documentation, complexity or golden-image rules checked at
-  commit time.
+- Build and run from `docs/src/developer/building.md`: `scripts/container.sh
+  <engine|decomp <game>|game <game>|windows <game>|shell>` builds each
+  surface in a container, and a native build follows the prerequisites
+  listed there. `scripts/setup.sh` arms the tracked git hooks (`githooks/`),
+  which refuse a commit that breaks the documentation, complexity or
+  golden-image rules checked at commit time; a commit from the container
+  is made in `scripts/container.sh shell`, which runs it.
 - Run the gates the change owes. A change to gameplay, the recompiler, the
   GTE or the state-region manifest runs `tests/harness/check_psx_oracle.sh`;
   a change to rendering runs `tests/harness/check_presentation_golden.sh`

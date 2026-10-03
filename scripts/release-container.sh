@@ -16,6 +16,7 @@
 # Pass `--out` relative to the tree: the packager runs inside the
 # container, where only /src (this tree) is mounted.
 #
+# Engine detection and the uid mapping come from scripts/lib/container.sh.
 # Rootless podman on a btrfs home has no overlay driver, and `podman build`
 # overlay-mounts its context even when the context is empty. There, set
 # `driver = "vfs"` in ~/.config/containers/storage.conf.d/*.conf, build
@@ -35,11 +36,10 @@ cd "$(dirname "$0")/.."
 # reusing the one an older Dockerfile made.
 DOCKERFILE=packaging/linux-release.Dockerfile
 IMAGE="${OPENPETE_RELEASE_IMAGE:-openpete-linux-release:$(sha256sum "$DOCKERFILE" | cut -c1-12)}"
-ENGINE="${OPENPETE_CONTAINER_ENGINE:-}"
-if [[ -z "$ENGINE" ]]; then
-    for e in podman docker; do command -v "$e" >/dev/null && { ENGINE=$e; break; }; done
-fi
-[[ -n "$ENGINE" ]] || { echo "[release] no podman or docker found" >&2; exit 64; }
+# shellcheck source=scripts/lib/container.sh
+source scripts/lib/container.sh
+ctr_engine release
+ENGINE="$CTR_ENGINE"
 
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "[release] building $IMAGE"
@@ -52,8 +52,8 @@ scripts/setup_appimagetool.sh
 # --userns=keep-id (podman) / --user (docker): the build writes into the
 # bind-mounted source tree, and root-owned objects there would be a
 # nuisance to clean up afterwards.
-uidmap=(--user "$(id -u):$(id -g)")
-[[ "$ENGINE" == podman ]] && uidmap=(--userns=keep-id)
+ctr_uidmap
+uidmap=("${CTR_UIDMAP[@]}")
 
 # The SDK ships in every release, so it is staged unless the caller opts out
 # with --no-mod-sdk. Leaving it to be remembered per invocation is how an

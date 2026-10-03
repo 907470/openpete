@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tests for the cognitive-complexity ratchet (complexity_ratchet.py).
 
-DecideTest drives the pure decision function per rule. EndToEndTest builds a throwaway git repo with the
+DecideTest drives the pure decision function per rule. ConfigurationTest
+drives the OPENPETE_GAMES configuration and its UNCONFIGURED bin.
+EndToEndTest builds a throwaway git repo with the
 hook installed and its own compile database (OPENPETE_COMPLEXITY_DB) and
 commits each index shape: M, A, D, identical rename, changed rename, the
 temporary-index form, and a stale hook-written baseline on a doc-only commit.
@@ -20,6 +22,7 @@ import unittest
 FENCES = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, FENCES)
 import complexity_ratchet as cr                              # noqa: E402
+import ratchet_lib as rl                                     # noqa: E402
 
 SCRIPT = os.path.join(FENCES, "complexity_ratchet.py")
 
@@ -171,6 +174,72 @@ class DecideTest(unittest.TestCase):
         self.assertEqual((head["written-by"], head["head"]), ("tighten", "abc"))
 
 
+DEFAULT_LIST = 'set(OPENPETE_GAMES "spyro-1;spyro-2;spyro-3" CACHE STRING "")\n'
+
+
+class ConfigurationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="ratchet-config-")
+        with open(os.path.join(self.tmp, "CMakeLists.txt"), "w") as fh:
+            fh.write(DEFAULT_LIST)
+        self.db = os.path.join(self.tmp, "build", "compile_commands.json")
+        os.makedirs(os.path.dirname(self.db))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def config(self, games=None):
+        cache = os.path.join(self.tmp, "build", "CMakeCache.txt")
+        if games is None:
+            if os.path.exists(cache):
+                os.remove(cache)
+        else:
+            with open(cache, "w") as fh:
+                fh.write("OPENPETE_GAMES:STRING=%s\n" % games)
+        return rl.read_configuration(self.tmp, self.db)
+
+    def test_missing_cache_is_the_full_default(self):
+        self.assertFalse(self.config().partial)
+
+    def test_list_is_compared_as_a_set(self):
+        self.assertFalse(self.config("spyro-3;spyro-1;spyro-2").partial)
+
+    def test_partial_paths(self):
+        c = self.config("spyro-2")
+        self.assertTrue(c.partial)
+        for rel, out in (("games/spyro-1/a.c", True), ("games/spyro-3/b.h", True),
+                         ("games/common/c.c", True), ("games/spyro-2/d.c", False),
+                         ("core/e.c", False),
+                         ("tests/unit/mod_shader_compile_test.c", True)):
+            self.assertEqual(c.out_of_config(rel), out, rel)
+        self.assertFalse(self.config("spyro-1").out_of_config(
+            "tests/unit/mod_shader_compile_test.c"))
+
+    def test_core_only(self):
+        c = self.config("")
+        self.assertTrue(c.out_of_config("games/spyro-2/d.c"))
+        self.assertFalse(c.out_of_config("core/e.c"))
+
+    def test_split_and_refusals(self):
+        fence = rl.Fence("t", "t.py", "t.tsv", ("core/", "games/"), "X")
+        fence.config = self.config("spyro-2")
+        kept, held = rl.split_unconfigured(
+            fence.config, {"games/spyro-1/a.c:f": (40, ""), "core/e.c:g": (30, "")})
+        self.assertEqual(set(kept), {"core/e.c:g"})
+        self.assertEqual(set(held), {"games/spyro-1/a.c:f"})
+        with self.assertRaises(rl.Refusal) as e:
+            rl.refuse_unconfigured(fence, ["core/e.c", "games/spyro-1/a.h"])
+        self.assertIn('-DOPENPETE_GAMES="spyro-1;spyro-2"', str(e.exception))
+        with self.assertRaises(rl.Refusal) as e:
+            rl.refuse_unconfigured(fence, ["games/common/x.c"])
+        self.assertIn('"spyro-1;spyro-2;spyro-3"', str(e.exception))
+        rl.refuse_unconfigured(fence, ["core/e.c", "games/spyro-2/d.c"])
+        with self.assertRaises(rl.Refusal):
+            rl.refuse_partial(fence, "tighten")
+        fence.config = self.config()
+        rl.refuse_partial(fence, "tighten")
+
+
 @unittest.skipUnless(shutil.which("clang-tidy-%d" % cr.TOOL_MAJOR),
                      "clang-tidy-%d not installed" % cr.TOOL_MAJOR)
 class EndToEndTest(unittest.TestCase):
@@ -257,6 +326,37 @@ class EndToEndTest(unittest.TestCase):
         self.git("add", "core/tail.c")
         self.commit("lower")
         self.assertEqual(self.rows()["core/tail.c:tail"], (37, ""))
+
+    def partial(self, games):
+        """Give the scratch tree the default list and the database a
+        CMakeCache.txt configuring `games`."""
+        self.write("CMakeLists.txt", DEFAULT_LIST)
+        with open(os.path.join(self.tmp, "CMakeCache.txt"), "w") as fh:
+            fh.write("OPENPETE_GAMES:STRING=%s\n" % games)
+
+    def test_partial_configure_refuses_a_staged_unconfigured_header(self):
+        self.partial("spyro-2")
+        os.makedirs(os.path.join(self.repo, "games", "spyro-1"))
+        self.write("games/spyro-1/a.h", "static int f(void) { return 0; }\n")
+        self.git("add", "games/spyro-1/a.h")
+        p = self.commit("header", ok=False)
+        self.assertIn("lie outside this build's configuration", p.stderr)
+        self.assertIn('-DOPENPETE_GAMES="spyro-1;spyro-2"', p.stderr)
+
+    def test_partial_configure_carries_unconfigured_rows(self):
+        text = self.git("show", "HEAD:" + cr.TSV).stdout
+        held = "games/spyro-1/held.c\theld\t50\t0\t\n"
+        self.write(cr.TSV, text + held)
+        self.git("add", cr.TSV)
+        self.git("-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "row")
+        self.partial("spyro-2")
+        self.write("core/tail.c", nest("tail", 8, 1))
+        self.git("add", "core/tail.c")
+        p = self.commit("lower")
+        self.assertIn("UNCONFIGURED", p.stderr)
+        rows = self.rows()
+        self.assertEqual(rows["core/tail.c:tail"], (37, ""))
+        self.assertEqual(rows["games/spyro-1/held.c:held"], (50, ""))
 
     def test_body_edit_leaves_the_baseline_untouched(self):
         self.write("core/body.c", nest("small", 3))

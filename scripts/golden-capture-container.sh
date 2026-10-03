@@ -103,11 +103,12 @@ fi
 CTREE="${MOUNT_AS:-$TREE}"
 
 IMAGE="${OPENPETE_CAPTURE_IMAGE:-openpete-linux-capture}"
-ENGINE="${OPENPETE_CONTAINER_ENGINE:-}"
-if [[ -z "$ENGINE" ]]; then
-    for e in podman docker; do command -v "$e" >/dev/null && { ENGINE=$e; break; }; done
-fi
-[[ -n "$ENGINE" ]] || { echo "[capture-container] no podman or docker found" >&2; exit 64; }
+# Engine detection, uid mapping, the tree mounts and the container home come
+# from the shared container library.
+# shellcheck source=scripts/lib/container.sh
+source "$RECIPE_DIR/scripts/lib/container.sh"
+ctr_engine capture-container
+ENGINE="$CTR_ENGINE"
 
 sub="${1:-}"; shift || true
 no_build=0 golden=0
@@ -149,17 +150,12 @@ if [[ "$image_label" != "$RECIPE_HASH" ]]; then
 fi
 [[ "$sub" == image ]] && exit 0
 
-mounts=()
-common="" main=""
-[[ -z "$MOUNT_AS" ]] && common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-main="${common%/.git}"
-if [[ -n "$common" && "$main" != "$common" && "$main" != "$TREE" ]]; then
-    # The common git directory stays writable beneath the read-only checkout:
-    # the capture record hashes the working copy into git objects, and a
-    # promote stages its manifest in the worktree's index.
-    mounts+=(-v "$main:$main:ro" -v "$common:$common")
-fi
-mounts+=(-v "$TREE:$CTREE")
+# For a worktree the common git directory stays writable beneath the
+# read-only main checkout: the capture record hashes the working copy into
+# git objects, and a promote stages its manifest in the worktree's index.
+# Under OPENPETE_CAPTURE_MOUNT_AS (CTREE differs) the worktree mounts are
+# skipped.
+ctr_tree_mounts "$TREE" "$CTREE"
 image_digest="$("$ENGINE" image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/null || true)"
 [[ -z "$image_digest" || "$image_digest" == "<none>" ]] && \
     image_digest="$("$ENGINE" image inspect --format '{{.Id}}' "$IMAGE")"
@@ -172,13 +168,8 @@ env_args=(-e OPENPETE_NO_COMMITS=1 -e OPENPETE_VIBRATION=0
 # the container and the engine's per-user directories ($HOME/.config/openpete)
 # and PulseAudio's runtime cookie resolve relative to the working directory,
 # the tree. A home under the container build directory keeps them out of it.
-home="$TREE/build/linux-release-container/home"
-mkdir -p "$home/run"
-chmod 700 "$home/run"
-chome="$CTREE/build/linux-release-container/home"
-env_args+=(-e "HOME=$chome" -e "XDG_CONFIG_HOME=$chome/.config"
-           -e "XDG_CACHE_HOME=$chome/.cache" -e "XDG_DATA_HOME=$chome/.local/share"
-           -e "XDG_RUNTIME_DIR=$chome/run")
+ctr_home_env "$TREE/build/linux-release-container/home" "$CTREE/build/linux-release-container/home"
+env_args+=("${CTR_ENV[@]}")
 # The reference store resolves as scripts/presentation-blessed.py resolves it,
 # and the container gets it by an explicit path: the container's home is not
 # the host's, so the default would otherwise name a directory inside the
@@ -192,7 +183,7 @@ if [[ -n "$MOUNT_AS" && "$store/" == "$TREE/"* ]]; then
     # in-container spelling.
     env_args+=(-e "OPENPETE_GOLDEN_REF_DIR=$CTREE${store#"$TREE"}")
 else
-    mounts+=(-v "$store_parent:$store_parent")
+    ctr_mount "$store_parent" "$store_parent"
     env_args+=(-e "OPENPETE_GOLDEN_REF_DIR=$store")
 fi
 # The harness knobs a capture run reads; the container sees only what -e passes.
@@ -202,8 +193,9 @@ for v in CORPUS_JOBS PRESENTATION_TIER PRESENTATION_GOLDEN_OUT PRESENTATION_GOLD
     [[ -n "${!v:-}" ]] && env_args+=(-e "$v=${!v}")
 done
 
-uidmap=(--user "$(id -u):$(id -g)")
-[[ "$ENGINE" == podman ]] && uidmap=(--userns=keep-id)
+ctr_uidmap
+uidmap=("${CTR_UIDMAP[@]}")
+mounts=("${CTR_MOUNTS[@]}")
 run_opts=(--network=none)
 [[ -n "${OPENPETE_CAPTURE_LABEL:-}" ]] && run_opts+=(--label "org.openpete.fleet=$OPENPETE_CAPTURE_LABEL")
 

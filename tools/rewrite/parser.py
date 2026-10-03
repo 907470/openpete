@@ -43,10 +43,15 @@ def _configure_libclang() -> None:
     )
 
 
-# Where the matching-decomp tree lives.
-SPYRO_REPO = Path(__file__).resolve().parents[3] / "spyro-1"
+# Where the matching-decomp tree lives: the Spyro 1 decompilation submodule
+# of this tree, whose src/ scripts/regen-manifest.sh hands the rewriter, so
+# the headers parsed are that checkout's. A tree without the submodule
+# falls back to a `spyro-1` checkout beside openpete/ (or beside its
+# worktrees/ directory).
+SPYRO_REPO = Path(__file__).resolve().parents[2] / "games" / "spyro-1" / "spyro-1"
+if not (SPYRO_REPO / "include").is_dir():
+    SPYRO_REPO = Path(__file__).resolve().parents[3] / "spyro-1"
 if not SPYRO_REPO.exists():
-    # Fallback: parent of openpete/.
     SPYRO_REPO = Path(__file__).resolve().parents[4] / "spyro-1"
 
 
