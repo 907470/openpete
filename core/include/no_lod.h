@@ -2,10 +2,6 @@
 //
 // --no-lod is a native-renderer display policy owned by the native feeders;
 // there is no game-side producer.
-//
-// `openpete_no_lod` is also re-declared in
-// third_party/psxrecomp/runner/include/psx_runtime.h so recompiler-
-// facing code can read it without dragging in this header.
 
 #ifndef OPENPETE_FEATURES_NO_LOD_H
 #define OPENPETE_FEATURES_NO_LOD_H

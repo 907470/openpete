@@ -8,7 +8,7 @@
  * Standalone - only compiles psx_region.c, doesn't pull in cpu.c or
  * the rest of openpete_core. */
 
-#include "../../third_party/psxrecomp/runner/include/psx_runtime.h"
+#include "../../core/include/psxrt/psx_runtime.h"
 
 #include <stdint.h>
 #include <stdio.h>

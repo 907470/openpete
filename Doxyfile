@@ -50,7 +50,7 @@ INPUT                  = core/config \
                          games/spyro-2/features \
                          games/spyro-3 \
                          games/spyro-3/features \
-                         third_party/psxrecomp/runner/include
+                         core/include/psxrt
 FILE_PATTERNS          = *.h \
                          *.hpp
 RECURSIVE              = NO

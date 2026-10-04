@@ -28,7 +28,7 @@ scripts/build-docs.sh):
   engine, so they sit a level up from the per-game slug.
   examples.md   <- mod.toml header comments of the mods in
                    mods/examples.txt (the SDK-shipped set)
-  cpustate.md   <- third_party/psxrecomp/runner/include/psx_runtime.h
+  cpustate.md   <- core/include/psxrt/psx_runtime.h
                    (the CPUState an override receives: struct prose +
                    one row per field)
   imgui.md      <- third_party/imgui/imgui.h (the version the engine
@@ -1376,7 +1376,7 @@ def main():
                          "exactly its pins")
     ap.add_argument("--mods-dir", default=REPO / "mods", type=Path)
     ap.add_argument("--psx-runtime",
-                    default=REPO / "third_party/psxrecomp/runner/include/psx_runtime.h",
+                    default=REPO / "core/include/psxrt/psx_runtime.h",
                     type=Path)
     ap.add_argument("--imgui-header",
                     default=REPO / "third_party/imgui/imgui.h",

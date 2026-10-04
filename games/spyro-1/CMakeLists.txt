@@ -445,7 +445,7 @@ add_custom_target(spyro1_sdk_stage ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
-            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
+            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h
@@ -504,7 +504,7 @@ if(OPENPETE_COMPILE_MODS)
         set(_mod_sdk_deps
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
-            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
+            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h
@@ -616,8 +616,8 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
             ${CMAKE_SOURCE_DIR}/games/common/module_main.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../common/spyro_overlay_table.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_recomp_module.h
-            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
-            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime_internal.h
+            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime.h
+            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime_internal.h
             ${_rdir}/src
         VERBATIM)
     if(WIN32)

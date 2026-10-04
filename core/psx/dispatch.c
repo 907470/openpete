@@ -503,21 +503,3 @@ void psx_syscall(CPUState* cpu, uint32_t code) {
     OPL_WARN_F("dispatch", "syscall code=0x%X (ra=0x%08X) - ignored",
                code, cpu ? cpu->ra : 0u);
 }
-
-/* MMIO trace toggle - referenced by generated C indirectly via the runtime
- * header. No-op in the slim runner; real MMIO tracing belongs in PsyCross. */
-void psx_mmio_trace_enable(int enable) { (void)enable; }
-
-void diag_track_gp1(uint32_t cmd) { (void)cmd; }
-
-/* runtime_init/load aliases that match psxrecomp's psx_runtime.h spelling. */
-void psx_runtime_init(CPUState* cpu) { openpete_psx_runtime_init(cpu); }
-void psx_runtime_load(uint32_t addr, const uint8_t* data, uint32_t size) {
-    openpete_psx_load(addr, data, size);
-}
-uint8_t* psx_get_ram(void)     { return openpete_psx_get_ram(); }
-uint8_t* psx_get_scratch(void) { return openpete_psx_get_scratch(); }
-
-void psx_install_crash_handler(void) {
-    openpete_psx_install_crash_handler();
-}

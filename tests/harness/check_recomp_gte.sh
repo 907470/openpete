@@ -45,6 +45,6 @@ python3 "$SRC/asm_probe.py" "$OUT/probe.bin"
 [[ -f "$OUT/gteprobe_full.c" ]] || { echo "[recomp-gte] FAIL: no gteprobe_full.c emitted" >&2; exit 1; }
 
 "$CC_BIN" -std=c11 -O1 -Wall -Wno-unused-label -Wno-unused-function \
-    -I third_party/psxrecomp/runner/include \
+    -I core/include/psxrt \
     "$SRC/harness.c" "$OUT/gteprobe_full.c" -o "$OUT/gte_test"
 "$OUT/gte_test"

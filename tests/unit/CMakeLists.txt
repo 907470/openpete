@@ -83,9 +83,20 @@ add_executable(psx_region_test
     psx_region_test.c
     ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
 target_include_directories(psx_region_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(psx_region_test PROPERTIES C_STANDARD 99)
 add_test(NAME psx_region_test COMMAND psx_region_test)
+
+# psx_runtime_layout_test - static assertions that CPUState in
+# core/include/psxrt/psx_runtime.h has the offset, size and type of every
+# field of the recompiler runner's CPUState, which savestates and mods built
+# against an earlier SDK depend on. The only target that reads the runner
+# header.
+add_executable(psx_runtime_layout_test psx_runtime_layout_test.c)
+target_include_directories(psx_runtime_layout_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+set_target_properties(psx_runtime_layout_test PROPERTIES C_STANDARD 11)
+add_test(NAME psx_runtime_layout_test COMMAND psx_runtime_layout_test)
 
 # psx_span_test - the span form of the guest-pointer resolver and the
 # width-checked bus accessors at the ends of main RAM, the scratchpad and a
@@ -97,7 +108,7 @@ add_executable(psx_span_test
     ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
 target_include_directories(psx_span_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(psx_span_test PROPERTIES C_STANDARD 11)
 add_test(NAME psx_span_test COMMAND psx_span_test)
 
@@ -123,7 +134,7 @@ add_executable(knob_registry_test
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(knob_registry_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(knob_registry_test PROPERTIES C_STANDARD 11)
 add_test(NAME knob_registry_test COMMAND knob_registry_test)
 
@@ -139,7 +150,7 @@ target_include_directories(audio_volume_test PRIVATE
     ${CMAKE_SOURCE_DIR}/games/spyro-1
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/core/host
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(audio_volume_test PROPERTIES C_STANDARD 99)
 add_test(NAME audio_volume_test COMMAND audio_volume_test)
 
@@ -158,7 +169,7 @@ target_include_directories(vibration_test PRIVATE
     ${CMAKE_SOURCE_DIR}/games/spyro-1
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/core/host
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(vibration_test PROPERTIES C_STANDARD 99)
 if(NOT WIN32)
     target_link_libraries(vibration_test PRIVATE m)
@@ -178,7 +189,7 @@ if(NOT WIN32)
         ${CMAKE_SOURCE_DIR}/core/diag/log.c)
     target_include_directories(memcard_test PRIVATE
         ${CMAKE_SOURCE_DIR}/core/include
-        ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt)
     set_target_properties(memcard_test PROPERTIES C_STANDARD 11)
     add_test(NAME memcard_test
              COMMAND memcard_test ${CMAKE_CURRENT_BINARY_DIR}/memcard_test.d)
@@ -261,7 +272,7 @@ add_executable(vstream_test
     ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
 target_include_directories(vstream_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(vstream_test PROPERTIES C_STANDARD 99)
 add_test(NAME vstream_test COMMAND vstream_test)
 
@@ -276,7 +287,7 @@ add_executable(text_moby_id_test
 target_include_directories(text_moby_id_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/games/spyro-1
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(text_moby_id_test PROPERTIES C_STANDARD 99)
 add_test(NAME text_moby_id_test COMMAND text_moby_id_test)
 
@@ -346,7 +357,7 @@ add_executable(tracer_snapshot_test
     ${CMAKE_SOURCE_DIR}/games/spyro-1/renderer/tracer_snapshot.c)
 target_include_directories(tracer_snapshot_test PRIVATE
     ${CMAKE_SOURCE_DIR}/games/spyro-1
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(tracer_snapshot_test PROPERTIES C_STANDARD 11)
 add_test(NAME tracer_snapshot_test COMMAND tracer_snapshot_test)
 
@@ -359,7 +370,7 @@ add_executable(boot_memfill_test
     ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
 target_include_directories(boot_memfill_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 set_target_properties(boot_memfill_test PROPERTIES C_STANDARD 11)
 add_test(NAME boot_memfill_test COMMAND boot_memfill_test)
 
@@ -373,7 +384,7 @@ add_executable(exe_loader_cap_test
     ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
 target_include_directories(exe_loader_cap_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
 target_link_libraries(exe_loader_cap_test PRIVATE SDL3::SDL3-static)
 if(WIN32)
     target_link_libraries(exe_loader_cap_test PRIVATE winmm)
@@ -392,7 +403,7 @@ add_executable(disc_cache_short_read_test
     ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
 target_include_directories(disc_cache_short_read_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
     ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include)
 target_link_libraries(disc_cache_short_read_test PRIVATE SDL3::SDL3-static)
 if(WIN32)
@@ -415,7 +426,7 @@ add_executable(disc_image_test
     ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
 target_include_directories(disc_image_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
     ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include)
 target_link_libraries(disc_image_test PRIVATE SDL3::SDL3-static)
 if(WIN32)

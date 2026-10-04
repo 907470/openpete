@@ -133,7 +133,7 @@ function(openpete_add_game GAME_ID)
         add_library(${_module} SHARED ${_module_sources})
         # Route the exe-exported DATA symbols through the import table
         # (__declspec(dllimport)) instead of PE pseudo-relocation; see
-        # psx_runtime.h. Module TUs only; the exe defines those symbols.
+        # psx_runtime_internal.h. Module TUs only; the exe defines those symbols.
         target_compile_definitions(${_module} PRIVATE OPENPETE_RECOMP_MODULE_BUILD)
         set_target_properties(${_module} PROPERTIES
             OUTPUT_NAME "${_tag}-recomp"
@@ -367,7 +367,7 @@ function(openpete_add_game GAME_ID)
     add_dependencies(openpete_generated_headers ${_tag}_generated_headers)
 
     # Generated C addresses psx_runtime.h via the include path provided by
-    # openpete_core (which adds psxrecomp/runner/include).
+    # openpete_core (which adds core/include/psxrt).
     target_include_directories(${_exe} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${_common}

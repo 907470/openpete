@@ -163,9 +163,7 @@ void openpete_yield_to_host(void);
  * effect when no host fiber exists. */
 void openpete_yield_to_host_no_tick(void);
 
-/* openpete_no_lod is declared in core/include/no_lod.h (there
- * and in third_party/psxrecomp/runner/include/psx_runtime.h for the
- * recompiler-generated C). */
+/* openpete_no_lod is declared in core/include/no_lod.h. */
 
 #ifdef __cplusplus
 }

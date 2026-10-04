@@ -4,8 +4,6 @@
 # games/<game>/. Anything Spyro-specific belongs in games/spyro-1/, not
 # here.
 
-set(PSXRECOMP_RUNNER ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner)
-
 add_library(openpete_core STATIC
     # Diagnostics: the log and its file mirror, the crash handler, the
     # pacing event log (--pace-log PATH) with the always-on pacing census,
@@ -283,7 +281,7 @@ target_include_directories(openpete_core
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_BINARY_DIR}/gen
         ${CMAKE_CURRENT_SOURCE_DIR}/host
-        ${PSXRECOMP_RUNNER}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/psxrt
         ${CMAKE_SOURCE_DIR}/third_party/libco
     PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/stb

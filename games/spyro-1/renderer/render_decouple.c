@@ -27,17 +27,17 @@
 
 /* "moby would have passed the native 4:3 cone test" (read by the m_WasDrawn=1
  * write gate). */
-uint8_t psx_runtime_native_cone_pass = 0;
+static uint8_t psx_runtime_native_cone_pass = 0;
 
 /* DISTANCE half of the box-cull verdict. native_dist_pass starts 1 each
  * iteration; the dist-gate hooks clear it if the box cull rejects. (The
  * saturated-vs-canonical mdist_thresh_delta these once subtracted out was
  * retired with the --no-lod producer stack - the .s cull is
  * canonical in every mode now, so the gates replay its own verdict.) */
-uint8_t psx_runtime_native_dist_pass = 1;
+static uint8_t psx_runtime_native_dist_pass = 1;
 
 /* Particle screen-cull verdict (read by the m_03 "drawn"-flag store gate). */
-uint8_t psx_runtime_native_part_pass = 0;
+static uint8_t psx_runtime_native_part_pass = 0;
 
 /* === Moby cone-X cull verdict (channel m_WasDrawn) ====================
  * Records the canonical (4:3) cone verdict in native_cone_pass - the
