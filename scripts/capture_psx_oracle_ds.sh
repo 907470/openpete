@@ -60,6 +60,19 @@
 #                                  card handler served (its stores to the port-
 #                                  flip word HEX; 0x80007264 on the SCPH-1001
 #                                  kernel) to <out>.sio0
+#           --vblpos               record every VBLANK interrupt taken outside a
+#                                  waited VSync to <out>.vblpos (EPC, the first
+#                                  game-code call target after the handler and
+#                                  its ordinal in the record); needs --game and
+#                                  --vsync-pc. The library spans and the
+#                                  self-entry list come from
+#                                  tools/psxtrace_selfentry.py at capture time.
+#                                  Refuses a capture whose recorder saw no
+#                                  VBLANK interrupt
+#           --spuq KIND:HEX        record every call of a libspu entry to
+#                                  <out>.spuq (KIND setkey, keystatus, allkeys,
+#                                  voiceattr; repeatable); refuses a capture
+#                                  that recorded no call
 #           --no-card              reference boots with no memory card
 #           --gte-dump LO-HI       also write every GTE instruction of records
 #                                  LO..HI to <out>.gtedump ({rec, pc, instr,
@@ -82,6 +95,7 @@ FRAMES=600
 ANCHOR_PC="0x8001ED5C"
 HIT=1
 MAX_RUNTIME=""
+VBLPOS=0; SPUQ=()
 CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
@@ -128,6 +142,8 @@ while [[ $# -gt 0 ]]; do
         --vsync-query-skip) VSYNC_QUERY_SKIP="$2"; shift 2 ;;
         --cd-read-pc-min) CD_READ_PC_MIN="$2"; shift 2 ;;
         --no-card) NO_CARD=1; shift ;;
+        --vblpos) VBLPOS=1; shift ;;
+        --spuq) SPUQ+=("$2"); shift 2 ;;
         --gte-dump) GTE_DUMP="$2"; shift 2 ;;
         -h|--help) sed -n 's/^# //p' "$0" | head -70; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
@@ -172,7 +188,9 @@ fi
 # The module hashes the regions the manifest lists at this commit: the
 # flat table is generated immediately before the capture, never reused.
 REGIONS_FLAT="${TMPDIR:-/tmp}/openpete-capture-regions.$$.flat"
-trap 'rm -f "$REGIONS_FLAT"' EXIT
+VBLPOS_LIB="${TMPDIR:-/tmp}/openpete-capture-vblpos-lib.$$.txt"
+VBLPOS_SKIP="${TMPDIR:-/tmp}/openpete-capture-vblpos-skip.$$.txt"
+trap 'rm -f "$REGIONS_FLAT" "$VBLPOS_LIB" "$VBLPOS_SKIP"' EXIT
 python3 tools/gen_state_regions.py --manifest "$MANIFEST" --out-flat "$REGIONS_FLAT" || {
     echo "[capture-ds] refusing to capture: region table generation failed" >&2
     exit 1
@@ -194,11 +212,19 @@ for pc in "${VSYNC_CB_PCS[@]}"; do REC_ARGS+=(-psxtrace-vsync-cb-pc "$pc"); done
 [[ -n "$CD_READ_PC_MIN" ]] && REC_ARGS+=(-psxtrace-cd-read-pc-min "$CD_READ_PC_MIN")
 [[ "$NO_CARD" == 1 ]] && REC_ARGS+=(-card1 none)
 REC_ARGS+=(-psxtrace-gte)
+if [[ "$VBLPOS" == 1 ]]; then
+    [[ -n "$GAME" && -n "$VSYNC_PC" ]] || {
+        echo "[capture-ds] --vblpos needs --game (library spans, self-entry list) and --vsync-pc" >&2; exit 64; }
+    python3 tools/psxtrace_selfentry.py library "$GAME" --out "$VBLPOS_LIB"
+    python3 tools/psxtrace_selfentry.py scan "$GAME" --out "$VBLPOS_SKIP"
+    REC_ARGS+=(-psxtrace-vblpos "$VBLPOS_LIB" -psxtrace-vblpos-skip "$VBLPOS_SKIP")
+fi
+for q in "${SPUQ[@]}"; do REC_ARGS+=(-psxtrace-spuq "$q"); done
 [[ -n "$GTE_DUMP" ]] && REC_ARGS+=(-psxtrace-gte-dump "$GTE_DUMP")
 
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" \
-      "$OUT.gte" "$OUT.gtedump"
+      "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
 # the worst case (4-vbl-per-game-frame splash logos before the title-
@@ -313,6 +339,24 @@ if [[ -n "$SIO0_WORD" ]]; then
         exit 1
     fi
     echo "[capture-ds] recorded $SERVED served vblanks -> $OUT.sio0"
+fi
+if [[ "$VBLPOS" == 1 ]]; then
+    [[ -f "$OUT.vblpos" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.vblpos" >&2; exit 1; }
+    IRQS="$(sed -n 's/^# rows=.* vbl_irqs=\([0-9]*\).*/\1/p' "$OUT.vblpos")"
+    if [[ -z "$IRQS" || "$IRQS" == 0 ]]; then
+        echo "[capture-ds] FAIL: VBLANK position recorder saw no VBLANK interrupt (CPU not on the interpreter?)" >&2
+        exit 1
+    fi
+    echo "[capture-ds] VBLANK positions: $(sed -n 's/^# //p' "$OUT.vblpos" | tail -1) -> $OUT.vblpos"
+fi
+if [[ ${#SPUQ[@]} -gt 0 ]]; then
+    [[ -f "$OUT.spuq" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.spuq" >&2; exit 1; }
+    ROWS="$(sed -n 's/^# rows=\([0-9]*\).*/\1/p' "$OUT.spuq")"
+    if [[ -z "$ROWS" || "$ROWS" == 0 ]]; then
+        echo "[capture-ds] FAIL: libspu recorder saw zero calls (wrong entry PCs?)" >&2
+        exit 1
+    fi
+    echo "[capture-ds] libspu calls: $(sed -n 's/^# //p' "$OUT.spuq" | tail -1) -> $OUT.spuq"
 fi
 if [[ -n "$SRAND_PC" ]]; then
     [[ -f "$OUT.srand" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.srand" >&2; exit 1; }

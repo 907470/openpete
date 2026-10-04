@@ -26,3 +26,4 @@
 0026-regtest-watched-word-rows-carry-the-clock-psxtrace-w.patch
 0027-regtest-psxtrace-vsync-query-skip-LO-HI-drops-a-libr.patch
 0028-regtest-GTE-hash-recorder-psxtrace-gte-psxtrace-gte-.patch
+0029-regtest-exact-psxtrace-ticks-VBLANK-position-and-lib.patch

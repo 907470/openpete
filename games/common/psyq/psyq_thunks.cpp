@@ -1067,6 +1067,23 @@ static void cd_events_tick(uint32_t vbls) {
  * game's witness site (a poll it makes only after seeing the callback)
  * places the callback before them, and it is delivered after the call. */
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
+/** @brief Write one stderr line for a deferred read's delivery when OPENPETE_CD_DEFER_LOG is set.
+ *
+ * The line names the deciding path (before a call, after the witness
+ * poll, at a VBL or anchor tick), the schedule's record and VBL position,
+ * the completion's reference record and VBLANK, and the two clock values
+ * the path compared (`clock=` the completion's, `at=` the schedule's last
+ * row); two runs over captures that differ only in tick precision deliver
+ * at equal positions unless a clock comparison flipped.
+ * @param path The deciding path's name. */
+static void cd_defer_log(const char* path) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = std::getenv("OPENPETE_CD_DEFER_LOG"); s_on = (e && *e && *e != '0'); }
+    if (!s_on) return;
+    fprintf(stderr, "[cd-defer] path=%s rec=%u pos=%u defer_rec=%u defer_vbl=%u owed=%u clock=%llu at=%llu\n", path,
+            openpete_sched_current_record(), openpete_sched_pos(), s_cd_defer_rec, s_cd_defer_vbl, s_cd_defer_owed,
+            (unsigned long long)s_cd_defer_clock, (unsigned long long)openpete_sched_last_tick());
+}
 /// @brief Complete the deferred read now: clear its deferral, land the remaining sectors, fire the callbacks.
 static void cd_defer_deliver(CPUState* cpu) {
     s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
@@ -1085,8 +1102,10 @@ static void cd_defer_before_call(CPUState* cpu) {
     if (!s_cd_defer_pending || !s_cd_defer_vbl) return;
     uint32_t cur = openpete_sched_current_record();
     uint64_t at = openpete_sched_last_tick();
-    if (cur > s_cd_defer_rec || (cur == s_cd_defer_rec && at && s_cd_defer_clock && s_cd_defer_clock <= at))
+    if (cur > s_cd_defer_rec || (cur == s_cd_defer_rec && at && s_cd_defer_clock && s_cd_defer_clock <= at)) {
+        cd_defer_log("before_call");
         cd_defer_deliver(cpu);
+    }
 }
 /** @brief Deliver a deferred read's completion after the call that shows the game has seen it.
  *
@@ -1099,8 +1118,10 @@ static void cd_defer_after_call(CPUState* cpu) {
     if (!s_cd_defer_pending || !s_cd_defer_vbl || !s_cd_defer_clock) return;
     if (openpete_sched_current_record() != s_cd_defer_rec) return;
     uint32_t witness = psyq_game_cd_done_witness_ra(), ra; uint64_t tick;
-    if (witness && openpete_sched_cdsync_peek(&ra, &tick) && ra == witness && tick >= s_cd_defer_clock)
+    if (witness && openpete_sched_cdsync_peek(&ra, &tick) && ra == witness && tick >= s_cd_defer_clock) {
+        cd_defer_log("after_call");
         cd_defer_deliver(cpu);
+    }
 }
 
 /** @brief Advance the deferred read by vbls VBLs and deliver its completion when due.
@@ -1123,6 +1144,7 @@ static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
         s_cd_defer_owed = (vbls >= s_cd_defer_owed) ? 0u : s_cd_defer_owed - vbls;
         if (s_cd_defer_owed) return;
     }
+    cd_defer_log("tick");
     s_cd_defer_pending = 0u;
     cd_land_rest();
     cd_read_complete(cpu);

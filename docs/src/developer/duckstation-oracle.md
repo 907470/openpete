@@ -146,9 +146,89 @@ driver's abort vblanks, are absent. `-psxtrace-watch-word HEX` rows
 (`psxtrace-watch 2`) end with the clock, so a store's place among the
 other recorded events of its record is readable.
 
-The clock in every recorder is DuckStation's global tick counter, which
-advances per CPU time slice: events inside one slice share a value, so an
-equal clock orders nothing and a lower one is earlier.
+### Exact tick, VBLANK positions and libspu calls
+
+Every tick column (`.vsync` `entry_tick` and `ret_tick`, `.loads`
+`issue_tick` and `done_tick`, `.cdsync` `tick`, `.watch` `tick`,
+`.vblpos` and `.spuq` `tick`) is the CPU tick of the instruction the
+recorder stopped at. Before patch 0029 the recorders read a counter that
+advances only at the emulator's scheduled events, so every call between
+two events shared one value (Spyro 1 `.vsync` rows 795898-795901: a wait's
+return and three later queries at 2315778078); patch 0029 adds the ticks
+the CPU has run since, and the same rows read 2315787079, 2315787088,
+2315787208 and 2315789070. A tick divided by 768 is an SPU sample.
+
+`--vblpos` (capture script; DuckStation `-psxtrace-vblpos SPANS
+-psxtrace-vblpos-skip LIST`) writes `<trace>.vblpos`: one row per VBLANK
+interrupt the CPU takes while no waited VSync call (mode >= 0) is pending
+on the VSync recorder's stack, so it needs `--vsync-pc`. Columns:
+
+| column | meaning |
+| --- | --- |
+| `idx` | row number |
+| `rec` | record being accumulated (records written so far, the `.vsync` convention) |
+| `vbl` | VBLANK count |
+| `via` | `irq`: the exception dispatch found VBLANK pending; `nested`: VBLANK was raised while another interrupt's handler ran and that handler served it before its `rfe` |
+| `epc` | EPC of the interrupt (the branch when it hit a delay slot); for `nested`, the enclosing interrupt's |
+| `entry` | entry address of the innermost active call at the EPC (a shadow call stack: push at each `jal`/`jalr` target, pop when the return address executes) |
+| `insns` | instructions executed outside exception handlers from that entry to the EPC, callees included |
+| `t` | the first call target entered after the handler's `rfe` whose address and call site are game code and which the self-entry list does not name |
+| `t_rec` | record being accumulated when `t` was entered |
+| `k` | `t`'s ordinal in `t_rec`: executions at pc == `t` since that record's anchor, outside exception handlers, each preceded by a game-code instruction |
+| `tick` | exact tick of the dispatch (for `nested`, of the enclosing dispatch) |
+
+Game code is RAM at or above `0x10000` outside the library spans:
+`tools/psxtrace_selfentry.py library GAME` lists, from
+`manifest/psyq.toml` and the linker map, each thunked PsyQ symbol's span
+up to the next map symbol, so a translated library function (the libgte
+closure, and on Spyro 2 and 3 every symbol `--thunked-only` left out)
+counts as game code, as its generated body carries the per-entry gate.
+`tools/psxtrace_selfentry.py scan GAME` lists the generated functions
+whose body contains `goto block_<self>;` (Spyro 1 14, Spyro 2 13, Spyro 3
+60, `<overlay> 0x<addr>` per line): the reference counts that loop-back at
+pc == `t` and openpete's gate does not, so such a function is never `t`;
+the recorder skips a listed address whichever overlay is loaded. The
+anchor breakpoint restarts the counts before the anchor instruction
+executes, so the anchor's own entry counts in the new record. Rows of
+interrupts taken before one `t` is reached share it; a row whose `t` is
+never reached prints `-` for `t`, `t_rec` and `k`. The trailer
+`# rows= resolved= unresolved= vbl_irqs= nested= in_wait=
+self_entry_skipped= shadow_dropped= records=` accounts for every VBLANK
+after arming (`vbl_irqs = rows + in_wait`, and equals the VBLANK span of
+the capture); the capture refuses `vbl_irqs=0`. The recorder runs on the
+interpreter through two hooks the patch adds to the CPU core: one called
+before each instruction and one called when an exception is raised, with
+CAUSE and EPC.
+
+Reading a row: the interrupt took effect for the game's code at the k-th
+entry of `t` in record `t_rec`; a host without a cycle clock that counts
+its own entries of `t` at the per-entry gate delivers the VBLANK there.
+Spyro 1, record 1555: `83 1555 4092 nested 0x8005DCF8 0x8005DBC4 21
+0x80058CC0 1555 1 ...` (VBL 4092 raised during a DMA interrupt taken
+inside a `VSync(-1)` query; delivered at the first entry of
+`0x80058CC0`).
+
+`--spuq KIND:HEX` (repeatable; DuckStation `-psxtrace-spuq`) writes
+`<trace>.spuq`: one row per libspu call that reads or moves voice
+envelope state, at the entry KIND names (`setkey` SpuSetKey,
+`keystatus` SpuGetKeyStatus, `allkeys` SpuGetAllKeysStatus, `voiceattr`
+SpuSetVoiceAttr; addresses from `psyq.toml`). A `voiceattr` call is
+recorded only when its mask has a pitch field (PITCH, NOTE, SAMPLE_NOTE)
+or an ADSR field (AMODE..SL, ADSR1, ADSR2), and the trailer counts the
+rest as `voiceattr_skipped`. Columns: `idx rec vbl kind pc ra tick`, then
+per kind `on voices` (setkey), `voice` (keystatus), `buf` (allkeys), or
+`voice mask pitch note sample_note a_mode s_mode r_mode ar dr sr rr sl
+adsr1 adsr2` (voiceattr; a field outside the mask is whatever the
+caller's struct held). The capture refuses a run with zero rows.
+
+Two captures of one recipe from builds that differ only in these
+recorders compare with `python3 -m tools.psxtrace_format compare A B`
+(first differing record and region; the build hash and flags are listed,
+not compared) and `python3 -m tools.psxtrace_format sidecar-compare A B`
+(every common sidecar equal line for line outside the header's `build=`
+and the tick columns; each tick in B at least A's, and B's ticks never
+decrease from one row to the next where A's did not; exit 0 only when
+every sidecar passes).
 
 ## The reference's schedule
 

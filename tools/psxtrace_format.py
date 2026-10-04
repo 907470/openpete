@@ -359,6 +359,143 @@ def gte_dump_diff(ref_path: str, op_path: str) -> int:
     return 0
 
 
+def compare_traces(a_path: str, b_path: str) -> int:
+    """Print the first record and region that differ between two traces and
+    the header fields that differ. Returns 0 when the headers agree on the
+    region table and every record matches, 1 otherwise. The capturing build
+    (`scm_hash`) and `flags` are reported, never counted as a difference."""
+    with open(a_path, "rb") as fa, open(b_path, "rb") as fb:
+        ha, hb = read_header(fa), read_header(fb)
+        for name in ("scm_hash", "flags", "frame_count"):
+            va, vb = getattr(ha, name), getattr(hb, name)
+            if va != vb:
+                print(f"header {name}: A={va} B={vb} (not compared)")
+        bad = 0
+        for name in ("version", "ram_size", "region_count", "region_names", "table_hash"):
+            if getattr(ha, name) != getattr(hb, name):
+                print(f"header {name} differs: the region tables are not comparable")
+                bad = 1
+        if bad:
+            return 1
+        n = 0
+        ra, rb = read_records(fa, ha), read_records(fb, hb)
+        while True:
+            x, y = next(ra, None), next(rb, None)
+            if x is None or y is None:
+                break
+            fields = [f for f in ("frame_no", "pad1", "pad2", "pc", "total_hash")
+                      if getattr(x, f) != getattr(y, f)]
+            regions = [ha.region_names[i] for i in range(ha.region_count)
+                       if x.region_hashes[i] != y.region_hashes[i]]
+            if fields or regions:
+                print(f"first differing record {n} (frame_no A={x.frame_no} B={y.frame_no}): "
+                      f"fields {fields or '-'} regions {regions or '-'}")
+                return 1
+            n += 1
+        if x is not None or y is not None:
+            longer = "A" if x is not None else "B"
+            print(f"records equal over {n}; {longer} has more records")
+            return 1
+        print(f"records={n} identical (records, VBL stamps, anchor pcs, every region)")
+        return 0
+
+
+# Tick columns (0-based, whitespace-split, data rows) of the text sidecars:
+# a capture from a build with exact ticks may differ from one with the
+# event-commit ticks only there.
+SIDECAR_TICK_COLUMNS = {
+    ".vsync": (5, 6),    # entry_tick ret_tick
+    ".loads": (3, 10),   # issue_tick done_tick
+    ".cdsync": (7,),     # tick
+    ".watch": (6,),      # tick
+}
+SIDECARS = (".vsync", ".loads", ".cdsync", ".watch", ".srand", ".rand", ".cdctl",
+            ".cdirq", ".padcmd", ".sio0", ".gte", ".vblpos", ".spuq")
+
+
+def _sidecar_lines(path: str) -> List[List[str]]:
+    with open(path) as fp:
+        return [line.split() for line in fp]
+
+
+def _tick_cols(ext: str, row: List[str]) -> tuple:
+    """The tick columns of one tokenised sidecar line: the data columns, or
+    the `tick=N` tokens of a comment line."""
+    if row and row[0].startswith("#"):
+        return tuple(i for i, t in enumerate(row) if t.startswith("tick="))
+    return tuple(i for i in SIDECAR_TICK_COLUMNS.get(ext, ()) if i < len(row))
+
+
+def _tick_value(tok: str) -> Optional[int]:
+    tok = tok[5:] if tok.startswith("tick=") else tok
+    return int(tok) if tok.isdigit() else None
+
+
+def compare_sidecar(ext: str, a_path: str, b_path: str) -> int:
+    """Compare one sidecar of two captures. Every line is token-equal except
+    the header line's `build=` token and the tick columns; a tick column in B
+    must be at least A's, and B's ticks must not decrease from one row to the
+    next where A's did not. Prints one summary line; returns 1 on a failure."""
+    a, b = _sidecar_lines(a_path), _sidecar_lines(b_path)
+    if len(a) != len(b):
+        print(f"{ext}: FAIL line count A={len(a)} B={len(b)}")
+        return 1
+    changed = rows_changed = below = order = 0
+    prev: dict = {}
+    for i, (x, y) in enumerate(zip(a, b)):
+        if i == 0 and x and x[0].startswith("psxtrace-"):
+            x = [t for t in x if not t.startswith("build=")]
+            y = [t for t in y if not t.startswith("build=")]
+        cols = _tick_cols(ext, x)
+        if len(x) != len(y) or any(x[j] != y[j] for j in range(len(x)) if j not in cols):
+            print(f"{ext}: FAIL line {i + 1} differs outside the tick columns:\n  A: {' '.join(x)}\n  B: {' '.join(y)}")
+            return 1
+        row_changed = False
+        for j in cols:
+            va, vb = _tick_value(x[j]), _tick_value(y[j])
+            if va is None or vb is None:
+                if x[j] != y[j]:
+                    print(f"{ext}: FAIL line {i + 1} column {j}: A={x[j]} B={y[j]}")
+                    return 1
+                continue
+            if vb != va:
+                changed += 1
+                row_changed = True
+            if vb < va:
+                below += 1
+            key = (x[0].startswith("#"), j)
+            if key in prev:
+                pa, pb = prev[key]
+                if pa <= va and vb < pb:
+                    order += 1
+            prev[key] = (va, vb)
+        rows_changed += row_changed
+    verdict = "PASS" if below == 0 and order == 0 else "FAIL"
+    print(f"{ext}: {verdict} lines={len(a)} rows_tick_changed={rows_changed} "
+          f"ticks_changed={changed} ticks_below_A={below} order_breaks={order}")
+    return 0 if verdict == "PASS" else 1
+
+
+def compare_sidecars(a_trace: str, b_trace: str) -> int:
+    """Run compare_sidecar over every sidecar both captures carry; report the
+    ones only one side carries. Returns 0 only when every common one passes."""
+    import os
+    rc = 0
+    common = 0
+    for ext in SIDECARS:
+        pa, pb = a_trace + ext, b_trace + ext
+        ha, hb = os.path.exists(pa), os.path.exists(pb)
+        if ha and hb:
+            common += 1
+            rc |= compare_sidecar(ext, pa, pb)
+        elif ha or hb:
+            print(f"{ext}: only in {'A' if ha else 'B'} (not compared)")
+    if common == 0:
+        print("no sidecar common to both captures")
+        return 1
+    return rc
+
+
 def main_cli(argv: Optional[list] = None) -> int:
     import argparse
     p = argparse.ArgumentParser(description="psxtrace inspector")
@@ -373,7 +510,18 @@ def main_cli(argv: Optional[list] = None) -> int:
     p_gd = sub.add_parser("gtedump-diff", help="first differing op of two .gtedump files")
     p_gd.add_argument("ref")
     p_gd.add_argument("op")
+    p_cmp = sub.add_parser("compare", help="first differing record and region of two traces")
+    p_cmp.add_argument("a")
+    p_cmp.add_argument("b")
+    p_sc = sub.add_parser("sidecar-compare",
+                          help="text sidecars of two captures: equal except tick columns, B's ticks >= A's, ordered")
+    p_sc.add_argument("a", help="trace path of capture A (its sidecars are A.vsync, A.loads, ...)")
+    p_sc.add_argument("b")
     args = p.parse_args(argv)
+    if args.cmd == "compare":
+        return compare_traces(args.a, args.b)
+    if args.cmd == "sidecar-compare":
+        return compare_sidecars(args.a, args.b)
     if args.cmd == "gtedump-diff":
         return gte_dump_diff(args.ref, args.op)
     if args.cmd == "gte":
