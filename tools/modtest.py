@@ -35,11 +35,14 @@ closure (deps resolved as sibling directories), enabled in
 dependency-first order.
 
 Env: OPENPETE_BIN, OPENPETE_DISC - same defaults as check_mods.sh.
+--jobs N runs up to N mods at once; each mod's output is buffered and
+printed whole in argument order, so the log reads as a serial run's.
 Exit 0 = all executed [test] blocks green; 1 = any failure, or
 no [test] block executed at all.
 """
 
 import argparse
+import concurrent.futures
 import os
 import re
 import shlex
@@ -150,27 +153,34 @@ AUDIO_RE = re.compile(r"alcOpenDevice|ALC_|AL lib:|OpenAL|PsyX_SPUAL|"
                       r"sound device|wav override")
 
 
-def print_audio_device_lines(mid: str, out: str):
-    """Print the run's audio-device and wav-override log lines.
+def print_audio_device_lines(mid: str, out: str, emit):
+    """Emit the run's audio-device and wav-override log lines.
 
     Lines the engine logs after the OpenAL check (the wav override's
     streaming and active lines) are absent when the device failed to open,
     for example alcOpenDevice returning ALC_OUT_OF_MEMORY; these lines show
     the device state beside the missing-line failure."""
     lines = [ln for ln in out.splitlines() if AUDIO_RE.search(ln)]
-    print(f"[modtest] {mid}: audio-device lines ({len(lines)}):")
+    emit(f"[modtest] {mid}: audio-device lines ({len(lines)}):")
     for ln in lines[:20]:
-        print(f"[modtest]   {ln.strip()}")
+        emit(f"[modtest]   {ln.strip()}")
 
 
-def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
-    """Run one mod's [test] block. Returns ("pass"|"skip"|"fail", reason)."""
+def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool, emit,
+            concurrent_run: bool = False):
+    """Run one mod's [test] block. Returns ("pass"|"skip"|"fail", reason).
+
+    Every report line goes through emit (one line per call, as print would
+    write it), so a caller running mods concurrently can buffer each mod's
+    lines and print them in order. With concurrent_run set, an inherited
+    OPENPETE_ORACLE_LOG path gains a ".<mod id>" suffix so two oracle runs
+    never write one file."""
     man = parse_manifest(mod_dir)
     test = man["test"]
     mid = man["id"]
     if test is None:
         reason = "no [test] block"
-        print(f"[modtest] {mid}: SKIP - {reason}")
+        emit(f"[modtest] {mid}: SKIP - {reason}")
         return "skip", reason
 
     # A test whose inputs are derived locally (converted from a disc) and
@@ -179,7 +189,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
     for req in test["requires"]:
         if not (REPO / req).exists():
             reason = f"missing input {req}"
-            print(f"[modtest] {mid}: SKIP - {reason}")
+            emit(f"[modtest] {mid}: SKIP - {reason}")
             return "skip", reason
 
     with tempfile.TemporaryDirectory(prefix="openpete-modtest-") as tmp:
@@ -200,6 +210,8 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
         env.setdefault("ALSOFT_DRIVERS", "null")
         if mode in ("pass", "fail"):
             env["OPENPETE_FRAME_LIMIT"] = frames
+            if concurrent_run and env.get("OPENPETE_ORACLE_LOG"):
+                env["OPENPETE_ORACLE_LOG"] += f".{mid}"
             cmd = [str(REPO / "tests/harness/check_psx_oracle.sh"),
                    "--", "--mods-dir", str(fixture)]
         else:
@@ -222,7 +234,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
         # name rather than counted green.
         if mode in ("pass", "fail") and r.returncode == 64:
             reason = "psx oracle prerequisites missing (exit 64)"
-            print(f"[modtest] {mid}: SKIP - {reason}")
+            emit(f"[modtest] {mid}: SKIP - {reason}")
             return "skip", reason
 
         ok = True
@@ -234,30 +246,30 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
         # checks below carry the engagement proof there.
         if mode not in ("pass", "fail"):
             if r.returncode != 0:
-                print(f"[modtest] {mid}: FAIL - run exited {r.returncode}")
+                emit(f"[modtest] {mid}: FAIL - run exited {r.returncode}")
                 ok = False
             elif "openpete-exit: reason=" not in out:
-                print(f"[modtest] {mid}: FAIL - "
-                      "run printed no openpete-exit line")
+                emit(f"[modtest] {mid}: FAIL - "
+                     "run printed no openpete-exit line")
                 ok = False
         if mode == "pass" and "verdict: PASS" not in out:
-            print(f"[modtest] {mid}: FAIL - oracle did not PASS")
+            emit(f"[modtest] {mid}: FAIL - oracle did not PASS")
             ok = False
         if mode == "fail" and "verdict: FAIL" not in out:
-            print(f"[modtest] {mid}: FAIL - oracle did not FAIL "
-                  "(expected divergence missing)")
+            emit(f"[modtest] {mid}: FAIL - oracle did not FAIL "
+                 "(expected divergence missing)")
             ok = False
         missing = [n for n in test["expect_log"] if n not in out]
         for needle in missing:
-            print(f"[modtest] {mid}: FAIL - log missing: {needle!r}")
+            emit(f"[modtest] {mid}: FAIL - log missing: {needle!r}")
             ok = False
         if missing:
-            print_audio_device_lines(mid, out)
+            print_audio_device_lines(mid, out, emit)
         if ok:
-            print(f"[modtest] {mid}: PASS ({mode}, {frames} frames, "
-                  f"{len(test['expect_log'])} log asserts)")
+            emit(f"[modtest] {mid}: PASS ({mode}, {frames} frames, "
+                 f"{len(test['expect_log'])} log asserts)")
         elif verbose:
-            print(out[-3000:])
+            emit(out[-3000:])
         return ("pass" if ok else "fail"), ""
 
 
@@ -265,7 +277,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mods", nargs="+", type=Path)
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("-j", "--jobs", type=int, default=1,
+                    help="mods run at once (default 1)")
     args = ap.parse_args()
+    if args.jobs < 1:
+        ap.error("--jobs must be at least 1")
 
     bin_path = os.environ.get(
         "OPENPETE_BIN",
@@ -274,9 +290,34 @@ def main():
         "OPENPETE_DISC",
         str(REPO / "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
 
+    def run_buffered(mod_dir: Path):
+        """Run one mod, returning its result, its buffered report lines and
+        the exception that ended it (None when it returned)."""
+        lines = []
+        try:
+            status, reason = run_one(mod_dir, bin_path, disc, args.verbose,
+                                     lines.append, args.jobs > 1)
+        except Exception as exc:  # re-raised in order, after the lines
+            return None, None, lines, exc
+        return status, reason, lines, None
+
     passed, failed, skipped = [], [], []
-    for mod_dir in args.mods:
-        status, reason = run_one(mod_dir, bin_path, disc, args.verbose)
+    with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
+        # Results are consumed in submission order: a mod's lines print once
+        # it and every mod before it have finished.
+        futures = [pool.submit(run_buffered, d) for d in args.mods]
+        results = []
+        for fut in futures:
+            status, reason, lines, exc = fut.result()
+            for line in lines:
+                print(line)
+            sys.stdout.flush()
+            if exc is not None:
+                for other in futures:
+                    other.cancel()
+                raise exc
+            results.append((status, reason))
+    for mod_dir, (status, reason) in zip(args.mods, results):
         if status == "pass":
             passed.append(mod_dir.name)
         elif status == "skip":

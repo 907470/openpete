@@ -622,14 +622,15 @@ say "[test] blocks via tools/modtest.py (the harness modders run)"
 # is the same on every machine. A mod whose
 # assets are derived locally and never committed declares `requires` and
 # the runner skips it by name; the runner exits non-zero if the whole
-# list executed nothing.
+# list executed nothing. MODTEST_JOBS (default 2) is the runner's --jobs:
+# rungs run that many at once, each one game process.
 modtest_mods=()
 while IFS= read -r manifest; do
     modtest_mods+=("$(dirname "$manifest")")
 done < <(find mods -mindepth 2 -maxdepth 2 -name modtest.toml | LC_ALL=C sort)
 if [ "${#modtest_mods[@]}" -eq 0 ]; then
     bad "no mods/*/modtest.toml found"
-elif python3 tools/modtest.py "${modtest_mods[@]}"; then
+elif python3 tools/modtest.py --jobs "${MODTEST_JOBS:-2}" "${modtest_mods[@]}"; then
     ok "modtest runner: ${#modtest_mods[@]} [test] blocks green"
 else
     bad "modtest runner reported failures"
