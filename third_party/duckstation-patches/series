@@ -27,3 +27,4 @@
 0027-regtest-psxtrace-vsync-query-skip-LO-HI-drops-a-libr.patch
 0028-regtest-GTE-hash-recorder-psxtrace-gte-psxtrace-gte-.patch
 0029-regtest-exact-psxtrace-ticks-VBLANK-position-and-lib.patch
+0030-GPU-Use-3412.5-clock-NTSC-lines-and-3405-clock-PAL-l.patch

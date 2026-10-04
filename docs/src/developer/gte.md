@@ -250,7 +250,7 @@ the guest's execution needs a recorder of where each interrupt lands.
 sound slot frees when libspu reports key status 3 (keyed on, envelope
 zero). openpete's SPU answers from the ADSR phase and advances 735
 samples per waited VBL, at the wait, with envelope time standing still
-during the tick's work; the reference advances 737.245 samples per VBL
+during the tick's work; the reference advances 737.137 samples per VBL
 continuously. The envelope ends on the same sample, but the query falls
 on the other side of it, so the slot frees one tick apart and the
 positional pan routine with its SQR pair (Spyro 1 SoundsUpdate, Spyro 2

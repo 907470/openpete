@@ -745,17 +745,16 @@ tripwire for that audit.
   it. The oracle hashes RAM, not VRAM, so this does not affect it; it would
   need fixing before regtest could drive visual regression tests.
 
-- The reference frame is 83 CPU ticks longer than the hardware frame.
-  The reference counts 3413 GPU ticks per NTSC line (measured);
-  the hardware line is 227.5
-  colour-subcarrier cycles, 3412.5 GPU ticks, which is what
-  `core/include/openpete_time.h` encodes (2250000/37609 Hz). The
-  reference therefore runs 59.81734 Hz against 59.82611 Hz, 0.0147 % slow,
-  one frame of wall-clock drift every 113 s. Guest state is unaffected: the
-  guest counts VBLs, guest-timed models count VBLs, and the gate samples at
-  anchor PCs. A model that converts cycles to VBL fractions against a
-  DuckStation golden uses the reference's 566,204 CPU ticks per VBL; against
-  hardware, 566,121.
+- The NTSC line is 227.5 colour-subcarrier cycles, 3412.5 GPU ticks, the
+  period `core/include/openpete_time.h` encodes (2250000/37609 Hz). Patch
+  0030 sets the reference's NTSC lines to alternate 3413 and 3412 GPU
+  ticks and its PAL line to 3405. The reference frame is then 897487.5
+  GPU ticks on average, 566120.83 CPU ticks at a 53693175 Hz GPU clock
+  (psx-spx's video clock; the 15 x colour-subcarrier clock, 53693181.8 Hz,
+  gives 566120.76); the `.vsync` waited rows of a 2000-record Spyro 1
+  capture read 566120.81 by least squares (566203.76 without the patch). A
+  model that converts reference CPU ticks to VBL fractions uses this one
+  period against a golden and against hardware.
 
 ## Related
 

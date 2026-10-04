@@ -27,6 +27,7 @@ Patches that change what a capture records, by number:
 | patch | change |
 | --- | --- |
 | 0029 | every sidecar tick is the exact instruction tick (the CPU tick of the instruction); `<trace>.vblpos` (`-psxtrace-vblpos SPANS`, `-psxtrace-vblpos-skip LIST`: each VBLANK interrupt taken outside a waited VSync, with EPC and the first game-code call target and its ordinal after the handler) and `<trace>.spuq` (`-psxtrace-spuq KIND:HEX`: SpuSetKey, SpuGetKeyStatus, SpuGetAllKeysStatus and envelope- or pitch-setting SpuSetVoiceAttr calls with their arguments); two core hooks, one before each instruction and one at an exception. Layouts: `docs/src/developer/duckstation-oracle.md` |
+| 0030 | the NTSC line alternates between 3413 and 3412 GPU ticks (3412.5 on average, 227.5 colour-subcarrier cycles) and the PAL line is 3405 ticks, so a VBL is 566120.83 CPU ticks instead of 566203.78: every sidecar tick column, the `.loads` issue VBLs, the `.vsync` `v0` HBLANK counts and the CD-timing state of a load window move |
 
 Apply (from the openpete checkout root; `--no-build` skips the build):
 
