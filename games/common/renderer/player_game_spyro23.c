@@ -32,6 +32,7 @@
 #include "renderer/player_game_spyro23.h"
 #include "game_layout.h"
 #include "openpete_recomp_module.h"
+#include "openpete_native_render.h"  /* OPENPETE_OT_SLOT_WORLD */
 
 #include <math.h>
 #include <stdlib.h>
@@ -436,7 +437,7 @@ static int s23_face_depth_keep(CPUState* cpu, const player_xform_t* root,
     (void)cpu;
     double thr = root ? 4.0 * (root->TR[2] - 2048.0) : 0.0;
     if (thr <= 0.0) thr = 1.0;
-    return (depth_sum - (double)f->otbias * 128.0 - thr) > 0.0;
+    return (depth_sum - (double)f->otbias * OPENPETE_OT_SLOT_WORLD - thr) > 0.0;
 }
 
 /* The water-plane split (spyrodraw.s:776-841 the setup, 847-857 the per-vertex

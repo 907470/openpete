@@ -6296,6 +6296,132 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
     }
 }
 
+/* Per-face admission and vertex writer of a key-layout batch
+ * (pack_keyrun_batch). The writer receives the span the face is appended
+ * to, NULL for the untextured prefix. */
+typedef int (*keyrun_admit_fn)(const scene_tri_t* t, const void* ctx);
+typedef void (*keyrun_write_fn)(const scene_tri_t* t, const keytex_span_t* sp,
+                                const void* ctx, rhi_vertex* out);
+
+/** @brief Return the span a textured face at vertex offset m appends to, opening a material run or the overflow sentinel when needed.
+ *
+ * The last span is reused when it is the overflow sentinel (bpp < 0) or
+ * holds the face's material (texture page, CLUT and bpp). Otherwise a new
+ * span opens at @p m with the face's material while fewer than
+ * KEYTEX_MAX_SPANS - 1 spans exist; past that the last slot opens as the
+ * overflow sentinel, material zeroed and bpp -1, and takes every later
+ * face.
+ * @param T Textured scene face.
+ * @param m Vertex offset the face's vertices go to.
+ * @param spans Span table, capacity KEYTEX_MAX_SPANS.
+ * @param nspans In: spans in use. Out: incremented when a span opens.
+ * @return The span to append the face to. */
+static keytex_span_t* keytex_span_for(const scene_tri_t* T, int m,
+                                      keytex_span_t* spans, int* nspans)
+{
+    keytex_span_t* sp = (*nspans > 0) ? &spans[*nspans - 1] : NULL;
+    if (sp && (sp->mat.bpp < 0 ||
+               (sp->mat.tpage_x == T->tpage_x && sp->mat.tpage_y == T->tpage_y &&
+                sp->mat.clut_x == T->clut_x && sp->mat.clut_y == T->clut_y &&
+                sp->mat.bpp == T->bpp)))
+        return sp;
+    sp = &spans[(*nspans)++];
+    sp->first = m; sp->count = 0;
+    memset(&sp->mat, 0, sizeof sp->mat);
+    if (*nspans < KEYTEX_MAX_SPANS) {
+        sp->mat.tpage_x = T->tpage_x; sp->mat.tpage_y = T->tpage_y;
+        sp->mat.clut_x = T->clut_x; sp->mat.clut_y = T->clut_y;
+        sp->mat.bpp = T->bpp;
+    } else {
+        sp->mat.bpp = -1;   /* table full: the remainder rasters full-footprint */
+    }
+    return sp;
+}
+
+/** @brief Pack a key-layout batch: admitted untextured faces first, then admitted textured faces in per-material runs.
+ *
+ * Faces are visited in scene order; @p admit selects them. Untextured faces
+ * are written at once; textured ones are collected (up to the compose
+ * triangle capacity), ordered by tex_mat_sort, the intern and sort the
+ * scene draw batches with, so runs are contiguous and few, and appended
+ * span by span (keytex_span_for). Output stops at the compose vertex
+ * capacity. The full-extent mapping is set for the pack and restored
+ * after.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Non-zero to map in the full-extent PSX space.
+ * @param admit Face admission test.
+ * @param write Vertex writer, given the face's span or NULL in the prefix.
+ * @param ctx Passed to @p admit and @p write.
+ * @param out Output vertices.
+ * @param out_untex Receives the untextured prefix length in vertices.
+ * @param spans Receives the textured runs, capacity KEYTEX_MAX_SPANS.
+ * @param nspans Receives the run count.
+ * @return Vertices written. */
+static int pack_keyrun_batch(const scene_tri_t* scene, int scene_n, int full_extent,
+                             keyrun_admit_fn admit, keyrun_write_fn write,
+                             const void* ctx, rhi_vertex* out, int* out_untex,
+                             keytex_span_t* spans, int* nspans)
+{
+    int prev_fe = s_render_full_extent;
+    s_render_full_extent = full_extent ? 1 : 0;
+    int m = 0, tex_n = 0;
+    *nspans = 0;
+    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
+        if (!admit(&scene[t], ctx)) continue;
+        if (scene[t].textured) {
+            if (tex_n < s_cz_tris) s_ktex_idx[tex_n++] = t;
+            continue;
+        }
+        write(&scene[t], NULL, ctx, &out[m]);
+        m += 3;
+    }
+    *out_untex = m;
+    tex_mat_sort(scene, s_ktex_idx, tex_n);
+    for (int i = 0; i < tex_n && m + 3 <= s_cz_verts; i++) {
+        const scene_tri_t* T = &scene[s_ktex_idx[i]];
+        keytex_span_t* sp = keytex_span_for(T, m, spans, nspans);
+        write(T, sp, ctx, &out[m]);
+        m += 3;
+        sp->count += 3;
+    }
+    s_render_full_extent = prev_fe;
+    return m;
+}
+
+/* Key-batch class and the scene's aura boxes, the context of the key
+ * batch's admit and write callbacks. */
+typedef struct {
+    int prop_class;
+    const key_box_t* aura;
+    int naura;
+} key_run_ctx_t;
+
+/** @brief Admit a face into a key batch by its class (key_batch_admits).
+ * @param t Scene face.
+ * @param ctx The batch's key_run_ctx_t.
+ * @return 1 when the face is admitted, else 0. */
+static int key_run_admit(const scene_tri_t* t, const void* ctx)
+{
+    const key_run_ctx_t* c = (const key_run_ctx_t*)ctx;
+    return key_batch_admits(t, c->prop_class, c->aura, c->naura);
+}
+
+/** @brief Write a key-batch face's vertices, with UVs on every textured span.
+ *
+ * The overflow sentinel keeps its UVs, since the cutout pipe keys a drain
+ * record's sub-cell by UV on that span too.
+ * @param t Scene face.
+ * @param sp The face's span, NULL in the untextured prefix.
+ * @param ctx The batch's key_run_ctx_t.
+ * @param out Receives three vertices. */
+static void key_run_write(const scene_tri_t* t, const keytex_span_t* sp,
+                          const void* ctx, rhi_vertex* out)
+{
+    const key_run_ctx_t* c = (const key_run_ctx_t*)ctx;
+    pack_key_vert(t, c->prop_class, sp != NULL, out);
+}
+
 /** @brief Pack one key batch's vertices: untextured keyed faces first, then textured ones in per-material runs.
  *
  * Admission is by class: 0 opaque keyed WORLD faces, 1 opaque keyed props,
@@ -6307,9 +6433,8 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
  * paint: a cloak edge or fence lattice does not key-discard what its holes
  * show. When the span table fills, the remainder goes into a trailing
  * sentinel span (bpp < 0) that the cutout pipe draws without the texel
- * cutout while still keying a drain record's sub-cell by its UV. Output
- * stops at the compose vertex capacity. The full-extent mapping is set for
- * the pack and restored after.
+ * cutout while still keying a drain record's sub-cell by its UV. The
+ * layout and limits are pack_keyrun_batch's.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param full_extent Non-zero to map in the full-extent PSX space.
@@ -6323,54 +6448,11 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
                                   int full_extent, int prop_class, rhi_vertex* out,
                                   int* out_untex, keytex_span_t* spans, int* nspans)
 {
-    int prev_fe = s_render_full_extent;
-    s_render_full_extent = full_extent ? 1 : 0;
-    int m = 0, tex_n = 0;
-    *nspans = 0;
     key_box_t aura[KEY_AURA_BOX_MAX];
-    int naura = prop_class == 2 ? scene_aura_boxes(scene, scene_n, aura) : 0;
-    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
-        if (!key_batch_admits(&scene[t], prop_class, aura, naura)) continue;
-        if (scene[t].textured) {
-            if (tex_n < s_cz_tris) s_ktex_idx[tex_n++] = t;
-            continue;
-        }
-        pack_key_vert(&scene[t], prop_class, 0, &out[m]);
-        m += 3;
-    }
-    *out_untex = m;
-    /* Material-run order for the textured tail - same intern/sort the scene
-     * draw batches with, so runs are contiguous and few. */
-    tex_mat_sort(scene, s_ktex_idx, tex_n);
-    for (int i = 0; i < tex_n && m + 3 <= s_cz_verts; i++) {
-        const scene_tri_t* T = &scene[s_ktex_idx[i]];
-        keytex_span_t* sp = (*nspans > 0) ? &spans[*nspans - 1] : NULL;
-        if (!sp || sp->mat.bpp < 0 ||
-            sp->mat.tpage_x != T->tpage_x || sp->mat.tpage_y != T->tpage_y ||
-            sp->mat.clut_x != T->clut_x || sp->mat.clut_y != T->clut_y ||
-            sp->mat.bpp != T->bpp) {
-            if (sp && sp->mat.bpp < 0) {
-                /* overflow sentinel already open: keep appending to it */
-            } else if (*nspans < KEYTEX_MAX_SPANS - 1) {
-                sp = &spans[(*nspans)++];
-                sp->first = m; sp->count = 0;
-                sp->mat.tpage_x = T->tpage_x; sp->mat.tpage_y = T->tpage_y;
-                sp->mat.clut_x = T->clut_x; sp->mat.clut_y = T->clut_y;
-                sp->mat.bpp = T->bpp;
-            } else {
-                /* table full: remainder rasters full-footprint */
-                sp = &spans[(*nspans)++];
-                sp->first = m; sp->count = 0;
-                memset(&sp->mat, 0, sizeof sp->mat);
-                sp->mat.bpp = -1;
-            }
-        }
-        pack_key_vert(T, prop_class, 1, &out[m]);
-        m += 3;
-        sp->count += 3;
-    }
-    s_render_full_extent = prev_fe;
-    return m;
+    key_run_ctx_t c = { prop_class, aura,
+                        prop_class == 2 ? scene_aura_boxes(scene, scene_n, aura) : 0 };
+    return pack_keyrun_batch(scene, scene_n, full_extent, key_run_admit,
+                             key_run_write, &c, out, out_untex, spans, nspans);
 }
 
 /** @brief Write one moby rank-batch triangle's three vertices.
@@ -6407,13 +6489,37 @@ static void pack_rank_vert(const scene_tri_t* T, int tex, rhi_vertex* out)
     }
 }
 
+/** @brief Admit a face into the rank batch when it is opaque (blend 0) and not ranked below 0.5.
+ * @param t Scene face.
+ * @param ctx Unused.
+ * @return 1 when the face is admitted, else 0. */
+static int rank_run_admit(const scene_tri_t* t, const void* ctx)
+{
+    (void)ctx;
+    return t->blend == 0 && !(t->rank < 0.5f);
+}
+
+/** @brief Write a rank-batch face's vertices, with UVs only on a material span.
+ *
+ * The overflow sentinel (bpp < 0) draws through the flat pipe, which reads
+ * no UV, so its vertices carry none.
+ * @param t Scene face.
+ * @param sp The face's span, NULL in the untextured prefix.
+ * @param ctx Unused.
+ * @param out Receives three vertices. */
+static void rank_run_write(const scene_tri_t* t, const keytex_span_t* sp,
+                           const void* ctx, rhi_vertex* out)
+{
+    (void)ctx;
+    pack_rank_vert(t, sp != NULL && sp->mat.bpp >= 0, out);
+}
+
 /** @brief Pack the rank batch: ranked opaque moby faces, untextured prefix first, then textured material runs.
  *
  * A face is packed when it is opaque (blend 0) and ranked (rank at least
- * 0.5); vertices come from pack_rank_vert. The layout, the material runs
- * and the trailing sentinel span (bpp -1) on span table overflow follow
- * pack_terrain_key_batch, and output stops at the compose vertex capacity.
- * The full-extent mapping is set for the pack and restored after.
+ * 0.5); vertices come from pack_rank_vert. The layout, the material runs,
+ * the trailing sentinel span (bpp -1) on span table overflow and the
+ * limits are pack_keyrun_batch's.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param full_extent Non-zero to map in the full-extent PSX space.
@@ -6426,50 +6532,8 @@ static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
                                 int full_extent, rhi_vertex* out,
                                 int* out_untex, keytex_span_t* spans, int* nspans)
 {
-    int prev_fe = s_render_full_extent;
-    s_render_full_extent = full_extent ? 1 : 0;
-    int m = 0, tex_n = 0;
-    *nspans = 0;
-    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
-        if (scene[t].blend != 0) continue;      /* opaque only */
-        if (scene[t].rank < 0.5f) continue;     /* ranked faces only */
-        if (scene[t].textured) {
-            if (tex_n < s_cz_tris) s_ktex_idx[tex_n++] = t;
-            continue;
-        }
-        pack_rank_vert(&scene[t], 0, &out[m]);
-        m += 3;
-    }
-    *out_untex = m;
-    tex_mat_sort(scene, s_ktex_idx, tex_n);
-    for (int i = 0; i < tex_n && m + 3 <= s_cz_verts; i++) {
-        const scene_tri_t* T = &scene[s_ktex_idx[i]];
-        keytex_span_t* sp = (*nspans > 0) ? &spans[*nspans - 1] : NULL;
-        if (!sp || sp->mat.bpp < 0 ||
-            sp->mat.tpage_x != T->tpage_x || sp->mat.tpage_y != T->tpage_y ||
-            sp->mat.clut_x != T->clut_x || sp->mat.clut_y != T->clut_y ||
-            sp->mat.bpp != T->bpp) {
-            if (sp && sp->mat.bpp < 0) {
-                /* overflow sentinel already open: keep appending to it */
-            } else if (*nspans < KEYTEX_MAX_SPANS - 1) {
-                sp = &spans[(*nspans)++];
-                sp->first = m; sp->count = 0;
-                sp->mat.tpage_x = T->tpage_x; sp->mat.tpage_y = T->tpage_y;
-                sp->mat.clut_x = T->clut_x; sp->mat.clut_y = T->clut_y;
-                sp->mat.bpp = T->bpp;
-            } else {
-                /* table full: remainder rasters full-footprint (flat pipe) */
-                sp = &spans[(*nspans)++];
-                sp->first = m; sp->count = 0;
-                sp->mat.bpp = -1;
-            }
-        }
-        pack_rank_vert(T, sp->mat.bpp >= 0, &out[m]);
-        m += 3;
-        sp->count += 3;
-    }
-    s_render_full_extent = prev_fe;
-    return m;
+    return pack_keyrun_batch(scene, scene_n, full_extent, rank_run_admit,
+                             rank_run_write, NULL, out, out_untex, spans, nspans);
 }
 
 /* The last key-pass packs (terrain + prop + actor), recorded for the identity
@@ -6499,13 +6563,68 @@ static int key_batch_drain_tris(const rhi_vertex* kbuf, int m)
     return n;
 }
 
+/* The pipelines one key-layout batch draws through (draw_keyrun_batch). */
+typedef struct {
+    rhi_pipeline* flat;     /* untextured prefix, and spans drawn flat      */
+    rhi_pipeline* cutout;   /* material spans; NULL draws every span flat   */
+    rhi_texture*  set1;     /* bound at set 1 with the cutout pipe, or NULL */
+    int overflow_flat;      /* non-zero: bpp < 0 spans draw through flat    */
+} keyrun_pipes_t;
+
+/** @brief Draw one packed key-layout batch into the currently open render pass.
+ *
+ * The untextured prefix draws through the flat pipe. Each material span
+ * draws through the cutout pipe with VRAM at set 0, @p p->set1 at set 1
+ * when given, and the span's material pushed; the binds are issued once
+ * per run of cutout spans. A span draws through the flat pipe instead when
+ * there is no cutout pipe, or when its bpp is negative and
+ * @p p->overflow_flat is set; the next cutout span then rebinds.
+ * @param p The batch's pipelines.
+ * @param base The batch's bump-allocated vertex offset in terrain_key_vb.
+ * @param m Vertices in the batch; nothing draws when 0 or less.
+ * @param untex Vertices in the untextured prefix.
+ * @param spans Textured material spans, offsets relative to @p base.
+ * @param nspans Span count. */
+static void draw_keyrun_batch(const keyrun_pipes_t* p, int base, int m, int untex,
+                              const keytex_span_t* spans, int nspans)
+{
+    if (m <= 0) return;
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.terrain_key_vb);
+    if (untex > 0) {
+        rhi_bind_pipeline(s_nr.dev, p->flat);
+        rhi_draw(s_nr.dev, (uint32_t)untex, (uint32_t)base);
+    }
+    int tex_bound = 0;
+    for (int i = 0; i < nspans; i++) {
+        if (spans[i].count <= 0) continue;
+        if (!p->cutout || (p->overflow_flat && spans[i].mat.bpp < 0)) {
+            rhi_bind_pipeline(s_nr.dev, p->flat);
+            rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
+                     (uint32_t)(base + spans[i].first));
+            tex_bound = 0;
+            continue;
+        }
+        if (!tex_bound) {
+            rhi_bind_pipeline(s_nr.dev, p->cutout);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            if (p->set1) rhi_bind_texture_set(s_nr.dev, p->set1, 1);
+            tex_bound = 1;
+        }
+        rhi_push_constants(s_nr.dev, &spans[i].mat, sizeof(spans[i].mat));
+        rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
+                 (uint32_t)(base + spans[i].first));
+    }
+}
+
 /** @brief Draw one packed key batch into the currently open key render pass.
  *
  * The untextured prefix draws through the flat full-footprint pipe
  * (terrain_key_pipe) and each textured material span through the
  * alpha-aware cutout pipe (terrain_key_tex_pipe, VRAM at set 0 and the
- * drain records at set 1), where transparent texels stamp no key; without
- * the cutout pipe the spans draw flat.
+ * drain records at set 1), where transparent texels stamp no key; the
+ * overflow sentinel (bpp < 0) takes the cutout pipe too, which skips the
+ * texel cutout on it but keys drain sub-cells by UV. Without the cutout
+ * pipe the spans draw flat.
  * @param base The batch's bump-allocated vertex offset in terrain_key_vb.
  * @param m Vertices in the batch; nothing draws when 0 or less.
  * @param untex Vertices in the untextured prefix.
@@ -6514,31 +6633,9 @@ static int key_batch_drain_tris(const rhi_vertex* kbuf, int m)
 static void draw_key_batch(int base, int m, int untex,
                            const keytex_span_t* spans, int nspans)
 {
-    if (m <= 0) return;
-    rhi_bind_vertex_buffer(s_nr.dev, s_nr.terrain_key_vb);
-    if (untex > 0) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
-        rhi_draw(s_nr.dev, (uint32_t)untex, (uint32_t)base);
-    }
-    int tex_bound = 0;
-    for (int i = 0; i < nspans; i++) {
-        if (spans[i].count <= 0) continue;
-        if (!s_nr.terrain_key_tex_pipe) {   /* no cutout pipe: degrade flat */
-            rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
-            rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
-                     (uint32_t)(base + spans[i].first));
-            continue;
-        }
-        if (!tex_bound) {
-            rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_tex_pipe);
-            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-            if (s_nr.drain_tex) rhi_bind_texture_set(s_nr.dev, s_nr.drain_tex, 1);
-            tex_bound = 1;
-        }
-        rhi_push_constants(s_nr.dev, &spans[i].mat, sizeof(spans[i].mat));
-        rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
-                 (uint32_t)(base + spans[i].first));
-    }
+    keyrun_pipes_t p = { s_nr.terrain_key_pipe, s_nr.terrain_key_tex_pipe,
+                         s_nr.drain_tex, 0 };
+    draw_keyrun_batch(&p, base, m, untex, spans, nspans);
 }
 
 /** @brief Draw one packed rank batch into the currently open rank render pass.
@@ -6555,31 +6652,9 @@ static void draw_key_batch(int base, int m, int untex,
 static void draw_rank_batch(int base, int m, int untex,
                             const keytex_span_t* spans, int nspans)
 {
-    if (m <= 0 || !s_nr.moby_rank_pipe) return;
-    rhi_bind_vertex_buffer(s_nr.dev, s_nr.terrain_key_vb);
-    if (untex > 0) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.moby_rank_pipe);
-        rhi_draw(s_nr.dev, (uint32_t)untex, (uint32_t)base);
-    }
-    int tex_bound = 0;
-    for (int i = 0; i < nspans; i++) {
-        if (spans[i].count <= 0) continue;
-        if (spans[i].mat.bpp < 0 || !s_nr.moby_rank_cutout_pipe) {
-            rhi_bind_pipeline(s_nr.dev, s_nr.moby_rank_pipe);
-            rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
-                     (uint32_t)(base + spans[i].first));
-            tex_bound = 0;
-            continue;
-        }
-        if (!tex_bound) {
-            rhi_bind_pipeline(s_nr.dev, s_nr.moby_rank_cutout_pipe);
-            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-            tex_bound = 1;
-        }
-        rhi_push_constants(s_nr.dev, &spans[i].mat, sizeof(spans[i].mat));
-        rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
-                 (uint32_t)(base + spans[i].first));
-    }
+    if (!s_nr.moby_rank_pipe) return;
+    keyrun_pipes_t p = { s_nr.moby_rank_pipe, s_nr.moby_rank_cutout_pipe, NULL, 1 };
+    draw_keyrun_batch(&p, base, m, untex, spans, nspans);
 }
 
 /** @brief Record a key pass's viewport and screen-to-clip mapping for terrain_key_dump.

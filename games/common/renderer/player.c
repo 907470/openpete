@@ -842,7 +842,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
         static int s_on = -1;
         if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_on = (e && *e) ? (*e != '0') : 1; }
         if (s_on && player_game.sort_depth_front && sd == player_game.sort_depth_front) {
-            sp_pull = 128.0 * (double)sd;
+            sp_pull = OPENPETE_OT_SLOT_WORLD * (double)sd;
             /* Cap the pull per tick so the nearest vertex lands ON the near
              * floor instead of clamping each vertex at it: a per-vertex clamp
              * flattens everything past the floor to ONE depth and kills
@@ -864,7 +864,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
              * so the copy sorts that many slots BEHIND the avatar. Applied to
              * the depth key only, like the front-layer pull above: the
              * reflection's geometry is already below the surface. */
-            if (s_mirror_pass && sd < 0) sp_pull = 128.0 * (double)sd;
+            if (s_mirror_pass && sd < 0) sp_pull = OPENPETE_OT_SLOT_WORLD * (double)sd;
         }
     }
     openpete_native_scene_begin_frame(openpete_frame);

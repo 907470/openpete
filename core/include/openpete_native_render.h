@@ -968,6 +968,12 @@ typedef struct {
 #define OPENPETE_SCENE_RANK_PROP  (-1.25f)
 #define OPENPETE_SCENE_RANK_AURA  (-2.0f)
 
+/* World view-Z per ordering-table slot: the games insert a face at its view-Z
+ * shifted right by 7, so one slot of ordering bias moves a key by 128 world
+ * units. The C mirror of OP_KEY_SLOT (psx_key_contest.glsl). A double
+ * constant; a float expression casts it to float. */
+#define OPENPETE_OT_SLOT_WORLD 128.0
+
 /* ---- scene view-Z: the ONE named point ------------------------------------
  *
  * The scene vertex stream carries depth as FULL-WORLD view-space Z (the GTE

@@ -63,14 +63,10 @@ layout(constant_id = 4) const bool SLOT_CONTEST = false;
 /* Untextured lighting view - see psx_scene.frag. */
 layout(constant_id = 2) const bool NOTEX = false;
 
-uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
-
 uint sample_word(int u, int v)
 {
-    if (pc.bpp == 16) return vram_at(pc.tpage_x + u, pc.tpage_y + v);
-    return vram_at(pc.clut_x + int(op_clut_index(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
-                                                 pc.bpp, u, v)),
-                   pc.clut_y);
+    return op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                         ivec2(pc.clut_x, pc.clut_y), pc.bpp, u, v);
 }
 
 /* The second fogged-CLUT row of a textured face (op_clut_fog_mix); the

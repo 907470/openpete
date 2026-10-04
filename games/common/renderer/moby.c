@@ -6652,7 +6652,7 @@ static void push_scene_moby(void) {
               int dofs = (int)s_wtri_dofs[i];
               double mean = ((double)s_wtri[i].v[0].tvz + (double)s_wtri[i].v[1].tvz
                            + (double)s_wtri[i].v[2].tvz) / 3.0;
-              double key = mean - 128.0 * (double)dofs;
+              double key = mean - OPENPETE_OT_SLOT_WORLD * (double)dofs;
               if (key < 1.0) key = 1.0;      /* og floors the slot at 0 */
               t.koff = (float)(key + 0.5);
               /* Embedded-PROP classes: rendered whole from every angle. */

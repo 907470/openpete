@@ -10701,7 +10701,7 @@ static void terrain_feed_native(CPUState* cpu) {
                     "xy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vzv=(%.0f,%.0f,%.0f)\n",
                     openpete_frame, (double)ppx, (double)ppy, i, t->sec, t->face,
                     t->tier, t->fill, t->blend, (int)t->otslots, (double)t->otkey,
-                    (double)vz, (double)vz*16.0, (double)(vz*16.0 + 128.0*t->otslots),
+                    (double)vz, (double)vz*16.0, (double)(vz*16.0 + OPENPETE_OT_SLOT_WORLD*t->otslots),
                     (double)t->sx[0], (double)t->sy[0], (double)t->sx[1], (double)t->sy[1],
                     (double)t->sx[2], (double)t->sy[2],
                     (double)t->vz[0]*16.0, (double)t->vz[1]*16.0, (double)t->vz[2]*16.0);
@@ -10932,7 +10932,7 @@ static void terrain_feed_native(CPUState* cpu) {
                 s_nbc = (e && *e) ? (*e != '0') : 1; }
             double mean = (t->otkey > 0.0f) ? (double)t->otkey
                         : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-            double key = mean + 128.0 * (double)t->otslots + 0.5;
+            double key = mean + OPENPETE_OT_SLOT_WORLD * (double)t->otslots + 0.5;
             if (!t->nearband)
                 tri.koff = (float)key;
             else if (!s_nbc || tri.blend)

@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#include "psx_clut.glsl"
 
 /* TEXTURED key-pass fragment stage: alpha-aware og-key rasterisation.
  *
@@ -40,21 +41,10 @@ layout(set = 1, binding = 0) uniform usampler2D u_drain;
 
 layout(location = 0) out vec4 outColor;
 
-uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
-
 uint sample_word(int u, int v)
 {
-    if (pc.bpp == 16) {
-        return vram_at(pc.tpage_x + u, pc.tpage_y + v);
-    } else if (pc.bpp == 8) {
-        uint word = vram_at(pc.tpage_x + (u >> 1), pc.tpage_y + v);
-        uint idx  = (word >> (8 * (u & 1))) & 0xFFu;
-        return vram_at(pc.clut_x + int(idx), pc.clut_y);
-    } else { /* 4bpp */
-        uint word = vram_at(pc.tpage_x + (u >> 2), pc.tpage_y + v);
-        uint nib  = (word >> (4 * (u & 3))) & 0xFu;
-        return vram_at(pc.clut_x + int(nib), pc.clut_y);
-    }
+    return op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                         ivec2(pc.clut_x, pc.clut_y), pc.bpp, u, v);
 }
 
 void main()

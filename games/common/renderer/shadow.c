@@ -367,7 +367,7 @@ int shadow_ot_slot(float sza, float sz1, float sz2, int shift, int bias) {
 }
 
 float shadow_slot_koff(int slot) {
-    return slot < 0 ? 0.0f : (float)slot * 128.0f + 0.5f;
+    return slot < 0 ? 0.0f : (float)slot * (float)OPENPETE_OT_SLOT_WORLD + 0.5f;
 }
 
 #define MOBY_SHADOW_SKIP (-2)

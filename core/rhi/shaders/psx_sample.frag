@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_clut.glsl"
 
 /* PSX VRAM sampler, fragment stage.
  *
@@ -28,42 +30,17 @@ layout(location = 1) in vec4 vColor;  /* modulate */
 
 layout(location = 0) out vec4 outColor;
 
-uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
-
-/* 5-bit -> 8-bit, normalized. (v<<3)|(v>>2) replicates the high bits. */
-float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
-
-/* PSX BGR555 + STP -> linear RGBA. 0 is the transparent sentinel. */
-vec4 decode555(uint p)
-{
-    if (p == 0u) return vec4(0.0);
-    return vec4(expand5( p        & 31u),
-                expand5((p >> 5)  & 31u),
-                expand5((p >> 10) & 31u),
-                1.0 - 0.5 * float((p >> 15) & 1u)); /* STP set => 50% alpha */
-}
-
-/* Fetch the raw 16-bit color for texel (u,v), resolving CLUT for 4/8bpp.
- * Two 8-bit indices per VRAM word (low byte first); four 4-bit indices per
- * word (low nibble first) - exactly the PSX packing. */
+/* The raw 16-bit colour of texel (u, v) through this draw's bpp and CLUT
+ * (op_texel_word). */
 uint sample_word(int u, int v)
 {
-    if (pc.bpp == 16) {
-        return vram_at(pc.tpage_x + u, pc.tpage_y + v);
-    } else if (pc.bpp == 8) {
-        uint word = vram_at(pc.tpage_x + (u >> 1), pc.tpage_y + v);
-        uint idx  = (word >> (8 * (u & 1))) & 0xFFu;
-        return vram_at(pc.clut_x + int(idx), pc.clut_y);
-    } else { /* 4bpp */
-        uint word = vram_at(pc.tpage_x + (u >> 2), pc.tpage_y + v);
-        uint nib  = (word >> (4 * (u & 3))) & 0xFu;
-        return vram_at(pc.clut_x + int(nib), pc.clut_y);
-    }
+    return op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                         ivec2(pc.clut_x, pc.clut_y), pc.bpp, u, v);
 }
 
 void main()
 {
-    vec4 c = decode555(sample_word(int(vUV.x), int(vUV.y)));
+    vec4 c = op_decode555(sample_word(int(vUV.x), int(vUV.y)));
     if (c.a == 0.0) discard;
     outColor = c * vColor;
 }

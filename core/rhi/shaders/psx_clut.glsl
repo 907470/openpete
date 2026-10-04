@@ -1,6 +1,8 @@
-/* psx_clut.glsl - the PSX texel decode and the fogged-CLUT row mix, shared by
- * the walked scene fragment stages (psx_scene.frag, psx_scene_key.frag) and
- * the scene half of the mod material contract (openpete_psx_material.glsl).
+/* psx_clut.glsl - the PSX texel fetch and decode and the fogged-CLUT row mix,
+ * shared by the fragment stages that read VRAM texels (psx_scene.frag,
+ * psx_scene_key.frag, psx_sample.frag, psx_key_cutout.frag,
+ * moby_rank_cutout.frag, shadow_decal_tex.frag) and the scene half of the mod
+ * material contract (openpete_psx_material.glsl).
  * The functions take the VRAM image (R16_UINT 1024x512) as an argument, since
  * each includer declares it at its own set. */
 
@@ -30,6 +32,17 @@ uint op_clut_index(usampler2D vram, ivec2 tpage, int bpp, int u, int v)
     }
     uint word = texelFetch(vram, ivec2(tpage.x + (u >> 2), tpage.y + v), 0).r;
     return (word >> (4 * (u & 3))) & 0xFu;
+}
+
+/* The 15-bit VRAM word of the texel at page-relative texel coords (u, v) of
+ * the texture page at tpage: the word itself at 16 bpp, else the word of the
+ * CLUT row at clut that the texel's 4- or 8-bpp index selects (any bpp other
+ * than 16 and 8 reads as 4). */
+uint op_texel_word(usampler2D vram, ivec2 tpage, ivec2 clut, int bpp, int u, int v)
+{
+    if (bpp == 16) return texelFetch(vram, ivec2(tpage.x + u, tpage.y + v), 0).r;
+    uint idx = op_clut_index(vram, tpage, bpp, u, v);
+    return texelFetch(vram, ivec2(clut.x + int(idx), clut.y), 0).r;
 }
 
 /* Second fogged-CLUT row of a textured face (the moby fog band between two

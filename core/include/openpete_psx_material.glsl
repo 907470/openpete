@@ -219,11 +219,9 @@ uint op_vram_at(int x, int y) { return texelFetch(op_vram, ivec2(x, y), 0).r; }
  * CLUT. Pass op_uv() for the fragment's own texel. */
 vec4 op_psx_texel(ivec2 uv)
 {
-    if (op_pc.bpp == 16)
-        return op_decode555(op_vram_at(op_pc.tpage_x + uv.x, op_pc.tpage_y + uv.y));
-    uint idx = op_clut_index(op_vram, ivec2(op_pc.tpage_x, op_pc.tpage_y), op_pc.bpp,
-                             uv.x, uv.y);
-    return op_decode555(op_vram_at(op_pc.clut_x + int(idx), op_pc.clut_y));
+    return op_decode555(op_texel_word(op_vram, ivec2(op_pc.tpage_x, op_pc.tpage_y),
+                                      ivec2(op_pc.clut_x, op_pc.clut_y), op_pc.bpp,
+                                      uv.x, uv.y));
 }
 
 /* PSX texture modulation: texel * vertexColour / 128 (128 = unchanged). */

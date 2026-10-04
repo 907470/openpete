@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#include "psx_clut.glsl"
 
 /* Textured depth-aware shadow decal - the MOBY drop-shadows.
  *
@@ -67,32 +68,11 @@ layout(location = 2) flat in float vKoff;  /* the fan triangle's slot key */
 
 layout(location = 0) out vec4 outColor;
 
-/* ---- PSX VRAM decode (psx_scene.frag) ------------------------------------- */
-uint  vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
-float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
-vec4  decode555(uint p)
-{
-    if (p == 0u) return vec4(0.0);                /* PSX transparent sentinel */
-    return vec4(expand5( p        & 31u),
-                expand5((p >> 5)  & 31u),
-                expand5((p >> 10) & 31u),
-                1.0 - 0.5 * float((p >> 15) & 1u));
-}
+/* ---- PSX VRAM texel fetch (psx_clut.glsl) ------------------------------ */
 uint sample_word(int u, int v)
 {
-    int tx = tpage_x(), ty = tpage_y();
-    int bpp = bpp_of();
-    if (bpp == 16) {
-        return vram_at(tx + u, ty + v);
-    } else if (bpp == 8) {
-        uint word = vram_at(tx + (u >> 1), ty + v);
-        uint idx  = (word >> (8 * (u & 1))) & 0xFFu;
-        return vram_at(clut_x() + int(idx), clut_y());
-    } else { /* 4bpp */
-        uint word = vram_at(tx + (u >> 2), ty + v);
-        uint nib  = (word >> (4 * (u & 3))) & 0xFu;
-        return vram_at(clut_x() + int(nib), clut_y());
-    }
+    return op_texel_word(u_vram, ivec2(tpage_x(), tpage_y()), ivec2(clut_x(), clut_y()),
+                         bpp_of(), u, v);
 }
 
 /* ---- world reconstruction (shadow_decal.frag) ----------------------------- */
@@ -140,7 +120,7 @@ void main()
 {
     /* Sprite texel: gates the soft fan shape (transparent sentinel -> discard)
      * and carries the grey the subtract blend removes from the ground. */
-    vec4 c = decode555(sample_word(int(vUV.x), int(vUV.y)));
+    vec4 c = op_decode555(sample_word(int(vUV.x), int(vUV.y)));
     if (c.a == 0.0) discard;
 
     /* Depth-aware occlusion - mirror shadow_decal.frag. This fragment's own PSX
