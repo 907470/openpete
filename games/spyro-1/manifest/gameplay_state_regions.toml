@@ -115,7 +115,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "VBLs elapsed since the previous tick, as the game measured them; the first tick after a load counts the read wait on the reference"
 cd_load_transient = true
-diverge_baseline  = 16
+diverge_baseline  = 8
 
 [[region]]
 name              = "g_CDMaxReadTime"
@@ -124,7 +124,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "Longest CdRead wait the load code has seen, in VBLs"
 cd_load_transient = true
-diverge_baseline  = 2452
+diverge_baseline  = 2450
 
 [[region]]
 name        = "g_UnprocessedFrames"
@@ -156,7 +156,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "Level-load state machine stage"
 cd_load_transient = true
-diverge_baseline  = 2390
+diverge_baseline  = 2392
 
 [[region]]
 name              = "g_CDReadTime"
@@ -165,7 +165,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "VBLs the current CdRead has been waiting"
 cd_load_transient = true
-diverge_baseline  = 2413
+diverge_baseline  = 2412
 
 [[region]]
 name        = "g_LevelIndex"
@@ -190,7 +190,7 @@ description       = "SPU definition table and sound-request slots the level load
 mask_offsets      = [0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B]
 mask_reason       = "+0x34..+0x4B: a sound-request slot the host SPU resolves one tick later than hardware (the voice answer lands in g_DragonCutscene+0x54, masked in its extent row); the same host-precision residual as the moby m_SoundChannel masks"
 cd_load_transient = true
-diverge_baseline  = 1786
+diverge_baseline  = 1788
 
 [[region]]
 name              = "level_tables"
@@ -199,7 +199,7 @@ length            = 0x900
 class             = "gameplay"
 description       = "D_80076278 and g_Models (model table): tables the level load fills as its sectors arrive"
 cd_load_transient = true
-diverge_baseline  = 2199
+diverge_baseline  = 2202
 
 [[region]]
 name              = "g_CdState"
@@ -208,7 +208,7 @@ length            = 0x30
 class             = "gameplay"
 description       = "CD load bookkeeping: current read position, sector counts and the wait counter"
 cd_load_transient = true
-diverge_baseline  = 2605
+diverge_baseline  = 2606
 
 [[region]]
 name              = "g_CdMusic_head"
@@ -235,7 +235,7 @@ length            = 0x14
 class             = "gameplay"
 description       = "Cyclorama pointers the load code publishes when the sky sectors land"
 cd_load_transient = true
-diverge_baseline  = 1592
+diverge_baseline  = 1594
 
 [[region]]
 name        = "render_dedup_flags"
@@ -265,7 +265,7 @@ length            = 0x60
 class             = "gameplay"
 description       = "g_Environment and g_Buffers: level environment header and buffer pointers set as the load lands them"
 cd_load_transient = true
-diverge_baseline  = 2199
+diverge_baseline  = 2202
 
 [[region]]
 name         = "g_Spyro"
@@ -541,7 +541,7 @@ mask_reason       = "Moby.m_SoundChannel: the SPU voice the host allocator answe
 # for the load's duration against the hardware-timed reference, then
 # re-converges.
 cd_load_transient = true
-diverge_baseline = 1417
+diverge_baseline = 1422
 
 [[region]]
 name             = "g_DynMobys_pool"
@@ -555,7 +555,7 @@ description      = "Dynamic-spawn moby pool behind *g_DynMobys; the Moby starts 
 mask_per_element = [0x6C]
 mask_reason      = "Moby.m_SoundChannel (Moby at +0x18 in the 0x70 stride)"
 cd_load_transient = true
-diverge_baseline = 972
+diverge_baseline = 971
 
 [[region]]
 name             = "g_Sparx_moby"
@@ -568,7 +568,7 @@ description      = "Sparx companion: the single Moby behind *g_Sparx"
 mask_per_element = [0x54]
 mask_reason      = "Moby.m_SoundChannel: the SPU voice the host allocator answered"
 cd_load_transient = true
-diverge_baseline = 981
+diverge_baseline = 980
 
 # ─── libcd mirror ──────────────────────────────────────────────────────
 # Of libcd's state block (0x80074E38, written by the shared CD thunks) the
@@ -589,7 +589,7 @@ length      = 0x1
 class       = "psyq_mirror"
 description = "libcd block 0x80074E38: last command byte (CdLastCom), read by music.c"
 cd_load_transient = true
-diverge_baseline = 2473
+diverge_baseline = 2471
 
 # crt0 mirrors, set once at boot.
 [[region]]
