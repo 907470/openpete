@@ -196,6 +196,7 @@ nav:
           - "0012 - Load GL entry points through SDL, not glad's GLX-only loader": developer/psycross/0012-glad-load-via-sdl-for-egl.md
           - "0013 - Tear down GL before destroying the SDL window": developer/psycross/0013-gl-shutdown-before-window-destroy.md
       - DuckStation oracle: developer/duckstation-oracle.md
+      - GTE: developer/gte.md
       - GTE trace vs reference: developer/gte-trace-vs-reference.md
       - RAM diff vs pcsx-redux: developer/ram-diff-vs-pcsxr.md
   - Spyro:

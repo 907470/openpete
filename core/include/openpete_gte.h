@@ -6,6 +6,8 @@
 // drive it without a CPU. The instruments (core/psx/gte_instruments.cpp)
 // are the env-gated diagnostics around each command: the side-by-side
 // trace (OPENPETE_GTE_TRACE), the command census (OPENPETE_GTE_CENSUS),
+// the per-command register record (OPENPETE_GTE_RECORD), the hash fold
+// (OPENPETE_GTE_HASH),
 // the render probe counters PsyCross prints (OPENPETE_RENDER_PROBE), a
 // one-VBL caller histogram (OPENPETE_GTE_PCHIST), the screen-box caller
 // log (OPENPETE_RTPS_BOXLOG) and the screen-offset census

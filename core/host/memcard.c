@@ -1,9 +1,9 @@
 /* memcard.c - host-backed PlayStation memory card. See openpete_memcard.h.
  *
  * Two raw 128 KiB card images (.mcr) with the standard PSX directory
- * structure, persisted write-through to disk. The layout / checksum /
- * free-block logic mirrors the (unlinked) reference in
- * third_party/psxrecomp/runner/src/runtime.c and the nocash PSX specs.
+ * structure, persisted write-through to disk. The layout, the XOR
+ * checksums and the free-block chain follow the memory card format in the
+ * nocash PSX specs.
  *
  * Card image layout (1024 sectors x 128 bytes = 128 KiB):
  *   Block 0 (sectors 0-63) = directory

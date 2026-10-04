@@ -66,8 +66,12 @@ The level notes are in the Spyro section.
 - [`duckstation-oracle.md`](duckstation-oracle.md) - the PSX oracle end to
   end: the DuckStation fork and capture mechanism, `check_psx_oracle.sh`
   exit codes and knobs, and the CD-load transient carve-out.
+- [`gte.md`](gte.md) - the GTE (`core/psx/gte.c`): what it implements and
+  how, what the recompiler's inline register moves own, the instruments,
+  the per-record hash row, the verification record and the residual
+  classes.
 - [`gte-trace-vs-reference.md`](gte-trace-vs-reference.md) - cross-checking
-  psxrecomp's GTE against PsyCross's: the in-tree two-engine CSV trace, and
+  openpete's GTE against PsyCross's: the in-tree two-engine CSV trace, and
   the live pcsx-redux replay for input-side divergence.
 - [`ram-diff-vs-pcsxr.md`](ram-diff-vs-pcsxr.md) - single-shot 2 MiB RAM and
   CPU diff against pcsx-redux at one PC: byte-level attribution the

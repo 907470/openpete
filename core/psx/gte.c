@@ -14,7 +14,7 @@
  * and ORGB collapsed from IR1-3, LZCR counted from LZCS, FLAG bit 31
  * summarising its error bits. A store the game makes between commands is
  * not reinterpreted here; the OPENPETE_GTE_CENSUS instrument counts such
- * stores (gte_instruments.c).
+ * stores (gte_instruments.cpp).
  */
 #include <stdint.h>
 #include <string.h>
