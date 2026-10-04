@@ -5688,8 +5688,8 @@ static void specular_hl_calibrate(CPUState* cpu) {
 /* ---- same-moby paint rank ---------------------------------------------------
  * Under true depth two faces of one moby that cross in 3D show their
  * intersection contour, which moves with every animation tick; the game
- * paints each face whole in its ordering-table order and never shows it. With
- * OPENPETE_MOBY_RANK=1 the rank select (native_render's rank image) orders
+ * paints each face whole in its ordering-table order and never shows it. The
+ * rank select (native_render's rank image; OPENPETE_MOBY_RANK=0 turns it off) orders
  * such faces by the game's paint order, and every other face keeps true
  * depth: a face carries its rank only while it intersects another face of the
  * same moby (the contest flag).

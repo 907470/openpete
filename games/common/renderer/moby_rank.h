@@ -20,10 +20,10 @@
 extern "C" {
 #endif
 
-/** @brief Whether the same-moby paint rank is on (OPENPETE_MOBY_RANK, default off; boot-latched).
+/** @brief Whether the same-moby paint rank is on (OPENPETE_MOBY_RANK, default on; boot-latched).
  *
- * @return 1 when OPENPETE_MOBY_RANK is set to a value other than 0; unset or 0,
- *         the faces of one moby order by true depth alone. */
+ * @return 0 when OPENPETE_MOBY_RANK is set to 0, so the faces of one moby
+ *         order by true depth alone; 1 when it is unset, empty or any other value. */
 int  openpete_mobyrank_on(void);
 
 /* ---- the game's paint key, evaluated natively ------------------------------

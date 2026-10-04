@@ -1407,10 +1407,10 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LATCHED("OCCL_CAM_TURN", "Debug", "0.35",
         "Occlusion-grid camera bound: degrees the querying camera may be rotated "
         "from the grid's before the depth verdict is refused (default 0.35)."),
-    ENVROW_LATCHED("MOBY_RANK", "Debug", "0",
+    ENVROW_LATCHED("MOBY_RANK", "Debug", "1",
         "Same-moby painter select: between faces of one moby that intersect in 3D, "
         "the game's own paint order (its OT key, evaluated natively) overrides "
-        "per-pixel depth (default 0 = true depth only)."),
+        "per-pixel depth (default 1; 0 = true depth only)."),
     ENVROW_LATCHED("MOBY_SHADOW_DECAL", "Debug", "1",
         "Depth-aware moby-shadow decal vs legacy subtract pipe (default 1)."),
     ENVROW_LATCHED("SHADOW_PLAYER", "Debug", "1",

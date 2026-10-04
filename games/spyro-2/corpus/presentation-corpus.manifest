@@ -78,10 +78,10 @@ glimmer-pogo-dialogue|900|200||700,897,901,903,987,989,1000
 # Synthesized: idle to 1450 then Start (make_bk2.py --hold 1450:1460:Start).
 pause-menu-midlevel|1440|200||1454,1462,1500
 #
-# start-new-game@mobyrank: same-moby self-interpenetration. Two faces of one
+# start-new-game: same-moby self-interpenetration. Two faces of one
 # moby that cross in 3D show their crossing contour under true depth, where
-# the PSX paints each face whole in OT order; OPENPETE_MOBY_RANK=1 applies the
+# the PSX paints each face whole in OT order; the same-moby rank applies the
 # game's paint order between such faces only. At 92 a pink sliver shows
 # through a near dark shape. Start 470 (the movie is 473 VBLs) keeps the grid
 # to two samples.
-start-new-game@mobyrank|470|10||92|OPENPETE_MOBY_RANK=1
+start-new-game|470|10||92

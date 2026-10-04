@@ -109,16 +109,16 @@ spyro-dragon-pedastal-depth              | 1700  | 100  |        | 3635
 spyro-shadow-wall-disocclusion           | 1700  | 100  |        | 2700,3450
 # Same-moby self-interpenetration: two faces of one moby that cross in 3D
 # show their crossing contour under true depth, where the PSX paints each face
-# whole in OT order. OPENPETE_MOBY_RANK=1 applies the game's paint order
+# whole in OT order. The same-moby rank applies the game's paint order
 # between such faces only. Foreground dragon in the new-game intro at 1614.
-start-new-game@mobyrank                  | 1609  | 10   |        | 1614 | OPENPETE_MOBY_RANK=1
+start-new-game                           | 1609  | 10   |        | 1614
 stone-hill-distant-terrain               | 1700  | 100  |        | 3020,3090
 # Gem in front of Spyro rendered partly behind his head at 1896: the gem's
 # facets lose the depth test to the player although closer in 3D.
 stone-hill-gem-spyro-occlusion           | 1700  | 100  |        | 1896
-# Same-moby self-interpenetration (as start-new-game@mobyrank): Lindar's neck
+# Same-moby self-interpenetration (as start-new-game): Lindar's neck
 # through the mouth at 2374.
-stone-hill-lindar-rescue@mobyrank        | 2369  | 10   |        | 2374 | OPENPETE_MOBY_RANK=1
+stone-hill-lindar-rescue                 | 2369  | 10   |        | 2374
 sunny-flight-exit                        | 1700  | 100  | freeze | 2466
 # sunny-flight-wall-punch: the Artisans waterfall pool at VBL 2700, a green
 # wedge under the rim's inner edge between rim and water; drawn by both

@@ -14,8 +14,8 @@ int openpete_mobyrank_on(void) {
     static int s_on = -1;
     if (s_on < 0) {
         const char* e = getenv("OPENPETE_MOBY_RANK");
-        /* Unset or 0: the faces of one moby order by true depth alone. */
-        s_on = (e && *e) ? (*e != '0') : 0;
+        /* 0: the faces of one moby order by true depth alone. */
+        s_on = (e && *e) ? (*e != '0') : 1;
     }
     return s_on;
 }
