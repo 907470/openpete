@@ -14,6 +14,7 @@ each row to its text, and packaging fails on a row with no text.
 | ------------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | spyro-1                              | CC0 1.0 Universal                              | https://github.com/TheMobyCollective/spyro-1                                                |
 | PsyCross                             | MIT                                            | https://github.com/OpenDriver2/PsyCross                                                     |
+| PsyCross GTE core (`src/gte/PsyX_GTE.cpp`: MAME `gte.cpp` by smf via TOMB5 `LIBGTE.C`) | BSD-3-Clause (smf); MIT (TOMB5)              | https://github.com/mamedev/mame ; https://github.com/TOMB5/TOMB5                           |
 | SDL (SDL **3**)                      | Zlib                                           | https://github.com/libsdl-org/SDL                                                           |
 | miniz                                | MIT                                            | https://github.com/richgel999/miniz                                                         |
 | tomlc99                              | MIT                                            | https://github.com/cktan/tomlc99                                                            |

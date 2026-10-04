@@ -22,6 +22,7 @@
 #              is required
 spyro-1	all	games/spyro-1/spyro-1/LICENSE	spyro-1.txt
 PsyCross	all	third_party/PsyCross/LICENSE	PsyCross.txt
+PsyCross GTE core (`src/gte/PsyX_GTE.cpp`: MAME `gte.cpp` by smf via TOMB5 `LIBGTE.C`)	all	packaging/licences/psycross-gte-notice.txt	PsyCross-GTE.txt
 SDL (SDL **3**)	all	third_party/SDL/LICENSE.txt	SDL.txt
 miniz	all	third_party/miniz/LICENSE	miniz.txt
 tomlc99	all	third_party/tomlc99/LICENSE	tomlc99.txt
