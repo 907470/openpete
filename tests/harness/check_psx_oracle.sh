@@ -53,6 +53,8 @@
 #
 # Env knobs:
 #   OPENPETE_BIN, OPENPETE_DISC
+#   ALSOFT_DRIVERS        OpenAL backend of the headless row; unset means null
+#                         (scripts/lib/headless_audio.sh)
 #   OPENPETE_ORACLE_WINDOWED=1 windowed row: native renderer in a real window
 #                         under llvmpipe, eager present thread; FAIL unless the
 #                         present thread presented AND at least one sub-tick
@@ -300,6 +302,12 @@ if [[ "$WINDOWED" != "0" ]]; then
     export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
     MODE=(--renderer vk --window 640x480)
     echo "[psx-oracle] windowed: native renderer under llvmpipe, present thread active"
+else
+    # The headless row opens OpenAL's null backend, so its audio device open
+    # does not depend on the host's audio server (headless_audio.sh).
+    # shellcheck source=scripts/lib/headless_audio.sh
+    source scripts/lib/headless_audio.sh
+    export "${HEADLESS_AUDIO_ENV[@]}"
 fi
 
 set +e

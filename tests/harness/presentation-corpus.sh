@@ -57,6 +57,8 @@ cd "$(dirname "$0")/../.."
 source scripts/corpus-jobs.sh
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
+# shellcheck source=scripts/lib/headless_audio.sh
+source scripts/lib/headless_audio.sh
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -168,7 +170,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   # to be independent of any openpete.toml on the machine capturing them.
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
-  env "${leg_env[@]}" "${run_env[@]}" timeout "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
+  env "${HEADLESS_AUDIO_ENV[@]}" "${leg_env[@]}" "${run_env[@]}" timeout "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
     "${bk2_arg[@]}" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
