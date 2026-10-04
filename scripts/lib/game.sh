@@ -28,8 +28,6 @@
 
 # shellcheck source=scripts/presentation-game.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../presentation-game.sh"
-# shellcheck source=scripts/lib/headless_audio.sh
-source "$(dirname "${BASH_SOURCE[0]}")/headless_audio.sh"
 
 # pg_capture LOG OUTPUTS [--] <run args...>
 #
@@ -46,10 +44,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/headless_audio.sh"
 # from PG_RUN_ARGS, ahead of the caller's arguments so the caller can override
 # them.
 #
-# Audio: the run opens OpenAL's null backend (headless_audio.sh), so the
-# device open does not depend on the host's audio server; an ALSOFT_DRIVERS
-# in the caller's environment or in PG_CAPTURE_ENV wins.
-#
 # Optional, set by the caller before the call:
 #   PG_CAPTURE_ENV      array of KEY=VALUE assignments for the run
 #   PG_CAPTURE_TIMEOUT  wall-clock seconds; unset or 0 runs untimed
@@ -65,7 +59,7 @@ pg_capture() {
     rm -f "$log"
     [[ ${#out_arr[@]} -gt 0 ]] && rm -f "${out_arr[@]}"
 
-    local -a pre=(env OPENPETE_VIBRATION=0 "${HEADLESS_AUDIO_ENV[@]}")
+    local -a pre=(env OPENPETE_VIBRATION=0)
     [[ -n "${PG_CAPTURE_ENV+set}" ]] && pre+=("${PG_CAPTURE_ENV[@]}")
     [[ -n "${PG_CAPTURE_TIMEOUT:-}" && "${PG_CAPTURE_TIMEOUT:-0}" != 0 ]] &&
         pre+=(timeout "$PG_CAPTURE_TIMEOUT")

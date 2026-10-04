@@ -64,8 +64,6 @@ cd "$(dirname "$0")/../.."
 source scripts/corpus-jobs.sh
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
-# shellcheck source=scripts/lib/headless_audio.sh
-source scripts/lib/headless_audio.sh
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -131,7 +129,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
   # --no-config: the tiles are compared pixel-for-pixel, so the run is
   # independent of any openpete.toml in the capturing machine's home.
-  env "${HEADLESS_AUDIO_ENV[@]}" "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
+  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}" \
     --skip-to-level "$level" --freecam-pose "$pose" \
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \

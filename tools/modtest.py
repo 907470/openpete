@@ -203,11 +203,6 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool, emit,
         mode = test["expect_oracle"]
         env = dict(os.environ)
         env["OPENPETE_VIBRATION"] = "0"
-        # OpenAL's null backend opens a device with no audio server, so the
-        # music rows reach the stream open on any host (the shell harnesses
-        # take the same setting from scripts/lib/headless_audio.sh); an
-        # ALSOFT_DRIVERS in the caller's environment wins.
-        env.setdefault("ALSOFT_DRIVERS", "null")
         if mode in ("pass", "fail"):
             env["OPENPETE_FRAME_LIMIT"] = frames
             if concurrent_run and env.get("OPENPETE_ORACLE_LOG"):
