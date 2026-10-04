@@ -79,17 +79,20 @@
 #                         so openpete delivers the reference's in-work
 #                         VBLANKs (<trace>.vblpos) at their recorded function
 #                         entries and charges the SPU envelope to the
-#                         reference's exact clock (<trace>.spuq); needs
-#                         OPENPETE_ORACLE_GTE_STRICT=1 and both sidecars
-#                         (else 64); zero VBLANKs delivered or zero libspu
-#                         calls charged is VACUOUS (exit 3)
+#                         reference's exact clock (<trace>.spuq) and its SPU
+#                         register accesses (<trace>.spureg); needs
+#                         OPENPETE_ORACLE_GTE_STRICT=1 and the three
+#                         sidecars (else 64); zero VBLANKs delivered, zero
+#                         libspu calls or zero register accesses charged is
+#                         VACUOUS (exit 3)
 #
 # Exit codes:
 #   0   bit-identical hashes for every traced frame
 #   2   divergence (openpete ran fine but a hash mismatched)
 #   3   the GTE hash row is VACUOUS: the golden has a <trace>.gte sidecar
 #       and the run hashed zero GTE instructions or printed no row; or the
-#       clock row delivered no in-work VBLANK or charged no libspu call
+#       clock row delivered no in-work VBLANK or charged no libspu call or
+#       SPU register access
 #   64  prerequisites missing (trace / binary / disc) - ctest treats as SKIP
 #   *   build/runtime error
 set -euo pipefail
@@ -216,14 +219,14 @@ if [[ "$CLOCK" != "0" ]]; then
         echo "[psx-oracle] OPENPETE_ORACLE_CLOCK=1 needs OPENPETE_ORACLE_GTE_STRICT=1" >&2
         exit 64
     fi
-    for _sc in vblpos spuq; do
+    for _sc in vblpos spuq spureg; do
         if [[ ! -f "$TRACE.$_sc" ]]; then
             echo "[psx-oracle] OPENPETE_ORACLE_CLOCK=1: no $TRACE.$_sc (recapture the golden)" >&2
             exit 64
         fi
     done
     export OPENPETE_PSXTRACE_CLOCK_REPLAY=1
-    echo "[psx-oracle] clock replay: $TRACE.vblpos $TRACE.spuq"
+    echo "[psx-oracle] clock replay: $TRACE.vblpos $TRACE.spuq $TRACE.spureg"
 fi
 
 EXTRA=()
@@ -354,12 +357,14 @@ if [[ "$GTE_ROW" == 1 ]]; then
 fi
 
 # Clock row engagement: a replay that delivered no in-work VBLANK or
-# charged no libspu call ran the stock timing under another name.
+# charged no libspu call or SPU register access ran the stock timing under
+# another name.
 if [[ "$CLOCK" != "0" ]]; then
     CLOCK_LINE=$(grep -o 'clock: vblpos delivered=.*' "$LOG" | tail -1)
     CLK_DELIV=$(sed -n 's/.*vblpos delivered=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
     CLK_CHARGED=$(sed -n 's/.*spuq charged=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
-    if [[ -z "$CLOCK_LINE" || "${CLK_DELIV:-0}" == 0 || "${CLK_CHARGED:-0}" == 0 ]]; then
+    CLK_REG=$(sed -n 's/.*spureg charged=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
+    if [[ -z "$CLOCK_LINE" || "${CLK_DELIV:-0}" == 0 || "${CLK_CHARGED:-0}" == 0 || "${CLK_REG:-0}" == 0 ]]; then
         echo "[psx-oracle] clock replay: ${CLOCK_LINE:-no summary line}; VACUOUS" >&2
         [[ "$rc" == 0 ]] && rc=3
     else

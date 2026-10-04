@@ -786,7 +786,11 @@ int openpete_sched_next_srand(uint32_t* seed_out) {
  * the exact clock. Gate hits are counted per target, so a guest call a
  * presentation flag adds or removes elsewhere does not move a delivery. */
 typedef struct { uint32_t rec, vbl, t, t_rec, k; } sched_vblpos_t;
-typedef struct { uint32_t rec, ra, a0, a1; uint64_t tick; uint8_t kind, used; } sched_spuq_t;
+typedef struct { uint32_t rec, ra, a0, a1, idx, reg_first, reg_n; uint64_t tick; uint8_t kind, used; } sched_spuq_t;
+/* A `.spureg` row: one SPU register access inside the libspu call of `.spuq`
+ * row `spuq`; unit is the KON half (0 low, 1 high) for a key-on store and
+ * the voice for a sample-rate store or an envelope-level load. */
+typedef struct { uint32_t spuq; uint64_t tick; uint8_t kind, unit, used; } sched_spureg_t;
 #define VBLPOS_TARGETS 32u
 
 static int      s_clock = 0;           /* the knob was set and both sidecars loaded */
@@ -798,6 +802,9 @@ static uint32_t s_vp_rec = 0xFFFFFFFFu;              /* record the target counte
 static uint32_t s_vp_tgt[VBLPOS_TARGETS], s_vp_cnt[VBLPOS_TARGETS], s_vp_ntgt = 0;
 static sched_spuq_t* s_sq = NULL;    static uint32_t s_sq_n = 0, s_sq_next = 0;
 static uint32_t s_sq_charged = 0, s_sq_unmatched = 0, s_sq_unmade = 0;
+static uint32_t s_sq_last = 0xFFFFFFFFu;  /* s_sq index of the last matched call, or none */
+static sched_spureg_t* s_sr = NULL;  static uint32_t s_sr_n = 0;
+static uint32_t s_sr_charged = 0, s_sr_unlinked = 0;
 
 int openpete_sched_clock_replay(void) { return s_clock; }
 uint64_t openpete_sched_wait_tick(void) { return s_wait_tick; }
@@ -866,11 +873,66 @@ static int load_spuq(const char* trace) {
         if (s_sq_n == cap) { cap *= 2; s_sq = (sched_spuq_t*)realloc(s_sq, cap * sizeof(*s_sq)); }
         sched_spuq_t* r = &s_sq[s_sq_n++];
         r->rec = rec; r->ra = ra; r->tick = tick; r->kind = (uint8_t)kd; r->used = 0;
+        r->idx = idx; r->reg_first = 0; r->reg_n = 0;
         r->a0 = (uint32_t)strtoul(a0, NULL, 0);
         r->a1 = (kd == 0 || kd == 3) ? (uint32_t)strtoul(a1, NULL, 0) : 0u;
     }
     free(buf);
     return s_sq_n != 0;
+}
+
+/** @brief Return the `.spureg` kind index of a kind column, -1 for an unknown kind.
+ * @param name The kind column.
+ * @return 0 kon, 1 pitch, 2 envx, or -1. */
+static int spureg_kind(const char* name) {
+    static const char* const kinds[3] = { "kon", "pitch", "envx" };
+    for (int i = 0; i < 3; i++)
+        if (strcmp(name, kinds[i]) == 0) return i;
+    return -1;
+}
+
+/** @brief Link each `.spureg` row to its `.spuq` row: the call's reg_first and reg_n index its accesses in s_sr.
+ *
+ * Both sidecars are in capture order, so one forward pass pairs them; a
+ * register row naming no loaded `.spuq` row is counted unlinked. */
+static void spureg_link(void) {
+    uint32_t q = 0;
+    for (uint32_t i = 0; i < s_sr_n; i++) {
+        while (q < s_sq_n && s_sq[q].idx < s_sr[i].spuq) q++;
+        if (q == s_sq_n || s_sq[q].idx != s_sr[i].spuq) { s_sr_unlinked++; continue; }
+        if (s_sq[q].reg_n == 0) s_sq[q].reg_first = i;
+        s_sq[q].reg_n++;
+    }
+}
+
+/** @brief Load the `.spureg` sidecar into s_sr, one row per SPU register access the reference made inside a recorded libspu call.
+ *
+ * Rows outside any call (spuq column -1) and rows of an unknown kind are
+ * skipped. The unit is derived from the access's address: the KON half for
+ * 0x1F801D88/0x1F801D8A, else the voice ((addr - 0x1F801C00) / 16).
+ * @param trace Path of the golden trace.
+ * @return 1 when at least one row loaded, else 0. */
+static int load_spureg(const char* trace) {
+    char* buf = read_sidecar(trace, ".spureg", "psxtrace-spureg");
+    if (!buf) return 0;
+    uint32_t cap = 4096;
+    s_sr = (sched_spureg_t*)malloc(cap * sizeof(*s_sr));
+    for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+        if (line[0] == '#' || line[0] == 'p') continue;
+        unsigned idx, rec, vbl, pc, addr; int spuq; unsigned long long tick; char kind[16], value[16];
+        if (sscanf(line, "%u %u %u %d %15s %x %x %15s %llu", &idx, &rec, &vbl, &spuq, kind, &pc, &addr, value, &tick) != 9)
+            continue;
+        const int kd = spureg_kind(kind);
+        if (kd < 0 || spuq < 0) continue;
+        const uint32_t a = addr & 0x1FFFFFFFu;
+        if (s_sr_n == cap) { cap *= 2; s_sr = (sched_spureg_t*)realloc(s_sr, cap * sizeof(*s_sr)); }
+        sched_spureg_t* r = &s_sr[s_sr_n++];
+        r->spuq = (uint32_t)spuq; r->tick = tick; r->kind = (uint8_t)kd; r->used = 0;
+        r->unit = (uint8_t)(kd == 0 ? (a & 2u) >> 1 : ((a - 0x1F801C00u) >> 4) & 0x1Fu);
+    }
+    free(buf);
+    spureg_link();
+    return s_sr_n != 0;
 }
 
 /** @brief Turn the clock replay on when OPENPETE_PSXTRACE_CLOCK_REPLAY is set to a value not starting with '0' and both sidecars load.
@@ -887,7 +949,10 @@ static void clock_open(const char* trace) {
         OPL_ERROR_F("psxtrace", "clock replay: %s%s missing; the replay is off", vp ? "" : ".vblpos ", sq ? "" : ".spuq");
         return;
     }
-    OPL_INFO_F("psxtrace", "clock replay: %u in-work VBLANK rows, %u libspu rows", s_vp_n, s_sq_n);
+    if (!load_spureg(trace))
+        OPL_WARN_F("psxtrace", "clock replay: no .spureg rows; the SPU clock charges at libspu entries only");
+    OPL_INFO_F("psxtrace", "clock replay: %u in-work VBLANK rows, %u libspu rows, %u SPU register rows (%u unlinked)",
+               s_vp_n, s_sq_n, s_sr_n, s_sr_unlinked);
 }
 
 /** @brief Skip the rows of the records a load window's end jumps over and re-seed the SPU clock.
@@ -961,6 +1026,7 @@ static int spuq_row_is(const sched_spuq_t* r, int kind, uint32_t ra, uint32_t a0
 }
 
 int openpete_sched_spuq(int kind, uint32_t ra, uint32_t a0, uint32_t a1, uint64_t* tick_out) {
+    s_sq_last = 0xFFFFFFFFu;
     if (!s_clock || s_failed || s_in_load) return 0;
     const uint32_t rec = sched_cur_rec();
     for (; s_sq_next < s_sq_n && (s_sq[s_sq_next].used || s_sq[s_sq_next].rec < rec); s_sq_next++)
@@ -976,8 +1042,24 @@ int openpete_sched_spuq(int kind, uint32_t ra, uint32_t a0, uint32_t a1, uint64_
                        (unsigned long long)s_sq[i].tick, s_pos);
     s_sq[i].used = 1;
     s_sq_charged++;
+    s_sq_last = i;
     *tick_out = s_sq[i].tick;
     return 1;
+}
+
+int openpete_sched_spureg(int kind, int unit, uint64_t* tick_out) {
+    if (s_sq_last >= s_sq_n) return 0;
+    const sched_spuq_t* q = &s_sq[s_sq_last];
+    for (uint32_t i = q->reg_first; i < q->reg_first + q->reg_n; i++) {
+        sched_spureg_t* r = &s_sr[i];
+        if (r->used || r->kind != (uint8_t)kind || r->unit != (uint8_t)unit) continue;
+        r->used = 1;
+        s_sr_charged++;
+        if (s_log) fprintf(s_log, "spureg kind=%d unit=%d tick=%llu pos=%u\n", kind, unit, (unsigned long long)r->tick, s_pos);
+        *tick_out = r->tick;
+        return 1;
+    }
+    return 0;
 }
 
 /** @brief Log the clock replay's engagement counters, and the `.spuq` key-on rows before the SPU clock's seed. */
@@ -987,9 +1069,11 @@ static void clock_summary(void) {
     for (uint32_t i = 0; i < s_sq_n && s_sq[i].tick < s_clock_seed_tick; i++)
         keyons_before += (s_sq[i].kind == 0 && s_sq[i].a0 == 1u);
     OPL_INFO_F("psxtrace", "clock: vblpos delivered=%u covered=%u late=%u skipped=%u pending=%u of %u; "
-               "spuq charged=%u unmatched=%u unmade=%u of %u; key-on rows before the SPU clock's seed=%u (seed tick %llu)",
+               "spuq charged=%u unmatched=%u unmade=%u of %u; key-on rows before the SPU clock's seed=%u (seed tick %llu); "
+               "spureg charged=%u of %u",
                s_vp_delivered, s_vp_covered, s_vp_late, s_vp_skipped, s_vp_n - s_vp_next, s_vp_n,
-               s_sq_charged, s_sq_unmatched, s_sq_unmade, s_sq_n, keyons_before, (unsigned long long)s_clock_seed_tick);
+               s_sq_charged, s_sq_unmatched, s_sq_unmade, s_sq_n, keyons_before, (unsigned long long)s_clock_seed_tick,
+               s_sr_charged, s_sr_n);
 }
 
 void openpete_sched_summary(void) {

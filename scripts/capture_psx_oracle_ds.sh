@@ -73,6 +73,14 @@
 #                                  <out>.spuq (KIND setkey, keystatus, allkeys,
 #                                  voiceattr; repeatable); refuses a capture
 #                                  that recorded no call
+#           --spureg KIND:HEX      record every execution of the SPU register
+#                                  access at HEX to <out>.spureg (KIND kon: the
+#                                  key-on register store; pitch: a voice's
+#                                  sample-rate store; envx: a voice's envelope
+#                                  level load; repeatable), with the .spuq row
+#                                  of the call in progress and the exact tick;
+#                                  refuses a capture in which a named kind
+#                                  recorded no access
 #           --no-card              reference boots with no memory card
 #           --gte-dump LO-HI       also write every GTE instruction of records
 #                                  LO..HI to <out>.gtedump ({rec, pc, instr,
@@ -95,7 +103,7 @@ FRAMES=600
 ANCHOR_PC="0x8001ED5C"
 HIT=1
 MAX_RUNTIME=""
-VBLPOS=0; SPUQ=()
+VBLPOS=0; SPUQ=(); SPUREG=()
 CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
@@ -144,6 +152,7 @@ while [[ $# -gt 0 ]]; do
         --no-card) NO_CARD=1; shift ;;
         --vblpos) VBLPOS=1; shift ;;
         --spuq) SPUQ+=("$2"); shift 2 ;;
+        --spureg) SPUREG+=("$2"); shift 2 ;;
         --gte-dump) GTE_DUMP="$2"; shift 2 ;;
         -h|--help) sed -n 's/^# //p' "$0" | head -70; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
@@ -220,11 +229,12 @@ if [[ "$VBLPOS" == 1 ]]; then
     REC_ARGS+=(-psxtrace-vblpos "$VBLPOS_LIB" -psxtrace-vblpos-skip "$VBLPOS_SKIP")
 fi
 for q in "${SPUQ[@]}"; do REC_ARGS+=(-psxtrace-spuq "$q"); done
+for q in "${SPUREG[@]}"; do REC_ARGS+=(-psxtrace-spureg "$q"); done
 [[ -n "$GTE_DUMP" ]] && REC_ARGS+=(-psxtrace-gte-dump "$GTE_DUMP")
 
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" \
-      "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq"
+      "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
 # the worst case (4-vbl-per-game-frame splash logos before the title-
@@ -357,6 +367,17 @@ if [[ ${#SPUQ[@]} -gt 0 ]]; then
         exit 1
     fi
     echo "[capture-ds] libspu calls: $(sed -n 's/^# //p' "$OUT.spuq" | tail -1) -> $OUT.spuq"
+fi
+if [[ ${#SPUREG[@]} -gt 0 ]]; then
+    [[ -f "$OUT.spureg" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.spureg" >&2; exit 1; }
+    for q in "${SPUREG[@]}"; do
+        N="$(sed -n "s/^# rows=.* ${q%%:*}=\([0-9]*\).*/\1/p" "$OUT.spureg")"
+        if [[ -z "$N" || "$N" == 0 ]]; then
+            echo "[capture-ds] FAIL: SPU register recorder saw no ${q%%:*} access (wrong PC in $q?)" >&2
+            exit 1
+        fi
+    done
+    echo "[capture-ds] SPU register accesses: $(sed -n 's/^# //p' "$OUT.spureg" | tail -1) -> $OUT.spureg"
 fi
 if [[ -n "$SRAND_PC" ]]; then
     [[ -f "$OUT.srand" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.srand" >&2; exit 1; }

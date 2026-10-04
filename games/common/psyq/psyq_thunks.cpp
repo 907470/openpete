@@ -3312,10 +3312,54 @@ static void sfx_key_log_attr(const SpuVoiceAttr* attr) {
  * @param kind 0 SpuSetKey, 1 SpuGetKeyStatus, 2 SpuGetAllKeysStatus, 3 SpuSetVoiceAttr.
  * @param ra The call's return address.
  * @param a0 First matched argument.
- * @param a1 Second matched argument. */
-static void spu_clock_at_call(int kind, uint32_t ra, uint32_t a0, uint32_t a1) {
+ * @param a1 Second matched argument.
+ * @return 1 when the call matched a row, else 0. */
+static int spu_clock_at_call(int kind, uint32_t ra, uint32_t a0, uint32_t a1) {
     uint64_t tick = 0;
-    if (openpete_sched_spuq(kind, ra, a0, a1, &tick)) spu_clock_charge(tick);
+    if (!openpete_sched_spuq(kind, ra, a0, a1, &tick)) return 0;
+    spu_clock_charge(tick);
+    return 1;
+}
+
+/** @brief Charge the SPU clock to the reference's tick of one SPU register access inside the call spu_clock_at_call last matched.
+ *
+ * The SPU state a libspu call moves or reads changes at the register
+ * access (the KON store, a voice's sample-rate store, a voice's ENVX
+ * load), a varying number of cycles after the call's entry. Does nothing
+ * when the reference recorded no such access for the call.
+ * @param kind 0 KON store, 1 sample-rate store, 2 ENVX load.
+ * @param unit The KON half (0 voices 0-15, 1 voices 16-23) for kind 0, else the voice. */
+static void spu_clock_at_reg(int kind, int unit) {
+    uint64_t tick = 0;
+    if (openpete_sched_spureg(kind, unit, &tick)) spu_clock_charge(tick);
+}
+
+/** @brief Key on the voices of mask, each KON half after charging the SPU clock to the reference's store of that half.
+ * @param mask Voice bits 0-23. */
+static void spu_key_on_at_kon(uint32_t mask) {
+    for (int half = 0; half < 2; half++) {
+        const uint32_t voices = mask & (half ? 0xFF0000u : 0xFFFFu);
+        spu_clock_at_reg(0, half);
+        if (voices) SpuSetKey(SPU_ON, voices);
+    }
+}
+
+/** @brief Apply attr with its pitch written per voice after charging the SPU clock to the reference's sample-rate store for that voice.
+ *
+ * The other fields apply first, at the clock of the call's entry; PsyCross
+ * applies the pitch after them within one attribute set as well.
+ * @param attr The guest's attribute set; its mask has SPU_VOICE_PITCH. */
+static void spu_voice_attr_at_pitch(const SpuVoiceAttr* attr) {
+    SpuVoiceAttr a = *attr;
+    a.mask = attr->mask & ~(unsigned long)SPU_VOICE_PITCH;
+    if (a.mask) SpuSetVoiceAttr(&a);
+    a.mask = SPU_VOICE_PITCH;
+    for (int v = 0; v < 24; v++) {
+        if (!(attr->voice & SPU_VOICECH(v))) continue;
+        spu_clock_at_reg(1, v);
+        a.voice = SPU_VOICECH(v);
+        SpuSetVoiceAttr(&a);
+    }
 }
 
 /** @brief libspu's key status of one voice: from the software key mask and the voice's ENVX register.
@@ -3340,7 +3384,8 @@ static int spu_libspu_key_status(int voice) {
  * the address and pitch the one-shot duration is derived from, and with them
  * the tick on which the guest sees the voice end, are the game's own. Under
  * the oracle's clock replay a call that sets a pitch or ADSR field first
- * charges the envelope to the reference's clock at the call. Under
+ * charges the envelope to the reference's clock at the call, and each
+ * voice's pitch to the reference's sample-rate store for it. Under
  * OPENPETE_SFX_END_LOG an attribute set that writes a start address is
  * logged per voice with its sample's slot name.
  * @param cpu Guest CPU state; a0 is the SpuVoiceAttr. */
@@ -3348,8 +3393,10 @@ void psyq_SpuSetVoiceAttr(CPUState* cpu) {
     const SpuVoiceAttr* attr = (const SpuVoiceAttr*)SPAN(cpu->a0, sizeof(SpuVoiceAttr));
     if (!attr) return;
     sfx_key_log_attr(attr);
-    if (attr->mask & SPU_VOICE_ENVELOPE_FIELDS) spu_clock_at_call(3, cpu->ra, (uint32_t)attr->voice, (uint32_t)attr->mask);
-    SpuSetVoiceAttr((SpuVoiceAttr*)attr);
+    const int matched = (attr->mask & SPU_VOICE_ENVELOPE_FIELDS) &&
+                        spu_clock_at_call(3, cpu->ra, (uint32_t)attr->voice, (uint32_t)attr->mask);
+    if (matched && (attr->mask & SPU_VOICE_PITCH)) spu_voice_attr_at_pitch(attr);
+    else SpuSetVoiceAttr((SpuVoiceAttr*)attr);
 }
 
 /** @brief Thunk for libspu SpuSetVoiceVolume: sets the left and right volume of voice a0 to a1 and a2.
@@ -3376,12 +3423,13 @@ void psyq_SpuGetVoiceVolume(CPUState* cpu) {
 /** @brief Thunk for libspu SpuSetKey: keys on or off the voices in mask a1, by a0 (SPU_ON or SPU_OFF).
  *
  * Under the oracle's clock replay the envelope is first charged to the
- * reference's clock at the call. Under OPENPETE_SFX_END_LOG a line with
+ * reference's clock at the call, and a key-on to the reference's KON store
+ * of each half. Under OPENPETE_SFX_END_LOG a line with
  * openpete_frame, the VBL count, a0, the mask and ra is written to stderr.
  * @param cpu Guest CPU state. */
 void psyq_SpuSetKey(CPUState* cpu) {
-    spu_clock_at_call(0, cpu->ra, cpu->a0, cpu->a1);
-    SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
+    if (spu_clock_at_call(0, cpu->ra, cpu->a0, cpu->a1) && cpu->a0 == SPU_ON) spu_key_on_at_kon(cpu->a1);
+    else SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
     if (sfx_key_log_on())
         fprintf(stderr, "[spu-key f=%u vbl=%d on=%d mask=%#x ra=%#x]\n",
                 openpete_frame, SDL_GetAtomicInt(&openpete_vbl), (int)cpu->a0,
@@ -3391,9 +3439,9 @@ void psyq_SpuSetKey(CPUState* cpu) {
 /** @brief Thunk for libspu SpuGetKeyStatus: PsyCross's key status for the voice mask in a0.
  *
  * Under the oracle's clock replay the envelope is first charged to the
- * reference's clock at the call, and the status is libspu's expression for
- * the mask's lowest voice (-1 for an empty mask), read from the envelope
- * level instead of PsyCross's ADSR phase.
+ * reference's clock at the call and at its ENVX load, and the status is
+ * libspu's expression for the mask's lowest voice (-1 for an empty mask),
+ * read from the envelope level instead of PsyCross's ADSR phase.
  * Under OPENPETE_SFX_END_LOG a single-voice query whose result differs from
  * that voice's previous result logs one line with openpete_frame when the
  * new status is SPU_ON or SPU_RESET. The RESET read is the tick the game
@@ -3402,7 +3450,7 @@ void psyq_SpuSetKey(CPUState* cpu) {
  * @param cpu Guest CPU state; v0 receives the status. */
 void psyq_SpuGetKeyStatus(CPUState* cpu) {
     unsigned int mask = (unsigned int)cpu->a0;
-    spu_clock_at_call(1, cpu->ra, mask, 0u);
+    if (spu_clock_at_call(1, cpu->ra, mask, 0u) && (mask & 0xFFFFFFu)) spu_clock_at_reg(2, __builtin_ctz(mask));
     if (openpete_sched_clock_replay()) cpu->v0 = (mask & 0xFFFFFFu) ? (uint32_t)spu_libspu_key_status(__builtin_ctz(mask)) : 0xFFFFFFFFu;
     else cpu->v0 = (uint32_t)SpuGetKeyStatus(mask);
     if (sfx_key_log_on() && mask && !(mask & (mask - 1u))) {
@@ -3421,7 +3469,8 @@ void psyq_SpuGetKeyStatus(CPUState* cpu) {
  *
  * A span that runs past its region stores nothing. Under the oracle's clock
  * replay the envelope is first charged to the reference's clock at the
- * call and each byte is libspu's expression over the envelope level.
+ * call, and each byte is libspu's expression over the envelope level after
+ * charging to the reference's ENVX load of that voice.
  * @param cpu Guest CPU state. */
 void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
     /* One status byte per SPU voice. */
@@ -3429,8 +3478,11 @@ void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
     if (!status) return;
     spu_clock_at_call(2, cpu->ra, cpu->a0, 0u);
     SpuGetAllKeysStatus(status);
-    if (openpete_sched_clock_replay())
-        for (int v = 0; v < 24; v++) status[v] = (char)spu_libspu_key_status(v);
+    if (!openpete_sched_clock_replay()) return;
+    for (int v = 0; v < 24; v++) {
+        spu_clock_at_reg(2, v);
+        status[v] = (char)spu_libspu_key_status(v);
+    }
 }
 
 /** @brief Thunk for libspu SpuRead: copies a1 bytes of SPU RAM from the transfer address to the guest address a0.

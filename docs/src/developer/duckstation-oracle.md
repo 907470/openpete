@@ -221,6 +221,19 @@ per kind `on voices` (setkey), `voice` (keystatus), `buf` (allkeys), or
 adsr1 adsr2` (voiceattr; a field outside the mask is whatever the
 caller's struct held). The capture refuses a run with zero rows.
 
+`--spureg KIND:HEX` (repeatable; DuckStation `-psxtrace-spureg`) writes
+`<trace>.spureg`: one row per execution of the libspu instruction at HEX
+that accesses an SPU register, `kon` a store to the key-on register
+(0x1F801D88 or 0x1F801D8A), `pitch` a store to a voice's sample rate
+(voice base + 4), `envx` a load of a voice's envelope level (voice base +
+0xC); the addresses are read off each game's libspu code and listed in
+its `oracle.conf`. Columns: `idx rec vbl spuq kind pc addr value tick`,
+where `spuq` is the `idx` of the last `.spuq` row written (the call the
+access belongs to), `addr` the effective address from the instruction's
+base register and offset, `value` the stored halfword (`-` for a load)
+and `tick` the exact tick before the instruction executes. The capture
+refuses a run in which a named kind recorded no access.
+
 Two captures of one recipe from builds that differ only in these
 recorders compare with `python3 -m tools.psxtrace_format compare A B`
 (first differing record and region; the build hash and flags are listed,
@@ -300,7 +313,7 @@ behind on those records.
 `OPENPETE_PSXTRACE_CLOCK_REPLAY=1` (set by the gate under
 `OPENPETE_ORACLE_CLOCK=1` with `OPENPETE_ORACLE_GTE_STRICT=1`, refused from
 the caller's environment) replays the two clock positions the shipped
-engine does not model, from `.vblpos` and `.spuq`:
+engine does not model, from `.vblpos`, `.spuq` and `.spureg`:
 
 - In-work VBLANKs. The per-entry gate (`psx_override_dispatch`) counts the
   entries of each `t` the current record's rows name since the record's
@@ -318,18 +331,24 @@ engine does not model, from `.vblpos` and `.spuq`:
   call site and arguments), instead of 735 samples per waited VBL. The
   clock seeds at the first such event and again after every load-window
   skip; inside a load window each VBL charges the reference's period
-  (527722650/715909 samples). SpuGetKeyStatus and SpuGetAllKeysStatus
-  answer libspu's own expression over the software key flag and the
-  envelope level (ENVX): keyed `ENVX == 0 ? 3 : 1`, else `ENVX != 0 ? 2 : 0`.
+  (527722650/715909 samples). Inside a matched call the clock moves on to
+  the reference's register access before the state it touches changes: a
+  key-on to the KON store of each half, a pitch to the voice's sample-rate
+  store, a key-status read to the voice's ENVX load. SpuGetKeyStatus and
+  SpuGetAllKeysStatus answer libspu's own expression over the software key
+  flag and the envelope level (ENVX): keyed `ENVX == 0 ? 3 : 1`, else
+  `ENVX != 0 ? 2 : 0`.
 
 The summary line `clock: vblpos delivered= covered= late= ...; spuq
-charged= unmatched= unmade= ...` is the engagement; the gate reports a run
-with no VBL delivered or no libspu call charged as VACUOUS (exit 3).
+charged= unmatched= unmade= ...; spureg charged= of ...` is the
+engagement; the gate reports a run with no VBL delivered, no libspu call
+or no register access charged as VACUOUS (exit 3).
 `scripts/check_psx_oracle_all.sh` runs a `clock` row per game after the
 `stock` rows; the stock row's GTE mismatch count and `vbl deltas` measure
 the in-tick timing the shipped engine leaves unreplayed. Under
 `OPENPETE_SCHED_LOG` each delivery (`vblpos`, `vblpos-late`) and each
-libspu match (`spuq`, `spuq-unmatched`) is logged.
+libspu match (`spuq`, `spuq-unmatched`) and register access (`spureg`) is
+logged.
 
 ### GTE instruction log
 

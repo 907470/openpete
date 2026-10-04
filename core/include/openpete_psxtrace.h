@@ -532,6 +532,16 @@ uint32_t openpete_sched_vblpos_late(uint32_t bound);
  * @param tick_out The reference's exact clock at the call.
  * @return 1 with tick_out set when a row matched, else 0. */
 int  openpete_sched_spuq(int kind, uint32_t ra, uint32_t a0, uint32_t a1, uint64_t* tick_out);
+/** @brief Return the reference's tick of an SPU register access inside the libspu call openpete_sched_spuq last matched.
+ *
+ * The access is the next unconsumed `.spureg` row of that call with the
+ * given kind and unit. Returns 0 when the last openpete_sched_spuq call
+ * matched no row or the call has no such access.
+ * @param kind 0 KON store, 1 sample-rate (pitch) store, 2 envelope-level (ENVX) load.
+ * @param unit The KON half (0 voices 0-15, 1 voices 16-23) for kind 0, else the voice.
+ * @param tick_out The reference's exact clock at the access.
+ * @return 1 with tick_out set when an access matched, else 0. */
+int  openpete_sched_spureg(int kind, int unit, uint64_t* tick_out);
 /** @brief Return the exact return clock of the waited `.vsync` row the last openpete_sched_next_vsync consumed.
  * @return The row's return tick, 0 when the last call consumed no row. */
 uint64_t openpete_sched_wait_tick(void);

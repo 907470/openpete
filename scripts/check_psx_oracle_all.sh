@@ -9,8 +9,8 @@
 # interrupt and envelope timing the shipped engine does not replay.
 # `clock`: OPENPETE_ORACLE_CLOCK=1 with OPENPETE_ORACLE_GTE_STRICT=1 and
 # stock flags only, the reference's in-work VBLANK positions and libspu
-# clocks replayed; the clock column is `.vblpos` rows delivered and `.spuq`
-# rows charged. The stock rows run first, all games at once, then the
+# clocks replayed; the clock column is `.vblpos` rows delivered, `.spuq`
+# rows charged and `.spureg` rows charged. The stock rows run first, all games at once, then the
 # clock rows.
 #
 # Usage:
@@ -66,7 +66,7 @@ for g in "${GAMES[@]}"; do
         vbld=$(sed -n 's/.*vbl deltas: policy=[a-z]* mismatches=\([0-9]*\).*/\1/p' "$log" | tail -1)
         clock=-
         if [[ -n "$row" ]]; then
-            clock=$(sed -n 's/.*clock: vblpos delivered=\([0-9]*\) .*spuq charged=\([0-9]*\) .*/\1\/\2/p' "$log" | tail -1)
+            clock=$(sed -n 's/.*clock: vblpos delivered=\([0-9]*\) .*spuq charged=\([0-9]*\) .*spureg charged=\([0-9]*\) .*/\1\/\2\/\3/p' "$log" | tail -1)
         fi
         # The first divergence outside the neutral rows (a healed CD-load
         # transient on a PASS, the failing row on a FAIL).
