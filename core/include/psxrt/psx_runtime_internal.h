@@ -44,8 +44,8 @@ void call_by_address(CPUState* cpu, uint32_t addr);
 /** @brief Entry check the generated code runs at the start of every recompiled function.
  *
  * Runs the engine's per-entry hooks (hang watchdog, pad-read probe,
- * halt-at-PC dump, oracle anchors) and then the game's own
- * psx_override_dispatch_game, when the game defines one.
+ * halt-at-PC dump, oracle anchors, the oracle's clock replay) and then the
+ * game's own psx_override_dispatch_game, when the game defines one.
  * @param cpu The CPU state at function entry.
  * @param addr The guest address of the function entered.
  * @return Nonzero when a hook handled the call and the recompiled body must not run. */

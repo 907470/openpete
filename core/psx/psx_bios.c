@@ -91,7 +91,8 @@ static void bios_census(CPUState* cpu, uint32_t table, uint32_t fn) {
  *
  * Calls the function at addr with ra set to 0xDEADBEEF, then restores a0..a3,
  * ra, v0 and v1 to their values on entry. Other registers are left as the
- * handler set them. A handler with no compiled body logs a warning.
+ * handler set them. A handler with no compiled body logs a warning. Its
+ * gate hits are host-initiated for the oracle's clock replay.
  * @param cpu Guest CPU the handler runs on.
  * @param addr Handler address; 0 does nothing. */
 static void invoke_guest(CPUState* cpu, uint32_t addr) {
@@ -99,9 +100,11 @@ static void invoke_guest(CPUState* cpu, uint32_t addr) {
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2, a3 = cpu->a3;
     uint32_t ra = cpu->ra, v0 = cpu->v0, v1 = cpu->v1;
     cpu->ra = 0xDEADBEEFu;
+    openpete_psxtrace_gate_host_enter();
     if (!openpete_recomp_module_get()->dispatch(cpu, addr)) {
         OPL_WARN_F("bios", "event handler 0x%08X has no compiled body", addr);
     }
+    openpete_psxtrace_gate_host_leave();
     cpu->a0 = a0; cpu->a1 = a1; cpu->a2 = a2; cpu->a3 = a3;
     cpu->ra = ra; cpu->v0 = v0; cpu->v1 = v1;
 }

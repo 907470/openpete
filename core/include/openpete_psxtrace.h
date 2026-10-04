@@ -491,6 +491,69 @@ int  openpete_sched_failed(const char** reason);
  * Does nothing when the schedule is inactive. */
 void openpete_sched_summary(void);
 
+/* Clock replay. Under OPENPETE_PSXTRACE_CLOCK_REPLAY=1 with `<trace>.vblpos`
+ * and `<trace>.spuq` beside the golden, the reference's in-work VBLANKs are
+ * delivered at the function entry the reference recorded for them, and the
+ * SPU envelope is charged to the reference's exact clock at every wait,
+ * poll, query and libspu call instead of a fixed count per VBL. */
+
+/** @brief Report whether the clock replay is on: the knob was set and both sidecars loaded at openpete_sched_open().
+ *
+ * Latched at openpete_sched_open(); 0 before it.
+ * @return 1 when the replay is on, else 0. */
+int  openpete_sched_clock_replay(void);
+/** @brief Count one per-entry gate hit of addr and return the in-work VBLANK due at it.
+ *
+ * Counts the entries of every target the current record's `.vblpos` rows
+ * name since the record's anchor. When the hit is the k-th entry of the
+ * next row's target, every row sharing that point is consumed; a row whose
+ * VBLANK the position has already reached is counted as covered.
+ * @param addr Guest address of the function entered.
+ * @param target_out The reference VBLANK to charge to.
+ * @return 1 with target_out set when a VBLANK is due here, else 0. */
+int  openpete_sched_vblpos_gate(uint32_t addr, uint32_t* target_out);
+/** @brief Consume the `.vblpos` rows whose entry openpete did not reach before an anchor or a wait.
+ *
+ * At an anchor (bound 0) the rows of every record before the current one
+ * are consumed; at a wait charging to bound, the rows whose VBLANK is at or
+ * below it. Each consumed row ahead of the position counts as late, each
+ * at or behind it as covered. Inside a load window nothing is consumed.
+ * @param bound The wait's target VBLANK, or 0 at an anchor.
+ * @return The highest VBLANK of the late rows, 0 when none is ahead of the position. */
+uint32_t openpete_sched_vblpos_late(uint32_t bound);
+/** @brief Match a libspu call to the next unconsumed `.spuq` row of the current record with the same kind, call site and arguments.
+ *
+ * Rows of earlier records left unconsumed count as unmade; a call with no
+ * row counts as unmatched. Inside a load window nothing matches.
+ * @param kind 0 SpuSetKey, 1 SpuGetKeyStatus, 2 SpuGetAllKeysStatus, 3 SpuSetVoiceAttr.
+ * @param ra The call's return address.
+ * @param a0 First argument (on, voice mask, buffer, or voice mask of the attribute).
+ * @param a1 Second argument (SpuSetKey voices, SpuSetVoiceAttr mask, else 0).
+ * @param tick_out The reference's exact clock at the call.
+ * @return 1 with tick_out set when a row matched, else 0. */
+int  openpete_sched_spuq(int kind, uint32_t ra, uint32_t a0, uint32_t a1, uint64_t* tick_out);
+/** @brief Return the exact return clock of the waited `.vsync` row the last openpete_sched_next_vsync consumed.
+ * @return The row's return tick, 0 when the last call consumed no row. */
+uint64_t openpete_sched_wait_tick(void);
+/** @brief Return the exact clock of the query row the last openpete_sched_query answered from.
+ * @return The row's tick, 0 when the last call answered from no row. */
+uint64_t openpete_sched_query_tick(void);
+/** @brief Report and clear the request to re-seed the SPU clock that the schedule raises at open and at every load-window skip.
+ * @return 1 when a re-seed was pending, else 0. */
+int  openpete_sched_clock_reseed_take(void);
+/** @brief Record the exact clock the SPU clock was seeded from, for the summary's count of key-on rows before it.
+ * @param tick The seeding row's clock. */
+void openpete_sched_clock_seeded(uint64_t tick);
+
+/** @brief Enter a host-initiated guest call: per-entry gate hits inside it are not counted for the clock replay.
+ *
+ * Bracket every call into guest code that the guest did not make at that
+ * point (an interrupt handler, a BIOS service, a host feature calling a
+ * guest body), paired with openpete_psxtrace_gate_host_leave(). */
+void openpete_psxtrace_gate_host_enter(void);
+/** @brief Leave a host-initiated guest call entered with openpete_psxtrace_gate_host_enter(). */
+void openpete_psxtrace_gate_host_leave(void);
+
 /* GTE hash row. Under OPENPETE_GTE_HASH=1 with a `<trace>.gte` sidecar
  * beside the golden, every gte_execute call is folded into one hash per
  * record interval by the rule the capture's recorder uses (the read view of

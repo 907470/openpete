@@ -18,6 +18,7 @@
 #include "feature_registry.h"
 #include "openpete_fiber.h"          /* openpete_speculative */
 #include "openpete_log.h"
+#include "openpete_psxtrace.h" /* openpete_psxtrace_gate_host_enter: a host-initiated guest call */
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
 
 #define ADDR_DRAW 0x8001E638u
@@ -70,7 +71,9 @@ static void call_guest(CPUState* cpu, uint32_t fn, uint32_t a0, uint32_t a1) {
     uint32_t ra = cpu->ra;
     cpu->a0 = a0;
     cpu->a1 = a1;
+    openpete_psxtrace_gate_host_enter();
     call_by_address(cpu, fn);
+    openpete_psxtrace_gate_host_leave();
     cpu->ra = ra;
 }
 

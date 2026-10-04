@@ -295,6 +295,42 @@ rows of the main image carry; and where inside a tick's work a long
 frame's interrupt landed, which leaves the VBL-derived counters one VBL
 behind on those records.
 
+### Clock replay
+
+`OPENPETE_PSXTRACE_CLOCK_REPLAY=1` (set by the gate under
+`OPENPETE_ORACLE_CLOCK=1` with `OPENPETE_ORACLE_GTE_STRICT=1`, refused from
+the caller's environment) replays the two clock positions the shipped
+engine does not model, from `.vblpos` and `.spuq`:
+
+- In-work VBLANKs. The per-entry gate (`psx_override_dispatch`) counts the
+  entries of each `t` the current record's rows name since the record's
+  anchor; at the `k`-th entry the row's VBL runs through the VBL body
+  before the entered function's body. Hits inside a host-initiated guest
+  call (interrupt callbacks, BIOS event handlers, the hang watchdog's spin
+  tick, host features that call a guest body) are not counted, and a hook's
+  re-dispatch of the body the guest called is not counted again. A row
+  whose VBL a query or poll already charged counts as covered; a row whose
+  entry openpete does not reach is charged at the next wait that covers
+  its VBL, or before the next anchor's hash, and counts as late.
+- The SPU clock. The envelope is charged to the reference's exact clock
+  divided by 768 at every waited row's return, answered query, answered
+  CdSync poll and libspu call matched to a `.spuq` row (same record, kind,
+  call site and arguments), instead of 735 samples per waited VBL. The
+  clock seeds at the first such event and again after every load-window
+  skip; inside a load window each VBL charges the reference's period
+  (527722650/715909 samples). SpuGetKeyStatus and SpuGetAllKeysStatus
+  answer libspu's own expression over the software key flag and the
+  envelope level (ENVX): keyed `ENVX == 0 ? 3 : 1`, else `ENVX != 0 ? 2 : 0`.
+
+The summary line `clock: vblpos delivered= covered= late= ...; spuq
+charged= unmatched= unmade= ...` is the engagement; the gate reports a run
+with no VBL delivered or no libspu call charged as VACUOUS (exit 3).
+`scripts/check_psx_oracle_all.sh` runs a `clock` row per game after the
+`stock` rows; the stock row's GTE mismatch count and `vbl deltas` measure
+the in-tick timing the shipped engine leaves unreplayed. Under
+`OPENPETE_SCHED_LOG` each delivery (`vblpos`, `vblpos-late`) and each
+libspu match (`spuq`, `spuq-unmatched`) is logged.
+
 ### GTE instruction log
 
 `-psxtrace-gte-log PATH -psxtrace-gte-vbl LO:HI` (with `-cpu Interpreter`;

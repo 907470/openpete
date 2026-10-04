@@ -66,6 +66,7 @@
 #include "named_target.h"
 #include "openpete_fiber.h" /* openpete_speculative, openpete_frame */
 #include "openpete_log.h"
+#include "openpete_psxtrace.h" /* openpete_psxtrace_gate_host_enter: a host-initiated guest call */
 #include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
 
 #include <stdint.h>
@@ -267,7 +268,9 @@ static void refuse(const char* name, const char* why) {
 static void guest_call(CPUState* cpu, uint32_t addr, uint32_t a0) {
     uint32_t ra = cpu->ra;
     cpu->a0 = a0;
+    openpete_psxtrace_gate_host_enter();
     call_by_address(cpu, addr);
+    openpete_psxtrace_gate_host_leave();
     cpu->ra = ra;
 }
 

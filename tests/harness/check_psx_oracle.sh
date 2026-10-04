@@ -70,16 +70,26 @@
 #   OPENPETE_ORACLE_GTE_STRICT=1 a GTE hash mismatch fails the run (exit 2);
 #                         without it the GTE row is reported and does not
 #                         decide the verdict
-#   OPENPETE_ORACLE_ALLOW_KNOBS=<reason> admits OPENPETE_PSXTRACE_HEAL_WINDOW
-#                         and OPENPETE_PSXTRACE_VBL_POLICY from the caller's
+#   OPENPETE_ORACLE_ALLOW_KNOBS=<reason> admits OPENPETE_PSXTRACE_HEAL_WINDOW,
+#                         OPENPETE_PSXTRACE_VBL_POLICY and
+#                         OPENPETE_PSXTRACE_CLOCK_REPLAY from the caller's
 #                         environment; otherwise the run refuses them, since
-#                         either weakens or changes the verdict
+#                         each weakens or changes the verdict
+#   OPENPETE_ORACLE_CLOCK=1 the clock row: sets OPENPETE_PSXTRACE_CLOCK_REPLAY=1,
+#                         so openpete delivers the reference's in-work
+#                         VBLANKs (<trace>.vblpos) at their recorded function
+#                         entries and charges the SPU envelope to the
+#                         reference's exact clock (<trace>.spuq); needs
+#                         OPENPETE_ORACLE_GTE_STRICT=1 and both sidecars
+#                         (else 64); zero VBLANKs delivered or zero libspu
+#                         calls charged is VACUOUS (exit 3)
 #
 # Exit codes:
 #   0   bit-identical hashes for every traced frame
 #   2   divergence (openpete ran fine but a hash mismatched)
 #   3   the GTE hash row is VACUOUS: the golden has a <trace>.gte sidecar
-#       and the run hashed zero GTE instructions or printed no row
+#       and the run hashed zero GTE instructions or printed no row; or the
+#       clock row delivered no in-work VBLANK or charged no libspu call
 #   64  prerequisites missing (trace / binary / disc) - ctest treats as SKIP
 #   *   build/runtime error
 set -euo pipefail
@@ -187,7 +197,7 @@ if [[ "$TRACE_RECORDS" != "$RECORDS" ]]; then
 fi
 
 # Verifier knobs that change the verdict are not inherited from the shell.
-for _k in OPENPETE_PSXTRACE_HEAL_WINDOW OPENPETE_PSXTRACE_VBL_POLICY; do
+for _k in OPENPETE_PSXTRACE_HEAL_WINDOW OPENPETE_PSXTRACE_VBL_POLICY OPENPETE_PSXTRACE_CLOCK_REPLAY; do
     if [[ -n "${!_k:-}" ]]; then
         if [[ -n "${OPENPETE_ORACLE_ALLOW_KNOBS:-}" ]]; then
             echo "[psx-oracle] WARNING: $_k=${!_k} from the environment; allowed: $OPENPETE_ORACLE_ALLOW_KNOBS"
@@ -197,6 +207,24 @@ for _k in OPENPETE_PSXTRACE_HEAL_WINDOW OPENPETE_PSXTRACE_VBL_POLICY; do
         fi
     fi
 done
+
+# The clock row: the reference's recorded clock positions replayed, gated
+# on the strict GTE hash row.
+CLOCK="${OPENPETE_ORACLE_CLOCK:-0}"
+if [[ "$CLOCK" != "0" ]]; then
+    if [[ "${OPENPETE_ORACLE_GTE_STRICT:-0}" == "0" ]]; then
+        echo "[psx-oracle] OPENPETE_ORACLE_CLOCK=1 needs OPENPETE_ORACLE_GTE_STRICT=1" >&2
+        exit 64
+    fi
+    for _sc in vblpos spuq; do
+        if [[ ! -f "$TRACE.$_sc" ]]; then
+            echo "[psx-oracle] OPENPETE_ORACLE_CLOCK=1: no $TRACE.$_sc (recapture the golden)" >&2
+            exit 64
+        fi
+    done
+    export OPENPETE_PSXTRACE_CLOCK_REPLAY=1
+    echo "[psx-oracle] clock replay: $TRACE.vblpos $TRACE.spuq"
+fi
 
 EXTRA=()
 [[ "${PSXTRACE_KEEP_GOING:-0}" != "0" ]] && EXTRA+=(--psxtrace-keep-going)
@@ -322,6 +350,20 @@ if [[ "$GTE_ROW" == 1 ]]; then
             echo "[psx-oracle] gte hash: $GTE_MISM mismatching record(s) under OPENPETE_ORACLE_GTE_STRICT" >&2
             rc=2
         fi
+    fi
+fi
+
+# Clock row engagement: a replay that delivered no in-work VBLANK or
+# charged no libspu call ran the stock timing under another name.
+if [[ "$CLOCK" != "0" ]]; then
+    CLOCK_LINE=$(grep -o 'clock: vblpos delivered=.*' "$LOG" | tail -1)
+    CLK_DELIV=$(sed -n 's/.*vblpos delivered=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
+    CLK_CHARGED=$(sed -n 's/.*spuq charged=\([0-9]*\).*/\1/p' <<<"$CLOCK_LINE")
+    if [[ -z "$CLOCK_LINE" || "${CLK_DELIV:-0}" == 0 || "${CLK_CHARGED:-0}" == 0 ]]; then
+        echo "[psx-oracle] clock replay: ${CLOCK_LINE:-no summary line}; VACUOUS" >&2
+        [[ "$rc" == 0 ]] && rc=3
+    else
+        echo "[psx-oracle] $CLOCK_LINE"
     fi
 fi
 

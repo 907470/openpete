@@ -66,6 +66,7 @@ extern "C" uint32_t psyq_ot_recent_base(int i) {
 #include "psx/libspu.h"
 #include <dirent.h>
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
+extern "C" int  PsyX_SPUAL_GetVoiceEnvelope(int voice, int* keyed_on);
 extern "C" int  PsyX_SPUAL_CaptureDrain(int16_t* out, int max_frames);
 extern "C" unsigned int PsyX_SPUAL_ResyncCount(void);
 extern "C" unsigned int PsyX_SPUAL_LastWriteResyncMask(void);
@@ -387,7 +388,8 @@ static uint32_t g_vsync_cb       = 0;
  * registers survive the call; the callee's return value is discarded. ra is
  * set to a sentinel, since the dispatcher runs the body to its return. A
  * zero cb_addr does nothing, and an address with no compiled body logs a
- * warning. OPENPETE_CB_DEBUG (read once) logs entry and exit.
+ * warning. The handler's gate hits are host-initiated for the oracle's
+ * clock replay. OPENPETE_CB_DEBUG (read once) logs entry and exit.
  * @param cpu Guest CPU state.
  * @param cb_addr Guest address of the handler.
  * @param a0 First argument.
@@ -401,9 +403,11 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
     cpu->a0 = a0; cpu->a1 = a1; cpu->ra = 0xDEADBEEF;
     static int s_cbdbg = -1; if (s_cbdbg < 0) s_cbdbg = getenv("OPENPETE_CB_DEBUG") ? 1 : 0;
     if (s_cbdbg) OPL_INFO_F("thunks", "DBG callback 0x%08X enter pos=%u sp=0x%08X", cb_addr, openpete_sched_pos(), cpu->sp);
+    openpete_psxtrace_gate_host_enter();
     if (!openpete_recomp_module_get()->dispatch(cpu, cb_addr)) {
         OPL_WARN_F("thunks", "callback 0x%08X has no compiled body", cb_addr);
     }
+    openpete_psxtrace_gate_host_leave();
     if (s_cbdbg) OPL_INFO_F("thunks", "DBG callback 0x%08X leave pos=%u sp=0x%08X", cb_addr, openpete_sched_pos(), cpu->sp);
     cpu->a0 = s_a0; cpu->a1 = s_a1; cpu->a2 = s_a2; cpu->a3 = s_a3;
     cpu->ra = s_ra; cpu->v0 = s_v0; cpu->v1 = s_v1;
@@ -467,6 +471,74 @@ static void cd_events_tick(uint32_t vbls);
 static int s_cd_at_anchor = 0;           /* inside the anchor hook, before the record's hash */
 static uint32_t s_pad_buf0 = 0;          /* the first port's pad buffer (PadInitDirect) */
 
+/* The SPU clock of the oracle's clock replay: the reference's SPU sample
+ * count (its exact CPU clock / 768, the SPU's sample period) that
+ * openpete's envelope has been charged to. Unseeded, every waited VBL
+ * charges 735 samples; seeded, the envelope advances only when an event
+ * with a reference clock (a wait's return, a query, a CdSync poll, a
+ * libspu call) moves the clock, except inside a load window, where the
+ * waits run on openpete's own count and each VBL charges the reference's
+ * period. */
+static int      s_spu_clk_seeded = 0;
+static uint64_t s_spu_clk = 0;          /* reference SPU samples charged to */
+static uint64_t s_spu_clk_frac = 0;     /* load-window remainder, in 1/715909 samples */
+static uint64_t s_spu_clk_charges = 0, s_spu_clk_samples = 0;
+
+/** @brief Charge the SPU envelope to the reference clock tick: the samples from the SPU clock to tick / 768.
+ *
+ * Does nothing without the clock replay or for tick 0 (no reference
+ * clock). The first tick after open and after every load-window skip
+ * seeds the clock instead of charging. A tick behind the clock charges
+ * nothing.
+ * @param tick The reference's exact CPU clock at the event. */
+static void spu_clock_charge(uint64_t tick) {
+    if (tick == 0 || !openpete_sched_clock_replay()) return;
+    const uint64_t s = tick / 768u;
+    if (openpete_sched_clock_reseed_take() || !s_spu_clk_seeded) {
+        if (!s_spu_clk_seeded) openpete_sched_clock_seeded(tick);
+        s_spu_clk = s;
+        s_spu_clk_seeded = 1;
+        return;
+    }
+    if (s <= s_spu_clk) return;
+    PsyX_SPUAL_TickEnvelope((int)(s - s_spu_clk));
+    s_spu_clk_charges++;
+    s_spu_clk_samples += s - s_spu_clk;
+    s_spu_clk = s;
+}
+
+/** @brief The SPU samples `wait` VBLs charge: 735 each until the SPU clock is seeded, then none outside a load window and the reference's period inside one.
+ *
+ * The reference's period is 897487.5 GPU clocks per VBLANK (3412.5 clocks
+ * by 263 lines) at 33868800/53693175 CPU cycles per GPU clock, over 768
+ * cycles per sample: 527722650/715909 samples, carried as a remainder.
+ * @param wait VBLs being run.
+ * @return Samples to charge. */
+static int spu_vbl_samples(int wait) {
+    if (!s_spu_clk_seeded) return wait * 735;
+    if (!openpete_sched_in_load()) return 0;
+    const uint64_t acc = s_spu_clk_frac + (uint64_t)wait * 527722650u;
+    s_spu_clk_frac = acc % 715909u;
+    return (int)(acc / 715909u);
+}
+
+/** @brief Deliver the in-work VBLANK the clock replay schedules at this gate hit, if any.
+ *
+ * Called by the dispatcher on every counted gate hit while the replay is
+ * on. The VBLs run through the VBL body (the game's own VSync callback
+ * included) before the entered function's body, a call boundary where only
+ * argument and return registers are live, which the callback invocation
+ * preserves.
+ * @param cpu Guest CPU state.
+ * @param addr Guest address of the function entered. */
+extern "C" void psyq_sched_clock_gate(CPUState* cpu, uint32_t addr) {
+    uint32_t target = 0;
+    if (!openpete_sched_vblpos_gate(addr, &target)) return;
+    openpete_psxtrace_gate_host_enter();
+    sched_charge_to(cpu, target, "in-work VBLANK");
+    openpete_psxtrace_gate_host_leave();
+}
+
 /** @brief Thunk for libetc VSync: returns the VBL counter, waiting first when a0 is not negative.
  *
  * A0 below 0 only reads the counter. A0 of 0 waits one VBL and any other
@@ -513,6 +585,7 @@ void psyq_VSync(CPUState* cpu) {
         uint32_t target = 0;
         int32_t sc = openpete_sched_query(cpu->ra, &target);
         if (sc >= 0 && target > openpete_sched_pos()) sched_charge_to(cpu, target, "VSync(-1)");
+        spu_clock_charge(openpete_sched_query_tick());
         cpu->v0 = (sc >= 0) ? (uint32_t)sc : (uint32_t)observed;
         return;
     }
@@ -527,7 +600,9 @@ void psyq_VSync(CPUState* cpu) {
             if ((++s_nocharge & 0x3FFu) == 1u)
                 OPL_INFO_F("thunks", "VSync(%d) charged nothing: pos=%u ra=0x%08X (#%u)", mode, openpete_sched_pos(), cpu->ra, s_nocharge);
         }
+        (void)openpete_sched_vblpos_late(sched_target);
         sched_charge_to(cpu, sched_target, "VSync");
+        spu_clock_charge(openpete_sched_wait_tick());
     } else {
         psyq_vbl_body(cpu, wait);
         /* Past the schedule's rows (the trace's end) the position follows
@@ -571,6 +646,13 @@ static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
     }
 }
 
+/** @brief Charge, before the anchor's hash, the in-work VBLANKs of the ending record whose entry openpete did not reach.
+ * @param cpu Guest CPU state. */
+static void sched_charge_late(CPUState* cpu) {
+    const uint32_t late = openpete_sched_vblpos_late(0u);
+    if (late > openpete_sched_pos()) sched_charge_to(cpu, late, "late in-work VBLANK");
+}
+
 /** @brief Check the schedule position against the reference at an anchor hit, and deliver disc events due there.
  *
  * Called by the dispatcher at every anchor hit from the hit target on. Inside
@@ -605,6 +687,7 @@ extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
      * and charged by the next wait: the interrupt landed inside the tick's
      * work after the tick had consumed its counters, so a body run before
      * the hash would count it one tick early. */
+    sched_charge_late(cpu);
     (void)openpete_sched_anchor_target(openpete_psxtrace_current_record(), &target);
     s_cd_at_anchor = 1;
     cd_defer_tick(cpu, 0u);
@@ -632,8 +715,10 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
      * samples per VBL. Without this, voice key state never transitions
      * to SPU_RESET and the game's voice-pool bookkeeping leaks. The
      * envelope sim is independent of the OpenAL playback path, so this
-     * is correct in both audio-on and headless runs. */
-    PsyX_SPUAL_TickEnvelope(wait * 735);
+     * is correct in both audio-on and headless runs. Under the oracle's
+     * seeded clock replay the reference's clock charges it instead
+     * (spu_vbl_samples). */
+    PsyX_SPUAL_TickEnvelope(spu_vbl_samples(wait));
     audio_dump_drain();
 
     /* The kernel's card driver runs from the vblank interrupt before the
@@ -2955,6 +3040,7 @@ void psyq_CdSync(CPUState* cpu) {
     if (mode != 0 && openpete_sched_active() && openpete_sched_cdsync(mode, cpu->ra, &ref_rc, &ref_vbl)) {
         cd_defer_before_call(cpu);
         if (ref_vbl > openpete_sched_pos()) sched_charge_to(cpu, ref_vbl, "CdSync poll");
+        spu_clock_charge(openpete_sched_last_tick());
         rc = (int)ref_rc;
         /* The reference's poll saw the completion: the drive's second
          * response had arrived (a poll answered complete before that
@@ -3217,12 +3303,44 @@ static void sfx_key_log_attr(const SpuVoiceAttr* attr) {
                     openpete_frame, v, attr->addr, attr->pitch, n ? names[0] : "-");
 }
 
+/* SpuVoiceAttr mask fields that move envelope timing: the pitch fields
+ * (PITCH, NOTE, SAMPLE_NOTE) and the ADSR fields (AMODE..SL, ADSR1,
+ * ADSR2). Only calls with one of them carry a `.spuq` row. */
+#define SPU_VOICE_ENVELOPE_FIELDS (0x70u | 0xFF00u | 0x60000u)
+
+/** @brief Charge the SPU clock to the reference's clock at this libspu call, when the clock replay matches it to a `.spuq` row.
+ * @param kind 0 SpuSetKey, 1 SpuGetKeyStatus, 2 SpuGetAllKeysStatus, 3 SpuSetVoiceAttr.
+ * @param ra The call's return address.
+ * @param a0 First matched argument.
+ * @param a1 Second matched argument. */
+static void spu_clock_at_call(int kind, uint32_t ra, uint32_t a0, uint32_t a1) {
+    uint64_t tick = 0;
+    if (openpete_sched_spuq(kind, ra, a0, a1, &tick)) spu_clock_charge(tick);
+}
+
+/** @brief libspu's key status of one voice: from the software key mask and the voice's ENVX register.
+ *
+ * Keyed on: 3 (SPU_RESET) when ENVX is 0, else 1 (SPU_ON); keyed off: 2
+ * (SPU_OFF_ENV_ON) when ENVX is not 0, else 0 (SPU_OFF), the expression of
+ * libspu's SpuGetKeyStatus and SpuGetAllKeysStatus. The key flag and ENVX
+ * are PsyCross's software key bit and envelope level.
+ * @param voice Voice index, 0..23.
+ * @return The status. */
+static int spu_libspu_key_status(int voice) {
+    int keyed = 0;
+    const int envx = PsyX_SPUAL_GetVoiceEnvelope(voice, &keyed);
+    if (keyed) return envx == 0 ? SPU_RESET : SPU_ON;
+    return envx != 0 ? SPU_OFF_ENV_ON : SPU_OFF;
+}
+
 /** @brief Thunk for libspu SpuSetVoiceAttr: passes the voice attributes to PsyCross as written.
  *
  * Sound replacement (the sfx pack, including the mod API's sfx_replace)
  * happens below this mirror, at the voice's PCM upload inside PsyCross, so
  * the address and pitch the one-shot duration is derived from, and with them
  * the tick on which the guest sees the voice end, are the game's own. Under
+ * the oracle's clock replay a call that sets a pitch or ADSR field first
+ * charges the envelope to the reference's clock at the call. Under
  * OPENPETE_SFX_END_LOG an attribute set that writes a start address is
  * logged per voice with its sample's slot name.
  * @param cpu Guest CPU state; a0 is the SpuVoiceAttr. */
@@ -3230,6 +3348,7 @@ void psyq_SpuSetVoiceAttr(CPUState* cpu) {
     const SpuVoiceAttr* attr = (const SpuVoiceAttr*)SPAN(cpu->a0, sizeof(SpuVoiceAttr));
     if (!attr) return;
     sfx_key_log_attr(attr);
+    if (attr->mask & SPU_VOICE_ENVELOPE_FIELDS) spu_clock_at_call(3, cpu->ra, (uint32_t)attr->voice, (uint32_t)attr->mask);
     SpuSetVoiceAttr((SpuVoiceAttr*)attr);
 }
 
@@ -3256,10 +3375,12 @@ void psyq_SpuGetVoiceVolume(CPUState* cpu) {
 
 /** @brief Thunk for libspu SpuSetKey: keys on or off the voices in mask a1, by a0 (SPU_ON or SPU_OFF).
  *
- * Under OPENPETE_SFX_END_LOG a line with openpete_frame, the VBL count, a0,
- * the mask and ra is written to stderr.
+ * Under the oracle's clock replay the envelope is first charged to the
+ * reference's clock at the call. Under OPENPETE_SFX_END_LOG a line with
+ * openpete_frame, the VBL count, a0, the mask and ra is written to stderr.
  * @param cpu Guest CPU state. */
 void psyq_SpuSetKey(CPUState* cpu) {
+    spu_clock_at_call(0, cpu->ra, cpu->a0, cpu->a1);
     SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
     if (sfx_key_log_on())
         fprintf(stderr, "[spu-key f=%u vbl=%d on=%d mask=%#x ra=%#x]\n",
@@ -3269,6 +3390,10 @@ void psyq_SpuSetKey(CPUState* cpu) {
 
 /** @brief Thunk for libspu SpuGetKeyStatus: PsyCross's key status for the voice mask in a0.
  *
+ * Under the oracle's clock replay the envelope is first charged to the
+ * reference's clock at the call, and the status is libspu's expression for
+ * the mask's lowest voice (-1 for an empty mask), read from the envelope
+ * level instead of PsyCross's ADSR phase.
  * Under OPENPETE_SFX_END_LOG a single-voice query whose result differs from
  * that voice's previous result logs one line with openpete_frame when the
  * new status is SPU_ON or SPU_RESET. The RESET read is the tick the game
@@ -3277,7 +3402,9 @@ void psyq_SpuSetKey(CPUState* cpu) {
  * @param cpu Guest CPU state; v0 receives the status. */
 void psyq_SpuGetKeyStatus(CPUState* cpu) {
     unsigned int mask = (unsigned int)cpu->a0;
-    cpu->v0 = (uint32_t)SpuGetKeyStatus(mask);
+    spu_clock_at_call(1, cpu->ra, mask, 0u);
+    if (openpete_sched_clock_replay()) cpu->v0 = (mask & 0xFFFFFFu) ? (uint32_t)spu_libspu_key_status(__builtin_ctz(mask)) : 0xFFFFFFFFu;
+    else cpu->v0 = (uint32_t)SpuGetKeyStatus(mask);
     if (sfx_key_log_on() && mask && !(mask & (mask - 1u))) {
         static uint8_t s_last[24];
         int v = __builtin_ctz(mask);
@@ -3292,13 +3419,18 @@ void psyq_SpuGetKeyStatus(CPUState* cpu) {
 
 /** @brief Thunk for libspu SpuGetAllKeysStatus: stores one key-status byte per voice, 24 in all, at the guest address a0.
  *
- * A span that runs past its region stores nothing.
+ * A span that runs past its region stores nothing. Under the oracle's clock
+ * replay the envelope is first charged to the reference's clock at the
+ * call and each byte is libspu's expression over the envelope level.
  * @param cpu Guest CPU state. */
 void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
     /* One status byte per SPU voice. */
     char* status = (char*)SPAN(cpu->a0, 24u);
     if (!status) return;
+    spu_clock_at_call(2, cpu->ra, cpu->a0, 0u);
     SpuGetAllKeysStatus(status);
+    if (openpete_sched_clock_replay())
+        for (int v = 0; v < 24; v++) status[v] = (char)spu_libspu_key_status(v);
 }
 
 /** @brief Thunk for libspu SpuRead: copies a1 bytes of SPU RAM from the transfer address to the guest address a0.

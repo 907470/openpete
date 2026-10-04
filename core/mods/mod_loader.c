@@ -43,6 +43,7 @@
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
+#include "openpete_psxtrace.h" /* openpete_psxtrace_gate_host_enter: a host-initiated guest call */
 #include "openpete_fiber.h"      /* openpete_speculative / openpete_replaying */
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h" /* mouse_read / mouse_capture */
@@ -893,7 +894,9 @@ void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime_internal.h */
  * @param addr Guest function address. */
 static void api_call_addr(CPUState* cpu, uint32_t addr) {
     if (purity_violation("call_addr")) return;
+    openpete_psxtrace_gate_host_enter();
     call_by_address(cpu, addr);
+    openpete_psxtrace_gate_host_leave();
 }
 
 /** @brief Register the mod's per-present hook.

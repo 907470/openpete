@@ -61,6 +61,7 @@
 #include "named_target.h"
 #include "openpete_fiber.h" /* openpete_speculative, openpete_frame */
 #include "openpete_log.h"
+#include "openpete_psxtrace.h" /* openpete_psxtrace_gate_host_enter: a host-initiated guest call */
 #include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
 
 #include <stdint.h>
@@ -228,7 +229,9 @@ static int credits_hook(CPUState* cpu) {
      * only the return address needs preserving across the nested call. */
     uint32_t ra = cpu->ra;
     cpu->a0 = full ? 1u : 0u;
+    openpete_psxtrace_gate_host_enter();
     call_by_address(cpu, ADDR_INIT_CREDITS_SEQUENCE);
+    openpete_psxtrace_gate_host_leave();
     cpu->ra = ra;
 
     OPL_INFO_F("skip-to-cutscene", "%s credits started from level %u; the "
@@ -269,7 +272,9 @@ static int intro_hook(CPUState* cpu) {
         return 0;
     s_induced = 1;
     uint32_t ra = cpu->ra;
+    openpete_psxtrace_gate_host_enter();
     call_by_address(cpu, ADDR_FUNC_8001277C);
+    openpete_psxtrace_gate_host_leave();
     cpu->ra = ra;
     cpu->write_word(ts + TS_MODE, 2u);     /* m_Mode = TSM_Loading */
     cpu->write_word(ts + TS_STATE, 5u);    /* m_State = 5 */

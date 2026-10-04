@@ -1333,6 +1333,13 @@ static const knob_desc_t g_builtin[] = {
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_logfmt_names), 0, 0,
       logfmt_get, logfmt_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    ENVROW_LATCHED("PSXTRACE_CLOCK_REPLAY", "Debug", "0",
+        "Oracle clock replay: with --psxtrace-verify and the golden's .vblpos "
+        "and .spuq sidecars, each of the reference's in-work VBLANKs is "
+        "delivered at the function entry it recorded and the SPU envelope is "
+        "charged to the reference's exact clock at every wait, poll, query "
+        "and libspu call. Read once when the golden opens; "
+        "tests/harness/check_psx_oracle.sh sets it under OPENPETE_ORACLE_CLOCK=1."),
     ENVROW_LATCHED("CRASH_TEST", "Debug", "",
         "Fault injection for the crash handler: segv (a null store) or "
         "overflow (unbounded recursion) on the game fiber before the game's "

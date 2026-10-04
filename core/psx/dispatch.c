@@ -11,6 +11,7 @@
 #include "openpete_paths.h"
 #include "openpete_psx.h"
 #include "openpete_pace_log.h"
+#include "openpete_psxtrace.h"
 #include "openpete_recomp_module.h"
 
 #include <errno.h>
@@ -421,6 +422,50 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
 /* Per-function intercept gate emitted at the top of every generated body.
  * The game supplies psx_override_dispatch_game for its per-game quirks. */
 __attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t addr);
+
+/* The oracle's clock replay counts the guest's own entries of each
+ * function. Two kinds of gate hit are not the guest's: every hit inside a
+ * host-initiated guest call (interrupt handlers, BIOS services, host
+ * features), which the depth counts, and the one hit of a hook that runs
+ * the body of the very call the guest made (the gate already counted it),
+ * which s_gate_redispatch names while the game's override for that
+ * address runs. */
+static int      s_gate_depth = 0;
+static uint32_t s_gate_redispatch = 0;
+
+void openpete_psxtrace_gate_host_enter(void) { s_gate_depth++; }
+void openpete_psxtrace_gate_host_leave(void) { s_gate_depth--; }
+
+/** @brief Pass one gate hit to the clock replay unless it is a host re-dispatch or inside a host-initiated call.
+ *
+ * A hit at the address the running override was entered for is that
+ * override's re-dispatch of the guest's own call: it clears the mark and
+ * is not counted. The replay's VBLANK delivery runs in
+ * psyq_sched_clock_gate.
+ * @param cpu Guest CPU state.
+ * @param addr Guest address of the function entered. */
+static void gate_clock(CPUState* cpu, uint32_t addr) {
+    if (addr == s_gate_redispatch) { s_gate_redispatch = 0; return; }
+    if (s_gate_depth || !openpete_sched_clock_replay()) return;
+    extern void psyq_sched_clock_gate(CPUState* cpu, uint32_t addr) __attribute__((weak));
+    if (psyq_sched_clock_gate) psyq_sched_clock_gate(cpu, addr);
+}
+
+/** @brief Run the game's override arms for addr with addr marked as the address a re-dispatch re-enters.
+ *
+ * The previous mark is restored afterwards, so the marks nest with the
+ * overrides.
+ * @param cpu Guest CPU state.
+ * @param addr Guest address of the function entered.
+ * @return The game's verdict: nonzero when the original must not run; 0 when the game has no override. */
+static int gate_override(CPUState* cpu, uint32_t addr) {
+    if (!psx_override_dispatch_game) return 0;
+    const uint32_t outer = s_gate_redispatch;
+    s_gate_redispatch = addr;
+    const int handled = psx_override_dispatch_game(cpu, addr);
+    s_gate_redispatch = outer;
+    return handled;
+}
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (!s_hang_threshold_inited) {
         const char* env = getenv("OPENPETE_HANG_THRESHOLD");
@@ -445,7 +490,9 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
          * VBL, the schedule passes one here (psyq_thunks.cpp). */
         if ((s_hang_calls_since_tick & 2047u) == 2047u) {
             extern void psyq_sched_spin_tick(CPUState* cpu) __attribute__((weak));
+            openpete_psxtrace_gate_host_enter();
             if (psyq_sched_spin_tick) psyq_sched_spin_tick(cpu);
+            openpete_psxtrace_gate_host_leave();
         }
         /* Only fill the ring for the first HANG_RING dispatches of each
          * frame. A tight loop produces 2-3 distinct addrs and trivially
@@ -494,9 +541,8 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
             openpete_psxtrace_dispatch_hook(addr);
         }
     }
-    if (psx_override_dispatch_game) return psx_override_dispatch_game(cpu, addr);
-    (void)cpu; (void)addr;
-    return 0;
+    gate_clock(cpu, addr);
+    return gate_override(cpu, addr);
 }
 
 void psx_syscall(CPUState* cpu, uint32_t code) {

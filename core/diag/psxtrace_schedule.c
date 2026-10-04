@@ -30,7 +30,7 @@
  * queries (mode -1) from one call site with the counter they returned, or
  * a callback registration (mode -2) with its VBLANK count. ra is the
  * caller's return address (0 in a sidecar without the column). */
-typedef struct { uint32_t rec; int32_t mode; uint32_t entry_vbl, ret_vbl; int32_t counter; uint32_t n, ra; uint64_t entry_tick; } sched_vsync_t;
+typedef struct { uint32_t rec; int32_t mode; uint32_t entry_vbl, ret_vbl; int32_t counter; uint32_t n, ra; uint64_t entry_tick, ret_tick; } sched_vsync_t;
 typedef struct { uint32_t idx, issue_rec, issue_vbl, sectors, dst, mode, done_rec, done_vbl; int done; uint64_t done_tick; } sched_read_t;
 
 static sched_vsync_t* s_vs = NULL;   static uint32_t s_vs_n = 0, s_vs_next = 0, s_vs_left = 0;
@@ -53,6 +53,10 @@ static uint64_t s_q_extra = 0;        /* openpete's queries past the record's ro
 static uint64_t s_q_unmade = 0;       /* the reference's queries openpete never made (rows dropped) */
 static uint32_t s_q_charged = 0;      /* VBLs charged at a query (the interrupt landed inside the tick's work) */
 static uint32_t s_q_behind = 0;       /* query rows of the record behind the position (dropped) */
+static uint64_t s_wait_tick = 0;      /* exact return clock of the waited row last consumed */
+static uint64_t s_query_tick = 0;     /* exact clock of the query row last answered from */
+static void clock_open(const char* trace);
+static void clock_skip_to(uint32_t rec);
 
 int openpete_sched_active(void) { return s_active; }
 int openpete_sched_failed(const char** reason) {
@@ -118,7 +122,7 @@ static int load_vsync(const char* trace) {
         sched_vsync_t* r = &s_vs[s_vs_n++];
         r->rec = rec; r->mode = mode; r->entry_vbl = evbl; r->ret_vbl = rvbl;
         r->counter = (mode == -1) ? (int32_t)v0 : -1; r->n = (mode == -1 && n) ? n : 1u; r->ra = ra;
-        r->entry_tick = et;
+        r->entry_tick = et; r->ret_tick = rt;
         if (mode == -1) {
             if (!s_counter_k_set) { s_counter_k = (int32_t)rvbl - (int32_t)v0; s_counter_k_set = 1; }
             s_q_total += r->n;
@@ -409,6 +413,7 @@ int openpete_sched_open(const char* trace_path) {
     int cs = load_cdsync(trace_path);
     if (!vs && !rd && !sd) return 0;
     s_active = 1;
+    clock_open(trace_path);
     if (wt) OPL_INFO_F("psxtrace", "schedule: %u load windows from the watched word", s_win_n);
     if (pc) OPL_INFO_F("psxtrace", "schedule: controller commands known from vblank %u to %u", s_padcmd.first, s_padcmd.n - 1u);
     if (so) OPL_INFO_F("psxtrace", "schedule: controller handler vblanks known from %u to %u", s_sio0.first, s_sio0.n - 1u);
@@ -442,6 +447,7 @@ static void pos_init_from(uint32_t vbl) {
 int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
     if (!s_active || !s_vs || s_failed) return 0;
     s_last_tick = 0;
+    s_wait_tick = 0;
     extern uint32_t openpete_psxtrace_anchor_hits;
     extern uint32_t openpete_psxtrace_anchor_hit_target;
     /* The sidecar's rec column is the records written when the call was
@@ -512,6 +518,7 @@ int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
         openpete_sched_fail("VSync row %u: mode %d, openpete called VSync(%d) (record %u)", s_vs_next - 1, r->mode, mode, r->rec);
     pos_init_from(r->entry_vbl);
     s_last_tick = r->entry_tick;
+    s_wait_tick = r->ret_tick;
     s_vsync_consumed++;
     /* VBLs the reference spent in game code after this wait returned (a
      * long frame) are charged at the next anchor hit: the tick's work
@@ -563,6 +570,7 @@ int openpete_sched_anchor_window(uint32_t record, uint32_t value, uint32_t* skip
             /* Rows inside the reference's window openpete never made. */
             while (s_vs && s_vs_next < s_vs_n && s_vs[s_vs_next].rec <= w->leave_rec) s_vs_next++;
             s_vs_left = 0;
+            clock_skip_to(w->leave_rec);
             if (s_log) fprintf(s_log, "window %u: openpete record %u -> reference record %u (%u skipped)\n",
                                s_windows_seen, record, w->leave_rec, w->leave_rec - record);
             *skip_to_rec = w->leave_rec;
@@ -634,6 +642,7 @@ int32_t openpete_sched_query(uint32_t ra, uint32_t* target_out) {
     int32_t counter = (int32_t)s_pos - s_counter_k;
     *target_out = s_pos;
     s_query_ra = ra;
+    s_query_tick = 0;
     const int replay = s_vs && !(cur_rec == 0 && getenv("OPENPETE_SCHED_BOOT_OWN")) && !s_in_load && !s_failed && !(s_stamps && cur_rec >= s_stamps_n);
     if (replay) {
         /* The next query row of this record from the same call site answers
@@ -658,6 +667,7 @@ int32_t openpete_sched_query(uint32_t ra, uint32_t* target_out) {
             }
             if (!s_vs_left) s_vs_left = s_vs[k].n;
             counter = s_vs[k].counter;
+            s_query_tick = s_vs[k].ret_tick;
             uint32_t target = (uint32_t)(counter + s_counter_k);
             if (target > s_pos) { s_q_charged += target - s_pos; *target_out = target; }
             s_q_answered++;
@@ -768,6 +778,220 @@ int openpete_sched_next_srand(uint32_t* seed_out) {
     return 1;
 }
 
+/* The clock replay (OPENPETE_PSXTRACE_CLOCK_REPLAY=1). `.vblpos` holds
+ * every VBLANK interrupt the reference took outside a waited VSync, with
+ * the first game-code function entered after its handler (t), that entry's
+ * ordinal since the record's anchor (k) and the record it fell in (t_rec);
+ * `.spuq` holds every libspu call that reads or moves envelope state with
+ * the exact clock. Gate hits are counted per target, so a guest call a
+ * presentation flag adds or removes elsewhere does not move a delivery. */
+typedef struct { uint32_t rec, vbl, t, t_rec, k; } sched_vblpos_t;
+typedef struct { uint32_t rec, ra, a0, a1; uint64_t tick; uint8_t kind, used; } sched_spuq_t;
+#define VBLPOS_TARGETS 32u
+
+static int      s_clock = 0;           /* the knob was set and both sidecars loaded */
+static int      s_clock_reseed = 1;    /* the SPU clock seeds from the next charged clock */
+static uint64_t s_clock_seed_tick = 0;
+static sched_vblpos_t* s_vp = NULL;  static uint32_t s_vp_n = 0, s_vp_next = 0;
+static uint32_t s_vp_delivered = 0, s_vp_covered = 0, s_vp_late = 0, s_vp_skipped = 0;
+static uint32_t s_vp_rec = 0xFFFFFFFFu;              /* record the target counters belong to */
+static uint32_t s_vp_tgt[VBLPOS_TARGETS], s_vp_cnt[VBLPOS_TARGETS], s_vp_ntgt = 0;
+static sched_spuq_t* s_sq = NULL;    static uint32_t s_sq_n = 0, s_sq_next = 0;
+static uint32_t s_sq_charged = 0, s_sq_unmatched = 0, s_sq_unmade = 0;
+
+int openpete_sched_clock_replay(void) { return s_clock; }
+uint64_t openpete_sched_wait_tick(void) { return s_wait_tick; }
+uint64_t openpete_sched_query_tick(void) { return s_query_tick; }
+int openpete_sched_clock_reseed_take(void) { int r = s_clock_reseed; s_clock_reseed = 0; return r; }
+void openpete_sched_clock_seeded(uint64_t tick) { if (!s_clock_seed_tick) s_clock_seed_tick = tick; }
+
+/** @brief Load the `.vblpos` sidecar into s_vp, one row per VBLANK interrupt taken outside a waited VSync.
+ *
+ * A row whose target column is `-` (the reference reached no game-code
+ * entry before the trace ended) keeps target 0, which no gate hit
+ * matches, so it is consumed late.
+ * @param trace Path of the golden trace.
+ * @return 1 when at least one row loaded, else 0. */
+static int load_vblpos(const char* trace) {
+    char* buf = read_sidecar(trace, ".vblpos", "psxtrace-vblpos");
+    if (!buf) return 0;
+    uint32_t cap = 4096;
+    s_vp = (sched_vblpos_t*)malloc(cap * sizeof(*s_vp));
+    for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+        if (line[0] == '#' || line[0] == 'p') continue;
+        unsigned idx, rec, vbl; char via[16], epc[16], entry[16], insns[16], t[16], t_rec[16], k[16];
+        if (sscanf(line, "%u %u %u %15s %15s %15s %15s %15s %15s %15s", &idx, &rec, &vbl, via, epc, entry, insns,
+                   t, t_rec, k) != 10)
+            continue;
+        if (s_vp_n == cap) { cap *= 2; s_vp = (sched_vblpos_t*)realloc(s_vp, cap * sizeof(*s_vp)); }
+        sched_vblpos_t* r = &s_vp[s_vp_n++];
+        r->rec = rec; r->vbl = vbl;
+        r->t = (uint32_t)strtoul(t, NULL, 16);
+        r->t_rec = (t_rec[0] == '-') ? rec : (uint32_t)strtoul(t_rec, NULL, 10);
+        r->k = (uint32_t)strtoul(k, NULL, 10);
+    }
+    free(buf);
+    return s_vp_n != 0;
+}
+
+/** @brief Return the `.spuq` kind index of a kind column, -1 for an unknown kind.
+ * @param name The kind column.
+ * @return 0 setkey, 1 keystatus, 2 allkeys, 3 voiceattr, or -1. */
+static int spuq_kind(const char* name) {
+    static const char* const kinds[4] = { "setkey", "keystatus", "allkeys", "voiceattr" };
+    for (int i = 0; i < 4; i++)
+        if (strcmp(name, kinds[i]) == 0) return i;
+    return -1;
+}
+
+/** @brief Load the `.spuq` sidecar into s_sq, one row per recorded libspu call with its first two arguments.
+ *
+ * The arguments kept are those the call is matched on: SpuSetKey's on
+ * flag and voices, SpuGetKeyStatus's voice, SpuGetAllKeysStatus's buffer,
+ * SpuSetVoiceAttr's voice and mask.
+ * @param trace Path of the golden trace.
+ * @return 1 when at least one row loaded, else 0. */
+static int load_spuq(const char* trace) {
+    char* buf = read_sidecar(trace, ".spuq", "psxtrace-spuq");
+    if (!buf) return 0;
+    uint32_t cap = 4096;
+    s_sq = (sched_spuq_t*)malloc(cap * sizeof(*s_sq));
+    for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+        if (line[0] == '#' || line[0] == 'p') continue;
+        unsigned idx, rec, vbl, pc, ra; unsigned long long tick; char kind[16], a0[24] = "0", a1[24] = "0";
+        if (sscanf(line, "%u %u %u %15s %x %x %llu %23s %23s", &idx, &rec, &vbl, kind, &pc, &ra, &tick, a0, a1) < 8)
+            continue;
+        const int kd = spuq_kind(kind);
+        if (kd < 0) continue;
+        if (s_sq_n == cap) { cap *= 2; s_sq = (sched_spuq_t*)realloc(s_sq, cap * sizeof(*s_sq)); }
+        sched_spuq_t* r = &s_sq[s_sq_n++];
+        r->rec = rec; r->ra = ra; r->tick = tick; r->kind = (uint8_t)kd; r->used = 0;
+        r->a0 = (uint32_t)strtoul(a0, NULL, 0);
+        r->a1 = (kd == 0 || kd == 3) ? (uint32_t)strtoul(a1, NULL, 0) : 0u;
+    }
+    free(buf);
+    return s_sq_n != 0;
+}
+
+/** @brief Turn the clock replay on when OPENPETE_PSXTRACE_CLOCK_REPLAY is set to a value not starting with '0' and both sidecars load.
+ *
+ * Read once, at openpete_sched_open(). With the knob set and a sidecar
+ * missing the replay stays off and an error is logged.
+ * @param trace Path of the golden trace. */
+static void clock_open(const char* trace) {
+    const char* e = getenv("OPENPETE_PSXTRACE_CLOCK_REPLAY");
+    if (!e || !*e || *e == '0') return;
+    const int vp = load_vblpos(trace), sq = load_spuq(trace);
+    s_clock = vp && sq;
+    if (!s_clock) {
+        OPL_ERROR_F("psxtrace", "clock replay: %s%s missing; the replay is off", vp ? "" : ".vblpos ", sq ? "" : ".spuq");
+        return;
+    }
+    OPL_INFO_F("psxtrace", "clock replay: %u in-work VBLANK rows, %u libspu rows", s_vp_n, s_sq_n);
+}
+
+/** @brief Skip the rows of the records a load window's end jumps over and re-seed the SPU clock.
+ * @param rec The reference record the window ended at. */
+static void clock_skip_to(uint32_t rec) {
+    s_clock_reseed = 1;
+    while (s_vp && s_vp_next < s_vp_n && s_vp[s_vp_next].t_rec <= rec) { s_vp_next++; s_vp_skipped++; }
+    while (s_sq && s_sq_next < s_sq_n && s_sq[s_sq_next].rec <= rec) s_sq_next++;
+}
+
+/** @brief Start counting the entries of rec's `.vblpos` targets: the distinct targets of its pending rows, each at 0.
+ *
+ * Rows of earlier records still pending are counted skipped (the anchor
+ * consumes them first, so these are rows of records openpete never ran).
+ * @param rec The current record. */
+static void vblpos_begin_record(uint32_t rec) {
+    s_vp_rec = rec;
+    s_vp_ntgt = 0;
+    while (s_vp_next < s_vp_n && s_vp[s_vp_next].t_rec < rec) { s_vp_next++; s_vp_skipped++; }
+    for (uint32_t i = s_vp_next; i < s_vp_n && s_vp[i].t_rec == rec && s_vp_ntgt < VBLPOS_TARGETS; i++) {
+        uint32_t j = 0;
+        while (j < s_vp_ntgt && s_vp_tgt[j] != s_vp[i].t) j++;
+        if (j == s_vp_ntgt) { s_vp_tgt[j] = s_vp[i].t; s_vp_cnt[j] = 0; s_vp_ntgt++; }
+    }
+}
+
+int openpete_sched_vblpos_gate(uint32_t addr, uint32_t* target_out) {
+    if (!s_clock || s_failed || s_in_load) return 0;
+    const uint32_t rec = sched_cur_rec();
+    if (rec != s_vp_rec) vblpos_begin_record(rec);
+    uint32_t j = 0;
+    while (j < s_vp_ntgt && s_vp_tgt[j] != addr) j++;
+    if (j == s_vp_ntgt) return 0;
+    const uint32_t k = ++s_vp_cnt[j];
+    uint32_t target = 0, n = 0;
+    while (s_vp_next < s_vp_n && s_vp[s_vp_next].t_rec == rec && s_vp[s_vp_next].t == addr && s_vp[s_vp_next].k == k) {
+        target = s_vp[s_vp_next++].vbl;
+        n++;
+    }
+    if (!n) return 0;
+    if (s_log) fprintf(s_log, "vblpos rec=%u t=0x%08X k=%u vbl=%u pos=%u rows=%u\n", rec, addr, k, target, s_pos, n);
+    if (target <= s_pos) { s_vp_covered += n; return 0; }
+    s_vp_delivered += n;
+    *target_out = target;
+    return 1;
+}
+
+uint32_t openpete_sched_vblpos_late(uint32_t bound) {
+    if (!s_clock || s_failed || s_in_load) return 0;
+    const uint32_t rec = sched_cur_rec();
+    uint32_t target = 0;
+    while (s_vp_next < s_vp_n && (bound ? s_vp[s_vp_next].vbl <= bound : s_vp[s_vp_next].t_rec < rec)) {
+        const uint32_t v = s_vp[s_vp_next++].vbl;
+        if (v <= s_pos) { s_vp_covered++; continue; }
+        s_vp_late++;
+        if (v > target) target = v;
+        if (s_log) fprintf(s_log, "vblpos-late rec=%u vbl=%u pos=%u at=%s\n", rec, v, s_pos, bound ? "wait" : "anchor");
+    }
+    return target;
+}
+
+/** @brief Return 1 when `.spuq` row r is unconsumed and is the call of the given kind, site and arguments.
+ * @param r The row.
+ * @param kind The call's kind index.
+ * @param ra The call's return address.
+ * @param a0 The call's first matched argument.
+ * @param a1 The call's second matched argument.
+ * @return 1 on a match, else 0. */
+static int spuq_row_is(const sched_spuq_t* r, int kind, uint32_t ra, uint32_t a0, uint32_t a1) {
+    return !r->used && r->kind == (uint8_t)kind && r->ra == ra && r->a0 == a0 && r->a1 == a1;
+}
+
+int openpete_sched_spuq(int kind, uint32_t ra, uint32_t a0, uint32_t a1, uint64_t* tick_out) {
+    if (!s_clock || s_failed || s_in_load) return 0;
+    const uint32_t rec = sched_cur_rec();
+    for (; s_sq_next < s_sq_n && (s_sq[s_sq_next].used || s_sq[s_sq_next].rec < rec); s_sq_next++)
+        s_sq_unmade += !s_sq[s_sq_next].used;
+    uint32_t i = s_sq_next;
+    while (i < s_sq_n && s_sq[i].rec == rec && !spuq_row_is(&s_sq[i], kind, ra, a0, a1)) i++;
+    if (i >= s_sq_n || s_sq[i].rec != rec) {
+        s_sq_unmatched++;
+        if (s_log) fprintf(s_log, "spuq-unmatched rec=%u kind=%d ra=0x%08X a0=0x%X a1=0x%X pos=%u\n", rec, kind, ra, a0, a1, s_pos);
+        return 0;
+    }
+    if (s_log) fprintf(s_log, "spuq rec=%u kind=%d ra=0x%08X a0=0x%X a1=0x%X tick=%llu pos=%u\n", rec, kind, ra, a0, a1,
+                       (unsigned long long)s_sq[i].tick, s_pos);
+    s_sq[i].used = 1;
+    s_sq_charged++;
+    *tick_out = s_sq[i].tick;
+    return 1;
+}
+
+/** @brief Log the clock replay's engagement counters, and the `.spuq` key-on rows before the SPU clock's seed. */
+static void clock_summary(void) {
+    if (!s_clock) return;
+    uint32_t keyons_before = 0;
+    for (uint32_t i = 0; i < s_sq_n && s_sq[i].tick < s_clock_seed_tick; i++)
+        keyons_before += (s_sq[i].kind == 0 && s_sq[i].a0 == 1u);
+    OPL_INFO_F("psxtrace", "clock: vblpos delivered=%u covered=%u late=%u skipped=%u pending=%u of %u; "
+               "spuq charged=%u unmatched=%u unmade=%u of %u; key-on rows before the SPU clock's seed=%u (seed tick %llu)",
+               s_vp_delivered, s_vp_covered, s_vp_late, s_vp_skipped, s_vp_n - s_vp_next, s_vp_n,
+               s_sq_charged, s_sq_unmatched, s_sq_unmade, s_sq_n, keyons_before, (unsigned long long)s_clock_seed_tick);
+}
+
 void openpete_sched_summary(void) {
     if (!s_active) return;
     OPL_INFO_F("psxtrace", "schedule: consumed %u/%u waited VSync rows, %u/%u reads (%u sync, %u async), %u/%u seeds, "
@@ -789,4 +1013,5 @@ void openpete_sched_summary(void) {
                s_sio0.served, s_sio0.skipped, s_padcmd.served, s_padcmd.skipped,
                s_cs_answered, s_cs_unmade, s_cs_charged,
                s_failed ? "; FAILED: " : "", s_failed ? s_fail_reason : "");
+    clock_summary();
 }
