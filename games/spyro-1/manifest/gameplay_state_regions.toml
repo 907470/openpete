@@ -40,14 +40,16 @@
 # primitive-buffer cursor. The DEMO MODE text
 # letters wobble by COSINE_8((g_LevelTicks * 4 + i * 12) & 0xFF)
 # (gamestates/draw.c func_80018908), and g_LevelTicks is the VBL counter
-# PadVSync increments; under the reference's VBL schedule (the golden's
-# .vsync/.loads/.srand siblings) the counter matches and the queues are
-# identical on every record. The cursor still differs on the records
-# openpete reaches one VBL behind the reference (a VBL the reference spent
-# inside a tick's work, charged at the next wait), gameplay_neutral with
-# the count as the ratchet. The three GTE engines and the reference agree
-# on every GTE instruction of such a tick, so no GTE or recompiler defect
-# is involved.
+# the VSync handler increments. Under the reference's VBL schedule (the
+# golden's .vsync/.loads/.srand siblings) a VBL the reference took inside a
+# tick's work, after the tick's last wait, is charged at openpete's next
+# wait, after the anchor and the draw that follows it. Where the tick that
+# starts the demo zeroes g_LevelTicks (LoadLevelScene) and the reference
+# then takes one or two VBLs before the anchor, openpete draws the letters
+# from a counter one or two lower; the letter angles, the GTE input rows of
+# the MVMVA at 0x80022E04, and the cursor differ on those records (six per
+# 20k run). g_LevelTicks itself is a boot_timing carve-out. The cursor row
+# is gameplay_neutral with the count as the ratchet.
 #
 # Carve-outs (commented rows; the ranges are subtracted above):
 #   pad_model       g_PadBuffer 0x800786A0-C4, g_Pad stick calibration
@@ -139,10 +141,11 @@ length           = 0x4
 class            = "render_scratch"
 description      = "D_800757B0: the primitive-buffer bump cursor the renderers allocate packets from (gamestates/draw.c, r_*.s); reset per frame, read by no gameplay code"
 # Differs from the reference by whole POLY_F3/F4 packets (0x18-byte
-# multiples) on the records where openpete reaches the anchor one VBL
-# behind the reference (a long frame, charged at the next wait): the DEMO
-# MODE text letters (head comment) rotate by a g_LevelTicks-dependent
-# angle. Classified gameplay_neutral; the count is the ratchet.
+# multiples) on the records where the demo start zeroes g_LevelTicks and
+# openpete reaches the anchor behind the reference (a long frame, charged
+# at the next wait): the DEMO MODE text letters (head comment) rotate by a
+# g_LevelTicks-dependent angle. Classified gameplay_neutral; the count is
+# the ratchet.
 gameplay_neutral = true
 diverge_baseline = 6
 
