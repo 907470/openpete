@@ -2,9 +2,8 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 78866c80213fc6954422b2f3a6f422833e4bd258
+# head: 8c0bce31163c0bcf5e43c02f5939907bfd21c9ea
 file	function	score	marked	accepted
-core/config/config.c	harvest_keys	35	0	
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
 core/config/config.c	openpete_config_report	45	0	

@@ -1837,20 +1837,23 @@ static int refusals_fail(void) {
     return s_strict_values || openpete_config_report_requested();
 }
 
-/** @brief Warn that the config file's value for the flag at argv[at] was refused and step *ip past it.
+/** @brief Warn that the config file's flag at argv[at] was refused and step *ip past it and its value.
  *
- * A value the config splice put into argv is a stored setting: refusing it
+ * A flag the config splice put into argv is a stored setting: refusing it
  * would stop a config file from booting the game, so the caller keeps the
- * option's previous value. The warning names the config key, the value and
- * the openpete.toml table it came from. A typed or bk2-sidecar flag is not
+ * option's previous value (a refused value) or drops the flag (an unknown
+ * [args] flag). The warning names the config key, the value and the
+ * openpete.toml table it came from. A typed or bk2-sidecar flag is not
  * spliced and is refused by the caller, as is every flag under strict mode
  * and under --config-report (refusals_fail).
  * @param argc Argument count.
  * @param argv The spliced argument vector.
  * @param at Index of the refused flag.
+ * @param unknown 1 when no arm knows the flag, 0 when its value was refused.
  * @param ip Receives the index of the flag's last token.
  * @return 1 when the flag came from the config file and falls back, else 0. */
-static int config_value_falls_back(int argc, char** argv, int at, int* ip) {
+static int config_value_falls_back(int argc, char** argv, int at, int unknown,
+                                   int* ip) {
     const char* src = openpete_config_token_source(argv[at]);
     if (!src || refusals_fail()) return 0;
     const char* v = NULL;
@@ -1859,8 +1862,9 @@ static int config_value_falls_back(int argc, char** argv, int at, int* ip) {
         v = argv[at + 1];
     int ki = cfg_schema_find_cli(argv[at]);
     const char* key = ki >= 0 ? cfg_schema(NULL)[ki].id : argv[at];
-    fprintf(stderr, "openpete: openpete.toml [%s]: %s = \"%s\" is not accepted; "
-                    "keeping the default\n", src, key, v ? v : "");
+    fprintf(stderr, "openpete: openpete.toml [%s]: %s = \"%s\" %s\n", src, key,
+            v ? v : "", unknown ? "is not a known flag; ignored"
+                                : "is not accepted; keeping the default");
     *ip = v ? at + 1 : at;
     return 1;
 }
@@ -1869,7 +1873,8 @@ static int config_value_falls_back(int argc, char** argv, int at, int* ip) {
  *
  * A flag whose value is refused fails the parse, except a flag the config
  * file supplied: its arm's writes are undone and the option keeps the value
- * it had (config_value_falls_back). An unknown argument always fails.
+ * it had (config_value_falls_back). An unknown argument fails unless the
+ * config file supplied it, which is dropped with a warning.
  * --help stops the walk.
  * @param opts The options block.
  * @param argc Argument count.
@@ -1884,7 +1889,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
         const int at = i;
         const int rc = parse_one_flag(opts, argc, argv, &i, notes);
         if (rc == OPENPETE_EXIT_OK) continue;
-        if (rc == PARSE_UNKNOWN_ARG || !config_value_falls_back(argc, argv, at, &i))
+        if (!config_value_falls_back(argc, argv, at, rc == PARSE_UNKNOWN_ARG, &i))
             return OPENPETE_EXIT_SETUP_ERROR;
         memcpy(opts, &before, sizeof before);
     }

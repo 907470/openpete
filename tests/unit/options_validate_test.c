@@ -152,8 +152,14 @@ static void refusals_that_stand(void) {
           "a typed --fov abc parsed beside a refused config value");
 
     g_case = "config unknown flag";
-    CHECK(parse_cfg(&o, "[args]\n\"--no-such-flag\" = \"1\"\n", 0, NULL) == OPENPETE_EXIT_SETUP_ERROR,
-          "an unknown [args] flag parsed");
+    CHECK(parse_cfg(&o, "ssaa = 2\n[args]\n\"--no-such-flag\" = \"1\"\n", 0, NULL) == OPENPETE_EXIT_OK,
+          "an unknown [args] flag failed the boot parse");
+    CHECK(o.ssaa == 2, "ssaa = %d, want 2 beside the ignored flag", o.ssaa);
+    static const char* const rep[] = { "--config-report" };
+    CHECK(parse_cfg(&o, "[args]\n\"--no-such-flag\" = \"1\"\n", 1, rep) == OPENPETE_EXIT_SETUP_ERROR,
+          "--config-report kept an unknown [args] flag");
+    static const char* const typed_unknown[] = { "--no-config", "--no-such-flag" };
+    CHECK(parse(&o, 2, typed_unknown) == OPENPETE_EXIT_SETUP_ERROR, "a typed unknown flag parsed");
 
     g_case = "strict config";
     openpete_options_set_strict(1);

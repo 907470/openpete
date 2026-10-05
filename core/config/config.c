@@ -269,6 +269,19 @@ static int value_refused(const char *where, const char *key, const char *val) {
     return 0;
 }
 
+/** @brief Answer a [keys] or [args] row refused for its name or binding: --config-report fails on it; a boot warns and ignores the row.
+ *
+ * The reason is already printed by the caller or the keymap.
+ * @param where The file and table.
+ * @param table The sub-table, such as "keys.host" or "args".
+ * @param key The row's key.
+ * @return -1 under --config-report, else 0 after the warning. */
+static int row_refused(const char *where, const char *table, const char *key) {
+    if (s_report_requested) return -1;
+    fprintf(stderr, "openpete: config: %s: [%s] '%s' ignored\n", where, table, key);
+    return 0;
+}
+
 /** @brief The schema knob id closest to an unknown config key, or NULL.
  *
  * Scores each id by the characters that match `key` position by position up
@@ -352,8 +365,9 @@ static int renamed_truth(const char *val, int is_bool, int bool_val) {
  *
  * A sub-table is skipped (its caller harvests it). A renamed key is mapped
  * to its new name with a warning, and its value to the new knob's
- * vocabulary when the rename carries one. A non-scalar value, an unknown
- * key (named with a did_you_mean hint) and a value of a TOML type the
+ * vocabulary when the rename carries one. An unknown key (named with a
+ * did_you_mean hint) is ignored with a warning at boot and is an error
+ * under --config-report. A non-scalar value and a value of a TOML type the
  * config does not accept are errors printed with `where`; a non-boolean
  * value for a bool knob and an enum value outside the knob's vocabulary
  * are refused through value_refused.
@@ -382,11 +396,11 @@ static int harvest_base_row(const toml_table_t *tab, const char *key, int tier,
     int ki = cfg_schema_find_id(key);
     if (ki < 0) {
         const char *hint = did_you_mean(key);
-        fprintf(stderr, "openpete: config: %s: unknown key '%s'%s%s%s\n",
+        fprintf(stderr, "openpete: config: %s: unknown key '%s'%s%s%s%s\n",
                 where, key,
                 hint ? " (did you mean '" : "", hint ? hint : "",
-                hint ? "'?)" : "");
-        return -1;
+                hint ? "'?)" : "", s_report_requested ? "" : "; ignored");
+        return s_report_requested ? -1 : 0;
     }
     const cfg_knob_t *k = &cfg_schema(NULL)[ki];
 
@@ -485,7 +499,8 @@ static int harvest_env(const toml_table_t *tab, int tier, int file,
  * valueless flag). On a schema alias flag ("--no-lod") true stands for the
  * alias's fixed value and false suppresses. On any other schema flag a
  * boolean is the 0/1 the flag expects, and an enum value outside the knob's
- * vocabulary is refused through value_refused. Returns 0, or -1 on an error. */
+ * vocabulary is refused through value_refused. A key that is not a flag is
+ * refused through row_refused. Returns 0, or -1 on an error. */
 static int harvest_args_row(const toml_table_t *tab, const char *key, int tier,
                             int file, const char *origin, const char *where) {
     toml_raw_t raw = toml_raw_in(tab, key);
@@ -498,7 +513,7 @@ static int harvest_args_row(const toml_table_t *tab, const char *key, int tier,
         fprintf(stderr, "openpete: config: %s: [args] key '%s' is not a flag "
                         "(write it exactly as on the command line, e.g. "
                         "\"--lod\")\n", where, key);
-        return -1;
+        return row_refused(where, "args", key);
     }
     char val[CFG_VALUE_MAX];
     int is_bool = 0, bool_val = 0;
@@ -557,7 +572,14 @@ static int harvest_args(const toml_table_t *tab, int tier, int file,
     return 0;
 }
 
-/** @brief Forward the rows of a [<scope>.keys.<domain>] table to the keymap at `rank`.
+/** @brief row_refused for a row of the [keys.<domain>] table. */
+static int keys_row_refused(const char *where, const char *domain, const char *key) {
+    char table[32];
+    snprintf(table, sizeof table, "keys.%s", domain);
+    return row_refused(where, table, key);
+}
+
+/** @brief Forward one row of a [<scope>.keys.<domain>] table to the keymap at `rank`.
  *
  * Input bindings. Unlike knobs, these do not
  * flow through the contribution table: the keymap owns its own layered
@@ -567,58 +589,128 @@ static int harvest_args(const toml_table_t *tab, int tier, int file,
  *
  * A value is a string or an array of strings; arrays are legal here only
  * (harvest_base rejects them). An array longer than 2 * KM_MAX_SOURCES is
- * truncated; an empty array means "none". Returns 0, or -1 on a malformed
- * row or a keymap refusal. */
+ * truncated; an empty array means "none". A row the keymap refuses (an
+ * unknown action, which it names with a did_you_mean hint, or a binding it
+ * cannot parse) goes through keys_row_refused. Returns 0, or -1 on a
+ * malformed row or a refusal under --config-report. */
+static int harvest_keys_row(const toml_table_t *tab, const char *domain,
+                            const char *key, int rank, const char *origin,
+                            const char *where) {
+    const toml_array_t *arr = toml_array_in(tab, key);
+    if (arr) {
+        const char *toks[KM_MAX_SOURCES * 2];
+        char bufs[KM_MAX_SOURCES * 2][CFG_KEY_MAX];
+        int n = toml_array_nelem(arr);
+        if (n > (int)(sizeof toks / sizeof toks[0]))
+            n = (int)(sizeof toks / sizeof toks[0]);
+        for (int j = 0; j < n; j++) {
+            toml_datum_t d = toml_string_at(arr, j);
+            if (!d.ok) {
+                fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' "
+                                "array must hold strings\n",
+                        where, domain, key);
+                return -1;
+            }
+            snprintf(bufs[j], CFG_KEY_MAX, "%s", d.u.s);
+            free(d.u.s);
+            toks[j] = bufs[j];
+        }
+        /* n == 0 is an empty array: the same statement as "none". */
+        if (openpete_keymap_set(domain, key, toks, n, rank, origin,
+                                where) != 0 &&
+            keys_row_refused(where, domain, key) != 0)
+            return -1;
+        return 0;
+    }
+
+    toml_raw_t raw = toml_raw_in(tab, key);
+    if (!raw) {
+        fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' must be a "
+                        "string or an array of strings\n",
+                where, domain, key);
+        return -1;
+    }
+    char val[CFG_VALUE_MAX];
+    int is_bool = 0, bool_val = 0;
+    if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
+        fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' has a value "
+                        "this config cannot use\n", where, domain, key);
+        return -1;
+    }
+    const char *tok = val;
+    if (openpete_keymap_set(domain, key, &tok, 1, rank, origin, where) != 0 &&
+        keys_row_refused(where, domain, key) != 0)
+        return -1;
+    return 0;
+}
+
+/** @brief Forward every row of a [<scope>.keys.<domain>] table through harvest_keys_row.
+ *
+ * Returns 0, or -1 on the first error. */
 static int harvest_keys_domain(const toml_table_t *tab, const char *domain,
                                int rank, const char *origin,
                                const char *where) {
     for (int i = 0;; i++) {
         const char *key = toml_key_in(tab, i);
         if (!key) break;
+        if (harvest_keys_row(tab, domain, key, rank, origin, where) != 0) return -1;
+    }
+    return 0;
+}
 
-        const toml_array_t *arr = toml_array_in(tab, key);
-        if (arr) {
-            const char *toks[KM_MAX_SOURCES * 2];
-            char bufs[KM_MAX_SOURCES * 2][CFG_KEY_MAX];
-            int n = toml_array_nelem(arr);
-            if (n > (int)(sizeof toks / sizeof toks[0]))
-                n = (int)(sizeof toks / sizeof toks[0]);
-            for (int j = 0; j < n; j++) {
-                toml_datum_t d = toml_string_at(arr, j);
-                if (!d.ok) {
-                    fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' "
-                                    "array must hold strings\n",
-                            where, domain, key);
-                    return -1;
-                }
-                snprintf(bufs[j], CFG_KEY_MAX, "%s", d.u.s);
-                free(d.u.s);
-                toks[j] = bufs[j];
-            }
-            /* n == 0 is an empty array: the same statement as "none". */
-            if (openpete_keymap_set(domain, key, toks, n, rank, origin,
-                                    where) != 0)
+/** @brief Forward the [keys.mod.<id>] tables to openpete_keymap_set_mod by name, without validation.
+ *
+ * A mod entry that is not a table, or a binding that is not a scalar string,
+ * is an error printed with `where`. Returns 0, or -1 on the first error. */
+static int harvest_keys_mods(const toml_table_t *keys, int rank, const char *where) {
+    const toml_table_t *mods = toml_table_in(keys, "mod");
+    if (!mods) return 0;
+    for (int i = 0;; i++) {
+        const char *mod_id = toml_key_in(mods, i);
+        if (!mod_id) break;
+        const toml_table_t *mt = toml_table_in(mods, mod_id);
+        if (!mt) {
+            fprintf(stderr, "openpete: config: %s: [keys.mod] '%s' must be "
+                            "a table of binding names\n", where, mod_id);
+            return -1;
+        }
+        for (int j = 0;; j++) {
+            const char *name = toml_key_in(mt, j);
+            if (!name) break;
+            toml_raw_t raw = toml_raw_in(mt, name);
+            char val[CFG_VALUE_MAX];
+            int is_bool = 0, bool_val = 0;
+            if (!raw ||
+                toml_scalar_to_string(raw, val, sizeof val,
+                                      &is_bool, &bool_val) != 0) {
+                fprintf(stderr, "openpete: config: %s: [keys.mod.%s] '%s' "
+                                "must be a string\n", where, mod_id, name);
                 return -1;
-            continue;
+            }
+            const char *tok = val;
+            if (openpete_keymap_set_mod(mod_id, name, &tok, 1, rank,
+                                        where) != 0)
+                return -1;
         }
+    }
+    return 0;
+}
 
-        toml_raw_t raw = toml_raw_in(tab, key);
-        if (!raw) {
-            fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' must be a "
-                            "string or an array of strings\n",
-                    where, domain, key);
-            return -1;
-        }
-        char val[CFG_VALUE_MAX];
-        int is_bool = 0, bool_val = 0;
-        if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
-            fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' has a value "
-                            "this config cannot use\n", where, domain, key);
-            return -1;
-        }
-        const char *tok = val;
-        if (openpete_keymap_set(domain, key, &tok, 1, rank, origin, where) != 0)
-            return -1;
+/** @brief Name every sub-table of `keys` outside pad, pad2..pad4, host and mod, refusing each through row_refused.
+ *
+ * Returns 0, or -1 when a refusal fails under --config-report. */
+static int keys_unknown_tables(const toml_table_t *keys, const char *where) {
+    /* Anything else under [keys] is a typo. Silence here is how the
+     * scoping got lost for [args]/[env] in the docs - name it instead. */
+    for (int i = 0;; i++) {
+        const char *key = toml_key_in(keys, i);
+        if (!key) break;
+        if (!strcmp(key, "pad") || !strcmp(key, "pad2") ||
+            !strcmp(key, "pad3") || !strcmp(key, "pad4") ||
+            !strcmp(key, "host") || !strcmp(key, "mod")) continue;
+        fprintf(stderr, "openpete: config: %s: unknown [keys.%s] - expected "
+                        "pad, pad2, pad3, pad4, host or mod.<id>\n", where, key);
+        if (row_refused(where, "keys", key) != 0) return -1;
     }
     return 0;
 }
@@ -630,7 +722,8 @@ static int harvest_keys_domain(const toml_table_t *tab, const char *domain,
  * openpete_keymap_set, which validates it; a [keys.mod.<id>] binding goes
  * through openpete_keymap_set_mod by name without validation, because mods are
  * discovered after the config is read. A binding value must be a scalar. Any
- * other sub-table of `keys` is an error naming the accepted set. Errors print
+ * other sub-table of `keys` is named with the accepted set and refused
+ * through row_refused. Errors print
  * to stderr with `where`. Returns 0, or -1 on the first error. */
 static int harvest_keys(const toml_table_t *keys, int tier, int file,
                         const char *origin, const char *where) {
@@ -648,51 +741,8 @@ static int harvest_keys(const toml_table_t *keys, int tier, int file,
     /* [keys.mod.<id>] - one more level, and the ids are not knowable
      * here (mods are discovered after the config is read), so these are
      * forwarded by name without validation. */
-    const toml_table_t *mods = toml_table_in(keys, "mod");
-    if (mods) {
-        for (int i = 0;; i++) {
-            const char *mod_id = toml_key_in(mods, i);
-            if (!mod_id) break;
-            const toml_table_t *mt = toml_table_in(mods, mod_id);
-            if (!mt) {
-                fprintf(stderr, "openpete: config: %s: [keys.mod] '%s' must be "
-                                "a table of binding names\n", where, mod_id);
-                return -1;
-            }
-            for (int j = 0;; j++) {
-                const char *name = toml_key_in(mt, j);
-                if (!name) break;
-                toml_raw_t raw = toml_raw_in(mt, name);
-                char val[CFG_VALUE_MAX];
-                int is_bool = 0, bool_val = 0;
-                if (!raw ||
-                    toml_scalar_to_string(raw, val, sizeof val,
-                                          &is_bool, &bool_val) != 0) {
-                    fprintf(stderr, "openpete: config: %s: [keys.mod.%s] '%s' "
-                                    "must be a string\n", where, mod_id, name);
-                    return -1;
-                }
-                const char *tok = val;
-                if (openpete_keymap_set_mod(mod_id, name, &tok, 1, rank,
-                                            where) != 0)
-                    return -1;
-            }
-        }
-    }
-
-    /* Anything else under [keys] is a typo. Silence here is how the
-     * scoping got lost for [args]/[env] in the docs - name it instead. */
-    for (int i = 0;; i++) {
-        const char *key = toml_key_in(keys, i);
-        if (!key) break;
-        if (!strcmp(key, "pad") || !strcmp(key, "pad2") ||
-            !strcmp(key, "pad3") || !strcmp(key, "pad4") ||
-            !strcmp(key, "host") || !strcmp(key, "mod")) continue;
-        fprintf(stderr, "openpete: config: %s: unknown [keys.%s] - expected "
-                        "pad, pad2, pad3, pad4, host or mod.<id>\n", where, key);
-        return -1;
-    }
-    return 0;
+    if (harvest_keys_mods(keys, rank, where) != 0) return -1;
+    return keys_unknown_tables(keys, where);
 }
 
 /** @brief Harvest one named scope table: its bare keys, then its [env], [args] and [keys] sub-tables.

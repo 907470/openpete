@@ -22,6 +22,10 @@ code span renders as <code><a>...</a></code>.
   (`ssaa = 0`, `lod = "turbo"`, `OPENPETE_MOUSE=maybe`) no longer stops the game from starting: it prints a warning
   and the setting keeps its default. The same value typed on the command line, and any refused value under
   `--config-report`, still exits with an error.
+- An unknown key in `openpete.toml`, an unknown flag or a key that is not a flag in its `[args]` table, and an
+  unknown action, binding or table under `[keys]` no longer stop the game from starting: each prints a warning
+  naming the file, the table and the key, and is ignored. `--config-report` still
+  exits with an error on it; an unknown flag typed on the command line still does.
 - `OPENPETE_WIREFRAME`, `OPENPETE_TERRAIN_CACHE`, `OPENPETE_DISC_CACHE`, `OPENPETE_LOAD_DELAY` and
   `OPENPETE_TERRAIN_VISIBILITY` set from an `[env]` table in `openpete.toml` take effect.
 - `--help` lists `--ingest`, `--compile-mods`, `--log-file` and `--no-log-file` with the player-facing flags, and

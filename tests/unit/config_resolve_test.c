@@ -356,11 +356,19 @@ static void case_env_only_knob(void) {
     expect_env_unset("OPENPETE_NOTEX");
 }
 
-/* Typos in keys are hard errors: a config line that silently does nothing
- * is the failure mode that costs an hour. */
+/* Malformed lines are hard errors; an unknown key warns at boot and fails
+ * --config-report, so a typo is named loudly without stopping the game. */
 static void case_validation(void) {
-    run_t r = run("unknown key", "lodd = \"extended\"\n", NULL, 0);
-    CHECK(r.rc < 0, "an unknown key must fail the run");
+    /* An unknown key warns and is ignored at boot, so a file written by a
+     * newer build still boots; --config-report, which checks a file,
+     * refuses it. */
+    run_t r = run("unknown key", "lodd = \"extended\"\nssaa = 2\n", NULL, 0);
+    CHECK(r.rc >= 0, "an unknown key must not fail a boot");
+    expect_flag_value(&r, "--ssaa", "2");
+    expect_no_flag(&r, "--lod");
+    static const char *const unknown_report[] = { "--config-report", NULL };
+    r = run("unknown key, report", "lodd = \"extended\"\n", unknown_report, 0);
+    CHECK(r.rc < 0, "--config-report must refuse an unknown key");
 
     /* A value of the wrong type is a stored setting gone stale, not a typo
      * in a key: a boot warns and keeps the default; --config-report, which
@@ -378,7 +386,12 @@ static void case_validation(void) {
 
     r = run("non-flag key in [args]",
         "[args]\nlod = \"extended\"\n", NULL, 0);
-    CHECK(r.rc < 0, "an [args] key that isn't a flag must fail the run");
+    CHECK(r.rc >= 0, "an [args] key that isn't a flag must not fail a boot");
+    expect_no_flag(&r, "--lod");
+    static const char *const args_report[] = { "--config-report", NULL };
+    r = run("non-flag key in [args], report",
+        "[args]\nlod = \"extended\"\n", args_report, 0);
+    CHECK(r.rc < 0, "--config-report must refuse an [args] key that isn't a flag");
 
     r = run("ambiguous sha prefix",
         "[disc.95f03abf]\nssaa = 2\n"
@@ -758,20 +771,38 @@ static void case_keys_values(void) {
           "a comma scalar must bind both");
 
     run_t r;
-    r = run("keys: unknown action is an error",
+    /* A refused [keys] row warns and is ignored at boot; --config-report
+     * refuses it. */
+    static const char *const keys_report[] = { "--config-report", NULL };
+    r = run("keys: unknown action is ignored at boot",
             "[keys.host]\n"
-            "telepart = \"F5\"\n", NULL, 0);
-    CHECK(r.rc < 0, "an unknown action must abort startup, not be ignored");
+            "telepart = \"F5\"\n"
+            "teleport = \"F6\"\n", NULL, 0);
+    CHECK(r.rc >= 0, "an unknown action must not abort a boot");
+    CHECK(key_bound_to(OPK_TELEPORT, "F6"), "the rows beside it must still bind");
+    r = run("keys: unknown action, report",
+            "[keys.host]\n"
+            "telepart = \"F5\"\n", keys_report, 0);
+    CHECK(r.rc < 0, "--config-report must refuse an unknown action");
 
-    r = run("keys: unknown namespace is an error",
+    r = run("keys: unknown namespace is ignored at boot",
             "[keys.padd]\n"
             "cross = \"C\"\n", NULL, 0);
-    CHECK(r.rc < 0, "an unknown [keys.*] namespace must be named");
+    CHECK(r.rc >= 0, "an unknown [keys.*] namespace must not abort a boot");
+    r = run("keys: unknown namespace, report",
+            "[keys.padd]\n"
+            "cross = \"C\"\n", keys_report, 0);
+    CHECK(r.rc < 0, "--config-report must refuse an unknown [keys.*] namespace");
 
-    r = run("keys: unknown key name is an error",
+    r = run("keys: unknown key name is ignored at boot",
             "[keys.host]\n"
             "teleport = \"Nonexistent\"\n", NULL, 0);
-    CHECK(r.rc < 0, "an unknown key name must abort startup");
+    CHECK(r.rc >= 0, "an unknown key name must not abort a boot");
+    CHECK(!key_bound_to(OPK_TELEPORT, "Nonexistent"), "a refused binding must not bind");
+    r = run("keys: unknown key name, report",
+            "[keys.host]\n"
+            "teleport = \"Nonexistent\"\n", keys_report, 0);
+    CHECK(r.rc < 0, "--config-report must refuse an unknown key name");
 }
 
 /* The `portable` directive decides where openpete writes: the game folder

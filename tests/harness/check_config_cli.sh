@@ -15,6 +15,12 @@
 #                 under --keys-report with one warning naming the key, the
 #                 value and the default kept.
 #   cfg-report    the same fov = "abc" under --config-report exits 3.
+#   unknown-key   lodd = "extended" (an unknown key) exits 0 under
+#                 --keys-report with the warning naming it; under
+#                 --config-report it exits 3.
+#   bad-rows      an unknown [keys.host] action, an unparseable [keys.host]
+#                 binding and a non-flag [args] key each exit 0 under
+#                 --keys-report with "ignored"; under --config-report, 3.
 #   cfg-and-cli   fog_scale = "abc" in the file plus --fov abc typed exits 3:
 #                 the typed value is refused even when its text equals a
 #                 spliced config value.
@@ -65,6 +71,10 @@ write_toml fovzero 'fov = 0'
 write_toml fovten  'fov = 10'
 write_toml ssaa0   'ssaa = 0'
 write_toml lodbad  'lod = "bogus"'
+write_toml lodd    'lodd = "extended"'
+write_toml keyact  $'[keys.host]\ntelepart = "F5"'
+write_toml keybind $'[keys.host]\nteleport = "Nonexistent"'
+write_toml argskey $'[args]\nlod = "extended"'
 write_toml bootenv $'fov = "abc"\n[env]\nOPENPETE_LOAD_DELAY = "7"'
 
 fail=0
@@ -105,6 +115,20 @@ has cfg_lod 'lod = "bogus" is not accepted; keeping the default'
 
 leg cfg_report 3 --config "$OUT/fovabc.toml" --config-report || true
 lacks cfg_report "keeping the default"
+
+leg unknown_key 0 --config "$OUT/lodd.toml" --keys-report || true
+has unknown_key "unknown key 'lodd' (did you mean 'lod'?); ignored"
+leg unknown_report 3 --config "$OUT/lodd.toml" --config-report || true
+lacks unknown_report "; ignored"
+
+for t in keyact keybind argskey; do
+    leg "${t}_boot" 0 --config "$OUT/$t.toml" --keys-report || true
+    leg "${t}_report" 3 --config "$OUT/$t.toml" --config-report || true
+done
+has keyact_boot "unknown action 'telepart' (did you mean 'teleport'?)"
+has keyact_boot "[keys.host] 'telepart' ignored"
+has keybind_boot "[keys.host] 'teleport' ignored"
+has argskey_boot "[args] 'lod' ignored"
 
 leg cfg_and_cli 3 --config "$OUT/fogabc.toml" --fov abc --keys-report || true
 has cfg_and_cli "--fov expects a number"
