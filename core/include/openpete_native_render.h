@@ -1246,13 +1246,6 @@ void openpete_native_scene_begin_frame(unsigned frame);
  * stamp would push and wipe a scene that a load stall holds on purpose.
  * @return The stamp, or 0xFFFFFFFF before the first begin_frame. */
 unsigned openpete_native_scene_frame(void);
-/** @brief Return the VBL stamp of the scene the game's own render last opened or fed.
- *
- * A sub-tick re-extract opens a scene per VBL under its own stamp; this stamp
- * moves only on a begin_frame call made outside the sub-tick view, so it
- * names the scene of the last tick the game rendered.
- * @return The stamp, or 0xFFFFFFFF before the game's first feed. */
-unsigned openpete_native_scene_game_frame(void);
 
 /** @brief Register the callback that fires immediately before a frame's accumulation is snapshotted.
  *
@@ -1638,16 +1631,6 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b);
  * @param g Green, 0..255.
  * @param b Blue, 0..255. */
 void openpete_native_scene_set_fade(int mode, int r, int g, int b);
-/** @brief Record an opaque screen quad the game drew that the scene holds no triangles for.
- *
- * The freeze backdrop's POLY_FT4s draw the frozen frame over the whole buffer
- * and are drawn natively as the backdrop rather than fed. A draw area that
- * keeps its content (auto-clear off) loses everything such a quad covers, so
- * the retained-area replay drops the earlier 2D entries under it. Consumed at
- * the next canonical capture.
- * @param x The quad's corner x in PSX screen pixels, PSX corner order (TL, TR, BL, BR).
- * @param y The corner y, same order. */
-void openpete_native_scene_note_cover_quad(const float x[4], const float y[4]);
 /** @brief Set this frame's freeze backdrop (the pause, inventory and flight-results overlay).
  *
  * The game freezes the rendered frame, desaturates it to grayscale and

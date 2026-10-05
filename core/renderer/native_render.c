@@ -836,9 +836,6 @@ void openpete_native_render_set_capture_nodelay(int on) { s_scene_shot_nodelay =
 /* The completed frame a framebuffer-window resolve must compose, 0 when no
  * resolve is in flight (see fbsnap_capture_crop). */
 static unsigned s_fbsnap_want_frame;
-/* 1 while that resolve composes the kept game-render scene (s_scene_game),
- * whose stamp equals s_fbsnap_want_frame. */
-static int s_fbsnap_game_sel;
 
 /* The openpete_frame stamp of the scene at a given delay depth. */
 static unsigned scene_frame_at_depth(int d);
@@ -860,7 +857,6 @@ static int scene_delay_depth(void) {
      * completed-scene ring to that frame. Wins over every other selection,
      * since the window's content is fixed by the copy, not by the present. */
     if (s_fbsnap_want_frame) {
-        if (s_fbsnap_game_sel) return 0;
         for (int d = 0; d <= scene_hist_depth_max(); d++)
             if (scene_frame_at_depth(d) == s_fbsnap_want_frame) return d;
         return 0;
@@ -1153,22 +1149,17 @@ static void bw_key_order_record(const scene_tri_t* sc, int n) {
  * same geometry in different orders: the game render in the order the guest
  * links its primitives, the re-extract in its fixed producer order. */
 static int s_scene_replay;
-static void scene_game_retain(void);
 void openpete_native_scene_begin(void) {
     /* The scene about to be wiped is the game render's own accumulation the
      * first time a tick re-extracts; record its blended-world key order
-     * before it goes, and keep the scene itself for a framebuffer copy that
-     * names its frame. A later re-extract of the same tick must not
-     * overwrite either with its own (already reordered) scene. */
-    if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
+     * before it goes. A later re-extract of the same tick must not
+     * overwrite the record with its own (already reordered) order. */
+    if (!s_scene_replay) bw_key_order_record(s_scene, s_scene_n);
     s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* per-present interned slots */ }
 
 /* VBL stamp of the scene accumulating in s_scene; 0xFFFFFFFF before the
  * first openpete_native_scene_begin_frame. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
-/* Stamp of the last begin_frame made outside the sub-tick view: the game's own
- * render, never a re-extract. 0xFFFFFFFF before the first. */
-static unsigned s_scene_game_frame = 0xFFFFFFFFu;
 static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
@@ -1267,63 +1258,48 @@ static void scene_hist_push(void) {
     if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
 }
 
-/** @brief Drop every completed-scene triangle of one blend class, under OPENPETE_SCENE_DROP_BLEND.
- *
- * OPENPETE_SCENE_DROP_BLEND=<n> names the class (0 opaque, 1 alpha, 2
- * additive, 3 subtractive), read once; unset leaves the scene whole. It
- * isolates which transparency class owns an artifact without touching any
- * feeder. */
-static void scene_drop_blend_debug(void) {
-    static int db = -2;
-    if (db == -2) { const char* e = getenv("OPENPETE_SCENE_DROP_BLEND");
-        db = (e && *e) ? atoi(e) : -1; }
-    if (db < 0) return;
-    int w = 0;
-    for (int ti = 0; ti < s_scene_n; ti++)
-        if (s_scene[ti].blend != db) { if (w != ti) s_scene[w] = s_scene[ti]; w++; }
-    s_scene_n = w;
-}
-
-/** @brief Close the completed scene sitting in the accumulator and push it into the frame-history ring.
- *
- * Warns once when the scene store refused triangles, reports a new demand
- * peak under OPENPETE_SCENE_CAPDBG, applies the blend-class drop diagnostic,
- * runs the blend census, then pushes the scene (scene_hist_push). */
-static void scene_close_completed(void) {
-    /* Permanent safety net: if the scene cap is ever exceeded, terrain/
-     * mobys silently vanish - warn once so the cap can be raised rather
-     * than leaving a view-dependent dropout in the wild. */
-    if (s_scene_dropped > 0) {
-        static int s_warned = 0;
-        if (!s_warned) { s_warned = 1;
-            fprintf(stderr, "native: WARNING scene store could not grow past %zu tris "
-                    "(frame=%u wanted=%d, %d tris dropped): geometry vanishes view-dependently\n",
-                    s_scene_v.cap, s_scene_frame, s_scene_n + s_scene_dropped, s_scene_dropped); }
-    }
-    static int s_capdbg = -1; static int s_scene_peak = 0;
-    if (s_capdbg < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_capdbg = (e && *e && *e != '0'); }
-    if (s_capdbg) {
-        int want = s_scene_n + s_scene_dropped;   /* true demand (raised caps -> dropped=0) */
-        if (want > s_scene_peak) { s_scene_peak = want;
-            fprintf(stderr, "[scenecap] frame=%u NEW PEAK want=%d (accepted=%d/%zu dropped=%d)\n",
-                    s_scene_frame, want, s_scene_n, s_scene_v.cap, s_scene_dropped); }
-    }
-    s_scene_dropped = 0;
-    scene_drop_blend_debug();
-    alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
-    scene_hist_push();
-}
-
 void openpete_native_scene_begin_frame(unsigned frame) {
-    if (!openpete_subtick_view_active()) s_scene_game_frame = frame;
     if (frame != s_scene_frame) {
         if (s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb) {
             static int in = 0;   /* the callback feeds, which re-enters begin_frame */
             if (!in) { in = 1; s_scene_frame_close_cb(s_scene_frame); in = 0; }
         }
         fov_latch();
-        if (s_scene_frame != 0xFFFFFFFFu)   /* a completed frame is sitting in s_scene */
-            scene_close_completed();
+        if (s_scene_frame != 0xFFFFFFFFu) {  /* a completed frame is sitting in s_scene */
+            /* Permanent safety net: if the scene cap is ever exceeded, terrain/
+             * mobys silently vanish - warn once so the cap can be raised rather
+             * than leaving a view-dependent dropout in the wild. */
+            if (s_scene_dropped > 0) {
+                static int s_warned = 0;
+                if (!s_warned) { s_warned = 1;
+                    fprintf(stderr, "native: WARNING scene store could not grow past %zu tris "
+                            "(frame=%u wanted=%d, %d tris dropped): geometry vanishes view-dependently\n",
+                            s_scene_v.cap, s_scene_frame, s_scene_n + s_scene_dropped, s_scene_dropped); }
+            }
+            static int s_capdbg = -1; static int s_scene_peak = 0;
+            if (s_capdbg < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_capdbg = (e && *e && *e != '0'); }
+            if (s_capdbg) {
+                int want = s_scene_n + s_scene_dropped;   /* true demand (raised caps -> dropped=0) */
+                if (want > s_scene_peak) { s_scene_peak = want;
+                    fprintf(stderr, "[scenecap] frame=%u NEW PEAK want=%d (accepted=%d/%zu dropped=%d)\n",
+                            s_scene_frame, want, s_scene_n, s_scene_v.cap, s_scene_dropped); }
+            }
+            s_scene_dropped = 0;
+            /* OPENPETE_SCENE_DROP_BLEND=<n> - drop every completed scene
+             * triangle with that blend class (0 opaque / 1 alpha / 2 additive
+             * / 3 subtractive). Isolates which transparency class owns an
+             * artifact without touching any feeder. */
+            { static int db = -2;
+              if (db == -2) { const char* e = getenv("OPENPETE_SCENE_DROP_BLEND");
+                  db = (e && *e) ? atoi(e) : -1; }
+              if (db >= 0) {
+                int w = 0;
+                for (int ti = 0; ti < s_scene_n; ti++)
+                    if (s_scene[ti].blend != db) { if (w != ti) s_scene[w] = s_scene[ti]; w++; }
+                s_scene_n = w; } }
+            alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
+            scene_hist_push();
+        }
         s_scene_epoch++;
 
         s_cur_seq = 0;
@@ -1388,39 +1364,6 @@ void openpete_native_scene_restore(void) {
 }
 
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
-unsigned openpete_native_scene_game_frame(void) { return s_scene_game_frame; }
-
-/* The game render's own scene of the last tick a re-extract replaced, kept for
- * a framebuffer copy: the copy names the frame the game drew into the buffer
- * (s_scene_game_frame), and a re-extract rebuilds that frame's scene under the
- * same stamp from the tick's records, which a paused tick does not hold. Only
- * a re-extract fills it, so a run without one (headless) composes from the
- * history and the accumulator as before. */
-static struct {
-    mod_fvec v;                 /* scene_tri_t */
-    int      n;                 /* triangles held; 0 = nothing kept */
-    unsigned frame;
-    uint32_t bg, fade, freeze;
-    int      hud_under, actor_front;
-} s_scene_game;
-
-/** @brief Keep the game render's accumulated scene before a re-extract wipes it, by exchanging storage.
- *
- * The accumulator takes the kept scene's former run, which the re-extract
- * overwrites from triangle 0. Nothing is kept when the accumulator is empty
- * or its storage went to an eager ring slot (the slot holds the scene), so
- * the previous kept scene stands. */
-static void scene_game_retain(void) {
-    if (s_scene_n <= 0 || s_scene_moved) return;
-    (void)scene_run_fit(&s_scene_game.v, "scene.game", 0);   /* initialise on first use */
-    scene_run_swap(&s_scene_game.v, &s_scene_v);
-    s_scene_game.n = s_scene_n;
-    s_scene_game.frame = s_scene_frame;
-    s_scene_game.bg = s_scene_bg; s_scene_game.fade = s_scene_fade;
-    s_scene_game.freeze = s_scene_freeze;
-    s_scene_game.hud_under = s_scene_hud_under;
-    s_scene_game.actor_front = s_scene_actor_front;
-}
 
 /* ---- frame-close notification ------------------------------------------- */
 void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame)) {
@@ -1450,7 +1393,6 @@ static int scene_hist_depth_max(void) { return s_scene_hist_count; }
  * @return Non-zero for a re-extracted scene. */
 static int scene_present_replay(void) {
     if (s_ps_slot) return s_ps_slot->replay;
-    if (s_fbsnap_game_sel) return 0;
     const int slot = scene_hist_slot_at(scene_delay_depth());
     if (slot >= 0) return s_scene_hist_replay[slot];
     return s_scene_replay;
@@ -1465,7 +1407,6 @@ static int scene_present_replay(void) {
  * @return The scene's stamp. */
 static unsigned scene_present_stamp(void) {
     if (s_ps_slot) return s_ps_slot->stamp;
-    if (s_fbsnap_game_sel) return s_scene_game.frame;
     const int slot = scene_hist_slot_at(scene_delay_depth());
     if (slot >= 0) return s_scene_hist_frame[slot];
     return s_scene_frame;
@@ -2009,225 +1950,6 @@ int scene_2d_count_fwd(const scene_tri_t* sc, int n) {
     return c;
 }
 
-/* ---- retained draw-area content -----------------------------------------
- *
- * A draw area the game puts with auto-clear off keeps what it holds: the image
- * it held when the run began (the frozen frame the retained freeze backdrop
- * draws) plus every 2D primitive drawn into it since, in order. The game draws
- * each such primitive once (the black strips that fill the screen a shrinking
- * window has vacated) and the native scene would hold it for that one tick.
- * The area's held list keeps the 2D entries of every earlier tick of the run
- * and replays them under the tick's own 2D, on the canonical scene and on every
- * re-extract. An entry is dropped once a later tick paints over every pixel it
- * covers with opaque entries, which is what the buffer does with it, and keeps
- * the list bounded while a menu redraws itself. The list starts afresh when the
- * area's content epoch changes (openpete_fb_snapshot_retained_area). */
-#define HELD_MAX   16384                 /* entries per area */
-#define HELD_GRID_W 512                  /* coverage grid, PSX screen pixels */
-#define HELD_GRID_H 256
-typedef struct {
-    scene_tri_t *t; int n, cap;
-    unsigned epoch; int valid;
-} held_list_t;
-static held_list_t s_held[OPENPETE_FB_SNAPSHOT_AREA_MAX];
-static int s_held_area = -1;   /* area whose list the tick's scenes replay, -1 none */
-static int s_held_replay;      /* entries of that list from earlier ticks */
-static uint8_t s_held_mask[HELD_GRID_H][HELD_GRID_W];
-/* Opaque full-buffer primitives the game drew since the last capture that the
- * scene does not hold as triangles (the freeze backdrop's FT4s, which the
- * native draws as its backdrop): they paint over everything drawn before them. */
-#define HELD_COVER_MAX 128
-static scene_tri_t s_held_cover[HELD_COVER_MAX];
-static int s_held_cover_n;
-
-void openpete_native_scene_note_cover_quad(const float x[4], const float y[4]) {
-    static const int idx[6] = { 0, 1, 2, 1, 3, 2 };
-    for (int t = 0; t < 2 && s_held_cover_n < HELD_COVER_MAX; t++) {
-        scene_tri_t q; memset(&q, 0, sizeof q);
-        for (int k = 0; k < 3; k++) { q.v[k].sx = x[idx[t * 3 + k]]; q.v[k].sy = y[idx[t * 3 + k]]; }
-        s_held_cover[s_held_cover_n++] = q;
-    }
-}
-
-/** @brief Return whether a direct-colour (16 bpp) textured entry samples no transparent texel.
- *
- * The GPU leaves a pixel untouched where the texel is 0x0000, so the entry
- * covers its pixels only when no texel of its texel box in the VRAM model is
- * zero. A box inside a draw area samples a rendered frame and counts as
- * solid (a rendered pixel of exactly 0x0000 is the exception it misses). A
- * box reaching outside VRAM reports not solid.
- * @param q Entry.
- * @return 1 when every texel of the box is non-zero. */
-static int held_texels_solid(const scene_tri_t* q) {
-    float u0 = q->v[0].u, u1 = u0, v0 = q->v[0].v, v1 = v0;
-    for (int k = 1; k < 3; k++) {
-        u0 = fminf(u0, q->v[k].u); u1 = fmaxf(u1, q->v[k].u);
-        v0 = fminf(v0, q->v[k].v); v1 = fmaxf(v1, q->v[k].v);
-    }
-    const int x0 = q->tpage_x + (int)floorf(u0), x1 = q->tpage_x + (int)ceilf(u1);
-    const int y0 = q->tpage_y + (int)floorf(v0), y1 = q->tpage_y + (int)ceilf(v1);
-    if (x0 < 0 || y0 < 0 || x1 > OPENPETE_VRAM_W || y1 > OPENPETE_VRAM_H) return 0;
-    /* Texels inside a draw buffer are pixels the game rendered there, which
-     * the VRAM model does not hold under a native render. */
-    if (openpete_fb_snapshot_area_holds(x0, y0, x1 - x0, y1 - y0)) return 1;
-    const uint16_t* vram = openpete_vram_data();
-    for (int y = y0; y < y1; y++)
-        for (int x = x0; x < x1; x++)
-            if (vram[(size_t)y * OPENPETE_VRAM_W + (size_t)x] == 0) return 0;
-    return 1;
-}
-
-/** @brief Return whether a 2D entry paints every pixel it covers with no blend and no transparent texel.
- *
- * Untextured entries count when opaque (blend class 0) or drawn through the
- * alpha pipe at full alpha on all three vertices; textured entries when they
- * sample a framebuffer snapshot opaquely, or a direct-colour page opaquely
- * with no zero texel (held_texels_solid). A CLUT entry never counts.
- * @param q Entry.
- * @return 1 when opaque. */
-static int held_opaque(const scene_tri_t* q) {
-    if (q->bpp == OPENPETE_FB_SNAPSHOT_BPP) return q->blend == 0;
-    if (q->textured) return q->blend == 0 && q->bpp == 16 && held_texels_solid(q);
-    if (q->blend == 0) return 1;
-    return q->blend == 1 && (q->v[0].rgba >> 24) == 0xFFu &&
-           (q->v[1].rgba >> 24) == 0xFFu && (q->v[2].rgba >> 24) == 0xFFu;
-}
-
-/** @brief Walk the coverage-grid pixels whose centres lie inside a triangle, edges inclusive.
- *
- * With @p set the pixels are marked; otherwise the walk reports whether
- * every one is marked. A triangle reaching outside the grid reports
- * uncovered, so it is never dropped.
- * @param q Triangle in PSX screen coordinates.
- * @param set 1 to mark, 0 to test.
- * @return In test mode 1 when every covered pixel is marked; 1 in mark mode. */
-static int held_raster(const scene_tri_t* q, int set) {
-    const float x0 = q->v[0].sx, y0 = q->v[0].sy, x1 = q->v[1].sx, y1 = q->v[1].sy,
-                x2 = q->v[2].sx, y2 = q->v[2].sy;
-    const float area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
-    if (area == 0.0f) return 1;
-    const float sg = area > 0.0f ? 1.0f : -1.0f;
-    const int bx0 = (int)floorf(fminf(x0, fminf(x1, x2))), bx1 = (int)ceilf(fmaxf(x0, fmaxf(x1, x2)));
-    const int by0 = (int)floorf(fminf(y0, fminf(y1, y2))), by1 = (int)ceilf(fmaxf(y0, fmaxf(y1, y2)));
-    if (!set && (bx0 < 0 || by0 < 0 || bx1 > HELD_GRID_W || by1 > HELD_GRID_H)) return 0;
-    for (int y = by0 < 0 ? 0 : by0; y < by1 && y < HELD_GRID_H; y++)
-        for (int x = bx0 < 0 ? 0 : bx0; x < bx1 && x < HELD_GRID_W; x++) {
-            const float px = (float)x + 0.5f, py = (float)y + 0.5f;
-            const float e0 = sg * ((x1 - x0) * (py - y0) - (y1 - y0) * (px - x0));
-            const float e1 = sg * ((x2 - x1) * (py - y1) - (y2 - y1) * (px - x1));
-            const float e2 = sg * ((x0 - x2) * (py - y2) - (y0 - y2) * (px - x2));
-            if (e0 < 0.0f || e1 < 0.0f || e2 < 0.0f) continue;
-            if (set) s_held_mask[y][x] = 1;
-            else if (!s_held_mask[y][x]) return 0;
-        }
-    return 1;
-}
-
-/** @brief Drop every held entry that the entries after it paint over completely, keeping the order of the rest.
- *
- * The list is walked newest first against a coverage grid of the opaque
- * entries already walked, so an entry is dropped only when everything drawn
- * after it, in its own tick or a later one, covers each pixel it covers. The
- * tick's cover primitives (openpete_native_scene_note_cover_quad) join the
- * grid between the tick's entries and the earlier ticks' ones.
- * @param L Held list.
- * @param old_n Entries of earlier ticks at the front of the list.
- * @return How many of those earlier entries survive; they stay at the front. */
-static int held_prune(held_list_t* L, int old_n) {
-    memset(s_held_mask, 0, sizeof s_held_mask);
-    int keep_old = 0, w = L->n;
-    for (int i = L->n - 1; i >= 0; i--) {
-        if (i == old_n - 1)   /* the tick's cover primitives lie under its own entries */
-            for (int c = 0; c < s_held_cover_n; c++) held_raster(&s_held_cover[c], 1);
-        const scene_tri_t q = L->t[i];
-        if (held_raster(&q, 0)) continue;      /* painted over by what follows */
-        if (held_opaque(&q)) held_raster(&q, 1);
-        L->t[--w] = q;
-        if (i < old_n) keep_old++;
-    }
-    memmove(L->t, L->t + w, (size_t)(L->n - w) * sizeof *L->t);
-    L->n -= w;
-    return keep_old;
-}
-
-/** @brief Append a tick's 2D entries to a held list, oldest dropped when the list is full.
- *
- * Each entry is stored as a composed copy (carry 2, which no capture
- * re-accumulates) with its traversal rank cleared, so the scene's 2D order
- * sort never interleaves it with the tick that replays it.
- * @param L Held list.
- * @param tick The tick's 2D entries.
- * @param n Entry count. */
-static void held_append(held_list_t* L, const scene_tri_t* tick, int n) {
-    if (n > HELD_MAX) { tick += n - HELD_MAX; n = HELD_MAX; }
-    if (L->n + n > HELD_MAX) {
-        const int drop = L->n + n - HELD_MAX;
-        memmove(L->t, L->t + drop, (size_t)(L->n - drop) * sizeof *L->t);
-        L->n -= drop;
-    }
-    if (L->n + n > L->cap) {
-        int cap = L->cap ? L->cap : 256;
-        while (cap < L->n + n) cap *= 2;
-        scene_tri_t* nt = (scene_tri_t*)realloc(L->t, (size_t)cap * sizeof *nt);
-        if (!nt) return;
-        L->t = nt; L->cap = cap;
-    }
-    for (int t = 0; t < n; t++) {
-        scene_tri_t q = tick[t];
-        q.carry = 2; q.seq = 0;
-        L->t[L->n++] = q;
-    }
-}
-
-/** @brief Insert triangles into the live scene in front of its first 2D triangle.
- *
- * @param src Triangles.
- * @param n Count. */
-static void scene_insert_before_2d(const scene_tri_t* src, int n) {
-    if (n <= 0 || !scene_room(s_scene_n + n)) return;
-    int at = 0;
-    while (at < s_scene_n && !(s_scene[at].category == OPENPETE_SCENE_HUD ||
-                               s_scene[at].category == OPENPETE_SCENE_HUD_PANEL ||
-                               s_scene[at].category == OPENPETE_SCENE_OVERLAY ||
-                               s_scene[at].carry)) at++;
-    memmove(&s_scene[at + n], &s_scene[at], (size_t)(s_scene_n - at) * sizeof(scene_tri_t));
-    memcpy(&s_scene[at], src, (size_t)n * sizeof(scene_tri_t));
-    s_scene_n += n;
-}
-
-/** @brief Roll the retained area's held list at a canonical capture and replay it into the canonical scene.
- *
- * With the area being drawn retained, its list is reset on a new content
- * epoch or when the tick renders the world, and extended by the tick's entries; entries painted over by what
- * follows them are dropped (held_prune); the surviving entries of earlier
- * ticks are replayed in front of the scene's 2D. The replay count is kept for the tick's re-extracts
- * (openpete_native_scene_apply_overlay). OPENPETE_FBSNAP_CENSUS prints the
- * list per capture. */
-static void held_capture(void) {
-    unsigned ep = 0;
-    const int a = openpete_fb_snapshot_retained_area(&ep);
-    if (a < 0) s_held_cover_n = 0;
-    s_held_area = a;
-    s_held_replay = 0;
-    if (a < 0) return;
-    held_list_t* L = &s_held[a];
-    if (!L->valid || L->epoch != ep) { L->n = 0; L->epoch = ep; L->valid = 1; }
-    /* A tick that renders the world repaints the buffer under its 2D (the
-     * world's sky and terrain cover the screen), so nothing earlier shows. */
-    if (scene_has_world(s_scene, s_scene_n)) L->n = 0;
-    const int before = L->n;
-    held_append(L, s_overlay_carry, s_overlay_carry_n);
-    const int added = s_overlay_carry_n < HELD_MAX ? s_overlay_carry_n : HELD_MAX;
-    const int old_n = L->n - added < before ? L->n - added : before;
-    s_held_replay = held_prune(L, old_n > 0 ? old_n : 0);
-    s_held_cover_n = 0;
-    scene_insert_before_2d(L->t, s_held_replay);
-    static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_FBSNAP_CENSUS"); on = (e && *e && *e != '0'); }
-    if (on) fprintf(stderr, "[fbsnap] held f=%u area=%d epoch=%u replayed=%d held=%d\n",
-                    s_scene_frame, a, ep, s_held_replay, L->n);
-}
-
 void openpete_native_scene_capture_overlay(void) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first - by the canonical present every post-link prim
@@ -2328,7 +2050,6 @@ void openpete_native_scene_capture_overlay(void) {
         }
     }
     seq_sort_scene_2d(s_scene, s_scene_n);   /* both paths end in emission order */
-    held_capture();
     { extern int scene_2d_count_fwd(const scene_tri_t* sc, int n);
       static int pz = -1;
       if (pz < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); pz = (e && *e && *e != '0'); }
@@ -3053,57 +2774,10 @@ static int carry_pair_content(const carry_key_map_t* m,
     return paired;
 }
 
-/** @brief Return whether two framebuffer-snapshot entries sample the same cell of the same stored image.
- *
- * The snapshot index and the three vertices' rect texel coordinates must
- * agree: the coordinates name the cell of the copied image, which a
- * shrinking or moving copy keeps from tick to tick while its screen box
- * changes size.
- * @param a One entry.
- * @param b The other.
- * @return 1 when both are snapshot entries of one cell, else 0. */
-static int carry_snapshot_same_cell(const scene_tri_t* a, const scene_tri_t* b) {
-    if (a->bpp != OPENPETE_FB_SNAPSHOT_BPP || b->bpp != OPENPETE_FB_SNAPSHOT_BPP) return 0;
-    if (a->tpage_x != b->tpage_x || a->category != b->category) return 0;
-    for (int k = 0; k < 3; k++)
-        if (a->v[k].u != b->v[k].u || a->v[k].v != b->v[k].v) return 0;
-    return 1;
-}
-
-/** @brief Run the snapshot pass, pairing each unmatched framebuffer-snapshot entry with the previous entry of its image cell.
- *
- * A copied image is drawn as quads whose texels stay fixed while their
- * screen box scales (the game shrinking a frozen frame into a window), so
- * the content key, which holds the box size, never matches across ticks.
- * The cell's texel coordinates identify it instead (carry_snapshot_same_cell);
- * the first unclaimed previous holder within CARRY_MOVE_MAX of every vertex
- * is taken, and the per-vertex lerp then scales the box with the image held.
- * The pair is anchored.
- * @param prev Previous capture.
- * @param prev_n Previous entry count.
- * @param curr Current capture.
- * @param curr_n Current entry count.
- * @param mt Match under construction.
- * @return The number of entries paired. */
-static int carry_pair_snapshot(const scene_tri_t* prev, int prev_n,
-                               const scene_tri_t* curr, int curr_n, carry_match_t* mt) {
-    int paired = 0;
-    for (int t = 0; t < curr_n; t++) {
-        if (mt->match[t] >= 0 || curr[t].bpp != OPENPETE_FB_SNAPSHOT_BPP) continue;
-        for (int j = 0; j < prev_n; j++) {
-            if (mt->prev_taken[j] || !carry_snapshot_same_cell(&prev[j], &curr[t])) continue;
-            if (tri_pos_dist(&prev[j], &curr[t]) > CARRY_MOVE_MAX) continue;
-            mt->match[t] = j; mt->prev_taken[j] = 1; mt->anchored[t] = 1; paired++;
-            break;
-        }
-    }
-    return paired;
-}
-
-/** @brief Match one capture against the previous one through the rigid-run, occupancy, single-entry and snapshot passes.
+/** @brief Match one capture against the previous one through the rigid-run, occupancy and single-entry passes.
  *
  * Resets the match, computes the current content keys into mt->ckey, builds
- * both captures' runs, then runs the four passes in that order.
+ * both captures' runs, then runs the three passes in that order.
  * @param m Previous capture's key map, built by carry_map_build.
  * @param prev Previous capture.
  * @param prev_n Previous entry count.
@@ -3124,8 +2798,7 @@ static int carry_pair_all(const carry_key_map_t* m,
     carry_runs_build(curr, mt->ckey, curr_n, &s_crun);
     int paired = carry_pair_runs(prev, &s_prun, curr, &s_crun, mt, st);
     paired += carry_pair_occupancy(m, prev, curr, curr_n, mt);
-    paired += carry_pair_content(m, prev, prev_n, curr, curr_n, &s_crun, mt);
-    return paired + carry_pair_snapshot(prev, prev_n, curr, curr_n, mt);
+    return paired + carry_pair_content(m, prev, prev_n, curr, curr_n, &s_crun, mt);
 }
 
 /* OPENPETE_CARRY_CENSUS=1: per-present audit of the 2D carry's position lerp.
@@ -3403,8 +3076,6 @@ void openpete_native_scene_apply_overlay(double alpha) {
                                 s_overlay_carry, s_overlay_carry_n, &s_mt, &rst);
     carry_census_t cz = {0};
     int census = carry_census_on();
-    if (s_held_area >= 0)   /* the retained area's earlier ticks, under the carry */
-        scene_insert_before_2d(s_held[s_held_area].t, s_held_replay);
     (void)scene_room(s_scene_n + s_overlay_carry_n);
     for (int t = 0; t < s_overlay_carry_n && s_scene_n < (int)s_scene_v.cap; t++) {
         scene_tri_t tri = s_overlay_carry[t];   /* curr; category already stamped */
@@ -3448,46 +3119,13 @@ void openpete_native_scene_apply_overlay(double alpha) {
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
 }
 
-/* A scene and its per-scene words, as one selection of the present returns them. */
-typedef struct {
-    const scene_tri_t *tri; int n;
-    uint32_t bg, fade, freeze;
-    int hud_under, actor_front;
-} scene_view_t;
-
-/** @brief Select the scene the present draws: the eager ring slot, the kept game-render scene, a history entry or the live accumulator.
- *
- * The ring slot being composed wins under eager production; then the kept
- * game-render scene while a framebuffer-window resolve selects it; then the
- * history entry at the delay depth; then the ring slot an eager publish moved
- * the live scene to; else the live accumulator.
- * @return The selected scene and its words. */
-static scene_view_t scene_present_view(void) {
-    if (s_ps_slot)
-        return (scene_view_t){ s_ps_slot->tri, s_ps_slot->n, s_ps_slot->bg, s_ps_slot->fade,
-                               s_ps_slot->freeze, s_ps_slot->hud_under, s_ps_slot->actor_front };
-    if (s_fbsnap_game_sel)
-        return (scene_view_t){ (const scene_tri_t*)s_scene_game.v.data, s_scene_game.n,
-                               s_scene_game.bg, s_scene_game.fade, s_scene_game.freeze,
-                               s_scene_game.hud_under, s_scene_game.actor_front };
-    const int slot = scene_hist_slot_at(scene_delay_depth());
-    if (slot >= 0)
-        return (scene_view_t){ scene_hist_tris(slot), s_scene_hist_n[slot], s_scene_hist_bg[slot],
-                               s_scene_hist_fade[slot], s_scene_hist_freeze[slot],
-                               s_scene_hist_hud_under[slot], s_scene_hist_actor_front[slot] };
-    const scene_slot_t *ms = scene_moved_slot();
-    if (ms)   /* an eager publish moved the live scene to this slot */
-        return (scene_view_t){ ms->tri, ms->n, ms->bg, ms->fade, ms->freeze,
-                               ms->hud_under, ms->actor_front };
-    return (scene_view_t){ s_scene, s_scene_n, s_scene_bg, s_scene_fade, s_scene_freeze,
-                           s_scene_hud_under, s_scene_actor_front };
-}
-
 /** @brief Return the scene the present should draw, with its per-scene words.
  *
- * The selection is scene_present_view's: the eager ring slot, the kept
- * game-render scene under a framebuffer-window resolve, the history entry at
- * the delay depth, the moved ring slot, else the live accumulator.
+ * The scene is the ring slot being composed under eager production; else,
+ * when a reference-compare delay is set, the history entry that many scenes
+ * back, so the native image stays in step with the lagged reference; else
+ * the live accumulator. While the history holds fewer scenes than the delay
+ * the live accumulator is used.
  * @param out_n Receives the triangle count.
  * @param out_bg Receives the background word.
  * @param out_fade Receives the fade word.
@@ -3498,12 +3136,35 @@ static scene_view_t scene_present_view(void) {
 static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
                                                    uint32_t* out_fade, uint32_t* out_freeze,
                                                    int* out_hud_under, int* out_actor_front) {
-    const scene_view_t v = scene_present_view();
-    *out_n = v.n; *out_bg = v.bg; *out_fade = v.fade;
-    if (out_freeze) *out_freeze = v.freeze;
-    if (out_hud_under) *out_hud_under = v.hud_under;
-    if (out_actor_front) *out_actor_front = v.actor_front;
-    return v.tri;
+    if (s_ps_slot) {
+        *out_n = s_ps_slot->n; *out_bg = s_ps_slot->bg; *out_fade = s_ps_slot->fade;
+        if (out_freeze) *out_freeze = s_ps_slot->freeze;
+        if (out_hud_under) *out_hud_under = s_ps_slot->hud_under;
+        if (out_actor_front) *out_actor_front = s_ps_slot->actor_front;
+        return s_ps_slot->tri;
+    }
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) {
+        *out_n = s_scene_hist_n[slot]; *out_bg = s_scene_hist_bg[slot];
+        *out_fade = s_scene_hist_fade[slot];
+        if (out_freeze) *out_freeze = s_scene_hist_freeze[slot];
+        if (out_hud_under) *out_hud_under = s_scene_hist_hud_under[slot];
+        if (out_actor_front) *out_actor_front = s_scene_hist_actor_front[slot];
+        return scene_hist_tris(slot);
+    }
+    const scene_slot_t *ms = scene_moved_slot();
+    if (ms) {   /* an eager publish moved the live scene to this slot */
+        *out_n = ms->n; *out_bg = ms->bg; *out_fade = ms->fade;
+        if (out_freeze) *out_freeze = ms->freeze;
+        if (out_hud_under) *out_hud_under = ms->hud_under;
+        if (out_actor_front) *out_actor_front = ms->actor_front;
+        return ms->tri;
+    }
+    *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade;
+    if (out_freeze) *out_freeze = s_scene_freeze;
+    if (out_hud_under) *out_hud_under = s_scene_hud_under;
+    if (out_actor_front) *out_actor_front = s_scene_actor_front;
+    return s_scene;
 }
 
 
@@ -9728,28 +9389,25 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
 
 /** @brief Draw a framebuffer-window run through its snapshot's HD texture, queueing the texture's upload on first sight.
  *
- * The run's texture page carries the snapshot index and its UVs are texels
- * of the stored rect, so the replaced box is the rect and the image maps onto
- * it at whatever resolution it was cropped. A snapshot not yet uploaded is
- * queued as a copy taken under the store's lock (the guest thread may free
- * the image before the flush) and draws nothing this present; so does an
- * index whose capture has not resolved, since its texels name no VRAM. Without
- * the HD pipe the run draws through the stock pipeline it was batched under.
+ * The run's texture page carries the snapshot index and its UVs are pixel
+ * coordinates in the snapshot image, so the rect is the whole image. A
+ * snapshot not yet uploaded is queued as a copy taken under the store's
+ * lock (the guest thread may free the image before the flush) and draws
+ * nothing this present. Without an image or the HD pipe the run draws
+ * through the stock pipeline it was batched under.
  * @param r The run.
  * @param idx Snapshot index (the run head's tpage_x).
  * @param hd_pipe HD pipe, or NULL.
  * @param self Pipeline bound by the caller, restored after an HD draw. */
 static void draw_fb_snapshot_run(const tex_run* r, int idx, rhi_pipeline* hd_pipe,
                                  rhi_pipeline* self) {
-    if (!hd_pipe) {
+    int sw = 0, sh = 0;
+    uint64_t key = 0;
+    if (!openpete_fb_snapshot_image(idx, &key, &sw, &sh) || !hd_pipe) {
         rhi_push_constants(s_nr.dev, &r->m, sizeof r->m);
         rhi_draw(s_nr.dev, (uint32_t)(r->ntri * 3), r->vert0);
         return;
     }
-    int sw = 0, sh = 0, rw = 0, rh = 0;
-    uint64_t key = 0;
-    if (!openpete_fb_snapshot_image(idx, &key, &sw, &sh) ||
-        !openpete_fb_snapshot_rect(idx, &rw, &rh)) return;
     rhi_texture* tex = hd_cache_lookup(key);
     if (!tex) {
         if (!hd_pending_has(key)) {
@@ -9758,7 +9416,7 @@ static void draw_fb_snapshot_run(const tex_run* r, int idx, rhi_pipeline* hd_pip
         }
         return;
     }
-    const hd_pc pc = { 0.f, 0.f, (float)rw, (float)rh,
+    const hd_pc pc = { 0.f, 0.f, (float)sw, (float)sh,
                        { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
     bind_scene_pipe(hd_pipe);
     rhi_bind_vram(s_nr.dev, tex);
@@ -11290,34 +10948,6 @@ static void utc_scatter(int lo, int hi, const scene_tri_t *scene, int scene_n, r
     }
 }
 
-/** @brief Print the screen bounding box of the composed scene's framebuffer-snapshot triangles under OPENPETE_FBSNAP_CENSUS.
- *
- * One line per compose that holds any: the VBL, the scene's tick and alpha
- * (0 inline), the triangle count and the bounding box in PSX screen units.
- * It reads the rect a window or a shrinking copy is drawn at on every
- * present, canonical and sub-tick alike.
- * @param scene Scene triangles.
- * @param n Triangle count. */
-static void fbsnap_present_census(const scene_tri_t* scene, int n)
-{
-    static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_FBSNAP_CENSUS"); on = (e && *e && *e != '0'); }
-    if (!on) return;
-    int k = 0; float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
-    for (int t = 0; t < n; t++) {
-        if (scene[t].bpp != OPENPETE_FB_SNAPSHOT_BPP) continue;
-        k++;
-        for (int j = 0; j < 3; j++) {
-            x0 = fminf(x0, scene[t].v[j].sx); x1 = fmaxf(x1, scene[t].v[j].sx);
-            y0 = fminf(y0, scene[t].v[j].sy); y1 = fmaxf(y1, scene[t].v[j].sy);
-        }
-    }
-    if (!k) return;
-    extern unsigned openpete_frame;
-    fprintf(stderr, "[fbsnap] present vbl=%u tick=%u alpha=%.3f tris=%d rect=%.2f,%.2f..%.2f,%.2f\n",
-            openpete_frame, ps_frame(), s_ps_slot ? s_ps_slot->alpha : 0.0, k, x0, y0, x1, y1);
-}
-
 /** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
  *
  * Packs the scene triangles into the vertex buffer and draws the world
@@ -11332,7 +10962,6 @@ static bool draw_native_scene(bool full_extent)
     scene_n = compose_reserve(scene_n);
     scene_probes((scene_tri_t*)scene, scene_n);   /* per-present: sees intermediates too */
     depth_transport_census_scene(scene, scene_n);
-    fbsnap_present_census(scene, scene_n);
 
     /* OPENPETE_TERRAIN_KEY_IDENT=1: prove the hoisted key pass and this draw
      * packed from the SAME scene snapshot + clip mapping - repack here and
@@ -16230,30 +15859,10 @@ static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch, floa
     return px;
 }
 
-/** @brief Return whether a copy naming a frame composes the kept game-render scene rather than the scene ring.
- *
- * The kept scene is the game's own render, so it serves its own frame first.
- * It also serves a later frame whose scene the ring holds empty or not at
- * all: a re-extract rebuilt that frame from records a paused tick does not
- * hold, and the buffer then still holds the last frame the game drew.
- * @param frame Stamp the copy names.
- * @return 1 to compose s_scene_game. */
-static int fbsnap_use_game_scene(unsigned frame) {
-    if (s_scene_game.n <= 0 || s_scene_game.frame > frame) return 0;
-    if (s_scene_game.frame == frame) return 1;
-    for (int d = 0; d <= scene_hist_depth_max(); d++) {
-        if (scene_frame_at_depth(d) != frame) continue;
-        const int slot = scene_hist_slot_at(d);
-        if ((d == 0 ? s_scene_n : (slot >= 0 ? s_scene_hist_n[slot] : 0)) > 0) return 0;
-    }
-    return 1;
-}
-
 /** @brief Compose a completed scene in memory and crop it to a framebuffer screen rectangle.
  *
  * s_fbsnap_want_frame selects the scene from the completed-scene ring for
- * the compose, which is the one the -vk dump and the live present produce;
- * the kept game-render scene wins where fbsnap_use_game_scene says so.
+ * the compose, which is the one the -vk dump and the live present produce.
  * The crop uses the widen the compose used, capture width over ref_w, not
  * the one requested. A NULL result leaves the caller's slot unresolved, so
  * its quads keep drawing the previous snapshot.
@@ -16271,31 +15880,14 @@ static unsigned char *fbsnap_capture_crop(unsigned frame, int sx, int sy, int w,
 {
     unsigned char *cap = NULL; int cw = 0, ch = 0;
     s_fbsnap_want_frame = frame;
-    s_fbsnap_game_sel = fbsnap_use_game_scene(frame);
     const int r = openpete_native_render_capture_rgba(&cap, &cw, &ch);
     s_fbsnap_want_frame = 0;
-    s_fbsnap_game_sel = 0;
     if (r != 0) return NULL;
     /* The widen the compose actually used, not the one it was asked for. */
     const float wf = (s_nr.ref_w > 0) ? (float)cw / (float)s_nr.ref_w : 1.0f;
     unsigned char *px = fbsnap_crop(cap, cw, ch, wf, sx, sy, w, h, out_w, out_h);
     free(cap);
     return px;
-}
-
-/** @brief Queue the upload of the image a snapshot index holds, unless it is cached or queued already.
- *
- * The present's HD flush then uploads it before the scene draws, so the
- * first present that samples a fresh window image draws it instead of
- * queueing it and drawing nothing.
- * @param idx Window slot index, or OPENPETE_FB_SNAPSHOT_AREA_BASE plus a draw area index. */
-static void fbsnap_queue_upload(int idx)
-{
-    uint64_t key = 0; int sw = 0, sh = 0;
-    if (!openpete_fb_snapshot_image(idx, &key, &sw, &sh)) return;
-    if (hd_cache_lookup(key) || hd_pending_has(key)) return;
-    unsigned char *copy = openpete_fb_snapshot_copy(idx, key, &sw, &sh);
-    if (copy) hd_pending_add(key, NULL, copy, sw, sh, 0, 0);
 }
 
 void openpete_native_render_snapshot_fb_window(void)
@@ -16306,12 +15898,12 @@ void openpete_native_render_snapshot_fb_window(void)
     while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
         unsigned char *px = fbsnap_capture_crop(frame, sx, sy, w, h, &pw, &ph);
-        if (px) { openpete_fb_snapshot_store(idx, px, pw, ph); fbsnap_queue_upload(idx); }
+        if (px) openpete_fb_snapshot_store(idx, px, pw, ph);
     }
     while (openpete_fb_snapshot_take_pending_area(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
         unsigned char *px = fbsnap_capture_crop(frame, sx, sy, w, h, &pw, &ph);
-        if (px) { openpete_fb_snapshot_store_area(idx, px, pw, ph); fbsnap_queue_upload(OPENPETE_FB_SNAPSHOT_AREA_BASE + idx); }
+        if (px) openpete_fb_snapshot_store_area(idx, px, pw, ph);
     }
     { static int s_census = -1;
       if (s_census < 0) { const char *e = getenv("OPENPETE_FBSNAP_CENSUS"); s_census = (e && *e && *e != '0'); }

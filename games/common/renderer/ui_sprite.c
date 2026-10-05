@@ -468,7 +468,7 @@ static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri
  * native render never writes. The quad's texel bounding box is looked up
  * with openpete_fb_snapshot_find; on a hit both triangles take the
  * snapshot's page and OPENPETE_FB_SNAPSHOT_BPP, and each UV is scaled and
- * offset into the texel space of the stored rect.
+ * offset into a pixel position in that image.
  * @param quad The quad's two triangles, rewritten in place on a hit.
  * @return 1 when redirected, 0 with the quad unchanged when no snapshot holds
  *         its texel box (the stock VRAM path). */
@@ -500,7 +500,7 @@ static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
  *
  * A quad sampling a framebuffer window is first redirected to its snapshot
  * (quad_to_fb_snapshot), whatever primitive it came from; its UVs are then
- * texel coordinates in the stored rect and are fed unchanged. A quad that
+ * pixel coordinates in the native image and are fed unchanged. A quad that
  * samples VRAM has each triangle's UVs set to the texel the GPU samples on
  * every pixel (tex_tri_psx_texel_centre). A VRAM quad of an ABR 1-3 class
  * is fed as a pair: its STP-clear texels through the opaque class, then its
@@ -1394,14 +1394,6 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * samples the emulated vram scratch). Tint = the FT4's setRGB0 (B,G,R
          * packed in w1), r=lo byte, g=mid, b=hi. */
         scene_begin_for_feed();
-        {   /* the quad paints the frozen frame over what the buffer held */
-            float x[4], y[4];
-            for (int k = 0; k < 4; k++) {
-                const uint32_t xy = cpu->read_word(prim + 0x08u + 8u * (uint32_t)k);
-                x[k] = (float)(int16_t)xy; y[k] = (float)(int16_t)(xy >> 16);
-            }
-            openpete_native_scene_note_cover_quad(x, y);
-        }
         openpete_native_scene_set_freeze_backdrop((int)(w1 & 0xFFu),
                               (int)((w1 >> 8) & 0xFFu),
                               (int)((w1 >> 16) & 0xFFu),

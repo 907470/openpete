@@ -106,7 +106,6 @@ void openpete_vram_load(int x, int y, int w, int h, const uint16_t* src)
     }
     op_log(dst_x, dst_y, w, h);
     texture_pack_on_load(dst_x, dst_y, w, h, src0, stride);
-    openpete_fb_snapshot_on_fill(dst_x, dst_y, w, h);
     if (tp_census_on())
         fprintf(stderr, "[texpack] f=%u load %d,%d %dx%d h=%016llx\n",
                 openpete_frame, dst_x, dst_y, w, h,
@@ -173,7 +172,6 @@ void openpete_vram_clear(int x, int y, int w, int h,
     }
     op_log(x, y, w, h);
     texture_pack_on_clear(x, y, w, h);
-    openpete_fb_snapshot_on_fill(x, y, w, h);
     if (tp_census_on())
         fprintf(stderr, "[texpack] f=%u clear %d,%d %dx%d rgb=%u,%u,%u\n",
                 openpete_frame, x, y, w, h, r, g, b);

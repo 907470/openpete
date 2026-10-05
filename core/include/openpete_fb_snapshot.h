@@ -26,18 +26,11 @@ extern "C" {
 
 /* Material bpp sentinel for a scene triangle redirected to a snapshot. The
  * material fields are otherwise unused on such a triangle: tpage_x carries the
- * slot and the vertex u,v are texel coordinates in the slot's stored rect,
- * which the draw maps onto the stored image at whatever resolution it holds. A
+ * slot and the vertex u,v are texel coordinates in the snapshot image. A
  * sentinel rather than a reserved id keeps the snapshot slots out of the mod
  * texture-id namespace, and keeps the run-coalescing material compare from
  * merging a snapshot run with a VRAM or mod run. */
 #define OPENPETE_FB_SNAPSHOT_BPP 33
-
-/* Snapshot index of draw area 0: window slots take the indices below it, draw
- * area i takes this plus i. */
-#define OPENPETE_FB_SNAPSHOT_AREA_BASE 4
-/* Draw areas the store tracks. */
-#define OPENPETE_FB_SNAPSHOT_AREA_MAX 4
 
 /** @brief Record a draw area the game put with PutDrawEnv: its clip rect and drawing offset.
  *
@@ -160,9 +153,7 @@ void openpete_fb_snapshot_store_area(int idx, unsigned char *px, int pw, int ph)
  * window copied to a row below its page's top edge is sampled with v offset
  * by that row. Window slots are searched first, then draw areas carrying a
  * content image, which serves a quad sampling the framebuffer itself (the
- * shrink of a frozen image before it is copied out). A slot or area waiting
- * for its capture matches too: the UVs do not depend on the image, and the
- * capture resolves before the present that draws the quad. Only 16-bit pages
+ * shrink of a frozen image before it is copied out). Only 16-bit pages
  * match, since a copied framebuffer is re-displayed at one texel per pixel.
  * A hit counts one redirected quad. Any output pointer may be NULL.
  * @param tpage_x Texture page origin x, VRAM texels.
@@ -172,11 +163,11 @@ void openpete_fb_snapshot_store_area(int idx, unsigned char *px, int pw, int ph)
  * @param v0 Texel box top.
  * @param u1 Texel box right edge, inclusive of the edge past the last texel.
  * @param v1 Texel box bottom edge, likewise.
- * @param su Receives the scale from page texels to rect texels in x (1).
- * @param sv Receives the scale in y (1).
- * @param ox Receives the rect texel x of the page origin (negative when the
+ * @param su Receives the scale from page texels to image pixels in x.
+ * @param sv Receives the scale in y.
+ * @param ox Receives the image pixel x of the page origin (negative when the
  *        origin precedes the rect).
- * @param oy Receives the rect texel y of the page origin.
+ * @param oy Receives the image pixel y of the page origin.
  * @return The window slot index, or 4 plus the draw area index, or -1 on a
  *         miss or when the mechanism is disabled. */
 int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
@@ -195,16 +186,6 @@ int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
  * @param ph Receives the image height.
  * @return 1 when the index holds an image, else 0 and nothing is written. */
 int openpete_fb_snapshot_image(int idx, uint64_t *key, int *pw, int *ph);
-
-/** @brief Read the texel size of the rect an index openpete_fb_snapshot_find returned stands for.
- *
- * A redirected quad's UVs are texels of this rect; the draw maps the rect
- * onto the stored image. Any output pointer may be NULL.
- * @param idx Window slot index, or 4 plus a draw area index.
- * @param w Receives the rect width in texels.
- * @param h Receives the rect height in texels.
- * @return 1 when the index names a rect, else 0 and nothing is written. */
-int openpete_fb_snapshot_rect(int idx, int *w, int *h);
 
 /** @brief Copy the image stored at an index when it is still the image with `key`.
  *
@@ -234,39 +215,6 @@ int openpete_fb_snapshot_key_live(uint64_t key);
  * @param quads Receives the quads redirected into a stored image. */
 void openpete_fb_snapshot_counts(unsigned *taken, unsigned *resolved,
                                  unsigned *quads);
-
-/** @brief Record a VRAM fill (ClearImage or LoadImage) so a draw area it covers whole forgets what it held.
- *
- * The buffer's content after such a fill is the fill alone, so a retained
- * run's held content (openpete_fb_snapshot_retained_area) starts afresh.
- * Partial fills change nothing. No effect when the mechanism is disabled.
- * @param x Fill left, VRAM texels.
- * @param y Fill top.
- * @param w Fill width.
- * @param h Fill height. */
-void openpete_fb_snapshot_on_fill(int x, int y, int w, int h);
-
-/** @brief Report whether a live draw area's clip rect contains a VRAM rect.
- *
- * @param x Rect left, VRAM texels.
- * @param y Rect top.
- * @param w Rect width.
- * @param h Rect height.
- * @return 1 when an area holds the rect, else 0 (also when the mechanism is disabled). */
-int openpete_fb_snapshot_area_holds(int x, int y, int w, int h);
-
-/** @brief Return the draw area the game is drawing into when its last put kept the buffer (auto-clear off).
- *
- * While an area runs with auto-clear off, what it shows is everything drawn
- * into it since its content last started afresh. The epoch changes whenever
- * that content is replaced: a put that changes the area's clip rect or
- * clears, the first retained put after a cleared one, a fill covering it
- * (openpete_fb_snapshot_on_fill), or a copy of another area over it.
- * @param epoch Receives the area's content epoch; may be NULL.
- * @return The area index (0 to OPENPETE_FB_SNAPSHOT_AREA_MAX - 1), or -1 when
- *         the area being drawn is cleared every frame, none is put, or the
- *         mechanism is disabled. */
-int openpete_fb_snapshot_retained_area(unsigned *epoch);
 
 /** @brief Report whether the snapshot mechanism is enabled.
  *
