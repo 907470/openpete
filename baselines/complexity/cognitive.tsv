@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 8c0bce31163c0bcf5e43c02f5939907bfd21c9ea
+# head: 0930dad604b697314fdb87b2f81cf3bd246c9ebf
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
@@ -183,8 +183,8 @@ games/common/renderer/terrain.c	tsc_lp_grade	31	0
 games/common/renderer/terrain.c	tsc_vert_anim_refresh	155	0	
 games/common/renderer/terrain.c	walk_sector	701	0	
 games/common/renderer/text_moby.c	emit_glyph	26	0	
-games/common/renderer/text_moby.c	font_file_load	39	0	
-games/common/renderer/text_moby.c	text_moby_native_cache	49	0	
+games/common/renderer/text_moby.c	text_moby_native_cache	40	0	
+games/common/renderer/text_moby.c	wad_model_read	33	0	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	43	0	
 games/spyro-1/dist/disc_library.cpp	spyro1_config_disc_identity	44	0	
 games/spyro-1/dist/disc_library.cpp	spyro1_library_resolve	53	0	

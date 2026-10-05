@@ -1,6 +1,5 @@
 # The 3D glyph text gate's rows (tests/harness/check_text_font.sh). The HUD font
-# loads with the title in every session, so there is no cache file and one
-# row.
+# loads with the title in every session and is decoded from guest RAM.
 #
-# name      | level    | cache | expect
-artisans    | artisans | cold  | ram
+# name      | level    | expect
+artisans    | artisans | ram

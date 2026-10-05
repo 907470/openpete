@@ -79,6 +79,9 @@ openpete_add_game(spyro-2
 
         # The shared portal preview feeder and the three addresses it reaches.
         ${CMAKE_SOURCE_DIR}/games/common/renderer/portal_spyro23.c
+        # The 3D glyph text producer: settings menu, OSD toasts, performance
+        # readout, drawn with the credits font read from the disc.
+        ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         renderer/portal_game.c)
 
 # The Win32 icon resource: the same source as the window icon, upscaled into

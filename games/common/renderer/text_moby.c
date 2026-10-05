@@ -3,6 +3,7 @@
 // Render text with the game's own extruded 3D glyph models: the gold letters
 // Spyro 1 draws its gem and life counters, "DEMO MODE", dragon names and
 // pause menu with, and the ones Spyro 3 spells its home-world portal names
+// with, and the credits glyphs Spyro 2 and Spyro 3 spell their end credits
 // with. A general "string -> 3D glyph triangles" engine
 // (text_moby_native_emit) with three consumers: the performance readout, the
 // settings menu and the OSD toasts.
@@ -16,12 +17,12 @@
 //
 // The glyph models are not permanently resident. Spyro 1 loads them with the
 // HUD font asset (title / attract) and evicts them later (the level-intro
-// cutscene); Spyro 3 has them only while a home world is loaded. So the
-// decoded geometry is snapshotted the first time it is available
-// (text_moby_native_cache) and every draw works from the snapshot. Where the
-// font is a per-level asset (GAME_FONT_ONE_CLASS) the snapshot is also kept in
-// a cache file, so a later session has the font from boot in any level. Until
-// a snapshot exists, ready() is false and the consumers publish no glyphs.
+// cutscene), so its decoded geometry is snapshotted from guest RAM the first
+// time it is available (text_moby_native_cache). Spyro 2 and 3 load their
+// credits font only for the credits, so the producer reads that model from
+// the disc image instead (GAME_FONT_WAD_MODEL), once, at its first call. Every
+// draw works from the snapshot; until one exists, ready() is false and the
+// consumers publish no glyphs.
 //
 // Glyphs are projected orthographically at a fixed window-relative spot (not
 // through the camera: an overlay sits at a window corner and looks identical
@@ -29,8 +30,8 @@
 // fixed or rotating light, and emitted in resolution-independent overlay
 // coordinates. The native renderer draws them depth-tested on the live present.
 //
-// Pure presentation: reads model geometry from RAM and calls native-render
-// setters. Writes no gameplay-readable state.
+// Pure presentation: reads model geometry from guest RAM or the disc image and
+// calls native-render setters. Writes no gameplay-readable state.
 
 #include "psx_runtime_internal.h"            /* CPUState (read_word / read_byte) */
 #include "openpete_native_render.h" /* openpete_hud_vert + the overlay API */
@@ -40,10 +41,9 @@
 #include "openpete_osd.h"          /* toast ring - the OSD builder below */
 #include "openpete_build_id.h"     /* the version line below */
 #include "openpete_fiber.h"        /* speculative / replayed ticks skip the shimmer */
-#include "openpete_paths.h"        /* the per-user state directory */
-#include "openpete_fnv1a64.h"
+#include "openpete_disc_image.h"   /* the WAD read of GAME_FONT_WAD_MODEL */
+#include "openpete_disc_trace.h"   /* OPENPETE_DISC_TAG_WAD */
 #include "openpete_log.h"
-#include "game_extras.h"           /* game_get_id, game_get_exe_filename */
 #include "game_layout.h"
 #include "renderer/text_moby.h"
 
@@ -118,13 +118,12 @@ typedef struct {
 } glyph_cache_t;
 
 /* Slots: '0'-'9', 'A'-'Z', the descriptor's punctuation list in order, then
- * the synthesized period and the synthesized hyphen. */
+ * the synthesized hyphen. */
 #define SLOT_DIGIT   0
 #define SLOT_LETTER  10
 #define SLOT_PUNCT   36
 #define N_PUNCT      ((int)(sizeof FONT.punct / sizeof FONT.punct[0]))
-#define SLOT_SYNTH_PERIOD (SLOT_PUNCT + 8)
-#define SLOT_SYNTH_HYPHEN (SLOT_SYNTH_PERIOD + 1)
+#define SLOT_SYNTH_HYPHEN (SLOT_PUNCT + 8)
 #define NGLYPH       (SLOT_SYNTH_HYPHEN + 1)
 _Static_assert(sizeof FONT.punct / sizeof FONT.punct[0] == 8, "slot table sized for 8 punctuation pairs");
 
@@ -132,7 +131,7 @@ static glyph_cache_t s_glyph[NGLYPH];
 static int s_cache_ready = 0;
 /* Common advance for '0'-'9' (model units) - see cache_finish. */
 static int s_digit_adv = 0;
-/* Where the snapshot came from: 0 none, 1 guest RAM, 2 the cache file. */
+/* Where the snapshot came from: 0 none, 1 guest RAM, 2 the disc image. */
 static int s_cache_source = 0;
 
 /** @brief Reports whether a glyph cache slot holds a digit '0'-'9'.
@@ -144,9 +143,8 @@ static int is_digit_slot(int slot) { return slot >= SLOT_DIGIT && slot < SLOT_LE
 /** @brief Maps a character to its glyph cache slot.
  *
  * Letters map case-insensitively; a character in the font's punctuation
- * list maps to its punctuation slot; '.' maps to the synthesized period
- * when the font sets synth_period and lists no period; '-' maps to the
- * synthesized hyphen when the font lists no hyphen.
+ * list maps to its punctuation slot; '-' maps to the synthesized hyphen
+ * when the font lists no hyphen.
  * @param c The character.
  * @return The slot, or -1 for a character that only advances (a space or an
  *         unsupported character). */
@@ -156,7 +154,6 @@ static int glyph_slot(char c) {
     if (c >= 'a' && c <= 'z') return SLOT_LETTER + (c - 'a');
     for (int p = 0; p < N_PUNCT && FONT.punct[p].ch; p++)
         if (FONT.punct[p].ch == c) return SLOT_PUNCT + p;
-    if (c == '.' && FONT.synth_period) return SLOT_SYNTH_PERIOD;
     /* Unconditional, unlike the period: a font that carries a hyphen returns
      * it from the punctuation loop above and never reaches here, and one that
      * does not gets the synthesized bar. */
@@ -167,15 +164,15 @@ static int glyph_slot(char c) {
 /** @brief Maps a glyph cache slot to the font descriptor's glyph index.
  *
  * The index is a moby class for GAME_FONT_CLASS_PER_GLYPH and a block index
- * for GAME_FONT_ONE_CLASS. A punctuation slot at or past the first empty
+ * for GAME_FONT_WAD_MODEL. A punctuation slot at or past the first empty
  * entry of the descriptor's list has none.
  * @param slot The cache slot.
  * @return The glyph index, or -1 for a slot the game's font does not fill
- *         (an unused punctuation slot and the two synthesized slots). */
+ *         (an unused punctuation slot and the synthesized hyphen). */
 static int slot_glyph_index(int slot) {
     if (slot < SLOT_LETTER) return FONT.digit_base + (slot - SLOT_DIGIT);
     if (slot < SLOT_PUNCT)  return FONT.letter_base + (slot - SLOT_LETTER);
-    if (slot < SLOT_SYNTH_PERIOD) {
+    if (slot < SLOT_SYNTH_HYPHEN) {
         for (int p = 0; p <= slot - SLOT_PUNCT; p++)
             if (!FONT.punct[p].ch) return -1;
         return FONT.punct[slot - SLOT_PUNCT].index;
@@ -276,51 +273,59 @@ static void cache_one_class(CPUState* cpu, glyph_cache_t* g, int cls) {
     g->valid = 1;
 }
 
-/** @brief Returns the GAME_FONT_ONE_CLASS font model's guest address when it holds enough glyph blocks.
+/* ---- GAME_FONT_WAD_MODEL: the model read from the disc image -------------
+ * The model is read whole into a host buffer of this many bytes (the credits
+ * font of Spyro 2 and Spyro 3 is 0x5000). */
+#define WAD_MODEL_MAX 0x10000u
+
+/** @brief Loads a little-endian 32-bit word at a byte offset of a host buffer.
  *
- * The model table entry of this font kind is a KUSEG address, returned with
- * the KSEG0 bit set; the model's word 0 is its block count.
- * @param cpu The guest CPU state.
- * @param need_blocks The block count the descriptor's glyph indices need.
- * @return The model's KSEG0 address, or 0 when the entry is empty or not a
- *         KUSEG address (the loaded level has no font) or the model holds
- *         fewer blocks. */
-static uint32_t one_class_model(CPUState* cpu, int need_blocks) {
-    uint32_t model = cpu->read_word(FONT.model_table + (uint32_t)FONT.font_class * 4u);
-    if (model == 0u || model >= 0x80000000u) return 0u;
-    model |= 0x80000000u;
-    if ((int32_t)cpu->read_word(model) < need_blocks) return 0u;
-    return model;
+ * @param b The buffer.
+ * @param off The byte offset; the caller keeps off + 4 inside the buffer.
+ * @return The word. */
+static uint32_t le32(const uint8_t* b, uint32_t off) {
+    return (uint32_t)b[off] | ((uint32_t)b[off + 1] << 8) |
+           ((uint32_t)b[off + 2] << 16) | ((uint32_t)b[off + 3] << 24);
 }
 
-/** @brief Decodes one block of the font model into a glyph cache entry, for GAME_FONT_ONE_CLASS.
+/** @brief Decodes one block of a GAME_FONT_WAD_MODEL model into a glyph cache entry.
  *
- * The model's -Z faces the reader, so Z and the normal's Z are negated into
- * the host form. A textured face (20 bytes) and a face without the flat-lit
- * bit are skipped, as they are not glyph faces. The entry stays invalid when
- * the block header is not a KSEG0 address, the vertex count is outside
- * 3..TXT_MAX_GLYPH_V, or no glyph face remains.
- * @param cpu The guest CPU state.
+ * Every offset in the model is relative to its first byte (layout in
+ * game_layout.h). The model's -Z faces the reader, so Z and the normal's Z
+ * are negated into the host form. A textured face (20 bytes) and a face
+ * without the flat-lit bit are skipped, as they are not glyph faces. The
+ * entry stays invalid when the model's first word is not a negated block
+ * count covering @p index, when the block, its vertices or its face list
+ * reach past @p len, when the vertex count is outside 3..TXT_MAX_GLYPH_V, or
+ * when no glyph face remains.
+ * @param m The model bytes.
+ * @param len Their count.
  * @param g The cache entry.
- * @param model The font model's guest address.
  * @param index The block index. */
-static void cache_one_block(CPUState* cpu, glyph_cache_t* g, uint32_t model, int index) {
+static void wad_decode_block(const uint8_t* m, uint32_t len, glyph_cache_t* g, int index) {
     g->valid = 0;
-    uint32_t H = cpu->read_word(model + FONT.block_table_off + (uint32_t)index * 4u);
-    if (H < 0x80000000u) return;
-    int vcount = (int)((cpu->read_word(H) >> 8) & 0xFFu);
-    if (vcount < 3 || vcount > TXT_MAX_GLYPH_V) return;
+    if (len < 0x18u || (int32_t)le32(m, 0) >= 0) return;
+    const uint32_t count = (uint32_t)-(int32_t)le32(m, 0);
+    if (index < 0 || (uint32_t)index >= count || 0x14u + 4u * count > len) return;
+    const uint32_t H = le32(m, 0x14u + 4u * (uint32_t)index);
+    if (H > len - 0x10u) return;
+    const int vcount = (int)((le32(m, H) >> 8) & 0xFFu);
+    if (vcount < 3 || vcount > TXT_MAX_GLYPH_V || H + 0x10u + 4u * (uint32_t)vcount > len) return;
     for (int i = 0; i < vcount; i++) {
-        uint32_t w = cpu->read_word(H + 0x10u + (uint32_t)i * 4u);
+        uint32_t w = le32(m, H + 0x10u + (uint32_t)i * 4u);
         g->vx[i] = (int16_t)((int32_t)(w << 10) >> 21);
         g->vy[i] = (int16_t)((int32_t)(w << 20) >> 20);
         g->vz[i] = (int16_t)-((int32_t)w >> 21);
     }
-    uint32_t faces = H + (cpu->read_word(H + 0x08u) & 0xFFFFu);
-    uint32_t fp = faces + 4u, end = fp + cpu->read_word(faces);
+    const uint32_t faces = le32(m, 0x10u) + (le32(m, H + 0x08u) & 0xFFFFu);
+    if (faces > len - 4u) return;
+    uint32_t fp = faces + 4u;
+    const uint32_t flen = le32(m, faces);
+    if (flen > len - fp) return;
+    const uint32_t end = fp + flen;
     int fcount = 0;
     while (fp + 8u <= end && fcount < TXT_MAX_GLYPH_F) {
-        uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
+        uint32_t w0 = le32(m, fp), w1 = le32(m, fp + 4u);
         if ((int32_t)w1 < 0) { fp += 0x14u; continue; }   /* textured: 20-byte face */
         fp += 8u;
         if (!(w1 & 2u)) continue;                          /* not flat-lit */
@@ -339,48 +344,49 @@ static void cache_one_block(CPUState* cpu, glyph_cache_t* g, uint32_t model, int
     g->valid = 1;
 }
 
-/** @brief Builds the synthesized period glyph: a box standing on the digits' baseline.
+/** @brief Reads the GAME_FONT_WAD_MODEL model from the booted disc into a host buffer.
  *
- * The box is square in X and Y with the width of the glyph of the font's
- * synth_depth_char, and spans that glyph's Z range; the baseline is digit
- * '0''s largest Y. Six faces with axis normals, so it takes the same
- * lighting as a real glyph. The slot stays invalid when the depth glyph or
- * digit '0' is not cached or the depth glyph has no width or depth. */
-static void synth_period(void) {
-    glyph_cache_t* g = &s_glyph[SLOT_SYNTH_PERIOD];
-    g->valid = 0;
-    const int ds = glyph_slot(FONT.synth_depth_char);
-    const glyph_cache_t* d = (ds >= 0) ? &s_glyph[ds] : NULL;
-    const glyph_cache_t* zero = &s_glyph[SLOT_DIGIT];
-    if (!d || !d->valid || !zero->valid) return;
-    int zmin = 1 << 30, zmax = -(1 << 30), base = -(1 << 30);
-    for (int i = 0; i < d->vcount; i++) {
-        if (d->vz[i] < zmin) zmin = d->vz[i];
-        if (d->vz[i] > zmax) zmax = d->vz[i];
+ * Opens a handle of its own on the booted disc's image, traced under the WAD
+ * tag, finds WAD.WAD by its ISO 9660 name, reads the entry table from the
+ * WAD's first two sectors and the sub-file table from the entry's first
+ * sector, then the sub-file's sectors. Every offset and size is checked
+ * against its container and against @p cap.
+ * @param buf Receives the model.
+ * @param cap The buffer's capacity in bytes.
+ * @return The model's byte count, or 0 with the reason logged. */
+static uint32_t wad_model_read(uint8_t* buf, uint32_t cap) {
+    enum { SEC = DISC_IMAGE_USER_SECTOR };
+    disc_image_t* game = disc_image_game();
+    if (!game) { OPL_WARN_F("font", "glyph model not read: no disc open"); return 0; }
+    disc_image_t* img = disc_image_open(disc_image_bin_path(game), DISC_READ_CACHED, OPENPETE_DISC_TAG_WAD);
+    if (!img) return 0;
+    static uint8_t hdr[2 * SEC], sec[SEC];
+    disc_image_entry_t wad;
+    const uint32_t e = (uint32_t)FONT.wad_entry, k = (uint32_t)FONT.wad_subfile;
+    const char* why = NULL;
+    uint32_t size = 0;
+    if (disc_image_find(img, "WAD.WAD", &wad) != 0)                 why = "no WAD.WAD";
+    else if (8u * e + 8u > sizeof hdr || 8u * k + 8u > SEC)         why = "descriptor index";
+    else if (disc_image_read_user(img, wad.lba, hdr) != 0 ||
+             disc_image_read_user(img, wad.lba + 1u, hdr + SEC) != 0) why = "WAD header read";
+    if (!why) {
+        const uint32_t eoff = le32(hdr, 8u * e), esz = le32(hdr, 8u * e + 4u);
+        if (esz == 0u || eoff % SEC || eoff > wad.size || esz > wad.size - eoff) why = "WAD entry";
+        else if (disc_image_read_user(img, wad.lba + eoff / SEC, sec) != 0)  why = "entry header read";
+        else {
+            const uint32_t soff = le32(sec, 8u * k), ssz = le32(sec, 8u * k + 4u);
+            if (ssz == 0u || ssz > cap || soff % SEC || soff > esz || ssz > esz - soff) why = "sub-file";
+            for (uint32_t i = 0; !why && i * SEC < ssz; i++) {
+                if (disc_image_read_user(img, wad.lba + (eoff + soff) / SEC + i, sec) != 0) { why = "sub-file read"; break; }
+                const uint32_t n = (ssz - i * SEC < SEC) ? ssz - i * SEC : SEC;
+                memcpy(buf + i * SEC, sec, n);
+            }
+            if (!why) size = ssz;
+        }
     }
-    for (int i = 0; i < zero->vcount; i++)
-        if (zero->vy[i] > base) base = zero->vy[i];
-    const int side = d->vxmax - d->vxmin;
-    if (side <= 0 || zmax <= zmin) return;
-    /* vertex i: bit 0 = right, bit 1 = bottom, bit 2 = back */
-    for (int i = 0; i < 8; i++) {
-        g->vx[i] = (int16_t)((i & 1) ? side : 0);
-        g->vy[i] = (int16_t)((i & 2) ? base : base - side);
-        g->vz[i] = (int16_t)((i & 4) ? zmin : zmax);
-    }
-    static const uint8_t quad[6][4] = {
-        {0,1,2,3}, {5,4,7,6},      /* front, back   */
-        {4,0,6,2}, {1,5,3,7},      /* left, right   */
-        {4,5,0,1}, {2,3,6,7},      /* top, bottom   */
-    };
-    static const int16_t normal[6][3] = {
-        {0,0,127}, {0,0,-127}, {-127,0,0}, {127,0,0}, {0,-127,0}, {0,127,0},
-    };
-    memcpy(g->fi, quad, sizeof quad);
-    memcpy(g->fn, normal, sizeof normal);
-    g->vcount = 8; g->fcount = 6;
-    glyph_set_xrange(g);
-    g->valid = 1;
+    disc_image_close(img);
+    if (why) { OPL_WARN_F("font", "glyph model not read from the disc (%s)", why); return 0; }
+    return size;
 }
 
 /** @brief Builds the synthesized hyphen glyph: a bar measured off digit '0'.
@@ -388,18 +394,16 @@ static void synth_period(void) {
  * The bar is half digit '0''s cap height wide and an eighth of it thick
  * (each at least 1 model unit), centred half the cap height above the
  * baseline, and spans the digit's Z range. Every dimension is a fraction of
- * the cap height, so it scales with the font. It is a six-faced box built
- * like synth_period's, so it takes the same lighting and extrusion as a
- * real glyph. Digit '0' is the reference because the snapshot is never
+ * the cap height, so it scales with the font. It is a six-faced box with
+ * axis normals, so it takes the same lighting and extrusion as a real
+ * glyph. Digit '0' is the reference because the snapshot is never
  * taken without it. The slot stays invalid when digit '0' is not cached or
  * has no height or depth. */
 static void synth_hyphen(void) {
     glyph_cache_t* g = &s_glyph[SLOT_SYNTH_HYPHEN];
     g->valid = 0;
     /* Everything is measured off the digit '0': it is the one glyph the
-     * snapshot is not taken without, so the bar exists wherever text does.
-     * (synth_period's depth-donor descriptor field is optional and unset on
-     * fonts that have their own period, which would leave the bar unbuilt.) */
+     * snapshot is not taken without, so the bar exists wherever text does. */
     const glyph_cache_t* zero = &s_glyph[SLOT_DIGIT];
     if (!zero->valid || zero->vcount <= 0) return;
     int zmin = 1 << 30, zmax = -(1 << 30);
@@ -449,9 +453,9 @@ static void synth_hyphen(void) {
  * digit's advance (s_digit_adv) and is centred in it (glyph_metrics), so a
  * number's width depends only on its digit count. measure_string and
  * emit_string both read it, so every consumer (the FPS counter, the menu's
- * values, the OSD, a mod's HUD) gets aligned columns. Once ready, guest RAM
- * is not read again.
- * @param source The snapshot's source: 1 guest RAM, 2 the cache file. */
+ * values, the OSD, a mod's HUD) gets aligned columns. Once ready, neither
+ * guest RAM nor the disc is read again.
+ * @param source The snapshot's source: 1 guest RAM, 2 the disc image. */
 static void cache_finish(int source) {
     s_digit_adv = 0;
     for (int d = 0; d < 10; d++) {
@@ -461,190 +465,6 @@ static void cache_finish(int source) {
     }
     s_cache_source = source;
     s_cache_ready = 1;                                    /* snapshot taken; never re-read RAM */
-}
-
-/* ---- the cache file ------------------------------------------------------
- * GAME_FONT_ONE_CLASS only: the font is resident in some levels and absent in
- * the rest, so the first snapshot is written to a file and later sessions
- * load it at boot.
- *
- * OPENPETE_FONT_CACHE names the file; "0" disables it. Unset, a windowed run
- * uses <state dir>/cache/font-<game id>.bin and a headless run uses no file,
- * so an unattended capture never depends on what an earlier session left on
- * the machine.
- *
- * Layout, little-endian: "OPFC", u32 version, the disc's boot-file name in 16
- * bytes, u32 form, u32 slot count, u32 payload bytes, u64 FNV-1a of the
- * payload; then per slot u8 valid, u8 vcount, u8 fcount, vcount * 3 int16
- * vertices, fcount * (4 u8 indices + 3 int16 normal). A file that fails any
- * field is ignored and overwritten by the next snapshot. */
-#define FONT_FILE_VERSION 1u
-#define FONT_FILE_HDR     44
-#define FONT_FILE_MAX     (FONT_FILE_HDR + NGLYPH * (3 + TXT_MAX_GLYPH_V * 6 + TXT_MAX_GLYPH_F * 10))
-
-/** @brief Resolves the font cache file path once and returns it.
- *
- * Only the GAME_FONT_ONE_CLASS form uses a file. OPENPETE_FONT_CACHE names
- * the path, and the value "0" disables the file. Unset, a windowed run
- * (openpete_skip_ffwd_windowed) uses font-<game id>.bin in the state
- * directory's cache subdirectory, and other runs use no file. The result is
- * latched on the first call.
- * @return The path in static storage, or NULL when no file is used. */
-static const char* font_file_path(void) {
-    static char s_path[1024];
-    static int  s_resolved = 0;
-    if (s_resolved) return s_path[0] ? s_path : NULL;
-    s_resolved = 1;
-    s_path[0] = 0;
-    if (FONT.form != GAME_FONT_ONE_CLASS) return NULL;
-    const char* e = getenv("OPENPETE_FONT_CACHE");
-    if (e && *e) {
-        if (strcmp(e, "0") != 0) snprintf(s_path, sizeof s_path, "%s", e);
-    } else if (openpete_skip_ffwd_windowed) {             /* 1 in a windowed run */
-        char dir[900], leaf[64];
-        if (openpete_paths_state_dir("cache", dir, sizeof dir, 1) == 0) {
-            snprintf(leaf, sizeof leaf, "font-%s.bin", game_get_id());
-            openpete_paths_join(s_path, sizeof s_path, dir, leaf);
-        }
-    }
-    return s_path[0] ? s_path : NULL;
-}
-
-/** @brief Stores a 16-bit value little-endian and advances the cursor by 2.
- *
- * @param p The write cursor.
- * @param v The value; the low 16 bits are stored. */
-static void put16(uint8_t** p, int v) { (*p)[0] = (uint8_t)v; (*p)[1] = (uint8_t)(v >> 8); *p += 2; }
-/** @brief Stores a 32-bit value little-endian and advances the cursor by 4.
- *
- * @param p The write cursor.
- * @param v The value. */
-static void put32(uint8_t** p, uint32_t v) { for (int i = 0; i < 4; i++) (*p)[i] = (uint8_t)(v >> (8 * i)); *p += 4; }
-/** @brief Loads a signed little-endian 16-bit value and advances the cursor by 2.
- *
- * @param p The read cursor.
- * @return The value, sign-extended. */
-static int  get16(const uint8_t** p) { int v = (int16_t)((*p)[0] | ((*p)[1] << 8)); *p += 2; return v; }
-/** @brief Loads an unsigned little-endian 32-bit value and advances the cursor by 4.
- *
- * @param p The read cursor.
- * @return The value. */
-static uint32_t get32(const uint8_t** p) { uint32_t v = 0; for (int i = 0; i < 4; i++) v |= (uint32_t)(*p)[i] << (8 * i); *p += 4; return v; }
-
-/** @brief Writes the disc's boot-file name into the font cache file's 16-byte disc field.
- *
- * The name (game_get_exe_filename) is truncated to 15 characters and the
- * remainder is zero-filled, so the field compares with memcmp.
- * @param out Receives 16 bytes. */
-static void font_file_disc_id(char out[16]) {
-    memset(out, 0, 16);
-    snprintf(out, 16, "%s", game_get_exe_filename());
-}
-
-/** @brief Writes the glyph cache to the font cache file.
- *
- * Serializes every slot after the 44-byte header (layout above), hashes the
- * payload with FNV-1a, and writes the file. A short write removes the file.
- * A missing path or an open failure writes nothing; failures are logged and
- * not reported to the caller. */
-static void font_file_save(void) {
-    const char* path = font_file_path();
-    if (!path) return;
-    static uint8_t buf[FONT_FILE_MAX];
-    uint8_t* p = buf + FONT_FILE_HDR;
-    for (int s = 0; s < NGLYPH; s++) {
-        const glyph_cache_t* g = &s_glyph[s];
-        *p++ = (uint8_t)(g->valid ? 1 : 0);
-        *p++ = (uint8_t)(g->valid ? g->vcount : 0);
-        *p++ = (uint8_t)(g->valid ? g->fcount : 0);
-        if (!g->valid) continue;
-        for (int i = 0; i < g->vcount; i++) { put16(&p, g->vx[i]); put16(&p, g->vy[i]); put16(&p, g->vz[i]); }
-        for (int f = 0; f < g->fcount; f++) {
-            memcpy(p, g->fi[f], 4); p += 4;
-            put16(&p, g->fn[f][0]); put16(&p, g->fn[f][1]); put16(&p, g->fn[f][2]);
-        }
-    }
-    const uint32_t payload = (uint32_t)(p - (buf + FONT_FILE_HDR));
-    const uint64_t h = openpete_fnv1a64(buf + FONT_FILE_HDR, payload);
-    uint8_t* q = buf;
-    memcpy(q, "OPFC", 4); q += 4;
-    put32(&q, FONT_FILE_VERSION);
-    font_file_disc_id((char*)q); q += 16;
-    put32(&q, (uint32_t)FONT.form);
-    put32(&q, (uint32_t)NGLYPH);
-    put32(&q, payload);
-    put32(&q, (uint32_t)h); put32(&q, (uint32_t)(h >> 32));
-    FILE* fp = fopen(path, "wb");
-    if (!fp) { OPL_WARN_F("font", "cannot write the glyph cache %s", path); return; }
-    const size_t total = FONT_FILE_HDR + payload;
-    const int ok = fwrite(buf, 1, total, fp) == total;
-    if (fclose(fp) != 0 || !ok) { remove(path); OPL_WARN_F("font", "short write, removed %s", path); return; }
-    OPL_INFO_F("font", "glyph cache written: %s (%u bytes)", path, (unsigned)total);
-}
-
-/** @brief Fills the glyph cache from the font cache file.
- *
- * The file is rejected on a size, magic, version, disc, descriptor, length or
- * checksum mismatch, a glyph out of bounds, or a missing digit '0'; the
- * rejection is logged with its reason.
- * @return 1 on success; 0 when no file is configured or present, or on a
- *         rejection, which leaves every glyph invalid. */
-static int font_file_load(void) {
-    const char* path = font_file_path();
-    if (!path) return 0;
-    FILE* fp = fopen(path, "rb");
-    if (!fp) return 0;
-    static uint8_t buf[FONT_FILE_MAX + 1];
-    const size_t got = fread(buf, 1, sizeof buf, fp);
-    fclose(fp);
-    const char* why = NULL;
-    char disc[16];
-    font_file_disc_id(disc);
-    const uint8_t* q = buf + 4;
-    if (got < FONT_FILE_HDR || got > FONT_FILE_MAX)  why = "size";
-    else if (memcmp(buf, "OPFC", 4) != 0)           why = "magic";
-    else if (get32(&q) != FONT_FILE_VERSION)        why = "version";
-    else if (memcmp(q, disc, 16) != 0)              why = "disc";
-    if (!why) {
-        q += 16;
-        const uint32_t form = get32(&q), slots = get32(&q), payload = get32(&q);
-        uint64_t h = get32(&q); h |= (uint64_t)get32(&q) << 32;
-        if (form != (uint32_t)FONT.form || slots != (uint32_t)NGLYPH) why = "descriptor";
-        else if ((size_t)payload + FONT_FILE_HDR != got)            why = "length";
-        else if (openpete_fnv1a64(buf + FONT_FILE_HDR, payload) != h) why = "checksum";
-    }
-    if (!why) {
-        const uint8_t* p = buf + FONT_FILE_HDR;
-        const uint8_t* end = buf + got;
-        for (int s = 0; s < NGLYPH && !why; s++) {
-            glyph_cache_t* g = &s_glyph[s];
-            g->valid = 0;
-            if (p + 3 > end) { why = "truncated"; break; }
-            const int valid = p[0], vcount = p[1], fcount = p[2];
-            p += 3;
-            if (!valid) continue;
-            if (vcount < 3 || vcount > TXT_MAX_GLYPH_V || fcount < 1 || fcount > TXT_MAX_GLYPH_F ||
-                p + (size_t)vcount * 6 + (size_t)fcount * 10 > end) { why = "glyph bounds"; break; }
-            for (int i = 0; i < vcount; i++) {
-                g->vx[i] = (int16_t)get16(&p); g->vy[i] = (int16_t)get16(&p); g->vz[i] = (int16_t)get16(&p);
-            }
-            for (int f = 0; f < fcount; f++) {
-                memcpy(g->fi[f], p, 4); p += 4;
-                g->fn[f][0] = (int16_t)get16(&p); g->fn[f][1] = (int16_t)get16(&p); g->fn[f][2] = (int16_t)get16(&p);
-            }
-            g->vcount = vcount; g->fcount = fcount;
-            glyph_set_xrange(g);
-            g->valid = 1;
-        }
-        if (!why && !s_glyph[SLOT_DIGIT].valid) why = "no digit 0";
-    }
-    if (why) {
-        for (int s = 0; s < NGLYPH; s++) s_glyph[s].valid = 0;
-        OPL_WARN_F("font", "glyph cache %s rejected (%s)", path, why);
-        return 0;
-    }
-    OPL_INFO_F("font", "glyph cache loaded: %s", path);
-    return 1;
 }
 
 void text_moby_native_cache(CPUState* cpu) {
@@ -657,41 +477,40 @@ void text_moby_native_cache(CPUState* cpu) {
         if (m0 < 0x80000000u) m0 |= 0x80000000u;
         if ((int32_t)cpu->read_word(m0) >= 0) return;        /* pointer set but data not yet in */
         if ((cpu->read_byte(m0) & 0xFF) == 0) return;        /* vcount 0 -> not ready */
-        for (int s = 0; s < SLOT_SYNTH_PERIOD; s++) {
+        for (int s = 0; s < SLOT_SYNTH_HYPHEN; s++) {
             const int idx = slot_glyph_index(s);
             if (idx >= 0) cache_one_class(cpu, &s_glyph[s], idx);
         }
-        if (FONT.synth_period) synth_period();
         synth_hyphen();
         cache_finish(1);
-    } else if (FONT.form == GAME_FONT_ONE_CLASS) {
-        static int s_file_tried = 0;
-        if (!s_file_tried) {
-            s_file_tried = 1;
-            if (font_file_load()) { cache_finish(2); return; }
-        }
-        int need = 0;
-        for (int s = 0; s < SLOT_SYNTH_PERIOD; s++)
-            if (slot_glyph_index(s) >= need) need = slot_glyph_index(s) + 1;
-        const uint32_t model = one_class_model(cpu, need);
-        if (!model) return;
-        for (int s = 0; s < SLOT_SYNTH_PERIOD; s++) {
+    } else if (FONT.form == GAME_FONT_WAD_MODEL) {
+        /* One attempt per session: the disc does not change under it. */
+        static int s_tried = 0;
+        if (s_tried) return;
+        s_tried = 1;
+        static uint8_t model[WAD_MODEL_MAX];
+        const uint32_t len = wad_model_read(model, sizeof model);
+        if (len == 0u) return;
+        for (int s = 0; s < SLOT_SYNTH_HYPHEN; s++) {
             const int idx = slot_glyph_index(s);
-            if (idx >= 0) cache_one_block(cpu, &s_glyph[s], model, idx);
+            if (idx >= 0) wad_decode_block(model, len, &s_glyph[s], idx);
         }
-        /* The model-table entry is set before the level's data is all in: take
-         * the snapshot only once every digit and letter decoded. */
-        for (int s = 0; s < SLOT_PUNCT; s++)
-            if (!s_glyph[s].valid) return;
+        for (int s = 0; s < SLOT_PUNCT; s++) {
+            if (s_glyph[s].valid) continue;
+            for (int t = 0; t < NGLYPH; t++) s_glyph[t].valid = 0;
+            OPL_WARN_F("font", "glyph model from WAD entry %d sub-file %d lacks glyph %d",
+                       FONT.wad_entry, FONT.wad_subfile, slot_glyph_index(s));
+            return;
+        }
         for (int p = 0; p < N_PUNCT && FONT.punct[p].ch; p++) {
             glyph_cache_t* g = &s_glyph[SLOT_PUNCT + p];
             for (int i = 0; g->valid && i < g->vcount; i++)
                 g->vy[i] = (int16_t)(g->vy[i] + FONT.punct[p].dy);
         }
-        if (FONT.synth_period) synth_period();
         synth_hyphen();
-        cache_finish(1);
-        font_file_save();
+        cache_finish(2);
+        OPL_INFO_F("font", "glyphs read from the disc: WAD entry %d sub-file %d, %u bytes",
+                   FONT.wad_entry, FONT.wad_subfile, (unsigned)len);
     }
 }
 
@@ -878,7 +697,7 @@ static int emit_string(emit_ctx_t* cx, const char* str,
             unsigned au = ((unsigned)wob_phase * 8u + (unsigned)gi * 12u) & 0xFFu;
             yaw = cosf((float)au * (6.2831853f / 256.0f)) * TXT_WOBBLE_AMP;
         }
-        if (c == ':') {                                  /* faked colon: two dots */
+        if (c == ':' && glyph_slot(':') < 0) {           /* faked colon: two dots */
             float w = emit_glyph(cx, period, cursor, center_y, scale * FONT.colon_scale,
                                  FONT.colon_recenter + FONT.colon_spread, yaw, baseR, baseG, baseB);
             if (w < 0.0f) { cursor += TXT_SPACE; continue; }
@@ -928,7 +747,7 @@ static float measure_string(const char* str, float cap_h);
 /** @brief Prints one stderr line when a consumer's published vertex count changes, under OPENPETE_TEXT_GLYPH_CENSUS.
  *
  * The line carries the vertex count, how many of them are glyph faces (the
- * rest is frame) and the snapshot's source (none, ram, file). A check
+ * rest is frame) and the snapshot's source (none, ram, disc). A check
  * harness reads it to tell a drawn font from an absent one. The variable is
  * latched on the first call; any value but 0 enables it.
  * @param consumer 0 perf, 1 menu, 2 osd, 3 version.
@@ -941,7 +760,7 @@ static void glyph_census(int consumer, int nverts, int glyph_verts) {
     if (!s_on || s_last[consumer] == nverts) return;
     s_last[consumer] = nverts;
     static const char* const name[4] = { "perf", "menu", "osd", "version" };
-    static const char* const src[3]  = { "none", "ram", "file" };
+    static const char* const src[3]  = { "none", "ram", "disc" };
     fprintf(stderr, "[text-glyph vbl=%u] consumer=%s verts=%d glyph_verts=%d source=%s\n",
             openpete_frame, name[consumer], nverts, glyph_verts, src[s_cache_source]);
 }
@@ -1291,7 +1110,7 @@ static float measure_string(const char* str, float cap_h) {
     for (int i = 0; str[i]; i++) {
         char c = str[i];
         if (c == ' ') { cursor += TXT_SPACE; continue; }
-        if (c == ':') {
+        if (c == ':' && glyph_slot(':') < 0) {
             int slot = glyph_slot('.');
             if (slot < 0 || !s_glyph[slot].valid) { cursor += TXT_SPACE; continue; }
             cursor += (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin)

@@ -838,25 +838,27 @@ typedef struct game_layout {
      * face normal in word 1's three high bytes as z, x, y). Model +Z faces
      * the reader.
      *
-     * Form GAME_FONT_ONE_CLASS: one class (`font_class`) carries every glyph
-     * as one geometry block per index; the model-table entry is a KUSEG
-     * address of a model whose first word is the block count and whose
-     * block pointers start at `block_table_off`. A block holds the vertex
-     * count in header byte 1, one-word vertices at +0x10 (y in bits 0-11, x
-     * in 11-21, z in 21-31), the offset of the byte-counted face list in
-     * the low half of +0x08, and 8-byte flat-lit faces (four 7-bit indices
-     * in word 0 bits 21/14/7/0, the normal in word 1 bits 15/7/23 as x, y,
-     * z). Model -Z faces the reader. The model is resident only in the
-     * levels that draw it, so the producer keeps the decoded glyphs in a
-     * host cache file.
+     * Form GAME_FONT_WAD_MODEL: every glyph is one geometry block of a
+     * model the producer reads from the disc at first use, never from guest
+     * RAM. The model is sub-file `wad_subfile` of entry `wad_entry` of
+     * WAD.WAD: the WAD's first two sectors hold one (offset, size) word pair
+     * per entry, and the entry's first sector one (offset, size) pair per
+     * sub-file, offsets relative to the entry. The model's first word is the
+     * negated block count, +0x10 the offset of a shared face pool and +0x14
+     * one block offset per glyph index, every offset relative to the model.
+     * A block holds the vertex count in header byte 1, one-word vertices at
+     * +0x10 (y in bits 0-11, x in 11-21, z in 21-31) and, in the low half of
+     * +0x08, the offset of its byte-counted face list inside the pool; a
+     * face is 8 bytes flat-lit (four 7-bit indices in word 0 bits 21/14/7/0,
+     * the normal in word 1 bits 15/7/23 as x, y, z) or 20 bytes textured
+     * (word 1 negative). Model -Z faces the reader.
      *
      * A character maps to `digit_base` + (c - '0'), `letter_base` +
      * (c - 'A'), or the index `punct` pairs it with (the list ends at a
      * zero character), drawn `dy` model units below where the model puts
-     * it. `synth_period` builds the period the font lacks as
-     * an extruded square as deep as the glyph of `synth_depth_char`. A colon
-     * is two periods, each scaled by `colon_scale`, moved by
-     * `colon_recenter` and then apart by +-`colon_spread` (model units).
+     * it. A font without a ':' entry draws the colon as two periods, each
+     * scaled by `colon_scale`, moved by `colon_recenter` and then apart by
+     * +-`colon_spread` (model units).
      *
      * `model_h` is the model-unit height a caller's cap height maps to.
      * A face's colour is the caller's base colour plus, per channel,
@@ -867,13 +869,10 @@ typedef struct game_layout {
     struct {
         int      form;
         uint32_t model_table;
-        int      font_class;
-        uint32_t block_table_off;
+        int      wad_entry, wad_subfile;
         int      digit_base;
         int      letter_base;
         struct { char ch; int index; int dy; } punct[8];
-        int      synth_period;
-        char     synth_depth_char;
         float    colon_recenter, colon_spread, colon_scale;
         float    model_h;
         float    light_add[3];
@@ -885,7 +884,7 @@ typedef struct game_layout {
 
 #define GAME_FONT_NONE            0
 #define GAME_FONT_CLASS_PER_GLYPH 1
-#define GAME_FONT_ONE_CLASS       2
+#define GAME_FONT_WAD_MODEL       2
 
 extern const game_layout_t game_layout;
 

@@ -1,11 +1,7 @@
-# The 3D glyph text gate's rows (tests/harness/check_text_font.sh; fields and cache
-# modes are documented there). The font model (class 265) is resident only in
-# the home worlds.
+# The 3D glyph text gate's rows (tests/harness/check_text_font.sh). The credits
+# font (WAD entry 183, sub-file 2) is read from the disc at the first draw, so
+# every level draws it, a home world or not.
 #
-# name            | level          | cache                    | expect
-cold-non-home     | cloud_spires   | cold                     | none
-home-world        | sunrise_spring | fresh                    | ram
-warm-non-home     | cloud_spires   | warm:home-world          | file
-reject-checksum   | cloud_spires   | bad-checksum:home-world  | none
-reject-disc       | cloud_spires   | bad-disc:home-world      | none
-reject-version    | cloud_spires   | bad-version:home-world   | none
+# name            | level          | expect
+home-world        | sunrise_spring | disc
+non-home          | cloud_spires   | disc

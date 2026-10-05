@@ -581,11 +581,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # The 3D glyph text gate: the settings menu, the OSD toasts and the
-    # performance readout publish glyph vertices from the game's own font, and
-    # Spyro 3's glyph cache file round-trips and rejects a tampered copy. Rows
-    # in games/<slug>/corpus/text-font-corpus.manifest. Windowed (the producer is
-    # inert headless); exits 64 without a display.
-    foreach(_font_game spyro-1 spyro-3)
+    # performance readout publish glyph vertices from the game's own font,
+    # decoded from guest RAM (Spyro 1) or read from the disc (Spyro 2 and 3,
+    # in every level). Rows in games/<slug>/corpus/text-font-corpus.manifest.
+    # Windowed (the producer is inert headless); exits 64 without a display.
+    foreach(_font_game spyro-1 spyro-2 spyro-3)
         add_test(NAME text_font_${_font_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_text_font.sh
                          --game ${_font_game} --build-dir=${CMAKE_BINARY_DIR})

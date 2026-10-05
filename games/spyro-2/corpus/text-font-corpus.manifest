@@ -1,0 +1,7 @@
+# The 3D glyph text gate's rows (tests/harness/check_text_font.sh). The credits
+# font (WAD entry 187, sub-file 2) is read from the disc at the first draw, so
+# every level draws it, a home world or not.
+#
+# name            | level          | expect
+home-world        | summer_forest  | disc
+non-home          | idol_springs   | disc

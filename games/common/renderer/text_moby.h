@@ -1,19 +1,18 @@
 // games/common/renderer/text_moby.h
 //
 // Render arbitrary text using the game's own extruded 3D glyph models (Spyro
-// 1's gem and life counters, "DEMO MODE", dragon names and pause menu; Spyro
-// 3's home-world portal names). game_layout.font says where the models are
-// and how they are packed; see the .c for both formats.
+// 1's gem and life counters, "DEMO MODE", dragon names and pause menu; the
+// end-credits glyphs of Spyro 2 and Spyro 3). game_layout.font says where the
+// models are and how they are packed; see the .c for both formats.
 //
-// The glyph models are not permanently resident, so their decoded geometry is
-// snapshotted once, the first time they are available
-// (text_moby_native_cache), and every draw works from the snapshot. A game
-// whose font is a per-level asset also keeps the snapshot in a cache file
-// (OPENPETE_FONT_CACHE), loaded at boot by later sessions. Until a snapshot
-// exists, ready() is false and the caller renders nothing.
+// The glyph geometry is decoded once into a snapshot (text_moby_native_cache)
+// and every draw works from the snapshot: Spyro 1's from guest RAM the first
+// time its font is resident, Spyro 2's and 3's from the disc image at the
+// first call. Until a snapshot exists, ready() is false and the caller
+// renders nothing.
 //
-// Pure presentation - reads glyph-model geometry from RAM, writes no
-// gameplay-readable state.
+// Pure presentation - reads glyph-model geometry from RAM or the disc image,
+// writes no gameplay-readable state.
 
 #ifndef OPENPETE_TEXT_MOBY_NATIVE_H
 #define OPENPETE_TEXT_MOBY_NATIVE_H
@@ -24,13 +23,12 @@ struct CPUState;
 
 /** @brief Snapshots the glyph-model geometry into the glyph cache the first time it is available.
  *
- * A GAME_FONT_ONE_CLASS font is loaded from the cache file when one is
- * configured and valid, else decoded from RAM once the font model is
- * resident and every digit and letter decodes, and the snapshot is then
- * written to the cache file. A GAME_FONT_CLASS_PER_GLYPH font is decoded
- * once digit '0' is a loaded simple model. A no-op once the cache is ready;
- * called every tick by the consumers below, and the cache survives the
- * models being unloaded later. Reads model RAM only.
+ * A GAME_FONT_WAD_MODEL font is read from the disc image at the first call
+ * (one attempt per session) and kept only when every digit and letter
+ * decodes. A GAME_FONT_CLASS_PER_GLYPH font is decoded from RAM once digit
+ * '0' is a loaded simple model. A no-op once the cache is ready; called
+ * every tick by the consumers below, and the cache survives the models
+ * being unloaded later.
  * @param cpu The guest CPU state. */
 void text_moby_native_cache(struct CPUState* cpu);
 

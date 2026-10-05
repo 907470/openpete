@@ -558,10 +558,33 @@ const game_layout_t game_layout = {
         .visibility = F_VISIBILITY,   /* called by both draws before their walks */
     },
 
-    /* No glyph models located: the class, the block indices and the levels
-     * that hold the font are unknown, so the text producer publishes no
-     * glyphs. */
-    .font = { .form = GAME_FONT_NONE },
+    /* The credits font: WAD entry 187, sub-file 2, the model the credits
+     * overlay reads as class 678 (credits_code.ovl, the spawn at 0x8006EF58
+     * stores the class and the glyph into the moby's animation-id bytes). It
+     * is Spyro 3's credits font, block for block: letters 0-25, digits 26-35,
+     * '!' 36, ',' 37, '.' 38, '-' 39, ':' 40 (the overlay's character map at
+     * 0x8006E35C-0x8006E3EC). '.' and ',' are lowered onto the letters'
+     * baseline, ':' and '-' stay centred.
+     *
+     * Every face is flat-lit against entry 2 of the flat colour table at
+     * 0x80064440 (the overlay stores Moby+0x54 = 2), whose words equal Spyro
+     * 3's (base 0x00004040, lit 0x0000A0A0), and the draw loads Spyro 3's
+     * light matrix (mobydraw.s:3856-3866), so the lighting constants are
+     * Spyro 3's. */
+    .font = {
+        .form            = GAME_FONT_WAD_MODEL,
+        .wad_entry       = 187,
+        .wad_subfile     = 2,
+        .digit_base      = 26,
+        .letter_base     = 0,
+        .punct           = { {'!', 36, 0}, {',', 37, 32}, {'.', 38, 36},
+                             {'-', 39, 0}, {':', 40, 0} },
+        .model_h         = 100.0f,
+        .light_add       = { 92.0f, 92.0f, 0.0f },
+        .hi_threshold    = 0.6256f, .hi_gain = 1176.5f,
+        .fixed_light     = { -0.404f, -0.646f, 0.648f },
+        .fixed_tint      = 0x404000u,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade
