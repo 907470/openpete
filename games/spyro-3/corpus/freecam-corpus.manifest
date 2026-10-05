@@ -49,3 +49,6 @@ sunrise_spring | pos=(86477, 47173, 22094) yaw=-713 pitch=184 | 2000
 # frame's stone, the inner rim draws over it, and blended water inside the
 # opening draws over the preview.
 sunrise_spring | pos=(25844, 47069, 20665) yaw=729 pitch=123
+# The same homeworld portal seen from its back side: the preview stops short
+# of the opening's top corners, and a particle draws over the preview.
+sunrise_spring | pos=(24392, 51564, 21691) yaw=-690 pitch=70
