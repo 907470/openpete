@@ -66,10 +66,10 @@ metropolis | pos=(115218, 59889, 40916) yaw=1696 pitch=160
 # portal record and stops short of the frame's stone in the side bands, and
 # blended water inside the opening draws over the preview.
 summer_forest | pos=(119874, 78997, 37176) yaw=-1789 pitch=111
-# A homeworld portal whose pentagon projects inside the 16:9 side band but
-# outside the 4:3 screen: the game's portal pass rejects it on the X
-# outcode bits, so its preview is missing at 16:9.
-summer_forest | pos=(119874, 78997, 37176) yaw=-1689 pitch=111
 # Homeworld portal preview leaves the top corners of the arch uncovered:
 # the world behind shows in two triangles between the preview and the stone.
 summer_forest | pos=(121674, 76726, 37488) yaw=1556 pitch=-40
+# A homeworld portal whose pentagon projects inside the 16:9 side band but
+# outside the 4:3 screen: the game's portal pass rejects it on the X
+# outcode bits, so its preview is missing at 16:9.
+autumn_plains | pos=(90130, 56523, 28297) yaw=688 pitch=160
