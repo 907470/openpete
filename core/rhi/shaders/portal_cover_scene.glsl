@@ -1,7 +1,7 @@
 /* portal_cover_scene.glsl - the portal cover discard of a scene fragment
  * stage's _cover and _rim variants.
  *
- * Every blended-terrain pipeline of the CPU-fed scene draws through a
+ * Every blended world pipeline of the CPU-fed scene draws through a
  * variant of its stock fragment stage compiled with OP_PORTAL_COVER=1
  * (core/rhi/CMakeLists.txt); the variant includes this file and discards
  * the fragments op_portal_cover_frag reports. The pipeline's layout carries
@@ -11,7 +11,8 @@
  * screen y = fc.z * fragy + fc.w). A plane count of 0 turns the test off,
  * so the variant then draws exactly what its stock stage draws.
  *
- * The _cover variant (OP_PORTAL_COVER alone) serves blended terrain: it
+ * The _cover variant (OP_PORTAL_COVER alone) serves the blended world
+ * (terrain, glow, glints, particles, mobys): it
  * discards at or behind plane minus the cover margin (cov_margin.x) while
  * the blended cover is on (cov_cnt.y). The _rim variant (OP_PORTAL_RIM as
  * well) serves the faces the terrain feed accepts as a portal's inner rim:

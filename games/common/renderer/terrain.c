@@ -8042,6 +8042,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              *    n2 >= 0 (block_80026CC0), clear -> accept n2 <= 0
              *    (block_80026CA8; the triple's orientation is inverted vs
              *    half 1, hence the opposite base sign).
+             *  - A double-sided TRI skips its NCLIP verdict outright, branching
+             *    past it beside the straddle flag (Spyro 1 r_environment.s
+             *    0x800271F8; Spyro 2 environment.s 0x80025028 and Spyro 3
+             *    environment.s 0x800237EC OR the bit into that flag), so it
+             *    emits facing either way. LP double-sided faces likewise skip
+             *    both halves (the LP arm below).
              * The face draws when either half accepts: a twisted quad near
              * edge-on is visible through one half only, while a genuine
              * back-to-back wall pair fails both. */
@@ -8095,11 +8101,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 nclip = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
                 if (flip) nclip = -nclip;
                 front = (nclip >= 0.0);
+                front2 = F->dside;
                 if (quad) {
                     double nx2 = NSAT(sv[i2].sx), ny2 = NSAT(sv[i2].sy);
                     double nx3 = NSAT(sv[i3].sx), ny3 = NSAT(sv[i3].sy);
                     double nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
-                    front2 = F->dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
+                    front2 |= flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0);
                 }
             }
             /* Far-band identity dump: full per-face record for the offline

@@ -1251,14 +1251,16 @@ void main()
     } else {
         /* HP walk: HALF 1 over (i0,i1, quad?i3:i2), flip-adjusted, >= 0;
          * HALF 2 (quads) over (i2,i1,i3) with the flip-selected sign;
-         * dside (w3 & 0x4) jumps straight to emit. */
+         * dside (the per-game word-3 bit) jumps straight to emit; a dside
+         * tri skips its NCLIP verdict altogether. */
         double nxA = quad ? nx3 : nx2, nyA = quad ? ny3 : ny2;
         precise double n1 = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
         if (flip) n1 = -n1;
         front = n1 >= 0.0lf;
+        front2 = (ff & FF_DSIDE) != 0u;
         if (quad) {
             precise double n2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
-            front2 = ((ff & FF_DSIDE) != 0u) || (flip ? (n2 >= 0.0lf) : (n2 <= 0.0lf));
+            front2 = front2 || (flip ? (n2 >= 0.0lf) : (n2 <= 0.0lf));
         }
     }
 

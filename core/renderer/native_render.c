@@ -472,8 +472,8 @@ static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) 
  * overwriting bytes a still-pending scene draws. */
 enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
 #define SCENE_RING 48
-/* One CPU-fed terrain pipeline and its portal twin: the same description
- * with the fragment stage's _cover variant (blended terrain) or _rim variant
+/* One CPU-fed scene pipeline and its portal twin: the same description
+ * with the fragment stage's _cover variant (blended world) or _rim variant
  * (opaque inner-rim terrain; portal_cover_scene.glsl) and the cover planes'
  * UBO at set 5. A NULL twin (no variant for the stage, or a failed build)
  * draws through the stock pipeline without the test. */
@@ -524,7 +524,7 @@ typedef struct {
     openpete_hud_vert *ovl; int ovl_cap, ovl_n;
     openpete_shadow_decal_params shadow;
     openpete_shadow_footprint shadow_foot;   /* the player fan the decal re-rasterizes */
-    nr_cover_block cover;                    /* the portal planes blended terrain tests */
+    nr_cover_block cover;                    /* the portal planes the blended world tests */
     openpete_occl_camera occl_cam;           /* camera this scene was projected from */
     bw_order_t bw;                           /* blended-world order recorded at publish */
     int       freeze_retained;               /* freeze-backdrop production mode at publish */
@@ -3469,7 +3469,7 @@ static struct {
     rhi_pipeline *scene_tex_add_pipe; /* additive (ABR mode 1, B+F) textured tris - flame */
     rhi_pipeline *scene_tex_qadd_pipe; /* quarter-additive (ABR mode 3, B+F/4) textured tris - glass */
     rhi_pipeline *gouraud_qadd_pipe;  /* quarter-additive UNTEXTURED gouraud (ABR mode 3) */
-    nr_cover_twin cover_twins[NR_COVER_TWINS]; /* every CPU-fed blended terrain pipe and its portal cover twin (cover_family_create) */
+    nr_cover_twin cover_twins[NR_COVER_TWINS]; /* every CPU-fed blended world pipe and its portal cover twin (cover_family_create) */
     int           cover_twin_n;
     rhi_pipeline *scene_tex_sub_pipe; /* subtractive (ABR mode 2, B-F) textured tris - moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
     rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL -> fall back to scene_tex_sub_pipe */
@@ -3834,7 +3834,7 @@ typedef struct {
     int rim;                    /* 1: the _rim twin (opaque), 0: the _cover twin (blended) */
 } nr_cover_src;
 
-/** @brief Build the portal twin of each terrain pipeline that must yield to a portal preview.
+/** @brief Build the portal twin of each scene pipeline that must yield to a portal preview.
  *
  * Each twin is its stock description with the fragment stage's _cover or
  * _rim variant (cover_frag_of) and the cover planes' UBO at set 5. A NULL
@@ -7191,7 +7191,7 @@ static const nr_cover_twin* nr_cover_entry(const rhi_pipeline* p)
     return NULL;
 }
 
-/** @brief The pipeline a blended terrain run draws through in place of a stock pipeline.
+/** @brief The pipeline a blended world run draws through in place of a stock pipeline.
  * @param stock Stock pipeline, or NULL.
  * @return Its cover twin, or @p stock when it has none. */
 static rhi_pipeline* nr_cover_twin_of(rhi_pipeline* stock)
@@ -7261,7 +7261,7 @@ static void bind_cover_block(uint32_t set, int rim)
  * (nr_is_key_pipe), the bind also sets the actor key depth paired with its
  * owner colour at set 1, the terrain key depth paired with the drain
  * texture at set 2, the moby key depth at set 3 and, when it exists, the
- * moby rank target at set 4. A blended-terrain cover twin takes, at set 5,
+ * moby rank target at set 4. A blended-world cover twin takes, at set 5,
  * the scene's portal cover planes (bind_cover_block), and the key sets
  * when its stock pipeline is a key-resolve pipe. Binding them here keeps
  * every call site correct without per-site handling. Any other pipeline is
@@ -10203,7 +10203,12 @@ static int blended_world_tri(const scene_tri_t* s) {
  *
  * The pipeline tables are indexed by blend class minus one (alpha,
  * additive, subtractive, quarter-additive); the last two classes have no
- * HD replacement twin. The subtractive pipes carry the dynamic depth bias
+ * HD replacement twin. Every SD and HD pipeline is replaced by its cover
+ * twin (nr_cover_twin_of), whose fragment stage discards what a portal
+ * preview covers: the guest links the preview picture at a shallow OT key,
+ * so any blended 3D prim behind the opening plane (terrain, glow fans,
+ * glints, particles, mobys) draws before it and is painted over. The
+ * subtractive pipes carry the dynamic depth bias
  * the shadow decals set, so a subtractive run resets it to zero. A
  * textured run binds VRAM and coalesces by material inside draw_tex_runs.
  * Nothing is drawn when the pipeline is missing, or for a textured run
@@ -10213,12 +10218,9 @@ static int blended_world_tri(const scene_tri_t* s) {
  * @param first_vert First vertex of the run.
  * @param vert_count Vertex count of the run.
  * @param bl Blend class, 1 to 4.
- * @param textured Nonzero for a textured run.
- * @param terrain Nonzero for a run of terrain triangles: its SD and HD
- *        pipelines are replaced by their cover twins (nr_cover_twin_of),
- *        whose fragment stage discards what a portal preview covers. */
+ * @param textured Nonzero for a textured run. */
 static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
-                        int vert_count, int bl, int textured, int terrain) {
+                        int vert_count, int bl, int textured) {
     rhi_pipeline* const utp[4] = { s_nr.gouraud_blend_pipe, s_nr.gouraud_add_pipe,
                                    s_nr.gouraud_sub_ztest_pipe, s_nr.gouraud_qadd_pipe };
     rhi_pipeline* const txp[4] = { s_nr.scene_tex_blend_pipe, s_nr.scene_tex_add_pipe,
@@ -10226,12 +10228,8 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
     rhi_pipeline* const hdp[4] = { s_nr.hd_scene_blend_pipe, s_nr.hd_scene_add_pipe,
                                    NULL, NULL };
     const int c = (bl >= 1 && bl <= 4) ? bl - 1 : 0;
-    rhi_pipeline* pipe = textured ? txp[c] : utp[c];
-    rhi_pipeline* hd = hdp[c];
-    if (terrain) {
-        pipe = nr_cover_twin_of(pipe);
-        hd = nr_cover_twin_of(hd);
-    }
+    rhi_pipeline* pipe = nr_cover_twin_of(textured ? txp[c] : utp[c]);
+    rhi_pipeline* hd = nr_cover_twin_of(hdp[c]);
     if (!pipe || (textured && !s_nr.vram_tex)) return;
     bind_scene_pipe(pipe);
     /* The subtract pipes enable the dynamic depth bias the shadow decals set;
@@ -10321,9 +10319,8 @@ static void bw_tercache_slots(const scene_tri_t* scene, int base, int ntri, int 
  * once a channel clamps, so a fixed class order composites something the GPU
  * never produced. The block is packed in emission order; each maximal run of
  * one class and one texturing mode is one bind and one draw range. A run also
- * ends where a terrain-cache class draws (bw_tercache_slots) and where the
- * triangles change between terrain and non-terrain, since only terrain runs
- * take the portal cover discard.
+ * ends where a terrain-cache class draws (bw_tercache_slots). Every run takes
+ * the portal cover discard (bw_draw_run).
  * @param scene Scene triangles.
  * @param tx_start First vertex of the textured block that s_txscene indexes.
  * @param first_vert First vertex of the blended world block.
@@ -10340,14 +10337,14 @@ static void draw_blended_world(const scene_tri_t* scene, int tx_start,
         for (; c < 3 && pos[c] == i; c++) bw_draw_tercache(c, tercache_on);
         const int stop = c < 3 ? pos[c] : ntri;
         const scene_tri_t* s0 = &scene[s_txscene[base + i]];
-        const int bl = s0->blend, textured = s0->textured, terrain = bw_is_terrain(s0);
+        const int bl = s0->blend, textured = s0->textured;
         int run = 1;
         while (i + run < stop) {
             const scene_tri_t* sn = &scene[s_txscene[base + i + run]];
-            if (sn->blend != bl || sn->textured != textured || bw_is_terrain(sn) != terrain) break;
+            if (sn->blend != bl || sn->textured != textured) break;
             run++;
         }
-        bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured, terrain);
+        bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured);
         i += run;
     }
     for (; c < 3; c++) bw_draw_tercache(c, tercache_on);
