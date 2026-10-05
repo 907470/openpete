@@ -80,8 +80,7 @@ controller; `pad2:` ... `pad4:` name the others. Inside `[keys.pad2]`, a bare
 ## Default bindings
 
 The built-in defaults. The [shipped `openpete.toml`](config-file.md#the-shipped-file)
-changes some of them for Spyro 1: ++escape++ <!-- id: key:host.menu @spyro-1 --> opens the [settings menu](../help/glossary.md#settings-menu) and does
-not quit, and ++m++ <!-- id: key:host.devui @spyro-1 -->, ++i++ <!-- id: key:host.interp_toggle @spyro-1 --> and ++l++ <!-- id: key:host.lod_toggle @spyro-1 --> are bound.
+changes none of them.
 
 ### Controller (`[keys.pad]`)
 
@@ -104,11 +103,12 @@ not quit, and ++m++ <!-- id: key:host.devui @spyro-1 -->, ++i++ <!-- id: key:hos
 
 | Action | Default | Does |
 | --- | --- | --- |
-| `menu` | ++o++<!-- id: key:host.menu --> | open or close the settings menu |
+| `menu` | ++escape++<!-- id: key:host.menu --> | open or close the [settings menu](../help/glossary.md#settings-menu) |
+| `devui` | ++m++<!-- id: key:host.devui --> | open or close the [dev overlay](../playing/dev-overlay.md) |
 | `menu_up` `menu_down` `menu_left` `menu_right` | arrow keys, d-pad, left stick<!-- id: key:host.menu_up --> | move in the settings menu; `menu_right` is also `pad:south` |
 | `menu_select` | ++enter++, `pad:south`<!-- id: key:host.menu_select --> | activate the selected row |
 | `menu_close` | `pad:start`, `pad:east`<!-- id: key:host.menu_close --> | close the settings menu |
-| `quit` | ++escape++<!-- id: key:host.quit --> | quit the game |
+| `quit` | none<!-- id: key:host.quit --> | quit the game |
 | `fullscreen` | none<!-- id: key:host.fullscreen --> | toggle fullscreen |
 | `screenshot` | ++f12++<!-- id: key:host.screenshot --> | save a PNG of the image on screen |
 | `savestate_save` | ++1++<!-- id: key:host.savestate_save --> | quick-save to the active slot |
@@ -118,7 +118,7 @@ not quit, and ++m++ <!-- id: key:host.devui @spyro-1 -->, ++i++ <!-- id: key:hos
 | `pause` | ++f7++<!-- id: key:host.pause --> | pause or resume |
 | `frame_step` | ++f8++<!-- id: key:host.frame_step --> | advance one [tick](../help/glossary.md#tick) while paused |
 | `turbo` | ++tab++<!-- id: key:host.turbo --> | hold to fast-forward |
-| `freecam` | ++f++, `pad:leftstick`<!-- id: key:host.freecam --> | engage or leave the free camera |
+| `freecam` | ++f++<!-- id: key:host.freecam --> | engage or leave the free camera |
 | `teleport` | ++t++<!-- id: key:host.teleport --> | drop Spyro at the free camera |
 | `fly_forward` `fly_back` `fly_left` `fly_right` | ++w++ ++s++ ++a++ ++d++<!-- id: key:host.fly_forward --> | free camera: move |
 | `fly_up` / `fly_down` | ++space++, `pad:rightshoulder` / ++left-shift++, `pad:leftshoulder`<!-- id: key:host.fly_up --> | free camera: rise / descend |
@@ -126,6 +126,8 @@ not quit, and ++m++ <!-- id: key:host.devui @spyro-1 -->, ++i++ <!-- id: key:hos
 | `speed_up` / `speed_down` | ++bracket-right++, `pad:righttrigger` / ++bracket-left++, `pad:lefttrigger`<!-- id: key:host.speed_up --> | free camera: faster / slower |
 | `fly_axis_x` `fly_axis_y` | `pad:leftx`, `pad:-lefty`<!-- id: key:host.fly_axis_x --> | free camera: move axes |
 | `look_axis_x` `look_axis_y` | `pad:rightx,mouse:x`, `pad:-righty,mouse:-y`<!-- id: key:host.look_axis_x --> | free camera: look axes |
+| `interp_toggle` | ++i++<!-- id: key:host.interp_toggle --> | toggle [frame interpolation](../help/glossary.md#frame-interpolation) |
+| `lod_toggle` | ++l++<!-- id: key:host.lod_toggle --> | toggle [extended detail](../help/glossary.md#extended-detail) |
 
 ++alt+enter++ always toggles fullscreen, whatever `fullscreen` is bound to.
 ++escape++ always closes an open settings menu or [dev overlay](../help/glossary.md#dev-overlay) first. The
@@ -139,9 +141,6 @@ own file to use it.
 
 | Action | Does |
 | --- | --- |
-| `devui` (++m++) | open or close the [dev overlay](../playing/dev-overlay.md); bound by the shipped file |
-| `interp_toggle` (++i++) | toggle [frame interpolation](../help/glossary.md#frame-interpolation); bound by the shipped file |
-| `lod_toggle` (++l++) | toggle [extended detail](../help/glossary.md#extended-detail); bound by the shipped file |
 | `camlock` (++g++) | lock the displayed view while the game keeps running |
 | `glitch_mark` (++f9++)<!-- id: key:host.glitch_mark --> | write the last presents and terrain walks to a file; bound in a development build only |
 | `fillpick` (++p++), `fillpick_preview` (++h++), `fillpick_fill` (++y++), `fillpick_nofill` (++n++), `fillpick_none` (++b++), `fillpick_undo` (++u++) | the fill-tag inspector, a renderer development tool |

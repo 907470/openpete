@@ -1,19 +1,1 @@
-[game.spyro-1]
 fullscreen = true
-mouse_sensitivity = 1.0   # free camera / camlock mouse look scale (see the look_axis rows)
-
-[game.spyro-1.keys.host]
-devui = "M"
-freecam = "F"
-interp_toggle = "I"
-lod_toggle = "L"
-menu = "escape"
-quit = "none"
-
-# Mouse look for the free camera (F) and the camlock rides the look axes as a
-# displacement source next to the stick; these are the defaults, spelled out
-# so they can be edited: "mouse:y" inverts, dropping the mouse: source
-# disables mouse look. mouse_sensitivity scales it (1.0 = one full turn per
-# 8192 counts; --mouse-sensitivity is the flag).
-look_axis_x = "pad:rightx,mouse:x"
-look_axis_y = "pad:-righty,mouse:-y"

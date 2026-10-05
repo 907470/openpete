@@ -34,8 +34,8 @@ everything at full detail.
 | `extended` | Full detail at every distance, out to the edge of the view and beyond |
 
 Settings menu **LOD** (**ORIGINAL** / **EXTENDED**), dev overlay **LOD**,
-`--lod original|extended` <!-- id: knob:lod -->. In the Spyro 1 package ++l++
-<!-- id: key:host.lod_toggle @spyro-1 home --> switches between the two. `extended` draws
+`--lod original|extended` <!-- id: knob:lod -->, and ++l++
+<!-- id: key:host.lod_toggle home --> switches between the two. `extended` draws
 many more triangles in wide views; see [Performance](performance.md).
 
 Switching LOD also switches the fog, as below, until the fog is set by hand.

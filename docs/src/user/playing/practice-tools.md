@@ -79,7 +79,7 @@ and can be pressed again; see [Dev overlay](dev-overlay.md#cheat-buttons).
 
 ## Free camera
 
-++f++ or the left stick click <!-- id: key:host.freecam home -->, or the menu's
+++f++ <!-- id: key:host.freecam home -->, or the menu's
 **FREECAM** row, detaches the camera from Spyro. While it is on, the game's
 camera and Spyro's own update are frozen and the camera flies:
 [Free camera keys](controls.md#free-camera-keys). The speed keys step

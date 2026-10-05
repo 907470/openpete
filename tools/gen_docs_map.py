@@ -20,21 +20,21 @@ spelling) that the surface dump will generate:
               menu:<row id>           a settings-menu row
               directive:<key>         a config-file word that is not a
                                       knob (config.c is_directive_key)
-  @<game>   the value is that game's shipped value (the game's scope in
-            openpete-dist.toml), not the built-in one. A marker on
-            games/<game>.md is in that game's scope without the suffix.
+  @<game>   the value is the one that game's package ships in its
+            openpete.toml (packaging/openpete-dist.toml), not the built-in
+            one. A marker on games/<game>.md is in that game's scope
+            without the suffix.
   home      this marker's anchor is the id's entry in the map. Needed only
             when the id's markers in one scope sit under more than one
             anchor.
 
 Namespaces decided here:
 
-  - The per-game shipped bindings (the Spyro 1 package's Escape for
-    `menu`, no `quit` key, M for `devui`, I for `interp_toggle`, L for
-    `lod_toggle`) keep the key action's own id, `key:host.<action>`, with
-    the `@spyro-1` suffix. The action is the same one the built-in binding
-    names; only the value comes from the shipped scope. A game-named key
-    domain would be an id the surface dump never emits.
+  - A per-game shipped binding keeps the key action's own id,
+    `key:host.<action>`, with the `@<game>` suffix. The action is the same
+    one the built-in binding names; only the value comes from the shipped
+    file. A game-named key domain would be an id the surface dump never
+    emits.
   - `portable` is `directive:portable`. It is a top-level word of
     openpete.toml that selects the file layout, is not a knob registry
     row, and has no flag; config.c names it the one directive among the

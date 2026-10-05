@@ -86,8 +86,8 @@ that binding came from.
 The settings menu (Escape) covers windowed/fullscreen, aspect, FPS target,
 vsync, supersampling, vertex wobble, texture mapping, dither, sector LOD, free
 camera, and the enabled mods; its SETTINGS row writes your choices into
-`openpete.toml`, and EXIT GAME quits. This build ships `openpete.toml` preset
-to fullscreen with 2x supersampling.
+`openpete.toml`, and EXIT GAME quits. This build ships an `openpete.toml`
+holding one line, `fullscreen = true`.
 
 Everything else is a command-line flag or an `openpete.toml` key of the same
 name. `openpete-spyro1 --help` lists the flags; `--config-report` prints which

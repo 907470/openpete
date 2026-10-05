@@ -70,35 +70,11 @@ so. The same choice decides where memory cards, [savestates](../help/glossary.md
 Each package ships this `openpete.toml`:
 
 ```toml
-[game.spyro-1]
 fullscreen = true
-mouse_sensitivity = 1.0
-
-[game.spyro-1.keys.host]
-devui = "M"
-freecam = "F"
-interp_toggle = "I"
-lod_toggle = "L"
-menu = "escape"
-quit = "none"
-look_axis_x = "pad:rightx,mouse:x"
-look_axis_y = "pad:-righty,mouse:-y"
 ```
 
-It changes these built-in defaults for Spyro 1:
-
-- `fullscreen = true`<!-- id: knob:fullscreen @spyro-1 --> (built-in: `0`<!-- id: knob:fullscreen -->,
-  windowed);
-- ++escape++<!-- id: key:host.menu @spyro-1 --> opens the settings menu (built-in:
-  ++o++<!-- id: key:host.menu -->);
-- ++escape++ no longer quits (built-in `quit` binding: ++escape++<!-- id: key:host.quit -->);
-- ++m++<!-- id: key:host.devui @spyro-1 --> opens the dev overlay,
-  ++i++<!-- id: key:host.interp_toggle @spyro-1 --> toggles [frame interpolation](../help/glossary.md#frame-interpolation) and
-  ++l++<!-- id: key:host.lod_toggle @spyro-1 --> toggles [extended detail](../help/glossary.md#extended-detail) (built-in:
-  unbound).
-
-`freecam`, `mouse_sensitivity` and the two look axes restate the built-in
-values so they can be edited in place.
+It changes one built-in default: `fullscreen = true`<!-- id: knob:fullscreen @spyro-1 -->
+(built-in: `0`<!-- id: knob:fullscreen -->, windowed).
 
 ## Writing settings
 

@@ -34,37 +34,32 @@ Only the first pad has default bindings. Pads 2 to 4 (`[keys.pad2]` to
 
 ## OpenPete keys
 
-The Spyro 1 package ships an `openpete.toml` that changes some of the
-built-in bindings. The table lists both; a config file without those lines
-gets the built-in column.
-
-| Action | Spyro 1 package | Built-in | Page |
-| --- | --- | --- | --- |
-| Open or close the settings menu | ++escape++ <!-- id: key:host.menu @spyro-1 --> | ++o++ <!-- id: key:host.menu --> | [Settings menu](settings-menu.md) |
-| Quit | none <!-- id: key:host.quit @spyro-1 --> | ++escape++ <!-- id: key:host.quit home --> | |
-| Open or close the dev overlay | ++m++ <!-- id: key:host.devui @spyro-1 --> | none (++m++ when bound) <!-- id: key:host.devui --> | [Dev overlay](dev-overlay.md) |
-| Toggle fullscreen | ++alt+enter++ | ++alt+enter++ | [Display](../graphics/display.md#fullscreen) |
-| Screenshot | ++f12++ | ++f12++ <!-- id: key:host.screenshot --> | [Recording](recording.md#screenshots) |
-| Savestate: save to the active slot | ++1++ | ++1++ <!-- id: key:host.savestate_save --> | [Saves](saves.md#savestates) |
-| Savestate: load from the active slot | ++2++ | ++2++ <!-- id: key:host.savestate_load --> | [Saves](saves.md#savestates) |
-| Savestate: next slot | ++3++ | ++3++ <!-- id: key:host.savestate_cycle --> | [Saves](saves.md#savestates) |
-| Rewind (hold) | ++backspace++ | ++backspace++ <!-- id: key:host.rewind --> | [Saves](saves.md#rewind) |
-| Pause / resume | ++f7++ | ++f7++ <!-- id: key:host.pause --> | [Practice tools](practice-tools.md#pause-and-tick-step) |
-| Advance one tick while paused | ++f8++ | ++f8++ <!-- id: key:host.frame_step --> | [Practice tools](practice-tools.md#pause-and-tick-step) |
-| Fast-forward (hold) | ++tab++ | ++tab++ <!-- id: key:host.turbo --> | [Practice tools](practice-tools.md#fast-forward) |
-| Free camera on / off | ++f++, left stick click | ++f++, left stick click <!-- id: key:host.freecam --> | [Practice tools](practice-tools.md#free-camera) |
-| Drop Spyro at the free camera | ++t++ | ++t++ <!-- id: key:host.teleport --> | [Practice tools](practice-tools.md#teleport) |
-| Toggle interpolation | ++i++ <!-- id: key:host.interp_toggle @spyro-1 --> | none (++i++ when bound) <!-- id: key:host.interp_toggle --> | [Smoothness](../graphics/smoothness.md#interpolation) |
-| Toggle LOD original / extended | ++l++ <!-- id: key:host.lod_toggle @spyro-1 --> | none (++l++ when bound) <!-- id: key:host.lod_toggle --> | [Quality](../graphics/quality.md#level-of-detail) |
+| Action | Key | Page |
+| --- | --- | --- |
+| Open or close the settings menu | ++escape++ <!-- id: key:host.menu --> | [Settings menu](settings-menu.md) |
+| Quit | none <!-- id: key:host.quit home --> | |
+| Open or close the dev overlay | ++m++ <!-- id: key:host.devui --> | [Dev overlay](dev-overlay.md) |
+| Toggle fullscreen | ++alt+enter++ | [Display](../graphics/display.md#fullscreen) |
+| Screenshot | ++f12++ <!-- id: key:host.screenshot --> | [Recording](recording.md#screenshots) |
+| Savestate: save to the active slot | ++1++ <!-- id: key:host.savestate_save --> | [Saves](saves.md#savestates) |
+| Savestate: load from the active slot | ++2++ <!-- id: key:host.savestate_load --> | [Saves](saves.md#savestates) |
+| Savestate: next slot | ++3++ <!-- id: key:host.savestate_cycle --> | [Saves](saves.md#savestates) |
+| Rewind (hold) | ++backspace++ <!-- id: key:host.rewind --> | [Saves](saves.md#rewind) |
+| Pause / resume | ++f7++ <!-- id: key:host.pause --> | [Practice tools](practice-tools.md#pause-and-tick-step) |
+| Advance one tick while paused | ++f8++ <!-- id: key:host.frame_step --> | [Practice tools](practice-tools.md#pause-and-tick-step) |
+| Fast-forward (hold) | ++tab++ <!-- id: key:host.turbo --> | [Practice tools](practice-tools.md#fast-forward) |
+| Free camera on / off | ++f++ <!-- id: key:host.freecam --> | [Practice tools](practice-tools.md#free-camera) |
+| Drop Spyro at the free camera | ++t++ <!-- id: key:host.teleport --> | [Practice tools](practice-tools.md#teleport) |
+| Toggle interpolation | ++i++ <!-- id: key:host.interp_toggle --> | [Smoothness](../graphics/smoothness.md#interpolation) |
+| Toggle LOD original / extended | ++l++ <!-- id: key:host.lod_toggle --> | [Quality](../graphics/quality.md#level-of-detail) |
 
 ++alt+enter++ is fixed. The rebindable `fullscreen` action is a second,
 single-key route to the same toggle and is unbound by default
 <!-- id: key:host.fullscreen home -->.
 
 ++esc++ closes an open settings menu or dev overlay whatever it is bound to.
-The window's close button always quits.
-
-The left stick click is bound both to the free camera and to L3 in the game.
+No key quits by default; the window's close button always quits, and
+[Key bindings](../customizing/key-bindings.md) binds `quit` to a key.
 
 ## Free camera keys
 

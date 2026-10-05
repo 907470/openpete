@@ -92,7 +92,7 @@ typedef enum { KM_DIGITAL = 0, KM_AXIS } km_kind_t;
 typedef enum {
     KM_CTX_ALWAYS = 0,   /* overlaps everything */
     KM_CTX_GAMEPLAY,     /* no overlay open, freecam disengaged */
-    KM_CTX_MENU,         /* the O settings menu is open */
+    KM_CTX_MENU,         /* the settings menu is open */
     KM_CTX_FREECAM,      /* freecam or camlock engaged */
     KM_CTX_FILLPICK,     /* the fill-tag inspector is engaged */
     KM_CTX_COUNT
@@ -133,8 +133,8 @@ typedef enum {
 #define OPENPETE_KEYMAP_HOST_ACTIONS(X)                                        \
   /* --- overlays ----------------------------------------------------- */     \
   X(MENU,      "menu",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_REQUIRED,          \
-        "O",              "open/close the settings menu")                      \
-  X(DEVUI,     "devui",     KM_DIGITAL, KM_CTX_ALWAYS,   KM_DEV,               \
+        "Escape",         "open/close the settings menu")                      \
+  X(DEVUI,     "devui",     KM_DIGITAL, KM_CTX_ALWAYS,   0,                    \
         "M",              "open/close the dev config overlay")                 \
   /* The d-pad AND the left stick drive menu nav, and cross doubles as
    * "increase" - the analog fallbacks matter because the settings menu is
@@ -176,14 +176,13 @@ typedef enum {
         "Tab",            "hold to run unlocked (fast-forward)")               \
   X(FULLSCREEN, "fullscreen",      KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
         "none",           "toggle fullscreen (Alt+Enter always works too)")    \
-  /* Deliberately NOT KM_REQUIRED: unbinding this is a supported choice -
-   * the window close button and the OS still quit - and warning about it
-   * would nag exactly the person who asked for it. */                         \
+  /* Unbound by default and not KM_REQUIRED: the window close button and
+   * the OS still quit, so no binding leaves quitting reachable. */            \
   X(QUIT,       "quit",            KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
-        "Escape",         "quit the game")                                     \
+        "none",           "quit the game")                                     \
   /* --- camera -------------------------------------------------------- */    \
   X(FREECAM,    "freecam",   KM_DIGITAL, KM_CTX_ALWAYS,  0,                    \
-        "F,pad:leftstick", "engage/disengage the debug free camera")           \
+        "F",              "engage/disengage the debug free camera")            \
   X(CAMLOCK,    "camlock",   KM_DIGITAL, KM_CTX_ALWAYS,  KM_DEV,               \
         "G",              "lock the presented view while the sim runs")        \
   X(TELEPORT,   "teleport",  KM_DIGITAL, KM_CTX_ALWAYS,  0,                    \
@@ -223,11 +222,11 @@ typedef enum {
         "pad:rightx,mouse:x",   "free camera: yaw axis")                       \
   X(LOOK_AXIS_Y,"look_axis_y", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,           \
         "pad:-righty,mouse:-y", "free camera: pitch axis")                     \
-  /* --- development instruments (KM_DEV: unbound unless configured) --- */    \
-  X(INTERP_TOGGLE, "interp_toggle", KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV,         \
+  X(INTERP_TOGGLE, "interp_toggle", KM_DIGITAL, KM_CTX_ALWAYS, 0,              \
         "I",              "toggle frame interpolation")                        \
-  X(LOD_TOGGLE,    "lod_toggle",    KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV,         \
+  X(LOD_TOGGLE,    "lod_toggle",    KM_DIGITAL, KM_CTX_ALWAYS, 0,              \
         "L",              "toggle sector LOD original/extended")               \
+  /* --- development instruments (KM_DEV: unbound unless configured) --- */    \
   X(FILLPICK,      "fillpick",      KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV,         \
         "P",              "toggle the LP fill-tag inspector")                  \
   X(FILLPICK_PREVIEW,"fillpick_preview", KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \

@@ -1,8 +1,7 @@
 # The settings menu
 
 The settings menu is a panel drawn over the game in the game's own lettering.
-It opens and closes with ++escape++ <!-- id: key:host.menu @spyro-1 home --> in the Spyro 1 package, or ++o++
-<!-- id: key:host.menu home --> with the built-in bindings; see
+It opens and closes with ++escape++ <!-- id: key:host.menu home -->; see
 [Controls](controls.md#openpete-keys).
 
 !!! note

@@ -145,8 +145,8 @@ static int has_source(openpete_action_t a, int kind, int code) {
 static void test_defaults_parse(void) {
     openpete_keymap_init();
 
-    CHECK(has_source(OPK_MENU, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "O")),
-          "menu should default to O");
+    CHECK(has_source(OPK_MENU, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "Escape")),
+          "menu should default to Escape");
     CHECK(has_source(OPK_PAD_CROSS, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "C")),
           "pad.cross should default to C");
     CHECK(has_source(OPK_PAD_CROSS, KM_SRC_PADBTN,
@@ -167,9 +167,6 @@ static void test_defaults_parse(void) {
 static void test_dev_unbound_by_default(void) {
     openpete_keymap_init();
     CHECK(n_sources(OPK_FILLPICK) == 0, "fillpick must be unbound by default");
-    CHECK(n_sources(OPK_DEVUI) == 0, "devui must be unbound by default");
-    CHECK(n_sources(OPK_INTERP_TOGGLE) == 0, "interp_toggle must be unbound");
-    CHECK(n_sources(OPK_LOD_TOGGLE) == 0, "lod_toggle must be unbound");
     CHECK(n_sources(OPK_CAMLOCK) == 0, "camlock must be unbound");
     CHECK(n_sources(OPK_FILLPICK_FILL) == 0, "fillpick_fill must be unbound");
 
@@ -177,6 +174,24 @@ static void test_dev_unbound_by_default(void) {
     CHECK(set1("host", "fillpick", "P", 100, "global") == 0, "bind fillpick");
     CHECK(has_source(OPK_FILLPICK, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "P")),
           "fillpick should be bindable from config");
+}
+
+/* devui, interp_toggle and lod_toggle are player controls, not KM_DEV
+ * rows: each defaults to its one key. */
+static void test_overlay_toggles_bound_by_default(void) {
+    openpete_keymap_init();
+    CHECK(n_sources(OPK_DEVUI) == 1 &&
+          has_source(OPK_DEVUI, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "M")),
+          "devui should default to M");
+    CHECK(n_sources(OPK_INTERP_TOGGLE) == 1 &&
+          has_source(OPK_INTERP_TOGGLE, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "I")),
+          "interp_toggle should default to I");
+    CHECK(n_sources(OPK_LOD_TOGGLE) == 1 &&
+          has_source(OPK_LOD_TOGGLE, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "L")),
+          "lod_toggle should default to L");
+    CHECK(n_sources(OPK_FREECAM) == 1 &&
+          has_source(OPK_FREECAM, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "F")),
+          "freecam should default to F alone");
 }
 
 /* Player 2 is a valid namespace but defaults to unbound - giving it P1's
@@ -390,7 +405,7 @@ static void test_parse_errors(void) {
     CHECK(set1("host", "menu", "pad:-south", 100, "g") != 0,
           "inverting a button must be an error");
     /* A failed parse must not have clobbered the previous binding. */
-    CHECK(has_source(OPK_MENU, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "O")),
+    CHECK(has_source(OPK_MENU, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "Escape")),
           "a rejected value must leave the old binding intact");
 }
 
@@ -454,7 +469,7 @@ static void test_required_warns_only_when_fully_unbound(void) {
 static void test_edge_latch(void) {
     openpete_keymap_init();
     fake_reset();
-    int o = fake_to_code(KM_SRC_KEY, "O");
+    int o = fake_to_code(KM_SRC_KEY, "Escape");
 
     openpete_keymap_poll();
     CHECK(!openpete_key_pressed(OPK_MENU), "no press before the key is held");
@@ -488,6 +503,8 @@ static void test_edge_latch(void) {
 static void test_suspend_is_keyboard_only(void) {
     openpete_keymap_init();
     fake_reset();
+    CHECK(set1("host", "freecam", "F,pad:leftstick", 100, "g") == 0,
+          "freecam -> F + pad:leftstick");
     g_keys[fake_to_code(KM_SRC_KEY, "F")]           = 1;
     g_btns[fake_to_code(KM_SRC_PADBTN, "leftstick")] = 1;
 
@@ -551,34 +568,37 @@ static void test_axis_as_digital(void) {
     CHECK(openpete_key_down(OPK_SPEED_UP), "a pulled trigger presses");
 }
 
-/* Quit is a binding like any other, so it can be turned off. The event
- * filter asks the keymap by scancode (it sees one key event at a time and
- * cannot use the polled latch), so that query is what these assert. */
+/* Quit is a binding like any other: unbound by default, bindable, and
+ * unbindable again. The event filter asks the keymap by scancode (it sees
+ * one key event at a time and cannot use the polled latch), so that query
+ * is what these assert. */
 static void test_quit_binding(void) {
     int esc = fake_to_code(KM_SRC_KEY, "Escape");
     int f10 = fake_to_code(KM_SRC_KEY, "F10");
 
     openpete_keymap_init();
-    CHECK(openpete_keymap_key_binds(OPK_QUIT, esc),
-          "quit must default to Escape");
+    CHECK(!openpete_keymap_key_binds(OPK_QUIT, esc),
+          "quit must default to unbound");
+    /* An unbound quit must NOT warn: the window close button still quits. */
+    CHECK(openpete_keymap_resolve() == 0,
+          "an unbound quit must not warn (it is not KM_REQUIRED)");
 
-    CHECK(set1("host", "quit", "none", 100, "global") == 0, "unbind quit");
+    CHECK(set1("host", "quit", "Escape", 100, "global") == 0, "bind quit");
+    CHECK(openpete_keymap_key_binds(OPK_QUIT, esc), "quit should now be Escape");
+    CHECK(set1("host", "quit", "none", 200, "global") == 0, "unbind quit");
     CHECK(!openpete_keymap_key_binds(OPK_QUIT, esc),
           "quit = \"none\" must stop Escape quitting");
-    /* Unbinding quit must NOT warn - it is a supported choice, and the
-     * window close button still quits. */
-    CHECK(openpete_keymap_resolve() == 0,
-          "unbinding quit must not warn (it is not KM_REQUIRED)");
 
     openpete_keymap_init();
-    CHECK(set1("host", "quit", "F10", 100, "global") == 0, "rebind quit");
+    CHECK(set1("host", "quit", "Escape", 100, "global") == 0, "bind quit");
+    CHECK(set1("host", "quit", "F10", 200, "global") == 0, "rebind quit");
     CHECK(openpete_keymap_key_binds(OPK_QUIT, f10), "quit should now be F10");
     CHECK(!openpete_keymap_key_binds(OPK_QUIT, esc),
           "rebinding quit must release Escape");
 
     /* The query is by scancode and must not match other actions' keys. */
-    CHECK(!openpete_keymap_key_binds(OPK_MENU, esc),
-          "menu is not bound to Escape");
+    CHECK(!openpete_keymap_key_binds(OPK_MENU, f10),
+          "menu is not bound to F10");
 }
 
 /* The event filter and the polled bindings are two paths onto one
@@ -589,8 +609,7 @@ static void test_quit_binding(void) {
 static void test_consume_key(void) {
     openpete_keymap_init();
     fake_reset();
-    /* Reproduce the reported config: menu on the dismiss key. */
-    CHECK(set1("host", "menu", "Escape", 100, "global") == 0, "menu -> Escape");
+    /* The default binds menu on the dismiss key. */
     int esc = fake_to_code(KM_SRC_KEY, "Escape");
 
     /* Press 1, menu closed: the filter does nothing (nothing to dismiss)
@@ -959,6 +978,7 @@ int main(void) {
     test_axis();
     test_axis_as_digital();
     test_quit_binding();
+    test_overlay_toggles_bound_by_default();
     test_consume_key();
     test_mod_bindings();
     test_mouse_parse();

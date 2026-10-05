@@ -42,15 +42,13 @@ suggests the nearest key name for a typo. Correct the line, or launch with
 `--no-config`<!-- id: flag:--no-config --> to confirm the file is the
 cause ([Config file](../customizing/config-file.md)).
 
-### Escape quits the game; the settings menu opens with O
+### Escape does not open the settings menu, or quits the game
 
-These are the built-in bindings: ++o++<!-- id: key:host.menu --> opens the
-[settings menu](glossary.md#settings-menu) and ++escape++<!-- id: key:host.quit --> quits. The shipped
-`openpete.toml` changes them to ++escape++ <!-- id: key:host.menu @spyro-1 --> for the menu and no quit key. The
-built-in bindings are in force when that file is missing, when the launch
-uses `--no-config` or `--config`, or when your own file rebinds `menu` or
-`quit`. `--keys-report`<!-- id: flag:--keys-report --> shows where each
-binding came from ([Key bindings](../customizing/key-bindings.md)).
+++escape++<!-- id: key:host.menu --> opens the
+[settings menu](glossary.md#settings-menu) and no key quits
+<!-- id: key:host.quit -->, unless a config file rebinds `menu` or `quit`.
+`--keys-report`<!-- id: flag:--keys-report --> shows where each binding
+came from ([Key bindings](../customizing/key-bindings.md)).
 
 ### Settings chosen in the menu are lost on the next start
 

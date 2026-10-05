@@ -9,22 +9,23 @@
 # `openpete-exit:` and `openpete-input:` lines.
 #
 # The script (OPENPETE_MOUSE_INJECT) presses F (free camera), moves the
-# pointer, presses O (settings menu), presses Escape (dismisses the menu) and
-# presses Escape again (the quit binding). OPENPETE_MOUSE_INJECT_RAW=1 files
+# pointer, and presses Escape three times: the `menu` binding opens the
+# settings menu, the pump's Escape dismiss closes it, and the third press
+# opens it again. OPENPETE_MOUSE_INJECT_RAW=1 files
 # the injected events and held keys with the physical devices, which is what
 # the lock discards; without it they carry the injection device id, which the
 # lock lets through.
 #
-#   leg raw+lock    raw injection, --input-lock: nothing may change. The run
-#                   reaches the frame limit, the free camera and the menu stay
-#                   off, the motion totals stay zero, and the lock's discard
-#                   counter equals the number of injected events.
+#   leg raw+lock    raw injection, --input-lock: nothing may change. The free
+#                   camera and the menu stay off, nothing is dismissed, the
+#                   motion totals stay zero, and the lock's discard counter
+#                   equals the number of injected events.
 #   leg raw         raw injection, no lock: the negative control. The free
-#                   camera engages, the motion totals move, the menu opens and
-#                   the first Escape dismisses it, and the second Escape quits
-#                   before the frame limit. A leg that shows none of this
-#                   means the injection never engaged and the first leg proved
-#                   nothing, so the verdict is VACUOUS, not PASS.
+#                   camera engages, the motion totals move, the menu opens,
+#                   the second Escape dismisses it, and the third reopens it,
+#                   so the run ends with the menu open. A leg that shows none
+#                   of this means the injection never engaged and the first
+#                   leg proved nothing, so the verdict is VACUOUS, not PASS.
 #   leg marked+lock marked injection, --input-lock: the scripted stream still
 #                   flows under the lock, with the same end state as `raw`.
 #
@@ -67,19 +68,18 @@ OUT="${INPUT_LOCK_OUT:-${TMPDIR:-/tmp}/openpete-check-input-lock}"
 mkdir -p "$OUT"
 
 FRAME_LIMIT=2500
-QUIT_ITER=1600
 SCRIPT="$OUT/inject.txt"
 rm -f "$SCRIPT"
 cat >"$SCRIPT" <<EOF
 1500 keydown F
 1504 keyup F
 1520 rel 40 -25
-1540 keydown O
-1544 keyup O
+1540 keydown Escape
+1544 keyup Escape
 1560 keydown Escape
 1564 keyup Escape
-$QUIT_ITER keydown Escape
-$((QUIT_ITER + 4)) keyup Escape
+1600 keydown Escape
+1604 keyup Escape
 EOF
 INJECTED_EVENTS=9   # eight key events and one motion event
 
@@ -122,8 +122,8 @@ done
 
 # Engagement of the negative control first: without it nothing below counts.
 engaged() {
-    [[ "$(field $1 reason)" == "user-quit" ]] &&
-    [[ "$(field $1 frames)" -lt "$FRAME_LIMIT" ]] &&
+    [[ "$(field $1 reason)" == "frame-limit" ]] &&
+    [[ "$(field $1 menu_open)" == "1" ]] &&
     [[ "$(field $1 freecam)" == "1" ]] &&
     [[ "$(motion $1)" == "(40, -25)" ]] &&
     [[ "$(dismissals $1)" -ge 1 ]]
@@ -142,12 +142,12 @@ fail=0
     { echo "[input-lock] FAIL: raw_lock did not run locked"; fail=1; }
 [[ "$(field raw_lock reason)" == "frame-limit" &&
    "$(field raw_lock frames)" == "$FRAME_LIMIT" ]] ||
-    { echo "[input-lock] FAIL: a raw Escape ended the locked run"; fail=1; }
+    { echo "[input-lock] FAIL: the locked run did not reach the frame limit"; fail=1; }
 [[ "$(field raw_lock freecam)" == "0" &&
    "$(field raw_lock freecam_engages)" == "0" ]] ||
     { echo "[input-lock] FAIL: a raw F reached the free camera under the lock"; fail=1; }
 [[ "$(field raw_lock menu_open)" == "0" && "$(dismissals raw_lock)" == "0" ]] ||
-    { echo "[input-lock] FAIL: a raw O or Escape reached the menu under the lock"; fail=1; }
+    { echo "[input-lock] FAIL: a raw Escape reached the menu under the lock"; fail=1; }
 [[ "$(motion raw_lock)" == "(0, 0)" ]] ||
     { echo "[input-lock] FAIL: raw pointer motion reached the mouse channel under the lock"; fail=1; }
 [[ "$(field raw_lock dropped)" == "$INJECTED_EVENTS" ]] ||
@@ -162,5 +162,5 @@ if [[ $fail -ne 0 ]]; then
     echo "[input-lock] verdict: FAIL (logs in $OUT)"
     exit 1
 fi
-echo "[input-lock] verdict: PASS (negative control engaged: quit at VBL $(field raw frames)," \
+echo "[input-lock] verdict: PASS (negative control engaged: menu open, $(dismissals raw) dismissal(s)," \
      "locked run discarded $(field raw_lock dropped) events)"
