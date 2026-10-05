@@ -45,3 +45,7 @@ evening_lake | pos=(45318, 64221, 42770) yaw=1790 pitch=-20
 evening_lake | pos=(44902, 64396, 42783) yaw=1790 pitch=-20
 # same-moby paint order: a head face cuts through Hunter's right eye under true depth; the same-moby rank paints the eye whole as the game does
 sunrise_spring | pos=(86477, 47173, 22094) yaw=-713 pitch=184 | 2000
+# Homeworld portal preview at 16:9: the preview opening stops short of the
+# frame's stone, the inner rim draws over it, and blended water inside the
+# opening draws over the preview.
+sunrise_spring | pos=(25844, 47069, 20665) yaw=729 pitch=123

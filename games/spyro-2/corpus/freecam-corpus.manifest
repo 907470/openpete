@@ -62,3 +62,7 @@ glimmer | pos=(68754, 34233, 13267) yaw=215 pitch=12
 # so every mirrored or rotated HQ quadrant in the frame moves when the
 # orientation table is read or left unread.
 metropolis | pos=(115218, 59889, 40916) yaw=1696 pitch=160
+# Homeworld portal preview at 16:9: the preview opening is cut from the
+# portal record and stops short of the frame's stone in the side bands, and
+# blended water inside the opening draws over the preview.
+summer_forest | pos=(119874, 78997, 37176) yaw=-1789 pitch=111
