@@ -89,9 +89,18 @@ typedef int (*openpete_disc_identity_fn)(const char* disc_path,
  *
  * Applies to the next openpete_config_apply; the hook is described at
  * openpete_disc_identity_fn. Without one no [disc.*] scope is read.
- * openpete_config_reset_for_test clears it.
+ * openpete_config_reset clears it.
  * @param fn The hook, or NULL to clear it. */
 void openpete_config_set_disc_identity_fn(openpete_disc_identity_fn fn);
+
+/** @brief Clear the resolver's state so the next openpete_config_apply starts from nothing.
+ *
+ * Frees the parsed documents and clears the file paths, the contribution,
+ * token, decision and saved tables, the save target, the disc scopes, the
+ * --no-config and --config-report latches and the disc-identity hook, and
+ * drops the portable directive. The game id and the keymap are kept; the
+ * spliced tokens are not freed. */
+void openpete_config_reset(void);
 
 /* ---- diagnostics --------------------------------------------------- */
 

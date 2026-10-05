@@ -328,7 +328,7 @@ done
 rc=${PIPESTATUS[0]}
 
 # The run must have entered through the EXE header's entry (the crt0); an
-# explicit --run-recomp at main leaves the stack 8 bytes lower than hardware.
+# explicit OPENPETE_RUN_RECOMP at main leaves the stack 8 bytes lower than hardware.
 HDR_PC=$(grep -o 'PSX EXE: pc=0x[0-9A-Fa-f]*' "$LOG" | head -1 | grep -o '0x.*')
 DISP_PC=$(grep -o 'game fiber: dispatching 0x[0-9A-Fa-f]*' "$LOG" | head -1 | grep -o '0x.*')
 if [[ -z "$HDR_PC" || "$HDR_PC" != "$DISP_PC" ]]; then

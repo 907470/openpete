@@ -8,6 +8,7 @@
 #define OPENPETE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "openpete_perf_stats.h"   /* OPENPETE_PERF_* levels for opts.perf_stats */
 #include "openpete_overlay_anchor.h" /* openpete_anchor_t for opts.perf_position */
@@ -118,6 +119,7 @@ typedef enum {
  * native occlusion pre-pass. Display-only: the visibility flags are read, never
  * written. Native renderer only. */
 typedef enum {
+    OPENPETE_TERRAIN_VIS_UNSET = -1, /* options only: not yet resolved */
     OPENPETE_TERRAIN_VIS_GAME = 0,  /* the game's visibility verdict */
     OPENPETE_TERRAIN_VIS_FRUSTUM,   /* default: every sector inside the frustum */
 } openpete_terrain_visibility_t;
@@ -244,7 +246,8 @@ typedef struct openpete_options {
     /* Wireframe view (`--wireframe 0|1`, env OPENPETE_WIREFRAME; the flag
      * wins). 1 = every 3D scene draw rasterizes as triangle edges coloured
      * by the gouraud vertex lighting (the NOTEX colouring); the 2D layers
-     * stay filled. Display-only; native renderer only. Default 0. */
+     * stay filled. Display-only; native renderer only. Default 0; -1 =
+     * unset between openpete_options_init and the end of the parse. */
     int wireframe;
 
     /* Reference-renderer raster (`--psycross-native-raster 0|1`). 1 renders the
@@ -267,13 +270,15 @@ typedef struct openpete_options {
      * CPU cost is O(sectors) instead of O(faces). Display-only; falls back to
      * the CPU walk per present whenever an unsupported mode is active (debug
      * envs, portal previews, HD texture packs, mod material selectors, A/B
-     * reference modes, software Vulkan, --vertex-precision integer). */
+     * reference modes, software Vulkan, --vertex-precision integer).
+     * -1 = unset between openpete_options_init and the end of the parse. */
     int         terrain_cache;
 
     /* Disc image resident in memory (default on): PsyCross reads the .bin
      * from a host array filled by a background loader instead of fread on
      * the sim thread. --disc-cache 0 / OPENPETE_DISC_CACHE=0 = the file
-     * path, for A/B. Display/timing-only; bytes identical. */
+     * path, for A/B. Display/timing-only; bytes identical. -1 = unset
+     * between openpete_options_init and the end of the parse. */
     int         disc_cache;
 
     /* VBLs of guest time every level load waits, spent by deferring the
@@ -878,11 +883,11 @@ typedef struct openpete_options {
 
 /** @brief Zero opts, then set every field whose default is not zero.
  *
- * Unset tri-state fields take -1 so a later consumer can tell a typed value
- * from the default. The env spellings of a few flags (OPENPETE_WIREFRAME,
- * OPENPETE_TERRAIN_CACHE, OPENPETE_DISC_CACHE, OPENPETE_LOAD_DELAY among
- * them) are read here, and openpete_options_parse, run later, lets the typed
- * flag overwrite them.
+ * Unset tri-state fields take -1 (OPENPETE_TERRAIN_VIS_UNSET for
+ * terrain_visibility) so a later consumer can tell a typed value from the
+ * default. No environment variable is read here: openpete_options_parse
+ * applies the env spellings after the flags, so an openpete.toml [env]
+ * entry reaches them too.
  * @param opts The options block to initialize. */
 void openpete_options_init(openpete_options_t* opts);
 
@@ -902,17 +907,57 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
  * openpete.toml flags, the <bk2>.args sidecar of a --bk2 movie, and the
  * typed arguments, then walks them with the last write winning. After the
  * walk it resolves the default --bk2-record path and its sidecar, then
- * applies the env spellings of the flags that were not typed. The EXE-source
- * check is left to openpete_options_require_exe_source. --help prints the
- * help, sets opts->help and returns OPENPETE_EXIT_OK at once; the caller
- * exits 0. A config-file value of --fov or --fog-scale that is not a finite
- * number warns and keeps the default; the same value typed fails.
+ * applies the env spellings of the flags that were not typed and resolves
+ * wireframe, terrain_cache, disc_cache and terrain_visibility to their
+ * defaults (load_delay stays -1 for run.c). The EXE-source check is left to
+ * openpete_options_require_exe_source. --help prints the help, sets
+ * opts->help and returns OPENPETE_EXIT_OK at once; the caller exits 0. A
+ * value refused by type or range fails the parse when typed or from a bk2
+ * sidecar; from the config file or an env spelling it warns and keeps the
+ * default, unless openpete_options_set_strict is on or --config-report was
+ * passed, which fail it.
  * @param opts The options block, initialized by openpete_options_init.
  * @param argc Argument count.
  * @param argv Argument vector.
  * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR on an unknown flag,
  *         a bad value, or an unreadable args file; the caller propagates it. */
 int  openpete_options_parse(openpete_options_t* opts, int argc, char** argv);
+
+/** @brief Make a refused config-file or env value fail openpete_options_parse instead of warning and keeping the default.
+ *
+ * The surface dump's selfcheck parses in strict mode, so a declared default
+ * the parser refuses cannot pass by falling back.
+ * @param on 1 for strict, 0 for the boot behaviour. */
+void openpete_options_set_strict(int on);
+
+/** @brief Copy in to out, resolving each unset field whose unset and resolved values behave the same at every consumer.
+ *
+ * mouse -1 becomes 1, input_lock and background -1 become 0,
+ * mouse_sensitivity -1 becomes 1.0, load_delay -1 becomes
+ * game_get_load_delay_default(), and wireframe, terrain_cache, disc_cache
+ * and terrain_visibility take their built-in defaults when still unset.
+ * Every runtime consumer reads the raw fields; this serves the surface
+ * dump's selfcheck, which compares a parse of a flag at its declared default
+ * with a parse without it.
+ * @param in Parsed options.
+ * @param out Receives the resolved copy; may alias nothing in in. */
+void openpete_options_effective(const openpete_options_t* in,
+                                openpete_options_t* out);
+
+/** @brief A parser flag with no registry row and no schema alias, as the surface dump lists it. */
+typedef struct {
+    const char* flag;          /* "--frame-limit" */
+    int         takes_arg;     /* knob_flag_arg_t: 0 required, 1 none, 2 optional */
+    const char* build_cond;    /* preprocessor symbol gating its --help line, or NULL */
+    const char* block;         /* --help block: "release", "preamble", "debug", "none" */
+    const char* default_note;  /* how the program decides its default, or NULL */
+} openpete_help_only_t;
+
+/** @brief The help-only flag table.
+ *
+ * @param count Receives the entry count.
+ * @return The static table. */
+const openpete_help_only_t* openpete_options_help_only(size_t* count);
 
 /** @brief Check that a disc or EXE path is set.
  *

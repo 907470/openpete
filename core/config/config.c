@@ -225,6 +225,50 @@ static void enum_vocab_str(const cfg_knob_t *k, char *out, size_t cap) {
     }
 }
 
+/** @brief Whether a bare key's value has the type its knob takes, printing the refusal when not.
+ *
+ * A bool knob takes a TOML boolean or 0, 1, on, off; an enum knob a word of
+ * its vocabulary.
+ * @param k The knob.
+ * @param val The value as text.
+ * @param is_bool 1 when the value was a TOML boolean.
+ * @param where The file and table, for the message.
+ * @param key The key, for the message.
+ * @return 1 when the type matches, else 0 after the message. */
+static int base_value_typed(const cfg_knob_t *k, const char *val, int is_bool,
+                            const char *where, const char *key) {
+    if (k->type == CFG_BOOL && !is_bool &&
+        strcmp(val, "0") && strcmp(val, "1") &&
+        strcmp(val, "on") && strcmp(val, "off")) {
+        fprintf(stderr, "openpete: config: %s: '%s' expects true/false, "
+                        "got: %s\n", where, key, val);
+        return 0;
+    }
+    if (!enum_ok(k, val)) {
+        char vocab[128];
+        enum_vocab_str(k, vocab, sizeof vocab);
+        fprintf(stderr, "openpete: config: %s: '%s' expects %s, got: %s\n",
+                where, key, vocab, val);
+        return 0;
+    }
+    return 1;
+}
+
+/** @brief Answer a value refused by type: --config-report fails on it; a boot warns and drops it, so the knob keeps its default.
+ *
+ * A stored setting that stops the game from booting is worse than the
+ * default; the report is how a user checks a file, so it refuses.
+ * @param where The file and table.
+ * @param key The key.
+ * @param val The refused value.
+ * @return -1 under --config-report, else 0 after the warning. */
+static int value_refused(const char *where, const char *key, const char *val) {
+    if (s_report_requested) return -1;
+    fprintf(stderr, "openpete: config: %s: %s = \"%s\" is not accepted; "
+                    "keeping the default\n", where, key, val);
+    return 0;
+}
+
 /** @brief The schema knob id closest to an unknown config key, or NULL.
  *
  * Scores each id by the characters that match `key` position by position up
@@ -304,16 +348,81 @@ static int renamed_truth(const char *val, int is_bool, int bool_val) {
     return !strcmp(val, "1") || !strcmp(val, "on") || !strcmp(val, "true");
 }
 
+/** @brief Record one bare key of `tab` as a contribution at (tier, file).
+ *
+ * A sub-table is skipped (its caller harvests it). A renamed key is mapped
+ * to its new name with a warning, and its value to the new knob's
+ * vocabulary when the rename carries one. A non-scalar value, an unknown
+ * key (named with a did_you_mean hint) and a value of a TOML type the
+ * config does not accept are errors printed with `where`; a non-boolean
+ * value for a bool knob and an enum value outside the knob's vocabulary
+ * are refused through value_refused.
+ * @return 0, or -1 on an error. */
+static int harvest_base_row(const toml_table_t *tab, const char *key, int tier,
+                            int file, const char *origin, const char *where) {
+    toml_raw_t raw = toml_raw_in(tab, key);
+    if (!raw) {
+        /* A sub-table ([env]/[args]/[saved]) or an array. Sub-tables are
+         * harvested by the caller; anything else is a mistake worth
+         * naming, because TOML also lands a stray bare key here when it
+         * is written after a sub-table header. */
+        if (toml_table_in(tab, key)) return 0;
+        fprintf(stderr, "openpete: config: %s: '%s' must be a scalar "
+                        "(arrays are not config values)\n", where, key);
+        return -1;
+    }
+
+    const cfg_renamed_t *ren = renamed_for(key);
+    if (ren) {
+        fprintf(stderr, "openpete: config: %s: '%s' has been renamed to "
+                        "'%s'; using it\n", where, key, ren->new_key);
+        key = ren->new_key;
+    }
+
+    int ki = cfg_schema_find_id(key);
+    if (ki < 0) {
+        const char *hint = did_you_mean(key);
+        fprintf(stderr, "openpete: config: %s: unknown key '%s'%s%s%s\n",
+                where, key,
+                hint ? " (did you mean '" : "", hint ? hint : "",
+                hint ? "'?)" : "");
+        return -1;
+    }
+    const cfg_knob_t *k = &cfg_schema(NULL)[ki];
+
+    char val[CFG_VALUE_MAX];
+    int is_bool = 0, bool_val = 0;
+    if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
+        fprintf(stderr, "openpete: config: %s: '%s' has a value this "
+                        "config cannot use\n", where, key);
+        return -1;
+    }
+    if (ren && ren->on) {
+        /* Translate BEFORE the type checks below: the value in the file
+         * is spelled for the old knob's type, not the new one's. */
+        snprintf(val, sizeof val, "%s",
+                 renamed_truth(val, is_bool, bool_val) ? ren->on : ren->off);
+        is_bool = 0;
+    }
+    if (!base_value_typed(k, val, is_bool, where, key))
+        return value_refused(where, key, val);
+
+    contrib_t *c = contrib_new();
+    if (!c) return -1;
+    c->knob = ki;
+    c->rank = RANK(tier, file, SP_BASE);
+    c->spelling = SP_BASE;
+    c->has_value = 1;
+    snprintf(c->key, sizeof c->key, "%s", key);
+    snprintf(c->value, sizeof c->value, "%s", val);
+    snprintf(c->origin, sizeof c->origin, "%s", origin);
+    return 0;
+}
+
 /** @brief Record the bare keys of `tab`, the validated spelling, as contributions at (tier, file).
  *
- * Sub-tables are skipped (their caller harvests them); `skip_directives`
- * also skips `portable`. A renamed key is mapped to its new name with a
- * warning, and its value to the new knob's vocabulary when the rename
- * carries one. A
- * non-scalar value, an unknown key (named with a did_you_mean hint), a
- * value of a TOML type the config does not accept, a non-boolean value for
- * a bool knob and an enum value outside the knob's vocabulary are errors
- * printed with `where`. Returns 0, or -1 on the first error. */
+ * Each key goes through harvest_base_row; `skip_directives` skips
+ * `portable`. Returns 0, or -1 on the first error. */
 static int harvest_base(const toml_table_t *tab, int tier, int file,
                         const char *origin, const char *where,
                         int skip_directives) {
@@ -321,75 +430,7 @@ static int harvest_base(const toml_table_t *tab, int tier, int file,
         const char *key = toml_key_in(tab, i);
         if (!key) break;
         if (skip_directives && is_directive_key(key)) continue;
-
-        toml_raw_t raw = toml_raw_in(tab, key);
-        if (!raw) {
-            /* A sub-table ([env]/[args]/[saved]) or an array. Sub-tables are
-             * harvested by the caller; anything else is a mistake worth
-             * naming, because TOML also lands a stray bare key here when it
-             * is written after a sub-table header. */
-            if (toml_table_in(tab, key)) continue;
-            fprintf(stderr, "openpete: config: %s: '%s' must be a scalar "
-                            "(arrays are not config values)\n", where, key);
-            return -1;
-        }
-
-        const cfg_renamed_t *ren = renamed_for(key);
-        if (ren) {
-            fprintf(stderr, "openpete: config: %s: '%s' has been renamed to "
-                            "'%s'; using it\n", where, key, ren->new_key);
-            key = ren->new_key;
-        }
-
-        int ki = cfg_schema_find_id(key);
-        if (ki < 0) {
-            const char *hint = did_you_mean(key);
-            fprintf(stderr, "openpete: config: %s: unknown key '%s'%s%s%s\n",
-                    where, key,
-                    hint ? " (did you mean '" : "", hint ? hint : "",
-                    hint ? "'?)" : "");
-            return -1;
-        }
-        const cfg_knob_t *k = &cfg_schema(NULL)[ki];
-
-        char val[CFG_VALUE_MAX];
-        int is_bool = 0, bool_val = 0;
-        if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
-            fprintf(stderr, "openpete: config: %s: '%s' has a value this "
-                            "config cannot use\n", where, key);
-            return -1;
-        }
-        if (ren && ren->on) {
-            /* Translate BEFORE the type checks below: the value in the file
-             * is spelled for the old knob's type, not the new one's. */
-            snprintf(val, sizeof val, "%s",
-                     renamed_truth(val, is_bool, bool_val) ? ren->on : ren->off);
-            is_bool = 0;
-        }
-        if (k->type == CFG_BOOL && !is_bool &&
-            strcmp(val, "0") && strcmp(val, "1") &&
-            strcmp(val, "on") && strcmp(val, "off")) {
-            fprintf(stderr, "openpete: config: %s: '%s' expects true/false, "
-                            "got: %s\n", where, key, val);
-            return -1;
-        }
-        if (!enum_ok(k, val)) {
-            char vocab[128];
-            enum_vocab_str(k, vocab, sizeof vocab);
-            fprintf(stderr, "openpete: config: %s: '%s' expects %s, got: %s\n",
-                    where, key, vocab, val);
-            return -1;
-        }
-
-        contrib_t *c = contrib_new();
-        if (!c) return -1;
-        c->knob = ki;
-        c->rank = RANK(tier, file, SP_BASE);
-        c->spelling = SP_BASE;
-        c->has_value = 1;
-        snprintf(c->key, sizeof c->key, "%s", key);
-        snprintf(c->value, sizeof c->value, "%s", val);
-        snprintf(c->origin, sizeof c->origin, "%s", origin);
+        if (harvest_base_row(tab, key, tier, file, origin, where) != 0) return -1;
     }
     return 0;
 }
@@ -436,7 +477,7 @@ static int harvest_env(const toml_table_t *tab, int tier, int file,
     return 0;
 }
 
-/** @brief Record the rows of a [<scope>.args] table, whose keys are flags verbatim.
+/** @brief Record one row of a [<scope>.args] table, whose keys are flags verbatim.
  *
  * A key must start with "--". On an unregistered or valueless flag a
  * boolean value means the flag takes none: true emits it, false suppresses
@@ -444,64 +485,74 @@ static int harvest_env(const toml_table_t *tab, int tier, int file,
  * valueless flag). On a schema alias flag ("--no-lod") true stands for the
  * alias's fixed value and false suppresses. On any other schema flag a
  * boolean is the 0/1 the flag expects, and an enum value outside the knob's
- * vocabulary is an error. Returns 0, or -1 on the first error. */
+ * vocabulary is refused through value_refused. Returns 0, or -1 on an error. */
+static int harvest_args_row(const toml_table_t *tab, const char *key, int tier,
+                            int file, const char *origin, const char *where) {
+    toml_raw_t raw = toml_raw_in(tab, key);
+    if (!raw) {
+        fprintf(stderr, "openpete: config: %s: [args] '%s' must be a scalar\n",
+                where, key);
+        return -1;
+    }
+    if (strncmp(key, "--", 2) != 0) {
+        fprintf(stderr, "openpete: config: %s: [args] key '%s' is not a flag "
+                        "(write it exactly as on the command line, e.g. "
+                        "\"--lod\")\n", where, key);
+        return -1;
+    }
+    char val[CFG_VALUE_MAX];
+    int is_bool = 0, bool_val = 0;
+    if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
+        fprintf(stderr, "openpete: config: %s: [args] '%s' has a value this "
+                        "config cannot use\n", where, key);
+        return -1;
+    }
+
+    int ki = cfg_schema_find_cli(key);
+    const cfg_knob_t *k = (ki >= 0) ? &cfg_schema(NULL)[ki] : NULL;
+
+    contrib_t *c = contrib_new();
+    if (!c) return -1;
+    c->knob = ki;
+    c->rank = RANK(tier, file, SP_ARGS);
+    c->spelling = SP_ARGS;
+    snprintf(c->key, sizeof c->key, "%s", key);
+    snprintf(c->origin, sizeof c->origin, "%s.args", origin);
+
+    if (k && k->alias && !strcmp(k->alias, key)) {
+        /* "--no-lod" = true means the alias's fixed value. */
+        if (is_bool && !bool_val) { c->suppress = 1; return 0; }
+        c->has_value = 1;
+        snprintf(c->value, sizeof c->value, "%s", k->alias_value);
+        return 0;
+    }
+    if (is_bool && (!k || k->flag_valueless)) {
+        if (!bool_val) { c->suppress = 1; return 0; }
+        c->valueless = 1;
+        return 0;
+    }
+    if (k && !enum_ok(k, val)) {
+        char vocab[128];
+        enum_vocab_str(k, vocab, sizeof vocab);
+        fprintf(stderr, "openpete: config: %s: [args] '%s' expects %s, got: %s\n",
+                where, key, vocab, val);
+        s_contrib_n--;   /* drop the refused contribution, the last one added */
+        return value_refused(where, key, val);
+    }
+    c->has_value = 1;
+    snprintf(c->value, sizeof c->value, "%s", val);
+    return 0;
+}
+
+/** @brief Record every row of an [args] table through harvest_args_row.
+ *
+ * Returns 0, or -1 on the first error. */
 static int harvest_args(const toml_table_t *tab, int tier, int file,
                         const char *origin, const char *where) {
     for (int i = 0;; i++) {
         const char *key = toml_key_in(tab, i);
         if (!key) break;
-        toml_raw_t raw = toml_raw_in(tab, key);
-        if (!raw) {
-            fprintf(stderr, "openpete: config: %s: [args] '%s' must be a scalar\n",
-                    where, key);
-            return -1;
-        }
-        if (strncmp(key, "--", 2) != 0) {
-            fprintf(stderr, "openpete: config: %s: [args] key '%s' is not a flag "
-                            "(write it exactly as on the command line, e.g. "
-                            "\"--lod\")\n", where, key);
-            return -1;
-        }
-        char val[CFG_VALUE_MAX];
-        int is_bool = 0, bool_val = 0;
-        if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
-            fprintf(stderr, "openpete: config: %s: [args] '%s' has a value this "
-                            "config cannot use\n", where, key);
-            return -1;
-        }
-
-        int ki = cfg_schema_find_cli(key);
-        const cfg_knob_t *k = (ki >= 0) ? &cfg_schema(NULL)[ki] : NULL;
-
-        contrib_t *c = contrib_new();
-        if (!c) return -1;
-        c->knob = ki;
-        c->rank = RANK(tier, file, SP_ARGS);
-        c->spelling = SP_ARGS;
-        snprintf(c->key, sizeof c->key, "%s", key);
-        snprintf(c->origin, sizeof c->origin, "%s.args", origin);
-
-        if (k && k->alias && !strcmp(k->alias, key)) {
-            /* "--no-lod" = true means the alias's fixed value. */
-            if (is_bool && !bool_val) { c->suppress = 1; continue; }
-            c->has_value = 1;
-            snprintf(c->value, sizeof c->value, "%s", k->alias_value);
-            continue;
-        }
-        if (is_bool && (!k || k->flag_valueless)) {
-            if (!bool_val) { c->suppress = 1; continue; }
-            c->valueless = 1;
-            continue;
-        }
-        if (k && !enum_ok(k, val)) {
-            char vocab[128];
-            enum_vocab_str(k, vocab, sizeof vocab);
-            fprintf(stderr, "openpete: config: %s: [args] '%s' expects %s, got: %s\n",
-                    where, key, vocab, val);
-            return -1;
-        }
-        c->has_value = 1;
-        snprintf(c->value, sizeof c->value, "%s", val);
+        if (harvest_args_row(tab, key, tier, file, origin, where) != 0) return -1;
     }
     return 0;
 }
@@ -1155,15 +1206,7 @@ const char *openpete_config_token_source(const char *token) {
     return NULL;
 }
 
-/** @brief Clear the resolver's state so the next openpete_config_apply starts from nothing.
- *
- * Only the unit test calls this: a process resolves its config once, and
- * the test walks many layer stacks. Frees the parsed documents and clears
- * the file paths, the contribution, token, decision and saved tables, the
- * save target, the disc scopes, the --no-config and --config-report
- * latches and the disc-identity hook, and drops the portable directive.
- * The game id and the keymap are kept; the spliced tokens are not freed. */
-void openpete_config_reset_for_test(void) {
+void openpete_config_reset(void) {
     for (int f = 0; f < 2; f++) {
         if (s_doc[f]) toml_free(s_doc[f]);
         s_doc[f] = NULL;

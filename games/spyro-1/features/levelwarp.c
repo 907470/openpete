@@ -163,6 +163,15 @@ const spyro1_level_t* spyro1_level_table(size_t* out_count) {
     return k_levels;
 }
 
+void spyro1_level_surface(struct openpete_surface_sink* sink) {
+    const named_target_table_t levels =
+        NAMED_TARGET_TABLE(k_levels, spyro1_level_t, name, id);
+    const named_target_table_t aliases =
+        NAMED_TARGET_TABLE(k_level_aliases, level_alias_t, name, id);
+    named_target_surface(sink, "level", "--skip-to-level", &levels);
+    named_target_surface(sink, "level", "--skip-to-level", &aliases);
+}
+
 /* A numeric argument passes through unchecked (see levelwarp.h). */
 int spyro1_level_resolve(const char* arg) {
     const named_target_table_t levels =

@@ -16,6 +16,12 @@ typedef struct CPUState CPUState;
  * @return The id, or -1. */
 int spyro2_cutscene_resolve(const char* arg);
 
+struct openpete_surface_sink;
+/** @brief Report every cutscene name --skip-to-cutscene accepts to the surface dump.
+ *
+ * @param sink The dump's collector. */
+void spyro2_cutscene_surface(struct openpete_surface_sink* sink);
+
 /** @brief Returns the level a cutscene is entered from, the --skip-to-level it rides.
  *
  * Dragon Shores (65) for a story cutscene, the level's homeworld for an

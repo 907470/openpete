@@ -157,6 +157,12 @@ static const cutscene_t* row_of(int id) {
     return NULL;
 }
 
+void spyro3_cutscene_surface(struct openpete_surface_sink* sink) {
+    const named_target_table_t cutscenes =
+        NAMED_TARGET_TABLE(k_cutscenes, cutscene_t, name, id);
+    named_target_surface(sink, "cutscene", "--skip-to-cutscene", &cutscenes);
+}
+
 int spyro3_cutscene_resolve(const char* arg) {
     const named_target_table_t cutscenes =
         NAMED_TARGET_TABLE(k_cutscenes, cutscene_t, name, id);

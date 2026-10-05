@@ -17,6 +17,12 @@ typedef struct CPUState CPUState;
  * @return The cutscene id, or -1. */
 int spyro3_cutscene_resolve(const char* arg);
 
+struct openpete_surface_sink;
+/** @brief Report every cutscene name --skip-to-cutscene accepts to the surface dump.
+ *
+ * @param sink The dump's collector. */
+void spyro3_cutscene_surface(struct openpete_surface_sink* sink);
+
 /** @brief Arms cutscene id for the per-tick driver and starts its watch (game_set_skip_to_cutscene).
  *
  * The route is the row's chain head. A head that starts from the title

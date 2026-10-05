@@ -1,4 +1,5 @@
 #include "named_target.h"
+#include "openpete_surface.h"
 
 #include <ctype.h>
 #include <stdint.h>
@@ -24,6 +25,13 @@ static const char* nt_name(const named_target_table_t* t, size_t i) {
 static int nt_id(const named_target_table_t* t, size_t i) {
     const char* e = (const char*)t->base + i * t->stride;
     return *(const int*)(const void*)(e + t->id_off);
+}
+
+void named_target_surface(struct openpete_surface_sink* sink, const char* table,
+                          const char* flag, const named_target_table_t* tbl) {
+    size_t i;
+    for (i = 0; i < tbl->count; i++)
+        openpete_surface_vocab(sink, table, flag, nt_name(tbl, i));
 }
 
 void named_target_print(const char* kind, const named_target_table_t* tbl) {

@@ -17,6 +17,7 @@
 #include "write_census.h"
 #include "freecam_game.h"
 #include "feature_registry.h"
+#include "features/levelwarp_ui.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -99,6 +100,12 @@ int game_is_gameplay_live(CPUState* cpu) { return spyro2_skip_gameplay_live(cpu)
 void game_set_skip_to_level(int level_id) { spyro2_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro2_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
+void game_surface(struct openpete_surface_sink* sink) {
+    levelwarp_ui_surface(sink);
+    spyro2_level_surface(sink);
+    spyro2_cutscene_surface(sink);
+}
+
 /* The target rides a --skip-to-level to its source level; a different explicit --skip-to-level refuses it. */
 void game_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id <= 0) return;

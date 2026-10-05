@@ -32,6 +32,12 @@ const spyro2_level_t* spyro2_level_table(size_t* out_count);
  * @return The level number, or -1. */
 int spyro2_level_resolve(const char* arg);
 
+struct openpete_surface_sink;
+/** @brief Report every level name --skip-to-level accepts to the surface dump.
+ *
+ * @param sink The dump's collector. */
+void spyro2_level_surface(struct openpete_surface_sink* sink);
+
 /** @brief Arms the skip to a level number, or disarms it with 0 or less (game_set_skip_to_level).
  *
  * Arming in a windowed run also sets openpete_skip_present_until_level, so

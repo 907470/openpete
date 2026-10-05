@@ -47,16 +47,48 @@ static const char* const ROW_LABEL[ROW_COUNT] = {
     "EXIT GAME",
 };
 
-/* OSD coalescing key per row. NAMED, not indexed, because the hotkeys that
- * front the same settings (L, F, Alt+Enter) raise their toasts from run.c and
+
+/* Per row: the id, which is also the OSD coalescing key, the knob registry
+ * row the row moves (NULL for the SETTINGS and EXIT action rows), and a hint
+ * naming what the row changes, written in the glyph set notify_row
+ * documents. The key is NAMED, not indexed, because the hotkeys that front
+ * the same settings (L, F, Alt+Enter) raise their toasts from run.c and
  * native_render.c and must land on the SAME toast - a player who flips LOD
  * with the key and then with the row should see one toast repaint, not two
- * stack. */
-static const char* const ROW_OSD_KEY[ROW_COUNT] = {
-    "menu.display", "menu.aspect", "menu.fps", "menu.fov", "menu.showfps", "menu.vsync",
-    "menu.ssaa", "menu.wobble", "menu.pixelation", "menu.texmap", "menu.dither",
-    "menu.lod", "menu.freecam", "menu.settings", "menu.quit",
+ * stack. Indexed by row through ROW_FOG, the parked rows included; the
+ * surface dump reads it through openpete_menu_surface_row. */
+static const struct { const char* id; const char* knob; const char* hint; }
+ROW_SURFACE[ROW_FOG + 1] = {
+    [ROW_DISPLAY] = { "menu.display",    "fullscreen",       "WINDOW OR FULLSCREEN" },
+    [ROW_ASPECT]  = { "menu.aspect",     "aspect",           "WIDTH TO HEIGHT OF THE PICTURE" },
+    [ROW_FPS]     = { "menu.fps",        "render_fps",       "PICTURES DRAWN PER SECOND" },
+    [ROW_FOV]     = { "menu.fov",        "fov",              "HOW WIDE THE CAMERA SEES" },
+    [ROW_SHOWFPS] = { "menu.showfps",    "perf_stats",       "FPS READOUT IN THE CORNER" },
+    [ROW_VSYNC]   = { "menu.vsync",      "vsync",            "WAIT FOR THE DISPLAY REFRESH" },
+    [ROW_SSAA]    = { "menu.ssaa",       "ssaa",             "RENDER AT A HIGHER RESOLUTION" },
+    [ROW_WOBBLE]  = { "menu.wobble",     "vertex_precision", "SNAP CORNERS TO THE PSX PIXEL GRID" },
+    [ROW_PIXEL]   = { "menu.pixelation", "raster_quantize",  "DRAW THE SCENE ON THE PSX PIXEL GRID" },
+    [ROW_TEXMAP]  = { "menu.texmap",     "texture_mapping",  "AFFINE TEXTURES AS ON THE PSX" },
+    [ROW_DITHER]  = { "menu.dither",     "dither",           "PSX 15 BIT COLOUR AND DITHER" },
+    [ROW_LOD]     = { "menu.lod",        "lod",              "ORIGINAL OR FULL DETAIL AT ANY DISTANCE" },
+    [ROW_FREECAM] = { "menu.freecam",    "freecam",          "FLY THE CAMERA FREELY" },
+    [ROW_SAVE]    = { "menu.settings",   NULL,               "SAVE OR CLEAR YOUR SETTINGS" },
+    [ROW_QUIT]    = { "menu.quit",       NULL,               "QUIT THE GAME" },
+    [ROW_COUNT]   = { NULL,              NULL,               NULL },
+    [ROW_MODSEL]  = { "menu.modsel",     NULL,               "CHOOSE A MOD" },
+    [ROW_MODEN]   = { "menu.moden",      NULL,               "TURN THE MOD ON OR OFF" },
+    [ROW_FOG]     = { "menu.fog",        "fog",              "DISTANCE FOG" },
 };
+
+int openpete_menu_surface_row(int i, openpete_menu_surface_t* out) {
+    const int row = (i < ROW_COUNT) ? i : i + 1;   /* skip the ROW_COUNT gap */
+    if (i < 0 || row > ROW_FOG) return -1;
+    out->id        = ROW_SURFACE[row].id;
+    out->knob      = ROW_SURFACE[row].knob;
+    out->hint      = ROW_SURFACE[row].hint;
+    out->displayed = row < ROW_COUNT;
+    return 0;
+}
 
 /* EXIT is a CENTERED row: no value column, its label spans the panel centre
  * (openpete_menu_row_centered), and it sits below a gap so it reads as an
@@ -303,7 +335,7 @@ static const char* value_str(int row, char* buf, int buflen) {
 
 /** @brief Announce a row's current value on the OSD as "LABEL: VALUE", or the label alone when the value is empty.
  *
- * Coalesced per row through the row's ROW_OSD_KEY, so holding Right through
+ * Coalesced per row through the row's ROW_SURFACE id, so holding Right through
  * the FPS ladder repaints one toast instead of stacking a dozen, and the
  * hotkeys that front the same settings repaint the same toast. Every string
  * is authored inside the glyph set the game's own text mobys cover (0-9 A-Z
@@ -313,7 +345,7 @@ static const char* value_str(int row, char* buf, int buflen) {
 static void notify_row(int row) {
     char vb[16];
     if (row < 0 || row >= ROW_COUNT) return;
-    const char* kb = ROW_OSD_KEY[row];
+    const char* kb = ROW_SURFACE[row].id;
     const char* label = openpete_menu_row_label(row);
     const char* value = value_str(row, vb, sizeof vb);
     if (value && *value) openpete_osd_notify("host", kb, 0, "%s: %s", label, value);

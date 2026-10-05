@@ -118,6 +118,21 @@ void openpete_menu_note_row_cap(float cap_h);
  *         close glyph at the last poll. */
 int openpete_menu_close_hovered(void);
 
+/** @brief One settings-menu row as the surface dump lists it. */
+typedef struct {
+    const char* id;        /* "menu.lod": the row's OSD key and surface id */
+    const char* knob;      /* knob registry id the row moves, or NULL */
+    const char* hint;      /* short description in the menu glyph set */
+    int         displayed; /* 1 for a row the menu shows, 0 for a parked row */
+} openpete_menu_surface_t;
+
+/** @brief Describe the i-th settings-menu row, the displayed rows first, then the parked ones.
+ *
+ * @param i Row ordinal from 0.
+ * @param out Receives the row.
+ * @return 0, or -1 past the last row. */
+int openpete_menu_surface_row(int i, openpete_menu_surface_t* out);
+
 /* Text + wobble phase for the game-side glyph builder (text_moby_native). */
 /** @brief Name the menu's title text.
  *

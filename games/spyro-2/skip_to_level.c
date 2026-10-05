@@ -91,6 +91,12 @@ const spyro2_level_t* spyro2_level_table(size_t* out_count) {
     return k_levels;
 }
 
+void spyro2_level_surface(struct openpete_surface_sink* sink) {
+    const named_target_table_t levels =
+        NAMED_TARGET_TABLE(k_levels, spyro2_level_t, name, number);
+    named_target_surface(sink, "level", "--skip-to-level", &levels);
+}
+
 int spyro2_level_resolve(const char* arg) {
     const named_target_table_t levels =
         NAMED_TARGET_TABLE(k_levels, spyro2_level_t, name, number);

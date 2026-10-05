@@ -20,6 +20,12 @@ typedef struct CPUState CPUState;
  * @return The level number, or -1. */
 int spyro3_area_resolve(const char* arg, int* out_area);
 
+struct openpete_surface_sink;
+/** @brief Report every --skip-to-area target to the surface dump, as "<level name>:<area>".
+ *
+ * @param sink The dump's collector. */
+void spyro3_area_surface(struct openpete_surface_sink* sink);
+
 /** @brief Arms a --skip-to-area target for game_set_skip_to_area.
  *
  * A level above 0 arms --skip-to-level `level` through spyro3_skip_set and the

@@ -49,6 +49,7 @@
 #include "features/skip_to_area.h"
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
+#include "features/levelwarp_ui.h"
 #include "openpete_fiber.h"
 #include "renderer/text_moby.h"
 
@@ -135,6 +136,13 @@ int game_is_gameplay_live(CPUState* cpu) { return spyro3_skip_gameplay_live(cpu)
 void game_set_skip_to_level(int level_id) { spyro3_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro3_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
+void game_surface(struct openpete_surface_sink* sink) {
+    levelwarp_ui_surface(sink);
+    spyro3_level_surface(sink);
+    spyro3_cutscene_surface(sink);
+    spyro3_area_surface(sink);
+}
+
 /* A row starting from a level rides a --skip-to-level there; a contradicting --skip-to-level refuses it. */
 void game_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id > 0) spyro3_cutscene_arm(cutscene_id, spyro3_skip_target());

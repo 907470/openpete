@@ -42,6 +42,12 @@ const spyro1_level_t* spyro1_level_table(size_t* out_count);
  *     the valid list to stderr. */
 int spyro1_level_resolve(const char* arg);
 
+struct openpete_surface_sink;
+/** @brief Report every level name --skip-to-level accepts to the surface dump.
+ *
+ * @param sink The dump's collector. */
+void spyro1_level_surface(struct openpete_surface_sink* sink);
+
 /** @brief Drives the level-warp state machine for one tick.
  *
  * Runs levelwarp_ui_tick first, which refreshes the route the overlay button

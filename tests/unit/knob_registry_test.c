@@ -387,6 +387,9 @@ int main(void) {
      * The reverse (a schema row with no registry row) is checked too, so the
      * schema can't grow knobs the M overlay never lists.
      *
+     * cli_only rows (one-shot action flags such as --ingest) are exempt from
+     * the first direction: openpete.toml must not name them.
+     *
      * ENVROW_* rows are exempt: they are the ~150 debug-only OPENPETE_* vars,
      * which have no flag to conflict with and no bare key by design. Their
      * ids are the SHOUTING var name minus the prefix, which is what tells
@@ -395,7 +398,7 @@ int main(void) {
         size_t n;
         const knob_desc_t *ks = knob_registry(&n);
         for (size_t i = 0; i < n; i++) {
-            if (!ks[i].cli) continue;
+            if (!ks[i].cli || ks[i].cli_only) continue;
             int si = cfg_schema_find_cli(ks[i].cli);
             if (si < 0) {
                 rc |= fail("knob has no config schema row");

@@ -44,6 +44,7 @@
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_knobs.h" /* dev-overlay rows (M key) */
 #include "openpete_log.h"
+#include "openpete_surface.h"
 #include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
 
 #include <ctype.h>
@@ -234,25 +235,42 @@ static void row_status(const knob_desc_t* k, char* buf, size_t cap) {
     else                           snprintf(buf, cap, "%s", "");
 }
 
+/** @brief The dev-overlay row of cheat i without its value plumbing: a live KNOB_ACTION labelled "Apply" in the Gameplay section.
+ *
+ * @param i Index into k_cheats.
+ * @return The row template. */
+static knob_desc_t cheat_row(size_t i) {
+    knob_desc_t row = {0};
+    row.id           = k_cheats[i].knob_id;
+    row.label        = k_cheats[i].knob_label;
+    row.section      = "Gameplay";
+    row.help         = k_cheats[i].knob_help;
+    row.type         = KNOB_ACTION;
+    row.mut          = KNOB_LIVE;
+    row.action_label = "Apply";
+    return row;
+}
+
 /** @brief Registers one dev-overlay action button per cheat in the Gameplay section.
  *
- * Each row is a live KNOB_ACTION labelled "Apply" whose enabled state is
- * row_ready, whose action is row_fire and whose status text is row_status.
- * A failed registration is ignored. */
+ * Each row is cheat_row's, with row_ready as its enabled state, row_fire as
+ * its action and row_status as its status text. A failed registration is
+ * ignored. */
 static void register_rows(void) {
     for (size_t i = 0; i < CHEAT_COUNT; i++) {
-        knob_desc_t row = {0};
-        row.id           = k_cheats[i].knob_id;
-        row.label        = k_cheats[i].knob_label;
-        row.section      = "Gameplay";
-        row.help         = k_cheats[i].knob_help;
-        row.type         = KNOB_ACTION;
-        row.mut          = KNOB_LIVE;
-        row.get_num      = row_ready;
-        row.set_num      = row_fire;
-        row.get_str      = row_status;
-        row.action_label = "Apply";
+        knob_desc_t row = cheat_row(i);
+        row.get_num = row_ready;
+        row.set_num = row_fire;
+        row.get_str = row_status;
         (void)openpete_knob_add(&row);
+    }
+}
+
+void spyro1_cheats_surface(struct openpete_surface_sink* sink) {
+    for (size_t i = 0; i < CHEAT_COUNT; i++) {
+        knob_desc_t row = cheat_row(i);
+        openpete_surface_row(sink, &row);
+        openpete_surface_vocab(sink, "cheat", "--cheats", k_cheats[i].name);
     }
 }
 

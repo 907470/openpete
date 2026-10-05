@@ -31,6 +31,7 @@
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
 #include "skip_to_level.h"
+#include "openpete_surface.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -119,6 +120,18 @@ static int parse_index(const char* s) {
     for (; *p; p++)
         if (!isdigit((unsigned char)*p)) return -1;
     return atoi(s);
+}
+
+void spyro3_area_surface(struct openpete_surface_sink* sink) {
+    size_t i;
+    char   slug[64];
+    for (i = 0; i < AREA_LEVEL_COUNT; i++) {
+        int a;
+        for (a = 1; a < k_area_levels[i].areas; a++) {
+            snprintf(slug, sizeof slug, "%s:%d", level_name(k_area_levels[i].level), a);
+            openpete_surface_vocab(sink, "area", "--skip-to-area", slug);
+        }
+    }
 }
 
 int spyro3_area_resolve(const char* arg, int* out_area) {

@@ -98,8 +98,10 @@ typedef struct knob_desc {
     /* Registry-owned current value for rows without a live getter. */
     double stored_num;
 
-    /* Built-in default as a display string (env rows: what an unset var
-     * resolves to - shown as "(unset - <def>)"). NULL/empty = unknown. */
+    /* The declared default in the vocabulary a user types: the CLI's for a
+     * row with a flag, the overlay's value word ("on", "off") for a flagless
+     * typed row, the variable's value for an env row (shown by the overlay as
+     * "(unset - <def>)"). NULL/empty = none declared. */
     const char *def_str;
 
     /* KNOB_ACTION only: button caption ("Apply" when NULL). */
@@ -119,7 +121,36 @@ typedef struct knob_desc {
      * the caption of the checkbox that selects 0, beside a slider over the
      * range. NULL = the range runs to num_min with nothing below it. */
     const char *zero_label;
+
+    /* The declared default, for a row whose default the program decides from
+     * the machine, the game, another flag or an env var: how it is decided.
+     * A row declares def_str (in the CLI's vocabulary, or the overlay's value
+     * word for a row with no flag) or this, never both. NULL = none. */
+    const char *default_note;
+
+    /* The preprocessor symbol the row's feature needs at build time
+     * ("OPENPETE_HAS_LIBAV"), or NULL when every build carries it. */
+    const char *build_cond;
+
+    /* How the `cli` flag takes its value (knob_flag_arg_t). */
+    unsigned char flag_arg;
+
+    /* 1 for a one-shot action flag (--ingest) that openpete.toml cannot
+     * name: the row has no config schema entry and no bare key. */
+    unsigned char cli_only;
+
+    /* 1 for a built-in row compiled inside the OPENPETE_HIDE_DEBUG_FLAGS
+     * block; set by the registry when it copies the built-ins in. */
+    unsigned char debug_block;
 } knob_desc_t;
+
+/* Arity of a row's flag: the default, a flag that takes no value
+ * ("--no-card"), and one whose value is optional ("--input-lock [0|1]"). */
+typedef enum {
+    KNOB_FLAG_ARG_REQUIRED = 0,
+    KNOB_FLAG_ARG_NONE,
+    KNOB_FLAG_ARG_OPTIONAL
+} knob_flag_arg_t;
 
 /** @brief The knob table; mutable, since boot stamps and stored values live in the rows.
  *

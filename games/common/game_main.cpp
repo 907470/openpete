@@ -11,6 +11,8 @@
 #include "openpete.h"
 #include "openpete_config.h"
 #include "openpete_log.h"
+#include "openpete_keymap.h"
+#include "openpete_surface.h"
 #include "game_extras.h"
 #include "openpete_psx.h"
 #include "psyq/psyq_game_hooks.h"
@@ -27,14 +29,15 @@ extern "C" const openpete_recomp_module openpete_game_recomp_module;
  *
  * Parses the command line, opens the log, registers the recompiled module, the
  * gameplay-state regions, and the interpolation and re-extract tables, sets
- * the root counter 2 the game's boot reads, and runs the core loop. Returns at
- * once with the option parser's status on a parse failure, after --help,
- * after printing the configuration report when one is requested, or when the
- * executable source is unavailable.
+ * the root counter 2 the game's boot reads, and runs the core loop. Writes the
+ * surface dump and exits when OPENPETE_SURFACE_DUMP is set. Returns at once
+ * with the option parser's status on a parse failure, after --help, after
+ * printing the configuration or keys report when one is requested, or when
+ * the executable source is unavailable.
  * @param argc The argument count.
  * @param argv The arguments.
  * @return The exit status: openpete_run's result, 0 after --help or a
- *         configuration report, 1 when the recompiled module fails to register. */
+ *         configuration or keys report, 1 when the recompiled module fails to register. */
 int main(int argc, char** argv) {
     /* abort() does not flush, and the PSYQ stubs use it to surface an
      * unimplemented surface. Unbuffer so that diagnostic survives. */
@@ -45,10 +48,15 @@ int main(int argc, char** argv) {
     opts.display_name = game_get_display_name();
     openpete_config_set_game_id(game_get_id());
 
+    /* OPENPETE_SURFACE_DUMP: write the surface and exit, before any config
+     * or env layer runs. */
+    openpete_surface_dump_run_if_requested(argv[0]);
+
     int rc = openpete_options_parse(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
     if (opts.help) return 0;
     if (opts.config_report) { openpete_config_report(stdout); return 0; }
+    if (opts.keys_report) { openpete_keymap_report(stdout); return 0; }
 
     openpete_log_init(opts.log_format, opts.log_level_spec);
     openpete_log_file_open(opts.log_file);

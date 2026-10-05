@@ -4,6 +4,7 @@
 
 #include "openpete.h"
 #include "openpete_config.h"  /* openpete.toml - the layered config file */
+#include "openpete_knobs.h"   /* knob_flag_arg_t - the help-only table's arity */
 #include "config_schema.h"    /* config key of a flag, for the fallback warning */
 #include "openpete_keymap.h"  /* [keys] - install the SDL name lookups */
 #include "openpete_overlay_anchor.h"  /* --perf-position / --osd-position spellings */
@@ -44,34 +45,11 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
     return 0;
 }
 
-/** @brief Keep an option's current value in place of a refused value the config file supplied, with a warning.
- *
- * A value the config splice put into argv is a stored setting: refusing it
- * would stop a config file from booting the game. The warning names the
- * config key, the value, the openpete.toml table it came from and the
- * value kept. A typed or bk2-sidecar value is not spliced and is left to
- * the caller to refuse.
- * @param flag The flag's spelling, mapped to its config key through the schema.
- * @param v The value token, matched by pointer against the spliced tokens.
- * @param kept The option's current value, which stays in place.
- * @return 1 when the value came from the config file, else 0. */
-static int config_value_keeps_default(const char* flag, const char* v, float kept) {
-    const char* src = openpete_config_token_source(v);
-    if (!src) return 0;
-    int ki = cfg_schema_find_cli(flag);
-    const char* key = ki >= 0 ? cfg_schema(NULL)[ki].id : flag;
-    fprintf(stderr, "openpete: openpete.toml [%s]: %s = \"%s\" is not a finite "
-                    "number; keeping %g\n", src, key, v, (double)kept);
-    return 1;
-}
-
 /** @brief Parse a flag's value as a finite number and clamp it to [lo, hi].
  *
  * The whole value must parse (strtod with an end-pointer check) and be
  * finite, so "nan", "inf" and "9O" are refused rather than reaching a
- * clamp that NaN would pass through. A refused value from the config file
- * keeps *out and warns (config_value_keeps_default); a refused typed value
- * fails. With zero_ok, exactly 0 is stored as 0 unclamped (the option's
+ * clamp that NaN would pass through. With zero_ok, exactly 0 is stored as 0 unclamped (the option's
  * "off" or "the game's own" value). Any other value outside [lo, hi] is
  * clamped with a message naming the flag.
  * @param flag The flag's spelling, for the messages.
@@ -80,13 +58,12 @@ static int config_value_keeps_default(const char* flag, const char* v, float kep
  * @param hi Upper bound.
  * @param zero_ok Whether 0 passes unclamped.
  * @param out Receives the clamped value.
- * @return 0 on success or a config fallback, -1 with a message on a refused value. */
+ * @return 0 on success, -1 with a message on a refused value. */
 static int parse_finite_clamped(const char* flag, const char* v, float lo, float hi,
                                 bool zero_ok, float* out) {
     char* end = NULL;
     double d = strtod(v, &end);
     if (!v[0] || end == v || *end || !isfinite(d)) {
-        if (config_value_keeps_default(flag, v, *out)) return 0;
         fprintf(stderr, "openpete: %s expects a number in [%g,%g], got: %s\n",
                 flag, (double)lo, (double)hi, v);
         return -1;
@@ -485,6 +462,75 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
     opts->default_renderer = r;
 }
 
+/* Every flag the parser accepts that has no knob registry row and is not a
+ * config schema alias (--no-lod): the one-shot reports and the preamble's
+ * --config pair, --help, the deprecated --show-fps, and the debug and
+ * diagnostic flags. The surface dump lists them beside the registry's flags,
+ * so the two together name every parser literal. `block` is the --help block
+ * that prints the flag ("none" = not printed). */
+static const openpete_help_only_t k_help_only[] = {
+    { "--help",                              KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL },
+    { "-h",                                  KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL },
+    { "--config",                            KNOB_FLAG_ARG_REQUIRED, NULL, "preamble", NULL },
+    { "--no-config",                         KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL },
+    { "--config-report",                     KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL },
+    { "--keys-report",                       KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL },
+    { "--show-fps",                          KNOB_FLAG_ARG_REQUIRED, NULL, "release",  "deprecated spelling of --perf-stats" },
+    { "--debug-triangle",                    KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
+    { "--dump-sfx-pack",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--dump-sfx-wads",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--exe-path",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--extract-recomp-inputs",             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--frame-limit",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--frame-time-log",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--freecam-path",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--gameplay-hash-log",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--halt-at-pc",                        KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--halt-cpu-dump-output",              KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--halt-hit",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--headless",                          KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
+    { "--max-runtime-seconds",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--pace-log",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--position-log",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--probe",                             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--profile-out",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--psxtrace-anchor-hit",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--psxtrace-anchor-pc",                KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--psxtrace-keep-going",               KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
+    { "--psxtrace-verify",                   KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--ram-dump-on-frame",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--ram-dump-output",                   KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--recomp-module",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--resume-handoff",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--rewind-hold",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--screenshot-freeze-backdrop",        KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
+    { "--screenshot-intermediate-on-frame",  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--screenshot-native-only",            KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
+    { "--screenshot-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--screenshot-on-tick",                KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--screenshot-output",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--screenshot-presents-count",         KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--screenshot-presents-start",         KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--seed-cpu",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--seed-ram",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--state-load-input",                  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--state-load-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--state-save-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--state-save-output",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--state-stress",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--state-stress-rewind",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--test-recomp-call",                  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--test-recomp-expect-v0",             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--test-recomp-gp",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+    { "--test-segv",                         KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
+    { "--unlock-frames",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+};
+
+const openpete_help_only_t* openpete_options_help_only(size_t* count) {
+    *count = sizeof k_help_only / sizeof k_help_only[0];
+    return k_help_only;
+}
+
 /** @brief Print the command-line help for `display_name`'s build to stderr.
  *
  * The release block of user-facing flags always prints and marks
@@ -517,6 +563,9 @@ static void print_help(const char* display_name, const char* argv0,
         "  --disc PATH                disc image: the .cue, or the .bin/.img/.iso itself. A cue\n"
         "                             whose FILE line names a missing bin falls back to the cue's\n"
         "                             own basename and then to the lone .bin beside it.\n"
+        "  --ingest PATH              copy a disc image (.cue/.bin) into the library\n"
+        "                             next to the exe and boot it; later runs need no\n"
+        "                             --disc at all (the original file can be deleted)\n"
         "  --disc-cache 0|1           keep the disc image resident in memory, filled by a background\n"
         "                             loader in the game's boot order (default 1): a resident sector is\n"
         "                             a copy, a missing one is read from the file at once. 0 = read\n"
@@ -524,7 +573,6 @@ static void print_help(const char* display_name, const char* argv0,
         "  --load-delay N             VBLs of guest time every level load waits (the game's default\n"
         "                             when omitted; 0 = instant). Recorded into a bk2's header and\n"
         "                             checked on replay.\n"
-        "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
         "  --renderer MODE            which rasterizer draws: vk (native Vulkan%s) | psycross\n"
         "                             (the GL reference%s). The native window displays either.\n"
         "  --window WxH               window size (default: the game's drawn viewport at 2x,\n"
@@ -611,10 +659,6 @@ static void print_help(const char* display_name, const char* argv0,
         "                             GPU's 4x4 ordered dither matrix on the PSX 512x240 framebuffer\n"
         "                             grid (the authentic banding + crosshatch the smooth float\n"
         "                             pipeline removed). 0 = off (default). Display-only.\n"
-        "  --psycross-native-raster N 1 = render the PsyCross reference on the console's own 512x240\n"
-        "                             display grid (one texel per PSX pixel, authentic aliasing) instead\n"
-        "                             of a square-pixel 4:3 grid sized from the window. The window blit\n"
-        "                             scales it up. Default 0. Reference renderer only.\n"
         "  --texture-mapping MODE     texture/colour interpolation: perspective (default = modern\n"
         "                             perspective-correct) | affine (PSX screen-linear = the original\n"
         "                             PS1 texture swim/warp). Native renderer only. Display-only.\n"
@@ -631,6 +675,9 @@ static void print_help(const char* display_name, const char* argv0,
         "  --mods ID[,ID...]          run exactly these mods, overriding mods/enabled.txt (order IS\n"
         "                             priority, later = higher). --mods \"\" enables none (vanilla run).\n"
         "                             Default: env OPENPETE_MODS, else enabled.txt.\n"
+        "  --compile-mods             compile EVERY mod with src/ in the mods dir (see --mods-dir;\n"
+        "                             ignores enabled.txt) against <exe>/sdk and exit; nonzero exit\n"
+        "                             on any failed compile (the cmake build-time mods gate)\n"
         "  --card1 PATH               use a specific .mcr memory-card image for port A (default: <card-dir>/card1.mcr)\n"
         "  --card2 PATH               use a specific .mcr memory-card image for port B (default: <card-dir>/card2.mcr)\n"
         "  --card-dir PATH            directory holding the memory-card .mcr images (default: env OPENPETE_CARD_DIR,\n"
@@ -702,11 +749,14 @@ static void print_help(const char* display_name, const char* argv0,
         "                             list). Applied once a level is live, and again for each new session\n"
         "                             started from the title screen. Changes gameplay state by design\n"
         "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
-        "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default: -first_input)\n"
+        "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default 0)\n"
         "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
         "  --bk2-record [PATH]        write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie).\n"
         "                             With no PATH, records to <exe_dir>/bk2/<timestamp>.bk2. Also writes a\n"
-        "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n",
+        "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n"
+        "  --log-file PATH            mirror stderr to PATH instead of the default\n"
+        "                             <state>/logs/openpete.log; env OPENPETE_LOG_FILE=...\n"
+        "  --no-log-file              do not write a log file at all\n",
         display_name, argv0,
         default_renderer == OPENPETE_RENDERER_VK       ? " - default" : "",
         default_renderer == OPENPETE_RENDERER_PSYCROSS ? " - default" : "");
@@ -716,6 +766,7 @@ static void print_help(const char* display_name, const char* argv0,
      * would advertise a feature this build cannot perform. They still parse. */
 #ifdef OPENPETE_HAS_LIBAV
     fputs(
+        "\nVideo recording (needs libav):\n"
         "  --record PATH              capture true-VFR gameplay video (.mkv recommended; .mp4 ok); reads the present FBO (no letterbox bars)\n"
         "  --record-encoder NAME      libavcodec encoder (default libx264; e.g. h264_nvenc, libopenh264)\n"
         "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
@@ -745,16 +796,10 @@ static void print_help(const char* display_name, const char* argv0,
         "  --frame-limit N            exit after N rendered frames\n"
         "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
         "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
-        "  --ingest PATH              copy a disc image (.cue/.bin) into the library\n"
-        "                             next to the exe and boot it; later runs need no\n"
-        "                             --disc at all (the original file can be deleted)\n"
         "  --recomp-module PATH       shared-linkage builds: load the recomp module\n"
         "                             from PATH instead of the default next to the exe\n"
         "  --extract-recomp-inputs DIR extract PSX.EXE + overlay blobs from --disc\n"
         "                             into DIR and exit (recomp pipeline stage)\n"
-        "  --compile-mods             compile EVERY mod with src/ in the mods dir (see --mods-dir;\n"
-        "                             ignores enabled.txt) against <exe>/sdk and exit; nonzero exit\n"
-        "                             on any failed compile (the cmake build-time mods gate)\n"
         "  --dump-sfx-pack DIR        write every game sound on --disc as a content-named WAV\n"
         "                             (+ index.txt) into DIR and exit: the sfx pack census\n"
         "  --dump-sfx-wads A.wad,B.wad also walk these custom-level Data files (a [[level]]\n"
@@ -768,6 +813,10 @@ static void print_help(const char* display_name, const char* argv0,
         "                             HUD and menus stay filled. Shows the terrain subdivision as drawn.\n"
         "                             Default: env OPENPETE_WIREFRAME, else 0. Native renderer only.\n"
         "                             Display-only.\n"
+        "  --psycross-native-raster N 1 = render the PsyCross reference on the console's own 512x240\n"
+        "                             display grid (one texel per PSX pixel, authentic aliasing) instead\n"
+        "                             of a square-pixel 4:3 grid sized from the window. The window blit\n"
+        "                             scales it up. Default 0. Reference renderer only.\n"
         "  --devui-open 0|1           open the dev config overlay (M panel) as soon as it\n"
         "                             initializes instead of waiting for the M key, with the Mods\n"
         "                             list and every mod node expanded once, so an unattended run\n"
@@ -775,9 +824,6 @@ static void print_help(const char* display_name, const char* argv0,
         "                             Windowed native-vk runs only; inert elsewhere.\n"
         "  --log-format json|plain    structured stderr (default plain)\n"
         "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
-        "  --log-file PATH            mirror stderr to PATH instead of the default\n"
-        "                             <state>/logs/openpete.log; env OPENPETE_LOG_FILE=...\n"
-        "  --no-log-file              do not write a log file at all\n"
         "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list.\n"
         "                             In a windowed pure-vk run, -vk.png is a READBACK of the exact\n"
         "                             presented frame (sub-tick interp, mods, overlays included);\n"
@@ -924,31 +970,22 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->raster_quantize = -1;   /* auto: 1x under --vertex-precision integer, else off */
     opts->extract_threads = 0;    /* auto: logical cores / 2, clamped to [1, 8] */
     opts->dither          = 0;    /* --dither 1 for PS1 15-bit colour + hardware dither */
-    /* Wireframe view: OPENPETE_WIREFRAME is the env spelling; --wireframe,
-     * parsed later, wins. */
-    { const char* e = getenv("OPENPETE_WIREFRAME");
-      opts->wireframe = (e && *e && *e != '0'); }
+    /* -1 = unset: resolve_env_spellings applies OPENPETE_WIREFRAME, else 0. */
+    opts->wireframe = -1;
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
-    /* Retained-terrain GPU cache, default ON; --terrain-cache 0 is the kill
-     * switch. Display-only (the CPU walk stays the fallback for claimed
-     * sectors, software vk, and no-fp64 devices). OPENPETE_TERRAIN_CACHE is
-     * the env spelling (harness runs that can't pass flags); the CLI,
-     * parsed later, wins. */
-    { const char* e = getenv("OPENPETE_TERRAIN_CACHE");
-      opts->terrain_cache = (e && *e) ? (atoi(e) != 0) : 1; }
-    { const char* e = getenv("OPENPETE_DISC_CACHE");
-      opts->disc_cache = (e && *e) ? (atoi(e) != 0) : 1; }
-    { const char* e = getenv("OPENPETE_LOAD_DELAY");
-      opts->load_delay = (e && *e) ? atoi(e) : -1; }
+    /* Retained-terrain GPU cache and the resident disc image, both default
+     * on; -1 = unset until resolve_env_spellings applies the env spelling
+     * (OPENPETE_TERRAIN_CACHE, OPENPETE_DISC_CACHE) or the default. */
+    opts->terrain_cache = -1;
+    opts->disc_cache    = -1;
+    /* -1 = the game's own default (game_get_load_delay_default), resolved by
+     * run.c; resolve_env_spellings applies OPENPETE_LOAD_DELAY. */
+    opts->load_delay    = -1;
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
-    /* --terrain-visibility: every sector inside the displayed frustum, hidden
-     * or not (the departure), unless the env spelling names the faithful
-     * path. A later --terrain-visibility on the command line wins. */
-    { const char* e = getenv("OPENPETE_TERRAIN_VISIBILITY");
-      opts->terrain_visibility = (e && *e && strcmp(e, "game") == 0)
-                                 ? OPENPETE_TERRAIN_VIS_GAME
-                                 : OPENPETE_TERRAIN_VIS_FRUSTUM; }
+    /* Unset until resolve_env_spellings applies OPENPETE_TERRAIN_VISIBILITY,
+     * else frustum. */
+    opts->terrain_visibility = OPENPETE_TERRAIN_VIS_UNSET;
 }
 
 /* Facts the flag chain learns that are not options: the post-parse phases
@@ -962,823 +999,894 @@ typedef struct {
     bool player_pose_flag;
 } parse_notes_t;
 
-/** @brief Walk the spliced argv left to right, one arm per flag, the last write winning.
+/* parse_one_flag's result for an argument no arm accepts, which no config
+ * fallback covers: an unknown flag is a typo to fix, not a value to replace. */
+#define PARSE_UNKNOWN_ARG (-2)
+
+/** @brief Parse the flag at argv[*ip] and its value, one arm per flag; *ip ends on the last token consumed.
  *
- * An argument no arm accepts fails the parse; the message names the openpete.toml table when the token came from
- * the config splice. Facts that are not options go to notes.
+ * An argument no arm accepts returns PARSE_UNKNOWN_ARG; the message names
+ * the openpete.toml table when the token came from the config splice. A
+ * refused value returns OPENPETE_EXIT_SETUP_ERROR, possibly after the arm
+ * wrote part of opts; parse_flag_chain restores them. Facts that are not
+ * options go to notes.
  * @param opts The options block.
  * @param argc Argument count.
  * @param argv The spliced argument vector.
- * @param notes Receives the post-parse facts. */
-// complexity-ratchet: one chain of sibling arms over argv, one per flag, where a new flag adds an arm and no other structure
-static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
-                            parse_notes_t* notes) {
-    for (int i = 1; i < argc; i++) {
-        const char* a = argv[i];
-        const char* v = NULL;
+ * @param ip In: index of the flag. Out: index of its last token.
+ * @param notes Receives the post-parse facts.
+ * @return OPENPETE_EXIT_OK, OPENPETE_EXIT_SETUP_ERROR or PARSE_UNKNOWN_ARG. */
+// complexity-ratchet: one chain of sibling arms, one per flag, where a new flag adds an arm and no other structure
+static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
+                          int* ip, parse_notes_t* notes) {
+    int i = *ip;
+    const char* a = argv[i];
+    const char* v = NULL;
 
-        if (strcmp(a, "--frame-limit") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->frame_limit = atoi(v); i++;
-        } else if (strcmp(a, "--max-runtime-seconds") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->max_runtime_seconds = atoi(v); i++;
-        } else if (strcmp(a, "--headless") == 0) {
-            opts->headless = true;
-        } else if (strcmp(a, "--renderer") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if      (strcmp(v, "psycross") == 0) opts->renderer = OPENPETE_RENDERER_PSYCROSS;
-            else if (strcmp(v, "vk")       == 0) opts->renderer = OPENPETE_RENDERER_VK;
-            else {
-                fprintf(stderr, "openpete: --renderer expects psycross|vk, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--render-paths") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->render_paths = v; i++;
-        } else if (strcmp(a, "--ssaa") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->ssaa = atoi(v); i++;
-            if (opts->ssaa < 1) {
-                fprintf(stderr, "openpete: --ssaa expects 1..%d (1 = off), got: %s\n",
-                        OPENPETE_SSAA_MAX, v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            /* Clamp rather than reject: a config file may carry a higher
-             * factor, and refusing to start is worse than rendering at the
-             * highest safe one. */
-            if (opts->ssaa > OPENPETE_SSAA_MAX) {
-                fprintf(stderr, "openpete: --ssaa %s exceeds the %dx maximum (VRAM); using %dx\n",
-                        v, OPENPETE_SSAA_MAX, OPENPETE_SSAA_MAX);
-                opts->ssaa = OPENPETE_SSAA_MAX;
-            }
-        } else if (strcmp(a, "--osd") == 0) {
-            const char *v = (i + 1 < argc) ? argv[++i] : "";
-            if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->osd = 1;
-            else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->osd = 0;
-            else {
-                fprintf(stderr, "openpete: --osd expects on|off, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        } else if (strcmp(a, "--version-osd") == 0) {
-            const char *v = (i + 1 < argc) ? argv[++i] : "";
-            if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->version_osd = 1;
-            else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->version_osd = 0;
-            else {
-                fprintf(stderr, "openpete: --version-osd expects on|off, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        } else if (strcmp(a, "--osd-position") == 0) {
-            const char *v = (i + 1 < argc) ? argv[++i] : "";
-            int an = openpete_anchor_parse(v);
-            if (an < 0) {
-                fprintf(stderr, "openpete: --osd-position expects one of "
-                        "top-left|top-center|top-right|bottom-left|bottom-center|"
-                        "bottom-right, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->osd_position = an;
-        } else if (strcmp(a, "--osd-timeout") == 0) {
-            /* Seconds in, milliseconds out - the ONE conversion point. */
-            const char *v = (i + 1 < argc) ? argv[++i] : "";
-            char *end = NULL;
-            double secs = strtod(v, &end);
-            if (!v[0] || end == v || *end || !(secs > 0.0) ||
-                secs > (double)OPENPETE_OSD_TIMEOUT_MAX_MS / 1000.0) {
-                fprintf(stderr, "openpete: --osd-timeout expects seconds in "
-                        "(0, %.0f], got: %s\n",
-                        (double)OPENPETE_OSD_TIMEOUT_MAX_MS / 1000.0, v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->osd_timeout_ms = (uint32_t)(secs * 1000.0 + 0.5);
-        } else if (strcmp(a, "--perf-position") == 0) {
-            const char *v = (i + 1 < argc) ? argv[++i] : "";
-            int an = openpete_anchor_parse(v);
-            if (an < 0) {
-                fprintf(stderr, "openpete: --perf-position expects one of "
-                        "top-left|top-center|top-right|bottom-left|bottom-center|"
-                        "bottom-right, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->perf_position = an;
-        } else if (strcmp(a, "--perf-stats") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            /* Words are the documented spelling (and what the config file
-             * writes back); the numbers are accepted because the level is an
-             * ordered scale and scripts reach for it that way. */
-            if      (!strcmp(v, "off")      || !strcmp(v, "0")) opts->perf_stats = OPENPETE_PERF_OFF;
-            else if (!strcmp(v, "fps")      || !strcmp(v, "1")) opts->perf_stats = OPENPETE_PERF_FPS;
-            else if (!strcmp(v, "detailed") || !strcmp(v, "2")) opts->perf_stats = OPENPETE_PERF_DETAIL;
-            else {
-                fprintf(stderr, "openpete: --perf-stats expects off|fps|detailed (0|1|2 also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--show-fps") == 0) {
-            /* The two-state spelling this setting used to have. ON restores
-             * the FPS level rather than the detailed one: a flag that only
-             * ever meant "the counter" must not start turning on a readout
-             * its author never asked for. */
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            /* Accept 0|1 (preferred) plus on|off, matching --mute. */
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->perf_stats = OPENPETE_PERF_FPS;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->perf_stats = OPENPETE_PERF_OFF;
-            else {
-                fprintf(stderr, "openpete: --show-fps expects 0|1 (on|off also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--vsync") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            /* Accept 0|1 (preferred) plus on|off, matching --show-fps / --mute. */
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->vsync = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->vsync = 0;
-            else {
-                fprintf(stderr, "openpete: --vsync expects 0|1 (on|off also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--fullscreen") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            /* Accept 0|1 (preferred) plus on|off, matching --vsync / --mute. */
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->fullscreen = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->fullscreen = 0;
-            else {
-                fprintf(stderr, "openpete: --fullscreen expects 0|1 (on|off also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--render-fps") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->render_fps = atoi(v); i++;
-            if (opts->render_fps < 0) {
-                fprintf(stderr, "openpete: --render-fps expects a non-negative integer\n");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        } else if (strcmp(a, "--tick-scale") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->tick_scale = atof(v); i++;
-            if (!(opts->tick_scale > 0.0)) {
-                fprintf(stderr, "openpete: --tick-scale expects a positive number (e.g. 0.5), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        } else if (strcmp(a, "--window") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            int w = 0, h = 0;
-            if (sscanf(v, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
-                fprintf(stderr, "openpete: --window expects WxH (e.g. 1280x720), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->window_w = w;
-            opts->window_h = h;
-            i++;
-        } else if (strcmp(a, "--aspect") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (strcmp(v, "auto") == 0) {
-                /* Explicit auto = same as unset: the render aspect follows the
-                 * window / fullscreen shape (Hor+ fill, the default). */
-                opts->aspect_w_over_h = 0.0f;
-                i++;
-            } else {
-                int aw = 0, ah = 0;
-                if (sscanf(v, "%d:%d", &aw, &ah) != 2 || aw <= 0 || ah <= 0) {
-                    fprintf(stderr, "openpete: --aspect expects W:H (e.g. 16:9) or auto, got: %s\n", v);
-                    return OPENPETE_EXIT_SETUP_ERROR;
-                }
-                opts->aspect_w_over_h = (float)aw / (float)ah;
-                i++;
-            }
-        } else if (strcmp(a, "--fov") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (parse_finite_clamped(a, v, 30.0f, 120.0f, true, &opts->fov_deg) != 0)
-                return OPENPETE_EXIT_SETUP_ERROR;
-            i++;
-        } else if (strcmp(a, "--vertex-precision") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (strcmp(v, "subpixel") == 0) {
-                opts->vertex_precision = OPENPETE_VERTEX_PRECISION_SUBPIXEL;
-            } else if (strcmp(v, "integer") == 0) {
-                opts->vertex_precision = OPENPETE_VERTEX_PRECISION_INTEGER;
-            } else {
-                fprintf(stderr, "openpete: --vertex-precision expects subpixel|integer, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--raster-quantize") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            long mult = strtol(v, NULL, 10);
-            if (mult < 0 || mult > 16) {
-                fprintf(stderr, "openpete: --raster-quantize expects 0 (off) or a grid multiplier in [1,16], got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->raster_quantize = (int)mult;
-            i++;
-        } else if (strcmp(a, "--extract-threads") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            long n = strtol(v, NULL, 10);
-            if (n < 0 || n > 8) {
-                fprintf(stderr, "openpete: --extract-threads expects 0 (auto), 1 (serial) or a count in [2,8], got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->extract_threads = (int)n;
-            i++;
-        } else if (strcmp(a, "--dither") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->dither = (atoi(v) != 0);
-            i++;
-        } else if (strcmp(a, "--wireframe") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->wireframe = (atoi(v) != 0);
-            i++;
-        } else if (strcmp(a, "--psycross-native-raster") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->psycross_native_raster = (atoi(v) != 0);
-            i++;
-        } else if (strcmp(a, "--texture-mapping") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (strcmp(v, "perspective") == 0) {
-                opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;
-            } else if (strcmp(v, "affine") == 0) {
-                opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_AFFINE;
-            } else {
-                fprintf(stderr, "openpete: --texture-mapping expects perspective|affine, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--lod") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (strcmp(v, "original") == 0) {
-                opts->lod = OPENPETE_LOD_ORIGINAL;
-            } else if (strcmp(v, "extended") == 0) {
-                opts->lod = OPENPETE_LOD_EXTENDED;
-            } else {
-                fprintf(stderr, "openpete: --lod expects original|extended, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--terrain-visibility") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (strcmp(v, "game") == 0) {
-                opts->terrain_visibility = OPENPETE_TERRAIN_VIS_GAME;
-            } else if (strcmp(v, "frustum") == 0) {
-                opts->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
-            } else {
-                fprintf(stderr, "openpete: --terrain-visibility expects game|frustum, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--no-lod") == 0) {
-            opts->lod = OPENPETE_LOD_EXTENDED;   /* deprecated alias for --lod extended */
-        } else if (strcmp(a, "--disc-cache") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->disc_cache = atoi(v) != 0; i++;
-        } else if (strcmp(a, "--load-delay") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->load_delay = atoi(v); i++;
-            if (opts->load_delay < 0) {
-                fprintf(stderr, "openpete: --load-delay must be >= 0\n");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        } else if (strcmp(a, "--terrain-cache") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->terrain_cache = atoi(v) != 0; i++;
-        } else if (strcmp(a, "--fog-scale") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (parse_finite_clamped(a, v, 0.25f, 128.0f, false, &opts->fog_scale) != 0)
-                return OPENPETE_EXIT_SETUP_ERROR;
-            i++;
-        } else if (strcmp(a, "--screenshot-on-frame") == 0 ||
-                   strcmp(a, "--screenshot-on-tick") == 0) {
-            bool ticks = (a[16] == 't');   /* "--screenshot-on-[t]ick" */
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (opts->screenshot_frame_count > 0 &&
-                opts->screenshot_ticks_keyed != ticks) {
-                fprintf(stderr, "openpete: --screenshot-on-frame and --screenshot-on-tick "
-                                "are mutually exclusive\n");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->screenshot_frame_count = 0;
-            opts->screenshot_ticks_keyed = ticks;
-            const char* p = v;
-            while (*p) {
-                while (*p == ',' || *p == ' ') p++;
-                if (!*p) break;
-                if (opts->screenshot_frame_count >= OPENPETE_MAX_SCREENSHOT_FRAMES) {
-                    fprintf(stderr, "openpete: %s supports up to %d frames\n",
-                            a, OPENPETE_MAX_SCREENSHOT_FRAMES);
-                    return OPENPETE_EXIT_SETUP_ERROR;
-                }
-                char* end = NULL;
-                long n = strtol(p, &end, 10);
-                if (end == p || n < 0) {
-                    fprintf(stderr, "openpete: %s expects N[,N2,...], got: %s\n", a, v);
-                    return OPENPETE_EXIT_SETUP_ERROR;
-                }
-                opts->screenshot_frames[opts->screenshot_frame_count++] = (int)n;
-                p = end;
-            }
-            i++;
-        } else if (strcmp(a, "--screenshot-intermediate-on-frame") == 0) {
-            /* Deterministic sub-tick (alpha 0.5) native capture targets, VBL-keyed.
-             * Fills a separate list from --screenshot-on-frame; implies native-only. */
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->screenshot_intermediate_count = 0;
-            const char* p = v;
-            while (*p) {
-                while (*p == ',' || *p == ' ') p++;
-                if (!*p) break;
-                if (opts->screenshot_intermediate_count >= OPENPETE_MAX_SCREENSHOT_FRAMES) {
-                    fprintf(stderr, "openpete: %s supports up to %d frames\n",
-                            a, OPENPETE_MAX_SCREENSHOT_FRAMES);
-                    return OPENPETE_EXIT_SETUP_ERROR;
-                }
-                char* end = NULL;
-                long n = strtol(p, &end, 10);
-                if (end == p || n < 0) {
-                    fprintf(stderr, "openpete: %s expects N[,N2,...], got: %s\n", a, v);
-                    return OPENPETE_EXIT_SETUP_ERROR;
-                }
-                opts->screenshot_intermediate_frames[opts->screenshot_intermediate_count++] = (int)n;
-                p = end;
-            }
-            opts->screenshot_native_only = true;   /* intermediate capture is vk-only */
-            i++;
-        } else if (strcmp(a, "--screenshot-native-only") == 0) {
-            opts->screenshot_native_only = true;
-        } else if (strcmp(a, "--screenshot-freeze-backdrop") == 0) {
-            opts->screenshot_freeze_backdrop = true;
-        } else if (strcmp(a, "--screenshot-output") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->screenshot_output = v; i++;
-        } else if (strcmp(a, "--screenshot-presents-start") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->screenshot_presents_start = atoi(v); i++;
-        } else if (strcmp(a, "--screenshot-presents-count") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->screenshot_presents_count = atoi(v); i++;
-        } else if (strcmp(a, "--ram-dump-on-frame") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->ram_dump_on_frame = atoi(v); i++;
-        } else if (strcmp(a, "--ram-dump-output") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->ram_dump_output = v; i++;
-        } else if (strcmp(a, "--state-save-on-frame") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->state_save_on_frame = atoi(v); i++;
-        } else if (strcmp(a, "--state-save-output") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->state_save_output = v; i++;
-        } else if (strcmp(a, "--state-load-on-frame") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->state_load_on_frame = atoi(v); i++;
-        } else if (strcmp(a, "--state-load-input") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->state_load_input = v; i++;
-        } else if (strcmp(a, "--state-stress") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->state_stress = atoi(v); i++;
-        } else if (strcmp(a, "--state-stress-rewind") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->state_stress_rewind = atoi(v); i++;
-        } else if (strcmp(a, "--rewind") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->rewind_window = atoi(v); i++;
-        } else if (strcmp(a, "--runahead") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->runahead = atoi(v);
-            if (opts->runahead < 0) opts->runahead = 0;
-            if (opts->runahead > 3) opts->runahead = 3;
-            i++;
-        } else if (strcmp(a, "--rewind-hold") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (sscanf(v, "%d:%d", &opts->rewind_hold_frame,
-                       &opts->rewind_hold_iters) != 2) {
-                fprintf(stderr, "openpete: --rewind-hold expects A:N, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--seed-ram") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->seed_ram_path = v; i++;
-        } else if (strcmp(a, "--seed-cpu") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->seed_cpu_path = v; i++;
-        } else if (strcmp(a, "--halt-at-pc") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->halt_at_pc = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--halt-cpu-dump-output") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->halt_cpu_dump_output = v; i++;
-        } else if (strcmp(a, "--halt-hit") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->halt_hit_target = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--log-format") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if      (strcmp(v, "json")  == 0) opts->log_format = OPENPETE_LOG_JSON;
-            else if (strcmp(v, "plain") == 0) opts->log_format = OPENPETE_LOG_PLAIN;
-            else {
-                fprintf(stderr, "openpete: unknown --log-format value: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--log-level") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->log_level_spec = v; i++;
-        } else if (strcmp(a, "--log-file") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->log_file = v; i++;
-        } else if (strcmp(a, "--no-log-file") == 0) {
-            opts->log_file = "off";
-        } else if (strcmp(a, "--disc") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->disc_path = v; i++;
-        } else if (strcmp(a, "--exe-path") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->exe_path = v; i++;
-        } else if (strcmp(a, "--recomp-module") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->recomp_module_path = v; i++;
-        } else if (strcmp(a, "--ingest") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->ingest_path = v; i++;
-        } else if (strcmp(a, "--extract-recomp-inputs") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->extract_recomp_inputs_dir = v; i++;
-        } else if (strcmp(a, "--test-recomp-call") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->test_recomp_call_addr = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--test-recomp-expect-v0") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->test_recomp_expected_v0 = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--test-recomp-gp") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->test_recomp_gp = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--probe") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->probe_addr = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--test-segv") == 0) {
-            opts->test_recomp_segv = true;
-        } else if (strcmp(a, "--run-recomp") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->run_recomp_addr = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--freecam-path") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-#ifdef _WIN32
-            _putenv_s("OPENPETE_FREECAM_PATH", v);
-#else
-            setenv("OPENPETE_FREECAM_PATH", v, 1);
-#endif
-            i++;
-        } else if (strcmp(a, "--freecam-pose") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-#ifdef _WIN32
-            _putenv_s("OPENPETE_FREECAM_POSE", v);
-#else
-            setenv("OPENPETE_FREECAM_POSE", v, 1);
-#endif
-            i++;
-        } else if (strcmp(a, "--player-pose") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-#ifdef _WIN32
-            _putenv_s("OPENPETE_PLAYER_POSE", v);
-#else
-            setenv("OPENPETE_PLAYER_POSE", v, 1);
-#endif
-            notes->player_pose_flag = true;
-            i++;
-        } else if (strcmp(a, "--debug-triangle") == 0) {
-            opts->debug_triangle = true;
-        } else if (strcmp(a, "--skip-to-level") == 0) {
-            /* No value (end of argv, or the next word is a flag): print the
-             * target list, as --help does. Level names never start with '-'. */
-            if (i + 1 >= argc || argv[i + 1][0] == '-') {
-                (void)game_resolve_level_arg("");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            v = argv[i + 1];
-            opts->skip_to_level = game_resolve_level_arg(v);
-            if (opts->skip_to_level < 0) {
-                fprintf(stderr, "openpete: --skip-to-level: unknown level '%s'\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--skip-to-cutscene") == 0) {
-            if (i + 1 >= argc || argv[i + 1][0] == '-') {
-                (void)game_resolve_cutscene_arg("");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            v = argv[i + 1];
-            opts->skip_to_cutscene = game_resolve_cutscene_arg(v);
-            if (opts->skip_to_cutscene < 0) {
-                fprintf(stderr, "openpete: --skip-to-cutscene: unknown cutscene '%s'\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--skip-to-area") == 0) {
-            if (i + 1 >= argc || argv[i + 1][0] == '-') {
-                (void)game_resolve_area_arg("", &opts->skip_to_area);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            v = argv[i + 1];
-            opts->skip_to_area_level = game_resolve_area_arg(v, &opts->skip_to_area);
-            if (opts->skip_to_area_level < 0) {
-                fprintf(stderr, "openpete: --skip-to-area: no sub-area '%s'\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--cheats") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (game_validate_cheats_arg(v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->cheats = v; i++;
-        } else if (strcmp(a, "--bk2") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->bk2_path = v; i++;
-        } else if (strcmp(a, "--bk2-frame-offset") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->bk2_frame_offset = atoi(v);
-            opts->bk2_frame_offset_set = true;
-            i++;
-        } else if (strcmp(a, "--bk2-stop-on-end") == 0) {
-            opts->bk2_stop_on_end = true;
-        } else if (strcmp(a, "--bk2-record") == 0) {
-            /* Optional PATH: consume the next token only when it isn't
-             * another flag. With no path, the default
-             * "<bk2 data dir>/<timestamp>.bk2" is resolved after the loop. */
-            notes->bk2_record_requested = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-') {
-                opts->bk2_record_path = argv[i + 1]; i++;
-            }
-        } else if (strcmp(a, "--record") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->record_path = v; i++;
-        } else if (strcmp(a, "--record-encoder") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->record_encoder = v; i++;
-        } else if (strcmp(a, "--record-crf") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->record_crf = atoi(v); i++;
-        } else if (strcmp(a, "--record-gop") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->record_gop = atoi(v); i++;
-            if (opts->record_gop < 0) {
-                fprintf(stderr, "openpete: --record-gop expects a non-negative integer\n");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        } else if (strcmp(a, "--record-pixfmt") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->record_pixfmt = v; i++;
-        } else if (strcmp(a, "--no-record-audio") == 0) {
-            opts->record_no_audio = true;
-        } else if (strcmp(a, "--record-audio-encoder") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->record_audio_encoder = v; i++;
-        } else if (strcmp(a, "--devui-open") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->devui_open = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->devui_open = 0;
-            else {
-                fprintf(stderr, "openpete: --devui-open expects 0|1 (on|off also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--record-fps-overlay") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            /* Accept 0|1 (preferred) plus on|off, matching --vsync. */
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->record_fps_overlay = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->record_fps_overlay = 0;
-            else {
-                fprintf(stderr, "openpete: --record-fps-overlay expects 0|1 (on|off also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--record-cfr") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            double rate = atof(v);
-            /* Only exact multiples of the NTSC tick rate are representable as a
-             * whole number of presents per sim tick; anything else would have
-             * the interpolator emit 2 intermediates on some ticks and 3 on
-             * others. Reject rather than round, so a typo is loud. */
-            double mult = rate / OP_TICK_HZ;
-            long   k    = lround(mult);
-            /* Relative tolerance so the rounded spellings people actually type
-             * - 30, 60, 120 - all land on their NTSC neighbour, while a genuine
-             * non-multiple like 45 is refused. 60 sits 0.29 % above 2x (the
-             * true tick rate is 29.913, not 30), so the window has to clear
-             * that; 0.5 % does, and still rejects 45 (50 % out) and 61 (2 %). */
-            if (rate <= 0.0 || k < 1 || k > OPENPETE_RECORD_CFR_MAX_MULT ||
-                fabs(mult - (double)k) > 0.005 * (double)k) {
-                fprintf(stderr,
-                        "openpete: --record-cfr expects an integer multiple of the NTSC "
-                        "tick rate 1125000/37609 (29.913, 59.826, 119.652, ... up to %dx), "
-                        "got: %s\n",
-                        OPENPETE_RECORD_CFR_MAX_MULT, v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->record_cfr = (double)k * OP_TICK_HZ;
-            if (fabs(opts->record_cfr - rate) > 0.001)
-                fprintf(stderr, "openpete: --record-cfr %s -> %.6f fps (NTSC %ldx)\n",
-                        v, opts->record_cfr, k);
-            i++;
-        } else if (strcmp(a, "--record-frames") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->record_frames = atoi(v); i++;
-            if (opts->record_frames < 0) {
-                fprintf(stderr, "openpete: --record-frames expects a non-negative integer\n");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        } else if (strcmp(a, "--sfxpack-dir") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->sfxpack_dir = v; i++;
-        } else if (strcmp(a, "--texpack-dir") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->texpack_dir = v; i++;
-        } else if (strcmp(a, "--controller-db") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->controller_db = v; i++;
-        } else if (strcmp(a, "--mods-dir") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->mods_dir = v; i++;
-        } else if (strcmp(a, "--mods") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->mods_enabled = v; i++;
-        } else if (strcmp(a, "--compile-mods") == 0) {
-            opts->compile_mods = 1;
-        } else if (strcmp(a, "--dump-sfx-pack") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->dump_sfx_pack_dir = v; i++;
-        } else if (strcmp(a, "--dump-sfx-wads") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->dump_sfx_wads = v; i++;
-        } else if (strcmp(a, "--config") == 0) {
-            /* Consumed by the config loader before this parse; accepted
-             * here so it isn't an unknown flag. */
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            i++;
-        } else if (strcmp(a, "--no-config") == 0) {
-            /* likewise */
-        } else if (strcmp(a, "--config-report") == 0) {
-            opts->config_report = 1;
-        } else if (strcmp(a, "--keys-report") == 0) {
-            opts->keys_report = 1;
-        } else if (strcmp(a, "--card-dir") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->card_dir = v; i++;
-        } else if (strcmp(a, "--card1") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->card1_path = v; i++;
-        } else if (strcmp(a, "--card2") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->card2_path = v; i++;
-        } else if (strcmp(a, "--no-card") == 0) {
-            opts->card_a_present = 0;
-            opts->card_b_present = 0;
-        } else if (strcmp(a, "--card-unformatted") == 0) {
-            opts->card_unformatted = 1;
-        } else if (strcmp(a, "--adopt-saves") == 0) {
-            opts->adopt_saves = 1;
-        } else if (strcmp(a, "--resume-handoff") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->resume_handoff = v; i++;
-        } else if (strcmp(a, "--unlock-frames") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->unlock_frames_spec = v;
-            /* Parse "A-B,C-D,..." into ranges. Permissive: skip empty
-             * tokens. Cap at OPENPETE_UNLOCK_RANGES_MAX. */
-            opts->unlock_ranges_count = 0;
-            const char* p = v;
-            while (*p && opts->unlock_ranges_count < OPENPETE_UNLOCK_RANGES_MAX) {
-                while (*p == ',' || *p == ' ') p++;
-                if (!*p) break;
-                char* end = NULL;
-                long lo = strtol(p, &end, 10);
-                if (end == p) break;
-                p = end;
-                long hi = lo;
-                if (*p == '-') {
-                    p++;
-                    hi = strtol(p, &end, 10);
-                    if (end == p) break;
-                    p = end;
-                }
-                if (hi < lo) { long t = lo; lo = hi; hi = t; }
-                opts->unlock_ranges[opts->unlock_ranges_count].lo = (int)lo;
-                opts->unlock_ranges[opts->unlock_ranges_count].hi = (int)hi;
-                opts->unlock_ranges_count++;
-            }
-            i++;
-        } else if (strcmp(a, "--position-log") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->position_log_path = v; i++;
-        } else if (strcmp(a, "--gameplay-hash-log") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->gameplay_hash_log_path = v; i++;
-        } else if (strcmp(a, "--frame-time-log") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->frame_time_log_path = v; i++;
-        } else if (strcmp(a, "--pace-log") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->pace_log_path = v; i++;
-        } else if (strcmp(a, "--profile-out") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->profile_out_path = v; i++;
-        } else if (strcmp(a, "--psxtrace-verify") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->psxtrace_verify_path = v; i++;
-        } else if (strcmp(a, "--psxtrace-keep-going") == 0) {
-            opts->psxtrace_keep_going = true;
-        } else if (strcmp(a, "--psxtrace-anchor-pc") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->psxtrace_anchor_pc = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--psxtrace-anchor-hit") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->psxtrace_anchor_hit = (uint32_t)strtoul(v, NULL, 0); i++;
-        } else if (strcmp(a, "--mute") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            /* Accept 0|1 (preferred) plus the legacy on|off so existing
-             * scripts/movies keep working. */
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mute = true;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mute = false;
-            else {
-                fprintf(stderr, "openpete: --mute expects 0|1 (on|off also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--sfx") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (parse_volume_arg(a, v, &opts->sfx_volume) != 0)
-                return OPENPETE_EXIT_SETUP_ERROR;
-            i++;
-        } else if (strcmp(a, "--music") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (parse_volume_arg(a, v, &opts->music_volume) != 0)
-                return OPENPETE_EXIT_SETUP_ERROR;
-            i++;
-        } else if (strcmp(a, "--vibration") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (parse_volume_arg(a, v, &opts->vibration) != 0)
-                return OPENPETE_EXIT_SETUP_ERROR;
-            i++;
-        } else if (strcmp(a, "--mouse") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mouse = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mouse = 0;
-            else {
-                fprintf(stderr, "openpete: --mouse expects 0|1 (on|off also accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            i++;
-        } else if (strcmp(a, "--input-lock") == 0) {
-            /* The value is optional: the bare flag turns the lock on, and an
-             * explicit 0 is how the command line overrides the env spelling. */
-            opts->input_lock = 1;
-            if (i + 1 < argc) {
-                const char* n = argv[i + 1];
-                if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->input_lock = 1; i++; }
-                else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->input_lock = 0; i++; }
-            }
-        } else if (strcmp(a, "--background") == 0) {
-            /* Optional value, as --input-lock. */
-            opts->background = 1;
-            if (i + 1 < argc) {
-                const char* n = argv[i + 1];
-                if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->background = 1; i++; }
-                else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->background = 0; i++; }
-            }
-        } else if (strcmp(a, "--mouse-sensitivity") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            char* end = NULL;
-            double d = strtod(v, &end);
-            if (!end || *end || !(d >= 0.0) || d > 100.0) {
-                fprintf(stderr, "openpete: --mouse-sensitivity expects a number "
-                        "in 0..100, got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->mouse_sensitivity = (float)d;
-            i++;
-        } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            print_help(opts->display_name, argv[0], opts->default_renderer);
-            opts->help = 1;
-            return OPENPETE_EXIT_OK;
-        } else if (a[0] != '-' && !opts->ingest_path && !opts->disc_path
-                   && !opts->exe_path && arg_is_disc_image(a)) {
-            /* A bare path to a disc image - what a desktop file's %f, a
-             * file manager's "Open with" and a drag onto the icon all
-             * deliver. Same meaning as --ingest: the library dedups by
-             * content, so re-opening an already-installed disc just boots
-             * it. */
-            opts->ingest_path = a;
-        } else {
-            /* Config-spliced tokens were never typed, so pointing at the
-             * command line would send the user hunting in the wrong place. */
-            const char* src = openpete_config_token_source(a);
-            if (src)
-                fprintf(stderr, "openpete: unknown arg: %s (from openpete.toml "
-                                "[%s])\n", a, src);
-            else
-                fprintf(stderr, "openpete: unknown arg: %s\n", a);
+    if (strcmp(a, "--frame-limit") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->frame_limit = atoi(v); i++;
+    } else if (strcmp(a, "--max-runtime-seconds") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->max_runtime_seconds = atoi(v); i++;
+    } else if (strcmp(a, "--headless") == 0) {
+        opts->headless = true;
+    } else if (strcmp(a, "--renderer") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if      (strcmp(v, "psycross") == 0) opts->renderer = OPENPETE_RENDERER_PSYCROSS;
+        else if (strcmp(v, "vk")       == 0) opts->renderer = OPENPETE_RENDERER_VK;
+        else {
+            fprintf(stderr, "openpete: --renderer expects psycross|vk, got: %s\n", v);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
+        i++;
+    } else if (strcmp(a, "--render-paths") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->render_paths = v; i++;
+    } else if (strcmp(a, "--ssaa") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->ssaa = atoi(v); i++;
+        if (opts->ssaa < 1) {
+            fprintf(stderr, "openpete: --ssaa expects 1..%d (1 = off), got: %s\n",
+                    OPENPETE_SSAA_MAX, v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        /* Clamp rather than reject: a config file may carry a higher
+         * factor, and refusing to start is worse than rendering at the
+         * highest safe one. */
+        if (opts->ssaa > OPENPETE_SSAA_MAX) {
+            fprintf(stderr, "openpete: --ssaa %s exceeds the %dx maximum (VRAM); using %dx\n",
+                    v, OPENPETE_SSAA_MAX, OPENPETE_SSAA_MAX);
+            opts->ssaa = OPENPETE_SSAA_MAX;
+        }
+    } else if (strcmp(a, "--osd") == 0) {
+        const char *v = (i + 1 < argc) ? argv[++i] : "";
+        if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->osd = 1;
+        else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->osd = 0;
+        else {
+            fprintf(stderr, "openpete: --osd expects on|off, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    } else if (strcmp(a, "--version-osd") == 0) {
+        const char *v = (i + 1 < argc) ? argv[++i] : "";
+        if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->version_osd = 1;
+        else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->version_osd = 0;
+        else {
+            fprintf(stderr, "openpete: --version-osd expects on|off, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    } else if (strcmp(a, "--osd-position") == 0) {
+        const char *v = (i + 1 < argc) ? argv[++i] : "";
+        int an = openpete_anchor_parse(v);
+        if (an < 0) {
+            fprintf(stderr, "openpete: --osd-position expects one of "
+                    "top-left|top-center|top-right|bottom-left|bottom-center|"
+                    "bottom-right, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->osd_position = an;
+    } else if (strcmp(a, "--osd-timeout") == 0) {
+        /* Seconds in, milliseconds out - the ONE conversion point. */
+        const char *v = (i + 1 < argc) ? argv[++i] : "";
+        char *end = NULL;
+        double secs = strtod(v, &end);
+        if (!v[0] || end == v || *end || !(secs > 0.0) ||
+            secs > (double)OPENPETE_OSD_TIMEOUT_MAX_MS / 1000.0) {
+            fprintf(stderr, "openpete: --osd-timeout expects seconds in "
+                    "(0, %.0f], got: %s\n",
+                    (double)OPENPETE_OSD_TIMEOUT_MAX_MS / 1000.0, v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->osd_timeout_ms = (uint32_t)(secs * 1000.0 + 0.5);
+    } else if (strcmp(a, "--perf-position") == 0) {
+        const char *v = (i + 1 < argc) ? argv[++i] : "";
+        int an = openpete_anchor_parse(v);
+        if (an < 0) {
+            fprintf(stderr, "openpete: --perf-position expects one of "
+                    "top-left|top-center|top-right|bottom-left|bottom-center|"
+                    "bottom-right, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->perf_position = an;
+    } else if (strcmp(a, "--perf-stats") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        /* Words are the documented spelling (and what the config file
+         * writes back); the numbers are accepted because the level is an
+         * ordered scale and scripts reach for it that way. */
+        if      (!strcmp(v, "off")      || !strcmp(v, "0")) opts->perf_stats = OPENPETE_PERF_OFF;
+        else if (!strcmp(v, "fps")      || !strcmp(v, "1")) opts->perf_stats = OPENPETE_PERF_FPS;
+        else if (!strcmp(v, "detailed") || !strcmp(v, "2")) opts->perf_stats = OPENPETE_PERF_DETAIL;
+        else {
+            fprintf(stderr, "openpete: --perf-stats expects off|fps|detailed (0|1|2 also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--show-fps") == 0) {
+        /* The two-state spelling this setting used to have. ON restores
+         * the FPS level rather than the detailed one: a flag that only
+         * ever meant "the counter" must not start turning on a readout
+         * its author never asked for. */
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        /* Accept 0|1 (preferred) plus on|off, matching --mute. */
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->perf_stats = OPENPETE_PERF_FPS;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->perf_stats = OPENPETE_PERF_OFF;
+        else {
+            fprintf(stderr, "openpete: --show-fps expects 0|1 (on|off also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--vsync") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        /* Accept 0|1 (preferred) plus on|off, matching --show-fps / --mute. */
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->vsync = 1;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->vsync = 0;
+        else {
+            fprintf(stderr, "openpete: --vsync expects 0|1 (on|off also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--fullscreen") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        /* Accept 0|1 (preferred) plus on|off, matching --vsync / --mute. */
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->fullscreen = 1;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->fullscreen = 0;
+        else {
+            fprintf(stderr, "openpete: --fullscreen expects 0|1 (on|off also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--render-fps") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->render_fps = atoi(v); i++;
+        if (opts->render_fps < 0) {
+            fprintf(stderr, "openpete: --render-fps expects a non-negative integer\n");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    } else if (strcmp(a, "--tick-scale") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->tick_scale = atof(v); i++;
+        if (!(opts->tick_scale > 0.0)) {
+            fprintf(stderr, "openpete: --tick-scale expects a positive number (e.g. 0.5), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    } else if (strcmp(a, "--window") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        int w = 0, h = 0;
+        if (sscanf(v, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
+            fprintf(stderr, "openpete: --window expects WxH (e.g. 1280x720), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->window_w = w;
+        opts->window_h = h;
+        i++;
+    } else if (strcmp(a, "--aspect") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (strcmp(v, "auto") == 0) {
+            /* Explicit auto = same as unset: the render aspect follows the
+             * window / fullscreen shape (Hor+ fill, the default). */
+            opts->aspect_w_over_h = 0.0f;
+            i++;
+        } else {
+            int aw = 0, ah = 0;
+            if (sscanf(v, "%d:%d", &aw, &ah) != 2 || aw <= 0 || ah <= 0) {
+                fprintf(stderr, "openpete: --aspect expects W:H (e.g. 16:9) or auto, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->aspect_w_over_h = (float)aw / (float)ah;
+            i++;
+        }
+    } else if (strcmp(a, "--fov") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (parse_finite_clamped(a, v, 30.0f, 120.0f, true, &opts->fov_deg) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--vertex-precision") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (strcmp(v, "subpixel") == 0) {
+            opts->vertex_precision = OPENPETE_VERTEX_PRECISION_SUBPIXEL;
+        } else if (strcmp(v, "integer") == 0) {
+            opts->vertex_precision = OPENPETE_VERTEX_PRECISION_INTEGER;
+        } else {
+            fprintf(stderr, "openpete: --vertex-precision expects subpixel|integer, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--raster-quantize") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        long mult = strtol(v, NULL, 10);
+        if (mult < 0 || mult > 16) {
+            fprintf(stderr, "openpete: --raster-quantize expects 0 (off) or a grid multiplier in [1,16], got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->raster_quantize = (int)mult;
+        i++;
+    } else if (strcmp(a, "--extract-threads") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        long n = strtol(v, NULL, 10);
+        if (n < 0 || n > 8) {
+            fprintf(stderr, "openpete: --extract-threads expects 0 (auto), 1 (serial) or a count in [2,8], got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->extract_threads = (int)n;
+        i++;
+    } else if (strcmp(a, "--dither") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->dither = (atoi(v) != 0);
+        i++;
+    } else if (strcmp(a, "--wireframe") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->wireframe = (atoi(v) != 0);
+        i++;
+    } else if (strcmp(a, "--psycross-native-raster") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->psycross_native_raster = (atoi(v) != 0);
+        i++;
+    } else if (strcmp(a, "--texture-mapping") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (strcmp(v, "perspective") == 0) {
+            opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;
+        } else if (strcmp(v, "affine") == 0) {
+            opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_AFFINE;
+        } else {
+            fprintf(stderr, "openpete: --texture-mapping expects perspective|affine, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--lod") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (strcmp(v, "original") == 0) {
+            opts->lod = OPENPETE_LOD_ORIGINAL;
+        } else if (strcmp(v, "extended") == 0) {
+            opts->lod = OPENPETE_LOD_EXTENDED;
+        } else {
+            fprintf(stderr, "openpete: --lod expects original|extended, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--terrain-visibility") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (strcmp(v, "game") == 0) {
+            opts->terrain_visibility = OPENPETE_TERRAIN_VIS_GAME;
+        } else if (strcmp(v, "frustum") == 0) {
+            opts->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
+        } else {
+            fprintf(stderr, "openpete: --terrain-visibility expects game|frustum, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--no-lod") == 0) {
+        opts->lod = OPENPETE_LOD_EXTENDED;   /* deprecated alias for --lod extended */
+    } else if (strcmp(a, "--disc-cache") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->disc_cache = atoi(v) != 0; i++;
+    } else if (strcmp(a, "--load-delay") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->load_delay = atoi(v); i++;
+        if (opts->load_delay < 0) {
+            fprintf(stderr, "openpete: --load-delay must be >= 0\n");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    } else if (strcmp(a, "--terrain-cache") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->terrain_cache = atoi(v) != 0; i++;
+    } else if (strcmp(a, "--fog-scale") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (parse_finite_clamped(a, v, 0.25f, 128.0f, false, &opts->fog_scale) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--screenshot-on-frame") == 0 ||
+               strcmp(a, "--screenshot-on-tick") == 0) {
+        bool ticks = (a[16] == 't');   /* "--screenshot-on-[t]ick" */
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (opts->screenshot_frame_count > 0 &&
+            opts->screenshot_ticks_keyed != ticks) {
+            fprintf(stderr, "openpete: --screenshot-on-frame and --screenshot-on-tick "
+                            "are mutually exclusive\n");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->screenshot_frame_count = 0;
+        opts->screenshot_ticks_keyed = ticks;
+        const char* p = v;
+        while (*p) {
+            while (*p == ',' || *p == ' ') p++;
+            if (!*p) break;
+            if (opts->screenshot_frame_count >= OPENPETE_MAX_SCREENSHOT_FRAMES) {
+                fprintf(stderr, "openpete: %s supports up to %d frames\n",
+                        a, OPENPETE_MAX_SCREENSHOT_FRAMES);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            char* end = NULL;
+            long n = strtol(p, &end, 10);
+            if (end == p || n < 0) {
+                fprintf(stderr, "openpete: %s expects N[,N2,...], got: %s\n", a, v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->screenshot_frames[opts->screenshot_frame_count++] = (int)n;
+            p = end;
+        }
+        i++;
+    } else if (strcmp(a, "--screenshot-intermediate-on-frame") == 0) {
+        /* Deterministic sub-tick (alpha 0.5) native capture targets, VBL-keyed.
+         * Fills a separate list from --screenshot-on-frame; implies native-only. */
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->screenshot_intermediate_count = 0;
+        const char* p = v;
+        while (*p) {
+            while (*p == ',' || *p == ' ') p++;
+            if (!*p) break;
+            if (opts->screenshot_intermediate_count >= OPENPETE_MAX_SCREENSHOT_FRAMES) {
+                fprintf(stderr, "openpete: %s supports up to %d frames\n",
+                        a, OPENPETE_MAX_SCREENSHOT_FRAMES);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            char* end = NULL;
+            long n = strtol(p, &end, 10);
+            if (end == p || n < 0) {
+                fprintf(stderr, "openpete: %s expects N[,N2,...], got: %s\n", a, v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->screenshot_intermediate_frames[opts->screenshot_intermediate_count++] = (int)n;
+            p = end;
+        }
+        opts->screenshot_native_only = true;   /* intermediate capture is vk-only */
+        i++;
+    } else if (strcmp(a, "--screenshot-native-only") == 0) {
+        opts->screenshot_native_only = true;
+    } else if (strcmp(a, "--screenshot-freeze-backdrop") == 0) {
+        opts->screenshot_freeze_backdrop = true;
+    } else if (strcmp(a, "--screenshot-output") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->screenshot_output = v; i++;
+    } else if (strcmp(a, "--screenshot-presents-start") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->screenshot_presents_start = atoi(v); i++;
+    } else if (strcmp(a, "--screenshot-presents-count") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->screenshot_presents_count = atoi(v); i++;
+    } else if (strcmp(a, "--ram-dump-on-frame") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->ram_dump_on_frame = atoi(v); i++;
+    } else if (strcmp(a, "--ram-dump-output") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->ram_dump_output = v; i++;
+    } else if (strcmp(a, "--state-save-on-frame") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->state_save_on_frame = atoi(v); i++;
+    } else if (strcmp(a, "--state-save-output") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->state_save_output = v; i++;
+    } else if (strcmp(a, "--state-load-on-frame") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->state_load_on_frame = atoi(v); i++;
+    } else if (strcmp(a, "--state-load-input") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->state_load_input = v; i++;
+    } else if (strcmp(a, "--state-stress") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->state_stress = atoi(v); i++;
+    } else if (strcmp(a, "--state-stress-rewind") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->state_stress_rewind = atoi(v); i++;
+    } else if (strcmp(a, "--rewind") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->rewind_window = atoi(v); i++;
+    } else if (strcmp(a, "--runahead") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->runahead = atoi(v);
+        if (opts->runahead < 0) opts->runahead = 0;
+        if (opts->runahead > 3) opts->runahead = 3;
+        i++;
+    } else if (strcmp(a, "--rewind-hold") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (sscanf(v, "%d:%d", &opts->rewind_hold_frame,
+                   &opts->rewind_hold_iters) != 2) {
+            fprintf(stderr, "openpete: --rewind-hold expects A:N, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--seed-ram") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->seed_ram_path = v; i++;
+    } else if (strcmp(a, "--seed-cpu") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->seed_cpu_path = v; i++;
+    } else if (strcmp(a, "--halt-at-pc") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->halt_at_pc = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--halt-cpu-dump-output") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->halt_cpu_dump_output = v; i++;
+    } else if (strcmp(a, "--halt-hit") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->halt_hit_target = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--log-format") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if      (strcmp(v, "json")  == 0) opts->log_format = OPENPETE_LOG_JSON;
+        else if (strcmp(v, "plain") == 0) opts->log_format = OPENPETE_LOG_PLAIN;
+        else {
+            fprintf(stderr, "openpete: unknown --log-format value: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--log-level") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->log_level_spec = v; i++;
+    } else if (strcmp(a, "--log-file") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->log_file = v; i++;
+    } else if (strcmp(a, "--no-log-file") == 0) {
+        opts->log_file = "off";
+    } else if (strcmp(a, "--disc") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->disc_path = v; i++;
+    } else if (strcmp(a, "--exe-path") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->exe_path = v; i++;
+    } else if (strcmp(a, "--recomp-module") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->recomp_module_path = v; i++;
+    } else if (strcmp(a, "--ingest") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->ingest_path = v; i++;
+    } else if (strcmp(a, "--extract-recomp-inputs") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->extract_recomp_inputs_dir = v; i++;
+    } else if (strcmp(a, "--test-recomp-call") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->test_recomp_call_addr = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--test-recomp-expect-v0") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->test_recomp_expected_v0 = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--test-recomp-gp") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->test_recomp_gp = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--probe") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->probe_addr = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--test-segv") == 0) {
+        opts->test_recomp_segv = true;
+    } else if (strcmp(a, "--freecam-path") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+#ifdef _WIN32
+        _putenv_s("OPENPETE_FREECAM_PATH", v);
+#else
+        setenv("OPENPETE_FREECAM_PATH", v, 1);
+#endif
+        i++;
+    } else if (strcmp(a, "--freecam-pose") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+#ifdef _WIN32
+        _putenv_s("OPENPETE_FREECAM_POSE", v);
+#else
+        setenv("OPENPETE_FREECAM_POSE", v, 1);
+#endif
+        i++;
+    } else if (strcmp(a, "--player-pose") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+#ifdef _WIN32
+        _putenv_s("OPENPETE_PLAYER_POSE", v);
+#else
+        setenv("OPENPETE_PLAYER_POSE", v, 1);
+#endif
+        notes->player_pose_flag = true;
+        i++;
+    } else if (strcmp(a, "--debug-triangle") == 0) {
+        opts->debug_triangle = true;
+    } else if (strcmp(a, "--skip-to-level") == 0) {
+        /* No value (end of argv, or the next word is a flag): print the
+         * target list, as --help does. Level names never start with '-'. */
+        if (i + 1 >= argc || argv[i + 1][0] == '-') {
+            (void)game_resolve_level_arg("");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        v = argv[i + 1];
+        opts->skip_to_level = game_resolve_level_arg(v);
+        if (opts->skip_to_level < 0) {
+            fprintf(stderr, "openpete: --skip-to-level: unknown level '%s'\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--skip-to-cutscene") == 0) {
+        if (i + 1 >= argc || argv[i + 1][0] == '-') {
+            (void)game_resolve_cutscene_arg("");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        v = argv[i + 1];
+        opts->skip_to_cutscene = game_resolve_cutscene_arg(v);
+        if (opts->skip_to_cutscene < 0) {
+            fprintf(stderr, "openpete: --skip-to-cutscene: unknown cutscene '%s'\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--skip-to-area") == 0) {
+        if (i + 1 >= argc || argv[i + 1][0] == '-') {
+            (void)game_resolve_area_arg("", &opts->skip_to_area);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        v = argv[i + 1];
+        opts->skip_to_area_level = game_resolve_area_arg(v, &opts->skip_to_area);
+        if (opts->skip_to_area_level < 0) {
+            fprintf(stderr, "openpete: --skip-to-area: no sub-area '%s'\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--cheats") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (game_validate_cheats_arg(v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->cheats = v; i++;
+    } else if (strcmp(a, "--bk2") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->bk2_path = v; i++;
+    } else if (strcmp(a, "--bk2-frame-offset") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->bk2_frame_offset = atoi(v);
+        opts->bk2_frame_offset_set = true;
+        i++;
+    } else if (strcmp(a, "--bk2-stop-on-end") == 0) {
+        opts->bk2_stop_on_end = true;
+    } else if (strcmp(a, "--bk2-record") == 0) {
+        /* Optional PATH: consume the next token only when it isn't
+         * another flag. With no path, the default
+         * "<bk2 data dir>/<timestamp>.bk2" is resolved after the loop. */
+        notes->bk2_record_requested = true;
+        if (i + 1 < argc && argv[i + 1][0] != '-') {
+            opts->bk2_record_path = argv[i + 1]; i++;
+        }
+    } else if (strcmp(a, "--record") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->record_path = v; i++;
+    } else if (strcmp(a, "--record-encoder") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->record_encoder = v; i++;
+    } else if (strcmp(a, "--record-crf") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->record_crf = atoi(v); i++;
+    } else if (strcmp(a, "--record-gop") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->record_gop = atoi(v); i++;
+        if (opts->record_gop < 0) {
+            fprintf(stderr, "openpete: --record-gop expects a non-negative integer\n");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    } else if (strcmp(a, "--record-pixfmt") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->record_pixfmt = v; i++;
+    } else if (strcmp(a, "--no-record-audio") == 0) {
+        opts->record_no_audio = true;
+    } else if (strcmp(a, "--record-audio-encoder") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->record_audio_encoder = v; i++;
+    } else if (strcmp(a, "--devui-open") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->devui_open = 1;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->devui_open = 0;
+        else {
+            fprintf(stderr, "openpete: --devui-open expects 0|1 (on|off also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--record-fps-overlay") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        /* Accept 0|1 (preferred) plus on|off, matching --vsync. */
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->record_fps_overlay = 1;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->record_fps_overlay = 0;
+        else {
+            fprintf(stderr, "openpete: --record-fps-overlay expects 0|1 (on|off also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--record-cfr") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        double rate = atof(v);
+        /* Only exact multiples of the NTSC tick rate are representable as a
+         * whole number of presents per sim tick; anything else would have
+         * the interpolator emit 2 intermediates on some ticks and 3 on
+         * others. Reject rather than round, so a typo is loud. */
+        double mult = rate / OP_TICK_HZ;
+        long   k    = lround(mult);
+        /* Relative tolerance so the rounded spellings people actually type
+         * - 30, 60, 120 - all land on their NTSC neighbour, while a genuine
+         * non-multiple like 45 is refused. 60 sits 0.29 % above 2x (the
+         * true tick rate is 29.913, not 30), so the window has to clear
+         * that; 0.5 % does, and still rejects 45 (50 % out) and 61 (2 %). */
+        if (rate <= 0.0 || k < 1 || k > OPENPETE_RECORD_CFR_MAX_MULT ||
+            fabs(mult - (double)k) > 0.005 * (double)k) {
+            fprintf(stderr,
+                    "openpete: --record-cfr expects an integer multiple of the NTSC "
+                    "tick rate 1125000/37609 (29.913, 59.826, 119.652, ... up to %dx), "
+                    "got: %s\n",
+                    OPENPETE_RECORD_CFR_MAX_MULT, v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->record_cfr = (double)k * OP_TICK_HZ;
+        if (fabs(opts->record_cfr - rate) > 0.001)
+            fprintf(stderr, "openpete: --record-cfr %s -> %.6f fps (NTSC %ldx)\n",
+                    v, opts->record_cfr, k);
+        i++;
+    } else if (strcmp(a, "--record-frames") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->record_frames = atoi(v); i++;
+        if (opts->record_frames < 0) {
+            fprintf(stderr, "openpete: --record-frames expects a non-negative integer\n");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+    } else if (strcmp(a, "--sfxpack-dir") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->sfxpack_dir = v; i++;
+    } else if (strcmp(a, "--texpack-dir") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->texpack_dir = v; i++;
+    } else if (strcmp(a, "--controller-db") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->controller_db = v; i++;
+    } else if (strcmp(a, "--mods-dir") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->mods_dir = v; i++;
+    } else if (strcmp(a, "--mods") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->mods_enabled = v; i++;
+    } else if (strcmp(a, "--compile-mods") == 0) {
+        opts->compile_mods = 1;
+    } else if (strcmp(a, "--dump-sfx-pack") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->dump_sfx_pack_dir = v; i++;
+    } else if (strcmp(a, "--dump-sfx-wads") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->dump_sfx_wads = v; i++;
+    } else if (strcmp(a, "--config") == 0) {
+        /* Consumed by the config loader before this parse; accepted
+         * here so it isn't an unknown flag. */
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--no-config") == 0) {
+        /* likewise */
+    } else if (strcmp(a, "--config-report") == 0) {
+        opts->config_report = 1;
+    } else if (strcmp(a, "--keys-report") == 0) {
+        opts->keys_report = 1;
+    } else if (strcmp(a, "--card-dir") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->card_dir = v; i++;
+    } else if (strcmp(a, "--card1") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->card1_path = v; i++;
+    } else if (strcmp(a, "--card2") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->card2_path = v; i++;
+    } else if (strcmp(a, "--no-card") == 0) {
+        opts->card_a_present = 0;
+        opts->card_b_present = 0;
+    } else if (strcmp(a, "--card-unformatted") == 0) {
+        opts->card_unformatted = 1;
+    } else if (strcmp(a, "--adopt-saves") == 0) {
+        opts->adopt_saves = 1;
+    } else if (strcmp(a, "--resume-handoff") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->resume_handoff = v; i++;
+    } else if (strcmp(a, "--unlock-frames") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->unlock_frames_spec = v;
+        /* Parse "A-B,C-D,..." into ranges. Permissive: skip empty
+         * tokens. Cap at OPENPETE_UNLOCK_RANGES_MAX. */
+        opts->unlock_ranges_count = 0;
+        const char* p = v;
+        while (*p && opts->unlock_ranges_count < OPENPETE_UNLOCK_RANGES_MAX) {
+            while (*p == ',' || *p == ' ') p++;
+            if (!*p) break;
+            char* end = NULL;
+            long lo = strtol(p, &end, 10);
+            if (end == p) break;
+            p = end;
+            long hi = lo;
+            if (*p == '-') {
+                p++;
+                hi = strtol(p, &end, 10);
+                if (end == p) break;
+                p = end;
+            }
+            if (hi < lo) { long t = lo; lo = hi; hi = t; }
+            opts->unlock_ranges[opts->unlock_ranges_count].lo = (int)lo;
+            opts->unlock_ranges[opts->unlock_ranges_count].hi = (int)hi;
+            opts->unlock_ranges_count++;
+        }
+        i++;
+    } else if (strcmp(a, "--position-log") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->position_log_path = v; i++;
+    } else if (strcmp(a, "--gameplay-hash-log") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->gameplay_hash_log_path = v; i++;
+    } else if (strcmp(a, "--frame-time-log") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->frame_time_log_path = v; i++;
+    } else if (strcmp(a, "--pace-log") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->pace_log_path = v; i++;
+    } else if (strcmp(a, "--profile-out") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->profile_out_path = v; i++;
+    } else if (strcmp(a, "--psxtrace-verify") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->psxtrace_verify_path = v; i++;
+    } else if (strcmp(a, "--psxtrace-keep-going") == 0) {
+        opts->psxtrace_keep_going = true;
+    } else if (strcmp(a, "--psxtrace-anchor-pc") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->psxtrace_anchor_pc = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--psxtrace-anchor-hit") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->psxtrace_anchor_hit = (uint32_t)strtoul(v, NULL, 0); i++;
+    } else if (strcmp(a, "--mute") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        /* Accept 0|1 (preferred) plus the legacy on|off so existing
+         * scripts/movies keep working. */
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mute = true;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mute = false;
+        else {
+            fprintf(stderr, "openpete: --mute expects 0|1 (on|off also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--sfx") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (parse_volume_arg(a, v, &opts->sfx_volume) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--music") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (parse_volume_arg(a, v, &opts->music_volume) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--vibration") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (parse_volume_arg(a, v, &opts->vibration) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--mouse") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mouse = 1;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mouse = 0;
+        else {
+            fprintf(stderr, "openpete: --mouse expects 0|1 (on|off also accepted), got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        i++;
+    } else if (strcmp(a, "--input-lock") == 0) {
+        /* The value is optional: the bare flag turns the lock on, and an
+         * explicit 0 is how the command line overrides the env spelling. */
+        opts->input_lock = 1;
+        if (i + 1 < argc) {
+            const char* n = argv[i + 1];
+            if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->input_lock = 1; i++; }
+            else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->input_lock = 0; i++; }
+        }
+    } else if (strcmp(a, "--background") == 0) {
+        /* Optional value, as --input-lock. */
+        opts->background = 1;
+        if (i + 1 < argc) {
+            const char* n = argv[i + 1];
+            if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->background = 1; i++; }
+            else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->background = 0; i++; }
+        }
+    } else if (strcmp(a, "--mouse-sensitivity") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        char* end = NULL;
+        double d = strtod(v, &end);
+        if (!end || *end || !(d >= 0.0) || d > 100.0) {
+            fprintf(stderr, "openpete: --mouse-sensitivity expects a number "
+                    "in 0..100, got: %s\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->mouse_sensitivity = (float)d;
+        i++;
+    } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
+        print_help(opts->display_name, argv[0], opts->default_renderer);
+        opts->help = 1;
+        return OPENPETE_EXIT_OK;
+    } else if (a[0] != '-' && !opts->ingest_path && !opts->disc_path
+               && !opts->exe_path && arg_is_disc_image(a)) {
+        /* A bare path to a disc image - what a desktop file's %f, a
+         * file manager's "Open with" and a drag onto the icon all
+         * deliver. Same meaning as --ingest: the library dedups by
+         * content, so re-opening an already-installed disc just boots
+         * it. */
+        opts->ingest_path = a;
+    } else {
+        /* Config-spliced tokens were never typed, so pointing at the
+         * command line would send the user hunting in the wrong place. */
+        const char* src = openpete_config_token_source(a);
+        if (src)
+            fprintf(stderr, "openpete: unknown arg: %s (from openpete.toml "
+                            "[%s])\n", a, src);
+        else
+            fprintf(stderr, "openpete: unknown arg: %s\n", a);
+        return PARSE_UNKNOWN_ARG;
+    }
+    *ip = i;
+    return OPENPETE_EXIT_OK;
+}
+
+/* 1 = a refused config or env value fails the parse instead of warning and
+ * keeping the default (openpete_options_set_strict). */
+static int s_strict_values;
+
+void openpete_options_set_strict(int on) { s_strict_values = on != 0; }
+
+/** @brief Whether a refused config or env value fails the parse: under strict mode, and under --config-report, which is how a user checks a file. */
+static int refusals_fail(void) {
+    return s_strict_values || openpete_config_report_requested();
+}
+
+/** @brief Warn that the config file's value for the flag at argv[at] was refused and step *ip past it.
+ *
+ * A value the config splice put into argv is a stored setting: refusing it
+ * would stop a config file from booting the game, so the caller keeps the
+ * option's previous value. The warning names the config key, the value and
+ * the openpete.toml table it came from. A typed or bk2-sidecar flag is not
+ * spliced and is refused by the caller, as is every flag under strict mode
+ * and under --config-report (refusals_fail).
+ * @param argc Argument count.
+ * @param argv The spliced argument vector.
+ * @param at Index of the refused flag.
+ * @param ip Receives the index of the flag's last token.
+ * @return 1 when the flag came from the config file and falls back, else 0. */
+static int config_value_falls_back(int argc, char** argv, int at, int* ip) {
+    const char* src = openpete_config_token_source(argv[at]);
+    if (!src || refusals_fail()) return 0;
+    const char* v = NULL;
+    if (at + 1 < argc && strncmp(argv[at + 1], "--", 2) != 0 &&
+        openpete_config_token_source(argv[at + 1]))
+        v = argv[at + 1];
+    int ki = cfg_schema_find_cli(argv[at]);
+    const char* key = ki >= 0 ? cfg_schema(NULL)[ki].id : argv[at];
+    fprintf(stderr, "openpete: openpete.toml [%s]: %s = \"%s\" is not accepted; "
+                    "keeping the default\n", src, key, v ? v : "");
+    *ip = v ? at + 1 : at;
+    return 1;
+}
+
+/** @brief Walk the spliced argv left to right, the last write winning.
+ *
+ * A flag whose value is refused fails the parse, except a flag the config
+ * file supplied: its arm's writes are undone and the option keeps the value
+ * it had (config_value_falls_back). An unknown argument always fails.
+ * --help stops the walk.
+ * @param opts The options block.
+ * @param argc Argument count.
+ * @param argv The spliced argument vector.
+ * @param notes Receives the post-parse facts.
+ * @return OPENPETE_EXIT_OK or OPENPETE_EXIT_SETUP_ERROR. */
+static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
+                            parse_notes_t* notes) {
+    for (int i = 1; i < argc && !opts->help; i++) {
+        openpete_options_t before;
+        memcpy(&before, opts, sizeof before);
+        const int at = i;
+        const int rc = parse_one_flag(opts, argc, argv, &i, notes);
+        if (rc == OPENPETE_EXIT_OK) continue;
+        if (rc == PARSE_UNKNOWN_ARG || !config_value_falls_back(argc, argv, at, &i))
+            return OPENPETE_EXIT_SETUP_ERROR;
+        memcpy(opts, &before, sizeof before);
     }
     return OPENPETE_EXIT_OK;
 }
@@ -1820,12 +1928,29 @@ static int finish_bk2_record(openpete_options_t* opts, int orig_argc,
     return OPENPETE_EXIT_OK;
 }
 
+/** @brief Answer a refused env-spelling value: warn and keep the default, or fail under strict mode.
+ *
+ * The variable may come from the environment or from an openpete.toml [env]
+ * table; either way it is a stored setting, refused by the same rules as the
+ * flag, and a stored setting that stops the game from booting is worse than
+ * the default.
+ * @param name The env var.
+ * @param v Its value.
+ * @return OPENPETE_EXIT_OK after the warning, or OPENPETE_EXIT_SETUP_ERROR when refusals_fail. */
+static int env_value_refused(const char* name, const char* v) {
+    if (refusals_fail()) return OPENPETE_EXIT_SETUP_ERROR;
+    fprintf(stderr, "openpete: %s = \"%s\" is not accepted; keeping the default\n",
+            name, v);
+    return OPENPETE_EXIT_OK;
+}
+
 /** @brief Apply the env spelling of an on/off flag when the flag was not typed (*slot < 0).
  *
  * The CLI beats the env. The variable accepts 1, 0, on or off; an empty or
- * unset variable leaves the slot alone and any other value fails the parse.
- * A harness that launches the game from several sites sets the variable once
- * at the top of the script instead of threading an argument into each site.
+ * unset variable leaves the slot alone and any other value is refused
+ * through env_value_refused. A harness that launches the game from several
+ * sites sets the variable once at the top of the script instead of
+ * threading an argument into each site.
  * @param name The env var.
  * @param slot The tri-state option field. */
 static int env_onoff_fallback(const char* name, int* slot) {
@@ -1837,7 +1962,7 @@ static int env_onoff_fallback(const char* name, int* slot) {
     else {
         fprintf(stderr, "openpete: %s expects 0|1 (on|off also accepted), got: %s\n",
                 name, v);
-        return OPENPETE_EXIT_SETUP_ERROR;
+        return env_value_refused(name, v);
     }
     return OPENPETE_EXIT_OK;
 }
@@ -1864,7 +1989,7 @@ static int apply_env_spellings(openpete_options_t* opts) {
         if (v && *v) {
             int level = -1;
             if (parse_volume_arg("OPENPETE_VIBRATION", v, &level) != 0)
-                return OPENPETE_EXIT_SETUP_ERROR;
+                return env_value_refused("OPENPETE_VIBRATION", v);
             opts->vibration = level;
         }
     }
@@ -1886,6 +2011,62 @@ static int apply_env_spellings(openpete_options_t* opts) {
         }
     }
     return OPENPETE_EXIT_OK;
+}
+
+/** @brief The value of env var `name` in *out when it is set and nonempty.
+ *
+ * @param name The env var.
+ * @param out Receives the value; untouched when the variable is unset or empty.
+ * @return 1 when set and nonempty, else 0. */
+static int env_value(const char* name, const char** out) {
+    const char* e = getenv(name);
+    if (!e || !*e) return 0;
+    *out = e;
+    return 1;
+}
+
+/** @brief Resolve the fields openpete_options_init leaves unset for their env spelling: the env value, else the built-in default.
+ *
+ * Runs after the flag walk, so a typed flag has claimed its field already,
+ * and after the config resolver has applied the openpete.toml [env] tables.
+ * OPENPETE_WIREFRAME is on unless it starts with '0'; OPENPETE_TERRAIN_CACHE
+ * and OPENPETE_DISC_CACHE take atoi's verdict (default 1);
+ * OPENPETE_TERRAIN_VISIBILITY=game selects the game's verdict (default
+ * frustum). OPENPETE_LOAD_DELAY is applied with atoi when set; unset,
+ * load_delay stays -1 and run.c applies the game's default.
+ * OPENPETE_RUN_RECOMP names a guest entry address (strtoul, base auto).
+ * @param opts The options block. */
+static void resolve_env_spellings(openpete_options_t* opts) {
+    const char* e = NULL;
+    if (opts->wireframe < 0)
+        opts->wireframe = env_value("OPENPETE_WIREFRAME", &e) && *e != '0';
+    if (opts->terrain_cache < 0)
+        opts->terrain_cache = env_value("OPENPETE_TERRAIN_CACHE", &e) ? (atoi(e) != 0) : 1;
+    if (opts->disc_cache < 0)
+        opts->disc_cache = env_value("OPENPETE_DISC_CACHE", &e) ? (atoi(e) != 0) : 1;
+    if (opts->load_delay < 0 && env_value("OPENPETE_LOAD_DELAY", &e))
+        opts->load_delay = atoi(e);
+    if (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
+        opts->terrain_visibility =
+            (env_value("OPENPETE_TERRAIN_VISIBILITY", &e) && strcmp(e, "game") == 0)
+                ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    if (env_value("OPENPETE_RUN_RECOMP", &e))
+        opts->run_recomp_addr = (uint32_t)strtoul(e, NULL, 0);
+}
+
+void openpete_options_effective(const openpete_options_t* in,
+                                openpete_options_t* out) {
+    *out = *in;
+    if (out->mouse < 0)                 out->mouse = 1;
+    if (out->input_lock < 0)            out->input_lock = 0;
+    if (out->background < 0)            out->background = 0;
+    if (out->mouse_sensitivity < 0.0f)  out->mouse_sensitivity = 1.0f;
+    if (out->load_delay < 0)            out->load_delay = (int)game_get_load_delay_default();
+    if (out->wireframe < 0)             out->wireframe = 0;
+    if (out->terrain_cache < 0)         out->terrain_cache = 1;
+    if (out->disc_cache < 0)            out->disc_cache = 1;
+    if (out->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
+        out->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -1939,14 +2120,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     /* The EXE-source requirement is deferred to
      * openpete_options_require_exe_source(): the game may resolve a
      * disc AFTER parse via the content-addressed library (--ingest, or
-     * a no-argument boot of an installed entry). Without --run-recomp the
+     * a no-argument boot of an installed entry). Without OPENPETE_RUN_RECOMP the
      * runtime dispatches the EXE header's entry, the crt0, once the header
      * has been read. */
 
     /* After validation, so a bad invocation creates no directory. */
     rc = finish_bk2_record(opts, orig_argc, orig_argv, &notes);
     if (rc != OPENPETE_EXIT_OK) return rc;
-    return apply_env_spellings(opts);
+    rc = apply_env_spellings(opts);
+    resolve_env_spellings(opts);
+    return rc;
 }
 
 int openpete_options_require_exe_source(const openpete_options_t* opts) {

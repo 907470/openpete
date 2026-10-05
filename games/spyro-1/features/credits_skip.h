@@ -29,6 +29,12 @@ typedef struct CPUState CPUState;
  *     for an empty or unknown argument. */
 int spyro1_cutscene_resolve(const char* arg);
 
+struct openpete_surface_sink;
+/** @brief Report every cutscene name --skip-to-cutscene accepts to the surface dump.
+ *
+ * @param sink The dump's collector. */
+void spyro1_cutscene_surface(struct openpete_surface_sink* sink);
+
 /** @brief Returns the level a cutscene target is entered from.
  *
  * @param id A SPYRO1_CUTSCENE_* id.

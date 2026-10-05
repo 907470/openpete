@@ -2,16 +2,14 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 44d88cf684367c8aa8eb324f03393a6cffbbde03
+# head: 78866c80213fc6954422b2f3a6f422833e4bd258
 file	function	score	marked	accepted
-core/config/config.c	harvest_args	30	0	
-core/config/config.c	harvest_base	39	0	
 core/config/config.c	harvest_keys	35	0	
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
 core/config/config.c	openpete_config_report	45	0	
 core/config/knob_registry.c	knob_registry_init	134	0	
-core/config/options.c	parse_flag_chain	784	1	
+core/config/options.c	parse_one_flag	597	1	
 core/config/options.c	tokenize_sidecar_args	43	0	
 core/diag/ident_audit.c	openpete_ident_audit_present	32	0	
 core/diag/log.c	parse_spec	30	0	
@@ -248,4 +246,4 @@ games/spyro-3/renderer/terrain_probe.c	probe_report	32	0
 games/spyro-3/renderer/terrain_probe.c	pv_match	35	0	
 games/spyro-3/renderer/terrain_probe.c	pv_midpoint	42	0	
 tests/bench/record_encode_bench.c	main	57	0	
-tests/unit/knob_registry_test.c	main	61	0	
+tests/unit/knob_registry_test.c	main	62	0	

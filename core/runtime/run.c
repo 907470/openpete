@@ -2830,12 +2830,12 @@ static int run_host_init(const openpete_options_t* opts) {
     }
 
     /* The header's entry is the crt0, which sets sp, fp and gp, stores the
-     * BIOS return address and calls main; an explicit --run-recomp bypasses
+     * BIOS return address and calls main; an explicit OPENPETE_RUN_RECOMP bypasses
      * it and is a diagnostic, since main entered directly runs 8 bytes lower
      * on the stack with the heap words unwritten. */
     g_game.entry = opts->run_recomp_addr ? opts->run_recomp_addr : g_game.cpu.pc;
     if (g_game.entry != g_game.cpu.pc) {
-        OPL_WARN_F("boot", "--run-recomp 0x%08X bypasses the EXE entry 0x%08X: "
+        OPL_WARN_F("boot", "OPENPETE_RUN_RECOMP 0x%08X bypasses the EXE entry 0x%08X: "
                    "stack, heap words and gp differ from hardware",
                    g_game.entry, g_game.cpu.pc);
     }
@@ -7066,7 +7066,7 @@ int openpete_run(const openpete_options_t* opts) {
     }
 
 #ifdef OPENPETE_HAS_PSYCROSS
-    /* Dispatch the entry (the EXE header's, or --run-recomp's) on a fiber
+    /* Dispatch the entry (the EXE header's, or OPENPETE_RUN_RECOMP's) on a fiber
      * and drive a frame loop with VSync yielding back here for present and
      * scene swap. */
     if (openpete_split_applies(opts))

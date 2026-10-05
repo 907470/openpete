@@ -9,6 +9,7 @@
 #include "openpete_freecam.h"
 #include "openpete_knobs.h" /* dev-overlay rows (M key) */
 #include "openpete_log.h"
+#include "openpete_surface.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -121,41 +122,43 @@ static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
     else                                        snprintf(buf, cap, "not in a level");
 }
 
+/* The two dev-overlay rows, as templates: register_rows fills in the
+ * dropdown's display names and the value plumbing, and levelwarp_ui_surface
+ * hands the templates to the surface dump as they are. */
+static const knob_desc_t k_warp_rows[] = {
+    { .id = "warp_level", .label = "Warp: level", .section = "Gameplay",
+      .help = "Destination for the Jump button below. Follows the level you "
+              "are in until you pick something.",
+      .type = KNOB_ENUM, .mut = KNOB_LIVE,
+      .default_note = "the level the player is in" },
+    { .id = "warp_go", .label = "Warp: jump to level", .section = "Gameplay",
+      .help = "Load the selected level through the game's own level "
+              "transition. From the title screen, and on the games whose "
+              "transition goes by way of it, that is a fresh session in the "
+              "chosen level and progress and lives reset, as with "
+              "--skip-to-level. Intentionally divergent gameplay state.",
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Jump" },
+};
+
 /** @brief Add the dropdown and Jump rows to the dev overlay's Gameplay section. */
 static void register_rows(void) {
-    knob_desc_t row;
-
-    memset(&row, 0, sizeof row);
-    row.id          = "warp_level";
-    row.label       = "Warp: level";
-    row.section     = "Gameplay";
-    row.help        = "Destination for the Jump button below. Follows the "
-                      "level you are in until you pick something.";
-    row.type        = KNOB_ENUM;
-    row.mut         = KNOB_LIVE;
+    knob_desc_t row = k_warp_rows[0];
     row.enum_values = s_desc->display;
     row.enum_count  = s_desc->count;
     row.get_num     = sel_get;
     row.set_num     = sel_set;
     (void)openpete_knob_add(&row);
 
-    memset(&row, 0, sizeof row);
-    row.id           = "warp_go";
-    row.label        = "Warp: jump to level";
-    row.section      = "Gameplay";
-    row.help         = "Load the selected level through the game's own level "
-                       "transition. From the title screen, and on the games "
-                       "whose transition goes by way of it, that is a fresh "
-                       "session in the chosen level and progress and lives "
-                       "reset, as with --skip-to-level. Intentionally "
-                       "divergent gameplay state.";
-    row.type         = KNOB_ACTION;
-    row.mut          = KNOB_LIVE;
-    row.get_num      = go_ready;
-    row.set_num      = go_fire;
-    row.get_str      = go_status;
-    row.action_label = "Jump";
+    row         = k_warp_rows[1];
+    row.get_num = go_ready;
+    row.set_num = go_fire;
+    row.get_str = go_status;
     (void)openpete_knob_add(&row);
+}
+
+void levelwarp_ui_surface(struct openpete_surface_sink* sink) {
+    for (size_t i = 0; i < sizeof k_warp_rows / sizeof k_warp_rows[0]; i++)
+        openpete_surface_row(sink, &k_warp_rows[i]);
 }
 
 /* ---- scripted driver --------------------------------------------------- */

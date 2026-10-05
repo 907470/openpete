@@ -214,6 +214,34 @@ target_include_directories(config_resolve_test PRIVATE
 set_target_properties(config_resolve_test PROPERTIES C_STANDARD 11)
 add_test(NAME config_resolve_test COMMAND config_resolve_test)
 
+# options_validate_test - the option parser's shared value validator: a
+# refused value fails when typed and warns and keeps the default from
+# openpete.toml or an env spelling, strict mode fails both, the env spellings
+# resolved after the flags (an [env] table reaches them), and
+# openpete_options_effective. options.c calls SDL for the --bk2-record
+# directory, so the test links SDL statically; the game hooks, the SDL key
+# names and the anchor parser are stubbed.
+if(TARGET SDL3::SDL3-static)
+    add_executable(options_validate_test
+        options_validate_test.c
+        ${CMAKE_SOURCE_DIR}/core/config/options.c
+        ${CMAKE_SOURCE_DIR}/core/config/config.c
+        ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
+        ${CMAKE_SOURCE_DIR}/core/input/keymap.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c
+        ${CMAKE_SOURCE_DIR}/core/config/paths.c
+        ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
+        ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
+    target_include_directories(options_validate_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include)
+    target_link_libraries(options_validate_test PRIVATE SDL3::SDL3-static)
+    if(NOT WIN32)
+        target_link_libraries(options_validate_test PRIVATE m)
+    endif()
+    set_target_properties(options_validate_test PROPERTIES C_STANDARD 11)
+    add_test(NAME options_validate_test COMMAND options_validate_test)
+endif()
+
 # record_encode_bench - encode-throughput validation for --record. Drives the swscale RGBA->yuv420p ->
 # libx264 path with synthetic frames as fast as the encoder allows and
 # reports the sustained fps (480 is the target). Self-contained: finds

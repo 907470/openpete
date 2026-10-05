@@ -22,3 +22,9 @@ typedef struct CPUState CPUState;
  * tick.
  * @param cpu The guest CPU state. */
 void spyro1_cheats_on_tick(CPUState* cpu);
+
+struct openpete_surface_sink;
+/** @brief Report each cheat's dev-overlay row and its --cheats name to the surface dump.
+ *
+ * @param sink The dump's collector. */
+void spyro1_cheats_surface(struct openpete_surface_sink* sink);

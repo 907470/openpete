@@ -72,6 +72,8 @@
     print:    (t) => log(t),
     printErr: (t) => log(t),
     onRuntimeInitialized: () => log("[wasm] runtime ready - drop your disc to boot."),
+    // The game fiber dispatches main() rather than the EXE header's entry.
+    preRun: [() => { ENV.OPENPETE_RUN_RECOMP = RUN_RECOMP_ADDR; }],
   };
 
   // Stream a dropped File into MEMFS in chunks so we never hold the whole
@@ -118,8 +120,7 @@
       canvas.style.display = "block";
       canvas.focus();
       log("[boot] launching...");
-      Module.callMain(["--disc", `${DISC_DIR}/${cue.name}`,
-                       "--run-recomp", RUN_RECOMP_ADDR]);
+      Module.callMain(["--disc", `${DISC_DIR}/${cue.name}`]);
     } catch (e) {
       log("[error] boot failed: " + (e && e.message ? e.message : e));
       console.error(e);

@@ -12,6 +12,7 @@
 #include "openpete_keymap.h"
 #include "game_extras.h"
 #include "openpete_mods.h"
+#include "openpete_surface.h"
 #include "recomp_attach.h"
 #include "mods/mod_wad_overlay.h"
 
@@ -179,6 +180,10 @@ int main(int argc, char** argv) {
      * game it is configuring and how to identify the disc that will boot. */
     openpete_config_set_game_id(game_get_id());
     openpete_config_set_disc_identity_fn(spyro1_config_disc_identity);
+
+    /* OPENPETE_SURFACE_DUMP: write the surface and exit, before any config
+     * or env layer runs. */
+    openpete_surface_dump_run_if_requested(argv[0]);
 
     int rc = parse_options(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;

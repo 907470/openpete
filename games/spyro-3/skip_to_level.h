@@ -32,6 +32,12 @@ const spyro3_level_t* spyro3_level_table(size_t* out_count);
  *         empty, NULL, or unknown argument. */
 int spyro3_level_resolve(const char* arg);
 
+struct openpete_surface_sink;
+/** @brief Report every level name --skip-to-level accepts to the surface dump.
+ *
+ * @param sink The dump's collector. */
+void spyro3_level_surface(struct openpete_surface_sink* sink);
+
 /** @brief Arm the level skip for `number`, or disarm it for 0 or below.
  *
  * Backs game_set_skip_to_level. Arming records the target, sets the phase

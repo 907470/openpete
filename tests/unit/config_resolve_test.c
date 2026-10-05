@@ -27,7 +27,6 @@
   #define rmdir_quiet(p) ((void)rmdir(p))
 #endif
 
-void openpete_config_reset_for_test(void);
 
 static int g_fail;
 static const char *g_case = "";
@@ -86,7 +85,7 @@ static int fake_identity(const char *disc_path, char *serial, size_t sc,
 static run_t run(const char *name, const char *body,
                  const char *const *typed, int with_disc) {
     g_case = name;
-    openpete_config_reset_for_test();
+    openpete_config_reset();
     write_toml(body);
 
     static char *argv[32];
@@ -357,14 +356,25 @@ static void case_env_only_knob(void) {
     expect_env_unset("OPENPETE_NOTEX");
 }
 
-/* Typos and bad values are hard errors: a config line that silently does
- * nothing is the failure mode that costs an hour. */
+/* Typos in keys are hard errors: a config line that silently does nothing
+ * is the failure mode that costs an hour. */
 static void case_validation(void) {
     run_t r = run("unknown key", "lodd = \"extended\"\n", NULL, 0);
     CHECK(r.rc < 0, "an unknown key must fail the run");
 
-    r = run("bad enum value", "lod = \"turbo\"\n", NULL, 0);
-    CHECK(r.rc < 0, "a value outside the vocabulary must fail the run");
+    /* A value of the wrong type is a stored setting gone stale, not a typo
+     * in a key: a boot warns and keeps the default; --config-report, which
+     * is how a file is checked, refuses it. */
+    r = run("bad enum value", "lod = \"turbo\"\nvsync = \"maybe\"\n", NULL, 0);
+    CHECK(r.rc >= 0, "a value outside the vocabulary must not fail a boot");
+    expect_no_flag(&r, "--lod");
+    expect_no_flag(&r, "--vsync");
+    static const char *const report[] = { "--config-report", NULL };
+    r = run("bad enum value, report", "lod = \"turbo\"\n", report, 0);
+    CHECK(r.rc < 0, "--config-report must refuse a value outside the vocabulary");
+    r = run("bad [args] enum value", "[args]\n\"--lod\" = \"turbo\"\n", NULL, 0);
+    CHECK(r.rc >= 0, "an [args] value outside the vocabulary must not fail a boot");
+    expect_no_flag(&r, "--lod");
 
     r = run("non-flag key in [args]",
         "[args]\nlod = \"extended\"\n", NULL, 0);
@@ -474,7 +484,7 @@ static void case_writer_round_trip(void) {
 
     /* Read the written file back: [saved] must now outrank both scopes. */
     g_case = "writer: saved tier reads back";
-    openpete_config_reset_for_test();
+    openpete_config_reset();
     static char *argv[8];
     int argc = 0;
     argv[argc++] = (char *)"openpete";
@@ -540,7 +550,7 @@ static void case_fov_zero_round_trip(void) {
     CHECK(strstr(body, "fov = 0\n") != NULL, "fov 0 should be written bare");
 
     g_case = "fov 0: read back";
-    openpete_config_reset_for_test();
+    openpete_config_reset();
     static char *argv[4];
     argv[0] = (char *)"openpete";
     argv[1] = (char *)"--config";

@@ -71,6 +71,12 @@ typedef struct {
  * @param desc The game's descriptor; it must outlive the process. */
 void levelwarp_ui_register(const levelwarp_ui_desc_t* desc);
 
+struct openpete_surface_sink;
+/** @brief Report the dropdown and Jump row templates to the surface dump, without registering them.
+ *
+ * @param sink The dump's collector. */
+void levelwarp_ui_surface(struct openpete_surface_sink* sink);
+
 /** @brief Run the per-tick front half: refresh the route, follow the dropdown, and drain a queued request.
  *
  * Queues a due scripted request first, so it lands where a click lands. The

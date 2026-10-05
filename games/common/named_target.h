@@ -19,6 +19,8 @@
 extern "C" {
 #endif
 
+struct openpete_surface_sink;
+
 typedef struct {
     const void* base;      /* first element of the table */
     size_t      stride;    /* bytes between elements */
@@ -68,6 +70,15 @@ int named_target_resolve(const char* arg, const char* kind,
                          const named_target_table_t* tbl,
                          const named_target_table_t* aliases,
                          unsigned flags);
+
+/** @brief Report every name of a table to the surface dump as a vocabulary entry of `flag`.
+ *
+ * @param sink The dump's collector.
+ * @param table Vocabulary table name ("level", "cutscene").
+ * @param flag The flag that takes the names.
+ * @param tbl The table. */
+void named_target_surface(struct openpete_surface_sink* sink, const char* table,
+                          const char* flag, const named_target_table_t* tbl);
 
 #ifdef __cplusplus
 }

@@ -18,6 +18,16 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
+- A setting in `openpete.toml` or an `OPENPETE_*` environment variable whose value is the wrong type or out of range
+  (`ssaa = 0`, `lod = "turbo"`, `OPENPETE_MOUSE=maybe`) no longer stops the game from starting: it prints a warning
+  and the setting keeps its default. The same value typed on the command line, and any refused value under
+  `--config-report`, still exits with an error.
+- `OPENPETE_WIREFRAME`, `OPENPETE_TERRAIN_CACHE`, `OPENPETE_DISC_CACHE`, `OPENPETE_LOAD_DELAY` and
+  `OPENPETE_TERRAIN_VISIBILITY` set from an `[env]` table in `openpete.toml` take effect.
+- `--help` lists `--ingest`, `--compile-mods`, `--log-file` and `--no-log-file` with the player-facing flags, and
+  `--psycross-native-raster` with the debug flags. `--run-recomp` is removed; its spelling is the environment
+  variable `OPENPETE_RUN_RECOMP`.
+- Spyro 2 and 3: `--keys-report` prints every key action and its binding.
 - Spyro 1 and 2: `--skip-to-cutscene` plays the story cutscenes by name (`--skip-to-cutscene zzz` lists them). Spyro 3: `--skip-to-cutscene` plays the 19 story cutscenes by their loading captions, and `--skip-to-area <level>:<area>` boots into a sub-area. `tests/harness/check_skip_targets.sh` and the `skip_targets_spyro-N` ctests run every row of `games/<game>/corpus/skip-targets.manifest`.
 - Renderer: scene depth is now reversed on the float depth format (`gl_FragCoord.z` = 1/viewZ, larger is nearer),
   so distant surfaces no longer tie and flicker by draw order. Mod shaders reading depth through

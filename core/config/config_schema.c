@@ -75,6 +75,12 @@ static const cfg_knob_t g_schema[] = {
     { "mods_dir",         "--mods-dir",         "OPENPETE_MODS_DIR",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "mods",             "--mods",             "OPENPETE_MODS",         CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "card_dir",         "--card-dir",         "OPENPETE_CARD_DIR",     CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "log_file",         "--log-file",         "OPENPETE_LOG_FILE",     CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "no_log_file",      "--no-log-file",      NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
+    { "card1",            "--card1",            NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "card2",            "--card2",            NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "no_card",          "--no-card",          NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
+    { "card_unformatted", "--card-unformatted", NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
 
     /* -------- Gameplay entry -------- */
     { "skip_to_level",    "--skip-to-level",    NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
@@ -86,18 +92,27 @@ static const cfg_knob_t g_schema[] = {
     { "player_pose",      "--player-pose",      "OPENPETE_PLAYER_POSE",  CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "camlock",          NULL,                 "OPENPETE_CAMLOCK",      CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "bk2",              "--bk2",              NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "bk2_frame_offset", "--bk2-frame-offset", NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "bk2_stop_on_end",  "--bk2-stop-on-end",  NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
+    { "bk2_record",       "--bk2-record",       NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
 
     /* -------- Recording -------- */
     { "record",           "--record",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "record_cfr",       "--record-cfr",       NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "record_frames",    "--record-frames",    NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "record_fps_overlay", "--record-fps-overlay", "OPENPETE_FPS_IN_RECORD", CFG_BOOL, NULL,    NULL,       NULL,       0 },
+    { "record_encoder",   "--record-encoder",   NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "record_crf",       "--record-crf",       NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "record_gop",       "--record-gop",       NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "record_pixfmt",    "--record-pixfmt",    NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "no_record_audio",  "--no-record-audio",  NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
+    { "record_audio_encoder", "--record-audio-encoder", NULL,            CFG_STRING, NULL,       NULL,       NULL,       0 },
 
     /* -------- Debug -------- */
     { "render_paths",     "--render-paths",     NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "psycross_native_raster", "--psycross-native-raster", NULL,        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "log_level",        "--log-level",        "OPENPETE_LOG",          CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "log_format",       "--log-format",       NULL,                    CFG_ENUM,   v_logfmt,   NULL,       NULL,       0 },
-    { "log_file",         "--log-file",         "OPENPETE_LOG_FILE",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "devui_open",       "--devui-open",       "OPENPETE_DEVUI_OPEN",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "devui_inject_mouse", NULL,                   "OPENPETE_DEVUI_INJECT_MOUSE", CFG_STRING, NULL, NULL,   NULL,       0 },
     { "fillpick",         NULL,                 "OPENPETE_FILLPICK",     CFG_BOOL,   NULL,       NULL,       NULL,       0 },

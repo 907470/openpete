@@ -564,6 +564,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # The surface dump (OPENPETE_SURFACE_DUMP): each game writes its flags,
+    # registry rows, menu rows, key actions and vocabularies with their
+    # declared defaults, and the selfcheck parses every flag at its declared
+    # default against the default parse. A broken default (the negative
+    # control) must fail it. Parse-only; no disc.
+    foreach(_surface_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME surface_dump_${_surface_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_surface_dump.sh
+                         --game ${_surface_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(surface_dump_${_surface_game} PROPERTIES
+            LABELS "tooling"
+            TIMEOUT 120
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # The 3D glyph text gate: the settings menu, the OSD toasts and the
     # performance readout publish glyph vertices from the game's own font, and
     # Spyro 3's glyph cache file round-trips and rejects a tampered copy. Rows

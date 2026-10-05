@@ -9,6 +9,7 @@
 
 #include "game_extras.h"
 #include "feature_registry.h"
+#include "features/levelwarp_ui.h"
 #include "openpete_mods.h"
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
@@ -208,6 +209,13 @@ int  game_resolve_area_arg(const char* arg, int* out_area) {
 /* The table is features/levelwarp.c's, shared with the dev-overlay warp dropdown. */
 int game_resolve_level_arg(const char* arg) {
     return spyro1_level_resolve(arg);
+}
+
+void game_surface(struct openpete_surface_sink* sink) {
+    spyro1_cheats_surface(sink);
+    levelwarp_ui_surface(sink);
+    spyro1_level_surface(sink);
+    spyro1_cutscene_surface(sink);
 }
 
 void game_on_hash_emit(uint32_t frame) {

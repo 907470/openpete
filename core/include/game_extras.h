@@ -262,6 +262,17 @@ void game_set_skip_to_area(int level_id, int area);
  *         else -1. */
 int game_validate_cheats_arg(const char* spec);
 
+struct openpete_surface_sink;
+/** @brief Report the game's feature rows and flag vocabularies to the surface dump.
+ *
+ * Emits, from the features' static tables and without running any
+ * feature's apply_options: the registry rows the features register (cheat
+ * buttons, the level-warp rows) through openpete_surface_row, and the
+ * level, cutscene, area and cheat names the parser accepts through
+ * openpete_surface_vocab.
+ * @param sink The dump's collector. */
+void game_surface(struct openpete_surface_sink* sink);
+
 /* --no-lod setup is a feature module - see core/include/no_lod.h and
  * core/renderer/no_lod.c. */
 
