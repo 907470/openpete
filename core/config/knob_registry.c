@@ -1638,7 +1638,21 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LATCHED("ACTOR_OWN_KEY", "Debug", "1",
         "Actor faces contest only other mobys' keys (0 = own keys too)."),
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
-        "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
+        "Master switch for the three ordering-bias mechanisms mirrored from "
+        "the game's OT depth pull: 0 turns off MOBY_TIE_PULL, MOBY_FACE_KEY "
+        "and PLAYER_SORT_PULL together."),
+    ENVROW_LATCHED("MOBY_TIE_PULL", "Debug", "1",
+        "Moby walk: feed each vertex 127 world units nearer than its true "
+        "view-Z when the record centre is in front of the camera, so a "
+        "same-slot moby-versus-terrain tie resolves to the moby (0 = off)."),
+    ENVROW_LATCHED("MOBY_FACE_KEY", "Debug", "1",
+        "Moby walk: write each opaque actor face's ordering key (mean "
+        "perspective W less 128 x the authored depth offset) into the actor "
+        "key image for the key contest (0 = off)."),
+    ENVROW_LATCHED("PLAYER_SORT_PULL", "Debug", "1",
+        "Spyro walk: apply the sortDepth pulls - the front sentinel's "
+        "whole-model near pull, otherwise the 127-unit tie pull and the "
+        "mirrored copy's negative depth-key bias (0 = off)."),
     ENVROW_LIVE("MOBY_TRUESCOPE", "Debug", "1",
         "Scope moby og-key yields by true depth (0 = og compound painter)."),
     ENVROW_LATCHED("SHADED_OTBIAS", "Debug", "1",

@@ -1101,7 +1101,7 @@ static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int 
  * Per vertex: sx, sy from project(), replaced by moby_gte_near_fixup inside
  * the GTE's saturation regime; vz the full-world view Z (the projected Z
  * times 2^m_Scale) less the one-slot tie pull OPENPETE_MOBY_TIE_PULL_VZ when
- * the record centre is in front of the camera (OPENPETE_MOBY_OTBIAS=0 drops
+ * the record centre is in front of the camera (moby_tie_pull_on() off drops
  * the pull), since the .s resolves a same-slot moby-terrain tie to the moby;
  * tvz the perspective W; ex, ey, ez the rotated vertex offset (M.v)/4096, the
  * specular env-UV input; iv the integer RTPS of the record's paint key. When
@@ -1229,8 +1229,6 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
      * genuinely occludes them). Its authored job - "win the surface I sit
      * on" - survives as the sub-slot tie pull below, which can only flip
      * pairs the OT calls a tie. */
-    static int s_otbias_on = -1;   /* OPENPETE_MOBY_OTBIAS=0 disables the tie pull (A/B) */
-    if (s_otbias_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_otbias_on = (e && *e) ? (*e != '0') : 1; }
     /* OPENPETE_DEPTHDBG="f0,f1": per-record OT-key inputs (header, w0/dofs,
      * pull, centre) for frames [f0,f1] - the OT-sort parity forensics
      * instrument (pairs with the Spyro-feed line and the moby TRIDBG box). */
@@ -1246,7 +1244,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
      * camera, so behind-camera records keep raw signed depths and emit's
      * vz<=0 near cull stays authoritative. */
     double ot_centre = 0.0;        /* 0 = disabled */
-    if (s_otbias_on) {
+    if (moby_tie_pull_on()) {
         double centre_full = TR_frac
             ? TR_frac[2] * 4.0                       /* full-world = stored x4 */
             : (double)TR_raw[2] * 4.0;
@@ -3100,6 +3098,41 @@ static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
  * renderer/moby.h for what each one is. */
 double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy) {
     return tri_nclip(ax, ay, bx, by, cx, cy);
+}
+
+/** @brief Latch one ordering-bias mechanism's switch: off when the master or the mechanism's own variable starts with '0'.
+ *
+ * An unset or empty variable reads as on. The master OPENPETE_MOBY_OTBIAS is
+ * latched once for every mechanism; `slot` latches the combined verdict.
+ * @param slot The mechanism's latch, seeded to -1; written on the first call.
+ * @param var The mechanism's own environment variable.
+ * @return 1 when the mechanism applies, else 0. */
+static int moby_otbias_latch(int* slot, const char* var) {
+    static int s_master = -1;
+    if (*slot < 0) {
+        if (s_master < 0) {
+            const char* m = getenv("OPENPETE_MOBY_OTBIAS");
+            s_master = !(m && *m == '0');
+        }
+        const char* e = getenv(var);
+        *slot = s_master && !(e && *e == '0');
+    }
+    return *slot;
+}
+
+int moby_tie_pull_on(void) {
+    static int s_on = -1;
+    return moby_otbias_latch(&s_on, "OPENPETE_MOBY_TIE_PULL");
+}
+
+int moby_face_key_on(void) {
+    static int s_on = -1;
+    return moby_otbias_latch(&s_on, "OPENPETE_MOBY_FACE_KEY");
+}
+
+int moby_player_sort_pull_on(void) {
+    static int s_on = -1;
+    return moby_otbias_latch(&s_on, "OPENPETE_PLAYER_SORT_PULL");
 }
 
 int moby_abr_blend(int abr) {
@@ -6684,10 +6717,8 @@ static void push_scene_moby(void) {
          * moby flooded a whole wall away). A genuinely-near moby needs no
          * key anyway - it is the viewer-side surface and TRUE depth
          * already wins its own pixels. */
-        { static int s_kob = -1;
-          if (s_kob < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS");
-              s_kob = (e && *e) ? (*e != '0') : 1; }
-          if (s_kob && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
+        {
+          if (moby_face_key_on() && cat == OPENPETE_SCENE_ACTOR && t.blend == 0 &&
               !s_wtri_mangle[i] &&
               s_wtri_moby[i] && openpete_native_key_resolve_on()) {
               int dofs = (int)s_wtri_dofs[i];

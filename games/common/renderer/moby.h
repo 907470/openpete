@@ -313,6 +313,24 @@ double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy
  * @return The blend id, 1..4. Opaque (0) is the caller's, from its own
  *         semi-transparency bit. */
 int    moby_abr_blend(int abr);
+/** @brief Whether the moby walk subtracts the sub-slot tie pull from each vertex's stored view-Z.
+ *
+ * On unless OPENPETE_MOBY_OTBIAS or OPENPETE_MOBY_TIE_PULL is set to a value
+ * starting with '0'; both are read once and latched.
+ * @return 1 when the tie pull applies, else 0. */
+int    moby_tie_pull_on(void);
+/** @brief Whether opaque actor faces write their ordering-table key (mean view-Z less the authored depth offset) into the actor key image.
+ *
+ * On unless OPENPETE_MOBY_OTBIAS or OPENPETE_MOBY_FACE_KEY is set to a value
+ * starting with '0'; both are read once and latched.
+ * @return 1 when the face key channel applies, else 0. */
+int    moby_face_key_on(void);
+/** @brief Whether the player walk applies its sortDepth pulls: the front-sentinel whole-model near pull, the tie pull, and the mirrored copy's negative bias.
+ *
+ * On unless OPENPETE_MOBY_OTBIAS or OPENPETE_PLAYER_SORT_PULL is set to a
+ * value starting with '0'; both are read once and latched.
+ * @return 1 when the sortDepth pulls apply, else 0. */
+int    moby_player_sort_pull_on(void);
 /** @brief Fill one face record's texture fields from its three texture words.
  *
  * The words are {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16} and

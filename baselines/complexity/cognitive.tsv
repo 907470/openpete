@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 8fe134e2e1c3b2bc1a2510b38b776e8050cfb080
+# head: e86695beb6aac83755a10147dba15eea31e09100
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -132,13 +132,13 @@ games/common/renderer/moby.c	compare_walk_vs_prims	251	0
 games/common/renderer/moby.c	emit_wtri	26	0	
 games/common/renderer/moby.c	hex_dump	35	0	
 games/common/renderer/moby.c	moby_build_validate	51	0	
-games/common/renderer/moby.c	moby_decode_project	83	0	
+games/common/renderer/moby.c	moby_decode_project	79	0	
 games/common/renderer/moby.c	moby_native_pass	46	0	
 games/common/renderer/moby.c	moby_reextract_body	48	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	183	0	
-games/common/renderer/moby.c	push_scene_moby	52	0	
+games/common/renderer/moby.c	push_scene_moby	46	0	
 games/common/renderer/moby.c	reextract_record_pass	215	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
@@ -157,7 +157,7 @@ games/common/renderer/particles.c	part_census	36	0
 games/common/renderer/player.c	pair_lists	27	0	
 games/common/renderer/player.c	plane_emit	32	0	
 games/common/renderer/player.c	player_build_walk	80	0	
-games/common/renderer/player.c	player_feed_walk_ex	64	0	
+games/common/renderer/player.c	player_feed_walk_ex	60	0	
 games/common/renderer/player.c	player_records_epoch_commit	200	0	
 games/common/renderer/player.c	player_reextract_record	27	0	
 games/common/renderer/player.c	player_verify_report	109	0	

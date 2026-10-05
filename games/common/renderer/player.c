@@ -810,7 +810,8 @@ static float player_part_key(int vidx, int sd)
  * policy: the provider's front sentinel pulls the whole model toward the near
  * plane by a cap shared across the tick's calls (player_flat_min), any other
  * value applies a one-slot tie pull, and the mirrored copy adds its own
- * negative bias to the depth key; OPENPETE_MOBY_OTBIAS=0 disables all of them.
+ * negative bias to the depth key; moby_player_sort_pull_on() off
+ * (OPENPETE_PLAYER_SORT_PULL=0 or OPENPETE_MOBY_OTBIAS=0) disables all of them.
  * Perspective W is taken from the unpulled view-Z. Triangles carry the PLAYER
  * tag of s_player_slot, and an opaque one an ordering key from its first
  * vertex's part. OPENPETE_SPYRO_UNTEX draws every triangle untextured;
@@ -834,14 +835,13 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
      * EXCEPTION: the saturated sentinel is the draw's own "ordering slot 0 -
      * draw in front of everything". That is authored full-front LAYERING, not
      * contact depth: keep the near-plane-capped whole-model pull for exactly
-     * that value. OPENPETE_MOBY_OTBIAS=0 disables both. */
+     * that value. OPENPETE_PLAYER_SORT_PULL=0 disables both. */
     double sp_pull = 0.0;
     double tie_pull = 0.0;
     int sd = PL.sort_depth_off ? (int)(int8_t)cpu->read_byte(PL.base + PL.sort_depth_off) : 0;
     {
-        static int s_on = -1;
-        if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_on = (e && *e) ? (*e != '0') : 1; }
-        if (s_on && player_game.sort_depth_front && sd == player_game.sort_depth_front) {
+        int pull_on = moby_player_sort_pull_on();
+        if (pull_on && player_game.sort_depth_front && sd == player_game.sort_depth_front) {
             sp_pull = OPENPETE_OT_SLOT_WORLD * (double)sd;
             /* Cap the pull per tick so the nearest vertex lands ON the near
              * floor instead of clamping each vertex at it: a per-vertex clamp
@@ -855,7 +855,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
             double fmin = player_flat_min(minvz);
             if (fmin - sp_pull < 1.0) sp_pull = fmin > 1.0 ? fmin - 1.0 : 0.0;
             if (minvz - sp_pull < 1.0) sp_pull = minvz > 1.0 ? minvz - 1.0 : 0.0;
-        } else if (s_on) {
+        } else if (pull_on) {
             /* One-slot tie pull: 127 world is under one ordering slot, so it
              * can only flip pairs the original called a tie. */
             tie_pull = 127.0;
