@@ -26,10 +26,16 @@
 // fades. The pentagon, its bounds and the opening plane come from the portal
 // record the pass drew, projected under the view without the pass's 4:3
 // clamp (p3_native_opening), so the preview reaches the edges of a wider
-// frame. The opening polygon goes out as the portal's stencil mask and the
-// picture as portal-cyclorama triangles, both at the opening plane's depth
-// minus the plane-cover margin, so terrain in front of the opening occludes
-// the picture per pixel and terrain behind it does not. The picture is
+// frame. The opening goes out as the portal's stencil mask and the picture
+// as portal-cyclorama triangles. Inside the pentagon both test at the
+// opening plane's depth minus the plane-cover margin, so terrain in front of
+// the opening occludes the picture per pixel and terrain behind it does not.
+// The pentagon is the game's approximation of the frame's hole; a band
+// P3_BAND_W wide outside it, in the opening plane, tests just behind the
+// plane, so the picture reaches the frame's stone wherever the hole is wider
+// than the pentagon and loses to any stone at or in front of the plane. The
+// terrain feeder culls the band of terrain lying in the opening plane inside
+// the pentagon (the inner rim) from the view-space outline. The picture is
 // authored in the 4:3 frame and shifts by the frame's centre offset. Sub-tick
 // presents replay the captured previews; a preview that has a partner in the
 // previous tick (same mesh and leaf argument) has its rect, edges, depth and
@@ -272,8 +278,9 @@ static int p3_clip_edge(const p3_v* in, int n, p3_v* out, float ax, float ay, fl
  * x - camX), rotated by the camera matrix, divided about (256, 120)), with no
  * frame clamp, every edge kept and a vertex behind SZ 256 clipped at SZ 256
  * the way the pass intersects such an edge. Its bounds are the projected
- * pentagon's, clamped to the visible screen-X range and the pass's rows; at
- * 4:3 they are the pass's rect and edges, computed in float.
+ * pentagon's outward band (p3_dilate_polygon), clamped to the visible
+ * screen-X range and the pass's rows; its edges are the pentagon's, at 4:3
+ * the pass's own computed in float.
  *
  * The same derivation yields the opening plane, which the preview tests
  * against per pixel (p3_vertex_depth) instead of at the pass's single depth.
@@ -290,6 +297,8 @@ typedef struct { float xmin, xmax, ymin, ymax; int widened; } p3_bounds;
 #define P3_FRAME_Y1 228
 #define P3_NEAR_SZ  256.0  /* func_8001C0F4's near outcode, where the pass clips an edge */
 #define P3_CX       256.0  /* the screen centre the meshes are authored about */
+#define P3_BAND_W   32.0   /* the outline's outward band in the opening plane, world units */
+#define P3_BAND_EPS 24.0   /* the band's test depth behind the opening plane, world units */
 #define P3_CY       120.0
 
 /* A preview's opening re-derived from its portal record under the view being
@@ -299,8 +308,11 @@ typedef struct {
     p3_bounds b;
     int      nedge;
     float    ex[P3_MAX_EDGES][2], ey[P3_MAX_EDGES][2];
+    int      ndil;                       /* the outline dilated by P3_BAND_W in the plane */
+    float    dx[P3_MAX_EDGES][2], dy[P3_MAX_EDGES][2];
     double   a, b_, c;                   /* 1/vz = a x + b_ y + c */
     double   far_vz;                     /* the farthest opening vertex's view-Z */
+    double   V[5][3];                    /* the pentagon in view space, unclipped */
 } p3_opening;
 
 /** @brief Whether every corner of the 4:3 frame's width at the rect's rows is inside every pentagon edge.
@@ -413,24 +425,95 @@ static int p3_plane_fit(const double V[][3], int n, double H, p3_opening* o) {
     return 1;
 }
 
-/** @brief Fills the opening's edges from its projected polygon, wound so the inside is cross >= 0.
+/** @brief Fills an edge list from a projected polygon, wound so the inside is cross >= 0.
  * @param x The projected X.
  * @param y The projected Y.
  * @param n The vertex count, at most P3_MAX_EDGES.
- * @param o Receives nedge, ex and ey. */
-static void p3_opening_edges(const float* x, const float* y, int n, p3_opening* o) {
+ * @param ex Receives each edge's two X.
+ * @param ey Receives each edge's two Y. */
+static void p3_polygon_edges(const float* x, const float* y, int n,
+                             float ex[P3_MAX_EDGES][2], float ey[P3_MAX_EDGES][2]) {
     double area = 0.0;
     for (int i = 0; i < n; i++) {
         const int j = (i + 1) % n;
         area += (double)x[i] * y[j] - (double)x[j] * y[i];
     }
-    o->nedge = n;
     for (int i = 0; i < n; i++) {
         const int a = area >= 0.0 ? i : n - 1 - i;
         const int b = area >= 0.0 ? (i + 1) % n : (2 * n - 2 - i) % n;
-        o->ex[i][0] = x[a]; o->ey[i][0] = y[a];
-        o->ex[i][1] = x[b]; o->ey[i][1] = y[b];
+        ex[i][0] = x[a]; ey[i][0] = y[a];
+        ex[i][1] = x[b]; ey[i][1] = y[b];
     }
+}
+
+/** @brief Projects a view-space polygon, clipped at SZ P3_NEAR_SZ, into the authored screen space.
+ * @param V The view-space polygon.
+ * @param n Its vertex count, at most P3_MAX_EDGES / 2.
+ * @param H The projection distance.
+ * @param x Receives the projected X; room for P3_MAX_EDGES.
+ * @param y Receives the projected Y; room for P3_MAX_EDGES.
+ * @return The projected vertex count, 0 when fewer than 3 survive the clip. */
+static int p3_project_polygon(const double V[][3], int n, double H, float* x, float* y) {
+    double C[P3_MAX_EDGES][3];
+    const int m = p3_clip_near(V, n, C);
+    if (m < 3 || m > P3_MAX_EDGES) return 0;
+    for (int i = 0; i < m; i++) {
+        x[i] = (float)(P3_CX + C[i][0] * H / C[i][2]);
+        y[i] = (float)(P3_CY + C[i][1] * H / C[i][2]);
+    }
+    return m;
+}
+
+/** @brief Dilates a planar convex view-space polygon outward by `w` within its own plane.
+ *
+ * Each edge moves out by `w` along the in-plane direction perpendicular to it
+ * and away from the vertex mean; each vertex moves to the meeting point of its
+ * two moved edges, V + w (u0 + u1) / (1 + u0.u1). Vertices closer than 1e-3
+ * to their predecessor are dropped first, since a zero-length edge has no
+ * direction (the pass's own pentagon repeats a vertex).
+ * @param V The polygon.
+ * @param n Its vertex count, at most 5.
+ * @param w The band width in world units.
+ * @param D Receives the dilated polygon.
+ * @return The dilated vertex count, 0 when fewer than 3 distinct vertices remain or the polygon is degenerate. */
+static int p3_dilate_polygon(const double V[][3], int n, double w, double D[][3]) {
+    double P[5][3], m[3] = { 0, 0, 0 }, N[3] = { 0, 0, 0 };
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        const double* q = V[i];
+        if (k && fabs(q[0] - P[k - 1][0]) + fabs(q[1] - P[k - 1][1]) + fabs(q[2] - P[k - 1][2]) < 1e-3) continue;
+        memcpy(P[k++], q, sizeof P[0]);
+    }
+    if (k >= 2 && fabs(P[0][0] - P[k - 1][0]) + fabs(P[0][1] - P[k - 1][1]) + fabs(P[0][2] - P[k - 1][2]) < 1e-3) k--;
+    if (k < 3) return 0;
+    for (int i = 0; i < k; i++) {
+        const double* a = P[i];
+        const double* b = P[(i + 1) % k];
+        N[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        N[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        N[2] += (a[0] - b[0]) * (a[1] + b[1]);
+        for (int c = 0; c < 3; c++) m[c] += a[c] / (double)k;
+    }
+    double U[5][3];
+    for (int i = 0; i < k; i++) {
+        const double* a = P[i];
+        const double* b = P[(i + 1) % k];
+        const double d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+        double u[3] = { N[1] * d[2] - N[2] * d[1], N[2] * d[0] - N[0] * d[2], N[0] * d[1] - N[1] * d[0] };
+        const double ul = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+        if (ul < 1e-9) return 0;
+        const double out = (a[0] + b[0]) * 0.5 - m[0], oy = (a[1] + b[1]) * 0.5 - m[1], oz = (a[2] + b[2]) * 0.5 - m[2];
+        const double sgn = (u[0] * out + u[1] * oy + u[2] * oz) < 0.0 ? -1.0 : 1.0;
+        for (int c = 0; c < 3; c++) U[i][c] = sgn * u[c] / ul;
+    }
+    for (int i = 0; i < k; i++) {
+        const double* u0 = U[(i + k - 1) % k];
+        const double* u1 = U[i];
+        const double dot = u0[0] * u1[0] + u0[1] * u1[1] + u0[2] * u1[2];
+        const double f = dot > -0.9 ? w / (1.0 + dot) : w;
+        for (int c = 0; c < 3; c++) D[i][c] = P[i][c] + f * (u0[c] + u1[c]);
+    }
+    return k;
 }
 
 /** @brief Re-derives a preview's opening from its portal record under the view `v`.
@@ -446,21 +529,25 @@ static void p3_opening_edges(const float* x, const float* y, int n, p3_opening* 
 static void p3_native_opening(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_opening* o) {
     memset(o, 0, sizeof *o);
     if (!p->rec) return;
-    double W[5][3], V[5][3], C[10][3];
+    double W[5][3], V[5][3], D[5][3];
     p3_record_vertices(cpu, p->rec, W);
     for (int i = 0; i < 5; i++)
         ngte_mac(v->cam_M, v->cam[1] - W[i][1], v->cam[2] - W[i][2], W[i][0] - v->cam[0],
                  &V[i][0], &V[i][1], &V[i][2]);
-    const int n = p3_clip_near((const double (*)[3])V, 5, C);
-    if (n < 3 || n > P3_MAX_EDGES) return;
+    memcpy(o->V, V, sizeof o->V);
+    float x[P3_MAX_EDGES], y[P3_MAX_EDGES], dxs[P3_MAX_EDGES], dys[P3_MAX_EDGES];
+    const int n = p3_project_polygon((const double (*)[3])V, 5, v->H_eff, x, y);
+    if (n < 3) return;
     if (!p3_plane_fit((const double (*)[3])V, 5, v->H_eff, o)) return;
-    float x[P3_MAX_EDGES], y[P3_MAX_EDGES];
+    const int nd = p3_dilate_polygon((const double (*)[3])V, 5, P3_BAND_W, D);
+    o->ndil = nd ? p3_project_polygon((const double (*)[3])D, nd, v->H_eff, dxs, dys) : 0;
+    const float* bx = o->ndil ? dxs : x;
+    const float* by = o->ndil ? dys : y;
+    const int bn = o->ndil ? o->ndil : n;
     float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
-    for (int i = 0; i < n; i++) {
-        x[i] = (float)(P3_CX + C[i][0] * v->H_eff / C[i][2]);
-        y[i] = (float)(P3_CY + C[i][1] * v->H_eff / C[i][2]);
-        x0 = fminf(x0, x[i]); x1 = fmaxf(x1, x[i]);
-        y0 = fminf(y0, y[i]); y1 = fmaxf(y1, y[i]);
+    for (int i = 0; i < bn; i++) {
+        x0 = fminf(x0, bx[i]); x1 = fmaxf(x1, bx[i]);
+        y0 = fminf(y0, by[i]); y1 = fmaxf(y1, by[i]);
     }
     for (int i = 0; i < 5; i++) o->far_vz = fmax(o->far_vz, V[i][2]);
     float xlo = (float)P3_FRAME_X0, xhi = (float)P3_FRAME_X1;
@@ -469,26 +556,31 @@ static void p3_native_opening(CPUState* cpu, const ngte_view* v, const p3_previe
     o->b.ymin = fmaxf(y0, (float)P3_FRAME_Y0); o->b.ymax = fminf(y1, (float)P3_FRAME_Y1);
     if (o->b.xmin >= o->b.xmax || o->b.ymin >= o->b.ymax) return;
     o->b.widened = o->b.xmin < (float)P3_FRAME_X0 || o->b.xmax > (float)P3_FRAME_X1;
-    p3_opening_edges(x, y, n, o);
+    o->nedge = n;
+    p3_polygon_edges(x, y, n, o->ex, o->ey);
+    if (o->ndil) p3_polygon_edges(dxs, dys, o->ndil, o->dx, o->dy);
     o->ok = 1;
 }
 
 /** @brief The scene depth a preview vertex tests at.
  *
- * On a re-derived opening, the opening plane's view-Z at the vertex pulled
- * nearer by the plane-cover margin (openpete_portal_plane_margin), floored at
- * 1: inside the footprint the preview covers everything at or behind
- * plane - M. Otherwise the pass's single depth, unpulled.
+ * On a re-derived opening, the opening plane's view-Z at the vertex moved by
+ * `plane_off` world units, floored at 1. Inside the outline the offset is
+ * minus the plane-cover margin (openpete_portal_plane_margin): the preview
+ * covers everything at or behind plane - M. In the outline's outward band it
+ * is +P3_BAND_EPS: the band covers only what lies behind the plane, so frame
+ * stone at or in front of it wins. Otherwise the pass's single depth.
  * @param op The re-derived opening, or NULL.
  * @param depth_world The pass's depth in world units.
+ * @param plane_off The offset from the plane in world units, + behind.
  * @param x The vertex's authored screen X.
  * @param y The vertex's authored screen Y.
  * @return The scene depth. */
-static float p3_vertex_depth(const p3_opening* op, float depth_world, float x, float y) {
+static float p3_vertex_depth(const p3_opening* op, float depth_world, double plane_off, float x, float y) {
     if (!op || !op->ok)
         return openpete_native_scene_viewz(openpete_worldvz_scaled(depth_world, 1.0f));
     const double inv = op->a * x + op->b_ * y + op->c;
-    double vz = (inv > 1e-9 ? 1.0 / inv : 1e9) - (double)openpete_portal_plane_margin();
+    double vz = (inv > 1e-9 ? 1.0 / inv : 1e9) + plane_off;
     if (vz < 1.0) vz = 1.0;
     return openpete_native_scene_viewz(openpete_worldvz_full((float)vz));
 }
@@ -518,13 +610,15 @@ typedef struct {
     float             offx, offy;
     const p3_opening* op;           /* the re-derived opening, or NULL */
     float             depth_world;  /* the pass's depth, used without an opening */
+    double            plane_off;    /* world units added to the plane's view-Z, + behind */
     int               group;
 } p3_emit_ctx;
 
 /** @brief Adds one untextured triangle of a preview to the native scene.
  *
  * Each vertex is shifted by the context's recentring offset, takes
- * p3_vertex_depth at its authored position as both depth and pvz, and its
+ * p3_vertex_depth at its authored position and the context's plane offset as
+ * both depth and pvz, and its
  * colour with alpha 0xFF. The triangle is added under `category` and the
  * context's group, with no blend. Under OPENPETE_PORTAL3_DBG the first 12
  * portal-cyclorama triangles from p3_dbg_from print to stderr. Counts the
@@ -541,7 +635,7 @@ static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, const p3_em
     const p3_v* v[3] = { a, b, c };
     const float offx = e->offx, offy = e->offy;
     for (int k = 0; k < 3; k++) {
-        const float z = p3_vertex_depth(e->op, e->depth_world, v[k]->x, v[k]->y);
+        const float z = p3_vertex_depth(e->op, e->depth_world, e->plane_off, v[k]->x, v[k]->y);
         t.v[k].sx = v[k]->x + offx; t.v[k].sy = v[k]->y + offy;
         t.v[k].z = z; t.v[k].pvz = z;
         t.v[k].u = 0.0f; t.v[k].v = 0.0f;
@@ -562,14 +656,11 @@ static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, const p3_em
     s_emitted++;
 }
 
-/* One mesh face to its clipped screen polygon: the index check, the shared-side
- * outcode reject, the flat-or-gouraud colour indices and the clip to the
- * pentagon's inside half-planes. Returns the polygon's vertex count in `poly`,
- * 0 when the face is dropped; the census counters name which test dropped it.
- *
- * The pentagon test is the leaf's own: a face with every vertex outside one
- * edge is dropped whole, a face straddling an edge is clipped to it, and a
- * clip that collapses the polygon drops it. */
+/* One mesh face: the index check, the shared-side outcode reject and the
+ * flat-or-gouraud colour indices. The clip to the outline follows in
+ * p3_emit_split. The pentagon test is the leaf's own: a face with every
+ * vertex outside one edge contributes nothing inside the outline, a face
+ * straddling an edge is clipped to it. */
 typedef struct {
     const float*    vx;
     const float*    vy;
@@ -578,21 +669,19 @@ typedef struct {
     uint32_t        vc, cc;
 } p3_mesh;
 
-/** @brief Clips one mesh face to the preview's pentagon and returns the polygon's vertex count.
+/** @brief Decodes one mesh face into its three screen vertices with their colours.
  *
  * Decodes the three vertex indices from `w0` and the colour indices from `w1`
  * (flat with one index in bits 29-20 when bit 31 is set, else three byte
- * offsets). Drops the face when an index reaches the vertex count, when the
- * three vertices share an outcode bit, when every vertex is outside one edge
- * or when a clip leaves fewer than 3 vertices; each drop increments its
- * census counter. A colour index at or past the colour count reads as black.
- * @param p The preview; supplies the pentagon edges.
+ * offsets). Drops the face when an index reaches the vertex count or when the
+ * three vertices share an outcode bit; each drop increments its census
+ * counter. A colour index at or past the colour count reads as black.
  * @param m The projected vertices, outcodes and faded colours.
  * @param w0 The face's first word.
  * @param w1 The face's second word.
- * @param poly Receives the polygon; room for 32 vertices.
- * @return The vertex count, or 0 when the face is dropped. */
-static int p3_clip_face(const p3_preview* p, const p3_mesh* m, uint32_t w0, uint32_t w1, p3_v* poly) {
+ * @param tri Receives the three vertices.
+ * @return 1, or 0 when the face is dropped. */
+static int p3_decode_face(const p3_mesh* m, uint32_t w0, uint32_t w1, p3_v tri[3]) {
     uint32_t i0 = (w0 >> 20) & 0xFFF, i1 = (w0 >> 10) & 0x3FF, i2 = w0 & 0x3FF;
     if (i0 >= m->vc || i1 >= m->vc || i2 >= m->vc) { s_cen_idx++; return 0; }
     if (m->oc[i0] & m->oc[i1] & m->oc[i2]) { s_cen_oc++; return 0; }
@@ -601,46 +690,79 @@ static int p3_clip_face(const p3_preview* p, const p3_mesh* m, uint32_t w0, uint
     else { k0 = ((w1 >> 18) & 0xFFC) >> 2; k1 = ((w1 >> 8) & 0xFFC) >> 2; k2 = ((w1 << 2) & 0xFFC) >> 2; }
     const uint32_t idx[3] = { i0, i1, i2 }, kidx[3] = { k0, k1, k2 };
     for (int k = 0; k < 3; k++) {
-        poly[k].x = m->vx[idx[k]]; poly[k].y = m->vy[idx[k]];
-        poly[k].rgb = kidx[k] < m->cc ? m->col[kidx[k]] : 0;
+        tri[k].x = m->vx[idx[k]]; tri[k].y = m->vy[idx[k]];
+        tri[k].rgb = kidx[k] < m->cc ? m->col[kidx[k]] : 0;
     }
-    p3_v tmp[32];
-    int n = 3;
-    for (int e = 0; e < p->nedge; e++) {
-        const float ax = p->ex[e][0], ay = p->ey[e][0], bx = p->ex[e][1], by = p->ey[e][1];
-        int outside = 0;
-        for (int k = 0; k < n; k++)
-            if (p3_cross(ax, ay, bx, by, poly[k].x, poly[k].y) < 0.0f) outside++;
-        if (outside == 0) continue;
-        if (outside == n) { s_cen_edge++; return 0; }
-        n = p3_clip_edge(poly, n, tmp, ax, ay, bx, by);
-        memcpy(poly, tmp, sizeof(p3_v) * (size_t)n);
-        if (n < 3) { s_cen_edge++; return 0; }
-    }
-    return n;
+    return 1;
 }
 
-static int p3_opening_poly(const p3_preview* p, const p3_opening* op, p3_v* out, int maxn);
+/** @brief Fan-triangulates a convex polygon into the native scene under one emission context.
+ * @param poly The polygon.
+ * @param n Its vertex count.
+ * @param E The emission context.
+ * @param category The scene category.
+ * @param tag The provenance tag. */
+static void p3_emit_fan(const p3_v* poly, int n, const p3_emit_ctx* E, int category, uint32_t tag) {
+    for (int k = 1; k + 1 < n; k++)
+        p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], E, category, tag);
+    if (category == OPENPETE_SCENE_PORTAL_CYCLORAMA && n >= 3) s_cen_tris += n - 2;
+}
+
+/** @brief Clips a polygon to the outline and emits it: the interior at E's depth, the outward band behind the plane.
+ *
+ * With a dilated outline, the polygon is first clipped to the dilated
+ * outline; then, edge by edge of the outline, the part outside the edge (and
+ * inside every earlier edge) is emitted as band at +P3_BAND_EPS behind the
+ * plane and the rest carried on. What survives every edge is the interior,
+ * emitted under E. The pieces are disjoint and convex, and their union is the
+ * polygon's part inside the dilated outline. Without a dilated outline only
+ * the interior is emitted.
+ * @param in The polygon.
+ * @param n Its vertex count, at most 30.
+ * @param q The preview; supplies the outline edges.
+ * @param E The interior's emission context; its opening supplies the dilated outline.
+ * @param category The scene category.
+ * @param tag The provenance tag. */
+static void p3_emit_split(const p3_v* in, int n, const p3_preview* q, const p3_emit_ctx* E,
+                          int category, uint32_t tag) {
+    p3_v P[32], T[32];
+    memcpy(P, in, sizeof(p3_v) * (size_t)n);
+    const p3_opening* op = E->op;
+    const int nd = (op && op->ok) ? op->ndil : 0;
+    for (int e = 0; e < nd && n >= 3; e++) {
+        n = p3_clip_edge(P, n, T, op->dx[e][0], op->dy[e][0], op->dx[e][1], op->dy[e][1]);
+        memcpy(P, T, sizeof(p3_v) * (size_t)n);
+    }
+    p3_emit_ctx band = *E;
+    band.plane_off = P3_BAND_EPS;
+    for (int e = 0; e < q->nedge && n >= 3; e++) {
+        const float ax = q->ex[e][0], ay = q->ey[e][0], bx = q->ex[e][1], by = q->ey[e][1];
+        if (nd) {
+            const int m = p3_clip_edge(P, n, T, bx, by, ax, ay);   /* reversed: the outside */
+            p3_emit_fan(T, m, &band, category, tag);
+        }
+        n = p3_clip_edge(P, n, T, ax, ay, bx, by);
+        memcpy(P, T, sizeof(p3_v) * (size_t)n);
+    }
+    if (n >= 3) p3_emit_fan(P, n, E, category, tag);
+    else s_cen_edge++;
+}
 
 /** @brief Emits one portal's stencil footprint as PORTAL_MASK triangles.
  *
- * On a re-derived opening the footprint is the opening polygon, each vertex at
- * the plane depth; otherwise it is the bounds rect at the pass's depth.
- * @param p The preview.
- * @param op The re-derived opening, or NULL.
+ * The footprint is the bounds rect split by p3_emit_split: the outline's
+ * interior at the interior depth and, on a re-derived opening, its outward
+ * band behind the plane.
+ * @param q The preview.
  * @param B The preview's bounds.
  * @param E The preview's emission context. */
-static void p3_emit_mask(const p3_preview* p, const p3_opening* op, p3_bounds B, const p3_emit_ctx* E) {
-    p3_v poly[32];
-    int n = (op && op->ok) ? p3_opening_poly(p, op, poly, 32) : 0;
-    if (n < 3) {
-        n = 4;
-        poly[0] = (p3_v){ B.xmin, B.ymin, 0 }; poly[1] = (p3_v){ B.xmax, B.ymin, 0 };
-        poly[2] = (p3_v){ B.xmax, B.ymax, 0 }; poly[3] = (p3_v){ B.xmin, B.ymax, 0 };
-    }
-    for (int k = 1; k + 1 < n; k++)
-        p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], E, OPENPETE_SCENE_PORTAL_MASK, 0);
+static void p3_emit_mask(const p3_preview* q, p3_bounds B, const p3_emit_ctx* E) {
+    const p3_v rect[4] = { { B.xmin, B.ymin, 0 }, { B.xmax, B.ymin, 0 },
+                           { B.xmax, B.ymax, 0 }, { B.xmin, B.ymax, 0 } };
+    p3_emit_split(rect, 4, q, E, OPENPETE_SCENE_PORTAL_MASK, 0);
 }
+
+static int p3_opening_poly(const p3_preview* p, const p3_opening* op, p3_v* out, int maxn);
 
 /** @brief Decodes a preview mesh's vertex table into screen positions and outcodes against the bounds.
  *
@@ -727,7 +849,8 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
     uint32_t cc = cpu->read_word(M + 0x08), co = cpu->read_word(M + 0x0C);
     uint32_t fc = cpu->read_word(M + 0x10), fo = cpu->read_word(M + 0x14);
     if (vc > P3_MAX_VERTS || cc > P3_MAX_COLS || fc > 4096) return;
-    const p3_emit_ctx E = { (float)(vw->ofx - P3_CX), (float)(vw->ofy - P3_CY), op, p->depth_w, 1 + p->slot };
+    const p3_emit_ctx E = { (float)(vw->ofx - P3_CX), (float)(vw->ofy - P3_CY), op, p->depth_w,
+                            -(double)openpete_portal_plane_margin(), 1 + p->slot };
     const p3_bounds B = p3_bounds_of(p, op);
     p3_decode_vertices(cpu, M + vo, vc, p->arg, B, vx, vy, oc);
     p3_decode_colours(cpu, M + co, cc, p, sky_ir0, env_far, col);
@@ -735,7 +858,7 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
      * comes first). */
     if (p->slot < P3_MAX_PORTALS && !mask_done[p->slot]) {
         mask_done[p->slot] = 1;
-        p3_emit_mask(p, op, B, &E);
+        p3_emit_mask(p, B, &E);
     }
     const uint32_t tag = OPENPETE_TAG_PORTAL(p->arg ? OPENPETE_TAG_PORTAL_FLAT : OPENPETE_TAG_PORTAL_DOME, p->slot);
     openpete_native_scene_set_tag(tag);
@@ -743,12 +866,9 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
     for (uint32_t f = 0; f < fc; f++) {
         uint32_t w0 = cpu->read_word(M + fo + f * 8), w1 = cpu->read_word(M + fo + f * 8 + 4);
         s_cen_faces++;
-        p3_v poly[32];
-        const int n = p3_clip_face(p, &mesh, w0, w1, poly);
-        if (n < 3) continue;
-        s_cen_tris += n - 2;
-        for (int k = 1; k + 1 < n; k++)
-            p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], &E, OPENPETE_SCENE_PORTAL_CYCLORAMA, tag);
+        p3_v tri[3];
+        if (p3_decode_face(&mesh, w0, w1, tri))
+            p3_emit_split(tri, 3, p, &E, OPENPETE_SCENE_PORTAL_CYCLORAMA, tag);
     }
     openpete_native_scene_set_tag(0);
 }
@@ -896,9 +1016,11 @@ int portal_s23_sky_recent(void) {
  * the authored screen space into the view's by the recentring offset, and
  * back_vz is the farthest opening vertex; otherwise the field is the pass's
  * single depth and back_vz that depth. The outline is the opening polygon
- * shifted by the same offset, with its bounding box. No view-space outline is
- * written: vn = 0 leaves the rim classifier's frames invalid, so no terrain
- * face is excluded from the contest as an inner rim.
+ * shifted by the same offset, with its bounding box. On a re-derived opening
+ * the view-space outline is the pentagon's five vertices, which lets the
+ * terrain feeder's rim classifier find the band of terrain lying in the
+ * opening plane inside it; otherwise vn = 0 leaves the classifier's frames
+ * invalid.
  * @param o Receives the record.
  * @param p The resolved preview.
  * @param op Its opening.
@@ -925,7 +1047,10 @@ static void p3_skyplane_fill(openpete_portal_skyplane* o, const p3_preview* p, c
         o->x0 = fminf(o->x0, o->px[k]); o->x1 = fmaxf(o->x1, o->px[k]);
         o->y0 = fminf(o->y0, o->py[k]); o->y1 = fmaxf(o->y1, o->py[k]);
     }
-    o->vn = 0;
+    o->vn = op->ok ? 5 : 0;
+    for (int k = 0; k < o->vn; k++) {
+        o->vx[k] = op->V[k][0]; o->vy[k] = op->V[k][1]; o->vz[k] = op->V[k][2];
+    }
 }
 
 int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
