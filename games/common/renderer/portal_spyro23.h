@@ -40,11 +40,20 @@
  *          +0x1E IR0, +0x20 edge count, +0x24 the 8-byte edge entries
  *   pass   the portal pass: gates each record, projects its pentagon, fills
  *          the block and calls the leaf
- *   leaf   the preview leaf: draws one pre-projected mesh under the block */
+ *   leaf   the preview leaf: draws one pre-projected mesh under the block
+ *   records  the pointer to the level's portal record array, 0x44 bytes per
+ *          record: five world-space pentagon vertices (int32 x, y, z) at
+ *          +0x00, the preview mesh pointer at +0x3C, the enable byte at +0x40
+ *   count  the portal record count
+ *   anim   1 when the pass scales the pentagon about its vertex mean by the
+ *          record's +0x43 counter / 256 while the counter is nonzero, else 0 */
 typedef struct portal_game_s23_consts {
     uint32_t block;
     uint32_t pass;
     uint32_t leaf;
+    uint32_t records;
+    uint32_t count;
+    int      anim;
 } portal_game_s23_consts_t;
 
 extern const portal_game_s23_consts_t portal_game_s23;

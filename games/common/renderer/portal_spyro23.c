@@ -22,16 +22,19 @@
 // This feeder hooks the leaf: it copies the block and the argument before
 // the real leaf runs (the block is rewritten per portal), and after the pass
 // re-derives every preview in float: the same outcode and half-plane
-// rejects, a Sutherland-Hodgman clip to the pentagon, the two colour fades,
-// and a depth at the portal's own distance. The rect footprint goes out as
-// the portal's stencil mask and the picture as portal-cyclorama triangles,
-// so terrain in front of the portal plane occludes the picture per pixel.
-// The picture is authored in the 4:3 frame; under a wider frame it and the
-// pentagon shift together by the frame's centre offset, and a full-screen
-// clip rect follows the window instead (p3_bounds_of). Sub-tick presents
-// replay the captured previews; a preview that has a partner in the previous
-// tick (same mesh and leaf argument) has its rect, edges, depth and fade terms
-// lerped between the two ticks.
+// rejects, a Sutherland-Hodgman clip to the pentagon and the two colour
+// fades. The pentagon, its bounds and the opening plane come from the portal
+// record the pass drew, projected under the view without the pass's 4:3
+// clamp (p3_native_opening), so the preview reaches the edges of a wider
+// frame. The opening polygon goes out as the portal's stencil mask and the
+// picture as portal-cyclorama triangles, both at the opening plane's depth
+// minus the plane-cover margin, so terrain in front of the opening occludes
+// the picture per pixel and terrain behind it does not. The picture is
+// authored in the 4:3 frame and shifts by the frame's centre offset. Sub-tick
+// presents replay the captured previews; a preview that has a partner in the
+// previous tick (same mesh and leaf argument) has its rect, edges, depth and
+// fade terms lerped between the two ticks, and its opening is re-derived
+// under the present's view.
 //
 // Never writes PSX RAM: the real pass and leaf run unchanged, and the feeder
 // only reads afterwards.
@@ -46,6 +49,7 @@
 #include "renderer/render_paths.h"
 #include "renderer/native_gte.h"
 #include "renderer/portal_spyro23.h"
+#include "renderer/portal_plane.h"     /* openpete_portal_plane_margin */
 #include "game_layout.h"
 
 #include <math.h>
@@ -70,6 +74,7 @@ typedef struct {
     int      nedge;
     float    ex[P3_MAX_EDGES][2], ey[P3_MAX_EDGES][2];
     int      slot;                 /* portal index within the pass */
+    uint32_t rec;                  /* the portal record the pass drew, 0 when unidentified */
 } p3_preview;
 
 typedef struct {
@@ -81,6 +86,7 @@ typedef struct {
 
 static p3_tick s_curr, s_prev;
 static int s_in_pass = 0;
+static uint32_t s_rec_next = 0;   /* the first record index the next background capture may name */
 static int s_leaf_calls = 0;      /* engagement: leaf hooks seen this tick */
 static unsigned s_sky_fed_frame = 0;  /* the last present a preview actually emitted */
 static uint32_t s_pass_start = 0;
@@ -124,6 +130,29 @@ static const char* s_feed_src = "canon";
 static float s_feed_alpha = 1.0f;
 
 /* ---- capture ---------------------------------------------------------- */
+#define P3_REC_STRIDE 0x44u
+
+/** @brief The portal record a background capture belongs to, found by its preview mesh.
+ *
+ * The pass visits the records in index order and loads the block's mesh
+ * pointer from the record's +0x3C, so the record is the first one at or after
+ * s_rec_next whose +0x3C equals the block's +0x10. Advances s_rec_next past
+ * it, so two portals previewing one destination resolve to two records.
+ * @param cpu Reads the record array.
+ * @param mesh The block's +0x10 word.
+ * @return The record address, or 0 when no record from s_rec_next holds the mesh. */
+static uint32_t p3_find_record(CPUState* cpu, uint32_t mesh) {
+    if (!portal_game_s23.records || !portal_game_s23.count) return 0;
+    const uint32_t base = cpu->read_word(portal_game_s23.records);
+    const uint32_t n = cpu->read_word(portal_game_s23.count);
+    if (base < 0x80000000u || base >= 0x80200000u || n > 256u) return 0;
+    for (uint32_t i = s_rec_next; i < n; i++) {
+        const uint32_t r = base + i * P3_REC_STRIDE;
+        if (cpu->read_word(r + 0x3C) == mesh) { s_rec_next = i + 1; return r; }
+    }
+    return 0;
+}
+
 /** @brief Copies the pass's parameter block for one leaf call into the tick's preview list.
  *
  * Called before the leaf runs, after the pass rewrote the block for this
@@ -131,9 +160,10 @@ static float s_feed_alpha = 1.0f;
  * 0x3C for the picture call), the depth >> 7 (+0x14), the far colour from
  * three halfwords >> 4 (+0x18..+0x1C), IR0 (+0x1E) and up to P3_MAX_EDGES
  * pentagon edges (count at +0x20, two packed int16 xy words each from +0x24).
- * A picture call following its portal's background call shares its slot;
- * every other call opens the next slot. Nothing is captured once the list holds
- * P3_MAX_PORTALS * 2 previews.
+ * A picture call following its portal's background call shares its slot and
+ * record; every other call opens the next slot and names its record through
+ * p3_find_record. Nothing is captured once the list holds P3_MAX_PORTALS * 2
+ * previews.
  * @param cpu Reads the block.
  * @param arg The leaf's argument: 1 for the background record, 0 for the picture. */
 static void p3_capture(CPUState* cpu, int arg) {
@@ -163,9 +193,10 @@ static void p3_capture(CPUState* cpu, int arg) {
         p->ex[i][1] = (float)(int16_t)(b2 & 0xFFFF); p->ey[i][1] = (float)(int16_t)(b2 >> 16);
     }
     /* Portal slot: the leaf pair (1 then 0) belongs to one portal. */
-    p->slot = (s_curr.n == 0) ? 0 : (s_curr.p[s_curr.n - 1].arg == 1 && arg == 0
-                                     ? s_curr.p[s_curr.n - 1].slot
-                                     : s_curr.p[s_curr.n - 1].slot + 1);
+    const int pairs = s_curr.n > 0 && s_curr.p[s_curr.n - 1].arg == 1 && arg == 0;
+    p->slot = (s_curr.n == 0) ? 0 : (pairs ? s_curr.p[s_curr.n - 1].slot
+                                           : s_curr.p[s_curr.n - 1].slot + 1);
+    p->rec = pairs ? s_curr.p[s_curr.n - 1].rec : p3_find_record(cpu, cpu->read_word(B + 0x10));
     s_curr.n++;
 }
 
@@ -231,23 +262,46 @@ static int p3_clip_edge(const p3_v* in, int n, p3_v* out, float ax, float ay, fl
 /* The screen bounds a preview's colours are admitted within, in the 2-D
  * screen space the meshes are authored in.
  *
- * The pass's clip rect is the GPU scissor, so it is written in the 4:3
- * framebuffer's coordinates and can never exceed [0,512]. A rect that spans
- * the whole of it while no pentagon edge cuts the frame is the camera standing
- * inside the portal: nothing bounds the preview, so it is the frame's entire
- * backdrop rather than an aperture cut into the world. Under a frame wider
- * than 4:3 that backdrop has to reach the window's edges, so the bounds become
- * the visible screen-X range.
+ * The pass's clip rect and pentagon edges are written for the 4:3 frame: the
+ * rect is clamped to X [0,512] and rows [12,228], and an edge whose two
+ * vertices share an outcode of func_8001C0F4 (X <= 0, X >= 512, row < 13,
+ * row >= 228, SZ < 256) is not written at all. Under a wider frame both cut
+ * the preview at the 4:3 sides. So the feeder re-derives the opening from the
+ * portal record itself (p3_native_opening): the five world vertices through
+ * the pass's own projection (func_8001C040: V = (camY - y, camZ - z,
+ * x - camX), rotated by the camera matrix, divided about (256, 120)), with no
+ * frame clamp, every edge kept and a vertex behind SZ 256 clipped at SZ 256
+ * the way the pass intersects such an edge. Its bounds are the projected
+ * pentagon's, clamped to the visible screen-X range and the pass's rows; at
+ * 4:3 they are the pass's rect and edges, computed in float.
  *
- * Both tests are needed. A portal approached head on grows until its rect
- * clamps to the frame's sides while its arch is still an opening with the
- * world around it, and there the pentagon still bounds the preview: widening
- * the rect would spill the preview over the world beside the arch. At 4:3 the
- * visible range is [0,512] and every bound is the rect's own. */
+ * The same derivation yields the opening plane, which the preview tests
+ * against per pixel (p3_vertex_depth) instead of at the pass's single depth.
+ *
+ * A record the feeder cannot identify, or a pentagon wholly behind SZ 256,
+ * falls back to the captured rect and edges: a rect spanning the whole 4:3
+ * width with no edge cutting the frame is the camera standing inside the
+ * portal, and its X bounds become the visible screen-X range. */
 typedef struct { float xmin, xmax, ymin, ymax; int widened; } p3_bounds;
 
 #define P3_FRAME_X0 0      /* the 4:3 framebuffer's screen-X range, the rect's */
 #define P3_FRAME_X1 512    /* clamp and the authored frame quad's edges */
+#define P3_FRAME_Y0 12     /* the rows the pass clamps the rect to */
+#define P3_FRAME_Y1 228
+#define P3_NEAR_SZ  256.0  /* func_8001C0F4's near outcode, where the pass clips an edge */
+#define P3_CX       256.0  /* the screen centre the meshes are authored about */
+#define P3_CY       120.0
+
+/* A preview's opening re-derived from its portal record under the view being
+ * presented, in the authored screen space. */
+typedef struct {
+    int      ok;                         /* 0: use the captured rect and edges */
+    p3_bounds b;
+    int      nedge;
+    float    ex[P3_MAX_EDGES][2], ey[P3_MAX_EDGES][2];
+    double   a, b_, c;                   /* 1/vz = a x + b_ y + c */
+    double   far_vz;                     /* the farthest opening vertex's view-Z */
+} p3_opening;
 
 /** @brief Whether every corner of the 4:3 frame's width at the rect's rows is inside every pentagon edge.
  *
@@ -266,13 +320,15 @@ static int p3_edges_clear_frame(const p3_preview* p) {
 
 /** @brief The screen bounds a preview's colours are admitted within.
  *
- * Starts from the captured clip rect. When the rect spans the whole 4:3 frame
- * width and no pentagon edge cuts the frame's corners at the rect's rows, the
- * X bounds become the visible screen-X range of the window and `widened` is
- * set; at 4:3 the range equals the rect's, so the bounds stay the rect's own.
+ * The re-derived opening's bounds when `op` holds one. Otherwise the captured
+ * clip rect; when it spans the whole 4:3 frame width and no pentagon edge cuts
+ * the frame's corners at its rows, the X bounds become the visible screen-X
+ * range of the window and `widened` is set.
  * @param p The preview.
+ * @param op The re-derived opening, or NULL.
  * @return The bounds. */
-static p3_bounds p3_bounds_of(const p3_preview* p) {
+static p3_bounds p3_bounds_of(const p3_preview* p, const p3_opening* op) {
+    if (op && op->ok) return op->b;
     p3_bounds b = { (float)p->xmin, (float)p->xmax, (float)p->ymin, (float)p->ymax, 0 };
     float xlo = 0.0f, xhi = 0.0f;
     openpete_native_widescreen_x_bounds(&xlo, &xhi);
@@ -283,31 +339,209 @@ static p3_bounds p3_bounds_of(const p3_preview* p) {
     return b;
 }
 
+/** @brief Reads a portal record's five pentagon vertices in world units, with the opening animation applied.
+ *
+ * Under portal_game_s23.anim and a nonzero +0x43 counter each vertex is moved
+ * to m + ((v - m) * counter >> 8) per axis, m the vertex mean truncated toward
+ * zero, as the pass does before projecting (func_8001EDEC.s:40-100,
+ * 303-334).
+ * @param cpu Reads the record.
+ * @param rec The record address.
+ * @param W Receives the vertices. */
+static void p3_record_vertices(CPUState* cpu, uint32_t rec, double W[5][3]) {
+    int32_t v[5][3], m[3] = { 0, 0, 0 };
+    for (int i = 0; i < 5; i++)
+        for (int k = 0; k < 3; k++) {
+            v[i][k] = (int32_t)cpu->read_word(rec + (uint32_t)(i * 12 + k * 4));
+            m[k] += v[i][k];
+        }
+    const int cnt = portal_game_s23.anim ? (int)cpu->read_byte(rec + 0x43) : 0;
+    for (int k = 0; k < 3; k++) m[k] /= 5;
+    for (int i = 0; i < 5; i++)
+        for (int k = 0; k < 3; k++)
+            W[i][k] = cnt ? (double)(m[k] + (((v[i][k] - m[k]) * cnt) >> 8)) : (double)v[i][k];
+}
+
+/** @brief Clips a view-space polygon to SZ >= P3_NEAR_SZ, Sutherland-Hodgman.
+ * @param in The polygon, view-space (x, y, z).
+ * @param n Its vertex count, at most 5.
+ * @param out Receives the clipped polygon; room for 2 n vertices.
+ * @return The clipped vertex count. */
+static int p3_clip_near(const double in[][3], int n, double out[][3]) {
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        const double* a = in[i];
+        const double* b = in[(i + 1) % n];
+        const int ai = a[2] >= P3_NEAR_SZ, bi = b[2] >= P3_NEAR_SZ;
+        if (ai) { memcpy(out[m], a, sizeof(double) * 3); m++; }
+        if (ai != bi) {
+            const double t = (P3_NEAR_SZ - a[2]) / (b[2] - a[2]);
+            for (int k = 0; k < 3; k++) out[m][k] = a[k] + (b[k] - a[k]) * t;
+            m++;
+        }
+    }
+    return m;
+}
+
+/** @brief The opening plane's screen-space 1/vz field from its view-space vertices.
+ *
+ * The normal is Newell's over the polygon, the plane n.P = k through the
+ * vertex mean. Dividing by vz at sx = P3_CX + x H / z gives
+ * 1/vz = (n_x (sx - P3_CX) / H + n_y (sy - P3_CY) / H + n_z) / k.
+ * @param V The view-space vertices.
+ * @param n Their count.
+ * @param H The projection distance.
+ * @param o Receives a, b_ and c.
+ * @return 1 on success, 0 when the polygon is degenerate or the camera lies within 1e-3 of the plane. */
+static int p3_plane_fit(const double V[][3], int n, double H, p3_opening* o) {
+    double nx = 0.0, ny = 0.0, nz = 0.0, mx = 0.0, my = 0.0, mz = 0.0;
+    for (int i = 0; i < n; i++) {
+        const double* a = V[i];
+        const double* b = V[(i + 1) % n];
+        nx += (a[1] - b[1]) * (a[2] + b[2]);
+        ny += (a[2] - b[2]) * (a[0] + b[0]);
+        nz += (a[0] - b[0]) * (a[1] + b[1]);
+        mx += a[0]; my += a[1]; mz += a[2];
+    }
+    const double nn = sqrt(nx * nx + ny * ny + nz * nz);
+    if (nn < 1e-6 || H < 1.0) return 0;
+    const double k = (nx * mx + ny * my + nz * mz) / (double)n;
+    if (k > -1e-3 * nn && k < 1e-3 * nn) return 0;
+    o->a  = nx / (H * k);
+    o->b_ = ny / (H * k);
+    o->c  = (nz - nx * P3_CX / H - ny * P3_CY / H) / k;
+    return 1;
+}
+
+/** @brief Fills the opening's edges from its projected polygon, wound so the inside is cross >= 0.
+ * @param x The projected X.
+ * @param y The projected Y.
+ * @param n The vertex count, at most P3_MAX_EDGES.
+ * @param o Receives nedge, ex and ey. */
+static void p3_opening_edges(const float* x, const float* y, int n, p3_opening* o) {
+    double area = 0.0;
+    for (int i = 0; i < n; i++) {
+        const int j = (i + 1) % n;
+        area += (double)x[i] * y[j] - (double)x[j] * y[i];
+    }
+    o->nedge = n;
+    for (int i = 0; i < n; i++) {
+        const int a = area >= 0.0 ? i : n - 1 - i;
+        const int b = area >= 0.0 ? (i + 1) % n : (2 * n - 2 - i) % n;
+        o->ex[i][0] = x[a]; o->ey[i][0] = y[a];
+        o->ex[i][1] = x[b]; o->ey[i][1] = y[b];
+    }
+}
+
+/** @brief Re-derives a preview's opening from its portal record under the view `v`.
+ *
+ * Projects the record's pentagon as func_8001C040 does, in float with no
+ * frame clamp (see the bounds note above), and fits the opening plane.
+ * Reads PSX RAM only.
+ * @param cpu Reads the record.
+ * @param v The view; supplies the camera, its matrix and H.
+ * @param p The preview; its record is used.
+ * @param o Receives the opening; ok is 0 when the record is unknown, the
+ *        pentagon lies wholly behind SZ 256, or the bounds are empty. */
+static void p3_native_opening(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_opening* o) {
+    memset(o, 0, sizeof *o);
+    if (!p->rec) return;
+    double W[5][3], V[5][3], C[10][3];
+    p3_record_vertices(cpu, p->rec, W);
+    for (int i = 0; i < 5; i++)
+        ngte_mac(v->cam_M, v->cam[1] - W[i][1], v->cam[2] - W[i][2], W[i][0] - v->cam[0],
+                 &V[i][0], &V[i][1], &V[i][2]);
+    const int n = p3_clip_near((const double (*)[3])V, 5, C);
+    if (n < 3 || n > P3_MAX_EDGES) return;
+    if (!p3_plane_fit((const double (*)[3])V, 5, v->H_eff, o)) return;
+    float x[P3_MAX_EDGES], y[P3_MAX_EDGES];
+    float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+    for (int i = 0; i < n; i++) {
+        x[i] = (float)(P3_CX + C[i][0] * v->H_eff / C[i][2]);
+        y[i] = (float)(P3_CY + C[i][1] * v->H_eff / C[i][2]);
+        x0 = fminf(x0, x[i]); x1 = fmaxf(x1, x[i]);
+        y0 = fminf(y0, y[i]); y1 = fmaxf(y1, y[i]);
+    }
+    for (int i = 0; i < 5; i++) o->far_vz = fmax(o->far_vz, V[i][2]);
+    float xlo = (float)P3_FRAME_X0, xhi = (float)P3_FRAME_X1;
+    openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    o->b.xmin = fmaxf(x0, xlo); o->b.xmax = fminf(x1, xhi);
+    o->b.ymin = fmaxf(y0, (float)P3_FRAME_Y0); o->b.ymax = fminf(y1, (float)P3_FRAME_Y1);
+    if (o->b.xmin >= o->b.xmax || o->b.ymin >= o->b.ymax) return;
+    o->b.widened = o->b.xmin < (float)P3_FRAME_X0 || o->b.xmax > (float)P3_FRAME_X1;
+    p3_opening_edges(x, y, n, o);
+    o->ok = 1;
+}
+
+/** @brief The scene depth a preview vertex tests at.
+ *
+ * On a re-derived opening, the opening plane's view-Z at the vertex pulled
+ * nearer by the plane-cover margin (openpete_portal_plane_margin), floored at
+ * 1: inside the footprint the preview covers everything at or behind
+ * plane - M. Otherwise the pass's single depth, unpulled.
+ * @param op The re-derived opening, or NULL.
+ * @param depth_world The pass's depth in world units.
+ * @param x The vertex's authored screen X.
+ * @param y The vertex's authored screen Y.
+ * @return The scene depth. */
+static float p3_vertex_depth(const p3_opening* op, float depth_world, float x, float y) {
+    if (!op || !op->ok)
+        return openpete_native_scene_viewz(openpete_worldvz_scaled(depth_world, 1.0f));
+    const double inv = op->a * x + op->b_ * y + op->c;
+    double vz = (inv > 1e-9 ? 1.0 / inv : 1e9) - (double)openpete_portal_plane_margin();
+    if (vz < 1.0) vz = 1.0;
+    return openpete_native_scene_viewz(openpete_worldvz_full((float)vz));
+}
+
+/** @brief The preview as the feeder draws it under the view `v`: its opening re-derived, its edges replaced by the opening's.
+ *
+ * Without a re-derived opening `q` is the capture unchanged.
+ * @param cpu Reads the portal record.
+ * @param v The view.
+ * @param p The captured (or lerped) preview.
+ * @param q Receives the preview to draw.
+ * @param op Receives the opening. */
+static void p3_resolve(CPUState* cpu, const ngte_view* v, const p3_preview* p, p3_preview* q, p3_opening* op) {
+    *q = *p;
+    p3_native_opening(cpu, v, p, op);
+    if (!op->ok) return;
+    q->nedge = op->nedge;
+    memcpy(q->ex, op->ex, sizeof q->ex);
+    memcpy(q->ey, op->ey, sizeof q->ey);
+}
+
 static int s_emitted = 0;
 
-/** @brief Adds one untextured triangle of a preview to the native scene at the portal's depth.
+/* What every triangle of one preview shares: the recentring offset from the
+ * authored screen space to the view's, the depth source and the scene group. */
+typedef struct {
+    float             offx, offy;
+    const p3_opening* op;           /* the re-derived opening, or NULL */
+    float             depth_world;  /* the pass's depth, used without an opening */
+    int               group;
+} p3_emit_ctx;
+
+/** @brief Adds one untextured triangle of a preview to the native scene.
  *
- * Each vertex is shifted by the recentring offset, takes `depth_world` as its
- * view-Z (unbiased for both depth and pvz) and its colour with alpha 0xFF.
- * The triangle is added under `category` and `group`, with no blend. Under
- * OPENPETE_PORTAL3_DBG the first 12 portal-cyclorama triangles from
- * p3_dbg_from print to stderr. Counts the triangle in s_emitted.
+ * Each vertex is shifted by the context's recentring offset, takes
+ * p3_vertex_depth at its authored position as both depth and pvz, and its
+ * colour with alpha 0xFF. The triangle is added under `category` and the
+ * context's group, with no blend. Under OPENPETE_PORTAL3_DBG the first 12
+ * portal-cyclorama triangles from p3_dbg_from print to stderr. Counts the
+ * triangle in s_emitted.
  * @param a The first vertex.
  * @param b The second vertex.
  * @param c The third vertex.
- * @param offx The screen X offset added to every vertex.
- * @param offy The screen Y offset added to every vertex.
- * @param depth_world The portal's depth in world units.
+ * @param e The preview's emission context.
  * @param category The scene category, such as OPENPETE_SCENE_PORTAL_MASK.
- * @param tag Unused.
- * @param group The portal's scene group. */
-static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, float offx, float offy,
-                        float depth_world, int category, uint32_t tag, int group) {
+ * @param tag Unused. */
+static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, const p3_emit_ctx* e,
+                        int category, uint32_t tag) {
     openpete_scene_tri t = {0};
     const p3_v* v[3] = { a, b, c };
-    openpete_worldvz wz = openpete_worldvz_scaled(depth_world, 1.0f);
-    float z = openpete_native_scene_viewz(wz);
+    const float offx = e->offx, offy = e->offy;
     for (int k = 0; k < 3; k++) {
+        const float z = p3_vertex_depth(e->op, e->depth_world, v[k]->x, v[k]->y);
         t.v[k].sx = v[k]->x + offx; t.v[k].sy = v[k]->y + offy;
         t.v[k].z = z; t.v[k].pvz = z;
         t.v[k].u = 0.0f; t.v[k].v = 0.0f;
@@ -315,7 +549,7 @@ static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, float offx,
     }
     t.textured = 0; t.blend = 0;
     (void)tag;
-    openpete_native_scene_add_tri_grouped(&t, category, 0, group);
+    openpete_native_scene_add_tri_grouped(&t, category, 0, e->group);
     if (p3_dbg() && category == OPENPETE_SCENE_PORTAL_CYCLORAMA) {
         static unsigned s_dumps = 0;
         if (s_dumps < 12 && openpete_frame >= p3_dbg_from()) {
@@ -386,23 +620,103 @@ static int p3_clip_face(const p3_preview* p, const p3_mesh* m, uint32_t w0, uint
     return n;
 }
 
+static int p3_opening_poly(const p3_preview* p, const p3_opening* op, p3_v* out, int maxn);
+
+/** @brief Emits one portal's stencil footprint as PORTAL_MASK triangles.
+ *
+ * On a re-derived opening the footprint is the opening polygon, each vertex at
+ * the plane depth; otherwise it is the bounds rect at the pass's depth.
+ * @param p The preview.
+ * @param op The re-derived opening, or NULL.
+ * @param B The preview's bounds.
+ * @param E The preview's emission context. */
+static void p3_emit_mask(const p3_preview* p, const p3_opening* op, p3_bounds B, const p3_emit_ctx* E) {
+    p3_v poly[32];
+    int n = (op && op->ok) ? p3_opening_poly(p, op, poly, 32) : 0;
+    if (n < 3) {
+        n = 4;
+        poly[0] = (p3_v){ B.xmin, B.ymin, 0 }; poly[1] = (p3_v){ B.xmax, B.ymin, 0 };
+        poly[2] = (p3_v){ B.xmax, B.ymax, 0 }; poly[3] = (p3_v){ B.xmin, B.ymax, 0 };
+    }
+    for (int k = 1; k + 1 < n; k++)
+        p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], E, OPENPETE_SCENE_PORTAL_MASK, 0);
+}
+
+/** @brief Decodes a preview mesh's vertex table into screen positions and outcodes against the bounds.
+ *
+ * Each word is (y << 16 | x) << 5, the low five bits draw-owned scratch: x is
+ * the signed 16 bits above them, y the signed 11 bits above x (a picture
+ * reaches a few dozen rows above and below the frame). The outcode bits are
+ * 1 at or above B.ymin, 2 at or below B.ymax, 4 at or left of B.xmin, 8 at or
+ * right of B.xmax.
+ *
+ * The background record (arg 1) is one quad spanning the 4:3 frame, the
+ * backdrop the picture is painted over; the picture itself is authored well
+ * past the frame's sides. Bounds past a side of the frame therefore reach
+ * real picture geometry, and the backdrop's vertices on that side move out to
+ * the bound so the band the picture does not cover keeps its colour instead
+ * of the frame's clear. The edge colours travel with the vertices, so the
+ * band continues the frame's edge exactly and the interior interpolates as it
+ * did.
+ * @param cpu Reads the table.
+ * @param tab The vertex table's address.
+ * @param vc The vertex count, at most P3_MAX_VERTS.
+ * @param arg The leaf argument of the preview.
+ * @param B The preview's bounds.
+ * @param vx Receives the X positions.
+ * @param vy Receives the Y positions.
+ * @param oc Receives the outcodes. */
+static void p3_decode_vertices(CPUState* cpu, uint32_t tab, uint32_t vc, int arg, p3_bounds B,
+                               float* vx, float* vy, uint8_t* oc) {
+    const float x_lo = (arg == 1 && B.xmin < (float)P3_FRAME_X0) ? B.xmin : (float)P3_FRAME_X0;
+    const float x_hi = (arg == 1 && B.xmax > (float)P3_FRAME_X1) ? B.xmax : (float)P3_FRAME_X1;
+    for (uint32_t i = 0; i < vc; i++) {
+        const uint32_t w = cpu->read_word(tab + i * 4);
+        const int x = (int16_t)((w >> 5) & 0xFFFF);
+        const float fx = x <= P3_FRAME_X0 ? fminf((float)x, x_lo)
+                       : x >= P3_FRAME_X1 ? fmaxf((float)x, x_hi) : (float)x;
+        const float fy = (float)((int32_t)w >> 21);
+        vx[i] = fx; vy[i] = fy;
+        oc[i] = (uint8_t)((fy <= B.ymin) | ((fy >= B.ymax) << 1) |
+                          ((fx <= B.xmin) << 2) | ((fx >= B.xmax) << 3));
+    }
+}
+
+/** @brief Decodes a preview mesh's colour table, faded by the portal's IR0 toward its far colour, then by `sky_ir0` toward `env_far`.
+ * @param cpu Reads the table.
+ * @param tab The colour table's address.
+ * @param cc The colour count, at most P3_MAX_COLS.
+ * @param p The preview; supplies IR0 and the far colour.
+ * @param sky_ir0 The sky fog factor, 0 for none.
+ * @param env_far The environment far colour.
+ * @param col Receives the colours. */
+static void p3_decode_colours(CPUState* cpu, uint32_t tab, uint32_t cc, const p3_preview* p,
+                              int sky_ir0, uint32_t env_far, uint32_t* col) {
+    for (uint32_t j = 0; j < cc; j++) {
+        uint32_t c = cpu->read_word(tab + j * 4) & 0xFFFFFF;
+        if (p->ir0) c = ngte_depth_cue(c, p->far_rgb, p->ir0);
+        if (sky_ir0) c = ngte_depth_cue(c, env_far, sky_ir0);
+        col[j] = c;
+    }
+}
+
 /** @brief Re-derives one captured preview in float and emits its triangles.
  *
  * Returns without emitting when the mesh header is outside main RAM or its
  * vertex, colour or face count exceeds P3_MAX_VERTS, P3_MAX_COLS or 4096.
- * Otherwise decodes the vertices (widening the backdrop quad's side edges
- * under widened bounds) and their outcodes, fades each colour by the
- * portal's IR0 toward its far colour and then by `sky_ir0` toward `env_far`,
- * emits the rect footprint once per portal as the stencil mask, and emits each
- * surviving face fan-triangulated as portal-cyclorama triangles under the
+ * Otherwise decodes the vertices (p3_decode_vertices) and the faded colours
+ * (p3_decode_colours), emits the footprint once per portal as the stencil mask (the
+ * opening polygon on a re-derived opening, else the bounds rect), and emits
+ * each surviving face fan-triangulated as portal-cyclorama triangles under the
  * portal's provenance tag. Reads PSX RAM only.
  * @param cpu The guest CPU state.
- * @param p The captured preview.
+ * @param p The preview; its edges are the ones the faces clip to.
+ * @param op The re-derived opening, or NULL.
  * @param vw The view; supplies the screen recentring offset.
  * @param sky_ir0 The sky fog factor, 0 for none.
  * @param env_far The environment far colour.
  * @param mask_done Per-slot flags, set once the slot's mask is emitted. */
-static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* vw,
+static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening* op, const ngte_view* vw,
                            int sky_ir0, uint32_t env_far, int mask_done[P3_MAX_PORTALS]) {
     static float vx[P3_MAX_VERTS], vy[P3_MAX_VERTS];
     static uint8_t oc[P3_MAX_VERTS];
@@ -413,54 +727,18 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* 
     uint32_t cc = cpu->read_word(M + 0x08), co = cpu->read_word(M + 0x0C);
     uint32_t fc = cpu->read_word(M + 0x10), fo = cpu->read_word(M + 0x14);
     if (vc > P3_MAX_VERTS || cc > P3_MAX_COLS || fc > 4096) return;
-    const float offx = (float)(vw->ofx - 256.0), offy = (float)(vw->ofy - 120.0);
-    const float depth_world = p->depth_w;
-    const int group = 1 + p->slot;
-    const p3_bounds B = p3_bounds_of(p);
-    /* The background record is one quad spanning the 4:3 frame, the backdrop
-     * the picture is painted over; the picture itself is authored well past the
-     * frame's sides. Widened bounds therefore reach real picture geometry, and
-     * the backdrop's two side edges move out with them so the band the picture
-     * does not cover keeps its colour instead of the frame's clear. The edge
-     * colours travel with the vertices, so the band continues the frame's edge
-     * exactly and the interior interpolates as it did. */
-    const int widen_quad = B.widened && p->arg == 1;
-
-    for (uint32_t i = 0; i < vc; i++) {
-        /* (y << 16 | x) << 5, the low five bits draw-owned scratch: x is
-         * the signed 16 bits above them, y the signed 11 bits above x (a
-         * picture reaches a few dozen rows above and below the frame). */
-        uint32_t w = cpu->read_word(M + vo + i * 4);
-        int x = (int16_t)((w >> 5) & 0xFFFF);
-        int y = (int)((int32_t)w >> 21);
-        float fx = (float)x;
-        if (widen_quad && x <= P3_FRAME_X0) fx = B.xmin;
-        else if (widen_quad && x >= P3_FRAME_X1) fx = B.xmax;
-        vx[i] = fx; vy[i] = (float)y;
-        uint8_t o = 0;
-        if (y <= p->ymin) o |= 1; if (y >= p->ymax) o |= 2;
-        if (fx <= B.xmin) o |= 4; if (fx >= B.xmax) o |= 8;
-        oc[i] = o;
-    }
-    for (uint32_t j = 0; j < cc; j++) {
-        uint32_t c = cpu->read_word(M + co + j * 4) & 0xFFFFFF;
-        if (p->ir0) c = ngte_depth_cue(c, p->far_rgb, p->ir0);
-        if (sky_ir0) c = ngte_depth_cue(c, env_far, sky_ir0);
-        col[j] = c;
-    }
-    /* The portal's stencil footprint: the rect at the portal depth, once per
-     * portal (the background record comes first). */
+    const p3_emit_ctx E = { (float)(vw->ofx - P3_CX), (float)(vw->ofy - P3_CY), op, p->depth_w, 1 + p->slot };
+    const p3_bounds B = p3_bounds_of(p, op);
+    p3_decode_vertices(cpu, M + vo, vc, p->arg, B, vx, vy, oc);
+    p3_decode_colours(cpu, M + co, cc, p, sky_ir0, env_far, col);
+    /* The portal's stencil footprint, once per portal (the background record
+     * comes first). */
     if (p->slot < P3_MAX_PORTALS && !mask_done[p->slot]) {
         mask_done[p->slot] = 1;
-        const float mask_depth = depth_world;
-        p3_v r0 = { B.xmin, B.ymin, 0 }, r1 = { B.xmax, B.ymin, 0 };
-        p3_v r2 = { B.xmax, B.ymax, 0 }, r3 = { B.xmin, B.ymax, 0 };
-        p3_emit_tri(&r0, &r1, &r2, offx, offy, mask_depth, OPENPETE_SCENE_PORTAL_MASK, 0, group);
-        p3_emit_tri(&r0, &r2, &r3, offx, offy, mask_depth, OPENPETE_SCENE_PORTAL_MASK, 0, group);
+        p3_emit_mask(p, op, B, &E);
     }
     const uint32_t tag = OPENPETE_TAG_PORTAL(p->arg ? OPENPETE_TAG_PORTAL_FLAT : OPENPETE_TAG_PORTAL_DOME, p->slot);
     openpete_native_scene_set_tag(tag);
-    const float pic_depth = depth_world;
     const p3_mesh mesh = { vx, vy, oc, col, vc, cc };
     for (uint32_t f = 0; f < fc; f++) {
         uint32_t w0 = cpu->read_word(M + fo + f * 8), w1 = cpu->read_word(M + fo + f * 8 + 4);
@@ -470,13 +748,10 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* 
         if (n < 3) continue;
         s_cen_tris += n - 2;
         for (int k = 1; k + 1 < n; k++)
-            p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], offx, offy, pic_depth,
-                        OPENPETE_SCENE_PORTAL_CYCLORAMA, tag, group);
+            p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], &E, OPENPETE_SCENE_PORTAL_CYCLORAMA, tag);
     }
     openpete_native_scene_set_tag(0);
 }
-
-static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn);
 
 /** @brief Prints the aperture census: a summary line, then one uncapped line per fed preview.
  *
@@ -484,19 +759,22 @@ static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn);
  * draws into and the per-record channels the replay carries. It is the
  * statistic tests/harness/check_feeder_subtick.sh --path portal judges, the
  * aperture being far larger than the compact blob a pixel mask models.
+ * @param cpu Reads the portal records.
  * @param T The tick whose previews were fed.
  * @param vw The view; supplies the screen recentring offset. */
-static void p3_census(const p3_tick* T, const ngte_view* vw) {
-    const float offx = (float)(vw->ofx - 256.0), offy = (float)(vw->ofy - 120.0);
+static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) {
+    const float offx = (float)(vw->ofx - P3_CX), offy = (float)(vw->ofy - P3_CY);
     fprintf(stderr, "[portal3-feed f=%u src=%s a=%.3f portals=%d tris=%d emitted=%d]\n",
             openpete_frame, s_feed_src, (double)s_feed_alpha, T->n, s_cen_tris, s_emitted);
     for (int i = 0; i < T->n; i++) {
-        const p3_preview* p = &T->p[i];
+        p3_preview q; p3_opening op;
+        p3_resolve(cpu, vw, &T->p[i], &q, &op);
+        const p3_preview* p = &q;
         p3_v poly[32];
-        const int pn = p3_opening_poly(p, poly, 32);
-        fprintf(stderr, "[portal3-ap f=%u src=%s a=%.3f slot=%d arg=%d n=%d d7=%d dw=%.1f ir0=%d far=%06X]",
+        const int pn = p3_opening_poly(p, &op, poly, 32);
+        fprintf(stderr, "[portal3-ap f=%u src=%s a=%.3f slot=%d arg=%d n=%d d7=%d dw=%.1f ir0=%d far=%06X rec=%08X native=%d]",
                 openpete_frame, s_feed_src, (double)s_feed_alpha, p->slot, p->arg, pn,
-                p->depth7, (double)p->depth_w, p->ir0, p->far_rgb);
+                p->depth7, (double)p->depth_w, p->ir0, p->far_rgb, p->rec, op.ok);
         for (int k = 0; k < pn; k++)
             fprintf(stderr, " (%.2f,%.2f)", (double)(poly[k].x + offx), (double)(poly[k].y + offy));
         fprintf(stderr, "\n");
@@ -507,8 +785,8 @@ static void p3_census(const p3_tick* T, const ngte_view* vw) {
  *
  * Returns without emitting when the native scene or RP_PORTAL is off, and
  * before opening the frame's scene when the tick holds no preview. Resets the
- * census counters, opens the scene for the current openpete_frame, extracts each
- * preview, and records the frame in s_sky_fed_frame when any triangle was
+ * census counters, opens the scene for the current openpete_frame, resolves
+ * each preview's opening under the view (p3_resolve) and extracts it, and records the frame in s_sky_fed_frame when any triangle was
  * emitted.
  * @param cpu The guest CPU state.
  * @param T The captured (or lerped) previews. */
@@ -530,9 +808,13 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
     int sky_ir0 = game_layout.fog.factor ? (int)cpu->read_word(game_layout.fog.factor) : 0;
     uint32_t env_far = ngte_fog_far_colour(cpu);
     int mask_done[P3_MAX_PORTALS]; memset(mask_done, 0, sizeof mask_done);
-    for (int i = 0; i < T->n; i++) p3_extract_one(cpu, &T->p[i], &vw, sky_ir0, env_far, mask_done);
+    for (int i = 0; i < T->n; i++) {
+        p3_preview q; p3_opening op;
+        p3_resolve(cpu, &vw, &T->p[i], &q, &op);
+        p3_extract_one(cpu, &q, &op, &vw, sky_ir0, env_far, mask_done);
+    }
     if (s_emitted) s_sky_fed_frame = openpete_frame;
-    if (p3_dbg() && openpete_frame >= p3_dbg_from()) p3_census(T, &vw);
+    if (p3_dbg() && openpete_frame >= p3_dbg_from()) p3_census(cpu, T, &vw);
 }
 
 /* ---- opening planes for the shared terrain feeder ----------------------
@@ -542,25 +824,24 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
  * cover margin: blended terrain draws AFTER the portal sequence, so without
  * the drop it paints over a preview that has already covered it.
  *
- * Unlike Spyro 1's arch previews : a dome rendered per pixel at the depth of
- * a 3-D opening polygon : a Spyro 3 preview is a pre-projected 2-D picture
- * pasted at one constant depth (the pass's depth >> 7, restored by
- * p3_extract_one as `depth7 << 7` full-world view-Z). So the plane is
- * constant in screen space: inv-vz = 1 / (depth7 << 7), a = b = 0. The sky's
- * render depth carries no OT slot push, so push_vz is 0.
+ * The preview is a pre-projected 2-D picture, but on a re-derived opening it
+ * tests at the opening plane's own depth (p3_vertex_depth), so the plane
+ * handed to the terrain feeder is that plane: the screen-space inv-vz field
+ * p3_plane_fit computes, moved from the authored screen space into the
+ * view's by the recentring offset. back_vz is the farthest pentagon vertex.
+ * Without a re-derived opening the plane is the pass's single depth
+ * (inv-vz = 1 / (depth7 << 7), a = b = 0). The preview's render depth
+ * carries no OT slot push, so push_vz is 0.
  *
- * The footprint is where the preview's colours actually land: the clip rect
- * intersected with the pass's pentagon half-planes, in the same recentred
- * screen space p3_emit_tri draws into. The mask rect alone is too wide : it
- * is the stencil aperture, and the colour tris are pentagon-clipped inside
- * it, so a face outside the pentagon is not covered by anything.
+ * The footprint is where the preview's colours actually land: the bounds
+ * intersected with the pentagon half-planes, in the same recentred screen
+ * space p3_emit_tri draws into.
  *
- * The planes come from the tick's capture, not from a live re-derivation:
- * the pass rewrites the parameter block per portal and it means nothing outside
- * the pass, so the rect and edges exist only as captured. The terrain feed
- * runs before the portal pass within a present, so a canonical present reads
- * the previous tick's rect : one tick of lag while a portal moves on screen,
- * zero while the camera holds. */
+ * The planes come from the tick's capture, which names the portal records the
+ * pass drew; the opening is re-derived under the view the terrain feed
+ * projects with. The terrain feed runs before the portal pass within a
+ * present, so a canonical present reads the previous tick's set of drawn
+ * portals. */
 /** @brief A preview's plane depth in full-world view-Z, floored at 1.
  *
  * @param p The preview.
@@ -572,18 +853,18 @@ static double p3_plane_depth_world(const p3_preview* p) {
 
 /** @brief The preview's painted footprint as a screen polygon.
  *
- * The preview's colour bounds (p3_bounds_of: the clip rect, widened to the
- * visible screen-X range for a camera inside the portal) are clipped by each
- * pentagon edge's inside half-plane, the same cross >= 0 rule the colour
+ * The preview's colour bounds (p3_bounds_of) are clipped by each of its
+ * pentagon edges' inside half-plane, the same cross >= 0 rule the colour
  * extraction clips with. An edge with every vertex inside is skipped.
- * @param p The preview.
+ * @param p The preview as p3_resolve returns it.
+ * @param op Its opening, or NULL.
  * @param out Receives the polygon.
  * @param maxn The capacity of `out`.
  * @return The vertex count; 0 when the polygon collapses below three vertices,
  *         lies wholly outside an edge, or exceeds `maxn`. */
-static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn) {
+static int p3_opening_poly(const p3_preview* p, const p3_opening* op, p3_v* out, int maxn) {
     p3_v poly[32], tmp[32];
-    const p3_bounds B = p3_bounds_of(p);
+    const p3_bounds B = p3_bounds_of(p, op);
     poly[0].x = B.xmin; poly[0].y = B.ymin; poly[0].rgb = 0;
     poly[1].x = B.xmax; poly[1].y = B.ymin; poly[1].rgb = 0;
     poly[2].x = B.xmax; poly[2].y = B.ymax; poly[2].rgb = 0;
@@ -609,52 +890,66 @@ int portal_s23_sky_recent(void) {
     return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
 }
 
+/** @brief Fills one terrain-feeder plane record from a resolved preview.
+ *
+ * On a re-derived opening the inv-vz field is the opening plane's, moved from
+ * the authored screen space into the view's by the recentring offset, and
+ * back_vz is the farthest opening vertex; otherwise the field is the pass's
+ * single depth and back_vz that depth. The outline is the opening polygon
+ * shifted by the same offset, with its bounding box. No view-space outline is
+ * written: vn = 0 leaves the rim classifier's frames invalid, so no terrain
+ * face is excluded from the contest as an inner rim.
+ * @param o Receives the record.
+ * @param p The resolved preview.
+ * @param op Its opening.
+ * @param poly The opening polygon in the authored screen space.
+ * @param pn Its vertex count, at most 16.
+ * @param offx The recentring offset's X.
+ * @param offy The recentring offset's Y. */
+static void p3_skyplane_fill(openpete_portal_skyplane* o, const p3_preview* p, const p3_opening* op,
+                             const p3_v* poly, int pn, float offx, float offy) {
+    memset(o, 0, sizeof *o);
+    const double dz = p3_plane_depth_world(p);
+    o->portal  = p->mesh;                 /* the preview mesh: this portal's identity */
+    o->a       = op->ok ? op->a : 0.0;
+    o->b       = op->ok ? op->b_ : 0.0;
+    o->c       = op->ok ? op->c - op->a * offx - op->b_ * offy : 1.0 / dz;
+    o->back_vz = op->ok ? op->far_vz : dz;
+    o->ot_vz   = dz;
+    o->push_vz = 0.0;
+    o->pn = pn;
+    o->x0 = o->y0 = 1e9f; o->x1 = o->y1 = -1e9f;
+    for (int k = 0; k < pn; k++) {
+        o->px[k] = poly[k].x + offx;
+        o->py[k] = poly[k].y + offy;
+        o->x0 = fminf(o->x0, o->px[k]); o->x1 = fmaxf(o->x1, o->px[k]);
+        o->y0 = fminf(o->y0, o->py[k]); o->y1 = fmaxf(o->y1, o->py[k]);
+    }
+    o->vn = 0;
+}
+
 int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
-    (void)cpu;
     if (!s_curr.valid || s_curr.n == 0 || max <= 0) return 0;
     if (openpete_frame - s_curr.frame > 3u) return 0;
-    const float offx = (float)(v->ofx - 256.0), offy = (float)(v->ofy - 120.0);
+    const float offx = (float)(v->ofx - P3_CX), offy = (float)(v->ofy - P3_CY);
     int n = 0;
     for (int i = 0; i < s_curr.n && n < max; i++) {
-        const p3_preview* p = &s_curr.p[i];
-        if (p->arg != 1) continue;            /* one entry per portal, on its base record */
-        if (p->nedge < 3) continue;           /* no pentagon: no bounded opening */
+        if (s_curr.p[i].arg != 1) continue;   /* one entry per portal, on its base record */
+        p3_preview q; p3_opening op;
+        p3_resolve(cpu, v, &s_curr.p[i], &q, &op);
         p3_v poly[16];
-        const int pn = p3_opening_poly(p, poly, 16);
-        if (pn < 3) continue;
-        openpete_portal_skyplane* o = &out[n];
-        memset(o, 0, sizeof *o);
-        const double dz = p3_plane_depth_world(p);
-        o->portal  = p->mesh;                 /* the preview mesh: this portal's identity */
-        o->a = 0.0; o->b = 0.0; o->c = 1.0 / dz;
-        o->back_vz = dz;
-        o->ot_vz   = dz;
-        o->push_vz = 0.0;
-        o->pn = pn;
-        float x0 = poly[0].x + offx, x1 = x0, y0 = poly[0].y + offy, y1 = y0;
-        for (int k = 0; k < pn; k++) {
-            o->px[k] = poly[k].x + offx;
-            o->py[k] = poly[k].y + offy;
-            if (o->px[k] < x0) x0 = o->px[k];
-            if (o->px[k] > x1) x1 = o->px[k];
-            if (o->py[k] < y0) y0 = o->py[k];
-            if (o->py[k] > y1) y1 = o->py[k];
-        }
-        o->x0 = x0; o->x1 = x1; o->y0 = y0; o->y1 = y1;
-        /* No view-space outline: the preview is a flat picture at one depth,
-         * so the opening has no measurable orientation in the world and the
-         * rim classifier, which reasons in the opening plane, has nothing to
-         * reason about. vn = 0 leaves its frames invalid. */
-        o->vn = 0;
+        const int pn = q.nedge < 3 ? 0 : p3_opening_poly(&q, &op, poly, 16);
+        if (pn < 3) continue;                 /* no bounded opening */
+        openpete_portal_skyplane* o = &out[n++];
+        p3_skyplane_fill(o, &q, &op, poly, pn, offx, offy);
         if (p3_dbg() && openpete_frame >= p3_dbg_from()) {
             static unsigned s_lines = 0;
             if (s_lines < 24) {
                 s_lines++;
                 fprintf(stderr, "[portal3-plane f=%u] mesh=%08X vz=%.0f pn=%d bbox=(%.0f,%.0f)-(%.0f,%.0f)\n",
-                        openpete_frame, o->portal, dz, pn, o->x0, o->y0, o->x1, o->y1);
+                        openpete_frame, o->portal, o->ot_vz, pn, o->x0, o->y0, o->x1, o->y1);
             }
         }
-        n++;
     }
     return n;
 }
@@ -741,6 +1036,7 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
         s_curr.n = 0; s_curr.frame = openpete_frame; s_curr.valid = 1;
     }
     s_leaf_calls = 0;
+    s_rec_next = 0;
     s_in_pass = 1;
     s_pass_start = cpu->read_word(game_layout.polybuf.cursor);
     openpete_recomp_module_get()->dispatch(cpu, addr);
