@@ -10,27 +10,30 @@
 #include <SDL3/SDL_atomic.h>
 #include <SDL3/SDL_mutex.h>
 
-/* The scene a copy's pixels come from is the one the tick's primitives were fed
- * into, which the scene ring stamps with its own frame. That stamp lags the VBL
+/* The scene a copy's pixels come from is the one the game's render last fed,
+ * which the scene ring stamps with its own frame. That stamp lags the VBL
  * counter across the tick's tail: the ordering-table walk keeps feeding the
  * open scene while openpete_frame has already moved on, so a copy taken after
- * the walk belongs to the open scene, not to the VBL it happens on. */
+ * the walk belongs to that scene, not to the VBL it happens on. A sub-tick
+ * re-extract opens scenes of its own between the game's renders; they are not
+ * the buffer's content, so the stamp is the game render's
+ * (openpete_native_scene_game_frame), not the open scene's. */
 extern unsigned openpete_frame;
-extern unsigned openpete_native_scene_frame(void);
+extern unsigned openpete_native_scene_game_frame(void);
 
 /** @brief Return the frame stamp a copy taken now belongs to.
  *
- * The scene ring's open scene frame when one is open, else
- * openpete_frame (the ring reports 0xFFFFFFFF when no scene is open). */
+ * The stamp of the scene the game's render last fed, else openpete_frame
+ * before the first feed (the ring reports 0xFFFFFFFF then). */
 static unsigned fb_copy_frame(void)
 {
-    const unsigned live = openpete_native_scene_frame();
+    const unsigned live = openpete_native_scene_game_frame();
     return (live != 0xFFFFFFFFu) ? live : openpete_frame;
 }
 
 /* One slot per live window. A screen holds at most one; the spare slots cover a
  * screen that keeps two copies (a before/after pair) without evicting either. */
-#define FB_SNAP_MAX 4
+#define FB_SNAP_MAX OPENPETE_FB_SNAPSHOT_AREA_BASE
 
 /* The two display buffers occupy the left half of VRAM (a 512-texel-wide
  * framebuffer at y 0 and y 256); everything at x >= 512 is texture and scratch
@@ -74,7 +77,7 @@ static unsigned  s_taken, s_resolved, s_quads, s_area_hits;
 /* A draw area the game put, with the native frame that stands for the content
  * of the buffer it covers. Two areas serve a double-buffered game; the spares
  * cover a screen that puts a third (an off-screen render target). */
-#define FB_AREA_MAX 4
+#define FB_AREA_MAX OPENPETE_FB_SNAPSHOT_AREA_MAX
 typedef struct {
     int x, y, w, h;           /* DRAWENV clip rect, VRAM texels */
     int ofx, ofy;             /* DRAWENV drawing offset */
@@ -84,6 +87,8 @@ typedef struct {
     unsigned char *px;        /* RGBA8 crop of that present over the area's rect */
     int pw, ph;
     uint64_t key;             /* unique per stored image (see the header) */
+    int retained;             /* last put with auto-clear off: the buffer keeps what it holds */
+    unsigned epoch;           /* bumped whenever the buffer's held content is replaced */
 } fb_area_t;
 static fb_area_t s_area[FB_AREA_MAX];
 static int       s_area_next;   /* the slot a new clip rect takes when all are live */
@@ -166,9 +171,33 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
      * the buffer holds, and a copy it has just taken stands until the buffer is
      * cleared again. */
     if (isbg) fb_area_drop(a);
+    /* A new clip rect in the slot, an auto-cleared frame, or the first put of a
+     * retained run each start the buffer's content afresh. */
+    const int same = a->live && a->x == clip_x && a->y == clip_y && a->w == clip_w && a->h == clip_h;
+    if (!same || isbg || !a->retained) a->epoch++;
+    a->retained = !isbg;
     a->x = clip_x; a->y = clip_y; a->w = clip_w; a->h = clip_h;
     a->ofx = ofs_x; a->ofy = ofs_y; a->live = 1;
     s_area_cur = idx;
+}
+
+void openpete_fb_snapshot_on_fill(int x, int y, int w, int h)
+{
+    if (!openpete_fb_snapshot_enabled()) return;
+    for (int i = 0; i < FB_AREA_MAX; i++) {
+        fb_area_t *a = &s_area[i];
+        if (!a->live) continue;
+        if (x <= a->x && y <= a->y && x + w >= a->x + a->w && y + h >= a->y + a->h) a->epoch++;
+    }
+}
+
+int openpete_fb_snapshot_retained_area(unsigned *epoch)
+{
+    if (!openpete_fb_snapshot_enabled() || s_area_cur < 0) return -1;
+    const fb_area_t *a = &s_area[s_area_cur];
+    if (!a->live || !a->retained) return -1;
+    if (epoch) *epoch = a->epoch;
+    return s_area_cur;
 }
 
 /** @brief Find the first live draw area whose clip rect contains a VRAM rect.
@@ -187,6 +216,11 @@ static fb_area_t *fb_area_holding(int x, int y, int w, int h)
         return a;
     }
     return NULL;
+}
+
+int openpete_fb_snapshot_area_holds(int x, int y, int w, int h)
+{
+    return openpete_fb_snapshot_enabled() && fb_area_holding(x, y, w, h) != NULL;
 }
 
 int openpete_fb_snapshot_enabled(void)
@@ -284,6 +318,7 @@ static void fb_move_area_to_area(fb_area_t *from, fb_area_t *to,
 {
     if (dst_x != to->x || dst_y != to->y || w != to->w || h != to->h) return;
     fb_area_drop(to);
+    to->epoch++;   /* the copy replaced everything the destination held */
     if (!from->px) {
         /* The source is the buffer being drawn, so the present composed next
          * is the frame this copy moved. After it both buffers hold that frame:
@@ -457,34 +492,32 @@ static int fb_rect_holds(int du, int dv, int u0, int v0, int u1, int v1, int w, 
     return du + u0 >= 0 && dv + v0 >= 0 && du + u1 <= w && dv + v1 <= h;
 }
 
-/** @brief Compute the mapping from page texels to pixels of an image standing for a texel rect.
+/** @brief Compute the mapping from page texels to the texel space of a stored rect.
  *
- * The scale is image size over rect size per axis; the offset is the
- * page-to-rect displacement times that scale. Any output pointer may be
- * NULL.
+ * A redirected quad samples its stored image through the rect's texel box,
+ * so a UV is the page texel offset by the page-to-rect displacement at unit
+ * scale, whatever resolution the image was cropped at. Any output pointer
+ * may be NULL.
  * @param du Page origin x less the rect's x.
  * @param dv Page origin y less the rect's y.
- * @param pw Image width in pixels.
- * @param ph Image height in pixels.
- * @param w Rect width in texels.
- * @param h Rect height in texels.
- * @param su Receives the x scale.
- * @param sv Receives the y scale.
- * @param ox Receives the image pixel x of the page origin.
- * @param oy Receives the image pixel y of the page origin. */
-static void fb_fill_map(int du, int dv, int pw, int ph, int w, int h,
-                        float *su, float *sv, float *ox, float *oy)
+ * @param su Receives the x scale, 1.
+ * @param sv Receives the y scale, 1.
+ * @param ox Receives the rect texel x of the page origin.
+ * @param oy Receives the rect texel y of the page origin. */
+static void fb_fill_map(int du, int dv, float *su, float *sv, float *ox, float *oy)
 {
-    const float sx = (float)pw / (float)w, sy = (float)ph / (float)h;
-    if (su) *su = sx;
-    if (sv) *sv = sy;
-    if (ox) *ox = (float)du * sx;
-    if (oy) *oy = (float)dv * sy;
+    if (su) *su = 1.0f;
+    if (sv) *sv = 1.0f;
+    if (ox) *ox = (float)du;
+    if (oy) *oy = (float)dv;
 }
 
-/** @brief Find the first window slot with pixels whose rect holds a quad's texel box.
+/** @brief Find the first window slot with pixels or a pending capture whose rect holds a quad's texel box.
  *
- * Fills the texel-to-pixel mapping on a hit, as fb_fill_map does.
+ * A slot waiting for its capture serves a quad fed before the resolve: the
+ * quad's UVs live in the rect's texel space, and the present that composes it
+ * runs after the resolve stores the image. Fills the mapping on a hit, as
+ * fb_fill_map does.
  * @param tpage_x Texture page origin x, VRAM texels.
  * @param tpage_y Texture page origin y.
  * @param u0 Texel box left.
@@ -502,19 +535,20 @@ static int fb_find_window(int tpage_x, int tpage_y, int u0, int v0, int u1, int 
     for (int i = 0; i < FB_SNAP_MAX; i++) {
         const fb_snap_t *s = &s_slot[i];
         const int du = tpage_x - s->dst_x, dv = tpage_y - s->dst_y;
-        if (!s->px || !fb_rect_holds(du, dv, u0, v0, u1, v1, s->w, s->h)) continue;
-        fb_fill_map(du, dv, s->pw, s->ph, s->w, s->h, su, sv, ox, oy);
+        if ((!s->px && !s->pending) || !fb_rect_holds(du, dv, u0, v0, u1, v1, s->w, s->h))
+            continue;
+        fb_fill_map(du, dv, su, sv, ox, oy);
         return i;
     }
     return -1;
 }
 
-/** @brief Find the first draw area with a content image whose clip rect holds a quad's texel box.
+/** @brief Find the first draw area with a content image or a pending capture whose clip rect holds a quad's texel box.
  *
  * A quad whose texels lie in a draw buffer samples the framebuffer itself
  * rather than a copy of it (the shrink of a frozen image before it is
  * copied out), and the area's clip rect stands in for a copy's destination
- * rect. Fills the texel-to-pixel mapping on a hit, as fb_fill_map does.
+ * rect. Fills the mapping on a hit, as fb_fill_map does.
  * @param tpage_x Texture page origin x, VRAM texels.
  * @param tpage_y Texture page origin y.
  * @param u0 Texel box left.
@@ -532,8 +566,9 @@ static int fb_find_area(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1
     for (int i = 0; i < FB_AREA_MAX; i++) {
         const fb_area_t *a = &s_area[i];
         const int du = tpage_x - a->x, dv = tpage_y - a->y;
-        if (!a->px || !fb_rect_holds(du, dv, u0, v0, u1, v1, a->w, a->h)) continue;
-        fb_fill_map(du, dv, a->pw, a->ph, a->w, a->h, su, sv, ox, oy);
+        if ((!a->px && !a->pending) || !fb_rect_holds(du, dv, u0, v0, u1, v1, a->w, a->h))
+            continue;
+        fb_fill_map(du, dv, su, sv, ox, oy);
         return FB_SNAP_MAX + i;
     }
     return -1;
@@ -598,6 +633,20 @@ unsigned char *openpete_fb_snapshot_copy(int idx, uint64_t key, int *pw, int *ph
     SDL_UnlockMutex(s_px_mx);
     if (out) { if (pw) *pw = w; if (ph) *ph = h; }
     return out;
+}
+
+int openpete_fb_snapshot_rect(int idx, int *w, int *h)
+{
+    int rw = 0, rh = 0;
+    if (idx >= FB_SNAP_MAX && idx - FB_SNAP_MAX < FB_AREA_MAX) {
+        rw = s_area[idx - FB_SNAP_MAX].w; rh = s_area[idx - FB_SNAP_MAX].h;
+    } else if (idx >= 0 && idx < FB_SNAP_MAX) {
+        rw = s_slot[idx].w; rh = s_slot[idx].h;
+    }
+    if (rw <= 0 || rh <= 0) return 0;
+    if (w) *w = rw;
+    if (h) *h = rh;
+    return 1;
 }
 
 int openpete_fb_snapshot_key_live(uint64_t key)

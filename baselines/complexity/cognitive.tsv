@@ -73,8 +73,7 @@ core/renderer/native_render.c	openpete_native_hdfold_intern	32	0
 core/renderer/native_render.c	openpete_native_render_init	162	0	
 core/renderer/native_render.c	openpete_native_render_snapshot_frozen	26	0	
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	43	0	
-core/renderer/native_render.c	openpete_native_scene_apply_overlay	82	0	
-core/renderer/native_render.c	openpete_native_scene_begin_frame	53	0	
+core/renderer/native_render.c	openpete_native_scene_apply_overlay	83	0	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	49	0	
 core/renderer/native_render.c	pc_note	38	0	
 core/renderer/native_render.c	portal_cover_check	142	0	
