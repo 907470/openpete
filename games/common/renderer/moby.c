@@ -6160,18 +6160,24 @@ static void native_rank_build(void) {
 }
 
 /* ---- sub-tick carry of the paint verdict ------------------------------------
- * The canonical feed of a tick stores each face's rank and contest flag by
- * (moby, fkey); an intermediate present reads them back rather than keying
- * and intersecting its interpolated pose, so the select changes only where
- * the game's own order changes, between two ticks, and a present costs one
- * lookup per face. Two tables are kept: the latest canonical tick's (T) and
- * the one before it (T-1). An intermediate present shows a pose between T-1
- * (alpha 0) and T (alpha 1), and applies the verdict of the nearer endpoint:
+ * The scene build a canonical present shows stores each face's rank and
+ * contest flag by (moby, fkey); an intermediate present reads them back
+ * rather than keying and intersecting its interpolated pose, so the select
+ * changes only where the game's own order changes, between two ticks, and a
+ * present costs one lookup per face. Two tables are kept: the latest
+ * canonical tick's (T) and the one before it (T-1). An intermediate present
+ * shows a pose between T-1 (alpha 0) and T (alpha 1), and applies the verdict
+ * of the nearer endpoint:
  * T-1's for alpha < 0.5, T's for alpha >= 0.5. The verdict therefore changes
  * once per tick interval, at its midpoint, and never leads the pose by more
  * than half a tick. A face the chosen endpoint did not rank (a mesh the
  * present holds from the previous clip, a face that tick culled, a T-1 table
  * that is not the tick adjacent to T) reads rank 0 and keeps true depth.
+ * One canonical epoch can hold more than one scene build: a pause screen
+ * feeds twice before its present, and runahead feeds the committed tick and
+ * then the speculated ticks, whose last build is the one presented. Each
+ * build empties the epoch's table before its first store, so the table holds
+ * only the last build's verdict, the one the canonical present shows.
  * OPENPETE_MOBY_RANK_CARRY=0 recomputes on every present instead. */
 #define RC_BITS 16
 #define RC_SIZE (1 << RC_BITS)
@@ -6182,6 +6188,7 @@ typedef struct {
     rc_ent   e[RC_SIZE];
     uint32_t gen;     /* generation of this table's live entries */
     uint32_t epoch;   /* canonical epoch the entries were stored under */
+    unsigned scene;   /* native scene build (openpete_native_scene_frame) that stored them */
     int      n;
     int      valid;
 } rc_tab;
@@ -6191,6 +6198,7 @@ static uint32_t s_rc_gen;              /* last generation handed out */
 static double   s_rc_alpha = 1.0;      /* the present's alpha (moby_native_set_verdict_alpha) */
 static long     s_rc_hit, s_rc_miss;   /* engagement counters (sub-tick lookups) */
 static int      s_rc_prev_used;        /* the last apply read the T-1 table */
+static long     s_rc_rebuilds;         /* tables emptied by a second build within one epoch */
 /** @brief Whether the sub-tick rank carry is on (OPENPETE_MOBY_RANK_CARRY).
  *
  * Read on the first call and latched.
@@ -6210,37 +6218,55 @@ void moby_native_set_verdict_alpha(double alpha, int bracketed) { s_rc_alpha = b
 static uint32_t rc_hash(uint32_t m, uint32_t k) {
     return ((m * 2654435761u) ^ (k * 2246822519u)) >> (32 - RC_BITS);
 }
-/** @brief The carry table a store under canonical epoch ep writes.
+/** @brief Empty a carry table for the build that stores into it next.
  *
- * The latest table while it is valid for ep. The first store of a new epoch
- * turns the latest table into the T-1 table and empties the other one for
- * the new tick by giving it a fresh generation; a generation wrap clears both
- * tables.
- * @param ep The canonical epoch.
- * @return The table. */
-static rc_tab* rank_carry_table_for(uint32_t ep) {
-    rc_tab* t = &s_rc_tab[s_rc_cur];
-    if (t->valid && ep == t->epoch) return t;
-    s_rc_cur ^= 1;
-    t = &s_rc_tab[s_rc_cur];
+ * Hands out a fresh generation, so every entry of the table stops matching;
+ * a generation wrap clears both tables first.
+ * @param t The table.
+ * @param ep The canonical epoch the build stores under.
+ * @param scene The native scene build. */
+static void rank_carry_empty(rc_tab* t, uint32_t ep, unsigned scene) {
     s_rc_gen = (s_rc_gen + 1) & 0x7FFFFFFFu;
     if (!s_rc_gen) {
         memset(s_rc_tab, 0, sizeof s_rc_tab);   /* wrap: both tables start empty */
         s_rc_gen = 1;
     }
-    t->gen = s_rc_gen; t->n = 0; t->epoch = ep; t->valid = 1;
+    t->gen = s_rc_gen; t->n = 0; t->epoch = ep; t->scene = scene; t->valid = 1;
+}
+/** @brief The carry table a store from scene build scene under canonical epoch ep writes.
+ *
+ * The latest table while it is valid for ep and was stored by the same build,
+ * so the material passes of one build accumulate. A later build under the
+ * same epoch empties the latest table in place and leaves the T-1 table as it
+ * is. The first store of a new epoch turns the latest table into the T-1
+ * table and empties the other one for the new tick.
+ * @param ep The canonical epoch.
+ * @param scene The native scene build (openpete_native_scene_frame).
+ * @return The table. */
+static rc_tab* rank_carry_table_for(uint32_t ep, unsigned scene) {
+    rc_tab* t = &s_rc_tab[s_rc_cur];
+    if (t->valid && ep == t->epoch) {
+        if (scene != t->scene) { rank_carry_empty(t, ep, scene); s_rc_rebuilds++; }
+        return t;
+    }
+    s_rc_cur ^= 1;
+    t = &s_rc_tab[s_rc_cur];
+    rank_carry_empty(t, ep, scene);
     return t;
 }
-/** @brief Store this canonical feed's face ranks in the current epoch's carry table.
+/** @brief Store this feed's face ranks in the carry table of its scene build.
  *
- * Does nothing unless the canonical capture is open. For each s_gout
- * triangle with a positive s_nrank and a nonzero moby it inserts or replaces
- * the entry keyed by (moby, face key) with the rank and the contest flag,
- * probing linearly from rc_hash. Once the table holds three quarters of
- * RC_SIZE keys every remaining triangle is skipped, replacements included. */
+ * Runs for every feed that is not a sub-tick re-extract, runahead's
+ * speculated builds included: the ranks come from the host walk of the build
+ * the canonical present shows, not from guest scratch a later tick reuses.
+ * The table is the one rank_carry_table_for gives the current canonical epoch
+ * and native scene build. For each s_gout triangle with a positive s_nrank
+ * and a nonzero moby it inserts or replaces the entry keyed by (moby, face
+ * key) with the rank and the contest flag, probing linearly from rc_hash.
+ * Once the table holds three quarters of RC_SIZE keys every remaining
+ * triangle is skipped, replacements included. */
 static void rank_carry_store(void) {
-    if (!spyro_native_canon_capture_open()) return;
-    rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp());
+    rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp(), openpete_native_scene_frame());
     for (int i = 0; i < s_gout.n; i++) {
         if (s_nrank[i] <= 0 || !s_wtri_moby[i] || t->n >= RC_SIZE - (RC_SIZE >> 2)) continue;
         uint32_t h = rc_hash(s_wtri_moby[i], s_wtri_fkey[i]);
@@ -6473,9 +6499,9 @@ static void moby_rank_prepare(void) {
     if (isect_log_on()) {
         if (carry)
             fprintf(stderr, "[rank-carry] vbl=%u mat=%s tris=%d hit=%ld miss=%ld epoch=%u "
-                            "alpha=%.3f endpoint=%s\n",
+                            "alpha=%.3f endpoint=%s rebuilds=%ld\n",
                     openpete_frame, s_cur_mat, s_gout.n, s_rc_hit, s_rc_miss,
-                    s_rc_tab[s_rc_cur].epoch, s_rc_alpha, s_rc_prev_used ? "prev" : "latest");
+                    s_rc_tab[s_rc_cur].epoch, s_rc_alpha, s_rc_prev_used ? "prev" : "latest", s_rc_rebuilds);
         isect_select_census();
     }
     s_rc_hit = s_rc_miss = 0;
