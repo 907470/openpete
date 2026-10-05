@@ -268,3 +268,7 @@ gnorc_gnexus | pos=(77512, 70274, 9034) yaw=2354 pitch=205
 # pedestal's faces are missing or keyed behind the backdrop at this pose
 # blessed pre-fix.
 peace_keepers | pos=(36639, 111464, 54580) yaw=1798 pitch=10
+# peace_keepers tents: navy triangles and slivers show through the tent faces
+# at 16:9 (the leftmost tent in the widescreen band, slivers on the right
+# tent); the guest reference draws the tents whole.
+peace_keepers | pos=(54862, 89528, 54872) yaw=7021 pitch=29
