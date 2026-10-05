@@ -1,16 +1,16 @@
 # presentation identity-leg baseline
 # game: spyro-2
 # tier: presentation
-# recipe-hash: 3847f0d03070b91feb43691053ab02f0511969adb456323eb32699669e2eb1bc
+# recipe-hash: 7acc560945fa65e84048326c7a4acc3e76cd1d16da7902bc7dd27eea4859e7db
 # mesa: Mesa 23.2.1-1ubuntu3.1~22.04.4 (LLVM 15.0.7)
 # device: llvmpipe (LLVM 15.0.7, 256 bits)
 # compiler: gcc-11 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
 # preset: linux-release-container
-# image-digest: sha256:85443b3bf7f717efaacd3fcb5732cb7dd2acabdc448aed236a0c6cb0001371dd
+# image-digest: sha256:5182f84114a1ac1a42405e03022b83c1abae72c9a1aefd57be281adc05793579
 # libvulkan: 1.3.204.1-2
 # disc-bin: b3fd9fdb24b115fee4583dbe3c36ab788fd8679fb4592dbec8736392dec64551 games/spyro-2/spyro-2/build/SCUS-94425.bin
 # disc-cue: 51448cef393383b175d88aa11b7173db710a66549bd8276d38a2ac9a5bc197eb games/spyro-2/spyro-2/build/SCUS-94425.cue
-# environment-accept: first capture-environment record: every non-held row reproduced in the pinned capture image
+# environment-accept: recipe 1c861b03f adds spirv-tools (spirv-opt SSA rewrite of the terrain vertex stages); identity baselines migrate with the presentation manifests
 # tile	differing pixels vs the canon tile of the same frame (target 0)
 attract-demo__ident__10200-vk.png	0
 attract-demo__ident__1400-vk.png	0
@@ -172,12 +172,12 @@ shady_oasis-951904__ident__1900-vk.png	0
 shady_oasis-951904__lodext__ident__1900-vk.png	0
 skelos_badlands-11d6cc__ident__1900-vk.png	0
 skelos_badlands-11d6cc__lodext__ident__1900-vk.png	0
-start-new-game@mobyrank__ident__470-vk.png	0
-start-new-game@mobyrank__ident__480-vk.png	0
-start-new-game@mobyrank__ident__92-vk.png	0
-start-new-game@mobyrank__lodext__ident__470-vk.png	0
-start-new-game@mobyrank__lodext__ident__480-vk.png	0
-start-new-game@mobyrank__lodext__ident__92-vk.png	0
+start-new-game__ident__470-vk.png	0
+start-new-game__ident__480-vk.png	0
+start-new-game__ident__92-vk.png	0
+start-new-game__lodext__ident__470-vk.png	0
+start-new-game__lodext__ident__480-vk.png	0
+start-new-game__lodext__ident__92-vk.png	0
 summer-forest-collect-orb__ident__870-vk.png	0
 summer-forest-collect-orb__ident__882-vk.png	0
 summer-forest-collect-orb__ident__884-vk.png	0

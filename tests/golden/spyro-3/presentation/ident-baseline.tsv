@@ -1,16 +1,16 @@
 # presentation identity-leg baseline
 # game: spyro-3
 # tier: presentation
-# recipe-hash: 3847f0d03070b91feb43691053ab02f0511969adb456323eb32699669e2eb1bc
+# recipe-hash: 7acc560945fa65e84048326c7a4acc3e76cd1d16da7902bc7dd27eea4859e7db
 # mesa: Mesa 23.2.1-1ubuntu3.1~22.04.4 (LLVM 15.0.7)
 # device: llvmpipe (LLVM 15.0.7, 256 bits)
 # compiler: gcc-11 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
 # preset: linux-release-container
-# image-digest: sha256:85443b3bf7f717efaacd3fcb5732cb7dd2acabdc448aed236a0c6cb0001371dd
+# image-digest: sha256:5182f84114a1ac1a42405e03022b83c1abae72c9a1aefd57be281adc05793579
 # libvulkan: 1.3.204.1-2
 # disc-bin: a313c9b1306a08e950edddc152280a443796e68052c8e0454b5d76d69354d157 games/spyro-3/spyro-3/build/SCUS-94467.bin
 # disc-cue: 6af76bca9c54442c256d9231363150e02bee22ed8a2a8c6c6c47a39c07b11c8a games/spyro-3/spyro-3/build/SCUS-94467.cue
-# environment-accept: first capture-environment record: every non-held row reproduced in the pinned capture image
+# environment-accept: recipe 1c861b03f adds spirv-tools (spirv-opt SSA rewrite of the terrain vertex stages); identity baselines migrate with the presentation manifests
 # tile	differing pixels vs the canon tile of the same frame (target 0)
 a-powerful-villain-emerges-throne__ident__5080-vk.png	0
 a-powerful-villain-emerges-throne__ident__5090-vk.png	0
@@ -130,22 +130,22 @@ open-atlas-turn-pages__lodext__ident__1524-vk.png	0
 open-atlas-turn-pages__lodext__ident__1532-vk.png	0
 open-atlas-turn-pages__lodext__ident__1640-vk.png	0
 open-atlas-turn-pages__lodext__ident__1740-vk.png	1410
-open-atlas__ident__1000-vk.png	0
+open-atlas__ident__1000-vk.png	1
 open-atlas__ident__1100-vk.png	0
 open-atlas__ident__1200-vk.png	0
 open-atlas__ident__1300-vk.png	0
 open-atlas__ident__900-vk.png	0
-open-atlas__lodext__ident__1000-vk.png	0
+open-atlas__lodext__ident__1000-vk.png	1
 open-atlas__lodext__ident__1100-vk.png	0
 open-atlas__lodext__ident__1200-vk.png	0
 open-atlas__lodext__ident__1300-vk.png	0
 open-atlas__lodext__ident__900-vk.png	0
-open-options__ident__1000-vk.png	0
+open-options__ident__1000-vk.png	1
 open-options__ident__1100-vk.png	509
 open-options__ident__1200-vk.png	0
 open-options__ident__1300-vk.png	0
 open-options__ident__900-vk.png	0
-open-options__lodext__ident__1000-vk.png	0
+open-options__lodext__ident__1000-vk.png	1
 open-options__lodext__ident__1100-vk.png	509
 open-options__lodext__ident__1200-vk.png	0
 open-options__lodext__ident__1300-vk.png	0
@@ -238,6 +238,8 @@ sunrise-spring-surface-swim__lodext__ident__2350-vk.png	0
 sunrise-spring-surface-swim__lodext__ident__2500-vk.png	0
 sunrise_spring-0a622e__ident__1900-vk.png	0
 sunrise_spring-0a622e__lodext__ident__1900-vk.png	0
+sunrise_spring-2b1b7e__ident__2000-vk.png	0
+sunrise_spring-2b1b7e__lodext__ident__2000-vk.png	0
 sunrise_spring-2bba56__ident__1900-vk.png	0
 sunrise_spring-2bba56__lodext__ident__1900-vk.png	0
 sunrise_spring-35b7b9__ident__1900-vk.png	0
@@ -252,8 +254,6 @@ sunrise_spring-d1d517__ident__1900-vk.png	0
 sunrise_spring-d1d517__lodext__ident__1900-vk.png	0
 sunrise_spring-f9ff4f__ident__1900-vk.png	0
 sunrise_spring-f9ff4f__lodext__ident__1900-vk.png	0
-sunrise_spring@mobyrank-2b1b7e__ident__2000-vk.png	0
-sunrise_spring@mobyrank-2b1b7e__lodext__ident__2000-vk.png	0
 title-demo-camcut__ident__5800-vk.png	0
 title-demo-camcut__ident__5852-vk.png	0
 title-demo-camcut__ident__5900-vk.png	0

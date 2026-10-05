@@ -1,16 +1,16 @@
 # presentation identity-leg baseline
 # game: spyro-1
 # tier: presentation
-# recipe-hash: 3847f0d03070b91feb43691053ab02f0511969adb456323eb32699669e2eb1bc
+# recipe-hash: 7acc560945fa65e84048326c7a4acc3e76cd1d16da7902bc7dd27eea4859e7db
 # mesa: Mesa 23.2.1-1ubuntu3.1~22.04.4 (LLVM 15.0.7)
 # device: llvmpipe (LLVM 15.0.7, 256 bits)
 # compiler: gcc-11 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
 # preset: linux-release-container
-# image-digest: sha256:85443b3bf7f717efaacd3fcb5732cb7dd2acabdc448aed236a0c6cb0001371dd
+# image-digest: sha256:5182f84114a1ac1a42405e03022b83c1abae72c9a1aefd57be281adc05793579
 # libvulkan: 1.3.204.1-2
 # disc-bin: b29c2a3c41e2af13ce0b1d6526217df43a395d4bf53860c29a7bcec47bd76be5 games/spyro-1/spyro-1/build/SCUS-94228.bin
 # disc-cue: 7305aa586d195a617de5998d56a5e9188222616f252ae492e646154e110e274d games/spyro-1/spyro-1/build/SCUS-94228.cue
-# environment-accept: first capture-environment record: every non-held row reproduced in the pinned capture image
+# environment-accept: recipe 1c861b03f adds spirv-tools (spirv-opt SSA rewrite of the terrain vertex stages); identity baselines migrate with the presentation manifests
 # tile	differing pixels vs the canon tile of the same frame (target 0)
 alban-rescue__ident__1700-vk.png	0
 alban-rescue__ident__1756-vk.png	0
@@ -232,15 +232,15 @@ blowhard-b4a6ff__ident__1900-vk.png	0
 blowhard-b4a6ff__lodext__ident__1900-vk.png	0
 blowhard-e74b04__ident__1900-vk.png	0
 blowhard-e74b04__lodext__ident__1900-vk.png	0
-camera-rotate-taps__ident__1700-vk.png	0
+camera-rotate-taps__ident__1700-vk.png	7
 camera-rotate-taps__ident__1800-vk.png	0
-camera-rotate-taps__ident__1900-vk.png	0
-camera-rotate-taps__ident__2000-vk.png	0
+camera-rotate-taps__ident__1900-vk.png	1
+camera-rotate-taps__ident__2000-vk.png	2
 camera-rotate-taps__ident__2100-vk.png	0
-camera-rotate-taps__lodext__ident__1700-vk.png	0
+camera-rotate-taps__lodext__ident__1700-vk.png	7
 camera-rotate-taps__lodext__ident__1800-vk.png	0
-camera-rotate-taps__lodext__ident__1900-vk.png	0
-camera-rotate-taps__lodext__ident__2000-vk.png	0
+camera-rotate-taps__lodext__ident__1900-vk.png	1
+camera-rotate-taps__lodext__ident__2000-vk.png	2
 camera-rotate-taps__lodext__ident__2100-vk.png	0
 chest-destruction__ident__1700-vk.png	0
 chest-destruction__ident__2000-vk.png	0
@@ -452,6 +452,8 @@ gnorc_cove-c2acad__ident__1900-vk.png	0
 gnorc_cove-c2acad__lodext__ident__1900-vk.png	0
 gnorc_cove-d15a99__ident__1900-vk.png	0
 gnorc_cove-d15a99__lodext__ident__1900-vk.png	0
+gnorc_gnexus-dd584d__ident__1900-vk.png	0
+gnorc_gnexus-dd584d__lodext__ident__1900-vk.png	0
 haunted_towers-26e482__ident__1900-vk.png	0
 haunted_towers-26e482__lodext__ident__1900-vk.png	0
 haunted_towers-933aeb__ident__1900-vk.png	0
@@ -660,6 +662,8 @@ peace_keepers-492c6e__ident__1900-vk.png	0
 peace_keepers-492c6e__lodext__ident__1900-vk.png	0
 peace_keepers-4e68b9__ident__1900-vk.png	0
 peace_keepers-4e68b9__lodext__ident__1900-vk.png	0
+peace_keepers-55101f__ident__1900-vk.png	0
+peace_keepers-55101f__lodext__ident__1900-vk.png	0
 peace_keepers-60f3b2__ident__1900-vk.png	0
 peace_keepers-60f3b2__lodext__ident__1900-vk.png	0
 peace_keepers-94d0b7__ident__1900-vk.png	0
@@ -756,12 +760,12 @@ spyro-shadow-wall-disocclusion__lodext__ident__2700-vk.png	0
 spyro-shadow-wall-disocclusion__lodext__ident__3100-vk.png	0
 spyro-shadow-wall-disocclusion__lodext__ident__3450-vk.png	0
 spyro-shadow-wall-disocclusion__lodext__ident__3500-vk.png	0
-start-new-game@mobyrank__ident__1609-vk.png	0
-start-new-game@mobyrank__ident__1614-vk.png	0
-start-new-game@mobyrank__ident__1619-vk.png	0
-start-new-game@mobyrank__lodext__ident__1609-vk.png	0
-start-new-game@mobyrank__lodext__ident__1614-vk.png	0
-start-new-game@mobyrank__lodext__ident__1619-vk.png	0
+start-new-game__ident__1609-vk.png	0
+start-new-game__ident__1614-vk.png	0
+start-new-game__ident__1619-vk.png	0
+start-new-game__lodext__ident__1609-vk.png	0
+start-new-game__lodext__ident__1614-vk.png	0
+start-new-game__lodext__ident__1619-vk.png	0
 stone-hill-distant-terrain__ident__1700-vk.png	0
 stone-hill-distant-terrain__ident__2100-vk.png	0
 stone-hill-distant-terrain__ident__2500-vk.png	0
@@ -776,12 +780,22 @@ stone-hill-distant-terrain__lodext__ident__2800-vk.png	0
 stone-hill-distant-terrain__lodext__ident__3020-vk.png	0
 stone-hill-distant-terrain__lodext__ident__3090-vk.png	0
 stone-hill-distant-terrain__lodext__ident__3200-vk.png	0
-stone-hill-lindar-rescue@mobyrank__ident__2369-vk.png	0
-stone-hill-lindar-rescue@mobyrank__ident__2374-vk.png	0
-stone-hill-lindar-rescue@mobyrank__ident__2379-vk.png	0
-stone-hill-lindar-rescue@mobyrank__lodext__ident__2369-vk.png	0
-stone-hill-lindar-rescue@mobyrank__lodext__ident__2374-vk.png	0
-stone-hill-lindar-rescue@mobyrank__lodext__ident__2379-vk.png	0
+stone-hill-gem-spyro-occlusion__ident__1700-vk.png	0
+stone-hill-gem-spyro-occlusion__ident__1800-vk.png	0
+stone-hill-gem-spyro-occlusion__ident__1896-vk.png	0
+stone-hill-gem-spyro-occlusion__ident__1900-vk.png	0
+stone-hill-gem-spyro-occlusion__ident__2000-vk.png	0
+stone-hill-gem-spyro-occlusion__lodext__ident__1700-vk.png	0
+stone-hill-gem-spyro-occlusion__lodext__ident__1800-vk.png	0
+stone-hill-gem-spyro-occlusion__lodext__ident__1896-vk.png	0
+stone-hill-gem-spyro-occlusion__lodext__ident__1900-vk.png	0
+stone-hill-gem-spyro-occlusion__lodext__ident__2000-vk.png	0
+stone-hill-lindar-rescue__ident__2369-vk.png	0
+stone-hill-lindar-rescue__ident__2374-vk.png	0
+stone-hill-lindar-rescue__ident__2379-vk.png	0
+stone-hill-lindar-rescue__lodext__ident__2369-vk.png	0
+stone-hill-lindar-rescue__lodext__ident__2374-vk.png	0
+stone-hill-lindar-rescue__lodext__ident__2379-vk.png	0
 stone_hill-005178__ident__1900-vk.png	0
 stone_hill-005178__lodext__ident__1900-vk.png	0
 stone_hill-167aff__ident__1900-vk.png	0
