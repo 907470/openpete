@@ -492,31 +492,42 @@ static int fb_rect_holds(int du, int dv, int u0, int v0, int u1, int v1, int w, 
     return du + u0 >= 0 && dv + v0 >= 0 && du + u1 <= w && dv + v1 <= h;
 }
 
-/** @brief Compute the mapping from page texels to the texel space of a stored rect.
+/** @brief Compute the mapping from page texels to a stored rect's image, or to the rect's texels when it holds no image yet.
  *
- * A redirected quad samples its stored image through the rect's texel box,
- * so a UV is the page texel offset by the page-to-rect displacement at unit
- * scale, whatever resolution the image was cropped at. Any output pointer
- * may be NULL.
+ * With an image the scale is image size over rect size per axis and the
+ * offset the page-to-rect displacement times that scale, so a UV is a pixel
+ * position in the image. A rect still waiting for its capture has no image
+ * size, so the scale is 1 and a UV is a texel of the rect; the draw maps
+ * either onto the image it finds (texel_space tells it which). Any output
+ * pointer may be NULL.
  * @param du Page origin x less the rect's x.
  * @param dv Page origin y less the rect's y.
- * @param su Receives the x scale, 1.
- * @param sv Receives the y scale, 1.
- * @param ox Receives the rect texel x of the page origin.
- * @param oy Receives the rect texel y of the page origin. */
-static void fb_fill_map(int du, int dv, float *su, float *sv, float *ox, float *oy)
+ * @param pw Image width in pixels, 0 when there is no image.
+ * @param ph Image height in pixels.
+ * @param w Rect width in texels.
+ * @param h Rect height in texels.
+ * @param su Receives the x scale.
+ * @param sv Receives the y scale.
+ * @param ox Receives the mapped x of the page origin.
+ * @param oy Receives the mapped y of the page origin.
+ * @param texel_space Receives 1 for the rect-texel mapping, 0 for image pixels. */
+static void fb_fill_map(int du, int dv, int pw, int ph, int w, int h,
+                        float *su, float *sv, float *ox, float *oy, int *texel_space)
 {
-    if (su) *su = 1.0f;
-    if (sv) *sv = 1.0f;
-    if (ox) *ox = (float)du;
-    if (oy) *oy = (float)dv;
+    const int img = pw > 0 && ph > 0;
+    const float sx = img ? (float)pw / (float)w : 1.0f, sy = img ? (float)ph / (float)h : 1.0f;
+    if (su) *su = sx;
+    if (sv) *sv = sy;
+    if (ox) *ox = (float)du * sx;
+    if (oy) *oy = (float)dv * sy;
+    if (texel_space) *texel_space = !img;
 }
 
 /** @brief Find the first window slot with pixels or a pending capture whose rect holds a quad's texel box.
  *
- * A slot waiting for its capture serves a quad fed before the resolve: the
- * quad's UVs live in the rect's texel space, and the present that composes it
- * runs after the resolve stores the image. Fills the mapping on a hit, as
+ * A slot waiting for its capture serves a quad fed before the resolve: its
+ * UVs are mapped to the rect's texels, and the present that composes it runs
+ * after the resolve stores the image. Fills the mapping on a hit, as
  * fb_fill_map does.
  * @param tpage_x Texture page origin x, VRAM texels.
  * @param tpage_y Texture page origin y.
@@ -526,18 +537,19 @@ static void fb_fill_map(int du, int dv, float *su, float *sv, float *ox, float *
  * @param v1 Texel box bottom edge.
  * @param su Receives the x scale.
  * @param sv Receives the y scale.
- * @param ox Receives the image pixel x of the page origin.
- * @param oy Receives the image pixel y of the page origin.
+ * @param ox Receives the mapped x of the page origin.
+ * @param oy Receives the mapped y of the page origin.
+ * @param texel_space Receives 1 when the mapping is to rect texels.
  * @return The slot index, or -1 when none holds the box. */
 static int fb_find_window(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1,
-                          float *su, float *sv, float *ox, float *oy)
+                          float *su, float *sv, float *ox, float *oy, int *texel_space)
 {
     for (int i = 0; i < FB_SNAP_MAX; i++) {
         const fb_snap_t *s = &s_slot[i];
         const int du = tpage_x - s->dst_x, dv = tpage_y - s->dst_y;
         if ((!s->px && !s->pending) || !fb_rect_holds(du, dv, u0, v0, u1, v1, s->w, s->h))
             continue;
-        fb_fill_map(du, dv, su, sv, ox, oy);
+        fb_fill_map(du, dv, s->px ? s->pw : 0, s->ph, s->w, s->h, su, sv, ox, oy, texel_space);
         return i;
     }
     return -1;
@@ -557,18 +569,19 @@ static int fb_find_window(int tpage_x, int tpage_y, int u0, int v0, int u1, int 
  * @param v1 Texel box bottom edge.
  * @param su Receives the x scale.
  * @param sv Receives the y scale.
- * @param ox Receives the image pixel x of the page origin.
- * @param oy Receives the image pixel y of the page origin.
+ * @param ox Receives the mapped x of the page origin.
+ * @param oy Receives the mapped y of the page origin.
+ * @param texel_space Receives 1 when the mapping is to rect texels.
  * @return FB_SNAP_MAX plus the area index, or -1 when none holds the box. */
 static int fb_find_area(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1,
-                        float *su, float *sv, float *ox, float *oy)
+                        float *su, float *sv, float *ox, float *oy, int *texel_space)
 {
     for (int i = 0; i < FB_AREA_MAX; i++) {
         const fb_area_t *a = &s_area[i];
         const int du = tpage_x - a->x, dv = tpage_y - a->y;
         if ((!a->px && !a->pending) || !fb_rect_holds(du, dv, u0, v0, u1, v1, a->w, a->h))
             continue;
-        fb_fill_map(du, dv, su, sv, ox, oy);
+        fb_fill_map(du, dv, a->px ? a->pw : 0, a->ph, a->w, a->h, su, sv, ox, oy, texel_space);
         return FB_SNAP_MAX + i;
     }
     return -1;
@@ -576,11 +589,11 @@ static int fb_find_area(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1
 
 int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
                              int u0, int v0, int u1, int v1,
-                             float *su, float *sv, float *ox, float *oy)
+                             float *su, float *sv, float *ox, float *oy, int *texel_space)
 {
     if (!openpete_fb_snapshot_enabled() || bpp != 16) return -1;
-    int idx = fb_find_window(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy);
-    if (idx < 0) idx = fb_find_area(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy);
+    int idx = fb_find_window(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy, texel_space);
+    if (idx < 0) idx = fb_find_area(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy, texel_space);
     if (idx >= 0) s_quads++;
     return idx;
 }

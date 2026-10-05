@@ -3189,6 +3189,33 @@ static bool fullscreen_poll(bool split, bool prev_alt_enter)
     return alt_enter;
 }
 
+/** @brief Commit the canonical present's 2D capture, then resolve the framebuffer windows it names.
+ *
+ * Runs once per canonical present, after the fade commit and before any
+ * re-extract or present of the tick. The 2D-UI overlay (fade, letterbox,
+ * menu panel, 2D sprites and lines) is captured from the canonical render's
+ * scene before a re-extract wipes it; sub-ticks only re-apply it, since their
+ * scene already holds the re-applied set. With the spine off (unlock, paused,
+ * interpolation disabled, headless) the capture still commits, so the carry
+ * always holds the last canonical present's 2D set for the headless
+ * intermediate leg and for the first sub-tick present after unlock. A pending
+ * framebuffer-window copy is then composed from that scene, which by now
+ * holds the tick's 2D, and cropped into its window before the tick's
+ * re-extract and present, so the present that first draws the window draws
+ * its image. The device belongs to the present thread while eager production
+ * is engaged, so the compose takes it back and returns it. Both steps are a
+ * no-op without a native scene. */
+static void run_canonical_capture(void)
+{
+    if (!openpete_native_scene_enabled()) return;
+    openpete_native_scene_capture_overlay();
+    if (!openpete_fb_snapshot_pending()) return;
+    const int pt_was = openpete_present_thread_active();
+    if (pt_was) openpete_present_thread_set_active(0);
+    openpete_native_render_snapshot_fb_window();
+    if (pt_was) openpete_present_thread_set_active(1);
+}
+
 /** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
  *
  * Split from run_host_init because SDL brings its video, gamepad and haptic
@@ -5422,22 +5449,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                 if (commit) commit();
             }
 
-            /* Framebuffer-window snapshot: the game copied a rect of its draw
-             * buffer to a VRAM scratch page and re-displays it as a textured
-             * quad, whose texels the native render never writes. Compose the
-             * scene the copy names and hand the window its crop. Resolved here,
-             * before this tick's re-extract and present, so the accumulator
-             * still holds the game's own render and the present that first
-             * draws the window draws its image. Same call windowed and headless;
-             * the device belongs to the present thread while eager is engaged,
-             * so take it back for the compose and return it. */
-            if (openpete_native_scene_enabled() && openpete_fb_snapshot_pending()) {
-                const int pt_was = openpete_present_thread_active();
-                if (pt_was) openpete_present_thread_set_active(0);
-                openpete_native_render_snapshot_fb_window();
-                if (pt_was) openpete_present_thread_set_active(1);
-            }
-
             /* Sub-tick spine: lag the CANONICAL native present too. The game's
              * render just built s_scene at the LATEST pose (tick N), but the
              * intermediates that follow present the 1-tick-lagged interpolation
@@ -5463,6 +5474,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * re-engages. The raw (spine-off) present path doesn't read what this
                  * writes, so an unconditional commit is harmless there. */
                 openpete_native_scene_commit_fade();
+                run_canonical_capture();
                 /* !headless: headless has no live present stream, so the canonical
                  * dump must stay the PURE canonical frame. The presentation-golden
                  * intermediate corpus enables interp capture headless (for the
@@ -5494,7 +5506,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                     OPL_INFO_F("eager", "%s", eager_now ? "engaged" : "disengaged (inline presents)");
                 }
                 if (eager_now) {
-                    openpete_native_scene_capture_overlay();
                     const op_time_t period = op_period_ns(s_render_period);
                     const op_time_t curr = openpete_interp_curr_tick_ns();
                     const op_time_t now = op_now();
@@ -5522,13 +5533,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                     pace_canon_extract_ns = 0;
                 } else
                 if (spine_on) {
-                    /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
-                     * 2D-UI sprites/lines) from THIS canonical render's scene before
-                     * the re-extract wipes it. Captured on the CANONICAL present only
-                     * - never on sub-ticks, where s_scene holds the already-re-applied
-                     * carry set (re-capturing it accumulates unbounded). The re-extract
-                     * (here and each sub-tick) only re-applies it. */
-                    openpete_native_scene_capture_overlay();
                     uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
                     extern int g_openpete_canon_lag_leg;
                     g_openpete_canon_lag_leg = 1;
@@ -5539,20 +5543,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                     pace_canon_extract_ns = op_now() - rex_t0;
                     g_openpete_canon_lag_leg = 0;
                     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
-                } else if (openpete_native_scene_enabled()) {
-                    /* Spine off (unlock / paused / interp disabled / headless):
-                     * commit the tick's accumulation all the same, so the carry
-                     * always holds the LAST canonical present's 2D set. The carry
-                     * outlives this present: the headless intermediate leg applies
-                     * it through its explicit re-extract, and the live spine
-                     * applies it on the first sub-tick present after unlock
-                     * releases. Dropping the accumulation here instead left the
-                     * carry at whatever the last spine-on present captured - the
-                     * title logo, when Tab is held from the title screen - and
-                     * that set was re-applied over VRAM the level had since
-                     * overwritten. This block runs once per game DrawOTag, so
-                     * nothing pools across presents. */
-                    openpete_native_scene_capture_overlay();
                 }
             }
 
@@ -5602,6 +5592,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                             openpete_frame, sw, sh);
                 s_presents_captured++;
             }
+
 
             /* Maintain the capture freeze backdrop: render this present's world
              * frame into the capture freeze texture so a later headless dump of a

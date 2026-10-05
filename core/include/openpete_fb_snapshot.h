@@ -26,8 +26,9 @@ extern "C" {
 
 /* Material bpp sentinel for a scene triangle redirected to a snapshot. The
  * material fields are otherwise unused on such a triangle: tpage_x carries the
- * slot and the vertex u,v are texel coordinates in the slot's stored rect,
- * which the draw maps onto the stored image at whatever resolution it holds. A
+ * slot, tpage_y says how the vertex u,v map (0: pixels of the stored image;
+ * 1: texels of the slot's rect, for a quad fed before its capture resolved,
+ * which the draw maps onto the image at whatever resolution it holds). A
  * sentinel rather than a reserved id keeps the snapshot slots out of the mod
  * texture-id namespace, and keeps the run-coalescing material compare from
  * merging a snapshot run with a VRAM or mod run. */
@@ -161,8 +162,8 @@ void openpete_fb_snapshot_store_area(int idx, unsigned char *px, int pw, int ph)
  * by that row. Window slots are searched first, then draw areas carrying a
  * content image, which serves a quad sampling the framebuffer itself (the
  * shrink of a frozen image before it is copied out). A slot or area waiting
- * for its capture matches too: the UVs do not depend on the image, and the
- * capture resolves before the present that draws the quad. Only 16-bit pages
+ * for its capture matches too, mapped to its rect's texels; the capture
+ * resolves before the present that draws the quad. Only 16-bit pages
  * match, since a copied framebuffer is re-displayed at one texel per pixel.
  * A hit counts one redirected quad. Any output pointer may be NULL.
  * @param tpage_x Texture page origin x, VRAM texels.
@@ -172,16 +173,19 @@ void openpete_fb_snapshot_store_area(int idx, unsigned char *px, int pw, int ph)
  * @param v0 Texel box top.
  * @param u1 Texel box right edge, inclusive of the edge past the last texel.
  * @param v1 Texel box bottom edge, likewise.
- * @param su Receives the scale from page texels to rect texels in x (1).
- * @param sv Receives the scale in y (1).
- * @param ox Receives the rect texel x of the page origin (negative when the
+ * @param su Receives the scale from page texels to image pixels in x (1 in
+ *        rect-texel mapping).
+ * @param sv Receives the scale in y.
+ * @param ox Receives the mapped x of the page origin (negative when the
  *        origin precedes the rect).
- * @param oy Receives the rect texel y of the page origin.
+ * @param oy Receives the mapped y of the page origin.
+ * @param texel_space Receives 1 when the stored entry holds no image yet and
+ *        the mapping is to the rect's texels, else 0; may be NULL.
  * @return The window slot index, or 4 plus the draw area index, or -1 on a
  *         miss or when the mechanism is disabled. */
 int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
                               int u0, int v0, int u1, int v1,
-                              float *su, float *sv, float *ox, float *oy);
+                              float *su, float *sv, float *ox, float *oy, int *texel_space);
 
 /** @brief Read the key and size of the image stored at an index openpete_fb_snapshot_find returned.
  *

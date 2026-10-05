@@ -468,12 +468,14 @@ static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri
  * native render never writes. The quad's texel bounding box is looked up
  * with openpete_fb_snapshot_find; on a hit both triangles take the
  * snapshot's page and OPENPETE_FB_SNAPSHOT_BPP, and each UV is scaled and
- * offset into the texel space of the stored rect.
+ * offset into a pixel position in that image, or into a texel of the rect
+ * while its capture is pending (tpage_y 1).
  * @param quad The quad's two triangles, rewritten in place on a hit.
  * @return 1 when redirected, 0 with the quad unchanged when no snapshot holds
  *         its texel box (the stock VRAM path). */
 static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
     float su = 1.0f, sv = 1.0f, ox = 0.0f, oy = 0.0f;
+    int texel_space = 0;
     float lo_u = quad[0].v[0].u, hi_u = lo_u, lo_v = quad[0].v[0].v, hi_v = lo_v;
     for (int t = 0; t < 2; t++)
         for (int j = 0; j < 3; j++) {
@@ -482,11 +484,11 @@ static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
         }
     const int snap = openpete_fb_snapshot_find(quad[0].tpage_x, quad[0].tpage_y, quad[0].bpp,
                                                (int)lo_u, (int)lo_v, (int)hi_u, (int)hi_v,
-                                               &su, &sv, &ox, &oy);
+                                               &su, &sv, &ox, &oy, &texel_space);
     if (snap < 0) return 0;
     for (int t = 0; t < 2; t++) {
         openpete_scene_tri* tri = &quad[t];
-        tri->tpage_x = snap; tri->tpage_y = 0; tri->clut_x = 0; tri->clut_y = 0;
+        tri->tpage_x = snap; tri->tpage_y = texel_space; tri->clut_x = 0; tri->clut_y = 0;
         tri->bpp = OPENPETE_FB_SNAPSHOT_BPP;
         for (int j = 0; j < 3; j++) {
             tri->v[j].u = ox + tri->v[j].u * su;
@@ -500,7 +502,7 @@ static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
  *
  * A quad sampling a framebuffer window is first redirected to its snapshot
  * (quad_to_fb_snapshot), whatever primitive it came from; its UVs are then
- * texel coordinates in the stored rect and are fed unchanged. A quad that
+ * coordinates in the stored image (or rect) and are fed unchanged. A quad that
  * samples VRAM has each triangle's UVs set to the texel the GPU samples on
  * every pixel (tex_tri_psx_texel_centre). A VRAM quad of an ABR 1-3 class
  * is fed as a pair: its STP-clear texels through the opaque class, then its

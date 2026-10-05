@@ -9728,19 +9728,21 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
 
 /** @brief Draw a framebuffer-window run through its snapshot's HD texture, queueing the texture's upload on first sight.
  *
- * The run's texture page carries the snapshot index and its UVs are texels
- * of the stored rect, so the replaced box is the rect and the image maps onto
- * it at whatever resolution it was cropped. A snapshot not yet uploaded is
+ * The run's texture page carries the snapshot index; its UVs are pixels of
+ * the stored image (texel_space 0), so the replaced box is the image, or
+ * texels of the stored rect for a quad fed before the capture resolved
+ * (texel_space 1), so the box is the rect. A snapshot not yet uploaded is
  * queued as a copy taken under the store's lock (the guest thread may free
  * the image before the flush) and draws nothing this present; so does an
- * index whose capture has not resolved, since its texels name no VRAM. Without
- * the HD pipe the run draws through the stock pipeline it was batched under.
+ * index with no image, since its texels name no VRAM. Without the HD pipe the
+ * run draws through the stock pipeline it was batched under.
  * @param r The run.
  * @param idx Snapshot index (the run head's tpage_x).
+ * @param texel_space The run head's tpage_y.
  * @param hd_pipe HD pipe, or NULL.
  * @param self Pipeline bound by the caller, restored after an HD draw. */
-static void draw_fb_snapshot_run(const tex_run* r, int idx, rhi_pipeline* hd_pipe,
-                                 rhi_pipeline* self) {
+static void draw_fb_snapshot_run(const tex_run* r, int idx, int texel_space,
+                                 rhi_pipeline* hd_pipe, rhi_pipeline* self) {
     if (!hd_pipe) {
         rhi_push_constants(s_nr.dev, &r->m, sizeof r->m);
         rhi_draw(s_nr.dev, (uint32_t)(r->ntri * 3), r->vert0);
@@ -9758,7 +9760,8 @@ static void draw_fb_snapshot_run(const tex_run* r, int idx, rhi_pipeline* hd_pip
         }
         return;
     }
-    const hd_pc pc = { 0.f, 0.f, (float)rw, (float)rh,
+    const float bw = texel_space ? (float)rw : (float)sw, bh = texel_space ? (float)rh : (float)sh;
+    const hd_pc pc = { 0.f, 0.f, bw, bh,
                        { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
     bind_scene_pipe(hd_pipe);
     rhi_bind_vram(s_nr.dev, tex);
@@ -9837,7 +9840,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             continue;
         }
         if (s0->bpp == OPENPETE_FB_SNAPSHOT_BPP) {
-            draw_fb_snapshot_run(&r, s0->tpage_x, hd_pipe, self);
+            draw_fb_snapshot_run(&r, s0->tpage_x, s0->tpage_y, hd_pipe, self);
             i += run;
             continue;
         }
