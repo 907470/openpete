@@ -272,3 +272,6 @@ peace_keepers | pos=(36639, 111464, 54580) yaw=1798 pitch=10
 # at 16:9 (the leftmost tent in the widescreen band, slivers on the right
 # tent); the guest reference draws the tents whole.
 peace_keepers | pos=(54862, 89528, 54872) yaw=7021 pitch=29
+# peace_keepers tents, second pose: navy triangles through the near-left
+# tent's walls, also with the same-moby rank off.
+peace_keepers | pos=(54726, 86672, 55294) yaw=2670 pitch=209
