@@ -1355,18 +1355,6 @@ static const knob_desc_t g_builtin[] = {
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
       .cli_only = 1 },
 
-    ENVROW_LATCHED_NOTE("FONT_CACHE", "Paths",
-      "<state dir>/cache/font-<game>.bin in a windowed run, no file in a "
-      "headless run",
-      "File holding the decoded 3D glyph models of a game whose font is "
-      "resident only in some levels (Spyro 3: the home worlds). Written the "
-      "first time such a level loads, read at boot by later sessions, so the "
-      "settings menu, the toasts and the performance readout have the font "
-      "in every level. Unset: <state dir>/cache/font-<game>.bin in a windowed "
-      "run, no file in a headless run. 0 = no file. Rejected and rewritten "
-      "when its disc name, format version or checksum does not match. "
-      "Boot-latched."),
-
     /* -------- Gameplay entry -------- */
     { "skip_to_level", "Skip to level", "Gameplay", "--skip-to-level", NULL,
       "Boot straight into a level id, fast-forwarding logos/title. One-shot "
