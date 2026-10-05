@@ -4,6 +4,7 @@
 
 #include "openpete.h"
 #include "openpete_config.h"  /* openpete.toml - the layered config file */
+#include "config_schema.h"    /* config key of a flag, for the fallback warning */
 #include "openpete_keymap.h"  /* [keys] - install the SDL name lookups */
 #include "openpete_overlay_anchor.h"  /* --perf-position / --osd-position spellings */
 #include "openpete_osd.h"             /* OPENPETE_OSD_TIMEOUT_MAX_MS */
@@ -43,26 +44,56 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
     return 0;
 }
 
+/** @brief Keep an option's current value in place of a refused value the config file supplied, with a warning.
+ *
+ * A value the config splice put into argv is a stored setting: refusing it
+ * would stop a config file from booting the game. The warning names the
+ * config key, the value, the openpete.toml table it came from and the
+ * value kept. A typed or bk2-sidecar value is not spliced and is left to
+ * the caller to refuse.
+ * @param flag The flag's spelling, mapped to its config key through the schema.
+ * @param v The value token, matched by pointer against the spliced tokens.
+ * @param kept The option's current value, which stays in place.
+ * @return 1 when the value came from the config file, else 0. */
+static int config_value_keeps_default(const char* flag, const char* v, float kept) {
+    const char* src = openpete_config_token_source(v);
+    if (!src) return 0;
+    int ki = cfg_schema_find_cli(flag);
+    const char* key = ki >= 0 ? cfg_schema(NULL)[ki].id : flag;
+    fprintf(stderr, "openpete: openpete.toml [%s]: %s = \"%s\" is not a finite "
+                    "number; keeping %g\n", src, key, v, (double)kept);
+    return 1;
+}
+
 /** @brief Parse a flag's value as a finite number and clamp it to [lo, hi].
  *
  * The whole value must parse (strtod with an end-pointer check) and be
  * finite, so "nan", "inf" and "9O" are refused rather than reaching a
- * clamp that NaN would pass through. A value outside [lo, hi] is clamped
- * with a message naming the flag.
+ * clamp that NaN would pass through. A refused value from the config file
+ * keeps *out and warns (config_value_keeps_default); a refused typed value
+ * fails. With zero_ok, exactly 0 is stored as 0 unclamped (the option's
+ * "off" or "the game's own" value). Any other value outside [lo, hi] is
+ * clamped with a message naming the flag.
  * @param flag The flag's spelling, for the messages.
  * @param v The value text.
  * @param lo Lower bound.
  * @param hi Upper bound.
+ * @param zero_ok Whether 0 passes unclamped.
  * @param out Receives the clamped value.
- * @return 0 on success, -1 with a message on a refused value. */
+ * @return 0 on success or a config fallback, -1 with a message on a refused value. */
 static int parse_finite_clamped(const char* flag, const char* v, float lo, float hi,
-                                float* out) {
+                                bool zero_ok, float* out) {
     char* end = NULL;
     double d = strtod(v, &end);
     if (!v[0] || end == v || *end || !isfinite(d)) {
+        if (config_value_keeps_default(flag, v, *out)) return 0;
         fprintf(stderr, "openpete: %s expects a number in [%g,%g], got: %s\n",
                 flag, (double)lo, (double)hi, v);
         return -1;
+    }
+    if (zero_ok && d == 0.0) {
+        *out = 0.0f;
+        return 0;
     }
     if (d < lo || d > hi) {
         fprintf(stderr, "openpete: %s clamped to [%g,%g]; got %.2f\n",
@@ -1120,7 +1151,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             }
         } else if (strcmp(a, "--fov") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (parse_finite_clamped(a, v, 30.0f, 120.0f, &opts->fov_deg) != 0)
+            if (parse_finite_clamped(a, v, 30.0f, 120.0f, true, &opts->fov_deg) != 0)
                 return OPENPETE_EXIT_SETUP_ERROR;
             i++;
         } else if (strcmp(a, "--vertex-precision") == 0) {
@@ -1214,7 +1245,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             opts->terrain_cache = atoi(v) != 0; i++;
         } else if (strcmp(a, "--fog-scale") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            if (parse_finite_clamped(a, v, 0.25f, 128.0f, &opts->fog_scale) != 0)
+            if (parse_finite_clamped(a, v, 0.25f, 128.0f, false, &opts->fog_scale) != 0)
                 return OPENPETE_EXIT_SETUP_ERROR;
             i++;
         } else if (strcmp(a, "--screenshot-on-frame") == 0 ||
@@ -1727,7 +1758,8 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             print_help(opts->display_name, argv[0], opts->default_renderer);
-            return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
+            opts->help = 1;
+            return OPENPETE_EXIT_OK;
         } else if (a[0] != '-' && !opts->ingest_path && !opts->disc_path
                    && !opts->exe_path && arg_is_disc_image(a)) {
             /* A bare path to a disc image - what a desktop file's %f, a
@@ -1902,7 +1934,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
 
     parse_notes_t notes = { false, false };
     int rc = parse_flag_chain(opts, argc, argv, &notes);
-    if (rc != OPENPETE_EXIT_OK) return rc;
+    if (rc != OPENPETE_EXIT_OK || opts->help) return rc;
 
     /* The EXE-source requirement is deferred to
      * openpete_options_require_exe_source(): the game may resolve a

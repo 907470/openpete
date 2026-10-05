@@ -28,13 +28,13 @@ extern "C" const openpete_recomp_module openpete_game_recomp_module;
  * Parses the command line, opens the log, registers the recompiled module, the
  * gameplay-state regions, and the interpolation and re-extract tables, sets
  * the root counter 2 the game's boot reads, and runs the core loop. Returns at
- * once with the option parser's status on a parse failure, after printing the
- * configuration report when one is requested, or when the executable source
- * is unavailable.
+ * once with the option parser's status on a parse failure, after --help,
+ * after printing the configuration report when one is requested, or when the
+ * executable source is unavailable.
  * @param argc The argument count.
  * @param argv The arguments.
- * @return The exit status: openpete_run's result, 0 after a configuration
- *         report, 1 when the recompiled module fails to register. */
+ * @return The exit status: openpete_run's result, 0 after --help or a
+ *         configuration report, 1 when the recompiled module fails to register. */
 int main(int argc, char** argv) {
     /* abort() does not flush, and the PSYQ stubs use it to surface an
      * unimplemented surface. Unbuffer so that diagnostic survives. */
@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
 
     int rc = openpete_options_parse(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
+    if (opts.help) return 0;
     if (opts.config_report) { openpete_config_report(stdout); return 0; }
 
     openpete_log_init(opts.log_format, opts.log_level_spec);

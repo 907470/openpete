@@ -505,6 +505,54 @@ static void case_writer_round_trip(void) {
           "reset ate the hand-written zone");
 }
 
+/** @brief Check that openpete_config_token_source matches spliced tokens by pointer only.
+ *
+ * The option parser keeps the default for a refused config value and fails
+ * a refused typed one, so a typed token whose text equals a spliced one
+ * (fog_scale = "abc" in the file, --fov abc typed) must not read as
+ * spliced. */
+static void case_token_source_by_pointer(void) {
+    static const char *typed[] = { "--fov", "abc", NULL };
+    run_t r = run("token source: pointer identity", "fog_scale = \"abc\"\n", typed, 0);
+    CHECK(r.rc == 1, "the fixture should splice tokens");
+    int cfg = arg_index(&r, "--fog-scale");
+    int cli = arg_index(&r, "--fov");
+    CHECK(cfg >= 0 && cfg + 1 < r.argc, "the spliced --fog-scale is missing");
+    CHECK(cli >= 0 && cli + 1 < r.argc, "the typed --fov is missing");
+    if (cfg < 0 || cfg + 1 >= r.argc || cli < 0 || cli + 1 >= r.argc) return;
+    CHECK(openpete_config_token_source(r.argv[cfg + 1]) != NULL,
+          "the spliced value should carry its origin label");
+    CHECK(!strcmp(r.argv[cli + 1], r.argv[cfg + 1]), "the fixture needs equal texts");
+    CHECK(openpete_config_token_source(r.argv[cli + 1]) == NULL,
+          "a typed token equal in text to a spliced one read as spliced");
+}
+
+/** @brief Check that a saved fov of 0 is written bare and spliced back as --fov 0.
+ *
+ * 0 is the game's own projection; the option parser takes it unclamped. */
+static void case_fov_zero_round_trip(void) {
+    run_t r = run("fov 0: save", "fov = 70\n", NULL, 0);
+    CHECK(r.rc >= 0, "the fixture should load cleanly");
+    CHECK(openpete_config_save_knob("fov", "0") == 0, "save_knob(fov) failed");
+    CHECK(openpete_config_save_flush() == 0, "save_flush failed");
+    char body[4096];
+    read_toml(body, sizeof body);
+    CHECK(strstr(body, "fov = 0\n") != NULL, "fov 0 should be written bare");
+
+    g_case = "fov 0: read back";
+    openpete_config_reset_for_test();
+    static char *argv[4];
+    argv[0] = (char *)"openpete";
+    argv[1] = (char *)"--config";
+    argv[2] = g_toml_path;
+    openpete_config_set_game_id("spyro-1");
+    run_t r2 = { 3, argv, 0 };
+    int oc = 0; char **ov = NULL;
+    r2.rc = openpete_config_apply(3, argv, 3, &oc, &ov);
+    if (r2.rc == 1) { r2.argc = oc; r2.argv = ov; }
+    expect_flag_value(&r2, "--fov", "0");
+}
+
 /* ---- [keys] --------------------------------------------------------- */
 
 /* `keys` is a scope-local sub-table like `env` and `args`, harvested by
@@ -778,6 +826,8 @@ int main(void) {
     case_scope_beats_file();
     case_unregistered_flags();
     case_writer_round_trip();
+    case_token_source_by_pointer();
+    case_fov_zero_round_trip();
     case_schema_sanity();
     case_keys_every_scope();
     case_keys_per_action_merge();

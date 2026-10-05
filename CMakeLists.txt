@@ -548,6 +548,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Option-parse exit codes: --help exits 0, a typed non-finite --fov exits
+    # 3, the same value from openpete.toml warns and keeps the default, and
+    # fov = 0 parses as the game's projection. Parse-only legs plus one
+    # 120-VBL headless boot under the bad config file.
+    foreach(_cli_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME config_cli_${_cli_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_config_cli.sh
+                         --game ${_cli_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(config_cli_${_cli_game} PROPERTIES
+            LABELS "tooling"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 300
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # The 3D glyph text gate: the settings menu, the OSD toasts and the
     # performance readout publish glyph vertices from the game's own font, and
     # Spyro 3's glyph cache file round-trips and rejects a tampered copy. Rows

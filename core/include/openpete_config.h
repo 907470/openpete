@@ -115,11 +115,12 @@ int openpete_config_report_requested(void);
 /** @brief Source label of a token the config spliced into argv ("game.spyro-1.args").
  *
  * The flag parser prints it for an unknown flag so the message names the
- * config scope rather than the command line. Tokens match by pointer or by
- * string, so a typed token equal to a spliced one also returns the spliced
- * token's label.
+ * config scope rather than the command line, and keeps the default for a
+ * refused config value where a typed one fails the parse. Tokens match by
+ * pointer only: the spliced argv holds the resolver's own token pointers,
+ * and a typed token equal in text to a spliced one is not spliced.
  * @param token An argv token.
- * @return The label, or NULL when no spliced token matches. */
+ * @return The label, or NULL when the token is not a spliced one. */
 const char* openpete_config_token_source(const char* token);
 
 /* ---- provenance (the M overlay / O menu) ---------------------------- */

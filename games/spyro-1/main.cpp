@@ -120,9 +120,8 @@ static int fatal_start(int rc, const char* why) {
  * A launch with no arguments (a double-click) can only fail on the config
  * file or the environment, so only that case shows the message box; a
  * launch with arguments came from a terminal, which shows the parser's
- * message (--help also exits through the failure code). After a
- * successful parse the box is allowed for every run that is not
- * --headless.
+ * message. After a successful parse the box is allowed for every run that
+ * is not --headless.
  * @param opts Receives the options.
  * @param argc Argument count.
  * @param argv Arguments.
@@ -137,13 +136,15 @@ static int parse_options(openpete_options_t* opts, int argc, char** argv) {
     return OPENPETE_EXIT_OK;
 }
 
-/** @brief Answer a config utility mode (--config-report, --keys-report) from the resolved stack.
+/** @brief Answer an informational mode (--help, --config-report, --keys-report) from the resolved stack.
  *
- * Mod keys are bindings too; the keys report is the audit of what an
- * install responds to, so it registers them first.
+ * The parser already printed the help. Mod keys are bindings too; the keys
+ * report is the audit of what an install responds to, so it registers them
+ * first.
  * @param opts The parsed options.
- * @return 1 when a report was written and main should exit, else 0. */
+ * @return 1 when the mode's output is written and main should exit 0, else 0. */
 static int report_mode(openpete_options_t* opts) {
+    if (opts->help) return 1;
     if (opts->config_report) { openpete_config_report(stdout); return 1; }
     if (!opts->keys_report) return 0;
     openpete_mods_register_key_defaults(opts);

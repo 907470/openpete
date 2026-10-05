@@ -822,6 +822,7 @@ typedef struct openpete_options {
     /* openpete.toml utility modes - resolve, do the one thing, exit 0.
      * Handled by game main alongside --compile-mods, so the whole config
      * stack is already resolved by the time they run. */
+    int         help;            /* --help / -h: the help was printed */
     int         config_report;   /* --config-report: print the resolution table */
     int         keys_report;     /* --keys-report: print the resolved keymap */
 
@@ -902,7 +903,10 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
  * typed arguments, then walks them with the last write winning. After the
  * walk it resolves the default --bk2-record path and its sidecar, then
  * applies the env spellings of the flags that were not typed. The EXE-source
- * check is left to openpete_options_require_exe_source.
+ * check is left to openpete_options_require_exe_source. --help prints the
+ * help, sets opts->help and returns OPENPETE_EXIT_OK at once; the caller
+ * exits 0. A config-file value of --fov or --fog-scale that is not a finite
+ * number warns and keeps the default; the same value typed fails.
  * @param opts The options block, initialized by openpete_options_init.
  * @param argc Argument count.
  * @param argv Argument vector.

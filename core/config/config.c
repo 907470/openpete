@@ -1150,7 +1150,7 @@ int openpete_config_report_requested(void) { return s_report_requested; }
 
 const char *openpete_config_token_source(const char *token) {
     for (int i = 0; i < s_token_n; i++)
-        if (s_tokens[i] == token || !strcmp(s_tokens[i], token))
+        if (s_tokens[i] == token)
             return s_token_origin[i];
     return NULL;
 }
