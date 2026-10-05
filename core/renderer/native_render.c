@@ -12493,9 +12493,7 @@ static bool draw_native_scene(bool full_extent)
 }
 
 /* ---- native FPS overlay (vk live window) --------------------------------
- * The legacy GL FPS counter (fps_overlay.cpp) stamps PsyCross's hidden window -
- * invisible in vk, and in pure-vk PsyCross never even presents. This is its
- * native equivalent: the FPS counter drawn with Spyro's OWN 3D HUD text mobys
+ * The FPS counter drawn with Spyro's OWN 3D HUD text mobys
  * (the gold extruded glyph models), built game-side by text_moby_native and
  * pushed via openpete_native_set_overlay_glyphs. Pure display: drawn only on the
  * LIVE vk present (not screenshots, ab, or diff, so the comparison images stay

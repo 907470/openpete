@@ -126,15 +126,13 @@ add_library(openpete_core STATIC
     # text_moby.c; see openpete_osd.h); the M-key dev config overlay (the
     # ImGui panel over the knob registry, C++ TU, flat C API in
     # openpete_devui.h; native-vk-only, live presents only); the G camlock
-    # and F freecam tools; and the top-left FPS overlay drawn via direct
-    # OpenGL during PsyCross's post-render hook (g_psyx_postRenderOverlay).
+    # and F freecam tools.
     ui/openpete_menu.c
     ui/overlay_anchor.c
     ui/openpete_osd.c
     ui/devui.cpp
     ui/camlock.c
     ui/freecam.c
-    ui/fps_overlay.cpp
 
     renderer/fillpick.c
     renderer/glitch_mark.c

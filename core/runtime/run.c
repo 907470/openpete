@@ -974,21 +974,11 @@ static void openpete_presents_note_shot(const char *path, const char *kind,
 }
 
 
-/* Top-left FPS overlay (core/ui/fps_overlay.cpp). */
-extern void openpete_fps_overlay_emit(void);
-
 /* PsyCross internal: set non-zero to bypass SDL_GL_SetSwapInterval at the
  * start of each scene, which uncaps the GL present and lets the host loop
  * actually run as fast as the pipeline allows. Without this Tab still
  * skips our wall-clock pacer, but GL vsync re-locks us to monitor refresh. */
 extern int g_skipSwapInterval;
-
-/* PsyCross post-render overlay hook (PsyX_public.h). PsyX_EndScene calls this
- * between GR_StoreFrameBuffer and GR_SwapWindow; we point it at the FPS
- * overlay so it stamps onto the presented frame without polluting the VRAM
- * mirror that the game reads back. */
-typedef void (*PsyXPostRenderOverlayFunc)(void);
-extern PsyXPostRenderOverlayFunc g_psyx_postRenderOverlay;
 
 /* PsyCross's GL window - created by PsyX_Initialise. We need it so --headless
  * can hide the window post-init (we keep a real GL driver for the context;
@@ -2700,17 +2690,10 @@ static int run_host_init(const openpete_options_t* opts) {
                    SDL_GetCurrentVideoDriver());
     }
 
-    /* Wire up the post-render overlay so PsyX_EndScene stamps an FPS counter
-     * onto every presented frame. Has to be after PsyX_Initialise (the GL
-     * context must exist before the overlay's first emit, but registration
-     * itself doesn't touch GL - it just stores the callback). */
-    g_psyx_postRenderOverlay = openpete_fps_overlay_emit;
-
     /* --record: arm gameplay video capture. The encoder is built lazily on
      * the first captured frame (once the present FBO's native dimensions are
-     * known); this only stashes the parameters. The FPS overlay is excluded
-     * from the recording - capture fires before PsyX_EndScene (which is where
-     * g_psyx_postRenderOverlay stamps), reading the present FBO directly. */
+     * known); this only stashes the parameters. Capture fires before
+     * PsyX_EndScene, reading the present FBO directly. */
     if (openpete_record_init(opts) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
 
@@ -5261,12 +5244,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Game yielded. Only present if the iter actually drew - see the
          * note above the pre-loop block. Screenshot fires BEFORE SwapWindow
          * so it captures the just-rendered backbuffer (post-swap, GL_BACK
-         * holds rotated-in stale content that doesn't match the window).
-         *
-         * The FPS overlay rides on PsyX's `g_psyx_postRenderOverlay` hook:
-         * PsyX_EndScene calls openpete_fps_overlay_emit between
-         * StoreFrameBuffer and SwapWindow, so it lands on the presented
-         * backbuffer without polluting the VRAM mirror. */
+         * holds rotated-in stale content that doesn't match the window). */
         /* True once a REAL game frame has been presented this iter.
          * The intermediate block must key off THIS, not
          * openpete_present_pending, which the block below clears to 0
