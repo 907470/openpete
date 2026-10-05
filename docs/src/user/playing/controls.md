@@ -40,8 +40,8 @@ gets the built-in column.
 
 | Action | Spyro 1 package | Built-in | Page |
 | --- | --- | --- | --- |
-| Open or close the settings menu | ++esc++ <!-- id: key:host.menu @spyro-1 --> | ++o++ <!-- id: key:host.menu --> | [Settings menu](settings-menu.md) |
-| Quit | none <!-- id: key:host.quit @spyro-1 --> | ++esc++ <!-- id: key:host.quit home --> | |
+| Open or close the settings menu | ++escape++ <!-- id: key:host.menu @spyro-1 --> | ++o++ <!-- id: key:host.menu --> | [Settings menu](settings-menu.md) |
+| Quit | none <!-- id: key:host.quit @spyro-1 --> | ++escape++ <!-- id: key:host.quit home --> | |
 | Open or close the dev overlay | ++m++ <!-- id: key:host.devui @spyro-1 --> | none (++m++ when bound) <!-- id: key:host.devui --> | [Dev overlay](dev-overlay.md) |
 | Toggle fullscreen | ++alt+enter++ | ++alt+enter++ | [Display](../graphics/display.md#fullscreen) |
 | Screenshot | ++f12++ | ++f12++ <!-- id: key:host.screenshot --> | [Recording](recording.md#screenshots) |
