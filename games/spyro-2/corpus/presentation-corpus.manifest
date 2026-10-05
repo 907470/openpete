@@ -21,7 +21,10 @@
 # text, linked into the ordering table at an explicit depth slot
 # (func_8001B354) rather than at the head (func_8001B390); pinned for the
 # slotted-insert hook. Pins below start are unioned with the grid.
-attract-demo|3400|3000||700,1400,3400,3785,6500,10200,14000,17400
+# 484 is the boot scene before the title: under --lod extended the distant
+# low-poly spires between the left cliffs and the skull do not draw, where
+# --lod original and the guest reference draw them (64533 px differ).
+attract-demo|3400|3000||484,700,1400,3400,3785,6500,10200,14000,17400
 #
 # autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
 # world, the in-gameplay level change. 1150 is the portal transition, 1250 and
