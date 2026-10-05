@@ -28,6 +28,10 @@ scripts/build-docs.sh):
   engine, so they sit a level up from the per-game slug.
   examples.md   <- mod.toml header comments of the mods in
                    mods/examples.txt (the SDK-shipped set)
+  changelog.md  <- the @since tags of api.md's entries x
+                   core/mods/sdk/api_releases.toml (the api and widget
+                   ABI each release tag ships), checked against the
+                   headers at each tag where git and the tags are present
   cpustate.md   <- core/include/psxrt/psx_runtime.h
                    (the CPUState an override receives: struct prose +
                    one row per field)
@@ -43,6 +47,7 @@ the compiler sees, so there is no second copy to drift.
 """
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -243,7 +248,7 @@ def scan_types(pre: str):
 MEMBER_NAME_RE = re.compile(r"\(\s*\*\s*(\w+)\s*\)")
 
 
-def gen_api(api_header: Path) -> str:
+def gen_api(api_header: Path):
     src = api_header.read_text(encoding="utf-8")
 
     # the file-top overview is the leading /** @file */ block
@@ -317,6 +322,7 @@ def gen_api(api_header: Path) -> str:
             if cut:
                 brief = brief[:cut.start() + 1]
             brief = brief.replace("#OPENPETE", "OPENPETE")
+            brief = re.sub(r"@p\s+(\w+)", r"`\1`", brief)
         index.append((group, name,
                       since_m.group(1) if since_m else "", brief))
         members += 1
@@ -327,7 +333,8 @@ def gen_api(api_header: Path) -> str:
     out.append("Every entry and the api version that introduced it. A mod "
                "declaring `api = N` in its manifest may use entries with "
                "Since ≤ N; the loader refuses a newer pin than the engine "
-               "provides.\n")
+               "provides. The [changelog](changelog.md) maps each api "
+               "version to the openpete release that first shipped it.\n")
     out.append("| Entry | Since | Group | Brief |")
     out.append("|---|---|---|---|")
     for grp, name, since, brief in index:
@@ -352,7 +359,169 @@ def gen_api(api_header: Path) -> str:
         sigs = [re.sub(r"\s+", " ", a[: a.index("{")]).strip() for a in acc]
         out.append("```c\n" + "\n".join(s + ";" for s in sigs) + "\n```\n")
 
-    return "\n".join(out), members
+    return "\n".join(out), members, index
+
+# ── changelog.md ─────────────────────────────────────────────────────────
+
+RELEASE_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def read_releases(path: Path) -> list:
+    """The [[release]] rows of api_releases.toml as (version, api, ui_abi),
+    oldest first; exits on a row missing a field or out of order."""
+    rows = []
+    for e in read_toml_blocks(path, "release"):
+        try:
+            rows.append((unq(e["version"]), int(unq(e["api"])),
+                         int(unq(e["ui_abi"]))))
+        except (KeyError, ValueError):
+            sys.exit(f"gen_mod_docs: {path}: a [[release]] row lacks "
+                     f"version, api or ui_abi: {e}")
+    keys = [RELEASE_TAG_RE.match(v) for v, _, _ in rows]
+    if not rows or not all(keys):
+        sys.exit(f"gen_mod_docs: {path}: no rows, or a version that is not "
+                 "v<major>.<minor>.<patch>")
+    nums = [tuple(int(g) for g in k.groups()) for k in keys]
+    if nums != sorted(set(nums)):
+        sys.exit(f"gen_mod_docs: {path}: rows not in ascending version order")
+    if any(b[1] < a[1] for a, b in zip(rows, rows[1:])):
+        sys.exit(f"gen_mod_docs: {path}: api decreases between rows")
+    return rows
+
+
+def header_define(text: str, name: str):
+    m = re.search(rf"#define\s+{name}\s+(\d+)u?", text)
+    return int(m.group(1)) if m else None
+
+
+def check_releases_against_git(rows: list, api_header: Path,
+                               ui_header: Path) -> int:
+    """Compare the rows with the release tags of the repository holding
+    the headers: every tag from the first row's version on has a row, and
+    each row's api and ui_abi equal the defines in the headers at its tag.
+    Returns the number of tags checked; 0 when git or the tags are absent
+    (a source tree without history), which skips the check. Exits on a
+    mismatch."""
+    def git(*a):
+        try:
+            r = subprocess.run(["git", "-C", str(REPO), *a],
+                               capture_output=True, text=True)
+        except OSError:
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    tags = git("tag", "--list", "v*")
+    if not tags:
+        return 0
+    first = tuple(int(g) for g in RELEASE_TAG_RE.match(rows[0][0]).groups())
+    by_version = {v: (api, ui) for v, api, ui in rows}
+    api_rel = api_header.resolve().relative_to(REPO).as_posix()
+    ui_rel = ui_header.resolve().relative_to(REPO).as_posix()
+    checked = 0
+    for tag in tags.split():
+        m = RELEASE_TAG_RE.match(tag)
+        if not m or tuple(int(g) for g in m.groups()) < first:
+            continue
+        if tag not in by_version:
+            sys.exit(f"gen_mod_docs: release tag {tag} has no row in "
+                     "core/mods/sdk/api_releases.toml")
+        api = header_define(git("show", f"{tag}:{api_rel}") or "",
+                            "OPENPETE_MOD_API_VERSION")
+        ui = header_define(git("show", f"{tag}:{ui_rel}") or "",
+                           "OPENPETE_MOD_UI_ABI")
+        if (api, ui) != by_version[tag]:
+            sys.exit(f"gen_mod_docs: api_releases.toml row {tag} says api "
+                     f"{by_version[tag][0]}, ui_abi {by_version[tag][1]}; "
+                     f"the headers at the tag say api {api}, ui_abi {ui}")
+        checked += 1
+    missing = set(by_version) - {t for t in tags.split()}
+    if missing:
+        sys.exit(f"gen_mod_docs: api_releases.toml rows {sorted(missing)} "
+                 "name no tag")
+    return checked
+
+
+def gen_changelog(rows: list, index: list, api_header: Path,
+                  ui_header: Path) -> str:
+    """One section per release that raised the api, newest first, listing
+    the entries whose @since falls in the versions it added; an api newer
+    than the last release row is listed as Unreleased."""
+    head_api = header_define(api_header.read_text(encoding="utf-8"),
+                             "OPENPETE_MOD_API_VERSION")
+    head_ui = header_define(ui_header.read_text(encoding="utf-8"),
+                            "OPENPETE_MOD_UI_ABI")
+    if head_api is None or head_ui is None:
+        sys.exit("gen_mod_docs: no OPENPETE_MOD_API_VERSION or "
+                 "OPENPETE_MOD_UI_ABI define in the headers")
+    if head_api < rows[-1][1]:
+        sys.exit(f"gen_mod_docs: header api {head_api} is older than the "
+                 f"last release row ({rows[-1][0]}, api {rows[-1][1]})")
+    undated = [n for _, n, s, _ in index if not s]
+    if undated:
+        sys.exit(f"gen_mod_docs: no @since on {undated}; the changelog "
+                 "cannot place them")
+
+    # (title, api range (lo, hi], widget ABI before, widget ABI after)
+    sections = []
+    prev_api, prev_ui = 0, None
+    for version, api, ui in rows:
+        if api > prev_api or ui != prev_ui:
+            sections.append((f"openpete {version}", prev_api, api,
+                             prev_ui, ui))
+        prev_api, prev_ui = api, ui
+    if head_api > prev_api or head_ui != prev_ui:
+        sections.append(("Unreleased", prev_api, head_api, prev_ui, head_ui))
+
+    out = [GEN_NOTE, "# Changelog\n"]
+    out.append("The mod API entries each openpete release added, and the "
+               "versions it ships. An entry's api version is its `@since` "
+               "tag in `openpete_mod_api.h`; a mod that uses it declares "
+               "at least that version as `api = N` in its manifest, and "
+               "runs on every openpete release whose api is N or later. "
+               "The widget ABI (`OPENPETE_MOD_UI_ABI` in `openpete_mod_ui.h`) "
+               "is versioned separately and must equal the engine's. "
+               "This page lists additions; the struct layout is frozen "
+               "from api 11, so no entry has been removed or retyped "
+               "since the first SDK release.\n")
+    out.append("## Versions\n")
+    out.append("| openpete | Mod API (`OPENPETE_MOD_API_VERSION`) "
+               "| Widget ABI (`OPENPETE_MOD_UI_ABI`) |")
+    out.append("|---|---|---|")
+    if head_api > rows[-1][1] or head_ui != rows[-1][2]:
+        out.append(f"| Unreleased | {head_api} | {head_ui} |")
+    for version, api, ui in reversed(rows):
+        out.append(f"| {version} | {api} | {ui} |")
+    out.append("")
+    out.append(f"Releases before {rows[0][0]} carried a pre-SDK mod API "
+               "with its own version numbering; the loader refuses a "
+               "prebuilt mod object built against an api older than 11.\n")
+
+    for title, lo, hi, ui_from, ui_to in reversed(sections):
+        apis = (f"api {hi}" if hi == lo + 1 or lo == hi
+                else f"api {lo + 1} to {hi}")
+        out.append(f"## {title}\n")
+        notes = []
+        if hi > lo:
+            notes.append(f"Mod API: {apis}.")
+        if ui_from is not None and ui_to != ui_from:
+            notes.append(f"Widget ABI: {ui_from} to {ui_to}; the loader "
+                         "refuses a UI section built against widget ABI "
+                         f"{ui_from} (the rest of the mod still runs) until "
+                         "the mod is rebuilt.")
+        elif ui_from is None:
+            notes.append(f"Widget ABI: {ui_to}.")
+        out.append(" ".join(notes) + "\n")
+        added = [(int(s), n, g, b) for g, n, s, b in index
+                 if lo < int(s) <= hi]
+        if not added:
+            continue
+        out.append("| Entry | Since | Group | Brief |")
+        out.append("|---|---|---|---|")
+        for since, name, grp, brief in sorted(added, key=lambda r: -r[0]):
+            out.append(f"| [`api->{name}`](api.md#api-{name}) | api {since} "
+                       f"| {grp} | {md_prose(brief)} |")
+        out.append("")
+    return "\n".join(out)
 
 
 def scan_ui_items(pre: str):
@@ -1375,6 +1544,9 @@ def main():
                     help="struct_layout.toml; the structs page must carry "
                          "exactly its pins")
     ap.add_argument("--mods-dir", default=REPO / "mods", type=Path)
+    ap.add_argument("--api-releases",
+                    default=REPO / "core/mods/sdk/api_releases.toml",
+                    type=Path)
     ap.add_argument("--psx-runtime",
                     default=REPO / "core/include/psxrt/psx_runtime.h",
                     type=Path)
@@ -1404,7 +1576,12 @@ def main():
 
     args.out.mkdir(parents=True, exist_ok=True)
 
-    api_md, n_api = gen_api(args.api_header)
+    api_md, n_api, api_index = gen_api(args.api_header)
+    releases = read_releases(args.api_releases)
+    n_tags = check_releases_against_git(releases, args.api_header,
+                                        args.ui_header)
+    cl_md = gen_changelog(releases, api_index, args.api_header,
+                          args.ui_header)
     ui_md, n_ui = gen_mod_ui(args.ui_header)
     api_md = api_md.rstrip("\n") + "\n\n" + ui_md
     game_counts = []
@@ -1438,7 +1615,7 @@ def main():
     ig_md, n_deny = gen_imgui(args.imgui_header, args.imgui_table_gen)
 
     for fname, content in (("api.md", api_md), ("examples.md", ex_md),
-                           ("cpustate.md", cs_md)):
+                           ("cpustate.md", cs_md), ("changelog.md", cl_md)):
         (args.out / fname).write_text(content, encoding="utf-8")
     (args.out_pages / "imgui.md").write_text(ig_md, encoding="utf-8")
 
@@ -1451,7 +1628,8 @@ def main():
     print(f"[gen_mod_docs] api: {n_api} members (+{n_ui} ui) | "
           + " | ".join(game_counts) +
           f" | examples: {n_mods} mods | cpustate: {n_cs} fields | "
-          f"imgui: {n_deny} denied families -> {args.out}, "
+          f"imgui: {n_deny} denied families | changelog: "
+          f"{len(releases)} releases ({n_tags} tags checked) -> {args.out}, "
           f"{args.out_pages}/imgui.md")
 
 

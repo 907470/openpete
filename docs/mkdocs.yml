@@ -152,6 +152,7 @@ nav:
       - Glossary: modding/glossary.md
       - Reference:
           - API: modding/reference/api.md
+          - Changelog: modding/reference/changelog.md
           - CPUState: modding/reference/cpustate.md
           - Examples: modding/reference/examples.md
           - Spyro 1:

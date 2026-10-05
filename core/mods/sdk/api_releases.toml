@@ -1,0 +1,43 @@
+# The mod API version each openpete release ships: one row per release
+# tag, oldest first. tools/gen_mod_docs.py joins these rows with the
+# `@since api N` tag of every openpete_mod_api_t entry to write the
+# Modding changelog (docs/src/modding/reference/changelog.md).
+#
+#   version  the release tag
+#   api      OPENPETE_MOD_API_VERSION in core/include/openpete_mod_api.h
+#            at that tag
+#   ui_abi   OPENPETE_MOD_UI_ABI in core/include/openpete_mod_ui.h at that
+#            tag
+#
+# A release tag gets its row in the commit the tag points at. Where git
+# and the tags are present, the generator refuses a v<major>.<minor>.<patch>
+# tag at or after the first row that has no row, and a row whose api or
+# ui_abi differs from the headers at its tag.
+#
+# Releases before v0.2.0 shipped a pre-SDK mod API whose numbering was
+# reset when the API was cut to api 1; they have no row.
+
+[[release]]
+version = "v0.2.0"
+api = 11
+ui_abi = 1
+
+[[release]]
+version = "v0.3.0"
+api = 11
+ui_abi = 2
+
+[[release]]
+version = "v0.4.0"
+api = 12
+ui_abi = 2
+
+[[release]]
+version = "v0.4.1"
+api = 12
+ui_abi = 2
+
+[[release]]
+version = "v0.4.2"
+api = 12
+ui_abi = 2
