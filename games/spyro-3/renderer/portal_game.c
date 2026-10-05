@@ -12,4 +12,7 @@ const portal_game_s23_consts_t portal_game_s23 = {
     .records = D_PORTALS,      /* the record array pointer the pass indexes */
     .count   = D_PORTALCOUNT,  /* the record count the pass loops over */
     .anim    = 1,              /* the +0x43 opening animation */
+    .atan_table  = 0x80065B24u,   /* func_8004E880's lhu table (stdutil.s:256-257) */
+    .sqrt_table  = 0x80069F40u,   /* func_8004EDE8's lh table (stdutil.s:645-646) */
+    .far_counter = 0x8006C644u,   /* drawutil/func_8001EDEC.s:505-506 */
 };

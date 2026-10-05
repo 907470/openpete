@@ -21,7 +21,10 @@
  * disassemblies differ only in which register holds each clip-rect bound when
  * it is stored [CITE: games/spyro-2/spyro-2/asm/nonmatchings/drawutil/func_8004C66C.s:363-369;
  * games/spyro-3/spyro-3/asm/nonmatchings/drawutil/func_8001EDEC.s:509-517].
- * So each game supplies only the block address and the two hook addresses. */
+ * So each game supplies the block address, the two hook addresses, the record
+ * array and count, and the three tables and the counter the pass's gates and
+ * far colour read, which the feeder re-evaluates for a record the pass culls
+ * only because the 4:3 frame's X bounds reject it. */
 #ifndef OPENPETE_COMMON_RENDERER_PORTAL_SPYRO23_H
 #define OPENPETE_COMMON_RENDERER_PORTAL_SPYRO23_H
 
@@ -46,7 +49,15 @@
  *          +0x00, the preview mesh pointer at +0x3C, the enable byte at +0x40
  *   count  the portal record count
  *   anim   1 when the pass scales the pentagon about its vertex mean by the
- *          record's +0x43 counter / 256 while the counter is nonzero, else 0 */
+ *          record's +0x43 counter / 256 while the counter is nonzero, else 0
+ *   atan_table  the u16 octant table of the pass's angle routine (S2
+ *          func_8001B4B8, S3 func_8004E880: 129 entries over the minor/major
+ *          ratio in 7 fractional bits)
+ *   sqrt_table  the s16 table of the pass's planar length routine (S2
+ *          func_8001BA20, S3 func_8004EDE8)
+ *   far_counter the word whose value, times 4 plus the record index times
+ *          64, indexes the cos table for the far colour the pass writes into
+ *          the block's +0x18/+0x1A */
 typedef struct portal_game_s23_consts {
     uint32_t block;
     uint32_t pass;
@@ -54,6 +65,9 @@ typedef struct portal_game_s23_consts {
     uint32_t records;
     uint32_t count;
     int      anim;
+    uint32_t atan_table;
+    uint32_t sqrt_table;
+    uint32_t far_counter;
 } portal_game_s23_consts_t;
 
 extern const portal_game_s23_consts_t portal_game_s23;

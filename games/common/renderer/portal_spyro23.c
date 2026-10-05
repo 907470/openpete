@@ -26,7 +26,10 @@
 // fades. The pentagon, its bounds and the opening plane come from the portal
 // record the pass drew, projected under the view without the pass's 4:3
 // clamp (p3_native_opening), so the preview reaches the edges of a wider
-// frame. The opening goes out as the portal's stencil mask and the picture
+// frame. A record the pass rejects only because its pentagon lies off the
+// 4:3 frame's sides is re-gated natively from game state and added to the
+// tick's previews when it falls inside the wider frame (p3_band_admit). The
+// opening goes out as the portal's stencil mask and the picture
 // as portal-cyclorama triangles. Inside the pentagon both test at the
 // opening plane's depth minus the plane-cover margin, so terrain in front of
 // the opening occludes the picture per pixel and terrain behind it does not.
@@ -1082,6 +1085,458 @@ int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_sky
     return n;
 }
 
+/* ---- records the pass culls only for the 4:3 frame ---------------------
+ *
+ * The pass rejects a portal whose five projected pentagon vertices share an
+ * outcode bit of func_8001C0F4, and the X bits test the 4:3 frame (X <= 0,
+ * X >= 512) (S2 func_8004C66C.s:215-336, S3 func_8001EDEC.s:294-482). A
+ * portal lying wholly in a widescreen side band is therefore never drawn by
+ * the game. After the pass, every record it did not draw is evaluated again
+ * from game state: the record gates, the depth and fade terms the pass would
+ * have written, and the outcode test with the X bits against the view's
+ * screen-X range. A record whose test fails at 4:3 and passes at the view's
+ * range is added to the tick's previews as the pass would have captured it.
+ * A record the pass drew keeps the pass's own capture. The integer helpers
+ * below are the pass's math routines, which are instruction-identical in
+ * the two games; the S2 address is named first, the S3 one second. */
+
+/** @brief The pass's 12-bit angle of (x, y): func_8001B4B8 / func_8004E880 with mode 1.
+ *
+ * The minor of |x| and |y| over the major in 14 fractional bits indexes the
+ * u16 octant table in 7-bit steps with a linear lerp; the signs and the
+ * comparison of x with y pick the octant base (S2 stdutil.s:198-299). The result
+ * is (angle + 2) >> 2 masked to 12 bits.
+ * @param cpu Reads portal_game_s23.atan_table.
+ * @param x The first component.
+ * @param y The second component.
+ * @return The angle, 0x1000 to the turn. */
+static int p3g_atan(CPUState* cpu, int32_t x, int32_t y) {
+    const int32_t ax = x < 0 ? -x : x, ay = y < 0 ? -y : y;
+    const int32_t lo = ax > ay ? ay : ax;
+    int32_t hi = ax > ay ? ax : ay;
+    if (hi == 0) hi = 1;
+    const uint32_t q = (uint32_t)((int32_t)((uint32_t)lo << 14) / hi);
+    static const struct { int sub; int32_t base; } oct[2][2][2] = {
+        /* x >= 0: y >= 0, y < 0; each by (|x| - |y| < 0) */
+        { { { 0, 0x0000 }, { 1, 0x1000 } }, { { 1, 0x4000 }, { 0, 0x3000 } } },
+        /* x < 0 */
+        { { { 1, 0x2000 }, { 0, 0x1000 } }, { { 0, 0x2000 }, { 1, 0x3000 } } },
+    };
+    const int sx = x < 0, sy = y < 0;
+    const int lt = ax - ay < 0;
+    const uint32_t tab = 0x80000000u | ((portal_game_s23.atan_table + ((q >> 7) << 1)) & 0x1FFFFFu);
+    uint32_t t = cpu->read_half(tab);
+    if (q & 0x7Fu) t += ((q & 0x7Fu) * (uint32_t)((int32_t)cpu->read_half(tab + 2) - (int32_t)t)) >> 7;
+    const int32_t a = oct[sx][sy][lt].sub ? oct[sx][sy][lt].base - (int32_t)t : oct[sx][sy][lt].base + (int32_t)t;
+    return (int)(((uint32_t)(a + 2) >> 2) & 0xFFFu);
+}
+
+/** @brief The pass's interpolated sine (cos_off 0) or cosine (cos_off 0x80) of a 12-bit angle: func_8001B61C / func_8001B664.
+ *
+ * Entry a >> 4 of the game's sin table, lerped by the low four bits
+ * (S2 stdutil.s:309-353).
+ * @param cpu Reads game_layout.sin_table.
+ * @param a The angle, 0x1000 to the turn.
+ * @param cos_off 0 for the sine, 0x80 for the cosine.
+ * @return The value, Q12. */
+static int32_t p3g_sin(CPUState* cpu, int32_t a, uint32_t cos_off) {
+    a &= 0xFFF;
+    const uint32_t p = game_layout.sin_table + cos_off + (uint32_t)((a >> 4) << 1);
+    int32_t t = (int16_t)cpu->read_half(p);
+    if (a & 0xF) t += ((a & 0xF) * ((int16_t)cpu->read_half(p + 2) - t)) >> 4;
+    return t;
+}
+
+/** @brief The number of leading zero bits of a positive word, 32 for zero, as the GTE's LZCR reads it.
+ * @param v The word.
+ * @return The count. */
+static int p3g_lzc(uint32_t v) {
+    int n = 0;
+    while (n < 32 && !(v & 0x80000000u)) { v <<= 1; n++; }
+    return n;
+}
+
+/** @brief The pass's planar length of (x, y): func_8001BA20 / func_8004EDE8 with a1 = 0.
+ *
+ * Both components shift right until they fit 14 bits, SQR sums their
+ * squares, and the root is the table's seed for the normalized sum refined
+ * by one Newton step, shifted back (S2 stdutil.s:610-700).
+ * @param cpu Reads portal_game_s23.sqrt_table.
+ * @param x The first component.
+ * @param y The second component.
+ * @return The length. */
+static int32_t p3g_len2d(CPUState* cpu, int32_t x, int32_t y) {
+    const uint32_t m = (uint32_t)(x < 0 ? -x : x) | (uint32_t)(y < 0 ? -y : y);
+    const int sh0 = 0x12 - p3g_lzc(m);
+    const int sh = sh0 > 0 ? sh0 : 0;
+    const int32_t a = (int16_t)(x >> sh), b = (int16_t)(y >> sh);
+    const int32_t sum = a * a + b * b;
+    if (sum == 0) return 0;
+    const int lz = p3g_lzc((uint32_t)sum) & 0xFE;
+    const int e = lz - 0x18;
+    const uint32_t n = e >= 0 ? (uint32_t)sum << e : (uint32_t)sum >> -e;
+    const int32_t seed = (int16_t)cpu->read_half(portal_game_s23.sqrt_table + ((n - 0x40u) << 1));
+    int32_t r = (int32_t)(((uint32_t)seed << ((0x1F - lz) >> 1)) >> 12);
+    if (r) r += ((sum - r * r) / (r + 1)) >> 1;
+    return r << sh;
+}
+
+/** @brief The pass's rotation of a vector by the world matrix: func_8001B9A4 / func_8004ED6C.
+ *
+ * IR1..IR3 = (-v1, -v2, v0) truncated to 16 bits, MVMVA with sf = 1, and the
+ * result (MAC3, -MAC1, -MAC2) (S2 stdutil.s:572-608).
+ * @param M The matrix, Q12.
+ * @param v The vector.
+ * @param o Receives the rotated vector; may alias v. */
+static void p3g_rotate(const int M[3][3], const int32_t v[3], int32_t o[3]) {
+    const int64_t ir[3] = { (int16_t)-v[1], (int16_t)-v[2], (int16_t)v[0] };
+    int32_t mac[3];
+    for (int r = 0; r < 3; r++)
+        mac[r] = (int32_t)((M[r][0] * ir[0] + M[r][1] * ir[1] + M[r][2] * ir[2]) >> 12);
+    o[0] = mac[2]; o[1] = -mac[0]; o[2] = -mac[1];
+}
+
+/** @brief A right shift that rounds toward zero, as func_8001BD48 / func_8004F110 shifts each component.
+ * @param v The value.
+ * @param n The shift.
+ * @return The shifted value. */
+static int32_t p3g_shr(int32_t v, int n) {
+    return v < 0 ? -((-v) >> n) : (v >> n);
+}
+
+/* What the record gates leave for the rest of the pass. */
+typedef struct {
+    int32_t d;      /* the view depth of vertex 2 lowered 0x540, floored at 0 */
+    int32_t face;   /* the facing term the edge-free case reads (+0x108 on the stack) */
+    int     sh;     /* the projection's right shift, 3 at depth 0x4000 and beyond */
+} p3_gate;
+
+/** @brief The pass's depth gates of one record: the enable and draw radius byte, the centre cone and the depth floor.
+ *
+ * Vertex 2 minus the camera, Z lowered 0x540, shifted right 2, rotated by the
+ * world matrix and shifted back gives the depth d and the lateral term l.
+ * The record passes when +0x40 is nonzero, d >= -0x7FF, d < +0x40 << 10,
+ * d > l - 0xA00 and d > -(l + 0x800) (func_8004C66C.s:28-83,
+ * func_8001EDEC.s:30-142).
+ * @param cpu Reads the record, the camera and the world matrix.
+ * @param rec The record.
+ * @param g Receives the floored depth and the shift.
+ * @return 1 when the record passes, else 0. */
+static int p3_gate_depth(CPUState* cpu, uint32_t rec, p3_gate* g) {
+    const uint32_t en = cpu->read_byte(rec + 0x40);
+    if (!en) return 0;
+    const uint32_t cp = game_layout.cam.position;
+    int32_t v[3];
+    for (int k = 0; k < 3; k++)
+        v[k] = (int32_t)cpu->read_word(rec + 0x18 + (uint32_t)k * 4) - (int32_t)cpu->read_word(cp + (uint32_t)k * 4);
+    v[2] -= 0x540;
+    for (int k = 0; k < 3; k++) v[k] = p3g_shr(v[k], 2);
+    int M[3][3];
+    ngte_read_matrix(cpu, game_layout.cam.view_matrix, M);
+    p3g_rotate(M, v, v);
+    const int32_t d = (int32_t)((uint32_t)v[0] << 2), l = (int32_t)((uint32_t)v[1] << 2);
+    if (d < -0x7FF || d >= (int32_t)(en << 10)) return 0;
+    if (!(l - 0xA00 < d) || !(-(l + 0x800) < d)) return 0;
+    g->d = d < 0 ? 0 : d;
+    g->sh = g->d >= 0x4000 ? 3 : 0;
+    return 1;
+}
+
+/** @brief The pass's facing gates of one record: the side the camera sees the plane from, the back-side flag and the distance from the plane.
+ *
+ * a is the angle of the edge from vertex 0 to vertex 4, c the angle from
+ * vertex 2 to the camera in XY, and t = a - c wrapped to (-0x800, 0x800].
+ * The record passes when 0x40 < |t| < 0x7C0, when t >= 0 or +0x41 is set,
+ * when |sin t * |camera - vertex 2|_XY| >= 0xA0, and when the plane normal
+ * (sin a, -cos a, 0) rotated by the world matrix has a depth term, negated
+ * for t < 0, of at most 0x800 (func_8004C66C.s:93-207,
+ * func_8001EDEC.s:143-268).
+ * @param cpu Reads the record, the camera, the world matrix and the tables.
+ * @param rec The record.
+ * @param g Receives the facing term.
+ * @return 1 when the record passes, else 0. */
+static int p3_gate_facing(CPUState* cpu, uint32_t rec, p3_gate* g) {
+    const uint32_t cp = game_layout.cam.position;
+    const int32_t rx = (int32_t)cpu->read_word(rec + 0x18), ry = (int32_t)cpu->read_word(rec + 0x1C);
+    const int32_t cx = (int32_t)cpu->read_word(cp) - rx, cy = (int32_t)cpu->read_word(cp + 4) - ry;
+    const int a = (int16_t)p3g_atan(cpu, (int32_t)cpu->read_word(rec + 0x30) - (int32_t)cpu->read_word(rec + 0x00),
+                                    (int32_t)cpu->read_word(rec + 0x34) - (int32_t)cpu->read_word(rec + 0x04));
+    const int c = (int16_t)p3g_atan(cpu, cx, cy);
+    int t = (a - c) & 0xFFF;
+    if (t > 0x800) t -= 0x1000;
+    if ((uint32_t)(t + 0x40) < 0x81u || (uint32_t)(t + 0x7BF) >= 0xF7Fu) return 0;
+    if (t < 0 && !cpu->read_byte(rec + 0x41)) return 0;
+    int32_t perp = (int32_t)((uint32_t)p3g_sin(cpu, t, 0) * (uint32_t)p3g_len2d(cpu, cx, cy)) >> 12;
+    if (perp < 0) perp = -perp;
+    if (perp < 0xA0) return 0;
+    int M[3][3];
+    ngte_read_matrix(cpu, game_layout.cam.view_matrix, M);
+    int32_t n[3] = { p3g_sin(cpu, a, 0), -p3g_sin(cpu, a, 0x80), 0 };
+    p3g_rotate(M, n, n);
+    g->face = t < 0 ? -n[0] : n[0];
+    return g->face <= 0x800;
+}
+
+/** @brief Projects one world point as func_8001C040 / func_8004F408 does and returns func_8001C0F4's outcode against [xlo, xhi].
+ *
+ * The camera-relative vector (T1 - y, T2 - z, x - T0) is shifted right by the
+ * gate's shift and truncated to 16 bits, rotated by the sky matrix and
+ * divided as RTPS divides (ngte_screen_gte, SXY bound on); SZ is shifted back.
+ * The bits are 1 at X <= xlo, 2 at X >= xhi, 4 above row 13, 8 at row 228
+ * and below, 0x10 at SZ < 256 (S2 stdutil.s:1134-1209). X and Y are floored to
+ * the integer screen position the GTE returns.
+ * @param v The view; supplies the camera, the sky matrix, OFX/OFY and H.
+ * @param W The world point.
+ * @param sh The gate's shift.
+ * @param xlo The left bound.
+ * @param xhi The right bound.
+ * @return The outcode. */
+static int p3_gate_outcode(const ngte_view* v, const double W[3], int sh, float xlo, float xhi) {
+    const int32_t a = (int16_t)((int32_t)(v->cam_ram[1] - W[1]) >> sh);
+    const int32_t b = (int16_t)((int32_t)(v->cam_ram[2] - W[2]) >> sh);
+    const int32_t c = (int16_t)((int32_t)(W[0] - v->cam_ram[0]) >> sh);
+    double m1, m2, m3;
+    ngte_mac(v->cam_M, a, b, c, &m1, &m2, &m3);
+    ngte_proj o;
+    ngte_screen_gte(m1, m2, m3, v->ofx, v->ofy, v, 1, &o);
+    const double sz = (m3 < 0.0 ? 0.0 : m3 > 65535.0 ? 65535.0 : floor(m3)) * (double)(1 << sh);
+    const double sx = floor(o.sx), sy = floor(o.sy);
+    return (sx <= (double)xlo) | ((sx >= (double)xhi) << 1) | ((sy < 13.0) << 2) |
+           ((sy >= 228.0) << 3) | ((sz < P3_NEAR_SZ) << 4);
+}
+
+/** @brief Whether the pass would call the leaf for one record's call under the screen-X range [xlo, xhi].
+ *
+ * Call 1 (the background) projects the pentagon; call 0 (the picture)
+ * projects each vertex moved by ((v - vertex 2) + (0, 0, dz)) >> 6, dz 0x540
+ * in a level whose number is a multiple of 10 and 0x320 elsewhere
+ * (func_8004C66C.s:245-290, func_8001EDEC.s:355-409), after the opening
+ * animation where the game has one. The call is rejected when the five
+ * outcodes share a bit, and when no edge has two vertices free of a shared
+ * bit unless the facing term is negative and the outcodes together hold all
+ * four screen bits (func_8004C66C.s:399-444, func_8001EDEC.s:540-593).
+ * @param cpu Reads the record and the level number.
+ * @param v The view the outcodes project under.
+ * @param rec The record.
+ * @param g The record's gate results.
+ * @param call 1 for the background, 0 for the picture.
+ * @param xlo The left bound.
+ * @param xhi The right bound.
+ * @return 1 when the leaf would be called, else 0. */
+static int p3_gate_call(CPUState* cpu, const ngte_view* v, uint32_t rec, const p3_gate* g, int call,
+                        float xlo, float xhi) {
+    double W[5][3];
+    p3_record_vertices(cpu, rec, W);
+    const int32_t dz = (cpu->read_word(game_layout.level_id) % 10u) == 0u ? 0x540 : 0x320;
+    int oc[5], all = -1, any = 0;
+    for (int k = 0; k < 5 && !call; k++)
+        for (int a = 0; a < 3; a++) {
+            const int32_t r = (int32_t)cpu->read_word(rec + (uint32_t)(k * 12 + a * 4));
+            const int32_t r2 = (int32_t)cpu->read_word(rec + 0x18 + (uint32_t)a * 4);
+            W[k][a] += (double)p3g_shr(r - r2 + (a == 2 ? dz : 0), 6);
+        }
+    for (int k = 0; k < 5; k++) {
+        oc[k] = p3_gate_outcode(v, W[k], g->sh, xlo, xhi);
+        all &= oc[k]; any |= oc[k];
+    }
+    if (all) return 0;
+    int edges = 0;
+    for (int k = 0; k < 5; k++) edges += (oc[k] & oc[(k + 1) % 5]) == 0;
+    return edges > 0 || (g->face < 0 && (any & 0xF) == 0xF);
+}
+
+/** @brief Fills one preview as the pass's block would hold it for a record it did not draw.
+ *
+ * The depth is d >> 7; the far colour is R = G = (cos entry >> 4) + 0xE00
+ * and B = 0xC00 at GTE scale, the cos entry at index (far_counter * 4 +
+ * record index * 64) & 0xFF (func_8004C66C.s:359-398,
+ * func_8001EDEC.s:505-541); IR0 is 0xFFF from depth 0x5000, depth - 0x4000
+ * from 0x4000, else 0 (func_8004C66C.s:679-698, func_8001EDEC.s:825-845).
+ * The rect and the edges stay empty: the feeder re-derives the opening
+ * from the record (p3_native_opening).
+ * @param cpu Reads the record, the counter and the cos table.
+ * @param p Receives the preview.
+ * @param rec The record.
+ * @param idx The record's index.
+ * @param g The record's gate results.
+ * @param arg 1 for the background, 0 for the picture.
+ * @param slot The portal's slot. */
+static void p3_band_fill(CPUState* cpu, p3_preview* p, uint32_t rec, uint32_t idx, const p3_gate* g,
+                         int arg, int slot) {
+    memset(p, 0, sizeof *p);
+    p->mesh = cpu->read_word(rec + 0x3C) + (arg ? 0u : 0x3Cu);
+    p->arg = arg;
+    p->depth7 = g->d >> 7;
+    p->depth_w = (float)(p->depth7 << 7);
+    const uint32_t ci = (cpu->read_word(portal_game_s23.far_counter) * 4u + idx * 64u) & 0xFFu;
+    const int32_t h = (int16_t)cpu->read_half(game_layout.sin_table + 0x80u + ci * 2u);
+    const uint32_t rg = ((uint32_t)(uint16_t)((h >> 4) + 0xE00) >> 4) & 0xFFu;
+    p->far_rgb = rg | (rg << 8) | (((0xC00u >> 4) & 0xFFu) << 16);
+    p->ir0 = g->d >= 0x5000 ? 0xFFF : g->d >= 0x4000 ? g->d - 0x4000 : 0;
+    p->slot = slot;
+    p->rec = rec;
+}
+
+/** @brief Whether OPENPETE_PORTAL3_BAND_AB selects the band admission's A/B instrument.
+ *
+ * Latched on the first call; set, non-empty and not starting with '0'
+ * enables it. Under it p3_band_admit discards the pass's captures and admits
+ * every record whose gates and wide-frame outcode test pass, so a capture
+ * compares the native derivation with the pass's own on the same portals.
+ * @return 1 when enabled, else 0. */
+static int p3_band_ab(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_BAND_AB"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/* Per-pass engagement of the band admission, for the census. */
+static int s_band_admit = 0;     /* records added this pass */
+static int s_band_disagree = 0;  /* records the 4:3 test admits that the pass did not draw */
+
+/** @brief Whether the tick's capture names a record.
+ * @param T The tick.
+ * @param rec The record.
+ * @param mesh The record's mesh, matched for a capture with no record.
+ * @return 1 when a preview of the tick belongs to it, else 0. */
+static int p3_tick_has(const p3_tick* T, uint32_t rec, uint32_t mesh) {
+    for (int i = 0; i < T->n; i++)
+        if (T->p[i].rec == rec || (!T->p[i].rec && T->p[i].mesh == mesh)) return 1;
+    return 0;
+}
+
+/** @brief Adds one record the pass did not draw to the tick when only the 4:3 frame's X bounds rejected it.
+ *
+ * The depth and facing gates, then per call the outcode test at
+ * [P3_FRAME_X0, P3_FRAME_X1] under the canonical view and at the view's
+ * screen-X range under its own. A call that fails the first and passes the
+ * second is appended as the pass would have captured it (the background
+ * first, the picture only below depth 0x5000) under the next slot. A call
+ * that passes the 4:3 test is counted in s_band_disagree and not added,
+ * since the pass's verdict stands; under p3_band_ab the 4:3 test is skipped.
+ * @param cpu Reads the record and game state.
+ * @param T The tick; receives the previews.
+ * @param vw The view being presented.
+ * @param vc Its canonical 4:3 counterpart.
+ * @param rec The record.
+ * @param idx Its index.
+ * @return 1 when a preview was added, else 0. */
+static int p3_band_record(CPUState* cpu, p3_tick* T, const ngte_view* vw, const ngte_view* vc,
+                          uint32_t rec, uint32_t idx) {
+    p3_gate g;
+    if (!p3_gate_depth(cpu, rec, &g) || !p3_gate_facing(cpu, rec, &g)) return 0;
+    int added = 0;
+    for (int call = 1; call >= 0 && T->n < P3_MAX_PORTALS * 2; call--) {
+        if (call == 0 && g.d >= 0x5000) break;
+        if (!p3_band_ab() && p3_gate_call(cpu, vc, rec, &g, call, (float)P3_FRAME_X0, (float)P3_FRAME_X1)) {
+            s_band_disagree++;
+            continue;
+        }
+        if (!p3_gate_call(cpu, vw, rec, &g, call, vw->xlo, vw->xhi)) continue;
+        const int slot = T->n == 0 ? 0 : T->p[T->n - 1].slot + (added ? 0 : 1);
+        p3_band_fill(cpu, &T->p[T->n++], rec, idx, &g, call, slot);
+        added = 1;
+    }
+    return added;
+}
+
+/** @brief Adds to the tick every record the pass rejected only because the 4:3 frame's X bounds culled it.
+ *
+ * Runs p3_band_record on every record the tick's capture does not name and
+ * marks RP_PORTAL drawn when it added any. Returns at once when the view is
+ * no wider than the 4:3 frame. Under p3_band_ab the pass's captures are
+ * discarded first. Reads PSX RAM only.
+ * @param cpu The guest CPU state.
+ * @param T The tick the pass just captured. */
+static void p3_band_admit(CPUState* cpu, p3_tick* T) {
+    s_band_admit = s_band_disagree = 0;
+    ngte_view vw, vc;
+    ngte_view_build(cpu, &vw);
+    if (!(vw.xlo < (float)P3_FRAME_X0 || vw.xhi > (float)P3_FRAME_X1)) return;
+    ngte_view_canon(&vw, &vc);
+    const uint32_t base = cpu->read_word(portal_game_s23.records);
+    const uint32_t n = cpu->read_word(portal_game_s23.count);
+    if (base < 0x80000000u || base >= 0x80200000u || n > 256u || !game_layout.sin_table) return;
+    if (p3_band_ab()) T->n = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t rec = base + i * P3_REC_STRIDE;
+        if (!p3_tick_has(T, rec, cpu->read_word(rec + 0x3C)))
+            s_band_admit += p3_band_record(cpu, T, &vw, &vc, rec, i);
+    }
+    /* A pass that drew nothing itself records no polybuf interval; the mark
+     * keeps the sub-tick replay feeding the added previews. */
+    if (s_band_admit) render_path_mark_drawn(RP_PORTAL);
+}
+
+/** @brief The capture of one record's call in the tick, or NULL.
+ * @param T The tick.
+ * @param rec The record.
+ * @param arg The leaf argument.
+ * @return The preview. */
+static const p3_preview* p3_tick_find(const p3_tick* T, uint32_t rec, int arg) {
+    for (int i = 0; i < T->n; i++)
+        if (T->p[i].rec == rec && T->p[i].arg == arg) return &T->p[i];
+    return NULL;
+}
+
+/* The gate census's running counts over one pass. */
+typedef struct { int calls, agree, fields, fmis; } p3_gate_census;
+
+/** @brief Compares one record's native gate evaluation at 4:3 with the pass's own captures, printing every disagreement.
+ *
+ * Per call, the verdict p3_gate_call returns at [P3_FRAME_X0, P3_FRAME_X1]
+ * under the canonical projection against whether the pass called the leaf;
+ * for a call both admit, the depth >> 7, far colour, IR0 and mesh
+ * p3_band_fill derives against the captured block.
+ * @param cpu Reads the record and game state.
+ * @param T The tick as the pass captured it.
+ * @param vc The canonical view.
+ * @param rec The record.
+ * @param idx Its index.
+ * @param c Accumulates the counts. */
+static void p3_band_census_record(CPUState* cpu, const p3_tick* T, const ngte_view* vc, uint32_t rec,
+                                  uint32_t idx, p3_gate_census* c) {
+    p3_gate g;
+    const int ok = p3_gate_depth(cpu, rec, &g) && p3_gate_facing(cpu, rec, &g);
+    for (int call = 1; call >= 0; call--) {
+        const p3_preview* cap = p3_tick_find(T, rec, call);
+        const int mine = ok && !(call == 0 && g.d >= 0x5000) &&
+                         p3_gate_call(cpu, vc, rec, &g, call, (float)P3_FRAME_X0, (float)P3_FRAME_X1);
+        c->calls++;
+        c->agree += mine == (cap != NULL);
+        if (mine != (cap != NULL))
+            fprintf(stderr, "[portal3-gate-mism f=%u rec=%u call=%d native=%d pass=%d d=%d]\n",
+                    openpete_frame, idx, call, mine, cap != NULL, ok ? g.d : -1);
+        if (!mine || !cap) continue;
+        p3_preview q;
+        p3_band_fill(cpu, &q, rec, idx, &g, call, 0);
+        c->fields++;
+        if (q.depth7 == cap->depth7 && q.far_rgb == cap->far_rgb && q.ir0 == cap->ir0 && q.mesh == cap->mesh) continue;
+        c->fmis++;
+        fprintf(stderr, "[portal3-gate-field f=%u rec=%u call=%d d7=%d/%d far=%06X/%06X ir0=%d/%d mesh=%08X/%08X]\n",
+                openpete_frame, idx, call, q.depth7, cap->depth7, q.far_rgb, cap->far_rgb, q.ir0, cap->ir0,
+                q.mesh, cap->mesh);
+    }
+}
+
+/** @brief Prints the gate census of one pass: the native 4:3 evaluation of every record against the pass's captures.
+ *
+ * Runs before p3_band_admit adds anything to the tick. Reads PSX RAM only.
+ * @param cpu The guest CPU state.
+ * @param T The tick as the pass captured it. */
+static void p3_band_census(CPUState* cpu, const p3_tick* T) {
+    const uint32_t base = cpu->read_word(portal_game_s23.records);
+    const uint32_t n = cpu->read_word(portal_game_s23.count);
+    if (base < 0x80000000u || base >= 0x80200000u || n > 256u || !game_layout.sin_table) return;
+    ngte_view vw, vc;
+    ngte_view_build(cpu, &vw);
+    ngte_view_canon(&vw, &vc);
+    p3_gate_census c = { 0, 0, 0, 0 };
+    for (uint32_t i = 0; i < n; i++) p3_band_census_record(cpu, T, &vc, base + i * P3_REC_STRIDE, i, &c);
+    fprintf(stderr, "[portal3-gate f=%u recs=%u calls=%d agree=%d fields=%d field-mism=%d]\n",
+            openpete_frame, n, c.calls, c.agree, c.fields, c.fmis);
+}
+
 /* ---- hooks ------------------------------------------------------------ */
 /** @brief The preview leaf's hook: captures the parameter block, then runs the real leaf.
  *
@@ -1171,7 +1626,11 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
     s_in_pass = 0;
     render_path_record(RP_PORTAL, s_pass_start, end);
-    if (feed) p3_feed(cpu, &s_curr);
+    if (p3_dbg() && openpete_frame >= p3_dbg_from()) p3_band_census(cpu, &s_curr);
+    if (feed) {
+        p3_band_admit(cpu, &s_curr);
+        p3_feed(cpu, &s_curr);
+    }
     if (p3_dbg()) {
         static unsigned s_reports = 0, s_passes = 0;
         s_passes++;
@@ -1180,8 +1639,8 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
          * view" from "the hook never fired". */
         if (s_reports < 64 && (s_curr.n || s_passes <= 4) && openpete_frame >= p3_dbg_from()) {
             s_reports++;
-            fprintf(stderr, "[portal3 f=%u] leaf-calls=%d captured=%d prim-bytes=%u emitted=%d faces=%d idx-drop=%d oc-drop=%d edge-drop=%d tris=%d",
-                    openpete_frame, s_leaf_calls, s_curr.n, end - s_pass_start, s_emitted,
+            fprintf(stderr, "[portal3 f=%u] leaf-calls=%d captured=%d band=%d band-disagree=%d prim-bytes=%u emitted=%d faces=%d idx-drop=%d oc-drop=%d edge-drop=%d tris=%d",
+                    openpete_frame, s_leaf_calls, s_curr.n, s_band_admit, s_band_disagree, end - s_pass_start, s_emitted,
                     s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris);
             for (int i = 0; i < s_curr.n; i++) {
                 const p3_preview* p = &s_curr.p[i];
