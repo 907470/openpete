@@ -37,8 +37,9 @@
 // P3_BAND_W wide outside it, in the opening plane, tests just behind the
 // plane, so the picture reaches the frame's stone wherever the hole is wider
 // than the pentagon and loses to any stone at or in front of the plane. The
-// terrain feeder culls the band of terrain lying in the opening plane inside
-// the pentagon (the inner rim) from the view-space outline. The picture is
+// terrain feeder marks the faces lying in the opening plane at the pentagon
+// (the inner rim), and their fragments inside the opening outline are
+// discarded (portal_cover_scene.glsl). The picture is
 // authored in the 4:3 frame and shifts by the frame's centre offset. Sub-tick
 // presents replay the captured previews; a preview that has a partner in the
 // previous tick (same mesh and leaf argument) has its rect, edges, depth and
