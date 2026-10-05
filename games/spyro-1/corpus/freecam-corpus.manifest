@@ -132,8 +132,8 @@ wizard_peak | pos=(109537, 74800, 18000) yaw=1024 pitch=280
 dream_weavers | pos=(31259, 44935, 13693) yaw=1379 pitch=-66
 # Close on a portal opening with a waterfall directly behind it: the preview
 # fills the frame and the waterfall's ABR-1 faces sit inside the outline. Guards
-# the transparent-terrain sky-cover drop (portal_sky_covers) - the preview draws
-# depth-test-only, so without it the additive pass blends over the preview.
+# the blended-terrain portal cover discard (portal_cover_scene.glsl) - the preview
+# draws depth-test-only, so without it the additive pass blends over the preview.
 dream_weavers | pos=(73050, 69383, 13760) yaw=-1400 pitch=41
 # Close on a portal at a sheer angle, where the arch silhouette cuts the opening.
 # Guards the flat/dome coverage identity on INTERMEDIATE presents: the stencil

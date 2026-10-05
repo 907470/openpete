@@ -1367,15 +1367,28 @@ typedef struct {
 /** @brief Replace the portal opening planes of the current scene.
  *
  * Called once per terrain feed. The OPENPETE_PORTAL_COVER_CHECK sweep reads
- * up to 8 planes. With @p blend_cover the first 6 also ride the scene to
- * the blended-terrain fragment stages, which discard a fragment inside an
- * outline at or behind its plane minus @p margin_world (portal_cover.glsl).
+ * up to 8 planes. The first 6 also ride the scene to the portal fragment
+ * stages (portal_cover_scene.glsl): with @p blend_cover the blended-terrain
+ * stages discard a fragment inside an outline at or behind its plane minus
+ * @p margin_world, and the inner-rim stages discard a rim fragment inside an
+ * outline (openpete_native_scene_set_portal_rim).
  * @param planes The opening planes; read only when @p n > 0.
  * @param n Plane count; 0 clears.
  * @param margin_world The plane-cover near margin M in world units.
  * @param blend_cover Nonzero to apply the planes to blended terrain. */
 void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
                                       int n, float margin_world, int blend_cover);
+
+/** @brief Set the sticky portal inner-rim mark stamped on the triangles added after it.
+ *
+ * A marked opaque terrain triangle is a face the terrain feed accepted as a
+ * portal's inner rim under a plane that discards its rim per fragment: it
+ * draws through the inner-rim twins of the WORLD and WORLD_FILL pipelines,
+ * whose fragment stage discards it inside the published opening outlines
+ * (openpete_native_set_cover_planes), so the preview paints there and the
+ * face stays drawn outside the opening. Reset it to 0 when leaving the feed.
+ * @param on Nonzero to mark. */
+void openpete_native_scene_set_portal_rim(int on);
 
 /** @brief Append one screen-space triangle to the current scene.
  *

@@ -9755,20 +9755,6 @@ static int s_pplane_n = 0;
  * ovz[3] (world/16 scale, the ttri unit) when the face is sky-covered. */
 static int s_pconform_dbg = -1;   /* OPENPETE_TERRAIN_PORTAL_CONFORM_DBG=x,y probe pixel */
 static float s_pcdbg_x, s_pcdbg_y;
-/** @brief Tests a screen point against a portal skyplane's projected outline by the crossing rule.
- * @param pp The skyplane; its pn outline points (px, py) are read.
- * @param x The point's X.
- * @param y The point's Y.
- * @return 1 when the point is inside the outline, else 0. */
-static int skyplane_contains(const openpete_portal_skyplane* pp, float x, float y) {
-    int in = 0;
-    for (int i = 0, j = pp->pn - 1; i < pp->pn; j = i++) {
-        if ((pp->py[i] > y) != (pp->py[j] > y) &&
-            x < (pp->px[j] - pp->px[i]) * (y - pp->py[i]) / (pp->py[j] - pp->py[i]) + pp->px[i])
-            in = !in;
-    }
-    return in;
-}
 /* ---- portal inner-rim detection -------------------------------------------
  * Some arches carry a thin band of terrain lying IN the portal's opening plane.
  * It is coincident with the destination-sky preview, so no depth ordering can
@@ -9970,6 +9956,29 @@ static int rim_uv_contains(const rim_uv* poly, int pn, double u, double v) {
             in = !in;
     }
     return in;
+}
+/** @brief Tests a face dropped onto an opening plane against the rim classifier's containment term.
+ *
+ * The face touches the opening when a vertex or its centroid lies inside the
+ * outline (a face can straddle a non-convex opening with its centre in and
+ * every corner out, hence both), or a vertex lies within @p reach of an
+ * outline edge.
+ * @param pv The outline in plane coordinates.
+ * @param pn Its vertex count.
+ * @param fuv The face's vertices in plane coordinates.
+ * @param reach The reach bound (portal_rim_reach).
+ * @return 1 when the term passes, else 0. */
+static int rim_face_touches(const rim_uv* pv, int pn, const rim_uv fuv[3], double reach) {
+    double cu = 0.0, cv = 0.0;
+    int touches = 0;
+    for (int k = 0; k < 3; k++) {
+        cu += fuv[k].u; cv += fuv[k].v;
+        if (!touches && rim_uv_contains(pv, pn, fuv[k].u, fuv[k].v)) touches = 1;
+    }
+    if (touches || rim_uv_contains(pv, pn, cu / 3.0, cv / 3.0)) return 1;
+    for (int k = 0; reach > 0.0 && k < 3; k++)
+        if (rim_uv_edge_dist(pv, pn, fuv[k].u, fuv[k].v) <= reach) return 1;
+    return 0;
 }
 /* Per-present frame of an opening plane - everything portal_rim_classify
  * needs that depends only on the PLANE, not the face under test: the unit
@@ -10185,6 +10194,7 @@ static void tgpu_rim_globals_fill(openpete_tercache_globals* g) {
             g->rim_O[pi][k]   = rf->O[k]; g->rim_U[pi][k] = rf->U[k];
             g->rim_W[pi][k]   = rf->W[k]; g->rim_nrm[pi][k] = rf->n[k];
         }
+        g->rim_O[pi][3] = pp->rim_fragment ? 1.0 : 0.0;
         g->rim_nrm[pi][3] = (double)pp->vn;
         g->rim_bbox[pi][0] = rf->pulo; g->rim_bbox[pi][1] = rf->puhi;
         g->rim_bbox[pi][2] = rf->pvlo; g->rim_bbox[pi][3] = rf->pvhi;
@@ -10202,19 +10212,20 @@ static void tgpu_rim_globals_fill(openpete_tercache_globals* g) {
  * from its screen positions and view-Z, and the triangle is a candidate when
  * its nearest vertex is within RIM_CAND_WINDOW of the opening plane and its
  * in-plane bounding box overlaps the opening's grown by RIM_CAND_MARGIN. A
- * candidate gets a mask of failed terms: RIMFAIL_CONTAIN when no vertex, no
- * centroid and no vertex within the reach bound of the outline lies inside
- * the opening polygon; RIMFAIL_DIST when the farthest vertex is beyond the
+ * candidate gets a mask of failed terms: RIMFAIL_CONTAIN when
+ * rim_face_touches fails (no vertex, centroid or vertex within the reach
+ * bound touches the outline); RIMFAIL_DIST when the farthest vertex is beyond the
  * eps bound or the nearest beyond the near bound; RIMFAIL_ANGLE when the
  * face normal is degenerate or its cosine with the plane normal is below
  * portal_rim_cos. The lowest mask over the planes is returned, stopping at
  * 0. A vertex whose plane reciprocal-depth is not positive skips the plane.
  * @param cpu Unused; the camera constants come from rim_frames_derive.
  * @param t The triangle.
+ * @param plane Receives the accepting plane's index on a 0 return; may be NULL.
  * @return -1 when no plane makes it a candidate, else the lowest failure
  *         mask, 0 for an accepted inner rim.
  */
-static int portal_rim_classify(CPUState* cpu, const ttri* t) {
+static int portal_rim_classify(CPUState* cpu, const ttri* t, int* plane) {
     (void)cpu;   /* per-present camera constants come from rim_frames_derive */
     if (!s_pplane_n) return -1;
     const double ofx = s_rim_ofx, ofy = s_rim_ofy, H = s_rim_H;
@@ -10275,21 +10286,9 @@ static int portal_rim_classify(CPUState* cpu, const ttri* t) {
         if (fuhi < pulo - RIM_CAND_MARGIN || fulo > puhi + RIM_CAND_MARGIN ||
             fvhi < pvlo - RIM_CAND_MARGIN || fvlo > pvhi + RIM_CAND_MARGIN) continue;
         int flags = 0;
-        /* contain: any vertex or the centroid, dropped onto the opening plane
-         * along its normal and tested against the polygon there. A face can
-         * straddle a non-convex opening with its centre in and every corner
-         * out, hence both. */
-        int touches = 0;
-        double cu = 0.0, cv = 0.0;
-        for (int k = 0; k < 3; k++) {
-            cu += fuv[k].u; cv += fuv[k].v;
-            if (!touches && rim_uv_contains(pv, pp->vn, fuv[k].u, fuv[k].v)) touches = 1;
-        }
-        if (!touches && rim_uv_contains(pv, pp->vn, cu/3.0, cv/3.0)) touches = 1;
-        if (!touches && reach > 0.0)
-            for (int k = 0; k < 3 && !touches; k++)
-                if (rim_uv_edge_dist(pv, pp->vn, fuv[k].u, fuv[k].v) <= reach) touches = 1;
-        if (!touches) flags |= RIMFAIL_CONTAIN;
+        /* contain: the face dropped onto the opening plane along its normal
+         * and tested against the polygon there (rim_face_touches). */
+        if (!rim_face_touches(pv, pp->vn, fuv, reach)) flags |= RIMFAIL_CONTAIN;
         /* dist: the face must both REACH the plane (nearest vertex within
          * `near`) and not stray past `eps` on its far side. */
         if (dmax > eps || dmin > near) flags |= RIMFAIL_DIST;
@@ -10300,43 +10299,32 @@ static int portal_rim_classify(CPUState* cpu, const ttri* t) {
         if (fl < 1e-9) flags |= RIMFAIL_ANGLE;
         else if (fabs((fx*nx + fy*ny + fz*nz) / fl) < portal_rim_cos()) flags |= RIMFAIL_ANGLE;
         if (best < 0 || flags < best) best = flags;
-        if (best == 0) return 0;
+        if (best == 0) { if (plane) *plane = pi; return 0; }
     }
     return best;
 }
 
-/** @brief Tests whether a triangle is accepted inner-rim geometry of a portal opening.
+/* What the feed does with a triangle under the inner-rim rule. */
+enum { RIM_KEEP = 0, RIM_DROP, RIM_FRAGMENT };
+/** @brief Returns the feed's inner-rim verdict for a triangle.
  * @param cpu The guest CPU state.
  * @param t The triangle.
- * @return 1 when portal_rim_classify returns 0, else 0.
- */
+ * @return RIM_KEEP when no plane accepts it as inner rim; RIM_DROP when the
+ *         accepting plane drops its rim whole; RIM_FRAGMENT when that plane
+ *         discards its rim per fragment (rim_fragment). */
 static int portal_rim_face(CPUState* cpu, const ttri* t) {
-    return portal_rim_classify(cpu, t) == 0;
+    int pi = 0;
+    if (portal_rim_classify(cpu, t, &pi) != 0) return RIM_KEEP;
+    return s_pplane[pi].rim_fragment ? RIM_FRAGMENT : RIM_DROP;
 }
 
-/* Does a portal sky cover this face outright - the .s walk draws the preview
- * AFTER it, so on PSX it is invisible?
- *
- * The opaque path handles this with depth: the preview rasters nearer and
- * repaints over the terrain behind it. Transparent terrain cannot ride that.
- * The preview colours draw depth-test-only (no depth WRITE, so a moby in front
- * of the arch keeps its pixels and the player is never clipped mid-entry), and
- * the ALPHA / ADDITIVE / SUBTRACT classes draw AFTER the portal sequence - they
- * test against the depth the OPAQUE terrain left behind, pass, and blend on top
- * of the preview. A waterfall behind a Dream Weavers arch reads as its animated
- * texture shining through the portal.
- *
- * Mirror the walk instead of fighting the depth buffer: a transparent face the
- * sky covers is simply not drawn. */
-/* Plane-cover rule: a transparent face is covered iff its screen centroid
- * lies inside an opening's footprint and its mean view-Z sits at or behind
- * the opening plane − M at that point. The former og-OT key comparison
- * (face insertion vs the sky bucket) is retired: the .s's OT pushes are
- * tier-asymmetric, so that verdict is a rendering artifact once tier and
- * distance decouple (with LOD forced off, the .s itself paints HP terrain
- * over its own fan) - the aperture is defined geometrically instead, in
- * both --lod modes. */
-/** @brief Reports whether the transparent-terrain portal cover drop is enabled.
+/* Transparent terrain the preview covers: the preview colours draw
+ * depth-test-only after the opaque terrain, and the blended classes draw
+ * after the portal sequence, so a blended face behind the opening would
+ * composite over the preview. The renderer's cover pipelines discard such
+ * fragments (portal_cover_scene.glsl, terrain.frag) at or behind the opening
+ * plane - M inside its outline. */
+/** @brief Reports whether the transparent-terrain portal cover discard is enabled.
  *
  * OPENPETE_PORTAL_TRANSP_COVER=0 disables it, so blended terrain shows
  * through the portal preview; unset or any other value enables it. Latched
@@ -10348,20 +10336,21 @@ static int transp_cover_on(void) {
                  v = (e && *e) ? (*e != '0') : 1; }
     return v;
 }
-/** @brief Stages the portal cover planes into the retained globals for the blended passes' fragment discard.
+/** @brief Stages the portal cover planes into the retained globals for the fragment discards.
  *
  * The planes are the same screen-space openings the CPU feed publishes to
  * the renderer; at most 6 planes and 16 outline points per plane are
- * staged. Filled only
- * when the rim frames are up (tgpu_portal_frames copied
- * this build's planes into s_pplane); otherwise the blanket portal claim
- * keeps every overlap sector on the CPU walk and no retained blend face can
- * reach the test. The feed-side lever (OPENPETE_PORTAL_TRANSP_COVER=0)
- * disables both sides alike, so lever-off keeps covers visible everywhere.
+ * staged. They serve the blended passes' cover discard and the inner-rim
+ * discard (terrain.frag). Filled only when the rim frames are up
+ * (tgpu_portal_frames copied this build's planes into s_pplane); otherwise
+ * the blanket portal claim keeps every overlap sector on the CPU walk. The
+ * feed-side lever (OPENPETE_PORTAL_TRANSP_COVER=0) clears cov_blend, which
+ * turns the blended discard off on both sides alike.
  * @param g The retained globals. */
 static void tgpu_cover_globals_fill(openpete_tercache_globals* g) {
-    if (!s_tgpu_rim_ok || !transp_cover_on()) return;
+    if (!s_tgpu_rim_ok) return;
     int n = s_pplane_n > 6 ? 6 : s_pplane_n;
+    g->cov_blend = transp_cover_on();
     g->cov_margin = (double)terrain_game.portal_plane_margin();
     for (int pi = 0; pi < n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
@@ -10377,32 +10366,6 @@ static void tgpu_cover_globals_fill(openpete_tercache_globals* g) {
         }
     }
     g->cov_n = n;
-}
-
-/** @brief Tests whether a portal preview covers a transparent triangle outright.
- *
- * True for a plane whose screen bounding box and footprint polygon contain
- * the triangle's screen centroid, whose reciprocal-depth fit is positive
- * there, and where the triangle's mean view-Z (times 16) is at or behind the
- * opening plane's depth less the plane margin.
- * @param t The triangle.
- * @return 1 when covered, else 0.
- */
-static int portal_sky_covers(const ttri* t) {
-    const double M = (double)terrain_game.portal_plane_margin();
-    for (int pi = 0; pi < s_pplane_n; pi++) {
-        const openpete_portal_skyplane* pp = &s_pplane[pi];
-        if (pp->pn < 3) continue;
-        const float cx = (t->sx[0] + t->sx[1] + t->sx[2]) / 3.0f;
-        const float cy = (t->sy[0] + t->sy[1] + t->sy[2]) / 3.0f;
-        if (cx < pp->x0 || cx > pp->x1 || cy < pp->y0 || cy > pp->y1) continue;
-        if (!skyplane_contains(pp, cx, cy)) continue;
-        const double inv = pp->a * (double)cx + pp->b * (double)cy + pp->c;
-        if (inv <= 1e-9) continue;                /* plane behind the camera here */
-        const double mean = (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-        if (mean >= 1.0 / inv - M) return 1;
-    }
-    return 0;
 }
 
 /** @brief Sets the scene feed's key-cell state for a triangle that carries a key table.
@@ -10422,14 +10385,43 @@ static void tn_feed_key_cells(const ttri* t) {
         openpete_native_scene_set_key_fold(t->kn);
 }
 
+/** @brief Returns the portal inner-rim verdict the feed applies to a triangle.
+ *
+ * The rim lies in the opening plane, coincident with the destination-sky
+ * preview, so no depth ordering separates them; on the original it never
+ * shows. A plane that drops its rim removes the face (RIM_DROP); a plane
+ * whose rim is discarded per fragment keeps it for the renderer's inner-rim
+ * pipelines (RIM_FRAGMENT). OPENPETE_PORTAL_RIM_CULL=0 keeps every face. The
+ * sector broadphase skips the classifier for a sector that cannot hold a rim
+ * face; OPENPETE_PORTAL_RIM_BROAD=2 classifies every face and logs a rim
+ * face in a sector the broadphase rejected.
+ * @param cpu The guest CPU state.
+ * @param t The triangle.
+ * @return RIM_KEEP, RIM_DROP or RIM_FRAGMENT. */
+static int tn_rim_verdict(CPUState* cpu, const ttri* t) {
+    static int s_cull = -1;
+    if (s_cull < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_CULL");
+                      s_cull = (e && *e) ? (*e != '0') : 1; }
+    if (!s_cull) return RIM_KEEP;
+    if (s_rimbroad == 1 && !rim_sec_cand(t->sec)) return RIM_KEEP;
+    const int rim = portal_rim_face(cpu, t);
+    if (s_rimbroad == 2 && rim != RIM_KEEP && !rim_sec_cand(t->sec)) {
+        static int logged = 0;
+        if (logged < 32) { logged++;
+            fprintf(stderr, "[rim-broad] VIOLATION f=%u sec=%d face=%d "
+                    "(rim face in a sector the broadphase rejected)\n",
+                    openpete_frame, t->sec, t->face); }
+    }
+    return rim;
+}
+
 /** @brief Feeds this build's terrain triangles to the native scene.
  *
  * Latches the debug toggles, fetches up to 6 portal opening planes for this
  * present's camera, republishes them for the plane-cover sweep, derives the
  * rim frames and the sector broadphase, and runs the one-shot diagnostics.
  * Each triangle in s_tri then becomes a scene triangle: it is skipped by the
- * tier-only debug filter or when a portal preview covers a transparent one
- * (portal_sky_covers); it takes its material, its corners (the fill tier
+ * tier-only debug filter; it takes its material, its corners (the fill tier
  * dilated when the knob is set), its depth as true view-Z scaled from
  * world/16, its fogged colour or a debug tint, and, under the key resolve,
  * its ordering key in koff. Its tag, fog delta and key cells are set, an
@@ -10583,7 +10575,7 @@ static void terrain_feed_native(CPUState* cpu) {
             if (fuhi < pulo - gu || fulo > puhi + gu ||
                 fvhi < pvlo - gv || fvlo > pvhi + gv) continue;
             fprintf(stderr, "[pfit]   f %d %d %d %.1f %.1f %.2f %.2f %.2f %.2f %.2f %.2f\n",
-                    t->sec, t->face, portal_rim_classify(cpu, t), dmin, dmax,
+                    t->sec, t->face, portal_rim_classify(cpu, t, NULL), dmin, dmax,
                     f[0].u, f[0].v, f[1].u, f[1].v, f[2].u, f[2].v);
           }
         }
@@ -10640,7 +10632,7 @@ static void terrain_feed_native(CPUState* cpu) {
             double para = 0.0;
             if (fl > 1e-9) para = fabs((fnx*nx + fny*ny + fnz*nz) / fl);
             const double ang = acos(para > 1.0 ? 1.0 : para) * 180.0 / 3.14159265358979323846;
-            const int cls = portal_rim_classify(cpu, t);
+            const int cls = portal_rim_classify(cpu, t, NULL);
             fprintf(stderr, "  sec=%d face=%d tier=%d texid=%d d=(%.1f,%.1f,%.1f) "
                     "|d|max=%.1f ang=%.1fdeg at=(%.1f,%.1f) => %s%s%s%s\n",
                     t->sec, t->face, t->tier, t->texid, d[0], d[1], d[2], amax, ang, cx, cy,
@@ -10764,15 +10756,12 @@ static void terrain_feed_native(CPUState* cpu) {
          * behind the opening plane, and the preview - mask and colours
          * testing at plane − M - repaints over them per pixel. Transparent
          * classes draw AFTER the portal sequence and would blend on top of
-         * the preview (a waterfall shining through the arch). The alpha,
-         * additive and quarter-additive classes are discarded per fragment
-         * by the renderer's cover pipelines against the planes published
-         * earlier in this feed (openpete_native_set_cover_planes), which keeps exactly the
-         * part of a face outside the opening or in front of its plane. The
-         * subtractive class has no cover pipeline and keeps the whole-face
-         * drop on the centroid. Both tiers: the HP waterfall is textured but
-         * its LP twin is blended UNTEXTURED gouraud (LP has no textures). */
-        if (s_pplane_n && t->blend == 3 && transp_cover_on() && portal_sky_covers(t)) continue;
+         * the preview (a waterfall shining through the arch); every blended
+         * class, on both tiers and through the HD replacement pipes too, is
+         * discarded per fragment by the renderer's cover twins against the
+         * planes published earlier in this feed
+         * (openpete_native_set_cover_planes), which keeps exactly the part of
+         * a face outside the opening or in front of its plane. */
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         uint32_t fp_col = 0;
         if (fp_tint) {
@@ -10977,30 +10966,9 @@ static void terrain_feed_native(CPUState* cpu) {
             : OPENPETE_TAG_TERRAIN_UNTEX(t->tier, t->env,
                                          t->sec < 0 ? 0 : t->sec, untex_slot));
         openpete_native_scene_set_fog_delta(t->fog_delta);
-        /* Portal inner-rim CULL. The rim lies in the opening plane, coincident
-         * with the destination-sky preview, so no depth ordering can separate
-         * them - on the original it never shows, and the only reason it did not
-         * show here was PORTAL_SKY_EPS dragging the whole sky forward to
-         * overpower it, which is what broke the silhouette everywhere else.
-         * Dropping the rim removes the contest instead of trying to win it.
-         * OPENPETE_PORTAL_RIM_CULL=0 restores the old behaviour for A/B. */
-        {   static int s_cull = -1;
-            if (s_cull < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_CULL");
-                              s_cull = (e && *e) ? (*e != '0') : 1; }
-            if (s_cull) {
-                if (s_rimbroad == 2) {          /* verify: classify live, audit the broadphase */
-                    const int rim = portal_rim_face(cpu, t);
-                    if (rim && !rim_sec_cand(t->sec)) {
-                        static int logged = 0;
-                        if (logged < 32) { logged++;
-                            fprintf(stderr, "[rim-broad] VIOLATION f=%u sec=%d face=%d "
-                                    "(rim face in a sector the broadphase rejected)\n",
-                                    openpete_frame, t->sec, t->face); }
-                    }
-                    if (rim) continue;
-                } else if ((s_rimbroad != 1 || rim_sec_cand(t->sec))
-                           && portal_rim_face(cpu, t)) continue;
-            }
+        {   const int rim = tn_rim_verdict(cpu, t);
+            if (rim == RIM_DROP) continue;
+            openpete_native_scene_set_portal_rim(rim == RIM_FRAGMENT);
         }
         /* OPENPETE_PORTAL_RIM_SHOW=1: paint classified faces one colour per
          * failure COMBINATION, so the picture says which TERM is responsible
@@ -11013,7 +10981,7 @@ static void terrain_feed_native(CPUState* cpu) {
         {   static int s_show = -1;
             ENV_FLAG_LATCH(s_show, "OPENPETE_PORTAL_RIM_SHOW");
             if (s_show) {
-                const int cls = portal_rim_classify(cpu, t);
+                const int cls = portal_rim_classify(cpu, t, NULL);
                 if (cls >= 0) {
                     /* vertex rgba packs R in the low byte:
                      *   RED     accepted (all terms pass)
@@ -11056,6 +11024,7 @@ static void terrain_feed_native(CPUState* cpu) {
         openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
     }
     openpete_native_scene_set_presnap(0);   /* never leak past this feeder */
+    openpete_native_scene_set_portal_rim(0);
     /* The former TERRAIN_KEY aperture fan (the sky bucket's og key rastered
      * into the key image, discarding og-covered opaque terrain per pixel) is
      * RETIRED with the plane-cover rule: opaque terrain behind the opening

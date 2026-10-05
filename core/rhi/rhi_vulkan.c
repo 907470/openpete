@@ -3996,6 +3996,11 @@ bool rhi_device_has_float64(const rhi_device *dev)
     return dev ? dev->has_shader_float64 : false;
 }
 
+uint32_t rhi_device_max_descriptor_sets(const rhi_device *dev)
+{
+    return dev ? dev->max_desc_sets : 0u;
+}
+
 bool rhi_device_has_fill_non_solid(const rhi_device *dev)
 {
     return dev ? dev->has_fill_non_solid : false;
@@ -5851,7 +5856,8 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * layout; uniform_set2 replaces set 2 with the single dynamic-UBO layout;
  * uniform_set5 puts the single dynamic-UBO layout at set 5 above the sets the
  * other flags give (the keyed scene pipes' sets 0..4, then the portal cover
- * planes).
+ * planes); uniform_set7 puts it at set 7 above a material layout's seven
+ * sets (the portal profile of a mod material).
  *
  * material: the mod layout PLUS the engine's occlusion inputs, which a
  * material's fragment stage runs before the mod's colour maths. They sit
@@ -5874,9 +5880,9 @@ static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
  * keys at set 2 and the actor key with its owner at set 5.
  * @param dev Device holding the set layouts.
  * @param desc Pipeline description.
- * @param out The pipeline's seven set layouts, rewritten in place. */
+ * @param out The pipeline's eight set layouts, rewritten in place. */
 static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
-                             VkDescriptorSetLayout out[7])
+                             VkDescriptorSetLayout out[8])
 {
     if (desc->material_pipeline) {
         out[2] = out[5] = dev->pair_set_layout;
@@ -5888,27 +5894,28 @@ static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *des
     if (desc->uses_vram4) out[1] = dev->pair_set_layout;
 }
 
-/** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..6].
+/** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..7].
  *
  * The per-kind assignment is the table in the comment above rhi_max_u32.
  * @param dev Device holding the set layouts.
  * @param desc Pipeline description.
- * @param out Receives seven set layouts.
+ * @param out Receives eight set layouts.
  * @return How many of them, from set 0, the pipeline layout uses. */
 static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
-                                     VkDescriptorSetLayout out[7])
+                                     VkDescriptorSetLayout out[8])
 {
     const bool ubo_pair = desc->postfx || desc->mod_pipeline ||
                           desc->material_pipeline || desc->terrain_pipeline;
     const VkDescriptorSetLayout high = desc->terrain_pipeline ? dev->ubo1_set_layout
                                                               : dev->vram_set_layout;
-    for (int i = 0; i < 7; i++) out[i] = dev->vram_set_layout;
+    for (int i = 0; i < 8; i++) out[i] = dev->vram_set_layout;
     out[3] = ubo_pair ? dev->ubo_set_layout : dev->vram_set_layout;
     out[5] = high;
     out[6] = high;
     if (desc->set1_vram_depth) out[1] = dev->pair_set_layout;
     if (desc->uniform_set2) out[2] = dev->ubo1_set_layout;
     if (desc->uniform_set5) out[5] = dev->ubo1_set_layout;
+    if (desc->uniform_set7) out[7] = dev->ubo1_set_layout;
     pair_set_layouts(dev, desc, out);
     uint32_t n = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
                : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
@@ -5918,10 +5925,11 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
                : desc->uses_vram3 ? 3u
                : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
     /* set1_vram_depth implies sets 0..1, uniform_set2 sets 0..2,
-     * uniform_set5 sets 0..5 */
+     * uniform_set5 sets 0..5, uniform_set7 sets 0..7 */
     const uint32_t lo = rhi_max_u32(rhi_max_u32(2u * (uint32_t)desc->set1_vram_depth,
                                                 3u * (uint32_t)desc->uniform_set2),
-                                    6u * (uint32_t)desc->uniform_set5);
+                                    rhi_max_u32(6u * (uint32_t)desc->uniform_set5,
+                                                8u * (uint32_t)desc->uniform_set7));
     return rhi_max_u32(n, lo);
 }
 
@@ -6147,7 +6155,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
                           : VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0, .size = desc->push_const_size,
     };
-    VkDescriptorSetLayout set_layouts[7];
+    VkDescriptorSetLayout set_layouts[8];
     uint32_t set_count = pipeline_set_layouts(dev, desc, set_layouts);
     if (set_count > dev->max_desc_sets) {
         /* Degrade, never crash: the caller treats a NULL pipeline as "draw

@@ -57,6 +57,12 @@ typedef struct {
      * answer. */
     double   vx[16], vy[16], vz[16];
     int      vn;                    /* outline points in view space (0 = none) */
+    /* What the terrain feed does with a face the rim classifier accepts
+     * under this plane. 0: drops it whole. 1: keeps it and draws it through
+     * the renderer's inner-rim pipelines, whose fragment stage discards it
+     * inside the screen outline (px, py) only, so the preview paints there
+     * and the face stays drawn outside the opening. */
+    int      rim_fragment;
 } openpete_portal_skyplane;
 
 typedef struct terrain_game {

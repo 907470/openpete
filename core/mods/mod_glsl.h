@@ -29,6 +29,9 @@ extern "C" {
 /* The define that selects the retained-terrain engine half of
  * openpete_psx_material.glsl; injected after #version. */
 #define OPENPETE_MOD_GLSL_TERRAIN_PREAMBLE "#define OP_PROFILE_TERRAIN 1\n"
+/* The define that selects the portal profile of the walked scene half of
+ * openpete_psx_material.glsl (terrain that yields to a portal preview). */
+#define OPENPETE_MOD_GLSL_PORTAL_PREAMBLE "#define OP_PROFILE_PORTAL 1\n"
 
 /* Include resolution: a name resolves in the staged SDK shader dir
  * (<sdk>/shaders) first, then in the including shader's own dir. */

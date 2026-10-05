@@ -1112,6 +1112,18 @@ const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
  * @param words Receives the word count; may be NULL.
  * @return The words, or NULL. */
 const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words);
+/** @brief Return the portal profile of a material fragment shader.
+ *
+ * The same source compiled with OP_PROFILE_PORTAL
+ * (openpete_psx_material.glsl), whose walked scene half discards what a
+ * portal preview covers. NULL when the handle is out of range or swept, or
+ * the shader has no portal profile (not a material fragment, a prebuilt, or
+ * its portal compile failed); such terrain then draws through the engine's
+ * own portal pipelines without the material.
+ * @param handle Shader handle.
+ * @param words Receives the word count; may be NULL.
+ * @return The words, or NULL. */
+const uint32_t* openpete_mods_shader_spv_portal(int handle, size_t* words);
 /** @brief Free every shader a mod registered and mark its slots dead.
  *
  * Takes the registry write lock. Both SPIR-V profiles are freed and the
@@ -1239,6 +1251,12 @@ void openpete_mods_registry_read_unlock(void);
  * contract rather than another blend class. */
 #define OPENPETE_MATERIAL_PIPE_VARIANTS 6
 #define OPENPETE_MATERIAL_PIPE_DECAL    5
+/* Portal-profile pipelines a material can be built for: [0..4] the cover
+ * rule per PSX blend class (index 0 unused), [5] the inner-rim rule, [6]
+ * its stencil-MARK twin. */
+#define OPENPETE_MATERIAL_PORTAL_PIPES  7
+#define OPENPETE_MATERIAL_PORTAL_RIM    5
+#define OPENPETE_MATERIAL_PORTAL_RIM_MARK 6
 
 /* Material selectors (declarative and per-instance) - draw-time resolve
  * for the batcher.
@@ -1258,6 +1276,11 @@ typedef struct {
          * write, stencil TEST against the aperture mask), [5] the decal
          * profile (openpete_psx_decal.glsl). */
     void** pipeline_mark_slot;  /* stencil-MARK twin (hole-fill groups) */
+    /* The portal profile of the fragment stage (OP_PROFILE_PORTAL; NULL
+     * when the material has none) and its pipelines, indexed as
+     * OPENPETE_MATERIAL_PORTAL_PIPES describes. */
+    const uint32_t* frag_portal_spv; size_t frag_portal_words;
+    void** pipeline_portal_slot[OPENPETE_MATERIAL_PORTAL_PIPES];
     const char* owner;
     int   uniform_slot;
 } openpete_mod_material_gpu_t;

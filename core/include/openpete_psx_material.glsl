@@ -46,7 +46,14 @@
  * pack folded through an atlas, so the engine compiles a material's source
  * twice, once with OP_PROFILE_TERRAIN defined, and this file supplies a
  * matching main() and helpers for each. The mod's source is identical in
- * both, and its colour must be a function of the face alone. */
+ * both, and its colour must be a function of the face alone.
+ *
+ * The walked scene half is compiled a second time with OP_PROFILE_PORTAL
+ * defined, for terrain that must yield to a portal preview (blended terrain
+ * behind an opening, a portal's inner rim): its main() discards what the
+ * preview covers before the painter verdicts, exactly as the engine's own
+ * stages do. The retained-terrain half always runs that rule. Neither adds
+ * anything the mod's source sees or writes. */
 
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
 #define OPENPETE_PSX_MATERIAL_GLSL
@@ -141,7 +148,9 @@ void main()
      * the engine believes, not what a mod paints. */
     vec4 c;
     if (ter_debug_shade(c)) { op_out_color = c; return; }
-    /* The painter verdict, as the stock terrain stage runs it. */
+    /* The portal plane-cover rule and the painter verdict, as the stock
+     * terrain stage runs them. */
+    if (ter_portal_discards()) discard;
     if (ter_key_loses()) discard;
     c = op_material(op_pack_shade());
     if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
@@ -182,6 +191,14 @@ layout(constant_id = 0) const bool OP_DEPTH_REVERSED = false;
 #define OP_DEPTH_AFFINE OP_DEPTH_REVERSED
 layout(constant_id = 3) const bool OP_MOBY_TRUESCOPE = true;
 layout(constant_id = 4) const bool OP_SLOT_CONTEST = false;
+
+#ifdef OP_PROFILE_PORTAL
+/* The portal profile: the opening planes ride a block at set 7, above the
+ * sets this half reserves (portal_cover_scene.glsl). */
+#define OP_COVER_SET 7
+#define OP_PORTAL_RUNTIME 1
+#include "portal_cover_scene.glsl"
+#endif
 
 layout(push_constant) uniform op_psx_material {
     int tpage_x, tpage_y;   /* texture page origin (VRAM 16-bit-pixel units) */
@@ -285,6 +302,9 @@ void main()
 {
     /* The painter verdicts, as the stock stages run them: which surface
      * exists at this pixel is the engine's decision. */
+#ifdef OP_PROFILE_PORTAL
+    if (op_portal_cover_frag(OP_DEPTH_REVERSED)) discard;
+#endif
     bool ranked = vRank.x > 0.5;
     float own = op_vz_from_depth(gl_FragCoord.z, OP_DEPTH_REVERSED);
     if (ranked &&

@@ -10,7 +10,8 @@
  *
  * The including stage defines OP_COVER_SRC as the instance name of a uniform
  * block holding, in this order and std140 layout:
- *   ivec4 cov_cnt      x = plane count (0 = test off)
+ *   ivec4 cov_cnt      x = plane count (0 = test off); y = 1 when the
+ *                      blended-terrain cover is on
  *   dvec4 cov_margin   x = M in world units
  *   dvec4 cov_abc[6]   the plane's screen-space field 1/vz = a x + b y + c; w = outline point count
  *   vec4  cov_bbox[6]  the outline's screen bounding box x0, y0, x1, y1
@@ -20,11 +21,17 @@
 #ifndef OPENPETE_PORTAL_COVER_GLSL
 #define OPENPETE_PORTAL_COVER_GLSL
 
+/* The margin of the inner-rim discard: a face the terrain feed accepts as a
+ * portal's inner rim lies within the rim classifier's band about the
+ * opening plane, so its fragments are discarded inside an outline at any
+ * depth. */
+#define OP_PORTAL_RIM_MARGIN 1.0e30
+
 /* Whether a fragment at PSX screen point p with view-Z vz (full-world units)
- * lies inside an opening's outline at or behind its plane minus M. The
+ * lies inside an opening's outline at or behind its plane minus m. The
  * outline containment is the crossing rule; a plane whose field is not
  * positive at p (the plane behind the camera there) covers nothing. */
-bool op_portal_covered(vec2 p, float vz)
+bool op_portal_covered(vec2 p, float vz, float m)
 {
     for (int pi = 0; pi < OP_COVER_SRC.cov_cnt.x; pi++) {
         int pn = int(OP_COVER_SRC.cov_abc[pi].w);
@@ -44,7 +51,7 @@ bool op_portal_covered(vec2 p, float vz)
         float inv = float(OP_COVER_SRC.cov_abc[pi].x) * p.x
                   + float(OP_COVER_SRC.cov_abc[pi].y) * p.y + float(OP_COVER_SRC.cov_abc[pi].z);
         if (inv <= 1e-9) continue;
-        if (vz >= 1.0 / inv - float(OP_COVER_SRC.cov_margin.x)) return true;
+        if (vz >= 1.0 / inv - m) return true;
     }
     return false;
 }

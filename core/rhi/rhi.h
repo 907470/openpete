@@ -504,6 +504,13 @@ bool        rhi_device_is_software(const rhi_device *dev);
  * @param dev Device, or NULL.
  * @return true when enabled; false otherwise or for NULL. */
 bool        rhi_device_has_float64(const rhi_device *dev);
+/** @brief Return how many descriptor sets a pipeline layout may bind on this device (maxBoundDescriptorSets).
+ *
+ * A pipeline needing more is refused at creation; a caller with an
+ * alternative checks first and takes it.
+ * @param dev Device, or NULL.
+ * @return The limit; 0 for NULL. */
+uint32_t    rhi_device_max_descriptor_sets(const rhi_device *dev);
 /** @brief Return whether fillModeNonSolid is enabled on this device.
  *
  * With it, pipelines may rasterize with VK_POLYGON_MODE_LINE (the wireframe
@@ -891,6 +898,11 @@ typedef struct {
                                  * to both stages. Sets 0..4 keep the layout
                                  * the flags above give them; implies sets
                                  * 0..5.                                     */
+    bool           uniform_set7; /* set 7 holds one dynamic-UBO binding (bind
+                                 * with rhi_ubo_bind_at(.., 7, ..)), visible
+                                 * to both stages, above the seven sets of a
+                                 * material layout; implies sets 0..7 and a
+                                 * device with 8 descriptor sets.            */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex - pair with the

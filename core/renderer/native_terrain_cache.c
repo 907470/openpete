@@ -139,7 +139,7 @@ typedef struct {
     double  rim_oxyH[4];   /* rim ofx, ofy, H, pad                       */
     double  rim_knobs[4];  /* eps, near, reach, cos(angle)               */
     double  rim_abc[6][4]; /* screen inv-vz plane fit a,b,c; w = valid   */
-    double  rim_O[6][4];   /* in-plane basis origin                      */
+    double  rim_O[6][4];   /* in-plane basis origin; w = 1: rim per fragment */
     double  rim_U[6][4];   /* in-plane basis U                           */
     double  rim_W[6][4];   /* in-plane basis W                           */
     double  rim_nrm[6][4]; /* unit view normal; w = outline vn           */
@@ -157,7 +157,7 @@ typedef struct {
      * so the ivec4 first keeps the dvec4 run at std140's 32-byte base
      * alignment (C natural layout == std140 continues to hold). cov_poly
      * holds one screen point per vec4 slot, 16 slots per plane. */
-    int32_t cov_cnt[4];    /* x = plane count (0 = test off)              */
+    int32_t cov_cnt[4];    /* x = plane count (0 = test off); y = blended cover on */
     double  cov_margin[4]; /* x = cover margin M (world units)            */
     double  cov_abc[6][4]; /* screen inv-vz plane fit a, b, c; w = pn     */
     float   cov_bbox[6][4];/* outline screen bbox x0, y0, x1, y1          */
@@ -521,7 +521,7 @@ typedef struct {
     int32_t snap;          /* 1 = integer vertex precision (screen-point floor) */
     int32_t cover;         /* 1 = portal cover discard (terrain.frag) */
     int32_t pad_[3];
-    float   fc[4];         /* gl_FragCoord -> PSX screen affine, read with cover */
+    float   fc[4];         /* gl_FragCoord -> PSX screen affine, read by the portal discards */
 } tc_pc;
 
 /* --vertex-precision integer, latched once per RHI frame (below) so every
@@ -1572,6 +1572,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
             memcpy(gu->hd_entry, tab, (size_t)n * sizeof(gu->hd_entry[0]));
     }
     gu->cov_cnt[0]   = g->cov_n;
+    gu->cov_cnt[1]   = g->cov_blend;
     gu->cov_margin[0] = g->cov_margin;
     for (int pi = 0; pi < 6; pi++) {
         gu->cov_abc[pi][0] = g->cov_abc[pi][0];

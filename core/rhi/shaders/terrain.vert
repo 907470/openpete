@@ -172,7 +172,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     dvec4 rim_oxyH;      /* rim ofx, ofy, H, pad                          */
     dvec4 rim_knobs;     /* eps, near, reach, cos(angle)                  */
     dvec4 rim_abc[6];    /* screen inv-vz plane fit a,b,c; w = valid      */
-    dvec4 rim_O[6];      /* in-plane basis origin (view space)            */
+    dvec4 rim_O[6];      /* in-plane basis origin (view space); w = 1 when
+                          * the plane discards its rim per fragment       */
     dvec4 rim_U[6];      /* in-plane basis U                              */
     dvec4 rim_W[6];      /* in-plane basis W                              */
     dvec4 rim_nrm[6];    /* unit view normal; w = outline vn              */
@@ -266,6 +267,7 @@ layout(location = 10)     out vec3  vKd;    /* fold position D x vKq            
 layout(location = 11) flat out vec4 vKn0;   /* fold corners TL.xyz TR.x             */
 layout(location = 12) flat out vec4 vKn1;   /*   TR.yz BL.xy                        */
 layout(location = 13) flat out vec4 vKn2;   /*   BL.z BR.xyz                        */
+layout(location = 14) flat out uint vRim;  /* inner rim discarded per fragment (terrain.frag) */
 layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
                                              * | ladder-face 1<<16 | fogbias 1<<17  */
 
@@ -805,6 +807,7 @@ void kill_vert() {
     vKoff = 0.0; vQ = 1.0;
     vKfl = vec2(0.0); vKq = 1.0; vKc0 = uvec4(0u); vKc1 = uvec4(0u);
     vKd = vec3(0.0); vKn0 = vec4(0.0); vKn1 = vec4(0.0); vKn2 = vec4(0.0);
+    vRim = 0u;
 }
 
 /* ---- portal inner-rim cull (portal_rim_classify mirror) --------------------
@@ -840,12 +843,15 @@ double rim_uv_edge_dist_g(int base, int pn, double u, double v) {
     }
     return best;
 }
-/* True = some plane accepts the tri as inner rim (classify flags == 0): the
- * CPU feed drops it, so the retained draw must too. Inputs are the emitted
- * tri's FLOAT screen coords (the feed ttri's sx/sy) and walk view-Z (m3). */
-bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
+/* The inner-rim verdict of a tri (classify flags == 0 under some plane):
+ * 0 = not rim; 1 = rim under a plane the CPU feed drops it for, so the
+ * retained draw drops it too; 2 = rim under a plane that discards its rim per
+ * fragment (rim_O[pi].w), so the face is kept and terrain.frag discards the
+ * covered part. Inputs are the emitted tri's FLOAT screen coords (the feed
+ * ttri's sx/sy) and walk view-Z (m3). */
+int rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
     precise double ofx = g.rim_oxyH.x, ofy = g.rim_oxyH.y, H = g.rim_oxyH.z;
-    if (H < 1.0lf) return false;
+    if (H < 1.0lf) return 0;
     double eps = g.rim_knobs.x, nearw = g.rim_knobs.y;
     double reach = g.rim_knobs.z, cosw = g.rim_knobs.w;
     double sx[3] = double[3](double(s0.x), double(s1.x), double(s2.x));
@@ -914,9 +920,9 @@ bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) 
         double fl = sqrt(fx * fx + fy * fy + fz * fz);
         if (fl < 1e-9lf) continue;                   /* RIMFAIL_ANGLE */
         if (abs((fx * nx + fy * ny + fz * nz) / fl) < cosw) continue;
-        return true;                                 /* all terms pass */
+        return g.rim_O[pi].w != 0.0lf ? 2 : 1;       /* all terms pass */
     }
-    return false;
+    return 0;
 }
 
 #ifdef TERRAIN_NEAR
@@ -1127,6 +1133,7 @@ bool cells_fetch() {
 
 void main()
 {
+    vRim = 0u;
 #ifdef TERRAIN_CELLS
     if (!cells_fetch()) { kill_vert(); return; }
 #endif
@@ -1449,7 +1456,7 @@ void main()
 #ifndef TERRAIN_NEAR
     if (g.rim_cnt.x > 0) {
         bool tri2 = (f16 & 0x2000u) != 0u;
-        bool pdrop;
+        int rimv;
         if (!hqv) {
             precise dvec3 ta, tb, tc2;
             vec2 sa, sb, sc;
@@ -1462,8 +1469,7 @@ void main()
                 else        { ta = m0; tb = m1; tc2 = m3c; sa = p0f; sb = p1f; sc = p3f; }
             }
             sa = snap_of(sa); sb = snap_of(sb); sc = snap_of(sc);
-            pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
+            rimv = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
         } else if (ist) {
             /* Sub-triangle members (A,B,C), nt4_emit's order. */
             int na = NT_SUB[tsub * 3], nb = NT_SUB[tsub * 3 + 1], nc2 = NT_SUB[tsub * 3 + 2];
@@ -1473,8 +1479,7 @@ void main()
             vec2 sa = nt4_screen(na, m0, m1, m2);
             vec2 sb = nt4_screen(nb, m0, m1, m2);
             vec2 sc = nt4_screen(nc2, m0, m1, m2);
-            pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
+            rimv = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
         } else if (is4) {
             /* Cell members (TL,TR,BL) / (TR,BL,BR), emit_quad_cv's order. */
             precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
@@ -1488,8 +1493,7 @@ void main()
             vec2 sa = nc4_screen(n0.x, n0.y, TL, TR, BL, BR);
             vec2 sb = nc4_screen(n1.x, n1.y, TL, TR, BL, BR);
             vec2 sc = nc4_screen(n2.x, n2.y, TL, TR, BL, BR);
-            pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
+            rimv = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
         } else {
             /* Sub-quad nodes from the transformed parent corners (the same
              * cv_mid mirrors the own-vertex rebuild uses below). */
@@ -1513,10 +1517,10 @@ void main()
             vec2 sa = hq_snap_screen(na, TL, TR, BL, BR, ta);
             vec2 sb = hq_snap_screen(nb, TL, TR, BL, BR, tb);
             vec2 sc = hq_snap_screen(nc2, TL, TR, BL, BR, tc2);
-            pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
+            rimv = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
         }
-        if (pdrop) { kill_vert(); return; }
+        if (rimv == 1) { kill_vert(); return; }
+        vRim = rimv == 2 ? 1u : 0u;
     }
 #endif
 
@@ -1749,8 +1753,9 @@ void main()
         if (g.rim_cnt.x > 0) {
             vec2 sa = scr_of(outv[e0]), sb = scr_of(outv[e1]),
                  sc = scr_of(outv[e2]);
-            if (rim_classified(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z))
-                { kill_vert(); return; }
+            int rimv = rim_classified(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z);
+            if (rimv == 1) { kill_vert(); return; }
+            vRim = rimv == 2 ? 1u : 0u;
         }
         cvx V = outv[self == 0 ? e0 : (self == 1 ? e1 : e2)];
         mo  = V.m;

@@ -1,4 +1,7 @@
 #version 450
+#ifdef OP_PORTAL_COVER
+#extension GL_GOOGLE_include_directive : require
+#endif
 
 /* HD texture replacement: samples a host RGBA8 replacement texture instead
  * of the PSX VRAM decode. UVs arrive in PSX texel units (same vertex path as
@@ -24,8 +27,19 @@ layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) 
 
 layout(location = 0) out vec4 outColor;
 
+#ifdef OP_PORTAL_COVER
+/* The _cover variant (blended terrain): portal_cover_scene.glsl, with the
+ * scene's gl_FragCoord.z convention (see psx_scene_key.frag). */
+#include "portal_cover_scene.glsl"
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
+#endif
+
 void main()
 {
+#ifdef OP_PORTAL_COVER
+    /* A blended terrain fragment the portal preview covers. */
+    if (op_portal_cover_frag(DEPTH_REVERSED)) discard;
+#endif
     vec2 vUV = vUVq / vQ;
     vec4 vColor = vColorq / vQ;
     vec2 t = vec2((vUV.x - pc.u0) / pc.uw, (vUV.y - pc.v0) / pc.vh);

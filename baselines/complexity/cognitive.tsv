@@ -46,7 +46,6 @@ core/mods/mod_loader.c	parse_config_row	29	0
 core/mods/mod_loader.c	parse_levels	31	0	
 core/mods/mod_loader.c	parse_mod_header	33	0	
 core/mods/mod_registry.c	custom_tick	51	0	
-core/mods/mod_shader.c	openpete_mods_shader_register_locked	30	0	
 core/mods/mod_shader.c	terrain_winner	42	0	
 core/psx/cdrom_mmio.c	openpete_cdrom_mmio_open	49	0	
 core/psx/dispatch.c	psx_override_dispatch	42	0	
@@ -60,7 +59,7 @@ core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0
 core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	
 core/renderer/native_render.c	compose_variant	52	0	
-core/renderer/native_render.c	draw_native_scene	625	0	
+core/renderer/native_render.c	draw_native_scene	624	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
 core/renderer/native_render.c	draw_tex_runs	89	0	
 core/renderer/native_render.c	draw_ut_mat_spans	48	0	
@@ -90,7 +89,7 @@ core/renderer/openpete_interp.c	openpete_interp_capture	29	0
 core/rhi/rhi_vulkan.c	create_render_target_impl	33	0	
 core/rhi/rhi_vulkan.c	pick_physical_and_device	43	0	
 core/rhi/rhi_vulkan.c	pipeline_compile	34	0	
-core/rhi/rhi_vulkan.c	pipeline_set_layouts	44	0	
+core/rhi/rhi_vulkan.c	pipeline_set_layouts	45	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	27	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
 core/rhi/rhi_vulkan.c	rhi_destroy	37	0	
@@ -169,13 +168,13 @@ games/common/renderer/shadow_player.c	shadow_player_compare	70	0
 games/common/renderer/terrain.c	clip_push_tri	35	0	
 games/common/renderer/terrain.c	fp_begin	28	0	
 games/common/renderer/terrain.c	fp_hit_tri	31	0	
-games/common/renderer/terrain.c	portal_rim_classify	66	0	
+games/common/renderer/terrain.c	portal_rim_classify	53	0	
 games/common/renderer/terrain.c	sector_verdicts	27	0	
 games/common/renderer/terrain.c	td_scan_verts	26	0	
 games/common/renderer/terrain.c	terrain_animdbg	44	0	
 games/common/renderer/terrain.c	terrain_build	560	0	
 games/common/renderer/terrain.c	terrain_compare	313	0	
-games/common/renderer/terrain.c	terrain_feed_native	463	0	
+games/common/renderer/terrain.c	terrain_feed_native	434	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	105	0	
 games/common/renderer/terrain.c	tgpu_build_sector	123	0	

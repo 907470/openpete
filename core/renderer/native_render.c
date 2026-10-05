@@ -356,6 +356,10 @@ typedef struct {
     int host_added; /* 1 = geometry the host added beyond the game's own render
                      * (sticky set_host_added value). The scene's content and
                      * world-frame verdicts skip these tris. */
+    int portal_rim; /* 1 = opaque terrain the feed accepted as a portal's inner
+                     * rim (sticky set_portal_rim value): it draws through the
+                     * inner-rim twins (nr_rim_twins), which discard it inside
+                     * the portal openings. */
     float kfl[3][2]; /* drain coordinate p per vertex and ...                 */
     uint32_t kc[8];  /* ... the face's drain sub-cell key table (sticky
                       * set_key_cells value; all zero = none): each fragment
@@ -468,11 +472,22 @@ static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) 
  * overwriting bytes a still-pending scene draws. */
 enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
 #define SCENE_RING 48
-/* The portal opening planes as the blended-terrain _cover fragment stages
- * read them (the std140 PortalCover block of psx_scene_key.frag and
- * quad_key.frag; portal_cover.glsl): fc, this pass's gl_FragCoord -> PSX
- * screen affine (fax, fbx, fay, fby), written at bind time; cnt.x the plane
- * count, 0 when the blended cover is off; margin.x the plane-cover margin;
+/* One CPU-fed terrain pipeline and its portal twin: the same description
+ * with the fragment stage's _cover variant (blended terrain) or _rim variant
+ * (opaque inner-rim terrain; portal_cover_scene.glsl) and the cover planes'
+ * UBO at set 5. A NULL twin (no variant for the stage, or a failed build)
+ * draws through the stock pipeline without the test. */
+typedef struct {
+    rhi_pipeline *stock;
+    rhi_pipeline *cover;
+    int rim;                    /* 1: the inner-rim rule, 0: the blended cover rule */
+} nr_cover_twin;
+#define NR_COVER_TWINS 17
+/* The portal opening planes as the _cover and _rim fragment stages read them
+ * (the std140 PortalCover block of portal_cover_scene.glsl): fc, this pass's
+ * gl_FragCoord -> PSX screen affine (fax, fbx, fay, fby), written at bind
+ * time; cnt.x the plane count, cnt.y 1 when the blended cover is on;
+ * margin.x the plane-cover margin;
  * abc the plane's screen field, w = outline point count; bbox and poly the
  * outline, 16 points per plane. */
 #define NR_COVER_PLANES 6
@@ -593,6 +608,9 @@ void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
 /* Sticky host-added origin (see openpete_native_scene_set_host_added). */
 static int s_cur_host_added;
 void openpete_native_scene_set_host_added(int on) { s_cur_host_added = on ? 1 : 0; }
+/* Sticky portal inner-rim mark (see openpete_native_scene_set_portal_rim). */
+static int s_cur_portal_rim;
+void openpete_native_scene_set_portal_rim(int on) { s_cur_portal_rim = on ? 1 : 0; }
 static float    s_cur_kfl[3][2];
 static uint32_t s_cur_kc[8];
 static float    s_cur_kn[12];
@@ -1512,6 +1530,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
         s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
+        s_scene[s_scene_n].portal_rim = s_cur_portal_rim; /* sticky (set_portal_rim) */
         scene_stamp_key_cells(&s_scene[s_scene_n]);
         s_scene[s_scene_n].ter_after = s_cur_ter_after;   /* sticky (mark_terrain_feed) */
         if (s_cur_tag && tag_tint_on()) {
@@ -3450,7 +3469,8 @@ static struct {
     rhi_pipeline *scene_tex_add_pipe; /* additive (ABR mode 1, B+F) textured tris - flame */
     rhi_pipeline *scene_tex_qadd_pipe; /* quarter-additive (ABR mode 3, B+F/4) textured tris - glass */
     rhi_pipeline *gouraud_qadd_pipe;  /* quarter-additive UNTEXTURED gouraud (ABR mode 3) */
-    rhi_pipeline *cover_pipes[2][4];  /* blended terrain with the portal cover discard: [textured][blend class - 1]; no subtractive member, NULL -> the stock pipe */
+    nr_cover_twin cover_twins[NR_COVER_TWINS]; /* every CPU-fed blended terrain pipe and its portal cover twin (cover_family_create) */
+    int           cover_twin_n;
     rhi_pipeline *scene_tex_sub_pipe; /* subtractive (ABR mode 2, B-F) textured tris - moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
     rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL -> fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES]; /* HUD overlay and panels: UNTEXTURED gouraud, depth-test OFF (on top), one pipe per blend class */
@@ -3789,38 +3809,69 @@ static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
     if (!ok) blend_family_destroy(dev, fam, nsel);
 }
 
-/** @brief Create the blended-terrain pipelines that run the portal cover discard.
- *
- * Each is its stock blended pipeline with the keyed fragment stage's _cover
- * variant (quad_key_cover.frag, psx_scene_key_cover.frag) and the cover
- * planes' UBO at set 5. A NULL base, and a pipeline that fails to build,
- * leave NULL: that class draws through its stock pipeline without the test.
- * @param dev Device.
- * @param base The stock descriptions, [textured][blend class - 1].
- * @param out Receives the pipelines. */
-static void cover_family_create(rhi_device* dev, const rhi_pipeline_desc* const base[2][4],
-                                rhi_pipeline* out[2][4]) {
-    static const char* const k_frag[2] = { "quad_key_cover.frag.spv", "psx_scene_key_cover.frag.spv" };
-    for (int t = 0; t < 2; t++)
-        for (int c = 0; c < 4; c++) {
-            out[t][c] = NULL;
-            if (!base[t][c]) continue;
-            rhi_pipeline_desc d = *base[t][c];
-            d.frag_spv = k_frag[t];
-            d.uniform_set5 = true;
-            out[t][c] = rhi_create_pipeline(dev, &d);
-        }
+/** @brief The _cover or _rim variant of a scene fragment stage, by its stock SPIR-V name.
+ * @param frag The stock stage's .spv name.
+ * @param rim Nonzero for the _rim variant.
+ * @return The variant's .spv name, or NULL for a stage without one. */
+static const char* cover_frag_of(const char* frag, int rim) {
+    static const char* const k_map[][3] = {
+        { "quad_key.frag.spv",      "quad_key_cover.frag.spv",      "quad_key_rim.frag.spv" },
+        { "psx_scene_key.frag.spv", "psx_scene_key_cover.frag.spv", "psx_scene_key_rim.frag.spv" },
+        { "quad.frag.spv",          "quad_cover.frag.spv",          "quad_rim.frag.spv" },
+        { "psx_scene.frag.spv",     "psx_scene_cover.frag.spv",     NULL },
+        { "hd_tex.frag.spv",        "hd_tex_cover.frag.spv",        NULL },
+        { "hd_tex_cutout.frag.spv", NULL,                           "hd_tex_cutout_rim.frag.spv" },
+    };
+    for (size_t i = 0; frag && i < sizeof k_map / sizeof k_map[0]; i++)
+        if (strcmp(frag, k_map[i][0]) == 0) return k_map[i][rim ? 2 : 1];
+    return NULL;
 }
 
-/** @brief Destroy the pipelines cover_family_create built and clear the table.
+/** @brief A stock terrain pipeline, the description it was built from, and which twin it takes (cover_family_create input). */
+typedef struct {
+    const rhi_pipeline_desc *desc;
+    rhi_pipeline *stock;
+    int rim;                    /* 1: the _rim twin (opaque), 0: the _cover twin (blended) */
+} nr_cover_src;
+
+/** @brief Build the portal twin of each terrain pipeline that must yield to a portal preview.
+ *
+ * Each twin is its stock description with the fragment stage's _cover or
+ * _rim variant (cover_frag_of) and the cover planes' UBO at set 5. A NULL
+ * stock pipeline is skipped; a stage without the variant, and a twin that
+ * fails to build, leave the twin NULL, and that pipeline draws without the
+ * test.
  * @param dev Device.
- * @param pipes The table. */
-static void cover_family_destroy(rhi_device* dev, rhi_pipeline* pipes[2][4]) {
-    for (int t = 0; t < 2; t++)
-        for (int c = 0; c < 4; c++) {
-            if (pipes[t][c]) rhi_destroy_pipeline(dev, pipes[t][c]);
-            pipes[t][c] = NULL;
-        }
+ * @param src The stock pipelines and their descriptions.
+ * @param n Entries in @p src; at most NR_COVER_TWINS are kept.
+ * @param out Receives the twins.
+ * @return The number of entries written to @p out. */
+static int cover_family_create(rhi_device* dev, const nr_cover_src* src, int n,
+                               nr_cover_twin* out) {
+    int k = 0;
+    for (int i = 0; i < n && k < NR_COVER_TWINS; i++) {
+        if (!src[i].stock) continue;
+        rhi_pipeline_desc d = *src[i].desc;
+        d.frag_spv = cover_frag_of(src[i].desc->frag_spv, src[i].rim);
+        d.uniform_set5 = true;
+        out[k].stock = src[i].stock;
+        out[k].rim = src[i].rim;
+        out[k].cover = d.frag_spv ? rhi_create_pipeline(dev, &d) : NULL;
+        k++;
+    }
+    return k;
+}
+
+/** @brief Destroy the twins cover_family_create built and empty the table.
+ * @param dev Device.
+ * @param tw The table.
+ * @param n Its entry count; set to 0. */
+static void cover_family_destroy(rhi_device* dev, nr_cover_twin* tw, int* n) {
+    for (int i = 0; i < *n; i++) {
+        if (tw[i].cover) rhi_destroy_pipeline(dev, tw[i].cover);
+        tw[i].stock = tw[i].cover = NULL;
+    }
+    *n = 0;
 }
 
 /** @brief Point the RHI's pipeline cache at the per-user state "cache" directory, created on demand.
@@ -4678,11 +4729,20 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_qadd_pipe = scene_tex_qadd_pipe;
     s_nr.gouraud_qadd_pipe = gouraud_qadd_pipe;
     {
-        const rhi_pipeline_desc* const cover_base[2][4] = {
-            { &gouraud_blend_desc, &gouraud_add_desc, NULL, &gouraud_qadd_desc },
-            { &scene_tex_blend_desc, &scene_tex_add_desc, NULL, &scene_tex_qadd_desc },
+        const nr_cover_src cover_src[] = {
+            { &gouraud_blend_desc, gouraud_blend_pipe, 0 }, { &gouraud_add_desc, gouraud_add_pipe, 0 },
+            { &gouraud_sub_ztest_desc, gouraud_sub_ztest_pipe, 0 }, { &gouraud_qadd_desc, gouraud_qadd_pipe, 0 },
+            { &scene_tex_blend_desc, scene_tex_blend_pipe, 0 }, { &scene_tex_add_desc, scene_tex_add_pipe, 0 },
+            { &scene_tex_sub_desc, scene_tex_sub_pipe, 0 }, { &scene_tex_qadd_desc, scene_tex_qadd_pipe, 0 },
+            { &hd_scene_blend_desc, hd_scene_blend_pipe, 0 }, { &hd_scene_add_desc, hd_scene_add_pipe, 0 },
+            { &gouraud_desc, gouraud_pipe, 1 }, { &gouraud_mark_desc, gouraud_mark_pipe, 1 },
+            { &scene_tex_desc, scene_tex_pipe, 1 }, { &scene_tex_mark_desc, scene_tex_mark_pipe, 1 },
+            { &hd_cutout_desc, hd_cutout_pipe, 1 }, { &hd_cutout_mark_desc, hd_cutout_mark_pipe, 1 },
+            { &gouraud_fill_desc, gouraud_fill_pipe, 1 },
         };
-        cover_family_create(dev, cover_base, s_nr.cover_pipes);
+        s_nr.cover_twin_n = cover_family_create(dev, cover_src,
+                                                (int)(sizeof cover_src / sizeof cover_src[0]),
+                                                s_nr.cover_twins);
     }
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL -> plain sub pipe */
@@ -5627,8 +5687,10 @@ static void scene_fragcoord_affine(scene_fc_affine *o)
  * screen edges, enough to flip rasterized edge pixels against the CPU-fed
  * draws. The function reads the state scene_to_clip reads (display sizes,
  * panel 0 rect, s_render_full_extent, s_render_freeze_wf), so the two
- * mappings cannot drift apart. The portal cover flag is cleared; the
- * blended draws set it (bw_draw_tercache).
+ * mappings cannot drift apart. The pass's gl_FragCoord -> PSX screen affine
+ * (scene_fragcoord_affine) rides every draw for the inner-rim discard; the
+ * blended cover flag is cleared, and the blended draws set it
+ * (bw_draw_tercache).
  * @param out Receives the parameters. */
 static void tercache_clip_params(openpete_tercache_clip *out)
 {
@@ -5643,7 +5705,9 @@ static void tercache_clip_params(openpete_tercache_clip *out)
     out->freeze_wf = s_render_freeze_wf;
     out->full_extent = s_render_full_extent ? 1 : 0;
     out->cover = 0;
-    memset(out->fc, 0, sizeof out->fc);
+    scene_fc_affine fa;
+    scene_fragcoord_affine(&fa);
+    out->fc[0] = fa.fax; out->fc[1] = fa.fbx; out->fc[2] = fa.fay; out->fc[3] = fa.fby;
 }
 
 /* ---- depth-aware shadow decal: the shared WORLD-opaque depth pre-pass ------ */
@@ -7117,31 +7181,63 @@ static float shadow_decal_bind_keys(void)
     return keys ? 1.0f : 0.0f;
 }
 
-/** @brief Whether a pipeline is one of the blended-terrain cover pipelines.
+/** @brief The cover twin table entry whose twin is a pipeline.
  * @param p Pipeline.
- * @return 1 for a non-NULL member of s_nr.cover_pipes, else 0. */
-static int nr_is_cover_pipe(const rhi_pipeline* p)
+ * @return The entry, or NULL when @p p is no cover twin. */
+static const nr_cover_twin* nr_cover_entry(const rhi_pipeline* p)
 {
-    for (int t = 0; t < 2; t++)
-        for (int c = 0; c < 4; c++)
-            if (p && p == s_nr.cover_pipes[t][c]) return 1;
-    return 0;
+    for (int i = 0; p && i < s_nr.cover_twin_n; i++)
+        if (p == s_nr.cover_twins[i].cover) return &s_nr.cover_twins[i];
+    return NULL;
+}
+
+/** @brief The pipeline a blended terrain run draws through in place of a stock pipeline.
+ * @param stock Stock pipeline, or NULL.
+ * @return Its cover twin, or @p stock when it has none. */
+static rhi_pipeline* nr_cover_twin_of(rhi_pipeline* stock)
+{
+    for (int i = 0; stock && i < s_nr.cover_twin_n; i++)
+        if (stock == s_nr.cover_twins[i].stock && s_nr.cover_twins[i].cover)
+            return s_nr.cover_twins[i].cover;
+    return stock;
+}
+
+/** @brief Whether a pipeline is a key-resolve pipe, whose fragment stage samples the key images at sets 1 to 4.
+ * @param p Pipeline.
+ * @return 1 for the opaque, marked, cutout, blended, additive,
+ *         quarter-additive and punch variants of the gouraud, scene-texture
+ *         and HD cutout pipes, else 0. */
+static int nr_is_key_pipe(const rhi_pipeline* p)
+{
+    return p == s_nr.gouraud_pipe || p == s_nr.gouraud_mark_pipe ||
+           p == s_nr.scene_tex_pipe || p == s_nr.scene_tex_mark_pipe ||
+           p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe ||
+           p == s_nr.gouraud_blend_pipe || p == s_nr.gouraud_add_pipe ||
+           p == s_nr.scene_tex_blend_pipe || p == s_nr.scene_tex_add_pipe ||
+           p == s_nr.gouraud_qadd_pipe || p == s_nr.scene_tex_qadd_pipe ||
+           p == s_nr.gouraud_punch_pipe || p == s_nr.scene_tex_punch_pipe ||
+           p == s_nr.hd_cutout_punch_pipe;
 }
 
 static rhi_ubo* s_cover_ubo;
-/** @brief Bind the composed scene's portal cover planes at set 5 of a cover pipeline.
+/** @brief Bind the composed scene's portal cover planes at one set of a portal pipeline.
  *
- * The one-block UBO is created on first use. The block is the scene's
- * planes (ps_cover) with this pass's gl_FragCoord -> PSX screen affine; it
- * is written on the first bind of each RHI frame and again whenever it
- * differs from the last one written, so a panel pass and a full-extent pass
+ * The two-block UBO is created on first use. Both blocks are the scene's
+ * planes (ps_cover) with this pass's gl_FragCoord -> PSX screen affine;
+ * block 1 also sets cnt.z, which selects the inner-rim rule in a stage that
+ * picks the rule at run time (a material's portal profile). They are
+ * written on the first bind of each RHI frame and again whenever they
+ * differ from the last ones written, so a panel pass and a full-extent pass
  * of one present each read their own affine. Returns without binding when
- * the UBO cannot be created. */
-static void bind_cover_block(void)
+ * the UBO cannot be created.
+ * @param set The descriptor set: 5 on the engine's twins, 7 on a material's
+ *        portal profile.
+ * @param rim Nonzero to bind the inner-rim block. */
+static void bind_cover_block(uint32_t set, int rim)
 {
     static uint64_t s_serial = UINT64_MAX;
     static nr_cover_block s_last;
-    if (!s_cover_ubo) s_cover_ubo = rhi_create_ubo(s_nr.dev, (uint32_t)sizeof(nr_cover_block), 1);
+    if (!s_cover_ubo) s_cover_ubo = rhi_create_ubo(s_nr.dev, (uint32_t)sizeof(nr_cover_block), 2);
     if (!s_cover_ubo) return;
     nr_cover_block b = *ps_cover();
     scene_fc_affine fa;
@@ -7150,39 +7246,34 @@ static void bind_cover_block(void)
     const uint64_t fs = rhi_frame_serial(s_nr.dev);
     if (fs != s_serial || memcmp(&b, &s_last, sizeof b) != 0) {
         rhi_ubo_write(s_cover_ubo, 0, &b, (uint32_t)sizeof b);
+        nr_cover_block r = b;
+        r.cnt[2] = 1;
+        rhi_ubo_write(s_cover_ubo, 1, &r, (uint32_t)sizeof r);
         s_last = b;
         s_serial = fs;
     }
-    rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, 5, 0);
+    rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, set, rim ? 1u : 0u);
 }
 
 /** @brief Bind a pipeline for scene drawing, with the key images a key-resolve pipe samples.
  *
- * When all three key depth images exist and @p p is one of the key-resolve
- * pipes (the opaque, marked, cutout, blended, additive, quarter-additive
- * and punch variants of the gouraud, scene-texture and HD cutout pipes),
- * the bind also sets the actor key depth paired with its owner colour at
- * set 1, the terrain key depth paired with the drain texture at set 2, the
- * moby key depth at set 3 and, when it exists, the moby rank target at set
- * 4. A blended-terrain cover pipe takes those sets and, at set 5, the
- * scene's portal cover planes (bind_cover_block). Binding them here keeps
+ * When all three key depth images exist and @p p is a key-resolve pipe
+ * (nr_is_key_pipe), the bind also sets the actor key depth paired with its
+ * owner colour at set 1, the terrain key depth paired with the drain
+ * texture at set 2, the moby key depth at set 3 and, when it exists, the
+ * moby rank target at set 4. A blended-terrain cover twin takes, at set 5,
+ * the scene's portal cover planes (bind_cover_block), and the key sets
+ * when its stock pipeline is a key-resolve pipe. Binding them here keeps
  * every call site correct without per-site handling. Any other pipeline is
  * bound alone.
  * @param p Pipeline to bind. */
 static void bind_scene_pipe(rhi_pipeline* p)
 {
     rhi_bind_pipeline(s_nr.dev, p);
-    const int cover = nr_is_cover_pipe(p);
-    if (cover) bind_cover_block();
+    const nr_cover_twin* const tw = nr_cover_entry(p);
+    if (tw) bind_cover_block(5, tw->rim);
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
-    if (cover || p == s_nr.gouraud_pipe || p == s_nr.gouraud_mark_pipe ||
-        p == s_nr.scene_tex_pipe || p == s_nr.scene_tex_mark_pipe ||
-        p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe ||
-        p == s_nr.gouraud_blend_pipe || p == s_nr.gouraud_add_pipe ||
-        p == s_nr.scene_tex_blend_pipe || p == s_nr.scene_tex_add_pipe ||
-        p == s_nr.gouraud_qadd_pipe || p == s_nr.scene_tex_qadd_pipe ||
-        p == s_nr.gouraud_punch_pipe || p == s_nr.scene_tex_punch_pipe ||
-        p == s_nr.hd_cutout_punch_pipe) {
+    if (nr_is_key_pipe(tw ? tw->stock : p)) {
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.actor_key_depth, s_nr.actor_key_depth, 1);
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
@@ -7728,7 +7819,7 @@ static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
 #define s_txscene ((int *)s_cz_txscene.data)
 /* Textured draw buckets the composer partitions the scene into (see the
  * bucket table above the partition loop in draw_native_scene). */
-#define TX_BUCKETS 13
+#define TX_BUCKETS 14
 /* Set for a scene triangle the untextured bucket build deferred into a mod
  * material span. A deferred triangle draws from that span at its group's slot,
  * so the emission-ordered blended-world block leaves it out. */
@@ -9125,13 +9216,28 @@ static void texsel_draw_forensics(const scene_tri_t* s0, int allow_override, int
  * the MARK slot is not keyed by blend class. A blended class builds with
  * depth writes off. A failed build is logged, cached as PFX_PIPE_FAILED and
  * not retried.
+ *
+ * With @p portal set the pipeline is the material's portal profile (the
+ * fragment stage compiled with OP_PROFILE_PORTAL, the cover planes at set
+ * 7), cached in its portal slots: per blend class for the cover rule, one
+ * slot and its MARK twin for the inner-rim rule. A material without a
+ * portal profile, and a device that binds fewer than 8 descriptor sets,
+ * have no such pipeline: the run then draws through the engine's portal
+ * twin without the material.
  * @param mg Resolved mod material.
  * @param ov_mark Nonzero for the stencil-MARK variant.
  * @param blend_class Blend class index into k_blend_class_rhi, 0 opaque.
- * @return The pipeline, or NULL when its build failed. */
+ * @param portal 0 none, 1 the blended cover rule, 2 the inner-rim rule.
+ * @return The pipeline, or NULL when it has no portal profile or its build failed. */
 static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
-                                       int ov_mark, int blend_class) {
-    void** ov_slot = ov_mark ? mg->pipeline_mark_slot
+                                       int ov_mark, int blend_class, int portal) {
+    if (portal && (!mg->frag_portal_spv || rhi_device_max_descriptor_sets(s_nr.dev) < 8u))
+        return NULL;
+    const int pslot = portal == 2 ? (ov_mark ? OPENPETE_MATERIAL_PORTAL_RIM_MARK
+                                             : OPENPETE_MATERIAL_PORTAL_RIM)
+                                  : blend_class;
+    void** ov_slot = portal ? mg->pipeline_portal_slot[pslot]
+                   : ov_mark ? mg->pipeline_mark_slot
                              : mg->pipeline_slot[blend_class];
     if (*ov_slot == NULL) {
         rhi_pipeline_desc md = {
@@ -9148,11 +9254,13 @@ static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
             .depth_write_off = blend_class != 0,
             .stencil = ov_mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
             .material_pipeline = true,
+            .uniform_set7 = portal != 0,
             .push_const_size = sizeof(psx_material_hd),
         };
         rhi_pipeline* p = rhi_create_pipeline_spv(
             s_nr.dev, &md, mg->vert_spv, mg->vert_words,
-            mg->frag_spv, mg->frag_words);
+            portal ? mg->frag_portal_spv : mg->frag_spv,
+            portal ? mg->frag_portal_words : mg->frag_words);
         *ov_slot = p ? (void*)p : PFX_PIPE_FAILED;
         if (!p)
             fprintf(stderr, "[native] material: pipeline build "
@@ -9228,6 +9336,9 @@ static void draw_material_pack_walk(const tex_run* r, psx_material_hd* mh,
  * are psx_scene.vert and psx_scene.frag, forked from sdk/shaders/. The
  * material UBO binds the engine block and the instance slot's mod block.
  * Afterwards @p restore and VRAM are rebound for the caller's stock draws.
+ * When @p restore is a portal twin (nr_cover_entry) the run draws through
+ * the material's portal profile with the cover planes at set 7, so it keeps
+ * the twin's discard; a material without one leaves the run to the twin.
  * @param r The run.
  * @param ov_mark Nonzero to build the stencil-MARK pipeline variant.
  * @param blend_class The caller group's blend class, inherited by the pipeline.
@@ -9242,9 +9353,12 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     if (!tag_split_on() || !s0->tag) return 0;
     openpete_mod_material_gpu_t mg;
     if (openpete_mods_material_resolve(s0->tag, &mg) < 0) return 0;
-    rhi_pipeline* pipe = material_run_pipe(&mg, ov_mark, blend_class);
+    const nr_cover_twin* tw = nr_cover_entry(restore);
+    const int portal = tw ? (tw->rim ? 2 : 1) : 0;
+    rhi_pipeline* pipe = material_run_pipe(&mg, ov_mark, blend_class, portal);
     if (!pipe) return 0;
     bind_scene_pipe(pipe);
+    if (portal) bind_cover_block(7, portal == 2);
     rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
     rhi_texture* pack_bound = s_nr.mat_pack_dummy;
     if (pack_bound)
@@ -9787,17 +9901,19 @@ static int   s_cvp_n = 0;
  *
  * At most NR_COVER_PLANES planes are kept and at most 16 outline points per
  * plane; a plane's bounding box is its outline's. n 0 leaves the count 0,
- * which turns the fragment test off.
+ * which turns both fragment tests off.
  * @param b Receives the planes.
  * @param planes The openings; read only when @p n > 0.
  * @param n Plane count.
- * @param margin_world The plane-cover margin in world units. */
+ * @param margin_world The plane-cover margin in world units.
+ * @param blend_cover Nonzero to turn the blended-terrain discard on. */
 static void cover_block_fill(nr_cover_block *b, const openpete_native_cover_plane *planes,
-                             int n, float margin_world)
+                             int n, float margin_world, int blend_cover)
 {
     memset(b, 0, sizeof *b);
     if (n > NR_COVER_PLANES) n = NR_COVER_PLANES;
     b->cnt[0] = n;
+    b->cnt[1] = blend_cover ? 1 : 0;
     b->margin[0] = margin_world;
     for (int i = 0; i < n; i++) {
         const openpete_native_cover_plane *pp = &planes[i];
@@ -9820,7 +9936,7 @@ void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
     if (n > 0) memcpy(s_cvp, planes, sizeof(*planes) * (size_t)n);
     s_cvp_n = n;
     s_cvp_m = margin_world;
-    cover_block_fill(&s_cover_live, planes, blend_cover ? n : 0, margin_world);
+    cover_block_fill(&s_cover_live, planes, n, margin_world, blend_cover);
 }
 /** @brief Verify the portal plane-cover rule on one composed scene and log a census per opening.
  *
@@ -10098,9 +10214,9 @@ static int blended_world_tri(const scene_tri_t* s) {
  * @param vert_count Vertex count of the run.
  * @param bl Blend class, 1 to 4.
  * @param textured Nonzero for a textured run.
- * @param terrain Nonzero for a run of terrain triangles: it draws through
- *        the class's cover pipeline when one exists, whose fragment stage
- *        discards what a portal preview covers. */
+ * @param terrain Nonzero for a run of terrain triangles: its SD and HD
+ *        pipelines are replaced by their cover twins (nr_cover_twin_of),
+ *        whose fragment stage discards what a portal preview covers. */
 static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
                         int vert_count, int bl, int textured, int terrain) {
     rhi_pipeline* const utp[4] = { s_nr.gouraud_blend_pipe, s_nr.gouraud_add_pipe,
@@ -10110,8 +10226,12 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
     rhi_pipeline* const hdp[4] = { s_nr.hd_scene_blend_pipe, s_nr.hd_scene_add_pipe,
                                    NULL, NULL };
     const int c = (bl >= 1 && bl <= 4) ? bl - 1 : 0;
-    rhi_pipeline* const cover = terrain ? s_nr.cover_pipes[textured ? 1 : 0][c] : NULL;
-    rhi_pipeline* pipe = cover ? cover : textured ? txp[c] : utp[c];
+    rhi_pipeline* pipe = textured ? txp[c] : utp[c];
+    rhi_pipeline* hd = hdp[c];
+    if (terrain) {
+        pipe = nr_cover_twin_of(pipe);
+        hd = nr_cover_twin_of(hd);
+    }
     if (!pipe || (textured && !s_nr.vram_tex)) return;
     bind_scene_pipe(pipe);
     /* The subtract pipes enable the dynamic depth bias the shadow decals set;
@@ -10124,14 +10244,14 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
     }
     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-    draw_tex_runs(first_vert, vert_count, tx_start, scene, &pipe, 1, hdp[c], 1, bl);
+    draw_tex_runs(first_vert, vert_count, tx_start, scene, &pipe, 1, hd, 1, bl);
 }
 
 /** @brief Draw one blended class of the retained terrain cache.
  *
- * The draw carries the portal cover flag and this pass's fragment affine:
- * terrain.frag discards a fragment a portal preview covers, reading the
- * cover planes from the cache's globals block.
+ * The draw carries the portal cover flag: terrain.frag discards a fragment
+ * a portal preview covers, reading the cover planes from the cache's
+ * globals block and the fragment affine from tercache_clip_params.
  * @param c Class: 0 alpha, 1 additive, 2 subtractive.
  * @param tercache_on Nonzero when the cache is live this present; zero
  *        draws nothing. */
@@ -10140,10 +10260,7 @@ static void bw_draw_tercache(int c, int tercache_on) {
     if (!tercache_on) return;
     openpete_tercache_clip aff;
     tercache_clip_params(&aff);
-    scene_fc_affine fa;
-    scene_fragcoord_affine(&fa);
     aff.cover = 1;
-    aff.fc[0] = fa.fax; aff.fc[1] = fa.fbx; aff.fc[2] = fa.fay; aff.fc[3] = fa.fby;
     openpete_tercache_draw(k_pass[c], &aff, s_nr.vram_tex, 0,
                            s_nr.terrain_key_depth, s_nr.moby_key_depth);
 }
@@ -10586,7 +10703,9 @@ static void depth_transport_census_shot(const char* path)
  * that also carries untextured triangles, so its runs keep the order the
  * guest linked the two texturing modes in; an untextured triangle deferred
  * to material spans (s_bw_deferred) is left out. Buckets 4, 5, 8 and 10 are
- * empty; their content is in bucket 11. Bucket 6 is HUD, 7 PORTAL_GUARD, 9
+ * empty; their content is in bucket 11. Bucket 13 holds the opaque WORLD
+ * faces carrying the portal inner-rim mark, which the WORLD group leaves
+ * out. Bucket 6 is HUD, 7 PORTAL_GUARD, 9
  * the opaque ACTOR_FRONT faces of the rescue actors, and 12 the opaque
  * textured faces of the 3D HUD icon models. The layered groups (0 to 3)
  * take textured triangles outside those categories whose blend class
@@ -10607,6 +10726,9 @@ static int tx_bucket_belongs(int b, const scene_tri_t* scene, int t, int gblend,
     const int bl = (st->blend < 0 || st->blend > 4) ? 0 : st->blend;
     switch (b) {
     case 4: case 5: case 8: case 10: return 0;
+    /* PORTAL_RIM (opaque): WORLD faces carrying the portal inner-rim mark,
+     * drawn beside the WORLD group through its inner-rim twins. */
+    case 13: return cat == OPENPETE_SCENE_WORLD && bl == 0 && st->portal_rim;
     case 6:  return cat == OPENPETE_SCENE_HUD;
     case 7:  return cat == OPENPETE_SCENE_PORTAL_GUARD;
     /* ACTOR_FRONT (opaque): the rescue actors' textured faces, the ACTOR
@@ -10621,6 +10743,7 @@ static int tx_bucket_belongs(int b, const scene_tri_t* scene, int t, int gblend,
            cat != OPENPETE_SCENE_PORTAL_GUARD &&
            bl == gblend &&
            !(gblend == 0 && gcat >= 0 && cat != gcat) &&
+           !(gblend == 0 && st->portal_rim) &&
            !(gblend == 3 && cat != OPENPETE_SCENE_SHADOW);
 }
 
@@ -10683,22 +10806,98 @@ static int draw_hud3d_layer(const scene_tri_t* scene, int tx_start,
     return tx_count / 3;
 }
 
+/** @brief Whether an opaque layered group leaves out an untextured triangle of its blend class.
+ *
+ * An opaque group (blend class 0) with a category takes only that
+ * category, and no opaque group takes a face carrying the portal inner-rim
+ * mark, which packs into UTC_WORLD_RIM or UTC_FILL_RIM instead.
+ * @param gb The group's blend class.
+ * @param gc The group's category, or negative for any.
+ * @param st The triangle.
+ * @return 1 when the group skips it, else 0. */
+static int ut_opaque_group_skips(int gb, int gc, const scene_tri_t* st) {
+    if (gb != 0) return 0;
+    return st->portal_rim || (gc >= 0 && st->category != gc);
+}
+
+/** @brief Draw the opaque WORLD faces carrying the portal inner-rim mark through the WORLD pipelines' inner-rim twins.
+ *
+ * The twins' fragment stage (the _rim variants, portal_cover_scene.glsl)
+ * discards a fragment inside a published opening outline, where the portal
+ * preview paints, and keeps it elsewhere; with hole-fill armed they are the
+ * stencil-MARK twins, so a kept fragment marks its coverage like the rest of
+ * the WORLD group. A pipeline without a twin draws through its stock
+ * pipeline. A mod material applies through its portal profile, which keeps
+ * the discard (draw_run_material); a material without one leaves the run
+ * stock.
+ * @param scene Scene triangles.
+ * @param tx_start First vertex of the textured block that s_txscene indexes.
+ * @param ut_first First vertex of the untextured rim faces.
+ * @param ut_count Their vertex count.
+ * @param tx_first First vertex of the textured rim faces (textured bucket 13).
+ * @param tx_count Their vertex count.
+ * @param holefill_on Nonzero when the WORLD group draws through the MARK pipes.
+ * @param gi The layered group being drawn; only the WORLD group (0) draws them. */
+static void draw_portal_rim(const scene_tri_t* scene, int tx_start, int ut_first, int ut_count,
+                            int tx_first, int tx_count, int holefill_on, int gi) {
+    if (gi != 0) return;
+    rhi_pipeline* ut = nr_cover_twin_of(holefill_on ? s_nr.gouraud_mark_pipe : s_nr.gouraud_pipe);
+    if (ut && ut_count > 0) {
+        bind_scene_pipe(ut);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count, (uint32_t)ut_first);
+    }
+    rhi_pipeline* tx = nr_cover_twin_of(holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe);
+    if (!tx || tx_count <= 0 || !s_nr.vram_tex) return;
+    rhi_pipeline* hd = nr_cover_twin_of(holefill_on ? s_nr.hd_cutout_mark_pipe : s_nr.hd_cutout_pipe);
+    bind_scene_pipe(tx);
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    draw_tex_runs(tx_first, tx_count, tx_start, scene, &tx, 1, hd, holefill_on ? 2 : 1, 0);
+}
+
+/** @brief Draw the WORLD_FILL faces carrying the portal inner-rim mark through the hole-fill pipeline's inner-rim twin.
+ *
+ * Same stencil TEST_ZERO role as the stock fill; the twin discards a
+ * fragment inside a published opening outline. Without a twin the stock
+ * fill pipeline draws them.
+ * @param first First vertex of the faces.
+ * @param count Their vertex count.
+ * @param holefill_on Nonzero when hole-fill is armed; zero draws nothing, as
+ *        for the stock fill.
+ * @param gi The layered group being drawn; the fill draws after the ACTOR
+ *        group (2). */
+static void draw_portal_rim_fill(int first, int count, int holefill_on, int gi) {
+    rhi_pipeline* p = nr_cover_twin_of(s_nr.gouraud_fill_pipe);
+    if (gi != 2 || !holefill_on || !p || count <= 0) return;
+    bind_scene_pipe(p);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, (uint32_t)count, (uint32_t)first);
+}
+
 /* Untextured single-category buckets of draw_native_scene, in vertex-buffer
  * order; k_utc_bucket maps each to its ut_first/ut_count slot. */
 enum { UTC_OVERLAY, UTC_HUD_PANEL, UTC_HUD3D, UTC_PORTAL_GUARD, UTC_WORLD_FILL,
-       UTC_ACTOR_FRONT, UTC_N };
-static const int k_utc_bucket[UTC_N] = { 7, 8, 9, 10, 12, 14 };
+       UTC_ACTOR_FRONT, UTC_WORLD_RIM, UTC_FILL_RIM, UTC_N };
+static const int k_utc_bucket[UTC_N] = { 7, 8, 9, 10, 12, 14, 16, 17 };
+/* Untextured bucket slots of draw_native_scene (ut_first / ut_count). */
+#define UT_BUCKETS 18
 
 /** @brief The single-category untextured bucket a scene triangle packs into, or -1.
  *
  * Untextured OVERLAY, HUD_PANEL, HUD3D, PORTAL_GUARD and WORLD_FILL
  * triangles of any blend class, and untextured ACTOR_FRONT triangles of
- * blend class 0 (a class outside 0 to 4 counts as 0).
+ * blend class 0 (a class outside 0 to 4 counts as 0). An opaque WORLD or
+ * WORLD_FILL triangle carrying the portal inner-rim mark takes the matching
+ * inner-rim bucket instead.
  * @param st The triangle.
  * @return A UTC_* index, or -1. */
 static int utc_class(const scene_tri_t *st)
 {
     if (st->textured) return -1;
+    const int opaque = st->blend <= 0 || st->blend > 4;
+    if (st->portal_rim && opaque && st->category == OPENPETE_SCENE_WORLD) return UTC_WORLD_RIM;
+    if (st->portal_rim && opaque && st->category == OPENPETE_SCENE_WORLD_FILL) return UTC_FILL_RIM;
     switch (st->category) {
     case OPENPETE_SCENE_OVERLAY:      return UTC_OVERLAY;
     case OPENPETE_SCENE_HUD_PANEL:    return UTC_HUD_PANEL;
@@ -10706,7 +10905,7 @@ static int utc_class(const scene_tri_t *st)
     case OPENPETE_SCENE_PORTAL_GUARD: return UTC_PORTAL_GUARD;
     case OPENPETE_SCENE_WORLD_FILL:   return UTC_WORLD_FILL;
     case OPENPETE_SCENE_ACTOR_FRONT:
-        return (st->blend <= 0 || st->blend > 4) ? UTC_ACTOR_FRONT : -1;
+        return opaque ? UTC_ACTOR_FRONT : -1;
     default:                          return -1;
     }
 }
@@ -10933,7 +11132,7 @@ static bool draw_native_scene(bool full_extent)
      * 11 = SKY (cyclorama dome - WORLD-like, drawn FIRST with the PLAIN pipe so
      * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
      * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
-    int ut_first[16], ut_count[16];
+    int ut_first[UT_BUCKETS], ut_count[UT_BUCKETS];
     /* CPU attribution (--profile-out): the compose phase splits into
      * build_ut (untextured bucketing incl. portal-run collection),
      * build_tex (textured bucketing + material sort), vb_tex (textured
@@ -10961,7 +11160,7 @@ static bool draw_native_scene(bool full_extent)
                 scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
             int b = scene[t].blend; if (b < 0 || b > 4) b = 0;   /* untextured class */
             if (b != gb) continue;
-            if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
+            if (ut_opaque_group_skips(gb, gc, &scene[t])) continue;
             /* SUBTRACT group = the drop-shadow DECALS only (SHADOW category).
              * Plain subtractive world content (blend 3, any other category -
              * e.g. hypothetical untextured smoke) goes to slot 13 below and
@@ -11185,6 +11384,7 @@ static bool draw_native_scene(bool full_extent)
      *   bucket  6    = HUD 2D textured backdrops (draw_hud_flat_layer)
      *   bucket  7    = PORTAL_GUARD; bucket 9 = ACTOR_FRONT opaque faces
      *   bucket 12    = HUD3D opaque textured faces (draw_hud3d_layer)
+     *   bucket 13    = opaque WORLD portal inner-rim faces (draw_portal_rim)
      * Textured tris no bucket matches (HUD3D with a blend class) are dropped
      * from the block. Opaque buckets (0,2,3,9,12) are material-sorted - depth resolves visibility regardless of draw order, so it
      * is exact. Bucket 11 keeps emission order (bw_rank_sort on a replay);
@@ -11679,6 +11879,8 @@ static bool draw_native_scene(bool full_extent)
          * sectors) draws in the same slot as the CPU-fed WORLD group - opaque
          * depth-write, stencil-MARK when hole-fill is armed (identical raster
          * roles; the vertex stage owns the per-face verdicts). */
+        draw_portal_rim(scene, tx_start, ut_first[16], ut_count[16],
+                        txg_first[13], txg_count[13], holefill_on, gi);
         if (gi == 0 && openpete_tercache_frame_open()) {
             openpete_tercache_clip aff; tercache_clip_params(&aff);
             openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
@@ -11703,6 +11905,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
         }
+        draw_portal_rim_fill(ut_first[17], ut_count[17], holefill_on, gi);
         /* Terrain-cache LP hole-fill twin: stencil TEST_ZERO at true LP depth,
          * same slot as the scene-fed fill (before the portal stencil clear). */
         if (gi == 2 && holefill_on && openpete_tercache_frame_open()) {
@@ -16039,6 +16242,7 @@ void openpete_native_render_shutdown(void)
     if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
     if (s_shfoot_ubo) { rhi_destroy_ubo(s_nr.dev, s_shfoot_ubo); s_shfoot_ubo = NULL; }
     if (s_cover_ubo) { rhi_destroy_ubo(s_nr.dev, s_cover_ubo); s_cover_ubo = NULL; }
+    if (s_mat_ubo) { rhi_destroy_ubo(s_nr.dev, s_mat_ubo); s_mat_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
@@ -16112,7 +16316,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_qadd_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_qadd_pipe);
-    cover_family_destroy(s_nr.dev, s_nr.cover_pipes);
+    cover_family_destroy(s_nr.dev, s_nr.cover_twins, &s_nr.cover_twin_n);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);

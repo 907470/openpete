@@ -112,6 +112,10 @@ typedef struct {
      * terrain draws then stay stock rather than the mod failing. */
     uint32_t*   spv_ter;
     size_t      spv_ter_words;
+    /* The same source compiled with OP_PROFILE_PORTAL, the walked scene
+     * half that discards what a portal preview covers. NULL like spv_ter. */
+    uint32_t*   spv_portal;
+    size_t      spv_portal_words;
     int         live;        /* 0 = swept slot (stale handle) */
 } mod_shader_t;
 
@@ -218,6 +222,8 @@ static const char* const k_iface_files[] = {
     "psx_key_contest.glsl",         /* og painter verdicts (both halves)  */
     "psx_clut.glsl",                /* texel decode, fogged-CLUT row mix  */
     "terrain_shade.glsl",           /* retained-terrain engine half       */
+    "portal_cover.glsl",            /* portal plane-cover test            */
+    "portal_cover_scene.glsl",      /* the scene half's portal profile    */
 };
 
 /** @brief Feed every staged shader interface file under the SDK directory to a SHA-256 context.
@@ -364,6 +370,46 @@ static size_t compile_profile(const char* src, int stage,
     return n;
 }
 
+/** @brief Compile the extra profiles of a material fragment: the retained-terrain half and the portal profile.
+ *
+ * The retained terrain pipelines take flat per-face varyings instead of a
+ * per-draw push block (OP_PROFILE_TERRAIN); terrain that yields to a portal
+ * preview draws through the portal profile (OP_PROFILE_PORTAL). The source
+ * is the same source: only the profile define differs. Anything that is not
+ * a material fragment (postfx, decal, mesh vertex stages) has one profile
+ * and gets neither. A failed profile is logged and left NULL; its draws stay
+ * on the engine's own stages.
+ * @param src The shader source.
+ * @param stage Its stage.
+ * @param ctx Include resolution.
+ * @param key The build key.
+ * @param build_dir The cache directory.
+ * @param flat The flattened path naming the cache files.
+ * @param log_path The compile log path.
+ * @param id The mod id, for log lines.
+ * @param path The shader's mod-relative path, for log lines.
+ * @param sh Receives spv_ter and spv_portal with their word counts. */
+static void compile_material_profiles(const char* src, int stage,
+                                      const openpete_mod_glsl_include_t* ctx,
+                                      const char* key, const char* build_dir,
+                                      const char* flat, const char* log_path,
+                                      const char* id, const char* path,
+                                      mod_shader_t* sh) {
+    if (!openpete_mod_glsl_has_terrain_profile(src, stage)) return;
+    sh->spv_ter_words = compile_profile(src, stage, ctx, key, build_dir, flat, ".terrain",
+                                        OPENPETE_MOD_GLSL_TERRAIN_PREAMBLE, log_path, id,
+                                        path, &sh->spv_ter);
+    if (sh->spv_ter_words == 0)
+        OPL_ERROR_F("mods", "%s: shader %s: terrain profile FAILED (see %s) - "
+                    "terrain draws stay stock", id, path, log_path);
+    sh->spv_portal_words = compile_profile(src, stage, ctx, key, build_dir, flat, ".portal",
+                                           OPENPETE_MOD_GLSL_PORTAL_PREAMBLE, log_path, id,
+                                           path, &sh->spv_portal);
+    if (sh->spv_portal_words == 0)
+        OPL_ERROR_F("mods", "%s: shader %s: portal profile FAILED (see %s) - "
+                    "terrain behind portal previews draws stock", id, path, log_path);
+}
+
 /* ------------------------------------------------------------------ */
 /* the service                                                         */
 
@@ -401,8 +447,8 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
 
     uint32_t* words = NULL;
     size_t n_words = 0;
-    uint32_t* ter_words = NULL;
-    size_t n_ter_words = 0;
+    mod_shader_t prof;                 /* the extra material profiles */
+    memset(&prof, 0, sizeof prof);
 
     size_t src_len = 0;
     char* src = openpete_mod_glsl_read_file(src_path, &src_len);
@@ -420,21 +466,8 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
             free(src);
             return -1;
         }
-        /* A material fragment is compiled a second time for the retained
-         * terrain pipelines, whose engine half of the contract takes flat
-         * per-face varyings instead of a per-draw push block. The source is
-         * the same source: only the profile define differs. Anything else
-         * (postfx, decal, mesh vertex stages) has one profile. */
-        if (openpete_mod_glsl_has_terrain_profile(src, stage)) {
-            n_ter_words = compile_profile(src, stage, &ctx, key, build_dir, flat,
-                                          ".terrain",
-                                          OPENPETE_MOD_GLSL_TERRAIN_PREAMBLE,
-                                          log_path, id, path, &ter_words);
-            if (n_ter_words == 0)
-                OPL_ERROR_F("mods", "%s: shader %s: terrain profile FAILED "
-                            "(see %s) - terrain draws stay stock", id, path,
-                            log_path);
-        }
+        compile_material_profiles(src, stage, &ctx, key, build_dir, flat, log_path,
+                                  id, path, &prof);
         free(src);
     } else {
         /* No source: author-shipped prebuilt "<path>.spv" + mandatory
@@ -485,7 +518,8 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     if (!sh) {
         OPL_ERROR_F("mods", "%s: shader table allocation failed", id);
         free(words);
-        free(ter_words);
+        free(prof.spv_ter);
+        free(prof.spv_portal);
         return -1;
     }
     sh->owner = id;
@@ -493,8 +527,10 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     sh->stage = stage;
     sh->spv = words;
     sh->spv_words = n_words;
-    sh->spv_ter = ter_words;
-    sh->spv_ter_words = n_ter_words;
+    sh->spv_ter = prof.spv_ter;
+    sh->spv_ter_words = prof.spv_ter_words;
+    sh->spv_portal = prof.spv_portal;
+    sh->spv_portal_words = prof.spv_portal_words;
     sh->live = 1;
     return shader_count() - 1;
 }
@@ -522,6 +558,16 @@ const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words) {
     return sh->spv_ter;
 }
 
+/* The portal profile of a material fragment; NULL when it has none. */
+const uint32_t* openpete_mods_shader_spv_portal(int handle, size_t* words) {
+    const mod_shader_t* sh;
+    if (handle < 0 || handle >= shader_count()) return NULL;
+    sh = shader_at(handle);
+    if (!sh->live) return NULL;
+    if (words) *words = sh->spv_portal_words;
+    return sh->spv_portal;
+}
+
 /** @brief Body of openpete_mods_shader_remove_owner, run under the registry write lock.
  *
  * Frees both SPIR-V profiles of every live shader the mod owns and marks
@@ -537,6 +583,9 @@ static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
         free(sh->spv_ter);
         sh->spv_ter = NULL;
         sh->spv_ter_words = 0;
+        free(sh->spv_portal);
+        sh->spv_portal = NULL;
+        sh->spv_portal_words = 0;
         sh->live = 0;   /* slot stays dead: stale handles error */
     }
 }
@@ -874,6 +923,8 @@ typedef struct {
      * slot). Separate from `pipeline` because the terrain layout, the
      * vertex input and the engine half of the contract all differ. */
     void* pipeline_ter[OPENPETE_MATERIAL_TER_PIPES];
+    /* Portal-profile pipelines (OPENPETE_MATERIAL_PORTAL_PIPES). */
+    void* pipeline_portal[OPENPETE_MATERIAL_PORTAL_PIPES];
     int   user_enabled;    /* material_enable - the mod's own on/off */
     /* Static uniform block (material_set_params). Declarative materials have
      * no per-instance callback to mint a slot, so the block is interned into
@@ -1609,6 +1660,11 @@ static int material_fill_gpu(int best, int uniform_slot,
     for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
         out->pipeline_slot[b] = &m->pipeline[b];
     out->pipeline_mark_slot = &m->pipeline_mark;
+    out->frag_portal_spv = m->frag >= 0
+        ? openpete_mods_shader_spv_portal(m->frag, &out->frag_portal_words) : NULL;
+    if (!out->frag_portal_spv) out->frag_portal_words = 0;
+    for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++)
+        out->pipeline_portal_slot[b] = &m->pipeline_portal[b];
     out->owner = m->owner;
     /* A per-instance slot always wins; otherwise fall back to this
      * material's static block (0 = no params at all). */
@@ -1777,6 +1833,10 @@ static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
         retire_pipeline(s_mats[i].pipeline_mark);
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++)
             retire_pipeline(s_mats[i].pipeline_ter[b]);
+        for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++) {
+            retire_pipeline(s_mats[i].pipeline_portal[b]);
+            s_mats[i].pipeline_portal[b] = NULL;
+        }
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
@@ -1801,6 +1861,10 @@ static void openpete_mods_material_retire_all_locked(void) {
         retire_pipeline(s_mats[i].pipeline_mark);
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++)
             retire_pipeline(s_mats[i].pipeline_ter[b]);
+        for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++) {
+            retire_pipeline(s_mats[i].pipeline_portal[b]);
+            s_mats[i].pipeline_portal[b] = NULL;
+        }
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;

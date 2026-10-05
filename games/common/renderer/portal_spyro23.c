@@ -1019,8 +1019,8 @@ int portal_s23_sky_recent(void) {
  * shifted by the same offset, with its bounding box. On a re-derived opening
  * the view-space outline is the pentagon's five vertices, which lets the
  * terrain feeder's rim classifier find the band of terrain lying in the
- * opening plane inside it; otherwise vn = 0 leaves the classifier's frames
- * invalid.
+ * opening plane, discarded per fragment inside the opening (rim_fragment);
+ * otherwise vn = 0 leaves the classifier's frames invalid.
  * @param o Receives the record.
  * @param p The resolved preview.
  * @param op Its opening.
@@ -1051,6 +1051,9 @@ static void p3_skyplane_fill(openpete_portal_skyplane* o, const p3_preview* p, c
     for (int k = 0; k < o->vn; k++) {
         o->vx[k] = op->V[k][0]; o->vy[k] = op->V[k][1]; o->vz[k] = op->V[k][2];
     }
+    /* An inner-rim face is discarded per fragment inside the opening, where
+     * the preview paints, and drawn outside it. */
+    o->rim_fragment = op->ok ? 1 : 0;
 }
 
 int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {

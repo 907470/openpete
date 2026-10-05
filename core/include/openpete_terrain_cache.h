@@ -212,7 +212,7 @@ typedef struct {
     double  rim_ofx, rim_ofy, rim_H;  /* rim_frames_derive's GTE constants  */
     double  rim_knobs[4];             /* eps, near, reach, cos(angle)       */
     double  rim_abc[6][4];            /* screen inv-vz plane fit a,b,c; w=valid */
-    double  rim_O[6][4];              /* in-plane basis origin              */
+    double  rim_O[6][4];              /* in-plane basis origin; w = 1: rim per fragment */
     double  rim_U[6][4];              /* in-plane basis U                   */
     double  rim_W[6][4];              /* in-plane basis W                   */
     double  rim_nrm[6][4];            /* unit view-space normal; w = vn     */
@@ -222,11 +222,14 @@ typedef struct {
      * fragment stage: the active opening planes in SCREEN space. The
      * blended passes' fragment stage (terrain.frag, portal_cover.glsl)
      * discards a fragment inside an opening's outline polygon at or behind
-     * the plane minus the cover margin. cov_n = 0 disables (no active
-     * portal, or the transparent-cover lever is off). A plane whose
+     * the plane minus the cover margin while cov_blend is set (the
+     * transparent-cover lever); every pass discards a face the vertex stage
+     * flags as per-fragment inner rim inside an outline. cov_n = 0 disables
+     * both (no active portal). A plane whose
      * screen outline projection failed rides with cov_pn = 0 and never
      * matches, exactly like the CPU test's pn < 3 skip. */
     int32_t cov_n;
+    int32_t cov_blend;                /* 1: the blended cover discard is on */
     double  cov_margin;               /* plane-cover near margin M (world)  */
     double  cov_abc[6][3];            /* screen inv-vz plane fit a, b, c    */
     int32_t cov_pn[6];                /* outline point count (0 = no poly)  */

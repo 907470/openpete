@@ -28,6 +28,7 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_unorm8.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_viewz.glsl
                         ${RHI_SHADER_SRC_DIR}/portal_cover.glsl
+                        ${RHI_SHADER_SRC_DIR}/portal_cover_scene.glsl
                         ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl)
 # terrain.vert and its four variants are rewritten to SSA form after
 # glslangValidator: every function-local variable whose loads and stores are
@@ -65,11 +66,11 @@ foreach(s IN LISTS RHI_SHADERS)
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}.spv)
 endforeach()
-# quad_key_cover.frag / psx_scene_key_cover.frag: the keyed scene fragment
-# stages recompiled with the portal plane-cover discard (portal_cover.glsl),
-# for the CPU-fed blended terrain pipelines; their layout adds the cover
-# planes' UBO at set 5.
-foreach(s IN ITEMS quad_key psx_scene_key)
+# <stage>_cover.frag: the fragment stage of every CPU-fed blended terrain
+# pipeline (alpha, additive, subtractive and quarter-additive, untextured,
+# textured and HD replacement) recompiled with the portal plane-cover discard
+# (portal_cover_scene.glsl); their layout adds the cover planes' UBO at set 5.
+foreach(s IN ITEMS quad_key psx_scene_key quad psx_scene hd_tex)
     add_custom_command(
         OUTPUT ${RHI_SHADER_OUT_DIR}/${s}_cover.frag.spv
         COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro OP_PORTAL_COVER=1
@@ -79,6 +80,23 @@ foreach(s IN ITEMS quad_key psx_scene_key)
         COMMENT "glslangValidator ${s}.frag (OP_PORTAL_COVER) -> ${s}_cover.frag.spv"
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_cover.frag.spv)
+endforeach()
+# <stage>_rim.frag: the fragment stage of every CPU-fed opaque terrain
+# pipeline (WORLD, its stencil-MARK twin, the HD cutouts and the LP hole-fill)
+# recompiled with the portal inner-rim discard (portal_cover_scene.glsl,
+# OP_PORTAL_RIM); the feed routes the faces it accepts as inner rim through
+# them.
+foreach(s IN ITEMS quad_key psx_scene_key hd_tex_cutout quad)
+    add_custom_command(
+        OUTPUT ${RHI_SHADER_OUT_DIR}/${s}_rim.frag.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro OP_PORTAL_COVER=1
+                --define-macro OP_PORTAL_RIM=1
+                ${RHI_SHADER_SRC_DIR}/${s}.frag
+                -o ${RHI_SHADER_OUT_DIR}/${s}_rim.frag.spv
+        DEPENDS ${RHI_SHADER_SRC_DIR}/${s}.frag ${RHI_SHADER_INCLUDES}
+        COMMENT "glslangValidator ${s}.frag (OP_PORTAL_RIM) -> ${s}_rim.frag.spv"
+        VERBATIM)
+    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_rim.frag.spv)
 endforeach()
 # terrain_anim.vert: terrain.vert recompiled with the poly-anim vertex-lerp
 # path (second vertex binding = previous-tick positions/corners).

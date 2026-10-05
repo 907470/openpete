@@ -46,9 +46,16 @@ layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
  * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
+#ifdef OP_PORTAL_COVER
+/* The _rim variant (portal inner-rim terrain): portal_cover_scene.glsl. */
+#include "portal_cover_scene.glsl"
+#endif
 
 void main()
 {
+#ifdef OP_PORTAL_COVER
+    if (op_portal_cover_frag(DEPTH_REVERSED)) discard;
+#endif
     bool ranked = vRank.x > 0.5;
     if (ranked) {   /* ranked moby face: NEAR-TIE-scoped same-moby painter
                      * select (rules in psx_scene_key.frag) */

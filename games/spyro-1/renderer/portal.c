@@ -1247,6 +1247,7 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
         for (int j = 0; j < n; j++) if (out[j].portal == p) { dup = 1; break; }
         if (dup) continue;
         openpete_portal_skyplane* o = &out[n];
+        o->rim_fragment = 0;               /* an accepted rim face is dropped whole */
         if (!portal_plane_invz(cpu, v, p, &o->a, &o->b, &o->c)) {
             if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X plane-FAIL\n", openpete_frame, i, p);
             continue;

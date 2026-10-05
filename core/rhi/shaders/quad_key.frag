@@ -25,19 +25,8 @@ layout(location = 5) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = mo
 layout(location = 0) out vec4 outColor;
 
 #ifdef OP_PORTAL_COVER
-/* The _cover variant (blended terrain): the portal opening planes
- * portal_cover.glsl tests, after this pass's gl_FragCoord -> PSX screen
- * affine (screen x = fc.x * fragx + fc.y, screen y = fc.z * fragy + fc.w). */
-layout(std140, set = 5, binding = 0) uniform PortalCover {
-    vec4  cov_fc;
-    ivec4 cov_cnt;
-    dvec4 cov_margin;
-    dvec4 cov_abc[6];
-    vec4  cov_bbox[6];
-    vec4  cov_poly[96];
-} pcov;
-#define OP_COVER_SRC pcov
-#include "portal_cover.glsl"
+/* The _cover variant (blended terrain): portal_cover_scene.glsl. */
+#include "portal_cover_scene.glsl"
 #endif
 
 /* gl_FragCoord.z convention - see psx_scene_key.frag. */
@@ -57,10 +46,8 @@ void main()
     bool ranked = vRank.x > 0.5;
     float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
 #ifdef OP_PORTAL_COVER
-    /* A blended terrain fragment the portal preview covers (portal_cover.glsl). */
-    if (op_portal_covered(vec2(pcov.cov_fc.x * gl_FragCoord.x + pcov.cov_fc.y,
-                               pcov.cov_fc.z * gl_FragCoord.y + pcov.cov_fc.w), own))
-        discard;
+    /* A blended terrain fragment the portal preview covers. */
+    if (op_portal_cover_frag(DEPTH_REVERSED)) discard;
 #endif
     if (ranked &&
         op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))

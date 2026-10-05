@@ -40,6 +40,13 @@ layout(constant_id = 2) const bool NOTEX = false;
  * (2), since those blend equations read no alpha to tell the two apart. */
 layout(constant_id = 5) const int STP_SELECT = 0;
 
+#ifdef OP_PORTAL_COVER
+/* The _cover variant (blended terrain): portal_cover_scene.glsl, with the
+ * scene's gl_FragCoord.z convention (see psx_scene_key.frag). */
+#include "portal_cover_scene.glsl"
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
+#endif
+
 uint sample_word(int u, int v)
 {
     return op_texel_word(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
@@ -57,6 +64,10 @@ vec3 clut_fog_mix(vec3 rgb, vec4 col, int u, int v)
 
 void main()
 {
+#ifdef OP_PORTAL_COVER
+    /* A blended terrain fragment the portal preview covers. */
+    if (op_portal_cover_frag(DEPTH_REVERSED)) discard;
+#endif
     vec2 uv = vUV / vQ;
     vec4 col = vColor / vQ;
     uint word = sample_word(int(uv.x), int(uv.y));
