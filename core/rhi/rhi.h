@@ -605,7 +605,13 @@ typedef struct {
                          * decal's depth-pre-pass lookup rides here, because its
                          * u,v are the sprite texel (unlike the untextured Spyro
                          * decal, which parks the screen coord in u,v). Ignored
-                         * by every pipeline whose shader omits location 3.     */
+                         * by every pipeline whose shader omits location 3. On
+                         * the scene and key stages the pair is the rank pair:
+                         * sx = paint rank or rank sentinel; sy = a negative
+                         * drain record tag (terrain), the moby ordinal (ranked
+                         * and non-actor faces) or the moby identity (unranked
+                         * actor faces), as psx_key_contest.glsl op_akey_owner
+                         * reads it.                                           */
     float    w;         /* perspective W = TRUE view-Z (location 4). On the
                          * scene stages z is the ORDERING view-Z and may carry
                          * a feeder's OT-slot shift, so deriving W from it
@@ -861,7 +867,10 @@ typedef struct {
     bool           uses_vram4;  /* fourth sampler at set 3 (the MOBY og-key
                                  * image - split from the terrain keys so the
                                  * near-band embed rule applies to moby keys
-                                 * only). Implies uses_vram3.                  */
+                                 * only); also turns set 1 into a pair, the
+                                 * actor key image's depth and its owner
+                                 * colour (rhi_bind_depth_tex_pair). Implies
+                                 * uses_vram3.                                 */
     bool           uses_vram5;  /* fifth sampler at set 4 (the moby og-RANK
                                  * image: per-pixel winning paint rank +
                                  * present-local moby ordinal, RGBA8 - the

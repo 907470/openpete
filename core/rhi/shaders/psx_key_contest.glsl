@@ -447,6 +447,49 @@ float op_akey_contest(float stored)
     return op_pkey_is(stored) ? OP_KEY_NONE : op_key_from_stored(stored);
 }
 
+/* ---- the owner of an actor key ------------------------------------------
+ *
+ * The actor key pass writes, beside each texel's nearest key, the moby
+ * identity of the face that wrote it (openpete_scene_tri.mid, the moby
+ * record's PSX RAM word index + 1, 0 = none) into the image's colour
+ * attachment, as three 8-bit channels (r = bits 0-7, g = 8-15, b = 16-23).
+ * An actor fragment whose own moby owns the texel's key does not contest
+ * it: order between two faces of one moby is left to true depth and the
+ * same-moby rank (op_rank_loses). A fragment of any other moby, a fragment
+ * that carries no identity, and a player-band texel keep the stored key.
+ *
+ * Residual: the image keeps only the nearest key, so where a moby's own
+ * face owns the nearest actor key, another moby's key between the fragment
+ * and that face no longer discards the fragment. This needs an own-face
+ * pair whose keys invert their depths and a second moby inside that key
+ * interval. */
+
+/* The moby identity a texel of the actor key image's colour holds. */
+float op_akey_id(vec4 c)
+{
+    return floor(c.r * 255.0 + 0.5) + floor(c.g * 255.0 + 0.5) * 256.0 +
+           floor(c.b * 255.0 + 0.5) * 65536.0;
+}
+
+/* The stored actor key a fragment of moby own_id contests: the cleared
+ * no-cover value 1.0 (decodes to OP_KEY_NONE) where own_id owns the stored
+ * key k1, else k1. own_id <= 0.5 (no identity: terrain, unkeyed classes)
+ * always reads k1. */
+float op_akey_select(float k1, vec4 k1_owner, float own_id)
+{
+    if (own_id > 0.5 && !op_pkey_is(k1) && abs(op_akey_id(k1_owner) - own_id) < 0.5)
+        return 1.0;
+    return k1;
+}
+
+/* The moby identity of a scene fragment for op_akey_select. An unranked
+ * actor face (rank -1, or -1.25 for an embedded prop) carries its moby
+ * identity in the rank pair's y; every other face reads 0. */
+float op_akey_owner(vec2 rank)
+{
+    return (rank.x < -0.5 && rank.x > -1.5) ? rank.y : 0.0;
+}
+
 /* The additive glow fan's order against the bodies it overlaps. The fan is
  * a flat billboard inserted at its own view-Z bucket and it writes no
  * depth, so it occludes nothing: the only question is which of the two the

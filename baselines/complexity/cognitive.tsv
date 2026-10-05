@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: eaba95d557932711da2b031731f9fc09140d1ac3
+# head: 8fe134e2e1c3b2bc1a2510b38b776e8050cfb080
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -90,7 +90,7 @@ core/renderer/openpete_interp.c	openpete_interp_capture	29	0
 core/rhi/rhi_vulkan.c	create_render_target_impl	33	0	
 core/rhi/rhi_vulkan.c	pick_physical_and_device	43	0	
 core/rhi/rhi_vulkan.c	pipeline_compile	34	0	
-core/rhi/rhi_vulkan.c	pipeline_set_layouts	47	0	
+core/rhi/rhi_vulkan.c	pipeline_set_layouts	44	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	27	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
 core/rhi/rhi_vulkan.c	rhi_destroy	37	0	

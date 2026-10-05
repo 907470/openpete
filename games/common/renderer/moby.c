@@ -6593,6 +6593,19 @@ static float moby_actor_rank_marker(int prop) {
     return prop ? OPENPETE_SCENE_RANK_PROP : OPENPETE_SCENE_RANK_ACTOR;
 }
 
+/** @brief Return the scene identity of the moby record at PSX address @p moby.
+ *
+ * The identity is the record's word index in the 2 MiB of PSX RAM plus one,
+ * so two records live in the same present never share it and 0 stays free
+ * for "no moby". It fits 19 bits plus the offset, below 2^24, so it travels
+ * exactly through a float vertex channel and three 8-bit colour channels.
+ * @param moby PSX address of the moby record, 0 for none.
+ * @return The identity, 0 when @p moby is 0. */
+static uint32_t moby_scene_identity(uint32_t moby)
+{
+    return moby ? ((moby & 0x1FFFFCu) >> 2) + 1u : 0u;
+}
+
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
  * Does nothing unless the moby render path is selected. Begins the scene for
@@ -6648,6 +6661,7 @@ static void push_scene_moby(void) {
         t.clut_x   = s_wtri[i].clut_x;  t.clut_y  = s_wtri[i].clut_y;
         t.bpp      = s_wtri[i].bpp;
         t.blend    = s_wtri[i].blend;
+        t.mid      = moby_scene_identity(s_wtri_moby[i]);
         /* og OT key channel, moby twin of the terrain emit: the .s inserts
          * each moby face at its average-Z slot minus the authored
          * m_DepthOffset (the angle word's top byte, which the cull packs into record
@@ -6661,7 +6675,8 @@ static void push_scene_moby(void) {
          * compound - which paints a chest through the wall lip genuinely
          * in front of it - is not mirrored: a wall in front keeps
          * occluding by TRUE depth. The moby face contests nearer keys
-         * symmetrically. Blend/FRONT/HUD classes
+         * except those its own moby owns (op_akey_select).
+         * Blend/FRONT/HUD classes
          * stay unkeyed - and so do MANGLED faces (near-plane fixup /
          * coordinate saturation): their screen footprint is not the true
          * projection, so a flat key stamped across one discards terrain

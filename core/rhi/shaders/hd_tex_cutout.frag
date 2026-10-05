@@ -9,6 +9,8 @@
 
 layout(set = 0, binding = 0) uniform sampler2D u_hd;
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */
+/* Owner identities of the actor key image; see psx_scene_key.frag. */
+layout(set = 1, binding = 1) uniform sampler2D u_actorown;
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
 /* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
  * terrain key image's set at binding 1. */
@@ -66,7 +68,9 @@ void main()
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {   /* contest rules in psx_scene_key.frag */
         float hk = texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r;
-        float ak = texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r;
+        float ak = op_akey_select(texelFetch(u_actorkey,  ivec2(gl_FragCoord.xy), 0).r,
+                                  texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
+                                  op_akey_owner(vRank));
         float mk = texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r;
         float tkey = hk < 0.999999 ? 4096.0 * hk / max(1.0 - hk, 1e-9) : 1e30;
         float akey = ak < 0.999999 ? 4096.0 * ak / max(1.0 - ak, 1e-9) : 1e30;

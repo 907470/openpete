@@ -5865,6 +5865,29 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * @return max(@p a, @p b). */
 static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
+/** @brief Replace the single-sampler sets of a pipeline's layout that hold an image pair with the two-sampler pair layout.
+ *
+ * The key-resolve scene layouts (uses_vram3 outside the terrain, postfx and
+ * mod kinds) pair the terrain key image with the drain records at set 2
+ * and, once uses_vram4 declares the moby key sets, the actor key image's
+ * depth with its owner colour at set 1. A material layout pairs the terrain
+ * keys at set 2 and the actor key with its owner at set 5.
+ * @param dev Device holding the set layouts.
+ * @param desc Pipeline description.
+ * @param out The pipeline's seven set layouts, rewritten in place. */
+static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
+                             VkDescriptorSetLayout out[7])
+{
+    if (desc->material_pipeline) {
+        out[2] = out[5] = dev->pair_set_layout;
+        return;
+    }
+    if (!desc->uses_vram3 || desc->terrain_pipeline || desc->postfx || desc->mod_pipeline)
+        return;
+    out[2] = dev->pair_set_layout;
+    if (desc->uses_vram4) out[1] = dev->pair_set_layout;
+}
+
 /** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..6].
  *
  * The per-kind assignment is the table in the comment above rhi_max_u32.
@@ -5886,11 +5909,7 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     if (desc->set1_vram_depth) out[1] = dev->pair_set_layout;
     if (desc->uniform_set2) out[2] = dev->ubo1_set_layout;
     if (desc->uniform_set5) out[5] = dev->ubo1_set_layout;
-    /* The terrain key image's set of the key-resolve and material layouts
-     * carries the drain sub-cell key records at binding 1. */
-    if (desc->material_pipeline ||
-        (desc->uses_vram3 && !desc->terrain_pipeline && !desc->postfx && !desc->mod_pipeline))
-        out[2] = dev->pair_set_layout;
+    pair_set_layouts(dev, desc, out);
     uint32_t n = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
                : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
                : (desc->postfx || desc->mod_pipeline) ? 4u

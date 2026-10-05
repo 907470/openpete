@@ -8,6 +8,8 @@
  * whose layout carries the HP key image at set 2. */
 
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */
+/* Owner identities of the actor key image; see psx_scene_key.frag. */
+layout(set = 1, binding = 1) uniform sampler2D u_actorown;
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
 /* Moby og-RANK image - same-moby painter select; see psx_scene_key.frag. */
@@ -17,7 +19,8 @@ layout(location = 0) in vec4 vColor;  /* x ratio (divide by vQ) */
 layout(location = 1) in vec2 vUV;
 layout(location = 3) in float vQ;
 layout(location = 4) flat in float vKoff;
-layout(location = 5) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal */
+layout(location = 5) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal
+                                           * (ranked) or moby identity (unranked actor) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -73,7 +76,10 @@ void main()
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
-                op_akey_contest(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
+                op_akey_contest(op_akey_select(
+                    texelFetch(u_actorkey,  ivec2(gl_FragCoord.xy), 0).r,
+                    texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
+                    op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
                 own, vKoff,
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */

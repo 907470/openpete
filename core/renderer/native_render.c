@@ -326,6 +326,7 @@ typedef struct {
     float rank;     /* og OT paint rank - see openpete_scene_tri */
     int mordinal;   /* present-local moby ordinal - see openpete_scene_tri */
     float pkey;     /* player ordering key - see openpete_scene_tri */
+    uint32_t mid;   /* moby identity - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -3641,7 +3642,9 @@ static struct {
                                        * keys, split from set 2 so fragments can
                                        * scope a moby's paint-over by their own
                                        * TRUE depth while terrain-vs-terrain
-                                       * keeps contesting authored keys */
+                                       * keeps contesting authored keys. Its
+                                       * colour holds the moby identity owning
+                                       * each key texel (op_akey_id) */
     rhi_texture  *moby_rank_rt;       /* moby og-RANK image (set 4): RGBA8
                                        * (rank lo, rank hi, moby ordinal) of the
                                        * LAST-painted ranked face per pixel -
@@ -4177,7 +4180,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * texelFetch(gl_FragCoord.xy) aligns exactly. */
     rhi_pipeline_desc terrain_key_desc = {
         .vert_spv = "terrain_key.vert.spv",
-        .frag_spv = "quad.frag.spv",
+        .frag_spv = "key_ident.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .uses_vram = false, .push_const_size = 0,
     };
@@ -5539,6 +5542,20 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
     }
 }
 
+/** @brief Return the moby value a scene face carries in its rank pair's second channel.
+ *
+ * An unranked opaque actor face (category ACTOR, rank sentinel -1 or -1.25)
+ * carries its moby identity (openpete_scene_tri.mid), the owner the key
+ * contest compares against the actor key image's owner colour
+ * (psx_key_contest.glsl op_akey_owner); every other face carries its
+ * present-local moby ordinal, the rank select's. */
+static inline float scene_rank_moby(const scene_tri_t *st)
+{
+    const int actor = st->category == OPENPETE_SCENE_ACTOR &&
+                      st->rank < -0.5f && st->rank > -1.5f;
+    return actor ? (float)st->mid : (float)st->mordinal;
+}
+
 /** @brief Pack scene vertex k of st into o: clip-space position through scene_to_clip, depth, the given UV, colour, key offset, moby paint pair and drain fields.
  *
  * The one vertex layout every scene pass of draw_native_scene and the depth
@@ -5555,7 +5572,7 @@ static inline void pack_scene_vert(rhi_vertex *o, const scene_tri_t *st, int k, 
     o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
     o->u = u; o->v = v;
     o->rgba = st->v[k].rgba; o->koff = st->koff;
-    o->sx = st->rank; o->sy = (float)st->mordinal;
+    o->sx = st->rank; o->sy = scene_rank_moby(st);
     rv_drain(o, st, k);
 }
 
@@ -6080,6 +6097,26 @@ static int terrain_key_readback_on(void)
     return v;
 }
 
+/** @brief Release every key-contest image and leave its slot NULL.
+ *
+ * The caller has waited for the device to idle. */
+static void key_images_release(void)
+{
+    rhi_texture** slots[] = { &s_nr.terrain_key_depth, &s_nr.moby_key_depth,
+                              &s_nr.actor_key_depth, &s_nr.moby_rank_rt };
+    for (size_t i = 0; i < sizeof slots / sizeof slots[0]; i++) {
+        rhi_destroy_texture(s_nr.dev, *slots[i]);
+        *slots[i] = NULL;
+    }
+}
+
+/** @brief Return whether every key-contest image exists. */
+static int key_images_complete(void)
+{
+    return s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.actor_key_depth &&
+           s_nr.moby_rank_rt;
+}
+
 /** @brief Grow the four key-contest images to at least w by h.
  *
  * The terrain, prop and actor key depth images and the rank target are
@@ -6098,8 +6135,7 @@ static int terrain_key_readback_on(void)
 static void ensure_terrain_key_depth(int w, int h)
 {
     if (w <= 0 || h <= 0) return;
-    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.actor_key_depth &&
-        s_nr.moby_rank_rt && s_nr.tk_w >= w && s_nr.tk_h >= h) return;
+    if (key_images_complete() && s_nr.tk_w >= w && s_nr.tk_h >= h) return;
     /* Never while a frame is recording. The scene pipelines' layouts declare
      * these four images as descriptor sets 1-4 and their shaders read them
      * unconditionally, so the recording command buffer may already reference
@@ -6119,10 +6155,7 @@ static void ensure_terrain_key_depth(int w, int h)
     if (w < s_nr.tk_w) w = s_nr.tk_w;
     if (h < s_nr.tk_h) h = s_nr.tk_h;
     rhi_wait_idle(s_nr.dev);
-    if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
-    if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
-    if (s_nr.actor_key_depth)   { rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);   s_nr.actor_key_depth = NULL; }
-    if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
+    key_images_release();
     s_nr.terrain_key_depth = terrain_key_readback_on()
         ? rhi_create_render_target_depth_readable(s_nr.dev, (uint32_t)w, (uint32_t)h)
         : rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
@@ -6133,8 +6166,7 @@ static void ensure_terrain_key_depth(int w, int h)
     rhi_set_render_target_depth_class(s_nr.moby_key_depth, RHI_DEPTH_FORWARD);
     rhi_set_render_target_depth_class(s_nr.actor_key_depth, RHI_DEPTH_FORWARD);
     rhi_set_render_target_depth_class(s_nr.moby_rank_rt, RHI_DEPTH_FORWARD);
-    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.actor_key_depth &&
-        s_nr.moby_rank_rt)
+    if (key_images_complete())
         rhi_texture_extent(s_nr.terrain_key_depth, &s_nr.tk_w, &s_nr.tk_h);
     else {
         /* All-or-nothing: the scene pipes' layouts sample sets 1/2/3/4 as one
@@ -6145,10 +6177,7 @@ static void ensure_terrain_key_depth(int w, int h)
          * here is undefined behaviour on every driver. It is an out-of-memory
          * condition on a device that has just allocated the scene targets
          * themselves, and it is logged as such. */
-        if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
-        if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
-        if (s_nr.actor_key_depth)   { rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);   s_nr.actor_key_depth = NULL; }
-        if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
+        key_images_release();
         s_nr.tk_w = s_nr.tk_h = 0;
         OPL_WARN_F("native", "key-contest targets %dx%d could not be allocated; scene draws are undefined", w, h);
     }
@@ -6327,11 +6356,26 @@ static float pack_player_key_z(float pkey)
     return NR_PKEY_BASE + slot * NR_PKEY_STEP;
 }
 
+/** @brief Return whether actor fragments skip their own moby's keys; OPENPETE_ACTOR_OWN_KEY=0 turns the skip off for an in-binary A/B.
+ *
+ * Read once. Off, the actor key pass writes no owner identity, so no
+ * fragment matches the owner of a key texel and every contest is the one
+ * the stored key alone gives. */
+static int actor_own_key_on(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_ACTOR_OWN_KEY"); s_on = !(e && *e == '0'); }
+    return s_on;
+}
+
 /** @brief Write one keyed scene face's three vertices for a key batch.
  *
  * Each vertex carries the clip position, the true view-Z in w, the UV when
- * textured (else 0), opaque black colour, koff 0.5 and the drain record
- * fields from rv_drain. The depth is the per-vertex view-Z for the prop
+ * textured (else 0), a colour, koff 0.5 and the drain record fields from
+ * rv_drain. The colour is opaque black, except an ACTOR face's in the actor
+ * class while actor_own_key_on, whose r, g, b carry its moby identity (bits
+ * 0-7, 8-15, 16-23 of openpete_scene_tri.mid) for the key image's owner
+ * colour. The depth is the per-vertex view-Z for the prop
  * class; otherwise it is one flat value per face, the player band depth
  * when the face has a player key (pkey above 0.25), else koff - 0.5.
  * @param T Scene triangle.
@@ -6343,6 +6387,9 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
 {
     float zflat = T->pkey > 0.25f ? pack_player_key_z(T->pkey)
                                   : T->koff - 0.5f;   /* the key K as view-Z */
+    const int owner = prop_class == 2 && T->category == OPENPETE_SCENE_ACTOR &&
+                      actor_own_key_on();
+    const uint32_t rgba = 0xFF000000u | (owner ? (T->mid & 0xFFFFFFu) : 0u);
     for (int k = 0; k < 3; k++) {
         float cx, cy;
         scene_to_clip(T->v[k].sx, T->v[k].sy, &cx, &cy);
@@ -6356,7 +6403,7 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
         o->x = cx; o->y = cy; o->z = z; o->w = tv;
         o->u = tex ? T->v[k].u : 0.0f;
         o->v = tex ? T->v[k].v : 0.0f;
-        o->rgba = 0xFF000000u;
+        o->rgba = rgba;
         o->koff = 0.5f;
         o->sx = 0.0f; o->sy = 0.0f;
         rv_drain(o, T, k);
@@ -6870,8 +6917,9 @@ static void drain_records_build(const scene_tri_t* scene, int scene_n)
  * several scene targets in one frame keep their own vertices. When the
  * buffer cannot grow the batches are emptied: the images clear to no cover
  * and the contest is off for this target. The terrain image also receives
- * the retained terrain's key draw. The four images render even from empty
- * batches, so a stale image is never sampled. The OPENPETE_TERRAIN_KEY_*
+ * the retained terrain's key draw; each actor face writes its moby identity
+ * into the actor key image's colour beside its key. The four images render
+ * even from empty batches, so a stale image is never sampled. The OPENPETE_TERRAIN_KEY_*
  * and OPENPETE_MOBY_RANK_DBG knobs add stderr and file dumps of the packed
  * batches.
  * @param full_extent Nonzero for the full-extent (widescreen) mapping.
@@ -7113,12 +7161,13 @@ static void bind_cover_block(void)
  * When all three key depth images exist and @p p is one of the key-resolve
  * pipes (the opaque, marked, cutout, blended, additive, quarter-additive
  * and punch variants of the gouraud, scene-texture and HD cutout pipes),
- * the bind also sets the actor key depth at set 1, the terrain key depth
- * paired with the drain texture at set 2, the moby key depth at set 3 and,
- * when it exists, the moby rank target at set 4. A blended-terrain cover
- * pipe takes those sets and, at set 5, the scene's portal cover planes
- * (bind_cover_block). Binding them here keeps every call site correct
- * without per-site handling. Any other pipeline is bound alone.
+ * the bind also sets the actor key depth paired with its owner colour at
+ * set 1, the terrain key depth paired with the drain texture at set 2, the
+ * moby key depth at set 3 and, when it exists, the moby rank target at set
+ * 4. A blended-terrain cover pipe takes those sets and, at set 5, the
+ * scene's portal cover planes (bind_cover_block). Binding them here keeps
+ * every call site correct without per-site handling. Any other pipeline is
+ * bound alone.
  * @param p Pipeline to bind. */
 static void bind_scene_pipe(rhi_pipeline* p)
 {
@@ -7134,7 +7183,7 @@ static void bind_scene_pipe(rhi_pipeline* p)
         p == s_nr.gouraud_qadd_pipe || p == s_nr.scene_tex_qadd_pipe ||
         p == s_nr.gouraud_punch_pipe || p == s_nr.scene_tex_punch_pipe ||
         p == s_nr.hd_cutout_punch_pipe) {
-        rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 1);
+        rhi_bind_depth_tex_pair(s_nr.dev, s_nr.actor_key_depth, s_nr.actor_key_depth, 1);
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
         if (s_nr.moby_rank_rt)
@@ -7210,8 +7259,8 @@ static void bind_player_shadow_decal(void)
  * A material layout puts them above the UBO pair rather than replacing sets
  * 1 and 2, so a material's own uniform block keeps set 3 binding 1: the
  * terrain key depth paired with the drain texture at set 2, the moby key
- * depth at set 4, the actor key depth at set 5 and, when it exists, the
- * moby rank target at set 6. The engine half of openpete_psx_material.glsl
+ * depth at set 4, the actor key depth paired with its owner colour at set 5 and, when it exists, the moby
+ * rank target at set 6. The engine half of openpete_psx_material.glsl
  * runs the key contest from these before the mod's op_material() sees a
  * colour, so a material keeps the painter verdicts of the stock pipes. No
  * effect unless all three key depth images exist. */
@@ -7220,7 +7269,7 @@ static void bind_material_keys(void)
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
     rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
     rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 4);
-    rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 5);
+    rhi_bind_depth_tex_pair(s_nr.dev, s_nr.actor_key_depth, s_nr.actor_key_depth, 5);
     if (s_nr.moby_rank_rt)
         rhi_bind_texture_set(s_nr.dev, s_nr.moby_rank_rt, 6);
 }

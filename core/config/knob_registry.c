@@ -1635,6 +1635,8 @@ static const knob_desc_t g_builtin[] = {
         "terrain-walk ordinal n (the only spelling a headless run reaches, "
         "since headless composes no presents), \"<n>ms\" n milliseconds "
         "after boot. One shot. Read once at boot."),
+    ENVROW_LATCHED("ACTOR_OWN_KEY", "Debug", "1",
+        "Actor faces contest only other mobys' keys (0 = own keys too)."),
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
         "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
     ENVROW_LIVE("MOBY_TRUESCOPE", "Debug", "1",

@@ -953,6 +953,17 @@ typedef struct {
                   * itself contests nothing - its koff stays 0 and its
                   * stored depth stays true, so an ordering pull can never
                   * show the avatar through geometry in front of him.     */
+    uint32_t mid;/* moby identity of an actor face: the emitting moby
+                  * record's PSX RAM word index + 1 (0 = none), unique per
+                  * moby within a present. The actor key pass writes it
+                  * beside the face's key, and an unranked actor fragment
+                  * does not contest a key its own moby owns
+                  * (psx_key_contest.glsl op_akey_select): order inside one
+                  * moby is decided by true depth and the rank. The scene
+                  * vertex's rank pair y (rhi_vertex.sy) carries one of
+                  * three values: a negative drain record tag (terrain), the
+                  * mordinal (ranked faces and every non-actor face), or mid
+                  * (unranked actor faces), which op_akey_owner selects.   */
 } openpete_scene_tri;
 
 /* Rank sentinels for faces that are not ranked but must still be told

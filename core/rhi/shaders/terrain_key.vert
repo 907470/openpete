@@ -38,6 +38,9 @@ layout(location = 2) noperspective out vec2 vScreenPSX;
 layout(location = 3) out float vQ;
 layout(location = 4) flat out float vDrain;   /* the drain record tag */
 layout(location = 5) flat out float vKv;      /* the flat key view-Z */
+/* The face's colour channel, flat: an actor face's moby identity in r, g, b
+ * (op_akey_id), written beside its key into the key image's colour. */
+layout(location = 6) flat out vec4 vIdent;
 
 /* PSX-affine UV (--texture-mapping affine, spec-constant 1) - must track the
  * SCENE stages' selection: the cutout fragment's texel lookups have to land on
@@ -60,4 +63,5 @@ void main()
     vQ = 1.0 / wq;
     vDrain = inRank.y;
     vKv = kv;
+    vIdent = inColor;
 }

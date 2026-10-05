@@ -18,6 +18,9 @@
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */
+/* The moby identity owning each actor key texel (op_akey_id), the actor key
+ * image's colour attachment. */
+layout(set = 1, binding = 1) uniform sampler2D u_actorown;
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
 /* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
  * terrain key image's set at binding 1. */
@@ -58,7 +61,9 @@ layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec4 vColor;
 layout(location = 2) in float vQ;
 layout(location = 3) flat in float vKoff;
-layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal */
+layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = moby ordinal
+                                           * (ranked), moby identity (unranked actor),
+                                           * or drain record tag (terrain) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -113,11 +118,13 @@ void main()
         op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;
     /* A RANKED face skips the positive-koff painter contest: rank IS og's
-     * exact same-moby painter, while the key image holds same-moby per-face
-     * keys with no ordinal - large same-moby faces (jaw vs chin) sit beyond
-     * the 64-world margin, so the contest would kill the rank winner while
-     * the select kills everything under it (a hole to the clear). The face
-     * still STAMPS its key, so keyed terrain keeps yielding to it. */
+     * exact same-moby painter. Its rank pair carries the rank-image ordinal,
+     * not the moby identity, so the contest's own-moby skip
+     * (op_akey_select) cannot apply to it - large same-moby faces (jaw vs
+     * chin) sit beyond the 64-world margin, so the contest would kill the
+     * rank winner while the select kills everything under it (a hole to the
+     * clear). The face still STAMPS its key, so keyed terrain keeps yielding
+     * to it. */
     float koff = op_drain_koff(vKoff, vRank.y, vUV / vQ, u_drain);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {
@@ -129,7 +136,10 @@ void main()
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
-                op_akey_contest(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
+                op_akey_contest(op_akey_select(
+                    texelFetch(u_actorkey,  ivec2(gl_FragCoord.xy), 0).r,
+                    texelFetch(u_actorown,  ivec2(gl_FragCoord.xy), 0),
+                    op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
                 own, koff,
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */

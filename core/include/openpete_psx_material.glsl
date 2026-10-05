@@ -167,6 +167,8 @@ layout(set = 2, binding = 0) uniform sampler2D op_key_terrain;
 layout(set = 2, binding = 1) uniform usampler2D op_drain_records;
 layout(set = 4, binding = 0) uniform sampler2D op_key_moby;
 layout(set = 5, binding = 0) uniform sampler2D op_key_actor;
+/* The moby identity owning each op_key_actor texel (op_akey_id). */
+layout(set = 5, binding = 1) uniform sampler2D op_key_actor_owner;
 layout(set = 6, binding = 0) uniform sampler2D op_moby_rank;
 
 /* Engine-selected depth convention, key scope and per-game contest rule
@@ -200,7 +202,7 @@ layout(location = 0) in vec2  vUV;     /* texel coords   x vQ */
 layout(location = 1) in vec4  vColor;  /* modulate 0..1  x vQ */
 layout(location = 2) in float vQ;      /* perspective ratio   */
 layout(location = 3) flat in float vKoff;  /* this face's OT key channel     */
-layout(location = 4) flat in vec2  vRank;  /* own walk rank, moby ordinal    */
+layout(location = 4) flat in vec2  vRank;  /* own walk rank; moby ordinal or identity */
 
 layout(location = 0) out vec4 op_out_color;
 
@@ -299,7 +301,10 @@ void main()
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r),
-                op_akey_contest(texelFetch(op_key_actor,   ivec2(gl_FragCoord.xy), 0).r),
+                op_akey_contest(op_akey_select(
+                    texelFetch(op_key_actor,       ivec2(gl_FragCoord.xy), 0).r,
+                    texelFetch(op_key_actor_owner, ivec2(gl_FragCoord.xy), 0),
+                    op_akey_owner(vRank))),
                 op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
                 own, koff,
                 vRank.x < -0.5,     /* unranked moby faces carry rank -1 */
