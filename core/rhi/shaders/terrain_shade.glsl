@@ -44,7 +44,7 @@ layout(location = 13) flat in vec4 vKn2;
 /* Prefix mirror of the vertex stage's TerrainGlobals block. Only the fields
  * this stage reads are named, but every field before them is declared so
  * the layout matches; a field added to the vertex stage's block ahead of
- * `fog` or `hd_lad` must be mirrored here. */
+ * `fog`, `hd_lad` or the cover planes must be mirrored here. */
 layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  mrow0; vec4 mrow1; vec4 mrow2;
     dvec2 dcam_xy; dvec2 dcam_zf; dvec2 dof_xy; dvec2 dH;
@@ -53,6 +53,11 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  pad_[302];     /* scroll_dv and the rim frames (vertex-stage state) */
     vec4  hd_lad;        /* HD fold: continuous-fog ramp ts, tb; count; enable */
     vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)    */
+    ivec4 cov_cnt;       /* portal cover planes (portal_cover.glsl)       */
+    dvec4 cov_margin;
+    dvec4 cov_abc[6];
+    vec4  cov_bbox[6];
+    vec4  cov_poly[96];
 } g;
 
 /* gl_FragCoord.z convention, matching the vertex stage's selection. */

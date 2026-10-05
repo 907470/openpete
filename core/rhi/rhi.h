@@ -877,6 +877,11 @@ typedef struct {
                                  * with rhi_ubo_bind_at(.., 2, ..)), visible
                                  * to both stages. Replaces set 2 of any layout
                                  * above and implies sets 0..2.               */
+    bool           uniform_set5; /* set 5 holds one dynamic-UBO binding (bind
+                                 * with rhi_ubo_bind_at(.., 5, ..)), visible
+                                 * to both stages. Sets 0..4 keep the layout
+                                 * the flags above give them; implies sets
+                                 * 0..5.                                     */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex - pair with the

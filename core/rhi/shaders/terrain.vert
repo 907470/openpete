@@ -180,11 +180,10 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     dvec2 rim_pv[96];    /* outlines in (U,W), 16 slots per plane         */
     vec4  hd_lad;        /* HD fold: CONT-fog ramp ts, tb; count; enable  */
     vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)   */
-    /* Blended-face portal-cover drop (portal_sky_covers mirror): active
+    /* Portal cover planes, read by terrain.frag (portal_cover.glsl): active
      * opening planes in SCREEN space. cov_cnt.x = plane count (0 = test
      * off); cov_abc.w = the plane's outline point count (pn < 3 never
-     * matches, the CPU test's skip). One outline point per cov_poly slot,
-     * 16 slots per plane. */
+     * matches). One outline point per cov_poly slot, 16 slots per plane. */
     ivec4 cov_cnt;
     dvec4 cov_margin;    /* x = plane-cover near margin M (world units)   */
     dvec4 cov_abc[6];    /* screen inv-vz plane fit a, b, c; w = pn       */
@@ -920,43 +919,6 @@ bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) 
     return false;
 }
 
-/* ---- blended-face portal-cover drop (portal_sky_covers mirror) ------------
- * The CPU feed drops any BLENDED emitted tri whose screen centroid sits
- * inside an active opening's outline polygon with the tri's mean view-Z at
- * or behind the opening plane minus the cover margin - the destination-sky
- * preview repaints that whole area, and a blended face cannot be depth-
- * punched out of it the way opaque cover is. Same test here on the rebuilt
- * emitted tri: float32 arithmetic exactly where the CPU's is float (the
- * ttri stores FLOAT screen coords but DOUBLE view-Z; `precise` blocks FMA
- * contraction), doubles exactly where the CPU computes double. */
-bool cover_dropped(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
-    precise float cx = (s0.x + s1.x + s2.x) / 3.0;
-    precise float cy = (s0.y + s1.y + s2.y) / 3.0;
-    precise double vzsum = z0 + z1 + z2;
-    for (int pi = 0; pi < g.cov_cnt.x; pi++) {
-        int pn = int(g.cov_abc[pi].w);
-        if (pn < 3) continue;
-        vec4 bb = g.cov_bbox[pi];
-        if (cx < bb.x || cx > bb.z || cy < bb.y || cy > bb.w) continue;
-        bool inp = false;                            /* crossing test, float */
-        int base = pi * 16;
-        for (int i = 0, j = pn - 1; i < pn; j = i++) {
-            precise vec2 P = g.cov_poly[base + i].xy;
-            precise vec2 Q = g.cov_poly[base + j].xy;
-            if ((P.y > cy) != (Q.y > cy) &&
-                cx < (Q.x - P.x) * (cy - P.y) / (Q.y - P.y) + P.x)
-                inp = !inp;
-        }
-        if (!inp) continue;
-        precise double inv = g.cov_abc[pi].x * double(cx)
-                           + g.cov_abc[pi].y * double(cy) + g.cov_abc[pi].z;
-        if (inv <= 1e-9lf) continue;
-        precise double mean = vzsum * 16.0lf / 3.0lf;
-        if (mean >= 1.0lf / inv - g.cov_margin.x) return true;
-    }
-    return false;
-}
-
 #ifdef TERRAIN_NEAR
 /* ---- near-plane clip fan (clip_push_tri / cv_lerp mirror) -----------------
  * A near-variant sector's faces may reach or cross the eye plane, so the walk
@@ -1472,23 +1434,20 @@ void main()
         if (cullable && !facing) { kill_vert(); return; }
     }
 
-    /* ---- portal drops: rebuild THIS vertex's emitted tri and run the two
-     * feed-side portal classifiers on it - the inner-rim cull (all faces)
-     * and the blended-face transparent-cover drop (flags16 bit 14).
+    /* ---- portal drops: rebuild THIS vertex's emitted tri and run the
+     * feed-side inner-rim cull on it (all faces). Blended faces a portal
+     * preview covers are discarded per fragment instead (terrain.frag).
      * Triangulation matches the bake exactly - flat LP (i0,i1,i2)+
      * (i1,i2,i3), flat HP (i0,i1,i3)+(i1,i3,i2), HQ sub-quad (c0,c1,c2)+
      * (c1,c2,c3) - in the walk's own emit corner ORDER ((tl,tr,bl)+
-     * (tr,bl,br)), which the cover centroid's float sums need for
-     * last-ulp identity; the rim classifier's terms are additionally
-     * vertex-SET invariant. Screen coords are the feed's push_tri values:
+     * (tr,bl,br)); the rim classifier's terms are vertex-SET invariant. Screen coords are the feed's push_tri values:
      * the raw float projections, or their snapped form under the integer
      * vertex precision, which is what the ttri the CPU classifies carries.
      * The near variant runs both classifiers after its clip
      * instead - the feed classifies the tris it actually emits, which for a
      * clipped face are the CLIPPED ones. ---- */
-    bool covTest = (f16 & 0x4000u) != 0u && g.cov_cnt.x > 0;
 #ifndef TERRAIN_NEAR
-    if (g.rim_cnt.x > 0 || covTest) {
+    if (g.rim_cnt.x > 0) {
         bool tri2 = (f16 & 0x2000u) != 0u;
         bool pdrop;
         if (!hqv) {
@@ -1504,9 +1463,7 @@ void main()
             }
             sa = snap_of(sa); sb = snap_of(sb); sc = snap_of(sc);
             pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
-                 || (covTest &&
-                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
         } else if (ist) {
             /* Sub-triangle members (A,B,C), nt4_emit's order. */
             int na = NT_SUB[tsub * 3], nb = NT_SUB[tsub * 3 + 1], nc2 = NT_SUB[tsub * 3 + 2];
@@ -1517,9 +1474,7 @@ void main()
             vec2 sb = nt4_screen(nb, m0, m1, m2);
             vec2 sc = nt4_screen(nc2, m0, m1, m2);
             pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
-                 || (covTest &&
-                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
         } else if (is4) {
             /* Cell members (TL,TR,BL) / (TR,BL,BR), emit_quad_cv's order. */
             precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
@@ -1534,9 +1489,7 @@ void main()
             vec2 sb = nc4_screen(n1.x, n1.y, TL, TR, BL, BR);
             vec2 sc = nc4_screen(n2.x, n2.y, TL, TR, BL, BR);
             pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
-                 || (covTest &&
-                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
         } else {
             /* Sub-quad nodes from the transformed parent corners (the same
              * cv_mid mirrors the own-vertex rebuild uses below). */
@@ -1561,9 +1514,7 @@ void main()
             vec2 sb = hq_snap_screen(nb, TL, TR, BL, BR, tb);
             vec2 sc = hq_snap_screen(nc2, TL, TR, BL, BR, tc2);
             pdrop = (g.rim_cnt.x > 0 &&
-                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
-                 || (covTest &&
-                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z));
         }
         if (pdrop) { kill_vert(); return; }
     }
@@ -1795,13 +1746,10 @@ void main()
         bool spare = (f16 & 0x8000u) != 0u;
         if (spare && nout < 4) { kill_vert(); return; }
         int e0 = 0, e1 = spare ? 2 : 1, e2 = spare ? 3 : 2;
-        if (g.rim_cnt.x > 0 || covTest) {
+        if (g.rim_cnt.x > 0) {
             vec2 sa = scr_of(outv[e0]), sb = scr_of(outv[e1]),
                  sc = scr_of(outv[e2]);
-            if ((g.rim_cnt.x > 0 &&
-                 rim_classified(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z))
-             || (covTest &&
-                 cover_dropped(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z)))
+            if (rim_classified(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z))
                 { kill_vert(); return; }
         }
         cvx V = outv[self == 0 ? e0 : (self == 1 ? e1 : e2)];

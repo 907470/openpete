@@ -5848,7 +5848,10 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * declared for layout continuity but never bound/used, and terrain keeps its
  * own two blocks at 5/6 - set 3 binding 1 is the mod's, and a set views one
  * buffer per binding. set1_vram_depth replaces set 1 with the two-sampler
- * layout; uniform_set2 replaces set 2 with the single dynamic-UBO layout.
+ * layout; uniform_set2 replaces set 2 with the single dynamic-UBO layout;
+ * uniform_set5 puts the single dynamic-UBO layout at set 5 above the sets the
+ * other flags give (the keyed scene pipes' sets 0..4, then the portal cover
+ * planes).
  *
  * material: the mod layout PLUS the engine's occlusion inputs, which a
  * material's fragment stage runs before the mod's colour maths. They sit
@@ -5882,6 +5885,7 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     out[6] = high;
     if (desc->set1_vram_depth) out[1] = dev->pair_set_layout;
     if (desc->uniform_set2) out[2] = dev->ubo1_set_layout;
+    if (desc->uniform_set5) out[5] = dev->ubo1_set_layout;
     /* The terrain key image's set of the key-resolve and material layouts
      * carries the drain sub-cell key records at binding 1. */
     if (desc->material_pipeline ||
@@ -5894,9 +5898,11 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
                : desc->uses_vram4 ? 4u
                : desc->uses_vram3 ? 3u
                : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
-    /* set1_vram_depth implies sets 0..1, uniform_set2 sets 0..2 */
-    const uint32_t lo = rhi_max_u32(2u * (uint32_t)desc->set1_vram_depth,
-                                    3u * (uint32_t)desc->uniform_set2);
+    /* set1_vram_depth implies sets 0..1, uniform_set2 sets 0..2,
+     * uniform_set5 sets 0..5 */
+    const uint32_t lo = rhi_max_u32(rhi_max_u32(2u * (uint32_t)desc->set1_vram_depth,
+                                                3u * (uint32_t)desc->uniform_set2),
+                                    6u * (uint32_t)desc->uniform_set5);
     return rhi_max_u32(n, lo);
 }
 

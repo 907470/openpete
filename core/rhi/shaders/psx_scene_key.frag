@@ -32,6 +32,22 @@ layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth ima
  * decides WHICH same-moby face exists at a pixel, never what depth it has. */
 layout(set = 4, binding = 0) uniform sampler2D u_mobyrank;
 
+#ifdef OP_PORTAL_COVER
+/* The _cover variant (blended terrain): the portal opening planes
+ * portal_cover.glsl tests, after this pass's gl_FragCoord -> PSX screen
+ * affine (screen x = fc.x * fragx + fc.y, screen y = fc.z * fragy + fc.w). */
+layout(std140, set = 5, binding = 0) uniform PortalCover {
+    vec4  cov_fc;
+    ivec4 cov_cnt;
+    dvec4 cov_margin;
+    dvec4 cov_abc[6];
+    vec4  cov_bbox[6];
+    vec4  cov_poly[96];
+} pcov;
+#define OP_COVER_SRC pcov
+#include "portal_cover.glsl"
+#endif
+
 layout(push_constant) uniform PsxMaterial {
     int tpage_x, tpage_y;
     int clut_x,  clut_y;
@@ -87,6 +103,12 @@ void main()
      * The verdicts themselves live in psx_key_contest.glsl. */
     bool ranked = vRank.x > 0.5;
     float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
+#ifdef OP_PORTAL_COVER
+    /* A blended terrain fragment the portal preview covers (portal_cover.glsl). */
+    if (op_portal_covered(vec2(pcov.cov_fc.x * gl_FragCoord.x + pcov.cov_fc.y,
+                               pcov.cov_fc.z * gl_FragCoord.y + pcov.cov_fc.w), own))
+        discard;
+#endif
     if (ranked &&
         op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;

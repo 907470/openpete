@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: d076ea8594982573428d1e35850532399289c43b
+# head: eaba95d557932711da2b031731f9fc09140d1ac3
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -90,7 +90,7 @@ core/renderer/openpete_interp.c	openpete_interp_capture	29	0
 core/rhi/rhi_vulkan.c	create_render_target_impl	33	0	
 core/rhi/rhi_vulkan.c	pick_physical_and_device	43	0	
 core/rhi/rhi_vulkan.c	pipeline_compile	34	0	
-core/rhi/rhi_vulkan.c	pipeline_set_layouts	46	0	
+core/rhi/rhi_vulkan.c	pipeline_set_layouts	47	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	27	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
 core/rhi/rhi_vulkan.c	rhi_destroy	37	0	
@@ -178,7 +178,7 @@ games/common/renderer/terrain.c	terrain_compare	313	0
 games/common/renderer/terrain.c	terrain_feed_native	463	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	105	0	
-games/common/renderer/terrain.c	tgpu_build_sector	127	0	
+games/common/renderer/terrain.c	tgpu_build_sector	123	0	
 games/common/renderer/terrain.c	tgpu_ensure	37	0	
 games/common/renderer/terrain.c	tgpu_env_block	30	0	
 games/common/renderer/terrain.c	tgpu_pack_scan	41	0	

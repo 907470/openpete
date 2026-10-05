@@ -27,6 +27,7 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_key_contest.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_unorm8.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_viewz.glsl
+                        ${RHI_SHADER_SRC_DIR}/portal_cover.glsl
                         ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl)
 # terrain.vert and its four variants are rewritten to SSA form after
 # glslangValidator: every function-local variable whose loads and stores are
@@ -63,6 +64,21 @@ foreach(s IN LISTS RHI_SHADERS)
         COMMENT "glslangValidator ${s} -> ${s}.spv"
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}.spv)
+endforeach()
+# quad_key_cover.frag / psx_scene_key_cover.frag: the keyed scene fragment
+# stages recompiled with the portal plane-cover discard (portal_cover.glsl),
+# for the CPU-fed blended terrain pipelines; their layout adds the cover
+# planes' UBO at set 5.
+foreach(s IN ITEMS quad_key psx_scene_key)
+    add_custom_command(
+        OUTPUT ${RHI_SHADER_OUT_DIR}/${s}_cover.frag.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro OP_PORTAL_COVER=1
+                ${RHI_SHADER_SRC_DIR}/${s}.frag
+                -o ${RHI_SHADER_OUT_DIR}/${s}_cover.frag.spv
+        DEPENDS ${RHI_SHADER_SRC_DIR}/${s}.frag ${RHI_SHADER_INCLUDES}
+        COMMENT "glslangValidator ${s}.frag (OP_PORTAL_COVER) -> ${s}_cover.frag.spv"
+        VERBATIM)
+    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}_cover.frag.spv)
 endforeach()
 # terrain_anim.vert: terrain.vert recompiled with the poly-anim vertex-lerp
 # path (second vertex binding = previous-tick positions/corners).

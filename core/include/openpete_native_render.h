@@ -1353,15 +1353,18 @@ typedef struct {
     float  px[16], py[16];     /* projected opening polygon (walk coords) */
     int    pn;
 } openpete_native_cover_plane;
-/** @brief Replace the portal opening planes the OPENPETE_PORTAL_COVER_CHECK sweep verifies.
+/** @brief Replace the portal opening planes of the current scene.
  *
- * Called once per terrain feed. At most 8 planes are kept; the sweep is the
- * only reader.
+ * Called once per terrain feed. The OPENPETE_PORTAL_COVER_CHECK sweep reads
+ * up to 8 planes. With @p blend_cover the first 6 also ride the scene to
+ * the blended-terrain fragment stages, which discard a fragment inside an
+ * outline at or behind its plane minus @p margin_world (portal_cover.glsl).
  * @param planes The opening planes; read only when @p n > 0.
  * @param n Plane count; 0 clears.
- * @param margin_world The plane-cover near margin M in world units. */
+ * @param margin_world The plane-cover near margin M in world units.
+ * @param blend_cover Nonzero to apply the planes to blended terrain. */
 void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
-                                      int n, float margin_world);
+                                      int n, float margin_world, int blend_cover);
 
 /** @brief Append one screen-space triangle to the current scene.
  *

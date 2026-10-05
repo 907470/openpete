@@ -218,14 +218,12 @@ typedef struct {
     double  rim_nrm[6][4];            /* unit view-space normal; w = vn     */
     double  rim_bbox[6][4];           /* outline UV bbox pulo,puhi,pvlo,pvhi */
     double  rim_pv[96][2];            /* outlines in (U,W) coords, 16/plane */
-    /* Blended-face portal-cover drop mirror (portal_sky_covers in the
-     * vertex stage): the active opening planes in SCREEN space. The feed
-     * drops any blended tri whose screen centroid falls inside an opening's
-     * outline polygon with the tri's mean view-Z at or behind the plane
-     * minus the cover margin; baked faces carry a blend bit (flags16 bit
-     * 14) and the vertex stage kills them by the same float-exact test.
-     * cov_n = 0 disables (no active portal, or the transparent-cover drop
-     * lever is off - the feed then keeps such tris too). A plane whose
+    /* Portal cover planes for the blended-face discard in the
+     * fragment stage: the active opening planes in SCREEN space. The
+     * blended passes' fragment stage (terrain.frag, portal_cover.glsl)
+     * discards a fragment inside an opening's outline polygon at or behind
+     * the plane minus the cover margin. cov_n = 0 disables (no active
+     * portal, or the transparent-cover lever is off). A plane whose
      * screen outline projection failed rides with cov_pn = 0 and never
      * matches, exactly like the CPU test's pn < 3 skip. */
     int32_t cov_n;
@@ -702,6 +700,10 @@ typedef struct {
     float y_base, y_span;   /* cy = y_base - ny*y_span, ny = (sy-band)/clip_h */
     float disp_w, clip_h, band, freeze_wf;
     int   full_extent;      /* cx = (-1 + nx*2)/freeze_wf, cy = 1 - ny*2    */
+    int   cover;            /* 1: the fragment stage discards what a portal
+                             * preview covers (the blended passes)         */
+    float fc[4];            /* gl_FragCoord -> PSX screen affine of the
+                             * target (fax, fbx, fay, fby); read with cover */
 } openpete_tercache_clip;
 
 /** @brief Draw one pass of the selected retained terrain state.

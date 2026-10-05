@@ -5550,8 +5550,8 @@ static int  s_tgpu_canim_mv;     /* ... of them, those whose last roll moved a c
 /* Active portal-sky planes for the per-sector portal claim. Of the feed's
  * portal semantics, only two ever DROP a CPU-fed terrain tri - the inner-rim
  * cull (bounded by the rim sector broadphase: a sector failing it cannot
- * contain a rim candidate) and the transparent-cover drop (blended faces
- * only). Opaque plane-cover needs no claim at all: covered pixels draw at
+ * contain a rim candidate) and the transparent cover (blended faces
+ * only, discarded per fragment on both paths). Opaque plane-cover needs no claim at all: covered pixels draw at
  * true depth and the preview repaints over them in core, whoever drew them.
  * So a sector claims iff it passes the rim broadphase, or it has a blended
  * face and its projected bbox overlaps an active outline; everything else
@@ -6239,8 +6239,7 @@ static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
          * (the near-emit's dv lookup keys on hq_idx, not tb;
          * hq_idx is w2 & 0x7F, always in range). */
         H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1)
-                  | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u
-                  | (m.blend ? 0x4000u : 0u));   /* cover-drop key */
+                  | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u);
         /* HQ cells are sub-quads of this HP face: same Tiledef, so
          * the same bucket (the pack overwrites the whole word). */
         H.matf0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
@@ -6844,11 +6843,6 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             k[q].rgb_far = k[q].rgb_near = rc[q];
             k[q].prgb_far = k[q].prgb_near = prc[q];
         }
-        /* flags16 bit 14 = blended face: the vertex stage's portal
-         * transparent-cover drop keys on it (raw mat blend, not the draw
-         * arena - ABR-3 clamps to the opaque arena but the feed still
-         * drops it under a cover). */
-        if (F->mat.blend) T.flags16 |= 0x4000u;
         int da = F->mat.blend ? tgpu_arena_of(&F->mat) : (int)OPTC_ARENA_LP;
         /* LP quad: strip diagonal i1-i2 (no i2/i3 swap - see the LP emit) */
         if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) goto done;
@@ -6895,7 +6889,6 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
          * tile isn't scrolling). */
         if (F->tb != -1)
             T.flags16 = (uint16_t)((((uint32_t)F->tb & 0x7Fu) << 5) | 0x1000u);
-        if (F->mat.blend) T.flags16 |= 0x4000u;   /* cover-drop key (bit 14) */
         uint32_t nearC[4], farC[4], pnearC[4], pfarC[4];
         const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
         for (int q = 0; q < 4; q++) {
@@ -9279,8 +9272,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          *    (claim everything) or the rim frames are unavailable and the
          *    sector's projected bbox meets an opening's outline. With the
          *    frames derived the vertex stage runs the rim cull and the
-         *    transparent-cover drop, so nothing claims. Opaque plane-cover
-         *    needs no claim (per-pixel in core).
+         *    blended passes' fragment stage the transparent cover, so
+         *    nothing claims. Opaque plane-cover needs no claim (per-pixel
+         *    in core).
          *  - (the pack-aware LP regrade does not claim: the bake carries
          *    raw colours and the per-sector grade affine rides the sector
          *    params - lp_grade_apply is mirrored in the vertex stage under
@@ -9331,11 +9325,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             } else if (s_tgpu_pplane_n && oc3 > 1.0) {
                 /* Portal claim, refined (see the s_tgpu_pplane comment). With
                  * the rim frames derived, NOTHING portal-side claims: the
-                 * inner-rim cull AND the blended-face transparent-cover drop
-                 * both run in the vertex stage on the emitted tri rebuilt
-                 * from the corner attributes (portal_rim_classify /
-                 * portal_sky_covers mirrors - the cover planes ride the
-                 * build's globals, blended faces carry flags16 bit 14). */
+                 * inner-rim cull runs in the vertex stage on the emitted tri
+                 * rebuilt from the corner attributes (portal_rim_classify
+                 * mirror), and the blended passes' fragment stage discards
+                 * what a portal preview covers (the cover planes ride the
+                 * build's globals). */
                 int pcl = 0;
                 if (!s_tgpu_rim_ok) {
                     /* Refinement frames unavailable (plane provider disabled):
@@ -10354,10 +10348,11 @@ static int transp_cover_on(void) {
                  v = (e && *e) ? (*e != '0') : 1; }
     return v;
 }
-/** @brief Stages the portal cover planes into the retained globals for the vertex stage's portal_sky_covers mirror.
+/** @brief Stages the portal cover planes into the retained globals for the blended passes' fragment discard.
  *
- * The planes are the same screen-space openings the feed's drop tests; at
- * most 6 planes and 16 outline points per plane are staged. Filled only
+ * The planes are the same screen-space openings the CPU feed publishes to
+ * the renderer; at most 6 planes and 16 outline points per plane are
+ * staged. Filled only
  * when the rim frames are up (tgpu_portal_frames copied
  * this build's planes into s_pplane); otherwise the blanket portal claim
  * keeps every overlap sector on the CPU walk and no retained blend face can
@@ -10476,7 +10471,8 @@ static void terrain_feed_native(CPUState* cpu) {
             o->a = pp->a; o->b = pp->b; o->c = pp->c; o->pn = pp->pn;
             for (int k = 0; k < pp->pn; k++) { o->px[k] = pp->px[k]; o->py[k] = pp->py[k]; }
         }
-        openpete_native_set_cover_planes(cvp, cn, terrain_game.portal_plane_margin());
+        openpete_native_set_cover_planes(cvp, cn, terrain_game.portal_plane_margin(),
+                                         transp_cover_on());
     }
     rim_frames_derive(cpu);
     rim_sector_cands();
@@ -10763,18 +10759,20 @@ static void terrain_feed_native(CPUState* cpu) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
         if (s_tieronly == 2 &&  t->tier) continue;   /* HP only */
-        /* Transparent terrain the preview covers (plane-cover rule): drop it.
-         * Opaque covered faces need no CPU treatment: they draw at TRUE
-         * depth behind the opening plane, and the preview - mask and colours
+        /* Transparent terrain the preview covers (plane-cover rule). Opaque
+         * covered faces need no CPU treatment: they draw at TRUE depth
+         * behind the opening plane, and the preview - mask and colours
          * testing at plane − M - repaints over them per pixel. Transparent
          * classes draw AFTER the portal sequence and would blend on top of
-         * the preview (a waterfall shining through the arch), so the mirror
-         * of the cover is not drawing them at all. Both tiers: the HP
-         * waterfall is textured but its LP twin is blended UNTEXTURED
-         * gouraud (LP has no textures), and it needs the same drop - the
-         * per-pixel key discard that used to catch it went with the
-         * TERRAIN_KEY fan. */
-        if (s_pplane_n && t->blend && transp_cover_on() && portal_sky_covers(t)) continue;
+         * the preview (a waterfall shining through the arch). The alpha,
+         * additive and quarter-additive classes are discarded per fragment
+         * by the renderer's cover pipelines against the planes published
+         * earlier in this feed (openpete_native_set_cover_planes), which keeps exactly the
+         * part of a face outside the opening or in front of its plane. The
+         * subtractive class has no cover pipeline and keeps the whole-face
+         * drop on the centroid. Both tiers: the HP waterfall is textured but
+         * its LP twin is blended UNTEXTURED gouraud (LP has no textures). */
+        if (s_pplane_n && t->blend == 3 && transp_cover_on() && portal_sky_covers(t)) continue;
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         uint32_t fp_col = 0;
         if (fp_tint) {

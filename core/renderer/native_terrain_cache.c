@@ -151,8 +151,9 @@ typedef struct {
      * openpete_native_hdfold_table at frame_begin. */
     float   hd_lad[4];
     float   hd_entry[OPENPETE_HDFOLD_MAX][16];
-    /* Blended-face portal-cover drop (portal_sky_covers mirror): active
-     * opening planes in screen space. hd_entry ends 16- but not 32-aligned,
+    /* Portal cover planes for the blended passes' fragment discard
+     * (terrain.frag, portal_cover.glsl): active opening planes in screen
+     * space. hd_entry ends 16- but not 32-aligned,
      * so the ivec4 first keeps the dvec4 run at std140's 32-byte base
      * alignment (C natural layout == std140 continues to hold). cov_poly
      * holds one screen point per vec4 slot, 16 slots per plane. */
@@ -518,6 +519,9 @@ typedef struct {
     int32_t pass_sel, full_extent;
     int32_t mat_pass;      /* -1 = every face, 0 = stock, >0 = that bucket */
     int32_t snap;          /* 1 = integer vertex precision (screen-point floor) */
+    int32_t cover;         /* 1 = portal cover discard (terrain.frag) */
+    int32_t pad_[3];
+    float   fc[4];         /* gl_FragCoord -> PSX screen affine, read with cover */
 } tc_pc;
 
 /* --vertex-precision integer, latched once per RHI frame (below) so every
@@ -1811,8 +1815,9 @@ static uint32_t tc_arena_high(int arena)
 /** @brief Fill a terrain push-constant block from a clip mapping.
  *
  * Zeroes the block, copies the clip mapping's extents, band and freeze
- * factor, and stamps the material pass (s_tc_mat_pass) and the vertex
- * precision snap latched for this present (s_tc_snap).
+ * factor, the portal cover flag and fragment affine, and stamps the material
+ * pass (s_tc_mat_pass) and the vertex precision snap latched for this
+ * present (s_tc_snap).
  * @param pc Out: the block to fill.
  * @param pass_sel Pass selector.
  * @param c Clip mapping; must not be NULL. */
@@ -1826,6 +1831,8 @@ static void tc_pc_fill(tc_pc *pc, int pass_sel, const openpete_tercache_clip *c)
     pc->pass_sel = pass_sel; pc->full_extent = c->full_extent;
     pc->mat_pass = s_tc_mat_pass;
     pc->snap = s_tc_snap;
+    pc->cover = c->cover;
+    memcpy(pc->fc, c->fc, sizeof pc->fc);
 }
 
 /** @brief Draw every buffer of one arena with the bound pipeline.

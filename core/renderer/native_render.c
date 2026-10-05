@@ -467,6 +467,26 @@ static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) 
  * overwriting bytes a still-pending scene draws. */
 enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
 #define SCENE_RING 48
+/* The portal opening planes as the blended-terrain _cover fragment stages
+ * read them (the std140 PortalCover block of psx_scene_key.frag and
+ * quad_key.frag; portal_cover.glsl): fc, this pass's gl_FragCoord -> PSX
+ * screen affine (fax, fbx, fay, fby), written at bind time; cnt.x the plane
+ * count, 0 when the blended cover is off; margin.x the plane-cover margin;
+ * abc the plane's screen field, w = outline point count; bbox and poly the
+ * outline, 16 points per plane. */
+#define NR_COVER_PLANES 6
+typedef struct {
+    float   fc[4];
+    int32_t cnt[4];
+    double  margin[4];
+    double  abc[NR_COVER_PLANES][4];
+    float   bbox[NR_COVER_PLANES][4];
+    float   poly[NR_COVER_PLANES * 16][4];
+} nr_cover_block;
+typedef char nr_cover_block_layout_assert[
+    (offsetof(nr_cover_block, margin) == 32 && offsetof(nr_cover_block, abc) == 64 &&
+     offsetof(nr_cover_block, bbox) == 256 && offsetof(nr_cover_block, poly) == 352) ? 1 : -1];
+static nr_cover_block s_cover_live;   /* the latest terrain feed's planes (fc unset) */
 /* The blended-world emission order a game-render scene recorded
  * (bw_key_order_record): keys in first-emission order and the terrain feed's
  * rank among them. The compose sorts re-extracted blended blocks by it. */
@@ -488,6 +508,7 @@ typedef struct {
     openpete_hud_vert *ovl; int ovl_cap, ovl_n;
     openpete_shadow_decal_params shadow;
     openpete_shadow_footprint shadow_foot;   /* the player fan the decal re-rasterizes */
+    nr_cover_block cover;                    /* the portal planes blended terrain tests */
     openpete_occl_camera occl_cam;           /* camera this scene was projected from */
     bw_order_t bw;                           /* blended-world order recorded at publish */
     int       freeze_retained;               /* freeze-backdrop production mode at publish */
@@ -510,6 +531,7 @@ static int ps_freeze_retained(void);
 static uint32_t ps_drawenv_clear(void);
 static const openpete_shadow_decal_params *ps_shadow(void);
 static const openpete_shadow_footprint *ps_shadow_foot(void);
+static const nr_cover_block *ps_cover(void);
 static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
@@ -3427,6 +3449,7 @@ static struct {
     rhi_pipeline *scene_tex_add_pipe; /* additive (ABR mode 1, B+F) textured tris - flame */
     rhi_pipeline *scene_tex_qadd_pipe; /* quarter-additive (ABR mode 3, B+F/4) textured tris - glass */
     rhi_pipeline *gouraud_qadd_pipe;  /* quarter-additive UNTEXTURED gouraud (ABR mode 3) */
+    rhi_pipeline *cover_pipes[2][4];  /* blended terrain with the portal cover discard: [textured][blend class - 1]; no subtractive member, NULL -> the stock pipe */
     rhi_pipeline *scene_tex_sub_pipe; /* subtractive (ABR mode 2, B-F) textured tris - moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
     rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL -> fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES]; /* HUD overlay and panels: UNTEXTURED gouraud, depth-test OFF (on top), one pipe per blend class */
@@ -3761,6 +3784,40 @@ static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
         ok = ok && fam[k];
     }
     if (!ok) blend_family_destroy(dev, fam, nsel);
+}
+
+/** @brief Create the blended-terrain pipelines that run the portal cover discard.
+ *
+ * Each is its stock blended pipeline with the keyed fragment stage's _cover
+ * variant (quad_key_cover.frag, psx_scene_key_cover.frag) and the cover
+ * planes' UBO at set 5. A NULL base, and a pipeline that fails to build,
+ * leave NULL: that class draws through its stock pipeline without the test.
+ * @param dev Device.
+ * @param base The stock descriptions, [textured][blend class - 1].
+ * @param out Receives the pipelines. */
+static void cover_family_create(rhi_device* dev, const rhi_pipeline_desc* const base[2][4],
+                                rhi_pipeline* out[2][4]) {
+    static const char* const k_frag[2] = { "quad_key_cover.frag.spv", "psx_scene_key_cover.frag.spv" };
+    for (int t = 0; t < 2; t++)
+        for (int c = 0; c < 4; c++) {
+            out[t][c] = NULL;
+            if (!base[t][c]) continue;
+            rhi_pipeline_desc d = *base[t][c];
+            d.frag_spv = k_frag[t];
+            d.uniform_set5 = true;
+            out[t][c] = rhi_create_pipeline(dev, &d);
+        }
+}
+
+/** @brief Destroy the pipelines cover_family_create built and clear the table.
+ * @param dev Device.
+ * @param pipes The table. */
+static void cover_family_destroy(rhi_device* dev, rhi_pipeline* pipes[2][4]) {
+    for (int t = 0; t < 2; t++)
+        for (int c = 0; c < 4; c++) {
+            if (pipes[t][c]) rhi_destroy_pipeline(dev, pipes[t][c]);
+            pipes[t][c] = NULL;
+        }
 }
 
 /** @brief Point the RHI's pipeline cache at the per-user state "cache" directory, created on demand.
@@ -4617,6 +4674,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
     s_nr.scene_tex_qadd_pipe = scene_tex_qadd_pipe;
     s_nr.gouraud_qadd_pipe = gouraud_qadd_pipe;
+    {
+        const rhi_pipeline_desc* const cover_base[2][4] = {
+            { &gouraud_blend_desc, &gouraud_add_desc, NULL, &gouraud_qadd_desc },
+            { &scene_tex_blend_desc, &scene_tex_add_desc, NULL, &scene_tex_qadd_desc },
+        };
+        cover_family_create(dev, cover_base, s_nr.cover_pipes);
+    }
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL -> plain sub pipe */
     memcpy(s_nr.gouraud_hud_pipes, gouraud_hud_pipes, sizeof gouraud_hud_pipes);
@@ -5546,7 +5610,8 @@ static void scene_fragcoord_affine(scene_fc_affine *o)
  * screen edges, enough to flip rasterized edge pixels against the CPU-fed
  * draws. The function reads the state scene_to_clip reads (display sizes,
  * panel 0 rect, s_render_full_extent, s_render_freeze_wf), so the two
- * mappings cannot drift apart.
+ * mappings cannot drift apart. The portal cover flag is cleared; the
+ * blended draws set it (bw_draw_tercache).
  * @param out Receives the parameters. */
 static void tercache_clip_params(openpete_tercache_clip *out)
 {
@@ -5560,6 +5625,8 @@ static void tercache_clip_params(openpete_tercache_clip *out)
     out->y_span = 2.0f * s_nr.p0_hy;
     out->freeze_wf = s_render_freeze_wf;
     out->full_extent = s_render_full_extent ? 1 : 0;
+    out->cover = 0;
+    memset(out->fc, 0, sizeof out->fc);
 }
 
 /* ---- depth-aware shadow decal: the shared WORLD-opaque depth pre-pass ------ */
@@ -7002,6 +7069,45 @@ static float shadow_decal_bind_keys(void)
     return keys ? 1.0f : 0.0f;
 }
 
+/** @brief Whether a pipeline is one of the blended-terrain cover pipelines.
+ * @param p Pipeline.
+ * @return 1 for a non-NULL member of s_nr.cover_pipes, else 0. */
+static int nr_is_cover_pipe(const rhi_pipeline* p)
+{
+    for (int t = 0; t < 2; t++)
+        for (int c = 0; c < 4; c++)
+            if (p && p == s_nr.cover_pipes[t][c]) return 1;
+    return 0;
+}
+
+static rhi_ubo* s_cover_ubo;
+/** @brief Bind the composed scene's portal cover planes at set 5 of a cover pipeline.
+ *
+ * The one-block UBO is created on first use. The block is the scene's
+ * planes (ps_cover) with this pass's gl_FragCoord -> PSX screen affine; it
+ * is written on the first bind of each RHI frame and again whenever it
+ * differs from the last one written, so a panel pass and a full-extent pass
+ * of one present each read their own affine. Returns without binding when
+ * the UBO cannot be created. */
+static void bind_cover_block(void)
+{
+    static uint64_t s_serial = UINT64_MAX;
+    static nr_cover_block s_last;
+    if (!s_cover_ubo) s_cover_ubo = rhi_create_ubo(s_nr.dev, (uint32_t)sizeof(nr_cover_block), 1);
+    if (!s_cover_ubo) return;
+    nr_cover_block b = *ps_cover();
+    scene_fc_affine fa;
+    scene_fragcoord_affine(&fa);
+    b.fc[0] = fa.fax; b.fc[1] = fa.fbx; b.fc[2] = fa.fay; b.fc[3] = fa.fby;
+    const uint64_t fs = rhi_frame_serial(s_nr.dev);
+    if (fs != s_serial || memcmp(&b, &s_last, sizeof b) != 0) {
+        rhi_ubo_write(s_cover_ubo, 0, &b, (uint32_t)sizeof b);
+        s_last = b;
+        s_serial = fs;
+    }
+    rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, 5, 0);
+}
+
 /** @brief Bind a pipeline for scene drawing, with the key images a key-resolve pipe samples.
  *
  * When all three key depth images exist and @p p is one of the key-resolve
@@ -7009,15 +7115,18 @@ static float shadow_decal_bind_keys(void)
  * and punch variants of the gouraud, scene-texture and HD cutout pipes),
  * the bind also sets the actor key depth at set 1, the terrain key depth
  * paired with the drain texture at set 2, the moby key depth at set 3 and,
- * when it exists, the moby rank target at set 4. Binding them here keeps
- * every call site correct without per-site handling. Any other pipeline is
- * bound alone.
+ * when it exists, the moby rank target at set 4. A blended-terrain cover
+ * pipe takes those sets and, at set 5, the scene's portal cover planes
+ * (bind_cover_block). Binding them here keeps every call site correct
+ * without per-site handling. Any other pipeline is bound alone.
  * @param p Pipeline to bind. */
 static void bind_scene_pipe(rhi_pipeline* p)
 {
     rhi_bind_pipeline(s_nr.dev, p);
+    const int cover = nr_is_cover_pipe(p);
+    if (cover) bind_cover_block();
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
-    if (p == s_nr.gouraud_pipe || p == s_nr.gouraud_mark_pipe ||
+    if (cover || p == s_nr.gouraud_pipe || p == s_nr.gouraud_mark_pipe ||
         p == s_nr.scene_tex_pipe || p == s_nr.scene_tex_mark_pipe ||
         p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe ||
         p == s_nr.gouraud_blend_pipe || p == s_nr.gouraud_add_pipe ||
@@ -9625,14 +9734,44 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
  * golden's job. */
 static openpete_native_cover_plane s_cvp[8];
 static int   s_cvp_n = 0;
+/** @brief Fill a cover block's planes (every field but fc) from the published openings.
+ *
+ * At most NR_COVER_PLANES planes are kept and at most 16 outline points per
+ * plane; a plane's bounding box is its outline's. n 0 leaves the count 0,
+ * which turns the fragment test off.
+ * @param b Receives the planes.
+ * @param planes The openings; read only when @p n > 0.
+ * @param n Plane count.
+ * @param margin_world The plane-cover margin in world units. */
+static void cover_block_fill(nr_cover_block *b, const openpete_native_cover_plane *planes,
+                             int n, float margin_world)
+{
+    memset(b, 0, sizeof *b);
+    if (n > NR_COVER_PLANES) n = NR_COVER_PLANES;
+    b->cnt[0] = n;
+    b->margin[0] = margin_world;
+    for (int i = 0; i < n; i++) {
+        const openpete_native_cover_plane *pp = &planes[i];
+        const int pn = pp->pn > 16 ? 16 : pp->pn;
+        b->abc[i][0] = pp->a; b->abc[i][1] = pp->b; b->abc[i][2] = pp->c; b->abc[i][3] = pn;
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        for (int k = 0; k < pn; k++) {
+            b->poly[i * 16 + k][0] = pp->px[k]; b->poly[i * 16 + k][1] = pp->py[k];
+            x0 = fminf(x0, pp->px[k]); x1 = fmaxf(x1, pp->px[k]);
+            y0 = fminf(y0, pp->py[k]); y1 = fmaxf(y1, pp->py[k]);
+        }
+        b->bbox[i][0] = x0; b->bbox[i][1] = y0; b->bbox[i][2] = x1; b->bbox[i][3] = y1;
+    }
+}
 static float s_cvp_m = 0.0f;
 void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
-                                      int n, float margin_world)
+                                      int n, float margin_world, int blend_cover)
 {
     if (n > 8) n = 8;
     if (n > 0) memcpy(s_cvp, planes, sizeof(*planes) * (size_t)n);
     s_cvp_n = n;
     s_cvp_m = margin_world;
+    cover_block_fill(&s_cover_live, planes, blend_cover ? n : 0, margin_world);
 }
 /** @brief Verify the portal plane-cover rule on one composed scene and log a census per opening.
  *
@@ -9909,9 +10048,12 @@ static int blended_world_tri(const scene_tri_t* s) {
  * @param first_vert First vertex of the run.
  * @param vert_count Vertex count of the run.
  * @param bl Blend class, 1 to 4.
- * @param textured Nonzero for a textured run. */
+ * @param textured Nonzero for a textured run.
+ * @param terrain Nonzero for a run of terrain triangles: it draws through
+ *        the class's cover pipeline when one exists, whose fragment stage
+ *        discards what a portal preview covers. */
 static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
-                        int vert_count, int bl, int textured) {
+                        int vert_count, int bl, int textured, int terrain) {
     rhi_pipeline* const utp[4] = { s_nr.gouraud_blend_pipe, s_nr.gouraud_add_pipe,
                                    s_nr.gouraud_sub_ztest_pipe, s_nr.gouraud_qadd_pipe };
     rhi_pipeline* const txp[4] = { s_nr.scene_tex_blend_pipe, s_nr.scene_tex_add_pipe,
@@ -9919,7 +10061,8 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
     rhi_pipeline* const hdp[4] = { s_nr.hd_scene_blend_pipe, s_nr.hd_scene_add_pipe,
                                    NULL, NULL };
     const int c = (bl >= 1 && bl <= 4) ? bl - 1 : 0;
-    rhi_pipeline* pipe = textured ? txp[c] : utp[c];
+    rhi_pipeline* const cover = terrain ? s_nr.cover_pipes[textured ? 1 : 0][c] : NULL;
+    rhi_pipeline* pipe = cover ? cover : textured ? txp[c] : utp[c];
     if (!pipe || (textured && !s_nr.vram_tex)) return;
     bind_scene_pipe(pipe);
     /* The subtract pipes enable the dynamic depth bias the shadow decals set;
@@ -9937,6 +10080,9 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
 
 /** @brief Draw one blended class of the retained terrain cache.
  *
+ * The draw carries the portal cover flag and this pass's fragment affine:
+ * terrain.frag discards a fragment a portal preview covers, reading the
+ * cover planes from the cache's globals block.
  * @param c Class: 0 alpha, 1 additive, 2 subtractive.
  * @param tercache_on Nonzero when the cache is live this present; zero
  *        draws nothing. */
@@ -9945,9 +10091,18 @@ static void bw_draw_tercache(int c, int tercache_on) {
     if (!tercache_on) return;
     openpete_tercache_clip aff;
     tercache_clip_params(&aff);
+    scene_fc_affine fa;
+    scene_fragcoord_affine(&fa);
+    aff.cover = 1;
+    aff.fc[0] = fa.fax; aff.fc[1] = fa.fbx; aff.fc[2] = fa.fay; aff.fc[3] = fa.fby;
     openpete_tercache_draw(k_pass[c], &aff, s_nr.vram_tex, 0,
                            s_nr.terrain_key_depth, s_nr.moby_key_depth);
 }
+
+/** @brief Whether a scene triangle came from the terrain feed (its provenance tag's top nibble is 2).
+ * @param s Scene triangle.
+ * @return 1 for terrain, else 0. */
+static int bw_is_terrain(const scene_tri_t* s) { return (s->tag >> 28) == 2u; }
 
 /** @brief Place a blended-world triangle against the terrain feed in the order the pass draws.
  *
@@ -9959,7 +10114,7 @@ static void bw_draw_tercache(int c, int tercache_on) {
  * @param replay Nonzero for a re-extract's block.
  * @return 0 before the feed, 1 a terrain triangle, 2 after the feed. */
 static int bw_ter_phase(const scene_tri_t* scene, int t, int replay) {
-    if ((scene[t].tag >> 28) == 2u) return 1;
+    if (bw_is_terrain(&scene[t])) return 1;
     if (replay) return bw_key_rank(ps_bw(), bw_rank_key(&scene[t])) < ps_bw()->ter_rank ? 0 : 2;
     return scene[t].ter_after ? 2 : 0;
 }
@@ -10000,7 +10155,9 @@ static void bw_tercache_slots(const scene_tri_t* scene, int base, int ntri, int 
  * once a channel clamps, so a fixed class order composites something the GPU
  * never produced. The block is packed in emission order; each maximal run of
  * one class and one texturing mode is one bind and one draw range. A run also
- * ends where a terrain-cache class draws (bw_tercache_slots).
+ * ends where a terrain-cache class draws (bw_tercache_slots) and where the
+ * triangles change between terrain and non-terrain, since only terrain runs
+ * take the portal cover discard.
  * @param scene Scene triangles.
  * @param tx_start First vertex of the textured block that s_txscene indexes.
  * @param first_vert First vertex of the blended world block.
@@ -10017,14 +10174,14 @@ static void draw_blended_world(const scene_tri_t* scene, int tx_start,
         for (; c < 3 && pos[c] == i; c++) bw_draw_tercache(c, tercache_on);
         const int stop = c < 3 ? pos[c] : ntri;
         const scene_tri_t* s0 = &scene[s_txscene[base + i]];
-        const int bl = s0->blend, textured = s0->textured;
+        const int bl = s0->blend, textured = s0->textured, terrain = bw_is_terrain(s0);
         int run = 1;
         while (i + run < stop) {
             const scene_tri_t* sn = &scene[s_txscene[base + i + run]];
-            if (sn->blend != bl || sn->textured != textured) break;
+            if (sn->blend != bl || sn->textured != textured || bw_is_terrain(sn) != terrain) break;
             run++;
         }
-        bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured);
+        bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured, terrain);
         i += run;
     }
     for (; c < 3; c++) bw_draw_tercache(c, tercache_on);
@@ -14445,6 +14602,8 @@ static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
 /** @brief The player shadow fan footprint of the composed scene: the slot's snapshot, or the live block inline. */
 static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot ? &s_ps_slot->shadow_foot : &s_shadow_foot; }
+/** @brief The portal cover planes of the composed scene: the slot's snapshot, or the live block inline. */
+static const nr_cover_block *ps_cover(void) { return s_ps_slot ? &s_ps_slot->cover : &s_cover_live; }
 /** @brief The camera the composed scene was projected from: the slot's snapshot, or the live occlusion camera inline. */
 static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
 /** @brief The blended-world order the composed scene recorded: the slot's copy, or the live record inline. */
@@ -14509,6 +14668,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     if (sl->ovl_n > 0) memcpy(sl->ovl, s_mod_overlay_verts, (size_t)sl->ovl_n * sizeof(openpete_hud_vert));
     sl->shadow = s_shadow_decal;
     sl->shadow_foot = s_shadow_foot;
+    sl->cover = s_cover_live;
     sl->occl_cam = s_occl_cam_live;
     sl->bw = s_bw;
     sl->freeze_retained = s_freeze_retained;
@@ -15829,6 +15989,7 @@ void openpete_native_render_shutdown(void)
             }
     if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
     if (s_shfoot_ubo) { rhi_destroy_ubo(s_nr.dev, s_shfoot_ubo); s_shfoot_ubo = NULL; }
+    if (s_cover_ubo) { rhi_destroy_ubo(s_nr.dev, s_cover_ubo); s_cover_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
@@ -15902,6 +16063,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_qadd_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_qadd_pipe);
+    cover_family_destroy(s_nr.dev, s_nr.cover_pipes);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);
