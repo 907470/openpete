@@ -102,6 +102,9 @@ static long s_animsw_heldx = 0, s_animsw_noheld = 0;
  * that header for the moby within the last two headers it showed (unk). */
 static long s_hold_shown = 0, s_hold_period = 0, s_prevhdr_sig = 0, s_prevhdr_unk = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
+/* Shaded metal census: [0] front kept, [1] back kept, [2] kept in the near
+ * band, [3] blended, [4..6] mobys whose DR_TPAGE ABR is 0, 1, 2. */
+static long s_metal_cnt[7];
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
 /** @brief The base address of the cull-record queue the game's cull pass built.
@@ -8456,24 +8459,27 @@ static uint32_t shaded_lit_color(const int RT[3][3], int nx, int ny, int nz,
  * is the light direction (s_shL, broadcast across the LCM rows) dotted with
  * it, >> 8. The colour is the metal table entry's word 0 as base tint plus
  * intensity times word 1 >> 12, plus a boost of (intensity - 0x5C0) << 3 on
- * every channel when positive, clamped from 12 bits to 8. The draw's
- * far-distance branch (>> 10 with word 0 >> 1) is approximated by this near
- * >> 8 path.
+ * every channel when positive, clamped from 12 bits to 8. A back-facing
+ * face (MAC0 < 0 at r_moby.s 4895-4899) takes the intensity >> 10 and the
+ * whole word 0 shifted right by one before its channels are extracted, so
+ * a channel's low bit enters the channel below it.
  * @param RT The model-to-view rotation.
  * @param nx The face normal X, a signed byte.
  * @param ny The face normal Y.
  * @param nz The face normal Z.
- * @param w0 The metal table entry's base-tint word.
+ * @param w0 The metal table entry's base-tint word, unmasked.
  * @param w1 The metal table entry's reflected-tint word.
+ * @param back Nonzero for a face the draw takes as back-facing.
  * @return The colour as 0x00BBGGRR. */
 static uint32_t shaded_metal_color(const int RT[3][3], int nx, int ny, int nz,
-                                   uint32_t w0, uint32_t w1) {
+                                   uint32_t w0, uint32_t w1, int back) {
     int64_t m1=((int64_t)RT[0][0]*nx+(int64_t)RT[0][1]*ny+(int64_t)RT[0][2]*nz)>>12;
     int64_t m2=((int64_t)RT[1][0]*nx+(int64_t)RT[1][1]*ny+(int64_t)RT[1][2]*nz)>>12;
     int64_t m3=((int64_t)RT[2][0]*nx+(int64_t)RT[2][1]*ny+(int64_t)RT[2][2]*nz)>>12;
     int32_t ir1=sat_ir_lm(m1,0), ir2=sat_ir_lm(m2,0), ir3=sat_ir_lm(m3,0);
     int64_t refl=(int64_t)s_shL[0]*ir1+(int64_t)s_shL[1]*ir2+(int64_t)s_shL[2]*ir3;
     int32_t intensity=(int32_t)(refl>>8);
+    if (back) { intensity >>= 2; w0 >>= 1; }
     int16_t ir0=(int16_t)intensity;
     int r1=(int)((w1<<4)&0xFF0u), g1=(int)((w1>>4)&0xFF0u), b1=(int)((w1>>12)&0xFF0u);
     int r0=(int)((w0<<4)&0xFF0u), g0=(int)((w0>>4)&0xFF0u), b0=(int)((w0>>12)&0xFF0u);
@@ -8914,25 +8920,127 @@ static int shaded_face_otkey(const moby_otk_rec_t* rec, const proj_xy* base, int
     return moby_otk_face_bucket(rec, &f);
 }
 
+/** @brief Whether the shaded draw keeps one face, and whether it takes it as back-facing.
+ *
+ * Outside the metal near band a triangle is kept on NCLIP(v0,v1,v2) > 0 and
+ * a quad on that or NCLIP(v3,v1,v2) < 0; a metal quad kept on the second
+ * test is back-facing, since the draw's MAC0 then holds the negative second
+ * NCLIP (r_moby.s 4853-4861). Inside the band a metal face is kept at either
+ * facing and is back-facing when NCLIP(v0,v1,v2) < 0 (r_moby.s 4844-4851).
+ * @param metal Nonzero for a metal face (word 0 bits 0 and 1).
+ * @param in_band Nonzero when the moby's TRZ is below 0x800.
+ * @param tri Nonzero for a triangle.
+ * @param n1 The float NCLIP of (v0,v1,v2).
+ * @param n2 The float NCLIP of (v3,v1,v2), unused on a triangle.
+ * @param back Receives 1 for a back-facing metal face, else 0.
+ * @return 1 when the face is kept, 0 when the draw drops it. */
+static int shaded_face_keep(int metal, int in_band, int tri, double n1, double n2, int* back) {
+    *back = 0;
+    if (metal && in_band) { *back = n1 < 0.0; return 1; }
+    if (n1 > 0.0) return 1;
+    if (tri || !(n2 < 0.0)) return 0;
+    *back = metal;
+    return 1;
+}
+
+/** @brief The four vertex colours of one shaded face by its shading mode.
+ *
+ * Word 0 bit 0 selects flat shading, lit once from word 1's face normal: with
+ * bit 1 set the metal tint (shaded_metal_color), otherwise the directional
+ * light on the flat table base. Gouraud reads word 1's colour fields
+ * (>> {21,14,7,0} & 0x1FC): byte offsets into the baked table of a
+ * static-gouraud record, else slots of the lit per-vertex colours. A field
+ * past its table gives 0x808080.
+ * @param cpu The guest CPU state, read only.
+ * @param R The moby's shaded record.
+ * @param w0 The face's first word.
+ * @param w1 The face's second word.
+ * @param pcol The lit per-vertex colours.
+ * @param pcn The number of entries in pcol.
+ * @param mw0 The metal table entry's base-tint word.
+ * @param mw1 The metal table entry's reflected-tint word.
+ * @param back Nonzero for a back-facing metal face.
+ * @param c0 Receives the first vertex colour.
+ * @param c1 Receives the second vertex colour.
+ * @param c2 Receives the third vertex colour.
+ * @param c3 Receives the fourth vertex colour. */
+static void shaded_face_colors(CPUState* cpu, const shaded_rec* R, uint32_t w0, uint32_t w1,
+                               const uint32_t* pcol, int pcn, uint32_t mw0, uint32_t mw1,
+                               int back, uint32_t* c0, uint32_t* c1, uint32_t* c2,
+                               uint32_t* c3) {
+    uint32_t* c[4] = { c0, c1, c2, c3 };
+    if (w0 & 1u) {
+        int fnz = (int8_t)(w1 >> 24), fnx = (int8_t)(w1 >> 16), fny = (int8_t)(w1 >> 8);
+        uint32_t v = (w0 & 2u) ? shaded_metal_color(R->RT, fnx, fny, fnz, mw0, mw1, back)
+                               : shaded_lit_color(R->RT, fnx, fny, fnz, R->base, 0);
+        for (int k = 0; k < 4; k++) *c[k] = v;
+        return;
+    }
+    for (int k = 0; k < 4; k++) {
+        uint32_t o = (w1 >> (21 - 7 * k)) & 0x1FCu;
+        if (R->ctab) *c[k] = o < (uint32_t)R->ctab_len ? cpu->read_word(R->ctab + o) & 0xFFFFFFu : 0x808080u;
+        else *c[k] = (int)(o >> 2) < pcn ? pcol[o >> 2] : 0x808080u;
+    }
+}
+
+/** @brief OPENPETE_SHADED_FACEDBG="cls,vbl": per-face NCLIP forensics for one class over two VBLs.
+ *
+ * Prints the float NCLIPs against the GTE-style integer NCLIP on truncated
+ * SXY, to catch sign flips on near-edge-on faces.
+ * @param R The moby's shaded record.
+ * @param f The face's stream index.
+ * @param i0 The first vertex slot.
+ * @param i1 The second vertex slot.
+ * @param i2 The third vertex slot.
+ * @param i3 The fourth vertex slot.
+ * @param tri Nonzero for a triangle.
+ * @param p0 The first projected vertex.
+ * @param p1 The second projected vertex.
+ * @param p2 The third projected vertex.
+ * @param ncl1 The float NCLIP of (v0,v1,v2).
+ * @param ncl2 The float NCLIP of (v3,v1,v2), 0 on a triangle.
+ * @param emitted The triangles the face emitted. */
+static void shaded_face_dbg(const shaded_rec* R, int f, int i0, int i1, int i2, int i3, int tri,
+                            const proj_xy* p0, const proj_xy* p1, const proj_xy* p2,
+                            double ncl1, double ncl2, int emitted) {
+    static long s_fd_cls = -2, s_fd_f0 = -1;
+    if (s_fd_cls == -2) {
+        const char* e = getenv("OPENPETE_SHADED_FACEDBG");
+        s_fd_cls = -1;
+        if (e && *e) { char* c = NULL; s_fd_cls = strtol(e, &c, 0);
+                       if (c && *c == ',') s_fd_f0 = strtol(c+1, NULL, 0); }
+    }
+    if (s_fd_cls < 0 || (int)s_cur_moby_cls != (int)s_fd_cls ||
+        (int)openpete_frame < s_fd_f0 || (int)openpete_frame >= s_fd_f0 + 2) return;
+    long i0i = (long)((int)p1->sx - (int)p0->sx) * ((int)p2->sy - (int)p0->sy)
+             - (long)((int)p2->sx - (int)p0->sx) * ((int)p1->sy - (int)p0->sy);
+    fprintf(stderr, "[shface vbl=%u] moby=%08x cls=%03x face=%d idx=%d,%d,%d,%d "
+            "p0=(%.2f,%.2f) p1=(%.2f,%.2f) p2=(%.2f,%.2f)%s ncl1=%.3f ncl2=%.3f int1=%ld emit=%d\n",
+            openpete_frame, R->moby, s_cur_moby_cls, f, i0, i1, i2, i3,
+            (double)p0->sx, (double)p0->sy, (double)p1->sx, (double)p1->sy,
+            (double)p2->sx, (double)p2->sy, tri ? " TRI" : " QUAD",
+            ncl1, ncl2, i0i, emitted);
+}
+
 /** @brief Build s_wtri[] from the shaded pass's moby records and return the triangle count.
  *
  * project_all_shaded fills the projected vertices and s_shrecs[]; each record's
  * face stream (func_80022A2C .L800232A8) is then walked. Word 0 of a face packs
  * four vertex slots, (w0 >> {21,14,7,0}) & 0x1FC with >> 2 indexing the
  * record's projected vertices, and a triangle has slot 2 equal to slot 3. A
- * face with a slot at or past the vertex count is skipped. A triangle is kept
- * when its float NCLIP is positive; a quad, (v0,v1,v2) and (v1,v3,v2), when
- * NCLIP1 > 0 or NCLIP2(v3,v1,v2) < 0.
+ * face with a slot at or past the vertex count is skipped. A kept quad emits
+ * (v0,v1,v2) and (v1,v3,v2); the facing tests run on float NCLIP.
  *
- * Bit 0 of word 0 selects the shading mode. Gouraud (mode 0) reads per-vertex
- * colours by word 1's colour fields: shaded_lit_color over the model's inline
- * normals at model + 0x10, or the baked colour table at [model + 8] for a
- * static-gouraud record. Flat (bit 0 set) lights once from the face normal in
- * word 1: with bit 1 set it takes the metal tint of shaded_metal_color (mode
- * 2), otherwise the directional light on the flat table base (mode 1). A mode 1
- * face of a moby whose m_SpecularMetalColor >> 22 is 0 is emitted with blend 1
- * (semi-transparent). OPENPETE_SHADED_NOHL drops the highlight term of the
- * gouraud colours.
+ * Bit 0 of word 0 selects the shading mode and shaded_face_colors the
+ * colours. shaded_face_keep decides the facing: a metal face (bits 0 and 1)
+ * of a moby whose TRZ is below 0x800 is kept at either facing, the front
+ * face semi-transparent and the back face opaque with the back-face colour;
+ * elsewhere a metal face is opaque and front-only. A flat-basic face of a
+ * moby whose m_SpecularMetalColor >> 22 is 0 is semi-transparent. The
+ * semi-transparent faces of one moby take the ABR of the DR_TPAGE the draw
+ * emits for it: flags less one, flag 1 for any kept flat ABE face and flag
+ * 2 for any kept metal face. OPENPETE_SHADED_NOHL drops the highlight term
+ * of the gouraud colours.
  *
  * Per record it sets the HUD tag s_cur_ui (0 actor, 1 flat HUD, 2 depth-tested
  * HUD), the cutscene-front flag, class and OT bias. Each face's paint bucket
@@ -8945,6 +9053,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
     static proj_xy sv[8192]; project_all_shaded(cpu, sv, 8192);   /* fills sv[] + s_shrecs[] */
     if (s_sh_nohl < 0) { const char* e=getenv("OPENPETE_SHADED_NOHL"); s_sh_nohl = (e&&*e!='0'); }
     s_shmode[0]=s_shmode[1]=s_shmode[2]=0;
+    memset(s_metal_cnt, 0, sizeof s_metal_cnt);
     s_gout.n = 0;
     for (int r = 0; r < s_nshrecs; r++) {
         shaded_rec* R = &s_shrecs[r];
@@ -9009,14 +9118,16 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * NOT the flat gray table - see shaded_metal_color. Read once per moby. */
         uint32_t mscolor = cpu->read_word(R->moby + moby_game.spec_colour_off);
         uint32_t mtab = moby_game.metal_coltab + (uint32_t)((int32_t)mscolor >> 21);
-        uint32_t metal_w0 = cpu->read_word(mtab) & 0xFFFFFFu;
+        uint32_t metal_w0 = cpu->read_word(mtab);
         uint32_t metal_w1 = cpu->read_word(mtab + 4u) & 0xFFFFFFu;
         /* flat-basic ABE (func_80022A2C block_8002363C): a flat-shaded moby whose flat
          * colour-table index (m_SpecularMetalColor>>22) is 0 emits its faces
-         * semi-transparent (the .s adds 0x02000000 = the GPU ABE bit). Per-moby, not
-         * depth-gated. (Metal-face ABE is depth(SZ3>=2048)/NCLIP-keyed and intertwined
-         * with the far-darkening approximation - deferred to a calibrated pass.) */
+         * semi-transparent (the .s adds 0x02000000 = the GPU ABE bit, r_moby.s 4775-4779). */
         int flat_abe = (((int32_t)mscolor) >> 22) == 0;
+        /* Metal near band (r_moby.s 4844-4847): TRZ - 0x800 < 0. */
+        int in_band = R->otk.trz < 0x800;
+        unsigned abe_flags = 0u;   /* the draw's s7 low bits: 1 flat ABE, 2 metal */
+        int rt0 = s_gout.n;
         uint32_t fp = R->faces;
         for (int f = 0; f < R->fcount && s_gout.n < MAX_NTRI; f++, fp += 8u) {
             uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
@@ -9026,105 +9137,57 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             int i2 = (int)((w0 >>  7) & 0x1FCu) >> 2;
             int i3 = (int)( w0        & 0x1FCu) >> 2;
             if (i0 >= vc || i1 >= vc || i2 >= vc) continue;
-            /* Colour: w0 bit0 selects shading MODE - flat (1) lights once from
-             * w1's 3-byte face normal; gouraud (0) reads per-vertex colours
-             * indexed by w1's colour fields (>>{21,14,7,0}&0x1FC, >>2 = slot). */
-            uint32_t c0,c1,c2,c3; uint8_t mode;
-            if (w0 & 1u) {
-                int fnz=(int8_t)(w1>>24), fnx=(int8_t)(w1>>16), fny=(int8_t)(w1>>8);
-                if (w0 & 2u)   /* METAL: env-reflection tint (block_80023720) */
-                    c0=c1=c2=c3 = shaded_metal_color(R->RT, fnx, fny, fnz, metal_w0, metal_w1);
-                else           /* flat-basic: directional light, flat table base */
-                    c0=c1=c2=c3 = shaded_lit_color(R->RT, fnx, fny, fnz, R->base, 0);
-                mode = (w0 & 2u) ? 2 : 1;
-            } else if (R->ctab) {
-                /* STATIC-GOURAUD: w1 fields are BYTE offsets into the baked
-                 * colour table at [model+8] (.s: t2 = ((w1>>sh)&0x1FC) + s4;
-                 * colour word used verbatim). */
-                uint32_t o0=(w1>>21)&0x1FCu, o1=(w1>>14)&0x1FCu, o2=(w1>>7)&0x1FCu, o3=w1&0x1FCu;
-                uint32_t L=(uint32_t)R->ctab_len;
-                c0 = o0<L ? cpu->read_word(R->ctab+o0)&0xFFFFFFu : 0x808080u;
-                c1 = o1<L ? cpu->read_word(R->ctab+o1)&0xFFFFFFu : 0x808080u;
-                c2 = o2<L ? cpu->read_word(R->ctab+o2)&0xFFFFFFu : 0x808080u;
-                c3 = o3<L ? cpu->read_word(R->ctab+o3)&0xFFFFFFu : 0x808080u;
-                mode = 0;
-            } else {
-                int j0=(int)((w1>>21)&0x1FCu)>>2, j1=(int)((w1>>14)&0x1FCu)>>2;
-                int j2=(int)((w1>> 7)&0x1FCu)>>2, j3=(int)( w1     &0x1FCu)>>2;
-                c0 = j0<pcn?pcol[j0]:0x808080u; c1 = j1<pcn?pcol[j1]:0x808080u;
-                c2 = j2<pcn?pcol[j2]:0x808080u; c3 = j3<pcn?pcol[j3]:0x808080u;
-                mode = 0;
-            }
-            /* flat-basic faces inherit the moby's flat ABE (mode 1 only); gouraud
-             * (mode 0) and metal (mode 2) stay opaque here (metal ABE deferred).
-             * blend=1 == ABR0 (50% B/2+F/2), the untextured-ABE default. */
-            int sh_blend = (mode == 1 && flat_abe) ? 1 : 0;
+            int tri = (i2 == i3);
+            if (!tri && i3 >= vc) continue;
+            proj_xy* p0 = &base[i0]; proj_xy* p1 = &base[i1]; proj_xy* p2 = &base[i2];
+            proj_xy* p3 = tri ? p2 : &base[i3];
+            double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);  /* float backface cull (see build_walk_tris) */
+            double ncl2 = tri ? 0.0 : tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy);
+            uint8_t mode = (w0 & 1u) ? ((w0 & 2u) ? 2 : 1) : 0;
+            int back = 0;
+            if (!shaded_face_keep(mode == 2, in_band, tri, ncl1, ncl2, &back)) continue;
+            int sh_blend = 0;
+            if (mode == 2) { abe_flags |= 2u; sh_blend = in_band && !back; }
+            else if (mode == 1 && flat_abe) { abe_flags |= 1u; sh_blend = 1; }
+            uint32_t c0,c1,c2,c3;
+            shaded_face_colors(cpu, R, w0, w1, pcol, pcn, metal_w0, metal_w1, back, &c0, &c1, &c2, &c3);
             int mt0 = s_gout.n;
-            uint64_t rt0 = rt_now();
+            uint64_t rt0k = rt_now();
             int ot_bk = shaded_face_otkey(&R->otk, base, i0, i1, i2, i3, vc, w0, w1);
-            rt_add(RT_KEY, rt0, 1);
+            rt_add(RT_KEY, rt0k, 1);
             /* Face identity for the paint-verdict carry and the rank
              * calibration: the face's stream index, bit 0 the quad's half. */
             s_emit_fkey = 0x80000000u | ((uint32_t)f << 1);
-            proj_xy* p0 = &base[i0]; proj_xy* p1 = &base[i1]; proj_xy* p2 = &base[i2];
-            double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);  /* float backface cull (see build_walk_tris) */
-            if (i2 == i3) {                                       /* TRI */
-                if (ncl1 > 0.0) {
-                    s_emit_otk = ot_bk;
-                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
-                }
-            } else if (i3 < vc) {                                 /* QUAD */
-                proj_xy* p3 = &base[i3];
-                double ncl2 = tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy);
-                if (ncl1 > 0.0 || ncl2 < 0.0) {
-                    s_emit_otk = ot_bk;
-                    emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
-                    s_emit_fkey |= 1u;
-                    s_emit_otk = moby_otk_second(ot_bk, 1);
-                    if (s_gout.n < MAX_NTRI)
-                        emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
-                }
+            s_emit_otk = ot_bk;
+            emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
+            if (!tri) {
+                s_emit_fkey |= 1u;
+                s_emit_otk = moby_otk_second(ot_bk, 1);
+                if (s_gout.n < MAX_NTRI)
+                    emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
             }
             s_emit_otk = -1;
-            { /* OPENPETE_SHADED_FACEDBG="cls,frameLo": per-face NCLIP forensics for
-               * one class over 2 VBLs - float ncl vs the GTE's integer NCLIP (which
-               * runs on truncated SXY), to catch sign flips on near-edge-on faces. */
-                static long s_fd_cls = -2, s_fd_f0 = -1;
-                if (s_fd_cls == -2) {
-                    const char* e = getenv("OPENPETE_SHADED_FACEDBG");
-                    s_fd_cls = -1;
-                    if (e && *e) { char* c = NULL; s_fd_cls = strtol(e, &c, 0);
-                                   if (c && *c == ',') s_fd_f0 = strtol(c+1, NULL, 0); }
-                }
-                if (s_fd_cls >= 0 && (int)s_cur_moby_cls == (int)s_fd_cls &&
-                    (int)openpete_frame >= s_fd_f0 && (int)openpete_frame < s_fd_f0 + 2) {
-                    long i0i = (long)((int)p1->sx - (int)p0->sx) * ((int)p2->sy - (int)p0->sy)
-                             - (long)((int)p2->sx - (int)p0->sx) * ((int)p1->sy - (int)p0->sy);
-                    fprintf(stderr, "[shface vbl=%u] moby=%08x cls=%03x face=%d idx=%d,%d,%d,%d "
-                            "p0=(%.2f,%.2f) p1=(%.2f,%.2f) p2=(%.2f,%.2f)%s ncl1=%.3f ncl2=%.3f int1=%ld emit=%d\n",
-                            openpete_frame, R->moby, s_cur_moby_cls, f, i0, i1, i2, i3,
-                            (double)p0->sx, (double)p0->sy, (double)p1->sx, (double)p1->sy,
-                            (double)p2->sx, (double)p2->sy, i2==i3?" TRI":" QUAD",
-                            ncl1, i2==i3 ? 0.0 :
-                                (i3<vc ? tri_nclip(base[i3].sx,base[i3].sy,p1->sx,p1->sy,p2->sx,p2->sy) : -999.0),
-                            i0i, s_gout.n - mt0);
-                }
+            shaded_face_dbg(R, f, i0, i1, i2, i3, tri, p0, p1, p2, ncl1, ncl2, s_gout.n - mt0);
+            if (mode == 2 && s_gout.n > mt0) {
+                s_metal_cnt[back ? 1 : 0]++; s_metal_cnt[2] += in_band; s_metal_cnt[3] += sh_blend;
             }
             for (int t = mt0; t < s_gout.n; t++) s_wtri_mode[t] = mode;
         }
-        /* ABR-CARVE-OUT: the game builds metal SimpleModel faces
-         * semi-transparent (cmd 0x2A) then REMOVES ABE per-face on a runtime depth
-         * (SZ3>=2048) / NCLIP (MAC0) test, and rates the kept ones via a per-moby
-         * DR_MODE (metal-only->ABR1 additive). We draw metal faces opaque. This was
-         * flagged as a mismatch by the static recomp read, but it is NOT a visible
-         * bug: on a 54-gem demo frame (f3494) the native-vs-PsyCross A/B diff is
-         * mean 0.9 with no systematic per-gem divergence (only sub-pixel edge jitter)
-         * and the gems look correct - the unmodelled ABE-removal gate
-         * clears it for these faces, and any kept additive shimmer is subtle and also
-         * dropped by PsyCross. Left opaque; revisit only if a metal moby ever looks
-         * wrong. (The earlier per-frame ABR-FIXME alarm here was a false-positive
-         * firehose - it counted every metal-mode face without the ABE-removal gate.) */
+        /* After the moby's faces the draw emits one DR_TPAGE whose ABR is
+         * the s7 flags less one and links it into the chain ahead of them
+         * (r_moby.s 5043-5073); the walk holds no textured face, so that ABR
+         * is in force for every semi-transparent face of the moby. */
+        if (abe_flags) {
+            int bl = moby_abr_blend((int)abe_flags - 1);
+            for (int t = rt0; t < s_gout.n; t++) if (s_wtri[t].blend) s_wtri[t].blend = bl;
+            if (s_gout.n > rt0) s_metal_cnt[4 + abe_flags - 1]++;
+        }
     }
+    if (moby_verify_vbl() && s_metal_cnt[0] + s_metal_cnt[1])
+        fprintf(stderr, "[moby-shaded-metal vbl=%u] front=%ld back=%ld in_band=%ld blended=%ld "
+                        "abr0=%ld abr1=%ld abr2=%ld\n", openpete_frame, s_metal_cnt[0],
+                s_metal_cnt[1], s_metal_cnt[2], s_metal_cnt[3], s_metal_cnt[4],
+                s_metal_cnt[5], s_metal_cnt[6]);
     return s_gout.n;
 }
 
