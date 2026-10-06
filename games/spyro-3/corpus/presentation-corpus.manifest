@@ -152,3 +152,6 @@ title-demo-camcut|5800|100||5852
 # the_second_warning cutscene, VBL 1293-1301: Bianca interpolates wrongly on
 # the sub-tick view just before she steps out from behind the tree (native).
 second-warning-bianca-tree|1289|2||1293,1295,1297,1298,1299,1300,1301|--skip-to-cutscene the_second_warning
+# the_second_warning cutscene, VBL 1785-1793: Hunter interpolates wrongly on
+# the sub-tick view (native).
+second-warning-hunter|1781|2||1785,1787,1788,1789,1790,1791,1793|--skip-to-cutscene the_second_warning
