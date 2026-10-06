@@ -103,8 +103,9 @@ static long s_animsw_heldx = 0, s_animsw_noheld = 0;
 static long s_hold_shown = 0, s_hold_period = 0, s_prevhdr_sig = 0, s_prevhdr_unk = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 /* Shaded metal census: [0] front kept, [1] back kept, [2] kept in the near
- * band, [3] blended, [4..6] mobys whose DR_TPAGE ABR is 0, 1, 2. */
-static long s_metal_cnt[7];
+ * band, [3] blended, [4..6] mobys whose DR_TPAGE ABR is 0, 1, 2, [7] front
+ * triangles composed over the back faces, [8] front triangles left blended. */
+static long s_metal_cnt[9];
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
 /** @brief The base address of the cull-record queue the game's cull pass built.
@@ -9022,6 +9023,301 @@ static void shaded_face_dbg(const shaded_rec* R, int f, int i0, int i1, int i2, 
             ncl1, ncl2, i0i, emitted);
 }
 
+/* One in-band metal triangle the shaded walk holds for the moby's composite:
+ * its projected vertices, flat colour, paint bucket and face identity. */
+typedef struct {
+    const proj_xy* v[3];
+    uint32_t col;
+    int32_t  otk;
+    uint32_t fkey;
+} metal_tri;
+
+/* The in-band metal triangles of the moby being walked: the back faces as
+ * drawn, and the front faces held until the moby's ABR is known. */
+#define METAL_TRI_MAX 512
+static metal_tri s_metal_back[METAL_TRI_MAX], s_metal_front[METAL_TRI_MAX];
+static int s_metal_back_n, s_metal_front_n;
+
+/** @brief One channel of a semi-transparent face over the pixel beneath it, by ABR.
+ *
+ * ABR 0 is (B + F) / 2, 1 is B + F, 2 is B - F, 3 is B + F / 4, clamped to
+ * 0..255.
+ * @param abr The ABR in force.
+ * @param b The channel beneath.
+ * @param f The face's channel.
+ * @return The composed channel. */
+static int metal_abr_channel(int abr, int b, int f) {
+    int v = abr == 0 ? (b + f) >> 1 : abr == 1 ? b + f : abr == 2 ? b - f : b + (f >> 2);
+    return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+
+/** @brief A face colour composed over another by ABR, both 0x00BBGGRR.
+ *
+ * @param abr The ABR in force.
+ * @param b The colour beneath.
+ * @param f The face colour.
+ * @return The composed colour. */
+static uint32_t metal_abr_compose(int abr, uint32_t b, uint32_t f) {
+    uint32_t out = 0u;
+    for (int k = 0; k < 24; k += 8)
+        out |= (uint32_t)metal_abr_channel(abr, (int)((b >> k) & 0xFFu), (int)((f >> k) & 0xFFu)) << k;
+    return out;
+}
+
+/* A screen-space clip polygon vertex. */
+typedef struct { double x, y; } mclip_pt;
+#define MCLIP_MAX 12
+
+/** @brief Whether point a orders before point b, x first, then y. */
+static int mclip_before(mclip_pt a, mclip_pt b) {
+    return a.x < b.x || (a.x == b.x && a.y < b.y);
+}
+
+/** @brief Twice the signed area of (a, b, p), with (a, b) taken in canonical order.
+ *
+ * Canonical order makes the value for an edge shared by two triangles the
+ * same number in both, up to sign.
+ * @param a One end of the line.
+ * @param b The other end.
+ * @param p The point.
+ * @param flip Receives -1 when the canonical order swapped a and b, else 1.
+ * @return The cross product. */
+static double mclip_side(mclip_pt a, mclip_pt b, mclip_pt p, int* flip) {
+    *flip = 1;
+    if (mclip_before(b, a)) { mclip_pt t = a; a = b; b = t; *flip = -1; }
+    return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+}
+
+/** @brief Clip a convex polygon to the inside of one edge of a triangle.
+ *
+ * The crossing point of a polygon edge is taken with that edge's ends in
+ * canonical order, so two polygons sharing the edge get bit-identical
+ * points and their pieces meet without a crack.
+ * @param in The polygon.
+ * @param n Its vertex count.
+ * @param a The edge's first end.
+ * @param b The edge's second end.
+ * @param sgn 1 when the inside is the positive side of (a, b), else -1.
+ * @param out Receives the clipped polygon.
+ * @return The clipped vertex count. */
+static int mclip_edge(const mclip_pt* in, int n, mclip_pt a, mclip_pt b, int sgn, mclip_pt* out) {
+    int m = 0;
+    for (int i = 0; i < n && m < MCLIP_MAX - 1; i++) {
+        mclip_pt p = in[i], q = in[(i + 1) % n];
+        int fp, fq;
+        double dp = mclip_side(a, b, p, &fp) * fp * sgn, dq = mclip_side(a, b, q, &fq) * fq * sgn;
+        if (dp >= 0.0) out[m++] = p;
+        if ((dp >= 0.0) != (dq >= 0.0)) {
+            mclip_pt s0 = p, s1 = q; double d0 = dp, d1 = dq;
+            if (mclip_before(q, p)) { s0 = q; s1 = p; d0 = dq; d1 = dp; }
+            double t = d0 / (d0 - d1);
+            out[m++] = (mclip_pt){ s0.x + t * (s1.x - s0.x), s0.y + t * (s1.y - s0.y) };
+        }
+    }
+    return m;
+}
+
+/** @brief The part of a screen triangle inside another, as a convex polygon.
+ *
+ * @param f The clipped triangle.
+ * @param b The clipping triangle.
+ * @param out Receives the polygon.
+ * @return Its vertex count, below 3 when the triangles do not overlap. */
+static int mclip_tri(const mclip_pt f[3], const mclip_pt b[3], mclip_pt* out) {
+    mclip_pt buf[2][MCLIP_MAX];
+    int n = 3;
+    for (int i = 0; i < 3; i++) buf[0][i] = f[i];
+    int cur = 0;
+    double area = (b[1].x - b[0].x) * (b[2].y - b[0].y) - (b[1].y - b[0].y) * (b[2].x - b[0].x);
+    int sgn = area > 0.0 ? 1 : -1;
+    for (int e = 0; e < 3 && n >= 3; e++) {
+        n = mclip_edge(buf[cur], n, b[e], b[(e + 1) % 3], sgn, buf[cur ^ 1]);
+        cur ^= 1;
+    }
+    for (int i = 0; i < n; i++) out[i] = buf[cur][i];
+    return n;
+}
+
+/** @brief Twice the unsigned area of a polygon. */
+static double mclip_area(const mclip_pt* p, int n) {
+    double a = 0.0;
+    for (int i = 0; i < n; i++)
+        a += p[i].x * p[(i + 1) % n].y - p[(i + 1) % n].x * p[i].y;
+    return fabs(a);
+}
+
+/** @brief A vertex on a front triangle's plane at a screen point.
+ *
+ * Screen barycentrics weight 1/vz and 1/tvz (perspective-correct depth) and
+ * the remaining fields linearly; the integer SXY is the rounded point.
+ * @param t The triangle.
+ * @param p The screen point.
+ * @return The vertex. */
+static proj_xy metal_plane_vertex(const metal_tri* t, mclip_pt p) {
+    const proj_xy *a = t->v[0], *b = t->v[1], *c = t->v[2];
+    double den = (double)(b->sx - a->sx) * (c->sy - a->sy) - (double)(c->sx - a->sx) * (b->sy - a->sy);
+    double wb = ((p.x - a->sx) * (c->sy - a->sy) - (c->sx - a->sx) * (p.y - a->sy)) / den;
+    double wc = ((b->sx - a->sx) * (p.y - a->sy) - (p.x - a->sx) * (b->sy - a->sy)) / den;
+    double wa = 1.0 - wb - wc;
+    proj_xy o = *a;
+    o.sx = (float)p.x; o.sy = (float)p.y;
+    o.vz  = (float)(1.0 / (wa / a->vz + wb / b->vz + wc / c->vz));
+    o.tvz = (float)(1.0 / (wa / a->tvz + wb / b->tvz + wc / c->tvz));
+    o.ex = (float)(wa * a->ex + wb * b->ex + wc * c->ex);
+    o.ey = (float)(wa * a->ey + wb * b->ey + wc * c->ey);
+    o.ez = (float)(wa * a->ez + wb * b->ez + wc * c->ez);
+    o.sat = a->sat | b->sat | c->sat; o.unr = a->unr | b->unr | c->unr;
+    o.iv.sx = (int16_t)lrint(p.x); o.iv.sy = (int16_t)lrint(p.y);
+    o.iv.sz = (int32_t)lrint(o.vz);
+    return o;
+}
+
+/** @brief Hold one in-band metal triangle for the moby's composite.
+ *
+ * A back triangle joins the back list, which the front triangles compose
+ * over; a front triangle joins the front list, emitted after the face walk.
+ * A full list drops the triangle.
+ * @param back Nonzero for a back-facing triangle.
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @param col The flat colour.
+ * @param otk The paint bucket word.
+ * @param fkey The face identity. */
+static void metal_hold(int back, const proj_xy* a, const proj_xy* b, const proj_xy* c,
+                       uint32_t col, int32_t otk, uint32_t fkey) {
+    metal_tri* L = back ? s_metal_back : s_metal_front;
+    int* n = back ? &s_metal_back_n : &s_metal_front_n;
+    if (*n >= METAL_TRI_MAX) return;
+    L[(*n)++] = (metal_tri){ { a, b, c }, col, otk, fkey };
+}
+
+/** @brief Emit one in-band metal front triangle composed over the moby's back faces.
+ *
+ * The draw paints a metal moby's back faces opaque, their buckets pushed
+ * 0x200 further back, before its front faces, and a front face then blends
+ * onto them at the moby's ABR (r_moby.s 4895-4899, 4952-4961). Where the
+ * back triangles' screen pieces under the front triangle tile it (their
+ * areas sum to its own within 0.1%), each piece is emitted opaque on the
+ * front plane in the colour the blend produces over that back face, so the
+ * result needs nothing behind it to survive depth or the paint-key contest.
+ * Otherwise, or on a mangled vertex, the triangle is emitted semi-transparent
+ * as it stands.
+ * @param t The front triangle.
+ * @param abr The ABR in force.
+ * @param blend_class The blend code the fallback triangle carries.
+ * @return The triangles emitted. */
+static int metal_front_emit(const metal_tri* t, int abr, int blend_class) {
+    int n0 = s_gout.n;
+    mclip_pt f[3];
+    int mangled = 0;
+    for (int k = 0; k < 3; k++) {
+        f[k] = (mclip_pt){ t->v[k]->sx, t->v[k]->sy };
+        mangled |= t->v[k]->sat | t->v[k]->unr;
+    }
+    double fa = mclip_area(f, 3), sum = 0.0;
+    static mclip_pt pc[METAL_TRI_MAX][MCLIP_MAX];
+    static int pn[METAL_TRI_MAX];
+    for (int j = 0; j < s_metal_back_n && !mangled; j++) {
+        mclip_pt b[3];
+        for (int k = 0; k < 3; k++) b[k] = (mclip_pt){ s_metal_back[j].v[k]->sx, s_metal_back[j].v[k]->sy };
+        pn[j] = mclip_tri(f, b, pc[j]);
+        if (pn[j] >= 3) sum += mclip_area(pc[j], pn[j]);
+    }
+    s_emit_fkey = t->fkey;
+    if (mangled || fa <= 0.0 || fabs(sum - fa) > fa * 1e-3) {
+        s_metal_cnt[8]++;
+        s_emit_otk = t->otk;
+        emit_wtri((proj_xy*)t->v[0], (proj_xy*)t->v[1], (proj_xy*)t->v[2],
+                  t->col, t->col, t->col, 0,0,0,0,0,0, 0,0,0,0,0,16, blend_class);
+        return s_gout.n - n0;
+    }
+    s_metal_cnt[7]++;
+    for (int j = 0; j < s_metal_back_n && s_gout.n < MAX_NTRI; j++) {
+        if (pn[j] < 3) continue;
+        uint32_t c = metal_abr_compose(abr, s_metal_back[j].col, t->col);
+        proj_xy v[MCLIP_MAX];
+        for (int k = 0; k < pn[j]; k++) v[k] = metal_plane_vertex(t, pc[j][k]);
+        for (int k = 1; k + 1 < pn[j] && s_gout.n < MAX_NTRI; k++) {
+            s_emit_otk = t->otk;
+            emit_wtri(&v[0], &v[k], &v[k + 1], c, c, c, 0,0,0,0,0,0, 0,0,0,0,0,16, 0);
+        }
+    }
+    s_emit_otk = -1;
+    return s_gout.n - n0;
+}
+
+/** @brief Emit one kept shaded face, or hold it for the moby's metal composite.
+ *
+ * A metal face in the near band joins the moby's metal lists (metal_hold);
+ * its front side is emitted later by metal_moby_finish. Every other face
+ * emits (v0,v1,v2) and, on a quad, (v1,v3,v2) with the second half's
+ * bucket word, the face identity carrying bit 0 on that half.
+ * @param p0 The first vertex.
+ * @param p1 The second vertex.
+ * @param p2 The third vertex.
+ * @param p3 The fourth vertex, p2 on a triangle.
+ * @param tri Nonzero for a triangle.
+ * @param c The four vertex colours.
+ * @param ot_bk The face's bucket word.
+ * @param fkey The face identity.
+ * @param metal_band Nonzero for a metal face of a moby in the near band.
+ * @param back Nonzero for a back-facing face.
+ * @param blend The blend code. */
+static void shaded_face_emit(proj_xy* p0, proj_xy* p1, proj_xy* p2, proj_xy* p3, int tri,
+                             const uint32_t c[4], int ot_bk, uint32_t fkey, int metal_band,
+                             int back, int blend) {
+    if (metal_band) {
+        metal_hold(back, p0, p1, p2, c[0], ot_bk, fkey);
+        if (!tri) metal_hold(back, p1, p3, p2, c[0], moby_otk_second(ot_bk, 1), fkey | 1u);
+        if (!back) return;
+    }
+    s_emit_fkey = fkey;
+    s_emit_otk = ot_bk;
+    emit_wtri(p0,p1,p2, c[0],c[1],c[2], 0,0,0,0,0,0, 0,0,0,0,0,16, blend);
+    if (!tri && s_gout.n < MAX_NTRI) {
+        s_emit_fkey = fkey | 1u;
+        s_emit_otk = moby_otk_second(ot_bk, 1);
+        emit_wtri(p1,p3,p2, c[1],c[3],c[2], 0,0,0,0,0,0, 0,0,0,0,0,16, blend);
+    }
+    s_emit_otk = -1;
+}
+
+/** @brief Count one kept metal face into the shaded metal census.
+ *
+ * @param drawn Nonzero when the face emitted a triangle or is held to blend.
+ * @param back Nonzero for a back-facing face.
+ * @param in_band Nonzero when the moby is in the near band.
+ * @param blended Nonzero for a semi-transparent face. */
+static void metal_count_face(int drawn, int back, int in_band, int blended) {
+    if (!drawn) return;
+    s_metal_cnt[back ? 1 : 0]++;
+    s_metal_cnt[2] += in_band;
+    s_metal_cnt[3] += blended;
+}
+
+/** @brief Close one moby of the shaded walk: emit its held metal fronts and apply its DR_TPAGE ABR.
+ *
+ * After the moby's faces the draw emits one DR_TPAGE whose ABR is the s7
+ * flags less one and links it into the chain ahead of them (r_moby.s
+ * 5043-5073); the walk holds no textured face, so that ABR is in force for
+ * every semi-transparent face of the moby. The held front triangles emit
+ * through metal_front_emit at that ABR, then every semi-transparent
+ * triangle of the moby takes the ABR's blend code.
+ * @param rt0 The moby's first triangle in s_wtri.
+ * @param abe_flags The moby's s7 flags: 1 flat ABE, 2 metal. */
+static void metal_moby_finish(int rt0, unsigned abe_flags) {
+    for (int k = 0; k < s_metal_front_n && s_gout.n < MAX_NTRI; k++) {
+        int e0 = s_gout.n;
+        metal_front_emit(&s_metal_front[k], (int)abe_flags - 1, 1);
+        for (int t = e0; t < s_gout.n; t++) s_wtri_mode[t] = 2;
+    }
+    if (!abe_flags) return;
+    int bl = moby_abr_blend((int)abe_flags - 1);
+    for (int t = rt0; t < s_gout.n; t++) if (s_wtri[t].blend) s_wtri[t].blend = bl;
+    if (s_gout.n > rt0) s_metal_cnt[4 + abe_flags - 1]++;
+}
+
 /** @brief Build s_wtri[] from the shaded pass's moby records and return the triangle count.
  *
  * project_all_shaded fills the projected vertices and s_shrecs[]; each record's
@@ -9035,7 +9331,8 @@ static void shaded_face_dbg(const shaded_rec* R, int f, int i0, int i1, int i2, 
  * colours. shaded_face_keep decides the facing: a metal face (bits 0 and 1)
  * of a moby whose TRZ is below 0x800 is kept at either facing, the front
  * face semi-transparent and the back face opaque with the back-face colour;
- * elsewhere a metal face is opaque and front-only. A flat-basic face of a
+ * the front faces are emitted after the walk, composed over the back faces
+ * (metal_front_emit). Elsewhere a metal face is opaque and front-only. A flat-basic face of a
  * moby whose m_SpecularMetalColor >> 22 is 0 is semi-transparent. The
  * semi-transparent faces of one moby take the ABR of the DR_TPAGE the draw
  * emits for it: flags less one, flag 1 for any kept flat ABE face and flag
@@ -9128,6 +9425,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         int in_band = R->otk.trz < 0x800;
         unsigned abe_flags = 0u;   /* the draw's s7 low bits: 1 flat ABE, 2 metal */
         int rt0 = s_gout.n;
+        s_metal_back_n = s_metal_front_n = 0;
         uint32_t fp = R->faces;
         for (int f = 0; f < R->fcount && s_gout.n < MAX_NTRI; f++, fp += 8u) {
             uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
@@ -9157,37 +9455,20 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             rt_add(RT_KEY, rt0k, 1);
             /* Face identity for the paint-verdict carry and the rank
              * calibration: the face's stream index, bit 0 the quad's half. */
-            s_emit_fkey = 0x80000000u | ((uint32_t)f << 1);
-            s_emit_otk = ot_bk;
-            emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
-            if (!tri) {
-                s_emit_fkey |= 1u;
-                s_emit_otk = moby_otk_second(ot_bk, 1);
-                if (s_gout.n < MAX_NTRI)
-                    emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
-            }
-            s_emit_otk = -1;
+            const uint32_t cq[4] = { c0, c1, c2, c3 };
+            shaded_face_emit(p0, p1, p2, p3, tri, cq, ot_bk, 0x80000000u | ((uint32_t)f << 1),
+                             mode == 2 && in_band, back, sh_blend);
             shaded_face_dbg(R, f, i0, i1, i2, i3, tri, p0, p1, p2, ncl1, ncl2, s_gout.n - mt0);
-            if (mode == 2 && s_gout.n > mt0) {
-                s_metal_cnt[back ? 1 : 0]++; s_metal_cnt[2] += in_band; s_metal_cnt[3] += sh_blend;
-            }
+            if (mode == 2) metal_count_face(s_gout.n > mt0 || sh_blend, back, in_band, sh_blend);
             for (int t = mt0; t < s_gout.n; t++) s_wtri_mode[t] = mode;
         }
-        /* After the moby's faces the draw emits one DR_TPAGE whose ABR is
-         * the s7 flags less one and links it into the chain ahead of them
-         * (r_moby.s 5043-5073); the walk holds no textured face, so that ABR
-         * is in force for every semi-transparent face of the moby. */
-        if (abe_flags) {
-            int bl = moby_abr_blend((int)abe_flags - 1);
-            for (int t = rt0; t < s_gout.n; t++) if (s_wtri[t].blend) s_wtri[t].blend = bl;
-            if (s_gout.n > rt0) s_metal_cnt[4 + abe_flags - 1]++;
-        }
+        metal_moby_finish(rt0, abe_flags);
     }
     if (moby_verify_vbl() && s_metal_cnt[0] + s_metal_cnt[1])
         fprintf(stderr, "[moby-shaded-metal vbl=%u] front=%ld back=%ld in_band=%ld blended=%ld "
-                        "abr0=%ld abr1=%ld abr2=%ld\n", openpete_frame, s_metal_cnt[0],
-                s_metal_cnt[1], s_metal_cnt[2], s_metal_cnt[3], s_metal_cnt[4],
-                s_metal_cnt[5], s_metal_cnt[6]);
+                        "abr0=%ld abr1=%ld abr2=%ld composed=%ld left_blended=%ld\n", openpete_frame,
+                s_metal_cnt[0], s_metal_cnt[1], s_metal_cnt[2], s_metal_cnt[3], s_metal_cnt[4],
+                s_metal_cnt[5], s_metal_cnt[6], s_metal_cnt[7], s_metal_cnt[8]);
     return s_gout.n;
 }
 

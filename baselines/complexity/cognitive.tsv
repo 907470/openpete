@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 9104665dc8f9e7582865ac1f43d5be77a4286e92
+# head: 7a63870a8338a9ed6e70cfdf91bcc58c5f726c63
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
@@ -120,7 +120,7 @@ games/common/renderer/flame.c	flame_build_strip	59	0
 games/common/renderer/flame.c	flame_dump	26	0	
 games/common/renderer/flame.c	flame_strip_compare	52	0	
 games/common/renderer/moby.c	append_revealed_regular_inner	125	0	
-games/common/renderer/moby.c	build_shaded_walk_tris	121	0	
+games/common/renderer/moby.c	build_shaded_walk_tris	99	0	
 games/common/renderer/moby.c	capture_gte	49	0	
 games/common/renderer/moby.c	compare_and_report	90	0	
 games/common/renderer/moby.c	compare_walk_vs_prims	251	0	
