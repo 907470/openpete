@@ -776,7 +776,7 @@ static long s_simple_screen_drawn;
 /* Records decoded on the low-poly lists (tier <= 0), and records whose colour
  * block took the depth cue (IR0 > 0). */
 static long s_simple_lp, s_simple_fade;
-static long s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped;
+static long s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped, s_flat_front_blended;
 extern unsigned openpete_frame;
 
 /* The four flat-material words the draw keeps in PSX scratchpad at
@@ -882,14 +882,20 @@ typedef struct {
     uint32_t col[4];
 } s23_shade;
 
-/** @brief The flat-lit material's face treatment: the winding verdict, the back side's blend and one colour.
+/** @brief The flat-lit material's face treatment: the winding verdict, the near-band blend and one colour.
  *
  * Two-sided, untextured F3/F4 whatever
  * the face's own texture words say, and one colour off a face normal instead of
  * four out of the colour block (mobydraw.s:4720-4724,4756-4765,4849-4862).
  *
- * It is two-sided in the sense that whichever way it faces it draws whole, and
- * only the ABE bit changes. The draw takes the back-facing verdict from the sign
+ * The near band is the record's translation Z, less 0x800 when word 1 bit 0 is
+ * set, below zero (mobydraw.s:4750-4755). Inside it the front face draws
+ * semi-transparent and the back face opaque; outside it the front face draws
+ * opaque and the back face is dropped. The draw builds the primitive code as
+ * 0x2A/0x22 (F4/F3 with ABE) less t5 (mobydraw.s:4854-4863): t5 is the back
+ * bit shifted to 0x2000000 (mobydraw.s:4748-4749), and outside the band the
+ * `lui t5, 0x200` in the delay slot of the back-face drop sets it for the front
+ * face too (mobydraw.s:4757-4758). The draw takes the back-facing verdict from the sign
  * of the NCLIP register it carries into the emit (mobydraw.s:4747-4748, srl/sll
  * 31/25 at 0x80034930), which the four-way test above it sets: a triangle keeps
  * its own NCLIP and drops on zero (mobydraw.s:4714-4718); a quad forces +1 when
@@ -903,7 +909,7 @@ typedef struct {
  * @param tri 1 for a triangle.
  * @param nA The NCLIP of (v0,v1,v2).
  * @param nB The NCLIP of (v3,v1,v2), on a quad.
- * @param trz The record's translation depth the back side is tested against.
+ * @param trz The record's translation depth the near band is tested against.
  * @param flat_w The four material words in force.
  * @param sh Receives the halves, the blend flag and the colour; `textured` is cleared.
  * @return 0 when the face emits nothing, 1 otherwise. */
@@ -922,12 +928,14 @@ static int s23_simple_flat_face(const int R[3][3], uint32_t f1, int tri,
         back = !(nB > 0.0);
         sh->emit_a = sh->emit_b = 1;
     }
-    /* The back side survives only within the near threshold the draw tests the
-     * translation Z against (mobydraw.s:4788-4797), and draws semi-transparent
-     * (mobydraw.s:4783-4784). */
+    /* Near band (mobydraw.s:4750-4758): the back face survives only inside it
+     * and draws opaque there; the front face blends only inside it. */
+    int in_band = (trz - ((f1 & 1u) ? 2048.0 : 0.0) < 0.0);
     if (back) {
-        if (trz - ((f1 & 1u) ? 2048.0 : 0.0) >= 0.0) { s_flat_back_dropped++; return 0; }
+        if (!in_band) { s_flat_back_dropped++; return 0; }
         s_flat_back_emitted++;
+    } else if (in_band) {
+        s_flat_front_blended++;
         sh->blend = 1;
     }
     /* Bit 0 picks which of the entry's two colour pairs (mobydraw.s:4772-4776). */
@@ -950,7 +958,7 @@ static int s23_simple_flat_face(const int R[3][3], uint32_t f1, int tri,
  * @param tri 1 for a triangle.
  * @param nA The NCLIP of (v0,v1,v2).
  * @param nB The NCLIP of (v3,v1,v2), on a quad.
- * @param trz The record's translation depth the back side is tested against.
+ * @param trz The record's translation depth the near band is tested against.
  * @param flat_w The four material words in force.
  * @param ctab The record's decoded colours.
  * @param ncol The number of entries in `ctab`.
@@ -1789,7 +1797,7 @@ static int s23_simple_pass(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
     s_simple_lp = s_simple_fade = 0;
-    s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = 0;
+    s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = s_flat_front_blended = 0;
     s23_simple_capture(cpu);
     /* Extended LOD: the cull's distance box is what keeps a distant moby out
      * of the queue, so the records it rejected are rebuilt here and decoded
@@ -1810,12 +1818,14 @@ static int s23_simple_pass(CPUState* cpu) {
         fprintf(stderr, "[moby-simple vbl=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
                         "screendrawn=%ld "
                         "verts=%ld faces=%ld flat=%ld tris=%d revealed=%d lp=%ld fade=%ld "
-                        "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld\n",
+                        "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld "
+                        "flat_front_blended=%ld\n",
                 openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
                 s_simple_screen_drawn,
                 s_simple_verts, s_simple_faces, s_simple_flat, n, revealed,
                 s_simple_lp, s_simple_fade,
-                s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped);
+                s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped,
+                s_flat_front_blended);
     return n;
 }
 
