@@ -228,6 +228,7 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define SF_SECINLOD   128u
 #define SF_LPGRADE    256u
 #define SF_NEARVAR    512u
+#define SF_LPUNCOV    1024u
 
 /* face_flags bits - keep in sync with rhi_terrain_vertex (rhi.h) */
 #define FF_SLOT_MASK  0x1FFu
@@ -240,6 +241,8 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define FF_W3_40      (1u << 15)
 #define FF_W3_80      (1u << 16)
 #define FF_HQELIG     (1u << 17)
+#define FF_LPUNCOV    (1u << 17)   /* LP: off the sector's HP mesh (bit 17 is
+                                    * FF_HQELIG on HP faces) */
 #define FF_FLOOR      (1u << 18)
 #define FF_PINCELLS   (1u << 19)   /* HP: the pin sends this face to the cells */
 #define FF_CELLOK     (1u << 20)   /* HP: the face may take the 4x4 cells */
@@ -1268,6 +1271,7 @@ void main()
     bool gapfill_face = (gf & GF_GAPFILL) != 0 && (ff & FF_GAPFILL) != 0u;
     if (lp && !fillPass) {
         if ((sf & SF_LPGAPONLY) != 0u && (ff & FF_GAPFILL) == 0u) { kill_vert(); return; }
+        if ((sf & SF_LPUNCOV) != 0u && (ff & FF_LPUNCOV) == 0u) { kill_vert(); return; }
         double z3g = quad ? m3c.z : m2.z;
         double slotv = (m0.z + m1.z + m2.z + z3g) / 32.0lf;
         if ((gf & GF_NOLOD) == 0) {

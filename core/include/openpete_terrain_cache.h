@@ -125,6 +125,8 @@ enum {
                                    * clip-fan vertex stage) instead of its plain
                                    * ones: exactly one of the two sets survives,
                                    * so a sector never draws twice */
+#define OPTC_SF_LPUNCOV    1024u  /* the LP world pass draws only the faces
+                                   * baked with the LP-uncovered face bit */
 
 /* Global flag bits (globals UBO; mirrored in terrain.vert). */
 #define OPTC_GF_NEARHQ     1u

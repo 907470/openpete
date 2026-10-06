@@ -3049,6 +3049,8 @@ typedef struct {
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
     uint8_t  gapfill;                              /* LP only: frozen fill-tag face (terrain_fill_tags.h) */
     uint8_t  fillcand;                             /* LP only: gapfill set by the inspector preview, not the list */
+    uint8_t  uncov;                                /* LP only: a sample point lies off the sector's HP mesh
+                                                    * (tsc_tag_uncovered; distance-binning games only) */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
     uint8_t  dside;                                /* double-sided, emits past both NCLIP halves:
@@ -3119,6 +3121,7 @@ typedef struct {
     int nLpC, nHpC;                          /* colour-array entry counts (GPU-cache liveness hash) */
     uint32_t lpColSpan, hpColSpan;           /* colour bytes each tier's faces index (tsc_decode_faces) */
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
+    int nUncov;                              /* LP faces tagged uncov (tsc_tag_uncovered) */
     unsigned fillGen;                        /* openpete_fillpick_generation() at last tagging */
     int originX, originY, originZ;
     int centreX, centreY, centreZ, radius;   /* header bounding sphere (w0/w1) - the .s LP/HP binning inputs */
@@ -3740,6 +3743,160 @@ static void tsc_retag_fill(CPUState* cpu, tscache_t* C,
     }
 }
 
+/* LP-to-HP coverage tolerance in decoded vertex units: an LP sample point
+ * farther than this from every HP triangle of its sector is off the HP mesh.
+ * An LP face that approximates its HP surface deviates from it by tens of
+ * units; LP-only geometry over a partial HP mesh (Spyro 2's spires over a
+ * ground strip) stands hundreds of units off it. At 32, coarse LP faces
+ * start to draw in front of the HP surface they approximate. */
+#define TSC_LPCOV_TOL 64.0
+
+/** @brief Returns the squared distance from a point to a segment.
+ *
+ * The parameter of the closest point is clamped to [0, 1]; a degenerate
+ * segment measures to its first end.
+ * @param p The point.
+ * @param a The segment's first end.
+ * @param b The segment's second end.
+ * @return The squared distance. */
+static double tsc_seg_d2(const double p[3], const double a[3], const double b[3]) {
+    double ab[3], ap[3], t = 0.0, l2 = 0.0, d2 = 0.0;
+    for (int k = 0; k < 3; k++) {
+        ab[k] = b[k] - a[k]; ap[k] = p[k] - a[k];
+        t += ap[k] * ab[k]; l2 += ab[k] * ab[k];
+    }
+    t = l2 > 0.0 ? fmin(fmax(t / l2, 0.0), 1.0) : 0.0;
+    for (int k = 0; k < 3; k++) { double d = ap[k] - t * ab[k]; d2 += d * d; }
+    return d2;
+}
+
+/** @brief Returns the squared distance from a point to a triangle.
+ *
+ * A point whose projection onto the triangle's plane falls inside the
+ * triangle (every edge's cross product with the corner-to-point vector on
+ * the normal's side) measures to the plane; any other point, and every point
+ * of a degenerate triangle, measures to the nearest of the three edges.
+ * @param p The point.
+ * @param v The triangle's three corners.
+ * @return The squared distance. */
+static double tsc_tri_d2(const double p[3], const double v[3][3]) {
+    double e0[3], e1[3], n[3];
+    for (int k = 0; k < 3; k++) { e0[k] = v[1][k] - v[0][k]; e1[k] = v[2][k] - v[0][k]; }
+    n[0] = e0[1] * e1[2] - e0[2] * e1[1];
+    n[1] = e0[2] * e1[0] - e0[0] * e1[2];
+    n[2] = e0[0] * e1[1] - e0[1] * e1[0];
+    double nl2 = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+    int inside = nl2 > 0.0;
+    for (int e = 0; e < 3 && inside; e++) {
+        const double* a = v[e]; const double* b = v[(e + 1) % 3];
+        double ed[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+        double ap[3] = { p[0] - a[0], p[1] - a[1], p[2] - a[2] };
+        double cx = ed[1] * ap[2] - ed[2] * ap[1];
+        double cy = ed[2] * ap[0] - ed[0] * ap[2];
+        double cz = ed[0] * ap[1] - ed[1] * ap[0];
+        inside = (cx * n[0] + cy * n[1] + cz * n[2]) >= 0.0;
+    }
+    if (inside) {
+        double h = (p[0] - v[0][0]) * n[0] + (p[1] - v[0][1]) * n[1] + (p[2] - v[0][2]) * n[2];
+        return h * h / nl2;
+    }
+    double d2 = tsc_seg_d2(p, v[0], v[1]);
+    d2 = fmin(d2, tsc_seg_d2(p, v[1], v[2]));
+    return fmin(d2, tsc_seg_d2(p, v[2], v[0]));
+}
+
+/** @brief Copies a cached face's four corners into double triples.
+ *
+ * @param V The tier's decoded vertices.
+ * @param F The face; its four indices must lie inside V.
+ * @param q Receives the corners in i0, i1, i2, i3 order. */
+static void tsc_face_corners(const tsvert_t* V, const tsface_t* F, double q[4][3]) {
+    const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
+    for (int c = 0; c < 4; c++) {
+        q[c][0] = V[ci[c]].x; q[c][1] = V[ci[c]].y; q[c][2] = V[ci[c]].z;
+    }
+}
+
+/** @brief Returns the squared distance from a point to a sector's HP mesh, stopping early inside a bound.
+ *
+ * Each HP face whose indices lie inside the HP vertex bank contributes the
+ * triangles the walk emits: (i0, i1, i2), and for a quad also (i1, i2, i3).
+ * The scan returns as soon as one triangle lies within stop2.
+ * @param C The cached sector.
+ * @param p The point, in the sector's decoded vertex frame.
+ * @param stop2 The squared distance at which the scan stops.
+ * @return The smallest squared distance found, or a value at or below stop2. */
+static double tsc_hp_d2(const tscache_t* C, const double p[3], double stop2) {
+    double best = INFINITY;
+    for (int f = 0; f < C->nHpF && best > stop2; f++) {
+        const tsface_t* H = &C->hpF[f];
+        if (H->i0 >= C->nHpV || H->i1 >= C->nHpV || H->i2 >= C->nHpV || H->i3 >= C->nHpV)
+            continue;
+        double q[4][3];
+        tsc_face_corners(C->hpV, H, q);
+        best = fmin(best, tsc_tri_d2(p, (const double (*)[3])q));
+        if (H->quad) best = fmin(best, tsc_tri_d2(p, (const double (*)[3])&q[1]));
+    }
+    return best;
+}
+
+/** @brief Returns the largest distance from an LP face's sample points to its sector's HP mesh, stopping early past a bound.
+ *
+ * The samples are the face's corners, the midpoints of its edges (a quad's
+ * perimeter in strip order runs i0, i1, i3, i2) and its centre. A sample
+ * within tol of the HP mesh counts as covered and contributes a value below
+ * tol; the scan returns at the first sample farther than tol.
+ * @param C The cached sector.
+ * @param F The LP face; its indices must lie inside the LP vertex bank.
+ * @param tol The coverage tolerance in decoded vertex units.
+ * @return The largest sample distance found, above tol for an uncovered face. */
+static double tsc_lp_face_gap(const tscache_t* C, const tsface_t* F, double tol) {
+    double q[4][3], smp[9][3];
+    tsc_face_corners(C->lpV, F, q);
+    const int nc = F->quad ? 4 : 3;
+    static const int ring4[4] = { 0, 1, 3, 2 }, ring3[3] = { 0, 1, 2 };
+    const int* ring = F->quad ? ring4 : ring3;
+    const int ns = 2 * nc + 1;          /* corners, edge midpoints, centre */
+    for (int k = 0; k < 3; k++) {
+        smp[2 * nc][k] = 0.0;
+        for (int c = 0; c < nc; c++) {
+            smp[c][k] = q[ring[c]][k];
+            smp[nc + c][k] = 0.5 * (q[ring[c]][k] + q[ring[(c + 1) % nc]][k]);
+            smp[2 * nc][k] += q[ring[c]][k] / nc;
+        }
+    }
+    double worst = 0.0, tol2 = tol * tol;
+    for (int i = 0; i < ns && worst <= tol2; i++)
+        worst = fmax(worst, tsc_hp_d2(C, smp[i], tol2));
+    return sqrt(worst);
+}
+
+/** @brief Tags the LP faces a distance-binning game's sector draws apart from its HP mesh.
+ *
+ * Runs only where the draw bins the two lists by distance
+ * (game_layout.terrain.hp_far): there a sector's LP mesh can carry
+ * geometry its HP mesh lacks (a strip of ground HP under LP spires), which
+ * the guest draws whenever the sector bins LP. An LP face is uncov when a
+ * sample point (tsc_lp_face_gap) lies farther than TSC_LPCOV_TOL from every
+ * HP triangle of the same sector. A sector with no HP faces and a face with
+ * an out-of-bank index stay untagged. nUncov counts the tagged faces. A
+ * poly-anim sector is re-tagged whenever tsc_vert_anim_refresh decodes
+ * moved vertices.
+ * @param C The cached sector; its LP faces and nUncov are updated. */
+static void tsc_tag_uncovered(tscache_t* C) {
+    C->nUncov = 0;
+    if (!C->lpF || !C->lpV) return;
+    for (int f = 0; f < C->nLpF; f++) C->lpF[f].uncov = 0;
+    if (!game_layout.terrain.hp_far || !C->hpF || !C->hpV) return;
+    for (int f = 0; f < C->nLpF; f++) {
+        tsface_t* F = &C->lpF[f];
+        if (F->i0 >= C->nLpV || F->i1 >= C->nLpV || F->i2 >= C->nLpV || F->i3 >= C->nLpV)
+            continue;
+        F->uncov = (uint8_t)(tsc_lp_face_gap(C, F, TSC_LPCOV_TOL) > TSC_LPCOV_TOL);
+        C->nUncov += F->uncov;
+    }
+}
+
 /* A sector named by an env poly-anim descriptor animates its packed verts in
  * RAM - but the .s Phase-1 walk only re-packs the bank of the TIER it draws,
  * so the LP bank of a sector the .s always bins HP (near) can hold an
@@ -4107,6 +4264,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
             for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
             C->nGapfill = 0;
         }
+        tsc_tag_uncovered(C);
     }
     return C;
 }
@@ -4239,7 +4397,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                     hp = (const uint8_t*)C->hpV;
                     for (size_t n = sizeof(tsvert_t) * (size_t)(C->hpV ? nHp : 0), j = 0; j < n; j++)
                         h = (h ^ hp[j]) * 16777619u;
-                    if (h != C->vertHash) { C->vertHash = h; C->vertGen++; }
+                    if (h != C->vertHash) { C->vertHash = h; C->vertGen++; tsc_tag_uncovered(C); }
                 }
             } else if (s_vanim_on) {
                 /* Sub-tick present: fill the fractional lerp banks prev->cur at the
@@ -6813,6 +6971,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         T.c[2] = tgpu_p4_of(&SC->lpV[F->i2]); T.c[3] = tgpu_p4_of(&SC->lpV[F->i3]);
         T.face_flags = base_ff | (1u << 9)                       /* tier LP */
                      | (F->gapfill ? (1u << 11) : 0u)
+                     | ((uint32_t)F->uncov << 17)                /* LP uncovered */
                      | (F->dside   ? (1u << 12) : 0u)            /* LP w0&0x80 */
                      | (F->quad    ? (1u << 14) : 0u)
                      | (F->floorf  ? (1u << 18) : 0u)
@@ -7296,10 +7455,68 @@ typedef struct {
  * computation). cbin stays double: the debug prints quote it raw. */
 typedef struct tn_secverd_s {
     double  cbin;
-    uint8_t drawHP, drawLP, lpFarOnly, lpGapOnly, fillLP, secInLOD;
+    uint8_t drawHP, drawLP, lpFarOnly, lpGapOnly, lpUncovOnly, fillLP, secInLOD;
 } tn_secverd;
 static tn_secverd s_pre_verd[1024];
 static uint8_t    s_tgpu_own[1024];      /* GPU owns this sector this walk */
+
+/** @brief Computes a distance-binning game's own HP and LP list verdicts for a sector.
+ *
+ * The draw's list binning, environment.s:800225A0-80022640: vz is the
+ * bounding centre's view-Z through the binning matrix, clamped like IR3. A
+ * sector lists LP while vz + radius - lp_near (plus lp_near_shift on a
+ * sector with lp_near_shift_flag) is positive, and HP while vz - radius is
+ * below hp_far (hp_far_tight on a sector with tight_flags); either list
+ * also needs faces and its no-tier flag clear. A sector can land in both
+ * lists where the two distance bands overlap.
+ * @param SC The sector's cache entry.
+ * @param cbin The bounding centre's view-Z through the binning matrix.
+ * @param binHP Receives the HP list verdict.
+ * @param binLP Receives the LP list verdict. */
+static void sector_bin_lists(const tscache_t* SC, double cbin, int* binHP, int* binLP) {
+    const int flags = SC->flags;
+    double vz = ngte_ir_clamp(cbin);
+    int r = SC->radius;
+    int shift = (flags & (int)game_layout.terrain.lp_near_shift_flag)
+                ? game_layout.terrain.lp_near_shift : 0;
+    int hpFar = (flags & (int)game_layout.terrain.tight_flags)
+                ? game_layout.terrain.hp_far_tight : game_layout.terrain.hp_far;
+    *binLP = !(flags & (int)game_layout.terrain.no_lp_flag) && SC->nLpF > 0
+             && (vz + r - game_layout.terrain.lp_near + shift > 0);
+    *binHP = !(flags & (int)game_layout.terrain.no_hp_flag) && SC->nHpF > 0
+             && (vz - r < hpFar);
+}
+
+/* The LP ride-along a sector the list verdict leaves LP-unlisted takes. */
+enum { TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY };
+
+/** @brief Picks the LP ride-along for a sector whose list verdict leaves its LP tier undrawn.
+ *
+ * A game whose draw does not bin by distance (terrain.hp_far 0) takes its
+ * LOD ladder: the LOD handoff substitutes a drawn-HP sector's LP for its
+ * far-dropped HP (far-only, outside the tier-faithful bin), else a sector
+ * with frozen fill tags draws those faces (gap-only). A game whose draw
+ * bins by distance keeps its list verdict, except under extended LOD
+ * (openpete_no_lod), where the HP list holds every sector and the LP list
+ * none: a drawn-HP sector the draw's own binning lists LP (binLP) and with
+ * LP faces off its HP mesh (nUncov) draws those faces (uncov-only), the
+ * geometry the guest draws only from the LP list. The binning gate keeps
+ * the guest's near bound and, on a poly-anim sector, draws the LP bank only
+ * while the guest re-packs it.
+ * @param SC The sector's cache entry.
+ * @param G The latched walk config.
+ * @param drawHP The sector's HP verdict.
+ * @param binLP The draw's own LP list verdict (sector_bin_lists; 0 on a
+ *        game that bins by flags).
+ * @return One of TN_RIDE_NONE, TN_RIDE_FARONLY, TN_RIDE_GAPONLY, TN_RIDE_UNCOVONLY. */
+static int sector_lp_ride(const tscache_t* SC, const tn_wcfg* G, int drawHP, int binLP) {
+    if (game_layout.terrain.hp_far)
+        return (openpete_no_lod && drawHP && binLP && SC->nUncov > 0)
+               ? TN_RIDE_UNCOVONLY : TN_RIDE_NONE;
+    if (G->lod_handoff && !G->tier_faithful && drawHP) return TN_RIDE_FARONLY;
+    if (s_gapfill_en && SC->nGapfill > 0) return TN_RIDE_GAPONLY;
+    return TN_RIDE_NONE;
+}
 
 /** @brief Computes one sector's tier and fill verdicts in the serial prepass.
  *
@@ -7310,8 +7527,8 @@ static uint8_t    s_tgpu_own[1024];      /* GPU owns this sector this walk */
  * half-widths draws neither list. A game whose draw bins by distance
  * (terrain.hp_far, LOD on) takes the draw's own list binning, where a sector
  * can land in both lists; otherwise the flags decide, with the tier-faithful
- * distance tests when enabled and the LP LOD-handoff and gap-fill
- * substitutions. fillLP marks an LP list kept for hole fill. The rule
+ * distance tests when enabled. A sector left LP-unlisted takes the LP
+ * ride-along sector_lp_ride picks. fillLP marks an LP list kept for hole fill. The rule
  * comments sit beside each decision in the code and in walk_sector.
  * @param SC The sector's cache entry.
  * @param G The latched walk config.
@@ -7335,19 +7552,10 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
          * the 4:3 half-width would reject. */
         culled = tsec_sphere_cull(c1m, c2m, cbin, SC->radius, G->cull_wx, G->cull_wy);
     }
+    int binHP = 0, binLP = 0;
+    if (game_layout.terrain.hp_far) sector_bin_lists(SC, cbin, &binHP, &binLP);
     if (game_layout.terrain.hp_far && !openpete_no_lod) {
-        /* The draw's own list binning, environment.s:800225A0-80022640. A
-         * sector can land in both lists where the two distance bands overlap.
-         * vz is the bounding centre's view-Z through the binning matrix. */
-        double vz = ngte_ir_clamp(cbin);
-        int r = SC->radius;
-        int shift = (flags & (int)game_layout.terrain.lp_near_shift_flag)
-                    ? game_layout.terrain.lp_near_shift : 0;
-        int hpFar = (flags & (int)game_layout.terrain.tight_flags)
-                    ? game_layout.terrain.hp_far_tight : game_layout.terrain.hp_far;
-        drawLP = !(flags & noLP) && nLpF > 0
-                 && (vz + r - game_layout.terrain.lp_near + shift > 0);
-        drawHP = !(flags & noHPf) && nHpF > 0 && (vz - r < hpFar);
+        drawHP = binHP; drawLP = binLP;
     } else {
         drawHP = !(flags & noHPf) && nHpF > 0;
         drawLP = !(flags & noLP) && nLpF > 0 && ((flags & forceLP) || !drawHP);
@@ -7359,21 +7567,31 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     }
     if (culled) { drawHP = 0; drawLP = 0; }
     int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
-    int lpFarOnly = 0, lpGapOnly = 0;
-    /* The LP substitutions are the LOD ladder of a game whose draw does not bin
-     * by distance; where the draw owns list membership its verdict stands. */
-    if (!game_layout.terrain.hp_far && !culled
-        && !drawLP && !(flags & noLP) && nLpF > 0) {   /* flags-only games */
-        if (G->lod_handoff && !G->tier_faithful && drawHP) { drawLP = 1; lpFarOnly = 1; }
-        else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
-    }
+    const int ride = (!culled && !drawLP && !(flags & noLP) && nLpF > 0)
+                     ? sector_lp_ride(SC, G, drawHP, binLP) : TN_RIDE_NONE;
+    drawLP = drawLP || ride != TN_RIDE_NONE;
     int fillLP = G->holefill && !culled && !(flags & noLP) && nLpF > 0
                  && ((double)lodThr < cbin + SC->radius + 0x100)
                  && !(openpete_no_lod && drawHP);
     V->cbin = cbin;
     V->drawHP = (uint8_t)drawHP; V->drawLP = (uint8_t)drawLP;
-    V->lpFarOnly = (uint8_t)lpFarOnly; V->lpGapOnly = (uint8_t)lpGapOnly;
+    V->lpFarOnly = (uint8_t)(ride == TN_RIDE_FARONLY);
+    V->lpGapOnly = (uint8_t)(ride == TN_RIDE_GAPONLY);
+    V->lpUncovOnly = (uint8_t)(ride == TN_RIDE_UNCOVONLY);
     V->fillLP = (uint8_t)fillLP; V->secInLOD = (uint8_t)secInLOD;
+}
+
+/** @brief Returns 1 when an LP face draws in the world pass under its sector's ride-along verdict.
+ *
+ * A gap-only sector draws its fill-tagged faces and an uncov-only sector
+ * its faces off the HP mesh; every other sector draws every LP face.
+ * @param SV The sector's verdicts.
+ * @param F The LP face.
+ * @return 1 when the face draws, else 0. */
+static int tn_lp_face_rides(const tn_secverd* SV, const tsface_t* F) {
+    if (SV->lpGapOnly) return F->gapfill != 0;
+    if (SV->lpUncovOnly) return F->uncov != 0;
+    return 1;
 }
 
 #define TN_MAX_WORKERS 8
@@ -7690,7 +7908,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * - lpGapOnly: frozen fill-tag faces still ride - ONLY those - so
          *   og-attested hole cover survives the bin (a tag in a fully-near
          *   both-tier or no-HP sector; and under --no-lod, the sparse-HP
-         *   holes of HP-drawing sectors; per-face gate below). */
+         *   holes of HP-drawing sectors; per-face gate below).
+         * - lpUncovOnly (distance-binning games, --no-lod): the LP faces off
+         *   the sector's HP mesh ride - ONLY those (tn_lp_face_rides). */
         int lpFarOnly = SV->lpFarOnly, lpGapOnly = SV->lpGapOnly;
         /* LP HOLE-FILL backing: an HP sector that does NOT already
          * draw its LP re-emits it as WORLD_FILL - stencil-gated in core to the
@@ -7755,6 +7975,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 | (drawLP    ? OPTC_SF_DRAWLP    : 0u)
                 | (lpFarOnly ? OPTC_SF_LPFARONLY : 0u)
                 | (lpGapOnly ? OPTC_SF_LPGAPONLY : 0u)
+                | ((uint32_t)SV->lpUncovOnly * OPTC_SF_LPUNCOV)
                 /* the walk never fills a poly-anim sector (stale LP bank) */
                 | (fillLP && !SC->polyanim ? OPTC_SF_FILLLP : 0u)
                 | (secInLOD  ? OPTC_SF_SECINLOD  : 0u)
@@ -8167,7 +8388,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 if (s_fardbg_active && !passFill) \
                     fprintf(stderr, "[fardbg-drop] s=%d p=%d f=%d r=%s\n", \
                             (int)i, pass, f, (reason)); } while (0)
-            if (passLP && !passFill && lpGapOnly && !F->gapfill) { FARDBG_DROP("gaponly"); continue; } /* --no-lod: fill-tag faces only */
+            if (passLP && !passFill && !tn_lp_face_rides(SV, F)) { FARDBG_DROP("rideonly"); continue; }
             /* Authored per-face LP admission (the .s test, exact): with
              * slot = (four corner SZ3 summed, tris doubling the shared corner)
              * >> 5 and s3 = (m_LodDistance >> 7) - 0x20, an LP face draws iff
