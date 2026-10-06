@@ -308,6 +308,12 @@ typedef struct {
  * rebuild waits the device idle and toasts arrive, expire and repaint many
  * times a second. */
 #define OSD_SS_FACTOR   2
+/* Dark outline width, in output pixels, of each supersampled text surface's
+ * composite (overlay_resolve.frag): the settings menu's glyphs carry one; the
+ * performance readout, the version line and the OSD toasts carry none. */
+#define OVL_OUTLINE_PX  0
+#define MENU_OUTLINE_PX 1
+#define OSD_OUTLINE_PX  0
 #define OSD_SLOT_W      0.62f   /* max toast box width,  overlay units */
 #define OSD_SLOT_H      0.075f  /* max toast box height, overlay units */
 #define OSD_GLYPH_MAX   24576   /* 8 toasts of border + wrapped text        */
@@ -4848,7 +4854,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_sample.vert.spv",
         .frag_spv = "overlay_resolve.frag.spv",
         .blend = RHI_BLEND_ALPHA, .depth_test = false,
-        .uses_vram = true, .push_const_size = sizeof(int),
+        .uses_vram = true, .push_const_size = 2 * sizeof(int),   /* ssaa, outline */
     };
     wireframe_report(dev);
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
@@ -13164,6 +13170,15 @@ static bool perf_overlay_should_draw(void) {
     return true;
 }
 
+/** @brief Push overlay_resolve.frag's constants: the supersample factor and the outline width.
+ *
+ * @param ssaa The layer's supersample factor.
+ * @param outline_px The dark outline width in output pixels; 0 draws none. */
+static void push_overlay_resolve(int ssaa, int outline_px) {
+    const int pc[2] = { ssaa, outline_px };
+    rhi_push_constants(s_nr.dev, pc, sizeof(pc));
+}
+
 /** @brief Return whether the stats overlay's supersample path is usable.
  *
  * The path needs the overlay resolve pipeline, the composite quad buffer and
@@ -13478,11 +13493,10 @@ static void prepare_perf_overlay_ss(void) {
 static void draw_perf_overlay(void) {
     if (!perf_overlay_should_draw()) return;
     if (ovl_ss_ready()) {
-        int factor = OVL_SS_FACTOR;
         rhi_reset_scissor(s_nr.dev);
         bind_scene_pipe(s_nr.ovl_resolve_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.ovl_ss);
-        rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+        push_overlay_resolve(OVL_SS_FACTOR, OVL_OUTLINE_PX);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.ovl_quad_vb);
         rhi_draw(s_nr.dev, 6, 0);
     } else {
@@ -13572,12 +13586,11 @@ static void draw_version_overlay(void) {
     build_panel_tinted(q, nx_left + rw_ndc * 0.5f, ny_top - rh_ndc * 0.5f,
                        rw_ndc * 0.5f, rh_ndc * 0.5f, 0.0f, 0.0f, 1.0f, 1.0f,
                        0x00FFFFFFu | ((uint32_t)s_ver_alpha8 << 24));
-    int factor = OVL_SS_FACTOR;
     rhi_update_buffer(s_nr.ver_quad_vb, q, sizeof(q));
     rhi_reset_scissor(s_nr.dev);
     bind_scene_pipe(s_nr.ovl_resolve_pipe);
     rhi_bind_vram(s_nr.dev, s_nr.ver_ss);
-    rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+    push_overlay_resolve(OVL_SS_FACTOR, OVL_OUTLINE_PX);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.ver_quad_vb);
     rhi_draw(s_nr.dev, 6, 0);
     s_ver_drawn++;   /* engagement counter */
@@ -13728,7 +13741,9 @@ static void prepare_menu_ss(void) {
  * has no extent. The panel is one subtractive gray quad (RGB 112,112,112)
  * matching the game's own message box. The glyph and border layer then
  * composites from the supersampled menu_ss layer that prepare_menu_ss built
- * when that path is ready, else draws directly as depth-isolated 3D glyphs. */
+ * when that path is ready, with a MENU_OUTLINE_PX dark outline around the
+ * glyphs (the border's vertices carry OPENPETE_HUD_ALPHA_NO_OUTLINE and take
+ * none), else draws directly as depth-isolated 3D glyphs without one. */
 static void draw_menu_overlay(void) {
     if (!openpete_menu_is_open() || !s_nr.menu_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0)
         return;
@@ -13770,11 +13785,10 @@ static void draw_menu_overlay(void) {
      * draw the glyphs directly (depth-isolated), the original crisp-but-aliased
      * path. Either way the glyphs sit on top of the panel. */
     if (menu_ss_ready() && s_menu_glyph_n >= 3) {
-        int factor = MENU_SS_FACTOR;
         rhi_reset_scissor(s_nr.dev);
         bind_scene_pipe(s_nr.ovl_resolve_pipe);
         rhi_bind_vram(s_nr.dev, s_nr.menu_ss);
-        rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+        push_overlay_resolve(MENU_SS_FACTOR, MENU_OUTLINE_PX);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_quad_vb);
         rhi_draw(s_nr.dev, 6, 0);
     } else {
@@ -14041,11 +14055,10 @@ static void draw_osd_overlay(void) {
     }
     if (qn <= 0 || !s_nr.osd_quad_vb) return;
     rhi_update_buffer(s_nr.osd_quad_vb, quads, (size_t)qn * sizeof(rhi_vertex));
-    int factor = OSD_SS_FACTOR;
     rhi_reset_scissor(s_nr.dev);
     bind_scene_pipe(s_nr.ovl_resolve_pipe);
     rhi_bind_vram(s_nr.dev, s_nr.osd_ss);
-    rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+    push_overlay_resolve(OSD_SS_FACTOR, OSD_OUTLINE_PX);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.osd_quad_vb);
     for (int i = 0; i < cn; i++)
         rhi_draw(s_nr.dev, 6, (uint32_t)(i * 6));

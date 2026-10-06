@@ -457,6 +457,12 @@ int  openpete_native_get_terrain_visibility(void);
  * (smaller = nearer). rgba is byte order R,G,B,A. */
 typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
 
+/* Alpha byte of a text-surface vertex that draws opaque but seeds no outline:
+ * an outlined surface's composite rings only texels of alpha 255 in black,
+ * so a frame built in the same layer as the glyphs (the settings menu's)
+ * takes this alpha and stays unringed. */
+#define OPENPETE_HUD_ALPHA_NO_OUTLINE 0xFEu
+
 /** @brief Hand the renderer the performance readout's glyph triangles.
  *
  * The glyphs are built each tick by the game-side emitter (text_moby_native)

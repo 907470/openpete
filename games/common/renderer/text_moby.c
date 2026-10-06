@@ -1026,7 +1026,9 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 /** @brief Computes the lit colour of a border vertex from its outward normal.
  *
  * The term N.L uses N = (nx, ny, 0) against the context's light, clamped to
- * -1..1, and shades the gold border base through lit_colour.
+ * -1..1, and shades the gold border base through lit_colour. The alpha byte
+ * is OPENPETE_HUD_ALPHA_NO_OUTLINE, so an outlined surface rings its glyphs
+ * and not its frame.
  * @param cx The emission context supplying the light.
  * @param nx The normal's X component.
  * @param ny The normal's Y component.
@@ -1034,7 +1036,8 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 static uint32_t border_lit(const emit_ctx_t* cx, float nx, float ny) {
     float t = nx * cx->light[0] + ny * cx->light[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
     if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f;
-    return lit_colour(MENU_BORDER_R, MENU_BORDER_G, MENU_BORDER_B, t);
+    return (lit_colour(MENU_BORDER_R, MENU_BORDER_G, MENU_BORDER_B, t) & 0x00FFFFFFu) |
+           (OPENPETE_HUD_ALPHA_NO_OUTLINE << 24);
 }
 
 /** @brief Emits a lit frame around a rectangle, lit by the emission context's light.
