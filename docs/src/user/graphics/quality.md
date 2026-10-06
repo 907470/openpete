@@ -52,6 +52,9 @@ The default follows the level of detail: 1 under `original`, 100 under
 with the dev overlay's **Fog scale** or **Fog** rows, fixes it; from then on
 LOD switches leave the fog alone.
 
+The dev overlay's **Fog** row <!-- id: knob:fog --> turns the fog off
+(a fog scale of 100) and on; it starts on <!-- id: knob:fog -->.
+
 ## Terrain visibility
 
 The game skips level geometry it judges unseen from the camera's position,

@@ -14,8 +14,8 @@ It opens and closes with {{ key("key:host.menu") }} <!-- id: key:host.menu home 
 
 | | Keyboard | Gamepad | Mouse |
 | --- | --- | --- | --- |
-| Previous / next row | ++up++ / ++down++ <!-- id: key:host.menu_up home --> | D-pad, left stick | Point at the row |
-| Change the value | ++left++ / {{ key("key:host.menu_right") }} <!-- id: key:host.menu_right --> | D-pad, left stick; Cross also steps forward | Left click steps forward, right click back, wheel either way |
+| Previous / next row | ++up++ <!-- id: key:host.menu_up home --> / ++down++ <!-- id: key:host.menu_down --> | D-pad, left stick | Point at the row |
+| Change the value | ++left++ <!-- id: key:host.menu_left --> / {{ key("key:host.menu_right") }} <!-- id: key:host.menu_right --> | D-pad, left stick; Cross also steps forward | Left click steps forward, right click back, wheel either way |
 | Activate **EXIT GAME** | {{ key("key:host.menu_select") }} <!-- id: key:host.menu_select home --> | Cross | Left click |
 | Close | the menu key, ++esc++ | Start or Circle, on release <!-- id: key:host.menu_close home --> | The close mark in the corner |
 
@@ -39,7 +39,7 @@ notification naming the row and its new value; see
 | **TEXTURES** | **CORRECT**, **AFFINE** | {{ config_key("knob:texture_mapping") }} <!-- id: knob:texture_mapping --> | [PlayStation look](../graphics/retro-look.md#texture-warp) |
 | **DITHER** | **OFF**, **15-BIT** | {{ config_key("knob:dither") }} <!-- id: knob:dither --> | [PlayStation look](../graphics/retro-look.md#dither) |
 | **LOD** | **ORIGINAL**, **EXTENDED** | {{ config_key("knob:lod") }} <!-- id: knob:lod --> | [Quality](../graphics/quality.md#level-of-detail) |
-| **FREECAM** | **OFF**, **ON** | the free camera | [Practice tools](practice-tools.md#free-camera) |
+| **FREECAM** | **OFF**, **ON** | `freecam` <!-- id: knob:freecam --> | [Practice tools](practice-tools.md#free-camera) |
 | **SETTINGS** | **SAVE**, **CLEAR SAVED** | | [below](#saving-your-settings) |
 | **EXIT GAME** | | | [below](#exit-game) |
 
@@ -55,7 +55,8 @@ you step the row.
 
 Changes made in the menu last for the session. To keep them:
 
-- ++right++ (or Cross, or a left click) on **SETTINGS** writes every setting
+- ++right++ (or Cross, or a left click) on **SETTINGS**
+  <!-- id: menu:menu.settings --> writes every setting
   changed this session into the `[saved]` block of your `openpete.toml`. The
   row reports **SAVED** and the count, or **FAILED**.
 - ++left++ on **SETTINGS** empties the `[saved]` block and reports
@@ -69,7 +70,8 @@ beats them for that launch; see [The config file](../customizing/config-file.md)
 
 ## EXIT GAME
 
-The first press changes the row to **REALLY EXIT?**; the second quits.
+The first press on **EXIT GAME** <!-- id: menu:menu.quit --> changes the row
+to **REALLY EXIT?**; the second quits.
 Moving to another row disarms it. The memory cards are written before the
 program exits, as on any other quit.
 

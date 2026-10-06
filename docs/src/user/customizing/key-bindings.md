@@ -97,7 +97,7 @@ changes none of them.
 | `select` | {{ key("key:pad.select") }}<!-- id: key:pad.select --> | `pad:back` |
 | `dpad_up` `dpad_down` `dpad_left` `dpad_right` | arrow keys<!-- id: key:pad.dpad_up --> | d-pad |
 | `stick_up` `stick_down` `stick_left` `stick_right` | ++w++ ++s++ ++a++ ++d++<!-- id: key:pad.stick_up --> | (keyboard only) |
-| `left_x` `left_y` `right_x` `right_y` | none | stick axes |
+| `left_x` `left_y` `right_x` `right_y` | none | `pad:leftx` <!-- id: key:pad.left_x -->, `pad:lefty` <!-- id: key:pad.left_y -->, `pad:rightx` <!-- id: key:pad.right_x -->, `pad:righty` <!-- id: key:pad.right_y --> |
 
 ### OpenPete keys (`[keys.host]`)
 
@@ -124,8 +124,8 @@ changes none of them.
 | `fly_up` / `fly_down` | ++space++, `pad:rightshoulder` / ++left-shift++, `pad:leftshoulder`<!-- id: key:host.fly_up --> | free camera: rise / descend |
 | `look_up` `look_down` `look_left` `look_right` | arrow keys<!-- id: key:host.look_up --> | free camera: turn |
 | `speed_up` / `speed_down` | ++bracket-right++, `pad:righttrigger` / ++bracket-left++, `pad:lefttrigger`<!-- id: key:host.speed_up --> | free camera: faster / slower |
-| `fly_axis_x` `fly_axis_y` | `pad:leftx`, `pad:-lefty`<!-- id: key:host.fly_axis_x --> | free camera: move axes |
-| `look_axis_x` `look_axis_y` | `pad:rightx,mouse:x`, `pad:-righty,mouse:-y`<!-- id: key:host.look_axis_x --> | free camera: look axes |
+| `fly_axis_x` `fly_axis_y` | `pad:leftx`<!-- id: key:host.fly_axis_x -->, `pad:-lefty`<!-- id: key:host.fly_axis_y --> | free camera: move axes |
+| `look_axis_x` `look_axis_y` | `pad:rightx,mouse:x`<!-- id: key:host.look_axis_x -->, `pad:-righty,mouse:-y`<!-- id: key:host.look_axis_y --> | free camera: look axes |
 | `interp_toggle` | {{ key("key:host.interp_toggle") }}<!-- id: key:host.interp_toggle --> | toggle [frame interpolation](../help/glossary.md#frame-interpolation) |
 | `lod_toggle` | {{ key("key:host.lod_toggle") }}<!-- id: key:host.lod_toggle --> | toggle [extended detail](../help/glossary.md#extended-detail) |
 

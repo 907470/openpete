@@ -190,6 +190,21 @@ if(NOT CMAKE_CROSSCOMPILING)
             COMMENT "Writing the surface dumps to ${CMAKE_BINARY_DIR}/surface/"
             VERBATIM)
         add_dependencies(surface_dump ${_surface_deps})
+        # The docs coverage fence, per build: every release id of a shipped
+        # game has a User docs entry. Warnings only, so a half-written row
+        # in one session does not fail another session's build; ctest
+        # surface_coverage and the release scripts refuse. Linux only, where
+        # the built binaries run, and only where the debug block is compiled
+        # (the check reads every row; the shipped presets hide the block).
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT OPENPETE_HIDE_DEBUG_FLAGS)
+            add_custom_target(openpete_surface_coverage ALL
+                COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/surface_coverage.py
+                        check --warn --build-dir ${CMAKE_BINARY_DIR}
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                COMMENT "docs coverage fence: every release id has a User docs entry"
+                VERBATIM)
+            add_dependencies(openpete_surface_coverage ${_surface_deps})
+        endif()
     endif()
 endif()
 
@@ -619,6 +634,27 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(docs_surface_identity PROPERTIES
         LABELS "tooling"
         TIMEOUT 120
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # The docs coverage fence (scripts/fences/surface_coverage.py): every
+    # release flag, row, menu row, key action and directive of a shipped
+    # game has a docs-map entry or resolves through one, every release value
+    # declares a default, and the parser, --help, schema and dump agree.
+    # The selftest feeds one negative control per refusal kind.
+    add_test(NAME surface_coverage
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/surface_coverage.py
+                     check --build-dir ${CMAKE_BINARY_DIR})
+    set_tests_properties(surface_coverage PROPERTIES
+        LABELS "fence"
+        TIMEOUT 120
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME surface_coverage_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_surface_coverage.py
+                     --build-dir ${CMAKE_BINARY_DIR})
+    set_tests_properties(surface_coverage_selftest PROPERTIES
+        LABELS "fence"
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME docs_surface_snippets
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/surface_docs.py snippets

@@ -572,7 +572,9 @@ This does not produce a playable folder by itself: the shared exe needs its
 recomp inputs staged next to it (manifests, module source kit, PSXRecomp,
 and a bundled compiler). `scripts/package-dist.sh` assembles the shippable
 archive from a `*-shared` build tree, staging `packaging/openpete-dist.toml` as
-the shipped `openpete.toml`.
+the shipped `openpete.toml`. It packages one archive per game listed in
+`games/shipped.toml`; an AppImage carries one game, so `--appimage` refuses
+a list of more than one.
 
 ```bash
 scripts/setup_linux_clang.sh          # -> .tools/clang (bundled compiler)
@@ -596,6 +598,8 @@ Archives land in `dist/`. Flags:
 - `--with-mod-sdk`: stage the mod SDK headers the boot-time mod compiler
   needs. Releases ship without it; the dist gate passes it to keep the path
   exercised.
+- `--dry-run`: print each shipped game's build input and archive name, and
+  exit.
 - `--sign '<command>'` (Windows): Authenticode hook, invoked once per
   first-party PE with the file path appended; a nonzero exit fails the
   package. The RFC3161 timestamp is not optional with Azure Artifact

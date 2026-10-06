@@ -20,6 +20,9 @@ overlay's **Performance stats** row sets all three levels.
 `top-center`, `top-right` (default <!-- id: knob:perf_position -->),
 `bottom-left`, `bottom-center`, `bottom-right`.
 
+`--show-fps 0|1` <!-- id: flag:--show-fps --> is a deprecated spelling of
+`--perf-stats off|fps`.
+
 ## What costs what
 
 | Setting | Cost |

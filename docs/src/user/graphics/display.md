@@ -11,6 +11,11 @@ The window opens at the game's drawn picture at twice its size: 640x448
 <!-- id: knob:window --> sets another starting size, for example
 `--window 1920x1080`. Drag the window's edges to resize it at any time.
 
+`--background` <!-- id: flag:--background --> opens the window at its
+normal size without taking focus, behind the other windows where the
+platform allows it; clicking the window or its taskbar button focuses it.
+It wins over `--fullscreen`. Default 0 <!-- id: knob:background -->.
+
 ## Fullscreen
 
 Fullscreen is borderless, at the desktop's resolution.

@@ -29,6 +29,10 @@ and loading screens are [fast-forwarded](../help/glossary.md#fast-forward) behin
 sound muted, until the level is playable. `--skip-to-level` with no value,
 or an unknown name, prints this list.
 
+`--skip-to-area` <!-- id: flag:--skip-to-area --> enters a level's sub-area
+in Spyro 3. Spyro the Dragon has no sub-area targets: the flag refuses every
+value and the program does not start.
+
 | Homeworld | Levels |
 | --- | --- |
 | Artisans | `artisans` (10), `stone_hill` (11), `dark_hollow` (12), `town_square` (13), `toasty` (14), `sunny_flight` (15) |
@@ -71,8 +75,10 @@ game's own cheat codes without entering them on the controller:
 
 A cheat is applied once per session, on the first [tick](../help/glossary.md#tick) in a level, and
 again for each new session started from the title screen. Dying still costs
-a life. The dev overlay's **Cheat: 99 lives** and
-**Cheat: unlock all levels** buttons apply a cheat on demand during play.
+a life. The dev overlay's **Cheat: 99 lives**
+<!-- id: knob:cheat_99_lives --> and **Cheat: unlock all levels**
+<!-- id: knob:cheat_unlock_all_levels --> buttons apply a cheat on demand
+during play.
 
 !!! note
     Cheats change the game's state, as entering the code does. A run using

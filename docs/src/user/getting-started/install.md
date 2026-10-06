@@ -86,6 +86,10 @@ A disc image passed as the only argument is ingested, so opening a `.cue` or
 
 The flag spelling is `--ingest PATH` <!-- id: flag:--ingest -->.
 
+`--disc PATH` <!-- id: flag:--disc --> boots the image at PATH where it is,
+without copying it into the [library](../help/glossary.md#library). Without
+it, the program boots the library's most recent disc.
+
 ## Uninstalling
 
 Delete the program folder or the AppImage. On Linux, and on a Windows

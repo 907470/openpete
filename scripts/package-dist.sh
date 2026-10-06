@@ -8,6 +8,11 @@
 #
 #   scripts/package-dist.sh linux   [--out DIR] [--toolchain DIR] [--appimage]
 #   scripts/package-dist.sh windows [--out DIR] [--toolchain DIR]
+#   scripts/package-dist.sh {linux|windows} --dry-run
+#
+# One archive per game listed in games/shipped.toml, each from that game's
+# *-shared build. --dry-run prints the games, each build input and archive
+# name, and exits without packaging anything.
 #
 # --appimage additionally emits OpenPete-<ver>-x86_64.AppImage from the
 # SAME staged tree the tarball is made from, so the two artifacts can
@@ -45,6 +50,7 @@ OUT=dist
 TOOLCHAIN=""
 WITH_MOD_SDK=0
 APPIMAGE=0
+DRY_RUN=0
 # --sign '<command>' - Authenticode hook, Windows platform only. Invoked
 # once per first-party PE (openpete-spyro1.exe, PSXRecomp.exe) with the
 # file path appended; a nonzero exit fails the package. Evaluated per
@@ -69,6 +75,7 @@ while [[ $# -gt 0 ]]; do
         --sign) SIGN_CMD="$2"; shift 2 ;;
         --with-mod-sdk) WITH_MOD_SDK=1; shift ;;
         --appimage) APPIMAGE=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
     esac
 done
@@ -116,11 +123,38 @@ case "$VERSION" in
              "or a checkout that can see the tag (git fetch --tags)." >&2
         ;;
 esac
-NAME="openpete-spyro1-${VERSION}-${PLATFORM}-x86_64"
+case "$PLATFORM" in
+linux|windows) ;;
+*)
+    echo "usage: scripts/package-dist.sh {linux|windows} [--out DIR]" \
+         "[--toolchain DIR] [--with-mod-sdk] [--appimage (linux)] [--dry-run]" >&2
+    exit 64
+    ;;
+esac
+
+# The shipped games: games/shipped.toml, the list the User docs and the
+# surface audience are computed for. Each game ships as its own archive.
+mapfile -t GAMES < <(python3 -c '
+import sys
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+for g in tomllib.load(open(sys.argv[1], "rb"))["games"]:
+    print(g)
+' games/shipped.toml)
+[[ ${#GAMES[@]} -gt 0 ]] || { echo "[package] games/shipped.toml lists no game" >&2; exit 1; }
+# The AppImage's file name, desktop entry and AppRun name no game, so an
+# image carries one game.
+if [[ $APPIMAGE -eq 1 && ${#GAMES[@]} -gt 1 ]]; then
+    echo "[package] --appimage packages one game; games/shipped.toml lists" \
+         "${#GAMES[@]}: ${GAMES[*]}" >&2
+    exit 1
+fi
+
 # Absolute: the example-staging loop below runs inside `cd mods/<id>`
 # subshells, where a relative --out no longer resolves.
 OUT=$(realpath -m "$OUT")
-STAGE="$OUT/$NAME"
 
 stage_common() {  # stage_common <build-game-dir>
     local B="$1"
@@ -322,7 +356,7 @@ build_appimage() {  # build_appimage <stage-dir>
     # nor universally installed. LGPL: dynamic linking preserved, license
     # text rides along (NOTICE.md), same arrangement as the Windows zip.
     local al
-    al=$(ldd "$S/openpete-spyro1" | awk '/libopenal\.so/ {print $3}')
+    al=$(ldd "$S/$EXE" | awk '/libopenal\.so/ {print $3}')
     [[ -n "$al" && -f "$al" ]] || { echo "[package] libopenal.so.1 not found" >&2; exit 1; }
     bundle_lib "$APPDIR" "$al"
 
@@ -343,7 +377,7 @@ build_appimage() {  # build_appimage <stage-dir>
         --toolchain-dir "$APPDIR/usr/recomp/tools/clang"
     assert_no_copyleft "$APPDIR"
 
-    assert_appdir_closure "$APPDIR" "$APPDIR/usr/openpete-spyro1" \
+    assert_appdir_closure "$APPDIR" "$APPDIR/usr/$EXE" \
         "$APPDIR"/usr/lib/*.so*
 
     local bad
@@ -388,17 +422,16 @@ build_appimage() {  # build_appimage <stage-dir>
     echo "[package] $IMG ready"
 }
 
-case "$PLATFORM" in
-linux)
-    B=build/linux-release-shared/games/spyro-1
-    [[ -x "$B/openpete-spyro1" ]] || { echo "build linux-release-shared first" >&2; exit 64; }
+package_linux() {  # package_linux <build-game-dir>
+    local B="$1"
+    [[ -x "$B/$EXE" ]] || { echo "build linux-release-shared first ($B/$EXE)" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
-    cp "$B/openpete-spyro1" "$STAGE/"
+    cp "$B/$EXE" "$STAGE/"
     # Strip debug info from the SHIPPED copy only (RelWithDebInfo embeds
     # thousands of absolute build paths - a username/layout leak). The
     # build-tree exe keeps its symbols for dev debugging. Exports live in
     # .dynsym, which strip preserves, so the first-boot module still binds.
-    strip "$STAGE/openpete-spyro1"
+    strip "$STAGE/$EXE"
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
     cp third_party/psxrecomp/build/PSXRecomp "$STAGE/recomp/tools/"
@@ -427,12 +460,13 @@ linux)
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
     ( cd "$OUT" && sha256sum "$NAME.tar.xz" > "$NAME.tar.xz.sha256" )
     if [[ $APPIMAGE -eq 1 ]]; then build_appimage "$STAGE"; fi
-    ;;
-windows)
-    B=build/windows-mingw-shared/games/spyro-1
-    [[ -f "$B/openpete-spyro1.exe" ]] || { echo "build windows-mingw-shared first" >&2; exit 64; }
+}
+
+package_windows() {  # package_windows <build-game-dir>
+    local B="$1"
+    [[ -f "$B/$EXE.exe" ]] || { echo "build windows-mingw-shared first ($B/$EXE.exe)" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
-    cp "$B/openpete-spyro1.exe" "$STAGE/"
+    cp "$B/$EXE.exe" "$STAGE/"
     # Strip debug info from the SHIPPED copy only (same rationale as the
     # Linux branch). PE exports live in the export table data directory,
     # not the COFF symbol table, and the first-boot module links against
@@ -440,7 +474,7 @@ windows)
     if [[ $APPIMAGE -eq 1 ]]; then
         echo "[package] --appimage is a Linux format; ignored for windows" >&2
     fi
-    x86_64-w64-mingw32-strip "$STAGE/openpete-spyro1.exe"
+    x86_64-w64-mingw32-strip "$STAGE/$EXE.exe"
     cp "$B/OpenAL32.dll" "$STAGE/" 2>/dev/null \
         || cp third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll "$STAGE/"
     # OpenAL Soft is LGPL: its license text must ride with the DLL (NOTICE.md).
@@ -478,7 +512,7 @@ windows)
     fi
     # Sign after strip and staging, before archiving. First-party PEs
     # only (see --sign notes above).
-    sign_pe "$STAGE/openpete-spyro1.exe"
+    sign_pe "$STAGE/$EXE.exe"
     sign_pe "$STAGE/recomp/tools/PSXRecomp.exe"
     assert_no_copyleft "$STAGE"
     # Zipped from INSIDE the stage dir, so the archive has no wrapping
@@ -486,13 +520,21 @@ windows)
     # zip, and a second level leaves users an install nested one deep.
     ( cd "$STAGE" && python3 -m zipfile -c "../$NAME.zip" . )
     ( cd "$OUT" && sha256sum "$NAME.zip" > "$NAME.zip.sha256" )
-    ;;
-*)
-    echo "usage: scripts/package-dist.sh {linux|windows} [--out DIR]" \
-         "[--toolchain DIR] [--with-mod-sdk] [--appimage (linux)]" >&2
-    exit 64
-    ;;
-esac
+}
 
-echo "[package] $OUT/$NAME ready"
-ls -la "$OUT" | grep "$NAME"
+for GAME in "${GAMES[@]}"; do
+    EXE="openpete-${GAME//-/}"
+    NAME="${EXE}-${VERSION}-${PLATFORM}-x86_64"
+    STAGE="$OUT/$NAME"
+    case "$PLATFORM" in
+    linux)   B="build/linux-release-shared/games/$GAME"; ART="$NAME.tar.xz" ;;
+    windows) B="build/windows-mingw-shared/games/$GAME"; ART="$NAME.zip" ;;
+    esac
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "[package] dry run: $GAME: $B/$EXE$([[ $PLATFORM == windows ]] && echo .exe) -> $OUT/$ART"
+        continue
+    fi
+    "package_$PLATFORM" "$B"
+    echo "[package] $OUT/$NAME ready"
+    ls -la "$OUT" | grep "$NAME"
+done

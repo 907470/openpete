@@ -153,6 +153,7 @@ static void emit_knob(FILE* f, int* first, const knob_desc_t* k, const char* gam
     json_kv(f, "type", k_knob_type_names[k->type]);
     if (k->num_min != 0.0f || k->num_max != 0.0f)
         fprintf(f, ", \"range\": [%g, %g]", (double)k->num_min, (double)k->num_max);
+    json_kv(f, "section", k->section);
     json_kv(f, "block", k->debug_block ? "debug" : "release");
     json_kv(f, "build_cond", k->build_cond);
     fprintf(f, ", \"cli_only\": %s", k->cli_only ? "true" : "false");

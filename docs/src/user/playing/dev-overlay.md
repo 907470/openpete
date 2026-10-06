@@ -46,7 +46,14 @@ each Graphics page names its settings.
 
 Restart rows include Renderer, Window size, Extraction threads, Terrain GPU
 cache, Input lock, every path, and the launch-only gameplay rows (Skip to
-level, Skip to cutscene, Cheats at launch, bk2 replay).
+level, Skip to cutscene, Cheats at launch, bk2 replay, Free camera pose,
+Player pose).
+
+**Free camera pose** <!-- id: knob:freecam_pose --> engages the free camera
+at a pose (`pos=(x, y, z) yaw=N pitch=N`, the format the free camera logs)
+once the level is live. **Player pose** <!-- id: knob:player_pose --> places
+Spyro at `x,y,z[,yaw]` once gameplay is live, with the camera re-seated
+behind him. Both are empty by default, and both change the game's state.
 
 **Untextured (lighting)** <!-- id: knob:notex --> and **Wireframe
 (lighting)** <!-- id: knob:wireframe --> are inspection views: the first
@@ -73,9 +80,9 @@ the ones `--cheats` applies at start; see
 
 Two Gameplay rows move to any level mid-session:
 
-- **Warp: level** picks the destination. It follows the level you are in
+- **Warp: level** <!-- id: knob:warp_level --> picks the destination. It follows the level you are in
   until you pick one.
-- **Warp: jump to level** has the **Jump** button.
+- **Warp: jump to level** <!-- id: knob:warp_go --> has the **Jump** button.
 
 In a level, the jump runs the game's own exit-level sequence and then loads
 the chosen level; progress is kept. From the title screen it starts a new

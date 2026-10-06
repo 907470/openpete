@@ -7,7 +7,15 @@
 # flags - it is a different machine. This wraps that: same sources, same
 # presets, older libc.
 #
-#   scripts/release-container.sh [package-dist args...]
+#   OPENPETE_DIST_VERSION=vX.Y.Z scripts/release-container.sh [package-dist args...]
+#
+# It packages a tagged release: it refuses unless OPENPETE_DIST_VERSION names
+# a tag, HEAD is that tag's commit, and the tracked tree is clean. Inside the
+# container, after the build and before packaging, each shipped game's
+# binary dumps its surface (OPENPETE_SURFACE_DUMP, which exits before the
+# recomp module attaches), and the release subset of that dump must equal the
+# committed baseline packaging/surface/<game>.json
+# (scripts/fences/surface_coverage.py compare).
 #
 # Everything after the script name goes to package-dist.sh, e.g.
 #   scripts/release-container.sh --appimage
@@ -76,12 +84,17 @@ fi
 # worktree /src/.git is a file pointing at a gitdir outside the mount, so
 # `git describe` inside the container fails and the artifact would be named
 # `dev`.
-if [[ -z "${OPENPETE_DIST_VERSION:-}" ]]; then
-    OPENPETE_DIST_VERSION=$(git describe --tags --always --dirty 2>/dev/null || true)
-    [[ -n "$OPENPETE_DIST_VERSION" ]] \
-        || { echo "[release] git describe failed; set OPENPETE_DIST_VERSION" >&2; exit 64; }
-    echo "[release] OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION (host git describe)"
-fi
+# The version is the tag create-release.sh made, passed by the caller and
+# checked against the tree on the host: inside the container /src/.git of a
+# worktree points outside the mount and git cannot answer.
+[[ -n "${OPENPETE_DIST_VERSION:-}" ]] \
+    || { echo "[release] set OPENPETE_DIST_VERSION=vX.Y.Z, the release tag" >&2; exit 64; }
+tag_sha=$(git rev-parse -q --verify "${OPENPETE_DIST_VERSION}^{commit}" 2>/dev/null) \
+    || { echo "[release] refused: no tag or commit $OPENPETE_DIST_VERSION" >&2; exit 1; }
+[[ "$(git rev-parse HEAD)" == "$tag_sha" ]] \
+    || { echo "[release] refused: HEAD is not $OPENPETE_DIST_VERSION ($tag_sha)" >&2; exit 1; }
+git diff --quiet HEAD -- \
+    || { echo "[release] refused: tracked changes in the tree" >&2; exit 1; }
 env_args=(-e OPENPETE_NO_COMMITS=1 -e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION")
 
 # The release builds from nothing, in directories only the container uses.
@@ -102,5 +115,14 @@ mounts=(-v "$PWD:/src"
     cmake --build third_party/psxrecomp/build -j
     cmake --preset linux-release-shared
     cmake --build build/linux-release-shared -j
+    surf=$(mktemp -d)
+    for game in $(python3 scripts/fences/surface_coverage.py shipped); do
+        exe=build/linux-release-shared/games/$game/openpete-${game//-/}
+        OPENPETE_SURFACE_DUMP=$surf/$game.json "$exe" >/dev/null
+        "$exe" --help >"$surf/$game.help" 2>&1
+        python3 scripts/fences/surface_coverage.py compare --game "$game" \
+            --dump "$surf/$game.json" --help-file "$surf/$game.help" \
+            --baseline "packaging/surface/$game.json"
+    done
     scripts/package-dist.sh linux --toolchain .tools/clang '"${pkg_args[*]}"'
 '

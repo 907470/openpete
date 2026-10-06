@@ -73,6 +73,10 @@ A mod that fails to compile or load is switched off and the game starts
 without it. The compiler's output is in `mods/<id>/.build/compile.log`,
 and `openpete.log` names the mod.
 
+`--compile-mods` <!-- id: flag:--compile-mods --> compiles every mod with
+`src/` in the mods folder, listed in `enabled.txt` or not, then exits; the
+exit status is nonzero when a compile fails.
+
 A package built without the mod SDK has no `sdk` folder. Its log says so,
 code mods are not compiled, and mods made only of `mod.toml` and assets
 load as usual. A mod that ships a prebuilt library in
