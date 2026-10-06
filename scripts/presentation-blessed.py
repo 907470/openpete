@@ -1622,13 +1622,19 @@ def resolve_reference(row, tdir, arch=None):
 
 def blessed_revision(rec):
     """HEAD when HEAD's tree equals the capture record's source tree over
-    SOURCE_ROOTS. Returns (sha, None) or (None, reason)."""
+    SOURCE_ROOTS, other games' corpus directories aside. Returns (sha, None)
+    or (None, reason)."""
     tree = rec.get("source-tree")
     if not tree:
         return None, "the candidate carries no %s" % RECORD_NAME
     if git("cat-file", "-e", tree + "^{tree}", check=False) is None:
         return None, "source tree %s is not in this repository" % tree
-    diff = source_tree_diff("HEAD^{tree}", tree)
+    # Another game's corpus (its manifests, bk2s and args) feeds no capture of
+    # this game, so a row added there does not invalidate this candidate.
+    game = rec.get("game", "")
+    diff = [p for p in source_tree_diff("HEAD^{tree}", tree)
+            if not (game and p.startswith("games/") and "/corpus/" in p
+                    and not p.startswith("games/%s/" % game))]
     if diff:
         return None, ("HEAD's tree differs from the capture's source tree "
                       "at %s (%d path(s))" % (diff[0], len(diff)))
