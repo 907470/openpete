@@ -88,3 +88,6 @@ pause-menu-midlevel|1440|200||1454,1462,1500
 # through a near dark shape. Start 470 (the movie is 473 VBLs) keeps the grid
 # to two samples.
 start-new-game|470|10||92
+# intro cutscene, VBL 1094: one of the sheep's eyes is covered by its own
+# face geometry (native); the guest draws the eye.
+intro-sheep-eye|1094|10||1094|--skip-to-cutscene intro
