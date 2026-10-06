@@ -1129,6 +1129,162 @@ static int32_t s23_simple_face_otk(const moby_otk_rec_t ork[2], const moby_otk_v
     return moby_otk_face_bucket(&ork[flat], &f);
 }
 
+/* The texture page word the draw links ahead of each record's spliced bucket
+ * array, 0xE1000620 (S2 mobydraw.s:4961-4962, S3 mobydraw.s:4980-4981): its
+ * ABR field, bits 5-6, is 1. */
+#define S23_RECORD_TPAGE_ABR (((0x620u) >> 5) & 3u)
+
+/* One record's faces as the semi-transparency resolve reads them, in face
+ * stream order. An untextured semi-transparent primitive (the flat-lit front
+ * face inside the near band) carries no texture page, so the GPU blends it
+ * at the ABR of the last texture page set before it in the chain: the
+ * record's own DR_TPAGE, or the page of a textured primitive spliced ahead
+ * of it. */
+typedef struct {
+    int      idx[4];
+    int      tri;
+    uint32_t f0, f1;
+    int8_t   tex_abr;   /* the textured face's page ABR, -1 untextured */
+    int8_t   semi;      /* an emitted untextured semi-transparent face */
+} s23_abr_face;
+
+/* One triangle held until the record's faces are resolved. */
+typedef struct {
+    double   p[3][3];
+    uint32_t rgb[3];
+    int      u[3], v[3];
+    int      textured, tpx, tpy, clx, cly, bpp, blend;
+    uint32_t fkey;
+    int32_t  otk;
+    const moby_otk_vert_t* iv[3];
+    int      face;
+} s23_held_tri;
+
+static s23_abr_face s_abr_face[S23_SIMPLE_FACES];
+static int          s_abr_face_n;
+static s23_held_tri s_held[2 * S23_SIMPLE_FACES];
+static int          s_held_n;
+static int          s_abr_semi_n;
+
+/** @brief Start a record's semi-transparency resolve with no faces and no held triangles. */
+static void s23_abr_begin(void) {
+    s_abr_face_n = 0;
+    s_held_n = 0;
+    s_abr_semi_n = 0;
+}
+
+/** @brief Note one face of the record in face stream order, with its texture page ABR when textured.
+ *
+ * Every face is noted, drawn natively or not, since a textured primitive the
+ * draw keeps sets the GPU texture page whatever the native winding test
+ * decides.
+ * @param cpu The guest CPU state, read only.
+ * @param fp The face's address; word 3 carries the texture page of a textured face.
+ * @param f0 Face word 0.
+ * @param f1 Face word 1; its sign is the textured flag.
+ * @param idx The face's four vertex indices.
+ * @param tri 1 for a triangle.
+ * @return The face's index in the record. */
+static int s23_abr_note_face(CPUState* cpu, uint32_t fp, uint32_t f0, uint32_t f1,
+                             const int idx[4], int tri) {
+    if (s_abr_face_n >= S23_SIMPLE_FACES) return S23_SIMPLE_FACES - 1;
+    s23_abr_face* F = &s_abr_face[s_abr_face_n];
+    memcpy(F->idx, idx, sizeof F->idx);
+    F->tri = tri; F->f0 = f0; F->f1 = f1; F->semi = 0;
+    F->tex_abr = -1;
+    if ((int32_t)f1 < 0) {
+        ngte_tpage t;
+        ngte_decode_tpage((cpu->read_word(fp + 0x0Cu) >> 16) & 0x7FFFu, 0u, 0u, &t);
+        F->tex_abr = (int8_t)t.abr;
+    }
+    return s_abr_face_n++;
+}
+
+/** @brief Hold one triangle of the record for emission after the resolve.
+ *
+ * An untextured triangle with a nonzero blend marks its face semi-transparent;
+ * its blend is replaced at the resolve.
+ * @param face The face's index from s23_abr_note_face.
+ * @param T The triangle, every moby_simple_tri argument. */
+static void s23_abr_hold(int face, const s23_held_tri* T) {
+    if (s_held_n >= 2 * S23_SIMPLE_FACES) return;
+    s_held[s_held_n] = *T;
+    s_held[s_held_n].face = face;
+    if (!T->textured && T->blend && !s_abr_face[face].semi) {
+        s_abr_face[face].semi = 1;
+        s_abr_semi_n++;
+    }
+    s_held_n++;
+}
+
+/** @brief The ABR in force when a face's primitive draws: the last texture page set before it in the record's chain.
+ *
+ * The draw splices the record's bucket array highest bucket first, the
+ * primitives of one bucket in insertion order, which is face stream order
+ * (moby_rank.h), behind the record's own DR_TPAGE. A face precedes face i
+ * when its bucket is higher, or equal with a lower face index. The textured
+ * face that precedes i last sets the ABR; with none, the DR_TPAGE's does. A
+ * face the draw drops (bucket -1) sets nothing; dropped itself, face i reads
+ * the state after every kept face.
+ * @param bucket Each face's local bucket, -1 when the draw drops it.
+ * @param i The face.
+ * @return The ABR, 0 to 3. */
+static int s23_abr_in_force(const int32_t* bucket, int i) {
+    int best = -1;
+    for (int j = 0; j < s_abr_face_n; j++) {
+        if (s_abr_face[j].tex_abr < 0 || bucket[j] < 0 || j == i) continue;
+        if (!(bucket[j] > bucket[i] || (bucket[j] == bucket[i] && j < i))) continue;
+        if (best < 0 || bucket[j] < bucket[best] || (bucket[j] == bucket[best] && j > best))
+            best = j;
+    }
+    return best < 0 ? (int)S23_RECORD_TPAGE_ABR : s_abr_face[best].tex_abr;
+}
+
+/** @brief Resolve each semi-transparent face's blend class from the ABR in force, then emit the record's held triangles.
+ *
+ * The buckets come from the draw's own integer RTPS and key arithmetic for
+ * this record (moby_otk_record, moby_otk_rtps), evaluated here whether or not
+ * the paint rank is on, so the verdict is the same on every present. The
+ * screen offset does not enter NCLIP or the key; H is the GTE's.
+ * @param cpu The guest CPU state, read only.
+ * @param nv The record's vertex count.
+ * @param vmod The record's model-space vertices.
+ * @param itr The integer translation the draw loaded.
+ * @param R The composed rotation.
+ * @return The number of triangles emitted. */
+static int s23_abr_flush(CPUState* cpu, int nv, const double (*vmod)[3],
+                         const int itr[3], const int R[3][3]) {
+    if (s_abr_semi_n > 0) {
+        static moby_otk_vert_t kv[S23_SIMPLE_VERTS];
+        static int32_t bucket[S23_SIMPLE_FACES];
+        static int8_t  abr[S23_SIMPLE_FACES];
+        ngte_view view;
+        ngte_view_build(cpu, &view);
+        moby_otk_rec_t ork[2];
+        moby_otk_record(MOBY_OTK_S23_SIMPLE, 0, itr[2], &ork[0]);
+        moby_otk_record(MOBY_OTK_S23_SIMPLE_FLAT, 0, itr[2], &ork[1]);
+        for (int k = 0; k < nv; k++)
+            moby_otk_rtps(itr, R, vmod[k][0], vmod[k][1], vmod[k][2],
+                          view.ofx, view.ofy, (int)view.H_canon, &kv[k]);
+        for (int j = 0; j < s_abr_face_n; j++) {
+            const s23_abr_face* F = &s_abr_face[j];
+            const int32_t b = s23_simple_face_otk(ork, kv, F->idx, F->tri, F->f0, F->f1);
+            bucket[j] = b < 0 ? -1 : MOBY_OTK_BUCKET(b);
+        }
+        for (int j = 0; j < s_abr_face_n; j++)
+            abr[j] = s_abr_face[j].semi ? (int8_t)s23_abr_in_force(bucket, j) : 0;
+        for (int t = 0; t < s_held_n; t++)
+            if (s_abr_face[s_held[t].face].semi && !s_held[t].textured)
+                s_held[t].blend = moby_abr_blend(abr[s_held[t].face]);
+    }
+    for (int t = 0; t < s_held_n; t++) {
+        const s23_held_tri* T = &s_held[t];
+        moby_simple_tri(T->p, T->rgb, T->u, T->v, T->textured, T->tpx, T->tpy,
+                        T->clx, T->cly, T->bpp, T->blend, T->fkey, T->otk, T->iv);
+    }
+    return s_held_n;
+}
+
 /** @brief Decodes the host queue of second-kind records into triangles for the shared walk.
  *
  * Per queued record: places it (s23_simple_place), takes the LOD tier from the
@@ -1179,6 +1335,7 @@ static int s23_simple_decode(CPUState* cpu) {
     static double vpos[S23_SIMPLE_VERTS][3];
     static float  vscr[S23_SIMPLE_VERTS][2];
     static moby_otk_vert_t iv[S23_SIMPLE_VERTS];   /* the draw's integer RTPS (paint key) */
+    static double vmod[S23_SIMPLE_VERTS][3];       /* model-space vertex words */
     static uint32_t ctab[S23_SIMPLE_COLS];
     uint32_t flat_w[4];
     memcpy(flat_w, s_flat_entry, sizeof flat_w);
@@ -1266,6 +1423,7 @@ static int s23_simple_decode(CPUState* cpu) {
             double vx = (double)((int32_t)(w << 10) >> 21);   /* bits 11-21 */
             double vy = (double)((int32_t)(w << 20) >> 20);   /* bits 0-11 */
             double vz = (double)((int32_t)w >> 21);           /* bits 21-31 */
+            vmod[i][0] = vx; vmod[i][1] = vy; vmod[i][2] = vz;
             double e1, e2, e3;
             ngte_mac(R, vx, vy, vz, &e1, &e2, &e3);
             /* world/2 in the game's space; the shared walk takes full world. */
@@ -1357,6 +1515,7 @@ static int s23_simple_decode(CPUState* cpu) {
             flat_w[3] = cpu->read_word(e + 12u);
         }
 
+        s23_abr_begin();
         uint32_t bytecount = cpu->read_word(faces);
         uint32_t fp = faces + 4u, end = fp + bytecount;
         int guard = 0;
@@ -1373,6 +1532,7 @@ static int s23_simple_decode(CPUState* cpu) {
             if (idx[0] >= nv || idx[1] >= nv || idx[2] >= nv || (!tri && idx[3] >= nv)) {
                 fp += adv; continue;
             }
+            const int face = s23_abr_note_face(cpu, fp, f0, f1, idx, tri);
             int u[4] = {0,0,0,0}, v[4] = {0,0,0,0};
             int tpx = 0, tpy = 0, clx = 0, cly = 0, bpp = 16;
             float sc[4][2];
@@ -1418,10 +1578,14 @@ static int s23_simple_decode(CPUState* cpu) {
                     memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
                     rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
                 }
-                const moby_otk_vert_t* const ia[3] = { &iv[idx[0]], &iv[idx[1]], &iv[idx[2]] };
-                moby_simple_tri(p, rgb, uu, vv, sh.textured, tpx, tpy, clx, cly, bpp, blend,
-                                (uint32_t)(idx[0] | (idx[1] << 10) | (idx[2] << 20)), otk, ia);
-                emitted++; s_simple_tris++;
+                s23_held_tri T = { .textured = sh.textured, .tpx = tpx, .tpy = tpy, .clx = clx,
+                                   .cly = cly, .bpp = bpp, .blend = blend,
+                                   .fkey = (uint32_t)(idx[0] | (idx[1] << 10) | (idx[2] << 20)),
+                                   .otk = otk, .iv = { &iv[idx[0]], &iv[idx[1]], &iv[idx[2]] } };
+                memcpy(T.p, p, sizeof T.p); memcpy(T.rgb, rgb, sizeof T.rgb);
+                memcpy(T.u, uu, sizeof T.u); memcpy(T.v, vv, sizeof T.v);
+                s23_abr_hold(face, &T);
+                s_simple_tris++;
             }
             if (sh.emit_b) {
                 const int o[3] = {1,3,2};
@@ -1429,14 +1593,19 @@ static int s23_simple_decode(CPUState* cpu) {
                     memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
                     rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
                 }
-                const moby_otk_vert_t* const ib[3] = { &iv[idx[1]], &iv[idx[3]], &iv[idx[2]] };
-                moby_simple_tri(p, rgb, uu, vv, sh.textured, tpx, tpy, clx, cly, bpp, blend,
-                                (uint32_t)(idx[1] | (idx[3] << 10) | (idx[2] << 20)),
-                                moby_otk_second(otk, sh.emit_a), ib);
-                emitted++; s_simple_tris++;
+                s23_held_tri T = { .textured = sh.textured, .tpx = tpx, .tpy = tpy, .clx = clx,
+                                   .cly = cly, .bpp = bpp, .blend = blend,
+                                   .fkey = (uint32_t)(idx[1] | (idx[3] << 10) | (idx[2] << 20)),
+                                   .otk = moby_otk_second(otk, sh.emit_a),
+                                   .iv = { &iv[idx[1]], &iv[idx[3]], &iv[idx[2]] } };
+                memcpy(T.p, p, sizeof T.p); memcpy(T.rgb, rgb, sizeof T.rgb);
+                memcpy(T.u, uu, sizeof T.u); memcpy(T.v, vv, sizeof T.v);
+                s23_abr_hold(face, &T);
+                s_simple_tris++;
             }
             fp += adv;
         }
+        emitted += s23_abr_flush(cpu, nv, (const double (*)[3])vmod, itr, R);
     }
     return emitted;
 }
