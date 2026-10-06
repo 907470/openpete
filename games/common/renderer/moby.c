@@ -90,6 +90,9 @@ static const char* s_cur_mat = "REG";   /* material tag for the current pass (RE
  * shape-lerp spans a clip switch (prev m_Animation != curr) - crossfaded when the two
  * clips share vertex count, snapped when they don't. Pure instrument, no behaviour. */
 static long s_animsw_cross = 0, s_animsw_snap = 0, s_animsw_mirror = 0;
+/* Clip-switch pairs shown from held vertices (heldx) and refused for want of
+ * them (noheld), counted on every present the verdict runs. */
+static long s_animsw_heldx = 0, s_animsw_noheld = 0;
 /* Sub-tick previous-pose guard census, counted on presents below alpha 1:
  * holds shown, holds ended by the tick-period rule, and clip-switch pairs
  * refused because the previous header's content no longer matches the
@@ -656,6 +659,9 @@ typedef struct {
     uint32_t frame_a;    /* keyframe A at frame, in the record's form */
     uint32_t frame_b;    /* keyframe B at nextFrame, in the record's form; frame_a alone */
     uint32_t blend;      /* the record's blend byte (w0 bits 8-15); 0 = keyframe A alone */
+    const double (*held)[3]; /* the model-space vertices a canonical pass decoded for
+                              * this pose (pose_hold_find), or NULL */
+    int held_n;              /* their count */
 } moby_pose_t;
 
 /** @brief A keyframe named the way the cull record names it.
@@ -698,6 +704,7 @@ static int moby_pose_derive(CPUState* cpu, uint32_t model, const uint8_t st[5], 
     if (p->header_b < 0x80000000u) { p->header_b = p->header; p->blend = 0; }
     p->frame_a = moby_keyframe_ref(cpu, p->header, st[2]);
     p->frame_b = p->blend ? moby_keyframe_ref(cpu, p->header_b, st[3]) : p->frame_a;
+    p->held = NULL; p->held_n = 0;
     return 1;
 }
 
@@ -903,14 +910,20 @@ typedef struct { float sx, sy, vz; int sat; int unr; int rec;
  * Both decode with that pose's own ShortShift, equal to the current one within
  * a clip and free to differ across a count-matched clip switch; keyframe B's
  * stream starts on keyframe B's own header. Stream B opens only for a
- * positive blend and a live keyframe B.
+ * positive blend and a live keyframe B. A pose with held vertices opens no
+ * stream: moby_prev_vertex reads them.
  * @param cpu The guest CPU state, read only.
  * @param prev The previous pose, or NULL.
+ * @param count The vertex count the decode reads; held vertices short of it
+ *        leave no previous pose.
  * @param A Receives keyframe A's stream.
  * @param B Receives keyframe B's stream when the blend is positive.
- * @return The pose's blend numerator (1.0 = 4096; 0 opens keyframe A alone),
- *         or -1 when there is no live previous pose. */
-static int moby_prev_streams(CPUState* cpu, const moby_pose_t* prev, vstream* A, vstream* B) {
+ * @return The pose's blend numerator (1.0 = 4096; 0 opens keyframe A alone,
+ *         and is returned for held vertices), or -1 when there is no live
+ *         previous pose. */
+static int moby_prev_streams(CPUState* cpu, const moby_pose_t* prev, int count,
+                             vstream* A, vstream* B) {
+    if (prev && prev->held) return prev->held_n >= count ? 0 : -1;
     if (!prev || !moby_pose_live(prev->header, prev->frame_a)) return -1;
     int s5 = (cpu->read_byte(prev->header + game_layout.moby.anim_shift_off) & 0xFF) + 1;
     int blend = (int)(((prev->blend << 8) >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask);
@@ -918,6 +931,141 @@ static int moby_prev_streams(CPUState* cpu, const moby_pose_t* prev, vstream* A,
     if (blend <= 0 || !moby_pose_live(prev->header_b, prev->frame_b)) return 0;
     vstream_init(cpu, B, prev->header_b, prev->frame_b, s5);
     return blend;
+}
+
+/** @brief The previous pose's model-space vertex i for the two-pass shape lerp.
+ *
+ * Held vertices are read as stored; otherwise keyframe A's stream advances,
+ * and for a positive blend keyframe B's, and the vertex is A + (B - A) tp with
+ * tp = blend / 4096, the arithmetic of the current pose's decode.
+ * @param cpu The guest CPU state, read only.
+ * @param prev The previous pose.
+ * @param A Keyframe A's stream from moby_prev_streams.
+ * @param B Keyframe B's stream, read for a positive blend.
+ * @param blend The blend numerator moby_prev_streams returned.
+ * @param i The vertex index; streams advance one vertex per call from 0.
+ * @param o Receives the vertex. */
+static void moby_prev_vertex(CPUState* cpu, const moby_pose_t* prev, vstream* A, vstream* B,
+                             int blend, int i, double o[3]) {
+    if (prev->held) { memcpy(o, prev->held[i], sizeof(double) * 3); return; }
+    vstream_next(cpu, A, i == 0);
+    o[0] = A->VX; o[1] = A->VY; o[2] = A->VZ;
+    if (blend <= 0) return;
+    const double tp = (double)blend / 4096.0;
+    vstream_next(cpu, B, i == 0);
+    o[0] += tp * (B->VX - A->VX);
+    o[1] += tp * (B->VY - A->VY);
+    o[2] += tp * (B->VZ - A->VZ);
+}
+
+/* ---- held poses ---------------------------------------------------------------
+ * The canonical pass keeps, per moby, the model-space vertices it decoded
+ * (after the keyframe blend, before rotation) for the moby's latest pose and
+ * for the distinct pose before it, the two ends of the moby's interp pair. A
+ * sub-tick present lerps from the earlier one; the game, or the CD stream
+ * refilling a buffer, may have reused that clip's keyframe memory since the
+ * pass drew it, so the lerp reads the held vertices instead of re-decoding a
+ * clip the moby has left. A pass that decodes the latest pose again (a
+ * second scene build in one tick, a moby holding still) refreshes it in
+ * place. The table is open-addressed on the moby address and holds at most
+ * POSE_HOLD_SLOTS - 1 mobys; each pose owns 256 vertices (the vertex count is
+ * a byte). OPENPETE_MOBY_POSE_HOLD=0 re-decodes from guest memory instead. */
+#define POSE_HOLD_SLOTS 2048
+typedef struct { moby_pose_t pose; int n; double (*v)[3]; } pose_hold_pose;
+typedef struct { uint32_t moby; pose_hold_pose p[2]; } pose_hold_slot;  /* p[0] latest */
+static pose_hold_slot s_ph[POSE_HOLD_SLOTS];
+static int s_ph_used;
+static pose_hold_pose* s_ph_open;           /* the pose the running decode fills, or NULL */
+static _Thread_local double (*t_ph_dst)[3]; /* the running decode's capture target, or NULL */
+/** @brief Whether held poses are on (OPENPETE_MOBY_POSE_HOLD, default on), latched on first use.
+ * @return 1 when on, else 0. */
+static int pose_hold_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_POSE_HOLD"); s = !(e && *e == '0'); }
+    return s;
+}
+/** @brief Whether two poses name the same keyframes at the same blend.
+ *
+ * Keyframe B counts only for a nonzero blend; its header only where the
+ * record names keyframes by their leading stream word
+ * (rec_frame_is_word), whose stream the decoder locates from that header.
+ * A pointer-form keyframe names its stream itself, and the cull record need
+ * not carry keyframe B's header.
+ * @param a The first pose.
+ * @param b The second pose.
+ * @return 1 when they match, else 0. */
+static int pose_hold_same(const moby_pose_t* a, const moby_pose_t* b) {
+    if (a->header != b->header || a->frame_a != b->frame_a || a->blend != b->blend) return 0;
+    if (a->blend == 0u) return 1;
+    return a->frame_b == b->frame_b &&
+           (!game_layout.moby.rec_frame_is_word || a->header_b == b->header_b);
+}
+/** @brief The table slot of a moby, claimed when absent and `add` is set.
+ * @param moby The moby's PSX address, nonzero.
+ * @param add Nonzero claims a free slot for a moby the table does not hold.
+ * @return The slot, or NULL when the moby is absent and not added (or the
+ *         table is full). */
+static pose_hold_slot* pose_hold_slot_of(uint32_t moby, int add) {
+    uint32_t h = (moby >> 2) * 2654435761u;
+    for (int k = 0; k < POSE_HOLD_SLOTS; k++) {
+        pose_hold_slot* t = &s_ph[(h + (uint32_t)k) & (POSE_HOLD_SLOTS - 1)];
+        if (t->moby == moby) return t;
+        if (t->moby != 0u) continue;
+        if (!add || s_ph_used >= POSE_HOLD_SLOTS - 1) return NULL;
+        t->moby = moby; s_ph_used++;
+        return t;
+    }
+    return NULL;
+}
+/** @brief Point the next decode's model-space vertex capture at a moby's latest pose.
+ *
+ * A pose other than the held latest one moves that one to the earlier slot
+ * first; the same pose is refreshed in place. Holds nothing when held poses
+ * are off, for an address below KSEG0, or when the table or an allocation
+ * fails.
+ * @param moby The moby the decode draws.
+ * @param header The pose's AnimationHeader.
+ * @param header_b Keyframe B's header.
+ * @param frame_a Keyframe A's reference.
+ * @param frame_b Keyframe B's reference.
+ * @param w0 The record flags word; bits 8-15 are the blend byte. */
+static void pose_hold_begin(uint32_t moby, uint32_t header, uint32_t header_b, uint32_t frame_a,
+                            uint32_t frame_b, uint32_t w0) {
+    s_ph_open = NULL; t_ph_dst = NULL;
+    pose_hold_slot* t = (pose_hold_on() && moby >= 0x80000000u) ? pose_hold_slot_of(moby, 1) : NULL;
+    if (!t) return;
+    const uint32_t bl = (w0 >> 8) & 0xFFu;
+    const moby_pose_t p = { header, bl ? header_b : header, frame_a, bl ? frame_b : frame_a, bl,
+                            NULL, 0 };
+    if (t->p[0].n > 0 && !pose_hold_same(&t->p[0].pose, &p)) {
+        const pose_hold_pose e = t->p[1]; t->p[1] = t->p[0]; t->p[0] = e;
+    }
+    pose_hold_pose* d = &t->p[0];
+    if (!d->v && !(d->v = (double (*)[3])malloc(sizeof *d->v * 256))) return;
+    d->pose = p; d->n = 0;
+    s_ph_open = d; t_ph_dst = d->v;
+}
+/** @brief Commit the pose pose_hold_begin opened with the decode's vertex count.
+ * @param got The vertices the decode wrote; 0 or less leaves the pose empty. */
+static void pose_hold_end(int got) {
+    if (s_ph_open) s_ph_open->n = got > 0 ? got : 0;
+    s_ph_open = NULL; t_ph_dst = NULL;
+}
+/** @brief Attach the vertices the canonical pass held for a moby's pose to that pose.
+ *
+ * The moby's latest held pose is tried, then the distinct one before it.
+ * Nothing is attached when held poses are off or neither matches
+ * (pose_hold_same).
+ * @param moby The moby.
+ * @param p The pose; its held fields are written. */
+static void pose_hold_find(uint32_t moby, moby_pose_t* p) {
+    p->held = NULL; p->held_n = 0;
+    const pose_hold_slot* t = pose_hold_on() ? pose_hold_slot_of(moby, 0) : NULL;
+    for (int k = 0; t && k < 2; k++) {
+        if (t->p[k].n <= 0 || !pose_hold_same(&t->p[k].pose, p)) continue;
+        p->held = (const double (*)[3])t->p[k].v; p->held_n = t->p[k].n;
+        return;
+    }
 }
 
 /* ---- paint-key cost instrument (OPENPETE_MOBY_RANK_TIME=1) ----------------
@@ -1089,7 +1237,8 @@ static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int 
  * control of the verify A/B.
  *
  * With prev naming a live pose the decoder reconstructs both the previous
- * drawn pose (its keyframes at its own blend byte) and the current one, lerps
+ * drawn pose (the vertices a canonical pass held for it, else its keyframes
+ * at its own blend byte) and the current one, lerps
  * them in model space by blend_alpha, and projects once, so the shape moves
  * between two poses the game drew rather than through a synthesized keyframe
  * blend. Across a clip switch moby_prev_keyframe lerps only when both clips
@@ -1290,9 +1439,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     vstream_init(cpu, &A, header, frameA, s5);
     if (do_blend) vstream_init(cpu, &B, headerB, frameB, s5);
     /* Optional prev pose (two-pass sub-tick shape lerp). */
-    int blend_p = moby_prev_streams(cpu, prev, &Ap, &Bp);
-    int two = blend_p >= 0, do_blend_p = blend_p > 0;
-    double tp = (double)blend_p / 4096.0;
+    int blend_p = moby_prev_streams(cpu, prev, count, &Ap, &Bp);
     for (int i = 0; i < count; i++) {
         vstream_next(cpu, &A, i == 0);
         double vx = A.VX, vy = A.VY, vz = A.VZ;
@@ -1302,20 +1449,16 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
             vy += t * (B.VY - A.VY);
             vz += t * (B.VZ - A.VZ);
         }
-        if (two) {
-            /* curr pose is in (vx,vy,vz); reconstruct the prev pose the same way and
-             * lerp prev->curr by blend_alpha (the moby's per-object sub-tick alpha). */
-            vstream_next(cpu, &Ap, i == 0);
-            double vxp = Ap.VX, vyp = Ap.VY, vzp = Ap.VZ;
-            if (do_blend_p) {
-                vstream_next(cpu, &Bp, i == 0);
-                vxp += tp * (Bp.VX - Ap.VX);
-                vyp += tp * (Bp.VY - Ap.VY);
-                vzp += tp * (Bp.VZ - Ap.VZ);
-            }
-            vx = vxp + (vx - vxp) * blend_alpha;
-            vy = vyp + (vy - vyp) * blend_alpha;
-            vz = vzp + (vz - vzp) * blend_alpha;
+        /* A canonical decode keeps the pose it drew (pose_hold_begin). */
+        if (t_ph_dst) { t_ph_dst[i][0] = vx; t_ph_dst[i][1] = vy; t_ph_dst[i][2] = vz; }
+        if (blend_p >= 0) {
+            /* curr pose is in (vx,vy,vz); lerp prev->curr by blend_alpha (the
+             * moby's per-object sub-tick alpha). */
+            double p[3];
+            moby_prev_vertex(cpu, prev, &Ap, &Bp, blend_p, i, p);
+            vx = p[0] + (vx - p[0]) * blend_alpha;
+            vy = p[1] + (vy - p[1]) * blend_alpha;
+            vz = p[2] + (vz - p[2]) * blend_alpha;
         }
         double sx, sy; int sat;
         double vzz = project(M, TR, vx, vy, vz, ofx, ofy, v, &sx, &sy, &sat);
@@ -2066,7 +2209,9 @@ static int project_all_records_inner(CPUState* cpu) {
         int zsf4 = record_zsf4(cpu, &R);
         moby_animsw_census(cpu, R.moby);
         moby_canon_row_scale(cpu, rec, &R);
+        pose_hold_begin(R.moby, R.header, R.header_b, R.frame_a, R.frame_b, R.w0);
         int got = moby_project_record(cpu, &R, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        pose_hold_end(got);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
             uint32_t header = R.header;
@@ -2676,8 +2821,10 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         }
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          pose_hold_begin(m, f.header, f.header_b, f.frameA, f.frameB, f.w0);
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0, NULL, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
                                     rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+          pose_hold_end(got);
           if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += game_layout.moby.array_stride; continue; }
         TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
@@ -9223,7 +9370,10 @@ static int moby_hold_schedule(const openpete_interp_obj_t* o, int verdict, doubl
  * the two poses, including a clip switch between clips of equal vertex
  * count, which deform one shared mesh. MOBY_PREV_HOLD: show the previous
  * pose whole until alpha 1, for a clip switch between clips of different
- * vertex count and for a facing reversal (moby_mirror_hold).
+ * vertex count and for a facing reversal (moby_mirror_hold). *prev carries
+ * the vertices a canonical pass held for it (pose_hold_find); across a clip
+ * switch a pose without them snaps, since the clip the moby left may hold
+ * other data.
  * @param cpu The guest CPU state, read only.
  * @param moby The Moby address.
  * @param header_curr The current pose's AnimationHeader.
@@ -9257,9 +9407,17 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     if (!moby_pose_derive(cpu, model, o->prev + game_layout.moby.anim_state_off, prev)) return 0;
     double t = moby_pair_alpha(o);
     *alpha = t;
+    pose_hold_find(moby, prev);
     int verdict = (prev->header != header_curr)
                 ? moby_clip_switch_verdict(cpu, moby, prev->header, header_curr, t)
                 : MOBY_PREV_LERP;
+    /* The clip the moby left may hold other data by now: across a switch the
+     * previous pose is shown only from the vertices a canonical pass held. */
+    if (verdict != MOBY_PREV_SNAP && prev->header != header_curr && pose_hold_on() && !prev->held) {
+        s_animsw_noheld++;
+        verdict = MOBY_PREV_SNAP;
+    }
+    s_animsw_heldx += (verdict != MOBY_PREV_SNAP && prev->header != header_curr && prev->held);
     /* A facing reversal has no pose between its two keyframe pairs either, so
      * it takes the same hold, clip switch or not. */
     if (verdict == MOBY_PREV_LERP && moby_mirror_hold(cpu, moby)) {
@@ -10110,6 +10268,29 @@ static uint32_t moby_fields_hold_prev(CPUState* cpu, uint32_t moby, moby_fields*
     return cpu->read_word(game_layout.moby.model_table + cls * 4u);
 }
 
+/** @brief The previous pose the sub-tick decode reads, and its alpha.
+ *
+ * A lerp reads the previous pose at the pair's alpha. A hold whose previous
+ * pose carries held vertices reads them as the alpha 0 end of the lerp, so
+ * the whole held shape comes from what a canonical pass decoded; a hold
+ * without them decodes its rewritten record alone. Any other verdict reads
+ * no previous pose.
+ * @param prev The previous pose from moby_prev_keyframe.
+ * @param verdict The moby_prev_keyframe verdict.
+ * @param model_held moby_fields_hold_prev's result, nonzero when the record holds.
+ * @param copy Receives the pose a hold reads.
+ * @param alpha The pair's alpha in, the decode's alpha out.
+ * @return The pose, or NULL. */
+static const moby_pose_t* moby_decode_prev(const moby_pose_t* prev, int verdict,
+                                           uint32_t model_held, moby_pose_t* copy,
+                                           double* alpha) {
+    if (verdict == MOBY_PREV_LERP) return prev;
+    if (!model_held || !prev->held) return NULL;
+    *copy = *prev;
+    *alpha = 0.0;
+    return copy;
+}
+
 /* Per present, the host-built records moby_fields_pose_from_snapshot
  * rewrote (applied), those whose pose the rewrite changed (differ), and those
  * it left because the sub-tick view holds the moby at its previous tick
@@ -10370,14 +10551,16 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * when the two animations share vertex topology; snaps to curr (no prev
          * pose, prev zeroed for the trace and the record) on spawn or a
          * topology-changing clip switch. */
-        moby_pose_t prev; double balpha = 0.0;
+        moby_pose_t prev = {0}; double balpha = 0.0;
         int prevkf = moby_prev_keyframe(cpu, mobys[i], f.header, &prev, &balpha);
         uint32_t model_held =
             moby_fields_hold_prev(cpu, mobys[i], &f, &prev, prevkf, balpha);
-        /* The held pose decodes alone: it is the whole shape, not one end of a
-         * lerp. prevkf keeps the verdict for the trace. */
-        int lerp_prev = (prevkf == MOBY_PREV_LERP);
-        if (!lerp_prev) memset(&prev, 0, sizeof prev);
+        /* The held pose is the whole shape, not one end of a lerp: it decodes
+         * alone, or from the vertices a canonical pass kept for it, as the
+         * alpha 0 end of the lerp. prevkf keeps the verdict for the trace. */
+        moby_pose_t dpose; double dalpha = balpha;
+        const moby_pose_t* dprev = moby_decode_prev(&prev, prevkf, model_held, &dpose, &dalpha);
+        if (prevkf != MOBY_PREV_LERP) memset(&prev, 0, sizeof prev);
         /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
          * traces the anim channel here. This block sits in the sub-tick
          * re-extract pass, so a run that presents only canonical ticks prints
@@ -10408,7 +10591,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
-                                    lerp_prev ? &prev : NULL, balpha, gpf_frac,
+                                    dprev, dalpha, gpf_frac,
                                     f.TR_raw, f.TR_frac, f.M, zsf4, moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
@@ -10742,14 +10925,17 @@ static void moby_reextract_body(CPUState* cpu) {
     if (animswdbg) {
         static long last_cross = -1, last_snap = -1;
         static long last_guard = -1;
-        long guard = s_hold_shown + s_hold_period + s_prevhdr_sig + s_prevhdr_unk;
+        long guard = s_hold_shown + s_hold_period + s_prevhdr_sig + s_prevhdr_unk + s_animsw_heldx +
+                     s_animsw_noheld;
         if (s_animsw_cross != last_cross || s_animsw_snap != last_snap || guard != last_guard) {
             last_cross = s_animsw_cross; last_snap = s_animsw_snap; last_guard = guard;
             fprintf(stderr, "[moby-animsw vbl=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld "
                             "held(facing-reversal)=%ld hold-shown=%ld hold-period-ended=%ld "
-                            "prevhdr-refused(sig)=%ld prevhdr-refused(unknown)=%ld\n",
+                            "prevhdr-refused(sig)=%ld prevhdr-refused(unknown)=%ld "
+                            "held-shown=%ld held-refused=%ld\n",
                     openpete_frame, s_animsw_cross, s_animsw_snap, s_animsw_mirror,
-                    s_hold_shown, s_hold_period, s_prevhdr_sig, s_prevhdr_unk);
+                    s_hold_shown, s_hold_period, s_prevhdr_sig, s_prevhdr_unk, s_animsw_heldx,
+                    s_animsw_noheld);
         }
     }
 }
