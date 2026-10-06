@@ -117,18 +117,21 @@ pg_resolve() {
 # (tests/harness/linux-capture.Dockerfile), which carries its recipe at
 # PG_IMAGE_RECIPE; pg_in_capture_image is true inside it.
 #
-# pg_enter_capture_image [--no-build] SCRIPT ARGS... runs SCRIPT with ARGS
-# inside the image through `scripts/golden-capture-container.sh gate`, which
-# builds the engine into PG_CONTAINER_BUILD_DIR with the image's toolchain
-# under an exclusive lock, then runs SCRIPT there; a --build-dir= argument is
-# replaced by PG_CONTAINER_BUILD_DIR, since the host's build tree holds
-# host-compiled objects. --no-build enters through the wrapper's `run`
-# instead, for a SCRIPT that reads files and runs no engine; `run` builds the
-# image when it is absent or stale rather than skipping. When
-# OPENPETE_CAPTURE_BINARIES is set (a tree whose engine was built elsewhere,
-# its binaries' hashes in that file), both forms enter through
-# `gate --no-build`, which builds nothing and runs SCRIPT only after the
-# shipped binaries match their hashes. The machine's
+# pg_enter_capture_image [--no-build|--no-engine] SCRIPT ARGS... runs SCRIPT
+# with ARGS inside the image through `scripts/golden-capture-container.sh
+# gate`, which builds the engine into PG_CONTAINER_BUILD_DIR with the image's
+# toolchain under an exclusive lock, then runs SCRIPT there; a --build-dir=
+# argument is replaced by PG_CONTAINER_BUILD_DIR, since the host's build tree
+# holds host-compiled objects. --no-build enters through the wrapper's `run`
+# instead, for a SCRIPT that runs no engine but reads the build directory's
+# name (its preset); `run` builds the image when it is absent or stale rather
+# than skipping. When OPENPETE_CAPTURE_BINARIES is set (a tree whose engine
+# was built elsewhere, its binaries' hashes in that file), both forms enter
+# through `gate --no-build`, which builds nothing and runs SCRIPT only after
+# the shipped binaries match their hashes. --no-engine enters through `run`
+# whatever OPENPETE_CAPTURE_BINARIES holds and passes ARGS unchanged, with no
+# --build-dir= argument, for a SCRIPT that takes no build directory and runs
+# no engine. The machine's
 # hostname enters as OPENPETE_CAPTURE_HOST, since inside the container the
 # hostname is the container id (scripts/presentation-blessed.py host_here).
 # The caller stays the host-side parent for the whole run, so a process
@@ -139,7 +142,13 @@ PG_CONTAINER_BUILD_DIR=build/linux-release-container
 
 pg_in_capture_image() { [[ -f "$PG_IMAGE_RECIPE" ]]; }
 
-pg_enter_capture_image() {  # [--no-build] script args...
+pg_enter_capture_image() {  # [--no-build|--no-engine] script args...
+  if [[ "$1" == "--no-engine" ]]; then
+    shift
+    scripts/golden-capture-container.sh run -- \
+      env "OPENPETE_CAPTURE_HOST=$(uname -n)" "$@"
+    return
+  fi
   local -a sub=(gate)
   [[ "$1" == "--no-build" ]] && { sub=(run); shift; }
   [[ -n "${OPENPETE_CAPTURE_BINARIES:-}" ]] && sub=(gate --no-build)

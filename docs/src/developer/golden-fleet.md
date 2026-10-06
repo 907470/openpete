@@ -303,7 +303,8 @@ nothing else is in it.
 ## Promote stays local
 
 Pulled tiles are adjudication material. `presentation-corpus-promote.sh`
-refuses a candidate whose `capture-record.txt` names another host. Re-capture
+refuses a candidate whose `capture-record.txt` names another host. Started on
+the host, the script enters the capture image itself. Re-capture
 each adjudicated row on the dev box and promote from that capture:
 
 ```sh

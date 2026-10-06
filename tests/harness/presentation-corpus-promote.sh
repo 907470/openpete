@@ -33,15 +33,27 @@
 # The promote runs inside the capture image, on a candidate captured there:
 # the manifest header records the capture environment, and a promote whose
 # capture departs from it, or which runs outside the image, is refused
-# (scripts/presentation-blessed.py, Environment).
+# (scripts/presentation-blessed.py, Environment). Started outside the image,
+# the script re-executes itself inside it through
+# `scripts/golden-capture-container.sh run` (pg_enter_capture_image
+# --no-engine), which passes the machine's hostname as OPENPETE_CAPTURE_HOST;
+# the container mounts this tree and the reference store's parent directory
+# only, so candidate_dir lies under one of them. Exit 64 when no container
+# engine is present.
 #
 # After running, review `git -C <openpete> diff --cached` and commit deliberately.
 #
-# Exit: 0 promoted or nothing to promote; 1 refused; 2 usage.
+# Exit: 0 promoted or nothing to promote; 1 refused; 2 usage; 64 no container
+# engine.
 set -u
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 2
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
+
+if ! pg_in_capture_image; then
+  pg_enter_capture_image --no-engine tests/harness/presentation-corpus-promote.sh "$@"
+  exit $?
+fi
 
 GAME="$(pg_parse_game "$@")" || exit 2
 pg_resolve "$GAME" || exit 2
