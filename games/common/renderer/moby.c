@@ -5729,8 +5729,12 @@ static void specular_hl_calibrate(CPUState* cpu) {
  *
  * Intersection space: (sx, sy, K/vz). The perspective map from view space is
  * projective and bijective for vz > 0, so it preserves incidence (planes,
- * lines, intersections). Two faces sharing >= 2 vertex positions (a shared
- * edge) are adjacent and skipped; otherwise the pair intersects when the
+ * lines, intersections). Two faces sharing exactly two vertex positions
+ * whose half-planes about the shared edge lie stacked (isect_stack_deg) are
+ * contested: a decal face on its base, which the game paints after the base
+ * on its key while its free vertex may sit behind the base's plane. Any
+ * other pair sharing >= 2 vertex positions (a shared edge) is adjacent and
+ * skipped; otherwise the pair intersects when the
  * overlap of the two plane-clipped segments has a screen length above
  * ISECT_TOL_PX (a shared single vertex yields a zero-length overlap at that
  * vertex and is rejected by the same bound). Coplanar pairs are not
@@ -5942,19 +5946,116 @@ static int isect_pair(const isect_tri* A, const isect_tri* B) {
     double dx = e[0]-s[0], dy = e[1]-s[1];
     return (dx*dx + dy*dy) > ISECT_TOL_PX*ISECT_TOL_PX;
 }
-/** @brief The number of vertices of one walk triangle that coincide with a vertex of another.
+/** @brief The vertices of one walk triangle that coincide with a vertex of another.
  *
  * A vertex coincides when a vertex of the other triangle has the same sx, sy
  * and tvz, compared exactly.
  * @param a The first triangle.
  * @param b The second triangle.
- * @return The count, 0 to 3. */
-static int isect_shared(const ntri_t* a, const ntri_t* b) {
+ * @param m Receives, per vertex of `a`, the index of its coincident vertex in
+ *          `b`, or -1.
+ * @return The number of coincident vertices, 0 to 3. */
+static int isect_shared(const ntri_t* a, const ntri_t* b, int m[3]) {
     int n = 0;
-    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
-        if (a->v[i].sx == b->v[j].sx && a->v[i].sy == b->v[j].sy &&
-            a->v[i].tvz == b->v[j].tvz) { n++; break; }
+    for (int i = 0; i < 3; i++) {
+        m[i] = -1;
+        for (int j = 0; j < 3 && m[i] < 0; j++)
+            if (a->v[i].sx == b->v[j].sx && a->v[i].sy == b->v[j].sy &&
+                a->v[i].tvz == b->v[j].tvz) m[i] = j;
+        n += m[i] >= 0;
+    }
     return n;
+}
+/* A pair sharing one edge is stacked (one face lies over the other, a decal
+ * on its base) when its free vertices lie on the same side of the shared edge
+ * on screen and the angle between the two half-planes about the edge is at
+ * most ISECT_STACK_DEG in view space. A manifold neighbour's free vertex lies
+ * on the opposite side; a fold seen at a silhouette opens a wider angle. On
+ * the Spyro 1-3 mobys a decal lies within 3.5 degrees of its base and the
+ * narrowest same-side fold opens 6.3 degrees. */
+#define ISECT_STACK_DEG 5.0
+/** @brief Whether the stacked-pair contest is on (OPENPETE_MOBY_RANK_STACKED, default on), latched on first use.
+ * @return 1 when on, else 0. */
+static int isect_stacked_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_STACKED"); s = !(e && *e == '0'); }
+    return s;
+}
+/** @brief A walk vertex in view space scaled by the projection's H.
+ *
+ * Inverts the perspective divide sx = ofx + H x / z with z = tvz:
+ * ((sx - ofx) tvz, (sy - ofy) tvz, H tvz), a uniform scale of the view-space
+ * position, so angles between the vertices hold.
+ * @param v The vertex.
+ * @param o Receives the point. */
+static void isect_view_of(const ntri_vert* v, double o[3]) {
+    o[0] = ((double)v->sx - s_view.ofx) * v->tvz;
+    o[1] = ((double)v->sy - s_view.ofy) * v->tvz;
+    o[2] = s_view.H_eff * v->tvz;
+}
+/** @brief The screen-space cross product (e1 - e0) x (p - e0), whose sign is p's side of the line e0 e1.
+ * @param e0 The line's first vertex.
+ * @param e1 The line's second vertex.
+ * @param p The vertex classified.
+ * @return The signed doubled area of the triangle e0 e1 p. */
+static double isect_side2(const ntri_vert* e0, const ntri_vert* e1, const ntri_vert* p) {
+    return ((double)e1->sx - e0->sx) * ((double)p->sy - e0->sy) -
+           ((double)e1->sy - e0->sy) * ((double)p->sx - e0->sx);
+}
+/** @brief The component of f - e0 perpendicular to the edge e0 e1 in view space.
+ * @param e0 The edge's first point.
+ * @param u The edge direction e1 - e0.
+ * @param uu u.u, nonzero.
+ * @param f The free vertex.
+ * @param w Receives the perpendicular component. */
+static void isect_edge_perp(const double e0[3], const double u[3], double uu, const double f[3],
+                            double w[3]) {
+    const double d[3] = { f[0] - e0[0], f[1] - e0[1], f[2] - e0[2] };
+    const double t = isect_dot(d, u) / uu;
+    for (int c = 0; c < 3; c++) w[c] = d[c] - t * u[c];
+}
+/** @brief The angle in degrees between two triangles' half-planes about their shared edge, in view space.
+ *
+ * 0 when both free vertices lie on one ray from the edge (stacked, coplanar),
+ * 180 when the faces continue each other flat. A degenerate edge or face
+ * returns 180.
+ * @param e0 The shared edge's first vertex.
+ * @param e1 Its second vertex.
+ * @param fa The first face's free vertex.
+ * @param fb The second face's free vertex.
+ * @return The angle, 0 to 180. */
+static double isect_fold_deg(const ntri_vert* e0, const ntri_vert* e1, const ntri_vert* fa,
+                             const ntri_vert* fb) {
+    double p0[3], p1[3], pa[3], pb[3], u[3], wa[3], wb[3], x[3];
+    isect_view_of(e0, p0); isect_view_of(e1, p1); isect_view_of(fa, pa); isect_view_of(fb, pb);
+    for (int c = 0; c < 3; c++) u[c] = p1[c] - p0[c];
+    const double uu = isect_dot(u, u);
+    if (!(uu > 0.0)) return 180.0;
+    isect_edge_perp(p0, u, uu, pa, wa);
+    isect_edge_perp(p0, u, uu, pb, wb);
+    isect_cross(wa, wb, x);
+    const double deg = atan2(sqrt(isect_dot(x, x)), isect_dot(wa, wb)) * (180.0 / M_PI);
+    return isfinite(deg) && isect_dot(wa, wa) > 0.0 && isect_dot(wb, wb) > 0.0 ? deg : 180.0;
+}
+/** @brief The fold angle of a pair sharing exactly two vertices whose free vertices lie on one side of the shared edge on screen.
+ *
+ * @param a The first triangle.
+ * @param b The second triangle.
+ * @param m The coincidence map of `a` onto `b` from isect_shared, two entries
+ *          set.
+ * @return The angle from isect_fold_deg, or -1 when a vertex lies at or
+ *         behind the camera or the free vertices lie on opposite sides (or
+ *         on the line). */
+static double isect_stack_deg(const ntri_t* a, const ntri_t* b, const int m[3]) {
+    const int fa = m[0] < 0 ? 0 : m[1] < 0 ? 1 : 2;
+    const int i0 = (fa + 1) % 3, i1 = (fa + 2) % 3;
+    const int fb = 3 - m[i0] - m[i1];
+    if (!(a->v[0].tvz > 0.0f && a->v[1].tvz > 0.0f && a->v[2].tvz > 0.0f && b->v[fb].tvz > 0.0f))
+        return -1.0;
+    const double sa = isect_side2(&a->v[i0], &a->v[i1], &a->v[fa]);
+    const double sb = isect_side2(&a->v[i0], &a->v[i1], &b->v[fb]);
+    if (!(sa * sb > 0.0)) return -1.0;
+    return isect_fold_deg(&a->v[i0], &a->v[i1], &a->v[fa], &b->v[fb]);
 }
 /** @brief Whether the rank select can order a walk triangle.
  *
@@ -5997,32 +6098,60 @@ static void isect_tri_of(int i, isect_tri* t) {
  * (OPENPETE_MOBY_ISECT_LOG) and the rank calibration.
  * @return Nonzero when one is on. */
 static int isect_instrumented(void) { return isect_log_on() || moby_rank_cal_on(); }
-typedef struct { long faces, contested, pairs, coplanar, shared; } isect_count;
+typedef struct { long faces, contested, pairs, coplanar, shared, stacked; } isect_count;
 typedef struct { const isect_tri* T; const int* idx; isect_count* c; int all; } isect_ctx;
+/** @brief Set a contesting pair's flags and record it in the pair list while the list has room.
+ * @param ia The first face's walk index.
+ * @param ib The second face's walk index. */
+static void isect_contest(int ia, int ib) {
+    s_wtri_contest[ia] = 1; s_wtri_contest[ib] = 1;
+    if (s_ip_n < ISECT_PAIRS_MAX) { s_ip_a[s_ip_n] = ia; s_ip_b[s_ip_n] = ib; s_ip_n++; }
+}
+/** @brief Print one same-side shared-edge pair as an [isect-stack] line.
+ * @param ia The first face's walk index.
+ * @param ib The second face's walk index.
+ * @param deg The pair's fold angle.
+ * @param hit Whether the angle is within ISECT_STACK_DEG. */
+static void isect_log_stack(int ia, int ib, double deg, int hit) {
+    const ntri_vert *a = s_wtri[ia].v, *b = s_wtri[ib].v;
+    fprintf(stderr, "[isect-stack] vbl=%u mat=%s m=%08X cls=%u fkey=%08X,%08X tex=%d,%d "
+                    "otk=%08X,%08X deg=%.3f stacked=%d a=%.2f,%.2f,%.2f,%.2f,%.2f,%.2f "
+                    "b=%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+            openpete_frame, s_cur_mat, s_wtri_moby[ia], s_wtri_cls[ia], s_wtri_fkey[ia],
+            s_wtri_fkey[ib], s_wtri[ia].textured, s_wtri[ib].textured, (uint32_t)s_wtri_otk[ia],
+            (uint32_t)s_wtri_otk[ib], deg, hit, a[0].sx, a[0].sy, a[1].sx, a[1].sy, a[2].sx,
+            a[2].sy, b[0].sx, b[0].sy, b[1].sx, b[1].sy, b[2].sx, b[2].sy);
+}
 /** @brief Test one pair of a moby's faces whose bounding boxes overlap and flag it when they intersect.
  *
- * Without an instrument, which counts every verdict, a pair is dropped before
- * the adjacency test when its result cannot set a contest flag: both faces
- * contest already, or either face's side of the other's plane rules it out.
+ * Without an instrument, which counts every verdict, a pair is dropped first
+ * when both faces contest already. A pair sharing exactly two vertex
+ * positions that is stacked (isect_stack_deg within ISECT_STACK_DEG) contests
+ * and counts as stacked. Without an instrument the remaining pairs are then
+ * dropped when either face's side of the other's plane rules the pair out.
  * A pair sharing two or more vertex positions is counted adjacent and
- * skipped. An intersecting pair sets both contest flags and is recorded in
- * the pair list while it has room.
+ * skipped. An intersecting pair contests (isect_contest).
  * @param x The moby's faces, their walk indices and the counts.
  * @param a The first face's position in the moby's face list.
  * @param b The second face's position, after `a`. */
 static void isect_test(const isect_ctx* x, int a, int b) {
     const int ia = x->idx[a], ib = x->idx[b];
     const isect_tri *A = &x->T[a], *B = &x->T[b];
-    if (!x->all && ((s_wtri_contest[ia] && s_wtri_contest[ib]) ||
-                    isect_misses(A, B) || isect_misses(B, A)))
-        return;
-    if (isect_shared(&s_wtri[ia], &s_wtri[ib]) >= 2) { x->c->shared++; return; }
+    if (!x->all && s_wtri_contest[ia] && s_wtri_contest[ib]) return;
+    int m[3];
+    const int ns = isect_shared(&s_wtri[ia], &s_wtri[ib], m);
+    const double deg = ns == 2 && isect_stacked_on() ? isect_stack_deg(&s_wtri[ia], &s_wtri[ib], m)
+                                                     : -1.0;
+    const int stacked = deg >= 0.0 && deg <= ISECT_STACK_DEG;
+    if (deg >= 0.0 && isect_log_on() && openpete_frame != 0) isect_log_stack(ia, ib, deg, stacked);
+    if (stacked) { x->c->stacked++; isect_contest(ia, ib); return; }
+    if (!x->all && (isect_misses(A, B) || isect_misses(B, A))) return;
+    if (ns >= 2) { x->c->shared++; return; }
     int r = isect_pair(A, B);
     x->c->coplanar += r == 2;
     if (r != 1) return;
     x->c->pairs++;
-    s_wtri_contest[ia] = 1; s_wtri_contest[ib] = 1;
-    if (s_ip_n < ISECT_PAIRS_MAX) { s_ip_a[s_ip_n] = ia; s_ip_b[s_ip_n] = ib; s_ip_n++; }
+    isect_contest(ia, ib);
 }
 /* A face's bounding box in the sweep order. A bound that is not a number
  * (every vertex coordinate on that axis is NaN) is widened to infinity, which
@@ -6099,9 +6228,9 @@ static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c
  * @param c The moby's counts. */
 static void isect_log_moby(uint32_t mob, int i0, const isect_count* c) {
     fprintf(stderr, "[isect] vbl=%u mat=%s m=%08X cls=%u front=%d faces=%ld contested=%ld "
-                    "pairs=%ld coplanar=%ld sharededge=%ld\n",
+                    "pairs=%ld coplanar=%ld sharededge=%ld stacked=%ld\n",
             openpete_frame, s_cur_mat, mob, s_wtri_cls[i0], s_wtri_front[i0], c->faces,
-            c->contested, c->pairs, c->coplanar, c->shared);
+            c->contested, c->pairs, c->coplanar, c->shared, c->stacked);
 }
 /** @brief Fill s_wtri_contest[] and the intersecting-pair list for the whole walk.
  *
@@ -6125,13 +6254,13 @@ static void isect_census(void) {
         isect_moby(T, idx, n, &c);
         if (logit && n > 0) isect_log_moby(mob, i0, &c);
         tot.faces += c.faces; tot.contested += c.contested; tot.pairs += c.pairs;
-        tot.coplanar += c.coplanar; tot.shared += c.shared;
+        tot.coplanar += c.coplanar; tot.shared += c.shared; tot.stacked += c.stacked;
         i0 = i1;
     }
     if (logit)
         fprintf(stderr, "[isect-sum] vbl=%u mat=%s faces=%ld contested=%ld pairs=%ld coplanar=%ld "
-                        "sharededge=%ld\n", openpete_frame, s_cur_mat, tot.faces, tot.contested,
-                tot.pairs, tot.coplanar, tot.shared);
+                        "sharededge=%ld stacked=%ld\n", openpete_frame, s_cur_mat, tot.faces,
+                tot.contested, tot.pairs, tot.coplanar, tot.shared, tot.stacked);
 }
 
 /* ---- native paint rank ------------------------------------------------------
