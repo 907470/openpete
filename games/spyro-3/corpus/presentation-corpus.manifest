@@ -149,3 +149,6 @@ spikes-arena|4100|100||4140,4158
 # row rather than a pin on title-demo, whose 20-VBL grid would otherwise fan out
 # over the 3600 VBLs between them.
 title-demo-camcut|5800|100||5852
+# the_second_warning cutscene, VBL 1293-1301: Bianca interpolates wrongly on
+# the sub-tick view just before she steps out from behind the tree (native).
+second-warning-bianca-tree|1289|2||1293,1295,1297,1298,1299,1300,1301|--skip-to-cutscene the_second_warning
