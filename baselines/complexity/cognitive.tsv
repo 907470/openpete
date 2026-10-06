@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 78c207dbc271784d99896a78edd3b9686752eb98
+# head: f3d9cb844f1ab7f94d3dbd044ded2c3ff22e2f3f
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
@@ -173,7 +173,7 @@ games/common/renderer/terrain.c	terrain_feed_native	434	0
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	105	0	
 games/common/renderer/terrain.c	tgpu_bake_hp_face	27	0	
-games/common/renderer/terrain.c	tgpu_build_sector	65	0	
+games/common/renderer/terrain.c	tgpu_build_sector	64	0	
 games/common/renderer/terrain.c	tgpu_ensure	37	0	
 games/common/renderer/terrain.c	tgpu_env_block	30	0	
 games/common/renderer/terrain.c	tgpu_pack_scan_faces	40	0	
@@ -182,8 +182,7 @@ games/common/renderer/terrain.c	tsc_field_census	27	0
 games/common/renderer/terrain.c	tsc_get	96	0	
 games/common/renderer/terrain.c	tsc_lp_grade	31	0	
 games/common/renderer/terrain.c	tsc_vert_anim_refresh	155	0	
-games/common/renderer/terrain.c	tsimp_attach	33	0	
-games/common/renderer/terrain.c	walk_sector	687	0	
+games/common/renderer/terrain.c	walk_sector	685	0	
 games/common/renderer/text_moby.c	emit_glyph	26	0	
 games/common/renderer/text_moby.c	text_moby_native_cache	40	0	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	43	0	
