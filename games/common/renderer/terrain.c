@@ -6247,6 +6247,16 @@ static ngte_view s_view;
  * radius-proportional slack the draw builds by shifts. The inputs are
  * saturated to 16 bits first, as the GTE saturates IR1..IR3 before the draw
  * reads them back.
+ *
+ * The draw's slack is sized for its own 4:3 tangents (4·t3 + 3·t4 ≈ 4.9r
+ * against the exact 5r): scaled by a half-width above 1 it falls further
+ * short of the sphere's true distance to the side plane (7.87r against
+ * 8.94r at wx 2.6667), and rejects spheres that reach into the displayed
+ * frame. An axis whose scale is not 1 therefore rejects on the exact plane
+ * distance, 4|vx| − 3·wx·vz ≥ r·√(16 + 9·wx²) and
+ * 32|vy| − 17·wy·vz ≥ r·√(1024 + 289·wy²), which admits every sphere the
+ * displayed frustum intersects; an axis at scale 1 keeps the draw's
+ * expression bit-exact, so the 4:3 verdict is the game's.
  * @param c1m The sphere centre's horizontal view coordinate.
  * @param c2m The sphere centre's vertical view coordinate.
  * @param cbin The sphere centre's view depth.
@@ -6258,11 +6268,21 @@ static ngte_view s_view;
 static int tsec_sphere_cull(double c1m, double c2m, double cbin, int r,
                             double wx, double wy) {
     double vx = ngte_ir_clamp(c1m), vy = ngte_ir_clamp(c2m), vz = ngte_ir_clamp(cbin);
-    double t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
-    double t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
-    return (vz + r <= 0)
-        || (4.0 * (fabs(vx) - t3) >= 3.0 * wx * (vz + t4))
-        || (32.0 * (fabs(vy) - t5) >= 17.0 * wy * (vz + t6));
+    if (vz + r <= 0) return 1;
+    int outX, outY;
+    if (wx == 1.0) {
+        double t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
+        outX = 4.0 * (fabs(vx) - t3) >= 3.0 * wx * (vz + t4);
+    } else {
+        outX = 4.0 * fabs(vx) - 3.0 * wx * vz >= (double)r * sqrt(16.0 + 9.0 * wx * wx);
+    }
+    if (wy == 1.0) {
+        double t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
+        outY = 32.0 * (fabs(vy) - t5) >= 17.0 * wy * (vz + t6);
+    } else {
+        outY = 32.0 * fabs(vy) - 17.0 * wy * vz >= (double)r * sqrt(1024.0 + 289.0 * wy * wy);
+    }
+    return outX || outY;
 }
 
 /* Sector bounding-sphere frustum inputs: the sector table, the draw's
