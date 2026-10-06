@@ -180,13 +180,16 @@ bool ter_key_loses()
 /* The stock colour for this fragment. a == 0 marks a texel the PSX treats
  * as transparent (the sentinel, or an HD replacement's cut-out); the
  * caller discards it. Untextured faces (LP, flat-gouraud HP) are the
- * vertex colour. */
+ * vertex colour at alpha 1, except blend class 1 (mat0 bits 21-22, PSX
+ * ABR 0), which takes alpha 128/255 so the alpha arena's SRC_ALPHA blend
+ * draws (B+F)/2, the vertex alpha the scene intake stores for the same
+ * face on the CPU walk. */
 vec4 ter_stock_shade()
 {
     uint mat0 = vMat.x;
     vec4 col = vColor / vQ;
     if ((mat0 & (1u << 23)) == 0u)            /* untextured: plain gouraud */
-        return vec4(col.rgb, 1.0);
+        return vec4(col.rgb, ((mat0 >> 21) & 3u) == 1u ? 128.0 / 255.0 : 1.0);
     /* HD-fold replacement: a baked entry replaces the VRAM fetch (file-box
      * mapping, alpha cut-out, the continuous pack-fog ramp), then the same
      * PSX modulation. Entries exist only on opaque faces. */

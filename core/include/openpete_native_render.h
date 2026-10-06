@@ -754,8 +754,8 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * another transparent layer). ABR mode 3 (B+F/4) + back-to-front sort are still
  * TODO (no consumer yet).
  *   TEXTURED tris go through the VRAM sampler (tex*col/128) for every class.
- *   UNTEXTURED gouraud tris support classes 0 (opaque), 1 (alpha - uses the
- * vertex rgba ALPHA byte; set 128 for (B+F)/2), 3 (subtract - reverse-
+ *   UNTEXTURED gouraud tris support classes 0 (opaque), 1 (alpha - the
+ * scene intake sets the vertex ALPHA byte to 128 for (B+F)/2), 3 (subtract - reverse-
  * subtracts the vertex colour, alpha ignored) and 2 (additive, B+F - the glow
  * rings: gouraud fan, bright centre fading to black edge, alpha ignored). */
 /* category: which draw layer an OPAQUE (blend==0) tri belongs to. The opaque
@@ -1418,7 +1418,9 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
  * colours, so the renderer stencil-isolates portals per group. The group is
  * an argument, not ambient state, like the category and carry. The stored
  * tri also takes the sticky tag, fog delta, seq, prim and STP selection.
- * A blend class outside 0..4 is stored as 0 (opaque).
+ * A blend class outside 0..4 is stored as 0 (opaque). An untextured tri of
+ * blend class 1 (PSX ABR 0) is stored with vertex alpha 0x80 whatever the
+ * feeder stated, which halves it to (B+F)/2.
  * @param tri Triangle to copy; NULL is ignored.
  * @param category Scene layer (OPENPETE_SCENE_*); ignored for blended tris.
  * @param carry 1 marks 2D UI the sub-tick re-extract cannot re-derive, so

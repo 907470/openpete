@@ -1579,6 +1579,20 @@ static int scene_blend_class(int blend) {
     return (blend >= 0 && blend < NR_BLEND_CLASSES) ? blend : 0;
 }
 
+/** @brief Set vertex alpha 0x80 on an untextured triangle of the alpha blend class.
+ *
+ * PSX ABR 0 is (B+F)/2. An untextured triangle of class NR_BLEND_AVG draws
+ * through a SRC_ALPHA / ONE_MINUS_SRC_ALPHA pipe that reads the vertex
+ * alpha, so the intake states the half for every feeder. A textured
+ * triangle is left alone: it takes its 0.5 from the texel's STP bit, and
+ * its vertex alpha byte carries the moby fog band instead.
+ * @param s Stored triangle whose blend class is already validated. */
+static void scene_abr0_alpha(scene_tri_t *s) {
+    if (s->textured || s->blend != NR_BLEND_AVG) return;
+    for (int k = 0; k < 3; k++)
+        s->v[k].rgba = (s->v[k].rgba & 0x00FFFFFFu) | (0x80u << 24);
+}
+
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
@@ -1591,6 +1605,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
          * table by it; a class outside the table draws opaque, as each
          * pass's own clamp already maps it. */
         s_scene[s_scene_n].blend = scene_blend_class(s_scene[s_scene_n].blend);
+        scene_abr0_alpha(&s_scene[s_scene_n]);
         s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
