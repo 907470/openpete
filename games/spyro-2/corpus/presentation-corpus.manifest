@@ -110,3 +110,6 @@ intro-arrival-ripto-mouth|5250|2||5256,5258,5260|--skip-to-cutscene intro_arriva
 # crush_intro cutscene, VBL 1012: orb geometry stretches across the screen
 # on the sub-tick view (native); the canonical tick draws clean.
 crush-intro-orb-stretch|1004|2||1010,1011,1012,1013,1014|--skip-to-cutscene crush_intro
+# crush_intro cutscene, VBL 1603: on a camera cut the mobys vanish for a
+# moment on the sub-tick view (native); the canonical ticks draw them.
+crush-intro-cut-mobys|1597|2||1601,1602,1603,1604,1605|--skip-to-cutscene crush_intro
