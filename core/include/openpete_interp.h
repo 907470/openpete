@@ -87,7 +87,7 @@ void openpete_interp_register_regions(const openpete_interp_region_t* regions,
  * `data[]`. `valid` flips to 1 the first time this slot is written. */
 typedef struct {
     uint32_t  tick;                 /* openpete_frame at capture time */
-    op_time_t tick_ns;              /* stamp passed to capture (a grid point when deterministic) */
+    op_time_t tick_ns;              /* stamp passed to capture (the VBL clock when deterministic) */
     uint32_t  total_bytes;
     uint8_t   valid;
     uint8_t   pad[3];
@@ -152,8 +152,8 @@ int  openpete_interp_enabled(void);
  * the head has held for that gap (at least 2), then committed as a
  * duplicate, so a held screen pairs a state with itself and the bracket
  * stays installed. Under deterministic capture @p tick_ns is replaced by
- * a grid point that advances on distinct states only; a duplicate takes
- * the copied state's stamp plus one period. No-op when disabled or when
+ * @p tick times half the period, raised to one period past the head when
+ * that does not exceed the head's stamp. No-op when disabled or when
  * the region table is empty.
  * @param tick VBL counter of the capture (openpete_frame).
  * @param tick_ns Present-clock stamp of the capture. */
@@ -181,10 +181,10 @@ op_time_t openpete_interp_present_now(void);
  *
  * Armed by run.c for intermediate screenshots. While armed,
  * openpete_interp_capture ignores the stamp it is passed and stamps each
- * stored distinct state on a fixed grid 0, P, 2P, ... with P = @p period_ns;
- * a duplicate commit takes the copied state's stamp plus P. A caller that
- * sets the present target to curr_tick_ns + P/2 then gets alpha 0.5 with no
- * dependence on host pacing. Arming resets the grid index to 0.
+ * commit with its VBL counter times P/2, P = @p period_ns (one tick, two
+ * VBLs), so stamps strictly increase and depend on the VBL alone. A caller
+ * that sets the present target to curr_tick_ns + P/2 then gets alpha 0.5 on
+ * a pair one logic step apart, with no dependence on host pacing.
  * @param on Nonzero arms.
  * @param period_ns Grid spacing, stored whether or not @p on is set. */
 void      openpete_interp_set_deterministic(int on, op_time_t period_ns);
@@ -202,8 +202,8 @@ op_time_t openpete_interp_det_period(void);
 
 /** @brief Return the newest stored snapshot's stamp.
  *
- * Under deterministic capture the stamp is a grid point; adding half the
- * period targets the sub-tick midpoint.
+ * Under deterministic capture the stamp is the VBL clock; adding half the
+ * period targets the sub-tick midpoint of a one-step pair.
  * @return curr->tick_ns, or 0 before init or while the head slot is
  *         invalid. */
 op_time_t openpete_interp_curr_tick_ns(void);

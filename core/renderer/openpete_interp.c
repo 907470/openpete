@@ -183,14 +183,33 @@ op_time_t openpete_interp_present_now(void) {
 /* Deterministic capture - see the header note. */
 static int       s_det_mode    = 0;
 static op_time_t s_det_period  = 0;
-static uint64_t  s_det_index   = 0;
 void openpete_interp_set_deterministic(int on, op_time_t period_ns) {
     s_det_mode = on ? 1 : 0;
     s_det_period = period_ns;
-    if (on) s_det_index = 0;
 }
 int openpete_interp_deterministic(void) { return s_det_mode; }
 op_time_t openpete_interp_det_period(void) { return s_det_period; }
+
+/** @brief The deterministic-capture stamp of a roll at VBL @p tick.
+ *
+ * The VBL clock, tick * P/2 (P is the tick period, two VBLs), so the stamp is
+ * a function of the capture's VBL alone (see the header note). Two distinct
+ * states one logic step (two VBLs) apart are exactly P apart, a duplicate
+ * committed at the cadence lands where the next logic step would, and no roll
+ * is stamped at or before the head it follows: the object ring takes this
+ * stamp, and a per-object pair whose curr stamp does not exceed its prev reads
+ * as a stale pair. The stamp does not depend on how many duplicates were
+ * committed, so the duplicate policy cannot move anything keyed on the
+ * absolute stamp (the animated-texture phase the present clock is derived
+ * from). The fallback past the head covers a roll at the head's own VBL.
+ * @param tick The VBL counter of the roll.
+ * @param curr The head snapshot the roll follows.
+ * @return The stamp in nanoseconds. */
+static op_time_t interp_det_stamp(uint32_t tick, const openpete_interp_snapshot_t* curr) {
+    op_time_t t = (op_time_t)tick * s_det_period / 2;
+    if (curr->valid && t <= curr->tick_ns) t = curr->tick_ns + s_det_period;
+    return t;
+}
 op_time_t openpete_interp_curr_tick_ns(void) {
     return (s_initialized && s_snap[s_head].valid) ? s_snap[s_head].tick_ns : 0;
 }
@@ -286,18 +305,7 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
         }
     }
 
-    /* Deterministic capture: override the wall-clock stamp with a fixed grid
-     * point (0, P, 2P, ...), so consecutive distinct ticks are exactly `period`
-     * apart (see the header note). The grid counts DISTINCT states only: a
-     * duplicate roll is stamped one period after the state it copies and
-     * consumes no grid point, so a tick's absolute stamp depends on the states that preceded it and
-     * not on how long any of them was held. Advancing the grid on duplicates
-     * shifts every later tick by one period per hold, and anything keyed on
-     * the absolute stamp (the animated-texture phase the present clock is
-     * derived from) moves with it. */
-    if (s_det_mode && s_det_period > 0)
-        tick_ns = dup_roll ? curr->tick_ns + s_det_period
-                           : (op_time_t)(s_det_index++) * s_det_period;
+    if (s_det_mode && s_det_period > 0) tick_ns = interp_det_stamp(tick, curr);
 
     /* State advanced - commit to the next ring slot. snap[s_head] becomes the
      * "latest distinct tick"; the two prior slots hold prev and prev2. */
