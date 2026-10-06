@@ -36,7 +36,7 @@ openpete-spyro1 --bk2 movie.bk2
 `movie.bk2.args` file beside it is read as one more settings layer, above
 `openpete.toml` and environment variables and below the flags you type. At
 the movie's end live input takes over;
-`--bk2-stop-on-end` <!-- id: flag:--bk2-stop-on-end --> exits instead.
+{{ flag("flag:--bk2-stop-on-end") }} <!-- id: flag:--bk2-stop-on-end --> exits instead.
 
 A movie records the level-load delay it was made under. A replay under a
 different delay refuses to start and names the `--load-delay`
@@ -51,7 +51,7 @@ different delay refuses to start and names the `--load-delay`
 
 ## Screenshots
 
-++f12++ <!-- id: key:host.screenshot home --> saves a PNG of the picture on screen
+{{ key("key:host.screenshot") }} <!-- id: key:host.screenshot home --> saves a PNG of the picture on screen
 as `openpete-<timestamp>.png` (for example `openpete-20260925-143000.png`,
 with `-2`, `-3` and so on appended for more shots in the same second) in the
 screenshots folder ([File locations](../help/file-locations.md)).

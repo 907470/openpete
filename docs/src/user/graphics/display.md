@@ -33,7 +33,7 @@ view and shows more at the sides.
 
 Settings menu **ASPECT** and the dev overlay's **Aspect ratio** offer
 **AUTO**, **4:3**, **16:10**, **16:9**, **21:9** and **32:9**; the flag
-`--aspect` <!-- id: knob:aspect --> takes any `W:H`.
+{{ flag("knob:aspect") }} <!-- id: knob:aspect --> takes any `W:H`.
 
 ## Field of view
 
@@ -68,9 +68,9 @@ lettering. Mods raise them too. Several stack.
 
 | Setting | Default | Flag |
 | --- | --- | --- |
-| Notifications on or off | on <!-- id: knob:osd --> | `--osd on\|off` <!-- id: knob:osd --> |
-| Position | top-left <!-- id: knob:osd_position --> | `--osd-position` <!-- id: knob:osd_position -->: `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, `bottom-right` |
-| Seconds on screen | 3.0 <!-- id: knob:osd_timeout -->, at most 30 <!-- id: knob:osd_timeout --> | `--osd-timeout` <!-- id: knob:osd_timeout --> |
+| Notifications on or off | {{ default("knob:osd") }} <!-- id: knob:osd --> | `--osd on\|off` <!-- id: knob:osd --> |
+| Position | {{ default("knob:osd_position") }} <!-- id: knob:osd_position --> | {{ flag("knob:osd_position") }} <!-- id: knob:osd_position -->: `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, `bottom-right` |
+| Seconds on screen | {{ default("knob:osd_timeout") }} <!-- id: knob:osd_timeout -->, at most 30 <!-- id: knob:osd_timeout --> | {{ flag("knob:osd_timeout") }} <!-- id: knob:osd_timeout --> |
 
 The notifications and the performance readout
 ([Performance](performance.md#the-performance-readout)) can share a corner:

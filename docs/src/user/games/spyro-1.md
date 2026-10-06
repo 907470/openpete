@@ -86,7 +86,7 @@ a life. The dev overlay's **Cheat: 99 lives** and
   toggles the [free camera](../help/glossary.md#free-camera) by default (`freecam` binding,
   [Key bindings](../customizing/key-bindings.md)).
 - Level loads complete without an added wait by default
-  (`--load-delay`<!-- id: flag:--load-delay --> default
-  `0`<!-- id: knob:load_delay --> on Spyro 1).
+  ({{ flag("flag:--load-delay") }}<!-- id: flag:--load-delay --> default
+  `{{ default("knob:load_delay", "spyro-1") }}`<!-- id: knob:load_delay --> on Spyro 1).
 - The game has 48 music tracks, `track_00.wav` to `track_47.wav`
   ([Music and sound packs](../customizing/music-and-sound-packs.md)).

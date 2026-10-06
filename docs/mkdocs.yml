@@ -8,6 +8,7 @@
 # Generated pages, written before mkdocs runs and ignored by git:
 # modding/reference/ and modding/imgui.md (tools/gen_mod_docs.py),
 # developer/reference/ (tools/gen_code_docs.py, the `code_docs` target).
+# user/reference/ is generated in memory by ../tools/mkdocs_surface.py.
 # OPENPETE_DOCS_SECTIONS (comma-separated section names) builds a subset;
 # ../tools/mkdocs_sections.py applies it.
 
@@ -59,7 +60,12 @@ plugins:
   - search
   - offline
 
+# mkdocs_surface.py expands the surface macros of the User pages from
+# packaging/surface/<game>.json and adds the generated user/reference/
+# pages; it runs first so mkdocs_sections.py drops those pages from a build
+# without the user section.
 hooks:
+  - ../tools/mkdocs_surface.py
   - ../tools/mkdocs_sections.py
 
 extra:
@@ -135,6 +141,11 @@ nav:
           - user/help/reporting-a-bug.md
           - user/help/file-locations.md
           - user/help/glossary.md
+      - Reference:
+          - Command line: user/reference/command-line.md
+          - Config keys: user/reference/config-keys.md
+          - Key actions: user/reference/key-actions.md
+          - Changelog: user/reference/changelog.md
   - Modding:
       - modding/index.md
       - Getting started: modding/getting-started.md

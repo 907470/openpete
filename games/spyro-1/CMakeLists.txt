@@ -394,6 +394,10 @@ file(GLOB_RECURSE _docs_pages CONFIGURE_DEPENDS
 file(GLOB _docs_modding CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/src/modding/*.md)
 list(REMOVE_ITEM _docs_modding ${CMAKE_SOURCE_DIR}/docs/src/modding/imgui.md)
 file(GLOB _docs_top CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/src/*.md)
+# The surface macros of the User pages and the generated user/reference/
+# pages read the committed baselines, the shipped toml, the shipped-games
+# list, the key-name table and CHANGELOG.md (tools/mkdocs_surface.py).
+file(GLOB _docs_surface CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/packaging/surface/*.json)
 add_custom_command(
     OUTPUT  ${_docs_stamp}
     COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
@@ -417,6 +421,13 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
             ${CMAKE_SOURCE_DIR}/docs/mkdocs.yml
             ${CMAKE_SOURCE_DIR}/tools/mkdocs_sections.py
+            ${CMAKE_SOURCE_DIR}/tools/mkdocs_surface.py
+            ${CMAKE_SOURCE_DIR}/tools/surface_macros.py
+            ${CMAKE_SOURCE_DIR}/tools/mkdocs_surface_keys.toml
+            ${CMAKE_SOURCE_DIR}/packaging/openpete-dist.toml
+            ${CMAKE_SOURCE_DIR}/games/shipped.toml
+            ${CMAKE_SOURCE_DIR}/CHANGELOG.md
+            ${_docs_surface}
             ${_docs_manifests}
             ${_docs_pages}
             ${_docs_modding}

@@ -6,9 +6,9 @@ and mute everything.
 
 | Flag | Config key | Values | Default |
 | --- | --- | --- | --- |
-| `--sfx N`<!-- id: flag:--sfx --> | `sfx` | `0` (off) to `10` (max), `on` (= 10), `off` (= 0), `-1` | `-1`<!-- id: knob:sfx -->: the slider stays as the game has it |
-| `--music N`<!-- id: flag:--music --> | `music` | same as `sfx` | `-1`<!-- id: knob:music --> |
-| `--mute 0\|1`<!-- id: flag:--mute --> | `mute` | `0`, `1`, `on`, `off` | `0`<!-- id: knob:mute -->: audio on |
+| `--sfx N`<!-- id: flag:--sfx --> | `sfx` | `0` (off) to `10` (max), `on` (= 10), `off` (= 0), `-1` | `{{ default("knob:sfx") }}`<!-- id: knob:sfx -->: the slider stays as the game has it |
+| `--music N`<!-- id: flag:--music --> | `music` | same as `sfx` | `{{ default("knob:music") }}`<!-- id: knob:music --> |
+| `--mute 0\|1`<!-- id: flag:--mute --> | `mute` | `0`, `1`, `on`, `off` | `{{ default("knob:mute") }}`<!-- id: knob:mute -->: audio on |
 
 ## Presetting the sliders
 

@@ -74,7 +74,7 @@ fullscreen = true
 ```
 
 It changes one built-in default: `fullscreen = true`<!-- id: knob:fullscreen @spyro-1 -->
-(built-in: `0`<!-- id: knob:fullscreen -->, windowed).
+(built-in: `{{ default("knob:fullscreen") }}`<!-- id: knob:fullscreen -->, windowed).
 
 ## Writing settings
 
@@ -162,10 +162,10 @@ variable overrides as **pinned**.
 
 | Command | Effect |
 | --- | --- |
-| `--config-report`<!-- id: flag:--config-report home --> | print every setting, the layer that won it and what it beat, the files read, the save target and every data directory; then exit |
+| {{ flag("flag:--config-report") }}<!-- id: flag:--config-report home --> | print every setting, the layer that won it and what it beat, the files read, the save target and every data directory; then exit |
 | `--config PATH`<!-- id: flag:--config --> | read only this file (it is also the save target) |
-| `--no-config`<!-- id: flag:--no-config home --> | read no config file |
-| `--keys-report`<!-- id: flag:--keys-report --> | print every key binding and the section that set it; then exit |
+| {{ flag("flag:--no-config") }}<!-- id: flag:--no-config home --> | read no config file |
+| {{ flag("flag:--keys-report") }}<!-- id: flag:--keys-report --> | print every key binding and the section that set it; then exit |
 
 The environment variable `OPENPETE_CONFIG` names a file the same way as
 `--config`; the value `none` reads no file.

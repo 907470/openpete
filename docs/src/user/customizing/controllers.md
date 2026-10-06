@@ -59,7 +59,7 @@ controller the mapping used and where it came from.
 
 `--vibration N`<!-- id: flag:--vibration --> sets the rumble strength from
 `0`<!-- id: knob:vibration --> (off) to `10`<!-- id: knob:vibration --> (full
-strength). The default, `-1`<!-- id: knob:vibration -->,
+strength). The default, `{{ default("knob:vibration") }}`<!-- id: knob:vibration -->,
 leaves the game's own vibration setting alone, which is on. `on` and `off`
 are also accepted. The motors are silent while the window is not focused.
 Turning vibration off in the game's own options menu takes effect as usual.
@@ -68,7 +68,7 @@ Turning vibration off in the game's own options menu takes effect as usual.
 
 The mouse moves the [free camera](../help/glossary.md#free-camera)'s view and drives the [settings menu](../help/glossary.md#settings-menu) and the
 [dev overlay](../help/glossary.md#dev-overlay). `--mouse-sensitivity S`<!-- id: flag:--mouse-sensitivity -->
-scales mouse look: `1.0`<!-- id: knob:mouse_sensitivity home --> (the default) is
+scales mouse look: `{{ default("knob:mouse_sensitivity") }}`<!-- id: knob:mouse_sensitivity home --> (the default) is
 one full turn per 8192 counts; the range is
 `0`<!-- id: knob:mouse_sensitivity --> to
 `100`<!-- id: knob:mouse_sensitivity -->. `--mouse 0`<!-- id: flag:--mouse home -->

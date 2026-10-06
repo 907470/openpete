@@ -39,15 +39,15 @@ the variable `OPENPETE_CC`.
 An unknown key, a value of the wrong type or a value outside a key's list
 stops the launch. The message names the file, the section and the key, and
 suggests the nearest key name for a typo. Correct the line, or launch with
-`--no-config`<!-- id: flag:--no-config --> to confirm the file is the
+{{ flag("flag:--no-config") }}<!-- id: flag:--no-config --> to confirm the file is the
 cause ([Config file](../customizing/config-file.md)).
 
 ### Escape does not open the settings menu, or quits the game
 
-++escape++<!-- id: key:host.menu --> opens the
+{{ key("key:host.menu") }}<!-- id: key:host.menu --> opens the
 [settings menu](glossary.md#settings-menu) and no key quits
 <!-- id: key:host.quit -->, unless a config file rebinds `menu` or `quit`.
-`--keys-report`<!-- id: flag:--keys-report --> shows where each binding
+{{ flag("flag:--keys-report") }}<!-- id: flag:--keys-report --> shows where each binding
 came from ([Key bindings](../customizing/key-bindings.md)).
 
 ### Settings chosen in the menu are lost on the next start
@@ -81,7 +81,7 @@ its source. Under Steam, Steam's own mappings outrank every file.
 
 ### Keys or the mouse do nothing
 
-- `--input-lock`<!-- id: flag:--input-lock --> ignores every keyboard,
+- {{ flag("flag:--input-lock") }}<!-- id: flag:--input-lock --> ignores every keyboard,
   mouse and controller; `--mouse 0`<!-- id: flag:--mouse --> ignores the
   mouse. Check `--config-report` for either.
 - A key your file binds to another action no longer does its default job.

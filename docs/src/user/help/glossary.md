@@ -32,14 +32,14 @@ input recordings and many developer flags count VBLs.
 ### Frame rate
 
 Codebase term: present rate. Clock: the present. How many images per second
-OpenPete shows. `--render-fps`<!-- id: flag:--render-fps --> (the **FPS**
+OpenPete shows. {{ flag("flag:--render-fps") }}<!-- id: flag:--render-fps --> (the **FPS**
 row of the settings menu) sets the target; the default is your monitor's
 refresh rate. The frame rate is independent of the game's speed.
 
 ### FPS
 
 Codebase term: presents per second. Clock: the present. The number the
-**SHOW FPS** row and `--perf-stats`<!-- id: flag:--perf-stats --> display.
+**SHOW FPS** row and {{ flag("flag:--perf-stats") }}<!-- id: flag:--perf-stats --> display.
 
 ### Frame pacing
 
@@ -66,12 +66,12 @@ the tick. Holding ++tab++ runs ticks as fast as the computer allows.
 
 ### Slow motion
 
-Codebase term: tick scale (`--tick-scale`<!-- id: flag:--tick-scale -->).
+Codebase term: tick scale ({{ flag("flag:--tick-scale") }}<!-- id: flag:--tick-scale -->).
 Clock: the tick and the present together. Scales the game's speed.
 
 ### Runahead
 
-Codebase term: runahead (`--runahead`<!-- id: flag:--runahead -->). Clock:
+Codebase term: runahead ({{ flag("flag:--runahead") }}<!-- id: flag:--runahead -->). Clock:
 the tick. Shows the image a number of ticks ahead of the game's state, to
 reduce input lag. The game's state is unchanged.
 
@@ -86,7 +86,7 @@ scenery.
 
 ### Supersampling
 
-Codebase term: SSAA (`--ssaa`<!-- id: flag:--ssaa -->). Renders at a
+Codebase term: SSAA ({{ flag("flag:--ssaa") }}<!-- id: flag:--ssaa -->). Renders at a
 multiple of the window's resolution and scales down, which smooths edges.
 
 ### Vertex wobble
@@ -169,7 +169,7 @@ clock each one counts.
 | `--ram-dump-on-frame N`<!-- id: flag:--ram-dump-on-frame --> | VBLs |
 | `--unlock-frames LIST`<!-- id: flag:--unlock-frames --> | VBLs: ranges to fast-forward |
 | `--frame-time-log PATH`<!-- id: flag:--frame-time-log --> | presents: one record per image shown |
-| `--wireframe`<!-- id: flag:--wireframe --> | no clock: draws polygon edges only |
+| {{ flag("flag:--wireframe") }}<!-- id: flag:--wireframe --> | no clock: draws polygon edges only |
 
 `--bk2-frame-offset` is listed in `--help`. `--record-frames` exists only in
 builds with video recording, which no release package includes. The others

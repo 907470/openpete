@@ -86,15 +86,15 @@ changes none of them.
 
 | Action | Keyboard | Controller |
 | --- | --- | --- |
-| `cross` | ++c++<!-- id: key:pad.cross --> | `pad:south` |
-| `circle` | ++v++<!-- id: key:pad.circle --> | `pad:east` |
-| `square` | ++x++<!-- id: key:pad.square --> | `pad:west` |
-| `triangle` | ++z++<!-- id: key:pad.triangle --> | `pad:north` |
-| `l1` / `r1` | ++left-shift++<!-- id: key:pad.l1 --> / ++right-shift++<!-- id: key:pad.r1 --> | shoulders |
-| `l2` / `r2` | ++left-ctrl++<!-- id: key:pad.l2 --> / ++right-ctrl++<!-- id: key:pad.r2 --> | triggers |
-| `l3` / `r3` | ++bracket-left++<!-- id: key:pad.l3 --> / ++bracket-right++<!-- id: key:pad.r3 --> | stick clicks |
-| `start` | ++enter++<!-- id: key:pad.start --> | `pad:start` |
-| `select` | ++space++<!-- id: key:pad.select --> | `pad:back` |
+| `cross` | {{ key("key:pad.cross") }}<!-- id: key:pad.cross --> | `pad:south` |
+| `circle` | {{ key("key:pad.circle") }}<!-- id: key:pad.circle --> | `pad:east` |
+| `square` | {{ key("key:pad.square") }}<!-- id: key:pad.square --> | `pad:west` |
+| `triangle` | {{ key("key:pad.triangle") }}<!-- id: key:pad.triangle --> | `pad:north` |
+| `l1` / `r1` | {{ key("key:pad.l1") }}<!-- id: key:pad.l1 --> / {{ key("key:pad.r1") }}<!-- id: key:pad.r1 --> | shoulders |
+| `l2` / `r2` | {{ key("key:pad.l2") }}<!-- id: key:pad.l2 --> / {{ key("key:pad.r2") }}<!-- id: key:pad.r2 --> | triggers |
+| `l3` / `r3` | {{ key("key:pad.l3") }}<!-- id: key:pad.l3 --> / {{ key("key:pad.r3") }}<!-- id: key:pad.r3 --> | stick clicks |
+| `start` | {{ key("key:pad.start") }}<!-- id: key:pad.start --> | `pad:start` |
+| `select` | {{ key("key:pad.select") }}<!-- id: key:pad.select --> | `pad:back` |
 | `dpad_up` `dpad_down` `dpad_left` `dpad_right` | arrow keys<!-- id: key:pad.dpad_up --> | d-pad |
 | `stick_up` `stick_down` `stick_left` `stick_right` | ++w++ ++s++ ++a++ ++d++<!-- id: key:pad.stick_up --> | (keyboard only) |
 | `left_x` `left_y` `right_x` `right_y` | none | stick axes |
@@ -103,31 +103,31 @@ changes none of them.
 
 | Action | Default | Does |
 | --- | --- | --- |
-| `menu` | ++escape++<!-- id: key:host.menu --> | open or close the [settings menu](../help/glossary.md#settings-menu) |
-| `devui` | ++m++<!-- id: key:host.devui --> | open or close the [dev overlay](../playing/dev-overlay.md) |
+| `menu` | {{ key("key:host.menu") }}<!-- id: key:host.menu --> | open or close the [settings menu](../help/glossary.md#settings-menu) |
+| `devui` | {{ key("key:host.devui") }}<!-- id: key:host.devui --> | open or close the [dev overlay](../playing/dev-overlay.md) |
 | `menu_up` `menu_down` `menu_left` `menu_right` | arrow keys, d-pad, left stick<!-- id: key:host.menu_up --> | move in the settings menu; `menu_right` is also `pad:south` |
 | `menu_select` | ++enter++, `pad:south`<!-- id: key:host.menu_select --> | activate the selected row |
 | `menu_close` | `pad:start`, `pad:east`<!-- id: key:host.menu_close --> | close the settings menu |
-| `quit` | none<!-- id: key:host.quit --> | quit the game |
-| `fullscreen` | none<!-- id: key:host.fullscreen --> | toggle fullscreen |
-| `screenshot` | ++f12++<!-- id: key:host.screenshot --> | save a PNG of the image on screen |
-| `savestate_save` | ++1++<!-- id: key:host.savestate_save --> | quick-save to the active slot |
-| `savestate_load` | ++2++<!-- id: key:host.savestate_load --> | quick-load from the active slot |
-| `savestate_cycle` | ++3++<!-- id: key:host.savestate_cycle --> | select the next savestate slot |
-| `rewind` | ++backspace++<!-- id: key:host.rewind --> | hold to rewind (needs `--rewind`) |
-| `pause` | ++f7++<!-- id: key:host.pause --> | pause or resume |
-| `frame_step` | ++f8++<!-- id: key:host.frame_step --> | advance one [tick](../help/glossary.md#tick) while paused |
-| `turbo` | ++tab++<!-- id: key:host.turbo --> | hold to fast-forward |
-| `freecam` | ++f++<!-- id: key:host.freecam --> | engage or leave the free camera |
-| `teleport` | ++t++<!-- id: key:host.teleport --> | drop Spyro at the free camera |
+| `quit` | {{ key("key:host.quit") }}<!-- id: key:host.quit --> | quit the game |
+| `fullscreen` | {{ key("key:host.fullscreen") }}<!-- id: key:host.fullscreen --> | toggle fullscreen |
+| `screenshot` | {{ key("key:host.screenshot") }}<!-- id: key:host.screenshot --> | save a PNG of the image on screen |
+| `savestate_save` | {{ key("key:host.savestate_save") }}<!-- id: key:host.savestate_save --> | quick-save to the active slot |
+| `savestate_load` | {{ key("key:host.savestate_load") }}<!-- id: key:host.savestate_load --> | quick-load from the active slot |
+| `savestate_cycle` | {{ key("key:host.savestate_cycle") }}<!-- id: key:host.savestate_cycle --> | select the next savestate slot |
+| `rewind` | {{ key("key:host.rewind") }}<!-- id: key:host.rewind --> | hold to rewind (needs `--rewind`) |
+| `pause` | {{ key("key:host.pause") }}<!-- id: key:host.pause --> | pause or resume |
+| `frame_step` | {{ key("key:host.frame_step") }}<!-- id: key:host.frame_step --> | advance one [tick](../help/glossary.md#tick) while paused |
+| `turbo` | {{ key("key:host.turbo") }}<!-- id: key:host.turbo --> | hold to fast-forward |
+| `freecam` | {{ key("key:host.freecam") }}<!-- id: key:host.freecam --> | engage or leave the free camera |
+| `teleport` | {{ key("key:host.teleport") }}<!-- id: key:host.teleport --> | drop Spyro at the free camera |
 | `fly_forward` `fly_back` `fly_left` `fly_right` | ++w++ ++s++ ++a++ ++d++<!-- id: key:host.fly_forward --> | free camera: move |
 | `fly_up` / `fly_down` | ++space++, `pad:rightshoulder` / ++left-shift++, `pad:leftshoulder`<!-- id: key:host.fly_up --> | free camera: rise / descend |
 | `look_up` `look_down` `look_left` `look_right` | arrow keys<!-- id: key:host.look_up --> | free camera: turn |
 | `speed_up` / `speed_down` | ++bracket-right++, `pad:righttrigger` / ++bracket-left++, `pad:lefttrigger`<!-- id: key:host.speed_up --> | free camera: faster / slower |
 | `fly_axis_x` `fly_axis_y` | `pad:leftx`, `pad:-lefty`<!-- id: key:host.fly_axis_x --> | free camera: move axes |
 | `look_axis_x` `look_axis_y` | `pad:rightx,mouse:x`, `pad:-righty,mouse:-y`<!-- id: key:host.look_axis_x --> | free camera: look axes |
-| `interp_toggle` | ++i++<!-- id: key:host.interp_toggle --> | toggle [frame interpolation](../help/glossary.md#frame-interpolation) |
-| `lod_toggle` | ++l++<!-- id: key:host.lod_toggle --> | toggle [extended detail](../help/glossary.md#extended-detail) |
+| `interp_toggle` | {{ key("key:host.interp_toggle") }}<!-- id: key:host.interp_toggle --> | toggle [frame interpolation](../help/glossary.md#frame-interpolation) |
+| `lod_toggle` | {{ key("key:host.lod_toggle") }}<!-- id: key:host.lod_toggle --> | toggle [extended detail](../help/glossary.md#extended-detail) |
 
 ++alt+enter++ always toggles fullscreen, whatever `fullscreen` is bound to.
 ++escape++ always closes an open settings menu or [dev overlay](../help/glossary.md#dev-overlay) first. The

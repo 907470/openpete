@@ -5,7 +5,7 @@ OpenPete has, grouped by section, with each row's current value and where it
 came from. It changes live settings without a restart, saves them to the
 config file, and carries the cheat buttons and the level warp.
 
-++m++ <!-- id: key:host.devui home --> opens and closes it. ++esc++ also closes it. It is drawn
+{{ key("key:host.devui") }} <!-- id: key:host.devui home --> opens and closes it. ++esc++ also closes it. It is drawn
 by the native renderer in the game window.
 
 The game keeps running behind the panel. Mouse use leaves the game playable;
@@ -97,8 +97,8 @@ Two more keys toggle renderer settings.
 
 | Key | Action | Notification |
 | --- | --- | --- |
-| ++i++ <!-- id: key:host.interp_toggle --> | Toggle [interpolation](../graphics/smoothness.md#interpolation) on and off | **INTERPOLATION: ON** / **OFF** |
-| ++l++ <!-- id: key:host.lod_toggle --> | Toggle [LOD](../graphics/quality.md#level-of-detail) between original and extended | **LOD: ORIGINAL** / **EXTENDED** |
+| {{ key("key:host.interp_toggle") }} <!-- id: key:host.interp_toggle --> | Toggle [interpolation](../graphics/smoothness.md#interpolation) on and off | **INTERPOLATION: ON** / **OFF** |
+| {{ key("key:host.lod_toggle") }} <!-- id: key:host.lod_toggle --> | Toggle [LOD](../graphics/quality.md#level-of-detail) between original and extended | **LOD: ORIGINAL** / **EXTENDED** |
 
 Interpolation off presents each tick's picture unchanged between ticks,
 which shows what interpolation adds.

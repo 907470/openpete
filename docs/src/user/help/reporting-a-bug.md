@@ -16,7 +16,7 @@
     <!-- id: flag:--config-report -->
 
     lists every setting, where it came from, and every folder in use.
-    For a controls problem, add the output of `--keys-report`<!-- id: flag:--keys-report -->.
+    For a controls problem, add the output of {{ flag("flag:--keys-report") }}<!-- id: flag:--keys-report -->.
 3. **What happened.** The level, what you did, what you expected, and what
    you saw instead. For a visual problem, an ++f12++ [screenshot](glossary.md#screenshot)
    ([File locations](file-locations.md) names the folder).
@@ -43,6 +43,6 @@ name from the paths before posting if you prefer.
 ## Input recordings
 
 A bug that depends on exact timing reproduces from a recording of the
-controller input. `--bk2-record`<!-- id: flag:--bk2-record --> records one
+controller input. {{ flag("flag:--bk2-record") }}<!-- id: flag:--bk2-record --> records one
 into the `bk2` folder; attach the `.bk2` and the `.bk2.args` file beside
 it ([Recording](../playing/recording.md)).

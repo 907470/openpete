@@ -35,7 +35,7 @@ the picture trails the game by up to one tick. [Runahead](#runahead) cancels
 that delay.
 
 Interpolation is on whenever the frame rate is above 30.
-++i++ <!-- id: key:host.interp_toggle home --> turns it off and on for
+{{ key("key:host.interp_toggle") }} <!-- id: key:host.interp_toggle home --> turns it off and on for
 comparison; with it off each tick's picture is shown unchanged until the
 next.
 

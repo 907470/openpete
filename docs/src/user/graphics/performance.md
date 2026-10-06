@@ -5,7 +5,7 @@ game's state, which stays the same [tick](../help/glossary.md#tick) for tick wha
 
 ## The performance readout
 
-`--perf-stats` <!-- id: knob:perf_stats home --> shows a readout in a corner of
+{{ flag("knob:perf_stats") }} <!-- id: knob:perf_stats home --> shows a readout in a corner of
 the window.
 
 | Value | Shows |
@@ -16,7 +16,7 @@ the window.
 
 The settings menu's **SHOW FPS** row switches it off and on; the dev
 overlay's **Performance stats** row sets all three levels.
-`--perf-position` <!-- id: knob:perf_position --> places it: `top-left`,
+{{ flag("knob:perf_position") }} <!-- id: knob:perf_position --> places it: `top-left`,
 `top-center`, `top-right` (default <!-- id: knob:perf_position -->),
 `bottom-left`, `bottom-center`, `bottom-right`.
 

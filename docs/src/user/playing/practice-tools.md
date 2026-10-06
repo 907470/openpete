@@ -11,16 +11,16 @@ running it faster or slower, starting in any level, and flying the camera.
 
 ## Pause and tick-step
 
-++f7++ <!-- id: key:host.pause home --> pauses and resumes the game. Pausing mutes
+{{ key("key:host.pause") }} <!-- id: key:host.pause home --> pauses and resumes the game. Pausing mutes
 the audio and stops controller vibration; resuming restores both.
 
-While paused, ++f8++ <!-- id: key:host.frame_step home --> advances the game by one
+While paused, {{ key("key:host.frame_step") }} <!-- id: key:host.frame_step home --> advances the game by one
 [tick](../help/glossary.md#tick), the game's own update step: 29.913 per
 second. Holding ++f8++ keeps stepping.
 
 ## Fast-forward
 
-Holding ++tab++ <!-- id: key:host.turbo home --> runs the game as fast as the
+Holding {{ key("key:host.turbo") }} <!-- id: key:host.turbo home --> runs the game as fast as the
 computer can, with no wait between ticks. Releasing it returns to normal
 speed.
 
@@ -79,7 +79,7 @@ and can be pressed again; see [Dev overlay](dev-overlay.md#cheat-buttons).
 
 ## Free camera
 
-++f++ <!-- id: key:host.freecam home -->, or the menu's
+{{ key("key:host.freecam") }} <!-- id: key:host.freecam home -->, or the menu's
 **FREECAM** row, detaches the camera from Spyro. While it is on, the game's
 camera and Spyro's own update are frozen and the camera flies:
 [Free camera keys](controls.md#free-camera-keys). The speed keys step
@@ -93,6 +93,6 @@ The free camera cannot be turned on while a bk2 movie replays or records
 
 ## Teleport
 
-With the free camera on, ++t++ <!-- id: key:host.teleport home --> moves Spyro to
+With the free camera on, {{ key("key:host.teleport") }} <!-- id: key:host.teleport home --> moves Spyro to
 the camera's position, turns the free camera off and returns the camera to
 the game, on the next tick. With the free camera off, ++t++ does nothing.

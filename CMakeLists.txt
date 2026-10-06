@@ -165,6 +165,34 @@ foreach(game IN LISTS OPENPETE_GAMES)
     endif()
 endforeach()
 
+# surface_dump: each built game writes its OPENPETE_SURFACE_DUMP to
+# <build>/surface/<game>.json. Not ALL and absent from a cross build, which
+# cannot run the binaries. tools/surface_docs.py baseline turns a dump into
+# the committed packaging/surface/<game>.json the docs read.
+if(NOT CMAKE_CROSSCOMPILING)
+    set(_surface_cmds "")
+    set(_surface_deps "")
+    foreach(game IN LISTS OPENPETE_GAMES)
+        string(REPLACE "-" "" _surface_exe "${game}")
+        set(_surface_exe "openpete-${_surface_exe}")
+        if(TARGET ${_surface_exe})
+            list(APPEND _surface_cmds
+                 COMMAND ${CMAKE_COMMAND} -E env
+                         OPENPETE_SURFACE_DUMP=${CMAKE_BINARY_DIR}/surface/${game}.json
+                         $<TARGET_FILE:${_surface_exe}>)
+            list(APPEND _surface_deps ${_surface_exe})
+        endif()
+    endforeach()
+    if(_surface_deps)
+        add_custom_target(surface_dump
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/surface
+            ${_surface_cmds}
+            COMMENT "Writing the surface dumps to ${CMAKE_BINARY_DIR}/surface/"
+            VERBATIM)
+        add_dependencies(surface_dump ${_surface_deps})
+    endif()
+endif()
+
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
     add_subdirectory(tests/unit)
 
@@ -579,6 +607,27 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
+
+    # The User docs' surface macros: each committed macro is what
+    # tools/surface_docs.py's converter writes for the literal it expands
+    # to, and a per-kind negative control (a mutated def, binding, config
+    # key or flag spelling) changes the expansion. Then every TOML block
+    # and command line on the User pages, macros expanded, passes
+    # --config-report, and a refused value is refused. No disc.
+    add_test(NAME docs_surface_identity
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/surface_docs.py identity)
+    set_tests_properties(docs_surface_identity PROPERTIES
+        LABELS "tooling"
+        TIMEOUT 120
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME docs_surface_snippets
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/surface_docs.py snippets
+                     --build-dir ${CMAKE_BINARY_DIR})
+    set_tests_properties(docs_surface_snippets PROPERTIES
+        LABELS "tooling"
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # The 3D glyph text gate: the settings menu, the OSD toasts and the
     # performance readout publish glyph vertices from the game's own font,

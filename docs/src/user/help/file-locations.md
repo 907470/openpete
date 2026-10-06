@@ -88,4 +88,4 @@ documentation and examples, in packages built with it.
   `--card2 PATH`<!-- id: flag:--card2 --> move the memory cards;
   `--mods-dir`, `--texpack-dir` and `--sfxpack-dir` move the mods and packs;
   `--log-file PATH`<!-- id: flag:--log-file --> moves the log and
-  `--no-log-file`<!-- id: flag:--no-log-file --> writes none.
+  {{ flag("flag:--no-log-file") }}<!-- id: flag:--no-log-file --> writes none.

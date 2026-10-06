@@ -16,8 +16,8 @@ Every write the game makes goes to the file at once. The files are standard
 | --- | --- |
 | `--card-dir PATH` <!-- id: knob:card_dir --> | Use another folder for both cards |
 | `--card1 PATH` <!-- id: flag:--card1 home -->, `--card2 PATH` <!-- id: flag:--card2 home --> | Use a specific image for port A or port B |
-| `--no-card` <!-- id: flag:--no-card --> | Insert no card; the game cannot save |
-| `--card-unformatted` <!-- id: flag:--card-unformatted --> | Provision a blank unformatted card, so the game's own format screen runs |
+| {{ flag("flag:--no-card") }} <!-- id: flag:--no-card --> | Insert no card; the game cannot save |
+| {{ flag("flag:--card-unformatted") }} <!-- id: flag:--card-unformatted --> | Provision a blank unformatted card, so the game's own format screen runs |
 
 ### Mods and memory cards
 
@@ -34,16 +34,16 @@ usual; the record stays as it was, so the warning repeats. The cases:
 - A card made under mods, loaded with no mods running.
 - A card made under a different set or version of mods.
 
-`--adopt-saves` <!-- id: flag:--adopt-saves --> rewrites the record to the
+{{ flag("flag:--adopt-saves") }} <!-- id: flag:--adopt-saves --> rewrites the record to the
 mods running now and ends the warnings.
 
 ## Savestates
 
 | Key | Action |
 | --- | --- |
-| ++1++ <!-- id: key:host.savestate_save home --> | Save to the active slot |
-| ++2++ <!-- id: key:host.savestate_load home --> | Load from the active slot |
-| ++3++ <!-- id: key:host.savestate_cycle home --> | Make the next slot active |
+| {{ key("key:host.savestate_save") }} <!-- id: key:host.savestate_save home --> | Save to the active slot |
+| {{ key("key:host.savestate_load") }} <!-- id: key:host.savestate_load home --> | Load from the active slot |
+| {{ key("key:host.savestate_cycle") }} <!-- id: key:host.savestate_cycle home --> | Make the next slot active |
 
 There are 10 slots, numbered 0 to 9; the active slot starts at 0 each run and
 the slot key wraps from 9 to 0. Each slot is a file, `slot0.state` to
@@ -68,7 +68,7 @@ A load is refused, and the running game left untouched, when:
 
 ## Rewind
 
-Holding ++backspace++ <!-- id: key:host.rewind home --> steps the game back one
+Holding {{ key("key:host.rewind") }} <!-- id: key:host.rewind home --> steps the game back one
 [tick](../help/glossary.md#tick) at a time. Rewind is off by default <!-- id: knob:rewind -->; turn it
 on with `--rewind N` <!-- id: knob:rewind -->, where N is how many seconds
 of play to keep, or with the **Rewind window** row of the
