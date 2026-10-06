@@ -98,3 +98,6 @@ intro-tree-subtick|1597|2||1597,1599,1600,1601,1602,1603,1605|--skip-to-cutscene
 # flickers as the camera moves, the gem and the wall it is set into trading
 # visibility at the gem's outline (native); the guest's outline is steady.
 intro-arrival-gem|1128|2||1136,1137,1138,1139,1140|--skip-to-cutscene intro_arrival
+# intro_arrival cutscene, VBL 1410-1416: the base of the portal moby slides
+# against the ground terrain from tick to tick (native).
+intro-arrival-portal-base|1406|2||1410,1411,1412,1413,1414,1415,1416|--skip-to-cutscene intro_arrival
