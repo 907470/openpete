@@ -10,6 +10,7 @@ layout(location = 0) out vec4 outColor;
 
 void main()
 {
+    ter_texel_grad_init();
     vec4 c;
     if (ter_debug_shade(c)) { outColor = c; return; }
     if (ter_portal_discards()) discard;   /* portal plane-cover rule */

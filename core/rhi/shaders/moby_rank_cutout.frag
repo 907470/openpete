@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_clut.glsl"
+#include "psx_texel.glsl"
 
 /* TEXTURED moby RANK pass fragment stage: alpha-aware rank rasterisation.
  * A face's og paint occupancy exists only where its OPAQUE texels land -
@@ -34,7 +35,8 @@ uint sample_word(int u, int v)
 void main()
 {
     vec2 uv = vUV / vQ;
-    if (sample_word(int(uv.x), int(uv.y)) == 0u) discard;
+    ivec2 ti = op_texel(uv, op_texel_grad(uv));
+    if (sample_word(ti.x, ti.y) == 0u) discard;
     float r = clamp(vRank.x, 0.0, 65534.0);
     float o = clamp(vRank.y, 0.0, 255.0);
     outColor = vec4(mod(r, 256.0) / 255.0, floor(r / 256.0) / 255.0,

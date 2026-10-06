@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
 #include "psx_clut.glsl"
+#include "psx_texel.glsl"
 
 /* TEXTURED key-pass fragment stage: alpha-aware og-key rasterisation.
  *
@@ -54,8 +55,9 @@ uint sample_word(int u, int v)
 void main()
 {
     vec2 uv = vUV / vQ;
+    ivec2 ti = op_texel(uv, op_texel_grad(uv));
     /* bpp < 0: a material-run overflow tail, keyed full-footprint. */
-    if (pc.bpp >= 0 && sample_word(int(uv.x), int(uv.y)) == 0u) discard;
+    if (pc.bpp >= 0 && sample_word(ti.x, ti.y) == 0u) discard;
     uvec4 t0, t1;
     vec2 p;
     float d = op_drain_record(u_drain, vDrain, uv, t0, t1, p) ? op_drain_delta(p, t0, t1, 0.0) : -1.0;

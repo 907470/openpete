@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#include "psx_texel.glsl"
 
 /* Retained-terrain KEY-pass fragment stage - the psx_key_cutout.frag
  * counterpart for terrain.vert's pass_sel==2 output: rasterise the flat og
@@ -36,6 +37,8 @@ uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
 
 void main()
 {
+    vec2 uvq = vUV / vQ;
+    vec2 tg = op_texel_grad(uvq);
     uint mat0 = vMat.x;
     if ((mat0 & (1u << 23)) != 0u) {          /* textured: transparent-texel cutout */
         int tpx  = int(mat0 & 0x3FFu);
@@ -43,8 +46,8 @@ void main()
         uint bppc = (mat0 >> 19) & 3u;
         int clx  = int(vMat.y & 0xFFFFu);
         int cly  = int(vMat.y >> 16);
-        vec2 uvq = vUV / vQ;
-        int u = int(uvq.x), v = int(uvq.y);
+        ivec2 ti = op_texel(uvq, tg);
+        int u = ti.x, v = ti.y;
         uint p;
         if (bppc == 2u) {
             p = vram_at(tpx + u, tpy + v);

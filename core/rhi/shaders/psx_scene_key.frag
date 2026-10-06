@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
 #include "psx_clut.glsl"
+#include "psx_texel.glsl"
 
 /* Textured OPAQUE scene fragment stage with the terrain KEY-RESOLVE contest.
  *
@@ -95,6 +96,8 @@ void main()
      * (keyed opaque ACTOR faces, same encoding). Set 3 = PROP TRUE DEPTH
      * (curated embedded-prop faces only). Set 4 = the moby og-RANK raster.
      * The verdicts themselves live in psx_key_contest.glsl. */
+    vec2 uv = vUV / vQ;
+    vec2 tg = op_texel_grad(uv);
     bool ranked = vRank.x > 0.5;
     float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
 #ifdef OP_PORTAL_COVER
@@ -112,7 +115,7 @@ void main()
      * rank winner while the select kills everything under it (a hole to the
      * clear). The face still STAMPS its key, so keyed terrain keeps yielding
      * to it. */
-    float koff = op_drain_koff(vKoff, vRank.y, vUV / vQ, u_drain);
+    float koff = op_drain_koff(vKoff, vRank.y, uv, u_drain);
     if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead -
@@ -134,12 +137,12 @@ void main()
                 MOBY_TRUESCOPE, SLOT_CONTEST))
             discard;
     }
-    vec2 uv = vUV / vQ;
     vec4 col = vColor / vQ;
-    vec4 c = op_decode555(sample_word(int(uv.x), int(uv.y)));
+    ivec2 ti = op_texel(uv, tg);
+    vec4 c = op_decode555(sample_word(ti.x, ti.y));
     if (c.a == 0.0) discard;
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
-    rgb = clut_fog_mix(rgb, col, int(uv.x), int(uv.y));
+    rgb = clut_fog_mix(rgb, col, ti.x, ti.y);
     outColor = vec4(rgb, c.a);
 }

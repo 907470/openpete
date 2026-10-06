@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_clut.glsl"
+#include "psx_texel.glsl"
 
 /* Textured native-scene fragment stage.
  *
@@ -64,13 +65,15 @@ vec3 clut_fog_mix(vec3 rgb, vec4 col, int u, int v)
 
 void main()
 {
+    vec2 uv = vUV / vQ;
+    vec2 tg = op_texel_grad(uv);
 #ifdef OP_PORTAL_COVER
     /* A blended terrain fragment the portal preview covers. */
     if (op_portal_cover_frag(DEPTH_REVERSED)) discard;
 #endif
-    vec2 uv = vUV / vQ;
     vec4 col = vColor / vQ;
-    uint word = sample_word(int(uv.x), int(uv.y));
+    ivec2 ti = op_texel(uv, tg);
+    uint word = sample_word(ti.x, ti.y);
     vec4 c = op_decode555(word);
     if (c.a == 0.0) discard;
     if (STP_SELECT == 1 && (word & 0x8000u) != 0u) discard;
@@ -78,6 +81,6 @@ void main()
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
-    rgb = clut_fog_mix(rgb, col, int(uv.x), int(uv.y));
+    rgb = clut_fog_mix(rgb, col, ti.x, ti.y);
     outColor = vec4(rgb, c.a);
 }

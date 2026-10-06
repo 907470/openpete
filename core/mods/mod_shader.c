@@ -221,6 +221,7 @@ static const char* const k_iface_files[] = {
     "openpete_psx_decal.glsl",      /* decal draw path                    */
     "psx_key_contest.glsl",         /* og painter verdicts (both halves)  */
     "psx_clut.glsl",                /* texel decode, fogged-CLUT row mix  */
+    "psx_texel.glsl",               /* integer texel of a texel coordinate */
     "terrain_shade.glsl",           /* retained-terrain engine half       */
     "portal_cover.glsl",            /* portal plane-cover test            */
     "portal_cover_scene.glsl",      /* the scene half's portal profile    */

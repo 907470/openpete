@@ -146,6 +146,7 @@ void main()
 {
     /* Sector debug tints take precedence over the material: they show what
      * the engine believes, not what a mod paints. */
+    ter_texel_grad_init();
     vec4 c;
     if (ter_debug_shade(c)) { op_out_color = c; return; }
     /* The portal plane-cover rule and the painter verdict, as the stock

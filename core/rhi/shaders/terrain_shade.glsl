@@ -19,6 +19,7 @@
 #extension GL_ARB_gpu_shader_fp64 : require
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#include "psx_texel.glsl"
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 layout(set = 1, binding = 0) uniform sampler2D u_hpkey;   /* terrain key image */
@@ -177,6 +178,17 @@ bool ter_key_loses()
         false, false, true, SLOT_CONTEST);
 }
 
+/* The texel coordinate's screen gradient (op_texel_grad) for ter_stock_shade,
+ * set by ter_texel_grad_init at the top of main(), before any discard. */
+vec2 ter_texel_grad;
+
+/* Set ter_texel_grad from this fragment's texel coordinate. Called first in
+ * main(): a screen derivative needs every lane of the 2x2 quad live. */
+void ter_texel_grad_init()
+{
+    ter_texel_grad = op_texel_grad(vUV / vQ);
+}
+
 /* The stock colour for this fragment. a == 0 marks a texel the PSX treats
  * as transparent (the sentinel, or an HD replacement's cut-out); the
  * caller discards it. Untextured faces (LP, flat-gouraud HP) are the
@@ -237,7 +249,8 @@ vec4 ter_stock_shade()
     int cly  = int(vMat.y >> 16);
 
     vec2 uvq = vUV / vQ;
-    int u = int(uvq.x), v = int(uvq.y);
+    ivec2 ti = op_texel(uvq, ter_texel_grad);
+    int u = ti.x, v = ti.y;
     uint p;
     if (bppc == 2u) {          /* 16bpp direct */
         p = ter_vram_at(tpx + u, tpy + v);
