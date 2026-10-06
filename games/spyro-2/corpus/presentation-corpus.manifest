@@ -94,3 +94,7 @@ intro-sheep-eye|1084|10||1094|--skip-to-cutscene intro
 # intro cutscene, VBL 1597-1605 at 16:9: on intermediate presents the static
 # tree moby on the left leaves the screen and returns.
 intro-tree-subtick|1597|2||1597,1599,1600,1601,1602,1603,1605|--skip-to-cutscene intro
+# intro_arrival cutscene, VBL 1130-1146: a face of the left green wall gem
+# flickers as the camera moves, the gem and the wall it is set into trading
+# visibility at the gem's outline (native); the guest's outline is steady.
+intro-arrival-gem|1128|2||1136,1137,1138,1139,1140|--skip-to-cutscene intro_arrival
