@@ -238,11 +238,16 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define FF_TIER_LP    (1u << 9)
 #define FF_FOGBIAS    (1u << 10)
 #define FF_GAPFILL    (1u << 11)
+#define FF_BORROWED   (1u << 11)   /* HP: borrowed from the HP source level
+                                    * (bit 11 is FF_GAPFILL on LP faces);
+                                    * drawn under extended LOD only */
 #define FF_DSIDE      (1u << 12)
 #define FF_FLIP       (1u << 13)
 #define FF_QUAD       (1u << 14)
 #define FF_W3_40      (1u << 15)
 #define FF_W3_80      (1u << 16)
+#define FF_LPUNCOVX   (1u << 16)   /* LP: off the HP mesh and the borrowed HP
+                                    * faces (bit 16 is FF_W3_80 on HP faces) */
 #define FF_HQELIG     (1u << 17)
 #define FF_LPUNCOV    (1u << 17)   /* LP: off the sector's HP mesh (bit 17 is
                                     * FF_HQELIG on HP faces) */
@@ -1188,6 +1193,10 @@ void main()
         if (lp  && (sf & SF_DRAWLP) == 0u) { kill_vert(); return; }
         if (!lp && (sf & SF_DRAWHP) == 0u) { kill_vert(); return; }
     }
+    if (!lp && (ff & FF_BORROWED) != 0u && (gf & GF_NOLOD) == 0) { kill_vert(); return; }
+    /* The LP faces the HP leaves uncovered: under extended LOD the borrowed
+     * HP faces draw and count as cover. */
+    uint ffUncov = ((gf & GF_NOLOD) != 0) ? FF_LPUNCOVX : FF_LPUNCOV;
 
     /* ---- face corners -> camera space (fp64, exact walk mirror) ---- */
     dvec3 sorigin = dvec3(s.sec[slot].o.xyz);
@@ -1274,7 +1283,7 @@ void main()
     bool gapfill_face = (gf & GF_GAPFILL) != 0 && (ff & FF_GAPFILL) != 0u;
     if (lp && !fillPass) {
         if ((sf & SF_LPGAPONLY) != 0u && (ff & FF_GAPFILL) == 0u) { kill_vert(); return; }
-        if ((sf & SF_LPUNCOV) != 0u && (ff & FF_LPUNCOV) == 0u) { kill_vert(); return; }
+        if ((sf & SF_LPUNCOV) != 0u && (ff & ffUncov) == 0u) { kill_vert(); return; }
         double z3g = quad ? m3c.z : m2.z;
         double slotv = (m0.z + m1.z + m2.z + z3g) / 32.0lf;
         if ((gf & GF_NOLOD) == 0) {
@@ -1285,7 +1294,7 @@ void main()
         }
         double thr = double((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
         if (!gapfill_face && (gf & GF_LPNEAROUT) != 0 && thr > 0.0lf
-            && (ff & FF_LPUNCOV) == 0u) {
+            && (ff & ffUncov) == 0u) {
             /* LP near outcode: a face on its sector's HP mesh, while that HP
              * draws (nonzero bound), drops when its corners all sit under
              * the sector's SZ3 bound; every other face takes the authored
@@ -1597,7 +1606,9 @@ void main()
      * the same scroll byte into all four V slots); HQ sub-quads: the
      * per-half dv (entries 1-2 vs 3-4 sit half a window apart in the
      * scroll ring). Zero for a tile that is not on the scroller list. */
-    bool scrollOn = (f16 & 0x1000u) != 0u;
+    /* A borrowed face's tile id names the source level's table, whose
+     * scroll state this scene does not run. */
+    bool scrollOn = (f16 & 0x1000u) != 0u && (lp || (ff & FF_BORROWED) == 0u);
     float uvdv = 0.0;
     if (scrollOn) {
         int stile = int((f16 >> 5) & 0x7Fu);
@@ -1607,6 +1618,11 @@ void main()
         uv.y += uvdv;
     }
     vMat = uvec2(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16));
+    /* A borrowed face samples the auxiliary VRAM bank, 512 rows below the
+     * PSX VRAM: bit 31 tells the fragment stage to offset the page row,
+     * and the CLUT row carries the offset here. */
+    if (!lp && (ff & FF_BORROWED) != 0u)
+        vMat = uvec2((mat0 & 0x00FFFFFFu) | 0x80000000u, vMat.y + (512u << 16));
     if ((gf & (1 << 29)) != 0) {               /* debug tint: ladder verdict */
         vMat.y |= (dbg_half << 30) | (dbg_delta << 25);
         if (((uint(gf) >> 26) & 7u) == 6u)     /* mode 6: exact t0k readout */

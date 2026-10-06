@@ -271,6 +271,9 @@ const game_layout_t game_layout = {
                                    * table, and a later insert into a bucket
                                    * paints later, with the moby pass run before
                                    * the terrain pass */
+        .hp_source_wad_entry = 35,  /* Skelos Badlands: the title scene's
+                                     * sectors are copies of its sectors with
+                                     * the HP mesh cut to ground strips */
     },
     /* The moby drop-shadow draw, func_800499D4, and the player's own ground
      * shadow, func_800495E8. Both are handwritten and both align one for one

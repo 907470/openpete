@@ -228,7 +228,7 @@ vec4 ter_stock_shade()
         return vec4(clamp(hc.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0), 1.0);
     }
     int tpx  = int(mat0 & 0x3FFu);
-    int tpy  = int((mat0 >> 10) & 0x1FFu);
+    int tpy  = int((mat0 >> 10) & 0x1FFu) + int(mat0 >> 31) * 512;   /* bit 31: auxiliary bank */
     uint bppc = (mat0 >> 19) & 3u;
     int clx  = int(vMat.y & 0xFFFFu);
     int cly  = int(vMat.y >> 16);

@@ -39,7 +39,7 @@ void main()
     uint mat0 = vMat.x;
     if ((mat0 & (1u << 23)) != 0u) {          /* textured: transparent-texel cutout */
         int tpx  = int(mat0 & 0x3FFu);
-        int tpy  = int((mat0 >> 10) & 0x1FFu);
+        int tpy  = int((mat0 >> 10) & 0x1FFu) + int(mat0 >> 31) * 512;   /* bit 31: auxiliary bank */
         uint bppc = (mat0 >> 19) & 3u;
         int clx  = int(vMat.y & 0xFFFFu);
         int cly  = int(vMat.y >> 16);

@@ -41,11 +41,11 @@
 #include "openpete_osd.h"          /* toast ring - the OSD builder below */
 #include "openpete_build_id.h"     /* the version line below */
 #include "openpete_fiber.h"        /* speculative / replayed ticks skip the shimmer */
-#include "openpete_disc_image.h"   /* the WAD read of GAME_FONT_WAD_MODEL */
 #include "openpete_disc_trace.h"   /* OPENPETE_DISC_TAG_FONT */
 #include "openpete_log.h"
 #include "game_layout.h"
 #include "renderer/text_moby.h"
+#include "renderer/wad_subfile.h"   /* the WAD read of GAME_FONT_WAD_MODEL */
 
 #include <math.h>
 #include <stddef.h>
@@ -346,48 +346,14 @@ static void wad_decode_block(const uint8_t* m, uint32_t len, glyph_cache_t* g, i
 
 /** @brief Reads the GAME_FONT_WAD_MODEL model from the booted disc into a host buffer.
  *
- * Opens a handle of its own on the booted disc's image, traced under the
- * font tag (a host path: its misses never steer the disc cache loader and
- * never enter a boot profile), finds WAD.WAD by its ISO 9660 name, reads the
- * entry table from the WAD's first two sectors and the sub-file table from
- * the entry's first sector, then the sub-file's sectors. Every offset and size is checked
- * against its container and against @p cap.
+ * The model is sub-file FONT.wad_subfile of WAD entry FONT.wad_entry, read
+ * through wad_subfile_read under the font tag (a host path: its misses never
+ * steer the disc cache loader and never enter a boot profile).
  * @param buf Receives the model.
  * @param cap The buffer's capacity in bytes.
  * @return The model's byte count, or 0 with the reason logged. */
 static uint32_t wad_model_read(uint8_t* buf, uint32_t cap) {
-    enum { SEC = DISC_IMAGE_USER_SECTOR };
-    disc_image_t* game = disc_image_game();
-    if (!game) { OPL_WARN_F("font", "glyph model not read: no disc open"); return 0; }
-    disc_image_t* img = disc_image_open(disc_image_bin_path(game), DISC_READ_CACHED, OPENPETE_DISC_TAG_FONT);
-    if (!img) return 0;
-    static uint8_t hdr[2 * SEC], sec[SEC];
-    disc_image_entry_t wad;
-    const uint32_t e = (uint32_t)FONT.wad_entry, k = (uint32_t)FONT.wad_subfile;
-    const char* why = NULL;
-    uint32_t size = 0;
-    if (disc_image_find(img, "WAD.WAD", &wad) != 0)                 why = "no WAD.WAD";
-    else if (8u * e + 8u > sizeof hdr || 8u * k + 8u > SEC)         why = "descriptor index";
-    else if (disc_image_read_user(img, wad.lba, hdr) != 0 ||
-             disc_image_read_user(img, wad.lba + 1u, hdr + SEC) != 0) why = "WAD header read";
-    if (!why) {
-        const uint32_t eoff = le32(hdr, 8u * e), esz = le32(hdr, 8u * e + 4u);
-        if (esz == 0u || eoff % SEC || eoff > wad.size || esz > wad.size - eoff) why = "WAD entry";
-        else if (disc_image_read_user(img, wad.lba + eoff / SEC, sec) != 0)  why = "entry header read";
-        else {
-            const uint32_t soff = le32(sec, 8u * k), ssz = le32(sec, 8u * k + 4u);
-            if (ssz == 0u || ssz > cap || soff % SEC || soff > esz || ssz > esz - soff) why = "sub-file";
-            for (uint32_t i = 0; !why && i * SEC < ssz; i++) {
-                if (disc_image_read_user(img, wad.lba + (eoff + soff) / SEC + i, sec) != 0) { why = "sub-file read"; break; }
-                const uint32_t n = (ssz - i * SEC < SEC) ? ssz - i * SEC : SEC;
-                memcpy(buf + i * SEC, sec, n);
-            }
-            if (!why) size = ssz;
-        }
-    }
-    disc_image_close(img);
-    if (why) { OPL_WARN_F("font", "glyph model not read from the disc (%s)", why); return 0; }
-    return size;
+    return wad_subfile_read(FONT.wad_entry, FONT.wad_subfile, OPENPETE_DISC_TAG_FONT, buf, cap, "font");
 }
 
 /** @brief Builds the synthesized hyphen glyph: a bar measured off digit '0'.

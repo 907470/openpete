@@ -75,6 +75,12 @@ extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h)
 
 #define NR_VRAM_W 1024
 #define NR_VRAM_H 512
+/* The GPU VRAM texture is twice the PSX height: rows 0-511 mirror the PSX
+ * VRAM, rows 512-1023 hold the host-loaded auxiliary bank
+ * (openpete_native_vram_aux_set). A material addresses the bank by adding
+ * NR_VRAM_H to its texture-page and CLUT rows; nothing the guest writes
+ * reaches those rows. */
+#define NR_VRAM_TEX_H (2 * NR_VRAM_H)
 
 /* Default window size when the caller passes none. */
 #define NR_DEFAULT_W 1280
@@ -4981,7 +4987,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         ? rhi_create_pipeline(dev, &moby_rank_cutout_desc) : NULL;
     if (terrain_key_pipe && !moby_rank_pipe)
         OPL_ERROR_F("native", "moby rank pass unavailable; same-moby painter select disabled");
-    rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
+    rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_TEX_H);
     rhi_texture  *drain_tex = rhi_create_u32x4(dev, DRAIN_REC_PER_ROW * 4, DRAIN_REC_ROWS);
     /* The CPU mirror IS the owned native VRAM model (static storage in
      * native_vram.c) - written by the native ops at op time and shadow-synced
@@ -5431,6 +5437,11 @@ typedef struct {
 static vram_jentry_t s_vj[VRAM_JOURNAL];
 static int  s_vj_head = 0, s_vj_n = 0;    /* ring: oldest at head */
 static bool s_ref_dirty = false;          /* readback refreshed; upload pending */
+/* The auxiliary VRAM bank: columns NR_VRAM_AUX_X..1023 of the texture rows
+ * NR_VRAM_H..2*NR_VRAM_H-1, uploaded once per set and kept for the session. */
+#define NR_VRAM_AUX_X 512
+static uint16_t *s_vram_aux;              /* host copy, row-major, (1024 - AUX_X) wide */
+static bool s_vram_aux_pending;           /* set; upload at the next frame */
 
 /** @brief Free the oldest VRAM journal entry's texel buffer and drop the entry from the ring.
  *
@@ -5448,8 +5459,10 @@ static void vram_journal_pop(void)
  * @param e Journal entry. */
 static void vram_journal_apply(const vram_jentry_t *e)
 {
-    if (e->full) rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
-    else if (e->nrects > 0 && e->pix)
+    if (e->full) {   /* the mirror covers the PSX rows only, not the auxiliary bank */
+        const rhi_rect all = { 0, 0, NR_VRAM_W, NR_VRAM_H };
+        rhi_update_vram_rects(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror, &all, 1);
+    } else if (e->nrects > 0 && e->pix)
         rhi_update_vram_rects_packed(s_nr.dev, s_nr.vram_tex, e->pix, e->pix_bytes, e->rects, e->nrects);
 }
 
@@ -5652,6 +5665,26 @@ static void upload_synced_textures(void)
         rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);
         s_ref_dirty = false;
     }
+    if (s_vram_aux_pending && s_vram_aux) {
+        const rhi_rect r = { NR_VRAM_AUX_X, NR_VRAM_H, NR_VRAM_W - NR_VRAM_AUX_X, NR_VRAM_H };
+        rhi_update_vram_rects_packed(s_nr.dev, s_nr.vram_tex, (const uint8_t*)s_vram_aux,
+                                     sizeof(uint16_t) * (size_t)r.w * (size_t)r.h, &r, 1);
+        s_vram_aux_pending = false;
+    }
+    SDL_UnlockMutex(vram_mx());
+}
+
+void openpete_native_vram_aux_set(const uint8_t* image, size_t bytes)
+{
+    const size_t need = sizeof(uint16_t) * (size_t)(NR_VRAM_W - NR_VRAM_AUX_X) * NR_VRAM_H;
+    if (!image || bytes < need) return;
+    uint16_t* copy = (uint16_t*)malloc(need);
+    if (!copy) return;
+    memcpy(copy, image, need);
+    SDL_LockMutex(vram_mx());
+    free(s_vram_aux);
+    s_vram_aux = copy;
+    s_vram_aux_pending = true;
     SDL_UnlockMutex(vram_mx());
 }
 

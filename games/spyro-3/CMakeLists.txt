@@ -83,6 +83,7 @@ openpete_add_game(spyro-3
         # The 3D glyph text producer: settings menu, OSD toasts, performance
         # readout, drawn with the credits font read from the disc.
         ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
+        ${CMAKE_SOURCE_DIR}/games/common/renderer/wad_subfile.c
         renderer/portal_game.c
         renderer/terrain_probe.c)
 

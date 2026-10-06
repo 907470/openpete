@@ -33,7 +33,8 @@ extern "C" {
 
 /* Read paths. ISO is a disc_image read issued with no tag outside any
  * tagged scope; MOD is a mod API read_sector; FONT is the host text
- * producer's read of a glyph model. */
+ * producer's read of a glyph model; TERRAIN is the terrain feeder's read of
+ * a source level's terrain and texture sub-files. */
 enum {
     OPENPETE_DISC_TAG_NONE = 0,
     OPENPETE_DISC_TAG_LIBCD,
@@ -49,6 +50,7 @@ enum {
     OPENPETE_DISC_TAG_ISO,
     OPENPETE_DISC_TAG_MOD,
     OPENPETE_DISC_TAG_FONT,
+    OPENPETE_DISC_TAG_TERRAIN,
     OPENPETE_DISC_TAG_COUNT
 };
 

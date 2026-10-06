@@ -2008,6 +2008,17 @@ int      openpete_native_scene_ring_free(void);
  * VRAM write lands mid-drain; the inline present path syncs on its own.
  * No-op when the native renderer is disabled or headless. */
 void     openpete_native_vram_sync(void);
+/** @brief Set the auxiliary VRAM bank: a host image the renderer's VRAM texture holds below the PSX rows.
+ *
+ * The image is VRAM columns 512-1023 by 512 rows, row-major, 16-bit texels
+ * (the layout of a Spyro level's texture sub-file head). It is copied and
+ * uploaded at the next frame into texture rows 512-1023 at the same
+ * columns, where a material whose texture-page and CLUT rows carry +512
+ * samples it with the stock texel, palette and fog-ladder math. The guest's
+ * VRAM and the native VRAM model are not touched. A short image is ignored.
+ * @param image The texels.
+ * @param bytes The image's byte count; at least 512 * 512 * 2. */
+void     openpete_native_vram_aux_set(const uint8_t* image, size_t bytes);
 
 /* --- sub-tick re-feed spine ------------------------------------------------ */
 /// @brief Game callback that rebuilds the native scene for one present against interpolated gamestate.

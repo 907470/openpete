@@ -373,6 +373,13 @@ typedef struct game_layout {
          * it. An actor face in a farther-or-equal slot than the terrain
          * key owning the pixel loses the pixel. */
         int      slot_ot_contest;
+        /* The WAD entry of a level whose terrain another scene reuses: a
+         * scene sector whose LP faces all occur, in world space, in one
+         * sector of this level's terrain (sub-file 1 of the entry) borrows
+         * that sector's HP faces under extended LOD, textured from the
+         * scene's own table where the scene's VRAM holds the same texels
+         * and palettes. 0 = no such level. */
+        int      hp_source_wad_entry;
     } terrain;
 
     /* The moby drop-shadow draw. Both games run the same walk: a list of
