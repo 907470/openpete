@@ -32,7 +32,8 @@ extern "C" {
 #endif
 
 /* Read paths. ISO is a disc_image read issued with no tag outside any
- * tagged scope; MOD is a mod API read_sector. */
+ * tagged scope; MOD is a mod API read_sector; FONT is the host text
+ * producer's read of a glyph model. */
 enum {
     OPENPETE_DISC_TAG_NONE = 0,
     OPENPETE_DISC_TAG_LIBCD,
@@ -47,6 +48,7 @@ enum {
     OPENPETE_DISC_TAG_CACHE_LOAD,
     OPENPETE_DISC_TAG_ISO,
     OPENPETE_DISC_TAG_MOD,
+    OPENPETE_DISC_TAG_FONT,
     OPENPETE_DISC_TAG_COUNT
 };
 

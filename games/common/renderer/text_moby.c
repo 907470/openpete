@@ -42,7 +42,7 @@
 #include "openpete_build_id.h"     /* the version line below */
 #include "openpete_fiber.h"        /* speculative / replayed ticks skip the shimmer */
 #include "openpete_disc_image.h"   /* the WAD read of GAME_FONT_WAD_MODEL */
-#include "openpete_disc_trace.h"   /* OPENPETE_DISC_TAG_WAD */
+#include "openpete_disc_trace.h"   /* OPENPETE_DISC_TAG_FONT */
 #include "openpete_log.h"
 #include "game_layout.h"
 #include "renderer/text_moby.h"
@@ -346,10 +346,11 @@ static void wad_decode_block(const uint8_t* m, uint32_t len, glyph_cache_t* g, i
 
 /** @brief Reads the GAME_FONT_WAD_MODEL model from the booted disc into a host buffer.
  *
- * Opens a handle of its own on the booted disc's image, traced under the WAD
- * tag, finds WAD.WAD by its ISO 9660 name, reads the entry table from the
- * WAD's first two sectors and the sub-file table from the entry's first
- * sector, then the sub-file's sectors. Every offset and size is checked
+ * Opens a handle of its own on the booted disc's image, traced under the
+ * font tag (a host path: its misses never steer the disc cache loader and
+ * never enter a boot profile), finds WAD.WAD by its ISO 9660 name, reads the
+ * entry table from the WAD's first two sectors and the sub-file table from
+ * the entry's first sector, then the sub-file's sectors. Every offset and size is checked
  * against its container and against @p cap.
  * @param buf Receives the model.
  * @param cap The buffer's capacity in bytes.
@@ -358,7 +359,7 @@ static uint32_t wad_model_read(uint8_t* buf, uint32_t cap) {
     enum { SEC = DISC_IMAGE_USER_SECTOR };
     disc_image_t* game = disc_image_game();
     if (!game) { OPL_WARN_F("font", "glyph model not read: no disc open"); return 0; }
-    disc_image_t* img = disc_image_open(disc_image_bin_path(game), DISC_READ_CACHED, OPENPETE_DISC_TAG_WAD);
+    disc_image_t* img = disc_image_open(disc_image_bin_path(game), DISC_READ_CACHED, OPENPETE_DISC_TAG_FONT);
     if (!img) return 0;
     static uint8_t hdr[2 * SEC], sec[SEC];
     disc_image_entry_t wad;

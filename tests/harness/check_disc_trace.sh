@@ -73,7 +73,7 @@ check_leg() {
     local verdict
     verdict="$(awk -F'\t' -v leg="$leg" -v cache="$cache" -v cdread="$cdread" -v woah="$woah" '
         BEGIN {
-            split("libcd xa exe serial extract woah sfx wad ingest cache-load iso mod", t, " ")
+            split("libcd xa exe serial extract woah sfx wad ingest cache-load iso mod font", t, " ")
             for (i in t) tags[t[i]] = 1
             res["hit"] = 1; res["miss"] = 1; res["direct"] = 1
             bad = ""

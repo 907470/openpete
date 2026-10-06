@@ -23,6 +23,7 @@ path.
 | sfx census (`--dump-sfx-pack`) | `sfx` | direct | no |
 | Library ingest copy | `ingest` | direct | no |
 | Mod API `read_sector` | `mod` | cached | no |
+| Host text glyph model (Spyro 2 and 3 credits font, first text draw) | `font` | cached | no |
 
 The Python offline tools (`tools/psxtrace_loads.py` and the disc-reading
 scripts under `scripts/`) open the image themselves. Community mods that
@@ -106,8 +107,8 @@ the call returns.
   absent sector. The game slot takes `libcd`, `extract` and `wad`; the XA
   slot takes `xa`. The EXE read happens once, at VBL 0, as the cache
   attaches, and steers nothing; host reads (`woah`, `serial`, `ingest`,
-  `sfx`, `mod`, untagged) steer nothing, so a host thread never reorders
-  the loader ahead of the game.
+  `sfx`, `mod`, `font`, untagged) steer nothing, so a host thread never
+  reorders the loader ahead of the game.
 - Loader order: each run is a run of missing sectors, chosen in this order:
   the game slot's chunk, the XA slot's chunk, the boot-order profile's
   ranges in profile order (a run never leaves its range), then every chunk
@@ -186,7 +187,7 @@ file read offline) writes a tab-separated file with the header
 |---|---|
 | `ns` | `op_now()` at the read, monotonic host nanoseconds |
 | `vbl` | the VBL count at the read; -1 before the runtime registers its VBL source |
-| `tag` | `libcd`, `xa`, `exe`, `serial`, `extract`, `woah`, `sfx`, `wad`, `ingest`, `cache-load`, `iso`, `mod` |
+| `tag` | `libcd`, `xa`, `exe`, `serial`, `extract`, `woah`, `sfx`, `wad`, `ingest`, `cache-load`, `iso`, `mod`, `font` |
 | `lba` | first 2352-byte sector the read touches |
 | `count` | sectors the read touches |
 | `result` | `hit` or `miss` (a cached read with the cache attached), `direct` (a read of the file) |

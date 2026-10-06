@@ -115,6 +115,7 @@ TRACE = (HDR
          + row(11, 3, "libcd", 501, 2)               # continues nothing listed before it
          + row(12, 15, "libcd", 570, 40)             # 570..606 listed; 607..609 new
          + row(13, 20, "woah", 260000, 100)          # host: left out
+         + row(13, 20, "font", 84290, 10)            # host: left out
          + row(14, 21, "xa", 90000, 8)
          + row(15, 22, "xa", 90008, 8)               # continues the previous range
          + row(16, 30, "cache-load", 0, 3566, "direct")
