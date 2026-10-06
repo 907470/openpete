@@ -142,6 +142,17 @@ typedef struct knob_desc {
     /* 1 for a built-in row compiled inside the OPENPETE_HIDE_DEBUG_FLAGS
      * block; set by the registry when it copies the built-ins in. */
     unsigned char debug_block;
+
+    /* --help line of the `cli` flag. help_arg is the value placeholder
+     * printed after the flag ("0|1", "PATH"), NULL for none. help_text is
+     * the description, one '\n' per printed line break; "{def}" expands to
+     * def_str, and "{default_mark:NAME}" to " - default" when NAME is the
+     * game's default renderer. help_order places the line inside its block
+     * (debug_block, else the OPENPETE_HAS_LIBAV build_cond, else release),
+     * ascending. A flag row with no help_text prints nothing. */
+    const char *help_arg;
+    const char *help_text;
+    unsigned short help_order;
 } knob_desc_t;
 
 /* Arity of a row's flag: the default, a flag that takes no value

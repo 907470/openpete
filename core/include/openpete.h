@@ -958,6 +958,9 @@ typedef struct {
     const char* build_cond;    /* preprocessor symbol gating its --help line, or NULL */
     const char* block;         /* --help block: "release", "preamble", "debug", "none" */
     const char* default_note;  /* how the program decides its default, or NULL */
+    const char* help_arg;      /* --help value placeholder ("N", "PATH"), or NULL */
+    unsigned short help_order; /* position inside the block, ascending */
+    const char* help_text;     /* --help description, '\n' per line break; NULL = not printed */
 } openpete_help_only_t;
 
 /** @brief The help-only flag table.

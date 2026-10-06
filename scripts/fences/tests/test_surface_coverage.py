@@ -153,9 +153,9 @@ class ControlTest(unittest.TestCase):
 
 
 class AudienceTest(unittest.TestCase):
-    """The derived audience of the rows whose flag --help prints under
-    "Debug / diagnostic flags" while the registry row is outside the debug
-    block, and of the pass-through env row."""
+    """The derived audience of the rows outside the debug block that only
+    the dev overlay shows besides their flag, of every registry flag's
+    --help block, and of the pass-through env row."""
 
     def setUp(self):
         base = STATE["tmp"] / "base"
@@ -166,13 +166,28 @@ class AudienceTest(unittest.TestCase):
     def reason(self, ident):
         return self.g.release_reason(self.g.idx[ident])
 
-    def test_debug_help_flags_with_release_rows(self):
+    def test_overlay_rows_flags_print_release(self):
         for flag, knob in (("--wireframe", "wireframe"),
                            ("--freecam-pose", "freecam_pose"),
-                           ("--player-pose", "player_pose")):
-            self.assertEqual(self.g.defs.get(flag), "debug")
-            self.assertIsNone(self.reason("flag:" + flag), flag)
-            self.assertIn("dev overlay", self.reason("knob:" + knob), knob)
+                           ("--player-pose", "player_pose"),
+                           ("--notex", "notex")):
+            self.assertEqual(self.g.defs.get(flag), "release")
+            self.assertIn("--help", self.reason("flag:" + flag), flag)
+            self.assertIn("release flag", self.reason("knob:" + knob), knob)
+
+    def test_row_flag_help_block_is_row_block(self):
+        n = 0
+        for e in self.g.entries:
+            if not e["id"].startswith("flag:") or "alias_value" in e \
+                    or not e.get("knob"):
+                continue
+            k = self.g.idx["knob:" + e["knob"]]
+            want = "debug" if k["block"] == "debug" else \
+                "libav" if k.get("build_cond") == "OPENPETE_HAS_LIBAV" \
+                else "release"
+            self.assertEqual(self.g.defs.get(e["flag"]), want, e["flag"])
+            n += 1
+        self.assertGreater(n, 0)
 
     def test_passthrough_env_row_not_release(self):
         self.assertIsNone(self.reason("knob:TERRAIN_HDFOLD"))

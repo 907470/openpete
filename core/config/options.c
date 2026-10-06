@@ -467,64 +467,185 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
  * --config pair, --help, the deprecated --show-fps, and the debug and
  * diagnostic flags. The surface dump lists them beside the registry's flags,
  * so the two together name every parser literal. `block` is the --help block
- * that prints the flag ("none" = not printed). */
+ * that prints the flag ("none" = not printed; "preamble" = the fixed help
+ * header names it); help_arg, help_order and help_text are its generated
+ * --help line, as on a registry row. */
 static const openpete_help_only_t k_help_only[] = {
-    { "--help",                              KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL },
-    { "-h",                                  KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL },
+    { "--help",                              KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL, NULL, 0, NULL },
+    { "-h",                                  KNOB_FLAG_ARG_NONE,     NULL, "none",     NULL, NULL, 0, NULL },
     { "--config",                            KNOB_FLAG_ARG_REQUIRED, NULL, "preamble",
-      "env OPENPETE_CONFIG, else openpete.toml next to the executable and openpete.toml in the per-user config directory, both read, the per-user file winning at the same scope" },
-    { "--no-config",                         KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL },
-    { "--config-report",                     KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL },
-    { "--keys-report",                       KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL },
-    { "--show-fps",                          KNOB_FLAG_ARG_REQUIRED, NULL, "release",  "deprecated spelling of --perf-stats" },
-    { "--debug-triangle",                    KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
-    { "--dump-sfx-pack",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--dump-sfx-wads",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--exe-path",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--extract-recomp-inputs",             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--frame-limit",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--frame-time-log",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--freecam-path",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--gameplay-hash-log",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--halt-at-pc",                        KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--halt-cpu-dump-output",              KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--halt-hit",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--headless",                          KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
-    { "--max-runtime-seconds",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--pace-log",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--position-log",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--probe",                             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--profile-out",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--psxtrace-anchor-hit",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--psxtrace-anchor-pc",                KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--psxtrace-keep-going",               KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
-    { "--psxtrace-verify",                   KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--ram-dump-on-frame",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--ram-dump-output",                   KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--recomp-module",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--resume-handoff",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--rewind-hold",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--screenshot-freeze-backdrop",        KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
-    { "--screenshot-intermediate-on-frame",  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--screenshot-native-only",            KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
-    { "--screenshot-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--screenshot-on-tick",                KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--screenshot-output",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--screenshot-presents-count",         KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--screenshot-presents-start",         KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--seed-cpu",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--seed-ram",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--state-load-input",                  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--state-load-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--state-save-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--state-save-output",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--state-stress",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--state-stress-rewind",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--test-recomp-call",                  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--test-recomp-expect-v0",             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--test-recomp-gp",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
-    { "--test-segv",                         KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL },
-    { "--unlock-frames",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL },
+      "env OPENPETE_CONFIG, else openpete.toml next to the executable and openpete.toml in the per-user config directory, both read, the per-user file winning at the same scope", NULL, 0, NULL },
+    { "--no-config",                         KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL, NULL, 0, NULL },
+    { "--config-report",                     KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL, NULL, 0, NULL },
+    { "--keys-report",                       KNOB_FLAG_ARG_NONE,     NULL, "preamble", NULL, NULL, 0, NULL },
+    { "--show-fps",                          KNOB_FLAG_ARG_REQUIRED, NULL, "release",  "deprecated spelling of --perf-stats",
+      "0|1", 140,
+      "deprecated spelling of --perf-stats off|fps (on|off also accepted)" },
+    { "--debug-triangle",                    KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
+      NULL, 460,
+      "emit a hardcoded POLY_F3 each frame (infra-only validation)" },
+    { "--dump-sfx-pack",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "DIR", 80,
+      "write every game sound on --disc as a content-named WAV\n"
+      "(+ index.txt) into DIR and exit: the sfx pack census" },
+    { "--dump-sfx-wads",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "A.wad,B.wad", 90,
+      "also walk these custom-level Data files (a [[level]]\n"
+      "mod's assets/levels/<stem>.wad)" },
+    { "--exe-path",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 50,
+      "direct PSX EXE bytes (overrides --disc)" },
+    { "--extract-recomp-inputs",             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "DIR", 70,
+      "extract PSX.EXE + overlay blobs from --disc\n"
+      "into DIR and exit (recomp pipeline stage)" },
+    { "--frame-limit",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 30,
+      "exit after N rendered frames" },
+    { "--frame-time-log",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 510,
+      "write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py" },
+    { "--freecam-path",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "SPEC", 470,
+      "engage the free camera and fly it along a looping waypoint\n"
+      "path: \"[ticks=N;] WP(;WP)+\" where WP is \"topdown\" or\n"
+      "\"x,y,z[,yaw,pitch]\". Interpolates over N ticks per segment\n"
+      "(default 120). Exercises the costs only movement reaches\n"
+      "(sector-cache churn, LOD crossings) that a static pose cannot.\n"
+      "CLI twin of OPENPETE_FREECAM_PATH; supersedes --freecam-pose." },
+    { "--gameplay-hash-log",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 500,
+      "append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
+      "gameplay-state region (games/<game>/manifest/gameplay_state_regions.toml).\n"
+      "Primary determinism gate - see check_aspect_determinism.sh" },
+    { "--halt-at-pc",                        KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "HEX", 340,
+      "dump RAM to --ram-dump-output at first call to fn HEX, then exit" },
+    { "--halt-cpu-dump-output",              KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 350,
+      "also write 528B 'CSv1' CPU dump alongside RAM at halt" },
+    { "--halt-hit",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 360,
+      "dump on Nth (1-indexed) call to --halt-at-pc (default 1)" },
+    { "--headless",                          KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
+      NULL, 10,
+      "no on-screen window (offscreen video driver)" },
+    { "--max-runtime-seconds",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 40,
+      "wall-clock SIGTERM after N seconds" },
+    { "--pace-log",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 520,
+      "write the unified pacing event log (every VBL + present, one timebase) for scripts/pacing/" },
+    { "--position-log",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 490,
+      "append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield" },
+    { "--probe",                             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "HEX", 440,
+      "read 4 bytes at this PSX vaddr post-dispatch and log" },
+    { "--profile-out",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 530,
+      "stream a binary .opp perf trace (CPU scopes + GPU zones + census,\n"
+      "keyed per present / canonical tick) for scripts/profile-summary.py\n"
+      "(plain text) and scripts/profile-to-trace.py (Perfetto flame chart).\n"
+      "Windowed only for GPU/intermediate coverage; ~0.1% CPU overhead." },
+    { "--psxtrace-anchor-hit",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 400,
+      "skip first N-1 hits before starting (default 1 = first)" },
+    { "--psxtrace-anchor-pc",                KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "HEX", 390,
+      "PC where advance() fires (default: trace's first-record pc)" },
+    { "--psxtrace-keep-going",               KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
+      NULL, 380,
+      "don't exit on first divergence (collect all)" },
+    { "--psxtrace-verify",                   KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 370,
+      "consume per-frame .psxtrace + diff against PSX oracle" },
+    { "--ram-dump-on-frame",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 230,
+      "write 2MB main RAM to --ram-dump-output after frame N" },
+    { "--ram-dump-output",                   KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 240,
+      "RAM dump path (default ./ram.bin)" },
+    { "--recomp-module",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 60,
+      "shared-linkage builds: load the recomp module\n"
+      "from PATH instead of the default next to the exe" },
+    { "--resume-handoff",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 20,
+      "resume a session from a process-handoff checkpoint\n"
+      "(written by the handoff exec; not for manual use)" },
+    { "--rewind-hold",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "A:N", 310,
+      "headless: simulate holding the rewind key for N iterations at frame A" },
+    { "--screenshot-freeze-backdrop",        KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
+      NULL, 190,
+      "maintain the green freeze backdrop during headless capture so pause/results/exit dumps aren't dark (renders an extra frame per present)" },
+    { "--screenshot-intermediate-on-frame",  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N[,...]", 180,
+      "deterministic sub-tick (alpha 0.5) native captures at each VBL, headless-capable; implies --screenshot-native-only" },
+    { "--screenshot-native-only",            KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
+      NULL, 170,
+      "capture the native -vk variant alone: skip PsyCross OT rasterization and -og (presentation-golden corpus path)" },
+    { "--screenshot-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N[,N2,...]", 150,
+      "save image at each listed frame; can be passed once with a comma list.\n"
+      "In a windowed pure-vk run, -vk.png is a READBACK of the exact\n"
+      "presented frame (sub-tick interp, mods, overlays included);\n"
+      "headless runs recompose the canonical scene instead." },
+    { "--screenshot-on-tick",                KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N[,N2,...]", 160,
+      "same, keyed on canonical draw-ticks instead of VBL frames.\n"
+      "Tick-keyed captures hit the same sim moment run-to-run (the\n"
+      "frame<->tick mapping drifts with host timing); used by the visual gates.\n"
+      "The PsyCross render is written as <out>-og.png; the native render as <out>-vk.png" },
+    { "--screenshot-output",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 200,
+      "screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP" },
+    { "--screenshot-presents-count",         KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "K", 220,
+      "number of consecutive presents to capture when --screenshot-presents-start is set (default 1)" },
+    { "--screenshot-presents-start",         KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 210,
+      "capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)" },
+    { "--seed-cpu",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 330,
+      "pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump" },
+    { "--seed-ram",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 320,
+      "pre-fill g_ram from a 2MB dump before dispatch" },
+    { "--state-load-input",                  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 280,
+      "state file for the scheduled load" },
+    { "--state-load-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 270,
+      "load --state-load-input once openpete_frame reaches N (re-anchors the frame counter)" },
+    { "--state-save-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 250,
+      "savestate to --state-save-output once openpete_frame (VBL) reaches N" },
+    { "--state-save-output",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "PATH", 260,
+      "scheduled-save path (default ./frameN.state)" },
+    { "--state-stress",                      KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 290,
+      "every N ticks: in-memory save + immediate quiet restore (restore-at-yield gate)" },
+    { "--state-stress-rewind",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "K", 300,
+      "save, run K iterations, restore, repeat (runahead rollback shape)" },
+    { "--test-recomp-call",                  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "HEX", 410,
+      "boot, dispatch one fn at HEX, exit" },
+    { "--test-recomp-expect-v0",             KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "N", 420,
+      "verify cpu->v0 after --test-recomp-call" },
+    { "--test-recomp-gp",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "HEX", 430,
+      "set cpu->gp before --test-recomp-call (skips PSYQ _96_init)" },
+    { "--test-segv",                         KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
+      NULL, 450,
+      "deliberately raise SIGSEGV (crash-handler smoke test)" },
+    { "--unlock-frames",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
+      "LIST", 480,
+      "force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)" },
 };
 
 const openpete_help_only_t* openpete_options_help_only(size_t* count) {
@@ -532,19 +653,138 @@ const openpete_help_only_t* openpete_options_help_only(size_t* count) {
     return k_help_only;
 }
 
+/* Column at which every --help description starts and continues. */
+#define HELP_TEXT_COL 29
+
+/* The --help blocks a flag can print in, in print order. */
+enum { HELP_RELEASE, HELP_LIBAV, HELP_DEBUG, HELP_NONE };
+
+/* One --help entry: a registry row's flag or a help-only table entry. */
+typedef struct {
+    const char*    flag;
+    const char*    arg;
+    const char*    text;
+    const char*    def;
+    unsigned short order;
+} help_entry_t;
+
+/* Capacity of one block's entry list: the registry's flag rows plus the
+ * help-only table. */
+#define HELP_ENTRIES_MAX 256
+
+/** @brief The --help block of a registry row: debug for a row of the debug block, libav for an OPENPETE_HAS_LIBAV row, else release. */
+static int help_block_of_row(const knob_desc_t* k) {
+    if (k->debug_block) return HELP_DEBUG;
+    if (k->build_cond && strcmp(k->build_cond, "OPENPETE_HAS_LIBAV") == 0) return HELP_LIBAV;
+    return HELP_RELEASE;
+}
+
+/** @brief The --help block of a help-only entry; HELP_NONE for "none" and "preamble", which the header prints. */
+static int help_block_of_entry(const openpete_help_only_t* h) {
+    if (h->build_cond && strcmp(h->build_cond, "OPENPETE_HAS_LIBAV") == 0) return HELP_LIBAV;
+    if (strcmp(h->block, "release") == 0) return HELP_RELEASE;
+    if (strcmp(h->block, "debug") == 0) return HELP_DEBUG;
+    return HELP_NONE;
+}
+
+/** @brief qsort order of help entries: ascending help_order. */
+static int help_entry_cmp(const void* a, const void* b) {
+    const help_entry_t* x = (const help_entry_t*)a;
+    const help_entry_t* y = (const help_entry_t*)b;
+    return (int)x->order - (int)y->order;
+}
+
+/** @brief Collect the entries of one --help block from the registry rows and the help-only table, sorted by help_order.
+ *
+ * @param block HELP_RELEASE, HELP_LIBAV or HELP_DEBUG.
+ * @param out Receives the entries.
+ * @param cap Capacity of out.
+ * @return The entry count. */
+static size_t help_collect(int block, help_entry_t* out, size_t cap) {
+    size_t n = 0, count = 0;
+    const knob_desc_t* ks = knob_registry(&count);
+    for (size_t i = 0; i < count && n < cap; i++) {
+        const knob_desc_t* k = &ks[i];
+        if (!k->cli || !k->help_text || help_block_of_row(k) != block) continue;
+        out[n++] = (help_entry_t){ k->cli, k->help_arg, k->help_text, k->def_str, k->help_order };
+    }
+    for (size_t i = 0; i < sizeof k_help_only / sizeof k_help_only[0] && n < cap; i++) {
+        const openpete_help_only_t* h = &k_help_only[i];
+        if (!h->help_text || help_block_of_entry(h) != block) continue;
+        out[n++] = (help_entry_t){ h->flag, h->help_arg, h->help_text, NULL, h->help_order };
+    }
+    qsort(out, n, sizeof *out, help_entry_cmp);
+    return n;
+}
+
+/** @brief Print a help description, expanding its tokens and indenting each continuation line to HELP_TEXT_COL.
+ *
+ * "{def}" prints def; "{default_mark:NAME}" prints " - default" when NAME
+ * is `renderer`; any other brace is literal text.
+ * @param t The description.
+ * @param def The row's declared default, or NULL.
+ * @param renderer Name of the game's default renderer. */
+static void help_put_text(const char* t, const char* def, const char* renderer) {
+    static const char kMark[] = "{default_mark:";
+    while (*t) {
+        const char* end = NULL;
+        if (strncmp(t, "{def}", 5) == 0) {
+            fputs(def ? def : "", stderr);
+            t += 5;
+        } else if (strncmp(t, kMark, sizeof kMark - 1) == 0 &&
+                   (end = strchr(t, '}')) != NULL) {
+            const char* name = t + sizeof kMark - 1;
+            size_t len = (size_t)(end - name);
+            if (strlen(renderer) == len && strncmp(name, renderer, len) == 0)
+                fputs(" - default", stderr);
+            t = end + 1;
+        } else if (*t == '\n') {
+            fprintf(stderr, "\n%*s", HELP_TEXT_COL, "");
+            t++;
+        } else {
+            fputc(*t++, stderr);
+        }
+    }
+    fputc('\n', stderr);
+}
+
+/** @brief Print the entries of one --help block, each as "  FLAG ARG" padded to HELP_TEXT_COL and its description.
+ *
+ * A head of 27 characters takes one separating space and a longer head
+ * two, so the description starts past HELP_TEXT_COL.
+ * @param block HELP_RELEASE, HELP_LIBAV or HELP_DEBUG.
+ * @param renderer Name of the game's default renderer. */
+static void help_put_block(int block, const char* renderer) {
+    help_entry_t es[HELP_ENTRIES_MAX];
+    size_t n = help_collect(block, es, HELP_ENTRIES_MAX);
+    for (size_t i = 0; i < n; i++) {
+        char head[128];
+        snprintf(head, sizeof head, "%s%s%s", es[i].flag, es[i].arg ? " " : "",
+                 es[i].arg ? es[i].arg : "");
+        size_t len = strlen(head);
+        int pad = len < 27 ? (int)(27 - len) : (len == 27 ? 1 : 2);
+        fprintf(stderr, "  %s%*s", head, pad, "");
+        help_put_text(es[i].text, es[i].def, renderer);
+    }
+}
+
 /** @brief Print the command-line help for `display_name`'s build to stderr.
  *
- * The release block of user-facing flags always prints and marks
- * `default_renderer` as the default renderer. The --record family prints
- * only under OPENPETE_HAS_LIBAV. The debug block of dev and diagnostic
- * flags is compiled out under OPENPETE_HIDE_DEBUG_FLAGS, set by the
- * *-shared distribution presets, and a one-line note replaces it. The
- * omission is display-only: every flag parses in every build.
+ * The header (usage, the config-file layers and the preamble flags) is
+ * fixed text. The flag blocks are generated from the knob registry rows and
+ * the help-only table: the release block always prints; the libav block
+ * ("Video recording") prints only under OPENPETE_HAS_LIBAV; the debug block
+ * is compiled out under OPENPETE_HIDE_DEBUG_FLAGS, set by the *-shared
+ * distribution presets, and a one-line note replaces it. The omission is
+ * display-only: every flag parses in every build.
  * @param display_name Game title printed in the heading.
  * @param argv0 Program path printed in the usage line.
  * @param default_renderer Renderer the game starts with when --renderer is absent. */
 static void print_help(const char* display_name, const char* argv0,
                        openpete_renderer_t default_renderer) {
+    const char* renderer = default_renderer == OPENPETE_RENDERER_VK       ? "vk"
+                         : default_renderer == OPENPETE_RENDERER_PSYCROSS ? "psycross"
+                         : "";
     fprintf(stderr,
         "OpenPete %s\n"
         "Usage: %s [options] [DISC-IMAGE]\n"
@@ -560,339 +800,18 @@ static void print_help(const char* display_name, const char* argv0,
         "  in any scope (e.g. [game.spyro-1.keys.host]). Bind a key by its name\n"
         "  (\"F5\", \"Left Shift\"), a pad input with the pad: prefix (\"pad:south\",\n"
         "  \"pad:-leftx\"), several with an array, or none with \"none\" to unbind.\n"
-        "  --keys-report    print every action, its binding and where it came from, and exit\n"
-        "  --disc PATH                disc image: the .cue, or the .bin/.img/.iso itself. A cue\n"
-        "                             whose FILE line names a missing bin falls back to the cue's\n"
-        "                             own basename and then to the lone .bin beside it.\n"
-        "  --ingest PATH              copy a disc image (.cue/.bin) into the library\n"
-        "                             next to the exe and boot it; later runs need no\n"
-        "                             --disc at all (the original file can be deleted)\n"
-        "  --disc-cache 0|1           keep the disc image resident in memory, filled by a background\n"
-        "                             loader in the game's boot order (default 1): a resident sector is\n"
-        "                             a copy, a missing one is read from the file at once. 0 = read\n"
-        "                             the file per sector (A/B). Bytes identical either way.\n"
-        "  --load-delay N             VBLs of guest time every level load waits (the game's default\n"
-        "                             when omitted; 0 = instant). Recorded into a bk2's header and\n"
-        "                             checked on replay.\n"
-        "  --renderer MODE            which rasterizer draws: vk (native Vulkan%s) | psycross\n"
-        "                             (the GL reference%s). The native window displays either.\n"
-        "  --window WxH               window size (default: the game's drawn viewport at 2x,\n"
-        "                             640x448 on Spyro 1, 640x432 on Spyro 2 and 3)\n"
-        "  --aspect W:H|auto          Hor+ widescreen. auto (default) = follow the window/fullscreen\n"
-        "                             shape, filling it live on resize; W:H (e.g. 16:9, 21:9) = fixed\n"
-        "                             render aspect (sizes the window; bars when the window mismatches)\n"
-        "  --fov DEG                  vertical FOV of the visible band, native renderer (default 55°,\n"
-        "                             range 30-120; the horizontal FOV follows the Hor+ aspect: 74° at\n"
-        "                             4:3, 90° at 16:9 for the default). Inert under --renderer psycross.\n"
-        "  --ssaa N                   native vk supersampling 1..4 (default 1=off); renders the live\n"
-        "                             window at NxN res and box-downsamples. The 4x ceiling keeps the\n"
-        "                             render targets inside an 8GB card at 1080p; higher factors are\n"
-        "                             clamped, and the extent is further capped to the GPU's max image\n"
-        "                             size. Display-only.\n"
-        "  --vsync 0|1                native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
-        "                             for uncapped fps / low latency; on|off also accepted). Display-only.\n"
-        "  --fullscreen 0|1           launch in borderless-desktop fullscreen (default 0 = windowed;\n"
-        "                             on|off also accepted). Alt+Enter / double-click / the O-menu\n"
-        "                             DISPLAY row toggle it live. Display-only.\n"
-        "  --background [0|1]         open the window at its normal size and visible, but do not take\n"
-        "                             focus, do not activate on show, and sit behind the other windows\n"
-        "                             where the platform allows it. Presents, pacing and screenshots are\n"
-        "                             unchanged; clicking the window or its taskbar button focuses it. Wins over\n"
-        "                             --fullscreen. For an unattended windowed run alongside\n"
-        "                             --input-lock (default 0 = off; ignored with --headless).\n"
-        "                             Display-only.\n"
-        "  --perf-stats LEVEL         on-screen performance stats: off | fps (default) | detailed.\n"
-        "                             detailed adds the VBL rate, slips, late ticks per 1000 and the\n"
-        "                             shed / interpolation share. 0|1|2 also accepted. Display-only.\n"
-        "  --show-fps 0|1             deprecated spelling of --perf-stats off|fps (on|off also accepted)\n"
-        "  --perf-position ANCHOR     where the stats block sits: top-right (default) | top-left | top-center | bottom-left | bottom-center | bottom-right\n"
-        "  --osd on|off               on-screen notifications when a setting changes (default on)\n"
-        "  --osd-position ANCHOR      where notifications stack; same six anchors (default top-left)\n"
-        "  --osd-timeout SECONDS      how long a notification stays up (default 3.0, max 30)\n"
-        "  --version-osd on|off       the release build's two-second version line at the bottom\n"
-        "                             left (default on). A distributed build that is not a clean\n"
-        "                             tag shows its version for the whole session and this does\n"
-        "                             not suppress it; a locally built binary shows none.\n"
-        "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
-        "                             ~2 MiB RAM per second of window; same-level only)\n"
-        "  --runahead N               lead the presented timeline by N sim ticks (default 0 = off).\n"
-        "                             1 recommended: cancels the interpolation tick exactly - real-\n"
-        "                             PSX input feel with high-fps motion, every animation frame\n"
-        "                             shown. 2 = sub-console latency but input edges skip one\n"
-        "                             animation onset frame (reads as 'uncanny'). Costs ~N extra\n"
-        "                             sim ticks/tick of CPU; gameplay state is UNCHANGED.\n"
-        "  --render-fps N             target render Hz (default: the display's refresh rate; 0=match\n"
-        "                             sim/30fps legacy pacer, >0=wall-clock dual-pacer + interpolation)\n"
-        "  --tick-scale F             engine speed x F (default 1.0); scales sim AND present cadence\n"
-        "                             together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
-        "                             speed slow-mo to inspect high-FPS interpolation. Display-only.\n"
-        "  --lod MODE                 sector level-of-detail: original (default = authentic PSX LOD band) |\n"
-        "                             extended (draw every visible sector at high-poly, out to the cull\n"
-        "                             distance and beyond). Native renderer only. (--no-lod = extended.)\n"
-        "  --terrain-visibility MODE  terrain candidate set: frustum (default) = every sector whose\n"
-        "                             bounding sphere is inside the displayed frame, hidden or not, so\n"
-        "                             the geometry the original hides (inside-geometry views, the side\n"
-        "                             wedges wider than 4:3) draws and the depth buffer decides what is\n"
-        "                             seen - a departure from the original presentation | game = the\n"
-        "                             game's own visibility verdict (faithful). Native renderer only.\n"
-        "  --terrain-cache 0|1        retained-terrain GPU cache: static sectors render from persistent\n"
-        "                             GPU meshes with the per-face verdicts mirrored in the vertex\n"
-        "                             stage (default 1; display-only; needs a hardware GPU with fp64,\n"
-        "                             else the CPU walk runs as before). 0 = kill switch.\n"
-        "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, N = fog\n"
-        "                             saturates N x farther (100 ~= fog off, the far-detail look).\n"
-        "                             Default: 1, or 100 under --lod extended. Range [0.25,128].\n"
-        "  --vertex-precision MODE    native vk vertex screen-coordinate precision: subpixel (default =\n"
-        "                             smooth sub-pixel projection) | integer (snap 3D-world vertices to the\n"
-        "                             PSX 512x240 pixel grid = the original PS1 polygon wobble). 2D HUD stays\n"
-        "                             smooth; depth/UVs untouched. Native renderer only. Display-only.\n"
-        "  --raster-quantize N        point-resample the 3D scene (pre-HUD) to N x the PSX raster (1 =\n"
-        "                             authentic 512x240 grid, of which the 224 visible lines span the\n"
-        "                             screen - the letterband rows are trimmed, so on-screen this is\n"
-        "                             512x224 as on a real TV; every N stays aligned with the\n"
-        "                             --vertex-precision integer grid). 0 = off. Default: 1 under\n"
-        "                             --vertex-precision integer, else off. Display-only.\n"
-        "  --extract-threads N        worker threads for the native render extraction (terrain sector\n"
-        "                             walk). 0 = auto (logical cores / 2, max 8), 1 = serial (no\n"
-        "                             threads). Output is byte-identical at any count (item-order\n"
-        "                             merge). Boot-latched. Display-only.\n"
-        "  --dither N                 1 = PS1 15-bit colour: quantize the 3D scene to RGB555 with the\n"
-        "                             GPU's 4x4 ordered dither matrix on the PSX 512x240 framebuffer\n"
-        "                             grid (the authentic banding + crosshatch the smooth float\n"
-        "                             pipeline removed). 0 = off (default). Display-only.\n"
-        "  --texture-mapping MODE     texture/colour interpolation: perspective (default = modern\n"
-        "                             perspective-correct) | affine (PSX screen-linear = the original\n"
-        "                             PS1 texture swim/warp). Native renderer only. Display-only.\n"
-        "  --notex 0|1                1 = draw the 3D scene with textures replaced by neutral grey,\n"
-        "                             showing the raw vertex lighting; cutout silhouettes stay real.\n"
-        "                             Default: env OPENPETE_NOTEX, else 0. Native renderer only.\n"
-        "                             Display-only.\n"
-        "  --sfxpack-dir PATH         directory of drop-in sound-effect WAVs named by the sfx census\n"
-        "                             (default: env OPENPETE_SFXPACK_DIR, else assets/sfx next to the exe)\n"
-        "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
-        "                             else <exe>/assets/textures/). Native renderer only.\n"
-        "  --controller-db PATH       extra SDL controller-mapping database, loaded after the shipped one and\n"
-        "                             the per-user gamecontrollerdb.txt, so it outranks both (default: env\n"
-        "                             OPENPETE_CONTROLLER_DB, else neither).\n"
-        "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
-        "                             enabled.txt fixes order (= priority). Default: env OPENPETE_MODS_DIR,\n"
-        "                             else <exe>/mods. No directory = no mods, byte-identical vanilla.\n"
-        "  --mods ID[,ID...]          run exactly these mods, overriding mods/enabled.txt (order IS\n"
-        "                             priority, later = higher). --mods \"\" enables none (vanilla run).\n"
-        "                             Default: env OPENPETE_MODS, else enabled.txt.\n"
-        "  --compile-mods             compile EVERY mod with src/ in the mods dir (see --mods-dir;\n"
-        "                             ignores enabled.txt) against <exe>/sdk and exit; nonzero exit\n"
-        "                             on any failed compile (the cmake build-time mods gate)\n"
-        "  --card1 PATH               use a specific .mcr memory-card image for port A (default: <card-dir>/card1.mcr)\n"
-        "  --card2 PATH               use a specific .mcr memory-card image for port B (default: <card-dir>/card2.mcr)\n"
-        "  --card-dir PATH            directory holding the memory-card .mcr images (default: env OPENPETE_CARD_DIR,\n"
-        "                             else <exe>/cards for a portable install, or the per-user state dir\n"
-        "                             openpete/cards. Two formatted cards inserted by default.\n"
-        "  --no-card                  present no memory card in either port (saving disabled)\n"
-        "  --card-unformatted         provision a blank unformatted card so the in-game format screen runs\n"
-        "  --adopt-saves              re-tag memory-card saves to the RUNNING modset (save safety: a card played\n"
-        "                             under a different modset warns on load until explicitly adopted)\n"
-        "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n"
-        "  --sfx N                    preset the game's SOUND EFFECTS slider: 0 (OFF) .. 10 (max), or on|off.\n"
-        "                             Survives the title screen and a save-file load; the game's own options\n"
-        "                             menu takes it back the moment you move that slider. -1 = don't preset\n"
-        "  --music N                  preset the game's MUSIC slider, same scale and rules as --sfx\n"
-        "  --vibration N              controller rumble: 0 (off) .. 10 (max), or on|off.\n"
-        "                             Default -1 leaves the game's own setting alone (= on);\n"
-        "                             0 silences the motors without changing that setting.\n"
-        "                             10 is the full measured response. Always silent when\n"
-        "                             headless or when the window is not focused.\n"
-        "  --mouse 0|1                host mouse channel: 0 ignores every mouse movement, button and\n"
-        "                             wheel event and leaves the pointer a free desktop cursor over the\n"
-        "                             window; mouse look, the settings menu pointer and the dev overlay\n"
-        "                             all go quiet (default 1 = on; on|off also accepted)\n"
-        "  --input-lock [0|1]         ignore every host input device: keyboard (game keys and every\n"
-        "                             hotkey), mouse (as --mouse 0) and gamepads. A --bk2 replay still\n"
-        "                             drives the game and closing the window still exits. For a window\n"
-        "                             that must not react to host input (default 0 = off)\n"
-        "  --mouse-sensitivity S      mouse look scale for the free camera and camlock (default 1.0;\n"
-        "                             0.5 = one full turn per 8192 counts). Mouse look binds through\n"
-        "                             [keys.host] look_axis_x = \"pad:rightx,mouse:x\" and\n"
-        "                             look_axis_y = \"pad:-righty,mouse:-y\"; \"mouse:y\" inverts, \"none\" unbinds\n"
-        "  --skip-to-level L          load directly into level L: the game's numeric level id or its\n"
-        "                             lower_snake_case name; no value or an unknown name prints this\n"
-        "                             game's list. Windowed runs fast-forward the logos/title/loading\n"
-        "                             (black window, audio muted) until the level is playable\n"
-        "  --skip-to-cutscene C       play the named cutscene C. No value or an unknown name prints this\n"
-        "                             game's list. Spyro 1: intro (the opening, from the title through\n"
-        "                             New Game; not with --skip-to-level), ending (Gnasty defeated, from\n"
-        "                             level 63), ending_loot (Gnasty's Loot, from level 64; the credits\n"
-        "                             return to Artisans), credits / credits_100 (the short / full 100%%\n"
-        "                             roll, from --skip-to-level's target or Artisans; the roll returns\n"
-        "                             to the level it started from). Spyro 2: intro, intro_arrival,\n"
-        "                             summer_forest, crush_intro, crush_defeated, autumn_plains,\n"
-        "                             gulp_intro, gulp_defeated, winter_tundra, ripto_intro, ending (the\n"
-        "                             Dragon Shores theater's replay, from level 65; playback returns\n"
-        "                             to Dragon Shores); LEVEL_intro (entered from the homeworld\n"
-        "                             portal, first visit) and LEVEL_outro (the level completed and\n"
-        "                             left) for LEVEL idol_springs, colossus, hurricos, aquaria_towers,\n"
-        "                             sunny_beach, skelos_badlands, crystal_glacier, breeze_harbor,\n"
-        "                             zephyr, scorch, shady_oasis, magma_cone, fracture_hills,\n"
-        "                             mystic_marsh, cloud_temples, robotica_farms, metropolis. Spyro 3\n"
-        "                             (the game's loading captions; each from its trigger's level, the\n"
-        "                             chain continues as in the game):\n"
-        "                             an_evil_plot_unfolds, a_powerful_villain_emerges,\n"
-        "                             a_desperate_rescue_begins (from the title through New Game; not\n"
-        "                             with --skip-to-level), bianca_strikes_back, the_second_warning,\n"
-        "                             no_hard_feelings (10), spike_is_born, hunters_tussle,\n"
-        "                             byrd_james_byrd (20), a_monster_to_end_all_monsters,\n"
-        "                             an_apology_and_lunch, a_duplicitous_larcenous_ursine (30),\n"
-        "                             the_escape (37), the_dancing_bear (40), deja_vu,\n"
-        "                             a_familiar_face, billy_in_the_wall, one_less_noble_warrior (47),\n"
-        "                             the_end (50)\n"
-        "  --skip-to-area L:A         load level L (number or name) and enter its sub-area A through the\n"
-        "                             game's own sub-area transition, as its area-0 portal does. A is\n"
-        "                             an index from 1; no value or an invalid target prints each level's\n"
-        "                             valid indices. Replaces --skip-to-level's level (Spyro 3)\n"
-        "  --cheats A,B,...           apply the game's own built-in cheat codes without entering them on\n"
-        "                             the pad: 99_lives, unlock_all_levels (an unknown name prints the\n"
-        "                             list). Applied once a level is live, and again for each new session\n"
-        "                             started from the title screen. Changes gameplay state by design\n"
-        "  --bk2 PATH                 replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)\n"
-        "  --bk2-frame-offset N       map bk2 frame 0 to openpete_frame N (default 0)\n"
-        "  --bk2-stop-on-end          exit after last bk2 frame instead of holding last input\n"
-        "  --bk2-record [PATH]        write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie).\n"
-        "                             With no PATH, records to <exe_dir>/bk2/<timestamp>.bk2. Also writes a\n"
-        "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n"
-        "  --log-file PATH            mirror stderr to PATH instead of the default\n"
-        "                             <state>/logs/openpete.log; env OPENPETE_LOG_FILE=...\n"
-        "  --no-log-file              do not write a log file at all\n",
-        display_name, argv0,
-        default_renderer == OPENPETE_RENDERER_VK       ? " - default" : "",
-        default_renderer == OPENPETE_RENDERER_PSYCROSS ? " - default" : "");
-
-    /* The --record family only exists where libav* could be linked. Without
-     * OPENPETE_HAS_LIBAV record.c is the warn-and-ignore stub, so listing these
-     * would advertise a feature this build cannot perform. They still parse. */
+        "  --keys-report    print every action, its binding and where it came from, and exit\n",
+        display_name, argv0);
+    help_put_block(HELP_RELEASE, renderer);
 #ifdef OPENPETE_HAS_LIBAV
-    fputs(
-        "\nVideo recording (needs libav):\n"
-        "  --record PATH              capture true-VFR gameplay video (.mkv recommended; .mp4 ok); reads the present FBO (no letterbox bars)\n"
-        "  --record-encoder NAME      libavcodec encoder (default libx264; e.g. h264_nvenc, libopenh264)\n"
-        "  --record-crf N             encoder quality for libx264/libx265 (default 23; lower = better)\n"
-        "  --record-gop N             keyframe interval in frames (default 120)\n"
-        "  --record-pixfmt NAME       encoder pixel format (default yuv420p)\n"
-        "  --no-record-audio          record video only (default: also capture mixed SPU audio)\n"
-        "  --record-audio-encoder NAME libavcodec audio encoder (default aac)\n"
-        "  --record-fps-overlay 0|1   burn the native FPS overlay into --record video (default 0 = clean\n"
-        "                             capture; on|off also accepted). Display-only.\n"
-        "  --record-cfr RATE          capture at a constant frame rate instead of true VFR. RATE must be an\n"
-        "                             integer multiple of the NTSC tick rate: 29.913, 59.826, 119.652, ...\n"
-        "                             Drives the host clock from the pacer, so the same span of GAME time is\n"
-        "                             captured however slowly the machine renders. Implies --no-record-audio.\n"
-        "  --record-frames N          finish the recording and exit after exactly N encoded frames (with\n"
-        "                             --record-cfr, a window of exactly N/RATE seconds of game time)\n",
-        stderr);
+    fputs("\nVideo recording (needs libav):\n", stderr);
+    help_put_block(HELP_LIBAV, renderer);
 #endif
-
 #ifdef OPENPETE_HIDE_DEBUG_FLAGS
     fputs("  (plus dev/diagnostic flags, hidden in this build)\n", stderr);
 #else
-    fputs(
-        "\nDebug / diagnostic flags:\n"
-        "  --headless                 no on-screen window (offscreen video driver)\n"
-        "  --resume-handoff PATH      resume a session from a process-handoff checkpoint\n"
-        "                             (written by the handoff exec; not for manual use)\n"
-        "  --frame-limit N            exit after N rendered frames\n"
-        "  --max-runtime-seconds N    wall-clock SIGTERM after N seconds\n"
-        "  --exe-path PATH            direct PSX EXE bytes (overrides --disc)\n"
-        "  --recomp-module PATH       shared-linkage builds: load the recomp module\n"
-        "                             from PATH instead of the default next to the exe\n"
-        "  --extract-recomp-inputs DIR extract PSX.EXE + overlay blobs from --disc\n"
-        "                             into DIR and exit (recomp pipeline stage)\n"
-        "  --dump-sfx-pack DIR        write every game sound on --disc as a content-named WAV\n"
-        "                             (+ index.txt) into DIR and exit: the sfx pack census\n"
-        "  --dump-sfx-wads A.wad,B.wad also walk these custom-level Data files (a [[level]]\n"
-        "                             mod's assets/levels/<stem>.wad)\n"
-        "  --render-paths LIST        render ONLY these paths in both renderers, e.g.\n"
-        "                             cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
-        "                             tracer,transition,portal,moby_shadow. Lets a path be\n"
-        "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
-        "  --wireframe 0|1            1 = draw every 3D scene triangle as its three edges, coloured by the\n"
-        "                             vertex lighting (textures replaced by neutral grey, as NOTEX); the\n"
-        "                             HUD and menus stay filled. Shows the terrain subdivision as drawn.\n"
-        "                             Default: env OPENPETE_WIREFRAME, else 0. Native renderer only.\n"
-        "                             Display-only.\n"
-        "  --psycross-native-raster N 1 = render the PsyCross reference on the console's own 512x240\n"
-        "                             display grid (one texel per PSX pixel, authentic aliasing) instead\n"
-        "                             of a square-pixel 4:3 grid sized from the window. The window blit\n"
-        "                             scales it up. Default 0. Reference renderer only.\n"
-        "  --devui-open 0|1           open the dev config overlay (M panel) as soon as it\n"
-        "                             initializes instead of waiting for the M key, with the Mods\n"
-        "                             list and every mod node expanded once, so an unattended run\n"
-        "                             reaches a mod UI section body (on|off also accepted).\n"
-        "                             Windowed native-vk runs only; inert elsewhere.\n"
-        "  --log-format json|plain    structured stderr (default plain)\n"
-        "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
-        "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list.\n"
-        "                             In a windowed pure-vk run, -vk.png is a READBACK of the exact\n"
-        "                             presented frame (sub-tick interp, mods, overlays included);\n"
-        "                             headless runs recompose the canonical scene instead.\n"
-        "  --screenshot-on-tick N[,N2,...]   same, keyed on canonical draw-ticks instead of VBL frames.\n"
-        "                             Tick-keyed captures hit the same sim moment run-to-run (the\n"
-        "                             frame<->tick mapping drifts with host timing); used by the visual gates.\n"
-        "                             The PsyCross render is written as <out>-og.png; the native render as <out>-vk.png\n"
-        "  --screenshot-native-only   capture the native -vk variant alone: skip PsyCross OT rasterization and -og (presentation-golden corpus path)\n"
-        "  --screenshot-intermediate-on-frame N[,...]  deterministic sub-tick (alpha 0.5) native captures at each VBL, headless-capable; implies --screenshot-native-only\n"
-        "  --screenshot-freeze-backdrop  maintain the green freeze backdrop during headless capture so pause/results/exit dumps aren't dark (renders an extra frame per present)\n"
-        "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
-        "  --screenshot-presents-start N  capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)\n"
-        "  --screenshot-presents-count K  number of consecutive presents to capture when --screenshot-presents-start is set (default 1)\n"
-        "  --ram-dump-on-frame N      write 2MB main RAM to --ram-dump-output after frame N\n"
-        "  --ram-dump-output PATH     RAM dump path (default ./ram.bin)\n"
-        "  --state-save-on-frame N    savestate to --state-save-output once openpete_frame (VBL) reaches N\n"
-        "  --state-save-output PATH   scheduled-save path (default ./frameN.state)\n"
-        "  --state-load-on-frame N    load --state-load-input once openpete_frame reaches N (re-anchors the frame counter)\n"
-        "  --state-load-input PATH    state file for the scheduled load\n"
-        "  --state-stress N           every N ticks: in-memory save + immediate quiet restore (restore-at-yield gate)\n"
-        "  --state-stress-rewind K    save, run K iterations, restore, repeat (runahead rollback shape)\n"
-        "  --rewind-hold A:N          headless: simulate holding the rewind key for N iterations at frame A\n"
-        "  --seed-ram PATH            pre-fill g_ram from a 2MB dump before dispatch\n"
-        "  --seed-cpu PATH            pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump\n"
-        "  --halt-at-pc HEX           dump RAM to --ram-dump-output at first call to fn HEX, then exit\n"
-        "  --halt-cpu-dump-output PATH also write 528B 'CSv1' CPU dump alongside RAM at halt\n"
-        "  --halt-hit N               dump on Nth (1-indexed) call to --halt-at-pc (default 1)\n"
-        "  --psxtrace-verify PATH     consume per-frame .psxtrace + diff against PSX oracle\n"
-        "  --psxtrace-keep-going      don't exit on first divergence (collect all)\n"
-        "  --psxtrace-anchor-pc HEX   PC where advance() fires (default: trace's first-record pc)\n"
-        "  --psxtrace-anchor-hit N    skip first N-1 hits before starting (default 1 = first)\n"
-        "  --test-recomp-call HEX     boot, dispatch one fn at HEX, exit\n"
-        "  --test-recomp-expect-v0 N  verify cpu->v0 after --test-recomp-call\n"
-        "  --test-recomp-gp HEX       set cpu->gp before --test-recomp-call (skips PSYQ _96_init)\n"
-        "  --probe HEX                read 4 bytes at this PSX vaddr post-dispatch and log\n"
-        "  --test-segv                deliberately raise SIGSEGV (crash-handler smoke test)\n"
-        "  --debug-triangle           emit a hardcoded POLY_F3 each frame (infra-only validation)\n"
-        "  --freecam-pose STR         engage the debug free camera at a pose once the level is\n"
-        "                             live (same format as the freecam log: \"pos=(x, y, z) yaw=N\n"
-        "                             pitch=N\"). CLI twin of OPENPETE_FREECAM_POSE - env vars don't\n"
-        "                             cross the WSL->Windows interop boundary.\n"
-        "  --player-pose STR          place the player once gameplay is live and under pad control:\n"
-        "                             \"x,y,z[,yaw]\" or the exit pose line (\"pos=(x, y, z) yaw=N\",\n"
-        "                             yaw 4096 per turn); the follow camera is re-seated behind him.\n"
-        "                             CLI twin of OPENPETE_PLAYER_POSE. Every run prints its end\n"
-        "                             state as openpete-pose: after openpete-exit:.\n"
-        "  --freecam-path SPEC        engage the free camera and fly it along a looping waypoint\n"
-        "                             path: \"[ticks=N;] WP(;WP)+\" where WP is \"topdown\" or\n"
-        "                             \"x,y,z[,yaw,pitch]\". Interpolates over N ticks per segment\n"
-        "                             (default 120). Exercises the costs only movement reaches\n"
-        "                             (sector-cache churn, LOD crossings) that a static pose cannot.\n"
-        "                             CLI twin of OPENPETE_FREECAM_PATH; supersedes --freecam-pose.\n"        "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
-        "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
-        "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
-        "                             gameplay-state region (games/<game>/manifest/gameplay_state_regions.toml).\n"
-        "                             Primary determinism gate - see check_aspect_determinism.sh\n"
-        "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n"
-        "  --pace-log PATH            write the unified pacing event log (every VBL + present, one timebase) for scripts/pacing/\n"
-        "  --profile-out PATH         stream a binary .opp perf trace (CPU scopes + GPU zones + census,\n"
-        "                             keyed per present / canonical tick) for scripts/profile-summary.py\n"
-        "                             (plain text) and scripts/profile-to-trace.py (Perfetto flame chart).\n"
-        "                             Windowed only for GPU/intermediate coverage; ~0.1% CPU overhead.\n",
-        stderr);
+    fputs("\nDebug / diagnostic flags:\n", stderr);
+    help_put_block(HELP_DEBUG, renderer);
 #endif
 }
 

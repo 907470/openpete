@@ -51,7 +51,8 @@ recording.
 | `--no-record-audio` | off | video only |
 | `--record-fps-overlay 0\|1` | 0 | burn the FPS overlay and the notifications into the video |
 
-Defaults are the `print_help` strings (`core/config/options.c:589-603`).
+Defaults are the rows' declarations (`def_str`, `default_note`) in
+`core/config/knob_registry.c`; `--help` interpolates `def_str`.
 `.mkv` and `.mp4` are detected by extension; `.mkv` survives an
 interrupted run. Ctrl-C finalizes a playable file. Linking `libx264` makes
 the binary GPL; `--record-encoder libopenh264` (BSD) avoids that.

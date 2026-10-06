@@ -10,12 +10,13 @@
  * sentinels the selfcheck compares.
  *
  * options.c, the config resolver and the keymap compile straight in; the
- * game hooks the parser calls are stubbed below. */
+ * game hooks the parser calls and the knob registry are stubbed below. */
 
 #include "openpete.h"
 #include "openpete_config.h"
 #include "game_extras.h"
 #include "openpete_keymap.h"
+#include "openpete_knobs.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +54,14 @@ static int any_name(int kind, const char* name) { (void)kind; (void)name; return
 static const char* any_code(int kind, int code) { (void)kind; (void)code; return "k"; }
 /** @brief Stub for the SDL key-name install: the keymap's built-in defaults need a lookup to parse, and the options do not care which. */
 void openpete_keymap_install_sdl(void) { openpete_keymap_set_lookup(any_name, any_code, NULL); }
+
+/** @brief Stub knob registry: no rows; only the --help generator reads it, and no case prints help.
+ * @param count Receives 0; may be NULL.
+ * @return NULL. */
+knob_desc_t* knob_registry(size_t* count) {
+    if (count) *count = 0;
+    return NULL;
+}
 
 /** @brief Stub anchor parser: the six anchor words, as overlay_anchor.c spells them. */
 int openpete_anchor_parse(const char* s) {

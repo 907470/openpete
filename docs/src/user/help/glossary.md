@@ -171,6 +171,6 @@ clock each one counts.
 | `--frame-time-log PATH`<!-- id: flag:--frame-time-log --> | presents: one record per image shown |
 | {{ flag("flag:--wireframe") }}<!-- id: flag:--wireframe --> | no clock: draws polygon edges only |
 
-`--bk2-frame-offset` is listed in `--help`. `--record-frames` exists only in
+`--bk2-frame-offset` and `--wireframe` are listed in `--help`. `--record-frames` exists only in
 builds with video recording, which no release package includes. The others
 are developer flags, which a release package's `--help` does not list.
