@@ -4297,16 +4297,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (s_texmap_affine)
         OPL_INFO_F("native", "%s", "texture-mapping: affine (PSX screen-linear)");
 
-    /* OPENPETE_NOTEX: untextured lighting view (fragment spec-constant 2) -
-     * textured scene fragments output the raw gouraud vertex colour. Debug
-     * view; live changes queue via openpete_native_set_notex. */
-    {
-        const char* e = getenv("OPENPETE_NOTEX");
-        s_notex = s_notex_pending = (e && *e && *e != '0');
-        rhi_set_notex(s_notex);
-        if (s_notex)
-            OPL_INFO_F("native", "%s", "notex: untextured lighting view ON");
-    }
+    /* Untextured lighting view (--notex / OPENPETE_NOTEX, fragment
+     * spec-constant 2): textured scene fragments output the raw gouraud
+     * vertex colour. Live changes queue via openpete_native_set_notex. */
+    s_notex = s_notex_pending = (opts->notex > 0);
+    rhi_set_notex(s_notex);
+    if (s_notex)
+        OPL_INFO_F("native", "%s", "notex: untextured lighting view ON");
     s_wireframe = s_wireframe_pending = (opts->wireframe != 0);
     rhi_set_wireframe(s_wireframe);
 

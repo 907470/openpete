@@ -663,6 +663,10 @@ static void print_help(const char* display_name, const char* argv0,
         "  --texture-mapping MODE     texture/colour interpolation: perspective (default = modern\n"
         "                             perspective-correct) | affine (PSX screen-linear = the original\n"
         "                             PS1 texture swim/warp). Native renderer only. Display-only.\n"
+        "  --notex 0|1                1 = draw the 3D scene with textures replaced by neutral grey,\n"
+        "                             showing the raw vertex lighting; cutout silhouettes stay real.\n"
+        "                             Default: env OPENPETE_NOTEX, else 0. Native renderer only.\n"
+        "                             Display-only.\n"
         "  --sfxpack-dir PATH         directory of drop-in sound-effect WAVs named by the sfx census\n"
         "                             (default: env OPENPETE_SFXPACK_DIR, else assets/sfx next to the exe)\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
@@ -971,7 +975,9 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->raster_quantize = -1;   /* auto: 1x under --vertex-precision integer, else off */
     opts->extract_threads = 0;    /* auto: logical cores / 2, clamped to [1, 8] */
     opts->dither          = 0;    /* --dither 1 for PS1 15-bit colour + hardware dither */
-    /* -1 = unset: resolve_env_spellings applies OPENPETE_WIREFRAME, else 0. */
+    /* -1 = unset: resolve_env_spellings applies OPENPETE_NOTEX and
+     * OPENPETE_WIREFRAME, else 0. */
+    opts->notex     = -1;
     opts->wireframe = -1;
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
@@ -1233,6 +1239,10 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
     } else if (strcmp(a, "--dither") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->dither = (atoi(v) != 0);
+        i++;
+    } else if (strcmp(a, "--notex") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->notex = (atoi(v) != 0);
         i++;
     } else if (strcmp(a, "--wireframe") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
@@ -2035,7 +2045,7 @@ static int env_value(const char* name, const char** out) {
  *
  * Runs after the flag walk, so a typed flag has claimed its field already,
  * and after the config resolver has applied the openpete.toml [env] tables.
- * OPENPETE_WIREFRAME is on unless it starts with '0'; OPENPETE_TERRAIN_CACHE
+ * OPENPETE_NOTEX and OPENPETE_WIREFRAME are on unless they start with '0'; OPENPETE_TERRAIN_CACHE
  * and OPENPETE_DISC_CACHE take atoi's verdict (default 1);
  * OPENPETE_TERRAIN_VISIBILITY=game selects the game's verdict (default
  * frustum). OPENPETE_LOAD_DELAY is applied with atoi when set; unset,
@@ -2044,6 +2054,8 @@ static int env_value(const char* name, const char** out) {
  * @param opts The options block. */
 static void resolve_env_spellings(openpete_options_t* opts) {
     const char* e = NULL;
+    if (opts->notex < 0)
+        opts->notex = env_value("OPENPETE_NOTEX", &e) && *e != '0';
     if (opts->wireframe < 0)
         opts->wireframe = env_value("OPENPETE_WIREFRAME", &e) && *e != '0';
     if (opts->terrain_cache < 0)
@@ -2068,6 +2080,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->background < 0)            out->background = 0;
     if (out->mouse_sensitivity < 0.0f)  out->mouse_sensitivity = 1.0f;
     if (out->load_delay < 0)            out->load_delay = (int)game_get_load_delay_default();
+    if (out->notex < 0)                 out->notex = 0;
     if (out->wireframe < 0)             out->wireframe = 0;
     if (out->terrain_cache < 0)         out->terrain_cache = 1;
     if (out->disc_cache < 0)            out->disc_cache = 1;

@@ -36,6 +36,7 @@
 "flag:--no-card" = "playing/saves.md#memory-cards"
 "flag:--no-config" = "customizing/config-file.md#commands"
 "flag:--no-log-file" = "help/file-locations.md#other-files"
+"flag:--notex" = "playing/dev-overlay.md#sections"
 "flag:--perf-stats" = "help/glossary.md#fps"
 "flag:--ram-dump-on-frame" = "help/glossary.md#ids-that-contain-frame"
 "flag:--record-frames" = "help/glossary.md#ids-that-contain-frame"

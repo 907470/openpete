@@ -216,8 +216,9 @@ static void resolved_env_fields(void) {
     static const char* const none[] = { "--no-config" };
     g_case = "defaults";
     CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK, "the default parse failed");
-    CHECK(o.wireframe == 0 && o.terrain_cache == 1 && o.disc_cache == 1,
-          "wireframe %d terrain_cache %d disc_cache %d", o.wireframe, o.terrain_cache, o.disc_cache);
+    CHECK(o.notex == 0 && o.wireframe == 0 && o.terrain_cache == 1 && o.disc_cache == 1,
+          "notex %d wireframe %d terrain_cache %d disc_cache %d", o.notex, o.wireframe,
+          o.terrain_cache, o.disc_cache);
     CHECK(o.load_delay == -1, "load_delay = %d, want -1 for run.c", o.load_delay);
     CHECK(o.terrain_visibility == OPENPETE_TERRAIN_VIS_FRUSTUM, "terrain_visibility %d",
           (int)o.terrain_visibility);
@@ -243,6 +244,19 @@ static void resolved_env_fields(void) {
     CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.wireframe == 1,
           "wireframe = %d, want 1 from the env", o.wireframe);
     unsetenv_portable("OPENPETE_WIREFRAME");
+
+    g_case = "typed notex beats env";
+    setenv_portable("OPENPETE_NOTEX", "0");
+    static const char* const nt1[] = { "--no-config", "--notex", "1" };
+    CHECK(parse(&o, 3, nt1) == OPENPETE_EXIT_OK && o.notex == 1,
+          "notex = %d, want the typed 1 over OPENPETE_NOTEX=0", o.notex);
+    setenv_portable("OPENPETE_NOTEX", "1");
+    static const char* const nt0[] = { "--no-config", "--notex", "0" };
+    CHECK(parse(&o, 3, nt0) == OPENPETE_EXIT_OK && o.notex == 0,
+          "notex = %d, want the typed 0 over OPENPETE_NOTEX=1", o.notex);
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.notex == 1,
+          "notex = %d, want 1 from the env", o.notex);
+    unsetenv_portable("OPENPETE_NOTEX");
 }
 
 /** @brief openpete_options_effective resolves each admitted sentinel and leaves typed values alone. */

@@ -344,16 +344,16 @@ static void case_renamed_key(void) {
  * a false one leaves the variable ABSENT, because several of these
  * consumers only test for presence. */
 static void case_env_only_knob(void) {
-    clear_env("OPENPETE_NOTEX");
+    clear_env("OPENPETE_CAMLOCK");
     run_t r = run("bare key for an env-only knob",
-        "notex = true\n", NULL, 0);
+        "camlock = true\n", NULL, 0);
     (void)r;
-    expect_env("OPENPETE_NOTEX", "1");
-    clear_env("OPENPETE_NOTEX");
+    expect_env("OPENPETE_CAMLOCK", "1");
+    clear_env("OPENPETE_CAMLOCK");
 
     r = run("false leaves it unset, not \"0\"",
-        "notex = false\n", NULL, 0);
-    expect_env_unset("OPENPETE_NOTEX");
+        "camlock = false\n", NULL, 0);
+    expect_env_unset("OPENPETE_CAMLOCK");
 }
 
 /* Malformed lines are hard errors; an unknown key warns at boot and fails

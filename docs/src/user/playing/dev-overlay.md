@@ -58,7 +58,10 @@ behind him. Both are empty by default, and both change the game's state.
 **Untextured (lighting)** <!-- id: knob:notex --> and **Wireframe
 (lighting)** <!-- id: knob:wireframe --> are inspection views: the first
 replaces textures with grey to show the lighting alone, the second draws
-every triangle's edges.
+every triangle's edges. {{ flag("flag:--notex") }}<!-- id: flag:--notex -->
+followed by `1` turns the untextured view on at launch, as the variable
+`OPENPETE_NOTEX=1` does; the flag wins over the variable. The view is off
+by default.
 
 **Camera lock (render)** <!-- id: knob:camlock --> holds the picture on the
 current view, and lets it fly with the free camera keys, while the game keeps

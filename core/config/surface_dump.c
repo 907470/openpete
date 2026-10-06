@@ -531,10 +531,9 @@ static void sc_check_switch(selfcheck_t* sc, const knob_desc_t* k) {
 }
 
 /* Flagless rows whose getter reads live state the dump never starts (the
- * free camera, the camera lock, the native renderer's untextured view):
- * comparing them checks nothing about the declaration, so they count as
- * unchecked. */
-static const char* const k_live_rows[] = { "freecam", "camlock", "notex" };
+ * free camera, the camera lock): comparing them checks nothing about the
+ * declaration, so they count as unchecked. */
+static const char* const k_live_rows[] = { "freecam", "camlock" };
 
 /** @brief 1 when row id is in k_live_rows. */
 static int is_live_row(const char* id) {

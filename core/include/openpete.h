@@ -243,6 +243,13 @@ typedef struct openpete_options {
      * Display-only; native renderer only. Default 0. */
     int dither;
 
+    /* Untextured view (`--notex 0|1`, env OPENPETE_NOTEX; the flag wins).
+     * 1 = textured scene fragments output the raw gouraud vertex colour;
+     * cutout silhouettes keep their texture alpha. Display-only; native
+     * renderer only. Default 0; -1 = unset between openpete_options_init and
+     * the end of the parse. */
+    int notex;
+
     /* Wireframe view (`--wireframe 0|1`, env OPENPETE_WIREFRAME; the flag
      * wins). 1 = every 3D scene draw rasterizes as triangle edges coloured
      * by the gouraud vertex lighting (the NOTEX colouring); the 2D layers
@@ -908,7 +915,7 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
  * typed arguments, then walks them with the last write winning. After the
  * walk it resolves the default --bk2-record path and its sidecar, then
  * applies the env spellings of the flags that were not typed and resolves
- * wireframe, terrain_cache, disc_cache and terrain_visibility to their
+ * notex, wireframe, terrain_cache, disc_cache and terrain_visibility to their
  * defaults (load_delay stays -1 for run.c). The EXE-source check is left to
  * openpete_options_require_exe_source. --help prints the help, sets
  * opts->help and returns OPENPETE_EXIT_OK at once; the caller exits 0. A
@@ -934,8 +941,8 @@ void openpete_options_set_strict(int on);
  *
  * mouse -1 becomes 1, input_lock and background -1 become 0,
  * mouse_sensitivity -1 becomes 1.0, load_delay -1 becomes
- * game_get_load_delay_default(), and wireframe, terrain_cache, disc_cache
- * and terrain_visibility take their built-in defaults when still unset.
+ * game_get_load_delay_default(), and notex, wireframe, terrain_cache,
+ * disc_cache and terrain_visibility take their built-in defaults when still unset.
  * Every runtime consumer reads the raw fields; this serves the surface
  * dump's selfcheck, which compares a parse of a flag at its declared default
  * with a parse without it.

@@ -1039,13 +1039,13 @@ static const knob_desc_t g_builtin[] = {
       "still claim. Inert without a pack. 0 = kill switch (tier-1 per-sector "
       "claims). Boot-latched; display-only."),
 
-    { "notex", "Untextured (lighting)", "Display", NULL, "OPENPETE_NOTEX",
+    { "notex", "Untextured (lighting)", "Display", "--notex", "OPENPETE_NOTEX",
       "Debug view: draw the 3D scene with textures replaced by neutral grey, "
       "showing the raw gouraud vertex lighting. Cutout silhouettes stay real. "
       "Applying re-bakes every scene pipeline (one-time hitch). Display-only.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       notex_get, notex_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .def_str = "off" },
+      .def_str = "0" },
 
     { "wireframe", "Wireframe (lighting)", "Display", "--wireframe", "OPENPETE_WIREFRAME",
       "Debug view: draw every 3D scene triangle as its three edges, coloured "

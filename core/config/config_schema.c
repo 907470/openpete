@@ -39,7 +39,7 @@ static const cfg_knob_t g_schema[] = {
     { "extract_threads",  "--extract-threads",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "terrain_cache",    "--terrain-cache",    "OPENPETE_TERRAIN_CACHE", CFG_BOOL,  NULL,       NULL,       NULL,       0 },
     { "terrain_visibility", "--terrain-visibility", "OPENPETE_TERRAIN_VISIBILITY", CFG_ENUM, v_tervis, NULL, NULL, 0 },
-    { "notex",            NULL,                 "OPENPETE_NOTEX",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "notex",            "--notex",            "OPENPETE_NOTEX",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "wireframe",        "--wireframe",        "OPENPETE_WIREFRAME",    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "dither",           "--dither",           NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "texture_mapping",  "--texture-mapping",  NULL,                    CFG_ENUM,   v_texmap,   NULL,       NULL,       0 },

@@ -478,7 +478,7 @@
   },
   {
    "id": "knob:notex",
-   "flag": null,
+   "flag": "--notex",
    "env": "OPENPETE_NOTEX",
    "config_key": "notex",
    "schema_type": "bool",
@@ -489,9 +489,18 @@
    "block": "release",
    "build_cond": null,
    "cli_only": false,
-   "def": "off",
+   "def": "0",
    "default_note": null,
    "game": "core"
+  },
+  {
+   "id": "flag:--notex",
+   "flag": "--notex",
+   "takes_arg": "required",
+   "knob": "notex",
+   "build_cond": null,
+   "def": "0",
+   "default_note": null
   },
   {
    "id": "knob:wireframe",
@@ -7622,7 +7631,7 @@
  ],
  "selfcheck": {
   "flag": {
-   "checked": 39,
+   "checked": 40,
    "unchecked": 32,
    "failed": 0
   },
@@ -7633,7 +7642,7 @@
   },
   "row": {
    "checked": 1,
-   "unchecked": 6,
+   "unchecked": 5,
    "failed": 0
   },
   "env": {
