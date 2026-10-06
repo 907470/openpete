@@ -226,12 +226,35 @@ static int cut_drawn_set_refusals(void) {
     return n;
 }
 
+/** @brief Count the records of the previous epoch's queue, which a held cut replays, that cannot show tick N-1.
+ *
+ * Dormant records are skipped. Counts refusals as cut_array_refusals does.
+ * @return The number of refusing records; 0 when the previous queue is not
+ *         usable (the hold then replays the current queue, which the other
+ *         two counts cover). */
+static int cut_prev_queue_refusals(void) {
+    static uint32_t mobys[1024];
+    const uint32_t soff = game_layout.moby.state_off;
+    const uint32_t rec_bytes = game_layout.moby.array_stride ? game_layout.moby.array_stride : soff + 1u;
+    const int all = cut_census_on();
+    const int cnt = moby_native_prev_queue_mobys(mobys, 1024);
+    int n = 0;
+    for (int i = 0; i < cnt && (all || n == 0); i++) {
+        const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(mobys[i], rec_bytes);
+        if (!mh || mh[soff] >= 0x80) continue;
+        if (!cut_rec_holdable(mobys[i], mh)) n++;
+    }
+    return n;
+}
+
 int cut_scene_holdable(void) {
-    if (!cut_census_on()) return cut_array_refusals() == 0 && cut_drawn_set_refusals() == 0;
-    const int na = cut_array_refusals(), nd = cut_drawn_set_refusals();
-    fprintf(stderr, "[cut-census vbl=%u] scene refusals array=%d drawn=%d\n",
-            openpete_frame, na, nd);
-    return na == 0 && nd == 0;
+    if (!cut_census_on())
+        return cut_array_refusals() == 0 && cut_drawn_set_refusals() == 0 &&
+               cut_prev_queue_refusals() == 0;
+    const int na = cut_array_refusals(), nd = cut_drawn_set_refusals(), np = cut_prev_queue_refusals();
+    fprintf(stderr, "[cut-census vbl=%u] scene refusals array=%d drawn=%d prevq=%d\n",
+            openpete_frame, na, nd, np);
+    return na == 0 && nd == 0 && np == 0;
 }
 
 int cut_camera_hold(double period_ns, op_time_t curr_tick_ns, int gs_edge) {

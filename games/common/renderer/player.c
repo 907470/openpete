@@ -1412,6 +1412,9 @@ typedef struct {
 
 static store_slot_t s_store[3];       /* [0] curr, [1] prev, [2] prev2 */
 static uint32_t     s_store_epoch;
+/* The store rolled at the last epoch commit: s_store[1] is then the list the
+ * previous canonical epoch drew, else s_store[0] still is. */
+static int          s_store_rolled;
 static op_time_t    s_latched_ring_ns;
 static uint32_t     s_reset_gen_seen;
 
@@ -1797,7 +1800,9 @@ void player_records_epoch_commit(void) {
     else if (ring_rolled)           s_roll_ring++;
     else if (rec_changed)           s_roll_records++;
     else                            s_dedupe++;
+    s_store_rolled = 0;
     if (ring_rolled || rec_changed) {
+        s_store_rolled = 1;
         s_store[2] = s_store[1];
         s_store[1] = s_store[0];
         s_store[0].list = epoch;
@@ -1875,14 +1880,37 @@ void player_records_epoch_commit(void) {
 /* ---- present side -------------------------------------------------------- */
 
 static int    s_pres_n = 0;
+static int    s_pres_b = 0;   /* the store slot the present shows as its newest */
+static int    s_pres_hold = 0;
+
+/** @brief The store slot k entries older than the one the present shows, or NULL past the store or on an empty slot.
+ *
+ * @param k 0 for the shown slot, 1 for its previous, 2 for the one before.
+ * @return The slot, or NULL. */
+static const store_slot_t* pres_slot(int k) {
+    const int i = s_pres_b + k;
+    return (i < 3 && s_store[i].valid) ? &s_store[i] : NULL;
+}
+
+void player_records_set_hold(int on) { s_pres_hold = on ? 1 : 0; }
 static int    s_pres_lerp = 0;
 static double s_pres_alpha = 0.0;
 
 int player_records_present_begin(int ring_paired, int ring_cut, double ring_alpha, double* out_alpha) {
-    s_pres_n = 0; s_pres_lerp = 0; s_pres_alpha = 0.0;
+    s_pres_n = 0; s_pres_lerp = 0; s_pres_alpha = 0.0; s_pres_b = 0;
     if (out_alpha) *out_alpha = 0.0;
     if (!s_store[0].valid) return 0;
     if (!spyro_native_canon_epoch_fresh(s_store_epoch)) return 0;
+    /* A held cut shows the previous epoch's records whole: its own set, its
+     * own drawn verdicts and its own state, with nothing to lerp toward. */
+    if (s_pres_hold) {
+        if (s_store_rolled) {
+            if (!s_store[1].valid) return 0;
+            s_pres_b = 1;
+        }
+        s_pres_n = s_store[s_pres_b].list.n;
+        return s_pres_n;
+    }
     s_pres_n = s_store[0].list.n;
     if (ring_paired && !ring_cut && s_store[1].valid) {
         s_pres_lerp = 1;
@@ -1902,17 +1930,19 @@ int player_records_present_begin(int ring_paired, int ring_cut, double ring_alph
 }
 
 const player_model_rec_t* player_records_curr(int k) {
-    return (k >= 0 && k < s_pres_n) ? &s_store[0].list.r[k] : NULL;
+    return (k >= 0 && k < s_pres_n) ? &s_store[s_pres_b].list.r[k] : NULL;
 }
 const player_model_rec_t* player_records_prev(int k) {
     const player_model_rec_t* c = player_records_curr(k);
-    if (!c || c->pair < 0 || !s_store[1].valid || c->pair >= s_store[1].list.n) return NULL;
-    return &s_store[1].list.r[c->pair];
+    const store_slot_t* p = pres_slot(1);
+    if (!c || c->pair < 0 || !p || c->pair >= p->list.n) return NULL;
+    return &p->list.r[c->pair];
 }
 const player_model_rec_t* player_records_prev2(int k) {
     const player_model_rec_t* c = player_records_curr(k);
-    if (!c || c->pair2 < 0 || !s_store[2].valid || c->pair2 >= s_store[2].list.n) return NULL;
-    return &s_store[2].list.r[c->pair2];
+    const store_slot_t* p = pres_slot(2);
+    if (!c || c->pair2 < 0 || !p || c->pair2 >= p->list.n) return NULL;
+    return &p->list.r[c->pair2];
 }
 int player_records_lerps(int k) {
     const player_model_rec_t* c = player_records_curr(k);
@@ -1923,15 +1953,16 @@ int player_records_model_drawn(int k) {
     return (k >= 0 && k < L->n && L->r[k].drawn) ? 1 : 0;
 }
 
-int player_records_shadow_count(void) { return s_pres_n ? s_store[0].list.nsh : 0; }
+int player_records_shadow_count(void) { return s_pres_n ? s_store[s_pres_b].list.nsh : 0; }
 const player_shadow_rec_t* player_records_shadow_curr(int j) {
-    return (s_pres_n && j >= 0 && j < s_store[0].list.nsh) ? &s_store[0].list.sh[j] : NULL;
+    return (s_pres_n && j >= 0 && j < s_store[s_pres_b].list.nsh) ? &s_store[s_pres_b].list.sh[j] : NULL;
 }
 const player_shadow_rec_t* player_records_shadow_prev(int j) {
     const player_shadow_rec_t* d = player_records_shadow_curr(j);
     const player_model_rec_t* m = d ? player_records_curr(d->model) : NULL;
-    if (!m || m->pair < 0 || !s_store[1].valid) return NULL;
-    const rec_list_t* prv = &s_store[1].list;
+    const store_slot_t* p = pres_slot(1);
+    if (!m || m->pair < 0 || !p) return NULL;
+    const rec_list_t* prv = &p->list;
     for (int i = 0; i < prv->nsh; i++)
         if (prv->sh[i].model == m->pair) return &prv->sh[i];
     return NULL;
@@ -1945,15 +1976,16 @@ void player_records_shadow_note(int j, const int32_t* staged_anchor) {
             openpete_frame, j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
             staged_anchor ? staged_anchor[0] : 0, staged_anchor ? staged_anchor[1] : 0, staged_anchor ? staged_anchor[2] : 0);
 }
-int player_records_flame_count(void) { return s_pres_n ? s_store[0].list.nfl : 0; }
+int player_records_flame_count(void) { return s_pres_n ? s_store[s_pres_b].list.nfl : 0; }
 const player_flame_rec_t* player_records_flame_curr(int j) {
-    return (s_pres_n && j >= 0 && j < s_store[0].list.nfl) ? &s_store[0].list.fl[j] : NULL;
+    return (s_pres_n && j >= 0 && j < s_store[s_pres_b].list.nfl) ? &s_store[s_pres_b].list.fl[j] : NULL;
 }
 const player_flame_rec_t* player_records_flame_prev(int j) {
     const player_flame_rec_t* d = player_records_flame_curr(j);
     const player_model_rec_t* m = d ? player_records_curr(d->model) : NULL;
-    if (!m || m->pair < 0 || !s_store[1].valid) return NULL;
-    const rec_list_t* prv = &s_store[1].list;
+    const store_slot_t* p = pres_slot(1);
+    if (!m || m->pair < 0 || !p) return NULL;
+    const rec_list_t* prv = &p->list;
     for (int i = 0; i < prv->nfl; i++)
         if (prv->fl[i].model == m->pair) return &prv->fl[i];
     return NULL;
@@ -1975,7 +2007,7 @@ void player_records_present_note(int k, const int32_t* staged_pos) {
             openpete_frame, k, c->drawn, c->pair, c->pair2, player_records_lerps(k), s_pres_alpha,
             staged_pos ? staged_pos[0] : 0, staged_pos ? staged_pos[1] : 0, staged_pos ? staged_pos[2] : 0);
 }
-void player_records_present_end(void) { s_pres_n = 0; s_pres_lerp = 0; }
+void player_records_present_end(void) { s_pres_n = 0; s_pres_lerp = 0; s_pres_b = 0; }
 
 op_time_t player_records_curr_ns(void) { return s_store[0].valid ? s_store[0].ns : 0; }
 

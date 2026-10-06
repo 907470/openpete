@@ -28,4 +28,16 @@
  *        rebase projects under it are phased onto the same instant. */
 void particles_reextract(CPUState* cpu, int bracketed, double alpha);
 
+/** @brief Make the particle re-extract replay the previous canonical epoch's captured set, or restore the current one.
+ *
+ * For a held camera cut, which shows tick N-1's camera: the primitives the
+ * draw emitted that tick are the ones visible under it. While on, each
+ * record's offsets are measured from the pool state that draw read (the
+ * pair's prev for a slot that rolled after it). Refused when the previous set
+ * is not from the epoch immediately before a fresh current one. Call on
+ * before particles_reextract and off after it.
+ * @param on Nonzero to swap the previous set in, zero to restore.
+ * @return 1 while the previous set is swapped in, else 0. */
+int particles_replay_prev(int on);
+
 #endif /* OPENPETE_RENDERER_PARTICLES_H */

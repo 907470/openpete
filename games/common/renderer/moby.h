@@ -60,6 +60,29 @@ void moby_native_set_verdict_alpha(double alpha, int bracketed);
  * @param pos The camera position, or NULL. */
 void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
 
+/** @brief Make the sub-tick record replay walk the previous canonical epoch's record queue, or restore the current one.
+ *
+ * For a held camera cut: the present shows tick N-1's camera, and the queue
+ * the cull built against that camera is the set it can see. On: the previous
+ * epoch's record copy, its base and its append set swap in for the current
+ * ones, the record re-base composes against the camera that cull used (the
+ * installed tick camera, which the second model kind's replay reads, is left
+ * as it is), and the replay takes each object's state as of that cull as the
+ * record's reference (rotation, own-motion offset and keyframe pair). Off:
+ * everything swaps back. Refused when the previous copy is not from the epoch
+ * immediately before a fresh current one, or carries no camera. Call off after
+ * moby_reextract.
+ * @param on Nonzero to swap the previous queue in, zero to restore.
+ * @return 1 while the previous queue is swapped in, else 0. */
+int moby_native_replay_prev_queue(int on);
+
+/** @brief The mobys of the previous canonical epoch's record queue, the set moby_native_replay_prev_queue would replay.
+ *
+ * @param out Receives up to @p max moby addresses.
+ * @param max Capacity of @p out.
+ * @return The count written, or -1 when the previous queue is not usable. */
+int moby_native_prev_queue_mobys(uint32_t* out, int max);
+
 /** @brief The installed tick camera position, for a cull whose records bake the camera position into a stored per-record delta.
  *
  * The delta is re-based onto the staged camera by the difference between the

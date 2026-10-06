@@ -62,6 +62,8 @@
 #include "openpete_recomp_module.h"  /* the game's own moby draws, run through the module dispatch */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
+extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
+
 extern unsigned openpete_frame;
 
 /** @brief Run one of the game's own moby draw passes through the recomp module's dispatch.
@@ -161,7 +163,10 @@ uint32_t moby_canon_rec_bytes(void) { return game_layout.moby.rec_base_polybuf_o
  * wider stride copies fewer records and the rest read memory. */
 #define REC_SNAP_RECS  MAX_RECORDS
 #define REC_SNAP_WORDS (REC_SNAP_RECS * 0x44u / 4u + 1u)
-static uint32_t s_rec_snap[REC_SNAP_WORDS];
+/* Two copies: the one the current tick's cull filled, and the previous
+ * canonical epoch's, which a held camera cut replays (moby_native_replay_prev_queue). */
+static uint32_t s_rec_snap_buf[2][REC_SNAP_WORDS];
+static uint32_t* s_rec_snap = s_rec_snap_buf[0];
 static uint32_t s_rec_snap_base;    /* guest address the copy starts at */
 static uint32_t s_rec_snap_words;   /* 0 = no copy; reads pass through */
 /* The records the cull itself wrote, and whether the copy reached the cull's
@@ -181,6 +186,40 @@ static void moby_rec_append_reset(void);
 #define REC_APPEND_MOBYS 512
 static uint32_t s_rec_append_moby[REC_APPEND_MOBYS];
 static int      s_rec_append_moby_n;
+
+/* The canonical epoch the copy was taken in, the object-capture stamp current
+ * at that moment (every object state the tick's cull composed is stamped at or
+ * before it), and the camera the cull composed the records against. */
+static unsigned  s_rec_snap_epoch;
+static op_time_t s_rec_snap_ref_ns;
+static int       s_rec_snap_cam_ok;
+static int16_t   s_rec_snap_cam_M[9];
+static int32_t   s_rec_snap_cam_pos[3];
+
+/* The previous canonical epoch's copy and everything above that describes it,
+ * swapped wholesale with the current one by rec_snap_swap. */
+static struct {
+    uint32_t* snap;
+    uint32_t  base, words, queued;
+    int       ended, appended;
+    uint32_t  append_moby[REC_APPEND_MOBYS];
+    int       append_n;
+    unsigned  epoch;
+    op_time_t ref_ns;
+    int       cam_ok;
+    int16_t   cam_M[9];
+    int32_t   cam_pos[3];
+} s_rec_prev = { s_rec_snap_buf[1] };
+
+/* While a held cut replays the previous queue: the records show the state the
+ * objects had when that queue's cull ran, which is the snapshot pair's prev
+ * for an object that rolled after s_rec_ref_ns and its curr otherwise. */
+static int       s_rec_ref_prev;
+static op_time_t s_rec_ref_ns;
+/* That queue's cull camera, in the record re-base's form. The installed tick
+ * camera stays the current tick's, which the second model kind's replay reads. */
+static int       s_rec_cam_M[3][3];
+static int32_t   s_rec_cam_pos[3];
 
 /* Retired whenever the set is rebuilt, so a memo taken against one tick's set
  * cannot answer for the next. */
@@ -224,6 +263,30 @@ static int moby_walk_tri_host_added(uint32_t moby) {
     return last_hit;
 }
 
+/** @brief Exchange the current record copy, with its append set, epoch, stamp and camera, for the previous epoch's.
+ *
+ * The buffers trade by pointer; the append set by value. Retires the
+ * appended-set generation, so no memo taken against one copy answers for the
+ * other. */
+static void rec_snap_swap(void) {
+#define REC_SWAP(a, b) do { __typeof__(a) t_ = (a); (a) = (b); (b) = t_; } while (0)
+    REC_SWAP(s_rec_snap, s_rec_prev.snap);
+    REC_SWAP(s_rec_snap_base, s_rec_prev.base);
+    REC_SWAP(s_rec_snap_words, s_rec_prev.words);
+    REC_SWAP(s_rec_snap_queued, s_rec_prev.queued);
+    REC_SWAP(s_rec_snap_ended, s_rec_prev.ended);
+    REC_SWAP(s_rec_snap_appended, s_rec_prev.appended);
+    REC_SWAP(s_rec_append_moby_n, s_rec_prev.append_n);
+    REC_SWAP(s_rec_snap_epoch, s_rec_prev.epoch);
+    REC_SWAP(s_rec_snap_ref_ns, s_rec_prev.ref_ns);
+    REC_SWAP(s_rec_snap_cam_ok, s_rec_prev.cam_ok);
+    for (int i = 0; i < REC_APPEND_MOBYS; i++) REC_SWAP(s_rec_append_moby[i], s_rec_prev.append_moby[i]);
+    for (int i = 0; i < 9; i++) REC_SWAP(s_rec_snap_cam_M[i], s_rec_prev.cam_M[i]);
+    for (int i = 0; i < 3; i++) REC_SWAP(s_rec_snap_cam_pos[i], s_rec_prev.cam_pos[i]);
+#undef REC_SWAP
+    s_rec_append_gen++;
+}
+
 /** @brief Copy the cull's record list and its terminator word into s_rec_snap.
  *
  * Reads records from moby_rec_base, game_layout.moby.rec_stride bytes apart,
@@ -233,6 +296,23 @@ static int moby_walk_tri_host_added(uint32_t moby) {
  * below KSEG0 leaves no copy, and moby_rec_word then reads guest memory.
  * @param cpu The guest CPU state, read only. */
 static void moby_rec_snapshot(CPUState* cpu) {
+    /* The first copy of a new canonical epoch retires the current one, appends
+     * included, to the previous slot; a second copy in the same epoch (a pause
+     * screen feeding twice, runahead's speculated ticks) replaces the current. */
+    const unsigned epoch = spyro_native_canon_epoch_stamp();
+    if (s_rec_snap_words && s_rec_snap_epoch != epoch) rec_snap_swap();
+    s_rec_snap_epoch  = epoch;
+    s_rec_snap_ref_ns = g_openpete_tick_stamp;
+    s_rec_snap_cam_ok = 0;
+    if (game_layout.cam.proj_matrix && game_layout.cam.position) {
+        int M[3][3];
+        ngte_read_matrix(cpu, game_layout.cam.proj_matrix, M);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) s_rec_snap_cam_M[r * 3 + c] = (int16_t)M[r][c];
+        for (int i = 0; i < 3; i++)
+            s_rec_snap_cam_pos[i] = (int32_t)cpu->read_word(game_layout.cam.position + (uint32_t)i * 4u);
+        s_rec_snap_cam_ok = 1;
+    }
     s_rec_snap_words = 0;
     const uint32_t stride = game_layout.moby.rec_stride;
     if (!stride || (stride & 3u)) return;
@@ -7676,6 +7756,70 @@ void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]) {
     s_tickcam_have = 1;
 }
 
+/** @brief Whether the previous epoch's record copy can stand in for the current one.
+ *
+ * It must be the canonical epoch immediately before a fresh current copy's,
+ * hold records, and carry the camera its cull composed them against.
+ * @return 1 when usable, else 0. */
+static int rec_prev_usable(void) {
+    return s_rec_snap_words && s_rec_prev.words && s_rec_prev.cam_ok &&
+           spyro_native_canon_epoch_fresh(s_rec_snap_epoch) &&
+           s_rec_prev.epoch + 1u == s_rec_snap_epoch;
+}
+
+int moby_native_replay_prev_queue(int on) {
+    static int      active;
+    static uint32_t saved_canon;
+    if (on) {
+        if (active) return 1;
+        if (!rec_prev_usable()) return 0;
+        /* Every object state the previous queue's cull composed is stamped at
+         * or before the stamp the current copy took. */
+        s_rec_ref_ns = s_rec_snap_ref_ns;
+        rec_snap_swap();
+        saved_canon = s_rec_base_canon;
+        s_rec_base_canon = s_rec_snap_base;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) s_rec_cam_M[r][c] = s_rec_snap_cam_M[r * 3 + c];
+        for (int i = 0; i < 3; i++) s_rec_cam_pos[i] = s_rec_snap_cam_pos[i];
+        s_rec_ref_prev = 1;
+        active = 1;
+        return 1;
+    }
+    if (active) {
+        rec_snap_swap();
+        s_rec_base_canon = saved_canon;
+        s_rec_ref_prev = 0;
+        active = 0;
+    }
+    return 0;
+}
+
+int moby_native_prev_queue_mobys(uint32_t* out, int max) {
+    if (!rec_prev_usable() || !out || max <= 0) return -1;
+    const uint32_t stride = game_layout.moby.rec_stride;
+    const uint32_t sw = stride / 4u;
+    const uint32_t n = s_rec_prev.queued + (uint32_t)s_rec_prev.appended;
+    const uint32_t moff = game_layout.moby.rec_moby_off / 4u;
+    int k = 0;
+    for (uint32_t r = 0; r < n && k < max && (r + 1u) * sw <= s_rec_prev.words; r++) {
+        if (s_rec_prev.snap[r * sw] == 0u) break;             /* the cull's terminator */
+        const uint32_t m = s_rec_prev.snap[r * sw + moff];
+        if (m >= 0x80000000u) out[k++] = m;
+    }
+    return k;
+}
+
+/** @brief The object state a replayed record was composed from: the snapshot pair's curr, or under a previous-queue replay the state as of that queue's cull.
+ *
+ * @param o The object's snapshot pair.
+ * @return The state bytes, or NULL when the record shows a state the pair no
+ *         longer holds (it rolled after that cull and has no prev). */
+static const uint8_t* rec_ref_state(const openpete_interp_obj_t* o) {
+    if (!s_rec_ref_prev || o->curr_ns <= s_rec_ref_ns) return o->curr;
+    return o->have_prev ? o->prev : NULL;
+}
+
 int moby_native_tick_camera_pos(int32_t out[3]) {
     if (!s_tickcam_have) return 0;
     for (int i = 0; i < 3; i++) out[i] = s_tickcam_pos[i];
@@ -10038,6 +10182,37 @@ static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t heade
     return 1;
 }
 
+/** @brief The camera the replayed cull records were composed against: the installed tick camera, or under a previous-queue replay the camera that queue's cull used.
+ *
+ * @param M Receives the camera matrix.
+ * @param pos Receives the camera position.
+ * @return 0 when no tick camera is installed (a canonical decode), else 1. */
+static int record_replay_camera(const int (**M)[3], const int32_t** pos) {
+    if (!s_tickcam_have) return 0;
+    *M   = s_rec_ref_prev ? (const int (*)[3])s_rec_cam_M : (const int (*)[3])s_tickcam_M;
+    *pos = s_rec_ref_prev ? s_rec_cam_pos : s_tickcam_pos;
+    return 1;
+}
+
+/** @brief The moby's displacement from the state its replayed record was composed from to the state this present shows.
+ *
+ * moby_record_world_offset measures from the snapshot pair's curr; a record
+ * of the previous queue composed from the pair's prev (rec_ref_state) moves by
+ * curr - prev more to reach the same displayed position.
+ * @param moby The Moby address.
+ * @param out Receives the displacement in world units. */
+static void record_world_offset_from_ref(uint32_t moby, double out[3]) {
+    moby_record_world_offset(moby, out);
+    if (!s_rec_ref_prev) return;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const uint8_t* ref = o ? rec_ref_state(o) : NULL;
+    if (!ref || ref == o->curr) return;
+    int32_t rv[3], cv[3];
+    memcpy(rv, ref + game_layout.moby.pos_off, 12);
+    memcpy(cv, o->curr + game_layout.moby.pos_off, 12);
+    for (int i = 0; i < 3; i++) out[i] += (double)cv[i] - (double)rv[i];
+}
+
 /** @brief Re-base one replayed cull record from the camera the tick composed it against onto the camera this present stages.
  *
  * A cull that stores view-space records hands the replay a matrix M = Rt*Rm,
@@ -10082,7 +10257,9 @@ static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t heade
  * @param f The record's fields, rebased in place.
  * @param moby The Moby address, for its own-motion offset and size byte. */
 static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t moby) {
-    if (!s_tickcam_have || f->header < 0x80000000u) return;
+    const int (*TM)[3];
+    const int32_t* TP;
+    if (!record_replay_camera(&TM, &TP) || f->header < 0x80000000u) return;
 
     int Rp[3][3];
     ngte_read_matrix(cpu, game_layout.cam.proj_matrix, Rp);
@@ -10090,13 +10267,13 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
     for (int i = 0; i < 3; i++)
         pp[i] = (int32_t)cpu->read_word(game_layout.cam.position + (uint32_t)i * 4u);
     double mw[3];
-    moby_record_world_offset(moby, mw);
-    if (memcmp(Rp, s_tickcam_M, sizeof Rp) == 0 &&
-        memcmp(pp, s_tickcam_pos, sizeof pp) == 0 &&
+    record_world_offset_from_ref(moby, mw);
+    if (memcmp(Rp, TM, sizeof Rp) == 0 &&
+        memcmp(pp, TP, sizeof pp) == 0 &&
         mw[0] == 0.0 && mw[1] == 0.0 && mw[2] == 0.0) return;
 
     double Ti[3][3];
-    if (!mat3_inverse(s_tickcam_M, Ti)) return;
+    if (!mat3_inverse(TM, Ti)) return;
 
     /* N = Rp * Rt^-1, both in 4096 units on the left and 1/4096 on the right,
      * so N is the plain camera-to-camera change of basis. */
@@ -10112,9 +10289,9 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
      * (mobydraw.s:79-94), so the moby's motion enters with the opposite sign
      * per component and the two displacements share one transform. */
     double e[3] = {
-        ((double)pp[1] - (double)s_tickcam_pos[1]) / 4.0 - mw[1] / 4.0,
-        ((double)pp[2] - (double)s_tickcam_pos[2]) / 4.0 - mw[2] / 4.0,
-       -((double)pp[0] - (double)s_tickcam_pos[0]) / 4.0 + mw[0] / 4.0,
+        ((double)pp[1] - (double)TP[1]) / 4.0 - mw[1] / 4.0,
+        ((double)pp[2] - (double)TP[2]) / 4.0 - mw[2] / 4.0,
+       -((double)pp[0] - (double)TP[0]) / 4.0 + mw[0] / 4.0,
     };
     int msc = (int)(cpu->read_byte(f->header + game_layout.moby.anim_scale_off) & 0xFFu);
     if (msc < 0) msc = 0; else if (msc > 30) msc = 30;
@@ -10208,11 +10385,13 @@ static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t mo
         return REC_ROT_OTHER_FORM;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o) return REC_ROT_NOPAIR;
+    const uint8_t* ref = rec_ref_state(o);
+    if (!ref) return REC_ROT_NOPAIR;
     ngte_euler_sc ep, ec;
     if (!moby_record_euler_at_present(cpu, moby, &ep)) return REC_ROT_NOPAIR;
     const uint32_t ao = game_layout.moby.angle_off;
-    ngte_euler_sincos(cpu, (uint32_t)o->curr[ao] | ((uint32_t)o->curr[ao + 1u] << 8)
-                           | ((uint32_t)o->curr[ao + 2u] << 16), &ec);
+    ngte_euler_sincos(cpu, (uint32_t)ref[ao] | ((uint32_t)ref[ao + 1u] << 8)
+                           | ((uint32_t)ref[ao + 2u] << 16), &ec);
     if (memcmp(&ep, &ec, sizeof ep) == 0) return REC_ROT_SAME;
     double Ei[3][3], Ep[3][3], Q[3][3];
     euler_mat_d(&ec, 1, Ei);
@@ -10326,6 +10505,26 @@ static void moby_pose_snap_census(void) {
     memset(&s_pose_snap, 0, sizeof s_pose_snap);
 }
 
+/** @brief The pose the snapshot pair's curr anim-state bytes derive, for a moby whose live class matches that state's.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's guest address.
+ * @param oc Receives the moby's snapshot pair when one exists.
+ * @param pose Receives the pose.
+ * @return 1 when the pose was derived, else 0. */
+static int moby_snapshot_curr_pose(CPUState* cpu, uint32_t moby,
+                                   const openpete_interp_obj_t** oc, moby_pose_t* pose) {
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    *oc = o;
+    if (!o) return 0;
+    uint16_t ccls = 0;
+    memcpy(&ccls, o->curr + 0x36, 2);
+    if (ccls != (uint16_t)cpu->read_half(moby + game_layout.moby.class_off)) return 0;
+    uint32_t model = cpu->read_word(game_layout.moby.model_table + (uint32_t)ccls * 4u);
+    return model >= 0x80000000u &&
+           moby_pose_derive(cpu, model, o->curr + game_layout.moby.anim_state_off, pose);
+}
+
 /** @brief On a sub-tick present, derive a host-built record's pose from the interp-objs snapshot.
  *
  * The pose is the one derived from the snapshot's curr anim-state bytes: the
@@ -10341,15 +10540,9 @@ static void moby_pose_snap_census(void) {
 static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fields* f) {
     if (!s_rot_now) return;
     if (moby_game.moby_held && moby_game.moby_held(moby)) { s_pose_snap.held_skip++; return; }
-    const openpete_interp_obj_t* oc = openpete_interp_objs_find(moby_interp_key(moby));
-    if (!oc) return;
-    uint16_t ccls = 0;
-    memcpy(&ccls, oc->curr + 0x36, 2);
-    if (ccls != (uint16_t)cpu->read_half(moby + game_layout.moby.class_off)) return;
-    uint32_t model = cpu->read_word(game_layout.moby.model_table + (uint32_t)ccls * 4u);
+    const openpete_interp_obj_t* oc = NULL;
     moby_pose_t pose;
-    if (model < 0x80000000u ||
-        !moby_pose_derive(cpu, model, oc->curr + game_layout.moby.anim_state_off, &pose)) return;
+    if (!moby_snapshot_curr_pose(cpu, moby, &oc, &pose)) return;
     const moby_fields before = *f;
     /* keep the snapshot's m_DepthOffset in bits 16-23 (OT pull) */
     f->w0 = (uint32_t)oc->curr[game_layout.moby.angle_off + 3u] << 16;
@@ -10358,6 +10551,36 @@ static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fi
     if (f->header != before.header || f->header_b != before.header_b ||
         f->frameA != before.frameA || f->frameB != before.frameB || f->w0 != before.w0)
         s_pose_snap.differ++;
+}
+
+/** @brief During a previous-queue replay, give a record the pose the current tick's cull wrote for the same moby.
+ *
+ * The current copy sits in the previous slot while the replay runs. The
+ * header pair, keyframes and blend byte come from that record's own words; a
+ * moby the current cull did not queue takes the pose its snapshot's curr
+ * anim-state bytes derive, and keeps its record's pose when that fails.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's guest address.
+ * @param f The record fields, whose pose is rewritten in place. */
+static void rec_pose_from_current_queue(CPUState* cpu, uint32_t moby, moby_fields* f) {
+    const uint32_t sw = game_layout.moby.rec_stride / 4u;
+    const uint32_t n = s_rec_prev.queued + (uint32_t)s_rec_prev.appended;
+    for (uint32_t r = 0; sw && r < n && (r + 1u) * sw <= s_rec_prev.words; r++) {
+        const uint32_t* w = &s_rec_prev.snap[r * sw];
+        if (w[0] == 0u) break;                                /* the cull's terminator */
+        if (w[game_layout.moby.rec_moby_off / 4u] != moby) continue;
+        moby_pose_t p = {0};
+        p.header   = w[game_layout.moby.rec_header_off / 4u];
+        p.header_b = game_layout.moby.rec_header_b_off ? w[game_layout.moby.rec_header_b_off / 4u] : p.header;
+        p.frame_a  = w[game_layout.moby.rec_frame_a_off / 4u];
+        p.frame_b  = w[game_layout.moby.rec_frame_b_off / 4u];
+        p.blend    = (w[0] >> 8) & 0xFFu;
+        moby_fields_set_pose(f, &p);
+        return;
+    }
+    const openpete_interp_obj_t* oc = NULL;
+    moby_pose_t pose;
+    if (moby_snapshot_curr_pose(cpu, moby, &oc, &pose)) moby_fields_set_pose(f, &pose);
 }
 
 /** @brief Build a record's fields by replaying the record the cull wrote, on a game with no host record builder.
@@ -10393,6 +10616,13 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
     for (int k = 0; k < 3; k++) {
         f->TR_raw[k]  = LR.TR_raw[k];
         f->TR_frac[k] = (double)LR.TR_raw[k];
+    }
+    /* A record composed from an object's prev state carries prev's keyframes;
+     * the shape lerp runs from the pair's prev pose to the record's, so the
+     * record takes curr's pose to span the same interval as every other. */
+    if (s_rec_ref_prev) {
+        const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+        if (o && rec_ref_state(o) != o->curr) rec_pose_from_current_queue(cpu, moby, f);
     }
     record_rebase_to_present(cpu, f, moby);
     rot_bins[record_rotation_to_present(cpu, f, moby)]++;

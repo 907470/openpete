@@ -237,6 +237,14 @@ void player_records_epoch_commit(void);
  * @return The model record count this present, 0 when nothing is opened. */
 int  player_records_present_begin(int ring_paired, int ring_cut, double ring_alpha,
                                   double* out_alpha);
+/** @brief Make the next player_records_present_begin open the previous canonical epoch's records, for a held camera cut.
+ *
+ * The present then shows that epoch's record set with its own drawn verdicts
+ * and states, unlerped: the newest store entry when the last commit did not
+ * roll the store, else the entry before it. Set before the replay and cleared
+ * after it.
+ * @param on Nonzero to open the previous epoch's records. */
+void player_records_set_hold(int on);
 /** @brief The newest store entry's model record k of the open present.
  *
  * Valid between player_records_present_begin and player_records_present_end.

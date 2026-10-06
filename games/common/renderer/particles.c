@@ -41,6 +41,9 @@
 #include "openpete_native_render.h"
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "renderer/particles.h"
+#include "renderer/orchestrator.h"  /* the canonical-render epoch */
+
+extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 #include "game_layout.h"
 
 #include <math.h>
@@ -113,9 +116,30 @@ typedef struct {
     uint8_t dsz;          /* 1 = the pair's two size bytes differ */
 } part_rebase;
 
-static part_item   s_item[PART_MAX_PRIMS];
+static part_item   s_item_buf[2][PART_MAX_PRIMS];
+static part_item*  s_item = s_item_buf[0];
 static part_rebase s_reb[PART_MAX_PRIMS];
 static int         s_item_n;
+/* The canonical epoch the captured set was taken in and the object-capture
+ * stamp current then (every pool state that draw read is stamped at or before
+ * it), and the previous epoch's set, which a held camera cut replays
+ * (particles_replay_prev). */
+static uint32_t  s_item_epoch;
+static op_time_t s_item_ref_ns;
+static struct { part_item* item; int n; uint32_t epoch; op_time_t ref_ns; } s_item_prev = { s_item_buf[1] };
+/* While the previous set is replayed: its records show each pool slot's state
+ * as of that set's draw, the pair's prev for a slot that rolled after
+ * s_item_ref_cut and its curr otherwise. */
+static int       s_item_ref_prev;
+static op_time_t s_item_ref_cut;
+
+/** @brief Exchange the captured set, its epoch and stamp for the previous epoch's. */
+static void part_item_swap(void) {
+    part_item* t = s_item; s_item = s_item_prev.item; s_item_prev.item = t;
+    int n = s_item_n; s_item_n = s_item_prev.n; s_item_prev.n = n;
+    uint32_t e = s_item_epoch; s_item_epoch = s_item_prev.epoch; s_item_prev.epoch = e;
+    op_time_t r = s_item_ref_ns; s_item_ref_ns = s_item_prev.ref_ns; s_item_prev.ref_ns = r;
+}
 
 static uint32_t s_code_hist[256];
 static uint32_t s_tag_hist[256];
@@ -155,6 +179,11 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
  * @param start Guest address of the first primitive.
  * @param end Guest address one past the last primitive. */
 static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+    /* The first capture of a new canonical epoch retires the current set. */
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    if (s_item_epoch != epoch) part_item_swap();
+    s_item_epoch  = epoch;
+    s_item_ref_ns = g_openpete_tick_stamp;
     s_item_n = 0;
     const ngte_walk_policy pol = {
         .tag_len_max = 9, .raw_words_max = 10, .guard = PART_MAX_PRIMS,
@@ -354,6 +383,10 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
     uint32_t pw[3], cw[3];
     memcpy(pw, o->prev + pos, 12);
     memcpy(cw, o->curr + pos, 12);
+    /* A record of the previous epoch's set drew the slot's prev state when the
+     * slot rolled after that draw: the displayed state is the same, and the
+     * offsets are measured from prev, so they gain curr - prev. */
+    const double from_prev = (s_item_ref_prev && o->curr_ns > s_item_ref_cut) ? 1.0 : 0.0;
     const double d[3] = {
         (double)(pw[0] & 0xFFFFu)        - (double)(cw[0] & 0xFFFFu),
         (double)((pw[0] >> 16) & 0xFFFFu) - (double)((cw[0] >> 16) & 0xFFFFu),
@@ -362,7 +395,7 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
     if (d[0]*d[0] + d[1]*d[1] + d[2]*d[2] > PART_REUSE_CEILING * PART_REUSE_CEILING)
         return PART_PAIR_REUSE;
     const double rest = 1.0 - alpha;
-    for (int k = 0; k < 3; k++) off[k] = d[k] * rest;
+    for (int k = 0; k < 3; k++) off[k] = d[k] * (rest - from_prev);
     /* The angle the corner extents are built from is the top byte of the
      * second position word (partsdraw.s:497-501 shifts it right by 23 and
      * masks the halfword index to 0x1FE, which drops the low bit), and the
@@ -372,12 +405,12 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
     double da = pa - ca;
     while (da > 128.0) da -= 256.0;
     while (da < -128.0) da += 256.0;
-    *prev_ang = ca + da * rest;
+    *prev_ang = ca + da * rest;   /* absolute: the corner rotation measures from the record's own angle */
     /* The size byte the corner extents are built from is byte 2 of the same
      * word (partsdraw.s:495-496 takes (w1 >> 16) & 0xFF and :521 loads it into
      * IR0 ahead of the sine pair in IR1 and IR2), so the extent this present
      * shows is the tick's size plus this much. */
-    *size_delta = ((double)((pw[1] >> 16) & 0xFFu) - (double)((cw[1] >> 16) & 0xFFu)) * rest;
+    *size_delta = ((double)((pw[1] >> 16) & 0xFFu) - (double)((cw[1] >> 16) & 0xFFu)) * (rest - from_prev);
     return PART_PAIR_LERP;
 }
 
@@ -828,6 +861,22 @@ static void part_extent_census(double alpha) {
     }
     fprintf(stderr, "[part-ext f=%u a=%.3f prims=%d]%s\n",
             openpete_frame, alpha, s_item_n, buf);
+}
+
+int particles_replay_prev(int on) {
+    static int active;
+    if (on) {
+        if (active) return 1;
+        if (!spyro_native_canon_epoch_fresh(s_item_epoch) || s_item_prev.epoch + 1u != s_item_epoch)
+            return 0;
+        s_item_ref_cut = s_item_ref_ns;
+        part_item_swap();
+        s_item_ref_prev = 1;
+        active = 1;
+        return 1;
+    }
+    if (active) { part_item_swap(); s_item_ref_prev = 0; active = 0; }
+    return 0;
 }
 
 /* Sub-tick re-extract of the captured particle set; see particles.h. */

@@ -129,8 +129,22 @@ static uint32_t s_list_base;
  * primitive buffer's tail overwrites it later in the tick, so that source
  * walks this copy; a fixed-address list is re-read live at each walk. */
 #define SHADOW_LIST_MAX 1024
-static struct { uint32_t moby; uint32_t size; } s_list[SHADOW_LIST_MAX];
+typedef struct { uint32_t moby; uint32_t size; } shadow_list_rec;
+static shadow_list_rec s_list_buf[2][SHADOW_LIST_MAX];
+static shadow_list_rec* s_list = s_list_buf[0];
 static int s_list_n;
+/* The canonical epoch the copy was taken in, and the previous epoch's copy,
+ * which a held camera cut walks (shadow_replay_prev_list). */
+static uint32_t s_list_epoch;
+static struct { shadow_list_rec* list; uint32_t base, epoch; int n; } s_list_prev = { s_list_buf[1] };
+
+/** @brief Exchange the current list copy, its base and epoch for the previous epoch's. */
+static void shadow_list_swap(void) {
+    shadow_list_rec* l = s_list; s_list = s_list_prev.list; s_list_prev.list = l;
+    uint32_t b = s_list_base; s_list_base = s_list_prev.base; s_list_prev.base = b;
+    uint32_t e = s_list_epoch; s_list_epoch = s_list_prev.epoch; s_list_prev.epoch = e;
+    int n = s_list_n; s_list_n = s_list_prev.n; s_list_prev.n = n;
+}
 
 /** @brief Latches the drawn-moby list base and copies the list records.
  *
@@ -141,6 +155,9 @@ static int s_list_n;
  * empty.
  * @param cpu The guest CPU state. */
 static void shadow_latch_list_base(CPUState* cpu) {
+    /* The first copy of a new canonical epoch retires the current one. */
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    if (s_list_epoch != epoch) { shadow_list_swap(); s_list_epoch = epoch; }
     if (game_layout.shadow.list_source == SHADOW_LIST_GTE_DATA) {
         int r = game_layout.shadow.list_reg;
         if (r < 0 || r >= 32) { s_list_base = 0; s_list_n = 0; return; }
@@ -1075,6 +1092,22 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
 void shadow_reextract(CPUState* cpu) {
     if (!hook_reextract_ready(RP_MOBY_SHADOW)) return;
     shadow_moby_feed_native(cpu);
+}
+
+int shadow_replay_prev_list(int on) {
+    static int active;
+    if (on) {
+        if (active) return 1;
+        /* Only a list in a copy: a fixed-address list is re-read live. */
+        if (game_layout.shadow.list_source != SHADOW_LIST_GTE_DATA ||
+            !spyro_native_canon_epoch_fresh(s_list_epoch) ||
+            s_list_prev.epoch + 1u != s_list_epoch || !s_list_prev.base) return 0;
+        shadow_list_swap();
+        active = 1;
+        return 1;
+    }
+    if (active) { shadow_list_swap(); active = 0; }
+    return 0;
 }
 
 /* The hook address is the layout's moby-shadow draw site, bound at boot: a
