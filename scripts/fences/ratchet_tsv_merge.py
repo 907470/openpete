@@ -26,8 +26,17 @@ options: the rows are not comparable) conflict as a whole.
 
 On a conflict the driver writes ours with conflict markers around each
 conflicting row and exits 1; git leaves the path unmerged.
+
+The driver overwrites %A, so it refuses, writing nothing, any invocation
+that is not git's: git passes exactly four arguments, %O %A %B are
+untracked temporary files (`.merge_file_XXXXXX` at the worktree top, the
+driver's working directory) and %P is a baseline path. Each of %O %A %B
+must hold a baseline (a `#` header over a `file\tfunction...` column line);
+%O alone may be empty (both sides added the path).
 """
+import fnmatch
 import re
+import subprocess
 import sys
 
 DRIVER_NAME = "ratchet-tsv"
@@ -97,21 +106,68 @@ def merge(base, ours, theirs):
     return "\n".join(oh + out) + "\n", conflicts
 
 
-def main(argv):
-    if len(argv) < 3:
-        sys.stderr.write("usage: ratchet_tsv_merge.py %O %A %B [%P]\n")
-        return 2
+USAGE = ("usage: ratchet_tsv_merge.py %O %A %B %P -- git merge driver for "
+         "baselines/*/*.tsv, run by git only (arm: " + ARM_MERGE + ")\n")
+
+
+def is_baseline(text):
+    """True when text has a baseline's shape: `#` header lines, then a
+    column line whose first two columns are `file` and `function`."""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines) and lines[i].startswith("#"):
+        i += 1
+    return i > 0 and i < len(lines) and lines[i].split("\t")[:2] == [
+        "file", "function"]
+
+
+def tracked(path):
+    """True when path is a file git tracks in the current repository."""
+    try:
+        p = subprocess.run(["git", "ls-files", "--error-unmatch", "--", path],
+                           capture_output=True)
+    except OSError:
+        return False
+    return p.returncode == 0
+
+
+def read_inputs(argv):
+    """-> (texts of %O %A %B, None) for git's driver invocation, else
+    (None, the reason to refuse). Writes nothing."""
+    if len(argv) != 4:
+        return None, "expected 4 arguments, got %d" % len(argv)
+    if not fnmatch.fnmatch(argv[3], "baselines/*/*.tsv"):
+        return None, "%%P %r is not a baseline path" % argv[3]
+    roles = list(zip(("%O", "%A", "%B"), argv[:3]))
+    for name, path in roles:
+        if tracked(path):
+            return None, "%s %r is a tracked file, not a merge temporary" % (
+                name, path)
     texts = []
-    for path in argv[:3]:
-        with open(path, encoding="utf-8", errors="surrogateescape") as fh:
-            texts.append(fh.read())
+    for name, path in roles:
+        try:
+            with open(path, encoding="utf-8", errors="surrogateescape") as fh:
+                texts.append(fh.read())
+        except OSError as e:
+            return None, "%s %r: %s" % (name, path, e.strerror)
+        if not is_baseline(texts[-1]) and not (name == "%O" and not texts[-1]):
+            return None, "%s %r is not a ratchet baseline TSV" % (name, path)
+    return texts, None
+
+
+def main(argv):
+    texts, why = read_inputs(argv)
+    if why:
+        sys.stderr.write("ratchet-tsv merge: refused, nothing written: %s\n%s"
+                         % (why, USAGE))
+        return 2
     text, conflicts = merge(*texts)
     with open(argv[1], "w", encoding="utf-8", errors="surrogateescape") as fh:
         fh.write(text)
     if conflicts:
         sys.stderr.write("ratchet-tsv merge: %s: %d row(s) changed on both "
                          "sides; resolve the marked rows.\n"
-                         % (argv[3] if len(argv) > 3 else argv[1], conflicts))
+                         % (argv[3], conflicts))
         return 1
     return 0
 
