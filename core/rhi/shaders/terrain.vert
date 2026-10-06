@@ -208,6 +208,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_CELLS4    2048
 #define GF_TRI4      4096
 #define GF_TRI2      8192
+#define GF_LPNEAROUT 16384
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -229,6 +230,8 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define SF_LPGRADE    256u
 #define SF_NEARVAR    512u
 #define SF_LPUNCOV    1024u
+#define SF_LPNEAR_SHIFT 16u          /* bits 16-27: LP near-outcode SZ3 bound */
+#define SF_LPNEAR_MASK  0xFFFu
 
 /* face_flags bits - keep in sync with rhi_terrain_vertex (rhi.h) */
 #define FF_SLOT_MASK  0x1FFu
@@ -1280,7 +1283,16 @@ void main()
              * far faces. */
             if (slotv >= double(g.fog.z)) { kill_vert(); return; }
         }
-        if (!gapfill_face) {
+        double thr = double((sf >> SF_LPNEAR_SHIFT) & SF_LPNEAR_MASK);
+        if (!gapfill_face && (gf & GF_LPNEAROUT) != 0 && thr > 0.0lf
+            && (ff & FF_LPUNCOV) == 0u) {
+            /* LP near outcode: a face on its sector's HP mesh, while that HP
+             * draws (nonzero bound), drops when its corners all sit under
+             * the sector's SZ3 bound; every other face takes the authored
+             * admission below. */
+            if (m0.z < thr && m1.z < thr && m2.z < thr &&
+                (!quad || m3c.z < thr)) { kill_vert(); return; }
+        } else if (!gapfill_face) {
             /* Authored per-face admission: slot + 8*admit >= s3, deficit
              * -31..-1 falls back to any-corner SZ3 >= (s3-8a)*8, deeper
              * rejects. (LP is a FAR tier; og drops it near.) */

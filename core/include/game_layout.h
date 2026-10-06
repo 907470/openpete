@@ -330,6 +330,16 @@ typedef struct game_layout {
         int      hp_far, lp_near, hp_far_tight;
         uint32_t tight_flags;
         int      sector_cull;
+        /* The LP walk's per-vertex near outcode. A sector the binning lists
+         * with view-Z minus radius at or below `lp_near_band` carries the
+         * near-band entry bit; the LP vertex transform of such a sector tags
+         * each vertex whose SZ3 is below `lp_near_sz` minus `lp_near_sz_step`
+         * times bits 24-25 of header word +0x10, and the face walk skips a
+         * face whose corners all carry the tag. 0 in `lp_near_sz` on a game
+         * whose LP walk has no such outcode (the authored admission rules
+         * there instead). */
+        int      lp_near_band;
+        int      lp_near_sz, lp_near_sz_step;
         /* The HP defer classifier: which faces the draw routes to its near/HQ
          * queues instead of the main OT, so they carry no OT key and no
          * authored OT bias. Both games sum the four corner SZ3s and compare the

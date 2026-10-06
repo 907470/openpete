@@ -3122,6 +3122,7 @@ typedef struct {
     uint32_t lpColSpan, hpColSpan;           /* colour bytes each tier's faces index (tsc_decode_faces) */
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
     int nUncov;                              /* LP faces tagged uncov (tsc_tag_uncovered) */
+    int lpNearSz;                            /* LP near-outcode SZ3 bound, 0 without the rule */
     unsigned fillGen;                        /* openpete_fillpick_generation() at last tagging */
     int originX, originY, originZ;
     int centreX, centreY, centreZ, radius;   /* header bounding sphere (w0/w1) - the .s LP/HP binning inputs */
@@ -3291,6 +3292,18 @@ static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss 
         fprintf(stderr, "[ter-cache] hit=%ld miss=%ld\n", s_tsc_hit, s_tsc_miss);
         s_tsc_hit = s_tsc_miss = 0; n = 0;
     }
+}
+
+/** @brief Returns a sector's LP near-outcode SZ3 bound from its header word +0x10, or 0 without the rule.
+ *
+ * The bound is terrain.lp_near_sz minus terrain.lp_near_sz_step times bits
+ * 24-25 of the word, as the LP vertex transform derives it.
+ * @param w10 The sector header's word at +0x10.
+ * @return The bound, or 0 on a game whose LP walk has no near outcode. */
+static int tsc_lp_near_sz(uint32_t w10) {
+    if (!game_layout.terrain.lp_near_sz) return 0;
+    return game_layout.terrain.lp_near_sz
+           - game_layout.terrain.lp_near_sz_step * (int)((w10 >> 24) & 3u);
 }
 
 /** @brief Unpacks nv guest vertex words into local vertex coordinates.
@@ -4321,6 +4334,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         C->nHpV = g[4] & 0xFF; C->nHpF = (g[4] >> 16) & 0xFF;
         int nHpC = (g[4] >> 8) & 0xFF, hpVertsOff = (int)((g[4] >> 24) & 0xFF);
         C->nLpC = nLpC; C->nHpC = nHpC;
+        C->lpNearSz = tsc_lp_near_sz(g[3]);
         {   /* GPU-cache liveness: any (re)decode invalidates the slot's chunks */
             static uint32_t s_decode_ctr;
             C->decodeGen = ++s_decode_ctr;
@@ -7564,6 +7578,7 @@ typedef struct {
 typedef struct tn_secverd_s {
     double  cbin;
     uint8_t drawHP, drawLP, lpFarOnly, lpGapOnly, lpUncovOnly, fillLP, secInLOD;
+    uint16_t lpNearThr;                  /* LP near-outcode SZ3 bound this walk, 0 = no test */
 } tn_secverd;
 static tn_secverd s_pre_verd[1024];
 static uint8_t    s_tgpu_own[1024];      /* GPU owns this sector this walk */
@@ -7626,6 +7641,23 @@ static int sector_lp_ride(const tscache_t* SC, const tn_wcfg* G, int drawHP, int
     return TN_RIDE_NONE;
 }
 
+/** @brief Returns the SZ3 bound under which the LP walk tags a sector's vertices near, or 0.
+ *
+ * The binning sets the near-band entry bit on a sector whose clamped
+ * bounding-centre view-Z minus radius is at most terrain.lp_near_band; the
+ * LP vertex transform of such a sector tags each vertex whose SZ3 is below
+ * the sector's bound (tscache_t.lpNearSz), and the face walk skips a face
+ * whose corners are all tagged. A game without the outcode and a sector out
+ * of the band return 0.
+ * @param SC The sector's cache entry.
+ * @param cbin The bounding centre's view-Z through the binning matrix.
+ * @return The bound, or 0 when the walk tags no vertex of the sector. */
+static int sector_lp_near_thr(const tscache_t* SC, double cbin) {
+    if (!SC->lpNearSz) return 0;
+    return (ngte_ir_clamp(cbin) - SC->radius - game_layout.terrain.lp_near_band <= 0)
+           ? SC->lpNearSz : 0;
+}
+
 /** @brief Computes one sector's tier and fill verdicts in the serial prepass.
  *
  * A pure function of the sector cache entry and the latched walk config,
@@ -7636,7 +7668,9 @@ static int sector_lp_ride(const tscache_t* SC, const tn_wcfg* G, int drawHP, int
  * (terrain.hp_far, LOD on) takes the draw's own list binning, where a sector
  * can land in both lists; otherwise the flags decide, with the tier-faithful
  * distance tests when enabled. A sector left LP-unlisted takes the LP
- * ride-along sector_lp_ride picks. fillLP marks an LP list kept for hole fill. The rule
+ * ride-along sector_lp_ride picks. fillLP marks an LP list kept for hole fill;
+ * lpNearThr is the LP near-outcode bound (sector_lp_near_thr), kept only
+ * while the sector's HP draws, since the dropped LP faces owe that cover. The rule
  * comments sit beside each decision in the code and in walk_sector.
  * @param SC The sector's cache entry.
  * @param G The latched walk config.
@@ -7687,6 +7721,7 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     V->lpGapOnly = (uint8_t)(ride == TN_RIDE_GAPONLY);
     V->lpUncovOnly = (uint8_t)(ride == TN_RIDE_UNCOVONLY);
     V->fillLP = (uint8_t)fillLP; V->secInLOD = (uint8_t)secInLOD;
+    V->lpNearThr = (uint16_t)(drawHP ? sector_lp_near_thr(SC, cbin) : 0);
 }
 
 /** @brief Returns 1 when an LP face draws in the world pass under its sector's ride-along verdict.
@@ -7700,6 +7735,46 @@ static int tn_lp_face_rides(const tn_secverd* SV, const tsface_t* F) {
     if (SV->lpGapOnly) return F->gapfill != 0;
     if (SV->lpUncovOnly) return F->uncov != 0;
     return 1;
+}
+
+/** @brief Applies the draw's near rule for an LP face: the LP near outcode where it applies, else the authored admission.
+ *
+ * On a game with terrain.lp_near_sz the near outcode replaces the
+ * admission for a face on its sector's HP mesh (uncov clear) while the
+ * sector's HP draws (a nonzero bound, sector_verdicts): the face drops when
+ * every corner's SZ3 is under the bound, so a dropped LP face always has its
+ * HP surface drawn in its place. Every other face takes the authored
+ * admission: with the admission on, slot = (four corner SZ3s summed, a triangle counting its
+ * shared corner twice) >> 5 and s3 = (fogRefBase >> 5) - 0x20: the face
+ * draws iff slot + 8*admit >= s3; a deficit of -31..-1 falls back to "draw
+ * if any corner SZ3 >= (s3 - 8*admit)*8"; a deeper deficit drops.
+ * @param SV The sector's verdicts.
+ * @param F The LP face.
+ * @param cz The corners' view-Z (SZ3 scale) in i0..i3 order.
+ * @param quad Nonzero for a quad.
+ * @param admit Nonzero when the authored admission is on.
+ * @param fogRefBase The walk's fog reference.
+ * @return The drop reason ("nearout", "admit"), or NULL when the face draws. */
+static const char* tn_lp_face_near_drop(const tn_secverd* SV, const tsface_t* F,
+                                        const double cz[4], int quad, int admit,
+                                        int fogRefBase) {
+    const int nc = quad ? 4 : 3;
+    if (game_layout.terrain.lp_near_sz && SV->lpNearThr && !F->uncov) {
+        const double thr = (double)SV->lpNearThr;
+        int under = 0;
+        for (int k = 0; k < nc; k++) under += cz[k] < thr;
+        return under == nc ? "nearout" : NULL;
+    }
+    if (!admit) return NULL;
+    const double sz3 = quad ? cz[3] : cz[2];          /* .s tris sum the shared corner twice */
+    const double slot = (cz[0] + cz[1] + cz[2] + sz3) / 32.0;
+    const double s3v = (double)((fogRefBase >> 5) - 0x20);
+    const double a1 = slot + 8.0 * (double)F->admit - s3v;
+    if (a1 >= 0.0) return NULL;
+    if (a1 <= -32.0) return "admit";
+    const double thr = (s3v - 8.0 * (double)F->admit) * 8.0;
+    for (int k = 0; k < nc; k++) if (cz[k] >= thr) return NULL;
+    return "admit";
 }
 
 #define TN_MAX_WORKERS 8
@@ -8090,7 +8165,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 /* own == 3: near-variant present - draw the clip-fan chunks
                  * and kill the plain ones (the two sets are exclusive). */
                 | (G->own[vi] == 3 ? OPTC_SF_NEARVAR : 0u)
-                | (((uint32_t)s_tgpu[(int)(SC - s_tsc)].gen & 7u) << 12);
+                | (((uint32_t)s_tgpu[(int)(SC - s_tsc)].gen & 7u) << 12)
+                | (((uint32_t)SV->lpNearThr & OPTC_SF_LPNEAR_MASK) << OPTC_SF_LPNEAR_SHIFT);
             /* Pack LP grade (lp_grade_apply's source choice, same priority):
              * the bake carries raw LP colours, so the affine rides the
              * sector params for the vertex stage to apply. */
@@ -8508,7 +8584,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * - but only while OPENPETE_TERRAIN_GAPFILL=1, so the tag A/B
              * knob keeps its contract in original mode too.
              * OPENPETE_TERRAIN_LP_ADMIT=0 restores the legacy fog-corner-only
-             * behaviour (A/B). */
+             * behaviour (A/B). A game with the LP near outcode
+             * (terrain.lp_near_sz) takes that rule instead
+             * (tn_lp_face_near_drop). */
             /* .s LP far cull (r_environment.s:792-793 quad / 930-931 tri):
              * slot = ΣSZ3>>5 tested against s2 = m_CullingDistance>>7 - drop
              * iff slot >= s2. A distinct, larger distance than m_LodDistance;
@@ -8524,19 +8602,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 }
             }
             if (passLP && !passFill && !(s_gapfill_en && F->gapfill)) {
-                if (G->lp_admit) {
-                    double sz0 = sv[i0].m3, sz1 = sv[i1].m3, sz2 = sv[i2].m3;
-                    double sz3 = quad ? sv[i3].m3 : sz2;   /* .s tris sum the shared corner twice */
-                    double slot = (sz0 + sz1 + sz2 + sz3) / 32.0;
-                    double s3v = (double)((fogRefBase >> 5) - 0x20);
-                    double a1 = slot + 8.0 * (double)F->admit - s3v;
-                    if (a1 < 0.0) {
-                        if (a1 <= -32.0) { FARDBG_DROP("admit"); continue; }
-                        double thr = (s3v - 8.0 * (double)F->admit) * 8.0;
-                        if (!(sz0 >= thr || sz1 >= thr || sz2 >= thr ||
-                              (quad && sv[i3].m3 >= thr))) { FARDBG_DROP("admit"); continue; }
-                    }
-                }
+                const double cz[4] = { sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3 };
+                const char* why = tn_lp_face_near_drop(SV, F, cz, quad, G->lp_admit, fogRefBase);
+                if (why) { FARDBG_DROP(why); continue; }
             }
             if (lod_handoff) {
                 int nc = quad ? 4 : 3, beyond = 0;
@@ -8950,6 +9018,7 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | (game_layout.terrain.hq_cells4             ? OPTC_GF_CELLS4  : 0u)
          | (game_layout.terrain.hq_tri4_cells         ? OPTC_GF_TRI4    : 0u)
          | (game_layout.terrain.hq_tri2_tiles         ? OPTC_GF_TRI2    : 0u)
+         | (game_layout.terrain.lp_near_sz            ? OPTC_GF_LPNEAROUT : 0u)
          | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 

@@ -238,6 +238,15 @@ const game_layout_t game_layout = {
         .lp_near       = 0x760,                     /* 1692: addi -0x760, blez skips LP */
         .hp_far_tight  = 0x600,                     /* 1713/1714: addi -0x100 then -0x500 */
         .tight_flags   = 0x5000u,                   /* 1711: andi 0x5000 */
+        /* The LP near outcode. */
+        .lp_near_band    = 0x760,                   /* 1696-1700: vz - r - 0x760 <= 0 sets
+                                                     * entry bit 1 */
+        .lp_near_sz      = 0x760,                   /* 6972-6974: t1 = ((w10 >> 15) & 0x600)
+                                                     * - 0x760; 7036-7039, 7075-7080: SZ3 + t1
+                                                     * < 0 tags the vertex 8; 7151-7155 quad,
+                                                     * 7255-7258 tri: a face whose corners
+                                                     * share a tag drops */
+        .lp_near_sz_step = 0x200,
         .sector_cull   = TERRAIN_SECTOR_CULL_SPHERE,
         /* The HP defer classifier, environment.s:2621-2630: the four corner
          * SZ3s summed against 0x2000 and each corner against 0x140, with no

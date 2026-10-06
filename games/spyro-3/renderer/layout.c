@@ -210,6 +210,14 @@ const game_layout_t game_layout = {
         .lp_near       = 0x760,                     /* 800225B4: addi -0x760, blez skips LP */
         .hp_far_tight  = 0x600,                     /* 800225F8/800225FC: addi -0x100 then -0x500 */
         .tight_flags   = 0x5000u,                   /* 800225F0: andi 0x5000 */
+        /* The LP near outcode, the Spyro 2 rule. */
+        .lp_near_band    = 0x760,                   /* 800225C0-800225D0: vz - r - 0x760 <= 0
+                                                     * sets entry bit 1 */
+        .lp_near_sz      = 0x760,                   /* 8002739C-800273A4: t1 = ((w10 >> 15) &
+                                                     * 0x600) - 0x760; 80027494, 80027520: SZ3
+                                                     * + t1 < 0 tags the vertex 8; 80027644:
+                                                     * a face whose corners share a tag drops */
+        .lp_near_sz_step = 0x200,
         .sector_cull   = TERRAIN_SECTOR_CULL_SPHERE,
         /* environment.s 80023348-80023374: the corner-SZ sum against 0x2000 and
          * each corner against 0x140, no face-word bits in the test. */

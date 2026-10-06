@@ -127,6 +127,9 @@ enum {
                                    * so a sector never draws twice */
 #define OPTC_SF_LPUNCOV    1024u  /* the LP world pass draws only the faces
                                    * baked with the LP-uncovered face bit */
+/* Bits 16-27: the sector's LP near-outcode SZ3 bound this walk (0 = no test). */
+#define OPTC_SF_LPNEAR_SHIFT 16u
+#define OPTC_SF_LPNEAR_MASK  0xFFFu
 
 /* Global flag bits (globals UBO; mirrored in terrain.vert). */
 #define OPTC_GF_NEARHQ     1u
@@ -166,6 +169,9 @@ enum {
                                    * near triangle outside tier 4 draws its 4
                                    * tier-2 sub-triangle records instead of
                                    * the flat GT3                             */
+#define OPTC_GF_LPNEAROUT  16384u /* game_layout.terrain.lp_near_sz != 0: the LP
+                                   * near outcode (the sector flags' bound)
+                                   * replaces the authored LP admission       */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u
