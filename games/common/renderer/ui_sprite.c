@@ -1420,11 +1420,12 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * the HUD layer, and the HUD draw paints its whole untextured range
          * after its whole textured one, so an untextured quad fed there covers
          * them whatever the ordering table says. The panel layer is drawn
-         * before both and is where a 2D box's backing belongs; at alpha 0xFF
-         * the alpha pipe reproduces the opaque quad exactly. */
+         * before both and is where a 2D box's backing belongs. The quad keeps
+         * blend class 0: the panel layer routes on the category alone, and
+         * class 1 would take the intake's ABR 0 half alpha. */
         const int full = f4_spans_frame_width(cpu, prim);
         if (full) { feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1); break; }
-        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 1, 0);
+        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0, 0);
         break; }
     case QK_F4_PANEL: {
         /* The box links its own DR_MODE immediately before the quad, so the
