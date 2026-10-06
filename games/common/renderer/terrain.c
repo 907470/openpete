@@ -4068,12 +4068,114 @@ static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
     return 0;
 }
 
+/* Pending bytes of the deferred keyframe vertex banks (env_anim.kf_lp_poly,
+ * kf_hp_poly): the world draw packs a bank only while bit 7 of its byte is
+ * clear and the sector bins in that tier, then stores 0xFF there (Spyro 2
+ * environment.s:1737-1743 LP, 1932-1935 HP). */
+#define TSC_KF_PEND_LP 0x18u
+#define TSC_KF_PEND_HP 0x1Au
+
+/** @brief Returns the descriptor whose posted pose a sector's tier bank has not packed yet, or 0.
+ *
+ * Bit 7 of the tier's pending byte set means the bank holds the latest
+ * posted pose. A clear byte is the descriptor's index in the tier's deferred
+ * keyframe registry; a game without that registry, an index at or past the
+ * registry count and a null entry return 0.
+ * @param cpu The guest CPU state, read only.
+ * @param s The sector's guest address.
+ * @param hp 1 for the HP bank, 0 for the LP bank.
+ * @return The descriptor's guest address, or 0. */
+static uint32_t tsc_kf_pending(CPUState* cpu, uint32_t s, int hp) {
+    uint32_t reg = hp ? game_layout.env_anim.kf_hp_poly : game_layout.env_anim.kf_lp_poly;
+    if (!reg) return 0;
+    uint32_t b = cpu->read_byte(s + (hp ? TSC_KF_PEND_HP : TSC_KF_PEND_LP));
+    if (b & 0x80u) return 0;
+    uint32_t cnt = rd(cpu, reg), arr = rd(cpu, reg + 4u);
+    if (!arr || b >= cnt || cnt > ENV_ANIM_COUNT_MAX) return 0;
+    return rd(cpu, arr + b * 4u);
+}
+
+/** @brief Returns a keyframe descriptor's posted keyframe word.
+ *
+ * The descriptor's current keyframe is the byte at +2; its 8-byte entry
+ * starts at +0xC and the word at entry +4 holds the blend factor (byte 0),
+ * keyframes A and B (bytes 1, 2) and the tier-hide byte (byte 3).
+ * @param cpu The guest CPU state, read only.
+ * @param desc The descriptor's guest address.
+ * @return The keyframe word. */
+static uint32_t tsc_kf_word(CPUState* cpu, uint32_t desc) {
+    uint32_t kf = cpu->read_byte(desc + 2u);
+    return rd(cpu, desc + 0xCu + kf * 8u + 4u);
+}
+
+/** @brief Overwrites a decoded tier bank with the pose its pending keyframe descriptor posts.
+ *
+ * Reproduces the world draw's pack (Spyro 2 environment.s:1744-1830 LP,
+ * 1936-2042 HP) without storing to guest RAM. The keyframe block is at desc
+ * plus the word at +8, one keyframe every stride bytes (u16 at +6); blend
+ * factor 0 copies keyframe A's packed words, else each packed axis is GTE
+ * INTPL's ((A << 12) + (B - A) * (f << 4)) >> 12. Word k lands at bank index
+ * (byte at +5) + k; indices at or past nv are dropped.
+ * @param cpu The guest CPU state, read only.
+ * @param s The sector's guest address.
+ * @param hp 1 for the HP bank, 0 for the LP bank.
+ * @param nv The bank's vertex count.
+ * @param flat The sector's flat flag (tvert_unpack).
+ * @param out The decoded bank.
+ * @return The posted tier-hide verdict (1 hidden, 0 shown), or -1 when the bank holds the posted pose. */
+static int tsc_kf_overlay(CPUState* cpu, uint32_t s, int hp, int nv, int flat, tsvert_t* out) {
+    uint32_t desc = tsc_kf_pending(cpu, s, hp);
+    if (!desc || !out) return -1;
+    uint32_t w = tsc_kf_word(cpu, desc);
+    int32_t f16 = (int32_t)(w & 0xFFu) << 4;
+    uint32_t stride = cpu->read_half(desc + 6u);
+    uint32_t blk = desc + rd(cpu, desc + 8u);
+    uint32_t kA = blk + ((w >> 8) & 0xFFu) * stride, kB = blk + ((w >> 16) & 0xFFu) * stride;
+    int first = (int)cpu->read_byte(desc + 5u);
+    for (uint32_t k = 0; k < stride / 4u && first + (int)k < nv; k++) {
+        uint32_t v = rd(cpu, kA + k * 4u);
+        if (f16) {
+            uint32_t b = rd(cpu, kB + k * 4u);
+            const int32_t a3[3] = { (int32_t)(v >> 21), (int32_t)((v >> 10) & 0x7FFu), (int32_t)(v & 0x3FFu) };
+            const int32_t b3[3] = { (int32_t)(b >> 21), (int32_t)((b >> 10) & 0x7FFu), (int32_t)(b & 0x3FFu) };
+            int32_t r[3];
+            for (int j = 0; j < 3; j++) r[j] = ((a3[j] << 12) + (b3[j] - a3[j]) * f16) >> 12;
+            v = ((uint32_t)r[0] << 21) + ((uint32_t)r[1] << 10) + (uint32_t)r[2];
+        }
+        int x, y, z; tvert_unpack(v, flat, &x, &y, &z);
+        tsvert_t* o = &out[first + (int)k];
+        o->x = (int16_t)x; o->y = (int16_t)y; o->z = (int16_t)z;
+    }
+    return (w >> 24) != 0;
+}
+
+/** @brief Brings a decoded sector's vertex banks and tier flags to the poses its deferred keyframe animations post.
+ *
+ * A bank the world draw has not packed since its descriptor advanced takes
+ * the posted pose (tsc_kf_overlay), and the tier's no-draw flag follows the
+ * posted hide byte, as the pack writes it (Spyro 2 environment.s:1756-1762,
+ * 1948-1954). Either bank of a sector then shows the pose the animation is
+ * at, whichever tier the guest bins. No-op on a game without the registry.
+ * @param cpu The guest CPU state, read only.
+ * @param C The cached sector. */
+static void tsc_kf_apply(CPUState* cpu, tscache_t* C) {
+    for (int hp = 0; hp < 2; hp++) {
+        int hide = tsc_kf_overlay(cpu, C->s, hp, hp ? C->nHpV : C->nLpV, C->flat,
+                                  hp ? C->hpV : C->lpV);
+        if (hide < 0) continue;
+        int bit = (int)(hp ? game_layout.terrain.no_hp_flag : game_layout.terrain.no_lp_flag);
+        C->flags = hide ? (C->flags | bit) : (C->flags & ~bit);
+    }
+}
+
 /** @brief Returns the FNV-1a hash of a sector's packed LP and HP vertex words.
  *
  * The decode cache's signature is the header (words +0x04..+0x14), which
  * carries the counts, the flags and the bounding sphere but not the
  * geometry: a gameplay event that rewrites a vertex block in place leaves
- * every signature word untouched, and this hash detects it. The caller
+ * every signature word untouched, and this hash detects it. A bank with a
+ * posted, unpacked keyframe (tsc_kf_pending) mixes in the descriptor and its
+ * keyframe word, so an advance the draw has not packed re-decodes too. The caller
  * excludes sectors named by an env poly-anim descriptor, whose vertices are
  * rewritten every tick and which the registry path re-decodes into prev and
  * cur banks that a full miss would drop.
@@ -4087,6 +4189,10 @@ static uint32_t tsc_vhash(CPUState* cpu, uint32_t s, const uint32_t g[5]) {
     uint32_t h = 2166136261u;
     for (uint32_t k = 0; k < nLpV; k++) h = (h ^ rd(cpu, s + 0x1Cu + k * 4u)) * 16777619u;
     for (uint32_t k = 0; k < nHpV; k++) h = (h ^ rd(cpu, hpVerts + k * 4u)) * 16777619u;
+    for (int hp = 0; hp < 2; hp++) {              /* a posted, unpacked keyframe */
+        uint32_t d = tsc_kf_pending(cpu, s, hp);
+        if (d) h = (((h ^ d) * 16777619u) ^ tsc_kf_word(cpu, d)) * 16777619u;
+    }
     return h ? h : 1u;
 }
 
@@ -4238,6 +4344,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         if (C->nHpF > 0) { C->hpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nHpF);
                            if (C->hpF) C->hpColSpan = tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
+        tsc_kf_apply(cpu, C);
         C->lpg_state = 0;              /* re-decoded sector: re-derive the LP grade */
         C->fillGen = openpete_fillpick_generation();
         tsc_tag_gapfill(cpu, C, sectorPtr, sectorCnt);
@@ -4386,6 +4493,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                     tsc_decode_verts(cpu, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
                                      nHp, C->flat, C->hpV);
                 }
+                tsc_kf_apply(cpu, C);
                 {   /* GPU-cache liveness: the re-decode is unconditional per tick,
                      * so hash the decoded verts and bump vertGen only when the
                      * geometry actually moved (else anim-listed sectors would

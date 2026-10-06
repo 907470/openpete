@@ -93,6 +93,13 @@ const game_layout_t game_layout = {
         .scroll     = D_ENV_ANIM_REGISTRY + 0x08u,
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = D_ENV_ANIM_LIVE,
+        /* Registry pairs 2 and 4. func_800225F8 advances each descriptor's
+         * keyframe and stamps its list index into sector+0x18 / +0x1A
+         * (environment.s:226, 340); the world draw packs the posted pose
+         * and stores 0xFF there only for a tier it lists
+         * (environment.s:1685-1737 bins the tiers, 1743 LP, 1935 HP). */
+        .kf_lp_poly = D_ENV_ANIM_REGISTRY + 0x10u,
+        .kf_hp_poly = D_ENV_ANIM_REGISTRY + 0x20u,
         .sub = {
             { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR },
             { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT },

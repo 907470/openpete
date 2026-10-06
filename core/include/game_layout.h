@@ -127,6 +127,16 @@ typedef struct game_layout {
         uint32_t lp_col;            /* LP vertex-colour animations */
         uint32_t hp_col;            /* HP vertex-colour animations */
 
+        /* Deferred keyframe vertex animations, each {count, descriptor-
+         * pointer array}. The animation update posts a descriptor's list
+         * index into its sector's pending byte (+0x18 LP, +0x1A HP) when the
+         * keyframe advances; the world draw packs the posted pose into the
+         * sector's vertex bank and writes 0xFF there only while it bins the
+         * sector in that tier, so a bank the draw does not list holds an
+         * older pose. 0 when the game packs every animated bank each tick. */
+        uint32_t kf_lp_poly;        /* LP deferred keyframe vertex animations */
+        uint32_t kf_hp_poly;        /* HP deferred keyframe vertex animations */
+
         /* ENV_ANIM_ARENA. `block_ptr` is the address of the word holding the
          * block base. `live_table` is a byte table indexed by an entry's low
          * byte (the sector index); bit 0 set = that animation runs, and the
