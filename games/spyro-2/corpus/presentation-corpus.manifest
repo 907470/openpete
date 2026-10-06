@@ -101,3 +101,6 @@ intro-arrival-gem|1128|2||1136,1137,1138,1139,1140|--skip-to-cutscene intro_arri
 # intro_arrival cutscene, VBL 1410-1416: the base of the portal moby slides
 # against the ground terrain from tick to tick (native).
 intro-arrival-portal-base|1406|2||1410,1411,1412,1413,1414,1415,1416|--skip-to-cutscene intro_arrival
+# intro cutscene at 32:9, VBL 1022-1026: two terrain faces at the far right
+# of the frame do not draw (native).
+intro-32x9-farright|1018|2||1022,1024,1026|--skip-to-cutscene intro --aspect 32:9
