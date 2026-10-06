@@ -73,3 +73,12 @@ summer_forest | pos=(121674, 76726, 37488) yaw=1556 pitch=-40
 # outside the 4:3 screen: the game's portal pass rejects it on the X
 # outcode bits, so its preview is missing at 16:9.
 autumn_plains | pos=(90130, 56523, 28297) yaw=688 pitch=160
+# zephyr poly-anim sector 114: far away the guest re-packs only the LP bank,
+# so --lod extended draws the stale HP pose and the uncovered-LP ride adds
+# the current LP pose, two copies of the object (863 px over HP); original
+# and the guest reference show one.
+zephyr | pos=(188848, 40008, 31664) yaw=1707 pitch=156
+# sunny_beach sector 28: LP faces 1, 2, 5, 7, 12 and 14 draw a standing slab
+# natively in both LOD modes (1648 px) that the guest's LP near outcode
+# drops (every corner SZ under the sector's near threshold).
+sunny_beach | pos=(30097, 21908, 44979) yaw=523 pitch=226
