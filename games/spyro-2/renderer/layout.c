@@ -420,6 +420,16 @@ const game_layout_t game_layout = {
         .cal_world_ot   = 0x80066FFCu,
         .cal_ot_buckets = 0x580u,
 
+        /* A cutscene's mobys take its actor slot as their class. While a
+         * cutscene plays (D_800681C8 = 6, stored by StartCutscene 0x80073E48)
+         * the word 0x80068C3C holds the WAD entry it plays; entry 0x29 is the
+         * intro_arrival cutscene, whose actor 9 is the portal cone. */
+        .props            = { { 9u, 0x29 } },
+        .prop_n           = 1,
+        .prop_scene_addr  = 0x80068C3Cu,
+        .prop_state_addr  = 0x800681C8u,
+        .prop_state_scene = 6u,
+
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,
         .hook_draw_specular = 0u,          /* no specular material: the draw issues no GTE

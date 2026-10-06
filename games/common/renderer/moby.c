@@ -6870,24 +6870,40 @@ static uint32_t moby_tri_alpha(const ntri_t* w) {
     return (w->textured && w->tmix) ? ((uint32_t)w->tmix << 24) : 0xFF000000u;
 }
 
-/** @brief Report whether a moby class is a curated embedded prop.
+/* The scene the curated prop rows with a scene match against: the word at
+ * game_layout.moby.prop_scene_addr while the scene state holds, else -1.
+ * Latched once per canonical regular pass (moby_prop_scene_latch); the
+ * sub-tick presents between two passes keep it. */
+static int32_t s_prop_scene = -1;
+/** @brief Latch the scene the curated prop rows match against.
+ * @param cpu The guest CPU state, read only. */
+static void moby_prop_scene_latch(CPUState* cpu) {
+    const uint32_t a = game_layout.moby.prop_scene_addr, st = game_layout.moby.prop_state_addr;
+    s_prop_scene = (a && st && cpu->read_word(st) == game_layout.moby.prop_state_scene)
+                 ? (int32_t)cpu->read_word(a) : -1;
+}
+/** @brief Report whether a moby class is a curated embedded prop in the latched scene.
  *
  * Embedded props are static scenery authored sunk into the ground (the
  * k_lp_artfix seam pattern). Near-band terrain yields to them within the
  * embed bound and their own faces never yield to a terrain key, so they
  * render whole from every angle instead of the original's view-dependent
- * piece-key roulette. The list is curated, because no geometric quantity
- * separates an embedded prop from an actor standing just behind a crest.
+ * piece-key roulette. The list is curated per game (game_layout.moby.props),
+ * because no geometric quantity separates an embedded prop from an actor
+ * standing just behind a crest. OPENPETE_MOBY_PROP_LEGACY=1 matches classes
+ * 250 and 332 in every game instead.
  * @param cls The moby's m_Class.
  * @return 1 for a prop class, 0 otherwise. */
 static int moby_class_is_prop(uint16_t cls) {
-    switch (cls) {
-    case 250:   /* dragon-pedestal statue */
-    case 332:   /* dragon-pedestal base disc */
-        return 1;
-    default:
-        return 0;
+    static int s_legacy = -1;
+    if (s_legacy < 0) { const char* e = getenv("OPENPETE_MOBY_PROP_LEGACY"); s_legacy = e && *e == '1'; }
+    if (s_legacy) return cls == 250u || cls == 332u;
+    for (int k = 0; k < game_layout.moby.prop_n; k++) {
+        if (game_layout.moby.props[k].cls != cls) continue;
+        const int32_t sc = game_layout.moby.props[k].scene;
+        if (sc < 0 || sc == s_prop_scene) return 1;
     }
+    return 0;
 }
 
 /** @brief Return the rank sentinel an unranked opaque actor face carries into the key contest.
@@ -7529,6 +7545,7 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
+    moby_prop_scene_latch(cpu);
     /* Extended LOD: the cull's distance box is what keeps a distant animated
      * moby out of its record list, so the records it rejected are appended to
      * the host copy of that list here and walked with the queued ones. The

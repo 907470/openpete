@@ -230,6 +230,10 @@ const game_layout_t game_layout = {
         .cal_world_ot   = D_WORLDOT,
         .cal_ot_buckets = 0x800u,    /* r_moby.s links into 2048 buckets */
 
+        /* The dragon-pedestal statue and its base disc. */
+        .props  = { { 250u, -1 }, { 332u, -1 } },
+        .prop_n = 2,
+
         .hook_cull          = 0u,    /* the cull is not hooked: it writes
                                       * m_WasDrawn, so the feeder reads its
                                       * records after the draw instead */

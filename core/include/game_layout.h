@@ -606,6 +606,21 @@ typedef struct game_layout {
         uint32_t cal_world_ot;
         uint32_t cal_ot_buckets;
 
+        /* Curated embedded props: static scenery the game authored sunk into
+         * the ground, which the native key contest renders whole (see
+         * moby_class_is_prop in games/common/renderer/moby.c). The first
+         * `prop_n` rows of `props` each name a class and a scene. A row with
+         * scene -1 matches the class anywhere. Any other row matches while
+         * the word at `prop_state_addr` equals `prop_state_scene` and the
+         * word at `prop_scene_addr` equals the row's scene: a game whose
+         * cutscenes number their actors by slot names the cutscene there,
+         * since one class number is a different model in each cutscene. */
+        struct { uint16_t cls; int32_t scene; } props[4];
+        int      prop_n;
+        uint32_t prop_scene_addr;
+        uint32_t prop_state_addr;
+        uint32_t prop_state_scene;
+
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it
          * names. `draw_simple` is the second model kind's own pass. */
