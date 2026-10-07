@@ -16280,6 +16280,27 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     s_render_freeze_wf = prev_wf;
 }
 
+void openpete_native_occl_service_headless(void)
+{
+    if (!s_nr.enabled || !s_nr.headless || !s_nr.dev) return;
+    ps_apply_geometry();
+    if (s_nr.ref_w <= 0 || s_nr.ref_h <= 0) {
+        int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
+        int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
+        int rh = ch * 2;
+        int rw = (int)((double)rh * (4.0 / 3.0) * (double)dh / (double)ch + 0.5);
+        if (rw > 0 && rh > 0) { s_nr.ref_w = rw; s_nr.ref_h = rh; }
+    }
+    sync_vram_texture();
+    ensure_opaque_depth();
+    if (!rhi_begin_frame(s_nr.dev)) return;
+    openpete_tercache_frame_select(scene_present_stamp());
+    upload_synced_textures();
+    native_depth_prepass();
+    native_occl_downsample();
+    rhi_end_frame(s_nr.dev);
+}
+
 /** @brief Render the widescreen (Hor+) native-only screenshot into shot_rtt and write it as the -vk PNG or hand it back in memory.
  *
  * The scene is composed at the widened extent, ref_w * cap_wf by @p H,

@@ -2139,6 +2139,19 @@ int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, floa
  * @param vz_near Nearest view-Z of the object, including the caller's slack.
  * @return 1 when the rect is off-screen, else 0. */
 int  openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near);
+/** @brief Build the occlusion grid headless at the host loop's present step, as a live present does.
+ *
+ * Headless never runs a live present, so without this no grid exists and
+ * both halves of the occlusion test (the off-screen reject and the depth
+ * query) refuse every query. Runs at the host loop's present step, after the
+ * walk: one device frame holding the world-opaque depth pre-pass of the scene
+ * a live present would compose and the grid reduction with its ring
+ * readback. The grid a walk reads is then the one a window presenting once
+ * per present step would hold, a deterministic function of the present
+ * sequence. Self-no-ops with a window, where the live present builds the
+ * grid.
+ */
+void openpete_native_occl_service_headless(void);
 /** @brief Refuse occlusion verdicts for at least the next presents presents; callable from any thread.
  *
  * Raises the suspension to presents when it is lower; the presenting thread

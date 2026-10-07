@@ -5548,6 +5548,9 @@ static int run_host_loop(const openpete_options_t* opts) {
              * VBL. Self-no-ops with a window, where the present entry runs
              * it on the thread that owns the device for that present. */
             openpete_native_tercache_service_headless();
+            /* Occlusion grid on the headless path, at this present step
+             * after the walk: the windowed live present builds it otherwise. */
+            openpete_native_occl_service_headless();
 
             /* Deferred canonical leg of --screenshot-presents-start/count (see
              * the gate above): the native offscreen now holds this canonical
