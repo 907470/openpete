@@ -3956,6 +3956,14 @@ static mod_ref_t* ref_at(const mod_fvec* v, int i) {
     return (mod_ref_t*)mod_fvec_at(v, (size_t)i);
 }
 
+/* The mods root the last discovery resolved, for openpete_mods_root_dir;
+ * empty until then. */
+static char s_mods_root_dir[MOD_PATH_MAX];
+
+const char* openpete_mods_root_dir(void) {
+    return s_mods_root_dir[0] ? s_mods_root_dir : NULL;
+}
+
 /** @brief Resolve the mods root directory.
  *
  * Order: opts->mods_dir, env OPENPETE_MODS_DIR, then the writable data
@@ -4278,6 +4286,7 @@ static int mods_discover(const openpete_options_t* opts,
                          char* mods_dir, size_t mods_dir_cap,
                          mod_fvec* out) {
     if (mods_root(opts, mods_dir, mods_dir_cap) != 0) return 0;
+    snprintf(s_mods_root_dir, sizeof s_mods_root_dir, "%s", mods_dir);
 
     /* --mods (env OPENPETE_MODS) replaces enabled.txt wholesale: a
      * comma-separated id list, same order-IS-priority semantics. An

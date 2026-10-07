@@ -109,6 +109,13 @@ const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out);
  * @return The number of mods loaded, including those loaded disabled. */
 int openpete_mods_init(const openpete_options_t* opts);
 
+/** @brief The mods root directory the boot discovery resolved.
+ *
+ * The directory openpete_mods_init scans (--mods-dir, OPENPETE_MODS_DIR, or
+ * the data location), whether or not it exists or holds a mod.
+ * @return The path, or NULL before discovery ran or when no root resolved. */
+const char* openpete_mods_root_dir(void);
+
 /** @brief Register every discovered mod's [[binding]] defaults with the keymap without loading any mod.
  *
  * Discovers mods the way openpete_mods_init does, parses each mod.toml,

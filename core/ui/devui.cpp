@@ -1222,18 +1222,111 @@ static bool mod_row_matches(const ImGuiTextFilter &f,
 static bool mod_owns_custom_levels(const char *mod_id);
 static void draw_custom_level_rows(const char *mod_id);
 
-/** @brief Draw the Mods header with one row per loaded mod that passes the filter.
+/** @brief Open the mods root directory in the platform's file manager, creating it first when it is missing.
  *
- * Draws nothing when no mod passes. Each row has an enable checkbox that
- * queues the toggle (disabled while the mod owns the level being played)
- * and a name; an enabled mod with a UI section, config rows or custom
- * levels gets a tree node holding its config rows, its bracketed UI body and
- * its level rows. An active filter or the boot reveal forces the header
- * open. */
+ * SDL_OpenURL hands a plain path to the shell on Windows and to xdg-open on
+ * Linux; macOS takes a file:// URL. A failure is logged. */
+static void open_mods_folder(void)
+{
+    const char *dir = openpete_mods_root_dir();
+    if (!dir) return;
+    (void)SDL_CreateDirectory(dir);   /* fails harmlessly when it exists */
+    char url[1100];
+#if defined(__APPLE__)
+    snprintf(url, sizeof url, "file://%s", dir);
+#else
+    snprintf(url, sizeof url, "%s", dir);
+#endif
+    if (SDL_OpenURL(url))
+        OPL_INFO_F("devui", "opened the mods folder %s", dir);
+    else
+        OPL_WARN_F("devui", "could not open the mods folder %s: %s", dir,
+                   SDL_GetError());
+}
+
+/** @brief Draw the Open folder button at the right end of the header just submitted.
+ *
+ * The header must carry ImGuiTreeNodeFlags_AllowOverlap so the button takes
+ * its own clicks. Disabled when no mods root resolved; the tooltip names the
+ * folder.
+ * @param right The content region's right edge in window coordinates. */
+static void draw_mods_folder_button(float right)
+{
+    const char *cap = "Open folder";
+    const float w = ImGui::CalcTextSize(cap).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SameLine(right - w);
+    const char *dir = openpete_mods_root_dir();
+    if (!dir) ImGui::BeginDisabled();
+    if (ImGui::Button(cap)) open_mods_folder();
+    if (!dir) ImGui::EndDisabled();
+    if (dir && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("%s", dir);
+}
+
+/** @brief Draw one mod's row: the enable checkbox, then its name or, for an enabled mod with controls or levels, a tree node holding them.
+ *
+ * The checkbox queues the toggle and is disabled while the mod owns the level
+ * being played. The node holds the mod's config rows, its bracketed UI body
+ * and its custom-level rows; the boot reveal opens it.
+ * @param i The mod's loader index.
+ * @param mi The mod's menu info. */
+static void draw_mod_row(int i, const openpete_mods_menu_info_t &mi)
+{
+    /* The checkbox queues through the live-toggle path; the loader
+     * applies it at the next tick boundary and the row reads the
+     * applied state back - no local shadow to go stale. Grayed while
+     * the mod owns the level the player is inside (a disable would
+     * strand them; the loader would defer it anyway). */
+    const bool busy =
+        mi.enabled && openpete_mods_registry_owner_busy(mi.id) != 0;
+    bool on = mi.enabled != 0;
+    if (busy) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("##en", &on)) {
+        if (openpete_mods_set_mod_enabled(mi.id, on ? 1 : 0) == 0)
+            OPL_INFO_F("devui", "mod %s -> %s", mi.id,
+                       on ? "enabled" : "disabled");
+    }
+    if (busy) ImGui::EndDisabled();
+    mod_row_tooltip(&mi);
+    ImGui::SameLine();
+
+    const bool has_levels = mod_owns_custom_levels(mi.id);
+    if (mi.enabled && (mi.has_ui || mi.has_cfg || has_levels)) {
+        if (s_boot_reveal) ImGui::SetNextItemOpen(true);
+        if (ImGui::TreeNodeEx(mi.name,
+                              ImGuiTreeNodeFlags_SpanAvailWidth)) {
+            mod_row_tooltip(&mi);
+            draw_mod_config_rows(i, &mi);
+            if (mi.has_ui)
+                draw_mod_section_bracketed(i, mi.id, false, false);
+            if (has_levels) draw_custom_level_rows(mi.id);
+            ImGui::TreePop();
+        } else {
+            mod_row_tooltip(&mi);
+        }
+    } else {
+        ImGui::AlignTextToFramePadding();
+        if (mi.enabled)
+            ImGui::TextUnformatted(mi.name);
+        else
+            ImGui::TextDisabled("%s", mi.name);
+        mod_row_tooltip(&mi);
+    }
+}
+
+/** @brief Draw the Mods header with an Open folder button and one row per loaded mod that passes the filter.
+ *
+ * Draws nothing when an active filter matches no mod. With no mod loaded and
+ * no filter the header still draws, holding a line that says so, so the
+ * folder button is reachable before the first mod is installed. Each row has
+ * an enable checkbox that queues the toggle (disabled while the mod owns the
+ * level being played) and a name; an enabled mod with a UI section, config
+ * rows or custom levels gets a tree node holding its config rows, its
+ * bracketed UI body and its level rows. An active filter or the boot reveal
+ * forces the header open. */
 static void draw_mods_section(const ImGuiTextFilter &filter)
 {
     const int n = openpete_mods_count();
-    if (n == 0) return;
 
     bool any = false;
     for (int i = 0; i < n && !any; i++) {
@@ -1241,59 +1334,25 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         if (openpete_mods_menu_info(i, &mi) && mod_row_matches(filter, &mi))
             any = true;
     }
-    if (!any) return;
+    if (!any && (n > 0 || filter.IsActive())) return;
 
     if (filter.IsActive() || s_boot_reveal) ImGui::SetNextItemOpen(true);
-    if (!ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen))
+    const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const bool open = ImGui::CollapsingHeader(
+        "Mods", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
+    draw_mods_folder_button(right);
+    if (!open) return;
+    if (n == 0) {
+        ImGui::TextDisabled("No mods installed. Open folder shows where they go.");
         return;
+    }
 
     for (int i = 0; i < n; i++) {
         openpete_mods_menu_info_t mi;
         if (!openpete_mods_menu_info(i, &mi)) continue;
         if (!mod_row_matches(filter, &mi)) continue;
         ImGui::PushID(mi.id);
-
-        /* The checkbox queues through the live-toggle path; the loader
-         * applies it at the next tick boundary and the row reads the
-         * applied state back - no local shadow to go stale. Grayed while
-         * the mod owns the level the player is inside (a disable would
-         * strand them; the loader would defer it anyway). */
-        const bool busy =
-            mi.enabled && openpete_mods_registry_owner_busy(mi.id) != 0;
-        bool on = mi.enabled != 0;
-        if (busy) ImGui::BeginDisabled();
-        if (ImGui::Checkbox("##en", &on)) {
-            if (openpete_mods_set_mod_enabled(mi.id, on ? 1 : 0) == 0)
-                OPL_INFO_F("devui", "mod %s -> %s", mi.id,
-                           on ? "enabled" : "disabled");
-        }
-        if (busy) ImGui::EndDisabled();
-        mod_row_tooltip(&mi);
-        ImGui::SameLine();
-
-        const bool has_levels = mod_owns_custom_levels(mi.id);
-        if (mi.enabled && (mi.has_ui || mi.has_cfg || has_levels)) {
-            if (s_boot_reveal) ImGui::SetNextItemOpen(true);
-            if (ImGui::TreeNodeEx(mi.name,
-                                  ImGuiTreeNodeFlags_SpanAvailWidth)) {
-                mod_row_tooltip(&mi);
-                draw_mod_config_rows(i, &mi);
-                if (mi.has_ui)
-                    draw_mod_section_bracketed(i, mi.id, false, false);
-                if (has_levels) draw_custom_level_rows(mi.id);
-                ImGui::TreePop();
-            } else {
-                mod_row_tooltip(&mi);
-            }
-        } else {
-            ImGui::AlignTextToFramePadding();
-            if (mi.enabled)
-                ImGui::TextUnformatted(mi.name);
-            else
-                ImGui::TextDisabled("%s", mi.name);
-            mod_row_tooltip(&mi);
-        }
-
+        draw_mod_row(i, mi);
         ImGui::PopID();
     }
 }

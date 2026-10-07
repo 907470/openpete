@@ -122,7 +122,9 @@ active**) or when no route exists (**not in a level**).
 ## Mods
 
 The Mods section lists each installed mod with a checkbox that enables or
-disables it at the next tick. A mod that registers its own controls shows
+disables it at the next tick. The **Open folder** button on its header opens
+the mods folder in the file manager, creating it when it is missing; with no
+mod installed the section shows only that button and a line saying so. A mod that registers its own controls shows
 them under its name. A mod that adds levels lists each with a **Warp**
 button. See [Mods](../customizing/mods.md).
 

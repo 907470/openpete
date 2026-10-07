@@ -100,7 +100,7 @@ core/runtime/run.c	run_host_loop	1483	0
 core/runtime/run.c	stamp_psx_pad_bindings	49	0	
 core/ui/devui.cpp	draw_custom_level_rows	26	0	
 core/ui/devui.cpp	draw_mod_config_rows	76	0	
-core/ui/devui.cpp	draw_mods_section	52	0	
+core/ui/devui.cpp	draw_mod_row	26	0	
 core/ui/openpete_menu.c	openpete_menu_mouse_poll	52	0	
 core/ui/openpete_menu.c	value_str	27	0	
 core/ui/openpete_osd.c	openpete_osd_present_update	47	0	
