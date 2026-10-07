@@ -340,6 +340,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # CD drive head: the CdlGetlocP head model replayed against every
+    # reference answer of the Spyro 2/3 20k goldens (|diff| <= 2 LBA), and
+    # the XA decoder head's rate on a Spyro 2 boot run (37609/15000 LBA per
+    # VBL +- 0.0005). Exit 64 = no golden, binary or disc for any row.
+    add_test(NAME cd_head
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_cd_head.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(cd_head PROPERTIES
+        LABELS "slow;audio;cd"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1200
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Disc boot-order profiles: per game, the committed profile equals the
     # generator's output over the committed boot trace, and the loader
     # simulation (tools/disc_boot_order.py) finds the lowest modelled

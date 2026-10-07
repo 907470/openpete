@@ -111,7 +111,7 @@ games/common/freecam_game.c	freecam_path_parse	42	0
 games/common/psyq/psyq_thunks.cpp	cd_command_host	27	0	
 games/common/psyq/psyq_thunks.cpp	format_from_mips	79	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdRead	36	0	
-games/common/psyq/psyq_thunks.cpp	psyq_CdSync	38	0	
+games/common/psyq/psyq_thunks.cpp	psyq_CdSync	36	0	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
 games/common/renderer/cyclorama.c	cyc_extract_m	139	0	

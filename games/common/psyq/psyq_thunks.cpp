@@ -3130,6 +3130,91 @@ static int cd_stream_pause_answer(int mode, int rc) {
     return (mode != 0 && s_cd_pause_owed && !openpete_sched_active()) ? CdlNoIntr : rc;
 }
 
+/** @brief The virtual music head's LBA at the current guest VBL, the position a CdlGetlocP answers outside sidecar replay.
+ *
+ * The head starts at g_cdXaStartLBA at the streaming read's VBL
+ * (g_cdXaStartVBL) and advances 1001/400 LBA per VBL; a VBL before the
+ * anchor reads the anchor. Guest-deterministic: both anchors are set by the
+ * game's own CdlReadS and the VBL counter is guest state.
+ * @return The head's LBA. */
+static int cd_getlocp_model_lba(void) {
+    int32_t vd = SDL_GetAtomicInt(&openpete_vbl) - g_cdXaStartVBL;
+    if (vd < 0) vd = 0;
+    return g_cdXaStartLBA + (int)(((int64_t)vd * 1001) / 400);
+}
+
+/// @brief Exit line of the OPENPETE_GETLOCP_AB comparison: answers compared, answers over 2 LBA apart, the largest difference.
+static uint32_t s_getlocp_ab_n, s_getlocp_ab_over;
+static int s_getlocp_ab_max;
+/// @brief Print the OPENPETE_GETLOCP_AB census line; registered with atexit on the first comparison.
+static void getlocp_ab_summary(void) {
+    fprintf(stderr, "[getlocp-ab] compared=%u over2=%u max_abs_diff=%d verdict=%s\n",
+            s_getlocp_ab_n, s_getlocp_ab_over, s_getlocp_ab_max,
+            s_getlocp_ab_n == 0 ? "VACUOUS" : (s_getlocp_ab_over ? "FAIL" : "PASS"));
+}
+
+/** @brief Under OPENPETE_GETLOCP_AB, compare the replayed reference GetlocP answer with cd_getlocp_model_lba and count differences over 2 LBA.
+ *
+ * Runs only where the sidecar answers the query, the path on which the
+ * model is otherwise never evaluated. A query before any streaming read has
+ * anchored the model is not compared. Speculative ticks are not counted.
+ * Each comparison writes one `[getlocp-ab]` line with the VBL, both LBAs
+ * and the difference (model minus reference).
+ * @param result The 8-byte GetlocP answer; bytes 5..7 are the absolute
+ *     position in BCD minute, second, sector. */
+static void getlocp_ab_compare(const u_char* result) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = std::getenv("OPENPETE_GETLOCP_AB"); s_on = (e && *e && *e != '0'); }
+    if (!s_on || openpete_speculative || g_cdXaStartLBA <= 0) return;
+    CdlLOC loc;
+    loc.minute = result[5];
+    loc.second = result[6];
+    loc.sector = result[7];
+    loc.track = 0;
+    const int ref = CdPosToInt(&loc);
+    const int model = cd_getlocp_model_lba();
+    const int d = model - ref;
+    const int ad = d < 0 ? -d : d;
+    if (s_getlocp_ab_n++ == 0) std::atexit(getlocp_ab_summary);
+    if (ad > 2) s_getlocp_ab_over++;
+    if (ad > s_getlocp_ab_max) s_getlocp_ab_max = ad;
+    fprintf(stderr, "[getlocp-ab] vbl=%d anchor=%d@%d model=%d ref=%d diff=%+d\n",
+            (int)SDL_GetAtomicInt(&openpete_vbl), g_cdXaStartLBA, g_cdXaStartVBL, model, ref, d);
+}
+
+/** @brief Under OPENPETE_XA_LOG=<path>, write the XA decoder's sector head once per guest VBL while a stream plays.
+ *
+ * Line `h <vbl> <lba>`: the decoder's next LBA after the pump of the
+ * VBL's first CdSync call. Line `x <vbl>`: the decoder stopped. Speculative ticks write nothing. The file is truncated
+ * on open and starts with a version line.
+ */
+static void xa_head_log(void) {
+    static FILE* s_f = NULL;
+    static int s_tried = 0, s_last_vbl = -1, s_was_active = 0;
+    if (!s_tried) {
+        s_tried = 1;
+        const char* path = std::getenv("OPENPETE_XA_LOG");
+        if (path && *path) {
+            s_f = std::fopen(path, "w");
+            if (s_f) std::fputs("# xa-head-log 1\n", s_f);
+            else OPL_WARN_F("audio", "OPENPETE_XA_LOG: cannot open %s", path);
+        }
+    }
+    if (!s_f || openpete_speculative) return;
+    const int vbl = (int)SDL_GetAtomicInt(&openpete_vbl);
+    const int active = PsyX_XA_IsActive();
+    if (!active) {
+        if (s_was_active) { std::fprintf(s_f, "x %d\n", vbl); std::fflush(s_f); }
+        s_was_active = 0;
+        return;
+    }
+    s_was_active = 1;
+    if (vbl == s_last_vbl) return;
+    s_last_vbl = vbl;
+    std::fprintf(s_f, "h %d %d\n", vbl, PsyX_XA_GetCurrentSector());
+    std::fflush(s_f);
+}
+
 /** @brief CdSync thunk: pumps XA and the music override, then returns PsyCross's CD command status, with an optional per-VBL spin limit.
  *
  * @param cpu Guest CPU state; a0 is the mode, a1 the result buffer, v0 receives the status. */
@@ -3246,16 +3331,15 @@ void psyq_CdSync(CPUState* cpu) {
          * the golden's controller sidecar: the head's position as the drive
          * reported it, seek and read timing included. */
         memcpy(result, s_getlocp_ref, 8);
+        getlocp_ab_compare(result);
     } else if (g_cdXaStartLBA > 0 && g_CD_com == CdlGetlocP && mode == 1) {
-        int32_t vd = SDL_GetAtomicInt(&openpete_vbl) - g_cdXaStartVBL;
-        if (vd < 0) vd = 0;
-        int cur = g_cdXaStartLBA + (int)(((int64_t)vd * 1001) / 400);
         CdlLOC abs;
-        CdIntToPos(cur, &abs);
+        CdIntToPos(cd_getlocp_model_lba(), &abs);
         result[5] = abs.minute;
         result[6] = abs.second;
         result[7] = abs.sector;
     }
+    xa_head_log();
     /* Don't log every CdSync - busy-loops would flood. Sample every 2^22
      * calls. */
     static uint32_t calls = 0;
