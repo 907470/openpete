@@ -250,6 +250,9 @@ const game_layout_t game_layout = {
                                    * bucket paint later, and
                                    * draw/func_8001E460.s:14,22 runs the moby
                                    * pass before the terrain pass */
+        .hp_source_wad_entry = 139, /* Fireworks Factory: the title scene's
+                                     * sectors are cut-down copies of its
+                                     * sectors (WAD entry 6, sub-file 1) */
     },
     .shadow = {
         .desc        = G_MOBYSHADOWS,     /* mobyfunc.s:921-923: +0x00/+0x04 the sprite UV

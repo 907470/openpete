@@ -239,8 +239,7 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define FF_FOGBIAS    (1u << 10)
 #define FF_GAPFILL    (1u << 11)
 #define FF_BORROWED   (1u << 11)   /* HP: borrowed from the HP source level
-                                    * (bit 11 is FF_GAPFILL on LP faces);
-                                    * drawn under extended LOD only */
+                                    * (bit 11 is FF_GAPFILL on LP faces) */
 #define FF_DSIDE      (1u << 12)
 #define FF_FLIP       (1u << 13)
 #define FF_QUAD       (1u << 14)
@@ -1193,10 +1192,9 @@ void main()
         if (lp  && (sf & SF_DRAWLP) == 0u) { kill_vert(); return; }
         if (!lp && (sf & SF_DRAWHP) == 0u) { kill_vert(); return; }
     }
-    if (!lp && (ff & FF_BORROWED) != 0u && (gf & GF_NOLOD) == 0) { kill_vert(); return; }
-    /* The LP faces the HP leaves uncovered: under extended LOD the borrowed
-     * HP faces draw and count as cover. */
-    uint ffUncov = ((gf & GF_NOLOD) != 0) ? FF_LPUNCOVX : FF_LPUNCOV;
+    /* The LP faces the HP leaves uncovered: the borrowed HP faces count as
+     * cover (FF_LPUNCOVX equals FF_LPUNCOV on a sector without them). */
+    uint ffUncov = FF_LPUNCOVX;
 
     /* ---- face corners -> camera space (fp64, exact walk mirror) ---- */
     dvec3 sorigin = dvec3(s.sec[slot].o.xyz);

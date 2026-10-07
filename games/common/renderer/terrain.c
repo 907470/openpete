@@ -4013,7 +4013,50 @@ static double tsc_lp_face_gap(const tsvert_t* lpV, const tsface_t* F,
     return sqrt(worst);
 }
 
+/* HP (and LP) faces a scene sector borrows from the HP source level; see
+ * the borrowed-faces section below. */
+typedef struct tsimp {
+    int nV, nF, nC;              /* borrowed HP verts, faces; colour words copied */
+    tsvert_t* V;                 /* the source sector's HP verts in this sector's frame */
+    tsface_t* F;                 /* the borrowed faces, indexing V and the colour banks */
+    uint8_t* nearCol;            /* the source sector's bytes from its near colour bank on */
+    uint8_t* farCol;             /* points into nearCol at the far colour bank */
+    int src;                     /* the source sector index */
+    int srcFlags;                /* the source sector's header flags (thdr_flags) */
+    int nCand, nDup;             /* candidates; dropped as duplicates */
+    int nLpV, nLpF;              /* the source sector's LP verts; the borrowed LP faces */
+    tsvert_t* lpV;               /* the source sector's LP verts in this sector's frame */
+    tsface_t* lpF;               /* the source LP faces this sector lacks, indexing lpV */
+    uint32_t lpColBase;          /* the source LP colour array in the TSRC_TERR_BASE window */
+    uint32_t lpColSpan;          /* bytes of it the borrowed LP faces index */
+    int centreX, centreY, centreZ, radius;   /* the source sector's bounding sphere */
+    int lpNearSz;                /* the source sector's LP near-outcode bound (tscache_t.lpNearSz) */
+} tsimp_t;
+
 static void tsimp_meshes(const tscache_t* C, tsmesh_t M[2], int* nm);
+
+/** @brief Tags a sector's borrowed LP faces (C->imp) the way tsc_tag_uncovered tags its own.
+ *
+ * A borrowed LP face is uncov when a sample point lies farther than
+ * TSC_LPCOV_TOL from the sector's own HP mesh (every face when it has
+ * none), and uncovX when one lies that far from the own and borrowed HP
+ * meshes; nUncovX counts the uncovX faces, so the uncov-only ride-along
+ * reaches a sector whose only uncovered LP faces are borrowed.
+ * @param C The cached sector.
+ * @param M The HP meshes tsimp_meshes listed.
+ * @param nm Their count.
+ * @param ownHP Nonzero when the sector has HP faces of its own. */
+static void tsc_tag_uncovered_borrowed(tscache_t* C, const tsmesh_t* M, int nm, int ownHP) {
+    tsimp_t* I = C->imp;
+    for (int f = 0; I && I->lpF && f < I->nLpF; f++) {
+        tsface_t* F = &I->lpF[f];
+        F->uncov = (uint8_t)(!ownHP || tsc_lp_face_gap(I->lpV, F, M, 1, TSC_LPCOV_TOL) > TSC_LPCOV_TOL);
+        F->uncovX = (nm > 1 && F->uncov)
+                  ? (uint8_t)(tsc_lp_face_gap(I->lpV, F, M, nm, TSC_LPCOV_TOL) > TSC_LPCOV_TOL)
+                  : F->uncov;
+        C->nUncovX += F->uncovX;
+    }
+}
 
 /** @brief Tags the LP faces a distance-binning game's sector draws apart from its HP mesh.
  *
@@ -4049,6 +4092,7 @@ static void tsc_tag_uncovered(tscache_t* C) {
         C->nUncov += F->uncov;
         C->nUncovX += F->uncovX;
     }
+    tsc_tag_uncovered_borrowed(C, M, nm, ownHP);
 }
 
 /* A sector named by an env poly-anim descriptor animates its packed verts in
@@ -4427,15 +4471,18 @@ static void tsc_decode_body(const twsrc_t* src, uint32_t s, uint32_t w0, const u
 }
 
 /* ---- HP faces borrowed from a source level ---------------------------------
- * A scene can be built from another level's terrain with its HP mesh cut
+ * A scene can be built from another level's terrain with its meshes cut
  * back: Spyro 2's title scene carries Skelos Badlands' sectors with ground
- * strips of HP under the full LP mesh. The layout names that source level
- * (terrain.hp_source_wad_entry); its terrain and texture sub-files are read
- * host-side once per session. A scene sector whose LP faces all occur, in
- * world space, in one source sector borrows the source HP faces lying within
- * TSC_LPCOV_TOL of the scene LP faces its own HP leaves uncovered, so under
- * extended LOD the scene draws HP surface where the source level has it. A
- * borrowed face keeps its source vertices, colours, face words and Tiledef
+ * strips of HP under the full LP mesh, and Spyro 3's carries Fireworks
+ * Factory's sectors with both meshes cut down. The layout names that source
+ * level (terrain.hp_source_wad_entry); its terrain and texture sub-files are
+ * read host-side once per session. A scene sector whose LP faces all occur,
+ * in world space, in one source sector borrows the source HP faces lying
+ * within TSC_LPCOV_TOL of the scene LP faces its own HP leaves uncovered or
+ * of the source LP faces it lacks, and those LP faces themselves, and takes
+ * the source sector's header for its tier verdicts (sector_header), so in
+ * either LOD mode the scene draws what the source level draws from the same
+ * view. A borrowed face keeps its source vertices, colours, face words and Tiledef
  * entries: its tiles decode from the source table through the host window
  * at TSRC_TEX_BASE and sample the source level's VRAM image, loaded into the
  * renderer's auxiliary VRAM bank, with the stock texel, palette and
@@ -4449,16 +4496,6 @@ static void tsc_decode_body(const twsrc_t* src, uint32_t s, uint32_t w0, const u
 #define HPS_TEX_IMAGE_W 512      /* the texture sub-file's first 512 KiB is VRAM
                                   * x 512-1023, rows 0-511 */
 
-typedef struct tsimp {
-    int nV, nF, nC;              /* borrowed HP verts, faces; colour words copied */
-    tsvert_t* V;                 /* the source sector's HP verts in this sector's frame */
-    tsface_t* F;                 /* the borrowed faces, indexing V and the colour banks */
-    uint8_t* nearCol;            /* the source sector's bytes from its near colour bank on */
-    uint8_t* farCol;             /* points into nearCol at the far colour bank */
-    int src;                     /* the source sector index */
-    int srcFlags;                /* the source sector's header flags (thdr_flags) */
-    int nCand, nDup;             /* candidates; dropped as duplicates */
-} tsimp_t;
 
 static struct {
     int state;                   /* 0 unread, 1 ready, -1 unavailable */
@@ -4652,7 +4689,7 @@ static int hps_match(const tscache_t* C) {
  * @param I The borrowed faces, or NULL. */
 static void tsimp_free(tsimp_t* I) {
     if (!I) return;
-    free(I->V); free(I->F); free(I->nearCol); free(I);
+    free(I->V); free(I->F); free(I->nearCol); free(I->lpV); free(I->lpF); free(I);
 }
 
 /** @brief Lists the HP meshes a sector's coverage tests measure against: its own, then its borrowed faces.
@@ -4899,14 +4936,56 @@ static int tsimp_colours(tsimp_t* I, const tscache_t* K) {
     return 1;
 }
 
+/** @brief Moves a source sector's vertices into a scene sector's frame.
+ * @param src The source vertices.
+ * @param n Their count.
+ * @param d The source origin minus the scene sector origin, per axis.
+ * @param out Receives the moved vertices (n entries).
+ * @return 1 when every moved coordinate fits the vertex type, else 0. */
+static int tsimp_move_verts(const tsvert_t* src, int n, const int d[3], tsvert_t* out) {
+    for (int j = 0; j < n; j++) {
+        const int x = src[j].x + d[0], y = src[j].y + d[1], z = src[j].z + d[2];
+        if (x < INT16_MIN || x > INT16_MAX || y < INT16_MIN || y > INT16_MAX || z < INT16_MIN || z > INT16_MAX)
+            return 0;
+        out[j] = (tsvert_t){ (int16_t)x, (int16_t)y, (int16_t)z };
+    }
+    return 1;
+}
+
+/** @brief Borrows the source sector's LP faces a cut-down scene sector lacks.
+ *
+ * The source LP vertex bank moves into the scene sector's frame whole; the
+ * faces tsimp_missing_lp marked are copied with their colour offsets, which
+ * index the source LP colour array read through the TSRC_TERR_BASE window.
+ * The uncov tags are set later by tsc_tag_uncovered.
+ * @param I The borrowed faces.
+ * @param K The source sector.
+ * @param miss The flags tsimp_missing_lp wrote.
+ * @param d The source origin minus the scene sector origin, per axis.
+ * @return 1 on success (also when nothing is marked), 0 on an allocation or range failure. */
+static int tsimp_borrow_lp(tsimp_t* I, const tscache_t* K, const uint8_t* miss, const int d[3]) {
+    if (!K->lpV || !K->lpF || K->nLpV <= 0) return 1;
+    I->lpV = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)K->nLpV);
+    I->lpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)K->nLpF);
+    if (!I->lpV || !I->lpF || !tsimp_move_verts(K->lpV, K->nLpV, d, I->lpV)) return 0;
+    I->nLpV = K->nLpV;
+    I->lpColBase = TSRC_TERR_BASE + K->lpColBase;
+    I->lpColSpan = K->lpColSpan;
+    for (int g = 0; g < K->nLpF; g++)
+        if (miss[g]) I->lpF[I->nLpF++] = K->lpF[g];
+    return 1;
+}
+
 /** @brief Widens a sector's vertex AABB over the vertices its borrowed faces use.
  * @param C The sector; C->imp is set. */
 static void tsimp_aabb(tscache_t* C) {
     const tsimp_t* I = C->imp;
-    for (int f = 0; f < I->nF; f++) {
-        const int ci[4] = { I->F[f].i0, I->F[f].i1, I->F[f].i2, I->F[f].i3 };
+    for (int f = 0; f < I->nF + I->nLpF; f++) {
+        const tsface_t* F = f < I->nF ? &I->F[f] : &I->lpF[f - I->nF];
+        const tsvert_t* V = f < I->nF ? I->V : I->lpV;
+        const int ci[4] = { F->i0, F->i1, F->i2, F->i3 };
         for (int q = 0; q < 4; q++) {
-            const tsvert_t* v = &I->V[ci[q]];
+            const tsvert_t* v = &V[ci[q]];
             if (v->x < C->vMinX) C->vMinX = v->x;
             if (v->x > C->vMaxX) C->vMaxX = v->x;
             if (v->y < C->vMinY) C->vMinY = v->y;
@@ -4945,7 +5024,7 @@ static int tsimp_source(CPUState* cpu, const tscache_t* C, int texTblMode) {
     return (!K->hpV || !K->hpF || K->nHpF <= 0 || tsimp_same_hp(C, K)) ? -1 : k;
 }
 
-/** @brief Borrows the source level's HP faces for a scene sector whose LP faces it holds.
+/** @brief Borrows the source level's HP and LP faces for a scene sector whose LP faces it holds.
  *
  * Runs on a distance-binning game whose layout names an HP source, for a
  * sector with uncov LP faces or whose matched source sector holds LP faces
@@ -4959,14 +5038,17 @@ static int tsimp_source(CPUState* cpu, const tscache_t* C, int texTblMode) {
  * (tsimp_near_uncov) or of a source LP face the sector lacks
  * (tsimp_near_missing). A candidate is borrowed unless it duplicates a
  * scene HP face (tsimp_dup); its materials come from the source table
- * (tsimp_retexture). The sector's AABB widens over the borrowed vertices.
+ * (tsimp_retexture). The source LP faces the sector lacks are borrowed
+ * too (tsimp_borrow_lp), and the source sector's bounding sphere and LP
+ * near bound are kept for sector_header. The sector's AABB widens over the
+ * borrowed vertices.
  * @param cpu The guest CPU state.
  * @param C The freshly decoded sector, uncov-tagged against its own HP.
  * @param texTblMode The walk's texture-table mode; nonzero borrows nothing.
  * @param hiDetail The hi-detail flag the sector's faces were decoded with.
  * @param sectorPtr The scene sector table's guest address.
  * @param sectorCnt The scene sector count.
- * @return 1 when faces were borrowed (C->imp set), else 0. */
+ * @return 1 when HP or LP faces were borrowed (C->imp set), else 0. */
 static int tsimp_attach(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetail,
                         uint32_t sectorPtr, uint32_t sectorCnt) {
     const int k = tsimp_source(cpu, C, texTblMode);
@@ -4981,15 +5063,11 @@ static int tsimp_attach(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetai
     tsimp_t* I = (tsimp_t*)calloc(1, sizeof(*I));
     if (!I) return 0;
     I->src = k; I->nV = K->nHpV; I->srcFlags = K->flags;
+    I->centreX = K->centreX; I->centreY = K->centreY; I->centreZ = K->centreZ; I->radius = K->radius;
+    I->lpNearSz = K->lpNearSz;
     I->V = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)K->nHpV);
     I->F = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)K->nHpF);
-    int ok = I->V && I->F && tsimp_colours(I, K);
-    for (int j = 0; ok && j < K->nHpV; j++) {
-        const int x = K->hpV[j].x + dx, y = K->hpV[j].y + dy, z = K->hpV[j].z + dz;
-        ok = x >= INT16_MIN && x <= INT16_MAX && y >= INT16_MIN && y <= INT16_MAX
-          && z >= INT16_MIN && z <= INT16_MAX;
-        I->V[j] = (tsvert_t){ (int16_t)x, (int16_t)y, (int16_t)z };
-    }
+    int ok = I->V && I->F && tsimp_colours(I, K) && tsimp_move_verts(K->hpV, K->nHpV, dvec, I->V);
     for (int f = 0; ok && f < K->nHpF; f++) {
         const tsface_t* H = &K->hpF[f];
         if (!hps_face_ok(H, I->nV)) continue;
@@ -5002,16 +5080,17 @@ static int tsimp_attach(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetai
         F->uncov = F->uncovX = 0;
         I->nF++;
     }
+    if (ok && nMiss) ok = tsimp_borrow_lp(I, K, miss, dvec);
     ENV_FLAG_LATCH(s_imp_census, "OPENPETE_TERRAIN_HPIMPORT_CENSUS");
     if (s_imp_census) {
         int idx = -1;
         for (uint32_t q = 0; q < sectorCnt && idx < 0; q++)
             if (rd(cpu, sectorPtr + q * 4u) == C->s) idx = (int)q;
         fprintf(stderr, "[hpimport] frame=%u sector=%d src=%d dorigin=%d,%d,%d srcHP=%d missLP=%d cand=%d dup=%d "
-                        "borrowed=%d\n", openpete_frame, idx, k, dx, dy, dz, K->nHpF, nMiss,
-                I->nCand, I->nDup, I->nF);
+                        "borrowed=%d borrowedLP=%d\n", openpete_frame, idx, k, dx, dy, dz, K->nHpF, nMiss,
+                I->nCand, I->nDup, I->nF, I->nLpF);
     }
-    if (!ok || I->nF == 0) { tsimp_free(I); return 0; }
+    if (!ok || (I->nF == 0 && I->nLpF == 0)) { tsimp_free(I); return 0; }
     C->imp = I;
     tsimp_aabb(C);
     return 1;
@@ -5180,12 +5259,11 @@ static uint32_t tsv_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCn
     return n;
 }
 
-/** @brief Points the walk at the extended sector table under extended LOD when it imports sectors.
+/** @brief Points the walk at the extended sector table when it imports sectors, in every LOD mode.
  * @param cpu The guest CPU state.
  * @param sectorPtr The scene sector table's address; replaced by TSV_TABLE_BASE.
  * @param sectorCnt The scene sector count; replaced by the extended count. */
 static void tsv_extend(CPUState* cpu, uint32_t* sectorPtr, uint32_t* sectorCnt) {
-    if (!openpete_no_lod) return;
     const uint32_t ext = tsv_refresh(cpu, *sectorPtr, *sectorCnt);
     if (ext > *sectorCnt) { *sectorPtr = TSV_TABLE_BASE; *sectorCnt = ext; }
 }
@@ -8233,11 +8311,85 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
     return 0;
 }
 
+/* The per-sector state an LP face bake reads (tgpu_bake_lp_face). */
+typedef struct {
+    const tsvert_t* V;           /* the LP vertex bank */
+    const tsvert_t* Vprev;       /* the previous-tick bank, or NULL to bake prev == cur */
+    int nV;                      /* the bank's vertex count */
+    uint32_t colBase;            /* the LP colour array (guest or host-window address) */
+    const canim_t* CA;           /* env-anim previous-tick colours, or NULL */
+    int sec_index;               /* the authored-correction key; -1 for none */
+} tgpu_lpset;
+
+/** @brief Bakes one LP face into the LP arena (or its blend arena).
+ *
+ * The face's corners, flags (tier LP, fill tag, uncov and uncovX,
+ * double-sided, quad, floor, admission, OT bias) and colours go into one or
+ * two triangles, the quad split on the i1-i2 diagonal as the walk's LP emit
+ * does. A face with an out-of-bank index is skipped, mirroring the walk.
+ * @param cpu The guest CPU state.
+ * @param buf The per-arena buffers.
+ * @param ab The arena family base (anim twins or plain).
+ * @param with_var 1 when near-variant chunks are baked.
+ * @param base_ff The slot and generation face-flag bits.
+ * @param lp_bucket The LP material bucket.
+ * @param L The face's bank, colours and correction key.
+ * @param F The face.
+ * @param f The face's index in its list (the correction key).
+ * @return 0 on success, -1 when an arena is full. */
+static int tgpu_bake_lp_face(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, uint32_t base_ff,
+                             int lp_bucket, const tgpu_lpset* L, const tsface_t* F, int f) {
+    if (F->i0 >= L->nV || F->i1 >= L->nV || F->i2 >= L->nV || F->i3 >= L->nV)
+        return 0;   /* mirrors the walk's OOB skip */
+    tgpu_face_t T;
+    memset(&T, 0, sizeof(T));
+    T.c[0] = tgpu_p4_of(&L->V[F->i0]); T.c[1] = tgpu_p4_of(&L->V[F->i1]);
+    T.c[2] = tgpu_p4_of(&L->V[F->i2]); T.c[3] = tgpu_p4_of(&L->V[F->i3]);
+    T.face_flags = base_ff | (1u << 9)                       /* tier LP */
+                 | (F->gapfill ? (1u << 11) : 0u)
+                 | ((uint32_t)F->uncov << 17)                /* LP uncovered */
+                 | ((uint32_t)F->uncovX << 16)               /* ... counting borrowed HP */
+                 | (F->dside   ? (1u << 12) : 0u)            /* LP w0&0x80 */
+                 | (F->quad    ? (1u << 14) : 0u)
+                 | (F->floorf  ? (1u << 18) : 0u)
+                 | (((uint32_t)F->admit  & 0x1Fu) << 19)
+                 | (((uint32_t)F->otbias & 0x1Fu) << 24);
+    T.matf0 = tgpu_pack_mat0(&F->mat)    /* untextured (blend may be set) */
+            | ((uint32_t)lp_bucket << 24);
+    uint32_t rc[4];
+    rc[0] = rd(cpu, L->colBase + F->c0) & 0xFFFFFFu;
+    rc[1] = rd(cpu, L->colBase + F->c1) & 0xFFFFFFu;
+    rc[2] = rd(cpu, L->colBase + F->c2) & 0xFFFFFFu;
+    rc[3] = F->quad ? (rd(cpu, L->colBase + F->c3) & 0xFFFFFFu) : 0u;
+    uint32_t prc[4];
+    tgpu_prev_cols(L->CA, 0, F->c0, F->c1, F->c2, F->quad ? F->c3 : F->c2, rc, prc);
+    uint32_t fixrgb;   /* authored-data corrections (unpainted vertex colours) - the
+                        * walk applies these per emit; bake them (static per level). */
+    if (L->sec_index >= 0 && lp_artfix_lookup(cpu, L->sec_index, f, &fixrgb))
+        rc[0] = rc[1] = rc[2] = rc[3] = prc[0] = prc[1] = prc[2] = prc[3] = fixrgb;
+    tgpu_corner_t k[4];
+    memset(k, 0, sizeof(k));
+    const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
+    for (int q = 0; q < 4; q++) {
+        k[q].p = tgpu_p4_of(&L->V[vi[q]]);
+        k[q].pp = L->Vprev ? tgpu_p4_of(&L->Vprev[vi[q]]) : k[q].p;
+        T.pc[q] = k[q].pp;
+        k[q].rgb_far = k[q].rgb_near = rc[q];
+        k[q].prgb_far = k[q].prgb_near = prc[q];
+    }
+    int da = F->mat.blend ? tgpu_arena_of(&F->mat) : (int)OPTC_ARENA_LP;
+    /* LP quad: strip diagonal i1-i2 (no i2/i3 swap - see the LP emit) */
+    if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) return -1;
+    if (F->quad && tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[1], k[2], k[3], 1) != 0) return -1;
+    return 0;
+}
+
 /** @brief Builds and uploads all of one sector's chunks.
  *
- * Bakes the LP tier and the HP tier's flat variant, then each HQ-eligible
- * HP face's near variants (tgpu_bake_near), into per-arena buffers, and
- * uploads them with tgpu_upload_chunks.
+ * Bakes the LP tier (the sector's own faces, then its borrowed LP faces)
+ * and the HP tier's flat variant, then each HQ-eligible HP face's near
+ * variants (tgpu_bake_near), into per-arena buffers, and uploads them with
+ * tgpu_upload_chunks.
  * @param cpu The guest CPU state.
  * @param slot The sector's decode slot index.
  * @param SC The decoded sector.
@@ -8295,59 +8447,24 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     /* Every LP face keys the same (untextured, LP tier), so its material
      * bucket is a per-sector constant. 0 = no material claims these faces. */
     const int lp_bucket = openpete_mods_material_terrain_bucket(-1, 0, 1);
-    for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++) {
-        const tsface_t* F = &SC->lpF[f];
-        if (F->i0 >= SC->nLpV || F->i1 >= SC->nLpV || F->i2 >= SC->nLpV || F->i3 >= SC->nLpV)
-            continue;   /* mirrors the walk's OOB skip */
-        tgpu_face_t T;
-        memset(&T, 0, sizeof(T));
-        T.c[0] = tgpu_p4_of(&SC->lpV[F->i0]); T.c[1] = tgpu_p4_of(&SC->lpV[F->i1]);
-        T.c[2] = tgpu_p4_of(&SC->lpV[F->i2]); T.c[3] = tgpu_p4_of(&SC->lpV[F->i3]);
-        T.face_flags = base_ff | (1u << 9)                       /* tier LP */
-                     | (F->gapfill ? (1u << 11) : 0u)
-                     | ((uint32_t)F->uncov << 17)                /* LP uncovered */
-                     | ((uint32_t)F->uncovX << 16)               /* ... counting borrowed HP */
-                     | (F->dside   ? (1u << 12) : 0u)            /* LP w0&0x80 */
-                     | (F->quad    ? (1u << 14) : 0u)
-                     | (F->floorf  ? (1u << 18) : 0u)
-                     | (((uint32_t)F->admit  & 0x1Fu) << 19)
-                     | (((uint32_t)F->otbias & 0x1Fu) << 24);
-        T.matf0 = tgpu_pack_mat0(&F->mat)    /* untextured (blend may be set) */
-                | ((uint32_t)lp_bucket << 24);
-        uint32_t rc[4];
-        rc[0] = rd(cpu, SC->lpColBase + F->c0) & 0xFFFFFFu;
-        rc[1] = rd(cpu, SC->lpColBase + F->c1) & 0xFFFFFFu;
-        rc[2] = rd(cpu, SC->lpColBase + F->c2) & 0xFFFFFFu;
-        rc[3] = F->quad ? (rd(cpu, SC->lpColBase + F->c3) & 0xFFFFFFu) : 0u;
-        uint32_t prc[4];
-        tgpu_prev_cols(CA, 0, F->c0, F->c1, F->c2, F->quad ? F->c3 : F->c2, rc, prc);
-        {   /* authored-data corrections (unpainted vertex colours) - the
-             * walk applies these per emit; bake them (static per level). */
-            uint32_t fixrgb;
-            if (lp_artfix_lookup(cpu, sec_index, f, &fixrgb))
-                rc[0] = rc[1] = rc[2] = rc[3] = prc[0] = prc[1] = prc[2] = prc[3] = fixrgb;
-        }
-        tgpu_corner_t k[4];
-        memset(k, 0, sizeof(k));
-        const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
-        for (int q = 0; q < 4; q++) {
-            k[q].p = tgpu_p4_of(&SC->lpV[vi[q]]);
-            k[q].pp = (anim && !vsnap) ? tgpu_p4_of(&SC->lpVprev[vi[q]]) : k[q].p;
-            T.pc[q] = k[q].pp;
-            k[q].rgb_far = k[q].rgb_near = rc[q];
-            k[q].prgb_far = k[q].prgb_near = prc[q];
-        }
-        int da = F->mat.blend ? tgpu_arena_of(&F->mat) : (int)OPTC_ARENA_LP;
-        /* LP quad: strip diagonal i1-i2 (no i2/i3 swap - see the LP emit) */
-        if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) goto done;
-        if (F->quad &&
-            tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[1], k[2], k[3], 1) != 0) goto done;
+    const tgpu_lpset own_lp = { SC->lpV, (anim && !vsnap) ? SC->lpVprev : NULL, SC->nLpV,
+                                SC->lpColBase, CA, sec_index };
+    for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++)
+        if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff, lp_bucket, &own_lp, &SC->lpF[f], f) != 0)
+            goto done;
+    if (SC->imp && SC->imp->lpV && SC->imp->lpF) {
+        /* Borrowed LP faces: the source LP colours through the host window,
+         * no previous-tick state, no authored correction. */
+        const tsimp_t* I = SC->imp;
+        const tgpu_lpset bor_lp = { I->lpV, NULL, I->nLpV, I->lpColBase, NULL, -1 };
+        for (int f = 0; f < I->nLpF; f++)
+            if (tgpu_bake_lp_face(cpu, buf, ab, with_var, base_ff, lp_bucket, &bor_lp, &I->lpF[f], f) != 0)
+                goto done;
     }
 
     /* ---- HP tier: flat variant + the HQ 2x2 subdivide variant; the
      * sector's own faces, then the faces it borrows from the HP source
-     * level (host colours, no previous-tick state, drawn under extended
-     * LOD only: FF_BORROWED) ---- */
+     * level (host colours, no previous-tick state: FF_BORROWED) ---- */
     tgpu_hpctx X = { cpu, buf, ab, with_var, anim && !vsnap, hdfold, canim_only, base_ff, hqTable };
     tgpu_hpset own = { SC->hpV, SC->hpVprev, SC->nHpV, NULL, NULL, SC->nearBase, SC->farBase, CA, 0u };
     tgpu_own_bank(SC, &X, &own);
@@ -8722,6 +8839,37 @@ typedef struct tn_secverd_s {
 static tn_secverd s_pre_verd[1024];
 static uint8_t    s_tgpu_own[1024];      /* GPU owns this sector this walk */
 
+/* The sector header the tier verdicts read: the sector's own, or for a
+ * sector that borrows from the HP source level (C->imp) the source
+ * sector's, since the scene sector stands in for it whole. */
+typedef struct {
+    int cx, cy, cz, r;           /* bounding sphere centre and radius */
+    int flags;                   /* header flags (thdr_flags) */
+    int hasLP, hasHP;            /* the sector draws LP / HP faces at all */
+    int lpNearSz;                /* tscache_t.lpNearSz */
+} tn_sechdr;
+
+/** @brief Fills the header the tier verdicts read for a sector.
+ *
+ * A sector without borrowed faces reads its own header. A sector with
+ * borrowed faces reads the matched source sector's bounding sphere, flags
+ * and LP near bound, and counts its borrowed faces as faces of their tier,
+ * so it bins, culls and selects its tiers as the source level does the
+ * sector it was cut from, in every LOD mode.
+ * @param SC The sector's cache entry.
+ * @param H Receives the header. */
+static void sector_header(const tscache_t* SC, tn_sechdr* H) {
+    const tsimp_t* I = SC->imp;
+    H->cx = I ? I->centreX : SC->centreX;
+    H->cy = I ? I->centreY : SC->centreY;
+    H->cz = I ? I->centreZ : SC->centreZ;
+    H->r = I ? I->radius : SC->radius;
+    H->flags = I ? I->srcFlags : SC->flags;
+    H->lpNearSz = I ? I->lpNearSz : SC->lpNearSz;
+    H->hasLP = SC->nLpF > 0 || (I && I->nLpF > 0);
+    H->hasHP = SC->nHpF > 0 || (I && I->nF > 0);
+}
+
 /** @brief Computes a distance-binning game's own HP and LP list verdicts for a sector.
  *
  * The draw's list binning, environment.s:800225A0-80022640: vz is the
@@ -8731,21 +8879,21 @@ static uint8_t    s_tgpu_own[1024];      /* GPU owns this sector this walk */
  * below hp_far (hp_far_tight on a sector with tight_flags); either list
  * also needs faces and its no-tier flag clear. A sector can land in both
  * lists where the two distance bands overlap.
- * @param SC The sector's cache entry.
+ * @param H The sector header (sector_header).
  * @param cbin The bounding centre's view-Z through the binning matrix.
  * @param binHP Receives the HP list verdict.
  * @param binLP Receives the LP list verdict. */
-static void sector_bin_lists(const tscache_t* SC, double cbin, int* binHP, int* binLP) {
-    const int flags = SC->flags;
+static void sector_bin_lists(const tn_sechdr* H, double cbin, int* binHP, int* binLP) {
+    const int flags = H->flags;
     double vz = ngte_ir_clamp(cbin);
-    int r = SC->radius;
+    int r = H->r;
     int shift = (flags & (int)game_layout.terrain.lp_near_shift_flag)
                 ? game_layout.terrain.lp_near_shift : 0;
     int hpFar = (flags & (int)game_layout.terrain.tight_flags)
                 ? game_layout.terrain.hp_far_tight : game_layout.terrain.hp_far;
-    *binLP = !(flags & (int)game_layout.terrain.no_lp_flag) && SC->nLpF > 0
+    *binLP = !(flags & (int)game_layout.terrain.no_lp_flag) && H->hasLP
              && (vz + r - game_layout.terrain.lp_near + shift > 0);
-    *binHP = !(flags & (int)game_layout.terrain.no_hp_flag) && SC->nHpF > 0
+    *binHP = !(flags & (int)game_layout.terrain.no_hp_flag) && H->hasHP
              && (vz - r < hpFar);
 }
 
@@ -8791,21 +8939,22 @@ static int sector_lp_ride(const tscache_t* SC, const tn_wcfg* G, int drawHP, int
  * the sector's bound (tscache_t.lpNearSz), and the face walk skips a face
  * whose corners are all tagged. A game without the outcode and a sector out
  * of the band return 0.
- * @param SC The sector's cache entry.
+ * @param H The sector header (sector_header).
  * @param cbin The bounding centre's view-Z through the binning matrix.
  * @return The bound, or 0 when the walk tags no vertex of the sector. */
-static int sector_lp_near_thr(const tscache_t* SC, double cbin) {
-    if (!SC->lpNearSz) return 0;
-    return (ngte_ir_clamp(cbin) - SC->radius - game_layout.terrain.lp_near_band <= 0)
-           ? SC->lpNearSz : 0;
+static int sector_lp_near_thr(const tn_sechdr* H, double cbin) {
+    if (!H->lpNearSz) return 0;
+    return (ngte_ir_clamp(cbin) - H->r - game_layout.terrain.lp_near_band <= 0)
+           ? H->lpNearSz : 0;
 }
 
 /** @brief Computes one sector's tier and fill verdicts in the serial prepass.
  *
  * A pure function of the sector cache entry and the latched walk config,
  * computed once per sector so the GPU-claim decision and the face walk read
- * one result. The sector's bounding centre goes through the binning matrix
- * (cbin its view-Z). Under the sphere cull a sector outside the displayed
+ * one result. The bounding centre of the sector's header (sector_header: the
+ * source sector's for a sector with borrowed faces) goes through the
+ * binning matrix (cbin its view-Z). Under the sphere cull a sector outside the displayed
  * half-widths draws neither list. A game whose draw bins by distance
  * (terrain.hp_far, LOD on) takes the draw's own list binning, where a sector
  * can land in both lists; otherwise the flags decide, with the tier-faithful
@@ -8821,11 +8970,12 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     const int noLP  = (int)game_layout.terrain.no_lp_flag;
     const int noHPf = (int)game_layout.terrain.no_hp_flag;
     const int forceLP = (int)game_layout.terrain.force_lp_flag;
+    tn_sechdr H;
+    sector_header(SC, &H);
     int flags = SC->flags;
     int nLpF = SC->nLpF, nHpF = SC->nHpF;
     double cbin, c1m, c2m;
-    ngte_mac(G->Mbin, G->camy - SC->centreY, G->camz - SC->centreZ,
-             SC->centreX - G->camx, &c1m, &c2m, &cbin);
+    ngte_mac(G->Mbin, G->camy - H.cy, G->camz - H.cz, H.cx - G->camx, &c1m, &c2m, &cbin);
     int lodThr = G->fogRefBase >> 2;
     int drawHP, drawLP;
     int culled = 0;
@@ -8834,32 +8984,31 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
          * frame cull_wx/cull_wy are 1.0 and this is the draw's own verdict,
          * and where the wedge fill is active the side wedges keep the sectors
          * the 4:3 half-width would reject. */
-        culled = tsec_sphere_cull(c1m, c2m, cbin, SC->radius, G->cull_wx, G->cull_wy);
+        culled = tsec_sphere_cull(c1m, c2m, cbin, H.r, G->cull_wx, G->cull_wy);
     }
     int binHP = 0, binLP = 0;
-    if (game_layout.terrain.hp_far) sector_bin_lists(SC, cbin, &binHP, &binLP);
+    if (game_layout.terrain.hp_far) sector_bin_lists(&H, cbin, &binHP, &binLP);
     if (game_layout.terrain.hp_far && !openpete_no_lod) {
         drawHP = binHP; drawLP = binLP;
     } else {
-        /* Under extended LOD a sector's borrowed HP faces count as its HP;
-         * the no-HP flag that gates them is the source sector's, since a
-         * scene sector cut down to LP carries the flag for its emptied bank. */
-        drawHP = (!(flags & noHPf) && nHpF > 0) ||
-                 (openpete_no_lod && SC->imp && !(SC->imp->srcFlags & noHPf));
+        /* A sector's borrowed HP faces count as its HP; the no-HP flag that
+         * gates them is the source sector's, since a scene sector cut down
+         * to LP carries the flag for its emptied bank. */
+        drawHP = (!(flags & noHPf) && nHpF > 0) || (SC->imp && !(SC->imp->srcFlags & noHPf));
         drawLP = !(flags & noLP) && nLpF > 0 && ((flags & forceLP) || !drawHP);
         if (G->tier_faithful) {
-            drawHP = drawHP && ((double)lodThr > cbin - SC->radius);
+            drawHP = drawHP && ((double)lodThr > cbin - H.r);
             drawLP = !(flags & noLP) && nLpF > 0 &&
-                     ((flags & forceLP) || (double)lodThr < cbin + SC->radius + 0x100);
+                     ((flags & forceLP) || (double)lodThr < cbin + H.r + 0x100);
         }
     }
     if (culled) { drawHP = 0; drawLP = 0; }
-    int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
+    int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - H.r);
     const int ride = (!culled && !drawLP && !(flags & noLP) && nLpF > 0)
                      ? sector_lp_ride(SC, G, drawHP, binLP) : TN_RIDE_NONE;
     drawLP = drawLP || ride != TN_RIDE_NONE;
     int fillLP = G->holefill && !culled && !(flags & noLP) && nLpF > 0
-                 && ((double)lodThr < cbin + SC->radius + 0x100)
+                 && ((double)lodThr < cbin + H.r + 0x100)
                  && !(openpete_no_lod && drawHP);
     V->cbin = cbin;
     V->drawHP = (uint8_t)drawHP; V->drawLP = (uint8_t)drawLP;
@@ -8867,7 +9016,7 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     V->lpGapOnly = (uint8_t)(ride == TN_RIDE_GAPONLY);
     V->lpUncovOnly = (uint8_t)(ride == TN_RIDE_UNCOVONLY);
     V->fillLP = (uint8_t)fillLP; V->secInLOD = (uint8_t)secInLOD;
-    V->lpNearThr = (uint16_t)(drawHP ? sector_lp_near_thr(SC, cbin) : 0);
+    V->lpNearThr = (uint16_t)(drawHP ? sector_lp_near_thr(&H, cbin) : 0);
 }
 
 /** @brief Returns 1 when an LP face draws in the world pass under its sector's ride-along verdict.
@@ -8887,8 +9036,8 @@ static int tn_lp_face_rides(const tn_secverd* SV, const tsface_t* F) {
 /** @brief Applies the draw's near rule for an LP face: the LP near outcode where it applies, else the authored admission.
  *
  * On a game with terrain.lp_near_sz the near outcode replaces the
- * admission for a face on its sector's HP mesh (uncov clear; uncovX under
- * extended LOD, where the borrowed HP faces draw) while the
+ * admission for a face on its sector's HP mesh and borrowed HP faces
+ * (uncovX clear; uncovX equals uncov without borrowed faces) while the
  * sector's HP draws (a nonzero bound, sector_verdicts): the face drops when
  * every corner's SZ3 is under the bound, so a dropped LP face always has its
  * HP surface drawn in its place. Every other face takes the authored
@@ -8907,8 +9056,7 @@ static const char* tn_lp_face_near_drop(const tn_secverd* SV, const tsface_t* F,
                                         const double cz[4], int quad, int admit,
                                         int fogRefBase) {
     const int nc = quad ? 4 : 3;
-    const int uncov = openpete_no_lod ? F->uncovX : F->uncov;   /* borrowed HP draws under extended only */
-    if (game_layout.terrain.lp_near_sz && SV->lpNearThr && !uncov) {
+    if (game_layout.terrain.lp_near_sz && SV->lpNearThr && !F->uncovX) {
         const double thr = (double)SV->lpNearThr;
         int under = 0;
         for (int k = 0; k < nc; k++) under += cz[k] < thr;
@@ -9147,14 +9295,72 @@ static uint32_t tn_pass_bank(tn_wctx* W, int passBorrow, const tscache_t* SC, ui
     return W->emit_bank ? TSRC_TEX_BASE : hqTableScene;
 }
 
+/* One walk pass's face source: vertices, faces, guest face records and
+ * colour arrays (tn_pass_source). */
+typedef struct {
+    const tsvert_t* V; const tsface_t* F;
+    int nv, nf;
+    uint32_t faces;              /* guest face records; 1 = none (no queue entry matches it) */
+    const float* vF;             /* sub-tick fractional verts, or NULL */
+    uint32_t lpCol, nearB, farB; /* colour arrays for the cpu read path */
+    const uint8_t *h_lp, *h_near, *h_far;   /* the same as host pointers, or NULL */
+} tn_passsrc;
+
+/** @brief Selects the faces one walk pass draws for a sector.
+ *
+ * Passes 0 and 2 walk the sector's LP faces and pass 1 its HP faces, with
+ * the sector's colour arrays (env-anim mixed through CAm). Pass 3 walks the
+ * HP faces borrowed from the HP source level and passes 4 and 5 the
+ * borrowed LP faces (C->imp): host vertices in the sector's frame, no
+ * guest face records, and colours read from the source level's bytes (the
+ * borrowed HP colour copy, the source LP array through the TSRC_TERR_BASE
+ * window), with no env-anim mix and no sub-tick vertices.
+ * @param SC The sector.
+ * @param pass The pass, 0-5.
+ * @param CAm The sector's env-anim colour mix, or NULL.
+ * @param P Receives the source.
+ * @return 1 when the pass has faces to walk, else 0. */
+static int tn_pass_source(const tscache_t* SC, int pass, const canim_t* CAm, tn_passsrc* P) {
+    memset(P, 0, sizeof(*P));
+    const tsimp_t* I = SC->imp;
+    if (pass >= 3) {
+        if (!I) return 0;
+        P->faces = 1u;
+        if (pass == 3) {
+            P->V = I->V; P->F = I->F; P->nv = I->nV; P->nf = I->nF;
+            P->h_near = I->nearCol; P->h_far = I->farCol;
+        } else {
+            P->V = I->lpV; P->F = I->lpF; P->nv = I->nLpV; P->nf = I->nLpF;
+            P->lpCol = I->lpColBase;
+            P->h_lp = (const uint8_t*)tn_host_span(I->lpColBase, I->lpColSpan);
+        }
+        return P->V && P->F && P->nf > 0;
+    }
+    const int lp = (pass != 1);
+    if (lp) {
+        P->V = SC->lpV; P->F = SC->lpF; P->nv = SC->nLpV; P->nf = SC->nLpF;
+        P->faces = SC->lpFaces; P->lpCol = SC->lpColBase;
+        if (SC->vfracPres == s_vanim_pres) P->vF = SC->lpVf;
+    } else {
+        P->V = SC->hpV; P->F = SC->hpF; P->nv = SC->nHpV; P->nf = SC->nHpF;
+        P->faces = SC->hpFaces; P->nearB = SC->nearBase; P->farB = SC->farBase;
+        if (SC->vfracPres == s_vanim_pres) P->vF = SC->hpVf;
+    }
+    tn_col_ptrs(CAm, lp, P->lpCol, P->nearB, P->farB, SC->lpColSpan, SC->hpColSpan,
+                &P->h_lp, &P->h_near, &P->h_far);
+    return P->V && P->F;   /* alloc failure: skip the pass */
+}
+
 /** @brief Walks one visible sector's faces into W's triangle run.
  *
  * Reads the sector's precomputed verdicts (drawHP, drawLP, the fill and
  * far-only flags). A sector the retained GPU cache owns publishes those
  * verdicts as sector parameters and skips the face walk; an owned sector
  * wholly behind the near threshold publishes nothing. Otherwise the walk
- * runs three passes: 0 the LP tier drawn behind HP, 1 the HP tier, 2 the LP
- * hole-fill backing, each skipped when its verdict is off.
+ * runs six passes: 0 the LP tier drawn behind HP, 1 the HP tier, 2 the LP
+ * hole-fill backing, then the faces borrowed from the HP source level: 3
+ * HP, 4 LP and 5 LP hole-fill (tn_pass_source), each skipped when its
+ * verdict is off.
  * @param W The walk context receiving the triangles.
  * @param G The walk's shared inputs.
  * @param vi The sector's index in the visible list. */
@@ -9362,11 +9568,14 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         int sd_vfront = 0, sd_nv = 0, sd_nf = 0;
 
       const canim_t* CAm = tsc_canim_mix(SC);   /* env-anim colours, sub-tick */
-      for (int pass = 0; pass < 4; pass++) {
-        int passFill = (pass == 2);               /* LP hole-fill backing */
+      for (int pass = 0; pass < 6; pass++) {
+        int passFill = (pass == 2 || pass == 5);  /* LP hole-fill backing */
         int passBorrow = (pass == 3);             /* HP faces borrowed from the source level */
-        int passLP = (pass == 0 || pass == 2);    /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP,
-                                                   * 3 = borrowed HP (extended LOD only) */
+        int passBorLP = (pass >= 4);              /* LP faces borrowed from the source level */
+        int passLP = (pass == 0 || pass == 2 || passBorLP);
+                                                  /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP,
+                                                   * 3 = borrowed HP, 4 = borrowed WORLD LP,
+                                                   * 5 = borrowed fill LP */
         int fmDumpOnly = 0;                       /* facemap: project + dump, never emit */
         if (pass == 0 && !drawLP) {
             /* The inspector forces the same dump-only walk facemap uses, so an
@@ -9375,43 +9584,18 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             if ((s_facemap_active || s_fp_on) && !(flags & 0x2000) && nLpF > 0) fmDumpOnly = 1;
             else continue;
         }
-        if (pass == 1 && !drawHP) continue;
-        if (passBorrow && !(drawHP && SC->imp && openpete_no_lod)) continue;
+        if ((pass == 1 || passBorrow) && !drawHP) continue;
+        if (pass == 4 && !drawLP) continue;
         if (passFill && !fillLP) continue;
         if (passFill && SC->polyanim) continue;   /* stale LP bank - never backstop-fill */
-
-        uint32_t faces; int nv, nf, faceStride;
-        const tsvert_t* cverts; const tsface_t* cfaces;
-        const float* cvF = NULL;   /* sub-tick fractional verts (poly-anim sectors only) */
-        uint32_t lpColBase = 0, nearBase = 0, farBase = 0;   /* colour arrays */
-        if (passLP) {
-            cverts = SC->lpV; cfaces = SC->lpF; nv = nLpV; nf = nLpF;
-            faces = SC->lpFaces; faceStride = 8;
-            lpColBase = SC->lpColBase;                     /* LP colours (4B, no fog) */
-            if (SC->vfracPres == s_vanim_pres) cvF = SC->lpVf;
-            /* SC->lpg_* is pre-warmed by the serial prepass (tsc_lp_grade),
-             * which also feeds the level-mean accumulator; workers only read
-             * it here (lp_grade_apply below). */
-        } else if (passBorrow) {
-            /* Host verts in this sector's frame, host colour banks, no
-             * guest face records: the near-queue lookups key on a record
-             * address, and an odd base matches no queue entry (the queues
-             * hold word-aligned records and zero padding). */
-            cverts = SC->imp->V; cfaces = SC->imp->F; nv = SC->imp->nV; nf = SC->imp->nF;
-            faces = 1u; faceStride = 16;
-        } else {
-            cverts = SC->hpV; cfaces = SC->hpF; nv = nHpV; nf = nHpF;
-            faces = SC->hpFaces; faceStride = 16;
-            nearBase = SC->nearBase;                       /* HP near colours (4B) */
-            farBase  = SC->farBase;                        /* HP far  colours (4B) */
-            if (SC->vfracPres == s_vanim_pres) cvF = SC->hpVf;
-        }
-        if (!cverts || !cfaces) continue;                  /* alloc failure: skip pass */
-        /* Colour bases -> host pointers (fallback: the cpu read path). */
-        const uint8_t *h_lp = NULL, *h_near = NULL, *h_far = NULL;
-        if (passBorrow) { h_near = SC->imp->nearCol; h_far = SC->imp->farCol; }
-        else tn_col_ptrs(CAm, passLP, lpColBase, nearBase, farBase,
-                         SC->lpColSpan, SC->hpColSpan, &h_lp, &h_near, &h_far);
+        tn_passsrc P;
+        if (!tn_pass_source(SC, pass, CAm, &P)) continue;
+        const uint32_t faces = P.faces; const int nv = P.nv, nf = P.nf;
+        const tsvert_t* cverts = P.V; const tsface_t* cfaces = P.F;
+        const float* cvF = P.vF;   /* sub-tick fractional verts (poly-anim sectors only) */
+        const uint32_t lpColBase = P.lpCol, nearBase = P.nearB, farBase = P.farB;
+        const uint8_t *h_lp = P.h_lp, *h_near = P.h_near, *h_far = P.h_far;
+        const int faceStride = passLP ? 8 : 16;
         int host_col = passLP ? (h_lp != NULL) : (h_near != NULL && h_far != NULL);
         W->emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
         /* Borrowed HP and imported sectors: auxiliary bank, source table,
@@ -9727,7 +9911,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * and behind-camera corners included - m3 ≤ 0 corners are marked
              * by their value; the offline side clips). secdraw distinguishes
              * "sector's LP pass ran normally" from the forced dump-only walk. */
-            if (s_facemap_active && passLP && !passFill) {
+            if (s_facemap_active && passLP && !passFill && !passBorLP) {
                 const int ci[4] = { i0, i1, i2, i3 };
                 int nc = quad ? 4 : 3;
                 fprintf(stderr, "[facemap] s=%u f=%d q=%d gf=%d flr=%d fb=%d fr=%d secdraw=%d",
@@ -9743,7 +9927,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * the surface that should cover the hole is the one not drawn).
              * The fill pass is skipped: it re-walks faces pass 0 already
              * offered. */
-            if (s_fp_on && !passFill)
+            if (s_fp_on && !passFill && !passBorLP)
                 fp_test_face(passLP, (int)i, f, F->fillcand, sv, i0, i1, i2, i3, quad);
             if (fmDumpOnly) continue;
             /* fardbg verdict trail: every face dropped AFTER its [fardbg-face]
@@ -10053,8 +10237,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 rc3 = quad ? terrain_color(cpu, passLP, lpColBase, nearBase, farBase, c3, sv[i3].vz, fogRef) : 0;
             }
             /* Authored-data corrections (unpainted vertex colours) - see
-             * k_lp_artfix. Applies to LP world faces and their fill twins. */
-            if (passLP) {
+             * k_lp_artfix. Applies to LP world faces and their fill twins;
+             * the table indexes the scene's own faces, so borrowed faces
+             * take none. */
+            if (passLP && !passBorLP) {
                 uint32_t fixrgb;
                 if (lp_artfix_lookup(cpu, (int)i, f, &fixrgb))
                     rc0 = rc1 = rc2 = rc3 = fixrgb;
