@@ -150,3 +150,7 @@ attract-demo-medallion                   | 1169  | 2    |        | 1170
 # a 49630-unit waypoint segment that func_8002BFE0 interpolates over two ticks;
 # a distance bound held it at tick N-1 on the sub-tick view. Blessed pre-fix.
 intro-cutpath-long-segment|4120|2||4123,4124,4125,4126|--skip-to-cutscene intro
+# attract-collect-hud-jump: classes 0x15a/0x15b project their position to
+# screen space in place on state 1 -> 2 (a placement); a distance bound held
+# or lerped it on the sub-tick view. Blessed pre-fix.
+attract-collect-hud-jump|13058|2||13060,13061,13062,13063,13064

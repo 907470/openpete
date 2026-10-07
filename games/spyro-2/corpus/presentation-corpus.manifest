@@ -113,3 +113,7 @@ crush-intro-orb-stretch|1004|2||1010,1011,1012,1013,1014|--skip-to-cutscene crus
 # crush_intro cutscene, VBL 1603: on a camera cut the mobys vanish for a
 # moment on the sub-tick view (native); the canonical ticks draw them.
 crush-intro-cut-mobys|1597|2||1601,1602,1603,1604,1605|--skip-to-cutscene crush_intro
+# attract-demo-spawn-jump: a class 0x1e3 moby placed without a marker the
+# native path reads (named residual); the sub-tick view lerps across it.
+# Blessed pre-fix.
+attract-demo-spawn-jump|14039|2||14041,14042,14043,14044,14045

@@ -167,3 +167,10 @@ second-warning-bianca-tree|1289|2||1293,1295,1297,1298,1299,1300,1301|--skip-to-
 # the_second_warning cutscene, VBL 1785-1793: Hunter interpolates wrongly on
 # the sub-tick view (native).
 second-warning-hunter|1781|2||1785,1787,1788,1789,1790,1791,1793|--skip-to-cutscene the_second_warning
+# attract-projectile-jump: class 0x1a2 copies a source moby's position into
+# a hidden record on state 30 -> 4 (a placement). Blessed pre-fix.
+attract-projectile-jump|4424|2||4426,4427,4428,4429,4430
+# second-warning-hunter-cut: an authored camera cut at VBL 1351 while Hunter
+# steps one 1639-unit sampler key; the held cut keeps the camera at tick N-1
+# while his record interpolated. Blessed pre-fix.
+second-warning-hunter-cut|1347|2||1349,1350,1351,1352,1353|--skip-to-cutscene the_second_warning
