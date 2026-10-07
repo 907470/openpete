@@ -12,6 +12,20 @@
 # disc-cue: 51448cef393383b175d88aa11b7173db710a66549bd8276d38a2ac9a5bc197eb games/spyro-2/spyro-2/build/SCUS-94425.cue
 # environment-accept: recipe 1c861b03f adds spirv-tools (spirv-opt SSA rewrite of the terrain vertex stages); identity baselines migrate with the presentation manifests
 # tile	differing pixels vs the canon tile of the same frame (target 0)
+attract-demo-spawn-jump__ident__14039-vk.png	0
+attract-demo-spawn-jump__ident__14041-vk.png	0
+attract-demo-spawn-jump__ident__14042-vk.png	0
+attract-demo-spawn-jump__ident__14043-vk.png	0
+attract-demo-spawn-jump__ident__14044-vk.png	0
+attract-demo-spawn-jump__ident__14045-vk.png	0
+attract-demo-spawn-jump__ident__14047-vk.png	0
+attract-demo-spawn-jump__lodext__ident__14039-vk.png	0
+attract-demo-spawn-jump__lodext__ident__14041-vk.png	0
+attract-demo-spawn-jump__lodext__ident__14042-vk.png	0
+attract-demo-spawn-jump__lodext__ident__14043-vk.png	0
+attract-demo-spawn-jump__lodext__ident__14044-vk.png	0
+attract-demo-spawn-jump__lodext__ident__14045-vk.png	0
+attract-demo-spawn-jump__lodext__ident__14047-vk.png	0
 attract-demo__ident__10200-vk.png	0
 attract-demo__ident__1400-vk.png	0
 attract-demo__ident__14000-vk.png	0
