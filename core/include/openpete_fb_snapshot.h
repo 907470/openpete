@@ -61,6 +61,15 @@ extern "C" {
 void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int clip_h,
                                         int ofs_x, int ofs_y, int isbg);
 
+/** @brief Record that the scene the game's render last fed is complete.
+ *
+ * Called at the canonical capture, after the tick's 2D is fed. A later
+ * framebuffer window copy names this scene: the game copies after
+ * DrawSync, which waits for the ordering table of the last completed tick,
+ * while the native scene open at the copy may already belong to the next
+ * tick and receive its 2D after the copy. */
+void openpete_fb_snapshot_note_scene_complete(void);
+
 /** @brief Record a MoveImage out of a display buffer.
  *
  * The source must lie in the display buffers (x + w <= 512). Its drawing
@@ -70,10 +79,12 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
  *
  *   destination at x >= 512 (a scratch page): a framebuffer window. The
  *   window slot holding the same destination rect, else a free slot, else
- *   slot 0, records the source in screen pixels and the current scene
- *   stamp. When the source area carries a content image and is not the
- *   area being drawn, the image is cropped and stored at once; otherwise
- *   the slot waits for the next present. Returns 1.
+ *   slot 0, records the source in screen pixels and the stamp of the
+ *   newest completed scene (openpete_fb_snapshot_note_scene_complete)
+ *   and keeps the destination's texels from before the copy (the caller
+ *   runs it before the copy lands). When the source area carries a content
+ *   image and is not the area being drawn, the image is cropped and stored
+ *   at once; otherwise the slot waits for the next present. Returns 1.
  *
  *   destination inside another draw area, covering it whole: the game moving
  *   a finished image into the buffer it is not drawing. The destination
@@ -90,6 +101,20 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
  * @return 1 when a window slot was recorded, 0 otherwise. */
 int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
                                  int dst_x, int dst_y);
+
+/** @brief Return the VRAM texels a window slot's copy overwrote, with their rect.
+ *
+ * openpete_fb_snapshot_on_move keeps them when it records a window, before
+ * the copy lands; a resolve composes the copied scene over them. Valid until
+ * the next window copy. Any output pointer may be NULL.
+ * @param idx Window slot index.
+ * @param x Receives the rect's left, VRAM texels.
+ * @param y Receives the rect's top.
+ * @param w Receives the width.
+ * @param h Receives the height.
+ * @return The w x h texels, row-major and tightly packed, or NULL when the
+ *         slot holds none. */
+const uint16_t *openpete_fb_snapshot_under(int idx, int *x, int *y, int *w, int *h);
 
 /** @brief Report whether any window slot or draw area is waiting for its pixels.
  *

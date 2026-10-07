@@ -131,6 +131,12 @@ void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y
     if (dst_y + h > OPENPETE_VRAM_H)  h = OPENPETE_VRAM_H - dst_y;
     if (w <= 0 || h <= 0) return;
 
+    /* A copy out of a display buffer onto a scratch page is a framebuffer
+     * window: the screen re-displays it as a textured quad, and the emulated
+     * framebuffer this copy reads carries no pixels on a native render. Record
+     * the rect so a present can put the native frame's own pixels behind it,
+     * before the copy lands, so the record keeps the texels it overwrites. */
+    openpete_fb_snapshot_on_move(src_x, src_y, w, h, dst_x, dst_y);
     const uint16_t* src = s_model + src_x + (size_t)src_y * OPENPETE_VRAM_W;
     uint16_t*       dst = s_model + dst_x + (size_t)dst_y * OPENPETE_VRAM_W;
     for (int i = 0; i < h; i++) {
@@ -140,11 +146,6 @@ void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y
     }
     op_log(dst_x, dst_y, w, h);
     texture_pack_on_move(src_x, src_y, w, h, dst_x, dst_y);
-    /* A copy out of a display buffer onto a scratch page is a framebuffer
-     * window: the screen re-displays it as a textured quad, and the emulated
-     * framebuffer this copy reads carries no pixels on a native render. Record
-     * the rect so a present can put the native frame's own pixels behind it. */
-    openpete_fb_snapshot_on_move(src_x, src_y, w, h, dst_x, dst_y);
     if (tp_census_on())
         fprintf(stderr, "[texpack] f=%u move %d,%d -> %d,%d %dx%d\n",
                 openpete_frame, src_x, src_y, dst_x, dst_y, w, h);

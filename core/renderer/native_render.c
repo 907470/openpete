@@ -2378,6 +2378,7 @@ void openpete_native_scene_capture_overlay(void) {
      * feedback loop (apply_overlay re-set s_scene_freeze from the carry, so capture
      * read it straight back and the freeze never died after the menu closed -> the
      * world stayed hidden on unpause). See s_game_freeze_seen. */
+    openpete_fb_snapshot_note_scene_complete();   /* the tick's 2D is in: the scene is complete */
 }
 
 /* --- pairing the 2D carry across two canonical captures --------------------
@@ -5646,6 +5647,38 @@ static void sync_vram_texture_locked(void)
     s_vj_n++;
 }
 
+/* A framebuffer-window resolve composes the scene its copy names, which the
+ * game drew before the copy overwrote the destination page; the game reuses
+ * that page as scratch while the world is frozen, so the scene's textures and
+ * CLUTs may lie in it. While a resolve is armed (s_vram_under) every inline
+ * upload puts the overwritten texels back over the rect after the journal;
+ * the first keeps the texels the GPU held there (s_vram_restore), which the
+ * first upload after the resolve puts back before the journal applies. */
+static struct { const uint16_t *pix; rhi_rect r; } s_vram_under;
+static struct { uint16_t *pix; rhi_rect r; } s_vram_restore;
+
+/** @brief Upload the armed window-resolve texels over their rect, keeping the texels they replace first.
+ *
+ * Called by upload_synced_textures after an inline present applied the whole
+ * journal, so the mirror rows of the rect are what the GPU holds. The caller
+ * holds the VRAM mutex. A failed allocation of the kept copy skips the
+ * override, so the GPU never loses the texels it held. */
+static void vram_under_apply(void)
+{
+    const rhi_rect r = s_vram_under.r;
+    if (!s_vram_restore.pix) {
+        uint16_t *keep = (uint16_t *)malloc((size_t)r.w * (size_t)r.h * sizeof *keep);
+        if (!keep) return;
+        for (int row = 0; row < r.h; row++)
+            memcpy(keep + (size_t)row * r.w,
+                   s_nr.vram_mirror + (size_t)(r.y + row) * NR_VRAM_W + r.x,
+                   (size_t)r.w * sizeof *keep);
+        s_vram_restore.pix = keep; s_vram_restore.r = r;
+    }
+    rhi_update_vram_rects_packed(s_nr.dev, s_nr.vram_tex, (const uint8_t*)s_vram_under.pix,
+                                 (size_t)r.w * (size_t)r.h * 2u, &r, 1);
+}
+
 /** @brief Record the pending VRAM journal entries and the pending reference image into the current frame's command buffer.
  *
  * Journal entries are applied in order up to and including the scene being
@@ -5662,6 +5695,12 @@ static void upload_synced_textures(void)
      * present, which has no scene of its own in the ring. */
     const uint32_t upto = s_ps_slot ? s_ps_slot->scene_id : UINT32_MAX;
     SDL_LockMutex(vram_mx());
+    if (s_vram_restore.pix && !s_vram_under.pix) {   /* a window resolve is over */
+        rhi_update_vram_rects_packed(s_nr.dev, s_nr.vram_tex, (const uint8_t*)s_vram_restore.pix,
+                                     (size_t)s_vram_restore.r.w * (size_t)s_vram_restore.r.h * 2u,
+                                     &s_vram_restore.r, 1);
+        free(s_vram_restore.pix); s_vram_restore.pix = NULL;
+    }
     while (s_vj_n > 0) {
         const vram_jentry_t *e = &s_vj[s_vj_head];
         if (upto != UINT32_MAX && (int32_t)(e->scene_id - upto) > 0) {
@@ -5676,6 +5715,7 @@ static void upload_synced_textures(void)
         vram_journal_apply(e);
         vram_journal_pop();
     }
+    if (s_vram_under.pix && !s_ps_slot) vram_under_apply();
     if (s_ref_dirty) {
         rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);
         s_ref_dirty = false;
@@ -10006,17 +10046,197 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
     if (hd_defer_ok) hd_defer_flush(hd_pipe, self);
 }
 
+/** @brief Report whether two triangles' screen bounding boxes overlap with nonzero area.
+ *
+ * @param a First triangle.
+ * @param b Second triangle.
+ * @return 1 when the boxes overlap, else 0. */
+static int tri_bbox_overlap(const scene_tri_t* a, const scene_tri_t* b)
+{
+    float ax0 = a->v[0].sx, ax1 = ax0, ay0 = a->v[0].sy, ay1 = ay0;
+    float bx0 = b->v[0].sx, bx1 = bx0, by0 = b->v[0].sy, by1 = by0;
+    for (int j = 1; j < 3; j++) {
+        ax0 = fminf(ax0, a->v[j].sx); ax1 = fmaxf(ax1, a->v[j].sx);
+        ay0 = fminf(ay0, a->v[j].sy); ay1 = fmaxf(ay1, a->v[j].sy);
+        bx0 = fminf(bx0, b->v[j].sx); bx1 = fmaxf(bx1, b->v[j].sx);
+        by0 = fminf(by0, b->v[j].sy); by1 = fmaxf(by1, b->v[j].sy);
+    }
+    return ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1;
+}
+
+/** @brief Report whether one 2D triangle precedes another in the ordering-table walk.
+ *
+ * Both must carry a walk rank (scene_tri_t::seq, set by
+ * openpete_native_scene_rank_2d); a triangle the walk did not rank has no
+ * known place in the chain, so it precedes nothing and nothing precedes it.
+ * @param a The earlier candidate.
+ * @param b The later candidate.
+ * @return 1 when both are ranked and @p a ranks before @p b, else 0. */
+static int tri_walk_before(const scene_tri_t* a, const scene_tri_t* b)
+{
+    return a->seq && b->seq && a->seq < b->seq;
+}
+
+/* A cursor through the textured HUD range (bucket 6), which keeps scene order
+ * (tx_bucket_order leaves it alone). idx maps its k-th triangle to its scene
+ * index; triangles [0, done) are drawn. The HUD layer draws the range in runs
+ * between the panel triangles, each run ending at the first triangle the
+ * ordering-table walk does not rank before the next panel triangle. */
+typedef struct {
+    const scene_tri_t* scene;
+    const int* idx;      /* s_txscene from the range's first triangle */
+    int n;               /* triangles in the range; 0 when it cannot draw */
+    int done;            /* triangles drawn */
+    int tx_start;        /* first vertex of the textured block */
+    int first_vert;      /* first vertex of the range */
+} hud_tex_cursor;
+
+/** @brief Open a cursor at the start of the textured HUD range.
+ *
+ * The range is empty when it holds no vertices or its VRAM texture or base
+ * pipe is absent, as the HUD layer then draws none of it.
+ * @param scene Scene triangles.
+ * @param tx_start First vertex of the textured block that draw_tex_runs
+ *        indexes.
+ * @param first_vert First vertex of the textured HUD range.
+ * @param vert_count Vertex count of the textured HUD range.
+ * @return The cursor. */
+static hud_tex_cursor hud_tex_cursor_open(const scene_tri_t* scene, int tx_start,
+                                          int first_vert, int vert_count)
+{
+    const int ok = vert_count > 0 && s_nr.vram_tex && s_nr.scene_tex_hud_pipes[0];
+    hud_tex_cursor c = { scene, NULL, ok ? vert_count / 3 : 0, 0, tx_start, first_vert };
+    if (c.n) c.idx = &s_txscene[(first_vert - tx_start) / 3];
+    return c;
+}
+
+/** @brief Return the end of the undrawn run of textured HUD triangles the walk ranks before a panel triangle.
+ *
+ * @param c The cursor.
+ * @param panel The panel triangle, or NULL for the rest of the range.
+ * @return The index one past the run's last triangle; c->done when the run
+ *         is empty. */
+static int hud_tex_run_end(const hud_tex_cursor* c, const scene_tri_t* panel)
+{
+    if (!panel) return c->n;
+    int k = c->done;
+    while (k < c->n && tri_walk_before(&c->scene[c->idx[k]], panel)) k++;
+    return k;
+}
+
+/** @brief Report whether a panel triangle lies under an overlapping opaque textured HUD triangle the walk ranks before it and the cursor has not drawn.
+ *
+ * @param c The cursor, positioned where the panel triangle draws.
+ * @param from First textured HUD triangle counted; 0 counts every one, as a
+ *        panels-first schedule would draw them all after the panel.
+ * @param panel The panel triangle.
+ * @return 1 when one such triangle exists, else 0. */
+static int hud_panel_inverted(const hud_tex_cursor* c, int from, const scene_tri_t* panel)
+{
+    for (int i = from; i < c->n; i++) {
+        const scene_tri_t* q = &c->scene[c->idx[i]];
+        if (q->blend == 0 && tri_walk_before(q, panel) && tri_bbox_overlap(q, panel)) return 1;
+    }
+    return 0;
+}
+
+/** @brief Report whether the HUD-panel order census is on, reading OPENPETE_HUD_ORDER_CENSUS once.
+ *
+ * @return 1 when on, else 0. */
+static int hud_order_census_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_HUD_ORDER_CENSUS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/** @brief Census the HUD panel draw order against the textured HUD range, on stderr, under OPENPETE_HUD_ORDER_CENSUS.
+ *
+ * Replays the schedule draw_hud_panels_and_tex draws on a copy of the
+ * cursor and prints the panel triangles, those drawn after at least one
+ * textured triangle (engagement), and the inverted ones (hud_panel_inverted)
+ * under a panels-first schedule and under the drawn one. A scene without
+ * panel triangles prints nothing.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param panels Panel triangles in the slot-8 vertex range.
+ * @param c The cursor at the start of the range. */
+static void hud_order_census(const scene_tri_t* scene, int scene_n, int panels,
+                             hud_tex_cursor c)
+{
+    if (!hud_order_census_on() || panels <= 0) return;
+    int n = 0, after = 0, inv_first = 0, inv_drawn = 0;
+    for (int t = 0; t < scene_n && n < panels; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
+        c.done = hud_tex_run_end(&c, &scene[t]);
+        n++; after += c.done > 0;
+        inv_first += hud_panel_inverted(&c, 0, &scene[t]);
+        inv_drawn += hud_panel_inverted(&c, c.done, &scene[t]);
+    }
+    fprintf(stderr, "[hudorder] stamp=%u panels=%d after_tex=%d inverted_panel_first=%d "
+                    "inverted_drawn=%d\n", scene_present_stamp(), n, after, inv_first, inv_drawn);
+}
+
+/** @brief Draw the cursor's textured HUD triangles up to an index through the per-class textured HUD pipes, and advance it.
+ *
+ * @param c The cursor.
+ * @param end Index one past the last triangle to draw; at or below
+ *        c->done draws nothing. */
+static void hud_tex_draw_to(hud_tex_cursor* c, int end)
+{
+    if (end <= c->done) return;
+    bind_scene_pipe(s_nr.scene_tex_hud_pipes[0]);
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    draw_tex_runs(c->first_vert + c->done * 3, (end - c->done) * 3, c->tx_start, c->scene,
+                  s_nr.scene_tex_hud_pipes, NR_HUD_TEX_PIPES, s_nr.hd_tex_pipe, 0, 0);
+    c->done = end;
+}
+
+/** @brief Draw the HUD panel boxes and the textured HUD range, interleaved by ordering-table walk rank.
+ *
+ * Before each panel triangle (bucket 8), the run of not yet drawn textured
+ * HUD triangles the walk ranks before it (tri_walk_before) draws, so a box
+ * the game links after a textured quad paints over it, and a backing linked
+ * first, or a panel the walk did not rank, stays under the textured layer.
+ * Each panel triangle carries the blend class of its PSX ABR mode (read from
+ * the box's DR_MODE in ui_sprite_native) and draws through that member of
+ * the untextured HUD family, alpha for a class outside it. The slot-8 vertex
+ * range is in scene order, so walking the scene for panel triangles tracks
+ * the vertex offset in lockstep. The textured triangles left after the last
+ * panel draw last.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param ut_first First vertex of each untextured bucket.
+ * @param ut_count Vertex count of each untextured bucket.
+ * @param c The cursor at the start of the textured HUD range. */
+static void draw_hud_panels_and_tex(const scene_tri_t* scene, int scene_n,
+                                    const int* ut_first, const int* ut_count, hud_tex_cursor c)
+{
+    hud_order_census(scene, scene_n, ut_count[8] / 3, c);
+    int voff = ut_first[8];
+    const int vend = ut_first[8] + ut_count[8];
+    for (int t = 0; t < scene_n && voff + 3 <= vend; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
+        hud_tex_draw_to(&c, hud_tex_run_end(&c, &scene[t]));
+        const int b = scene[t].blend;
+        rhi_pipeline *pipe = s_nr.gouraud_hud_pipes[(b > 0 && b < NR_BLEND_CLASSES) ? b : NR_BLEND_AVG];
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        if (pipe) { bind_scene_pipe(pipe); rhi_draw(s_nr.dev, 3, (uint32_t)voff); }
+        voff += 3;
+    }
+    hud_tex_draw_to(&c, hud_tex_run_end(&c, NULL));
+}
+
 /** @brief Draw the flat 2D HUD layer: panels, textured backdrops and glyphs.
  *
- * The layer draws depth-off, in three steps. Bucket 8 (HUD_PANEL boxes) draws
- * one triangle at a time through the untextured HUD pipe of each box's blend
- * class, alpha for a class outside the family. The textured HUD range
- * draws through draw_tex_runs on the per-class textured HUD pipes. Bucket 6
- * (untextured HUD text and glyphs, depth-sorted at build time) draws through
- * the base untextured HUD pipe. OPENPETE_HUD6_ZPIPE draws bucket 6 through
- * the opaque gouraud pipe after a depth clear and returns without the
- * default bucket 6 draw. Steps whose pipes or vertices are absent are
- * skipped.
+ * The layer draws depth-off. The panel boxes and the textured HUD range draw
+ * first, interleaved by ordering-table walk rank (draw_hud_panels_and_tex).
+ * Bucket 6 (untextured HUD text and glyphs, depth-sorted at build time)
+ * draws last through the base untextured HUD pipe.
+ * OPENPETE_HUD6_ZPIPE draws bucket 6 through the opaque gouraud pipe after a
+ * depth clear and returns without the default bucket 6 draw. Steps whose
+ * pipes or vertices are absent are skipped.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param ut_first First vertex of each untextured bucket.
@@ -10029,31 +10249,8 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                                 const int* ut_first, const int* ut_count, int tx_start,
                                 int hud_tex_first, int hud_tex_count)
 {
-    if (ut_count[8] > 0) {                                          /* HUD_PANEL (semi-transparent 2D box) */
-        /* Each HUD-panel box carries the blend class of its PSX ABR mode (read
-         * from the box's DR_MODE in ui_sprite_native) and draws through that
-         * member of the untextured HUD family; a class outside the family
-         * draws alpha. The slot-8 VB range is in scene[] submission order, so
-         * walking scene[] for HUD_PANEL tris tracks the vertex offset in lockstep. */
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        int voff = ut_first[8], vend = ut_first[8] + ut_count[8];
-        for (int t = 0; t < scene_n && voff + 3 <= vend; t++) {
-            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
-            const int b = scene[t].blend;
-            rhi_pipeline *pipe = s_nr.gouraud_hud_pipes[(b > 0 && b < NR_BLEND_CLASSES) ? b : NR_BLEND_AVG];
-            if (pipe) { bind_scene_pipe(pipe); rhi_draw(s_nr.dev, 3, (uint32_t)voff); }
-            voff += 3;
-        }
-    }
-    if (hud_tex_count > 0 && s_nr.vram_tex && s_nr.scene_tex_hud_pipes[0]) {  /* textured HUD (2D) */
-        /* Bucket 6 in submission (ordering-table) order, each run through the
-         * pipe of its own blend class; HD = alpha, depth-off. */
-        bind_scene_pipe(s_nr.scene_tex_hud_pipes[0]);
-        rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipes,
-                      NR_HUD_TEX_PIPES, s_nr.hd_tex_pipe, 0, 0);
-    }
+    draw_hud_panels_and_tex(scene, scene_n, ut_first, ut_count,
+                            hud_tex_cursor_open(scene, tx_start, hud_tex_first, hud_tex_count));
     {   /* OPENPETE_HUD6_ZPIPE=1 (A/B): draw the glyph bucket through the opaque
          * depth-tested pipe after a depth clear - isolates the HUD pipe state. */
         static int s_zp = -1;
@@ -16308,6 +16505,40 @@ static int fbsnap_use_game_scene(unsigned frame) {
     return 1;
 }
 
+/** @brief Census the scene a framebuffer-window resolve composes, on stderr, under OPENPETE_FBSNAP_CENSUS.
+ *
+ * Prints the stamp the copy names, the stamp of the scene selected for the
+ * compose, its triangle count, and its 2D triangles (HUD, HUD panel,
+ * overlay) whose screen box overlaps the copied rectangle: a window copy
+ * holds the buffer before the 2D drawn after the copy, so a scene holding
+ * that 2D shows here as a nonzero count. Read once.
+ * @param frame Stamp the copy names.
+ * @param sx Rectangle left in screen coordinates.
+ * @param sy Rectangle top.
+ * @param w Rectangle width.
+ * @param h Rectangle height. */
+static void fbsnap_resolve_census(unsigned frame, int sx, int sy, int w, int h)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_FBSNAP_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    const scene_view_t v = scene_present_view();
+    int n2d = 0;
+    for (int t = 0; t < v.n; t++) {
+        const scene_tri_t* q = &v.tri[t];
+        if (q->category != OPENPETE_SCENE_HUD && q->category != OPENPETE_SCENE_HUD_PANEL &&
+            q->category != OPENPETE_SCENE_OVERLAY) continue;
+        float x0 = q->v[0].sx, x1 = x0, y0 = q->v[0].sy, y1 = y0;
+        for (int j = 1; j < 3; j++) {
+            x0 = fminf(x0, q->v[j].sx); x1 = fmaxf(x1, q->v[j].sx);
+            y0 = fminf(y0, q->v[j].sy); y1 = fmaxf(y1, q->v[j].sy);
+        }
+        n2d += x0 < (float)(sx + w) && (float)sx < x1 && y0 < (float)(sy + h) && (float)sy < y1;
+    }
+    fprintf(stderr, "[fbsnap] resolve want=%u composed=%u game_sel=%d tris=%d 2d_in_rect=%d\n",
+            frame, scene_present_stamp(), s_fbsnap_game_sel, v.n, n2d);
+}
+
 /** @brief Compose a completed scene in memory and crop it to a framebuffer screen rectangle.
  *
  * s_fbsnap_want_frame selects the scene from the completed-scene ring for
@@ -16316,7 +16547,10 @@ static int fbsnap_use_game_scene(unsigned frame) {
  * The crop uses the widen the compose used, capture width over ref_w, not
  * the one requested. A NULL result leaves the caller's slot unresolved, so
  * its quads keep drawing the previous snapshot.
- * @param frame openpete_frame stamp of the scene the copy was taken on.
+ * A window slot's compose samples the VRAM texels its copy overwrote
+ * (s_vram_under), since the scene was drawn before the copy.
+ * @param frame openpete_frame stamp of the scene the copy names.
+ * @param win Window slot index, or -1 for a draw area.
  * @param sx Rectangle left in screen coordinates.
  * @param sy Rectangle top in screen coordinates.
  * @param w Rectangle width.
@@ -16325,13 +16559,23 @@ static int fbsnap_use_game_scene(unsigned frame) {
  * @param out_h Receives the crop height.
  * @return A malloc'd RGBA crop owned by the caller, or NULL when the
  *         compose or the crop fails. */
-static unsigned char *fbsnap_capture_crop(unsigned frame, int sx, int sy, int w, int h,
+static unsigned char *fbsnap_capture_crop(unsigned frame, int win, int sx, int sy, int w, int h,
                                           int *out_w, int *out_h)
 {
     unsigned char *cap = NULL; int cw = 0, ch = 0;
     s_fbsnap_want_frame = frame;
     s_fbsnap_game_sel = fbsnap_use_game_scene(frame);
+    fbsnap_resolve_census(frame, sx, sy, w, h);
+    {   rhi_rect ur = { 0, 0, 0, 0 };
+        const uint16_t *under = win >= 0
+            ? openpete_fb_snapshot_under(win, &ur.x, &ur.y, &ur.w, &ur.h) : NULL;
+        SDL_LockMutex(vram_mx());
+        s_vram_under.pix = under; s_vram_under.r = ur;
+        SDL_UnlockMutex(vram_mx()); }
     const int r = openpete_native_render_capture_rgba(&cap, &cw, &ch);
+    SDL_LockMutex(vram_mx());
+    s_vram_under.pix = NULL;
+    SDL_UnlockMutex(vram_mx());
     s_fbsnap_want_frame = 0;
     s_fbsnap_game_sel = 0;
     if (r != 0) return NULL;
@@ -16364,12 +16608,12 @@ void openpete_native_render_snapshot_fb_window(void)
     int idx, sx, sy, w, h, cw = 0, ch = 0; unsigned frame = 0;
     while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
-        unsigned char *px = fbsnap_capture_crop(frame, sx, sy, w, h, &pw, &ph);
+        unsigned char *px = fbsnap_capture_crop(frame, idx, sx, sy, w, h, &pw, &ph);
         if (px) { openpete_fb_snapshot_store(idx, px, pw, ph); fbsnap_queue_upload(idx); }
     }
     while (openpete_fb_snapshot_take_pending_area(&idx, &sx, &sy, &w, &h, &frame)) {
         int pw = 0, ph = 0;
-        unsigned char *px = fbsnap_capture_crop(frame, sx, sy, w, h, &pw, &ph);
+        unsigned char *px = fbsnap_capture_crop(frame, -1, sx, sy, w, h, &pw, &ph);
         if (px) { openpete_fb_snapshot_store_area(idx, px, pw, ph); fbsnap_queue_upload(OPENPETE_FB_SNAPSHOT_AREA_BASE + idx); }
     }
     { static int s_census = -1;

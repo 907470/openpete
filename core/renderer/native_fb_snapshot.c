@@ -1,6 +1,7 @@
 /* native_fb_snapshot.c - see openpete_fb_snapshot.h. */
 
 #include "openpete_fb_snapshot.h"
+#include "openpete_native_vram.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,26 @@ static unsigned fb_copy_frame(void)
     return (live != 0xFFFFFFFFu) ? live : openpete_frame;
 }
 
+/* Stamp of the newest completed scene: the game render's scene at the last
+ * canonical capture, 0xFFFFFFFF before the first. The games copy a window
+ * out of a display buffer after DrawSync, which waits for the ordering table
+ * of the last completed tick; by then the next tick's feeders may already
+ * have opened its scene, and its 2D lands in that scene after the copy. */
+static unsigned s_done_frame = 0xFFFFFFFFu;
+
+void openpete_fb_snapshot_note_scene_complete(void)
+{
+    if (openpete_fb_snapshot_enabled()) s_done_frame = fb_copy_frame();
+}
+
+/** @brief Return the stamp a framebuffer window copy names: the newest completed scene.
+ *
+ * Falls back to fb_copy_frame before the first canonical capture. */
+static unsigned fb_window_frame(void)
+{
+    return (s_done_frame != 0xFFFFFFFFu) ? s_done_frame : fb_copy_frame();
+}
+
 /* One slot per live window. A screen holds at most one; the spare slots cover a
  * screen that keeps two copies (a before/after pair) without evicting either. */
 #define FB_SNAP_MAX OPENPETE_FB_SNAPSHOT_AREA_BASE
@@ -49,6 +70,7 @@ typedef struct {
     unsigned char *px;        /* RGBA8 crop of the native composed frame */
     int pw, ph;
     uint64_t key;             /* unique per stored image (see the header) */
+    uint16_t *under;          /* the w x h VRAM texels the copy overwrote */
 } fb_snap_t;
 
 static fb_snap_t s_slot[FB_SNAP_MAX];
@@ -338,6 +360,37 @@ static void fb_move_area_to_area(fb_area_t *from, fb_area_t *to,
     SDL_UnlockMutex(s_px_mx);
 }
 
+/** @brief Keep the VRAM texels a window copy is about to overwrite.
+ *
+ * Runs before the copy lands in the VRAM model. The scene the copy names was
+ * drawn with these texels in place: its textures and CLUTs may lie in the
+ * destination page, which the game reuses as scratch while the world is
+ * frozen. A failed allocation leaves the slot without texels.
+ * @param s The window slot, its destination rect already set. */
+static void fb_save_under(fb_snap_t *s)
+{
+    const size_t n = (size_t)s->w * (size_t)s->h;
+    uint16_t *u = (uint16_t *)realloc(s->under, n * sizeof *u);
+    s->under = u;
+    if (!u) return;
+    const uint16_t *vr = openpete_vram_data();
+    for (int row = 0; row < s->h; row++)
+        memcpy(u + (size_t)row * s->w,
+               vr + (size_t)(s->dst_y + row) * OPENPETE_VRAM_W + s->dst_x,
+               (size_t)s->w * sizeof *u);
+}
+
+const uint16_t *openpete_fb_snapshot_under(int idx, int *x, int *y, int *w, int *h)
+{
+    if (idx < 0 || idx >= FB_SNAP_MAX || !s_slot[idx].under) return NULL;
+    const fb_snap_t *s = &s_slot[idx];
+    if (x) *x = s->dst_x;
+    if (y) *y = s->dst_y;
+    if (w) *w = s->w;
+    if (h) *h = s->h;
+    return s->under;
+}
+
 int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
                                  int dst_x, int dst_y)
 {
@@ -364,7 +417,8 @@ int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
 
     fb_snap_t *s = fb_window_slot(dst_x, dst_y, w, h);
     s->src_x = ssx; s->src_y = ssy;
-    s->frame = fb_copy_frame();
+    s->frame = fb_window_frame();
+    fb_save_under(s);
     s_taken++;
     const fb_area_t *cur = (s_area_cur >= 0) ? &s_area[s_area_cur] : NULL;
     if (from && from->px && from != cur) {
