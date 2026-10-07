@@ -117,3 +117,8 @@ crush-intro-cut-mobys|1597|2||1601,1602,1603,1604,1605|--skip-to-cutscene crush_
 # native path reads (named residual); the sub-tick view lerps across it.
 # Blessed pre-fix.
 attract-demo-spawn-jump|14039|2||14041,14042,14043,14044,14045
+# glimmer-32x9-leftedge: the reported free-camera pose at 32:9; the terrain
+# occlusion cull's frustum half bounded each sector's sphere with a square
+# box too small off-axis and culled sector 69 at the left edge (pink
+# background). Blessed on the headless-occlusion build, before the fix.
+glimmer-32x9-leftedge|1898|2||1900|--skip-to-level glimmer --aspect 32:9 OPENPETE_FREECAM_POSE=30338,87973,7965,-194,52
