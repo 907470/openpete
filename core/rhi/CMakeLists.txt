@@ -19,7 +19,7 @@ find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
 set(RHI_SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(RHI_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${RHI_SHADER_OUT_DIR})
-set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag terrain.vert terrain.frag terrain_prepass.frag terrain_key_cache.frag)
+set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag key_ident.frag blit.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag terrain.vert terrain.frag terrain_prepass.frag terrain_prepass_cutout.frag prepass_cutout.frag terrain_key_cache.frag)
 # Shared .glsl includes (GL_GOOGLE_include_directive). Every shader DEPENDS
 # on all of them: the set is tiny, and a per-shader dependency scan would be
 # one more thing to keep in sync with the #include lines.
@@ -30,7 +30,8 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_viewz.glsl
                         ${RHI_SHADER_SRC_DIR}/portal_cover.glsl
                         ${RHI_SHADER_SRC_DIR}/portal_cover_scene.glsl
-                        ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl)
+                        ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl
+                        ${RHI_SHADER_SRC_DIR}/prepass_pack.glsl)
 # terrain.vert and its four variants are rewritten to SSA form after
 # glslangValidator: every function-local variable whose loads and stores are
 # whole-value is promoted to an SSA value (spirv-opt's local single-block and

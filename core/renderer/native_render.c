@@ -4012,7 +4012,9 @@ static struct {
      * carries a Spyro shadow (blend-3 untextured tris); NULL means the decal
      * falls back to the plain depth-tested subtractive pipe. Reusable by future
      * depth-aware passes (glow auras, soft particles). */
-    rhi_pipeline *prepass_pipe;       /* depth-only raster (colour-write-off) */
+    rhi_pipeline *prepass_pipe;       /* WORLD pre-pass raster: depth + packed depth in colour */
+    rhi_pipeline *prepass_depth_pipe; /* pre-pass full footprints + WORLD_FILL: depth only (colour-write-off) */
+    rhi_pipeline *prepass_tex_pipe;   /* textured WORLD pre-pass raster: transparent-texel cutout */
     rhi_texture  *opaque_depth;       /* rhi_create_render_target_depth_sampled */
     int           od_w, od_h;         /* current opaque_depth allocation */
     rhi_buffer   *prepass_vb;         /* WORLD-opaque clip geometry, one batched draw */
@@ -4577,17 +4579,31 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * so the decal's neighbour-texel NORMAL reconstruction is exact - the
      * canonical vz/(vz+4096) curve interpolates screen-linearly with a
      * distorted local gradient across large terrain tris (read flat floors as
-     * fronto-parallel). Depth only: nothing samples the pre-pass colour
-     * attachment (only its depth-aspect view is bound), so the fragment stage
-     * is the constant-output terrain_prepass.frag with the colour write mask
-     * off, the same pairing the retained terrain cache's pre-pass uses. */
+     * fronto-parallel). The fragment stage, terrain_prepass.frag (shared with
+     * the retained terrain cache's pre-pass), also writes its depth packed to
+     * 24 bits into the colour attachment; this pipe draws the backstop. The
+     * WORLD occluders draw with colour on through the cutout pipe below, and
+     * the depth pipe redraws textured WORLD faces over their whole footprint
+     * and draws the WORLD_FILL backing with colour off, so the colour
+     * attachment holds the depth of what the WORLD faces paint, which the
+     * occlusion grid reduces, while the depth aspect (the decal's) holds the
+     * full footprints and the backing. */
     rhi_pipeline_desc prepass_desc = {
         .vert_spv = "prepass.vert.spv",
         .frag_spv = "terrain_prepass.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
-        .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
+    rhi_pipeline_desc prepass_depth_desc = prepass_desc;
+    prepass_depth_desc.color_write_off = true;
+    /* WORLD colour run, per material run: prepass_cutout.frag samples the
+     * texel the scene draw does and drops the transparent texels it
+     * discards, so the colour attachment marks an occluder only where a
+     * face paints. */
+    rhi_pipeline_desc prepass_tex_desc = prepass_desc;
+    prepass_tex_desc.frag_spv = "prepass_cutout.frag.spv";
+    prepass_tex_desc.uses_vram = true;
+    prepass_tex_desc.push_const_size = sizeof(psx_material);
     /* Terrain HP KEY pass: rasterise opaque HP terrain with depth = the
      * og OT key (true view-Z + authored slot offset) into a private depth
      * image; the scene's LP fragments key-contest it (quad_key.frag /
@@ -4884,6 +4900,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_sub_ztest_pipe = rhi_create_pipeline(dev, &gouraud_sub_ztest_desc);
     rhi_pipeline *gouraud_sub_fade_pipe = rhi_create_pipeline(dev, &gouraud_sub_fade_desc);
     rhi_pipeline *prepass_pipe = rhi_create_pipeline(dev, &prepass_desc);
+    rhi_pipeline *prepass_depth_pipe = rhi_create_pipeline(dev, &prepass_depth_desc);
+    rhi_pipeline *prepass_tex_pipe = rhi_create_pipeline(dev, &prepass_tex_desc);
     rhi_pipeline *gouraud_add_pipe = rhi_create_pipeline(dev, &gouraud_add_desc);
     rhi_pipeline *gouraud_noz_pipe = rhi_create_pipeline(dev, &gouraud_noz_desc);
     rhi_pipeline *portal_mask_pipe = rhi_create_pipeline(dev, &portal_mask_desc);
@@ -5009,11 +5027,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * native_vram.c) - written by the native ops at op time and shadow-synced
      * from PsyCross's mirror per dirty rect at present time. */
     uint16_t     *mirror    = openpete_vram_data();
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipes[0] || !scene_tex_hud_pipes[0] || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !prepass_depth_pipe || !prepass_tex_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipes[0] || !scene_tex_hud_pipes[0] || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         !freeze_overlay_pipe || !freeze_plain_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         if (prepass_vb)    rhi_destroy_buffer(dev, prepass_vb);
         if (prepass_pipe)  rhi_destroy_pipeline(dev, prepass_pipe);
+        if (prepass_depth_pipe) rhi_destroy_pipeline(dev, prepass_depth_pipe);
+        if (prepass_tex_pipe) rhi_destroy_pipeline(dev, prepass_tex_pipe);
         if (gouraud_sub_fade_pipe) rhi_destroy_pipeline(dev, gouraud_sub_fade_pipe);
         if (gouraud_sub_ztest_pipe) rhi_destroy_pipeline(dev, gouraud_sub_ztest_pipe);
         if (resolve_pipe) rhi_destroy_pipeline(dev, resolve_pipe);
@@ -5075,6 +5095,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_sub_ztest_pipe = gouraud_sub_ztest_pipe;
     s_nr.gouraud_sub_fade_pipe = gouraud_sub_fade_pipe;
     s_nr.prepass_pipe = prepass_pipe;
+    s_nr.prepass_depth_pipe = prepass_depth_pipe;
+    s_nr.prepass_tex_pipe = prepass_tex_pipe;
     s_nr.prepass_vb   = prepass_vb;
     s_nr.terrain_key_pipe = terrain_key_pipe;
     s_nr.terrain_key_tex_pipe = terrain_key_tex_pipe;
@@ -6359,6 +6381,30 @@ static void ensure_opaque_depth(void)
 }
 
 
+/** @brief Pack the present scene's opaque triangles of one category into the pre-pass vertex run.
+ *
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param pbuf Pre-pass vertex run, s_cz_verts vertices.
+ * @param m Vertices already in @p pbuf.
+ * @param category OPENPETE_SCENE_WORLD or OPENPETE_SCENE_WORLD_FILL.
+ * @return The vertex count after the packed triangles. */
+static int prepass_pack_world(const scene_tri_t *scene, int scene_n, rhi_vertex *pbuf,
+                              int m, int category)
+{
+    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
+        int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
+        if (b != 0 || scene[t].category != category) continue;   /* opaque only */
+        pack_scene_tri(&pbuf[m], &scene[t]);
+        m += 3;
+    }
+    return m;
+}
+
+static int prepass_pack_world_runs(const scene_tri_t *scene, int scene_n, rhi_vertex *out);
+static void prepass_draw_world_runs(void);
+static void prepass_draw_world_footprints(void);
+
 /* The pre-pass far backstop's view-Z: 4096 * 0.999 / (1 - 0.999) in float,
  * the view-Z whose hyperbolic depth is 0.999. */
 #define NR_PREPASS_BACKSTOP_VZ 0x1.f381a6p+21f
@@ -6413,7 +6459,10 @@ static void native_depth_prepass(void)
     s_render_full_extent = 1;
     s_render_freeze_wf = openpete_native_widescreen_factor();
     rhi_vertex *pbuf = (rhi_vertex *)s_cz_prepass.data;
-    int m = 0;
+    /* WORLD occluders first: untextured faces, then textured faces in
+     * material runs (prepass_pack_world_runs). */
+    const int mt = prepass_pack_world_runs(scene, scene_n, pbuf);
+    int m = mt;
     /* Far BACKSTOP: a fullscreen quad at view-Z ≈ 4.09M (the far sentinel)
      * drawn under everything, so every pre-pass texel is
      * DEFINED. Without it, texels no WORLD tri covers (sky, cyclorama gaps)
@@ -6439,18 +6488,16 @@ static void native_depth_prepass(void)
         }
         m += 6;
     }
-    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
-        int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
-        if (b != 0) continue;                                    /* opaque only */
-        /* World occluders only - plus the WORLD_FILL LP backing: at the fogged
-         * waterline much of the painted terrain IS the hole-fill layer, and the
-         * decal / occlusion consumers gain accuracy from counting it as coverage
-         * (it is canonical LP geometry at true depth). */
-        if (scene[t].category != OPENPETE_SCENE_WORLD &&
-            scene[t].category != OPENPETE_SCENE_WORLD_FILL) continue;
-        pack_scene_tri(&pbuf[m], &scene[t]);
-        m += 3;
-    }
+    /* Then the WORLD_FILL LP backing. The decal counts the backing as
+     * coverage: at the fogged waterline much of the painted terrain IS the
+     * hole-fill layer, at true LP depth. The occlusion grid must not: the
+     * main pass paints a fill face only into pixels no WORLD fragment
+     * covered, so a fill face in front of a WORLD sector is drawn exactly
+     * where that sector is not, and counting it would cull the sector it
+     * yields to. The fill run draws with colour off, so the colour attachment
+     * the grid reduces holds WORLD depth only. */
+    const int mw = m;
+    m = prepass_pack_world(scene, scene_n, pbuf, m, OPENPETE_SCENE_WORLD_FILL);
     /* Record the PSX-screen->uv affine of THIS mapping for the consumers
      * (probe the mapping itself rather than duplicating its math):
      * u = (cx+1)/2, v = (1-cy)/2 with cx,cy affine in sx,sy. */
@@ -6539,19 +6586,32 @@ static void native_depth_prepass(void)
 
     /* Render the opaque depth (begin clears depth to far=1.0). Even with m==0
      * the cleared far-depth reads as "no occluder" - never a stale frame. */
-    rhi_begin_render_target(s_nr.dev, s_nr.opaque_depth, 0.0f, 0.0f, 0.0f, 1.0f);
+    /* Two runs. The colour run draws each WORLD occluder where the main pass
+     * paints it (textured faces with their transparent texels cut out), the
+     * scene's and the terrain cache's; colour clears to white, the packed far
+     * sentinel the grid reads as no occluder, and the backstop rewrites it
+     * inside the viewport. The depth run then draws, colour off, the
+     * textured WORLD faces over their whole footprint and the WORLD_FILL
+     * backing, so the depth aspect the decal reads keeps both. It runs after
+     * every colour draw, so no colour-writing fragment is depth-rejected by a
+     * depth-run face and the colour keeps the nearest painted WORLD depth. */
+    rhi_begin_render_target(s_nr.dev, s_nr.opaque_depth, 1.0f, 1.0f, 1.0f, 1.0f);
     rhi_set_viewport(s_nr.dev, vw, vh);
-    if (m > 0) {
-        rhi_bind_pipeline(s_nr.dev, s_nr.prepass_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
-        rhi_draw(s_nr.dev, (uint32_t)m, 0);
-    }
-    /* Terrain-cache occluders: depth-only draw of the retained WORLD terrain
-     * (unclaimed sectors), matching the CPU extraction's WORLD + WORLD_FILL
-     * coverage above so the shadow-decal / occlusion consumers see the whole
-     * opaque terrain regardless of which path fed it. */
-    if (openpete_tercache_frame_open())
+    prepass_draw_world_runs();
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
+    rhi_bind_pipeline(s_nr.dev, s_nr.prepass_pipe);
+    rhi_draw(s_nr.dev, (uint32_t)(mw - mt), (uint32_t)mt);   /* the backstop */
+    const int tc_open = openpete_tercache_frame_open();
+    if (tc_open)
         openpete_tercache_draw(OPTC_DRAW_PREPASS, &s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
+    prepass_draw_world_footprints();
+    if (m > mw) {
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
+        rhi_bind_pipeline(s_nr.dev, s_nr.prepass_depth_pipe);
+        rhi_draw(s_nr.dev, (uint32_t)(m - mw), (uint32_t)mw);
+    }
+    if (tc_open)
+        openpete_tercache_draw(OPTC_DRAW_PREPASS_DEPTH, &s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
     rhi_end_render_target(s_nr.dev, s_nr.opaque_depth);
     s_od_vw = (float)vw; s_od_vh = (float)vh;
     s_od_ready = 1;
@@ -7265,6 +7325,87 @@ static void draw_rank_batch(int base, int m, int untex,
     draw_keyrun_batch(&p, base, m, untex, spans, nspans);
 }
 
+/* The depth pre-pass's WORLD batch layout, written by
+ * prepass_pack_world_runs and drawn by prepass_draw_world_runs within one
+ * native_depth_prepass. */
+static keytex_span_t s_pp_spans[KEYTEX_MAX_SPANS];
+static int s_pp_nspans, s_pp_untex, s_pp_m;
+
+/** @brief Admit an opaque WORLD face into the pre-pass WORLD batch.
+ * @param t Scene face.
+ * @param ctx Unused.
+ * @return 1 when the face is opaque (blend 0) WORLD, else 0. */
+static int prepass_run_admit(const scene_tri_t* t, const void* ctx)
+{
+    (void)ctx;
+    return t->blend == 0 && t->category == OPENPETE_SCENE_WORLD;
+}
+
+/** @brief Write a pre-pass WORLD face's vertices (pack_scene_vert), with UVs on a material span.
+ * @param t Scene face.
+ * @param sp The face's span, NULL in the untextured prefix.
+ * @param ctx Unused.
+ * @param out Receives three vertices. */
+static void prepass_run_write(const scene_tri_t* t, const keytex_span_t* sp,
+                              const void* ctx, rhi_vertex* out)
+{
+    (void)ctx;
+    for (int k = 0; k < 3; k++)
+        pack_scene_vert(&out[k], t, k, sp ? t->v[k].u : 0.0f, sp ? t->v[k].v : 0.0f);
+}
+
+/** @brief Pack the depth pre-pass's WORLD occluders: opaque untextured faces first, then textured faces in material runs.
+ *
+ * The layout and limits are pack_keyrun_batch's, in the full-extent
+ * mapping; the runs are kept for prepass_draw_world_runs.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param out Pre-pass vertex run.
+ * @return Vertices written. */
+static int prepass_pack_world_runs(const scene_tri_t *scene, int scene_n, rhi_vertex *out)
+{
+    s_pp_m = pack_keyrun_batch(scene, scene_n, 1, prepass_run_admit, prepass_run_write,
+                               NULL, out, &s_pp_untex, s_pp_spans, &s_pp_nspans);
+    return s_pp_m;
+}
+
+/** @brief Draw the packed pre-pass WORLD batch into the open pre-pass render pass, the colour run.
+ *
+ * Every face draws through prepass_tex_pipe: the untextured prefix with
+ * bpp -1 pushed, which covers each face's footprint, and each material run
+ * with its material, whose transparent texels are cut (prepass_cutout.frag);
+ * the overflow tail carries bpp -1 and covers its footprint. */
+static void prepass_draw_world_runs(void)
+{
+    if (s_pp_m <= 0) return;
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
+    rhi_bind_pipeline(s_nr.dev, s_nr.prepass_tex_pipe);
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    const psx_material flat = { 0, 0, 0, 0, -1 };
+    if (s_pp_untex > 0) {
+        rhi_push_constants(s_nr.dev, &flat, sizeof flat);
+        rhi_draw(s_nr.dev, (uint32_t)s_pp_untex, 0);
+    }
+    for (int i = 0; i < s_pp_nspans; i++) {
+        if (s_pp_spans[i].count <= 0) continue;
+        rhi_push_constants(s_nr.dev, &s_pp_spans[i].mat, sizeof(s_pp_spans[i].mat));
+        rhi_draw(s_nr.dev, (uint32_t)s_pp_spans[i].count, (uint32_t)s_pp_spans[i].first);
+    }
+}
+
+/** @brief Draw the packed pre-pass WORLD batch's textured runs again over their whole footprints, depth only.
+ *
+ * Keeps the depth aspect the shadow decal reads as it was before the colour
+ * run cut transparent texels: the decal treats a textured face as covering
+ * its footprint. */
+static void prepass_draw_world_footprints(void)
+{
+    if (s_pp_m <= s_pp_untex) return;
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
+    rhi_bind_pipeline(s_nr.dev, s_nr.prepass_depth_pipe);
+    rhi_draw(s_nr.dev, (uint32_t)(s_pp_m - s_pp_untex), (uint32_t)s_pp_untex);
+}
+
 /** @brief Record a key pass's viewport and screen-to-clip mapping for terrain_key_dump.
  *
  * The mapping is taken with s_render_full_extent set to @p full_extent, so
@@ -7970,7 +8111,7 @@ static void native_occl_downsample(void)
         { OCCL_GW, OCCL_GH, (int)s_od_vw, (int)s_od_vh };
     rhi_begin_render_target(s_nr.dev, s_nr.occl_grid, 0.0f, 0.0f, 0.0f, 1.0f);
     bind_scene_pipe(s_nr.occl_pipe);
-    rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
+    rhi_bind_texture_set(s_nr.dev, s_nr.opaque_depth, 0);   /* WORLD-only packed depth */
     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
     rhi_bind_vertex_buffer(s_nr.dev, s_nr.fs_quad_vb);
     rhi_draw(s_nr.dev, 6, 0);
@@ -16993,6 +17134,8 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_pipeline(s_nr.dev, s_nr.occl_pipe);
     rhi_destroy_buffer(s_nr.dev, s_nr.prepass_vb);
     rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
+    rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_depth_pipe);
+    rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_tex_pipe);
     rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth);
     rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);
     rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);

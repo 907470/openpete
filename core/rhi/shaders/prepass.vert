@@ -22,8 +22,13 @@ layout(location = 2) in vec4 inColor;
 layout(location = 4) in float inW;    /* true view-Z (see psx_scene.vert) */
 
 layout(location = 0) out vec4 vColor;
-layout(location = 1) out vec2 vUV;
+layout(location = 1) out vec2 vUV;    /* texel coords x vQ (divide by vQ) */
 layout(location = 2) noperspective out vec2 vScreenPSX;
+layout(location = 3) out float vQ;
+
+/* PSX-affine texture mapping (rhi_set_affine_uv), as psx_scene.vert: the
+ * textured cutout stage samples the texel the scene draw does. */
+layout(constant_id = 1) const bool AFFINE_UV = false;
 
 void main()
 {
@@ -37,6 +42,11 @@ void main()
     float Wt = max(inW, 1.0);
     gl_Position = vec4(inPos.xy * Wt, Wt - 1.0, Wt);  /* z_ndc = 1 - 1/Wt */
     vColor = inColor;
-    vUV = inUV;
+    /* W is the true view-Z, psx_scene.vert's UV perspective W, so plain
+     * interpolation is its perspective mapping; UV and the ratio scaled by
+     * W interpolate screen-linearly, its affine mapping. */
+    float q = AFFINE_UV ? Wt : 1.0;
+    vUV = inUV * q;
+    vQ = q;
     vScreenPSX = inUV;
 }

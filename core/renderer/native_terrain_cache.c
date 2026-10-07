@@ -77,7 +77,7 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
 /* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
  * faces, and the hole-fill backing is LP only. */
 enum { TC_CP_WORLD, TC_CP_MARK, TC_CP_ALPHA, TC_CP_ADD, TC_CP_SUB,
-       TC_CP_PREPASS, TC_CP_KEY, TC_CP_N };
+       TC_CP_PREPASS, TC_CP_PREPASS_DEPTH, TC_CP_KEY, TC_CP_N };
 
 typedef struct { uint32_t first, count; } tc_span;
 
@@ -252,12 +252,13 @@ static struct {
     rhi_pipeline *pipe_add;
     rhi_pipeline *pipe_sub;
     rhi_pipeline *pipe_fill;          /* stencil TEST_ZERO                    */
-    rhi_pipeline *pipe_prepass;       /* colour-write-off depth-only          */
+    rhi_pipeline *pipe_prepass;       /* pre-pass WORLD: depth + packed depth in colour */
+    rhi_pipeline *pipe_prepass_depth; /* pre-pass full footprint: depth only (colour off) */
     rhi_pipeline *pipe_key;           /* og OT-key emit (pass_sel 2)          */
     /* terrain_anim variants (binding-1 prev twin + vertex-stage lerp). */
     rhi_pipeline *pipe_a_world, *pipe_a_world_mark;
     rhi_pipeline *pipe_a_alpha, *pipe_a_add, *pipe_a_sub;
-    rhi_pipeline *pipe_a_prepass, *pipe_a_key;
+    rhi_pipeline *pipe_a_prepass, *pipe_a_prepass_depth, *pipe_a_key;
     rhi_pipeline *pipe_a_fill;        /* anim LP hole-fill: env-anim colour
                                        * sectors fill, poly-anim sectors do
                                        * not (their SF_FILLLP stays clear)   */
@@ -265,7 +266,7 @@ static struct {
      * near-plane clip fan). Full set: near sectors carry every draw class. */
     rhi_pipeline *pipe_n_world, *pipe_n_world_mark;
     rhi_pipeline *pipe_n_alpha, *pipe_n_add, *pipe_n_sub;
-    rhi_pipeline *pipe_n_fill, *pipe_n_prepass, *pipe_n_key;
+    rhi_pipeline *pipe_n_fill, *pipe_n_prepass, *pipe_n_prepass_depth, *pipe_n_key;
     /* terrain_cells variants (instanced cell records): the near-variant
      * sectors' set (clip-fan stage) and the poly-anim sectors' set (lerp
      * stage), indexed by TC_CP_*. */
@@ -603,9 +604,11 @@ static int tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
     d[TC_CP_ALPHA].blend = RHI_BLEND_ALPHA;    d[TC_CP_ALPHA].depth_write_off = true;
     d[TC_CP_ADD].blend   = RHI_BLEND_ADD;      d[TC_CP_ADD].depth_write_off = true;
     d[TC_CP_SUB].blend   = RHI_BLEND_SUBTRACT; d[TC_CP_SUB].depth_write_off = true;
-    d[TC_CP_PREPASS].frag_spv = "terrain_prepass.frag.spv";
-    d[TC_CP_PREPASS].color_write_off = true;
+    d[TC_CP_PREPASS].frag_spv = "terrain_prepass_cutout.frag.spv";   /* colour = packed depth */
     d[TC_CP_PREPASS].depth_class = RHI_DEPTH_FORWARD;
+    d[TC_CP_PREPASS_DEPTH].frag_spv = "terrain_prepass.frag.spv";
+    d[TC_CP_PREPASS_DEPTH].color_write_off = true;
+    d[TC_CP_PREPASS_DEPTH].depth_class = RHI_DEPTH_FORWARD;
     d[TC_CP_KEY].frag_spv = "terrain_key_cache.frag.spv";
     d[TC_CP_KEY].depth_class = RHI_DEPTH_FORWARD;
     int ok = 1;
@@ -640,9 +643,15 @@ int openpete_tercache_init(rhi_device *dev)
     s_tc.pipe_sub = rhi_create_pipeline(dev, &d);
     d = world_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     s_tc.pipe_fill = rhi_create_pipeline(dev, &d);
-    d = world_desc; d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    /* Pre-pass pair: the WORLD run writes its packed depth to colour (the
+     * occlusion grid's source) where terrain.frag would paint, its
+     * transparent texels cut out (terrain_prepass_cutout.frag); the depth
+     * run writes depth only, over whole footprints. */
+    d = world_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_prepass = rhi_create_pipeline(dev, &d);
+    d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    s_tc.pipe_prepass_depth = rhi_create_pipeline(dev, &d);
     d = world_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_key = rhi_create_pipeline(dev, &d);
@@ -666,9 +675,11 @@ int openpete_tercache_init(rhi_device *dev)
     s_tc.pipe_a_add = rhi_create_pipeline(dev, &d);
     d = anim_desc; d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true;
     s_tc.pipe_a_sub = rhi_create_pipeline(dev, &d);
-    d = anim_desc; d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    d = anim_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_a_prepass = rhi_create_pipeline(dev, &d);
+    d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    s_tc.pipe_a_prepass_depth = rhi_create_pipeline(dev, &d);
     d = anim_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_a_key = rhi_create_pipeline(dev, &d);
@@ -695,9 +706,11 @@ int openpete_tercache_init(rhi_device *dev)
     s_tc.pipe_n_sub = rhi_create_pipeline(dev, &d);
     d = near_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     s_tc.pipe_n_fill = rhi_create_pipeline(dev, &d);
-    d = near_desc; d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    d = near_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_n_prepass = rhi_create_pipeline(dev, &d);
+    d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    s_tc.pipe_n_prepass_depth = rhi_create_pipeline(dev, &d);
     d = near_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_n_key = rhi_create_pipeline(dev, &d);
@@ -708,13 +721,13 @@ int openpete_tercache_init(rhi_device *dev)
 
     int ok = cells_ok && s_tc.pipe_world && s_tc.pipe_world_mark && s_tc.pipe_alpha &&
              s_tc.pipe_add && s_tc.pipe_sub && s_tc.pipe_fill && s_tc.pipe_prepass &&
-             s_tc.pipe_key &&
+             s_tc.pipe_prepass_depth && s_tc.pipe_key &&
              s_tc.pipe_a_world && s_tc.pipe_a_world_mark && s_tc.pipe_a_alpha &&
              s_tc.pipe_a_add && s_tc.pipe_a_sub && s_tc.pipe_a_prepass &&
-             s_tc.pipe_a_key && s_tc.pipe_a_fill &&
+             s_tc.pipe_a_prepass_depth && s_tc.pipe_a_key && s_tc.pipe_a_fill &&
              s_tc.pipe_n_world && s_tc.pipe_n_world_mark && s_tc.pipe_n_alpha &&
              s_tc.pipe_n_add && s_tc.pipe_n_sub && s_tc.pipe_n_fill &&
-             s_tc.pipe_n_prepass && s_tc.pipe_n_key;
+             s_tc.pipe_n_prepass && s_tc.pipe_n_prepass_depth && s_tc.pipe_n_key;
     /* No level has loaded yet, so every arena starts on the union row. */
     for (int a = 0; ok && a < OPTC_ARENA_COUNT; a++) {
         tc_pair *pr = tc_pair_make(dev, a, tc_initial_cap(-1, a));
@@ -788,6 +801,7 @@ void openpete_tercache_shutdown(rhi_device *dev)
         &s_tc.pipe_n_world, &s_tc.pipe_n_world_mark, &s_tc.pipe_n_alpha,
         &s_tc.pipe_n_add, &s_tc.pipe_n_sub, &s_tc.pipe_n_fill, &s_tc.pipe_n_prepass,
         &s_tc.pipe_n_key,
+        &s_tc.pipe_prepass_depth, &s_tc.pipe_a_prepass_depth, &s_tc.pipe_n_prepass_depth,
     };
     for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); i++)
         if (*named[i]) rhi_destroy_pipeline(dev, *named[i]);
@@ -2091,6 +2105,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         case OPTC_DRAW_SUB:     p = s_tc.pipe_sub;     break;
         case OPTC_DRAW_FILL:    p = s_tc.pipe_fill;    break;
         case OPTC_DRAW_PREPASS: p = s_tc.pipe_prepass; break;
+        case OPTC_DRAW_PREPASS_DEPTH: p = s_tc.pipe_prepass_depth; break;
         case OPTC_DRAW_KEY:     p = s_tc.pipe_key;     break;
     }
     if (!p) return;
@@ -2109,7 +2124,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
     }
     static const char *k_zone[] = { "ter.world", "ter.alpha", "ter.add",
                                     "ter.sub", "ter.fill", "ter.prepass",
-                                    "ter.key" };
+                                    "ter.prepass_depth", "ter.key" };
     rhi_gpu_zone_begin(s_tc.dev,
                        (which >= 0 && which <= OPTC_DRAW_KEY) ? k_zone[which]
                                                              : "ter.gpu");
@@ -2138,7 +2153,8 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
      * and redraws the whole arena. The depth and key passes shade nothing,
      * so they draw every face regardless of bucket. */
     int buckets[OPENPETE_MATERIAL_TER_BUCKET_MAX];
-    const int bn = (which == OPTC_DRAW_PREPASS || which == OPTC_DRAW_KEY)
+    const int bn = (which == OPTC_DRAW_PREPASS || which == OPTC_DRAW_PREPASS_DEPTH ||
+                    which == OPTC_DRAW_KEY)
                        ? 0
                        : openpete_mods_material_terrain_bucket_list(
                              buckets, OPENPETE_MATERIAL_TER_BUCKET_MAX);
@@ -2190,16 +2206,30 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_anim(s_tc.pipe_n_fill, OPTC_ARENA_N_LP, 1, clip);
             break;
         case OPTC_DRAW_PREPASS:
+            /* The WORLD faces of the OPTC_DRAW_WORLD set. */
             tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
             tc_draw_arena(OPTC_ARENA_LP,     0, clip);
-            tc_draw_arena(OPTC_ARENA_LP,     1, clip);
             tc_draw_anim(s_tc.pipe_a_prepass, OPTC_ARENA_A_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.pipe_ca[TC_CP_PREPASS], OPTC_ARENA_CA_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.pipe_a_prepass, OPTC_ARENA_A_LP,     0, clip);
             tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.pipe_cn[TC_CP_PREPASS], OPTC_ARENA_CN_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_LP,     0, clip);
-            tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_LP,     1, clip);
+            break;
+        case OPTC_DRAW_PREPASS_DEPTH:
+            /* The OPTC_DRAW_PREPASS set again over whole footprints, then
+             * the hole-fill faces of the OPTC_DRAW_FILL set. */
+            tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
+            tc_draw_arena(OPTC_ARENA_LP,     0, clip);
+            tc_draw_anim(s_tc.pipe_a_prepass_depth, OPTC_ARENA_A_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_ca[TC_CP_PREPASS_DEPTH], OPTC_ARENA_CA_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_a_prepass_depth, OPTC_ARENA_A_LP,     0, clip);
+            tc_draw_anim(s_tc.pipe_n_prepass_depth, OPTC_ARENA_N_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_cn[TC_CP_PREPASS_DEPTH], OPTC_ARENA_CN_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_n_prepass_depth, OPTC_ARENA_N_LP,     0, clip);
+            tc_draw_arena(OPTC_ARENA_LP,     1, clip);
+            tc_draw_anim(s_tc.pipe_a_prepass_depth, OPTC_ARENA_A_LP, 1, clip);
+            tc_draw_anim(s_tc.pipe_n_prepass_depth, OPTC_ARENA_N_LP, 1, clip);
             break;
         case OPTC_DRAW_KEY:
             /* keyed opaque faces only (blend arenas contest but never emit;

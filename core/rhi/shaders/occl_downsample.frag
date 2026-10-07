@@ -3,8 +3,12 @@
 /* Occlusion-grid downsample (moby occlusion culling).
  *
  * Renders into the small (grid_w × grid_h) occlusion RT; each output pixel is
- * one grid cell. Gathers its FULL source block of the WORLD-opaque depth
- * pre-pass and keeps the FARTHEST depth (max - the pre-pass encodes
+ * one grid cell. Gathers its FULL source block of the pre-pass COLOUR
+ * attachment, which holds the WORLD occluders' depth packed as 24-bit fixed
+ * point (terrain_prepass.frag; the hole-fill backing draws there with colour
+ * writes off, since the main pass paints it only where no WORLD fragment
+ * covered, so it occludes nothing), and keeps the FARTHEST depth (max - the
+ * pre-pass encodes
  * d = 1 - 1/viewZ, monotonic increasing with distance). "Farthest" is the
  * conservative reduction for occlusion: a cell only reports "occluder at
  * depth d" if EVERY covered texel is at least that near, so any sky / gap /
@@ -17,7 +21,7 @@
  * 24 bits keeps the decode error under ~100 world units at viewZ 40k (16 bits
  * would be ~6000 - useless against a ~1500-unit slack). */
 
-layout(set = 0, binding = 0) uniform sampler2D uDepth;  /* pre-pass depth (depth-aspect view) */
+layout(set = 0, binding = 0) uniform sampler2D uDepth;  /* pre-pass colour: packed WORLD depth */
 
 /* gw/gh = grid extent; pvw/pvh = the pre-pass VIEWPORT extent (the rasterized
  * region - the RT allocation may be larger and holds clear-far outside it). */
@@ -36,12 +40,14 @@ void main()
     int y0 = (cell.y     * pc.pvh) / pc.gh;
     int y1 = ((cell.y+1) * pc.pvh) / pc.gh;
 
-    float m = 0.0;
+    uint m = 0u;
     for (int y = y0; y < y1; ++y)
-        for (int x = x0; x < x1; ++x)
-            m = max(m, texelFetch(uDepth, ivec2(x, y), 0).r);
+        for (int x = x0; x < x1; ++x) {
+            uvec3 b = uvec3(texelFetch(uDepth, ivec2(x, y), 0).rgb * 255.0 + 0.5);
+            m = max(m, (b.r << 16) | (b.g << 8) | b.b);
+        }
 
-    uint q = uint(clamp(m, 0.0, 1.0) * 16777215.0 + 0.5);
+    uint q = m;
     outColor = vec4(float((q >> 16) & 255u) / 255.0,
                     float((q >>  8) & 255u) / 255.0,
                     float( q        & 255u) / 255.0, 1.0);

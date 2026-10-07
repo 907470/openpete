@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: cfa39c004af84686982bacebeaf9bc486bb6ce24
+# head: 852ffea2a1c2cfe7eb8cda59b9b86b0e28258aff
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
@@ -62,12 +62,12 @@ core/renderer/native_render.c	draw_tex_runs	89	0
 core/renderer/native_render.c	draw_ut_mat_spans	48	0	
 core/renderer/native_render.c	gpu_zone_report	27	0	
 core/renderer/native_render.c	hd_flush_pending	28	0	
-core/renderer/native_render.c	native_depth_prepass	85	0	
+core/renderer/native_render.c	native_depth_prepass	76	0	
 core/renderer/native_render.c	native_postfx_run	53	0	
 core/renderer/native_render.c	native_render_screenshot_all_impl	52	0	
 core/renderer/native_render.c	native_terrain_key_pass	66	0	
 core/renderer/native_render.c	openpete_native_hdfold_intern	32	0	
-core/renderer/native_render.c	openpete_native_render_init	161	0	
+core/renderer/native_render.c	openpete_native_render_init	165	0	
 core/renderer/native_render.c	openpete_native_render_snapshot_frozen	26	0	
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	43	0	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	83	0	
