@@ -245,6 +245,13 @@ int  player_records_present_begin(int ring_paired, int ring_cut, double ring_alp
  * after it.
  * @param on Nonzero to open the previous epoch's records. */
 void player_records_set_hold(int on);
+/** @brief The store slot the open held present shows, as a cut_held_pick_t, or -1 outside a hold.
+ *
+ * Written by player_records_present_begin under player_records_set_hold and
+ * cleared by player_records_set_hold; the argument
+ * hook_reextract_ready_held takes for a producer bound to the player records.
+ * @return CUT_HELD_EMPTY, CUT_HELD_CURR, CUT_HELD_PREV, or -1. */
+int  player_records_held_pick(void);
 /** @brief The newest store entry's model record k of the open present.
  *
  * Valid between player_records_present_begin and player_records_present_end.

@@ -84,6 +84,7 @@
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"
 #include "renderer/env_knob.h"
+#include "renderer/cut_guard.h"     /* cut_held_sets_t: the held cut's tick N-1 set */
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
@@ -143,9 +144,14 @@ typedef struct {
     uint8_t rot;      /* 1 = rotate the corner offsets as well */
 } glint_rebase;
 
-static glint_item   s_item[GLINT_MAX_PRIMS];
+static glint_item   s_item_buf[2][GLINT_MAX_PRIMS];
+static glint_item*  s_item = s_item_buf[0];
 static glint_rebase s_reb[GLINT_MAX_PRIMS];
 static int          s_item_n;
+/* The set the last capture of a new canonical epoch retired, which a held
+ * camera cut shows when it is tick N-1's. */
+static glint_item*  s_item_old = s_item_buf[1];
+static int          s_item_old_n;
 static int          s_stars;      /* draw-mode packets the call appended */
 static int          s_crosses;    /* line pairs the call appended */
 static int          s_pred_near;  /* near records the pool walk predicted */
@@ -154,6 +160,14 @@ static uint32_t     s_code_hist[256];
 static uint32_t     s_tag_hist[256];
 static uint32_t     s_fed_star_tris;
 static uint32_t     s_fed_cross_tris;
+
+/** @brief Exchange the current captured set with the retired one, with their counts. */
+static void glint_sets_swap(void) {
+    glint_item* t = s_item; s_item = s_item_old; s_item_old = t;
+    const int n = s_item_n; s_item_n = s_item_old_n; s_item_old_n = n;
+}
+
+static cut_held_sets_t s_sets = { glint_sets_swap, &s_item_n, "glint", { 0u, 0u } };
 
 /** @brief Append one walked primitive to s_item, unpaired at the near-guard depth.
  *
@@ -1132,6 +1146,8 @@ static const hook_bracket_desc k_bracket = {
  *
  * The world draw's call is the only one in either image, so the hook takes
  * every entry (Spyro 2 draw/func_800155A0.s:32, Spyro 3 draw/func_8001E460.s:30).
+ * A taken call empties the captured set, retiring the previous epoch's set
+ * first when it is the epoch's first call (cut_held_sets_capture).
  * When the routine appended anything, its primitives are captured and paired
  * under the tick's view, and fed natively with the canonical trace when the
  * scene is live and RP_SPARKLE is selected. The census runs on every taken
@@ -1145,6 +1161,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
 
+    cut_held_sets_capture(&s_sets);
     s_item_n = 0; s_stars = 0; s_crosses = 0; s_pred_near = 0; s_pred_far = 0;
     const uint32_t star_before = s_fed_star_tris, cross_before = s_fed_cross_tris;
     if (endp > startp) {
@@ -1162,11 +1179,20 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract; documented at the declaration in glint.h. */
-void glint_reextract(CPUState* cpu, int bracketed, double alpha) {
-    if (!hook_reextract_ready(RP_SPARKLE)) return;
-    if (bracketed) glint_rebase_all(cpu, alpha);
-    glint_feed_native();
-    glint_trace("inter", bracketed ? alpha : 1.0);
+void glint_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+    const int pick = cut_held_sets_enter(&s_sets, hold);
+    if (hook_reextract_ready_held(RP_SPARKLE, pick)) {
+        if (pick >= 0) {
+            /* The staged camera is tick N-1's, the camera this set was drawn
+             * under: the stars stand where that tick drew them. */
+            for (int i = 0; i < s_item_n; i++) s_reb[i].active = 0;
+        } else if (bracketed) {
+            glint_rebase_all(cpu, alpha);
+        }
+        glint_feed_native();
+        glint_trace("inter", bracketed ? alpha : 1.0);
+    }
+    cut_held_sets_leave(&s_sets, pick);
 }
 
 /* The hook address is the layout's glint draw site, bound at boot: a static

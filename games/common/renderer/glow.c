@@ -57,6 +57,7 @@
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"
 #include "renderer/env_knob.h"
+#include "renderer/cut_guard.h"     /* cut_held_sets_t: the held cut's tick N-1 set */
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
@@ -101,13 +102,26 @@ typedef struct {
     glow_rec  src;
 } glow_item;
 
-static glow_item s_item[GLOW_MAX_PRIMS];
-static int       s_item_n;
+static glow_item  s_item_buf[2][GLOW_MAX_PRIMS];
+static glow_item* s_item = s_item_buf[0];
+static int        s_item_n;
+/* The set the last capture of a new canonical epoch retired, which a held
+ * camera cut shows when it is tick N-1's. */
+static glow_item* s_item_old = s_item_buf[1];
+static int        s_item_old_n;
 static int       s_groups;        /* draw-mode packets the call appended */
 static int       s_accepted;      /* records the pool walk predicted */
 static uint32_t  s_code_hist[256];
 static uint32_t  s_tag_hist[256];
 static uint32_t  s_fed_tris;
+
+/** @brief Exchange the current captured set with the retired one, with their counts. */
+static void glow_sets_swap(void) {
+    glow_item* t = s_item; s_item = s_item_old; s_item_old = t;
+    const int n = s_item_n; s_item_n = s_item_old_n; s_item_old_n = n;
+}
+
+static cut_held_sets_t s_sets = { glow_sets_swap, &s_item_n, "glow", { 0u, 0u } };
 
 /** @brief Append one walked primitive to s_item, unpaired at the near-guard depth with no displacement.
  *
@@ -358,7 +372,9 @@ static const hook_bracket_desc k_bracket = {
 /** @brief Dispatch hook on the glow routine: run it once, then capture, pair and feed its prims.
  *
  * Runs through the shared bracket. Refuses (returns 0, the ordinary dispatch runs) a call whose return
- * address differs from GW.ra_guard when the layout names one. When the routine
+ * address differs from GW.ra_guard when the layout names one. A taken call
+ * empties the captured set, retiring the previous epoch's set first when it
+ * is the epoch's first call (cut_held_sets_capture). When the routine
  * appended anything, its primitives are captured and paired under the tick's
  * view, and fed natively when the scene is live and RP_GLOW is selected. The
  * census runs on every taken call.
@@ -374,6 +390,7 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
 
+    cut_held_sets_capture(&s_sets);
     s_item_n = 0; s_groups = 0; s_accepted = 0;
     const uint32_t fed_before = s_fed_tris;
     if (endp > startp) {
@@ -517,10 +534,19 @@ static void glow_rebase_all(CPUState* cpu, double alpha) {
 }
 
 /* Sub-tick re-extract; see glow.h. */
-void glow_reextract(CPUState* cpu, int bracketed, double alpha) {
-    if (!hook_reextract_ready(RP_GLOW)) return;
-    if (bracketed) glow_rebase_all(cpu, alpha);
-    glow_feed_native();
+void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+    const int pick = cut_held_sets_enter(&s_sets, hold);
+    if (hook_reextract_ready_held(RP_GLOW, pick)) {
+        if (pick >= 0) {
+            /* The staged camera is tick N-1's, the camera this set was drawn
+             * under: the fans stand where that tick drew them. */
+            for (int i = 0; i < s_item_n; i++) { s_item[i].dx = 0.0f; s_item[i].dy = 0.0f; }
+        } else if (bracketed) {
+            glow_rebase_all(cpu, alpha);
+        }
+        glow_feed_native();
+    }
+    cut_held_sets_leave(&s_sets, pick);
 }
 
 /* The hook address is the layout's glow draw site, bound at boot: a static

@@ -11,10 +11,13 @@
  * and every corner is moved by the blended displacement; otherwise the
  * captured corners and paired depths feed verbatim. The primitives are
  * the guest's output held from the canonical tick; nothing is read from
- * the polybuf and no PSX RAM is written.
+ * the polybuf and no PSX RAM is written. A held camera cut shows tick N-1's
+ * set (cut_held_sets_enter) verbatim, since the staged camera is then tick
+ * N-1's.
  * @param cpu The guest CPU state.
  * @param bracketed Nonzero when the tick's call ran under the bracket.
- * @param alpha The present's sub-tick position, used when bracketed. */
-void zap_reextract(CPUState* cpu, int bracketed, double alpha);
+ * @param alpha The present's sub-tick position, used when bracketed.
+ * @param hold Nonzero on a held camera cut. */
+void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold);
 
 #endif

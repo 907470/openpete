@@ -1900,6 +1900,7 @@ static const store_slot_t* pres_slot(int k) {
 }
 
 void player_records_set_hold(int on) { s_pres_hold = on ? 1 : 0; s_pres_pick = -1; }
+int  player_records_held_pick(void) { return s_pres_pick; }
 static int    s_pres_lerp = 0;
 static double s_pres_alpha = 0.0;
 

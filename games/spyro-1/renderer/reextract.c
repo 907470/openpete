@@ -2562,7 +2562,7 @@ static void game_reextract_body(void* cpu_v) {
                        sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION()] : NULL,
                        sh);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
-    particle_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
+    particle_reextract(cpu, cam_hold);   /* particles / glows / sparkles (Sparx) */
     flame_records_present(cpu, paired, cam_snap, alpha, fl);   /* fire breath, one ribbon per flame record */
     tracer_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */

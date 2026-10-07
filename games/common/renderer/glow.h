@@ -8,11 +8,14 @@
  * reused, so the replay re-feeds the set the canonical tick captured, at the
  * depths paired then, rebased onto the screen position the staged camera and
  * the record's own motion put them at. At alpha 1 the rebase is zero and the
- * replay reproduces the canonical present exactly. Does nothing unless
- * hook_reextract_ready(RP_GLOW) holds.
+ * replay reproduces the canonical present exactly. A held camera cut shows
+ * tick N-1's set (cut_held_sets_enter) as that tick drew it, unrebased, since
+ * the staged camera is then tick N-1's. Does nothing unless
+ * hook_reextract_ready_held(RP_GLOW, ...) holds.
  * @param cpu The guest CPU state, read only.
  * @param bracketed Nonzero when the present lies inside a paired tick
  *        interval; zero skips the rebase and re-feeds at the displacements
  *        last computed.
- * @param alpha The present's position in the tick interval, 1 at its end. */
-void glow_reextract(CPUState* cpu, int bracketed, double alpha);
+ * @param alpha The present's position in the tick interval, 1 at its end.
+ * @param hold Nonzero on a held camera cut. */
+void glow_reextract(CPUState* cpu, int bracketed, double alpha, int hold);

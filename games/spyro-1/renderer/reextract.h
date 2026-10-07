@@ -93,9 +93,12 @@ void player_reextract(struct CPUState* cpu);
  * canonical tick; the star follows the particle path. Extract-only: the
  * .s does not run and no verdict byte is written. Latches s_phase_now to the
  * present clock around the pool feeds so the channel interpolation is on,
- * and clears it afterwards so the inline hook feeds stay integer-exact.
- * @param cpu The guest CPU state. */
-void particle_reextract(struct CPUState* cpu);
+ * and clears it afterwards so the inline hook feeds stay integer-exact. On a
+ * held camera cut the glow and sparkle feeds re-derive tick N-1's pool copy
+ * (cut_held_sets_enter), staged over the pool, with the interpolation off.
+ * @param cpu The guest CPU state.
+ * @param hold Nonzero on a held camera cut. */
+void particle_reextract(struct CPUState* cpu, int hold);
 /** @brief Sub-tick re-extract that replays the tracer snapshot against the current camera.
  *
  * Does nothing unless the tracer path was drawn on the canonical tick, so a

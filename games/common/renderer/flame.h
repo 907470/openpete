@@ -28,7 +28,8 @@ void flame_native_set_subframe(double frac);
  *
  * Extract-only: the game's emitter does not run. Returns without effect when
  * the game names no flame state, the native scene is off, the flame render
- * path is excluded or was not drawn by the canonical tick, or the staged
+ * path is excluded or was not drawn by the canonical tick (on a held cut, when
+ * the open records are tick N-1's, the canonical-tick test is dropped), or the staged
  * m_IsFlameActive word is 0 (the emitter runs only while the player breathes
  * fire, so an unconditional feed would draw a stale ribbon). The ribbon
  * attaches to the staged pose and projects through the interpolated camera.

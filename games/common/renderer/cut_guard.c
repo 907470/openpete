@@ -65,6 +65,37 @@ cut_held_pick_t cut_held_set_pick(uint32_t curr_epoch, uint32_t prev_epoch) {
     return spyro_native_canon_epoch_fresh(curr_epoch + 1u) ? CUT_HELD_CURR : CUT_HELD_EMPTY;
 }
 
+/** @brief Exchange a producer's two sets and their epochs.
+ *
+ * @param s The producer's sets. */
+static void cut_held_sets_exchange(cut_held_sets_t* s) {
+    s->swap();
+    const uint32_t e = s->epoch[0];
+    s->epoch[0] = s->epoch[1];
+    s->epoch[1] = e;
+}
+
+int cut_held_sets_capture(cut_held_sets_t* s) {
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    if (s->epoch[0] == epoch) return 0;
+    s->swap();
+    s->epoch[1] = s->epoch[0];
+    s->epoch[0] = epoch;
+    return 1;
+}
+
+int cut_held_sets_enter(cut_held_sets_t* s, int hold) {
+    if (!hold) return -1;
+    const cut_held_pick_t pick = cut_held_set_pick(s->epoch[0], s->epoch[1]);
+    if (pick == CUT_HELD_PREV) cut_held_sets_exchange(s);
+    cut_census_held_set(s->kind, pick, s->epoch[0], pick == CUT_HELD_EMPTY ? 0 : *s->n);
+    return (int)pick;
+}
+
+void cut_held_sets_leave(cut_held_sets_t* s, int pick) {
+    if (pick == CUT_HELD_PREV) cut_held_sets_exchange(s);
+}
+
 void cut_census_held_set(const char* kind, cut_held_pick_t pick, unsigned epoch, int n) {
     if (!cut_census_on()) return;
     static const char* const k_set[] = { "empty", "curr", "prev" };

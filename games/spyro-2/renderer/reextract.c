@@ -499,8 +499,9 @@ static void game_reextract_body(CPUState* cpu) {
         moby_native_set_tick_camera(NULL, NULL);
     }
     RX_CENSUS_STEP("moby");
-    /* The same hold for the player, the moby drop-shadows and the particles:
-     * the set tick N-1 drew is the set its camera sees. */
+    /* The same hold for the player, the moby drop-shadows, the particles and
+     * every producer after them: the set tick N-1 drew is the set its camera
+     * sees. */
     player_records_set_hold(hold);
     if (player_ranges_stage(hold))
         player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */
@@ -514,15 +515,18 @@ static void game_reextract_body(CPUState* cpu) {
     particles_reextract(cpu, bracketed, alpha);   /* the particle primitives the tick captured */
     particles_replay_prev(0);
     RX_CENSUS_STEP("particles");
+    /* The flame records are the player's, so the player hold picks them. */
+    player_records_set_hold(hold);
     flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
+    player_records_set_hold(0);
     RX_CENSUS_STEP("flame");
-    tracers_reextract(cpu, bracketed, alpha);   /* the tracer primitives the tick captured */
+    tracers_reextract(cpu, bracketed, alpha, hold);   /* the tracer primitives the tick captured */
     RX_CENSUS_STEP("tracers");
-    glow_reextract(cpu, bracketed, alpha);            /* the glow fans the tick captured */
+    glow_reextract(cpu, bracketed, alpha, hold);      /* the glow fans the tick captured */
     RX_CENSUS_STEP("glow");
-    glint_reextract(cpu, bracketed, alpha);   /* the gem-glint stars the tick captured */
+    glint_reextract(cpu, bracketed, alpha, hold);     /* the gem-glint stars the tick captured */
     RX_CENSUS_STEP("glint");
-    zap_reextract(cpu, bracketed, alpha);          /* Zoe's zap, the ribbons the tick captured */
+    zap_reextract(cpu, bracketed, alpha, hold);       /* Zoe's zap, the ribbons the tick captured */
     RX_CENSUS_STEP("zap");
     /* The HUD, dialog boxes, text and screen fades are produced during the
      * game's own render and cannot be re-derived here, so the canonical present

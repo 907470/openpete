@@ -866,12 +866,11 @@ static int on_flame_draw(CPUState* cpu, uint32_t addr) {
 /* Sub-tick ribbon re-extract; documented at the declaration in flame.h. */
 void flame_reextract(CPUState* cpu, int slot) {
     if (!FL_STATE) return;
-    if (!openpete_native_scene_enabled()) return;
-    if (!render_path_enabled(RP_FLAME)) return;
     /* Belt-and-braces with the m_IsFlameActive self-gate below: only replay the
      * flame if the canonical frame drew it (skips stale ribbons during a level
-     * transition where the active flag could lag the suppressed render). */
-    if (!render_path_canon_drawn(RP_FLAME)) return;
+     * transition where the active flag could lag the suppressed render). A held
+     * cut shows tick N-1's flame records, whose own drawing decides instead. */
+    if (!hook_reextract_ready_held(RP_FLAME, player_records_held_pick())) return;
     if (cpu->read_word(FL_STATE + FL_ACTIVE) == 0) return;   /* not breathing fire */
     flame_feed_native(cpu, slot, "rx");
 }

@@ -33,6 +33,9 @@
 #include "openpete_interp_objs.h"  /* per-slot prev/curr snapshots (sparkle phase) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
+#include "renderer/cut_guard.h"     /* cut_held_sets_t: the held cut's tick N-1 set */
+#include "openpete_psx.h"           /* openpete_psx_to_host_span */
+#include "openpete_subtick_view.h"  /* staging a held cut's pool copy */
 
 #include <math.h>
 #include <stdint.h>
@@ -2115,6 +2118,97 @@ static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
 /* The three particle renderers share one latch: they are separate guest
  * entries, so the descriptor is built per call around the caller's own draw. */
 static hook_bracket_state s_particle_hb;
+/* ---- held camera cut: the glow and sparkle pools of tick N-1 ---------------
+ *
+ * The glow and sparkle feeds re-derive their primitives from their pools, which
+ * hold tick N's records by the time a sub-tick present runs. A held cut shows
+ * tick N-1 under tick N-1's camera, so each renderer's hook copies its pool as
+ * the renderer left it, the bytes the canonical feed read, two canonical epochs
+ * deep, and the held present stages tick N-1's copy over the pool. */
+#define GLOW_POOL_BYTES  (16u * 0x24u)
+#define SPARK_POOL_BYTES (8u * 0x18u)
+
+/* One pool's two copies: the current epoch's and the one it retired, each with
+ * its live-record count. */
+typedef struct {
+    uint8_t* cur;
+    uint8_t* old;
+    int      n, n_old;
+} pool_copies_t;
+
+static uint8_t       s_glow_pool[2][GLOW_POOL_BYTES];
+static uint8_t       s_spark_pool[2][SPARK_POOL_BYTES];
+static pool_copies_t s_glow_pc  = { s_glow_pool[0],  s_glow_pool[1],  0, 0 };
+static pool_copies_t s_spark_pc = { s_spark_pool[0], s_spark_pool[1], 0, 0 };
+
+/** @brief Exchange a pool's current copy with the retired one, with their counts.
+ *
+ * @param pc The pool's copies. */
+static void pool_copies_swap(pool_copies_t* pc) {
+    uint8_t* t = pc->cur; pc->cur = pc->old; pc->old = t;
+    const int n = pc->n; pc->n = pc->n_old; pc->n_old = n;
+}
+/** @brief Exchange the glow pool's two copies. */
+static void glow_pool_swap(void)  { pool_copies_swap(&s_glow_pc); }
+/** @brief Exchange the sparkle pool's two copies. */
+static void spark_pool_swap(void) { pool_copies_swap(&s_spark_pc); }
+
+static cut_held_sets_t s_glow_held  = { glow_pool_swap,  &s_glow_pc.n,  "glow",    { 0u, 0u } };
+static cut_held_sets_t s_spark_held = { spark_pool_swap, &s_spark_pc.n, "sparkle", { 0u, 0u } };
+
+/** @brief Copy a pool as its renderer left it into the current epoch's copy, retiring the previous epoch's first.
+ *
+ * A record is live when the word at live_off masked by live_mask is nonzero
+ * and, as a signed value, positive: the glow ring count (+0x00) and the
+ * sparkle m_Life byte (+0x0C).
+ * @param h The pool's held sets.
+ * @param pc The pool's copies.
+ * @param base The pool's guest address.
+ * @param n_rec The pool's record count.
+ * @param stride The record size in bytes.
+ * @param live_off The offset of the liveness word in a record.
+ * @param live_mask The mask applied to the liveness word. */
+static void pool_capture(cut_held_sets_t* h, pool_copies_t* pc, uint32_t base,
+                         uint32_t n_rec, uint32_t stride, uint32_t live_off, uint32_t live_mask) {
+    const uint8_t* src = (const uint8_t*)openpete_psx_to_host_span(base, n_rec * stride);
+    if (!src) return;
+    cut_held_sets_capture(h);
+    memcpy(pc->cur, src, n_rec * stride);
+    pc->n = 0;
+    for (uint32_t i = 0; i < n_rec; i++) {
+        uint32_t w;
+        memcpy(&w, pc->cur + i * stride + live_off, 4);
+        if ((int32_t)(w & live_mask) > 0) pc->n++;
+    }
+}
+
+/** @brief Whether a pool's re-derivation may feed this present, staging tick N-1's copy over the pool on a held cut.
+ *
+ * Outside a hold, hook_reextract_ready. On a hold, cut_held_sets_enter picks
+ * tick N-1's copy, which is staged through the sub-tick view so the build
+ * reads it in place of tick N's records; a refused staging feeds nothing.
+ * @param h The pool's held sets.
+ * @param pc The pool's copies.
+ * @param path The pool's render path.
+ * @param base The pool's guest address.
+ * @param len The pool's size in bytes.
+ * @param hold Nonzero on a held camera cut.
+ * @param held Receives 1 when the feed shows a staged held copy, else 0.
+ * @return 1 when the feed may run, else 0. */
+static int pool_feed_ready(cut_held_sets_t* h, pool_copies_t* pc, render_path_t path,
+                           uint32_t base, uint32_t len, int hold, int* held) {
+    const int pick = cut_held_sets_enter(h, hold);
+    int ok = hook_reextract_ready_held(path, pick);
+    *held = pick >= 0;
+    if (ok && pick >= 0) {
+        uint8_t* st = (uint8_t*)openpete_subtick_view_stage(base, len);
+        if (st) memcpy(st, pc->cur, len);
+        else ok = 0;
+    }
+    cut_held_sets_leave(h, pick);
+    return ok;
+}
+
 static void (*s_particle_realfn)(CPUState*);
 /** @brief Runs the guest particle renderer chosen by on_particle_renderer as the bracket's draw.
  *
@@ -2218,16 +2312,28 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
 static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", RP_PARTICLES, 1); }
 /** @brief Dispatch hook for func_800580F4, the glow renderer.
  *
+ * A taken call then copies the glow pool for a held camera cut (pool_capture).
  * @param cpu The guest CPU state.
  * @param addr The hooked address (unused).
  * @return The on_particle_renderer verdict. */
-static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", RP_GLOW, 0); }
+static int on_800580F4_glows(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    const int took = on_particle_renderer(cpu, func_800580F4, "glows", RP_GLOW, 0);
+    if (took) pool_capture(&s_glow_held, &s_glow_pc, D_GLOWS, 16u, 0x24u, 0x00u, 0xFFFFFFFFu);
+    return took;
+}
 /** @brief Dispatch hook for func_800584C4, the sparkle renderer.
  *
+ * A taken call then copies the sparkle pool for a held camera cut (pool_capture).
  * @param cpu The guest CPU state.
  * @param addr The hooked address (unused).
  * @return The on_particle_renderer verdict. */
-static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", RP_SPARKLE, 0); }
+static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    const int took = on_particle_renderer(cpu, func_800584C4, "sparkles", RP_SPARKLE, 0);
+    if (took) pool_capture(&s_spark_held, &s_spark_pc, G_SPARKLES, 8u, 0x18u, 0x0Cu, 0xFFu);
+    return took;
+}
 
 /** @brief Runs the guest dragon-rescue star renderer (func_80058864) as the hook bracket's draw.
  *
@@ -2286,7 +2392,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
  * sparkles from the current g_Particles pool - extract-only (no render_fn, no
  * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
  * stay present on intermediates. */
-void particle_reextract(CPUState* cpu) {
+void particle_reextract(CPUState* cpu, int hold) {
     if (!openpete_native_scene_enabled()) return;
     /* Each feeder replays only when ITS .s renderer drew on the canonical
      * tick. The pools outlive the renderers: a level transition stops all
@@ -2295,17 +2401,24 @@ void particle_reextract(CPUState* cpu) {
      * the glow and sparkle renderers are never called, leaving Sparx's glow
      * active in its pool but absent from every canonical present. */
     const int part = render_path_enabled(RP_PARTICLES) && render_path_canon_drawn(RP_PARTICLES);
-    const int glow = render_path_enabled(RP_GLOW)      && render_path_canon_drawn(RP_GLOW);
-    const int spar = render_path_enabled(RP_SPARKLE)   && render_path_canon_drawn(RP_SPARKLE);
+    int glow_held = 0, spar_held = 0;
+    const int glow = pool_feed_ready(&s_glow_held, &s_glow_pc, RP_GLOW,
+                                     D_GLOWS, GLOW_POOL_BYTES, hold, &glow_held);
+    const int spar = pool_feed_ready(&s_spark_held, &s_spark_pc, RP_SPARKLE,
+                                     G_SPARKLES, SPARK_POOL_BYTES, hold, &spar_held);
     if (!part && !glow && !spar) return;
     /* Channel-phase interp on for the re-extract feeds only (every present when
      * the sub-tick spine is active - canonical-lag leg + intermediates); reset
      * so the canonical inline hook feeds stay integer/byte-exact for the A/Bs.
      * Covers particle spin/size/extents + line far endpoints + sparkle
      * life/spin (see the s_phase_now block). */
-    s_phase_now = openpete_interp_present_now();
+    const op_time_t now = openpete_interp_present_now();
+    s_phase_now = now;
     if (part) particle_feed_native(cpu);
+    /* A staged held copy is tick N-1's pool as that tick drew it: no phase lerp. */
+    s_phase_now = glow_held ? 0 : now;
     if (glow) glow_feed_native(cpu);
+    s_phase_now = spar_held ? 0 : now;
     if (spar) sparkle_feed_native(cpu);
     s_phase_now = 0;
     if (part) dragonstar_feed_native(cpu);   /* self-gates on the D_80076248 active flag; shares RP_PARTICLES */

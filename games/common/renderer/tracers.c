@@ -68,6 +68,7 @@
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"
 #include "renderer/env_knob.h"
+#include "renderer/cut_guard.h"     /* cut_held_sets_t: the held cut's tick N-1 set */
 #include "renderer/tracers.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
@@ -134,10 +135,22 @@ static tr_item  s_item[TR_MAX_PRIMS];
 static int      s_item_n;
 
 /* The tick's whole set, replayed by the sub-tick leg: nine calls contribute to
- * one canonical present and the polybuf is reused before the next one. */
-static tr_item  s_tick[TR_MAX_TICK];
+ * one canonical present and the polybuf is reused before the next one. The
+ * set the last capture of a new canonical epoch retired is kept beside it,
+ * which a held camera cut shows when it is tick N-1's. */
+static tr_item  s_tick_buf[2][TR_MAX_TICK];
+static tr_item* s_tick = s_tick_buf[0];
 static int      s_tick_n;
-static unsigned s_tick_frame = 0xFFFFFFFFu;
+static tr_item* s_tick_old = s_tick_buf[1];
+static int      s_tick_old_n;
+
+/** @brief Exchange the tick's held set with the retired one, with their counts. */
+static void tr_sets_swap(void) {
+    tr_item* t = s_tick; s_tick = s_tick_old; s_tick_old = t;
+    const int n = s_tick_n; s_tick_n = s_tick_old_n; s_tick_old_n = n;
+}
+
+static cut_held_sets_t s_sets = { tr_sets_swap, &s_tick_n, "tracers", { 0u, 0u } };
 
 /* The mesh vertex lists the most recent drawing frame read: address and
  * vertex count. The set stands until the next frame that draws a mesh, so
@@ -620,12 +633,13 @@ static void tr_feed_native(const tr_item* set, int n) {
 
 /** @brief Appends the call's items to the tick's held set for the sub-tick replay.
  *
- * The first call on a new VBL empties the set, since several calls
+ * The first call of a canonical epoch retires the previous epoch's set
+ * (cut_held_sets_capture) and empties the held one, since several calls
  * contribute to one canonical present; items past TR_MAX_TICK are dropped.
  * Clears the rebase so a canonical feed emits the captured corners.
  * @return The index of the call's first item in the held set. */
 static int tr_hold(void) {
-    if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
+    if (cut_held_sets_capture(&s_sets)) s_tick_n = 0;
     const int first = s_tick_n;
     for (int i = 0; i < s_item_n && s_tick_n < TR_MAX_TICK; i++) s_tick[s_tick_n++] = s_item[i];
     s_reb_active = 0;
@@ -911,11 +925,16 @@ static void tr_rebase_all(CPUState* cpu, double alpha) {
 }
 
 /* Called from each game's reextract.c on a sub-tick present. */
-void tracers_reextract(CPUState* cpu, int bracketed, double alpha) {
-    if (!hook_reextract_ready(RP_TRACER)) return;
-    tr_rebase_all(cpu, bracketed ? alpha : 1.0);
-    tr_feed_native(s_tick, s_tick_n);
-    s_reb_active = 0;
+void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+    const int pick = cut_held_sets_enter(&s_sets, hold);
+    if (hook_reextract_ready_held(RP_TRACER, pick)) {
+        /* On a held cut the staged camera is tick N-1's, the camera the shown
+         * set was drawn under: alpha 1 emits its captured corners. */
+        tr_rebase_all(cpu, (bracketed && pick < 0) ? alpha : 1.0);
+        tr_feed_native(s_tick, s_tick_n);
+        s_reb_active = 0;
+    }
+    cut_held_sets_leave(&s_sets, pick);
 }
 
 /* The hook addresses are the layout's two tracer draw sites, bound at boot: a

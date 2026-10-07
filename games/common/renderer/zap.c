@@ -86,6 +86,7 @@
 #include "renderer/native_gte.h"
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"
+#include "renderer/cut_guard.h"     /* cut_held_sets_t: the held cut's tick N-1 set */
 #include "renderer/env_knob.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
@@ -157,9 +158,21 @@ static struct {
 
 /* The tick's captured set, replayed by every sub-tick present of the tick. */
 typedef struct { ngte_prim p; float depth; zap_pivot pv; } zap_held;
-static zap_held  s_tick[ZAP_MAX_PRIMS];
+static zap_held  s_tick_buf[2][ZAP_MAX_PRIMS];
+static zap_held* s_tick = s_tick_buf[0];
 static int      s_tick_n;
-static unsigned s_tick_frame = ~0u;
+/* The set the last capture of a new canonical epoch retired, which a held
+ * camera cut shows when it is tick N-1's. */
+static zap_held* s_tick_old = s_tick_buf[1];
+static int      s_tick_old_n;
+
+/** @brief Exchange the tick's held set with the retired one, with their counts. */
+static void zap_sets_swap(void) {
+    zap_held* t = s_tick; s_tick = s_tick_old; s_tick_old = t;
+    const int n = s_tick_n; s_tick_n = s_tick_old_n; s_tick_old_n = n;
+}
+
+static cut_held_sets_t s_sets = { zap_sets_swap, &s_tick_n, "zap", { 0u, 0u } };
 
 /** @brief Stores one decoded primitive in s_item as an unpaired item at the near-guard depth 1.
  *
@@ -684,10 +697,9 @@ static void zap_trace(const char* leg, double alpha) {
 
 /** @brief Appends the call's captured primitives to the held set the sub-tick replay re-feeds.
  *
- * The held set is cleared when openpete_frame differs from the frame it was
- * filled on, and holds at most ZAP_MAX_PRIMS primitives. */
+ * The held set holds at most ZAP_MAX_PRIMS primitives; on_zap_draw empties it
+ * on the canonical epoch's first call. */
 static void zap_hold(void) {
-    if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
     for (int i = 0; i < s_item_n && s_tick_n < ZAP_MAX_PRIMS; i++) {
         s_tick[s_tick_n].p = s_item[i].p;
         s_tick[s_tick_n].depth = s_item[i].depth;
@@ -759,7 +771,8 @@ static int on_zap_draw(CPUState* cpu, uint32_t addr) {
     s_item_n = 0; s_pred_n = 0; s_live = 0; s_reached = 0; s_accepted = 0;
     memset(&s_reb, 0, sizeof s_reb);   /* the canonical feed emits the captured corners */
     const uint32_t fed_before = s_fed_tris;
-    if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
+    /* The epoch's first call retires the previous epoch's set (cut_held_sets_capture). */
+    if (cut_held_sets_capture(&s_sets)) s_tick_n = 0;
     if (endp > startp) {
         zap_capture_prims(cpu, startp, endp);
         ngte_view view;
@@ -891,11 +904,18 @@ static void zap_rebase_all(CPUState* cpu, double alpha) {
  * emits the captured corners and the paired depths verbatim and so reproduces
  * the canonical present exactly, which is what the spine's identity leg
  * measures. */
-void zap_reextract(CPUState* cpu, int bracketed, double alpha) {
-    if (!hook_reextract_ready(RP_TRACER)) return;
-    if (bracketed) zap_rebase_all(cpu, alpha);
-    zap_feed_set(s_tick, s_tick_n);
-    zap_trace("inter", bracketed ? alpha : 1.0);
+void zap_reextract(CPUState* cpu, int bracketed, double alpha, int hold) {
+    const int pick = cut_held_sets_enter(&s_sets, hold);
+    if (hook_reextract_ready_held(RP_TRACER, pick)) {
+        /* On a held cut the staged camera is tick N-1's, the camera the shown
+         * set was drawn under, and its record state is not the one s_rec
+         * paired: the captured corners feed verbatim. */
+        if (pick >= 0) memset(&s_reb, 0, sizeof s_reb);
+        else if (bracketed) zap_rebase_all(cpu, alpha);
+        zap_feed_set(s_tick, s_tick_n);
+        zap_trace("inter", bracketed ? alpha : 1.0);
+    }
+    cut_held_sets_leave(&s_sets, pick);
 }
 
 /* The hook address is the layout's zap draw site, bound at boot: a

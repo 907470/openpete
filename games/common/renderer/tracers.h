@@ -11,11 +11,14 @@
  * its source point between the tick's camera and records and the staged
  * camera and interpolated records. At alpha 1, and on a present outside a
  * bracket, it emits the captured corners verbatim and reproduces the
- * canonical present. A no-op until hook_reextract_ready(RP_TRACER).
+ * canonical present. A held camera cut shows tick N-1's set
+ * (cut_held_sets_enter) verbatim, since the staged camera is then tick
+ * N-1's. A no-op until hook_reextract_ready_held(RP_TRACER, ...).
  * @param cpu The guest CPU state.
  * @param bracketed Nonzero on a present inside a reextract bracket.
- * @param alpha The present's position in the tick interval, 0..1. */
-void tracers_reextract(CPUState* cpu, int bracketed, double alpha);
+ * @param alpha The present's position in the tick interval, 0..1.
+ * @param hold Nonzero on a held camera cut. */
+void tracers_reextract(CPUState* cpu, int bracketed, double alpha, int hold);
 
 /** @brief Copies out the mesh vertex lists the most recent VBL with a mesh draw read.
  *

@@ -71,6 +71,42 @@ typedef enum {
  * @return The set to show. */
 cut_held_pick_t cut_held_set_pick(uint32_t curr_epoch, uint32_t prev_epoch);
 
+/* The two captured sets a producer keeps so a held present can show tick
+ * N-1's: the set of the last canonical epoch it captured in and the set that
+ * capture retired. The producer owns both buffers; `swap` exchanges them with
+ * their counts and `n` points at the current set's count. */
+typedef struct cut_held_sets {
+    void      (*swap)(void);  /* exchanges the producer's current and retired sets */
+    const int*  n;            /* the current set's item count */
+    const char* kind;         /* the census name */
+    uint32_t    epoch[2];     /* canonical epoch of the current set, of the retired set */
+} cut_held_sets_t;
+
+/** @brief Open one capture in the canonical epoch in flight: the epoch's first capture retires the current set.
+ *
+ * On retirement the producer's sets are exchanged, so the current buffer is
+ * the one retired an epoch earlier; the caller empties it before appending.
+ * @param s The producer's sets.
+ * @return 1 on the epoch's first capture, else 0. */
+int cut_held_sets_capture(cut_held_sets_t* s);
+
+/** @brief Select the set a re-extract shows and, on a held cut, swap tick N-1's set in.
+ *
+ * Outside a hold nothing changes. On a hold the choice is
+ * cut_held_set_pick's; CUT_HELD_PREV exchanges the two sets until
+ * cut_held_sets_leave, and the census line names the set shown.
+ * @param s The producer's sets.
+ * @param hold Nonzero on a held camera cut.
+ * @return -1 outside a hold, else the cut_held_pick_t shown, the argument
+ *         hook_reextract_ready_held takes. */
+int cut_held_sets_enter(cut_held_sets_t* s, int hold);
+
+/** @brief Undo cut_held_sets_enter: exchange the sets back when it swapped tick N-1's set in.
+ *
+ * @param s The producer's sets.
+ * @param pick cut_held_sets_enter's return value. */
+void cut_held_sets_leave(cut_held_sets_t* s, int pick);
+
 /** @brief Print which captured set one channel shows on a held cut, when the census is armed.
  *
  * @param kind The channel's name.
