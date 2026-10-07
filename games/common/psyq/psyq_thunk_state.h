@@ -45,6 +45,8 @@
  *                           stream read (pack_ver 6)
  *   [44]     pause_owed     VBLs until that read's closing CdlPause
  *                           completes (pack_ver 6)
+ *   [45]     spu_clk_frac   remainder of the SPU's samples per VBL, in
+ *                           1/715909 samples (pack_ver 7)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -55,14 +57,15 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 6u
-#define PSYQ_THUNK_STATE_WORDS    45u
+#define PSYQ_THUNK_STATE_PACK_VER 7u
+#define PSYQ_THUNK_STATE_WORDS    46u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
 #define PSYQ_THUNK_STATE_V2_BYTES 100u
 #define PSYQ_THUNK_STATE_V3_BYTES 104u
 #define PSYQ_THUNK_STATE_V4_BYTES 120u
 #define PSYQ_THUNK_STATE_V5_BYTES 172u
+#define PSYQ_THUNK_STATE_V6_BYTES 180u
 
 /** @brief Return the byte length of a pack whose first word is `ver`.
  *

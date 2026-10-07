@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <AL/al.h>
-#include <AL/alc.h>
 #include <SDL3/SDL.h>
 
 #include "openpete_log.h"
@@ -13,10 +11,18 @@
 #include "openpete_paths.h" /* the writable user assets root */
 #include "wav_loader.h"
 
+/* The SPU render's host stream input (PsyCross src/audio/PsyX_SPUAL.h):
+ * frames at the WAV's rate, consumed per output sample in guest time and
+ * added after the SPU's main volume. */
+extern void PsyX_SPUAL_HostStreamStart(int channels, unsigned int rate);
+extern void PsyX_SPUAL_HostStreamStop(void);
+extern int  PsyX_SPUAL_HostStreamSpace(void);
+extern int  PsyX_SPUAL_HostStreamPush(const short* pcm, int frames);
+extern void PsyX_SPUAL_HostStreamSetGain(float gain);
+
 #define MO_MAX_TRACKS   64    /* m_MusicTable capacity; 48 used in Spyro 1 */
-#define MO_RING         4
-#define MO_CHUNK_FRAMES 8192u /* ~0.19 s @ 44.1 kHz per AL buffer */
-/* Frames the streaming worker keeps decoded ahead of the AL ring: about
+#define MO_CHUNK_FRAMES 8192u /* ~0.19 s @ 44.1 kHz per push */
+/* Frames the streaming worker keeps decoded ahead of the host stream: about
  * 2.7 s at 48 kHz, 512 KiB of stereo PCM, whatever the track length. */
 #define MO_STREAM_FRAMES (1u << 17)
 
@@ -37,12 +43,6 @@ static struct {
     uint8_t    cache_state[MO_MAX_TRACKS];
     unsigned   cache_epoch[MO_MAX_TRACKS]; /* modset epoch at cache time */
 
-    int    al_ready;
-    ALuint source;
-    ALuint buffers[MO_RING];
-    ALuint free_bufs[MO_RING];
-    int    n_free;
-
     int       active;
     int       track;
     int       channels;             /* of the active stream */
@@ -53,7 +53,7 @@ static struct {
 } s = { .gain = 1.0f, .forced_gain = -1.0f };
 
 /* The streaming worker. A start opens the file and reads its header and
- * first AL chunk on the calling thread, then hands the open stream to the
+ * first chunk on the calling thread, then hands the open stream to the
  * worker, which reads the rest into `ring` ahead of music_override_pump.
  * Everything below is guarded by `mx`; the worker does its file reads
  * outside it, into its own buffer, and copies them into the ring only if
@@ -81,14 +81,10 @@ static struct {
 
 static int16_t s_chunk[MO_CHUNK_FRAMES * 2]; /* caller-thread staging */
 
-/** @brief Set the AL source gain to the forced gain when one is set, else the linear gain.
- *
- * No-op until the AL source exists. */
+/** @brief Set the host stream's gain to the forced gain when one is set, else the linear gain. */
 static void apply_gain(void)
 {
-    if (!s.al_ready) return;
-    alSourcef(s.source, AL_GAIN,
-              s.forced_gain >= 0.0f ? s.forced_gain : s.gain);
+    PsyX_SPUAL_HostStreamSetGain(s.forced_gain >= 0.0f ? s.forced_gain : s.gain);
 }
 
 /** @brief Parse one manifest line "<index> <relative path>" and return 1 when both fields parse.
@@ -407,12 +403,13 @@ static void stream_hand_over(FILE* f, int ch, uint32_t primed, uint32_t left)
     SDL_UnlockMutex(st.mx);
 }
 
-/** @brief Open a WAV for streaming, prime its first AL chunk here and hand the rest to the worker.
+/** @brief Open a WAV for streaming, prime its first chunk here and hand the rest to the worker.
  *
  * Only the RIFF header and the first MO_CHUNK_FRAMES frames are read on
  * the calling thread.
  * @param path WAV file path.
- * @return 0 with the stream installed and s.channels / s.sample_rate set;
+ * @return 0 with the stream installed, s.channels / s.sample_rate set and
+ *         the render's host stream started in that format;
  *         -1 when the file cannot be opened, its header is rejected
  *         (logged), or the worker is unavailable. */
 static int stream_open(const char* path)
@@ -429,6 +426,7 @@ static int stream_open(const char* path)
     const uint32_t left = got < n ? 0u : info.frame_count - (uint32_t)got;
     s.channels = info.channels;
     s.sample_rate = info.sample_rate;
+    PsyX_SPUAL_HostStreamStart(info.channels, (unsigned)info.sample_rate);
     st.starts++;
     stream_hand_over(f, info.channels, (uint32_t)got, left);
     OPL_INFO_F("music", "wav override: streaming %s (%u frames, %d ch, %d Hz)",
@@ -446,45 +444,12 @@ static double note_start_time(Uint64 t0)
     return (double)d / 1e3;
 }
 
-/** @brief Create the AL source and the four-buffer ring on first use.
- *
- * The source is listener-relative at unit pitch, every buffer starts
- * free, and the current gain is applied.
- * @return 1 when the ring exists, 0 (logged) when no AL context is
- *         current, which sends the caller to the XA path. */
-static int ensure_al(void)
-{
-    if (s.al_ready) return 1;
-    if (!alcGetCurrentContext()) {
-        OPL_WARN_F("music", "wav override: no OpenAL context; using XA path");
-        return 0;
-    }
-    alGenSources(1, &s.source);
-    alGenBuffers(MO_RING, s.buffers);
-    alSourcei(s.source, AL_SOURCE_RELATIVE, AL_TRUE);
-    alSourcef(s.source, AL_PITCH, 1.0f);
-    for (int i = 0; i < MO_RING; ++i) s.free_bufs[i] = s.buffers[i];
-    s.n_free   = MO_RING;
-    s.al_ready = 1;
-    apply_gain();
-    return 1;
-}
-
 void music_override_stop(void)
 {
     if (!s.active) return;
     s.active = 0;
     if (st.th) stream_hand_over(NULL, 0, 0, 0);
-    if (s.al_ready) {
-        alSourceStop(s.source);
-        ALint queued = 0;
-        alGetSourcei(s.source, AL_BUFFERS_QUEUED, &queued);
-        while (queued-- > 0) {
-            ALuint b = 0;
-            alSourceUnqueueBuffers(s.source, 1, &b);
-            if (s.n_free < MO_RING) s.free_bufs[s.n_free++] = b;
-        }
-    }
+    PsyX_SPUAL_HostStreamStop();
 }
 
 int music_override_try_start(int track_index, int start_sector)
@@ -496,10 +461,7 @@ int music_override_try_start(int track_index, int start_sector)
     const Uint64 t0 = SDL_GetTicksNS();
     char path[sizeof(s.dir[0]) + 1040];
     if (!resolve_track(track_index, path, sizeof path)) return 0;
-    /* Logged before the AL check: the selection does not depend on the
-     * audio device, and a run without one still names the file it chose. */
     OPL_INFO_F("music", "wav override selected: track %02d -> %s", track_index, path);
-    if (!ensure_al()) return 0;
 
     music_override_stop();
     if (stream_open(path) != 0) {
@@ -534,7 +496,6 @@ int music_override_try_start_path(const char* path, int start_sector)
     }
     if (s_path.failed) return 0;
     OPL_INFO_F("music", "wav override selected: %s", path);
-    if (!ensure_al()) return 0;
 
     const Uint64 t0 = SDL_GetTicksNS();
     music_override_stop();
@@ -556,17 +517,9 @@ int music_override_is_active(void) { return s.active; }
 
 void music_override_pump(void)
 {
-    if (!s.active || !s.al_ready) return;
+    if (!s.active) return;
 
-    ALint processed = 0;
-    alGetSourcei(s.source, AL_BUFFERS_PROCESSED, &processed);
-    while (processed-- > 0) {
-        ALuint b = 0;
-        alSourceUnqueueBuffers(s.source, 1, &b);
-        if (s.n_free < MO_RING) s.free_bufs[s.n_free++] = b;
-    }
-
-    while (s.n_free > 0) {
+    while (PsyX_SPUAL_HostStreamSpace() >= (int)MO_CHUNK_FRAMES) {
         SDL_LockMutex(st.mx);
         uint64_t avail = st.wr - st.rd;
         uint32_t n = avail < MO_CHUNK_FRAMES ? (uint32_t)avail : MO_CHUNK_FRAMES;
@@ -574,35 +527,21 @@ void music_override_pump(void)
         SDL_SignalCondition(st.cv);
         SDL_UnlockMutex(st.mx);
         if (n == 0) break;
-        ALuint b = s.free_bufs[--s.n_free];
-        alBufferData(b,
-                     s.channels == 2 ? AL_FORMAT_STEREO16 : AL_FORMAT_MONO16,
-                     s_chunk,
-                     (ALsizei)(n * (uint32_t)s.channels * sizeof(int16_t)),
-                     s.sample_rate);
-        alSourceQueueBuffers(s.source, 1, &b);
+        PsyX_SPUAL_HostStreamPush(s_chunk, (int)n);
     }
 
-    /* WAV exhausted -> ring drains and the source stops. Looping is the
+    /* WAV exhausted -> the stream drains to silence. Looping is the
      * game's job: it polls CdlGetlocP and re-issues CdlReadS when the
      * head passes the track's end, which restarts us from frame 0. The
      * head is driven by the game layer (psyq_CdSync), not from here, so
      * a WAV shorter than the original XA track trails silence and a
      * longer one is cut off at the original's length. */
-    ALint queued = 0;
-    alGetSourcei(s.source, AL_BUFFERS_QUEUED, &queued);
-    if (queued > 0) {
-        ALint state = 0;
-        alGetSourcei(s.source, AL_SOURCE_STATE, &state);
-        if (state != AL_PLAYING) alSourcePlay(s.source);
-    }
 }
 
 void music_override_set_gain(float linear_gain)
 {
     s.gain = linear_gain;
-    if (s.al_ready && s.forced_gain < 0.0f)
-        alSourcef(s.source, AL_GAIN, linear_gain);
+    apply_gain();
 }
 
 void music_override_set_forced_gain(float linear_gain)
@@ -614,13 +553,6 @@ void music_override_set_forced_gain(float linear_gain)
 void music_override_shutdown(void)
 {
     music_override_stop();
-    if (s.al_ready) {
-        alDeleteSources(1, &s.source);
-        alDeleteBuffers(MO_RING, s.buffers);
-        s.source   = 0;
-        s.al_ready = 0;
-        s.n_free   = 0;
-    }
     for (int i = 0; i < MO_MAX_TRACKS; ++i) {
         free(s.manifest[i]);
         s.manifest[i] = NULL;

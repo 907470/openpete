@@ -1,0 +1,22 @@
+# sfx-play-probe: plays its own clip through sfx_play on a fixed tick
+# schedule, for the audio harness that checks host clips reach the
+# recording and the audio dump.
+#
+# The clip assets/sfx/own/probe.wav is written by the harness (a 1 kHz
+# tone, 0.25 s); the mod plays it at every 150th CameraUpdate call. It
+# reads and writes no guest RAM.
+#
+# uses: `api->override_name` - a CameraUpdate pre-hook, the per-tick clock
+# uses: `api->base` - hands control back so the camera still updates
+# uses: `api->sfx_play` - plays the clip
+# uses: `api->log` - one line per play, naming the call count
+
+[mod]
+id      = "sfx-play-probe"
+name    = "SFX Play Probe"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 1
+state    = "none"
+runahead = "host-fx"
+sim_mutative = false

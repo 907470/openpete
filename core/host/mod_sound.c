@@ -1,99 +1,73 @@
 /* mod_sound - one-shot mod sound effects (sfx_play, the modding
  * framework's engine-services contract).
  *
- * HOST-SIDE ADDITIVE audio: OpenAL static buffers played through a small
- * fire-and-forget source pool on the context PsyCross owns (the same
- * piggyback as music_override.c). Never touches the SPU or guest state -
- * playing a sound from any hook context is sim-neutral by construction,
- * so it is legal from tick AND present hooks (audio is presentation, not
- * render output; the render-purity contract concerns sim effects).
+ * HOST-SIDE ADDITIVE audio: clips played on the SPU render's host inputs
+ * (PsyX_SPUAL_HostPlay), added to the console's output after its main
+ * volume and advanced in guest time, so the device, --record and the
+ * audio dump carry them in one mix. Never touches SPU registers or guest
+ * state - playing a sound from any hook context is sim-neutral by
+ * construction, so it is legal from tick AND present hooks (audio is
+ * presentation, not render output; the render-purity contract concerns
+ * sim effects). A play from a speculated tick is rewound with the
+ * speculation and made again by the committed tick; a play from a present
+ * hook persists.
  *
- * These sources sit on PsyCross's AL context but outside its SPU mixer, so
- * the SPU's own mute flag never reaches them. --mute arrives here through
- * openpete_mod_sound_set_mute() instead - the same push music_override
- * takes - and stops whatever is already in flight.
+ * --mute arrives through openpete_mod_sound_set_mute(), which stops
+ * whatever is in flight and plays nothing while set.
  *
- * WAVs load through op_wav_load (PCM int16 mono/stereo) and are cached
- * by path - repeated plays reuse the AL buffer. Callers that already hold
- * decoded PCM (a synthesized tone, a sample pulled out of game data) take
- * the _pcm entry point and are cached by a caller-chosen key instead, so
- * nothing has to be staged on disk to be playable. All failures are
- * warn-and-return; a missing file or dead AL context can never brick a
- * mod, let alone the launch. */
+ * WAVs load through op_wav_load (PCM int16 mono/stereo) and are cached by
+ * path - repeated plays reuse the clip. Callers that already hold decoded
+ * PCM (a synthesized tone, a sample pulled out of game data) take the _pcm
+ * entry point and are cached by a caller-chosen key instead, so nothing
+ * has to be staged on disk to be playable. All failures are
+ * warn-and-return; a missing file can never brick a mod, let alone the
+ * launch. */
 
 #include "openpete_mods.h"
 #include "wav_loader.h"
 #include "openpete_log.h"
 #include "mod_vec.h"
 
-#include <AL/al.h>
-
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-/* Buffers the cache allocates up front; it grows past this. */
+/* The SPU render's host inputs (PsyCross src/audio/PsyX_SPUAL.h). */
+extern int  PsyX_SPUAL_HostBufferCreate(const short* pcm, int frames, int channels, unsigned int rate);
+extern int  PsyX_SPUAL_HostPlay(int buffer, float gain, int persist);
+extern void PsyX_SPUAL_HostStopAll(void);
+
+/* Clips the cache allocates up front; it grows past this. */
 #define SND_CACHE_INIT 16
-#define SND_SOURCES    8
 
 typedef struct {
-    char   key[1024];   /* WAV path, or a caller-chosen label for raw PCM */
-    ALuint buf;
+    char key[1024];   /* WAV path, or a caller-chosen label for raw PCM */
+    int  clip;        /* host-input clip id */
 } snd_cache_t;
 
-static mod_fvec    s_cache;      /* snd_cache_t, one per uploaded key */
-static ALuint      s_sources[SND_SOURCES];
-static int         s_inited = 0; /* 0 = not yet, 1 = ok, -1 = AL dead */
-static int         s_muted  = 0;
+static mod_fvec s_cache;      /* snd_cache_t, one per uploaded key */
+static int      s_muted = 0;
 
-/** @brief Create the source pool on first use and return the init state, 1 when usable or -1 when AL is dead.
- *
- * The result is latched in s_inited, so a failed generation is not retried
- * and the warning logs once. Sources are made listener-relative. */
-static int snd_init(void) {
-    if (s_inited) return s_inited;
-    alGetError();
-    alGenSources(SND_SOURCES, s_sources);
-    if (alGetError() != AL_NO_ERROR) {
-        OPL_WARN_F("mods", "sfx_play: no OpenAL context - mod "
-                   "sounds disabled this session");
-        s_inited = -1;
-        return s_inited;
-    }
-    for (int i = 0; i < SND_SOURCES; i++)
-        alSourcei(s_sources[i], AL_SOURCE_RELATIVE, AL_TRUE);
-    s_inited = 1;
-    return s_inited;
-}
-
-/** @brief Return the cached AL buffer for key, or 0 when key has not been uploaded. */
-static ALuint snd_cache_find(const char* key) {
+/** @brief Return the cached clip for key, or 0 when key has not been uploaded. */
+static int snd_cache_find(const char* key) {
     for (size_t i = 0; i < mod_fvec_count(&s_cache); i++) {
         const snd_cache_t* c = (const snd_cache_t*)mod_fvec_at(&s_cache, i);
-        if (strcmp(c->key, key) == 0) return c->buf;
+        if (strcmp(c->key, key) == 0) return c->clip;
     }
     return 0;
 }
 
-/** @brief Upload interleaved s16 PCM to a new AL buffer cached under key, and return the buffer or 0 on failure (logged).
+/** @brief Copy interleaved s16 PCM into a new host-input clip cached under key, and return the clip or 0 on failure (logged).
  *
- * A channels value other than 2 uploads as mono. AL copies the samples, so
- * the caller may free them. The cache is created on first use; a failed
- * cache push deletes the buffer. */
-static ALuint snd_cache_upload(const char* key, const int16_t* pcm,
-                               uint32_t frame_count, int channels,
-                               uint32_t sample_rate) {
-    ALuint buf = 0;
-    alGetError();
-    alGenBuffers(1, &buf);
-    alBufferData(buf,
-                 channels == 2 ? AL_FORMAT_STEREO16 : AL_FORMAT_MONO16,
-                 pcm,
-                 (ALsizei)(frame_count * (uint32_t)channels * 2u),
-                 (ALsizei)sample_rate);
-    if (alGetError() != AL_NO_ERROR) {
-        OPL_WARN_F("mods", "sfx_play: AL buffer upload failed for %s", key);
-        if (buf) alDeleteBuffers(1, &buf);
+ * A channels value other than 2 uploads as mono. The render copies the
+ * samples, so the caller may free them. The cache is created on first use. */
+static int snd_cache_upload(const char* key, const int16_t* pcm,
+                            uint32_t frame_count, int channels,
+                            uint32_t sample_rate) {
+    const int clip = PsyX_SPUAL_HostBufferCreate(pcm, (int)frame_count,
+                                                 channels == 2 ? 2 : 1, sample_rate);
+    if (!clip) {
+        OPL_WARN_F("mods", "sfx_play: clip upload failed for %s", key);
         return 0;
     }
     if (!s_cache.elem_size)
@@ -103,76 +77,62 @@ static ALuint snd_cache_upload(const char* key, const int16_t* pcm,
     if (!c) {
         OPL_ERROR_F("mods", "sfx_play: sound cache allocation failed - "
                     "%s not cached", key);
-        alDeleteBuffers(1, &buf);
-        return 0;
+        return clip;
     }
     snprintf(c->key, sizeof c->key, "%s", key);
-    c->buf = buf;
-    return buf;
+    c->clip = clip;
+    return clip;
 }
 
-/** @brief Return the AL buffer for the WAV at path, loading and caching it on first use, or 0 on failure.
+/** @brief Return the clip for the WAV at path, loading and caching it on first use, or 0 on failure.
  *
- * The decoded samples are freed once AL holds its copy. A load failure is
- * logged by the loader and an upload failure by snd_cache_upload. */
-static ALuint snd_buffer_for(const char* path) {
-    ALuint cached = snd_cache_find(path);
+ * The decoded samples are freed once the render holds its copy. A load
+ * failure is logged by the loader and an upload failure by snd_cache_upload. */
+static int snd_clip_for(const char* path) {
+    int cached = snd_cache_find(path);
     if (cached) return cached;
     op_wav_pcm pcm;
     if (op_wav_load(path, &pcm) != 0) return 0; /* loader logged why */
-    ALuint buf = snd_cache_upload(path, pcm.samples, pcm.frame_count,
-                                  pcm.channels, pcm.sample_rate);
+    int clip = snd_cache_upload(path, pcm.samples, pcm.frame_count,
+                                pcm.channels, pcm.sample_rate);
     op_wav_free(&pcm);
-    return buf;
+    return clip;
 }
 
-/** @brief Play buf once at gain on the first source not playing, and return 0.
+/** @brief Play clip once at gain and return 0, or -1 when the render refused it.
  *
- * When every source is playing, a source is taken round-robin and
- * restarted with buf. The gain is clamped to [0, 4]. While muted nothing
- * plays and 0 is returned. */
-static int snd_play_buffer(ALuint buf, float gain) {
+ * The gain is clamped to [0, 4]. While muted nothing plays and 0 is
+ * returned. A play from a present hook persists through a discarded
+ * speculation. */
+static int snd_play_clip(int clip, float gain) {
     if (s_muted) return 0; /* muted is a silence, not a failure */
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 4.0f) gain = 4.0f;
-    static int s_rr = 0;
-    ALuint src = 0;
-    for (int i = 0; i < SND_SOURCES; i++) {
-        ALint st = 0;
-        alGetSourcei(s_sources[i], AL_SOURCE_STATE, &st);
-        if (st != AL_PLAYING) { src = s_sources[i]; break; }
-    }
-    if (!src) src = s_sources[s_rr++ % SND_SOURCES];
-    alSourceStop(src);
-    alSourcei(src, AL_BUFFER, (ALint)buf);
-    alSourcef(src, AL_GAIN, gain);
-    alSourcePlay(src);
-    return 0;
+    return PsyX_SPUAL_HostPlay(clip, gain, openpete_mods_in_present ? 1 : 0);
 }
 
 void openpete_mod_sound_set_mute(int on) {
     s_muted = on ? 1 : 0;
-    if (s_muted && s_inited > 0)
-        for (int i = 0; i < SND_SOURCES; i++) alSourceStop(s_sources[i]);
+    if (s_muted) PsyX_SPUAL_HostStopAll();
 }
 
 int openpete_mod_sound_play(const char* path, float gain) {
-    if (!path || snd_init() < 0) return -1;
-    ALuint buf = snd_buffer_for(path);
-    if (!buf) return -1;
-    return snd_play_buffer(buf, gain);
+    if (!path) return -1;
+    int clip = snd_clip_for(path);
+    if (!clip) return -1;
+    return snd_play_clip(clip, gain);
 }
 
 int openpete_mod_sound_play_pcm(const char* key, const int16_t* pcm,
                                 uint32_t frame_count, int channels,
                                 uint32_t sample_rate, float gain) {
-    if (!key || snd_init() < 0) return -1;
-    ALuint buf = snd_cache_find(key);
-    if (!buf) {
+    if (!key) return -1;
+    int clip = snd_cache_find(key);
+    if (!clip) {
         if (!pcm || !frame_count || (channels != 1 && channels != 2))
             return -1;
-        buf = snd_cache_upload(key, pcm, frame_count, channels, sample_rate);
-        if (!buf) return -1;
+        clip = snd_cache_upload(key, pcm, frame_count, channels, sample_rate);
+        if (!clip) return -1;
     }
-    return snd_play_buffer(buf, gain);
+    return snd_play_clip(clip, gain);
 }

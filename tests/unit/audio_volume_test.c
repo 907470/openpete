@@ -26,10 +26,8 @@ void openpete_set_music_volume(int v)  { s_music_req = v; }
 
 /* ---- the audio channels it drives ---- */
 
-static float s_xa_gain    = -1.0f;
 static float s_wav_gain   = -1.0f;
 
-void PsyX_XA_SetVolume(float g)      { s_xa_gain  = g; }
 /* SPU main volume: unity here so the test sees the CD-volume stage alone. */
 float PsyX_SPUAL_GetMasterVolume(void) { return 1.0f; }
 void music_override_set_gain(float g) { s_wav_gain = g; }
@@ -106,7 +104,7 @@ int main(void) {
      * (sample * volume) >> 15, so a slider of 10 is 20480/32768 = 0.625.
      * Treating it as 1.0 overdrives the music past unity, where it clamps at
      * AL_MAX_GAIN and flattens the top of the slider's travel. */
-    if (s_xa_gain != 0.625f || s_wav_gain != 0.625f)
+    if (s_wav_gain != 0.625f)
         fail("music gain did not mirror a slider of 10");
 
     /* A preset stamps the slider and every derived field. */
@@ -119,7 +117,7 @@ int main(void) {
     expect("music slider", MUSIC_SLIDER,  3);
     expect("m_MusicVolume", SPU_MUSIC_VOL, 3u << 11);
     expect("cd volume",    SPU_CD_VOLUME, (3u << 11) | (3u << 27));
-    if (s_xa_gain != 3.0f / 16.0f) fail("music gain did not follow the preset");
+    if (s_wav_gain != 3.0f / 16.0f) fail("music gain did not follow the preset");
 
     /* Steady state costs no writes. */
     s_writes = 0;
@@ -167,7 +165,7 @@ int main(void) {
     if (openpete_get_music_volume() != -1)
         fail("a hand-moved music slider did not release the preset");
     expect("music slider stays where the player left it", MUSIC_SLIDER, 9);
-    if (s_xa_gain != 9.0f / 16.0f) fail("music gain did not follow the player's edit");
+    if (s_wav_gain != 9.0f / 16.0f) fail("music gain did not follow the player's edit");
     expect("sfx preset survives a music edit", SFX_SLIDER, 7);
 
     /* A released channel stays released across the game's own reseeds. */
@@ -180,7 +178,7 @@ int main(void) {
     openpete_set_music_volume(0);
     tick();
     expect("re-armed music slider", MUSIC_SLIDER, 0);
-    if (s_xa_gain != 0.0f) fail("music gain did not follow the re-arm");
+    if (s_wav_gain != 0.0f) fail("music gain did not follow the re-arm");
 
     printf(rc ? "audio_volume_test: FAILED\n" : "audio_volume_test: ok\n");
     return rc;

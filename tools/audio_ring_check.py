@@ -7,8 +7,9 @@ the other. The head log (games/common/psyq/psyq_thunks.cpp) holds a `k`
 line per voice keyed on or off and, before every SpuWrite, a `w` line per
 running voice whose decode window the write overlaps: the guest head
 (`dec`, decoder samples since key-on; `hb`/`ib`, the block it is in) and
-the OpenAL source offset (`al_so`, buffer samples from the window start
-`win`, one per decoder sample).
+the device source offset (`al_so`, buffer samples from the window start
+`win`, one per decoder sample; -1 when the SPU renders in software and no
+per-voice source exists).
 
 A run is one voice from key-on to its first key-off. A run is a ring run
 when at least two writes of one length H land at the voice's start
@@ -41,8 +42,11 @@ ADPCM filters (predictor reset per chunk), resampled at the pitch and
 cross-correlated against the mixed OPENPETE_AUDIO_DUMP at its expected
 position: the key-on's capture frame (`out`) plus c * dh * 4096 / pitch,
 mapped to a file frame through DUMP.idx (`vbl file_frames produced`
-per VBL, the dump's recorded rate). A chunk cut short by the key-off is
-correlated over its played part; one with under 100 ms played, or whose
+per VBL, the dump's recorded rate). A chunk cut short by the key-off, or
+by an earlier pitch change (a `p` line; 0 stops the head, psx-spx
+"0=stop"), is correlated over its part before it. A later write into a chunk's half
+(not a ring write) replaces, in the expectation, the blocks the head had
+not yet played when it landed ("patched N" in the status); one with under 100 ms played, or whose
 expectation is silent (RMS below --min-rms, where any signal correlates),
 is listed and not judged. This is self-consistency: the
 expectation is the engine's own payload, not a hardware reference.
@@ -106,7 +110,7 @@ def num(x):
 def parse(path):
     recs = []
     for line in open(path):
-        if not line or line[0] not in "wk":
+        if not line or line[0] not in "wkp":
             continue
         d = dict(KV.findall(line))
         d["kind"] = line[0]
@@ -137,6 +141,10 @@ def runs_of(recs):
                 run = open_runs.pop(v)
                 run["off"] = r
                 done.append(run)
+        elif r["kind"] == "p":
+            run = open_runs.get(v)
+            if run is not None and run.get("stop") is None and r["pitch"] != run["on"]["pitch"]:
+                run["stop"] = r
         elif v in open_runs:
             open_runs[v]["writes"].append(r)
     done.extend(open_runs.values())
@@ -263,6 +271,33 @@ def half_reading(pos, c, dh):
 def payload(writes_dir, vbl, addr):
     p = os.path.join(writes_dir, f"{vbl:08d}_{addr:06x}.bin")
     return p if os.path.exists(p) else None
+
+
+def patch_later_writes(raw, c, addr, H, dh, others, writes_dir, chunk_vbl):
+    """Apply to chunk c's payload the later non-ring writes into its half that
+    landed before the head played the blocks they cover: the voice plays those
+    bytes, not the chunk's. Returns the number of 16-byte blocks replaced."""
+    base = addr + (c % 2) * H
+    n = 0
+    for w in others:
+        if w["vbl"] < chunk_vbl:
+            continue
+        lo, hi = max(w["lo"], base), min(w["hi"], base + H)
+        if lo >= hi:
+            continue
+        p = payload(writes_dir, w["vbl"], w["lo"])
+        if not p:
+            continue
+        data = np.fromfile(p, dtype=np.uint8)
+        for b in range((lo - base) // 16, (hi - base + 15) // 16):
+            if c * dh + (b + 1) * 28 <= w["dec"]:
+                continue  # the head had played this block before the write
+            src = base + b * 16 - w["lo"]
+            if src < 0 or src + 16 > len(data) or b * 16 + 16 > len(raw):
+                continue
+            raw[b * 16: b * 16 + 16] = data[src: src + 16]
+            n += 1
+    return n
 
 
 def preload_chunks(writes_dir, addr, H, key_vbl, c0):
@@ -398,8 +433,17 @@ def main():
         if dump:
             key_file = on["out"] + 1 - dump.offset
             end_file = (off["out"] - dump.offset) if off else len(dump.mono)
+            # A pitch change before the key-off (0 stops the head) ends
+            # the part the key-on pitch's expectation describes.
+            if run.get("stop") is not None:
+                end_file = min(end_file, run["stop"]["out"] - dump.offset)
+            ring_ids = {id(w) for w in writes}
+            others = [w for w in run["writes"] if id(w) not in ring_ids]
             for c in sorted(bodies):
-                dec_s = decode_adpcm(np.fromfile(bodies[c], dtype=np.uint8))
+                raw = np.fromfile(bodies[c], dtype=np.uint8)
+                patched = patch_later_writes(raw, c, addr, H, dh, others, a.writes,
+                                             int(os.path.basename(bodies[c]).split("_")[0]))
+                dec_s = decode_adpcm(raw)
                 start = key_file + c * dh * o_per_d
                 pos = int(round(start))
                 n_out = int(len(dec_s) * o_per_d)
@@ -417,8 +461,9 @@ def main():
                     corr_of[c] = (f"{cc:.3f}", f"{lag:+d}", "silent")
                     continue
                 seg_of[c] = (pos + lag, n_out)
+                note = f"patched {patched}" if patched else ""
                 if use_ref:
-                    corr_of[c] = (f"{cc:.3f}", f"{lag:+d}", "")
+                    corr_of[c] = (f"{cc:.3f}", f"{lag:+d}", note)
                     continue
                 tot["body_n"] += 1
                 bad = ""
@@ -431,7 +476,7 @@ def main():
                 if bad:
                     tot["body_bad"] += 1
                 min_corr = cc if min_corr is None else min(min_corr, cc)
-                corr_of[c] = (f"{cc:.3f}", f"{lag:+d}", bad)
+                corr_of[c] = (f"{cc:.3f}", f"{lag:+d}", (bad + " " + note).strip())
         rows = {w["_row"][0]: w["_row"] for w in writes}
         if use_ref:
             ref_rows, ref_key = ref.ring(addr, H)

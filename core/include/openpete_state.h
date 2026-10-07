@@ -96,7 +96,7 @@ typedef struct openpete_state_mem openpete_state_mem_t;
 
 /** @brief Allocate an empty in-memory snapshot.
  *
- * Sizes the buffers for guest RAM, the SPU mirror, the CD transport, the
+ * Sizes the buffers for guest RAM, the SPU state, the CD transport, the
  * game-extra blob and VRAM; the mod arena copy is allocated by the first
  * save. The snapshot is not valid until a save succeeds.
  * @return The snapshot, or NULL when calloc or any buffer allocation fails
@@ -109,7 +109,7 @@ void openpete_state_mem_free(openpete_state_mem_t* m);
 
 /** @brief Capture the running state into an in-memory snapshot.
  *
- * Copies the register prefix, RAM, scratchpad, the SPU mirror, the CD
+ * Copies the register prefix, RAM, scratchpad, the SPU state, the CD
  * cursors and queue, the game-extra blob, VRAM, the used prefix of the mod
  * arena and the guest-visible VBL counter. The arena copy buffer only
  * grows. A failed SPU, VRAM or arena-growth step returns -1 partway: the
@@ -127,7 +127,7 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
  *
  * Refuses, restoring nothing, when the snapshot is NULL or was never
  * saved, or when the run follows the reference schedule. Otherwise
- * restores the register prefix, RAM, scratchpad, SPU mirror, CD cursors
+ * restores the register prefix, RAM, scratchpad, SPU state, CD cursors
  * and queue, the game-extra blob, VRAM (by row delta), the mod arena and
  * the VBL counter, in that order. A failed SPU restore returns -1 after
  * the registers, RAM and scratchpad were already replaced. With @p quiet
@@ -137,8 +137,8 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
  * @param cpu Guest CPU state whose register prefix is overwritten.
  * @param out_frame Receives the snapshot's frame; may be NULL.
  * @param quiet Nonzero for a speculative rollback: no resync, no
- *        discontinuity broadcast, and the SPU restore does not stop
- *        OpenAL voices.
+ *        discontinuity broadcast, and the SPU's ring-out tails keep
+ *        playing.
  * @return 0 on success; -1 on refusal or a failed SPU restore. */
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);

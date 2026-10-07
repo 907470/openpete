@@ -69,10 +69,6 @@ extern "C" uint32_t psyq_ot_recent_base(int i) {
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
 extern "C" int  PsyX_SPUAL_GetVoiceEnvelope(int voice, int* keyed_on);
 extern "C" int  PsyX_SPUAL_CaptureDrain(int16_t* out, int max_frames);
-extern "C" unsigned int PsyX_SPUAL_ResyncCount(void);
-extern "C" unsigned int PsyX_SPUAL_LastWriteResyncMask(void);
-extern "C" unsigned int PsyX_SPUAL_LastResyncMicros(void);
-extern "C" unsigned int PsyX_SPUAL_HeadBoundBreaks(void);
 extern "C" void PsyX_SPUAL_CaptureStats(unsigned long long* produced, unsigned long long* dropped);
 
 /* OPENPETE_AUDIO_DUMP: set by the host when the env var names a file and no
@@ -186,8 +182,6 @@ extern "C" {
     int  PsyX_XA_IsActive(void);
     void PsyX_XA_Pump(int maxSectors);
     int  PsyX_XA_GetCurrentSector(void);
-    void PsyX_XA_SetVolume(float linear_gain);
-    void PsyX_SPUAL_SetMasterVolume(float linear_gain);
 }
 
 /* Music WAV override (core/host/) - plays assets/music/track_NN.wav in
@@ -485,15 +479,15 @@ static uint32_t s_pad_buf0 = 0;          /* the first port's pad buffer (PadInit
 
 /* The SPU clock of the oracle's clock replay: the reference's SPU sample
  * count (its exact CPU clock / 768, the SPU's sample period) that
- * openpete's envelope has been charged to. Unseeded, every waited VBL
- * charges 735 samples; seeded, the envelope advances only when an event
- * with a reference clock (a wait's return, a query, a CdSync poll, a
- * libspu call) moves the clock, except inside a load window, where the
- * waits run on openpete's own count and each VBL charges the reference's
- * period. */
+ * openpete's SPU has been charged to. Unseeded, every waited VBL charges
+ * the hardware's period, 527722650/715909 samples with the remainder
+ * carried; seeded, the SPU advances only when an event with a reference
+ * clock (a wait's return, a query, a CdSync poll, a libspu call) moves the
+ * clock, except inside a load window, where the waits run on openpete's own
+ * count and each VBL charges the same period. */
 static int      s_spu_clk_seeded = 0;
 static uint64_t s_spu_clk = 0;          /* reference SPU samples charged to */
-static uint64_t s_spu_clk_frac = 0;     /* load-window remainder, in 1/715909 samples */
+static uint64_t s_spu_clk_frac = 0;     /* remainder of the samples per VBL, in 1/715909 samples */
 static uint64_t s_spu_clk_charges = 0, s_spu_clk_samples = 0;
 
 /** @brief Charge the SPU envelope to the reference clock tick: the samples from the SPU clock to tick / 768.
@@ -501,7 +495,7 @@ static uint64_t s_spu_clk_charges = 0, s_spu_clk_samples = 0;
  * Does nothing without the clock replay or for tick 0 (no reference
  * clock). The first tick after open and after every load-window skip
  * seeds the clock instead of charging. A tick behind the clock charges
- * nothing.
+ * nothing. The audio dump drains after each charge.
  * @param tick The reference's exact CPU clock at the event. */
 static void spu_clock_charge(uint64_t tick) {
     if (tick == 0 || !openpete_sched_clock_replay()) return;
@@ -514,21 +508,23 @@ static void spu_clock_charge(uint64_t tick) {
     }
     if (s <= s_spu_clk) return;
     PsyX_SPUAL_TickEnvelope((int)(s - s_spu_clk));
+    /* A load window can charge more than the capture ring holds between
+     * two VBL bodies: the dump drains after every charge. */
+    audio_dump_drain();
     s_spu_clk_charges++;
     s_spu_clk_samples += s - s_spu_clk;
     s_spu_clk = s;
 }
 
-/** @brief The SPU samples `wait` VBLs charge: 735 each until the SPU clock is seeded, then none outside a load window and the reference's period inside one.
+/** @brief The SPU samples `wait` VBLs charge: the hardware's period until the SPU clock is seeded, then none outside a load window and the same period inside one.
  *
- * The reference's period is 897487.5 GPU clocks per VBLANK (3412.5 clocks
- * by 263 lines) at 33868800/53693175 CPU cycles per GPU clock, over 768
- * cycles per sample: 527722650/715909 samples, carried as a remainder.
+ * The period is 897487.5 GPU clocks per VBLANK (3412.5 clocks by 263
+ * lines) at 33868800/53693175 CPU cycles per GPU clock, over 768 cycles per
+ * sample: 527722650/715909 samples (737.136), carried as a remainder.
  * @param wait VBLs being run.
  * @return Samples to charge. */
 static int spu_vbl_samples(int wait) {
-    if (!s_spu_clk_seeded) return wait * 735;
-    if (!openpete_sched_in_load()) return 0;
+    if (s_spu_clk_seeded && !openpete_sched_in_load()) return 0;
     const uint64_t acc = s_spu_clk_frac + (uint64_t)wait * 527722650u;
     s_spu_clk_frac = acc % 715909u;
     return (int)(acc / 715909u);
@@ -722,12 +718,9 @@ extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
 static void psyq_vbl_body(CPUState* cpu, int wait) {
     SDL_AddAtomicInt(&openpete_vbl, wait);
 
-    /* Advance PsyCross's deterministic ADSR envelope simulation in
-     * lockstep with VBL. NTSC PSX: 44100 SPU samples / 60 VBL = 735
-     * samples per VBL. Without this, voice key state never transitions
-     * to SPU_RESET and the game's voice-pool bookkeeping leaks. The
-     * envelope sim is independent of the OpenAL playback path, so this
-     * is correct in both audio-on and headless runs. Under the oracle's
+    /* Run the SPU for the VBLs' output samples: the voices' envelopes and
+     * heads the guest reads back (key status, ENVX) and the mix, on the
+     * same clock, with or without an audio device. Under the oracle's
      * seeded clock replay the reference's clock charges it instead
      * (spu_vbl_samples). */
     PsyX_SPUAL_TickEnvelope(spu_vbl_samples(wait));
@@ -1376,6 +1369,7 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 42, (uint32_t)(s_cd_defer_clock >> 32));
     put_word(p, 43, s_cd_defer_stream);
     put_word(p, 44, s_cd_pause_owed);
+    put_word(p, 45, (uint32_t)s_spu_clk_frac);
 }
 
 extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
@@ -1384,7 +1378,8 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 3u) return PSYQ_THUNK_STATE_V3_BYTES;
     if (ver == 4u) return PSYQ_THUNK_STATE_V4_BYTES;
     if (ver == 5u) return PSYQ_THUNK_STATE_V5_BYTES;
-    if (ver == 6u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 6u) return PSYQ_THUNK_STATE_V6_BYTES;
+    if (ver == 7u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -1434,6 +1429,9 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     /* A pack without the stream-read words predates the drive model: none owed. */
     s_cd_defer_stream  = (ver >= 6u) ? get_word(p, 43) : 0u;
     s_cd_pause_owed    = (ver >= 6u) ? get_word(p, 44) : 0u;
+    /* A pack without the SPU period's remainder predates the exact period:
+     * the next VBL starts a fresh one. */
+    s_spu_clk_frac     = (ver >= 7u) ? get_word(p, 45) : 0u;
     uint32_t card[PSX_BIOS_CARD_STATE_WORDS] = { 0u };
     if (ver >= 5u)
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = get_word(p, 31u + i);
@@ -1467,6 +1465,7 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_cd_defer_clock   = 0xD5D50017D5D50015ull;
     s_cd_defer_stream  = 0x19u;
     s_cd_pause_owed    = 0xD5D5001Bu;
+    s_spu_clk_frac     = 0xD5D5001Du;
     {
         uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = 0xE5E50001u + 2u * i;
@@ -2614,11 +2613,12 @@ static void start_music_stream(int sector) {
 
 /// @brief Log the music routing counters; registered with atexit by cd_set_mode.
 static void cd_exit_summary(void) {
+    unsigned long long cd_frames = 0, cd_starved = 0;
+    PsyX_SPUAL_CDInputStats(&cd_frames, &cd_starved);
     OPL_INFO_F("music", "summary: stream_starts=%u mode_rt_cleared=%u "
-               "reads_rt_clear=%u spu_resyncs=%u spu_head_bound_breaks=%u",
+               "reads_rt_clear=%u cd_input_frames=%llu cd_input_starved=%llu",
                s_cnt_stream_starts, s_cnt_mode_rt_cleared,
-               s_cnt_reads_rt_clear, PsyX_SPUAL_ResyncCount(),
-               PsyX_SPUAL_HeadBoundBreaks());
+               s_cnt_reads_rt_clear, cd_frames, cd_starved);
 }
 
 /** @brief Set the drive's mode byte and mirror it into libcd's state block.
@@ -3444,11 +3444,12 @@ void psyq_SpuInit(CPUState* cpu) {
     psyq_game_sfx_arm();
 }
 
-/** @brief Set the XA streaming gain and the music override gain to the CD volume times the SPU main volume. */
+/** @brief Set the music override's gain to the CD volume times the SPU main volume.
+ *
+ * XA reaches the SPU's CD input, where the SPU applies both volumes from its
+ * registers; the override's WAV plays outside the SPU and takes them here. */
 static void spyro_apply_music_gain(void) {
-    const float g = s_cdVolume * s_spuMainVolume;
-    PsyX_XA_SetVolume(g);
-    music_override_set_gain(g);
+    music_override_set_gain(s_cdVolume * s_spuMainVolume);
 }
 
 /** @brief Thunk for libspu SpuSetCommonAttr: PsyCross's SpuSetCommonAttr, and the music gain from the main and CD volumes.
@@ -3476,7 +3477,6 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
          * volume below has no sweep mode and is applied as written, making
          * it full scale at 32768 - the two are not the same scale. */
         s_spuMainVolume = (float)((l + r) / 2) / 16384.0f;
-        PsyX_SPUAL_SetMasterVolume(s_spuMainVolume);
         spyro_apply_music_gain();
     }
     if (attr && (attr->mask & (SPU_COMMON_CDVOLL | SPU_COMMON_CDVOLR))) {
@@ -3557,6 +3557,25 @@ static void audio_head_log_key(int on, unsigned int mask) {
         PsyX_SPUAL_VoiceHead h;
         if (!PsyX_SPUAL_GetVoiceHead(v, &h)) { h.addr = 0; h.pitch = 0; }
         fprintf(f, "k vbl=%d v=%d on=%d addr=%#x pitch=%u out=%lld\n", vbl, v, on, h.addr, h.pitch, out);
+    }
+    fflush(f);
+}
+
+/** @brief Under OPENPETE_AUDIO_HEAD_LOG, write one `p` line per running voice of `attr` whose pitch the set changes.
+ *
+ * The body check resamples a chunk at the run's key-on pitch, so a pitch
+ * change (0 stops the head, psx-spx "0=stop") ends the part it can judge.
+ * @param attr A mapped guest voice attribute record, not NULL. */
+static void audio_head_log_pitch(const SpuVoiceAttr* attr) {
+    FILE* f = audio_head_log();
+    if (!f || !(attr->mask & SPU_VOICE_PITCH)) return;
+    const int vbl = SDL_GetAtomicInt(&openpete_vbl);
+    const long long out = audio_head_log_out();
+    for (int v = 0; v < 24; v++) {
+        if (!(attr->voice & (1u << v))) continue;
+        PsyX_SPUAL_VoiceHead h;
+        if (!PsyX_SPUAL_GetVoiceHead(v, &h) || h.pitch == attr->pitch) continue;
+        fprintf(f, "p vbl=%d v=%d pitch=%u out=%lld\n", vbl, v, (unsigned)attr->pitch, out);
     }
     fflush(f);
 }
@@ -3670,12 +3689,15 @@ static int spu_libspu_key_status(int voice) {
  * charges the envelope to the reference's clock at the call, and each
  * voice's pitch to the reference's sample-rate store for it. Under
  * OPENPETE_SFX_END_LOG an attribute set that writes a start address is
- * logged per voice with its sample's slot name.
+ * logged per voice with its sample's slot name; under
+ * OPENPETE_AUDIO_HEAD_LOG a pitch change of a running voice logs a `p`
+ * line before it applies.
  * @param cpu Guest CPU state; a0 is the SpuVoiceAttr. */
 void psyq_SpuSetVoiceAttr(CPUState* cpu) {
     const SpuVoiceAttr* attr = (const SpuVoiceAttr*)SPAN(cpu->a0, sizeof(SpuVoiceAttr));
     if (!attr) return;
     sfx_key_log_attr(attr);
+    audio_head_log_pitch(attr);
     const int matched = (attr->mask & SPU_VOICE_ENVELOPE_FIELDS) &&
                         spu_clock_at_call(3, cpu->ra, (uint32_t)attr->voice, (uint32_t)attr->mask);
     if (matched && (attr->mask & SPU_VOICE_PITCH)) spu_voice_attr_at_pitch(attr);
@@ -3716,9 +3738,9 @@ void psyq_SpuSetKey(CPUState* cpu) {
     else SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
     audio_head_log_key(cpu->a0 == SPU_ON, cpu->a1);
     if (sfx_key_log_on())
-        fprintf(stderr, "[spu-key f=%u vbl=%d on=%d mask=%#x ra=%#x]\n",
+        fprintf(stderr, "[spu-key f=%u vbl=%d on=%d mask=%#x ra=%#x rec=%u]\n",
                 openpete_frame, SDL_GetAtomicInt(&openpete_vbl), (int)cpu->a0,
-                cpu->a1, cpu->ra);
+                cpu->a1, cpu->ra, openpete_psxtrace_current_record());
 }
 
 /** @brief Thunk for libspu SpuGetKeyStatus: PsyCross's key status for the voice mask in a0.
@@ -3728,8 +3750,8 @@ void psyq_SpuSetKey(CPUState* cpu) {
  * libspu's expression for the mask's lowest voice (-1 for an empty mask),
  * read from the envelope level instead of PsyCross's ADSR phase.
  * Under OPENPETE_SFX_END_LOG a single-voice query whose result differs from
- * that voice's previous result logs one line with openpete_frame when the
- * new status is SPU_ON or SPU_RESET. The RESET read is the tick the game
+ * that voice's previous result logs one line with openpete_frame and the
+ * trace record index when the new status is SPU_ON or SPU_RESET. The RESET read is the tick the game
  * frees the sound slot and writes the sound-ref byte, so two runs whose
  * logs match played every voice to the same guest-visible end.
  * @param cpu Guest CPU state; v0 receives the status. */
@@ -3744,8 +3766,8 @@ void psyq_SpuGetKeyStatus(CPUState* cpu) {
         if (v < 24 && s_last[v] != (uint8_t)cpu->v0) {
             s_last[v] = (uint8_t)cpu->v0;
             if (cpu->v0 == SPU_ON || cpu->v0 == SPU_RESET)
-                fprintf(stderr, "[sfx-key f=%u v=%d %s]\n", openpete_frame, v,
-                        cpu->v0 == SPU_ON ? "on" : "reset");
+                fprintf(stderr, "[sfx-key f=%u v=%d %s rec=%u]\n", openpete_frame, v,
+                        cpu->v0 == SPU_ON ? "on" : "reset", openpete_psxtrace_current_record());
         }
     }
 }
@@ -3755,7 +3777,10 @@ void psyq_SpuGetKeyStatus(CPUState* cpu) {
  * A span that runs past its region stores nothing. Under the oracle's clock
  * replay the envelope is first charged to the reference's clock at the
  * call, and each byte is libspu's expression over the envelope level after
- * charging to the reference's ENVX load of that voice.
+ * charging to the reference's ENVX load of that voice. Under
+ * OPENPETE_SFX_END_LOG a voice whose byte differs from its previous read
+ * logs one line with openpete_frame and the trace record index when the
+ * new status is SPU_ON or SPU_RESET, the same line SpuGetKeyStatus writes.
  * @param cpu Guest CPU state. */
 void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
     /* One status byte per SPU voice. */
@@ -3763,10 +3788,22 @@ void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
     if (!status) return;
     spu_clock_at_call(2, cpu->ra, cpu->a0, 0u);
     SpuGetAllKeysStatus(status);
-    if (!openpete_sched_clock_replay()) return;
-    for (int v = 0; v < 24; v++) {
-        spu_clock_at_reg(2, v);
-        status[v] = (char)spu_libspu_key_status(v);
+    if (openpete_sched_clock_replay()) {
+        for (int v = 0; v < 24; v++) {
+            spu_clock_at_reg(2, v);
+            status[v] = (char)spu_libspu_key_status(v);
+        }
+    }
+    if (sfx_key_log_on()) {
+        static uint8_t s_last[24];
+        for (int v = 0; v < 24; v++) {
+            const uint8_t st = (uint8_t)status[v];
+            if (s_last[v] == st) continue;
+            s_last[v] = st;
+            if (st == SPU_ON || st == SPU_RESET)
+                fprintf(stderr, "[sfx-key f=%u v=%d %s rec=%u]\n", openpete_frame, v,
+                        st == SPU_ON ? "on" : "reset", openpete_psxtrace_current_record());
+        }
     }
 }
 
@@ -3851,15 +3888,10 @@ void psyq_SpuWrite(CPUState* cpu) {
     }
     audio_head_log_write(s_spu_xfer_addr, s_spu_xfer_addr + len);
     cpu->v0 = SpuWrite(src, len);
-    if (sfx_key_log_on()) {
+    if (sfx_key_log_on())
         fprintf(stderr, "[spu-write f=%u vbl=%d spu=%#x src=%#x len=%#x ra=%#x]\n",
                 openpete_frame, SDL_GetAtomicInt(&openpete_vbl), s_spu_xfer_addr,
                 cpu->a0, len, cpu->ra);
-        unsigned int mask = PsyX_SPUAL_LastWriteResyncMask();
-        if (mask)
-            fprintf(stderr, "[spu-resync f=%u mask=%#x gap_us=%u]\n", openpete_frame,
-                    mask, PsyX_SPUAL_LastResyncMicros());
-    }
     spu_write_dump(src, len);
     s_spu_xfer_addr += len;
 }

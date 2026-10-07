@@ -923,10 +923,70 @@ extern void PsyX_Shutdown(void);
 extern char PsyX_BeginScene(void);
 extern void PsyX_EndScene(void);
 extern void PsyX_UpdateInput(void);
-/* Declared in PsyCross's private src/audio/PsyX_SPUAL.h, which is not on
- * any public include path. Runahead mutes the OpenAL layer around a
- * speculative tick so the replayed audio is emitted once, not twice. */
+/* Declared in PsyCross's private src/audio/PsyX_SPUAL.h and PsyX_SPUFeed.h,
+ * which are not on any public include path. Runahead and rewind replay run
+ * the SPU speculatively (its frames are committed or dropped, never fed
+ * twice); pause, fast-forward and replay hold the device feed. */
 extern int PsyX_SPUAL_SetMute(int on_off);
+extern void PsyX_SPUAL_Speculate(int on, int commit);
+extern void PsyX_SPUAL_SetCapture(int on);
+extern void PsyX_SPUFeed_SetHold(int on);
+extern void PsyX_SPUFeed_Pump(void);
+extern void PsyX_SPUFeed_Simulate(double drift, unsigned int seed, double start_stall);
+extern void PsyX_SPUFeed_SetNominalRate(double rate);
+#define PSYX_SPUFEED_PHASES 8
+typedef struct PsyX_SPUFeed_PhaseStats {
+    unsigned long long pushed, held, overflow, underruns, primes;
+} PsyX_SPUFeed_PhaseStats;
+typedef struct PsyX_SPUFeed_Stats {
+    unsigned long long pushed, held, overflow, consumed, pulls, underruns, primes;
+    int target, depth_min, depth_p01, depth_p50, depth_p99;
+    double ratio, rate;
+    unsigned long long taken, discarded;
+    unsigned int fifo;
+    unsigned long long data_out, silence_out;
+    PsyX_SPUFeed_PhaseStats phase[PSYX_SPUFEED_PHASES];
+    char phase_name[PSYX_SPUFEED_PHASES][16];
+} PsyX_SPUFeed_Stats;
+extern void PsyX_SPUFeed_SetPhase(int phase, const char* name, int tag);
+extern void PsyX_SPUFeed_SetLog(const char* path);
+extern void PsyX_SPUFeed_GetStats(PsyX_SPUFeed_Stats* out);
+extern void PsyX_SPUAL_FeatureStats(unsigned long long* reverb_cycles, unsigned long long* reverb_in,
+                                    unsigned long long* noise, unsigned long long* pmon,
+                                    unsigned long long* sweep);
+extern void PsyX_SPUAL_HostStats(unsigned long long* plays, unsigned long long* clip_frames,
+                                 unsigned long long* stream_frames);
+
+/** @brief Log the SPU's feature engagement and host-input counters, then the device feed's counters (frames pushed, held and consumed, device periods, underruns, primes, the depth target and percentiles, the rate estimate), its frame accounting, and its per-phase counters, at exit. */
+static void audio_feed_exit_summary(void) {
+    unsigned long long rc = 0, ri = 0, nz = 0, pm = 0, sw = 0, hp = 0, hf = 0, hs = 0;
+    PsyX_SPUAL_FeatureStats(&rc, &ri, &nz, &pm, &sw);
+    PsyX_SPUAL_HostStats(&hp, &hf, &hs);
+    OPL_INFO_F("audio", "spu: reverb_cycles=%llu reverb_in=%llu noise=%llu pmon=%llu sweep=%llu "
+               "host_plays=%llu host_clip_frames=%llu host_stream_frames=%llu",
+               rc, ri, nz, pm, sw, hp, hf, hs);
+    PsyX_SPUFeed_Stats st;
+    PsyX_SPUFeed_GetStats(&st);
+    if (!st.pulls && !st.pushed) return;
+    OPL_INFO_F("audio", "feed: pushed=%llu held=%llu overflow=%llu consumed=%llu periods=%llu "
+               "underruns=%llu primes=%llu target=%d depth_min=%d p01=%d p50=%d p99=%d "
+               "ratio=%.5f rate=%.5f",
+               st.pushed, st.held, st.overflow, st.consumed, st.pulls, st.underruns, st.primes,
+               st.target, st.depth_min, st.depth_p01, st.depth_p50, st.depth_p99,
+               st.ratio, st.rate);
+    OPL_INFO_F("audio", "feed: accounting: pushed=%llu = taken=%llu + overflow=%llu + discarded=%llu "
+               "+ fifo=%u (residual %lld); consumed=%llu = data_out=%llu + silence_out=%llu",
+               st.pushed, st.taken, st.overflow, st.discarded, st.fifo,
+               (long long)(st.pushed - st.taken - st.overflow - st.discarded - st.fifo),
+               st.consumed, st.data_out, st.silence_out);
+    for (int i = 0; i < PSYX_SPUFEED_PHASES; i++) {
+        const PsyX_SPUFeed_PhaseStats* p = &st.phase[i];
+        if (!p->pushed && !p->held) continue;
+        OPL_INFO_F("audio", "feed: phase %s: pushed=%llu held=%llu overflow=%llu underruns=%llu primes=%llu",
+                   st.phase_name[i][0] ? st.phase_name[i] : "?", p->pushed, p->held, p->overflow,
+                   p->underruns, p->primes);
+    }
+}
 
 /* The --debug-triangle infra-triangle (core/renderer/debug_render.cpp). */
 extern void openpete_debug_triangle_init(void);
@@ -2267,6 +2327,77 @@ static int s_mute = 0;
  * (the baseline), never replacing it. */
 static int s_skip_mute = 0;
 
+/* The device feed's phases: its hold policy and per-phase counters. Boot is
+ * the phase until the host loop's first iteration names another. */
+enum { PH_BOOT, PH_SKIP, PH_UNLOCKED, PH_PAUSED, PH_LIVE, PH_HEADLESS };
+static const char* const s_feed_phase_names[] = { "boot", "skip", "unlocked", "paused", "live", "headless" };
+
+/** @brief Set up the SPU render's output sinks before any SPU init: the capture ring, the audio dump, the feed's synthetic device, and the exit summary.
+ *
+ * --record (with audio) arms the capture ring the recorder drains: every
+ * frame the SPU renders, the frames the device plays. OPENPETE_AUDIO_DUMP
+ * =PATH arms the same ring, drained into a raw s16 stereo 44.1 kHz file
+ * every VSync (psyq_VSync), so a headless run yields the SPU's output as a
+ * measurable signal; the recorder owns the ring when both are asked for.
+ * OPENPETE_AUDIO_FEED_SIM=DRIFT[,SEED[,STALL]] replaces the audio device
+ * with the feed's synthetic device, whose clock runs DRIFT (a fraction,
+ * e.g. -0.024) off the producer's and which consumes nothing for STALL
+ * seconds after the feed first leaves hold, so a headless run measures the
+ * feed's underruns and depth. OPENPETE_AUDIO_FEED_LOG=PATH writes the
+ * feed's timeline (holds, primes, underruns, overflows, and its counters
+ * every 250 ms of device time).
+ * @param opts The parsed options. */
+static void audio_sinks_setup(const openpete_options_t* opts) {
+    const int record_audio = opts->record_path && !opts->record_no_audio;
+    PsyX_SPUAL_SetCapture(record_audio);
+    const char* dump = getenv("OPENPETE_AUDIO_DUMP");
+    if (dump && *dump && opts->record_path) {
+        OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP ignored: --record owns the capture ring");
+    } else if (dump && *dump) {
+        extern int openpete_audio_dump_armed;
+        openpete_audio_dump_armed = 1;
+        PsyX_SPUAL_SetCapture(1);
+    }
+    const char* feed_log = getenv("OPENPETE_AUDIO_FEED_LOG");
+    if (feed_log && *feed_log)
+        PsyX_SPUFeed_SetLog(feed_log);
+    PsyX_SPUFeed_SetPhase(PH_BOOT, s_feed_phase_names[PH_BOOT], 0);
+    const char* sim = getenv("OPENPETE_AUDIO_FEED_SIM");
+    if (sim && *sim) {
+        const char* comma = strchr(sim, ',');
+        const unsigned seed = comma ? (unsigned)strtoul(comma + 1, NULL, 10) : 1u;
+        const char* comma2 = comma ? strchr(comma + 1, ',') : NULL;
+        const double stall = comma2 ? atof(comma2 + 1) : 0.0;
+        PsyX_SPUFeed_Simulate(atof(sim), seed, stall);
+        OPL_INFO_F("audio", "feed: synthetic device, drift %+.4f seed %u start stall %.3f s",
+                   atof(sim), seed, stall);
+    }
+    atexit(audio_feed_exit_summary);
+}
+
+/** @brief Apply the device feed's run-mode policy for this host-loop iteration, then top the device queue up.
+ *
+ * The feed carries the SPU at the guest's real-time rate. In a window the
+ * feed holds (the SPU still runs) through fast boot, which runs the guest
+ * without host yields until the first scene, through a pause, a
+ * skip-to-level fast-forward and any other unlocked stretch. The phase and
+ * the VBL count tag the feed's per-phase counters and timeline log. Headless runs unpaced by design: its feed (the synthetic device,
+ * when armed) times itself from the frames pushed.
+ * @param unlock_fps The iteration runs unpaced (fast-forward, skip, headless).
+ * @param headless The run is headless.
+ * @param paused The game is paused. */
+static void audio_feed_sync(int unlock_fps, int headless, int paused) {
+    int ph = PH_LIVE;
+    if (headless)                                ph = PH_HEADLESS;
+    else if (openpete_fast_boot_active)          ph = PH_BOOT;
+    else if (paused)                             ph = PH_PAUSED;
+    else if (openpete_skip_present_until_level)  ph = PH_SKIP;
+    else if (unlock_fps)                         ph = PH_UNLOCKED;
+    PsyX_SPUFeed_SetPhase(ph, s_feed_phase_names[ph], SDL_GetAtomicInt(&openpete_vbl));
+    PsyX_SPUFeed_SetHold(ph != PH_LIVE && ph != PH_HEADLESS);
+    PsyX_SPUFeed_Pump();
+}
+
 /** @brief Apply the combined mute state (baseline or skip-to-level) to every host audio path.
  *
  * With either s_mute or s_skip_mute set it mutes the SPU layer, forces the XA
@@ -2280,8 +2411,8 @@ static void apply_mute_gains(void) {
     PsyX_SPUAL_SetMute(on);
     PsyX_XA_ForceGain(on ? 0.0f : -1.0f);
     music_override_set_forced_gain(on ? 0.0f : -1.0f);
-    /* Mod one-shots are AL sources outside the SPU mixer, so the SPU mute
-     * flag above does not cover them. */
+    /* The SPU mute silences the render's output, host clips included;
+     * the mod-sound mute also stops clips in flight and refuses new ones. */
     openpete_mod_sound_set_mute(on);
 }
 
@@ -2581,30 +2712,7 @@ static int run_host_init(const openpete_options_t* opts) {
         return OPENPETE_EXIT_SETUP_ERROR;
     }
 
-    /* Arm audio capture before any SPU init: when recording (and audio not
-     * disabled), PsyX_SPUAL_InitSound opens an OpenAL loopback device so the
-     * mixed PCM can be pulled into the recording. Set before PsyX_Initialise
-     * so it's in place regardless of when SpuInit fires. Default 0 leaves
-     * normal playback untouched. */
-    extern int g_psyx_audioCaptureMode;
-    g_psyx_audioCaptureMode =
-        (opts->record_path && !opts->record_no_audio) ? 1 : 0;
-    /* OPENPETE_AUDIO_DUMP=PATH: the same loopback capture, drained into a raw
-     * s16 stereo 44.1 kHz file every VSync (psyq_VSync), so a headless run
-     * yields the mixed SPU output as a measurable signal. The recorder owns
-     * the capture ring when both are asked for. */
-    {
-        const char* dump = getenv("OPENPETE_AUDIO_DUMP");
-        if (dump && *dump) {
-            if (opts->record_path) {
-                OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP ignored: --record owns the capture ring");
-            } else {
-                extern int openpete_audio_dump_armed;
-                openpete_audio_dump_armed = 1;
-                g_psyx_audioCaptureMode = 1;
-            }
-        }
-    }
+    audio_sinks_setup(opts);
 
     /* --psycross-native-raster: size the reference renderer's present FBO to
      * the console display grid instead of the window. Read per scene begin, so
@@ -3417,6 +3525,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     s_render_fps_dirty = 0;
     s_tick_scale       = tick_scale;
     s_tick_scale_dirty = 0;
+    PsyX_SPUFeed_SetNominalRate(tick_scale);
     /* One WALL-time tick for every sub-tick alpha denominator (ring +
      * per-object phase lerps). Must stretch with --tick-scale: interp alphas
      * are wall-clock-derived, so an unscaled (NTSC) cap makes every sweep run
@@ -3836,6 +3945,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             g_openpete_tick_period_ns = op_period_ns(tick_period);
             slip_threshold_ns = 4 * sim_period_ns;
             s_render_fps_dirty = 1;
+            PsyX_SPUFeed_SetNominalRate(tick_scale);
             OPL_INFO_F("pacer", "tick-scale -> %.3f (sim %.6f ms, %.6f Hz)",
                        tick_scale, (double)sim_period_ns / 1e6,
                        op_period_hz(sim_period));
@@ -4369,6 +4479,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                          * a held Backspace replays up to a keyframe of ticks
                          * with no present between them. */
                         openpete_replaying = 1;
+                        PsyX_SPUAL_Speculate(1, 0);
                         while (openpete_frame < target) {
                             int idx = kf->log_idx +
                                       (int)(openpete_frame - kf->frame);
@@ -4421,6 +4532,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                             if (openpete_frame == before) break; /* safety */
                         }
                         openpete_replaying = 0;
+                        PsyX_SPUAL_Speculate(0, 0);
                         input_log_truncate(kf->log_idx +
                                            (int)(target - kf->frame));
                         openpete_rewind_drop_after(openpete_frame);
@@ -5019,7 +5131,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * sampled the wrong sim moments). */
                     int      ra_pp    = openpete_present_pending;
                     unsigned ra_prims = openpete_primitives_drawn;
-                    int prev_mute = PsyX_SPUAL_SetMute(1);
+                    PsyX_SPUAL_Speculate(1, 0);
                     openpete_speculative = 1;
                     /* Speculated ticks run inside this VBL's bracket but are
                      * not this VBL: their pad reads must not be measured
@@ -5058,7 +5170,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                     }
                     openpete_speculative = 0;
                     openpete_pace_vbl_suspend(0);
-                    (void)PsyX_SPUAL_SetMute(prev_mute);
+                    /* An adopted speculation is the timeline: its frames
+                     * are fed. A rolled-back one is rendered again by the
+                     * committed ticks. */
+                    PsyX_SPUAL_Speculate(0, ra_live_lost);
                     if (!ra_live_lost) {
                         openpete_present_pending  = ra_pp;
                         openpete_primitives_drawn = ra_prims;
@@ -6315,6 +6430,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         pace_unlock_prev = unlock_fps ? 1 : 0;
         openpete_unlock_fps = unlock_fps ? 1 : 0;
         g_skipSwapInterval = unlock_fps ? 1 : 0;
+        audio_feed_sync(unlock_fps, opts->headless, g_paused);
 
         /* Paused without a step pending: sleep so we don't spin the CPU.
          * The condvar pacer below only waits when ticked_this_iter, and

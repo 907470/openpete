@@ -310,44 +310,45 @@ void           openpete_mods_arena_immutable_check(const char* when);
  *         owner-table allocation failure. */
 uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner);
 
-/** @brief Play the PCM WAV at path once as a host-side OpenAL sound.
+/** @brief Play the PCM WAV at path once as a host-side sound.
  *
- * The sound plays on a source of mod_sound.c's pool on PsyCross's AL
- * context, outside the SPU, so it writes no guest state and is legal from
- * tick and present hooks. The WAV is loaded through op_wav_load on its
- * first play and its AL buffer is cached by path. While muted the call
- * plays nothing and returns 0.
+ * The sound plays on one of the SPU render's host clip voices, added after
+ * the SPU's main volume in guest time, so the device, --record and the
+ * audio dump carry it; it writes no SPU register or guest state and is
+ * legal from tick and present hooks. A play from a speculated tick is
+ * rewound with it; one from a present hook persists. The WAV is loaded
+ * through op_wav_load on its first play and its clip is cached by path.
+ * While muted the call plays nothing and returns 0.
  * @param path WAV file path.
- * @param gain Source gain, clamped to [0, 4].
- * @return 0 when played or muted; -1 when path is NULL, no AL context
- *         exists, or the load or upload fails (logged). */
+ * @param gain Linear gain, clamped to [0, 4].
+ * @return 0 when played or muted; -1 when path is NULL, or the load or
+ *         upload fails (logged). */
 int openpete_mod_sound_play(const char* path, float gain);
 
-/** @brief Play in-memory interleaved s16 PCM once as a host-side OpenAL sound.
+/** @brief Play in-memory interleaved s16 PCM once as a host-side sound.
  *
  * The counterpart of openpete_mod_sound_play for audio the caller already
- * holds, so nothing is staged on disk. The first call for a key uploads
- * the samples to an AL buffer cached under the key; later calls with the
- * same key play the cached buffer and ignore pcm, frame_count, channels
- * and sample_rate. AL copies the samples, so the caller keeps ownership.
+ * holds, so nothing is staged on disk. The first call for a key copies
+ * the samples into a clip cached under the key; later calls with the same
+ * key play the cached clip and ignore pcm, frame_count, channels and
+ * sample_rate. The caller keeps ownership of pcm.
  * @param key Cache label for the sound, not a path.
  * @param pcm Interleaved samples.
  * @param frame_count Sample frames in pcm.
  * @param channels 1 or 2.
  * @param sample_rate Sample rate in Hz.
- * @param gain Source gain, clamped to [0, 4].
- * @return 0 when played or muted; -1 when key is NULL, no AL context
- *         exists, an uncached key comes with NULL pcm, zero frames or a
- *         channel count other than 1 or 2, or the upload fails. */
+ * @param gain Linear gain, clamped to [0, 4].
+ * @return 0 when played or muted; -1 when key is NULL, an uncached key
+ *         comes with NULL pcm, zero frames or a channel count other than 1
+ *         or 2, or the upload fails. */
 int openpete_mod_sound_play_pcm(const char* key, const int16_t* pcm,
                                 uint32_t frame_count, int channels,
                                 uint32_t sample_rate, float gain);
 
-/** @brief Set the engine mute for mod sounds; muting stops every source in the pool.
+/** @brief Set the engine mute for mod sounds; muting stops every playing clip.
  *
- * Called by openpete_set_mute(). The mod-sound sources live on PsyCross's
- * AL context but outside its SPU mixer, so the SPU's mute flag does not
- * reach them. While muted, play calls return 0 without playing.
+ * Called by openpete_set_mute(). While muted, play calls return 0 without
+ * playing.
  * @param on Nonzero mutes. */
 void openpete_mod_sound_set_mute(int on);
 

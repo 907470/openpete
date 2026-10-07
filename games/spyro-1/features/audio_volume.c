@@ -27,14 +27,13 @@
 // only move the host-side request (core/runtime/run.c), so a UI-thread edit
 // never lands in gameplay RAM off-schedule.
 //
-// MUSIC GAIN. PsyCross implements SpuSetCommonAttr as a no-op, so the cd
-// volume the game computes never reaches the XA stream's OpenAL source: music
-// played at full gain for every non-zero slider position. The mirror below
-// closes that gap by driving the XA (and music-WAV override) gain from the
-// game's own slider each tick, which is what makes both the menu row and
-// --music N audible as levels rather than as an on/off switch. Host audio
-// only, and it layers UNDER --mute: PsyX_XA_ForceGain still wins while the
-// forced gain is active.
+// MUSIC GAIN. XA music reaches the SPU's CD input, where the SPU applies the
+// CD volume the game writes (SpuSetCommonAttr) and the main volume, as the
+// hardware does. The music-WAV override plays outside the SPU, so the mirror
+// below drives its gain from the game's own slider each tick, which makes
+// both the menu row and --music N audible as levels on that path too. Host
+// audio only, and it layers UNDER --mute: the forced gain still wins while
+// it is active.
 //
 // Addresses from manifest/globals.toml; g_Spu field offsets from
 // spyro-1/include/spu.h.
@@ -47,10 +46,7 @@
 
 #include <stdint.h>
 
-/* PsyCross XA streaming source. SetVolume is the game-driven channel; the
- * forced gain (--mute) sits above it and keeps winning while it is set. */
-extern void PsyX_XA_SetVolume(float linear_gain);
-/* SPU main volume, as forwarded from SpuSetCommonAttr. */
+/* SPU main volume as a linear gain, from the SPU's main volume register. */
 extern float PsyX_SPUAL_GetMasterVolume(void);
 
 /* Runahead speculation flag (openpete_fiber.h). Declared rather than
@@ -192,14 +188,14 @@ static void channel_tick(CPUState* cpu, vol_channel_t* ch, int menu_open) {
     ch->stamped = want;
 }
 
-/* --- music slider -> OpenAL gain ----------------------------------------- */
+/* --- music slider -> music-override gain ---------------------------------- */
 
 static int   s_mirrored_music = -1;
 static float s_mirrored_master = -1.0f;
 
-/** @brief Sets the XA stream and music-override gain from the game's music slider and the SPU main volume.
+/** @brief Sets the music-override gain from the game's music slider and the SPU main volume.
  *
- * Reproduces the two hardware stages the XA stream passes through rather than
+ * Reproduces the two hardware stages XA music passes through rather than
  * treating the slider as a 0..1 fader. The game derives its CD input volume as
  * m_MusicVolume = slider << 11, and the SPU applies both that and the main
  * volume as (sample * volume) >> 15. CD input volume is written to the
@@ -221,7 +217,6 @@ static void music_gain_mirror(CPUState* cpu) {
 
     const float cd_volume = (float)(level * 2048) / 32768.0f;
     const float gain = cd_volume * master;
-    PsyX_XA_SetVolume(gain);
     music_override_set_gain(gain);
 }
 

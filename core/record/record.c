@@ -64,9 +64,10 @@ extern int GR_PresentPBO_Submit(unsigned int gl_format, int* out_w, int* out_h);
 extern unsigned char* GR_PresentPBO_Map(int* out_w, int* out_h);
 extern void GR_PresentPBO_Unmap(void);
 
-/* PsyCross loopback audio capture (PsyX_SPUAL.h). CaptureActive is non-zero
- * when the loopback device is live (host arms it via g_psyx_audioCaptureMode
- * before SPU init); CaptureDrain pulls mixed stereo s16 @ 44100 frames. */
+/* PsyCross SPU capture ring (PsyX_SPUAL.h). CaptureActive is non-zero while
+ * the host has armed it (PsyX_SPUAL_SetCapture); CaptureDrain pulls the
+ * SPU's rendered stereo s16 @ 44100 frames, the same frames the device
+ * feed plays. */
 extern int PsyX_SPUAL_CaptureActive(void);
 extern int PsyX_SPUAL_CaptureDrain(short* out, int max_frames);
 extern void PsyX_SPUAL_CaptureStats(unsigned long long* produced,
@@ -95,9 +96,9 @@ static struct {
     int          crf;
     int          gop;
 
-    /* Audio (loopback SPU capture -> AAC second stream). */
+    /* Audio (SPU capture ring -> AAC second stream). */
     int          audio_requested;    /* not --no-record-audio */
-    int          audio_enabled;      /* requested + loopback active + set up */
+    int          audio_enabled;      /* requested + capture ring armed + set up */
     const char*  audio_encoder_name;
     AVStream*    astream;
     AVCodecContext* acodec;
@@ -236,21 +237,21 @@ static int rec_encode_one(const uint8_t* buf, uint64_t pts_us) {
     }
 }
 
-/* ---- audio (loopback SPU capture -> second stream) ---- */
+/* ---- audio (SPU capture ring -> second stream) ---- */
 
 /** @brief Add the audio stream: encoder, s16-to-encoder resampler, and sample FIFO.
  *
  * Called from rec_lazy_init before the container header is written, since
  * every stream must exist first. Needs audio requested and the PsyCross
- * loopback capture active; the stream is 44100 Hz stereo at 160 kb/s.
+ * capture ring armed; the stream is 44100 Hz stereo at 160 kb/s.
  * Any failure logs a warning and leaves audio_enabled 0, so recording
- * continues with video only. On success it discards the loopback backlog
+ * continues with video only. On success it discards the capture backlog
  * and resets its drop counters so audio sample 0 lines up with the first
  * video image.
  * @return 0 in every path. */
 static int rec_setup_audio(void) {
     if (!g_rec.audio_requested || !PsyX_SPUAL_CaptureActive())
-        return 0;  /* not requested, or loopback not active -> video only */
+        return 0;  /* not requested, or capture ring not armed -> video only */
 
     const AVCodec* ac = avcodec_find_encoder_by_name(g_rec.audio_encoder_name);
     if (!ac) {
@@ -309,7 +310,7 @@ static int rec_setup_audio(void) {
         return 0;
     }
 
-    /* Discard whatever the loopback accumulated before recording started so
+    /* Discard whatever the capture ring accumulated before recording started so
      * audio sample 0 ~aligns with video frame 0. */
     { short scratch[2048 * 2]; while (PsyX_SPUAL_CaptureDrain(scratch, 2048) > 0) {} }
     PsyX_SPUAL_CaptureResetStats();  /* pre-roll backlog is expected; count from here */
@@ -342,7 +343,7 @@ static int rec_encode_audio_frame(AVFrame* af) {
     }
 }
 
-/** @brief Move the captured loopback PCM into the FIFO and encode every whole audio frame it holds.
+/** @brief Move the captured SPU PCM into the FIFO and encode every whole audio frame it holds.
  *
  * Frame PTS counts samples from 0. An encode error disables audio for the
  * rest of the recording. Runs on the encoder thread, and on the shutdown
@@ -802,9 +803,9 @@ void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
     rec_publish(rgba, pts_us);
 }
 
-/** @brief Free every encoder, stream, ring and lock, and log the loopback audio drop count.
+/** @brief Free every encoder, stream, ring and lock, and log the capture ring drop count.
  *
- * A non-zero drop count is a warning, because dropped loopback frames
+ * A non-zero drop count is a warning, because dropped capture frames
  * shorten the audio track against emulated time. Freed pointers are
  * cleared, so a second call frees nothing. The encoder thread must be
  * joined or never started. */

@@ -21,7 +21,7 @@ extern "C" {
  * music_override_shutdown; the start functions call it lazily, and boot
  * code calls it to log the search path early. */
 void music_override_init(void);
-/** @brief Stop playback, release the AL objects, join the streaming worker and forget the roots and manifests.
+/** @brief Stop playback, join the streaming worker and forget the roots and manifests.
  *
  * Logs a stream census line (starts, bytes read, resident ring bytes,
  * longest start on the calling thread) when any stream started. */
@@ -56,7 +56,7 @@ int  music_override_try_start(int track_index, int start_sector);
  * @param start_sector The stream's LBA, used only in the log line.
  * @return 1 when playback started, 0 to fall back to the XA path. */
 int  music_override_try_start_path(const char* path, int start_sector);
-/** @brief End override playback: the streaming worker drops its stream and the AL source is stopped and emptied.
+/** @brief End override playback: the streaming worker drops its stream and the render's host stream empties.
  *
  * No-op while no override is active. */
 void music_override_stop(void);
@@ -64,12 +64,12 @@ void music_override_stop(void);
  * @return Nonzero from a successful start until the next stop. */
 int  music_override_is_active(void);
 
-/** @brief Refill the four-buffer AL ring with the next PCM chunks and keep the source playing.
+/** @brief Push the next PCM chunks into the SPU render's host stream while it has room.
  *
- * Processed buffers are unqueued and refilled with up to 8192 sample
- * frames each from what the streaming worker has read ahead, and the
- * worker is woken to read more; once the WAV is exhausted the source
- * drains and stops. Looping is the game's: it re-issues the stream read when the CD
+ * Chunks of up to 8192 sample frames come from what the streaming worker
+ * has read ahead, and the worker is woken to read more; the render
+ * consumes them per output sample in guest time, after the SPU main
+ * volume. Once the WAV is exhausted the stream drains to silence. Looping is the game's: it re-issues the stream read when the CD
  * head passes the track end, which restarts playback from frame 0. No-op
  * while no override is active. Called on every CdSync thunk, beside
  * PsyX_XA_Pump. */
@@ -79,7 +79,7 @@ void music_override_pump(void);
  *
  * Mirrors PsyX_XA_SetVolume; the game layer passes the CD volume times
  * the SPU master volume.
- * @param linear_gain Linear AL source gain. */
+ * @param linear_gain Linear gain on the host stream. */
 void music_override_set_gain(float linear_gain);
 /** @brief Set or release a gain that overrides the game-driven one.
  *
