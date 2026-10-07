@@ -1874,14 +1874,14 @@ static const knob_desc_t g_builtin_debug[] = {
     { "render_paths", "Render paths", "Debug", "--render-paths", NULL,
       "Render only the named paths in isolation (cyclorama,spyro,moby,"
       "terrain,shadow,flame,particles,tracer,transition,portal,glow,sparkle,"
-      "moby_shadow); none renders no path. Empty or \"(all)\" clears the "
+      "moby_shadow,ui); none renders no path. Empty or \"(all)\" clears the "
       "selection. Live once the game module binds its setter.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .help_arg = "LIST", .help_order = 100,
       .help_text = "render ONLY these paths in both renderers, e.g.\n"
           "cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
-          "tracer,transition,portal,moby_shadow. Lets a path be\n"
+          "tracer,transition,portal,moby_shadow,ui. Lets a path be\n"
           "compared in isolation. Presentation-only; gameplay state unaffected." },
 
     { "log_level", "Log level", "Debug", "--log-level", "OPENPETE_LOG",

@@ -18,7 +18,7 @@
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
-    "transition", "portal", "glow", "sparkle", "moby_shadow",
+    "transition", "portal", "glow", "sparkle", "moby_shadow", "ui",
 };
 
 static uint32_t s_mask   = 0;      /* bit per selected path */
@@ -45,7 +45,7 @@ void render_paths_init(const char* spec) {
         else if (strcmp(tok, "none") == 0) { /* selects no path */ }
         else fprintf(stderr, "[render-paths] unknown path '%s' (known: "
                              "cyclorama,spyro,moby,terrain,shadow,flame,particles,"
-                             "tracer,transition,portal,glow,sparkle,moby_shadow)\n", tok);
+                             "tracer,transition,portal,glow,sparkle,moby_shadow,ui)\n", tok);
     }
 
     fprintf(stderr, "[render-paths] isolating:");
@@ -125,6 +125,13 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
         if (s_ivdump >= 0 && (int)openpete_frame == s_ivdump)
             fprintf(stderr, "[render-paths] ivdump f=%u path=%s [0x%08X,0x%08X)\n",
                     openpete_frame, k_names[p], start, end);
+    }
+    /* A range that continues the previous one of the same path extends it:
+     * the 2D layer records one range per primitive, and the polybuf allocates
+     * them back to back. */
+    if (s_iv_n > 0 && s_iv[s_iv_n - 1].path == p && s_iv[s_iv_n - 1].end == start) {
+        s_iv[s_iv_n - 1].end = end;
+        return;
     }
     s_iv[s_iv_n].start = start;
     s_iv[s_iv_n].end   = end;

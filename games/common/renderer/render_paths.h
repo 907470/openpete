@@ -43,12 +43,17 @@ typedef enum {
     RP_MOBY_SHADOW,/* moby drop-shadows (Spyro 1 func_80059F8C). Separate from RP_SHADOW:
                    * the rescue-cutscene states 5 and 6 draw the player's shadow and not
                    * the moby shadows while the moby draw still fills their list */
+    RP_UI,        /* the 2D screen-space layer: every primitive linked through the
+                   * game's 2D ordering-table insert (ui_game.ot_insert - logo, HUD
+                   * sprites, dialog boxes, the fade) and the glyph chains
+                   * (ui_game.sprt_chain_emitter) */
     RP_COUNT
 } render_path_t;
 
-/* Note: there is no separate HUD path - HUD content is copied into the shaded
- * moby list (CopyHudMobysToShaded) and rendered through the moby pipeline, so it
- * is part of RP_MOBY, not separately isolatable via a dispatch bracket. */
+/* Note: the 3D HUD (Spyro 1's gold counters and the other extruded glyph
+ * models) is copied into the shaded moby list (CopyHudMobysToShaded) and
+ * rendered through the moby pipeline, so it is part of RP_MOBY; RP_UI is the
+ * 2D layer only. */
 
 /** @brief Parse the --render-paths CSV.
  *

@@ -52,7 +52,9 @@ closed; click a title to open it.
 Button groups (Vertex precision, Color depth, Texture mapping, LOD, Terrain
 visibility) highlight the current choice. **Color depth** **15-bit** is the
 dither setting on, **24-bit** off. **Runahead** has a checkbox; buttons for 1,
-2 and 3 ticks appear beside it while runahead is on. The same pattern holds
+2 and 3 ticks appear beside it while runahead is on. **Rewind** has a
+checkbox; the window in seconds appears beside it while rewind is on. The
+same pattern holds
 elsewhere: a row's further controls show only while its first control is
 on, as Render FPS's target (while **Interpolation** is on), Field of view's
 slider (while **Original** is off), Performance
@@ -61,10 +63,9 @@ stats' position, Notifications' position and timeout, Fog's scale, and the
 checkbox.
 
 **Render paths** draws only the chosen render paths (sky, Spyro, mobys,
-terrain, shadows, flame, particles and the rest), one checkbox each, for
-comparing one path in isolation; **All** returns to normal drawing and
-**None** draws no path. It changes only the picture. **Rewind** has a checkbox; the window in seconds
-appears beside it while rewind is on.
+terrain, shadows, flame, particles, the 2D UI and the rest), one checkbox
+each, for comparing one path in isolation; **All** returns to normal drawing
+and **None** draws no path. It changes only the picture.
 
 **Pause sim** <!-- id: knob:pause --> stops the game's ticks while the
 picture keeps presenting, as the pause key ({{ key("key:host.pause") }} <!-- id: key:host.pause -->)

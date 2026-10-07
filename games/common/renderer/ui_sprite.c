@@ -1451,12 +1451,16 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
  * and the glyphs fed at emission, is then ranked by build_ot_rank_map and
  * openpete_native_scene_rank_2d. The unreleased tail moves to the front of
  * the claim array. With no CPU, no n or the native scene off, the n claims
- * are dropped unfed. Every caller releases the whole batch.
+ * are dropped unfed, as they are while a render-path selection leaves RP_UI
+ * out. Every caller releases the whole batch.
  * @param n The count to release, clamped to the claimed count. */
 static void release_batch(unsigned n) {
     CPUState* cpu = s_cpu;
     if (n > s_claim_n) n = s_claim_n;
-    if (!cpu || !n || !openpete_native_scene_enabled()) { s_claim_n -= n; return; }
+    if (!cpu || !n || !openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) {
+        s_claim_n -= n;
+        return;
+    }
     /* Which primitives are released is decided in claim order. What order
      * they are composed in is decided after the feed, by the table walk
      * below, over every 2D tri of the scene at once. */
@@ -1624,7 +1628,7 @@ static void claim(CPUState* cpu, uint32_t prim, int kind) { claim_aux(cpu, prim,
 void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
     if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_sprt++;
-    if (!openpete_native_scene_enabled()) return;
+    if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
     if (!s_cpu) s_cpu = cpu;
     openpete_native_scene_set_prim(prim);   /* ranked by the release's table walk */
     feed_sprt_now(cpu, prim, tpage);
@@ -1634,16 +1638,29 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
 /* Feeds one glyph POLY_FT4 at emission through the chokepoint's FT4 decoder. */
 void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) {
     if (openpete_frame == s_cap_frame) s_post_sprt++;
-    if (!openpete_native_scene_enabled()) return;
+    if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
     if (!s_cpu) s_cpu = cpu;
     openpete_native_scene_set_prim(prim);   /* ranked by the release's table walk */
     feed_ft4(cpu, prim, cpu->read_word(prim + 4));
     openpete_native_scene_set_prim(0u);
 }
 
+/** @brief Record a 2D primitive's polybuf range as RP_UI while a render-path selection is active.
+ *
+ * The range is the packet's tag word length, (len + 1) words, so the OT walk
+ * keeps the primitive when RP_UI is selected; a zero length records nothing.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address. */
+static void ui_path_record(CPUState* cpu, uint32_t prim) {
+    if (!render_paths_active()) return;
+    const unsigned len = (cpu->read_word(prim) >> 24) & 0xFFu;
+    if (len) render_path_record(RP_UI, prim, prim + (len + 1u) * 4u);
+}
+
 /** @brief Hooks the game's 2D ordering-table insert: claims the primitive being linked, then runs the real insert.
  *
- * Inert (returns 0) while the native scene is off and on re-entry from its
+ * Inert (returns 0) while the native scene is off, apart from recording the
+ * primitive's range under a render-path selection, and on re-entry from its
  * own dispatch. The first call registers the frame-close and overlay
  * precapture callbacks and names the UI atlas for the texture pack. The
  * primitive at a0 is classified in order: freeze backdrop FT4 (also
@@ -1657,7 +1674,10 @@ void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) {
  * @return 0 when the ordinary dispatch runs the insert, 1 having run it. */
 static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     int feed = openpete_native_scene_enabled();
-    if (!feed) return 0;                        /* inert: normal dispatch runs it */
+    if (!feed) {                                /* inert: normal dispatch runs it */
+        ui_path_record(cpu, cpu->a0);
+        return 0;
+    }
     if (!s_cpu) {                               /* one-time: the CPU the flush reads through */
         s_cpu = cpu;
         openpete_native_scene_register_frame_close(on_scene_frame_close);
@@ -1679,6 +1699,7 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     uint32_t prim = cpu->a0;                     /* a0 = prim pointer being linked */
+    ui_path_record(cpu, prim);
     if (openpete_frame != s_unclaimed_frame) { unclaimed_flush_tick(); s_unclaimed_frame = openpete_frame; }
 
     if (feed) {
@@ -1734,7 +1755,8 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
  * diagonal triangle, so the native overlay is driven from the arguments
  * (openpete_native_scene_set_fade) rather than from the F4 and its
  * preceding DR_MODE. The fade clears each VBL, so it is set whenever the
- * emitter runs. The real emitter then runs unchanged with s_in_fade set, so
+ * emitter runs, unless a render-path selection leaves RP_UI out. The real
+ * emitter then runs unchanged with s_in_fade set, so
  * the chokepoint does not claim its F4 as a dark panel. Reads the
  * arguments only; writes no PSX RAM.
  * @param cpu The guest CPU state.
@@ -1748,8 +1770,11 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
     if (s_in) return 0;                                /* re-entry from our own call -> real body */
     s_in = 1;
     openpete_native_scene_begin_frame(openpete_frame); /* idempotent within a frame */
-    openpete_native_scene_set_fade((int)cpu->a0, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3);
-    if ((int)cpu->a1 | (int)cpu->a2 | (int)cpu->a3) bbox_note(UICLS_FADE, 0.0f, 0.0f, 512.0f, 240.0f);
+    if (render_path_enabled(RP_UI)) {                  /* the fade is the 2D layer's */
+        openpete_native_scene_set_fade((int)cpu->a0, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3);
+        if ((int)cpu->a1 | (int)cpu->a2 | (int)cpu->a3)
+            bbox_note(UICLS_FADE, 0.0f, 0.0f, 512.0f, 240.0f);
+    }
     /* The real fade emit links its 0x2A F4 through the chokepoint; flag it so
      * the chokepoint hook treats that F4 as the fade (already handled) and NOT
      * a dark panel (also a 0x2A F4). */
