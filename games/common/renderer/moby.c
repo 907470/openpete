@@ -96,6 +96,9 @@ static long s_animsw_cross = 0, s_animsw_snap = 0, s_animsw_mirror = 0;
 /* Clip-switch pairs shown from held vertices (heldx) and refused for want of
  * them (noheld), counted on every present the verdict runs. */
 static long s_animsw_heldx = 0, s_animsw_noheld = 0;
+/* Clip-switch LERP and HOLD verdicts whose two headers carry different scale
+ * bytes (model units), counted on every present the verdict runs. */
+static long s_animsw_scale_lerp = 0, s_animsw_scale_hold = 0;
 /* Sub-tick previous-pose guard census, counted on presents below alpha 1:
  * holds shown, holds ended by the tick-period rule, and clip-switch pairs
  * refused because the previous header's content no longer matches the
@@ -1018,6 +1021,32 @@ static int moby_prev_streams(CPUState* cpu, const moby_pose_t* prev, int count,
     return blend;
 }
 
+/* Decodes whose previous pose was rescaled into the current clip's model unit
+ * (the two headers' scale bytes differ), counted since start; printed in the
+ * OPENPETE_MOBY_ANIMSW_DBG line. */
+static long s_prev_rescaled = 0;
+
+/** @brief The factor that carries a previous pose's model-space vertices into the current clip's model unit.
+ *
+ * A clip's model unit is 2^s for its header's scale byte s (the translation
+ * is shifted right by s, moby_decode_project), so a vertex decoded under the
+ * previous pose's byte is multiplied by 2^(s_prev - s_curr). Held vertices
+ * (pose_hold_find) were decoded under the same header and take the same
+ * factor.
+ * @param cpu The guest CPU state, read only.
+ * @param prev The previous pose; a header that is not an address yields 1.
+ * @param blend_p moby_prev_streams' result; negative (no previous pose to
+ *        read) yields 1.
+ * @param m_scale The current header's scale byte.
+ * @return The factor, 1 when the two bytes agree. */
+static double moby_prev_unit(CPUState* cpu, const moby_pose_t* prev, int blend_p, int m_scale) {
+    if (blend_p < 0 || !prev || prev->header < 0x80000000u) return 1.0;
+    const int sp = (int)(cpu->read_byte(prev->header + game_layout.moby.anim_scale_off) & 0xFFu);
+    if (sp == m_scale) return 1.0;
+    s_prev_rescaled++;
+    return ldexp(1.0, sp - m_scale);
+}
+
 /** @brief The previous pose's model-space vertex i for the two-pass shape lerp.
  *
  * Held vertices are read as stored; otherwise keyframe A's stream advances,
@@ -1328,9 +1357,13 @@ static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int 
  * between two poses the game drew rather than through a synthesized keyframe
  * blend. Across a clip switch moby_prev_keyframe lerps only when both clips
  * share a vertex count, so vertex i is the same vertex in both; the previous
- * streams decode with prev->header's own ShortShift (moby_prev_streams), and
- * m_Scale feeds only the current translation, so neither difference bends
- * the shape.
+ * streams decode with prev->header's own ShortShift (moby_prev_streams). The
+ * header's scale byte sets the model unit: the translation the vertices add
+ * to is the quarter-world centre shifted left 2 and right by that byte, so
+ * one model unit is 2^byte times as large as at byte 0. A previous pose
+ * decoded under another clip's byte is multiplied by
+ * 2^(previous byte - current byte) before the lerp (moby_prev_unit), so both
+ * ends are in the current clip's unit.
  *
  * Per vertex: sx, sy from project(), replaced by moby_gte_near_fixup inside
  * the GTE's saturation regime; vz the full-world view Z (the projected Z
@@ -1525,6 +1558,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     if (do_blend) vstream_init(cpu, &B, headerB, frameB, s5);
     /* Optional prev pose (two-pass sub-tick shape lerp). */
     int blend_p = moby_prev_streams(cpu, prev, count, &Ap, &Bp);
+    const double prev_k = moby_prev_unit(cpu, prev, blend_p, m_scale);
     for (int i = 0; i < count; i++) {
         vstream_next(cpu, &A, i == 0);
         double vx = A.VX, vy = A.VY, vz = A.VZ;
@@ -1541,6 +1575,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
              * moby's per-object sub-tick alpha). */
             double p[3];
             moby_prev_vertex(cpu, prev, &Ap, &Bp, blend_p, i, p);
+            p[0] *= prev_k; p[1] *= prev_k; p[2] *= prev_k;
             vx = p[0] + (vx - p[0]) * blend_alpha;
             vy = p[1] + (vy - p[1]) * blend_alpha;
             vz = p[2] + (vz - p[2]) * blend_alpha;
@@ -9972,7 +10007,13 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
         s_animsw_mirror++;
         verdict = MOBY_PREV_HOLD;
     }
-    return moby_hold_schedule(o, verdict, t);
+    verdict = moby_hold_schedule(o, verdict, t);
+    if (verdict != MOBY_PREV_SNAP && prev->header != header_curr &&
+        cpu->read_byte(prev->header + game_layout.moby.anim_scale_off) !=
+        cpu->read_byte(header_curr + game_layout.moby.anim_scale_off)) {
+        if (verdict == MOBY_PREV_LERP) s_animsw_scale_lerp++; else s_animsw_scale_hold++;
+    }
+    return verdict;
 }
 
 /** @brief The GPF scale byte a sub-tick present decodes a record at: the byte lerped from the previous tick's to this tick's.
@@ -11567,16 +11608,17 @@ static void moby_reextract_body(CPUState* cpu) {
         static long last_cross = -1, last_snap = -1;
         static long last_guard = -1;
         long guard = s_hold_shown + s_hold_period + s_prevhdr_sig + s_prevhdr_unk + s_animsw_heldx +
-                     s_animsw_noheld;
+                     s_animsw_noheld + s_animsw_scale_lerp + s_animsw_scale_hold + s_prev_rescaled;
         if (s_animsw_cross != last_cross || s_animsw_snap != last_snap || guard != last_guard) {
             last_cross = s_animsw_cross; last_snap = s_animsw_snap; last_guard = guard;
             fprintf(stderr, "[moby-animsw vbl=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld "
                             "held(facing-reversal)=%ld hold-shown=%ld hold-period-ended=%ld "
                             "prevhdr-refused(sig)=%ld prevhdr-refused(unknown)=%ld "
-                            "held-shown=%ld held-refused=%ld\n",
+                            "held-shown=%ld held-refused=%ld scale-differ(lerp)=%ld "
+                            "scale-differ(hold)=%ld prev-rescaled=%ld\n",
                     openpete_frame, s_animsw_cross, s_animsw_snap, s_animsw_mirror,
                     s_hold_shown, s_hold_period, s_prevhdr_sig, s_prevhdr_unk, s_animsw_heldx,
-                    s_animsw_noheld);
+                    s_animsw_noheld, s_animsw_scale_lerp, s_animsw_scale_hold, s_prev_rescaled);
         }
     }
 }
