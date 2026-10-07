@@ -58,7 +58,11 @@
 #
 # name                                     | start | int. | freeze | pins | launch
 alban-rescue                             | 1700  | 100  |        | 1756,1760
+# @heldfx: held presents where glow and sparkle drew tick N's set (or none)
+# instead of tick N-1's. Blessed pre-fix.
+alban-rescue@heldfx                      | 2500  | 100  |        | 2574
 artisans-balloonist                      | 1700  | 100  | freeze | 3130,3520
+artisans-balloonist@heldfx               | 2900  | 100  | freeze | 2996
 artisans-bridge                          | 1700  | 100  |        | 1701,2000
 artisans-bridge-hq                       | 1700  | 100  |        | 2320
 artisans-bridge-hq@vpint                 | 1700  | 100  |        | 2320 | --vertex-precision integer
@@ -90,6 +94,7 @@ key                                      | 1700  | 100  |        | 2435,3579
 level-transition                         | 1700  | 100  |        | 1850,2050
 level-transition-framebuffer             | 1700
 level-transition-gems                    | 1700  | 100  |        | 2440,2800
+level-transition-gems@heldfx            | 5000  | 100  |        | 5002
 low-fps                                  | 1700  | 100  |        | 3000
 magic-crafters-balloonist                | 1700  | 100  |        | 3580
 magic-crafters-portal-cyclorama          | 1700  | 100  |        | 2075,2945

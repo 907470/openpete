@@ -161,6 +161,9 @@ title-demo-camcut|5800|100||5852
 # held cut draws tick N-1's sets under tick N-1's camera. Blessed pre-fix.
 title-demo-hold-player|7100|100||7130,7131
 title-demo-hold-particles|10400|100||10479,10480
+# sunny-villa @heldfx: held presents where glint and tracers drew tick N's
+# set (or none) instead of tick N-1's. Blessed pre-fix.
+sunrise-spring-sunny-villa-portal-entry@heldfx|1900|100||1927,2431,2493
 # the_second_warning cutscene, VBL 1293-1301: Bianca interpolates wrongly on
 # the sub-tick view just before she steps out from behind the tree (native).
 second-warning-bianca-tree|1289|2||1293,1295,1297,1298,1299,1300,1301|--skip-to-cutscene the_second_warning
