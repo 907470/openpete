@@ -469,6 +469,8 @@ static void game_reextract_body(CPUState* cpu) {
     (void)cpu;
     double qa = 0.0;
     const openpete_interp_snapshot_t *prev2 = NULL, *prev = NULL, *curr = NULL;
+    /* One per-object hold verdict per present, read by every channel. */
+    cut_obj_present_begin();
     int paired = openpete_interp_query3(openpete_interp_present_now(), g_openpete_tick_period_ns,
                                         &qa, &prev2, &prev, &curr);
     if (!paired) openpete_pace_note_alpha(0.0, 0);
@@ -576,6 +578,7 @@ static void game_reextract_body(CPUState* cpu) {
     openpete_native_scene_apply_overlay(bracketed ? alpha : 0.0);
     RX_CENSUS_END(bracketed, alpha);
     s_fpos_active = 0;
+    cut_obj_present_end();
 }
 
 /** @brief Adapts game_reextract_body to the void-pointer callback the shared view installs.

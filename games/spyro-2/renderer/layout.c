@@ -355,6 +355,17 @@ const game_layout_t game_layout = {
     .moby = {
         .array_head   = G_MOBYARRAY,
         .array_direct = 0,                 /* the head is a pointer: lw through it (mobydraw.s:32-33) */
+        /* The cutscene sampler (func_titlescreen_and_loading_8007490C) walks
+         * the first D_80068C64 records and, where two consecutive track
+         * points lie 0x800 or more apart (func_8001BA20 length), holds the
+         * first and then places the actor on the second, where shorter
+         * segments interpolate in sixteenths (0x80074CC0-0x80074D2C). */
+        .cutpath_count    = 0x80068C64u,
+        .cutpath_snap     = 0x800u,
+        .cutpath_overlays = "titlescreen_and_loading",
+        /* No distance bound (jump_bound 0): Sparx (class 0x78) moves up to
+         * about 31000 units a tick while other mobys jump as little as about
+         * 1000, so a moby the sampler does not drive is never held. */
         .array_stride = 0x58u,             /* mobydraw.s:65 addi $ra, $ra, 0x58 */
         .state_off    = 0x48u,             /* mobydraw.s:66 lb; >= 0 processes */
         .state_term   = 0xFFu,             /* mobydraw.s:69-70 state == -1 ends the list */

@@ -2237,6 +2237,9 @@ static const knob_desc_t g_builtin_debug[] = {
         "(bitmask 1=player 2=moby 4=world; 0 = legacy derive-from-depth)."),
     ENVROW_LATCHED("MOBY_SNAP_STALE", "Debug", "1",
         "Snap instead of lerp across stale interp pairs (default 1)."),
+    ENVROW_LATCHED("MOBY_JUMP_HOLD", "Debug", "1",
+        "Hold a replayed moby at its previous tick across a one-tick position "
+        "jump (Spyro 2/3; 0 interpolates across it)."),
     ENVROW_LATCHED("MOBY_MIRROR_HOLD", "Debug", "64",
         "Sub-tick hold threshold for a moby's one-tick turn, in byte angles "
         "(256 = one turn); 0 interpolates every interval."),

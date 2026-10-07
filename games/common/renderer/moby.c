@@ -48,6 +48,7 @@
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
+#include "renderer/cut_guard.h"     /* the per-object discontinuity hold */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 #include "openpete_mods.h"     /* per-instance material slot resolve */
 #include "openpete_workpool.h" /* data-parallel face walk (--extract-threads) */
@@ -7948,6 +7949,45 @@ static double moby_pair_alpha(const openpete_interp_obj_t* o) {
     return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
 }
 
+/** @brief Whether moby_jump_held may hold a record: OPENPETE_MOBY_JUMP_HOLD, default on, read once.
+ *
+ * 0 interpolates across a jump, for a same-binary A/B.
+ * @return Nonzero when the hold applies. */
+static int moby_jump_hold_enabled(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_JUMP_HOLD"); s = (e && *e) ? (*e != '0') : 1; }
+    return s;
+}
+
+/** @brief Whether the sub-tick view holds a replayed record whole at its previous tick on this present, for a position jump between the pair's two ticks.
+ *
+ * A jump (cut_obj_jump) is not a motion, so no state lies between the two
+ * ticks: the interval shows tick N-1 on every channel the replay
+ * interpolates (position, euler angles, keyframe shape, GPF scale) and tick N
+ * at alpha 1. The shared guard (cut_obj_hold) takes the verdict once per
+ * present, on the moby pass (s_rot_now set); a later reader on the same
+ * present, such as the shadow pass, reads that verdict, and a reader outside
+ * an open present or before the moby pass reads no hold. The alpha is the
+ * present clock past the current stamp over the pair's interval capped at one
+ * tick, the clock moby_record_pair sweeps. A game whose sub-tick view stages
+ * its moby records (host_reveal) holds them in its own walk, so every channel
+ * here already reads tick N-1, and this returns 0.
+ * @param moby The moby's PSX address.
+ * @param o The moby's interp pair; NULL yields 0.
+ * @return 1 when the record holds, else 0. */
+static int moby_jump_held(uint32_t moby, const openpete_interp_obj_t* o) {
+    if (moby_game.host_reveal || !o || !o->have_prev || o->curr_ns <= o->prev_ns) return 0;
+    const uint32_t po = game_layout.moby.pos_off;
+    if (!cut_obj_jump(moby, (const int32_t*)(o->prev + po), (const int32_t*)(o->curr + po))) return 0;
+    const int v = cut_obj_held(moby);
+    if (v >= 0) return v;
+    if (!s_rot_now || !moby_jump_hold_enabled()) return 0;
+    double period = (double)(o->curr_ns - o->prev_ns);
+    if (period > (double)g_openpete_tick_period_ns) period = (double)g_openpete_tick_period_ns;
+    const double a = (double)(s_rot_now - o->curr_ns) / period;
+    return cut_obj_hold(CUT_TELEPORT, moby, o, po, a, NULL);
+}
+
 /** @brief The facing-reversal verdict: whether a record holds its previous shape and rotation through this sub-tick interval.
  *
  * One verdict per record per present, read by both sub-tick channels, the
@@ -8006,7 +8046,7 @@ int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e)
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
     memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
     if (pcls != ccls) return 0;
-    double t = moby_pair_alpha(o);
+    double t = moby_jump_held(moby, o) ? 0.0 : moby_pair_alpha(o);
     /* A facing reversal steps instead of sweeping: the previous tick's angles
      * through the whole interval, this tick's at alpha 1, the same schedule
      * the shape channel takes for the same verdict. */
@@ -9913,6 +9953,9 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     double t = moby_pair_alpha(o);
     *alpha = t;
     pose_hold_find(moby, prev);
+    /* A jump has no pose between its two ticks either: the whole record,
+     * shape included, shows tick N-1 until alpha 1. */
+    if (moby_jump_held(moby, o)) return MOBY_PREV_HOLD;
     int verdict = (prev->header != header_curr)
                 ? moby_clip_switch_verdict(cpu, moby, prev->header, header_curr, t)
                 : MOBY_PREV_LERP;
@@ -9930,6 +9973,37 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
         verdict = MOBY_PREV_HOLD;
     }
     return moby_hold_schedule(o, verdict, t);
+}
+
+/** @brief The GPF scale byte a sub-tick present decodes a record at: the byte lerped from the previous tick's to this tick's.
+ *
+ * The byte is the cull's copy of m_ScaleOverride (moby+0x57, folded into w0
+ * @8001F4A8/F4C4), animated per tick by effect classes (the Gnasty-blast
+ * dome). It lerps on the pose crossfade's clock (moby_pair_alpha), so scale
+ * stays in phase with the shape, and reads tick N-1's byte while the record
+ * holds a jump (moby_jump_held). A previous byte of 0 takes the .s's non-GPF
+ * (true-distance) branch, a discontinuity, so it does not lerp. With
+ * OPENPETE_MOBY_GPF_DBG=1 one line per call prints the ramp, which must be
+ * monotone across the presents of one tick.
+ * @param moby The moby's PSX address.
+ * @param gnow This tick's byte, from the live record's w0.
+ * @param frac The value to keep when no lerp applies.
+ * @return The lerped byte, or frac outside a sub-tick present, without a pair,
+ *         or after a previous byte of 0. */
+static double moby_gpf_subtick(uint32_t moby, int gnow, double frac) {
+    if (!s_rot_now) return frac;
+    const openpete_interp_obj_t* og = openpete_interp_objs_find(moby_interp_key(moby));
+    if (!og || !og->have_prev || !og->prev_ns || og->curr_ns <= og->prev_ns) return frac;
+    const int gprev = (int)og->prev[game_layout.moby.size_off];
+    if (gprev > 0) {
+        const double t = moby_jump_held(moby, og) ? 0.0 : moby_pair_alpha(og);
+        frac = (double)gprev + ((double)gnow - (double)gprev) * t;
+    }
+    static int s_gd = -1;
+    if (s_gd < 0) { const char* e = getenv("OPENPETE_MOBY_GPF_DBG"); s_gd = (e && *e && *e != '0'); }
+    if (s_gd) fprintf(stderr, "[gpf] vbl=%u m=%08x prev=%d now=%d frac=%.3f\n",
+                      openpete_frame, moby, gprev, gnow, frac);
+    return frac;
 }
 
 /* ---- moby occlusion cull (native-side, display-only) ------------------------
@@ -10422,6 +10496,7 @@ static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     if (period > (double)MOBY_TICK_PERIOD_NS) period = (double)MOBY_TICK_PERIOD_NS;
     double ph = (double)(openpete_interp_present_now() - o->curr_ns) / period;
     *t = ph < 0.0 ? 0.0 : (ph > 1.0 ? 1.0 : ph);
+    if (moby_jump_held(moby, o)) *t = 0.0;
     return o;
 }
 
@@ -11101,34 +11176,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 /* thread the live GPF byte into the decode so the sub-tick pose
                  * projects at the same GPF-rescaled translation */
                 f.w0 = (f.w0 & ~0xFFu) | (rw0 & 0xFFu);
-                /* GPF sub-tick scale lerp: the byte is the cull's copy of
-                 * m_ScaleOverride (moby+0x57, folded into w0 @8001F4A8/F4C4),
-                 * animated per tick by effect classes (Gnasty-blast dome).
-                 * Frozen per tick the on-screen scale steps at 30Hz under
-                 * --render-fps; lerp prev->curr from the interp snapshots on
-                 * the SAME clock as the pose crossfade (moby_prev_keyframe's
-                 * t), so scale stays in phase with the poses. Snap when the
-                 * prev byte is 0 or missing: byte==0 takes the .s's non-GPF
-                 * (true-distance) branch - a semantic discontinuity, and the
-                 * spine never lerps across a discontinuity. */
-                if (s_rot_now) {
-                    const openpete_interp_obj_t* og =
-                        openpete_interp_objs_find(moby_interp_key(mobys[i]));
-                    if (og && og->have_prev && og->prev_ns && og->curr_ns > og->prev_ns) {
-                        int gprev = (int)og->prev[game_layout.moby.size_off];
-                        int gnow  = (int)(rw0 & 0xFFu);
-                        if (gprev > 0) {
-                            double t = moby_pair_alpha(og);
-                            gpf_frac = (double)gprev + ((double)gnow - (double)gprev) * t;
-                        }
-                        /* OPENPETE_MOBY_GPF_DBG=1: one line per GPF re-extract -
-                         * the ramp must be monotone across presents within a tick */
-                        { static int s_gd = -1;
-                          if (s_gd < 0) { const char* e = getenv("OPENPETE_MOBY_GPF_DBG"); s_gd = (e && *e && *e != '0'); }
-                          if (s_gd) fprintf(stderr, "[gpf] vbl=%u m=%08x prev=%d now=%d frac=%.3f\n",
-                                            openpete_frame, mobys[i], gprev, gnow, gpf_frac); }
-                    }
-                }
+                /* Frozen per tick, the on-screen scale steps at the tick rate
+                 * under --render-fps: the sub-tick decode takes the lerped byte. */
+                gpf_frac = moby_gpf_subtick(mobys[i], (int)(rw0 & 0xFFu), gpf_frac);
             }
         }
         if (!moby_draw_row_scale(cpu, recs[i], s_cur_mat, f.M))

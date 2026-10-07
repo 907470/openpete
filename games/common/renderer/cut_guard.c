@@ -98,6 +98,73 @@ const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
     return why;
 }
 
+int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos) {
+    const double lim = (double)game_layout.moby.jump_bound;
+    if (lim <= 0.0) return 0;
+    const double dx = (double)curr_pos[0] - prev_pos[0];
+    const double dy = (double)curr_pos[1] - prev_pos[1];
+    const double dz = (double)curr_pos[2] - prev_pos[2];
+    return dx*dx + dy*dy + dz*dz > lim * lim;
+}
+
+int cut_obj_jump(uint32_t addr, const int32_t* prev_pos, const int32_t* curr_pos) {
+    const int v = moby_game.cutpath_jump ? moby_game.cutpath_jump(addr, prev_pos, curr_pos) : -1;
+    return v >= 0 ? v : cut_pos_jump(prev_pos, curr_pos);
+}
+
+/* The present's per-object verdicts, in decision order. */
+#define CUT_OBJ_MAX 256
+static struct { uint32_t addr; int held; } s_obj[CUT_OBJ_MAX];
+static int s_obj_n;
+static int s_obj_open;
+/* The present's camera cut showed tick N (cut_set_camera_snap). */
+static int s_cam_snap;
+
+void cut_obj_present_begin(void) { s_obj_n = 0; s_obj_open = 1; }
+void cut_obj_present_end(void)   { s_obj_n = 0; s_obj_open = 0; }
+void cut_set_camera_snap(int snap) { s_cam_snap = snap ? 1 : 0; }
+
+int cut_obj_held(uint32_t addr) {
+    if (!s_obj_open) return -1;
+    for (int i = 0; i < s_obj_n; i++)
+        if (s_obj[i].addr == addr) return s_obj[i].held;
+    return -1;
+}
+
+/** @brief Note one object verdict in the census and record it in the present's set.
+ *
+ * @param kind CUT_CLASS or CUT_TELEPORT.
+ * @param addr The object's guest address.
+ * @param held 1 for a hold, 0 for a snap.
+ * @param why The verdict's reason.
+ * @param pp Tick N-1's position.
+ * @param cp Tick N's position.
+ * @return held. */
+static int cut_obj_decide(int kind, uint32_t addr, int held, const char* why,
+                          const int32_t* pp, const int32_t* cp) {
+    cut_census_note(kind, addr, held, why, pp, held ? pp : cp);
+    if (s_obj_open && s_obj_n < CUT_OBJ_MAX) {
+        s_obj[s_obj_n].addr = addr;
+        s_obj[s_obj_n].held = held;
+        s_obj_n++;
+    }
+    return held;
+}
+
+int cut_obj_hold(int kind, uint32_t addr, const openpete_interp_obj_t* o,
+                 uint32_t pos_off, double alpha,
+                 int (*stage)(uint32_t addr, const openpete_interp_obj_t* o)) {
+    int32_t pp[3], cp[3];
+    memcpy(pp, o->prev + pos_off, 12);
+    memcpy(cp, o->curr + pos_off, 12);
+    const char* why = NULL;
+    if (!cut_pair_is_tick(o))          why = "stale";
+    else if (alpha >= 1.0)             why = "alpha1";
+    else if (s_cam_snap)               why = "camsnap";
+    else if (stage && !stage(addr, o)) why = "unstaged";
+    return cut_obj_decide(kind, addr, why == NULL, why ? why : "hold", pp, cp);
+}
+
 int cut_pair_is_tick(const openpete_interp_obj_t* o) {
     if (!o || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     /* The capture rolls only on a change, so prev_ns is when prev was first
@@ -324,6 +391,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev,
                      const cut_cam_desc_t* desc, uint32_t view_off,
                      cam_bracket_t* out) {
     cam_bracket_t r = { 0, 0, 0, 0.0, NULL, { 0.0, 0.0, 0.0 } };
+    s_cam_snap = 0;
     const uint8_t* pcam = snap_region(prev, desc->cam_region);
     const uint8_t* ccam = snap_region(curr, desc->cam_region);
     if (!cam || !pcam || !ccam) { if (out) *out = r; return; }
@@ -340,7 +408,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev,
                           / (double)g_openpete_tick_period_ns;
     r.hold = r.cut && pair_age <= CUT_PAIR_STALE_TICKS &&
              cut_camera_hold(period, curr->tick_ns, m.gs_edge);
-    if (r.cut && !r.hold) { if (out) *out = r; return; }
+    if (r.cut && !r.hold) { s_cam_snap = 1; if (out) *out = r; return; }
 
     r.alpha = (double)(openpete_interp_present_now() - curr->tick_ns) / period;
     /* The registered regions stopped changing longer ago than the pair's own

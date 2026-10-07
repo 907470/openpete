@@ -341,6 +341,11 @@ typedef struct moby_game {
     /* A moby whose position the cutscene path drives, so a clip switch on it
      * must snap rather than crossfade. */
     int  (*cutpath_actor)(uint32_t moby);
+    /* The game's own verdict on one step of a moby its cutscene path
+     * sampler drives: 1 when the sampler placed it across a segment it does
+     * not interpolate (a jump), 0 when it interpolated, -1 when the moby is
+     * not such an actor or the game has no such rule (NULL = -1). */
+    int  (*cutpath_jump)(uint32_t moby, const int32_t* prev_pos, const int32_t* curr_pos);
     /* A moby the sub-tick view holds at its previous tick on this present:
      * every byte of its record the feeders read is tick N-1's, so no channel
      * of its record may take tick N's value. */

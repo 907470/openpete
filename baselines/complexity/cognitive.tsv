@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 7a63870a8338a9ed6e70cfdf91bcc58c5f726c63
+# head: ccd300a46aaa74f5a1318d62a5a2926b2668f6c3
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
@@ -134,7 +134,7 @@ games/common/renderer/moby.c	moby_reveal_dbg	44	0
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	183	0	
 games/common/renderer/moby.c	push_scene_moby	46	0	
-games/common/renderer/moby.c	reextract_record_pass	213	0	
+games/common/renderer/moby.c	reextract_record_pass	184	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
 games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0	

@@ -892,58 +892,43 @@ static uint8_t* s_body_cam = NULL;              /* the camera bytes the feeders 
 static uint8_t  s_prod_cam_saved[CAM_XFORM_BYTES];
 static int      s_prod_cam_active = 0;
 
-/* Set per present: the camera pair is a cut the present shows at tick N
- * (no hold), so every channel shows tick N. */
-static int s_cut_cam_snap;
-
-/* The mobys moby_cut_hold staged at their previous tick on this present,
- * reset where the re-extract's moby walk starts. */
-#define CUT_HELD_MAX 256
-static uint32_t s_cut_held[CUT_HELD_MAX];
-static int      s_cut_held_n;
+/** @brief Publish a moby's previous record through the sub-tick view for a cut hold.
+ *
+ * Stages the whole previous record, so position, class, model and animation
+ * state all read N-1 through the view, and pins the fractional position table
+ * to it. Guest memory is never written.
+ * @param m The moby's guest address.
+ * @param o The moby's interp pair.
+ * @return 1 when staged, 0 when the staging arena refuses the record. */
+static int moby_cut_stage(uint32_t m, const openpete_interp_obj_t* o) {
+    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(m, MOBY_STRIDE);
+    if (!st) return 0;
+    uint32_t len = o->blob_len < MOBY_STRIDE ? o->blob_len : MOBY_STRIDE;
+    memcpy(st, o->prev, len);
+    const int32_t* pp = (const int32_t*)(o->prev + MOBY_POS);
+    fpos_set(m, pp, pp, 0.0);
+    return 1;
+}
 
 /** @brief Whether the sub-tick view holds `moby` at its previous tick on the current present.
  *
- * moby_cut_hold staged its whole previous record, so every byte of it the
+ * moby_cut_stage staged its whole previous record, so every byte of it the
  * feeders read is tick N-1's.
  * @param moby the moby's guest address
  * @return 1 when held, 0 otherwise */
 int spyro_moby_cut_held(uint32_t moby) {
-    for (int i = 0; i < s_cut_held_n; i++)
-        if (s_cut_held[i] == moby) return 1;
-    return 0;
+    return cut_obj_held(moby) == 1;
 }
 
 /** @brief Hold this moby's previous tick for the rest of the interval.
  *
- * Stages the whole previous record, so position, class, model and animation
- * state all read N-1 through the view, pins the fractional position table to
- * it, and records the moby in the present's held set (spyro_moby_cut_held).
- * Returns 1 when the hold is in force; 0 leaves the canonical tick-N record
- * (the snap) when the pair is not two consecutive ticks (cut_pair_is_tick),
- * the present has reached alpha 1, the camera cut on this present without a
- * hold, or the staging arena refuses the record. Guest memory is never
- * written. */
-static int moby_cut_hold(uint32_t m, const uint8_t* mh,
-                         const openpete_interp_obj_t* o, op_time_t now, int kind) {
-    const int32_t* pp = (const int32_t*)(o->prev + MOBY_POS);
-    const int32_t* cp = (const int32_t*)(mh + MOBY_POS);
-    if (!cut_pair_is_tick(o)) { cut_census_note(kind, m, 0, "stale", pp, cp); return 0; }
-    if ((double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns) >= 1.0) {
-        cut_census_note(kind, m, 0, "alpha1", pp, cp);
-        return 0;
-    }
-    /* The camera cut this present and could not hold, so the view is tick N;
-     * a record held at N-1 under it stands where tick N no longer has it. */
-    if (s_cut_cam_snap) { cut_census_note(kind, m, 0, "camsnap", pp, cp); return 0; }
-    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(m, MOBY_STRIDE);
-    if (!st) { cut_census_note(kind, m, 0, "unstaged", pp, cp); return 0; }
-    uint32_t len = o->blob_len < MOBY_STRIDE ? o->blob_len : MOBY_STRIDE;
-    memcpy(st, o->prev, len);
-    fpos_set(m, pp, pp, 0.0);
-    if (s_cut_held_n < CUT_HELD_MAX) s_cut_held[s_cut_held_n++] = m;
-    cut_census_note(kind, m, 1, "hold", pp, pp);
-    return 1;
+ * The shared guard (cut_obj_hold) takes the verdict and moby_cut_stage
+ * publishes the previous record.
+ * @return 1 when the hold is in force, 0 for the snap (the canonical tick-N
+ *         record). */
+static int moby_cut_hold(uint32_t m, const openpete_interp_obj_t* o, op_time_t now, int kind) {
+    const double a = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
+    return cut_obj_hold(kind, m, o, MOBY_POS, a, moby_cut_stage);
 }
 
 /** @brief Returns the g_Camera and g_GameState region indices and camera field offsets for the shared cut guard.
@@ -960,7 +945,7 @@ static const cut_cam_desc_t* cut_desc(void) {
  *
  * The guards run on intermediate presents, which a headless run produces
  * only where a capture asks for one. The locator evaluates the guard's
- * predicate (class change at +0x36, or a position jump above 5000 units)
+ * predicate (class change at +0x36, or a position jump, cut_obj_jump)
  * against the same object snapshots, so one replay names the ticks at
  * which the moby guards fire. Lines carry `locate=` and the pair's age in
  * ticks; they state nothing about what was presented. The walk stops at
@@ -983,7 +968,7 @@ static void cut_locate_mobys(void) {
         memcpy(cp, o->curr + MOBY_POS, 12);
         double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
         const double d2 = dx*dx + dy*dy + dz*dz;
-        const char* kind = (pcls != ccls) ? "class" : (d2 > 5000.0 * 5000.0 ? "teleport" : NULL);
+        const char* kind = (pcls != ccls) ? "class" : (cut_obj_jump(m, pp, cp) ? "teleport" : NULL);
         if (!kind) continue;
         /* Pair age in ticks: the guard only has a previous state to hold while
          * this object's own interval is still open (age below 1); an object
@@ -1844,7 +1829,7 @@ static void game_reextract_body(void* cpu_v) {
                          cut_camera_hold(interp_period_ns(prev->tick_ns, curr->tick_ns),
                                          curr->tick_ns, gs_edge);
     const int cam_snap = cam_cut && !cam_hold;
-    s_cut_cam_snap = cam_snap;
+    cut_set_camera_snap(cam_snap);
 
     if (paired && cam && prev && curr && (!cam_cut || cam_hold)) {
         /* 1-tick-lag alpha: at the instant tick N completed (now≈curr.tick_ns)
@@ -2143,7 +2128,7 @@ static void game_reextract_body(void* cpu_v) {
      * every tick (both stamped from op_now() one VBL apart, so spatial coherence
      * with a moving camera is preserved), and keeps animating when the camera is
      * static. Same per-object-cadence pattern as the HUD icons below. */
-    s_cut_held_n = 0;
+    cut_obj_present_begin();
     {
         op_time_t now = openpete_interp_present_now();
         uint8_t* base_p = (uint8_t*)openpete_psx_to_host_span(G_LEVELMOBYS, 4u);
@@ -2194,7 +2179,7 @@ static void game_reextract_body(void* cpu_v) {
                         memcpy(&pcls, o->prev + 0x36u, 2);
                         memcpy(&ccls, o->curr + 0x36u, 2);
                         if (pcls != ccls) {
-                            moby_cut_hold(m, mh, o, now, CUT_CLASS);
+                            moby_cut_hold(m, o, now, CUT_CLASS);
                             goto next_moby;
                         }
 
@@ -2213,11 +2198,10 @@ static void game_reextract_body(void* cpu_v) {
                             memcpy(pp, o->prev + MOBY_POS, 12);
                             memcpy(cp, o->curr + MOBY_POS, 12);
                             /* per-moby teleport guard: a respawn / warp jumps far in
-                             * one tick - lerping streaks it across the screen. Snap
-                             * (leave at curr, don't bracket) when the jump is large. */
-                            double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
-                            if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) {
-                                moby_cut_hold(m, mh, o, now, CUT_TELEPORT);
+                             * one tick - lerping streaks it across the screen. The
+                             * record holds tick N-1 whole until alpha 1 (moby_cut_hold). */
+                            if (cut_obj_jump(m, pp, cp)) {
+                                moby_cut_hold(m, o, now, CUT_TELEPORT);
                                 goto next_moby;
                             }
                             s_moby_save[moby_save_n].addr = m;
@@ -2236,8 +2220,7 @@ static void game_reextract_body(void* cpu_v) {
                             int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
                             if (o->have_prev2) {
                                 memcpy(p2, o->prev2 + MOBY_POS, 12);
-                                double e2x=(double)pp[0]-p2[0], e2y=(double)pp[1]-p2[1], e2z=(double)pp[2]-p2[2];
-                                have_p2 = (e2x*e2x + e2y*e2y + e2z*e2z <= 5000.0 * 5000.0);
+                                have_p2 = !cut_pos_jump(p2, pp);
                                 m_herm = hermite_enabled() && have_p2 && ma >= 0.0
                                 /* Cutscene path actors: LINEAR position lerp only.
                                  * Their pose (two-pass shape lerp, linear in

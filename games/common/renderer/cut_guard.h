@@ -117,6 +117,73 @@ const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
  * @return 1 when the pair spans one tick, else 0. */
 int cut_pair_is_tick(const openpete_interp_obj_t* o);
 
+/** @brief Whether one object's world-position step between two ticks is a jump rather than a move, by the game's distance bound.
+ *
+ * The step is a jump when its length exceeds game_layout.moby.jump_bound
+ * world units; a game whose bound is 0 has none, and no step is a jump.
+ * @param prev_pos Tick N-1's int32 x/y/z position.
+ * @param curr_pos Tick N's int32 x/y/z position.
+ * @return 1 for a jump, else 0. */
+int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos);
+
+/** @brief Whether one moby's step between two ticks is a jump, by the game's own marker where it has one.
+ *
+ * moby_game.cutpath_jump decides for a moby the game's cutscene path sampler
+ * drives (the sampler's own no-interpolation segment rule); every other moby
+ * takes the distance bound (cut_pos_jump).
+ * @param addr The moby's guest address.
+ * @param prev_pos Tick N-1's int32 x/y/z position.
+ * @param curr_pos Tick N's int32 x/y/z position.
+ * @return 1 for a jump, else 0. */
+int cut_obj_jump(uint32_t addr, const int32_t* prev_pos, const int32_t* curr_pos);
+
+/** @brief Open a sub-tick present's per-object hold set, emptying the previous present's.
+ *
+ * Every object cut_obj_hold decides on is recorded in the set until the next
+ * cut_obj_present_begin or cut_obj_present_end, so each channel that reads the
+ * object on the same present reads one verdict. */
+void cut_obj_present_begin(void);
+
+/** @brief Close the present's per-object hold set: cut_obj_held reports every object undecided until the next cut_obj_present_begin. */
+void cut_obj_present_end(void);
+
+/** @brief Record whether this present's camera cut without a hold (the view shows tick N).
+ *
+ * cam_bracket_run records its own verdict; a body that brackets its camera
+ * itself calls this once per present before any cut_obj_hold.
+ * @param snap Nonzero when the camera cut and shows tick N. */
+void cut_set_camera_snap(int snap);
+
+/** @brief This present's verdict for one object.
+ *
+ * @param addr The object's guest address.
+ * @return 1 when cut_obj_hold held it, 0 when it snapped, -1 when no verdict
+ *         was taken on this present or the set is closed. */
+int cut_obj_held(uint32_t addr);
+
+/** @brief Decide whether the sub-tick view holds one object whole at tick N-1 for the rest of the interval, for a class change or a position jump between its two ticks.
+ *
+ * The hold refuses, leaving tick N (the snap), when the pair is not two
+ * consecutive ticks (cut_pair_is_tick, "stale"), when the object's alpha has
+ * reached 1 ("alpha1"), when the camera cut on this present without a hold
+ * ("camsnap"; a record held at N-1 under a tick-N view stands where tick N no
+ * longer has it), or when `stage` returns 0 ("unstaged"). The verdict is
+ * noted in the census with both positions and recorded in the present's set
+ * (cut_obj_held). Guest memory is never written.
+ * @param kind CUT_CLASS or CUT_TELEPORT.
+ * @param addr The object's guest address.
+ * @param o The object's interp pair.
+ * @param pos_off Offset of the int32 x/y/z position in the record.
+ * @param alpha The object's alpha at this present over a denominator capped
+ *        at one tick period.
+ * @param stage Called once every other test passes, to publish the previous
+ *        record to the view; NULL when the caller applies the hold through its
+ *        own channels. It returns 0 to refuse.
+ * @return 1 when the hold is in force, else 0. */
+int cut_obj_hold(int kind, uint32_t addr, const openpete_interp_obj_t* o,
+                 uint32_t pos_off, double alpha,
+                 int (*stage)(uint32_t addr, const openpete_interp_obj_t* o));
+
 /** @brief Whether this present can show tick N-1 whole.
  *
  * A held cut shows the previous tick on every channel, so every record the

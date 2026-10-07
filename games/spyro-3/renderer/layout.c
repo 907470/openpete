@@ -323,6 +323,19 @@ const game_layout_t game_layout = {
         .colour_off   = 0x54u,          /* mobydraw.s:217,229 copied into the record at +0x3C */
         .size_off     = 0x4Fu,          /* mobydraw.s:453-467 high byte of the +0x4E halfword */
         .drawn_off    = 0x4Du,          /* mobydraw.s:73 cleared, :224 written 1 or 2 */
+        /* Every cutscene overlay's sampler and the title overlay's
+         * (func_cutscene_62_80077C70, func_title_8007A1C0) walk the first
+         * D_8006EDFC records of the array and, where two consecutive track
+         * points lie 0x800 or more apart (func_8004EDE8 length), hold the
+         * first until the sub-step passes half and then place the actor on
+         * the second, where shorter segments interpolate in sixteenths
+         * (cutscene_62 camera.s 0x80078044-0x80078180). */
+        .cutpath_count    = 0x8006EDFCu,
+        .cutpath_snap     = 0x800u,
+        .cutpath_overlays = "cutscene_ title",
+        /* No distance bound (jump_bound 0): Sparx (class 0x78) moves up to
+         * about 31000 units a tick while other mobys jump as little as about
+         * 1000, so a moby the sampler does not drive is never held. */
 
         .model_table     = G_MOBYMODELS,
         .model_anims_off = 0x3Cu,       /* mobydraw.s:116-118 model + 0x3C + id*4 */

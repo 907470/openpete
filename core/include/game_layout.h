@@ -533,6 +533,18 @@ typedef struct game_layout {
         uint32_t colour_off;        /* per-moby colour word; 0 where none */
         uint32_t size_off;          /* per-moby screen-scale byte; 0 where none */
         uint32_t drawn_off;         /* the drawn verdict the cull writes back */
+        /* The cutscene path sampler's actor count variable: while an overlay
+         * whose name starts with one of the space-separated prefixes in
+         * cutpath_overlays runs, the first [cutpath_count] array records
+         * ride the sampler's track, and it moves an actor across a track
+         * segment of cutpath_snap world units or more in one step instead of
+         * interpolating it. 0 where the game's sampler has no such rule. */
+        uint32_t    cutpath_count;
+        uint32_t    cutpath_snap;
+        const char* cutpath_overlays;
+        /* A moby step longer than this many world units in one tick is a
+         * jump, for a moby no game marker decides; 0 = no distance bound. */
+        uint32_t    jump_bound;
 
         uint32_t model_table;
         uint32_t model_anims_off;

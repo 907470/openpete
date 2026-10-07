@@ -31,6 +31,8 @@
 #include "no_lod.h"                    /* openpete_no_lod - the extended-LOD clause */
 #include "openpete_recomp_module.h"    /* the game's own static draw */
 #include "renderer/interp_regions_gen.h"  /* game_interp_moby_stash_begin/_put */
+#include "openpete_psx.h"               /* openpete_psx_to_host_span */
+#include "spyro_overlay_table.h"       /* the resident overlay, for the cutscene sampler rule */
 
 #include <math.h>
 #include <stddef.h>
@@ -2028,6 +2030,58 @@ static moby_otk_row_t s23_otkey_record(CPUState* cpu, uint32_t header, uint32_t 
     return MOBY_OTK_S23_REGULAR;
 }
 
+/** @brief Whether the resident overlay is one game_layout.moby.cutpath_overlays names by prefix.
+ *
+ * @return 1 when its name starts with one of the space-separated prefixes,
+ *         else 0 (no overlay resident, or no list). */
+static int cutpath_overlay_runs(void) {
+    const char* list = game_layout.moby.cutpath_overlays;
+    const spyro_overlay_entry_t* ov = spyro_overlay_find(spyro_get_active_overlay_magic());
+    if (!list || !ov || !ov->name) return 0;
+    while (*list) {
+        size_t n = strcspn(list, " ");
+        if (n && strncmp(ov->name, list, n) == 0) return 1;
+        list += n;
+        while (*list == ' ') list++;
+    }
+    return 0;
+}
+
+/** @brief The cutscene path sampler's verdict on one step of a moby it drives.
+ *
+ * The sampler runs only in the overlays game_layout.moby.cutpath_overlays
+ * names (cutpath_overlay_runs); there it drives the first [cutpath_count]
+ * records of the moby array (count taken only in 1..64) and places an actor
+ * across any track
+ * segment of cutpath_snap world units or more instead of interpolating it,
+ * while a shorter segment advances in sixteenths, so one step of
+ * cutpath_snap or more is a jump. The game's length (func_8004EDE8) is an
+ * integer square root of the same sum (func_8004EDE8 in Spyro 3,
+ * func_8001BA20 in Spyro 2); the exact length is used here.
+ * @param moby The moby's guest address.
+ * @param pp Tick N-1's position.
+ * @param cp Tick N's position.
+ * @return 1 for a jump, 0 for an interpolated step, -1 when the game names
+ *         no sampler rule, no sampler overlay runs, or the moby is not one of
+ *         its actors. */
+static int s23_cutpath_jump(uint32_t moby, const int32_t* pp, const int32_t* cp) {
+    const uint32_t cnt_addr = game_layout.moby.cutpath_count;
+    if (!cnt_addr || !game_layout.moby.cutpath_snap) return -1;
+    if (!cutpath_overlay_runs()) return -1;
+    uint32_t cnt = 0, arr = 0;
+    const void* cp_host = openpete_psx_to_host_span(cnt_addr, 4u);
+    const void* ap_host = openpete_psx_to_host_span(game_layout.moby.array_head, 4u);
+    if (!cp_host || !ap_host) return -1;
+    memcpy(&cnt, cp_host, 4);
+    memcpy(&arr, ap_host, 4);
+    const uint32_t stride = game_layout.moby.array_stride;
+    if (cnt == 0 || cnt > 64u || arr < 0x80000000u || moby < arr || !stride) return -1;
+    if ((moby - arr) % stride || (moby - arr) / stride >= cnt) return -1;
+    const double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
+    const double snap = (double)game_layout.moby.cutpath_snap;
+    return dx*dx + dy*dy + dz*dz >= snap * snap;
+}
+
 const moby_game_t moby_game = {
     .vstream_init      = s23_vstream_init,
     .vstream_next      = s23_vstream_next,
@@ -2058,4 +2112,5 @@ const moby_game_t moby_game = {
     /* The moby array is fixed with a live sentinel, so a record's Moby address
      * is its slot and is stable across ticks: the walk's default identity. */
     .interp_key        = NULL,
+    .cutpath_jump      = s23_cutpath_jump,
 };
