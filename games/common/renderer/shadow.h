@@ -260,15 +260,16 @@ unsigned shadow_verify_frame(void);
  * interpolated poses and the interpolated camera.
  * @param cpu guest state, the sub-tick view staged */
 void   shadow_reextract(CPUState* cpu);
-/** @brief Make the moby drop-shadow re-extract walk the previous canonical epoch's drawn-moby list, or restore the current one.
+/** @brief Make the moby drop-shadow re-extract walk tick N-1's drawn-moby list for a held camera cut, or restore the current one.
  *
- * For a held camera cut, which shows tick N-1's camera: the list the game
- * built that tick is the set of mobys whose shadows it drew. Refused for a
- * fixed-address list (re-read live), or when the previous copy is not from the
- * epoch immediately before a fresh current one. Call on before
- * shadow_reextract and off after it.
- * @param on Nonzero to swap the previous list in, zero to restore.
- * @return 1 while the previous list is swapped in, else 0. */
+ * A held cut shows tick N-1's camera, and the list the game built that tick is
+ * the set of mobys whose shadows it drew. The list is chosen by
+ * cut_held_set_pick: the previous copy swapped in, the current copy when tick
+ * N built none, or no list when tick N-1 built none; whether tick N drew the
+ * path does not gate the held feed. Not applied to a fixed-address list
+ * (re-read live). Call on before shadow_reextract and off after it.
+ * @param on Nonzero to choose the held list, zero to restore.
+ * @return 1 while a held list is walked, else 0. */
 int    shadow_replay_prev_list(int on);
 
 /** @brief Sub-tick re-extract of the player's ground shadow for one model record.

@@ -826,13 +826,16 @@ static void s23_simple_own_motion(uint32_t moby, double out[3]) {
     else moby_record_world_offset(moby, out);
 }
 
-/** @brief The second-kind copy of canonical epoch @p epoch when it is the previous copy of a fresh current one.
+/** @brief Which second-kind copy holds canonical epoch @p epoch when that epoch is the one before the last committed (cut_held_set_pick).
  *
- * @param epoch The canonical epoch.
- * @return The copy, or NULL. */
-static const s23_simple_queue* s23_simple_prev_copy(uint32_t epoch) {
-    return (s_sq_prev->epoch == epoch && s_sq->epoch == epoch + 1u &&
-            spyro_native_canon_epoch_fresh(s_sq->epoch)) ? s_sq_prev : NULL;
+ * @param epoch The canonical epoch the held present shows.
+ * @param pick Receives the pick: the previous copy, the current copy (no
+ *        capture in the last committed epoch), or no copy (none in @p epoch).
+ * @return 1 when @p epoch is the one before the last committed epoch, else 0. */
+static int s23_simple_held_pick(uint32_t epoch, cut_held_pick_t* pick) {
+    if (!spyro_native_canon_epoch_fresh(epoch + 1u)) return 0;
+    *pick = cut_held_set_pick(s_sq->epoch, s_sq_prev->epoch);
+    return 1;
 }
 
 /** @brief The mobys of the second-kind queue copy of canonical epoch @p epoch (moby_game.simple_prev_mobys).
@@ -840,12 +843,15 @@ static const s23_simple_queue* s23_simple_prev_copy(uint32_t epoch) {
  * @param epoch The canonical epoch.
  * @param out Receives up to @p max moby addresses.
  * @param max Capacity of @p out.
- * @return The count written, or -1 when no copy of that epoch is held as the previous one. */
+ * @return The count written (0 when that epoch captured no queue), or -1 when
+ *         @p epoch is not the one before the last committed epoch. */
 static int s23_simple_prev_mobys(uint32_t epoch, uint32_t* out, int max) {
-    const s23_simple_queue* c = s23_simple_prev_copy(epoch);
-    if (!c || !out) return -1;
+    cut_held_pick_t pick;
+    if (!out || !s23_simple_held_pick(epoch, &pick)) return -1;
+    const s23_simple_queue* c = pick == CUT_HELD_PREV ? s_sq_prev
+                              : pick == CUT_HELD_CURR ? s_sq : NULL;
     int k = 0;
-    for (int i = 0; i < c->qn && k < max; i++) out[k++] = c->q[i][0];
+    for (int i = 0; c && i < c->qn && k < max; i++) out[k++] = c->q[i][0];
     return k;
 }
 
@@ -1693,9 +1699,11 @@ static int s23_simple_decode(CPUState* cpu) {
 /** @brief A sub-tick present's replay of the second kind: the captured queue decoded again under the present's camera.
  *
  * Makes no call into the game's draw. During a held cut's previous-queue
- * replay (moby_native_prev_queue_replay) it decodes the previous epoch's copy
- * instead, re-based from that cull's camera and from each object's state as
- * of that cull, when that copy is held. Resets the pass counters, and prints
+ * replay (moby_native_prev_queue_replay) it decodes that epoch's copy
+ * (cut_held_set_pick: the previous copy, the current one when the last
+ * committed epoch captured none, or nothing when that epoch captured none),
+ * re-based from that cull's camera and from each object's state as of that
+ * cull. Resets the pass counters, and prints
  * its own census line under moby_verify_vbl, since the pass census covers the
  * canonical tick alone, and a held-queue line under the cut census.
  * @param cpu The guest CPU state, read only.
@@ -1708,16 +1716,21 @@ static int s23_simple_replay(CPUState* cpu) {
      * this kind's copy of the same epoch: the cull built both against the
      * camera the present shows. */
     uint32_t ep = 0;
-    const int prev = moby_native_prev_queue_replay(&ep, s_sq_prev_cam) &&
-                     s23_simple_prev_copy(ep) != NULL;
-    if (prev) { s23_simple_queue_swap(); s_sq_replaying_prev = 1; }
-    int n = s23_simple_decode(cpu);
-    if (cut_census_on() && moby_native_prev_queue_replay(NULL, NULL))
+    cut_held_pick_t pick = CUT_HELD_EMPTY;
+    const int held = moby_native_prev_queue_replay(&ep, s_sq_prev_cam) &&
+                     s23_simple_held_pick(ep, &pick);
+    if (held && pick == CUT_HELD_PREV) s23_simple_queue_swap();
+    s_sq_replaying_prev = held;
+    const int n = (held && pick == CUT_HELD_EMPTY) ? 0 : s23_simple_decode(cpu);
+    if (cut_census_on() && moby_native_prev_queue_replay(NULL, NULL)) {
+        static const char* const k_set[] = { "empty", "curr", "prev" };
         fprintf(stderr, "[cut-census vbl=%u] held-queue kind=simple set=%s epoch=%u queued=%d "
                         "drawn=%ld tris=%d\n",
-                openpete_frame, prev ? "prev" : "curr", s_sq->epoch, s_sq->qn,
-                s_simple_recs - s_simple_culled, n);
-    if (prev) { s23_simple_queue_swap(); s_sq_replaying_prev = 0; }
+                openpete_frame, held ? k_set[pick] : "refused", s_sq->epoch,
+                (held && pick == CUT_HELD_EMPTY) ? 0 : s_sq->qn, s_simple_recs - s_simple_culled, n);
+    }
+    if (held && pick == CUT_HELD_PREV) s23_simple_queue_swap();
+    s_sq_replaying_prev = 0;
     /* The replay's own census: the queue it read and what that queue decoded
      * to. The pass census covers the canonical tick alone, so without this a
      * replay of a queue no canonical pass built this tick reads as silence. */

@@ -50,14 +50,35 @@ int cut_census_on(void);
 void cut_census_note(int kind, uint32_t addr, int held, const char* why,
                      const int32_t* prev_pos, const int32_t* shown_pos);
 
-/** @brief Print which canonical epoch's set one channel replays on a held cut, when the census is armed.
+/* Which of a producer's two captured sets a held present shows. */
+typedef enum {
+    CUT_HELD_EMPTY = 0,   /* tick N-1 captured nothing: show no set */
+    CUT_HELD_CURR  = 1,   /* the current set is tick N-1's: tick N captured nothing */
+    CUT_HELD_PREV  = 2,   /* the previous set is tick N-1's: swap it in */
+} cut_held_pick_t;
+
+/** @brief Which of a producer's two captured sets is tick N-1's, the set a held present shows.
+ *
+ * A producer keeps the set of the last canonical epoch it captured in and the
+ * set it retired at that capture, each with its epoch. Tick N is the last
+ * committed canonical epoch (spyro_native_canon_epoch_fresh); a held present
+ * shows exactly tick N-1's set whatever tick N captured: the current set when
+ * its epoch is N-1, the previous set when the current is N and the previous
+ * N-1, and no set otherwise, since a producer that captured nothing in epoch
+ * N-1 drew nothing then.
+ * @param curr_epoch The current set's canonical epoch.
+ * @param prev_epoch The previous set's canonical epoch.
+ * @return The set to show. */
+cut_held_pick_t cut_held_set_pick(uint32_t curr_epoch, uint32_t prev_epoch);
+
+/** @brief Print which captured set one channel shows on a held cut, when the census is armed.
  *
  * @param kind The channel's name.
- * @param prev 1 when the previous epoch's set is swapped in, 0 when the
- *        current one stays (the previous was unusable).
- * @param epoch The canonical epoch of the replayed set.
- * @param n The replayed set's item count. */
-void cut_census_held_set(const char* kind, int prev, unsigned epoch, int n);
+ * @param pick The set shown (cut_held_set_pick).
+ * @param epoch The canonical epoch of the shown set; for CUT_HELD_EMPTY the
+ *        current set's.
+ * @param n The shown set's item count, 0 for CUT_HELD_EMPTY. */
+void cut_census_held_set(const char* kind, cut_held_pick_t pick, unsigned epoch, int n);
 
 /** @brief Print the camera a present showed, at the alpha it showed it, when the census is armed.
  *

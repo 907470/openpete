@@ -45,7 +45,7 @@
 #include "game_layout.h"
 #include "openpete_profile.h"       /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
-#include "renderer/cut_guard.h"         /* cut_census_held_set */
+#include "renderer/cut_guard.h"         /* cut_held_set_pick, cut_census_held_set */
 
 extern unsigned openpete_frame;
 
@@ -1089,30 +1089,32 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_shadow_bracket);
 }
 
+/* The list a held present walks (cut_held_set_pick), or -1 outside a hold. */
+static int s_list_held = -1;
+
 /* Sub-tick moby drop-shadow re-extract; see shadow.h. */
 void shadow_reextract(CPUState* cpu) {
-    if (!hook_reextract_ready(RP_MOBY_SHADOW)) return;
+    if (!hook_reextract_ready_held(RP_MOBY_SHADOW, s_list_held)) return;
     shadow_moby_feed_native(cpu);
 }
 
 int shadow_replay_prev_list(int on) {
-    static int active;
-    if (on) {
-        if (active) return 1;
-        /* Only a list in a copy: a fixed-address list is re-read live. */
-        if (game_layout.shadow.list_source != SHADOW_LIST_GTE_DATA ||
-            !spyro_native_canon_epoch_fresh(s_list_epoch) ||
-            s_list_prev.epoch + 1u != s_list_epoch || !s_list_prev.base) {
-            cut_census_held_set("shadow", 0, s_list_epoch, s_list_n);
-            return 0;
-        }
-        shadow_list_swap();
-        active = 1;
-        cut_census_held_set("shadow", 1, s_list_epoch, s_list_n);
-        return 1;
+    if (!on) {
+        if (s_list_held == CUT_HELD_PREV) shadow_list_swap();
+        s_list_held = -1;
+        return 0;
     }
-    if (active) { shadow_list_swap(); active = 0; }
-    return 0;
+    if (s_list_held >= 0) return s_list_held != CUT_HELD_EMPTY;
+    /* Only a list in a copy: a fixed-address list is re-read live. */
+    if (game_layout.shadow.list_source != SHADOW_LIST_GTE_DATA) return 0;
+    cut_held_pick_t pick = cut_held_set_pick(s_list_epoch, s_list_prev.epoch);
+    /* A copy with no base is a list the tick did not build. */
+    if ((pick == CUT_HELD_PREV && !s_list_prev.base) || (pick == CUT_HELD_CURR && !s_list_base))
+        pick = CUT_HELD_EMPTY;
+    if (pick == CUT_HELD_PREV) shadow_list_swap();
+    s_list_held = (int)pick;
+    cut_census_held_set("shadow", pick, s_list_epoch, pick == CUT_HELD_EMPTY ? 0 : s_list_n);
+    return pick != CUT_HELD_EMPTY;
 }
 
 /* The hook address is the layout's moby-shadow draw site, bound at boot: a

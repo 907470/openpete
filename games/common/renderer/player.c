@@ -1289,6 +1289,11 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
 
 /* ---- sub-tick re-extract ------------------------------------------------ */
 
+/* Set while a held camera cut replays tick N-1's records (player_records_set_hold),
+ * and the store slot that present shows as a cut_held_pick_t, -1 outside a hold. */
+static int s_pres_hold = 0;
+static int s_pres_pick = -1;
+
 void player_reextract_record(CPUState* cpu, int mirror) {
     if (!openpete_native_scene_enabled()) return;
     /* Which call of the tick this replay reproduces. The driver restores the
@@ -1299,8 +1304,10 @@ void player_reextract_record(CPUState* cpu, int mirror) {
     /* Only re-extract on sub-ticks if the canonical tick actually drew the
      * avatar. A cutscene that suppresses the gameplay avatar and shows it as a
      * moby instead would otherwise get a SECOND avatar painted over the
-     * cutscene one, at the same position in a different pose. */
-    if (!render_path_canon_drawn(RP_SPYRO)) return;
+     * cutscene one, at the same position in a different pose. A held cut
+     * replays tick N-1's records, whose own drawn verdicts decide, so tick N's
+     * verdict does not gate it. */
+    if (!hook_reextract_ready_held(RP_SPYRO, s_pres_pick)) return;
 
     /* Sub-tick animation = two-pass keyframe-SHAPE interpolation: decode the
      * two REAL rendered poses, each internally consistent with its own seam,
@@ -1882,7 +1889,6 @@ void player_records_epoch_commit(void) {
 
 static int    s_pres_n = 0;
 static int    s_pres_b = 0;   /* the store slot the present shows as its newest */
-static int    s_pres_hold = 0;
 
 /** @brief The store slot k entries older than the one the present shows, or NULL past the store or on an empty slot.
  *
@@ -1893,26 +1899,33 @@ static const store_slot_t* pres_slot(int k) {
     return (i < 3 && s_store[i].valid) ? &s_store[i] : NULL;
 }
 
-void player_records_set_hold(int on) { s_pres_hold = on ? 1 : 0; }
+void player_records_set_hold(int on) { s_pres_hold = on ? 1 : 0; s_pres_pick = -1; }
 static int    s_pres_lerp = 0;
 static double s_pres_alpha = 0.0;
+
+/** @brief Shows tick N-1's records whole on a held cut: its own set, drawn verdicts and state, with nothing to lerp toward.
+ *
+ * The store's newest slot is tick N-1's when the store did not roll at the
+ * last commit, else the slot before it; s_pres_pick records which.
+ * @return The record count shown, 0 when tick N-1's slot is empty. */
+static int pres_begin_held(void) {
+    s_pres_pick = CUT_HELD_CURR;
+    if (s_store_rolled) {
+        if (!s_store[1].valid) { s_pres_pick = CUT_HELD_EMPTY; return 0; }
+        s_pres_b = 1;
+        s_pres_pick = CUT_HELD_PREV;
+    }
+    s_pres_n = s_store[s_pres_b].list.n;
+    cut_census_held_set("player", (cut_held_pick_t)s_pres_pick, s_store_epoch - 1u, s_pres_n);
+    return s_pres_n;
+}
 
 int player_records_present_begin(int ring_paired, int ring_cut, double ring_alpha, double* out_alpha) {
     s_pres_n = 0; s_pres_lerp = 0; s_pres_alpha = 0.0; s_pres_b = 0;
     if (out_alpha) *out_alpha = 0.0;
     if (!s_store[0].valid) return 0;
     if (!spyro_native_canon_epoch_fresh(s_store_epoch)) return 0;
-    /* A held cut shows the previous epoch's records whole: its own set, its
-     * own drawn verdicts and its own state, with nothing to lerp toward. */
-    if (s_pres_hold) {
-        if (s_store_rolled) {
-            if (!s_store[1].valid) return 0;
-            s_pres_b = 1;
-        }
-        s_pres_n = s_store[s_pres_b].list.n;
-        cut_census_held_set("player", 1, s_store_epoch - 1u, s_pres_n);
-        return s_pres_n;
-    }
+    if (s_pres_hold) return pres_begin_held();
     s_pres_n = s_store[0].list.n;
     if (ring_paired && !ring_cut && s_store[1].valid) {
         s_pres_lerp = 1;

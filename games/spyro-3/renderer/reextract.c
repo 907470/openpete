@@ -22,6 +22,7 @@
 #include "renderer/zap.h"
 #include "renderer/moby.h"
 #include "renderer/player.h"
+#include "renderer/player_ranges.h"   /* the player hook's scratch ranges */
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
 #include "openpete_psx.h"          /* openpete_psx_to_host_span */
 #include "openpete_interp.h"
@@ -156,68 +157,14 @@ int  spyro_native_canon_shaded_fresh(void) { return 0; }   /* no second material
  * hook and staged back over its own address for the duration of each
  * intermediate present, which is what makes the replay read the records the
  * tick actually drew. The moby hooks' capture_range requests (0x500 and 0x800
- * bytes) exceed the range slots below and capture nothing. */
+ * bytes) exceed the player range slots (player_ranges_capture) and capture
+ * nothing. */
 static uint8_t  s_recs_copy[0x1000];
 static uint32_t s_recs_base;
 static uint32_t s_recs_len;
 
-/* The player draw's part-transform records live in the same per-tick draw
- * scratch, at a fixed offset the player hook names, and the passes after it
- * reuse those bytes before any sub-tick present runs. Captured and staged the
- * same way as the moby queue, so the player replay decodes the records the
- * tick drew instead of whatever overwrote them.
- *
- * Two slots, not one: the hook captures the part records and the pre-blend
- * colour table in the same tick, and a single slot would leave one of them
- * unstaged. An unstaged span is not merely stale - the replay's two-pass
- * decode writes each rendered pose into the block it reads, and outside the
- * sub-tick view that host pointer is live PSX RAM, so the present would edit
- * gameplay memory. Slots are keyed by the scratch offset the hook named. */
-#define S3_RANGE_SLOTS 2
-static struct {
-    uint8_t  copy[0x200];
-    uint32_t off, base, len, epoch;
-} s_range[S3_RANGE_SLOTS];
-
 void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
-    CPUState* cpu = (CPUState*)cpu_v;
-    int slot = -1;
-    for (int i = 0; i < S3_RANGE_SLOTS; i++)
-        if (s_range[i].len && s_range[i].off == off) { slot = i; break; }
-    if (slot < 0)
-        for (int i = 0; i < S3_RANGE_SLOTS; i++) if (!s_range[i].len) { slot = i; break; }
-    if (slot < 0) return;
-    s_range[slot].len = 0;
-    if (!len || len > sizeof s_range[slot].copy || !game_layout.polybuf.end) return;
-    uint32_t end = cpu->read_word(game_layout.polybuf.end);
-    if (end < 0x80000000u) return;
-    uint32_t base = end - game_layout.player.part_base_polybuf_off + off;
-    const void* host = openpete_psx_to_host_span(base, len);
-    if (!host) return;
-    memcpy(s_range[slot].copy, host, len);
-    s_range[slot].off   = off;
-    s_range[slot].base  = base;
-    s_range[slot].len   = len;
-    s_range[slot].epoch = s_epoch_now;
-}
-
-/** @brief Stages every captured player range over its own address for this present.
- *
- * A range whose capture is not from the last canonical present, or that the
- * sub-tick view cannot stage, fails the whole call, so a partial stage never
- * reaches the replay.
- * @return The number of ranges staged, or 0 when none is captured or any fails. */
-static int stage_player_records(void) {
-    int staged = 0;
-    for (int i = 0; i < S3_RANGE_SLOTS; i++) {
-        if (!s_range[i].len) continue;
-        if (s_range[i].epoch != s_epoch_ok) return 0;
-        void* stage = openpete_subtick_view_stage(s_range[i].base, s_range[i].len);
-        if (!stage) return 0;
-        memcpy(stage, s_range[i].copy, s_range[i].len);
-        staged++;
-    }
-    return staged;
+    player_ranges_capture((CPUState*)cpu_v, off, len);
 }
 
 /* No capture: the player walk decodes the captured part records, not the SXY block. */
@@ -562,7 +509,7 @@ static void game_reextract_body(CPUState* cpu) {
     /* The same hold for the player, the moby drop-shadows and the particles:
      * the set tick N-1 drew is the set its camera sees. */
     player_records_set_hold(hold);
-    if (stage_player_records())
+    if (player_ranges_stage(hold))
         player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */
     player_records_set_hold(0);
     RX_CENSUS_STEP("player");

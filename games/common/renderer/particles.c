@@ -42,7 +42,8 @@
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "renderer/particles.h"
 #include "renderer/orchestrator.h"  /* the canonical-render epoch */
-#include "renderer/cut_guard.h"     /* cut_census_held_set */
+#include "renderer/cut_guard.h"     /* cut_held_set_pick, cut_census_held_set */
+#include "renderer/moby.h"          /* moby_native_canon_ref_ns */
 
 extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 #include "game_layout.h"
@@ -864,28 +865,34 @@ static void part_extent_census(double alpha) {
             openpete_frame, alpha, s_item_n, buf);
 }
 
+/* The set a held present shows (cut_held_set_pick), or -1 outside a hold. */
+static int s_item_held = -1;
+
 int particles_replay_prev(int on) {
-    static int active;
-    if (on) {
-        if (active) return 1;
-        if (!spyro_native_canon_epoch_fresh(s_item_epoch) || s_item_prev.epoch + 1u != s_item_epoch) {
-            cut_census_held_set("particles", 0, s_item_epoch, s_item_n);
-            return 0;
-        }
+    if (!on) {
+        if (s_item_held == CUT_HELD_PREV) part_item_swap();
+        s_item_ref_prev = 0;
+        s_item_held = -1;
+        return 0;
+    }
+    if (s_item_held >= 0) return s_item_held != CUT_HELD_EMPTY;
+    const cut_held_pick_t pick = cut_held_set_pick(s_item_epoch, s_item_prev.epoch);
+    s_item_held = (int)pick;
+    if (pick == CUT_HELD_PREV) {
         s_item_ref_cut = s_item_ref_ns;
         part_item_swap();
         s_item_ref_prev = 1;
-        active = 1;
-        cut_census_held_set("particles", 1, s_item_epoch, s_item_n);
-        return 1;
+    } else if (pick == CUT_HELD_CURR) {
+        /* No capture in tick N: the moby cull's stamp is that tick's draw stamp. */
+        s_item_ref_prev = moby_native_canon_ref_ns(&s_item_ref_cut);
     }
-    if (active) { part_item_swap(); s_item_ref_prev = 0; active = 0; }
-    return 0;
+    cut_census_held_set("particles", pick, s_item_epoch, pick == CUT_HELD_EMPTY ? 0 : s_item_n);
+    return pick != CUT_HELD_EMPTY;
 }
 
 /* Sub-tick re-extract of the captured particle set; see particles.h. */
 void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
-    if (!hook_reextract_ready(RP_PARTICLES)) return;
+    if (!hook_reextract_ready_held(RP_PARTICLES, s_item_held)) return;
     if (bracketed) part_rebase_all(cpu, alpha);
     part_extent_census(alpha);
     part_feed_native();

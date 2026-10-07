@@ -7803,8 +7803,14 @@ void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]) {
  * @return 1 when usable, else 0. */
 static int rec_prev_usable(void) {
     return s_rec_snap_words && s_rec_prev.words && s_rec_prev.cam_ok &&
-           spyro_native_canon_epoch_fresh(s_rec_snap_epoch) &&
-           s_rec_prev.epoch + 1u == s_rec_snap_epoch;
+           cut_held_set_pick(s_rec_snap_epoch, s_rec_prev.epoch) == CUT_HELD_PREV;
+}
+
+int moby_native_canon_ref_ns(op_time_t* out) {
+    if (s_rec_ref_prev || !s_rec_snap_words || !spyro_native_canon_epoch_fresh(s_rec_snap_epoch))
+        return 0;
+    if (out) *out = s_rec_snap_ref_ns;
+    return 1;
 }
 
 /* A held cut asked for the previous queue (moby_native_replay_prev_queue on),
@@ -9743,8 +9749,9 @@ static int s_simple_ntri;
 static uint32_t s_canon_simple_epoch = 0;
 static int      s_canon_simple_valid = 0;
 int moby_native_simple_fresh(void) {
-    return moby_game.simple_replay && s_canon_simple_valid &&
-           spyro_native_canon_epoch_fresh(s_canon_simple_epoch);
+    if (!moby_game.simple_replay) return 0;
+    if (s_rec_ref_prev) return 1;   /* held: the replay picks tick N-1's copy */
+    return s_canon_simple_valid && spyro_native_canon_epoch_fresh(s_canon_simple_epoch);
 }
 /** @brief Run the provider's second-kind draw pass and stamp the canonical epoch its queue belongs to.
  *

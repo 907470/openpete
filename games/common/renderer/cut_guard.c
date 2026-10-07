@@ -5,6 +5,7 @@
 #include "renderer/interp_regions_gen.h"
 #include "renderer/moby.h"          /* moby_native_canon_drawn_mobys */
 #include "renderer/moby_game.h"     /* moby_game.interp_key */
+#include "renderer/orchestrator.h"   /* spyro_native_canon_epoch_fresh */
 #include "openpete_interp_objs.h"   /* g_openpete_tick_period_ns */
 #include "openpete_psx.h"           /* openpete_psx_to_host_span */
 #include "game_layout.h"
@@ -58,10 +59,17 @@ void cut_census_note(int kind, uint32_t addr, int held, const char* why,
             s_cut_snap[0], s_cut_snap[1], s_cut_snap[2], s_cut_snap[3]);
 }
 
-void cut_census_held_set(const char* kind, int prev, unsigned epoch, int n) {
+cut_held_pick_t cut_held_set_pick(uint32_t curr_epoch, uint32_t prev_epoch) {
+    if (spyro_native_canon_epoch_fresh(curr_epoch))
+        return spyro_native_canon_epoch_fresh(prev_epoch + 1u) ? CUT_HELD_PREV : CUT_HELD_EMPTY;
+    return spyro_native_canon_epoch_fresh(curr_epoch + 1u) ? CUT_HELD_CURR : CUT_HELD_EMPTY;
+}
+
+void cut_census_held_set(const char* kind, cut_held_pick_t pick, unsigned epoch, int n) {
     if (!cut_census_on()) return;
+    static const char* const k_set[] = { "empty", "curr", "prev" };
     fprintf(stderr, "[cut-census vbl=%u] held-queue kind=%s set=%s epoch=%u n=%d\n",
-            openpete_frame, kind, prev ? "prev" : "curr", epoch, n);
+            openpete_frame, kind, k_set[pick], epoch, n);
 }
 
 void cut_census_camera(const int32_t* pos, const int16_t* mat,

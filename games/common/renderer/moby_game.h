@@ -249,8 +249,8 @@ typedef struct moby_game {
     int  (*simple_pass)(CPUState* cpu);
     int  (*simple_replay)(CPUState* cpu);
     /* The mobys of the second kind's queue copy taken in canonical epoch
-     * `epoch`, written to out (at most max); -1 when no copy of that epoch is
-     * held. A held camera cut replays that copy (moby_native_prev_queue_replay)
+     * `epoch`, written to out (at most max); 0 when that epoch captured no
+     * queue, -1 when `epoch` is not the one before the last committed. A held camera cut replays that copy (moby_native_prev_queue_replay)
      * and the cut guard checks each of these can show that tick. NULL where
      * the game keeps no previous copy. */
     int  (*simple_prev_mobys)(uint32_t epoch, uint32_t* out, int max);

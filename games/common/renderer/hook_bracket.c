@@ -4,6 +4,8 @@
 
 #include "renderer/hook_bracket.h"
 
+#include "renderer/cut_guard.h"            /* CUT_HELD_EMPTY */
+
 #include "game_layout.h"                 /* polybuf.cursor */
 #include "openpete_native_render.h"      /* openpete_native_scene_enabled */
 #include "openpete_profile.h"            /* op_prof_*: the guest draw's bucket */
@@ -64,4 +66,9 @@ int hook_reextract_ready(render_path_t path) {
     return openpete_native_scene_enabled() &&
            render_path_enabled(path) &&
            render_path_canon_drawn(path);
+}
+
+int hook_reextract_ready_held(render_path_t path, int held) {
+    if (held < 0) return hook_reextract_ready(path);
+    return held != CUT_HELD_EMPTY && openpete_native_scene_enabled() && render_path_enabled(path);
 }

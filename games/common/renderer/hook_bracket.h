@@ -125,6 +125,17 @@ int hook_bracket_end(const hook_bracket_desc* d);
  * @return 1 when the re-extract may feed, else 0. */
 int hook_reextract_ready(render_path_t path);
 
+/** @brief Whether a re-extract may feed, on a held camera cut by the producer's own tick N-1 set.
+ *
+ * Outside a hold, hook_reextract_ready. On a held cut the producer's set
+ * choice (cut_held_set_pick) stands in for the canon-drawn term, since whether
+ * tick N drew the path does not decide what tick N-1 drew: no feed for
+ * CUT_HELD_EMPTY, else the scene is live and the path selected.
+ * @param path The feeder's render path.
+ * @param held -1 outside a hold, else the producer's cut_held_pick_t.
+ * @return 1 when the re-extract may feed, else 0. */
+int hook_reextract_ready_held(render_path_t path, int held);
+
 #ifdef __cplusplus
 }
 #endif

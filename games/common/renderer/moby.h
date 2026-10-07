@@ -77,6 +77,14 @@ void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
  * @return 1 while the previous queue is swapped in, else 0. */
 int moby_native_replay_prev_queue(int on);
 
+/** @brief The object-capture stamp current at the last canonical tick's moby cull, the draw stamp of that tick.
+ *
+ * An object whose curr is stamped after it rolled after that draw.
+ * Not answered while a previous-queue replay is swapped in.
+ * @param out Receives the stamp, when non-NULL.
+ * @return 1 when the current queue copy is of the last canonical epoch, else 0. */
+int moby_native_canon_ref_ns(op_time_t* out);
+
 /** @brief The mobys of the previous canonical epoch's record queue, the set moby_native_replay_prev_queue would replay.
  *
  * Followed by the mobys of the second kind's queue copy of the same epoch,
@@ -226,7 +234,9 @@ void moby_reextract(struct CPUState* cpu);
  * one. The queue is a host copy rather than a staged view of
  * the tick's draw scratch, so it replays independently of the animated queue's
  * staging: a state whose tick ran one of the two draws replays that one, and a
- * state that ran neither still replays nothing.
+ * state that ran neither still replays nothing. While a held cut's
+ * previous-queue replay is in progress the kind replays whether or not tick N
+ * ran its draw, since the replay shows tick N-1's copy (cut_held_set_pick).
  * @return 1 when the queue may replay, else 0. */
 int moby_native_simple_fresh(void);
 
