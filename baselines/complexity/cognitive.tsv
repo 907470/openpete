@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 98a26add79ad20005686836c24c3eec18d5fe4a5
+# head: cfa39c004af84686982bacebeaf9bc486bb6ce24
 file	function	score	marked	accepted
 core/config/config.c	materialize	32	0	
 core/config/config.c	openpete_config_apply	80	0	
@@ -113,7 +113,7 @@ games/common/psyq/psyq_thunks.cpp	psyq_CdSync	36	0
 games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
 games/common/renderer/cyclorama.c	cyc_extract_m	139	0	
-games/common/renderer/cyclorama.c	cyclorama_reextract	57	0	
+games/common/renderer/cyclorama.c	cyclorama_reextract	56	0	
 games/common/renderer/flame.c	flame_build_strip	59	0	
 games/common/renderer/flame.c	flame_dump	26	0	
 games/common/renderer/flame.c	flame_strip_compare	52	0	
@@ -152,7 +152,7 @@ games/common/renderer/player.c	plane_emit	32	0
 games/common/renderer/player.c	player_build_walk	80	0	
 games/common/renderer/player.c	player_feed_walk_ex	60	0	
 games/common/renderer/player.c	player_records_epoch_commit	200	0	
-games/common/renderer/player.c	player_reextract_record	27	0	
+games/common/renderer/player.c	player_reextract_record	26	0	
 games/common/renderer/player.c	player_verify_report	109	0	
 games/common/renderer/player.c	pv_capture	60	0	
 games/common/renderer/player_game_spyro23.c	s23_part_record	28	0	
@@ -217,7 +217,7 @@ games/spyro-1/renderer/portal.c	feed_portal_quad	77	0
 games/spyro-1/renderer/portal.c	feed_revealed_portals	76	0	
 games/spyro-1/renderer/portal.c	leaf_hook	136	0	
 games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	74	0	
-games/spyro-1/renderer/portal.c	portal_reextract	84	0	
+games/spyro-1/renderer/portal.c	portal_reextract	83	0	
 games/spyro-1/renderer/reextract.c	cl_fit_pose	26	0	
 games/spyro-1/renderer/reextract.c	game_reextract_body	352	0	
 games/spyro-1/renderer/reextract.c	particle_pools_bracket	41	0	

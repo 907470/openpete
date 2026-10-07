@@ -57,6 +57,7 @@
 #include "openpete_recomp_module.h"
 #include "openpete_fiber.h"           /* openpete_frame */
 #include "renderer/render_paths.h"
+#include "renderer/hook_bracket.h"   /* hook_reextract_ready */
 #include "renderer/native_gte.h"
 #include "renderer/portal_spyro23.h"
 #include "renderer/portal_plane.h"     /* openpete_portal_plane_margin */
@@ -1720,8 +1721,7 @@ static void p3_lerp_preview(p3_preview* O, const p3_preview* P, const p3_preview
 
 /* Sub-tick re-extract: replays the tick's previews, lerped per portal. */
 void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) {
-    if (!openpete_native_scene_enabled()) return;
-    if (!render_path_canon_drawn(RP_PORTAL)) return;
+    if (!hook_reextract_ready(RP_PORTAL)) return;  /* scene on, selected, canon-drawn */
     if (!s_curr.valid || s_curr.n == 0) return;
     p3_tick T = s_curr;
     /* At alpha 1 the present is the current tick's own view: replay the

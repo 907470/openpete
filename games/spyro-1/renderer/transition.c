@@ -33,6 +33,7 @@
 #include "psx_runtime_internal.h"            /* CPUState */
 #include "openpete_native_render.h" /* native scene API */
 #include "renderer/render_paths.h"           /* render_paths_active */
+#include "renderer/hook_bracket.h"           /* hook_reextract_ready */
 #include "renderer/reextract.h" /* transition_reextract decl */
 
 #include <stdint.h>
@@ -416,8 +417,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
 
 /* Sub-tick re-extract of the cross-fade dome and backdrop; see reextract.h. */
 void transition_reextract(CPUState* cpu) {
-    if (!openpete_native_scene_enabled()) return;
-    if (!render_path_canon_drawn(RP_TRANSITION)) return;
+    if (!hook_reextract_ready(RP_TRANSITION)) return;  /* scene on, selected, canon-drawn */
     crossfade_extract(cpu);
     crossfade_feed_native();
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */

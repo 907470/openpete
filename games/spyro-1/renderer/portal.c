@@ -56,6 +56,7 @@
 #include "openpete_subtick_view.h"
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"
+#include "renderer/hook_bracket.h"   /* hook_reextract_ready */
 #include "renderer/reextract.h"   /* portal_reextract export */
 #include "renderer/portal.h"         /* cross-feeder exports (terrain OT-conformance clamp) */
 #include "renderer/portal_plane.h"   /* openpete_portal_plane_margin (shared) */
@@ -3034,7 +3035,6 @@ static void portal_replay_rect(CPUState* cpu, const portal_cap_t* c, int rc[4]) 
 
 /* ---- sub-tick re-extract; documented in reextract.h ---- */
 void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
-    if (!openpete_native_scene_enabled()) return;
     if (s_pcap_n == 0) return;
     /* Don't replay a STALE capture. During a level-load transition (e.g. warping
      * THROUGH a portal) the normal draw loop stops, so canonical RenderPortals
@@ -3047,8 +3047,9 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
      * RP_PORTAL is marked (render_path_mark_drawn - interval-less, so widescreen-
      * revealed portals with no polybuf emission still count) each canonical present
      * on_80050BE0 runs+feeds, so the bit goes false the moment RenderPortals stops
-     * - exactly the staleness signal we need. */
-    if (!render_path_canon_drawn(RP_PORTAL)) return;
+     * - exactly the staleness signal we need. The gate also holds the native
+     * scene on and the path selected. */
+    if (!hook_reextract_ready(RP_PORTAL)) return;
     ngte_view_build(cpu, &s_view);
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
         static int cen = -1;

@@ -11509,14 +11509,15 @@ void moby_reextract(CPUState* cpu) {
  * OPENPETE_* variables enable.
  * @param cpu The guest CPU state. */
 static void moby_reextract_body(CPUState* cpu) {
-    if (!openpete_native_scene_enabled()) return;
     /* Only replay mobys the canonical frame actually drew. During a level
      * transition the moby render path may not fire (or only for the collected-gem
      * mobys); gating on the canon-drawn mask reproduces exactly that set instead
-     * of replaying the previous level's mobys from stale cull records. */
-    if (!render_path_canon_drawn(RP_MOBY)) {
-        if (moby_census_on())
-            fprintf(stderr, "[census vbl=%u MOBY-RE] SKIP (not canon-drawn)\n", openpete_frame);
+     * of replaying the previous level's mobys from stale cull records. The
+     * gate also holds the native scene on and the path selected. */
+    if (!hook_reextract_ready(RP_MOBY)) {
+        if (moby_census_on() && openpete_native_scene_enabled())
+            fprintf(stderr, "[census vbl=%u MOBY-RE] SKIP (not canon-drawn or "
+                            "deselected)\n", openpete_frame);
         return;
     }
 

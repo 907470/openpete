@@ -1295,7 +1295,6 @@ static int s_pres_hold = 0;
 static int s_pres_pick = -1;
 
 void player_reextract_record(CPUState* cpu, int mirror) {
-    if (!openpete_native_scene_enabled()) return;
     /* Which call of the tick this replay reproduces. The driver restores the
      * state word that told the two apart before the tick ends, so live RAM
      * cannot answer it here: the caller reads it off the record whose bytes
@@ -1304,9 +1303,10 @@ void player_reextract_record(CPUState* cpu, int mirror) {
     /* Only re-extract on sub-ticks if the canonical tick actually drew the
      * avatar. A cutscene that suppresses the gameplay avatar and shows it as a
      * moby instead would otherwise get a SECOND avatar painted over the
-     * cutscene one, at the same position in a different pose. A held cut
-     * replays tick N-1's records, whose own drawn verdicts decide, so tick N's
-     * verdict does not gate it. */
+     * cutscene one, at the same position in a different pose. The gate also
+     * holds the native scene on and the path selected. A held cut replays tick
+     * N-1's records, whose own drawn verdicts decide, so tick N's verdict does
+     * not gate it. */
     if (!hook_reextract_ready_held(RP_SPYRO, s_pres_pick)) return;
 
     /* Sub-tick animation = two-pass keyframe-SHAPE interpolation: decode the
