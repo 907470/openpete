@@ -45,7 +45,7 @@ value and the program does not start.
 `gnastys_world` is accepted for `gnorc_gnexus` (60) and `twilight_harbour`
 for `twilight_harbor` (62).
 
-The [dev overlay](../help/glossary.md#dev-overlay)'s **Warp: level** list and **Jump** button move to any of
+The [dev overlay](../help/glossary.md#dev-overlay)'s **Level warp** list and **Warp** button move to any of
 these levels during play, through the game's own level exit
 ([Dev overlay](../playing/dev-overlay.md)).
 
@@ -75,9 +75,10 @@ game's own cheat codes without entering them on the controller:
 
 A cheat is applied once per session, on the first [tick](../help/glossary.md#tick) in a level, and
 again for each new session started from the title screen. Dying still costs
-a life. The dev overlay's **Cheat: 99 lives**
-<!-- id: knob:cheat_99_lives --> and **Cheat: unlock all levels**
-<!-- id: knob:cheat_unlock_all_levels --> buttons apply a cheat on demand
+a life. The dev overlay's **99 lives**
+<!-- id: knob:cheat_99_lives --> and **Unlock all levels**
+<!-- id: knob:cheat_unlock_all_levels --> buttons, under Gameplay's
+**Cheats**, apply a cheat on demand
 during play.
 
 !!! note

@@ -49,11 +49,12 @@ game's own fog, 100 turns it off in practice. Range 0.25 to 128
 
 The default follows the level of detail: 1 under `original`, 100 under
 `extended` <!-- id: knob:fog_scale -->. Setting a fog scale, by flag or
-with the dev overlay's **Fog scale** or **Fog** rows, fixes it; from then on
+with the dev overlay's **Fog** row, fixes it; from then on
 LOD switches leave the fog alone.
 
-The dev overlay's **Fog** row <!-- id: knob:fog --> turns the fog off
-(a fog scale of 100) and on; it starts on <!-- id: knob:fog -->.
+The dev overlay's **Fog** row <!-- id: knob:fog -->, under Display's
+**Advanced**, holds a checkbox that turns the fog off (a fog scale of 100)
+and on, and the fog scale beside it; the fog starts on <!-- id: knob:fog -->.
 
 ## Terrain visibility
 

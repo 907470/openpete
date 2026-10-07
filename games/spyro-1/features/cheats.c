@@ -15,7 +15,7 @@
 // cheats 0/1/5/6/7 have no CheatApplyEffect case at all in the retail build.
 //
 // Two ways in, one write path: --cheats picks the cheats a session starts
-// with, and the dev overlay's Gameplay section carries a button per cheat that
+// with, and the dev overlay's Cheats rows carry a button per cheat that
 // fires it on demand (re-clickable - "99 lives" tops the counter back up after
 // dying). The overlay runs outside the sim, so a click only queues a request;
 // every guest write happens in the per-tick hook below.
@@ -91,13 +91,13 @@ typedef struct {
 static const cheat_def_t k_cheats[] = {
     { "99_lives", CHEAT_99_LIVES,
       "99 extra lives (the \"99 LIVES\" code)",
-      "cheat_99_lives", "Cheat: 99 lives",
+      "cheat_99_lives", "99 lives",
       "Sets Spyro's extra lives to 99 - the game's own \"99 LIVES\" code. "
       "Applies on the next tick in a level; click again to top back up after "
       "dying. Intentionally divergent gameplay state." },
     { "unlock_all_levels", CHEAT_UNLOCK_ALL,
       "every level visited + every homeworld unlocked (the \"LEVELS OPEN\" code)",
-      "cheat_unlock_all_levels", "Cheat: unlock all levels",
+      "cheat_unlock_all_levels", "Unlock all levels",
       "Marks every level visited and every homeworld unlocked - the game's own "
       "\"LEVELS OPEN\" code. Applies on the next tick in a level. "
       "Intentionally divergent gameplay state." },
@@ -235,7 +235,7 @@ static void row_status(const knob_desc_t* k, char* buf, size_t cap) {
     else                           snprintf(buf, cap, "%s", "");
 }
 
-/** @brief The dev-overlay row of cheat i without its value plumbing: a live KNOB_ACTION labelled "Apply" in the Gameplay section.
+/** @brief The dev-overlay row of cheat i without its value plumbing: a live KNOB_ACTION labelled "Apply" in the Cheats section.
  *
  * @param i Index into k_cheats.
  * @return The row template. */
@@ -243,7 +243,7 @@ static knob_desc_t cheat_row(size_t i) {
     knob_desc_t row = {0};
     row.id           = k_cheats[i].knob_id;
     row.label        = k_cheats[i].knob_label;
-    row.section      = "Gameplay";
+    row.section      = "Cheats";
     row.help         = k_cheats[i].knob_help;
     row.type         = KNOB_ACTION;
     row.mut          = KNOB_LIVE;
@@ -251,7 +251,7 @@ static knob_desc_t cheat_row(size_t i) {
     return row;
 }
 
-/** @brief Registers one dev-overlay action button per cheat in the Gameplay section.
+/** @brief Registers one dev-overlay action button per cheat in the Cheats section.
  *
  * Each row is cheat_row's, with row_ready as its enabled state, row_fire as
  * its action and row_status as its status text. A failed registration is

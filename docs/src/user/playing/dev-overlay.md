@@ -16,12 +16,11 @@ hotkey bindings pause and the PlayStation pad is released.
 
 | Part | Meaning |
 | --- | --- |
-| **live editable only** | Checked by default: shows only the rows that apply at once. Uncheck it to see the rows that need a restart, drawn greyed out. |
-| **filter** | Shows the rows whose name, flag or environment variable contains the text. |
-| Row value | Changes apply at once on a live row. |
-| Source column | `cli` (a command-line flag), `env` (an environment variable), `def` (the default), plus the `openpete.toml` section that set it, for example `[saved]`. **pinned** marks a row that a flag or variable of this launch overrides; saving it takes effect once that override is gone. |
-| Tooltip | The setting's description, its flag and variable spellings, and "restart to apply" on a restart row. |
-| Right click on a row | **Reset to boot value**, **Copy as CLI flag**, **Copy as env line**. |
+| Search field | Shows the rows whose name, flag or environment variable contains the text, with every section holding a match opened. |
+| Row value | Changes apply at once on a live row. A row that needs a restart is drawn greyed out. |
+| Row title tooltip | The setting's description, its flag and variable spellings, "restart to apply" on a restart row, and where the value came from: the command line, the environment or the default, "edited this session" once changed, and the `openpete.toml` section that set it, for example `[saved]`. **pinned** marks a setting that a flag or variable of this launch overrides; saving it takes effect once that override is gone. |
+| Button tooltip | A button's status, such as **not in a level**, above its description. |
+| Right click on a row title | **Reset to boot value**, **Copy as CLI flag**, **Copy as env line**. |
 
 **Save settings** writes every row changed this session into the `[saved]`
 block of the config file, as the settings menu's **SETTINGS** row does.
@@ -32,67 +31,73 @@ Closing the panel writes nothing. See
 ## Sections
 
 The graphics rows are described under [Graphics](../graphics/display.md);
-each Graphics page names its settings.
+each Graphics page names its settings. Sections marked collapsed start
+closed; click a title to open it.
 
-| Section | Live rows |
+| Section | Rows |
 | --- | --- |
-| Display | Fullscreen, Aspect ratio, Field of view, Supersampling, VSync, Performance stats, Stats position, Notifications, Version line, Notification position, Notification timeout, Vertex precision, Raster quantize, Terrain visibility, Untextured (lighting), Wireframe (lighting), Dither (15-bit), Texture mapping, LOD, Fog, Fog scale |
-| Pacing | Render FPS, Tick scale, Runahead, Rewind window |
-| Audio | Mute, SFX volume, Music volume |
-| Input | Vibration, Mouse, Mouse sensitivity |
-| Paths | none; every path row needs a restart |
-| Gameplay | Free camera, Camera lock (render), the cheat buttons, the level warp |
+| Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Notifications (on, position, timeout), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
+| Display, Advanced (collapsed) | Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Version line |
+| Audio (collapsed) | Mute, SFX volume, Music volume |
+| Gameplay | Freecam, Tick scale, Runahead, Rewind, Level warp |
+| Gameplay, Input (collapsed) | Vibration, Mouse, Mouse sensitivity |
+| Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
+| Info (collapsed) | the launch-only rows: Skip to level, Skip to cutscene, Skip to sub-area, Freecam pose, Player pose, bk2 replay, bk2 frame offset, bk2 recording, Renderer, Extraction threads, Window size |
+| Info, Paths (collapsed) | every path and memory card row |
+| Recording | the video capture rows, shown only while recording |
 | Mods | one row per installed mod |
+| Debug, Debug diagnostics (collapsed) | diagnostic settings |
 
-Restart rows include Renderer, Window size, Extraction threads, Terrain GPU
-cache, Input lock, every path, and the launch-only gameplay rows (Skip to
-level, Skip to cutscene, Cheats at launch, bk2 replay, Free camera pose,
-Player pose).
+Button groups (Vertex precision, Color depth, Texture mapping, LOD, Terrain
+visibility) highlight the current choice. **Color depth** **15-bit** is the
+dither setting on, **24-bit** off. **Runahead** has a checkbox; buttons for 1,
+2 and 3 ticks appear beside it while runahead is on. **Rewind** has a checkbox; the window in seconds
+appears beside it while rewind is on.
 
-**Free camera pose** <!-- id: knob:freecam_pose --> engages the free camera
+**Freecam pose** <!-- id: knob:freecam_pose --> engages the free camera
 at a pose (`pos=(x, y, z) yaw=N pitch=N`, the format the free camera logs)
 once the level is live. **Player pose** <!-- id: knob:player_pose --> places
 Spyro at `x,y,z[,yaw]` once gameplay is live, with the camera re-seated
 behind him. Both are empty by default, and both change the game's state.
 
-**Untextured (lighting)** <!-- id: knob:notex --> and **Wireframe
-(lighting)** <!-- id: knob:wireframe --> are inspection views: the first
-replaces textures with grey to show the lighting alone, the second draws
-every triangle's edges. {{ flag("flag:--notex") }}<!-- id: flag:--notex -->
-followed by `1` turns the untextured view on at launch, as the variable
-`OPENPETE_NOTEX=1` does; the flag wins over the variable. The view is off
-by default.
+**Render mode** offers **Textured**, **Untextured**
+<!-- id: knob:notex --> and **Wireframe** <!-- id: knob:wireframe -->.
+Untextured and Wireframe are inspection views: the first replaces textures
+with grey to show the lighting alone, the second draws every triangle's
+edges. {{ flag("flag:--notex") }}<!-- id: flag:--notex --> followed by `1`
+turns the untextured view on at launch, as the variable `OPENPETE_NOTEX=1`
+does; the flag wins over the variable. The view is off by default.
 
-**Camera lock (render)** <!-- id: knob:camlock --> holds the picture on the
-current view, and lets it fly with the free camera keys, while the game keeps
-running underneath: cutscenes play on. It changes only the picture, not the
-game. Turning it on turns the free camera off. Its key, `camlock`, is unbound
-unless configured <!-- id: key:host.camlock -->.
+The camera lock <!-- id: knob:camlock --> holds the picture on the current
+view, and lets it fly with the free camera keys, while the game keeps running
+underneath: cutscenes play on. It changes only the picture, not the game.
+Turning it on turns the free camera off. It has no row in the panel; its
+key, `camlock`, is unbound unless configured <!-- id: key:host.camlock -->.
 
 ## Cheat buttons
 
-The Gameplay section has one row per cheat, **Cheat: 99 lives** and **Cheat:
-unlock all levels**, each with an **Apply** button. A press applies the
-cheat on the next tick in a level, during play or on the pause and inventory
-screens; it can be pressed again, for example to top up lives. The row's
-status reads **queued**, **applied**, or **not in a level**. The cheats are
-the ones `--cheats` applies at start; see
+Gameplay's **Cheats** subsection has one row per cheat, **99 lives** and
+**Unlock all levels** on Spyro the Dragon, each with an **Apply** button. A
+press applies the cheat on the next tick in a level, during play or on the
+pause and inventory screens; it can be pressed again, for example to top up
+lives. The button's tooltip reads **queued**, **applied**, or **not in a
+level**; outside a level the button is disabled. The cheats are the ones
+`--cheats` applies at start; see
 [Practice tools](practice-tools.md#cheats).
 
 ## Level warp
 
-Two Gameplay rows move to any level mid-session:
+The **Level warp** row moves to any level mid-session. Its list
+<!-- id: knob:warp_level --> picks the destination and follows the level you
+are in until you pick one; the **Warp** button <!-- id: knob:warp_go -->
+starts the warp.
 
-- **Warp: level** <!-- id: knob:warp_level --> picks the destination. It follows the level you are in
-  until you pick one.
-- **Warp: jump to level** <!-- id: knob:warp_go --> has the **Jump** button.
-
-In a level, the jump runs the game's own exit-level sequence and then loads
+In a level, the warp runs the game's own exit-level sequence and then loads
 the chosen level; progress is kept. From the title screen it starts a new
 session in the chosen level, with progress and lives reset as with
-`--skip-to-level`; the status reads **from title (resets progress)**. The
-button is disabled while the free camera is on (**freecam active**) or when
-no route exists (**not in a level**).
+`--skip-to-level`; the button's tooltip reads **from title (resets
+progress)**. The button is disabled while the free camera is on (**freecam
+active**) or when no route exists (**not in a level**).
 
 ## Mods
 

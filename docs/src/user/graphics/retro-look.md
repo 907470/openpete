@@ -10,7 +10,7 @@ HUD stays smooth.
 | [Wobble](#wobble) | **WOBBLE** | **Vertex precision** | `--vertex-precision subpixel\|integer` <!-- id: knob:vertex_precision home --> | `subpixel` (off) <!-- id: knob:vertex_precision --> |
 | [Pixelation](#pixelation) | **PIXELATION** | **Raster quantize** | `--raster-quantize N` <!-- id: knob:raster_quantize --> | off, or 1 with wobble on <!-- id: knob:raster_quantize --> |
 | [Texture warp](#texture-warp) | **TEXTURES** | **Texture mapping** | `--texture-mapping perspective\|affine` <!-- id: knob:texture_mapping home --> | `perspective` (**CORRECT**) <!-- id: knob:texture_mapping --> |
-| [Dither](#dither) | **DITHER** | **Dither (15-bit)** | `--dither 0\|1` <!-- id: knob:dither home --> | 0 (off) <!-- id: knob:dither --> |
+| [Dither](#dither) | **DITHER** | **Color depth** (**15-bit** = on) | `--dither 0\|1` <!-- id: knob:dither home --> | 0 (off) <!-- id: knob:dither --> |
 
 ## Wobble
 

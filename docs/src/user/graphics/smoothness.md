@@ -44,7 +44,8 @@ next.
 `--runahead N` <!-- id: knob:runahead --> computes N ticks ahead of the shown
 picture and shows the result, which removes N ticks of delay between a
 button press and its effect on screen. Default 0 (off)
-<!-- id: knob:runahead -->; the dev overlay's **Runahead** row takes 0 to 3
+<!-- id: knob:runahead -->; the dev overlay's **Runahead** row has a
+checkbox for off and on, and while on, buttons for 1, 2 and 3
 <!-- id: knob:runahead -->.
 
 | N | Effect |

@@ -350,19 +350,17 @@ int openpete_devui_wants_mouse(void)
 /* panel                                                              */
 /* ------------------------------------------------------------------ */
 
-/** @brief Name the source of a knob's boot value for the panel's source column.
+/** @brief Name the source of a knob's boot value for the row title's tooltip.
  *
- * KNOB_SRC_CLI reads "cli", KNOB_SRC_ENV "env", and every other value
- * (KNOB_SRC_DEFAULT) "def". The column shows "edited" instead while the
- * row's value differs from its boot value.
  * @param s The source recorded at boot.
- * @return A static three-letter tag. */
-static const char *src_tag(knob_src_t s)
+ * @return "command line" for KNOB_SRC_CLI, "environment" for KNOB_SRC_ENV,
+ *         "default" for every other value. */
+static const char *src_word(knob_src_t s)
 {
     switch (s) {
-    case KNOB_SRC_CLI: return "cli";
-    case KNOB_SRC_ENV: return "env";
-    default:           return "def";
+    case KNOB_SRC_CLI: return "command line";
+    case KNOB_SRC_ENV: return "environment";
+    default:           return "default";
     }
 }
 
@@ -423,25 +421,67 @@ static void row_context_menu(knob_desc_t *k)
     ImGui::EndPopup();
 }
 
-/** @brief Draw the hover tooltip of the item just submitted: a knob's help and spellings.
+/** @brief Write a knob's help and its flag and variable spellings into the open tooltip.
  *
- * Shows over a disabled item too. Adds a "restart to apply" line for a
- * restart-only knob. */
-static void row_tooltip(const knob_desc_t *k)
+ * Adds a "restart to apply" line for a restart-only knob. */
+static void knob_tooltip_body(const knob_desc_t *k)
 {
-    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip |
-                              ImGuiHoveredFlags_AllowWhenDisabled))
-        return;
-    ImGui::BeginTooltip();
-    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
     ImGui::TextUnformatted(k->help);
     ImGui::Separator();
     if (k->cli) ImGui::Text("flag: %s", k->cli);
     if (k->env) ImGui::Text("env:  %s", k->env);
     if (k->mut == KNOB_RESTART_ONLY)
         ImGui::TextDisabled("restart to apply");
+}
+
+/** @brief Report whether the item just submitted is hovered for a tooltip, disabled or not. */
+static bool tooltip_hovered(void)
+{
+    return ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip |
+                                ImGuiHoveredFlags_AllowWhenDisabled);
+}
+
+/** @brief Open a tooltip that wraps at 30 font sizes. */
+static void tooltip_begin(void)
+{
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+}
+
+/** @brief Close a tooltip opened by tooltip_begin. */
+static void tooltip_end(void)
+{
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
+}
+
+/** @brief Draw the hover tooltip of the item just submitted: a knob's help and spellings.
+ *
+ * Shows over a disabled item too. */
+static void row_tooltip(const knob_desc_t *k)
+{
+    if (!tooltip_hovered()) return;
+    tooltip_begin();
+    knob_tooltip_body(k);
+    tooltip_end();
+}
+
+/** @brief Draw the hover tooltip of an action button: its get_str status line, when non-empty, above its help and spellings.
+ *
+ * Shows over a disabled button too, where the status says why it is
+ * disabled. */
+static void action_tooltip(const knob_desc_t *k)
+{
+    if (!tooltip_hovered()) return;
+    char status[KNOB_STR_MAX] = "";
+    if (k->get_str) k->get_str(k, status, sizeof status);
+    tooltip_begin();
+    if (status[0]) {
+        ImGui::TextUnformatted(status);
+        ImGui::Separator();
+    }
+    knob_tooltip_body(k);
+    tooltip_end();
 }
 
 /* In-progress edit shadow. Numeric widgets are re-seeded from the live
@@ -537,7 +577,7 @@ static void knob_widget_enum(knob_desc_t *k)
     }
 }
 
-/** @brief Draw an action knob as a button that fires its setter with 1.0, followed by its status text.
+/** @brief Draw an action knob as a button that fires its setter with 1.0; its status text is the button's tooltip.
  *
  * get_num, when present, gates the button: 0 draws it disabled. */
 static void knob_widget_action(knob_desc_t *k)
@@ -549,13 +589,7 @@ static void knob_widget_action(knob_desc_t *k)
             OPL_INFO_F("devui", "%s fired", k->id);
     }
     if (!ready) ImGui::EndDisabled();
-    if (!k->get_str) return;
-    char status[KNOB_STR_MAX];
-    k->get_str(k, status, sizeof status);
-    if (!status[0]) return;
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s", status);
+    action_tooltip(k);
 }
 
 /** @brief Draw a string knob as a text field, editable and committed on release only for a live row with a setter.
@@ -578,7 +612,8 @@ static void knob_widget_string(knob_desc_t *k)
 
 /** @brief Draw a knob's type-specific value widget, disabled unless the knob is live, with its tooltip.
  *
- * The caller sets the item width. */
+ * An action row's tooltip carries its status (action_tooltip). The caller
+ * sets the item width. */
 static void knob_widget(knob_desc_t *k)
 {
     const bool disabled = (k->mut != KNOB_LIVE);
@@ -592,77 +627,71 @@ static void knob_widget(knob_desc_t *k)
     case KNOB_STRING: knob_widget_string(k); break;
     }
     if (disabled) ImGui::EndDisabled();
-    row_tooltip(k);
+    if (k->type != KNOB_ACTION) row_tooltip(k);
 }
 
-/** @brief Draw the label cell of a panel row: the caption, with the primary knob's tooltip and right-click menu.
+/** @brief Write where a knob's value comes from into the open tooltip.
  *
+ * The boot source, "edited this session" while the value differs from it,
+ * and the launch tier that pins the knob or else the non-default
+ * openpete.toml layer that set it. A pinned knob outranks the file, so saving
+ * it does nothing until that override is gone; the line says so.
+ * @param k The knob.
+ * @param name Prefix naming the knob on a row of several; NULL on a single-knob row. */
+static void knob_source_lines(const knob_desc_t *k, const char *name)
+{
+    const char *pre = name ? name : "source";
+    if (row_edited(k))
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.30f, 1.0f),
+                           "%s: %s, edited this session", pre,
+                           src_word(k->boot_src));
+    else
+        ImGui::TextDisabled("%s: %s", pre, src_word(k->boot_src));
+    const char *pin = openpete_config_knob_pin_spelling(k->id);
+    if (pin) {
+        ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
+                           "pinned: %s is set for this launch, which outranks "
+                           "openpete.toml; a saved value applies once that "
+                           "override is gone", pin);
+        return;
+    }
+    const char *layer = openpete_config_knob_layer(k->id);
+    if (layer && strcmp(layer, "default") != 0)
+        ImGui::TextDisabled("openpete.toml: [%s]", layer);
+}
+
+/** @brief Draw the label cell of a panel row: the caption, its tooltip and the primary knob's right-click menu.
+ *
+ * The tooltip holds the primary knob's help and spellings, then the source
+ * lines of every knob on the row, each prefixed with its label when the row
+ * has several.
  * @param label The caption.
- * @param k The row's primary knob. */
-static void row_label_cell(const char *label, knob_desc_t *k)
+ * @param ks The row's knobs, the primary first.
+ * @param n The knob count. */
+static void row_label_cell(const char *label, knob_desc_t *const *ks, int n)
 {
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
-    row_tooltip(k);
-    row_context_menu(k);
+    if (tooltip_hovered()) {
+        tooltip_begin();
+        knob_tooltip_body(ks[0]);
+        ImGui::Separator();
+        for (int i = 0; i < n; i++)
+            knob_source_lines(ks[i], n > 1 ? ks[i]->label : nullptr);
+        tooltip_end();
+    }
+    row_context_menu(ks[0]);
 }
 
-/** @brief Draw the source cell of a panel row over its knobs.
- *
- * Reads "edited" when any knob's value differs from its boot value, else
- * the strongest boot source among them (cli over env over default). The
- * first knob a launch tier pins adds "pinned" with the pinning spelling in
- * its tooltip, else the first non-default config layer is shown in brackets.
- * A restart-only row says so in its disabled widget and its tooltip.
- * @param ks The row's knobs, the primary first.
- * @param n The knob count. */
-static void row_source_cell(knob_desc_t *const *ks, int n)
-{
-    ImGui::TableNextColumn();
-    bool edited = false;
-    knob_src_t src = KNOB_SRC_DEFAULT;
-    for (int i = 0; i < n; i++) {
-        edited = edited || row_edited(ks[i]);
-        if (ks[i]->boot_src > src) src = ks[i]->boot_src;
-    }
-    if (edited)
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.30f, 1.0f), "edited");
-    else
-        ImGui::TextDisabled("%s", src_tag(src));
-
-    /* A launch-tier override outranks anything in the file, so saving this
-     * row would look like it did nothing next launch. Say so on the row
-     * rather than letting the user discover it by restarting. */
-    for (int i = 0; i < n; i++) {
-        const char *pin = openpete_config_knob_pin_spelling(ks[i]->id);
-        if (!pin) continue;
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "pinned");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("%s is set for this launch, which outranks\n"
-                              "openpete.toml. A saved value applies once that\n"
-                              "override is gone.", pin);
-        return;
-    }
-    for (int i = 0; i < n; i++) {
-        const char *layer = openpete_config_knob_layer(ks[i]->id);
-        if (!layer || strcmp(layer, "default") == 0) continue;
-        ImGui::SameLine();
-        ImGui::TextDisabled("[%s]", layer);
-        return;
-    }
-}
-
-/** @brief Draw one knob as a table row: label, type-specific value widget, source column. */
+/** @brief Draw one knob as a table row: label, then its type-specific value widget. */
 static void draw_row(knob_desc_t *k)
 {
     ImGui::TableNextRow();
-    row_label_cell(k->label, k);
+    row_label_cell(k->label, &k, 1);
     ImGui::TableNextColumn();
     ImGui::SetNextItemWidth(-FLT_MIN);
     knob_widget(k);
-    row_source_cell(&k, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1332,6 +1361,7 @@ enum lay_kind {
     LAY_INLINE,    /* ids[0..2] side by side; ids[0] at 0 disables the rest */
     LAY_DRAWMODE,  /* ids[0] notex, ids[1] wireframe as one three-way combo */
     LAY_REWIND,    /* ids[0] rewind: on/off box, the window field while on */
+    LAY_DEPTH,     /* ids[0] int: on/off box, 1..3 buttons while on */
     LAY_WARP,      /* ids[0] level combo, ids[1] its action button */
     LAY_REST,      /* every unplaced row of registry section `label` */
     LAY_SUB,       /* opens a subsection titled `label`, closed by default */
@@ -1386,15 +1416,20 @@ static const lay_row k_lay_display[] = {
 };
 
 static const lay_row k_lay_audio[] = { { LAY_REST, "Audio" } };
-static const lay_row k_lay_input[] = { { LAY_REST, "Input" } };
 
 static const lay_row k_lay_gameplay[] = {
     { LAY_ROW,    nullptr, { "freecam" } },
     { LAY_ROW,    nullptr, { "tick_scale" } },
-    { LAY_ROW,    nullptr, { "runahead" } },
+    { LAY_DEPTH,  nullptr, { "runahead" } },
     { LAY_REWIND, "Rewind", { "rewind" } },
     { LAY_REST,   "Gameplay" },
     { LAY_WARP,   "Level warp", { "warp_level", "warp_go" } },
+    { LAY_SUB,    "Input" },
+    { LAY_REST,   "Input" },
+    { LAY_SUB_END, nullptr },
+    { LAY_SUB,    "Cheats" },
+    { LAY_REST,   "Cheats" },
+    { LAY_SUB_END, nullptr },
 };
 
 static const lay_row k_lay_info[] = {
@@ -1409,7 +1444,6 @@ static const lay_row k_lay_info[] = {
     { LAY_ROW,    nullptr, { "renderer" } },
     { LAY_ROW,    nullptr, { "extract_threads" } },
     { LAY_ROW,    nullptr, { "window" } },
-    { LAY_ROW,    nullptr, { "background" } },
     { LAY_SUB,    "Paths" },
     { LAY_REST,   "Paths" },
     { LAY_SUB_END, nullptr },
@@ -1425,7 +1459,6 @@ static const lay_row k_lay_debug[] = {
 static const lay_section k_layout[] = {
     { "Display",   true,  false, k_lay_display,   LAY_N(k_lay_display) },
     { "Audio",     false, false, k_lay_audio,     LAY_N(k_lay_audio) },
-    { "Input",     false, false, k_lay_input,     LAY_N(k_lay_input) },
     { "Gameplay",  true,  false, k_lay_gameplay,  LAY_N(k_lay_gameplay) },
     { "Info",      false, false, k_lay_info,      LAY_N(k_lay_info) },
     { "Recording", true,  false, k_lay_recording, LAY_N(k_lay_recording) },
@@ -1436,7 +1469,7 @@ static const lay_section k_layout[] = {
 /* Registry rows the panel does not show. They stay in the registry, so
  * --help, --config-report, the config file and saving still carry them. */
 static const char *const k_lay_hidden[] = {
-    "input_lock", "camlock", "bk2_stop_on_end", "cheats",
+    "background", "input_lock", "camlock", "bk2_stop_on_end", "cheats",
 };
 
 /** @brief Report whether a knob id is named by a layout row or hidden from the panel.
@@ -1656,6 +1689,35 @@ static void rewind_widget(knob_desc_t *k)
     knob_widget(k);
 }
 
+/** @brief Draw an int knob whose 0 is off as an on/off box, with a 1..num_max button group beside it only while on.
+ *
+ * Turning it on restores the last depth that was on, 1 before any. At most
+ * three depths are offered. */
+static void depth_widget(knob_desc_t *k)
+{
+    static const char *const k_depths[] = { "1", "2", "3" };
+    static const double      k_depth_v[] = { 1.0, 2.0, 3.0 };
+    static int s_last_on = 1;
+    const int live = (int)knob_num(k);
+    if (live > 0) s_last_on = live;
+    bool on = live > 0;
+    const bool disabled = (k->mut != KNOB_LIVE || !k->set_num);
+    if (disabled) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("##on", &on) && !disabled) {
+        const int v = on ? s_last_on : 0;
+        if (k->set_num(k, v) == 0)
+            OPL_INFO_F("devui", "%s = %d", k->id, v);
+    }
+    if (disabled) ImGui::EndDisabled();
+    row_tooltip(k);
+    if (!on) return;
+    const int max = (int)k->num_max < (int)LAY_N(k_depths)
+                        ? (int)k->num_max : (int)LAY_N(k_depths);
+    const lay_row depths = { LAY_SEG, nullptr, { k->id }, k_depths, k_depth_v, max };
+    ImGui::SameLine();
+    seg_widget(k, depths);
+}
+
 /** @brief Draw a level combo and its action button on one line; the button's status is its tooltip.
  *
  * The combo's list grows to the height of the display before it scrolls.
@@ -1688,40 +1750,27 @@ static void warp_widget(knob_desc_t *lvl, knob_desc_t *go)
     if (ImGui::Button(cap) && go->set_num && go->set_num(go, 1.0) == 0)
         OPL_INFO_F("devui", "%s fired", go->id);
     if (!ready) ImGui::EndDisabled();
-    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip |
-                              ImGuiHoveredFlags_AllowWhenDisabled))
-        return;
-    char status[KNOB_STR_MAX] = "";
-    if (go->get_str) go->get_str(go, status, sizeof status);
-    ImGui::BeginTooltip();
-    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
-    if (status[0]) {
-        ImGui::TextUnformatted(status);
-        ImGui::Separator();
-    }
-    ImGui::TextUnformatted(go->help);
-    ImGui::PopTextWrapPos();
-    ImGui::EndTooltip();
+    action_tooltip(go);
 }
 
-/** @brief Draw one layout row of knobs as a table row: caption, widget, source column. */
+/** @brief Draw one layout row of knobs as a table row: caption, then its widget. */
 static void lay_draw_knob_row(const lay_ctx &c, const lay_row &r)
 {
     knob_desc_t *ks[3];
     const int n = lay_knobs(c, r, ks);
     if (r.kind == LAY_ROW) { draw_row(ks[0]); return; }
     ImGui::TableNextRow();
-    row_label_cell(r.label ? r.label : ks[0]->label, ks[0]);
+    row_label_cell(r.label ? r.label : ks[0]->label, ks, n);
     ImGui::TableNextColumn();
     switch (r.kind) {
     case LAY_SEG:      seg_widget(ks[0], r);           break;
     case LAY_INLINE:   inline_widget(ks, n);           break;
     case LAY_DRAWMODE: drawmode_widget(ks[0], ks[1]);  break;
     case LAY_REWIND:   rewind_widget(ks[0]);           break;
+    case LAY_DEPTH:    depth_widget(ks[0]);            break;
     case LAY_WARP:     warp_widget(ks[0], ks[1]);      break;
     default:                                           break;
     }
-    row_source_cell(ks, n);
 }
 
 /** @brief Draw the rows [from, to) of a section, none of them a subsection marker, as one table.
@@ -1733,11 +1782,10 @@ static void lay_draw_table(const lay_ctx &c, const lay_row *rows, size_t from,
 {
     if (!lay_span_shows(c, rows, from, to)) return;
     ImGui::PushID((int)from);
-    if (ImGui::BeginTable("##t", 3, ImGuiTableFlags_RowBg |
+    if (ImGui::BeginTable("##t", 2, ImGuiTableFlags_RowBg |
                                     ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("name",   ImGuiTableColumnFlags_WidthStretch, 0.42f);
-        ImGui::TableSetupColumn("value",  ImGuiTableColumnFlags_WidthStretch, 0.42f);
-        ImGui::TableSetupColumn("source", ImGuiTableColumnFlags_WidthStretch, 0.16f);
+        ImGui::TableSetupColumn("name",  ImGuiTableColumnFlags_WidthStretch, 0.42f);
+        ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch, 0.58f);
         for (size_t r = from; r < to; r++) {
             if (!lay_row_shows(c, rows[r])) continue;
             if (rows[r].kind != LAY_REST) {

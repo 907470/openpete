@@ -1722,9 +1722,8 @@ static const knob_desc_t g_builtin[] = {
           "With no PATH, records to <exe_dir>/bk2/<timestamp>.bk2. Also writes a\n"
           "<PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2." },
 
-    /* Last row of the section on purpose: the game module contributes one
-     * button row per cheat through openpete_knob_add, and those land after
-     * the section's last built-in - directly under this launch summary. */
+    /* The launch selection; the game module contributes one button row per
+     * cheat through openpete_knob_add, in the Cheats section. */
     { "cheats", "Cheats at launch", "Gameplay", "--cheats", NULL,
       "Built-in cheat codes this run starts each session with. The rows below "
       "fire the same cheats on demand; this one only shows the launch "
