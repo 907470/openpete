@@ -493,6 +493,12 @@ static void action_tooltip(const knob_desc_t *k)
 static const knob_desc_t *s_edit_row = nullptr;
 static double             s_edit_val = 0.0;
 
+/** @brief Place the next widget on the previous widget's line at the button-group gap (ItemInnerSpacing.x). */
+static void same_line_inner(void)
+{
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+}
+
 /** @brief Draw a float knob as a slider over its registered range, applied on every change.
  *
  * A drag widget that commits only on release reads as dead while it is
@@ -517,7 +523,7 @@ static void knob_row_float(knob_desc_t *k)
             }
         }
         if (off) return;
-        ImGui::SameLine();
+        same_line_inner();
         ImGui::SetNextItemWidth(-FLT_MIN);
     }
     float v = (float)live;
@@ -742,13 +748,15 @@ static void draw_row(knob_desc_t *k)
 /* Save bar                                                           */
 /* ------------------------------------------------------------------ */
 
-/** @brief Draw the Save settings and Reset saved buttons and the last status line.
+/** @brief Draw the Save settings button at a given width; the last save's result is in its tooltip.
  *
  * Save writes every row edited this session into the config file's [saved]
- * block and is disabled while no row is edited; Reset saved empties that
- * block. Persisting is explicit and never happens on close, so the config
- * file changes only on a click. */
-static void draw_save_bar(void) {
+ * block and is disabled while no row is edited. Persisting is explicit and
+ * never happens on close, so the config file changes only on a click. The
+ * settings menu's SETTINGS row clears the block.
+ * @param w The button width. */
+static void draw_save_button(float w)
+{
     static char s_status[256];
 
     int edited = 0;
@@ -758,7 +766,7 @@ static void draw_save_bar(void) {
         if (ks[i].type != KNOB_ACTION && row_edited(&ks[i])) edited++;
 
     if (edited == 0) ImGui::BeginDisabled();
-    if (ImGui::Button("Save settings")) {
+    if (ImGui::Button("Save settings", ImVec2(w, 0.0f))) {
         int saved = knob_registry_save_edited();
         if (saved < 0)
             snprintf(s_status, sizeof s_status, "save FAILED (see the log)");
@@ -767,30 +775,21 @@ static void draw_save_bar(void) {
                      saved, openpete_config_save_path());
     }
     if (edited == 0) ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Write every row you changed this session into the\n"
-                          "[saved] block of %s.\n\n"
-                          "Saved settings beat everything else in the file, but\n"
-                          "still lose to a flag you type or a variable you export\n"
-                          "- rows in that position are marked 'pinned by ...'.",
-                          openpete_config_save_path());
-
-    ImGui::SameLine();
-    if (ImGui::Button("Reset saved")) {
-        if (openpete_config_reset_saved() == 0)
-            snprintf(s_status, sizeof s_status,
-                     "cleared the saved block (restart to see the effect)");
-        else
-            snprintf(s_status, sizeof s_status, "reset FAILED (see the log)");
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Empty the [saved] block. Hand-written config above\n"
-                          "the managed marker is untouched.");
-
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip |
+                              ImGuiHoveredFlags_AllowWhenDisabled))
+        return;
+    ImGui::BeginTooltip();
     if (s_status[0]) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", s_status);
+        ImGui::TextUnformatted(s_status);
+        ImGui::Separator();
     }
+    ImGui::Text("Write every row you changed this session into the\n"
+                "[saved] block of %s.\n\n"
+                "Saved settings beat everything else in the file, but\n"
+                "still lose to a flag you type or a variable you export\n"
+                "- rows in that position are marked 'pinned by ...'.",
+                openpete_config_save_path());
+    ImGui::EndTooltip();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1404,7 +1403,8 @@ enum lay_kind {
     LAY_SEG,       /* ids[0] (enum or bool) as a row of buttons */
     LAY_INLINE,    /* ids[0..2] side by side; ids[0] at 0 disables the rest */
     LAY_DRAWMODE,  /* ids[0] notex, ids[1] wireframe as one three-way combo */
-    LAY_REWIND,    /* ids[0] rewind: on/off box, the window field while on */
+    LAY_ONOFF,     /* ids[0] int, 0 = off: checkbox captioned `caption`, the
+                    * field while on; `fallback` is the first on value */
     LAY_DEPTH,     /* ids[0] int: on/off box, 1..3 buttons while on */
     LAY_OVERRIDE,  /* ids[0] int, -1 = leave alone: Override box, slider while on */
     LAY_TOKENS,    /* ids[0] comma-list string: a toggle per vocabulary token */
@@ -1421,6 +1421,8 @@ struct lay_row {
     const char *const *seg;      /* LAY_SEG captions; NULL = the enum's values */
     const double      *seg_val;  /* value each caption sets; NULL = its index */
     int                seg_n;
+    const char        *caption;   /* LAY_ONOFF checkbox caption */
+    int                fallback;  /* LAY_ONOFF first on value */
 };
 
 struct lay_section {
@@ -1439,7 +1441,8 @@ static const double      k_depth_vals[] = { 1.0, 0.0 };
 static const lay_row k_lay_display[] = {
     { LAY_ROW,    nullptr, { "fullscreen" } },
     { LAY_ROW,    nullptr, { "aspect" } },
-    { LAY_ROW,    nullptr, { "render_fps" } },
+    { LAY_ONOFF,  nullptr, { "render_fps" }, nullptr, nullptr, 0,
+      "Interpolation", 60 },
     { LAY_ROW,    nullptr, { "fov" } },
     { LAY_ROW,    nullptr, { "ssaa" } },
     { LAY_ROW,    nullptr, { "vsync" } },
@@ -1471,7 +1474,7 @@ static const lay_row k_lay_gameplay[] = {
     { LAY_ROW,    nullptr, { "freecam" } },
     { LAY_ROW,    nullptr, { "tick_scale" } },
     { LAY_DEPTH,  nullptr, { "runahead" } },
-    { LAY_REWIND, "Rewind", { "rewind" } },
+    { LAY_ONOFF,  "Rewind", { "rewind" }, nullptr, nullptr, 0, "", 30 },
     { LAY_REST,   "Gameplay" },
     { LAY_WARP,   "Level warp", { "warp_level", "warp_go" } },
     { LAY_SUB,    "Input" },
@@ -1675,9 +1678,9 @@ static void inline_widget(knob_desc_t *const *ks, int n)
     int flex = 0;
     for (int i = 0; i < n; i++)
         if (ks[i]->type != KNOB_BOOL) flex++;
-    const float sp = ImGui::GetStyle().ItemSpacing.x;
+    const float sp = ImGui::GetStyle().ItemInnerSpacing.x;
     for (int i = 0; i < n; i++) {
-        if (i > 0) ImGui::SameLine();
+        if (i > 0) same_line_inner();
         ImGui::PushID(i);
         if (ks[i]->type != KNOB_BOOL) {
             const float avail = ImGui::GetContentRegionAvail().x;
@@ -1712,26 +1715,46 @@ static void drawmode_widget(knob_desc_t *notex, knob_desc_t *wire)
     row_tooltip(idx == 2 ? wire : notex);
 }
 
-/** @brief Draw the rewind knob as an on/off box, with the window field beside it only while on.
+/** @brief Find the last on-value remembered for a knob, seeding it on first use.
  *
- * Turning it on restores the last window that was on, 30 seconds before any. */
-static void rewind_widget(knob_desc_t *k)
+ * @param k The knob.
+ * @param seed The value stored when the knob has no slot yet.
+ * @return The knob's slot; valid for the session. */
+static int *last_on_slot(const knob_desc_t *k, int seed)
 {
-    static int s_last_on = 30;
+    static std::deque<std::pair<const knob_desc_t *, int>> s_last;
+    for (auto &e : s_last)
+        if (e.first == k) return &e.second;
+    s_last.emplace_back(k, seed);
+    return &s_last.back().second;
+}
+
+/** @brief Draw an int knob whose 0 is off as a checkbox, with its value field beside it only while on.
+ *
+ * Turning it on restores the last value that was on: the boot value when it
+ * was on, else `fallback`.
+ * @param k The knob.
+ * @param caption The checkbox caption; "" for none.
+ * @param fallback The value turning it on uses before any was on. */
+static void onoff_int_widget(knob_desc_t *k, const char *caption, int fallback)
+{
+    int *last = last_on_slot(k, k->boot_num > 0.0 ? (int)k->boot_num : fallback);
     const double live = knob_num(k);
-    if (live > 0.0) s_last_on = (int)live;
+    if (live > 0.0) *last = (int)live;
     bool on = live > 0.0 || s_edit_row == k;
     const bool disabled = (k->mut != KNOB_LIVE || !k->set_num);
     if (disabled) ImGui::BeginDisabled();
-    if (ImGui::Checkbox("##on", &on) && !disabled) {
-        const double v = on ? (double)s_last_on : 0.0;
+    char id[64];
+    snprintf(id, sizeof id, "%s##on", caption);
+    if (ImGui::Checkbox(id, &on) && !disabled) {
+        const double v = on ? (double)*last : 0.0;
         if (k->set_num(k, v) == 0)
             OPL_INFO_F("devui", "%s = %d", k->id, (int)v);
     }
     if (disabled) ImGui::EndDisabled();
     row_tooltip(k);
     if (!on) return;
-    ImGui::SameLine();
+    same_line_inner();
     ImGui::SetNextItemWidth(-FLT_MIN);
     knob_widget(k);
 }
@@ -1761,7 +1784,7 @@ static void depth_widget(knob_desc_t *k)
     const int max = (int)k->num_max < (int)LAY_N(k_depths)
                         ? (int)k->num_max : (int)LAY_N(k_depths);
     const lay_row depths = { LAY_SEG, nullptr, { k->id }, k_depths, k_depth_v, max };
-    ImGui::SameLine();
+    same_line_inner();
     seg_widget(k, depths);
 }
 
@@ -1771,14 +1794,7 @@ static void depth_widget(knob_desc_t *k)
 static void override_widget(knob_desc_t *k)
 {
     const int live = (int)knob_num(k);
-    static std::vector<std::pair<const knob_desc_t *, int>> s_last;
-    int *last = nullptr;
-    for (auto &e : s_last)
-        if (e.first == k) last = &e.second;
-    if (!last) {
-        s_last.emplace_back(k, (int)k->num_max);
-        last = &s_last.back().second;
-    }
+    int *last = last_on_slot(k, (int)k->num_max);
     if (live >= 0) *last = live;
     bool on = live >= 0;
     const bool disabled = (k->mut != KNOB_LIVE || !k->set_num);
@@ -1790,7 +1806,7 @@ static void override_widget(knob_desc_t *k)
     }
     row_tooltip(k);
     if (on) {
-        ImGui::SameLine();
+        same_line_inner();
         ImGui::SetNextItemWidth(-FLT_MIN);
         int v = live >= 0 ? live : *last;
         if (ImGui::SliderInt("##v", &v, 0, (int)k->num_max) && !disabled &&
@@ -1889,7 +1905,7 @@ static void warp_widget(knob_desc_t *lvl, knob_desc_t *go)
     const char *cap = go->action_label ? go->action_label : "Apply";
     const ImGuiStyle &st = ImGui::GetStyle();
     const float bw = ImGui::CalcTextSize(cap).x + st.FramePadding.x * 2.0f;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw - st.ItemSpacing.x);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw - st.ItemInnerSpacing.x);
     const int idx = (int)knob_num(lvl);
     const char *preview =
         (idx >= 0 && idx < lvl->enum_count) ? lvl->enum_values[idx] : "";
@@ -1905,7 +1921,7 @@ static void warp_widget(knob_desc_t *lvl, knob_desc_t *go)
     }
     row_tooltip(lvl);
 
-    ImGui::SameLine();
+    same_line_inner();
     const bool ready = !go->get_num || go->get_num(go) != 0.0;
     if (!ready) ImGui::BeginDisabled();
     if (ImGui::Button(cap) && go->set_num && go->set_num(go, 1.0) == 0)
@@ -1927,7 +1943,7 @@ static void lay_draw_knob_row(const lay_ctx &c, const lay_row &r)
     case LAY_SEG:      seg_widget(ks[0], r);           break;
     case LAY_INLINE:   inline_widget(ks, n);           break;
     case LAY_DRAWMODE: drawmode_widget(ks[0], ks[1]);  break;
-    case LAY_REWIND:   rewind_widget(ks[0]);           break;
+    case LAY_ONOFF:    onoff_int_widget(ks[0], r.caption, r.fallback); break;
     case LAY_DEPTH:    depth_widget(ks[0]);            break;
     case LAY_OVERRIDE: override_widget(ks[0]);         break;
     case LAY_TOKENS:   tokens_widget(ks[0]);           break;
@@ -2055,16 +2071,26 @@ static void lay_draw_unplaced(const lay_ctx &c)
     }
 }
 
-/** @brief Draw the search field over the full panel width, a magnifier drawn inside its left edge.
+/** @brief Draw the search field and the Save settings button on one line spanning the section headers' width, a magnifier drawn inside the field's left edge.
  *
  * @param f The panel's filter; rebuilt when the text changes. */
 static void draw_search(ImGuiTextFilter &f)
 {
+    /* The section headers overhang the content region by half the window
+     * padding on each side; the search field and the Save button span the
+     * same width, the button at the right end. */
+    const ImGuiStyle &st = ImGui::GetStyle();
+    const float half = IM_TRUNC(st.WindowPadding.x * 0.5f);
+    const float save_w = ImGui::CalcTextSize("Save settings").x + st.FramePadding.x * 2.0f;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() - half);
+    const float search_w = ImGui::GetContentRegionAvail().x + half - save_w -
+                           st.ItemInnerSpacing.x;
+
     const float icon = ImGui::GetFontSize();
-    const ImVec2 pad = ImGui::GetStyle().FramePadding;
+    const ImVec2 pad = st.FramePadding;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(pad.x * 2.0f + icon, pad.y));
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::SetNextItemWidth(search_w);
     if (ImGui::InputTextWithHint("##search", "Search settings", f.InputBuf,
                                  IM_COUNTOF(f.InputBuf)))
         f.Build();
@@ -2081,9 +2107,12 @@ static void draw_search(ImGuiTextFilter &f)
     const float d = r * 0.7071f;
     dl->AddLine(ImVec2(ctr.x + d, ctr.y + d),
                 ImVec2(ctr.x + d + r * 0.75f, ctr.y + d + r * 0.75f), col, 2.0f);
+
+    ImGui::SameLine(0.0f, st.ItemInnerSpacing.x);
+    draw_save_button(save_w);
 }
 
-/** @brief Draw the "openpete config" window: search field, Save bar, the laid-out sections, then any unplaced registry section.
+/** @brief Draw the "openpete config" window: search field and Save button, the laid-out sections, then any unplaced registry section.
  *
  * Writes the window's close state back to the open flag and clears the boot
  * reveal. */
@@ -2103,7 +2132,6 @@ static void draw_panel(void)
 
     static ImGuiTextFilter s_filter;
     draw_search(s_filter);
-    draw_save_bar();
 
     lay_ctx c;
     c.ks = knob_registry(&c.n);

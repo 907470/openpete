@@ -23,8 +23,9 @@ display's refresh rate.
 The settings menu's **FPS** row offers 30, 60, then steps of 60 below the
 refresh rate, the refresh rate itself, and **UNLIMITED**, which draws as fast
 as the GPU allows (still capped by VSync when it is on). The dev overlay's
-**Render FPS** row takes 0 to 1000 <!-- id: knob:render_fps --> and shows the
-current target.
+**Render FPS** row has an **Interpolation** checkbox; unchecked is a target of
+0, one present per tick, and checked shows the target beside it, 1 to 1000
+<!-- id: knob:render_fps -->, starting at the current one.
 
 ## Interpolation
 

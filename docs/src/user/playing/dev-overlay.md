@@ -22,10 +22,11 @@ hotkey bindings pause and the PlayStation pad is released.
 | Button tooltip | A button's status, such as **not in a level**, above its description. |
 | Right click on a row title | **Reset to boot value**, **Copy as CLI flag**, **Copy as env line**. |
 
-**Save settings** writes every row changed this session into the `[saved]`
-block of the config file, as the settings menu's **SETTINGS** row does.
-**Reset saved** empties that block; the effect shows at the next start.
-Closing the panel writes nothing. See
+**Save settings**, beside the search field, writes every row changed this
+session into the `[saved]` block of the config file, as the settings menu's
+**SETTINGS** row does; its tooltip shows the result of the last save. The
+settings menu's **CLEAR SAVED** empties that block. Closing the panel writes
+nothing. See
 [Saving your settings](settings-menu.md#saving-your-settings).
 
 ## Sections
@@ -53,7 +54,8 @@ visibility) highlight the current choice. **Color depth** **15-bit** is the
 dither setting on, **24-bit** off. **Runahead** has a checkbox; buttons for 1,
 2 and 3 ticks appear beside it while runahead is on. The same pattern holds
 elsewhere: a row's further controls show only while its first control is
-on, as Field of view's slider (while **Original** is off), Performance
+on, as Render FPS's target (while **Interpolation** is on), Field of view's
+slider (while **Original** is off), Performance
 stats' position, Notifications' position and timeout, Fog's scale, and the
 **SFX volume** and **Music volume** sliders beside their **Override**
 checkbox.
