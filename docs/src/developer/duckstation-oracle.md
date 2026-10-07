@@ -221,6 +221,16 @@ per kind `on voices` (setkey), `voice` (keystatus), `buf` (allkeys), or
 adsr1 adsr2` (voiceattr; a field outside the mask is whatever the
 caller's struct held). The capture refuses a run with zero rows.
 
+KIND `spuwrite` (SpuWrite, a main-RAM to SPU-RAM transfer) adds `src size
+n` and then `n` voice heads `v:start:cur:counter`, one per voice whose
+envelope is not off, read after the SPU has generated every sample due at
+the call's tick: the voice index, its start address register and the
+address of the ADPCM block it decodes (both in bytes), and its 4.12
+position counter (bits 12-16 the sample in the block's 28, bits 4-11 the
+interpolation fraction). A streaming ring refill is placed against the
+head of the voice that plays the ring. The header and the trailer name
+the kind only when it is armed.
+
 `--spureg KIND:HEX` (repeatable; DuckStation `-psxtrace-spureg`) writes
 `<trace>.spureg`: one row per execution of the libspu instruction at HEX
 that accesses an SPU register, `kon` a store to the key-on register
@@ -470,7 +480,9 @@ scripts/capture_psx_oracle_ds.sh --game spyro-2
 scripts/capture_psx_oracle_ds.sh --game spyro-3
 ```
 
-Options on the command line override the recipe's. Spyro 2 and 3 anchor
+Options on the command line override the recipe's; `--recipe PATH` (with
+`--game`) sources another recipe of the game in place of `oracle.conf`.
+Spyro 2 and 3 anchor
 at the first call of each main-loop iteration, record every sidecar
 (Spyro 2 without the raw-register floor: its own code never touches the
 controller's registers), skip libcd's own `VSync(-1)` polls, and boot
@@ -492,6 +504,46 @@ capture with software GL (`LIBGL_ALWAYS_SOFTWARE=1`,
 `MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`), asserts the trace exists and
 carries the build hash, deletes a RAM-carrying trace under `tests/golden/`,
 and prints `tools.psxtrace_format info` on it.
+
+### Driven captures
+
+A reference that must reach a state past the menus (a cutscene after
+starting a new game) cannot replay a per-VBL input log recorded under
+openpete's load timing: under the drive's load times the presses land in
+another state. `--pad-script PATH` (DuckStation `-pad-script`) drives the
+port 1 controller from steps that wait on guest RAM, advanced once per
+VBL (DuckStation's frame counter, the `vbl` column of every sidecar)
+before the VBL's emulation:
+
+| step | effect |
+| --- | --- |
+| `wait N` | release every button for N VBLs |
+| `tap BUTTONS HOLD` | hold BUTTONS for HOLD VBLs |
+| `mash BUTTONS HOLD PERIOD until COND` | hold BUTTONS for the first HOLD VBLs of every PERIOD until COND holds |
+| `until COND` | release every button until COND holds |
+| `quit` | shut the system down |
+
+BUTTONS is a `+`-joined list of `cross circle square triangle start
+select up down left right l1 r1 l2 r2`; COND is `W:HEX OP VALUE`, a byte
+(`b`), halfword (`h`) or word (`w`) read of the guest address HEX
+compared `eq` or `ne` to VALUE. Each completed step is logged with its
+VBL; the script keeps the log, filtered of the per-breakpoint lines, as
+`<out>.log` and refuses a run that ended before the script's last step.
+`--spu-dump` writes the SPU final mix (post voice volume, reverb and main
+volume; 44100 Hz stereo s16) to `<out>.wav` through `OPENPETE_SPU_DUMP`
+and refuses an empty dump.
+
+`games/spyro-2/oracle-cutscene-intro.conf` captures the Spyro 2 intro
+cutscene into `tests/golden/spyro-2/psxtrace-cutscene-intro.bin`: the
+attract recipe's recorders, `games/spyro-2/oracle-cutscene-intro.pad`
+(Cross every 60 VBLs until the top-level state word 0x800681C8 reads 5,
+then until it leaves 6, then 120 VBLs), the watched word 0x80068C50
+(the speech ring's chunk index: -1 at the stream read issue, the chunk at
+the ring refill), `.spuq` `spuwrite` rows and the final-mix dump:
+
+```sh
+scripts/capture_psx_oracle_ds.sh --game spyro-2 --recipe games/spyro-2/oracle-cutscene-intro.conf
+```
 
 Re-blessing a golden (deleting it so the gate recaptures it under a new
 DuckStation head, manifest or recipe) is only legal for an intentional

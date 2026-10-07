@@ -12,6 +12,9 @@
 #       (the recipe in games/spyro-3/oracle.conf: golden path, frame count,
 #        disc, manifest, anchor and recorder options; any option given on the
 #        command line overrides the recipe's)
+#   scripts/capture_psx_oracle_ds.sh --game spyro-2 \
+#       --recipe games/spyro-2/oracle-cutscene-intro.conf
+#       (another recipe of the game in place of its oracle.conf)
 #   scripts/capture_psx_oracle_ds.sh \
 #       --out tests/golden/spyro-1/psxtrace-titlescreen-baseline.bin \
 #       --frames 600
@@ -82,6 +85,13 @@
 #                                  refuses a capture in which a named kind
 #                                  recorded no access
 #           --no-card              reference boots with no memory card
+#           --pad-script PATH      drive the port 1 controller from PATH
+#                                  (RAM-conditioned steps, regtest -pad-script);
+#                                  the full log is kept in <out>.log and a run
+#                                  that ends before the script's last step is
+#                                  refused
+#           --spu-dump             write the SPU final mix (44100 Hz stereo
+#                                  s16) to <out>.wav; refuses an empty dump
 #           --gte-dump LO-HI       also write every GTE instruction of records
 #                                  LO..HI to <out>.gtedump ({rec, pc, instr,
 #                                  written bitmap, pre[64], post[64]} in read
@@ -106,6 +116,7 @@ MAX_RUNTIME=""
 VBLPOS=0; SPUQ=(); SPUREG=()
 CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
+PAD_SCRIPT=""; SPU_DUMP=0
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 MANIFEST="${OPENPETE_REGIONS_MANIFEST:-games/spyro-1/manifest/gameplay_state_regions.toml}"
 
@@ -114,11 +125,14 @@ MANIFEST="${OPENPETE_REGIONS_MANIFEST:-games/spyro-1/manifest/gameplay_state_reg
 # occurrence wins for every single-valued option).
 GAME=""
 _args=("$@")
+RECIPE=""
 for ((_i = 0; _i < ${#_args[@]} - 1; _i++)); do
     [[ "${_args[$_i]}" == "--game" ]] && GAME="${_args[$((_i + 1))]}"
+    [[ "${_args[$_i]}" == "--recipe" ]] && RECIPE="${_args[$((_i + 1))]}"
 done
+[[ -z "$RECIPE" || -n "$GAME" ]] || { echo "[capture-ds] --recipe needs --game" >&2; exit 64; }
 if [[ -n "$GAME" ]]; then
-    CONF="games/$GAME/oracle.conf"
+    CONF="${RECIPE:-games/$GAME/oracle.conf}"
     [[ -f "$CONF" ]] || { echo "[capture-ds] no recipe: $CONF" >&2; exit 64; }
     GOLDEN=""; CAPTURE_ARGS=()
     # shellcheck disable=SC1090
@@ -128,7 +142,9 @@ if [[ -n "$GAME" ]]; then
 fi
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --game) shift 2 ;;
+        --game|--recipe) shift 2 ;;
+        --pad-script) PAD_SCRIPT="$2"; shift 2 ;;
+        --spu-dump) SPU_DUMP=1; shift ;;
         --out) OUT="$2"; shift 2 ;;
         --disc) DISC="$2"; shift 2 ;;
         --manifest) MANIFEST="$2"; shift 2 ;;
@@ -231,10 +247,16 @@ fi
 for q in "${SPUQ[@]}"; do REC_ARGS+=(-psxtrace-spuq "$q"); done
 for q in "${SPUREG[@]}"; do REC_ARGS+=(-psxtrace-spureg "$q"); done
 [[ -n "$GTE_DUMP" ]] && REC_ARGS+=(-psxtrace-gte-dump "$GTE_DUMP")
+if [[ -n "$PAD_SCRIPT" ]]; then
+    [[ -f "$PAD_SCRIPT" ]] || { echo "[capture-ds] pad script missing: $PAD_SCRIPT" >&2; exit 64; }
+    REC_ARGS+=(-pad-script "$PAD_SCRIPT")
+fi
+DUMP_ENV=()
+[[ "$SPU_DUMP" == 1 ]] && DUMP_ENV=(OPENPETE_SPU_DUMP="$OUT.wav")
 
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" \
-      "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg"
+      "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg" "$OUT.wav" "$OUT.log"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
 # the worst case (4-vbl-per-game-frame splash logos before the title-
@@ -248,6 +270,7 @@ echo "[capture-ds] capturing $FRAMES records @ PC=$ANCHOR_PC hit=$HIT -> $OUT"
 # bash's job-control "Aborted" line doesn't leak into the wrapper's
 # output.
 ulimit -c 0
+env "${DUMP_ENV[@]}" \
 LIBGL_ALWAYS_SOFTWARE=1 \
 MESA_LOADER_DRIVER_OVERRIDE=llvmpipe \
 sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
@@ -260,9 +283,26 @@ sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
     "${REC_ARGS[@]}" \
     -console \
     "$DISC" \
-  | grep -E "psxtrace|FPS|Exiting" \
-  | tail -5
+  | { grep -avE "I/CPU|ReportDebuggerEvent" || true; } > "$OUT.log"
+grep -E "psxtrace|FPS|Exiting" "$OUT.log" | tail -5
 echo "[capture-ds] done"
+if [[ -n "$PAD_SCRIPT" ]]; then
+    grep -E "pad-script" "$OUT.log" | sed 's/^.*pad-script/[capture-ds] pad-script/; s/\x1b\[[0-9;]*m//g'
+    STEPS="$(sed 's/#.*//' "$PAD_SCRIPT" | grep -c '[^[:space:]]' || true)"
+    LAST="$(sed -n "s/^.*pad-script: step \([0-9]*\) .*/\1/p" "$OUT.log" | tail -1)"
+    if [[ -z "$STEPS" || -z "$LAST" || "$LAST" != "$((STEPS - 1))" ]]; then
+        echo "[capture-ds] FAIL: the run ended at pad-script step ${LAST:-none} of ${STEPS:-?} (see $OUT.log)" >&2
+        exit 1
+    fi
+fi
+if [[ "$SPU_DUMP" == 1 ]]; then
+    WAV_FRAMES="$(python3 -c 'import sys, wave; print(wave.open(sys.argv[1]).getnframes())' "$OUT.wav" 2>/dev/null || true)"
+    if [[ -z "$WAV_FRAMES" || "$WAV_FRAMES" == 0 ]]; then
+        echo "[capture-ds] FAIL: SPU dump $OUT.wav is missing or holds no frames" >&2
+        exit 1
+    fi
+    echo "[capture-ds] SPU final mix: $WAV_FRAMES frames -> $OUT.wav"
+fi
 [[ -f "$OUT" ]] || { echo "[capture-ds] FAIL: trace not produced" >&2; exit 1; }
 # A golden is hashes only. A trace carrying RAM payloads (FLAG_HAS_RAM) or
 # any sibling dump under tests/golden/ is deleted, not left for a later

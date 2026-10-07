@@ -29,3 +29,6 @@
 0029-regtest-exact-psxtrace-ticks-VBLANK-position-and-lib.patch
 0030-GPU-Use-3412.5-clock-NTSC-lines-and-3405-clock-PAL-l.patch
 0031-regtest-SPU-register-access-recorder-psxtrace-spureg.patch
+0032-spu-the-final-mix-dump-writes-in-the-VU-meter-build-.patch
+0033-regtest-spuwrite-kind-of-the-libspu-call-recorder-wi.patch
+0034-regtest-pad-script-drives-the-port-1-controller-from.patch
