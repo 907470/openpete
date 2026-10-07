@@ -161,6 +161,11 @@ title-demo-camcut|5800|100||5852
 # held cut draws tick N-1's sets under tick N-1's camera. Blessed pre-fix.
 title-demo-hold-player|7100|100||7130,7131
 title-demo-hold-particles|10400|100||10479,10480
+# title-demo-segment-fade / -2: attract-demo segment changes, where the
+# loading image fades in on ticks with no 3D producer; the canonical present
+# drew the previous presented scene and its fade. Blessed pre-fix.
+title-demo-segment-fade|3000|100||3096,3100,3124
+title-demo-segment-fade-2|14500|100||14521
 # sunny-villa @heldfx: held presents where glint and tracers drew tick N's
 # set (or none) instead of tick N-1's. Blessed pre-fix.
 sunrise-spring-sunny-villa-portal-entry@heldfx|1900|100||1927,2431,2493
