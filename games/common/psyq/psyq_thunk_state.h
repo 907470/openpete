@@ -41,6 +41,10 @@
  *                           (pack_ver 5)
  *   [41..42] defer_clock    that completion's clock value on the reference,
  *                           low word first (pack_ver 5)
+ *   [43]     defer_stream   1 while the deferred read is a drive-timed
+ *                           stream read (pack_ver 6)
+ *   [44]     pause_owed     VBLs until that read's closing CdlPause
+ *                           completes (pack_ver 6)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -51,13 +55,14 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 5u
-#define PSYQ_THUNK_STATE_WORDS    43u
+#define PSYQ_THUNK_STATE_PACK_VER 6u
+#define PSYQ_THUNK_STATE_WORDS    45u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
 #define PSYQ_THUNK_STATE_V2_BYTES 100u
 #define PSYQ_THUNK_STATE_V3_BYTES 104u
 #define PSYQ_THUNK_STATE_V4_BYTES 120u
+#define PSYQ_THUNK_STATE_V5_BYTES 172u
 
 /** @brief Return the byte length of a pack whose first word is `ver`.
  *

@@ -487,11 +487,12 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         }
         /* A spin that polls a deferred disc read without waiting on VSync
          * spent VBLs on the reference; every so many entries without a
-         * VBL, the schedule passes one here (psyq_thunks.cpp). */
+         * VBL, the schedule or the drive model passes one here
+         * (psyq_thunks.cpp). */
         if ((s_hang_calls_since_tick & 2047u) == 2047u) {
-            extern void psyq_sched_spin_tick(CPUState* cpu) __attribute__((weak));
+            extern void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) __attribute__((weak));
             openpete_psxtrace_gate_host_enter();
-            if (psyq_sched_spin_tick) psyq_sched_spin_tick(cpu);
+            if (psyq_sched_spin_tick) psyq_sched_spin_tick(cpu, addr);
             openpete_psxtrace_gate_host_leave();
         }
         /* Only fill the ring for the first HANG_RING dispatches of each

@@ -245,3 +245,26 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
 /* Disc layout is not mapped for this game yet. */
 const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }
 
+
+/* Stream reads. The disc reader in str.c has two entries over the same
+ * request words: func_80050680 issues a read (CdRead returns to 0x80050758)
+ * and returns, its callers polling the busy check func_800503F8 from their
+ * main loop; func_80050578 issues one and spins on func_800503F8 before and
+ * after it (calls returning to 0x800505B0 and 0x80050658) without calling
+ * VSync. func_800503F8 reports busy while D_8006E480 is set (the read
+ * callback func_80050504 clears it) and, once clear, until CdSync(1)
+ * reports the closing CdlPause complete. A cutscene plays with game.state
+ * 0x8006E344 at 6, and each cutscene overlay streams through
+ * func_80050680. */
+/* Classify a read as a cutscene stream read: the asynchronous reader's CdRead while game.state is cutscene playback (6). */
+int psyq_game_cd_read_streamed(CPUState* cpu) {
+    return cpu->ra == 0x80050758u && cpu->read_word(0x8006E344u) == 6u;
+}
+/* Whether the entry is inside func_800503F8 called from func_80050578's spins.
+ *
+ * The recompiled body can enter through more than one block, so any
+ * address of the function counts.
+ */
+int psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr) {
+    return addr >= 0x800503F8u && addr < 0x80050504u && (cpu->ra == 0x800505B0u || cpu->ra == 0x80050658u);
+}

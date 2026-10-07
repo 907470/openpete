@@ -222,6 +222,27 @@ int      psyq_game_cd_read_in_load(CPUState* cpu);
  * @return The cap in VBLs, or 0 for no per-read cap. */
 uint32_t psyq_game_cd_read_delay_cap(void);
 
+/* Stream reads: the disc reads a cutscene streams its speech and animation
+ * through, timed by the thunk layer's drive model instead of completing at
+ * issue. */
+/** @brief Classify the data read being issued as a stream read the drive model times.
+ *
+ * A stream read is one the game issues through its asynchronous reader
+ * while a cutscene plays and polls from its main loop, returning to VSync
+ * between polls. A read the game spins on in guest code must answer 0
+ * unless psyq_game_cd_spin_wait names that spin.
+ * @param cpu Guest CPU state at the CdRead call (ra is the call site).
+ * @return 1 when the read is a stream read, else 0. */
+int      psyq_game_cd_read_streamed(CPUState* cpu);
+/** @brief Whether the function being entered is the game's synchronous reader polling the drive in a spin that never calls VSync.
+ *
+ * The dispatcher asks every 2048 entries without a VBL; while a stream
+ * read or its closing CdlPause is owed, a yes passes one VBL there.
+ * @param cpu Guest CPU state at the entry (ra is the caller's return address).
+ * @param addr Guest address of the function being entered.
+ * @return 1 for the spin's poll, else 0. */
+int      psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr);
+
 /* The load window as the oracle sees it. The reference records every store
  * to the game's loader-state word (the golden's .watch sibling) and
  * openpete samples it at every anchor hit; a loader whose ticks are CPU time

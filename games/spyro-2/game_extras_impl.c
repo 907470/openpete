@@ -159,3 +159,26 @@ uint16_t psyq_game_root_counter2(void) { return 0x4876u; }
 
 /* Disc layout is not mapped for this game yet. */
 const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }
+
+/* Stream reads. The disc reader in str.c has two entries over the same
+ * request words: func_80013918 issues a read (CdRead returns to 0x800139F0)
+ * and returns, its callers polling the busy check func_80013690 from their
+ * main loop; func_80013810 issues one and spins on func_80013690 before and
+ * after it (calls returning to 0x80013848 and 0x800138F0) without calling
+ * VSync. func_80013690 reports busy while D_800682E8 is set (the read
+ * callback func_8001379C clears it) and, once clear, until CdSync(1)
+ * reports the closing CdlPause complete. A cutscene plays with the top
+ * state D_800681C8 at 6, and its loop func_titlescreen_and_loading_800742F8
+ * streams through func_80013918 (0x800748D4). */
+/* Classify a read as a cutscene stream read: the asynchronous reader's CdRead while the top state is cutscene playback (6). */
+int psyq_game_cd_read_streamed(CPUState* cpu) {
+    return cpu->ra == 0x800139F0u && cpu->read_word(0x800681C8u) == 6u;
+}
+/* Whether the entry is inside func_80013690 called from func_80013810's spins.
+ *
+ * The recompiled body enters through more than one block (0x80013690,
+ * 0x80013698), so any address of the function counts.
+ */
+int psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr) {
+    return addr >= 0x80013690u && addr < 0x8001379Cu && (cpu->ra == 0x80013848u || cpu->ra == 0x800138F0u);
+}

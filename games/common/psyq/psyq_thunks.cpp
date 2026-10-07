@@ -917,6 +917,39 @@ static uint32_t s_cd_defer_rec = 0, s_cd_defer_vbl = 0; /* the reference's compl
 static uint64_t s_cd_defer_clock = 0;    /* its clock value on the reference */
 static uint32_t s_cd_load_budget   = 0;  /* VBLs the current load has left to spend */
 static uint32_t s_cd_load_prev     = 0;  /* in_load of the previous read (edge) */
+static uint32_t s_cd_defer_stream  = 0;  /* 1 while the deferred read is a stream read (drive-timed) */
+static uint32_t s_cd_pause_owed    = 0;  /* VBLs until the closing CdlPause of a stream read completes */
+static uint32_t s_cd_stream_reads  = 0;  /* stream reads timed by the drive model (engagement count) */
+static uint32_t s_cd_stream_spin_vbls = 0; /* VBLs passed in the game's synchronous-reader spins (engagement count) */
+
+/* Stream reads (psyq_game_cd_read_streamed) run on a drive model instead of
+ * the level-load budget: a read the game polls from its main loop while a
+ * cutscene plays completes when a double-speed drive would deliver its last
+ * sector, and libcd's closing CdlPause completes later still, which is what
+ * the game's busy check (CdSync(1) == CdlComplete) waits for. The constants
+ * are in CPU cycles (33868800 Hz) and are read off the reference's stream
+ * reads (31-44 sectors, mode 0x80): one sector per 1/150 s after a fixed
+ * 2.73 VBLs (the seek and rotational wait from a paused head, its mean;
+ * the reference's spans 0.7-4.5), so the last sector's interrupt is seen
+ * from the first VBL at or after that time; the CdlPause's second response
+ * arrives 4 VBLs after the last sector's data-ready interrupt. */
+#define CD_STREAM_SECTOR_CYCLES 225792u   /* 33868800 / 150 */
+#define CD_STREAM_SEEK_CYCLES   1545510u  /* 2.73 VBL */
+#define CD_STREAM_PAUSE_VBLS    4u
+
+/** @brief Return the VBLs a stream read of `sectors` sectors stays in flight on the drive model, rounded up to a whole VBL.
+ *
+ * The VBL is 2250000/37609 Hz of the 33868800 Hz CPU clock, so a cycle
+ * count c is c * 2250000 / (33868800 * 37609) VBLs.
+ * @param sectors The read's sector count.
+ * @return The VBLs from the issue to the last sector's arrival, at least 1. */
+static uint32_t cd_stream_read_vbls(int sectors) {
+    const uint64_t n = sectors > 0 ? (uint64_t)sectors : 0u;
+    const uint64_t cycles = CD_STREAM_SEEK_CYCLES + n * CD_STREAM_SECTOR_CYCLES;
+    const uint64_t den = 33868800ull * 37609ull;
+    const uint64_t v = (cycles * 2250000ull + den - 1u) / den;
+    return v ? (uint32_t)v : 1u;
+}
 
 /* libpad runs one controller command per vsync its handler runs on, so a
  * request that needs a command sequence keeps the pad in PadStateExecCmd
@@ -1089,14 +1122,51 @@ static uint32_t cd_read_delay_for(CPUState* cpu, int sectors) {
     return d;
 }
 
+/** @brief Return the VBLs a data read stays in flight off the schedule: the level-load budget, else the drive model for a stream read.
+ *
+ * A read the level-load budget does not defer and the game classifies as a
+ * stream read (psyq_game_cd_read_streamed) is deferred by
+ * cd_stream_read_vbls and marked, so its delivery starts the closing
+ * CdlPause.
+ * @param cpu Guest CPU state at the CdRead call.
+ * @param sectors The read's sector count.
+ * @return VBLs to defer the read's completion. */
+static uint32_t cd_read_or_stream_delay_for(CPUState* cpu, int sectors) {
+    uint32_t delay = cd_read_delay_for(cpu, sectors);
+    if (delay || !psyq_game_cd_read_streamed(cpu)) return delay;
+    delay = cd_stream_read_vbls(sectors);
+    s_cd_defer_stream = 1u;
+    s_cd_stream_reads++;
+    OPL_INFO_F("cd", "stream read %u: %d sectors at 0x%08X complete in %u VBL(s), "
+               "CdlPause %u later (vbl=%d, spin VBLs so far %u)", s_cd_stream_reads, sectors,
+               cpu->a1, delay, CD_STREAM_PAUSE_VBLS, SDL_GetAtomicInt(&openpete_vbl),
+               s_cd_stream_spin_vbls);
+    return delay;
+}
+
 /** @brief Charge one VBL to a guest spin that polls a deferred disc read without calling VSync.
  *
  * The reference spent the read's VBLs, interrupts included, inside such a
- * spin. The dispatcher calls this every 2048 dispatches without a VBL; it
- * charges nothing unless the schedule is active and a read's completion is
- * deferred.
- * @param cpu Guest CPU state. */
-extern "C" void psyq_sched_spin_tick(CPUState* cpu) {
+ * spin. The dispatcher calls this every 2048 dispatches without a VBL. Off
+ * the schedule it runs one VBL body when a stream read or its closing
+ * CdlPause is owed and the entry is the game's synchronous reader polling
+ * the drive (psyq_game_cd_spin_wait); on the schedule it charges one VBL
+ * when a read's completion is deferred; otherwise nothing.
+ * @param cpu Guest CPU state.
+ * @param addr Guest address of the function being entered. */
+extern "C" void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) {
+    /* A stream read the game spins on without VSync (its synchronous
+     * reader waiting for the drive to go idle before or after its own
+     * read): the VBLs the drive still owes pass in the spin, one per call,
+     * as the VBL interrupts did on hardware. */
+    if (!openpete_sched_active() && (s_cd_defer_stream || s_cd_pause_owed) &&
+        psyq_game_cd_spin_wait(cpu, addr)) {
+        s_cd_stream_spin_vbls++;
+        OPL_DEBUG_F("cd", "stream read polled in a spin, 1 VBL passes (%u + %u owed)",
+                    s_cd_defer_owed, s_cd_pause_owed);
+        psyq_vbl_body(cpu, 1);
+        return;
+    }
     if (!openpete_sched_active() || !s_cd_defer_pending) return;
     OPL_DEBUG_F("cd", "schedule: deferred read polled in a spin, 1 VBL passes (%u owed)", s_cd_defer_owed);
     sched_charge_to(cpu, openpete_sched_pos() + 1u, "spin");
@@ -1231,13 +1301,18 @@ static void cd_defer_after_call(CPUState* cpu) {
  * @param vbls VBLs the position advances by; 0 checks the current one. */
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
     cd_events_tick(vbls);
-    if (!s_cd_defer_pending) return;
+    if (!s_cd_defer_pending) {
+        s_cd_pause_owed = (vbls >= s_cd_pause_owed) ? 0u : s_cd_pause_owed - vbls;
+        return;
+    }
+    uint32_t left = 0u;
     if (s_cd_defer_vbl) {
         /* The completion callback ran at the reference's VBLANK inside its
          * record; it is delivered when the position reaches it there. */
         if (!cd_ref_seen(s_cd_defer_rec, s_cd_defer_vbl, vbls)) return;
         s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
     } else {
+        left = (vbls > s_cd_defer_owed) ? vbls - s_cd_defer_owed : 0u;
         s_cd_defer_owed = (vbls >= s_cd_defer_owed) ? 0u : s_cd_defer_owed - vbls;
         if (s_cd_defer_owed) return;
     }
@@ -1245,6 +1320,12 @@ static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
     s_cd_defer_pending = 0u;
     cd_land_rest();
     cd_read_complete(cpu);
+    /* A stream read's closing CdlPause is in flight from here; VBLs of this
+     * advance past the completion count toward it. */
+    if (s_cd_defer_stream) {
+        s_cd_defer_stream = 0u;
+        s_cd_pause_owed = (left >= CD_STREAM_PAUSE_VBLS) ? 0u : CD_STREAM_PAUSE_VBLS - left;
+    }
 }
 
 /* --- The latch pack (psyq_thunk_state.h) --------------------------------- */
@@ -1293,6 +1374,8 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 40, s_cd_defer_vbl);
     put_word(p, 41, (uint32_t)s_cd_defer_clock);
     put_word(p, 42, (uint32_t)(s_cd_defer_clock >> 32));
+    put_word(p, 43, s_cd_defer_stream);
+    put_word(p, 44, s_cd_pause_owed);
 }
 
 extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
@@ -1300,7 +1383,8 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 2u) return PSYQ_THUNK_STATE_V2_BYTES;
     if (ver == 3u) return PSYQ_THUNK_STATE_V3_BYTES;
     if (ver == 4u) return PSYQ_THUNK_STATE_V4_BYTES;
-    if (ver == 5u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 5u) return PSYQ_THUNK_STATE_V5_BYTES;
+    if (ver == 6u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -1347,6 +1431,9 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     s_cd_defer_rec     = (ver >= 5u) ? get_word(p, 39) : 0u;
     s_cd_defer_vbl     = (ver >= 5u) ? get_word(p, 40) : 0u;
     s_cd_defer_clock   = (ver >= 5u) ? ((uint64_t)get_word(p, 42) << 32 | get_word(p, 41)) : 0u;
+    /* A pack without the stream-read words predates the drive model: none owed. */
+    s_cd_defer_stream  = (ver >= 6u) ? get_word(p, 43) : 0u;
+    s_cd_pause_owed    = (ver >= 6u) ? get_word(p, 44) : 0u;
     uint32_t card[PSX_BIOS_CARD_STATE_WORDS] = { 0u };
     if (ver >= 5u)
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = get_word(p, 31u + i);
@@ -1378,6 +1465,8 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_cd_defer_rec     = 0xD5D50011u;
     s_cd_defer_vbl     = 0xD5D50013u;
     s_cd_defer_clock   = 0xD5D50017D5D50015ull;
+    s_cd_defer_stream  = 0x19u;
+    s_cd_pause_owed    = 0xD5D5001Bu;
     {
         uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = 0xE5E50001u + 2u * i;
@@ -2562,6 +2651,7 @@ static void cd_set_mode(uint8_t mode) {
  * @return 1 when the command was consumed here, 0 when PsyCross still runs
  *         it. */
 static int cd_command_host(u_char com, u_char* param) {
+    s_cd_pause_owed = 0u;  /* the new command supersedes a stream read's closing CdlPause */
     g_CD_com = com;   /* CdLastCom() reports the command as issued */
     cd_mirror_com(com);
     if (com != CdlGetlocP && com != CdlGetlocL) {
@@ -2877,8 +2967,11 @@ void psyq_CdRead(CPUState* cpu) {
         s_cd_land_sectors = 0;
     }
 
+    /* A new read supersedes the previous stream read's closing CdlPause. */
+    s_cd_pause_owed = 0u;
     /* A completion still owed from the previous read fires before this
      * read's, in issue order: the game re-issued after its own timeout. */
+    s_cd_defer_stream = 0u;
     if (s_cd_defer_pending) {
         OPL_WARN_F("cd", "load delay: read issued with %u VBL(s) still owed; "
                    "completing the deferred read first", s_cd_defer_owed);
@@ -2915,7 +3008,7 @@ void psyq_CdRead(CPUState* cpu) {
         }
         (void)cd_read_delay_for(cpu, sectors);
     } else {
-        delay = cd_read_delay_for(cpu, sectors);
+        delay = cd_read_or_stream_delay_for(cpu, sectors);
     }
     if (delay) {
         cd_land_tick(0u);
@@ -3017,6 +3110,26 @@ void psyq_CD_flush(CPUState* cpu)   { cpu->v0 = 0u; }
  * @param cpu Guest CPU state; v0 receives 0. */
 void psyq_CD_initvol(CPUState* cpu) { cpu->v0 = 0u; }
 
+/** @brief Pass the VBLs a blocking CdSync spends in libcd until a stream read's closing CdlPause completes.
+ *
+ * Runs one VBL body per owed VBL for mode 0 off the schedule; does nothing
+ * for a poll, under the schedule, or while the read itself is still in
+ * flight.
+ * @param cpu Guest CPU state.
+ * @param mode The CdSync mode. */
+static void cd_stream_pause_wait(CPUState* cpu, int mode) {
+    if (mode != 0 || openpete_sched_active()) return;
+    while (s_cd_pause_owed && !s_cd_defer_pending) psyq_vbl_body(cpu, 1);
+}
+/** @brief Answer a CdSync poll as libcd does while a stream read's closing CdlPause is in flight: no command complete.
+ *
+ * @param mode The CdSync mode.
+ * @param rc The answer otherwise.
+ * @return CdlNoIntr for a poll off the schedule while the CdlPause is owed, else rc. */
+static int cd_stream_pause_answer(int mode, int rc) {
+    return (mode != 0 && s_cd_pause_owed && !openpete_sched_active()) ? CdlNoIntr : rc;
+}
+
 /** @brief CdSync thunk: pumps XA and the music override, then returns PsyCross's CD command status, with an optional per-VBL spin limit.
  *
  * @param cpu Guest CPU state; a0 is the mode, a1 the result buffer, v0 receives the status. */
@@ -3040,7 +3153,8 @@ void psyq_CdSync(CPUState* cpu) {
     music_override_pump();
 
     if (mode == 0) cd_charge_pending(cpu, "CdSync");
-    int rc = CdSync(mode, result);
+    cd_stream_pause_wait(cpu, mode);
+    int rc = cd_stream_pause_answer(mode, CdSync(mode, result));
     /* A poll answers as the reference's poll at this call site did, from
      * the golden's CdSync sidecar, the VBLs to that poll's VBLANK passing
      * first (a game spinning on the drive spent them in the spin).

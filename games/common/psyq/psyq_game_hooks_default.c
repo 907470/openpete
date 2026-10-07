@@ -88,6 +88,10 @@ void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
 int      psyq_game_cd_read_in_load(CPUState* cpu) { (void)cpu; return 0; }
 uint32_t psyq_game_cd_read_delay_cap(void)        { return 0u; }
 #endif
+#ifndef PSYQ_GAME_PROVIDES_CD_STREAM
+int psyq_game_cd_read_streamed(CPUState* cpu) { (void)cpu; return 0; }
+int psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr) { (void)cpu; (void)addr; return 0; }
+#endif
 #ifndef PSYQ_GAME_PROVIDES_ROOT_COUNTER2
 uint16_t psyq_game_root_counter2(void) { return 0u; }
 #endif
