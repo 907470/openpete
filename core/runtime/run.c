@@ -427,14 +427,18 @@ static void openpete_cursor_update(bool headless)
 /** @brief Drain the SDL event queue, forwarding unconsumed events to PsyCross, then apply rumble.
  *
  * Each event goes through openpete_handle_event, and PsyX_Sys_HandleEvent
- * when it is not consumed. Rumble is applied here because this thread owns
- * the SDL gamepad handles. */
+ * when it is not consumed. The overlay's text-input state and rumble are
+ * applied here because this thread owns the window and the SDL gamepad
+ * handles. */
 static void openpete_pump_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (openpete_handle_event(&ev))
             PsyX_Sys_HandleEvent(&ev);
     }
+    /* SDL text input is a window op of this thread; the overlay decides on
+     * the present thread whether a field wants it. */
+    openpete_devui_pump_text_input();
     /* Actuators are driven from here because this thread owns the SDL gamepad
      * handles: PsyCross opens and closes them in the controller-added /
      * -removed handlers just above, so applying on any other thread would race

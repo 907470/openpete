@@ -324,7 +324,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     spyro1_vibration_on_tick(cpu);
 
     /* Dev-overlay level warp (M menu): drives the game's own exit-level ->
-     * load sequence toward a chosen level. Inert until the Jump button is
+     * load sequence toward a chosen level. Inert until the Warp button is
      * clicked. */
     spyro1_levelwarp_on_tick(cpu);
 

@@ -1137,7 +1137,7 @@ static const knob_desc_t g_builtin[] = {
           "Default: env OPENPETE_WIREFRAME, else {def}. Native renderer only.\n"
           "Display-only." },
 
-    { "dither", "Dither (15-bit)", "Display", "--dither", NULL,
+    { "dither", "Color depth", "Display", "--dither", NULL,
       "PS1 15-bit colour: quantize the 3D scene to RGB555 with the GPU's 4x4 "
       "ordered dither matrix on the PSX framebuffer grid (authentic banding + "
       "crosshatch). Display-only.",
@@ -1639,7 +1639,7 @@ static const knob_desc_t g_builtin[] = {
           "an index from 1; no value or an invalid target prints each level's\n"
           "valid indices. Replaces --skip-to-level's level (Spyro 3)" },
 
-    { "freecam", "Free camera", "Gameplay", NULL, "OPENPETE_FREECAM",
+    { "freecam", "Freecam", "Gameplay", NULL, "OPENPETE_FREECAM",
       "Debug free camera (same toggle as the F key / stick click). "
       "Intentionally divergent debug tool - the one non-presentation row.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
@@ -1648,7 +1648,7 @@ static const knob_desc_t g_builtin[] = {
 
     /* Both pose flags set their env spelling from the parser, so the env
      * getter shows either spelling. One-shot at boot. */
-    { "freecam_pose", "Free camera pose", "Gameplay", "--freecam-pose", "OPENPETE_FREECAM_POSE",
+    { "freecam_pose", "Freecam pose", "Gameplay", "--freecam-pose", "OPENPETE_FREECAM_POSE",
       "Engage the debug free camera at this pose once the level is live "
       "(\"pos=(x, y, z) yaw=N pitch=N\"). Intentionally divergent debug tool.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,

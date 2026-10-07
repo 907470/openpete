@@ -1,5 +1,5 @@
 // games/common/features/levelwarp_ui.c - the dev-overlay level warp's
-// game-independent half: the dropdown, the Jump button, the click queue and
+// game-independent half: the dropdown, the Warp button, the click queue and
 // the scripted driver. See levelwarp_ui.h for the contract.
 
 #include "features/levelwarp_ui.h"
@@ -23,7 +23,7 @@
  *   s_sel_touched - the user has picked something, so stop auto-following
  *                   the level they are in
  *   s_pending     - a click waiting for the next non-speculative tick
- *   s_route       - cached "what would Jump do right now", for the gate and
+ *   s_route       - cached "what would Warp do right now", for the gate and
  *                   the status line */
 static const levelwarp_ui_desc_t* s_desc;
 static int s_sel         = 0;
@@ -65,7 +65,7 @@ static int sel_set(knob_desc_t* k, double v) {
     return 0;
 }
 
-/** @brief Report whether a warp is queued or in flight, the Jump button's second gate.
+/** @brief Report whether a warp is queued or in flight, the Warp button's second gate.
  *
  * Kept apart from s_route because the tick also consults s_route when it
  * drains the queue: a route that read none while a click is pending would
@@ -76,7 +76,7 @@ static int warp_busy(void) {
     return s_pending || (s_desc->in_flight && s_desc->in_flight());
 }
 
-/** @brief Gate the Jump button on a usable route and no warp in progress.
+/** @brief Gate the Warp button on a usable route and no warp in progress.
  *
  * @param k The row; unused.
  * @return 1 when the cached route is not none and no warp is queued or in
@@ -86,7 +86,7 @@ static double go_ready(const knob_desc_t* k) {
     return (s_route != LEVELWARP_ROUTE_NONE && !warp_busy()) ? 1.0 : 0.0;
 }
 
-/** @brief Queue a warp to the selected level when the Jump button is pressed.
+/** @brief Queue a warp to the selected level when the Warp button is pressed.
  *
  * Snapshots the selected level id, since the dropdown can move before the tick
  * drains the queue.
@@ -103,7 +103,7 @@ static int go_fire(knob_desc_t* k, double v) {
     return 0;
 }
 
-/** @brief Write the status text shown beside the Jump button.
+/** @brief Write the status text shown beside the Warp button.
  *
  * Reads queued while a click waits; else the descriptor's in-flight status
  * when it supplies one; else a note for the title route, an empty string for
@@ -126,21 +126,21 @@ static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
  * dropdown's display names and the value plumbing, and levelwarp_ui_surface
  * hands the templates to the surface dump as they are. */
 static const knob_desc_t k_warp_rows[] = {
-    { .id = "warp_level", .label = "Warp: level", .section = "Gameplay",
-      .help = "Destination for the Jump button below. Follows the level you "
+    { .id = "warp_level", .label = "Level warp", .section = "Gameplay",
+      .help = "Destination for the Warp button. Follows the level you "
               "are in until you pick something.",
       .type = KNOB_ENUM, .mut = KNOB_LIVE,
       .default_note = "the level the player is in" },
-    { .id = "warp_go", .label = "Warp: jump to level", .section = "Gameplay",
+    { .id = "warp_go", .label = "Warp to level", .section = "Gameplay",
       .help = "Load the selected level through the game's own level "
               "transition. From the title screen, and on the games whose "
               "transition goes by way of it, that is a fresh session in the "
               "chosen level and progress and lives reset, as with "
               "--skip-to-level. Intentionally divergent gameplay state.",
-      .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Jump" },
+      .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Warp" },
 };
 
-/** @brief Add the dropdown and Jump rows to the dev overlay's Gameplay section. */
+/** @brief Add the dropdown and Warp rows to the dev overlay's Gameplay section. */
 static void register_rows(void) {
     knob_desc_t row = k_warp_rows[0];
     row.enum_values = s_desc->display;
@@ -163,7 +163,7 @@ void levelwarp_ui_surface(struct openpete_surface_sink* sink) {
 
 /* ---- scripted driver --------------------------------------------------- */
 
-/* OPENPETE_LEVELWARP_TEST=<vbl>:<level> queues the same request the Jump
+/* OPENPETE_LEVELWARP_TEST=<vbl>:<level> queues the same request the Warp
  * button does, at the given VBL counter. The warp is a multi-tick ride
  * through the game's own state machine, so firing it from a script is what
  * makes it testable from a script. Deliberately not a knob

@@ -3,7 +3,7 @@
 //
 // --skip-to-level only works at boot: it hijacks the title screen's demo-
 // timeout transition once and then latches. This module adds a level
-// dropdown + Jump button to the overlay's Gameplay section that works
+// dropdown + Warp button to the overlay's Gameplay section that works
 // mid-session, so switching levels for an A/B is not a relaunch. The
 // dropdown, the button and the click queue are the shared overlay half
 // (games/common/features/levelwarp_ui.c); this file supplies the route
@@ -90,7 +90,7 @@ static int warp_level_id(int index) {
 
 /** @brief Reports whether a warp this module started has not finished.
  *
- * The shared overlay half reads it to gate the Jump button and the dropdown's
+ * The shared overlay half reads it to gate the Warp button and the dropdown's
  * auto-follow.
  *
  * @return 1 while the phase is not WARP_IDLE, else 0. */

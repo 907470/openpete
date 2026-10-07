@@ -1,6 +1,6 @@
 #pragma once
 /* levelwarp_ui.h - the game-independent half of the dev-overlay level warp
- * (M key): the level dropdown, the Jump button, the click queue and the
+ * (M key): the level dropdown, the Warp button, the click queue and the
  * scripted driver.
  *
  * The overlay runs outside the sim, so a click only queues a request. The
@@ -72,7 +72,7 @@ typedef struct {
 void levelwarp_ui_register(const levelwarp_ui_desc_t* desc);
 
 struct openpete_surface_sink;
-/** @brief Report the dropdown and Jump row templates to the surface dump, without registering them.
+/** @brief Report the dropdown and Warp row templates to the surface dump, without registering them.
  *
  * @param sink The dump's collector. */
 void levelwarp_ui_surface(struct openpete_surface_sink* sink);

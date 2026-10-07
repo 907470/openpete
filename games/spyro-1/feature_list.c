@@ -108,7 +108,7 @@ const feature_module_t* const openpete_features[] = {
      * InitCreditsSequence from a GamestateUpdate entry hook). Inert unless
      * armed by game_set_skip_to_cutscene. */
     &credits_skip_module,
-    /* Dev-overlay level warp (M menu): a level dropdown + Jump button that
+    /* Dev-overlay level warp (M menu): a level dropdown + Warp button that
      * rides the game's own exit-level -> load sequence to any level, plus
      * the shared level id/name table --skip-to-level resolves against.
      * Writes nothing until the button is clicked. */

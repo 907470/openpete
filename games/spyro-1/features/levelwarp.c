@@ -3,10 +3,10 @@
 //
 // --skip-to-level only works at boot: it hijacks the title screen's demo-
 // timeout transition once and then latches. This module adds a level
-// dropdown + Jump button to the overlay's Gameplay section that works
+// dropdown + Warp button to the overlay's Gameplay section that works
 // mid-session, so switching levels for an A/B is not a relaunch.
 //
-// The dropdown, the Jump button and the click queue are the shared overlay
+// The dropdown, the Warp button and the click queue are the shared overlay
 // half (games/common/features/levelwarp_ui.c); this file supplies the level
 // table, the route probe and the two guest-write phases below.
 //

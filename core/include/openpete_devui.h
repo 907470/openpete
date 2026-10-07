@@ -14,7 +14,9 @@
  * Input contract (run.c owns the wiring):
  *  - every SDL event is forwarded via openpete_devui_process_event (cheap io
  *    bookkeeping; imgui frames run only while the overlay is open, the
- *    fill-tag inspector is active, or a mod's always section is enabled);
+ *    fill-tag inspector is active, or a mod's always section is enabled),
+ *    and the pump thread calls openpete_devui_pump_text_input after each
+ *    drain;
  *  - while wants_keyboard() the host hotkey block and the keyboard->pad path
  *    must be gated off so typed text never steers the game, except that the
  *    overlay's own toggle action stays readable unless wants_text_input();
@@ -132,6 +134,14 @@ int  openpete_devui_wants_keyboard(void);
  * @return 1 while a text field has focus; 0 before init, while closed, or
  *         otherwise. */
 int  openpete_devui_wants_text_input(void);
+/** @brief Start or stop SDL text input on the overlay's window to follow openpete_devui_wants_text_input.
+ *
+ * SDL_StartTextInput and SDL_StopTextInput belong to the thread that pumps
+ * the window's events, while the imgui frame that decides a text field has
+ * focus runs on the present thread, so the imgui backend's own IME hook is
+ * left uninstalled and the pump thread calls this after each drain. Calls SDL
+ * only when the published want differs from the state it last applied. */
+void openpete_devui_pump_text_input(void);
 /** @brief Report whether imgui captured the mouse on the last drawn present.
  *
  * Holds with the overlay open, and also with it closed while the fill-tag
