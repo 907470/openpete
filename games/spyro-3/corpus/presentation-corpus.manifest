@@ -113,6 +113,10 @@ title-demo|500|20||510,2210
 # semi-transparent box, and the box corners darker than the box; PsyCross
 # shows the same, the PSX does not. Blessed pre-fix.
 open-options|900|100|freeze|1200,1242,1300
+# open-options@terrain: the same window under --render-paths terrain; the
+# window composes the copied scene, whose textures and CLUTs lie in the page
+# the copy overwrites. Blessed pre-fix.
+open-options@terrain|900|100|freeze|1242|--render-paths terrain
 open-atlas|900|100|freeze|1200,1300
 
 # open-atlas-turn-pages holds the atlas page-turn animation: the turning
