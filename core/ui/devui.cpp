@@ -1671,7 +1671,8 @@ static void seg_widget(knob_desc_t *k, const lay_row &r)
 /** @brief Draw up to three knobs side by side; while the first reads 0 only the first is drawn.
  *
  * A checkbox takes its natural width; the other widgets share the remaining
- * width equally. */
+ * width equally, split as a button group splits its row (seg_widget), so
+ * the edges line up with a group of as many buttons. */
 static void inline_widget(knob_desc_t *const *ks, int n)
 {
     if (knob_num(ks[0]) == 0.0) n = 1;
@@ -1679,12 +1680,15 @@ static void inline_widget(knob_desc_t *const *ks, int n)
     for (int i = 0; i < n; i++)
         if (ks[i]->type != KNOB_BOOL) flex++;
     const float sp = ImGui::GetStyle().ItemInnerSpacing.x;
+    float w = 0.0f;   /* per-widget width, fixed at the first non-checkbox */
     for (int i = 0; i < n; i++) {
         if (i > 0) same_line_inner();
         ImGui::PushID(i);
         if (ks[i]->type != KNOB_BOOL) {
-            const float avail = ImGui::GetContentRegionAvail().x;
-            ImGui::SetNextItemWidth(flex > 1 ? avail / (float)flex - sp : -FLT_MIN);
+            if (w == 0.0f)
+                w = (ImGui::GetContentRegionAvail().x - sp * (float)(flex - 1)) /
+                    (float)flex;
+            ImGui::SetNextItemWidth(flex > 1 ? w : -FLT_MIN);
             flex--;
         }
         knob_widget(ks[i]);
@@ -1904,7 +1908,9 @@ static void warp_widget(knob_desc_t *lvl, knob_desc_t *go)
 {
     const char *cap = go->action_label ? go->action_label : "Apply";
     const ImGuiStyle &st = ImGui::GetStyle();
-    const float bw = ImGui::CalcTextSize(cap).x + st.FramePadding.x * 2.0f;
+    /* The button spans an int field's -/+ pair (two frame-height squares and
+     * their gap), so the combo ends where those fields' text boxes end. */
+    const float bw = ImGui::GetFrameHeight() * 2.0f + st.ItemInnerSpacing.x;
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - bw - st.ItemInnerSpacing.x);
     const int idx = (int)knob_num(lvl);
     const char *preview =
@@ -1924,7 +1930,8 @@ static void warp_widget(knob_desc_t *lvl, knob_desc_t *go)
     same_line_inner();
     const bool ready = !go->get_num || go->get_num(go) != 0.0;
     if (!ready) ImGui::BeginDisabled();
-    if (ImGui::Button(cap) && go->set_num && go->set_num(go, 1.0) == 0)
+    if (ImGui::Button(cap, ImVec2(bw, 0.0f)) && go->set_num &&
+        go->set_num(go, 1.0) == 0)
         OPL_INFO_F("devui", "%s fired", go->id);
     if (!ready) ImGui::EndDisabled();
     action_tooltip(go);
