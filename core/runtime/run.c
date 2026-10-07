@@ -2236,6 +2236,18 @@ void openpete_runahead_set(int n) {
 
 int openpete_runahead_get(void) { return SDL_GetAtomicInt(&s_runahead_live); }
 
+/* Pause and step requests from the dev overlay, read by the host loop where it
+ * reads the pause and step keys: s_pause_req holds -1 (none), 0 or 1;
+ * s_step_req is nonzero while a step waits. s_paused_shown publishes the
+ * loop's paused state. */
+static SDL_AtomicInt s_pause_req = { -1 };
+static SDL_AtomicInt s_step_req;
+static SDL_AtomicInt s_paused_shown;
+
+void openpete_sim_pause_request(int on) { SDL_SetAtomicInt(&s_pause_req, on ? 1 : 0); }
+void openpete_sim_step_request(void)    { SDL_SetAtomicInt(&s_step_req, 1); }
+int  openpete_sim_paused(void)          { return SDL_GetAtomicInt(&s_paused_shown); }
+
 void openpete_rewind_window_set(int seconds) {
     knob_lock();
     s_knob_cmds.rw = seconds < 0 ? 0 : seconds; s_knob_cmds.rw_set = 1;
@@ -3212,6 +3224,60 @@ static void run_canonical_capture(void)
     if (pt_was) openpete_present_thread_set_active(0);
     openpete_native_render_snapshot_fb_window();
     if (pt_was) openpete_present_thread_set_active(1);
+}
+
+/** @brief Apply the pause and step keys and the dev overlay's pause and step requests for one host iteration.
+ *
+ * Pause is an edge-triggered toggle; step raises the one-tick flag whenever
+ * held while paused, so a held key steps every host iteration without an
+ * OS key-repeat dependency. The overlay's requests take the same paths: a
+ * pause request that differs from the state toggles it, a step request steps
+ * once. Pausing mutes the audio and silences the motors; resuming restores
+ * the live mute baseline. Publishes the paused state for
+ * openpete_sim_paused.
+ * @param paused The host loop's paused flag, toggled here.
+ * @param step_one The host loop's one-tick flag, raised here while paused. */
+static void host_pause_step(bool *paused, bool *step_one)
+{
+    const bool step_k = openpete_key_down(OPK_FRAME_STEP) ||
+                        SDL_SetAtomicInt(&s_step_req, 0) != 0;
+    const int pause_req = SDL_SetAtomicInt(&s_pause_req, -1);
+    if (openpete_key_pressed(OPK_PAUSE) ||
+        (pause_req >= 0 && (pause_req != 0) != *paused)) {
+        *paused = !*paused;
+        /* Enter: mute. Exit: restore the live mute baseline (boot --mute,
+         * possibly toggled since via the dev overlay). */
+        extern int PsyX_SPUAL_SetMute(int on_off);
+        PsyX_SPUAL_SetMute(*paused ? 1 : (s_mute || s_skip_mute));
+        /* A paused game is not producing actuator bytes, but the last pair
+         * it published would keep being re-issued; silence the motors for the
+         * same reason the audio mutes. */
+        openpete_rumble_set_paused(*paused ? 1 : 0);
+        OPL_INFO_F("frame-step", "%s at openpete_frame=%u",
+                   *paused ? "paused" : "resumed", openpete_frame);
+    }
+    if (*paused && step_k) *step_one = true;
+    SDL_SetAtomicInt(&s_paused_shown, *paused ? 1 : 0);
+}
+
+/** @brief Present the held scene on a paused host iteration that presented nothing else.
+ *
+ * While the sim is paused with no step pending no tick runs, so neither the
+ * canonical nor the sub-tick present fires, and the window would hold its
+ * last image with the dev overlay, the toasts and the cursor frozen inside
+ * it - the overlay could not even be used to resume. This presents the held
+ * scene instead, once per call (the paused loop sleeps 16 ms per iteration),
+ * without a re-extract, since nothing advanced: the hold the intermediate
+ * path applies while the world is not live. Windowed only, never during a
+ * skip fast-forward, and never while eager production holds the display
+ * (it is disengaged while paused).
+ * @param opts The parsed options. */
+static void host_paused_repaint(const openpete_options_t *opts)
+{
+    if (opts->headless || openpete_skip_present_until_level || s_eager.active)
+        return;
+    openpete_mods_present_flush(&g_game.cpu, 0);
+    openpete_native_render_frame((uint64_t)(op_now() / 1000));
 }
 
 /** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
@@ -4423,29 +4489,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 g_PsyX_Pad_OverrideActive = ovr;
             }
 
-            /* Frame-step hotkeys. Pause is an edge-triggered toggle; step
-             * sets g_step_one whenever HELD while paused, so the natural
-             * key-repeat behavior is "step every host iter while held"
-             * without needing an OS-level repeat-rate dependency. */
-            bool step_k = openpete_key_down(OPK_FRAME_STEP);
-            if (openpete_key_pressed(OPK_PAUSE)) {
-                g_paused = !g_paused;
-                /* Enter: mute. Exit: restore the live mute baseline (boot
-                 * --mute, possibly toggled since via the dev overlay). */
-                {
-                    extern int PsyX_SPUAL_SetMute(int on_off);
-                    PsyX_SPUAL_SetMute(g_paused ? 1 : (s_mute || s_skip_mute));
-                }
-                /* A paused game is not producing actuator bytes, but the last
-                 * pair it published would keep being re-issued; silence the
-                 * motors for the same reason the audio mutes. */
-                openpete_rumble_set_paused(g_paused ? 1 : 0);
-                OPL_INFO_F("frame-step", "%s at openpete_frame=%u",
-                           g_paused ? "paused" : "resumed", openpete_frame);
-            }
-            if (g_paused && step_k) {
-                g_step_one = true;
-            }
+            host_pause_step(&g_paused, &g_step_one);
 
             /* Player screenshot. The key edge only raises the request: the
              * capture is a blocking readback of the native renderer's
@@ -6067,6 +6111,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                 s_presents_captured++;
             }
         }
+
+        /* Paused repaint: no tick runs, so no other present fires. */
+        if (g_paused && !g_step_one && !did_present_this_iter)
+            host_paused_repaint(opts);
 
         /* RAM dump runs outside the present_pending gate so a request for
          * the very first rendered frame (ram-dump-on-frame=0) still fires

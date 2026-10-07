@@ -1473,6 +1473,7 @@ static const lay_row k_lay_audio[] = {
 static const lay_row k_lay_gameplay[] = {
     { LAY_ROW,    nullptr, { "freecam" } },
     { LAY_ROW,    nullptr, { "tick_scale" } },
+    { LAY_INLINE, nullptr, { "pause", "frame_step" } },
     { LAY_DEPTH,  nullptr, { "runahead" } },
     { LAY_ONOFF,  "Rewind", { "rewind" }, nullptr, nullptr, 0, "", 30 },
     { LAY_REST,   "Gameplay" },

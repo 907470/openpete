@@ -12,7 +12,10 @@ running it faster or slower, starting in any level, and flying the camera.
 ## Pause and tick-step
 
 {{ key("key:host.pause") }} <!-- id: key:host.pause home --> pauses and resumes the game. Pausing mutes
-the audio and stops controller vibration; resuming restores both.
+the audio and stops controller vibration; resuming restores both. The
+window keeps showing the paused picture with the
+[dev overlay](../help/glossary.md#dev-overlay) still usable over it; the dev
+overlay's **Pause sim** row does the same as the key.
 
 While paused, {{ key("key:host.frame_step") }} <!-- id: key:host.frame_step home --> advances the game by one
 [tick](../help/glossary.md#tick), the game's own update step: 29.913 per

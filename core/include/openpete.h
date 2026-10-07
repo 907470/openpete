@@ -1052,6 +1052,22 @@ void openpete_runahead_set(int n);
  * history.
  * @param seconds Window length; 0 or less disables rewind. */
 void openpete_rewind_window_set(int seconds);
+/** @brief Request the sim paused or resumed, as the pause key does.
+ *
+ * The host loop applies it where it reads the pause key, with the same
+ * audio mute and rumble silence; a request that matches the current state
+ * changes nothing.
+ * @param on Nonzero pauses, 0 resumes. */
+void openpete_sim_pause_request(int on);
+/** @brief Request one tick while the sim is paused, as the step key does.
+ *
+ * The host loop consumes the request at its next iteration; a request made
+ * while the sim runs is dropped there. */
+void openpete_sim_step_request(void);
+/** @brief Report whether the host loop has the sim paused; callable from any thread.
+ *
+ * @return 1 while paused, else 0. */
+int  openpete_sim_paused(void);
 /** @brief Return the runahead depth the host loop applied; callable from any thread.
  *
  * @return Depth in ticks, 0 when disarmed. */

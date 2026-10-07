@@ -40,7 +40,7 @@ closed; click a title to open it.
 | Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
 | Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths (absent from release packages) |
 | Audio (collapsed) | Mute, SFX volume, Music volume |
-| Gameplay | Freecam, Tick scale, Runahead, Rewind, Level warp |
+| Gameplay | Freecam, Tick scale, Pause sim, Runahead, Rewind, Level warp |
 | Gameplay, Input (collapsed) | Vibration, Mouse sensitivity |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
 | Info (collapsed) | the launch-only rows: Skip to level, Skip to cutscene, Skip to sub-area, Freecam pose, Player pose, bk2 replay, bk2 frame offset, bk2 recording, Renderer, Extraction threads, Window size |
@@ -65,6 +65,13 @@ terrain, shadows, flame, particles and the rest), one checkbox each, for
 comparing one path in isolation; **All** returns to normal drawing and
 **None** draws no path. It changes only the picture. **Rewind** has a checkbox; the window in seconds
 appears beside it while rewind is on.
+
+**Pause sim** <!-- id: knob:pause --> stops the game's ticks while the
+picture keeps presenting, as the pause key ({{ key("key:host.pause") }} <!-- id: key:host.pause -->)
+does; audio mutes while paused. Checked, it shows a **Step tick** button
+<!-- id: knob:frame_step --> that advances the game by one tick, as the step
+key ({{ key("key:host.frame_step") }} <!-- id: key:host.frame_step -->) does. It starts unchecked
+<!-- id: knob:pause -->.
 
 **Freecam pose** <!-- id: knob:freecam_pose --> engages the free camera
 at a pose (`pos=(x, y, z) yaw=N pitch=N`, the format the free camera logs)

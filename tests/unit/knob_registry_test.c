@@ -56,6 +56,9 @@ void   openpete_set_tick_scale(double s)       { (void)s; }
 int    openpete_runahead_get(void)             { return 0; }
 void   openpete_runahead_set(int n)            { (void)n; }
 void   openpete_rewind_window_set(int w)       { (void)w; }
+void   openpete_sim_pause_request(int on)      { (void)on; }
+void   openpete_sim_step_request(void)         { }
+int    openpete_sim_paused(void)               { return 0; }
 int    openpete_native_fullscreen_active(void) { return 0; }
 void   openpete_native_toggle_fullscreen(void) { }
 void   openpete_native_request_fullscreen_toggle(void) { }

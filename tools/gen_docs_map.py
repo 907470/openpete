@@ -111,6 +111,7 @@ SECTION_PAGES = {
     "knob:Input": "customizing/controllers.md",
     "knob:Paths": "help/file-locations.md",
     "knob:Gameplay": "playing/practice-tools.md",
+    "knob:Cheats": "playing/practice-tools.md",
     "knob:Debug": "playing/dev-overlay.md",
     "key:host": "customizing/key-bindings.md",
     "key:pad": "customizing/key-bindings.md",

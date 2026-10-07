@@ -519,6 +519,15 @@ static int fov_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief 1 while the host loop has the sim paused, else 0. */
+static double pause_get(const knob_desc_t *k) { (void)k; return openpete_sim_paused(); }
+/** @brief Request the sim paused (`v` nonzero) or resumed, as the pause key does. */
+static int pause_set(knob_desc_t *k, double v) { (void)k; openpete_sim_pause_request(v != 0.0); return 0; }
+/** @brief The Step tick button's gate: 1 while the sim is paused, else 0. */
+static double step_ready(const knob_desc_t *k) { (void)k; return openpete_sim_paused(); }
+/** @brief Request one tick of the paused sim, as the step key does. */
+static int step_fire(knob_desc_t *k, double v) { (void)k; (void)v; openpete_sim_step_request(); return 0; }
+
 /** @brief Request a rewind window of `v` seconds, truncated to int.
  *
  * Returns -1, changing nothing, when `v` is negative. Otherwise the host loop
@@ -1256,6 +1265,20 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "engine speed x F (default {def}); scales sim AND present cadence\n"
           "together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
           "speed slow-mo to inspect high-FPS interpolation. Display-only." },
+
+    { "pause", "Pause sim", "Pacing", NULL, NULL,
+      "Pause the game's ticks while presents continue (same toggle as the "
+      "pause key, F7 by default). Audio mutes and rumble stops while paused.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      pause_get, pause_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "off" },
+
+    { "frame_step", "Step tick", "Pacing", NULL, NULL,
+      "Advance the paused game by one tick (same as the step key, F8 by "
+      "default).",
+      KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
+      step_ready, step_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .action_label = "Step tick" },
 
     { "runahead", "Runahead", "Pacing", "--runahead", NULL,
       "Present-timeline lead of N sim ticks (latency cut, ~N extra ticks of "
