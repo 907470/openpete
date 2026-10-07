@@ -1001,6 +1001,41 @@ static int moby_cut_hold(uint32_t m, const openpete_interp_obj_t* o, op_time_t n
     return cut_obj_hold(kind, m, o, MOBY_POS, a, moby_cut_stage);
 }
 
+/** @brief The hold a moby record takes before its own lerp: a class change, or a held camera cut it rolled on.
+ *
+ * A class change holds as CUT_CLASS. A held camera cut shows tick N-1 on
+ * every record, so a record that rolled at the cut's tick holds as CUT_HELD
+ * (cut_held_rolled).
+ * @param o The moby's interp pair.
+ * @param pcls Tick N-1's class.
+ * @param ccls Tick N's class.
+ * @return CUT_CLASS, CUT_HELD, or -1 for no hold. */
+static int moby_cut_kind(const openpete_interp_obj_t* o, uint16_t pcls, uint16_t ccls) {
+    if (pcls != ccls) return CUT_CLASS;
+    return cut_held_rolled(o) == 1 ? CUT_HELD : -1;
+}
+
+/** @brief A record's own alpha, or 1 under a held camera cut for a record that did not roll at the cut's tick.
+ *
+ * Such a record's current state is its state at tick N-1 (cut_held_rolled).
+ * @param o The moby's interp pair.
+ * @param ma The record's own alpha.
+ * @return The alpha to show. */
+static double moby_held_cut_alpha(const openpete_interp_obj_t* o, double ma) {
+    return cut_held_rolled(o) == 0 ? 1.0 : ma;
+}
+
+/** @brief Whether a record's step is a jump the record holds at tick N-1 (cut_obj_jump).
+ *
+ * Under a held camera cut a record that did not roll shows its current state
+ * whatever its last step was, so no step of it holds.
+ * @param m The moby's guest address.
+ * @param o The moby's interp pair.
+ * @return 1 for a jump to hold, else 0. */
+static int moby_step_jumps(uint32_t m, const openpete_interp_obj_t* o) {
+    return cut_held_rolled(o) < 0 && cut_obj_jump(m, o->prev, o->curr);
+}
+
 /** @brief Returns the g_Camera and g_GameState region indices and camera field offsets for the shared cut guard.
  *
  * The region indices resolve on the first call.
@@ -2248,8 +2283,9 @@ static void game_reextract_body(void* cpu_v) {
                         uint16_t pcls, ccls;
                         memcpy(&pcls, o->prev + 0x36u, 2);
                         memcpy(&ccls, o->curr + 0x36u, 2);
-                        if (pcls != ccls) {
-                            moby_cut_hold(m, o, now, CUT_CLASS);
+                        const int hold_kind = moby_cut_kind(o, pcls, ccls);
+                        if (hold_kind >= 0) {
+                            moby_cut_hold(m, o, now, hold_kind);
                             goto next_moby;
                         }
 
@@ -2264,13 +2300,14 @@ static void game_reextract_body(void* cpu_v) {
                             /* same negative-alpha allowance as the camera (roll-
                              * boundary continuity); hermite gated on ma >= 0 below */
                             if (ma < -0.35) ma = -0.35; else if (ma > 1.0) ma = 1.0;
+                            ma = moby_held_cut_alpha(o, ma);
                             int32_t pp[3], cp[3];
                             memcpy(pp, o->prev + MOBY_POS, 12);
                             memcpy(cp, o->curr + MOBY_POS, 12);
                             /* per-moby teleport guard: a respawn / warp jumps far in
                              * one tick - lerping streaks it across the screen. The
                              * record holds tick N-1 whole until alpha 1 (moby_cut_hold). */
-                            if (cut_obj_jump(m, o->prev, o->curr)) {
+                            if (moby_step_jumps(m, o)) {
                                 moby_cut_hold(m, o, now, CUT_TELEPORT);
                                 goto next_moby;
                             }
@@ -2616,6 +2653,7 @@ static void game_reextract_body(void* cpu_v) {
 
     s_fpos_active = 0;   /* leave the resolver inert for the canonical render path */
     s_body_cam = NULL;
+    cut_obj_present_end();
 
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_REEXTRACT_DBG"); dbg = (e && *e && *e != '0'); }

@@ -35,10 +35,13 @@ int cut_census_on(void) {
 }
 
 static long s_cut_hold[CUT_KINDS], s_cut_snap[CUT_KINDS];
+/* The current snapshot's stamp while this present holds a camera cut
+ * (cut_camera_hold), else 0. */
+static op_time_t s_held_ns;
 
 void cut_census_note(int kind, uint32_t addr, int held, const char* why,
                      const int32_t* prev_pos, const int32_t* shown_pos) {
-    static const char* const names[CUT_KINDS] = { "camcut", "class", "teleport" };
+    static const char* const names[CUT_KINDS] = { "camcut", "class", "teleport", "heldcut" };
     if (kind < 0 || kind >= CUT_KINDS) return;
     if (held) s_cut_hold[kind]++; else s_cut_snap[kind]++;
     if (!cut_census_on()) return;
@@ -48,11 +51,11 @@ void cut_census_note(int kind, uint32_t addr, int held, const char* why,
     double dx = (double)sp[0]-pp[0], dy = (double)sp[1]-pp[1], dz = (double)sp[2]-pp[2];
     fprintf(stderr, "[cut-census vbl=%u] kind=%s obj=%08x verdict=%s why=%s "
                     "prev=(%d,%d,%d) shown=(%d,%d,%d) D=%.3f "
-                    "holds=%ld/%ld/%ld snaps=%ld/%ld/%ld\n",
+                    "holds=%ld/%ld/%ld/%ld snaps=%ld/%ld/%ld/%ld\n",
             openpete_frame, names[kind], addr, held ? "hold" : "snap", why,
             pp[0], pp[1], pp[2], sp[0], sp[1], sp[2], sqrt(dx*dx + dy*dy + dz*dz),
-            s_cut_hold[0], s_cut_hold[1], s_cut_hold[2],
-            s_cut_snap[0], s_cut_snap[1], s_cut_snap[2]);
+            s_cut_hold[0], s_cut_hold[1], s_cut_hold[2], s_cut_hold[3],
+            s_cut_snap[0], s_cut_snap[1], s_cut_snap[2], s_cut_snap[3]);
 }
 
 void cut_census_held_set(const char* kind, int prev, unsigned epoch, int n) {
@@ -104,8 +107,71 @@ const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
     return why;
 }
 
+/** @brief The distance bound cut_pos_jump applies: OPENPETE_MOBY_JUMP_BOUND when set (read once), else game_layout.moby.jump_bound.
+ *
+ * The variable is a same-binary A/B of the bound; 0 disables it.
+ * @return The bound in world units. */
+static double cut_jump_bound(void) {
+    static long s = -2;
+    if (s == -2) { const char* e = getenv("OPENPETE_MOBY_JUMP_BOUND"); s = (e && *e) ? strtol(e, NULL, 0) : -1; }
+    return s >= 0 ? (double)s : (double)game_layout.moby.jump_bound;
+}
+
+/** @brief Whether the placement markers apply: OPENPETE_MOBY_JUMP_MARKERS, default on, read once.
+ *
+ * 0 leaves the cutscene sampler's rule and the distance bound alone, for a
+ * same-binary A/B of the markers.
+ * @return Nonzero when the markers apply. */
+static int cut_jump_markers_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_JUMP_MARKERS"); s = (e && *e) ? (*e != '0') : 1; }
+    return s;
+}
+
+/** @brief Whether a moby step matches a row of the game's placement table.
+ *
+ * A row matches on tick N's class halfword, tick N's state byte, and tick
+ * N-1's state byte unless the row takes any (0xFF).
+ * @param prev_rec Tick N-1's moby record.
+ * @param curr_rec Tick N's moby record.
+ * @return 1 when a row matches, else 0. */
+static int cut_place_marked(const uint8_t* prev_rec, const uint8_t* curr_rec) {
+    const game_moby_place_t* t = game_layout.moby.place;
+    if (!t) return 0;
+    uint16_t cls;
+    memcpy(&cls, curr_rec + game_layout.moby.class_off, 2);
+    const uint8_t sp = prev_rec[game_layout.moby.state_off];
+    const uint8_t sc = curr_rec[game_layout.moby.state_off];
+    for (uint32_t i = 0; i < game_layout.moby.place_n; i++)
+        if (t[i].cls == cls && t[i].state_curr == sc &&
+            (t[i].state_prev == 0xFFu || t[i].state_prev == sp)) return 1;
+    return 0;
+}
+
+/** @brief Whether either snapshot of the interp ring's newest pair holds a load-regime game state (game_layout.moby.load_gamestates).
+ *
+ * The state is the ring's g_GameState row; its row index resolves on the
+ * first call that finds it registered.
+ * @return 1 in a load regime, else 0 (also when the game names none, the row
+ *         is unregistered, or the ring has no pair). */
+static int cut_load_regime(void) {
+    const uint32_t mask = game_layout.moby.load_gamestates;
+    if (!mask) return 0;
+    static int row = -1;
+    if (row < 0) row = game_interp_row_index(GAME_INTERP_GS_ROW);
+    if (row < 0) return 0;
+    double a = 0.0;
+    const openpete_interp_snapshot_t *p2 = NULL, *pv = NULL, *cu = NULL;
+    if (!openpete_interp_query3(openpete_interp_curr_tick_ns(), g_openpete_tick_period_ns,
+                                &a, &p2, &pv, &cu) || !pv || !cu) return 0;
+    uint32_t pgs, cgs;
+    memcpy(&pgs, pv->data + pv->region_offsets[row], 4);
+    memcpy(&cgs, cu->data + cu->region_offsets[row], 4);
+    return (pgs < 32u && ((mask >> pgs) & 1u)) || (cgs < 32u && ((mask >> cgs) & 1u));
+}
+
 int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos) {
-    const double lim = (double)game_layout.moby.jump_bound;
+    const double lim = cut_jump_bound();
     if (lim <= 0.0) return 0;
     const double dx = (double)curr_pos[0] - prev_pos[0];
     const double dy = (double)curr_pos[1] - prev_pos[1];
@@ -113,13 +179,73 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos) {
     return dx*dx + dy*dy + dz*dz > lim * lim;
 }
 
+int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                        const char** why) {
+    const char* w;
+    int v = moby_game.cutpath_jump ? moby_game.cutpath_jump(addr, prev_rec, curr_rec) : -1;
+    if (v >= 0) {
+        w = "cutpath";
+    } else if (cut_jump_markers_on() && cut_place_marked(prev_rec, curr_rec)) {
+        v = 1; w = "table";
+    } else if (cut_jump_markers_on() && cut_load_regime()) {
+        v = 1; w = "load";
+    } else {
+        int32_t pp[3], cp[3];
+        memcpy(pp, prev_rec + game_layout.moby.pos_off, 12);
+        memcpy(cp, curr_rec + game_layout.moby.pos_off, 12);
+        v = cut_pos_jump(pp, cp);
+        w = v ? "bound" : "none";
+    }
+    if (why) *why = w;
+    return v;
+}
+
 int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec) {
-    const int v = moby_game.cutpath_jump ? moby_game.cutpath_jump(addr, prev_rec, curr_rec) : -1;
-    if (v >= 0) return v;
+    return cut_obj_jump_reason(addr, prev_rec, curr_rec, NULL);
+}
+
+void cut_jump_census_capture(uint32_t key) {
+    static long s_min = -2;
+    if (s_min == -2) { const char* e = getenv("OPENPETE_JUMP_CENSUS"); s_min = (e && *e) ? strtol(e, NULL, 0) : -1; }
+    if (s_min < 0) return;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
+    if (!o || !o->have_prev || o->curr_ns != openpete_interp_tick_stamp()) return;
     int32_t pp[3], cp[3];
-    memcpy(pp, prev_rec + game_layout.moby.pos_off, 12);
-    memcpy(cp, curr_rec + game_layout.moby.pos_off, 12);
-    return cut_pos_jump(pp, cp);
+    memcpy(pp, o->prev + game_layout.moby.pos_off, 12);
+    memcpy(cp, o->curr + game_layout.moby.pos_off, 12);
+    const double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
+    const double d = sqrt(dx*dx + dy*dy + dz*dz);
+    if (d < (double)s_min) return;
+    uint16_t pc, cc;
+    memcpy(&pc, o->prev + game_layout.moby.class_off, 2);
+    memcpy(&cc, o->curr + game_layout.moby.class_off, 2);
+    const char* why = "class";
+    const int v = (pc != cc) ? 1 : cut_obj_jump_reason(key, o->prev, o->curr, &why);
+    /* Each rule's own verdict, so one run scores every combination of the
+     * markers and the bound. */
+    const int cutpath = moby_game.cutpath_jump ? moby_game.cutpath_jump(key, o->prev, o->curr) : -1;
+    fprintf(stderr, "[jump-census vbl=%u] obj=%08x cls=%03x st=%02x->%02x d=%.1f "
+                    "cutpath=%d table=%d load=%d bound=%.0f verdict=%s why=%s\n",
+            openpete_frame, key, (unsigned)cc, o->prev[game_layout.moby.state_off],
+            o->curr[game_layout.moby.state_off], d, cutpath,
+            cut_place_marked(o->prev, o->curr), cut_load_regime(), cut_jump_bound(),
+            v ? "jump" : "lerp", why);
+}
+
+/** @brief Whether the held-cut rule applies: OPENPETE_CUT_HOLD_ALL, default on, read once.
+ *
+ * 0 leaves a held camera cut's records on their own clocks, for a same-binary
+ * A/B.
+ * @return Nonzero when the rule applies. */
+static int cut_hold_all_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_CUT_HOLD_ALL"); s = (e && *e) ? (*e != '0') : 1; }
+    return s;
+}
+
+int cut_held_rolled(const openpete_interp_obj_t* o) {
+    if (!s_held_ns || !o || !o->have_prev) return -1;
+    return o->curr_ns + g_openpete_tick_period_ns / 2 > s_held_ns ? 1 : 0;
 }
 
 /* The present's per-object verdicts, in decision order. */
@@ -131,7 +257,7 @@ static int s_obj_open;
 static int s_cam_snap;
 
 void cut_obj_present_begin(void) { s_obj_n = 0; s_obj_open = 1; }
-void cut_obj_present_end(void)   { s_obj_n = 0; s_obj_open = 0; }
+void cut_obj_present_end(void)   { s_obj_n = 0; s_obj_open = 0; s_held_ns = 0; }
 void cut_set_camera_snap(int snap) { s_cam_snap = snap ? 1 : 0; }
 
 int cut_obj_held(uint32_t addr) {
@@ -347,6 +473,7 @@ int cut_camera_hold(double period_ns, op_time_t curr_tick_ns, int gs_edge) {
     if (openpete_interp_curr_is_stale()) a = 1.0;
     const char* why = (a < 1.0) ? (cut_scene_holdable() ? "hold" : "scene") : "stale";
     const int hold = (why[0] == 'h');
+    s_held_ns = (hold && cut_hold_all_on()) ? curr_tick_ns : 0;
     cut_census_note(CUT_CAM, gs_edge ? 1u : 0u, hold, why, NULL, NULL);
     return hold;
 }
@@ -409,6 +536,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev,
                      cam_bracket_t* out) {
     cam_bracket_t r = { 0, 0, 0, 0.0, NULL, { 0.0, 0.0, 0.0 } };
     s_cam_snap = 0;
+    s_held_ns = 0;
     const uint8_t* pcam = snap_region(prev, desc->cam_region);
     const uint8_t* ccam = snap_region(curr, desc->cam_region);
     if (!cam || !pcam || !ccam) { if (out) *out = r; return; }

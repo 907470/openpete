@@ -25,6 +25,15 @@ static uint32_t flame_cap_colour_off(CPUState* cpu) {
  * generated env-anim walker func_8002A6FC indexes it as t9+0x10.. */
 #define G_ENVANIM (G_ENVIRONMENT - (uint32_t)sizeof(EnvironmentAnimations))
 
+/* Moby placements, read off each writer: classes 0x15A/0x15B going from state
+ * 1 to 2 have had their world position projected to screen space in place
+ * (level_55 0x800803B0-0x80080408: func_80017AA4(&m_Position, &m_Position),
+ * then sb 2 to m_State). */
+static const game_moby_place_t s_moby_place[] = {
+    { 0x15Au, 1u, 2u },
+    { 0x15Bu, 1u, 2u },
+};
+
 const game_layout_t game_layout = {
     .display = {
         /* initialization.c GraphicsInitialize: SetDefDispEnv(..., 0, 240, 512, 240)
@@ -203,6 +212,12 @@ const game_layout_t game_layout = {
          * up to about 49000 units a tick while respawned and relocated
          * mobys jump as little as about 900, so no bound separates the two. */
         .jump_bound   = 5000u,
+        .place        = s_moby_place,
+        .place_n      = sizeof s_moby_place / sizeof s_moby_place[0],
+        /* GS_LevelTransition: LoadLevel stores the new level's records over
+         * the slots of the old one while the state stays 1 on both ticks, so
+         * the gamestate edge does not mark those stores. */
+        .load_gamestates = 1u << 1,
 
         .model_table     = G_MODELS,
         .model_anims_off = offsetof(Model, m_Animations),

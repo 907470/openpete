@@ -8005,11 +8005,14 @@ static int moby_hold_expired(const openpete_interp_obj_t* o) {
 /** @brief A pair's alpha at this present on the per-object clock.
  *
  * The present clock (s_rot_now) past the current stamp over the pair's
- * distinct interval, clamped to [0, 1]. The caller has checked
- * curr_ns > prev_ns.
+ * distinct interval, clamped to [0, 1]. On a present that holds a camera cut,
+ * an object that did not roll at the cut's tick takes 1, its current state
+ * being its state at tick N-1 (cut_held_rolled); one that rolled is held by
+ * moby_jump_held. The caller has checked curr_ns > prev_ns.
  * @param o The interp object.
  * @return The alpha. */
 static double moby_pair_alpha(const openpete_interp_obj_t* o) {
+    if (cut_held_rolled(o) == 0) return 1.0;
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
     return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
 }
@@ -8024,9 +8027,12 @@ static int moby_jump_hold_enabled(void) {
     return s;
 }
 
-/** @brief Whether the sub-tick view holds a replayed record whole at its previous tick on this present, for a position jump between the pair's two ticks.
+/** @brief Whether the sub-tick view holds a replayed record whole at its previous tick on this present, for a held cut or a jump.
  *
- * A jump (cut_obj_jump) is not a motion, so no state lies between the two
+ * A present that holds a camera cut shows tick N-1 on every record, so a
+ * record that rolled at the cut's tick holds (kind CUT_HELD) and one that did
+ * not shows its current state (cut_held_rolled). Otherwise a jump
+ * (cut_obj_jump) holds: it is not a motion, so no state lies between the two
  * ticks: the interval shows tick N-1 on every channel the replay
  * interpolates (position, euler angles, keyframe shape, GPF scale) and tick N
  * at alpha 1. The shared guard (cut_obj_hold) takes the verdict once per
@@ -8043,14 +8049,16 @@ static int moby_jump_hold_enabled(void) {
 static int moby_jump_held(uint32_t moby, const openpete_interp_obj_t* o) {
     if (moby_game.host_reveal || !o || !o->have_prev || o->curr_ns <= o->prev_ns) return 0;
     const uint32_t po = game_layout.moby.pos_off;
-    if (!cut_obj_jump(moby, o->prev, o->curr)) return 0;
+    const int rolled = cut_held_rolled(o);
+    if (rolled == 0) return 0;
+    if (rolled < 0 && !cut_obj_jump(moby, o->prev, o->curr)) return 0;
     const int v = cut_obj_held(moby);
     if (v >= 0) return v;
-    if (!s_rot_now || !moby_jump_hold_enabled()) return 0;
+    if (!s_rot_now || (rolled < 0 && !moby_jump_hold_enabled())) return 0;
     double period = (double)(o->curr_ns - o->prev_ns);
     if (period > (double)g_openpete_tick_period_ns) period = (double)g_openpete_tick_period_ns;
     const double a = (double)(s_rot_now - o->curr_ns) / period;
-    return cut_obj_hold(CUT_TELEPORT, moby, o, po, a, NULL);
+    return cut_obj_hold(rolled > 0 ? CUT_HELD : CUT_TELEPORT, moby, o, po, a, NULL);
 }
 
 /** @brief The facing-reversal verdict: whether a record holds its previous shape and rotation through this sub-tick interval.
@@ -10548,7 +10556,9 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  * The phase is the present clock past the curr stamp over the roll interval,
  * capped at one tick so a pair whose two distinct states are further apart
  * sweeps the whole delta over the tick and still lands exactly on curr at
- * t = 1, and clamped to [0, 1].
+ * t = 1, and clamped to [0, 1]. On a held camera cut it is 1 for an object
+ * that did not roll at the cut's tick (cut_held_rolled), and 0 for a record
+ * moby_jump_held holds.
  * @param moby The Moby address.
  * @param t Receives the phase when a pair is returned.
  * @return The interp object, or NULL when no term built on the pair may be
@@ -10567,6 +10577,7 @@ static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     if (period > (double)MOBY_TICK_PERIOD_NS) period = (double)MOBY_TICK_PERIOD_NS;
     double ph = (double)(openpete_interp_present_now() - o->curr_ns) / period;
     *t = ph < 0.0 ? 0.0 : (ph > 1.0 ? 1.0 : ph);
+    if (cut_held_rolled(o) == 0) *t = 1.0;
     if (moby_jump_held(moby, o)) *t = 0.0;
     return o;
 }

@@ -24,7 +24,7 @@ extern "C" {
 #endif
 
 /* Guard kinds, in census-tally order. */
-enum { CUT_CAM = 0, CUT_CLASS = 1, CUT_TELEPORT = 2, CUT_KINDS = 3 };
+enum { CUT_CAM = 0, CUT_CLASS = 1, CUT_TELEPORT = 2, CUT_HELD = 3, CUT_KINDS = 4 };
 
 /** @brief Whether the cut census is armed: OPENPETE_CUT_CENSUS set to a nonempty value not starting with '0', read once.
  *
@@ -40,7 +40,7 @@ int cut_census_on(void);
  * guards' engagement counters. The tallies count whether or not the census
  * is armed, so they are complete from the first present. A kind outside
  * 0..CUT_KINDS-1 is ignored.
- * @param kind CUT_CAM, CUT_CLASS or CUT_TELEPORT.
+ * @param kind CUT_CAM, CUT_CLASS, CUT_TELEPORT or CUT_HELD.
  * @param addr The object's address; the camera guard passes its regime-edge
  *        flag instead.
  * @param held Nonzero when the guard held tick N-1, zero when it snapped.
@@ -129,23 +129,64 @@ int cut_pair_is_tick(const openpete_interp_obj_t* o);
 /** @brief Whether one object's world-position step between two ticks is a jump rather than a move, by the game's distance bound.
  *
  * The step is a jump when its length exceeds game_layout.moby.jump_bound
- * world units; a game whose bound is 0 has none, and no step is a jump.
+ * world units (OPENPETE_MOBY_JUMP_BOUND overrides it); a bound of 0 is none,
+ * and no step is a jump.
  * @param prev_pos Tick N-1's int32 x/y/z position.
  * @param curr_pos Tick N's int32 x/y/z position.
  * @return 1 for a jump, else 0. */
 int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos);
 
-/** @brief Whether one moby's step between two ticks is a jump, by the game's own marker where it has one.
+/** @brief Whether one moby's step between two ticks is a jump, by the game's own marker where it has one, and which rule decided.
  *
- * moby_game.cutpath_jump decides for a moby the game's cutscene path sampler
- * drives (the sampler's own rule for a placement it does not interpolate);
- * every other moby takes the distance bound (cut_pos_jump) on the positions
- * at game_layout.moby.pos_off.
+ * The rules, in order: moby_game.cutpath_jump decides for a moby the game's
+ * cutscene path sampler drives (the sampler's own rule for a placement it
+ * does not interpolate); a row of the placement table
+ * (game_layout.moby.place) matching the record's class and state transition
+ * is a jump; a pair in a load regime (game_layout.moby.load_gamestates) is a
+ * jump; every other step takes the distance bound (cut_pos_jump) on the
+ * positions at game_layout.moby.pos_off. OPENPETE_MOBY_JUMP_MARKERS=0 skips
+ * the table and the load regime. No rule measures distance before the bound.
+ * @param addr The moby's guest address.
+ * @param prev_rec Tick N-1's moby record.
+ * @param curr_rec Tick N's moby record.
+ * @param why Receives "cutpath", "table", "load", "bound" or "none" when
+ *        non-NULL.
+ * @return 1 for a jump, else 0. */
+int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                        const char** why);
+
+/** @brief Whether one moby's step between two ticks is a jump: cut_obj_jump_reason without the reason.
+ *
  * @param addr The moby's guest address.
  * @param prev_rec Tick N-1's moby record.
  * @param curr_rec Tick N's moby record.
  * @return 1 for a jump, else 0. */
 int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec);
+
+/** @brief With OPENPETE_JUMP_CENSUS=<min> set, print the jump verdict of one moby the capture just rolled, when its step is at least min world units.
+ *
+ * Called by the moby capture after each record's capture. The line carries
+ * the VBL, the object key, tick N's class, both state bytes, the step length,
+ * each rule's own verdict (the sampler's -1/0/1, the placement table, the
+ * load regime, the bound in force), the verdict and its rule
+ * (cut_obj_jump_reason, or "class" for a class change). Objects that did not
+ * roll on this capture print nothing.
+ * @param key The object's interp key, which the array capture takes as the
+ *        guest address. */
+void cut_jump_census_capture(uint32_t key);
+
+/** @brief On a present that holds a camera cut, whether an object rolled on the cut's tick N.
+ *
+ * A held cut shows tick N-1 on every record: an object that rolled at N shows
+ * its previous state, one that did not shows its current state, which is
+ * already its state at N-1. Rolled means its current stamp is within half a
+ * tick period of the held snapshot's stamp or later. The held stamp is set by
+ * cut_camera_hold (OPENPETE_CUT_HOLD_ALL=0 never sets it) and cleared by
+ * cam_bracket_run and cut_obj_present_end.
+ * @param o The interp object.
+ * @return -1 when no cut is held or the object has no previous state, 1 when
+ *         it rolled at tick N, 0 when it did not. */
+int cut_held_rolled(const openpete_interp_obj_t* o);
 
 /** @brief Open a sub-tick present's per-object hold set, emptying the previous present's.
  *
@@ -180,7 +221,7 @@ int cut_obj_held(uint32_t addr);
  * longer has it), or when `stage` returns 0 ("unstaged"). The verdict is
  * noted in the census with both positions and recorded in the present's set
  * (cut_obj_held). Guest memory is never written.
- * @param kind CUT_CLASS or CUT_TELEPORT.
+ * @param kind CUT_CLASS, CUT_TELEPORT or CUT_HELD.
  * @param addr The object's guest address.
  * @param o The object's interp pair.
  * @param pos_off Offset of the int32 x/y/z position in the record.
@@ -214,7 +255,8 @@ int cut_scene_holdable(void);
  * forward endpoint stopped advancing, so there is no open interval). The cut
  * holds while the alpha is below 1 and cut_scene_holdable() passes. The
  * verdict is noted in the census as kind CUT_CAM with reason "hold",
- * "scene" or "stale".
+ * "scene" or "stale". A hold records curr_tick_ns as the held stamp
+ * cut_held_rolled reads for the rest of the present.
  * @param period_ns The pair's tick period.
  * @param curr_tick_ns The current snapshot's tick stamp.
  * @param gs_edge Nonzero when the pair crossed a regime edge; noted in the

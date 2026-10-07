@@ -24,6 +24,18 @@ static uint32_t flame_cap_colour_off(CPUState* cpu) {
     return cpu->read_word(G_LEVELID) == 0x1Fu ? 0x10u : 0u;
 }
 
+/* Moby placements, read off each writer:
+ * - class 0x1A2, state 30 -> 4: state 30 hid the record (level_33 0x800806BC
+ *   clears +0x4C/+0x4D); level_33 0x800806D0-0x800807F4 copies a source
+ *   moby's position into it (func_8004F178) and stores state 4.
+ * - class 0x0C7, state 2 -> 3: level_13 0x8007FA64-0x8007FB3C stores state 3
+ *   and sets the position to the props base plus (r sin, r cos) at a new
+ *   angle. */
+static const game_moby_place_t s_moby_place[] = {
+    { 0x1A2u, 30u, 4u },
+    { 0x0C7u,  2u, 3u },
+};
+
 const game_layout_t game_layout = {
     .display = {
         /* warp.c func_80059038: SetDefDrawEnv(..., 0, 12, 512, 216) paired with
@@ -338,7 +350,10 @@ const game_layout_t game_layout = {
         .cutpath_overlays = "cutscene_ title",
         /* No distance bound (jump_bound 0): Sparx (class 0x78) moves up to
          * about 31000 units a tick while other mobys jump as little as about
-         * 1000, so a moby the sampler does not drive is never held. */
+         * 1000, so a moby the sampler does not drive is held only on a
+         * placement marker. */
+        .place   = s_moby_place,
+        .place_n = sizeof s_moby_place / sizeof s_moby_place[0],
 
         .model_table     = G_MOBYMODELS,
         .model_anims_off = 0x3Cu,       /* mobydraw.s:116-118 model + 0x3C + id*4 */

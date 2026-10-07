@@ -66,6 +66,16 @@ typedef struct env_anim_sublist {
     uint8_t  kind;       /* ENV_ANIM_KIND_* */
 } env_anim_sublist_t;
 
+/* One moby placement marker: a moby of class `cls` whose state byte goes
+ * from `state_prev` to `state_curr` between two ticks was placed by the
+ * game's code, not moved, on that tick. `state_prev` 0xFF matches any
+ * previous state. */
+typedef struct game_moby_place {
+    uint16_t cls;
+    uint8_t  state_prev;
+    uint8_t  state_curr;
+} game_moby_place_t;
+
 typedef struct game_layout {
     /* The game's display environment, in VRAM pixels, as its boot code hands
      * it to SetDefDispEnv/SetDefDrawEnv. `disp_w` by `disp_h` is the region
@@ -547,6 +557,14 @@ typedef struct game_layout {
         /* A moby step longer than this many world units in one tick is a
          * jump, for a moby no game marker decides; 0 = no distance bound. */
         uint32_t    jump_bound;
+        /* The placement markers (game_moby_place_t), `place_n` rows; NULL
+         * where the game names none. */
+        const game_moby_place_t* place;
+        uint32_t    place_n;
+        /* Bit k set: the interp ring's g_GameState row holding k on either
+         * snapshot of its newest pair is a load regime, whose moby stores are
+         * placements. 0 = no load regime. */
+        uint32_t    load_gamestates;
 
         uint32_t model_table;
         uint32_t model_anims_off;

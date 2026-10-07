@@ -8,6 +8,7 @@
 #include "openpete_psx.h"          /* openpete_psx_to_host_span */
 #include "game_layout.h"
 #include "renderer/env_knob.h"
+#include "renderer/cut_guard.h"     /* cut_jump_census_capture */
 #include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
 #include "renderer/orchestrator.h" /* the canonical-render epoch the moby stash carries */
 
@@ -346,6 +347,7 @@ void game_interp_capture_moby_array(void) {
         if (st < 0x80) {                                         /* 0x80 and above: dormant, skipped */
             const void* src = stash_source(&sw, m, host, blob);
             openpete_interp_objs_capture(m, src, blob);
+            cut_jump_census_capture(m);
             if (s_ctc >= 0) {
                 uint16_t c2; memcpy(&c2, (const uint8_t*)host + game_layout.moby.class_off, 2);
                 if (s_ctc == 0xFFFF || c2 == (uint16_t)s_ctc) {
