@@ -660,29 +660,43 @@ static void knob_source_lines(const knob_desc_t *k, const char *name)
         ImGui::TextDisabled("openpete.toml: [%s]", layer);
 }
 
-/* The panel's title-column edge. Every table sizes its title column so the
- * value column starts where the widest drawn title ends, whatever the
- * subsection indent: `next` collects the right edge of every title drawn this
- * present (window-relative), and `edge` is the last present's, applied now.
- * A present that draws no title keeps the last edge. */
+/* Title-column edges: one shared by the top-level rows of every section, and
+ * one per subsection title, so a subsection's titles size its own tables and
+ * not the panel's. Every table sizes its title column so the value column
+ * starts where the widest title of its record ends: `next` collects the right
+ * edge of every title drawn this present (window-relative), and `edge` is the
+ * last present's, applied now. A record that draws no title keeps its last
+ * edge. */
 struct title_edge {
-    float edge;
-    float next;
+    const char *key;   /* NULL for the panel's record, else the subsection title */
+    float       edge;
+    float       next;
 };
-static title_edge  s_title_panel = { 0.0f, 0.0f };
-static title_edge *s_title_cur   = nullptr;
+static std::deque<title_edge> s_title_edges;
+static title_edge            *s_title_cur = nullptr;
 
-/** @brief Make the panel's title-column record current while a section's rows draw. */
-static void title_edge_enter(void)
+/** @brief Make the title-column record of a subsection, or the panel's for NULL, current; appends one on its first use.
+ *
+ * Records live in a deque, so a pointer to one stays valid as others are
+ * appended. */
+static void title_edge_enter(const char *key)
 {
-    s_title_cur = &s_title_panel;
+    for (title_edge &e : s_title_edges)
+        if (e.key == key || (e.key && key && strcmp(e.key, key) == 0)) {
+            s_title_cur = &e;
+            return;
+        }
+    s_title_edges.push_back({ key, 0.0f, 0.0f });
+    s_title_cur = &s_title_edges.back();
 }
 
-/** @brief Adopt the measured title edge and start a new measurement; called once per panel draw. */
+/** @brief Adopt every record's measured title edge and start a new measurement; called once per panel draw. */
 static void title_edge_roll(void)
 {
-    if (s_title_panel.next > 0.0f) s_title_panel.edge = s_title_panel.next;
-    s_title_panel.next = 0.0f;
+    for (title_edge &e : s_title_edges) {
+        if (e.next > 0.0f) e.edge = e.next;
+        e.next = 0.0f;
+    }
     s_title_cur = nullptr;
 }
 
@@ -1930,7 +1944,7 @@ static void lay_draw_table(const lay_ctx &c, const lay_row *rows, size_t from,
                            size_t to)
 {
     if (!lay_span_shows(c, rows, from, to)) return;
-    /* Title column ends at the panel's widest title plus one item gap;
+    /* Title column ends at the record's widest title plus one item gap;
      * 0 (nothing measured yet) auto-fits this table's own titles. */
     const ImGuiStyle &st = ImGui::GetStyle();
     float title_w = 0.0f;
@@ -1975,7 +1989,8 @@ static size_t lay_sub_end(const lay_row *rows, size_t sub, size_t n)
 /** @brief Draw a section's rows: tables between subsections, each subsection a tree node closed by default.
  *
  * An active filter opens every subsection with a match; a subsection with no
- * row to show is left out. */
+ * row to show is left out. A subsection sizes its title column from its own
+ * title-column record. */
 static void lay_draw_rows(const lay_ctx &c, const lay_row *rows, size_t n)
 {
     size_t i = 0;
@@ -1991,7 +2006,10 @@ static void lay_draw_rows(const lay_ctx &c, const lay_row *rows, size_t n)
         if (lay_span_shows(c, rows, i + 1, end)) {
             if (c.filter->IsActive()) ImGui::SetNextItemOpen(true);
             if (ImGui::TreeNodeEx(rows[i].label, ImGuiTreeNodeFlags_SpanAvailWidth)) {
+                title_edge *outer = s_title_cur;
+                title_edge_enter(rows[i].label);
                 lay_draw_table(c, rows, i + 1, end);
+                s_title_cur = outer;
                 ImGui::TreePop();
             }
         }
@@ -2002,7 +2020,7 @@ static void lay_draw_rows(const lay_ctx &c, const lay_row *rows, size_t n)
 /** @brief Draw one section under its collapsing header when any of its rows shows.
  *
  * An active filter forces the header open. The panel's title-column record
- * is current while its rows draw. */
+ * is current while its top-level rows draw. */
 static void lay_draw_section(const lay_ctx &c, const char *title, bool open,
                              const lay_row *rows, size_t n)
 {
@@ -2010,7 +2028,7 @@ static void lay_draw_section(const lay_ctx &c, const char *title, bool open,
     if (c.filter->IsActive()) ImGui::SetNextItemOpen(true);
     ImGui::PushID(title);
     if (ImGui::CollapsingHeader(title, open ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-        title_edge_enter();
+        title_edge_enter(nullptr);
         lay_draw_rows(c, rows, n);
         s_title_cur = nullptr;
     }
