@@ -660,36 +660,29 @@ static void knob_source_lines(const knob_desc_t *k, const char *name)
         ImGui::TextDisabled("openpete.toml: [%s]", layer);
 }
 
-/* Title-column width per top-level section. Every table of a section sizes
- * its title column so the value column starts where the section's widest
- * title ends, whatever the subsection indent: `next` collects the right
- * edge of every title drawn this present (window-relative), and `edge` is the
- * last present's, applied now. A collapsed section measures nothing and keeps
- * its last edge. */
+/* The panel's title-column edge. Every table sizes its title column so the
+ * value column starts where the widest drawn title ends, whatever the
+ * subsection indent: `next` collects the right edge of every title drawn this
+ * present (window-relative), and `edge` is the last present's, applied now.
+ * A present that draws no title keeps the last edge. */
 struct title_edge {
-    const char *section;
-    float       edge;
-    float       next;
+    float edge;
+    float next;
 };
-static std::vector<title_edge> s_title_edges;
-static title_edge             *s_title_cur = nullptr;
+static title_edge  s_title_panel = { 0.0f, 0.0f };
+static title_edge *s_title_cur   = nullptr;
 
-/** @brief Make a section's title-column record current, appending one on its first draw. */
-static void title_edge_enter(const char *section)
+/** @brief Make the panel's title-column record current while a section's rows draw. */
+static void title_edge_enter(void)
 {
-    for (title_edge &e : s_title_edges)
-        if (strcmp(e.section, section) == 0) { s_title_cur = &e; return; }
-    s_title_edges.push_back({ section, 0.0f, 0.0f });
-    s_title_cur = &s_title_edges.back();
+    s_title_cur = &s_title_panel;
 }
 
-/** @brief Adopt each section's measured title edge and start a new measurement; called once per panel draw. */
+/** @brief Adopt the measured title edge and start a new measurement; called once per panel draw. */
 static void title_edge_roll(void)
 {
-    for (title_edge &e : s_title_edges) {
-        if (e.next > 0.0f) e.edge = e.next;
-        e.next = 0.0f;
-    }
+    if (s_title_panel.next > 0.0f) s_title_panel.edge = s_title_panel.next;
+    s_title_panel.next = 0.0f;
     s_title_cur = nullptr;
 }
 
@@ -1937,7 +1930,7 @@ static void lay_draw_table(const lay_ctx &c, const lay_row *rows, size_t from,
                            size_t to)
 {
     if (!lay_span_shows(c, rows, from, to)) return;
-    /* Title column ends at the section's widest title plus one item gap;
+    /* Title column ends at the panel's widest title plus one item gap;
      * 0 (nothing measured yet) auto-fits this table's own titles. */
     const ImGuiStyle &st = ImGui::GetStyle();
     float title_w = 0.0f;
@@ -2008,8 +2001,8 @@ static void lay_draw_rows(const lay_ctx &c, const lay_row *rows, size_t n)
 
 /** @brief Draw one section under its collapsing header when any of its rows shows.
  *
- * An active filter forces the header open. The open section's title-column
- * record is current while its rows draw. */
+ * An active filter forces the header open. The panel's title-column record
+ * is current while its rows draw. */
 static void lay_draw_section(const lay_ctx &c, const char *title, bool open,
                              const lay_row *rows, size_t n)
 {
@@ -2017,7 +2010,7 @@ static void lay_draw_section(const lay_ctx &c, const char *title, bool open,
     if (c.filter->IsActive()) ImGui::SetNextItemOpen(true);
     ImGui::PushID(title);
     if (ImGui::CollapsingHeader(title, open ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-        title_edge_enter(title);
+        title_edge_enter();
         lay_draw_rows(c, rows, n);
         s_title_cur = nullptr;
     }
