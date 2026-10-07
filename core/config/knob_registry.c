@@ -2334,6 +2334,10 @@ static const knob_desc_t g_builtin_debug[] = {
         "and one per query the camera bound admits (distance and matrix trace)."),
     ENVROW_LATCHED("TERRAIN_OCCL_DBG", "Debug diagnostics", "0",
         "Sector occlusion-cull census."),
+    ENVROW_LATCHED("TERRAIN_OCCL_AUDIT", "Debug diagnostics", "",
+        "From this VBL on, check every sector the occlusion cull calls off-screen "
+        "against the exact sphere-vs-frame test; prints each false off-screen sector "
+        "and cumulative totals at exit."),
     ENVROW_LATCHED("TERRAIN_TIMERS", "Debug diagnostics", "0",
         "~1/s per-sector walk-cost census."),
     ENVROW_LATCHED("TERRAIN_VISDBG", "Debug diagnostics", "0",

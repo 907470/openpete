@@ -400,6 +400,9 @@ static void terrain_dump(CPUState* cpu) {
 /* Projection params (file-static so the clip/emit path can re-project clipped
  * vertices). Set per frame in terrain_build. */
 static double s_ofx, s_ofy, s_H;
+/* Displayed frame bounds in PSX screen pixels: x lo, x hi, y lo, y hi. Set per
+ * walk in terrain_build. */
+static double s_frame_b[4];
 
 /** @brief Projects a camera-space point to the screen: the float mirror of RTPS with TR = 0.
  *
@@ -10389,20 +10392,166 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
+/** @brief Computes the exact screen interval a sector's bounding sphere projects to under this walk's camera.
+ *
+ * The camera matrix is not orthonormal, so the world-space radius is scaled
+ * by the largest projection row norm (s_rim_rowmax) to a view-space sphere
+ * that contains the sector. For a sphere at view (x, z) of radius r wholly
+ * in front of the eye, the tangent lines through the eye project to
+ * H * (x z -+ r sqrt(x^2 + z^2 - r^2)) / (z^2 - r^2) about the centre; the
+ * same holds for (y, z). The interval is exact for any view tangent, where
+ * a box proportional to r H / z under-covers spheres far off-axis.
+ * @param oc1 The sphere centre's horizontal view coordinate.
+ * @param oc2 The sphere centre's vertical view coordinate.
+ * @param oc3 The sphere centre's view depth.
+ * @param radius The sphere radius in world units of the walk (world / 16).
+ * @param iv Receives x0, x1, y0, y1 in PSX screen pixels.
+ * @return 1 when the sphere lies wholly in front of the eye and @p iv is
+ *         set, else 0. */
+static int tsec_screen_interval(double oc1, double oc2, double oc3, double radius,
+                                double iv[4])
+{
+    const double rr = radius * s_rim_rowmax;
+    if (!(oc3 > rr + 1.0)) return 0;
+    const double d  = oc3 * oc3 - rr * rr;
+    const double kx = rr * sqrt(oc1 * oc1 + d);
+    const double ky = rr * sqrt(oc2 * oc2 + d);
+    iv[0] = s_ofx + s_H * (oc1 * oc3 - kx) / d;
+    iv[1] = s_ofx + s_H * (oc1 * oc3 + kx) / d;
+    iv[2] = s_ofy + s_H * (oc2 * oc3 - ky) / d;
+    iv[3] = s_ofy + s_H * (oc2 * oc3 + ky) / d;
+    return 1;
+}
+
+/** @brief Returns whether a screen interval from tsec_screen_interval lies wholly outside the displayed frame.
+ *
+ * @param iv x0, x1, y0, y1 in PSX screen pixels.
+ * @return 1 when no part of the interval reaches the frame, else 0. */
+static int tsec_interval_offscreen(const double iv[4])
+{
+    return iv[1] < s_frame_b[0] || iv[0] > s_frame_b[1] ||
+           iv[3] < s_frame_b[2] || iv[2] > s_frame_b[3];
+}
+
+/* Occlusion-cull audit (OPENPETE_TERRAIN_OCCL_AUDIT=<vbl>): cumulative
+ * counts over every walk at VBL >= vbl. */
+static long s_occa_walks, s_occa_walked, s_occa_frustum, s_occa_depth, s_occa_false;
+static int  s_occa_on = -1;
+static unsigned s_occa_from;
+
+/** @brief Prints the occlusion audit's cumulative totals; registered with atexit. */
+static void tocc_audit_total(void)
+{
+    fprintf(stderr, "[occl-audit-total] walks=%ld walked=%ld frustum=%ld depth=%ld "
+            "false_offscreen=%ld\n", s_occa_walks, s_occa_walked, s_occa_frustum,
+            s_occa_depth, s_occa_false);
+}
+
+/** @brief Returns whether the occlusion audit runs on this walk.
+ *
+ * OPENPETE_TERRAIN_OCCL_AUDIT=<vbl> arms it for every walk at VBL >= vbl;
+ * read once. The first armed call registers the totals line at exit.
+ * @return 1 when armed for this walk, else 0. */
+static int tocc_audit_on(void)
+{
+    if (s_occa_on < 0) {
+        const char *e = getenv("OPENPETE_TERRAIN_OCCL_AUDIT");
+        s_occa_on = (e && *e) ? 1 : 0;
+        s_occa_from = s_occa_on ? (unsigned)strtoul(e, NULL, 0) : 0u;
+        if (s_occa_on) atexit(tocc_audit_total);
+    }
+    return s_occa_on && openpete_frame >= s_occa_from;
+}
+
+/** @brief Returns whether a view-space sphere reaches the displayed frame, by its distance to the four side planes through the eye.
+ *
+ * The audit's reference, written independently of tsec_screen_interval:
+ * a frame edge at screen coordinate e about the centre c bounds the plane
+ * H v - (e - c) z = 0, and the sphere is wholly outside when its signed
+ * distance to that plane, on the outer side, exceeds the radius scaled by
+ * s_rim_rowmax.
+ * @param oc1 The sphere centre's horizontal view coordinate.
+ * @param oc2 The sphere centre's vertical view coordinate.
+ * @param oc3 The sphere centre's view depth.
+ * @param radius The sphere radius in world units of the walk.
+ * @return 1 when no side plane separates the sphere from the frame, else 0. */
+static int tocc_audit_in_frame(double oc1, double oc2, double oc3, double radius)
+{
+    const double rr = radius * s_rim_rowmax, H = s_H;
+    const double a = s_frame_b[0] - s_ofx, b = s_frame_b[1] - s_ofx;
+    const double c = s_frame_b[2] - s_ofy, d = s_frame_b[3] - s_ofy;
+    if (H * oc1 - a * oc3 < -rr * sqrt(H * H + a * a)) return 0;
+    if (b * oc3 - H * oc1 < -rr * sqrt(H * H + b * b)) return 0;
+    if (H * oc2 - c * oc3 < -rr * sqrt(H * H + c * c)) return 0;
+    if (d * oc3 - H * oc2 < -rr * sqrt(H * H + d * d)) return 0;
+    return 1;
+}
+
+/** @brief Returns whether a sector's projected sphere interval overlaps any portal sky plane's screen rect.
+ *
+ * The retained-GPU portal claim used when the rim refinement frames are
+ * unavailable: the exact interval (tsec_screen_interval) widened by 16 px
+ * against each plane's rect. A sphere not wholly in front of the eye has
+ * no bounded projection, may reach any portal, and claims.
+ * @param oc1 The sphere centre's horizontal view coordinate.
+ * @param oc2 The sphere centre's vertical view coordinate.
+ * @param oc3 The sphere centre's view depth.
+ * @param radius The sphere radius in world units of the walk.
+ * @return 1 to claim the sector for the portal, else 0. */
+static int tgpu_portal_interval_claim(double oc1, double oc2, double oc3, double radius)
+{
+    double iv[4];
+    if (!tsec_screen_interval(oc1, oc2, oc3, radius, iv)) return 1;
+    for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
+        const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
+        if (iv[1] + 16.0 >= pp->x0 && iv[0] - 16.0 <= pp->x1 &&
+            iv[3] + 16.0 >= pp->y0 && iv[2] - 16.0 <= pp->y1)
+            return 1;
+    }
+    return 0;
+}
+
 /* Sector occlusion-cull verdicts, in the order they are tested. */
 enum { TOCC_KEEP = 0, TOCC_FRUSTUM = 1, TOCC_DEPTH = 2 };
 
+/** @brief Records one sector's occlusion verdict in the audit when it is armed.
+ *
+ * Counts the sector as walked and by verdict; a TOCC_FRUSTUM verdict whose
+ * sphere tocc_audit_in_frame puts in the frame counts as false_offscreen
+ * and prints its sector.
+ * @param i The sector index.
+ * @param verdict The verdict tocc_sector_verdict returned.
+ * @param oc1 The sphere centre's horizontal view coordinate.
+ * @param oc2 The sphere centre's vertical view coordinate.
+ * @param oc3 The sphere centre's view depth.
+ * @param radius The sphere radius in world units of the walk. */
+static void tocc_audit_note(uint32_t i, int verdict, double oc1, double oc2,
+                            double oc3, double radius)
+{
+    if (!tocc_audit_on()) return;
+    s_occa_walked++;
+    s_occa_depth += verdict == TOCC_DEPTH;
+    if (verdict != TOCC_FRUSTUM) return;
+    s_occa_frustum++;
+    if (!tocc_audit_in_frame(oc1, oc2, oc3, radius)) return;
+    s_occa_false++;
+    fprintf(stderr, "[occl-audit] f=%u sub=%d false_offscreen sector=%u\n",
+            openpete_frame, s_vanim_sub ? 1 : 0, i);
+}
+
 /** @brief Returns the occlusion-cull verdict for a sector's view-space bounding sphere under this walk's camera.
  *
- * The frustum reject is a test on the sector's own projected rect, so every
- * walk evaluates it under its own camera. The depth verdict reads the
+ * The frustum reject tests the exact screen interval of the view-space
+ * sphere (tsec_screen_interval) against the displayed frame; it reads no
+ * grid, so it runs whether or not an occluder grid exists, and every walk
+ * evaluates it under its own camera. The depth verdict reads the
  * occluder grid, which advances once per present while the canonical walk
  * runs once per tick: a sub-tick re-extract reuses its tick's canonical depth
  * verdict (s_tocc_latch) instead of querying a grid that has moved on. A
  * reused frustum verdict would be wrong in the other direction: the
  * re-extract's interpolated camera lags the tick camera, so a sector the tick
  * camera has panned off is still in the re-extract's frame. A sector not
- * wholly in front of the camera has a meaningless rect and is kept.
+ * wholly in front of the camera has an unbounded projection and is kept.
  * @param i The sector index.
  * @param oc1 The sphere centre's horizontal view coordinate.
  * @param oc2 The sphere centre's vertical view coordinate.
@@ -10412,17 +10561,16 @@ enum { TOCC_KEEP = 0, TOCC_FRUSTUM = 1, TOCC_DEPTH = 2 };
 static int tocc_sector_verdict(uint32_t i, double oc1, double oc2, double oc3,
                                double radius)
 {
-    if (!(oc3 > radius + 1.0)) return TOCC_KEEP;
-    double inv = s_H / oc3;
-    float sx  = (float)(s_ofx + oc1 * inv);
-    float sy  = (float)(s_ofy + oc2 * inv);
-    float rpx = (float)(radius * inv * 1.5 + 8.0);            /* generous bbox */
-    float vz_near = (float)((oc3 - radius) * 16.0);           /* world/16 -> full-world */
-    int own_off = openpete_native_occl_offscreen(sx - rpx, sy - rpx,
-                                                 sx + rpx, sy + rpx, vz_near);
+    double iv[4];
+    if (!tsec_screen_interval(oc1, oc2, oc3, radius, iv)) return TOCC_KEEP;
+    /* Nearest view-Z of the view-space sphere, world/16 -> full-world. */
+    float vz_near = (float)((oc3 - radius * s_rim_rowmax) * 16.0);
+    int own_off = tsec_interval_offscreen(iv);
     if (!s_vanim_sub) {
         if (own_off) return TOCC_FRUSTUM;
-        return openpete_native_occl_query(sx - rpx, sy - rpx, sx + rpx, sy + rpx,
+        /* 8 px margin around the exact interval, as the depth rect has always had. */
+        return openpete_native_occl_query((float)iv[0] - 8.0f, (float)iv[2] - 8.0f,
+                                          (float)iv[1] + 8.0f, (float)iv[3] + 8.0f,
                                           vz_near, &s_occl_cam) ? TOCC_DEPTH : TOCC_KEEP;
     }
     int lat = (i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick) ? s_tocc_latch[i]
@@ -10460,6 +10608,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         prev_tris = s_tri_n;
     }
     if (!s_vanim_sub) s_tocc_tick++;
+    s_occa_walks += tocc_audit_on();
     s_fardbg_occl0 = s_tocc_culled;
     s_tocc_latoff = s_tocc_offadm = 0;
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
@@ -10630,6 +10779,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_ofx = s_view.ofx;
     s_ofy = s_view.ofy;
     s_H   = s_view.H_eff;
+    {   /* Displayed frame bounds in PSX screen pixels, for the sector sphere
+         * tests (tsec_screen_interval consumers and the occlusion audit). */
+        float ylo, yhi;
+        openpete_native_visible_y_bounds(&ylo, &yhi);
+        s_frame_b[0] = s_view.xlo; s_frame_b[1] = s_view.xhi;
+        s_frame_b[2] = ylo;        s_frame_b[3] = yhi;
+    }
     /* Arm the fill-tag inspector's pick point set for this walk (see fp_begin:
      * the crosshair, plus an optional grid sweep). */
     s_fp_on = openpete_fillpick_active();
@@ -10977,9 +11133,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * GPU depth-tests it away, but the CPU still paid to extract, sort and
          * upload it. Under --lod extended the game's distance cull is defeated,
          * so fully-occluded distant sectors (everything behind a wall) still get
-         * walked. Reuse the moby occlusion grid (built from the WORLD-opaque
+         * walked. A sector whose bounding sphere projects wholly outside the
+         * displayed frame is culled first, by an exact test that needs no grid.
+         * Otherwise reuse the moby occlusion grid (built from the WORLD-opaque
          * terrain depth pre-pass, frames-lagged like the moby query): cull a
-         * sector only when EVERY grid cell over its (inflated) bbox is nearer
+         * sector only when EVERY grid cell over its projected interval is nearer
          * than the sector's NEAREST point - partial occlusion keeps it, so no
          * pop-in. openpete_native_occl_query returns 0 (keep) whenever the grid
          * is absent/stale/too-near, or was rendered from a camera outside the
@@ -11011,6 +11169,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
         if (s_tocc) {
             int culled = tocc_sector_verdict(i, oc1, oc2, oc3, (double)SC->radius);
+            tocc_audit_note(i, culled, oc1, oc2, oc3, (double)SC->radius);
             if (!s_vanim_sub && i < 1024u) {
                 s_tocc_latch[i] = (uint8_t)culled;
                 s_tocc_latch_stamp[i] = s_tocc_tick;
@@ -11109,20 +11268,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * what a portal preview covers (the cover planes ride the
                  * build's globals). */
                 int pcl = 0;
-                if (!s_tgpu_rim_ok) {
-                    /* Refinement frames unavailable (plane provider disabled):
-                     * blanket projected-bbox claim, the pre-refinement rule. */
-                    const double csx = s_ofx + oc1 * s_H / oc3;
-                    const double csy = s_ofy + oc2 * s_H / oc3;
-                    const double rpx = (double)SC->radius * s_H / oc3 * 1.5 + 16.0;
-                    for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
-                        const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
-                        if (csx + rpx >= pp->x0 && csx - rpx <= pp->x1 &&
-                            csy + rpx >= pp->y0 && csy - rpx <= pp->y1) {
-                            pcl = 1; break;
-                        }
-                    }
-                }
+                /* Refinement frames unavailable (plane provider disabled):
+                 * blanket projected-interval claim, the pre-refinement rule. */
+                if (!s_tgpu_rim_ok)
+                    pcl = tgpu_portal_interval_claim(oc1, oc2, oc3, (double)SC->radius);
                 if (pcl) { claim = 1; s_tgcl_portal++; }
             }
             if (!claim && s_tgpu_own[vi] != 2) {

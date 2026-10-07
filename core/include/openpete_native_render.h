@@ -1739,6 +1739,16 @@ float openpete_native_widescreen_factor(void);
  * @param xlo Receives the left bound; may be NULL.
  * @param xhi Receives the right bound; may be NULL. */
 void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
+/** @brief Return the visible PSX screen-Y range of the displayed frame.
+ *
+ * The range is the clip band of the guest's display geometry, centred in
+ * the display height: [(disp_h - clip_h) / 2, (disp_h + clip_h) / 2], which
+ * scene_to_clip maps to the frame's top and bottom edges; 240 and 224 stand
+ * in before the guest sets them. The widescreen factor does not change it.
+ * Reads the guest-side geometry, so it is valid on the extracting thread.
+ * @param ylo Receives the top bound; may be NULL.
+ * @param yhi Receives the bottom bound; may be NULL. */
+void  openpete_native_visible_y_bounds(float *ylo, float *yhi);
 
 /* ---- field of view display policy ------------------------------------ */
 /** @brief Set --fov, the vertical FOV in degrees of the visible band; 0 or less keeps the game's projection.
@@ -2123,22 +2133,6 @@ void openpete_native_occl_set_camera(const openpete_occl_camera *c);
  * @return 1 to cull, 0 to keep. */
 int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                 const openpete_occl_camera *cam);
-/** @brief Return 1 when a screen rect lies wholly outside the occlusion grid's visible extent.
- *
- * The frustum half of openpete_native_occl_query alone: a test on the rect's
- * own geometry that reads no depth and no camera. It returns 0 whenever the
- * query would refuse the grid (absent, suspended, stale), since the extent
- * mapping arrives with the grid, and when @p vz_near is 256 or less, where a
- * projected rect is not trusted. A hit counts as OPENPETE_OCCL_Q_OFFSCREEN.
- * A caller that reuses a depth result across cameras applies this to its
- * current rect instead of reusing a stored off-screen result.
- * @param sx0 Rect left, screen X.
- * @param sy0 Rect top, screen Y.
- * @param sx1 Rect right, screen X.
- * @param sy1 Rect bottom, screen Y.
- * @param vz_near Nearest view-Z of the object, including the caller's slack.
- * @return 1 when the rect is off-screen, else 0. */
-int  openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near);
 /** @brief Build the occlusion grid headless at the host loop's present step, as a live present does.
  *
  * Headless never runs a live present, so without this no grid exists and

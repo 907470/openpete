@@ -8096,16 +8096,6 @@ static int occl_uv_offscreen(const occl_uv_rect *r, float vz_near)
     return vz_near > 256.0f && (r->u1 < 0.0f || r->u0 > 1.0f || r->v1 < 0.0f || r->v0 > 1.0f);
 }
 
-int openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near)
-{
-    const occl_grid_t *G = occl_grid_reader();
-    if (occl_grid_refusal(G) >= 0) return 0;
-    occl_uv_rect r = occl_rect_uv(G, sx0, sy0, sx1, sy1);
-    if (!occl_uv_offscreen(&r, vz_near)) return 0;
-    s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
-    return 1;
-}
-
 int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                const openpete_occl_camera *cam)
 {
@@ -8208,6 +8198,16 @@ void openpete_native_widescreen_x_bounds(float *xlo, float *xhi)
     float F = openpete_native_widescreen_factor();
     if (xlo) *xlo = 256.0f - 256.0f * F;
     if (xhi) *xhi = 256.0f + 256.0f * F;
+}
+
+/* Visible PSX screen-Y range; documented at the declaration. */
+void openpete_native_visible_y_bounds(float *ylo, float *yhi)
+{
+    const float disp_h = s_geom_in[3] > 0 ? (float)s_geom_in[3] : 240.0f;
+    const float clip_h = s_geom_in[7] > 0 ? (float)s_geom_in[7] : 224.0f;
+    const float band = (disp_h - clip_h) * 0.5f;
+    if (ylo) *ylo = band;
+    if (yhi) *yhi = band + clip_h;
 }
 
 /** @brief Compute the clip-space rect the full-frame cover quads span.
