@@ -146,3 +146,7 @@ widescreen-culling                       | 1700
 # olive ring drew grey until the near-tier triangle subdivide. Plain boot, no
 # bk2.
 attract-demo-medallion                   | 1169  | 2    |        | 1170
+# The intro cutscene, VBL 4123-4126: path actor 801d1180 (class 0x005) crosses
+# a 49630-unit waypoint segment that func_8002BFE0 interpolates over two ticks;
+# a distance bound held it at tick N-1 on the sub-tick view. Blessed pre-fix.
+intro-cutpath-long-segment|4120|2||4123,4124,4125,4126|--skip-to-cutscene intro
