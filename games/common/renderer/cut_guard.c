@@ -107,9 +107,13 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos) {
     return dx*dx + dy*dy + dz*dz > lim * lim;
 }
 
-int cut_obj_jump(uint32_t addr, const int32_t* prev_pos, const int32_t* curr_pos) {
-    const int v = moby_game.cutpath_jump ? moby_game.cutpath_jump(addr, prev_pos, curr_pos) : -1;
-    return v >= 0 ? v : cut_pos_jump(prev_pos, curr_pos);
+int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec) {
+    const int v = moby_game.cutpath_jump ? moby_game.cutpath_jump(addr, prev_rec, curr_rec) : -1;
+    if (v >= 0) return v;
+    int32_t pp[3], cp[3];
+    memcpy(pp, prev_rec + game_layout.moby.pos_off, 12);
+    memcpy(cp, curr_rec + game_layout.moby.pos_off, 12);
+    return cut_pos_jump(pp, cp);
 }
 
 /* The present's per-object verdicts, in decision order. */

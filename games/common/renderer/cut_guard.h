@@ -129,13 +129,14 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos);
 /** @brief Whether one moby's step between two ticks is a jump, by the game's own marker where it has one.
  *
  * moby_game.cutpath_jump decides for a moby the game's cutscene path sampler
- * drives (the sampler's own no-interpolation segment rule); every other moby
- * takes the distance bound (cut_pos_jump).
+ * drives (the sampler's own rule for a placement it does not interpolate);
+ * every other moby takes the distance bound (cut_pos_jump) on the positions
+ * at game_layout.moby.pos_off.
  * @param addr The moby's guest address.
- * @param prev_pos Tick N-1's int32 x/y/z position.
- * @param curr_pos Tick N's int32 x/y/z position.
+ * @param prev_rec Tick N-1's moby record.
+ * @param curr_rec Tick N's moby record.
  * @return 1 for a jump, else 0. */
-int cut_obj_jump(uint32_t addr, const int32_t* prev_pos, const int32_t* curr_pos);
+int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec);
 
 /** @brief Open a sub-tick present's per-object hold set, emptying the previous present's.
  *

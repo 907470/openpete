@@ -309,6 +309,7 @@ extern int spyro_cutpath_is_actor(uint32_t m);
  * @param m The moby's guest address.
  * @return 1 for a path-follower, else 0. */
 static int s1_cutpath_actor(uint32_t m) { return spyro_cutpath_is_actor(m); }
+extern int spyro_cutpath_jump(uint32_t m, const uint8_t* prev_rec, const uint8_t* curr_rec);
 extern int spyro_moby_cut_held(uint32_t moby);
 
 /** @brief Reports whether flat HUD and text draw under the player model this tick.
@@ -480,6 +481,7 @@ const moby_game_t moby_game = {
     .cutscene_actor     = s1_cutscene_actor,
     .cutscene_owns_draw = s1_cutscene_owns_draw,
     .cutpath_actor      = s1_cutpath_actor,
+    .cutpath_jump       = spyro_cutpath_jump,
     .moby_held          = spyro_moby_cut_held,
     .run_once_hidden    = s1_run_once_hidden,
     .hud_under_player   = s1_hud_under_player,

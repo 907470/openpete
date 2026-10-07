@@ -731,24 +731,94 @@ static int cut_rd32(uint32_t va, uint32_t* out) {
     return 1;
 }
 
-/** @brief Reports whether a moby is a cutscene path-follower: one of the first count entries of g_LevelMobys while g_CutsceneLayout is live.
+#define G_GAMESTATE_WORD  0x800757D8u  /* g_Gamestate */
+#define G_TITLE_MODE      0x80078D78u  /* g_TitlescreenState.m_Mode */
+#define GS_TITLESCREEN    13u
+#define GS_CUTSCENE       14u
+#define TSM_DEMO          3u
+
+/** @brief Reports whether a moby is a cutscene path-follower: one of the first count entries of g_LevelMobys while the sampler func_8002BFE0 runs.
  *
- * count is g_CutsceneLayout +0x0C, taken only in [1, 8]. The moby feeder
- * switches these actors' animation clips without a crossfade, as the
- * canonical render does: their flight clips carry large whole-body
- * translation, and a crossfade averages two distant poses on a phase that
- * does not match the path timing.
+ * The sampler runs under GS_Cutscene (GamestateCutsceneUpdate) and under
+ * GS_TitleScreen outside TSM_Demo (TitlescreenUpdate); in any other state
+ * g_CutsceneLayout is a stale pointer. count is g_CutsceneLayout +0x0C (the
+ * intro has 16 actors), taken only in [1, 64]. The moby feeder switches these
+ * actors' animation clips without a crossfade, as the canonical render does:
+ * their flight clips carry large whole-body translation, and a crossfade
+ * averages two distant poses on a phase that does not match the path timing.
  * @param m The moby's guest address.
  * @return 1 for a path-follower, else 0. */
 int spyro_cutpath_is_actor(uint32_t m) {
-    uint32_t cs, base, cnt;
+    uint32_t gs, mode, cs, base, cnt;
+    if (!cut_rd32(G_GAMESTATE_WORD, &gs)) return 0;
+    if (gs == GS_TITLESCREEN) {
+        if (!cut_rd32(G_TITLE_MODE, &mode) || mode == TSM_DEMO) return 0;
+    } else if (gs != GS_CUTSCENE) {
+        return 0;
+    }
     if (!cut_rd32(G_CUTSCENE, &cs) || cs < 0x80000000u || cs >= 0x80200000u) return 0;
     if (!cut_rd32(G_LEVELMOBYS, &base) || base < 0x80000000u || base >= 0x80200000u) return 0;
     if (m < base) return 0;
     uint32_t off = m - base;
     if (off % MOBY_STRIDE) return 0;
-    if (!cut_rd32(cs + 0x0C, &cnt) || cnt == 0 || cnt > 8u) return 0;
+    if (!cut_rd32(cs + 0x0C, &cnt) || cnt == 0 || cnt > 64u) return 0;
     return (off / MOBY_STRIDE) < cnt;
+}
+
+/** @brief The sampler clock m_CurrentTick that func_8002BFE0 wrote into one actor's record.
+ *
+ * The sampler derives waypoint a and the 64ths fraction b from
+ * m_CurrentTick by a divisor K chosen by m_ProgressPerTick of
+ * g_Models[1 + idx]->m_Animations[0] (16 -> 8, 21 -> 6, 32 -> 4, else 2),
+ * and stores m_Animation = a / 60, m_Frame = a % 60, m_NextAnimation =
+ * (a + 1) / 60, m_NextFrame = (a + 1) % 60 and m_FrameProgress = b =
+ * (tick % K) * 64 / K. The inverse is tick = a * K + b / (64 / K).
+ * @param idx The actor's index in g_LevelMobys.
+ * @param rec The actor's moby record.
+ * @param tick Receives the clock.
+ * @return 1 when the record's animation state is one the sampler writes,
+ *         0 when it is not, -1 when the model is unreadable. */
+static int cutpath_record_tick(uint32_t idx, const uint8_t* rec, int32_t* tick) {
+    uint32_t mdl, anim;
+    if (!cut_rd32(G_MODELS + (1u + idx) * 4u, &mdl) || mdl < 0x80000000u) return -1;
+    if (!cut_rd32(mdl + 0x38u, &anim) || anim < 0x80000000u) return -1;   /* m_Animations[0] */
+    const uint8_t* ppt = (const uint8_t*)openpete_psx_to_host_span(anim + 0x0Cu, 1u);
+    if (!ppt) return -1;                                                  /* m_ProgressPerTick */
+    const int32_t k = *ppt == 16u ? 8 : *ppt == 21u ? 6 : *ppt == 32u ? 4 : 2;
+    const uint8_t* as = rec + game_layout.moby.anim_state_off;
+    const int32_t a = (int32_t)as[0] * 60 + as[2];
+    const int32_t b = as[4];
+    const int32_t q = 64 / k;
+    *tick = a * k + b / q;
+    return b % q == 0 && b < 64 && as[1] == (a + 1) / 60 && as[3] == (a + 1) % 60;
+}
+
+/** @brief The cutscene path sampler's verdict on one step of an actor it drives.
+ *
+ * func_8002BFE0 interpolates every waypoint segment: from one tick to the
+ * next the clock m_CurrentTick advances by g_DeltaTime, which main clamps to
+ * [2, 4], or by 2 under TitlescreenUpdate. The clock moves otherwise only by
+ * a store: the title loop (1344 or 1530 -> 1172), the title skip (-> 1170),
+ * the return to the title (720 or 1168), a cutscene start (0). A step whose
+ * clock advance lies outside [2, 4] is therefore a placement the game did not
+ * interpolate, and so is a step onto a sampler-written record from one the
+ * sampler did not write. The previous record's clock is decoded against the
+ * current model table.
+ * @param m The moby's guest address.
+ * @param prev_rec Tick N-1's moby record.
+ * @param curr_rec Tick N's moby record.
+ * @return 1 for a jump, 0 for an interpolated step, -1 when the moby is not
+ *         a path-follower or tick N's record is not the sampler's. */
+int spyro_cutpath_jump(uint32_t m, const uint8_t* prev_rec, const uint8_t* curr_rec) {
+    if (!spyro_cutpath_is_actor(m)) return -1;
+    uint32_t base;
+    if (!cut_rd32(G_LEVELMOBYS, &base)) return -1;
+    const uint32_t idx = (m - base) / MOBY_STRIDE;
+    int32_t tp = 0, tc = 0;
+    if (cutpath_record_tick(idx, curr_rec, &tc) != 1) return -1;
+    if (cutpath_record_tick(idx, prev_rec, &tp) != 1) return 1;
+    const int32_t dt = tc - tp;
+    return dt < 2 || dt > 4;
 }
 
 /* ---- transient .s render-pass scratch bracket --------------------------------
@@ -968,7 +1038,7 @@ static void cut_locate_mobys(void) {
         memcpy(cp, o->curr + MOBY_POS, 12);
         double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
         const double d2 = dx*dx + dy*dy + dz*dz;
-        const char* kind = (pcls != ccls) ? "class" : (cut_obj_jump(m, pp, cp) ? "teleport" : NULL);
+        const char* kind = (pcls != ccls) ? "class" : (cut_obj_jump(m, o->prev, o->curr) ? "teleport" : NULL);
         if (!kind) continue;
         /* Pair age in ticks: the guard only has a previous state to hold while
          * this object's own interval is still open (age below 1); an object
@@ -2200,7 +2270,7 @@ static void game_reextract_body(void* cpu_v) {
                             /* per-moby teleport guard: a respawn / warp jumps far in
                              * one tick - lerping streaks it across the screen. The
                              * record holds tick N-1 whole until alpha 1 (moby_cut_hold). */
-                            if (cut_obj_jump(m, pp, cp)) {
+                            if (cut_obj_jump(m, o->prev, o->curr)) {
                                 moby_cut_hold(m, o, now, CUT_TELEPORT);
                                 goto next_moby;
                             }

@@ -197,11 +197,11 @@ const game_layout_t game_layout = {
         .colour_off   = 0u,               /* no per-moby colour word */
         .size_off     = offsetof(Moby, m_ScaleOverride),
         .drawn_off    = offsetof(Moby, m_WasDrawn),
-        /* The sampler (func_8002BFE0) interpolates every track segment, so
-         * no game marker names a jump and the distance bound decides. Sparx
-         * (class 120) closes on Spyro in steps of up to about 49000 units a
-         * tick while respawned and relocated mobys jump as little as about
-         * 900, so no bound separates the two. */
+        /* The bound decides for every moby the cutscene path sampler does
+         * not drive (the sampler's actors take its clock rule,
+         * spyro_cutpath_jump). Sparx (class 120) closes on Spyro in steps of
+         * up to about 49000 units a tick while respawned and relocated
+         * mobys jump as little as about 900, so no bound separates the two. */
         .jump_bound   = 5000u,
 
         .model_table     = G_MODELS,

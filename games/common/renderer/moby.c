@@ -8013,7 +8013,7 @@ static int moby_jump_hold_enabled(void) {
 static int moby_jump_held(uint32_t moby, const openpete_interp_obj_t* o) {
     if (moby_game.host_reveal || !o || !o->have_prev || o->curr_ns <= o->prev_ns) return 0;
     const uint32_t po = game_layout.moby.pos_off;
-    if (!cut_obj_jump(moby, (const int32_t*)(o->prev + po), (const int32_t*)(o->curr + po))) return 0;
+    if (!cut_obj_jump(moby, o->prev, o->curr)) return 0;
     const int v = cut_obj_held(moby);
     if (v >= 0) return v;
     if (!s_rot_now || !moby_jump_hold_enabled()) return 0;

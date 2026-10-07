@@ -2059,12 +2059,12 @@ static int cutpath_overlay_runs(void) {
  * integer square root of the same sum (func_8004EDE8 in Spyro 3,
  * func_8001BA20 in Spyro 2); the exact length is used here.
  * @param moby The moby's guest address.
- * @param pp Tick N-1's position.
- * @param cp Tick N's position.
+ * @param prev_rec Tick N-1's moby record.
+ * @param curr_rec Tick N's moby record.
  * @return 1 for a jump, 0 for an interpolated step, -1 when the game names
  *         no sampler rule, no sampler overlay runs, or the moby is not one of
  *         its actors. */
-static int s23_cutpath_jump(uint32_t moby, const int32_t* pp, const int32_t* cp) {
+static int s23_cutpath_jump(uint32_t moby, const uint8_t* prev_rec, const uint8_t* curr_rec) {
     const uint32_t cnt_addr = game_layout.moby.cutpath_count;
     if (!cnt_addr || !game_layout.moby.cutpath_snap) return -1;
     if (!cutpath_overlay_runs()) return -1;
@@ -2077,6 +2077,9 @@ static int s23_cutpath_jump(uint32_t moby, const int32_t* pp, const int32_t* cp)
     const uint32_t stride = game_layout.moby.array_stride;
     if (cnt == 0 || cnt > 64u || arr < 0x80000000u || moby < arr || !stride) return -1;
     if ((moby - arr) % stride || (moby - arr) / stride >= cnt) return -1;
+    int32_t pp[3], cp[3];
+    memcpy(pp, prev_rec + game_layout.moby.pos_off, 12);
+    memcpy(cp, curr_rec + game_layout.moby.pos_off, 12);
     const double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
     const double snap = (double)game_layout.moby.cutpath_snap;
     return dx*dx + dy*dy + dz*dz >= snap * snap;
