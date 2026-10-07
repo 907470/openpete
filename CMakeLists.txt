@@ -325,6 +325,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Spyro 2/3 cutscene speech ring: per row, run to the speech voice's
+    # key-off; every ring refill lands behind the guest voice head (0
+    # overwrite, 0 stale samples), the OpenAL offset takes no slip step,
+    # and each chunk's body correlates >= 0.95 with its payload.
+    # Exit 64 = no binary or disc for any row.
+    add_test(NAME cutscene_audio
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_cutscene_audio.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(cutscene_audio PROPERTIES
+        LABELS "slow;audio"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Disc boot-order profiles: per game, the committed profile equals the
     # generator's output over the committed boot trace, and the loader
     # simulation (tools/disc_boot_order.py) finds the lowest modelled

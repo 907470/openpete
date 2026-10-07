@@ -65,6 +65,7 @@ extern "C" uint32_t psyq_ot_recent_base(int i) {
 #include "psx/libpad.h"
 #include "psx/libspu.h"
 #include <dirent.h>
+#include "../../../third_party/PsyCross/src/audio/PsyX_SPUAL.h"
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
 extern "C" int  PsyX_SPUAL_GetVoiceEnvelope(int voice, int* keyed_on);
 extern "C" int  PsyX_SPUAL_CaptureDrain(int16_t* out, int max_frames);
@@ -82,11 +83,16 @@ int openpete_audio_dump_armed = 0;
  * Does nothing unless openpete_audio_dump_armed is set. The first armed call
  * opens the file named by the variable once; a failed open is logged and the
  * dump stays off. Frames drain in chunks of 4096 as 16-bit stereo at 44100
- * Hz and the file is flushed on every call. The first drain logs the VBL
- * that sample 0 belongs to (735 frames per VBL), and a rise in the ring's
- * dropped-frame count logs an error, since a drop shifts every later sample. */
+ * Hz and the file is flushed on every call. Each call appends one line
+ * `<vbl> <frames in the file> <frames the capture ring has produced>` to
+ * PATH.idx, the dump's VBL axis at the rate the SPU clock actually charged
+ * (the two frame counts differ by the frames rendered before the file
+ * opened that the ring no longer held, constant unless the ring drops). A
+ * rise in the ring's dropped-frame count logs an error, since a drop
+ * shifts every later sample. */
 static void audio_dump_drain(void) {
     static FILE* f = NULL;
+    static FILE* idx = NULL;
     static int tried = 0;
     if (!openpete_audio_dump_armed) return;
     if (!f) {
@@ -95,8 +101,11 @@ static void audio_dump_drain(void) {
         const char* path = getenv("OPENPETE_AUDIO_DUMP");
         f = path ? fopen(path, "wb") : NULL;
         if (!f) { OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP: cannot open %s", path ? path : "(null)"); return; }
-        /* The ring holds every frame rendered since SpuInit: sample 0 of the
-         * file is the VBL that many frames before this one (735 per VBL). */
+        char ipath[1024];
+        snprintf(ipath, sizeof ipath, "%s.idx", path);
+        idx = fopen(ipath, "w");
+        if (idx) fputs("# vbl file_frames produced\n", idx);
+        else OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP: cannot open %s", ipath);
         OPL_INFO_F("audio", "dump: %s (s16 stereo 44100) vbl_now=%d",
                    path, SDL_GetAtomicInt(&openpete_vbl));
     }
@@ -111,14 +120,17 @@ static void audio_dump_drain(void) {
     }
     if (first && total > 0) {
         first = 0;
-        OPL_INFO_F("audio", "dump: first drain %llu frames at vbl %d: sample 0 is vbl %.3f",
-                   total, SDL_GetAtomicInt(&openpete_vbl),
-                   (double)SDL_GetAtomicInt(&openpete_vbl) - (double)total / 735.0);
+        OPL_INFO_F("audio", "dump: first drain %llu frames at vbl %d",
+                   total, SDL_GetAtomicInt(&openpete_vbl));
     }
     /* A frame the ring dropped before this drain is a hole in the file:
      * every later sample is early by it. */
     unsigned long long produced = 0, dropped = 0;
     PsyX_SPUAL_CaptureStats(&produced, &dropped);
+    if (idx) {
+        fprintf(idx, "%d %llu %llu\n", SDL_GetAtomicInt(&openpete_vbl), total, produced);
+        fflush(idx);
+    }
     static unsigned long long reported = 0;
     if (dropped != reported) {
         reported = dropped;
@@ -3278,6 +3290,79 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
     }
 }
 
+/** @brief The OPENPETE_AUDIO_HEAD_LOG file, opened on the first call; NULL when the variable is unset or empty or the open failed.
+ *
+ * The file is truncated on open and starts with a version line.
+ * @return The open file or NULL. */
+static FILE* audio_head_log(void) {
+    static FILE* s_f = NULL;
+    static int s_tried = 0;
+    if (!s_tried) {
+        s_tried = 1;
+        const char* path = getenv("OPENPETE_AUDIO_HEAD_LOG");
+        if (path && *path) {
+            s_f = fopen(path, "w");
+            if (s_f) fputs("# audio-head-log 1\n", s_f);
+            else OPL_WARN_F("audio", "OPENPETE_AUDIO_HEAD_LOG: cannot open %s", path);
+        }
+    }
+    return s_f;
+}
+
+/** @brief Frames the SPU capture ring has produced, the sample index of the mix being rendered next in an OPENPETE_AUDIO_DUMP; -1 without a capture.
+ * @return The produced frame count, or -1. */
+static long long audio_head_log_out(void) {
+    if (!PsyX_SPUAL_CaptureActive()) return -1;
+    unsigned long long produced = 0;
+    PsyX_SPUAL_CaptureStats(&produced, NULL);
+    return (long long)produced;
+}
+
+/** @brief Under OPENPETE_AUDIO_HEAD_LOG, write one `w` line per running voice whose decode window overlaps the SPU RAM span [lo, hi) about to be written.
+ *
+ * Called before the write reaches PsyCross, so the line holds the voice's
+ * guest head (decoder samples since key-on, the block it is in) and its
+ * OpenAL source offset as they were when the bytes landed.
+ * @param lo First SPU RAM byte written.
+ * @param hi One past the last byte written. */
+static void audio_head_log_write(unsigned int lo, unsigned int hi) {
+    FILE* f = audio_head_log();
+    if (!f || hi <= lo) return;
+    const int vbl = SDL_GetAtomicInt(&openpete_vbl);
+    const long long out = audio_head_log_out();
+    for (int v = 0; v < 24; v++) {
+        PsyX_SPUAL_VoiceHead h;
+        if (!PsyX_SPUAL_GetVoiceHead(v, &h)) continue;
+        if (h.decode_hi <= h.decode_lo || hi <= h.decode_lo || lo >= h.decode_hi) continue;
+        fprintf(f, "w vbl=%d v=%d lo=%#x hi=%#x addr=%#x loop=%#x win=%#x-%#x pitch=%u dec=%lld "
+                   "head=%d hb=%#x ib=%u kp=%d al_state=%#x al_so=%d out=%lld\n",
+                vbl, v, lo, hi, h.addr, h.loop_addr, h.decode_lo, h.decode_hi, h.pitch, h.dec,
+                h.head, h.head_block, h.head_in_block, h.key_on_pending, (unsigned)h.al_state,
+                h.al_offset, out);
+    }
+    fflush(f);
+}
+
+/** @brief Under OPENPETE_AUDIO_HEAD_LOG, write one `k` line per voice in `mask` keyed on or off.
+ *
+ * Called after the key reaches PsyCross: a key-on is pending until the
+ * next output sample, so `out` is the sample before the one it starts on.
+ * @param on 1 for a key-on, 0 for a key-off.
+ * @param mask The voice mask. */
+static void audio_head_log_key(int on, unsigned int mask) {
+    FILE* f = audio_head_log();
+    if (!f) return;
+    const int vbl = SDL_GetAtomicInt(&openpete_vbl);
+    const long long out = audio_head_log_out();
+    for (int v = 0; v < 24; v++) {
+        if (!(mask & (1u << v))) continue;
+        PsyX_SPUAL_VoiceHead h;
+        if (!PsyX_SPUAL_GetVoiceHead(v, &h)) { h.addr = 0; h.pitch = 0; }
+        fprintf(f, "k vbl=%d v=%d on=%d addr=%#x pitch=%u out=%lld\n", vbl, v, on, h.addr, h.pitch, out);
+    }
+    fflush(f);
+}
+
 /** @brief Whether OPENPETE_SFX_END_LOG is set to a nonempty value not starting with '0', read once.
  *
  * Gates the stderr lines of the SPU thunks: voice attributes, key on/off,
@@ -3425,11 +3510,13 @@ void psyq_SpuGetVoiceVolume(CPUState* cpu) {
  * Under the oracle's clock replay the envelope is first charged to the
  * reference's clock at the call, and a key-on to the reference's KON store
  * of each half. Under OPENPETE_SFX_END_LOG a line with
- * openpete_frame, the VBL count, a0, the mask and ra is written to stderr.
+ * openpete_frame, the VBL count, a0, the mask and ra is written to stderr;
+ * under OPENPETE_AUDIO_HEAD_LOG a `k` line per voice in the mask.
  * @param cpu Guest CPU state. */
 void psyq_SpuSetKey(CPUState* cpu) {
     if (spu_clock_at_call(0, cpu->ra, cpu->a0, cpu->a1) && cpu->a0 == SPU_ON) spu_key_on_at_kon(cpu->a1);
     else SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
+    audio_head_log_key(cpu->a0 == SPU_ON, cpu->a1);
     if (sfx_key_log_on())
         fprintf(stderr, "[spu-key f=%u vbl=%d on=%d mask=%#x ra=%#x]\n",
                 openpete_frame, SDL_GetAtomicInt(&openpete_vbl), (int)cpu->a0,
@@ -3544,7 +3631,9 @@ static void spu_write_dump(const unsigned char* src, unsigned int len) {
  *
  * The sfx pack's staged replacements are invalidated over the written
  * range, or all of them on a whole-bank write. v0 is 0 with nothing
- * uploaded when the span runs past its region.
+ * uploaded when the span runs past its region. Under
+ * OPENPETE_AUDIO_HEAD_LOG the running voices whose window the write
+ * overlaps are logged before it lands.
  * @param cpu Guest CPU state. */
 void psyq_SpuWrite(CPUState* cpu) {
     /* The level-load bank blast overwrites all of SPU RAM including any
@@ -3562,6 +3651,7 @@ void psyq_SpuWrite(CPUState* cpu) {
     } else {
         sfx_pack_invalidate_range(s_spu_xfer_addr, len);
     }
+    audio_head_log_write(s_spu_xfer_addr, s_spu_xfer_addr + len);
     cpu->v0 = SpuWrite(src, len);
     if (sfx_key_log_on()) {
         fprintf(stderr, "[spu-write f=%u vbl=%d spu=%#x src=%#x len=%#x ra=%#x]\n",
