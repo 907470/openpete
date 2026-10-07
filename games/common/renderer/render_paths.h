@@ -52,9 +52,10 @@ typedef enum {
 
 /** @brief Parse the --render-paths CSV.
  *
- * NULL/empty = no selection (all paths render, filtering off). Unknown names
- * are warned and ignored; a non-empty spec with no known name selects no path,
- * and nothing renders. The selected set is logged to stderr.
+ * NULL/empty = no selection (all paths render, filtering off). The name
+ * "none" selects no path without a warning; other unknown names are warned
+ * and ignored. A non-empty spec with no known name selects no path, and
+ * nothing renders. The selected set is logged to stderr.
  * @param spec comma- or space-separated path names */
 void render_paths_init(const char* spec);
 
@@ -70,7 +71,7 @@ void render_paths_set(const char* spec);
 
 /** @brief Writes the current selection into `buf` as comma-separated path names.
  *
- * Writes "(all)" when no selection is in effect and "(none)" when a selection
+ * Writes "(all)" when no selection is in effect and "none" when a selection
  * matched no path; otherwise the selected names in render_path_t order.
  * Output longer than `cap` is truncated by snprintf.
  * @param buf Receives the NUL-terminated text.

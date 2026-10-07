@@ -76,7 +76,9 @@ typedef struct knob_desc {
     knob_type_t type;
     knob_mut_t  mut;
 
-    const char *const *enum_values;  /* KNOB_ENUM: display strings */
+    const char *const *enum_values;  /* KNOB_ENUM: display strings; KNOB_STRING:
+                                      * the tokens of a comma-list value, one
+                                      * overlay toggle each (bind_vocab) */
     int    enum_count;
     float  num_min, num_max;         /* numeric widget range (both 0 = free) */
 
@@ -289,6 +291,20 @@ int openpete_knob_bind_str(const char *id,
                            void (*get_str)(const struct knob_desc *k,
                                            char *buf, size_t cap),
                            int (*set_str)(struct knob_desc *k, const char *v));
+
+/** @brief Attach the token vocabulary of a comma-list string row.
+ *
+ * The overlay then draws one toggle per token in place of a text field: the
+ * row's value lists the tokens switched on, "(all)" or an empty value reads
+ * as every token on, and "none" is the value with every token off. A game
+ * module owns the vocabulary of a row the registry builds, as with
+ * openpete_knob_bind_str.
+ * @param id Row id to bind.
+ * @param tokens The token strings; they must outlive the process.
+ * @param count The token count.
+ * @return 0 when the row exists, -1 when no row has that id. */
+int openpete_knob_bind_vocab(const char *id, const char *const *tokens,
+                             int count);
 
 #ifdef __cplusplus
 }

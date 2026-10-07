@@ -1851,9 +1851,8 @@ static const knob_desc_t g_builtin_debug[] = {
     { "render_paths", "Render paths", "Debug", "--render-paths", NULL,
       "Render only the named paths in isolation (cyclorama,spyro,moby,"
       "terrain,shadow,flame,particles,tracer,transition,portal,glow,sparkle,"
-      "moby_shadow). Empty or "
-      "\"(all)\" clears the selection. Live once the game module binds its "
-      "setter.",
+      "moby_shadow); none renders no path. Empty or \"(all)\" clears the "
+      "selection. Live once the game module binds its setter.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .help_arg = "LIST", .help_order = 100,
@@ -2624,6 +2623,19 @@ int openpete_knob_bind_str(const char *id,
         if (strcmp(ks[i].id, id) != 0) continue;
         if (get_str) ks[i].get_str = get_str;
         if (set_str) { ks[i].set_str = set_str; ks[i].mut = KNOB_LIVE; }
+        return 0;
+    }
+    return -1;   /* row absent (compiled out) - nothing to bind */
+}
+
+int openpete_knob_bind_vocab(const char *id, const char *const *tokens,
+                             int count) {
+    size_t n;
+    knob_desc_t *ks = knob_registry(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(ks[i].id, id) != 0) continue;
+        ks[i].enum_values = tokens;
+        ks[i].enum_count  = count;
         return 0;
     }
     return -1;   /* row absent (compiled out) - nothing to bind */

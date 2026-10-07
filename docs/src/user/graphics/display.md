@@ -50,8 +50,9 @@ ratio.
 
 The settings menu's **FOV** row steps from **DEFAULT** through 30 to 120 in
 5-degree steps and shows the vertical and horizontal angles, for example
-**55V 90H**. The dev overlay's **Field of view** row takes any value in the
-range; its **Original** checkbox returns to the game's projection.
+**55V 90H**. The dev overlay's **Field of view** row has an **Original**
+checkbox for the game's projection; unchecked, a slider beside it takes any
+value in the range.
 
 The field of view applies to the native renderer only.
 

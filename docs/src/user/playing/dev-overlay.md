@@ -36,11 +36,11 @@ closed; click a title to open it.
 
 | Section | Rows |
 | --- | --- |
-| Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Notifications (on, position, timeout), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
-| Display, Advanced (collapsed) | Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Version line |
+| Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
+| Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths (absent from release packages) |
 | Audio (collapsed) | Mute, SFX volume, Music volume |
 | Gameplay | Freecam, Tick scale, Runahead, Rewind, Level warp |
-| Gameplay, Input (collapsed) | Vibration, Mouse, Mouse sensitivity |
+| Gameplay, Input (collapsed) | Vibration, Mouse sensitivity |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
 | Info (collapsed) | the launch-only rows: Skip to level, Skip to cutscene, Skip to sub-area, Freecam pose, Player pose, bk2 replay, bk2 frame offset, bk2 recording, Renderer, Extraction threads, Window size |
 | Info, Paths (collapsed) | every path and memory card row |
@@ -51,7 +51,17 @@ closed; click a title to open it.
 Button groups (Vertex precision, Color depth, Texture mapping, LOD, Terrain
 visibility) highlight the current choice. **Color depth** **15-bit** is the
 dither setting on, **24-bit** off. **Runahead** has a checkbox; buttons for 1,
-2 and 3 ticks appear beside it while runahead is on. **Rewind** has a checkbox; the window in seconds
+2 and 3 ticks appear beside it while runahead is on. The same pattern holds
+elsewhere: a row's further controls show only while its first control is
+on, as Field of view's slider (while **Original** is off), Performance
+stats' position, Notifications' position and timeout, Fog's scale, and the
+**SFX volume** and **Music volume** sliders beside their **Override**
+checkbox.
+
+**Render paths** draws only the chosen render paths (sky, Spyro, mobys,
+terrain, shadows, flame, particles and the rest), one checkbox each, for
+comparing one path in isolation; **All** returns to normal drawing and
+**None** draws no path. It changes only the picture. **Rewind** has a checkbox; the window in seconds
 appears beside it while rewind is on.
 
 **Freecam pose** <!-- id: knob:freecam_pose --> engages the free camera

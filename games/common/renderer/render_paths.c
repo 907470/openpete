@@ -42,6 +42,7 @@ void render_paths_init(const char* spec) {
         for (int i = 0; i < RP_COUNT; i++)
             if (strcmp(tok, k_names[i]) == 0) { matched = i; break; }
         if (matched >= 0) s_mask |= (1u << matched);
+        else if (strcmp(tok, "none") == 0) { /* selects no path */ }
         else fprintf(stderr, "[render-paths] unknown path '%s' (known: "
                              "cyclorama,spyro,moby,terrain,shadow,flame,particles,"
                              "tracer,transition,portal,glow,sparkle,moby_shadow)\n", tok);
@@ -64,7 +65,7 @@ void render_paths_set(const char* spec) {
 
 void render_paths_current(char* buf, size_t cap) {
     if (!s_active) { snprintf(buf, cap, "(all)"); return; }
-    if (!s_mask)   { snprintf(buf, cap, "(none)"); return; }
+    if (!s_mask)   { snprintf(buf, cap, "none"); return; }
     size_t off = 0;
     if (cap) buf[0] = '\0';
     for (int i = 0; i < RP_COUNT; i++) {
@@ -335,21 +336,22 @@ static void rp_knob_get(const knob_desc_t* k, char* buf, size_t cap) {
 }
 /** @brief The render_paths row's setter: applies the text through render_paths_set().
  *
- * A value starting with '(' is the getter's "(all)" or "(none)" placeholder
- * and clears the selection.
+ * A value starting with '(' is the getter's "(all)" placeholder and clears
+ * the selection; "none" selects no path.
  * @param k Unused.
  * @param v The new selection text, or NULL.
  * @return 0. */
 static int rp_knob_set(knob_desc_t* k, const char* v) {
     (void)k;
-    if (v && *v == '(') v = NULL;   /* "(all)" / "(none)" placeholder = clear */
+    if (v && *v == '(') v = NULL;   /* "(all)" placeholder = clear */
     render_paths_set(v);
     return 0;
 }
 
 /** @brief Parses --render-paths, syncs the native isolation background, and registers the per-canonical-present commit.
  *
- * Also binds the dev overlay's render_paths row; the bind fails silently in
+ * Also binds the dev overlay's render_paths row and its path vocabulary; the
+ * binds fail silently in
  * builds without that row. The module hooks no guest address: each path's
  * own feature module records its polybuf interval.
  * @param opts The parsed options; NULL leaves every path rendering. */
@@ -364,6 +366,7 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
     /* Attach the live channel to the dev overlay's row (absent in dist
      * builds - ignore the miss). */
     (void)openpete_knob_bind_str("render_paths", rp_knob_get, rp_knob_set);
+    (void)openpete_knob_bind_vocab("render_paths", k_names, RP_COUNT);
 }
 
 const feature_module_t render_paths_module = {

@@ -46,6 +46,7 @@ extern "C" {
 #include "openpete_mod_ui.h"
 
 #include <deque>
+#include <utility>
 #include <vector>
 
 #include <stdarg.h>
@@ -500,14 +501,14 @@ static double             s_edit_val = 0.0;
  * typed entry and applies through the same call. A row carrying a
  * zero_label has a mode at 0 that the span up to num_min does not reach: a
  * drag through that span only ever hands the setter values it refuses, so
- * the mode is a checkbox and the slider starts at num_min.
+ * the mode is a checkbox, the slider starts at num_min, and the slider is
+ * drawn only while the mode is off.
  * @param k The knob. */
 static void knob_row_float(knob_desc_t *k)
 {
     double live = k->get_num ? k->get_num(k) : k->stored_num;
-    bool off = false;
     if (k->zero_label) {
-        off = (live <= 0.0);
+        bool off = (live <= 0.0);
         if (ImGui::Checkbox(k->zero_label, &off) && k->set_num) {
             const double v = off ? 0.0 : (double)k->num_min;
             if (k->set_num(k, v) == 0) {
@@ -515,9 +516,9 @@ static void knob_row_float(knob_desc_t *k)
                 live = v;
             }
         }
+        if (off) return;
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (off) ImGui::BeginDisabled();
     }
     float v = (float)live;
     if (ImGui::SliderFloat("##v", &v, k->num_min, k->num_max, "%.2f") &&
@@ -525,7 +526,6 @@ static void knob_row_float(knob_desc_t *k)
         if (k->set_num(k, v) == 0)
             OPL_INFO_F("devui", "%s = %.3f", k->id, v);
     }
-    if (off) ImGui::EndDisabled();
 }
 
 /** @brief Read a numeric knob's current value: its getter, else the registry's stored copy. */
@@ -1362,6 +1362,8 @@ enum lay_kind {
     LAY_DRAWMODE,  /* ids[0] notex, ids[1] wireframe as one three-way combo */
     LAY_REWIND,    /* ids[0] rewind: on/off box, the window field while on */
     LAY_DEPTH,     /* ids[0] int: on/off box, 1..3 buttons while on */
+    LAY_OVERRIDE,  /* ids[0] int, -1 = leave alone: Override box, slider while on */
+    LAY_TOKENS,    /* ids[0] comma-list string: a toggle per vocabulary token */
     LAY_WARP,      /* ids[0] level combo, ids[1] its action button */
     LAY_REST,      /* every unplaced row of registry section `label` */
     LAY_SUB,       /* opens a subsection titled `label`, closed by default */
@@ -1398,7 +1400,6 @@ static const lay_row k_lay_display[] = {
     { LAY_ROW,    nullptr, { "ssaa" } },
     { LAY_ROW,    nullptr, { "vsync" } },
     { LAY_INLINE, "Performance stats", { "perf_stats", "perf_position" } },
-    { LAY_INLINE, "Notifications", { "osd", "osd_position", "osd_timeout" } },
     { LAY_SEG,    nullptr, { "vertex_precision" } },
     { LAY_ROW,    nullptr, { "raster_quantize" } },
     { LAY_SEG,    nullptr, { "dither" }, k_depth_caps, k_depth_vals,
@@ -1407,15 +1408,20 @@ static const lay_row k_lay_display[] = {
     { LAY_SEG,    nullptr, { "lod" } },
     { LAY_REST,   "Display" },
     { LAY_SUB,    "Advanced" },
+    { LAY_INLINE, "Notifications", { "osd", "osd_position", "osd_timeout" } },
     { LAY_INLINE, "Fog", { "fog", "fog_scale" } },
     { LAY_DRAWMODE, "Render mode", { "notex", "wireframe" } },
     { LAY_ROW,    nullptr, { "terrain_cache" } },
     { LAY_SEG,    nullptr, { "terrain_visibility" } },
-    { LAY_ROW,    nullptr, { "version_osd" } },
+    { LAY_TOKENS, nullptr, { "render_paths" } },
     { LAY_SUB_END, nullptr },
 };
 
-static const lay_row k_lay_audio[] = { { LAY_REST, "Audio" } };
+static const lay_row k_lay_audio[] = {
+    { LAY_REST,     "Audio" },
+    { LAY_OVERRIDE, nullptr, { "sfx" } },
+    { LAY_OVERRIDE, nullptr, { "music" } },
+};
 
 static const lay_row k_lay_gameplay[] = {
     { LAY_ROW,    nullptr, { "freecam" } },
@@ -1469,7 +1475,7 @@ static const lay_section k_layout[] = {
 /* Registry rows the panel does not show. They stay in the registry, so
  * --help, --config-report, the config file and saving still carry them. */
 static const char *const k_lay_hidden[] = {
-    "background", "input_lock", "camlock", "bk2_stop_on_end", "cheats",
+    "background", "version_osd", "mouse", "input_lock", "camlock", "bk2_stop_on_end", "cheats",
 };
 
 /** @brief Report whether a knob id is named by a layout row or hidden from the panel.
@@ -1615,21 +1621,19 @@ static void seg_widget(knob_desc_t *k, const lay_row &r)
     if (disabled) ImGui::EndDisabled();
 }
 
-/** @brief Draw up to three knobs side by side; while the first reads 0 the others are disabled.
+/** @brief Draw up to three knobs side by side; while the first reads 0 only the first is drawn.
  *
  * A checkbox takes its natural width; the other widgets share the remaining
  * width equally. */
 static void inline_widget(knob_desc_t *const *ks, int n)
 {
-    const bool gate_off = knob_num(ks[0]) == 0.0;
+    if (knob_num(ks[0]) == 0.0) n = 1;
     int flex = 0;
     for (int i = 0; i < n; i++)
         if (ks[i]->type != KNOB_BOOL) flex++;
     const float sp = ImGui::GetStyle().ItemSpacing.x;
     for (int i = 0; i < n; i++) {
         if (i > 0) ImGui::SameLine();
-        const bool off = (i > 0 && gate_off);
-        if (off) ImGui::BeginDisabled();
         ImGui::PushID(i);
         if (ks[i]->type != KNOB_BOOL) {
             const float avail = ImGui::GetContentRegionAvail().x;
@@ -1638,7 +1642,6 @@ static void inline_widget(knob_desc_t *const *ks, int n)
         }
         knob_widget(ks[i]);
         ImGui::PopID();
-        if (off) ImGui::EndDisabled();
     }
 }
 
@@ -1718,6 +1721,120 @@ static void depth_widget(knob_desc_t *k)
     seg_widget(k, depths);
 }
 
+/** @brief Draw an int knob whose -1 leaves a value alone as an Override box, with a slider over 0..num_max beside it only while on.
+ *
+ * Turning it on restores the last overriding value, num_max before any. */
+static void override_widget(knob_desc_t *k)
+{
+    const int live = (int)knob_num(k);
+    static std::vector<std::pair<const knob_desc_t *, int>> s_last;
+    int *last = nullptr;
+    for (auto &e : s_last)
+        if (e.first == k) last = &e.second;
+    if (!last) {
+        s_last.emplace_back(k, (int)k->num_max);
+        last = &s_last.back().second;
+    }
+    if (live >= 0) *last = live;
+    bool on = live >= 0;
+    const bool disabled = (k->mut != KNOB_LIVE || !k->set_num);
+    if (disabled) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("Override", &on) && !disabled) {
+        const int v = on ? *last : -1;
+        if (k->set_num(k, v) == 0)
+            OPL_INFO_F("devui", "%s = %d", k->id, v);
+    }
+    row_tooltip(k);
+    if (on) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        int v = live >= 0 ? live : *last;
+        if (ImGui::SliderInt("##v", &v, 0, (int)k->num_max) && !disabled &&
+            k->set_num(k, v) == 0)
+            OPL_INFO_F("devui", "%s = %d", k->id, v);
+        row_tooltip(k);
+    }
+    if (disabled) ImGui::EndDisabled();
+}
+
+/** @brief Read a comma-list string knob's value as a bit per vocabulary token.
+ *
+ * An empty value or a "(...)" placeholder reads as every token on; "none"
+ * and unknown tokens contribute no bit.
+ * @param k The knob; enum_values holds at most 32 tokens.
+ * @return The token mask. */
+static uint32_t tokens_mask(const knob_desc_t *k)
+{
+    const uint32_t all = k->enum_count >= 32 ? 0xFFFFFFFFu
+                                             : (1u << k->enum_count) - 1u;
+    char cur[KNOB_STR_MAX];
+    knob_value_str(k, cur, sizeof cur);
+    if (!cur[0] || cur[0] == '(') return all;
+    uint32_t m = 0;
+    for (char *tok = strtok(cur, ", "); tok; tok = strtok(nullptr, ", "))
+        for (int i = 0; i < k->enum_count && i < 32; i++)
+            if (strcmp(tok, k->enum_values[i]) == 0) m |= 1u << i;
+    return m;
+}
+
+/** @brief Apply a token mask to a comma-list string knob through its setter.
+ *
+ * Every token on writes the empty value (no selection), none writes "none",
+ * and any other mask writes the on tokens in vocabulary order. */
+static void tokens_apply(knob_desc_t *k, uint32_t m)
+{
+    const uint32_t all = k->enum_count >= 32 ? 0xFFFFFFFFu
+                                             : (1u << k->enum_count) - 1u;
+    char spec[KNOB_STR_MAX] = "";
+    if (m == 0) snprintf(spec, sizeof spec, "none");
+    size_t off = 0;
+    for (int i = 0; m != all && i < k->enum_count && i < 32; i++) {
+        if (!(m & (1u << i))) continue;
+        off += (size_t)snprintf(spec + off, off < sizeof spec ? sizeof spec - off : 0,
+                                "%s%s", off ? "," : "", k->enum_values[i]);
+    }
+    if (k->set_str(k, spec) == 0)
+        OPL_INFO_F("devui", "%s = %s", k->id, spec[0] ? spec : "(all)");
+}
+
+/** @brief Draw a comma-list string knob as All and None buttons and one checkbox per vocabulary token, wrapped to the cell width.
+ *
+ * A knob with no vocabulary bound, or one wider than 32 tokens, falls back to
+ * its text field. */
+static void tokens_widget(knob_desc_t *k)
+{
+    if (!k->enum_values || k->enum_count <= 0 || k->enum_count > 32) {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        knob_widget(k);
+        return;
+    }
+    const uint32_t all = k->enum_count == 32 ? 0xFFFFFFFFu
+                                             : (1u << k->enum_count) - 1u;
+    const uint32_t cur = tokens_mask(k);
+    uint32_t m = cur;
+    const bool disabled = (k->mut != KNOB_LIVE || !k->set_str);
+    if (disabled) ImGui::BeginDisabled();
+    if (ImGui::SmallButton("All")) m = all;
+    row_tooltip(k);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("None")) m = 0;
+    row_tooltip(k);
+    const ImGuiStyle &st = ImGui::GetStyle();
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    for (int i = 0; i < k->enum_count; i++) {
+        const float w = ImGui::GetFrameHeight() + st.ItemInnerSpacing.x +
+                        ImGui::CalcTextSize(k->enum_values[i]).x;
+        if (ImGui::GetItemRectMax().x + st.ItemSpacing.x + w <= right)
+            ImGui::SameLine();
+        bool on = (m & (1u << i)) != 0;
+        if (ImGui::Checkbox(k->enum_values[i], &on))
+            m = on ? (m | (1u << i)) : (m & ~(1u << i));
+        row_tooltip(k);
+    }
+    if (disabled) ImGui::EndDisabled();
+    if (m != cur && !disabled) tokens_apply(k, m);
+}
+
 /** @brief Draw a level combo and its action button on one line; the button's status is its tooltip.
  *
  * The combo's list grows to the height of the display before it scrolls.
@@ -1768,6 +1885,8 @@ static void lay_draw_knob_row(const lay_ctx &c, const lay_row &r)
     case LAY_DRAWMODE: drawmode_widget(ks[0], ks[1]);  break;
     case LAY_REWIND:   rewind_widget(ks[0]);           break;
     case LAY_DEPTH:    depth_widget(ks[0]);            break;
+    case LAY_OVERRIDE: override_widget(ks[0]);         break;
+    case LAY_TOKENS:   tokens_widget(ks[0]);           break;
     case LAY_WARP:     warp_widget(ks[0], ks[1]);      break;
     default:                                           break;
     }
