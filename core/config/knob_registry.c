@@ -519,14 +519,14 @@ static int fov_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/** @brief Reconfigure the rewind window to `v` seconds, truncated to int.
+/** @brief Request a rewind window of `v` seconds, truncated to int.
  *
- * Returns -1, changing nothing, when `v` is negative. Otherwise the reconfigure
- * discards the accumulated rewind history (0 disables rewind), the row stores
- * the value and 0 is returned. */
+ * Returns -1, changing nothing, when `v` is negative. Otherwise the host loop
+ * resizes the ring at its next iteration, discarding the accumulated rewind
+ * history (0 disables rewind); the row stores the value and 0 is returned. */
 static int rewind_set(knob_desc_t *k, double v) {
     if (v < 0) return -1;
-    openpete_rewind_configure((int)v);
+    openpete_rewind_window_set((int)v);
     k->stored_num = (int)v;
     return 0;
 }

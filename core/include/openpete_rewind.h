@@ -41,9 +41,10 @@ typedef struct {
  *
  * The ring holds window_seconds + 1 keyframes, each snapshot allocated on
  * first capture. The first enabling call registers a guest-discontinuity
- * handler that clears the ring on a savestate load. Called at startup
- * from --rewind and by the overlay's rewind knob. An allocation failure
- * leaves rewind disabled.
+ * handler that clears the ring on a savestate load. Called on the host loop's
+ * thread only, which also writes the snapshots: at startup from --rewind and
+ * from the live-knob drain for openpete_rewind_window_set. An allocation
+ * failure leaves rewind disabled.
  * @param window_seconds Window length; 0 or less disables rewind. */
 void openpete_rewind_configure(int window_seconds);
 /** @brief Report whether a rewind ring is allocated.

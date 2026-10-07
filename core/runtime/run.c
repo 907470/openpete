@@ -2155,9 +2155,10 @@ static uint64_t s_render_slip_events = 0;
 static uint64_t s_render_slip_periods = 0;
 
 /* Live-knob command queue. The dev overlay and the settings menu set the
- * render fps, tick scale, runahead depth and mute from the presenting or pump
- * thread; the values they drive (s_render_fps, s_tick_scale, s_runahead_req,
- * s_mute and their dirty flags) belong to the host loop. A setter records its
+ * render fps, tick scale, runahead depth, rewind window and mute from the
+ * presenting or pump thread; the values they drive (s_render_fps,
+ * s_tick_scale, s_runahead_req, the rewind keyframe ring, s_mute and their
+ * dirty flags) belong to the host loop. A setter records its
  * request in s_knob_cmds under s_knob_mx and raises s_knob_pending; the host
  * loop drains the requests at the top of its iteration (live_knob_drain), its
  * quiescent point, so every write of those values and every mute gain change
@@ -2167,6 +2168,7 @@ typedef struct {
     int    fps, fps_set;
     double scale; int scale_set;
     int    ra, ra_set;
+    int    rw, rw_set;
     int    mute, mute_set;
 } live_knob_cmds_t;
 typedef struct { int fps; double scale; int mute; } live_knob_shown_t;
@@ -2234,6 +2236,13 @@ void openpete_runahead_set(int n) {
 
 int openpete_runahead_get(void) { return SDL_GetAtomicInt(&s_runahead_live); }
 
+void openpete_rewind_window_set(int seconds) {
+    knob_lock();
+    s_knob_cmds.rw = seconds < 0 ? 0 : seconds; s_knob_cmds.rw_set = 1;
+    knob_unlock();
+    SDL_SetAtomicInt(&s_knob_pending, 1);
+}
+
 /* Live engine-level mute (dev overlay). Same three gain clamps the boot
  * apply uses; s_mute replaces opts->mute as the baseline the F7 pause
  * exit restores, so a live toggle survives a pause/resume cycle. Host
@@ -2286,6 +2295,7 @@ static void live_knob_publish_shown(void)
  *
  * A changed render fps or tick scale raises the dirty flag the loop's
  * re-derivation reads; a changed runahead depth raises the re-arm flag; a
+ * rewind window request resizes the keyframe ring here, off every capture; a
  * mute request sets the baseline and applies the gains here. Requests that
  * match the applied value change nothing. */
 static void live_knob_drain(void)
@@ -2299,6 +2309,7 @@ static void live_knob_drain(void)
     if (c.fps_set && c.fps != s_render_fps) { s_render_fps = c.fps; s_render_fps_dirty = 1; }
     if (c.scale_set && c.scale != s_tick_scale) { s_tick_scale = c.scale; s_tick_scale_dirty = 1; }
     if (c.ra_set && c.ra != s_runahead_req) { s_runahead_req = c.ra; s_runahead_dirty = 1; }
+    if (c.rw_set) openpete_rewind_configure(c.rw);
     if (c.mute_set) { s_mute = c.mute; apply_mute_gains(); }
 }
 

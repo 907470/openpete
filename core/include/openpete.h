@@ -1043,6 +1043,15 @@ double openpete_get_tick_scale(void);
  * depth.
  * @param n Depth, clamped to 0..3; 0 disables runahead. */
 void openpete_runahead_set(int n);
+/** @brief Request a rewind window in seconds at runtime.
+ *
+ * The host loop applies it at the top of its next iteration through
+ * openpete_rewind_configure, which frees and reallocates the keyframe ring
+ * and its snapshots; the loop also writes those snapshots, so the resize
+ * runs on its thread and never under a capture. Applying clears the rewind
+ * history.
+ * @param seconds Window length; 0 or less disables rewind. */
+void openpete_rewind_window_set(int seconds);
 /** @brief Return the runahead depth the host loop applied; callable from any thread.
  *
  * @return Depth in ticks, 0 when disarmed. */
