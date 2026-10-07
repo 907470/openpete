@@ -39,14 +39,14 @@ closed; click a title to open it.
 | --- | --- |
 | Display | Fullscreen, Aspect ratio, Render FPS, Field of view, Supersampling, VSync, Performance stats (level and position), Vertex precision, Raster quantize, Color depth, Texture mapping, LOD |
 | Display, Advanced (collapsed) | Notifications (on, position, timeout), Fog (on and scale), Render mode, Terrain GPU cache, Terrain visibility, Render paths (absent from release packages) |
-| Audio (collapsed) | Mute, SFX volume, Music volume |
 | Gameplay | Freecam, Tick scale, Pause sim, Runahead, Rewind, Level warp |
+| Gameplay, Audio (collapsed) | Mute, SFX volume, Music volume |
 | Gameplay, Input (collapsed) | Vibration, Mouse sensitivity |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
+| Mods | one row per installed mod |
 | Info (collapsed) | the launch-only rows: Skip to level, Skip to cutscene, Skip to sub-area, Freecam pose, Player pose, bk2 replay, bk2 frame offset, bk2 recording, Renderer, Extraction threads, Window size |
 | Info, Paths (collapsed) | every path and memory card row |
 | Recording | the video capture rows, shown only while recording |
-| Mods | one row per installed mod |
 | Debug, Debug diagnostics (collapsed) | diagnostic settings |
 
 Button groups (Vertex precision, Color depth, Texture mapping, LOD, Terrain

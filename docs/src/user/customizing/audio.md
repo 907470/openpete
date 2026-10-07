@@ -28,7 +28,7 @@ sfx   = 7
 
 `--mute 1` silences all output: sound effects, music and
 [replacement music](music-and-sound-packs.md). It does not change the
-game's sliders. The [dev overlay](../help/glossary.md#dev-overlay)'s **Audio** section toggles mute and sets
+game's sliders. The [dev overlay](../help/glossary.md#dev-overlay)'s **Audio** rows, under **Gameplay**, toggle mute and set
 both presets while the game runs: each volume row's **Override** checkbox
 turns its preset on, with a slider from 0 to 10 beside it, and off leaves
 the game's slider alone.

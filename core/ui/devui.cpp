@@ -1464,11 +1464,6 @@ static const lay_row k_lay_display[] = {
     { LAY_SUB_END, nullptr },
 };
 
-static const lay_row k_lay_audio[] = {
-    { LAY_REST,     "Audio" },
-    { LAY_OVERRIDE, nullptr, { "sfx" } },
-    { LAY_OVERRIDE, nullptr, { "music" } },
-};
 
 static const lay_row k_lay_gameplay[] = {
     { LAY_ROW,    nullptr, { "freecam" } },
@@ -1478,6 +1473,11 @@ static const lay_row k_lay_gameplay[] = {
     { LAY_ONOFF,  "Rewind", { "rewind" }, nullptr, nullptr, 0, "", 30 },
     { LAY_REST,   "Gameplay" },
     { LAY_WARP,   "Level warp", { "warp_level", "warp_go" } },
+    { LAY_SUB,    "Audio" },
+    { LAY_REST,   "Audio" },
+    { LAY_OVERRIDE, nullptr, { "sfx" } },
+    { LAY_OVERRIDE, nullptr, { "music" } },
+    { LAY_SUB_END, nullptr },
     { LAY_SUB,    "Input" },
     { LAY_REST,   "Input" },
     { LAY_SUB_END, nullptr },
@@ -1512,11 +1512,10 @@ static const lay_row k_lay_debug[] = {
 
 static const lay_section k_layout[] = {
     { "Display",   true,  false, k_lay_display,   LAY_N(k_lay_display) },
-    { "Audio",     false, false, k_lay_audio,     LAY_N(k_lay_audio) },
     { "Gameplay",  true,  false, k_lay_gameplay,  LAY_N(k_lay_gameplay) },
+    { "Mods",      true,  true,  nullptr,         0 },
     { "Info",      false, false, k_lay_info,      LAY_N(k_lay_info) },
     { "Recording", true,  false, k_lay_recording, LAY_N(k_lay_recording) },
-    { "Mods",      true,  true,  nullptr,         0 },
     { "Debug",     false, false, k_lay_debug,     LAY_N(k_lay_debug) },
 };
 
