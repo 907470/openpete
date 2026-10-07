@@ -7807,9 +7807,14 @@ static int rec_prev_usable(void) {
            s_rec_prev.epoch + 1u == s_rec_snap_epoch;
 }
 
+/* A held cut asked for the previous queue (moby_native_replay_prev_queue on),
+ * whether or not it was usable; read by the cut census. */
+static int s_hold_asked;
+
 int moby_native_replay_prev_queue(int on) {
     static int      active;
     static uint32_t saved_canon;
+    s_hold_asked = on ? 1 : 0;
     if (on) {
         if (active) return 1;
         if (!rec_prev_usable()) return 0;
@@ -7835,8 +7840,20 @@ int moby_native_replay_prev_queue(int on) {
     return 0;
 }
 
-int moby_native_prev_queue_mobys(uint32_t* out, int max) {
+/** @brief On a held cut, print which epoch's animated queue the replay walked, when the cut census is armed.
+ *
+ * @param recs The records the regular pass replayed.
+ * @param tris The triangles they produced. */
+static void rec_held_queue_census(int recs, int tris) {
+    if (!s_hold_asked || !cut_census_on()) return;
+    fprintf(stderr, "[cut-census vbl=%u] held-queue kind=reg set=%s epoch=%u canon=%u recs=%d tris=%d\n",
+            openpete_frame, s_rec_ref_prev ? "prev" : "curr", s_rec_snap_epoch,
+            spyro_native_canon_epoch_stamp(), recs, tris);
+}
+
+int moby_native_prev_queue_mobys(uint32_t* out, int max, op_time_t* ref_ns) {
     if (!rec_prev_usable() || !out || max <= 0) return -1;
+    if (ref_ns) *ref_ns = s_rec_snap_ref_ns;
     const uint32_t stride = game_layout.moby.rec_stride;
     const uint32_t sw = stride / 4u;
     const uint32_t n = s_rec_prev.queued + (uint32_t)s_rec_prev.appended;
@@ -7847,7 +7864,20 @@ int moby_native_prev_queue_mobys(uint32_t* out, int max) {
         const uint32_t m = s_rec_prev.snap[r * sw + moff];
         if (m >= 0x80000000u) out[k++] = m;
     }
+    /* The second kind's queue of the same cull, when its copy of that epoch
+     * is held: a held cut replays it too. */
+    if (moby_game.simple_prev_mobys && k < max) {
+        const int ks = moby_game.simple_prev_mobys(s_rec_prev.epoch, out + k, max - k);
+        if (ks > 0) k += ks;
+    }
     return k;
+}
+
+int moby_native_prev_queue_replay(uint32_t* epoch, int32_t cam_pos[3]) {
+    if (!s_rec_ref_prev) return 0;
+    if (epoch) *epoch = s_rec_snap_epoch;
+    if (cam_pos) for (int i = 0; i < 3; i++) cam_pos[i] = s_rec_cam_pos[i];
+    return 1;
 }
 
 /** @brief The object state a replayed record was composed from: the snapshot pair's curr, or under a previous-queue replay the state as of that queue's cull.
@@ -10654,14 +10684,7 @@ static int record_replay_camera(const int (**M)[3], const int32_t** pos) {
     return 1;
 }
 
-/** @brief The moby's displacement from the state its replayed record was composed from to the state this present shows.
- *
- * moby_record_world_offset measures from the snapshot pair's curr; a record
- * of the previous queue composed from the pair's prev (rec_ref_state) moves by
- * curr - prev more to reach the same displayed position.
- * @param moby The Moby address.
- * @param out Receives the displacement in world units. */
-static void record_world_offset_from_ref(uint32_t moby, double out[3]) {
+void moby_replay_world_offset(uint32_t moby, double out[3]) {
     moby_record_world_offset(moby, out);
     if (!s_rec_ref_prev) return;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
@@ -10727,7 +10750,7 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
     for (int i = 0; i < 3; i++)
         pp[i] = (int32_t)cpu->read_word(game_layout.cam.position + (uint32_t)i * 4u);
     double mw[3];
-    record_world_offset_from_ref(moby, mw);
+    moby_replay_world_offset(moby, mw);
     if (memcmp(Rp, TM, sizeof Rp) == 0 &&
         memcmp(pp, TP, sizeof pp) == 0 &&
         mw[0] == 0.0 && mw[1] == 0.0 && mw[2] == 0.0) return;
@@ -11503,6 +11526,7 @@ static void moby_reextract_body(CPUState* cpu) {
         nm = reextract_record_pass(cpu, "REG");
         reg_walk = s_gout.n;
     }
+    rec_held_queue_census(nm, reg_walk);
     openpete_phase_set_count(OPPC_MOBYS, nm);   /* perf census: records this present */
 
     /* SPEC pass: replay the captured specular queue so specular-ONLY mobys (the

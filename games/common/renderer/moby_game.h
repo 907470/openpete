@@ -248,6 +248,12 @@ typedef struct moby_game {
      * the animated records alone. */
     int  (*simple_pass)(CPUState* cpu);
     int  (*simple_replay)(CPUState* cpu);
+    /* The mobys of the second kind's queue copy taken in canonical epoch
+     * `epoch`, written to out (at most max); -1 when no copy of that epoch is
+     * held. A held camera cut replays that copy (moby_native_prev_queue_replay)
+     * and the cut guard checks each of these can show that tick. NULL where
+     * the game keeps no previous copy. */
+    int  (*simple_prev_mobys)(uint32_t epoch, uint32_t* out, int max);
 
     /* ---- per-face special material -----------------------------------
      * A face the stream marks with a special-material flag (moby_wface_t.hl)

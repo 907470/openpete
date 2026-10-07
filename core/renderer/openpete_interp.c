@@ -210,6 +210,11 @@ static op_time_t interp_det_stamp(uint32_t tick, const openpete_interp_snapshot_
     if (curr->valid && t <= curr->tick_ns) t = curr->tick_ns + s_det_period;
     return t;
 }
+op_time_t openpete_interp_det_vbl_stamp(uint32_t tick) {
+    const op_time_t head = openpete_interp_curr_tick_ns();
+    const op_time_t t = (op_time_t)tick * s_det_period / 2;
+    return t > head ? t : head;
+}
 op_time_t openpete_interp_curr_tick_ns(void) {
     return (s_initialized && s_snap[s_head].valid) ? s_snap[s_head].tick_ns : 0;
 }

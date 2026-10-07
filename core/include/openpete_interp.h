@@ -207,6 +207,17 @@ op_time_t openpete_interp_det_period(void);
  * @return curr->tick_ns, or 0 before init or while the head slot is
  *         invalid. */
 op_time_t openpete_interp_curr_tick_ns(void);
+
+/** @brief The deterministic-capture stamp of VBL @p tick for the per-object snapshot table.
+ *
+ * The VBL clock, @p tick times half the period, raised to the newest stored
+ * snapshot's stamp when that is later. On a VBL whose region capture
+ * committed, this is that commit's stamp; on a VBL the region ring skipped (no
+ * registered region changed) it still advances, so an object that changes on
+ * that VBL is stamped after the capture that last saw its previous state.
+ * @param tick The VBL counter of the capture (openpete_frame).
+ * @return The stamp in nanoseconds. */
+op_time_t openpete_interp_det_vbl_stamp(uint32_t tick);
 /** @brief Return the newest stored snapshot.
  *
  * Read-only. The player record pairing (games/common/renderer/player.c)

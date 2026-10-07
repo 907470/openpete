@@ -42,6 +42,7 @@
 #include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "renderer/particles.h"
 #include "renderer/orchestrator.h"  /* the canonical-render epoch */
+#include "renderer/cut_guard.h"     /* cut_census_held_set */
 
 extern op_time_t g_openpete_tick_stamp;   /* the newest object-capture stamp (openpete_interp_objs.c) */
 #include "game_layout.h"
@@ -867,12 +868,15 @@ int particles_replay_prev(int on) {
     static int active;
     if (on) {
         if (active) return 1;
-        if (!spyro_native_canon_epoch_fresh(s_item_epoch) || s_item_prev.epoch + 1u != s_item_epoch)
+        if (!spyro_native_canon_epoch_fresh(s_item_epoch) || s_item_prev.epoch + 1u != s_item_epoch) {
+            cut_census_held_set("particles", 0, s_item_epoch, s_item_n);
             return 0;
+        }
         s_item_ref_cut = s_item_ref_ns;
         part_item_swap();
         s_item_ref_prev = 1;
         active = 1;
+        cut_census_held_set("particles", 1, s_item_epoch, s_item_n);
         return 1;
     }
     if (active) { part_item_swap(); s_item_ref_prev = 0; active = 0; }

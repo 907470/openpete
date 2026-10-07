@@ -45,6 +45,7 @@
 #include "game_layout.h"
 #include "openpete_profile.h"       /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 #include "renderer/env_knob.h"
+#include "renderer/cut_guard.h"         /* cut_census_held_set */
 
 extern unsigned openpete_frame;
 
@@ -1101,9 +1102,13 @@ int shadow_replay_prev_list(int on) {
         /* Only a list in a copy: a fixed-address list is re-read live. */
         if (game_layout.shadow.list_source != SHADOW_LIST_GTE_DATA ||
             !spyro_native_canon_epoch_fresh(s_list_epoch) ||
-            s_list_prev.epoch + 1u != s_list_epoch || !s_list_prev.base) return 0;
+            s_list_prev.epoch + 1u != s_list_epoch || !s_list_prev.base) {
+            cut_census_held_set("shadow", 0, s_list_epoch, s_list_n);
+            return 0;
+        }
         shadow_list_swap();
         active = 1;
+        cut_census_held_set("shadow", 1, s_list_epoch, s_list_n);
         return 1;
     }
     if (active) { shadow_list_swap(); active = 0; }

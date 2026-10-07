@@ -479,6 +479,7 @@ static void game_reextract_body(CPUState* cpu) {
     uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(game_layout.cam.base, cam_len);
     int bracketed = 0;
     int cam_cut = 0;
+    int hold = 0;
     double alpha = 0.0;
     /* The tick side of the bracket, kept for the moby replay: the cull composed
      * every animated record against this camera, so the replay needs it to turn
@@ -496,6 +497,7 @@ static void game_reextract_body(CPUState* cpu) {
         bracketed  = br.bracketed;
         alpha      = br.alpha;
         tickcam    = br.tickcam;
+        hold       = br.hold;
         if (br.bracketed) {
             for (int i = 0; i < 3; i++) s_fpos[i] = br.fpos[i];
             s_fpos_active = 1;
@@ -538,6 +540,10 @@ static void game_reextract_body(CPUState* cpu) {
          * inline render replays the records untouched. */
         moby_native_set_tick_camera(tickcam ? (const int16_t*)(tickcam + CAM_OFF_SKY) : NULL,
                                     tickcam ? (const int32_t*)(tickcam + CAM_OFF_POS) : NULL);
+        /* A held cut shows tick N-1's camera for the whole interval: replay the
+         * queues the cull built against that camera, so a moby only N-1 could
+         * see stays on screen until the cut lands. */
+        moby_native_replay_prev_queue(hold);
         /* Arm the per-object sub-tick clock for this feeder pass: it is the
          * timebase the keyframe crossfade reads, so without it every replayed
          * record holds the tick's mesh while its translation sweeps, and a clip
@@ -549,15 +555,24 @@ static void game_reextract_body(CPUState* cpu) {
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
         moby_native_set_verdict_alpha(1.0, 1);
         moby_native_set_rot_interp(0);
+        moby_native_replay_prev_queue(0);
         moby_native_set_tick_camera(NULL, NULL);
     }
     RX_CENSUS_STEP("moby");
+    /* The same hold for the player, the moby drop-shadows and the particles:
+     * the set tick N-1 drew is the set its camera sees. */
+    player_records_set_hold(hold);
     if (stage_player_records())
         player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */
+    player_records_set_hold(0);
     RX_CENSUS_STEP("player");
+    shadow_replay_prev_list(hold);
     shadow_reextract(cpu);          /* drop-shadows under mobys */
+    shadow_replay_prev_list(0);
     RX_CENSUS_STEP("shadow");
+    particles_replay_prev(hold);
     particles_reextract(cpu, bracketed, alpha);   /* the particle primitives the tick captured */
+    particles_replay_prev(0);
     RX_CENSUS_STEP("particles");
     flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
     RX_CENSUS_STEP("flame");

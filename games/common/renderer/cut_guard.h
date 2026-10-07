@@ -50,6 +50,15 @@ int cut_census_on(void);
 void cut_census_note(int kind, uint32_t addr, int held, const char* why,
                      const int32_t* prev_pos, const int32_t* shown_pos);
 
+/** @brief Print which canonical epoch's set one channel replays on a held cut, when the census is armed.
+ *
+ * @param kind The channel's name.
+ * @param prev 1 when the previous epoch's set is swapped in, 0 when the
+ *        current one stays (the previous was unusable).
+ * @param epoch The canonical epoch of the replayed set.
+ * @param n The replayed set's item count. */
+void cut_census_held_set(const char* kind, int prev, unsigned epoch, int n);
+
 /** @brief Print the camera a present showed, at the alpha it showed it, when the census is armed.
  *
  * A snapped present writes no bracket trace, so this line is the only record

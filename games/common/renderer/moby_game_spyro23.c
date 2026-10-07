@@ -33,6 +33,8 @@
 #include "renderer/interp_regions_gen.h"  /* game_interp_moby_stash_begin/_put */
 #include "openpete_psx.h"               /* openpete_psx_to_host_span */
 #include "spyro_overlay_table.h"       /* the resident overlay, for the cutscene sampler rule */
+#include "renderer/orchestrator.h"     /* the canonical-render epoch */
+#include "renderer/cut_guard.h"        /* cut_census_on */
 
 #include <math.h>
 #include <stddef.h>
@@ -756,17 +758,96 @@ static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
 
 /* The cull's own queue, copied at the hook. The queue lives in the tick's
  * draw scratch, which the passes after this one build their own data in, so
- * the bytes are taken while they are still the cull's. */
-static uint32_t s_simple_q[S23_SIMPLE_QCAP][4];
-static int      s_simple_qn;
-/* The same record's camera deltas and far-cull distance at full width. The
- * cull packs the three deltas as int16 halves and the distance as a halfword,
- * which cannot express a centre or a range past ~131000 world units; the
- * capture fills these by sign-extending its own halves, so a canonical record
- * decodes exactly as it did, while a host-built reveal record carries the
- * numbers untruncated and a far distance of -1 for "no range limit". */
-static int32_t  s_simple_d[S23_SIMPLE_QCAP][3];
-static int32_t  s_simple_far[S23_SIMPLE_QCAP];
+ * the bytes are taken while they are still the cull's.
+ *
+ * d and far: the same record's camera deltas and far-cull distance at full
+ * width. The cull packs the three deltas as int16 halves and the distance as a
+ * halfword, which cannot express a centre or a range past ~131000 world units;
+ * the capture fills these by sign-extending its own halves, so a canonical
+ * record decodes exactly as it did, while a host-built reveal record carries
+ * the numbers untruncated and a far distance of -1 for "no range limit".
+ *
+ * flat: the four flat-material words the draw keeps in PSX scratchpad at
+ * 0x1F8003F0..0x1F8003FC (mobydraw.s:4360-4363, $gp = 0x1F800000). They are
+ * reloaded from the table only for a record whose Moby+0x54 is non-zero
+ * (mobydraw.s:4350-4352), so a record with a zero index draws with whatever
+ * the previous record - or the previous draw call - left there. Snapshotting
+ * the words before the game's own draw gives the decode the same entry state
+ * that draw started from, and a sub-tick replay the same state again, without
+ * ever writing the scratchpad.
+ *
+ * epoch: the canonical epoch the copy was taken in. */
+typedef struct {
+    uint32_t q[S23_SIMPLE_QCAP][4];
+    int32_t  d[S23_SIMPLE_QCAP][3];
+    int32_t  far[S23_SIMPLE_QCAP];
+    int      qn;
+    uint32_t flat[4];
+    uint32_t epoch;
+} s23_simple_queue;
+/* Two copies: the current canonical epoch's and the previous one's, which a
+ * held camera cut replays (s23_simple_replay under moby_native_prev_queue_replay). */
+static s23_simple_queue s_sq_buf[2];
+static s23_simple_queue* s_sq      = &s_sq_buf[0];
+static s23_simple_queue* s_sq_prev = &s_sq_buf[1];
+
+/* While a held cut replays the previous copy: the camera position that copy's
+ * cull composed its deltas against. */
+static int     s_sq_replaying_prev;
+static int32_t s_sq_prev_cam[3];
+
+/** @brief Exchange the current second-kind queue copy for the previous epoch's. */
+static void s23_simple_queue_swap(void) {
+    s23_simple_queue* t = s_sq; s_sq = s_sq_prev; s_sq_prev = t;
+}
+
+/** @brief The camera position the decoded copy's cull composed its deltas against, on a sub-tick present.
+ *
+ * The installed tick camera's position (moby_native_tick_camera_pos), or
+ * during a held cut's replay of the previous copy the camera that copy's
+ * cull used.
+ * @param out Receives the position when a tick camera is installed.
+ * @return 1 on a sub-tick present (a tick camera is installed), else 0. */
+static int s23_simple_tick_camera_pos(int32_t out[3]) {
+    if (!moby_native_tick_camera_pos(out)) return 0;
+    if (s_sq_replaying_prev) memcpy(out, s_sq_prev_cam, sizeof s_sq_prev_cam);
+    return 1;
+}
+
+/** @brief The moby's own world displacement from the state the decoded record was composed from to the state this present shows.
+ *
+ * moby_record_world_offset, or during a held cut's replay of the previous
+ * copy moby_replay_world_offset, which measures from the object's state as of
+ * that copy's cull.
+ * @param moby The Moby address.
+ * @param out Receives the displacement in world units. */
+static void s23_simple_own_motion(uint32_t moby, double out[3]) {
+    if (s_sq_replaying_prev) moby_replay_world_offset(moby, out);
+    else moby_record_world_offset(moby, out);
+}
+
+/** @brief The second-kind copy of canonical epoch @p epoch when it is the previous copy of a fresh current one.
+ *
+ * @param epoch The canonical epoch.
+ * @return The copy, or NULL. */
+static const s23_simple_queue* s23_simple_prev_copy(uint32_t epoch) {
+    return (s_sq_prev->epoch == epoch && s_sq->epoch == epoch + 1u &&
+            spyro_native_canon_epoch_fresh(s_sq->epoch)) ? s_sq_prev : NULL;
+}
+
+/** @brief The mobys of the second-kind queue copy of canonical epoch @p epoch (moby_game.simple_prev_mobys).
+ *
+ * @param epoch The canonical epoch.
+ * @param out Receives up to @p max moby addresses.
+ * @param max Capacity of @p out.
+ * @return The count written, or -1 when no copy of that epoch is held as the previous one. */
+static int s23_simple_prev_mobys(uint32_t epoch, uint32_t* out, int max) {
+    const s23_simple_queue* c = s23_simple_prev_copy(epoch);
+    if (!c || !out) return -1;
+    int k = 0;
+    for (int i = 0; i < c->qn && k < max; i++) out[k++] = c->q[i][0];
+    return k;
+}
 
 /* Per-frame engagement counts: a pass that walked nothing proves nothing, so
  * the verify harness prints what this one actually read. */
@@ -781,40 +862,37 @@ static long s_simple_lp, s_simple_fade;
 static long s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped, s_flat_front_blended;
 extern unsigned openpete_frame;
 
-/* The four flat-material words the draw keeps in PSX scratchpad at
- * 0x1F8003F0..0x1F8003FC (mobydraw.s:4360-4363, $gp = 0x1F800000). They are
- * reloaded from the table only for a record whose Moby+0x54 is non-zero
- * (mobydraw.s:4350-4352), so a record with a zero index draws with whatever
- * the previous record - or the previous draw call - left there. Snapshotting
- * the words before the game's own draw gives the decode the same entry state
- * that draw started from, and a sub-tick replay the same state again, without
- * ever writing the scratchpad. */
 #define S23_FLAT_SCRATCH 0x1F8003F0u
-static uint32_t s_flat_entry[4];
 
-/** @brief Copies the cull's second-kind queue into the host queue s_simple_q.
+/** @brief Copies the cull's second-kind queue into the host queue s_sq.
  *
  * Reads records from draw scratch + 0x1C00 (the base the cull left in GTE data
  * 2), stride 0x10, until a zero first word or S23_SIMPLE_RECS records, and
- * sign-extends each record's packed halves into s_simple_d and s_simple_far.
- * Sets s_simple_qn to the count. Writes no guest memory. */
+ * sign-extends each record's packed halves into its d and far.
+ * Sets its qn to the count. Writes no guest memory. */
 static void s23_simple_capture(CPUState* cpu) {
-    s_simple_qn = 0;
+    /* The first copy of a new canonical epoch retires the current one, reveal
+     * records included, to the previous slot; a second copy in the same epoch
+     * replaces the current. */
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    if (s_sq->epoch != epoch) s23_simple_queue_swap();
+    s_sq->epoch = epoch;
+    s_sq->qn = 0;
     /* The cull left the draw scratch base in GTE data 2 (mobydraw.s:35,3893)
      * and parked this queue 0x1C00 into it (mobydraw.s:44,3895). */
     uint32_t q = cpu->gte_data[2] + 0x1C00u;
     for (int i = 0; i < S23_SIMPLE_RECS; i++, q += 0x10u) {
         uint32_t m = cpu->read_word(q);
         if (m == 0u) break;                     /* the cull's terminator (mobydraw.s:584) */
-        s_simple_q[i][0] = m;
-        s_simple_q[i][1] = cpu->read_word(q + 4u);
-        s_simple_q[i][2] = cpu->read_word(q + 8u);
-        s_simple_q[i][3] = cpu->read_word(q + 12u);
-        s_simple_d[i][0] = (int16_t)(s_simple_q[i][1] & 0xFFFFu);
-        s_simple_d[i][1] = (int16_t)(s_simple_q[i][2] >> 16);
-        s_simple_d[i][2] = (int16_t)(s_simple_q[i][1] >> 16);
-        s_simple_far[i]  = (int32_t)(s_simple_q[i][2] & 0xFFFFu);
-        s_simple_qn = i + 1;
+        s_sq->q[i][0] = m;
+        s_sq->q[i][1] = cpu->read_word(q + 4u);
+        s_sq->q[i][2] = cpu->read_word(q + 8u);
+        s_sq->q[i][3] = cpu->read_word(q + 12u);
+        s_sq->d[i][0] = (int16_t)(s_sq->q[i][1] & 0xFFFFu);
+        s_sq->d[i][1] = (int16_t)(s_sq->q[i][2] >> 16);
+        s_sq->d[i][2] = (int16_t)(s_sq->q[i][1] >> 16);
+        s_sq->far[i]  = (int32_t)(s_sq->q[i][2] & 0xFFFFu);
+        s_sq->qn = i + 1;
     }
 }
 
@@ -1032,9 +1110,9 @@ typedef struct {
 static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
                             const double dcam[3], const double dmob[3],
                             s23_place* pl) {
-    const uint32_t slot = s_simple_q[r][3];
+    const uint32_t slot = s_sq->q[r][3];
     /* The far-cull distance's bit 15 sorts the record (mobydraw.s:3914-3915). */
-    pl->screen = (s_simple_q[r][2] & 0x8000u) != 0;
+    pl->screen = (s_sq->q[r][2] & 0x8000u) != 0;
     pl->ofx = pl->ofy = 0.0;
     memcpy(pl->R, Rcam, sizeof pl->R);
     double m1 = 0.0, m2 = 0.0, m3 = 0.0;
@@ -1057,10 +1135,10 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
          * moby's own displacement enters each of them directly: X into OFX, Y
          * into OFY and Z into the depth, in the same units and with no sign
          * change. */
-        const double dz = (double)s_simple_d[r][1] + dmob[2];
+        const double dz = (double)s_sq->d[r][1] + dmob[2];
         if (dz <= 0.0) return 0;
-        pl->ofx = (double)s_simple_d[r][2] + dmob[0];
-        pl->ofy = (double)s_simple_d[r][0] + dmob[1];
+        pl->ofx = (double)s_sq->d[r][2] + dmob[0];
+        pl->ofy = (double)s_sq->d[r][0] + dmob[1];
         pl->TR[0] = pl->TR[1] = 0.0;
         pl->TR[2] = (double)(((int)dz >> 2) * 2);
         memset(pl->R, 0, sizeof pl->R);
@@ -1071,15 +1149,15 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
          * and (moby - cam) >> 2 on the third (mobydraw.s:81,87,94), so the
          * moby's own displacement enters in quarter-world units with the
          * opposite sign per component, beside the camera's. */
-        ngte_mac(Rcam, (double)s_simple_d[r][0] + dcam[1] - dmob[1] * 0.25,
-                       (double)s_simple_d[r][1] + dcam[2] - dmob[2] * 0.25,
-                       (double)s_simple_d[r][2] + dcam[0] + dmob[0] * 0.25, &m1, &m2, &m3);
+        ngte_mac(Rcam, (double)s_sq->d[r][0] + dcam[1] - dmob[1] * 0.25,
+                       (double)s_sq->d[r][1] + dcam[2] - dmob[2] * 0.25,
+                       (double)s_sq->d[r][2] + dcam[0] + dmob[0] * 0.25, &m1, &m2, &m3);
         /* The record's own draw range (mobydraw.s:3958). Extended LOD removes
          * the range rather than widening it: the threshold is a per-moby byte
          * scaled by 256, so any raised value is still a ceiling a high camera
          * clears, while terrain carries no distance term at all. */
-        if (!openpete_no_lod && s_simple_far[r] >= 0 &&
-            m3 - (double)s_simple_far[r] >= 0.0) return 0;
+        if (!openpete_no_lod && s_sq->far[r] >= 0 &&
+            m3 - (double)s_sq->far[r] >= 0.0) return 0;
         pl->TR[0] = m1*2.0; pl->TR[1] = m2*2.0; pl->TR[2] = m3*2.0;
     }
 
@@ -1325,7 +1403,7 @@ static int s23_simple_decode(CPUState* cpu) {
      * per-record own motion and the tick's own rotation word. */
     double dcam[3] = { 0.0, 0.0, 0.0 };
     int32_t tickpos[3];
-    const int bracketed = moby_native_tick_camera_pos(tickpos);
+    const int bracketed = s23_simple_tick_camera_pos(tickpos);
     if (bracketed) {
         static const double sign[3] = { -0.25, 0.25, 0.25 };
         for (int i = 0; i < 3; i++) {
@@ -1340,16 +1418,16 @@ static int s23_simple_decode(CPUState* cpu) {
     static double vmod[S23_SIMPLE_VERTS][3];       /* model-space vertex words */
     static uint32_t ctab[S23_SIMPLE_COLS];
     uint32_t flat_w[4];
-    memcpy(flat_w, s_flat_entry, sizeof flat_w);
+    memcpy(flat_w, s_sq->flat, sizeof flat_w);
 
-    for (int r = 0; r < s_simple_qn; r++) {
-        uint32_t moby = s_simple_q[r][0];
+    for (int r = 0; r < s_sq->qn; r++) {
+        uint32_t moby = s_sq->q[r][0];
         /* The moby's own world displacement over the fraction of the tick this
          * present shows. The cull composed the record at the tick's position,
          * which both kinds encode directly, so without this term the record
          * holds that position for the whole tick and steps at the tick rate. */
         double dmob[3] = { 0.0, 0.0, 0.0 };
-        if (bracketed) moby_record_world_offset(moby, dmob);
+        if (bracketed) s23_simple_own_motion(moby, dmob);
         s23_place pl;
         const int placed = s23_simple_place(cpu, r, Rcam, dcam, dmob, &pl);
         if (pl.screen) s_simple_screen++;
@@ -1614,16 +1692,32 @@ static int s23_simple_decode(CPUState* cpu) {
 
 /** @brief A sub-tick present's replay of the second kind: the captured queue decoded again under the present's camera.
  *
- * Makes no call into the game's draw. Resets the pass counters, and prints its
- * own census line under moby_verify_vbl, since the pass census covers the
- * canonical tick alone.
+ * Makes no call into the game's draw. During a held cut's previous-queue
+ * replay (moby_native_prev_queue_replay) it decodes the previous epoch's copy
+ * instead, re-based from that cull's camera and from each object's state as
+ * of that cull, when that copy is held. Resets the pass counters, and prints
+ * its own census line under moby_verify_vbl, since the pass census covers the
+ * canonical tick alone, and a held-queue line under the cut census.
  * @param cpu The guest CPU state, read only.
  * @return The number of triangles emitted. */
 static int s23_simple_replay(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
     s_simple_lp = s_simple_fade = 0;
+    /* A held camera cut replaying the previous epoch's animated queue replays
+     * this kind's copy of the same epoch: the cull built both against the
+     * camera the present shows. */
+    uint32_t ep = 0;
+    const int prev = moby_native_prev_queue_replay(&ep, s_sq_prev_cam) &&
+                     s23_simple_prev_copy(ep) != NULL;
+    if (prev) { s23_simple_queue_swap(); s_sq_replaying_prev = 1; }
     int n = s23_simple_decode(cpu);
+    if (cut_census_on() && moby_native_prev_queue_replay(NULL, NULL))
+        fprintf(stderr, "[cut-census vbl=%u] held-queue kind=simple set=%s epoch=%u queued=%d "
+                        "drawn=%ld tris=%d\n",
+                openpete_frame, prev ? "prev" : "curr", s_sq->epoch, s_sq->qn,
+                s_simple_recs - s_simple_culled, n);
+    if (prev) { s23_simple_queue_swap(); s_sq_replaying_prev = 0; }
     /* The replay's own census: the queue it read and what that queue decoded
      * to. The pass census covers the canonical tick alone, so without this a
      * replay of a queue no canonical pass built this tick reads as silence. */
@@ -1631,7 +1725,7 @@ static int s23_simple_replay(CPUState* cpu) {
         fprintf(stderr, "[moby-simple-replay vbl=%u] queued=%d drawn=%ld culled=%ld "
                         "screenkind=%ld screendrawn=%ld "
                         "verts=%ld faces=%ld tris=%d lp=%ld fade=%ld\n",
-                openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled,
+                openpete_frame, s_sq->qn, s_simple_recs, s_simple_culled,
                 s_simple_screen, s_simple_screen_drawn,
                 s_simple_verts, s_simple_faces, n, s_simple_lp, s_simple_fade);
     return n;
@@ -1927,11 +2021,11 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t ki
         *why = MOBY_REVEAL_OTHER_KIND; return 0;
     }
     if (kind == MOBY_REVEAL_ANIMATED) return s23_reveal_anim_record(cpu, moby, why);
-    if (s_simple_qn >= S23_SIMPLE_QCAP) { *why = MOBY_REVEAL_QUEUE_FULL; return 0; }
+    if (s_sq->qn >= S23_SIMPLE_QCAP) { *why = MOBY_REVEAL_QUEUE_FULL; return 0; }
     /* The cull admits on more than the box, so a moby outside the box can
      * already hold a captured record; a second one would draw it twice. */
-    for (int k = 0; k < s_simple_qn; k++)
-        if (s_simple_q[k][0] == moby) { *why = MOBY_REVEAL_DUPLICATE; return 0; }
+    for (int k = 0; k < s_sq->qn; k++)
+        if (s_sq->q[k][0] == moby) { *why = MOBY_REVEAL_DUPLICATE; return 0; }
     const uint32_t anim = cpu->read_word(moby + game_layout.moby.anim_state_off);
     const int32_t cx = (int32_t)cpu->read_word(game_layout.cam.position + 0u),
                   cy = (int32_t)cpu->read_word(game_layout.cam.position + 4u),
@@ -1940,18 +2034,18 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t ki
                   my = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
                   mz = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
     const int32_t dx = (mx - cx) >> 2, dy = (cy - my) >> 2, dz = (cz - mz) >> 2;
-    const int i = s_simple_qn;
-    s_simple_q[i][0] = moby;
-    s_simple_q[i][1] = ((uint32_t)dx << 16) | ((uint32_t)dy & 0xFFFFu);
+    const int i = s_sq->qn;
+    s_sq->q[i][0] = moby;
+    s_sq->q[i][1] = ((uint32_t)dx << 16) | ((uint32_t)dy & 0xFFFFu);
     /* The low half stays clear of bit 15, which marks the screen-space kind
      * the draw reads its own halves as (mobydraw.s:4030-4049). */
-    s_simple_q[i][2] = ((uint32_t)dz << 16);
-    s_simple_q[i][3] = model + (anim & 0xFFu) * 4u;
-    s_simple_d[i][0] = dy;
-    s_simple_d[i][1] = dz;
-    s_simple_d[i][2] = dx;
-    s_simple_far[i]  = -1;
-    s_simple_qn = i + 1;
+    s_sq->q[i][2] = ((uint32_t)dz << 16);
+    s_sq->q[i][3] = model + (anim & 0xFFu) * 4u;
+    s_sq->d[i][0] = dy;
+    s_sq->d[i][1] = dz;
+    s_sq->d[i][2] = dx;
+    s_sq->far[i]  = -1;
+    s_sq->qn = i + 1;
     return 1;
 }
 
@@ -1976,14 +2070,14 @@ static int s23_simple_pass(CPUState* cpu) {
      * game's own draw below still reads its own, unchanged. */
     int revealed = moby_reveal_candidates(cpu, MOBY_REVEAL_SIMPLE);
     for (int i = 0; i < 4; i++)
-        s_flat_entry[i] = cpu->read_word(S23_FLAT_SCRATCH + (uint32_t)i * 4u);
+        s_sq->flat[i] = cpu->read_word(S23_FLAT_SCRATCH + (uint32_t)i * 4u);
     openpete_recomp_module_get()->dispatch(cpu, game_layout.moby.hook_draw_simple);
     /* The records as the decode below reads them, after the draw's own stores
      * (byte +0x4D) and before any later routine of the tick writes a queued
      * moby (the HUD update advances a HUD moby's angle after this draw), so
      * the object ring's pair takes the drawn records, not the tick-end ones. */
     game_interp_moby_stash_begin();
-    for (int i = 0; i < s_simple_qn; i++) game_interp_moby_stash_put(s_simple_q[i][0]);
+    for (int i = 0; i < s_sq->qn; i++) game_interp_moby_stash_put(s_sq->q[i][0]);
     int n = s23_simple_decode(cpu);
     if (moby_verify_vbl())
         fprintf(stderr, "[moby-simple vbl=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
@@ -1991,7 +2085,7 @@ static int s23_simple_pass(CPUState* cpu) {
                         "verts=%ld faces=%ld flat=%ld tris=%d revealed=%d lp=%ld fade=%ld "
                         "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld "
                         "flat_front_blended=%ld\n",
-                openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
+                openpete_frame, s_sq->qn, s_simple_recs, s_simple_culled, s_simple_screen,
                 s_simple_screen_drawn,
                 s_simple_verts, s_simple_faces, s_simple_flat, n, revealed,
                 s_simple_lp, s_simple_fade,
@@ -2095,6 +2189,7 @@ const moby_game_t moby_game = {
     .model_is_animated = s23_model_is_animated,
     .simple_pass       = s23_simple_pass,
     .simple_replay     = s23_simple_replay,
+    .simple_prev_mobys = s23_simple_prev_mobys,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so the
      * shared field reveal stays off (host_reveal below); these two let the
      * shared candidate walk offer the mobys the cull's distance box rejected

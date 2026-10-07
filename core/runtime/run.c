@@ -5118,14 +5118,16 @@ static int run_host_loop(const openpete_options_t* opts) {
                         op_time_t stamp = s_vclk - s_phase;
                         openpete_interp_capture(openpete_frame, stamp);
                         extern op_time_t g_openpete_tick_stamp;   /* objs capture shares the stamp */
-                        /* openpete_interp_capture grids the DIRECT ring's stamp under
-                         * deterministic capture (fixed 0,P,2P,... grid); mirror that for the
-                         * objs ring so per-object sub-tick interps (moby positions/rotation,
-                         * particles, sparkles, HUD icons, dragon-stars) pair the pinned
-                         * present clock against a GRIDDED object timestamp instead of wall
-                         * time - else those tiles flake run-to-run on the intermediate leg. */
+                        /* Under deterministic capture the objs ring takes the VBL clock
+                         * the direct ring stamps its commits with, so per-object sub-tick
+                         * interps (moby positions/rotation, particles, sparkles, HUD
+                         * icons, dragon-stars) pair the pinned present clock against a
+                         * reproducible object timestamp instead of wall time. It advances
+                         * on a VBL the direct ring skips, as the wall-clock stamp does:
+                         * an object that changes there is stamped after the capture that
+                         * last saw its previous state, not equal to it. */
                         g_openpete_tick_stamp = openpete_interp_deterministic()
-                                              ? openpete_interp_curr_tick_ns() : stamp;
+                                              ? openpete_interp_det_vbl_stamp(openpete_frame) : stamp;
                     }
                 }
 

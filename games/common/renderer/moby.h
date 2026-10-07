@@ -13,6 +13,7 @@
 #include "renderer/moby_game.h"   /* moby_wface_t: the shared face record */
 #include "renderer/moby_rank.h"   /* paint-key records and vertices */
 #include "renderer/native_gte.h"  /* ngte_euler_sc: the composed rotation's sin/cos */
+#include "openpete_time.h"         /* op_time_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,10 +79,25 @@ int moby_native_replay_prev_queue(int on);
 
 /** @brief The mobys of the previous canonical epoch's record queue, the set moby_native_replay_prev_queue would replay.
  *
+ * Followed by the mobys of the second kind's queue copy of the same epoch,
+ * when the game holds one (moby_game.simple_prev_mobys).
  * @param out Receives up to @p max moby addresses.
  * @param max Capacity of @p out.
+ * @param ref_ns Receives the object-capture stamp current at the current
+ *        queue's cull, when non-NULL: an object whose curr is stamped at or
+ *        before it has not changed since the previous cull drew it.
  * @return The count written, or -1 when the previous queue is not usable. */
-int moby_native_prev_queue_mobys(uint32_t* out, int max);
+int moby_native_prev_queue_mobys(uint32_t* out, int max, op_time_t* ref_ns);
+
+/** @brief Whether a previous-queue replay (moby_native_replay_prev_queue) is in progress, with the epoch it replays and that cull's camera position.
+ *
+ * A second queue the same cull wrote (the second model kind's) replays its own
+ * copy of that epoch under the same camera.
+ * @param epoch Receives the replayed canonical epoch, when non-NULL.
+ * @param cam_pos Receives the camera position that cull composed against,
+ *        when non-NULL.
+ * @return 1 while the previous queue is swapped in, else 0 (outputs untouched). */
+int moby_native_prev_queue_replay(uint32_t* epoch, int32_t cam_pos[3]);
 
 /** @brief The installed tick camera position, for a cull whose records bake the camera position into a stored per-record delta.
  *
@@ -131,6 +147,14 @@ double moby_native_view_widen(void);
  *         where a multi-tick gap is a discontinuity rather than motion; 1
  *         otherwise, with a zero out[] for a moby static in the world. */
 int moby_record_world_offset(uint32_t moby, double out[3]);
+/** @brief The moby's displacement from the state its replayed record was composed from to the state this present shows.
+ *
+ * moby_record_world_offset, plus curr - prev for a record of a previous-queue
+ * replay that was composed from the pair's prev (the object rolled after that
+ * queue's cull); outside such a replay it equals moby_record_world_offset.
+ * @param moby The Moby address.
+ * @param out Receives the displacement in world units. */
+void moby_replay_world_offset(uint32_t moby, double out[3]);
 /** @brief The (prev - curr) * (1 - t) offset of one captured unsigned 16-bit moby field at the present's phase t.
  *
  * For a caller whose own convention is not the position words. The field is

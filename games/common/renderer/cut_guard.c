@@ -55,6 +55,12 @@ void cut_census_note(int kind, uint32_t addr, int held, const char* why,
             s_cut_snap[0], s_cut_snap[1], s_cut_snap[2]);
 }
 
+void cut_census_held_set(const char* kind, int prev, unsigned epoch, int n) {
+    if (!cut_census_on()) return;
+    fprintf(stderr, "[cut-census vbl=%u] held-queue kind=%s set=%s epoch=%u n=%d\n",
+            openpete_frame, kind, prev ? "prev" : "curr", epoch, n);
+}
+
 void cut_census_camera(const int32_t* pos, const int16_t* mat,
                        double alpha, int cam_cut) {
     if (!cut_census_on() || !pos || !mat) return;
@@ -297,9 +303,12 @@ static int cut_drawn_set_refusals(void) {
     return n;
 }
 
-/** @brief Count the records of the previous epoch's queue, which a held cut replays, that cannot show tick N-1.
+/** @brief Count the records of the previous epoch's queues, which a held cut replays, that cannot show tick N-1.
  *
- * Dormant records are skipped. Counts refusals as cut_array_refusals does.
+ * Dormant records are skipped. A record whose object has not rolled since the
+ * current queue's cull stamp shows its snapshot curr, which is the state the
+ * previous cull drew, so it holds without a pair; every other record is
+ * judged by cut_rec_holdable. Counts refusals as cut_array_refusals does.
  * @return The number of refusing records; 0 when the previous queue is not
  *         usable (the hold then replays the current queue, which the other
  *         two counts cover). */
@@ -308,11 +317,15 @@ static int cut_prev_queue_refusals(void) {
     const uint32_t soff = game_layout.moby.state_off;
     const uint32_t rec_bytes = game_layout.moby.array_stride ? game_layout.moby.array_stride : soff + 1u;
     const int all = cut_census_on();
-    const int cnt = moby_native_prev_queue_mobys(mobys, 1024);
+    op_time_t ref_ns = 0;
+    const int cnt = moby_native_prev_queue_mobys(mobys, 1024, &ref_ns);
     int n = 0;
     for (int i = 0; i < cnt && (all || n == 0); i++) {
         const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(mobys[i], rec_bytes);
         if (!mh || mh[soff] >= 0x80) continue;
+        const uint32_t key = moby_game.interp_key ? moby_game.interp_key(mobys[i]) : mobys[i];
+        const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
+        if (o && o->curr_ns <= ref_ns) continue;
         if (!cut_rec_holdable(mobys[i], mh)) n++;
     }
     return n;

@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "renderer/env_knob.h"
+#include "renderer/cut_guard.h"     /* cut_census_held_set */
 
 extern unsigned openpete_frame;
 extern op_time_t g_openpete_tick_stamp;      /* per-VBL stamp (PLL) */
@@ -1909,6 +1910,7 @@ int player_records_present_begin(int ring_paired, int ring_cut, double ring_alph
             s_pres_b = 1;
         }
         s_pres_n = s_store[s_pres_b].list.n;
+        cut_census_held_set("player", 1, s_store_epoch - 1u, s_pres_n);
         return s_pres_n;
     }
     s_pres_n = s_store[0].list.n;
