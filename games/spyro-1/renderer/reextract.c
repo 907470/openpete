@@ -1784,6 +1784,40 @@ static int particle_pools_bracket(part_save_t* save) {
     return n;
 }
 
+/** @brief Undo particle_pools_bracket: write each bracketed slot's saved position words back to guest RAM.
+ *
+ * A slot staged through the sub-tick view never touched guest RAM and is
+ * skipped.
+ * @param save The slots particle_pools_bracket recorded.
+ * @param n The number of entries in save. */
+static void particle_pools_restore(const part_save_t* save, int n) {
+    for (int i = 0; i < n; i++) {
+        if (save[i].staged) continue;   /* never written; nothing to undo */
+        uint8_t* ph = (uint8_t*)openpete_psx_to_host_span(save[i].addr, PART_STRIDE);
+        if (!ph) continue;
+        memcpy(ph + PART_POS_OFF, &save[i].w1, 4);
+        memcpy(ph + 0x08u,        &save[i].w2, 4);
+    }
+}
+
+/** @brief Report every bracketed slot whose position words in guest RAM differ from the saved canonical words.
+ *
+ * Run after particle_pools_restore; one stderr line per mismatching slot.
+ * @param save The slots particle_pools_bracket recorded.
+ * @param n The number of entries in save. */
+static void particle_pools_check(const part_save_t* save, int n) {
+    for (int i = 0; i < n; ++i) {
+        const uint8_t* ph = (const uint8_t*)openpete_psx_to_host_span(save[i].addr, PART_STRIDE);
+        if (!ph) continue;
+        uint32_t w1, w2;
+        memcpy(&w1, ph + PART_POS_OFF, 4);
+        memcpy(&w2, ph + 0x08u, 4);
+        if (w1 != save[i].w1 || w2 != save[i].w2)
+            fprintf(stderr, "[bracket-check f=%u] RESTORE MISMATCH particle@%08x\n",
+                    openpete_frame, save[i].addr);
+    }
+}
+
 /** @brief The sub-tick present body.
  *
  * Always entered through the wrapper game_reextract_view_install registers
@@ -2456,12 +2490,15 @@ static void game_reextract_body(void* cpu_v) {
         }
     }
 
-    part_save_n = particle_pools_bracket(s_part_save);
-
-    /* Dragon-star record (D_DRAGONSTAR): staged through the view with the
-     * sub-tick position, size and colour; its rotation reaches the feeder as
-     * float euler angles (dragonstar_bracket). */
-    dragonstar_bracket();
+    /* g_Particles slots, and the dragon-star record (D_DRAGONSTAR) staged
+     * through the view with the sub-tick position, size and colour, its
+     * rotation reaching the feeder as float euler angles (dragonstar_bracket).
+     * A held cut brackets neither: particle_reextract stages tick N-1's copies
+     * of both whole. */
+    if (!cam_hold) {
+        part_save_n = particle_pools_bracket(s_part_save);
+        dragonstar_bracket();
+    }
 
     /* The 2D-UI overlay (fade + cutscene letterbox + menu panel + the 2D-UI
      * sprites/lines) is ACCUMULATED at feed time inside add_tri (so this rebuild's
@@ -2593,12 +2630,7 @@ static void game_reextract_body(void* cpu_v) {
         uint8_t* mh = (uint8_t*)openpete_psx_to_host_span(s_moby_save[i].addr, MOBY_STRIDE);
         if (mh) memcpy(mh, s_moby_save[i].bytes, MOBY_STRIDE);
     }
-    for (int i = 0; i < part_save_n; i++) {
-        if (s_part_save[i].staged) continue;   /* never written; nothing to undo */
-        uint8_t* ph = (uint8_t*)openpete_psx_to_host_span(s_part_save[i].addr, PART_STRIDE);
-        if (ph) { memcpy(ph + PART_POS_OFF, &s_part_save[i].w1, 4);
-                  memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }
-    }
+    particle_pools_restore(s_part_save, part_save_n);
     dragonstar_native_set_rot_interp(NULL);   /* canonical presents compose from the bytes */
     if (sh_bracketed && !sh_staged)  memcpy(sh, sh_saved, SHADOW_SAVE);
     if (fl_bracketed && !fl_staged)  memcpy(fl, fl_saved, FLAME_SAVE);
@@ -2638,17 +2670,7 @@ static void game_reextract_body(void* cpu_v) {
                 fprintf(stderr, "[bracket-check f=%u] RESTORE MISMATCH moby@%08x\n",
                         openpete_frame, s_moby_save[i].addr);
         }
-        for (int i = 0; i < part_save_n; ++i) {
-            const uint8_t* ph = (const uint8_t*)openpete_psx_to_host_span(s_part_save[i].addr, PART_STRIDE);
-            if (ph) {
-                uint32_t w1, w2;
-                memcpy(&w1, ph + PART_POS_OFF, 4);
-                memcpy(&w2, ph + 0x08u, 4);
-                if (w1 != s_part_save[i].w1 || w2 != s_part_save[i].w2)
-                    fprintf(stderr, "[bracket-check f=%u] RESTORE MISMATCH particle@%08x\n",
-                            openpete_frame, s_part_save[i].addr);
-            }
-        }
+        particle_pools_check(s_part_save, part_save_n);
     }
 
     s_fpos_active = 0;   /* leave the resolver inert for the canonical render path */

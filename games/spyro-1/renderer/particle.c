@@ -2118,28 +2118,39 @@ static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
 /* The three particle renderers share one latch: they are separate guest
  * entries, so the descriptor is built per call around the caller's own draw. */
 static hook_bracket_state s_particle_hb;
-/* ---- held camera cut: the glow and sparkle pools of tick N-1 ---------------
+/* ---- held camera cut: the particle, glow, sparkle and star records of tick N-1
  *
- * The glow and sparkle feeds re-derive their primitives from their pools, which
- * hold tick N's records by the time a sub-tick present runs. A held cut shows
+ * The g_Particles, glow, sparkle and dragon-star feeds re-derive their
+ * primitives from their records, which hold tick N's state by the time a
+ * sub-tick present runs. A held cut shows
  * tick N-1 under tick N-1's camera, so each renderer's hook copies its pool as
  * the renderer left it, the bytes the canonical feed read, two canonical epochs
  * deep, and the held present stages tick N-1's copy over the pool. */
 #define GLOW_POOL_BYTES  (16u * 0x24u)
 #define SPARK_POOL_BYTES (8u * 0x18u)
+/* 256 records of 0x20 plus the terminator word the level loader stores at
+ * record 256 (g_Particles[256], spyro-1 src/loaders.c). */
+#define PART_POOL_BYTES  (256u * 0x20u + 4u)
+/* The dragon-star record D_DRAGONSTAR, a pool of one record. */
+#define STAR_REC_BYTES   0x2Cu
 
 /* One pool's two copies: the current epoch's and the one it retired, each with
- * its live-record count. */
+ * its live-record count and the guest address it was copied from. */
 typedef struct {
     uint8_t* cur;
     uint8_t* old;
     int      n, n_old;
+    uint32_t base, base_old;
 } pool_copies_t;
 
 static uint8_t       s_glow_pool[2][GLOW_POOL_BYTES];
 static uint8_t       s_spark_pool[2][SPARK_POOL_BYTES];
-static pool_copies_t s_glow_pc  = { s_glow_pool[0],  s_glow_pool[1],  0, 0 };
-static pool_copies_t s_spark_pc = { s_spark_pool[0], s_spark_pool[1], 0, 0 };
+static uint8_t       s_part_pool_copy[2][PART_POOL_BYTES];
+static uint8_t       s_star_rec_copy[2][STAR_REC_BYTES];
+static pool_copies_t s_glow_pc  = { s_glow_pool[0],  s_glow_pool[1],  0, 0, 0u, 0u };
+static pool_copies_t s_spark_pc = { s_spark_pool[0], s_spark_pool[1], 0, 0, 0u, 0u };
+static pool_copies_t s_part_pc  = { s_part_pool_copy[0], s_part_pool_copy[1], 0, 0, 0u, 0u };
+static pool_copies_t s_star_pc  = { s_star_rec_copy[0],  s_star_rec_copy[1],  0, 0, 0u, 0u };
 
 /** @brief Exchange a pool's current copy with the retired one, with their counts.
  *
@@ -2147,38 +2158,79 @@ static pool_copies_t s_spark_pc = { s_spark_pool[0], s_spark_pool[1], 0, 0 };
 static void pool_copies_swap(pool_copies_t* pc) {
     uint8_t* t = pc->cur; pc->cur = pc->old; pc->old = t;
     const int n = pc->n; pc->n = pc->n_old; pc->n_old = n;
+    const uint32_t b = pc->base; pc->base = pc->base_old; pc->base_old = b;
 }
 /** @brief Exchange the glow pool's two copies. */
 static void glow_pool_swap(void)  { pool_copies_swap(&s_glow_pc); }
 /** @brief Exchange the sparkle pool's two copies. */
 static void spark_pool_swap(void) { pool_copies_swap(&s_spark_pc); }
+/** @brief Exchange the g_Particles pool's two copies. */
+static void part_pool_swap(void)  { pool_copies_swap(&s_part_pc); }
+/** @brief Exchange the dragon-star record's two copies. */
+static void star_rec_swap(void)   { pool_copies_swap(&s_star_pc); }
 
-static cut_held_sets_t s_glow_held  = { glow_pool_swap,  &s_glow_pc.n,  "glow",    { 0u, 0u } };
-static cut_held_sets_t s_spark_held = { spark_pool_swap, &s_spark_pc.n, "sparkle", { 0u, 0u } };
+static cut_held_sets_t s_glow_held  = { glow_pool_swap,  &s_glow_pc.n,  "glow",      { 0u, 0u } };
+static cut_held_sets_t s_spark_held = { spark_pool_swap, &s_spark_pc.n, "sparkle",   { 0u, 0u } };
+static cut_held_sets_t s_part_held  = { part_pool_swap,  &s_part_pc.n,  "particles", { 0u, 0u } };
+static cut_held_sets_t s_star_held  = { star_rec_swap,   &s_star_pc.n,  "star",      { 0u, 0u } };
+
+/* A pool record's liveness: 1 live, 0 dead, -1 the pool's end (no later record
+ * is read). */
+typedef int (*pool_live_fn)(const uint8_t* rec);
+
+/** @brief Whether a glow record is live: its ring count (+0x00) is positive.
+ *
+ * @param rec The record.
+ * @return 1 live, else 0. */
+static int glow_rec_live(const uint8_t* rec) {
+    int32_t w; memcpy(&w, rec, 4);
+    return w > 0;
+}
+/** @brief Whether a sparkle record is live: its m_Life byte (+0x0C) is nonzero.
+ *
+ * @param rec The record.
+ * @return 1 live, else 0. */
+static int spark_rec_live(const uint8_t* rec) { return rec[0x0C] != 0; }
+/** @brief Whether the dragon-star record is live: its gate word (+0x00) is nonzero, as dragonstar_build reads it.
+ *
+ * @param rec The record.
+ * @return 1 live, else 0. */
+static int star_rec_live(const uint8_t* rec) {
+    uint32_t w; memcpy(&w, rec, 4);
+    return w != 0u;
+}
+/** @brief Whether a g_Particles record is live, by its type byte (+0x01) as particle_build reads it.
+ *
+ * @param rec The record.
+ * @return -1 at the 0xFF terminator, 0 for an inactive slot (bit 7 set), else 1. */
+static int part_rec_live(const uint8_t* rec) {
+    if (rec[1] == 0xFFu) return -1;
+    return (rec[1] & 0x80u) ? 0 : 1;
+}
 
 /** @brief Copy a pool as its renderer left it into the current epoch's copy, retiring the previous epoch's first.
  *
- * A record is live when the word at live_off masked by live_mask is nonzero
- * and, as a signed value, positive: the glow ring count (+0x00) and the
- * sparkle m_Life byte (+0x0C).
+ * Copies len bytes and records the guest address; the live-record count is
+ * the number of whole records the predicate reports live before the first
+ * end mark.
  * @param h The pool's held sets.
  * @param pc The pool's copies.
  * @param base The pool's guest address.
- * @param n_rec The pool's record count.
+ * @param len The pool's size in bytes.
  * @param stride The record size in bytes.
- * @param live_off The offset of the liveness word in a record.
- * @param live_mask The mask applied to the liveness word. */
+ * @param live The pool's record liveness predicate. */
 static void pool_capture(cut_held_sets_t* h, pool_copies_t* pc, uint32_t base,
-                         uint32_t n_rec, uint32_t stride, uint32_t live_off, uint32_t live_mask) {
-    const uint8_t* src = (const uint8_t*)openpete_psx_to_host_span(base, n_rec * stride);
+                         uint32_t len, uint32_t stride, pool_live_fn live) {
+    const uint8_t* src = (const uint8_t*)openpete_psx_to_host_span(base, len);
     if (!src) return;
     cut_held_sets_capture(h);
-    memcpy(pc->cur, src, n_rec * stride);
+    memcpy(pc->cur, src, len);
+    pc->base = base;
     pc->n = 0;
-    for (uint32_t i = 0; i < n_rec; i++) {
-        uint32_t w;
-        memcpy(&w, pc->cur + i * stride + live_off, 4);
-        if ((int32_t)(w & live_mask) > 0) pc->n++;
+    for (uint32_t off = 0; off + stride <= len; off += stride) {
+        const int v = live(pc->cur + off);
+        if (v < 0) break;
+        pc->n += v;
     }
 }
 
@@ -2186,7 +2238,8 @@ static void pool_capture(cut_held_sets_t* h, pool_copies_t* pc, uint32_t base,
  *
  * Outside a hold, hook_reextract_ready. On a hold, cut_held_sets_enter picks
  * tick N-1's copy, which is staged through the sub-tick view so the build
- * reads it in place of tick N's records; a refused staging feeds nothing.
+ * reads it in place of tick N's records; a refused staging, or a copy taken
+ * from another guest address than base, feeds nothing.
  * @param h The pool's held sets.
  * @param pc The pool's copies.
  * @param path The pool's render path.
@@ -2201,7 +2254,7 @@ static int pool_feed_ready(cut_held_sets_t* h, pool_copies_t* pc, render_path_t 
     int ok = hook_reextract_ready_held(path, pick);
     *held = pick >= 0;
     if (ok && pick >= 0) {
-        uint8_t* st = (uint8_t*)openpete_subtick_view_stage(base, len);
+        uint8_t* st = pc->base == base ? (uint8_t*)openpete_subtick_view_stage(base, len) : NULL;
         if (st) memcpy(st, pc->cur, len);
         else ok = 0;
     }
@@ -2217,8 +2270,10 @@ static void (*s_particle_realfn)(CPUState*);
 static void particle_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; s_particle_realfn(cpu); }
 /** @brief Stashes the g_Particles pool pointer before the guest particle renderer runs.
  *
- * g_Particles is a pointer the game swaps between two buffers, so the pool
- * the .s walks is read here and later walks use s_part_pool.
+ * g_Particles points at one pool the level loader sets per level and the
+ * allocator (func_80053570, func_80053608) works in place; the address the
+ * .s walks is read here, and the native walks and the held-cut copy use
+ * s_part_pool.
  * @param cpu The guest CPU state.
  * @param feed Unused.
  * @param verify Unused. */
@@ -2308,8 +2363,15 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
  *
  * @param cpu The guest CPU state.
  * @param addr The hooked address (unused).
+ * A taken call then copies the g_Particles pool for a held camera cut
+ * (pool_capture).
  * @return The on_particle_renderer verdict. */
-static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", RP_PARTICLES, 1); }
+static int on_800573C8_particles(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    const int took = on_particle_renderer(cpu, func_800573C8, "particles", RP_PARTICLES, 1);
+    if (took) pool_capture(&s_part_held, &s_part_pc, s_part_pool, PART_POOL_BYTES, 0x20u, part_rec_live);
+    return took;
+}
 /** @brief Dispatch hook for func_800580F4, the glow renderer.
  *
  * A taken call then copies the glow pool for a held camera cut (pool_capture).
@@ -2319,7 +2381,7 @@ static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; ret
 static int on_800580F4_glows(CPUState* cpu, uint32_t addr) {
     (void)addr;
     const int took = on_particle_renderer(cpu, func_800580F4, "glows", RP_GLOW, 0);
-    if (took) pool_capture(&s_glow_held, &s_glow_pc, D_GLOWS, 16u, 0x24u, 0x00u, 0xFFFFFFFFu);
+    if (took) pool_capture(&s_glow_held, &s_glow_pc, D_GLOWS, GLOW_POOL_BYTES, 0x24u, glow_rec_live);
     return took;
 }
 /** @brief Dispatch hook for func_800584C4, the sparkle renderer.
@@ -2331,7 +2393,7 @@ static int on_800580F4_glows(CPUState* cpu, uint32_t addr) {
 static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr) {
     (void)addr;
     const int took = on_particle_renderer(cpu, func_800584C4, "sparkles", RP_SPARKLE, 0);
-    if (took) pool_capture(&s_spark_held, &s_spark_pc, G_SPARKLES, 8u, 0x18u, 0x0Cu, 0xFFu);
+    if (took) pool_capture(&s_spark_held, &s_spark_pc, G_SPARKLES, SPARK_POOL_BYTES, 0x18u, spark_rec_live);
     return took;
 }
 
@@ -2362,8 +2424,9 @@ static const hook_bracket_desc k_dragonstar_bracket = {
  * Brackets dragonstar_run_draw without --render-paths isolation. Notes the
  * call in the path census as the star, captures the polybuf range when the
  * feed or verify gate is on, and after the feed marks RP_PARTICLES drawn
- * when the star emitted triangles. In verify mode dumps the prims once from
- * verify_frame on and runs dragonstar_compare up to 2000 times.
+ * when the star emitted triangles, then copies the record for a held camera
+ * cut (pool_capture). In verify mode dumps the prims once from verify_frame
+ * on and runs dragonstar_compare up to 2000 times.
  * @param cpu The guest CPU state.
  * @param addr The hooked address.
  * @return 0 when the bracket declines, 1 after the renderer ran here. */
@@ -2378,6 +2441,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
         dragonstar_feed_native(cpu);
         if (s_dstri_n > 0) render_path_mark_drawn(RP_PARTICLES);
     }
+    pool_capture(&s_star_held, &s_star_pc, D_DRAGONSTAR, STAR_REC_BYTES, STAR_REC_BYTES, star_rec_live);
 
     if (verify && endp > startp && openpete_frame >= verify_frame()) {
         static int s_dumped = 0;
@@ -2400,28 +2464,31 @@ void particle_reextract(CPUState* cpu, int hold) {
      * cyclorama), and a dragon-rescue cutscene keeps rendering particles while
      * the glow and sparkle renderers are never called, leaving Sparx's glow
      * active in its pool but absent from every canonical present. */
-    const int part = render_path_enabled(RP_PARTICLES) && render_path_canon_drawn(RP_PARTICLES);
-    int glow_held = 0, spar_held = 0;
+    int part_held = 0, glow_held = 0, spar_held = 0, star_held = 0;
+    const int part = pool_feed_ready(&s_part_held, &s_part_pc, RP_PARTICLES,
+                                     s_part_pool, PART_POOL_BYTES, hold, &part_held);
     const int glow = pool_feed_ready(&s_glow_held, &s_glow_pc, RP_GLOW,
                                      D_GLOWS, GLOW_POOL_BYTES, hold, &glow_held);
     const int spar = pool_feed_ready(&s_spark_held, &s_spark_pc, RP_SPARKLE,
                                      G_SPARKLES, SPARK_POOL_BYTES, hold, &spar_held);
-    if (!part && !glow && !spar) return;
+    const int star = pool_feed_ready(&s_star_held, &s_star_pc, RP_PARTICLES,
+                                     D_DRAGONSTAR, STAR_REC_BYTES, hold, &star_held);
+    if (!part && !glow && !spar && !star) return;
     /* Channel-phase interp on for the re-extract feeds only (every present when
      * the sub-tick spine is active - canonical-lag leg + intermediates); reset
      * so the canonical inline hook feeds stay integer/byte-exact for the A/Bs.
      * Covers particle spin/size/extents + line far endpoints + sparkle
      * life/spin (see the s_phase_now block). */
     const op_time_t now = openpete_interp_present_now();
-    s_phase_now = now;
-    if (part) particle_feed_native(cpu);
     /* A staged held copy is tick N-1's pool as that tick drew it: no phase lerp. */
+    s_phase_now = part_held ? 0 : now;
+    if (part) particle_feed_native(cpu);
     s_phase_now = glow_held ? 0 : now;
     if (glow) glow_feed_native(cpu);
     s_phase_now = spar_held ? 0 : now;
     if (spar) sparkle_feed_native(cpu);
     s_phase_now = 0;
-    if (part) dragonstar_feed_native(cpu);   /* self-gates on the D_80076248 active flag; shares RP_PARTICLES */
+    if (star) dragonstar_feed_native(cpu);   /* self-gates on the record's +0x00 gate word */
 }
 
 static const feature_dispatch_entry_t particle_dispatch[] = {
