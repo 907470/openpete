@@ -150,6 +150,9 @@ scripts/golden-fleet.py run --all --all-tiers --wait        # every unit: 4
 scripts/golden-fleet.py run --all --hosts local,box2 --wait
 scripts/golden-fleet.py run --all --no-local --wait         # keep the dev box free
 scripts/golden-fleet.py run --game spyro-2 --pull all --wait
+scripts/golden-fleet.py run --all --expect moves.txt        # tag streamed moves against predictions
+scripts/golden-fleet.py stop <run-id> --unit spyro-3-presentation
+scripts/golden-fleet.py stop <run-id>                       # every running and pending unit
 ```
 
 | Flag | Meaning |
@@ -160,6 +163,7 @@ scripts/golden-fleet.py run --game spyro-2 --pull all --wait
 | `--no-local` | Leave the local host out. Exclusive with `--hosts`. |
 | `--pull divergent\|all` | `divergent` (default): the report files, divergent tiles and identity pairs; `all`: the whole candidate directory. |
 | `--wait` | Follow the detached coordinator and exit with its code. |
+| `--expect FILE` | Expected-moves file (Streamed divergences); a line naming a unit not in the run, or a substring matching nothing, refuses the run with exit 2 before it detaches. |
 
 `run` detaches the coordinator (`setsid`) and prints its log and done
 marker, `<local fleet_root>/runs/<run-id>/coordinator.log` and `done`.
@@ -225,7 +229,9 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    (the supervisor's session by PID and start time, its containers by the
    label `org.openpete.fleet=<run-id>`) and re-queued, at most 2 attempts;
    a host unreachable for 10 min is dropped. A re-queued attempt on the same
-   host resumes at row level (Row resume, below).
+   host resumes at row level (Row resume, below). Every poll also reads the
+   attempt's streamed row verdicts, pulls new divergences and renders their
+   heat diffs, and acts on a `stop` request (Streamed divergences, below).
 7. Canary. With two or more capture hosts, every host first captures one
    bk2 and one freecam level of the first unit's game. A canary tile whose
    verdict digest differs between hosts fails the run.
@@ -233,7 +239,8 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    `check_presentation_golden.sh --verdict-only <candidate> --game G` in
    the image. The coordinator prints the report's census,
    `census captured=C imported=I (R rows) compared=K of N`, and the summary
-   repeats it beside each unit's verdict.
+   repeats it beside each unit's verdict. The accepted attempt's stream is
+   checked against the report (unit-end check).
 9. Pull. `verdict-report.txt`, `capture-record.txt`,
    `capture-device.txt`, `credits-verdict.txt` (presentation tier), the
    verdict logs, the divergent tiles and both members of each identity pair
@@ -249,8 +256,8 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
     store with `tests/harness/presentation-corpus-diff.py --expect-subset`
     into `<candidate>/diff`.
 11. Teardown. `runs/<run-id>/` is deleted on every host on every exit
-    path; the local run directory keeps `coordinator.log`, `done` and
-    `active.lock`. A host unreachable at teardown keeps its directory for
+    path; the local run directory keeps `coordinator.log`, `done`,
+    `active.lock`, `stream.log`, `expect.txt` and `stop-request`. A host unreachable at teardown keeps its directory for
     `clean`.
 
 ## Row resume
@@ -302,6 +309,110 @@ partial and a tampered row, another run id, binary, tree, LOD set,
 manifest line and filter, an interrupted import, concurrent legs, and
 resume off.
 
+## Streamed divergences
+
+A unit's capture streams each row's verdict while it runs, so a divergence
+reaches the dev box minutes into a unit instead of at its end. The
+supervisor sets `OPENPETE_STREAM_FILE=<u-job>/attempt-N.stream` for a unit
+(never for a canary, a calibration leg, a bless or a plain local gate);
+`scripts/golden-capture-container.sh` passes it into the image. When the
+last leg of a row finishes, `scripts/corpus-resume.sh` classifies the row's
+tiles outside the row lock with `tests/harness/presentation-stream.py`,
+which calls the end verdict's own functions (`classify_tiles` of
+`presentation-corpus-diff.py`, `classify_pair` of
+`presentation-ident-check.py`), and appends one line per tile:
+
+```
+SAME    <tile> <blessed digest>                     <host epoch>
+DIVERGE <tile> <blessed digest>-><candidate digest> <host epoch>
+EXTRA   <tile> -><candidate digest>                 <host epoch>
+IDENT   <tile> pixels=<n>/<baseline>                <host epoch>
+EXCEED  <tile> pixels=<n>/<baseline>                <host epoch>
+CREDITS rc=<N> <host epoch>
+END     <host epoch>
+```
+
+Digests are the first 16 hex digits of the verdict digest. EXCEED also
+covers an identity tile without its canon twin (`pixels=nocanon/<b>`). The
+credits leg appends `CREDITS`; a tier without the leg has none, which
+stands for credits-rc 64. A re-queued attempt classifies the rows it
+imports again and appends their lines tagged `imported` (the credits leg
+included). The capture's verdict appends `END`: the capture reached its
+verdict, so every row's lines are in the stream. The end verdict's image
+comparison is unchanged.
+
+Each poll runs `POLL_SCRIPT <attempt base> <offset>`, which returns the
+done marker first and then the stream's new bytes from the offset, in
+framed sections; a kill reads them once more before `KILL_SCRIPT`. The
+coordinator appends each complete line to `<local run dir>/stream.log` as
+`<unit> <host> <attempt> <receipt epoch> <line> [EXPECTED|UNEXPECTED]`,
+after one `# skew <host> <seconds> bound <seconds>` line per remote host
+(the host clock minus this machine's, measured at run start). A DIVERGE,
+EXTRA or EXCEED line is printed in the coordinator log with its latency
+(receipt minus the host epoch, skew removed). Per poll, at most 20
+divergent tiles and identity pairs (both members) are pulled in one rsync
+into `build/fleet-stream/<run-id>/<unit>/`, outside every candidate
+directory, and their heat diffs are rendered into its `diff/` against the
+local store (a divergent tile) or canon against ident (an identity pair);
+the rest wait for the next poll in stream order. A pull or render failure
+is logged and changes no result. `clean` removes the directory with its run.
+
+Unit-end check. When the accepted attempt's stream holds `END`, its lines
+must satisfy SAME + DIVERGE = the report's `compared`, and its DIVERGE,
+EXTRA and EXCEED tiles and CREDITS rc must equal the report's `divergent`,
+`extra`, `identity-exceed`/`identity-nocanon` and `credits-rc`. A mismatch
+sets the unit's rc to 1 and prints `stream mismatch: ...` beside the
+report's own status. Stopped and SKIP units and an attempt without `END`
+(a capture that timed out or failed before its verdict) are exempt.
+`OPENPETE_FLEET_POKE` changes a tile after the stream classified it, so a
+poked unit also reports a stream mismatch.
+
+### Stop
+
+`scripts/golden-fleet.py stop <run-id> [--unit <job>]` writes
+`<local run dir>/stop-request` atomically (`unit=<job>` per named unit,
+`all` without `--unit`); it is refused (exit 1) once the run's `done`
+exists, and with exit 2 for an unknown run. The coordinator reads the
+request once per loop iteration. A named running or pending job gets its
+result (rc 1, `stopped by user`, no ledger row) before `KILL_SCRIPT`, so
+it is not re-queued; a job whose done marker was read first keeps its
+result. A stopped unit's `build/fleet-stream/<run-id>/<unit>/` gets a
+`STOPPED` marker. A run with a stopped job is FAIL, `reason=stopped by
+user` in `done`; the local golden lock is released when the coordinator
+exits. A stopped run is not resumed.
+
+### Expected moves
+
+`run --expect FILE` reads one line per expectation, `#` comments allowed:
+
+```
+<unit> <tile substring> <reason>
+spyro-1-presentation cliff-town-vista__lodext__ far-band LOD change
+```
+
+`<unit>` is the job name (`<game>-<tier>`); the substring is matched
+against tile names and manifest row names, so a row name covers the row's
+`__ident__` tiles. The file is copied into the local run directory before
+the coordinator detaches and only the copy is read. Each line's match count
+is printed at start. A streamed DIVERGE, EXTRA or EXCEED tile is EXPECTED
+when an expectation of its unit matches it, else UNEXPECTED (the tag in
+`stream.log`). At the end each expectation is `moved` (a matching tile
+moved), EXPECTED-NOT-MOVED (every matching tile streamed and none moved)
+or NOT-REACHED (a matching tile never streamed: a timed-out row, a stopped
+or SKIP unit). The summary counts EXPECTED, UNEXPECTED and
+EXPECTED-NOT-MOVED tiles over each unit's accepted attempt (imported lines
+included; a killed attempt's lines are tagged for display only). The tags
+and counts change no exit code and take no part in the unit-end check.
+
+`tests/harness/check_fleet_stream.sh` checks the stream on synthetic tiles
+(the line per verb against the end verdict's own scripts, the row poke,
+stream without stamps, off, a resumed attempt against the uninterrupted
+one) and runs `tests/harness/fleet-stream-check.py`, which places fake
+supervisors on this machine through the coordinator: poll framing, the
+unit-end check and its refusals under `OPENPETE_STREAM_DROP`, a kill in the
+last poll interval and the re-queued attempt, the exemptions, `stop`
+(running, pending, local, racing completion) and expected moves.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -309,7 +420,7 @@ resume off.
 | 0 | PASS: every unit passed. |
 | 1 | FAIL: a unit diverged or failed, a pull or report check refused, the canary differed, or the run failed (torn sync, build, transfer). |
 | 64 | SKIP: no usable host, no host file, no local engine or image, a stale image recipe, a missing disc, or a unit whose capture skipped. |
-| 2 | Usage error (argparse, `clean --all --tree`, `add <name>` without `--ssh`, a malformed `OPENPETE_FLEET_POKE`). |
+| 2 | Usage error (argparse, `clean --all --tree`, `add <name>` without `--ssh`, a malformed `OPENPETE_FLEET_POKE` or `OPENPETE_FLEET_ROW_POKE`, an expected-moves file naming a unit not in the run or a substring matching nothing, `stop` of an unknown run). |
 
 A run's code is the worst unit's in the order 1 > 64 > 0: one SKIP unit
 makes the run non-PASS. The summary prints each unit's verdict beside its
@@ -331,8 +442,11 @@ host, attempt and wall time.
     active.lock          held shared by the coordinator and supervisors
     ship/                supervise.sh, fields-<game>.txt, binaries.sha256
     tree/                the snapshot units run in
+    stream.log           local host only: received stream lines
+    expect.txt           local host only: the run's copy of --expect FILE
+    stop-request         local host only: written by `stop`
     u-<job>/             attempt-N.pid, attempt-N.done, attempt-N.memavail,
-                         capture.log, verdict.log, store/, cand/
+                         attempt-N.stream, capture.log, verdict.log, store/, cand/
                          (cand/resume/: row stamps, imported.tsv)
                          (calibration legs: u-calib-<host>-s<slots>-<n>/)
     helpers.tsv          dbus-daemon helpers started during a job
@@ -351,7 +465,8 @@ one and named by no other tag. `--tree PATH` removes only this
 coordinator's trees of PATH. `--all` removes `runs/`, `trees/`, the lock
 and image records, every fleet-labelled container and the `:fleet` tag
 (the image itself only when no other tag names it), and `fleet_root` when
-nothing else is in it.
+nothing else is in it. On the local host `clean` also removes the
+checkout's `build/fleet-stream/<run-id>/` whose run directory is gone.
 
 ## Promote stays local
 
@@ -378,14 +493,18 @@ A full re-bless (`--bless`) also runs on the dev box.
 | `LP_NUM_THREADS` | Pins llvmpipe threads per capture on every host; default `ceil(cores / slots)` per host. |
 | `OPENPETE_FLEET_AFTER_SYNC` | Test only: a shell command run in the checkout between the syncs and the recheck (negative control for the torn-sync recheck). |
 | `OPENPETE_FLEET_POKE` | Test only: `<host>:<job\|unit\|canary>:<tile substring>` flips one pixel of the first matching candidate tile on that host before its verdict (negative control for the verdict and canary). |
+| `OPENPETE_FLEET_ROW_POKE` | Test only: `<host>:<job\|unit>:<tile substring>` changes pixel (0,0) of each matching tile of that host's unit when its leg finishes, before the leg hashes it (`OPENPETE_STREAM_POKE` in the image), so the row streams DIVERGE and the report agrees. |
+| `OPENPETE_STREAM_DROP` | Test only: a tile name; the coordinator discards the first stream line naming it (negative control for the unit-end check). |
+| `OPENPETE_FLEET_STREAM` | Test only: `0` runs every unit without the stream and its unit-end check (the wall-time baseline of the stream's cost). |
 | `OPENPETE_FLEET_DEADLINE_S` | Test only: seconds; replaces the deadline of every unit's and canary's first attempt, so the attempt is killed and re-queued (row resume check). |
 | `OPENPETE_FLEET_CANARY_ONLY` | Test only: `1` runs only the canaries, one per host even on one host, pulls each canary's tiles, report, record, device and credits files into `<candidate directory>/canary-<host>`, and exits with the worst canary's code. |
 
 The supervisor sets `CORPUS_JOBS`, `PRESENTATION_LEG_TIMEOUT`,
 `PRESENTATION_TIER`, `OPENPETE_FLEET_ROOT`, `OPENPETE_GOLDEN_LOCK_HELD`,
 `OPENPETE_CAPTURE_LABEL`, `OPENPETE_CAPTURE_MOUNT_AS`,
-`OPENPETE_CAPTURE_FIELDS`, `OPENPETE_CAPTURE_BINARIES` and
-`OPENPETE_RESUME_RUN` itself; a value
+`OPENPETE_CAPTURE_FIELDS`, `OPENPETE_CAPTURE_BINARIES`,
+`OPENPETE_RESUME_RUN`, `OPENPETE_STREAM_FILE` and `OPENPETE_STREAM_POKE`
+itself; a value
 set by hand does not reach a unit.
 
 ## Troubleshooting
@@ -406,4 +525,6 @@ set by hand does not reach a unit.
 | `synced <file> hashes to ..., blessed header disc-... is ...` | The disc image differs from the one the golden was blessed on. |
 | `canary: REFUSED: N of M tile(s) differ between ...` | The hosts render differently; take the named host out (`enabled = false`) until the difference is explained. |
 | `REFUSED: blessed-sha256 ... differs from the local blessed.tsv` | The host decided against another manifest; the checkout changed after the sync. |
+| `stream mismatch: ...` | The accepted attempt's stream and its verdict report disagree (the message names the counts and the first tiles that differ); a row that finished without its compare (`[stream] FAIL: no line for ...` in `capture.log`), or a tile changed after its row streamed. |
+| `expected-moves file refused: line N: ...` | Fix the unit (a job name of this run) or the substring (it matches no blessed tile and no manifest row). |
 | `<dir> kept for clean (host unreachable)` | Run `clean --hosts <host>` once it is reachable. |

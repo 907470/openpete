@@ -10,6 +10,8 @@
     golden-fleet.py calibrate [--hosts a,b] [--dry-run]
     golden-fleet.py run [--game G | --all] [--tier T | --all-tiers]
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
+                    [--expect FILE]
+    golden-fleet.py stop <run-id> [--unit U]
     golden-fleet.py clean [--hosts a,b] [--tree PATH | --all]
 
 Host file. $OPENPETE_FLEET_HOSTS, else `${XDG_CONFIG_HOME:-~/.config}/
@@ -145,7 +147,26 @@ coordinator:
      imported and compared tiles), and renders heat diffs locally
      (presentation-corpus-diff.py --expect-subset);
   7. deletes runs/<run-id>/ on every host on every exit path (the local
-     directory keeps its log and done marker).
+     directory keeps its log, done marker, stream.log, expect.txt and
+     stop-request).
+Stream: a unit's supervisor sets OPENPETE_STREAM_FILE=<attempt base>.stream;
+each finished row appends one SAME|DIVERGE|EXTRA|IDENT|EXCEED line per tile
+(classified by the end verdict's functions), the credits leg `CREDITS rc=N`,
+imported rows their lines tagged `imported`, and the capture's verdict `END`.
+Each poll returns the done marker, then the stream's new bytes from the
+attempt's offset (POLL_SCRIPT); complete lines go to <local run
+dir>/stream.log tagged with unit, host, attempt and receipt time; at most
+STREAM_K divergent tiles and identity pairs per poll are pulled into
+build/fleet-stream/<run-id>/<unit>/ and their heat diffs rendered. At unit
+end, when the accepted attempt's stream holds END, SAME + DIVERGE must equal
+the report's compared count and the DIVERGE, EXTRA, EXCEED and CREDITS sets
+the report's; a mismatch sets the unit's rc to 1 (`stream mismatch`).
+Stopped and SKIP units and attempts without END are exempt.
+--expect FILE: `<unit> <substring> <reason>` lines (unit = job name); a
+unit not in the run or a substring matching no blessed tile and no manifest
+row refuses the run (2). Streamed moves are tagged EXPECTED or UNEXPECTED;
+each expectation ends moved, EXPECTED-NOT-MOVED or NOT-REACHED; the counts
+change no exit code.
 Exit (and done marker rc): the worst unit in the order 1 > 64 > 0.
 Negative-control knobs: OPENPETE_FLEET_AFTER_SYNC=<shell command> runs in
 the checkout between the syncs and the recheck; OPENPETE_FLEET_POKE=
@@ -155,7 +176,18 @@ OPENPETE_FLEET_DEADLINE_S=<seconds> replaces the deadline of every unit's
 and canary's first attempt; OPENPETE_FLEET_CANARY_ONLY=1 runs only the
 canaries, one per host even on one host, pulls each canary's tiles and
 report into <candidate directory>/canary-<host>, and exits with the worst
-canary's code.
+canary's code. OPENPETE_FLEET_ROW_POKE=<host>:<job|unit>:<tile substring>
+changes the matching tiles of that unit as their leg finishes, before the
+leg hashes them, so the row streams DIVERGE; OPENPETE_STREAM_DROP=<tile>
+discards the first stream line naming the tile (unit-end check control);
+OPENPETE_FLEET_STREAM=0 runs units without the stream (wall-time baseline).
+
+stop: writes <local run dir>/stop-request (`unit=<job>`, or `all` without
+--unit) atomically; refused (1) once the run's done marker exists. The
+coordinator reads it once per loop iteration: a named running or pending
+job gets rc 1, `stopped by user`, no ledger row, before its kill, so it is
+not re-queued; a job whose done marker was read first keeps its result.
+The run is FAIL with reason=stopped by user.
 
 clean: per host, under its golden lock (a busy host is skipped): removes
 runs/ directories no process holds (active.lock) and with no done marker
@@ -167,7 +199,9 @@ other than the current :fleet one and named by no other tag. --tree PATH
 removes only this coordinator's trees of PATH. --all removes runs/, trees/,
 the lock and image records, every fleet-labelled container and the :fleet
 tag (the image itself only when no other tag names it), and fleet_root
-itself when nothing else is in it.
+itself when nothing else is in it. On the local host it also removes the
+checkout's build/fleet-stream/<run-id>/ directories whose run directory is
+gone.
 """
 
 import argparse
@@ -225,7 +259,12 @@ GRACE_S = 600
 MAX_ATTEMPTS = 2
 TREE_MAX_AGE_S = 14 * 86400
 # Files of the coordinator's local run directory that outlive the run.
-RUN_KEEP = ("coordinator.log", "done", "active.lock")
+RUN_KEEP = ("coordinator.log", "done", "active.lock", "stream.log", "expect.txt", "stop-request")
+STREAM_K = 20                 # divergent tiles and identity pairs pulled per poll per unit
+STREAM_DIR = os.path.join("build", "fleet-stream")
+TILE_VERBS = ("SAME", "DIVERGE", "EXTRA", "IDENT", "EXCEED")
+MOVED_VERBS = ("DIVERGE", "EXTRA", "EXCEED")
+STOP_STATUS = "stopped by user"
 
 HOST_KEYS = {
     "transport": str, "ssh": str, "fleet_root": str, "engine": str,
@@ -445,17 +484,18 @@ class Host:
             return ["bash", "-c", remote_cmd]
         return ["ssh", *SSH_OPTS, self.cfg["ssh"], remote_cmd]
 
-    def run_script(self, script, args=(), timeout=120, check=False):
-        """Run a bash script on the host via `bash -s`, script on stdin."""
+    def run_script(self, script, args=(), timeout=120, check=False, binary=False):
+        """Run a bash script on the host via `bash -s`, script on stdin; binary keeps stdout as bytes."""
         cmd = "bash -s -- " + " ".join(shlex.quote(str(a)) for a in args)
         try:
-            cp = subprocess.run(self.argv(cmd), input=script, capture_output=True,
-                                text=True, timeout=timeout)
+            cp = subprocess.run(self.argv(cmd), input=script.encode() if binary else script,
+                                capture_output=True, text=not binary, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise FleetError(f"{self.name}: script timed out after {timeout} s")
         if check and cp.returncode != 0:
+            err = cp.stderr.decode(errors="replace") if binary else cp.stderr
             raise FleetError(f"{self.name}: script exited {cp.returncode}: "
-                             f"{cp.stderr.strip()[-400:]}")
+                             f"{err.strip()[-400:]}")
         return cp
 
     def stream_command(self, argv):
@@ -1223,7 +1263,20 @@ def cmd_clean(a):
     for h in sel:
         rc = clean_host(h, mode, a.tree)
         worst = max(worst, 1 if rc not in (0, 3, EXIT_SKIP) else 0)
+        if h.local and mode != "tree":
+            clean_stream_dirs(script_repo(), expand_root(h.fleet_root))
     return worst
+
+
+def clean_stream_dirs(tree, root):
+    """Remove the checkout's build/fleet-stream/<run id> directories whose local run directory is gone."""
+    base = os.path.join(tree, STREAM_DIR)
+    if not os.path.isdir(base):
+        return
+    for run_id in sorted(os.listdir(base)):
+        if not os.path.isdir(os.path.join(root, "runs", run_id)):
+            shutil.rmtree(os.path.join(base, run_id), ignore_errors=True)
+            print(f"[fleet] local: removed {os.path.join(STREAM_DIR, run_id)}")
 
 
 # ---- run: host-side scripts -------------------------------------------------
@@ -1308,6 +1361,10 @@ unit|canary)
     # Row resume: an attempt after an interrupted one in the same unit
     # directory imports the rows the earlier attempt stamped.
     [ "$RESUME" = 1 ] && export OPENPETE_RESUME_RUN="$RUN_ID"
+    # Streamed verdict lines: each finished row's tiles, into the attempt's
+    # own file, which the coordinator reads by offset at every poll.
+    [ "${STREAM:-0}" = 1 ] && export OPENPETE_STREAM_FILE="$ATTEMPT_BASE.stream"
+    [ -n "${STREAM_POKE:-}" ] && export OPENPETE_STREAM_POKE="$STREAM_POKE"
     nice -n "$NICE" tests/harness/check_presentation_golden.sh --game "$GAME" $FILTERS >"$UNIT_DIR/capture.log" 2>&1
     crc=$?
     echo "capture-rc=$crc" >>"$UNIT_DIR/capture.log"
@@ -1326,6 +1383,7 @@ im.save(fs[0])
 print("poked", fs[0])' "$cand" "$POKE" >>"$UNIT_DIR/capture.log" 2>&1 || finish 1 poke-failed
     fi
     [ "$KIND" = canary ] && finish "$crc" canary-captured
+    unset OPENPETE_STREAM_FILE OPENPETE_STREAM_POKE
     nice -n "$NICE" tests/harness/check_presentation_golden.sh --verdict-only "$cand" --game "$GAME" \
         >"$UNIT_DIR/verdict.log" 2>&1
     vrc=$?
@@ -1365,19 +1423,32 @@ else
 fi
 '''
 
-# Report each attempt's state: `<base> done <k=v ...>`, `running`, `dead`
-# (PID gone or reused) or `starting` (no PID file yet). args: attempt bases.
+# Report each attempt's state and the new bytes of its stream file, in two
+# framed sections per attempt: `state <base> done <k=v ...>`, `running`,
+# `dead` (PID gone or reused) or `starting` (no PID file yet); then
+# `stream <base> <n>` followed by the n bytes of <base>.stream from the
+# offset. The done marker is read before the stream's size, so a done
+# attempt's bytes hold every line it wrote. args: <attempt base> <offset> pairs.
 POLL_SCRIPT = SH_STARTTIME + r'''
 set -u
-for b in "$@"; do
-    if [ -f "$b.done" ]; then echo "$b done $(tr '\n' ' ' <"$b.done")"; continue; fi
-    if [ -f "$b.pid" ]; then
+while [ $# -ge 2 ]; do
+    b="$1"; off="$2"; shift 2
+    if [ -f "$b.done" ]; then
+        st="done $(tr '\n' ' ' <"$b.done")"
+    elif [ -f "$b.pid" ]; then
         read -r pid start <"$b.pid"
-        if [ "$(starttime "$pid")" = "$start" ]; then echo "$b running"; else echo "$b dead"; fi
+        if [ "$(starttime "$pid")" = "$start" ]; then st=running; else st=dead; fi
     else
-        echo "$b starting"
+        st=starting
     fi
+    echo "state $b $st"
+    n=0
+    [ -f "$b.stream" ] && n=$(( $(stat -c %s "$b.stream") - off ))
+    [ "$n" -gt 0 ] || n=0
+    echo "stream $b $n"
+    [ "$n" -gt 0 ] && tail -c +"$((off + 1))" "$b.stream" | head -c "$n"
 done
+exit 0
 '''
 
 # Stop an attempt: every process of its supervisor's session (the supervisor
@@ -1795,6 +1866,8 @@ class Job:
         self.slots, self.label = slots, label
         self.attempts = 0
         self.result = None
+        self.atts = {}
+        self.stopped = False
 
     @property
     def unit(self):
@@ -1823,6 +1896,11 @@ class Attempt:
         self.t0 = time.monotonic()
         self.deadline = self.t0 + deadline_s
         self.lost_since = None
+        self.stream_off = 0       # bytes of <base>.stream read so far
+        self.stream_tail = b""    # a line not yet complete at the last read
+        self.lines = []           # parsed stream records, in receipt order
+        self.backlog = []         # DIVERGE and EXCEED records not yet pulled
+        job.atts[self.n] = self
 
     @property
     def unit_dir(self):
@@ -1863,6 +1941,8 @@ class Coordinator:
 
     # A re-queued attempt imports the rows its predecessor stamped.
     resume = True
+    # A unit's capture streams its rows' verdict lines.
+    stream = True
 
     def __init__(self, a, run_id, local_run_dir):
         """Bind the arguments and the run's identity."""
@@ -1879,17 +1959,30 @@ class Coordinator:
         self.jobs = []
         self.rc_notes = []
         self.poke = self.parse_poke(os.environ.get("OPENPETE_FLEET_POKE", ""))
+        self.row_poke = self.parse_poke(os.environ.get("OPENPETE_FLEET_ROW_POKE", ""))
+        self.stream_drop = os.environ.get("OPENPETE_STREAM_DROP", "")
+        if os.environ.get("OPENPETE_FLEET_STREAM", "") == "0":
+            self.stream = False
+        self.stream_log = os.path.join(local_run_dir, "stream.log")
+        self.skew = {}
+        self.done_reason = ""
+        self.stop_path = os.path.join(local_run_dir, "stop-request")
+        self.stop_noted = set()
+        self.expect = []
+        self.diffmod = None
+        self.archive = None
+        self.rows_cache = {}
         self.first_deadline = self.parse_first_deadline(os.environ.get("OPENPETE_FLEET_DEADLINE_S", ""))
         self.canary_only = os.environ.get("OPENPETE_FLEET_CANARY_ONLY", "") == "1"
 
     @staticmethod
     def parse_poke(spec):
-        """Parse OPENPETE_FLEET_POKE=<host>:<job>:<tile substring> (a negative-control knob)."""
+        """Parse a poke knob's <host>:<job>:<tile substring> (OPENPETE_FLEET_POKE, OPENPETE_FLEET_ROW_POKE)."""
         if not spec:
             return None
         parts = spec.split(":", 2)
         if len(parts) != 3:
-            raise FleetError(f"OPENPETE_FLEET_POKE={spec}: expected <host>:<job>:<tile>", 2)
+            raise FleetError(f"poke {spec}: expected <host>:<job>:<tile>", 2)
         return tuple(parts)
 
     @staticmethod
@@ -2208,20 +2301,27 @@ class Coordinator:
         slots = self.job_slots(job, hs)
         canary = CANARY.get(game, ("", "")) if job.kind == "canary" else None
         filters = f"--filter={canary[0]} --freecam-filter={canary[1]}" if canary else ""
-        poke = ""
-        if self.poke and self.poke[0] == hs.name and self.poke[1] in (job.name, job.kind):
-            poke = self.poke[2]
+        poke = self.poke_for(self.poke, job, hs)
         env = {"RUN_ID": self.run_id, "JOB": job.name, "KIND": job.kind, "GAME": game,
                "TIER": tier, "RUN_DIR": hs.run_dir, "UNIT_DIR": att.unit_dir,
                "ATTEMPT": att.n, "ATTEMPT_BASE": att.base, "FLEET_ROOT": hs.root,
                "LOCK_MODE": "held" if hs.host.local else "take", "IMAGE": IMAGE_TAG,
                "MOUNT_AS": self.tree, "ENGINE": hs.engine, "NICE": hs.nice,
                "SLOTS": slots, "LEG_TIMEOUT": self.leg_timeout_s(job, hs), "FILTERS": filters,
-               "POKE": poke, "RESUME": int(self.resume), "BINARIES": " ".join(
+               "POKE": poke, "RESUME": int(self.resume),
+               "STREAM": int(self.stream and job.kind == "unit"),
+               "STREAM_POKE": self.poke_for(self.row_poke, job, hs), "BINARIES": " ".join(
                    f"{BUILD_TREE}/games/{g}/openpete-{g.replace('-', '')}" for g in GAMES),
                "TARGETS": " ".join(GAME_TARGETS),
                "PIN_LP_NUM_THREADS": lp_threads(hs.info, slots)}
         return [f"{k}={v}" for k, v in env.items()]
+
+    @staticmethod
+    def poke_for(poke, job, hs):
+        """Return a parsed poke's tile substring when it names this host and job, else ''."""
+        if poke and poke[0] == hs.name and poke[1] in (job.name, job.kind):
+            return poke[2]
+        return ""
 
     def launch(self, job, hs, deadline_s):
         """Start one attempt of a job on a host through its detached supervisor."""
@@ -2259,6 +2359,7 @@ class Coordinator:
         pending = list(jobs)
         deadline = deadline or self.deadline
         while True:
+            self.apply_stop(pending)
             self.place(pending, deadline)
             running = [hs for hs in self.hosts if hs.current]
             if not running:
@@ -2285,14 +2386,24 @@ class Coordinator:
                 job.result = {"rc": EXIT_SKIP, "status": f"host {job.pinned} dropped",
                               "host": job.pinned}
 
+    def poll_attempt(self, att):
+        """Run POLL_SCRIPT for an attempt; take its new stream lines; return its state words ([] when unreachable)."""
+        try:
+            cp = att.hs.host.run_script(POLL_SCRIPT, [att.base, att.stream_off], timeout=60,
+                                        binary=True)
+            frames = parse_poll(cp.stdout) if cp.returncode == 0 else {}
+        except (FleetError, ValueError) as e:
+            print(f"[fleet] {att.hs.name}: poll of {att.job.name} failed: {e}")
+            frames = {}
+        state, data = frames.get(att.base, ["", b""])
+        if state:
+            self.take_stream(att, data)
+        return state.split(None, 1)
+
     def poll(self, hs, pending, on_done):
         """Poll a host's attempt and act on done, dead, overdue or unreachable."""
         att = hs.current
-        try:
-            cp = hs.host.run_script(POLL_SCRIPT, [att.base], timeout=60)
-            state = cp.stdout.split(None, 2)[1:] if cp.returncode == 0 else []
-        except FleetError:
-            state = []
+        state = self.poll_attempt(att)
         now = time.monotonic()
         if not state:
             att.lost_since = att.lost_since or now
@@ -2313,9 +2424,10 @@ class Coordinator:
                   f"({(att.deadline - att.t0) / 60:.0f} min)")
             self.stop_and_requeue(att, pending)
 
-    def stop_and_requeue(self, att, pending):
-        """Kill an attempt's supervisor and containers, confirm the lock is free, re-queue."""
+    def kill_attempt(self, att):
+        """Read the attempt's stream once more, then kill its supervisor and containers; drop the host when the lock stays held."""
         hs = att.hs
+        self.poll_attempt(att)
         try:
             cp = hs.host.run_script(KILL_SCRIPT, [hs.engine, self.run_id, hs.root,
                                                   int(not hs.host.local), att.base], timeout=120)
@@ -2327,7 +2439,200 @@ class Coordinator:
                 print(f"[fleet] {hs.name}: {line}")
         if "lock=free" not in out:
             self.drop(hs, "could not confirm the golden lock released after a kill")
+
+    def stop_and_requeue(self, att, pending):
+        """Kill an attempt's supervisor and containers, confirm the lock is free, re-queue."""
+        self.kill_attempt(att)
         self.requeue(att, pending, killed=True)
+
+    # -- stop (golden-fleet.py stop) --
+
+    def apply_stop(self, pending):
+        """Stop the running and pending jobs the run's stop request names."""
+        want = read_stop_request(self.stop_path)
+        if not want:
+            return
+        names = {j.name for j in self.jobs} | {j.name for j in pending}
+        for name in sorted(want - names - {"all"} - self.stop_noted) if self.jobs else ():
+            print(f"[fleet] stop request: no job {name} in this run")
+            self.stop_noted.add(name)
+        hit = (lambda j: "all" in want or j.name in want)
+        for hs in self.hosts:
+            if hs.current and hit(hs.current.job):
+                att = hs.current
+                self.mark_stopped(att.job, hs.name, att.n)
+                self.kill_attempt(att)
+                hs.current = None
+        for job in [j for j in pending if hit(j)]:
+            pending.remove(job)
+            self.mark_stopped(job, "-", None)
+
+    def mark_stopped(self, job, host, attempt):
+        """Record a job's result as stopped by the user (no ledger row, no re-queue) and mark its stream directory."""
+        job.result = {"rc": 1, "status": STOP_STATUS, "host": host, "attempt": attempt}
+        job.stopped = True
+        print(f"[fleet] {job.name}: {STOP_STATUS}" + (f" (attempt {attempt} on {host})" if attempt else
+                                                       " before it started"))
+        if job.kind == "unit":
+            d = self.stream_dir(job)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "STOPPED"), "w") as f:
+                f.write(f"{STOP_STATUS} {datetime.datetime.now().isoformat(timespec='seconds')}\n")
+
+    # -- the stream --
+
+    def stream_dir(self, job):
+        """Return the local directory a unit's streamed divergences are pulled into."""
+        return os.path.join(self.tree, STREAM_DIR, self.run_id, job.name)
+
+    def log_stream(self, text):
+        """Append one line to the run's stream.log."""
+        with open(self.stream_log, "a", encoding="utf-8") as f:
+            f.write(text + "\n")
+
+    def measure_skew(self):
+        """Measure each host's clock offset from this machine (host minus local) and log it."""
+        for hs in self.hosts:
+            if hs.host.local:
+                self.skew[hs.name] = 0.0
+                continue
+            t0 = time.time()
+            try:
+                cp = hs.host.run_script("date +%s.%N", timeout=30)
+                remote = float(cp.stdout.strip())
+            except (FleetError, ValueError):
+                print(f"[fleet] {hs.name}: clock skew not measured")
+                continue
+            t1 = time.time()
+            self.skew[hs.name] = remote - (t0 + t1) / 2
+            self.log_stream(f"# skew {hs.name} {self.skew[hs.name]:+.3f} bound {(t1 - t0) / 2:.3f}")
+            print(f"[fleet] {hs.name}: clock {self.skew[hs.name]:+.3f} s from this machine "
+                  f"(+-{(t1 - t0) / 2:.3f} s)")
+
+    def take_stream(self, att, data):
+        """Take an attempt's new stream bytes: complete lines are recorded, logged and queued for pulls."""
+        att.stream_off += len(data)
+        buf = att.stream_tail + data
+        cut = buf.rfind(b"\n") + 1
+        att.stream_tail = buf[cut:]
+        for raw in buf[:cut].decode(errors="replace").splitlines():
+            self.receive_line(att, raw)
+        if att.backlog:
+            self.pull_stream(att)
+
+    def receive_line(self, att, raw):
+        """Record one stream line of an attempt: stream.log, moved-tile tag, pull backlog."""
+        rec = parse_stream_line(raw)
+        if rec is None:
+            print(f"[fleet] {att.job.name}: malformed stream line: {raw[:120]}")
+            return
+        if self.stream_drop and rec["tile"] == self.stream_drop:
+            self.stream_drop = ""
+            print(f"[fleet] {att.job.name}: OPENPETE_STREAM_DROP dropped: {raw}")
+            return
+        rec["receipt"] = time.time()
+        att.lines.append(rec)
+        tag = expect_tag(self.expect, att.job.name, rec)
+        self.log_stream(f"{att.job.name} {att.hs.name} {att.n} {rec['receipt']:.3f} {raw}"
+                        + (f" {tag}" if tag else ""))
+        if rec["verb"] in MOVED_VERBS:
+            lat = ""
+            if rec["epoch"] is not None and att.hs.name in self.skew:
+                lat = f", received {rec['receipt'] - rec['epoch'] + self.skew[att.hs.name]:.1f} s after it was written"
+            print(f"[fleet] {att.job.name}: stream: {rec['verb']} {rec['tile']} {rec['detail']}"
+                  f"{' ' + tag if tag else ''}{' (imported)' if rec['imported'] else ''}{lat}")
+        if rec["verb"] in ("DIVERGE", "EXCEED"):
+            att.backlog.append(rec)
+
+    def pull_stream(self, att):
+        """Pull up to STREAM_K queued divergent tiles and identity pairs in one rsync and render their heat diffs."""
+        take, att.backlog = att.backlog[:STREAM_K], att.backlog[STREAM_K:]
+        names = []
+        for rec in take:
+            names.append(rec["tile"])
+            if rec["verb"] == "EXCEED":
+                names.append(rec["tile"].replace("__ident__", "__canon__"))
+        dest = self.stream_dir(att.job)
+        rc, err = rsync_pull(att.hs.host, f"{att.unit_dir}/cand", dest, names=sorted(set(names)))
+        if rc != 0:
+            print(f"[fleet] {att.job.name}: stream pull of {len(take)} item(s) failed: {err}")
+            return
+        for rec in take:
+            try:
+                note = self.stream_heat(att.job, rec, dest)
+            except Exception as e:  # a render failure is logged and affects no result
+                note = f"heat diff failed: {type(e).__name__}: {e}"
+            print(f"[fleet] {att.job.name}: stream pulled {rec['tile']}: {note}")
+
+    def load_diffmod(self):
+        """Import the tree's presentation-corpus-diff.py (heat diffs) once."""
+        if self.diffmod is None:
+            path = os.path.join(self.tree, "tests", "harness", "presentation-corpus-diff.py")
+            spec = importlib.util.spec_from_file_location("presentation_corpus_diff", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            # The script's own import of presentation-blessed.py replaced
+            # self.pb in sys.modules; pb.digest_files pickles its worker by
+            # that name, so both use self.pb.
+            mod.pb = self.pb
+            sys.modules["presentation_blessed"] = self.pb
+            self.diffmod = mod
+        return self.diffmod
+
+    def unit_rows(self, job):
+        """Return a unit's blessed rows by tile, its tile directory and its manifest sizes (cached)."""
+        if job.unit not in self.rows_cache:
+            path = os.path.join(self.tree, self.pb.manifest_path(job.game, job.tier))
+            m = self.pb.load_manifest(job.game, job.tier)
+            self.rows_cache[job.unit] = (
+                {r["tile"]: r for r in m.rows},
+                self.load_diffmod().manifest_tile_dir(job.game, path),
+                {x for x in m.header.get("size", "").split(",") if "x" in x})
+        return self.rows_cache[job.unit]
+
+    def stream_heat(self, job, rec, dest):
+        """Render one pulled record's heat diff into <dest>/diff: a DIVERGE tile against its reference, an identity pair canon against ident."""
+        diff = self.load_diffmod()
+        name = rec["tile"]
+        heat_dir = os.path.join(dest, "diff")
+        if rec["verb"] == "EXCEED":
+            canon = name.replace("__ident__", "__canon__")
+            res = diff.diff_images(os.path.join(dest, canon), os.path.join(dest, name),
+                                   os.path.join(heat_dir, name.replace("-vk.png", "-diff.png")))
+            return f"identity pair {res[0]} {res[1:3]}"
+        rows, tdir, sizes = self.unit_rows(job)
+        path = os.path.join(dest, name)
+        dig = self.pb.digest_file(path)
+        if dig is None:
+            return "undecodable"
+        if self.archive is None:
+            self.archive = self.pb.Archive()
+        return diff.divergent_line(name, rows[name], path, dig, tdir, self.archive, heat_dir,
+                                   job.game, sizes)
+
+    def check_stream(self, job, report_path):
+        """Unit-end check: the accepted attempt's stream equals its verdict report; a mismatch sets rc 1.
+
+        Exempt: stopped and SKIP units, and an attempt whose stream holds no
+        END (its capture did not reach the verdict).
+        """
+        att = job.atts.get(job.result.get("attempt"))
+        lines = att.lines if att else []
+        if job.stopped or job.result["rc"] == EXIT_SKIP or not any(r["verb"] == "END" for r in lines):
+            job.result["stream"] = "exempt"
+            print(f"[fleet] {job.name}: stream: exempt (no END in attempt "
+                  f"{job.result.get('attempt', '-')})")
+            return
+        bad = stream_mismatches(lines, report_path)
+        sets, credits = stream_sets(lines)
+        print(f"[fleet] {job.name}: stream: {len(sets['SAME'])} SAME + {len(sets['DIVERGE'])} "
+              f"DIVERGE, {len(sets['EXTRA'])} EXTRA, {len(sets['IDENT'])} IDENT, "
+              f"{len(sets['EXCEED'])} EXCEED, CREDITS {credits or 'absent'}; "
+              + ("equals the report" if not bad else f"{len(bad)} mismatch(es)"))
+        if bad:
+            job.result["rc"] = 1
+            job.result["stream_mismatch"] = "; ".join(bad)
+            print(f"[fleet] {job.name}: stream mismatch: {job.result['stream_mismatch']}")
 
     def requeue(self, att, pending, killed):
         """Re-queue an attempt's job while attempts remain, else record its failure."""
@@ -2397,6 +2702,9 @@ class Coordinator:
                     print(f"[fleet] {job.name}: REFUSED: {e}")
             elif job.result["rc"] in (0, 1):
                 self.record_time(job)
+        if self.stream:
+            self.check_stream(job, os.path.join(self.pull_target(job.game, job.tier),
+                                                "verdict-report.txt"))
 
     def pull_unit(self, job, hs):
         """Pull a unit's report and divergences into a cleared local directory; return refusals."""
@@ -2524,6 +2832,7 @@ class Coordinator:
     def stop_current(self, hs):
         """Stop a host's in-flight attempt (session and containers) on the way out."""
         try:
+            self.poll_attempt(hs.current)
             hs.host.run_script(KILL_SCRIPT, [hs.engine, self.run_id, hs.root, 0,
                                              hs.current.base], timeout=120)
             print(f"[fleet] {hs.name}: stopped {hs.current.job.name}")
@@ -2550,6 +2859,9 @@ class Coordinator:
             if e not in RUN_KEEP:
                 p = os.path.join(self.local_run_dir, e)
                 shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.unlink(p)
+        if self.archive is not None:
+            self.archive.close()
+            self.archive = None
         if self.golden_fd is not None:
             os.close(self.golden_fd)
             self.golden_fd = None
@@ -2560,16 +2872,55 @@ class Coordinator:
         """Execute the run; return the exit code (1 > 64 > 0 over units)."""
         src_bytes = set_bytes(self.tree, source_set(self.tree, self.pb,
                                                     sorted({g for g, _t in self.units})))
+        self.load_expect()
         self.prepare_hosts(src_bytes)
+        self.measure_skew()
         self.build_and_sync()
         self.jobs = self.make_jobs()
         self.run_jobs(self.jobs, on_done=self.unit_done)
+        rc = self.run_rc()
+        self.print_summary(rc)
+        return rc
+
+    def run_rc(self):
+        """Return the run's exit code over its jobs: the worst unit (canary under CANARY_ONLY), 1 on a canary refusal or a stopped job."""
         decided = "canary" if self.canary_only else "unit"
         rc = worst_rc(j.result["rc"] if j.result else 1 for j in self.jobs if j.kind == decided)
         if self.compare_canaries(self.jobs):
             rc = 1
-        self.print_summary(rc)
+        if any(j.stopped for j in self.jobs):
+            rc, self.done_reason = 1, STOP_STATUS
         return rc
+
+    def load_expect(self):
+        """Read the run's copy of the expected-moves file; refuse the run (2) on an unknown unit or a substring matching nothing."""
+        if not getattr(self.a, "expect", None):
+            return
+        copy = os.path.join(self.local_run_dir, "expect.txt")
+        if not os.path.exists(copy):
+            shutil.copyfile(self.a.expect, copy)
+        self.expect = parse_expect(copy)
+        errs = expect_refusals(self.tree, self.pb, self.units, self.expect)
+        if errs:
+            raise FleetError("expected-moves file refused: " + "; ".join(errs), 2)
+
+    def expect_summary(self):
+        """Print each expectation's status and the EXPECTED, UNEXPECTED and EXPECTED-NOT-MOVED tile counts."""
+        units = {}
+        for j in self.jobs:
+            if j.kind != "unit":
+                continue
+            r = j.result or {}
+            att = j.atts.get(r.get("attempt"))
+            reached = bool(att) and not j.stopped and r.get("rc") != EXIT_SKIP
+            blessed = {x["tile"] for x in self.pb.load_manifest(j.game, j.tier).rows}
+            units[j.name] = (reached, att.lines if att else [], blessed)
+        counts, rows = expect_counts(self.expect, units)
+        for e, status, match in rows:
+            print(f"[fleet] expect {e.unit} '{e.sub}': {status} ({len(match)} matching tile(s)); "
+                  f"{e.reason}")
+        print(f"[fleet] expected moves: EXPECTED {counts['EXPECTED']}, UNEXPECTED "
+              f"{counts['UNEXPECTED']}, EXPECTED-NOT-MOVED {counts['EXPECTED-NOT-MOVED']}")
 
     def print_summary(self, rc):
         """Print each unit's host beside its verdict, then the run's verdict."""
@@ -2579,8 +2930,12 @@ class Coordinator:
             census = f"; {r['census']}" if r.get("census") else ""
             print(f"[fleet] result {j.name}: {verdict} on {r['host']} (rc {r['rc']}, "
                   f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']}{census})")
+            if r.get("stream_mismatch"):
+                print(f"[fleet] result {j.name}: stream mismatch: {r['stream_mismatch']}")
+        if self.expect:
+            self.expect_summary()
         print(f"[fleet] run {self.run_id}: " + {0: "PASS", EXIT_SKIP: "SKIP"}.get(rc, "FAIL")
-              + f" (exit {rc})")
+              + f" (exit {rc}" + (f", reason={self.done_reason}" if self.done_reason else "") + ")")
 
 
 # ---- add and calibrate: the calibration unit through run's machinery ----------
@@ -2617,6 +2972,8 @@ class Calibrator(Coordinator):
 
     # A leg's wall time is the measurement: a re-queued leg captures every row.
     resume = False
+    # A leg's wall time is not loaded by per-row classification.
+    stream = False
 
     def canary_on(self):
         """False: calibration legs capture no canary."""
@@ -2867,6 +3224,263 @@ def parse_report(path):
     return out
 
 
+# ---- run: the stream, its unit-end check and expected moves ---------------------
+
+def parse_poll(out):
+    """Parse POLL_SCRIPT's framed bytes into {base: [state text, stream bytes]}; ValueError when torn."""
+    res, i = {}, 0
+    while i < len(out):
+        nl = out.index(b"\n", i)
+        tag, base, rest = (out[i:nl].decode(errors="replace").split(" ", 2) + ["", ""])[:3]
+        i = nl + 1
+        entry = res.setdefault(base, ["", b""])
+        if tag == "state":
+            entry[0] = rest
+        elif tag == "stream" and rest.isdigit():
+            entry[1] = out[i:i + int(rest)]
+            if len(entry[1]) != int(rest):
+                raise ValueError(f"stream section of {base} short: {len(entry[1])} of {rest} bytes")
+            i += int(rest)
+        else:
+            raise ValueError(f"unframed poll line {out[i:nl][:80]!r}")
+    return res
+
+
+def parse_stream_line(line):
+    """Parse one stream line into {verb, tile, detail, epoch, imported}, or None when malformed.
+
+    Tile verbs carry `<tile> <detail> <epoch>`, CREDITS `rc=N <epoch>` (tile
+    `credits`), END `<epoch>` (tile `END`); a trailing `imported` marks a line
+    of a row the attempt imported.
+    """
+    f = line.split()
+    if not f:
+        return None
+    if f[0] == "END":
+        tile, detail, rest = "END", "", f[1:]
+    elif f[0] == "CREDITS" and len(f) >= 2 and f[1].startswith("rc="):
+        tile, detail, rest = "credits", f[1], f[2:]
+    elif f[0] in TILE_VERBS and len(f) >= 4:
+        tile, detail, rest = f[1], f[2], f[3:]
+    else:
+        return None
+    try:
+        epoch = float(rest[0]) if rest else None
+    except ValueError:
+        return None
+    return {"verb": f[0], "tile": tile, "detail": detail, "epoch": epoch,
+            "imported": "imported" in rest[1:]}
+
+
+def stream_key(rec):
+    """The fields two attempts' lines of one tile share: verb, tile and detail."""
+    return (rec["verb"], rec["tile"], rec["detail"])
+
+
+def stream_sets(lines):
+    """Return ({verb: set of tiles}, credits rc text or None) over stream records."""
+    sets = {v: set() for v in TILE_VERBS}
+    credits = None
+    for r in lines:
+        if r["verb"] in sets:
+            sets[r["verb"]].add(r["tile"])
+        elif r["verb"] == "CREDITS":
+            credits = r["detail"][len("rc="):]
+    return sets, credits
+
+
+def report_sets(path):
+    """Return the verdict report's compared count, credits-rc and divergent, extra and identity-exceed sets.
+
+    identity-exceed holds the identity member of each EXCEED and NOCANON
+    pair, the two the stream spells EXCEED.
+    """
+    rep = {"compared": None, "credits-rc": None, "divergent": set(), "extra": set(),
+           "identity-exceed": set()}
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return rep
+    for line in text.splitlines():
+        key, _sep, val = line.partition(": ")
+        words = val.split()
+        if key in ("compared", "credits-rc"):
+            rep[key] = val.strip()
+        elif key in ("divergent", "extra") and words:
+            rep[key].add(words[0])
+        elif key in ("identity-exceed", "identity-nocanon") and words:
+            rep["identity-exceed"].add(words[0])
+    return rep
+
+
+def stream_mismatches(lines, report_path):
+    """Return the differences between an attempt's stream and its verdict report (empty when equal).
+
+    SAME + DIVERGE equals the report's compared count; the DIVERGE, EXTRA
+    and EXCEED tile sets equal its divergent, extra and identity-exceed
+    sets; the CREDITS rc equals its credits-rc, an absent CREDITS line
+    standing for 64 (a tier without the credits leg).
+    """
+    sets, credits = stream_sets(lines)
+    rep = report_sets(report_path)
+    out = []
+    n = len(sets["SAME"] | sets["DIVERGE"])
+    if str(n) != str(rep["compared"]):
+        out.append(f"SAME + DIVERGE = {n}, the report compared {rep['compared']}")
+    for verb, key in (("DIVERGE", "divergent"), ("EXTRA", "extra"),
+                      ("EXCEED", "identity-exceed")):
+        got, want = sets[verb], rep[key]
+        if got != want:
+            out.append(f"{verb} {len(got)} tile(s), the report's {key} {len(want)}; "
+                       f"streamed only: {' '.join(sorted(got - want)[:3]) or '-'}; "
+                       f"reported only: {' '.join(sorted(want - got)[:3]) or '-'}")
+    got_rc = credits if credits is not None else "64"
+    if got_rc != rep["credits-rc"]:
+        out.append(f"CREDITS rc={got_rc}, the report's credits-rc {rep['credits-rc']}")
+    return out
+
+
+class Expectation:
+    """One line of an expected-moves file: a unit (job name), a tile substring and a reason."""
+
+    def __init__(self, unit, sub, reason, lineno):
+        """Bind the line's fields."""
+        self.unit, self.sub, self.reason, self.lineno = unit, sub, reason, lineno
+
+    def matches(self, unit, tile):
+        """True when the expectation names the unit and its substring occurs in the tile name."""
+        return unit == self.unit and self.sub in tile
+
+
+def parse_expect(path):
+    """Read an expected-moves file: `<unit> <substring> <reason>` per line, `#` comments; exit 2 on a malformed line."""
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError as e:
+        raise FleetError(f"--expect {path}: {e.strerror}", 2)
+    out = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        f = line.split(None, 2)
+        if len(f) < 3:
+            raise FleetError(f"--expect {path}:{n}: expected `<unit> <substring> <reason>`", 2)
+        out.append(Expectation(f[0], f[1], f[2].strip(), n))
+    return out
+
+
+def corpus_row_names(tree, game, tier):
+    """The name field of every row of a unit's corpus manifests (bk2 rows and freecam levels)."""
+    files = (["dragon-rescue-corpus.manifest"] if tier == "dragons"
+             else ["presentation-corpus.manifest", "freecam-corpus.manifest"])
+    names = set()
+    for f in files:
+        try:
+            text = open(os.path.join(tree, "games", game, "corpus", f), encoding="utf-8").read()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            name = line.split("|", 1)[0].strip()
+            if name and not name.startswith("#"):
+                names.add(name)
+    return names
+
+
+def check_expect(exps, unit_names, universe):
+    """Print each expectation's match count; return the refusals (an unknown unit, a substring matching nothing).
+
+    universe maps a unit's job name to (blessed tile names, manifest row names).
+    """
+    errs = []
+    for e in exps:
+        if e.unit not in unit_names:
+            errs.append(f"line {e.lineno}: unit {e.unit} is not a unit of this run "
+                        f"({', '.join(sorted(unit_names))})")
+            continue
+        tiles, rows = universe[e.unit]
+        nt = sum(1 for t in tiles if e.sub in t)
+        nr = sum(1 for r in rows if e.sub in r)
+        print(f"[fleet] expect: {e.unit} '{e.sub}': {nt} tile(s), {nr} manifest row(s) match")
+        if not nt and not nr:
+            errs.append(f"line {e.lineno}: '{e.sub}' matches no tile of {e.unit}'s blessed.tsv "
+                        f"and no manifest row")
+    return errs
+
+
+def expect_refusals(tree, pb, units, exps):
+    """Check an expected-moves file against a run's units (job names `<game>-<tier>`); return the refusals."""
+    universe = {}
+    for game, tier in units:
+        tiles = {r["tile"] for r in pb.load_manifest(game, tier).rows}
+        universe[f"{game}-{tier}"] = (tiles, corpus_row_names(tree, game, tier))
+    return check_expect(exps, set(universe), universe)
+
+
+def expect_tag(exps, unit, rec):
+    """EXPECTED or UNEXPECTED for a moved tile's line, '' for any other line."""
+    if rec["verb"] not in MOVED_VERBS:
+        return ""
+    return "EXPECTED" if any(e.matches(unit, rec["tile"]) for e in exps) else "UNEXPECTED"
+
+
+def expect_status(e, reached, lines, blessed):
+    """Return (status, matching tiles) of one expectation over its unit's accepted attempt.
+
+    moved when a matching tile streamed a DIVERGE, EXTRA or EXCEED line;
+    EXPECTED-NOT-MOVED when every matching tile (of blessed.tsv and of the
+    stream) streamed and none moved; NOT-REACHED otherwise, and always for a
+    unit with no accepted attempt (stopped, SKIP).
+    """
+    streamed = {r["tile"]: r["verb"] for r in lines if r["verb"] in TILE_VERBS}
+    match = {t for t in blessed if e.sub in t} | {t for t in streamed if e.sub in t}
+    if not reached:
+        return "NOT-REACHED", match
+    if any(streamed.get(t) in MOVED_VERBS for t in match):
+        return "moved", match
+    if match and all(t in streamed for t in match):
+        return "EXPECTED-NOT-MOVED", match
+    return "NOT-REACHED", match
+
+
+def expect_counts(exps, units):
+    """Count EXPECTED, UNEXPECTED and EXPECTED-NOT-MOVED tiles over each unit's accepted lines.
+
+    units maps a job name to (reached, accepted attempt's records, blessed
+    tile names). Returns (counts, [(expectation, status, matching tiles)]).
+    """
+    counts = {"EXPECTED": 0, "UNEXPECTED": 0, "EXPECTED-NOT-MOVED": 0}
+    for name, (_reached, lines, _blessed) in units.items():
+        moved = {r["tile"] for r in lines if r["verb"] in MOVED_VERBS}
+        for t in moved:
+            hit = any(e.matches(name, t) for e in exps)
+            counts["EXPECTED" if hit else "UNEXPECTED"] += 1
+    rows, quiet = [], set()
+    for e in exps:
+        reached, lines, blessed = units.get(e.unit, (False, [], set()))
+        status, match = expect_status(e, reached, lines, blessed)
+        rows.append((e, status, match))
+        if status == "EXPECTED-NOT-MOVED":
+            quiet |= {(e.unit, t) for t in match}
+    counts["EXPECTED-NOT-MOVED"] = len(quiet)
+    return counts, rows
+
+
+def read_stop_request(path):
+    """Return the stop request's targets: {'all'} and/or job names; empty without a request."""
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return set()
+    out = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if line == "all":
+            out.add("all")
+        elif line.startswith("unit="):
+            out.add(line[len("unit="):])
+    return out
+
+
 # ---- run: entry points --------------------------------------------------------
 
 def local_fleet_root():
@@ -2906,6 +3520,7 @@ def drive(run_id, run_dir, factory):
     try:
         co = factory()
         rc = co.run()
+        why = co.done_reason
     except FleetError as e:
         rc, why = e.code, str(e)
         print(f"[fleet] {'SKIP' if rc == EXIT_SKIP else 'FAIL'}: {why}")
@@ -2925,6 +3540,23 @@ def drive(run_id, run_dir, factory):
     return rc, co
 
 
+def cmd_stop(a):
+    """Request a stop of a detached run's units (one with --unit, else all); refused once the run is done."""
+    run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
+    if not os.path.isdir(run_dir):
+        raise FleetError(f"no run {a.run_id} under {os.path.dirname(run_dir)}", 2)
+    if os.path.exists(os.path.join(run_dir, "done")):
+        raise FleetError(f"run {a.run_id} is done; nothing to stop", 1)
+    path = os.path.join(run_dir, "stop-request")
+    want = read_stop_request(path) | {a.unit or "all"}
+    with open(path + ".tmp", "w") as f:
+        f.write("".join(("all" if w == "all" else f"unit={w}") + "\n" for w in sorted(want)))
+    os.replace(path + ".tmp", path)
+    print(f"[fleet] run {a.run_id}: stop requested for {a.unit or 'every running and pending unit'}; "
+          f"the coordinator acts within {POLL_S} s")
+    return 0
+
+
 def run_foreground(a):
     """Run the coordinator in this process under drive()."""
     run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
@@ -2936,11 +3568,19 @@ def cmd_run(a):
     """Detach a coordinator (setsid) and print its log and done marker; --wait follows it."""
     if a.foreground:
         return run_foreground(a)
-    select_units(a)
+    units = select_units(a)
     load_hosts()
+    exps = parse_expect(a.expect) if a.expect else []
+    if exps:
+        tree = script_repo()
+        errs = expect_refusals(tree, load_pb(tree), units, exps)
+        if errs:
+            raise FleetError("expected-moves file refused: " + "; ".join(errs), 2)
     a.run_id = new_run_id()
     run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
     os.makedirs(run_dir)
+    if a.expect:
+        shutil.copyfile(a.expect, os.path.join(run_dir, "expect.txt"))
     log = os.path.join(run_dir, "coordinator.log")
     argv = [sys.executable, os.path.abspath(__file__), "run", "--foreground",
             "--run-id", a.run_id, *[x for x in sys.argv[2:] if x != "--wait"]]
@@ -2999,9 +3639,15 @@ def main(argv=None):
     h.add_argument("--no-local", action="store_true", help="leave the local host out")
     p.add_argument("--pull", choices=("divergent", "all"), default="divergent")
     p.add_argument("--wait", action="store_true", help="follow the detached run to its end")
+    p.add_argument("--expect", metavar="FILE",
+                   help="expected-moves file: `<unit> <tile substring> <reason>` per line")
     p.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--run-id", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("stop")
+    p.add_argument("run_id", metavar="run-id")
+    p.add_argument("--unit", help="the job name to stop (default: every running and pending unit)")
+    p.set_defaults(fn=cmd_stop)
     p = sub.add_parser("clean")
     p.add_argument("--hosts", default="")
     p.add_argument("--tree", help="remove only the trees this coordinator keyed on PATH")

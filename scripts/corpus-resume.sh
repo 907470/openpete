@@ -39,15 +39,31 @@
 # imported rows (`kind key png-tiles files`), from which the verdict's census
 # counts captured and imported tiles separately.
 #
+# Stream. Under OPENPETE_STREAM_FILE (set only by the golden fleet's
+# supervisor, to its attempt's own file) the leg that completes a row also
+# appends the row's verdict lines to that file, outside the row lock, through
+# tests/harness/presentation-stream.py: one SAME, DIVERGE, EXTRA, IDENT or
+# EXCEED line per tile, classified by the end verdict's own functions. The
+# leg count runs when the stream or the stamps are on; only the stamp write
+# depends on OPENPETE_RESUME_RUN. rs_import classifies each imported row's
+# tiles again and appends their lines tagged `imported`, and an imported
+# credits leg appends `CREDITS rc=N <epoch> imported`.
+# OPENPETE_STREAM_POKE=<tile substring> is a test knob: every tile of a
+# finishing leg whose name contains it has its pixel (0,0) changed before the
+# leg hashes it, so the row streams a DIVERGE line and its stamp matches the
+# changed tile.
+#
 # Variables: RS_ON (1 when stamps are written and read), RS_RUN, RS_TREE,
-# RS_BIN, RS_AFFINE, RS_OUT, RS_DIR (OUT/resume), RS_LEGS (legs per row).
+# RS_BIN, RS_AFFINE, RS_OUT, RS_DIR (OUT/resume), RS_LEGS (legs per row),
+# RS_STREAM (the stream file, empty when off).
 
 # Bind the resume state to an output directory. args: outdir binary affine
 rs_init() {
   RS_ON=0 RS_OUT="$1" RS_DIR="$1/resume" RS_AFFINE="$3"
-  RS_RUN="${OPENPETE_RESUME_RUN:-}"
+  RS_RUN="${OPENPETE_RESUME_RUN:-}" RS_STREAM="${OPENPETE_STREAM_FILE:-}"
   pg_cap_settings
   RS_LEGS=$(( 3 * $(wc -w <<<"$PG_CAP_LODS") ))
+  [[ -z "$RS_STREAM" ]] || mkdir -p "$RS_DIR"
   [[ -n "$RS_RUN" ]] || return 0
   if [[ -z "${OPENPETE_CAPTURE_FIELDS:-}" || ! -f "${OPENPETE_CAPTURE_FIELDS:-}" ]]; then
     echo "[resume] off: OPENPETE_CAPTURE_FIELDS names no file, so no tree identity to stamp"
@@ -88,12 +104,53 @@ rs_write_stamp() {
     && mv -f "$s.tmp" "$s"
 }
 
-# Record a finished leg of a row; the leg that completes the row writes the
-# row's stamp. args: kind key row leg-id log tile...
+# Change pixel (0,0) of each named tile whose name contains
+# OPENPETE_STREAM_POKE (a test knob; see Stream above). args: tile...
+rs_poke() {
+  [[ -n "${OPENPETE_STREAM_POKE:-}" ]] || return 0
+  local t
+  for t in "$@"; do
+    [[ "$t" == *"$OPENPETE_STREAM_POKE"* ]] || continue
+    python3 -c '
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+p = im.getpixel((0, 0))
+im.putpixel((0, 0), ((p[0] + 128) % 256, p[1], p[2]))
+im.save(sys.argv[1])' "$RS_OUT/$t" && echo "[stream] poked $t"
+  done
+}
+
+# Append the verdict lines of tiles of the output directory to the stream.
+# args: tag tile...
+rs_stream_tiles() {
+  local tag="$1"; shift
+  (( $# )) || return 0
+  python3 tests/harness/presentation-stream.py "$RS_OUT" "$@" --game "$PG_GAME" \
+    --manifest "$PG_BLESSED" --baseline "$PG_IDENT_BASELINE" --stream "$RS_STREAM" --tag "$tag" \
+    || echo "[stream] FAIL: no line for $# tile(s) starting $1"
+}
+
+# Append the credits leg's result to the stream. args: rc [tag]
+rs_stream_credits() {
+  [[ -n "${RS_STREAM:-}" ]] || return 0
+  printf 'CREDITS rc=%s %s%s\n' "$1" "$(date +%s.%3N)" "${2:+ $2}" >>"$RS_STREAM"
+}
+
+# Mark the stream complete: the capture reached its verdict.
+rs_stream_end() {
+  [[ -n "${RS_STREAM:-}" ]] || return 0
+  printf 'END %s\n' "$(date +%s.%3N)" >>"$RS_STREAM"
+}
+
+# Record a finished leg of a row. The leg that completes the row writes the
+# row's stamp (stamps on) and, outside the lock, streams the row's tiles
+# (stream on). args: kind key row leg-id log tile...
 rs_leg_done() {
-  (( ${RS_ON:-0} )) || return 0
+  (( ${RS_ON:-0} )) || [[ -n "${RS_STREAM:-}" ]] || return 0
   local kind="$1" key="$2" row="$3" leg="$4" log="$5"; shift 5
   local d="$RS_DIR/legs/$kind.$key" t dev
+  rs_poke "$@"
   mkdir -p "$d"
   {
     for t in "$@"; do rs_tile_line "$t"; done
@@ -104,9 +161,19 @@ rs_leg_done() {
     [[ -e "$(rs_stamp_path "$kind" "$key")" ]] && exit 0
     n=0; for t in "$d"/*.leg; do [[ -e "$t" ]] && n=$((n + 1)); done
     (( n >= RS_LEGS )) || exit 0
-    cat "$d"/*.leg | rs_write_stamp "$kind" "$key" "$row"
+    cat "$d"/*.leg >"$d.row"
+    if (( RS_ON )); then rs_write_stamp "$kind" "$key" "$row" <"$d.row"; fi
     rm -rf "$d"
+    exit 10
   ) 9>"$d.lock"
+  if [[ $? -eq 10 ]]; then
+    if [[ -n "${RS_STREAM:-}" ]]; then
+      local -a tiles=()
+      mapfile -t tiles < <(awk '$1 == "tile:" { print $3 }' "$d.row")
+      rs_stream_tiles "" "${tiles[@]}"
+    fi
+    rm -f "$d.row"
+  fi
   return 0
 }
 
@@ -174,6 +241,7 @@ rs_check_stamp() {
 # fresh outdir and delete the rest. args: outdir bk2-filter freecam-filter
 rs_import() {
   local out="$1" prev="$1.resume-prev" s why line k sha name rows=0 png=0 files n p
+  local -a streamed=()
   # A previous import that was itself interrupted left prev beside a partial
   # outdir: the rows already moved are dropped and captured again.
   if [[ -d "$prev" ]]; then rm -rf "$out"; elif [[ -d "$out" ]]; then mv "$out" "$prev"; fi
@@ -189,6 +257,7 @@ rs_import() {
         "tile: "*)
           read -r k sha name <<<"$line"
           mv -f "$prev/$name" "$out/$name"
+          [[ "$name" == *-vk.png ]] && streamed+=("$name")
           n=$((n + 1)); [[ "$name" == *-vk.png ]] && p=$((p + 1));;
         "device: "*) echo "${line#device: }" >>"$out/capture-device.txt";;
       esac
@@ -199,6 +268,11 @@ rs_import() {
     rows=$((rows + 1)) png=$((png + p))
   done
   rm -rf "$prev"
+  if [[ -n "${RS_STREAM:-}" ]]; then
+    rs_stream_tiles imported "${streamed[@]}"
+    [[ -f "$out/resume/credits.credits.stamp" && -f "$out/credits-verdict.txt" ]] \
+      && rs_stream_credits "$(head -n 1 "$out/credits-verdict.txt" | sed 's/^rc=//')" imported
+  fi
   echo "[resume] run $RS_RUN: imported $rows row(s), $png tile(s) from the previous attempt; the rest of its output deleted"
 }
 

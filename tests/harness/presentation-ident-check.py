@@ -60,6 +60,25 @@ def diff_count(a, b):
     return d.histogram()[255]
 
 
+def classify_pair(cand_dir, name, base):
+    """Classify one identity tile against the canon tile of its frame.
+
+    Returns (verb, differing pixels, allowed): NOCANON (pixels None) when the
+    candidate holds no canon twin, EXCEED when the count is over the tile's
+    baseline row (0 without one), `within` when it is under it and nonzero,
+    `ident` at zero.
+    """
+    canon = name.replace("__ident__", "__canon__")
+    cpath = os.path.join(cand_dir, canon)
+    allowed = base.get(name, 0)
+    if not os.path.isfile(cpath):
+        return "NOCANON", None, allowed
+    n = diff_count(cpath, os.path.join(cand_dir, name))
+    if n > allowed:
+        return "EXCEED", n, allowed
+    return ("within" if n else "ident"), n, allowed
+
+
 def read_baseline(path):
     base = {}
     if os.path.isfile(path):
@@ -126,18 +145,16 @@ def main():
     counts = {}
     total_px = 0
     for name in idents:
-        canon = name.replace("__ident__", "__canon__")
-        cpath = os.path.join(args.candidate, canon)
-        if not os.path.isfile(cpath):
+        verb, n, allowed = classify_pair(args.candidate, name, base)
+        if verb == "NOCANON":
+            canon = name.replace("__ident__", "__canon__")
             print(f"NOCANON  {name}  (no {canon} in the candidate)"); fails += 1
             continue
-        n = diff_count(cpath, os.path.join(args.candidate, name))
         counts[name] = n
         total_px += n
-        allowed = base.get(name, 0)
-        if n > allowed:
+        if verb == "EXCEED":
             print(f"EXCEED   {name}  pixels={n} baseline={allowed}"); fails += 1
-        elif n:
+        elif verb == "within":
             print(f"within   {name}  pixels={n} baseline={allowed}")
         else:
             print(f"ident    {name}")

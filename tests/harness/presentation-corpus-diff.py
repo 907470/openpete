@@ -80,10 +80,10 @@ def diff_images(ref_src, cand_path, heat_out):
     return ("pixels", n, mx, d.getbbox())
 
 
-def report_divergent(name, row, cand_path, cand_dig, tdir, arch, diff_out,
-                     game, size_set):
-    """Print the DIVERGE line of one divergent row, resolving its
-    reference image only here."""
+def divergent_line(name, row, cand_path, cand_dig, tdir, arch, diff_out,
+                   game, size_set):
+    """Return the DIVERGE line of one divergent row, resolving its
+    reference image only here; writes the heat PNG when pixels differ."""
     src, where = pb.resolve_reference(row, tdir, arch)
     cand_size = cand_dig[1]
     if src is None:
@@ -91,19 +91,49 @@ def report_divergent(name, row, cand_path, cand_dig, tdir, arch, diff_out,
         if size_set and "%dx%d" % cand_size not in size_set:
             size_note = " size=%dx%d not in the manifest sizes (%s)" % (
                 cand_size[0], cand_size[1], ",".join(sorted(size_set)))
-        print(f"DIVERGE  {name}  digest={row['digest'][:12]}->"
-              f"{cand_dig[0][:12]} reference=unavailable"
-              f"{size_note} (resolve: scripts/presentation-blessed.py golden-at "
-              f"{row['revision'][:12]} {game} {name})")
-        return
+        return (f"DIVERGE  {name}  digest={row['digest'][:12]}->"
+                f"{cand_dig[0][:12]} reference=unavailable"
+                f"{size_note} (resolve: scripts/presentation-blessed.py golden-at "
+                f"{row['revision'][:12]} {game} {name})")
     heat = os.path.join(diff_out, name.replace("-vk.png", "-diff.png"))
     res = diff_images(src, cand_path, heat)
     if res[0] == "size":
         (aw, ah), (bw, bh) = res[1], res[2]
-        print(f"DIVERGE  {name}  size={aw}x{ah}->{bw}x{bh} reference={where}")
-    else:
-        print(f"DIVERGE  {name}  pixels={res[1]} maxch={res[2]} "
-              f"reference={where}")
+        return f"DIVERGE  {name}  size={aw}x{ah}->{bw}x{bh} reference={where}"
+    return f"DIVERGE  {name}  pixels={res[1]} maxch={res[2]} reference={where}"
+
+
+def classify_tiles(rows, cand_dir, names):
+    """Classify candidate tiles against manifest rows.
+
+    Returns one (name, verb, row digest, candidate digest) per name, in
+    order: SAME when the tile's decoded verdict digest equals its row's,
+    DIVERGE when it differs or the tile does not decode (candidate digest
+    None), EXTRA when no row names the tile (row digest None). Candidate
+    digests are pb.digest_files results, (hex, (width, height)) or None.
+    """
+    names = list(names)
+    digs = pb.digest_files(os.path.join(cand_dir, n) for n in names)
+    out = []
+    for n in names:
+        got = digs[os.path.join(cand_dir, n)]
+        row = rows.get(n)
+        if row is None:
+            out.append((n, "EXTRA", None, got))
+        elif got is not None and got[0] == row["digest"]:
+            out.append((n, "SAME", row["digest"], got))
+        else:
+            out.append((n, "DIVERGE", row["digest"], got))
+    return out
+
+
+def manifest_tile_dir(game, manifest):
+    """The directory a manifest's tiles were tracked in before the store
+    held them; the native-tick manifest sits apart from its tiles."""
+    rel = os.path.relpath(os.path.abspath(manifest), pb.repo_root())
+    if rel == pb.NATIVE_TICK_MANIFEST:
+        return pb.tier_dir(game, "native-vk")
+    return os.path.dirname(rel)
 
 
 def load_rows(path):
@@ -144,11 +174,7 @@ def main():
         print(f"[presentation-diff] FAIL: {err}")
         return 1
     rows = {r["tile"]: r for r in m.rows}
-    rel = os.path.relpath(os.path.abspath(args.manifest), pb.repo_root())
-    # The directory the manifest's tiles were tracked in before the store held
-    # them; the native-tick manifest sits apart from its tiles.
-    tdir = (pb.tier_dir(args.game, "native-vk")
-            if rel == pb.NATIVE_TICK_MANIFEST else os.path.dirname(rel))
+    tdir = manifest_tile_dir(args.game, args.manifest)
     size_set = {s for s in m.header.get("size", "").split(",") if "x" in s}
 
     cand = pb.list_tiles(args.candidate)
@@ -171,24 +197,20 @@ def main():
         print("[presentation-diff] FAIL: VACUOUS - no candidate tile has a golden twin")
         return 1
 
-    digs = pb.digest_files(os.path.join(args.candidate, n) for n in common)
     divergent = []
     arch = None
-    for name in common:
-        path = os.path.join(args.candidate, name)
-        got = digs[path]
+    for name, verb, _want, got in classify_tiles(rows, args.candidate, common):
+        if verb == "SAME":
+            print(f"ok       {name}")
+            continue
+        divergent.append(name); fails += 1
         if got is None:
             print(f"DIVERGE  {name}  undecodable candidate tile")
-            divergent.append(name); fails += 1
-            continue
-        if got[0] == rows[name]["digest"]:
-            print(f"ok       {name}")
             continue
         if arch is None:
             arch = pb.Archive()
-        report_divergent(name, rows[name], path, got, tdir, arch,
-                         diff_out, args.game, size_set)
-        divergent.append(name); fails += 1
+        print(divergent_line(name, rows[name], os.path.join(args.candidate, name), got,
+                             tdir, arch, diff_out, args.game, size_set))
     if arch is not None:
         arch.close()
 

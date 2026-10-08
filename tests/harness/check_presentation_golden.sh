@@ -98,6 +98,11 @@
 # image compared nothing, so it is refused as VACUOUS rather than reported as
 # a pass; a run in which no tile names a row is refused by the diff.
 #
+# Stream. Under OPENPETE_STREAM_FILE (the golden fleet's supervisor sets it
+# for a unit) every finished row appends its tiles' verdict lines to that
+# file, the credits leg appends `CREDITS rc=N` and the capture's verdict
+# appends `END` (scripts/corpus-resume.sh, Stream). The verdict is unchanged.
+#
 # Resume. Under OPENPETE_RESUME_RUN (the golden fleet sets it to its run id)
 # and without --bless, the run does not clear the candidate directory: it
 # imports the rows an interrupted capture of the same run, tree and binary
@@ -295,8 +300,11 @@ vr_finish() {
 # Identity leg, the credits leg's recorded result and the strict diff over
 # OUT, then the verdict; exits. The identity leg and the diff both run
 # whatever the other reports, so one run reports every verdict. Their
-# previous outputs in OUT (heat diffs, logs, report) are deleted first.
+# previous outputs in OUT (heat diffs, logs, report) are deleted first. A
+# capturing run under OPENPETE_STREAM_FILE first appends `END` to the stream:
+# the capture reached its verdict, so every row's lines are in the stream.
 vr_verdict() {
+  [[ -z "$VERDICT_ONLY" ]] && rs_stream_end
   rm -rf "$OUT/diff"
   rm -f "$OUT/verdict-ident.log" "$OUT/verdict-diff.log" "$OUT/$REPORT_NAME"
   # Identity leg: the alpha-0 re-extract against the canon tile of the same
@@ -420,6 +428,7 @@ if [[ "$PG_TIER" == "presentation" ]]; then
     PG_BUILD_DIR="$BUILD_DIR" tests/harness/check_credits_interp.sh "$GAME_ARG" | tee "$credits_log"
     credits_rc=${PIPESTATUS[0]}
     vr_record_credits "$credits_rc" "$credits_log"
+    rs_stream_credits "$credits_rc"
     rm -f "$credits_log"
     [[ $credits_rc -eq 0 ]] && rs_files_done credits credits credits-interp "$CREDITS_NAME"
   fi
