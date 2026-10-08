@@ -90,6 +90,10 @@ icy-peak-ice-crystal-destruction|1500|100||1660,1674,1690
 # streak on the intermediate leg: a primitive lerped from a previous-tick
 # record that is not its own.
 title-demo|500|20||510,2210
+# title-demo-early: the title screen at VBL 90 (user report 2026-10-08):
+# terrain polys of the left building missing, the purple clear colour shows
+# through. Blessed pre-fix.
+title-demo-early|60|20||90
 
 # open-options and open-atlas are the corpus rows for the 2D UI layer: they are
 # the only movies whose frames carry its classes inside the visible band. At
