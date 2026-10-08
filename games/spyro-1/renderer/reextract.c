@@ -2566,7 +2566,7 @@ static void game_reextract_body(void* cpu_v) {
     moby_native_set_rot_interp(1);
 
     /* Rebuild the scene against the (now interpolated) gamestate. scene_begin
-     * resets s_scene without bumping the frame id, so the feeders' own
+     * resets s_scene and stamps it with openpete_frame, so the feeders' own
      * begin_frame() calls no-op (no history snapshot / no double-reset). */
     openpete_native_scene_begin();
     uint32_t bg = cpu->read_word(game_layout.cyc.bg_colour) & 0xFFFFFF;

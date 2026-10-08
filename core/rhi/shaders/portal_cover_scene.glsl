@@ -37,8 +37,8 @@
 layout(std140, set = OP_COVER_SET, binding = 0) uniform PortalCover {
     vec4  cov_fc;
     ivec4 cov_cnt;
-    dvec4 cov_margin;
-    dvec4 cov_abc[6];
+    vec4  cov_margin;
+    vec4  cov_abc[6];
     vec4  cov_bbox[6];
     vec4  cov_poly[96];
 } pcov;
@@ -54,10 +54,10 @@ bool op_portal_cover_frag(bool reversed)
     const float m = OP_PORTAL_RIM_MARGIN;
 #elif defined(OP_PORTAL_RUNTIME)
     if (pcov.cov_cnt.z == 0 && pcov.cov_cnt.y == 0) return false;
-    const float m = pcov.cov_cnt.z != 0 ? OP_PORTAL_RIM_MARGIN : float(pcov.cov_margin.x);
+    const float m = pcov.cov_cnt.z != 0 ? OP_PORTAL_RIM_MARGIN : pcov.cov_margin.x;
 #else
     if (pcov.cov_cnt.y == 0) return false;
-    const float m = float(pcov.cov_margin.x);
+    const float m = pcov.cov_margin.x;
 #endif
     return op_portal_covered(vec2(pcov.cov_fc.x * gl_FragCoord.x + pcov.cov_fc.y,
                                   pcov.cov_fc.z * gl_FragCoord.y + pcov.cov_fc.w),

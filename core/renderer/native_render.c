@@ -501,19 +501,21 @@ typedef struct {
  * time; cnt.x the plane count, cnt.y 1 when the blended cover is on;
  * margin.x the plane-cover margin;
  * abc the plane's screen field, w = outline point count; bbox and poly the
- * outline, 16 points per plane. */
+ * outline, 16 points per plane. Every member is 32-bit, so the stages need
+ * no shaderFloat64; abc holds the planes' double fields rounded to float,
+ * the precision the cover test computes in. */
 #define NR_COVER_PLANES 6
 typedef struct {
     float   fc[4];
     int32_t cnt[4];
-    double  margin[4];
-    double  abc[NR_COVER_PLANES][4];
+    float   margin[4];
+    float   abc[NR_COVER_PLANES][4];
     float   bbox[NR_COVER_PLANES][4];
     float   poly[NR_COVER_PLANES * 16][4];
 } nr_cover_block;
 typedef char nr_cover_block_layout_assert[
-    (offsetof(nr_cover_block, margin) == 32 && offsetof(nr_cover_block, abc) == 64 &&
-     offsetof(nr_cover_block, bbox) == 256 && offsetof(nr_cover_block, poly) == 352) ? 1 : -1];
+    (offsetof(nr_cover_block, margin) == 32 && offsetof(nr_cover_block, abc) == 48 &&
+     offsetof(nr_cover_block, bbox) == 144 && offsetof(nr_cover_block, poly) == 240) ? 1 : -1];
 static nr_cover_block s_cover_live;   /* the latest terrain feed's planes (fc unset) */
 /* The blended-world emission order a game-render scene recorded
  * (bw_key_order_record): keys in first-emission order and the terrain feed's
@@ -1173,7 +1175,18 @@ void openpete_native_scene_begin(void) {
      * names its frame. A later re-extract of the same tick must not
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* per-present interned slots */ }
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* per-present interned slots */
+    /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
+     * builder tags its build with outside an eager scene
+     * (openpete_native_scene_build_stamp). The present's retained-terrain
+     * selection compares the scene stamp against that tag, so a rebuild left
+     * under the canonical tick's stamp composes the canonical retained terrain
+     * beside the rebuild's own feed. Stamping here keeps the stamp independent
+     * of which producers the body runs; a producer's own begin_frame of the
+     * same VBL is then a no-op and cannot clear what earlier producers fed. */
+    extern unsigned openpete_frame;
+    openpete_native_scene_begin_frame(openpete_frame);
+}
 
 /* VBL stamp of the scene accumulating in s_scene; 0xFFFFFFFF before the
  * first openpete_native_scene_begin_frame. */
@@ -10652,7 +10665,8 @@ static void cover_block_fill(nr_cover_block *b, const openpete_native_cover_plan
     for (int i = 0; i < n; i++) {
         const openpete_native_cover_plane *pp = &planes[i];
         const int pn = pp->pn > 16 ? 16 : pp->pn;
-        b->abc[i][0] = pp->a; b->abc[i][1] = pp->b; b->abc[i][2] = pp->c; b->abc[i][3] = pn;
+        b->abc[i][0] = (float)pp->a; b->abc[i][1] = (float)pp->b;
+        b->abc[i][2] = (float)pp->c; b->abc[i][3] = (float)pn;
         float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
         for (int k = 0; k < pn; k++) {
             b->poly[i * 16 + k][0] = pp->px[k]; b->poly[i * 16 + k][1] = pp->py[k];

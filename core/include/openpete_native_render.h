@@ -1221,8 +1221,12 @@ void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
  * latches the FOV tangent, bumps the scene epoch and resets the per-present
  * material slots. The first re-extract of a tick first records the game
  * render's blended-world key order from the scene it is about to clear; a
- * later re-extract of the same tick keeps that record. The game render's
- * own accumulation begins with openpete_native_scene_begin_frame. */
+ * later re-extract of the same tick keeps that record. It then stamps the
+ * cleared scene with openpete_frame through
+ * openpete_native_scene_begin_frame, so the present stamp matches the stamp
+ * the terrain builder tags the rebuild with whichever producers feed. The
+ * game render's own accumulation begins with
+ * openpete_native_scene_begin_frame. */
 void openpete_native_scene_begin(void);
 /** @brief Mark the scene now accumulating as a sub-tick or lag re-extract's rebuild.
  *

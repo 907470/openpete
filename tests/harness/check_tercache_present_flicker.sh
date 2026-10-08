@@ -33,8 +33,29 @@
 # before every captured present. FAIL lists the pairs; VACUOUS (exit 1) when
 # engagement is short.
 #
+# Path leg (games with a PATH_SPEC row): the camera flies a freecam path
+# (--freecam-path), presents PATH_START.. (PATH_N of them) captured
+# native-only. Class: a sub-tick present composes retained terrain of a
+# different extraction than its CPU-fed terrain (the canonical tick's
+# retained state beside the re-extract's feed), so near terrain lags the
+# camera (seams open onto the clear colour) and sectors owned differently
+# by the two builds draw in neither (a large hole for a present).
+# Metrics, per captured present, on pixels within 2 of the clear colour
+# PATH_CLEAR outside the OSD corner (x >= 690, y < 20):
+#   thin   clear pixels outside 5x5-opened regions (seams), mean per kind
+#   spike  total clear pixels > neighbour median (+-3 presents) + 2000 and
+#          > 2 x median + 500 (a hole for a present)
+#   tc_src composed presents preceded by a re-extract ([rx-census],
+#          OPENPETE_RX_CENSUS) whose retained terrain came from the staged
+#          canonical state (tc_src=3, OPENPETE_FREEZE_DBG): the present
+#          stamp is not the re-extract's build stamp
+# Pass: thin mean <= PATH_THIN_MAX for both kinds, 0 spikes, 0 tc_src=3
+# presents after a re-extract. Engagement: at least PATH_MIN_INTER
+# intermediate presents captured, and the re-extracts fed terrain
+# (sum of the census terrain= counts > 0).
+#
 # Usage: tests/harness/check_tercache_present_flicker.sh [--game SLUG]
-#            [--build-dir=DIR]
+#            [--build-dir=DIR] [--leg=static|path|all]
 #   OPENPETE_TC_FLICKER_EXE   the exe to drive (default: the build's
 #                             windows-mingw exe of the game); a Linux binary
 #                             runs windowed on $DISPLAY or $WAYLAND_DISPLAY
@@ -53,11 +74,14 @@ source scripts/lib/wslenv.sh
 export OPENPETE_VIBRATION=0
 
 PG_BUILD_DIR="build/windows-mingw"
+LEG=all
 for a in "$@"; do
     case "$a" in
         --build-dir=*) PG_BUILD_DIR="${a#--build-dir=}";;
+        --leg=*) LEG="${a#--leg=}";;
     esac
 done
+case "$LEG" in static|path|all) ;; *) echo "tercache-flicker: --leg must be static, path or all"; exit 64;; esac
 
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
@@ -71,10 +95,32 @@ case "$GAME" in
     PRESENTS_START=1900
     MASKS="780,0,10000,20 113,163,188,314"
     ;;
+  spyro-3)
+    # Fireworks Factory at 16:10: terrain dropping out for whole presents.
+    LEVEL="fireworks_factory"
+    POSE="pos=(39952, 29602, 9465) yaw=999 pitch=260"
+    ASPECT="16:10"
+    # Terrain alone: the level's actors and effects move every present.
+    PATHS="terrain"
+    PRESENTS_START=1900
+    MASKS=""
+    # Path leg: an approach-and-sweep over the factory floor, terrain path
+    # alone at 16:10 (waypoints x,y,z,yaw,pitch; 24 ticks per segment).
+    PATH_SPEC="ticks=24; 37952,29602,9465,699,260; 39952,29602,9465,999,260; 41452,31102,10265,1299,180; 39952,29602,9465,999,320; 38952,27602,8465,800,100; 39952,29602,9465,1100,260"
+    PATH_CLEAR="88,20,189"
+    ;;
   *) LEVEL="";;
 esac
 [[ -n "$LEVEL" ]] || { echo "tercache-flicker: SKIP ($GAME has no measured pose)"; exit 64; }
 PRESENTS_N=64
+PATH_SPEC="${PATH_SPEC:-}"
+PATH_START=1900
+PATH_N=300
+PATH_THIN_MAX=60
+PATH_MIN_INTER=100
+[[ "$LEG" == path && -z "$PATH_SPEC" ]] && { echo "tercache-flicker: SKIP ($GAME has no path leg)"; exit 64; }
+ASPECT="${ASPECT:-16:9}"
+PATH_ARGS=(); [[ -n "${PATHS:-}" ]] && PATH_ARGS=(--render-paths "$PATHS")
 MIN_PRESENTS=32
 MIN_INTER=8
 MIN_REGION=100
@@ -100,6 +146,8 @@ LOG="$OUT_ABS/$GAME-present-flicker.log"
 
 wslenv_forward OPENPETE_VIBRATION=0 OPENPETE_TC_DBG=1 OPENPETE_TC_SUBMIT_CENSUS=1
 
+STATIC_RC=0
+if [[ "$LEG" != path ]]; then
 # A loaded machine walks slower, and the capture window may not be reached
 # inside the first frame limit: one retry with a longer limit.
 attempt=1
@@ -108,7 +156,7 @@ while :; do
     rm -f "$LOG" "$OUT_ABS/$GAME"__*.png
     env "${WSLENV_ARGS[@]}" "$EXE" \
         --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
-        --renderer vk --aspect 16:9 --lod extended --terrain-cache 1 \
+        --renderer vk --aspect "$ASPECT" --lod extended --terrain-cache 1 "${PATH_ARGS[@]}" \
         --skip-to-level "$LEVEL" --freecam-pose "$POSE" \
         --screenshot-native-only --screenshot-presents-start "$PRESENTS_START" \
         --screenshot-presents-count "$PRESENTS_N" \
@@ -201,3 +249,116 @@ for p, size, box in hits:
     print("[tercache-flicker]   pair ending at present %d region=%d %s" % (p, size, box))
 sys.exit(rc)
 CENSUS_PY
+STATIC_RC=$?
+fi
+
+PATH_RC=0
+if [[ "$LEG" != static && -n "$PATH_SPEC" ]]; then
+PLOG="$OUT_ABS/$GAME-path.log"
+wslenv_forward OPENPETE_VIBRATION=0 OPENPETE_FREEZE_DBG=1 OPENPETE_RX_CENSUS=0-1000000
+attempt=1
+limit=$((PATH_START + PATH_N + 100))
+while :; do
+    rm -f "$PLOG" "$OUT_ABS/$GAME"-path__*.png
+    env "${WSLENV_ARGS[@]}" "$EXE" \
+        --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
+        --renderer vk --aspect "$ASPECT" --lod extended --terrain-cache 1 "${PATH_ARGS[@]}" \
+        --skip-to-level "$LEVEL" --freecam-path "$PATH_SPEC" \
+        --screenshot-native-only --screenshot-presents-start "$PATH_START" \
+        --screenshot-presents-count "$PATH_N" \
+        --screenshot-output "$OUT_ABS/${GAME}-path__{n}_{p}.png" \
+        --frame-limit "$limit" 2>&1 | tr -d '\r' |
+        grep -E --line-buffered '^\[freeze f=|^\[rx-census|screenshot: wrote|exit: reason|panic|assert' \
+            > "$PLOG"
+    n=$(ls "$OUT_ABS/$GAME"-path__*.png 2>/dev/null | wc -l)
+    [[ "$n" -ge "$PATH_N" ]] && break
+    if [[ "$attempt" -ge 2 ]]; then
+        break
+    fi
+    echo "tercache-flicker: path leg $n presents captured, retrying once with a longer frame limit"
+    attempt=2
+    limit=$((PATH_START + PATH_N + 600))
+    sleep 15
+done
+
+python3 - "$OUT_ABS" "$GAME" "$PLOG" "$PATH_CLEAR" "$PATH_THIN_MAX" "$PATH_MIN_INTER" "$PATH_N" <<'PATH_PY'
+import glob, re, sys
+import numpy as np
+from PIL import Image
+from scipy import ndimage
+
+out, game, log, clear = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+thin_max, min_inter, want = int(sys.argv[5]), int(sys.argv[6]), int(sys.argv[7])
+clr = np.array([int(v) for v in clear.split(",")])
+rx = re.compile(r"__(\d+)_(\d+)\.png$")
+files = sorted((f for f in glob.glob(f"{out}/{game}-path__*.png") if rx.search(f)),
+               key=lambda f: int(rx.search(f).group(2)))
+
+kinds, rx_terrain, rx_n, after_rx, tc3_after, pending = [], 0, 0, 0, 0, False
+for line in open(log, errors="replace"):
+    if line.startswith("[rx-census"):
+        m = re.search(r" terrain=(\d+)", line)
+        rx_terrain += int(m.group(1)) if m else 0
+        rx_n += 1
+        pending = True
+    elif line.startswith("[freeze f="):
+        if pending:
+            after_rx += 1
+            if re.search(r" tc_src=3 ", line):
+                tc3_after += 1
+        pending = False
+    elif "screenshot: wrote" in line:
+        m = re.search(r"kind=native-(\w+)", line)
+        kinds.append(m.group(1) if m else "?")
+
+thin = {"canonical": [], "intermediate": []}
+total = []
+for i, f in enumerate(files):
+    a = np.asarray(Image.open(f).convert("RGB")).astype(int)
+    m = np.abs(a - clr).max(axis=2) <= 2
+    m[:20, 690:] = False
+    big = ndimage.binary_dilation(ndimage.binary_opening(m, np.ones((5, 5))), np.ones((5, 5)))
+    k = kinds[i] if i < len(kinds) else "?"
+    thin.setdefault(k, []).append(int((m & ~big).sum()))
+    total.append(int(m.sum()))
+spikes = []
+for i, n in enumerate(total):
+    lo, hi = max(0, i - 3), min(len(total), i + 4)
+    nb = total[lo:i] + total[i + 1:hi]
+    med = int(np.median(nb)) if nb else n
+    if n > med + 2000 and n > 2 * med + 500:
+        spikes.append((int(rx.search(files[i]).group(2)), n, med))
+mean = {k: (sum(v) / len(v) if v else 0.0) for k, v in thin.items()}
+inter = len(thin.get("intermediate", []))
+
+reasons = []
+if len(files) < want:
+    reasons.append("presents=%d<%d" % (len(files), want))
+if inter < min_inter:
+    reasons.append("intermediate=%d<%d" % (inter, min_inter))
+if len(kinds) != len(files):
+    reasons.append("log names %d captures, %d files" % (len(kinds), len(files)))
+if rx_terrain <= 0:
+    reasons.append("re-extracts fed no terrain (census terrain sum %d over %d)" % (rx_terrain, rx_n))
+fails = []
+for k in ("canonical", "intermediate"):
+    if mean.get(k, 0.0) > thin_max:
+        fails.append("thin %s mean %.1f>%d" % (k, mean[k], thin_max))
+if spikes:
+    fails.append("spikes=%d" % len(spikes))
+if tc3_after:
+    fails.append("tc_src=3 after re-extract on %d of %d presents" % (tc3_after, after_rx))
+verdict, rc = ("VACUOUS", 1) if reasons else (("FAIL", 1) if fails else ("PASS", 0))
+print("[tercache-flicker] path game=%s presents=%d intermediate=%d thin_mean canon=%.1f inter=%.1f "
+      "spikes=%d tc_src3_after_rx=%d of %d rx=%d rx_terrain=%d verdict=%s%s"
+      % (game, len(files), inter, mean.get("canonical", 0.0), mean.get("intermediate", 0.0),
+         len(spikes), tc3_after, after_rx, rx_n, rx_terrain, verdict,
+         (" reason=" + "; ".join(reasons + fails)) if (reasons or fails) else ""))
+for p, n, med in spikes[:16]:
+    print("[tercache-flicker]   spike at present %d clear=%d median=%d" % (p, n, med))
+sys.exit(rc)
+PATH_PY
+PATH_RC=$?
+fi
+[[ "$STATIC_RC" -ne 0 ]] && exit "$STATIC_RC"
+exit "$PATH_RC"
