@@ -194,8 +194,8 @@ uint16_t psyq_game_root_counter2(void) { return 0x58C7u; }
  * Loading state 8 in func_8002CA50 (0x8002CD24) takes the walk's result
  * once per level load: when the cursor 0x8006C6B8 has not reached
  * 0x8007B6E4 or the CRC 0x8006C6B4 is not 0, a rand()-picked word of the
- * table at 0x8002AB38 is zeroed and the game misbehaves later with no
- * message; otherwise both words are cleared. Both conditions are readable
+ * code of func_8002AB38 is zeroed (guest RAM is never executed here, so
+ * the store changes no behaviour); otherwise both words are cleared. Both conditions are readable
  * at the function's entry on the first call with the loading state word
  * 0x8006C518 at 8, so the result is logged there before the game acts on
  * it: a warning on failure, an info line on pass. A failure on the retail
@@ -211,8 +211,8 @@ static void checksum_verdict(CPUState* cpu) {
         uint32_t crc    = cpu->read_word(0x8006C6B4u);
         if (cursor != 0x8007B6E4u || crc != 0u)
             OPL_WARN_F("cd", "checksum walk failed: cursor 0x%08X (end 0x8007B6E4), "
-                       "crc 0x%08X (want 0) at vbl=%d; the game will poison a word "
-                       "of its table at 0x8002AB38",
+                       "crc 0x%08X (want 0) at vbl=%d; the game will zero a word "
+                       "of func_8002AB38",
                        cursor, crc, SDL_GetAtomicInt(&openpete_vbl));
         else
             OPL_INFO_F("cd", "checksum walk passed (vbl=%d)",
