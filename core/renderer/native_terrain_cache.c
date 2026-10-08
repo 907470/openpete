@@ -568,14 +568,31 @@ void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, i
     }
 }
 
-/* Scans the selected state's sector flags, skipping the dead slot. */
+static const tc_state *tc_state_for_stamp(uint32_t stamp, int *src);
+
+/** @brief Test whether a retained state holds a live sector: a nonzero flag word on any slot but the dead one.
+ * @param T The state.
+ * @return 1 when a sector is published, else 0. */
+static int tc_state_content(const tc_state *T)
+{
+    for (int i = 0; i < OPTC_SLOTS; i++)
+        if (i != (int)OPTC_SLOT_DEAD && T->sec[i].o[3] != 0.0f) return 1;
+    return 0;
+}
+
 int openpete_tercache_frame_content(void)
 {
     if (!s_tc.ready) return -1;
     if (!s_tc.draw_open) return 0;
-    for (int i = 0; i < OPTC_SLOTS; i++)
-        if (i != (int)OPTC_SLOT_DEAD && s_tc.sel.sec[i].o[3] != 0.0f) return 1;
-    return 0;
+    return tc_state_content(&s_tc.sel);
+}
+
+int openpete_tercache_build_content(uint32_t stamp)
+{
+    if (!s_tc.ready) return -1;
+    int src = 0;
+    const tc_state *T = tc_state_for_stamp(stamp, &src);
+    return T ? tc_state_content(T) : 0;
 }
 
 /** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
@@ -1623,6 +1640,25 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
     s_tc.build_state = T;
 }
 
+/** @brief Find the retained state built for a stamp: the eager scene ring, then live, then staged.
+ *
+ * The ring is searched only for a stamp carrying OPTC_STAMP_SCENE_BIT.
+ * @param stamp Stamp of the scene.
+ * @param src Receives 1 for a ring state, 2 for live, 3 for staged; left
+ *        unchanged when no state matches.
+ * @return The matching state, or NULL when the cache is not ready or no
+ *         state carries @p stamp. */
+static const tc_state *tc_state_for_stamp(uint32_t stamp, int *src)
+{
+    if (!s_tc.ready) return NULL;
+    if (stamp & OPTC_STAMP_SCENE_BIT)
+        for (int i = 0; i < TC_RING; i++)
+            if (s_tc.ring[i].valid && s_tc.ring[i].stamp == stamp) { *src = 1; return &s_tc.ring[i]; }
+    if (s_tc.live.valid && stamp == s_tc.live.stamp) { *src = 2; return &s_tc.live; }
+    if (s_tc.staged.valid && stamp == s_tc.staged.stamp) { *src = 3; return &s_tc.staged; }
+    return NULL;
+}
+
 /* Selects the retained state whose stamp matches the composed scene. */
 void openpete_tercache_frame_select(uint32_t present_stamp)
 {
@@ -1636,16 +1672,10 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
      * scene N with terrain N-1, and the camera moves between extractions, so
      * the skew bakes a whole-scene rim into the frozen backdrop). No other
      * state may stand in: a scene with no build of its own ran no feed. */
-    const tc_state *R = NULL;
-    if (s_tc.ready && (present_stamp & OPTC_STAMP_SCENE_BIT))
-        for (int i = 0; i < TC_RING; i++)
-            if (s_tc.ring[i].valid && s_tc.ring[i].stamp == present_stamp) { R = &s_tc.ring[i]; break; }
+    int src = 0;
+    const tc_state *R = tc_state_for_stamp(present_stamp, &src);
     if (R) {
-        s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, R); s_tc.sel_src = 1;
-    } else if (s_tc.ready && s_tc.live.valid && present_stamp == s_tc.live.stamp) {
-        s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, &s_tc.live); s_tc.sel_src = 2;
-    } else if (s_tc.ready && s_tc.staged.valid && present_stamp == s_tc.staged.stamp) {
-        s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, &s_tc.staged); s_tc.sel_src = 3;
+        s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, R); s_tc.sel_src = src;
     } else {
         s_tc.draw_open = 0; s_tc.sel_src = 0;
         if (tc_dbg() && s_tc.ready && s_tc.live.valid)

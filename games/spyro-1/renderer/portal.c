@@ -1223,8 +1223,11 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
      * repeatedly mistaken for "the classifier rejected everything". */
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_PORTAL_PLANES_DBG"); dbg = (e && *e && *e != '0'); }
-    if (!s_pcap_valid || s_pcap_n == 0) {
-        if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL no-cap valid=%d n=%d\n", openpete_frame, s_pcap_valid, s_pcap_n);
+    /* No preview paints an opening while the portal path is deselected, so
+     * terrain keeps its faces there. */
+    const int rp = render_path_enabled(RP_PORTAL);
+    if (!rp || !s_pcap_valid || s_pcap_n == 0) {
+        if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL no-cap rp=%d valid=%d n=%d\n", openpete_frame, rp, s_pcap_valid, s_pcap_n);
         return 0;
     }
     if (!canon_epoch_recent(s_pcap_epoch)) {

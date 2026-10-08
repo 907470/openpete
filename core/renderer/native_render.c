@@ -516,7 +516,19 @@ typedef struct {
 typedef char nr_cover_block_layout_assert[
     (offsetof(nr_cover_block, margin) == 32 && offsetof(nr_cover_block, abc) == 48 &&
      offsetof(nr_cover_block, bbox) == 144 && offsetof(nr_cover_block, poly) == 240) ? 1 : -1];
-static nr_cover_block s_cover_live;   /* the latest terrain feed's planes (fc unset) */
+static nr_cover_block s_cover_live;   /* this scene's terrain feed's planes (fc unset) */
+static openpete_native_cover_plane s_cvp[8];   /* the same openings, for the cover check */
+static int   s_cvp_n = 0;
+/** @brief Drop the published portal openings at a scene wipe.
+ *
+ * Only the terrain feed publishes openings (openpete_native_set_cover_planes),
+ * so a scene whose terrain does not feed (a level transition, a render-path
+ * selection without terrain) carries none, instead of the openings of the
+ * last scene that fed terrain. A zero count turns both fragment tests off. */
+static void cover_planes_clear(void) {
+    memset(&s_cover_live, 0, sizeof s_cover_live);
+    s_cvp_n = 0;
+}
 /* The blended-world emission order a game-render scene recorded
  * (bw_key_order_record): keys in first-emission order and the terrain feed's
  * rank among them. The compose sorts re-extracted blended blocks by it. */
@@ -813,6 +825,7 @@ static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop ov
 static int                s_scene_hist_replay[SCENE_HIST]; /* built by a re-extract, per snapshot */
 static int                s_scene_hist_hud_under[SCENE_HIST]; /* flat-HUD-under-player flag, per snapshot */
 static int                s_scene_hist_actor_front[SCENE_HIST]; /* actors-in-front (dragon rescue) flag, per snapshot */
+static nr_cover_block     s_scene_hist_cover[SCENE_HIST]; /* the snapshot's portal openings */
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
 static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
 /* 1 after an eager publish took the accumulator's storage: s_scene holds the
@@ -1175,7 +1188,7 @@ void openpete_native_scene_begin(void) {
      * names its frame. A later re-extract of the same tick must not
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* per-present interned slots */
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); openpete_mods_material_frame_reset(); /* per-present interned slots */
     /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
      * builder tags its build with outside an eager scene
      * (openpete_native_scene_build_stamp). The present's retained-terrain
@@ -1197,6 +1210,7 @@ static unsigned s_scene_game_frame = 0xFFFFFFFFu;
 static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
+static bool scene_accum_has_world(void);                          /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) - capdbg */
 /** @brief Return the ring slot that still holds the scene an eager publish moved out of the accumulator, or NULL.
  *
@@ -1276,6 +1290,7 @@ static void scene_hist_push(void) {
         s_scene_hist_replay[slot] = sl->replay;
         s_scene_hist_hud_under[slot] = sl->hud_under;
         s_scene_hist_actor_front[slot] = sl->actor_front;
+        s_scene_hist_cover[slot] = sl->cover;
         s_scene_hist_head = slot;
         if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         return;
@@ -1288,6 +1303,7 @@ static void scene_hist_push(void) {
     s_scene_hist_replay[slot] = s_scene_replay;
     s_scene_hist_hud_under[slot] = s_scene_hud_under;
     s_scene_hist_actor_front[slot] = s_scene_actor_front;
+    s_scene_hist_cover[slot] = s_cover_live;
     s_scene_hist_head = slot;
     if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
 }
@@ -1353,7 +1369,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
 
         s_cur_seq = 0;
         s_cur_prim = 0;
-        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; s_scene_frame = frame;
+        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
@@ -1379,6 +1395,9 @@ static uint32_t     s_scene_saved_fam[16];
 static uint32_t     s_scene_saved_bg, s_scene_saved_fade, s_scene_saved_freeze;
 static int          s_scene_saved_hud_under, s_scene_saved_actor_front, s_scene_saved_dropped;
 static int          s_scene_saved_ter_after;
+static nr_cover_block s_scene_saved_cover;   /* the scene's portal openings */
+static int          s_scene_saved_cvp_n;
+static openpete_native_cover_plane s_scene_saved_cvp[8];
 static int          s_scene_saved_moved;
 
 int openpete_native_scene_save(void) {
@@ -1391,6 +1410,8 @@ int openpete_native_scene_save(void) {
     s_scene_saved_hud_under = s_scene_hud_under;
     s_scene_saved_actor_front = s_scene_actor_front;
     s_scene_saved_ter_after = s_cur_ter_after;
+    s_scene_saved_cover = s_cover_live; s_scene_saved_cvp_n = s_cvp_n;
+    memcpy(s_scene_saved_cvp, s_cvp, sizeof s_cvp);
     s_scene_saved_dropped = s_scene_dropped;
     s_scene_saved_moved = s_scene_moved;
     return 0;
@@ -1407,6 +1428,8 @@ void openpete_native_scene_restore(void) {
     s_scene_hud_under = s_scene_saved_hud_under;
     s_scene_actor_front = s_scene_saved_actor_front;
     s_cur_ter_after = s_scene_saved_ter_after;
+    s_cover_live = s_scene_saved_cover; s_cvp_n = s_scene_saved_cvp_n;
+    memcpy(s_cvp, s_scene_saved_cvp, sizeof s_cvp);
     s_scene_dropped = s_scene_saved_dropped;
     s_scene_moved = s_scene_saved_moved;   /* the slot still holds the moved scene */
     s_scene_saved_n = -1;
@@ -1427,6 +1450,7 @@ static struct {
     unsigned frame;
     uint32_t bg, fade, freeze;
     int      hud_under, actor_front;
+    nr_cover_block cover;       /* its portal openings */
 } s_scene_game;
 
 /** @brief Keep the game render's accumulated scene before a re-extract wipes it, by exchanging storage.
@@ -1445,6 +1469,7 @@ static void scene_game_retain(void) {
     s_scene_game.freeze = s_scene_freeze;
     s_scene_game.hud_under = s_scene_hud_under;
     s_scene_game.actor_front = s_scene_actor_front;
+    s_scene_game.cover = s_cover_live;
 }
 
 /* ---- frame-close notification ------------------------------------------- */
@@ -1870,6 +1895,16 @@ static op_time_t          s_overlay_curr_ns, s_overlay_prev_ns;
  * 30 Hz (intermediates hold the previous tick's brightness). */
 static uint32_t s_fade_prev, s_fade_curr;
 
+/** @brief Report whether OPENPETE_LOAD_CENSUS is set to a value other than one starting with `0`.
+ *
+ * Read once.
+ * @return 1 when the load-window census is on, else 0. */
+static int load_census_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
 void openpete_native_scene_commit_fade(void) {
     s_fade_prev = s_fade_curr;
     /* The fade is active this tick only if the game actually called set_fade
@@ -1890,15 +1925,19 @@ void openpete_native_scene_commit_fade(void) {
      * its frozen framebuffer persists in VRAM. A handoff frame carries only the reset
      * Spyro (PLAYER) + bg with no real WORLD/ACTOR geometry, so when the freeze is
      * dropping but the scene has no world, hold the previous freeze. A genuine unpause
-     * rebuilds terrain (WORLD) that same tick, so scene_has_world is true and the
-     * freeze drops correctly - the world reappears with no lag. */
+     * feeds terrain that same tick, as WORLD triangles or as retained-cache sectors,
+     * so scene_accum_has_world is true and the freeze drops correctly - the world
+     * reappears with no lag. */
     /* Only the emitted-quad mode has such a gap. Under retention the arming
      * signal is the latched DRAWENV.isbg word: the tick it reads 1 again the
      * game has cleared the framebuffer and draws its own content, so holding
      * the previous freeze would blank that content for as long as the screen
      * stays world-less. */
+    int held = 0;
+    const int ter_fed = s_cur_ter_after;
     if (!s_freeze_retained &&
-        new_freeze == 0 && prev_freeze != 0 && !scene_has_world(s_scene, s_scene_n)) {
+        new_freeze == 0 && prev_freeze != 0 && !scene_accum_has_world()) {
+        held = 1;
         new_freeze = prev_freeze;
         /* The canonical present of this degenerate tick may show the RAW game-fiber
          * scene (the sub-tick re-extract that re-applies the carry is skipped on a
@@ -1908,6 +1947,16 @@ void openpete_native_scene_commit_fade(void) {
         s_scene_freeze = new_freeze;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_cur_ter_after = 0;
     }
+    if (load_census_on() && s_cover_live.cnt[0] > 0 && !ter_fed) {
+        int blend = 0;
+        for (int t = 0; t < s_scene_n; t++) blend += s_scene[t].blend != 0;
+        fprintf(stderr, "[census f=%u COVER] stale planes=%d blend=%d n=%d\n",
+                s_scene_frame, s_cover_live.cnt[0], blend, s_scene_n);
+    }
+    if ((held || new_freeze != prev_freeze) && load_census_on())
+        fprintf(stderr, "[census f=%u FREEZE] prev=%08x new=%08x held=%d ter=%d game=%08x\n",
+                s_scene_frame, prev_freeze, new_freeze, held, ter_fed,
+                s_game_freeze_seen ? s_game_freeze : 0u);
     s_overlay_prev_freeze  = prev_freeze;
     s_overlay_carry_freeze = new_freeze;
     s_game_freeze_seen = 0;
@@ -2254,7 +2303,7 @@ static void held_capture(void) {
     if (!L->valid || L->epoch != ep) { L->n = 0; L->epoch = ep; L->valid = 1; }
     /* A tick that renders the world repaints the buffer under its 2D (the
      * world's sky and terrain cover the screen), so nothing earlier shows. */
-    if (scene_has_world(s_scene, s_scene_n)) L->n = 0;
+    if (scene_accum_has_world()) L->n = 0;
     const int before = L->n;
     held_append(L, s_overlay_carry, s_overlay_carry_n);
     const int added = s_overlay_carry_n < HELD_MAX ? s_overlay_carry_n : HELD_MAX;
@@ -3557,8 +3606,8 @@ static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
  * before the freeze FT4 is emitted, leaving a frame with only Spyro's body,
  * and snapshotting it freezes a near-empty image. SKY qualifies, so a frame
  * holding only the cyclorama dome counts as a gameplay frame. Host-added
- * triangles are ignored. The freeze-source test and the freeze hold at
- * scene begin use it.
+ * triangles are ignored. The freeze-source test uses it, and the freeze
+ * hold and the held-2D reset through scene_accum_has_world.
  * @param scene Scene triangles.
  * @param n Triangle count.
  * @return true when a qualifying triangle is present. */
@@ -3572,6 +3621,21 @@ static bool scene_has_world(const scene_tri_t* scene, int n) {
             return true;
     }
     return false;
+}
+
+static uint32_t scene_accum_stamp(void);   /* defined with the build stamp */
+/** @brief Test whether the scene accumulating in s_scene holds the game's own world, on either terrain route.
+ *
+ * scene_has_world's triangles, or a live sector in the retained terrain
+ * state this scene's terrain build wrote: with the retained cache in use,
+ * every sector the cache draws is skipped by the CPU walk, so a scene whose
+ * view holds only cache-drawn terrain carries no WORLD triangle. The state
+ * is found by the scene's build stamp, not by the present's selection,
+ * since the scene has not been composed yet.
+ * @return true when the scene holds world geometry. */
+static bool scene_accum_has_world(void) {
+    return scene_has_world(s_scene, s_scene_n) ||
+           openpete_tercache_build_content(scene_accum_stamp()) > 0;
 }
 
 /** @brief Test whether the presented scene holds a triangle the game's own render produced.
@@ -10642,8 +10706,6 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
  * A scene-list mirror: feeder drops, category routing, and footprint
  * coverage are attested here; GPU stencil/pass wiring is the presentation
  * golden's job. */
-static openpete_native_cover_plane s_cvp[8];
-static int   s_cvp_n = 0;
 /** @brief Fill a cover block's planes (every field but fc) from the published openings.
  *
  * At most NR_COVER_PLANES planes are kept and at most 16 outline points per
@@ -15633,8 +15695,21 @@ static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
 /** @brief The player shadow fan footprint of the composed scene: the slot's snapshot, or the live block inline. */
 static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot ? &s_ps_slot->shadow_foot : &s_shadow_foot; }
-/** @brief The portal cover planes of the composed scene: the slot's snapshot, or the live block inline. */
-static const nr_cover_block *ps_cover(void) { return s_ps_slot ? &s_ps_slot->cover : &s_cover_live; }
+/** @brief Return the portal openings of the scene the present draws, chosen as scene_present_view chooses the scene.
+ *
+ * The openings travel with their scene: a compose of a kept or history
+ * scene (a framebuffer-copy backdrop, a delayed present) reads the planes
+ * that scene's terrain feed published, not the accumulator's, which a later
+ * scene wipe has cleared.
+ * @return The selected scene's cover block. */
+static const nr_cover_block *ps_cover(void) {
+    if (s_ps_slot) return &s_ps_slot->cover;
+    if (s_fbsnap_game_sel) return &s_scene_game.cover;
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) return &s_scene_hist_cover[slot];
+    const scene_slot_t *ms = scene_moved_slot();
+    return ms ? &ms->cover : &s_cover_live;
+}
 /** @brief The camera the composed scene was projected from: the slot's snapshot, or the live occlusion camera inline. */
 static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
 /** @brief The blended-world order the composed scene recorded: the slot's copy, or the live record inline. */
@@ -15650,6 +15725,14 @@ static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : 
 uint32_t openpete_native_scene_build_stamp(void) {
     extern unsigned openpete_frame;
     return s_eager_stamp ? s_eager_stamp : (uint32_t)openpete_frame;
+}
+/** @brief Return the stamp the terrain build of the scene accumulating in s_scene carries.
+ *
+ * The scene id while an eager scene is being extracted, else the VBL the
+ * scene was opened on.
+ * @return The build stamp. */
+static uint32_t scene_accum_stamp(void) {
+    return s_eager_stamp ? s_eager_stamp : (uint32_t)s_scene_frame;
 }
 void openpete_native_scene_eager_begin(void) {
     s_eager_stamp = OPTC_STAMP_SCENE_BIT | (s_scene_id_next & ~OPTC_STAMP_SCENE_BIT);
@@ -16711,8 +16794,8 @@ static void fbsnap_resolve_census(unsigned frame, int sx, int sy, int w, int h)
         }
         n2d += x0 < (float)(sx + w) && (float)sx < x1 && y0 < (float)(sy + h) && (float)sy < y1;
     }
-    fprintf(stderr, "[fbsnap] resolve want=%u composed=%u game_sel=%d tris=%d 2d_in_rect=%d\n",
-            frame, scene_present_stamp(), s_fbsnap_game_sel, v.n, n2d);
+    fprintf(stderr, "[fbsnap] resolve want=%u composed=%u game_sel=%d tris=%d 2d_in_rect=%d cover=%d\n",
+            frame, scene_present_stamp(), s_fbsnap_game_sel, v.n, n2d, ps_cover()->cnt[0]);
 }
 
 /** @brief Compose a completed scene in memory and crop it to a framebuffer screen rectangle.

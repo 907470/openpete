@@ -107,7 +107,8 @@ int portal_s23_sky_recent(void);
  * @param v The view whose screen offset places the polygon.
  * @param out Receives the planes.
  * @param max The capacity of `out`.
- * @return The number of planes written; 0 when no recent capture holds a preview. */
+ * @return The number of planes written; 0 when no recent capture holds a
+ *         preview or the portal render path is deselected. */
 int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
 
 #endif /* OPENPETE_COMMON_RENDERER_PORTAL_SPYRO23_H */

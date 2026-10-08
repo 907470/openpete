@@ -1062,6 +1062,9 @@ static void p3_skyplane_fill(openpete_portal_skyplane* o, const p3_preview* p, c
 }
 
 int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
+    /* No preview paints an opening while the portal path is deselected
+     * (p3_feed), so terrain keeps its faces there. */
+    if (!render_path_enabled(RP_PORTAL)) return 0;
     if (!s_curr.valid || s_curr.n == 0 || max <= 0) return 0;
     if (openpete_frame - s_curr.frame > 3u) return 0;
     const float offx = (float)(v->ofx - P3_CX), offy = (float)(v->ofy - P3_CY);

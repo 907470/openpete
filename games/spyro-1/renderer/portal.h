@@ -46,7 +46,8 @@ int openpete_portal_capture_follows(CPUState* cpu);
  * @param v   the caller's pass view (camera, offset, H)
  * @param out receives the plane entries
  * @param max capacity of out
- * @return the entry count (0 when no portal sky is active) */
+ * @return the entry count (0 when no portal sky is active or the portal
+ *         render path is deselected) */
 int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
 
 
