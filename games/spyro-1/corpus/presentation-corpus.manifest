@@ -108,6 +108,11 @@ nestor                                   | 1700  | 100  |        | 1710,1875
 particle-circling-stars                  | 1700
 pause-menu-text-moby-swim                | 1700  | 100 | freeze
 pause-menu-text-moby-swim@vpint          | 1750  | 100  | freeze | 1750 | --vertex-precision integer OPENPETE_TERRAIN_CACHE_FORCE=1 PRESENTATION_LEG_TIMEOUT=900
+# pause-unpause@rpcache: unpause with only cache-drawn terrain in the scene
+# (terrain, Spyro and the 2D layer selected, 4:3, cache forced on): the pause
+# freeze stayed up because cache-owned terrain did not count as world.
+# Blessed pre-fix.
+pause-unpause@rpcache                    | 1700  | 100  |        | 1760,1800,2060 | --no-card --aspect 4:3 --render-paths terrain,spyro,ui OPENPETE_TERRAIN_CACHE_FORCE=1
 peace-keepers-terrain-culling            | 1700  | 100  |        | 3230,3238
 portal-cyclorama-cull                    | 1700  | 100  |        | 2000,2156
 portal-ground-disocclusion               | 1700  | 100  |        | 2440,2444
