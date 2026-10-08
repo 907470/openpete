@@ -5,8 +5,8 @@ Input: an OPENPETE_XA_LOG file (`h <vbl> <lba>` once per VBL while a stream
 plays, `x <vbl>` when it stops). A stream segment ends at an `x` line or at
 an LBA step outside [0, 64] between consecutive lines (a new stream start).
 Per segment spanning at least --min-span VBL, the head's rate is the least
-squares slope of LBA on VBL after the first --skip VBL (the decoder's ring
-prefill runs ahead of the rate). A double-speed drive reads 150 sectors per
+squares slope of LBA on VBL after the first --skip VBL (the seek, during
+which the decoder holds at the start LBA). A double-speed drive reads 150 sectors per
 second, 37609/15000 = 2.507267 LBA per VBL at 2250000/37609 VBL per second.
 
 Pass: every qualifying segment's slope within --tol of that rate.

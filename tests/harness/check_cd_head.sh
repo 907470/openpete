@@ -5,8 +5,9 @@
 #
 # Row getlocp/<game> (spyro-2, spyro-3): tools/getlocp_check.py over the
 # game's 20k attract golden's .cdirq sidecar. Every reference CdlGetlocP
-# answer of every streaming run is compared with openpete's head model
-# replayed at the answer's VBL from the run's CdlReadS. Pass: |model -
+# answer of every streaming run is compared with openpete's drive head
+# replayed over the reference's own commands (the seek from the head's
+# position before the run's CdlReadS, then the drive rate). Pass: |model -
 # reference| <= 2 LBA at every answer, at least the golden's run count
 # (spyro-2 23, spyro-3 25). The instrument's positive control (--model
 # calibrate: the drive rate from the fitted seek-latency VBL) must pass on
@@ -15,13 +16,12 @@
 # committed (check_psx_oracle.sh captures it).
 #
 # Row xa/spyro-2: one headless boot run to --frame-limit 3400 under
-# OPENPETE_XA_LOG (the decoder's next LBA once per VBL) and
-# OPENPETE_AUDIO_DUMP (the capture ring is what consumes the decoder's
-# buffers headless; without it the head stops when the ring is full).
-# tools/xa_head_check.py fits the head's LBA on VBL per stream segment of
-# >= 1000 VBL (the title track, VBL ~1060-3250), skipping the first 120
-# VBL of ring prefill. Pass: slope within 0.0005 of 2.507267. Engagement:
-# qualifying segments, nonzero.
+# OPENPETE_XA_LOG (the decoder's next LBA once per VBL) and no audio dump:
+# the decoder follows the drive head, so it advances whether or not any
+# sink drains the render. tools/xa_head_check.py fits the head's LBA on VBL
+# per stream segment of >= 1000 VBL (the title track, VBL ~1060-3250),
+# skipping the first 120 VBL. Pass: slope within 0.0005 of 2.507267.
+# Engagement: qualifying segments, nonzero.
 #
 # Verdict line per row: [cd-head] <row> <instrument verdict line>.
 # Usage: tests/harness/check_cd_head.sh [--build-dir=DIR] [--golden-dir=DIR]
@@ -76,15 +76,15 @@ done
 pg_resolve spyro-2
 out="$ROOT/xa-spyro-2"
 mkdir -p "$out"
-rm -f "$out/run.log" "$out/xa.log" "$out/dump.raw" "$out/dump.raw.idx" "$out/check.txt"
+rm -f "$out/run.log" "$out/xa.log" "$out/check.txt"
 if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" ]]; then
     echo "[cd-head] xa/spyro-2 SKIP (binary or disc missing)"
     skipped=$((skipped + 1))
 else
     ran=$((ran + 1))
-    PG_CAPTURE_ENV=("OPENPETE_XA_LOG=$out/xa.log" "OPENPETE_AUDIO_DUMP=$out/dump.raw")
+    PG_CAPTURE_ENV=("OPENPETE_XA_LOG=$out/xa.log")
     PG_CAPTURE_TIMEOUT=900
-    pg_capture "$out/run.log" "$out/xa.log,$out/dump.raw" -- \
+    pg_capture "$out/run.log" "$out/xa.log" -- \
         --mute 1 --mods "" --frame-limit 3400 </dev/null
     rc=$?
     if (( rc )); then
@@ -102,7 +102,6 @@ else
             (( crc )) && failed=$((failed + 1))
         fi
     fi
-    rm -f "$out/dump.raw" "$out/dump.raw.idx"
 fi
 
 echo "[cd-head] rows ran=$ran failed=$failed skipped=$skipped" \

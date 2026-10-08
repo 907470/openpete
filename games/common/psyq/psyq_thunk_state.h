@@ -23,8 +23,9 @@
  *   [6..16]  intr_cb[11]  interrupt-callback table
  *   [17..23] dma_cb[7]    DMA-callback table
  *   [24]     setloc_sector  last CdlSetloc (pack_ver 2)
- *   [25]     cd_reading     1 while a CdlReadS stream runs, cleared by
- *                           CdlPause, CdlStop or a data read (pack_ver 3)
+ *   [25]     cd_reading     bit 0 while a CdlReadS stream runs, cleared by
+ *                           CdlPause, CdlStop or a data read (pack_ver 3);
+ *                           bit 1 while it streams music (pack_ver 8)
  *   [26]     defer_owed     VBLs until the deferred data read completes
  *   [27]     defer_pending  1 while a data read's completion is deferred
  *   [28]     load_budget    VBLs the current level load has left to spend
@@ -47,6 +48,13 @@
  *                           completes (pack_ver 6)
  *   [45]     spu_clk_frac   remainder of the SPU's samples per VBL, in
  *                           1/715909 samples (pack_ver 7)
+ *   [46]     head_lba       the drive head's rest LBA, or the LBA a moving
+ *                           head reaches at head_t
+ *   [47..48] head_t         when a moving head reaches head_lba, in
+ *                           1/30000 VBL, low word first
+ *   [49]     head_rate      0 idle, 1 single speed, 2 double speed
+ *   [50]     head_speed     speed factor of the last read or play
+ *                           (pack_ver 8)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -57,8 +65,8 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 7u
-#define PSYQ_THUNK_STATE_WORDS    46u
+#define PSYQ_THUNK_STATE_PACK_VER 8u
+#define PSYQ_THUNK_STATE_WORDS    51u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
 #define PSYQ_THUNK_STATE_V2_BYTES 100u
@@ -66,6 +74,7 @@ extern "C" {
 #define PSYQ_THUNK_STATE_V4_BYTES 120u
 #define PSYQ_THUNK_STATE_V5_BYTES 172u
 #define PSYQ_THUNK_STATE_V6_BYTES 180u
+#define PSYQ_THUNK_STATE_V7_BYTES 184u
 
 /** @brief Return the byte length of a pack whose first word is `ver`.
  *

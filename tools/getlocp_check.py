@@ -7,11 +7,18 @@ a CdlReadS (0x1B) at the last CdlSetloc's LBA and ends at CdlPause,
 CdlStop or CdlReadN; every 8-byte response to a CdlGetlocP (0x11) inside
 it is one reference answer, its absolute position at bytes 5..7 (BCD).
 
-Model `openpete` mirrors cd_getlocp_model_lba in
-games/common/psyq/psyq_thunks.cpp: start LBA + floor(vd * 1001 / 400),
-vd = VBLs since the ReadS, floored at 0. --source names that file; the
-check refuses (exit 64) when the mirrored expression is absent from it, so
-a changed model fails loudly here until this mirror follows it.
+Model `openpete` mirrors the drive head in
+games/common/psyq/psyq_thunks.cpp (cd_head_at, cd_head_read and the
+commands that move it), replayed over the reference's own commands: a data
+read (CdlReadN) rests the head after its last sector (the Setloc LBA plus
+its data-ready interrupts), CdlSeekL/CdlSeekP rest it at the Setloc LBA,
+CdlPlay starts it at the Setloc LBA, CdlPause/CdlStop stop it where it is,
+and a CdlReadS starts it at the Setloc LBA after the seek time of the
+distance from its current position (plus the speed-change term when the
+mode's speed differs from the last read's or play's). A moving head
+advances rate * 37609 / 30000 LBA per VBL. --source names that file; the
+check refuses (exit 64) when a mirrored expression is absent from it, so a
+changed model fails loudly here until this mirror follows it.
 Model `calibrate` is the positive control: the drive rate 37609/15000 LBA
 per VBL from the VBL at which a least squares fit of the run's answers
 crosses the start LBA (the seek latency read off the reference itself).
@@ -22,10 +29,20 @@ Verdict line: [getlocp] runs=N answers=A over=O max_abs_diff=D
 verdict=PASS|FAIL|VACUOUS. Exit 0 PASS, 2 FAIL or VACUOUS, 64 input missing.
 """
 import argparse
+import math
 import os
 import sys
 
-MIRRORED = "((int64_t)vd * 1001) / 400"
+MIRRORED = (
+    "#define CD_HEAD_TU 30000u",
+    "#define CD_SEEK_C0            499349u",
+    "#define CD_SEEK_C1_PER_1E5    215288u",
+    "#define CD_SEEK_C2_PER_1E5     73043u",
+    "#define CD_SEEK_SPEED_CHANGE  520500u",
+    "const uint64_t k = (uint64_t)s_head_rate * 37609u * per;",
+)
+TU = 30000
+SEEK_C0, SEEK_C1, SEEK_C2, SEEK_SPEED = 499349, 215288, 73043, 520500
 
 
 def bcd(s):
@@ -39,9 +56,40 @@ def msf_lba(m, s, f):
     return (bcd(m) * 60 + bcd(s)) * 75 + bcd(f) - 150
 
 
+class Head:
+    """The drive head of cd_head_at / cd_head_read: rest or anchor LBA, anchor time (1/TU VBL), rate, last speed."""
+
+    def __init__(self):
+        self.lba, self.t, self.rate, self.speed = 0, 0, 0, 2
+
+    def at(self, t):
+        if not self.rate or t <= self.t:
+            return self.lba
+        return self.lba + (t - self.t) * self.rate * 37609 // 900000000
+
+    def read(self, lba, rate, now):
+        d = abs(lba - self.at(now))
+        seek = SEEK_C0 + d * SEEK_C1 // 100000 + math.isqrt(d * 1000000) * SEEK_C2 // 100000
+        if rate != self.speed:
+            seek += SEEK_SPEED
+        self.lba, self.t, self.rate, self.speed = lba, now + seek, rate, rate
+
+    def play(self, lba, rate, now):
+        self.lba, self.t, self.rate, self.speed = lba, now, rate, rate
+
+    def stop(self, now):
+        if self.rate:
+            self.lba, self.rate = self.at(now), 0
+
+    def rest(self, lba, rate):
+        self.lba, self.rate, self.speed = lba, 0, rate
+
+
 def runs(path):
-    """Streaming runs of the .cdirq at path: dicts with vbl, lba, pts [(vbl, lba)]."""
+    """Streaming runs of the .cdirq at path: dicts with vbl, lba, pts [(vbl, lba)], and the
+    mirrored head as it stood at the run's CdlReadS (key head)."""
     out, cur, setloc, pend = [], None, None, None
+    head, mode, readn = Head(), 0, None
     with open(path) as fh:
         for line in fh:
             f = line.split()
@@ -50,24 +98,45 @@ def runs(path):
             if f[0] == "C":
                 cmd = f[5]
                 pend = cmd
+                now = int(f[3]) * TU
+                rate = 2 if mode & 0x80 else 1
                 if cmd == "0x02" and int(f[6]) == 3:
                     setloc = msf_lba(f[7], f[8], f[9])
+                elif cmd == "0x0E" and int(f[6]) >= 1:
+                    mode = int(f[7], 16)
+                elif cmd in ("0x15", "0x16") and setloc is not None:
+                    head.rest(setloc, head.speed)
+                elif cmd == "0x03" and setloc is not None:
+                    head.play(setloc, rate, now)
+                elif cmd == "0x06":
+                    readn = [setloc or 0, 0, rate]
+                    head.rate = 0
                 elif cmd == "0x1B":
-                    cur = {"vbl": int(f[3]), "lba": setloc, "pts": []}
+                    if setloc is not None:
+                        head.read(setloc, rate, now)
+                    snap = Head()
+                    snap.lba, snap.t, snap.rate, snap.speed = head.lba, head.t, head.rate, head.speed
+                    cur = {"vbl": int(f[3]), "lba": setloc, "pts": [], "head": snap}
                     out.append(cur)
-                elif cmd in ("0x09", "0x08", "0x06"):
+                elif cmd in ("0x09", "0x08"):
+                    if readn:
+                        head.rest(readn[0] + readn[1], readn[2])
+                        readn = None
+                    head.stop(now)
                     cur = None
-            elif pend == "0x11" and f[5] == "8" and cur is not None:
-                r = f[6:14]
-                cur["pts"].append((int(f[3]), msf_lba(r[5], r[6], r[7])))
-                pend = None
+            else:
+                if f[4] == "1" and readn:
+                    readn[1] += 1
+                if pend == "0x11" and f[5] == "8" and cur is not None:
+                    r = f[6:14]
+                    cur["pts"].append((int(f[3]), msf_lba(r[5], r[6], r[7])))
+                    pend = None
     return out
 
 
 def model_openpete(run, vbl):
-    """openpete's head at reference VBL vbl, anchored at the run's ReadS."""
-    vd = max(vbl - run["vbl"], 0)
-    return run["lba"] + vd * 1001 // 400
+    """openpete's drive head at reference VBL vbl, as it stood after the run's CdlReadS."""
+    return run["head"].at(vbl * TU)
 
 
 def make_calibrate(run):
@@ -101,8 +170,9 @@ def main():
         except OSError:
             print(f"[getlocp] model source {a.source} missing", file=sys.stderr)
             return 64
-        if MIRRORED not in src:
-            print(f"[getlocp] {a.source} no longer contains `{MIRRORED}`: update model_openpete",
+        missing = [m for m in MIRRORED if m not in src]
+        if missing:
+            print(f"[getlocp] {a.source} no longer contains `{missing[0]}`: update the Head mirror",
                   file=sys.stderr)
             return 64
     nruns = answers = over = 0

@@ -71,8 +71,7 @@ int  music_override_is_active(void);
  * consumes them per output sample in guest time, after the SPU main
  * volume. Once the WAV is exhausted the stream drains to silence. Looping is the game's: it re-issues the stream read when the CD
  * head passes the track end, which restarts playback from frame 0. No-op
- * while no override is active. Called on every CdSync thunk, beside
- * PsyX_XA_Pump. */
+ * while no override is active. Called on every CdSync thunk. */
 void music_override_pump(void);
 
 /** @brief Set the game-driven music gain, applied unless a forced gain is set.

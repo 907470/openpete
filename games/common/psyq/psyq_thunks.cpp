@@ -180,8 +180,11 @@ extern "C" {
     void PsyX_XA_Start(int sector, int file, int chan);
     void PsyX_XA_Stop(void);
     int  PsyX_XA_IsActive(void);
-    void PsyX_XA_Pump(int maxSectors);
+    void PsyX_XA_PumpTo(int end_lba, long long head_f, int frames_per_lba);
     int  PsyX_XA_GetCurrentSector(void);
+    void PsyX_XA_Stats(unsigned long long* sectors, unsigned long long* silence,
+                       unsigned long long* late, unsigned long long* refused,
+                       unsigned long long* reseeks);
 }
 
 /* Music WAV override (core/host/) - plays assets/music/track_NN.wav in
@@ -205,7 +208,7 @@ extern "C" int g_cdXaStartVBL;
  * the stream. */
 static uint8_t s_cd_mode          = 0;
 static int     s_cd_setloc_sector = 0;
-static uint32_t s_cd_reading      = 0;   /* a CdlReadS stream is running */
+static uint32_t s_cd_reading      = 0;   /* bit 0: a CdlReadS runs; bit 1: it streams music */
 static int     s_xa_filter_file   = 1;
 static int     s_xa_filter_chan   = 0;
 
@@ -215,6 +218,125 @@ static int     s_xa_filter_chan   = 0;
 static uint32_t s_cnt_mode_rt_cleared = 0;
 static uint32_t s_cnt_reads_rt_clear  = 0;
 static uint32_t s_cnt_stream_starts   = 0;
+
+/* The drive head: one position serves the guest's position query
+ * (CdlGetlocP), the seek bit of the drive status, and the XA decoder's
+ * pump. Idle, it rests at s_head_lba. While a read or a play runs it
+ * reaches s_head_lba at time s_head_t, after the seek, and advances from
+ * there at 75 LBA per second times the speed factor: at double speed
+ * 37609/15000 LBA per VBL (150 LBA per second at 2250000/37609 VBLs per
+ * second). Time is in 1/CD_HEAD_TU VBL. The state is set by guest commands
+ * and the guest VBL count, so it travels in the latch pack. */
+#define CD_HEAD_TU 30000u
+static uint32_t s_head_lba   = 0;   /* rest LBA, or the LBA a moving head reaches at s_head_t */
+static uint64_t s_head_t     = 0;   /* when a moving head reaches s_head_lba */
+static uint32_t s_head_rate  = 0;   /* 0 idle, 1 single speed, 2 double speed */
+static uint32_t s_head_speed = 2;   /* speed factor of the last read or play */
+
+/* Seek time of a CdlReadS, read off the reference drive's position answers
+ * (the VBL each streaming run's least-squares fit reaches its start LBA;
+ * 31 runs, seek distances 35174-141299 LBA, 23.7-36.0 VBLs): 16.645 +
+ * 7.17627e-5 d + 0.0243477 sqrt(d) VBLs for a seek of d LBA, within 0.03
+ * VBL of every run. A read at a speed other than the last read's or play's
+ * adds CD_SEEK_SPEED_CHANGE: the one such run (a double-speed stream read
+ * after single-speed CD-DA play, seek about 5900 LBA) took 36.5 VBLs, and
+ * 17.0-17.7 VBLs keeps every answer of the run within 1 LBA. Seeks
+ * outside 35174-141299 LBA are extrapolated. */
+#define CD_SEEK_C0            499349u   /* 16.645 VBL, in CD_HEAD_TU */
+#define CD_SEEK_C1_PER_1E5    215288u   /* per LBA, x 1e5 */
+#define CD_SEEK_C2_PER_1E5     73043u   /* per 1/1000 sqrt(LBA), x 1e5 */
+#define CD_SEEK_SPEED_CHANGE  520500u   /* 17.35 VBL */
+
+/// @brief The guest VBL count as drive-head time (CD_HEAD_TU per VBL).
+static uint64_t cd_head_now(void) {
+    return (uint64_t)(uint32_t)SDL_GetAtomicInt(&openpete_vbl) * CD_HEAD_TU;
+}
+
+/** @brief The head's position at time `t` in units of 1/`per` LBA, floored.
+ *
+ * A moving head advances (t - s_head_t) * rate * 37609 / (CD_HEAD_TU * 30000)
+ * LBA; the product is split by whole VBLs to stay within 64 bits.
+ * @param t Head time (CD_HEAD_TU per VBL).
+ * @param per Units per LBA: 1 for the LBA, 294 for output frames at double speed.
+ * @return The position. */
+static int64_t cd_head_at(uint64_t t, uint32_t per) {
+    const int64_t base = (int64_t)s_head_lba * per;
+    if (s_head_rate == 0u || t <= s_head_t) return base;
+    const uint64_t dt = t - s_head_t;
+    const uint64_t k = (uint64_t)s_head_rate * 37609u * per;
+    const uint64_t a = (dt / CD_HEAD_TU) * k;
+    return base + (int64_t)(a / 30000u + ((a % 30000u) * CD_HEAD_TU + (dt % CD_HEAD_TU) * k) / 900000000u);
+}
+
+/// @brief Floor of the square root of v.
+static uint64_t cd_isqrt(uint64_t v) {
+    uint64_t r = 0, bit = 1ull << 62;
+    while (bit > v) bit >>= 2;
+    while (bit) {
+        if (v >= r + bit) { v -= r + bit; r = (r >> 1) + bit; } else r >>= 1;
+        bit >>= 2;
+    }
+    return r;
+}
+
+/** @brief Start the head moving toward `lba` for a CdlReadS: it reaches it after the seek from its current position and then reads at `rate`.
+ *
+ * @param lba The read's first LBA.
+ * @param rate 1 single speed, 2 double speed. */
+static void cd_head_read(int lba, uint32_t rate) {
+    const uint64_t now = cd_head_now();
+    const int64_t from = cd_head_at(now, 1u);
+    const uint64_t d = (uint64_t)(from > lba ? from - lba : lba - from);
+    uint64_t seek = CD_SEEK_C0 + d * CD_SEEK_C1_PER_1E5 / 100000u +
+                    cd_isqrt(d * 1000000u) * CD_SEEK_C2_PER_1E5 / 100000u;
+    if (rate != s_head_speed) seek += CD_SEEK_SPEED_CHANGE;
+    if (!openpete_speculative)
+        OPL_INFO_F("cd", "head: read at LBA %d from LBA %lld (x%u), seek %llu/%u VBL (vbl %d)",
+                   lba, (long long)from, rate, (unsigned long long)seek, CD_HEAD_TU,
+                   SDL_GetAtomicInt(&openpete_vbl));
+    s_head_lba = (uint32_t)lba;
+    s_head_t = now + seek;
+    s_head_rate = rate;
+    s_head_speed = rate;
+}
+
+/** @brief Start the head playing CD-DA from `lba` at `rate` now, without a seek.
+ *
+ * @param lba The play's first LBA.
+ * @param rate 1 single speed, 2 double speed. */
+static void cd_head_play(int lba, uint32_t rate) {
+    s_head_lba = (uint32_t)lba;
+    s_head_t = cd_head_now();
+    s_head_rate = rate;
+    s_head_speed = rate;
+}
+
+/// @brief Stop a moving head where it is now (CdlPause, CdlStop).
+static void cd_head_stop(void) {
+    if (s_head_rate == 0u) return;
+    s_head_lba = (uint32_t)cd_head_at(cd_head_now(), 1u);
+    s_head_rate = 0u;
+}
+
+/** @brief Rest the head at `lba` after a data read or a seek, read at `rate`.
+ *
+ * @param lba The LBA after the last sector read, or the seek target.
+ * @param rate 1 single speed, 2 double speed. */
+static void cd_head_rest(int lba, uint32_t rate) {
+    s_head_lba = (uint32_t)lba;
+    s_head_rate = 0u;
+    s_head_speed = rate;
+}
+
+/** @brief Whether the head is still seeking to a read's first LBA.
+ *
+ * @return 1 while a moving head has not reached s_head_lba, else 0. */
+static int cd_head_seeking(void) {
+    return s_head_rate != 0u && cd_head_now() < s_head_t;
+}
+
+/// @brief The speed factor a drive mode byte selects: 2 with CdlModeSpeed, else 1.
+static uint32_t cd_mode_rate(uint8_t mode) { return (mode & CdlModeSpeed) ? 2u : 1u; }
 
 /** @brief Write one byte of libcd's state block in guest RAM.
  *
@@ -248,18 +370,21 @@ static void cd_mirror_com(uint8_t com)    { cd_mirror_byte(0x1Du, com); }
 static void cd_mirror_pos(const u_char* loc) {
     for (uint32_t i = 0; i < 4u; i++) cd_mirror_byte(0x18u + i, loc[i]);
 }
-/** @brief Return the model's drive status for a command's first response: motor-on (0x02), plus reading (0x20) while a streaming read runs.
+/** @brief Return the model's drive status for a command's first response: motor-on (0x02), plus seeking (0x40) or reading (0x20) while a streaming read runs.
  *
  * libcd stores the status from a command's first response for every command
  * except the two location queries, whose responses are the position. The
- * model never sets the shell-open, seek or error bits; cd_command_host uses
- * this value only when the golden's controller sidecar holds no reference
- * response. A CdlReadS is acknowledged before its reading starts, so the
- * reading bit appears only through a later command; a stream never polled
- * with a status command keeps the idle value.
+ * model never sets the shell-open or error bits; the seek bit is set until
+ * the drive head reaches the read's first LBA (cd_head_seeking).
+ * cd_command_host uses this value only when the golden's controller sidecar
+ * holds no reference response. A CdlReadS is acknowledged before its
+ * reading starts, so the seek and reading bits appear only through a later
+ * command; a stream never polled with a status command keeps the idle
+ * value.
  * @return The status byte. */
 static uint8_t cd_live_status(void) {
-    return (uint8_t)(0x02u | (s_cd_reading ? 0x20u : 0u));
+    if (!s_cd_reading) return 0x02u;
+    return (uint8_t)(0x02u | (cd_head_seeking() ? 0x40u : 0x20u));
 }
 /* Music level is the product of the two hardware stages the XA stream passes
  * through: its own CD input volume, then the SPU main volume applied to the
@@ -468,6 +593,7 @@ static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what);
 extern "C" uint32_t openpete_psxtrace_anchor_hits;
 extern "C" uint32_t openpete_psxtrace_anchor_hit_target;
 static void psyq_vbl_body(CPUState* cpu, int wait);
+static void cd_stream_pump(int wait);
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
 static void cd_defer_before_call(CPUState* cpu);
 static void cd_defer_after_call(CPUState* cpu);
@@ -720,9 +846,11 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
 
     /* Run the SPU for the VBLs' output samples: the voices' envelopes and
      * heads the guest reads back (key status, ENVX) and the mix, on the
-     * same clock, with or without an audio device. Under the oracle's
-     * seeded clock replay the reference's clock charges it instead
-     * (spu_vbl_samples). */
+     * same clock, with or without an audio device, after the XA decoder
+     * has delivered the sectors the drive head reads in them. Under the
+     * oracle's seeded clock replay the reference's clock charges it
+     * instead (spu_vbl_samples). */
+    cd_stream_pump(wait);
     PsyX_SPUAL_TickEnvelope(spu_vbl_samples(wait));
     audio_dump_drain();
 
@@ -1370,6 +1498,11 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 43, s_cd_defer_stream);
     put_word(p, 44, s_cd_pause_owed);
     put_word(p, 45, (uint32_t)s_spu_clk_frac);
+    put_word(p, 46, s_head_lba);
+    put_word(p, 47, (uint32_t)s_head_t);
+    put_word(p, 48, (uint32_t)(s_head_t >> 32));
+    put_word(p, 49, s_head_rate);
+    put_word(p, 50, s_head_speed);
 }
 
 extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
@@ -1379,7 +1512,8 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 4u) return PSYQ_THUNK_STATE_V4_BYTES;
     if (ver == 5u) return PSYQ_THUNK_STATE_V5_BYTES;
     if (ver == 6u) return PSYQ_THUNK_STATE_V6_BYTES;
-    if (ver == 7u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 7u) return PSYQ_THUNK_STATE_V7_BYTES;
+    if (ver == 8u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -1393,6 +1527,33 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
 static uint8_t cd_mode_from_armed_bit(uint32_t armed) {
     return armed ? (uint8_t)(CdlModeRT | CdlModeSF | CdlModeSpeed)
                  : (uint8_t)CdlModeSpeed;
+}
+
+/** @brief Load the drive head from pack `p` of version `ver`.
+ *
+ * A pack before version 8 holds no head: a running stream read (bit 0 of
+ * the reading latch) under a CdlModeRT mode was music, and its head is
+ * rebuilt at double speed from the stream's anchor in the core CD section
+ * (loaded before the pack), without a seek; otherwise the head rests at
+ * LBA 0.
+ * @param p The pack.
+ * @param ver Its version. */
+static void cd_head_load(const uint8_t* p, uint32_t ver) {
+    if (ver >= 8u) {
+        s_head_lba   = get_word(p, 46);
+        s_head_t     = (uint64_t)get_word(p, 48) << 32 | get_word(p, 47);
+        s_head_rate  = get_word(p, 49);
+        s_head_speed = get_word(p, 50);
+        return;
+    }
+    s_head_speed = 2u;
+    s_head_rate = 0u;
+    s_head_lba = 0u;
+    if (!(s_cd_reading & 1u) || !(s_cd_mode & CdlModeRT)) return;
+    s_cd_reading |= 2u;
+    s_head_lba = (uint32_t)g_cdXaStartLBA;
+    s_head_t = (uint64_t)(uint32_t)g_cdXaStartVBL * CD_HEAD_TU;
+    s_head_rate = 2u;
 }
 
 extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
@@ -1432,6 +1593,7 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     /* A pack without the SPU period's remainder predates the exact period:
      * the next VBL starts a fresh one. */
     s_spu_clk_frac     = (ver >= 7u) ? get_word(p, 45) : 0u;
+    cd_head_load(p, ver);
     uint32_t card[PSX_BIOS_CARD_STATE_WORDS] = { 0u };
     if (ver >= 5u)
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = get_word(p, 31u + i);
@@ -1466,6 +1628,10 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_cd_defer_stream  = 0x19u;
     s_cd_pause_owed    = 0xD5D5001Bu;
     s_spu_clk_frac     = 0xD5D5001Du;
+    s_head_lba         = 0xD5D5001Fu;
+    s_head_t           = 0xD5D50023D5D50021ull;
+    s_head_rate        = 0x25u;
+    s_head_speed       = 0x27u;
     {
         uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = 0xE5E50001u + 2u * i;
@@ -2562,24 +2728,66 @@ void psyq_CdInit(CPUState* cpu) {
     cpu->v0 = (uint32_t)rc;
 }
 
+/* The music the host plays: the stream (its CdlReadS anchor LBA and VBL)
+ * whose audio the host started, LBA 0 when none. The routes the game chose
+ * for the last streams anchored, keyed by anchor, let cd_stream_host_sync
+ * start a stream whose CdlReadS ran in a speculation the timeline adopted,
+ * or that a rewind returned to. Host state. */
+static int s_host_stream_lba = 0, s_host_stream_vbl = 0;
+#define CD_ROUTE_HISTORY 8
+static struct { int lba, vbl; psyq_music_route_t route; } s_routes[CD_ROUTE_HISTORY];
+static uint32_t s_route_next = 0;
+
+/** @brief Stop the host's music: the XA decoder and a WAV override. */
+static void cd_stream_host_stop(void) {
+    if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+    music_override_stop();
+    s_host_stream_lba = 0;
+    s_host_stream_vbl = 0;
+}
+
+/** @brief Start the host's music for the stream anchored at (`lba`, `vbl`) on `route`.
+ *
+ * Exactly one of a custom song by path, a WAV override by track, or the XA
+ * decoder at `lba` then owns playback, tried in that order; starting an
+ * override stops XA, and starting XA stops the override.
+ * @param lba The stream's start LBA.
+ * @param vbl The VBL of its CdlReadS.
+ * @param route The game's route for it. */
+static void cd_stream_host_start(int lba, int vbl, const psyq_music_route_t* route) {
+    s_host_stream_lba = lba;
+    s_host_stream_vbl = vbl;
+    /* One line per track start / loop (every couple of minutes), so a
+     * music report can be read off an ordinary log: the gap between two
+     * of these is the loop period the guest measured. */
+    s_cnt_stream_starts++;
+    OPL_INFO_F("music", "stream start: track %d LBA %d chan %d vbl %d (at vbl %d)",
+               route->track, lba, s_xa_filter_chan, vbl, SDL_GetAtomicInt(&openpete_vbl));
+    if (route->custom_path && music_override_try_start_path(route->custom_path, lba)) {
+        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+        return;
+    }
+    if (music_override_try_start(route->track, lba)) {
+        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+        return;
+    }
+    music_override_stop();
+    PsyX_XA_Start(lba, s_xa_filter_file, s_xa_filter_chan);
+}
+
 /** @brief Route a streaming read issued under an XA mode to one music source.
  *
- * Anchors the virtual streaming head (g_cdXaStartLBA, g_cdXaStartVBL) and
- * lets the game fill the route (its track index, a custom song's path);
- * both run during runahead speculation, since they are guest-deterministic
- * or roll back with the tick. On a committed tick exactly one of a custom
- * song by path, a WAV override by track, or the XA decoder at `sector` then
- * owns playback, tried in that order; starting an override stops XA, and
- * starting XA stops the override.
+ * Anchors the music stream (g_cdXaStartLBA, g_cdXaStartVBL), marks the
+ * stream running (bit 1 of s_cd_reading) and lets the game fill the route
+ * (its track index, a custom song's path); these run during runahead
+ * speculation too, since they are guest-deterministic or roll back with
+ * the tick. The route is recorded under the anchor; on a committed tick the
+ * host's music then starts (cd_stream_host_start).
  * @param sector The read's start LBA. */
 static void start_music_stream(int sector) {
-    /* Anchor the VIRTUAL streaming head first - guest-deterministic and
-     * snapshotted, so it runs during speculation too (the game's ReadS
-     * command is guest code; only the host-audio half below is
-     * speculation-suppressed). The GetlocP override in psyq_CdSync
-     * synthesizes the position the game reads from this anchor. */
     g_cdXaStartLBA = sector;
     g_cdXaStartVBL = SDL_GetAtomicInt(&openpete_vbl);
+    s_cd_reading |= 2u;
 
     /* The game's route runs before the speculation check: its guest RAM
      * writes are part of the tick and roll back with it. */
@@ -2587,38 +2795,73 @@ static void start_music_stream(int sector) {
     route.track = -1;
     route.custom_path = NULL;
     psyq_game_music_route(sector, &route);
+    s_routes[s_route_next].lba = sector;
+    s_routes[s_route_next].vbl = g_cdXaStartVBL;
+    s_routes[s_route_next].route = route;
+    s_route_next = (s_route_next + 1u) % CD_ROUTE_HISTORY;
 
     /* Runahead lookahead: starting host audio (WAV override or XA) from a
      * speculative tick would be audible and then re-fired by the committed
      * re-run. Guest-side effects of the read roll back regardless. */
     if (openpete_speculative) return;
-    /* One line per track start / loop (every couple of minutes), so a
-     * music report can be read off an ordinary log: the gap between two
-     * of these is the loop period the guest measured. */
-    s_cnt_stream_starts++;
-    OPL_INFO_F("music", "stream start: track %d LBA %d chan %d vbl %d",
-               route.track, sector, s_xa_filter_chan, g_cdXaStartVBL);
-    if (route.custom_path &&
-        music_override_try_start_path(route.custom_path, sector)) {
-        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
-        return;
-    }
-    if (music_override_try_start(route.track, sector)) {
-        if (PsyX_XA_IsActive()) PsyX_XA_Stop();
-        return;
-    }
-    music_override_stop();
-    PsyX_XA_Start(sector, s_xa_filter_file, s_xa_filter_chan);
+    cd_stream_host_start(sector, g_cdXaStartVBL, &route);
 }
 
-/// @brief Log the music routing counters; registered with atexit by cd_set_mode.
+/** @brief Make the host's music follow the guest's stream on a committed tick.
+ *
+ * A stop or a CdlReadS issued in a speculation the timeline adopted, or a
+ * rewind to another stream, leaves the host on a stream the guest is not
+ * reading: the host stops when the guest reads none and starts the guest's
+ * stream on its recorded route. A stream with no recorded route stops the
+ * host. */
+static void cd_stream_host_sync(void) {
+    if (!(s_cd_reading & 2u)) {
+        if (s_host_stream_lba) cd_stream_host_stop();
+        return;
+    }
+    if (s_host_stream_lba == g_cdXaStartLBA && s_host_stream_vbl == g_cdXaStartVBL) return;
+    cd_stream_host_stop();
+    for (uint32_t i = 0; i < CD_ROUTE_HISTORY; i++)
+        if (s_routes[i].lba == g_cdXaStartLBA && s_routes[i].vbl == g_cdXaStartVBL) {
+            cd_stream_host_start(g_cdXaStartLBA, g_cdXaStartVBL, &s_routes[i].route);
+            return;
+        }
+    /* Held as the host's stream with nothing playing, so the warning is
+     * written once. */
+    s_host_stream_lba = g_cdXaStartLBA;
+    s_host_stream_vbl = g_cdXaStartVBL;
+    OPL_WARN_F("music", "stream at LBA %d (vbl %d) has no recorded route; host music stopped",
+               g_cdXaStartLBA, g_cdXaStartVBL);
+}
+
+/** @brief Start the drive head on a CdlReadS at `sector` and, under an XA mode, the music stream; return whether the command was consumed.
+ *
+ * @param sector The read's first LBA.
+ * @return 1 when the read streams music (consumed here), else 0. */
+static int cd_read_stream(int sector) {
+    s_cd_reading = 1u;
+    cd_head_read(sector, cd_mode_rate(s_cd_mode));
+    if (!(s_cd_mode & CdlModeRT)) {
+        s_cnt_reads_rt_clear++;
+        return 0;
+    }
+    start_music_stream(sector);
+    return 1;
+}
+
+/// @brief Log the music routing and XA delivery counters; registered with atexit by cd_set_mode.
 static void cd_exit_summary(void) {
     unsigned long long cd_frames = 0, cd_starved = 0;
+    unsigned long long xa_sectors = 0, xa_silence = 0, xa_late = 0, xa_refused = 0, xa_reseeks = 0;
     PsyX_SPUAL_CDInputStats(&cd_frames, &cd_starved);
+    PsyX_XA_Stats(&xa_sectors, &xa_silence, &xa_late, &xa_refused, &xa_reseeks);
     OPL_INFO_F("music", "summary: stream_starts=%u mode_rt_cleared=%u "
-               "reads_rt_clear=%u cd_input_frames=%llu cd_input_starved=%llu",
+               "reads_rt_clear=%u cd_input_frames=%llu cd_input_starved=%llu "
+               "xa_sectors=%llu xa_silence_frames=%llu xa_late_frames=%llu "
+               "xa_refused_frames=%llu xa_reseeks=%llu",
                s_cnt_stream_starts, s_cnt_mode_rt_cleared,
-               s_cnt_reads_rt_clear, cd_frames, cd_starved);
+               s_cnt_reads_rt_clear, cd_frames, cd_starved,
+               xa_sectors, xa_silence, xa_late, xa_refused, xa_reseeks);
 }
 
 /** @brief Set the drive's mode byte and mirror it into libcd's state block.
@@ -2666,10 +2909,14 @@ static int cd_command_host(u_char com, u_char* param) {
         } else cd_mirror_status(cd_live_status());
     }
     /* libcd keeps the CdlLOC parameter of a positional command: CdlReadS,
-     * CdlReadN, CdlSeekL and CdlSeekP here, CdlSetloc below. */
+     * CdlReadN, CdlSeekL and CdlSeekP here, CdlSetloc below. Without a
+     * parameter the command acts at the drive's last Setloc. */
+    int loc = s_cd_setloc_sector;
     if (param && (com == CdlReadS || com == CdlReadN || com == CdlSeekL ||
-                  com == CdlSeekP))
+                  com == CdlSeekP)) {
         cd_mirror_pos(param);
+        loc = CdPosToInt((CdlLOC*)param);
+    }
     switch (com) {
         case CdlSetloc:
             if (param) {
@@ -2696,28 +2943,24 @@ static int cd_command_host(u_char com, u_char* param) {
             }
             return 0;
         }
-        case CdlReadS: {
-            /* A CdlReadS with no param reads from the drive's last Setloc. */
-            const int sector = param ? CdPosToInt((CdlLOC*)param)
-                                     : s_cd_setloc_sector;
-            s_cd_reading = 1u;
-            if (!(s_cd_mode & CdlModeRT)) {
-                s_cnt_reads_rt_clear++;
-                return 0;
-            }
-            start_music_stream(sector);
-            return 1;
-        }
+        case CdlReadS:
+            return cd_read_stream(loc);
+        case CdlPlay:
+            cd_head_play(loc, cd_mode_rate(s_cd_mode));
+            return 0;
+        case CdlSeekL:
+        case CdlSeekP:
+            cd_head_rest(loc, s_head_speed);
+            return 0;
         case CdlPause:
         case CdlStop:
         case CdlReadN:
             /* A data read or a stop ends the stream; PsyCross's read would
              * seek the same image file. Host audio only, so not under
-             * speculation (see start_music_stream). */
-            if (!openpete_speculative) {
-                if (PsyX_XA_IsActive()) PsyX_XA_Stop();
-                music_override_stop();
-            }
+             * speculation (see start_music_stream); a stop a speculation
+             * adopted into the timeline is applied by cd_stream_host_sync. */
+            if (!openpete_speculative) cd_stream_host_stop();
+            cd_head_stop();
             /* Pause and Stop complete with a second response whose status is
              * idle; the motor-off bit a CdlStop clears on hardware is not
              * measured. A CdlReadN's completion is written by psyq_CdRead. */
@@ -2914,6 +3157,8 @@ void psyq_CdRead(CPUState* cpu) {
      * mode byte reads mode | 0x20 after a read; PsyCross's CdRead only
      * enqueues, so the mirror is written here. */
     cd_set_mode((uint8_t)(mode | 0x20));
+    /* The head comes to rest after the read's last sector. */
+    cd_head_rest(s_cd_setloc_sector + sectors, cd_mode_rate((uint8_t)mode));
     /* libcd's CdRead issues CdlSetmode and CdlReadN; the command byte and
      * the drive's first response are what the game reads while the read
      * is in flight, its first data response from the VBLANK it arrived
@@ -3130,17 +3375,67 @@ static int cd_stream_pause_answer(int mode, int rc) {
     return (mode != 0 && s_cd_pause_owed && !openpete_sched_active()) ? CdlNoIntr : rc;
 }
 
-/** @brief The virtual music head's LBA at the current guest VBL, the position a CdlGetlocP answers outside sidecar replay.
+/** @brief The drive head's LBA at the current guest VBL, the position a CdlGetlocP answers outside sidecar replay.
  *
- * The head starts at g_cdXaStartLBA at the streaming read's VBL
- * (g_cdXaStartVBL) and advances 1001/400 LBA per VBL; a VBL before the
- * anchor reads the anchor. Guest-deterministic: both anchors are set by the
- * game's own CdlReadS and the VBL counter is guest state.
+ * Guest-deterministic: the head moves on the game's own commands and the
+ * VBL count (cd_head_at).
  * @return The head's LBA. */
 static int cd_getlocp_model_lba(void) {
-    int32_t vd = SDL_GetAtomicInt(&openpete_vbl) - g_cdXaStartVBL;
-    if (vd < 0) vd = 0;
-    return g_cdXaStartLBA + (int)(((int64_t)vd * 1001) / 400);
+    return (int)cd_head_at(cd_head_now(), 1u);
+}
+
+/** @brief Under OPENPETE_XA_LOG=<path>, write the XA decoder's sector head once per guest VBL while a stream plays.
+ *
+ * Line `h <vbl> <lba>`: the decoder's next LBA after the VBL's pump
+ * (cd_stream_pump). Line `x <vbl>`: the decoder stopped. Speculative ticks
+ * write nothing. The file is truncated on open and starts with a version
+ * line.
+ */
+static void xa_head_log(void) {
+    static FILE* s_f = NULL;
+    static int s_tried = 0, s_last_vbl = -1, s_was_active = 0;
+    if (!s_tried) {
+        s_tried = 1;
+        const char* path = std::getenv("OPENPETE_XA_LOG");
+        if (path && *path) {
+            s_f = std::fopen(path, "w");
+            if (s_f) std::fputs("# xa-head-log 1\n", s_f);
+            else OPL_WARN_F("audio", "OPENPETE_XA_LOG: cannot open %s", path);
+        }
+    }
+    if (!s_f || openpete_speculative) return;
+    const int vbl = (int)SDL_GetAtomicInt(&openpete_vbl);
+    const int active = PsyX_XA_IsActive();
+    if (!active) {
+        if (s_was_active) { std::fprintf(s_f, "x %d\n", vbl); std::fflush(s_f); }
+        s_was_active = 0;
+        return;
+    }
+    s_was_active = 1;
+    if (vbl == s_last_vbl) return;
+    s_last_vbl = vbl;
+    std::fprintf(s_f, "h %d %d\n", vbl, PsyX_XA_GetCurrentSector());
+    std::fflush(s_f);
+}
+
+/** @brief Advance the XA decoder to the drive head over the `wait` VBLs the SPU is about to render, after reconciling the host's music with the guest's stream on a committed tick.
+ *
+ * The decoder is pumped only while the guest streams music and the host
+ * plays that same stream: a CdlReadS a speculation issued has not started
+ * host audio, and its head must not drive the decoder of the stream before
+ * it. The head's position at the render's current sample is the position
+ * `wait` VBLs ago; a matching sector plays from when the head has read it.
+ * @param wait VBLs the VBL body is about to render. */
+static void cd_stream_pump(int wait) {
+    if (!openpete_speculative) cd_stream_host_sync();
+    if ((s_cd_reading & 2u) && s_host_stream_lba == g_cdXaStartLBA &&
+        s_host_stream_vbl == g_cdXaStartVBL && s_head_rate != 0u) {
+        const uint64_t now = cd_head_now();
+        const uint32_t per = 588u / s_head_rate;   /* output frames per LBA at the head's speed */
+        PsyX_XA_PumpTo((int)cd_head_at(now, 1u),
+                       (long long)cd_head_at(now - (uint64_t)wait * CD_HEAD_TU, per), (int)per);
+    }
+    xa_head_log();
 }
 
 /// @brief Exit line of the OPENPETE_GETLOCP_AB comparison: answers compared, answers over 2 LBA apart, the largest difference.
@@ -3182,40 +3477,32 @@ static void getlocp_ab_compare(const u_char* result) {
             (int)SDL_GetAtomicInt(&openpete_vbl), g_cdXaStartLBA, g_cdXaStartVBL, model, ref, d);
 }
 
-/** @brief Under OPENPETE_XA_LOG=<path>, write the XA decoder's sector head once per guest VBL while a stream plays.
+/** @brief Write the drive head's position into a CdlGetlocP answer: the reference drive's answer under the golden's sidecar, else the head model's once a music stream has been anchored.
  *
- * Line `h <vbl> <lba>`: the decoder's next LBA after the pump of the
- * VBL's first CdSync call. Line `x <vbl>`: the decoder stopped. Speculative ticks write nothing. The file is truncated
- * on open and starts with a version line.
- */
-static void xa_head_log(void) {
-    static FILE* s_f = NULL;
-    static int s_tried = 0, s_last_vbl = -1, s_was_active = 0;
-    if (!s_tried) {
-        s_tried = 1;
-        const char* path = std::getenv("OPENPETE_XA_LOG");
-        if (path && *path) {
-            s_f = std::fopen(path, "w");
-            if (s_f) std::fputs("# xa-head-log 1\n", s_f);
-            else OPL_WARN_F("audio", "OPENPETE_XA_LOG: cannot open %s", path);
-        }
-    }
-    if (!s_f || openpete_speculative) return;
-    const int vbl = (int)SDL_GetAtomicInt(&openpete_vbl);
-    const int active = PsyX_XA_IsActive();
-    if (!active) {
-        if (s_was_active) { std::fprintf(s_f, "x %d\n", vbl); std::fflush(s_f); }
-        s_was_active = 0;
+ * Spyro's track-end detection compares the absolute position (bytes 5..7,
+ * BCD minute, second, sector) with the track's end in its music table, so
+ * the answer is the drive head (cd_getlocp_model_lba), never the XA
+ * decoder's position. Before the first music stream PsyCross's answer
+ * stands.
+ * @param result The 8-byte answer buffer. */
+static void cd_getlocp_answer(u_char* result) {
+    if (s_getlocp_ref_valid) {
+        /* The reference drive's answer to the last position query, under
+         * the golden's controller sidecar: the head's position as the drive
+         * reported it, seek and read timing included. */
+        memcpy(result, s_getlocp_ref, 8);
+        getlocp_ab_compare(result);
         return;
     }
-    s_was_active = 1;
-    if (vbl == s_last_vbl) return;
-    s_last_vbl = vbl;
-    std::fprintf(s_f, "h %d %d\n", vbl, PsyX_XA_GetCurrentSector());
-    std::fflush(s_f);
+    if (g_cdXaStartLBA <= 0) return;
+    CdlLOC abs;
+    CdIntToPos(cd_getlocp_model_lba(), &abs);
+    result[5] = abs.minute;
+    result[6] = abs.second;
+    result[7] = abs.sector;
 }
 
-/** @brief CdSync thunk: pumps XA and the music override, then returns PsyCross's CD command status, with an optional per-VBL spin limit.
+/** @brief CdSync thunk: pumps the music override, then returns PsyCross's CD command status, with an optional per-VBL spin limit.
  *
  * @param cpu Guest CPU state; a0 is the mode, a1 the result buffer, v0 receives the status. */
 void psyq_CdSync(CPUState* cpu) {
@@ -3233,8 +3520,8 @@ void psyq_CdSync(CPUState* cpu) {
     u_char* result = (u_char*)SPAN_OPT(cpu->a1, PSYQ_CD_RESULT_SIZE);
     if (!result) result = scratch;
 
-    /* Pump XA every CdSync - this is Spyro's per-frame music tick. */
-    PsyX_XA_Pump(0);
+    /* The WAV override's stream refills on every CdSync; XA is pumped by
+     * the drive head from the VBL body (cd_stream_pump). */
     music_override_pump();
 
     if (mode == 0) cd_charge_pending(cpu, "CdSync");
@@ -3301,45 +3588,7 @@ void psyq_CdSync(CPUState* cpu) {
         }
     }
 
-    /* Override PsyCross's GetlocP fake-position with the VIRTUAL music
-     * head so Spyro's track-end detection (compares position to
-     * m_MusicTable.end) fires at hardware rate. result[5..7] = absolute
-     * MSF.
-     *
-     * NOT the host decoder's real playhead: that advances on the AUDIO
-     * clock (up to kPumpBatch=8 sectors per pump - ~3x faster than a
-     * real drive - and frozen during runahead speculation, where wall
-     * time doesn't pass). Feeding it to the guest makes m_TrackPosition
-     * a stealth host-state read: track ends fire early vs PSX, and
-     * runahead's led/committed predictions diverge the moment music
-     * starts.
-     *
-     * Rate = 150 sectors per wall-second of GUEST time, i.e. DOUBLE
-     * speed, because that is how the music is streamed: SetMusicState
-     * issues CdlModeSF|CdlModeRT|CdlModeSpeed with chan = track % 8,
-     * the textbook 8-channel 37.8 kHz-stereo XA layout. Each matching
-     * sector carries 53.3 ms of audio and only 1 sector in 8 matches
-     * the filter, so real-time playback burns 150 LBA/s and a real
-     * drive's head - which is what CdlGetlocP reports - covers the
-     * same 150. At single speed the guest sees a track as twice its
-     * true length: the audio runs out mid-track and the decoder walks
-     * on into the next XA file's stream on the same channel (which is
-     * an unrelated level's theme) until the late loop finally fires.
-     * 150/59.94 = 1001/400 per VBL - deterministic and snapshotted. */
-    if (g_CD_com == CdlGetlocP && mode == 1 && s_getlocp_ref_valid) {
-        /* The reference drive's answer to the last position query, under
-         * the golden's controller sidecar: the head's position as the drive
-         * reported it, seek and read timing included. */
-        memcpy(result, s_getlocp_ref, 8);
-        getlocp_ab_compare(result);
-    } else if (g_cdXaStartLBA > 0 && g_CD_com == CdlGetlocP && mode == 1) {
-        CdlLOC abs;
-        CdIntToPos(cd_getlocp_model_lba(), &abs);
-        result[5] = abs.minute;
-        result[6] = abs.second;
-        result[7] = abs.sector;
-    }
-    xa_head_log();
+    if (g_CD_com == CdlGetlocP && mode == 1) cd_getlocp_answer(result);
     /* Don't log every CdSync - busy-loops would flood. Sample every 2^22
      * calls. */
     static uint32_t calls = 0;
