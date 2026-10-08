@@ -165,9 +165,36 @@ pg_enter_capture_image() {  # [--no-build|--no-engine] script args...
 # which scripts/presentation-blessed.py reads the Mesa and device strings a
 # manifest header records. args: log outdir
 pg_note_device() {
-  grep -a -o "\[rhi/vk\] device='[^']*'.* driver-info='[^']*'" "$1" 2>/dev/null \
-    | head -1 >>"$2/capture-device.txt"
+  pg_device_line "$1" >>"$2/capture-device.txt"
   return 0
+}
+
+# Print a capture log's first Vulkan device line (empty when it has none).
+# args: log
+pg_device_line() {
+  grep -a -o "\[rhi/vk\] device='[^']*'.* driver-info='[^']*'" "$1" 2>/dev/null | head -1
+  return 0
+}
+
+# Capture settings both corpora read from the environment, defaults in one
+# place (a resumed attempt compares them against a row's completion stamp):
+#   PG_CAP_ASPECT     OPENPETE_CAP_ASPECT, default 16:9 (the golden is widescreen)
+#   PG_CAP_LODS       OPENPETE_CAP_LODS, default "original extended"
+#   PG_MAX_SAMPLES    OPENPETE_MAX_SAMPLES, canonical samples per bk2, default 5
+#   PG_FREECAM_START  OPENPETE_FREECAM_START, a freecam row's default canonical VBL, 1900
+pg_cap_settings() {
+  PG_CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
+  PG_CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
+  PG_MAX_SAMPLES="${OPENPETE_MAX_SAMPLES:-5}"
+  PG_FREECAM_START="${OPENPETE_FREECAM_START:-1900}"
+}
+
+# A freecam row's tile key: the row's level field plus the first six hex
+# digits of the pose's md5, so two poses in one level never collide and the
+# key survives re-ordering the manifest. args: level-field pose
+pg_pose_slug() {
+  local h; h="$(printf '%s' "$2" | md5sum | cut -c1-6)"
+  echo "${1}-${h}"
 }
 
 # ---- corpus manifests ------------------------------------------------------

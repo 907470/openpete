@@ -125,7 +125,12 @@ coordinator:
      expected time / speed x 2; a lost, dead or overdue attempt is killed
      (supervisor by PID and start time, containers by the label
      org.openpete.fleet=<run-id>) and re-queued once the golden lock is free,
-     at most twice; a host unreachable for 10 min is dropped;
+     at most twice; a host unreachable for 10 min is dropped. A unit or
+     canary runs with OPENPETE_RESUME_RUN=<run-id>: every manifest row it
+     finishes is stamped (scripts/corpus-resume.sh), and a re-queued attempt
+     on the same host imports the stamped rows whose run, tree, binary,
+     manifest line and tile digests match, deletes the rest of the previous
+     attempt's output and captures only the other rows;
   5. runs a canary (one bk2 and one freecam level of the first unit's game)
      on every host first when two or more hosts capture, and refuses the run
      when a canary tile's digest differs between hosts;
@@ -136,7 +141,8 @@ coordinator:
      the cleared local candidate directory (build/presentation-candidate and
      its per-game and dragon forms, or PRESENTATION_GOLDEN_OUT), refuses a
      unit whose report's blessed.tsv or identity-baseline hash or census
-     differs from the local files, and renders heat diffs locally
+     differs from the local files, prints the report's census (captured,
+     imported and compared tiles), and renders heat diffs locally
      (presentation-corpus-diff.py --expect-subset);
   7. deletes runs/<run-id>/ on every host on every exit path (the local
      directory keeps its log and done marker).
@@ -144,7 +150,12 @@ Exit (and done marker rc): the worst unit in the order 1 > 64 > 0.
 Negative-control knobs: OPENPETE_FLEET_AFTER_SYNC=<shell command> runs in
 the checkout between the syncs and the recheck; OPENPETE_FLEET_POKE=
 <host>:<job|unit|canary>:<tile substring> flips a pixel of the first
-matching candidate tile on that host before its verdict.
+matching candidate tile on that host before its verdict. Resume test knobs:
+OPENPETE_FLEET_DEADLINE_S=<seconds> replaces the deadline of every unit's
+and canary's first attempt; OPENPETE_FLEET_CANARY_ONLY=1 runs only the
+canaries, one per host even on one host, pulls each canary's tiles and
+report into <candidate directory>/canary-<host>, and exits with the worst
+canary's code.
 
 clean: per host, under its golden lock (a busy host is skipped): removes
 runs/ directories no process holds (active.lock) and with no done marker
@@ -1294,6 +1305,9 @@ unit|canary)
     # tests/harness/check_dragon_golden.sh captures the dragons tier at stock LOD only.
     [ "$TIER" = dragons ] && export OPENPETE_CAP_LODS=original
     export OPENPETE_CAPTURE_FIELDS="$UNIT_DIR/fields.txt" OPENPETE_CAPTURE_BINARIES="$RUN_DIR/ship/binaries.sha256"
+    # Row resume: an attempt after an interrupted one in the same unit
+    # directory imports the rows the earlier attempt stamped.
+    [ "$RESUME" = 1 ] && export OPENPETE_RESUME_RUN="$RUN_ID"
     nice -n "$NICE" tests/harness/check_presentation_golden.sh --game "$GAME" $FILTERS >"$UNIT_DIR/capture.log" 2>&1
     crc=$?
     echo "capture-rc=$crc" >>"$UNIT_DIR/capture.log"
@@ -1847,6 +1861,9 @@ class Interrupted(FleetError):
 class Coordinator:
     """One `run`: hosts, build, sync, placement, verdicts, pulls and cleanup."""
 
+    # A re-queued attempt imports the rows its predecessor stamped.
+    resume = True
+
     def __init__(self, a, run_id, local_run_dir):
         """Bind the arguments and the run's identity."""
         self.a, self.run_id = a, run_id
@@ -1862,6 +1879,8 @@ class Coordinator:
         self.jobs = []
         self.rc_notes = []
         self.poke = self.parse_poke(os.environ.get("OPENPETE_FLEET_POKE", ""))
+        self.first_deadline = self.parse_first_deadline(os.environ.get("OPENPETE_FLEET_DEADLINE_S", ""))
+        self.canary_only = os.environ.get("OPENPETE_FLEET_CANARY_ONLY", "") == "1"
 
     @staticmethod
     def parse_poke(spec):
@@ -1872,6 +1891,15 @@ class Coordinator:
         if len(parts) != 3:
             raise FleetError(f"OPENPETE_FLEET_POKE={spec}: expected <host>:<job>:<tile>", 2)
         return tuple(parts)
+
+    @staticmethod
+    def parse_first_deadline(spec):
+        """Parse OPENPETE_FLEET_DEADLINE_S=<seconds> (a resume test knob), or None."""
+        if not spec:
+            return None
+        if not spec.isdigit() or int(spec) < 1:
+            raise FleetError(f"OPENPETE_FLEET_DEADLINE_S={spec}: expected whole seconds", 2)
+        return int(spec)
 
     # -- hosts --
 
@@ -2139,8 +2167,8 @@ class Coordinator:
     # -- canary --
 
     def canary_on(self):
-        """True when the run spans two or more capture hosts."""
-        return len(self.hosts) >= 2
+        """True when the run spans two or more capture hosts, or under OPENPETE_FLEET_CANARY_ONLY."""
+        return len(self.hosts) >= 2 or self.canary_only
 
     def canary_game(self):
         """Return the canary's game: the first unit's game."""
@@ -2154,6 +2182,8 @@ class Coordinator:
         if self.canary_on():
             jobs += [Job("canary", self.canary_game(), "presentation", pinned=hs.name)
                      for hs in self.hosts]
+        if self.canary_only:
+            return jobs
         units = sorted(self.units, key=lambda u: -expected_s(u, self.ledger))
         jobs += [Job("unit", g, t) for g, t in units]
         return jobs
@@ -2187,7 +2217,7 @@ class Coordinator:
                "LOCK_MODE": "held" if hs.host.local else "take", "IMAGE": IMAGE_TAG,
                "MOUNT_AS": self.tree, "ENGINE": hs.engine, "NICE": hs.nice,
                "SLOTS": slots, "LEG_TIMEOUT": self.leg_timeout_s(job, hs), "FILTERS": filters,
-               "POKE": poke, "BINARIES": " ".join(
+               "POKE": poke, "RESUME": int(self.resume), "BINARIES": " ".join(
                    f"{BUILD_TREE}/games/{g}/openpete-{g.replace('-', '')}" for g in GAMES),
                "TARGETS": " ".join(GAME_TARGETS),
                "PIN_LP_NUM_THREADS": lp_threads(hs.info, slots)}
@@ -2195,6 +2225,8 @@ class Coordinator:
 
     def launch(self, job, hs, deadline_s):
         """Start one attempt of a job on a host through its detached supervisor."""
+        if self.first_deadline and job.attempts == 0 and job.kind in ("unit", "canary"):
+            deadline_s = self.first_deadline
         att = Attempt(job, hs, deadline_s)
         args = [f"{hs.run_dir}/ship/supervise.sh", f"{att.base}.env", f"{att.base}.log",
                 *self.job_env(job, hs, att)]
@@ -2347,12 +2379,15 @@ class Coordinator:
     def unit_done(self, job, hs):
         """Pull, check and render a finished unit; canaries pull their tiles only."""
         if job.kind == "canary":
-            dst = os.path.join(self.local_run_dir, "canary", hs.name)
+            dst = self.canary_dir(hs.name)
             shutil.rmtree(dst, ignore_errors=True)
             rc, err = rsync_pull(hs.host, f"{job.result['unit_dir']}/cand", dst,
-                                 includes=["*-vk.png"])
+                                 includes=["*-vk.png", "verdict-report.txt", CREDITS_NAME,
+                                           "capture-record.txt", "capture-device.txt"])
             if rc != 0:
                 job.result.update(rc=1, status=f"canary pull failed: {err}")
+                return
+            self.note_census(job, parse_report(os.path.join(dst, "verdict-report.txt")))
             return
         if job.result["rc"] in (0, 1):
             errs = self.pull_unit(job, hs)
@@ -2378,6 +2413,7 @@ class Coordinator:
         else:
             rsync_pull(hs.host, rdir, local, names=first)
         report = parse_report(os.path.join(local, "verdict-report.txt"))
+        self.note_census(job, report)
         tiles, pairs = report["divergent"], report["identity"]
         if self.a.pull != "all":
             rsync_pull(hs.host, rdir, local, names=tiles)
@@ -2393,6 +2429,22 @@ class Coordinator:
         if tiles and not errs:
             self.heat_diffs(job, local)
         return errs
+
+    def note_census(self, job, report):
+        """Print a verdict report's census (captured, imported and compared tiles) and keep it in the result."""
+        f = report["fields"]
+        census = (f"captured={f.get('captured', '?')} imported={f.get('imported', '0')} "
+                  f"({f.get('imported-rows', '0')} rows) compared={f.get('compared', '?')} "
+                  f"of {f.get('manifest-rows', '?')}")
+        job.result["census"] = census
+        print(f"[fleet] {job.name}: census {census}")
+
+    def canary_dir(self, host_name):
+        """Return the local directory one host's canary tiles are pulled into."""
+        if self.canary_only:
+            return os.path.join(self.pull_target(self.canary_game(), "presentation"),
+                                f"canary-{host_name}")
+        return os.path.join(self.local_run_dir, "canary", host_name)
 
     def check_report(self, job, report):
         """Compare the report's manifest hashes and census with the local files."""
@@ -2462,7 +2514,7 @@ class Coordinator:
 
     def canary_digests(self, host_name):
         """Return {tile: verdict digest} of the canary tiles pulled from one host."""
-        d = os.path.join(self.local_run_dir, "canary", host_name)
+        d = self.canary_dir(host_name)
         files = sorted(glob.glob(os.path.join(d, "*-vk.png")))
         return {os.path.basename(p): (dg[0] if dg else "undecodable")
                 for p, dg in self.pb.digest_files(files).items()}
@@ -2512,7 +2564,8 @@ class Coordinator:
         self.build_and_sync()
         self.jobs = self.make_jobs()
         self.run_jobs(self.jobs, on_done=self.unit_done)
-        rc = worst_rc(j.result["rc"] if j.result else 1 for j in self.jobs if j.kind == "unit")
+        decided = "canary" if self.canary_only else "unit"
+        rc = worst_rc(j.result["rc"] if j.result else 1 for j in self.jobs if j.kind == decided)
         if self.compare_canaries(self.jobs):
             rc = 1
         self.print_summary(rc)
@@ -2523,8 +2576,9 @@ class Coordinator:
         for j in self.jobs:
             r = j.result or {"rc": 1, "status": "no result", "host": "-"}
             verdict = {0: "PASS", EXIT_SKIP: "SKIP"}.get(r["rc"], "FAIL")
+            census = f"; {r['census']}" if r.get("census") else ""
             print(f"[fleet] result {j.name}: {verdict} on {r['host']} (rc {r['rc']}, "
-                  f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']})")
+                  f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']}{census})")
         print(f"[fleet] run {self.run_id}: " + {0: "PASS", EXIT_SKIP: "SKIP"}.get(rc, "FAIL")
               + f" (exit {rc})")
 
@@ -2560,6 +2614,9 @@ class Calibrator(Coordinator):
         self.infos = {}
         self.fit = {}
         self.seq = 0
+
+    # A leg's wall time is the measurement: a re-queued leg captures every row.
+    resume = False
 
     def canary_on(self):
         """False: calibration legs capture no canary."""

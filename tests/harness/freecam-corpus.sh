@@ -43,6 +43,10 @@
 #           the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing).
 #
+# Under OPENPETE_RESUME_RUN (scripts/corpus-resume.sh) a row whose completion
+# stamp is in <outdir>/resume is not captured again, and every row this run
+# finishes is stamped.
+#
 # Environment:
 #   PRESENTATION_LEG_TIMEOUT  seconds one capture process may run (default
 #                             300); the binary's own --max-runtime-seconds is
@@ -64,16 +68,19 @@ cd "$(dirname "$0")/../.."
 source scripts/corpus-jobs.sh
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
+# shellcheck source=scripts/corpus-resume.sh
+source scripts/corpus-resume.sh
+pg_cap_settings
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
 FILTER="${3:-}"
 
-CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
-CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
+CAP_ASPECT="$PG_CAP_ASPECT"
+CAP_LODS="$PG_CAP_LODS"
 # Pinned post-load frame for the canonical leg (+HALF for the intermediate).
 # --skip-to-level is playable well before this (loads ~f1700); a row may override.
-START_DEFAULT="${OPENPETE_FREECAM_START:-1900}"
+START_DEFAULT="$PG_FREECAM_START"
 LEG_TIMEOUT="${PRESENTATION_LEG_TIMEOUT:-300}"
 if ! [[ "$LEG_TIMEOUT" =~ ^[0-9]+$ ]] || (( LEG_TIMEOUT <= 20 )); then
   echo "freecam-corpus: PRESENTATION_LEG_TIMEOUT must be an integer above 20 (got '$LEG_TIMEOUT')" >&2; exit 64; fi
@@ -108,20 +115,13 @@ if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_
 
 mkdir -p "$OUTDIR"
 pg_clear_crash_logs "$OUTDIR"
+rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
 echo "[freecam-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT lods=[$CAP_LODS] filter='$FILTER' -> $OUTDIR"
 
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
-# A stable, unique, human-scannable slug per (level, pose): the level name plus a
-# short hash of the pose, so two poses in the same level don't collide and the
-# filename survives re-ordering the manifest.
-pose_slug() {  # level pose
-  local h; h="$(printf '%s' "$2" | md5sum | cut -c1-6)"
-  echo "${1}-${h}"
-}
-
-run_leg() {  # slug frame_limit leg flag target lodmode level pose launch
-  local slug="$1" flim="$2" leg="$3" flag="$4" target="$5" lod="$6" level="$7" pose="$8" launch="${9:-}"
+run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-line
+  local slug="$1" flim="$2" leg="$3" flag="$4" target="$5" lod="$6" level="$7" pose="$8" launch="${9:-}" row="${10:-}"
   local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
@@ -155,11 +155,13 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch
       rm -f "$log"; return 1
     fi
   fi
+  rs_leg_done freecam "$slug" "$row" "$lod-$leg" "$log" "${slug}__${tag}${leg}__${target}-vk.png"
   rm -f "$log"; return 0
 }
 
-fail=0 ran=0
-while IFS='|' read -r name pose start launch; do
+fail=0 ran=0 imported=0
+while IFS= read -r row; do
+  IFS='|' read -r name pose start launch <<<"$row"
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   level="${name%%@*}"
@@ -171,18 +173,20 @@ while IFS='|' read -r name pose start launch; do
   [[ -n "$FILTER" && "$name" != *"$FILTER"* ]] && continue
   local_istart=$((start + 50))
   flim=$((local_istart + 51))
-  slug="$(pose_slug "$name" "$pose")"
+  slug="$(pg_pose_slug "$name" "$pose")"
+  if rs_imported freecam "$slug"; then
+    imported=$((imported+1)); echo "[$slug] imported from the previous attempt"; continue; fi
   ran=$((ran+1))
   echo "[$slug] level=$level start=$start pose='$pose'${launch:+  launch=$launch}"
   for lod in $CAP_LODS; do
-    cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" "$launch"
-    cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" "$launch"
-    cj_run run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose" "$launch"
+    cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
+    cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" "$launch" "$row"
+    cj_run run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose" "$launch" "$row"
   done
 done < "$MANIFEST"
 cj_wait || fail=1
 
-if [[ $ran -eq 0 ]]; then echo "[freecam-corpus] $GAME: no rows matched '$FILTER' - 0 rows"; exit 0; fi
+if [[ $ran -eq 0 && $imported -eq 0 ]]; then echo "[freecam-corpus] $GAME: no rows matched '$FILTER' - 0 rows"; exit 0; fi
 if [[ $fail -ne 0 ]]; then echo "[freecam-corpus] FAIL: missing captures"; exit 1; fi
-echo "[freecam-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images in $OUTDIR across $ran pose(s)"
+echo "[freecam-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images in $OUTDIR across $ran pose(s) captured, $imported imported"
 exit 0

@@ -92,10 +92,19 @@
 # belongs to the presentation tier only. tests/harness/check_dragon_golden.sh
 # runs the `dragons` tier through this script.
 #
-# Every run prints its row counts: images captured, the captured tiles that
-# name a blessed.tsv row, and the manifest's row count. A run that captured
-# nothing compared nothing, so it is refused as VACUOUS rather than reported as
-# a pass; a run in which no captured tile names a row is refused by the diff.
+# Every run prints its row counts: images this run captured, images imported
+# from an interrupted attempt of the same run (and their rows), the tiles that
+# name a blessed.tsv row, and the manifest's row count. A run that holds no
+# image compared nothing, so it is refused as VACUOUS rather than reported as
+# a pass; a run in which no tile names a row is refused by the diff.
+#
+# Resume. Under OPENPETE_RESUME_RUN (the golden fleet sets it to its run id)
+# and without --bless, the run does not clear the candidate directory: it
+# imports the rows an interrupted capture of the same run, tree and binary
+# finished (scripts/corpus-resume.sh: per-row completion stamps, every tile
+# checked against its sha256), deletes everything else of that capture, and
+# captures only the rows not imported. The credits leg is imported the same
+# way when it passed. Imported tiles go through the same strict diff.
 #
 # Exit: 0 = matches golden, the identity leg is within baseline and the credits
 #       leg passes; 1 = divergence, identity exceed, credits failure (or no
@@ -108,6 +117,8 @@ set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
+# shellcheck source=scripts/corpus-resume.sh
+source scripts/corpus-resume.sh
 
 # --materialize-ref [--game G] [--tier T] [--at REV] <tile>...: rebuild the
 # blessed revision of the named rows in a throwaway worktree and re-capture
@@ -195,17 +206,19 @@ REPORT_NAME="verdict-report.txt"
 # produced nothing proves nothing about the renderer, so it is refused here;
 # a capture no row matches is refused by the diff. Sets captured, compared,
 # goldrows.
-captured=0 compared=0 goldrows=0 irc="not run" crc="not run" drc="not run"
+captured=0 imported=0 imported_rows=0 compared=0 goldrows=0 irc="not run" crc="not run" drc="not run"
 vr_census() {
-  local f census
-  captured=0
-  for f in "$OUT"/*-vk.png; do [[ -e "$f" ]] && captured=$((captured+1)); done
+  local f census total=0
+  for f in "$OUT"/*-vk.png; do [[ -e "$f" ]] && total=$((total+1)); done
+  rs_census "$OUT"
+  imported="$RS_IMPORTED_PNG" imported_rows="$RS_IMPORTED_ROWS"
+  captured=$((total - imported))
   census="$(python3 scripts/presentation-blessed.py census "$GAME" --tier "$PG_TIER" --candidate "$OUT")" \
     || { echo "[presentation-golden] FAIL: $PG_BLESSED unreadable (see above)"; vr_finish 1; }
   goldrows="${census#rows=}"; goldrows="${goldrows%% *}"
   compared="${census##*matched=}"
-  echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured compared=$compared golden=$goldrows"
-  if [[ $captured -eq 0 ]]; then
+  echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured imported=$imported imported-rows=$imported_rows compared=$compared golden=$goldrows"
+  if [[ $total -eq 0 ]]; then
     echo "[presentation-golden] VACUOUS: $GAME captured 0 rows - nothing was rendered,"
     echo "  so nothing was verified. Populate $PG_CORPUS_MANIFEST"
     [[ -n "$PG_FREECAM_MANIFEST" ]] && echo "  (or $PG_FREECAM_MANIFEST)"
@@ -257,6 +270,8 @@ vr_finish() {
     echo "mode: $([[ -n "$VERDICT_ONLY" ]] && echo verdict-only || echo capture)"
     echo "candidate: $OUT"
     echo "captured: $captured"
+    echo "imported: $imported"
+    echo "imported-rows: $imported_rows"
     echo "compared: $compared"
     echo "manifest-rows: $goldrows"
     echo "blessed-sha256: $(sha256sum "$PG_BLESSED" 2>/dev/null | cut -d' ' -f1) $PG_BLESSED"
@@ -335,7 +350,14 @@ if [[ -n "$VERDICT_ONLY" ]]; then
 fi
 
 OUT="${PRESENTATION_GOLDEN_OUT:-$PG_CAND_DIR}"
-rm -rf "$OUT"; mkdir -p "$OUT"
+# A bless captures the whole corpus afresh: no stamp is read or written.
+[[ $BLESS -eq 1 ]] && unset OPENPETE_RESUME_RUN
+rs_init "$OUT" "$PG_BIN" default
+if (( RS_ON )); then
+  rs_import "$OUT" "$FILTER" "$FREECAM_FILTER"
+else
+  rm -rf "$OUT"; mkdir -p "$OUT"
+fi
 if [[ "${PRESENTATION_GOLDEN_KEEP:-1}" == "0" ]]; then trap 'rm -rf "$OUT"' EXIT; fi
 FIELDS_ARG=()
 if [[ -n "${OPENPETE_CAPTURE_FIELDS:-}" ]]; then
@@ -388,10 +410,18 @@ fi
 # Credits leg (no golden: the checks are relations between one run's own
 # canonical and intermediate captures). Presentation tier only. Its result is
 # recorded in OUT and read back by vr_verdict.
+# A passed leg is stamped as the row `credits-interp`, so a resumed attempt
+# imports its record instead of running it again.
 if [[ "$PG_TIER" == "presentation" ]]; then
-  credits_log="$(mktemp)"
-  PG_BUILD_DIR="$BUILD_DIR" tests/harness/check_credits_interp.sh "$GAME_ARG" | tee "$credits_log"
-  vr_record_credits "${PIPESTATUS[0]}" "$credits_log"
-  rm -f "$credits_log"
+  if rs_imported credits credits; then
+    echo "[presentation-golden] credits leg imported from the previous attempt ($(head -n 1 "$OUT/$CREDITS_NAME"))"
+  else
+    credits_log="$(mktemp)"
+    PG_BUILD_DIR="$BUILD_DIR" tests/harness/check_credits_interp.sh "$GAME_ARG" | tee "$credits_log"
+    credits_rc=${PIPESTATUS[0]}
+    vr_record_credits "$credits_rc" "$credits_log"
+    rm -f "$credits_log"
+    [[ $credits_rc -eq 0 ]] && rs_files_done credits credits credits-interp "$CREDITS_NAME"
+  fi
 fi
 vr_verdict

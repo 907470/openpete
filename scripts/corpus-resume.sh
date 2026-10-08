@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+#
+# corpus-resume.sh - row completion stamps and their import, shared by the
+# presentation-golden gate and its two capture corpora. SOURCED, after
+# scripts/presentation-game.sh and pg_resolve, not executed.
+#
+# A re-run of an interrupted capture of one run (the golden fleet re-queues
+# an attempt that passed its deadline or lost its supervisor) captures only
+# the rows the interrupted attempt did not finish. Off unless
+# OPENPETE_RESUME_RUN names the run; the fleet's supervisor sets it to its run
+# id. A capture without it writes no stamp and imports nothing.
+#
+# Stamp. When the last leg of a row finishes (every LOD mode times the canon,
+# inter and ident legs, each with every tile it was asked for), the row's
+# completion stamp is written into OUT/resume/<kind>.<key>.stamp, where kind is
+# bk2, freecam or credits and key the row's tile key:
+#   run: <OPENPETE_RESUME_RUN>
+#   tree: <sha256 of the OPENPETE_CAPTURE_FIELDS file: head, source tree,
+#          recomp input and generated tree of the shipped tree>
+#   binary: <sha256 of the capture binary>
+#   params: <kind, game, tier and the capture settings of pg_cap_settings>
+#   row: <the row's manifest line, verbatim>
+#   tile: <sha256 of the file> <name>      one per tile of the row
+#   device: <the leg's Vulkan device line>  one per leg that logged one
+# A leg writes its own part under OUT/resume/legs/ when it finishes; the leg
+# that completes the row assembles the stamp under a lock and renames it into
+# place, so a row interrupted mid-capture has no stamp. The credits leg is the
+# row `credits-interp` (key credits) whose one tile is credits-verdict.txt,
+# stamped only when the leg passed; the identity leg is a leg of its row.
+#
+# Import (rs_import, by the gate before it captures). The previous attempt's
+# output directory is set aside; a stamp is imported only when its run, tree,
+# binary and params equal this attempt's, its row line is a line of the
+# current manifest that this run's filter selects, its key is the row's key,
+# and every tile it lists is present with its sha256. An imported row's tiles
+# and stamp move into the fresh output directory and its device lines are
+# appended to capture-device.txt; everything else of the previous attempt is
+# deleted before the capture starts. OUT/resume/imported.tsv lists the
+# imported rows (`kind key png-tiles files`), from which the verdict's census
+# counts captured and imported tiles separately.
+#
+# Variables: RS_ON (1 when stamps are written and read), RS_RUN, RS_TREE,
+# RS_BIN, RS_AFFINE, RS_OUT, RS_DIR (OUT/resume), RS_LEGS (legs per row).
+
+# Bind the resume state to an output directory. args: outdir binary affine
+rs_init() {
+  RS_ON=0 RS_OUT="$1" RS_DIR="$1/resume" RS_AFFINE="$3"
+  RS_RUN="${OPENPETE_RESUME_RUN:-}"
+  pg_cap_settings
+  RS_LEGS=$(( 3 * $(wc -w <<<"$PG_CAP_LODS") ))
+  [[ -n "$RS_RUN" ]] || return 0
+  if [[ -z "${OPENPETE_CAPTURE_FIELDS:-}" || ! -f "${OPENPETE_CAPTURE_FIELDS:-}" ]]; then
+    echo "[resume] off: OPENPETE_CAPTURE_FIELDS names no file, so no tree identity to stamp"
+    return 0
+  fi
+  if [[ ! -f "$2" ]]; then echo "[resume] off: no binary at $2"; return 0; fi
+  RS_TREE="$(sha256sum <"$OPENPETE_CAPTURE_FIELDS" | cut -d' ' -f1)"
+  RS_BIN="$(sha256sum <"$2" | cut -d' ' -f1)"
+  mkdir -p "$RS_DIR"
+  RS_ON=1
+}
+
+# The capture settings a row's tiles depend on beyond the binary and tree.
+# args: kind affine
+rs_params() {
+  case "$1" in
+    bk2) echo "kind=bk2 game=$PG_GAME tier=$PG_TIER affine=$2 aspect=$PG_CAP_ASPECT lods=$PG_CAP_LODS samples=$PG_MAX_SAMPLES";;
+    freecam) echo "kind=freecam game=$PG_GAME tier=$PG_TIER affine=$2 aspect=$PG_CAP_ASPECT lods=$PG_CAP_LODS start=$PG_FREECAM_START";;
+    *) echo "kind=$1 game=$PG_GAME tier=$PG_TIER";;
+  esac
+}
+
+rs_stamp_path() { echo "$RS_DIR/$1.$2.stamp"; }   # args: kind key
+
+# True when this attempt holds the row's stamp (imported, or written by this
+# attempt). args: kind key
+rs_imported() { (( ${RS_ON:-0} )) && [[ -f "$(rs_stamp_path "$1" "$2")" ]]; }
+
+# One `tile:` line for a file of the output directory. args: name
+rs_tile_line() { echo "tile: $(sha256sum <"$RS_OUT/$1" | cut -d' ' -f1) $1"; }
+
+# Write a stamp from the body on stdin (tile and device lines), atomically.
+# args: kind key row
+rs_write_stamp() {
+  local s; s="$(rs_stamp_path "$1" "$2")"
+  { printf 'run: %s\ntree: %s\nbinary: %s\nparams: %s\nrow: %s\n' \
+      "$RS_RUN" "$RS_TREE" "$RS_BIN" "$(rs_params "$1" "$RS_AFFINE")" "$3"; cat; } >"$s.tmp" \
+    && mv -f "$s.tmp" "$s"
+}
+
+# Record a finished leg of a row; the leg that completes the row writes the
+# row's stamp. args: kind key row leg-id log tile...
+rs_leg_done() {
+  (( ${RS_ON:-0} )) || return 0
+  local kind="$1" key="$2" row="$3" leg="$4" log="$5"; shift 5
+  local d="$RS_DIR/legs/$kind.$key" t dev
+  mkdir -p "$d"
+  {
+    for t in "$@"; do rs_tile_line "$t"; done
+    dev="$(pg_device_line "$log")"; [[ -z "$dev" ]] || echo "device: $dev"
+  } >"$d/$leg.tmp" && mv -f "$d/$leg.tmp" "$d/$leg.leg"
+  (
+    flock 9
+    [[ -e "$(rs_stamp_path "$kind" "$key")" ]] && exit 0
+    n=0; for t in "$d"/*.leg; do [[ -e "$t" ]] && n=$((n + 1)); done
+    (( n >= RS_LEGS )) || exit 0
+    cat "$d"/*.leg | rs_write_stamp "$kind" "$key" "$row"
+    rm -rf "$d"
+  ) 9>"$d.lock"
+  return 0
+}
+
+# Stamp a row made of whole files of the output directory (the credits leg).
+# args: kind key row file...
+rs_files_done() {
+  (( ${RS_ON:-0} )) || return 0
+  local kind="$1" key="$2" row="$3" t; shift 3
+  for t in "$@"; do rs_tile_line "$t"; done | rs_write_stamp "$kind" "$key" "$row"
+}
+
+# Trim a manifest field. args: text
+rs_trim() { sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$1"; }
+
+# Print why a stamp of the previous attempt cannot be imported; print nothing
+# when it can. args: stamp prev-dir bk2-filter freecam-filter
+rs_check_stamp() {
+  local s="$1" prev="$2" filter="$3" ffilter="$4"
+  local base="${1##*/}"; base="${base%.stamp}"
+  local kind="${base%%.*}" key="${base#*.}"
+  local run="" tree="" bin="" params="" row="" line k sha name ntiles=0 manifest="" rname pose
+  while IFS= read -r line; do
+    case "$line" in
+      "run: "*) run="${line#run: }";;
+      "tree: "*) tree="${line#tree: }";;
+      "binary: "*) bin="${line#binary: }";;
+      "params: "*) params="${line#params: }";;
+      "row: "*) row="${line#row: }";;
+      "tile: "*)
+        read -r k sha name <<<"$line"
+        if [[ -z "$name" || "$name" == */* || "$name" == .* ]]; then echo "malformed tile line '$line'"; return; fi
+        if [[ ! -f "$prev/$name" ]]; then echo "tile $name absent"; return; fi
+        if [[ "$(sha256sum <"$prev/$name" | cut -d' ' -f1)" != "$sha" ]]; then echo "tile $name digest differs from its stamp"; return; fi
+        ntiles=$((ntiles + 1));;
+    esac
+  done <"$s"
+  [[ "$run" == "$RS_RUN" ]] || { echo "run '$run', this attempt's is $RS_RUN"; return; }
+  [[ "$tree" == "$RS_TREE" ]] || { echo "tree ${tree:0:12}, this attempt's ${RS_TREE:0:12}"; return; }
+  [[ "$bin" == "$RS_BIN" ]] || { echo "binary ${bin:0:12}, this attempt's ${RS_BIN:0:12}"; return; }
+  [[ "$params" == "$(rs_params "$kind" "$RS_AFFINE")" ]] || { echo "params '$params' differ from '$(rs_params "$kind" "$RS_AFFINE")'"; return; }
+  (( ntiles > 0 )) || { echo "no tile"; return; }
+  case "$kind" in
+    bk2)
+      manifest="$PG_CORPUS_MANIFEST"
+      rname="$(tr -d ' \t' <<<"${row%%|*}")"
+      [[ "$rname" == "$key" ]] || { echo "row names $rname, the stamp $key"; return; }
+      [[ "$rname" == *"$filter"* ]] || { echo "row outside the filter '$filter'"; return; };;
+    freecam)
+      manifest="$PG_FREECAM_MANIFEST"
+      [[ -n "$manifest" ]] || { echo "the tier has no freecam manifest"; return; }
+      rname="$(tr -d ' \t' <<<"${row%%|*}")"
+      pose="${row#*|}"; pose="$(rs_trim "${pose%%|*}")"
+      [[ "$(pg_pose_slug "$rname" "$pose")" == "$key" ]] || { echo "row keys $(pg_pose_slug "$rname" "$pose"), the stamp $key"; return; }
+      [[ -z "$ffilter" || "$rname" == *"$ffilter"* ]] || { echo "row outside the freecam filter '$ffilter'"; return; };;
+    credits)
+      [[ "$key" == credits && "$row" == credits-interp && "$PG_TIER" == presentation ]] \
+        || { echo "not this tier's credits leg"; return; }
+      return;;
+    *) echo "unknown kind $kind"; return;;
+  esac
+  grep -Fxq -- "$row" "$manifest" || { echo "row line is not a line of $manifest"; return; }
+}
+
+# Set the previous attempt's output aside, move its importable rows into a
+# fresh outdir and delete the rest. args: outdir bk2-filter freecam-filter
+rs_import() {
+  local out="$1" prev="$1.resume-prev" s why line k sha name rows=0 png=0 files n p
+  # A previous import that was itself interrupted left prev beside a partial
+  # outdir: the rows already moved are dropped and captured again.
+  if [[ -d "$prev" ]]; then rm -rf "$out"; elif [[ -d "$out" ]]; then mv "$out" "$prev"; fi
+  mkdir -p "$out/resume"
+  : >"$out/resume/imported.tsv"
+  for s in "$prev"/resume/*.stamp; do
+    [[ -e "$s" ]] || continue
+    why="$(rs_check_stamp "$s" "$prev" "$2" "$3")"
+    if [[ -n "$why" ]]; then echo "[resume] not imported: ${s##*/}: $why"; continue; fi
+    n=0 p=0
+    while IFS= read -r line; do
+      case "$line" in
+        "tile: "*)
+          read -r k sha name <<<"$line"
+          mv -f "$prev/$name" "$out/$name"
+          n=$((n + 1)); [[ "$name" == *-vk.png ]] && p=$((p + 1));;
+        "device: "*) echo "${line#device: }" >>"$out/capture-device.txt";;
+      esac
+    done <"$s"
+    mv -f "$s" "$out/resume/"
+    files="${s##*/}"; files="${files%.stamp}"
+    printf '%s\t%s\t%s\t%s\n' "${files%%.*}" "${files#*.}" "$p" "$n" >>"$out/resume/imported.tsv"
+    rows=$((rows + 1)) png=$((png + p))
+  done
+  rm -rf "$prev"
+  echo "[resume] run $RS_RUN: imported $rows row(s), $png tile(s) from the previous attempt; the rest of its output deleted"
+}
+
+# Imported counts of an output directory: RS_IMPORTED_ROWS rows and
+# RS_IMPORTED_PNG -vk.png tiles. args: outdir
+rs_census() {
+  RS_IMPORTED_ROWS=0 RS_IMPORTED_PNG=0
+  [[ -f "$1/resume/imported.tsv" ]] || return 0
+  read -r RS_IMPORTED_ROWS RS_IMPORTED_PNG < <(awk -F'\t' 'NF >= 4 { r++; p += $3 } END { print r + 0, p + 0 }' "$1/resume/imported.tsv")
+}

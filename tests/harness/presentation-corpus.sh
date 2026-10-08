@@ -40,6 +40,10 @@
 #       65 = no rows (the manifest holds none, or the filter matched none) -
 #            the caller decides whether an empty corpus is a skip or a
 #            vacuous run.
+#
+# Under OPENPETE_RESUME_RUN (scripts/corpus-resume.sh) a row whose completion
+# stamp is in <outdir>/resume is not captured again, and every row this run
+# finishes is stamped.
 set -u
 
 # Unattended launcher: silence controller vibration for every run this script
@@ -57,6 +61,9 @@ cd "$(dirname "$0")/../.."
 source scripts/corpus-jobs.sh
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
+# shellcheck source=scripts/corpus-resume.sh
+source scripts/corpus-resume.sh
+pg_cap_settings
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -65,15 +72,15 @@ FILTER="${3:-}"   # bk2-name substring; empty = the whole manifest (the fanned-o
 # Cap the canonical samples per bk2 to this many evenly-spaced frames (0 = the
 # full every-`interval` grid). Keeps the golden broad across bk2s without a dense
 # per-bk2 grid; the intermediate leg mirrors the kept canonical frames.
-MAX_SAMPLES="${OPENPETE_MAX_SAMPLES:-5}"
+MAX_SAMPLES="$PG_MAX_SAMPLES"
 
 # Capture aspect. The golden is ALWAYS widescreen so it catches Hor+ artifacts
 # the 4:3 view can't show; override for a 4:3 spot-check if ever needed.
-CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
+CAP_ASPECT="$PG_CAP_ASPECT"
 
 # LOD modes swept per bk2/leg - both by default (original = authentic PSX band,
 # extended = --no-lod full detail). Override to one mode for a faster spot-check.
-CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
+CAP_LODS="$PG_CAP_LODS"
 
 LEG_TIMEOUT="${PRESENTATION_LEG_TIMEOUT:-300}"
 if ! [[ "$LEG_TIMEOUT" =~ ^[0-9]+$ ]] || (( LEG_TIMEOUT <= 20 )); then
@@ -116,6 +123,7 @@ if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_
 
 mkdir -p "$OUTDIR"
 pg_clear_crash_logs "$OUTDIR"
+rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
 echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
 
 # The golden filename encodes the LOD mode: `original` (the authentic PSX band)
@@ -130,8 +138,8 @@ lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 # the plain row's; the bk2 is everything before the first `@`.
 row_bk2() { echo "${1%%@*}"; }
 
-run_one() {  # name frame_limit leg flag targets lodmode freeze launch
-  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7" launch="${8:-}"
+run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
+  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7" launch="${8:-}" row="${9:-}"
   local bk2name; bk2name="$(row_bk2 "$name")"
   local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
   # A launch token PRESENTATION_LEG_TIMEOUT=N is the harness's, not the run's:
@@ -186,6 +194,11 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   if [[ $rc -ne 0 || $miss -ne 0 ]]; then
     pg_keep_crash_log "$log" "$OUTDIR" "${name}__${tag}${leg}" "$rc"
   fi
+  if [[ $miss -eq 0 ]]; then
+    local -a tiles=()
+    for t in "${TS[@]}"; do tiles+=("${name}__${tag}${leg}__${t}-vk.png"); done
+    rs_leg_done bk2 "$name" "$row" "$lod-$leg" "$log" "${tiles[@]}"
+  fi
   rm -f "$log"
   return $miss
 }
@@ -239,11 +252,14 @@ print(",".join(map(str, canon)) + "|" + ",".join(map(str, inter)) + "|" + str(fl
 PY
 }
 
-fail=0 ran=0
-while IFS='|' read -r name start interval freeze pins launch; do
+fail=0 ran=0 imported=0
+while IFS= read -r row; do
+  IFS='|' read -r name start interval freeze pins launch <<<"$row"
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   [[ "$name" == *"$FILTER"* ]] || continue
+  if rs_imported bk2 "$name"; then
+    imported=$((imported+1)); echo "[$name] imported from the previous attempt"; continue; fi
   start="$(echo "$start" | tr -d ' \t')"
   interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
   freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field non-empty => --screenshot-freeze-backdrop
@@ -283,15 +299,15 @@ while IFS='|' read -r name start interval freeze pins launch; do
   echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}${launch:+  launch=$launch}"
   # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
   for lod in $CAP_LODS; do
-    cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" "$launch"
-    cj_run run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" "$launch"
-    cj_run run_one "$name" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze" "$launch"
+    cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
+    cj_run run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" "$launch" "$row"
+    cj_run run_one "$name" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze" "$launch" "$row"
   done
 done < "$MANIFEST"
 cj_wait || fail=1
 
 if [[ $fail -ne 0 ]]; then echo "[presentation-corpus] FAIL: missing captures"; exit 1; fi
-if [[ $ran -eq 0 ]]; then
+if [[ $ran -eq 0 && $imported -eq 0 ]]; then
   echo "[presentation-corpus] $GAME: no manifest rows matched '$FILTER' - 0 rows"; exit 65; fi
-echo "[presentation-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images across $ran bk2"
+echo "[presentation-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images across $ran bk2 captured, $imported imported"
 exit 0

@@ -224,13 +224,16 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    expected time / speed x 2. A lost, dead or overdue attempt is killed
    (the supervisor's session by PID and start time, its containers by the
    label `org.openpete.fleet=<run-id>`) and re-queued, at most 2 attempts;
-   a host unreachable for 10 min is dropped.
+   a host unreachable for 10 min is dropped. A re-queued attempt on the same
+   host resumes at row level (Row resume, below).
 7. Canary. With two or more capture hosts, every host first captures one
    bk2 and one freecam level of the first unit's game. A canary tile whose
    verdict digest differs between hosts fails the run.
 8. Verdict. The capturing host runs the harness's capture, then
    `check_presentation_golden.sh --verdict-only <candidate> --game G` in
-   the image.
+   the image. The coordinator prints the report's census,
+   `census captured=C imported=I (R rows) compared=K of N`, and the summary
+   repeats it beside each unit's verdict.
 9. Pull. `verdict-report.txt`, `capture-record.txt`,
    `capture-device.txt`, `credits-verdict.txt` (presentation tier), the
    verdict logs, the divergent tiles and both members of each identity pair
@@ -249,6 +252,55 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
     path; the local run directory keeps `coordinator.log`, `done` and
     `active.lock`. A host unreachable at teardown keeps its directory for
     `clean`.
+
+## Row resume
+
+A unit's or canary's supervisor sets `OPENPETE_RESUME_RUN=<run-id>`
+(passed into the image by `scripts/golden-capture-container.sh`). The
+harness (`scripts/corpus-resume.sh`, sourced by
+`check_presentation_golden.sh`, `presentation-corpus.sh` and
+`freecam-corpus.sh`) then stamps every manifest row it finishes: when the
+last of a row's legs (each LOD mode times canon, inter and ident) has
+written every tile it was asked for, `cand/resume/<kind>.<key>.stamp` is
+written atomically:
+
+```
+run: <run id>
+tree: <sha256 of the capture-fields file: head, source tree, recomp input, generated tree>
+binary: <sha256 of the capture binary>
+params: kind=bk2 game=spyro-1 tier=presentation affine=default aspect=16:9 lods=original extended samples=5
+row: <the row's manifest line, verbatim>
+tile: <sha256> <tile name>          one per tile, identity tiles included
+device: <the leg's Vulkan device line>
+```
+
+`kind` is `bk2`, `freecam` or `credits`; a passed credits leg is the row
+`credits-interp` whose one tile is `credits-verdict.txt`. A row interrupted
+mid-capture has no stamp.
+
+A re-queued attempt on the same host runs in the same `u-<job>/` directory.
+Before capturing, the harness moves the previous `cand/` aside and imports
+a stamp's row only when its run id, tree, binary and params equal the
+attempt's, its row line is a line of the current manifest that the run's
+filter selects, its key is that row's key, and every listed tile is present
+with its sha256. An imported row's tiles move into a fresh `cand/` (its
+device lines into `capture-device.txt`); everything else of the previous
+attempt is deleted. The capture then skips the imported rows, and the
+strict diff covers imported and captured tiles alike.
+`cand/resume/imported.tsv` lists the imported rows; the census line
+(`captured=C imported=I imported-rows=R compared=K golden=N`) and
+`verdict-report.txt` (`captured:`, `imported:`, `imported-rows:`) count
+them apart, so an import never stands in for a missing row. A new run id
+imports nothing: its run directory is new and every stamp names its run.
+A re-queued attempt on another host captures every row. Calibration legs
+never resume, since their wall time is the measurement. `--bless` neither
+reads nor writes stamps.
+
+`tests/harness/check_corpus_resume.sh` checks the stamp and import rules on
+a synthetic candidate directory (no binary or image): a finished, a
+partial and a tampered row, another run id, binary, tree, LOD set,
+manifest line and filter, an interrupted import, concurrent legs, and
+resume off.
 
 ## Exit codes
 
@@ -281,6 +333,7 @@ host, attempt and wall time.
     tree/                the snapshot units run in
     u-<job>/             attempt-N.pid, attempt-N.done, attempt-N.memavail,
                          capture.log, verdict.log, store/, cand/
+                         (cand/resume/: row stamps, imported.tsv)
                          (calibration legs: u-calib-<host>-s<slots>-<n>/)
     helpers.tsv          dbus-daemon helpers started during a job
 ```
@@ -325,11 +378,14 @@ A full re-bless (`--bless`) also runs on the dev box.
 | `LP_NUM_THREADS` | Pins llvmpipe threads per capture on every host; default `ceil(cores / slots)` per host. |
 | `OPENPETE_FLEET_AFTER_SYNC` | Test only: a shell command run in the checkout between the syncs and the recheck (negative control for the torn-sync recheck). |
 | `OPENPETE_FLEET_POKE` | Test only: `<host>:<job\|unit\|canary>:<tile substring>` flips one pixel of the first matching candidate tile on that host before its verdict (negative control for the verdict and canary). |
+| `OPENPETE_FLEET_DEADLINE_S` | Test only: seconds; replaces the deadline of every unit's and canary's first attempt, so the attempt is killed and re-queued (row resume check). |
+| `OPENPETE_FLEET_CANARY_ONLY` | Test only: `1` runs only the canaries, one per host even on one host, pulls each canary's tiles, report, record, device and credits files into `<candidate directory>/canary-<host>`, and exits with the worst canary's code. |
 
 The supervisor sets `CORPUS_JOBS`, `PRESENTATION_LEG_TIMEOUT`,
 `PRESENTATION_TIER`, `OPENPETE_FLEET_ROOT`, `OPENPETE_GOLDEN_LOCK_HELD`,
 `OPENPETE_CAPTURE_LABEL`, `OPENPETE_CAPTURE_MOUNT_AS`,
-`OPENPETE_CAPTURE_FIELDS` and `OPENPETE_CAPTURE_BINARIES` itself; a value
+`OPENPETE_CAPTURE_FIELDS`, `OPENPETE_CAPTURE_BINARIES` and
+`OPENPETE_RESUME_RUN` itself; a value
 set by hand does not reach a unit.
 
 ## Troubleshooting

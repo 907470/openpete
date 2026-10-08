@@ -81,7 +81,7 @@ for ((i = 1; i <= ROUNDS; i++)); do
     rc=$?
 
     captured=0 compared=0
-    census="$(grep -m1 -oE 'captured=[0-9]+ compared=[0-9]+' "$log" || true)"
+    census="$(grep -m1 -oE 'captured=[0-9]+ ([a-z-]+=[0-9]+ )*compared=[0-9]+' "$log" || true)"
     if [[ -n "$census" ]]; then
         captured="${census#captured=}"; captured="${captured%% *}"
         compared="${census##*compared=}"

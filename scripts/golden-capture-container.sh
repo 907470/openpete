@@ -76,6 +76,8 @@
 # adds the container label org.openpete.fleet=<value>. OPENPETE_CAPTURE_FIELDS
 # (the capture record's tree fields for a tree without .git) passes into the
 # container with the harness knobs; the file must lie on a mounted path.
+# OPENPETE_RESUME_RUN (row resume, scripts/corpus-resume.sh) passes in the
+# same way.
 #
 # Rootless podman on a btrfs home has no overlay driver; build the image
 # there as scripts/release-container.sh describes (podman run + commit, the
@@ -189,7 +191,7 @@ fi
 # The harness knobs a capture run reads; the container sees only what -e passes.
 for v in CORPUS_JOBS PRESENTATION_TIER PRESENTATION_GOLDEN_OUT PRESENTATION_GOLDEN_KEEP \
          PRESENTATION_LEG_TIMEOUT LP_NUM_THREADS OPENPETE_CAP_LODS OPENPETE_FRAME_LIMIT \
-         OPENPETE_CAPTURE_FIELDS; do
+         OPENPETE_CAPTURE_FIELDS OPENPETE_RESUME_RUN; do
     [[ -n "${!v:-}" ]] && env_args+=(-e "$v=${!v}")
 done
 
