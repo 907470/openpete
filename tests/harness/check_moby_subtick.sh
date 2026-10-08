@@ -132,7 +132,10 @@ run_alpha() {
     mkdir -p "$dir"
     find "$dir" -maxdepth 1 -name '*.png' -delete
     rm -f "$log" "$log.part"
-    PG_CAPTURE_ENV=(OPENPETE_MOBY_POSTRACE_CLS=0xFFFF
+    # The moby occlusion cull is off: the harness measures pose continuity
+    # of every moby, and the pose trace is printed only for mobys the cull
+    # keeps, whose set follows the previous present's depth grid.
+    PG_CAPTURE_ENV=(OPENPETE_MOBY_POSTRACE_CLS=0xFFFF OPENPETE_MOBY_OCCLUSION=0
                     OPENPETE_INTERMEDIATE_ALPHA="$alpha" "${ROW_ENV[@]}")
     PG_CAPTURE_TIMEOUT=600
     local i n=${#vbls[@]}
