@@ -69,7 +69,10 @@ a-powerful-villain-emerges-throne|5080|10||5094|--skip-to-cutscene a_powerful_vi
 # occluder depth grid is a GPU readback and headless holds none, so a headless
 # tile cannot see a cull verdict change. That class is measured windowed, per
 # walk.
-sunrise-spring-camera-swing|1500|100||1518,1519,1520,1540,1560,1760,2000
+# 1756 (lod extended canonical): the terrain feed of the world draw used the
+# previous tick's portal openings while this tick's portal pass captured a
+# different set; a sliver shows through the arch edge. Blessed pre-fix.
+sunrise-spring-camera-swing|1500|100||1518,1519,1520,1540,1560,1756,1760,2000
 
 # 1500 pins the opening dialogue, complete and static from 1494: a large
 # semi-transparent text box whose corners are semi-transparent textured quads.
