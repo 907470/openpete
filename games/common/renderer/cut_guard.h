@@ -199,14 +199,16 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos);
  * cutscene path sampler drives (the sampler's own rule for a placement it
  * does not interpolate); a row of the placement table
  * (game_layout.moby.place) matching the record's class and state transition
- * is a jump; a pair in a load regime (game_layout.moby.load_gamestates) is a
- * jump; every other step takes the distance bound (cut_pos_jump) on the
- * positions at game_layout.moby.pos_off. OPENPETE_MOBY_JUMP_MARKERS=0 skips
- * the table and the load regime. No rule measures distance before the bound.
+ * is a jump; a director row (game_layout.moby.director) whose ring record's
+ * state edge names this moby is a jump; a pair in a load regime
+ * (game_layout.moby.load_gamestates) is a jump; every other step takes the
+ * distance bound (cut_pos_jump) on the positions at game_layout.moby.pos_off.
+ * OPENPETE_MOBY_JUMP_MARKERS=0 skips the table, the director rows and the
+ * load regime. No rule measures distance before the bound.
  * @param addr The moby's guest address.
  * @param prev_rec Tick N-1's moby record.
  * @param curr_rec Tick N's moby record.
- * @param why Receives "cutpath", "table", "load", "bound" or "none" when
+ * @param why Receives "cutpath", "table", "director", "load", "bound" or "none" when
  *        non-NULL.
  * @return 1 for a jump, else 0. */
 int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
@@ -219,6 +221,18 @@ int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* c
  * @param curr_rec Tick N's moby record.
  * @return 1 for a jump, else 0. */
 int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec);
+
+/** @brief Whether one moby's step from tick N-2 to tick N-1 was a jump, so a curve through the three records must not span it.
+ *
+ * The step is a jump on a class change or on cut_obj_jump's rules applied to
+ * the older pair (the load-regime rule reads the ring's prev2 and prev
+ * snapshots). A Hermite position curve whose start tangent runs back across
+ * such a step overshoots by up to half the jump on tick N's segment.
+ * @param addr The moby's guest address.
+ * @param prev2_rec Tick N-2's moby record.
+ * @param prev_rec Tick N-1's moby record.
+ * @return 1 for a jump, else 0. */
+int cut_obj_prev_jump(uint32_t addr, const uint8_t* prev2_rec, const uint8_t* prev_rec);
 
 /** @brief With OPENPETE_JUMP_CENSUS=<min> set, print the jump verdict of one moby the capture just rolled, when its step is at least min world units.
  *

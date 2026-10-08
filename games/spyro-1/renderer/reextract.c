@@ -2361,7 +2361,7 @@ static void game_reextract_body(void* cpu_v) {
                             int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
                             if (o->have_prev2) {
                                 memcpy(p2, o->prev2 + MOBY_POS, 12);
-                                have_p2 = !cut_pos_jump(p2, pp);
+                                have_p2 = !cut_obj_prev_jump(m, o->prev2, o->prev);
                                 m_herm = hermite_enabled() && have_p2 && ma >= 0.0
                                 /* Cutscene path actors: LINEAR position lerp only.
                                  * Their pose (two-pass shape lerp, linear in

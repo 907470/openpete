@@ -34,6 +34,15 @@ static const game_moby_place_t s_moby_place[] = {
     { 0x15Bu, 1u, 2u },
 };
 
+/* The balloonist ride (D_800777E8): on its m_State 4 -> 5 edge,
+ * GS_Balloonist (func_800324D8, 0x80032810-0x8003285C) stores m_State = 5
+ * and VecCopy's the destination homeworld's arrival point
+ * (D_8006EA4C[m_Homeworld]) over the position of m_BalloonMoby (+0x68), the
+ * balloon record the ride copied out of g_LevelMobys before LoadLevel. */
+static const game_moby_director_t s_moby_director[] = {
+    { "g_BalloonState", "g_BalloonMoby", 4u, 5u },
+};
+
 const game_layout_t game_layout = {
     .display = {
         /* initialization.c GraphicsInitialize: SetDefDispEnv(..., 0, 240, 512, 240)
@@ -206,14 +215,17 @@ const game_layout_t game_layout = {
         .colour_off   = 0u,               /* no per-moby colour word */
         .size_off     = offsetof(Moby, m_ScaleOverride),
         .drawn_off    = offsetof(Moby, m_WasDrawn),
-        /* The bound decides for every moby the cutscene path sampler does
-         * not drive (the sampler's actors take its clock rule,
-         * spyro_cutpath_jump). Sparx (class 120) closes on Spyro in steps of
-         * up to about 49000 units a tick while respawned and relocated
-         * mobys jump as little as about 900, so no bound separates the two. */
-        .jump_bound   = 5000u,
+        /* No distance bound (jump_bound 0): Sparx (class 120) closes on
+         * Spyro in steps of up to about 49000 units a tick while respawned
+         * and relocated mobys jump as little as about 900, so no bound
+         * separates the two; a moby the cutscene path sampler does not drive
+         * (its actors take spyro_cutpath_jump) is held only on a placement
+         * marker or the load-regime rule. */
+        .jump_bound   = 0u,
         .place        = s_moby_place,
         .place_n      = sizeof s_moby_place / sizeof s_moby_place[0],
+        .director     = s_moby_director,
+        .director_n   = sizeof s_moby_director / sizeof s_moby_director[0],
         /* GS_LevelTransition: LoadLevel stores the new level's records over
          * the slots of the old one while the state stays 1 on both ticks, so
          * the gamestate edge does not mark those stores. */

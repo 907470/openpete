@@ -76,6 +76,18 @@ typedef struct game_moby_place {
     uint8_t  state_curr;
 } game_moby_place_t;
 
+/* One director placement marker: a game record drives one moby through a
+ * pointer word captured as the interp ring row `moby_row`; when its state
+ * word, captured as the ring row `state_row`, goes from `state_prev` to
+ * `state_curr` between two snapshots, the record's code placed the moby the
+ * later snapshot's pointer names on that tick. */
+typedef struct game_moby_director {
+    const char* state_row;
+    const char* moby_row;
+    uint32_t    state_prev;
+    uint32_t    state_curr;
+} game_moby_director_t;
+
 typedef struct game_layout {
     /* The game's display environment, in VRAM pixels, as its boot code hands
      * it to SetDefDispEnv/SetDefDrawEnv. `disp_w` by `disp_h` is the region
@@ -561,6 +573,10 @@ typedef struct game_layout {
          * where the game names none. */
         const game_moby_place_t* place;
         uint32_t    place_n;
+        /* The director placement markers (game_moby_director_t),
+         * `director_n` rows; NULL where the game names none. */
+        const game_moby_director_t* director;
+        uint32_t    director_n;
         /* Bit k set: the interp ring's g_GameState row holding k on either
          * snapshot of its newest pair is a load regime, whose moby stores are
          * placements. 0 = no load regime. */

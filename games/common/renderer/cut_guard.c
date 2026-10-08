@@ -187,26 +187,72 @@ static int cut_place_marked(const uint8_t* prev_rec, const uint8_t* curr_rec) {
     return 0;
 }
 
-/** @brief Whether either snapshot of the interp ring's newest pair holds a load-regime game state (game_layout.moby.load_gamestates).
+/** @brief One interp ring pair's snapshots: the newest pair (prev, curr), or the pair before it (prev2, prev).
+ *
+ * @param older 0 for the newest pair, 1 for the pair before it.
+ * @param a Receives the earlier snapshot.
+ * @param b Receives the later snapshot.
+ * @return 1 when the ring holds that pair, else 0. */
+static int cut_ring_pair(int older, const openpete_interp_snapshot_t** a,
+                         const openpete_interp_snapshot_t** b) {
+    double al = 0.0;
+    const openpete_interp_snapshot_t *p2 = NULL, *pv = NULL, *cu = NULL;
+    if (!openpete_interp_query3(openpete_interp_curr_tick_ns(), g_openpete_tick_period_ns,
+                                &al, &p2, &pv, &cu) || !pv || !cu) return 0;
+    if (older) { if (!p2) return 0; cu = pv; pv = p2; }
+    *a = pv; *b = cu;
+    return 1;
+}
+
+/** @brief Whether either snapshot of one interp ring pair holds a load-regime game state (game_layout.moby.load_gamestates).
  *
  * The state is the ring's g_GameState row; its row index resolves on the
  * first call that finds it registered.
+ * @param older 0 tests the newest pair (prev, curr); 1 tests the pair before
+ *        it (prev2, prev).
  * @return 1 in a load regime, else 0 (also when the game names none, the row
- *         is unregistered, or the ring has no pair). */
-static int cut_load_regime(void) {
+ *         is unregistered, or the ring has no such pair). */
+static int cut_load_regime(int older) {
     const uint32_t mask = game_layout.moby.load_gamestates;
     if (!mask) return 0;
     static int row = -1;
     if (row < 0) row = game_interp_row_index(GAME_INTERP_GS_ROW);
     if (row < 0) return 0;
-    double a = 0.0;
-    const openpete_interp_snapshot_t *p2 = NULL, *pv = NULL, *cu = NULL;
-    if (!openpete_interp_query3(openpete_interp_curr_tick_ns(), g_openpete_tick_period_ns,
-                                &a, &p2, &pv, &cu) || !pv || !cu) return 0;
+    const openpete_interp_snapshot_t *pv = NULL, *cu = NULL;
+    if (!cut_ring_pair(older, &pv, &cu)) return 0;
     uint32_t pgs, cgs;
     memcpy(&pgs, pv->data + pv->region_offsets[row], 4);
     memcpy(&cgs, cu->data + cu->region_offsets[row], 4);
     return (pgs < 32u && ((mask >> pgs) & 1u)) || (cgs < 32u && ((mask >> cgs) & 1u));
+}
+
+/** @brief Whether a director placement marker (game_layout.moby.director) names this moby on one interp ring pair.
+ *
+ * A row matches when its state row goes state_prev -> state_curr across the
+ * pair and the later snapshot's moby row names `addr`.
+ * @param addr The moby's guest address.
+ * @param older 0 tests the newest pair (prev, curr); 1 tests the pair before
+ *        it (prev2, prev).
+ * @return 1 when a row matches, else 0 (also when a row's ring rows are
+ *         unregistered or the ring has no such pair). */
+static int cut_director_placed(uint32_t addr, int older) {
+    const game_moby_director_t* t = game_layout.moby.director;
+    if (!t) return 0;
+    const openpete_interp_snapshot_t *pv = NULL, *cu = NULL;
+    int have = -1;
+    for (uint32_t i = 0; i < game_layout.moby.director_n; i++) {
+        const int srow = game_interp_row_index(t[i].state_row);
+        const int mrow = game_interp_row_index(t[i].moby_row);
+        if (srow < 0 || mrow < 0) continue;
+        if (have < 0) have = cut_ring_pair(older, &pv, &cu);
+        if (!have) return 0;
+        uint32_t sp, sc, ptr;
+        memcpy(&sp, pv->data + pv->region_offsets[srow], 4);
+        memcpy(&sc, cu->data + cu->region_offsets[srow], 4);
+        memcpy(&ptr, cu->data + cu->region_offsets[mrow], 4);
+        if (sp == t[i].state_prev && sc == t[i].state_curr && ptr == addr) return 1;
+    }
+    return 0;
 }
 
 int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos) {
@@ -218,15 +264,26 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos) {
     return dx*dx + dy*dy + dz*dz > lim * lim;
 }
 
-int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
-                        const char** why) {
+/** @brief The jump verdict of one moby step between two consecutive ring snapshots, and the rule that decided (cut_obj_jump_reason).
+ *
+ * @param addr The moby's guest address.
+ * @param prev_rec The earlier record.
+ * @param curr_rec The later record.
+ * @param older 0 when the records are the ring's newest pair, 1 when they are
+ *        the pair before it; selects the snapshots the load-regime rule reads.
+ * @param why Receives the deciding rule's name when non-NULL.
+ * @return 1 for a jump, else 0. */
+static int cut_obj_jump_at(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                           int older, const char** why) {
     const char* w;
     int v = moby_game.cutpath_jump ? moby_game.cutpath_jump(addr, prev_rec, curr_rec) : -1;
     if (v >= 0) {
         w = "cutpath";
     } else if (cut_jump_markers_on() && cut_place_marked(prev_rec, curr_rec)) {
         v = 1; w = "table";
-    } else if (cut_jump_markers_on() && cut_load_regime()) {
+    } else if (cut_jump_markers_on() && cut_director_placed(addr, older)) {
+        v = 1; w = "director";
+    } else if (cut_jump_markers_on() && cut_load_regime(older)) {
         v = 1; w = "load";
     } else {
         int32_t pp[3], cp[3];
@@ -239,8 +296,20 @@ int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* c
     return v;
 }
 
+int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                        const char** why) {
+    return cut_obj_jump_at(addr, prev_rec, curr_rec, 0, why);
+}
+
 int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec) {
     return cut_obj_jump_reason(addr, prev_rec, curr_rec, NULL);
+}
+
+int cut_obj_prev_jump(uint32_t addr, const uint8_t* prev2_rec, const uint8_t* prev_rec) {
+    uint16_t c2, c1;
+    memcpy(&c2, prev2_rec + game_layout.moby.class_off, 2);
+    memcpy(&c1, prev_rec + game_layout.moby.class_off, 2);
+    return c2 != c1 || cut_obj_jump_at(addr, prev2_rec, prev_rec, 1, NULL);
 }
 
 void cut_jump_census_capture(uint32_t key) {
@@ -267,7 +336,7 @@ void cut_jump_census_capture(uint32_t key) {
                     "cutpath=%d table=%d load=%d bound=%.0f verdict=%s why=%s\n",
             openpete_frame, key, (unsigned)cc, o->prev[game_layout.moby.state_off],
             o->curr[game_layout.moby.state_off], d, cutpath,
-            cut_place_marked(o->prev, o->curr), cut_load_regime(), cut_jump_bound(),
+            cut_place_marked(o->prev, o->curr) || cut_director_placed(key, 0), cut_load_regime(0), cut_jump_bound(),
             v ? "jump" : "lerp", why);
 }
 

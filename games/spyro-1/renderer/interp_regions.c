@@ -28,6 +28,7 @@
 #include "renderer/interp_regions.h"
 #include "renderer/reextract.h"   /* moby_native_canon_drawn_mobys */
 #include "renderer/text_moby_id.h"    /* text_moby_id_lookup */
+#include "renderer/cut_guard.h"     /* cut_jump_census_capture */
 
 #include <math.h>
 #include <stdint.h>
@@ -70,6 +71,13 @@ static const game_interp_row_t s_spyro_interp_rows[] = {
      * camera it gates: a led copy could flip a tick before the camera pair it
      * is compared against. */
     { "g_GameState", 0x800757D8, 0x4, 1 },
+    /* The balloonist ride's m_State (D_800777E8 +0x00) and m_BalloonMoby
+     * (+0x68): the state edge marks the tick the ride places the balloon
+     * (game_layout.moby.director). Two words the ride's update stores at the
+     * logic cadence, so they add no ring roll the camera and player rows do
+     * not. Committed timeline, like g_GameState. */
+    { "g_BalloonState", 0x800777E8, 0x4, 1 },
+    { "g_BalloonMoby",  0x80077850, 0x4, 1 },
 };
 
 /* --- per-object (indirect) capture: the g_LevelMobys array --------------- */
@@ -434,6 +442,7 @@ static void spyro_interp_extra_pools(void) {
             if (!host || host[MOBY_STATE_OFF] >= 0x80) continue;   /* dead / unmapped */
             openpete_interp_objs_capture(game_interp_moby_key(drawn[i]), host,
                                          openpete_interp_objs_blob_bytes());
+            cut_jump_census_capture(game_interp_moby_key(drawn[i]));
         }
     }
 
