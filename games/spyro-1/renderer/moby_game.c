@@ -301,14 +301,6 @@ static int s1_record_row_scale(CPUState* cpu, uint32_t rec, double scale[3]) {
     return 1;
 }
 
-extern int spyro_cutpath_is_actor(uint32_t m);
-/** @brief Reports whether a moby is a cutscene path-follower, through spyro_cutpath_is_actor.
- *
- * The moby feeder switches such a moby's animation clips without a
- * crossfade.
- * @param m The moby's guest address.
- * @return 1 for a path-follower, else 0. */
-static int s1_cutpath_actor(uint32_t m) { return spyro_cutpath_is_actor(m); }
 extern int spyro_cutpath_jump(uint32_t m, const uint8_t* prev_rec, const uint8_t* curr_rec);
 extern int spyro_moby_cut_held(uint32_t moby);
 
@@ -480,7 +472,6 @@ const moby_game_t moby_game = {
 
     .cutscene_actor     = s1_cutscene_actor,
     .cutscene_owns_draw = s1_cutscene_owns_draw,
-    .cutpath_actor      = s1_cutpath_actor,
     .cutpath_jump       = spyro_cutpath_jump,
     .moby_held          = spyro_moby_cut_held,
     .run_once_hidden    = s1_run_once_hidden,

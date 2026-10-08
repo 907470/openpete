@@ -742,10 +742,7 @@ static int cut_rd32(uint32_t va, uint32_t* out) {
  * The sampler runs under GS_Cutscene (GamestateCutsceneUpdate) and under
  * GS_TitleScreen outside TSM_Demo (TitlescreenUpdate); in any other state
  * g_CutsceneLayout is a stale pointer. count is g_CutsceneLayout +0x0C (the
- * intro has 16 actors), taken only in [1, 64]. The moby feeder switches these
- * actors' animation clips without a crossfade, as the canonical render does:
- * their flight clips carry large whole-body translation, and a crossfade
- * averages two distant poses on a phase that does not match the path timing.
+ * intro has 16 actors), taken only in [1, 64].
  * @param m The moby's guest address.
  * @return 1 for a path-follower, else 0. */
 int spyro_cutpath_is_actor(uint32_t m) {

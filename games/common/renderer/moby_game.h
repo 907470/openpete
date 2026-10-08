@@ -344,9 +344,6 @@ typedef struct moby_game {
      * adds nothing while that renderer owns the draw. */
     int  (*cutscene_actor)(CPUState* cpu, uint32_t moby);
     int  (*cutscene_owns_draw)(CPUState* cpu);
-    /* A moby whose position the cutscene path drives, so a clip switch on it
-     * must snap rather than crossfade. */
-    int  (*cutpath_actor)(uint32_t moby);
     /* The game's own verdict on one step of a moby its cutscene path
      * sampler drives, from the moby's tick N-1 and tick N records: 1 when the
      * sampler placed it without interpolating (a jump), 0 when it

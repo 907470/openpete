@@ -9940,34 +9940,35 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
 /* What the sub-tick pass may do with a clip switch, shared by the pass and the
  * census so both read one rule. CROSS: the two clips deform one shared mesh
  * (equal vertex count), so vertex i is the same physical vertex in both and a
- * model-space lerp prev->curr stays on-model. CUTPATH: a cutscene path-follower,
- * whose flight clips carry large baked whole-body translation, so crossfading
- * two spatially-distant poses lurches the whole model. COUNTSW: the clips have
- * different vertex counts, so no vertex correspondence exists between them. */
-typedef enum { MOBY_CLIP_CROSS = 0, MOBY_CLIP_CUTPATH, MOBY_CLIP_COUNTSW } moby_clip_t;
+ * model-space lerp prev->curr stays on-model. A cutscene path-follower's
+ * switch is CROSS too: the Spyro 1 sampler func_8002BFE0 steps m_Animation
+ * every 60 waypoints and blends keyframe 59 of one clip into keyframe 0 of the
+ * next, so the switch continues the motion; a placement it did not
+ * interpolate is a jump (cut_obj_jump), whose interval shows tick N-1's
+ * record whole and so carries no switch.
+ * COUNTSW: the clips have different vertex counts, so no vertex correspondence
+ * exists between them. */
+typedef enum { MOBY_CLIP_CROSS = 0, MOBY_CLIP_COUNTSW } moby_clip_t;
 
 /* moby_prev_keyframe's verdict; also the prevkf field of the [moby-anim]
  * trace, which the sub-tick harness bins on. */
 enum { MOBY_PREV_SNAP = 0, MOBY_PREV_LERP = 1, MOBY_PREV_HOLD = 2 };
 
-/** @brief Classify a clip switch as cross-fadable, cutscene path-follower or vertex-count change.
+/** @brief Classify a clip switch as cross-fadable or a vertex-count change.
  *
- * A moby moby_game.cutpath_actor names is CUTPATH whatever the counts. Else
- * equal vertex counts (anim_vcount_hi of each header) are CROSS and unequal
+ * Equal vertex counts (anim_vcount_hi of each header) are CROSS and unequal
  * ones COUNTSW.
  * @param cpu The guest CPU state, read only.
- * @param moby The Moby address.
  * @param header_prev The previous pose's AnimationHeader.
  * @param header_curr The current pose's AnimationHeader.
  * @param count_p Receives the previous header's vertex count.
  * @param count_c Receives the current header's vertex count.
  * @return The kind. */
-static moby_clip_t moby_clip_switch_kind(CPUState* cpu, uint32_t moby,
+static moby_clip_t moby_clip_switch_kind(CPUState* cpu,
                                          uint32_t header_prev, uint32_t header_curr,
                                          int* count_p, int* count_c) {
     *count_c = cpu->read_byte(header_curr + game_layout.moby.anim_vcount_hi) & 0xFFu;
     *count_p = cpu->read_byte(header_prev + game_layout.moby.anim_vcount_hi) & 0xFFu;
-    if (moby_game.cutpath_actor && moby_game.cutpath_actor(moby)) return MOBY_CLIP_CUTPATH;
     return (*count_p == *count_c) ? MOBY_CLIP_CROSS : MOBY_CLIP_COUNTSW;
 }
 
@@ -10035,8 +10036,8 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
     if (pp.header == pc.header) return;
     n_sw++;
     int np = 0, nc = 0;
-    moby_clip_t k = moby_clip_switch_kind(cpu, moby, pp.header, pc.header, &np, &nc);
-    static const char* const kind[] = { "cross", "cutpath", "countsw" };
+    moby_clip_t k = moby_clip_switch_kind(cpu, pp.header, pc.header, &np, &nc);
+    static const char* const kind[] = { "cross", "countsw" };
     /* span: the pair's interval in tick periods (above 1 after a static
      * stretch); intact: the previous header against the signature the
      * previous canonical pass drew it with (1 same, 0 changed, -1 no entry). */
@@ -10056,8 +10057,8 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
  * game no longer draws may already hold another clip, and with its content
  * gone there is no previous pose to show, so unless fade_header_intact finds
  * it unchanged in this tick's table the record snaps to the current pose.
- * Otherwise moby_clip_switch_kind decides: a cutscene path-follower snaps, a
- * vertex-count change holds, a shared mesh lerps. The refusal census
+ * Otherwise moby_clip_switch_kind decides: a vertex-count change holds, a
+ * shared mesh lerps. The refusal census
  * (s_prevhdr_sig, s_prevhdr_unk) counts presents below alpha 1 only.
  * @param cpu The guest CPU state, read only.
  * @param moby The moby's PSX address.
@@ -10072,8 +10073,7 @@ static int moby_clip_switch_verdict(CPUState* cpu, uint32_t moby, uint32_t heade
     s_prevhdr_unk += (intact < 0 && t < 1.0);
     if (intact != 1) return MOBY_PREV_SNAP;
     int count_p = 0, count_c = 0;
-    switch (moby_clip_switch_kind(cpu, moby, header_prev, header_curr, &count_p, &count_c)) {
-    case MOBY_CLIP_CUTPATH: s_animsw_snap++;  return MOBY_PREV_SNAP;
+    switch (moby_clip_switch_kind(cpu, header_prev, header_curr, &count_p, &count_c)) {
     case MOBY_CLIP_COUNTSW: s_animsw_snap++;  return MOBY_PREV_HOLD;
     default:                s_animsw_cross++; return MOBY_PREV_LERP;
     }
@@ -10107,10 +10107,10 @@ static int moby_hold_schedule(const openpete_interp_obj_t* o, int verdict, doubl
  * previous keyframe, no distinct prev snapshot, a slot that changed class, or
  * a model or pose that does not derive; with both written for a clip switch
  * whose previous header no longer holds the content a canonical pass drew it
- * with (fade_header_intact), a cutscene path-follower's switch, or a hold
- * past its tick period (moby_hold_expired). MOBY_PREV_LERP: a lerp between
- * the two poses, including a clip switch between clips of equal vertex
- * count, which deform one shared mesh. MOBY_PREV_HOLD: show the previous
+ * with (fade_header_intact), or a hold past its tick period
+ * (moby_hold_expired). MOBY_PREV_LERP: a lerp between the two poses,
+ * including a clip switch between clips of equal vertex count, which deform
+ * one shared mesh. MOBY_PREV_HOLD: show the previous
  * pose whole until alpha 1, for a clip switch between clips of different
  * vertex count and for a facing reversal (moby_mirror_hold). *prev carries
  * the vertices a canonical pass held for it (pose_hold_find); across a clip
@@ -11063,9 +11063,7 @@ static void moby_fields_set_pose(moby_fields* f, const moby_pose_t* p) {
  * tick's pose at alpha 1, the instant every other channel reaches its
  * canonical value. Translation and rotation keep interpolating: the keyframe
  * stream is model-space only, and the world position is the moby's own,
- * which the guest steps per tick independently of the clip (the cutscene
- * path-follower, whose clips carry baked whole-body translation, snaps to the
- * current pose instead).
+ * which the guest steps per tick independently of the clip.
  * @param cpu The guest CPU state, read only.
  * @param moby The moby's PSX address.
  * @param f The record fields, rewritten on a hold.
