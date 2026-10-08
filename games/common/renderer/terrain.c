@@ -3130,6 +3130,11 @@ typedef struct {
                                                     * sector borrows none. Extended LOD reads this one. */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
+    uint8_t  lpkey;                                /* borrowed HP only: admitted solely over the sector's
+                                                    * uncov LP faces (tsimp_candidate) under
+                                                    * terrain.standin_lp_key, so it keys with the LP
+                                                    * base slot term the LP face it stands in for
+                                                    * carries */
     uint8_t  dside;                                /* double-sided, emits past both NCLIP halves:
                                                     * LP w0 & 0x80 (Spyro 1) / w0 bit 31 (Spyro 3),
                                                     * HP w3 & 0x4 (Spyro 1) / w3 & 0x800 (Spyro 3) */
@@ -4027,6 +4032,7 @@ typedef struct tsimp {
     int src;                     /* the source sector index */
     int srcFlags;                /* the source sector's header flags (thdr_flags) */
     int nCand, nDup;             /* candidates; dropped as duplicates */
+    int nLpKey;                  /* borrowed faces carrying lpkey */
     int nLpV, nLpF;              /* the source sector's LP verts; the borrowed LP faces */
     tsvert_t* lpV;               /* the source sector's LP verts in this sector's frame */
     tsface_t* lpF;               /* the source LP faces this sector lacks, indexing lpV */
@@ -4770,11 +4776,14 @@ static int tsimp_near_missing(const tscache_t* K, const uint8_t* miss, const int
     return 0;
 }
 
-/** @brief Tests whether a source HP face is a borrowing candidate for a scene sector.
+/** @brief Classifies a source HP face as a borrowing candidate for a scene sector.
  *
  * A scene sector with no HP of its own takes the source sector's whole HP
  * mesh; one with HP takes the faces over its uncov LP (tsimp_near_uncov)
- * and over the source LP faces it lacks (tsimp_near_missing).
+ * and over the source LP faces it lacks (tsimp_near_missing). A face the
+ * uncov test alone admits draws where the sector's own uncov LP face
+ * drew, and is classed apart so its key can take that LP face's base
+ * slot term (terrain.standin_lp_key).
  * @param C The scene sector.
  * @param K The matched source sector.
  * @param miss The flags tsimp_missing_lp wrote.
@@ -4783,11 +4792,14 @@ static int tsimp_near_missing(const tscache_t* K, const uint8_t* miss, const int
  * @param V The candidate's vertex bank, in the scene sector's frame.
  * @param nV The bank's vertex count.
  * @param H The candidate face.
- * @return 1 for a candidate. */
+ * @return 0 for no candidate, 2 for a candidate only tsimp_near_uncov
+ *         admits, else 1. */
 static int tsimp_candidate(const tscache_t* C, const tscache_t* K, const uint8_t* miss, int nMiss,
                            const int d[3], const tsvert_t* V, int nV, const tsface_t* H) {
-    if (C->nHpF <= 0 || tsimp_near_uncov(C, V, nV, H)) return 1;
-    return nMiss && tsimp_near_missing(K, miss, d, V, nV, H);
+    if (C->nHpF <= 0) return 1;
+    const int nearMiss = nMiss && tsimp_near_missing(K, miss, d, V, nV, H);
+    if (tsimp_near_uncov(C, V, nV, H)) return nearMiss ? 1 : 2;
+    return nearMiss;
 }
 
 /* World-space keys (hps_face_key) of every HP face of the scene's
@@ -5074,13 +5086,16 @@ static int tsimp_attach(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetai
     for (int f = 0; ok && f < K->nHpF; f++) {
         const tsface_t* H = &K->hpF[f];
         if (!hps_face_ok(H, I->nV)) continue;
-        if (!tsimp_candidate(C, K, miss, nMiss, dvec, I->V, I->nV, H)) continue;
+        const int cand = tsimp_candidate(C, K, miss, nMiss, dvec, I->V, I->nV, H);
+        if (!cand) continue;
         I->nCand++;
         if (tsimp_dup(C, I->V, H)) { I->nDup++; continue; }
         tsface_t* F = &I->F[I->nF];
         *F = *H;
         tsimp_retexture(cpu, F, hiDetail);
         F->uncov = F->uncovX = 0;
+        F->lpkey = (uint8_t)(cand == 2 && game_layout.terrain.standin_lp_key);
+        I->nLpKey += F->lpkey;
         I->nF++;
     }
     if (ok && nMiss) ok = tsimp_borrow_lp(I, K, miss, dvec);
@@ -5090,8 +5105,8 @@ static int tsimp_attach(CPUState* cpu, tscache_t* C, int texTblMode, int hiDetai
         for (uint32_t q = 0; q < sectorCnt && idx < 0; q++)
             if (rd(cpu, sectorPtr + q * 4u) == C->s) idx = (int)q;
         fprintf(stderr, "[hpimport] frame=%u sector=%d src=%d dorigin=%d,%d,%d srcHP=%d missLP=%d cand=%d dup=%d "
-                        "borrowed=%d borrowedLP=%d\n", openpete_frame, idx, k, dx, dy, dz, K->nHpF, nMiss,
-                I->nCand, I->nDup, I->nF, I->nLpF);
+                        "borrowed=%d lpkey=%d borrowedLP=%d\n", openpete_frame, idx, k, dx, dy, dz, K->nHpF, nMiss,
+                I->nCand, I->nDup, I->nF, I->nLpKey, I->nLpF);
     }
     if (!ok || (I->nF == 0 && I->nLpF == 0)) { tsimp_free(I); return 0; }
     C->imp = I;
@@ -8273,6 +8288,7 @@ static int tgpu_bake_hp_face(const tgpu_hpctx* X, const tgpu_hpset* S, const tsf
                  | (pin4    ? (1u << 19) : 0u)      /* routed to the cells */
                  | ((uint32_t)tface_cells_ok(F->hq_idx) << 20)   /* may take the cells */
                  | ((uint32_t)key_cells << 21)   /* keys per drain sub-cell */
+                 | ((uint32_t)F->lpkey << 22)    /* keys with the LP base term */
                  | (((uint32_t)F->otbias & 0x1Fu) << 24);
     /* Material bucket, keyed exactly as the walk's provenance tag is:
      * Tiledef id + env-rewrite membership. Both LOD halves of a face
@@ -9354,6 +9370,24 @@ static int tn_pass_source(const tscache_t* SC, int pass, const canim_t* CAm, tn_
     return P->V && P->F;   /* alloc failure: skip the pass */
 }
 
+/** @brief Returns a face's authored OT-slot offset, in 128-world slots.
+ *
+ * An LP face takes the layout's LP base plus its bias field times the LP
+ * multiplier; an HP face its bias field times the HP multiplier. A
+ * borrowed HP face carrying lpkey (terrain.standin_lp_key) stands in for
+ * the uncov LP face it lies on and adds the LP base, so it loses the key
+ * contest to the scene faces that LP face lost to. The GPU twin is the
+ * koff slot term in terrain.vert.
+ * @param F The face.
+ * @param lp Nonzero when F is an LP face.
+ * @return The slot offset. */
+static uint16_t tface_ot_slots(const tsface_t* F, int lp) {
+    const unsigned base = (lp || F->lpkey) ? (unsigned)game_layout.terrain.lp_base_slots : 0u;
+    const unsigned mul = lp ? (unsigned)game_layout.terrain.lp_bias_slots
+                            : (unsigned)game_layout.terrain.hp_bias_slots;
+    return (uint16_t)(base + mul * F->otbias);
+}
+
 /** @brief Walks one visible sector's faces into W's triangle run.
  *
  * Reads the sector's precomputed verdicts (drawHP, drawLP, the fill and
@@ -9667,10 +9701,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * the near/HQ subdivide and clip paths inherit the PARENT
              * face's offset, like otkey. */
             W->emit_nearband = 0;
-            W->emit_otslots = passLP
-                ? (uint16_t)((unsigned)game_layout.terrain.lp_base_slots
-                             + (unsigned)game_layout.terrain.lp_bias_slots * F->otbias)
-                : (uint16_t)((unsigned)game_layout.terrain.hp_bias_slots * F->otbias);
+            W->emit_otslots = tface_ot_slots(F, passLP);
             /* A face in the .s's FOREGROUND band (corner-depth sum < 0x2000) is
              * marked emit_nearband, and its OT-slot offset is dropped unless
              * the layout keys near/HQ faces through the ordinary insert

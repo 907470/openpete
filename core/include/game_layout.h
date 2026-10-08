@@ -404,6 +404,16 @@ typedef struct game_layout {
          * an auxiliary bank. A scene whose every sector matches also
          * imports the level's sectors it lacks. 0 = no such level. */
         int      hp_source_wad_entry;
+        /* Nonzero: a borrowed HP face admitted only because it lies on the
+         * scene sector's own uncov LP faces (a stand-in) adds lp_base_slots
+         * to its key, the term the LP face it replaces carried. Off, the
+         * stand-in keys as HP and a far stand-in face seen near edge-on can
+         * key below a nearer scene HP wall and paint over it. On, it also
+         * loses to any HP-keyed face within lp_base_slots behind it: the
+         * whole-mesh borrows of neighbouring sectors with no HP of their
+         * own, and own LP faces at a nearer key, so a scene whose stand-ins
+         * adjoin such faces opens holes in the borrowed surface. */
+        int      standin_lp_key;
     } terrain;
 
     /* The moby drop-shadow draw. Both games run the same walk: a list of

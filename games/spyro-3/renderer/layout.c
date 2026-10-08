@@ -265,6 +265,7 @@ const game_layout_t game_layout = {
         .hp_source_wad_entry = 139, /* Fireworks Factory: the title scene's
                                      * sectors are cut-down copies of its
                                      * sectors (WAD entry 6, sub-file 1) */
+        .standin_lp_key = 1,  /* stand-ins adjoin no whole-mesh borrow */
     },
     .shadow = {
         .desc        = G_MOBYSHADOWS,     /* mobyfunc.s:921-923: +0x00/+0x04 the sprite UV

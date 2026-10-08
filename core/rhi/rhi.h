@@ -681,6 +681,9 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * 4x4 cells) |
                                  * keycells<<21 (HP: the drawn triangles key
                                  * each fragment by its drain sub-cell) |
+                                 * lpkey<<22 (HP: a borrowed face standing in
+                                 * for an uncov LP face keys with the LP base
+                                 * slot term) |
                                  * otbias(5)<<24 (authored OT-slot bias)     */
     int16_t  c0x, c0y, c0z;     /* parent face corners in i0,i1,i2,i3 order, */
     int16_t  c1x, c1y, c1z;     /* sector-local, same x4 fixed point         */

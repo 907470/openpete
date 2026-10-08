@@ -255,6 +255,8 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define FF_CELLOK     (1u << 20)   /* HP: the face may take the 4x4 cells */
 #define FF_KEYCELLS   (1u << 21)   /* HP: the face's drain sub-cells ride its
                                     * key-only records (OPTC_ARENA_KN / KA) */
+#define FF_LPKEY      (1u << 22)   /* HP: a borrowed face standing in for an
+                                    * uncov LP face; keys with the LP base term */
 /* admit (LP): bits 19-23; otbias: bits 24-28 */
 
 /* Depth convention + PSX-affine interpolation - the scene stages' spec
@@ -1902,7 +1904,8 @@ void main()
             koff = -float(double(ok) + 0.5lf);
         } else {
             double slots = lp ? double(0x40u + 8u * ((ff >> 24) & 0x1Fu))
-                              : double(4u * ((ff >> 24) & 0x1Fu));
+                              : double(((ff & FF_LPKEY) != 0u ? 0x40u : 0u)
+                                       + 4u * ((ff >> 24) & 0x1Fu));
             koff = float(double(ok) + 128.0lf * slots + 0.5lf);
         }
     }
