@@ -80,6 +80,14 @@ glimmer-pogo-dialogue|900|200||700,897,901,903,987,989,1000
 # quarter; pins at the first full-window frame, mid-shrink and settled.
 # Synthesized: idle to 1450 then Start (make_bk2.py --hold 1450:1460:Start).
 pause-menu-midlevel|1440|200||1454,1462,1500
+# pause-menu-midlevel@shrink: the same movie pinned on every VBL of the shrink and the
+# settle (one game tick per VBL): the window must show the scaled image of
+# the tick being drawn, not the first shrink tick's scene. Blessed pre-fix.
+pause-menu-midlevel@shrink|1440|200||1454,1455,1456,1457,1458,1459,1460,1461,1462,1463,1464,1465,1466,1467,1468,1469,1470,1471,1472,1473,1474,1475,1476
+# pause-unpause: Start again at 1600; the game grows the window back over
+# 1617-1624 from the other draw buffer, then draws the live world. Blessed
+# pre-fix.
+pause-unpause|1600|200||1616,1618,1620,1622,1624,1626
 #
 # start-new-game: same-moby self-interpenetration. Two faces of one
 # moby that cross in 3D show their crossing contour under true depth, where
