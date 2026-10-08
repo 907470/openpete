@@ -57,7 +57,13 @@
  *          func_8001BA20, S3 func_8004EDE8)
  *   far_counter the word whose value, times 4 plus the record index times
  *          64, indexes the cos table for the far colour the pass writes into
- *          the block's +0x18/+0x1A */
+ *          the block's +0x18/+0x1A
+ *   env_draw_ret the return address of the world draw's call inside the
+ *          draw dispatcher's world-draw wrapper, the instruction after its
+ *          jal; the wrapper keeps its own $ra at sp+0x10
+ *   env_wrap_ret the return address of that wrapper's call inside the draw
+ *          dispatcher (the world draw under flag 0x4, the portal pass later
+ *          under flag 0x8, the flag word in $s3) */
 typedef struct portal_game_s23_consts {
     uint32_t block;
     uint32_t pass;
@@ -68,6 +74,8 @@ typedef struct portal_game_s23_consts {
     uint32_t atan_table;
     uint32_t sqrt_table;
     uint32_t far_counter;
+    uint32_t env_draw_ret;
+    uint32_t env_wrap_ret;
 } portal_game_s23_consts_t;
 
 extern const portal_game_s23_consts_t portal_game_s23;
@@ -110,5 +118,18 @@ int portal_s23_sky_recent(void);
  * @return The number of planes written; 0 when no recent capture holds a
  *         preview or the portal render path is deselected. */
 int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
+
+/** @brief 1 when the running world draw is the draw dispatcher's and this tick's portal pass follows it uncaptured.
+ *
+ * The test is the dispatcher's own: the world draw's $ra is
+ * portal_game_s23.env_draw_ret, the wrapper's saved $ra at sp+0x10 is
+ * env_wrap_ret, the dispatcher's flag word in $s3 has bit 0x8 (the portal
+ * pass runs after the world draw in the same call), and the feeder holds no
+ * capture for openpete_frame yet. The terrain feed then waits for that
+ * capture (terrain_game.env_feed_waits_for_portals); the portal pass hook
+ * releases it.
+ * @param cpu guest state at the world-draw hook
+ * @return 1 when the terrain feed must wait for this tick's portal capture */
+int portal_s23_capture_follows(CPUState* cpu);
 
 #endif /* OPENPETE_COMMON_RENDERER_PORTAL_SPYRO23_H */

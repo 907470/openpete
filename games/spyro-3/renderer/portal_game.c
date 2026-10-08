@@ -15,4 +15,6 @@ const portal_game_s23_consts_t portal_game_s23 = {
     .atan_table  = 0x80065B24u,   /* func_8004E880's lhu table (stdutil.s:256-257) */
     .sqrt_table  = 0x80069F40u,   /* func_8004EDE8's lh table (stdutil.s:645-646) */
     .far_counter = 0x8006C644u,   /* drawutil/func_8001EDEC.s:505-506 */
+    .env_draw_ret = 0x8001EC4Cu,  /* drawutil/func_8001EC24.s:13-15: after the world draw's jal */
+    .env_wrap_ret = 0x8001E4A8u,  /* draw/func_8001E460.s:22-24: after the wrapper's jal */
 };

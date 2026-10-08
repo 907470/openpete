@@ -76,6 +76,14 @@ void terrain_visibility_capture_arm(void);
  * pending is a no-op. The portal draw calls it once its capture for the tick is
  * complete. */
 void terrain_native_flush_deferred(void);
+/** @brief Run a deferred terrain build and feed whose portal draw never released it.
+ *
+ * The world draw's hook calls it before the next draw and the canonical
+ * commit calls it before the scene presents, so a held feed still reaches
+ * the scene of its VBL. A pending feed at either point is never expected and
+ * is counted as late in the deferral census; a call with none pending is a
+ * no-op. */
+void terrain_native_flush_deferred_late(void);
 /** @brief Returns the sector visibility table captured during the last armed world draw.
  * @param out receives the byte array (nonzero = the sector is visible); may
  *        be NULL

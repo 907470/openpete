@@ -61,6 +61,7 @@
 #include "renderer/native_gte.h"
 #include "renderer/portal_spyro23.h"
 #include "renderer/portal_plane.h"     /* openpete_portal_plane_margin */
+#include "renderer/terrain.h"          /* terrain_native_flush_deferred */
 #include "game_layout.h"
 
 #include <math.h>
@@ -1599,6 +1600,23 @@ static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/* The dispatcher's world-draw wrapper stores its $ra at sp+0x10
+ * [CITE: games/spyro-3/spyro-3/asm/nonmatchings/drawutil/func_8001EC24.s:10;
+ * games/spyro-2/spyro-2/asm/nonmatchings/drawutil/func_8004C4FC.s:12], and the
+ * dispatcher runs the portal pass under bit 0x8 of the flag word it keeps in
+ * $s3 [CITE: games/spyro-3/spyro-3/asm/nonmatchings/draw/func_8001E460.s:59-71;
+ * games/spyro-2/spyro-2/asm/nonmatchings/draw/func_800155A0.s:61-67]. */
+#define P3_WRAP_RA_SLOT  0x10u
+#define P3_FLAG_PORTALS  0x8u
+
+int portal_s23_capture_follows(CPUState* cpu) {
+    if (!portal_game_s23.env_draw_ret || !portal_game_s23.env_wrap_ret) return 0;
+    return cpu->ra == portal_game_s23.env_draw_ret
+        && cpu->read_word(cpu->sp + P3_WRAP_RA_SLOT) == portal_game_s23.env_wrap_ret
+        && (cpu->s3 & P3_FLAG_PORTALS) != 0
+        && s_curr.frame != openpete_frame;
+}
+
 /** @brief The portal pass's hook: rolls the tick buffers, runs the real pass, then feeds the previews.
  *
  * Returns 0 (the pass runs unhooked) when neither the native scene, a
@@ -1607,8 +1625,10 @@ static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
  * (valid for up to 3 frames back) and the current list is emptied. Sets
  * s_in_pass so the leaf hook captures, dispatches the pass once, records the
  * pass's polybuf interval under RP_PORTAL, and feeds the captured previews
- * when the native scene is enabled. Under OPENPETE_PORTAL3_DBG prints up to 64
- * capture reports. Writes no PSX RAM itself.
+ * when the native scene is enabled. Then releases a terrain feed the world
+ * draw held for this capture (portal_s23_capture_follows). Under
+ * OPENPETE_PORTAL3_DBG prints up to 64 capture reports. Writes no PSX RAM
+ * itself.
  * @param cpu The guest CPU state.
  * @param addr The pass's address, dispatched.
  * @return 1 after running the pass, else 0. */
@@ -1636,6 +1656,7 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
         p3_band_admit(cpu, &s_curr);
         p3_feed(cpu, &s_curr);
     }
+    terrain_native_flush_deferred();          /* a world draw that ran first this tick */
     if (p3_dbg()) {
         static unsigned s_reports = 0, s_passes = 0;
         s_passes++;

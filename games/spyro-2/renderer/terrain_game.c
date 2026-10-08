@@ -46,6 +46,7 @@ static int s2_lp_artfix(int level, int sec, int face, uint32_t* rgb) {
 const terrain_game_t terrain_game = {
     .portal_sky_recent   = portal_s23_sky_recent,
     .portal_sky_planes   = portal_s23_sky_planes,
+    .env_feed_waits_for_portals = portal_s23_capture_follows,
     .portal_plane_margin = openpete_portal_plane_margin,
     .fill_tag            = s2_fill_tag,
     .level_name          = s2_level_name,

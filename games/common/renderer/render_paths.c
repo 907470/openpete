@@ -8,6 +8,7 @@
 #include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */
 #include "renderer/orchestrator.h"  /* canonical-render epoch commit */
+#include "renderer/terrain.h"       /* deferred terrain feed fallback */
 #include "psyq/psyq_game_hooks.h"   /* the OT walk's view of this filter */
 
 #include <stdio.h>
@@ -274,11 +275,13 @@ static void render_paths_census(void) {
 
 /** @brief The per-canonical-present commit: latches the canon-drawn mask and rolls the frame state.
  *
- * In order: latches the canon-drawn mask, prints the census, audits the feed,
+ * In order: runs a terrain feed still held for a portal draw that did not
+ * release it, latches the canon-drawn mask, prints the census, audits the feed,
  * rolls the intervals, commits the canonical-render epoch, then syncs the
  * native background clear and the retained freeze backdrop from the draw
  * environment the next DrawOTag applies. */
 static void render_paths_commit(void) {
+    terrain_native_flush_deferred_late();   /* a feed held past its portal draw */
     render_paths_canon_snapshot();
     render_paths_census();
     render_paths_feed_audit();

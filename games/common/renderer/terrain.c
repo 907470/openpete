@@ -13354,8 +13354,9 @@ static int32_t s_terrain_saved_occGroup = -1;
  * exists (terrain_game.env_feed_waits_for_portals). The world draw's RAM
  * verdicts persist until the portal draw that flushes it, which runs next
  * in the same draw. Census (OPENPETE_TERRAIN_DEFER_CENSUS=1, at exit):
- * deferred feeds, feeds flushed by the portal draw, and feeds still pending
- * when the next world draw began (an invariant breach, flushed there). */
+ * deferred feeds, feeds flushed (by the portal draw or a fallback), and feeds
+ * still pending at the canonical commit or when the next world draw began
+ * (an invariant breach, flushed there). */
 static struct { CPUState* cpu; int32_t occ; int pending; } s_env_defer;
 static unsigned s_env_defer_n, s_env_defer_flushed, s_env_defer_late;
 
@@ -13386,10 +13387,7 @@ void terrain_native_flush_deferred(void) {
     terrain_native_build_feed(s_env_defer.cpu, s_env_defer.occ);
 }
 
-/** @brief Flush a deferred feed still pending when the next world draw begins.
- *
- * A pending feed there is never expected; it is counted as late in the census. */
-static void terrain_defer_flush_late(void) {
+void terrain_native_flush_deferred_late(void) {
     if (!s_env_defer.pending) return;
     s_env_defer_late++;
     terrain_native_flush_deferred();
@@ -13440,7 +13438,7 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
-    terrain_defer_flush_late();
+    terrain_native_flush_deferred_late();
 
     /* Capture the occlusion-group arg BEFORE the real call clobbers a0. This is
      * the exact input the .s uses to build D_800771C8 - the ground truth for the
