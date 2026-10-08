@@ -121,6 +121,8 @@ open-options|900|100|freeze|1200,1242,1300
 # window composes the copied scene, whose textures and CLUTs lie in the page
 # the copy overwrites. Blessed pre-fix.
 open-options@terrain|900|100|freeze|1242|--render-paths terrain,ui
+# open-atlas 1300: the guest draws Sparx over the atlas page beside the
+# highlighted world; native draws the page with no Sparx. Blessed pre-fix.
 open-atlas|900|100|freeze|1200,1300
 
 # open-atlas-turn-pages holds the atlas page-turn animation: the turning
