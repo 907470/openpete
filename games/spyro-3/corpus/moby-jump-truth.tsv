@@ -6,7 +6,8 @@
 # label: jump (an isolated step, or a placement writer storing its state), motion, sampler
 #   (the cutscene path sampler wrote it; its own rule decides), cut (a camera cut
 #   or gamestate edge decides).
-# bin (jumps): table, load, or residual:<cls>:<writer> (no marker known).
+# bin (jumps): the marker kind that decides it (table, director, props, attach,
+#   regime), or residual:<cls>:<writer> (no marker known).
 row	a-powerful-villain-emerges-throne	4673
 row	an-evil-plot-unfolds-egg-edge	1229
 row	attract	11562
@@ -148,7 +149,7 @@ step	attract	6748	800a9480	002	0	0	6420.4	sampler	-	func_title_8007A1C0
 step	attract	6808	800a9480	002	0	0	5888.0	sampler	-	func_title_8007A1C0
 step	attract	5980	800a93d0	000	0	0	2048.0	sampler	-	func_title_8007A1C0
 step	attract	6868	800a9480	002	0	0	10023.3	sampler	-	func_title_8007A1C0
-step	attract	7181	8017d8e4	036	-	4	53543.7	jump	residual:036:func_8003E968	func_8003E968
+step	attract	7181	8017d8e4	036	-	4	53543.7	jump	director	func_8003E968
 step	attract	8051	8017dd04	078	-	-	1404.6	motion	-	func_level_22_80076A34
 step	attract	8053	8017dd04	078	-	-	1219.4	motion	-	func_level_22_80076A34
 step	attract	8055	8017dd04	078	-	-	986.2	motion	-	func_level_22_80076A34

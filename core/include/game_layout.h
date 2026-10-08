@@ -86,7 +86,49 @@ typedef struct game_moby_director {
     const char* moby_row;
     uint32_t    state_prev;
     uint32_t    state_curr;
+    /* Byte offset of the pointer word within `moby_row`. With `state_row`
+     * NULL the row is a pointer edge: the moby the word names in the later
+     * snapshot and not in the earlier one was placed on that tick. */
+    uint32_t    moby_off;
 } game_moby_director_t;
+
+/* One props-word placement marker: in the overlays whose name starts with
+ * `overlay` (NULL: any), a moby of class `cls` whose props word at
+ * `word_off` goes from 0 to nonzero on the tick its record steps was placed
+ * by the game's code on that tick. `base_off` nonzero also requires the
+ * record's position component `base_axis` on the earlier tick to equal the
+ * props word at `base_off` (the placement starts from that stored value). */
+typedef struct game_moby_props {
+    uint16_t    cls;
+    uint16_t    word_off;
+    uint16_t    base_off;
+    uint16_t    base_axis;
+    const char* overlay;
+} game_moby_props_t;
+
+/* One attachment marker: in the overlays whose name starts with `overlay`
+ * (NULL: any), a moby of class `cls` copies the position of its parent, the
+ * moby-array record whose index is the props word at `parent_off`; its step
+ * is a jump on the tick its parent's step is one. */
+typedef struct game_moby_attach {
+    uint16_t    cls;
+    uint16_t    parent_off;
+    const char* overlay;
+} game_moby_attach_t;
+
+/* game_moby_regime_t.snaps: which snapshots of a ring pair the row tests. */
+#define GAME_REGIME_EITHER 0u   /* either snapshot of the pair */
+#define GAME_REGIME_BEFORE 1u   /* the snapshot before the pair's earlier one */
+
+/* One regime marker: the 4-byte interp ring row `row` holding a value in
+ * [lo, hi] (unsigned) on the snapshots `snaps` names marks every moby step
+ * of that pair as a placement (a load or reload writes the records). */
+typedef struct game_moby_regime {
+    const char* row;
+    uint32_t    lo;
+    uint32_t    hi;
+    uint32_t    snaps;
+} game_moby_regime_t;
 
 typedef struct game_layout {
     /* The game's display environment, in VRAM pixels, as its boot code hands
@@ -587,10 +629,16 @@ typedef struct game_layout {
          * `director_n` rows; NULL where the game names none. */
         const game_moby_director_t* director;
         uint32_t    director_n;
-        /* Bit k set: the interp ring's g_GameState row holding k on either
-         * snapshot of its newest pair is a load regime, whose moby stores are
-         * placements. 0 = no load regime. */
-        uint32_t    load_gamestates;
+        /* The props-word markers (game_moby_props_t), `props_mark_n` rows,
+         * the attachment markers (game_moby_attach_t), `attach_n` rows, and
+         * the regime markers (game_moby_regime_t), `regime_n` rows; NULL
+         * where the game names none. */
+        const game_moby_props_t*  props_mark;
+        uint32_t                  props_mark_n;
+        const game_moby_attach_t* attach;
+        uint32_t                  attach_n;
+        const game_moby_regime_t* regime;
+        uint32_t                  regime_n;
 
         uint32_t model_table;
         uint32_t model_anims_off;

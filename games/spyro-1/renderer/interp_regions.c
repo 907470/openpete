@@ -78,6 +78,11 @@ static const game_interp_row_t s_spyro_interp_rows[] = {
      * not. Committed timeline, like g_GameState. */
     { "g_BalloonState", 0x800777E8, 0x4, 1 },
     { "g_BalloonMoby",  0x80077850, 0x4, 1 },
+    /* g_LoadStage (0x80075864, level_10 0x80084BA8 lui 0x8007 / sw +0x5864):
+     * LoadLevel's stage machine; stages 1..12 mark the ticks whose moby
+     * stores are CD DMA (game_layout.moby.regime). Committed timeline, like
+     * g_GameState. */
+    { "g_LoadStage", 0x80075864, 0x4, 1 },
 };
 
 /* --- per-object (indirect) capture: the g_LevelMobys array --------------- */

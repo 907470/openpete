@@ -11,6 +11,7 @@
 #include "game_layout.h"
 #include "openpete_pace_log.h"
 #include "openpete_fiber.h"         /* openpete_frame */
+#include "spyro_overlay_table.h"    /* the resident overlay, for the props and attach markers */
 
 #include <math.h>
 #include <stdio.h>
@@ -204,32 +205,54 @@ static int cut_ring_pair(int older, const openpete_interp_snapshot_t** a,
     return 1;
 }
 
-/** @brief Whether either snapshot of one interp ring pair holds a load-regime game state (game_layout.moby.load_gamestates).
+/** @brief Read the 4-byte word of ring row `row` at byte `off` from one snapshot.
  *
- * The state is the ring's g_GameState row; its row index resolves on the
- * first call that finds it registered.
+ * @param s The snapshot.
+ * @param row The row index.
+ * @param off Byte offset within the row.
+ * @return The word. */
+static uint32_t cut_snap_word(const openpete_interp_snapshot_t* s, int row, uint32_t off) {
+    uint32_t v;
+    memcpy(&v, s->data + s->region_offsets[row] + off, 4);
+    return v;
+}
+
+/** @brief Whether a regime marker (game_layout.moby.regime) holds on one interp ring pair.
+ *
+ * A GAME_REGIME_EITHER row tests both snapshots of the pair; a
+ * GAME_REGIME_BEFORE row tests the snapshot before the pair's earlier one,
+ * which the ring holds only for its newest pair.
  * @param older 0 tests the newest pair (prev, curr); 1 tests the pair before
  *        it (prev2, prev).
- * @return 1 in a load regime, else 0 (also when the game names none, the row
- *         is unregistered, or the ring has no such pair). */
-static int cut_load_regime(int older) {
-    const uint32_t mask = game_layout.moby.load_gamestates;
-    if (!mask) return 0;
-    static int row = -1;
-    if (row < 0) row = game_interp_row_index(GAME_INTERP_GS_ROW);
-    if (row < 0) return 0;
-    const openpete_interp_snapshot_t *pv = NULL, *cu = NULL;
-    if (!cut_ring_pair(older, &pv, &cu)) return 0;
-    uint32_t pgs, cgs;
-    memcpy(&pgs, pv->data + pv->region_offsets[row], 4);
-    memcpy(&cgs, cu->data + cu->region_offsets[row], 4);
-    return (pgs < 32u && ((mask >> pgs) & 1u)) || (cgs < 32u && ((mask >> cgs) & 1u));
+ * @return 1 when a row's value range holds, else 0 (also when the game names
+ *         none, a row is unregistered, or the ring has no such pair). */
+static int cut_regime(int older) {
+    const game_moby_regime_t* t = game_layout.moby.regime;
+    if (!t) return 0;
+    double al = 0.0;
+    const openpete_interp_snapshot_t *p2 = NULL, *pv = NULL, *cu = NULL;
+    if (!openpete_interp_query3(openpete_interp_curr_tick_ns(), g_openpete_tick_period_ns,
+                                &al, &p2, &pv, &cu) || !pv || !cu) return 0;
+    if (older) { if (!p2) return 0; cu = pv; pv = p2; p2 = NULL; }
+    for (uint32_t i = 0; i < game_layout.moby.regime_n; i++) {
+        const int row = game_interp_row_index(t[i].row);
+        const openpete_interp_snapshot_t* tested[2] = { pv, cu };
+        if (t[i].snaps == GAME_REGIME_BEFORE) { tested[0] = p2; tested[1] = NULL; }
+        for (int k = 0; row >= 0 && k < 2; k++) {
+            if (!tested[k]) continue;
+            const uint32_t v = cut_snap_word(tested[k], row, 0);
+            if (v >= t[i].lo && v <= t[i].hi) return 1;
+        }
+    }
+    return 0;
 }
 
 /** @brief Whether a director placement marker (game_layout.moby.director) names this moby on one interp ring pair.
  *
- * A row matches when its state row goes state_prev -> state_curr across the
- * pair and the later snapshot's moby row names `addr`.
+ * A row with a state row matches when that row goes state_prev -> state_curr
+ * across the pair and the later snapshot's pointer word names `addr`; a row
+ * with no state row (a pointer edge) matches when the pointer word names
+ * `addr` in the later snapshot and not in the earlier one.
  * @param addr The moby's guest address.
  * @param older 0 tests the newest pair (prev, curr); 1 tests the pair before
  *        it (prev2, prev).
@@ -239,19 +262,213 @@ static int cut_director_placed(uint32_t addr, int older) {
     const game_moby_director_t* t = game_layout.moby.director;
     if (!t) return 0;
     const openpete_interp_snapshot_t *pv = NULL, *cu = NULL;
-    int have = -1;
+    if (!cut_ring_pair(older, &pv, &cu)) return 0;
     for (uint32_t i = 0; i < game_layout.moby.director_n; i++) {
-        const int srow = game_interp_row_index(t[i].state_row);
         const int mrow = game_interp_row_index(t[i].moby_row);
-        if (srow < 0 || mrow < 0) continue;
-        if (have < 0) have = cut_ring_pair(older, &pv, &cu);
-        if (!have) return 0;
-        uint32_t sp, sc, ptr;
-        memcpy(&sp, pv->data + pv->region_offsets[srow], 4);
-        memcpy(&sc, cu->data + cu->region_offsets[srow], 4);
-        memcpy(&ptr, cu->data + cu->region_offsets[mrow], 4);
-        if (sp == t[i].state_prev && sc == t[i].state_curr && ptr == addr) return 1;
+        const int srow = t[i].state_row ? game_interp_row_index(t[i].state_row) : -1;
+        if (mrow < 0 || (t[i].state_row && srow < 0)) continue;
+        if (cut_snap_word(cu, mrow, t[i].moby_off) != addr) continue;
+        if (srow < 0 ? cut_snap_word(pv, mrow, t[i].moby_off) != addr
+                     : (cut_snap_word(pv, srow, 0) == t[i].state_prev &&
+                        cut_snap_word(cu, srow, 0) == t[i].state_curr)) return 1;
     }
+    return 0;
+}
+
+/** @brief Whether the resident overlay's name starts with `prefix`.
+ *
+ * @param prefix The prefix; NULL matches any overlay.
+ * @return 1 on a match, else 0 (also when no overlay is resident). */
+static int cut_overlay_is(const char* prefix) {
+    if (!prefix) return 1;
+    const spyro_overlay_entry_t* ov = spyro_overlay_find(spyro_get_active_overlay_magic());
+    return ov && ov->name && strncmp(ov->name, prefix, strlen(prefix)) == 0;
+}
+
+/** @brief The guest address of a moby record's props block.
+ *
+ * @param rec The moby record.
+ * @return The props pointer word (moby_game.props_off). */
+static uint32_t cut_rec_props(const uint8_t* rec) {
+    uint32_t p;
+    memcpy(&p, rec + moby_game.props_off, 4);
+    return p;
+}
+
+/** @brief The props bytes the capture takes for a moby of class `cls` in the resident overlay: through the last word a props or attach marker row reads.
+ *
+ * @param cls The moby's class halfword.
+ * @return The byte count; 0 when no row names the class in this overlay. */
+static uint32_t cut_props_span(uint16_t cls) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < game_layout.moby.props_mark_n; i++) {
+        const game_moby_props_t* r = &game_layout.moby.props_mark[i];
+        if (r->cls != cls || !cut_overlay_is(r->overlay)) continue;
+        const uint32_t e = (uint32_t)(r->word_off > r->base_off ? r->word_off : r->base_off) + 4u;
+        if (e > n) n = e;
+    }
+    for (uint32_t i = 0; i < game_layout.moby.attach_n; i++) {
+        const game_moby_attach_t* r = &game_layout.moby.attach[i];
+        if (r->cls == cls && cut_overlay_is(r->overlay) && r->parent_off + 4u > n)
+            n = r->parent_off + 4u;
+    }
+    return n;
+}
+
+void cut_props_capture(const uint8_t* rec) {
+    if (!game_layout.moby.props_mark_n && !game_layout.moby.attach_n) return;
+    uint16_t cls;
+    memcpy(&cls, rec + game_layout.moby.class_off, 2);
+    const uint32_t n = cut_props_span(cls);
+    const uint32_t props = n ? cut_rec_props(rec) : 0u;
+    if (props < 0x80000000u) return;
+    const void* host = openpete_psx_to_host_span(props, n);
+    if (host) openpete_interp_objs_capture(props, host, n);
+}
+
+/** @brief An object's step that ends on the tick stamp `t`: (prev, curr) when its curr rolled at `t`, (prev2, prev) when its prev did.
+ *
+ * The store keeps the last distinct state and evicts an object not seen on a
+ * capture, so a paired object's earlier blob is its state on the tick
+ * before `t`.
+ * @param o The object.
+ * @param t The roll stamp the step ends on.
+ * @param a Receives the earlier blob.
+ * @param b Receives the later blob.
+ * @return 1 when the object holds such a step, else 0. */
+static int cut_obj_step_at(const openpete_interp_obj_t* o, op_time_t t,
+                           const uint8_t** a, const uint8_t** b) {
+    if (!o || !o->have_prev) return 0;
+    if (o->curr_ns == t) { *a = o->prev; *b = o->curr; return 1; }
+    if (o->prev_ns == t && o->have_prev2) { *a = o->prev2; *b = o->prev; return 1; }
+    return 0;
+}
+
+/** @brief The roll stamp a moby's step ends on: its curr roll for the newest pair, its prev roll for the pair before it.
+ *
+ * @param addr The moby's guest address.
+ * @param older 0 for the newest pair, 1 for the pair before it.
+ * @param t Receives the stamp.
+ * @return 1 when the moby is tracked with that pair, else 0. */
+static int cut_step_stamp(uint32_t addr, int older, op_time_t* t) {
+    const openpete_interp_obj_t* mo = openpete_interp_objs_find(addr);
+    if (!mo || !mo->have_prev || (older && !mo->have_prev2)) return 0;
+    *t = older ? mo->prev_ns : mo->curr_ns;
+    return 1;
+}
+
+/** @brief One moby step's props-block pair: the props object's step ending on the tick the moby's step does.
+ *
+ * The props object is keyed by the props address the later record names.
+ * @param addr The moby's guest address.
+ * @param curr_rec The later moby record.
+ * @param older 0 for the moby's newest pair, 1 for the pair before it.
+ * @param a Receives the earlier props blob.
+ * @param b Receives the later props blob.
+ * @return The blob length, or 0 when the props block did not change on that tick. */
+static uint32_t cut_props_pair(uint32_t addr, const uint8_t* curr_rec, int older,
+                               const uint8_t** a, const uint8_t** b) {
+    op_time_t t;
+    const openpete_interp_obj_t* po = openpete_interp_objs_find(cut_rec_props(curr_rec));
+    if (!cut_step_stamp(addr, older, &t) || !cut_obj_step_at(po, t, a, b)) return 0;
+    return po->blob_len;
+}
+
+/** @brief Read a 4-byte word at `off` from a props blob of `len` bytes.
+ *
+ * @param blob The blob.
+ * @param len Its length.
+ * @param off Byte offset.
+ * @param v Receives the word.
+ * @return 1 when the word lies inside the blob, else 0. */
+static int cut_blob_word(const uint8_t* blob, uint32_t len, uint32_t off, uint32_t* v) {
+    if (off + 4u > len) return 0;
+    memcpy(v, blob + off, 4);
+    return 1;
+}
+
+/** @brief Whether a props-word marker (game_layout.moby.props_mark) marks a moby step as a placement.
+ *
+ * A row matches the later record's class in the resident overlay when its
+ * props word goes 0 -> nonzero on the step's tick and, with a base word,
+ * the earlier record's position component equals that word.
+ * @param addr The moby's guest address.
+ * @param prev_rec The earlier record.
+ * @param curr_rec The later record.
+ * @param older 0 for the moby's newest pair, 1 for the pair before it.
+ * @return 1 when a row matches, else 0. */
+static int cut_props_marked(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                            int older) {
+    if (!game_layout.moby.props_mark_n) return 0;
+    uint16_t cls;
+    memcpy(&cls, curr_rec + game_layout.moby.class_off, 2);
+    const uint8_t *a = NULL, *b = NULL;
+    uint32_t len = 0;
+    for (uint32_t i = 0; i < game_layout.moby.props_mark_n; i++) {
+        const game_moby_props_t* r = &game_layout.moby.props_mark[i];
+        if (r->cls != cls || !cut_overlay_is(r->overlay)) continue;
+        if (!len && !(len = cut_props_pair(addr, curr_rec, older, &a, &b))) return 0;
+        uint32_t wa, wb, base;
+        if (!cut_blob_word(a, len, r->word_off, &wa) || !cut_blob_word(b, len, r->word_off, &wb) ||
+            wa != 0u || wb == 0u) continue;
+        int32_t pos;
+        memcpy(&pos, prev_rec + game_layout.moby.pos_off + 4u * r->base_axis, 4);
+        if (!r->base_off ||
+            (cut_blob_word(a, len, r->base_off, &base) && (uint32_t)pos == base)) return 1;
+    }
+    return 0;
+}
+
+static uint32_t cut_moby_array_head(void);
+static int cut_obj_jump_at(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                           int older, int depth, const char** why);
+
+/** @brief Whether an attachment marker (game_layout.moby.attach) carries a jump of the moby's parent to it.
+ *
+ * The parent is the moby-array record whose index the props word names; its
+ * step must lie on the same tick as the moby's, and its own verdict decides.
+ * @param addr The moby's guest address.
+ * @param curr_rec The later record.
+ * @param older 0 for the moby's newest pair, 1 for the pair before it.
+ * @param depth Attachment levels already followed; the chain stops at 4.
+ * @return 1 when the parent's step is a jump, else 0. */
+static int cut_attach_jump(uint32_t addr, const uint8_t* curr_rec, int older, int depth) {
+    if (!game_layout.moby.attach_n || depth >= 4) return 0;
+    uint16_t cls;
+    memcpy(&cls, curr_rec + game_layout.moby.class_off, 2);
+    for (uint32_t i = 0; i < game_layout.moby.attach_n; i++) {
+        const game_moby_attach_t* r = &game_layout.moby.attach[i];
+        if (r->cls != cls || !cut_overlay_is(r->overlay)) continue;
+        const openpete_interp_obj_t* po = openpete_interp_objs_find(cut_rec_props(curr_rec));
+        const uint32_t arr = cut_moby_array_head();
+        uint32_t idx;
+        op_time_t t;
+        if (!po || !arr || !cut_blob_word(po->curr, po->blob_len, r->parent_off, &idx) ||
+            idx >= 4096u || !cut_step_stamp(addr, older, &t)) continue;
+        const uint32_t paddr = arr + idx * game_layout.moby.array_stride;
+        const uint8_t *p0 = NULL, *p1 = NULL;
+        if (paddr == addr || !cut_obj_step_at(openpete_interp_objs_find(paddr), t, &p0, &p1)) continue;
+        if (memcmp(p0 + game_layout.moby.class_off, p1 + game_layout.moby.class_off, 2) != 0 ||
+            cut_obj_jump_at(paddr, p0, p1, older, depth + 1, NULL)) return 1;
+    }
+    return 0;
+}
+
+/** @brief Whether a per-moby game marker (placement table, director, props word or attachment) marks one step as a placement.
+ *
+ * @param addr The moby's guest address.
+ * @param prev_rec The earlier record.
+ * @param curr_rec The later record.
+ * @param older 0 for the newest pair, 1 for the pair before it.
+ * @param depth Attachment levels already followed.
+ * @param why Receives the matching marker's name.
+ * @return 1 when a marker matches, else 0. */
+static int cut_moby_marked(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
+                           int older, int depth, const char** why) {
+    if (cut_place_marked(prev_rec, curr_rec)) { *why = "table"; return 1; }
+    if (cut_director_placed(addr, older)) { *why = "director"; return 1; }
+    if (cut_props_marked(addr, prev_rec, curr_rec, older)) { *why = "props"; return 1; }
+    if (cut_attach_jump(addr, curr_rec, older, depth)) { *why = "attach"; return 1; }
     return 0;
 }
 
@@ -270,21 +487,20 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos) {
  * @param prev_rec The earlier record.
  * @param curr_rec The later record.
  * @param older 0 when the records are the ring's newest pair, 1 when they are
- *        the pair before it; selects the snapshots the load-regime rule reads.
+ *        the pair before it; selects the snapshots the ring-row rules read.
+ * @param depth Attachment levels already followed (cut_attach_jump).
  * @param why Receives the deciding rule's name when non-NULL.
  * @return 1 for a jump, else 0. */
 static int cut_obj_jump_at(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
-                           int older, const char** why) {
-    const char* w;
+                           int older, int depth, const char** why) {
+    const char* w = "none";
     int v = moby_game.cutpath_jump ? moby_game.cutpath_jump(addr, prev_rec, curr_rec) : -1;
     if (v >= 0) {
         w = "cutpath";
-    } else if (cut_jump_markers_on() && cut_place_marked(prev_rec, curr_rec)) {
-        v = 1; w = "table";
-    } else if (cut_jump_markers_on() && cut_director_placed(addr, older)) {
-        v = 1; w = "director";
-    } else if (cut_jump_markers_on() && cut_load_regime(older)) {
-        v = 1; w = "load";
+    } else if (cut_jump_markers_on() && cut_moby_marked(addr, prev_rec, curr_rec, older, depth, &w)) {
+        v = 1;
+    } else if (cut_jump_markers_on() && cut_regime(older)) {
+        v = 1; w = "regime";
     } else {
         int32_t pp[3], cp[3];
         memcpy(pp, prev_rec + game_layout.moby.pos_off, 12);
@@ -298,7 +514,7 @@ static int cut_obj_jump_at(uint32_t addr, const uint8_t* prev_rec, const uint8_t
 
 int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
                         const char** why) {
-    return cut_obj_jump_at(addr, prev_rec, curr_rec, 0, why);
+    return cut_obj_jump_at(addr, prev_rec, curr_rec, 0, 0, why);
 }
 
 int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec) {
@@ -309,7 +525,7 @@ int cut_obj_prev_jump(uint32_t addr, const uint8_t* prev2_rec, const uint8_t* pr
     uint16_t c2, c1;
     memcpy(&c2, prev2_rec + game_layout.moby.class_off, 2);
     memcpy(&c1, prev_rec + game_layout.moby.class_off, 2);
-    return c2 != c1 || cut_obj_jump_at(addr, prev2_rec, prev_rec, 1, NULL);
+    return c2 != c1 || cut_obj_jump_at(addr, prev2_rec, prev_rec, 1, 0, NULL);
 }
 
 void cut_jump_census_capture(uint32_t key) {
@@ -332,11 +548,13 @@ void cut_jump_census_capture(uint32_t key) {
     /* Each rule's own verdict, so one run scores every combination of the
      * markers and the bound. */
     const int cutpath = moby_game.cutpath_jump ? moby_game.cutpath_jump(key, o->prev, o->curr) : -1;
+    const char* mw = NULL;
+    const int marked = cut_moby_marked(key, o->prev, o->curr, 0, 0, &mw);
     fprintf(stderr, "[jump-census vbl=%u] obj=%08x cls=%03x st=%02x->%02x d=%.1f "
                     "cutpath=%d table=%d load=%d bound=%.0f verdict=%s why=%s\n",
             openpete_frame, key, (unsigned)cc, o->prev[game_layout.moby.state_off],
             o->curr[game_layout.moby.state_off], d, cutpath,
-            cut_place_marked(o->prev, o->curr) || cut_director_placed(key, 0), cut_load_regime(0), cut_jump_bound(),
+            marked, cut_regime(0), cut_jump_bound(),
             v ? "jump" : "lerp", why);
 }
 

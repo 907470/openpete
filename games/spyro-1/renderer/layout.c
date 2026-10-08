@@ -32,6 +32,50 @@ static uint32_t flame_cap_colour_off(CPUState* cpu) {
 static const game_moby_place_t s_moby_place[] = {
     { 0x15Au, 1u, 2u },
     { 0x15Bu, 1u, 2u },
+    /* Toasty (level_14 0x80080074-0x800800E4) stores m_State 0xB into the
+     * record g_LevelMobys[props+0x20] names and VecCopy's its own position
+     * over it. */
+    { 0x13Au, 0u, 0xBu },
+};
+
+/* Props-word placements:
+ * - 0x0A3 (level_55 0x8007FB74-0x8007FBFC): the state-0 bob stores
+ *   z = props+0x14 + 0x800 + D_8006CC78[t * 8 / 15] / 2 with the timer
+ *   t = props+0x8 += g_DeltaTime; the first update after the record is
+ *   admitted moves z from the level-data value (props+0x14) by about 4095.
+ * - 0x11E (level_11 0x800861B4-0x800863BC): with props+0x10 == 1, a
+ *   countdown props+0x24 at or below 0 stores the next path point into the
+ *   position and a new countdown.
+ * - 0x00D (level_11 0x8007E790-0x8007E9C8, level_14 0x8007B760): the
+ *   attach handler's first update (props+0x10 == 0) runs the init, stores
+ *   props+0x10 = 1 and copies the parent's position. */
+static const game_moby_props_t s_moby_props[] = {
+    { 0x0A3u, 0x08u, 0x14u, 2u, "level_55" },
+    { 0x11Eu, 0x24u, 0u,    0u, "level_11" },
+    { 0x00Du, 0x10u, 0u,    0u, "level_"   },
+};
+
+/* The 0x00D attach handler copies the position of g_LevelMobys[props+0x0]
+ * every update (VecCopy after the init). */
+static const game_moby_attach_t s_moby_attach[] = {
+    { 0x00Du, 0x00u, "level_" },
+};
+
+/* Regimes whose moby stores are placements:
+ * - g_LoadStage (0x80075864, LoadLevel's stage machine) 1..12: the CD DMA
+ *   writes the records, also while the title demo path loads (gs 13).
+ * - GS_LevelTransition (1): LoadLevel stores the new level's records over
+ *   the old ones while the state stays 1 on both ticks.
+ * - GS_Respawn (4): the reload rewrites the records.
+ * - GS_EntranceAnimation (9) on the snapshot before the pair: g_UpdateMoby
+ *   does not run in state 9, so the first update after the entrance runs
+ *   each record's init placement (0x143 copies g_Spyro, level_11
+ *   0x80086C14-0x80086C24). */
+static const game_moby_regime_t s_moby_regime[] = {
+    { "g_LoadStage", 1u, 12u, GAME_REGIME_EITHER },
+    { "g_GameState", 1u, 1u,  GAME_REGIME_EITHER },
+    { "g_GameState", 4u, 4u,  GAME_REGIME_EITHER },
+    { "g_GameState", 9u, 9u,  GAME_REGIME_BEFORE },
 };
 
 /* The balloonist ride (D_800777E8): on its m_State 4 -> 5 edge,
@@ -226,10 +270,12 @@ const game_layout_t game_layout = {
         .place_n      = sizeof s_moby_place / sizeof s_moby_place[0],
         .director     = s_moby_director,
         .director_n   = sizeof s_moby_director / sizeof s_moby_director[0],
-        /* GS_LevelTransition: LoadLevel stores the new level's records over
-         * the slots of the old one while the state stays 1 on both ticks, so
-         * the gamestate edge does not mark those stores. */
-        .load_gamestates = 1u << 1,
+        .props_mark   = s_moby_props,
+        .props_mark_n = sizeof s_moby_props / sizeof s_moby_props[0],
+        .attach       = s_moby_attach,
+        .attach_n     = sizeof s_moby_attach / sizeof s_moby_attach[0],
+        .regime       = s_moby_regime,
+        .regime_n     = sizeof s_moby_regime / sizeof s_moby_regime[0],
 
         .model_table     = G_MODELS,
         .model_anims_off = offsetof(Model, m_Animations),

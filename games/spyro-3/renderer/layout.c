@@ -36,6 +36,12 @@ static const game_moby_place_t s_moby_place[] = {
     { 0x0C7u,  2u, 3u },
 };
 
+/* func_8003E968 0x8003EDF8-0x8003EE44 copies the moby Spyro+0x250 names to
+ * Spyro's hand each tick; the tick the word comes to name a moby places it. */
+static const game_moby_director_t s_moby_director[] = {
+    { NULL, "g_Spyro", 0u, 0u, 0x250u },
+};
+
 const game_layout_t game_layout = {
     .display = {
         /* warp.c func_80059038: SetDefDrawEnv(..., 0, 12, 512, 216) paired with
@@ -355,6 +361,8 @@ const game_layout_t game_layout = {
          * placement marker. */
         .place   = s_moby_place,
         .place_n = sizeof s_moby_place / sizeof s_moby_place[0],
+        .director   = s_moby_director,
+        .director_n = sizeof s_moby_director / sizeof s_moby_director[0],
 
         .model_table     = G_MOBYMODELS,
         .model_anims_off = 0x3Cu,       /* mobydraw.s:116-118 model + 0x3C + id*4 */

@@ -318,6 +318,21 @@ static const void* stash_source(stash_walk_t* w, uint32_t m, const void* host, u
     return src;
 }
 
+/** @brief Print one moby's tick-end position when its class is the OPENPETE_CAPTRACE_CLS class (0xFFFF: every class).
+ *
+ * @param m The moby's PSX address.
+ * @param host The live record.
+ * @param cls The traced class. */
+static void captrace_moby(uint32_t m, const uint8_t* host, long cls) {
+    uint16_t c2;
+    memcpy(&c2, host + game_layout.moby.class_off, 2);
+    if (cls != 0xFFFF && c2 != (uint16_t)cls) return;
+    int32_t pos[3];
+    memcpy(pos, host + game_layout.moby.pos_off, 12);
+    fprintf(stderr, "[cap-tick f=%u] m=%08x cls=%03x pos=(%d,%d,%d)\n",
+            openpete_frame, m, c2, pos[0], pos[1], pos[2]);
+}
+
 void game_interp_capture_moby_array(void) {
     stash_walk_t sw = { stash_prepare(), 0, 0, 0, stash_census_on() };
 
@@ -338,6 +353,11 @@ void game_interp_capture_moby_array(void) {
      * captured after it so a full array can never crowd them out; the array's
      * sentinel stops the walk after the live prefix anyway. */
     const long bound = (long)openpete_interp_objs_slots() - 512;
+    /* The census runs after the walk, so a record whose marker reads another
+     * record (an attachment's parent later in the array) sees that record's
+     * capture of this tick. */
+    static uint32_t s_live[4096];
+    uint32_t n_live = 0;
     uint32_t m = arr;
     for (long guard = 0; guard < bound; ++guard) {
         const void* host = openpete_psx_to_host_span(m, stride);
@@ -347,18 +367,13 @@ void game_interp_capture_moby_array(void) {
         if (st < 0x80) {                                         /* 0x80 and above: dormant, skipped */
             const void* src = stash_source(&sw, m, host, blob);
             openpete_interp_objs_capture(m, src, blob);
-            cut_jump_census_capture(m);
-            if (s_ctc >= 0) {
-                uint16_t c2; memcpy(&c2, (const uint8_t*)host + game_layout.moby.class_off, 2);
-                if (s_ctc == 0xFFFF || c2 == (uint16_t)s_ctc) {
-                    int32_t pos[3]; memcpy(pos, (const uint8_t*)host + game_layout.moby.pos_off, 12);
-                    fprintf(stderr, "[cap-tick f=%u] m=%08x cls=%03x pos=(%d,%d,%d)\n",
-                            openpete_frame, m, c2, pos[0], pos[1], pos[2]);
-                }
-            }
+            cut_props_capture((const uint8_t*)src);
+            if (n_live < sizeof s_live / sizeof s_live[0]) s_live[n_live++] = m;
+            if (s_ctc >= 0) captrace_moby(m, (const uint8_t*)host, s_ctc);
         }
         m += stride;
     }
+    for (uint32_t i = 0; i < n_live; ++i) cut_jump_census_capture(s_live[i]);
     if (sw.census)
         fprintf(stderr, "[moby-stash f=%u] stashed=%u served=%u differ=%u\n",
                 openpete_frame, sw.n, sw.served, sw.differ);

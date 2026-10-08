@@ -200,15 +200,18 @@ int cut_pos_jump(const int32_t* prev_pos, const int32_t* curr_pos);
  * does not interpolate); a row of the placement table
  * (game_layout.moby.place) matching the record's class and state transition
  * is a jump; a director row (game_layout.moby.director) whose ring record's
- * state edge names this moby is a jump; a pair in a load regime
- * (game_layout.moby.load_gamestates) is a jump; every other step takes the
+ * state edge or pointer edge names this moby is a jump; a props-word row
+ * (game_layout.moby.props_mark) whose props word goes 0 -> nonzero on the
+ * step's tick is a jump; an attachment row (game_layout.moby.attach) whose
+ * parent's step on the same tick is a jump is a jump; a pair a regime row
+ * (game_layout.moby.regime) holds on is a jump; every other step takes the
  * distance bound (cut_pos_jump) on the positions at game_layout.moby.pos_off.
- * OPENPETE_MOBY_JUMP_MARKERS=0 skips the table, the director rows and the
- * load regime. No rule measures distance before the bound.
+ * OPENPETE_MOBY_JUMP_MARKERS=0 skips every marker. No rule measures distance
+ * before the bound.
  * @param addr The moby's guest address.
  * @param prev_rec Tick N-1's moby record.
  * @param curr_rec Tick N's moby record.
- * @param why Receives "cutpath", "table", "director", "load", "bound" or "none" when
+ * @param why Receives "cutpath", "table", "director", "props", "attach", "regime", "bound" or "none" when
  *        non-NULL.
  * @return 1 for a jump, else 0. */
 int cut_obj_jump_reason(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec,
@@ -225,7 +228,7 @@ int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec
 /** @brief Whether one moby's step from tick N-2 to tick N-1 was a jump, so a curve through the three records must not span it.
  *
  * The step is a jump on a class change or on cut_obj_jump's rules applied to
- * the older pair (the load-regime rule reads the ring's prev2 and prev
+ * the older pair (the ring-row rules read the ring's prev2 and prev
  * snapshots). A Hermite position curve whose start tangent runs back across
  * such a step overshoots by up to half the jump on tick N's segment.
  * @param addr The moby's guest address.
@@ -234,12 +237,21 @@ int cut_obj_jump(uint32_t addr, const uint8_t* prev_rec, const uint8_t* curr_rec
  * @return 1 for a jump, else 0. */
 int cut_obj_prev_jump(uint32_t addr, const uint8_t* prev2_rec, const uint8_t* prev_rec);
 
+/** @brief Capture the props block of one moby record as an interp object keyed by the props address, when a props or attachment marker row names its class in the resident overlay.
+ *
+ * The span runs from the block's start through the last word a matching row
+ * reads (game_layout.moby.props_mark, game_layout.moby.attach). Called by the
+ * moby capture after each record's capture, with the record it captured.
+ * Reads guest RAM only.
+ * @param rec The moby record. */
+void cut_props_capture(const uint8_t* rec);
+
 /** @brief With OPENPETE_JUMP_CENSUS=<min> set, print the jump verdict of one moby the capture just rolled, when its step is at least min world units.
  *
- * Called by the moby capture after each record's capture. The line carries
- * the VBL, the object key, tick N's class, both state bytes, the step length,
- * each rule's own verdict (the sampler's -1/0/1, the placement table, the
- * load regime, the bound in force), the verdict and its rule
+ * Called by the moby capture after the array walk, once per captured record.
+ * The line carries the VBL, the object key, tick N's class, both state bytes,
+ * the step length, each rule's own verdict (the sampler's -1/0/1, the
+ * per-moby markers as `table`, the regime rows as `load`, the bound in force), the verdict and its rule
  * (cut_obj_jump_reason, or "class" for a class change). Objects that did not
  * roll on this capture print nothing.
  * @param key The object's interp key, which the array capture takes as the

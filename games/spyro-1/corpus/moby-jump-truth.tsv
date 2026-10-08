@@ -6,7 +6,8 @@
 # label: jump (an isolated step, or a placement writer storing its state), motion, sampler
 #   (the cutscene path sampler wrote it; its own rule decides), cut (a camera cut
 #   or gamestate edge decides).
-# bin (jumps): table, load, or residual:<cls>:<writer> (no marker known).
+# bin (jumps): the marker kind that decides it (table, props, attach, regime), or
+#   residual:<cls>:<writer> (no marker known).
 row	alban-rescue	2596
 row	artisans-balloonist	4246
 row	artisans-bridge	1626
@@ -675,19 +676,19 @@ step	attract	12403	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	12405	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	12583	800e5b14	004	0	0	6869.2	sampler	-	TitlescreenUpdate
 step	attract	13062	80158854	15a	1	2	121389.1	jump	table	func_level_55_8007CFB4
-step	attract	13090	8015806c	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	13096	8015811c	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	13106	80158174	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	13110	80157fbc	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	13122	80157f0c	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
+step	attract	13090	8015806c	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	13096	8015811c	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	13106	80158174	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	13110	80157fbc	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	13122	80157f0c	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
 step	attract	13178	80158854	15a	1	2	120424.2	jump	table	func_level_55_8007CFB4
 step	attract	13186	80158bc4	15a	1	2	121699.1	jump	table	func_level_55_8007CFB4
 step	attract	13412	80158854	15b	1	2	117158.4	jump	table	func_level_55_8007CFB4
 step	attract	13514	80158904	15a	1	2	120610.5	jump	table	func_level_55_8007CFB4
 step	attract	13524	80158c74	15a	1	2	120677.6	jump	table	func_level_55_8007CFB4
-step	attract	13588	80158014	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	13678	801580c4	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	13686	80157f64	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
+step	attract	13588	80158014	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	13678	801580c4	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	13686	80157f64	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
 step	attract	13724	80158854	15b	1	2	90765.0	jump	table	func_level_55_8007CFB4
 step	attract	13816	80158904	15b	1	2	85321.8	jump	table	func_level_55_8007CFB4
 step	attract	13960	801588ac	15b	1	2	102351.5	jump	table	func_level_55_8007CFB4
@@ -780,7 +781,7 @@ step	attract	21797	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	21799	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	21977	800e5b14	004	0	0	6869.2	sampler	-	TitlescreenUpdate
 step	attract	3726	80175de0	053	-	-	1080.8	motion	-	?80082c14
-step	attract	4528	80176ca8	11e	-	-	28864.4	jump	residual:11e:?80086120	?80086120
+step	attract	4528	80176ca8	11e	-	-	28864.4	jump	props	?80086120
 step	attract	22384	80177960	078	0	0	55574.9	jump	residual:078:NOWRITE	NOWRITE
 step	attract	22586	80177960	078	0	0	48867.2	motion	-	?80084800
 step	attract	22588	80177960	078	0	0	36937.3	motion	-	?80084800
@@ -889,19 +890,19 @@ step	attract	31291	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	31293	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	31471	800e5b14	004	0	0	6869.2	sampler	-	TitlescreenUpdate
 step	attract	31950	80158854	15a	1	2	121389.1	jump	table	func_level_55_8007CFB4
-step	attract	31978	8015806c	0a3	1	1	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	31984	8015811c	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	31994	80158174	0a3	1	1	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	31998	80157fbc	0a3	1	1	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	32010	80157f0c	0a3	1	1	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
+step	attract	31978	8015806c	0a3	1	1	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	31984	8015811c	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	31994	80158174	0a3	1	1	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	31998	80157fbc	0a3	1	1	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	32010	80157f0c	0a3	1	1	4095.0	jump	props	func_level_55_8007CFB4
 step	attract	32066	80158854	15a	1	2	120424.2	jump	table	func_level_55_8007CFB4
 step	attract	32074	80158bc4	15a	1	2	121699.1	jump	table	func_level_55_8007CFB4
 step	attract	32300	80158854	15b	1	2	117158.4	jump	table	func_level_55_8007CFB4
 step	attract	32402	80158904	15a	1	2	120610.5	jump	table	func_level_55_8007CFB4
 step	attract	32412	80158c74	15a	1	2	120677.6	jump	table	func_level_55_8007CFB4
-step	attract	32476	80158014	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	32566	801580c4	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
-step	attract	32574	80157f64	0a3	-	-	4095.0	jump	residual:0a3:func_level_55_8007CFB4	func_level_55_8007CFB4
+step	attract	32476	80158014	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	32566	801580c4	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
+step	attract	32574	80157f64	0a3	-	-	4095.0	jump	props	func_level_55_8007CFB4
 step	attract	32612	80158854	15b	1	2	90765.0	jump	table	func_level_55_8007CFB4
 step	attract	32704	80158904	15b	1	2	85321.8	jump	table	func_level_55_8007CFB4
 step	attract	32848	801588ac	15b	1	2	102351.5	jump	table	func_level_55_8007CFB4
@@ -991,7 +992,7 @@ step	attract	39811	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	39813	800e5b14	004	0	0	2289.7	sampler	-	TitlescreenUpdate
 step	attract	39991	800e5b14	004	0	0	6869.2	sampler	-	TitlescreenUpdate
 step	attract	22614	80175de0	053	-	-	1080.8	motion	-	?80082c14
-step	attract	23416	80176ca8	11e	162	162	28864.4	jump	residual:11e:?80086120	?80086120
+step	attract	23416	80176ca8	11e	162	162	28864.4	jump	props	?80086120
 step	beast-makers-distant-portal	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	beast-makers-distant-portal	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	beast-makers-distant-portal	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -1046,7 +1047,7 @@ step	beast-makers-distant-portal	1602	8017daf8	078	0	0	2590.4	motion	-	func_leve
 step	beast-makers-distant-portal	1604	8017daf8	078	0	0	1942.3	motion	-	func_level_40_8007E18C
 step	beast-makers-distant-portal	1606	8017daf8	078	0	0	1457.3	motion	-	func_level_40_8007E18C
 step	beast-makers-distant-portal	1608	8017daf8	078	0	0	1092.5	motion	-	func_level_40_8007E18C
-step	beast-makers-distant-portal	1203	800e6b94	000	-	-	34848130.6	jump	residual:000:NOWRITE	NOWRITE
+step	beast-makers-distant-portal	1203	800e6b94	000	-	-	34848130.6	jump	regime	NOWRITE
 step	beast-makers-wild-flight-text	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	beast-makers-wild-flight-text	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	beast-makers-wild-flight-text	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -1101,7 +1102,7 @@ step	beast-makers-wild-flight-text	1602	8017daf8	078	0	0	2590.4	motion	-	func_le
 step	beast-makers-wild-flight-text	1604	8017daf8	078	0	0	1942.3	motion	-	func_level_40_8007E18C
 step	beast-makers-wild-flight-text	1606	8017daf8	078	0	0	1457.3	motion	-	func_level_40_8007E18C
 step	beast-makers-wild-flight-text	1608	8017daf8	078	0	0	1092.5	motion	-	func_level_40_8007E18C
-step	beast-makers-wild-flight-text	1203	800e6b94	000	-	-	34848130.6	jump	residual:000:NOWRITE	NOWRITE
+step	beast-makers-wild-flight-text	1203	800e6b94	000	-	-	34848130.6	jump	regime	NOWRITE
 step	beast_makers_wall	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	beast_makers_wall	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	beast_makers_wall	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -1156,7 +1157,7 @@ step	beast_makers_wall	1602	8017daf8	078	0	0	2590.4	motion	-	func_level_40_8007E
 step	beast_makers_wall	1604	8017daf8	078	0	0	1942.3	motion	-	func_level_40_8007E18C
 step	beast_makers_wall	1606	8017daf8	078	0	0	1457.3	motion	-	func_level_40_8007E18C
 step	beast_makers_wall	1608	8017daf8	078	0	0	1092.5	motion	-	func_level_40_8007E18C
-step	beast_makers_wall	1203	800e6b94	000	-	-	34848130.6	jump	residual:000:NOWRITE	NOWRITE
+step	beast_makers_wall	1203	800e6b94	000	-	-	34848130.6	jump	regime	NOWRITE
 step	camera-rotate-taps	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	camera-rotate-taps	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	camera-rotate-taps	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -1573,7 +1574,7 @@ step	dream-weavers-crash	1822	8017b11c	1a5	-	-	932.0	motion	-	func_80038458
 step	dream-weavers-crash	1982	8017afbc	0a0	-	-	1798.0	cut	-	__maspsx_include_asm_hack_func_80039398
 step	dream-weavers-crash	1982	8017b0c4	143	-	-	25183.6	cut	-	?80087674
 step	dream-weavers-crash	1982	8017b69c	078	0	0	84327.3	cut	-	?800831f8
-step	dream-weavers-crash	1982	80178bfc	05c	30	30	935.8	jump	residual:05c:NOWRITE	NOWRITE
+step	dream-weavers-crash	1982	80178bfc	05c	30	30	935.8	jump	regime	NOWRITE
 step	dream-weavers-crash	1984	8017b69c	078	0	0	24284.0	motion	-	?800831f8
 step	dream-weavers-crash	1986	8017b69c	078	0	0	18213.2	motion	-	?800831f8
 step	dream-weavers-crash	1982	8017b11c	1a5	-	-	932.0	cut	-	func_80038458
@@ -1633,7 +1634,7 @@ step	egg	1604	80177960	078	0	0	2542.1	motion	-	?80084800
 step	egg	1606	80177960	078	0	0	1906.6	motion	-	?80084800
 step	egg	1608	80177960	078	0	0	1424.8	motion	-	?80084828
 step	egg	1610	80177960	078	0	0	1076.1	motion	-	?80084828
-step	egg	2464	80176ca8	11e	-	-	28864.4	jump	residual:11e:?80086120	?80086120
+step	egg	2464	80176ca8	11e	-	-	28864.4	jump	props	?80086120
 step	exit-level	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	exit-level	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	exit-level	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -2041,7 +2042,7 @@ step	level-transition-framebuffer	948	80170fb8	078	0	0	2438.0	motion	-	?80082364
 step	level-transition-framebuffer	950	80170fb8	078	0	0	1828.0	motion	-	?80082364
 step	level-transition-framebuffer	952	80170fb8	078	0	0	1368.8	motion	-	?80082364
 step	level-transition-framebuffer	954	80170fb8	078	0	0	1027.0	motion	-	?80082364
-step	level-transition-framebuffer	1884	801772d8	143	-	-	12092.7	jump	residual:143:?80086c28	?80086c28
+step	level-transition-framebuffer	1884	801772d8	143	-	-	12092.7	jump	regime	?80086c28
 step	level-transition-framebuffer	1886	80177960	078	-	-	45996.9	motion	-	?80084800
 step	level-transition-framebuffer	1888	80177960	078	-	-	34480.8	motion	-	?80084800
 step	level-transition-framebuffer	1890	80177960	078	-	-	25843.0	motion	-	?80084800
@@ -2056,12 +2057,12 @@ step	level-transition-framebuffer	1906	80177960	078	-	-	2488.4	motion	-	?8008480
 step	level-transition-framebuffer	1908	80177960	078	-	-	1836.8	motion	-	?80084800
 step	level-transition-framebuffer	1910	80177960	078	-	-	1348.9	motion	-	?80084800
 step	level-transition-framebuffer	1912	80177960	078	-	-	983.2	motion	-	?80084800
-step	level-transition-framebuffer	1430	8016df98	000	-	92	1499384.0	jump	load	LoadLevel
-step	level-transition-framebuffer	1430	8016e0a0	c1b	-	68	1499384.0	jump	load	LoadLevel
-step	level-transition-framebuffer	1884	80177438	00d	-	-	1595.2	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
-step	level-transition-framebuffer	1884	80177490	00d	-	-	1177.6	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
-step	level-transition-framebuffer	1884	801774e8	00d	-	-	922.0	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
-step	level-transition-framebuffer	1884	80177598	00d	-	-	1160.1	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
+step	level-transition-framebuffer	1430	8016df98	000	-	92	1499384.0	jump	regime	LoadLevel
+step	level-transition-framebuffer	1430	8016e0a0	c1b	-	68	1499384.0	jump	regime	LoadLevel
+step	level-transition-framebuffer	1884	80177438	00d	-	-	1595.2	jump	props	func_level_11_8007DA78
+step	level-transition-framebuffer	1884	80177490	00d	-	-	1177.6	jump	props	func_level_11_8007DA78
+step	level-transition-framebuffer	1884	801774e8	00d	-	-	922.0	jump	props	func_level_11_8007DA78
+step	level-transition-framebuffer	1884	80177598	00d	-	-	1160.1	jump	props	func_level_11_8007DA78
 step	level-transition-gems	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	level-transition-gems	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	level-transition-gems	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -2115,8 +2116,8 @@ step	level-transition-gems	1600	80170fb8	078	0	0	2438.0	motion	-	?80082364
 step	level-transition-gems	1602	80170fb8	078	0	0	1828.0	motion	-	?80082364
 step	level-transition-gems	1604	80170fb8	078	0	0	1368.8	motion	-	?80082364
 step	level-transition-gems	1606	80170fb8	078	0	0	1027.0	motion	-	?80082364
-step	level-transition-gems	5038	8016df98	000	-	92	1499384.0	jump	load	LoadLevel
-step	level-transition-gems	5038	8016e0a0	c1b	-	68	1499384.0	jump	load	LoadLevel
+step	level-transition-gems	5038	8016df98	000	-	92	1499384.0	jump	regime	LoadLevel
+step	level-transition-gems	5038	8016e0a0	c1b	-	68	1499384.0	jump	regime	LoadLevel
 step	level-transition	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	level-transition	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	level-transition	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -2170,7 +2171,7 @@ step	level-transition	1600	80170fb8	078	0	0	2438.0	motion	-	?80082364
 step	level-transition	1602	80170fb8	078	0	0	1828.0	motion	-	?80082364
 step	level-transition	1604	80170fb8	078	0	0	1368.8	motion	-	?80082364
 step	level-transition	1606	80170fb8	078	0	0	1027.0	motion	-	?80082364
-step	level-transition	2400	801772d8	143	-	-	12092.7	jump	residual:143:?80086c28	?80086c28
+step	level-transition	2400	801772d8	143	-	-	12092.7	jump	regime	?80086c28
 step	level-transition	2402	80177960	078	-	-	46090.3	motion	-	?80084800
 step	level-transition	2404	80177960	078	-	-	34550.3	motion	-	?80084800
 step	level-transition	2406	80177960	078	-	-	25895.3	motion	-	?80084800
@@ -2185,12 +2186,12 @@ step	level-transition	2422	80177960	078	-	-	2494.5	motion	-	?80084800
 step	level-transition	2424	80177960	078	-	-	1841.4	motion	-	?80084800
 step	level-transition	2426	80177960	078	-	-	1352.0	motion	-	?80084800
 step	level-transition	2428	80177960	078	-	-	985.6	motion	-	?80084800
-step	level-transition	1946	8016df98	000	-	92	1499384.0	jump	load	LoadLevel
-step	level-transition	1946	8016e0a0	c1b	-	68	1499384.0	jump	load	LoadLevel
-step	level-transition	2400	80177438	00d	-	-	1595.2	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
-step	level-transition	2400	80177490	00d	-	-	1177.6	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
-step	level-transition	2400	801774e8	00d	-	-	922.0	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
-step	level-transition	2400	80177598	00d	-	-	1160.1	jump	residual:00d:func_level_11_8007DA78	func_level_11_8007DA78
+step	level-transition	1946	8016df98	000	-	92	1499384.0	jump	regime	LoadLevel
+step	level-transition	1946	8016e0a0	c1b	-	68	1499384.0	jump	regime	LoadLevel
+step	level-transition	2400	80177438	00d	-	-	1595.2	jump	props	func_level_11_8007DA78
+step	level-transition	2400	80177490	00d	-	-	1177.6	jump	props	func_level_11_8007DA78
+step	level-transition	2400	801774e8	00d	-	-	922.0	jump	props	func_level_11_8007DA78
+step	level-transition	2400	80177598	00d	-	-	1160.1	jump	props	func_level_11_8007DA78
 step	low-fps	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	low-fps	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	low-fps	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -2246,7 +2247,7 @@ step	low-fps	1604	80177960	078	0	0	2542.1	motion	-	?80084800
 step	low-fps	1606	80177960	078	0	0	1906.6	motion	-	?80084800
 step	low-fps	1608	80177960	078	0	0	1424.8	motion	-	?80084828
 step	low-fps	1610	80177960	078	0	0	1076.1	motion	-	?80084828
-step	low-fps	2516	80176ca8	11e	-	-	28864.4	jump	residual:11e:?80086120	?80086120
+step	low-fps	2516	80176ca8	11e	-	-	28864.4	jump	props	?80086120
 step	magic-crafters-balloonist	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	magic-crafters-balloonist	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	magic-crafters-balloonist	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -2694,7 +2695,7 @@ step	peace-keepers-terrain-culling	1604	8017f058	078	0	0	2389.1	motion	-	?800836
 step	peace-keepers-terrain-culling	1606	8017f058	078	0	0	1899.6	motion	-	?80083628
 step	peace-keepers-terrain-culling	1608	8017f058	078	0	0	1319.6	motion	-	?80083600
 step	peace-keepers-terrain-culling	1610	8017f058	078	0	0	966.6	motion	-	?80083628
-step	peace-keepers-terrain-culling	1204	800e5e84	fffe	-	-	3717919860.0	jump	residual:fffe:NOWRITE	NOWRITE
+step	peace-keepers-terrain-culling	1204	800e5e84	fffe	-	-	3717919860.0	jump	regime	NOWRITE
 step	portal-cyclorama-cull	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	portal-cyclorama-cull	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	portal-cyclorama-cull	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -3129,8 +3130,8 @@ step	stone-hill-distant-terrain	1604	80177960	078	0	0	2542.1	motion	-	?80084800
 step	stone-hill-distant-terrain	1606	80177960	078	0	0	1906.6	motion	-	?80084800
 step	stone-hill-distant-terrain	1608	80177960	078	0	0	1424.8	motion	-	?80084828
 step	stone-hill-distant-terrain	1610	80177960	078	0	0	1076.1	motion	-	?80084828
-step	stone-hill-distant-terrain	2016	80176b48	11e	-	-	23230.8	jump	residual:11e:?80086120	?80086120
-step	stone-hill-distant-terrain	2662	80176ca8	11e	-	-	28864.4	jump	residual:11e:?80086120	?80086120
+step	stone-hill-distant-terrain	2016	80176b48	11e	-	-	23230.8	jump	props	?80086120
+step	stone-hill-distant-terrain	2662	80176ca8	11e	-	-	28864.4	jump	props	?80086120
 step	stone-hill-gem-spyro-occlusion	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	stone-hill-gem-spyro-occlusion	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	stone-hill-gem-spyro-occlusion	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -3186,7 +3187,7 @@ step	stone-hill-gem-spyro-occlusion	1604	80177960	078	0	0	2542.1	motion	-	?80084
 step	stone-hill-gem-spyro-occlusion	1606	80177960	078	0	0	1906.6	motion	-	?80084800
 step	stone-hill-gem-spyro-occlusion	1608	80177960	078	0	0	1424.8	motion	-	?80084828
 step	stone-hill-gem-spyro-occlusion	1610	80177960	078	0	0	1076.1	motion	-	?80084828
-step	stone-hill-gem-spyro-occlusion	2016	80176b48	11e	-	-	23230.8	jump	residual:11e:?80086120	?80086120
+step	stone-hill-gem-spyro-occlusion	2016	80176b48	11e	-	-	23230.8	jump	props	?80086120
 step	stone-hill-lindar-rescue	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	stone-hill-lindar-rescue	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	stone-hill-lindar-rescue	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
@@ -3413,9 +3414,9 @@ step	toasty-defeat@w1a	1702	80173b14	078	0	0	2240.9	motion	-	func_level_14_8007A
 step	toasty-defeat@w1a	1704	80173b14	078	0	0	1679.7	motion	-	func_level_14_8007AF94
 step	toasty-defeat@w1a	1706	80173b14	078	0	0	1258.3	motion	-	func_level_14_8007AF94
 step	toasty-defeat@w1a	1708	80173b14	078	0	0	943.1	motion	-	func_level_14_8007AF94
-step	toasty-defeat@w1a	2576	80173854	13a	-	11	19448.5	jump	residual:13a:?800800e8	?800800e8
-step	toasty-defeat@w1a	2576	8017395c	00d	-	-	19448.5	jump	residual:00d:func_level_14_8007AF94	func_level_14_8007AF94
-step	toasty-defeat@w1a	2576	801739b4	00d	-	-	19448.5	jump	residual:00d:func_level_14_8007AF94	func_level_14_8007AF94
+step	toasty-defeat@w1a	2576	80173854	13a	-	11	19448.5	jump	table	?800800e8
+step	toasty-defeat@w1a	2576	8017395c	00d	-	-	19448.5	jump	attach	func_level_14_8007AF94
+step	toasty-defeat@w1a	2576	801739b4	00d	-	-	19448.5	jump	attach	func_level_14_8007AF94
 step	toasty-moving-terrain-z-fighting	163	800e5a64	002	-	-	1144.9	sampler	-	TitlescreenUpdate
 step	toasty-moving-terrain-z-fighting	163	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
 step	toasty-moving-terrain-z-fighting	165	800e5abc	003	-	-	1619.1	sampler	-	TitlescreenUpdate
