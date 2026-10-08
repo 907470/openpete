@@ -470,15 +470,58 @@ static ngte_view s_view_shd_canon;
 static void moby_view_build(CPUState* cpu)     { ngte_view_build(cpu, &s_view);     ngte_view_canon(&s_view,     &s_view_canon); }
 /** @brief Build s_view_shd from the guest camera and derive its canonical twin s_view_shd_canon. */
 static void moby_view_shd_build(CPUState* cpu) { ngte_view_build(cpu, &s_view_shd); ngte_view_canon(&s_view_shd, &s_view_shd_canon); }
+/* Nonzero while a regular pass walks the game's overlay moby list
+ * (game_layout.moby.overlay_moby): every record of the pass draws HUD3D.
+ * s_canon_overlay is the canonical pass's verdict, which the sub-tick
+ * re-extract replays because the game restores the array head before the
+ * present. */
+static int s_pass_overlay;
+static int s_canon_overlay;
+
+/** @brief Whether the regular draw about to run walks the game's overlay moby list.
+ *
+ * The game builds that list as a one-moby array: the array head holds the
+ * word at game_layout.moby.overlay_moby and the next element's state byte is
+ * the array terminator.
+ * @param cpu The guest CPU state, read only.
+ * @return 1 for the overlay pass, else 0; 0 where the game names no overlay
+ *         word. */
+static int moby_overlay_pass_now(CPUState* cpu) {
+    const uint32_t word = game_layout.moby.overlay_moby;
+    if (!word || game_layout.moby.array_direct) return 0;
+    const uint32_t mob = cpu->read_word(word);
+    if (mob < 0x80000000u || cpu->read_word(game_layout.moby.array_head) != mob) return 0;
+    return cpu->read_byte(mob + game_layout.moby.array_stride + game_layout.moby.state_off)
+           == (uint8_t)game_layout.moby.state_term;
+}
+
+/** @brief Whether a regular-walk moby draws on the HUD: a static or UI HUD address, or any moby of the overlay pass.
+ *
+ * @param mob The Moby address.
+ * @return 1 for a HUD moby, else 0. */
+static int moby_is_hud(uint32_t mob) {
+    return s_pass_overlay || openpete_ui_moby_is_addr_static(mob) || openpete_ui_moby_is_addr_ui(mob);
+}
+
+/** @brief The HUD tag of a regular-walk or second-kind moby: 2 HUD3D, 1 flat HUD, 0 actor.
+ *
+ * Every moby of the overlay pass and a moby in the static HUD address range
+ * are HUD3D; a moby in the UI HUD range is flat HUD.
+ * @param mob The Moby address.
+ * @return The tag. */
+static int moby_hud_tag(uint32_t mob) {
+    if (s_pass_overlay || openpete_ui_moby_is_addr_static(mob)) return 2;
+    return openpete_ui_moby_is_addr_ui(mob) ? 1 : 0;
+}
+
 /** @brief The regular-walk view a record projects through.
  *
- * A moby in the static or UI HUD address range keeps the game's projection
- * (s_view_canon); every other moby takes the pass view (s_view).
+ * A HUD moby (moby_is_hud) keeps the game's projection (s_view_canon); every
+ * other moby takes the pass view (s_view).
  * @param mob The Moby address.
  * @return The view. */
 static const ngte_view* moby_record_view(uint32_t mob) {
-    return (openpete_ui_moby_is_addr_static(mob) || openpete_ui_moby_is_addr_ui(mob))
-        ? &s_view_canon : &s_view;
+    return moby_is_hud(mob) ? &s_view_canon : &s_view;
 }
 
 /** @brief Float RTPS mirror with translation, through the shared ngte_project_raw.
@@ -2084,6 +2127,78 @@ static uint32_t moby_interp_key(uint32_t moby) {
     return moby_game.interp_key ? moby_game.interp_key(moby) : moby;
 }
 
+/* The overlay moby's state as each canonical overlay pass drew it. The menu
+ * state that runs the overlay pass updates that moby after the draw, so the
+ * tick-end snapshot pair is one update ahead of what the tick drew; the
+ * sub-tick re-extract of the overlay pass reads this pair instead (blob[cur]
+ * the latest draw, blob[cur ^ 1] the one before), and stages the latest over
+ * the moby while it runs. */
+#define MOBY_OVL_BLOB 0x100u
+static struct {
+    uint32_t moby;                     /* the moby the blobs hold, 0 = none */
+    uint32_t len;                      /* bytes per blob, the array stride */
+    uint32_t epoch[2];                 /* canonical epoch of each draw */
+    int      n, cur;                   /* draws held (0..2), latest slot */
+    uint8_t  blob[2][MOBY_OVL_BLOB];
+    uint8_t  saved[MOBY_OVL_BLOB];     /* the view's bytes the stage replaced */
+    int      staged;
+    openpete_interp_obj_t obj;         /* the pair moby_interp_find hands out */
+} s_ovl;
+
+/** @brief Record the overlay moby's state as the canonical overlay pass draws it.
+ *
+ * Reads the moby's array record (game_layout.moby.array_stride bytes) after
+ * the game's draw, into the slot after the latest; a different moby restarts
+ * the pair.
+ * @param cpu The guest CPU state, read only. */
+static void moby_ovl_capture(CPUState* cpu) {
+    const uint32_t mob = cpu->read_word(game_layout.moby.overlay_moby);
+    const uint32_t len = game_layout.moby.array_stride < MOBY_OVL_BLOB
+                       ? game_layout.moby.array_stride : MOBY_OVL_BLOB;
+    if (mob != s_ovl.moby || len != s_ovl.len) { s_ovl.moby = mob; s_ovl.len = len; s_ovl.n = 0; }
+    s_ovl.cur ^= 1;
+    for (uint32_t i = 0; i < len; i++) s_ovl.blob[s_ovl.cur][i] = cpu->read_byte(mob + i);
+    s_ovl.epoch[s_ovl.cur] = spyro_native_canon_epoch_stamp();
+    if (s_ovl.n < 2) s_ovl.n++;
+}
+
+/** @brief Stage the latest overlay draw over the overlay moby in the sub-tick view, or restore the view's bytes.
+ *
+ * While staged, every read of the moby in the overlay re-extract sees the
+ * state the canonical pass drew, and moby_interp_find hands out the
+ * draw-time pair. Writes the sub-tick view only, never guest memory.
+ * @param on 1 to stage, 0 to restore a stage. */
+static void moby_ovl_stage(int on) {
+    if (on && s_ovl.n > 0 && s_ovl.epoch[s_ovl.cur] == spyro_native_canon_epoch_stamp() - 1u) {
+        openpete_subtick_view_peek(s_ovl.moby, s_ovl.saved, s_ovl.len);
+        openpete_subtick_view_poke(s_ovl.moby, s_ovl.blob[s_ovl.cur], s_ovl.len);
+        s_ovl.staged = 1;
+    } else if (!on && s_ovl.staged) {
+        openpete_subtick_view_poke(s_ovl.moby, s_ovl.saved, s_ovl.len);
+        s_ovl.staged = 0;
+    }
+}
+
+/** @brief The snapshot pair a moby is interpolated with: the overlay draw-time pair for the overlay moby inside the overlay re-extract, else the interp table's entry.
+ *
+ * The substitute keeps the table entry's stamps, key and verdict flags and
+ * replaces its prev and curr blobs with the two latest overlay draws; it has
+ * a prev only when those draws are from consecutive canonical epochs.
+ * @param moby The moby's PSX address.
+ * @return The pair, or NULL when the table holds none. */
+static const openpete_interp_obj_t* moby_interp_find(uint32_t moby) {
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    if (!s_ovl.staged || !o || moby != s_ovl.moby) return o;
+    s_ovl.obj = *o;
+    s_ovl.obj.curr = s_ovl.blob[s_ovl.cur];
+    s_ovl.obj.prev = s_ovl.blob[s_ovl.cur ^ 1];
+    s_ovl.obj.have_prev = (uint8_t)(o->have_prev && s_ovl.n == 2 &&
+                                    s_ovl.epoch[s_ovl.cur] == s_ovl.epoch[s_ovl.cur ^ 1] + 1u);
+    s_ovl.obj.have_prev2 = 0;
+    if (s_ovl.obj.blob_len > s_ovl.len) s_ovl.obj.blob_len = (uint16_t)s_ovl.len;
+    return &s_ovl.obj;
+}
+
 /** @brief The moby OPENPETE_MOBY_TRACE names for a per-call gate trace, 0 when unset.
  *
  * The canonical extract logs the moby's queue membership and the reveal
@@ -3615,8 +3730,7 @@ void moby_simple_record(CPUState* cpu, uint32_t moby) {
     s_cur_moby_key  = moby;
     s_cur_moby_cls  = moby ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0;
     s_cur_moby_dofs = moby ? (int8_t)cpu->read_byte(moby + game_layout.moby.angle_off + 3u) : 0;
-    s_cur_ui    = openpete_ui_moby_is_addr_static(moby) ? 2
-                : openpete_ui_moby_is_addr_ui(moby)     ? 1 : 0;
+    s_cur_ui    = moby_hud_tag(moby);
     s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
     s_cur_screen = 0;
     s_emit_fkey = 0u;
@@ -4652,8 +4766,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         }
         s_cur_env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
-          s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
-                   : openpete_ui_moby_is_addr_ui(mob) ? 1 : 0;
+          s_cur_ui = moby_hud_tag(mob);
           /* Regular-walk twin of the shaded HUD3D promotion: a UI-range moby
            * that is a real 3D MODEL self-occludes and needs its own Z pass -
            * the flat HUD layer's per-tri painter can't sort interpenetrating
@@ -7505,6 +7618,8 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
                 if (!is_spec) {
                     spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
                     spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
+                    s_canon_overlay = s_pass_overlay;
+                    if (s_pass_overlay) moby_ovl_capture(cpu);
                     spyro_native_canon_capture_camera(cpu, SPYRO_PROD_MOBYREG);
                     /* Invalidate the SPECULAR capture at the START of each canonical
                      * moby render (REGULAR runs first every frame). The game only calls
@@ -7666,6 +7781,7 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
     moby_prop_scene_latch(cpu);
+    s_pass_overlay = moby_overlay_pass_now(cpu);
     /* Extended LOD: the cull's distance box is what keeps a distant animated
      * moby out of its record list, so the records it rejected are appended to
      * the host copy of that list here and walked with the queued ones. The
@@ -7682,6 +7798,7 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     }
     moby_native_pass(cpu, game_layout.moby.hook_draw_regular, "REG");
     moby_reveal_dbg(cpu);                          /* widescreen-reveal sizing (env-gated) */
+    s_pass_overlay = 0;
     s_in = 0;
     return 1;
 }
@@ -7977,7 +8094,7 @@ static int moby_euler_step_max(const openpete_interp_obj_t* o) {
  *         or pose that does not resolve), leaving both outputs untouched;
  *         else 1. */
 static int moby_turn_interval(CPUState* cpu, uint32_t moby, int* step, int* kf_changed) {
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     uint16_t pcls, ccls;
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
@@ -8119,7 +8236,7 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
 
 int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
     if (!s_rot_now) return 0;
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     uint16_t pcls, ccls;
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
@@ -8818,7 +8935,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             { double mf[3];
               if (openpete_native_interp_pos(m, mf)) { bfx=mf[0]; bfy=mf[1]; bfz=mf[2]; }
               else if (s_rot_now) {
-                const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(m));
+                const openpete_interp_obj_t* o = moby_interp_find(m);
                 if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
                     uint16_t pcls2, ccls2;
                     memcpy(&pcls2, o->prev + 0x36u, 2); memcpy(&ccls2, o->curr + 0x36u, 2);
@@ -9890,7 +10007,7 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
                 openpete_frame, n_rec, n_obj, n_prev, n_cls, n_pose, n_sw,
                 n_mirror_kf, n_mirror_nokf);
     }
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o) return;
     n_obj++;
     if (!o->have_prev) return;
@@ -10016,7 +10133,7 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
      * neither form has no way to name the prev keyframe, so the sub-tick pass
      * replays the record the cull wrote and holds the pose. */
     if (!moby_game.host_reveal && !game_layout.moby.rec_frame_is_word) return 0;
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     /* Occupant guard: prev snapshot must be the SAME class as the live moby -
      * a reused level slot would crossfade another object's anim/frame state
@@ -10078,7 +10195,7 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
  *         or after a previous byte of 0. */
 static double moby_gpf_subtick(uint32_t moby, int gnow, double frac) {
     if (!s_rot_now) return frac;
-    const openpete_interp_obj_t* og = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* og = moby_interp_find(moby);
     if (!og || !og->have_prev || !og->prev_ns || og->curr_ns <= og->prev_ns) return frac;
     const int gprev = (int)og->prev[game_layout.moby.size_off];
     if (gprev > 0) {
@@ -10234,8 +10351,7 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
  * @param moby The Moby address.
  * @return 1 when the moby is hidden behind nearer world depth, else 0. */
 static int occl_record_decide(CPUState* cpu, uint32_t moby) {
-    if (openpete_ui_moby_is_addr_static(moby) || openpete_ui_moby_is_addr_ui(moby))
-        { s_occl_f[0]++; return 0; }                /* HUD/UI: drawn depth-off, never occluded */
+    if (moby_is_hud(moby)) { s_occl_f[0]++; return 0; }   /* HUD/UI: drawn over the scene, never occluded */
     const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
     if (e->moby != moby) { s_occl_f[1]++; return 0; }   /* no cached bounds -> extract (refreshes) */
     unsigned age = openpete_frame - e->tick;
@@ -10573,7 +10689,7 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  *         or a stale pair, where a multi-tick gap is a discontinuity rather
  *         than motion and the record's own pose is what to keep. */
 static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
     uint16_t pcls, ccls;
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
@@ -10705,7 +10821,7 @@ static int record_replay_camera(const int (**M)[3], const int32_t** pos) {
 void moby_replay_world_offset(uint32_t moby, double out[3]) {
     moby_record_world_offset(moby, out);
     if (!s_rec_ref_prev) return;
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     const uint8_t* ref = o ? rec_ref_state(o) : NULL;
     if (!ref || ref == o->curr) return;
     int32_t rv[3], cv[3];
@@ -10884,7 +11000,7 @@ static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t mo
     if (game_layout.moby.colour_off &&
         (cpu->read_word(moby + game_layout.moby.colour_off) & 0x40000000u))
         return REC_ROT_OTHER_FORM;
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     if (!o) return REC_ROT_NOPAIR;
     const uint8_t* ref = rec_ref_state(o);
     if (!ref) return REC_ROT_NOPAIR;
@@ -11015,7 +11131,7 @@ static void moby_pose_snap_census(void) {
  * @return 1 when the pose was derived, else 0. */
 static int moby_snapshot_curr_pose(CPUState* cpu, uint32_t moby,
                                    const openpete_interp_obj_t** oc, moby_pose_t* pose) {
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    const openpete_interp_obj_t* o = moby_interp_find(moby);
     *oc = o;
     if (!o) return 0;
     uint16_t ccls = 0;
@@ -11122,7 +11238,7 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
      * the shape lerp runs from the pair's prev pose to the record's, so the
      * record takes curr's pose to span the same interval as every other. */
     if (s_rec_ref_prev) {
-        const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+        const openpete_interp_obj_t* o = moby_interp_find(moby);
         if (o && rec_ref_state(o) != o->curr) rec_pose_from_current_queue(cpu, moby, f);
     }
     record_rebase_to_present(cpu, f, moby);
@@ -11143,6 +11259,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
     long rot_bins[REC_ROT_N] = {0};
     s_walk_in_rex = 1;
+    s_pass_overlay = !is_spec && s_canon_overlay;
+    moby_ovl_stage(s_pass_overlay);
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
     /* Tier-2 hold pool is per canonical epoch: a new tick invalidates every
      * hold (its first present re-extracts everything and re-captures). */
@@ -11152,7 +11270,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int nreplay = 0;
     static uint32_t replay_moby[MAX_RECORDS]; int nreplay_moby = 0;
     s_rec_base = game_layout.moby.rec_base ? game_layout.moby.rec_base : s_rec_base_canon;
-    if (!s_rec_base) { s_walk_in_rex = 0; return 0; }
+    if (!s_rec_base) { s_walk_in_rex = 0; s_pass_overlay = 0; moby_ovl_stage(0); return 0; }
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         moby_record_t R;
@@ -11406,7 +11524,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int hpx = hold_px_max();
         for (int r = 0; r < s_nrecs && s_hold_n < HOLD_MOBY_MAX; r++) {
             uint32_t mob = s_recs[r].moby;
-            if (openpete_ui_moby_is_addr_static(mob) || openpete_ui_moby_is_addr_ui(mob)) continue;
+            if (moby_is_hud(mob)) continue;
             const occl_rect_t* e = &s_occl_cache[occl_slot(mob)];
             if (e->moby != mob) continue;
             if ((e->x1 - e->x0) >= (float)hpx || (e->y1 - e->y0) >= (float)hpx) continue;
@@ -11479,6 +11597,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     moby_rot_census(mat, rot_bins);
     moby_centre_census(mat);
     s_walk_in_rex = 0;
+    s_pass_overlay = 0;
+    moby_ovl_stage(0);
     return nm;
 }
 

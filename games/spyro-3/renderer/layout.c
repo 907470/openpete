@@ -428,6 +428,11 @@ const game_layout_t game_layout = {
                                          * GTE lighting op at all */
         .hook_draw_shaded   = 0u,
         .hook_draw_simple   = F_MOBY_DRAW_STATIC,
+        /* D_8006C65C: in game state 4, draw/Draw.s:268-337 stores it into
+         * D_8006C550, writes 0xFF to its +0xA0 (the next element's state
+         * byte), runs func_80030478 and func_80031124 into a cleared OT and
+         * links that chain after the frame's, 2D layer included. */
+        .overlay_moby       = 0x8006C65Cu,
     },
     .player = {
         .base    = G_SPYRO,

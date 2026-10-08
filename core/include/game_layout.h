@@ -735,6 +735,13 @@ typedef struct game_layout {
         uint32_t hook_draw_specular;
         uint32_t hook_draw_shaded;
         uint32_t hook_draw_simple;
+        /* The word holding the one moby a menu state draws over the finished
+         * frame: the game points `array_head` at it, terminates the array
+         * after it, and runs the cull and regular draw again into an ordering
+         * table linked after every other primitive. A regular pass run while
+         * the array head equals this word draws HUD3D. 0 where the game has
+         * no such pass. */
+        uint32_t overlay_moby;
     } moby;
 
     /* The player avatar's own draw. The avatar is not a moby: a dedicated
