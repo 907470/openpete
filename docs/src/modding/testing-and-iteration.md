@@ -64,7 +64,7 @@ openpete-spyro1.exe --mods your_mod 2>&1 | more
 The log file is written either way.
 
 The compiler writes two logs the engine does not mirror:
-`mods/<id>/.build/compile.log` for a C compile failure,
+`mods/<id>/.build/<game>/compile.log` for a C compile failure,
 `mods/<id>/.build/shaders/<name>.log` for a shader one. A mod that fails
 to compile is disabled and the game starts without it, so a mod that
 produces no output at all is diagnosed from these two files.

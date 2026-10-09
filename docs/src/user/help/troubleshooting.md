@@ -114,7 +114,7 @@ at one of the listed rates
 - A mod not listed in `mods/enabled.txt` does not load at startup when that
   file exists.
 - A [code mod](glossary.md#code-mod) that failed to compile is switched off; its compiler output is
-  in `mods/<id>/.build/compile.log`.
+  in `mods/<id>/.build/<game>/compile.log`.
 - A package without the mod SDK compiles no code mods; the log says
   "packaged without the mod SDK".
 

@@ -10,28 +10,34 @@
 //                          OPENPETE_MODS) overrides the file with a
 //                          comma-separated id list, same semantics.
 //
-// Mods compile against <exe>/sdk/ (openpete_mod_api.h, psx_runtime.h,
-// openpete_sdk_symbols.h - staged there by the build) into
-// mods/<id>/.build/<id>.so, rebuilt when the CONTENT-HASH build key
-// (api version + compiler identity + SDK headers + sources) differs
-// from the stamped one - mtime churn never forces a rebuild. Mods may
-// also ship as <id>.zip (unpacked to .unpacked/<id>/, content-stamped;
-// "folder or zip, identical"). The shared object is dlopen'd and its
+// Mods compile against <exe>/sdk/games/<game-id>/ (the running game's
+// generated headers and openpete_game.h) before <exe>/sdk/ (the
+// game-neutral openpete_mod_api.h, psx_runtime.h, ...), staged there by
+// the build, into mods/<id>/.build/<game-id>/<id>.so, rebuilt when the
+// CONTENT-HASH build key (api version + compiler identity + game id +
+// SDK files + sources) differs from the stamped one - mtime churn never
+// forces a rebuild. An object records the game it was built for
+// (openpete_mod_game); the loader refuses one that does not fit the
+// running game (mod_check_game). Mods may also ship as <id>.zip
+// (unpacked to .unpacked/<id>/, content-stamped; "folder or zip,
+// identical"). The shared object is dlopen'd and its
 // openpete_mod_entry(api, self) is called to register overrides.
 //
 // Failure posture: a mod that fails to parse/build/load is disabled with
-// an error log (compile log at mods/<id>/.build/compile.log) - mods
+// an error log (compile log at mods/<id>/.build/<game-id>/compile.log) - mods
 // never brick a launch. Zero mods loaded leaves the engine byte-
 // identical to a modless build (openpete_mods_active == 0).
 //
 // Platform (openpete-mod-compile-on-boot): every platform compiles
 // src/ mods on load - Windows resolves the bundled llvm-mingw the
 // distribution package ships (recomp/tools/llvm-mingw), falling back to
-// a prebuilt mods/<id>/.build/<id>.dll only when no compiler exists. A
-// mod with NO src/ but a prebuilt .build/<id>.{so,dll} is a binary-only
-// mod: loaded as-is, never hashed or compiled. openpete_mods_prepare()
-// lets the game compile stale mods behind its splash (progress UI)
-// before openpete_mods_init() loads them from the warmed cache.
+// a prebuilt object only when no compiler exists. A mod with NO src/ but
+// a prebuilt object is a binary-only mod: loaded as-is, never hashed or
+// compiled. Prebuilt objects are looked up in .build/<game-id>/, then
+// .build/any/, then the legacy .build/<id>.{so,dll} (mod_find_prebuilt).
+// openpete_mods_prepare() lets the game compile stale mods behind its
+// splash (progress UI) before openpete_mods_init() loads them from the
+// warmed cache.
 
 #include "openpete_mods.h"
 #include "mod_vec.h"
@@ -286,6 +292,12 @@ struct openpete_mod {
     char  obj_path[MOD_PATH_MAX]; /* the object dl was opened from; a
                           * reload with an unchanged build key copies
                           * it instead of compiling */
+    int   obj_kind;      /* mod_obj_kind_t of obj_path: the lookup path
+                          * the object came from, which decides the game
+                          * identity it must carry */
+    int   game_any;      /* the object recorded openpete_mod_game "*":
+                          * built for every game, so a raw address or a
+                          * func_ name may mean another function here */
     char  cfg_key[65];   /* config.toml content hash (hot-reload watch;
                           * a config edit re-enters entry without a
                           * recompile - the cached object is reused) */
@@ -725,12 +737,30 @@ static void warn_render_bypassed(openpete_mod_t* self, uint32_t addr) {
                "visuals, or run --renderer psycross to see this path.", rn, addr);
 }
 
+/** @brief Warn that an object built for every game binds an override by a raw address or a func_ name.
+ *
+ * A "*" object (mod->game_any) runs on every game, and such a target
+ * resolves through the running game's address space or symbol table: on
+ * another game it names a different function. Fires on every call.
+ * @param self The registering mod.
+ * @param call The api entry, for the log line.
+ * @param target The address or name as the mod passed it. */
+static void warn_any_game_target(const openpete_mod_t* self,
+                                 const char* call, const char* target) {
+    if (!self->game_any) return;
+    OPL_WARN_F(self->log_tag,
+               "%s(%s) from a mod built for every game (openpete_mod_game "
+               "\"*\"): on %s it binds what this game has there, a "
+               "different function on another game", call, target,
+               game_get_id());
+}
+
 /** @brief Register a mod's override at a raw guest address on the chain.
  *
  * Refused inside a present hook. A first success also warns once per mod
  * that raw addresses are unstable across engine and decomp updates, and
  * warns when the address is a PSX render function the native renderer does
- * not rasterize.
+ * not rasterize. Every call from a "*" object warns (warn_any_game_target).
  * @param self The calling mod; NULL returns -1.
  * @param addr Guest function address; 0 fails in the chain.
  * @param fn The override; NULL fails in the chain.
@@ -740,6 +770,11 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
     if (purity_violation("override_addr")) return -1;
+    {
+        char a[16];
+        snprintf(a, sizeof a, "0x%08X", addr);
+        warn_any_game_target(self, "override_addr", a);
+    }
     int rc = openpete_mods_chain_add(addr, fn, self->id);
     if (rc == 0) {
         OPL_INFO_F(self->log_tag, "override registered at 0x%08X", addr);
@@ -763,7 +798,8 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
  * Refused inside a present hook. A legacy alias resolves to its address
  * with a warning naming the stable spelling; a name absent from the table
  * is an error. Warns when the target is a PSX render function the native
- * renderer does not rasterize.
+ * renderer does not rasterize, and on every func_ name from a "*" object
+ * (warn_any_game_target).
  * @param self The calling mod; NULL returns -1.
  * @param name Symbol name; NULL is treated as absent.
  * @param fn The override.
@@ -773,6 +809,8 @@ static int api_override_name(openpete_mod_t* self, const char* name,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
     if (purity_violation("override_name")) return -1;
+    if (name && strncmp(name, "func_", 5) == 0)
+        warn_any_game_target(self, "override_name", name);
     const openpete_sdk_symbol_t* sym = sym_find(name);
     if (!sym) {
         OPL_ERROR_F(self->log_tag,
@@ -1076,6 +1114,136 @@ static int api_host_key_down(const char* key_name) {
 
 static char s_sdk_dir[MOD_PATH_MAX];
 
+/* ---- per-game object paths and identity ------------------------------ */
+
+/* Where a loaded object was found; decides the openpete_mod_game value it
+ * must carry (mod_check_game). */
+typedef enum {
+    MOD_OBJ_GAME = 0,   /* .build/<game-id>/<id>: compiled for the running game */
+    MOD_OBJ_ANY,        /* .build/any/<id>: a prebuilt "*" object */
+    MOD_OBJ_LEGACY,     /* .build/<id>: written before per-game objects */
+} mod_obj_kind_t;
+
+/** @brief Format <mod_dir>/.build/<game-id>, the running game's object directory.
+ *
+ * The object, its build-key stamp, the compiler response file, the
+ * compile log and the hot-reload copies live there.
+ * @param mod_dir Mod directory.
+ * @param out Output buffer; the path is truncated to @p cap.
+ * @param cap Size of @p out. */
+static void mod_game_build_dir(const char* mod_dir, char* out, size_t cap) {
+    snprintf(out, cap, "%s/.build/%s", mod_dir, game_get_id());
+}
+
+/** @brief Format the path of a mod's object for the running game, <mod_dir>/.build/<game-id>/<id> plus the platform extension.
+ *
+ * @param mod_dir Mod directory.
+ * @param id Mod id.
+ * @param out Output buffer; the path is truncated to @p cap.
+ * @param cap Size of @p out. */
+static void mod_obj_path(const char* mod_dir, const char* id, char* out,
+                         size_t cap) {
+    snprintf(out, cap, "%s/.build/%s/%s" MOD_DL_EXT, mod_dir, game_get_id(),
+             id);
+}
+
+/** @brief Create <mod_dir>/.build and the running game's directory below it.
+ *
+ * An existing directory is not an error.
+ * @param mod_dir Mod directory. */
+static void mod_make_build_dir(const char* mod_dir) {
+    char d[MOD_PATH_MAX + 8];
+    snprintf(d, sizeof d, "%s/.build", mod_dir);
+    mod_mkdir(d);
+    mod_game_build_dir(mod_dir, d, sizeof d);
+    mod_mkdir(d);
+}
+
+/** @brief Find a prebuilt object of a mod for the running game, in lookup order.
+ *
+ * Probes .build/<game-id>/<id>, then .build/any/<id>, then the legacy
+ * .build/<id>, each with the platform extension; the first existing file
+ * is the object, and its kind decides which game identity it must carry.
+ * @param mod_dir Mod directory.
+ * @param id Mod id.
+ * @param out Receives the found path, or the .build/<game-id>/ path when
+ *        none exists; truncated to @p cap.
+ * @param cap Size of @p out.
+ * @return The mod_obj_kind_t of the found object, or -1 when none exists. */
+static int mod_find_prebuilt(const char* mod_dir, const char* id, char* out,
+                             size_t cap) {
+    static const char* const k_dirs[] = { NULL, "any/", "" };
+    struct stat st;
+    for (int k = MOD_OBJ_GAME; k <= MOD_OBJ_LEGACY; k++) {
+        if (k == MOD_OBJ_GAME)
+            mod_obj_path(mod_dir, id, out, cap);
+        else
+            snprintf(out, cap, "%s/.build/%s%s" MOD_DL_EXT, mod_dir,
+                     k_dirs[k], id);
+        if (stat(out, &st) == 0 && S_ISREG(st.st_mode)) return k;
+    }
+    mod_obj_path(mod_dir, id, out, cap);
+    return -1;
+}
+
+/** @brief Copy a loaded object's openpete_mod_game string into a buffer.
+ *
+ * Reads at most @p cap - 1 bytes and requires a NUL within them, so an
+ * object exporting a malformed symbol reads as "(malformed)".
+ * @param dl The dlopen handle.
+ * @param out Output buffer, always NUL-terminated.
+ * @param cap Size of @p out.
+ * @return 1 when the object exports openpete_mod_game, else 0 (@p out
+ *         then reads "(none)"). */
+static int mod_object_game(void* dl, char* out, size_t cap) {
+    const char* g = (const char*)mod_dlsym(dl, "openpete_mod_game");
+    if (!g) { snprintf(out, cap, "(none)"); return 0; }
+    const char* nul = memchr(g, '\0', cap - 1);
+    if (!nul) snprintf(out, cap, "(malformed)");
+    else      memcpy(out, g, (size_t)(nul - g) + 1);
+    return 1;
+}
+
+/** @brief Refuse a loaded object whose recorded game does not fit its lookup path and the running game.
+ *
+ * An object from .build/<game-id>/ must record the running game; one
+ * from .build/any/ must record "*"; a legacy .build/<id> object loads
+ * when it records the running game or "*", and when it records nothing
+ * only on spyro-1, since every object built before per-game SDKs was
+ * built against the Spyro 1 SDK. Sets mod->game_any for a "*" object.
+ * Each refusal logs an error naming both games.
+ * @param mod The mod; its id labels the log line.
+ * @param dl The dlopen handle.
+ * @param path Object path for the log line.
+ * @param kind The mod_obj_kind_t the object was found as.
+ * @return 0 when loadable, -1 when refused. */
+static int mod_check_game(struct openpete_mod* mod, void* dl,
+                          const char* path, int kind) {
+    char g[32];
+    const int has = mod_object_game(dl, g, sizeof g);
+    const char* run = game_get_id();
+    const int is_run = has && strcmp(g, run) == 0;
+    const int is_any = has && strcmp(g, "*") == 0;
+    int ok;
+    if (kind == MOD_OBJ_GAME)     ok = is_run;
+    else if (kind == MOD_OBJ_ANY) ok = is_any;
+    else ok = has ? (is_run || is_any) : strcmp(run, "spyro-1") == 0;
+    mod->game_any = ok && is_any;
+    if (ok) return 0;
+    if (kind == MOD_OBJ_LEGACY && !has)
+        OPL_ERROR_F("mods", "%s: %s was built before per-game SDKs (built "
+                    "for spyro-1, running %s) - rebuild it against the %s "
+                    "SDK - disabled", mod->id, path, run, run);
+    else if (kind == MOD_OBJ_ANY)
+        OPL_ERROR_F("mods", "%s: %s records game %s, but .build/any/ holds "
+                    "objects built for every game (\"*\"; running %s) - "
+                    "disabled", mod->id, path, g, run);
+    else
+        OPL_ERROR_F("mods", "%s: %s records game %s, not the running %s - "
+                    "disabled", mod->id, path, g, run);
+    return -1;
+}
+
 /* defined later in this file */
 static int parse_manifest(const char* mod_dir, struct openpete_mod* mod);
 static void mod_register_key_defaults(const struct openpete_mod* mod, int enabled);
@@ -1095,11 +1263,48 @@ static int mod_compile(const char* mod_dir, const char* id,
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 static const openpete_mod_api_t s_api;
 
+/** @brief Open a hot-reload object and run every check a load runs, without touching the running object.
+ *
+ * dlopens @p path, then checks the abi descriptor, the ImGui descriptor,
+ * the entry symbol and the game identity (mod_check_game for @p kind).
+ * Each failure logs and leaves the mod's running object, registrations
+ * and game_any as they were.
+ * @param mod The reloading mod.
+ * @param path The fresh object.
+ * @param kind The mod_obj_kind_t the object stands for.
+ * @param dl_out Receives the dlopen handle on success.
+ * @return The entry point, or NULL when the object is refused. */
+static mod_entry_fn mod_reload_open(struct openpete_mod* mod,
+                                    const char* path, int kind,
+                                    void** dl_out) {
+    void* dl = mod_dlopen(path);
+    if (!dl) {
+        OPL_ERROR_F("mods", "%s: reload dlopen failed: %s - keeping the "
+                    "running object", mod->id, mod_dlerror());
+        return NULL;
+    }
+    if (mod_check_abi(dl, mod->id, path) != 0) return NULL;
+    if (mod_resolve_imgui(mod, dl, path) != 0) return NULL;
+    mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
+    if (!entry) {
+        OPL_ERROR_F("mods", "%s: reload object has no openpete_mod_entry "
+                    "- keeping the running object", mod->id);
+        return NULL;
+    }
+    const int was_any = mod->game_any;
+    if (mod_check_game(mod, dl, path, kind) != 0) {
+        mod->game_any = was_any;   /* the running object stays */
+        return NULL;
+    }
+    *dl_out = dl;
+    return entry;
+}
+
 /** @brief Reload one mod in place at a tick boundary under a fresh object.
  *
- * First produces a loadable object under a unique `.build/<id>.hotN` name
- * and dlopens it, checking the abi, the ImGui descriptor and the entry
- * symbol; any failure up to there logs and keeps the running object and
+ * First produces a loadable object under a unique
+ * `.build/<game-id>/<id>.hotN` name and dlopens it, checking the abi, the
+ * game identity, the ImGui descriptor and the entry symbol; any failure up to there logs and keeps the running object and
  * its registrations. Only a changed source key compiles (on Windows
  * straight to the .hotN name, since the boot DLL is file-locked); a
  * reload for a config.toml or shader edit copies the object already
@@ -1127,9 +1332,10 @@ static void mod_hot_reload(struct openpete_mod* mod) {
      * cost a log line, not the session's mod. */
     static unsigned s_hot_n = 0;
     char hot_path[MOD_PATH_MAX + 32];
-    snprintf(hot_path, sizeof hot_path, "%s/.build/%s.hot%u" MOD_DL_EXT,
-             mod->dir, mod->id, ++s_hot_n);
+    snprintf(hot_path, sizeof hot_path, "%s/.build/%s/%s.hot%u" MOD_DL_EXT,
+             mod->dir, game_get_id(), mod->id, ++s_hot_n);
     const char* src_obj = mod->obj_path;
+    int obj_kind = mod->obj_kind;   /* a compile below makes it MOD_OBJ_GAME */
     if (need_compile) {
         if (!mods_sdk_present(s_sdk_dir)) {
             mods_sdk_missing_notice(s_sdk_dir);
@@ -1149,6 +1355,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         }
         snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
         src_obj = hot_path;
+        obj_kind = MOD_OBJ_GAME;
 #else
         static char so_path[MOD_PATH_MAX];
         if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0) {
@@ -1157,6 +1364,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
             return;
         }
         src_obj = so_path;
+        obj_kind = MOD_OBJ_GAME;
 #endif
     }
     if (strcmp(src_obj, hot_path) != 0) {
@@ -1179,20 +1387,9 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         fclose(in);
         fclose(outf);
     }
-    void* dl = mod_dlopen(hot_path);
-    if (!dl) {
-        OPL_ERROR_F("mods", "%s: reload dlopen failed: %s - keeping the "
-                    "running object", mod->id, mod_dlerror());
-        return;
-    }
-    if (mod_check_abi(dl, mod->id, hot_path) != 0) return;
-    if (mod_resolve_imgui(mod, dl, hot_path) != 0) return;
-    mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
-    if (!entry) {
-        OPL_ERROR_F("mods", "%s: reload object has no openpete_mod_entry "
-                    "- keeping the running object", mod->id);
-        return;
-    }
+    void* dl = NULL;
+    mod_entry_fn entry = mod_reload_open(mod, hot_path, obj_kind, &dl);
+    if (!entry) return;
 
     /* A loadable object exists: now retire the running one. From here a
      * failure leaves the mod INERT - the old registrations are gone and
@@ -1224,6 +1421,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     }
     mod->dl = dl; /* old object deliberately stays resident */
     snprintf(mod->obj_path, sizeof mod->obj_path, "%s", hot_path);
+    mod->obj_kind = obj_kind;
     mod_resolve_ui_section(mod, dl);
     /* Re-entry registered every surface in its default (enabled) state;
      * a live-disabled mod must come back disabled, not resurrected. And
@@ -3062,8 +3260,9 @@ static const char* src_path(const mod_fvec* v, int i) {
     return ((const mod_src_t*)mod_fvec_at(v, (size_t)i))->path;
 }
 
-/* CONTENT-HASH build key: api version + compiler identity + SDK header
- * bytes + sorted source bytes. mtime churn (git checkout, cp, zip
+/* CONTENT-HASH build key: api version + compiler identity + game id +
+ * SDK file bytes (each from the directory it resolves in) + sorted source
+ * bytes. mtime churn (git checkout, cp, zip
  * re-extract) never changes it; an SDK regen, api bump, toolchain swap,
  * or real source edit always does. Returns 0 with key_out filled, -1 if
  * the mod has no compilable sources. */
@@ -3076,40 +3275,61 @@ static const char* src_path(const mod_fvec* v, int i) {
  * so an SDK edit is still noticed. */
 static openpete_sha256_ctx s_sdk_prefix;
 static char                s_sdk_prefix_dir[MOD_PATH_MAX];
+static char                s_sdk_prefix_game[32];
 static int                 s_sdk_prefix_ok = 0;
 static uint64_t            s_sdk_prefix_stamp;
 
 static const char* const sdk_inputs[] = {
     "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
     "openpete_sdk_wrappers.h", "psx_runtime.h",
-    "openpete_game_structs.h",
+    "openpete_game_structs.h", "openpete_game.h",
     "openpete_mod_abi.c",
     "openpete_imgui.h", "openpete_imgui_table.h",
     "openpete_imgui_macros.h", "dcimgui.h", "imconfig.h",
 };
 #define SDK_INPUT_COUNT (sizeof sdk_inputs / sizeof sdk_inputs[0])
 
+/** @brief Resolve an SDK file the way a mod's compile line does: the running game's directory before the SDK root.
+ *
+ * The compile line passes `-I <sdk>/games/<game-id>` before `-I <sdk>`,
+ * so a file present in both resolves to the per-game copy.
+ * @param sdk_dir The staged SDK root.
+ * @param name File name.
+ * @param out Receives the resolved path (the root path when the file is
+ *        in neither); truncated to @p cap.
+ * @param cap Size of @p out.
+ * @return 1 when the file resolved in the per-game directory, else 0. */
+static int sdk_input_path(const char* sdk_dir, const char* name, char* out,
+                          size_t cap) {
+    struct stat st;
+    snprintf(out, cap, "%s/games/%s/%s", sdk_dir, game_get_id(), name);
+    if (stat(out, &st) == 0) return 1;
+    snprintf(out, cap, "%s/%s", sdk_dir, name);
+    return 0;
+}
+
 /** @brief Fold the mtime and size of every SDK build-key input into one FNV-1a-style number.
  *
  * The digest decides a build key; this stamp only decides whether
- * sdk_prefix_recheck drops the cached digest. A missing input folds as 0.
+ * sdk_prefix_recheck drops the cached digest. Each input is stat()ed
+ * where sdk_input_path resolves it; a missing input folds as 0.
  * @param sdk_dir The staged SDK directory.
  * @return The stamp. */
 static uint64_t sdk_prefix_stamp(const char* sdk_dir) {
     uint64_t h = 1469598103934665603ull;
     for (size_t i = 0; i < SDK_INPUT_COUNT; i++) {
         char p[MOD_PATH_MAX];
-        snprintf(p, sizeof p, "%s/%s", sdk_dir, sdk_inputs[i]);
+        uint64_t v = (uint64_t)sdk_input_path(sdk_dir, sdk_inputs[i], p,
+                                              sizeof p);
         struct stat st;
-        uint64_t v = 0;
         if (stat(p, &st) == 0)
-            v = (uint64_t)st.st_mtime * 1000003ull + (uint64_t)st.st_size;
+            v += (uint64_t)st.st_mtime * 1000003ull + (uint64_t)st.st_size;
         h = (h ^ v) * 1099511628211ull;
     }
     return h;
 }
 
-/** @brief Drop the cached SDK prefix digest when the SDK directory or the stamp of its inputs changed.
+/** @brief Drop the cached SDK prefix digest when the SDK directory, the game or the stamp of its inputs changed.
  *
  * The hot-reload poll calls it on the sim thread every 64 ticks, where
  * stat()ing the inputs is far cheaper than rehashing their bytes. No-op
@@ -3118,20 +3338,25 @@ static uint64_t sdk_prefix_stamp(const char* sdk_dir) {
 static void sdk_prefix_recheck(const char* sdk_dir) {
     if (!s_sdk_prefix_ok) return;
     if (strcmp(s_sdk_prefix_dir, sdk_dir) != 0 ||
+        strcmp(s_sdk_prefix_game, game_get_id()) != 0 ||
         sdk_prefix_stamp(sdk_dir) != s_sdk_prefix_stamp)
         s_sdk_prefix_ok = 0;
 }
 
 /** @brief Return the SHA-256 state that every mod's build key starts from.
  *
- * Hashes the API version, the compiler identity, then each file of
- * sdk_inputs in order; an absent file contributes nothing. The state is
- * cached per SDK directory until sdk_prefix_recheck drops it, and callers
+ * Hashes the API version, the compiler identity, the running game's id,
+ * then for each file of sdk_inputs in order the directory it resolves in
+ * (sdk_input_path: per-game or root) and its bytes; an absent file
+ * contributes its resolution byte only. The state is cached per (SDK
+ * directory, game id) until sdk_prefix_recheck drops it, and callers
  * copy it before feeding a mod's sources.
  * @param sdk_dir The staged SDK directory.
  * @return The cached state, owned by the function; not thread-safe. */
 static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
-    if (s_sdk_prefix_ok && strcmp(s_sdk_prefix_dir, sdk_dir) == 0)
+    const char* game = game_get_id();
+    if (s_sdk_prefix_ok && strcmp(s_sdk_prefix_dir, sdk_dir) == 0 &&
+        strcmp(s_sdk_prefix_game, game) == 0)
         return &s_sdk_prefix;
     openpete_sha256_ctx hc;
     openpete_sha256_init(&hc);
@@ -3141,13 +3366,17 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
         const char* ident = mods_cc_identity();
         openpete_sha256_update(&hc, ident, strlen(ident));
     }
+    openpete_sha256_update(&hc, game, strlen(game) + 1);
     for (size_t i = 0; i < SDK_INPUT_COUNT; i++) {
         char p[MOD_PATH_MAX];
-        snprintf(p, sizeof p, "%s/%s", sdk_dir, sdk_inputs[i]);
-        (void)hash_file(&hc, p); /* absent header = stable no-op */
+        const uint8_t per_game =
+            (uint8_t)sdk_input_path(sdk_dir, sdk_inputs[i], p, sizeof p);
+        openpete_sha256_update(&hc, &per_game, 1);
+        (void)hash_file(&hc, p); /* absent file = stable no-op */
     }
     s_sdk_prefix = hc;
     snprintf(s_sdk_prefix_dir, sizeof s_sdk_prefix_dir, "%s", sdk_dir);
+    snprintf(s_sdk_prefix_game, sizeof s_sdk_prefix_game, "%s", game);
     s_sdk_prefix_stamp = sdk_prefix_stamp(sdk_dir);
     s_sdk_prefix_ok = 1;
     return &s_sdk_prefix;
@@ -3202,13 +3431,13 @@ static int config_compute_key(const char* mod_dir, char key_out[65]) {
     return 0;
 }
 
-/** @brief Format the path of a mod's build-key stamp, <mod_dir>/.build/<id>.hash.
+/** @brief Format the path of a mod's build-key stamp, <mod_dir>/.build/<game-id>/<id>.hash.
  *
  * @param out Output buffer; the path is truncated to @p cap.
  * @param cap Size of @p out. */
 static void mod_stamp_path(const char* mod_dir, const char* id,
                            char* out, size_t cap) {
-    snprintf(out, cap, "%s/.build/%s.hash", mod_dir, id);
+    snprintf(out, cap, "%s/.build/%s/%s.hash", mod_dir, game_get_id(), id);
 }
 
 /** @brief Read a mod's stored build key from its stamp file.
@@ -3231,13 +3460,13 @@ static void mod_read_stamp(const char* mod_dir, const char* id,
 
 /** @brief Test whether a mod's cached object is current for a build key.
  *
- * @return 1 when `.build/<id>` plus the platform object extension exists
- *         and `.build/<id>.hash` holds `key`, 0 otherwise. */
+ * @return 1 when `.build/<game-id>/<id>` plus the platform object
+ *         extension exists and `.build/<game-id>/<id>.hash` holds `key`,
+ *         0 otherwise. */
 static int mod_key_cached(const char* mod_dir, const char* id,
                           const char* key) {
     char so_path[MOD_PATH_MAX];
-    snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT, mod_dir,
-             id);
+    mod_obj_path(mod_dir, id, so_path, sizeof so_path);
     if (file_mtime(so_path) == (time_t)-1) return 0;
     char stamped[65];
     mod_read_stamp(mod_dir, id, stamped);
@@ -3274,10 +3503,16 @@ static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
     return ok ? 0 : -1;
 }
 
-/** @brief Compile a mod's src/ C files into out_path with the resolved compiler, its output in .build/compile.log.
+/** @brief Compile a mod's src/ C files into out_path with the resolved compiler, its output in .build/<game-id>/compile.log.
  *
  * The compiler runs from an argument vector (openpete_host_spawn_argv),
- * the sources and the SDK's ABI descriptor from a response file. `stamp`
+ * the sources and the SDK's ABI descriptor from a response file, with
+ * `-I <sdk>/games/<game-id>` before `-I <sdk>` and `-Wundef`, so the
+ * running game's generated headers and openpete_game.h shadow any root
+ * copy and a misspelled game macro warns; on Windows with
+ * `-Wl,--export-all-symbols`, so every global the loader resolves stays
+ * exported when a source marks one `dllexport`. Log lines carry the label
+ * `<id> [<game-id>]`. `stamp`
  * = 1 records the build key on success so an unchanged mod never
  * recompiles (0 = hot-reload .hotN objects on Windows, where the base DLL
  * is file-locked and must go stale until the next boot). A failed compile
@@ -3307,8 +3542,9 @@ static int mod_compile(const char* mod_dir, const char* id,
     }
 
     char build_dir[MOD_PATH_MAX];
-    snprintf(build_dir, sizeof build_dir, "%s/.build", mod_dir);
-    mod_mkdir(build_dir); /* EEXIST is fine */
+    mod_make_build_dir(mod_dir); /* EEXIST is fine */
+    mod_game_build_dir(mod_dir, build_dir, sizeof build_dir);
+    const char* game = game_get_id();
 
     char stamp_path[MOD_PATH_MAX + 16];
     mod_stamp_path(mod_dir, id, stamp_path, sizeof stamp_path);
@@ -3330,23 +3566,31 @@ static int mod_compile(const char* mod_dir, const char* id,
     /* The compiler is started from an argument vector, never a shell: a
      * mods, SDK or output path holding a quote, a space, `%NAME%` or `$`
      * is one argument, taken literally. */
-    char inc[MOD_PATH_MAX + 4], rsp_arg[MOD_PATH_MAX + 20], log_path[MOD_PATH_MAX + 16];
+    char inc_game[MOD_PATH_MAX + 48], inc[MOD_PATH_MAX + 4];
+    char rsp_arg[MOD_PATH_MAX + 20], log_path[MOD_PATH_MAX + 16];
+    snprintf(inc_game, sizeof inc_game, "-I%s/games/%s", sdk_dir, game);
     snprintf(inc, sizeof inc, "-I%s", sdk_dir);
     snprintf(rsp_arg, sizeof rsp_arg, "@%s", rsp_path);
     snprintf(log_path, sizeof log_path, "%s/compile.log", build_dir);
+    /* Windows: one dllexport in a mod source would turn off the MinGW
+     * linker's export of every global, and with it openpete_mod_entry,
+     * openpete_mod_abi and openpete_mod_game; the flag keeps them all. */
     const char* argv[] = { cc, "-shared",
 #ifndef _WIN32
                            "-fPIC",
+#else
+                           "-Wl,--export-all-symbols",
 #endif
                            "-O2", "-g", "-fno-strict-aliasing", "-Wall",
-                           inc, "-o", out_path, rsp_arg, NULL };
+                           "-Wundef", inc_game, inc, "-o", out_path, rsp_arg,
+                           NULL };
 
-    OPL_INFO_F("mods", "%s: compiling %d source file%s", id, n_srcs,
-               n_srcs == 1 ? "" : "s");
+    OPL_INFO_F("mods", "%s [%s]: compiling %d source file%s", id, game,
+               n_srcs, n_srcs == 1 ? "" : "s");
     int rc = openpete_host_spawn_argv(argv, log_path, NULL, 0);
     if (rc != 0) {
-        OPL_ERROR_F("mods", "%s: compile failed (see %s/compile.log) - "
-                    "disabled", id, build_dir);
+        OPL_ERROR_F("mods", "%s [%s]: compile failed (see %s/compile.log) "
+                    "- disabled", id, game, build_dir);
         /* Remove the STAMP only: nothing may cache-hit a failed build,
          * but the object file survives - it may be an author-shipped
          * prebuilt (cross-build handoff) that a no-compiler boot can
@@ -3362,11 +3606,13 @@ static int mod_compile(const char* mod_dir, const char* id,
     return 0;
 }
 
-/** @brief Build a mod's src/ C files into `.build/<id>` plus the object extension when the build key differs from the stamped one.
+/** @brief Build a mod's src/ C files into `.build/<game-id>/<id>` plus the object extension when the build key differs from the stamped one.
  *
- * Stores the computed key in mod->build_key and fills so_path with the
- * object path. With no compiler resolved, an existing prebuilt object is
- * used, with a warning when its stamp exists and mismatches.
+ * Stores the computed key in mod->build_key, fills so_path with the
+ * object path and mod->obj_kind with its mod_obj_kind_t. With no
+ * compiler resolved, the prebuilt object mod_find_prebuilt finds is used,
+ * with a warning when it is the per-game object and its stamp exists and
+ * mismatches.
  * @return 0 on a cache hit, a fresh compile or a prebuilt fallback; -1
  *         when src/ has no .c files, no compiler and no prebuilt object
  *         exist, or the compile fails. */
@@ -3379,8 +3625,8 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
     }
     snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
 
-    snprintf(so_path, so_path_len, "%s/.build/%s" MOD_DL_EXT, mod->dir,
-             mod->id);
+    mod_obj_path(mod->dir, mod->id, so_path, so_path_len);
+    mod->obj_kind = MOD_OBJ_GAME;
     if (mod_key_cached(mod->dir, mod->id, key)) {
         OPL_DEBUG_F("mods", "%s: cached %s up to date (key %.12s)",
                     mod->id, so_path, key);
@@ -3396,10 +3642,13 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
              * stamp exists and mismatches) loads loudly; an unstamped
              * DLL (typical for cross-compiled staging) loads silently -
              * there is nothing trustworthy to compare against. */
-            if (file_mtime(so_path) != (time_t)-1) {
+            const int kind = mod_find_prebuilt(mod->dir, mod->id, so_path,
+                                               so_path_len);
+            if (kind >= 0) {
                 char stamped[65];
+                mod->obj_kind = kind;
                 mod_read_stamp(mod->dir, mod->id, stamped);
-                if (stamped[0])
+                if (kind == MOD_OBJ_GAME && stamped[0])
                     OPL_WARN_F("mods", "%s: %s was built from DIFFERENT "
                                "sources/SDK than what is on disk - "
                                "loading it anyway (rebuild the DLL to "
@@ -3510,10 +3759,12 @@ static void mod_register_assets(struct openpete_mod* mod) {
 /** @brief Load one parsed mod: register its custom levels, obtain and dlopen its object, and optionally enter it.
  *
  * The object comes from build_mod when the mod has src/ and the SDK is
- * present, else from a prebuilt `.build/<id>` object loaded as-is. A mod
+ * present, else from the prebuilt object mod_find_prebuilt finds, loaded
+ * as-is. A mod
  * with neither src/ nor an object is declarative: its manifest rows and
- * files are the whole mod. After dlopen the abi and ImGui descriptors are
- * checked and config.toml is loaded.
+ * files are the whole mod. After dlopen the abi descriptor, the game
+ * identity (mod_check_game) and the ImGui descriptor are checked and
+ * config.toml is loaded.
  *
  * run_entry 0 is the deferred-entry load (the load-all path): no mod code
  * runs and no material or asset root registers, so a boot-disabled mod is
@@ -3553,9 +3804,10 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
         }
     }
     if (!mod->has_src) {
-        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
-                 mod->dir, mod->id);
-        if (file_mtime(so_path) == (time_t)-1) {
+        const int kind = mod_find_prebuilt(mod->dir, mod->id, so_path,
+                                           sizeof so_path);
+        mod->obj_kind = kind;
+        if (kind < 0) {
             /* Declarative mods are legal: no src/ and no prebuilt
               * object means the manifest and its files are the whole
               * mod. */
@@ -3577,9 +3829,10 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
                    "as-is", mod->id, so_path);
     } else if (!mods_sdk_present(sdk_dir)) {
         mods_sdk_missing_notice(sdk_dir);
-        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
-                 mod->dir, mod->id);
-        if (file_mtime(so_path) == (time_t)-1) {
+        const int kind = mod_find_prebuilt(mod->dir, mod->id, so_path,
+                                           sizeof so_path);
+        mod->obj_kind = kind;
+        if (kind < 0) {
             OPL_ERROR_F("mods", "%s: has src/ but no SDK to compile it "
                         "against and no prebuilt %s - disabled",
                         mod->id, so_path);
@@ -3600,6 +3853,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
     }
     snprintf(mod->obj_path, sizeof mod->obj_path, "%s", so_path);
     if (mod_check_abi(mod->dl, mod->id, so_path) != 0 ||
+        mod_check_game(mod, mod->dl, so_path, mod->obj_kind) != 0 ||
         mod_resolve_imgui(mod, mod->dl, so_path) != 0) {
         mod->dl = NULL; /* the object stays mapped; nothing in it runs */
         return -1;
@@ -4389,20 +4643,43 @@ static void mods_sdk_dir(char* out, size_t cap) {
     snprintf(out, cap, "%ssdk", base ? base : "./");
 }
 
-/** @brief Test whether the staged SDK exists, probing for its openpete_mod_api.h.
+/** @brief Test whether the staged SDK serves the running game, probing for its openpete_mod_api.h and games/<game-id>/openpete_game.h.
  *
  * An install packaged without --with-mod-sdk has no <exe>/sdk, and a
  * compile would fail inside the compiler with a header-not-found in
  * compile.log that names nothing. Callers check this first, skip the
  * compile, and name the cause once through mods_sdk_missing_notice. The
- * api header is the probe because every compile line includes it.
+ * api header is the probe because every compile line includes it; the
+ * game header, because without it an object records no game and the
+ * loader refuses it.
  * @param sdk_dir The staged SDK directory.
- * @return 1 when the header exists as a regular file, else 0. */
+ * @return 1 when both exist as regular files, else 0. */
 static int mods_sdk_present(const char* sdk_dir) {
-    char p[MOD_PATH_MAX + 32];
-    snprintf(p, sizeof p, "%s/openpete_mod_api.h", sdk_dir);
+    char p[MOD_PATH_MAX + 64];
     struct stat st;
+    snprintf(p, sizeof p, "%s/openpete_mod_api.h", sdk_dir);
+    if (stat(p, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+    snprintf(p, sizeof p, "%s/games/%s/openpete_game.h", sdk_dir,
+             game_get_id());
     return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/** @brief Write the SDK directory --compile-mods compiles against into @p out.
+ *
+ * OPENPETE_MOD_SDK_DIR, when set and nonempty, replaces <exe dir>/sdk
+ * (a harness variable: it points one game's binary at the build tree's
+ * mod-sdk-test/sdk/); compile-on-boot and the loader never read it.
+ * @param out Output buffer.
+ * @param cap Size of @p out. */
+static void mods_compile_sdk_dir(char* out, size_t cap) {
+    const char* e = getenv("OPENPETE_MOD_SDK_DIR");
+    if (e && *e) {
+        snprintf(out, cap, "%s", e);
+        OPL_INFO_F("mods", "--compile-mods: SDK %s (OPENPETE_MOD_SDK_DIR)",
+                   out);
+        return;
+    }
+    mods_sdk_dir(out, cap);
 }
 
 /** @brief Log once per process that this build ships without the mod SDK.
@@ -4414,10 +4691,11 @@ static void mods_sdk_missing_notice(const char* sdk_dir) {
     static int s_said = 0;
     if (s_said) return;
     s_said = 1;
-    OPL_WARN_F("mods", "no sdk/ next to the exe (%s): this build was "
-               "packaged without the mod SDK - source mods are not "
-               "compiled; a prebuilt .build/<id>" MOD_DL_EXT " still "
-               "loads as-is", sdk_dir);
+    OPL_WARN_F("mods", "no mod SDK for %s at %s (openpete_mod_api.h and "
+               "games/%s/): this build was packaged without it - source "
+               "mods are not compiled; a prebuilt object in .build/%s/, "
+               ".build/any/ or .build/ still loads", game_get_id(), sdk_dir,
+               game_get_id(), game_get_id());
 }
 
 /* ---- compile-on-boot prepare (openpete-mod-compile-on-boot) ---------- */
@@ -4447,8 +4725,7 @@ static int mods_prepare_task(void* ud) {
         const mod_ref_t* r = ref_at(&c->refs, si);
         if (c->progress) c->progress("COMPILING MODS", i, c->n_stale);
         char so_path[MOD_PATH_MAX];
-        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
-                 r->dir, r->id);
+        mod_obj_path(r->dir, r->id, so_path, sizeof so_path);
         /* A failure is logged (+ compile.log) and left for init to
          * report as disabled - prepare never aborts the boot. */
         (void)mod_compile(r->dir, r->id, c->sdk_dir,
@@ -4558,7 +4835,7 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
           cmp_id_row);
 
     char sdk_dir[MOD_PATH_MAX];
-    mods_sdk_dir(sdk_dir, sizeof sdk_dir);
+    mods_compile_sdk_dir(sdk_dir, sizeof sdk_dir);
     if (!mods_sdk_present(sdk_dir)) {
         mod_fvec_free(&ids);
         mods_sdk_missing_notice(sdk_dir);
@@ -4578,16 +4855,16 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
             continue;
         }
         char so_path[MOD_PATH_MAX];
-        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
-                 r.dir, r.id);
+        mod_obj_path(r.dir, r.id, so_path, sizeof so_path);
         if (mod_compile(r.dir, r.id, sdk_dir, key, so_path, 1) == 0)
             n_compiled++;
         else
             n_failed++; /* mod_compile logged + pointed at compile.log */
     }
     mod_fvec_free(&ids);
-    OPL_INFO_F("mods", "--compile-mods: %d compiled, %d up to date, "
-               "%d failed (%s)", n_compiled, n_cached, n_failed, mods_dir);
+    OPL_INFO_F("mods", "--compile-mods [%s]: %d compiled, %d up to date, "
+               "%d failed (%s)", game_get_id(), n_compiled, n_cached,
+               n_failed, mods_dir);
     return n_failed;
 }
 

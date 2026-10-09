@@ -8,6 +8,7 @@ in CI (tests/harness/check_mods.sh); third-party modders run the *identical*
 harness locally:
 
     tools/modtest.py mods/my-mod
+    tools/modtest.py --game spyro-3 mods/my-mod
 
 modtest.toml schema (CI-side, next to mod.toml):
 
@@ -34,7 +35,9 @@ The fixture is composed automatically: the mod + its hard-dependency
 closure (deps resolved as sibling directories), enabled in
 dependency-first order.
 
-Env: OPENPETE_BIN, OPENPETE_DISC - same defaults as check_mods.sh.
+--game SLUG (default spyro-1) picks the binary, the disc and the game's
+boot flags through scripts/lib/game.sh, the resolver every harness uses;
+OPENPETE_BIN and OPENPETE_DISC override the first two there.
 --jobs N runs up to N mods at once; each mod's output is buffered and
 printed whole in argument order, so the log reads as a serial run's.
 Exit 0 = all executed [test] blocks green; 1 = any failure, or
@@ -166,7 +169,25 @@ def print_audio_device_lines(mid: str, out: str, emit):
         emit(f"[modtest]   {ln.strip()}")
 
 
-def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool, emit,
+def resolve_game(game: str):
+    """(binary, disc, boot flags) for a game slug, from scripts/lib/game.sh's
+    pg_resolve, which honours OPENPETE_BIN and OPENPETE_DISC."""
+    r = subprocess.run(
+        ["bash", "-c", 'source scripts/lib/game.sh && '
+         'GAME="$(pg_parse_game --game "$1")" && pg_resolve "$GAME" && '
+         'printf "%s\\n%s\\n%s\\n" "$PG_BIN" "$PG_DISC" "${PG_RUN_ARGS[*]-}"',
+         "_", game], cwd=REPO, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"modtest: cannot resolve game {game!r}: {r.stderr.strip()}")
+    bin_path, disc, run_args = (r.stdout.split("\n") + ["", "", ""])[:3]
+    if not Path(bin_path).is_absolute():
+        bin_path = str(REPO / bin_path)
+    if disc and not Path(disc).is_absolute():
+        disc = str(REPO / disc)
+    return bin_path, disc, shlex.split(run_args)
+
+
+def run_one(mod_dir: Path, game, verbose: bool, emit,
             concurrent_run: bool = False):
     """Run one mod's [test] block. Returns ("pass"|"skip"|"fail", reason).
 
@@ -174,7 +195,8 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool, emit,
     write it), so a caller running mods concurrently can buffer each mod's
     lines and print them in order. With concurrent_run set, an inherited
     OPENPETE_ORACLE_LOG path gains a ".<mod id>" suffix so two oracle runs
-    never write one file."""
+    never write one file. `game` is (slug, binary, disc, boot flags)."""
+    slug, bin_path, disc, run_args = game
     man = parse_manifest(mod_dir)
     test = man["test"]
     mid = man["id"]
@@ -208,9 +230,9 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool, emit,
             if concurrent_run and env.get("OPENPETE_ORACLE_LOG"):
                 env["OPENPETE_ORACLE_LOG"] += f".{mid}"
             cmd = [str(REPO / "tests/harness/check_psx_oracle.sh"),
-                   "--", "--mods-dir", str(fixture)]
+                   "--game", slug, "--", "--mods-dir", str(fixture)]
         else:
-            cmd = [bin_path, "--headless", "--disc", disc,
+            cmd = [bin_path, "--headless", "--disc", disc, *run_args,
                    "--frame-limit", frames, "--mods-dir", str(fixture)]
         if test["input"]:
             cmd += ["--bk2", str(mod_dir / test["input"]), "--bk2-stop-on-end"]
@@ -274,23 +296,20 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("-j", "--jobs", type=int, default=1,
                     help="mods run at once (default 1)")
+    ap.add_argument("--game", default="spyro-1",
+                    help="game slug (scripts/lib/game.sh); default spyro-1")
     args = ap.parse_args()
     if args.jobs < 1:
         ap.error("--jobs must be at least 1")
 
-    bin_path = os.environ.get(
-        "OPENPETE_BIN",
-        str(REPO / "build/linux-release/games/spyro-1/openpete-spyro1"))
-    disc = os.environ.get(
-        "OPENPETE_DISC",
-        str(REPO / "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
+    game = (args.game, *resolve_game(args.game))
 
     def run_buffered(mod_dir: Path):
         """Run one mod, returning its result, its buffered report lines and
         the exception that ended it (None when it returned)."""
         lines = []
         try:
-            status, reason = run_one(mod_dir, bin_path, disc, args.verbose,
+            status, reason = run_one(mod_dir, game, args.verbose,
                                      lines.append, args.jobs > 1)
         except Exception as exc:  # re-raised in order, after the lines
             return None, None, lines, exc

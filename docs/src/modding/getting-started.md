@@ -37,11 +37,11 @@ it. The [Examples](reference/examples.md) page lists them first.
 |---|---|
 | `mod.toml` | Manifest. See [Manifest](manifest.md). |
 | `config.toml` | Optional player-editable settings, read through `api->config_*`. |
-| `src/*.c` | C sources, compiled on load against `<exe>/sdk/`. |
+| `src/*.c` | C sources, compiled on load against `<exe>/sdk/games/<game>/` and `<exe>/sdk/`. |
 | `shaders/*.vert`, `*.frag` | GLSL, compiled on load. See [Shaders](shaders.md). |
 | `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, `wad/`, `levels/`. See [Textures](textures.md), [Music](music.md), [Sounds](sounds.md), [Custom levels](levels.md). |
 | `data/` | Per-mod persistent directory, created on first `api->data_dir()` call. |
-| `.build/` | The engine's compile cache. Not part of a release. |
+| `.build/` | The engine's compile cache, one `.build/<game>/` per game. Not part of a release. |
 
 An `<id>.zip` with `mod.toml` at the archive root, or inside a single
 top-level directory that wraps every entry (the layout "zip the folder"
@@ -105,7 +105,7 @@ Linux AppImage bundle the compiler; the Linux `.tar.xz` uses `cc` on
 The engine hashes the sources, compiles them when the hash changed (a
 "COMPILING MODS" splash stage), loads the object, and runs
 `openpete_mod_entry`. A compile failure disables the mod and writes the
-error to `mods/hello/.build/compile.log`; the game still starts. A
+error to `mods/hello/.build/<game>/compile.log`; the game still starts. A
 non-zero return from the entry point disables the mod.
 
 `api = N` is the minimum engine API version the mod needs. The loader

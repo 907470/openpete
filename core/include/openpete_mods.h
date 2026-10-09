@@ -51,7 +51,9 @@ typedef struct CPUState CPUState;
 
 /* Name->vaddr symbol table (generated from manifest/symbols.toml by
  * tools/gen_mod_sdk.py into sdk_symbols_table.c, game-side). The game's
- * main registers it before openpete_run(). Entries sorted by name. */
+ * main registers it before openpete_run(). Entries sorted by name, then
+ * overlay id; one row per (name, overlay), so a name whose rows lie in
+ * several overlays occupies adjacent rows. */
 typedef struct {
     const char* name;
     uint32_t    addr;
@@ -59,6 +61,7 @@ typedef struct {
                          * since-renamed function) - resolvable forever
                          * (decomp promotion contract), but the loader
                          * warns so mods migrate to the stable name. */
+    uint32_t    overlay; /* overlay table id of the row's function; 0 = EXE */
 } openpete_sdk_symbol_t;
 
 /** @brief Register the generated name-to-address table that override names resolve against.

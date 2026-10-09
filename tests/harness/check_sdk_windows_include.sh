@@ -7,10 +7,14 @@
 # which includes the staged SDK headers and then <windows.h>, and fails on a
 # collision.
 #
-# Usage: tests/harness/check_sdk_windows_include.sh [--sdk DIR] [--toolchain DIR]
+# Usage: tests/harness/check_sdk_windows_include.sh [--sdk DIR] [--game ID] [--toolchain DIR]
 #
-#   --sdk DIR        staged SDK headers. Default: the linux-release build's
-#                    games/spyro-1/sdk, else a windows-mingw build's.
+#   --sdk DIR        staged SDK root; the unit compiles with -I DIR/games/ID
+#                    before -I DIR, as the mod compiler does. Default: the
+#                    linux-release build's games/spyro-1/sdk, else a
+#                    windows-mingw build's.
+#   --game ID        the per-game SDK directory under DIR/games/. Default
+#                    spyro-1.
 #   --toolchain DIR  unpacked Linux-hosted llvm-mingw tree. Default:
 #                    $OPENPETE_TOOLCHAIN, then a llvm-mingw* tree under
 #                    <spyro>/toolchains, then x86_64-w64-mingw32-gcc on PATH.
@@ -25,9 +29,11 @@ source "$REPO/scripts/lib/mingw.sh"
 
 TOOLCHAIN="${OPENPETE_TOOLCHAIN:-}"
 SDK_DIR=""
+GAME="spyro-1"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --sdk)       SDK_DIR="${2:-}";   shift 2 ;;
+        --game)      GAME="${2:-}";      shift 2 ;;
         --toolchain) TOOLCHAIN="${2:-}"; shift 2 ;;
         -h|--help)   sed -n '/^# Usage:/,/^set -euo/p' "${BASH_SOURCE[0]}" \
                          | sed '$d;s/^# \{0,1\}//'; exit 0 ;;
@@ -40,10 +46,10 @@ if [[ -z "$SDK_DIR" ]]; then
     for c in "$REPO/build/linux-release/games/spyro-1/sdk" \
              "$REPO/build/windows-mingw-shared/games/spyro-1/sdk" \
              "$REPO/build/windows-mingw/games/spyro-1/sdk"; do
-        [[ -f "$c/openpete_game_structs.h" ]] && { SDK_DIR="$c"; break; }
+        [[ -f "$c/games/$GAME/openpete_game_structs.h" ]] && { SDK_DIR="$c"; break; }
     done
 fi
-if [[ -z "$SDK_DIR" || ! -f "$SDK_DIR/openpete_game_structs.h" ]]; then
+if [[ -z "$SDK_DIR" || ! -f "$SDK_DIR/games/$GAME/openpete_game_structs.h" ]]; then
     echo "check-sdk-windows-include: SKIP - no staged SDK (build a game target" \
          "or pass --sdk DIR)" >&2
     exit 64
@@ -66,8 +72,9 @@ SRC="$REPO/tests/unit/sdk_windows_include_test.c"
 OUT="${TMPDIR:-/tmp}/sdk_windows_include_test.$$.exe"
 rm -f "$OUT"
 echo "check-sdk-windows-include: cc  $CC"
-echo "check-sdk-windows-include: sdk $SDK_DIR"
-if ! "$CC" -std=c11 -Wall -Wextra -Werror -I "$SDK_DIR" -o "$OUT" "$SRC"; then
+echo "check-sdk-windows-include: sdk $SDK_DIR (games/$GAME)"
+if ! "$CC" -std=c11 -Wall -Wextra -Werror -I "$SDK_DIR/games/$GAME" \
+        -I "$SDK_DIR" -o "$OUT" "$SRC"; then
     echo "check-sdk-windows-include: FAIL - the unit did not compile"
     exit 1
 fi

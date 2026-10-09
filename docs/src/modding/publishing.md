@@ -28,17 +28,18 @@ engine.
 ## Prefer source
 
 A mod that ships `src/*.c` compiles on the player's machine against the
-engine's `sdk/`, with the bundled toolchain on Windows and the system
-compiler on Linux. It needs no build on the author's side, works on every
-platform the engine ships for, and recompiles when the engine's SDK
-changes.
+engine's `sdk/games/<game>/` (the running game's symbols, wrappers, structs
+and `openpete_game.h`) and `sdk/` (the game-neutral headers), with the
+bundled toolchain on Windows and the system compiler on Linux, into
+`.build/<game>/<id>.so` or `.dll`. It needs no build on the author's side,
+works on every platform the engine ships for, and recompiles when the
+engine's SDK changes.
 
 ## Prebuilt objects
 
-A mod with no `src/` and a `.build/<id>.so` or `.dll` loads that object
-as-is on any platform. A mod with `src/` uses its prebuilt object only
-when no compiler resolves; a compile error disables the mod rather than
-falling back.
+A mod with no `src/` and a prebuilt object loads that object as-is on any
+platform. A mod with `src/` uses its prebuilt object only when no compiler
+resolves; a compile error disables the mod rather than falling back.
 
 Every object must export the ABI descriptor: compile
 `<sdk>/openpete_mod_abi.c` alongside the sources, or put
@@ -47,9 +48,31 @@ with no descriptor, one built for a newer API than the engine, one whose
 API struct is larger than the engine's, or one built before the layout
 freeze at api 11, and logs both versions.
 
+The descriptor also records the game the object was built for, as
+`openpete_mod_game`: the per-game SDK's game when the compile line has
+`-I <sdk>/games/<game>` before `-I <sdk>`, `"*"` when it defines
+`OPENPETE_MOD_ANY_GAME` (every per-game header then stops the compile
+with `#error`), and nothing when the line has `-I <sdk>` alone. A Windows
+object links with `-Wl,--export-all-symbols`: one `dllexport` in a source
+otherwise turns off the export of every unmarked global, the descriptors
+and `openpete_mod_entry` among them. The engine
+looks for a prebuilt object in this order and loads the first it finds
+only when its game fits:
+
+| path | loads when the object records |
+|---|---|
+| `.build/<game>/<id>.so` or `.dll` | the running game |
+| `.build/any/<id>.so` or `.dll` | `"*"` |
+| `.build/<id>.so` or `.dll` | the running game or `"*"`; on Spyro 1 also no game, since objects built before per-game SDKs were built against Spyro 1's |
+
+A `"*"` object reads no per-game header, so `override_addr` and a
+`func_`-spelled `override_name` resolve through the running game's
+addresses; each such call logs a warning.
+
 ## Package
 
 A `.zip` with `mod.toml` at its root, plus `src/`, `shaders/`, `assets/`,
 `README`, and `LICENSE`. Players drop it into `mods/` unchanged. Do not
-zip a wrapping folder, and leave out `.build/` (compile cache) and
-`data/` (per-player state).
+zip a wrapping folder, and leave out `.build/` (compile cache, except a
+prebuilt object a mod without `src/` ships) and `data/` (per-player
+state).

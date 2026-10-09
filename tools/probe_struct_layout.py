@@ -74,9 +74,17 @@ def sym(path: str) -> str:
     return re.sub(r"[^\w]+", "_", path.replace(".", "__")).strip("_")
 
 
-def probe_tu(include_dir: Path, structs, extra_names, globs):
-    lines = [f'#include "{h.relative_to(include_dir).as_posix()}"'
-             for h in G.headers(include_dir, globs)]
+def probe_tu(include_dir: Path, structs, extra_names, globs, renames=None):
+    """The probe TU: every header, then one sizeof/offsetof global per
+    struct and member path. `renames` maps a header to the function names
+    `#define`d to a header-suffixed spelling before it is included, for
+    decomp headers that redeclare a function with other parameter types."""
+    lines = []
+    for h in G.headers(include_dir, globs):
+        rel = h.relative_to(include_dir).as_posix()
+        for fn in (renames or {}).get(rel, []):
+            lines.append(f"#define {fn} {fn}__{sym(rel)}")
+        lines.append(f'#include "{rel}"')
     keep = []
     for _, name, body in structs:
         lines.append(f"unsigned long sz_{name} = sizeof({name}) + {BIAS};")
@@ -207,7 +215,8 @@ def main():
         stubs = td / "stubs"
         write_stubs(stubs, stub_set, cfg["empty_stubs"])
         (td / "probe.c").write_text(
-            probe_tu(inc, structs, psyq, header_globs))
+            probe_tu(inc, structs, psyq, header_globs,
+                     cfg.get("probe_renames")))
         r = subprocess.run([CC, *FLAGS, f"-I{inc}", f"-I{stubs}",
                             "-o", str(td / "probe.s"), str(td / "probe.c")],
                            capture_output=True, text=True)

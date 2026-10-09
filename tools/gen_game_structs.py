@@ -319,6 +319,23 @@ def bound_macros(include_dir: Path, bodies, globs=("*.h",)):
     return out
 
 
+def scalar_typedef(include_dir: Path, globs, name: str) -> str:
+    """The one top-level non-struct `typedef <type> name[...];` among the
+    game's headers, with PSX-width types rewritten to stdint; refuses a
+    name defined zero or several times."""
+    rx = re.compile(rf"^typedef\s+(?!struct\b|union\b|enum\b)[^;{{}}()]*?"
+                    rf"\b{name}\b(?:\s*\[[^\]]*\])*\s*;", re.M)
+    hits = [m.group(0) for h in headers(include_dir, globs)
+            for m in rx.finditer(h.read_text(encoding="utf-8"))]
+    if len(hits) != 1:
+        raise SystemExit(f"[game-structs] ERROR: scalar typedef {name} found "
+                         f"{len(hits)} times in the headers (want 1)")
+    text = hits[0]
+    for rx_w, repl in WIDTH_MAP:
+        text = rx_w.sub(repl, text)
+    return text
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", default="spyro-1",
@@ -353,6 +370,8 @@ def main():
     # <windows.h> defines RECT, and a mod including both headers would
     # otherwise see two definitions of the name.
     blocks = []
+    for name in cfg.get("scalar_typedefs", []):
+        blocks.append(scalar_typedef(args.include, globs, name) + "\n")
     for _, text in P.psyq_types(stubs):
         blocks.append(transform_body(P.psx_prefixed(text, psyq_names)) + "\n")
     for name in order:
@@ -419,6 +438,10 @@ def main():
         " */\n"
         "#ifndef OPENPETE_GAME_STRUCTS_H\n"
         "#define OPENPETE_GAME_STRUCTS_H\n\n"
+        "#ifdef OPENPETE_MOD_ANY_GAME\n"
+        "#error \"openpete_game_structs.h is per-game; an "
+        "OPENPETE_MOD_ANY_GAME object reads no per-game header\"\n"
+        "#endif\n\n"
         "#include <stddef.h>\n"
         "#include <stdint.h>\n\n"
         + "\n".join(bound_macros(args.include, bodies.values(), globs)) + "\n\n"

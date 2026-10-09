@@ -308,6 +308,7 @@ grep -q "rebuilding it from your disc" "$WORK/repair.log" \
 
 # The staged example is the drop-in: sdk/examples/ sits next to the
 # binary (AppImage: usr/), as does the documentation site docs/. The
+# compile writes the object for the running game, .build/spyro-1/. The
 # example and the site's Modding section prove the --with-mod-sdk staging,
 # and the compile proves the example.
 sdkdir="$(dirname "$BIN")/sdk"
@@ -327,7 +328,7 @@ rm -rf "$DATA/mods/hello-anchor/.build"
       > "$WORK/mod-boot.log" 2>&1 \
     || { echo "[dist-gate] FAIL: boot with drop-in mod crashed" >&2;
          tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
-[[ -f "$DATA/mods/hello-anchor/.build/hello-anchor.so" ]] \
+[[ -f "$DATA/mods/hello-anchor/.build/spyro-1/hello-anchor.so" ]] \
     || { echo "[dist-gate] FAIL: drop-in mod did not compile" >&2;
          tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
 grep -q "loaded hello-anchor" "$WORK/mod-boot.log" \

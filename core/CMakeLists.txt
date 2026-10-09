@@ -304,6 +304,12 @@ set_target_properties(openpete_core PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
+# Every translation unit linking openpete_core compiles with
+# OPENPETE_ENGINE_BUILD: openpete_mod_api.h then skips the
+# per-game openpete_game.h, which only a mod's compile line puts on the
+# include path, so no engine TU reads a game identity macro through it.
+target_compile_definitions(openpete_core PUBLIC OPENPETE_ENGINE_BUILD)
+
 # SDL3 is required for window/render/screenshot. Built from the
 # third_party/SDL submodule (see top-level CMakeLists.txt).
 target_link_libraries(openpete_core PUBLIC SDL3::SDL3-static)

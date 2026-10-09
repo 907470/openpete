@@ -13,4 +13,4 @@
 
 /** Marks the layout pins as compiled; a translation unit needs one
  *  external declaration. */
-const int openpete_spyro3_game_structs_checked = 1;
+const int openpete_game_structs_checked = 1;

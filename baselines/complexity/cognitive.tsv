@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: eb7a1706d58e5c133eccd370c501a0348bef38a1
+# head: 9cc6a40e12e6aa0e24989da5e19a78ae6e5e6377
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -35,7 +35,6 @@ core/input/keymap.c	openpete_keymap_report	30	0
 core/input/keymap.c	openpete_keymap_resolve	57	0	
 core/input/keymap.c	openpete_keymap_set	32	0	
 core/mods/mod_config.c	cfgw_apply_one	126	0	
-core/mods/mod_loader.c	mod_hot_reload	26	0	
 core/mods/mod_loader.c	mods_discover	44	0	
 core/mods/mod_loader.c	openpete_mods_init	64	0	
 core/mods/mod_loader.c	openpete_mods_tick_boundary	34	0	

@@ -16,6 +16,10 @@
 #     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
 #     [MODULE_LINKAGE static|shared]  # default static
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
+#     [MOD_SDK]                       # generate and stage the game's mod SDK
+#                                     # (cmake/openpete_mod_sdk.cmake)
+#     [SDK_ROOT_COPIES]               # with MOD_SDK: also stage the generated
+#                                     # headers at <exe>/sdk/ root
 #     [SOURCES <file>...]             # exe TUs beyond the skeleton
 #     [MODULE_SOURCES <file>...])     # module TUs beyond the generated code
 #
@@ -52,9 +56,11 @@
 # boot; the exe-side attach TU, export surface and implib are the game's
 # (games/spyro-1/CMakeLists.txt).
 
+include(${CMAKE_SOURCE_DIR}/cmake/openpete_mod_sdk.cmake)
+
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
-        ""
+        "MOD_SDK;SDK_ROOT_COPIES"
         "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
         "SOURCES;MODULE_SOURCES"
         ${ARGN})
@@ -434,6 +440,18 @@ function(openpete_add_game GAME_ID)
     # <SDL3/SDL_main.h>.
     if(TARGET SDL3::SDL3main)
         target_link_libraries(${_exe} PRIVATE SDL3::SDL3main)
+    endif()
+
+    if(G_MOD_SDK)
+        if(G_SDK_ROOT_COPIES)
+            openpete_mod_sdk(${GAME_ID} ROOT_COPIES)
+        else()
+            openpete_mod_sdk(${GAME_ID})
+        endif()
+        set(OPENPETE_GAME_SDK_GEN   ${OPENPETE_GAME_SDK_GEN}   PARENT_SCOPE)
+        set(OPENPETE_GAME_SDK_FILES ${OPENPETE_GAME_SDK_FILES} PARENT_SCOPE)
+    elseif(G_SDK_ROOT_COPIES)
+        message(FATAL_ERROR "openpete_add_game(${GAME_ID}): SDK_ROOT_COPIES needs MOD_SDK")
     endif()
 
     set(OPENPETE_GAME_TAG       ${_tag}       PARENT_SCOPE)

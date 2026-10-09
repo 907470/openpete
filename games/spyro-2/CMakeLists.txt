@@ -2,8 +2,9 @@
 #
 # The targets come from cmake/openpete_game.cmake; this game adds its
 # --skip-to-level driver, its freecam descriptor, its engine layout and its
-# sub-tick re-extract spine (ORCHESTRATOR plus INTERP_REGIONS). Every PSX
-# vaddr routes through the recompiler: no native-decomp TUs, no mod SDK.
+# sub-tick re-extract spine (ORCHESTRATOR plus INTERP_REGIONS), and its mod
+# SDK (MOD_SDK, cmake/openpete_mod_sdk.cmake). Every PSX vaddr routes
+# through the recompiler: no native-decomp TUs.
 
 # App icon, as in Spyro 1. OPENPETE_ROM_FREE_ICON=OFF decodes frame 0 of the
 # memory-card save-file header (D_8006410C in the EXE data, 512 bytes: "SC",
@@ -52,6 +53,7 @@ openpete_add_game(spyro-2
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
     PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro2_symbols.toml
+    MOD_SDK
     SOURCES
         skip_to_level.c
         features/freecam.c

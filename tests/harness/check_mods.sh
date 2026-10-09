@@ -16,9 +16,10 @@
 #        (repo root; ~10 min - ctest mod_poc_ladder)
 # Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded to runs + oracle.
 #
-# Every fixture, level name and golden below is Spyro 1's, so --game names
-# the game whose binary and disc are used and refuses every other slug
-# rather than running Spyro 1's fixtures against another game's disc.
+# Fixture sets are per game. Every game runs the mod SDK and object
+# identity rungs (tests/harness/mods_sdk_rungs.sh). The rest of this
+# script is Spyro 1's corpus: its fixtures, level names and golden are
+# Spyro 1's, so it runs under --game spyro-1 only.
 
 set -u
 
@@ -38,9 +39,6 @@ source scripts/lib/game.sh
 
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
-[ "$PG_GAME" = "spyro-1" ] || {
-    echo "[modtest] SKIP: the mod fixtures, level names and oracle golden" \
-         "are spyro-1's, not $PG_GAME's"; exit 64; }
 
 MODS_SRC="$PWD/mods"
 WORK="$(mktemp -d /tmp/openpete-modtest.XXXXXX)"
@@ -93,6 +91,22 @@ run_game() { # run_game <mods_dir> <frames> [extra flags...] -> stdout+stderr
     cat "$log"
     return $rc
 }
+
+# finish: the verdict line and exit status.
+finish() {
+    echo
+    if [ "$fail" -eq 0 ]; then
+        echo "[modtest] ALL GREEN"
+    else
+        echo "[modtest] FAILURES - see above"
+    fi
+    exit $fail
+}
+
+# ── 0. per-game fixture set: SDK tree, header edits, object identity ────
+# shellcheck source=tests/harness/mods_sdk_rungs.sh
+source tests/harness/mods_sdk_rungs.sh
+[ "$PG_GAME" = "spyro-1" ] || finish
 
 # ── 1+2. chain-duo matrix (order A,B then B,A) - also observer-neutral ──
 say "chain-duo matrix: order [a,b] (b outermost)"
@@ -278,7 +292,7 @@ else
 fi
 
 # ── 7b. prebuilt objects: the ABI descriptor decides what may run ──────
-# A binary-only mod (no src/, a prebuilt .build/<id>.so) is the one path
+# A binary-only mod (no src/, a prebuilt .build/<game>/<id>.so) is the one path
 # compile-on-load cannot rebuild, so it is the path a stale vtable shape
 # reaches the engine through. Three objects, compiled by hand against the
 # staged SDK: no descriptor at all, a descriptor claiming a newer api, a
@@ -309,12 +323,13 @@ EOF
 abi_fixture() { # abi_fixture <id> <extra .c or ""> - a binary-only mod dir
     local id="$1" extra="$2"
     local d="$WORK/abi/$id"
-    mkdir -p "$d/.build"
+    mkdir -p "$d/.build/$PG_GAME"
     printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = %s\n' "$id" "$API_VER" \
         > "$d/mod.toml"
     # shellcheck disable=SC2086
-    "$CC_MOD" -shared -fPIC -O2 -fno-strict-aliasing -I"$SDK" \
-        -o "$d/.build/$id.so" "$WORK/abisrc/body.c" $extra \
+    "$CC_MOD" -shared -fPIC -O2 -fno-strict-aliasing \
+        -I"$SDK/games/$PG_GAME" -I"$SDK" \
+        -o "$d/.build/$PG_GAME/$id.so" "$WORK/abisrc/body.c" $extra \
         > "$WORK/abi-$id.cc.log" 2>&1 || bad "abi fixture $id did not compile"
 }
 abi_fixture abi-none   ""
@@ -630,7 +645,8 @@ while IFS= read -r manifest; do
 done < <(find mods -mindepth 2 -maxdepth 2 -name modtest.toml | LC_ALL=C sort)
 if [ "${#modtest_mods[@]}" -eq 0 ]; then
     bad "no mods/*/modtest.toml found"
-elif python3 tools/modtest.py --jobs "${MODTEST_JOBS:-2}" "${modtest_mods[@]}"; then
+elif python3 tools/modtest.py --game "$PG_GAME" --jobs "${MODTEST_JOBS:-2}" \
+        "${modtest_mods[@]}"; then
     ok "modtest runner: ${#modtest_mods[@]} [test] blocks green"
 else
     bad "modtest runner reported failures"
@@ -1483,10 +1499,4 @@ done
 # to open. Covered by the mod_vec unit test on the same container.
 ok "snd_cache CARVE-OUT: no audio device headless, covered by mod_vec_test"
 
-echo
-if [ "$fail" -eq 0 ]; then
-    echo "[modtest] ALL GREEN"
-else
-    echo "[modtest] FAILURES - see above"
-fi
-exit $fail
+finish

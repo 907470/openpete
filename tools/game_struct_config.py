@@ -25,6 +25,11 @@ between decompilations lives here, keyed by game slug:
   bss_globals    cross-check every struct-typed extern against the
                  `.space` its symbol reserves in asm/data
   known_slack    .bss reservations larger than the struct, with the reason
+  probe_renames  {header: [function]} renamed by `#define` before that
+                 header in the probe TU, where two headers declare one
+                 function with different parameter types
+  scalar_typedefs  non-struct typedefs (`typedef char StickState[4];`)
+                 that the structs embed, emitted before the structs
   pins           layout facts read out of the game's own asm or source,
                  asserted by the probe against the probed values and by
                  the generator against the toml
@@ -99,6 +104,33 @@ GAMES = {
             "g_PadBufferSecondController": 8,
         },
         "pins": SPYRO1_PINS,
+    },
+    "spyro-2": {
+        # The decomp names few structs: the vector and spherical types,
+        # the camera position, the savepoint, the pad state and one
+        # unidentified tracer record.
+        # The headers that define structs, in dependency order: camera.h
+        # embeds common.h's SphericalCoordinates without including it.
+        "header_globs": ["common.h", "camera.h", "pad.h", "tracers.h",
+                         "savepoint.h"],
+        # pad.h and savepoint.h declare func_8001B40C with different
+        # parameter types; the probe TU renames the second declaration.
+        "probe_renames": {"savepoint.h": ["func_8001B40C"]},
+        # Non-struct typedefs the structs embed, emitted before them.
+        "scalar_typedefs": ["StickState"],
+        "psyq_stubs": [],
+        "empty_stubs": [],
+        "unk_offset_re": r"(?:.*\.)?unk_?([0-9A-Fa-f]+)",
+        "unk_offset_bases": {},
+        "unk_offset_skip": {
+            # Structs where `unkN` numbers the unknown, not its offset.
+            "Savepoint": "unk5 sits at 0x84c",
+            "Pad": "unk1 sits at 0x0",
+        },
+        "comment_offsets": True,
+        "bss_globals": True,
+        "known_slack": {},
+        "pins": [],
     },
     "spyro-3": {
         # include/moby/ and include/overlay/ carry struct definitions and

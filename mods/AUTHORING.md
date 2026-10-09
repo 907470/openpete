@@ -14,7 +14,7 @@ matching decompilation: `git clone https://github.com/TheMobyCollective/spyro-1`
 `src/` and `include/` are the C; `asm/` holds unmatched functions and
 data; `src/overlays/level_NN/` is per-level moby code. The SDK's symbol
 names and addresses are generated from it, so a name in
-`sdk/openpete_sdk_symbols.h` is greppable there verbatim.
+`sdk/games/spyro-1/openpete_sdk_symbols.h` is greppable there verbatim.
 
 ## 1. Model
 
@@ -47,7 +47,7 @@ the exe if that dir exists and is writable, or `portable = true` in
 | `shaders/*.vert,*.frag` | GLSL, compiled on load; the hot-reload watch dir |
 | `assets/{textures,music,sfx,wad,levels}/` | Overlay roots, matched by filename |
 | `data/` | Per-mod persistent dir, created on first `api->data_dir()` |
-| `.build/` | Engine compile cache: `<id>.so|.dll`, `compile.log`, `shaders/<name>.log`, `.hash` stamp. Not shipped |
+| `.build/` | Engine compile cache: `<game>/` holds `<id>.so|.dll`, `compile.log` and the `.hash` stamp per game; `shaders/<name>.log`. Not shipped |
 
 `<id>.zip` with `mod.toml` at root (or under one wrapping folder) loads
 identically; unpacked to `mods/.unpacked/<id>/`, re-unpacked only when the
@@ -64,14 +64,24 @@ reorder.
 
 Compiler: Windows archive and Linux AppImage bundle one; Linux tar uses
 `cc` on PATH or `OPENPETE_CC`. `OPENPETE_MOD_CC` overrides first. Flags:
-`-shared -fPIC -O2 -g -fno-strict-aliasing -Wall -I sdk/ src/*.c
-sdk/openpete_mod_abi.c`. Compile failure disables the mod, writes
-`.build/compile.log`, game still boots. Non-zero entry return disables the
-mod and sweeps its registrations. A mod with no `src/` and a prebuilt
-`.build/<id>.so|.dll` loads as-is; it must export the ABI descriptor
+`-shared -fPIC -O2 -g -fno-strict-aliasing -Wall -Wundef
+-I sdk/games/<game>/ -I sdk/ src/*.c sdk/openpete_mod_abi.c`, output
+`.build/<game>/<id>.so|.dll`; Windows adds `-Wl,--export-all-symbols`, so
+a `dllexport` in a source does not drop the unmarked entry point and
+descriptors from the DLL. `sdk/games/<game>/` holds the game's
+symbols, wrappers, structs and `openpete_game.h` (`OPENPETE_GAME_ID`,
+`OPENPETE_GAME_SPYRO1/2/3` as 1 or 0). Compile failure disables the mod,
+writes `.build/<game>/compile.log`, game still boots. Non-zero entry return
+disables the mod and sweeps its registrations. A mod with no `src/` and a
+prebuilt object loads as-is; it must export the ABI descriptor
 (`openpete_mod_abi.c` compiled in, or `OPENPETE_MOD_ABI_DEFINE()` in one
 TU); the loader refuses no descriptor, newer api, larger struct, or a
-descriptor from before the api-11 layout freeze.
+descriptor from before the api-11 layout freeze. The descriptor records
+the game (`openpete_mod_game`): prebuilt lookup is `.build/<game>/` (must
+record the running game), `.build/any/` (must record `"*"`, built with
+`-DOPENPETE_MOD_ANY_GAME`, which makes every per-game header `#error`),
+then legacy `.build/<id>.so|.dll` (running game or `"*"`; no game loads on
+Spyro 1 only).
 
 ## 3. mod.toml
 
@@ -542,7 +552,7 @@ Prototyped functions (typed wrappers): `CameraUpdate`, `GamestateUpdate`,
 `Vec*`, `OctDistance`, `Memcpy/Memset`, `SaveLoad/SaveCreate/SaveChecksum`,
 `Titlescreen*`, `Pad*`, `CheatsProcess`, `func_80022A2C` (runs every
 screen), `func_80019300` (HUD list builder, gameplay only). Full list:
-`sdk/openpete_sdk_wrappers.h`.
+`sdk/games/spyro-1/openpete_sdk_wrappers.h`.
 
 `Moby` (0x58): `m_Position` +0x0C (Vector3D int), `m_RotationMatrix` +0x20,
 `m_Class` +0x36 (short), `m_AnimationState` +0x3C, `m_Rotation` +0x44

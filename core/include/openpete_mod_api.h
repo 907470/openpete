@@ -39,6 +39,17 @@
 
 #include <stdint.h>
 
+/* A mod's compile line puts the per-game SDK directory (`sdk/games/<id>/`)
+ * before `sdk/`; its openpete_game.h defines OPENPETE_GAME_ID and
+ * OPENPETE_GAME_SPYRO1/2/3, and #OPENPETE_MOD_ABI_DEFINE records the id in
+ * the object. The engine's own build defines OPENPETE_ENGINE_BUILD and
+ * never reads it. */
+#if !defined(OPENPETE_ENGINE_BUILD) && defined(__has_include)
+#if __has_include("openpete_game.h")
+#include "openpete_game.h"
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -390,7 +401,9 @@ typedef struct openpete_mod_api {
      *        the callee's own override chain runs.
      *
      * Write `cpu->a0..a3` before, read `cpu->v0` after. Valid only inside
-     * an override.
+     * an override. An address inside the overlay window runs the resident
+     * overlay's function there: while another overlay is loaded, that
+     * overlay's function at the address runs.
      * @since api 1
      */
     void (*call)(CPUState* cpu, uint32_t addr);
@@ -1048,8 +1061,30 @@ typedef struct openpete_mod_abi {
 } openpete_mod_abi_t;
 /** @brief 'OPAB'. */
 #define OPENPETE_MOD_ABI_MAGIC 0x4F504142u
-/** @brief Defines the ABI descriptor; use in exactly one source of a hand-built object. */
+/* The game identity an object records as `openpete_mod_game`: "*" under
+ * OPENPETE_MOD_ANY_GAME (every per-game header then refuses to compile),
+ * the per-game SDK's OPENPETE_GAME_ID when openpete_game.h was found, and
+ * no symbol when neither holds (a hand-built object compiled against
+ * `sdk/` alone). The loader matches it against the running game. */
+#if defined(OPENPETE_MOD_ANY_GAME)
+#define OPENPETE_MOD_GAME_DEFINE_                                          \
+    extern const char openpete_mod_game[];                                 \
+    const char openpete_mod_game[] = "*";
+#elif defined(OPENPETE_GAME_ID)
+#define OPENPETE_MOD_GAME_DEFINE_                                          \
+    extern const char openpete_mod_game[];                                 \
+    const char openpete_mod_game[] = OPENPETE_GAME_ID;
+#else
+#define OPENPETE_MOD_GAME_DEFINE_
+#endif
+/** @brief Defines the ABI descriptor and the game identity; use in exactly one source of a hand-built object.
+ *
+ * Both are ordinary globals. A Windows object exports them through the
+ * MinGW linker's export of every global, which one `dllexport` in the DLL
+ * turns off; the engine's compile line passes `-Wl,--export-all-symbols`,
+ * which keeps every global exported either way. */
 #define OPENPETE_MOD_ABI_DEFINE()                                          \
+    OPENPETE_MOD_GAME_DEFINE_                                              \
     const openpete_mod_abi_t openpete_mod_abi = {                          \
         OPENPETE_MOD_ABI_MAGIC, OPENPETE_MOD_API_VERSION,                  \
         (uint32_t)sizeof(openpete_mod_api_t) }

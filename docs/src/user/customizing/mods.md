@@ -70,7 +70,9 @@ another). The splash screen shows
 **COMPILING MODS** meanwhile. An unchanged mod is not compiled again.
 
 A mod that fails to compile or load is switched off and the game starts
-without it. The compiler's output is in `mods/<id>/.build/compile.log`,
+without it. The compiler's output is in
+`mods/<id>/.build/<game>/compile.log` (`<game>` is `spyro-1`, `spyro-2` or
+`spyro-3`),
 and `openpete.log` names the mod.
 
 `--compile-mods` <!-- id: flag:--compile-mods --> compiles every mod with
@@ -80,8 +82,8 @@ exit status is nonzero when a compile fails.
 A package built without the mod SDK has no `sdk` folder. Its log says so,
 code mods are not compiled, and mods made only of `mod.toml` and assets
 load as usual. A mod that ships a prebuilt library in
-`.build/<id>.dll` (Windows) or `.build/<id>.so` (Linux) and no `src/` loads
-that library as-is.
+`.build/<game>/<id>.dll` (Windows) or `.build/<game>/<id>.so` (Linux) and
+no `src/` loads that library as-is when it was built for the running game.
 
 ## Mods and saves
 

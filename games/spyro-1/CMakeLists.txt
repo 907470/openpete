@@ -169,6 +169,8 @@ openpete_add_game(spyro-1
     ICON_SOURCE    ${_spyro_icon_c}
     MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
+    MOD_SDK
+    SDK_ROOT_COPIES
     SOURCES
         psyq_hooks.cpp
 
@@ -297,60 +299,14 @@ add_custom_target(spyro1_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro
 add_dependencies(openpete-spyro1 spyro1_sfx_names)
 
 
-# --- Mod SDK v0 ---
-# Generate the name->vaddr symbol surface from manifest/symbols.toml:
-# a #define header for mods + a sorted resolve table compiled into the
-# exe. Staged with the API headers into <exe>/sdk/ so the mod loader can
-# compile mods/<id>/src/*.c against it at load time.
-set(_mod_sdk_gen ${CMAKE_CURRENT_BINARY_DIR}/mod_sdk_gen)
-add_custom_command(
-    OUTPUT  ${_mod_sdk_gen}/openpete_sdk_symbols.h
-            ${_mod_sdk_gen}/sdk_symbols_table.c
-            ${_mod_sdk_gen}/openpete_sdk_wrappers.h
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
-            --symbols ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
-            --globals ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
-            --protos ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
-            --out-dir ${_mod_sdk_gen}
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
-            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
-            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
-            ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
-    COMMENT "Generating mod SDK symbol table + natural wrappers (gen_mod_sdk.py)")
-target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)
-# renderer/layout.c takes its member offsets from the typed structs header.
-target_include_directories(openpete-spyro1 PRIVATE ${_mod_sdk_gen})
-
-# Typed game structs for mods: every decomp typedef struct plus the PSYQ
-# types they embed, guest-pointer fields rewritten to uint32_t, pinned by
-# _Static_asserts read from manifest/struct_layout.toml (the MIPS layout
-# probed by scripts/regen-struct-layout.sh; committed, so no build needs
-# the MIPS compiler). The generator refuses a toml probed from other
-# headers than the checkout's.
-file(GLOB _spyro1_decomp_headers CONFIGURE_DEPENDS
-     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/*.h)
-add_custom_command(
-    OUTPUT  ${_mod_sdk_gen}/openpete_game_structs.h
-    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
-            --include ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include
-            --layout ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
-            --out ${_mod_sdk_gen}/openpete_game_structs.h
-    DEPENDS ${_spyro1_decomp_headers}
-            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
-            ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
-            ${CMAKE_SOURCE_DIR}/tools/psyq_types.py
-            ${CMAKE_SOURCE_DIR}/tools/probe_struct_layout.py
-    COMMENT "Generating typed game structs for the mod SDK (gen_game_structs.py)")
-add_custom_target(spyro1_game_structs ALL
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${_mod_sdk_gen}/openpete_game_structs.h
-            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
-    DEPENDS ${_mod_sdk_gen}/openpete_game_structs.h
-    COMMENT "Staging typed game structs into <exe>/sdk/")
-add_dependencies(openpete-spyro1 spyro1_game_structs)
-add_dependencies(openpete_generated_headers spyro1_sfx_names spyro1_game_structs)
+# --- Mod SDK ---
+# Generated and staged by openpete_add_game(MOD_SDK SDK_ROOT_COPIES)
+# (cmake/openpete_mod_sdk.cmake): <exe>/sdk/ and <exe>/sdk/games/spyro-1/,
+# with Spyro 1's generated headers also at the root for build lines that
+# pass `-I sdk` alone. renderer/layout.c takes its member offsets from the
+# typed structs header in the generation directory.
+set(_mod_sdk_gen ${OPENPETE_GAME_SDK_GEN})
+add_dependencies(openpete_generated_headers spyro1_sfx_names)
 
 # --- Documentation site (docs/mkdocs.yml), shipped sections ---
 # scripts/build-docs.sh runs tools/gen_mod_docs.py, which extracts the SDK
@@ -437,54 +393,6 @@ add_custom_command(
     COMMENT "Building the documentation site (gen_mod_docs.py + mkdocs)")
 add_custom_target(docs ALL DEPENDS ${_docs_stamp})
 
-# The staged <exe>/sdk/ tree IS the contract mods compile and #include
-# against, so it must never lag the repo. An ALL target rather than a
-# POST_BUILD command: POST_BUILD only fires when the exe relinks, and
-# editing a header or a .glsl does not relink anything - a contract edit
-# would sit unstaged until some unrelated C change happened to force a
-# link, and every mod would keep building against the old contract with
-# no diagnostic. copy_if_different over a dozen small files is cheap
-# enough to run unconditionally.
-# The directory is removed first: a file dropped from this list would
-# otherwise survive in the build tree and ship with the archive, since
-# package-dist copies the staged directory whole. Mod build keys hash the
-# SDK sources, so the fresh copies' timestamps do not force recompiles.
-add_custom_target(spyro1_sdk_stage ALL
-    COMMAND ${CMAKE_COMMAND} -E rm -rf
-            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
-            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime.h
-            ${_mod_sdk_gen}/openpete_sdk_symbols.h
-            ${_mod_sdk_gen}/openpete_sdk_wrappers.h
-            ${_mod_sdk_gen}/openpete_game_structs.h
-            ${CMAKE_SOURCE_DIR}/core/mods/sdk/openpete_mod_abi.c
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_imgui.h
-            ${CMAKE_SOURCE_DIR}/third_party/dear_bindings/dcimgui.h
-            ${CMAKE_SOURCE_DIR}/third_party/imgui/imconfig.h
-            ${OPENPETE_IMGUI_TABLE_DIR}/openpete_imgui_table.h
-            ${OPENPETE_IMGUI_TABLE_DIR}/openpete_imgui_macros.h
-            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_shader_api.glsl
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_psx_material.glsl
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_psx_decal.glsl
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_key_contest.glsl
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_clut.glsl
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_texel.glsl
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/terrain_shade.glsl
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/portal_cover.glsl
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/portal_cover_scene.glsl
-            $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
-    COMMENT "Staging mod SDK headers into <exe>/sdk/"
-    VERBATIM)
-add_dependencies(spyro1_sdk_stage openpete-spyro1)
-
 # --- Build-time mod compile
 # `cmake --build` leaves every mod compiled, not just the engine:
 #  - Native presets: run the freshly built exe in --compile-mods mode over
@@ -497,7 +405,7 @@ add_dependencies(spyro1_sdk_stage openpete-spyro1)
 #    exact source mirror; user-owned config.toml/enabled.txt and staged-
 #    only mod dirs untouched) and cross-compile each one with the
 #    preset's own toolchain into <build>/games/spyro-1/mods/<id>/.build/
-#    <id>.dll, DROPPING the stamp - an unstamped prebuilt is the
+#    spyro-1/<id>.dll, DROPPING the stamp - an unstamped prebuilt is the
 #    loader's designed cross-handoff artifact (build_mod: loads silently
 #    when the host has no compiler, recompiles+stamps once when it
 #    does). DLLs compile from the REPO src/*.c (identical to the staged
@@ -517,13 +425,8 @@ if(OPENPETE_COMPILE_MODS)
         # Staged-SDK *sources* - mirrors mod_compute_key()'s sdk_inputs
         # list, so an SDK change re-cross-compiles every staged mod.
         set(_mod_sdk_deps
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
-            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime.h
-            ${_mod_sdk_gen}/openpete_sdk_symbols.h
-            ${_mod_sdk_gen}/openpete_sdk_wrappers.h
-            ${_mod_sdk_gen}/openpete_game_structs.h
-            ${CMAKE_SOURCE_DIR}/core/mods/sdk/openpete_mod_abi.c)
+            ${OPENPETE_MOD_SDK_ROOT_FILES}
+            ${OPENPETE_GAME_SDK_FILES})
         # Always runs (cheap: copy-if-different over a <5MB tree); keeps
         # staged mod sources/assets current with the repo every build.
         add_custom_target(spyro1_mods_stage ALL
@@ -546,7 +449,7 @@ if(OPENPETE_COMPILE_MODS)
             endif()
             file(GLOB _mod_hdrs CONFIGURE_DEPENDS ${_src_mod_dir}/src/*.h)
             set(_mod_build_dir
-                ${CMAKE_CURRENT_BINARY_DIR}/mods/${_mod_id}/.build)
+                ${CMAKE_CURRENT_BINARY_DIR}/mods/${_mod_id}/.build/spyro-1)
             set(_dll ${_mod_build_dir}/${_mod_id}.dll)
             add_custom_command(OUTPUT ${_dll}
                 COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_build_dir}
@@ -554,8 +457,9 @@ if(OPENPETE_COMPILE_MODS)
                 # uses on Windows - keep in sync - plus -static-libgcc:
                 # the exe ships no mingw runtime DLLs (mingw-w64.cmake
                 # links -static), so the mod DLL must be self-contained.
-                COMMAND ${CMAKE_C_COMPILER} -shared -O2 -g
-                        -fno-strict-aliasing -Wall -static-libgcc
+                COMMAND ${CMAKE_C_COMPILER} -shared -Wl,--export-all-symbols
+                        -O2 -g -fno-strict-aliasing -Wall -Wundef -static-libgcc
+                        -I$<TARGET_FILE_DIR:openpete-spyro1>/sdk/games/spyro-1
                         -I$<TARGET_FILE_DIR:openpete-spyro1>/sdk
                         -o ${_dll} ${_mod_srcs}
                         $<TARGET_FILE_DIR:openpete-spyro1>/sdk/openpete_mod_abi.c
