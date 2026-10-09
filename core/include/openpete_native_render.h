@@ -1238,11 +1238,15 @@ void openpete_native_scene_begin(void);
 void openpete_native_scene_mark_replay(void);
 /** @brief Begin the game render's scene accumulation for a VBL, once per VBL.
  *
- * Clears the scene only when @p frame differs from the last call's, else is
- * a no-op, so independent feeders (cyclorama, world, mobys, in any order)
- * compose into one scene: the first feeder of a VBL clears and the rest
- * append, and a feeder absent on a level breaks nothing. On a change it
- * first fires the frame-close callback for the completed scene, then pushes
+ * Starts a new scene when @p frame differs from the last call's, or when a
+ * call from the game's render (outside the sub-tick view) finds a
+ * re-extract's rebuild under the same stamp; otherwise it is a no-op, so
+ * independent feeders (cyclorama, world, mobys, in any order) compose into
+ * one scene: the first feeder of a VBL clears and the rest append, and a
+ * feeder absent on a level breaks nothing. The game's render of a tick thus
+ * never shares a scene with a re-extract. On a stamp change it first fires
+ * the frame-close callback for the completed scene (a rebuild closed by the
+ * game's render fires none); on either start it pushes
  * that scene with its background, fade, freeze and flags into the
  * frame-history ring after the blend census, warns once when the scene store refused tris, latches the FOV
  * tangent, bumps the scene epoch, clears the replay flag and resets the

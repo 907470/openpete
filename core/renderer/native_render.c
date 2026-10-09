@@ -1355,12 +1355,32 @@ static void scene_close_completed(void) {
     scene_hist_push();
 }
 
+/* 1 while the frame-close callback runs: its feeds re-enter begin_frame with
+ * the closing scene's stamp and must append to that scene. */
+static int s_scene_close_cb_in;
 void openpete_native_scene_begin_frame(unsigned frame) {
-    if (!openpete_subtick_view_active()) s_scene_game_frame = frame;
-    if (frame != s_scene_frame) {
-        if (s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb) {
-            static int in = 0;   /* the callback feeds, which re-enters begin_frame */
-            if (!in) { in = 1; s_scene_frame_close_cb(s_scene_frame); in = 0; }
+    const int game_feed = !openpete_subtick_view_active();
+    if (game_feed) s_scene_game_frame = frame;
+    /* The game's render owns the scene of its tick: its triangles never land
+     * in a scene a re-extract built. A re-extract stamps its rebuild with the
+     * VBL it runs on (openpete_native_scene_begin), so where the game ticks
+     * on consecutive VBLs (a menu at VBL rate, a tick that slips onto a VBL
+     * already re-extracted) the rebuild holds the stamp of the tick the game
+     * is about to render. The game's first feed of that tick then closes the
+     * rebuild into the history ring like any completed scene and opens its
+     * own scene under the same stamp, with the replay flag clear, so the next
+     * re-extract keeps it (scene_game_retain) for a framebuffer copy naming
+     * the tick, and the canonical compose holds the game's render alone. The
+     * closing rebuild fires no frame-close callback: that callback releases
+     * the game's pending 2D batch into the scene of the VBL that built it,
+     * which is the scene being opened, not the rebuild. */
+    const int reclaim = game_feed && frame == s_scene_frame && s_scene_replay &&
+                        !s_scene_close_cb_in;
+    if (frame != s_scene_frame || reclaim) {
+        if (!reclaim && s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb && !s_scene_close_cb_in) {
+            s_scene_close_cb_in = 1;   /* the callback feeds, which re-enters begin_frame */
+            s_scene_frame_close_cb(s_scene_frame);
+            s_scene_close_cb_in = 0;
         }
         fov_latch();
         if (s_scene_frame != 0xFFFFFFFFu)   /* a completed frame is sitting in s_scene */
