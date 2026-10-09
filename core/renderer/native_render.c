@@ -578,6 +578,10 @@ static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
 static uint32_t     s_eager_stamp;             /* build stamp for the scene being extracted */
+/* Build stamp of an eager scene the ring refused, which stays in the
+ * accumulator, and the scene epoch it belongs to (scene_live_stamp). */
+static uint32_t     s_scene_refused_stamp;
+static uint32_t     s_scene_refused_epoch;
 static uint32_t     s_scene_id_next = 1;
 /* Bumped by every scene wipe (the frame-keyed reset and the sub-tick
  * scene_begin alike), so a tri recorded at feed time can be told from a tri
@@ -1512,35 +1516,6 @@ static unsigned scene_frame_at_depth(int d) {
  * The count of completed scenes recorded, saturating at SCENE_HIST, so a depth
  * above it has no slot (scene_hist_slot_at). */
 static int scene_hist_depth_max(void) { return s_scene_hist_count; }
-
-/** @brief Return whether the scene scene_present_buf returns was built by a re-extract rather than by the game's render.
- *
- * Uses the selection scene_present_stamp reads: the ring slot being
- * composed, else the delayed history entry, else the live accumulator.
- * @return Non-zero for a re-extracted scene. */
-static int scene_present_replay(void) {
-    if (s_ps_slot) return s_ps_slot->replay;
-    if (s_fbsnap_game_sel) return 0;
-    const int slot = scene_hist_slot_at(scene_delay_depth());
-    if (slot >= 0) return s_scene_hist_replay[slot];
-    return s_scene_replay;
-}
-
-/** @brief Return the stamp of the scene scene_present_buf returns under the current selection.
- *
- * The selection is the ring slot being composed, else the delayed history
- * entry, else the live accumulator. The retained-terrain freshness gate
- * compares against it, so a frozen or lagged compose keeps its retained
- * content and a stale-state compose (menus) drops it.
- * @return The scene's stamp. */
-static unsigned scene_present_stamp(void) {
-    if (s_ps_slot) return s_ps_slot->stamp;
-    if (s_fbsnap_game_sel) return s_scene_game.frame;
-    const int slot = scene_hist_slot_at(scene_delay_depth());
-    if (slot >= 0) return s_scene_hist_frame[slot];
-    return s_scene_frame;
-}
-
 
 /* --vertex-precision (`--vertex-precision integer`, live via the O-menu). When
  * set, openpete_native_scene_add_tri_grouped rounds each 3D-world vertex's PSX
@@ -3574,11 +3549,17 @@ void openpete_native_scene_apply_overlay(double alpha) {
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
 }
 
-/* A scene and its per-scene words, as one selection of the present returns them. */
+static unsigned scene_live_stamp(void);   /* defined beside the eager publish */
+
+/* A scene and its per-scene words, as one selection of the present returns them.
+ * stamp is the id its retained-terrain state is kept under (a scene id for an
+ * eager scene, else its VBL); replay is set for a re-extracted scene. */
 typedef struct {
     const scene_tri_t *tri; int n;
     uint32_t bg, fade, freeze;
     int hud_under, actor_front;
+    unsigned stamp;
+    int replay;
 } scene_view_t;
 
 /** @brief Select the scene the present draws: the eager ring slot, the kept game-render scene, a history entry or the live accumulator.
@@ -3586,28 +3567,51 @@ typedef struct {
  * The ring slot being composed wins under eager production; then the kept
  * game-render scene while a framebuffer-window resolve selects it; then the
  * history entry at the delay depth; then the ring slot an eager publish moved
- * the live scene to; else the live accumulator.
+ * the live scene to; else the live accumulator. The scene's stamp and
+ * replay flag come from the same arm as its triangles, so the
+ * retained-terrain selection keyed on the stamp matches what is drawn.
  * @return The selected scene and its words. */
 static scene_view_t scene_present_view(void) {
     if (s_ps_slot)
         return (scene_view_t){ s_ps_slot->tri, s_ps_slot->n, s_ps_slot->bg, s_ps_slot->fade,
-                               s_ps_slot->freeze, s_ps_slot->hud_under, s_ps_slot->actor_front };
+                               s_ps_slot->freeze, s_ps_slot->hud_under, s_ps_slot->actor_front,
+                               s_ps_slot->stamp, s_ps_slot->replay };
     if (s_fbsnap_game_sel)
         return (scene_view_t){ (const scene_tri_t*)s_scene_game.v.data, s_scene_game.n,
                                s_scene_game.bg, s_scene_game.fade, s_scene_game.freeze,
-                               s_scene_game.hud_under, s_scene_game.actor_front };
+                               s_scene_game.hud_under, s_scene_game.actor_front,
+                               s_scene_game.frame, 0 };
     const int slot = scene_hist_slot_at(scene_delay_depth());
     if (slot >= 0)
         return (scene_view_t){ scene_hist_tris(slot), s_scene_hist_n[slot], s_scene_hist_bg[slot],
                                s_scene_hist_fade[slot], s_scene_hist_freeze[slot],
-                               s_scene_hist_hud_under[slot], s_scene_hist_actor_front[slot] };
+                               s_scene_hist_hud_under[slot], s_scene_hist_actor_front[slot],
+                               s_scene_hist_frame[slot], s_scene_hist_replay[slot] };
     const scene_slot_t *ms = scene_moved_slot();
     if (ms)   /* an eager publish moved the live scene to this slot */
         return (scene_view_t){ ms->tri, ms->n, ms->bg, ms->fade, ms->freeze,
-                               ms->hud_under, ms->actor_front };
+                               ms->hud_under, ms->actor_front, ms->stamp, ms->replay };
     return (scene_view_t){ s_scene, s_scene_n, s_scene_bg, s_scene_fade, s_scene_freeze,
-                           s_scene_hud_under, s_scene_actor_front };
+                           s_scene_hud_under, s_scene_actor_front, scene_live_stamp(),
+                           s_scene_replay };
 }
+
+/** @brief Return whether the scene scene_present_buf returns was built by a re-extract rather than by the game's render.
+ *
+ * Reads scene_present_view's selection, so the flag belongs to the scene
+ * whose triangles the present draws.
+ * @return Non-zero for a re-extracted scene. */
+static int scene_present_replay(void) { return scene_present_view().replay; }
+
+/** @brief Return the stamp of the scene scene_present_buf returns under the current selection.
+ *
+ * Reads scene_present_view's selection, so the stamp belongs to the scene
+ * whose triangles the present draws, the moved eager slot included. The
+ * retained-terrain selection and the freshness gate compare against it, so a
+ * frozen or lagged compose keeps its retained content and a stale-state
+ * compose (menus) drops it.
+ * @return The scene's stamp. */
+static unsigned scene_present_stamp(void) { return scene_present_view().stamp; }
 
 /** @brief Return the scene the present should draw, with its per-scene words.
  *
@@ -15762,6 +15766,15 @@ uint32_t openpete_native_scene_build_stamp(void) {
     extern unsigned openpete_frame;
     return s_eager_stamp ? s_eager_stamp : (uint32_t)openpete_frame;
 }
+/** @brief Return the stamp the accumulator's retained terrain is kept under, for a present of the accumulator.
+ *
+ * The scene id of an eager scene the ring refused while the accumulator
+ * still holds it (same epoch), else the VBL the scene was opened on.
+ * @return The stamp. */
+static unsigned scene_live_stamp(void) {
+    return (s_scene_refused_stamp && s_scene_refused_epoch == s_scene_epoch)
+           ? s_scene_refused_stamp : s_scene_frame;
+}
 /** @brief Return the stamp the terrain build of the scene accumulating in s_scene carries.
  *
  * The scene id while an eager scene is being extracted, else the VBL the
@@ -15785,6 +15798,16 @@ static int slot_grow(scene_slot_t *sl, int n) {
     sl->tri = (scene_tri_t*)sl->tri_v.data;
     return held >= n;
 }
+/** @brief Keep a refused eager scene's build stamp on the accumulator and end the eager extraction.
+ *
+ * The refused scene stays in the accumulator while its terrain build sits
+ * under the scene id, so the accumulator's present stamp is that id until
+ * the next scene reset (a new epoch). */
+static void scene_keep_refused_stamp(void) {
+    s_scene_refused_stamp = s_eager_stamp;
+    s_scene_refused_epoch = s_scene_epoch;
+    s_eager_stamp = 0;
+}
 /* Publish into any free ring slot; see the header. */
 int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
     SDL_LockMutex(ring_mx());
@@ -15793,13 +15816,17 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
         const int cand = (s_ring_head + i) % SCENE_RING;
         if (s_ring[cand].state == SS_FREE) { idx = cand; break; }
     }
-    if (idx < 0) { s_ring_census.refused_full++; SDL_UnlockMutex(ring_mx()); s_eager_stamp = 0; return -1; }
+    if (idx < 0) {
+        s_ring_census.refused_full++; SDL_UnlockMutex(ring_mx());
+        scene_keep_refused_stamp();
+        return -1;
+    }
     scene_slot_t *sl = &s_ring[idx];
     SDL_UnlockMutex(ring_mx());   /* the slot is FREE: only this thread publishes */
     /* The finished scene moves into the slot by exchanging storage: the
      * accumulator takes the slot's former run and holds no scene until the
      * next one begins (every eager re-extract begins its scene). */
-    if (!slot_grow(sl, 0)) { s_eager_stamp = 0; return -1; }
+    if (!slot_grow(sl, 0)) { scene_keep_refused_stamp(); return -1; }
     scene_run_swap(&sl->tri_v, &s_scene_v);
     sl->tri = (scene_tri_t*)sl->tri_v.data;
     sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;

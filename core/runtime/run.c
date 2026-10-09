@@ -3334,20 +3334,131 @@ static void run_canonical_capture(void)
     if (pt_was) openpete_present_thread_set_active(1);
 }
 
+/* Scripted pause for windowed harnesses, OPENPETE_PAUSE_AT_VBL=N[,M[,K]]:
+ * pause at VBL N through the dev overlay's pause request (the pause key's
+ * path), then, after every M paused idle iterations (each one repaints the
+ * held scene where a repaint runs), request one step, K steps in all (M
+ * defaults to 30, K to 1), and after M more request the resume. Each transition logs a frame-step line the harness parses.
+ * Unset or malformed leaves it disarmed. */
+static struct {
+    int      armed;      /* -1 unread, 0 off, 1 on */
+    unsigned vbl;        /* N */
+    int      every;      /* M */
+    int      steps;      /* K */
+    int      stage;      /* 0 waiting for N, 1 paused, 2 done */
+    int      idle;       /* paused idle iterations since the last transition */
+    int      stepped;    /* steps requested so far */
+} s_pause_at = { -1, 0, 30, 1, 0, 0, 0 };
+
+/* Set when a paused step finished; host_pause_step logs it on the next
+ * iteration, after that iteration's canonical present counted its tick. */
+static int s_step_done_log;
+/* VBLs the pending step has run. A step with no draw for STEP_MAX_VBLS
+ * VBLs (about 10 s) ends with a warning and the sim stays paused. */
+static unsigned s_step_vbls;
+#define STEP_MAX_VBLS 600u
+
+/** @brief Drive the OPENPETE_PAUSE_AT_VBL schedule for one host iteration, before the pause and step requests are read.
+ *
+ * Raises the same requests the dev overlay's Pause sim row and Step tick
+ * button raise, so the run takes the pause key's path. A step is requested
+ * only once the previous one has finished (no step pending).
+ * @param paused The host loop's paused flag.
+ * @param step_one The host loop's pending-step flag. */
+static void pause_at_vbl_drive(bool paused, bool step_one)
+{
+    if (s_pause_at.armed < 0) {
+        const char *e = getenv("OPENPETE_PAUSE_AT_VBL");
+        unsigned n = 0; int m = 30, k = 1;
+        const int got = (e && *e) ? sscanf(e, "%u,%d,%d", &n, &m, &k) : 0;
+        s_pause_at.armed = got >= 1 && m > 0 && k >= 0;
+        s_pause_at.vbl = n; s_pause_at.every = m; s_pause_at.steps = k;
+    }
+    if (!s_pause_at.armed || s_pause_at.stage == 2) return;
+    if (s_pause_at.stage == 0) {
+        if (openpete_frame >= s_pause_at.vbl && !paused) {
+            openpete_sim_pause_request(1);
+            s_pause_at.stage = 1; s_pause_at.idle = 0;
+        }
+        return;
+    }
+    if (!paused || step_one || s_pause_at.idle < s_pause_at.every) return;
+    s_pause_at.idle = 0;
+    if (s_pause_at.stepped < s_pause_at.steps) {
+        s_pause_at.stepped++;
+        openpete_sim_step_request();
+    } else {
+        openpete_sim_pause_request(0);
+        s_pause_at.stage = 2;
+    }
+}
+
+/** @brief Decide whether the VBL about to run belongs to a paused step, clearing the step flag when it does not.
+ *
+ * @param paused The host loop's paused flag.
+ * @param step_one The host loop's pending-step flag.
+ * @return True when the VBL runs for a pending paused step. */
+static bool step_begin_vbl(bool paused, bool *step_one)
+{
+    const bool stepping = paused && *step_one;
+    if (!stepping) *step_one = false;
+    return stepping;
+}
+
+/** @brief End a paused step on the VBL the game drew, its tick boundary.
+ *
+ * A VBL with no draw (the first VBL of a two-VBL tick, or a load) keeps the
+ * step pending into the next; after STEP_MAX_VBLS VBLs with no draw the step
+ * ends with a warning and the sim stays paused.
+ * @param stepping Whether the VBL ran for a paused step (step_begin_vbl); false returns at once.
+ * @param step_one The host loop's pending-step flag, lowered when the step ends. */
+static void step_after_vbl(bool stepping, bool *step_one)
+{
+    if (!stepping) return;
+    s_step_vbls++;
+    if (openpete_present_pending) {
+        *step_one = false;
+        s_step_done_log = 1;
+    } else if (s_step_vbls >= STEP_MAX_VBLS) {
+        *step_one = false;
+        OPL_WARN_F("frame-step", "no tick completed in %u VBLs; step ended "
+                   "at openpete_frame=%u", s_step_vbls, openpete_frame);
+        s_step_vbls = 0;
+    }
+}
+
+/* Hold time after which a held step key repeats, one tick at a time. */
+#define STEP_REPEAT_DELAY_NS ((op_time_t)300 * 1000 * 1000)
+
 /** @brief Apply the pause and step keys and the dev overlay's pause and step requests for one host iteration.
  *
- * Pause is an edge-triggered toggle; step raises the one-tick flag whenever
- * held while paused, so a held key steps every host iteration without an
- * OS key-repeat dependency. The overlay's requests take the same paths: a
- * pause request that differs from the state toggles it, a step request steps
- * once. Pausing mutes the audio and silences the motors; resuming restores
+ * Pause is an edge-triggered toggle. Step raises the pending-step flag on
+ * the key's press edge while paused; the flag stays raised across VBLs until
+ * the game draws (its tick boundary), so one press is one tick whether the
+ * game's tick spans one VBL or two. A key held for STEP_REPEAT_DELAY_NS
+ * re-raises the flag each time the previous step finishes, so holding steps
+ * tick after tick. The overlay's requests take the same paths: a pause
+ * request that differs from the state toggles it, a step request steps one
+ * tick. Pausing mutes the audio and silences the motors; resuming restores
  * the live mute baseline. Publishes the paused state for
  * openpete_sim_paused.
  * @param paused The host loop's paused flag, toggled here.
  * @param step_one The host loop's one-tick flag, raised here while paused. */
 static void host_pause_step(bool *paused, bool *step_one)
 {
-    const bool step_k = openpete_key_down(OPK_FRAME_STEP) ||
+    if (s_step_done_log) {
+        s_step_done_log = 0;
+        OPL_INFO_F("frame-step", "stepped to openpete_frame=%u canon_tick=%u vbls=%u",
+                   openpete_frame, openpete_canon_tick, s_step_vbls);
+        s_step_vbls = 0;
+    }
+    pause_at_vbl_drive(*paused, *step_one);
+    static op_time_t step_held_since;
+    const bool step_edge = openpete_key_pressed(OPK_FRAME_STEP);
+    if (step_edge) step_held_since = op_now();
+    const bool step_repeat = !step_edge && openpete_key_down(OPK_FRAME_STEP) &&
+                             op_now() - step_held_since >= STEP_REPEAT_DELAY_NS;
+    const bool step_k = step_edge || step_repeat ||
                         SDL_SetAtomicInt(&s_step_req, 0) != 0;
     const int pause_req = SDL_SetAtomicInt(&s_pause_req, -1);
     if (openpete_key_pressed(OPK_PAUSE) ||
@@ -3361,10 +3472,15 @@ static void host_pause_step(bool *paused, bool *step_one)
          * it published would keep being re-issued; silence the motors for the
          * same reason the audio mutes. */
         openpete_rumble_set_paused(*paused ? 1 : 0);
-        OPL_INFO_F("frame-step", "%s at openpete_frame=%u",
-                   *paused ? "paused" : "resumed", openpete_frame);
+        OPL_INFO_F("frame-step", "%s at openpete_frame=%u canon_tick=%u",
+                   *paused ? "paused" : "resumed", openpete_frame, openpete_canon_tick);
     }
-    if (*paused && step_k) *step_one = true;
+    if (!*paused) { *step_one = false; s_step_vbls = 0; }
+    else if (step_k && !*step_one) {
+        *step_one = true;
+        OPL_INFO_F("frame-step", "step requested at openpete_frame=%u canon_tick=%u",
+                   openpete_frame, openpete_canon_tick);
+    }
     SDL_SetAtomicInt(&s_paused_shown, *paused ? 1 : 0);
 }
 
@@ -3378,10 +3494,12 @@ static void host_pause_step(bool *paused, bool *step_one)
  * without a re-extract, since nothing advanced: the hold the intermediate
  * path applies while the world is not live. Windowed only, never during a
  * skip fast-forward, and never while eager production holds the display
- * (it is disengaged while paused).
+ * (it is disengaged while paused). Every call counts one paused idle
+ * iteration for the OPENPETE_PAUSE_AT_VBL schedule, presented or not.
  * @param opts The parsed options. */
 static void host_paused_repaint(const openpete_options_t *opts)
 {
+    s_pause_at.idle++;
     if (opts->headless || openpete_skip_present_until_level || s_eager.active)
         return;
     openpete_mods_present_flush(&g_game.cpu, 0);
@@ -3857,7 +3975,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     unsigned active_slot = 0;
 
     /* Frame-step state. Pause toggles; frame-step advances exactly one
-     * game tick (hold to repeat at host-loop rate). While paused the host
+     * game tick, running VBLs until the game draws (hold to repeat). While paused the host
      * loop pumps SDL events, sleeps the deadline, and skips the co_switch
      * into the game fiber - so g_ram / CPUState stay frozen and PsyCross
      * keeps presenting the last completed frame. SPU is muted on enter to
@@ -4914,8 +5032,8 @@ static int run_host_loop(const openpete_options_t* opts) {
          * --render-fps>0 outer iterations that don't have a sim tick due
          * skip the yield entirely (input is still pumped above; pacer below
          * sleeps to the next deadline). Frame-step adds a second gate:
-         * while g_paused the yield only fires when g_step_one was set by
-         * F8 - one tick per held-iter. */
+         * while g_paused the yield only fires while g_step_one is raised
+         * (step key or overlay), which stays raised until the game draws. */
         unsigned frame_before_yield = openpete_frame;
         bool ticked_this_iter = false;
         bool yield_now = sim_due && (!g_paused || g_step_one)
@@ -4936,7 +5054,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         uint8_t   pace_flags = pace_paced ? 0u : OP_PACE_F_UNLOCK;
         if (pace_slip_pending) { pace_flags |= OP_PACE_F_SLIPPED; pace_slip_pending = 0; }
         if (yield_now) {
-            g_step_one = false;
+            const bool stepping = step_begin_vbl(g_paused, &g_step_one);
             game_on_frame_pre(&g_game.cpu, openpete_frame);
             /* Calibration stall (OPENPETE_PACE_INJECT_US), off unless asked
              * for: a known lateness the log must then report, so the
@@ -4982,6 +5100,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
             pace_exec_end_ns = op_now();
             ticked_this_iter = (openpete_frame != frame_before_yield);
+            step_after_vbl(stepping, &g_step_one);
 
             /* Sample the actuator buffer the tick just wrote. Here, rather
              * than beside the pad latch above, because the guest fills that

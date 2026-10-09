@@ -19,7 +19,10 @@ overlay's **Pause sim** row does the same as the key.
 
 While paused, {{ key("key:host.frame_step") }} <!-- id: key:host.frame_step home --> advances the game by one
 [tick](../help/glossary.md#tick), the game's own update step: 29.913 per
-second. Holding ++f8++ keeps stepping.
+second in play. One press is one tick however long the game takes to finish
+it: some menus and loading screens tick twice as fast as play, and a slow
+moment can hold a tick for longer. Holding ++f8++ for longer than 0.3 seconds
+keeps stepping, one tick at a time.
 
 ## Fast-forward
 
