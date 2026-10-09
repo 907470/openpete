@@ -20,31 +20,47 @@
  *     iterations, each call timed: its duration is the write-lock wait
  *     plus the call's own work.
  *
- * The run is made twice: once with no compiles (jobs discarded unrun) and
- * once with the workers. Reported: each writer's maximum and mean call time
- * in both, the display owner's registry read holds, the compile and install
- * counts (engagement), seam violations, and, on Linux, the getenv and fopen
- * calls made on worker threads (the harness interposes both and attributes
- * each by its caller: this executable, which links the RHI, or the Vulkan
- * driver's shared library). Exit 0 when the workers ran jobs, installed
- * results, saw no seam violation, made no getenv or fopen call from this
- * executable's code, a link and unlink made off the display owner each
- * counted one seam violation (the negative control), and no
- * read hold's CPU time or writer maximum grew beyond max(2 x, +5 ms) of the no-compile
+ * The run is made three times: with no compiles (jobs discarded unrun),
+ * with the harness's own workers, and on the RHI compile pool
+ * (rhi_compile_pool_submit), whose install callbacks the display owner runs
+ * under its read hold (rhi_rebuild_poll drains them) and where the display
+ * owner also requests a live variant switch every 16 cycles, and every 32 a
+ * second one the next cycle (rhi_rebuild_request), keeps 8 built-in pipelines registered (each new one
+ * retires the oldest, so members leave rebuilds in flight). In every leg
+ * the environment writes run inside rhi_env_write_guard, and every compile
+ * run (rhi_compile_job_run) and the guest's file commits
+ * (op_atomic_file_set_env_guard) inside its read side. Reported: each writer's maximum
+ * and mean call time in each leg, the display owner's registry read holds,
+ * the compile and install counts (engagement), the pool leg's rebuild
+ * counts, seam violations, and, on Linux, the getenv and fopen calls made on
+ * worker threads (harness workers and the pool's openpete-compile threads;
+ * the harness interposes both and attributes each by its caller: this
+ * executable, which links the RHI, or the Vulkan driver's shared library).
+ * Exit 0 when each compiling leg ran jobs, installed results, made no getenv
+ * or fopen call from this executable's code on a worker, and grew no read
+ * hold's CPU time or writer maximum beyond max(2 x, +5 ms) of the no-compile
  * run (a writer rise within the longest hold plus the unlocked control
- * section's jitter reads JITTER, not a failure);
+ * section's jitter reads JITTER, not a failure); the pool leg swapped
+ * rebuilds, superseded one, discarded stale results, lost a member to
+ * retirement in flight and failed none; no seam violation was seen; a link
+ * and unlink made off the display owner each counted one seam violation (the
+ * negative control); and a pool stopped with jobs queued and in flight
+ * accounted every job as run or cancelled (the stop control);
  * 1 otherwise; 77 when no Vulkan device can be created.
  *
- * Usage: rhi_compile_stress [workers] [seconds] [shader_dir]
- * shader_dir, when given, is a directory of built .spv files the display
- * owner points OPENPETE_SHADER_DIR at on alternate cycles. Under
- * ThreadSanitizer (target rhi_compile_stress_tsan) a Linux kernel with high
- * mmap randomization needs `setarch "$(uname -m)" -R`. */
+ * Usage: rhi_compile_stress [workers] [seconds] [shader_dir|-] [pool]
+ * workers is the harness worker count and the pool size
+ * (OPENPETE_COMPILE_POOL). shader_dir, when given, is a directory of built
+ * .spv files the display owner points OPENPETE_SHADER_DIR at on alternate
+ * cycles. "pool" skips the harness-worker leg. Under ThreadSanitizer
+ * (target rhi_compile_stress_tsan) a Linux kernel with high mmap
+ * randomization needs `setarch "$(uname -m)" -R`. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE   /* RTLD_NEXT */
 #endif
 #include "rhi.h"
 #include "rhi_embedded_shaders.h"
+#include "openpete_atomic_file.h"
 #include "openpete_mods.h"
 #include "openpete_native_render.h"
 #include "mod_glsl.h"
@@ -67,6 +83,7 @@ static atomic_uint s_worker_getenv, s_worker_fopen, s_driver_getenv, s_driver_fo
 
 #if defined(__linux__)
 #include <dlfcn.h>
+#include <pthread.h>
 extern char **environ;
 
 /** @brief Return whether a code address lies in this executable rather than a shared library.
@@ -81,6 +98,26 @@ static bool in_exe(const void *addr)
     return dladdr(addr, &at) && exe && strcmp(at.dli_fname, exe) == 0;
 }
 
+/* The calling thread is an RHI compile-pool worker: 0 unknown, 1 yes, 2 no. */
+static _Thread_local int t_pool_thread;
+/* Set while secure_getenv forwards to getenv, so the call counts once. */
+static _Thread_local int t_forwarding;
+
+/** @brief Return whether the calling thread compiles: a harness worker, or an RHI compile-pool worker (named openpete-compile).
+ *
+ * @return true on a compile worker. */
+static bool worker_thread(void)
+{
+    if (t_forwarding) return false;
+    if (t_worker) return true;
+    if (!t_pool_thread) {
+        char name[16] = {0};
+        pthread_getname_np(pthread_self(), name, sizeof name);
+        t_pool_thread = strncmp(name, "openpete-compil", 15) == 0 ? 1 : 2;
+    }
+    return t_pool_thread == 1;
+}
+
 /** @brief Count one worker-thread call, as the executable's or the driver's by its caller.
  *
  * @param caller The call's return address.
@@ -88,7 +125,7 @@ static bool in_exe(const void *addr)
  * @param driver Counter for a caller in a shared library. */
 static void count_worker_call(const void *caller, atomic_uint *own, atomic_uint *driver)
 {
-    if (t_worker) atomic_fetch_add(in_exe(caller) ? own : driver, 1u);
+    if (worker_thread()) atomic_fetch_add(in_exe(caller) ? own : driver, 1u);
 }
 
 /** @brief Look a variable up in environ, counting calls made on a compile worker.
@@ -111,10 +148,9 @@ char *getenv(const char *name)
 char *secure_getenv(const char *name)
 {
     count_worker_call(__builtin_return_address(0), &s_worker_getenv, &s_driver_getenv);
-    const int was = t_worker;
-    t_worker = 0;
+    t_forwarding = 1;
     char *v = getenv(name);
-    t_worker = was;
+    t_forwarding = 0;
     return v;
 }
 
@@ -286,7 +322,13 @@ typedef struct {
     uint64_t hold_max_ns, hold_sum_ns; /* the display owner's registry read holds, wall */
     uint64_t hold_cpu_max_ns;          /* the same holds in the thread's CPU time */
     unsigned holds;
+    /* Pool leg: live rebuild requests and what their swaps reported. */
+    unsigned rb_requests, rb_swaps, rb_rebuilt, rb_failed, rb_late, rb_stale, rb_retired,
+             rb_superseding, env_writes;
 } run_stats;
+
+/* Where a leg's jobs go. */
+typedef enum { MODE_NONE, MODE_QUEUE, MODE_POOL } leg_mode;
 
 static rhi_device *s_dev;
 static run_stats   s_st;
@@ -432,11 +474,45 @@ static const rhi_pipeline_desc k_scene_desc = {
 /* Slots with a job in flight, by kind and index. */
 static unsigned char s_pending[2][1024];
 
+static void pool_mod_install(rhi_device *dev, rhi_compile_job *job, int rc, void *tag);
+static void pool_builtin_install(rhi_device *dev, rhi_compile_job *job, int rc, void *tag);
+
+/** @brief Hand a made job to the leg's sink: discard it unrun, push it on the harness queue, or submit it to the RHI compile pool.
+ *
+ * @param mode The leg's mode.
+ * @param job The job.
+ * @param kind Its kind.
+ * @param index Postfx pass or material index (mod kinds).
+ * @return true when the job is in flight. */
+static bool hand_off(leg_mode mode, rhi_compile_job *job, job_kind kind, int index)
+{
+    s_st.enqueued++;
+    if (mode == MODE_NONE) {
+        rhi_compile_job_discard(s_dev, job);
+        s_st.unrun_discards++;
+        return false;
+    }
+    if (mode == MODE_POOL) {
+        if (kind == JOB_VARIANT)
+            rhi_compile_pool_submit(s_dev, job, RHI_COMPILE_VARIANT | RHI_COMPILE_PROBE, NULL, NULL);
+        else if (kind == JOB_BUILTIN)
+            rhi_compile_pool_submit(s_dev, job, 0, pool_builtin_install, NULL);
+        else
+            rhi_compile_pool_submit(s_dev, job, 0, pool_mod_install,
+                                    (void *)(uintptr_t)(((unsigned)kind << 16) | (unsigned)index));
+        return true;
+    }
+    qjob *q = calloc(1, sizeof *q);
+    *q = (qjob){ .job = job, .kind = kind, .index = index };
+    q_push(&s_q.todo, q);
+    return true;
+}
+
 /** @brief Enqueue a job for every live pass and material slot that holds no pipeline and has none in flight.
  *
  * Runs under the registry read lock, as the compose's enqueue does.
- * @param compile false discards each job unrun (the no-compile run). */
-static void enqueue_mod_slots(bool compile)
+ * @param mode Where the jobs go (hand_off). */
+static void enqueue_mod_slots(leg_mode mode)
 {
     const rhi_pipe_variant var = rhi_pipe_variant_current();
     const uint32_t epoch = rhi_pipe_variant_epoch();
@@ -445,13 +521,7 @@ static void enqueue_mod_slots(bool compile)
         if (openpete_mods_postfx_enum_at(i, &p) != 0 || *p.pipeline_slot || s_pending[0][i]) continue;
         rhi_compile_job *job = rhi_compile_job_new(s_dev, &k_postfx_desc, NULL, 0, p.frag_spv,
                                                    p.frag_words, var, p.generation, epoch);
-        if (!job) continue;
-        s_st.enqueued++;
-        if (!compile) { rhi_compile_job_discard(s_dev, job); s_st.unrun_discards++; continue; }
-        qjob *q = calloc(1, sizeof *q);
-        *q = (qjob){ .job = job, .kind = JOB_POSTFX, .index = i };
-        s_pending[0][i] = 1;
-        q_push(&s_q.todo, q);
+        if (job && hand_off(mode, job, JOB_POSTFX, i)) s_pending[0][i] = 1;
     }
     for (int i = 0; i < openpete_mods_material_enum_count() && i < 1024; i++) {
         openpete_mod_material_gpu_t g;
@@ -461,42 +531,60 @@ static void enqueue_mod_slots(bool compile)
             continue;
         rhi_compile_job *job = rhi_compile_job_new(s_dev, &k_postfx_desc, NULL, 0, g.frag_spv,
                                                    g.frag_words, var, g.generation, epoch);
-        if (!job) continue;
-        s_st.enqueued++;
-        if (!compile) { rhi_compile_job_discard(s_dev, job); s_st.unrun_discards++; continue; }
-        qjob *q = calloc(1, sizeof *q);
-        *q = (qjob){ .job = job, .kind = JOB_MATERIAL, .index = i };
-        s_pending[1][i] = 1;
-        q_push(&s_q.todo, q);
+        if (job && hand_off(mode, job, JOB_MATERIAL, i)) s_pending[1][i] = 1;
     }
 }
 
 /** @brief Enqueue the built-in scene pipeline in one view and its five other views as variant jobs.
  *
  * @param cycle Cycle number; selects the installed view.
- * @param compile false discards each job unrun. */
-static void enqueue_builtin(unsigned cycle, bool compile)
+ * @param mode Where the jobs go (hand_off). */
+static void enqueue_builtin(unsigned cycle, leg_mode mode)
 {
     for (int v = 0; v < 6; v++) {
         const rhi_pipe_variant var = { .affine = (v & 1) != 0, .notex = v == 2 || v == 3,
                                        .wireframe = v >= 4, .truescope = true };
         rhi_compile_job *job = rhi_compile_job_new(s_dev, &k_scene_desc, NULL, 0, NULL, 0, var, 0,
                                                    rhi_pipe_variant_epoch());
-        if (!job) continue;
-        s_st.enqueued++;
-        if (!compile) { rhi_compile_job_discard(s_dev, job); s_st.unrun_discards++; continue; }
-        qjob *q = calloc(1, sizeof *q);
-        *q = (qjob){ .job = job, .kind = (unsigned)v == cycle % 6u ? JOB_BUILTIN : JOB_VARIANT };
-        q_push(&s_q.todo, q);
+        if (job) hand_off(mode, job, (unsigned)v == cycle % 6u ? JOB_BUILTIN : JOB_VARIANT, 0);
     }
 }
 
-/** @brief Install or discard every finished job on the display owner.
+/** @brief Install a mod slot's result: only when its slot, re-resolved by index, still holds no pipeline and its generation equals the job's; otherwise destroy it as Vulkan objects.
  *
- * A mod slot's result installs only when its slot, re-resolved by index,
- * still holds no pipeline and its generation equals the job's; otherwise it
- * is destroyed as Vulkan objects. A built-in result is installed, then
- * retired at once. Runs under the registry read lock. */
+ * @param kind JOB_POSTFX or JOB_MATERIAL.
+ * @param index Pass or material index.
+ * @param job The job, consumed. */
+static void install_mod(job_kind kind, int index, rhi_compile_job *job)
+{
+    void **slot = NULL;
+    unsigned gen = 0;
+    openpete_postfx_pass_t pp;
+    openpete_mod_material_gpu_t g;
+    int contract = 0, terrain = 0;
+    if (kind == JOB_POSTFX && openpete_mods_postfx_enum_at(index, &pp) == 0) {
+        slot = pp.pipeline_slot; gen = pp.generation;
+    } else if (kind == JOB_MATERIAL &&
+               openpete_mods_material_enum_at(index, &contract, &terrain, &g) == 0) {
+        slot = g.pipeline_slot[0]; gen = g.generation;
+    }
+    s_pending[kind == JOB_MATERIAL][index] = 0;
+    if (!slot || gen != rhi_compile_job_generation(job)) {
+        rhi_compile_job_discard(s_dev, job);
+        s_st.stale++;
+    } else if (*slot) {
+        rhi_compile_job_discard(s_dev, job);
+        s_st.slot_taken++;
+    } else {
+        rhi_pipeline *p = rhi_compile_job_install(s_dev, job);
+        if (p) { *slot = p; s_st.installed++; }
+    }
+}
+
+/** @brief Install or discard every finished job of the harness queue on the display owner.
+ *
+ * A mod slot's result goes through install_mod. A built-in result is
+ * installed, then retired at once. Runs under the registry read lock. */
 static void drain_done(void)
 {
     SDL_LockMutex(s_q.mx);
@@ -509,31 +597,117 @@ static void drain_done(void)
             rhi_pipeline *p = rhi_compile_job_install(s_dev, j->job);
             if (p) { s_st.installed++; rhi_retire_pipeline(s_dev, p); s_st.builtin_retired++; }
         } else {
-            void **slot = NULL;
-            unsigned gen = 0;
-            openpete_postfx_pass_t pp;
-            openpete_mod_material_gpu_t g;
-            int contract = 0, terrain = 0;
-            if (j->kind == JOB_POSTFX && openpete_mods_postfx_enum_at(j->index, &pp) == 0) {
-                slot = pp.pipeline_slot; gen = pp.generation;
-            } else if (j->kind == JOB_MATERIAL &&
-                       openpete_mods_material_enum_at(j->index, &contract, &terrain, &g) == 0) {
-                slot = g.pipeline_slot[0]; gen = g.generation;
-            }
-            s_pending[j->kind == JOB_MATERIAL][j->index] = 0;
-            if (!slot || gen != rhi_compile_job_generation(j->job)) {
-                rhi_compile_job_discard(s_dev, j->job);
-                s_st.stale++;
-            } else if (*slot) {
-                rhi_compile_job_discard(s_dev, j->job);
-                s_st.slot_taken++;
-            } else {
-                rhi_pipeline *p = rhi_compile_job_install(s_dev, j->job);
-                if (p) { *slot = p; s_st.installed++; }
-            }
+            install_mod(j->kind, j->index, j->job);
         }
         free(j);
         j = next;
+    }
+}
+
+static void drain_swept(void);
+
+/* Built-in pipelines the pool leg keeps registered, oldest retired first,
+ * so live rebuilds have members to rebuild and to lose while in flight. */
+#define LIVE_BUILTINS 8
+static rhi_pipeline *s_live[LIVE_BUILTINS];
+static unsigned      s_live_next;
+
+/** @brief Pool install callback of a mod slot's job: install_mod, or a discard for a cancelled job.
+ *
+ * @param dev Device.
+ * @param job The job, consumed.
+ * @param rc Its run's result, or RHI_POOL_CANCELLED.
+ * @param tag Kind (bits 16 and up) and index (low 16 bits). */
+static void pool_mod_install(rhi_device *dev, rhi_compile_job *job, int rc, void *tag)
+{
+    const unsigned v = (unsigned)(uintptr_t)tag;
+    const job_kind kind = (job_kind)(v >> 16);
+    const int index = (int)(v & 0xFFFFu);
+    atomic_fetch_add(&s_st.ran, 1u);
+    if (rc == 0) atomic_fetch_add(&s_st.ran_ok, 1u);
+    if (rc == RHI_POOL_CANCELLED) {
+        s_pending[kind == JOB_MATERIAL][index] = 0;
+        rhi_compile_job_discard(dev, job);
+        return;
+    }
+    install_mod(kind, index, job);
+}
+
+/** @brief Pool install callback of a built-in job: install it into the live ring, retiring the ring's oldest member.
+ *
+ * @param dev Device.
+ * @param job The job, consumed.
+ * @param rc Its run's result, or RHI_POOL_CANCELLED.
+ * @param tag Unused. */
+static void pool_builtin_install(rhi_device *dev, rhi_compile_job *job, int rc, void *tag)
+{
+    (void)tag;
+    atomic_fetch_add(&s_st.ran, 1u);
+    if (rc == 0) atomic_fetch_add(&s_st.ran_ok, 1u);
+    if (rc == RHI_POOL_CANCELLED) { rhi_compile_job_discard(dev, job); return; }
+    rhi_pipeline *p = rhi_compile_job_install(dev, job);
+    if (!p) return;
+    s_st.installed++;
+    if (s_live[s_live_next]) {
+        rhi_retire_pipeline(dev, s_live[s_live_next]);
+        s_st.builtin_retired++;
+    }
+    s_live[s_live_next] = p;
+    s_live_next = (s_live_next + 1u) % LIVE_BUILTINS;
+}
+
+/** @brief Take a finished live rebuild's counts into the run's stats.
+ *
+ * @param r The swap's counts. */
+static void note_swap(const rhi_rebuild_stats *r)
+{
+    s_st.rb_swaps++;
+    s_st.rb_rebuilt += r->rebuilt;
+    s_st.rb_failed += r->failed;
+    s_st.rb_late += r->late;
+    s_st.rb_stale += r->stale;
+    s_st.rb_retired += r->retired;
+    s_st.rb_superseding += r->requests > 1u;
+}
+
+/** @brief Pool leg's display-owner step under the read hold: install staged results and swap a complete rebuild, enqueue slots and built-ins, and request variant switches.
+ *
+ * @param cycle Cycle number. */
+static void pool_cycle(unsigned cycle)
+{
+    rhi_rebuild_stats r;
+    if (rhi_rebuild_poll(s_dev, &r)) note_swap(&r);
+    enqueue_mod_slots(MODE_POOL);
+    if ((cycle & 7u) == 0) enqueue_builtin(cycle, MODE_POOL);
+    /* Every 16 cycles a switch; every 32, a second one the next cycle,
+     * which supersedes the first while its jobs are in flight. */
+    if ((cycle & 15u) == 0 || (cycle & 31u) == 1) {
+        const unsigned v = (cycle / 16u + (cycle & 1u) * 3u) % 6u;
+        const rhi_pipe_variant var = { .affine = (v & 1u) != 0, .notex = v == 2 || v == 3,
+                                       .wireframe = v >= 4, .truescope = true };
+        rhi_rebuild_request(s_dev, var, false);
+        s_st.rb_requests++;
+    }
+}
+
+/** @brief Finish the pool leg: wait for the pool, swap the rebuild in flight, and retire the live ring. */
+static void pool_settle(void)
+{
+    for (;;) {
+        const bool frame = rhi_begin_frame(s_dev);
+        openpete_mods_registry_read_lock();
+        drain_swept();
+        rhi_compile_pool_wait(s_dev, NULL, NULL);
+        rhi_rebuild_stats r;
+        if (rhi_rebuild_poll(s_dev, &r)) note_swap(&r);
+        const bool pending = rhi_rebuild_pending(s_dev);
+        openpete_mods_registry_read_unlock();
+        if (frame) rhi_end_frame(s_dev);
+        if (!pending) break;
+    }
+    for (unsigned i = 0; i < LIVE_BUILTINS; i++) {
+        if (s_live[i]) rhi_retire_pipeline(s_dev, s_live[i]);
+        s_live[i] = NULL;
     }
 }
 
@@ -551,11 +725,27 @@ static void drain_swept(void)
         }
 }
 
-/** @brief Write environment variables as the overlay's live env rows do, from the display owner.
+static void env_write(unsigned cycle, const char *shader_dir);
+
+/** @brief Write environment variables as the overlay's live env rows do, from the display owner, inside rhi_env_write_guard.
  *
+ * The registry's live rows write inside the same guard once the renderer
+ * installs it (knob_registry_set_env_guard).
  * @param cycle Cycle number.
  * @param shader_dir Directory for OPENPETE_SHADER_DIR on odd cycles, or NULL. */
 static void env_edit(unsigned cycle, const char *shader_dir)
+{
+    rhi_env_write_guard(1);
+    s_st.env_writes++;
+    env_write(cycle, shader_dir);
+    rhi_env_write_guard(0);
+}
+
+/** @brief The environment writes env_edit makes.
+ *
+ * @param cycle Cycle number.
+ * @param shader_dir Directory for OPENPETE_SHADER_DIR on odd cycles, or NULL. */
+static void env_write(unsigned cycle, const char *shader_dir)
 {
     char v[32];
     snprintf(v, sizeof v, "%u", cycle);
@@ -567,12 +757,15 @@ static void env_edit(unsigned cycle, const char *shader_dir)
     else SDL_unsetenv_unsafe("OPENPETE_SHADER_DIR");
 }
 
-/** @brief Run one timed leg: guest thread, workers when compiling, and the display owner's cycle.
+/** @brief Run one timed leg: guest thread, the compile sink, and the display owner's cycle.
  *
- * @param workers Worker count; 0 discards every job unrun.
+ * @param mode MODE_NONE discards every job unrun, MODE_QUEUE runs them on
+ *             the harness's own workers, MODE_POOL on the RHI compile pool
+ *             with live rebuild requests.
+ * @param workers Harness worker count (MODE_QUEUE).
  * @param seconds Duration.
- * @param shader_dir See env_edit. */
-static void run_leg(int workers, int seconds, const char *shader_dir)
+ * @param shader_dir See env_write. */
+static void run_leg(leg_mode mode, int workers, int seconds, const char *shader_dir)
 {
     memset(&s_st, 0, sizeof s_st);
     memset(s_pending, 0, sizeof s_pending);
@@ -580,7 +773,7 @@ static void run_leg(int workers, int seconds, const char *shader_dir)
     s_q.stop = false;
     SDL_Thread *guest = SDL_CreateThread(guest_main, "stress-guest", NULL);
     SDL_Thread *w[64];
-    const int nw = workers < 64 ? workers : 64;
+    const int nw = mode != MODE_QUEUE ? 0 : workers < 64 ? workers : 64;
     for (int i = 0; i < nw; i++) w[i] = SDL_CreateThread(worker_main, "stress-worker", NULL);
     const Uint64 end = SDL_GetTicksNS() + (Uint64)seconds * 1000000000ull;
     for (unsigned cycle = 0; SDL_GetTicksNS() < end; cycle++) {
@@ -589,9 +782,13 @@ static void run_leg(int workers, int seconds, const char *shader_dir)
         const Uint64 h0 = SDL_GetTicksNS();
         const uint64_t c0 = thread_cpu_ns();
         drain_swept();
-        drain_done();
-        enqueue_mod_slots(nw > 0);
-        if ((cycle & 7u) == 0) enqueue_builtin(cycle, nw > 0);
+        if (mode == MODE_POOL) {
+            pool_cycle(cycle);
+        } else {
+            drain_done();
+            enqueue_mod_slots(mode);
+            if ((cycle & 7u) == 0) enqueue_builtin(cycle, mode);
+        }
         const uint64_t hold = SDL_GetTicksNS() - h0;
         const uint64_t hold_cpu = thread_cpu_ns() - c0;
         openpete_mods_registry_read_unlock();
@@ -605,6 +802,7 @@ static void run_leg(int workers, int seconds, const char *shader_dir)
     }
     atomic_store(&s_guest_stop, true);
     SDL_WaitThread(guest, NULL);
+    if (mode == MODE_POOL) { pool_settle(); return; }
     SDL_LockMutex(s_q.mx);
     s_q.stop = true;
     SDL_BroadcastCondition(s_q.cv);
@@ -648,6 +846,123 @@ static uint64_t growth_bound(uint64_t base)
     return base * 2 > base + 5000000u ? base * 2 : base + 5000000u;
 }
 
+/** @brief Judge a compiling leg against the no-compile leg: engagement, read-hold CPU growth, writer maxima.
+ *
+ * Workers take no registry lock, so a writer waits only on the display
+ * owner's read holds. The holds' CPU time (wall time minus preemption) is
+ * judged against the no-compile run; a writer's maximum is judged
+ * likewise, and a rise the leg's longest wall hold plus its scheduling
+ * jitter (the control) accounts for is reported, not failed: CPU
+ * contention from the workers stretches a hold, the hold's work does not
+ * grow.
+ * @param leg Leg name.
+ * @param base_max The no-compile leg's writer maxima.
+ * @param base_hold The no-compile leg's read-hold CPU maximum.
+ * @return 1 on a failure, else 0. */
+static int judge_leg(const char *leg, const uint64_t base_max[4], uint64_t base_hold)
+{
+    int fail = 0;
+    if (!atomic_load(&s_st.ran_ok) || !s_st.installed) {
+        printf("verdict: leg=%s VACUOUS (no job compiled or installed)\n", leg);
+        fail = 1;
+    }
+    if (s_st.hold_cpu_max_ns > growth_bound(base_hold)) {
+        printf("verdict: leg=%s GROWTH read_hold cpu max_ms %.3f -> %.3f\n", leg,
+               (double)base_hold / 1e6, (double)s_st.hold_cpu_max_ns / 1e6);
+        fail = 1;
+    }
+    for (int w = 0; w < 4; w++) {
+        if (s_st.max_ns[w] <= growth_bound(base_max[w])) continue;
+        const bool explained = s_st.max_ns[w] <= s_st.hold_max_ns + s_st.ctl_max_ns + 1000000u;
+        printf("verdict: leg=%s %s writer=%s max_ms %.3f -> %.3f (hold max %.3f + control max %.3f)\n",
+               leg, explained ? "JITTER" : "GROWTH", k_writer[w], (double)base_max[w] / 1e6,
+               (double)s_st.max_ns[w] / 1e6, (double)s_st.hold_max_ns / 1e6,
+               (double)s_st.ctl_max_ns / 1e6);
+        if (!explained) fail = 1;
+    }
+    return fail;
+}
+
+/** @brief Report a leg's getenv and fopen calls on compile workers; a call from this executable's code fails.
+ *
+ * @param leg Leg name.
+ * @return 1 on a failure, else 0. */
+static int judge_worker_calls(const char *leg)
+{
+    const unsigned genv = atomic_load(&s_worker_getenv), gfo = atomic_load(&s_worker_fopen);
+    printf("leg=%s worker_getenv=%u worker_fopen=%u driver_getenv=%u driver_fopen=%u%s\n", leg,
+           genv, gfo, atomic_load(&s_driver_getenv), atomic_load(&s_driver_fopen),
+#if defined(__linux__)
+           ""
+#else
+           " (not interposed on this platform)"
+#endif
+    );
+    return genv || gfo;
+}
+
+/** @brief Judge the pool leg's engagement: pool runs, staged installs, rebuild swaps, superseded and retired-in-flight members, guarded environment writes.
+ *
+ * @param p0 The pool's counts before the leg.
+ * @return 1 when a path the leg exists to drive was not engaged, else 0. */
+static int judge_pool(const rhi_compile_pool_stats *p0)
+{
+    rhi_compile_pool_stats p1;
+    rhi_compile_pool_stats_get(s_dev, &p1);
+    printf("leg=pool pool_workers=%u submitted=%u run=%u staged=%u variants_created=%u "
+           "variant_probe_hits=%u variant_failed=%u queue_max=%u run_ms=%.1f\n",
+           p1.workers, p1.submitted - p0->submitted, p1.run - p0->run, p1.staged - p0->staged,
+           p1.variant_created - p0->variant_created,
+           p1.variant_probe_hits - p0->variant_probe_hits, p1.variant_failed - p0->variant_failed,
+           p1.max_queued, p1.run_ms - p0->run_ms);
+    printf("leg=pool rebuild_requests=%u swaps=%u superseding_swaps=%u rebuilt=%u failed=%u "
+           "late=%u stale_results=%u retired_in_flight=%u guarded_env_writes=%u\n",
+           s_st.rb_requests, s_st.rb_swaps, s_st.rb_superseding, s_st.rb_rebuilt, s_st.rb_failed,
+           s_st.rb_late, s_st.rb_stale, s_st.rb_retired, s_st.env_writes);
+    const struct { const char *what; unsigned n; } need[] = {
+        { "pool runs", p1.run - p0->run }, { "staged results", p1.staged - p0->staged },
+        { "variant jobs", p1.variant_created + p1.variant_probe_hits - p0->variant_created -
+                          p0->variant_probe_hits },
+        { "rebuild swaps", s_st.rb_swaps }, { "superseding swaps", s_st.rb_superseding },
+        { "stale results", s_st.rb_stale }, { "members retired in flight", s_st.rb_retired },
+        { "guarded env writes", s_st.env_writes },
+    };
+    int fail = 0;
+    for (size_t i = 0; i < sizeof need / sizeof need[0]; i++) {
+        if (need[i].n) continue;
+        printf("verdict: leg=pool VACUOUS (no %s)\n", need[i].what);
+        fail = 1;
+    }
+    return fail || p1.variant_failed != p0->variant_failed || s_st.rb_failed;
+}
+
+/** @brief Stop the pool with jobs queued and in flight: every job must be run or cancelled, none lost.
+ *
+ * @return 1 when the counts do not add up or nothing was cancelled, else 0. */
+static int stop_control(void)
+{
+    rhi_compile_pool_stats p0;
+    rhi_compile_pool_stats_get(s_dev, &p0);
+    for (unsigned c = 0; c < 8; c++) enqueue_builtin(c, MODE_POOL);
+    rhi_compile_pool_stop(s_dev);
+    rhi_compile_pool_stats p1;
+    rhi_compile_pool_stats_get(s_dev, &p1);
+    const unsigned sub = p1.submitted - p0.submitted, ran = p1.run - p0.run;
+    const unsigned cancelled = p1.cancelled - p0.cancelled;
+    const unsigned staged = p1.staged - p0.staged;
+    /* Every job ends as a variant run on a worker (run, not staged), or
+     * cancelled: never run, or run and staged but not installed before the
+     * stop (nothing drains in between, so every staged job is cancelled). */
+    const bool whole = ran - staged + cancelled == sub;
+    printf("stop_control: submitted=%u run=%u staged=%u cancelled=%u: %s\n", sub, ran, staged,
+           cancelled, whole && cancelled ? "engaged" : "NOT ENGAGED");
+    for (unsigned i = 0; i < LIVE_BUILTINS; i++) {
+        if (s_live[i]) rhi_retire_pipeline(s_dev, s_live[i]);
+        s_live[i] = NULL;
+    }
+    return !(whole && cancelled);
+}
+
 /** @brief Copy the embedded raster-quantize fragment's SPIR-V as the words every stress mod shader compiles to.
  *
  * @return true when the blob was found. */
@@ -680,17 +995,20 @@ static int SDLCALL seam_control_main(void *arg)
     return 0;
 }
 
-/** @brief Run the no-compile leg and the worker leg and judge the worker leg.
+/** @brief Run the no-compile leg, the harness-worker leg and the compile-pool leg, and judge the compiling legs.
  *
  * @param argc Argument count.
- * @param argv workers, seconds, shader_dir (all optional).
+ * @param argv workers, seconds, shader_dir ("-" for none), legs ("pool"
+ *             skips the harness-worker leg) (all optional).
  * @return 0 pass, 1 fail, 77 no Vulkan device. */
 int main(int argc, char **argv)
 {
     const int workers = argc > 1 ? atoi(argv[1]) : 4;
     const int seconds = argc > 2 ? atoi(argv[2]) : 5;
-    const char *shader_dir = argc > 3 ? argv[3] : NULL;
+    const char *shader_dir = argc > 3 && strcmp(argv[3], "-") != 0 ? argv[3] : NULL;
+    const char *legs = argc > 4 ? argv[4] : NULL;
     SDL_setenv_unsafe("MESA_SHADER_CACHE_DISABLE", "true", 1);   /* no driver file IO on workers */
+    op_atomic_file_set_env_guard(rhi_env_read_guard);   /* the guest's file commits read the environment */
     snprintf(s_mod_dir, sizeof s_mod_dir, "%s", "rhi_compile_stress.d");
     SDL_CreateDirectory(s_mod_dir);
     s_q.mx = SDL_CreateMutex();
@@ -706,55 +1024,36 @@ int main(int argc, char **argv)
     if (!s_dev) { fprintf(stderr, "rhi_compile_stress: no Vulkan device - SKIP\n"); return 77; }
     if (!load_frag_words()) { fprintf(stderr, "rhi_compile_stress: no raster_quantize.frag.spv\n"); return 1; }
 
-    run_leg(0, seconds, shader_dir);
+    const bool p1_leg = !legs || strcmp(legs, "pool") != 0;
+    SDL_setenv_unsafe("OPENPETE_COMPILE_POOL", argc > 1 ? argv[1] : "4", 1);   /* read at the pool's start */
+    run_leg(MODE_NONE, 0, seconds, shader_dir);
     report("no_compile");
     uint64_t base_max[4];
     for (int w = 0; w < 4; w++) base_max[w] = s_st.max_ns[w];
     const uint64_t base_hold = s_st.hold_cpu_max_ns;
+    int fail = 0;
+    if (p1_leg) {
+        atomic_store(&s_worker_getenv, 0u);
+        atomic_store(&s_worker_fopen, 0u);
+        run_leg(MODE_QUEUE, workers, seconds, shader_dir);
+        report("compile");
+        fail |= judge_leg("compile", base_max, base_hold);
+        fail |= judge_worker_calls("compile");
+    }
     atomic_store(&s_worker_getenv, 0u);
     atomic_store(&s_worker_fopen, 0u);
-    run_leg(workers, seconds, shader_dir);
-    report("compile");
-
-    /* Workers take no registry lock, so a writer waits only on the display
-     * owner's read holds. The holds' CPU time (wall time minus preemption)
-     * is judged against the no-compile run; a writer's maximum is judged
-     * likewise, and a rise the compile leg's longest wall hold plus its
-     * scheduling jitter (the control) accounts for is reported, not failed:
-     * CPU contention from the workers stretches a hold, the hold's work
-     * does not grow. */
-    int fail = 0;
-    if (!atomic_load(&s_st.ran_ok) || !s_st.installed) {
-        printf("verdict: VACUOUS (no job compiled or installed)\n");
-        fail = 1;
-    }
-    if (s_st.hold_cpu_max_ns > growth_bound(base_hold)) {
-        printf("verdict: GROWTH read_hold cpu max_ms %.3f -> %.3f\n", (double)base_hold / 1e6,
-               (double)s_st.hold_cpu_max_ns / 1e6);
-        fail = 1;
-    }
-    for (int w = 0; w < 4; w++) {
-        if (s_st.max_ns[w] <= growth_bound(base_max[w])) continue;
-        const bool explained = s_st.max_ns[w] <= s_st.hold_max_ns + s_st.ctl_max_ns + 1000000u;
-        printf("verdict: %s writer=%s max_ms %.3f -> %.3f (compile leg hold max %.3f + control max %.3f)\n",
-               explained ? "JITTER" : "GROWTH", k_writer[w], (double)base_max[w] / 1e6,
-               (double)s_st.max_ns[w] / 1e6, (double)s_st.hold_max_ns / 1e6,
-               (double)s_st.ctl_max_ns / 1e6);
-        if (!explained) fail = 1;
-    }
+    atomic_store(&s_driver_getenv, 0u);
+    atomic_store(&s_driver_fopen, 0u);
+    rhi_compile_pool_stats p0;
+    rhi_compile_pool_stats_get(s_dev, &p0);
+    run_leg(MODE_POOL, workers, seconds, shader_dir);
+    report("pool");
+    fail |= judge_leg("pool", base_max, base_hold);
+    fail |= judge_pool(&p0);
+    fail |= judge_worker_calls("pool");
     const unsigned seams = rhi_seam_violations();
-    const unsigned genv = atomic_load(&s_worker_getenv), gfo = atomic_load(&s_worker_fopen);
-    printf("driver_getenv=%u driver_fopen=%u (worker-thread calls from a shared library)\n",
-           atomic_load(&s_driver_getenv), atomic_load(&s_driver_fopen));
-    printf("workers=%d seconds=%d seam_violations=%u worker_getenv=%u worker_fopen=%u%s\n",
-           workers, seconds, seams, genv, gfo,
-#if defined(__linux__)
-           ""
-#else
-           " (not interposed on this platform)"
-#endif
-    );
-    if (seams || genv || gfo) fail = 1;
+    printf("workers=%d seconds=%d seam_violations=%u\n", workers, seconds, seams);
+    if (seams) fail = 1;
 
     /* Negative control: a registry link and unlink from a thread that does
      * not own the display must each count one seam violation. */
@@ -769,6 +1068,7 @@ int main(int argc, char **argv)
     printf("seam_control: off-owner link+unlink counted %u violation(s) (want 2): %s\n", seam_hits,
            seam_hits == 2 ? "engaged" : "NOT ENGAGED");
     if (seam_hits != 2) fail = 1;
+    fail |= stop_control();
 
     openpete_mods_postfx_retire_all();
     openpete_mods_material_retire_all();

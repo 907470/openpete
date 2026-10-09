@@ -1584,11 +1584,13 @@ static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dit
 /* --terrain-visibility: the terrain feeder's candidate-set policy
  * (openpete_terrain_visibility_t), seeded at init and moved by the setter. */
 static int s_terrain_vis = OPENPETE_TERRAIN_VIS_FRUSTUM;
-/* --texture-mapping (0 = perspective, 1 = affine): the live mode plus the
+/* --texture-mapping (0 = perspective, 1 = affine): the drawn mode plus the
  * queued one. The mode is a vertex spec constant baked into every scene
  * pipeline, so a change cannot apply mid-frame like the knobs above - the
- * setter queues it and texmap_apply_pending() re-bakes all pipelines at the
- * next present boundary (rhi_rebuild_pipelines; the replaced objects are
+ * setter queues it, variant_apply_pending() requests the rebuild at the next
+ * present boundary (rhi_rebuild_request: the pipelines it changes compile on
+ * the compile pool while the old ones draw), and the swap of the whole set
+ * at one later present moves the drawn mode (the replaced objects are
  * destroyed once the frames in flight that may bind them retire). */
 static int s_texmap_affine  = 0;
 static int s_notex          = 0;   /* untextured lighting view (spec-const 2) */
@@ -4711,6 +4713,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
      * rather than spin failed frames forever. */
     rhi_set_device_lost_handler(openpete_request_shutdown);
+    /* The live env rows' writes wait for the compile workers' runs, inside
+     * which the driver reads the environment, and for any file commit's
+     * environment read on another thread. */
+    knob_registry_set_env_guard(rhi_env_write_guard);
+    op_atomic_file_set_env_guard(rhi_env_read_guard);
     /* Live-window supersampling (--ssaa N, default 1=no-op): the ss_rtt + resolve
      * pass are set up lazily (ensure_ss_rtt) once the window size is known. */
     s_nr.ssaa = (opts->ssaa > 0) ? opts->ssaa : 1;
@@ -9385,10 +9392,12 @@ static void** nr_material_slot(const openpete_mod_material_gpu_t* mg, const nr_m
  * subtract blend, no depth test, the opaque depth at set 1 and the decal push
  * block. No depth bias on any: binding a bias pipeline invalidates the
  * dynamic bias state. A failed build is logged and cached as
- * PFX_PIPE_FAILED, never retried.
+ * PFX_PIPE_FAILED, never retried. Inside an open pipeline batch the build is
+ * queued and the slot is filled when the batch ends.
  * @param mg Resolved or enumerated mod material.
  * @param q The request.
- * @return The slot's content: an rhi_pipeline*, or PFX_PIPE_FAILED. */
+ * @return The slot's content: an rhi_pipeline*, PFX_PIPE_FAILED, or NULL
+ *         while a batch holds the build. */
 static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_mat_req* q) {
     void** slot = nr_material_slot(mg, q);
     if (*slot) return *slot;
@@ -9420,10 +9429,8 @@ static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_ma
             .push_const_size = sizeof(shadow_decal_tex_pc),
         };
     }
-    rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &md, mg->vert_spv, mg->vert_words,
-                                              frag, frag_n);
-    *slot = p ? (void*)p : PFX_PIPE_FAILED;
-    if (!p)
+    if (rhi_create_pipeline_slot(s_nr.dev, &md, mg->vert_spv, mg->vert_words, frag, frag_n, slot,
+                                 PFX_PIPE_FAILED) < 0)
         fprintf(stderr, "[native] material: pipeline build FAILED for %s "
                         "(kind %d, blend %d, portal slot %d, mark %d)\n",
                 mg->owner, (int)q->kind, b, q->pslot, q->mark);
@@ -13345,29 +13352,12 @@ void openpete_native_set_terrain_visibility(int mode) {
 
 int openpete_native_get_terrain_visibility(void) { return s_terrain_vis; }
 
-/* Queued; texmap_apply_pending re-bakes the pipelines at the next present. */
+/* Queued; variant_apply_pending requests the rebuild at the next present. */
 void openpete_native_set_texture_mapping(int affine) {
     s_texmap_pending = affine ? 1 : 0;
 }
 
 int openpete_native_get_texture_mapping(void) { return s_texmap_affine; }
-
-/** @brief Apply a queued texture-mapping mode change by rebuilding the pipelines.
- *
- * Runs between frames. No effect when the requested mode equals the current one
- * or there is no device. Sets the affine-UV mode in the rhi and rebuilds; a
- * rebuild that fails for some pipelines is logged and the mode is still
- * recorded as changed. */
-static void texmap_apply_pending(void) {
-    if (s_texmap_pending == s_texmap_affine || !s_nr.dev) return;
-    rhi_set_affine_uv(s_texmap_pending);
-    int fails = rhi_rebuild_pipelines(s_nr.dev);
-    s_texmap_affine = s_texmap_pending;
-    OPL_INFO_F("native", "texture-mapping -> %s (pipelines re-baked)",
-               s_texmap_affine ? "affine (PSX screen-linear)" : "perspective");
-    if (fails)
-        OPL_ERROR_F("native", "texture-mapping: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
-}
 
 /* Key-contest scoping (MOBY_TRUESCOPE, fragment spec-constant 3), DEFAULT ON:
  * a moby og key claims a pixel only when it also beats the covering
@@ -13378,26 +13368,21 @@ static void texmap_apply_pending(void) {
  * OPENPETE_MOBY_TRUESCOPE=0 restores og's painter for A/B. Cutscene actors
  * are unaffected either way: the ACTOR_FRONT class never emits keys, and
  * their authored inside-terrain look (Delvin's wing through the tower) is
- * carried by the ACTOR_FRONT depth-punch pass. Same re-bake shape as
+ * carried by the ACTOR_FRONT depth-punch pass. Same rebuild path as
  * texture-mapping. */
-static int s_moby_truescope = 1;   /* currently-baked value (pipelines start at 1) */
-/** @brief Re-bakes the pipelines when OPENPETE_MOBY_TRUESCOPE changed since the last bake; the knob is re-read when the registry env epoch changes. */
-static void truescope_apply_pending(void) {
-    if (!s_nr.dev) return;
+static int s_moby_truescope = 1;   /* the value the drawn pipelines carry (they start at 1) */
+
+/** @brief Return the MOBY_TRUESCOPE value OPENPETE_MOBY_TRUESCOPE asks for; the knob is re-read when the registry env epoch changes.
+ *
+ * @return 1 to scope (unset or nonzero), 0 for og's painter. */
+static int truescope_wanted(void) {
     static int want = 1;
     static unsigned seen = 0;
     if (knob_env_epoch_stale(&seen)) {
         const char* e = getenv("OPENPETE_MOBY_TRUESCOPE");
         want = (e && *e) ? (*e != '0') : 1;
     }
-    if (want == s_moby_truescope) return;
-    rhi_set_moby_truescope(want);
-    int fails = rhi_rebuild_pipelines(s_nr.dev);
-    s_moby_truescope = want;
-    OPL_INFO_F("native", "moby key contest -> %s (pipelines re-baked)",
-               want ? "true-depth scoped" : "og compound painter (A/B)");
-    if (fails)
-        OPL_ERROR_F("native", "moby-truescope: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
+    return want;
 }
 
 /* Untextured lighting view - same queued-rebuild shape as texture-mapping. */
@@ -13414,36 +13399,99 @@ void openpete_native_set_wireframe(int on) {
 
 int openpete_native_get_wireframe(void) { return s_wireframe; }
 
-/** @brief Apply a queued wireframe change by rebuilding the pipelines.
+/* The variant last requested of the rhi (rhi_rebuild_request). */
+static rhi_pipe_variant s_variant_req;
+static bool             s_variant_req_set;
+
+/** @brief Return whether two pipeline variants are equal.
  *
- * Runs between frames. No effect when the requested mode equals the current one
- * or there is no device. Logs the change and the rhi wireframe report; a
- * rebuild that fails for some pipelines is logged and the mode is still
- * recorded as changed. */
-static void wireframe_apply_pending(void) {
-    if (s_wireframe_pending == s_wireframe || !s_nr.dev) return;
-    rhi_set_wireframe(s_wireframe_pending);
-    int fails = rhi_rebuild_pipelines(s_nr.dev);
-    s_wireframe = s_wireframe_pending;
-    OPL_INFO_F("native", "wireframe -> %s (pipelines re-baked)", s_wireframe ? "on" : "off");
-    wireframe_report(s_nr.dev);
-    if (fails)
-        OPL_ERROR_F("native", "wireframe: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
+ * @param a A variant.
+ * @param b A variant.
+ * @return true when every field matches. */
+static bool variant_same(rhi_pipe_variant a, rhi_pipe_variant b) {
+    return a.affine == b.affine && a.notex == b.notex && a.wireframe == b.wireframe &&
+           a.truescope == b.truescope;
 }
 
-/** @brief Apply a queued untextured-lighting-view change by rebuilding the pipelines.
+/** @brief Take the variant a rebuild swap installed as the drawn one: the getters return it from here on; each change is logged.
  *
- * Runs between frames. No effect when the requested mode equals the current
- * one or there is no device. A failed pipeline rebuild is logged. */
-static void notex_apply_pending(void) {
-    if (s_notex_pending == s_notex || !s_nr.dev) return;
-    rhi_set_notex(s_notex_pending);
-    int fails = rhi_rebuild_pipelines(s_nr.dev);
-    s_notex = s_notex_pending;
-    OPL_INFO_F("native", "notex -> %s (pipelines re-baked)",
-               s_notex ? "untextured lighting view" : "textured");
-    if (fails)
-        OPL_ERROR_F("native", "notex: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
+ * @param st The swap's counts. */
+static void variant_shown(const rhi_rebuild_stats* st) {
+    const rhi_pipe_variant v = st->shown;
+    if ((int)v.affine != s_texmap_affine)
+        OPL_INFO_F("native", "texture-mapping -> %s (pipelines re-baked)",
+                   v.affine ? "affine (PSX screen-linear)" : "perspective");
+    if ((int)v.notex != s_notex)
+        OPL_INFO_F("native", "notex -> %s (pipelines re-baked)",
+                   v.notex ? "untextured lighting view" : "textured");
+    if ((int)v.truescope != s_moby_truescope)
+        OPL_INFO_F("native", "moby key contest -> %s (pipelines re-baked)",
+                   v.truescope ? "true-depth scoped" : "og compound painter (A/B)");
+    const bool wire_changed = (int)v.wireframe != s_wireframe;
+    s_texmap_affine = v.affine;
+    s_notex = v.notex;
+    s_wireframe = v.wireframe;
+    s_moby_truescope = v.truescope;
+    if (wire_changed) {
+        OPL_INFO_F("native", "wireframe -> %s (pipelines re-baked)", s_wireframe ? "on" : "off");
+        wireframe_report(s_nr.dev);
+    }
+    if (st->failed)
+        OPL_ERROR_F("native", "variant switch: %u pipeline(s) failed to rebuild (kept previous mode)",
+                    st->failed);
+}
+
+/** @brief Seed the last-requested variant from the drawn one on first use. */
+static void variant_request_init(void) {
+    if (s_variant_req_set) return;
+    s_variant_req = (rhi_pipe_variant){ .affine = s_texmap_affine != 0, .notex = s_notex != 0,
+                                        .wireframe = s_wireframe != 0,
+                                        .truescope = s_moby_truescope != 0 };
+    s_variant_req_set = true;
+}
+
+/** @brief Request a variant when it differs from the last request, then install a finished rebuild.
+ *
+ * @param want The variant to draw.
+ * @param sync true waits for the rebuild's compiles, so the swap lands in this call. */
+static void variant_request(rhi_pipe_variant want, bool sync) {
+    variant_request_init();
+    if (!variant_same(want, s_variant_req)) {
+        s_variant_req = want;
+        rhi_rebuild_request(s_nr.dev, want, sync);
+    }
+    rhi_rebuild_stats st;
+    if (rhi_rebuild_poll(s_nr.dev, &st)) variant_shown(&st);
+}
+
+/** @brief Request a rebuild for a changed queued variant and install a finished one.
+ *
+ * Runs between frames, before any command buffer records. The queued
+ * texture-mapping, notex and wireframe values and OPENPETE_MOBY_TRUESCOPE
+ * form the wanted variant; when it differs from the last request it is
+ * requested (rhi_rebuild_request), which compiles on the compile pool while
+ * the old variant keeps drawing. A deterministic capture requests it
+ * synchronously, so the swap lands at this present whatever the workers'
+ * timing. When the rebuild's set is complete rhi_rebuild_poll swaps it at
+ * this present and the getters start returning the new variant. */
+static void variant_apply_pending(void) {
+    if (!s_nr.dev) return;
+    const rhi_pipe_variant want = { .affine = s_texmap_pending != 0, .notex = s_notex_pending != 0,
+                                    .wireframe = s_wireframe_pending != 0,
+                                    .truescope = truescope_wanted() != 0 };
+    variant_request(want, openpete_interp_deterministic());
+}
+
+/** @brief Apply an OPENPETE_MOBY_TRUESCOPE change before a dump compose, synchronously: the swap lands before this compose.
+ *
+ * Headless runs reach the pipelines only through the dump compose; the
+ * other queued variant fields are left as last requested. */
+static void truescope_apply_pending(void) {
+    if (!s_nr.dev) return;
+    variant_request_init();
+    rhi_pipe_variant want = s_variant_req;
+    want.truescope = truescope_wanted() != 0;
+    variant_request(want, true);
 }
 
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see
@@ -15527,13 +15575,16 @@ static void pfx_drain_retired(void) {
  * blend, the postfx layout, and the pass's fragment stage, an embedded
  * .spv name for an engine pass or SPIR-V words for a mod pass. A failed
  * build is logged and cached as PFX_PIPE_FAILED, which makes the executor
- * skip the pass, and is never retried.
+ * skip the pass, and is never retried. Inside an open pipeline batch
+ * (rhi_pipeline_batch_begin) the build is queued and the slot is filled
+ * when the batch ends.
  * @param slot The pass's pipeline slot.
  * @param frag_name Embedded fragment .spv name, or NULL for words.
  * @param words Fragment SPIR-V words, or NULL.
  * @param n Their count.
  * @param owner Owner named in the failure log.
- * @return The slot's content: an rhi_pipeline*, or PFX_PIPE_FAILED. */
+ * @return The slot's content: an rhi_pipeline*, PFX_PIPE_FAILED, or NULL
+ *         while a batch holds the build. */
 static void* nr_postfx_pipe(void** slot, const char* frag_name, const uint32_t* words,
                             size_t n, const char* owner) {
     if (*slot) return *slot;
@@ -15543,9 +15594,7 @@ static void* nr_postfx_pipe(void** slot, const char* frag_name, const uint32_t* 
         .blend = RHI_BLEND_NONE,
         .postfx = true,
     };
-    rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &pd, NULL, 0, words, n);
-    *slot = p ? (void*)p : PFX_PIPE_FAILED;
-    if (!p)
+    if (rhi_create_pipeline_slot(s_nr.dev, &pd, NULL, 0, words, n, slot, PFX_PIPE_FAILED) < 0)
         fprintf(stderr, "[native] postfx: pipeline build FAILED for %s - pass disabled\n",
                 owner);
     return *slot;
@@ -15832,10 +15881,12 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
  * draw sites' own description builders, whether its feature or material is
  * enabled: the raster quantize and dither passes, every live mod postfx
  * pass and every live mod material's slots (nr_precompile_material), under
- * the registry read lock. Each installed slot is a registered pipeline.
- * Then rhi_precompile_variants compiles every other reachable variant of
- * every registered pipeline into the cache and saves the cache when it
- * changed. Creates count in the precompile phase; creates after it count as
+ * the registry read lock. The builds run on the compile pool inside a
+ * pipeline batch, whose end installs each result into its slot on this
+ * thread. Each installed slot is a registered pipeline. Then
+ * rhi_precompile_variants compiles every other reachable variant of every
+ * registered pipeline into the cache on the pool and saves the cache when
+ * it changed. Creates count in the precompile phase; creates after it count as
  * first use. The window's events are pumped between creates. */
 static void nr_precompile(void) {
     if (!s_nr.dev || !nr_precompile_forced()) return;
@@ -15844,6 +15895,7 @@ static void nr_precompile(void) {
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
     rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
     openpete_mods_registry_read_lock();
+    rhi_pipeline_batch_begin(s_nr.dev);
     nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, "raster-quantize");
     nr_postfx_pipe(&s_dither_pipe, "psx_dither.frag.spv", NULL, 0, "psx-dither");
     unsigned slots = 2, fx = 0, mats = 0;
@@ -15859,6 +15911,8 @@ static void nr_precompile(void) {
         mats += n > 0;
         slots += n;
     }
+    rhi_pipeline_batch_stats bs;
+    rhi_pipeline_batch_end(s_nr.dev, pump, NULL, &bs);
     openpete_mods_registry_read_unlock();
     const double install_ms = (double)(SDL_GetTicksNS() - t0) / 1e6;  /* clock-guard: wall: precompile duration for the log */
     rhi_precompile_stats st;
@@ -15866,11 +15920,15 @@ static void nr_precompile(void) {
     rhi_pipe_phase_set(RHI_PIPE_PHASE_AUTO);
     rhi_pipe_precompile_done();
     openpete_boot_mark(OP_BOOT_PRECOMPILE_END);
+    rhi_compile_pool_stats ps;
+    rhi_compile_pool_stats_get(s_nr.dev, &ps);
     OPL_INFO_F("native", "precompile: installed %u lazy slots (%u mod postfx passes, %u mod "
-               "materials) in %.1f ms; %u distinct create infos, %u created, %u probe hits, "
-               "%u manifest skips, %u failed; %.1f ms total",
-               slots + fx, fx, mats, install_ms, st.keys, st.created, st.probe_hits,
-               st.manifest_skips, st.failed, (double)(SDL_GetTicksNS() - t0) / 1e6);  /* clock-guard: wall: precompile duration for the log */
+               "materials; %u queued, %u installed, %u failed, %u duplicate) in %.1f ms; "
+               "%u distinct create infos, %u created, %u probe hits, %u manifest skips, "
+               "%u failed; %u compile worker(s); %.1f ms total",
+               slots + fx, fx, mats, bs.queued, bs.installed, bs.failed, bs.duplicate, install_ms,
+               st.keys, st.created, st.probe_hits, st.manifest_skips, st.failed, ps.workers,
+               (double)(SDL_GetTicksNS() - t0) / 1e6);  /* clock-guard: wall: precompile duration for the log */
 }
 
 /* GPU per-pass zone report (OPENPETE_GPU_TIMERS=1): EMA per zone name over
@@ -16309,12 +16367,10 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     if (s_nr.headless)
         return;
 
-    /* Queued --texture-mapping change: re-bake the pipelines OUTSIDE the
-     * frame, before any command buffer records against them. No-op normally. */
-    texmap_apply_pending();
-    notex_apply_pending();
-    wireframe_apply_pending();
-    truescope_apply_pending();
+    /* Queued variant change: request its rebuild, and swap a finished one
+     * between render submissions, before any command buffer records; no-op
+     * when none is queued. */
+    variant_apply_pending();
 
 
     /* Mirror VRAM + read the reference back BEFORE opening our frame: these do
@@ -16433,10 +16489,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     if (!s_nr.enabled || s_nr.headless || slot < 0 || slot >= SCENE_RING) return 0;
     scene_slot_t *sl = &s_ring[slot];
     rhi_set_present_blocking(s_nr.dev, true);
-    texmap_apply_pending();
-    notex_apply_pending();
-    wireframe_apply_pending();
-    truescope_apply_pending();
+    variant_apply_pending();
     s_ps_slot = sl;
     openpete_mods_material_view_set(&sl->matview);
     s_stage_target = stage;

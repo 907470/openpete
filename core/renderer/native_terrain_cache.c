@@ -2022,16 +2022,13 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
         case 5: d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true; break;
         default: break;
     }
-    rhi_pipeline *p = rhi_create_pipeline_spv(s_tc.dev, &d, NULL, 0, frag, frag_words);
-    if (!p) {
+    const int rc = rhi_create_pipeline_slot(s_tc.dev, &d, NULL, 0, frag, frag_words, pslot,
+                                            OPENPETE_POSTFX_PIPE_FAILED);
+    if (rc < 0)
         fprintf(stderr, "[tercache] material: terrain pipeline build "
                         "FAILED for %s (variant %d slot %d) - its faces "
                         "draw stock\n", owner ? owner : "?", variant, slot);
-        *pslot = OPENPETE_POSTFX_PIPE_FAILED;
-        return NULL;
-    }
-    *pslot = p;
-    return p;
+    return rc == 0 ? *pslot : NULL;
 }
 
 /** @brief Bind one bucket's terrain material pipeline for a vertex variant and colour slot, or the stock pipeline.

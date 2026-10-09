@@ -338,6 +338,25 @@ struct rhi_stage_chunk {
 
 static void record_pending_inits(rhi_device *dev);
 
+/* A live rebuild in flight (rhi_rebuild_request to rhi_rebuild_poll): the
+ * set of registered pipelines the requested variant changes, one entry per
+ * member (struct rebuild_entry), and the timing of the requests. A member
+ * pipeline carries the set's generation and its entry index. */
+struct rebuild_set {
+    uint32_t              gen;        /* generation of the set; jobs carry it */
+    bool                  active;     /* requested and not yet swapped        */
+    rhi_pipe_variant      target;     /* the latest requested variant         */
+    struct rebuild_entry *e;          /* members, by index                    */
+    unsigned              n, cap;
+    unsigned              waiting;    /* members with a job outstanding       */
+    unsigned              requests, stale, retired;
+    unsigned              joined;     /* members registered after the first request */
+    uint64_t              t0_ns;      /* wall clock at the first request      */
+    uint64_t              owner_ns;   /* display-owner time in the requests   */
+    uint64_t              serial0;    /* frame serial at the first request    */
+    unsigned              hit0, miss0, unk0; /* rebuild tally at the first request */
+};
+
 struct rhi_device {
     struct SDL_Window *window;
 
@@ -365,6 +384,13 @@ struct rhi_device {
     bool                     pcache_fu_pending;
     struct pcache_save_job  *pcache_save;
     rhi_pcache_autosave_stats autosave;
+    struct compile_pool     *cpool;      /* compile worker pool; NULL until the first submit */
+    bool                     cpool_stopped; /* rhi_compile_pool_stop ran: submits run at once */
+    rhi_compile_pool_stats   cpool_final;   /* the pool's counts at its stop */
+    struct rebuild_set       rb;         /* live rebuild in flight */
+    bool                     batch_open; /* rhi_pipeline_batch_begin .. _end */
+    rhi_pipeline_batch_stats batch;
+    uint64_t                 batch_t0;   /* wall clock at rhi_pipeline_batch_begin */
     VkQueue                  gfx_queue;
     char                     device_name[256];
     char                     driver_version[64];
@@ -473,7 +499,7 @@ struct rhi_device {
                                       * image the held semaphore was not armed for faults the driver. */
 
     /* All live pipelines on this device (doubly linked via rhi_pipeline
-     * prev/next): the sweep list for rhi_rebuild_pipelines. */
+     * prev/next): the sweep list of a live rebuild (rhi_rebuild_request). */
     struct rhi_pipeline *pipes_head;
 
     uint32_t frame;        /* 0..RHI_FRAMES_IN_FLIGHT-1 */
@@ -624,12 +650,12 @@ struct rhi_device {
      * kept until no submitted frame can still read it. */
     struct rhi_retired_buf *retired;
     struct rhi_texture *retired_tex;   /* rhi_destroy_texture_deferred, linked by retire_next */
-    struct rhi_retired_pipe *retired_pipes;   /* pipelines replaced by rhi_rebuild_pipelines */
+    struct rhi_retired_pipe *retired_pipes;   /* pipelines replaced by a live rebuild */
 };
 
 /* One replaced buffer allocation and the frame serial current when it was
  * replaced: frames up to that serial may have recorded binds of it. */
-/* A pipeline and layout replaced by rhi_rebuild_pipelines, destroyed once
+/* A pipeline and layout replaced by a live rebuild, destroyed once
  * every frame that may have bound them has retired. */
 struct rhi_retired_pipe {
     struct rhi_retired_pipe *next;
@@ -786,7 +812,7 @@ typedef struct {
 struct rhi_pipeline {
     VkPipeline       pipeline;
     VkPipelineLayout layout;
-    /* Rebuild sources (rhi_rebuild_pipelines): the desc plus owned copies of
+    /* Rebuild sources (rhi_rebuild_request): the desc plus owned copies of
      * the shader identities - embedded/loose filenames, or in-memory SPIR-V
      * for mod shaders - so any pipeline can be re-baked with new vertex
      * spec-constant values without its owner's involvement. desc.vert_spv /
@@ -803,6 +829,8 @@ struct rhi_pipeline {
                                    * rhi_push_constants must match the range */
     pipe_stage_info  info;         /* recorded when the creating job resolved its stages */
     uint64_t         vkey;         /* dedupe key of the installed objects' create info */
+    uint32_t         rb_gen;       /* the rebuild set's gen while a member, else 0 */
+    uint32_t         rb_idx;       /* its entry index in that set */
 };
 
 /* A compile job (rhi.h, variant-explicit compile jobs): every input of one
@@ -3222,7 +3250,8 @@ struct pcache_save_job {
 /** @brief Seal and write one save snapshot: the save worker's body.
  *
  * Reads and writes only its job; the file writer replaces the file in one
- * step.
+ * step, and its one environment read runs inside the guard installed with
+ * op_atomic_file_set_env_guard (rhi_env_read_guard).
  * @param arg The pcache_save_job.
  * @return 0. */
 static int SDLCALL pcache_save_worker(void *arg)
@@ -3498,6 +3527,7 @@ void rhi_destroy(rhi_device *dev)
                 (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
                 (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
     if (!dev) return;
+    rhi_compile_pool_stop(dev);   /* no thread may use the cache or the device past here */
     rhi_pc_report();
     if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); retired_reclaim(dev, true); }
 
@@ -6193,7 +6223,7 @@ static const void *stage_bytes(const uint32_t *words, size_t nw, const char *nam
 /* Shared pipeline builder: both public entry points store their shader
  * sources on the rhi_pipeline and land in pipeline_compile, which (re)creates
  * the Vulkan objects from those stored sources - the same path
- * rhi_rebuild_pipelines uses to re-bake live pipelines after a spec-constant
+ * a live rebuild (rhi_rebuild_request) uses to re-bake live pipelines after a spec-constant
  * change. desc->postfx selects the mod-postfx layout - no vertex input
  * (fullscreen triangle from gl_VertexIndex), sets 0..2 = one sampler
  * each, set 3 = the dynamic-UBO pair. */
@@ -6215,7 +6245,7 @@ bool rhi_depth_reversed(const rhi_device *dev)
 /* Vertex-stage specialization constant 1 (`AFFINE_UV`): PSX-affine UV/colour
  * interpolation (--texture-mapping affine). Like DEPTH_AFFINE it is captured
  * at pipeline creation - set it before the pipelines are built, or follow a
- * live change with rhi_rebuild_pipelines to re-bake the existing ones.
+ * live change with rhi_rebuild_request to re-bake the existing ones.
  * Declared by psx_scene.vert, quad.vert, terrain.vert, terrain_key.vert and
  * moby_rank.vert: the key and rank stages have to select the same texel
  * lookups the scene draw samples, or a raster stamps where the face's own
@@ -6262,14 +6292,14 @@ void rhi_set_affine_uv(int on) { variant_store(&s_vs_affine_uv, on ? VK_TRUE : V
  * view - the textured scene fragments replace the sampled texel colour with
  * the modulation-neutral grey (128/255), so the output is the raw gouraud
  * vertex colour while transparency cutouts keep their real texel shapes.
- * Debug view; live toggle via rhi_rebuild_pipelines like the others. */
+ * Debug view; live toggle via rhi_rebuild_request like the others. */
 static VkBool32 s_fs_notex = VK_FALSE;
 void rhi_set_notex(int on) { variant_store(&s_fs_notex, on ? VK_TRUE : VK_FALSE); }
 
 /* Wireframe view (rhi.h rhi_set_wireframe): the scene pipelines rasterize
  * as lines and bake NOTEX on. Captured at pipeline creation like the
  * specialization constants, so a live change rebuilds every pipeline in
- * place (rhi_rebuild_pipelines); there is no second pipeline set. */
+ * place (rhi_rebuild_request); there is no second pipeline set. */
 static bool s_wireframe = false;
 void rhi_set_wireframe(int on)
 {
@@ -6297,7 +6327,7 @@ static bool pipeline_wire_view(const rhi_pipeline_desc *desc, bool wireframe)
  * key-contest's moby og-key yields by the covering fragment's own TRUE
  * view-Z. Default 1 - og's pull+push OT compounding reads as
  * moby-through-terrain punch-through from ordinary gameplay angles too;
- * 0 restores og's painter for A/B. Live toggle via rhi_rebuild_pipelines
+ * 0 restores og's painter for A/B. Live toggle via rhi_rebuild_request
  * like the others. */
 static VkBool32 s_fs_moby_truescope = VK_TRUE;
 void rhi_set_moby_truescope(int on) { variant_store(&s_fs_moby_truescope, on ? VK_TRUE : VK_FALSE); }
@@ -7138,13 +7168,19 @@ rhi_compile_job *rhi_compile_job_of(rhi_device *dev, const rhi_pipeline *pipe,
     return job;
 }
 
+static void env_read_begin(void);
+static void env_read_end(void);
+
 int rhi_compile_job_run(rhi_device *dev, rhi_compile_job *job, unsigned flags)
 {
     if (!dev || !job) return -1;
     if (job->out.pipeline) return 0;
     const VkPipelineCreateFlags vf = (flags & RHI_COMPILE_PROBE)
         ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT : 0;
-    return pipeline_compile(dev, job, vf, (flags & RHI_COMPILE_VARIANT) != 0);
+    env_read_begin();   /* the driver reads the environment inside the create */
+    const int rc = pipeline_compile(dev, job, vf, (flags & RHI_COMPILE_VARIANT) != 0);
+    env_read_end();
+    return rc;
 }
 
 uint32_t rhi_compile_job_generation(const rhi_compile_job *job) { return job ? job->generation : 0u; }
@@ -7186,6 +7222,9 @@ static void registry_unlink(rhi_device *dev, rhi_pipeline *p)
     p->prev = p->next = NULL;
 }
 
+static void rebuild_forget(rhi_device *dev, rhi_pipeline *p);
+static void rebuild_join(rhi_device *dev, rhi_pipeline *p);
+
 /** @brief Free a pipeline's owned stage copies and the struct; its Vulkan objects are left to the caller.
  *
  * @param p The pipeline, unlinked. */
@@ -7222,6 +7261,7 @@ rhi_pipeline *rhi_compile_job_install(rhi_device *dev, rhi_compile_job *job)
     job_free(job);
     census_add_base(dev, p);
     registry_link(dev, p);
+    rebuild_join(dev, p);
     return p;
 }
 
@@ -7247,6 +7287,7 @@ static void retire_objects(rhi_device *dev, VkPipeline pipeline, VkPipelineLayou
 void rhi_retire_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 {
     if (!dev || !pipe) return;
+    rebuild_forget(dev, pipe);
     registry_unlink(dev, pipe);
     retire_objects(dev, pipe->pipeline, pipe->layout);
     pipeline_free(pipe);
@@ -7319,92 +7360,834 @@ static void rebuild_swap(rhi_device *dev, rhi_pipeline *p, const pipe_compiled *
     p->swap_idle = !dev->frame_active;
 }
 
-int rhi_rebuild_pipelines(rhi_device *dev)
+/* ---- environment write guard ---------------------------------------------
+ * A compile run (rhi_compile_job_run, on any thread) holds the read side
+ * for its create; an environment write holds the write side. A waiting
+ * writer stops new compile runs, so a write waits for at most the runs
+ * already in progress. A short read (rhi_env_read_guard) waits only while a
+ * write is in progress, never behind a waiting writer, so it never waits
+ * for a compile. */
+static SDL_InitState  s_env_init;
+static SDL_Mutex     *s_env_mx;
+static SDL_Condition *s_env_cv;
+static unsigned       s_env_readers, s_env_writers_waiting;
+static bool           s_env_writing;
+
+/** @brief Create the environment guard's lock on first use.
+ *
+ * @return true when the lock exists. */
+static bool env_guard_ready(void)
 {
-    if (!dev) return 0;
-    seam_check("rebuild_pipelines");   /* the retired list is the display owner's */
-    const Uint64 t0 = SDL_GetTicksNS();
-    int fails = 0, rebuilt = 0, unchanged = 0;
-    unsigned hit0, miss0, unk0, hit1, miss1, unk1;
-    rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit0, &miss0, &unk0);
-    rhi_pc_rebuild_visit();
+    if (SDL_ShouldInit(&s_env_init)) {
+        s_env_mx = SDL_CreateMutex();
+        s_env_cv = SDL_CreateCondition();
+        SDL_SetInitialized(&s_env_init, true);
+    }
+    return s_env_mx && s_env_cv;
+}
+
+/** @brief Take the environment guard's read side for a compile run: wait while a write is in progress or waiting. */
+static void env_read_begin(void)
+{
+    if (!env_guard_ready()) return;
+    SDL_LockMutex(s_env_mx);
+    while (s_env_writing || s_env_writers_waiting) SDL_WaitCondition(s_env_cv, s_env_mx);
+    s_env_readers++;
+    SDL_UnlockMutex(s_env_mx);
+}
+
+/** @brief Take the environment guard's read side for a short read: wait only while a write is in progress. */
+static void env_short_read_begin(void)
+{
+    if (!env_guard_ready()) return;
+    SDL_LockMutex(s_env_mx);
+    while (s_env_writing) SDL_WaitCondition(s_env_cv, s_env_mx);
+    s_env_readers++;
+    SDL_UnlockMutex(s_env_mx);
+}
+
+/** @brief Release the environment guard's read side. */
+static void env_read_end(void)
+{
+    if (!env_guard_ready()) return;
+    SDL_LockMutex(s_env_mx);
+    if (--s_env_readers == 0) SDL_BroadcastCondition(s_env_cv);
+    SDL_UnlockMutex(s_env_mx);
+}
+
+void rhi_env_read_guard(int begin)
+{
+    if (begin) env_short_read_begin();
+    else env_read_end();
+}
+
+void rhi_env_write_guard(int begin)
+{
+    if (!env_guard_ready()) return;
+    SDL_LockMutex(s_env_mx);
+    if (begin) {
+        s_env_writers_waiting++;
+        while (s_env_writing || s_env_readers) SDL_WaitCondition(s_env_cv, s_env_mx);
+        s_env_writers_waiting--;
+        s_env_writing = true;
+    } else {
+        s_env_writing = false;
+        SDL_BroadcastCondition(s_env_cv);
+    }
+    SDL_UnlockMutex(s_env_mx);
+}
+
+/* ---- compile pool (rhi.h) ------------------------------------------------ */
+
+#define POOL_MAX_WORKERS 32
+
+/* One submitted job and what its run returned. */
+typedef struct pool_item {
+    struct pool_item   *next;
+    rhi_compile_job    *job;
+    unsigned            flags;     /* RHI_COMPILE_* */
+    rhi_pool_install_fn fn;        /* NULL: a precompile variant */
+    void               *tag;
+    rhi_pipe_phase      phase;     /* the submitter's create phase */
+    bool                rebuild;   /* the submitter was in a live rebuild */
+    bool                probe_hit; /* a probe found the create info cached */
+    int                 rc;        /* the run's result */
+    uint64_t            run_ns;
+} pool_item;
+
+struct compile_pool {
+    SDL_Mutex     *mx;
+    SDL_Condition *work;           /* signalled on submit and stop */
+    SDL_Condition *done;           /* broadcast when a run returns */
+    SDL_Thread    *thr[POOL_MAX_WORKERS];
+    int            n;              /* worker threads; 0 runs jobs at submit */
+    pool_item     *q_head, *q_tail;   /* queued */
+    pool_item     *s_head, *s_tail;   /* staged for the display owner */
+    unsigned       queued, running;
+    bool           stop;
+    rhi_compile_pool_stats st;     /* under mx */
+    uint64_t       run_ns;         /* under mx */
+};
+
+/** @brief Run one pool item: probe first when asked, compile on a miss, and destroy a variant's result.
+ *
+ * Any thread. The create phase is the submitter's; each create holds the
+ * environment guard's read side (rhi_compile_job_run).
+ * @param dev Device.
+ * @param it The item; it->rc, probe_hit and run_ns receive the outcome. */
+static void pool_run_item(rhi_device *dev, pool_item *it)
+{
+    t_pipe_phase = it->phase;
+    t_in_rebuild = it->rebuild;
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: worker run time for the pool report */
+    int rc = 1;
+    if (it->flags & RHI_COMPILE_PROBE) {
+        t_pipe_phase = RHI_PIPE_PHASE_PROBE;
+        rc = rhi_compile_job_run(dev, it->job, it->flags);
+        t_pipe_phase = it->phase;
+        it->probe_hit = rc == 0;
+    }
+    if (rc == 1) rc = rhi_compile_job_run(dev, it->job, it->flags & ~(unsigned)RHI_COMPILE_PROBE);
+    it->run_ns = SDL_GetTicksNS() - t0;  /* clock-guard: wall: worker run time for the pool report */
+    it->rc = rc;
+    if (!it->fn) {
+        rhi_compile_job_discard(dev, it->job);
+        it->job = NULL;
+    }
+    t_pipe_phase = RHI_PIPE_PHASE_AUTO;
+    t_in_rebuild = false;
+}
+
+/** @brief Account a run item under the pool lock: count it, then stage it for the display owner or free a variant.
+ *
+ * @param pl The pool, locked.
+ * @param it The item, run. */
+static void pool_finish_locked(struct compile_pool *pl, pool_item *it)
+{
+    pl->st.run++;
+    pl->run_ns += it->run_ns;
+    if (!it->fn) {
+        pl->st.variant_probe_hits += it->probe_hit;
+        pl->st.variant_created += it->rc == 0 && !it->probe_hit;
+        pl->st.variant_failed += it->rc < 0;
+        free(it);
+    } else {
+        it->next = NULL;
+        if (pl->s_tail) pl->s_tail->next = it; else pl->s_head = it;
+        pl->s_tail = it;
+        pl->st.staged++;
+    }
+    SDL_BroadcastCondition(pl->done);
+}
+
+/** @brief Worker thread: run queued items until the pool stops.
+ *
+ * @param arg The device.
+ * @return 0. */
+static int SDLCALL pool_worker(void *arg)
+{
+    rhi_device *dev = arg;
+    struct compile_pool *pl = dev->cpool;
+    SDL_LockMutex(pl->mx);
+    for (;;) {
+        while (!pl->q_head && !pl->stop) SDL_WaitCondition(pl->work, pl->mx);
+        if (pl->stop) break;
+        pool_item *it = pl->q_head;
+        pl->q_head = it->next;
+        if (!pl->q_head) pl->q_tail = NULL;
+        pl->queued--;
+        pl->running++;
+        SDL_UnlockMutex(pl->mx);
+        pool_run_item(dev, it);
+        SDL_LockMutex(pl->mx);
+        pl->running--;
+        pool_finish_locked(pl, it);
+    }
+    SDL_UnlockMutex(pl->mx);
+    return 0;
+}
+
+/** @brief Return the worker count the pool starts with: OPENPETE_COMPILE_POOL when set, else the logical cores less one, 1 to RHI_COMPILE_POOL_DEFAULT_MAX.
+ *
+ * Display owner only (reads the environment).
+ * @return The count, 0 to POOL_MAX_WORKERS. */
+static int pool_size_wanted(void)
+{
+    const char *e = getenv("OPENPETE_COMPILE_POOL");
+    int n;
+    if (e && *e) {
+        n = atoi(e);
+    } else {
+        n = SDL_GetNumLogicalCPUCores() - 1;
+        if (n > RHI_COMPILE_POOL_DEFAULT_MAX) n = RHI_COMPILE_POOL_DEFAULT_MAX;
+        if (n < 1) n = 1;
+    }
+    return n < 0 ? 0 : n > POOL_MAX_WORKERS ? POOL_MAX_WORKERS : n;
+}
+
+/** @brief Free a pool's lock objects and the pool.
+ *
+ * @param pl The pool, with no thread running. */
+static void pool_free(struct compile_pool *pl)
+{
+    if (pl->mx) SDL_DestroyMutex(pl->mx);
+    if (pl->work) SDL_DestroyCondition(pl->work);
+    if (pl->done) SDL_DestroyCondition(pl->done);
+    free(pl);
+}
+
+/** @brief Return the device's compile pool, starting it on first use.
+ *
+ * Display owner only. A worker that cannot be started leaves the pool
+ * smaller; with none the pool runs jobs at submit.
+ * @param dev Device.
+ * @return The pool, or NULL after rhi_compile_pool_stop or on allocation failure. */
+static struct compile_pool *pool_get(rhi_device *dev)
+{
+    if (dev->cpool || dev->cpool_stopped) return dev->cpool;
+    struct compile_pool *pl = calloc(1, sizeof *pl);
+    if (!pl) return NULL;
+    pl->mx = SDL_CreateMutex();
+    pl->work = SDL_CreateCondition();
+    pl->done = SDL_CreateCondition();
+    if (!pl->mx || !pl->work || !pl->done) { pool_free(pl); return NULL; }
+    (void)env_guard_ready();   /* created here, before any worker runs */
+    dev->cpool = pl;
+    const int want = pool_size_wanted();
+    for (int i = 0; i < want; i++) {
+        pl->thr[pl->n] = SDL_CreateThread(pool_worker, "openpete-compile", dev);
+        if (!pl->thr[pl->n]) break;
+        pl->n++;
+    }
+    pl->st.workers = (unsigned)pl->n;
+    RHI_LOG("compile pool: %d worker(s)%s\n", pl->n, pl->n ? "" : " (jobs run at submit)");
+    return pl;
+}
+
+int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flags,
+                            rhi_pool_install_fn fn, void *tag)
+{
+    if (!dev || !job) return -1;
+    seam_check("compile_pool_submit");
+    struct compile_pool *pl = pool_get(dev);
+    pool_item *it = calloc(1, sizeof *it);
+    pool_item local;
+    if (!it) { memset(&local, 0, sizeof local); it = &local; }
+    *it = (pool_item){ .job = job, .flags = flags, .fn = fn, .tag = tag,
+                       .phase = t_pipe_phase, .rebuild = t_in_rebuild };
+    if (!pl || it == &local) {   /* no pool: run now, install now */
+        pool_run_item(dev, it);
+        if (it->fn) it->fn(dev, it->job, it->rc, it->tag);
+        if (it != &local) free(it);
+        return 0;
+    }
+    if (pl->n == 0) {            /* a pool of none: run now, install at the drain */
+        pool_run_item(dev, it);
+        SDL_LockMutex(pl->mx);
+        pl->st.submitted++;
+        pool_finish_locked(pl, it);
+        SDL_UnlockMutex(pl->mx);
+        return 0;
+    }
+    SDL_LockMutex(pl->mx);
+    if (pl->q_tail) pl->q_tail->next = it; else pl->q_head = it;
+    pl->q_tail = it;
+    pl->queued++;
+    pl->st.submitted++;
+    if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
+    SDL_SignalCondition(pl->work);
+    SDL_UnlockMutex(pl->mx);
+    return 0;
+}
+
+unsigned rhi_compile_pool_drain(rhi_device *dev)
+{
+    struct compile_pool *pl = dev ? dev->cpool : NULL;
+    if (!pl) return 0;
+    seam_check("compile_pool_drain");
+    SDL_LockMutex(pl->mx);
+    pool_item *it = pl->s_head;
+    pl->s_head = pl->s_tail = NULL;
+    SDL_UnlockMutex(pl->mx);
+    unsigned n = 0;
+    for (; it; n++) {
+        pool_item *next = it->next;
+        it->fn(dev, it->job, it->rc, it->tag);
+        free(it);
+        it = next;
+    }
+    return n;
+}
+
+/** @brief Wait for the pool, draining staged results and pumping, until fewer than @p cap jobs are queued (cap 0: until nothing is queued, running or staged).
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @param cap Queue depth to wait below, or 0.
+ * @param pump Called between waits, or NULL.
+ * @param ctx Passed to @p pump. */
+static void pool_wait_below(rhi_device *dev, unsigned cap, void (*pump)(void *), void *ctx)
+{
+    struct compile_pool *pl = dev->cpool;
+    if (!pl) return;
+    for (;;) {
+        rhi_compile_pool_drain(dev);
+        SDL_LockMutex(pl->mx);
+        const bool met = cap ? pl->queued < cap
+                             : (!pl->queued && !pl->running && !pl->s_head);
+        if (!met && !pl->s_head) SDL_WaitConditionTimeout(pl->done, pl->mx, 10);
+        SDL_UnlockMutex(pl->mx);
+        if (met) return;
+        if (pump) pump(ctx);
+    }
+}
+
+void rhi_compile_pool_wait(rhi_device *dev, void (*pump)(void *ctx), void *ctx)
+{
+    if (dev) pool_wait_below(dev, 0, pump, ctx);
+}
+
+void rhi_compile_pool_stats_get(const rhi_device *dev, rhi_compile_pool_stats *out)
+{
+    struct compile_pool *pl = dev ? dev->cpool : NULL;
+    *out = dev ? dev->cpool_final : (rhi_compile_pool_stats){0};
+    if (!pl) return;
+    SDL_LockMutex(pl->mx);
+    *out = pl->st;
+    out->run_ms = (double)pl->run_ns / 1e6;
+    SDL_UnlockMutex(pl->mx);
+}
+
+/** @brief Drop a list of pool items: an install callback receives RHI_POOL_CANCELLED, a variant job is destroyed.
+ *
+ * @param dev Device.
+ * @param it The list head.
+ * @return The items dropped. */
+static unsigned pool_cancel_list(rhi_device *dev, pool_item *it)
+{
+    unsigned n = 0;
+    for (; it; n++) {
+        pool_item *next = it->next;
+        if (it->fn) it->fn(dev, it->job, RHI_POOL_CANCELLED, it->tag);
+        else rhi_compile_job_discard(dev, it->job);
+        free(it);
+        it = next;
+    }
+    return n;
+}
+
+static void rebuild_abandon(rhi_device *dev);
+
+void rhi_compile_pool_stop(rhi_device *dev)
+{
+    if (!dev) return;
+    dev->cpool_stopped = true;
+    struct compile_pool *pl = dev->cpool;
+    if (pl) {
+        seam_check("compile_pool_stop");
+        SDL_LockMutex(pl->mx);
+        pl->stop = true;
+        SDL_BroadcastCondition(pl->work);
+        SDL_UnlockMutex(pl->mx);
+        for (int i = 0; i < pl->n; i++) SDL_WaitThread(pl->thr[i], NULL);
+        pl->st.cancelled += pool_cancel_list(dev, pl->q_head);
+        pl->st.cancelled += pool_cancel_list(dev, pl->s_head);
+        pl->q_head = pl->q_tail = pl->s_head = pl->s_tail = NULL;
+        RHI_LOG("compile pool: stopped; %u workers, %u submitted, %u run (%.1f ms), %u staged, "
+                "variants %u created %u probe hits %u failed, %u cancelled, queue max %u\n",
+                pl->st.workers, pl->st.submitted, pl->st.run, (double)pl->run_ns / 1e6,
+                pl->st.staged, pl->st.variant_created, pl->st.variant_probe_hits,
+                pl->st.variant_failed, pl->st.cancelled, pl->st.max_queued);
+        dev->cpool_final = pl->st;
+        dev->cpool_final.run_ms = (double)pl->run_ns / 1e6;
+        dev->cpool = NULL;
+        pool_free(pl);
+    }
+    rebuild_abandon(dev);
+}
+
+/* ---- pipeline batch (rhi.h) ---------------------------------------------- */
+
+/* Where a batch create installs: the slot and the value a failure leaves. */
+typedef struct {
+    void **slot;
+    void  *failed;
+} batch_slot;
+
+/** @brief Install a batch create's result into its slot, or the failed value, or discard it when the slot was filled first.
+ *
+ * Display owner (an rhi_pool_install_fn).
+ * @param dev Device.
+ * @param job The job, consumed.
+ * @param rc Its run's result, or RHI_POOL_CANCELLED.
+ * @param tag Its batch_slot, freed. */
+static void batch_install(rhi_device *dev, rhi_compile_job *job, int rc, void *tag)
+{
+    batch_slot *b = tag;
+    if (rc == RHI_POOL_CANCELLED || *b->slot) {
+        dev->batch.duplicate += rc != RHI_POOL_CANCELLED;
+        rhi_compile_job_discard(dev, job);
+        free(b);
+        return;
+    }
+    char what[160];
+    snprintf(what, sizeof what, "%s + %s", job->desc.vert_spv ? job->desc.vert_spv : "(words)",
+             job->desc.frag_spv ? job->desc.frag_spv : "(words)");
+    rhi_pipeline *p = NULL;
+    if (rc == 0) p = rhi_compile_job_install(dev, job);
+    else rhi_compile_job_discard(dev, job);
+    if (p) {
+        dev->batch.installed++;
+        *b->slot = p;
+    } else {
+        dev->batch.failed++;
+        *b->slot = b->failed;
+        RHI_LOG("pipeline batch: build FAILED for %s\n", what);
+    }
+    free(b);
+}
+
+void rhi_pipeline_batch_begin(rhi_device *dev)
+{
+    if (!dev) return;
+    seam_check("pipeline_batch_begin");
+    dev->batch_open = true;
+    dev->batch = (rhi_pipeline_batch_stats){0};
+    dev->batch_t0 = SDL_GetTicksNS();  /* clock-guard: wall: batch duration for the log */
+}
+
+void rhi_pipeline_batch_end(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
+                            rhi_pipeline_batch_stats *out)
+{
+    if (!dev) return;
+    rhi_compile_pool_wait(dev, pump, ctx);
+    dev->batch_open = false;
+    dev->batch.ms = (double)(SDL_GetTicksNS() - dev->batch_t0) / 1e6;  /* clock-guard: wall: batch duration for the log */
+    if (out) *out = dev->batch;
+}
+
+int rhi_create_pipeline_slot(rhi_device *dev, const rhi_pipeline_desc *desc,
+                             const uint32_t *vert_words, size_t vert_n,
+                             const uint32_t *frag_words, size_t frag_n,
+                             void **slot, void *failed)
+{
+    if (!dev || !desc || !slot) return -1;
+    if (!dev->batch_open) {
+        rhi_pipeline *p = create_pipeline_common(dev, desc, vert_words, vert_n, frag_words, frag_n);
+        *slot = p ? (void *)p : failed;
+        return p ? 0 : -1;
+    }
+    rhi_compile_job *job = rhi_compile_job_new(dev, desc, vert_words, vert_n, frag_words, frag_n,
+                                               rhi_pipe_variant_current(), 0u,
+                                               rhi_pipe_variant_epoch());
+    batch_slot *b = job ? malloc(sizeof *b) : NULL;
+    if (!b) {
+        rhi_compile_job_discard(dev, job);
+        *slot = failed;
+        return -1;
+    }
+    *b = (batch_slot){ slot, failed };
+    dev->batch.queued++;
+    rhi_compile_pool_submit(dev, job, 0, batch_install, b);
+    return 1;
+}
+
+/* ---- live rebuild (rhi.h) ------------------------------------------------ */
+
+/* One member of a live rebuild: the pipeline, the create info it is rebuilt
+ * to, and the compiled result once its job returns. */
+struct rebuild_entry {
+    rhi_pipeline *p;        /* NULL: the member left the set */
+    uint64_t      key;      /* create-info key the member is rebuilt to */
+    pipe_compiled ready;    /* the result; pipeline VK_NULL_HANDLE until it arrives */
+    bool          waiting;  /* a job for key is outstanding */
+};
+
+/** @brief Return the create-info key a compile job compiles: its desc, stages and variant.
+ *
+ * @param dev Device.
+ * @param job The job.
+ * @return The key. */
+static uint64_t job_variant_key(const rhi_device *dev, const rhi_compile_job *job)
+{
+    rhi_pc_variant v;
+    pipe_variant_view(dev, &job->desc, &job->info, job->variant, job->slot_contest, &v);
+    return rhi_pc_variant_key(&v);
+}
+
+/** @brief Destroy a member's compiled result (never linked or recorded) and stop waiting for its job.
+ *
+ * @param dev Device.
+ * @param e The entry. */
+static void rebuild_entry_clear(rhi_device *dev, struct rebuild_entry *e)
+{
+    if (e->ready.pipeline) vkDestroyPipeline(dev->device, e->ready.pipeline, NULL);
+    if (e->ready.layout)   vkDestroyPipelineLayout(dev->device, e->ready.layout, NULL);
+    e->ready = (pipe_compiled){0};
+    if (e->waiting) dev->rb.waiting--;
+    e->waiting = false;
+}
+
+/** @brief Remove a member from the rebuild set, destroying its result; a job still out for it is discarded when it returns.
+ *
+ * @param dev Device.
+ * @param e The member's entry. */
+static void rebuild_drop(rhi_device *dev, struct rebuild_entry *e)
+{
+    rebuild_entry_clear(dev, e);
+    if (e->p) e->p->rb_gen = 0;
+    e->p = NULL;
+}
+
+/** @brief Take a pipeline out of the live rebuild in flight, if it is a member: the retirement and destruction paths call it before freeing the pipeline.
+ *
+ * @param dev Device.
+ * @param p The pipeline. */
+static void rebuild_forget(rhi_device *dev, rhi_pipeline *p)
+{
+    struct rebuild_set *rb = &dev->rb;
+    if (!rb->active || p->rb_gen != rb->gen || p->rb_idx >= rb->n) return;
+    rebuild_drop(dev, &rb->e[p->rb_idx]);
+    rb->retired++;
+}
+
+/** @brief Add a pipeline to the rebuild set.
+ *
+ * @param dev Device.
+ * @param p The pipeline, not a member.
+ * @return Its entry, or NULL on allocation failure. */
+static struct rebuild_entry *rebuild_add(rhi_device *dev, rhi_pipeline *p)
+{
+    struct rebuild_set *rb = &dev->rb;
+    if (rb->n == rb->cap) {
+        const unsigned cap = rb->cap ? rb->cap * 2u : 256u;
+        struct rebuild_entry *e = realloc(rb->e, cap * sizeof *e);
+        if (!e) return NULL;
+        rb->e = e;
+        rb->cap = cap;
+    }
+    struct rebuild_entry *e = &rb->e[rb->n];
+    *e = (struct rebuild_entry){ .p = p };
+    p->rb_gen = rb->gen;
+    p->rb_idx = rb->n++;
+    return e;
+}
+
+/** @brief Take a rebuild job's result: keep it when its member is still in the set and still rebuilt to the job's create info, else destroy it.
+ *
+ * Display owner (an rhi_pool_install_fn).
+ * @param dev Device.
+ * @param job The job, consumed; its generation is the set's.
+ * @param rc Its run's result, or RHI_POOL_CANCELLED.
+ * @param tag The member's entry index. */
+static void rebuild_install(rhi_device *dev, rhi_compile_job *job, int rc, void *tag)
+{
+    struct rebuild_set *rb = &dev->rb;
+    const unsigned idx = (unsigned)(uintptr_t)tag;
+    struct rebuild_entry *e = (rc != RHI_POOL_CANCELLED && rb->active &&
+                               job->generation == rb->gen && idx < rb->n) ? &rb->e[idx] : NULL;
+    if (e && (!e->p || !e->waiting || job_variant_key(dev, job) != e->key)) e = NULL;
+    if (!e) {
+        rb->stale += rc != RHI_POOL_CANCELLED;
+        rhi_compile_job_discard(dev, job);
+        return;
+    }
+    e->waiting = false;
+    rb->waiting--;
+    if (rc == 0) {
+        e->ready = job->out;
+        job->out = (pipe_compiled){0};
+    }
+    rhi_compile_job_discard(dev, job);
+}
+
+/** @brief Bring one registered pipeline's membership in line with a requested variant: keep, join with a new job, or leave.
+ *
+ * @param dev Device.
+ * @param p The pipeline.
+ * @param var The requested variant.
+ * @param epoch The variant epoch of the request. */
+static void rebuild_member(rhi_device *dev, rhi_pipeline *p, rhi_pipe_variant var, uint32_t epoch)
+{
+    struct rebuild_set *rb = &dev->rb;
+    rhi_pc_variant v;
+    pipe_variant_of(dev, p, var, &v);
+    const uint64_t k = rhi_pc_variant_key(&v);
+    const bool member = p->rb_gen == rb->gen && p->rb_idx < rb->n;
+    if (member && rb->e[p->rb_idx].key == k) return;   /* its job or result is still right */
+    if (k == p->vkey) {                                 /* back to its installed objects */
+        if (member) rebuild_drop(dev, &rb->e[p->rb_idx]);
+        return;
+    }
+    struct rebuild_entry *e = member ? &rb->e[p->rb_idx] : rebuild_add(dev, p);
+    if (!e) return;   /* allocation failure: the swap compiles it (rebuild_late) */
+    rebuild_entry_clear(dev, e);
+    e->key = k;
+    rhi_compile_job *job = rhi_compile_job_of(dev, p, var, rb->gen, epoch);
+    if (!job) return;   /* left with no result: the swap keeps its old objects */
+    e->waiting = true;
+    rb->waiting++;
+    rhi_compile_pool_submit(dev, job, 0, rebuild_install, (void *)(uintptr_t)(e - rb->e));
+}
+
+/** @brief Return whether two variants select the same creation-time state.
+ *
+ * @param a A variant.
+ * @param b A variant.
+ * @return true when equal. */
+static bool variant_eq(rhi_pipe_variant a, rhi_pipe_variant b)
+{
+    return a.affine == b.affine && a.notex == b.notex && a.wireframe == b.wireframe &&
+           a.truescope == b.truescope;
+}
+
+int rhi_rebuild_request(rhi_device *dev, rhi_pipe_variant var, bool sync)
+{
+    if (!dev) return -1;
+    seam_check("rebuild_request");   /* the registry is the display owner's */
+    struct rebuild_set *rb = &dev->rb;
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: rebuild timing for the log */
+    if (!rb->active) {
+        rb->gen = rb->gen + 1u ? rb->gen + 1u : 1u;
+        rb->active = true;
+        rb->n = rb->waiting = rb->requests = rb->stale = rb->retired = rb->joined = 0;
+        rb->t0_ns = t0;
+        rb->owner_ns = 0;
+        rb->serial0 = s_frame_serial;
+        rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &rb->hit0, &rb->miss0, &rb->unk0);
+        rhi_pc_rebuild_visit();
+    } else if (variant_eq(var, rb->target)) {
+        return 0;
+    }
+    atomic_fetch_add(&s_variant_epoch, 1u);
+    rb->target = var;
+    rb->requests++;
+    const uint32_t epoch = rhi_pipe_variant_epoch();
     t_in_rebuild = true;
-    const rhi_pipe_variant var = rhi_pipe_variant_current();
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) rebuild_member(dev, p, var, epoch);
+    t_in_rebuild = false;
+    if (sync) rhi_compile_pool_wait(dev, NULL, NULL);
+    rb->owner_ns += SDL_GetTicksNS() - t0;  /* clock-guard: wall: rebuild timing for the log */
+    return 0;
+}
+
+bool rhi_rebuild_pending(const rhi_device *dev)
+{
+    return dev && dev->rb.active;
+}
+
+/** @brief Bring a pipeline registered while a rebuild is in flight into its set: its create info for the requested variant compiles on the pool, and the swap waits for it.
+ *
+ * The pipeline was compiled for the variant still shown; when the
+ * requested variant changes its create info it joins the set like a member
+ * the request found.
+ * @param dev Device.
+ * @param p The pipeline, just linked. */
+static void rebuild_join(rhi_device *dev, rhi_pipeline *p)
+{
+    struct rebuild_set *rb = &dev->rb;
+    if (!rb->active) return;
+    const unsigned n0 = rb->n;
+    t_in_rebuild = true;
+    rebuild_member(dev, p, rb->target, rhi_pipe_variant_epoch());
+    t_in_rebuild = false;
+    rb->joined += rb->n != n0;
+}
+
+/** @brief Compile, on the display owner, every registered pipeline outside the rebuild set whose create info the target variant changes: those that could not join it (an allocation failure).
+ *
+ * @param dev Device.
+ * @param st Counts: rebuilt, failed and late are added to. */
+static void rebuild_late(rhi_device *dev, rhi_rebuild_stats *st)
+{
+    struct rebuild_set *rb = &dev->rb;
     const uint32_t epoch = rhi_pipe_variant_epoch();
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
-        /* A switch leaves the create info of a pipeline whose stages declare
-         * none of its constants, and that it does not rasterize differently,
-         * unchanged: its objects are kept. */
+        if (p->rb_gen == rb->gen) continue;
         rhi_pc_variant v;
-        pipe_variant_of(dev, p, var, &v);
-        if (rhi_pc_variant_key(&v) == p->vkey) { unchanged++; continue; }
-        rhi_compile_job *job = rhi_compile_job_of(dev, p, var, 0u, epoch);
+        pipe_variant_of(dev, p, rb->target, &v);
+        if (rhi_pc_variant_key(&v) == p->vkey) continue;
+        st->late++;
+        rhi_compile_job *job = rhi_compile_job_of(dev, p, rb->target, 0u, epoch);
         if (!job || rhi_compile_job_run(dev, job, 0) != 0) {
-            fails++;   /* keep the old objects: stale spec constants beat a hole */
+            st->failed++;   /* keep the old objects: stale spec constants beat a hole */
             rhi_compile_job_discard(dev, job);
             continue;
         }
         rebuild_swap(dev, p, &job->out);
         job->out = (pipe_compiled){0};
-        job_free(job);
-        rebuilt++;
+        rhi_compile_job_discard(dev, job);
+        st->rebuilt++;
     }
-    t_in_rebuild = false;
-    rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit1, &miss1, &unk1);
-    RHI_LOG("rebuilt %d pipelines (%d failed, %d unchanged kept) in %.1f ms "
-            "(cache hit %u, miss %u, unknown %u)\n",
-            rebuilt, fails, unchanged, (double)(SDL_GetTicksNS() - t0) / 1e6,
-            hit1 - hit0, miss1 - miss0, unk1 - unk0);
-    return fails;
 }
+
+/** @brief Make a variant the one rhi_pipe_variant_current returns, without bumping the epoch (the request bumped it).
+ *
+ * @param var The variant. */
+static void variant_show(rhi_pipe_variant var)
+{
+    s_vs_affine_uv = var.affine ? VK_TRUE : VK_FALSE;
+    s_fs_notex = var.notex ? VK_TRUE : VK_FALSE;
+    s_wireframe = var.wireframe;
+    s_fs_moby_truescope = var.truescope ? VK_TRUE : VK_FALSE;
+}
+
+/** @brief Swap a complete rebuild set: install every member's result at once, compile the late members, and show the target variant.
+ *
+ * @param dev Device.
+ * @param st Receives the rebuild's counts. */
+static void rebuild_swap_all(rhi_device *dev, rhi_rebuild_stats *st)
+{
+    struct rebuild_set *rb = &dev->rb;
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: rebuild timing for the log */
+    *st = (rhi_rebuild_stats){ .shown = rb->target, .stale = rb->stale, .retired = rb->retired,
+                               .requests = rb->requests, .late = rb->joined };
+    t_in_rebuild = true;
+    rebuild_late(dev, st);
+    t_in_rebuild = false;
+    for (unsigned i = 0; i < rb->n; i++) {
+        struct rebuild_entry *e = &rb->e[i];
+        if (!e->p) continue;
+        if (e->ready.pipeline) {
+            rebuild_swap(dev, e->p, &e->ready);
+            st->rebuilt++;
+        } else {
+            st->failed++;   /* keep the old objects: stale spec constants beat a hole */
+        }
+        e->ready = (pipe_compiled){0};
+        e->p->rb_gen = 0;
+    }
+    unsigned members = 0;
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) members++;
+    st->unchanged = members - st->rebuilt - st->failed;
+    variant_show(rb->target);
+    rb->active = false;
+    rb->n = 0;
+    const Uint64 t1 = SDL_GetTicksNS();  /* clock-guard: wall: rebuild timing for the log */
+    rb->owner_ns += t1 - t0;
+    st->ms = (double)(t1 - rb->t0_ns) / 1e6;
+    st->owner_ms = (double)rb->owner_ns / 1e6;
+    st->presents = (unsigned)(s_frame_serial - rb->serial0);
+    unsigned hit, miss, unk;
+    rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit, &miss, &unk);
+    st->hit = hit - rb->hit0;
+    st->miss = miss - rb->miss0;
+    st->unknown = unk - rb->unk0;
+    RHI_LOG("rebuilt %u pipelines (%u failed, %u unchanged kept) in %.1f ms "
+            "(cache hit %u, miss %u, unknown %u); display owner %.1f ms, %u presents, "
+            "%u request(s), %u late, %u stale results, %u retired in flight\n",
+            st->rebuilt, st->failed, st->unchanged, st->ms, st->hit, st->miss, st->unknown,
+            st->owner_ms, st->presents, st->requests, st->late, st->stale, st->retired);
+}
+
+int rhi_rebuild_poll(rhi_device *dev, rhi_rebuild_stats *out)
+{
+    if (!dev) return 0;
+    seam_check("rebuild_poll");
+    rhi_compile_pool_drain(dev);
+    if (!dev->rb.active || dev->rb.waiting) return 0;
+    rhi_rebuild_stats st;
+    rebuild_swap_all(dev, &st);
+    if (out) *out = st;
+    return 1;
+}
+
+/** @brief Abandon a rebuild in flight: destroy every compiled result and empty the set (pool stop, device destruction).
+ *
+ * @param dev Device. */
+static void rebuild_abandon(rhi_device *dev)
+{
+    struct rebuild_set *rb = &dev->rb;
+    for (unsigned i = 0; i < rb->n; i++) rebuild_drop(dev, &rb->e[i]);
+    rb->active = false;
+    rb->n = 0;
+    free(rb->e);
+    rb->e = NULL;
+    rb->cap = 0;
+}
+
+/* ---- precompile ---------------------------------------------------------- */
+
+/* Queue depth per worker the precompile keeps: bounds the jobs (each holds
+ * its stage copies) alive at once. */
+#define PRECOMPILE_QUEUE_PER_WORKER 4u
 
 /* State of one rhi_precompile_variants walk. */
 typedef struct {
     rhi_device          *dev;
     rhi_pc_keyset        seen;   /* keys created, probed or installed this walk */
     rhi_precompile_stats st;
+    unsigned             cap;    /* queue depth the submits wait below */
     void               (*pump)(void *);
     void                *ctx;
 } precompile_walk;
 
-/** @brief Bring one non-current variant of a pipeline into the cache unless its key was seen: probe, manifest, or create, then destroy.
+/** @brief Queue one non-current variant of a pipeline unless its key was seen or the manifest lists it: the worker probes or creates it and destroys the result.
  *
- * The job is the pipeline's, retargeted to the variant; its result is
- * destroyed as Vulkan objects and cleared, so the job serves the next view.
  * @param w The walk.
  * @param p The pipeline.
- * @param job Its compile job.
- * @param var The variant. */
-static void precompile_variant(precompile_walk *w, const rhi_pipeline *p, rhi_compile_job *job,
-                               rhi_pipe_variant var)
+ * @param var The variant.
+ * @param epoch The variant epoch. */
+static void precompile_variant(precompile_walk *w, const rhi_pipeline *p, rhi_pipe_variant var,
+                               uint32_t epoch)
 {
     rhi_device *dev = w->dev;
     rhi_pc_variant v;
     pipe_variant_of(dev, p, var, &v);
     if (!rhi_pc_keyset_insert(&w->seen, rhi_pc_variant_key(&v))) return;
     w->st.keys++;
-    job->variant = var;
-    int r = 1;
-    if (dev->has_cache_control) {
-        rhi_pipe_phase_set(RHI_PIPE_PHASE_PROBE);
-        r = rhi_compile_job_run(dev, job, RHI_COMPILE_PROBE | RHI_COMPILE_VARIANT);
-        rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
-        w->st.probe_hits += r == 0;
-    } else if (dev->manifest_trusted) {
+    if (!dev->has_cache_control && dev->manifest_trusted) {
         SDL_LockMutex(dev->pc_mx);
         const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key(&v));
         SDL_UnlockMutex(dev->pc_mx);
         if (listed) { w->st.manifest_skips++; return; }
     }
-    if (r == 1) {
-        r = rhi_compile_job_run(dev, job, RHI_COMPILE_VARIANT);
-        w->st.created += r == 0;
-    }
-    w->st.failed += r < 0;
-    if (job->out.pipeline) vkDestroyPipeline(dev->device, job->out.pipeline, NULL);
-    if (job->out.layout)   vkDestroyPipelineLayout(dev->device, job->out.layout, NULL);
-    job->out = (pipe_compiled){0};
-    if (w->pump) w->pump(w->ctx);
+    rhi_compile_job *job = rhi_compile_job_of(dev, p, var, 0u, epoch);
+    if (!job) { w->st.failed++; return; }
+    rhi_compile_pool_submit(dev, job,
+                            RHI_COMPILE_VARIANT | (dev->has_cache_control ? RHI_COMPILE_PROBE : 0u),
+                            NULL, NULL);
+    pool_wait_below(dev, w->cap, w->pump, w->ctx);
 }
 
 int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
@@ -7412,26 +8195,34 @@ int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
 {
     if (!dev) return -1;
     seam_check("precompile_variants");   /* the registry is the display owner's */
-    const Uint64 t0 = SDL_GetTicksNS();
-    precompile_walk w = { .dev = dev, .pump = pump, .ctx = ctx };
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
+    struct compile_pool *pl = pool_get(dev);
+    rhi_compile_pool_stats p0;
+    rhi_compile_pool_stats_get(dev, &p0);
+    precompile_walk w = { .dev = dev, .pump = pump, .ctx = ctx,
+                          .cap = PRECOMPILE_QUEUE_PER_WORKER * (unsigned)(pl && pl->n ? pl->n : 1) };
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
         w.st.bases++;
         if (rhi_pc_keyset_insert(&w.seen, p->vkey)) { w.st.keys++; w.st.current++; }
     }
     const uint32_t epoch = rhi_pipe_variant_epoch();
-    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
-        rhi_compile_job *job = rhi_compile_job_of(dev, p, pipe_view_variant(0), 0u, epoch);
-        if (!job) { w.st.failed++; continue; }
-        for (int view = 0; view < 6; view++) precompile_variant(&w, p, job, pipe_view_variant(view));
-        rhi_compile_job_discard(dev, job);
-    }
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next)
+        for (int view = 0; view < 6; view++) precompile_variant(&w, p, pipe_view_variant(view), epoch);
+    rhi_compile_pool_wait(dev, pump, ctx);
+    rhi_compile_pool_stats p1;
+    rhi_compile_pool_stats_get(dev, &p1);
+    w.st.created = p1.variant_created - p0.variant_created;
+    w.st.probe_hits = p1.variant_probe_hits - p0.variant_probe_hits;
+    w.st.failed += p1.variant_failed - p0.variant_failed;
     rhi_pc_keyset_free(&w.seen);
     w.st.saved = pipeline_cache_save(dev, "precompile");
-    w.st.ms = (double)(SDL_GetTicksNS() - t0) / 1e6;
+    w.st.ms = (double)(SDL_GetTicksNS() - t0) / 1e6;  /* clock-guard: wall: precompile duration for the log */
     RHI_LOG("precompile: %u pipelines, %u distinct create infos (%u installed), %u created, "
-            "%u probe hits, %u manifest skips, %u failed, cache %s, %.1f ms\n",
+            "%u probe hits, %u manifest skips, %u failed, cache %s, %.1f ms on %u worker(s) "
+            "(%.1f ms of runs)\n",
             w.st.bases, w.st.keys, w.st.current, w.st.created, w.st.probe_hits,
-            w.st.manifest_skips, w.st.failed, w.st.saved ? "saved" : "not saved", w.st.ms);
+            w.st.manifest_skips, w.st.failed, w.st.saved ? "saved" : "not saved", w.st.ms,
+            p1.workers, p1.run_ms - p0.run_ms);
     if (out) *out = w.st;
     return 0;
 }
@@ -7767,6 +8558,7 @@ void rhi_blit_rt_to_rt(rhi_device *dev, rhi_texture *dst, rhi_texture *src)
 void rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 {
     if (!pipe) return;
+    rebuild_forget(dev, pipe);
     registry_unlink(dev, pipe);
     if (pipe->pipeline) vkDestroyPipeline(dev->device, pipe->pipeline, NULL);
     if (pipe->layout)   vkDestroyPipelineLayout(dev->device, pipe->layout, NULL);

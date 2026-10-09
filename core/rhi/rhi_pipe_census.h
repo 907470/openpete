@@ -29,7 +29,7 @@
 typedef enum {
     RHI_PC_PHASE_BRINGUP = 0,   /* before the first frame was submitted      */
     RHI_PC_PHASE_PRECOMPILE,    /* inside rhi_pipe_phase_set(PRECOMPILE)      */
-    RHI_PC_PHASE_REBUILD,       /* inside rhi_rebuild_pipelines              */
+    RHI_PC_PHASE_REBUILD,       /* a live rebuild (rhi_rebuild_request)      */
     RHI_PC_PHASE_FIRST_USE,     /* after the first frame, outside the above  */
     RHI_PC_PHASE_PROBE,         /* inside rhi_pipe_phase_set(PROBE)           */
     RHI_PC_PHASES

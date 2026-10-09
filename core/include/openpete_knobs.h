@@ -198,6 +198,15 @@ void knob_registry_init(const struct openpete_options *opts);
  * @return The current epoch; it starts at 1. */
 unsigned knob_registry_env_epoch(void);
 
+/** @brief Install the guard a live env row's write runs inside: guard(1) before the write, guard(0) after it.
+ *
+ * Threads that read the environment while a row may be edited (the
+ * renderer's compile workers, inside which the Vulkan driver calls getenv)
+ * hold the guard's other side, so the write never moves the environment
+ * under them.
+ * @param guard The guard, or NULL for none. */
+void knob_registry_set_env_guard(void (*guard)(int begin));
+
 /** @brief Whether a cache keyed on the registry env epoch must re-read its knob.
  *
  * The pattern for a live knob read on a hot path: keep the parsed value and

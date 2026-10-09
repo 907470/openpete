@@ -79,6 +79,15 @@ int op_atomic_write_file(const char* path, const void* data, size_t n);
  * @return 0 when the bytes reached the file, -1 otherwise (the file may be missing or shorter). */
 int op_file_write_at(const char* path, long offset, const void* data, size_t n);
 
+/** @brief Install the guard the fault-injection environment read runs inside: guard(1) before the read, guard(0) after it.
+ *
+ * A process that writes the environment while other threads commit files
+ * installs the read side of its environment write guard here, so the
+ * OPENPETE_WRITE_FAIL lookup never walks an environment a setenv is
+ * moving. Without a guard the lookup runs unguarded.
+ * @param guard The guard, or NULL for none. */
+void op_atomic_file_set_env_guard(void (*guard)(int begin));
+
 #ifdef __cplusplus
 }
 #endif

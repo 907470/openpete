@@ -764,7 +764,12 @@ unsigned knob_registry_env_epoch(void) {
     return atomic_load_explicit(&s_env_epoch, memory_order_acquire);
 }
 
-/** @brief Write or unset an env var, then bump the registry env epoch.
+/* The guard every live env write runs inside (knob_registry_set_env_guard). */
+static void (*s_env_guard)(int begin);
+
+void knob_registry_set_env_guard(void (*guard)(int begin)) { s_env_guard = guard; }
+
+/** @brief Write or unset an env var inside the env guard, then bump the registry env epoch.
  *
  * The epoch moves after the write with release order, so a consumer on
  * another thread that loads the new epoch (acquire) and then calls getenv
@@ -774,11 +779,13 @@ unsigned knob_registry_env_epoch(void) {
  * @param val New value; NULL or "" unsets the variable.
  * @return 0 on success, else the platform call's failure value. */
 static int portable_setenv(const char *name, const char *val) {
+    if (s_env_guard) s_env_guard(1);
 #ifdef _WIN32
     const int rc = _putenv_s(name, val ? val : "");
 #else
     const int rc = (!val || !*val) ? unsetenv(name) : setenv(name, val, 1);
 #endif
+    if (s_env_guard) s_env_guard(0);
     atomic_fetch_add_explicit(&s_env_epoch, 1u, memory_order_release);
     return rc;
 }

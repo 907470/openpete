@@ -1131,7 +1131,7 @@ size_t      rhi_vertex_buffer_slot_bytes(const rhi_buffer *buf);
  *
  * The pipeline keeps a copy of the desc and the shader names, is compiled
  * against the device's depth convention and the specialization constants set
- * at this call, and is registered so rhi_rebuild_pipelines can recompile it.
+ * at this call, and is registered so a live rebuild (rhi_rebuild_request) can recompile it.
  * Shaders load from OPENPETE_SHADER_DIR when set, else from the embedded
  * blobs.
  * @param dev Device the pipeline is created on.
@@ -1187,7 +1187,7 @@ void          rhi_depth_report(const rhi_device *dev);
  * Affine interpolation (w = 1) reproduces the PSX GPU's screen-linear
  * texture and gouraud swim. Applies to pipelines created after this call:
  * set at bring-up from --texture-mapping before the scene pipelines are
- * built, and followed by rhi_rebuild_pipelines for a live toggle. Global.
+ * built; a live toggle goes through rhi_rebuild_request. Global.
  * @param on Nonzero for affine; 0 (the default) for perspective-correct. */
 void          rhi_set_affine_uv(int on);
 
@@ -1196,8 +1196,8 @@ void          rhi_set_affine_uv(int on);
  * The textured scene fragments replace the sampled texel with the
  * modulation-neutral grey (128/255), so the output is the raw gouraud vertex
  * colour; transparency cutouts keep their real texel shapes. Applies to
- * pipelines created after this call; a live toggle follows with
- * rhi_rebuild_pipelines. Global.
+ * pipelines created after this call; a live toggle goes through
+ * rhi_rebuild_request. Global.
  * @param on Nonzero to enable; 0 is the default. */
 void          rhi_set_notex(int on);
 
@@ -1215,7 +1215,7 @@ void          rhi_set_notex(int on);
  * only by a nearer line (the decals, whose fragment stage samples the
  * filled pre-pass depth, also by nearer faces). On a device without
  * fillModeNonSolid the pipelines stay filled and only the NOTEX colouring
- * applies. A live toggle follows with rhi_rebuild_pipelines. Global.
+ * applies. A live toggle goes through rhi_rebuild_request. Global.
  * @param on Nonzero to enable; 0 is the default. */
 void          rhi_set_wireframe(int on);
 
@@ -1223,7 +1223,7 @@ void          rhi_set_wireframe(int on);
  *
  * On, a moby og-key yield additionally requires the key to beat the
  * covering fragment's own true view-Z. Applies to pipelines created after
- * this call; a live toggle follows with rhi_rebuild_pipelines. Global.
+ * this call; a live toggle goes through rhi_rebuild_request. Global.
  * @param on Nonzero (the default) to scope; 0 restores og's compound
  *           painter. */
 void          rhi_set_moby_truescope(int on);
@@ -1235,21 +1235,27 @@ void          rhi_set_moby_truescope(int on);
  * @param on Nonzero to compare slot indices; 0 compares world distances. */
 void          rhi_set_slot_contest(int on);
 
-/** @brief Recompile every live pipeline on the device from its stored description and shader sources.
+/** @brief Serialize an environment write against compile runs: 1 waits until no compile runs and holds new runs off, 0 releases.
  *
- * The recompile captures the current creation-time globals
- * (rhi_set_affine_uv, rhi_set_notex, rhi_set_wireframe,
- * rhi_set_moby_truescope): the live-toggle path for state otherwise latched
- * at pipeline creation. Compiles go through the device's pipeline cache, so
- * a variant built before (a toggle turned back) is a cache hit. Without a
- * device idle it swaps each pipeline's Vulkan objects in place and retires
- * the old ones until the frames that may have bound them retire: every rhi_pipeline handle
- * stays valid, so owners (renderer fields, mod material and mesh caches)
- * need no involvement. A pipeline whose recompile fails keeps its old
- * objects (stale constants, still functional).
- * @param dev Device, or NULL.
- * @return The number of failed recompiles; 0 when all succeed or for NULL. */
-int           rhi_rebuild_pipelines(rhi_device *dev);
+ * Vulkan drivers call getenv inside vkCreateGraphicsPipelines, on whichever
+ * thread compiles (rhi_compile_job_run holds the guard's read side for the
+ * create), and the pipeline-cache save worker's file commit reads the
+ * environment (rhi_env_read_guard); setenv on another thread may move the
+ * environment under them. A thread that writes the environment while
+ * compiles may run brackets the write with guard(1) and guard(0). A
+ * waiting write holds off new compile runs. Global; any thread.
+ * @param begin 1 before the write, 0 after it. */
+void          rhi_env_write_guard(int begin);
+
+/** @brief Hold off environment writes around an environment read on a thread other than the writer's: 1 before the read, 0 after.
+ *
+ * The short read side of rhi_env_write_guard: it waits only while a write
+ * is in progress, never behind a waiting write, so it never waits for a
+ * compile run. A thread that reads the environment while a writer may run
+ * (a file commit's fault-injection lookup, op_atomic_file_set_env_guard)
+ * brackets the read with it. Global; any thread.
+ * @param begin 1 before the read, 0 after it. */
+void          rhi_env_read_guard(int begin);
 
 /* Site classes of the pipeline-create instruments (rhi_pipe_census.h): the
  * class a create is counted in, and the lazy sites whose visits are each
@@ -1261,7 +1267,7 @@ typedef enum {
     RHI_PIPE_SITE_MOD_POSTFX,        /* mod postfx pass                            */
     RHI_PIPE_SITE_MOD_MATERIAL,      /* mod material on scene, moby, decal, portal */
     RHI_PIPE_SITE_TERRAIN_MATERIAL,  /* mod material on a terrain-cache bucket     */
-    RHI_PIPE_SITE_REBUILD,           /* rhi_rebuild_pipelines                      */
+    RHI_PIPE_SITE_REBUILD,           /* a live rebuild (rhi_rebuild_request)        */
     RHI_PIPE_SITES
 } rhi_pipe_site;
 
@@ -1281,7 +1287,7 @@ typedef enum {
 
 /** @brief Set the phase the calling thread's pipeline creates are counted in until the next call.
  *
- * Per thread. Creates inside rhi_rebuild_pipelines count as rebuild in
+ * Per thread. Creates of a live rebuild count as rebuild in
  * every phase but PROBE.
  * @param phase The phase. */
 void          rhi_pipe_phase_set(rhi_pipe_phase phase);
@@ -1351,11 +1357,12 @@ typedef struct {
  * (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT, on a device
  * with pipelineCreationCacheControl) finds it cached, or, without cache
  * control on a calibrated driver, when the key manifest lists it; otherwise
- * it is created and destroyed, never linked. The variant statics are set
- * around each create and restored. @p pump runs between creates. Display
- * owner only.
+ * it is created and destroyed, never linked. The probes and creates run on
+ * the compile pool (rhi_compile_pool_submit), each worker destroying what it
+ * created; the call returns when every one has run. @p pump runs between
+ * submits and waits. Display owner only.
  * @param dev Device.
- * @param pump Called between creates (event pumping), or NULL.
+ * @param pump Called between submits and waits (event pumping), or NULL.
  * @param ctx Passed to @p pump.
  * @param out Receives the counts, or NULL.
  * @return 0, or -1 for a NULL device. */
@@ -1403,7 +1410,7 @@ enum {
  * @return The variant. */
 rhi_pipe_variant rhi_pipe_variant_current(void);
 
-/** @brief Return the variant epoch: a counter every variant setter bumps when it changes its value.
+/** @brief Return the variant epoch: a counter every variant setter bumps when it changes its value, and every rebuild request bumps.
  *
  * @return The epoch. */
 uint32_t      rhi_pipe_variant_epoch(void);
@@ -1448,7 +1455,9 @@ rhi_compile_job *rhi_compile_job_of(rhi_device *dev, const rhi_pipeline *pipe,
  *
  * Any thread; the device must outlive the call. A job that already holds a
  * result keeps it and returns 0. The create is counted by the pipeline
- * census, the creation-feedback tally and the first-use hitch metric.
+ * census, the creation-feedback tally and the first-use hitch metric, and
+ * runs inside the read side of rhi_env_write_guard. Not called by a thread
+ * inside rhi_env_write_guard or rhi_env_read_guard.
  * @param dev Device the job was made for.
  * @param job The job.
  * @param flags RHI_COMPILE_* bits.
@@ -1511,10 +1520,201 @@ typedef struct {
  * @param out Receives the counts. */
 void          rhi_pcache_autosave_stats_get(const rhi_device *dev, rhi_pcache_autosave_stats *out);
 
+/* ---- compile pool -----------------------------------------------------
+ * Worker threads run compile jobs from a locked queue. A job submitted with
+ * an install callback enters a locked staging list when its run returns;
+ * the display owner drains the list (rhi_compile_pool_drain,
+ * rhi_compile_pool_wait, rhi_rebuild_poll) and calls each callback, which
+ * installs or discards the result. A job submitted with no callback is a
+ * precompile variant: the worker runs it (a probe first with
+ * RHI_COMPILE_PROBE), destroys the result and counts the outcome, so its
+ * objects never leave the worker. Each run holds off environment writes
+ * (rhi_env_write_guard). The worker count is OPENPETE_COMPILE_POOL when
+ * set (0 runs every job on the display owner at submit), else the logical
+ * core count less one, at most RHI_COMPILE_POOL_DEFAULT_MAX; it is read
+ * when the pool starts, at the first submit. With an empty driver cache,
+ * workers compiling variants that share a stage each compile that stage
+ * where one worker would reuse it from the pipeline cache, so the compile
+ * work grows with the worker count; the cap bounds that growth. */
+
+#define RHI_COMPILE_POOL_DEFAULT_MAX 4
+
+/* The rc an install callback receives for a job the pool's stop dropped:
+ * the callback discards the job and releases its tag. */
+#define RHI_POOL_CANCELLED (-2)
+
+/* Install callback: display owner; owns @p job (installs or discards it).
+ * @p rc is rhi_compile_job_run's result, or RHI_POOL_CANCELLED. */
+typedef void (*rhi_pool_install_fn)(rhi_device *dev, rhi_compile_job *job, int rc, void *tag);
+
+/* What the compile pool did since it started. */
+typedef struct {
+    unsigned workers;        /* worker threads (0: jobs run at submit)           */
+    unsigned submitted;      /* jobs submitted                                   */
+    unsigned run;            /* jobs run                                         */
+    unsigned staged;         /* results handed to the display owner              */
+    unsigned variant_created, variant_probe_hits, variant_failed; /* callback-less jobs */
+    unsigned cancelled;      /* jobs the stop dropped, run or not                */
+    unsigned max_queued;     /* deepest queue                                    */
+    double   run_ms;         /* summed run time over the workers                 */
+} rhi_compile_pool_stats;
+
+/** @brief Queue a compile job on the device's compile pool, starting the pool on first use.
+ *
+ * Display owner only. The job runs in the create phase the submitting
+ * thread is in (rhi_pipe_phase_set, a rebuild). Without a pool (start
+ * failure) the job runs at once and @p fn is called before return.
+ * @param dev Device the job was made for.
+ * @param job The job, consumed.
+ * @param flags RHI_COMPILE_* bits; RHI_COMPILE_PROBE probes first and
+ *              compiles on a probe miss.
+ * @param fn Install callback, or NULL for a precompile variant.
+ * @param tag Passed to @p fn.
+ * @return 0, or -1 for a NULL device or job. */
+int           rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flags,
+                                      rhi_pool_install_fn fn, void *tag);
+
+/** @brief Call the install callback of every staged result.
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @return The results handled. */
+unsigned      rhi_compile_pool_drain(rhi_device *dev);
+
+/** @brief Wait until no job is queued, running or staged, draining staged results and calling @p pump between waits.
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @param pump Called between waits (event pumping), or NULL.
+ * @param ctx Passed to @p pump. */
+void          rhi_compile_pool_wait(rhi_device *dev, void (*pump)(void *ctx), void *ctx);
+
+/** @brief Read the compile pool's counts; after rhi_compile_pool_stop, its counts at the stop.
+ *
+ * @param dev Device, or NULL (zeros).
+ * @param out Receives the counts. */
+void          rhi_compile_pool_stats_get(const rhi_device *dev, rhi_compile_pool_stats *out);
+
+/** @brief Stop the compile pool: take no more jobs, join the workers, and drop every queued and staged job.
+ *
+ * Display owner only. A dropped job with an install callback is handed to
+ * it with RHI_POOL_CANCELLED; one without is destroyed. A rebuild in flight
+ * is abandoned and its compiled results destroyed. rhi_destroy calls it
+ * before the device idles. A submit after the stop runs at once.
+ * @param dev Device, or NULL. */
+void          rhi_compile_pool_stop(rhi_device *dev);
+
+/* What one pipeline batch did (rhi_pipeline_batch_end). */
+typedef struct {
+    unsigned queued;      /* creates queued on the pool                         */
+    unsigned installed;   /* results installed into their slots                 */
+    unsigned failed;      /* compiles that failed: the slot took its failed value */
+    unsigned duplicate;   /* results discarded: their slot was filled first     */
+    double   ms;          /* wall time, batch begin to end                      */
+} rhi_pipeline_batch_stats;
+
+/** @brief Open a pipeline batch: until rhi_pipeline_batch_end, rhi_create_pipeline_slot queues its create on the compile pool.
+ *
+ * Display owner only. No slot a batch fills may be read until the batch
+ * ends.
+ * @param dev Device. */
+void          rhi_pipeline_batch_begin(rhi_device *dev);
+
+/** @brief Close a pipeline batch: wait for its creates and install each result into its slot.
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @param pump Called between waits (event pumping), or NULL.
+ * @param ctx Passed to @p pump.
+ * @param out Receives the batch's counts, or NULL. */
+void          rhi_pipeline_batch_end(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
+                                     rhi_pipeline_batch_stats *out);
+
+/** @brief Create a pipeline into a slot: now, or at the end of the open pipeline batch.
+ *
+ * Display owner only. Outside a batch the pipeline is created for the
+ * current variant (rhi_create_pipeline_spv) and @p slot set to it, or to
+ * @p failed when the create fails. Inside a batch the create is queued and
+ * @p slot is left unchanged; rhi_pipeline_batch_end sets it to the
+ * installed pipeline or to @p failed, or discards the result when the slot
+ * was filled first.
+ * @param dev Device.
+ * @param desc Pipeline description, copied.
+ * @param vert_words Vertex SPIR-V words, or NULL to use desc->vert_spv.
+ * @param vert_n Word count of @p vert_words.
+ * @param frag_words Fragment SPIR-V words, or NULL to use desc->frag_spv.
+ * @param frag_n Word count of @p frag_words.
+ * @param slot The slot.
+ * @param failed The value a failed create leaves in the slot.
+ * @return 0 created, 1 queued, -1 failed. */
+int           rhi_create_pipeline_slot(rhi_device *dev, const rhi_pipeline_desc *desc,
+                                       const uint32_t *vert_words, size_t vert_n,
+                                       const uint32_t *frag_words, size_t frag_n,
+                                       void **slot, void *failed);
+
+/* What one live rebuild did, from its first request to its swap
+ * (rhi_rebuild_poll). */
+typedef struct {
+    rhi_pipe_variant shown;   /* the variant the swap installed                    */
+    unsigned rebuilt;         /* pipelines given new objects                        */
+    unsigned failed;          /* pipelines whose compile failed: old objects kept   */
+    unsigned unchanged;       /* pipelines whose create info the switch left alone  */
+    unsigned late;            /* pipelines registered after the request that joined the set */
+    unsigned stale;           /* results discarded: superseded, or their member retired */
+    unsigned retired;         /* members retired while the rebuild was in flight    */
+    unsigned requests;        /* requests the swap answers (a later one supersedes) */
+    unsigned presents;        /* frames begun between the first request and the swap */
+    double   ms;              /* wall time, first request to swap                   */
+    double   owner_ms;        /* display-owner time inside the requests and the swap */
+    unsigned hit, miss, unknown; /* cache readings of the rebuild's creates         */
+} rhi_rebuild_stats;
+
+/** @brief Request a live variant switch: compile the registered pipelines the switch changes on the compile pool.
+ *
+ * Display owner only. Bumps the variant epoch. Each registered pipeline
+ * whose create info under @p var differs from its installed objects' gets
+ * a compile job (rhi_compile_job_of); the pipelines keep drawing their
+ * installed objects, and pipelines created meanwhile draw the variant
+ * still shown (rhi_pipe_variant_current) and join the set. A request during a rebuild supersedes
+ * it: a member whose create info the new request leaves as the previous
+ * one requested keeps its job or result, a member it changes gets a new
+ * job and the earlier result is discarded when it arrives, and a member
+ * the new request returns to its installed create info leaves the set.
+ * rhi_rebuild_poll performs the swap.
+ * @param dev Device, or NULL.
+ * @param var The variant to show.
+ * @param sync true waits for every job of the set before returning, so the
+ *             next rhi_rebuild_poll swaps (a run whose output must not
+ *             depend on worker timing).
+ * @return 0, or -1 for a NULL device. */
+int           rhi_rebuild_request(rhi_device *dev, rhi_pipe_variant var, bool sync);
+
+/** @brief Install finished compile-pool results and, when a rebuild's set is complete, swap it.
+ *
+ * Display owner only; called between frames, before any command buffer
+ * records. The swap installs every member's new objects at once (the
+ * replaced ones retire by frame serial) and then makes the requested
+ * variant the one rhi_pipe_variant_current returns. A pipeline registered
+ * while the rebuild is in flight joins the set (its create info for the
+ * requested variant compiles on the pool) and the swap waits for it; one
+ * that could not join compiles on the display owner at the swap. A member whose compile failed keeps its
+ * old objects.
+ * @param dev Device, or NULL.
+ * @param out Receives the rebuild's counts when a swap happened, or NULL.
+ * @return 1 when a swap happened in this call, else 0. */
+int           rhi_rebuild_poll(rhi_device *dev, rhi_rebuild_stats *out);
+
+/** @brief Return whether a live rebuild is in flight (requested and not yet swapped).
+ *
+ * @param dev Device, or NULL.
+ * @return true while a rebuild is in flight. */
+bool          rhi_rebuild_pending(const rhi_device *dev);
+
+
 /** @brief Create a pipeline from in-memory SPIR-V words (mod shaders).
  *
  * The words are copied into the pipeline, which keeps them for
- * rhi_rebuild_pipelines; the caller keeps ownership of its buffers. A stage
+ * a live rebuild; the caller keeps ownership of its buffers. A stage
  * given NULL words or a zero count falls back to the desc's embedded
  * filename (mod postfx: vert NULL with desc->vert_spv = "postfx_fs.vert.spv",
  * frag from the mod).

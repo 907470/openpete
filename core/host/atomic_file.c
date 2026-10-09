@@ -5,6 +5,7 @@
 #include "openpete_log.h"
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,6 +21,11 @@
   #define op_getpid() getpid()
 #endif
 
+/* The environment read guard (op_atomic_file_set_env_guard); NULL for none. */
+static _Atomic(void (*)(int)) s_env_guard;
+
+void op_atomic_file_set_env_guard(void (*guard)(int begin)) { atomic_store(&s_env_guard, guard); }
+
 /** @brief Report whether OPENPETE_WRITE_FAIL names path, and the byte count the injected failure keeps.
  *
  * The variable is `<substring>[:<bytes>]`; the substring must be non-empty
@@ -28,11 +34,14 @@
  * @param keep Receives the byte count, 0 when none is given.
  * @return 1 when the commit must fail, else 0. */
 static int write_fail_injected(const char* path, long* keep) {
-    const char* spec = getenv("OPENPETE_WRITE_FAIL");
-    *keep = 0;
-    if (!spec || !*spec) return 0;
+    void (*guard)(int) = atomic_load(&s_env_guard);
     char pat[256];
-    snprintf(pat, sizeof pat, "%s", spec);
+    if (guard) guard(1);
+    const char* spec = getenv("OPENPETE_WRITE_FAIL");
+    snprintf(pat, sizeof pat, "%s", spec ? spec : "");
+    if (guard) guard(0);
+    *keep = 0;
+    if (!pat[0]) return 0;
     char* colon = strrchr(pat, ':');
     if (colon) {
         *colon = '\0';
