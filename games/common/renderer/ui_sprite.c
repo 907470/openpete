@@ -1420,8 +1420,9 @@ static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
  * claim. QK_FREEZE drives the native freeze backdrop at the FT4's tint and
  * feeds no quad. QK_DR_MODE mirrors the ABR and draw-mode word for the
  * claims after it. QK_F4_BAR feeds a frame-width quad as a letterbox bar on
- * the overlay layer and a narrower one as a menu-box backing on the panel
- * layer, stamped with the framebuffer cell key in its auxiliary word;
+ * the overlay layer and a narrower one, or a framebuffer grid border of any
+ * width, as a menu-box backing on the panel layer, stamped with the
+ * framebuffer cell key in its auxiliary word;
  * QK_F4_PANEL feeds a dark panel on the panel layer at the tracked ABR.
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address.
@@ -1467,8 +1468,11 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * class 1 would take the intake's ABR 0 half alpha. */
         /* A border the framebuffer grid emitter linked carries its element
          * key (the claim's aux word, grid_elem_key), so the carry moves it
-         * with the grid's cells between ticks. */
-        const int full = f4_spans_frame_width(cpu, prim);
+         * with the grid's cells between ticks. Such a border is the scaled
+         * window's edge, not a letterbox bar, even on the first shrink step
+         * where it spans x 0..512: it feeds the panel layer unwidened, inside
+         * the 4:3 window, on every step. */
+        const int full = !aux && f4_spans_frame_width(cpu, prim);
         openpete_native_scene_set_fb_cell(aux);
         if (full) feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1);
         else      feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0, 0);
