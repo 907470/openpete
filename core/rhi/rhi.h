@@ -1226,6 +1226,64 @@ void          rhi_set_slot_contest(int on);
  * @return The number of failed recompiles; 0 when all succeed or for NULL. */
 int           rhi_rebuild_pipelines(rhi_device *dev);
 
+/* Site classes of the pipeline-create instruments (rhi_pipe_census.h): the
+ * class a create is counted in, and the lazy sites whose visits are each
+ * class's engagement count. */
+typedef enum {
+    RHI_PIPE_SITE_BUILTIN = 0,       /* built-in pipeline created eagerly          */
+    RHI_PIPE_SITE_TERRAIN_CACHE,     /* built-in terrain-cache pipeline            */
+    RHI_PIPE_SITE_BUILTIN_LAZY,      /* built-in postfx compiled at first draw     */
+    RHI_PIPE_SITE_MOD_POSTFX,        /* mod postfx pass                            */
+    RHI_PIPE_SITE_MOD_MATERIAL,      /* mod material on scene, moby, decal, portal */
+    RHI_PIPE_SITE_TERRAIN_MATERIAL,  /* mod material on a terrain-cache bucket     */
+    RHI_PIPE_SITE_REBUILD,           /* rhi_rebuild_pipelines                      */
+    RHI_PIPE_SITES
+} rhi_pipe_site;
+
+/** @brief Count visits of a lazy pipeline site: draws that reached the slot test of that class, whether or not they compile.
+ *
+ * Safe on any thread.
+ * @param site The site's class.
+ * @param count Visits to add. */
+void          rhi_pipe_site_visit(rhi_pipe_site site, int count);
+
+/* Explicit create phase for rhi_pipe_phase_set. */
+typedef enum {
+    RHI_PIPE_PHASE_AUTO = 0,   /* bring-up before the first frame, first use after */
+    RHI_PIPE_PHASE_PRECOMPILE, /* the precompile                                   */
+    RHI_PIPE_PHASE_PROBE       /* warm-boot probe creates, counted apart           */
+} rhi_pipe_phase;
+
+/** @brief Set the phase the calling thread's pipeline creates are counted in until the next call.
+ *
+ * Per thread. Creates inside rhi_rebuild_pipelines count as rebuild in
+ * every phase but PROBE.
+ * @param phase The phase. */
+void          rhi_pipe_phase_set(rhi_pipe_phase phase);
+
+/** @brief Install the clock the RHI stamps its boot events with, in ns.
+ *
+ * Process-global; call before rhi_create. Without one the events read 0.
+ * @param now_ns The clock. */
+void          rhi_set_clock(int64_t (*now_ns)(void));
+
+/* Boot facts of the most recently created device, on the rhi_set_clock clock. */
+typedef struct {
+    int64_t  device_created_ns;  /* rhi_create returned the device              */
+    int64_t  first_frame_ns;     /* the first frame was submitted               */
+    int64_t  cache_load_ns;      /* reading the cache file and vkCreatePipelineCache */
+    uint64_t cache_file_bytes;   /* the cache file's size at open, 0 when absent */
+    uint64_t cache_offered_bytes;/* bytes offered to the driver                 */
+    int      cache_cold;         /* the file was removed at open (OPENPETE_PIPELINE_CACHE_COLD) */
+    unsigned bringup_creates;    /* pipeline creates before the first frame     */
+    uint64_t bringup_ns;         /* their summed wall time                      */
+} rhi_boot_stats;
+
+/** @brief Read the boot facts.
+ *
+ * @param out Receives them. */
+void          rhi_boot_stats_get(rhi_boot_stats *out);
+
 /** @brief Name the directory where devices created afterwards persist their Vulkan pipeline cache, and the function that writes the file.
  *
  * Each device loads vk-pipelines-<vendor>-<device>-<cache uuid>.bin from it

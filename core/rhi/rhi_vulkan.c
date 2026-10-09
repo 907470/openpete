@@ -28,6 +28,7 @@
 
 #include "rhi_gpu_audit.h" /* must follow volk.h: redirects the vk* globals */
 #include "rhi_memtype.h"
+#include "rhi_pipe_census.h"
 
 /* Acquire budget, and the back-off after one expiry.
  *
@@ -363,6 +364,8 @@ struct rhi_device {
     bool           has_depth_bias_clamp; /* depthBiasClamp feature enabled */
     bool           has_shader_float64;   /* shaderFloat64 feature enabled  */
     bool           has_fill_non_solid;   /* fillModeNonSolid feature enabled */
+    bool           has_creation_feedback; /* VK_EXT_pipeline_creation_feedback enabled */
+    bool           has_cache_control;    /* pipelineCreationCacheControl enabled */
     VkExtent2D     sc_extent;
     uint32_t       sc_count;
     VkImage        sc_images[RHI_MAX_SC_IMAGES];
@@ -629,6 +632,38 @@ struct rhi_buffer {
  * writes that had no generation left and overwrote bound data in place. */
 static uint64_t s_ring_gen_bumps, s_ring_gen_overflows, s_dbg_gw, s_dbg_gb;
 static uint64_t s_frame_serial;
+
+/* Boot facts (rhi_boot_stats_get) on the rhi_set_clock clock, and whether a
+ * frame has been submitted: the first submit ends the bring-up phase of the
+ * pipeline-create instruments. */
+static int64_t (*s_clock)(void);
+static rhi_boot_stats s_boot;
+static bool s_first_frame_done;
+/* Per-thread create phase (rhi_pipe_phase_set) and rebuild marker. */
+static _Thread_local rhi_pipe_phase t_pipe_phase;
+static _Thread_local bool t_in_rebuild;
+
+void rhi_set_clock(int64_t (*now_ns)(void)) { s_clock = now_ns; }
+void rhi_pipe_phase_set(rhi_pipe_phase phase) { t_pipe_phase = phase; }
+
+/** @brief Return the rhi_set_clock time, or 0 without a clock.
+ *
+ * @return ns on the installed clock. */
+static int64_t boot_now(void) { return s_clock ? s_clock() : 0; }
+
+/** @brief Record the first frame submission: its time, and the end of the bring-up create phase. */
+static void boot_frame_submitted(void)
+{
+    if (s_first_frame_done) return;
+    s_first_frame_done = true;
+    s_boot.first_frame_ns = boot_now();
+}
+
+void rhi_boot_stats_get(rhi_boot_stats *out)
+{
+    *out = s_boot;
+    out->bringup_creates = rhi_pc_bringup(&out->bringup_ns);
+}
 /** @brief Return whether OPENPETE_RING_GEN_DBG requests the ring-generation totals at rhi_destroy.
  *
  * The variable is read once; unset, empty or starting with 0 is off. */
@@ -1028,6 +1063,131 @@ static VkPhysicalDevice *enumerate_physical_devices(VkInstance instance, uint32_
     return devs;
 }
 
+/** @brief Return whether an extension name is in a device's extension list.
+ *
+ * @param avail The list, or NULL.
+ * @param n Its length.
+ * @param name Extension name.
+ * @return true when listed. */
+static bool ext_offered(const VkExtensionProperties *avail, uint32_t n, const char *name)
+{
+    for (uint32_t i = 0; avail && i < n; i++)
+        if (strcmp(avail[i].extensionName, name) == 0) return true;
+    return false;
+}
+
+/* Feature and property structs of VK_EXT_extended_dynamic_state3 and
+ * VK_EXT_graphics_pipeline_library, which the pinned Vulkan headers predate;
+ * layouts and structure types from the Vulkan registry. Queried for the
+ * pipeline feature report only, never enabled. */
+#define RHI_ST_EDS3_FEATURES ((VkStructureType)1000455000)
+#define RHI_ST_GPL_FEATURES  ((VkStructureType)1000320000)
+#define RHI_ST_GPL_PROPS     ((VkStructureType)1000320001)
+typedef struct {
+    VkStructureType sType;
+    void           *pNext;
+    VkBool32        f[31];   /* f[2] = extendedDynamicState3PolygonMode */
+} rhi_eds3_features;
+typedef struct {
+    VkStructureType sType;
+    void           *pNext;
+    VkBool32        graphicsPipelineLibrary;
+} rhi_gpl_features;
+typedef struct {
+    VkStructureType sType;
+    void           *pNext;
+    VkBool32        fastLinking;
+    VkBool32        independentInterpolationDecoration;
+} rhi_gpl_props;
+
+/* What the pipeline feature report found on a physical device. */
+typedef struct {
+    bool cache_control;   /* pipelineCreationCacheControl */
+    bool eds3_polygon;    /* extendedDynamicState3PolygonMode */
+    bool gpl;             /* graphicsPipelineLibrary */
+    bool gpl_fast_link;   /* graphicsPipelineLibraryFastLinking */
+} rhi_pipe_features;
+
+/** @brief Query the pipeline-related features of the offered extensions through vkGetPhysicalDeviceFeatures2.
+ *
+ * A struct is chained only for an extension the device lists; a device
+ * below Vulkan 1.1 reports every feature absent.
+ * @param phys Physical device.
+ * @param cc The device lists VK_EXT_pipeline_creation_cache_control.
+ * @param eds3 It lists VK_EXT_extended_dynamic_state3.
+ * @param gpl It lists VK_EXT_graphics_pipeline_library.
+ * @return The features found. */
+static rhi_pipe_features query_pipe_features(VkPhysicalDevice phys, bool cc, bool eds3, bool gpl)
+{
+    rhi_pipe_features out = {0};
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(phys, &props);
+    if (props.apiVersion < VK_API_VERSION_1_1) return out;
+    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT f_cc = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT };
+    rhi_eds3_features f_eds3 = { .sType = RHI_ST_EDS3_FEATURES };
+    rhi_gpl_features f_gpl = { .sType = RHI_ST_GPL_FEATURES };
+    rhi_gpl_props p_gpl = { .sType = RHI_ST_GPL_PROPS };
+    VkPhysicalDeviceFeatures2 f2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+    void *chain = NULL;
+    if (cc)   { f_cc.pNext = chain;   chain = &f_cc; }
+    if (eds3) { f_eds3.pNext = chain; chain = &f_eds3; }
+    if (gpl)  { f_gpl.pNext = chain;  chain = &f_gpl; p2.pNext = &p_gpl; }
+    f2.pNext = chain;
+    vkGetPhysicalDeviceFeatures2(phys, &f2);
+    vkGetPhysicalDeviceProperties2(phys, &p2);
+    out.cache_control = f_cc.pipelineCreationCacheControl == VK_TRUE;
+    out.eds3_polygon = f_eds3.f[2] == VK_TRUE;
+    out.gpl = f_gpl.graphicsPipelineLibrary == VK_TRUE;
+    out.gpl_fast_link = p_gpl.fastLinking == VK_TRUE;
+    return out;
+}
+
+/** @brief Select the pipeline-instrument extensions a device offers, record them, and log the pipeline feature report.
+ *
+ * VK_EXT_pipeline_creation_feedback is enabled when listed (it adds a
+ * per-create report and nothing to any other call), and
+ * VK_EXT_pipeline_creation_cache_control when listed with its feature (no
+ * create passes its flags unless asked); OPENPETE_PIPE_EXTS starting with 0
+ * declines both, for pricing them against a run without. The report line
+ * names, beside them, extendedDynamicState3PolygonMode,
+ * graphicsPipelineLibrary and its fast-link property, which are queried and
+ * never enabled.
+ * @param dev Device whose phys is read and has_creation_feedback and
+ *            has_cache_control are written.
+ * @param avail The device's extension list.
+ * @param n Its length.
+ * @param out Receives the names to enable (room for two).
+ * @return How many names were written. */
+static uint32_t pipeline_exts_select(rhi_device *dev, const VkExtensionProperties *avail,
+                                     uint32_t n, const char **out)
+{
+    static const char k_fb[] = "VK_EXT_pipeline_creation_feedback";
+    static const char k_cc[] = "VK_EXT_pipeline_creation_cache_control";
+    const bool cc_ext = ext_offered(avail, n, k_cc);
+    const bool eds3 = ext_offered(avail, n, "VK_EXT_extended_dynamic_state3");
+    const bool gpl = ext_offered(avail, n, "VK_EXT_graphics_pipeline_library");
+    const rhi_pipe_features f = query_pipe_features(dev->phys, cc_ext, eds3, gpl);
+    uint32_t k = 0;
+    const char *x_env = getenv("OPENPETE_PIPE_EXTS");
+    const bool declined = x_env && *x_env == '0';
+    const bool fb_listed = ext_offered(avail, n, k_fb);
+    dev->has_creation_feedback = fb_listed && !declined;
+    dev->has_cache_control = cc_ext && f.cache_control && !declined;
+    if (dev->has_creation_feedback) out[k++] = k_fb;
+    if (dev->has_cache_control) out[k++] = k_cc;
+    RHI_LOG("pipeline features: creation_feedback=%s cache_control=%s "
+            "eds3_polygon_mode=%s graphics_pipeline_library=%s gpl_fast_link=%s\n",
+            dev->has_creation_feedback ? "enabled" : fb_listed ? "declined" : "absent",
+            dev->has_cache_control ? "enabled" : !cc_ext ? "absent"
+                                   : declined ? "declined" : "listed-no-feature",
+            eds3 ? (f.eds3_polygon ? "yes" : "no") : "absent",
+            gpl ? (f.gpl ? "yes" : "no") : "absent",
+            gpl ? (f.gpl_fast_link ? "yes" : "no") : "absent");
+    return k;
+}
+
 /** @brief Choose the physical device and queue family and create the logical device and its graphics queue.
  *
  * A device qualifies with a graphics queue family that can also present to
@@ -1043,7 +1203,9 @@ static VkPhysicalDevice *enumerate_physical_devices(VkInstance instance, uint32_
  * extension, only on a windowed device that has both and whose
  * OPENPETE_PRESENT_TIMING, OPENPETE_PACE_FLIP_LOG or OPENPETE_EAGER_LATTICE
  * asks for them (OPENPETE_PRESENT_TIMING=0 declines); dev->has_present_timing
- * records the outcome. A headless device enables no extension.
+ * records the outcome. pipeline_exts_select adds the pipeline-instrument
+ * extensions on every device, headless included, and logs the pipeline
+ * feature report; a headless device enables no other extension.
  * @param dev Device whose instance, headless flag and surface are read and
  *            whose phys, gfx_family, device, gfx_queue, depth and feature
  *            fields are written.
@@ -1166,14 +1328,8 @@ static bool pick_physical_and_device(rhi_device *dev)
         ? calloc(dev_ext_n, sizeof(*dev_avail)) : NULL;
     if (dev_avail)
         vkEnumerateDeviceExtensionProperties(dev->phys, NULL, &dev_ext_n, dev_avail);
-    bool have_present_id = false, have_present_wait = false;
-    for (uint32_t i = 0; i < dev_ext_n && dev_avail; i++) {
-        if (strcmp(dev_avail[i].extensionName, "VK_KHR_present_id") == 0)
-            have_present_id = true;
-        else if (strcmp(dev_avail[i].extensionName, "VK_KHR_present_wait") == 0)
-            have_present_wait = true;
-    }
-    free(dev_avail);
+    const bool have_present_id = ext_offered(dev_avail, dev_ext_n, "VK_KHR_present_id");
+    const bool have_present_wait = ext_offered(dev_avail, dev_ext_n, "VK_KHR_present_wait");
 
     /* OFF unless asked for, because enabling it is NOT free: chaining a
      * present id onto every present measured 34.5 / 31.0 / 33.4 late ticks per
@@ -1205,8 +1361,13 @@ static bool pick_physical_and_device(rhi_device *dev)
                 ? "ENABLED (costs pacing; measurement runs only)" : "off");
     dev->has_present_timing = pt_want && !dev->headless &&
                               have_present_id && have_present_wait;
-    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-                              "VK_KHR_present_id", "VK_KHR_present_wait" };
+    /* Swapchain first, the present-timing pair after it, then the pipeline
+     * instrument extensions; a headless device takes only the last. */
+    const char *dev_ext[5] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                               "VK_KHR_present_id", "VK_KHR_present_wait" };
+    uint32_t ext_n = dev->headless ? 0u : (dev->has_present_timing ? 3u : 1u);
+    ext_n += pipeline_exts_select(dev, dev_avail, dev_ext_n, dev_ext + ext_n);
+    free(dev_avail);
     VkPhysicalDevicePresentWaitFeaturesKHR feat_wait = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
         .presentWait = VK_TRUE,
@@ -1216,15 +1377,18 @@ static bool pick_physical_and_device(rhi_device *dev)
         .pNext = &feat_wait,
         .presentId = VK_TRUE,
     };
+    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT feat_cc = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT,
+        .pNext = dev->has_present_timing ? (void *)&feat_id : NULL,
+        .pipelineCreationCacheControl = VK_TRUE,
+    };
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = dev->has_present_timing ? (const void *)&feat_id : NULL,
+        .pNext = dev->has_cache_control ? (const void *)&feat_cc : feat_cc.pNext,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
-        /* No swapchain extension when there's no surface to present to. */
-        .enabledExtensionCount = dev->headless ? 0u
-                                 : (dev->has_present_timing ? 3u : 1u),
-        .ppEnabledExtensionNames = dev->headless ? NULL : dev_ext,
+        .enabledExtensionCount = ext_n,
+        .ppEnabledExtensionNames = ext_n ? dev_ext : NULL,
         .pEnabledFeatures = &enable,
     };
     VkResult r = vkCreateDevice(dev->phys, &dci, NULL, &dev->device);
@@ -2698,22 +2862,50 @@ static const uint8_t *pcache_payload(const uint8_t *data, size_t n,
     return pl;
 }
 
+/** @brief Return the directory the pipeline cache file lives in.
+ *
+ * OPENPETE_PIPELINE_CACHE_DIR, when set and non-empty and a writer is
+ * installed, replaces the directory rhi_set_pipeline_cache_dir named, so a
+ * measurement keeps its cache file apart from the player's.
+ * @return The directory, "" when not persisted. */
+static const char *pcache_dir(void)
+{
+    const char *e = getenv("OPENPETE_PIPELINE_CACHE_DIR");
+    return (e && *e && s_pcache_write) ? e : s_pcache_dir;
+}
+
+/** @brief Remove the cache file before it is read when OPENPETE_PIPELINE_CACHE_COLD is set, for an app-cold boot.
+ *
+ * Only openpete's own file is removed; no driver cache is touched.
+ * @param path The cache file path, or "".
+ * @return 1 when the cold mode is on, else 0. */
+static int pcache_cold_remove(const char *path)
+{
+    const char *e = getenv("OPENPETE_PIPELINE_CACHE_COLD");
+    if (!(e && *e && *e != '0')) return 0;
+    if (path[0] && remove(path) == 0) RHI_LOG("pipeline cache: removed %s (cold boot)\n", path);
+    return 1;
+}
+
 /** @brief Create the device's pipeline cache, seeded from its file when pcache_payload accepts the file.
  *
  * The file is named by the device's vendor id, device id and
- * pipelineCacheUUID under the directory rhi_set_pipeline_cache_dir named, so
- * a driver update or another GPU starts a fresh file. Without a directory
- * the cache lives for the process only. A failure leaves dev->pcache
- * VK_NULL_HANDLE, which every pipeline create accepts.
+ * pipelineCacheUUID under pcache_dir, so a driver update or another GPU
+ * starts a fresh file. Without a directory the cache lives for the process
+ * only. A failure leaves dev->pcache VK_NULL_HANDLE, which every pipeline
+ * create accepts. The file's size, the bytes offered and the time spent
+ * reading the file and creating the cache are recorded for
+ * rhi_boot_stats_get.
  * @param dev Device whose physical device and logical device exist. */
 static void pipeline_cache_open(rhi_device *dev)
 {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(dev->phys, &props);
     dev->pcache_path[0] = '\0';
-    if (s_pcache_dir[0]) {
+    const char *dir = pcache_dir();
+    if (dir[0]) {
         int n = snprintf(dev->pcache_path, sizeof dev->pcache_path,
-                         "%s/vk-pipelines-%04x-%04x-", s_pcache_dir,
+                         "%s/vk-pipelines-%04x-%04x-", dir,
                          props.vendorID, props.deviceID);
         for (int i = 0; i < VK_UUID_SIZE && n > 0 && (size_t)n + 3 < sizeof dev->pcache_path; i++)
             n += snprintf(dev->pcache_path + n, sizeof dev->pcache_path - (size_t)n, "%02x",
@@ -2721,6 +2913,8 @@ static void pipeline_cache_open(rhi_device *dev)
         if (n > 0 && (size_t)n + 5 < sizeof dev->pcache_path) memcpy(dev->pcache_path + n, ".bin", 5);
         else dev->pcache_path[0] = '\0';
     }
+    s_boot.cache_cold = pcache_cold_remove(dev->pcache_path);
+    const int64_t t0 = boot_now();
     size_t n = 0, pn = 0;
     void *data = dev->pcache_path[0] ? read_whole_file(dev->pcache_path, &n) : NULL;
     const uint8_t *pl = pcache_payload((const uint8_t *)data, n, &props, &pn);
@@ -2735,6 +2929,9 @@ static void pipeline_cache_open(rhi_device *dev)
             dev->pcache = VK_NULL_HANDLE;
     }
     dev->pcache_loaded = pn;
+    s_boot.cache_load_ns = boot_now() - t0;
+    s_boot.cache_file_bytes = n;
+    s_boot.cache_offered_bytes = pn;
     if (dev->pcache_path[0])
         RHI_LOG("pipeline cache: %s (%zu bytes offered%s)\n", dev->pcache_path,
                 pn, data && !pl ? "; file refused" : "");
@@ -2853,6 +3050,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
             dev->device_name, headless ? " (headless)" : "",
             rhi_driver_version(dev), drv.driverInfo, (int)dev->sc_format, (int)RHI_RT_FORMAT,
             dev->sc_extent.width, dev->sc_extent.height, dev->sc_count);
+    s_boot.device_created_ns = boot_now();
     return dev;
 
 fail:
@@ -2912,6 +3110,7 @@ void rhi_destroy(rhi_device *dev)
                 (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
                 (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
     if (!dev) return;
+    rhi_pc_report();
     if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); retired_reclaim(dev, true); }
 
     if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
@@ -3553,6 +3752,7 @@ void rhi_end_frame(rhi_device *dev)
         queue_submit(dev, &si, dev->in_flight[dev->frame], "headless frame");
         dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
         dev->frame_active = false;
+        boot_frame_submitted();
         return;
     }
 
@@ -3608,6 +3808,7 @@ void rhi_end_frame(rhi_device *dev)
 
     dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
     dev->frame_active = false;
+    boot_frame_submitted();
 }
 
 bool rhi_begin_frame(rhi_device *dev) { return begin_frame_impl(dev, true); }
@@ -3669,6 +3870,7 @@ void rhi_end_frame_to_stage(rhi_device *dev, int stage)
     queue_submit(dev, &si, dev->in_flight[dev->frame], "stage frame");
     dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
     dev->frame_active = false;
+    boot_frame_submitted();
 }
 
 bool rhi_present_stage_acquire(rhi_device *dev)
@@ -5670,19 +5872,29 @@ void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
 static bool s_wireframe = false;
 void rhi_set_wireframe(int on) { s_wireframe = on != 0; }
 
-/** @brief Return whether a pipeline rasterizes as lines under the wireframe view.
+/** @brief Return whether a pipeline rasterizes as lines when the wireframe view is in the given state.
  *
- * True only while the wireframe view is on, for a non-postfx pipeline that
- * is marked wire_scene or tests depth. A depth-tested colour-write-off
- * pipeline without depth_overwrite (the opaque-depth pre-pass, the portal
- * aperture mask) stays filled so its coverage stays whole-face.
+ * True only with the view on, for a non-postfx pipeline that is marked
+ * wire_scene or tests depth. A depth-tested colour-write-off pipeline
+ * without depth_overwrite (the opaque-depth pre-pass, the portal aperture
+ * mask) stays filled so its coverage stays whole-face.
  * @param desc Pipeline description.
+ * @param wireframe The wireframe view's state.
  * @return true when the pipeline is drawn as lines. */
-static bool pipeline_wire(const rhi_pipeline_desc *desc)
+static bool pipeline_wire_view(const rhi_pipeline_desc *desc, bool wireframe)
 {
-    if (!s_wireframe || desc->postfx) return false;
+    if (!wireframe || desc->postfx) return false;
     if (desc->wire_scene) return true;
     return desc->depth_test && (!desc->color_write_off || desc->depth_overwrite);
+}
+
+/** @brief Return whether a pipeline rasterizes as lines under the current wireframe view.
+ *
+ * @param desc Pipeline description.
+ * @return pipeline_wire_view at the current view state. */
+static bool pipeline_wire(const rhi_pipeline_desc *desc)
+{
+    return pipeline_wire_view(desc, s_wireframe);
 }
 
 /** @brief Return the polygon mode a pipeline is created with.
@@ -5933,6 +6145,128 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     return rhi_max_u32(n, lo);
 }
 
+/* Creation feedback for one create: the whole pipeline and its two stages. */
+typedef struct {
+    VkPipelineCreationFeedbackEXT           pipe;
+    VkPipelineCreationFeedbackEXT           stages[2];
+    VkPipelineCreationFeedbackCreateInfoEXT info;
+} pipe_feedback;
+
+/** @brief Prepare a creation-feedback chain for one create.
+ *
+ * @param dev Device whose has_creation_feedback is read.
+ * @param fb Storage, zeroed here.
+ * @return The struct to chain onto VkGraphicsPipelineCreateInfo, or NULL
+ *         when the extension is not enabled. */
+static const void *pipe_feedback_chain(const rhi_device *dev, pipe_feedback *fb)
+{
+    memset(fb, 0, sizeof *fb);
+    if (!dev->has_creation_feedback) return NULL;
+    fb->info.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT;
+    fb->info.pPipelineCreationFeedback = &fb->pipe;
+    fb->info.pipelineStageCreationFeedbackCount = 2;
+    fb->info.pPipelineStageCreationFeedbacks = fb->stages;
+    return &fb->info;
+}
+
+/** @brief Return the instrument phase of a create on the calling thread.
+ *
+ * PROBE and the rebuild marker take precedence, then PRECOMPILE; otherwise
+ * bring-up until the first frame is submitted and first use after.
+ * @return The phase. */
+static rhi_pc_phase pipe_phase_now(void)
+{
+    if (t_pipe_phase == RHI_PIPE_PHASE_PROBE) return RHI_PC_PHASE_PROBE;
+    if (t_in_rebuild) return RHI_PC_PHASE_REBUILD;
+    if (t_pipe_phase == RHI_PIPE_PHASE_PRECOMPILE) return RHI_PC_PHASE_PRECOMPILE;
+    return s_first_frame_done ? RHI_PC_PHASE_FIRST_USE : RHI_PC_PHASE_BRINGUP;
+}
+
+/** @brief Count one vkCreateGraphicsPipelines call in the resource census and the pipeline-create instruments.
+ *
+ * The cache reading is the feedback's APPLICATION_PIPELINE_CACHE_HIT bit
+ * when the feedback is marked valid, else unknown. The present a
+ * display-owner create delays is the frame being recorded, or the next one
+ * outside a frame.
+ * @param dev Device the pipeline was created on.
+ * @param p The pipeline whose desc and stage sources were compiled.
+ * @param fb Its creation feedback.
+ * @param wall_ns Time inside the call. */
+static void pipe_create_record(const rhi_device *dev, const rhi_pipeline *p,
+                               const pipe_feedback *fb, uint64_t wall_ns)
+{
+    s_census.pipe_builds++;
+    s_census.pipe_ns += wall_ns;
+    const bool valid = (fb->pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT) != 0;
+    const bool hit = (fb->pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT) != 0;
+    const rhi_pc_create c = {
+        .phase = pipe_phase_now(),
+        .site = rhi_pc_site_of(&p->desc, p->vert_words || p->frag_words),
+        .fb = !valid ? RHI_PC_FB_UNKNOWN : hit ? RHI_PC_FB_HIT : RHI_PC_FB_MISS,
+        .owner = !s_display_owner || SDL_GetCurrentThreadID() == s_display_owner,
+        .present = s_frame_serial + (dev->frame_active ? 0u : 1u),
+        .wall_ns = wall_ns,
+        .driver_ns = valid ? fb->pipe.duration : 0u,
+    };
+    rhi_pc_record_create(&c);
+}
+
+/** @brief Return a stage's SPIR-V bytes: the stored mod words, else the embedded blob of its .spv name.
+ *
+ * OPENPETE_SHADER_DIR is not consulted: the census keys the embedded build.
+ * @param words Stored words, or NULL.
+ * @param nw Their count.
+ * @param name .spv name, or NULL.
+ * @param out_bytes Receives the byte count, 0 when no source exists.
+ * @return The bytes, or NULL. */
+static const void *census_stage_bytes(const uint32_t *words, size_t nw, const char *name,
+                                      size_t *out_bytes)
+{
+    *out_bytes = 0;
+    if (words) { *out_bytes = nw * 4; return words; }
+    return name ? find_embedded_shader(name, out_bytes) : NULL;
+}
+
+/** @brief Add a new pipeline base and its six reachable variant create infos to the census row.
+ *
+ * The variants are texture mapping (perspective, affine) by view (textured,
+ * notex, wireframe), with the constants and polygon mode pipeline_compile
+ * would hand the driver in that state; the stage hashes and declared
+ * constant ids come from the stage SPIR-V. No-op unless OPENPETE_PIPE_CENSUS
+ * is set.
+ * @param dev Device the pipeline was created on.
+ * @param p The pipeline. */
+static void census_add_base(const rhi_device *dev, const rhi_pipeline *p)
+{
+    if (!rhi_pc_level()) return;
+    const rhi_pipeline_desc *d = &p->desc;
+    size_t vn = 0, fn = 0;
+    const void *vs = census_stage_bytes(p->vert_words, p->vert_n, d->vert_spv, &vn);
+    const void *fs = census_stage_bytes(p->frag_words, p->frag_n, d->frag_spv, &fn);
+    const rhi_pc_variant base = {
+        .desc_hash = rhi_pc_desc_hash(d),
+        .vs_hash = rhi_pc_bytes_hash(vs, vn),
+        .fs_hash = rhi_pc_bytes_hash(fs, fn),
+        .declared = rhi_pc_spec_ids(vs, vn) | rhi_pc_spec_ids(fs, fn),
+        .render_pass = (uint64_t)(uintptr_t)dev->off_rp,
+    };
+    rhi_pc_variant v[6];
+    for (int i = 0; i < 6; i++) {
+        const int view = i >> 1;   /* 0 textured, 1 notex, 2 wireframe */
+        const bool wire = pipeline_wire_view(d, view == 2);
+        v[i] = base;
+        v[i].consts[0] = dev->depth_rev[d->depth_class];
+        v[i].consts[1] = (uint32_t)(i & 1);
+        v[i].consts[2] = (view == 1 || wire) ? 1u : 0u;
+        v[i].consts[3] = s_fs_moby_truescope;
+        v[i].consts[4] = s_fs_slot_contest;
+        v[i].consts[5] = (uint32_t)d->texel_stp_select;
+        v[i].poly_mode = (uint32_t)((wire && dev->has_fill_non_solid) ? VK_POLYGON_MODE_LINE
+                                                                     : VK_POLYGON_MODE_FILL);
+    }
+    rhi_pc_add_base(rhi_pc_site_of(d, p->vert_words || p->frag_words), v, 6);
+}
+
 /** @brief Compile a pipeline's Vulkan pipeline and layout from its stored desc and shader sources.
  *
  * The shaders come from the stored mod SPIR-V words when present, else from
@@ -5940,7 +6274,8 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
  * create path assigns the result to a fresh pipeline, and the rebuild path
  * swaps it into a live one only on success. The specialization constants
  * (depth convention, affine UV, NOTEX, moby true-scope, slot contest, texel
- * STP select) are read at this call.
+ * STP select) are read at this call. The create carries a creation-feedback
+ * chain when the extension is enabled and is counted by pipe_create_record.
  * @param dev Device the objects are created on.
  * @param p Pipeline whose desc and shader sources are compiled.
  * @param out_pipe Receives the pipeline on success.
@@ -6197,10 +6532,11 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         .subpass = 0,
     };
     VkPipeline pipeline = VK_NULL_HANDLE;
+    pipe_feedback fb;
+    gp.pNext = pipe_feedback_chain(dev, &fb);
     const Uint64 pipe_t0 = SDL_GetTicksNS();
     VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, &pipeline);
-    s_census.pipe_builds++;
-    s_census.pipe_ns += SDL_GetTicksNS() - pipe_t0;
+    pipe_create_record(dev, p, &fb, SDL_GetTicksNS() - pipe_t0);
     vkDestroyShaderModule(dev->device, vs, NULL);
     vkDestroyShaderModule(dev->device, fs, NULL);
     if (r != VK_SUCCESS) {
@@ -6258,6 +6594,7 @@ static rhi_pipeline *create_pipeline_common(rhi_device *dev,
         p->desc.frag_spv = p->frag_name;
     }
     if (pipeline_compile(dev, p, &p->pipeline, &p->layout) != 0) goto fail;
+    census_add_base(dev, p);
     p->next = dev->pipes_head;
     if (p->next) p->next->prev = p;
     dev->pipes_head = p;
@@ -6289,6 +6626,10 @@ int rhi_rebuild_pipelines(rhi_device *dev)
     seam_check("rebuild_pipelines");   /* the retired list is the display owner's */
     const Uint64 t0 = SDL_GetTicksNS();
     int fails = 0, rebuilt = 0;
+    unsigned hit0, miss0, unk0, hit1, miss1, unk1;
+    rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit0, &miss0, &unk0);
+    rhi_pc_rebuild_visit();
+    t_in_rebuild = true;
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
         VkPipeline np = VK_NULL_HANDLE;
         VkPipelineLayout nl = VK_NULL_HANDLE;
@@ -6319,8 +6660,11 @@ int rhi_rebuild_pipelines(rhi_device *dev)
         p->swap_idle = !dev->frame_active;
         rebuilt++;
     }
-    RHI_LOG("rebuilt %d pipelines (%d failed) in %.1f ms\n", rebuilt, fails,
-            (double)(SDL_GetTicksNS() - t0) / 1e6);
+    t_in_rebuild = false;
+    rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit1, &miss1, &unk1);
+    RHI_LOG("rebuilt %d pipelines (%d failed) in %.1f ms (cache hit %u, miss %u, unknown %u)\n",
+            rebuilt, fails, (double)(SDL_GetTicksNS() - t0) / 1e6,
+            hit1 - hit0, miss1 - miss0, unk1 - unk0);
     return fails;
 }
 

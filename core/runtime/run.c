@@ -24,6 +24,7 @@
 #include "openpete_workpool.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_pace_log.h"
+#include "openpete_boot_timing.h"
 #include "openpete_disc_trace.h"
 #include "openpete_disc_image.h"
 #include "rhi.h"
@@ -2658,6 +2659,7 @@ static int run_host_init(const openpete_options_t* opts) {
      * means zero work and a byte-identical modless run; a broken mod is
      * disabled with a log, never a failed launch. */
     openpete_mods_init(opts);
+    openpete_boot_mark(OP_BOOT_MODS_INIT);
 
     int win_w = (opts->window_w > 0) ? opts->window_w : game_default_window_w();
     int win_h = (opts->window_h > 0) ? opts->window_h : game_default_window_h();
@@ -2841,6 +2843,7 @@ static int run_host_init(const openpete_options_t* opts) {
     /* Create the window before bring-up so it belongs to this thread - the
      * one that pumps. Bring-up adopts it exactly as it adopts the splash's. */
     openpete_native_precreate_window(opts, win_w, win_h);
+    rhi_set_clock(op_now);   /* boot facts on the pace log's clock */
     (void)openpete_native_render_init(opts, win_w, win_h);
     /* Bring-up failed in a windowed run: PsyCross's own GL window is the only
      * display left, so map the window that was created hidden above. Without
@@ -6534,6 +6537,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                               pace_deadline_ns, pace_latch_ns,
                               pace_exec_start_ns, pace_exec_end_ns,
                               pace_latch_seq, pace_latch_bits);
+            openpete_boot_tick();
+            openpete_live_switch_poll(openpete_frame);
         }
 
         const int s_force_pacing = pace_force_pacing();

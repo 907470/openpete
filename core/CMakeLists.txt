@@ -22,6 +22,7 @@ add_library(openpete_core STATIC
     diag/fatal_message.c
     diag/pace_log.c
     diag/perf_stats.c
+    diag/boot_timing.c
     diag/profile.c
     diag/func_trace.c
     diag/ident_audit.c

@@ -9,6 +9,7 @@
 #include "openpete_fatal.h"
 #include "openpete_config.h"
 #include "openpete_log.h"
+#include "openpete_boot_timing.h"
 #include "openpete_keymap.h"
 #include "game_extras.h"
 #include "openpete_mods.h"
@@ -159,6 +160,7 @@ static int report_mode(openpete_options_t* opts) {
  * @param argv Arguments.
  * @return The process exit code (OPENPETE_EXIT_*, or 1 on a startup failure). */
 int main(int argc, char** argv) {
+    openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* Reconnect stdout/stderr to the parent terminal on a GUI-subsystem
      * (distribution) Windows build; no-op elsewhere. Before any output. */
     openpete_attach_parent_console();

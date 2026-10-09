@@ -9354,6 +9354,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
         if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, &mg) >= 0) {
             void** slot = want_mark ? mg.pipeline_mark_slot
                                     : mg.pipeline_slot[blend_class];
+            rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
             if (*slot == NULL) {
                 rhi_pipeline_desc md = {
                     .vert_spv = "psx_scene.vert.spv",
@@ -10034,6 +10035,7 @@ static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
     void** ov_slot = portal ? mg->pipeline_portal_slot[pslot]
                    : ov_mark ? mg->pipeline_mark_slot
                              : mg->pipeline_slot[blend_class];
+    rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
     if (*ov_slot == NULL) {
         rhi_pipeline_desc md = {
             .vert_spv = "psx_scene.vert.spv",
@@ -12760,6 +12762,7 @@ static bool draw_native_scene(bool full_extent)
                     if (uniform &&
                         openpete_mods_material_resolve(s0_decal_tag, &dmg) >= 0) {
                         void** ds = dmg.pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL];
+                        rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
                         if (*ds == NULL) {
                             rhi_pipeline_desc dd = {
                                 .vert_spv = "shadow_decal_tex.vert.spv",
@@ -12971,6 +12974,7 @@ static bool draw_native_scene(bool full_extent)
                         if (pseg[sg].tag &&
                             openpete_mods_material_resolve(pseg[sg].tag, &mg) >= 0) {
                             void** slot = mg.pipeline_slot[4];
+                            rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
                             if (*slot == NULL) {
                                 rhi_pipeline_desc md = {
                                     .vert_spv = "psx_scene.vert.spv",
@@ -15493,6 +15497,7 @@ static struct {                                /* std140 mirror of rq_params */
 static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || s_raster_mult <= 0) return 0;
+    rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
     if (!s_rq_pipe) {
         rhi_pipeline_desc pd = {0};
         pd.vert_spv = "postfx_fs.vert.spv";
@@ -15550,6 +15555,7 @@ static void* s_dither_pipe;                    /* rhi_pipeline* / PFX_PIPE_FAILE
 static int psx_dither_append(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || !s_dither) return 0;
+    rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
     if (!s_dither_pipe) {
         rhi_pipeline_desc pd = {0};
         pd.vert_spv = "postfx_fs.vert.spv";
@@ -15608,8 +15614,10 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
     int n = raster_quantize_prepend(point, pass);
     n += psx_dither_append(point, pass + n);
-    n += openpete_mods_postfx_collect(point, pass + n, PFX_MAX_PASSES - n);
+    const int n_mod = openpete_mods_postfx_collect(point, pass + n, PFX_MAX_PASSES - n);
+    n += n_mod;
     if (n <= 0 || w <= 0 || h <= 0) return 0;
+    rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_POSTFX, n_mod);
     if (!s_pfx_ubo)
         s_pfx_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_POSTFX_UNIFORMS_MAX,
                                    1 + PFX_MAX_PASSES);

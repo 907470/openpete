@@ -11,6 +11,7 @@
 #include "openpete.h"
 #include "openpete_config.h"
 #include "openpete_log.h"
+#include "openpete_boot_timing.h"
 #include "openpete_keymap.h"
 #include "openpete_surface.h"
 #include "game_extras.h"
@@ -39,6 +40,7 @@ extern "C" const openpete_recomp_module openpete_game_recomp_module;
  * @return The exit status: openpete_run's result, 0 after --help or a
  *         configuration or keys report, 1 when the recompiled module fails to register. */
 int main(int argc, char** argv) {
+    openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* abort() does not flush, and the PSYQ stubs use it to surface an
      * unimplemented surface. Unbuffer so that diagnostic survives. */
     setvbuf(stderr, NULL, _IONBF, 0);

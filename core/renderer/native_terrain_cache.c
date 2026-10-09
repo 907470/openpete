@@ -2016,6 +2016,7 @@ static int tc_bind_material(int bucket, int variant, int slot,
     int idx = variant * OPENPETE_MATERIAL_TER_SLOTS + slot;
     if (openpete_mods_material_terrain_bucket_gpu(bucket, idx, &mg) != 0)
         goto draw_stock;
+    rhi_pipe_site_visit(RHI_PIPE_SITE_TERRAIN_MATERIAL, 1);
     if (*mg.pipeline_slot == OPENPETE_POSTFX_PIPE_FAILED) goto draw_stock;
     if (!*mg.pipeline_slot) {
         static const char *k_vert[OPENPETE_MATERIAL_TER_VARIANTS] = {
