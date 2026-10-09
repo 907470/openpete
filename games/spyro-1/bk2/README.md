@@ -122,9 +122,14 @@ Read the failure tag, then:
 - **expected-red** - the BK2 surfaces an `open` channel; not a
   regression. Open channels are tracked in
   `games/spyro-1/manifest/render_channels.toml`.
-- **REGRESSION** - a `gated` channel diverged. The classifier
-  output names which channel and which state region; cross-
-  reference with `code_generator.cpp` substitution sites for that
-  channel.
+- **REGRESSION** - a channel with any status other than `open`
+  diverged, or a state region no channel claims diverged (an orphan).
+  The classifier output names each channel and state region with the
+  tick it first diverged; cross-reference with `code_generator.cpp`
+  substitution sites for that channel. An orphan gets a channel entry
+  before it can be expected-red.
 - **BROKEN (no hash log)** - openpete crashed or hung; check
   `/tmp/determinism-matrix/log-*.txt` (rerun with `--keep-logs`).
+- **BROKEN (classifier ...)** - the two hash logs cannot be compared:
+  header or row-count mismatch, no rows, or columns that name no
+  region of the game's `gameplay_state_regions.toml`.

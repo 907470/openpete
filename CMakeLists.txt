@@ -1349,8 +1349,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     # Matrix determinism gate - broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
-    # Divergence in an open channel is expected; in a gated or verified
-    # channel it is a regression.
+    # Divergence in an open channel of the game's channel registry is
+    # expected; in any other channel, or in a region no channel claims, it
+    # is a regression.
     # Slow (boots N PSX sessions); only runs under `ctest -L slow`.
     add_test(NAME determinism_matrix
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_determinism_matrix.sh

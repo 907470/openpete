@@ -9,11 +9,16 @@
 # triggers in-level (via a moby AI path, say), or only at 21:9. This
 # script sweeps the product of presentation knobs and the BK2 corpus.
 #
-# Pass/fail policy: divergence in an `open` channel is EXPECTED
-# (gate is documented red until those channels are closed); divergence
-# in a `gated`/`verified` channel is a REGRESSION (the harness exits
-# non-zero). We piggyback on tools/classify_hash_divergence.py to make
-# that distinction - any line tagged REGRESSION in any cell fails.
+# Pass/fail policy: tools/classify_hash_divergence.py classifies each
+# cell against the game's channel registry
+# (games/<game>/manifest/render_channels.toml). Divergence in an `open`
+# channel is EXPECTED (the gate is documented red until those channels
+# are closed). Divergence in any other channel, or in a region no
+# channel claims, is a REGRESSION; a game without a registry has no
+# channels, so every divergent region of it is a REGRESSION. A cell the
+# classifier cannot compare (missing log, header or row-count mismatch,
+# no rows, columns that name no region of the game) is BROKEN. Both fail
+# the run, as does a run that compared zero rows.
 #
 # Defaults are tuned for a "PR-tier" sweep that runs in a handful of
 # minutes locally. For a full nightly-style sweep, pass --full or
@@ -24,12 +29,19 @@
 #     [--game SLUG]                  (default spyro-1; the bk2 corpus and the
 #                                     disc follow it)
 #     [--build-dir=build/linux-release]
-#     [--frames=N]                   (default 2000; per-cell frame cap)
+#     [--frames=N]                   (default per game: 2000; spyro-3 2600,
+#                                     its longest default movie is 2589 rows)
 #     [--aspects=4:3,16:9,21:9]      (comma list; baseline 4:3)
 #     [--fovs=default,90]            ("default" = no --fov flag)
-#     [--scenarios=title,stone-hill-entry,inventory]
-#                                    ("title" = no --bk2; otherwise a stem
-#                                     under the game's bk2 directory)
+#     [--scenarios=LIST]             ("title" = no --bk2; otherwise a stem
+#                                     under the game's bk2 directory). Default
+#                                     per game, each covering a new-game boot,
+#                                     a level load and a portal entry:
+#       spyro-1  title,stone-hill-entry,inventory
+#       spyro-2  title,start-new-game,summer-forest-collect-orb,
+#                autumn-plains-skelos-badlands-portal-entry
+#       spyro-3  title,new-game-title,crystal-islands-flame,
+#                sunrise-spring-sunny-villa-portal-entry
 #     [--out=/tmp/determinism-matrix]
 #     [--full]                       (4:3,16:9,21:9,32:9 × default,50,90,120
 #                                     × all *.bk2 scenarios + title)
@@ -44,8 +56,9 @@
 #
 # Exit codes:
 #   0 - every cell either matches its baseline or diverges only in
-#       open-status channels (documented expected red).
-#   1 - at least one cell diverges in a gated/verified channel.
+#       open-status channels (documented expected red), and at least one
+#       row was compared.
+#   1 - a cell is a REGRESSION or BROKEN, or no row was compared.
 #   2 - setup error.
 
 set -uo pipefail
@@ -57,10 +70,20 @@ source scripts/lib/game.sh
 GAME="$(pg_parse_game "$@")" || exit 2
 
 BUILD_DIR="build/linux-release"
-FRAMES=2000
 ASPECTS_CSV="4:3,16:9,21:9"
 FOVS_CSV="default,90"
-SCENARIOS_CSV="title,stone-hill-entry,inventory"
+case "$GAME" in
+    spyro-2)
+        FRAMES=2000
+        SCENARIOS_CSV="title,start-new-game,summer-forest-collect-orb,autumn-plains-skelos-badlands-portal-entry" ;;
+    spyro-3)
+        FRAMES=2600
+        SCENARIOS_CSV="title,new-game-title,crystal-islands-flame,sunrise-spring-sunny-villa-portal-entry" ;;
+    *)
+        FRAMES=2000
+        SCENARIOS_CSV="title,stone-hill-entry,inventory" ;;
+esac
+FRAMES_DEFAULT="$FRAMES"
 OUT_DIR="/tmp/determinism-matrix"
 KEEP_LOGS=0
 FULL=0
@@ -82,7 +105,7 @@ for arg in "$@"; do
         --keep-logs)   KEEP_LOGS=1 ;;
         --game|--game=*) ;;   # consumed by pg_parse_game above
         spyro-*)       ;;     # the two-word --game SLUG spelling
-        --help|-h)     sed -n '1,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h)     sed -n '1,62p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
@@ -120,7 +143,7 @@ if [[ $SOAK -eq 1 ]]; then
     # rather than spinning out to FRAMES.
     [[ "$ASPECTS_CSV" == "4:3,16:9,21:9" ]] && ASPECTS_CSV="4:3,16:9"
     [[ "$FOVS_CSV"    == "default,90"    ]] && FOVS_CSV="default"
-    [[ "$FRAMES"      == "2000"          ]] && FRAMES=30000
+    [[ "$FRAMES"      == "$FRAMES_DEFAULT" ]] && FRAMES=30000
     SCENARIOS_CSV=$(list_bk2_scenarios "$EXCLUDE_CSV")
     BK2_STOP_ON_END=1
 fi
@@ -170,10 +193,14 @@ run_cell() {
 }
 
 declare -i total_cells=0 regressions=0 expected_red=0 clean=0 broken_runs=0
+declare -i rows_compared=0
 
 # Compare two hash logs; classify the result. Echo a one-line verdict
-# (CLEAN / EXPECTED / REGRESSION / BROKEN). Increments the global
-# counters as a side effect.
+# (CLEAN / expected-red / REGRESSION / BROKEN) with the rows compared.
+# Increments the global counters as a side effect. The verdict is read
+# from the classifier's exit status and its final `VERDICT <v> rows=<n>`
+# line; an exit status and verdict line that do not agree, or a missing
+# line, is BROKEN, so a classifier crash can never count as expected-red.
 compare_cell() {
     local label="$1" baseline_csv="$2" cell_csv="$3"
     if [[ ! -s "$cell_csv" ]]; then
@@ -181,21 +208,33 @@ compare_cell() {
         printf "  %-50s BROKEN (no hash log)\n" "$label"
         return
     fi
-    local out
-    out=$(python3 tools/classify_hash_divergence.py "$baseline_csv" "$cell_csv" 2>&1)
-    if [[ -z "$out" || "$out" == *"MATCH bit-identical"* ]]; then
-        clean+=1
-        printf "  %-50s CLEAN\n" "$label"
-        return
-    fi
-    if echo "$out" | grep -q "REGRESSION"; then
-        regressions+=1
-        printf "  %-50s REGRESSION\n" "$label"
-        echo "$out" | sed 's/^/      /'
-    else
-        expected_red+=1
-        printf "  %-50s expected-red\n" "$label"
-    fi
+    local out rc verdict rows
+    out=$(python3 tools/classify_hash_divergence.py --game "$GAME" \
+          "$baseline_csv" "$cell_csv" 2>&1)
+    rc=$?
+    verdict=$(printf '%s\n' "$out" | sed -n 's/^VERDICT \([A-Z]*\) rows=[0-9]*$/\1/p' | tail -n1)
+    rows=$(printf '%s\n' "$out" | sed -n 's/^VERDICT [A-Z]* rows=\([0-9]*\)$/\1/p' | tail -n1)
+    case "$rc:$verdict" in
+        0:CLEAN)
+            clean+=1
+            rows_compared+=rows
+            printf "  %-50s CLEAN (%s rows)\n" "$label" "$rows" ;;
+        1:EXPECTED)
+            expected_red+=1
+            rows_compared+=rows
+            printf "  %-50s expected-red (%s rows)\n" "$label" "$rows"
+            printf '%s\n' "$out" | sed 's/^/      /' ;;
+        1:REGRESSION)
+            regressions+=1
+            rows_compared+=rows
+            printf "  %-50s REGRESSION (%s rows)\n" "$label" "$rows"
+            printf '%s\n' "$out" | sed 's/^/      /' ;;
+        *)
+            broken_runs+=1
+            printf "  %-50s BROKEN (classifier rc=%s verdict=%s)\n" \
+                "$label" "$rc" "${verdict:-none}"
+            printf '%s\n' "$out" | sed 's/^/      /' ;;
+    esac
 }
 
 mode_tag="matrix"
@@ -232,26 +271,36 @@ for scenario in "${SCENARIOS[@]}"; do
     echo
 done
 
-# Print registry context to keep the report self-explanatory.
-if [[ -x "$(command -v python3)" ]]; then
-    python3 tools/check_channel_registry.py 2>/dev/null | sed "s/^/[$mode_tag] /"
+# Print the game's registry context to keep the report self-explanatory.
+REGISTRY="games/$GAME/manifest/render_channels.toml"
+if [[ -f "$REGISTRY" ]]; then
+    python3 tools/check_channel_registry.py --registry "$REGISTRY" \
+        --state-regions "games/$GAME/manifest/gameplay_state_regions.toml" \
+        2>/dev/null | sed "s/^/[$mode_tag] /"
+else
+    echo "[$mode_tag] $GAME has no channel registry ($REGISTRY): every divergent region is a REGRESSION"
 fi
 
 echo
-echo "[$mode_tag] cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs"
+echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared"
 
 if [[ $KEEP_LOGS -eq 0 ]]; then
     rm -f "$OUT_DIR"/log-*.txt
 fi
 
-# Broken runs are setup failures, not gameplay regressions; report
-# them but don't conflate. Exit code: 1 if any regression OR any
-# broken run; 0 if every cell was clean or expected-red.
+# Broken cells are setup or comparison failures, not gameplay
+# regressions; they are reported apart but fail the run the same way.
+# Exit code: 1 on any regression, any broken cell, or zero rows
+# compared; 0 if every cell was clean or expected-red.
 if (( regressions > 0 )); then
     exit 1
 fi
 if (( broken_runs > 0 )); then
-    echo "[$mode_tag] FAIL: $broken_runs cell(s) failed to run - see $OUT_DIR/log-*.txt" >&2
+    echo "[$mode_tag] FAIL: $broken_runs cell(s) BROKEN - see $OUT_DIR/log-*.txt" >&2
+    exit 1
+fi
+if (( rows_compared == 0 )); then
+    echo "[$mode_tag] FAIL: VACUOUS - no cell compared a row" >&2
     exit 1
 fi
 exit 0
