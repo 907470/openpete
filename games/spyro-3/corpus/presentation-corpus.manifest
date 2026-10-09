@@ -195,3 +195,9 @@ second-warning-hunter-cut|1347|2||1349,1350,1351,1352,1353|--skip-to-cutscene th
 # tick N-1 drew particles and tick N captured none, and 1989 where tick N-1
 # captured none; a held present draws exactly tick N-1's set. Blessed pre-fix.
 second-warning-held-particles|1799|264||1799,1989,2063|--skip-to-cutscene the_second_warning
+
+# cloud-spires-game-over: the game-over reload. The game-over image is read
+# through the synchronous reader with loadStage already 2; deferring that
+# read's completion hangs the reader's no-VSync spin (watchdog exit at VBL
+# 5916). 5400 is the game-over screen, 7300 the reloaded level live.
+cloud-spires-game-over|5400|1000||5400,7300

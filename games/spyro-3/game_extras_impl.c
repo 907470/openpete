@@ -33,9 +33,14 @@
 // iteration. A budget spent on the image fetch leaves the walk with no read in
 // flight, the cursor never reaches its end, and the overlay's final
 // `while (loadStage < 8) func_8002CA50()` spin at 0x80076D98, which never
-// calls VSync, hangs; the image fetch is therefore not in load. The title path
-// (GAMESTATE_LOADING_IMG, 5) reads its image synchronously through
-// func_80050578 before the state machine starts and is unaffected.
+// calls VSync, hangs; the image fetch is therefore not in load. A read is in
+// load only when it comes from the asynchronous reader, whose CdRead returns
+// to 0x80050758. The synchronous reader func_80050578 spins at 0x80050650 on
+// the read's completion flag without calling VSync, so a deferred completion
+// never arrives inside its spin: the game-over image fetch
+// (func_loading_80076FEC sub-state 1, issued with loadStage already 2) and
+// the title path's image read (GAMESTATE_LOADING_IMG, 5) both go through it
+// and both complete in the iteration that issued them.
 
 #include "game_extras.h"
 #include "openpete_psx.h"
@@ -163,8 +168,9 @@ int  game_resolve_area_arg(const char* arg, int* out_area) {
  * per-game belongs to the recompiler, not to this file. */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
-/* loadStage 2..7 except the portal loading-image fetch (the load-read classifier note in the file header). */
+/* Asynchronous-reader reads in loadStage 2..7 except the portal loading-image fetch (the load-read classifier note in the file header). */
 int psyq_game_cd_read_in_load(CPUState* cpu) {
+    if (cpu->ra != 0x80050758u) return 0;
     uint32_t state = cpu->read_word(0x8006C518u);
     if (state < 2u || state > 7u) return 0;
     if (cpu->read_word(0x8006E344u) == 7u && cpu->read_word(0x8006FBC8u) == 2u)
