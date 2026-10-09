@@ -82,9 +82,18 @@
 # Every verdict writes verdict-report.txt into the candidate directory: the
 # verdict and exit code, the row census, the sha256 of the blessed.tsv and
 # identity baseline read, the credits, identity and diff exit codes, the
-# divergent, missing and extra tiles and the identity pairs over baseline
-# (both members). The identity and diff output is kept beside it in
-# verdict-ident.log and verdict-diff.log.
+# divergent, missing and extra tiles, the identity pairs over baseline
+# (both members) and every crashed capture leg (`crashed-leg: <leg> rc=N
+# <kept dir>`, from crashes.txt). The identity and diff output is kept beside
+# it in verdict-ident.log and verdict-diff.log. A capture that ends
+# incomplete also writes the report.
+#
+# Crashed legs. A capture leg that exits nonzero or writes no tile is kept,
+# its log, argv, exit code and any hang or core dump, in a crash directory
+# beside the candidate directory that no run deletes (default
+# <candidate>.crashes/<time>-<pid>-<random>/<leg>/; PRESENTATION_GOLDEN_CRASH_DIR
+# replaces <candidate>.crashes; scripts/presentation-game.sh, crashed legs).
+# A crash alone does not change the verdict.
 #
 # PRESENTATION_TIER selects the corpus tier (scripts/presentation-game.sh):
 # its manifest, golden, identity baseline and default candidate directory. A
@@ -284,6 +293,7 @@ vr_finish() {
     echo "credits-rc: $crc"
     echo "identity-rc: $irc"
     echo "diff-rc: $drc"
+    pg_crash_list "crashed-leg: " "$OUT"
     [[ -f "$OUT/verdict-diff.log" ]] && awk '
       $1 == "DIVERGE" { print "divergent: " $2 " " substr($0, index($0, $3)) }
       $1 == "MISSING" { print "missing: " $2 }
@@ -293,6 +303,10 @@ vr_finish() {
         canon = $2; sub(/__ident__/, "__canon__", canon)
         print "identity-" tolower($1) ": " $2 " " canon " " $3 " " $4 }' "$OUT/verdict-ident.log"
   } >"$OUT/$REPORT_NAME"
+  if [[ -s "$OUT/crashes.txt" ]]; then
+    echo "[presentation-golden] $(wc -l <"$OUT/crashes.txt") crashed leg(s) kept:"
+    pg_crash_list "  " "$OUT"
+  fi
   echo "[presentation-golden] report: $OUT/$REPORT_NAME"
   exit "$rc"
 }
@@ -367,6 +381,9 @@ else
   rm -rf "$OUT"; mkdir -p "$OUT"
 fi
 if [[ "${PRESENTATION_GOLDEN_KEEP:-1}" == "0" ]]; then trap 'rm -rf "$OUT"' EXIT; fi
+# Crashed capture legs are kept outside OUT (scripts/presentation-game.sh,
+# crashed legs); OUT/crashes.txt names them and the report lists them.
+pg_crash_init "$OUT"
 FIELDS_ARG=()
 if [[ -n "${OPENPETE_CAPTURE_FIELDS:-}" ]]; then
   FIELDS_ARG=(--fields "$OPENPETE_CAPTURE_FIELDS")
@@ -387,7 +404,7 @@ rc=$?
 if [[ $rc -eq 64 ]]; then echo "[presentation-golden] SKIP (capture prereqs missing)"; exit 64; fi
 # 65 = the bk2 corpus had no rows for this game. Not a failure on its own: the
 # freecam corpus may still carry rows, and the row count below decides.
-if [[ $rc -ne 0 && $rc -ne 65 ]]; then echo "[presentation-golden] FAIL: capture incomplete"; exit 1; fi
+if [[ $rc -ne 0 && $rc -ne 65 ]]; then echo "[presentation-golden] FAIL: capture incomplete"; vr_finish 1; fi
 
 # The freecam corpus is additive: a manifest with no rows returns 0 (nothing to
 # capture), a missing Vulkan loader returns 64 (skip that corpus, keep the bk2
@@ -395,7 +412,7 @@ if [[ $rc -ne 0 && $rc -ne 65 ]]; then echo "[presentation-golden] FAIL: capture
 if [[ -n "$PG_FREECAM_MANIFEST" ]]; then
   tests/harness/freecam-corpus.sh default "$OUT" "$FREECAM_FILTER" $BUILD_ARG "$GAME_ARG"
   frc=$?
-  if [[ $frc -eq 1 ]]; then echo "[presentation-golden] FAIL: freecam capture incomplete"; exit 1; fi
+  if [[ $frc -eq 1 ]]; then echo "[presentation-golden] FAIL: freecam capture incomplete"; vr_finish 1; fi
 fi
 
 vr_census

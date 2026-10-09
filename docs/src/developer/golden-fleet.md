@@ -255,9 +255,13 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
 10. Heat diffs. The pulled divergent tiles are diffed locally against the
     store with `tests/harness/presentation-corpus-diff.py --expect-subset`
     into `<candidate>/diff`.
-11. Teardown. `runs/<run-id>/` is deleted on every host on every exit
-    path; the local run directory keeps `coordinator.log`, `done`,
-    `active.lock`, `stream.log`, `expect.txt` and `stop-request`. A host unreachable at teardown keeps its directory for
+11. Teardown. Every touched host's crashed capture legs (each unit's
+    `cand.crashes/`: leg log, argv, exit code, hang and core dumps) are
+    pulled into `<local run dir>/crashes/<host>/` and each kept leg is
+    named in `coordinator.log`. `runs/<run-id>/` is then deleted on every
+    host on every exit path; the local run directory keeps
+    `coordinator.log`, `done`, `active.lock`, `stream.log`, `expect.txt`,
+    `stop-request` and `crashes/`. A host unreachable at teardown keeps its directory for
     `clean`.
 
 ## Row resume
@@ -445,8 +449,10 @@ host, attempt and wall time.
     stream.log           local host only: received stream lines
     expect.txt           local host only: the run's copy of --expect FILE
     stop-request         local host only: written by `stop`
+    crashes/<host>/      local host only: crashed capture legs pulled at teardown
     u-<job>/             attempt-N.pid, attempt-N.done, attempt-N.memavail,
-                         attempt-N.stream, capture.log, verdict.log, store/, cand/
+                         attempt-N.stream, capture.log, verdict.log, store/, cand/,
+                         cand.crashes/ (crashed capture legs, kept across attempts)
                          (cand/resume/: row stamps, imported.tsv)
                          (calibration legs: u-calib-<host>-s<slots>-<n>/)
     helpers.tsv          dbus-daemon helpers started during a job

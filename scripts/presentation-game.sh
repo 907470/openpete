@@ -266,39 +266,114 @@ pg_split_launch() {  # launch-field
   done
 }
 
-# ---- failed-leg logs -------------------------------------------------------
+# ---- crashed legs ----------------------------------------------------------
 #
 # A capture leg's log is the only record of why it failed, and a crash writes
 # its evidence to that log: the crash handler prints the fault address, the
 # host RIP, the guest pc/ra and the FIRST backtrace frames (the faulting
 # function) before the last frames (the dispatcher, which is the same for
-# every guest-side fault). Keeping five tail lines therefore keeps the part
-# that identifies nothing, and deleting the log loses a crash that does not
-# reproduce. These two helpers keep the whole log beside the tiles the leg was
-# supposed to write, and quote the identifying lines into the corpus log.
+# every guest-side fault); a glibc abort prints only its one-line message.
+# The candidate directory is cleared by the next run, so a crash that does
+# not reproduce would lose its evidence there. A leg that exits nonzero or
+# writes no tile is therefore kept in a crash directory outside the candidate
+# directory, which no harness deletes:
+#
+#   ${PRESENTATION_GOLDEN_CRASH_DIR:-<outdir>.crashes}/<YYYYmmdd-HHMMSS>-<pid>-<random>/<leg>/
+#     leg.log        the leg's stdout and stderr
+#     argv.txt       the leg's command line, shell-quoted, env entries first
+#     rc.txt         exit code, signal name, host, time, working directory,
+#                    core_pattern, core size limit, moved core files
+#     hang-trace.bin, hang-ram.bin   the hang watchdog's dumps, when it tripped
+#     core*          core files written into the working directory during the
+#                    leg (attributed by time: concurrent legs share the
+#                    working directory)
+#
+# The per-run directory is created by the first crashed leg, so a run with no
+# crashed leg creates nothing. PG_CRASH_LIST, the candidate directory's
+# crashes.txt, lists the run's crashed legs (`<leg>\t<rc>\t<kept dir>`), from
+# which the verdict report names each one.
 
-# Delete the crash logs of a previous run so a leg that passes this time
-# cannot leave one behind to be read as this run's failure. args: outdir
-pg_clear_crash_logs() {
+# Set and export PG_CRASH_DIR, this run's crash directory, and PG_CRASH_LIST,
+# outdir/crashes.txt, unless an enclosing script set them; when this call sets
+# them, also delete outdir's crashes.txt and legacy *.crash.log copies of the
+# previous run. A script run by an enclosing run shares that run's directory
+# and list. args: outdir
+pg_crash_init() {
+  [[ -n "${PG_CRASH_DIR:-}" ]] && return 0
+  local root="${PRESENTATION_GOLDEN_CRASH_DIR:-${1%/}.crashes}"
+  PG_CRASH_DIR="$(realpath -m -- "$root")/$(date +%Y%m%d-%H%M%S)-$$-$RANDOM"
+  PG_CRASH_LIST="$(realpath -m -- "$1")/crashes.txt"
+  export PG_CRASH_DIR PG_CRASH_LIST
   [[ -d "$1" ]] || return 0
+  rm -f -- "${1:?}/crashes.txt"
   find "$1" -maxdepth 1 -type f -name '*.crash.log' -delete
 }
 
-# args: logfile outdir leg-name rc
-pg_keep_crash_log() {
-  local log="$1" outdir="$2" name="$3" rc="$4"
-  local kept="$outdir/${name}.crash.log"
-  cp -f "$log" "$kept"
-  echo "  rc=$rc, full leg log kept: $kept"
+# Make a leg's scratch directory and print its path. The leg logs to
+# <dir>/leg.log with pg_leg_env's entries in its environment; the caller
+# removes the directory after the leg. args: none
+pg_leg_begin() {
+  local d; d="$(mktemp -d -t openpete-leg.XXXXXX)" || return 1
+  : >"$d/.start"
+  echo "$d"
+}
+
+# Print the environment entries that put the hang watchdog's dumps in the
+# leg's scratch directory instead of the shared logs state directory.
+# args: legdir
+pg_leg_env() {
+  echo "OPENPETE_HANG_TRACE=$1/hang-trace.bin"
+  echo "OPENPETE_HANG_RAM=$1/hang-ram.bin"
+}
+
+# Keep a crashed leg: copy its scratch directory to PG_CRASH_DIR/<leg>, write
+# argv.txt and rc.txt, move core files written into the working directory
+# since the leg started, append the leg to PG_CRASH_LIST and quote the
+# identifying log lines into the corpus log. args: legdir leg-name rc argv...
+pg_keep_crash_leg() {
+  local legdir="$1" name="$2" rc="$3"; shift 3
+  local kept="${PG_CRASH_DIR:?pg_crash_init not called}/$name" log="$legdir/leg.log" sig="" c
+  mkdir -p "$kept"
+  cp -a "$legdir/." "$kept/"
+  rm -f -- "${kept:?}/.start"
+  { printf '%q ' "$@"; echo; } >"$kept/argv.txt"
+  (( rc > 128 )) && sig="$(kill -l "$((rc - 128))" 2>/dev/null)"
+  (( rc == 124 )) && sig="timeout"
+  {
+    echo "rc=$rc"
+    echo "signal=${sig:-none}"
+    echo "host=${OPENPETE_CAPTURE_HOST:-$(uname -n)}"
+    echo "time=$(date -Is)"
+    echo "cwd=$PWD"
+    echo "core_pattern=$(cat /proc/sys/kernel/core_pattern 2>/dev/null)"
+    echo "core_ulimit=$(ulimit -c)"
+  } >"$kept/rc.txt"
+  while IFS= read -r c; do
+    [[ -n "$c" ]] && mv -f -- "$c" "$kept/" && echo "core=${c##*/}" >>"$kept/rc.txt"
+  done < <(find "$PWD" -maxdepth 1 -type f -name 'core*' -newer "$legdir/.start" 2>/dev/null)
+  mkdir -p "$(dirname "$PG_CRASH_LIST")"
+  printf '%s\t%s\t%s\n' "$name" "$rc" "$kept" >>"$PG_CRASH_LIST"
+  echo "  rc=$rc${sig:+ ($sig)}, crashed leg kept: $kept"
   if grep -q '=== openpete crash:' "$log"; then
     echo "  --- crash handler ---"
     sed -n '/=== openpete crash:/,$p' "$log" \
       | grep -E '^=== openpete crash:|^  fault addr=|^  host RIP=|^  guest (pc|ra) =|^  MOD ATTRIBUTION:|^  host backtrace|^    #[0-2] ' \
       | sed 's/^/  /'
   else
-    # No crash banner: a timeout, a refused launch or a clean exit that wrote
-    # no tile. The tail is what says which.
+    # No crash banner: an abort, a timeout, a refused launch or a clean exit
+    # that wrote no tile. The tail is what says which.
     echo "  --- last log lines ---"
+    grep -m1 'watchdog: hang detected' "$log" | sed 's/^/  /'
     tail -5 "$log" | sed 's/^/  /'
   fi
+}
+
+# Print one line per crashed leg listed in outdir/crashes.txt, each after
+# the prefix. args: prefix outdir
+pg_crash_list() {
+  [[ -s "$2/crashes.txt" ]] || return 0
+  local name rc dir
+  while IFS=$'\t' read -r name rc dir; do
+    echo "$1$name rc=$rc $dir"
+  done <"$2/crashes.txt"
 }

@@ -71,12 +71,24 @@ esac
 if [[ -z "$CASES" ]]; then
     echo "credits-interp: SKIP ($GAME has no credits corpus)"; exit 64; fi
 
+# A leg that exits nonzero is kept as a crashed leg (scripts/presentation-game.sh,
+# crashed legs): under the presentation golden in its run's crash directory,
+# standalone in build/credits-interp-<game>.crashes.
+pg_crash_init "build/credits-interp-$GAME"
+
 run() {  # target leg out-flag out-name frame-list limit [env...]
     local target="$1" leg="$2" flag="$3" name="$4" frames="$5" lim="$6"; shift 6
-    env "$@" timeout 600 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 "${PG_RUN_ARGS[@]}" \
-        --renderer vk --mute 1 --aspect 4:3 --skip-to-cutscene "$target" --screenshot-native-only \
-        --render-paths moby "$flag" "$frames" --screenshot-output "$WORK/${target}_${name}_{n}.png" \
-        --frame-limit "$lim" >"$WORK/${target}_$leg.log" 2>&1
+    local legdir; legdir="$(pg_leg_begin)" || return 1
+    local -a henv; mapfile -t henv < <(pg_leg_env "$legdir")
+    local -a cmd=(env "$@" "${henv[@]}" timeout 600 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 "${PG_RUN_ARGS[@]}"
+        --renderer vk --mute 1 --aspect 4:3 --skip-to-cutscene "$target" --screenshot-native-only
+        --render-paths moby "$flag" "$frames" --screenshot-output "$WORK/${target}_${name}_{n}.png"
+        --frame-limit "$lim")
+    "${cmd[@]}" >"$legdir/leg.log" 2>&1
+    local rc=$?
+    cp -f "$legdir/leg.log" "$WORK/${target}_$leg.log"
+    [[ $rc -ne 0 ]] && pg_keep_crash_leg "$legdir" "credits__${target}__$leg" "$rc" "${cmd[@]}"
+    rm -rf -- "${legdir:?}"
 }
 
 rc=0

@@ -114,7 +114,7 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi
 
 mkdir -p "$OUTDIR"
-pg_clear_crash_logs "$OUTDIR"
+pg_crash_init "$OUTDIR"
 rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
 echo "[freecam-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT lods=[$CAP_LODS] filter='$FILTER' -> $OUTDIR"
 
@@ -125,22 +125,27 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
   local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
-  local log; log="$(mktemp)"
+  local legdir; legdir="$(pg_leg_begin)" || return 1
+  local log="$legdir/leg.log"
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
+  mapfile -t -O "${#leg_env[@]}" leg_env < <(pg_leg_env "$legdir")
   # --no-config: the tiles are compared pixel-for-pixel, so the run is
   # independent of any openpete.toml in the capturing machine's home.
-  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
-    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}" \
-    --skip-to-level "$level" --freecam-pose "$pose" \
-    --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \
-    --frame-limit "$flim" --max-runtime-seconds "$((LEG_TIMEOUT - 20))" "${ROW_ARGS[@]}" >"$log" 2>&1
-  local rc=$?
+  local -a cmd=(env "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}"
+    --skip-to-level "$level" --freecam-pose "$pose"
+    --screenshot-native-only "$flag" "$target" --screenshot-output "$out"
+    --frame-limit "$flim" --max-runtime-seconds "$((LEG_TIMEOUT - 20))" "${ROW_ARGS[@]}")
+  "${cmd[@]}" >"$log" 2>&1
+  local rc=$? miss=0
   pg_note_device "$log" "$OUTDIR"
   if [[ ! -f "$OUTDIR/${slug}__${tag}${leg}__${target}-vk.png" ]]; then
-    echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"
-    pg_keep_crash_log "$log" "$OUTDIR" "${slug}__${tag}${leg}" "$rc"
-    rm -f "$log"; return 1
+    echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"; miss=1
   fi
+  # A leg that wrote its tile and then exited nonzero (an abort at shutdown)
+  # keeps the tile and its verdict, and is kept as a crashed leg.
+  [[ $rc -ne 0 || $miss -ne 0 ]] && pg_keep_crash_leg "$legdir" "${slug}__${tag}${leg}" "$rc" "${cmd[@]}"
+  if [[ $miss -ne 0 ]]; then rm -rf -- "${legdir:?}"; return 1; fi
   # The intermediate leg is only evidence when the sub-tick re-extract actually
   # installed an interpolation bracket. Unbracketed, the re-extract composes the
   # canonical pose and writes it under the sub-tick filename, so the image is a
@@ -152,11 +157,11 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
     local unbr="${sum##*, }"; unbr="${unbr%% *}"
     if [[ -z "$sum" || "$unbr" != 0 ]]; then
       echo "  VACUOUS ${slug}__${tag}${leg}__${target}-vk.png: no bracketed sub-tick re-extract (${sum:-no exit summary})"
-      rm -f "$log"; return 1
+      rm -rf -- "${legdir:?}"; return 1
     fi
   fi
   rs_leg_done freecam "$slug" "$row" "$lod-$leg" "$log" "${slug}__${tag}${leg}__${target}-vk.png"
-  rm -f "$log"; return 0
+  rm -rf -- "${legdir:?}"; return 0
 }
 
 fail=0 ran=0 imported=0

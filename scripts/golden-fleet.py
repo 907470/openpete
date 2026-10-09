@@ -146,9 +146,13 @@ coordinator:
      differs from the local files, prints the report's census (captured,
      imported and compared tiles), and renders heat diffs locally
      (presentation-corpus-diff.py --expect-subset);
-  7. deletes runs/<run-id>/ on every host on every exit path (the local
-     directory keeps its log, done marker, stream.log, expect.txt and
-     stop-request).
+  7. pulls every attempt's crashed capture legs (u-<unit>/cand.crashes, the
+     harness's crash directory: leg log, argv, exit code, hang and core
+     dumps) from every touched host into <local run dir>/crashes/<host>/
+     and names each kept leg in the coordinator log, then deletes
+     runs/<run-id>/ on every host on every exit path (the local directory
+     keeps its log, done marker, stream.log, expect.txt, stop-request and
+     crashes/).
 Stream: a unit's supervisor sets OPENPETE_STREAM_FILE=<attempt base>.stream;
 each finished row appends one SAME|DIVERGE|EXTRA|IDENT|EXCEED line per tile
 (classified by the end verdict's functions), the credits leg `CREDITS rc=N`,
@@ -259,7 +263,8 @@ GRACE_S = 600
 MAX_ATTEMPTS = 2
 TREE_MAX_AGE_S = 14 * 86400
 # Files of the coordinator's local run directory that outlive the run.
-RUN_KEEP = ("coordinator.log", "done", "active.lock", "stream.log", "expect.txt", "stop-request")
+RUN_KEEP = ("coordinator.log", "done", "active.lock", "stream.log", "expect.txt", "stop-request",
+            "crashes")
 STREAM_K = 20                 # divergent tiles and identity pairs pulled per poll per unit
 STREAM_DIR = os.path.join("build", "fleet-stream")
 TILE_VERBS = ("SAME", "DIVERGE", "EXTRA", "IDENT", "EXCEED")
@@ -2839,14 +2844,39 @@ class Coordinator:
         except FleetError as e:
             print(f"[fleet] {hs.name}: stop failed: {e}")
 
+    def pull_crashes(self, hs):
+        """Pull a host's crashed capture legs (every unit's cand.crashes) into <local run dir>/crashes/<host>; print each leg."""
+        dst = os.path.join(self.local_run_dir, "crashes", hs.name)
+        argv = ["rsync", "-a", "-m", *rsync_base(hs.host), "--include=u-*/",
+                "--include=u-*/cand.crashes/***", "--exclude=*",
+                remote_path(hs.host, hs.run_dir.rstrip("/")) + "/", dst + "/"]
+        os.makedirs(dst, exist_ok=True)
+        cp = subprocess.run(argv, capture_output=True, text=True)
+        if cp.returncode != 0:
+            print(f"[fleet] {hs.name}: crash pull failed (rc {cp.returncode}): {cp.stderr.strip()[-300:]}")
+        legs = sorted(glob.glob(os.path.join(dst, "u-*", "cand.crashes", "*", "*", "rc.txt")))
+        for rc_txt in legs:
+            rc = parse_kv(open(rc_txt, encoding="utf-8", errors="replace").read()).get("rc", "?")
+            print(f"[fleet] {hs.name}: crashed leg kept: {os.path.dirname(rc_txt)} (rc={rc})")
+        if not legs and cp.returncode == 0:
+            shutil.rmtree(dst, ignore_errors=True)
+            try:
+                os.rmdir(os.path.join(self.local_run_dir, "crashes"))
+            except OSError:
+                pass
+
     def teardown(self):
-        """Stop in-flight attempts and delete this run's directories on every touched host."""
+        """Pull crashed legs, stop in-flight attempts and delete this run's directories on every touched host."""
         self.span.release()
         for hs in self.hosts:
             if hs.current:
                 self.stop_current(hs)
             if not hs.touched:
                 continue
+            try:
+                self.pull_crashes(hs)
+            except OSError as e:
+                print(f"[fleet] {hs.name}: crash pull failed: {e}")
             keep = list(RUN_KEEP) if hs.host.local else []
             try:
                 cp = hs.host.run_script(DELETE_SCRIPT, [hs.run_dir, *keep], timeout=600)

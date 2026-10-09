@@ -122,7 +122,7 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi
 
 mkdir -p "$OUTDIR"
-pg_clear_crash_logs "$OUTDIR"
+pg_crash_init "$OUTDIR"
 rs_init "$OUTDIR" "$BIN" "$AFFINE_ENV"
 echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
 
@@ -153,7 +153,8 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
   done
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${name}__${tag}${leg}__{n}.png"
-  local log; log="$(mktemp)"
+  local legdir; legdir="$(pg_leg_begin)" || return 1
+  local log="$legdir/leg.log"
   # A freeze-marked row (a bk2 that reaches a pause / flight-results / level-exit
   # state) needs the green freeze backdrop maintained during capture, else the
   # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
@@ -165,6 +166,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
   # The identity leg is the intermediate re-extract phased onto the newest tick's
   # stamp (alpha 1), which must reproduce the canonical dump of the same frame.
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
+  mapfile -t -O "${#leg_env[@]}" leg_env < <(pg_leg_env "$legdir")
   # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts -
   # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
   # headless native-only capture honors --aspect (openpete_native_widescreen_factor
@@ -176,11 +178,12 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
   # to be independent of any openpete.toml on the machine capturing them.
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
-  env "${leg_env[@]}" "${run_env[@]}" timeout "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
-    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
-    "${bk2_arg[@]}" --screenshot-native-only \
-    "$flag" "$targets" --screenshot-output "$out" \
-    --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${ROW_ARGS[@]}" >"$log" 2>&1
+  local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}"
+    "${bk2_arg[@]}" --screenshot-native-only
+    "$flag" "$targets" --screenshot-output "$out"
+    --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${ROW_ARGS[@]}")
+  "${cmd[@]}" >"$log" 2>&1
   local rc=$?
   pg_note_device "$log" "$OUTDIR"
   # Assert every requested target produced a -vk PNG (fail loudly, never silently
@@ -192,14 +195,14 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
       echo "  MISSING ${name}__${tag}${leg}__${t}-vk.png (rc=$rc)"; miss=1; fi
   done
   if [[ $rc -ne 0 || $miss -ne 0 ]]; then
-    pg_keep_crash_log "$log" "$OUTDIR" "${name}__${tag}${leg}" "$rc"
+    pg_keep_crash_leg "$legdir" "${name}__${tag}${leg}" "$rc" "${cmd[@]}"
   fi
   if [[ $miss -eq 0 ]]; then
     local -a tiles=()
     for t in "${TS[@]}"; do tiles+=("${name}__${tag}${leg}__${t}-vk.png"); done
     rs_leg_done bk2 "$name" "$row" "$lod-$leg" "$log" "${tiles[@]}"
   fi
-  rm -f "$log"
+  rm -rf -- "${legdir:?}"
   return $miss
 }
 
