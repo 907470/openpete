@@ -14,6 +14,7 @@
 #include "psx_runtime_internal.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -33,6 +34,91 @@ static uint8_t g_scratch[SCRATCH_SIZE];
 uint8_t* openpete_psx_get_ram(void)     { return g_ram; }
 uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
 
+/* --- Above-RAM access census (OPENPETE_ARENA_CENSUS) ----------------------
+ * Counts accesses whose physical address lies above the 2 MB of main RAM
+ * and below expansion region 1 (0x1F000000), reached through the KUSEG,
+ * KSEG0 or KSEG1 alias, in three bands around the guest arena window
+ * (mod_arena.c ARENA_BASE 0x80700000, ARENA_SIZE 8 MB). Kinds: a bus read
+ * or write no host region maps (miss), a host span lookup that resolves
+ * nothing, a lookup a registered region resolves (span_ptr_region, bus and
+ * host together), and the host share of those hits. Counters are relaxed
+ * atomics because host span lookups also run off the simulation thread;
+ * the first distinct bus-miss word addresses are recorded with no lock, so
+ * the list may hold a duplicate. Off unless the variable is set; the
+ * report runs at exit (census_report). */
+#define CENSUS_LO       0x00200000u
+#define CENSUS_ARENA_LO 0x00700000u
+#define CENSUS_ARENA_HI 0x00F00000u
+#define CENSUS_HI       0x1F000000u
+#define CENSUS_SEEN_MAX 32u
+
+enum { CK_READ_MISS, CK_WRITE_MISS, CK_HOST_MISS, CK_REGION_HIT, CK_HOST_HIT, CK_KINDS };
+enum { CB_BELOW, CB_ARENA, CB_ABOVE, CB_BANDS };
+enum { CS_KUSEG, CS_KSEG0, CS_KSEG1, CS_SEGS };
+
+typedef struct {
+    uint64_t n[CK_KINDS][CB_BANDS][CS_SEGS];
+} census_counts_t;
+
+static int             s_census_on = 0;
+static census_counts_t s_census;
+static uint32_t        s_census_seen_addr[CENSUS_SEEN_MAX];
+static uint8_t         s_census_seen_kind[CENSUS_SEEN_MAX];
+static uint64_t        s_census_seen_n[CENSUS_SEEN_MAX];
+static uint32_t        s_census_seen_count = 0;
+
+/** @brief Classify an address into a census band and alias segment.
+ *
+ * @param addr Guest virtual address.
+ * @param band Receives CB_BELOW, CB_ARENA or CB_ABOVE.
+ * @param seg Receives CS_KUSEG, CS_KSEG0 or CS_KSEG1.
+ * @return 1 when the address is a RAM-segment alias above 2 MB and below
+ *         0x1F000000, else 0. */
+static int census_classify(uint32_t addr, unsigned* band, unsigned* seg) {
+    uint32_t top = addr >> 29;
+    if (top == 0u) *seg = CS_KUSEG;
+    else if (top == 4u) *seg = CS_KSEG0;
+    else if (top == 5u) *seg = CS_KSEG1;
+    else return 0;
+    uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys < CENSUS_LO || phys >= CENSUS_HI) return 0;
+    *band = phys < CENSUS_ARENA_LO ? CB_BELOW : (phys < CENSUS_ARENA_HI ? CB_ARENA : CB_ABOVE);
+    return 1;
+}
+
+/** @brief Record the word address of a bus miss in the first-seen list.
+ *
+ * @param addr Guest address of the access.
+ * @param kind CK_READ_MISS or CK_WRITE_MISS. */
+static void census_seen(uint32_t addr, unsigned kind) {
+    uint32_t word = addr & ~3u;
+    uint32_t n = __atomic_load_n(&s_census_seen_count, __ATOMIC_RELAXED);
+    for (uint32_t i = 0; i < n; i++) {
+        if (s_census_seen_addr[i] == word && s_census_seen_kind[i] == kind) {
+            __atomic_fetch_add(&s_census_seen_n[i], 1u, __ATOMIC_RELAXED);
+            return;
+        }
+    }
+    if (n >= CENSUS_SEEN_MAX) return;
+    s_census_seen_addr[n] = word;
+    s_census_seen_kind[n] = (uint8_t)kind;
+    s_census_seen_n[n] = 1u;
+    __atomic_store_n(&s_census_seen_count, n + 1u, __ATOMIC_RELAXED);
+}
+
+/** @brief Count one access of @p kind at @p addr when the census is on and the address is in its range.
+ *
+ * Out of line and cold: every caller sits on a path main RAM and the
+ * scratchpad never take.
+ * @param addr Guest address of the access.
+ * @param kind One of the CK_ kinds. */
+static __attribute__((noinline, cold)) void census_note(uint32_t addr, unsigned kind) {
+    unsigned band, seg;
+    if (!s_census_on || !census_classify(addr, &band, &seg)) return;
+    __atomic_fetch_add(&s_census.n[kind][band][seg], 1u, __ATOMIC_RELAXED);
+    if (kind == CK_READ_MISS || kind == CK_WRITE_MISS) census_seen(addr, kind);
+}
+
 /** @brief Resolve a span through the presentation region table, or NULL.
  *
  * The cold half of span_ptr, kept out of line: its out-parameters are
@@ -47,8 +133,10 @@ static __attribute__((noinline, cold)) uint8_t* span_ptr_region(uint32_t addr, u
     if (psx_runtime_region_count() == 0u) return NULL;
     void* host = NULL;
     uint32_t rem = 0;
-    if (psx_runtime_resolve_region(addr, &host, &rem) && len <= rem)
+    if (psx_runtime_resolve_region(addr, &host, &rem) && len <= rem) {
+        census_note(addr, CK_REGION_HIT);
         return (uint8_t*)host;
+    }
     return NULL;
 }
 
@@ -73,7 +161,9 @@ static uint8_t* span_ptr(uint32_t addr, uint32_t len) {
 
 void* openpete_psx_to_host_span(uint32_t addr, uint32_t len) {
     if (addr == 0u) return NULL;
-    return span_ptr(addr, len);
+    uint8_t* p = span_ptr(addr, len);
+    if ((addr & 0x1FFFFFFFu) >= RAM_SIZE) census_note(addr, p ? CK_HOST_HIT : CK_HOST_MISS);
+    return p;
 }
 
 void* openpete_psx_to_host_ptr(uint32_t addr) {
@@ -177,6 +267,7 @@ uint16_t openpete_psx_root_counter2(void) { return s_root_counter2; }
  * @return The value, zero-extended. */
 static __attribute__((noinline, cold)) uint32_t rom_read(uint32_t addr, unsigned n) {
     uint32_t v = 0;
+    census_note(addr, CK_READ_MISS);
     if ((addr & 0x1FFFFFFFu) == ROOT_COUNTER2_COUNT) return s_root_counter2;
     for (unsigned i = 0; i < n; i++) {
         uint8_t b;
@@ -196,7 +287,7 @@ static uint32_t read_word(uint32_t addr) {
 /** @brief Write a word to the PSX bus; dropped unless all four bytes map. */
 static void write_word(uint32_t addr, uint32_t value) {
     uint8_t* p = mem_ptr(addr, 4u);
-    if (!p) return;
+    if (!p) { census_note(addr, CK_WRITE_MISS); return; }
     memcpy(p, &value, 4);
 }
 /** @brief Read a half from the PSX bus; an address with no two mapped bytes reads the ROM model. */
@@ -210,7 +301,7 @@ static uint16_t read_half(uint32_t addr) {
 /** @brief Write a half to the PSX bus; dropped unless both bytes map. */
 static void write_half(uint32_t addr, uint16_t value) {
     uint8_t* p = mem_ptr(addr, 2u);
-    if (!p) return;
+    if (!p) { census_note(addr, CK_WRITE_MISS); return; }
     memcpy(p, &value, 2);
 }
 /** @brief Read one byte no host region maps: a CD-ROM controller register, the BIOS ROM window, or 0.
@@ -224,6 +315,7 @@ static void write_half(uint32_t addr, uint16_t value) {
  * @return The byte. */
 static __attribute__((noinline, cold)) uint8_t read_byte_unmapped(uint32_t addr) {
     uint8_t v;
+    census_note(addr, CK_READ_MISS);
     if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u && openpete_cdrom_mmio_read8(addr & 0x1FFFFFFFu, &v)) return v;
     if (openpete_psx_bios_rom_read8(addr & 0x1FFFFFFFu, &v)) return v;
     return 0u;
@@ -238,6 +330,7 @@ static uint8_t read_byte(uint32_t addr) {
 static void write_byte(uint32_t addr, uint8_t value) {
     uint8_t* p = mem_ptr(addr, 1u);
     if (p) { *p = value; return; }
+    census_note(addr, CK_WRITE_MISS);
     if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u) (void)openpete_cdrom_mmio_write8(addr & 0x1FFFFFFFu, value);
 }
 
@@ -299,9 +392,114 @@ static void do_swr(uint32_t addr, uint32_t rt) {
     write_word(aligned, (existing & ~mask) | (rt << shift));
 }
 
+/* --- Above-RAM census report ---------------------------------------------- */
+
+static const char* const k_census_kind[CK_KINDS] = {
+    "read_miss", "write_miss", "host_miss", "region_hit", "host_hit"
+};
+static const char* const k_census_band[CB_BANDS] = {
+    "below_arena", "arena", "above_arena"
+};
+
+/** @brief Sum one kind of one band over the three alias segments.
+ *
+ * @param c Counts to read.
+ * @param kind One of the CK_ kinds.
+ * @param band One of the CB_ bands.
+ * @return The total. */
+static uint64_t census_sum(const census_counts_t* c, unsigned kind, unsigned band) {
+    return c->n[kind][band][CS_KUSEG] + c->n[kind][band][CS_KSEG0] + c->n[kind][band][CS_KSEG1];
+}
+
+/** @brief Write the census report to @p f.
+ *
+ * One line per band with each kind as total(kuseg/kseg0/kseg1), one line
+ * per recorded bus-miss word address, the probe line, and a summary line
+ * whose game_miss counts bus reads and writes in every band.
+ * @param f Destination stream.
+ * @param c Counts taken before the probe.
+ * @param probe Count deltas the probe produced, arena band summed over segments.
+ * @param control The probe verdict text. */
+static void census_emit(FILE* f, const census_counts_t* c, const uint64_t probe[CK_KINDS],
+                        const char* control) {
+    uint64_t game_miss = 0;
+    for (unsigned b = 0; b < CB_BANDS; b++) {
+        fprintf(f, "[arena-census] band=%s", k_census_band[b]);
+        for (unsigned k = 0; k < CK_KINDS; k++) {
+            const uint64_t* s = c->n[k][b];
+            fprintf(f, " %s=%llu(%llu/%llu/%llu)", k_census_kind[k],
+                    (unsigned long long)census_sum(c, k, b), (unsigned long long)s[CS_KUSEG],
+                    (unsigned long long)s[CS_KSEG0], (unsigned long long)s[CS_KSEG1]);
+        }
+        fputc('\n', f);
+        game_miss += census_sum(c, CK_READ_MISS, b) + census_sum(c, CK_WRITE_MISS, b);
+    }
+    uint32_t seen = __atomic_load_n(&s_census_seen_count, __ATOMIC_RELAXED);
+    for (uint32_t i = 0; i < seen; i++)
+        fprintf(f, "[arena-census] addr=0x%08X kind=%s n=%llu\n", s_census_seen_addr[i],
+                k_census_kind[s_census_seen_kind[i]], (unsigned long long)s_census_seen_n[i]);
+    fprintf(f, "[arena-census] probe read_miss=+%llu write_miss=+%llu host_miss=+%llu "
+               "region_hit=+%llu host_hit=+%llu control=%s\n",
+            (unsigned long long)probe[CK_READ_MISS], (unsigned long long)probe[CK_WRITE_MISS],
+            (unsigned long long)probe[CK_HOST_MISS], (unsigned long long)probe[CK_REGION_HIT],
+            (unsigned long long)probe[CK_HOST_HIT], control);
+    fprintf(f, "[arena-census] summary game_miss=%llu arena_miss=%llu arena_region_hit=%llu "
+               "arena_host_hit=%llu control=%s\n",
+            (unsigned long long)game_miss,
+            (unsigned long long)(census_sum(c, CK_READ_MISS, CB_ARENA) +
+                                 census_sum(c, CK_WRITE_MISS, CB_ARENA)),
+            (unsigned long long)census_sum(c, CK_REGION_HIT, CB_ARENA),
+            (unsigned long long)census_sum(c, CK_HOST_HIT, CB_ARENA), control);
+}
+
+/** @brief Report the census at exit after a probe control inside the arena window.
+ *
+ * Snapshots the counts, then reads the window's first words through the
+ * KUSEG, KSEG0 and KSEG1 aliases, rewrites one word with the value it
+ * holds (no byte changes; dropped when no region maps it) and makes one
+ * host span lookup. With the arena unregistered the probe must add 4 read
+ * misses, 1 write miss and 1 host miss; with it registered, 6 region hits
+ * (4 reads, 1 write, 1 host) of which 1 host hit. Anything else is FAIL.
+ * The report goes to stderr and, when OPENPETE_ARENA_CENSUS is a path
+ * rather than 1, is appended to that file. */
+static void census_report(void) {
+    census_counts_t before = s_census;
+    (void)read_word(0x00700000u);
+    (void)read_word(0x80700004u);
+    (void)read_word(0xA0700008u);
+    write_word(0x8070000Cu, read_word(0x8070000Cu));
+    (void)openpete_psx_to_host_span(0x80700010u, 4u);
+    uint64_t probe[CK_KINDS];
+    for (unsigned k = 0; k < CK_KINDS; k++)
+        probe[k] = census_sum(&s_census, k, CB_ARENA) - census_sum(&before, k, CB_ARENA);
+    const int miss = probe[CK_READ_MISS] == 4u && probe[CK_WRITE_MISS] == 1u &&
+                     probe[CK_HOST_MISS] == 1u && probe[CK_REGION_HIT] == 0u;
+    const int hit = probe[CK_REGION_HIT] == 6u && probe[CK_HOST_HIT] == 1u &&
+                    probe[CK_READ_MISS] == 0u && probe[CK_WRITE_MISS] == 0u;
+    const char* control = miss ? "PASS(unregistered)" : (hit ? "PASS(registered)" : "FAIL");
+    census_emit(stderr, &before, probe, control);
+    const char* e = getenv("OPENPETE_ARENA_CENSUS");
+    if (e && strcmp(e, "1") != 0) {
+        FILE* f = fopen(e, "a");
+        if (f) { census_emit(f, &before, probe, control); fclose(f); }
+    }
+}
+
+/** @brief Turn the census on when OPENPETE_ARENA_CENSUS is set and not 0, once per process. */
+static void census_init(void) {
+    static int armed = 0;
+    if (armed) return;
+    armed = 1;
+    const char* e = getenv("OPENPETE_ARENA_CENSUS");
+    if (!e || !*e || *e == '0') return;
+    s_census_on = 1;
+    atexit(census_report);
+}
+
 /* --- Public API ---------------------------------------------------------- */
 
 void openpete_psx_runtime_init(CPUState* cpu) {
+    census_init();
     memset(cpu, 0, sizeof(*cpu));
     memset(g_ram, 0, sizeof(g_ram));
     memset(g_scratch, 0, sizeof(g_scratch));
