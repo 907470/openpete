@@ -11,6 +11,9 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
 void spyro_native_canon_epoch_commit(void) {
 }
 
+void spyro_native_canon_epoch_supersede(void) {
+}
+
 /* The canonical-render epoch and the producer-camera bracket: a game with no
  * sub-tick spine snapshots nothing, so every producer reports never-fresh and
  * every feeder skips its replay. */

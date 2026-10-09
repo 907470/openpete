@@ -498,6 +498,36 @@ static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
     return 1;
 }
 
+/** @brief Returns the framebuffer cell key of a quad triangle that samples a draw buffer's texels, or 0.
+ *
+ * A 16 bpp triangle whose texel box lies inside a live draw area samples
+ * pixels the game rendered into that buffer. The key hashes the texture page
+ * and the three texel coordinates as the primitive holds them, which a copy
+ * keeps from tick to tick while its screen box scales (the pause window's
+ * grow back to full size draws the same 4x4 grid of buffer cells at a larger
+ * size each tick, func_8004DF84). The bit 0 is forced so a key is never 0.
+ * @param t The triangle with the primitive's own texel coordinates.
+ * @return The key, or 0 when the triangle samples no draw buffer. */
+static uint32_t fb_cell_key(const openpete_scene_tri* t) {
+    if (!t->textured || t->bpp != 16) return 0;
+    float lo_u = t->v[0].u, hi_u = lo_u, lo_v = t->v[0].v, hi_v = lo_v;
+    for (int j = 1; j < 3; j++) {
+        lo_u = fminf(lo_u, t->v[j].u); hi_u = fmaxf(hi_u, t->v[j].u);
+        lo_v = fminf(lo_v, t->v[j].v); hi_v = fmaxf(hi_v, t->v[j].v);
+    }
+    if (!openpete_fb_snapshot_area_holds(t->tpage_x + (int)lo_u, t->tpage_y + (int)lo_v,
+                                         (int)(hi_u - lo_u), (int)(hi_v - lo_v)))
+        return 0;
+    uint32_t h = 2166136261u;
+    const uint32_t w[2] = { (uint32_t)t->tpage_x, (uint32_t)t->tpage_y };
+    for (int k = 0; k < 2; k++) { h ^= w[k]; h *= 16777619u; }
+    for (int j = 0; j < 3; j++) {
+        h ^= (uint32_t)t->v[j].u; h *= 16777619u;
+        h ^= (uint32_t)t->v[j].v; h *= 16777619u;
+    }
+    return h | 1u;
+}
+
 /** @brief Adds a textured 2D quad's two triangles to the HUD layer, split by texel STP where the blend class needs it.
  *
  * A quad sampling a framebuffer window is first redirected to its snapshot
@@ -510,13 +540,16 @@ static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
  * alpha and the GPU applies them to STP-set texels only. Both halves precede
  * the next primitive's triangles, so the draw order of overlapping
  * primitives holds. Every other quad (opaque, ABR 0, a framebuffer-snapshot
- * window, whose image carries no STP bit) is fed once.
+ * window, whose image carries no STP bit) is fed once. A VRAM triangle that
+ * samples a draw buffer carries its framebuffer cell key (fb_cell_key).
  * @param in The quad's two triangles.
  * @return 1 for a quad fed as an STP pair, else 0. */
 static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
     openpete_scene_tri quad[2] = { in[0], in[1] };
     const int vram = !quad_to_fb_snapshot(quad);
+    uint32_t cell[2] = { 0, 0 };
     for (int t = 0; vram && t < 2; t++) {
+        cell[t] = fb_cell_key(&in[t]);
         tex_tri_psx_texel_centre(&quad[t]);
         uvedge_note(&in[t], &quad[t]);
     }
@@ -526,12 +559,17 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
         openpete_scene_tri clear[2] = { quad[0], quad[1] };
         clear[0].blend = clear[1].blend = 0;
         openpete_native_scene_set_stp_select(OPENPETE_STP_CLEAR_ONLY);
-        openpete_native_scene_add_tri(&clear[0], OPENPETE_SCENE_HUD, 1);
-        openpete_native_scene_add_tri(&clear[1], OPENPETE_SCENE_HUD, 1);
+        for (int t = 0; t < 2; t++) {
+            openpete_native_scene_set_fb_cell(cell[t]);
+            openpete_native_scene_add_tri(&clear[t], OPENPETE_SCENE_HUD, 1);
+        }
         openpete_native_scene_set_stp_select(OPENPETE_STP_SET_ONLY);
     }
-    openpete_native_scene_add_tri(&quad[0], OPENPETE_SCENE_HUD, 1);
-    openpete_native_scene_add_tri(&quad[1], OPENPETE_SCENE_HUD, 1);
+    for (int t = 0; t < 2; t++) {
+        openpete_native_scene_set_fb_cell(cell[t]);
+        openpete_native_scene_add_tri(&quad[t], OPENPETE_SCENE_HUD, 1);
+    }
+    openpete_native_scene_set_fb_cell(0);
     openpete_native_scene_set_stp_select(OPENPETE_STP_ALL);
     return split;
 }

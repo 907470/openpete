@@ -356,6 +356,12 @@ typedef struct {
                      * OPENPETE_STP_*): which texels a textured tri draws.
                      * Non-zero only on the two halves of a split ABR 1-3 2D
                      * primitive. */
+    uint32_t fb_cell; /* the framebuffer texels a 2D tri samples through the
+                       * VRAM path (sticky set_fb_cell value; 0 = none): one
+                       * key per texel-coordinate triple of a draw buffer, the
+                       * same from tick to tick while the tri's screen box
+                       * scales. The 2D carry pairs a scaled framebuffer copy
+                       * by it (carry_pair_snapshot). */
     uint32_t seq;   /* the ordering-table traversal rank for this frame (sticky
                      * set_seq value; 0 for everything that is not 2D). The 2D
                      * layer is screen-space with the depth test off, so the
@@ -620,6 +626,7 @@ static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
 static uint32_t s_cur_seq;
 static uint32_t s_cur_prim;       /* sticky, stamped by add_tri (see scene_tri_t::prim) */
 static int s_cur_stp_sel;         /* sticky, stamped by add_tri (see scene_tri_t::stp_sel) */
+static uint32_t s_cur_fb_cell;    /* sticky, stamped by add_tri (see scene_tri_t::fb_cell) */
 /* Accepted tris per provenance-tag family (tag bits 31:28) in the scene
  * being accumulated. Reset with the scene. Read at the canonical commit by
  * the render-path feed audit: a family that fed geometry belongs to a path
@@ -1212,6 +1219,18 @@ static unsigned s_scene_frame = 0xFFFFFFFFu;
  * render, never a re-extract. 0xFFFFFFFF before the first. */
 static unsigned s_scene_game_frame = 0xFFFFFFFFu;
 static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
+static void (*s_scene_superseded_cb)(unsigned frame);  /* see openpete_native_scene_register_superseded */
+/* 1 from the game render's opening of a scene until the canonical capture
+ * that presents it (openpete_native_scene_capture_overlay). Re-extract
+ * rebuilds in between leave it set: they replace the accumulator, not the
+ * game's render. */
+static int s_game_scene_pending;
+/* 1 from any begin_frame the game's render makes (a scene opened or fed)
+ * until the canonical capture. */
+static int s_game_fed;
+/* The canonical present's repeat verdict (openpete_native_scene_canon_repeat),
+ * -1 until it is first asked for and again after the capture. */
+static int s_canon_repeat = -1;
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
 static bool scene_accum_has_world(void);                          /* defined below */
@@ -1364,7 +1383,7 @@ static void scene_close_completed(void) {
 static int s_scene_close_cb_in;
 void openpete_native_scene_begin_frame(unsigned frame) {
     const int game_feed = !openpete_subtick_view_active();
-    if (game_feed) s_scene_game_frame = frame;
+    if (game_feed) { s_scene_game_frame = frame; s_game_fed = 1; }
     /* The game's render owns the scene of its tick: its triangles never land
      * in a scene a re-extract built. A re-extract stamps its rebuild with the
      * VBL it runs on (openpete_native_scene_begin), so where the game ticks
@@ -1381,6 +1400,14 @@ void openpete_native_scene_begin_frame(unsigned frame) {
     const int reclaim = game_feed && frame == s_scene_frame && s_scene_replay &&
                         !s_scene_close_cb_in;
     if (frame != s_scene_frame || reclaim) {
+        /* The game opening a scene while its previous scene never reached a
+         * canonical present: the present that follows shows this scene only,
+         * so what the earlier render recorded for the sub-tick re-extract
+         * belongs to an image no present showed. */
+        if (game_feed) {
+            if (s_game_scene_pending && s_scene_superseded_cb) s_scene_superseded_cb(frame);
+            s_game_scene_pending = 1;
+        }
         if (!reclaim && s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb && !s_scene_close_cb_in) {
             s_scene_close_cb_in = 1;   /* the callback feeds, which re-enters begin_frame */
             s_scene_frame_close_cb(s_scene_frame);
@@ -1393,6 +1420,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
 
         s_cur_seq = 0;
         s_cur_prim = 0;
+        s_cur_fb_cell = 0;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
@@ -1499,6 +1527,10 @@ static void scene_game_retain(void) {
 /* ---- frame-close notification ------------------------------------------- */
 void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame)) {
     s_scene_frame_close_cb = fn;
+}
+
+void openpete_native_scene_register_superseded(void (*fn)(unsigned frame)) {
+    s_scene_superseded_cb = fn;
 }
 
 /** @brief Return the VBL stamp of the scene at a delay depth: the accumulator's at depth 0, a history entry's above it.
@@ -1648,6 +1680,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
+        s_scene[s_scene_n].fb_cell = s_cur_fb_cell;      /* sticky (set_fb_cell) */
         s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
         s_scene[s_scene_n].portal_rim = s_cur_portal_rim; /* sticky (set_portal_rim) */
         scene_stamp_key_cells(&s_scene[s_scene_n]);
@@ -1812,6 +1845,7 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
 
 void openpete_native_scene_set_seq(uint32_t seq) { s_cur_seq = seq; }
 void openpete_native_scene_set_prim(uint32_t prim) { s_cur_prim = prim; }
+void openpete_native_scene_set_fb_cell(uint32_t cell) { s_cur_fb_cell = cell; }
 void openpete_native_scene_set_stp_select(int sel) {
     s_cur_stp_sel = (sel > 0 && sel < OPENPETE_STP_SELS) ? sel : OPENPETE_STP_ALL;
 }
@@ -1901,6 +1935,20 @@ static int load_census_on(void) {
 }
 
 void openpete_native_scene_commit_fade(void) {
+    /* A repeat present shows the previous scene, its fade and freeze with it.
+     * The render that ends a run of repeats starts its fade and freeze from
+     * no previous word, as a fresh fade does: the run may hide a scene change
+     * (a level load), and a lerp from the held words would show the new scene
+     * under the old screen's fade for part of a tick. */
+    static int s_after_repeat;
+    if (openpete_native_scene_canon_repeat()) {
+        s_fade_prev = s_fade_curr;
+        s_overlay_prev_freeze = s_overlay_carry_freeze;
+        s_game_fade_seen = 0; s_game_freeze_seen = 0;
+        s_after_repeat = 1;
+        return;
+    }
+    if (s_after_repeat) { s_fade_curr = 0; s_overlay_carry_freeze = 0; s_after_repeat = 0; }
     s_fade_prev = s_fade_curr;
     /* The fade is active this tick only if the game actually called set_fade
      * since the last commit; else it ended (the game stopped calling) -> off. */
@@ -2328,13 +2376,48 @@ static void held_capture(void) {
                     s_scene_frame, a, ep, s_held_replay, L->n);
 }
 
+/** @brief Keep the 2D carry for a canonical present that shows the scene the previous capture took.
+ *
+ * The previous set becomes the current one and the current set stays, so
+ * the sub-tick lerp holds every element where the scene draws it. The
+ * capture timestamps stay those of the capture that took the scene: the
+ * next fresh capture then interpolates from it over one tick of its own
+ * cadence. The retained area's held list and replay count stay as that
+ * capture left them, since the buffer holds the same content. */
+static void overlay_carry_hold(void) {
+    if (s_overlay_carry_n > 0)
+        memcpy(s_overlay_prev, s_overlay_carry, (size_t)s_overlay_carry_n * sizeof(s_overlay_carry[0]));
+    s_overlay_prev_n = s_overlay_carry_n;
+}
+
+int openpete_native_scene_canon_repeat(void) {
+    if (s_canon_repeat < 0) {
+        /* The 2D feeder's deferred primitive belongs to this present's tick:
+         * flush it first, as the capture does. */
+        if (s_overlay_precapture) s_overlay_precapture();
+        s_canon_repeat = !s_game_fed && s_overlay_accum_n == 0;
+    }
+    return s_canon_repeat;
+}
+
 void openpete_native_scene_capture_overlay(void) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first - by the canonical present every post-link prim
      * mutation is done, so the flush is exact. Without it, a gameplay frame
      * whose LAST 2D prim is an FT4 (the collected-egg sprite is the ONLY 2D
-     * prim then) defers that sprite a whole tick and misses this capture. */
-    if (s_overlay_precapture) s_overlay_precapture();
+     * prim then) defers that sprite a whole tick and misses this capture. The
+     * repeat verdict runs that flush. */
+    const int repeat = openpete_native_scene_canon_repeat();
+    s_canon_repeat = -1;
+    s_game_fed = 0;
+    /* A repeat present shows the scene the previous capture took: the carry
+     * stays that scene's 2D, standing still. */
+    if (repeat) {
+        overlay_carry_hold();
+        openpete_fb_snapshot_note_scene_complete();
+        return;
+    }
+    s_game_scene_pending = 0;
     /* Roll curr -> prev so apply_overlay can interpolate animated 2D-UI positions
      * (the logo slide-in) across sub-ticks. Runs on the CANONICAL present only, so
      * prev/curr are consecutive canonical captures (one sim tick apart). */
@@ -3154,16 +3237,31 @@ static int carry_pair_content(const carry_key_map_t* m,
     return paired;
 }
 
-/** @brief Return whether two framebuffer-snapshot entries sample the same cell of the same stored image.
+/** @brief Return whether a carry entry samples a framebuffer copy: a stored snapshot image or a draw buffer's texels.
  *
- * The snapshot index and the three vertices' rect texel coordinates must
- * agree: the coordinates name the cell of the copied image, which a
- * shrinking or moving copy keeps from tick to tick while its screen box
- * changes size.
+ * @param t Entry.
+ * @return 1 for a snapshot entry or an entry with a framebuffer cell key, else 0. */
+static int carry_fb_entry(const scene_tri_t* t) {
+    return t->bpp == OPENPETE_FB_SNAPSHOT_BPP || t->fb_cell != 0;
+}
+
+/** @brief Return whether two framebuffer-copy entries sample the same cell of the same image.
+ *
+ * Two snapshot entries agree on the snapshot index and the three vertices'
+ * rect texel coordinates: the coordinates name the cell of the copied
+ * image, which a shrinking or moving copy keeps from tick to tick while its
+ * screen box changes size. Two entries that sample a draw buffer through the
+ * VRAM path agree on the cell key the feeder stamped from the primitive's
+ * own texture page and coordinates (scene_tri_t::fb_cell), on the layer and
+ * on the STP half; their fed coordinates are adjusted to the screen box and
+ * differ between ticks.
  * @param a One entry.
  * @param b The other.
- * @return 1 when both are snapshot entries of one cell, else 0. */
+ * @return 1 when both sample one cell, else 0. */
 static int carry_snapshot_same_cell(const scene_tri_t* a, const scene_tri_t* b) {
+    if (a->fb_cell || b->fb_cell)
+        return a->fb_cell == b->fb_cell && a->category == b->category &&
+               a->stp_sel == b->stp_sel;
     if (a->bpp != OPENPETE_FB_SNAPSHOT_BPP || b->bpp != OPENPETE_FB_SNAPSHOT_BPP) return 0;
     if (a->tpage_x != b->tpage_x || a->category != b->category) return 0;
     for (int k = 0; k < 3; k++)
@@ -3171,12 +3269,13 @@ static int carry_snapshot_same_cell(const scene_tri_t* a, const scene_tri_t* b) 
     return 1;
 }
 
-/** @brief Run the snapshot pass, pairing each unmatched framebuffer-snapshot entry with the previous entry of its image cell.
+/** @brief Run the snapshot pass, pairing each unmatched framebuffer-copy entry with the previous entry of its image cell.
  *
  * A copied image is drawn as quads whose texels stay fixed while their
- * screen box scales (the game shrinking a frozen frame into a window), so
- * the content key, which holds the box size, never matches across ticks.
- * The cell's texel coordinates identify it instead (carry_snapshot_same_cell);
+ * screen box scales (the game shrinking a frozen frame into a window, or
+ * growing a draw buffer's frame back to full size), so the content key,
+ * which holds the box size, never matches across ticks. The cell
+ * identifies it instead (carry_snapshot_same_cell);
  * the first unclaimed previous holder within CARRY_MOVE_MAX of every vertex
  * is taken, and the per-vertex lerp then scales the box with the image held.
  * The pair is anchored.
@@ -3190,7 +3289,7 @@ static int carry_pair_snapshot(const scene_tri_t* prev, int prev_n,
                                const scene_tri_t* curr, int curr_n, carry_match_t* mt) {
     int paired = 0;
     for (int t = 0; t < curr_n; t++) {
-        if (mt->match[t] >= 0 || curr[t].bpp != OPENPETE_FB_SNAPSHOT_BPP) continue;
+        if (mt->match[t] >= 0 || !carry_fb_entry(&curr[t])) continue;
         for (int j = 0; j < prev_n; j++) {
             if (mt->prev_taken[j] || !carry_snapshot_same_cell(&prev[j], &curr[t])) continue;
             if (tri_pos_dist(&prev[j], &curr[t]) > CARRY_MOVE_MAX) continue;

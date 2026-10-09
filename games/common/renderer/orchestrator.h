@@ -34,6 +34,16 @@ int openpete_native_interp_pos(unsigned int key, double out[3]);
  * and run the cut-guard locator census when it is enabled. */
 void spyro_native_canon_epoch_commit(void);
 
+/** @brief Moves the in-flight canonical-render epoch past the captures of a render no canonical present showed.
+ *
+ * render_paths_superseded calls it when the game opens a scene while its
+ * previous scene never reached a canonical present. Captures stamped before
+ * the call no longer match the epoch the next commit latches, so the
+ * sub-tick re-extracts that follow that commit replay only what the newest
+ * render captured. The latched epoch is unchanged until that commit. A
+ * game with no sub-tick spine does nothing. */
+void spyro_native_canon_epoch_supersede(void);
+
 /** @brief Set the native clear colour from the DRAWENV the game will apply to the scene being presented.
  *
  * Called once per canonical present by render_paths_commit. The game flips

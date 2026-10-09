@@ -1118,6 +1118,7 @@ void spyro_native_canon_epoch_commit(void) {
     s_canon_epoch_now++;
     player_records_epoch_commit();               /* close the hooks' record epoch */
 }
+void spyro_native_canon_epoch_supersede(void) { s_canon_epoch_now++; }
 uint32_t spyro_native_canon_epoch_stamp(void) { return s_canon_epoch_now; }
 int spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }
 int spyro_native_canon_mobyreg_fresh(void) { return s_prod_epoch[SPROD_MOBYREG] == s_canon_epoch_ok; }

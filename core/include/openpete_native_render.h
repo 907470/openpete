@@ -1283,6 +1283,19 @@ unsigned openpete_native_scene_game_frame(void);
  * @param fn Callback taking the closing frame's VBL stamp, or NULL. */
 void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame));
 
+/** @brief Register the callback that fires when the game's render opens a scene while its previous scene never reached a canonical present.
+ *
+ * The canonical present shows the newest scene the game rendered, so what a
+ * superseded render recorded for the sub-tick re-extract (drawn render
+ * paths, captured producer state) describes an image no present showed.
+ * The callback runs from openpete_native_scene_begin_frame before the new
+ * scene opens, on the game's render. A scene counts as presented from the
+ * canonical capture that takes it (openpete_native_scene_capture_overlay);
+ * re-extract rebuilds in between do not present it. One callback; a later
+ * call replaces it.
+ * @param fn Callback taking the VBL stamp of the scene being opened, or NULL. */
+void openpete_native_scene_register_superseded(void (*fn)(unsigned frame));
+
 /** @brief Set the ordering-table traversal rank stamped on the triangles added next.
  *
  * Sticky, cleared at each frame boundary; a feeder that never sets it leaves
@@ -1297,6 +1310,17 @@ void openpete_native_scene_set_seq(uint32_t seq);
  * ranks triangles by it.
  * @param prim PSX address, or 0 for none. */
 void openpete_native_scene_set_prim(uint32_t prim);
+
+/** @brief Set the framebuffer cell key stamped on the triangles added next.
+ *
+ * Sticky, cleared at each frame boundary. A 2D feeder sets it on a
+ * triangle that samples a draw buffer's texels through the VRAM path,
+ * keyed by the primitive's texture page and texel coordinates as the game
+ * wrote them, and resets it to 0 after. The 2D carry pairs such a
+ * triangle with the previous tick's holder of the same key, so a copy whose
+ * screen box scales between ticks interpolates its corners.
+ * @param cell Key, or 0 for none. */
+void openpete_native_scene_set_fb_cell(uint32_t cell);
 
 /* Texel STP selection of a textured scene triangle: which texels of its
  * texture the fragment stage keeps (psx_scene.frag STP_SELECT). The GPU
@@ -2259,8 +2283,25 @@ void     openpete_phase_set_count(int which, int n);
  * scene that has since been replaced and the scene holds no re-applied
  * carry, the scene's carry-eligible tris are replaced by the carry set, so
  * the canonical and sub-tick presents show the same 2D layer. The scene's
- * 2D is then sorted into emission order. */
+ * 2D is then sorted into emission order. A present with no game render
+ * since the previous capture (no scene opened by the game and nothing
+ * accumulated) shows the scene that capture took: the carry is kept, with
+ * the previous set equal to it, and the retained area's held list is left
+ * as it was. */
 void openpete_native_scene_capture_overlay(void);
+/** @brief Report whether the canonical present in flight repeats the previous one: no game render since the last capture.
+ *
+ * The game's render made no begin_frame (it opened and fed no scene) and
+ * accumulated no 2D since the previous canonical capture, after the 2D
+ * feeder's deferred primitive is flushed: the game submitted an ordering
+ * table it added nothing to, and the present shows the scene the previous
+ * capture took. The per-present commits then hold what that scene's
+ * sub-tick replay reads (the drawn render paths, the producer epoch, the 2D
+ * carry, the fade and the freeze) instead of rolling it to an empty set.
+ * Computed on the first call of a canonical present and cleared by the
+ * capture.
+ * @return 1 for a repeat present, else 0. */
+int openpete_native_scene_canon_repeat(void);
 /** @brief Re-apply the overlay carry to the scene, interpolated to the present instant.
  *
  * Call at the end of every re-extract, after the 3D feeders. Each carry
@@ -2302,7 +2343,9 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
  * emitted-quad freeze mode a freeze that drops on a scene with no world
  * geometry (the pause-to-exit handoff tick) is held, and that scene's
  * geometry is dropped so only the held freeze shows. Clears both one-tick
- * seen flags. */
+ * seen flags. A repeat present (openpete_native_scene_canon_repeat) keeps
+ * both words, with the previous equal to the current; the first present
+ * after a run of repeats rolls from no previous word. */
 void openpete_native_scene_commit_fade(void);
 
 /** @brief Write the offscreen target to a PNG.

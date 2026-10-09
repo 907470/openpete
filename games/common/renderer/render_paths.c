@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "openpete_fiber.h"   /* openpete_frame - for the ivdump env probe */
+#include "openpete_fiber.h"   /* openpete_frame: interval and mark VBLs, the ivdump probe */
 #include "renderer/env_knob.h"
 
 static const char* const k_names[RP_COUNT] = {
@@ -94,7 +94,7 @@ bool render_path_enabled(render_path_t p) {
  * The polybuf double-buffers per frame, so the two tables cover disjoint
  * address banks and cannot false-match each other. */
 #define MAX_INTERVALS 1024
-typedef struct { uint32_t start, end; render_path_t path; } interval_t;
+typedef struct { uint32_t start, end; render_path_t path; unsigned vbl; } interval_t;
 static interval_t s_iv[MAX_INTERVALS];
 static int        s_iv_n = 0;
 static interval_t s_iv_prev[MAX_INTERVALS];
@@ -103,6 +103,7 @@ static int        s_iv_prev_n = 0;
 /* Interval-less canon-drawn marks (render_path_mark_drawn). Kept separate from
  * the intervals so they can never leak into the OT-walk addr filter. */
 static uint32_t s_pending_marks = 0;
+static unsigned s_mark_vbl[RP_COUNT];   /* VBL of each path's pending mark */
 
 void render_paths_frame_reset(void) {
     if (s_iv_n) {   /* roll into the drawn-OT bank; keep it across idle VBLs */
@@ -115,6 +116,7 @@ void render_paths_frame_reset(void) {
 void render_path_mark_drawn(render_path_t p) {
     if (p < 0 || p >= RP_COUNT) return;
     s_pending_marks |= (1u << (unsigned)p);
+    s_mark_vbl[p] = openpete_frame;
 }
 
 void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
@@ -131,13 +133,15 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
     /* A range that continues the previous one of the same path extends it:
      * the 2D layer records one range per primitive, and the polybuf allocates
      * them back to back. */
-    if (s_iv_n > 0 && s_iv[s_iv_n - 1].path == p && s_iv[s_iv_n - 1].end == start) {
+    if (s_iv_n > 0 && s_iv[s_iv_n - 1].path == p && s_iv[s_iv_n - 1].end == start &&
+        s_iv[s_iv_n - 1].vbl == openpete_frame) {
         s_iv[s_iv_n - 1].end = end;
         return;
     }
     s_iv[s_iv_n].start = start;
     s_iv[s_iv_n].end   = end;
     s_iv[s_iv_n].path  = p;
+    s_iv[s_iv_n].vbl   = openpete_frame;
     s_iv_n++;
 }
 
@@ -153,6 +157,26 @@ void render_paths_canon_snapshot(void) {
     uint32_t m = s_pending_marks;
     for (int i = 0; i < s_iv_n; i++) m |= (1u << (unsigned)s_iv[i].path);
     s_canon_mask = m;
+}
+
+/** @brief Drops what a render superseded before any canonical present recorded, when the game opens its next scene.
+ *
+ * Registered with openpete_native_scene_register_superseded. The canonical
+ * present that follows shows only the newest scene, so the polybuf
+ * intervals and drawn marks recorded on VBLs before that scene's VBL leave
+ * the pending set, and the canonical-render epoch moves past the captures
+ * the superseded render stamped (spyro_native_canon_epoch_supersede). A
+ * render never spans a VBL boundary, so a path the new scene's render
+ * recorded before its first feed opened the scene stays.
+ * @param frame The VBL stamp of the scene being opened. */
+static void render_paths_superseded(unsigned frame) {
+    int w = 0;
+    for (int i = 0; i < s_iv_n; i++)
+        if (s_iv[i].vbl >= frame) s_iv[w++] = s_iv[i];
+    s_iv_n = w;
+    for (int p = 0; p < RP_COUNT; p++)
+        if (s_mark_vbl[p] < frame) s_pending_marks &= ~(1u << (unsigned)p);
+    spyro_native_canon_epoch_supersede();
 }
 
 bool render_path_canon_drawn(render_path_t p) {
@@ -279,20 +303,26 @@ static void render_paths_census(void) {
  * In order: runs a terrain feed still held for a portal draw that did not
  * release it, feeds the held menu overlay moby pass rebuilt from the moby's
  * current state, latches the canon-drawn mask, prints the census, audits the feed,
- * rolls the intervals, commits the canonical-render epoch, then syncs the
+ * rolls the intervals, commits the canonical-render epoch (none of these five on
+ * a repeat present, openpete_native_scene_canon_repeat), then syncs the
  * native background clear and the retained freeze backdrop from the draw
  * environment the next DrawOTag applies. */
 static void render_paths_commit(void) {
     terrain_native_flush_deferred_late();   /* a feed held past its portal draw */
     moby_native_overlay_commit();           /* the menu overlay pass, at the moby's present state */
-    render_paths_canon_snapshot();
-    render_paths_census();
-    render_paths_feed_audit();
-    render_paths_frame_reset();
-    /* Same anchor drives the canonical-render epoch: captures taken during the
-     * present that just committed become the (only) fresh set for the sub-tick
-     * re-extracts that follow. */
-    spyro_native_canon_epoch_commit();
+    /* A present with no game render since the last one shows the previous
+     * scene: the drawn mask and the fresh epoch stay those of the render that
+     * built it, so the sub-tick re-extracts keep replaying it. */
+    if (!openpete_native_scene_canon_repeat()) {
+        render_paths_canon_snapshot();
+        render_paths_census();
+        render_paths_feed_audit();
+        render_paths_frame_reset();
+        /* Same anchor drives the canonical-render epoch: captures taken during
+         * the present that just committed become the (only) fresh set for the
+         * sub-tick re-extracts that follow. */
+        spyro_native_canon_epoch_commit();
+    }
     /* Sync the native background clear from g_CurDB->m_DrawEnv (the env the
      * game's DrawOTag will apply to the scene being presented) - the PutDrawEnv
      * thunk latch trails the OT build by one VSync and flashed the stale
@@ -376,6 +406,7 @@ static void render_paths_apply_options(const openpete_options_t* opts) {
     /* Drive the per-frame canon-mask latch + interval reset from the host present
      * loop (renderer-agnostic), not psyq_DrawOTag (future-removed). */
     openpete_native_register_commit(render_paths_commit);
+    openpete_native_scene_register_superseded(render_paths_superseded);
     /* Attach the live channel to the dev overlay's row (absent in dist
      * builds - ignore the miss). */
     (void)openpete_knob_bind_str("render_paths", rp_knob_get, rp_knob_set);

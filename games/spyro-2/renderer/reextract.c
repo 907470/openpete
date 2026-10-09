@@ -150,6 +150,7 @@ void spyro_native_canon_epoch_commit(void) {
     s_epoch_now++;
     player_records_epoch_commit();               /* close the hooks' record epoch */
 }
+void spyro_native_canon_epoch_supersede(void) { s_epoch_now++; }
 uint32_t spyro_native_canon_epoch_stamp(void) { return s_epoch_now; }
 int  spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
 int  spyro_native_canon_mobyreg_fresh(void) { return s_recs_staged; }
