@@ -375,6 +375,15 @@ int  openpete_tercache_frame_content(void);
  *         @p stamp or it is empty (a frame_skip state); -1 when the cache
  *         is not ready. */
 int  openpete_tercache_build_content(uint32_t stamp);
+/** @brief Count the drawn sectors of the state the build of a stamp wrote.
+ *
+ * Searches as openpete_tercache_build_content does and counts the slots
+ * with OPTC_SF_DRAWN, the count openpete_tercache_frame_stats reports as
+ * `drawn` once that state is selected.
+ * @param stamp Stamp of the scene (openpete_native_scene_build_stamp at its build).
+ * @return The drawn-sector count; 0 when no state carries @p stamp; -1 when
+ *         the cache is not ready. */
+int  openpete_tercache_build_drawn(uint32_t stamp);
 /** @brief Report which retained state the last openpete_tercache_frame_select() chose.
  *
  * @return 0 when the draws are closed, 1 for the scene-ring state, 2 for the

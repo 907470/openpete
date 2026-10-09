@@ -1993,6 +1993,8 @@ uint32_t openpete_native_stage_gen(void);
  * frames' fences have been waited, so their scenes' GPU reads are over.
  * @param begun_serial The serial of the frame just begun. */
 void     openpete_native_scene_retire(uint64_t begun_serial);
+/* Slots in the eager scene ring. */
+#define OPENPETE_NATIVE_SCENE_RING 48
 /** @brief Return whether any unretired ring scene carries a terrain-cache build stamp.
  *
  * @param stamp The build stamp.

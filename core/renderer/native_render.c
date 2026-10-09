@@ -491,7 +491,7 @@ static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) 
  * freed arena range be rewritten, which is what keeps a burst's builds from
  * overwriting bytes a still-pending scene draws. */
 enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
-#define SCENE_RING 48
+#define SCENE_RING OPENPETE_NATIVE_SCENE_RING
 /* One CPU-fed scene pipeline and its portal twin: the same description
  * with the fragment stage's _cover variant (blended world) or _rim variant
  * (opaque inner-rim terrain; portal_cover_scene.glsl) and the cover planes'
@@ -563,6 +563,10 @@ typedef struct {
     bw_order_t bw;                           /* blended-world order recorded at publish */
     int       freeze_retained;               /* freeze-backdrop production mode at publish */
     openpete_glitch_walk_t gwalk;            /* census of the walk that built this scene */
+    uint32_t  fam_n[16];                     /* triangles per provenance family at publish
+                                              * (OPENPETE_PRESENT_TRACE only) */
+    int       tc_built;                      /* drawn retained sectors its terrain build
+                                              * held at publish (OPENPETE_PRESENT_TRACE only) */
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
     openpete_mods_material_view_t matview;   /* interned material slots at publish */
     /* scheduling */
@@ -575,6 +579,7 @@ typedef struct {
 static scene_slot_t s_ring[SCENE_RING];
 static int          s_ring_head = -1;          /* last published */
 static void        *s_ring_mx;   /* SDL_Mutex, openpete_mutex_once */
+static int pc_trace_on(void);
 static const scene_slot_t *s_ps_slot;          /* compose source: NULL = live */
 static const bw_order_t *ps_bw(void);
 static int ps_freeze_retained(void);
@@ -14791,6 +14796,43 @@ static int pc_trace_on(void)
     return on;
 }
 
+/* Ring audit (OPENPETE_PRESENT_TRACE): canonical presents compared, those
+ * that drew a path short, and per family (16 = retained terrain) how often. */
+static struct { unsigned compared, shortfall, fam[17]; } s_ra;
+
+/** @brief Compare a canonical present's per-family triangle counts and retained terrain with its scene's publish-time counts.
+ *
+ * Under OPENPETE_PRESENT_TRACE, for a canonical present of a ring slot: the
+ * slot's triangles are counted per provenance family (tag bits 31:28), and
+ * a family the published scene held with more triangles than the present
+ * composes is short; the retained terrain is short when its build held
+ * drawn sectors and the present draws fewer. Each short present prints one
+ * `[ring-audit]` line; openpete_native_present_census_report prints the
+ * totals.
+ * @param kind PC_CANON, PC_INTER or PC_INLINE.
+ * @param tc_drawn Retained sectors the present draws (frame_stats `drawn`). */
+static void pc_ring_audit(int kind, int tc_drawn)
+{
+    if (kind != PC_CANON || !s_ps_slot || !pc_trace_on()) return;
+    const scene_slot_t *sl = s_ps_slot;
+    uint32_t n[16] = {0};
+    for (int i = 0; i < sl->n; i++) n[sl->tri[i].tag >> 28]++;
+    uint32_t mask = 0;
+    for (int f = 0; f < 16; f++) mask |= (uint32_t)(n[f] < sl->fam_n[f]) << f;
+    mask |= (uint32_t)(sl->tc_built > 0 && tc_drawn < sl->tc_built) << 16;
+    s_ra.compared++;
+    if (!mask) return;
+    s_ra.shortfall++;
+    fprintf(stderr, "[ring-audit] #%u stamp=%08x short:", s_pc.total, sl->stamp);
+    for (int f = 0; f < 16; f++) {
+        if (!(mask & (1u << f))) continue;
+        s_ra.fam[f]++;
+        fprintf(stderr, " fam%d=%u/%u", f, n[f], sl->fam_n[f]);
+    }
+    if (mask & (1u << 16)) { s_ra.fam[16]++; fprintf(stderr, " tercache=%d/%d", tc_drawn, sl->tc_built); }
+    fputc('\n', stderr);
+}
+
 /** @brief Tally one composed present into the per-present census.
  *
  * Called by render_frame_common after the frame is submitted. It consumes
@@ -14825,6 +14867,7 @@ static void pc_note(void)
     }
     s_pc.sum_n[kind] += ntri; s_pc.sum_tc[kind] += tc_drawn;
     if (!tc_drawn) s_pc.no_tc[kind]++;
+    pc_ring_audit(kind, tc_drawn);
     if (!s_pc.ext_w[kind]) { s_pc.ext_w[kind] = s_nr.win_w; s_pc.ext_h[kind] = s_nr.win_h; }
     else if (s_pc.ext_w[kind] != s_nr.win_w || s_pc.ext_h[kind] != s_nr.win_h) s_pc.ext_alt[kind]++;
     if (s_pc.last_outcome >= 0 && s_pc.last_outcome != outcome) s_pc.outcome_flips++;
@@ -14884,6 +14927,15 @@ void openpete_native_present_census_report(void)
                "%u composed frame(s) total, %u showed something other than their predecessor, "
                "%u changed scene kind; %u frame(s) never began",
                s_pc.total, s_pc.outcome_flips, s_pc.kind_flips, s_pc.begin_refused);
+    if (s_ra.compared) {
+        char per[256] = "";
+        int at = 0;
+        for (int f = 0; f < 16 && at < (int)sizeof per - 24; f++)
+            if (s_ra.fam[f]) at += snprintf(per + at, sizeof per - (size_t)at, " fam%d=%u", f, s_ra.fam[f]);
+        if (s_ra.fam[16]) snprintf(per + at, sizeof per - (size_t)at, " tercache=%u", s_ra.fam[16]);
+        OPL_INFO_F("ring-audit", "%u canonical present(s) compared, %u drew a path short of its scene%s",
+                   s_ra.compared, s_ra.shortfall, per);
+    }
 }
 
 /** @brief Compose one present's display image into the window-sized offscreen pass.
@@ -15910,6 +15962,20 @@ static void scene_keep_refused_stamp(void) {
     s_scene_refused_epoch = s_scene_epoch;
     s_eager_stamp = 0;
 }
+/** @brief Record a publishing slot's per-family triangle counts and its retained-terrain build size.
+ *
+ * Under OPENPETE_PRESENT_TRACE only: the per-present ring audit
+ * (pc_ring_audit) compares the canonical present of the slot against these.
+ * The counts are taken from the slot's own triangle run after the storage
+ * exchange, keyed by provenance family (tag bits 31:28).
+ * @param sl The slot being published, its run and stamp already set. */
+static void slot_note_census(scene_slot_t *sl) {
+    memset(sl->fam_n, 0, sizeof sl->fam_n);
+    sl->tc_built = 0;
+    if (!pc_trace_on()) return;
+    for (int i = 0; i < sl->n; i++) sl->fam_n[sl->tri[i].tag >> 28]++;
+    sl->tc_built = openpete_tercache_build_drawn(sl->stamp);
+}
 /* Publish into any free ring slot; see the header. */
 int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
     SDL_LockMutex(ring_mx());
@@ -15951,6 +16017,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->occl_cam = s_occl_cam_live;
     sl->bw = s_bw;
     sl->freeze_retained = s_freeze_retained;
+    slot_note_census(sl);
     /* The walk ran on this thread just now; the compose may run on another,
      * a tick later, so the census travels with the scene rather than being
      * read live at compose time. */

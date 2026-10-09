@@ -236,10 +236,13 @@ typedef struct {
     int       n, cap;
 } tc_chunk_list;
 
-/* Eager scene ring: one state per published scene, keyed by the scene id the
- * builder stamped it with. Sized past the scene ring so a state outlives its
- * scene's retirement. */
-#define TC_RING 48
+/* Eager scene ring: one state per scene id, keyed by the id the builder
+ * stamped it with. A build of an id that already holds a state reuses that
+ * state (the rebuild of a scene the ring refused), so the live states are at
+ * most one per unretired scene. Sized at the scene ring plus the build in
+ * progress plus the refused scene the accumulator holds, so a build always
+ * finds a state no unretired scene carries. */
+#define TC_RING (OPENPETE_NATIVE_SCENE_RING + 2)
 
 static struct {
     rhi_device   *dev;
@@ -279,6 +282,11 @@ static struct {
     tc_state      live;               /* what presents render                 */
     tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
     int           ring_next;
+    unsigned      ring_builds;        /* scene-id builds that took a ring state */
+    unsigned      ring_reuses;        /* of those, rebuilds of an id holding a state */
+    unsigned      ring_overwrites;    /* builds that overwrote a live scene's state */
+    unsigned      ring_dup_selects;   /* selects of a stamp held by several states
+                                       * that took an older build than the newest */
     tc_state      sel;                /* frame_select's snapshot of live: the
                                        * present's draws may execute VBLs after
                                        * selection (deferred screenshot
@@ -595,6 +603,20 @@ int openpete_tercache_build_content(uint32_t stamp)
     return T ? tc_state_content(T) : 0;
 }
 
+int openpete_tercache_build_drawn(uint32_t stamp)
+{
+    if (!s_tc.ready) return -1;
+    int src = 0;
+    const tc_state *T = tc_state_for_stamp(stamp, &src);
+    if (!T) return 0;
+    int n = 0;
+    for (int i = 0; i < OPTC_SLOTS; i++) {
+        union { float f; uint32_t u; } w; w.f = T->sec[i].o[3];
+        n += (w.u & OPTC_SF_DRAWN) != 0;
+    }
+    return n;
+}
+
 /** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
  *
  * The slots share terrain.frag and depth test and differ as the world
@@ -793,6 +815,10 @@ void openpete_tercache_shutdown(rhi_device *dev)
     if (!dev) return;
     openpete_tercache_get_stats(&s_tc_final);
     s_tc_final_valid = 1;
+    if (s_tc.ring_builds)
+        fprintf(stderr, "[tercache] ring: %u scene build(s), %u rebuild(s) of a held id, "
+                "%u overwrite(s) of a live state, %u duplicate-stamp select(s) of an older build\n",
+                s_tc.ring_builds, s_tc.ring_reuses, s_tc.ring_overwrites, s_tc.ring_dup_selects);
     {
         const char *e = getenv("OPENPETE_TC_SUBMIT_CENSUS");
         if (e && *e && *e != '0' && s_tc.cen_presents)
@@ -1422,11 +1448,37 @@ static int tc_dbg(void)
     if (on < 0) { const char *e = getenv("OPENPETE_TC_DBG"); on = (e && *e && *e != '0'); }
     return on;
 }
+/** @brief Pick the eager ring state a scene-id build writes.
+ *
+ * A state already carrying @p stamp is reused: the id was built before and
+ * its scene was refused by the full scene ring, so the id was not consumed
+ * and the rebuild supersedes that build (one state per id, so selection
+ * cannot find the refused build). Otherwise the first state from ring_next
+ * on whose scene has retired is taken. When every state belongs to an
+ * unretired scene, ring_next's state is overwritten and counted in
+ * ring_overwrites; TC_RING's sizing keeps that branch unreachable.
+ * @param stamp Scene-id stamp of the build (OPTC_STAMP_SCENE_BIT set).
+ * @return Ring index of the state. */
+static int tc_ring_pick(uint32_t stamp)
+{
+    s_tc.ring_builds++;
+    for (int i = 0; i < TC_RING; i++)
+        if (s_tc.ring[i].valid && s_tc.ring[i].stamp == stamp) { s_tc.ring_reuses++; return i; }
+    int pick = -1;
+    for (int k = 0; k < TC_RING && pick < 0; k++) {
+        const int i = (s_tc.ring_next + k) % TC_RING;
+        if (!s_tc.ring[i].valid || !openpete_native_scene_stamp_live(s_tc.ring[i].stamp)) pick = i;
+    }
+    if (pick < 0) { pick = s_tc.ring_next; s_tc.ring_overwrites++; }
+    s_tc.ring_next = (pick + 1) % TC_RING;
+    return pick;
+}
+
 /** @brief Pick a build's target state and run the promote rule.
  *
  * Shared prologue of frame_begin and frame_skip. An immediate build with a
- * scene stamp (OPTC_STAMP_SCENE_BIT) takes its own ring entry, reusing one
- * whose scene has retired. Any other immediate (re-extract) build writes
+ * scene stamp (OPTC_STAMP_SCENE_BIT) takes the ring entry tc_ring_pick
+ * chooses. Any other immediate (re-extract) build writes
  * live directly and leaves staged in place. A canonical build stages, and
  * the previous staged state promotes to live (the extraction the next
  * presents show); a repeated stamp (the serial-retry path re-runs one build)
@@ -1438,16 +1490,8 @@ static tc_state *tc_begin_state(uint32_t stamp, int immediate)
 {
     if (immediate && (stamp & OPTC_STAMP_SCENE_BIT)) {
         /* A scene-id build: its own ring entry, so every pending scene of a
-         * burst composes against the terrain state extracted WITH it. Reuse
-         * an entry whose scene has retired; a state for a scene still
-         * pending is never overwritten (the oldest retired one is taken). */
-        int pick = -1;
-        for (int k = 0; k < TC_RING; k++) {
-            int i = (s_tc.ring_next + k) % TC_RING;
-            if (!s_tc.ring[i].valid || !openpete_native_scene_stamp_live(s_tc.ring[i].stamp)) { pick = i; break; }
-        }
-        if (pick < 0) pick = s_tc.ring_next;   /* ring exhausted: the oldest (should not happen) */
-        s_tc.ring_next = (pick + 1) % TC_RING;
+         * burst composes against the terrain state extracted WITH it. */
+        const int pick = tc_ring_pick(stamp);
         tc_state *T = &s_tc.ring[pick];
         if (tc_dbg()) fprintf(stderr, "[tc] state pick=%d for stamp=%08x (was %08x valid=%d) ctr=%u\n",
                               pick, stamp, T->stamp, T->valid, s_tc.present_ctr);
@@ -1659,6 +1703,28 @@ static const tc_state *tc_state_for_stamp(uint32_t stamp, int *src)
     return NULL;
 }
 
+/** @brief Count a selection that found an older build of a stamp several ring states carry.
+ *
+ * Diagnostic. tc_state_for_stamp returns the lowest-index ring match; when
+ * more than one valid ring state carries @p stamp and @p R is not the one
+ * with the newest build serial, ring_dup_selects is incremented.
+ * @param stamp Stamp of the composed scene.
+ * @param R The state the selection returned. */
+static void tc_dup_probe(uint32_t stamp, const tc_state *R)
+{
+    int n = 0, newer = 0;
+    for (int i = 0; i < TC_RING; i++) {
+        const tc_state *S = &s_tc.ring[i];
+        if (!S->valid || S->stamp != stamp) continue;
+        n++;
+        newer |= (int32_t)(S->build_serial - R->build_serial) > 0;
+    }
+    if (n > 1 && newer) {
+        s_tc.ring_dup_selects++;
+        if (tc_dbg()) fprintf(stderr, "[tc] select stamp=%08x took an older build of %d\n", stamp, n);
+    }
+}
+
 /* Selects the retained state whose stamp matches the composed scene. */
 void openpete_tercache_frame_select(uint32_t present_stamp)
 {
@@ -1675,6 +1741,7 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
     int src = 0;
     const tc_state *R = tc_state_for_stamp(present_stamp, &src);
     if (R) {
+        if (src == 1) tc_dup_probe(present_stamp, R);
         s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, R); s_tc.sel_src = src;
     } else {
         s_tc.draw_open = 0; s_tc.sel_src = 0;

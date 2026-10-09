@@ -1059,6 +1059,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Eager canonical presents under scene-ring pressure: one windowed row per
+    # game stalls the present thread (OPENPETE_PRESENT_STALL_MS) until the
+    # ring refuses publishes, and fails on a canonical present with no
+    # retained terrain, a retained-terrain state overwritten while its scene
+    # is unretired, or a canonical present composing fewer triangles of a
+    # render path than its scene was published with. Eager production needs a
+    # window, so no headless capture reaches the path. Skips (exit 64) without
+    # a display, a binary or a disc.
+    foreach(_rp_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME eager_ring_pressure_${_rp_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_eager_ring_pressure.sh
+                         --game ${_rp_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(eager_ring_pressure_${_rp_game} PROPERTIES
+            LABELS "presentation;terrain;windowed"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 1200
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Retained-terrain GPU cache hole census, windowed on the machine's own
     # GPU. Per freecam-corpus row, two legs of one build on one device
     # differing only in --terrain-cache, and a count of the pixels the cached

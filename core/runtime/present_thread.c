@@ -467,6 +467,18 @@ static struct {
 } s_staged;
 static int s_stage_next;
 
+/** @brief Sleep OPENPETE_PRESENT_STALL_MS milliseconds before a scene render.
+ *
+ * Harness knob: a present thread slower than the producer lets published
+ * scenes fill the scene ring, as a loaded machine does. Read once; unset
+ * or 0 sleeps nothing. Called with the mutex released. */
+static void pt_stall(void)
+{
+    static op_time_t ns = -1;
+    if (ns < 0) { const char *e = getenv("OPENPETE_PRESENT_STALL_MS"); ns = (e && *e) ? (op_time_t)atoll(e) * 1000000 : 0; }
+    if (ns > 0) op_sleep_until(op_now() + ns);
+}
+
 /** @brief Body of the present thread: present scenes from the ring while eager production is active. */
 static int present_thread_main(void *unused)
 {
@@ -532,6 +544,7 @@ static int present_thread_main(void *unused)
             }
             s_pt.busy = 1;
             SDL_UnlockMutex(s_pt.mx);
+            pt_stall();
             const op_time_t c0 = op_now();
             const uint32_t gen = openpete_native_stage_gen();
             int did;
