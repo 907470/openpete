@@ -227,6 +227,22 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * tick's verdict.
  * @param cpu The guest CPU state. */
 void moby_reextract(struct CPUState* cpu);
+/** @brief Feed the overlay pass held for this canonical present, rebuilt from the overlay moby's current state.
+ *
+ * The menu screens' one-moby overlay pass (game_layout.moby.overlay_moby) runs
+ * before the menu update moves that moby, so the pass opens its scene and
+ * holds its feed. Called once per canonical present, before the scene is
+ * composed: the overlay moby's record is rebuilt through the cull's rule
+ * (moby_game.reveal_record) in place of the pass's record in the host record
+ * copy, which the sub-tick re-extract replays, and walked into the scene the
+ * pass opened. When a later cull of the same Draw replaced the copy, the walk
+ * runs in a borrowed copy holding the pass's record, the later copy is
+ * restored, and the rebuilt record is kept for the re-extract to replay as
+ * the overlay pass. The pass's own record is fed instead when the overlay word names
+ * another moby or the builder declines; nothing is fed when the scene closed
+ * first. Reads guest memory only. No effect on a game that names no overlay
+ * word. */
+void moby_native_overlay_commit(void);
 /** @brief Whether the second model kind has a queue this present may replay.
  *
  * True when the game provides the kind's replay (moby_game.simple_replay),

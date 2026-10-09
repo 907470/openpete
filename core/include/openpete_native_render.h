@@ -2274,6 +2274,17 @@ void openpete_native_scene_capture_overlay(void);
  * to @p alpha until the capture stamps are primed.
  * @param alpha The camera bracket's alpha, 0 when the camera ring dedupes. */
 void openpete_native_scene_apply_overlay(double alpha);
+/** @brief Mark the accumulating scene's triangle count for openpete_native_scene_front_end. */
+void openpete_native_scene_front_begin(void);
+/** @brief Move the triangles added since openpete_native_scene_front_begin in front of the scene's first 2D triangle.
+ *
+ * For a feeder that appends geometry to a scene after that scene's 2D was
+ * fed: the 2D layer draws in array order and its emission-order sort works
+ * within contiguous runs of 2D triangles, so geometry appended among them
+ * would split a run. The moved triangles keep their order. Does nothing
+ * without a mark or when nothing was added since it.
+ */
+void openpete_native_scene_front_end(void);
 /** @brief Register the callback run at the top of the canonical overlay capture.
  *
  * Lets the 2D-UI feeder flush a deferred primitive into this tick's

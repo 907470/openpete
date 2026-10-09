@@ -2127,76 +2127,12 @@ static uint32_t moby_interp_key(uint32_t moby) {
     return moby_game.interp_key ? moby_game.interp_key(moby) : moby;
 }
 
-/* The overlay moby's state as each canonical overlay pass drew it. The menu
- * state that runs the overlay pass updates that moby after the draw, so the
- * tick-end snapshot pair is one update ahead of what the tick drew; the
- * sub-tick re-extract of the overlay pass reads this pair instead (blob[cur]
- * the latest draw, blob[cur ^ 1] the one before), and stages the latest over
- * the moby while it runs. */
-#define MOBY_OVL_BLOB 0x100u
-static struct {
-    uint32_t moby;                     /* the moby the blobs hold, 0 = none */
-    uint32_t len;                      /* bytes per blob, the array stride */
-    uint32_t epoch[2];                 /* canonical epoch of each draw */
-    int      n, cur;                   /* draws held (0..2), latest slot */
-    uint8_t  blob[2][MOBY_OVL_BLOB];
-    uint8_t  saved[MOBY_OVL_BLOB];     /* the view's bytes the stage replaced */
-    int      staged;
-    openpete_interp_obj_t obj;         /* the pair moby_interp_find hands out */
-} s_ovl;
-
-/** @brief Record the overlay moby's state as the canonical overlay pass draws it.
+/** @brief The snapshot pair a moby is interpolated with: the interp table's entry under its ring key.
  *
- * Reads the moby's array record (game_layout.moby.array_stride bytes) after
- * the game's draw, into the slot after the latest; a different moby restarts
- * the pair.
- * @param cpu The guest CPU state, read only. */
-static void moby_ovl_capture(CPUState* cpu) {
-    const uint32_t mob = cpu->read_word(game_layout.moby.overlay_moby);
-    const uint32_t len = game_layout.moby.array_stride < MOBY_OVL_BLOB
-                       ? game_layout.moby.array_stride : MOBY_OVL_BLOB;
-    if (mob != s_ovl.moby || len != s_ovl.len) { s_ovl.moby = mob; s_ovl.len = len; s_ovl.n = 0; }
-    s_ovl.cur ^= 1;
-    for (uint32_t i = 0; i < len; i++) s_ovl.blob[s_ovl.cur][i] = cpu->read_byte(mob + i);
-    s_ovl.epoch[s_ovl.cur] = spyro_native_canon_epoch_stamp();
-    if (s_ovl.n < 2) s_ovl.n++;
-}
-
-/** @brief Stage the latest overlay draw over the overlay moby in the sub-tick view, or restore the view's bytes.
- *
- * While staged, every read of the moby in the overlay re-extract sees the
- * state the canonical pass drew, and moby_interp_find hands out the
- * draw-time pair. Writes the sub-tick view only, never guest memory.
- * @param on 1 to stage, 0 to restore a stage. */
-static void moby_ovl_stage(int on) {
-    if (on && s_ovl.n > 0 && s_ovl.epoch[s_ovl.cur] == spyro_native_canon_epoch_stamp() - 1u) {
-        openpete_subtick_view_peek(s_ovl.moby, s_ovl.saved, s_ovl.len);
-        openpete_subtick_view_poke(s_ovl.moby, s_ovl.blob[s_ovl.cur], s_ovl.len);
-        s_ovl.staged = 1;
-    } else if (!on && s_ovl.staged) {
-        openpete_subtick_view_poke(s_ovl.moby, s_ovl.saved, s_ovl.len);
-        s_ovl.staged = 0;
-    }
-}
-
-/** @brief The snapshot pair a moby is interpolated with: the overlay draw-time pair for the overlay moby inside the overlay re-extract, else the interp table's entry.
- *
- * The substitute keeps the table entry's stamps, key and verdict flags and
- * replaces its prev and curr blobs with the two latest overlay draws; it has
- * a prev only when those draws are from consecutive canonical epochs.
  * @param moby The moby's PSX address.
  * @return The pair, or NULL when the table holds none. */
 static const openpete_interp_obj_t* moby_interp_find(uint32_t moby) {
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
-    if (!s_ovl.staged || !o || moby != s_ovl.moby) return o;
-    s_ovl.obj = *o;
-    s_ovl.obj.curr = s_ovl.blob[s_ovl.cur];
-    s_ovl.obj.prev = s_ovl.blob[s_ovl.cur ^ 1];
-    s_ovl.obj.have_prev = (uint8_t)(o->have_prev && s_ovl.n == 2 &&
-                                    s_ovl.epoch[s_ovl.cur] == s_ovl.epoch[s_ovl.cur ^ 1] + 1u);
-    s_ovl.obj.have_prev2 = 0;
-    if (s_ovl.obj.blob_len > s_ovl.len) s_ovl.obj.blob_len = (uint16_t)s_ovl.len;
-    return &s_ovl.obj;
+    return openpete_interp_objs_find(moby_interp_key(moby));
 }
 
 /** @brief The moby OPENPETE_MOBY_TRACE names for a per-call gate trace, 0 when unset.
@@ -7166,9 +7102,10 @@ static uint32_t moby_scene_identity(uint32_t moby)
 
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
- * Does nothing unless the moby render path is selected. Begins the scene for
- * the current VBL counter, which composes with the cyclorama: the cyclorama
- * draws first and owns the background fill, and the mobys append on top.
+ * Does nothing unless the moby render path is selected. Appends to the scene
+ * already open (push_scene_moby opens the one of the current VBL counter),
+ * which composes with the cyclorama: the cyclorama draws first and owns the
+ * background fill, and the mobys append on top.
  * Each vertex carries its own view-space Z and the pre-bias perspective W, so
  * the Z-buffer sorts opaque faces independent of submission order. Each
  * triangle is stamped with its scene category from the walk's UI tag and
@@ -7177,7 +7114,7 @@ static uint32_t moby_scene_identity(uint32_t moby)
  * moby, its material slot (resolved per moby at emit time, since slot ids are
  * interned per feed cycle) and whether a reveal added it. Writes host scene
  * state only. */
-static void push_scene_moby(void) {
+static void push_scene_moby_tris(void) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     static int s_logged = 0;
     if (!s_logged && s_gout.n > 0) {
@@ -7185,7 +7122,6 @@ static void push_scene_moby(void) {
         fprintf(stderr, "[moby-native] feeding panel 0: %d moby tris from gamestate "
                 "(independent face-stream walk) frame %u\n", s_gout.n, openpete_frame);
     }
-    openpete_native_scene_begin_frame(openpete_frame);
     /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top. Stamped per-tri
      * from the walk's UI tag (0=ACTOR, 1=HUD flat overlay, 2=HUD3D depth-sorted
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
@@ -7311,6 +7247,13 @@ static void push_scene_moby(void) {
     }
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
     openpete_native_scene_set_host_added(0);
+}
+
+/** @brief Open the scene of the current VBL counter and append the walk's moby triangles to it (push_scene_moby_tris). */
+static void push_scene_moby(void) {
+    if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
+    openpete_native_scene_begin_frame(openpete_frame);
+    push_scene_moby_tris();
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts -- */
@@ -7468,6 +7411,308 @@ int moby_verify_vbl(void) {
     return s_verify_sparse && openpete_frame > s_verify_hi && openpete_frame % 200u == 0;
 }
 
+/* ---- overlay pass: fed at the canonical present -------------------------
+ * The menu screens that draw a one-moby overlay pass (game_layout.moby.
+ * overlay_moby) run it at the end of their Draw, after the state draw and its
+ * VSync waits and just before DrawOTag; the menu update then moves that moby,
+ * and the 2D of the next Draw lands in the scene the pass opened before that
+ * scene is presented. The ordering table the guest presents beside that 2D is
+ * the next Draw's, whose overlay pass draws the moby's updated state. So the
+ * pass opens its scene and feeds nothing; at the canonical present
+ * (moby_native_overlay_commit) the moby's record is rebuilt from its state
+ * through the cull's rule (moby_game.reveal_record), replaces the pass's
+ * record in the host record copy, and is walked into the same scene in front
+ * of its 2D. The canonical present and the sub-tick re-extract, which replays
+ * that copy against the tick-end snapshot pair, then show one pose. Where a
+ * later regular pass of the same Draw recaptured the copy, the rebuild runs
+ * in a borrowed copy and the re-extract replays the kept record
+ * (moby_ovl_reextract). */
+#define OVL_REC_WORDS 32u
+static struct {
+    CPUState* cpu;
+    unsigned  frame;               /* the VBL whose scene the overlay pass opened */
+    uint32_t  moby;                /* the overlay moby the pass drew */
+    uint32_t  base;                /* the record copy's guest base at the pass */
+    uint32_t  rec[OVL_REC_WORDS];  /* the pass's one record */
+    unsigned  epoch;               /* the canonical epoch the pass ran in */
+    int       pending;
+} s_ovl_feed;
+/* The rebuilt overlay record of a commit that borrowed the record copy, for
+ * the sub-tick re-extract: the copy it replays holds the later cull's
+ * records, so the overlay record is replayed in a borrowed copy of its own
+ * (moby_ovl_reextract). */
+static struct {
+    int      valid;
+    unsigned epoch;
+    uint32_t base;
+    uint32_t rec[OVL_REC_WORDS];
+} s_ovl_rex;
+/* Commit outcomes: rebuilt; fed the pass's own record (the overlay word
+ * moved or the builder declined); held feeds dropped because their scene
+ * closed before a canonical present; and commits that found the record copy
+ * replaced by a later cull and borrowed it. */
+static long s_ovl_rebuilt, s_ovl_kept, s_ovl_orphan, s_ovl_borrowed;
+
+/* The record copy a later cull left, set aside while a commit walks the
+ * overlay record in its place (ovl_copy_borrow / ovl_copy_return). */
+static struct {
+    uint32_t words, queued, base;
+    int      ended, appended, append_n;
+    uint32_t append_moby[REC_APPEND_MOBYS];
+    uint32_t snap[REC_SNAP_WORDS];
+} s_ovl_lent;
+
+/* OPENPETE_OVERLAY_REBUILD_AB=1: the rebuilt record and its walk, kept until
+ * the next overlay pass, whose cull record and walk must equal them. */
+#define OVL_AB_TRIS  2048
+static struct {
+    int           armed;
+    uint32_t      moby;
+    unsigned      frame;
+    moby_record_t rec;
+    int           n;
+    ntri_t        t[OVL_AB_TRIS];
+    uint8_t       ui[OVL_AB_TRIS];
+    long          cmp, rec_eq, verdict_eq, tri_eq;
+    double        worst_xy;
+} s_ovl_ab;
+
+/** @brief Whether OPENPETE_OVERLAY_REBUILD_AB is set, read once.
+ *
+ * @return 1 when the overlay rebuild A/B is on, else 0. */
+static int ovl_ab_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_OVERLAY_REBUILD_AB"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/** @brief Print the overlay rebuild A/B totals at exit. */
+static void ovl_ab_report(void) {
+    fprintf(stderr, "[ovl-ab] total compared=%ld record_equal=%ld verdict_equal=%ld walk_equal=%ld "
+                    "worst_xy=%.4f rebuilt=%ld kept=%ld dropped=%ld borrowed=%ld\n",
+            s_ovl_ab.cmp, s_ovl_ab.rec_eq, s_ovl_ab.verdict_eq, s_ovl_ab.tri_eq, s_ovl_ab.worst_xy,
+            s_ovl_rebuilt, s_ovl_kept, s_ovl_orphan, s_ovl_borrowed);
+}
+
+/** @brief Keep the rebuilt overlay record and its walk for the next overlay pass to compare against.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param moby The overlay Moby address. */
+static void ovl_ab_store(CPUState* cpu, uint32_t moby) {
+    static int reg = 0;
+    if (!reg) { reg = 1; atexit(ovl_ab_report); }
+    if (!moby_game.read_record(cpu, s_rec_snap_base, &s_ovl_ab.rec)) return;
+    s_ovl_ab.n = s_gout.n < OVL_AB_TRIS ? s_gout.n : OVL_AB_TRIS;
+    memcpy(s_ovl_ab.t, s_wtri, (size_t)s_ovl_ab.n * sizeof(ntri_t));
+    memcpy(s_ovl_ab.ui, s_wtri_ui, (size_t)s_ovl_ab.n);
+    s_ovl_ab.moby  = moby;
+    s_ovl_ab.frame = openpete_frame;
+    s_ovl_ab.armed = 1;
+}
+
+/** @brief The first field the walk reads that differs between two overlay records, or NULL when none does.
+ *
+ * Compares the keyframe-blend byte, the LOD verdict, header and keyframe A,
+ * keyframe B and its header while the blend is nonzero (the cull leaves them
+ * stale at blend 0, where the walk does not read them), the moby, the
+ * material word, the translation and the matrix. The draw-verdict byte
+ * (flags byte 0) is reported apart.
+ * @param a The rebuilt record.
+ * @param b The cull's record.
+ * @return The field name, or NULL. */
+static const char* ovl_ab_record_diff(const moby_record_t* a, const moby_record_t* b) {
+    const uint32_t bl = (a->w0 >> 8) & 0xFFu;
+    if (bl != ((b->w0 >> 8) & 0xFFu)) return "blend";
+    if (a->tier != b->tier) return "tier";
+    if (a->header != b->header) return "header";
+    if (a->frame_a != b->frame_a) return "frame_a";
+    if (bl && (a->header_b != b->header_b || a->frame_b != b->frame_b)) return "frame_b";
+    if (a->moby != b->moby) return "moby";
+    if (a->material != b->material) return "material";
+    if (memcmp(a->TR_raw, b->TR_raw, sizeof a->TR_raw)) return "TR";
+    if (memcmp(a->M, b->M, sizeof a->M)) return "M";
+    return NULL;
+}
+
+/** @brief Compare this overlay pass's cull record and walk with the record rebuilt at the previous canonical present.
+ *
+ * The record fields the walk reads must be equal (ovl_ab_record_diff); each
+ * triangle's material, texel and colour must be equal and its screen
+ * position within 1/64 px. One line per pass.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The overlay Moby address this pass drew. */
+static void ovl_ab_compare(CPUState* cpu, uint32_t moby) {
+    if (!s_ovl_ab.armed) return;
+    s_ovl_ab.armed = 0;
+    moby_record_t R;
+    if (moby != s_ovl_ab.moby || s_rec_snap_queued != 1u || s_rec_snap_appended ||
+        !moby_game.read_record(cpu, s_rec_snap_base, &R)) return;
+    const char* rdiff = ovl_ab_record_diff(&s_ovl_ab.rec, &R);
+    const int verdict_eq = (s_ovl_ab.rec.w0 & 0xFFu) == (R.w0 & 0xFFu);
+    int mism = 0; double wxy = 0.0;
+    const int n = s_gout.n;
+    if (n != s_ovl_ab.n) mism = -1;
+    for (int i = 0; mism >= 0 && i < n; i++) {
+        const ntri_t* a = &s_ovl_ab.t[i]; const ntri_t* b = &s_wtri[i];
+        int bad = a->textured != b->textured || a->tpage_x != b->tpage_x || a->tpage_y != b->tpage_y ||
+                  a->clut_x != b->clut_x || a->clut_y != b->clut_y || a->bpp != b->bpp ||
+                  a->blend != b->blend || s_ovl_ab.ui[i] != s_wtri_ui[i];
+        for (int k = 0; k < 3; k++) {
+            double dx = fabs((double)a->v[k].sx - b->v[k].sx), dy = fabs((double)a->v[k].sy - b->v[k].sy);
+            if (dx > wxy) wxy = dx;
+            if (dy > wxy) wxy = dy;
+            bad |= a->v[k].u != b->v[k].u || a->v[k].v != b->v[k].v || a->v[k].rgb != b->v[k].rgb ||
+                   dx > 1.0 / 64.0 || dy > 1.0 / 64.0;
+        }
+        mism += bad;
+    }
+    s_ovl_ab.cmp++;
+    if (!rdiff) s_ovl_ab.rec_eq++;
+    if (verdict_eq) s_ovl_ab.verdict_eq++;
+    if (mism == 0) s_ovl_ab.tri_eq++;
+    if (wxy > s_ovl_ab.worst_xy) s_ovl_ab.worst_xy = wxy;
+    fprintf(stderr, "[ovl-ab vbl=%u built=%u] moby=%08X record=%s verdict=%02X/%02X blend=%02X "
+                    "tris %d/%d mismatched=%d max_dxy=%.4f\n",
+            openpete_frame, s_ovl_ab.frame, moby, rdiff ? rdiff : "equal",
+            s_ovl_ab.rec.w0 & 0xFFu, R.w0 & 0xFFu, (R.w0 >> 8) & 0xFFu, s_ovl_ab.n, n, mism, wxy);
+}
+
+/** @brief Whether the host record copy holds exactly the cull's one record and it names a given moby.
+ *
+ * @param mob The Moby address.
+ * @return 1 when it does, else 0. */
+static int moby_ovl_single_record(uint32_t mob) {
+    const uint32_t sw = game_layout.moby.rec_stride / 4u;
+    return s_rec_snap_words && s_rec_snap_ended && s_rec_snap_queued == 1u && !s_rec_snap_appended &&
+           sw != 0u && sw <= OVL_REC_WORDS && s_rec_snap[game_layout.moby.rec_moby_off / 4u] == mob;
+}
+
+/** @brief Hold an overlay pass's scene feed for the canonical present instead of pushing it now.
+ *
+ * Holds only a pass whose record copy is the overlay moby's one record
+ * (moby_ovl_single_record), on a game with a record builder
+ * (moby_game.reveal_record); any other pass keeps the draw-time feed. Opens
+ * the pass's scene as push_scene_moby would and records the scene, the CPU
+ * and the overlay moby for moby_native_overlay_commit.
+ * @param cpu The guest CPU state, read only.
+ * @return 1 when the feed is held, 0 when the caller pushes it. */
+static int moby_ovl_defer(CPUState* cpu) {
+    if (!moby_game.reveal_record) return 0;
+    const uint32_t mob = cpu->read_word(game_layout.moby.overlay_moby);
+    if (ovl_ab_on()) ovl_ab_compare(cpu, mob);
+    if (!moby_ovl_single_record(mob)) return 0;
+    if (s_ovl_feed.pending) s_ovl_orphan++;
+    if (render_path_enabled(RP_MOBY)) openpete_native_scene_begin_frame(openpete_frame);
+    memcpy(s_ovl_feed.rec, s_rec_snap, game_layout.moby.rec_stride);
+    s_ovl_feed.base = s_rec_snap_base;
+    s_ovl_feed.epoch = spyro_native_canon_epoch_stamp();
+    s_ovl_feed.cpu = cpu;
+    s_ovl_feed.frame = openpete_frame;
+    s_ovl_feed.moby = mob;
+    s_ovl_feed.pending = 1;
+    return 1;
+}
+
+/** @brief Replace the host record copy's single overlay record with one rebuilt from the moby's state.
+ *
+ * Runs only while the copy holds exactly the cull's one record, naming the
+ * overlay moby. The builder appends after an emptied copy; the result is then
+ * re-labelled as the cull's own record (queued, not appended), since it
+ * stands in for the record the next overlay pass's cull writes, and keeps the
+ * pass's draw-verdict byte (record byte 0), which the builder sets to the
+ * near verdict and the overlay cull sets to its own. A declined build puts
+ * the pass's record back.
+ * @param cpu The guest CPU state, read only.
+ * @param mob The overlay Moby address.
+ * @return 1 when the copy holds the rebuilt record, 0 when it holds the pass's. */
+static int moby_ovl_rebuild_record(CPUState* cpu, uint32_t mob) {
+    if (!moby_ovl_single_record(mob)) return 0;
+    const uint32_t sw = game_layout.moby.rec_stride / 4u;
+    uint32_t keep[OVL_REC_WORDS];
+    memcpy(keep, s_rec_snap, sw * 4u);
+    s_rec_snap_queued = 0u;
+    moby_rec_append_reset();
+    moby_reveal_reason_t why = MOBY_REVEAL_OK;
+    const int ok = moby_game.reveal_record(cpu, mob, MOBY_REVEAL_ANIMATED, &why) &&
+                   s_rec_snap_appended == 1;
+    if (!ok) memcpy(s_rec_snap, keep, sw * 4u);
+    else     s_rec_snap[0] = (s_rec_snap[0] & ~0xFFu) | (keep[0] & 0xFFu);
+    s_rec_snap[sw] = 0u;
+    s_rec_snap_words = sw + 1u;
+    s_rec_snap_queued = 1u;
+    s_rec_snap_appended = 0;
+    s_rec_append_moby_n = 0;
+    s_rec_append_gen++;
+    return ok;
+}
+
+/** @brief Set aside the record copy a later cull left and install one overlay record in its place.
+ *
+ * The copy is restored by ovl_copy_return.
+ * @param rec The record's words, game_layout.moby.rec_stride bytes.
+ * @param base The guest base the record is read at. */
+static void ovl_copy_borrow(const uint32_t* rec, uint32_t base) {
+    const uint32_t sw = game_layout.moby.rec_stride / 4u;
+    s_ovl_lent.words = s_rec_snap_words;  s_ovl_lent.queued = s_rec_snap_queued;
+    s_ovl_lent.base = s_rec_snap_base;    s_ovl_lent.ended = s_rec_snap_ended;
+    s_ovl_lent.appended = s_rec_snap_appended;
+    s_ovl_lent.append_n = s_rec_append_moby_n;
+    memcpy(s_ovl_lent.append_moby, s_rec_append_moby, sizeof s_rec_append_moby);
+    memcpy(s_ovl_lent.snap, s_rec_snap, (size_t)s_rec_snap_words * 4u);
+    memcpy(s_rec_snap, rec, sw * 4u);
+    s_rec_snap[sw] = 0u;
+    s_rec_snap_words = sw + 1u;  s_rec_snap_queued = 1u;
+    s_rec_snap_base = base;
+    s_rec_snap_ended = 1;  s_rec_snap_appended = 0;  s_rec_append_moby_n = 0;
+    s_rec_append_gen++;
+}
+
+/** @brief Restore the record copy ovl_copy_borrow set aside. */
+static void ovl_copy_return(void) {
+    s_rec_snap_words = s_ovl_lent.words;  s_rec_snap_queued = s_ovl_lent.queued;
+    s_rec_snap_base = s_ovl_lent.base;    s_rec_snap_ended = s_ovl_lent.ended;
+    s_rec_snap_appended = s_ovl_lent.appended;
+    s_rec_append_moby_n = s_ovl_lent.append_n;
+    memcpy(s_rec_append_moby, s_ovl_lent.append_moby, sizeof s_rec_append_moby);
+    memcpy(s_rec_snap, s_ovl_lent.snap, (size_t)s_ovl_lent.words * 4u);
+    s_rec_append_gen++;
+}
+
+void moby_native_overlay_commit(void) {
+    if (!s_ovl_feed.pending) return;
+    s_ovl_feed.pending = 0;
+    s_ovl_rex.valid = 0;
+    if (openpete_native_scene_frame() != s_ovl_feed.frame) { s_ovl_orphan++; return; }
+    /* A later cull (a regular pass after the overlay pass in the same Draw)
+     * replaced the copy: walk the overlay record in a borrowed copy. */
+    const int borrow = !moby_ovl_single_record(s_ovl_feed.moby) || s_rec_snap_base != s_ovl_feed.base;
+    if (borrow) { s_ovl_borrowed++; ovl_copy_borrow(s_ovl_feed.rec, s_ovl_feed.base); }
+    CPUState* cpu = s_ovl_feed.cpu;
+    const uint32_t mob = cpu->read_word(game_layout.moby.overlay_moby);
+    moby_view_build(cpu);
+    const int rebuilt = mob == s_ovl_feed.moby && moby_ovl_rebuild_record(cpu, mob);
+    if (rebuilt) s_ovl_rebuilt++; else s_ovl_kept++;
+    s_cur_mat = "REG";
+    s_rec_base = s_rec_snap_base;
+    s_pass_overlay = 1;
+    project_all_records(cpu);
+    build_walk_tris(cpu);
+    if (rebuilt && ovl_ab_on()) ovl_ab_store(cpu, mob);
+    /* The held scene is still the open one; the next Draw's 2D is in it, so
+     * the triangles go in front of that 2D, where the pass would have fed them. */
+    openpete_native_scene_front_begin();
+    push_scene_moby_tris();
+    openpete_native_scene_front_end();
+    s_pass_overlay = 0;
+    if (borrow) {
+        memcpy(s_ovl_rex.rec, s_rec_snap, game_layout.moby.rec_stride);
+        s_ovl_rex.base  = s_rec_snap_base;
+        s_ovl_rex.epoch = s_ovl_feed.epoch;
+        s_ovl_rex.valid = 1;
+        ovl_copy_return();
+    }
+}
+
 /** @brief One canonical regular or specular moby pass: run the game's draw, then decode, feed and verify its records natively.
  *
  * Both passes loop the same cull-record queue with the same vertex decode,
@@ -7599,7 +7844,9 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
          * intermediate present while the canonical present shows them. */
         if (s_gout.n > 0 && end <= start) render_path_mark_drawn(RP_MOBY);
         { OP_PROF_ACCUM_SCOPE("moby.feed");
-          push_scene_moby(); }                /* recolor_walk_from_prims dropped: colour already native
+          /* the overlay pass feeds at the canonical present (moby_ovl_defer) */
+          if (is_spec || !s_pass_overlay || !moby_ovl_defer(cpu))
+              push_scene_moby(); }            /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
         /* Sub-tick spine: snapshot the cull records + per-vertex fog colour
          * scratch (both live now) so intermediates can re-derive these mobys.
@@ -7619,7 +7866,6 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
                     spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
                     spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
                     s_canon_overlay = s_pass_overlay;
-                    if (s_pass_overlay) moby_ovl_capture(cpu);
                     spyro_native_canon_capture_camera(cpu, SPYRO_PROD_MOBYREG);
                     /* Invalidate the SPECULAR capture at the START of each canonical
                      * moby render (REGULAR runs first every frame). The game only calls
@@ -11258,7 +11504,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     long rot_bins[REC_ROT_N] = {0};
     s_walk_in_rex = 1;
     s_pass_overlay = !is_spec && s_canon_overlay;
-    moby_ovl_stage(s_pass_overlay);
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
     /* Tier-2 hold pool is per canonical epoch: a new tick invalidates every
      * hold (its first present re-extracts everything and re-captures). */
@@ -11268,7 +11513,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int nreplay = 0;
     static uint32_t replay_moby[MAX_RECORDS]; int nreplay_moby = 0;
     s_rec_base = game_layout.moby.rec_base ? game_layout.moby.rec_base : s_rec_base_canon;
-    if (!s_rec_base) { s_walk_in_rex = 0; s_pass_overlay = 0; moby_ovl_stage(0); return 0; }
+    if (!s_rec_base) { s_walk_in_rex = 0; s_pass_overlay = 0; return 0; }
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         moby_record_t R;
@@ -11596,8 +11841,27 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     moby_centre_census(mat);
     s_walk_in_rex = 0;
     s_pass_overlay = 0;
-    moby_ovl_stage(0);
     return nm;
+}
+
+/** @brief Replay the overlay record a borrowing commit kept, as an overlay pass of the sub-tick re-extract.
+ *
+ * Runs when the tick's regular-pass capture is a later cull's (s_canon_overlay
+ * 0) and the commit of the same canonical epoch rebuilt the overlay record in
+ * a borrowed copy (s_ovl_rex): the record is installed in a borrowed copy
+ * again, replayed by reextract_record_pass as the overlay pass, and the copy
+ * restored.
+ * @param cpu The sub-tick view's CPU state, read only. */
+static void moby_ovl_reextract(CPUState* cpu) {
+    if (!s_ovl_rex.valid || s_canon_overlay || !spyro_native_canon_epoch_fresh(s_ovl_rex.epoch)) return;
+    const uint32_t base_canon = s_rec_base_canon;
+    ovl_copy_borrow(s_ovl_rex.rec, s_ovl_rex.base);
+    s_rec_base_canon = s_ovl_rex.base;
+    s_canon_overlay = 1;
+    reextract_record_pass(cpu, "REG");
+    s_canon_overlay = 0;
+    s_rec_base_canon = base_canon;
+    ovl_copy_return();
 }
 
 /** @brief Whether OPENPETE_LOAD_CENSUS is set to a nonzero value, read once.
@@ -11701,6 +11965,7 @@ static void moby_reextract_body(CPUState* cpu) {
         sim_walk = s_gout.n;
         push_scene_moby();
     }
+    if (reg_fresh) moby_ovl_reextract(cpu);
     spyro_native_prod_camera_leave();
 
     /* Shaded mobys (gems/props/HUD icons/text) - already re-derive from g_Camera. */

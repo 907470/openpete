@@ -2304,6 +2304,22 @@ static void scene_insert_before_2d(const scene_tri_t* src, int n) {
     s_scene_n += n;
 }
 
+static int s_front_mark = -1;   /* openpete_native_scene_front_begin's count, -1 = none */
+
+void openpete_native_scene_front_begin(void) { s_front_mark = s_scene_n; }
+
+void openpete_native_scene_front_end(void) {
+    static mod_fvec tail;   /* scene_tri_t */
+    const int first = s_front_mark;
+    s_front_mark = -1;
+    if (first < 0 || first >= s_scene_n) return;
+    const int k = s_scene_n - first;
+    if (scene_run_fit(&tail, "scene.front", k) < k) return;
+    memcpy(tail.data, &s_scene[first], (size_t)k * sizeof(scene_tri_t));
+    s_scene_n = first;
+    scene_insert_before_2d((const scene_tri_t*)tail.data, k);
+}
+
 /** @brief Roll the retained area's held list at a canonical capture and replay it into the canonical scene.
  *
  * With the area being drawn retained, its list is reset on a new content

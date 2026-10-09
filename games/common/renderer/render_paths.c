@@ -9,6 +9,7 @@
 #include "openpete_native_render.h"  /* isolation toggle */
 #include "renderer/orchestrator.h"  /* canonical-render epoch commit */
 #include "renderer/terrain.h"       /* deferred terrain feed fallback */
+#include "renderer/moby.h"          /* held overlay-pass feed */
 #include "psyq/psyq_game_hooks.h"   /* the OT walk's view of this filter */
 
 #include <stdio.h>
@@ -276,12 +277,14 @@ static void render_paths_census(void) {
 /** @brief The per-canonical-present commit: latches the canon-drawn mask and rolls the frame state.
  *
  * In order: runs a terrain feed still held for a portal draw that did not
- * release it, latches the canon-drawn mask, prints the census, audits the feed,
+ * release it, feeds the held menu overlay moby pass rebuilt from the moby's
+ * current state, latches the canon-drawn mask, prints the census, audits the feed,
  * rolls the intervals, commits the canonical-render epoch, then syncs the
  * native background clear and the retained freeze backdrop from the draw
  * environment the next DrawOTag applies. */
 static void render_paths_commit(void) {
     terrain_native_flush_deferred_late();   /* a feed held past its portal draw */
+    moby_native_overlay_commit();           /* the menu overlay pass, at the moby's present state */
     render_paths_canon_snapshot();
     render_paths_census();
     render_paths_feed_audit();
