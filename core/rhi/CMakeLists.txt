@@ -169,6 +169,7 @@ add_library(openpete_rhi STATIC
     rhi_memtype.c
     rhi_gpu_audit.c
     rhi_pipe_census.c
+    rhi_pcache_file.c
     ${RHI_EMBED_C}
     ${VOLK_DIR}/volk.c
 )

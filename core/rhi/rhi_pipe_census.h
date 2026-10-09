@@ -48,7 +48,7 @@ typedef struct {
     uint64_t vs_hash;       /* vertex stage SPIR-V content hash              */
     uint64_t fs_hash;       /* fragment stage SPIR-V content hash            */
     uint32_t declared;      /* bit i: constant_id i declared by either stage */
-    uint32_t consts[6];     /* the six specialization values handed over     */
+    uint32_t consts[6];     /* the values handed over; 0 for an undeclared id */
     uint32_t poly_mode;     /* VkPolygonMode                                 */
     uint64_t render_pass;   /* VkRenderPass handle the pipeline targets      */
 } rhi_pc_variant;
@@ -98,6 +98,41 @@ uint64_t rhi_pc_bytes_hash(const void *p, size_t n);
  * @param bytes Their count.
  * @return Bit i set when constant_id i (below 32) is declared. */
 uint32_t rhi_pc_spec_ids(const void *spv, size_t bytes);
+
+/** @brief Return the dedupe key of a variant: the full pipeline description with only the constants its stages declare.
+ *
+ * The one key of the precompile set, the census row's dedup_full column and
+ * the warm-boot key manifest.
+ * @param v The variant.
+ * @return The key, never 0. */
+uint64_t rhi_pc_variant_key(const rhi_pc_variant *v);
+
+/* Open-addressed set of nonzero 64-bit keys (0 marks an empty slot);
+ * zero-initialised it is empty. Not locked: one owner per set. */
+typedef struct {
+    uint64_t *slot;
+    size_t    cap;   /* power of two, or 0 before the first insert */
+    size_t    n;
+} rhi_pc_keyset;
+
+/** @brief Insert a key into a set, growing it at half load.
+ *
+ * @param s The set.
+ * @param k The key; 0 is stored as 1.
+ * @return 1 when the key was new, 0 when present or on allocation failure. */
+int rhi_pc_keyset_insert(rhi_pc_keyset *s, uint64_t k);
+
+/** @brief Return whether a set holds a key.
+ *
+ * @param s The set.
+ * @param k The key; 0 reads as 1.
+ * @return 1 when present. */
+int rhi_pc_keyset_has(const rhi_pc_keyset *s, uint64_t k);
+
+/** @brief Free a set's storage and leave it empty.
+ *
+ * @param s The set. */
+void rhi_pc_keyset_free(rhi_pc_keyset *s);
 
 /** @brief Add one pipeline base and its variant create infos to the census row.
  *

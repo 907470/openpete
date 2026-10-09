@@ -24,6 +24,7 @@
 #include "openpete_overlay_anchor.h"
 #include "openpete_osd.h"
 #include "openpete_build_id.h"
+#include "openpete_boot_timing.h" /* precompile start and end marks */
 #include "openpete_knobs.h"   /* env-epoch for cached live knobs */
 #include "openpete_mutex_once.h"
 #include "openpete_devui.h"
@@ -4470,13 +4471,13 @@ static void cover_family_destroy(rhi_device* dev, nr_cover_twin* tw, int* n) {
 
 /** @brief Point the RHI's pipeline cache at the per-user state "cache" directory, created on demand.
  *
- * Compiled pipelines then persist per GPU and driver across runs; when the
- * directory cannot be resolved the cache stays in memory. */
+ * Compiled pipelines then persist per GPU, driver and engine build across
+ * runs; when the directory cannot be resolved the cache stays in memory. */
 static void nr_set_pipeline_cache_dir(void)
 {
     char dir[1024];
     rhi_set_pipeline_cache_dir(openpete_paths_state_dir("cache", dir, sizeof dir, 1) == 0 ? dir : NULL,
-                               op_atomic_write_file);
+                               openpete_build_version(), op_atomic_write_file);
 }
 
 /** @brief Log the wireframe view's raster mode when the view is on.
@@ -4532,6 +4533,8 @@ static void nr_apply_scoped_present(rhi_device *dev, const openpete_options_t *o
                "(vsync %d -> %d, mode %s -> %s)", created_vsync, opts->vsync,
                created_mode ? created_mode : "-", mode ? mode : "-");
 }
+
+static void nr_precompile(void);
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
@@ -5471,6 +5474,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * during bring-up costs the same time where no deadline is running. */
     if (openpete_native_hdfold_on()) openpete_native_hdfold_prime(dev);
     rhi_depth_report(dev);
+    /* After every eager pipeline, the terrain cache's set and SLOT_CONTEST,
+     * and after openpete_mods_init registered the mods' passes and
+     * materials; before the first tick. */
+    nr_precompile();
 
     OPL_INFO_F("native", "Vulkan vk window up (%dx%d, device='%s'); PsyCross hidden",
                w, h, rhi_device_name(dev));
@@ -9335,6 +9342,94 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
     return n;
 }
 
+/* A mod material pipeline a scene draw site requests (nr_material_pipe). */
+typedef enum {
+    NR_MAT_SCENE = 0,   /* walked scene runs and untextured spans: pipeline_slot[blend], or MARK */
+    NR_MAT_PORTAL,      /* the portal profile: pipeline_portal_slot[pslot]                       */
+    NR_MAT_SKY,         /* portal sky: pipeline_slot[4]                                          */
+    NR_MAT_DECAL        /* the moby-shadow decal profile: pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL] */
+} nr_mat_kind;
+typedef struct {
+    nr_mat_kind kind;
+    int blend_class;    /* the group's blend class, 0 opaque to 3 subtract (SCENE, PORTAL) */
+    int pslot;          /* portal slot (PORTAL)                                            */
+    int mark;           /* stencil-MARK variant (SCENE: the MARK slot; PORTAL: the stencil) */
+} nr_mat_req;
+
+/** @brief Return the material slot that caches the pipeline of one request.
+ *
+ * @param mg Resolved or enumerated mod material.
+ * @param q The request.
+ * @return The slot. */
+static void** nr_material_slot(const openpete_mod_material_gpu_t* mg, const nr_mat_req* q) {
+    switch (q->kind) {
+    case NR_MAT_PORTAL: return mg->pipeline_portal_slot[q->pslot];
+    case NR_MAT_SKY:    return mg->pipeline_slot[4];
+    case NR_MAT_DECAL:  return mg->pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL];
+    default:            return q->mark ? mg->pipeline_mark_slot : mg->pipeline_slot[q->blend_class];
+    }
+}
+
+/** @brief Return a mod material's pipeline for one draw-site request, building it into its slot when the slot is empty.
+ *
+ * The one description builder of the mod material scene sites, shared by
+ * the draws and the pipeline precompile, so a precompiled pipeline is the
+ * one the draw would build. SCENE and PORTAL: the psx_scene stages as stock
+ * fallbacks, the group's blend class inherited (a blended class does not
+ * write depth: blended groups are painter-ordered), depth tested, the MARK
+ * stencil when asked; PORTAL adds the cover planes at set 7 and the
+ * fragment stage's portal profile. SKY: opaque, depth tested without depth
+ * writes (the sky must not occlude what shows through the aperture) and the
+ * stencil TEST against the aperture mask, which confines the sky to the
+ * portal's opening. DECAL: the shadow_decal_tex stages as fallbacks,
+ * subtract blend, no depth test, the opaque depth at set 1 and the decal push
+ * block. No depth bias on any: binding a bias pipeline invalidates the
+ * dynamic bias state. A failed build is logged and cached as
+ * PFX_PIPE_FAILED, never retried.
+ * @param mg Resolved or enumerated mod material.
+ * @param q The request.
+ * @return The slot's content: an rhi_pipeline*, or PFX_PIPE_FAILED. */
+static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_mat_req* q) {
+    void** slot = nr_material_slot(mg, q);
+    if (*slot) return *slot;
+    const int b = (q->blend_class >= 0 && q->blend_class < 4) ? q->blend_class : 0;
+    rhi_pipeline_desc md = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = k_blend_class_rhi[b],
+        .depth_test = true,
+        .depth_write_off = b != 0,
+        .stencil = q->mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
+        .material_pipeline = true,
+        .uniform_set7 = q->kind == NR_MAT_PORTAL,
+        .push_const_size = sizeof(psx_material_hd),
+    };
+    const uint32_t* frag = q->kind == NR_MAT_PORTAL ? mg->frag_portal_spv : mg->frag_spv;
+    const size_t frag_n = q->kind == NR_MAT_PORTAL ? mg->frag_portal_words : mg->frag_words;
+    if (q->kind == NR_MAT_SKY) {
+        md.blend = RHI_BLEND_NONE;
+        md.depth_write_off = true;
+        md.stencil = RHI_STENCIL_TEST;
+    } else if (q->kind == NR_MAT_DECAL) {
+        md = (rhi_pipeline_desc){
+            .vert_spv = "shadow_decal_tex.vert.spv",
+            .frag_spv = "shadow_decal_tex.frag.spv",
+            .blend = RHI_BLEND_SUBTRACT,
+            .depth_test = false, .wire_scene = true,
+            .mod_pipeline = true, .set1_vram_depth = true,
+            .push_const_size = sizeof(shadow_decal_tex_pc),
+        };
+    }
+    rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &md, mg->vert_spv, mg->vert_words,
+                                              frag, frag_n);
+    *slot = p ? (void*)p : PFX_PIPE_FAILED;
+    if (!p)
+        fprintf(stderr, "[native] material: pipeline build FAILED for %s "
+                        "(kind %d, blend %d, portal slot %d, mark %d)\n",
+                mg->owner, (int)q->kind, b, q->pslot, q->mark);
+    return *slot;
+}
+
 /** @brief Return whether an untextured bucket draws its deferred material spans.
  *
  * Deferring a triangle removes it from the plain span, so one predicate
@@ -9393,32 +9488,11 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
         rhi_pipeline* pipe = NULL;
         openpete_mod_material_gpu_t mg;
         if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
-            void** slot = want_mark ? mg.pipeline_mark_slot
-                                    : mg.pipeline_slot[blend_class];
             rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-            if (*slot == NULL) {
-                rhi_pipeline_desc md = {
-                    .vert_spv = "psx_scene.vert.spv",
-                    .frag_spv = "psx_scene.frag.spv",
-                    .blend = k_blend_class_rhi[blend_class],
-                    /* Blended groups are painter-ordered and depth-write off;
-                     * inherit that too rather than punching the depth buffer. */
-                    .depth_write_off = blend_class != 0,
-                    .depth_test = true,
-                    .stencil = want_mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
-                    .material_pipeline = true,
-                    .push_const_size = sizeof(psx_material_hd),
-                };
-                rhi_pipeline* np = rhi_create_pipeline_spv(
-                    s_nr.dev, &md, mg.vert_spv, mg.vert_words,
-                    mg.frag_spv, mg.frag_words);
-                *slot = np ? (void*)np : PFX_PIPE_FAILED;
-                if (!np)
-                    fprintf(stderr, "[native] material: untextured pipeline "
-                                    "build FAILED for %s\n", mg.owner);
-            }
-            if (*slot != PFX_PIPE_FAILED) {
-                pipe = (rhi_pipeline*)*slot;
+            const nr_mat_req q = { NR_MAT_SCENE, blend_class, 0, want_mark };
+            void* built = nr_material_pipe(&mg, &q);
+            if (built != PFX_PIPE_FAILED) {
+                pipe = (rhi_pipeline*)built;
                 bind_scene_pipe(pipe);
                 rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                 if (s_nr.mat_pack_dummy)   /* op_pack_tex: no pack art for gouraud */
@@ -10073,38 +10147,10 @@ static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
     const int pslot = portal == 2 ? (ov_mark ? OPENPETE_MATERIAL_PORTAL_RIM_MARK
                                              : OPENPETE_MATERIAL_PORTAL_RIM)
                                   : blend_class;
-    void** ov_slot = portal ? mg->pipeline_portal_slot[pslot]
-                   : ov_mark ? mg->pipeline_mark_slot
-                             : mg->pipeline_slot[blend_class];
     rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-    if (*ov_slot == NULL) {
-        rhi_pipeline_desc md = {
-            .vert_spv = "psx_scene.vert.spv",
-            .frag_spv = "psx_scene.frag.spv",
-            .blend = k_blend_class_rhi[blend_class],
-            .depth_test = true,
-            /* Blended groups z-test against opaque but never occlude each
-             * other. No .depth_bias: binding a bias pipeline invalidates the
-             * dynamic bias state, so an override would have to re-set a value
-             * it doesn't have - and the one override-eligible subtract group
-             * (SUBTRACT-WORLD) draws at zero bias anyway. The biased group,
-             * moby shadows, takes no overrides. */
-            .depth_write_off = blend_class != 0,
-            .stencil = ov_mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
-            .material_pipeline = true,
-            .uniform_set7 = portal != 0,
-            .push_const_size = sizeof(psx_material_hd),
-        };
-        rhi_pipeline* p = rhi_create_pipeline_spv(
-            s_nr.dev, &md, mg->vert_spv, mg->vert_words,
-            portal ? mg->frag_portal_spv : mg->frag_spv,
-            portal ? mg->frag_portal_words : mg->frag_words);
-        *ov_slot = p ? (void*)p : PFX_PIPE_FAILED;
-        if (!p)
-            fprintf(stderr, "[native] material: pipeline build "
-                            "FAILED for %s\n", mg->owner);
-    }
-    return *ov_slot == PFX_PIPE_FAILED ? NULL : (rhi_pipeline*)*ov_slot;
+    const nr_mat_req q = { portal ? NR_MAT_PORTAL : NR_MAT_SCENE, blend_class, pslot, ov_mark };
+    void* built = nr_material_pipe(mg, &q);
+    return built == PFX_PIPE_FAILED ? NULL : (rhi_pipeline*)built;
 }
 
 /** @brief Draw a material-overridden run with its texture-pack replacements (op_pack_shade).
@@ -12802,26 +12848,10 @@ static bool draw_native_scene(bool full_extent)
                         if (scene[s_txscene[base + q]].tag != s0_decal_tag) { uniform = 0; break; }
                     if (uniform &&
                         openpete_mods_material_resolve(s0_decal_tag, OPENPETE_MATERIAL_CONTRACT_DECAL, &dmg) >= 0) {
-                        void** ds = dmg.pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL];
                         rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-                        if (*ds == NULL) {
-                            rhi_pipeline_desc dd = {
-                                .vert_spv = "shadow_decal_tex.vert.spv",
-                                .frag_spv = "shadow_decal_tex.frag.spv",
-                                .blend = RHI_BLEND_SUBTRACT,
-                                .depth_test = false, .wire_scene = true,
-                                .mod_pipeline = true, .set1_vram_depth = true,
-                                .push_const_size = sizeof(shadow_decal_tex_pc),
-                            };
-                            rhi_pipeline* np = rhi_create_pipeline_spv(
-                                s_nr.dev, &dd, dmg.vert_spv, dmg.vert_words,
-                                dmg.frag_spv, dmg.frag_words);
-                            *ds = np ? (void*)np : PFX_PIPE_FAILED;
-                            if (!np)
-                                fprintf(stderr, "[native] material: decal pipeline "
-                                                "build FAILED for %s\n", dmg.owner);
-                        }
-                        if (*ds != PFX_PIPE_FAILED) { dpipe = (rhi_pipeline*)*ds; dslot_ok = 1; }
+                        const nr_mat_req dq = { NR_MAT_DECAL, 0, 0, 0 };
+                        void* ds = nr_material_pipe(&dmg, &dq);
+                        if (ds != PFX_PIPE_FAILED) { dpipe = (rhi_pipeline*)ds; dslot_ok = 1; }
                     }
                 }
                 bind_scene_pipe(dpipe);
@@ -13014,32 +13044,11 @@ static bool draw_native_scene(bool full_extent)
                         openpete_mod_material_gpu_t mg;
                         if (pseg[sg].tag &&
                             openpete_mods_material_resolve(pseg[sg].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
-                            void** slot = mg.pipeline_slot[4];
                             rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
-                            if (*slot == NULL) {
-                                rhi_pipeline_desc md = {
-                                    .vert_spv = "psx_scene.vert.spv",
-                                    .frag_spv = "psx_scene.frag.spv",
-                                    .blend = RHI_BLEND_NONE,
-                                    .depth_test = true,
-                                    .depth_write_off = true,
-                                    /* The aperture mask is what confines the
-                                     * destination sky to the portal's opening;
-                                     * an override that drops it paints sky over
-                                     * the surrounding wall. Reshade-only means
-                                     * inheriting the group's stencil state the
-                                     * same way it inherits blend and depth. */
-                                    .stencil = RHI_STENCIL_TEST,
-                                    .material_pipeline = true,
-                                    .push_const_size = sizeof(psx_material_hd),
-                                };
-                                rhi_pipeline* np = rhi_create_pipeline_spv(
-                                    s_nr.dev, &md, mg.vert_spv, mg.vert_words,
-                                    mg.frag_spv, mg.frag_words);
-                                *slot = np ? (void*)np : PFX_PIPE_FAILED;
-                            }
-                            if (*slot != PFX_PIPE_FAILED) {
-                                pipe = (rhi_pipeline*)*slot;
+                            const nr_mat_req sq = { NR_MAT_SKY, 0, 0, 0 };
+                            void* built = nr_material_pipe(&mg, &sq);
+                            if (built != PFX_PIPE_FAILED) {
+                                pipe = (rhi_pipeline*)built;
                                 bind_scene_pipe(pipe);
                                 rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                                 if (s_nr.mat_pack_dummy)
@@ -15510,6 +15519,38 @@ static void pfx_drain_retired(void) {
         rhi_destroy_pipeline(s_nr.dev, (rhi_pipeline*)dead[i]);
 }
 
+/** @brief Return a postfx pass's pipeline, building it into its slot when the slot is empty.
+ *
+ * The one description builder of the postfx sites (the engine's raster
+ * quantize and dither passes and every mod pass), shared by the executor
+ * and the pipeline precompile: the fullscreen-triangle vertex stage, no
+ * blend, the postfx layout, and the pass's fragment stage, an embedded
+ * .spv name for an engine pass or SPIR-V words for a mod pass. A failed
+ * build is logged and cached as PFX_PIPE_FAILED, which makes the executor
+ * skip the pass, and is never retried.
+ * @param slot The pass's pipeline slot.
+ * @param frag_name Embedded fragment .spv name, or NULL for words.
+ * @param words Fragment SPIR-V words, or NULL.
+ * @param n Their count.
+ * @param owner Owner named in the failure log.
+ * @return The slot's content: an rhi_pipeline*, or PFX_PIPE_FAILED. */
+static void* nr_postfx_pipe(void** slot, const char* frag_name, const uint32_t* words,
+                            size_t n, const char* owner) {
+    if (*slot) return *slot;
+    rhi_pipeline_desc pd = {
+        .vert_spv = "postfx_fs.vert.spv",
+        .frag_spv = frag_name,
+        .blend = RHI_BLEND_NONE,
+        .postfx = true,
+    };
+    rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &pd, NULL, 0, words, n);
+    *slot = p ? (void*)p : PFX_PIPE_FAILED;
+    if (!p)
+        fprintf(stderr, "[native] postfx: pipeline build FAILED for %s - pass disabled\n",
+                owner);
+    return *slot;
+}
+
 /* Run the chain. target == NULL -> over off_image (live present);
  * else over the given compose RT (screenshot-all). Returns pass count. */
 /* Any enabled postfx pass at `point`? Cheap gate for the SCENE split. */
@@ -15539,18 +15580,7 @@ static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || s_raster_mult <= 0) return 0;
     rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
-    if (!s_rq_pipe) {
-        rhi_pipeline_desc pd = {0};
-        pd.vert_spv = "postfx_fs.vert.spv";
-        pd.frag_spv = "raster_quantize.frag.spv";
-        pd.blend    = RHI_BLEND_NONE;
-        pd.postfx   = true;
-        rhi_pipeline* p = rhi_create_pipeline(s_nr.dev, &pd);
-        s_rq_pipe = p ? (void*)p : PFX_PIPE_FAILED;
-        if (!p)
-            fprintf(stderr, "[native] raster-quantize: pipeline build FAILED "
-                            "- quantize disabled\n");
-    }
+    nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, "raster-quantize");
     s_rq_params.scale = (float)s_raster_mult;
     /* Depth-majority vote input: the WORLD-opaque pre-pass depth, addressed
      * through its PSX-screen->uv affine scaled from the raster extent to the
@@ -15597,18 +15627,7 @@ static int psx_dither_append(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || !s_dither) return 0;
     rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
-    if (!s_dither_pipe) {
-        rhi_pipeline_desc pd = {0};
-        pd.vert_spv = "postfx_fs.vert.spv";
-        pd.frag_spv = "psx_dither.frag.spv";
-        pd.blend    = RHI_BLEND_NONE;
-        pd.postfx   = true;
-        rhi_pipeline* p = rhi_create_pipeline(s_nr.dev, &pd);
-        s_dither_pipe = p ? (void*)p : PFX_PIPE_FAILED;
-        if (!p)
-            fprintf(stderr, "[native] dither: pipeline build FAILED "
-                            "- dither disabled\n");
-    }
+    nr_postfx_pipe(&s_dither_pipe, "psx_dither.frag.spv", NULL, 0, "psx-dither");
     memset(&pass[0], 0, sizeof pass[0]);
     pass[0].pipeline_slot = &s_dither_pipe;
     pass[0].owner         = "psx-dither";
@@ -15692,21 +15711,9 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
 
     int out_idx = 0, ran = 0;
     for (int i = 0; i < n; i++) {
-        if (*pass[i].pipeline_slot == NULL) {
-            rhi_pipeline_desc pd = {
-                .vert_spv = "postfx_fs.vert.spv",
-                .frag_spv = NULL,
-                .blend = RHI_BLEND_NONE,
-                .postfx = true,
-            };
-            rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &pd, NULL, 0,
-                                                      pass[i].frag_spv,
-                                                      pass[i].frag_words);
-            *pass[i].pipeline_slot = p ? (void*)p : PFX_PIPE_FAILED;
-            if (!p)
-                fprintf(stderr, "[native] postfx: pipeline build FAILED for "
-                                "%s - pass disabled\n", pass[i].owner);
-        }
+        if (*pass[i].pipeline_slot == NULL)
+            nr_postfx_pipe(pass[i].pipeline_slot, NULL, pass[i].frag_spv, pass[i].frag_words,
+                           pass[i].owner);
         if (*pass[i].pipeline_slot == PFX_PIPE_FAILED) continue;
         rhi_texture* out = ping[out_idx];
         /* Per-mod GPU attribution: one zone per pass, named by the
@@ -15754,6 +15761,116 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
         rhi_blit_rt_to_rt(s_nr.dev, target, final_rt);
     }
     return ran;
+}
+
+/** @brief Return whether OPENPETE_PRECOMPILE_FORCE asks for the pipeline precompile in this run.
+ *
+ * Read at the one call, during bring-up.
+ * @return 1 when set to a value not starting with 0. */
+static int nr_precompile_forced(void) {
+    const char* e = getenv("OPENPETE_PRECOMPILE_FORCE");
+    return e && *e && *e != '0';
+}
+
+/** @brief Pump the window's events between precompile creates, so the window answers the compositor throughout.
+ *
+ * @param ctx Unused. */
+static void nr_precompile_pump(void* ctx) {
+    (void)ctx;
+    SDL_PumpEvents();
+}
+
+/** @brief Install the current variant of every mod material slot a scene or terrain draw site can request for one material, enabled or not.
+ *
+ * Scene contract: the four blend classes, the MARK twin, the portal sky,
+ * and, with a portal profile on a device binding 8 descriptor sets, the
+ * blended cover rule per class and the inner-rim rule with its MARK twin;
+ * terrain-drawable materials also take the 5 x 6 retained-terrain slots
+ * when the terrain cache is up. Decal contract: the decal profile.
+ * @param i Material index.
+ * @param pump Event pump run after each slot, or NULL.
+ * @return The slots visited. */
+static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
+    openpete_mod_material_gpu_t mg;
+    int contract = 0, terrain = 0;
+    if (openpete_mods_material_enum_at(i, &contract, &terrain, &mg) != 0) return 0;
+    nr_mat_req q[13];
+    int nq = 0;
+    if (contract == OPENPETE_MATERIAL_CONTRACT_DECAL) {
+        q[nq++] = (nr_mat_req){ NR_MAT_DECAL, 0, 0, 0 };
+    } else {
+        for (int b = 0; b < 4; b++) q[nq++] = (nr_mat_req){ NR_MAT_SCENE, b, 0, 0 };
+        q[nq++] = (nr_mat_req){ NR_MAT_SCENE, 0, 0, 1 };
+        q[nq++] = (nr_mat_req){ NR_MAT_SKY, 0, 0, 0 };
+        if (mg.frag_portal_spv && rhi_device_max_descriptor_sets(s_nr.dev) >= 8u) {
+            for (int b = 1; b < 4; b++) q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, b, b, 0 };
+            q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM, 0 };
+            q[nq++] = (nr_mat_req){ NR_MAT_PORTAL, 0, OPENPETE_MATERIAL_PORTAL_RIM_MARK, 1 };
+        }
+    }
+    unsigned n = 0;
+    for (int k = 0; k < nq; k++, n++) {
+        nr_material_pipe(&mg, &q[k]);
+        if (pump) pump(NULL);
+    }
+    for (int idx = 0; terrain && openpete_tercache_ready() && idx < OPENPETE_MATERIAL_TER_PIPES;
+         idx++) {
+        openpete_mod_material_terrain_t tm;
+        if (openpete_mods_material_enum_terrain(i, idx, &tm) != 0) continue;
+        openpete_tercache_material_pipe(tm.pipeline_slot, idx / OPENPETE_MATERIAL_TER_SLOTS,
+                                        idx % OPENPETE_MATERIAL_TER_SLOTS, tm.frag_spv,
+                                        tm.frag_words, tm.owner);
+        n++;
+        if (pump) pump(NULL);
+    }
+    return n;
+}
+
+/** @brief Run the pipeline precompile when OPENPETE_PRECOMPILE_FORCE asks for it.
+ *
+ * First the current variant of every lazy slot is installed through the
+ * draw sites' own description builders, whether its feature or material is
+ * enabled: the raster quantize and dither passes, every live mod postfx
+ * pass and every live mod material's slots (nr_precompile_material), under
+ * the registry read lock. Each installed slot is a registered pipeline.
+ * Then rhi_precompile_variants compiles every other reachable variant of
+ * every registered pipeline into the cache and saves the cache when it
+ * changed. Creates count in the precompile phase; creates after it count as
+ * first use. The window's events are pumped between creates. */
+static void nr_precompile(void) {
+    if (!s_nr.dev || !nr_precompile_forced()) return;
+    void (*pump)(void*) = s_nr.headless ? NULL : nr_precompile_pump;
+    openpete_boot_mark(OP_BOOT_PRECOMPILE_START);
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
+    rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
+    openpete_mods_registry_read_lock();
+    nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, "raster-quantize");
+    nr_postfx_pipe(&s_dither_pipe, "psx_dither.frag.spv", NULL, 0, "psx-dither");
+    unsigned slots = 2, fx = 0, mats = 0;
+    for (int i = 0; i < openpete_mods_postfx_enum_count(); i++) {
+        openpete_postfx_pass_t pass;
+        if (openpete_mods_postfx_enum_at(i, &pass) != 0) continue;
+        nr_postfx_pipe(pass.pipeline_slot, NULL, pass.frag_spv, pass.frag_words, pass.owner);
+        fx++;
+        if (pump) pump(NULL);
+    }
+    for (int i = 0; i < openpete_mods_material_enum_count(); i++) {
+        const unsigned n = nr_precompile_material(i, pump);
+        mats += n > 0;
+        slots += n;
+    }
+    openpete_mods_registry_read_unlock();
+    const double install_ms = (double)(SDL_GetTicksNS() - t0) / 1e6;  /* clock-guard: wall: precompile duration for the log */
+    rhi_precompile_stats st;
+    rhi_precompile_variants(s_nr.dev, pump, NULL, &st);
+    rhi_pipe_phase_set(RHI_PIPE_PHASE_AUTO);
+    rhi_pipe_precompile_done();
+    openpete_boot_mark(OP_BOOT_PRECOMPILE_END);
+    OPL_INFO_F("native", "precompile: installed %u lazy slots (%u mod postfx passes, %u mod "
+               "materials) in %.1f ms; %u distinct create infos, %u created, %u probe hits, "
+               "%u manifest skips, %u failed; %.1f ms total",
+               slots + fx, fx, mats, install_ms, st.keys, st.created, st.probe_hits,
+               st.manifest_skips, st.failed, (double)(SDL_GetTicksNS() - t0) / 1e6);  /* clock-guard: wall: precompile duration for the log */
 }
 
 /* GPU per-pass zone report (OPENPETE_GPU_TIMERS=1): EMA per zone name over

@@ -19,12 +19,9 @@ static const char *const k_site_name[RHI_PIPE_SITES] = {
     "mod_material", "terrain_material", "rebuild"
 };
 
-/* Open-addressed set of nonzero 64-bit keys (0 marks an empty slot). */
-typedef struct {
-    uint64_t *slot;
-    size_t    cap;   /* power of two, or 0 before the first insert */
-    size_t    n;
-} pc_set;
+/* Open-addressed set of nonzero 64-bit keys (0 marks an empty slot); the
+ * header's rhi_pc_keyset has the same layout. */
+typedef rhi_pc_keyset pc_set;
 
 typedef struct {
     unsigned creates, hit, miss, unknown;
@@ -179,6 +176,36 @@ static uint64_t pc_key(const rhi_pc_variant *v, bool declared_only)
     for (int i = 0; i < 6; i++)
         h = pc_mix(h, (!declared_only || (v->declared >> i) & 1u) ? (uint64_t)v->consts[i] + 1u : 0u);
     return pc_mix(pc_mix(h, v->poly_mode), v->render_pass);
+}
+
+uint64_t rhi_pc_variant_key(const rhi_pc_variant *v)
+{
+    const uint64_t k = pc_key(v, true);
+    return k ? k : 1u;
+}
+
+int rhi_pc_keyset_insert(rhi_pc_keyset *s, uint64_t k)
+{
+    return pc_set_insert((pc_set *)s, k);
+}
+
+int rhi_pc_keyset_has(const rhi_pc_keyset *s, uint64_t k)
+{
+    if (!k) k = 1;
+    if (!s->cap) return 0;
+    size_t j = (size_t)k & (s->cap - 1);
+    while (s->slot[j]) {
+        if (s->slot[j] == k) return 1;
+        j = (j + 1) & (s->cap - 1);
+    }
+    return 0;
+}
+
+void rhi_pc_keyset_free(rhi_pc_keyset *s)
+{
+    free(s->slot);
+    s->slot = NULL;
+    s->cap = s->n = 0;
 }
 
 void rhi_pc_add_base(rhi_pipe_site site, const rhi_pc_variant *v, int nv)

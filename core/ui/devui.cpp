@@ -139,6 +139,7 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
     ii.Device             = (VkDevice)info.device;
     ii.QueueFamily        = info.queue_family;
     ii.Queue              = (VkQueue)info.queue;
+    ii.PipelineCache      = (VkPipelineCache)info.pipeline_cache;
     ii.DescriptorPool     = VK_NULL_HANDLE;
     ii.DescriptorPoolSize = 8;   /* backend creates + owns its own pool */
     ii.PipelineInfoMain.RenderPass  = (VkRenderPass)info.render_pass;

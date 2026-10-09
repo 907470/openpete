@@ -860,6 +860,20 @@ int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
     return n;
 }
 
+int openpete_mods_postfx_enum_count(void) { return fx_count(); }
+
+int openpete_mods_postfx_enum_at(int i, openpete_postfx_pass_t* out) {
+    if (!out || i < 0 || i >= fx_count()) return -1;
+    mod_postfx_t* fx = fx_at(i);
+    if (!fx->live) return -1;
+    memset(out, 0, sizeof *out);
+    out->frag_spv = openpete_mods_shader_spv(fx->shader, &out->frag_words, NULL);
+    if (!out->frag_spv) return -1;
+    out->pipeline_slot = &fx->pipeline;
+    out->owner = fx->owner;
+    return 0;
+}
+
 /* Drain executor-cached pipelines orphaned by a sweep (hot reload).
  * The renderer destroys them under its own synchronization. */
 int openpete_mods_postfx_take_retired(void** out, int cap) {
@@ -1861,6 +1875,37 @@ int openpete_mods_material_resolve(uint32_t tag, int contract,
     best = material_winner(&k, contract);
     if (best < 0) return -1;
     return material_fill_gpu(best, 0, out);
+}
+
+int openpete_mods_material_enum_count(void) { return s_mat_count; }
+
+int openpete_mods_material_enum_at(int i, int* contract, int* terrain,
+                                   openpete_mod_material_gpu_t* out) {
+    if (!out || i < 0 || i >= s_mat_count || !s_mats[i].live) return -1;
+    const mod_material_t* m = &s_mats[i];
+    size_t words = 0;
+    const int ter_sel = m->sel.channel == -1 || m->sel.channel == OP_CHAN_TERRAIN ||
+        (m->sel_dirty && (m->sel_pending.channel == -1 ||
+                          m->sel_pending.channel == OP_CHAN_TERRAIN));
+    if (contract) *contract = m->contract;
+    if (terrain)
+        *terrain = m->contract == OPENPETE_MATERIAL_CONTRACT_SCENE && ter_sel && m->frag >= 0 &&
+                   openpete_mods_shader_spv_terrain(m->frag, &words) != NULL && words > 0;
+    material_fill_gpu(i, 0, out);
+    return 0;
+}
+
+int openpete_mods_material_enum_terrain(int i, int pipe_idx,
+                                        openpete_mod_material_terrain_t* out) {
+    if (!out || i < 0 || i >= s_mat_count || !s_mats[i].live || s_mats[i].frag < 0) return -1;
+    if (pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES) return -1;
+    mod_material_t* m = &s_mats[i];
+    memset(out, 0, sizeof *out);
+    out->frag_spv = openpete_mods_shader_spv_terrain(m->frag, &out->frag_words);
+    if (!out->frag_spv || out->frag_words == 0) return -1;
+    out->pipeline_slot = &m->pipeline_ter[pipe_idx];
+    out->owner = m->owner;
+    return 0;
 }
 
 /** @brief Body of openpete_mods_material_remove_owner, run under the registry write lock.

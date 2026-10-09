@@ -17,6 +17,7 @@
 #ifndef OPENPETE_TERRAIN_CACHE_H
 #define OPENPETE_TERRAIN_CACHE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* Forward decls only (full definitions in rhi.h) - this header is included
@@ -275,6 +276,26 @@ void openpete_tercache_shutdown(struct rhi_device *dev);
  * int read without synchronisation.
  * @return 1 when the cache is ready, 0 otherwise. */
 int  openpete_tercache_ready(void);
+
+/** @brief Return a mod material's retained-terrain pipeline for a vertex variant and colour slot, building it into its slot when the slot is empty.
+ *
+ * The one description builder of the terrain material site, shared by the
+ * draw and the pipeline precompile: the variant's terrain vertex stage, the
+ * colour slot's stencil, blend and depth-write rule, and the material's
+ * terrain-profile fragment stage. A failed build is logged and cached as
+ * OPENPETE_POSTFX_PIPE_FAILED, never retried. Display owner only.
+ * @param pslot The material's pipeline slot for (variant, slot).
+ * @param variant Vertex variant: 0 plain, 1 anim, 2 near, 3 anim cells, 4 near cells.
+ * @param slot Colour slot: 0 world, 1 world with stencil mark, 2 fill,
+ *             3 alpha, 4 add, 5 subtract.
+ * @param frag Terrain-profile fragment SPIR-V words.
+ * @param frag_words Their count.
+ * @param owner Owning mod id for the failure log, or NULL.
+ * @return The pipeline (an rhi_pipeline*), or NULL when the slot failed or
+ *         the cache has no device. */
+void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
+                                      const uint32_t *frag, size_t frag_words,
+                                      const char *owner);
 
 /* Per-build protocol (driven by the terrain feeder). The sub-tick spine
  * presents the PREVIOUS canonical extraction (the canonical-lag leg), so

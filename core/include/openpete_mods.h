@@ -1480,6 +1480,48 @@ typedef struct {
  * @return 0 on success, -1 otherwise. */
 int  openpete_mods_material_terrain_bucket_gpu(
         int bucket, int pipe_idx, openpete_mod_material_terrain_t* out);
+/** @brief Return the size of the material table, live and swept slots alike, for openpete_mods_material_enum_at.
+ *
+ * Takes no lock; the precompile calls it under the registry read lock.
+ * @return The count. */
+int  openpete_mods_material_enum_count(void);
+/** @brief Describe one material for the pipeline precompile, enabled or not.
+ *
+ * Takes no lock. Fills the same shaders and pipeline slots the draw-time
+ * resolve hands a draw site, with the material's static uniform slot, and
+ * reports its shading contract and whether the retained terrain cache can
+ * draw it: scene contract, a selector (current or parked) on channel -1 or
+ * OP_CHAN_TERRAIN, and a fragment shader with a terrain profile.
+ * @param i Material index, below openpete_mods_material_enum_count().
+ * @param contract Receives the OPENPETE_MATERIAL_CONTRACT_*.
+ * @param terrain Receives 1 when the terrain cache can draw it, else 0.
+ * @param out Receives the scene-site shaders and slots.
+ * @return 0 for a live material, -1 for a swept slot or a bad index. */
+int  openpete_mods_material_enum_at(int i, int* contract, int* terrain,
+                                    openpete_mod_material_gpu_t* out);
+/** @brief Describe one material's retained-terrain pipeline slot for the precompile, enabled or not.
+ *
+ * Takes no lock. Valid only for a material openpete_mods_material_enum_at
+ * reported terrain-drawable; the uniform slot is not filled.
+ * @param i Material index.
+ * @param pipe_idx Variant * OPENPETE_MATERIAL_TER_SLOTS + colour slot.
+ * @param out Receives the terrain-profile fragment stage, the slot and the owner.
+ * @return 0 on success, -1 otherwise. */
+int  openpete_mods_material_enum_terrain(int i, int pipe_idx,
+                                         openpete_mod_material_terrain_t* out);
+/** @brief Return the size of the postfx table, live and swept passes alike, for openpete_mods_postfx_enum_at.
+ *
+ * Takes no lock.
+ * @return The count. */
+int  openpete_mods_postfx_enum_count(void);
+/** @brief Describe one postfx pass for the pipeline precompile, enabled or not.
+ *
+ * Takes no lock. Fills the fragment stage, the pipeline slot and the owner
+ * as openpete_mods_postfx_collect does; the uniforms are not filled.
+ * @param i Pass index, below openpete_mods_postfx_enum_count().
+ * @param out Receives the pass.
+ * @return 0 for a live pass, -1 for a swept one or a bad index. */
+int  openpete_mods_postfx_enum_at(int i, openpete_postfx_pass_t* out);
 /** @brief Reset the per-present interned material slot table.
  *
  * native_render calls it at scene begin and at the canonical present's

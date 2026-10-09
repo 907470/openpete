@@ -1990,6 +1990,50 @@ static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
  * arenas included: each runs its stock pass filtered to mat_pass 0, then one
  * pass per live bucket. The depth prepass and key slots draw every face. */
 
+void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
+                                      const uint32_t *frag, size_t frag_words,
+                                      const char *owner)
+{
+    if (*pslot == OPENPETE_POSTFX_PIPE_FAILED) return NULL;
+    if (*pslot) return *pslot;
+    if (!s_tc.dev || variant < 0 || variant >= OPENPETE_MATERIAL_TER_VARIANTS) return NULL;
+    static const char *k_vert[OPENPETE_MATERIAL_TER_VARIANTS] = {
+        "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
+        "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv"
+    };
+    rhi_pipeline_desc d;
+    memset(&d, 0, sizeof(d));
+    d.vert_spv = k_vert[variant];
+    d.blend = RHI_BLEND_NONE;
+    d.depth_test = true;
+    d.terrain_pipeline = true;
+    d.terrain_anim = (variant == 1 || variant == 3);
+    d.terrain_near = (variant == 2 || variant == 4);
+    d.terrain_cells = (variant >= 3);
+    d.push_const_size = sizeof(tc_pc);
+    switch (slot) {
+        case 1: d.stencil = RHI_STENCIL_MARK; break;
+        case 2: d.stencil = RHI_STENCIL_TEST_ZERO; break;
+        /* A material inherits its group's compositing, so a blend slot's
+         * pipeline differs from the stock one only in the fragment
+         * stage - same equation, same depth-write rule. */
+        case 3: d.blend = RHI_BLEND_ALPHA;    d.depth_write_off = true; break;
+        case 4: d.blend = RHI_BLEND_ADD;      d.depth_write_off = true; break;
+        case 5: d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true; break;
+        default: break;
+    }
+    rhi_pipeline *p = rhi_create_pipeline_spv(s_tc.dev, &d, NULL, 0, frag, frag_words);
+    if (!p) {
+        fprintf(stderr, "[tercache] material: terrain pipeline build "
+                        "FAILED for %s (variant %d slot %d) - its faces "
+                        "draw stock\n", owner ? owner : "?", variant, slot);
+        *pslot = OPENPETE_POSTFX_PIPE_FAILED;
+        return NULL;
+    }
+    *pslot = p;
+    return p;
+}
+
 /** @brief Bind one bucket's terrain material pipeline for a vertex variant and colour slot, or the stock pipeline.
  *
  * The material pipeline is built lazily, once per material, variant and
@@ -2017,45 +2061,9 @@ static int tc_bind_material(int bucket, int variant, int slot,
     if (openpete_mods_material_terrain_bucket_gpu(bucket, idx, &mg) != 0)
         goto draw_stock;
     rhi_pipe_site_visit(RHI_PIPE_SITE_TERRAIN_MATERIAL, 1);
-    if (*mg.pipeline_slot == OPENPETE_POSTFX_PIPE_FAILED) goto draw_stock;
-    if (!*mg.pipeline_slot) {
-        static const char *k_vert[OPENPETE_MATERIAL_TER_VARIANTS] = {
-            "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
-            "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv"
-        };
-        rhi_pipeline_desc d;
-        memset(&d, 0, sizeof(d));
-        d.vert_spv = k_vert[variant];
-        d.blend = RHI_BLEND_NONE;
-        d.depth_test = true;
-        d.terrain_pipeline = true;
-        d.terrain_anim = (variant == 1 || variant == 3);
-        d.terrain_near = (variant == 2 || variant == 4);
-        d.terrain_cells = (variant >= 3);
-        d.push_const_size = sizeof(tc_pc);
-        switch (slot) {
-            case 1: d.stencil = RHI_STENCIL_MARK; break;
-            case 2: d.stencil = RHI_STENCIL_TEST_ZERO; break;
-            /* A material inherits its group's compositing, so a blend slot's
-             * pipeline differs from the stock one only in the fragment
-             * stage - same equation, same depth-write rule. */
-            case 3: d.blend = RHI_BLEND_ALPHA;    d.depth_write_off = true; break;
-            case 4: d.blend = RHI_BLEND_ADD;      d.depth_write_off = true; break;
-            case 5: d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true; break;
-            default: break;
-        }
-        rhi_pipeline *p = rhi_create_pipeline_spv(s_tc.dev, &d, NULL, 0,
-                                                  mg.frag_spv, mg.frag_words);
-        if (!p) {
-            fprintf(stderr, "[tercache] material: terrain pipeline build "
-                            "FAILED for %s (variant %d slot %d) - its faces "
-                            "draw stock\n", mg.owner ? mg.owner : "?",
-                    variant, slot);
-            *mg.pipeline_slot = OPENPETE_POSTFX_PIPE_FAILED;
-            goto draw_stock;
-        }
-        *mg.pipeline_slot = p;
-    }
+    if (!openpete_tercache_material_pipe(mg.pipeline_slot, variant, slot, mg.frag_spv,
+                                         mg.frag_words, mg.owner))
+        goto draw_stock;
     {
         rhi_ubo *mu = openpete_native_material_ubo();
         if (!mu) goto draw_stock;   /* no uniform source yet */

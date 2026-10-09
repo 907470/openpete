@@ -29,6 +29,7 @@
 #include "rhi_gpu_audit.h" /* must follow volk.h: redirects the vk* globals */
 #include "rhi_memtype.h"
 #include "rhi_pipe_census.h"
+#include "rhi_pcache_file.h"
 
 /* Acquire budget, and the back-off after one expiry.
  *
@@ -343,7 +344,11 @@ struct rhi_device {
     uint32_t                 gfx_family;
     VkPipelineCache          pcache;          /* every pipeline compiles through it */
     char                     pcache_path[1152]; /* file it loads from and saves to; "" = not persisted */
-    size_t                   pcache_loaded;   /* bytes offered to the driver, so an unchanged cache is not rewritten */
+    uint64_t                 pcache_digest;   /* digest of the cache bytes at load or the last save */
+    rhi_pc_keyset            pc_keys;         /* manifest: loaded keys plus every key created this run */
+    size_t                   pcache_keys_saved; /* pc_keys.n at load or the last save */
+    bool                     manifest_trusted; /* the driver is calibrated (pcache_manifest_calibrated) */
+    unsigned                 pcache_unhit;    /* creates since load or the last save not reported a cache hit */
     VkQueue                  gfx_queue;
     char                     device_name[256];
     char                     driver_version[64];
@@ -661,6 +666,7 @@ static uint64_t s_frame_serial;
 static int64_t (*s_clock)(void);
 static rhi_boot_stats s_boot;
 static bool s_first_frame_done;
+static bool s_precompile_done;   /* rhi_pipe_precompile_done */
 /* Per-thread create phase (rhi_pipe_phase_set) and rebuild marker. */
 static _Thread_local rhi_pipe_phase t_pipe_phase;
 static _Thread_local bool t_in_rebuild;
@@ -764,6 +770,12 @@ struct rhi_pipeline {
     VkShaderStageFlags pc_stages; /* stage visibility of the push-constant
                                    * block (FRAGMENT; terrain: VERTEX too) -
                                    * rhi_push_constants must match the range */
+    /* Recorded at the first compile (pipe_stage_modules): the desc's dedupe
+     * hash, each stage's SPIR-V content hash and declared constant ids. */
+    bool             stage_info;
+    uint64_t         desc_hash, vs_hash, fs_hash;
+    uint32_t         vs_ids, fs_ids;
+    uint64_t         vkey;         /* dedupe key of the installed objects' create info */
 };
 
 struct rhi_texture {
@@ -2801,26 +2813,46 @@ static void rhi_balloon_free(rhi_device *dev)
 }
 
 static char s_pcache_dir[1024];   /* rhi_set_pipeline_cache_dir; "" = not persisted */
+static char s_pcache_build[9];    /* rhi_pcf_build_tag of the engine build */
 static int (*s_pcache_write)(const char *path, const void *data, size_t n);
 
-void rhi_set_pipeline_cache_dir(const char *dir, int (*write_file)(const char *path, const void *data, size_t n))
+void rhi_set_pipeline_cache_dir(const char *dir, const char *build,
+                                int (*write_file)(const char *path, const void *data, size_t n))
 {
     snprintf(s_pcache_dir, sizeof s_pcache_dir, "%s", dir && write_file ? dir : "");
+    rhi_pcf_build_tag(build, s_pcache_build);
     s_pcache_write = write_file;
 }
 
-/* The persisted file is this envelope followed by vkGetPipelineCacheData's
- * bytes. The driver treats pInitialData as trusted (it must come from
- * vkGetPipelineCacheData), so a file is offered only when its length and
- * FNV-1a 64 digest match what was written and it names this driverVersion:
- * a truncated, corrupted or foreign file is never passed to the driver. */
-#define PCACHE_MAGIC "OPVKPC\0\1"
+/* The persisted file is this envelope, then vkGetPipelineCacheData's bytes,
+ * then the key manifest: key_count 64-bit dedupe keys
+ * (rhi_pc_variant_key with the render pass zeroed) of every pipeline
+ * variant created into the cache. The driver treats pInitialData as trusted
+ * (it must come from vkGetPipelineCacheData), so a file is offered only when
+ * its length and FNV-1a 64 digest (over the cache bytes, then the keys)
+ * match what was written and it names this driverVersion: a truncated,
+ * corrupted or foreign file is never passed to the driver. */
+#define PCACHE_MAGIC "OPVKPC\0\2"
 struct pcache_envelope {
     char     magic[8];
     uint32_t driver_version;   /* VkPhysicalDeviceProperties::driverVersion */
-    uint32_t payload_len;      /* bytes after the envelope */
-    uint64_t digest;           /* FNV-1a 64 of those bytes */
+    uint32_t payload_len;      /* cache bytes after the envelope */
+    uint64_t digest;           /* FNV-1a 64 of the cache bytes, then the keys */
+    uint32_t key_count;        /* manifest keys after the cache bytes */
+    uint32_t reserved;         /* 0 */
 };
+
+/** @brief Fold bytes into an FNV-1a 64-bit digest.
+ *
+ * @param h Running digest; 0xcbf29ce484222325 starts one.
+ * @param p The bytes.
+ * @param n Their count.
+ * @return The updated digest. */
+static uint64_t fnv1a64_fold(uint64_t h, const uint8_t *p, size_t n)
+{
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
+    return h;
+}
 
 /** @brief Return the FNV-1a 64-bit digest of n bytes.
  *
@@ -2829,9 +2861,7 @@ struct pcache_envelope {
  * @return The digest. */
 static uint64_t fnv1a64(const uint8_t *p, size_t n)
 {
-    uint64_t h = 0xcbf29ce484222325ull;
-    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
-    return h;
+    return fnv1a64_fold(0xcbf29ce484222325ull, p, n);
 }
 
 /** @brief Read a whole file into a malloc'd buffer.
@@ -2852,38 +2882,49 @@ static void *read_whole_file(const char *path, size_t *out_n)
     return buf;
 }
 
-/** @brief Return the pipeline-cache payload inside a persisted file when the envelope and the Vulkan header both match this device.
+/* A persisted file's accepted parts (pcache_payload). */
+typedef struct {
+    const uint8_t *payload;    /* the cache bytes, NULL when refused */
+    size_t         payload_n;
+    const uint8_t *keys;       /* key_count little-endian 64-bit keys */
+    uint32_t       key_count;
+} pcache_parts;
+
+/** @brief Split a persisted file into its cache bytes and key manifest when the envelope and the Vulkan header both match this device.
  *
- * The envelope must carry PCACHE_MAGIC, this driverVersion, the file's
- * exact payload length and that payload's digest; the payload's
- * VkPipelineCacheHeaderVersionOne must have headerSize in [32, length],
- * version ONE, and this vendorID, deviceID and pipelineCacheUUID.
+ * The envelope must carry PCACHE_MAGIC, this driverVersion, a payload
+ * length and key count that add up to the file's length, and their
+ * digest; the payload's VkPipelineCacheHeaderVersionOne must have
+ * headerSize in [32, length], version ONE, and this vendorID, deviceID and
+ * pipelineCacheUUID.
  * @param data The file's bytes.
  * @param n Their count.
  * @param props This device's properties.
- * @param out_n Receives the payload length, 0 when refused.
- * @return The payload, or NULL when refused. */
-static const uint8_t *pcache_payload(const uint8_t *data, size_t n,
-                                     const VkPhysicalDeviceProperties *props, size_t *out_n)
+ * @return The parts; payload NULL when refused. */
+static pcache_parts pcache_payload(const uint8_t *data, size_t n,
+                                   const VkPhysicalDeviceProperties *props)
 {
+    pcache_parts out = {0};
     struct pcache_envelope env;
-    *out_n = 0;
-    if (!data || n < sizeof env + 16 + VK_UUID_SIZE) return NULL;
+    if (!data || n < sizeof env + 16 + VK_UUID_SIZE) return out;
     memcpy(&env, data, sizeof env);
     const uint8_t *pl = data + sizeof env;
-    const size_t pn = n - sizeof env;
+    const size_t pn = env.payload_len;
+    if (memcmp(env.magic, PCACHE_MAGIC, sizeof env.magic) != 0 ||
+        env.driver_version != props->driverVersion ||
+        (uint64_t)sizeof env + pn + 8u * (uint64_t)env.key_count != (uint64_t)n ||
+        pn < 16 + VK_UUID_SIZE)
+        return out;
     uint32_t hdr[4];
     memcpy(hdr, pl, sizeof hdr);
-    if (memcmp(env.magic, PCACHE_MAGIC, sizeof env.magic) != 0 ||
-        env.driver_version != props->driverVersion || env.payload_len != pn ||
-        hdr[0] < 16 + VK_UUID_SIZE || hdr[0] > pn ||
+    if (hdr[0] < 16 + VK_UUID_SIZE || hdr[0] > pn ||
         hdr[1] != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||
         hdr[2] != props->vendorID || hdr[3] != props->deviceID ||
         memcmp(pl + 16, props->pipelineCacheUUID, VK_UUID_SIZE) != 0 ||
-        env.digest != fnv1a64(pl, pn))
-        return NULL;
-    *out_n = pn;
-    return pl;
+        env.digest != fnv1a64(pl, n - sizeof env))
+        return out;
+    out = (pcache_parts){ pl, pn, pl + pn, env.key_count };
+    return out;
 }
 
 /** @brief Return the directory the pipeline cache file lives in.
@@ -2911,89 +2952,185 @@ static int pcache_cold_remove(const char *path)
     return 1;
 }
 
+/** @brief Return whether a driver's pipeline cache keeps what it was given, so the key manifest may stand in for a probe on it.
+ *
+ * Listed: RADV, whose creation feedback reports a cache hit for every
+ * pipeline a warm boot recreates from its saved cache. A driver that drops
+ * entries would read present in the manifest and absent in the cache.
+ * @param driver_id VkDriverId of the device.
+ * @return true for a calibrated driver. */
+static bool pcache_manifest_calibrated(uint32_t driver_id)
+{
+    return driver_id == (uint32_t)VK_DRIVER_ID_MESA_RADV;
+}
+
+/** @brief Name a device's pipeline cache file under pcache_dir, or leave the path empty when the cache is not persisted.
+ *
+ * vk-pipelines-<build>-<vendor>-<device>-<pipelineCacheUUID>.bin, so a
+ * driver update, another GPU or another engine build starts its own file.
+ * @param dev Device whose pcache_path is written.
+ * @param props Its properties. */
+static void pcache_name(rhi_device *dev, const VkPhysicalDeviceProperties *props)
+{
+    dev->pcache_path[0] = '\0';
+    const char *dir = pcache_dir();
+    if (!dir[0]) return;
+    int n = snprintf(dev->pcache_path, sizeof dev->pcache_path,
+                     "%s/vk-pipelines-%s-%04x-%04x-", dir, s_pcache_build,
+                     props->vendorID, props->deviceID);
+    for (int i = 0; i < VK_UUID_SIZE && n > 0 && (size_t)n + 3 < sizeof dev->pcache_path; i++)
+        n += snprintf(dev->pcache_path + n, sizeof dev->pcache_path - (size_t)n, "%02x",
+                      props->pipelineCacheUUID[i]);
+    if (n > 0 && (size_t)n + 5 < sizeof dev->pcache_path) memcpy(dev->pcache_path + n, ".bin", 5);
+    else dev->pcache_path[0] = '\0';
+}
+
+/** @brief Load a file's key manifest into the device's key set.
+ *
+ * @param dev Device whose pc_keys and pcache_keys_saved are written.
+ * @param parts The accepted file parts. */
+static void pcache_load_keys(rhi_device *dev, const pcache_parts *parts)
+{
+    for (uint32_t i = 0; parts->keys && i < parts->key_count; i++) {
+        uint64_t k;
+        memcpy(&k, parts->keys + 8u * i, sizeof k);
+        rhi_pc_keyset_insert(&dev->pc_keys, k);
+    }
+    dev->pcache_keys_saved = dev->pc_keys.n;
+}
+
 /** @brief Create the device's pipeline cache, seeded from its file when pcache_payload accepts the file.
  *
- * The file is named by the device's vendor id, device id and
- * pipelineCacheUUID under pcache_dir, so a driver update or another GPU
- * starts a fresh file. Without a directory the cache lives for the process
+ * The file is named by pcache_name; its mtime is refreshed as its last-use
+ * time, and a windowed open ages out the other cache files of its class
+ * (rhi_pcf_prune). Without a directory the cache lives for the process
  * only. A failure leaves dev->pcache VK_NULL_HANDLE, which every pipeline
- * create accepts. The file's size, the bytes offered and the time spent
- * reading the file and creating the cache are recorded for
- * rhi_boot_stats_get.
+ * create accepts. The file's key manifest seeds dev->pc_keys, trusted for
+ * the warm-boot skip only on a calibrated driver. The file's size, the
+ * bytes offered and the time spent reading the file and creating the cache
+ * are recorded for rhi_boot_stats_get.
  * @param dev Device whose physical device and logical device exist. */
 static void pipeline_cache_open(rhi_device *dev)
 {
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(dev->phys, &props);
-    dev->pcache_path[0] = '\0';
-    const char *dir = pcache_dir();
-    if (dir[0]) {
-        int n = snprintf(dev->pcache_path, sizeof dev->pcache_path,
-                         "%s/vk-pipelines-%04x-%04x-", dir,
-                         props.vendorID, props.deviceID);
-        for (int i = 0; i < VK_UUID_SIZE && n > 0 && (size_t)n + 3 < sizeof dev->pcache_path; i++)
-            n += snprintf(dev->pcache_path + n, sizeof dev->pcache_path - (size_t)n, "%02x",
-                          props.pipelineCacheUUID[i]);
-        if (n > 0 && (size_t)n + 5 < sizeof dev->pcache_path) memcpy(dev->pcache_path + n, ".bin", 5);
-        else dev->pcache_path[0] = '\0';
-    }
+    VkPhysicalDeviceDriverProperties drv = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+    VkPhysicalDeviceProperties2 props2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv };
+    vkGetPhysicalDeviceProperties2(dev->phys, &props2);
+    const VkPhysicalDeviceProperties *props = &props2.properties;
+    dev->manifest_trusted = pcache_manifest_calibrated((uint32_t)drv.driverID);
+    pcache_name(dev, props);
     s_boot.cache_cold = pcache_cold_remove(dev->pcache_path);
+    rhi_pcf_touch(dev->pcache_path);
+    if (!dev->headless) rhi_pcf_prune(pcache_dir(), dev->pcache_path);
     const int64_t t0 = boot_now();
-    size_t n = 0, pn = 0;
+    size_t n = 0;
     void *data = dev->pcache_path[0] ? read_whole_file(dev->pcache_path, &n) : NULL;
-    const uint8_t *pl = pcache_payload((const uint8_t *)data, n, &props, &pn);
+    const pcache_parts parts = pcache_payload((const uint8_t *)data, n, props);
+    size_t pn = parts.payload ? parts.payload_n : 0;
     VkPipelineCacheCreateInfo ci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
         .initialDataSize = pn,
-        .pInitialData = pl,
+        .pInitialData = parts.payload,
     };
     if (vkCreatePipelineCache(dev->device, &ci, NULL, &dev->pcache) != VK_SUCCESS) {
         ci.initialDataSize = 0; ci.pInitialData = NULL; pn = 0;
         if (vkCreatePipelineCache(dev->device, &ci, NULL, &dev->pcache) != VK_SUCCESS)
             dev->pcache = VK_NULL_HANDLE;
     }
-    dev->pcache_loaded = pn;
+    dev->pcache_digest = pn ? fnv1a64(parts.payload, pn) : 0;
+    if (pn) pcache_load_keys(dev, &parts);
     s_boot.cache_load_ns = boot_now() - t0;
     s_boot.cache_file_bytes = n;
     s_boot.cache_offered_bytes = pn;
     if (dev->pcache_path[0])
-        RHI_LOG("pipeline cache: %s (%zu bytes offered%s)\n", dev->pcache_path,
-                pn, data && !pl ? "; file refused" : "");
+        RHI_LOG("pipeline cache: %s (%zu bytes offered, %zu manifest keys%s%s)\n",
+                dev->pcache_path, pn, dev->pc_keys.n,
+                dev->manifest_trusted ? ", manifest trusted" : "",
+                data && !parts.payload ? "; file refused" : "");
     free(data);
 }
 
-/** @brief Write the pipeline cache to its file when it changed size since load, then destroy it.
+/** @brief Write a cache file image: the envelope, the cache bytes and every key of the device's key set.
  *
- * The envelope and the cache data go through the writer
- * rhi_set_pipeline_cache_dir installed, which replaces the file in one
- * step.
+ * @param dev Device whose pc_keys are written.
+ * @param n Count of the cache bytes, already at buf + sizeof envelope.
+ * @param buf Buffer of sizeof envelope + n + 8 * pc_keys.n bytes.
+ * @return The file's total length. */
+static size_t pcache_image(const rhi_device *dev, size_t n, uint8_t *buf)
+{
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->phys, &props);
+    struct pcache_envelope env = {0};
+    uint8_t *k = buf + sizeof env + n;
+    uint32_t kc = 0;
+    for (size_t i = 0; i < dev->pc_keys.cap; i++) {
+        if (!dev->pc_keys.slot[i]) continue;
+        memcpy(k + 8u * kc, &dev->pc_keys.slot[i], 8);
+        kc++;
+    }
+    memcpy(env.magic, PCACHE_MAGIC, sizeof env.magic);
+    env.driver_version = props.driverVersion;
+    env.payload_len = (uint32_t)n;
+    env.key_count = kc;
+    env.digest = fnv1a64(buf + sizeof env, n + 8u * kc);
+    memcpy(buf, &env, sizeof env);
+    return sizeof env + n + 8u * kc;
+}
+
+/** @brief Write the pipeline cache to its file when its bytes or its key manifest changed since load or the last save.
+ *
+ * The cache bytes are compared by digest, so a same-size change is saved.
+ * With the manifest unchanged and every create since the last save
+ * reported a cache hit, nothing entered the cache and the file is kept
+ * whatever the digest: a driver may serialize the same entries in another
+ * order.
+ * The image goes through the writer rhi_set_pipeline_cache_dir installed,
+ * which replaces the file in one step.
+ * @param dev Device.
+ * @param why Log label of the save point.
+ * @return 1 when written, 0 when unchanged, not persisted or failed. */
+static int pipeline_cache_save(rhi_device *dev, const char *why)
+{
+    size_t n = 0;
+    if (!dev->pcache || !dev->pcache_path[0] || !s_pcache_write ||
+        vkGetPipelineCacheData(dev->device, dev->pcache, &n, NULL) != VK_SUCCESS ||
+        n == 0 || n > UINT32_MAX)
+        return 0;
+    const size_t cap = sizeof(struct pcache_envelope) + n + 8u * dev->pc_keys.n;
+    uint8_t *buf = malloc(cap);
+    int wrote = 0;
+    if (buf && vkGetPipelineCacheData(dev->device, dev->pcache, &n,
+                                      buf + sizeof(struct pcache_envelope)) == VK_SUCCESS) {
+        const uint64_t digest = fnv1a64(buf + sizeof(struct pcache_envelope), n);
+        const bool keys_same = dev->pc_keys.n == dev->pcache_keys_saved;
+        if (keys_same && (digest == dev->pcache_digest || !dev->pcache_unhit)) {
+            RHI_LOG("pipeline cache: unchanged at %s, not saved\n", why);
+        } else if (s_pcache_write(dev->pcache_path, buf, pcache_image(dev, n, buf)) == 0) {
+            RHI_LOG("pipeline cache: saved %zu bytes, %zu manifest keys (%s)\n", n,
+                    dev->pc_keys.n, why);
+            dev->pcache_digest = digest;
+            dev->pcache_keys_saved = dev->pc_keys.n;
+            dev->pcache_unhit = 0;
+            wrote = 1;
+        } else {
+            RHI_LOG("pipeline cache: save to %s failed\n", dev->pcache_path);
+        }
+    }
+    free(buf);
+    return wrote;
+}
+
+/** @brief Save the pipeline cache when it changed (pipeline_cache_save), then destroy it.
+ *
  * @param dev Device, idle. */
 static void pipeline_cache_close(rhi_device *dev)
 {
     if (!dev->pcache) return;
-    size_t n = 0;
-    uint8_t *buf = NULL;
-    struct pcache_envelope env;
-    if (dev->pcache_path[0] && s_pcache_write &&
-        vkGetPipelineCacheData(dev->device, dev->pcache, &n, NULL) == VK_SUCCESS &&
-        n > 0 && n <= UINT32_MAX && n != dev->pcache_loaded &&
-        (buf = malloc(sizeof env + n)) != NULL &&
-        vkGetPipelineCacheData(dev->device, dev->pcache, &n, buf + sizeof env) == VK_SUCCESS) {
-        VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(dev->phys, &props);
-        memcpy(env.magic, PCACHE_MAGIC, sizeof env.magic);
-        env.driver_version = props.driverVersion;
-        env.payload_len = (uint32_t)n;
-        env.digest = fnv1a64(buf + sizeof env, n);
-        memcpy(buf, &env, sizeof env);
-        if (s_pcache_write(dev->pcache_path, buf, sizeof env + n) == 0)
-            RHI_LOG("pipeline cache: saved %zu bytes\n", n);
-        else
-            RHI_LOG("pipeline cache: save to %s failed\n", dev->pcache_path);
-    }
-    free(buf);
+    pipeline_cache_save(dev, "shutdown");
     vkDestroyPipelineCache(dev->device, dev->pcache, NULL);
     dev->pcache = VK_NULL_HANDLE;
+    rhi_pc_keyset_free(&dev->pc_keys);
 }
 
 /**
@@ -4194,6 +4331,7 @@ bool rhi_get_imgui_info(rhi_device *dev, rhi_imgui_info *out)
     out->queue_family    = dev->gfx_family;
     out->queue           = (void *)dev->gfx_queue;
     out->render_pass     = (uint64_t)dev->off_rp;
+    out->pipeline_cache  = (uint64_t)dev->pcache;
     out->image_count     = dev->sc_count >= 2 ? dev->sc_count : 2;
     out->api_version     = VK_API_VERSION_1_2;   /* matches create_instance */
     return true;
@@ -5789,54 +5927,42 @@ static const void *find_embedded_shader(const char *filename, size_t *out_size)
     return NULL;
 }
 
-/** @brief Create the shader module for a .spv filename from OPENPETE_SHADER_DIR or the embedded blobs.
+/** @brief Return a stage's SPIR-V bytes: the stored mod words, else OPENPETE_SHADER_DIR/<name>, else the embedded blob of its .spv name.
  *
  * When OPENPETE_SHADER_DIR is set and holds a readable, non-empty
- * <dir>/<filename>, that file is compiled and no fallback follows a
- * compile failure. A missing or unreadable file logs and falls through to the
- * SPIR-V embedded in the binary (find_embedded_shader).
- * @param dev Device the module is created on.
- * @param filename .spv name from the pipeline desc.
- * @return The module, or VK_NULL_HANDLE when no source exists or creation
- *         fails (logged). */
-static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
+ * <dir>/<name>, that file is read into a buffer the caller frees. A missing
+ * or unreadable file logs and falls through to the SPIR-V embedded in the
+ * binary (find_embedded_shader).
+ * @param words Stored mod words, or NULL.
+ * @param nw Their count.
+ * @param name .spv name from the pipeline desc, or NULL.
+ * @param out_n Receives the byte count, 0 when no source exists (logged).
+ * @param owned Receives a buffer for the caller to free, or NULL.
+ * @return The bytes, or NULL. */
+static const void *stage_bytes(const uint32_t *words, size_t nw, const char *name,
+                               size_t *out_n, void **owned)
 {
+    *out_n = 0;
+    *owned = NULL;
+    if (words) { *out_n = nw * 4; return words; }
+    if (!name) return NULL;
     /* Dev/modding override: OPENPETE_SHADER_DIR=<dir> loads loose .spv from
      * disk (e.g. the build's core/rhi/shaders) so a shader edit applies on the
      * next launch without relinking. Unset in shipping builds, where the
      * embedded SPIR-V baked in at build time is used and the binary needs no
-     * shaders/ dir. A missing/unreadable file falls through to embedded. */
+     * shaders/ dir. */
     const char *dir = getenv("OPENPETE_SHADER_DIR");
     if (dir && dir[0]) {
         char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", dir, filename);
-        FILE *f = fopen(path, "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long n = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            if (n > 0) {
-                void *buf = malloc((size_t)n);
-                if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n) {
-                    fclose(f);
-                    VkShaderModule m = create_shader_module(dev, buf, (size_t)n, path);
-                    free(buf);
-                    return m;
-                }
-                free(buf);
-            }
-            fclose(f);
-            RHI_LOG("OPENPETE_SHADER_DIR: failed to read %s; using embedded\n", path);
-        } else {
-            RHI_LOG("OPENPETE_SHADER_DIR: %s not found; using embedded\n", path);
-        }
+        snprintf(path, sizeof(path), "%s/%s", dir, name);
+        size_t n = 0;
+        void *buf = read_whole_file(path, &n);
+        if (buf) { *owned = buf; *out_n = n; return buf; }
+        RHI_LOG("OPENPETE_SHADER_DIR: %s not readable; using embedded\n", path);
     }
-
-    /* Default/shipping path: the SPIR-V embedded in the binary. */
-    size_t n = 0;
-    const void *spv = find_embedded_shader(filename, &n);
-    if (!spv) { RHI_LOG("no embedded shader: %s\n", filename); return VK_NULL_HANDLE; }
-    return create_shader_module(dev, spv, n, filename);
+    const void *spv = find_embedded_shader(name, out_n);
+    if (!spv) RHI_LOG("no embedded shader: %s\n", name);
+    return spv;
 }
 
 /* Shared pipeline builder: both public entry points store their shader
@@ -5922,42 +6048,6 @@ static bool pipeline_wire_view(const rhi_pipeline_desc *desc, bool wireframe)
     if (!wireframe || desc->postfx) return false;
     if (desc->wire_scene) return true;
     return desc->depth_test && (!desc->color_write_off || desc->depth_overwrite);
-}
-
-/** @brief Return whether a pipeline rasterizes as lines under the current wireframe view.
- *
- * @param desc Pipeline description.
- * @return pipeline_wire_view at the current view state. */
-static bool pipeline_wire(const rhi_pipeline_desc *desc)
-{
-    return pipeline_wire_view(desc, s_wireframe);
-}
-
-/** @brief Return the polygon mode a pipeline is created with.
- *
- * LINE when pipeline_wire selects the pipeline for the wireframe view and the
- * device supports fillModeNonSolid; FILL otherwise, so the view degrades to
- * filled faces without the feature.
- * @param dev Device whose has_fill_non_solid is read.
- * @param desc Pipeline description.
- * @return VK_POLYGON_MODE_LINE or VK_POLYGON_MODE_FILL. */
-static VkPolygonMode pipeline_polygon_mode(const rhi_device *dev,
-                                           const rhi_pipeline_desc *desc)
-{
-    return (pipeline_wire(desc) && dev->has_fill_non_solid)
-               ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
-}
-
-/** @brief Return fragment specialization constant 2 (`NOTEX`) for a pipeline.
- *
- * On under the global NOTEX view, and on every pipeline the wireframe view
- * selects for lines (pipeline_wire, whether or not the device can draw lines),
- * so its edges carry the gouraud vertex colour.
- * @param desc Pipeline description.
- * @return VK_TRUE when NOTEX applies. */
-static VkBool32 pipeline_notex(const rhi_pipeline_desc *desc)
-{
-    return (s_fs_notex || pipeline_wire(desc)) ? VK_TRUE : VK_FALSE;
 }
 
 /* Fragment-stage specialization constant 3 (`MOBY_TRUESCOPE`): scopes the
@@ -6208,14 +6298,16 @@ static const void *pipe_feedback_chain(const rhi_device *dev, pipe_feedback *fb)
 /** @brief Return the instrument phase of a create on the calling thread.
  *
  * PROBE and the rebuild marker take precedence, then PRECOMPILE; otherwise
- * bring-up until the first frame is submitted and first use after.
+ * bring-up until the first frame is submitted or the precompile ends, and
+ * first use after.
  * @return The phase. */
 static rhi_pc_phase pipe_phase_now(void)
 {
     if (t_pipe_phase == RHI_PIPE_PHASE_PROBE) return RHI_PC_PHASE_PROBE;
     if (t_in_rebuild) return RHI_PC_PHASE_REBUILD;
     if (t_pipe_phase == RHI_PIPE_PHASE_PRECOMPILE) return RHI_PC_PHASE_PRECOMPILE;
-    return s_first_frame_done ? RHI_PC_PHASE_FIRST_USE : RHI_PC_PHASE_BRINGUP;
+    return (s_first_frame_done || s_precompile_done) ? RHI_PC_PHASE_FIRST_USE
+                                                     : RHI_PC_PHASE_BRINGUP;
 }
 
 /** @brief Count one vkCreateGraphicsPipelines call in the resource census and the pipeline-create instruments.
@@ -6247,123 +6339,212 @@ static void pipe_create_record(const rhi_device *dev, const rhi_pipeline *p,
     rhi_pc_record_create(&c);
 }
 
-/** @brief Return a stage's SPIR-V bytes: the stored mod words, else the embedded blob of its .spv name.
+/** @brief Describe the create info a pipeline gets in a given view: the dedupe fields, the constants each stage receives and the polygon mode.
  *
- * OPENPETE_SHADER_DIR is not consulted: the census keys the embedded build.
- * @param words Stored words, or NULL.
- * @param nw Their count.
- * @param name .spv name, or NULL.
- * @param out_bytes Receives the byte count, 0 when no source exists.
- * @return The bytes, or NULL. */
-static const void *census_stage_bytes(const uint32_t *words, size_t nw, const char *name,
-                                      size_t *out_bytes)
+ * A pipeline the wireframe view selects (pipeline_wire_view) rasterizes as
+ * lines when the device has fillModeNonSolid and bakes NOTEX on, so its
+ * edges carry the gouraud vertex colour; NOTEX is otherwise the view's. A
+ * constant no stage of the pipeline declares is not handed over and reads 0
+ * here. The stage hashes and declared constant ids are those its last
+ * compile recorded.
+ * @param dev Device the pipeline lives on.
+ * @param p The pipeline, compiled at least once.
+ * @param affine Texture mapping is affine (AFFINE_UV).
+ * @param notex The untextured view is on.
+ * @param wire The wireframe view is on.
+ * @param v Receives the variant. */
+static void pipe_variant_view(const rhi_device *dev, const rhi_pipeline *p, bool affine,
+                              bool notex, bool wire, rhi_pc_variant *v)
 {
-    *out_bytes = 0;
-    if (words) { *out_bytes = nw * 4; return words; }
-    return name ? find_embedded_shader(name, out_bytes) : NULL;
+    const rhi_pipeline_desc *d = &p->desc;
+    const bool w = pipeline_wire_view(d, wire);
+    const uint32_t c[6] = { dev->depth_rev[d->depth_class], affine, (notex || w) ? 1u : 0u,
+                            s_fs_moby_truescope, s_fs_slot_contest,
+                            (uint32_t)d->texel_stp_select };
+    *v = (rhi_pc_variant){
+        .desc_hash = p->desc_hash, .vs_hash = p->vs_hash, .fs_hash = p->fs_hash,
+        .declared = p->vs_ids | p->fs_ids,
+        .poly_mode = (uint32_t)((w && dev->has_fill_non_solid) ? VK_POLYGON_MODE_LINE
+                                                               : VK_POLYGON_MODE_FILL),
+        .render_pass = (uint64_t)(uintptr_t)dev->off_rp,
+    };
+    for (int i = 0; i < 6; i++) v->consts[i] = ((v->declared >> i) & 1u) ? c[i] : 0u;
 }
+
+/** @brief Describe the create info a pipeline gets under the current variant statics.
+ *
+ * @param dev Device the pipeline lives on.
+ * @param p The pipeline, compiled at least once.
+ * @param v Receives the variant. */
+static void pipe_variant_now(const rhi_device *dev, const rhi_pipeline *p, rhi_pc_variant *v)
+{
+    pipe_variant_view(dev, p, s_vs_affine_uv != VK_FALSE, s_fs_notex != VK_FALSE, s_wireframe, v);
+}
+
+/** @brief Return the key manifest's key of a variant: its dedupe key with the render pass left out, which is per device and not stable across runs.
+ *
+ * @param v The variant.
+ * @return The key. */
+static uint64_t pipe_manifest_key(const rhi_pc_variant *v)
+{
+    rhi_pc_variant m = *v;
+    m.render_pass = 0;
+    return rhi_pc_variant_key(&m);
+}
+
+/* The views a variant walk visits: texture mapping by (notex, wireframe). */
+static const bool k_pipe_views[6][3] = {
+    { false, false, false }, { true, false, false }, { false, true, false },
+    { true, true, false },   { false, false, true }, { true, false, true },
+};
 
 /** @brief Add a new pipeline base and its six reachable variant create infos to the census row.
  *
  * The variants are texture mapping (perspective, affine) by view (textured,
- * notex, wireframe), with the constants and polygon mode pipeline_compile
- * would hand the driver in that state; the stage hashes and declared
- * constant ids come from the stage SPIR-V. No-op unless OPENPETE_PIPE_CENSUS
- * is set.
+ * notex, wireframe), as pipe_variant_view describes them. No-op unless
+ * OPENPETE_PIPE_CENSUS is set.
  * @param dev Device the pipeline was created on.
  * @param p The pipeline. */
 static void census_add_base(const rhi_device *dev, const rhi_pipeline *p)
 {
     if (!rhi_pc_level()) return;
-    const rhi_pipeline_desc *d = &p->desc;
-    size_t vn = 0, fn = 0;
-    const void *vs = census_stage_bytes(p->vert_words, p->vert_n, d->vert_spv, &vn);
-    const void *fs = census_stage_bytes(p->frag_words, p->frag_n, d->frag_spv, &fn);
-    const rhi_pc_variant base = {
-        .desc_hash = rhi_pc_desc_hash(d),
-        .vs_hash = rhi_pc_bytes_hash(vs, vn),
-        .fs_hash = rhi_pc_bytes_hash(fs, fn),
-        .declared = rhi_pc_spec_ids(vs, vn) | rhi_pc_spec_ids(fs, fn),
-        .render_pass = (uint64_t)(uintptr_t)dev->off_rp,
-    };
     rhi_pc_variant v[6];
-    for (int i = 0; i < 6; i++) {
-        const int view = i >> 1;   /* 0 textured, 1 notex, 2 wireframe */
-        const bool wire = pipeline_wire_view(d, view == 2);
-        v[i] = base;
-        v[i].consts[0] = dev->depth_rev[d->depth_class];
-        v[i].consts[1] = (uint32_t)(i & 1);
-        v[i].consts[2] = (view == 1 || wire) ? 1u : 0u;
-        v[i].consts[3] = s_fs_moby_truescope;
-        v[i].consts[4] = s_fs_slot_contest;
-        v[i].consts[5] = (uint32_t)d->texel_stp_select;
-        v[i].poly_mode = (uint32_t)((wire && dev->has_fill_non_solid) ? VK_POLYGON_MODE_LINE
-                                                                     : VK_POLYGON_MODE_FILL);
+    for (int i = 0; i < 6; i++)
+        pipe_variant_view(dev, p, k_pipe_views[i][0], k_pipe_views[i][1], k_pipe_views[i][2], &v[i]);
+    rhi_pc_add_base(rhi_pc_site_of(&p->desc, p->vert_words || p->frag_words), v, 6);
+}
+
+/* One stage's specialization info: an entry and a packed value for each
+ * constant the stage declares, and nothing for the rest. */
+typedef struct {
+    VkSpecializationMapEntry e[6];
+    VkBool32                 d[6];
+    VkSpecializationInfo     info;
+} stage_spec;
+
+/** @brief Fill a stage's specialization info with only the constants it declares.
+ *
+ * @param s Storage.
+ * @param ids The stage's declared constant ids (bit i = constant_id i).
+ * @param c The six constant values.
+ * @return The info, or NULL when the stage declares none. */
+static const VkSpecializationInfo *stage_spec_fill(stage_spec *s, uint32_t ids, const uint32_t c[6])
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < 6; i++) {
+        if (!((ids >> i) & 1u)) continue;
+        s->e[n] = (VkSpecializationMapEntry){ .constantID = i, .offset = n * (uint32_t)sizeof(VkBool32),
+                                              .size = sizeof(VkBool32) };
+        s->d[n] = c[i];
+        n++;
     }
-    rhi_pc_add_base(rhi_pc_site_of(d, p->vert_words || p->frag_words), v, 6);
+    s->info = (VkSpecializationInfo){ .mapEntryCount = n, .pMapEntries = s->e,
+                                      .dataSize = n * sizeof(VkBool32), .pData = s->d };
+    return n ? &s->info : NULL;
+}
+
+/** @brief Create a pipeline's two shader modules, recording each stage's content hash and declared constant ids on first use.
+ *
+ * @param dev Device.
+ * @param p Pipeline whose stored sources are read and whose vs_hash,
+ *          fs_hash, vs_ids, fs_ids and desc_hash are written.
+ * @param vs Receives the vertex module.
+ * @param fs Receives the fragment module.
+ * @return true when both modules exist; on false neither is left alive. */
+static bool pipe_stage_modules(rhi_device *dev, rhi_pipeline *p, VkShaderModule *vs,
+                               VkShaderModule *fs)
+{
+    size_t vn = 0, fn = 0;
+    void *vown = NULL, *fown = NULL;
+    const void *vb = stage_bytes(p->vert_words, p->vert_n, p->desc.vert_spv, &vn, &vown);
+    const void *fb = stage_bytes(p->frag_words, p->frag_n, p->desc.frag_spv, &fn, &fown);
+    if (!p->stage_info) {
+        p->desc_hash = rhi_pc_desc_hash(&p->desc);
+        p->vs_hash = rhi_pc_bytes_hash(vb, vn);
+        p->fs_hash = rhi_pc_bytes_hash(fb, fn);
+        p->vs_ids = rhi_pc_spec_ids(vb, vn);
+        p->fs_ids = rhi_pc_spec_ids(fb, fn);
+        p->stage_info = true;
+    }
+    *vs = vb ? create_shader_module(dev, vb, vn, p->desc.vert_spv ? p->desc.vert_spv : "(mod vert)")
+             : VK_NULL_HANDLE;
+    *fs = fb ? create_shader_module(dev, fb, fn, p->desc.frag_spv ? p->desc.frag_spv : "(mod frag)")
+             : VK_NULL_HANDLE;
+    free(vown);
+    free(fown);
+    if (*vs && *fs) return true;
+    if (*vs) vkDestroyShaderModule(dev->device, *vs, NULL);
+    if (*fs) vkDestroyShaderModule(dev->device, *fs, NULL);
+    *vs = *fs = VK_NULL_HANDLE;
+    return false;
+}
+
+/** @brief Release what a failed or refused pipeline create left and classify the failure.
+ *
+ * VK_PIPELINE_COMPILE_REQUIRED_EXT is a probe's answer that the create info
+ * is not cached and is not logged; any other result is logged.
+ * @param dev Device.
+ * @param r The create's result.
+ * @param pipeline A pipeline the driver returned anyway, or VK_NULL_HANDLE.
+ * @param layout The layout created for the attempt.
+ * @return 1 for a probe miss, -1 for a failure. */
+static int pipeline_create_failed(rhi_device *dev, VkResult r, VkPipeline pipeline,
+                                  VkPipelineLayout layout)
+{
+    const bool uncached = r == VK_PIPELINE_COMPILE_REQUIRED_EXT;
+    if (!uncached) RHI_LOG("vkCreateGraphicsPipelines failed: %d\n", (int)r);
+    if (pipeline) vkDestroyPipeline(dev->device, pipeline, NULL);
+    vkDestroyPipelineLayout(dev->device, layout, NULL);
+    return uncached ? 1 : -1;
 }
 
 /** @brief Compile a pipeline's Vulkan pipeline and layout from its stored desc and shader sources.
  *
  * The shaders come from the stored mod SPIR-V words when present, else from
  * the desc's .spv names. The rhi_pipeline's live handles are not touched: the
- * create path assigns the result to a fresh pipeline, and the rebuild path
- * swaps it into a live one only on success. The specialization constants
- * (depth convention, affine UV, NOTEX, moby true-scope, slot contest, texel
- * STP select) are read at this call. The create carries a creation-feedback
- * chain when the extension is enabled and is counted by pipe_create_record.
+ * create path assigns the result to a fresh pipeline, the rebuild path swaps
+ * it into a live one only on success, and the precompile destroys it. Each
+ * stage receives only the specialization constants it declares, with the
+ * values pipe_variant_now reads from the variant statics at this call. The
+ * create carries a creation-feedback chain when the extension is enabled and
+ * is counted by pipe_create_record; a successful create adds its manifest
+ * key to dev->pc_keys.
  * @param dev Device the objects are created on.
  * @param p Pipeline whose desc and shader sources are compiled.
+ * @param flags Pipeline create flags (the probe's FAIL_ON_PIPELINE_COMPILE_REQUIRED).
+ * @param variant True for a precompile variant, which the depth report's
+ *                per-compare count leaves out.
  * @param out_pipe Receives the pipeline on success.
  * @param out_layout Receives the pipeline layout on success.
- * @return 0 on success, -1 on failure. */
-static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
-                            VkPipeline *out_pipe, VkPipelineLayout *out_layout)
+ * @param out_key Receives the variant's dedupe key.
+ * @return 0 on success, 1 when a probe found the create info uncached,
+ *         -1 on failure. */
+static int pipeline_compile(rhi_device *dev, rhi_pipeline *p, VkPipelineCreateFlags flags,
+                            bool variant, VkPipeline *out_pipe, VkPipelineLayout *out_layout,
+                            uint64_t *out_key)
 {
     const rhi_pipeline_desc *desc = &p->desc;
-    VkShaderModule vs = p->vert_words
-        ? create_shader_module(dev, p->vert_words, p->vert_n * 4, "(mod vert)")
-        : load_shader_module(dev, desc->vert_spv);
-    VkShaderModule fs = p->frag_words
-        ? create_shader_module(dev, p->frag_words, p->frag_n * 4, "(mod frag)")
-        : load_shader_module(dev, desc->frag_spv);
-    if (vs == VK_NULL_HANDLE || fs == VK_NULL_HANDLE) {
-        if (vs) vkDestroyShaderModule(dev->device, vs, NULL);
-        if (fs) vkDestroyShaderModule(dev->device, fs, NULL);
-        return -1;
-    }
+    VkShaderModule vs, fs;
+    if (!pipe_stage_modules(dev, p, &vs, &fs)) return -1;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-
-    VkSpecializationMapEntry vsSpecMap[6] = {
-        { .constantID = 0, .offset = 0,                    .size = sizeof(VkBool32) },
-        { .constantID = 1, .offset = sizeof(VkBool32),     .size = sizeof(VkBool32) },
-        { .constantID = 2, .offset = 2 * sizeof(VkBool32), .size = sizeof(VkBool32) },
-        { .constantID = 3, .offset = 3 * sizeof(VkBool32), .size = sizeof(VkBool32) },
-        { .constantID = 4, .offset = 4 * sizeof(VkBool32), .size = sizeof(VkBool32) },
-        { .constantID = 5, .offset = 5 * sizeof(VkBool32), .size = sizeof(VkBool32) },
-    };
-    /* Constant 5 (`STP_SELECT`) is per pipeline, from its desc: the texel STP
-     * selection of psx_scene.frag (rhi_pipeline_desc.texel_stp_select). */
-    VkBool32 vsSpecData[6] = { dev->depth_rev[desc->depth_class], s_vs_affine_uv,
-                               pipeline_notex(desc),
-                               s_fs_moby_truescope, s_fs_slot_contest,
-                               (VkBool32)desc->texel_stp_select };
-    VkSpecializationInfo vsSpec = {
-        .mapEntryCount = 6, .pMapEntries = vsSpecMap,
-        .dataSize = sizeof(vsSpecData), .pData = vsSpecData,
-    };
+    rhi_pc_variant var;
+    pipe_variant_now(dev, p, &var);
+    /* Constant values before declaration masking: 0 DEPTH_REVERSED (per depth
+     * class), 1 AFFINE_UV, 2 NOTEX, 3 MOBY_TRUESCOPE, 4 SLOT_CONTEST,
+     * 5 STP_SELECT (the desc's texel STP selection of psx_scene.frag). The
+     * fragment stage gets the same values as the vertex stage: the terrain
+     * key-resolve fragments invert gl_FragCoord.z back to view-Z, and the
+     * inversion follows the encoding the vertex stage selected. */
+    const uint32_t cvals[6] = { var.consts[0], var.consts[1], var.consts[2],
+                                var.consts[3], var.consts[4], var.consts[5] };
+    stage_spec vspec, fspec;
     VkPipelineShaderStageCreateInfo stages[2] = {
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vs, .pName = "main",
-          .pSpecializationInfo = &vsSpec },
-        /* The fragment stage sees the SAME spec constants (constant_id 0 =
-         * DEPTH_REVERSED): the terrain key-resolve fragments invert
-         * gl_FragCoord.z back to view-Z, and the inversion formula follows
-         * the encoding the vertex stage selected. Frags that declare no
-         * spec constants ignore the info. */
+          .pSpecializationInfo = stage_spec_fill(&vspec, p->vs_ids, cvals) },
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main",
-          .pSpecializationInfo = &vsSpec },
+          .pSpecializationInfo = stage_spec_fill(&fspec, p->fs_ids, cvals) },
     };
     VkVertexInputBindingDescription bind = {
         .binding = 0, .stride = sizeof(rhi_vertex),
@@ -6408,7 +6589,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     };
     VkPipelineRasterizationStateCreateInfo rs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = pipeline_polygon_mode(dev, desc),
+        .polygonMode = (VkPolygonMode)var.poly_mode,
         .cullMode = VK_CULL_MODE_NONE,
         .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         /* Decal pipelines (desc->depth_bias) enable the hardware polygon
@@ -6470,7 +6651,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
      * depthTestEnable is VK_FALSE. */
     const VkCompareOp cmp = desc->depth_overwrite ? VK_COMPARE_OP_ALWAYS
                                                   : dev->depth_cmp[desc->depth_class];
-    dev->pipes_by_cmp[cmp] += (unsigned)desc->depth_test;
+    if (!variant) dev->pipes_by_cmp[cmp] += (unsigned)desc->depth_test;
     VkPipelineDepthStencilStateCreateInfo dss = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable  = desc->depth_test ? VK_TRUE : VK_FALSE,
@@ -6566,6 +6747,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         .layout = layout,
         .renderPass = dev->off_rp,
         .subpass = 0,
+        .flags = flags,
     };
     VkPipeline pipeline = VK_NULL_HANDLE;
     pipe_feedback fb;
@@ -6575,11 +6757,10 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     pipe_create_record(dev, p, &fb, SDL_GetTicksNS() - pipe_t0);
     vkDestroyShaderModule(dev->device, vs, NULL);
     vkDestroyShaderModule(dev->device, fs, NULL);
-    if (r != VK_SUCCESS) {
-        RHI_LOG("vkCreateGraphicsPipelines failed: %d\n", (int)r);
-        vkDestroyPipelineLayout(dev->device, layout, NULL);
-        return -1;
-    }
+    if (r != VK_SUCCESS) return pipeline_create_failed(dev, r, pipeline, layout);
+    rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key(&var));
+    dev->pcache_unhit += !(fb.pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
+    *out_key = rhi_pc_variant_key(&var);
     *out_pipe = pipeline;
     *out_layout = layout;
     return 0;
@@ -6629,7 +6810,7 @@ static rhi_pipeline *create_pipeline_common(rhi_device *dev,
         if (!p->frag_name) goto fail;
         p->desc.frag_spv = p->frag_name;
     }
-    if (pipeline_compile(dev, p, &p->pipeline, &p->layout) != 0) goto fail;
+    if (pipeline_compile(dev, p, 0, false, &p->pipeline, &p->layout, &p->vkey) != 0) goto fail;
     census_add_base(dev, p);
     p->next = dev->pipes_head;
     if (p->next) p->next->prev = p;
@@ -6656,53 +6837,152 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
                                   frag_words, frag_n);
 }
 
+/** @brief Install a rebuilt pipeline's new objects, retiring the replaced ones by frame serial.
+ *
+ * Frames in flight may still execute the old objects: they are destroyed
+ * once those frames retire, so no device idle is needed. Objects a rebuild
+ * installed outside a frame, with no frame begun since, were never recorded:
+ * they are destroyed now instead of retired, so rebuilds while no frame
+ * begins (a minimized window, a lost device) do not grow the retired list.
+ * @param dev Device.
+ * @param p The pipeline.
+ * @param np Its new pipeline.
+ * @param nl Its new layout. */
+static void rebuild_swap(rhi_device *dev, rhi_pipeline *p, VkPipeline np, VkPipelineLayout nl)
+{
+    const bool unrecorded = p->swap_idle && !dev->frame_active &&
+                            p->swap_serial == s_frame_serial;
+    struct rhi_retired_pipe *r = unrecorded ? NULL : calloc(1, sizeof(*r));
+    if (!r && !unrecorded) vkDeviceWaitIdle(dev->device);
+    if (r) {
+        *r = (struct rhi_retired_pipe){ dev->retired_pipes, p->pipeline, p->layout, s_frame_serial };
+        dev->retired_pipes = r;
+    } else {
+        if (p->pipeline) vkDestroyPipeline(dev->device, p->pipeline, NULL);
+        if (p->layout)   vkDestroyPipelineLayout(dev->device, p->layout, NULL);
+    }
+    p->pipeline = np;
+    p->layout = nl;
+    p->swap_serial = s_frame_serial;
+    p->swap_idle = !dev->frame_active;
+}
+
 int rhi_rebuild_pipelines(rhi_device *dev)
 {
     if (!dev) return 0;
     seam_check("rebuild_pipelines");   /* the retired list is the display owner's */
     const Uint64 t0 = SDL_GetTicksNS();
-    int fails = 0, rebuilt = 0;
+    int fails = 0, rebuilt = 0, unchanged = 0;
     unsigned hit0, miss0, unk0, hit1, miss1, unk1;
     rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit0, &miss0, &unk0);
     rhi_pc_rebuild_visit();
     t_in_rebuild = true;
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
+        /* A switch leaves the create info of a pipeline whose stages declare
+         * none of its constants, and that it does not rasterize differently,
+         * unchanged: its objects are kept. */
+        rhi_pc_variant v;
+        pipe_variant_now(dev, p, &v);
+        if (rhi_pc_variant_key(&v) == p->vkey) { unchanged++; continue; }
         VkPipeline np = VK_NULL_HANDLE;
         VkPipelineLayout nl = VK_NULL_HANDLE;
-        if (pipeline_compile(dev, p, &np, &nl) != 0) {
+        uint64_t key = 0;
+        if (pipeline_compile(dev, p, 0, false, &np, &nl, &key) != 0) {
             fails++;   /* keep the old objects: stale spec constants beat a hole */
             continue;
         }
-        /* Frames in flight may still execute the old objects: they are
-         * destroyed once those frames retire, so no device idle is needed.
-         * Objects a rebuild installed outside a frame, with no frame begun
-         * since, were never recorded: they are destroyed now instead of
-         * retired, so rebuilds while no frame begins (a minimized window, a
-         * lost device) do not grow the retired list. */
-        const bool unrecorded = p->swap_idle && !dev->frame_active &&
-                                p->swap_serial == s_frame_serial;
-        struct rhi_retired_pipe *r = unrecorded ? NULL : calloc(1, sizeof(*r));
-        if (!r && !unrecorded) vkDeviceWaitIdle(dev->device);
-        if (r) {
-            *r = (struct rhi_retired_pipe){ dev->retired_pipes, p->pipeline, p->layout, s_frame_serial };
-            dev->retired_pipes = r;
-        } else {
-            if (p->pipeline) vkDestroyPipeline(dev->device, p->pipeline, NULL);
-            if (p->layout)   vkDestroyPipelineLayout(dev->device, p->layout, NULL);
-        }
-        p->pipeline = np;
-        p->layout = nl;
-        p->swap_serial = s_frame_serial;
-        p->swap_idle = !dev->frame_active;
+        rebuild_swap(dev, p, np, nl);
+        p->vkey = key;
         rebuilt++;
     }
     t_in_rebuild = false;
     rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit1, &miss1, &unk1);
-    RHI_LOG("rebuilt %d pipelines (%d failed) in %.1f ms (cache hit %u, miss %u, unknown %u)\n",
-            rebuilt, fails, (double)(SDL_GetTicksNS() - t0) / 1e6,
+    RHI_LOG("rebuilt %d pipelines (%d failed, %d unchanged kept) in %.1f ms "
+            "(cache hit %u, miss %u, unknown %u)\n",
+            rebuilt, fails, unchanged, (double)(SDL_GetTicksNS() - t0) / 1e6,
             hit1 - hit0, miss1 - miss0, unk1 - unk0);
     return fails;
 }
+
+/* State of one rhi_precompile_variants walk. */
+typedef struct {
+    rhi_device          *dev;
+    rhi_pc_keyset        seen;   /* keys created, probed or installed this walk */
+    rhi_precompile_stats st;
+    void               (*pump)(void *);
+    void                *ctx;
+} precompile_walk;
+
+/** @brief Bring one non-current variant of a pipeline into the cache unless its key was seen: probe, manifest, or create, then destroy.
+ *
+ * The variant statics are already set to the view.
+ * @param w The walk.
+ * @param p The pipeline. */
+static void precompile_variant(precompile_walk *w, rhi_pipeline *p)
+{
+    rhi_device *dev = w->dev;
+    rhi_pc_variant v;
+    pipe_variant_now(dev, p, &v);
+    if (!rhi_pc_keyset_insert(&w->seen, rhi_pc_variant_key(&v))) return;
+    w->st.keys++;
+    VkPipeline np = VK_NULL_HANDLE;
+    VkPipelineLayout nl = VK_NULL_HANDLE;
+    uint64_t key = 0;
+    int r = 1;
+    if (dev->has_cache_control) {
+        rhi_pipe_phase_set(RHI_PIPE_PHASE_PROBE);
+        r = pipeline_compile(dev, p, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT,
+                             true, &np, &nl, &key);
+        rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
+        w->st.probe_hits += r == 0;
+    } else if (dev->manifest_trusted && rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key(&v))) {
+        w->st.manifest_skips++;
+        return;
+    }
+    if (r == 1) {
+        r = pipeline_compile(dev, p, 0, true, &np, &nl, &key);
+        w->st.created += r == 0;
+    }
+    w->st.failed += r < 0;
+    if (np) vkDestroyPipeline(dev->device, np, NULL);
+    if (nl) vkDestroyPipelineLayout(dev->device, nl, NULL);
+    if (w->pump) w->pump(w->ctx);
+}
+
+int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
+                            rhi_precompile_stats *out)
+{
+    if (!dev) return -1;
+    seam_check("precompile_variants");   /* the registry is the display owner's */
+    const Uint64 t0 = SDL_GetTicksNS();
+    precompile_walk w = { .dev = dev, .pump = pump, .ctx = ctx };
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
+        w.st.bases++;
+        if (rhi_pc_keyset_insert(&w.seen, p->vkey)) { w.st.keys++; w.st.current++; }
+    }
+    const VkBool32 aff0 = s_vs_affine_uv, notex0 = s_fs_notex;
+    const bool wire0 = s_wireframe;
+    for (int view = 0; view < 6; view++) {
+        s_vs_affine_uv = k_pipe_views[view][0] ? VK_TRUE : VK_FALSE;
+        s_fs_notex = k_pipe_views[view][1] ? VK_TRUE : VK_FALSE;
+        s_wireframe = k_pipe_views[view][2];
+        for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) precompile_variant(&w, p);
+    }
+    s_vs_affine_uv = aff0;
+    s_fs_notex = notex0;
+    s_wireframe = wire0;
+    rhi_pc_keyset_free(&w.seen);
+    w.st.saved = pipeline_cache_save(dev, "precompile");
+    w.st.ms = (double)(SDL_GetTicksNS() - t0) / 1e6;
+    RHI_LOG("precompile: %u pipelines, %u distinct create infos (%u installed), %u created, "
+            "%u probe hits, %u manifest skips, %u failed, cache %s, %.1f ms\n",
+            w.st.bases, w.st.keys, w.st.current, w.st.created, w.st.probe_hits,
+            w.st.manifest_skips, w.st.failed, w.st.saved ? "saved" : "not saved", w.st.ms);
+    if (out) *out = w.st;
+    return 0;
+}
+
+void rhi_pipe_precompile_done(void) { s_precompile_done = true; }
 
 /* ---- rhi_ubo: fixed-size uniform blocks × frame ring --------------- */
 

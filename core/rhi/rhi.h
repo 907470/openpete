@@ -1306,18 +1306,61 @@ typedef struct {
  * @param out Receives them. */
 void          rhi_boot_stats_get(rhi_boot_stats *out);
 
-/** @brief Name the directory where devices created afterwards persist their Vulkan pipeline cache, and the function that writes the file.
+/** @brief Name the directory where devices created afterwards persist their Vulkan pipeline cache, the engine build, and the function that writes the file.
  *
- * Each device loads vk-pipelines-<vendor>-<device>-<cache uuid>.bin from it
- * at creation, offering the driver only a file whose envelope (length,
- * digest, driverVersion) and Vulkan header match, and rewrites it through
- * write_file at rhi_destroy when the cache changed size. A NULL or "" dir,
- * or a NULL write_file, keeps the cache in memory only (the default).
+ * Each device loads vk-pipelines-<build>-<vendor>-<device>-<cache uuid>.bin
+ * from it at creation (<build> a digest of @p build and the embedded
+ * SPIR-V, so engine builds keep separate files), offering the driver only a
+ * file whose envelope (length, digest, driverVersion) and Vulkan header
+ * match. The file carries a key manifest of the pipeline variants created
+ * into it. It is rewritten through write_file after a precompile and at
+ * rhi_destroy when the cache bytes or the manifest changed. Each open
+ * refreshes the file's mtime; a windowed open removes the other cache files
+ * unused for 30 days or ranked beyond the 4 most recently used. A NULL or ""
+ * dir, or a NULL write_file, keeps the cache in memory only (the default).
  * Process-global; call before rhi_create.
  * @param dir Existing directory, or NULL.
+ * @param build The engine build string, or NULL.
  * @param write_file Replaces path with n bytes in one step; returns 0 on success. */
-void          rhi_set_pipeline_cache_dir(const char *dir,
+void          rhi_set_pipeline_cache_dir(const char *dir, const char *build,
                                          int (*write_file)(const char *path, const void *data, size_t n));
+
+/* What rhi_precompile_variants did. */
+typedef struct {
+    unsigned bases;         /* registered pipelines walked                       */
+    unsigned keys;          /* distinct create infos over every reachable variant */
+    unsigned current;       /* of them, a registered pipeline's installed variant */
+    unsigned created;       /* variants compiled into the cache and destroyed     */
+    unsigned probe_hits;    /* variants a probe create found in the cache         */
+    unsigned manifest_skips;/* variants the key manifest skipped                  */
+    unsigned failed;        /* variant creates that failed                        */
+    int      saved;         /* the cache file was rewritten afterwards            */
+    double   ms;            /* wall time                                          */
+} rhi_precompile_stats;
+
+/** @brief Compile every reachable non-current variant of every registered pipeline into the pipeline cache, then save the cache when it changed.
+ *
+ * Variants are texture mapping (perspective, affine) by view (textured,
+ * notex, wireframe). Each variant's create info is keyed on the full
+ * pipeline description (rhi_pc_variant_key); a key already seen, including
+ * every registered pipeline's installed key, is not created again. A new
+ * key is skipped when a probe create
+ * (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT, on a device
+ * with pipelineCreationCacheControl) finds it cached, or, without cache
+ * control on a calibrated driver, when the key manifest lists it; otherwise
+ * it is created and destroyed, never linked. The variant statics are set
+ * around each create and restored. @p pump runs between creates. Display
+ * owner only.
+ * @param dev Device.
+ * @param pump Called between creates (event pumping), or NULL.
+ * @param ctx Passed to @p pump.
+ * @param out Receives the counts, or NULL.
+ * @return 0, or -1 for a NULL device. */
+int           rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
+                                      rhi_precompile_stats *out);
+
+/** @brief Mark the precompile ended: pipeline creates after it count as first use, before the first frame too. */
+void          rhi_pipe_precompile_done(void);
 
 /** @brief Create a pipeline from in-memory SPIR-V words (mod shaders).
  *
@@ -2073,6 +2116,7 @@ typedef struct {
     uint32_t queue_family;
     void    *queue;            /* VkQueue (graphics) */
     uint64_t render_pass;      /* VkRenderPass (offscreen color+depth pass) */
+    uint64_t pipeline_cache;   /* VkPipelineCache the RHI's own pipelines compile through */
     uint32_t image_count;      /* swapchain image count (>= 2) */
     uint32_t api_version;      /* VK_API_VERSION the instance was created with */
 } rhi_imgui_info;
