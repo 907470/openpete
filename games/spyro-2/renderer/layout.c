@@ -639,6 +639,10 @@ const ui_game_t ui_game = {
      * chokepoint carrying the logo, "press start" and the credits text. */
     .ot_insert_slot = F_UI_OT_INSERT_SLOT,
     .fade_emitter = F_UI_FADE,
+    /* func_8004DF84: two black F4 borders, then the 4x4 cell grid, per step
+     * of the pause window's shrink and grow (drawutil/func_8004DF84.s:37-42,
+     * draw/func_800145AC.s:95,336). */
+    .fb_grid_emitter = F_UI_FB_GRID,
 
     /* No freeze-frame backdrop quad is located on this game: the frozen frame
      * comes from the retained framebuffer below instead. */

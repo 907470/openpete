@@ -356,12 +356,14 @@ typedef struct {
                      * OPENPETE_STP_*): which texels a textured tri draws.
                      * Non-zero only on the two halves of a split ABR 1-3 2D
                      * primitive. */
-    uint32_t fb_cell; /* the framebuffer texels a 2D tri samples through the
-                       * VRAM path (sticky set_fb_cell value; 0 = none): one
-                       * key per texel-coordinate triple of a draw buffer, the
-                       * same from tick to tick while the tri's screen box
-                       * scales. The 2D carry pairs a scaled framebuffer copy
-                       * by it (carry_pair_snapshot). */
+    uint32_t fb_cell; /* the element of a framebuffer copy a 2D tri draws
+                       * (sticky set_fb_cell value; 0 = none): one key per
+                       * texel-coordinate triple of a draw buffer the tri
+                       * samples through the VRAM path, or per border the
+                       * copy's emitter draws around it, the same from tick
+                       * to tick while the tri's screen box scales. The 2D
+                       * carry pairs a scaled framebuffer copy by it
+                       * (carry_pair_snapshot). */
     uint32_t seq;   /* the ordering-table traversal rank for this frame (sticky
                      * set_seq value; 0 for everything that is not 2D). The 2D
                      * layer is screen-space with the depth test off, so the
@@ -3237,7 +3239,7 @@ static int carry_pair_content(const carry_key_map_t* m,
     return paired;
 }
 
-/** @brief Return whether a carry entry samples a framebuffer copy: a stored snapshot image or a draw buffer's texels.
+/** @brief Return whether a carry entry belongs to a framebuffer copy: a stored snapshot image, a draw buffer's texels or a border drawn with them.
  *
  * @param t Entry.
  * @return 1 for a snapshot entry or an entry with a framebuffer cell key, else 0. */
@@ -3251,10 +3253,11 @@ static int carry_fb_entry(const scene_tri_t* t) {
  * rect texel coordinates: the coordinates name the cell of the copied
  * image, which a shrinking or moving copy keeps from tick to tick while its
  * screen box changes size. Two entries that sample a draw buffer through the
- * VRAM path agree on the cell key the feeder stamped from the primitive's
- * own texture page and coordinates (scene_tri_t::fb_cell), on the layer and
- * on the STP half; their fed coordinates are adjusted to the screen box and
- * differ between ticks.
+ * VRAM path, or two borders drawn around such a copy, agree on the cell key
+ * the feeder stamped (scene_tri_t::fb_cell: from the primitive's own texture
+ * page and coordinates, or from a border's emission order), on the layer
+ * and on the STP half; a cell's fed coordinates are adjusted to the screen
+ * box and differ between ticks.
  * @param a One entry.
  * @param b The other.
  * @return 1 when both sample one cell, else 0. */

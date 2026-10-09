@@ -1034,6 +1034,10 @@ static CPUState* s_cpu = NULL;        /* the game CPU (stable), for the OT-walk 
 static int      s_in_fade = 0;        /* set across the fade emitter's real-function call so
                                        * the chokepoint hook can tell the fade's 0x2A F4 from
                                        * a dark panel's (both go through the chokepoint) */
+static int      s_in_grid = 0;        /* set across the framebuffer grid emitter's real call
+                                       * (ui_game.fb_grid_emitter) */
+static unsigned s_grid_ord;           /* primitives linked through the chokepoint since that
+                                       * call began: the emission ordinal */
 static int      s_last_abr = 0;       /* semi-transparency rate (ABR) of the most recent
                                        * DR_MODE seen - the GPU draw-mode in effect for the
                                        * next semi-transparent F4 (the game links a box's
@@ -1417,14 +1421,14 @@ static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
  * feeds no quad. QK_DR_MODE mirrors the ABR and draw-mode word for the
  * claims after it. QK_F4_BAR feeds a frame-width quad as a letterbox bar on
  * the overlay layer and a narrower one as a menu-box backing on the panel
- * layer; QK_F4_PANEL feeds a dark panel on the panel layer at the tracked
- * ABR.
+ * layer, stamped with the framebuffer cell key in its auxiliary word;
+ * QK_F4_PANEL feeds a dark panel on the panel layer at the tracked ABR.
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address.
  * @param kind The claim kind (QK_*).
- * @param aux The claim's auxiliary word; unused. */
+ * @param aux The claim's auxiliary word: for QK_F4_BAR the framebuffer cell
+ *        key of a grid border (grid_elem_key), else 0. */
 static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
-    (void)aux;
     const uint32_t w1 = cpu->read_word(prim + 4);
     switch (kind) {
     case QK_FT4:    feed_ft4(cpu, prim, w1); break;
@@ -1461,9 +1465,14 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
          * before both and is where a 2D box's backing belongs. The quad keeps
          * blend class 0: the panel layer routes on the category alone, and
          * class 1 would take the intake's ABR 0 half alpha. */
+        /* A border the framebuffer grid emitter linked carries its element
+         * key (the claim's aux word, grid_elem_key), so the carry moves it
+         * with the grid's cells between ticks. */
         const int full = f4_spans_frame_width(cpu, prim);
-        if (full) { feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1); break; }
-        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0, 0);
+        openpete_native_scene_set_fb_cell(aux);
+        if (full) feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1);
+        else      feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 0, 0);
+        openpete_native_scene_set_fb_cell(0u);
         break; }
     case QK_F4_PANEL: {
         /* The box links its own DR_MODE immediately before the quad, so the
@@ -1662,6 +1671,22 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
 /// @brief Claims a primitive with a zero auxiliary word.
 static void claim(CPUState* cpu, uint32_t prim, int kind) { claim_aux(cpu, prim, kind, 0u); }
 
+/** @brief Returns the framebuffer cell key of the primitive the grid emitter links at an emission ordinal.
+ *
+ * The grid emitter links the same primitives in the same order on every
+ * tick of a shrink or grow (its borders first, then its cells), so the
+ * emitter's address and the ordinal name one element of the grid from tick
+ * to tick while its screen box changes. The bit 0 is forced so a key is
+ * never 0.
+ * @param ord The emission ordinal within one call of the emitter.
+ * @return The key. */
+static uint32_t grid_elem_key(unsigned ord) {
+    uint32_t h = 2166136261u;
+    h ^= ui_game.fb_grid_emitter; h *= 16777619u;
+    h ^= (uint32_t)ord;           h *= 16777619u;
+    return h | 1u;
+}
+
 /* Feeds one glyph SPRT at emission, tagged with its address for the release's ranking. */
 void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
     if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
@@ -1703,7 +1728,8 @@ static void ui_path_record(CPUState* cpu, uint32_t prim) {
  * precapture callbacks and names the UI atlas for the texture pack. The
  * primitive at a0 is classified in order: freeze backdrop FT4 (also
  * widens the freeze band), freeze mask line (counted, not claimed), FT4,
- * draw mode, opaque F4 bar, semi-transparent F4 panel (not inside the fade
+ * draw mode, opaque F4 bar (keyed by its emission ordinal inside the
+ * framebuffer grid emitter), semi-transparent F4 panel (not inside the fade
  * emitter), SPRT, LINE_G2, POLY_G, LINE_F2; anything else is counted as
  * unclaimed. The real insert then runs unchanged, so the reference link is
  * intact. Reads guest RAM only; writes none.
@@ -1741,13 +1767,15 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     if (openpete_frame != s_unclaimed_frame) { unclaimed_flush_tick(); s_unclaimed_frame = openpete_frame; }
 
     if (feed) {
+        const unsigned grid_ord = s_grid_ord++;   /* meaningful inside the grid emitter only */
         /* Claimed here, fed at the batch release: the primitive's words are
          * not final yet (see the dispatch header). */
         if (is_freeze_backdrop(cpu, prim)) { freeze_band_note(cpu, prim); claim(cpu, prim, QK_FREEZE); }
         else if (is_freeze_mask_line(cpu, prim)) s_freeze_mask_dropped++;   /* see is_freeze_mask_line */
         else if (is_ft4(cpu, prim))        claim(cpu, prim, QK_FT4);
         else if (is_dr_mode(cpu, prim))    claim(cpu, prim, QK_DR_MODE);   /* the GPU draw-mode's ABR */
-        else if (is_f4_opaque(cpu, prim))  claim(cpu, prim, QK_F4_BAR);    /* letterbox bars */
+        else if (is_f4_opaque(cpu, prim))                                   /* letterbox bars, */
+            claim_aux(cpu, prim, QK_F4_BAR, s_in_grid ? grid_elem_key(grid_ord) : 0u); /* grid borders */
         else if (is_f4_semitrans(cpu, prim) && !s_in_fade)
                                            claim(cpu, prim, QK_F4_PANEL);  /* HUD shaded box / menu panel */
         else if (is_sprt(cpu, prim))       claim(cpu, prim, QK_SPRT);      /* HUD icons and digits */
@@ -1824,6 +1852,24 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief Hooks the framebuffer grid emitter and numbers the primitives it links.
+ *
+ * The real emitter runs unchanged with s_in_grid set and the emission
+ * ordinal s_grid_ord restarted, so the chokepoint keys each opaque F4 the
+ * call links by its ordinal (grid_elem_key). Reads no guest RAM; writes none.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the native scene is off or on re-entry (the ordinary
+ *         dispatch runs the emitter), 1 having run it. */
+static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
+    if (!openpete_native_scene_enabled() || s_in_grid) return 0;
+    s_in_grid = 1;
+    s_grid_ord = 0;
+    openpete_recomp_module_get()->dispatch(cpu, addr);   /* the real emitter (ref unchanged) */
+    s_in_grid = 0;
+    return 1;
+}
+
 /* The hook addresses are the descriptor's, bound at boot: a static
  * initializer cannot read another TU's const. A game whose descriptor names
  * neither address registers no hook and the module is inert. */
@@ -1831,6 +1877,7 @@ static feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0u, on_ot_insert },
     { 0u, on_ot_insert },
     { 0u, on_fade_emitter },
+    { 0u, on_fb_grid_emitter },
     { 0u, NULL },
 };
 
@@ -1877,8 +1924,8 @@ static void ui_freeze_retain_census(void) {
  *
  * When ui_game.freeze_retained is set, turns on the scene's retained
  * freeze mode and registers the exit census. The named ot_insert,
- * ot_insert_slot and fade_emitter addresses are packed to the front of
- * the table and a zero address ends it.
+ * ot_insert_slot, fade_emitter and fb_grid_emitter addresses are packed to
+ * the front of the table and a zero address ends it.
  * @param opts The options; unused. */
 static void ui_sprite_apply_options(const openpete_options_t* opts) {
     (void)opts;
@@ -1900,6 +1947,10 @@ static void ui_sprite_apply_options(const openpete_options_t* opts) {
     if (ui_game.fade_emitter) {
         ui_sprite_dispatch[n].addr = ui_game.fade_emitter;
         ui_sprite_dispatch[n].fn   = on_fade_emitter; n++;
+    }
+    if (ui_game.fb_grid_emitter) {
+        ui_sprite_dispatch[n].addr = ui_game.fb_grid_emitter;
+        ui_sprite_dispatch[n].fn   = on_fb_grid_emitter; n++;
     }
     ui_sprite_dispatch[n].addr = 0u;
     ui_sprite_dispatch[n].fn   = NULL;

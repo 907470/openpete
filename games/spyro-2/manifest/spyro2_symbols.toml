@@ -194,6 +194,12 @@ kind = "function"
 note = "func_8004D748(abrMode, r, g, b) (drawutil/func_8004D748.s:7-56) - the full-screen fade emitter: func_8005A01C(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4 with rgb at +0x10..+0x12, each linked through func_8001B390 and the polybuf cursor D_80067030 advanced 0x24. draw/func_800155A0.s:82,91 drives it from D_80066F68 at ABR 2 and D_80067150 at ABR 1; drawutil/func_8004D810.s:73 is the blocking 16-step variant"
 
 [[symbol]]
+name = "F_UI_FB_GRID"
+addr = 0x8004DF84
+kind = "function"
+note = "func_8004DF84(step) (drawutil/func_8004DF84.s:6-123) - the pause window's per-tick framebuffer grid: two black 0x28 POLY_F4 borders through func_8004DD28 (drawutil/func_8004DD28.s:6-34, rect x0..x1, y0..y1 from a0..a3), the first spanning x 0..D_800633BA[step], y D_800633DF[step]..D_800633E0[step] and the second x D_800633BC[step]..D_800633BA[step], y D_800633E0[step]..0xE4, then a 4x4 grid of 0x2C POLY_FT4 cells over x 0..D_800633BC[step], y D_800633E0[step]..0xE4, every primitive linked through func_8001B390 in that order. The borders are the band between the box of step-1 and the box of step. draw/func_800145AC.s:95 calls it for steps 1..16 (the shrink on pause), :336 for steps 14, 12, ..., 2 (the grow back on unpause)"
+
+[[symbol]]
 name = "F_TEXT_SPRT"
 addr = 0x8004A374
 kind = "function"

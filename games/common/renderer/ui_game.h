@@ -45,6 +45,14 @@ typedef struct ui_game {
      * POLY_F4. The feeder drives the native fade from the arguments. */
     uint32_t fade_emitter;
 
+    /* The emitter that draws a draw buffer's frame back as a grid of cells
+     * inside an untextured border, once per tick of a window's shrink or
+     * grow, every primitive linked through `ot_insert`. Its opaque F4s are
+     * keyed by their emission ordinal within the call, so the 2D carry pairs
+     * each border with the same border of the previous tick and moves it
+     * with the cells on presents between ticks. 0 = the game has none. */
+    uint32_t fb_grid_emitter;
+
     /* The freeze-frame backdrop quad's signature: its setRGB0 tint as the
      * primitive packs it (0x00BBGGRR) and the VRAM position of the grayscale
      * CLUT it samples through. A quad matching both is reproduced from the

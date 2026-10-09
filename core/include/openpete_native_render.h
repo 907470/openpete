@@ -1316,9 +1316,11 @@ void openpete_native_scene_set_prim(uint32_t prim);
  * Sticky, cleared at each frame boundary. A 2D feeder sets it on a
  * triangle that samples a draw buffer's texels through the VRAM path,
  * keyed by the primitive's texture page and texel coordinates as the game
- * wrote them, and resets it to 0 after. The 2D carry pairs such a
- * triangle with the previous tick's holder of the same key, so a copy whose
- * screen box scales between ticks interpolates its corners.
+ * wrote them, or on an untextured border the copy's emitter draws around
+ * those cells, keyed by its emission order within the emitter, and resets
+ * it to 0 after. The 2D carry pairs such a triangle with the previous
+ * tick's holder of the same key, so a copy whose screen box scales between
+ * ticks interpolates its corners, and its borders with it.
  * @param cell Key, or 0 for none. */
 void openpete_native_scene_set_fb_cell(uint32_t cell);
 
