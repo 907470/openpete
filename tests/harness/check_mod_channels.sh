@@ -175,6 +175,42 @@ while IFS='|' read -r tag bk2 frame row minpx label; do
     fi
 done <<< "$RUNGS"
 
+# ── shading contracts ─────────────────────────────────────────────────
+# A material's fragment is written against one shading contract: the scene
+# contract (openpete_psx_material.glsl) or the decal profile
+# (openpete_psx_decal.glsl). The two differ in descriptor sets, push block
+# and fragment inputs, so a fragment built into the other contract's
+# pipeline is an invalid pipeline. Row 0 is a scene-contract material with
+# no key, so its selector also matches the moby-shadow tag, which draws on
+# the decal pipe; the resolve must skip it there and leave the shadow stock.
+# Row 8 is the decal-contract shadow material: lit together with row 0 it
+# must still win the shadow tag, so rows 0,8 repaint the shadow (96-128 px
+# at this pin) that rows 0 alone leaves stock.
+say "a material resolves only on a draw path of its own shading contract"
+cbase="$WORK/base_artisans-bridge_1986-1986-vk.png"
+if [ ! -s "$cbase" ] && ! run_rows "base_artisans-bridge_1986" artisans-bridge 1986 "" ""; then
+    bad "no baseline for artisans-bridge at frame 1986"
+elif ! run_rows "contract0" artisans-bridge 1986 "0" ""; then
+    bad "rows 0 produced no capture (see $WORK/contract0.log): a scene-contract material was built into a decal pipeline"
+else
+    n0=$(diffpx "$cbase" "$WORK/contract0-1986-vk.png")
+    if [ "${n0:-0}" -gt 0 ]; then
+        ok "rows 0 captured and repainted $n0 px"
+    else
+        bad "rows 0 repainted 0 px, so the contract rungs prove nothing"
+    fi
+    if ! run_rows "contract08" artisans-bridge 1986 "0,8" ""; then
+        bad "rows 0,8 produced no capture (see $WORK/contract08.log)"
+    else
+        n8=$(diffpx "$WORK/contract0-1986-vk.png" "$WORK/contract08-1986-vk.png")
+        if [ "${n8:-0}" -ge 60 ]; then
+            ok "rows 0,8 differ from rows 0 by $n8 px (>= 60): the decal-contract row wins the shadow tag"
+        else
+            bad "rows 0,8 differ from rows 0 by only ${n8:-0} px, expected >= 60: the scene-contract row still claims the shadow tag"
+        fi
+    fi
+fi
+
 # ── identity materials ────────────────────────────────────────────────
 # The rungs above prove a material REACHES its audience. These prove it
 # reaches it and nothing else: a material that returns the stock shading

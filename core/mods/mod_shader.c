@@ -116,6 +116,9 @@ typedef struct {
      * half that discards what a portal preview covers. NULL like spv_ter. */
     uint32_t*   spv_portal;
     size_t      spv_portal_words;
+    /* OPENPETE_MATERIAL_CONTRACT_* of the stock profile, read from its
+     * SPIR-V at registration (shader_spv_contract). */
+    int         contract;
     int         live;        /* 0 = swept slot (stale handle) */
 } mod_shader_t;
 
@@ -130,6 +133,31 @@ static int shader_count(void) { return (int)mod_cvec_count(&s_shaders); }
 /** @brief Return the shader table slot at an index; the caller bounds the index by shader_count(). */
 static mod_shader_t* shader_at(int i) {
     return (mod_shader_t*)mod_cvec_at(&s_shaders, (size_t)i);
+}
+
+/** @brief Return the shading contract a SPIR-V module was compiled against.
+ *
+ * Scans the module's OpName instructions (opcode 5) for the decal
+ * profile's push-block name `OP_DECAL_PC`, which only
+ * openpete_psx_decal.glsl declares. A module that names it is
+ * OPENPETE_MATERIAL_CONTRACT_DECAL; every other module, including one
+ * whose debug names are stripped, is OPENPETE_MATERIAL_CONTRACT_SCENE.
+ * The walk stops at a zero word count or one that runs past the module.
+ * @param w The SPIR-V words, starting with the magic number.
+ * @param n The word count.
+ * @return The OPENPETE_MATERIAL_CONTRACT_* value. */
+static int shader_spv_contract(const uint32_t* w, size_t n) {
+    static const char k_decal_block[] = "OP_DECAL_PC";
+    if (!w || n < 5 || w[0] != 0x07230203u) return OPENPETE_MATERIAL_CONTRACT_SCENE;
+    for (size_t i = 5; i < n;) {
+        const uint32_t wc = w[i] >> 16;
+        if (wc == 0 || wc > n - i) break;
+        if ((w[i] & 0xFFFFu) == 5u && (wc - 2u) * 4u >= sizeof k_decal_block &&
+            memcmp(&w[i + 2], k_decal_block, sizeof k_decal_block) == 0)
+            return OPENPETE_MATERIAL_CONTRACT_DECAL;
+        i += wc;
+    }
+    return OPENPETE_MATERIAL_CONTRACT_SCENE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -532,6 +560,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     sh->spv_ter_words = prof.spv_ter_words;
     sh->spv_portal = prof.spv_portal;
     sh->spv_portal_words = prof.spv_portal_words;
+    sh->contract = shader_spv_contract(words, n_words);
     sh->live = 1;
     return shader_count() - 1;
 }
@@ -909,6 +938,9 @@ typedef struct {
     int  vert, frag;       /* shader handles; -1 = stock stage */
     openpete_mod_material_fn per_instance;   /* NULL = declarative */
     int  load_index;
+    /* OPENPETE_MATERIAL_CONTRACT_* of the fragment stage; SCENE for a
+     * material with the stock fragment stage. */
+    int  contract;
     /* Executor-cached rhi_pipeline*, one per BLEND CLASS (0 opaque, 1
      * average, 2 additive, 3 subtract). A material reshades inside
      * whatever group it lands in and must not change how that group
@@ -1055,13 +1087,15 @@ static int openpete_mods_current_level(void);   /* defined with s_cur_level */
 /** @brief Test whether a material can bucket terrain faces in a level.
  *
  * True when the material is live, user-enabled and owned by an enabled
- * mod, is on channel -1 or OP_CHAN_TERRAIN, and has no level key or one
+ * mod, has the scene shading contract (retained terrain is a scene-contract
+ * site), is on channel -1 or OP_CHAN_TERRAIN, and has no level key or one
  * equal to @p level; a negative @p level matches every level key. The
  * level test mirrors the draw-time resolve's, so a level-scoped selector
  * buckets faces only in its level. */
 static int terrain_sel_usable(const mod_material_t* m, int level) {
     if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner))
         return 0;
+    if (m->contract != OPENPETE_MATERIAL_CONTRACT_SCENE) return 0;
     if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) return 0;
     if (m->sel.level != -1 && level >= 0 && m->sel.level != level) return 0;
     return 1;
@@ -1254,6 +1288,8 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
     m->sel = *sel;
     m->vert = vert_shader;
     m->frag = frag_shader;
+    m->contract = frag_shader >= 0 ? shader_at(frag_shader)->contract
+                                   : OPENPETE_MATERIAL_CONTRACT_SCENE;
     m->per_instance = per_instance;
     m->load_index = openpete_mods_load_index_of(self);
     m->live = 1;
@@ -1786,15 +1822,17 @@ static int material_selector_matches(const mod_material_t* m,
 
 /** @brief Return the declarative material that wins a decoded tag key, or -1.
  *
- * Considers live, user-enabled materials of enabled mods without a
- * per-instance callback, which resolve through slots only; among those
- * material_selector_matches accepts, the highest load_index, the
- * later-loaded mod, wins. */
-static int material_winner(const material_key_t* k) {
+ * Considers live, user-enabled materials of enabled mods with the shading
+ * contract @p contract and without a per-instance callback, which resolve
+ * through slots only; among those material_selector_matches accepts, the
+ * highest load_index, the later-loaded mod, wins.
+ * @param k The decoded tag key.
+ * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*. */
+static int material_winner(const material_key_t* k, int contract) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
-        if (!m->live || !m->user_enabled ||
+        if (!m->live || !m->user_enabled || m->contract != contract ||
             !openpete_mods_is_enabled(m->owner)) continue;
         if (m->per_instance) continue;   /* per-instance winners resolve via slots only */
         if (!material_selector_matches(m, k)) continue;
@@ -1805,18 +1843,22 @@ static int material_winner(const material_key_t* k) {
     return best;
 }
 
-int openpete_mods_material_resolve(uint32_t tag,
+int openpete_mods_material_resolve(uint32_t tag, int contract,
                                    openpete_mod_material_gpu_t* out) {
     material_key_t k;
     int slot = 0, best;
     if (!tag || s_mat_count == 0) return -1;
     material_key_from_tag(tag, &k);
     switch (material_slot_from_tag(tag, k.path, &slot)) {
-    case 1:  return material_fill_gpu(view_slot_mat(slot), slot, out);
+    case 1:
+        /* A slot whose material has another contract draws stock. */
+        best = view_slot_mat(slot);
+        if (s_mats[best].contract != contract) return -1;
+        return material_fill_gpu(best, slot, out);
     case -1: return -1;
     default: break;   /* declarative resolve */
     }
-    best = material_winner(&k);
+    best = material_winner(&k, contract);
     if (best < 0) return -1;
     return material_fill_gpu(best, 0, out);
 }

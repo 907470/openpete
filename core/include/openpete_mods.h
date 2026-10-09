@@ -1259,6 +1259,14 @@ void openpete_mods_registry_read_unlock(void);
  * contract rather than another blend class. */
 #define OPENPETE_MATERIAL_PIPE_VARIANTS 6
 #define OPENPETE_MATERIAL_PIPE_DECAL    5
+/* The shading contract a material's fragment stage is compiled against,
+ * and the one a draw site's pipeline layout provides. SCENE is
+ * openpete_psx_material.glsl (the walked scene, sky and portal sites);
+ * DECAL is openpete_psx_decal.glsl (the moby-shadow decal pipe). The two
+ * differ in descriptor sets, push block and fragment inputs, so a
+ * fragment builds a valid pipeline only at a site of its own contract. */
+#define OPENPETE_MATERIAL_CONTRACT_SCENE 0
+#define OPENPETE_MATERIAL_CONTRACT_DECAL 1
 /* Portal-profile pipelines a material can be built for: [0..4] the cover
  * rule per PSX blend class (index 0 unused), [5] the inner-rim rule, [6]
  * its stencil-MARK twin. */
@@ -1294,18 +1302,21 @@ typedef struct {
 } openpete_mod_material_gpu_t;
 /** @brief Resolve a draw's provenance tag to the material override that applies.
  *
- * Takes no lock; the compose calls it under the registry read lock. A slot
+ * Takes no lock; the compose calls it under the registry read lock. Only
+ * materials whose shading contract equals @p contract take part. A slot
  * the tag carries (moby bits 27:16, terrain bits 24:16) selects its
  * material directly; slot 0 falls through to the declarative winner among
  * live, user-enabled materials of enabled mods, the highest load index
  * winning. An OPENPETE_MATERIAL_SLOT_STOCK or
- * OPENPETE_MATERIAL_TERRAIN_STOCK slot, a slot past the view, and a slot
- * whose material is swept or owner disabled resolve to none.
+ * OPENPETE_MATERIAL_TERRAIN_STOCK slot, a slot past the view, a slot
+ * whose material is swept or owner disabled, and a slot whose material
+ * has another contract resolve to none.
  *
  * @param tag Provenance tag; 0 resolves to none.
+ * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
  * @param out Receives the shaders, pipeline slots, owner and uniform slot.
  * @return The winning material index, or -1 for none. */
-int  openpete_mods_material_resolve(uint32_t tag,
+int  openpete_mods_material_resolve(uint32_t tag, int contract,
                                     openpete_mod_material_gpu_t* out);
 /** @brief Retire the pipelines of every material a mod registered and mark the materials dead.
  *

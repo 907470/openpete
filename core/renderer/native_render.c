@@ -9239,7 +9239,7 @@ static int ut_tag_resolves(uint32_t tag) {
     for (int i = 0; i < s_utmemo_n; i++)
         if (s_utmemo_tag[i] == mt) return s_utmemo_hit[i];
     openpete_mod_material_gpu_t mg;
-    int hit = openpete_mods_material_resolve(mt, &mg) >= 0;
+    int hit = openpete_mods_material_resolve(mt, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0;
     if (s_utmemo_n < 32) { s_utmemo_tag[s_utmemo_n] = mt; s_utmemo_hit[s_utmemo_n++] = (int8_t)hit; }
     return hit;
 }
@@ -9351,7 +9351,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
         if (!bound) { rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb); bound = 1; }
         rhi_pipeline* pipe = NULL;
         openpete_mod_material_gpu_t mg;
-        if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, &mg) >= 0) {
+        if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
             void** slot = want_mark ? mg.pipeline_mark_slot
                                     : mg.pipeline_slot[blend_class];
             rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
@@ -10000,7 +10000,7 @@ static void texsel_draw_forensics(const scene_tri_t* s0, int allow_override, int
             fprintf(stderr, "[texsel-draw f=%u] tag=%08X allow=%d split=%d "
                     "resolve=%d run=%d\n", openpete_frame, s0->tag,
                     allow_override, tag_split_on(),
-                    openpete_mods_material_resolve(s0->tag, &mgd), run);
+                    openpete_mods_material_resolve(s0->tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mgd), run);
     }
 }
 
@@ -10149,7 +10149,7 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     const scene_tri_t* s0 = tex_run_tri(r, 0);
     if (!tag_split_on() || !s0->tag) return 0;
     openpete_mod_material_gpu_t mg;
-    if (openpete_mods_material_resolve(s0->tag, &mg) < 0) return 0;
+    if (openpete_mods_material_resolve(s0->tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) < 0) return 0;
     const nr_cover_twin* tw = nr_cover_entry(restore);
     const int portal = tw ? (tw->rim ? 2 : 1) : 0;
     rhi_pipeline* pipe = material_run_pipe(&mg, ov_mark, blend_class, portal);
@@ -12760,7 +12760,7 @@ static bool draw_native_scene(bool full_extent)
                     for (int q = 1; q < ntri1; q++)
                         if (scene[s_txscene[base + q]].tag != s0_decal_tag) { uniform = 0; break; }
                     if (uniform &&
-                        openpete_mods_material_resolve(s0_decal_tag, &dmg) >= 0) {
+                        openpete_mods_material_resolve(s0_decal_tag, OPENPETE_MATERIAL_CONTRACT_DECAL, &dmg) >= 0) {
                         void** ds = dmg.pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL];
                         rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
                         if (*ds == NULL) {
@@ -12972,7 +12972,7 @@ static bool draw_native_scene(bool full_extent)
                         rhi_pipeline* pipe = NULL;
                         openpete_mod_material_gpu_t mg;
                         if (pseg[sg].tag &&
-                            openpete_mods_material_resolve(pseg[sg].tag, &mg) >= 0) {
+                            openpete_mods_material_resolve(pseg[sg].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
                             void** slot = mg.pipeline_slot[4];
                             rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
                             if (*slot == NULL) {
