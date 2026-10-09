@@ -4,6 +4,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +35,7 @@ typedef struct {
 } pc_hitch;
 
 static SDL_Mutex  *s_mx;
-static SDL_AtomicInt s_mx_init;   /* 0 none, 1 creating, 2 ready */
+static atomic_int  s_mx_init;     /* 0 none, 1 creating, 2 ready; release publishes s_mx */
 static SDL_AtomicInt s_visits[RHI_PIPE_SITES];
 static pc_tally    s_tally[RHI_PC_PHASES];
 static pc_hitch    s_hitch[RHI_PIPE_SITES];
@@ -47,12 +48,13 @@ static pc_set      s_full_all, s_decl_all;
 /** @brief Take the records' mutex, creating it on first use. */
 static void pc_lock(void)
 {
-    if (SDL_GetAtomicInt(&s_mx_init) != 2) {
-        if (SDL_CompareAndSwapAtomicInt(&s_mx_init, 0, 1)) {
+    if (atomic_load_explicit(&s_mx_init, memory_order_acquire) != 2) {
+        int none = 0;
+        if (atomic_compare_exchange_strong(&s_mx_init, &none, 1)) {
             s_mx = SDL_CreateMutex();
-            SDL_SetAtomicInt(&s_mx_init, 2);
+            atomic_store_explicit(&s_mx_init, 2, memory_order_release);
         }
-        while (SDL_GetAtomicInt(&s_mx_init) != 2) SDL_Delay(0);
+        while (atomic_load_explicit(&s_mx_init, memory_order_acquire) != 2) SDL_Delay(0);
     }
     SDL_LockMutex(s_mx);
 }
@@ -228,13 +230,15 @@ void rhi_pc_add_base(rhi_pipe_site site, const rhi_pc_variant *v, int nv)
 
 int rhi_pc_level(void)
 {
-    static int lvl = -1;
-    if (lvl < 0) {
+    static SDL_AtomicInt lvl = { -1 };   /* read from compile jobs on any thread */
+    int v = SDL_GetAtomicInt(&lvl);
+    if (v < 0) {
         const char *e = getenv("OPENPETE_PIPE_CENSUS");
-        lvl = (e && *e) ? atoi(e) : 0;
-        if (lvl < 0) lvl = 0;
+        v = (e && *e) ? atoi(e) : 0;
+        if (v < 0) v = 0;
+        SDL_SetAtomicInt(&lvl, v);
     }
-    return lvl;
+    return v;
 }
 
 /** @brief Count one create of the first-use or rebuild phase in its class's hitch row and the event list.

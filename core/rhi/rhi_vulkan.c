@@ -20,6 +20,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -151,12 +152,12 @@ static const char *rhi_knob(const char *name)
  * shipped build never dies for it; OPENPETE_SEAM_GUARD_FATAL=1 aborts at
  * the first, which names the interleaving that a driver would otherwise turn
  * into a silent process kill minutes later. */
-static SDL_ThreadID s_display_owner;
+static _Atomic(SDL_ThreadID) s_display_owner;   /* read by compile jobs on any thread */
 static unsigned     s_seam_violations;
 void rhi_display_claim(rhi_device *dev)
 {
     (void)dev;
-    s_display_owner = SDL_GetCurrentThreadID();
+    atomic_store(&s_display_owner, SDL_GetCurrentThreadID());
 }
 /** @brief Count and log a display-seam violation when the calling thread is not the display owner.
  *
@@ -166,14 +167,15 @@ void rhi_display_claim(rhi_device *dev)
  * @param where Entry point name for the log line. */
 static void seam_check(const char *where)
 {
-    if (!s_display_owner) return;                 /* pre-claim boot window */
+    const SDL_ThreadID owner = atomic_load(&s_display_owner);
+    if (!owner) return;                           /* pre-claim boot window */
     const SDL_ThreadID me = SDL_GetCurrentThreadID();
-    if (me == s_display_owner) return;
+    if (me == owner) return;
     static int fatal = -1;
     if (fatal < 0) { const char *e = getenv("OPENPETE_SEAM_GUARD_FATAL"); fatal = (e && *e && *e != '0'); }
     if (s_seam_violations < 8)
         RHI_LOG("SEAM: %s on thread %" SDL_PRIu64 " but the display is owned by %" SDL_PRIu64 "\n",
-                where, (Uint64)me, (Uint64)s_display_owner);
+                where, (Uint64)me, (Uint64)owner);
     s_seam_violations++;
     if (fatal) abort();
 }
@@ -222,7 +224,9 @@ static void rhi_signal_device_lost(const char *where) {
 /* Resource census, printed every RHI_CENSUS_PERIOD begun frames while
  * OPENPETE_RHI_CENSUS is set: live sampled textures with their device and
  * host staging bytes, vkQueueWaitIdle calls, and pipeline compiles with
- * their wall time. Counters are touched only by the display owner. */
+ * their wall time. The pipeline counters are atomic: a compile job counts
+ * its create on any thread. The rest are touched only by the display
+ * owner. */
 #define RHI_CENSUS_PERIOD 60
 static struct {
     int      on;             /* -1 until the env is read */
@@ -230,8 +234,8 @@ static struct {
     int64_t  tex_dev_bytes;  /* their device-local image memory */
     int64_t  tex_host_bytes; /* host staging held for texture uploads (the upload ring) */
     uint64_t queue_idles;    /* vkQueueWaitIdle calls */
-    uint64_t pipe_builds;    /* vkCreateGraphicsPipelines calls */
-    uint64_t pipe_ns;        /* wall time inside them */
+    _Atomic uint64_t pipe_builds;    /* vkCreateGraphicsPipelines calls */
+    _Atomic uint64_t pipe_ns;        /* wall time inside them */
     uint64_t frames;         /* frames begun */
     uint64_t idles_mark;     /* queue_idles at the previous report */
 } s_census = { .on = -1 };
@@ -262,7 +266,8 @@ static void census_frame(void)
             (double)s_census.tex_host_bytes / 1048576.0,
             (unsigned long long)s_census.queue_idles,
             (unsigned long long)(s_census.queue_idles - s_census.idles_mark),
-            (unsigned long long)s_census.pipe_builds, (double)s_census.pipe_ns / 1e6);
+            (unsigned long long)atomic_load(&s_census.pipe_builds),
+            (double)atomic_load(&s_census.pipe_ns) / 1e6);
     s_census.idles_mark = s_census.queue_idles;
 }
 
@@ -349,6 +354,17 @@ struct rhi_device {
     size_t                   pcache_keys_saved; /* pc_keys.n at load or the last save */
     bool                     manifest_trusted; /* the driver is calibrated (pcache_manifest_calibrated) */
     unsigned                 pcache_unhit;    /* creates since load or the last save not reported a cache hit */
+    SDL_Mutex               *pc_mx;           /* guards pc_keys and pcache_unhit: compile jobs write them on any thread */
+    size_t                   pcache_saved_n;  /* cache byte count at load or the last save */
+    /* Debounced first-use save (pcache_autosave): first-use creates not
+     * reported a cache hit, counted on any thread; the count and frame
+     * serial the display owner last saw; the in-flight save worker. */
+    _Atomic unsigned         pcache_fu_misses;
+    unsigned                 pcache_fu_seen;
+    uint64_t                 pcache_fu_serial;
+    bool                     pcache_fu_pending;
+    struct pcache_save_job  *pcache_save;
+    rhi_pcache_autosave_stats autosave;
     VkQueue                  gfx_queue;
     char                     device_name[256];
     char                     driver_version[64];
@@ -387,7 +403,7 @@ struct rhi_device {
     float          depth_clear[RHI_DEPTH_CLASSES];
     VkBool32       depth_rev[RHI_DEPTH_CLASSES]; /* spec constant 0 (DEPTH_REVERSED) */
     float          cur_depth_clear;  /* clear value of the current pass (rhi_clear_depth) */
-    unsigned       pipes_by_cmp[8];  /* pipelines compiled per VkCompareOp (engagement) */
+    _Atomic unsigned pipes_by_cmp[8]; /* pipelines compiled per VkCompareOp (engagement) */
     bool           has_depth_bias_clamp; /* depthBiasClamp feature enabled */
     bool           has_shader_float64;   /* shaderFloat64 feature enabled  */
     bool           has_fill_non_solid;   /* fillModeNonSolid feature enabled */
@@ -665,8 +681,8 @@ static uint64_t s_frame_serial;
  * pipeline-create instruments. */
 static int64_t (*s_clock)(void);
 static rhi_boot_stats s_boot;
-static bool s_first_frame_done;
-static bool s_precompile_done;   /* rhi_pipe_precompile_done */
+static atomic_bool s_first_frame_done;   /* read by compile jobs on any thread */
+static atomic_bool s_precompile_done;    /* rhi_pipe_precompile_done */
 /* Per-thread create phase (rhi_pipe_phase_set) and rebuild marker. */
 static _Thread_local rhi_pipe_phase t_pipe_phase;
 static _Thread_local bool t_in_rebuild;
@@ -682,8 +698,8 @@ static int64_t boot_now(void) { return s_clock ? s_clock() : 0; }
 /** @brief Record the first frame submission: its time, and the end of the bring-up create phase. */
 static void boot_frame_submitted(void)
 {
-    if (s_first_frame_done) return;
-    s_first_frame_done = true;
+    if (atomic_load(&s_first_frame_done)) return;
+    atomic_store(&s_first_frame_done, true);
     s_boot.first_frame_ns = boot_now();
 }
 
@@ -752,6 +768,21 @@ static uint32_t ring_bind_slot(rhi_buffer *buf)
 uint64_t rhi_ring_gen_bumps(void) { return s_ring_gen_bumps; }
 uint64_t rhi_ring_gen_overflows(void) { return s_ring_gen_overflows; }
 
+/* Stage facts recorded when a compile job resolves its stages: the desc's
+ * dedupe hash, each stage's SPIR-V content hash and declared constant ids. */
+typedef struct {
+    uint64_t desc_hash, vs_hash, fs_hash;
+    uint32_t vs_ids, fs_ids;
+} pipe_stage_info;
+
+/* The bare result of one pipeline create: no rhi_pipeline, no registry link. */
+typedef struct {
+    VkPipeline         pipeline;
+    VkPipelineLayout   layout;
+    VkShaderStageFlags pc_stages;   /* stage visibility of the push-constant block */
+    uint64_t           key;         /* dedupe key of the create info */
+} pipe_compiled;
+
 struct rhi_pipeline {
     VkPipeline       pipeline;
     VkPipelineLayout layout;
@@ -770,12 +801,26 @@ struct rhi_pipeline {
     VkShaderStageFlags pc_stages; /* stage visibility of the push-constant
                                    * block (FRAGMENT; terrain: VERTEX too) -
                                    * rhi_push_constants must match the range */
-    /* Recorded at the first compile (pipe_stage_modules): the desc's dedupe
-     * hash, each stage's SPIR-V content hash and declared constant ids. */
-    bool             stage_info;
-    uint64_t         desc_hash, vs_hash, fs_hash;
-    uint32_t         vs_ids, fs_ids;
+    pipe_stage_info  info;         /* recorded when the creating job resolved its stages */
     uint64_t         vkey;         /* dedupe key of the installed objects' create info */
+};
+
+/* A compile job (rhi.h, variant-explicit compile jobs): every input of one
+ * create, owned, and its result. The stage names and words are kept so an
+ * installed pipeline can be rebuilt; vb/fb are the bytes the run reads. */
+struct rhi_compile_job {
+    rhi_pipeline_desc desc;          /* vert_spv / frag_spv point at the name copies */
+    char            *vert_name, *frag_name;     /* owned .spv name copies (built-in stages) */
+    uint32_t        *vert_words, *frag_words;   /* owned SPIR-V word copies (mod stages)    */
+    size_t           vert_n, frag_n;            /* word counts                               */
+    const void      *vb, *fb;        /* resolved stage bytes: the words, an embedded blob or a file read */
+    size_t           vbn, fbn;       /* their byte counts                          */
+    void            *vown, *fown;    /* OPENPETE_SHADER_DIR file bytes read at the job's making */
+    pipe_stage_info  info;
+    rhi_pipe_variant variant;
+    VkBool32         slot_contest;   /* SLOT_CONTEST at the job's making           */
+    uint32_t         generation, epoch;
+    pipe_compiled    out;            /* the result; out.pipeline VK_NULL_HANDLE until a run succeeds */
 };
 
 struct rhi_texture {
@@ -3008,7 +3053,8 @@ static void pcache_load_keys(rhi_device *dev, const pcache_parts *parts)
  * create accepts. The file's key manifest seeds dev->pc_keys, trusted for
  * the warm-boot skip only on a calibrated driver. The file's size, the
  * bytes offered and the time spent reading the file and creating the cache
- * are recorded for rhi_boot_stats_get.
+ * are recorded for rhi_boot_stats_get, and the cache's serialized size as
+ * the last saved size. Creates dev->pc_mx, the lock of the key manifest.
  * @param dev Device whose physical device and logical device exist. */
 static void pipeline_cache_open(rhi_device *dev)
 {
@@ -3019,6 +3065,7 @@ static void pipeline_cache_open(rhi_device *dev)
     vkGetPhysicalDeviceProperties2(dev->phys, &props2);
     const VkPhysicalDeviceProperties *props = &props2.properties;
     dev->manifest_trusted = pcache_manifest_calibrated((uint32_t)drv.driverID);
+    dev->pc_mx = SDL_CreateMutex();   /* NULL leaves SDL's lock calls no-ops */
     pcache_name(dev, props);
     s_boot.cache_cold = pcache_cold_remove(dev->pcache_path);
     rhi_pcf_touch(dev->pcache_path);
@@ -3040,6 +3087,9 @@ static void pipeline_cache_open(rhi_device *dev)
     }
     dev->pcache_digest = pn ? fnv1a64(parts.payload, pn) : 0;
     if (pn) pcache_load_keys(dev, &parts);
+    if (!dev->pcache || vkGetPipelineCacheData(dev->device, dev->pcache, &dev->pcache_saved_n,
+                                               NULL) != VK_SUCCESS)
+        dev->pcache_saved_n = 0;
     s_boot.cache_load_ns = boot_now() - t0;
     s_boot.cache_file_bytes = n;
     s_boot.cache_offered_bytes = pn;
@@ -3051,26 +3101,37 @@ static void pipeline_cache_open(rhi_device *dev)
     free(data);
 }
 
-/** @brief Write a cache file image: the envelope, the cache bytes and every key of the device's key set.
+/** @brief Copy every key of the device's key set to an array.
  *
- * @param dev Device whose pc_keys are written.
- * @param n Count of the cache bytes, already at buf + sizeof envelope.
- * @param buf Buffer of sizeof envelope + n + 8 * pc_keys.n bytes.
- * @return The file's total length. */
-static size_t pcache_image(const rhi_device *dev, size_t n, uint8_t *buf)
+ * Caller holds dev->pc_mx.
+ * @param dev Device whose pc_keys are read.
+ * @param k Receives 8 * pc_keys.n bytes.
+ * @return The key count. */
+static uint32_t pcache_copy_keys(const rhi_device *dev, uint8_t *k)
 {
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(dev->phys, &props);
-    struct pcache_envelope env = {0};
-    uint8_t *k = buf + sizeof env + n;
     uint32_t kc = 0;
     for (size_t i = 0; i < dev->pc_keys.cap; i++) {
         if (!dev->pc_keys.slot[i]) continue;
         memcpy(k + 8u * kc, &dev->pc_keys.slot[i], 8);
         kc++;
     }
+    return kc;
+}
+
+/** @brief Fill a cache file image's envelope over cache bytes and keys already in place.
+ *
+ * Any thread: reads and writes only the buffer.
+ * @param buf Buffer of sizeof envelope + n + 8 * kc bytes, the cache bytes at
+ *            buf + sizeof envelope and the keys after them.
+ * @param n Count of the cache bytes.
+ * @param kc Count of the keys.
+ * @param driver_version The device's driverVersion.
+ * @return The file's total length. */
+static size_t pcache_seal(uint8_t *buf, size_t n, uint32_t kc, uint32_t driver_version)
+{
+    struct pcache_envelope env = {0};
     memcpy(env.magic, PCACHE_MAGIC, sizeof env.magic);
-    env.driver_version = props.driverVersion;
+    env.driver_version = driver_version;
     env.payload_len = (uint32_t)n;
     env.key_count = kc;
     env.digest = fnv1a64(buf + sizeof env, n + 8u * kc);
@@ -3078,13 +3139,24 @@ static size_t pcache_image(const rhi_device *dev, size_t n, uint8_t *buf)
     return sizeof env + n + 8u * kc;
 }
 
+/** @brief Return the device's driverVersion.
+ *
+ * @param dev Device.
+ * @return The version. */
+static uint32_t pcache_driver_version(const rhi_device *dev)
+{
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->phys, &props);
+    return props.driverVersion;
+}
+
 /** @brief Write the pipeline cache to its file when its bytes or its key manifest changed since load or the last save.
  *
- * The cache bytes are compared by digest, so a same-size change is saved.
- * With the manifest unchanged and every create since the last save
- * reported a cache hit, nothing entered the cache and the file is kept
- * whatever the digest: a driver may serialize the same entries in another
- * order.
+ * Display owner only. The cache bytes are compared by digest, so a
+ * same-size change is saved. With the manifest unchanged and every create
+ * since the last save reported a cache hit, nothing entered the cache and
+ * the file is kept whatever the digest: a driver may serialize the same
+ * entries in another order.
  * The image goes through the writer rhi_set_pipeline_cache_dir installed,
  * which replaces the file in one step.
  * @param dev Device.
@@ -3097,21 +3169,30 @@ static int pipeline_cache_save(rhi_device *dev, const char *why)
         vkGetPipelineCacheData(dev->device, dev->pcache, &n, NULL) != VK_SUCCESS ||
         n == 0 || n > UINT32_MAX)
         return 0;
-    const size_t cap = sizeof(struct pcache_envelope) + n + 8u * dev->pc_keys.n;
-    uint8_t *buf = malloc(cap);
+    SDL_LockMutex(dev->pc_mx);
+    const size_t kn = dev->pc_keys.n;
+    const unsigned unhit = dev->pcache_unhit;
+    uint8_t *buf = malloc(sizeof(struct pcache_envelope) + n + 8u * kn);
+    const uint32_t kc = buf ? pcache_copy_keys(dev, buf + sizeof(struct pcache_envelope) + n) : 0u;
+    SDL_UnlockMutex(dev->pc_mx);
     int wrote = 0;
+    const size_t cap_n = n;   /* the keys sit after cap_n cache bytes */
     if (buf && vkGetPipelineCacheData(dev->device, dev->pcache, &n,
-                                      buf + sizeof(struct pcache_envelope)) == VK_SUCCESS) {
+                                      buf + sizeof(struct pcache_envelope)) == VK_SUCCESS &&
+        n == cap_n) {
         const uint64_t digest = fnv1a64(buf + sizeof(struct pcache_envelope), n);
-        const bool keys_same = dev->pc_keys.n == dev->pcache_keys_saved;
-        if (keys_same && (digest == dev->pcache_digest || !dev->pcache_unhit)) {
+        const bool keys_same = kn == dev->pcache_keys_saved;
+        if (keys_same && (digest == dev->pcache_digest || !unhit)) {
             RHI_LOG("pipeline cache: unchanged at %s, not saved\n", why);
-        } else if (s_pcache_write(dev->pcache_path, buf, pcache_image(dev, n, buf)) == 0) {
-            RHI_LOG("pipeline cache: saved %zu bytes, %zu manifest keys (%s)\n", n,
-                    dev->pc_keys.n, why);
+        } else if (s_pcache_write(dev->pcache_path, buf,
+                                  pcache_seal(buf, n, kc, pcache_driver_version(dev))) == 0) {
+            RHI_LOG("pipeline cache: saved %zu bytes, %zu manifest keys (%s)\n", n, kn, why);
             dev->pcache_digest = digest;
-            dev->pcache_keys_saved = dev->pc_keys.n;
-            dev->pcache_unhit = 0;
+            dev->pcache_saved_n = n;
+            SDL_LockMutex(dev->pc_mx);
+            dev->pcache_keys_saved = kn;
+            dev->pcache_unhit -= unhit;
+            SDL_UnlockMutex(dev->pc_mx);
             wrote = 1;
         } else {
             RHI_LOG("pipeline cache: save to %s failed\n", dev->pcache_path);
@@ -3121,13 +3202,155 @@ static int pipeline_cache_save(rhi_device *dev, const char *why)
     return wrote;
 }
 
-/** @brief Save the pipeline cache when it changed (pipeline_cache_save), then destroy it.
+/* One debounced first-use save, handed by the display owner to its worker:
+ * the snapshot (cache bytes and keys behind envelope space) and the
+ * worker's outcome. */
+struct pcache_save_job {
+    SDL_Thread *thread;
+    atomic_bool done;
+    char        path[1152];
+    uint8_t    *buf;
+    size_t      n;              /* cache bytes in the snapshot          */
+    uint32_t    kc;             /* keys in the snapshot                 */
+    size_t      kn;             /* pc_keys.n at the snapshot            */
+    unsigned    unhit;          /* pcache_unhit at the snapshot         */
+    uint32_t    driver_version;
+    uint64_t    digest;         /* worker: digest of the cache bytes    */
+    int         wrote;          /* worker: 1 when the file was replaced */
+};
+
+/** @brief Seal and write one save snapshot: the save worker's body.
  *
+ * Reads and writes only its job; the file writer replaces the file in one
+ * step.
+ * @param arg The pcache_save_job.
+ * @return 0. */
+static int SDLCALL pcache_save_worker(void *arg)
+{
+    struct pcache_save_job *j = arg;
+    j->digest = fnv1a64(j->buf + sizeof(struct pcache_envelope), j->n);
+    const size_t len = pcache_seal(j->buf, j->n, j->kc, j->driver_version);
+    j->wrote = s_pcache_write(j->path, j->buf, len) == 0;
+    atomic_store(&j->done, true);
+    return 0;
+}
+
+/** @brief Join a finished (or, with wait, an in-flight) save worker and take its outcome into the device's save state.
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @param wait true joins an in-flight worker; false returns while it runs. */
+static void pcache_save_reap(rhi_device *dev, bool wait)
+{
+    struct pcache_save_job *j = dev->pcache_save;
+    if (!j || (!wait && !atomic_load(&j->done))) return;
+    if (j->thread) SDL_WaitThread(j->thread, NULL);
+    if (j->wrote) {
+        RHI_LOG("pipeline cache: saved %zu bytes, %zu manifest keys (first use)\n", j->n, j->kn);
+        dev->pcache_digest = j->digest;
+        dev->pcache_saved_n = j->n;
+        SDL_LockMutex(dev->pc_mx);
+        dev->pcache_keys_saved = j->kn;
+        dev->pcache_unhit -= j->unhit;
+        SDL_UnlockMutex(dev->pc_mx);
+        dev->autosave.written++;
+    } else {
+        RHI_LOG("pipeline cache: first-use save to %s failed\n", j->path);
+    }
+    free(j->buf);
+    free(j);
+    dev->pcache_save = NULL;
+}
+
+/** @brief Snapshot the cache and its keys and hand the snapshot to a save worker.
+ *
+ * Display owner only. Skipped when the cache's byte count equals the last
+ * saved one (a same-size change waits for the digest compare at shutdown).
+ * The worker computes the envelope digest and replaces the file; a worker
+ * that cannot be started runs inline.
+ * @param dev Device, with no save in flight. */
+static void pcache_save_start(rhi_device *dev)
+{
+    size_t n = 0;
+    if (vkGetPipelineCacheData(dev->device, dev->pcache, &n, NULL) != VK_SUCCESS ||
+        n == 0 || n > UINT32_MAX)
+        return;
+    if (n == dev->pcache_saved_n) { dev->autosave.same_size++; return; }
+    struct pcache_save_job *j = calloc(1, sizeof(*j));
+    if (!j) return;
+    SDL_LockMutex(dev->pc_mx);
+    j->kn = dev->pc_keys.n;
+    j->unhit = dev->pcache_unhit;
+    j->buf = malloc(sizeof(struct pcache_envelope) + n + 8u * j->kn);
+    if (j->buf) j->kc = pcache_copy_keys(dev, j->buf + sizeof(struct pcache_envelope) + n);
+    SDL_UnlockMutex(dev->pc_mx);
+    const size_t cap_n = n;
+    if (!j->buf || vkGetPipelineCacheData(dev->device, dev->pcache, &n,
+                                          j->buf + sizeof(struct pcache_envelope)) != VK_SUCCESS ||
+        n != cap_n) {
+        free(j->buf);
+        free(j);
+        dev->pcache_fu_pending = true;   /* the cache grew under the copy: retry */
+        return;
+    }
+    j->n = n;
+    j->driver_version = pcache_driver_version(dev);
+    snprintf(j->path, sizeof j->path, "%s", dev->pcache_path);
+    dev->pcache_save = j;
+    dev->autosave.started++;
+    j->thread = SDL_CreateThread(pcache_save_worker, "openpete-pcache-save", j);
+    if (!j->thread) pcache_save_worker(j);
+}
+
+/* Frames with no first-use cache miss before the debounced save runs. */
+#define PCACHE_SAVE_QUIET_FRAMES 120u
+
+/** @brief Run the debounced first-use cache save: reap a finished save, and start one once first-use misses have been quiet for PCACHE_SAVE_QUIET_FRAMES begun frames.
+ *
+ * Display owner only; called at every begun frame. A first-use create not
+ * reported a cache hit, on any thread, counts in dev->pcache_fu_misses
+ * (pipe_create_record); each new count restarts the quiet period.
+ * @param dev Device. */
+static void pcache_autosave(rhi_device *dev)
+{
+    pcache_save_reap(dev, false);
+    if (!dev->pcache || !dev->pcache_path[0] || !s_pcache_write) return;
+    const unsigned m = atomic_load_explicit(&dev->pcache_fu_misses, memory_order_relaxed);
+    if (m != dev->pcache_fu_seen) {
+        dev->pcache_fu_seen = m;
+        dev->pcache_fu_serial = s_frame_serial;
+        dev->pcache_fu_pending = true;
+        return;
+    }
+    if (!dev->pcache_fu_pending || dev->pcache_save ||
+        s_frame_serial - dev->pcache_fu_serial < PCACHE_SAVE_QUIET_FRAMES)
+        return;
+    dev->pcache_fu_pending = false;
+    dev->autosave.triggers++;
+    pcache_save_start(dev);
+}
+
+void rhi_pcache_autosave_stats_get(const rhi_device *dev, rhi_pcache_autosave_stats *out)
+{
+    *out = dev ? dev->autosave : (rhi_pcache_autosave_stats){0};
+}
+
+/** @brief Join an in-flight first-use save, save the pipeline cache when it changed (pipeline_cache_save), then destroy it.
+ *
+ * The join comes first, so an older snapshot never replaces the final save.
  * @param dev Device, idle. */
 static void pipeline_cache_close(rhi_device *dev)
 {
+    if (dev->pcache_save) {
+        dev->autosave.joined_at_shutdown++;
+        pcache_save_reap(dev, true);
+    }
     if (!dev->pcache) return;
     pipeline_cache_save(dev, "shutdown");
+    const rhi_pcache_autosave_stats *a = &dev->autosave;
+    RHI_LOG("pipeline cache autosave: triggers=%u same_size=%u started=%u written=%u "
+            "joined_at_shutdown=%u\n", a->triggers, a->same_size, a->started, a->written,
+            a->joined_at_shutdown);
     vkDestroyPipelineCache(dev->device, dev->pcache, NULL);
     dev->pcache = VK_NULL_HANDLE;
     rhi_pc_keyset_free(&dev->pc_keys);
@@ -3324,6 +3547,7 @@ void rhi_destroy(rhi_device *dev)
         if (rm) rm(dev->instance, dev->debug, NULL);
     }
     if (dev->instance) vkDestroyInstance(dev->instance, NULL);
+    SDL_DestroyMutex(dev->pc_mx);
     free(dev);
 }
 
@@ -3707,6 +3931,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     s_frame_serial++;
     census_frame();
     retired_reclaim(dev, false);
+    pcache_autosave(dev);
     dev->pair_used[dev->frame] = 0;   /* the slot's pair sets have retired */
     dev->cur_layout = VK_NULL_HANDLE; /* a layout bound last frame may be retired */
     dev->frame_active = true;
@@ -5997,11 +6222,25 @@ bool rhi_depth_reversed(const rhi_device *dev)
  * paint discards. */
 static VkBool32 s_vs_affine_uv = VK_FALSE;
 
+/* Variant epoch (rhi_pipe_variant_epoch): bumped by each variant setter that
+ * changes its value. */
+static _Atomic uint32_t s_variant_epoch = 1;
+
+/** @brief Store a variant static and bump the variant epoch when the value changes.
+ *
+ * @param slot The static.
+ * @param v The new value. */
+static void variant_store(VkBool32 *slot, VkBool32 v)
+{
+    if (*slot != v) atomic_fetch_add(&s_variant_epoch, 1u);
+    *slot = v;
+}
+
 int rhi_depth_format(const rhi_device *dev) { return dev ? (int)dev->depth_format : 0; }
 
 unsigned rhi_depth_pipelines_by_compare(const rhi_device *dev, int compare_op)
 {
-    return (dev && compare_op >= 0 && compare_op < 8) ? dev->pipes_by_cmp[compare_op] : 0u;
+    return (dev && compare_op >= 0 && compare_op < 8) ? atomic_load(&dev->pipes_by_cmp[compare_op]) : 0u;
 }
 
 void rhi_depth_report(const rhi_device *dev)
@@ -6013,11 +6252,11 @@ void rhi_depth_report(const rhi_device *dev)
             dev->depth_rev[RHI_DEPTH_SCENE] ? "reversed 1/vz" : "forward 1-1/vz",
             (int)dev->depth_cmp[RHI_DEPTH_SCENE], (double)dev->depth_clear[RHI_DEPTH_SCENE],
             (int)dev->depth_cmp[RHI_DEPTH_FORWARD], (double)dev->depth_clear[RHI_DEPTH_FORWARD],
-            dev->pipes_by_cmp[VK_COMPARE_OP_LESS_OR_EQUAL],
-            dev->pipes_by_cmp[VK_COMPARE_OP_GREATER_OR_EQUAL],
-            dev->pipes_by_cmp[VK_COMPARE_OP_ALWAYS]);
+            atomic_load(&dev->pipes_by_cmp[VK_COMPARE_OP_LESS_OR_EQUAL]),
+            atomic_load(&dev->pipes_by_cmp[VK_COMPARE_OP_GREATER_OR_EQUAL]),
+            atomic_load(&dev->pipes_by_cmp[VK_COMPARE_OP_ALWAYS]));
 }
-void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
+void rhi_set_affine_uv(int on) { variant_store(&s_vs_affine_uv, on ? VK_TRUE : VK_FALSE); }
 
 /* Fragment-stage specialization constant 2 (`NOTEX`): untextured lighting
  * view - the textured scene fragments replace the sampled texel colour with
@@ -6025,14 +6264,18 @@ void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
  * vertex colour while transparency cutouts keep their real texel shapes.
  * Debug view; live toggle via rhi_rebuild_pipelines like the others. */
 static VkBool32 s_fs_notex = VK_FALSE;
-void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
+void rhi_set_notex(int on) { variant_store(&s_fs_notex, on ? VK_TRUE : VK_FALSE); }
 
 /* Wireframe view (rhi.h rhi_set_wireframe): the scene pipelines rasterize
  * as lines and bake NOTEX on. Captured at pipeline creation like the
  * specialization constants, so a live change rebuilds every pipeline in
  * place (rhi_rebuild_pipelines); there is no second pipeline set. */
 static bool s_wireframe = false;
-void rhi_set_wireframe(int on) { s_wireframe = on != 0; }
+void rhi_set_wireframe(int on)
+{
+    if (s_wireframe != (on != 0)) atomic_fetch_add(&s_variant_epoch, 1u);
+    s_wireframe = on != 0;
+}
 
 /** @brief Return whether a pipeline rasterizes as lines when the wireframe view is in the given state.
  *
@@ -6057,7 +6300,7 @@ static bool pipeline_wire_view(const rhi_pipeline_desc *desc, bool wireframe)
  * 0 restores og's painter for A/B. Live toggle via rhi_rebuild_pipelines
  * like the others. */
 static VkBool32 s_fs_moby_truescope = VK_TRUE;
-void rhi_set_moby_truescope(int on) { s_fs_moby_truescope = on ? VK_TRUE : VK_FALSE; }
+void rhi_set_moby_truescope(int on) { variant_store(&s_fs_moby_truescope, on ? VK_TRUE : VK_FALSE); }
 
 /* Fragment-stage specialization constant 4 (`SLOT_CONTEST`): the key
  * contest compares 128-world ordering-table slot indices instead of world
@@ -6306,64 +6549,70 @@ static rhi_pc_phase pipe_phase_now(void)
     if (t_pipe_phase == RHI_PIPE_PHASE_PROBE) return RHI_PC_PHASE_PROBE;
     if (t_in_rebuild) return RHI_PC_PHASE_REBUILD;
     if (t_pipe_phase == RHI_PIPE_PHASE_PRECOMPILE) return RHI_PC_PHASE_PRECOMPILE;
-    return (s_first_frame_done || s_precompile_done) ? RHI_PC_PHASE_FIRST_USE
+    return (atomic_load(&s_first_frame_done) || atomic_load(&s_precompile_done)) ? RHI_PC_PHASE_FIRST_USE
                                                      : RHI_PC_PHASE_BRINGUP;
 }
 
 /** @brief Count one vkCreateGraphicsPipelines call in the resource census and the pipeline-create instruments.
  *
- * The cache reading is the feedback's APPLICATION_PIPELINE_CACHE_HIT bit
- * when the feedback is marked valid, else unknown. The present a
- * display-owner create delays is the frame being recorded, or the next one
- * outside a frame.
+ * Any thread. The cache reading is the feedback's
+ * APPLICATION_PIPELINE_CACHE_HIT bit when the feedback is marked valid, else
+ * unknown. The present a display-owner create delays is the frame being
+ * recorded, or the next one outside a frame; a create on another thread
+ * delays none and records 0. A first-use create not reported a hit arms the
+ * debounced cache save (pcache_autosave).
  * @param dev Device the pipeline was created on.
- * @param p The pipeline whose desc and stage sources were compiled.
+ * @param job The job whose desc and stage sources were compiled.
  * @param fb Its creation feedback.
  * @param wall_ns Time inside the call. */
-static void pipe_create_record(const rhi_device *dev, const rhi_pipeline *p,
+static void pipe_create_record(rhi_device *dev, const rhi_compile_job *job,
                                const pipe_feedback *fb, uint64_t wall_ns)
 {
-    s_census.pipe_builds++;
-    s_census.pipe_ns += wall_ns;
+    atomic_fetch_add_explicit(&s_census.pipe_builds, 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s_census.pipe_ns, wall_ns, memory_order_relaxed);
     const bool valid = (fb->pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT_EXT) != 0;
     const bool hit = (fb->pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT) != 0;
+    const SDL_ThreadID owner_id = atomic_load(&s_display_owner);
+    const bool owner = !owner_id || SDL_GetCurrentThreadID() == owner_id;
     const rhi_pc_create c = {
         .phase = pipe_phase_now(),
-        .site = rhi_pc_site_of(&p->desc, p->vert_words || p->frag_words),
+        .site = rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words),
         .fb = !valid ? RHI_PC_FB_UNKNOWN : hit ? RHI_PC_FB_HIT : RHI_PC_FB_MISS,
-        .owner = !s_display_owner || SDL_GetCurrentThreadID() == s_display_owner,
-        .present = s_frame_serial + (dev->frame_active ? 0u : 1u),
+        .owner = owner,
+        .present = owner ? s_frame_serial + (dev->frame_active ? 0u : 1u) : 0u,
         .wall_ns = wall_ns,
         .driver_ns = valid ? fb->pipe.duration : 0u,
     };
     rhi_pc_record_create(&c);
+    if (c.phase == RHI_PC_PHASE_FIRST_USE && c.fb != RHI_PC_FB_HIT)
+        atomic_fetch_add_explicit(&dev->pcache_fu_misses, 1u, memory_order_relaxed);
 }
 
-/** @brief Describe the create info a pipeline gets in a given view: the dedupe fields, the constants each stage receives and the polygon mode.
+/** @brief Describe the create info a pipeline gets for a variant: the dedupe fields, the constants each stage receives and the polygon mode.
  *
  * A pipeline the wireframe view selects (pipeline_wire_view) rasterizes as
  * lines when the device has fillModeNonSolid and bakes NOTEX on, so its
- * edges carry the gouraud vertex colour; NOTEX is otherwise the view's. A
- * constant no stage of the pipeline declares is not handed over and reads 0
- * here. The stage hashes and declared constant ids are those its last
- * compile recorded.
+ * edges carry the gouraud vertex colour; NOTEX is otherwise the variant's.
+ * A constant no stage of the pipeline declares is not handed over and reads
+ * 0 here. Reads only the arguments and device fields fixed at device
+ * creation, so any thread may call it.
  * @param dev Device the pipeline lives on.
- * @param p The pipeline, compiled at least once.
- * @param affine Texture mapping is affine (AFFINE_UV).
- * @param notex The untextured view is on.
- * @param wire The wireframe view is on.
- * @param v Receives the variant. */
-static void pipe_variant_view(const rhi_device *dev, const rhi_pipeline *p, bool affine,
-                              bool notex, bool wire, rhi_pc_variant *v)
+ * @param d Its description.
+ * @param info Its stage facts.
+ * @param var The variant.
+ * @param slot_contest SLOT_CONTEST's value.
+ * @param v Receives the variant's create-info description. */
+static void pipe_variant_view(const rhi_device *dev, const rhi_pipeline_desc *d,
+                              const pipe_stage_info *info, rhi_pipe_variant var,
+                              VkBool32 slot_contest, rhi_pc_variant *v)
 {
-    const rhi_pipeline_desc *d = &p->desc;
-    const bool w = pipeline_wire_view(d, wire);
-    const uint32_t c[6] = { dev->depth_rev[d->depth_class], affine, (notex || w) ? 1u : 0u,
-                            s_fs_moby_truescope, s_fs_slot_contest,
+    const bool w = pipeline_wire_view(d, var.wireframe);
+    const uint32_t c[6] = { dev->depth_rev[d->depth_class], var.affine,
+                            (var.notex || w) ? 1u : 0u, var.truescope, slot_contest,
                             (uint32_t)d->texel_stp_select };
     *v = (rhi_pc_variant){
-        .desc_hash = p->desc_hash, .vs_hash = p->vs_hash, .fs_hash = p->fs_hash,
-        .declared = p->vs_ids | p->fs_ids,
+        .desc_hash = info->desc_hash, .vs_hash = info->vs_hash, .fs_hash = info->fs_hash,
+        .declared = info->vs_ids | info->fs_ids,
         .poly_mode = (uint32_t)((w && dev->has_fill_non_solid) ? VK_POLYGON_MODE_LINE
                                                                : VK_POLYGON_MODE_FILL),
         .render_pass = (uint64_t)(uintptr_t)dev->off_rp,
@@ -6371,14 +6620,27 @@ static void pipe_variant_view(const rhi_device *dev, const rhi_pipeline *p, bool
     for (int i = 0; i < 6; i++) v->consts[i] = ((v->declared >> i) & 1u) ? c[i] : 0u;
 }
 
-/** @brief Describe the create info a pipeline gets under the current variant statics.
- *
- * @param dev Device the pipeline lives on.
- * @param p The pipeline, compiled at least once.
- * @param v Receives the variant. */
-static void pipe_variant_now(const rhi_device *dev, const rhi_pipeline *p, rhi_pc_variant *v)
+rhi_pipe_variant rhi_pipe_variant_current(void)
 {
-    pipe_variant_view(dev, p, s_vs_affine_uv != VK_FALSE, s_fs_notex != VK_FALSE, s_wireframe, v);
+    return (rhi_pipe_variant){ .affine = s_vs_affine_uv != VK_FALSE,
+                               .notex = s_fs_notex != VK_FALSE,
+                               .wireframe = s_wireframe,
+                               .truescope = s_fs_moby_truescope != VK_FALSE };
+}
+
+uint32_t rhi_pipe_variant_epoch(void) { return atomic_load(&s_variant_epoch); }
+
+/** @brief Describe the create info a registered pipeline gets for a variant.
+ *
+ * Display owner only: SLOT_CONTEST is read from its static.
+ * @param dev Device the pipeline lives on.
+ * @param p The pipeline.
+ * @param var The variant.
+ * @param v Receives the variant's create-info description. */
+static void pipe_variant_of(const rhi_device *dev, const rhi_pipeline *p, rhi_pipe_variant var,
+                            rhi_pc_variant *v)
+{
+    pipe_variant_view(dev, &p->desc, &p->info, var, s_fs_slot_contest, v);
 }
 
 /** @brief Return the key manifest's key of a variant: its dedupe key with the render pass left out, which is per device and not stable across runs.
@@ -6398,6 +6660,17 @@ static const bool k_pipe_views[6][3] = {
     { true, true, false },   { false, false, true }, { true, false, true },
 };
 
+/** @brief Return a view of the variant walk as a variant, MOBY_TRUESCOPE at its current value.
+ *
+ * @param view Index into k_pipe_views.
+ * @return The variant. */
+static rhi_pipe_variant pipe_view_variant(int view)
+{
+    return (rhi_pipe_variant){ .affine = k_pipe_views[view][0], .notex = k_pipe_views[view][1],
+                               .wireframe = k_pipe_views[view][2],
+                               .truescope = s_fs_moby_truescope != VK_FALSE };
+}
+
 /** @brief Add a new pipeline base and its six reachable variant create infos to the census row.
  *
  * The variants are texture mapping (perspective, affine) by view (textured,
@@ -6409,8 +6682,7 @@ static void census_add_base(const rhi_device *dev, const rhi_pipeline *p)
 {
     if (!rhi_pc_level()) return;
     rhi_pc_variant v[6];
-    for (int i = 0; i < 6; i++)
-        pipe_variant_view(dev, p, k_pipe_views[i][0], k_pipe_views[i][1], k_pipe_views[i][2], &v[i]);
+    for (int i = 0; i < 6; i++) pipe_variant_of(dev, p, pipe_view_variant(i), &v[i]);
     rhi_pc_add_base(rhi_pc_site_of(&p->desc, p->vert_words || p->frag_words), v, 6);
 }
 
@@ -6443,35 +6715,22 @@ static const VkSpecializationInfo *stage_spec_fill(stage_spec *s, uint32_t ids, 
     return n ? &s->info : NULL;
 }
 
-/** @brief Create a pipeline's two shader modules, recording each stage's content hash and declared constant ids on first use.
+/** @brief Create a job's two shader modules from its resolved stage bytes.
  *
+ * Any thread: reads only the job.
  * @param dev Device.
- * @param p Pipeline whose stored sources are read and whose vs_hash,
- *          fs_hash, vs_ids, fs_ids and desc_hash are written.
+ * @param job The job.
  * @param vs Receives the vertex module.
  * @param fs Receives the fragment module.
  * @return true when both modules exist; on false neither is left alive. */
-static bool pipe_stage_modules(rhi_device *dev, rhi_pipeline *p, VkShaderModule *vs,
+static bool pipe_stage_modules(rhi_device *dev, const rhi_compile_job *job, VkShaderModule *vs,
                                VkShaderModule *fs)
 {
-    size_t vn = 0, fn = 0;
-    void *vown = NULL, *fown = NULL;
-    const void *vb = stage_bytes(p->vert_words, p->vert_n, p->desc.vert_spv, &vn, &vown);
-    const void *fb = stage_bytes(p->frag_words, p->frag_n, p->desc.frag_spv, &fn, &fown);
-    if (!p->stage_info) {
-        p->desc_hash = rhi_pc_desc_hash(&p->desc);
-        p->vs_hash = rhi_pc_bytes_hash(vb, vn);
-        p->fs_hash = rhi_pc_bytes_hash(fb, fn);
-        p->vs_ids = rhi_pc_spec_ids(vb, vn);
-        p->fs_ids = rhi_pc_spec_ids(fb, fn);
-        p->stage_info = true;
-    }
-    *vs = vb ? create_shader_module(dev, vb, vn, p->desc.vert_spv ? p->desc.vert_spv : "(mod vert)")
-             : VK_NULL_HANDLE;
-    *fs = fb ? create_shader_module(dev, fb, fn, p->desc.frag_spv ? p->desc.frag_spv : "(mod frag)")
-             : VK_NULL_HANDLE;
-    free(vown);
-    free(fown);
+    const rhi_pipeline_desc *d = &job->desc;
+    *vs = job->vb ? create_shader_module(dev, job->vb, job->vbn, d->vert_spv ? d->vert_spv : "(mod vert)")
+                  : VK_NULL_HANDLE;
+    *fs = job->fb ? create_shader_module(dev, job->fb, job->fbn, d->frag_spv ? d->frag_spv : "(mod frag)")
+                  : VK_NULL_HANDLE;
     if (*vs && *fs) return true;
     if (*vs) vkDestroyShaderModule(dev->device, *vs, NULL);
     if (*fs) vkDestroyShaderModule(dev->device, *fs, NULL);
@@ -6498,37 +6757,32 @@ static int pipeline_create_failed(rhi_device *dev, VkResult r, VkPipeline pipeli
     return uncached ? 1 : -1;
 }
 
-/** @brief Compile a pipeline's Vulkan pipeline and layout from its stored desc and shader sources.
+/** @brief Compile a job's Vulkan pipeline and layout from its desc, resolved stage bytes and variant.
  *
- * The shaders come from the stored mod SPIR-V words when present, else from
- * the desc's .spv names. The rhi_pipeline's live handles are not touched: the
- * create path assigns the result to a fresh pipeline, the rebuild path swaps
- * it into a live one only on success, and the precompile destroys it. Each
- * stage receives only the specialization constants it declares, with the
- * values pipe_variant_now reads from the variant statics at this call. The
- * create carries a creation-feedback chain when the extension is enabled and
- * is counted by pipe_create_record; a successful create adds its manifest
- * key to dev->pc_keys.
+ * Any thread: reads the job, the device fields fixed at device creation and
+ * the pipeline cache (internally synchronized); writes only the job's
+ * result and the atomic or locked instruments. Each stage receives only the
+ * specialization constants it declares, with the values the job's variant
+ * and SLOT_CONTEST give. The create carries a creation-feedback chain when
+ * the extension is enabled and is counted by pipe_create_record; a
+ * successful create adds its manifest key to dev->pc_keys under dev->pc_mx.
  * @param dev Device the objects are created on.
- * @param p Pipeline whose desc and shader sources are compiled.
+ * @param job The job; job->out receives the pipeline, layout,
+ *            push-constant stage flags and dedupe key on success.
  * @param flags Pipeline create flags (the probe's FAIL_ON_PIPELINE_COMPILE_REQUIRED).
  * @param variant True for a precompile variant, which the depth report's
  *                per-compare count leaves out.
- * @param out_pipe Receives the pipeline on success.
- * @param out_layout Receives the pipeline layout on success.
- * @param out_key Receives the variant's dedupe key.
  * @return 0 on success, 1 when a probe found the create info uncached,
  *         -1 on failure. */
-static int pipeline_compile(rhi_device *dev, rhi_pipeline *p, VkPipelineCreateFlags flags,
-                            bool variant, VkPipeline *out_pipe, VkPipelineLayout *out_layout,
-                            uint64_t *out_key)
+static int pipeline_compile(rhi_device *dev, rhi_compile_job *job, VkPipelineCreateFlags flags,
+                            bool variant)
 {
-    const rhi_pipeline_desc *desc = &p->desc;
+    const rhi_pipeline_desc *desc = &job->desc;
     VkShaderModule vs, fs;
-    if (!pipe_stage_modules(dev, p, &vs, &fs)) return -1;
+    if (!pipe_stage_modules(dev, job, &vs, &fs)) return -1;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     rhi_pc_variant var;
-    pipe_variant_now(dev, p, &var);
+    pipe_variant_view(dev, desc, &job->info, job->variant, job->slot_contest, &var);
     /* Constant values before declaration masking: 0 DEPTH_REVERSED (per depth
      * class), 1 AFFINE_UV, 2 NOTEX, 3 MOBY_TRUESCOPE, 4 SLOT_CONTEST,
      * 5 STP_SELECT (the desc's texel STP selection of psx_scene.frag). The
@@ -6541,10 +6795,10 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p, VkPipelineCreateFl
     VkPipelineShaderStageCreateInfo stages[2] = {
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vs, .pName = "main",
-          .pSpecializationInfo = stage_spec_fill(&vspec, p->vs_ids, cvals) },
+          .pSpecializationInfo = stage_spec_fill(&vspec, job->info.vs_ids, cvals) },
         { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
           .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main",
-          .pSpecializationInfo = stage_spec_fill(&fspec, p->fs_ids, cvals) },
+          .pSpecializationInfo = stage_spec_fill(&fspec, job->info.fs_ids, cvals) },
     };
     VkVertexInputBindingDescription bind = {
         .binding = 0, .stride = sizeof(rhi_vertex),
@@ -6651,7 +6905,9 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p, VkPipelineCreateFl
      * depthTestEnable is VK_FALSE. */
     const VkCompareOp cmp = desc->depth_overwrite ? VK_COMPARE_OP_ALWAYS
                                                   : dev->depth_cmp[desc->depth_class];
-    if (!variant) dev->pipes_by_cmp[cmp] += (unsigned)desc->depth_test;
+    if (!variant)
+        atomic_fetch_add_explicit(&dev->pipes_by_cmp[cmp], (unsigned)desc->depth_test,
+                                  memory_order_relaxed);
     VkPipelineDepthStencilStateCreateInfo dss = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable  = desc->depth_test ? VK_TRUE : VK_FALSE,
@@ -6732,7 +6988,6 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p, VkPipelineCreateFl
         vkDestroyShaderModule(dev->device, fs, NULL);
         return -1;
     }
-    p->pc_stages = desc->push_const_size ? pcr.stageFlags : 0;
     VkGraphicsPipelineCreateInfo gp = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .stageCount = 2, .pStages = stages,
@@ -6754,25 +7009,254 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p, VkPipelineCreateFl
     gp.pNext = pipe_feedback_chain(dev, &fb);
     const Uint64 pipe_t0 = SDL_GetTicksNS();
     VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, &pipeline);
-    pipe_create_record(dev, p, &fb, SDL_GetTicksNS() - pipe_t0);
+    pipe_create_record(dev, job, &fb, SDL_GetTicksNS() - pipe_t0);
     vkDestroyShaderModule(dev->device, vs, NULL);
     vkDestroyShaderModule(dev->device, fs, NULL);
     if (r != VK_SUCCESS) return pipeline_create_failed(dev, r, pipeline, layout);
+    SDL_LockMutex(dev->pc_mx);
     rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key(&var));
     dev->pcache_unhit += !(fb.pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
-    *out_key = rhi_pc_variant_key(&var);
-    *out_pipe = pipeline;
-    *out_layout = layout;
+    SDL_UnlockMutex(dev->pc_mx);
+    job->out = (pipe_compiled){ .pipeline = pipeline, .layout = layout,
+                                .pc_stages = desc->push_const_size ? pcr.stageFlags : 0,
+                                .key = rhi_pc_variant_key(&var) };
     return 0;
 }
 
-/** @brief Create a pipeline: copy its shader sources, compile it, and link it into the device's rebuild registry.
+/** @brief Free a compile job's owned copies and the job; its result is left to the caller.
  *
- * The pipeline keeps owned copies of its desc and shader sources, which
- * rhi_rebuild_pipelines recompiles from. Word buffers (mod SPIR-V) take
- * precedence over the desc's filenames; a stage given words has its
- * filename cleared. The new pipeline is pushed at the head of
- * dev->pipes_head.
+ * @param job The job, or NULL. */
+static void job_free(rhi_compile_job *job)
+{
+    if (!job) return;
+    free(job->vert_name); free(job->frag_name);
+    free(job->vert_words); free(job->frag_words);
+    free(job->vown); free(job->fown);
+    free(job);
+}
+
+/** @brief Copy one stage's source into a job: SPIR-V words, else the .spv name.
+ *
+ * @param words Stage words, or NULL.
+ * @param n Their count.
+ * @param name The desc's .spv name, or NULL.
+ * @param out_words Receives the word copy.
+ * @param out_n Receives the word count.
+ * @param out_name Receives the name copy.
+ * @return false on allocation failure. */
+static bool job_copy_stage(const uint32_t *words, size_t n, const char *name,
+                           uint32_t **out_words, size_t *out_n, char **out_name)
+{
+    if (words && n) {
+        *out_words = malloc(n * 4);
+        if (!*out_words) return false;
+        memcpy(*out_words, words, n * 4);
+        *out_n = n;
+        return true;
+    }
+    if (!name) return true;
+    *out_name = strdup(name);
+    return *out_name != NULL;
+}
+
+/** @brief Make a job holding copies of a desc and its stage sources, with its stage bytes resolved.
+ *
+ * Display owner only: stage_bytes reads OPENPETE_SHADER_DIR and its file
+ * here, and the census level is latched here, so the job's run reads no
+ * environment and no file. A stage given words has its .spv
+ * name cleared from the desc copy.
+ * @param desc Pipeline description.
+ * @param vert_words Vertex words, or NULL.
+ * @param vert_n Their count.
+ * @param frag_words Fragment words, or NULL.
+ * @param frag_n Their count.
+ * @param variant Variant the job compiles for.
+ * @param generation The enqueuer's slot generation.
+ * @param epoch The variant epoch.
+ * @return The job, or NULL on allocation failure or a stage with no source. */
+static rhi_compile_job *job_make(const rhi_pipeline_desc *desc,
+                                 const uint32_t *vert_words, size_t vert_n,
+                                 const uint32_t *frag_words, size_t frag_n,
+                                 rhi_pipe_variant variant, uint32_t generation, uint32_t epoch)
+{
+    rhi_compile_job *job = calloc(1, sizeof(*job));
+    if (!job) return NULL;
+    job->desc = *desc;
+    if (!job_copy_stage(vert_words, vert_n, desc->vert_spv, &job->vert_words, &job->vert_n,
+                        &job->vert_name) ||
+        !job_copy_stage(frag_words, frag_n, desc->frag_spv, &job->frag_words, &job->frag_n,
+                        &job->frag_name)) {
+        job_free(job);
+        return NULL;
+    }
+    job->desc.vert_spv = job->vert_name;
+    job->desc.frag_spv = job->frag_name;
+    job->vb = stage_bytes(job->vert_words, job->vert_n, job->vert_name, &job->vbn, &job->vown);
+    job->fb = stage_bytes(job->frag_words, job->frag_n, job->frag_name, &job->fbn, &job->fown);
+    if (!job->vb || !job->fb) {
+        job_free(job);
+        return NULL;
+    }
+    (void)rhi_pc_level();   /* latch OPENPETE_PIPE_CENSUS here, never in a run */
+    job->variant = variant;
+    job->slot_contest = s_fs_slot_contest;
+    job->generation = generation;
+    job->epoch = epoch;
+    return job;
+}
+
+rhi_compile_job *rhi_compile_job_new(rhi_device *dev, const rhi_pipeline_desc *desc,
+                                     const uint32_t *vert_words, size_t vert_n,
+                                     const uint32_t *frag_words, size_t frag_n,
+                                     rhi_pipe_variant variant, uint32_t generation,
+                                     uint32_t epoch)
+{
+    if (!dev || !desc) return NULL;
+    seam_check("compile_job_new");   /* stage resolution reads the environment and files */
+    rhi_compile_job *job = job_make(desc, vert_words, vert_n, frag_words, frag_n, variant,
+                                    generation, epoch);
+    if (!job) return NULL;
+    job->info = (pipe_stage_info){
+        .desc_hash = rhi_pc_desc_hash(&job->desc),
+        .vs_hash = rhi_pc_bytes_hash(job->vb, job->vbn),
+        .fs_hash = rhi_pc_bytes_hash(job->fb, job->fbn),
+        .vs_ids = rhi_pc_spec_ids(job->vb, job->vbn),
+        .fs_ids = rhi_pc_spec_ids(job->fb, job->fbn),
+    };
+    return job;
+}
+
+rhi_compile_job *rhi_compile_job_of(rhi_device *dev, const rhi_pipeline *pipe,
+                                    rhi_pipe_variant variant, uint32_t generation,
+                                    uint32_t epoch)
+{
+    if (!dev || !pipe) return NULL;
+    seam_check("compile_job_of");   /* the registry and stage resolution are the display owner's */
+    rhi_compile_job *job = job_make(&pipe->desc, pipe->vert_words, pipe->vert_n,
+                                    pipe->frag_words, pipe->frag_n, variant, generation, epoch);
+    if (job) job->info = pipe->info;
+    return job;
+}
+
+int rhi_compile_job_run(rhi_device *dev, rhi_compile_job *job, unsigned flags)
+{
+    if (!dev || !job) return -1;
+    if (job->out.pipeline) return 0;
+    const VkPipelineCreateFlags vf = (flags & RHI_COMPILE_PROBE)
+        ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT : 0;
+    return pipeline_compile(dev, job, vf, (flags & RHI_COMPILE_VARIANT) != 0);
+}
+
+uint32_t rhi_compile_job_generation(const rhi_compile_job *job) { return job ? job->generation : 0u; }
+uint32_t rhi_compile_job_epoch(const rhi_compile_job *job) { return job ? job->epoch : 0u; }
+
+void rhi_compile_job_discard(rhi_device *dev, rhi_compile_job *job)
+{
+    if (!job) return;
+    if (dev && job->out.pipeline) vkDestroyPipeline(dev->device, job->out.pipeline, NULL);
+    if (dev && job->out.layout)   vkDestroyPipelineLayout(dev->device, job->out.layout, NULL);
+    job_free(job);
+}
+
+/** @brief Link a pipeline at the head of the device's rebuild registry.
+ *
+ * Display owner only (checked).
+ * @param dev Device.
+ * @param p The pipeline, not linked. */
+static void registry_link(rhi_device *dev, rhi_pipeline *p)
+{
+    seam_check("pipeline_link");
+    p->prev = NULL;
+    p->next = dev->pipes_head;
+    if (p->next) p->next->prev = p;
+    dev->pipes_head = p;
+}
+
+/** @brief Unlink a pipeline from the device's rebuild registry.
+ *
+ * Display owner only (checked). A pipeline with no prev is the head.
+ * @param dev Device.
+ * @param p The pipeline, linked. */
+static void registry_unlink(rhi_device *dev, rhi_pipeline *p)
+{
+    seam_check("pipeline_unlink");
+    if (p->prev) p->prev->next = p->next;
+    else         dev->pipes_head = p->next;
+    if (p->next) p->next->prev = p->prev;
+    p->prev = p->next = NULL;
+}
+
+/** @brief Free a pipeline's owned stage copies and the struct; its Vulkan objects are left to the caller.
+ *
+ * @param p The pipeline, unlinked. */
+static void pipeline_free(rhi_pipeline *p)
+{
+    free(p->vert_name); free(p->frag_name);
+    free(p->vert_words); free(p->frag_words);
+    free(p);
+}
+
+rhi_pipeline *rhi_compile_job_install(rhi_device *dev, rhi_compile_job *job)
+{
+    if (!dev || !job) return NULL;
+    if (!job->out.pipeline) {
+        rhi_compile_job_discard(dev, job);
+        return NULL;
+    }
+    rhi_pipeline *p = calloc(1, sizeof(*p));
+    if (!p) {
+        rhi_compile_job_discard(dev, job);
+        return NULL;
+    }
+    p->desc = job->desc;
+    p->vert_name = job->vert_name;   p->frag_name = job->frag_name;
+    p->vert_words = job->vert_words; p->frag_words = job->frag_words;
+    p->vert_n = job->vert_n;         p->frag_n = job->frag_n;
+    job->vert_name = job->frag_name = NULL;
+    job->vert_words = job->frag_words = NULL;
+    p->info = job->info;
+    p->pipeline = job->out.pipeline;
+    p->layout = job->out.layout;
+    p->pc_stages = job->out.pc_stages;
+    p->vkey = job->out.key;
+    job_free(job);
+    census_add_base(dev, p);
+    registry_link(dev, p);
+    return p;
+}
+
+/** @brief Retire a pipeline and layout by frame serial: destroyed once every frame that may have bound them has retired.
+ *
+ * An allocation failure waits the device idle and destroys them at once.
+ * @param dev Device.
+ * @param pipeline The pipeline, or VK_NULL_HANDLE.
+ * @param layout The layout, or VK_NULL_HANDLE. */
+static void retire_objects(rhi_device *dev, VkPipeline pipeline, VkPipelineLayout layout)
+{
+    struct rhi_retired_pipe *r = calloc(1, sizeof(*r));
+    if (r) {
+        *r = (struct rhi_retired_pipe){ dev->retired_pipes, pipeline, layout, s_frame_serial };
+        dev->retired_pipes = r;
+        return;
+    }
+    vkDeviceWaitIdle(dev->device);
+    if (pipeline) vkDestroyPipeline(dev->device, pipeline, NULL);
+    if (layout)   vkDestroyPipelineLayout(dev->device, layout, NULL);
+}
+
+void rhi_retire_pipeline(rhi_device *dev, rhi_pipeline *pipe)
+{
+    if (!dev || !pipe) return;
+    registry_unlink(dev, pipe);
+    retire_objects(dev, pipe->pipeline, pipe->layout);
+    pipeline_free(pipe);
+}
+
+/** @brief Create a pipeline on the display owner: make its job, compile it for the current variant, and install it.
+ *
+ * Word buffers (mod SPIR-V) take precedence over the desc's filenames; a
+ * stage given words has its filename cleared. The new pipeline is pushed at
+ * the head of dev->pipes_head.
  * @param dev Device the pipeline is created on.
  * @param desc Pipeline description, copied.
  * @param vert_words Vertex SPIR-V words, or NULL to use desc->vert_spv.
@@ -6785,42 +7269,12 @@ static rhi_pipeline *create_pipeline_common(rhi_device *dev,
                                             const uint32_t *vert_words, size_t vert_n,
                                             const uint32_t *frag_words, size_t frag_n)
 {
-    rhi_pipeline *p = calloc(1, sizeof(*p));
-    if (!p) return NULL;
-    p->desc = *desc;
-    if (vert_words && vert_n) {
-        p->vert_words = malloc(vert_n * 4);
-        if (!p->vert_words) goto fail;
-        memcpy(p->vert_words, vert_words, vert_n * 4);
-        p->vert_n = vert_n;
-        p->desc.vert_spv = NULL;
-    } else if (desc->vert_spv) {
-        p->vert_name = strdup(desc->vert_spv);
-        if (!p->vert_name) goto fail;
-        p->desc.vert_spv = p->vert_name;
-    }
-    if (frag_words && frag_n) {
-        p->frag_words = malloc(frag_n * 4);
-        if (!p->frag_words) goto fail;
-        memcpy(p->frag_words, frag_words, frag_n * 4);
-        p->frag_n = frag_n;
-        p->desc.frag_spv = NULL;
-    } else if (desc->frag_spv) {
-        p->frag_name = strdup(desc->frag_spv);
-        if (!p->frag_name) goto fail;
-        p->desc.frag_spv = p->frag_name;
-    }
-    if (pipeline_compile(dev, p, 0, false, &p->pipeline, &p->layout, &p->vkey) != 0) goto fail;
-    census_add_base(dev, p);
-    p->next = dev->pipes_head;
-    if (p->next) p->next->prev = p;
-    dev->pipes_head = p;
-    return p;
-fail:
-    free(p->vert_name); free(p->frag_name);
-    free(p->vert_words); free(p->frag_words);
-    free(p);
-    return NULL;
+    rhi_compile_job *job = rhi_compile_job_new(dev, desc, vert_words, vert_n, frag_words, frag_n,
+                                               rhi_pipe_variant_current(), 0u,
+                                               rhi_pipe_variant_epoch());
+    if (!job) return NULL;
+    rhi_compile_job_run(dev, job, 0);
+    return rhi_compile_job_install(dev, job);
 }
 
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc)
@@ -6846,23 +7300,21 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
  * begins (a minimized window, a lost device) do not grow the retired list.
  * @param dev Device.
  * @param p The pipeline.
- * @param np Its new pipeline.
- * @param nl Its new layout. */
-static void rebuild_swap(rhi_device *dev, rhi_pipeline *p, VkPipeline np, VkPipelineLayout nl)
+ * @param c Its new objects. */
+static void rebuild_swap(rhi_device *dev, rhi_pipeline *p, const pipe_compiled *c)
 {
     const bool unrecorded = p->swap_idle && !dev->frame_active &&
                             p->swap_serial == s_frame_serial;
-    struct rhi_retired_pipe *r = unrecorded ? NULL : calloc(1, sizeof(*r));
-    if (!r && !unrecorded) vkDeviceWaitIdle(dev->device);
-    if (r) {
-        *r = (struct rhi_retired_pipe){ dev->retired_pipes, p->pipeline, p->layout, s_frame_serial };
-        dev->retired_pipes = r;
-    } else {
+    if (unrecorded) {
         if (p->pipeline) vkDestroyPipeline(dev->device, p->pipeline, NULL);
         if (p->layout)   vkDestroyPipelineLayout(dev->device, p->layout, NULL);
+    } else {
+        retire_objects(dev, p->pipeline, p->layout);
     }
-    p->pipeline = np;
-    p->layout = nl;
+    p->pipeline = c->pipeline;
+    p->layout = c->layout;
+    p->pc_stages = c->pc_stages;
+    p->vkey = c->key;
     p->swap_serial = s_frame_serial;
     p->swap_idle = !dev->frame_active;
 }
@@ -6877,22 +7329,24 @@ int rhi_rebuild_pipelines(rhi_device *dev)
     rhi_pc_tally_get(RHI_PC_PHASE_REBUILD, &hit0, &miss0, &unk0);
     rhi_pc_rebuild_visit();
     t_in_rebuild = true;
+    const rhi_pipe_variant var = rhi_pipe_variant_current();
+    const uint32_t epoch = rhi_pipe_variant_epoch();
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
         /* A switch leaves the create info of a pipeline whose stages declare
          * none of its constants, and that it does not rasterize differently,
          * unchanged: its objects are kept. */
         rhi_pc_variant v;
-        pipe_variant_now(dev, p, &v);
+        pipe_variant_of(dev, p, var, &v);
         if (rhi_pc_variant_key(&v) == p->vkey) { unchanged++; continue; }
-        VkPipeline np = VK_NULL_HANDLE;
-        VkPipelineLayout nl = VK_NULL_HANDLE;
-        uint64_t key = 0;
-        if (pipeline_compile(dev, p, 0, false, &np, &nl, &key) != 0) {
+        rhi_compile_job *job = rhi_compile_job_of(dev, p, var, 0u, epoch);
+        if (!job || rhi_compile_job_run(dev, job, 0) != 0) {
             fails++;   /* keep the old objects: stale spec constants beat a hole */
+            rhi_compile_job_discard(dev, job);
             continue;
         }
-        rebuild_swap(dev, p, np, nl);
-        p->vkey = key;
+        rebuild_swap(dev, p, &job->out);
+        job->out = (pipe_compiled){0};
+        job_free(job);
         rebuilt++;
     }
     t_in_rebuild = false;
@@ -6915,37 +7369,41 @@ typedef struct {
 
 /** @brief Bring one non-current variant of a pipeline into the cache unless its key was seen: probe, manifest, or create, then destroy.
  *
- * The variant statics are already set to the view.
+ * The job is the pipeline's, retargeted to the variant; its result is
+ * destroyed as Vulkan objects and cleared, so the job serves the next view.
  * @param w The walk.
- * @param p The pipeline. */
-static void precompile_variant(precompile_walk *w, rhi_pipeline *p)
+ * @param p The pipeline.
+ * @param job Its compile job.
+ * @param var The variant. */
+static void precompile_variant(precompile_walk *w, const rhi_pipeline *p, rhi_compile_job *job,
+                               rhi_pipe_variant var)
 {
     rhi_device *dev = w->dev;
     rhi_pc_variant v;
-    pipe_variant_now(dev, p, &v);
+    pipe_variant_of(dev, p, var, &v);
     if (!rhi_pc_keyset_insert(&w->seen, rhi_pc_variant_key(&v))) return;
     w->st.keys++;
-    VkPipeline np = VK_NULL_HANDLE;
-    VkPipelineLayout nl = VK_NULL_HANDLE;
-    uint64_t key = 0;
+    job->variant = var;
     int r = 1;
     if (dev->has_cache_control) {
         rhi_pipe_phase_set(RHI_PIPE_PHASE_PROBE);
-        r = pipeline_compile(dev, p, VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT,
-                             true, &np, &nl, &key);
+        r = rhi_compile_job_run(dev, job, RHI_COMPILE_PROBE | RHI_COMPILE_VARIANT);
         rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
         w->st.probe_hits += r == 0;
-    } else if (dev->manifest_trusted && rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key(&v))) {
-        w->st.manifest_skips++;
-        return;
+    } else if (dev->manifest_trusted) {
+        SDL_LockMutex(dev->pc_mx);
+        const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key(&v));
+        SDL_UnlockMutex(dev->pc_mx);
+        if (listed) { w->st.manifest_skips++; return; }
     }
     if (r == 1) {
-        r = pipeline_compile(dev, p, 0, true, &np, &nl, &key);
+        r = rhi_compile_job_run(dev, job, RHI_COMPILE_VARIANT);
         w->st.created += r == 0;
     }
     w->st.failed += r < 0;
-    if (np) vkDestroyPipeline(dev->device, np, NULL);
-    if (nl) vkDestroyPipelineLayout(dev->device, nl, NULL);
+    if (job->out.pipeline) vkDestroyPipeline(dev->device, job->out.pipeline, NULL);
+    if (job->out.layout)   vkDestroyPipelineLayout(dev->device, job->out.layout, NULL);
+    job->out = (pipe_compiled){0};
     if (w->pump) w->pump(w->ctx);
 }
 
@@ -6960,17 +7418,13 @@ int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
         w.st.bases++;
         if (rhi_pc_keyset_insert(&w.seen, p->vkey)) { w.st.keys++; w.st.current++; }
     }
-    const VkBool32 aff0 = s_vs_affine_uv, notex0 = s_fs_notex;
-    const bool wire0 = s_wireframe;
-    for (int view = 0; view < 6; view++) {
-        s_vs_affine_uv = k_pipe_views[view][0] ? VK_TRUE : VK_FALSE;
-        s_fs_notex = k_pipe_views[view][1] ? VK_TRUE : VK_FALSE;
-        s_wireframe = k_pipe_views[view][2];
-        for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) precompile_variant(&w, p);
+    const uint32_t epoch = rhi_pipe_variant_epoch();
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
+        rhi_compile_job *job = rhi_compile_job_of(dev, p, pipe_view_variant(0), 0u, epoch);
+        if (!job) { w.st.failed++; continue; }
+        for (int view = 0; view < 6; view++) precompile_variant(&w, p, job, pipe_view_variant(view));
+        rhi_compile_job_discard(dev, job);
     }
-    s_vs_affine_uv = aff0;
-    s_fs_notex = notex0;
-    s_wireframe = wire0;
     rhi_pc_keyset_free(&w.seen);
     w.st.saved = pipeline_cache_save(dev, "precompile");
     w.st.ms = (double)(SDL_GetTicksNS() - t0) / 1e6;
@@ -6982,7 +7436,7 @@ int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
     return 0;
 }
 
-void rhi_pipe_precompile_done(void) { s_precompile_done = true; }
+void rhi_pipe_precompile_done(void) { atomic_store(&s_precompile_done, true); }
 
 /* ---- rhi_ubo: fixed-size uniform blocks × frame ring --------------- */
 
@@ -7313,15 +7767,10 @@ void rhi_blit_rt_to_rt(rhi_device *dev, rhi_texture *dst, rhi_texture *src)
 void rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 {
     if (!pipe) return;
-    /* Unlink from the rebuild registry (a pipeline with no prev is the head). */
-    if (pipe->prev) pipe->prev->next = pipe->next;
-    else            dev->pipes_head = pipe->next;
-    if (pipe->next) pipe->next->prev = pipe->prev;
+    registry_unlink(dev, pipe);
     if (pipe->pipeline) vkDestroyPipeline(dev->device, pipe->pipeline, NULL);
     if (pipe->layout)   vkDestroyPipelineLayout(dev->device, pipe->layout, NULL);
-    free(pipe->vert_name); free(pipe->frag_name);
-    free(pipe->vert_words); free(pipe->frag_words);
-    free(pipe);
+    pipeline_free(pipe);
 }
 
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)

@@ -1211,6 +1211,7 @@ typedef struct {
     uint32_t        uniforms_len;
     void**          pipeline_slot;
     const char*     owner;
+    unsigned        generation;  /* the slot's generation (openpete_mods_postfx_enum_at) */
 } openpete_postfx_pass_t;
 /** @brief Fill @p out with the enabled postfx passes at one insertion point, highest priority first.
  *
@@ -1302,6 +1303,7 @@ typedef struct {
     void** pipeline_portal_slot[OPENPETE_MATERIAL_PORTAL_PIPES];
     const char* owner;
     int   uniform_slot;
+    unsigned generation;  /* the material's slot generation: moves when its pipelines are retired */
 } openpete_mod_material_gpu_t;
 /** @brief Resolve a draw's provenance tag to the material override that applies.
  *
@@ -1463,6 +1465,7 @@ typedef struct {
     void**          pipeline_slot; /* cached rhi_pipeline* for this variant */
     const char*     owner;
     int             uniform_slot;  /* material-UBO block (0 = no params)    */
+    unsigned        generation;    /* the material's slot generation        */
 } openpete_mod_material_terrain_t;
 /** @brief Fill the GPU binding of one retained-terrain material bucket for one pipeline variant.
  *

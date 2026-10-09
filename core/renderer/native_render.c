@@ -15504,19 +15504,19 @@ static rhi_texture** pfx_pings(int w, int h) {
     return s_pfx_pool[victim].t;
 }
 
-/** @brief Destroy the postfx and material pipelines the mod registry retired.
+/** @brief Retire the postfx and material pipelines the mod registry retired.
  *
- * Pipelines are retired when a mod is unloaded and at shutdown. Takes up to
- * PFX_MAX_PASSES per call; later presents drain the rest. Waits the device
- * idle before destroying, only when the list is non-empty. Runs on every
- * present before the COMPOSITE-point chain. */
+ * Pipelines are retired when a mod is unloaded or hot-reloaded and at
+ * shutdown. Takes up to PFX_MAX_PASSES per call; later presents drain the
+ * rest. Each goes through rhi_retire_pipeline: unlinked and freed now, its
+ * Vulkan objects destroyed once the frames that may have bound them retire,
+ * with no device idle. Runs on every present before the COMPOSITE-point
+ * chain, on the display owner. */
 static void pfx_drain_retired(void) {
     void* dead[PFX_MAX_PASSES];
     int n = openpete_mods_postfx_take_retired(dead, PFX_MAX_PASSES);
-    if (n <= 0) return;
-    rhi_wait_idle(s_nr.dev);
     for (int i = 0; i < n; i++)
-        rhi_destroy_pipeline(s_nr.dev, (rhi_pipeline*)dead[i]);
+        rhi_retire_pipeline(s_nr.dev, (rhi_pipeline*)dead[i]);
 }
 
 /** @brief Return a postfx pass's pipeline, building it into its slot when the slot is empty.
@@ -17593,6 +17593,10 @@ void openpete_native_render_shutdown(void)
 
     if (!s_nr.enabled)
         return;
+    /* Every thread that drew is joined by now (under the thread split this
+     * runs on main after the host-loop thread's join), so the calling thread
+     * owns the display for the teardown's pipeline unlinks. */
+    rhi_display_claim(s_nr.dev);
     rhi_wait_idle(s_nr.dev);
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
     openpete_tercache_shutdown(s_nr.dev);

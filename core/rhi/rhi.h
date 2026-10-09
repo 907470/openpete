@@ -20,8 +20,9 @@
  * effects (StoreImage) read back from it, and only then is it blitted to
  * the swapchain.
  *
- * Threading: single-threaded. Every call happens on the loop that drives
- * the frame (the host fiber in openpete; main() in the smoke test).
+ * Threading: the thread that owns the display (rhi_display_claim) makes
+ * the calls; rhi_compile_job_run, rhi_compile_job_discard and the entry
+ * points documented as safe on any thread are the exceptions.
  */
 
 #include <stdbool.h>
@@ -1141,7 +1142,9 @@ rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc
 /** @brief Unlink a pipeline from the rebuild registry and free its Vulkan objects and copies.
  *
  * Destroys immediately, so the caller guarantees no submitted frame still
- * uses the pipeline (after rhi_wait_idle or during setup failure).
+ * uses the pipeline (after rhi_wait_idle or during setup failure). Display
+ * owner only: the unlink is seam-checked. A pipeline frames may still use
+ * goes through rhi_retire_pipeline instead.
  * @param dev Device that created the pipeline.
  * @param pipe Pipeline to destroy, or NULL (ignored). */
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
@@ -1361,6 +1364,152 @@ int           rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), 
 
 /** @brief Mark the precompile ended: pipeline creates after it count as first use, before the first frame too. */
 void          rhi_pipe_precompile_done(void);
+
+/* ---- variant-explicit compile jobs ------------------------------------
+ * A compile job owns every input of one pipeline compile: a copy of the
+ * desc, each stage's SPIR-V bytes resolved when the job is made (a mod
+ * stage's words copied, a built-in stage's .spv name resolved to the
+ * embedded blob, held by pointer, or to the bytes of the
+ * OPENPETE_SHADER_DIR file, read then), and the variant it compiles for.
+ * Jobs are made on the display owner (rhi_display_claim); a job runs on
+ * any thread, calls no getenv, opens no file and touches no registry; its
+ * result is a bare pipeline and layout with the push-constant stage flags,
+ * with no rhi_pipeline. Only rhi_compile_job_install, on the display
+ * owner, wraps a result in an rhi_pipeline and links it into the rebuild
+ * registry; a result never installed is destroyed by
+ * rhi_compile_job_discard on the thread holding it. */
+
+/* Variant inputs of one compile, the creation-time state the variant
+ * setters (rhi_set_affine_uv, rhi_set_notex, rhi_set_wireframe,
+ * rhi_set_moby_truescope) select for every pipeline created after them. */
+typedef struct {
+    bool affine;      /* AFFINE_UV: PSX-affine texture mapping */
+    bool notex;       /* NOTEX: the untextured view */
+    bool wireframe;   /* the wireframe view */
+    bool truescope;   /* MOBY_TRUESCOPE */
+} rhi_pipe_variant;
+
+typedef struct rhi_compile_job rhi_compile_job;
+
+/* rhi_compile_job_run flags. */
+enum {
+    RHI_COMPILE_PROBE   = 1u << 0,  /* fail instead of compiling an uncached create info */
+    RHI_COMPILE_VARIANT = 1u << 1   /* a precompile variant: left out of the depth report's count */
+};
+
+/** @brief Return the variant the setters currently select.
+ *
+ * Display owner only: the setters write it there.
+ * @return The variant. */
+rhi_pipe_variant rhi_pipe_variant_current(void);
+
+/** @brief Return the variant epoch: a counter every variant setter bumps when it changes its value.
+ *
+ * @return The epoch. */
+uint32_t      rhi_pipe_variant_epoch(void);
+
+/** @brief Make a compile job for a new pipeline.
+ *
+ * Display owner only. Copies the desc and the stage words (a stage given
+ * words has its .spv name cleared), resolves every stage to bytes (see the
+ * block comment above) and records the stages' content hashes and declared
+ * specialization constant ids.
+ * @param dev Device the job compiles on.
+ * @param desc Pipeline description, copied.
+ * @param vert_words Vertex SPIR-V words, or NULL to use desc->vert_spv.
+ * @param vert_n Word count of @p vert_words.
+ * @param frag_words Fragment SPIR-V words, or NULL to use desc->frag_spv.
+ * @param frag_n Word count of @p frag_words.
+ * @param variant Variant the job compiles for.
+ * @param generation The enqueuer's slot generation, returned by rhi_compile_job_generation.
+ * @param epoch The variant epoch the job compiles for, returned by rhi_compile_job_epoch.
+ * @return The job, or NULL on allocation failure or a stage with no source (logged). */
+rhi_compile_job *rhi_compile_job_new(rhi_device *dev, const rhi_pipeline_desc *desc,
+                                     const uint32_t *vert_words, size_t vert_n,
+                                     const uint32_t *frag_words, size_t frag_n,
+                                     rhi_pipe_variant variant, uint32_t generation,
+                                     uint32_t epoch);
+
+/** @brief Make a compile job that recompiles a registered pipeline from its stored desc and shader sources.
+ *
+ * Display owner only. The stage bytes are resolved as rhi_compile_job_new
+ * resolves them; the stage hashes and constant ids are the pipeline's.
+ * @param dev Device the pipeline lives on.
+ * @param pipe The pipeline.
+ * @param variant Variant the job compiles for.
+ * @param generation The enqueuer's slot generation.
+ * @param epoch The variant epoch the job compiles for.
+ * @return The job, or NULL on allocation failure or a stage with no source. */
+rhi_compile_job *rhi_compile_job_of(rhi_device *dev, const rhi_pipeline *pipe,
+                                    rhi_pipe_variant variant, uint32_t generation,
+                                    uint32_t epoch);
+
+/** @brief Compile a job's pipeline and layout through the device's pipeline cache.
+ *
+ * Any thread; the device must outlive the call. A job that already holds a
+ * result keeps it and returns 0. The create is counted by the pipeline
+ * census, the creation-feedback tally and the first-use hitch metric.
+ * @param dev Device the job was made for.
+ * @param job The job.
+ * @param flags RHI_COMPILE_* bits.
+ * @return 0 on success, 1 when a probe found the create info uncached, -1 on failure. */
+int           rhi_compile_job_run(rhi_device *dev, rhi_compile_job *job, unsigned flags);
+
+/** @brief Return the slot generation a job was made with.
+ *
+ * @param job The job.
+ * @return The generation. */
+uint32_t      rhi_compile_job_generation(const rhi_compile_job *job);
+
+/** @brief Return the variant epoch a job was made with.
+ *
+ * @param job The job.
+ * @return The epoch. */
+uint32_t      rhi_compile_job_epoch(const rhi_compile_job *job);
+
+/** @brief Wrap a job's result in an rhi_pipeline, link it into the rebuild registry and free the job.
+ *
+ * Display owner only. The pipeline takes the job's desc, stage sources and
+ * push-constant stage flags. A job with no result (never run, or its run
+ * failed) is discarded and NULL returned.
+ * @param dev Device the job was made for.
+ * @param job The job, consumed.
+ * @return The pipeline, or NULL. */
+rhi_pipeline *rhi_compile_job_install(rhi_device *dev, rhi_compile_job *job);
+
+/** @brief Destroy a job's result as Vulkan objects and free the job.
+ *
+ * Any thread. The result was never linked or recorded in a command buffer,
+ * so it is destroyed at once, with no device idle and no registry access.
+ * @param dev Device the job was made for.
+ * @param job The job, consumed, or NULL (ignored). */
+void          rhi_compile_job_discard(rhi_device *dev, rhi_compile_job *job);
+
+/** @brief Retire a registered pipeline: unlink it, free it, and destroy its Vulkan objects once the frames that may have bound them retire.
+ *
+ * Display owner only. The pipeline and layout join the list the live
+ * rebuild's replaced objects use, stamped with the current frame serial,
+ * so no device idle runs (one does only when that list's allocation
+ * fails). The rhi_pipeline is freed here: the handle is invalid after the
+ * call.
+ * @param dev Device that created the pipeline.
+ * @param pipe The pipeline, or NULL (ignored). */
+void          rhi_retire_pipeline(rhi_device *dev, rhi_pipeline *pipe);
+
+/* What the debounced first-use cache save did (rhi_pcache_autosave_stats). */
+typedef struct {
+    unsigned triggers;   /* quiet periods reached after first-use creates     */
+    unsigned same_size;  /* of them, skipped: the cache size was unchanged     */
+    unsigned started;    /* snapshots handed to a save worker                 */
+    unsigned written;    /* saves the worker wrote                            */
+    unsigned joined_at_shutdown; /* in-flight saves shutdown waited for      */
+} rhi_pcache_autosave_stats;
+
+/** @brief Read the debounced first-use cache save's counts for the device.
+ *
+ * @param dev Device, or NULL (zeros).
+ * @param out Receives the counts. */
+void          rhi_pcache_autosave_stats_get(const rhi_device *dev, rhi_pcache_autosave_stats *out);
 
 /** @brief Create a pipeline from in-memory SPIR-V words (mod shaders).
  *

@@ -31,6 +31,7 @@
 #include <glslang/build_info.h>
 #endif
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,7 +62,7 @@ static SDL_RWLock* reg_lock(void) {
  * the mutation is by the reader itself, which is the single-threaded case
  * this lock exists to preserve. Only one compose runs at a time, so one
  * reader thread id suffices. */
-static SDL_ThreadID s_reg_reader_tid;
+static _Atomic(SDL_ThreadID) s_reg_reader_tid;   /* read by writers on other threads */
 /** @brief Take the registry write lock unless the caller is the compose reader thread.
  *
  * The thread recorded by openpete_mods_registry_read_lock() already holds
@@ -69,7 +70,8 @@ static SDL_ThreadID s_reg_reader_tid;
  *
  * @return 1 when the write lock was taken, 0 when it was not. */
 static int reg_wr_begin(void) {
-    if (s_reg_reader_tid && s_reg_reader_tid == SDL_GetCurrentThreadID()) return 0;
+    const SDL_ThreadID reader = atomic_load_explicit(&s_reg_reader_tid, memory_order_relaxed);
+    if (reader && reader == SDL_GetCurrentThreadID()) return 0;
     SDL_LockRWLockForWriting(reg_lock());
     return 1;
 }
@@ -81,10 +83,10 @@ static void reg_wr_end(int locked) { if (locked) SDL_UnlockRWLock(s_reg_lock); }
 #define REG_WR_END() reg_wr_end(reg_l_)
 void openpete_mods_registry_read_lock(void) {
     SDL_LockRWLockForReading(reg_lock());
-    s_reg_reader_tid = SDL_GetCurrentThreadID();
+    atomic_store_explicit(&s_reg_reader_tid, SDL_GetCurrentThreadID(), memory_order_relaxed);
 }
 void openpete_mods_registry_read_unlock(void) {
-    s_reg_reader_tid = 0;
+    atomic_store_explicit(&s_reg_reader_tid, (SDL_ThreadID)0, memory_order_relaxed);
     SDL_UnlockRWLock(s_reg_lock);
 }
 #include <dirent.h>
@@ -676,9 +678,25 @@ typedef struct {
     int  enabled;
     int  live;
     void* pipeline;              /* executor-cached rhi_pipeline* */
+    unsigned generation;         /* slot_generation_next at register and at each retirement */
     unsigned char uniforms[OPENPETE_POSTFX_UNIFORMS_MAX];
     uint32_t uniforms_len;
 } mod_postfx_t;
+
+/* Slot generations: one registry-wide counter, so a value names one
+ * (registration, retirement) epoch of one slot. A compile job records the
+ * generation its slot had at enqueue; a slot whose generation moved since
+ * was retired or swept, and the job's result is stale. Written under the
+ * registry write lock. */
+static unsigned s_slot_generation;
+
+/** @brief Return a fresh slot generation.
+ *
+ * @return The next value of the registry-wide counter, never 0. */
+static unsigned slot_generation_next(void) {
+    if (++s_slot_generation == 0) s_slot_generation = 1;
+    return s_slot_generation;
+}
 
 /* Chunked: the renderer holds &fx->pipeline as its executor-cached
  * pipeline slot across presents. */
@@ -754,6 +772,7 @@ static int openpete_mods_postfx_register_locked(openpete_mod_t* self, int frag_s
     fx->load_index = openpete_mods_load_index_of(self);
     fx->enabled = 0;             /* explicit postfx_enable arms it */
     fx->live = 1;
+    fx->generation = slot_generation_next();
     return fx_count() - 1;
 }
 int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
@@ -871,6 +890,7 @@ int openpete_mods_postfx_enum_at(int i, openpete_postfx_pass_t* out) {
     if (!out->frag_spv) return -1;
     out->pipeline_slot = &fx->pipeline;
     out->owner = fx->owner;
+    out->generation = fx->generation;
     return 0;
 }
 
@@ -897,6 +917,7 @@ static void openpete_mods_postfx_retire_all_locked(void) {
         if (!f->live) continue;
         retire_pipeline(f->pipeline);
         f->pipeline = NULL;
+        f->generation = slot_generation_next();
     }
 }
 void openpete_mods_postfx_retire_all(void) { REG_WR(); openpete_mods_postfx_retire_all_locked(); REG_WR_END(); }
@@ -913,6 +934,7 @@ static void openpete_mods_postfx_remove_owner_locked(const char* mod_id) {
         retire_pipeline(f->pipeline);
         f->pipeline = NULL;
         f->live = 0;
+        f->generation = slot_generation_next();
     }
 }
 void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_postfx_remove_owner_locked(mod_id); REG_WR_END(); }
@@ -992,6 +1014,7 @@ typedef struct {
     openpete_mod_material_selector_t sel_pending;
     int           sel_dirty;
     int  live;
+    unsigned generation;   /* slot_generation_next at register and at each retirement */
 } mod_material_t;
 
 static mod_material_t s_mats[MOD_MATERIAL_MAX];
@@ -1208,6 +1231,7 @@ int openpete_mods_material_terrain_bucket_gpu(
     if (!out->frag_spv || out->frag_words == 0) return -1;
     out->pipeline_slot = &m->pipeline_ter[pipe_idx];
     out->owner = m->owner;
+    out->generation = m->generation;
     return 0;
 }
 
@@ -1307,6 +1331,7 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
     m->per_instance = per_instance;
     m->load_index = openpete_mods_load_index_of(self);
     m->live = 1;
+    m->generation = slot_generation_next();
     m->user_enabled = 1;          /* registration arms it; enable() toggles */
     int handle = s_mat_count++;
     if (!s_mat_census.storage)
@@ -1717,6 +1742,7 @@ static int material_fill_gpu(int best, int uniform_slot,
     for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++)
         out->pipeline_portal_slot[b] = &m->pipeline_portal[b];
     out->owner = m->owner;
+    out->generation = m->generation;
     /* A per-instance slot always wins; otherwise fall back to this
      * material's static block (0 = no params at all). */
     out->uniform_slot = uniform_slot > 0 ? uniform_slot : view_static_slot(best);
@@ -1905,6 +1931,7 @@ int openpete_mods_material_enum_terrain(int i, int pipe_idx,
     if (!out->frag_spv || out->frag_words == 0) return -1;
     out->pipeline_slot = &m->pipeline_ter[pipe_idx];
     out->owner = m->owner;
+    out->generation = m->generation;
     return 0;
 }
 
@@ -1930,6 +1957,7 @@ static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
         s_mats[i].pipeline_mark = NULL;
         s_mats[i].sel_dirty = 0;   /* a parked retune dies with the material */
         s_mats[i].live = 0;
+        s_mats[i].generation = slot_generation_next();
         s_mat_ter_epoch++;
     }
     material_rearm_split();
@@ -1956,6 +1984,7 @@ static void openpete_mods_material_retire_all_locked(void) {
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
+        s_mats[i].generation = slot_generation_next();
     }
 }
 void openpete_mods_material_retire_all(void) { REG_WR(); openpete_mods_material_retire_all_locked(); REG_WR_END(); }

@@ -182,10 +182,22 @@ target_compile_definitions(openpete_rhi
 # volk dlopens the loader; on Linux that needs libdl (CMAKE_DL_LIBS), on
 # Windows it uses LoadLibrary (no extra lib).
 target_link_libraries(openpete_rhi PUBLIC SDL3::SDL3-static ${CMAKE_DL_LIBS})
+# C11: the pipeline compile path counts creates through <stdatomic.h>
+# atomics, since a compile job may run on any thread.
 set_target_properties(openpete_rhi PROPERTIES
-    C_STANDARD 99
+    C_STANDARD 11
     C_STANDARD_REQUIRED ON
 )
+# The RHI's sources, for a test that compiles them under its own flags
+# (tests/unit rhi_compile_stress_tsan, built with ThreadSanitizer).
+set_property(GLOBAL PROPERTY OPENPETE_RHI_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/rhi_vulkan.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/rhi_memtype.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/rhi_gpu_audit.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/rhi_pipe_census.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/rhi_pcache_file.c
+    ${RHI_EMBED_C}
+    ${VOLK_DIR}/volk.c)
 # The embedded-shader source (RHI_EMBED_C) carries its own dependency on the
 # .spv via the custom command above, which in turn depends on the glslang
 # outputs - so building openpete_rhi compiles shaders and regenerates the
