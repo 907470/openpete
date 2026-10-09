@@ -525,6 +525,9 @@ const char* spyro1_splash_wait_for_disc(void) {
 
 int spyro1_splash_select(const char* const* labels, int count) {
     if (!s_win || count <= 0) return -1;
+    /* Harness: OPENPETE_SPLASH_SELECT=<index> picks that label after the
+     * first frame, so a scripted launch exercises the selection path. */
+    const char* scripted = getenv("OPENPETE_SPLASH_SELECT");
     int sel = 0;
     for (;;) {
         frame_begin();
@@ -543,6 +546,10 @@ int spyro1_splash_select(const char* const* labels, int count) {
             "UP/DOWN OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT",
             110, 95, 150);
         frame_end("selector");
+        if (scripted && *scripted) {
+            const int pick = atoi(scripted);
+            if (pick >= 0 && pick < count) return pick;
+        }
 
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 100)) {

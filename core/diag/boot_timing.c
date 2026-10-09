@@ -2,6 +2,7 @@
  * (contract in openpete_boot_timing.h). */
 #include "openpete_boot_timing.h"
 
+#include "openpete_config.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_time.h"
@@ -46,19 +47,24 @@ static void boot_line_print(void)
     rhi_boot_stats_get(&rb);
     int64_t t0 = atomic_load(&s_mark[OP_BOOT_LAUNCHER_START]);
     if (!t0) t0 = atomic_load(&s_mark[OP_BOOT_MODS_INIT]);
-    char a[32], b[32], c[32], d[32], e[32], f[32];
+    char a[32], b[32], c[32], d[32], e[32], f[32], g[32], h[32];
     const char *mesa = getenv("MESA_SHADER_CACHE_DISABLE");
     OPL_INFO_F("boot",
-               "timing (ms after launcher start, op_now clock): mods_init=%s device_created=%s "
+               "timing (ms after launcher start, op_now clock): identified=%s materialized=%s "
+               "mods_init=%s device_created=%s "
                "precompile_start=%s precompile_end=%s first_frame=%s first_tick=%s; "
+               "materializations=%d; "
                "bringup_pipes=%u bringup_pipe_ms=%.1f; cache_file_bytes=%llu cache_offered_bytes=%llu "
                "cache_load_ms=%.2f app_cold=%d mesa_cache_disabled=%s",
+               boot_ms(g, sizeof g, t0, atomic_load(&s_mark[OP_BOOT_IDENTIFIED])),
+               boot_ms(h, sizeof h, t0, atomic_load(&s_mark[OP_BOOT_MATERIALIZED])),
                boot_ms(a, sizeof a, t0, atomic_load(&s_mark[OP_BOOT_MODS_INIT])),
                boot_ms(b, sizeof b, t0, rb.device_created_ns),
                boot_ms(c, sizeof c, t0, atomic_load(&s_mark[OP_BOOT_PRECOMPILE_START])),
                boot_ms(d, sizeof d, t0, atomic_load(&s_mark[OP_BOOT_PRECOMPILE_END])),
                boot_ms(e, sizeof e, t0, rb.first_frame_ns),
                boot_ms(f, sizeof f, t0, s_first_tick_ns),
+               openpete_config_materializations(),
                rb.bringup_creates, (double)rb.bringup_ns / 1e6,
                (unsigned long long)rb.cache_file_bytes, (unsigned long long)rb.cache_offered_bytes,
                (double)rb.cache_load_ns / 1e6, rb.cache_cold, (mesa && *mesa) ? mesa : "unset");

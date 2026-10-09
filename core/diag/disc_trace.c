@@ -122,6 +122,14 @@ int openpete_disc_trace_init(void) {
     return openpete_disc_trace_state;
 }
 
+void openpete_disc_trace_reload(void) {
+    const char* path = getenv("OPENPETE_DISC_TRACE");
+    if (!path || !path[0]) return;
+    SDL_LockSpinlock(&s_lock);
+    if (openpete_disc_trace_state == 0) openpete_disc_trace_state = -1;
+    SDL_UnlockSpinlock(&s_lock);
+}
+
 void openpete_disc_trace_set_vbl_source(int (*fn)(void)) { s_vbl_fn = fn; }
 
 int openpete_disc_trace_vbl(void) { return s_vbl_fn ? s_vbl_fn() : -1; }

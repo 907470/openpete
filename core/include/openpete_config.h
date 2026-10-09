@@ -53,8 +53,11 @@ extern "C" {
  * wins), and flag winners are spliced into a new argv after argv[0], left
  * of the caller's arguments, so a typed flag still overrides them.
  *
- * Called once from openpete_options_parse, before any getenv consumer
- * runs, because features cache their env reads on first use.
+ * The full stage: called once, from openpete_options_parse after the game
+ * is identified, before any getenv consumer of a game or disc scope value
+ * runs, because features cache their env reads on first use. A
+ * device-creation knob of class CFG_DEVICE_FIXED or the `disc` knob set in
+ * a game or disc scope is not applied and is listed by --config-report.
  * @param argc Argument count, including a bk2 sidecar splice.
  * @param argv Arguments; may carry the bk2 sidecar tokens left of the typed ones.
  * @param typed_argc Count of the arguments as typed, so the config report can label a sidecar token apart from a typed one; both outrank every file tier.
@@ -64,6 +67,69 @@ extern "C" {
 int openpete_config_apply(int argc, char** argv, int typed_argc,
                           int* out_argc, char*** out_argv);
 
+/** @brief Resolve the tiers that hold no game or disc scope, writing nothing to the process environment.
+ *
+ * The game-neutral stage, run before the game is identified. Reads the
+ * same files and launch tiers as openpete_config_apply and harvests the
+ * global and [saved] scopes, but not [game.*], [disc.*] or any [keys]
+ * table. Flag winners are spliced into a new argv as openpete_config_apply
+ * splices them; [env] winners are kept in memory and read back through
+ * openpete_config_env, never setenv. openpete_config_apply then runs once,
+ * after identification, from every tier.
+ * @param argc Argument count, including a bk2 sidecar splice.
+ * @param argv Arguments.
+ * @param typed_argc Count of the arguments as typed.
+ * @param out_argc Receives the spliced argument count when the return is 1.
+ * @param out_argv Receives the spliced argv when the return is 1; retained for the process lifetime.
+ * @return 1 when tokens were spliced, 0 when none were, -1 on a config error (already printed). */
+int openpete_config_apply_neutral(int argc, char** argv, int typed_argc,
+                                  int* out_argc, char*** out_argv);
+
+/** @brief The value of env var `name`: the process environment, else the game-neutral stage's [env] winner.
+ *
+ * After openpete_config_apply the environment holds every winner, so this
+ * is getenv; before it, the game-neutral stage's winners are visible here
+ * without having been written.
+ * @param name The variable.
+ * @return The value, or NULL when neither holds it. */
+const char* openpete_config_env(const char* name);
+
+/** @brief The value a device-creation knob resolved to from the tiers without a game or disc scope.
+ *
+ * `spelling` is a flag ("--vsync") or an env var ("OPENPETE_RHI_DEPTH_D24")
+ * of the device-creation set (config_schema.h cfg_schema_device_class).
+ * The winner is taken over the launch tiers, the real environment, the
+ * global scopes and [saved]; when the winning spelling of a two-spelling
+ * knob is the other one, NULL is returned, so the caller reads each
+ * spelling in its own vocabulary. Valid after either stage.
+ * @param spelling The flag or env var.
+ * @return The value, or NULL when no such tier sets it. */
+const char* openpete_config_device_value(const char* spelling);
+
+/** @brief The number of full-stage materializations this process ran (openpete_config_apply calls).
+ * @return The count; 1 after a normal boot. */
+int openpete_config_materializations(void);
+
+/** @brief Print a diagnostic to stderr unless the same text was printed before.
+ *
+ * Both stages harvest the global scopes, so a warning about one of their
+ * values would otherwise print twice. The option parser's warnings use it
+ * for the same reason.
+ * @param fmt printf format. */
+void openpete_config_diag(const char* fmt, ...);
+
+/** @brief Name the disc image whose [disc.*] scopes the next openpete_config_apply harvests.
+ *
+ * The identification result: the disc that identified the game (argv,
+ * the library entry the player or the run selected). Passed to the
+ * disc-identity hook; NULL or "" names none.
+ * @param disc_path The image path. */
+void openpete_config_set_identified_disc(const char* disc_path);
+
+/** @brief Label the identification source for --config-report ("disc", "library", "selector", "executable").
+ * @param source The label; NULL clears it. */
+void openpete_config_set_identity_source(const char* source);
+
 /** @brief Set the game id that selects the [game.<id>] scope ("spyro-1").
  *
  * Call before openpete_config_apply. An empty or unset id matches no
@@ -72,8 +138,8 @@ int openpete_config_apply(int argc, char** argv, int typed_argc,
 void openpete_config_set_game_id(const char* id);
 
 /* How the [disc.*] scopes get their keys. openpete_config_apply calls this
- * hook once it knows which image will boot, to learn that image's serial
- * and/or content hash. Cheap by contract: an ISO serial read, or a library
+ * hook with the identified disc (openpete_config_set_identified_disc, NULL
+ * when none) to learn that image's serial and/or content hash. Cheap by contract: an ISO serial read, or a library
  * entry's already-recorded hash - never an image hash, which would mean
  * digesting ~500 MB on every launch. Fills `serial` / `sha` with "" for
  * whatever it cannot resolve; returns 0 if it resolved anything.
@@ -97,9 +163,12 @@ void openpete_config_set_disc_identity_fn(openpete_disc_identity_fn fn);
  *
  * Frees the parsed documents and clears the file paths, the contribution,
  * token, decision and saved tables, the save target, the disc scopes, the
- * --no-config and --config-report latches and the disc-identity hook, and
- * drops the portable directive. The game id and the keymap are kept; the
- * spliced tokens are not freed. */
+ * --no-config and --config-report latches, the disc-identity hook, the
+ * identified disc and source, the printed-diagnostic memory and the
+ * materialization count, and drops the portable directive. The game id and
+ * the keymap are kept; the spliced tokens are not freed. Each stage clears
+ * its own resolution state on entry, so a caller resets only to forget the
+ * identification. */
 void openpete_config_reset(void);
 
 /* ---- diagnostics --------------------------------------------------- */

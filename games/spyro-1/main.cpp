@@ -8,6 +8,7 @@
 #include "openpete.h"
 #include "openpete_fatal.h"
 #include "openpete_config.h"
+#include "openpete_identify.h"
 #include "openpete_log.h"
 #include "openpete_boot_timing.h"
 #include "openpete_keymap.h"
@@ -81,6 +82,7 @@ extern "C" int spyro1_config_disc_identity(const char* disc_path,
 extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap);
+extern "C" const char* spyro1_library_selected_game(void);
 extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
 /* Mod SDK name->vaddr table, generated from manifest/symbols.toml by
@@ -119,6 +121,9 @@ static int fatal_start(int rc, const char* why) {
 
 /** @brief Parse the command line and the config stack into opts, telling the player when the settings are rejected.
  *
+ * With no identification the parse is the game-neutral one
+ * (openpete_options_parse_neutral), which writes nothing to the process;
+ * with one it is the one full parse (openpete_options_parse_identified).
  * A launch with no arguments (a double-click) can only fail on the config
  * file or the environment, so only that case shows the message box; a
  * launch with arguments came from a terminal, which shows the parser's
@@ -127,9 +132,13 @@ static int fatal_start(int rc, const char* why) {
  * @param opts Receives the options.
  * @param argc Argument count.
  * @param argv Arguments.
+ * @param id The identification, or NULL for the game-neutral parse.
  * @return OPENPETE_EXIT_OK or the parser's exit code. */
-static int parse_options(openpete_options_t* opts, int argc, char** argv) {
-    int rc = openpete_options_parse(opts, argc, argv);
+static int parse_options(openpete_options_t* opts, int argc, char** argv,
+                         const openpete_ident_t* id) {
+    int rc = id ? openpete_options_parse_identified(opts, argc, argv, id,
+                                                    game_get_display_name())
+                : openpete_options_parse_neutral(opts, argc, argv);
     openpete_fatal_set_interactive(!opts->headless && argc <= 1);
     if (rc != OPENPETE_EXIT_OK)
         return fatal_start(rc, "A setting in openpete.toml (or an OPENPETE_ "
@@ -138,23 +147,145 @@ static int parse_options(openpete_options_t* opts, int argc, char** argv) {
     return OPENPETE_EXIT_OK;
 }
 
-/** @brief Answer an informational mode (--help, --config-report, --keys-report) from the resolved stack.
+/** @brief Name the game from the game-neutral options and an optional library pick.
  *
- * The parser already printed the help. Mod keys are bindings too; the keys
- * report is the audit of what an install responds to, so it registers them
- * first.
- * @param opts The parsed options.
- * @return 1 when the mode's output is written and main should exit 0, else 0. */
-static int report_mode(openpete_options_t* opts) {
-    if (opts->help) return 1;
-    if (opts->config_report) { openpete_config_report(stdout); return 1; }
-    if (!opts->keys_report) return 0;
-    openpete_mods_register_key_defaults(opts);
-    openpete_keymap_report(stdout);
-    return 1;
+ * The disc is --ingest's image or the --disc path; a library boot passes
+ * the entry it booted and that entry's recorded game. This executable's own
+ * game is the last source.
+ * @param opts The options holding --game and the disc.
+ * @param library_game The booted library entry's game, or NULL when the library booted nothing.
+ * @param id Receives the identification.
+ * @return OPENPETE_EXIT_OK or OPENPETE_EXIT_SETUP_ERROR. */
+static int identify(const openpete_options_t* opts, const char* library_game,
+                    openpete_ident_t* id) {
+    openpete_ident_in_t in = {};
+    in.selector = opts->game_selector;
+    in.disc_path = opts->ingest_path && !library_game ? opts->ingest_path : opts->disc_path;
+    in.from_library = library_game != nullptr;
+    in.recorded_game = (library_game && *library_game) ? library_game : nullptr;
+    in.linked_game = game_get_id();
+    return openpete_identify(&in, id);
 }
 
-/** @brief Spyro 1 entry point: parse the options, resolve the disc and the recomp module, and run the game.
+/** @brief Answer an informational mode (--config-report, --keys-report) from the identified resolution.
+ *
+ * The game comes from the disc named on the command line or a game-neutral
+ * tier, from --game, else this executable; the library is not read, so a
+ * report writes nothing. Mod keys are bindings too; the keys report is the
+ * audit of what an install responds to, so it registers them first.
+ * @param argc Argument count.
+ * @param argv Arguments.
+ * @param neutral The game-neutral options.
+ * @return 0 when the report is written, else the identification's or the parser's exit code. */
+static int report_mode(int argc, char** argv, const openpete_options_t* neutral) {
+    openpete_ident_t id;
+    int rc = identify(neutral, nullptr, &id);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    openpete_options_t opts;
+    rc = parse_options(&opts, argc, argv, &id);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    if (opts.config_report) { openpete_config_report(stdout); return 0; }
+    openpete_mods_register_key_defaults(&opts);
+    openpete_keymap_report(stdout);
+    return 0;
+}
+
+/** @brief Register this game's mod layer: the symbol table, the draw text rasterizer, the content registries' game ops and the WAD overlay.
+ *
+ * Runs once, after the game is identified and before any mod compile or
+ * load, so mods override by name ("CameraUpdate") against the identified
+ * game's table. The WAD overlay reads the disc's TOC lazily, at the first
+ * CdRead.
+ * @param disc_path The identified disc. */
+static void register_mod_layer(const char* disc_path) {
+    openpete_mods_set_symbol_table(openpete_sdk_symbols,
+                                   openpete_sdk_symbol_count);
+    /* Spyro's 3D gold text-moby glyphs - the same font as the FPS overlay. */
+    openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
+    spyro1_moby_ops_register();
+    spyro1_level_ops_register();
+    spyro1_mod_wad_configure(disc_path);
+}
+
+/** @brief Run a batch exit mode that needs the identified disc: --extract-recomp-inputs or --dump-sfx-pack.
+ *
+ * --dump-sfx-pack takes the library's most recent entry when no disc is
+ * named; the splash stays off, since a batch command must not open a window
+ * to ask which version to census.
+ * @param argc Argument count.
+ * @param argv Arguments.
+ * @param neutral The game-neutral options.
+ * @return The process exit code. */
+static int batch_disc_mode(int argc, char** argv, openpete_options_t* neutral) {
+    const char* library_game = nullptr;
+    if (neutral->dump_sfx_pack_dir && !neutral->disc_path && !neutral->exe_path) {
+        spyro1_splash_set_enabled(0);
+        (void)spyro1_library_resolve(neutral, nullptr, 0);
+        if (neutral->disc_path) library_game = spyro1_library_selected_game();
+    }
+    openpete_ident_t id;
+    int rc = identify(neutral, library_game, &id);
+    if (rc == OPENPETE_EXIT_OK) rc = openpete_identify_require_linked(&id, game_get_id());
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    openpete_options_t opts;
+    rc = parse_options(&opts, argc, argv, &id);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    /* Standalone extraction stage - carve PSX.EXE + overlay blobs from the
+     * disc and exit (also the first stage of the first-boot pipeline). Runs
+     * before module attach: extraction must work when no module exists. */
+    if (opts.extract_recomp_inputs_dir)
+        return spyro1_extract_recomp_inputs(opts.disc_path,
+                                            opts.extract_recomp_inputs_dir) ? 1 : 0;
+    return spyro1_dump_sfx_pack(opts.disc_path, opts.dump_sfx_pack_dir,
+                                opts.dump_sfx_wads) == 0 ? 0 : 1;
+}
+
+/** @brief Pick the disc through the library and the launcher's splash, then identify the game.
+ *
+ * --ingest copies an image in; no disc at all boots the most recent entry,
+ * or the version selector picks among several; an empty library opens the
+ * drop screen. An explicit --disc bypasses the library (dev/CI path). The
+ * splash renders the waits (ingest copy), the selector and the drop screen,
+ * lazy-opening only when one of them is needed.
+ * @param neutral The game-neutral options; receives the library's disc.
+ * @param module_path Receives the library entry's module path, "" for none.
+ * @param module_cap Its capacity.
+ * @param id Receives the identification.
+ * @param exit_now Set to 1 when the player closed the drop screen.
+ * @return OPENPETE_EXIT_OK, or the exit code after the player was told. */
+static int launcher_identify(openpete_options_t* neutral, char* module_path,
+                             size_t module_cap, openpete_ident_t* id,
+                             int* exit_now) {
+    *exit_now = 0;
+    const bool named = neutral->disc_path || neutral->exe_path;
+    spyro1_splash_set_enabled(!neutral->headless);
+    /* Open at the game window's size (an explicit --window carries through)
+     * so the vk-mode window adoption needs no resize. */
+    spyro1_splash_set_window_size(neutral->window_w, neutral->window_h);
+    spyro1_progress_cb = spyro1_splash_progress;
+
+    if (spyro1_library_resolve(neutral, module_path, module_cap) != 0)
+        return fatal_start(1, "The game library could not be read.");
+    if (!neutral->disc_path && !neutral->exe_path && !neutral->headless) {
+        /* Nothing to boot anywhere: first run. DROP mode. */
+        if (spyro1_splash_open() == 0) {
+            const char* dropped = spyro1_splash_wait_for_disc();
+            if (!dropped) { *exit_now = 1; return OPENPETE_EXIT_OK; }   /* window closed */
+            neutral->ingest_path = dropped;
+            if (spyro1_library_resolve(neutral, module_path, module_cap) != 0)
+                return fatal_start(1, "The disc image could not be added to the game library.");
+        }
+    }
+    const char* library_game = (!named && neutral->disc_path)
+                               ? spyro1_library_selected_game() : nullptr;
+    int rc = identify(neutral, library_game, id);
+    if (rc == OPENPETE_EXIT_OK) rc = openpete_identify_require_linked(id, game_get_id());
+    if (rc != OPENPETE_EXIT_OK)
+        return fatal_start(rc, "The disc is not Spyro the Dragon.");
+    return OPENPETE_EXIT_OK;
+}
+
+/** @brief Spyro 1 entry point: resolve the game-neutral settings, identify the game, apply its settings once, attach the recomp module, and run the game.
  *
  * @param argc Argument count.
  * @param argv Arguments.
@@ -173,115 +304,75 @@ int main(int argc, char** argv) {
      * is fine for stderr). */
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    openpete_options_t opts;
-    openpete_options_init(&opts);
-    opts.display_name = game_get_display_name();
-
-    /* openpete.toml scopes, registered before the parse: the config stack
-     * is resolved inside openpete_options_parse and needs to know which
-     * game it is configuring and how to identify the disc that will boot. */
-    openpete_config_set_game_id(game_get_id());
+    /* The [disc.*] scopes' keys for the identified disc: its serial, and
+     * the hash its library entry recorded. */
     openpete_config_set_disc_identity_fn(spyro1_config_disc_identity);
 
     /* OPENPETE_SURFACE_DUMP: write the surface and exit, before any config
      * or env layer runs. */
     openpete_surface_dump_run_if_requested(argv[0]);
 
-    int rc = parse_options(&opts, argc, argv);
+    /* The game-neutral tiers: everything that runs before the game is
+     * known reads these options, and nothing is written to the process. */
+    openpete_options_t neutral;
+    openpete_options_init(&neutral);
+    int rc = parse_options(&neutral, argc, argv, nullptr);
     if (rc != OPENPETE_EXIT_OK) return rc;
-    if (report_mode(&opts)) return 0;
+    if (neutral.help) return 0;
+    if (neutral.config_report || neutral.keys_report)
+        return report_mode(argc, argv, &neutral);
 
     /* Bring the logger and its file mirror up before the recomp module is
      * attached. First boot builds that module, and a build that fails is
      * exactly the report we need a file for - opening the sink inside
-     * openpete_run() would be too late to record it. */
-    openpete_log_init(opts.log_format, opts.log_level_spec);
-    if (openpete_log_file_open(opts.log_file) == 0)
+     * openpete_run() would be too late to record it. Format and file are
+     * device-creation knobs: the game-neutral tiers decide them. */
+    openpete_log_init(neutral.log_format, neutral.log_level_spec
+                                              ? neutral.log_level_spec
+                                              : openpete_config_env("OPENPETE_LOG"));
+    if (openpete_log_file_open(neutral.log_file ? neutral.log_file
+                                                : openpete_config_env("OPENPETE_LOG_FILE")) == 0)
         OPL_INFO_F("log", "log file: %s (build %s %s)",
                    openpete_log_file_path(), __DATE__, __TIME__);
-
-    /* Mod framework: hand the loader this game's symbol table so mods
-     * override by name ("CameraUpdate") instead of raw vaddr. The loader
-     * itself runs from openpete_run() after all setup. */
-    openpete_mods_set_symbol_table(openpete_sdk_symbols,
-                                   openpete_sdk_symbol_count);
-    /* ...and the draw service's text rasterizer (Spyro's 3D gold
-     * text-moby glyphs - the same font as the FPS overlay). */
-    openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
-    /* ...and the content registries' game ops (moby classes, level slots). */
-    spyro1_moby_ops_register();
-    spyro1_level_ops_register();
-    /* Level-segment asset overlay: needs the disc image to read
-     * the WAD TOC (lazy - first CdRead). */
-    spyro1_mod_wad_configure(opts.disc_path);
-
-    /* Standalone extraction stage - carve PSX.EXE +
-     * overlay blobs from the disc and exit (also the first stage of the
-     * first-boot pipeline). Runs before module attach: extraction must
-     * work when no module exists yet. */
-    if (opts.extract_recomp_inputs_dir) {
-        return spyro1_extract_recomp_inputs(opts.disc_path,
-                                            opts.extract_recomp_inputs_dir)
-                   ? 1 : 0;
-    }
 
     /* Build-time mod compile (--compile-mods): compile every mod in the
      * resolved mods dir against <exe>/sdk and exit - the cmake
      * `spyro1_mods` step for native presets; also pre-warms a dist
-     * install's compile-on-boot cache. Needs no disc/library/window. */
-    if (opts.compile_mods)
+     * install's compile-on-boot cache. Runs before any game is identified,
+     * so its settings are the game-neutral tiers, materialized once. */
+    if (neutral.compile_mods) {
+        openpete_ident_t none = {};
+        openpete_options_t opts;
+        rc = parse_options(&opts, argc, argv, &none);
+        if (rc != OPENPETE_EXIT_OK) return rc;
         return openpete_mods_compile_all(&opts) == 0 ? 0 : 1;
-
-    /* sfx pack census (--dump-sfx-pack): walk the disc's WAD (+ custom
-     * level files) and exit. Needs a disc, which is the library's most
-     * recent entry unless --disc names one: opts.disc_path is empty until
-     * the library resolves it, and walking an empty path yields an empty
-     * census. The splash stays off - this is a batch command and must not
-     * open a window to ask which version to census. */
-    if (opts.dump_sfx_pack_dir) {
-        if (!opts.disc_path && !opts.exe_path) {
-            spyro1_splash_set_enabled(0);
-            (void)spyro1_library_resolve(&opts, nullptr, 0);
-        }
-        return spyro1_dump_sfx_pack(opts.disc_path, opts.dump_sfx_pack_dir,
-                                    opts.dump_sfx_wads) == 0 ? 0 : 1;
     }
 
-    /* Resolve disc + module through the
-     * content-addressed library (--ingest copies an image in; no disc
-     * at all boots the most recent library entry). Explicit --disc
-     * bypasses the library entirely (dev/CI path). The splash renders
-     * the waits (ingest copy, first-boot build), the version selector,
-     * and the drag-a-disc first-run screen; it lazy-opens only when
-     * one of those is actually needed. */
-    spyro1_splash_set_enabled(!opts.headless);
-    /* Open at the game window's size (an explicit --window carries
-     * through) so the vk-mode window adoption below needs no resize. */
-    spyro1_splash_set_window_size(opts.window_w, opts.window_h);
-    spyro1_progress_cb = spyro1_splash_progress;
+    if (neutral.extract_recomp_inputs_dir || neutral.dump_sfx_pack_dir)
+        return batch_disc_mode(argc, argv, &neutral);
 
     static char library_module_path[4096];
-    if (spyro1_library_resolve(&opts, library_module_path,
-                               sizeof library_module_path) != 0)
-        return fatal_start(1, "The game library could not be read.");
+    openpete_ident_t id;
+    int exit_now = 0;
+    rc = launcher_identify(&neutral, library_module_path, sizeof library_module_path,
+                           &id, &exit_now);
+    if (rc != OPENPETE_EXIT_OK || exit_now) return rc;
 
-    if (!opts.disc_path && !opts.exe_path && !opts.headless) {
-        /* Nothing to boot anywhere: first run. DROP mode. */
-        if (spyro1_splash_open() == 0) {
-            const char* dropped = spyro1_splash_wait_for_disc();
-            if (!dropped) return 0;   /* user closed the window */
-            opts.ingest_path = dropped;
-            if (spyro1_library_resolve(&opts, library_module_path,
-                                       sizeof library_module_path) != 0)
-                return fatal_start(1, "The disc image could not be added to the game library.");
-        }
-    }
+    /* The one full resolution: the identified game's and disc's scopes
+     * join the tiers, and the environment and argv are written once. */
+    openpete_options_t opts;
+    rc = parse_options(&opts, argc, argv, &id);
+    if (rc != OPENPETE_EXIT_OK) return rc;
 
     {
         int src_rc = openpete_options_require_exe_source(&opts);
         if (src_rc != OPENPETE_EXIT_OK)
             return fatal_start(src_rc, "No Spyro the Dragon disc image was found.");
     }
+
+    /* The mod layer, once, at identification: before the compile-on-boot
+     * pass below and the load inside openpete_run(). */
+    register_mod_layer(opts.disc_path);
 
     /* The runtime reaches recompiled code only
      * through the recomp-module descriptor. Static builds register the
@@ -294,9 +385,6 @@ int main(int argc, char** argv) {
      * path and for library entries; an explicit --recomp-module points
      * at a module the user asserts exists. */
     int allow_build = (opts.recomp_module_path == NULL);
-    /* Re-point the WAD overlay at the resolved disc (the library path
-     * above may have filled opts.disc_path). */
-    spyro1_mod_wad_configure(opts.disc_path);
     if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
         return fatal_start(1, "The game code built from the disc could not be loaded or built.");
 

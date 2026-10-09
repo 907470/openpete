@@ -23,6 +23,7 @@
 #include "../../third_party/tomlc99/toml.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,6 +116,73 @@ static char s_scope_game[64];
 static char s_scope_serial[64];
 static char s_scope_sha[80];
 
+/* The game-neutral stage (openpete_config_apply_neutral) resolves the
+ * tiers that hold no [game.*] or [disc.*] scope and writes nothing to the
+ * process: its [env] winners are kept here and read through
+ * openpete_config_env. The full stage (openpete_config_apply) runs once,
+ * after the game is identified, and is the only one that calls setenv. */
+static int  s_neutral;
+#define CFG_MAX_PENDING_ENV 128
+typedef struct { char key[CFG_KEY_MAX]; char value[CFG_VALUE_MAX]; } pending_env_t;
+static pending_env_t s_pending_env[CFG_MAX_PENDING_ENV];
+static int           s_pending_env_n;
+
+/* Identification result, set before the full stage: the disc image whose
+ * [disc.*] scopes apply, and the label of the source that named the game. */
+static char s_ident_disc[CFG_PATH_MAX];
+static char s_ident_source[32];
+static int  s_materializations;
+
+/* Contributions the full stage refused: a device-creation knob of class
+ * CFG_DEVICE_FIXED or the `disc` identification input, set in a game or
+ * disc scope. Listed by --config-report as not applied. */
+#define CFG_MAX_NOT_APPLIED 32
+typedef struct {
+    char key[CFG_KEY_MAX];
+    char value[CFG_VALUE_MAX];
+    char origin[CFG_ORIGIN_MAX];
+    const char *why;
+} not_applied_t;
+static not_applied_t s_not_applied[CFG_MAX_NOT_APPLIED];
+static int           s_not_applied_n;
+
+/* Hashes of the diagnostics already printed. Both stages harvest the
+ * global and user scopes, so each warning about them would print twice. */
+#define CFG_MAX_DIAG 256
+static unsigned long long s_diag_hash[CFG_MAX_DIAG];
+static int                s_diag_n;
+
+/** @brief Print a resolver diagnostic to stderr, once per distinct text.
+ *
+ * The text is formatted, hashed with FNV-1a 64, and skipped when the same
+ * hash was printed before; past CFG_MAX_DIAG distinct texts every
+ * diagnostic prints. */
+static void cfg_diag_v(const char *fmt, va_list ap) {
+    char buf[1024];
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    unsigned long long h = 1469598103934665603ULL;
+    for (const char *p = buf; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ULL; }
+    for (int i = 0; i < s_diag_n; i++)
+        if (s_diag_hash[i] == h) return;
+    if (s_diag_n < CFG_MAX_DIAG) s_diag_hash[s_diag_n++] = h;
+    fputs(buf, stderr);
+}
+
+/** @brief Print a resolver diagnostic to stderr unless the same text was printed before (cfg_diag_v). */
+static void cfg_diag(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    cfg_diag_v(fmt, ap);
+    va_end(ap);
+}
+
+void openpete_config_diag(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    cfg_diag_v(fmt, ap);
+    va_end(ap);
+}
+
 /* ------------------------------------------------------------------ */
 /* paths                                                              */
 /* ------------------------------------------------------------------ */
@@ -137,7 +205,7 @@ static int file_exists(const char *p) {
  * CFG_MAX_CONTRIB entries. */
 static contrib_t *contrib_new(void) {
     if (s_contrib_n >= CFG_MAX_CONTRIB) {
-        fprintf(stderr, "openpete: config: too many entries (max %d)\n",
+        cfg_diag("openpete: config: too many entries (max %d)\n",
                 CFG_MAX_CONTRIB);
         return NULL;
     }
@@ -240,14 +308,14 @@ static int base_value_typed(const cfg_knob_t *k, const char *val, int is_bool,
     if (k->type == CFG_BOOL && !is_bool &&
         strcmp(val, "0") && strcmp(val, "1") &&
         strcmp(val, "on") && strcmp(val, "off")) {
-        fprintf(stderr, "openpete: config: %s: '%s' expects true/false, "
-                        "got: %s\n", where, key, val);
+        cfg_diag("openpete: config: %s: '%s' expects true/false, "
+                 "got: %s\n", where, key, val);
         return 0;
     }
     if (!enum_ok(k, val)) {
         char vocab[128];
         enum_vocab_str(k, vocab, sizeof vocab);
-        fprintf(stderr, "openpete: config: %s: '%s' expects %s, got: %s\n",
+        cfg_diag("openpete: config: %s: '%s' expects %s, got: %s\n",
                 where, key, vocab, val);
         return 0;
     }
@@ -264,8 +332,8 @@ static int base_value_typed(const cfg_knob_t *k, const char *val, int is_bool,
  * @return -1 under --config-report, else 0 after the warning. */
 static int value_refused(const char *where, const char *key, const char *val) {
     if (s_report_requested) return -1;
-    fprintf(stderr, "openpete: config: %s: %s = \"%s\" is not accepted; "
-                    "keeping the default\n", where, key, val);
+    cfg_diag("openpete: config: %s: %s = \"%s\" is not accepted; "
+             "keeping the default\n", where, key, val);
     return 0;
 }
 
@@ -278,7 +346,7 @@ static int value_refused(const char *where, const char *key, const char *val) {
  * @return -1 under --config-report, else 0 after the warning. */
 static int row_refused(const char *where, const char *table, const char *key) {
     if (s_report_requested) return -1;
-    fprintf(stderr, "openpete: config: %s: [%s] '%s' ignored\n", where, table, key);
+    cfg_diag("openpete: config: %s: [%s] '%s' ignored\n", where, table, key);
     return 0;
 }
 
@@ -381,22 +449,22 @@ static int harvest_base_row(const toml_table_t *tab, const char *key, int tier,
          * naming, because TOML also lands a stray bare key here when it
          * is written after a sub-table header. */
         if (toml_table_in(tab, key)) return 0;
-        fprintf(stderr, "openpete: config: %s: '%s' must be a scalar "
-                        "(arrays are not config values)\n", where, key);
+        cfg_diag("openpete: config: %s: '%s' must be a scalar "
+                 "(arrays are not config values)\n", where, key);
         return -1;
     }
 
     const cfg_renamed_t *ren = renamed_for(key);
     if (ren) {
-        fprintf(stderr, "openpete: config: %s: '%s' has been renamed to "
-                        "'%s'; using it\n", where, key, ren->new_key);
+        cfg_diag("openpete: config: %s: '%s' has been renamed to "
+                 "'%s'; using it\n", where, key, ren->new_key);
         key = ren->new_key;
     }
 
     int ki = cfg_schema_find_id(key);
     if (ki < 0) {
         const char *hint = did_you_mean(key);
-        fprintf(stderr, "openpete: config: %s: unknown key '%s'%s%s%s%s\n",
+        cfg_diag("openpete: config: %s: unknown key '%s'%s%s%s%s\n",
                 where, key,
                 hint ? " (did you mean '" : "", hint ? hint : "",
                 hint ? "'?)" : "", s_report_requested ? "" : "; ignored");
@@ -407,8 +475,8 @@ static int harvest_base_row(const toml_table_t *tab, const char *key, int tier,
     char val[CFG_VALUE_MAX];
     int is_bool = 0, bool_val = 0;
     if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
-        fprintf(stderr, "openpete: config: %s: '%s' has a value this "
-                        "config cannot use\n", where, key);
+        cfg_diag("openpete: config: %s: '%s' has a value this "
+                 "config cannot use\n", where, key);
         return -1;
     }
     if (ren && ren->on) {
@@ -463,20 +531,20 @@ static int harvest_env(const toml_table_t *tab, int tier, int file,
         if (!key) break;
         toml_raw_t raw = toml_raw_in(tab, key);
         if (!raw) {
-            fprintf(stderr, "openpete: config: %s: [env] '%s' must be a scalar\n",
+            cfg_diag("openpete: config: %s: [env] '%s' must be a scalar\n",
                     where, key);
             return -1;
         }
         char val[CFG_VALUE_MAX];
         int is_bool = 0, bool_val = 0;
         if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
-            fprintf(stderr, "openpete: config: %s: [env] '%s' has a value this "
-                            "config cannot use\n", where, key);
+            cfg_diag("openpete: config: %s: [env] '%s' has a value this "
+                     "config cannot use\n", where, key);
             return -1;
         }
         if (strncmp(key, "OPENPETE_", 9) != 0)
-            fprintf(stderr, "openpete: config: %s: [env] '%s' is not an "
-                            "OPENPETE_* variable (applied anyway)\n", where, key);
+            cfg_diag("openpete: config: %s: [env] '%s' is not an "
+                     "OPENPETE_* variable (applied anyway)\n", where, key);
 
         contrib_t *c = contrib_new();
         if (!c) return -1;
@@ -505,21 +573,21 @@ static int harvest_args_row(const toml_table_t *tab, const char *key, int tier,
                             int file, const char *origin, const char *where) {
     toml_raw_t raw = toml_raw_in(tab, key);
     if (!raw) {
-        fprintf(stderr, "openpete: config: %s: [args] '%s' must be a scalar\n",
+        cfg_diag("openpete: config: %s: [args] '%s' must be a scalar\n",
                 where, key);
         return -1;
     }
     if (strncmp(key, "--", 2) != 0) {
-        fprintf(stderr, "openpete: config: %s: [args] key '%s' is not a flag "
-                        "(write it exactly as on the command line, e.g. "
-                        "\"--lod\")\n", where, key);
+        cfg_diag("openpete: config: %s: [args] key '%s' is not a flag "
+                 "(write it exactly as on the command line, e.g. "
+                 "\"--lod\")\n", where, key);
         return row_refused(where, "args", key);
     }
     char val[CFG_VALUE_MAX];
     int is_bool = 0, bool_val = 0;
     if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
-        fprintf(stderr, "openpete: config: %s: [args] '%s' has a value this "
-                        "config cannot use\n", where, key);
+        cfg_diag("openpete: config: %s: [args] '%s' has a value this "
+                 "config cannot use\n", where, key);
         return -1;
     }
 
@@ -549,7 +617,7 @@ static int harvest_args_row(const toml_table_t *tab, const char *key, int tier,
     if (k && !enum_ok(k, val)) {
         char vocab[128];
         enum_vocab_str(k, vocab, sizeof vocab);
-        fprintf(stderr, "openpete: config: %s: [args] '%s' expects %s, got: %s\n",
+        cfg_diag("openpete: config: %s: [args] '%s' expects %s, got: %s\n",
                 where, key, vocab, val);
         s_contrib_n--;   /* drop the refused contribution, the last one added */
         return value_refused(where, key, val);
@@ -606,8 +674,8 @@ static int harvest_keys_row(const toml_table_t *tab, const char *domain,
         for (int j = 0; j < n; j++) {
             toml_datum_t d = toml_string_at(arr, j);
             if (!d.ok) {
-                fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' "
-                                "array must hold strings\n",
+                cfg_diag("openpete: config: %s: [keys.%s] '%s' "
+                         "array must hold strings\n",
                         where, domain, key);
                 return -1;
             }
@@ -625,16 +693,16 @@ static int harvest_keys_row(const toml_table_t *tab, const char *domain,
 
     toml_raw_t raw = toml_raw_in(tab, key);
     if (!raw) {
-        fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' must be a "
-                        "string or an array of strings\n",
+        cfg_diag("openpete: config: %s: [keys.%s] '%s' must be a "
+                 "string or an array of strings\n",
                 where, domain, key);
         return -1;
     }
     char val[CFG_VALUE_MAX];
     int is_bool = 0, bool_val = 0;
     if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
-        fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' has a value "
-                        "this config cannot use\n", where, domain, key);
+        cfg_diag("openpete: config: %s: [keys.%s] '%s' has a value "
+                 "this config cannot use\n", where, domain, key);
         return -1;
     }
     const char *tok = val;
@@ -670,8 +738,8 @@ static int harvest_keys_mods(const toml_table_t *keys, int rank, const char *whe
         if (!mod_id) break;
         const toml_table_t *mt = toml_table_in(mods, mod_id);
         if (!mt) {
-            fprintf(stderr, "openpete: config: %s: [keys.mod] '%s' must be "
-                            "a table of binding names\n", where, mod_id);
+            cfg_diag("openpete: config: %s: [keys.mod] '%s' must be "
+                     "a table of binding names\n", where, mod_id);
             return -1;
         }
         for (int j = 0;; j++) {
@@ -683,8 +751,8 @@ static int harvest_keys_mods(const toml_table_t *keys, int rank, const char *whe
             if (!raw ||
                 toml_scalar_to_string(raw, val, sizeof val,
                                       &is_bool, &bool_val) != 0) {
-                fprintf(stderr, "openpete: config: %s: [keys.mod.%s] '%s' "
-                                "must be a string\n", where, mod_id, name);
+                cfg_diag("openpete: config: %s: [keys.mod.%s] '%s' "
+                         "must be a string\n", where, mod_id, name);
                 return -1;
             }
             const char *tok = val;
@@ -708,8 +776,8 @@ static int keys_unknown_tables(const toml_table_t *keys, const char *where) {
         if (!strcmp(key, "pad") || !strcmp(key, "pad2") ||
             !strcmp(key, "pad3") || !strcmp(key, "pad4") ||
             !strcmp(key, "host") || !strcmp(key, "mod")) continue;
-        fprintf(stderr, "openpete: config: %s: unknown [keys.%s] - expected "
-                        "pad, pad2, pad3, pad4, host or mod.<id>\n", where, key);
+        cfg_diag("openpete: config: %s: unknown [keys.%s] - expected "
+                 "pad, pad2, pad3, pad4, host or mod.<id>\n", where, key);
         if (row_refused(where, "keys", key) != 0) return -1;
     }
     return 0;
@@ -727,6 +795,9 @@ static int keys_unknown_tables(const toml_table_t *keys, const char *where) {
  * to stderr with `where`. Returns 0, or -1 on the first error. */
 static int harvest_keys(const toml_table_t *keys, int tier, int file,
                         const char *origin, const char *where) {
+    /* No consumer reads a binding before the game is identified, so the
+     * game-neutral stage leaves the keymap to the full stage. */
+    if (s_neutral) return 0;
     /* Keys have no [env]/[args] twin, so the spelling sub-sort never
      * applies and every binding ranks at SP_BASE for its scope. */
     const int rank = RANK(tier, file, SP_BASE);
@@ -791,7 +862,7 @@ static int load_toml(int file) {
     toml_table_t *doc = toml_parse_file(f, err, sizeof err);
     fclose(f);
     if (!doc) {
-        fprintf(stderr, "openpete: config: %s: %s\n", path, err);
+        cfg_diag("openpete: config: %s: %s\n", path, err);
         return -1;
     }
     s_doc[file] = doc;
@@ -869,8 +940,8 @@ static int harvest_disc_sha(int file) {
         if (klen < 8) continue;                       /* a serial, not a hash */
         if (strncmp(key, s_scope_sha, klen) != 0) continue;
         if (match) {
-            fprintf(stderr, "openpete: config: %s: [disc.%s] and [disc.%s] both "
-                            "match the running image - use a longer prefix\n",
+            cfg_diag("openpete: config: %s: [disc.%s] and [disc.%s] both "
+                     "match the running image - use a longer prefix\n",
                     s_file_path[file], match, key);
             return -1;
         }
@@ -913,9 +984,9 @@ static int harvest_saved(int file) {
      * exe-dir), so this can only happen when the layout puts the target in
      * the lower-ranked file; say so rather than let saves vanish. */
     if (file > s_write_file)
-        fprintf(stderr, "openpete: config: %s has a [saved] section that "
-                        "outranks the save target %s - settings saved from "
-                        "the menus will not take effect until it is removed\n",
+        cfg_diag("openpete: config: %s has a [saved] section that "
+                 "outranks the save target %s - settings saved from "
+                 "the menus will not take effect until it is removed\n",
                 s_file_path[file], s_file_path[s_write_file]);
 
     /* Keep a copy so a later save rewrites the whole zone rather than
@@ -962,8 +1033,8 @@ static void warn_retired_sidecars(const char *dir) {
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         openpete_paths_join(path, sizeof path, dir, names[i]);
         if (!file_exists(path)) continue;
-        fprintf(stderr, "openpete: config: %s is no longer read; put these "
-                        "settings in openpete.toml\n", path);
+        cfg_diag("openpete: config: %s is no longer read; put these "
+                 "settings in openpete.toml\n", path);
     }
 }
 
@@ -999,26 +1070,44 @@ static void scan_launch(int argc, char **argv, int typed_from) {
     }
 }
 
-/** @brief Record every set schema env var as a TIER_REAL_ENV contribution.
+/** @brief Record one set env var as a TIER_REAL_ENV contribution of schema knob `knob` (-1 for none).
+ *
+ * @param knob The schema index, or -1.
+ * @param var The variable.
+ * @param v Its value. */
+static void real_env_contrib(int knob, const char *var, const char *v) {
+    contrib_t *c = contrib_new();
+    if (!c) return;
+    c->knob = knob;
+    c->rank = RANK(TIER_REAL_ENV, 0, SP_ENV);
+    c->spelling = SP_ENV;
+    c->has_value = 1;
+    snprintf(c->key, sizeof c->key, "%s", var);
+    snprintf(c->value, sizeof c->value, "%s", v);
+    snprintf(c->origin, sizeof c->origin, "env");
+}
+
+/** @brief Record every set schema env var and every set device-creation env var as a TIER_REAL_ENV contribution.
  *
  * Runs before any [env] tier is applied, or the files' own variables would
- * read back as exported by the user. */
+ * read back as exported by the user. A device-creation variable with no
+ * schema row is recorded so openpete_config_device_value sees the real
+ * environment without a getenv of its own. */
 static void scan_real_env(void) {
     size_t n;
     const cfg_knob_t *sch = cfg_schema(&n);
     for (size_t i = 0; i < n; i++) {
         if (!sch[i].env) continue;
         const char *v = getenv(sch[i].env);
-        if (!v) continue;
-        contrib_t *c = contrib_new();
-        if (!c) return;
-        c->knob = (int)i;
-        c->rank = RANK(TIER_REAL_ENV, 0, SP_ENV);
-        c->spelling = SP_ENV;
-        c->has_value = 1;
-        snprintf(c->key, sizeof c->key, "%s", sch[i].env);
-        snprintf(c->value, sizeof c->value, "%s", v);
-        snprintf(c->origin, sizeof c->origin, "env");
+        if (v) real_env_contrib((int)i, sch[i].env, v);
+    }
+    size_t dn;
+    const char *const *dev = cfg_schema_device_spellings(&dn);
+    for (size_t i = 0; i < dn; i++) {
+        if (strncmp(dev[i], "OPENPETE_", 9) != 0) continue;
+        if (cfg_schema_find_env(dev[i]) >= 0) continue;   /* recorded above */
+        const char *v = getenv(dev[i]);
+        if (v) real_env_contrib(-1, dev[i], v);
     }
 }
 
@@ -1039,6 +1128,29 @@ static int portable_setenv_soft(const char *k, const char *v) {
 #endif
 }
 
+/** @brief Materialize one env winner: setenv in the full stage, the pending table in the game-neutral stage.
+ *
+ * Both keep the soft rule: a variable the environment already carries is
+ * not replaced. A full pending table drops the variable with a diagnostic.
+ * @param k The variable.
+ * @param v Its value. */
+static void cfg_setenv(const char *k, const char *v) {
+    if (!s_neutral) { (void)portable_setenv_soft(k, v); return; }
+    if (getenv(k)) return;
+    for (int i = 0; i < s_pending_env_n; i++)
+        if (!strcmp(s_pending_env[i].key, k)) {
+            snprintf(s_pending_env[i].value, sizeof s_pending_env[i].value, "%s", v ? v : "");
+            return;
+        }
+    if (s_pending_env_n >= CFG_MAX_PENDING_ENV) {
+        cfg_diag("openpete: config: too many [env] entries (max %d)\n", CFG_MAX_PENDING_ENV);
+        return;
+    }
+    pending_env_t *e = &s_pending_env[s_pending_env_n++];
+    snprintf(e->key, sizeof e->key, "%s", k);
+    snprintf(e->value, sizeof e->value, "%s", v ? v : "");
+}
+
 /** @brief Copy `s` into a new malloc block, or return NULL when the allocation fails.
  *
  * The copy is never freed: emitted tokens live for the process. */
@@ -1057,7 +1169,7 @@ static char *dup_str(const char *s) {
  * nothing reports the loss to the caller. */
 static void emit_token(const char *tok, const char *origin) {
     if (s_token_n >= CFG_MAX_TOKENS) {
-        fprintf(stderr, "openpete: config: too many flags to splice (max %d)\n",
+        cfg_diag("openpete: config: too many flags to splice (max %d)\n",
                 CFG_MAX_TOKENS);
         return;
     }
@@ -1163,7 +1275,8 @@ static void record_decision(const contrib_t *win) {
  * mutex-blocked flags. A bare key of an env-only knob is set as its
  * variable, and a false bool is left unset because some consumers test
  * presence only. setenv never replaces a variable the environment already
- * carries. */
+ * carries. In the game-neutral stage the variables go to the pending table
+ * (cfg_setenv) and the process environment is not written. */
 static void materialize(void) {
     for (int i = 0; i < s_contrib_n; i++) {
         contrib_t *c = &s_contrib[i];
@@ -1179,7 +1292,7 @@ static void materialize(void) {
         const cfg_knob_t *k = (c->knob >= 0) ? &cfg_schema(NULL)[c->knob] : NULL;
 
         if (c->spelling == SP_ENV) {
-            portable_setenv_soft(c->key, c->value);
+            cfg_setenv(c->key, c->value);
             continue;
         }
 
@@ -1190,7 +1303,7 @@ static void materialize(void) {
             if (k->type == CFG_BOOL &&
                 (!strcmp(c->value, "0") || !strcmp(c->value, "off")))
                 continue;
-            portable_setenv_soft(k->env, c->value);
+            cfg_setenv(k->env, c->value);
             continue;
         }
 
@@ -1217,30 +1330,74 @@ void openpete_config_set_disc_identity_fn(openpete_disc_identity_fn fn) {
     s_disc_identity = fn;
 }
 
-/** @brief Best guess at the disc image this launch boots, used only to pick the [disc.*] scopes.
+void openpete_config_set_identified_disc(const char *disc_path) {
+    snprintf(s_ident_disc, sizeof s_ident_disc, "%s", disc_path ? disc_path : "");
+}
+
+void openpete_config_set_identity_source(const char *source) {
+    snprintf(s_ident_source, sizeof s_ident_source, "%s", source ? source : "");
+}
+
+/* ------------------------------------------------------------------ */
+/* game and disc scopes on the device-creation set                    */
+/* ------------------------------------------------------------------ */
+
+/** @brief Whether contribution `c` was harvested from a [game.*] or [disc.*] scope. */
+static int scoped_tier(const contrib_t *c) {
+    const int tier = c->rank / 1000;
+    return tier == TIER_GAME || tier == TIER_DISC_SERIAL || tier == TIER_DISC_SHA;
+}
+
+/** @brief The device-creation class of contribution `c`, from its own spelling or its knob's.
  *
- * The last --disc or --ingest value in argv, else the value of the
- * highest-ranked `disc` contribution harvested so far (the tiers below the
- * [disc.*] scopes). A bare image path in argv is not considered. Returns a
- * static buffer, or NULL when neither source names an image. */
-static const char *provisional_disc(int argc, char **argv) {
-    static char path[CFG_PATH_MAX];
-    path[0] = '\0';
-
-    for (int i = 1; i + 1 < argc; i++)
-        if (!strcmp(argv[i], "--disc") || !strcmp(argv[i], "--ingest"))
-            snprintf(path, sizeof path, "%s", argv[i + 1]);
-    if (path[0]) return path;
-
-    int best = -1, best_rank = -1;
-    int disc_knob = cfg_schema_find_id("disc");
-    for (int i = 0; i < s_contrib_n; i++) {
-        if (s_contrib[i].knob != disc_knob) continue;
-        if (s_contrib[i].rank <= best_rank) continue;
-        best = i; best_rank = s_contrib[i].rank;
+ * An [env] or [args] contribution is classed by its key; a bare key, or any
+ * spelling of a schema knob, by the stronger class of the knob's flag and
+ * env var, since the two spellings are one setting. */
+static cfg_device_t contrib_device_class(const contrib_t *c) {
+    cfg_device_t cls = cfg_schema_device_class(c->key);
+    if (c->knob >= 0) {
+        const cfg_knob_t *k = &cfg_schema(NULL)[c->knob];
+        cfg_device_t a = cfg_schema_device_class(k->cli);
+        cfg_device_t b = cfg_schema_device_class(k->env);
+        if (a > cls) cls = a;
+        if (b > cls) cls = b;
     }
-    if (best >= 0) snprintf(path, sizeof path, "%s", s_contrib[best].value);
-    return path[0] ? path : NULL;
+    return cls;
+}
+
+/** @brief Move every game or disc scope contribution the full stage may not apply to the not-applied list.
+ *
+ * Two kinds: a CFG_DEVICE_FIXED knob, which the device was created without,
+ * and the `disc` knob, an identification input that a scope selected by
+ * the identified game or disc cannot name. CFG_DEVICE_LIVE contributions
+ * stay and win as usual; the consumer applies them after creation. */
+static void drop_scoped_unapplied(void) {
+    const int disc_knob = cfg_schema_find_id("disc");
+    int o = 0;
+    for (int i = 0; i < s_contrib_n; i++) {
+        const contrib_t *c = &s_contrib[i];
+        const char *why = NULL;
+        if (scoped_tier(c)) {
+            if (contrib_device_class(c) == CFG_DEVICE_FIXED)
+                why = "device-creation knob";
+            else if (disc_knob >= 0 && c->knob == disc_knob)
+                why = "identification input";
+        }
+        if (!why) {
+            if (o != i) s_contrib[o] = s_contrib[i];
+            o++;
+            continue;
+        }
+        if (s_not_applied_n < CFG_MAX_NOT_APPLIED) {
+            not_applied_t *n = &s_not_applied[s_not_applied_n++];
+            snprintf(n->key, sizeof n->key, "%s",
+                     c->knob >= 0 ? cfg_schema(NULL)[c->knob].id : c->key);
+            snprintf(n->value, sizeof n->value, "%s", c->value);
+            snprintf(n->origin, sizeof n->origin, "%s", c->origin);
+            n->why = why;
+        }
+    }
+    s_contrib_n = o;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1256,7 +1413,12 @@ const char *openpete_config_token_source(const char *token) {
     return NULL;
 }
 
-void openpete_config_reset(void) {
+/** @brief Clear one resolution's state: documents, files, contributions, tokens, decisions, scopes and latches.
+ *
+ * Keeps the game id, the disc-identity hook, the identified disc and source,
+ * the diagnostics already printed and the materialization count, which span
+ * both stages. The spliced tokens are not freed. */
+static void reset_resolution(void) {
     for (int f = 0; f < 2; f++) {
         if (s_doc[f]) toml_free(s_doc[f]);
         s_doc[f] = NULL;
@@ -1264,23 +1426,31 @@ void openpete_config_reset(void) {
         s_file_present[f] = 0;
     }
     s_contrib_n = s_token_n = s_decision_n = s_saved_n = 0;
+    s_pending_env_n = s_not_applied_n = 0;
     s_file_n = 0;
     s_write_file = 1;
     s_save_path[0] = s_scope_serial[0] = s_scope_sha[0] = '\0';
     s_no_config = s_report_requested = 0;
-    s_disc_identity = NULL;
     openpete_paths_set_portable(-1);   /* drop the last run's directive */
 }
 
-int openpete_config_apply(int argc, char **argv, int typed_argc,
-                          int *out_argc, char ***out_argv) {
-    const char *explicit_path = NULL;
+void openpete_config_reset(void) {
+    reset_resolution();
+    s_disc_identity = NULL;
+    s_ident_disc[0] = s_ident_source[0] = '\0';
+    s_diag_n = 0;
+    s_materializations = 0;
+}
 
-    /* Seed the keymap from its registry defaults before any [keys] table
-     * is read, so config rows layer on top of a populated store rather
-     * than defining it. Idempotent, and a no-op for a caller that never
-     * uses the keymap. */
-    openpete_keymap_init();
+/** @brief Read the launch tiers and both files, and harvest the global scope of each.
+ *
+ * Scans argv for --no-config, --config-report, --keys-report and --config
+ * (OPENPETE_CONFIG when --config is absent; "none" disables the files),
+ * captures the real environment, records the launch tiers, loads the files
+ * and settles the save target from the `portable` directive.
+ * @return 0, or -1 on an error already printed. */
+static int harvest_launch_and_global(int argc, char **argv, int typed_argc) {
+    const char *explicit_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-config")) s_no_config = 1;
@@ -1299,7 +1469,8 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
 
     /* The environment as the user actually exported it - captured before a
      * single [env] line is applied, so tier 8 can be told apart from the
-     * file's own variables. */
+     * file's own variables. The game-neutral stage writes nothing, so the
+     * full stage captures the same environment. */
     scan_real_env();
 
     /* argv already carries the bk2 sidecar (spliced by the caller), whose
@@ -1309,83 +1480,115 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
     if (typed_from < 1) typed_from = 1;
     scan_launch(argc, argv, typed_from);
 
+    if (s_no_config) return 0;
+
     char exedir[CFG_PATH_MAX] = "";
     int have_exedir = (openpete_exe_dir(exedir, sizeof exedir) == 0);
 
-    if (!s_no_config) {
-        if (explicit_path) {
-            snprintf(s_file_path[0], CFG_PATH_MAX, "%s", explicit_path);
-            s_file_n = 1;
-            s_write_file = 0;
-            if (!file_exists(explicit_path)) {
-                fprintf(stderr, "openpete: --config %s: no such file\n", explicit_path);
-                return -1;
-            }
-        } else {
-            if (have_exedir)
-                openpete_paths_join(s_file_path[0], CFG_PATH_MAX, exedir, "openpete.toml");
-            /* Named, not created: the per-user file is read whether or not
-             * it is the write target, and a portable install must not leave
-             * an empty directory behind in AppData just for having looked. */
+    if (explicit_path) {
+        snprintf(s_file_path[0], CFG_PATH_MAX, "%s", explicit_path);
+        s_file_n = 1;
+        s_write_file = 0;
+        if (!file_exists(explicit_path)) {
+            cfg_diag("openpete: --config %s: no such file\n", explicit_path);
+            return -1;
+        }
+    } else {
+        if (have_exedir)
+            openpete_paths_join(s_file_path[0], CFG_PATH_MAX, exedir, "openpete.toml");
+        /* Named, not created: the per-user file is read whether or not
+         * it is the write target, and a portable install must not leave
+         * an empty directory behind in AppData just for having looked. */
+        char userdir[CFG_PATH_MAX];
+        if (openpete_paths_user_config_dir(userdir, sizeof userdir, 0) == 0)
+            openpete_paths_join(s_file_path[1], CFG_PATH_MAX, userdir, "openpete.toml");
+        s_file_n = 2;
+    }
+
+    if (!explicit_path && have_exedir) warn_retired_sidecars(exedir);
+
+    for (int f = 0; f < s_file_n; f++) {
+        if (!s_file_path[f][0]) continue;
+        if (load_toml(f) < 0) return -1;
+    }
+
+    /* Both files are now parsed, so the `portable` directive (if any)
+     * has landed and the layout is decided. --config pins its own file
+     * as the target and is not up for a vote. */
+    if (!explicit_path) {
+        s_write_file = openpete_paths_portable() ? 0 : 1;
+        if (s_write_file == 1 && !s_neutral) {
+            /* The write target has to exist before the [saved] flush;
+             * naming it above deliberately did not create it. */
             char userdir[CFG_PATH_MAX];
-            if (openpete_paths_user_config_dir(userdir, sizeof userdir, 0) == 0)
-                openpete_paths_join(s_file_path[1], CFG_PATH_MAX, userdir, "openpete.toml");
-            s_file_n = 2;
-        }
-
-        if (!explicit_path && have_exedir) warn_retired_sidecars(exedir);
-
-        for (int f = 0; f < s_file_n; f++) {
-            if (!s_file_path[f][0]) continue;
-            if (load_toml(f) < 0) return -1;
-        }
-
-        /* Both files are now parsed, so the `portable` directive (if any)
-         * has landed and the layout is decided. --config pins its own file
-         * as the target and is not up for a vote. */
-        if (!explicit_path) {
-            s_write_file = openpete_paths_portable() ? 0 : 1;
-            if (s_write_file == 1) {
-                /* The write target has to exist before the [saved] flush;
-                 * naming it above deliberately did not create it. */
-                char userdir[CFG_PATH_MAX];
-                (void)openpete_paths_user_config_dir(userdir, sizeof userdir, 1);
-            }
-        }
-
-        for (int f = 0; f < s_file_n; f++) {
-            if (!s_doc[f]) continue;
-            if (harvest_global(f) != 0) return -1;
-            if (harvest_named(f, "game", s_scope_game, TIER_GAME, "game") != 0) return -1;
+            (void)openpete_paths_user_config_dir(userdir, sizeof userdir, 1);
         }
     }
 
-    /* Now that the low tiers are in, we know which image will boot, which
-     * is what selects the [disc.*] scopes. Cheap by contract: a serial read
-     * or a library entry's recorded hash, never an image hash. */
+    for (int f = 0; f < s_file_n; f++)
+        if (s_doc[f] && harvest_global(f) != 0) return -1;
+    return 0;
+}
+
+/** @brief Harvest the identified game's [game.<id>] scope and the identified disc's [disc.*] scopes.
+ *
+ * The disc-identity hook names the identified disc's serial and hash
+ * (cheap by contract: a serial read or a library entry's recorded hash).
+ * @return 0, or -1 on an error already printed. */
+static int harvest_identified_scopes(void) {
+    for (int f = 0; f < s_file_n; f++)
+        if (s_doc[f] && harvest_named(f, "game", s_scope_game, TIER_GAME, "game") != 0)
+            return -1;
+    if (s_disc_identity)
+        (void)s_disc_identity(s_ident_disc[0] ? s_ident_disc : NULL,
+                              s_scope_serial, sizeof s_scope_serial,
+                              s_scope_sha, sizeof s_scope_sha);
+    for (int f = 0; f < s_file_n; f++) {
+        if (!s_doc[f]) continue;
+        if (harvest_named(f, "disc", s_scope_serial, TIER_DISC_SERIAL, "disc") != 0)
+            return -1;
+        if (harvest_disc_sha(f) != 0) return -1;
+    }
+    return 0;
+}
+
+/** @brief Run one resolution stage: harvest, resolve and materialize.
+ *
+ * The game-neutral stage (s_neutral) harvests the launch tiers, the global
+ * scopes and [saved]; the full stage adds the identified game's and disc's
+ * scopes, drops the scoped values it may not apply, resolves the keymap,
+ * and is the stage that writes the environment.
+ * @return As openpete_config_apply. */
+static int resolve_stage(int argc, char **argv, int typed_argc,
+                         int *out_argc, char ***out_argv) {
+    reset_resolution();
+
+    /* Seed the keymap from its registry defaults before any [keys] table
+     * is read, so config rows layer on top of a populated store rather
+     * than defining it. The game-neutral stage reads no [keys] table. */
+    if (!s_neutral) openpete_keymap_init();
+
+    if (harvest_launch_and_global(argc, argv, typed_argc) != 0) return -1;
+
     if (!s_no_config) {
-        const char *disc = provisional_disc(argc, argv);
-        if (s_disc_identity)
-            (void)s_disc_identity(disc, s_scope_serial, sizeof s_scope_serial,
-                                  s_scope_sha, sizeof s_scope_sha);
-        for (int f = 0; f < s_file_n; f++) {
-            if (!s_doc[f]) continue;
-            if (harvest_named(f, "disc", s_scope_serial, TIER_DISC_SERIAL, "disc") != 0)
-                return -1;
-            if (harvest_disc_sha(f) != 0) return -1;
-            if (harvest_saved(f) != 0) return -1;
-        }
+        if (!s_neutral && harvest_identified_scopes() != 0) return -1;
+        for (int f = 0; f < s_file_n; f++)
+            if (s_doc[f] && harvest_saved(f) != 0) return -1;
     }
 
     if (s_write_file >= 0 && s_file_path[s_write_file][0])
         snprintf(s_save_path, sizeof s_save_path, "%s", s_file_path[s_write_file]);
 
-    /* Every [keys] layer is in; pick winners and run the conflict +
-     * reachability scans. Never fails a boot - a clash is a warning, and
-     * an unreachable control is the user's call to make. */
-    (void)openpete_keymap_resolve();
+    if (!s_neutral) {
+        drop_scoped_unapplied();
+        /* Every [keys] layer is in; pick winners and run the conflict +
+         * reachability scans. Never fails a boot - a clash is a warning,
+         * and an unreachable control is the user's call to make. */
+        (void)openpete_keymap_resolve();
+    }
 
     materialize();
+    if (!s_neutral) s_materializations++;
 
     if (s_token_n == 0) return 0;
 
@@ -1401,6 +1604,59 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
     *out_argc = new_argc;
     *out_argv = new_argv;
     return 1;
+}
+
+int openpete_config_apply_neutral(int argc, char **argv, int typed_argc,
+                                  int *out_argc, char ***out_argv) {
+    s_neutral = 1;
+    const int rc = resolve_stage(argc, argv, typed_argc, out_argc, out_argv);
+    s_neutral = 0;
+    return rc;
+}
+
+int openpete_config_apply(int argc, char **argv, int typed_argc,
+                          int *out_argc, char ***out_argv) {
+    s_neutral = 0;
+    return resolve_stage(argc, argv, typed_argc, out_argc, out_argv);
+}
+
+int openpete_config_materializations(void) { return s_materializations; }
+
+const char *openpete_config_env(const char *name) {
+    if (!name) return NULL;
+    const char *v = getenv(name);
+    if (v) return v;
+    for (int i = 0; i < s_pending_env_n; i++)
+        if (!strcmp(s_pending_env[i].key, name)) return s_pending_env[i].value;
+    return NULL;
+}
+
+const char *openpete_config_device_value(const char *spelling) {
+    if (!spelling) return NULL;
+    const int is_env = !strncmp(spelling, "OPENPETE_", 9);
+    /* The contribution that names this spelling, to find its setting. */
+    const contrib_t *probe = NULL;
+    contrib_t synth;
+    for (int i = 0; i < s_contrib_n && !probe; i++)
+        if (!strcmp(s_contrib[i].key, spelling)) probe = &s_contrib[i];
+    if (!probe) {
+        memset(&synth, 0, sizeof synth);
+        synth.knob = is_env ? cfg_schema_find_env(spelling) : cfg_schema_find_cli(spelling);
+        synth.spelling = is_env ? SP_ENV : SP_ARGS;
+        snprintf(synth.key, sizeof synth.key, "%s", spelling);
+        probe = &synth;
+    }
+    /* The setting's winner over the tiers without a game or disc scope. */
+    const contrib_t *win = NULL;
+    for (int i = 0; i < s_contrib_n; i++) {
+        const contrib_t *c = &s_contrib[i];
+        if (c->suppress || scoped_tier(c) || !same_setting(probe, c)) continue;
+        if (!win || c->rank > win->rank) win = c;
+    }
+    if (!win) return NULL;
+    /* Two spellings of one knob share a winner; it answers only its own. */
+    if (is_env != (win->spelling == SP_ENV)) return NULL;
+    return win->value;
 }
 
 void openpete_config_set_game_id(const char *id) {
@@ -1432,6 +1688,7 @@ void openpete_config_report(FILE *out) {
             s_scope_game[0] ? s_scope_game : "-",
             s_scope_serial[0] ? s_scope_serial : "-",
             s_scope_sha[0] ? s_scope_sha : "-");
+    fprintf(out, "  identified by: %s\n", s_ident_source[0] ? s_ident_source : "-");
     fprintf(out, "  save target: %s\n", s_save_path[0] ? s_save_path : "(none)");
 
     /* Where the things openpete writes go, which the knob table below
@@ -1473,6 +1730,16 @@ void openpete_config_report(FILE *out) {
         fprintf(out, "    %-30s %-14s %s\n", c->key,
                 c->suppress ? "(suppressed)" : (c->value[0] ? c->value : "(flag)"),
                 c->origin);
+    }
+
+    /* Scoped values of the device-creation set and of the identification
+     * input: harvested, then refused, so the file's line is accounted for. */
+    if (s_not_applied_n) {
+        fprintf(out, "\n  not applied (set in a game or disc scope):\n");
+        for (int i = 0; i < s_not_applied_n; i++)
+            fprintf(out, "    %-30s %-14s %-26s %s\n", s_not_applied[i].key,
+                    s_not_applied[i].value, s_not_applied[i].origin,
+                    s_not_applied[i].why);
     }
     fprintf(out, "\n");
 }

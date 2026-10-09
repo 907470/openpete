@@ -90,6 +90,11 @@ The flag spelling is `--ingest PATH` <!-- id: flag:--ingest -->.
 without copying it into the [library](../help/glossary.md#library). Without
 it, the program boots the library's most recent disc.
 
+`--game ID` <!-- id: flag:--game --> names the game to run: `spyro-1`,
+`spyro-2` or `spyro-3`. Without it the game is read from the disc. A disc of
+another game, or a game this program does not run, stops the launch with a
+message.
+
 ## Uninstalling
 
 Delete the program folder or the AppImage. On Linux, and on a Windows

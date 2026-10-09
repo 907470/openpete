@@ -194,6 +194,36 @@ static int float_rows_refuse_non_finite(void) {
     return rc;
 }
 
+/** @brief Check the registry's device_creation marks against the config schema's device set, both ways.
+ *
+ * Every spelling of a marked row has the row's class in the schema set;
+ * every schema spelling a row names marks that row with the same class.
+ * Spellings with no row (harness env vars) are the schema set's alone. The
+ * set must be non-empty, so a check over nothing fails.
+ * @return 1 on a mismatch, else 0. */
+static int device_marks_agree(void) {
+    int rc = 0, marked = 0;
+    size_t n;
+    const knob_desc_t *ks = knob_registry(&n);
+    for (size_t i = 0; i < n; i++) {
+        const char *sp[2] = { ks[i].cli, ks[i].env };
+        for (int j = 0; j < 2; j++) {
+            if (!sp[j]) continue;
+            const int cls = (int)cfg_schema_device_class(sp[j]);
+            if (cls == (int)ks[i].device_creation) { marked += cls != 0; continue; }
+            rc |= fail("device-creation mark differs between registry and schema");
+            fprintf(stderr, "       %s (%s): registry %d, schema %d\n",
+                    ks[i].id, sp[j], ks[i].device_creation, cls);
+        }
+    }
+    size_t dn;
+    (void)cfg_schema_device_spellings(&dn);
+    if (dn == 0 || marked == 0) rc |= fail("device-creation set is empty");
+    printf("knob_registry_test: device marks: %d row spellings, %zu schema spellings\n",
+           marked, dn);
+    return rc;
+}
+
 int main(void) {
     int rc = 0;
 
@@ -425,6 +455,7 @@ int main(void) {
     }
 
     rc |= float_rows_refuse_non_finite();
+    rc |= device_marks_agree();
 
     printf(rc ? "knob_registry_test: FAILED\n" : "knob_registry_test: ok\n");
     return rc;

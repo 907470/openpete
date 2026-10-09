@@ -30,6 +30,7 @@
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 #include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
 #include "openpete_paths.h"         /* pipeline cache directory */
+#include "openpete_config.h"        /* device-creation knobs from the game-neutral tiers */
 #include "openpete_atomic_file.h"   /* pipeline cache write-back */
 
 #include "openpete_log.h"
@@ -3941,7 +3942,7 @@ static void nr_log_window_state(SDL_Window *win, const char *when)
     if (!s_background_requested) {
         /* OPENPETE_WINDOW_STATE=1 prints the same lines for a window created
          * without --background, which is what a comparison of the two needs. */
-        const char *v = getenv("OPENPETE_WINDOW_STATE");
+        const char *v = openpete_config_device_value("OPENPETE_WINDOW_STATE");
         if (!v || !*v || *v == '0') return;
     }
     const SDL_WindowFlags f = SDL_GetWindowFlags(win);
@@ -4494,6 +4495,44 @@ static void wireframe_report(const rhi_device *dev)
                                    "drawing the filled NOTEX view instead");
 }
 
+/** @brief Point the RHI's device-creation knobs at the game-neutral tiers and return the present preference the device is created with.
+ *
+ * The window, instance and device are created from tiers that hold no game
+ * or disc scope (openpete_config_device_value), so the device a launcher
+ * creates before the game is known matches the one created after it.
+ * @return The --vsync value of those tiers: 1, 0, or -1 when they leave it unset. */
+static int nr_device_knobs_install(void)
+{
+    rhi_set_knob_source(openpete_config_device_value);
+    const char *v = openpete_config_device_value("--vsync");
+    if (!v) return -1;
+    return (!strcmp(v, "0") || !strcmp(v, "off") || !strcmp(v, "false")) ? 0 : 1;
+}
+
+/** @brief Apply a game or disc scope's present mode to the created device through the live path.
+ *
+ * The present mode is the device-creation knob a game or disc scope still
+ * applies to: when the full resolution (opts->vsync, OPENPETE_PRESENT_MODE)
+ * differs from the game-neutral one the device was created with, the
+ * swapchain is flagged for recreation with it (rhi_set_present_mode_name,
+ * rhi_set_vsync) and the change is logged.
+ * @param dev The created device.
+ * @param opts The session options, from the full resolution.
+ * @param created_vsync The vsync preference the device was created with. */
+static void nr_apply_scoped_present(rhi_device *dev, const openpete_options_t *opts,
+                                    int created_vsync)
+{
+    const char *created_mode = openpete_config_device_value("OPENPETE_PRESENT_MODE");
+    const char *mode = openpete_config_env("OPENPETE_PRESENT_MODE");
+    const int mode_differs = strcmp(created_mode ? created_mode : "", mode ? mode : "") != 0;
+    if (opts->vsync == created_vsync && !mode_differs) return;
+    rhi_set_present_mode_name(dev, mode);
+    rhi_set_vsync(dev, opts->vsync);
+    OPL_INFO_F("native", "present mode: scoped value applied after device creation "
+               "(vsync %d -> %d, mode %s -> %s)", created_vsync, opts->vsync,
+               created_mode ? created_mode : "-", mode ? mode : "-");
+}
+
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
     if (!opts)
@@ -4571,6 +4610,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 
     SDL_Window *win = NULL;
     rhi_device *dev = NULL;
+    const int created_vsync = nr_device_knobs_install();
     nr_set_pipeline_cache_dir();
     if (headless) {
         /* No window: render into the offscreen/RTT and read back for screenshots.
@@ -4653,12 +4693,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             openpete_window_send_to_back(win);
         nr_log_window_state(win, "bring-up");
 
-        dev = rhi_create(win, "openpete-native", opts->vsync);
+        dev = rhi_create(win, "openpete-native", created_vsync);
         if (!dev) {
             OPL_ERROR_F("native", "rhi_create failed; continuing without native A/B");
             SDL_DestroyWindow(win);
             return 1;
         }
+        nr_apply_scoped_present(dev, opts, created_vsync);
         /* M-key dev config overlay: imgui context + SDL3/Vulkan backends bound
          * to this window/device. Failure just leaves the overlay unavailable
          * (logged inside); never fatal to the renderer. */

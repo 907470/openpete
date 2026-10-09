@@ -843,6 +843,89 @@ static void case_portable_layout(void) {
           "dropping the directive must restore the platform default");
 }
 
+/* The game-neutral stage writes nothing: its [env] winners are readable
+ * through openpete_config_env and absent from the process, and the game
+ * scope is not read. The full stage after it writes the environment once. */
+static void case_neutral_stage(void) {
+    clear_env("OPENPETE_NOTEX");
+    clear_env("OPENPETE_TEXPACK_DIR");
+    const char *body =
+        "[env]\nOPENPETE_NOTEX = \"1\"\n"
+        "[game.spyro-1]\nfov = 75\n"
+        "[game.spyro-1.env]\nOPENPETE_TEXPACK_DIR = \"packs\"\n";
+    g_case = "neutral stage writes nothing";
+    openpete_config_reset();
+    write_toml(body);
+    char *argv[] = { (char *)"openpete", (char *)"--config", g_toml_path, NULL };
+    openpete_config_set_game_id("spyro-1");
+    int oc = 0;
+    char **ov = NULL;
+    int rc = openpete_config_apply_neutral(3, argv, 3, &oc, &ov);
+    run_t r = { 3, argv, rc };
+    if (rc == 1) { r.argc = oc; r.argv = ov; }
+    CHECK(rc >= 0, "the neutral stage must resolve");
+    expect_env_unset("OPENPETE_NOTEX");
+    const char *pending = openpete_config_env("OPENPETE_NOTEX");
+    CHECK(pending && !strcmp(pending, "1"), "openpete_config_env should see the pending [env] winner");
+    expect_no_flag(&r, "--fov");
+    CHECK(!openpete_config_env("OPENPETE_TEXPACK_DIR"), "the game scope must not be read");
+    CHECK(openpete_config_materializations() == 0, "the neutral stage is not a materialization");
+
+    g_case = "full stage after identification";
+    rc = openpete_config_apply(3, argv, 3, &oc, &ov);
+    r.rc = rc; r.argc = 3; r.argv = argv;
+    if (rc == 1) { r.argc = oc; r.argv = ov; }
+    expect_env("OPENPETE_NOTEX", "1");
+    expect_env("OPENPETE_TEXPACK_DIR", "packs");
+    expect_flag_value(&r, "--fov", "75");
+    CHECK(openpete_config_materializations() == 1, "one materialization, got %d",
+          openpete_config_materializations());
+    clear_env("OPENPETE_NOTEX");
+    clear_env("OPENPETE_TEXPACK_DIR");
+}
+
+/* Device-creation knobs: a game or disc scope value of a fixed knob is not
+ * applied, a live one is, and openpete_config_device_value answers from the
+ * tiers without a scope. The `disc` key in a scope is not applied either. */
+static void case_scoped_device_knobs(void) {
+    const char *vars[] = { "OPENPETE_RHI_DEPTH_D24", "OPENPETE_GPU_TIMERS",
+                           "OPENPETE_VK_VALIDATION", "OPENPETE_PRESENT_MODE",
+                           "OPENPETE_BACKGROUND", NULL };
+    for (int i = 0; vars[i]; i++) clear_env(vars[i]);
+    run_t r = run("scoped device knobs",
+        "[env]\nOPENPETE_GPU_TIMERS = \"1\"\n"
+        "[game.spyro-1]\nvsync = false\nbackground = true\nlog_format = \"json\"\n"
+        "disc = \"other.cue\"\nfov = 80\n"
+        "[game.spyro-1.env]\nOPENPETE_RHI_DEPTH_D24 = \"1\"\nOPENPETE_GPU_TIMERS = \"0\"\n"
+        "[disc.SCUS-94228.env]\nOPENPETE_VK_VALIDATION = \"1\"\n",
+        NULL, 1);
+    CHECK(r.rc >= 0, "the full stage must resolve");
+    expect_env_unset("OPENPETE_RHI_DEPTH_D24");
+    expect_env_unset("OPENPETE_VK_VALIDATION");
+    expect_env("OPENPETE_GPU_TIMERS", "1");
+    expect_flag_value(&r, "--vsync", "0");
+    expect_flag_value(&r, "--log-format", "json");
+    expect_flag_value(&r, "--fov", "80");
+    expect_no_flag(&r, "--background");
+    expect_no_flag(&r, "--disc");
+    CHECK(!openpete_config_device_value("--vsync"), "no unscoped tier sets --vsync");
+    const char *gt = openpete_config_device_value("OPENPETE_GPU_TIMERS");
+    CHECK(gt && !strcmp(gt, "1"), "GPU_TIMERS should resolve to the global [env] 1, got %s",
+          gt ? gt : "(null)");
+    CHECK(!openpete_config_device_value("OPENPETE_RHI_DEPTH_D24"),
+          "a game-scope D24 must not reach device creation");
+    CHECK(!strcmp(openpete_config_knob_layer("vsync"), "game.spyro-1"),
+          "vsync is won by the game scope, got %s", openpete_config_knob_layer("vsync"));
+
+    static const char *const typed[] = { "--vsync", "1", NULL };
+    r = run("cli device knob", "[game.spyro-1]\nvsync = false\n", typed, 0);
+    const char *v = openpete_config_device_value("--vsync");
+    CHECK(v && !strcmp(v, "1"), "--vsync from the command line reaches device creation");
+    CHECK(!openpete_config_device_value("OPENPETE_PRESENT_MODE"),
+          "the flag spelling won, so the env spelling answers nothing");
+    for (int i = 0; vars[i]; i++) clear_env(vars[i]);
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     snprintf(g_toml_path, sizeof g_toml_path, "%s/openpete-config-test.toml",
@@ -875,6 +958,8 @@ int main(void) {
     case_keys_unbind();
     case_keys_values();
     case_portable_layout();
+    case_neutral_stage();
+    case_scoped_device_knobs();
 
     remove(g_toml_path);
     if (g_fail) {

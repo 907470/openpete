@@ -145,13 +145,23 @@ static void parse_slack_env(void) {
     s_slack_ns = (op_time_t)v * OP_NS_PER_US;
 }
 
+/** @brief Read OPENPETE_PACER_CENSUS into s_census: on unless unset, empty or starting with '0'. */
+static void parse_census_env(void) {
+    const char* c = getenv("OPENPETE_PACER_CENSUS");
+    s_census = (c && *c && *c != '0');
+}
+
+void op_time_reload_env(void) {
+    const char* s = getenv("OPENPETE_PACER_SLACK_US");
+    /* Unset now and before: the adaptive slack keeps what it learned. */
+    if ((s && *s) || s_slack_fixed) parse_slack_env();
+    parse_census_env();
+}
+
 void op_time_init(void) {
     if (s_initialized) return;
     parse_slack_env();
-    {
-        const char* c = getenv("OPENPETE_PACER_CENSUS");
-        s_census = (c && *c && *c != '0');
-    }
+    parse_census_env();
 
 #if defined(_WIN32)
     LARGE_INTEGER f;

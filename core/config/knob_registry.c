@@ -624,6 +624,7 @@ static const struct { const char *id; size_t off; } k_optstr_fields[] = {
     { "card1",                offsetof(openpete_options_t, card1_path) },
     { "card2",                offsetof(openpete_options_t, card2_path) },
     { "ingest",               offsetof(openpete_options_t, ingest_path) },
+    { "game",                 offsetof(openpete_options_t, game_selector) },
     { "record",               offsetof(openpete_options_t, record_path) },
     { "record_encoder",       offsetof(openpete_options_t, record_encoder) },
     { "record_pixfmt",        offsetof(openpete_options_t, record_pixfmt) },
@@ -817,6 +818,12 @@ static int env_set_str(knob_desc_t *k, const char *v) {
     { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
       KNOB_RESTART_ONLY, NULL, 0, 0, 0, NULL, NULL, env_get_str, NULL, \
       KNOB_SRC_DEFAULT, 0, {0}, 0, def }
+/* An ENVROW_LATCHED row read while the device is created: device-creation
+ * class 1 (openpete_knobs.h device_creation). */
+#define ENVROW_DEVICE(name, sect, def, helptext) \
+    { name, name, sect, NULL, "OPENPETE_" name, helptext, KNOB_STRING, \
+      KNOB_RESTART_ONLY, NULL, 0, 0, 0, NULL, NULL, env_get_str, NULL, \
+      KNOB_SRC_DEFAULT, 0, {0}, 0, def, .device_creation = 1 }
 /* An ENVROW_LATCHED row whose unset value the program decides: `note` says
  * how, and the overlay shows "(unset)". */
 #define ENVROW_LATCHED_NOTE(name, sect, note, helptext) \
@@ -960,6 +967,7 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       vsync_get, vsync_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "on (FIFO), unless OPENPETE_PRESENT_MODE or the device selects another present mode",
+      .device_creation = 2,
       .help_arg = "0|1", .help_order = 100,
       .help_text = "native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
           "for uncapped fps / low latency; on|off also accepted). Display-only." },
@@ -1233,6 +1241,7 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0", .flag_arg = KNOB_FLAG_ARG_OPTIONAL,
+      .device_creation = 1,
       .help_arg = "[0|1]", .help_order = 120,
       .help_text = "open the window at its normal size and visible, but do not take\n"
           "focus, do not activate on show, and sit behind the other windows\n"
@@ -1509,6 +1518,7 @@ static const knob_desc_t g_builtin[] = {
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, logfile_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "env OPENPETE_LOG_FILE, else <state dir>/logs/openpete.log",
+      .device_creation = 1,
       .help_arg = "PATH", .help_order = 640,
       .help_text = "mirror stderr to PATH instead of the default\n"
           "<state>/logs/openpete.log; env OPENPETE_LOG_FILE=..." },
@@ -1518,6 +1528,7 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       nologfile_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
+      .device_creation = 1,
       .help_arg = NULL, .help_order = 650,
       .help_text = "do not write a log file at all" },
 
@@ -1533,6 +1544,19 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "copy a disc image (.cue/.bin) into the library\n"
           "next to the exe and boot it; later runs need no\n"
           "--disc at all (the original file can be deleted)" },
+
+    { "game", "Game", "Paths", "--game", NULL,
+      "The game this session runs (spyro-1, spyro-2, spyro-3), which "
+      "selects the [game.<id>] scope of openpete.toml. A disc of another "
+      "game refuses the launch, as does a game this executable does not "
+      "run. Read once at startup.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .default_note = "the disc's game, else the library entry's, else this executable's",
+      .cli_only = 1,
+      .help_arg = "ID", .help_order = 25,
+      .help_text = "the game to run: spyro-1, spyro-2 or spyro-3 (default: the\n"
+          "disc's game); a disc of another game refuses the launch" },
 
     { "compile_mods", "Compile mods and exit", "Paths", "--compile-mods", NULL,
       "Compile every mod with a src/ directory in the mods directory against "
@@ -1920,6 +1944,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "effect on the next line.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_logfmt_names), 0, 0,
       logfmt_get, logfmt_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .device_creation = 2,
       .help_arg = "json|plain", .help_order = 130,
       .help_text = "structured stderr (default plain)" },
 
@@ -1939,7 +1964,7 @@ static const knob_desc_t g_builtin_debug[] = {
         "every atomic save (memory card, save state, config, mod config, "
         "shader cache) whose path contains <substring> fail after <bytes> "
         "bytes, with the previous file kept. Read at each save."),
-    ENVROW_LATCHED("RHI_DEPTH_D24", "Debug", "0",
+    ENVROW_DEVICE("RHI_DEPTH_D24", "Debug", "0",
         "1 = take the D24_UNORM_S8 depth format even where D32_SFLOAT_S8 is "
         "available, running the fallback's depth convention. Read at device "
         "creation."),
@@ -1961,7 +1986,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "stars alone, 2 the near stars and the far crosses. The guest draw "
       "runs at every setting, so 0 and 1 price the feed's painted pixels "
       "against 2 from one binary. Latched at first use."),
-    ENVROW_LATCHED("VK_VALIDATION", "Debug", "0",
+    ENVROW_DEVICE("VK_VALIDATION", "Debug", "0",
         "1 = enable the Khronos Vulkan validation layer and log its warnings "
         "and errors as 'validation:' lines. Needs the Vulkan SDK (the layer "
         "is not part of a driver install); costs CPU time on every Vulkan "
@@ -1971,7 +1996,7 @@ static const knob_desc_t g_builtin_debug[] = {
         "submit) returns device-lost without submitting, which drives the "
         "device-lost shutdown on a working device. Read at the first "
         "submit."),
-    ENVROW_LATCHED("GPU_TIMERS", "Debug", "0",
+    ENVROW_DEVICE("GPU_TIMERS", "Debug", "0",
         "Per-pass GPU timestamp zones (query pools created at device init)."),
     ENVROW_LIVE("PHASE_TIMERS", "Debug", "0",
         "Once-per-second per-phase CPU us report (re-resolved per VBL)."),
@@ -2201,7 +2226,7 @@ static const knob_desc_t g_builtin_debug[] = {
     ENVROW_LATCHED("MOUSE_PROBE", "Debug", "0",
         "Log the mouse channel on change and every consumer gesture with its "
         "outcome. Read once at boot."),
-    ENVROW_LATCHED("WINDOW_STATE", "Debug", "0",
+    ENVROW_DEVICE("WINDOW_STATE", "Debug", "0",
         "Log the window's flags and input focus at bring-up and at exit for a "
         "window created without --background, which prints them anyway. The "
         "comparison of the two is what proves the flag changed the state. "

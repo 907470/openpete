@@ -88,6 +88,32 @@ int cfg_schema_find_env(const char *var);
  * @return The NULL-terminated group, or NULL when `flag` is in none. */
 const char *const *cfg_schema_mutex_group(const char *flag);
 
+/* A device-creation knob: a spelling read while the window, the Vulkan
+ * instance or the device is created, and so resolved only from the tiers
+ * that hold no [game.*] or [disc.*] scope. CFG_DEVICE_LIVE marks a knob a
+ * game or disc scope still applies to after creation, through a live path
+ * (the present mode: rhi_set_vsync rebuilds the swapchain); a
+ * CFG_DEVICE_FIXED knob's game or disc scope value is reported not applied.
+ * The knob registry carries the same mark on its rows (knob_desc_t
+ * device_creation), cross-checked by tests/unit/knob_registry_test.c. */
+typedef enum {
+    CFG_DEVICE_NONE = 0,
+    CFG_DEVICE_FIXED,
+    CFG_DEVICE_LIVE
+} cfg_device_t;
+
+/** @brief The device-creation class of a flag or env var spelling.
+ *
+ * @param spelling A flag ("--vsync") or an env var ("OPENPETE_RHI_DEPTH_D24"); NULL returns CFG_DEVICE_NONE.
+ * @return The class, CFG_DEVICE_NONE for a spelling outside the set. */
+cfg_device_t cfg_schema_device_class(const char *spelling);
+
+/** @brief The device-creation set, one spelling per entry.
+ *
+ * @param count Receives the entry count; may be NULL.
+ * @return The NULL-terminated spelling array. */
+const char *const *cfg_schema_device_spellings(size_t *count);
+
 #ifdef __cplusplus
 }
 #endif

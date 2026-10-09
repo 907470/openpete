@@ -2,7 +2,7 @@
 //
 //   library/<disc_sha256>/
 //     disc.bin, disc.cue     ingested copy (cue synthesized)
-//     meta.toml              label / source / ingested / last_played
+//     meta.toml              label / source / sha256 / last_played / game
 //     modules/<codegen-stamp>/spyro1-recomp.so   (+ obj/ kept)
 //
 // Lives wherever openpete_paths puts writable data: next to the exe in a
@@ -17,6 +17,7 @@
 #include "openpete.h"
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
+#include "openpete_identify.h" /* openpete_game_for_serial */
 #include "openpete_log.h"
 #include "openpete_paths.h" /* library root: portable vs per-user data dir */
 #include "openpete_psx.h"   /* openpete_psx_read_disc_serial */
@@ -173,23 +174,26 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
     return read_ok && out.good();
 }
 
-/** @brief Writes an entry's meta.toml with its label, source, hash and last-played time.
+/** @brief Writes an entry's meta.toml with its label, source, hash, last-played time and game.
  *
  * Truncates the file. String values are written between double quotes
- * without escaping; write errors are not reported.
+ * without escaping; write errors are not reported. An empty game writes no
+ * game line.
  * @param entry The library entry's directory.
  * @param label The display name.
  * @param source The file name the image was ingested from.
  * @param sha The disc's SHA-256 in hex.
- * @param last_played The last boot time in seconds since the Unix epoch. */
+ * @param last_played The last boot time in seconds since the Unix epoch.
+ * @param game The registered game id the image's serial names, or "". */
 void write_meta(const fs::path& entry, const std::string& label,
                 const std::string& source, const std::string& sha,
-                long long last_played) {
+                long long last_played, const std::string& game) {
     std::ofstream f(entry / "meta.toml", std::ios::trunc);
     f << "label = \"" << label << "\"\n"
       << "source = \"" << source << "\"\n"
       << "sha256 = \"" << sha << "\"\n"
       << "last_played = " << last_played << "\n";
+    if (!game.empty()) f << "game = \"" << game << "\"\n";
 }
 
 struct Meta {
@@ -197,8 +201,21 @@ struct Meta {
     std::string label;
     std::string source;
     std::string sha;
+    std::string game;   /* registered game id; "" = unidentified */
     long long last_played = 0;
 };
+
+/** @brief The registered game an image's SYSTEM.CNF serial names.
+ *
+ * @param image The image's cue or bin.
+ * @return The game id, or "" when the image cannot be read or its serial is unregistered. */
+std::string game_of_image(const fs::path& image) {
+    char serial[32];
+    if (openpete_psx_read_disc_serial(image.string().c_str(), serial, sizeof serial) != 0)
+        return {};
+    const char* g = openpete_game_for_serial(serial);
+    return g ? g : "";
+}
 
 /** @brief Loads a library entry's meta.toml into a Meta.
  *
@@ -223,13 +240,33 @@ bool read_meta(const fs::path& entry, Meta& m) {
             m.sha = line.substr(10, line.size() - 11);
         else if (line.rfind("last_played = ", 0) == 0)
             m.last_played = atoll(line.c_str() + 14);
+        else if (line.rfind("game = \"", 0) == 0)
+            m.game = line.substr(8, line.size() - 9);
     }
     return true;
 }
 
+/** @brief Records the game of an entry that has none, from its image's serial.
+ *
+ * An entry ingested before entries recorded their game is identified at its
+ * first read in the library scan: the serial is read from the entry's
+ * disc.cue (a SYSTEM.CNF read) and meta.toml rewritten with the game. An
+ * entry whose image cannot be read, or whose serial names no registered
+ * game, is left as it is and stays unidentified.
+ * @param m The entry; its game is set when recorded. */
+void record_game(Meta& m) {
+    if (!m.game.empty()) return;
+    std::string g = game_of_image(m.dir / "disc.cue");
+    if (g.empty()) return;
+    m.game = g;
+    write_meta(m.dir, m.label, m.source, m.sha, m.last_played, m.game);
+    OPL_INFO_F("library", "entry %s recorded as %s",
+               m.dir.filename().string().c_str(), m.game.c_str());
+}
+
 /** @brief Rewrites an entry's meta.toml with last_played set to the current time. */
 void touch_last_played(const Meta& m) {
-    write_meta(m.dir, m.label, m.source, m.sha, (long long)time(nullptr));
+    write_meta(m.dir, m.label, m.source, m.sha, (long long)time(nullptr), m.game);
 }
 
 /** @brief Writes a library entry's disc.cue, the file the runtime boots.
@@ -247,11 +284,14 @@ void write_cue(const fs::path& entry) {
 /* Static storage for the strings the options point into. */
 char s_disc_path[4096];
 char s_module_path[4096];
+/* The game recorded on the entry boot_entry last booted; "" for none. */
+char s_selected_game[32];
 
 /** @brief Points the options at a library entry's cue and module path and stamps the entry played.
  *
  * Copies the entry's disc.cue path into static storage and sets
- * opts->disc_path to it. When module_path_out is given, writes the entry's
+ * opts->disc_path to it, and records the entry's game for
+ * spyro1_library_selected_game. When module_path_out is given, writes the entry's
  * modules/<codegen-stamp>/spyro1-recomp.dll (Windows) or .so path and
  * creates that directory; when spyro1_recomp_codegen_stamp reports no stamp
  * (a static build) it writes an empty string instead. Then rewrites the
@@ -283,8 +323,10 @@ int boot_entry(openpete_options_t* opts, Meta& m,
         }
     }
     touch_last_played(m);
-    OPL_INFO_F("library", "booting library entry %s (%s)",
-               m.dir.filename().string().c_str(), m.label.c_str());
+    std::snprintf(s_selected_game, sizeof s_selected_game, "%s", m.game.c_str());
+    OPL_INFO_F("library", "booting library entry %s (%s, %s)",
+               m.dir.filename().string().c_str(), m.label.c_str(),
+               m.game.empty() ? "unidentified" : m.game.c_str());
     return 0;
 }
 
@@ -301,13 +343,12 @@ int boot_entry(openpete_options_t* opts, Meta& m,
  *     when the image was ingested; hashing here would digest the whole image
  *     on every launch.
  *
- * A named disc takes the hash of the library entry whose disc.cue or
- * disc.bin is the same file, so a raw --disc outside the library resolves a
- * serial and no hash, and a [disc.SHA] scope does not apply to it. With no disc
- * named, the most recently played entry is used, the choice
- * spyro1_library_resolve makes before the selector UI runs; a different
- * version picked in the splash gets its scopes on the next launch.
- * @param disc_path The --disc path, or NULL or empty for none.
+ * Called with the identified disc: the --disc path, or the library entry
+ * the launch selected. A disc takes the hash of the library entry whose
+ * disc.cue or disc.bin is the same file, so a raw --disc outside the library
+ * resolves a serial and no hash, and a [disc.SHA] scope does not apply to
+ * it. With no disc, nothing is resolved.
+ * @param disc_path The identified disc, or NULL or empty for none.
  * @param serial Receives the disc serial, or NULL.
  * @param serial_cap The capacity of serial.
  * @param sha Receives the library entry's hash, or NULL.
@@ -319,43 +360,23 @@ extern "C" int spyro1_config_disc_identity(const char* disc_path,
     if (serial && serial_cap) serial[0] = '\0';
     if (sha && sha_cap) sha[0] = '\0';
 
-    std::string image;
-    if (disc_path && *disc_path) {
-        image = disc_path;
-        /* An ingest source or a dev path: no library entry to consult, but
-         * if the same content is already installed we know its hash. */
-        std::error_code ec;
-        for (auto& e : fs::directory_iterator(library_root(), ec)) {
-            Meta m;
-            if (!e.is_directory() || !read_meta(e.path(), m)) continue;
-            if (fs::equivalent(m.dir / "disc.cue", fs::path(image), ec) ||
-                fs::equivalent(m.dir / "disc.bin", fs::path(image), ec)) {
-                if (sha && sha_cap) std::snprintf(sha, sha_cap, "%s", m.sha.c_str());
-                break;
-            }
+    if (!disc_path || !*disc_path) return -1;
+    const fs::path image(disc_path);
+    /* A library entry, an ingest source or a dev path: if the same content
+     * is installed, its recorded hash names the [disc.SHA] scope. */
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(library_root(), ec)) {
+        Meta m;
+        if (!e.is_directory() || !read_meta(e.path(), m)) continue;
+        if (fs::equivalent(m.dir / "disc.cue", image, ec) ||
+            fs::equivalent(m.dir / "disc.bin", image, ec)) {
+            if (sha && sha_cap) std::snprintf(sha, sha_cap, "%s", m.sha.c_str());
+            break;
         }
-    } else {
-        /* No disc named: the library will pick the most recently played,
-         * so that is the entry whose settings apply. Mirrors the choice
-         * spyro1_library_resolve makes below (minus the selector UI, which
-         * has not run yet - a user who picks a different version in the
-         * splash gets that version's scopes on the NEXT launch). */
-        std::vector<Meta> entries;
-        std::error_code ec;
-        for (auto& e : fs::directory_iterator(library_root(), ec)) {
-            Meta m;
-            if (e.is_directory() && read_meta(e.path(), m)) entries.push_back(m);
-        }
-        if (entries.empty()) return -1;
-        Meta* pick = &entries[0];
-        for (auto& m : entries)
-            if (m.last_played > pick->last_played) pick = &m;
-        if (sha && sha_cap) std::snprintf(sha, sha_cap, "%s", pick->sha.c_str());
-        image = (pick->dir / "disc.cue").string();
     }
 
-    if (serial && serial_cap && !image.empty())
-        (void)openpete_psx_read_disc_serial(image.c_str(), serial, serial_cap);
+    if (serial && serial_cap)
+        (void)openpete_psx_read_disc_serial(disc_path, serial, serial_cap);
 
     return (serial && serial[0]) || (sha && sha[0]) ? 0 : -1;
 }
@@ -459,7 +480,7 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                     ? "Spyro the Dragon (NTSC-U)"
                                     : bin.filename().string();
             write_meta(entry, label, bin.filename().string(), sha,
-                       (long long)time(nullptr));
+                       (long long)time(nullptr), game_of_image(entry / "disc.cue"));
             std::fprintf(stderr, "[library] added %s (%s)\n", label.c_str(), sha);
             /* The library owns this copy from here on - the module is
              * rebuilt from it, never from wherever the image came from.
@@ -473,6 +494,7 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
         }
         Meta m;
         if (!read_meta(entry, m)) return -1;
+        record_game(m);
         return boot_entry(opts, m, module_path_out, module_path_cap);
     }
 
@@ -484,7 +506,9 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
     std::error_code ec;
     for (auto& e : fs::directory_iterator(library_root(), ec)) {
         Meta m;
-        if (e.is_directory() && read_meta(e.path(), m)) entries.push_back(m);
+        if (!e.is_directory() || !read_meta(e.path(), m)) continue;
+        record_game(m);
+        entries.push_back(m);
     }
     if (entries.empty()) return 0;   /* fall through to the normal
                                       * "--disc is required" diagnostic
@@ -499,7 +523,8 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
         for (auto& m : entries)
             if (&m != pick) order.push_back(&m);
         std::vector<std::string> label_store;
-        for (auto* m : order) label_store.push_back(m->label);
+        for (auto* m : order)
+            label_store.push_back(m->game.empty() ? m->label + " (unidentified)" : m->label);
         std::vector<const char*> labels;
         for (auto& l : label_store) labels.push_back(l.c_str());
         if (spyro1_splash_open() == 0) {
@@ -518,4 +543,12 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                      "'%s'\n", entries.size(), pick->label.c_str());
     }
     return boot_entry(opts, *pick, module_path_out, module_path_cap);
+}
+
+/** @brief The game recorded on the library entry spyro1_library_resolve last booted.
+ *
+ * @return The registered game id, or "" when no entry was booted (a --disc
+ *         or --exe-path run, an empty library) or the entry is unidentified. */
+extern "C" const char* spyro1_library_selected_game(void) {
+    return s_selected_game;
 }

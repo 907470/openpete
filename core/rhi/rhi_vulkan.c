@@ -115,6 +115,24 @@
 
 #define RHI_LOG(...)  fprintf(stderr, "[rhi/vk] " __VA_ARGS__)
 
+/* Where a device-creation knob's value comes from (rhi_set_knob_source);
+ * NULL reads the process environment. */
+static const char *(*s_knob_source)(const char *name);
+
+void rhi_set_knob_source(const char *(*fn)(const char *name))
+{
+    s_knob_source = fn;
+}
+
+/** @brief Read a device-creation knob through the installed source, else the environment.
+ *
+ * @param name The env var.
+ * @return Its value, or NULL when unset. */
+static const char *rhi_knob(const char *name)
+{
+    return s_knob_source ? s_knob_source(name) : getenv(name);
+}
+
 /* Heap-balloon block size, the per-spec block cap (32 GiB of blocks) and the
  * block-list length. The cap is per spec so a spec filling a second heap
  * cannot be starved by the blocks an earlier spec already holds. */
@@ -334,6 +352,10 @@ struct rhi_device {
     int                      vsync_pref; /* --vsync: 1 = FIFO (vsync ON), 0 = vsync
                                           * OFF, -1 = unset (env / default). Read by
                                           * choose_present_mode on (re)create. */
+    char                     present_mode_name[16]; /* OPENPETE_PRESENT_MODE as
+                                          * the knob source gave it at create, or
+                                          * rhi_set_present_mode_name; "" = unset.
+                                          * Read when vsync_pref is -1. */
     uint64_t                 fence_sheds; /* presents skipped rather than
                                            * blocking the caller on the
                                            * display's cadence */
@@ -863,7 +885,7 @@ static bool layer_available(const char *name)
  * @return true when the layer is requested and available. */
 static bool want_validation_layer(void)
 {
-    const char *e = getenv("OPENPETE_VK_VALIDATION");
+    const char *e = rhi_knob("OPENPETE_VK_VALIDATION");
     if (!(e && *e && *e != '0')) return false;
     if (layer_available("VK_LAYER_KHRONOS_validation")) return true;
     RHI_LOG("OPENPETE_VK_VALIDATION set but VK_LAYER_KHRONOS_validation is "
@@ -986,7 +1008,7 @@ static VkFormat pick_depth_format(VkPhysicalDevice phys)
                                VK_FORMAT_D24_UNORM_S8_UINT };
     /* OPENPETE_RHI_DEPTH_D24=1 starts at the fallback, so the D24 selection
      * runs on a device that has both. */
-    const char *force = getenv("OPENPETE_RHI_DEPTH_D24");
+    const char *force = rhi_knob("OPENPETE_RHI_DEPTH_D24");
     for (int i = (force && *force == '1') ? 1 : 0; i < 2; i++) {
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(phys, cand[i], &fp);
@@ -1170,7 +1192,7 @@ static uint32_t pipeline_exts_select(rhi_device *dev, const VkExtensionPropertie
     const bool gpl = ext_offered(avail, n, "VK_EXT_graphics_pipeline_library");
     const rhi_pipe_features f = query_pipe_features(dev->phys, cc_ext, eds3, gpl);
     uint32_t k = 0;
-    const char *x_env = getenv("OPENPETE_PIPE_EXTS");
+    const char *x_env = rhi_knob("OPENPETE_PIPE_EXTS");
     const bool declined = x_env && *x_env == '0';
     const bool fb_listed = ext_offered(avail, n, k_fb);
     dev->has_creation_feedback = fb_listed && !declined;
@@ -1342,9 +1364,9 @@ static bool pick_physical_and_device(rhi_device *dev)
      * OPENPETE_PACE_FLIP_LOG implies it: asking for flip times is asking to
      * pay for them, and the pacing numbers from such a run are not comparable
      * with a normal one. */
-    const char *pt_env = getenv("OPENPETE_PRESENT_TIMING");
-    const char *fl_env = getenv("OPENPETE_PACE_FLIP_LOG");
-    const char *lt_env = getenv("OPENPETE_EAGER_LATTICE");
+    const char *pt_env = rhi_knob("OPENPETE_PRESENT_TIMING");
+    const char *fl_env = rhi_knob("OPENPETE_PACE_FLIP_LOG");
+    const char *lt_env = rhi_knob("OPENPETE_EAGER_LATTICE");
     /* OPENPETE_EAGER_LATTICE implies it too: there the presenter is its own
      * thread, the sim thread never touches the queue, and the flips are the
      * pacing SOURCE (the present thread fits the display's vblank lattice
@@ -1449,8 +1471,10 @@ static bool surface_has_present_mode(rhi_device *dev, VkPresentModeKHR want)
  *                       or uncapped-throughput benchmarking (FIFO otherwise hides
  *                       the real frame rate behind the refresh ceiling).
  *   --vsync unset    -> OPENPETE_PRESENT_MODE=immediate|mailbox if set, else FIFO.
+ * The env spelling is the device's present_mode_name: the knob source's value
+ * at rhi_create, or what rhi_set_present_mode_name set since.
  * A vsync-OFF request the surface lacks falls back to FIFO (with a log).
- * @param dev Device whose vsync_pref and surface are read.
+ * @param dev Device whose vsync_pref, present_mode_name and surface are read.
  * @return The present mode to create the swapchain with. */
 static VkPresentModeKHR choose_present_mode(rhi_device *dev)
 {
@@ -1470,8 +1494,8 @@ static VkPresentModeKHR choose_present_mode(rhi_device *dev)
         return VK_PRESENT_MODE_FIFO_KHR;
     }
 
-    /* unset (-1): defer to the env override, else default FIFO (vsync ON). */
-    const char *env = getenv("OPENPETE_PRESENT_MODE");
+    /* unset (-1): defer to the env spelling, else default FIFO (vsync ON). */
+    const char *env = dev->present_mode_name[0] ? dev->present_mode_name : NULL;
     VkPresentModeKHR want = VK_PRESENT_MODE_FIFO_KHR;
     if (env && !strcmp(env, "immediate")) want = VK_PRESENT_MODE_IMMEDIATE_KHR;
     else if (env && !strcmp(env, "mailbox")) want = VK_PRESENT_MODE_MAILBOX_KHR;
@@ -2119,7 +2143,7 @@ static bool create_sync_and_commands(rhi_device *dev)
  *         VK_CHECK. */
 static bool create_gpu_timers(rhi_device *dev)
 {
-    const char *e = getenv("OPENPETE_GPU_TIMERS");
+    const char *e = rhi_knob("OPENPETE_GPU_TIMERS");
     if (!(e && *e && *e != '0')) return true;   /* off: zero cost */
 
     VkPhysicalDeviceProperties props;
@@ -2748,7 +2772,7 @@ static void balloon_spec(rhi_device *dev,
  * @param dev Device that holds the blocks. */
 static void rhi_balloon_init(rhi_device *dev)
 {
-    const char *env = getenv("OPENPETE_RHI_BALLOON");
+    const char *env = rhi_knob("OPENPETE_RHI_BALLOON");
     if (!env || !*env) return;
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(dev->phys, &mp);
@@ -2870,7 +2894,7 @@ static const uint8_t *pcache_payload(const uint8_t *data, size_t n,
  * @return The directory, "" when not persisted. */
 static const char *pcache_dir(void)
 {
-    const char *e = getenv("OPENPETE_PIPELINE_CACHE_DIR");
+    const char *e = rhi_knob("OPENPETE_PIPELINE_CACHE_DIR");
     return (e && *e && s_pcache_write) ? e : s_pcache_dir;
 }
 
@@ -2881,7 +2905,7 @@ static const char *pcache_dir(void)
  * @return 1 when the cold mode is on, else 0. */
 static int pcache_cold_remove(const char *path)
 {
-    const char *e = getenv("OPENPETE_PIPELINE_CACHE_COLD");
+    const char *e = rhi_knob("OPENPETE_PIPELINE_CACHE_COLD");
     if (!(e && *e && *e != '0')) return 0;
     if (path[0] && remove(path) == 0) RHI_LOG("pipeline cache: removed %s (cold boot)\n", path);
     return 1;
@@ -2991,6 +3015,10 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     dev->window     = window;
     dev->headless   = headless;
     dev->vsync_pref = vsync;   /* consulted by choose_present_mode (windowed only) */
+    {
+        const char *pm = rhi_knob("OPENPETE_PRESENT_MODE");
+        snprintf(dev->present_mode_name, sizeof dev->present_mode_name, "%s", pm ? pm : "");
+    }
 
     /* Dynamically load the Vulkan loader (libvulkan.so.1 / vulkan-1.dll);
      * no loader import library is linked on any platform. */
@@ -4141,6 +4169,14 @@ void rhi_set_vsync(rhi_device *dev, int vsync)
     if (!dev) return;
     if (dev->vsync_pref == vsync) return;            /* no change */
     dev->vsync_pref = vsync;                          /* choose_present_mode reads it on recreate */
+    if (!dev->headless) dev->needs_recreate = true;  /* rebuild swapchain next begin_frame */
+}
+
+void rhi_set_present_mode_name(rhi_device *dev, const char *mode)
+{
+    if (!dev) return;
+    if (!strcmp(dev->present_mode_name, mode ? mode : "")) return;   /* no change */
+    snprintf(dev->present_mode_name, sizeof dev->present_mode_name, "%s", mode ? mode : "");
     if (!dev->headless) dev->needs_recreate = true;  /* rebuild swapchain next begin_frame */
 }
 

@@ -38,7 +38,8 @@ typedef struct rhi_device rhi_device;
  * until a handoff. `vsync` selects the swapchain present mode: 1 forces FIFO
  * (vsync on, present locked to the monitor refresh), 0 forces a vsync-off
  * mode (immediate, else mailbox: uncapped throughput, low latency), -1 leaves
- * it unset (the OPENPETE_PRESENT_MODE env var decides, else FIFO). A vsync-off
+ * it unset (the OPENPETE_PRESENT_MODE knob, read through rhi_set_knob_source's
+ * lookup, decides, else FIFO). A vsync-off
  * request the surface does not support falls back to FIFO with a log.
  * @param window SDL window created with SDL_WINDOW_VULKAN.
  * @param app_name Application name for VkApplicationInfo; NULL selects
@@ -58,6 +59,27 @@ rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsyn
  * @param dev Device, or NULL (ignored).
  * @param vsync Present-mode preference: 1, 0 or -1. */
 void rhi_set_vsync(rhi_device *dev, int vsync);
+
+/** @brief Change the env spelling of the present mode ("immediate", "mailbox", "" for unset) at runtime.
+ *
+ * Read when the vsync preference is -1. The name is stored and the swapchain
+ * flagged for recreation as rhi_set_vsync does; an unchanged name does
+ * nothing. Touches no gameplay state.
+ * @param dev Device, or NULL (ignored).
+ * @param mode The mode name, or NULL for unset. */
+void rhi_set_present_mode_name(rhi_device *dev, const char *mode);
+
+/** @brief Install the lookup the RHI reads its device-creation knobs through.
+ *
+ * The knobs are the env vars read while the instance, the device, the
+ * swapchain, the pipeline cache and the timer pools are created
+ * (OPENPETE_VK_VALIDATION, OPENPETE_RHI_DEPTH_D24, OPENPETE_PRESENT_MODE,
+ * OPENPETE_PRESENT_TIMING, OPENPETE_PACE_FLIP_LOG, OPENPETE_EAGER_LATTICE,
+ * OPENPETE_PIPE_EXTS, OPENPETE_GPU_TIMERS, OPENPETE_RHI_BALLOON,
+ * OPENPETE_PIPELINE_CACHE_DIR, OPENPETE_PIPELINE_CACHE_COLD). Without a
+ * lookup they are read with getenv. Process-global; call before rhi_create.
+ * @param fn Returns a knob's value or NULL when unset; NULL restores getenv. */
+void rhi_set_knob_source(const char *(*fn)(const char *name));
 
 /** @brief Return the device's vsync preference as rhi_create or rhi_set_vsync last received it.
  *

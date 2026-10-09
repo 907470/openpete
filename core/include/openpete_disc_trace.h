@@ -72,6 +72,15 @@ extern int openpete_disc_trace_state;
  * @return 1 when the trace is on. */
 int openpete_disc_trace_init(void);
 
+/** @brief Re-arm the first-use read when it found OPENPETE_DISC_TRACE unset and the variable is now set.
+ *
+ * The identification reads the disc's serial before the configuration is
+ * materialized, which latches the trace off unless the real environment
+ * set it; called after the materialization, this lets an openpete.toml
+ * [env] value open the trace at the next read. A trace already open is
+ * kept. */
+void openpete_disc_trace_reload(void);
+
 /** @brief Report whether the trace is on, reading OPENPETE_DISC_TRACE on the first call.
  *
  * @return 1 when rows are being written. */

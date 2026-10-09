@@ -445,6 +445,9 @@ typedef struct openpete_options {
     const char* ingest_path;       /* --ingest: copy this disc image into
                                        the content-addressed library next
                                        to the exe, then boot it. */
+    const char* game_selector;     /* --game ID: the game this session
+                                       runs; a disc naming another game
+                                       refuses the launch. NULL = none. */
     const char* extract_recomp_inputs_dir; /* Extract PSX.EXE + overlay
                                        blobs from --disc into this dir and
                                        exit (first-boot pipeline stage /
@@ -908,8 +911,25 @@ void openpete_options_init(openpete_options_t* opts);
 void openpete_options_set_default_renderer(openpete_options_t* opts,
                                            openpete_renderer_t r);
 
+/** @brief Parse the command line and the game-neutral configuration tiers into opts, writing nothing to the process environment.
+ *
+ * The parse that runs before the game is identified: as
+ * openpete_options_parse over openpete_config_apply_neutral, so the
+ * [game.*], [disc.*] and [keys] tables are not read, the [env] winners are
+ * read through openpete_config_env without being set, the flags that stand
+ * for an env var (--freecam-pose, --player-pose, --freecam-path) do not set
+ * it, and a --bk2-record request is not completed. The caller runs
+ * openpete_options_parse on fresh options after identification.
+ * @param opts The options block, initialized by openpete_options_init.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return As openpete_options_parse. */
+int  openpete_options_parse_neutral(openpete_options_t* opts, int argc, char** argv);
+
 /** @brief Parse the command line into opts.
  *
+ * The full parse, run once after the game is identified (the game id and
+ * the identified disc are set on the configuration layer first).
  * argv[0] is the program name. The parse splices, left to right, the
  * openpete.toml flags, the <bk2>.args sidecar of a --bk2 movie, and the
  * typed arguments, then walks them with the last write winning. After the

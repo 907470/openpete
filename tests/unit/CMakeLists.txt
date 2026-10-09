@@ -214,6 +214,22 @@ target_include_directories(config_resolve_test PRIVATE
 set_target_properties(config_resolve_test PROPERTIES C_STANDARD 11)
 add_test(NAME config_resolve_test COMMAND config_resolve_test)
 
+# identify_test - game identification: the serial table against every
+# game's recomp.conf, and openpete_identify's source order and refusals.
+# The disc read and identify.c's calls into the parser, the config layer,
+# the boot line, the clock and the disc trace are stubbed in the test.
+add_executable(identify_test
+    identify_test.c
+    ${CMAKE_SOURCE_DIR}/core/config/identify.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(identify_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+target_compile_definitions(identify_test PRIVATE
+    OPENPETE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+set_target_properties(identify_test PROPERTIES C_STANDARD 11)
+add_test(NAME identify_test COMMAND identify_test)
+
 # options_validate_test - the option parser's shared value validator: a
 # refused value fails when typed and warns and keeps the default from
 # openpete.toml or an env spelling, strict mode fails both, the env spellings

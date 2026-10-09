@@ -60,7 +60,9 @@ const char* spyro1_splash_wait_for_disc(void);
  * Shows at most six labels. Up and down (keys, d-pad or left stick) move the
  * selection; Enter or the gamepad's south button picks; Escape, the east
  * button or closing the window quits. A dropped file is stored for
- * spyro1_splash_dropped_path, for the caller to ingest.
+ * spyro1_splash_dropped_path, for the caller to ingest. With the harness
+ * variable OPENPETE_SPLASH_SELECT set to an index below count, that label is
+ * picked after the first frame is drawn.
  * @param labels The entry labels.
  * @param count The number of labels.
  * @return The picked index, -1 on quit, when the splash is not open or when

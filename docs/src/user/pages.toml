@@ -22,6 +22,7 @@
 "flag:--dump-sfx-pack" = "customizing/music-and-sound-packs.md#sound-effects"
 "flag:--frame-limit" = "help/glossary.md#ids-that-contain-frame"
 "flag:--frame-time-log" = "help/glossary.md#ids-that-contain-frame"
+"flag:--game" = "getting-started/install.md#opening-a-disc-image-directly"
 "flag:--ingest" = "getting-started/install.md#opening-a-disc-image-directly"
 "flag:--input-lock" = "help/troubleshooting.md#keys-or-the-mouse-do-nothing"
 "flag:--keys-report" = "customizing/key-bindings.md#key-bindings"

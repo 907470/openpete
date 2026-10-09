@@ -145,6 +145,14 @@ typedef struct knob_desc {
      * block; set by the registry when it copies the built-ins in. */
     unsigned char debug_block;
 
+    /* Device-creation class (config_schema.h cfg_device_t): 0 none, 1 a
+     * knob read while the window, instance or device is created, resolved
+     * only from tiers without a game or disc scope, whose scoped value is
+     * reported not applied; 2 the same with a live path that applies a
+     * scoped value after creation. The config schema's device set carries
+     * the same class for each of the row's spellings. */
+    unsigned char device_creation;
+
     /* --help line of the `cli` flag. help_arg is the value placeholder
      * printed after the flag ("0|1", "PATH"), NULL for none. help_text is
      * the description, one '\n' per printed line break; "{def}" expands to

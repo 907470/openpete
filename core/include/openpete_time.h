@@ -317,6 +317,15 @@ int  op_virtual_clock_active(void);
  * first use; calling it early moves that cost out of the host loop. */
 void op_time_init(void);
 
+/** @brief Re-read OPENPETE_PACER_SLACK_US and OPENPETE_PACER_CENSUS.
+ *
+ * op_time_init reads both at the first clock call, which precedes the
+ * configuration; this re-read after the configuration is materialized lets
+ * an openpete.toml [env] value, game scopes included, apply. A set slack
+ * fixes it; an unset slack leaves an adaptive slack as it is and returns a
+ * fixed one to adaptive at its starting value. */
+void op_time_reload_env(void);
+
 /** @brief Release the clock module's OS resources and mark it uninitialized.
  *
  * On Win32 it closes the probe timer and every per-thread waitable timer

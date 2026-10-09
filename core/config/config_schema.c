@@ -174,3 +174,52 @@ const char *const *cfg_schema_mutex_group(const char *flag) {
             if (!strcmp(g_mutex_groups[g][i], flag)) return g_mutex_groups[g];
     return NULL;
 }
+
+/* The device-creation set: every spelling read while the window, the
+ * Vulkan instance or the device is created (window flags, activation
+ * hints, instance layers, device extensions and features, the depth
+ * format, the pipeline cache, the GPU timer pools, the present mode), and
+ * the log format and sink, set up before the game is identified. Each is
+ * consumed before a game or disc scope can be known once the launcher owns
+ * the device, so its value comes from the tiers without one. The live
+ * class has a path that applies a scoped value after creation: the present
+ * mode through rhi_set_vsync, the log format through openpete_run's
+ * openpete_log_init. Ordered as the consumers run. */
+typedef struct { const char *spelling; cfg_device_t cls; } cfg_device_row_t;
+static const cfg_device_row_t g_device[] = {
+    { "--log-format",                 CFG_DEVICE_LIVE  },
+    { "--log-file",                   CFG_DEVICE_FIXED },
+    { "--no-log-file",                CFG_DEVICE_FIXED },
+    { "OPENPETE_LOG_FILE",            CFG_DEVICE_FIXED },
+    { "--background",                 CFG_DEVICE_FIXED },
+    { "OPENPETE_BACKGROUND",          CFG_DEVICE_FIXED },
+    { "OPENPETE_WINDOW_STATE",        CFG_DEVICE_FIXED },
+    { "OPENPETE_VK_VALIDATION",       CFG_DEVICE_FIXED },
+    { "OPENPETE_RHI_DEPTH_D24",       CFG_DEVICE_FIXED },
+    { "OPENPETE_PRESENT_TIMING",      CFG_DEVICE_FIXED },
+    { "OPENPETE_PACE_FLIP_LOG",       CFG_DEVICE_FIXED },
+    { "OPENPETE_EAGER_LATTICE",       CFG_DEVICE_FIXED },
+    { "OPENPETE_PIPE_EXTS",           CFG_DEVICE_FIXED },
+    { "OPENPETE_PIPELINE_CACHE_DIR",  CFG_DEVICE_FIXED },
+    { "OPENPETE_PIPELINE_CACHE_COLD", CFG_DEVICE_FIXED },
+    { "OPENPETE_GPU_TIMERS",          CFG_DEVICE_FIXED },
+    { "OPENPETE_RHI_BALLOON",         CFG_DEVICE_FIXED },
+    { "--vsync",                      CFG_DEVICE_LIVE  },
+    { "OPENPETE_PRESENT_MODE",        CFG_DEVICE_LIVE  },
+};
+
+cfg_device_t cfg_schema_device_class(const char *spelling) {
+    if (!spelling) return CFG_DEVICE_NONE;
+    for (size_t i = 0; i < sizeof g_device / sizeof g_device[0]; i++)
+        if (!strcmp(g_device[i].spelling, spelling)) return g_device[i].cls;
+    return CFG_DEVICE_NONE;
+}
+
+const char *const *cfg_schema_device_spellings(size_t *count) {
+    static const char *list[sizeof g_device / sizeof g_device[0] + 1];
+    const size_t n = sizeof g_device / sizeof g_device[0];
+    if (!list[0])
+        for (size_t i = 0; i < n; i++) list[i] = g_device[i].spelling;
+    if (count) *count = n;
+    return list;
+}

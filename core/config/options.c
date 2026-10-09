@@ -925,6 +925,27 @@ typedef struct {
     bool player_pose_flag;
 } parse_notes_t;
 
+/* 1 while openpete_options_parse_neutral runs: the game-neutral parse writes
+ * nothing to the process environment, so the full parse after
+ * identification sees the environment the user exported. */
+static int s_parse_neutral;
+
+/** @brief Set the env spelling a flag stands for, except in the game-neutral parse.
+ *
+ * --freecam-path, --freecam-pose and --player-pose hand their value to
+ * consumers that read the variable. The full parse after identification
+ * repeats the flag and sets it then.
+ * @param name The variable.
+ * @param v The flag's value. */
+static void flag_setenv(const char* name, const char* v) {
+    if (s_parse_neutral) return;
+#ifdef _WIN32
+    _putenv_s(name, v);
+#else
+    setenv(name, v, 1);
+#endif
+}
+
 /* parse_one_flag's result for an argument no arm accepts, which no config
  * fallback covers: an unknown flag is a typo to fix, not a value to replace. */
 #define PARSE_UNKNOWN_ARG (-2)
@@ -1378,6 +1399,9 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
     } else if (strcmp(a, "--ingest") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->ingest_path = v; i++;
+    } else if (strcmp(a, "--game") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        opts->game_selector = v; i++;
     } else if (strcmp(a, "--extract-recomp-inputs") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->extract_recomp_inputs_dir = v; i++;
@@ -1397,27 +1421,15 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         opts->test_recomp_segv = true;
     } else if (strcmp(a, "--freecam-path") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-#ifdef _WIN32
-        _putenv_s("OPENPETE_FREECAM_PATH", v);
-#else
-        setenv("OPENPETE_FREECAM_PATH", v, 1);
-#endif
+        flag_setenv("OPENPETE_FREECAM_PATH", v);
         i++;
     } else if (strcmp(a, "--freecam-pose") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-#ifdef _WIN32
-        _putenv_s("OPENPETE_FREECAM_POSE", v);
-#else
-        setenv("OPENPETE_FREECAM_POSE", v, 1);
-#endif
+        flag_setenv("OPENPETE_FREECAM_POSE", v);
         i++;
     } else if (strcmp(a, "--player-pose") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-#ifdef _WIN32
-        _putenv_s("OPENPETE_PLAYER_POSE", v);
-#else
-        setenv("OPENPETE_PLAYER_POSE", v, 1);
-#endif
+        flag_setenv("OPENPETE_PLAYER_POSE", v);
         notes->player_pose_flag = true;
         i++;
     } else if (strcmp(a, "--debug-triangle") == 0) {
@@ -1792,9 +1804,9 @@ static int config_value_falls_back(int argc, char** argv, int at, int unknown,
         v = argv[at + 1];
     int ki = cfg_schema_find_cli(argv[at]);
     const char* key = ki >= 0 ? cfg_schema(NULL)[ki].id : argv[at];
-    fprintf(stderr, "openpete: openpete.toml [%s]: %s = \"%s\" %s\n", src, key,
-            v ? v : "", unknown ? "is not a known flag; ignored"
-                                : "is not accepted; keeping the default");
+    openpete_config_diag("openpete: openpete.toml [%s]: %s = \"%s\" %s\n", src, key,
+                         v ? v : "", unknown ? "is not a known flag; ignored"
+                                             : "is not accepted; keeping the default");
     *ip = v ? at + 1 : at;
     return 1;
 }
@@ -1874,8 +1886,8 @@ static int finish_bk2_record(openpete_options_t* opts, int orig_argc,
  * @return OPENPETE_EXIT_OK after the warning, or OPENPETE_EXIT_SETUP_ERROR when refusals_fail. */
 static int env_value_refused(const char* name, const char* v) {
     if (refusals_fail()) return OPENPETE_EXIT_SETUP_ERROR;
-    fprintf(stderr, "openpete: %s = \"%s\" is not accepted; keeping the default\n",
-            name, v);
+    openpete_config_diag("openpete: %s = \"%s\" is not accepted; keeping the default\n",
+                         name, v);
     return OPENPETE_EXIT_OK;
 }
 
@@ -1890,13 +1902,13 @@ static int env_value_refused(const char* name, const char* v) {
  * @param slot The tri-state option field. */
 static int env_onoff_fallback(const char* name, int* slot) {
     if (*slot >= 0) return OPENPETE_EXIT_OK;
-    const char* v = getenv(name);
+    const char* v = openpete_config_env(name);
     if (!v || !*v) return OPENPETE_EXIT_OK;
     if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) *slot = 1;
     else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) *slot = 0;
     else {
-        fprintf(stderr, "openpete: %s expects 0|1 (on|off also accepted), got: %s\n",
-                name, v);
+        openpete_config_diag("openpete: %s expects 0|1 (on|off also accepted), got: %s\n",
+                             name, v);
         return env_value_refused(name, v);
     }
     return OPENPETE_EXIT_OK;
@@ -1920,7 +1932,7 @@ static int apply_env_spellings(openpete_options_t* opts) {
      * run. (Under WSL an env knob only reaches a Windows .exe if WSLENV names
      * it; scripts/fences/wslenv_guard.py is what enforces that half.) */
     if (opts->vibration < 0) {
-        const char* v = getenv("OPENPETE_VIBRATION");
+        const char* v = openpete_config_env("OPENPETE_VIBRATION");
         if (v && *v) {
             int level = -1;
             if (parse_volume_arg("OPENPETE_VIBRATION", v, &level) != 0)
@@ -1938,7 +1950,7 @@ static int apply_env_spellings(openpete_options_t* opts) {
     /* The legacy input path hands the event pump and the pad decode to
      * PsyCross, where the lock has no filter. */
     if (opts->input_lock > 0) {
-        const char* legacy = getenv("OPENPETE_INPUT_LEGACY");
+        const char* legacy = openpete_config_env("OPENPETE_INPUT_LEGACY");
         if (legacy && *legacy && *legacy != '0') {
             fprintf(stderr, "openpete: --input-lock cannot be combined with "
                     "OPENPETE_INPUT_LEGACY=1\n");
@@ -1950,11 +1962,13 @@ static int apply_env_spellings(openpete_options_t* opts) {
 
 /** @brief The value of env var `name` in *out when it is set and nonempty.
  *
+ * Read through openpete_config_env, so the game-neutral parse sees the
+ * [env] winners it has not written.
  * @param name The env var.
  * @param out Receives the value; untouched when the variable is unset or empty.
  * @return 1 when set and nonempty, else 0. */
 static int env_value(const char* name, const char** out) {
-    const char* e = getenv(name);
+    const char* e = openpete_config_env(name);
     if (!e || !*e) return 0;
     *out = e;
     return 1;
@@ -2007,7 +2021,18 @@ void openpete_options_effective(const openpete_options_t* in,
         out->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
 }
 
-int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
+/** @brief Splice the bk2 sidecar and one config stage into argv, then walk the flags into opts.
+ *
+ * The shared body of the game-neutral parse and the full parse. The full
+ * parse completes a --bk2-record request; both apply the env spellings,
+ * read through openpete_config_env.
+ * @param opts The options block.
+ * @param argc Argument count.
+ * @param argv Arguments as typed.
+ * @param neutral 1 for the game-neutral stage (openpete_config_apply_neutral), 0 for the full stage.
+ * @return OPENPETE_EXIT_OK or the parser's exit code. */
+static int options_parse_stage(openpete_options_t* opts, int argc, char** argv,
+                               int neutral) {
     /* Snapshot the command line as typed, before the sidecar / config
      * splices below rewrite argv. --bk2-record captures this (and not the
      * machine's own config defaults) into its .args sidecar. */
@@ -2047,12 +2072,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
 
     int cfg_argc = 0;
     char** cfg_argv = NULL;
-    int cfg_rc = openpete_config_apply(argc, argv, orig_argc, &cfg_argc, &cfg_argv);
+    int cfg_rc = neutral
+        ? openpete_config_apply_neutral(argc, argv, orig_argc, &cfg_argc, &cfg_argv)
+        : openpete_config_apply(argc, argv, orig_argc, &cfg_argc, &cfg_argv);
     if (cfg_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
     if (cfg_rc == 1) { argc = cfg_argc; argv = cfg_argv; }
 
     parse_notes_t notes = { false, false };
+    s_parse_neutral = neutral;
     int rc = parse_flag_chain(opts, argc, argv, &notes);
+    s_parse_neutral = 0;
     if (rc != OPENPETE_EXIT_OK || opts->help) return rc;
 
     /* The EXE-source requirement is deferred to
@@ -2063,11 +2092,21 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
      * has been read. */
 
     /* After validation, so a bad invocation creates no directory. */
-    rc = finish_bk2_record(opts, orig_argc, orig_argv, &notes);
-    if (rc != OPENPETE_EXIT_OK) return rc;
+    if (!neutral) {
+        rc = finish_bk2_record(opts, orig_argc, orig_argv, &notes);
+        if (rc != OPENPETE_EXIT_OK) return rc;
+    }
     rc = apply_env_spellings(opts);
     resolve_env_spellings(opts);
     return rc;
+}
+
+int openpete_options_parse_neutral(openpete_options_t* opts, int argc, char** argv) {
+    return options_parse_stage(opts, argc, argv, 1);
+}
+
+int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
+    return options_parse_stage(opts, argc, argv, 0);
 }
 
 int openpete_options_require_exe_source(const openpete_options_t* opts) {

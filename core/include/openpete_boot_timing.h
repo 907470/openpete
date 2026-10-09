@@ -7,7 +7,9 @@
  * line is printed once, at the first tick after both the first tick and the
  * first submitted frame are known, or after OP_BOOT_LINE_MAX_TICKS ticks
  * without a frame (a run with no native renderer). Every instant is printed
- * in ms after the launcher-start mark; a mark never reached prints "-".
+ * in ms after the launcher-start mark; a mark never reached prints "-". The
+ * line also carries the count of full configuration materializations
+ * (openpete_config_materializations), 1 on a normal boot.
  *
  * The harness knob OPENPETE_LIVE_SWITCH=<vbl>:<row>=<value>[,...] (rows
  * texture-mapping, notex, wireframe; value 0 or 1, texture-mapping 1 =
@@ -27,6 +29,8 @@ typedef enum {
     OP_BOOT_MODS_INIT,           /* openpete_mods_init returned               */
     OP_BOOT_PRECOMPILE_START,    /* the pipeline precompile began             */
     OP_BOOT_PRECOMPILE_END,      /* the pipeline precompile ended             */
+    OP_BOOT_IDENTIFIED,          /* the game was identified                   */
+    OP_BOOT_MATERIALIZED,        /* the full configuration parse returned     */
     OP_BOOT_MARKS
 } op_boot_mark;
 
