@@ -3,6 +3,7 @@
 #include <fmt/format.h>
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
 #include <set>
 #include <vector>
 
@@ -1406,6 +1407,318 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
     return config_.indent + pc_emit + code + comment;
 }
 
+namespace {
+
+/// Result of a bound walk that found no definition on any path (every path
+/// closed a cycle).
+constexpr uint32_t kBoundNone = 0;
+/// Result of a bound walk that found no usable unique SLTIU bound.
+constexpr uint32_t kBoundFail = UINT32_MAX;
+
+/** @brief Name the general-purpose register an instruction writes.
+ *
+ * Covers the R-type ALU, shift, `mfhi`/`mflo` and `jalr` destinations, the
+ * I-type ALU and load targets, `jal`/`bltzal`/`bgezal` ($ra) and the
+ * coprocessor moves `mfc`/`cfc`.
+ * @param i instruction word
+ * @return register number, or 0 when the instruction writes no GPR */
+uint32_t gpr_written(uint32_t i) {
+    uint32_t op = (i >> 26) & 0x3F;
+    uint32_t rs = (i >> 21) & 0x1F;
+    uint32_t rt = (i >> 16) & 0x1F;
+    uint32_t rd = (i >> 11) & 0x1F;
+    uint32_t fn = i & 0x3F;
+    switch (op) {
+    case 0x00:
+        switch (fn) {
+        case 0x08: case 0x0C: case 0x0D:              // jr, syscall, break
+        case 0x11: case 0x13:                         // mthi, mtlo
+        case 0x18: case 0x19: case 0x1A: case 0x1B:   // mult/div
+            return 0;
+        default:
+            return rd;
+        }
+    case 0x01: return (rt == 0x10 || rt == 0x11) ? 31u : 0u;  // bltzal, bgezal
+    case 0x03: return 31;                                     // jal
+    case 0x10: case 0x12: return (rs == 0x00 || rs == 0x02) ? rt : 0u;  // mfc, cfc
+    default:
+        if (op >= 0x08 && op <= 0x0F) return rt;  // I-type ALU, lui
+        if (op >= 0x20 && op <= 0x26) return rt;  // loads
+        return 0;
+    }
+}
+
+/** @brief Report whether an instruction ends fall-through flow or calls out.
+ *
+ * True for `j`, `jal`, `jr`, `jalr`, `bltzal` and `bgezal`: the instruction
+ * two words after such a transfer is not reached from it by fall-through
+ * with the registers it left.
+ * @param i instruction word
+ * @return true for an unconditional transfer or a call */
+bool ends_stream_or_calls(uint32_t i) {
+    uint32_t op = (i >> 26) & 0x3F;
+    uint32_t rt = (i >> 16) & 0x1F;
+    uint32_t fn = i & 0x3F;
+    if (op == 0x02 || op == 0x03) return true;
+    if (op == 0x00 && (fn == 0x08 || fn == 0x09)) return true;
+    if (op == 0x01 && (rt == 0x10 || rt == 0x11)) return true;
+    return false;
+}
+
+/** @brief Merge the bounds two paths reach.
+ * @param a bound of the paths seen so far
+ * @param b bound of the next path
+ * @return the shared bound, kBoundNone when neither path defined one,
+ *         kBoundFail when either failed or they disagree */
+uint32_t merge_bound(uint32_t a, uint32_t b) {
+    if (a == kBoundFail || b == kBoundFail) return kBoundFail;
+    if (a == kBoundNone) return b;
+    if (b == kBoundNone) return a;
+    return a == b ? a : kBoundFail;
+}
+
+/** @brief Classify one instruction met on a backward walk for `reg`.
+ * @param i         instruction word
+ * @param reg       register whose definition is sought
+ * @param index_reg register that must not be redefined, or 0xFF
+ * @param out       set to the bound or kBoundFail when the walk ends here
+ * @return true when the walk ends at this instruction */
+bool bound_step(uint32_t i, uint32_t reg, uint32_t index_reg, uint32_t* out) {
+    uint32_t d = gpr_written(i);
+    if (d == 0) return false;
+    if (d == reg) {
+        uint32_t op = (i >> 26) & 0x3F;
+        uint32_t rs = (i >> 21) & 0x1F;
+        bool ok = op == 0x0B && (index_reg == 0xFF || rs == index_reg) &&
+                  (i & 0xFFFF) != 0;
+        *out = ok ? (i & 0xFFFF) : kBoundFail;
+        return true;
+    }
+    if (d == index_reg) {
+        *out = kBoundFail;
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+uint32_t CodeGenerator::sltiu_bound_before(const ControlFlowGraph& cfg,
+                                           uint32_t block_start, uint32_t from_addr,
+                                           uint32_t reg, uint32_t index_reg,
+                                           std::set<uint32_t>& visited) const {
+    if (!visited.insert(block_start).second) return kBoundNone;
+    uint32_t out = kBoundFail;
+    for (uint32_t a = from_addr; a > block_start;) {
+        a -= 4;
+        auto w = exe_.read_word(a);
+        if (!w) return kBoundFail;
+        if (bound_step(*w, reg, index_reg, &out)) return out;
+    }
+    auto it = cfg.blocks.find(block_start);
+    if (it == cfg.blocks.end()) return kBoundFail;
+    if (it->second.predecessors.empty()) {
+        if (block_start != cfg.function_start) return kBoundFail;
+        // A split piece's entry: its predecessors live in the preceding piece,
+        // which this graph does not hold. Continue in the instruction stream
+        // while each word is reached from the one before by fall-through.
+        for (uint32_t a = block_start;;) {
+            auto before = exe_.read_word(a - 8);
+            if (!before || ends_stream_or_calls(*before)) return kBoundFail;
+            a -= 4;
+            auto w = exe_.read_word(a);
+            if (!w) return kBoundFail;
+            if (bound_step(*w, reg, index_reg, &out)) return out;
+        }
+    }
+    uint32_t acc = kBoundNone;
+    for (uint32_t p : it->second.predecessors) {
+        const BasicBlock& pb = cfg.blocks.at(p);
+        // A call between the definition and the use may redefine the register.
+        if (pb.exit_instr.type == ControlFlowType::JumpLink ||
+            pb.exit_instr.type == ControlFlowType::JumpLinkReg) {
+            return kBoundFail;
+        }
+        acc = merge_bound(acc, sltiu_bound_before(cfg, p, pb.end_addr + 4, reg,
+                                                  index_reg, visited));
+        if (acc == kBoundFail) return kBoundFail;
+    }
+    return acc;
+}
+
+uint32_t CodeGenerator::find_jump_table_bound(const BasicBlock& jr_block,
+                                              const ControlFlowGraph& cfg,
+                                              uint32_t index_reg) const {
+    std::set<uint32_t> visited;   // blocks walked by the bound search
+    std::set<uint32_t> hopped;    // fall-through blocks walked to the guard
+    // Bound reached through the guard on one edge into `succ`, the guard being
+    // the zero-compare branch of `pred_exit` (its block starts at `pred`).
+    auto guard_bound = [&](uint32_t pred, const ControlFlowInstr& g,
+                           uint32_t succ) -> uint32_t {
+        uint32_t i  = g.instruction;
+        uint32_t op = (i >> 26) & 0x3F;
+        uint32_t rs = (i >> 21) & 0x1F;
+        uint32_t rt = (i >> 16) & 0x1F;
+        if ((op != 0x04 && op != 0x05) || (rs == 0) == (rt == 0)) return kBoundFail;
+        bool taken = g.target == succ;
+        bool fall  = g.address + 8 == succ;
+        if (taken == fall) return kBoundFail;
+        // In range when the SLTIU result is nonzero: bne taken, beq not taken.
+        if (!((op == 0x05 && taken) || (op == 0x04 && fall))) return kBoundFail;
+        uint32_t tested = rs != 0 ? rs : rt;
+        return sltiu_bound_before(cfg, pred, g.address, tested, index_reg, visited);
+    };
+    std::function<uint32_t(uint32_t)> bound_into = [&](uint32_t succ) -> uint32_t {
+        const BasicBlock& b = cfg.blocks.at(succ);
+        if (b.predecessors.empty()) {
+            // Entry of a split piece: the guard precedes it in the stream.
+            if (succ != cfg.function_start) return kBoundFail;
+            auto w = exe_.read_word(succ - 8);
+            if (!w) return kBoundFail;
+            ControlFlowInstr g = ControlFlowAnalyzer::analyze_instruction(succ - 8, *w);
+            if (g.type != ControlFlowType::Branch) return kBoundFail;
+            uint32_t tested = get_rs(*w) != 0 ? get_rs(*w) : get_rt(*w);
+            uint32_t op = (*w >> 26) & 0x3F;
+            if (op != 0x04 || (get_rs(*w) == 0) == (get_rt(*w) == 0)) return kBoundFail;
+            uint32_t out = kBoundFail;
+            for (uint32_t a = succ - 8;;) {
+                auto before = exe_.read_word(a - 8);
+                if (!before || ends_stream_or_calls(*before)) return kBoundFail;
+                a -= 4;
+                auto iw = exe_.read_word(a);
+                if (!iw) return kBoundFail;
+                if (bound_step(*iw, tested, index_reg, &out)) return out;
+            }
+        }
+        uint32_t acc = kBoundNone;
+        for (uint32_t p : b.predecessors) {
+            const BasicBlock& pb = cfg.blocks.at(p);
+            uint32_t r;
+            if (pb.exit_instr.type == ControlFlowType::Branch) {
+                r = guard_bound(p, pb.exit_instr, succ);
+            } else if (pb.exit_instr.type == ControlFlowType::None &&
+                       hopped.insert(p).second) {
+                r = bound_into(p);
+            } else {
+                r = kBoundFail;
+            }
+            acc = merge_bound(acc, r);
+            if (acc == kBoundFail) return kBoundFail;
+        }
+        return acc;
+    };
+    uint32_t bound = bound_into(jr_block.start_addr);
+    return bound == kBoundFail ? 0u : bound;
+}
+
+CodeGenerator::JumpTableSite CodeGenerator::detect_jump_table(
+    const BasicBlock& jr_block, const ControlFlowGraph& cfg) const {
+    // Base and index, from the instructions ending at the `jr`:
+    //   P1: lui $R,hi; addiu $R,$R,lo; addu $D,$idx,$R; lw $D,0($D)
+    //   P2: lui $R,hi;                 addu $D,$R,$idx; lw $D,off($D)
+    // table_base = lui_val + addiu_val + lw_offset. The SLL feeding the ADDU
+    // names the index register, so the dispatch can switch on the index
+    // (cases 0..N-1) and stay immune to runtime writes to the table bytes.
+    JumpTableSite site;
+    uint32_t jr_rs = get_rs(jr_block.exit_instr.instruction);
+    uint32_t lw_base_reg   = 0xFF;
+    int32_t  lw_offset     = 0;
+    uint32_t addu_cand[2]  = {0xFF, 0xFF};
+    uint32_t table_reg     = 0xFF;
+    uint32_t lui_val       = 0;
+    int16_t  addiu_val[2]  = {0, 0};
+    bool     found_addiu[2]= {false, false};
+    bool     found_lui     = false;
+
+    // The sequence sits in the `jr` block and the guard's delay slot; 40
+    // words bound the search for it. Don't stop at cfg.function_start:
+    // forced entries can split the sequence across pieces, and
+    // exe_.read_word() bounds the scan to the image.
+    for (int back = 1; back <= 40; back++) {
+        uint32_t sa = jr_block.exit_instr.address - (uint32_t)(back * 4);
+        auto sopt = exe_.read_word(sa);
+        if (!sopt) break;
+        uint32_t si   = *sopt;
+        uint32_t s_op = (si >> 26) & 0x3F;
+        uint32_t s_rs = (si >> 21) & 0x1F;
+        uint32_t s_rt = (si >> 16) & 0x1F;
+        uint32_t s_rd = (si >> 11) & 0x1F;
+        uint32_t s_sa = (si >> 6)  & 0x1F;
+        uint32_t s_fn = si & 0x3F;
+
+        // LW $jr_reg, offset($base)
+        if (s_op == 0x23 && s_rt == jr_rs && lw_base_reg == 0xFF) {
+            lw_base_reg = s_rs;
+            lw_offset   = (int32_t)(int16_t)(si & 0xFFFF);
+            continue;
+        }
+        // ADDU $lw_base, $a, $b  — save both operands as candidates
+        if (s_op == 0x00 && s_fn == 0x21 &&
+            s_rd == lw_base_reg && lw_base_reg != 0xFF &&
+            addu_cand[0] == 0xFF) {
+            addu_cand[0] = s_rs;
+            addu_cand[1] = s_rt;
+            table_reg    = s_rt;  // initial guess; may flip on LUI match
+            continue;
+        }
+        // ADDIU $cand, $cand, imm  (scanning back → before LUI)
+        if (s_op == 0x09 && addu_cand[0] != 0xFF) {
+            for (int c = 0; c < 2; c++) {
+                if (!found_addiu[c] && addu_cand[c] != 0xFF &&
+                    s_rs == addu_cand[c] && s_rt == addu_cand[c]) {
+                    addiu_val[c]   = (int16_t)(si & 0xFFFF);
+                    found_addiu[c] = true;
+                    break;
+                }
+            }
+            continue;
+        }
+        // LUI $cand, hi  — determines which candidate is the table base
+        if (s_op == 0x0F && addu_cand[0] != 0xFF && !found_lui) {
+            for (int c = 0; c < 2; c++) {
+                if (addu_cand[c] != 0xFF && s_rt == addu_cand[c]) {
+                    lui_val   = ((uint32_t)(si & 0xFFFF)) << 16;
+                    table_reg = addu_cand[c];
+                    if (!found_addiu[c]) { addiu_val[c] = 0; }
+                    addiu_val[0]   = addiu_val[c];
+                    found_addiu[0] = found_addiu[c];
+                    found_lui      = true;
+                    break;
+                }
+            }
+            continue;
+        }
+        // SLL $rd, $rt, 2  — the ×4 shift that turns the index into a byte
+        // offset. The destination must match one of the ADDU operands.
+        // NOPs (sa=0) fail the sa==2 check.
+        if (s_op == 0x00 && s_fn == 0x00 && s_sa == 2 &&
+            addu_cand[0] != 0xFF && !site.found_sll) {
+            for (int c = 0; c < 2; c++) {
+                if (addu_cand[c] != 0xFF && s_rd == addu_cand[c]) {
+                    site.index_reg = s_rt;
+                    site.found_sll = true;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (found_lui && site.found_sll) break;
+    }
+    if (!found_lui) return site;
+    // The ×4 result cannot also be the base address: drop such an SLL match.
+    if (site.found_sll && site.index_reg == table_reg && table_reg != 0xFF) {
+        site.found_sll = false;
+        site.index_reg = 0xFF;
+    }
+    uint32_t count = find_jump_table_bound(jr_block, cfg,
+                                           site.found_sll ? site.index_reg : 0xFFu);
+    if (count == 0 || count >= 512) return site;
+    site.table_count = count;
+    site.table_base  = lui_val +
+        (found_addiu[0] ? (uint32_t)(int32_t)addiu_val[0] : 0u) + (uint32_t)lw_offset;
+    return site;
+}
+
 std::string CodeGenerator::translate_basic_block(
     const BasicBlock& block,
     const ControlFlowGraph& cfg) {
@@ -1746,132 +2059,11 @@ std::string CodeGenerator::translate_basic_block(
                                           reg_name(jr_rs), reg_name(jr_rs));
                     } else {
 
-                    // Detect MIPS jump-table pattern by scanning backwards from jr.
-                    // Handles two common patterns:
-                    //   P1: lui $R,hi; addiu $R,$R,lo; addu $D,$idx,$R; lw $D,0($D)
-                    //   P2: lui $R,hi;                 addu $D,$R,$idx; lw $D,off($D)
-                    // table_base = lui_val + addiu_val + lw_offset
-                    //
-                    // Also tracks the SLL feeding the ADDU so we can emit a
-                    // switch on the *index* register (cases 0..N-1) instead of
-                    // on the loaded address. Switching on the index makes the
-                    // dispatch immune to runtime corruption of the jump-table
-                    // bytes (see plans/psxrecomp-jumptable-baking.md).
-                    uint32_t table_base  = 0;
-                    uint32_t table_count = 0;
-                    uint32_t index_reg   = 0xFF;  // source of `sll _, idx, 2`
-                    bool     found_sll   = false;
-                    {
-                        uint32_t lw_base_reg   = 0xFF;   // base reg in the LW
-                        int32_t  lw_offset     = 0;      // offset in the LW instruction
-                        uint32_t addu_cand[2]  = {0xFF, 0xFF}; // rs, rt of ADDU
-                        uint32_t addu_dest     = 0xFF;   // rd of ADDU (= sll dest target)
-                        uint32_t table_reg     = 0xFF;   // candidate for table base reg
-                        uint32_t lui_val       = 0;
-                        int16_t  addiu_val[2]  = {0, 0}; // per-candidate ADDIU
-                        bool     found_addiu[2]= {false, false};
-                        bool     found_lui     = false;
-
-                        // Back-scan up to 40 instructions. Don't stop at
-                        // cfg.function_start: forced-entry manifests can
-                        // split a JT's SLTIU bound check off into the
-                        // preceding function, and we still need to find it.
-                        // exe_.read_word() naturally bounds the scan to the
-                        // EXE/overlay extent.
-                        for (int back = 1; back <= 40; back++) {
-                            uint32_t sa = block.exit_instr.address - (uint32_t)(back * 4);
-                            auto sopt = exe_.read_word(sa);
-                            if (!sopt) break;
-                            uint32_t si   = *sopt;
-                            uint32_t s_op = (si >> 26) & 0x3F;
-                            uint32_t s_rs = (si >> 21) & 0x1F;
-                            uint32_t s_rt = (si >> 16) & 0x1F;
-                            uint32_t s_rd = (si >> 11) & 0x1F;
-                            uint32_t s_sa = (si >> 6)  & 0x1F;
-                            uint32_t s_fn = si & 0x3F;
-
-                            // LW $jr_reg, offset($base)
-                            if (s_op == 0x23 && s_rt == jr_rs && lw_base_reg == 0xFF) {
-                                lw_base_reg = s_rs;
-                                lw_offset   = (int32_t)(int16_t)(si & 0xFFFF);
-                                continue;
-                            }
-                            // ADDU $lw_base, $a, $b  — save both operands as candidates
-                            if (s_op == 0x00 && s_fn == 0x21 &&
-                                s_rd == lw_base_reg && lw_base_reg != 0xFF &&
-                                addu_cand[0] == 0xFF) {
-                                addu_cand[0] = s_rs;
-                                addu_cand[1] = s_rt;
-                                addu_dest    = s_rd;
-                                table_reg    = s_rt;  // initial guess; may flip on LUI match
-                                continue;
-                            }
-                            // ADDIU $cand, $cand, imm  (scanning back → before LUI)
-                            if (s_op == 0x09 && addu_cand[0] != 0xFF) {
-                                for (int c = 0; c < 2; c++) {
-                                    if (!found_addiu[c] && addu_cand[c] != 0xFF &&
-                                        s_rs == addu_cand[c] && s_rt == addu_cand[c]) {
-                                        addiu_val[c]   = (int16_t)(si & 0xFFFF);
-                                        found_addiu[c] = true;
-                                        break;
-                                    }
-                                }
-                                continue;
-                            }
-                            // LUI $cand, hi  — determines which candidate is the table base
-                            if (s_op == 0x0F && addu_cand[0] != 0xFF && !found_lui) {
-                                for (int c = 0; c < 2; c++) {
-                                    if (addu_cand[c] != 0xFF && s_rt == addu_cand[c]) {
-                                        lui_val   = ((uint32_t)(si & 0xFFFF)) << 16;
-                                        table_reg = addu_cand[c];
-                                        // carry over the ADDIU for this candidate
-                                        if (!found_addiu[c]) { addiu_val[c] = 0; }
-                                        // store addiu in slot 0 for convenience
-                                        addiu_val[0]   = addiu_val[c];
-                                        found_addiu[0] = found_addiu[c];
-                                        found_lui      = true;
-                                        break;
-                                    }
-                                }
-                                continue;
-                            }
-                            // SLL $rd, $rt, 2  — the ×4 shift that turns the
-                            // index into a byte offset. The destination must
-                            // match one of the ADDU operands; the OTHER operand
-                            // is the table-base register. NOPs (sa=0) are
-                            // skipped because they fail the sa==2 check.
-                            if (s_op == 0x00 && s_fn == 0x00 && s_sa == 2 &&
-                                addu_cand[0] != 0xFF && !found_sll) {
-                                for (int c = 0; c < 2; c++) {
-                                    if (addu_cand[c] != 0xFF && s_rd == addu_cand[c]) {
-                                        index_reg = s_rt;
-                                        found_sll = true;
-                                        break;
-                                    }
-                                }
-                                continue;
-                            }
-                            // SLTIU — table entry count
-                            if (s_op == 0x0B && table_count == 0) {
-                                table_count = si & 0xFFFF;
-                                continue;
-                            }
-                            if (found_lui && table_count != 0 && found_sll) break;
-                        }
-
-                        if (found_lui && table_count > 0 && table_count < 512) {
-                            uint32_t base = lui_val +
-                                (found_addiu[0] ? (uint32_t)(int32_t)addiu_val[0] : 0u);
-                            table_base = base + (uint32_t)lw_offset;
-                        }
-                        // If SLL's matched candidate is the same as table_reg,
-                        // detection is bogus (the ×4 result can't also be the
-                        // base address). Drop the SLL match; old path applies.
-                        if (found_sll && index_reg == table_reg && table_reg != 0xFF) {
-                            found_sll = false;
-                        }
-                        (void)addu_dest;
-                    }
+                    JumpTableSite jt = detect_jump_table(block, cfg);
+                    uint32_t table_base  = jt.table_base;
+                    uint32_t table_count = jt.table_count;
+                    uint32_t index_reg   = jt.index_reg;
+                    bool     found_sll   = jt.found_sll;
 
                     // If we found a valid table, emit switch.
                     // Preferred path: when found_sll, switch on the index register
@@ -2065,27 +2257,8 @@ GeneratedFunction CodeGenerator::generate_function(
     extra_labels_.clear();
     for (const auto& [baddr, blk] : cfg.blocks) {
         if (blk.exit_instr.type != ControlFlowType::JumpRegister) continue;
-        uint32_t jr_r = get_rs(blk.exit_instr.instruction);
-        // Run same backward scan as translate_basic_block to find table_base/count
-        uint32_t tb = 0, tc = 0;
-        {
-            uint32_t lw_base = 0xFF; int32_t lw_off = 0;
-            uint32_t ac[2] = {0xFF,0xFF}; uint32_t lui_v = 0;
-            int16_t av[2] = {0,0}; bool fa[2] = {false,false}, fl = false;
-            for (int b = 1; b <= 40; b++) {
-                uint32_t sa = blk.exit_instr.address - (uint32_t)(b*4);
-                auto so = exe_.read_word(sa); if (!so) break;
-                uint32_t si=*so, s_op=(si>>26)&0x3F, s_rs=(si>>21)&0x1F,
-                         s_rt=(si>>16)&0x1F, s_rd=(si>>11)&0x1F, s_fn=si&0x3F;
-                if (s_op==0x23 && s_rt==jr_r && lw_base==0xFF) { lw_base=s_rs; lw_off=(int32_t)(int16_t)(si&0xFFFF); continue; }
-                if (s_op==0x00 && s_fn==0x21 && s_rd==lw_base && lw_base!=0xFF && ac[0]==0xFF) { ac[0]=s_rs; ac[1]=s_rt; continue; }
-                if (s_op==0x09 && ac[0]!=0xFF) { for(int c=0;c<2;c++){if(!fa[c]&&ac[c]!=0xFF&&s_rs==ac[c]&&s_rt==ac[c]){av[c]=(int16_t)(si&0xFFFF);fa[c]=true;break;}} continue; }
-                if (s_op==0x0F && ac[0]!=0xFF && !fl) { for(int c=0;c<2;c++){if(ac[c]!=0xFF&&s_rt==ac[c]){lui_v=((uint32_t)(si&0xFFFF))<<16;if(!fa[c]){av[c]=0;}av[0]=av[c];fa[0]=fa[c];fl=true;break;}} continue; }
-                if (s_op==0x0B && tc==0) { tc=si&0xFFFF; continue; }
-                if (fl && tc!=0) break;
-            }
-            if (fl && tc>0 && tc<512) tb = (lui_v+(fa[0]?(uint32_t)(int32_t)av[0]:0u)) + (uint32_t)lw_off;
-        }
+        JumpTableSite jt = detect_jump_table(blk, cfg);
+        uint32_t tb = jt.table_base, tc = jt.table_count;
         if (tb==0 || tc==0) continue;
         for (uint32_t i = 0; i < tc; i++) {
             auto eopt = exe_.read_word(tb + i*4);

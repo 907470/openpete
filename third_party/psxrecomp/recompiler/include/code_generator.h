@@ -223,6 +223,62 @@ private:
         const BasicBlock& block,
         const ControlFlowGraph& cfg);
 
+    /// A `jr` through a word table: `lui`(+`addiu`) base, `addu` with the
+    /// scaled index, `lw`, `jr`.
+    struct JumpTableSite {
+        uint32_t table_base  = 0;     ///< address of entry 0 (0 = no table)
+        uint32_t table_count = 0;     ///< entries, from the guard's SLTIU bound
+        uint32_t index_reg   = 0xFF;  ///< source of `sll _, idx, 2`
+        bool     found_sll   = false; ///< index_reg is valid
+    };
+
+    /** @brief Detect the jump table a `jr` block dispatches through.
+     *
+     * The base and the index come from the `lui`/`addiu`/`addu`/`sll`/`lw`
+     * sequence ending at the `jr`; the entry count is the game's own bound,
+     * read by find_jump_table_bound() from the SLTIU that the guarding
+     * branch tests.
+     * @param jr_block block whose exit is the `jr`
+     * @param cfg      control-flow graph of the function holding the block
+     * @return the site; table_base is 0 when no bounded table was found */
+    JumpTableSite detect_jump_table(const BasicBlock& jr_block,
+                                    const ControlFlowGraph& cfg) const;
+
+    /** @brief Find the SLTIU bound of a jump table through the control flow.
+     *
+     * The guard is the conditional `beq`/`bne` against $zero on the edge
+     * into the `jr` block (through fall-through blocks), taken on the
+     * in-range edge. The bound is the SLTIU defining the guard's register on
+     * every path reaching the guard; its source must be the index register
+     * and nothing on those paths may redefine the index.
+     * @param jr_block  block whose exit is the `jr`
+     * @param cfg       control-flow graph of the function holding the block
+     * @param index_reg register the `sll` scales, or 0xFF when unknown
+     * @return the SLTIU immediate, or 0 when no unique bound reaches the guard */
+    uint32_t find_jump_table_bound(const BasicBlock& jr_block,
+                                   const ControlFlowGraph& cfg,
+                                   uint32_t index_reg) const;
+
+    /** @brief Resolve the SLTIU defining a register before an address.
+     *
+     * Walks back from `from_addr` (exclusive) through the block starting at
+     * `block_start`, then through every predecessor in `cfg`; a block with
+     * no predecessor that starts the function continues in the instruction
+     * stream before it.
+     * @param cfg         control-flow graph of the function
+     * @param block_start start of the block holding `from_addr - 4`
+     * @param from_addr   first address not scanned
+     * @param reg         register whose definition is sought
+     * @param index_reg   register that must not be redefined, or 0xFF
+     * @param visited     blocks already on the walk (cycle guard)
+     * @return the SLTIU immediate; 0 on a cycle; UINT32_MAX when a path
+     *         defines `reg` otherwise, redefines the index, crosses a call,
+     *         or paths disagree */
+    uint32_t sltiu_bound_before(const ControlFlowGraph& cfg,
+                                uint32_t block_start, uint32_t from_addr,
+                                uint32_t reg, uint32_t index_reg,
+                                std::set<uint32_t>& visited) const;
+
     // Control flow translation
     std::string generate_branch_condition(uint32_t instr);
     std::string translate_branch(const ControlFlowInstr& cf, uint32_t fall_through);

@@ -226,6 +226,15 @@ function(openpete_add_game GAME_ID)
                              PROPERTIES LABELS "fence;oracle")
     endif()
 
+    # Every in-image word-table `jr` in the generated C dispatches through an
+    # index switch, or is named in recomp.conf's JUMPTABLE_UNSWITCHED; the
+    # regen runs the same check.
+    add_test(NAME jumptable_dispatch_${GAME_ID}
+             COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/check_jumptable_dispatch.py
+                     --game ${GAME_ID})
+    set_tests_properties(jumptable_dispatch_${GAME_ID}
+                         PROPERTIES LABELS "fence" SKIP_RETURN_CODE 64)
+
     # Disc boot-order profile: the sector ranges the disc cache loader
     # reads first, generated into the C table games/common/disc_boot_order.c
     # installs. A game without the manifest loads in file order.
