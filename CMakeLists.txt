@@ -1221,9 +1221,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endif()
 
     # Channel registry audit - fast static check (no PSX boot). Cross-
-    # references games/spyro-1/manifest/render_channels.toml against the recompiler's
-    # address-keyed substitution table; fails on missing or orphaned
-    # substitutions.
+    # references games/spyro-1/manifest/render_channels.toml against the
+    # channel-tagged substitutions in the generated main-EXE C and the
+    # recompiler's hand-written `addr ==` arms; fails on missing, orphaned
+    # or mismatched substitutions and on zero sites reconciled.
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         add_test(NAME channel_registry_audit
@@ -1362,6 +1363,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # One row per further game, at the game's default scenarios and
+    # --frames (classified against that game's own manifests).
+    foreach(_g spyro-2 spyro-3)
+        add_test(NAME determinism_matrix_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_determinism_matrix.sh
+                         --game ${_g}
+                         --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(determinism_matrix_${_g} PROPERTIES
+            LABELS "slow;determinism;matrix"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
 
     # Soak determinism gate - long-replay mode for hunting slow-burn
     # / late-frame channel leaks the 2000-frame matrix cells miss.

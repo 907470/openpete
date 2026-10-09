@@ -1,13 +1,17 @@
 # render_channels.toml - registry of every render->gameplay coupling
 # channel openpete knows about. The audit tool
 # (tools/check_channel_registry.py) cross-references this file
-# against the address-keyed substitution table in
-# third_party/psxrecomp/recompiler/src/code_generator.cpp:
+# against the substitutions the recompiler emitted:
 #
-#   - Every `substitution_sites` address listed here MUST exist as
-#     an `addr == 0xNNNNNNNN` clause in code_generator.cpp.
-#   - Conversely, every `addr == 0xNNNNNNNN` clause in
-#     code_generator.cpp MUST appear in at least one channel here.
+#   - A site with a `kind` (generated through tools/gen_channel_sites.py
+#     and --channel-sites) MUST be emitted at its address in
+#     games/spyro-1/generated/PSX.EXE_full.c, tagged
+#     `/* channel <kind> */`, with the row's hook or knob and void-ness.
+#   - A bare address MUST exist as an `addr == 0xNNNNNNNN` clause in
+#     third_party/psxrecomp/recompiler/src/code_generator.cpp.
+#   - Conversely, every channel-tagged emission in the generated C and
+#     every `addr == 0xNNNNNNNN` clause in code_generator.cpp MUST
+#     appear in at least one channel here.
 #
 # Together those rules turn "we close channels as we find them" into
 # "we know what we don't know" - orphan substitutions and missing
