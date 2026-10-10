@@ -102,7 +102,10 @@ int game_resolve_area_arg(const char* arg, int* out_area) {
     return -1;
 }
 int game_validate_cheats_arg(const char* spec) {
-    return s_rt->validate_cheats_arg ? s_rt->validate_cheats_arg(spec) : -1;
+    if (s_rt->validate_cheats_arg) return s_rt->validate_cheats_arg(spec);
+    fprintf(stderr, "openpete: --cheats: %s has no built-in cheats to apply\n",
+            game_get_display_name());
+    return -1;
 }
 void game_surface(struct openpete_surface_sink* sink) {
     if (s_rt->surface) s_rt->surface(sink);

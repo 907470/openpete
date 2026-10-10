@@ -270,7 +270,8 @@ void game_set_skip_to_area(int level_id, int area);
  * The spec is comma-separated names ("99_lives,unlock_all_levels"). This
  * runs in CLI-parse context, so a typo fails before the game boots; on
  * failure the implementation prints the valid names to stderr. A game
- * without --cheats support rejects every spec. The cheats themselves are
+ * without --cheats support prints that it has no built-in cheats and
+ * rejects every spec. The cheats themselves are
  * applied by the per-game feature module from opts->cheats.
  * @param spec The --cheats argument.
  * @return 0 when the spec names at least one cheat and every name is known,

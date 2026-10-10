@@ -89,9 +89,12 @@ during play.
 
 - The default window is 640x448<!-- id: knob:window -->, twice the
   game's drawn area.
-- Spyro 1 never reads the L3 button, so a controller's left-stick click
-  toggles the [free camera](../help/glossary.md#free-camera) by default (`freecam` binding,
-  [Key bindings](../customizing/key-bindings.md)).
+- The [free camera](../help/glossary.md#free-camera) toggle is bound to a
+  keyboard key only by default
+  ([Practice tools](../playing/practice-tools.md#free-camera)). Spyro 1
+  never reads the L3 button, so adding `pad:l3` to the `freecam` binding
+  gives a controller's left-stick click the toggle without taking a game
+  input ([Key bindings](../customizing/key-bindings.md)).
 - Level loads complete without an added wait by default
   ({{ flag("flag:--load-delay") }}<!-- id: flag:--load-delay --> default
   `{{ default("knob:load_delay", "spyro-1") }}`<!-- id: knob:load_delay --> on Spyro 1).

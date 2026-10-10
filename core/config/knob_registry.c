@@ -1808,10 +1808,11 @@ static const knob_desc_t g_builtin[] = {
       NULL, NULL, cheats_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none",
       .help_arg = "A,B,...", .help_order = 570,
-      .help_text = "apply the game's own built-in cheat codes without entering them on\n"
-          "the pad: 99_lives, unlock_all_levels (an unknown name prints the\n"
-          "list). Applied once a level is live, and again for each new session\n"
-          "started from the title screen. Changes gameplay state by design" },
+      .help_text = "Spyro 1 only: apply the game's own built-in cheat codes without\n"
+          "entering them on the pad: 99_lives, unlock_all_levels (an unknown\n"
+          "name prints the list). Applied once a level is live, and again for\n"
+          "each new session started from the title screen. Changes gameplay\n"
+          "state by design. Spyro 2 and 3 refuse the flag" },
 
     /* -------- Recording --------
      * Every row here is hidden unless this run is recording; see
