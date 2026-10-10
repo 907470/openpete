@@ -12,6 +12,7 @@
 # uses: `api->mouse_capture` - requests relative mouse mode, gated on a config row
 # uses: `api->binding_down` - a binding whose mod.toml key is a mouse button
 # uses: `api->override_name` - a CameraUpdate pre-hook, the per-tick sampler
+# uses: `api->override_addr` - the Spyro 2 and 3 arms, which bind the camera update by address until the decomp names it
 # uses: `api->base` - hands control back after sampling
 # uses: `api->config_bool` - the capture toggle
 # uses: `api->ui_status` - the last tick-hook reading in the Mods panel
@@ -22,7 +23,7 @@
 id      = "mouse-probe"
 name    = "Mouse Probe"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 12
 state   = "none"       # host-side readings only
 runahead = "pure"      # reads host input, writes no guest RAM

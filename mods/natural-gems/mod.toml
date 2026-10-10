@@ -12,6 +12,7 @@
 # uses: `OP_REGISTER_OVERRIDE_CollectItem` - attaches that body without naming an address or a string
 # uses: `op_base_CollectItem` - falls through to the original with the same typed arguments
 # uses: `op_call_Sin` - calls an unrelated game function from inside the override, saving and restoring the argument registers around it
+# uses: `api->override_addr`, `api->base` - the Spyro 2 and 3 arms: a raw-register override at the collect function's address, since only Spyro 1 prototypes CollectItem and Sin
 # uses: `api->log` - reports the doubled pickup and the result of the nested call
 # uses: `api->ui_status` - shows the running totals in the Mods panel
 
@@ -19,7 +20,7 @@
 id      = "natural-gems"
 name    = "Natural Gems"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"      # session counters only; nothing to carry across a state load
 runahead = "host-fx"   # logs on pickup; the engine suppresses them during speculation

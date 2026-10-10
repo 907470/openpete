@@ -12,7 +12,7 @@
 id      = "arena-canary"
 name    = "Arena Timeline Canary"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 8
 state    = "none"      # no host residue: everything lives in the arena
 runahead = "pure"      # tick hook reads guest RAM and writes the arena only

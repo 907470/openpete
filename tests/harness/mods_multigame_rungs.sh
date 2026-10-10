@@ -25,6 +25,17 @@
 #                   material channel mask.
 #   levels          (a game with no level ops) a [[level]] row is refused
 #                   with one line naming the game; the mod still loads.
+#   engagement      every in-tree mod with per-game arms (the camera-clock
+#                   mods, double-gems, natural-gems) loads and its own
+#                   override link counts calls above 0 on the attract demo
+#                   (OPENPETE_MOD_LINK_CALLS); double-gems and natural-gems
+#                   each double a pickup, and a later pickup in the same
+#                   run starts from the doubled total, so the write landed
+#                   in guest RAM.
+#   arms copies     (Spyro 2 and 3; Spyro 1 runs its own in check_mods.sh)
+#                   chain-duo nesting in both enabled orders, crash-dummy
+#                   attribution, arena-canary armed with no DESYNC across a
+#                   file save and load that restores its 64 B block.
 
 # Copy an in-tree mod into <dest dir> without its .build/.
 copy_mod() { # copy_mod <id> <dest dir>
@@ -245,5 +256,126 @@ TEOF
     else
         bad "level refusal lines $n_ref (want 1) or the mod did not load"
         printf '%s\n' "$out" | grep -E 'lvl-games|level' | head -5
+    fi
+fi
+
+# ── M8. per-game arms: engagement on the attract demo ────────────────────
+# DEMO_FRAMES covers each game's first two consecutive CollectItem-class
+# pickups on the attract demo: Spyro 1 near VBL 4100, Spyro 2 near VBL
+# 14300, Spyro 3 near VBL 3000.
+case "$PG_GAME" in
+    spyro-1) DEMO_FRAMES=6000 ;;
+    spyro-2) DEMO_FRAMES=15500 ;;
+    *)       DEMO_FRAMES=6000 ;;
+esac
+
+# link_calls <log text> <owner>: the summed calls of the owner's links.
+link_calls() {
+    printf '%s\n' "$1" |
+        sed -n "s/.*link-calls owner=$2 addr=.* calls=\([0-9]*\)$/\1/p" |
+        awk '{n += $1} END {print n + 0}'
+}
+
+# double_chain <log text> <pattern>: 1 when two consecutive doubling lines
+# show the second pickup starting from the first one's written total
+# (after2 - delta2 == after1 + delta1).
+double_chain() {
+    printf '%s\n' "$1" |
+        sed -n "s/.*$2: +\([0-9]*\) twice, total \([0-9]*\) -> \([0-9]*\).*/\1 \2 \3/p" |
+        awk 'NR > 1 && $2 - $1 == prev { ok = 1 } { prev = $3 } END { print ok + 0 }'
+}
+
+ARMS_MODS="hello-anchor hud-stopwatch pad-probe mouse-probe sfx-play-probe chain-duo-a chain-duo-b arena-canary double-gems"
+say "per-game arms: $ARMS_MODS engage on $PG_GAME ($DEMO_FRAMES VBLs)"
+# shellcheck disable=SC2086
+fixture "$WORK/arms" $ARMS_MODS
+out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
+        RUN_TIMEOUT=600 run_game "$WORK/arms" "$DEMO_FRAMES" )"
+for m in $ARMS_MODS; do
+    n="$(link_calls "$out" "$m")"
+    if printf '%s\n' "$out" | grep -q "loaded $m " && [ "$n" -gt 0 ]; then
+        ok "$m: $n calls"
+    else
+        bad "$m: loaded line or calls missing ($n calls)"
+        printf '%s\n' "$out" | grep -E "$m" | head -3
+    fi
+done
+n_dbl="$(printf '%s\n' "$out" | grep -c "gem pickup doubled: ")"
+if [ "$n_dbl" -gt 0 ] && [ "$(double_chain "$out" "gem pickup doubled")" -eq 1 ]; then
+    ok "double-gems: $n_dbl pickups doubled; a later pickup started from the doubled total"
+else
+    bad "double-gems: $n_dbl pickups doubled, no pickup started from a doubled total"
+fi
+
+say "per-game arms: natural-gems engages on $PG_GAME"
+fixture "$WORK/natural" natural-gems
+out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
+        RUN_TIMEOUT=600 run_game "$WORK/natural" "$DEMO_FRAMES" )"
+n="$(link_calls "$out" natural-gems)"
+n_dbl="$(printf '%s\n' "$out" | grep -c "natural gem double: ")"
+if [ "$n" -gt 0 ] && [ "$n_dbl" -gt 0 ] &&
+   [ "$(double_chain "$out" "natural gem double")" -eq 1 ]; then
+    ok "natural-gems: $n calls, $n_dbl pickups doubled, doubled total carried"
+else
+    bad "natural-gems: $n calls, $n_dbl pickups doubled or the doubled total not carried"
+fi
+if [ "$PG_GAME" = "spyro-1" ]; then
+    if printf '%s\n' "$out" | grep -q "natural call Sin(1024) -> 4096"; then
+        ok "natural-gems: Sin(1024) -> 4096"
+    else
+        bad "natural-gems: typed Sin call missing or wrong"
+    fi
+fi
+
+# ── M9. Spyro 2 and 3 copies of the Spyro 1 arms rungs ───────────────────
+if [ "$PG_GAME" != "spyro-1" ]; then
+    say "chain-duo: enabled order sets nesting on $PG_GAME"
+    for order in "chain-duo-a chain-duo-b" "chain-duo-b chain-duo-a"; do
+        # shellcheck disable=SC2086
+        fixture "$WORK/duo-${order%% *}" $order
+        out="$(run_game "$WORK/duo-${order%% *}" "$DEMO_FRAMES")"
+        seq="$(printf '%s\n' "$out" | grep -oE 'chain (enter|exit)  ?[<>AB]+' |
+               tr -d ' ' | paste -sd, -)"
+        want="chainenterB>,chainenterA>,chainexit<A,chainexit<B"
+        [ "${order%% *}" = chain-duo-b ] &&
+            want="chainenterA>,chainenterB>,chainexit<B,chainexit<A"
+        if [ "$seq" = "$want" ]; then
+            ok "order [$order]: $seq"
+        else
+            bad "order [$order]: $seq (want $want)"
+        fi
+    done
+
+    say "crash-dummy: the fault is attributed to the mod on $PG_GAME"
+    fixture "$WORK/crash-$PG_GAME" crash-dummy
+    out="$(run_game "$WORK/crash-$PG_GAME" "$DEMO_FRAMES")"; rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] &&
+       printf '%s\n' "$out" | grep -q "MOD ATTRIBUTION: .* mod 'crash-dummy'"; then
+        ok "process died (rc=$rc), report names crash-dummy"
+    else
+        bad "crash-dummy: rc=$rc or attribution line missing"
+        printf '%s\n' "$out" | grep -A3 "openpete crash" | head -6
+    fi
+
+    say "arena-canary: armed, saved and restored on $PG_GAME"
+    fixture "$WORK/canary-$PG_GAME" arena-canary
+    st="$WORK/canary-$PG_GAME.state"
+    out="$(RUN_OUTS="$st" run_game "$WORK/canary-$PG_GAME" 5000 \
+            --state-save-on-frame 4500 --state-save-output "$st")"
+    if printf '%s\n' "$out" | grep -q "arena-canary: armed" &&
+       printf '%s\n' "$out" | grep -q "savestate: saved"; then
+        ok "canary armed; savestate written"
+    else
+        bad "canary not armed or savestate not written"
+    fi
+    out="$(run_game "$WORK/canary-$PG_GAME" 6000 --state-load-on-frame 5000 \
+            --state-load-input "$st")"
+    if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 64 B restored" &&
+       printf '%s\n' "$out" | grep -q "savestate: loaded" &&
+       ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
+        ok "file load restored the 64 B arena block, no DESYNC"
+    else
+        bad "file load: arena not restored, or DESYNC"
+        printf '%s\n' "$out" | grep -E 'arena|savestate' | head -5
     fi
 fi

@@ -16,6 +16,7 @@
 # uses: `api->pad_read` - slots 0-3 from the input-log record staged for the running tick
 # uses: `api->pad_rumble` - a distinctive actuator byte pair on one slot, and the slot-0 refusal
 # uses: `api->override_name` - a CameraUpdate pre-hook, the per-tick sampler
+# uses: `api->override_addr` - the Spyro 2 and 3 arms, which bind the camera update by address until the decomp names it
 # uses: `api->base` - hands control back after sampling
 # uses: `api->config_str` - the expected slot set
 # uses: `api->config_bool` - the rumble-drive row
@@ -27,7 +28,7 @@
 id      = "pad-probe"
 name    = "Pad Probe"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 12
 state   = "none"       # host-side tallies only
 runahead = "pure"      # reads the input-log record, writes no guest RAM

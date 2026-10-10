@@ -7,6 +7,7 @@
 # reads and writes no guest RAM.
 #
 # uses: `api->override_name` - a CameraUpdate pre-hook, the per-tick clock
+# uses: `api->override_addr` - the Spyro 2 and 3 arms, which bind the camera update by address until the decomp names it
 # uses: `api->base` - hands control back so the camera still updates
 # uses: `api->sfx_play` - plays the clip
 # uses: `api->log` - one line per play, naming the call count
@@ -15,7 +16,7 @@
 id      = "sfx-play-probe"
 name    = "SFX Play Probe"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"
 runahead = "host-fx"

@@ -9,6 +9,12 @@
  * load that restored one and not the other. That is logged as DESYNC.
  * Zero is excluded: a level load legitimately resets the counter.
  *
+ * Spyro 2 and 3 name no tick counter yet, so on those games the observed
+ * value is the hook's own call count, kept in the arena block: it moves
+ * with the block, so the DESYNC check cannot fire there, and the run
+ * checks only that the block is allocated, written every tick, saved and
+ * restored.
+ *
  * Nothing here writes canonical guest RAM; the only state is the arena
  * block, so a DESYNC can only come from the engine carrying guest RAM
  * and the arena on different timelines.
@@ -40,8 +46,30 @@ static void publish_status(void) {
                      g_mirror ? g_mirror->desyncs : 0u);
 }
 
+/**
+ * @brief Read the tick value the mirror is checked against.
+ *
+ * Spyro 1 reads g_GameTick from guest RAM. Spyro 2 and 3 return the
+ * mirror's hook count plus one, so the value advances once per call and
+ * rolls back with the arena block.
+ * @return The observed tick value.
+ */
+static uint32_t observed_tick(void) {
+#if OPENPETE_GAME_SPYRO1
+    return op_read_u32(g_api, OP_GADDR_g_GameTick);
+#elif OPENPETE_GAME_SPYRO2 || OPENPETE_GAME_SPYRO3
+    return g_mirror->ticks_seen + 1u;
+#else
+#error "arena-canary: no tick counter binding for this game"
+#endif
+}
+
+/**
+ * @brief Camera-clock pre-hook: checks the observed tick against the mirror, then advances the mirror.
+ * @param cpu The guest register file at the call.
+ */
 static void on_camera_update(CPUState* cpu) {
-    uint32_t g = op_read_u32(g_api, OP_GADDR_g_GameTick);
+    uint32_t g = observed_tick();
     if (!g_armed_logged) {
         g_armed_logged = 1;
         g_api->log(g_self, OP_MOD_LOG_INFO,
@@ -62,6 +90,39 @@ static void on_camera_update(CPUState* cpu) {
     g_api->base(cpu);
 }
 
+/**
+ * @brief Attach @p fn to the running game's once-per-gameplay-tick camera update.
+ *
+ * Spyro 1 binds CameraUpdate by name. Spyro 2 and 3 name no such function
+ * yet, so their arms bind the main-executable address: Spyro 2
+ * func_8001D87C (src/camera.c), Spyro 3 func_8001204C (src/camera.c,
+ * called from the UPDATE_CAMERA arm of func_80055294). Each is called once
+ * per gameplay tick; the Spyro 2 and 3 calls stop during a portal exit and
+ * level load and resume a few ticks into the fade-in.
+ * @param api The engine table.
+ * @param self This mod's handle.
+ * @param fn The override body.
+ * @return The override call's result, 0 on success.
+ */
+static int bind_tick_clock(const openpete_mod_api_t* api, openpete_mod_t* self,
+                           openpete_mod_override_fn fn) {
+#if OPENPETE_GAME_SPYRO1
+    return api->override_name(self, "CameraUpdate", fn);
+#elif OPENPETE_GAME_SPYRO2
+    return api->override_addr(self, 0x8001D87Cu, fn);
+#elif OPENPETE_GAME_SPYRO3
+    return api->override_addr(self, 0x8001204Cu, fn);
+#else
+#error "arena-canary: no camera clock binding for this game"
+#endif
+}
+
+/**
+ * @brief Mod entry: allocates the mutable mirror block and attaches the check to the camera clock.
+ * @param api The engine table.
+ * @param self This mod's handle.
+ * @return -1 when the allocation fails, else the override registration's result, 0 on success.
+ */
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
     int64_t slots = api->config_int(self, "slots", 4);
@@ -82,5 +143,5 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
              "arena-canary: block 0x%08X (%u B) ticks so far %u", g_va,
              g_bytes, g_mirror->ticks_seen);
     publish_status();
-    return api->override_name(self, "CameraUpdate", on_camera_update);
+    return bind_tick_clock(api, self, on_camera_update);
 }

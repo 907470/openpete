@@ -9,7 +9,7 @@
 id      = "double-gems"
 name    = "Double Gems"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"      # counters only; nothing world-derived
 runahead = "host-fx"   # logs on pickup - suppressible

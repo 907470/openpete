@@ -9,6 +9,7 @@
 # guest RAM.
 #
 # uses: `api->override_name` - a CameraUpdate pre-hook, used as the per-tick clock source
+# uses: `api->override_addr` - the Spyro 2 and 3 arms, which bind the camera update by address until the decomp names it
 # uses: `api->base` - hands control back so the camera still updates
 # uses: `api->register_present_hook` - runs once per present, where the sub-tick time is evaluated
 # uses: `api->draw_text` - draws the clock in overlay space, in the game's HUD gold
@@ -21,7 +22,7 @@
 id      = "hud-stopwatch"
 name    = "HUD Stopwatch"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 sim_mutative = false  # writes no guest RAM: outside the save modset tag
 

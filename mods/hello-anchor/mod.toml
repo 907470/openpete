@@ -8,6 +8,7 @@
 # three keys below declare that to the engine.
 #
 # uses: `api->override_name` - attaches the body to CameraUpdate by name, the tier that keeps working when the decompilation renames a function
+# uses: `api->override_addr` - the Spyro 2 and 3 arms, which bind the camera update by address until the decomp names it
 # uses: `api->base` - runs the rest of the chain and then the original, which is what makes this a pre-hook rather than a replacement
 # uses: `api->log` - one stderr line on the first call, tagged with the mod id
 # uses: `api->ui_status` - publishes the running count into the mod's block of the Mods panel
@@ -16,7 +17,7 @@
 id      = "hello-anchor"
 name    = "Hello Anchor"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 # state: what the engine must carry for this mod across a state load.
 # "none" = the mod keeps no data derived from guest history; a counter

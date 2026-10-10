@@ -29,8 +29,41 @@ static void on_camera_update(CPUState* cpu) {
 }
 
 
+/**
+ * @brief Attach @p fn to the running game's once-per-gameplay-tick camera update.
+ *
+ * Spyro 1 binds CameraUpdate by name. Spyro 2 and 3 name no such function
+ * yet, so their arms bind the main-executable address: Spyro 2
+ * func_8001D87C (src/camera.c), Spyro 3 func_8001204C (src/camera.c,
+ * called from the UPDATE_CAMERA arm of func_80055294). Each is called once
+ * per gameplay tick; the Spyro 2 and 3 calls stop during a portal exit and
+ * level load and resume a few ticks into the fade-in.
+ * @param api The engine table.
+ * @param self This mod's handle.
+ * @param fn The override body.
+ * @return The override call's result, 0 on success.
+ */
+static int bind_tick_clock(const openpete_mod_api_t* api, openpete_mod_t* self,
+                           openpete_mod_override_fn fn) {
+#if OPENPETE_GAME_SPYRO1
+    return api->override_name(self, "CameraUpdate", fn);
+#elif OPENPETE_GAME_SPYRO2
+    return api->override_addr(self, 0x8001D87Cu, fn);
+#elif OPENPETE_GAME_SPYRO3
+    return api->override_addr(self, 0x8001204Cu, fn);
+#else
+#error "chain-duo-a: no camera clock binding for this game"
+#endif
+}
+
+/**
+ * @brief Mod entry: attaches the nesting logger to the camera clock.
+ * @param api The engine table.
+ * @param self This mod's handle.
+ * @return The override registration's result, 0 on success.
+ */
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
     publish_status();
-    return api->override_name(self, "CameraUpdate", on_camera_update);
+    return bind_tick_clock(api, self, on_camera_update);
 }
