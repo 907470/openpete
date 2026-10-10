@@ -419,7 +419,7 @@ the recompiled module joins the runtime:
   (`games/spyro-1/dist/recomp_build.cpp`), keying the cache on a hash of the
   PSXRecomp binary, its emission metadata and the disc's SHA-256. Discs live
   in a content-addressed library under the user data dir, or beside the exe
-  for a portable install (`games/spyro-1/dist/disc_library.cpp:98-103`).
+  for a portable install (`core/launcher/library.cpp`, `library_root`).
 
 Both modes build from the same sources; `shared` is an additive second
 linkage, not a fork.
@@ -621,8 +621,10 @@ pair, a single MODE2/2352 data track of 281270 sectors. The .bin's SHA256
 is `fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37`
 (the Redump image; SHA1 `cf3ce6bedeb89dfbc40990336180f3b9b0f40d9f`, MD5
 `387185f71cd0043fd75a19521dc75104`). The same image covers the Original,
-Greatest Hits and Collectors' Edition pressings. The disc library checks
-the SHA256 at ingest (`games/spyro-1/dist/disc_library.cpp`).
+Greatest Hits and Collectors' Edition pressings. The disc library labels
+an ingested image with this SHA256 "Spyro the Dragon (NTSC-U)" and any other
+by its file name (`core/launcher/library.cpp`, the known-disc table in
+`games/spyro-1/main.cpp`).
 
 Development runs use the disc rebuilt from the decomp output,
 `games/spyro-1/spyro-1/build/SCUS-94228.cue`, the default of every script

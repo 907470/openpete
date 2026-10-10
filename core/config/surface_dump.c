@@ -385,8 +385,8 @@ static const size_t k_str_fields[] = {
 
 /** @brief Whether two option blocks are equal field by field.
  *
- * The handoff fields (every parse writes them) and the adopted window are
- * skipped; strings compare by value, NULL equal only to NULL; every other
+ * The handoff fields (every parse writes them) and native_unavailable
+ * (the launcher's hand-off writes it) are skipped; strings compare by value, NULL equal only to NULL; every other
  * byte compares exactly. Both blocks come from openpete_options_init,
  * whose memset zeroes the padding.
  * @return 1 when equal. */
@@ -396,7 +396,7 @@ static int options_equal(const openpete_options_t* a, const openpete_options_t* 
     memcpy(&y, b, sizeof y);
     x.handoff_argc = y.handoff_argc = 0;
     x.handoff_argv = y.handoff_argv = NULL;
-    x.adopted_window = y.adopted_window = NULL;
+    x.native_unavailable = y.native_unavailable = 0;
     for (size_t i = 0; i < sizeof k_str_fields / sizeof k_str_fields[0]; i++) {
         const char** px = (const char**)((char*)&x + k_str_fields[i]);
         const char** py = (const char**)((char*)&y + k_str_fields[i]);

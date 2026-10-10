@@ -23,7 +23,7 @@
 #include "spyro_overlay_table.h"
 #include "openpete_log.h"
 #include "openpete_paths.h"
-#include "dist/splash.h"
+#include "openpete_launcher.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -129,9 +129,9 @@ static int file_readable(const char* p) {
 extern int spyro1_recomp_build_module(const char* disc_path,
                                       const char* out_module_path);
 
-/* First-boot build as a splash worker task: the extract -> recomp ->
- * compile -> link pipeline must not run on the UI thread (a window drag
- * would freeze it - see spyro1_splash_run_task). */
+/* First-boot build as a launcher task: the extract -> recomp -> compile ->
+ * link pipeline must not run on the window's thread (a window drag would
+ * freeze it - see openpete_launcher_run_task). */
 struct build_task { const char* disc; const char* out; };
 static int build_task_fn(void* p) {
     struct build_task* t = (struct build_task*)p;
@@ -211,7 +211,7 @@ int spyro1_recomp_attach(const char* module_path_override,
                             "from your disc\n", why);
         struct build_task bt = { disc_path, path };
         why = NULL;
-        if (spyro1_splash_run_task(build_task_fn, &bt) == 0)
+        if (openpete_launcher_run_task(build_task_fn, &bt) == 0)
             desc = bind_module(path, &why);
         else
             why = "could not be rebuilt";

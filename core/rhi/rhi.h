@@ -46,7 +46,8 @@ typedef struct rhi_device rhi_device;
  * @param app_name Application name for VkApplicationInfo; NULL selects
  *                 "openpete".
  * @param vsync Present-mode preference: 1, 0 or -1.
- * @return The device, or NULL on failure (a diagnostic is logged to stderr). */
+ * @return The device, or NULL on failure (a diagnostic is logged to stderr
+ *         and rhi_create_error names the failed step). */
 rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync);
 
 /** @brief Change the swapchain present-mode preference (vsync) at runtime.
@@ -1308,12 +1309,31 @@ typedef struct {
     int      cache_cold;         /* the file was removed at open (OPENPETE_PIPELINE_CACHE_COLD) */
     unsigned bringup_creates;    /* pipeline creates before the first frame     */
     uint64_t bringup_ns;         /* their summed wall time                      */
+    unsigned devices_created;    /* devices rhi_create and rhi_create_headless returned */
 } rhi_boot_stats;
 
 /** @brief Read the boot facts.
  *
  * @param out Receives them. */
 void          rhi_boot_stats_get(rhi_boot_stats *out);
+
+/** @brief Mark the frames submitted from now on as launcher frames, or end the marking.
+ *
+ * A launcher frame is drawn before the game's renderer is brought up; it
+ * sets no first-frame boot fact and does not end the bring-up create phase,
+ * so those instruments describe the game's first frame whether or not the
+ * launcher drew first.
+ * @param on true while the launcher draws. */
+void          rhi_boot_launcher_frames(bool on);
+
+/** @brief Return the reason the last failed rhi_create or rhi_create_headless gave.
+ *
+ * A sentence naming the step that failed (no Vulkan loader, the instance,
+ * the surface, no listed device, no device that can present to the window,
+ * the device, the swapchain or a later resource), for a message to the
+ * player. Process-global; the text stays until the next failure.
+ * @return The reason, or "" when no create has failed. */
+const char   *rhi_create_error(void);
 
 /** @brief Name the directory where devices created afterwards persist their Vulkan pipeline cache, the engine build, and the function that writes the file.
  *

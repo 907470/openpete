@@ -40,15 +40,85 @@ extern "C" {
  * @param h Height in pixels. */
 void openpete_native_set_icon(const void* rgba32, int w, int h);
 
-/** @brief Create the game window on the caller's thread for bring-up to adopt.
+/** @brief Create the launcher's window, the Vulkan device on it and the imgui context, on the calling thread.
  *
- * The same hand-over the first-run splash uses. Win32 delivers a window's
- * messages only to the thread that created it, so the window must belong to
- * the thread that runs the event pump. The size comes from the same
- * resolution bring-up uses, and the creation flags carry the --background
- * activation hints. No-op under --headless, when a window was already
- * precreated, or when @p opts carries an adopted window. A failed creation
- * is logged and bring-up creates its own window.
+ * The one windowed device of a run: the launcher draws on it before the
+ * game is identified, and bring-up adopts it (openpete_native_render_init)
+ * instead of creating another. Takes a precreated window when one exists,
+ * else creates one with the --background activation hints. The window,
+ * instance and device read the device-creation knobs from the game-neutral
+ * tiers. rhi_create claims the display for the calling thread (main), and
+ * launcher frames are drawn there. No-op returning 0 when the device
+ * exists.
+ * @param opts Session options; window flags and the synchronous-run class.
+ * @param win_w Requested width in pixels, or <= 0 for the default.
+ * @param win_h Requested height in pixels, or <= 0 for the default.
+ * @param title Window title; NULL selects "openpete".
+ * @return 0 when the device exists, -1 when the window or the device could
+ *         not be created (openpete_native_launcher_error names why; the
+ *         window is destroyed). */
+int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int win_h,
+                                  const char *title);
+
+/** @brief Return why the last openpete_native_launcher_open failed, as a sentence for the player.
+ *
+ * @return The reason, or "" when no open has failed. */
+const char *openpete_native_launcher_error(void);
+
+/** @brief Report whether the launcher's device exists and has not been adopted or closed.
+ *
+ * @return 1 while the launcher holds the device, else 0. */
+int openpete_native_launcher_active(void);
+
+/** @brief Return the launcher's window, for a dialog parent.
+ *
+ * @return The window, or NULL when the launcher holds none. */
+struct SDL_Window *openpete_native_launcher_window(void);
+
+/** @brief Present one launcher frame: clear to a colour and record the imgui frame a callback draws.
+ *
+ * The launcher's per-present hook, on the display owner (the thread that
+ * opened the device). The begin waits for the frame slot (blocking
+ * present); a refused begin (a pending swapchain rebuild, a minimized
+ * window) draws nothing. The frame is a launcher frame for the boot facts
+ * (rhi_boot_launcher_frames).
+ * @param r Clear red, 0..1.
+ * @param g Clear green, 0..1.
+ * @param b Clear blue, 0..1.
+ * @param draw Issues the frame's imgui calls.
+ * @param ud Passed to @p draw.
+ * @return 1 when a frame was drawn, 0 otherwise. */
+int openpete_native_launcher_present(float r, float g, float b,
+                                     void (*draw)(void *ud), void *ud);
+
+/** @brief Read back the last launcher frame, count the pixels that differ from the clear colour, and write it as a PNG.
+ *
+ * A pixel differs when a channel is more than 8 levels from @p bg. Waits
+ * the device idle.
+ * @param path PNG to write, or NULL or "" to only count.
+ * @param bg The clear colour as R, G, B bytes.
+ * @param differ Receives the differing pixel count.
+ * @param total Receives the frame's pixel count.
+ * @return 0 on success, -1 when there is no launcher device, the readback
+ *         fails, or the PNG cannot be written. */
+int openpete_native_launcher_shot(const char *path, const uint8_t bg[3],
+                                  unsigned *differ, unsigned *total);
+
+/** @brief Destroy the launcher's imgui context, device and window when the run ends before bring-up adopts them.
+ *
+ * No-op when the launcher holds no device. */
+void openpete_native_launcher_close(void);
+
+/** @brief Create the game window on the caller's thread for the device creation to take.
+ *
+ * Win32 delivers a window's messages only to the thread that created it,
+ * so the window must belong to the thread that runs the event pump. The size
+ * comes from the same resolution bring-up uses, and the creation flags carry
+ * the --background activation hints. No-op under --headless, when a window
+ * was already precreated, when the launcher's window exists, or when the
+ * launcher found no Vulkan device (opts->native_unavailable). A failed
+ * creation is logged and openpete_native_launcher_open creates its own
+ * window.
  * @param opts Session options; must not be NULL.
  * @param win_w Requested width in pixels, or <= 0 for the default.
  * @param win_h Requested height in pixels, or <= 0 for the default. */

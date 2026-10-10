@@ -22,8 +22,9 @@ set -uo pipefail
 OPENPETE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Dev default: the disc rebuilt from the decomp output (override with
 # OPENPETE_DISC). The rebuild is not byte-identical to the Redump image, so it
-# is checked for presence only; the Redump SHA256 is enforced at ingest by
-# games/spyro-1/dist/disc_library.cpp.
+# is checked for presence only; the library labels the Redump SHA256 at
+# ingest (core/launcher/library.cpp, the known-disc table in
+# games/spyro-1/main.cpp).
 DISC_BIN_DEFAULT="$OPENPETE_ROOT/games/spyro-1/spyro-1/build/SCUS-94228.bin"
 
 DISC_BIN="${OPENPETE_DISC:-$DISC_BIN_DEFAULT}"

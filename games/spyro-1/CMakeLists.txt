@@ -142,12 +142,10 @@ openpete_add_game(spyro-1
         mods/mod_moby_ops.c
         mods/mod_level_ops.c
 
-        # First-run distribution: the WAD extraction, the disc library and
-        # the splash window (the module build, dist/recomp_build.cpp, is a
-        # shared-linkage attach source above).
-        dist/recomp_extract.cpp
-        dist/disc_library.cpp
-        dist/splash.c)
+        # First-run distribution: the WAD extraction (the disc library and
+        # the launcher are core/launcher/; the module build,
+        # dist/recomp_build.cpp, is a shared-linkage attach source above).
+        dist/recomp_extract.cpp)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")

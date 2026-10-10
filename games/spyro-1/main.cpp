@@ -12,6 +12,7 @@
 #include "openpete_log.h"
 #include "openpete_boot_timing.h"
 #include "openpete_keymap.h"
+#include "openpete_launcher.h"
 #include "game_extras.h"
 #include "openpete_mods.h"
 #include "openpete_surface.h"
@@ -76,13 +77,7 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
                                     const char* extra_wads);
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
-extern "C" int spyro1_config_disc_identity(const char* disc_path,
-                                           char* serial, size_t serial_cap,
-                                           char* sha, size_t sha_cap);
-extern "C" int spyro1_library_resolve(openpete_options_t* opts,
-                                      char* module_path_out,
-                                      size_t module_path_cap);
-extern "C" const char* spyro1_library_selected_game(void);
+extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap);
 extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
 /* Mod SDK name->vaddr table, generated from manifest/symbols.toml by
@@ -100,14 +95,52 @@ void spyro1_moby_ops_register(void);
 /* Level-slot registry game ops (mods/mod_level_ops.c). */
 void spyro1_level_ops_register(void);
 }
-#include "dist/splash.h"
-extern "C" {
-extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
-}
 #include "renderer/interp_regions.h"
 #include "renderer/reextract.h"
 
 #include <cstdio>
+#include <filesystem>
+
+/** @brief Write a library entry's recompiled-module path: modules/<codegen stamp>/spyro1-recomp.so (.dll on Windows), creating its directory.
+ *
+ * @param entry_dir The library entry's directory.
+ * @param out Receives the path.
+ * @param cap Its capacity.
+ * @return 0, or -1 when this build has no codegen stamp (a static build
+ *         loads no module from the library). */
+static int spyro1_library_module_path(const char* entry_dir, char* out, size_t cap) {
+    char stamp[128];
+    if (spyro1_recomp_codegen_stamp(stamp, sizeof stamp) != 0) return -1;
+#ifdef _WIN32
+    const char* name = "spyro1-recomp.dll";
+#else
+    const char* name = "spyro1-recomp.so";
+#endif
+    const std::filesystem::path mod = std::filesystem::path(entry_dir) / "modules" / stamp / name;
+    std::error_code ec;
+    std::filesystem::create_directories(mod.parent_path(), ec);
+    std::snprintf(out, cap, "%s", mod.string().c_str());
+    return 0;
+}
+
+/* The README-pinned retail NTSC-U disc, labelled by name in the library. */
+static const openpete_launcher_known_disc k_known_discs[] = {
+    {"fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37",
+     "Spyro the Dragon (NTSC-U)"},
+};
+
+/** @brief The launcher's view of this game: its id, name, known discs and library module path.
+ *
+ * @return The descriptor, built on first call. */
+static const openpete_launcher_game* launcher_game_desc(void) {
+    static openpete_launcher_game g;
+    g.game_id = game_get_id();
+    g.display_name = game_get_display_name();
+    g.known_discs = k_known_discs;
+    g.known_disc_count = (int)(sizeof k_known_discs / sizeof k_known_discs[0]);
+    g.module_path = spyro1_library_module_path;
+    return &g;
+}
 
 /** @brief Tell the player the game cannot start, then hand back the exit code.
  *
@@ -210,8 +243,8 @@ static void register_mod_layer(const char* disc_path) {
 /** @brief Run a batch exit mode that needs the identified disc: --extract-recomp-inputs or --dump-sfx-pack.
  *
  * --dump-sfx-pack takes the library's most recent entry when no disc is
- * named; the splash stays off, since a batch command must not open a window
- * to ask which version to census.
+ * named; the launcher shows no screen, since a batch command must not open a
+ * window to ask which version to census.
  * @param argc Argument count.
  * @param argv Arguments.
  * @param neutral The game-neutral options.
@@ -219,9 +252,10 @@ static void register_mod_layer(const char* disc_path) {
 static int batch_disc_mode(int argc, char** argv, openpete_options_t* neutral) {
     const char* library_game = nullptr;
     if (neutral->dump_sfx_pack_dir && !neutral->disc_path && !neutral->exe_path) {
-        spyro1_splash_set_enabled(0);
-        (void)spyro1_library_resolve(neutral, nullptr, 0);
-        if (neutral->disc_path) library_game = spyro1_library_selected_game();
+        int exit_now = 0;
+        openpete_launcher_begin(launcher_game_desc(), neutral, 0);
+        (void)openpete_launcher_resolve(neutral, nullptr, 0, &exit_now);
+        library_game = openpete_launcher_selected_game();
     }
     openpete_ident_t id;
     int rc = identify(neutral, library_game, &id);
@@ -240,49 +274,82 @@ static int batch_disc_mode(int argc, char** argv, openpete_options_t* neutral) {
                                 opts.dump_sfx_wads) == 0 ? 0 : 1;
 }
 
-/** @brief Pick the disc through the library and the launcher's splash, then identify the game.
+/** @brief Pick the disc through the library and the launcher, then identify the game.
  *
- * --ingest copies an image in; no disc at all boots the most recent entry,
- * or the version selector picks among several; an empty library opens the
- * drop screen. An explicit --disc bypasses the library (dev/CI path). The
- * splash renders the waits (ingest copy), the selector and the drop screen,
- * lazy-opening only when one of them is needed.
+ * --ingest copies an image in; no disc at all boots the library's entry, or
+ * the version selector picks among several; an empty library opens the drop
+ * screen. An explicit --disc bypasses the library (dev/CI path). The
+ * launcher's window and device open only when a screen is needed.
  * @param neutral The game-neutral options; receives the library's disc.
  * @param module_path Receives the library entry's module path, "" for none.
  * @param module_cap Its capacity.
  * @param id Receives the identification.
- * @param exit_now Set to 1 when the player closed the drop screen.
+ * @param exit_now Set to 1 when the run ends in the launcher (the player quit).
  * @return OPENPETE_EXIT_OK, or the exit code after the player was told. */
 static int launcher_identify(openpete_options_t* neutral, char* module_path,
                              size_t module_cap, openpete_ident_t* id,
                              int* exit_now) {
-    *exit_now = 0;
-    const bool named = neutral->disc_path || neutral->exe_path;
-    spyro1_splash_set_enabled(!neutral->headless);
-    /* Open at the game window's size (an explicit --window carries through)
-     * so the vk-mode window adoption needs no resize. */
-    spyro1_splash_set_window_size(neutral->window_w, neutral->window_h);
-    spyro1_progress_cb = spyro1_splash_progress;
-
-    if (spyro1_library_resolve(neutral, module_path, module_cap) != 0)
-        return fatal_start(1, "The game library could not be read.");
-    if (!neutral->disc_path && !neutral->exe_path && !neutral->headless) {
-        /* Nothing to boot anywhere: first run. DROP mode. */
-        if (spyro1_splash_open() == 0) {
-            const char* dropped = spyro1_splash_wait_for_disc();
-            if (!dropped) { *exit_now = 1; return OPENPETE_EXIT_OK; }   /* window closed */
-            neutral->ingest_path = dropped;
-            if (spyro1_library_resolve(neutral, module_path, module_cap) != 0)
-                return fatal_start(1, "The disc image could not be added to the game library.");
-        }
-    }
-    const char* library_game = (!named && neutral->disc_path)
-                               ? spyro1_library_selected_game() : nullptr;
-    int rc = identify(neutral, library_game, id);
+    openpete_launcher_begin(launcher_game_desc(), neutral, !neutral->headless);
+    int rc = openpete_launcher_resolve(neutral, module_path, module_cap, exit_now);
+    if (rc != OPENPETE_EXIT_OK || *exit_now) return rc;
+    rc = identify(neutral, openpete_launcher_selected_game(), id);
     if (rc == OPENPETE_EXIT_OK) rc = openpete_identify_require_linked(id, game_get_id());
     if (rc != OPENPETE_EXIT_OK)
         return fatal_start(rc, "The disc is not Spyro the Dragon.");
     return OPENPETE_EXIT_OK;
+}
+
+/** @brief Take the session from the game-neutral options to the hand-off: the launcher's disc, identification, the full parse, the mod layer, the recompiled module and the mod compile.
+ *
+ * The launcher draws the waits (the first-boot module build, the mod
+ * compile) and its window opens only when one of them has work. The
+ * hand-off then gives the game the launcher's window, device and imgui
+ * context in a windowed run (creating them when no screen did), so one OS
+ * window and one Vulkan device carry launcher and game.
+ * @param argc Argument count.
+ * @param argv Arguments.
+ * @param neutral The game-neutral options; receives the library's disc.
+ * @param opts Receives the full resolution.
+ * @param exit_now Set to 1 when the run ends in the launcher.
+ * @return OPENPETE_EXIT_OK, or the exit code after the player was told. */
+static int start_session(int argc, char** argv, openpete_options_t* neutral,
+                         openpete_options_t* opts, int* exit_now) {
+    static char library_module_path[4096];
+    openpete_ident_t id;
+    int rc = launcher_identify(neutral, library_module_path, sizeof library_module_path,
+                               &id, exit_now);
+    if (rc != OPENPETE_EXIT_OK || *exit_now) return rc;
+
+    /* The one full resolution: the identified game's and disc's scopes
+     * join the tiers, and the environment and argv are written once. */
+    rc = parse_options(opts, argc, argv, &id);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    rc = openpete_options_require_exe_source(opts);
+    if (rc != OPENPETE_EXIT_OK)
+        return fatal_start(rc, "No Spyro the Dragon disc image was found.");
+
+    /* The mod layer, once, at identification: before the compile-on-boot
+     * pass below and the load inside openpete_run(). */
+    register_mod_layer(opts->disc_path);
+
+    /* The runtime reaches recompiled code only through the recomp-module
+     * descriptor. Static builds register the linked-in module;
+     * shared-linkage builds dlopen spyro1-recomp and resolve the same
+     * descriptor. Must precede any dispatch. Auto-building into the module
+     * location is fine for the default path and for library entries; an
+     * explicit --recomp-module points at a module the user asserts exists. */
+    const char* module_override = opts->recomp_module_path;
+    if (!module_override && library_module_path[0])
+        module_override = library_module_path;
+    const int allow_build = (opts->recomp_module_path == NULL);
+    if (spyro1_recomp_attach(module_override, opts->disc_path, allow_build) != 0)
+        return fatal_start(1, "The game code built from the disc could not be loaded or built.");
+
+    /* Mod compile-on-boot: compile any stale enabled source mods on a
+     * launcher task; the window opens only if there is real work. Loading
+     * stays in openpete_run(); this pass only warms the build cache. */
+    openpete_mods_prepare(opts, openpete_launcher_progress, openpete_launcher_run_task);
+    return openpete_launcher_handoff(opts);
 }
 
 /** @brief Spyro 1 entry point: resolve the game-neutral settings, identify the game, apply its settings once, attach the recomp module, and run the game.
@@ -306,7 +373,7 @@ int main(int argc, char** argv) {
 
     /* The [disc.*] scopes' keys for the identified disc: its serial, and
      * the hash its library entry recorded. */
-    openpete_config_set_disc_identity_fn(spyro1_config_disc_identity);
+    openpete_config_set_disc_identity_fn(openpete_library_disc_identity);
 
     /* OPENPETE_SURFACE_DUMP: write the surface and exit, before any config
      * or env layer runs. */
@@ -351,62 +418,13 @@ int main(int argc, char** argv) {
     if (neutral.extract_recomp_inputs_dir || neutral.dump_sfx_pack_dir)
         return batch_disc_mode(argc, argv, &neutral);
 
-    static char library_module_path[4096];
-    openpete_ident_t id;
-    int exit_now = 0;
-    rc = launcher_identify(&neutral, library_module_path, sizeof library_module_path,
-                           &id, &exit_now);
-    if (rc != OPENPETE_EXIT_OK || exit_now) return rc;
-
-    /* The one full resolution: the identified game's and disc's scopes
-     * join the tiers, and the environment and argv are written once. */
     openpete_options_t opts;
-    rc = parse_options(&opts, argc, argv, &id);
-    if (rc != OPENPETE_EXIT_OK) return rc;
-
-    {
-        int src_rc = openpete_options_require_exe_source(&opts);
-        if (src_rc != OPENPETE_EXIT_OK)
-            return fatal_start(src_rc, "No Spyro the Dragon disc image was found.");
+    int exit_now = 0;
+    rc = start_session(argc, argv, &neutral, &opts, &exit_now);
+    if (rc != OPENPETE_EXIT_OK || exit_now) {
+        openpete_launcher_close();
+        return rc;
     }
-
-    /* The mod layer, once, at identification: before the compile-on-boot
-     * pass below and the load inside openpete_run(). */
-    register_mod_layer(opts.disc_path);
-
-    /* The runtime reaches recompiled code only
-     * through the recomp-module descriptor. Static builds register the
-     * linked-in module; shared-linkage builds dlopen spyro1-recomp and
-     * resolve the same descriptor. Must precede any dispatch. */
-    const char* module_override = opts.recomp_module_path;
-    if (!module_override && library_module_path[0])
-        module_override = library_module_path;
-    /* Auto-building into the module location is fine for the default
-     * path and for library entries; an explicit --recomp-module points
-     * at a module the user asserts exists. */
-    int allow_build = (opts.recomp_module_path == NULL);
-    if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
-        return fatal_start(1, "The game code built from the disc could not be loaded or built.");
-
-    /* Mod compile-on-boot: compile any
-     * stale enabled source mods behind the splash while it is still
-     * alive - run_task lazy-opens the window only if there is real work,
-     * so a boot with nothing stale never flashes it. Loading stays in
-     * openpete_run(); this pass only warms the build cache. */
-    openpete_mods_prepare(&opts, spyro1_splash_progress,
-                          spyro1_splash_run_task);
-
-    /* In-process continuation: the splash's job ends where the game
-     * window begins. Every windowed run ADOPTS the splash window
-     * (native_render retitles + reuses it) so the window never closes and
-     * reopens - both renderer modes display through the native window, so
-     * both want the handover. Headless closes it. Progress is unhooked
-     * either way - nothing may lazy-reopen a splash window mid-game. */
-    spyro1_progress_cb = NULL;
-    if (!opts.headless)
-        opts.adopted_window = spyro1_splash_detach_window();
-    else
-        spyro1_splash_close();
 
     /* Register the interp ring's region table. Must
      * happen before openpete_run() so openpete_interp_init() (called

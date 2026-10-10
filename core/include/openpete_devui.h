@@ -34,20 +34,47 @@ struct rhi_device;
 struct SDL_Window;
 union SDL_Event;
 
-/** @brief Create the imgui context and its SDL3 and Vulkan backends against the native vk window and device.
+/** @brief Create the imgui context and its SDL3 and Vulkan backends against a window and its device.
  *
- * Call after rhi_create. Seeds the knob registry from the options, latches
- * OPENPETE_DEVUI_INJECT_MOUSE, stores window state in openpete-devui.ini
- * beside the executable, and opens the overlay at boot when
+ * Call after rhi_create. The launcher calls it on the device it creates and
+ * draws through openpete_devui_render_frame; the overlay itself stays
+ * unattached until openpete_devui_init. Stores window state in
+ * openpete-devui.ini beside the executable. A second call on the same
+ * device returns 1 at once.
+ * @param dev The device.
+ * @param win Its window.
+ * @return 1 when the context exists on @p dev, 0 when a handle is missing,
+ *         the device exposes no imgui info (headless), a backend fails to
+ *         initialise, or the context exists on another device. */
+int  openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win);
+
+/** @brief Attach the dev overlay to the session: create the imgui context unless the launcher did, then seed the knob registry.
+ *
+ * Call after rhi_create. Creates the context through openpete_devui_create
+ * when none exists, seeds the knob registry from the options, latches
+ * OPENPETE_DEVUI_INJECT_MOUSE, and opens the overlay at boot when
  * openpete_devui_open_requested says so. A second call after success
  * returns 1 at once. On failure every other call is a no-op.
  * @param dev The native render device.
  * @param win The native window.
  * @param opts The parsed options.
- * @return 1 on success, 0 when a handle is missing, the device exposes no
- *         imgui info (headless), or a backend fails to initialise. */
+ * @return 1 on success, 0 when openpete_devui_create fails. */
 int  openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
                          const struct openpete_options *opts);
+
+/** @brief Record one imgui frame whose content a callback draws, into the current offscreen pass.
+ *
+ * The launcher's per-present hook: called between rhi_begin_offscreen and
+ * rhi_end_offscreen. Feeds imgui the queued SDL events
+ * (openpete_devui_process_event), starts the frame, calls @p draw, and
+ * records the draw data. Needs only the context (openpete_devui_create),
+ * not the attached overlay.
+ * @param dev The device the context was created on.
+ * @param draw Issues the frame's imgui calls.
+ * @param ud Passed to @p draw.
+ * @return 1 when a frame was recorded, 0 when no context exists on @p dev,
+ *         @p draw is NULL or no command buffer is recording. */
+int  openpete_devui_render_frame(struct rhi_device *dev, void (*draw)(void *ud), void *ud);
 
 /** @brief Destroy the imgui backends and context and return the overlay to its uninitialised state.
  *
@@ -116,7 +143,7 @@ void openpete_devui_close(void);
  * openpete_devui_render drains on the frame's thread. A full ring drops the
  * newest event, not the oldest, so a press is never lost ahead of its
  * release; the drop count is logged on the first drop and every 256th.
- * No-op before init.
+ * No-op before openpete_devui_create.
  * @param ev The event; NULL is ignored. */
 void openpete_devui_process_event(const union SDL_Event *ev);
 

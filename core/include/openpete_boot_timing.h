@@ -9,7 +9,9 @@
  * without a frame (a run with no native renderer). Every instant is printed
  * in ms after the launcher-start mark; a mark never reached prints "-". The
  * line also carries the count of full configuration materializations
- * (openpete_config_materializations), 1 on a normal boot.
+ * (openpete_config_materializations), 1 on a normal boot, and the count of
+ * Vulkan devices created (the launcher's device is the renderer's, so 1 on
+ * a windowed boot).
  *
  * The harness knob OPENPETE_LIVE_SWITCH=<vbl>:<row>=<value>[,...] (rows
  * texture-mapping, notex, wireframe; value 0 or 1, texture-mapping 1 =

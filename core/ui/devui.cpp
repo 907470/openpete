@@ -54,6 +54,9 @@ extern "C" {
 #include <string.h>
 #include <stdlib.h>
 
+/* The imgui context and its two backends exist (openpete_devui_create). */
+static bool        s_ctx    = false;
+/* The overlay is attached to the session's options (openpete_devui_init). */
 static bool        s_inited = false;
 static bool        s_open   = false;
 /* One present's worth of "reveal": the panel window uncollapsed, the Mods
@@ -96,19 +99,13 @@ int openpete_devui_inject_mouse_requested(float *x, float *y)
     return 1;
 }
 
-int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
-                        const struct openpete_options *opts)
+int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
 {
-    if (s_inited) return 1;
+    if (s_ctx) return dev == s_dev ? 1 : 0;
     if (!dev || !win) return 0;
 
     rhi_imgui_info info;
     if (!rhi_get_imgui_info(dev, &info)) return 0;
-
-    knob_registry_init(opts);
-    s_inject_mouse =
-        openpete_devui_inject_mouse_requested(&s_inject_x, &s_inject_y)
-            != 0;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -155,6 +152,20 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
 
     s_dev    = dev;
     s_win    = win;
+    s_ctx    = true;
+    return 1;
+}
+
+int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
+                        const struct openpete_options *opts)
+{
+    if (s_inited) return 1;
+    if (!openpete_devui_create(dev, win)) return 0;
+
+    knob_registry_init(opts);
+    s_inject_mouse =
+        openpete_devui_inject_mouse_requested(&s_inject_x, &s_inject_y)
+            != 0;
     s_inited = true;
     s_open   = openpete_devui_open_requested(opts) != 0;
     s_boot_reveal = s_open;
@@ -165,10 +176,11 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
 
 void openpete_devui_shutdown(void)
 {
-    if (!s_inited) return;
+    if (!s_ctx) return;
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
+    s_ctx    = false;
     s_inited = false;
     s_open   = false;
     s_boot_reveal = false;
@@ -242,7 +254,7 @@ static size_t devui_enqueue(const SDL_Event *ev)
 
 void openpete_devui_process_event(const union SDL_Event *ev)
 {
-    if (!s_inited || !ev) return;
+    if (!s_ctx || !ev) return;
     const SDL_Event *e = (const SDL_Event *)ev;
     if (e->type != SDL_EVENT_TEXT_INPUT) {
         (void)devui_enqueue(e);
@@ -2429,6 +2441,23 @@ void openpete_devui_render(struct rhi_device *dev)
     ImGui::Render();
     devui_publish_io_wants();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
+}
+
+int openpete_devui_render_frame(struct rhi_device *dev, void (*draw)(void *ud), void *ud)
+{
+    if (!s_ctx || dev != s_dev || !draw) return 0;
+    void *cb = rhi_current_command_buffer(dev);
+    if (!cb) return 0;
+    devui_drain_events();
+    ImGuiIO &io = ImGui::GetIO();
+    io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    draw(ud);
+    ImGui::Render();
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
+    return 1;
 }
 
 int openpete_devui_render_progress(struct rhi_device *dev, const char *title,

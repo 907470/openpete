@@ -3961,14 +3961,26 @@ static void nr_log_window_state(SDL_Window *win, const char *when)
                SDL_GetCurrentVideoDriver());
 }
 
-/* A window created by the host before bring-up, adopted the same way the
- * first-run splash's window is. See openpete_native_precreate_window. */
+/* A window created by the host before bring-up, which the device creation
+ * (openpete_native_launcher_open) takes instead of creating its own. See
+ * openpete_native_precreate_window. */
 static SDL_Window* s_precreated_win;
+
+/* The launcher's window and device (openpete_native_launcher_open), held
+ * until bring-up adopts them (nr_adopt_launcher) or
+ * openpete_native_launcher_close destroys them. */
+static struct {
+    SDL_Window *win;
+    rhi_device *dev;
+    int         created_vsync;   /* the vsync preference the device was created with */
+} s_launch;
+/* Why the last openpete_native_launcher_open failed, for the player. */
+static char s_launch_error[192];
 
 void openpete_native_precreate_window(const openpete_options_t *opts,
                                       int win_w, int win_h)
 {
-    if (s_precreated_win || opts->adopted_window) return;
+    if (s_precreated_win || s_launch.win || opts->native_unavailable) return;
     /* Every windowed mode now brings the native window up and displays through
      * it, so every windowed mode wants the single-window handover. Headless has
      * no window at all. */
@@ -4555,6 +4567,203 @@ static bool nr_run_is_synchronous(bool headless, const openpete_options_t *opts)
     return headless || opts->screenshot_intermediate_count > 0;
 }
 
+int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int win_h,
+                                  const char *title)
+{
+    if (s_launch.dev) return 0;
+    int w, h;
+    nr_resolve_window_size(opts, win_w, win_h, &w, &h);
+    /* The window belongs to the calling thread, the one that pumps its
+     * events: Win32 delivers a window's messages only to its creator. */
+    SDL_Window *win = s_precreated_win;
+    s_precreated_win = NULL;
+    if (!win) win = SDL_CreateWindow(title ? title : "openpete", w, h, nr_window_flags(opts));
+    if (!win) {
+        snprintf(s_launch_error, sizeof s_launch_error,
+                 "The window could not be created (%s).", SDL_GetError());
+        OPL_ERROR_F("native", "%s", s_launch_error);
+        return -1;
+    }
+    /* Window, instance and device come from the game-neutral tiers, so a
+     * device created before the game is known is the one created after it. */
+    const int created_vsync = nr_device_knobs_install();
+    rhi_set_pipeline_cache_sync_class(nr_run_is_synchronous(false, opts));
+    nr_set_pipeline_cache_dir();
+    rhi_set_clock(op_now);   /* boot facts on the pace log's clock */
+    rhi_device *dev = rhi_create(win, "openpete-native", created_vsync);
+    if (!dev) {
+        const char *why = rhi_create_error();
+        snprintf(s_launch_error, sizeof s_launch_error, "%s",
+                 (why && *why) ? why : "The Vulkan device could not be created.");
+        SDL_DestroyWindow(win);
+        return -1;
+    }
+    if (!openpete_devui_create(dev, win))
+        OPL_WARN_F("native", "%s", "imgui could not start on the launcher device");
+    s_launch.win = win;
+    s_launch.dev = dev;
+    s_launch.created_vsync = created_vsync;
+    OPL_INFO_F("native", "launcher device %p created on window %p (%dx%d)",
+               (void *)dev, (void *)win, w, h);
+    return 0;
+}
+
+const char *openpete_native_launcher_error(void) { return s_launch_error; }
+
+int openpete_native_launcher_active(void) { return s_launch.dev != NULL; }
+
+struct SDL_Window *openpete_native_launcher_window(void) { return s_launch.win; }
+
+int openpete_native_launcher_present(float r, float g, float b,
+                                     void (*draw)(void *ud), void *ud)
+{
+    rhi_device *dev = s_launch.dev;
+    if (!dev) return 0;
+    int drawn = 0;
+    rhi_boot_launcher_frames(true);
+    rhi_set_present_blocking(dev, true);
+    if (rhi_begin_frame(dev)) {
+        rhi_begin_offscreen(dev, r, g, b, 1.0f);
+        drawn = openpete_devui_render_frame(dev, draw, ud);
+        rhi_end_offscreen(dev);
+        rhi_blit_to_swapchain(dev);
+        rhi_end_frame(dev);
+    }
+    rhi_set_present_blocking(dev, false);
+    rhi_boot_launcher_frames(false);
+    return drawn;
+}
+
+int openpete_native_launcher_shot(const char *path, const uint8_t bg[3],
+                                  unsigned *differ, unsigned *total)
+{
+    *differ = *total = 0;
+    rhi_device *dev = s_launch.dev;
+    int w = 0, h = 0;
+    if (!dev) return -1;
+    (void)rhi_read_offscreen(dev, NULL, 0, &w, &h);
+    if (w <= 0 || h <= 0) return -1;
+    const size_t n = (size_t)w * (size_t)h * 4u;
+    uint8_t *px = malloc(n);
+    if (!px) return -1;
+    if (!rhi_read_offscreen(dev, px, n, &w, &h)) { free(px); return -1; }
+    /* A pixel differs when any channel is more than 8 levels from the clear
+     * colour: the blend edges of drawn text count, the clear does not. */
+    for (size_t i = 0; i < n; i += 4) {
+        const int d0 = abs((int)px[i] - bg[0]), d1 = abs((int)px[i + 1] - bg[1]),
+                  d2 = abs((int)px[i + 2] - bg[2]);
+        *differ += (d0 > 8 || d1 > 8 || d2 > 8) ? 1u : 0u;
+    }
+    *total = (unsigned)(w * h);
+    const int rc = (path && *path) ? openpete_write_png_rgba(path, px, w, h) : 0;
+    free(px);
+    return rc;
+}
+
+void openpete_native_launcher_close(void)
+{
+    if (!s_launch.dev) return;
+    openpete_devui_shutdown();   /* imgui backend objects die before the device */
+    rhi_destroy(s_launch.dev);
+    SDL_DestroyWindow(s_launch.win);
+    memset(&s_launch, 0, sizeof s_launch);
+}
+
+/** @brief Apply the game's window icon, the --fullscreen launch state and the --background placement to the adopted window.
+ *
+ * The icon is set on the native window rather than PsyCross's: in the
+ * default (null-GPU) path PsyCross never creates one. --fullscreen 1 enters
+ * borderless-desktop fullscreen, the state openpete_native_toggle_fullscreen
+ * switches into; --background wins over it and keeps the window windowed and
+ * behind the others. Logs the window state for a harness.
+ * @param win The window.
+ * @param opts The session options. */
+static void nr_apply_game_window_state(SDL_Window *win, const openpete_options_t *opts)
+{
+    if (s_icon_rgba && s_icon_w > 0 && s_icon_h > 0) {
+        SDL_Surface* ico = SDL_CreateSurfaceFrom(
+            s_icon_w, s_icon_h, SDL_PIXELFORMAT_RGBA32,
+            (void*)s_icon_rgba, s_icon_w * 4);
+        if (ico) {
+            SDL_SetWindowIcon(win, ico);
+            SDL_DestroySurface(ico);
+            OPL_INFO_F("native", "window icon applied (%dx%d)", s_icon_w, s_icon_h);
+        }
+    } else {
+        /* Weakly linked: a build without the icon generator step resolves
+         * the symbol to NULL and silently ships a default icon. Say so. */
+        OPL_WARN_F("native", "%s", "no window icon available (icon data not linked)");
+    }
+    s_background_requested = opts->background > 0;
+    if (opts->fullscreen && s_background_requested) {
+        /* A fullscreen window covers the screen, which is the one thing
+         * the background window must not do, so the background wins. */
+        OPL_WARN_F("native", "%s", "--background with --fullscreen 1: "
+                   "--background wins, staying windowed");
+    } else if (opts->fullscreen) {
+        SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
+        SDL_SetWindowFullscreen(win, true);
+        OPL_INFO_F("native", "%s", "--fullscreen: borderless desktop at launch");
+    }
+    if (s_background_requested)
+        openpete_window_send_to_back(win);
+    nr_log_window_state(win, "bring-up");
+}
+
+/** @brief Take the launcher's window and device for the game, creating them first when no launcher did.
+ *
+ * The device is the one the launcher created and drew on (one device per
+ * run); a run that reached bring-up without a launcher device creates it
+ * here through the same openpete_native_launcher_open. The game's title,
+ * size, icon, fullscreen and background state then apply to the live
+ * window, a game or disc scope's present mode applies through the live
+ * swapchain path, and the dev overlay attaches to the imgui context the
+ * launcher created. A run whose launcher could not create a device
+ * (opts->native_unavailable) brings nothing up.
+ * @param opts The session options, from the full resolution.
+ * @param w The game window's width.
+ * @param h The game window's height.
+ * @param out_win Receives the window.
+ * @param out_dev Receives the device.
+ * @return 0 on success, 1 when no device is available. */
+static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
+                             SDL_Window **out_win, rhi_device **out_dev)
+{
+    if (opts->native_unavailable) {
+        OPL_WARN_F("native", "%s", "no Vulkan device (the launcher's creation failed); "
+                   "the native renderer stays off");
+        return 1;
+    }
+    const char *title = (opts->display_name && opts->display_name[0])
+                        ? opts->display_name : "openpete";
+    if (!s_launch.dev && openpete_native_launcher_open(opts, w, h, title) != 0) {
+        OPL_ERROR_F("native", "rhi_create failed (%s); continuing without native A/B",
+                    s_launch_error);
+        return 1;
+    }
+    SDL_Window *win = s_launch.win;
+    rhi_device *dev = s_launch.dev;
+    const int created_vsync = s_launch.created_vsync;
+    memset(&s_launch, 0, sizeof s_launch);   /* the renderer owns them from here */
+    OPL_INFO_F("native", "renderer device %p is the launcher device (window %p)",
+               (void *)dev, (void *)win);
+    SDL_SetWindowTitle(win, title);
+    SDL_SetWindowResizable(win, true);
+    int cur_w = 0, cur_h = 0;
+    SDL_GetWindowSize(win, &cur_w, &cur_h);
+    if (cur_w != w || cur_h != h)
+        SDL_SetWindowSize(win, w, h);
+    nr_apply_game_window_state(win, opts);
+    nr_apply_scoped_present(dev, opts, created_vsync);
+    /* M-key dev config overlay: attaches to the imgui context the launcher
+     * created on this window and device. Failure leaves the overlay
+     * unavailable (logged inside); never fatal to the renderer. */
+    openpete_devui_init(dev, win, opts);
+    *out_win = win;
+    *out_dev = dev;
+    return 0;
+}
+
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
     if (!opts)
@@ -4633,101 +4842,20 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 
     SDL_Window *win = NULL;
     rhi_device *dev = NULL;
-    const int created_vsync = nr_device_knobs_install();
     rhi_set_pipeline_cache_sync_class(s_nr.sync_run);
-    nr_set_pipeline_cache_dir();
     if (headless) {
         /* No window: render into the offscreen/RTT and read back for screenshots.
          * The offscreen extent is the resolved size; the screenshot path composes
          * at the reference resolution regardless, so w/h only size unused buffers. */
+        (void)nr_device_knobs_install();
+        nr_set_pipeline_cache_dir();
         dev = rhi_create_headless("openpete-native", (uint32_t)w, (uint32_t)h);
         if (!dev) {
             OPL_ERROR_F("native", "rhi_create_headless failed; native capture disabled");
             return 1;
         }
-    } else {
-        const char *title = (opts->display_name && opts->display_name[0])
-                            ? opts->display_name : "openpete";
-        /* Either the first-run splash's window or one the host precreated.
-         * Both exist so the window is owned by the thread that will pump it:
-         * Win32 delivers a window's messages only to its creating thread. */
-        SDL_Window *adopt = (SDL_Window*)opts->adopted_window;
-        const char *adopt_src = "splash";
-        if (!adopt) { adopt = s_precreated_win; adopt_src = "precreated"; }
-        if (adopt) {
-            /* In-process continuation: reuse the first-run splash's window
-             * (main.cpp hands it over in windowed vk mode only; its
-             * SDL_Renderer is already destroyed). SDL converts a plain
-             * window to Vulkan inside SDL_Vulkan_CreateSurface, so the
-             * missing SDL_WINDOW_VULKAN creation flag is fine - only the
-             * game's title/flags/size need applying. The splash opens at
-             * the game's size, so this is normally just a retitle. */
-            win = adopt;
-            SDL_SetWindowTitle(win, title);
-            SDL_SetWindowResizable(win, true);
-            int cur_w = 0, cur_h = 0;
-            SDL_GetWindowSize(win, &cur_w, &cur_h);
-            if (cur_w != w || cur_h != h)
-                SDL_SetWindowSize(win, w, h);
-            OPL_INFO_F("native", "adopted %s window (%dx%d)", adopt_src, w, h);
-        } else {
-            win = SDL_CreateWindow(title, w, h, nr_window_flags(opts));
-            if (!win) {
-                OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
-                return 1;
-            }
-        }
-
-        /* The window icon has to be set here, not on PsyCross's window: in the
-         * default (null-GPU) path PsyCross never creates one, so the visible
-         * window would ship icon-less on any platform without a resource-file
-         * icon - i.e. everywhere but Windows. */
-        if (s_icon_rgba && s_icon_w > 0 && s_icon_h > 0) {
-            SDL_Surface* ico = SDL_CreateSurfaceFrom(
-                s_icon_w, s_icon_h, SDL_PIXELFORMAT_RGBA32,
-                (void*)s_icon_rgba, s_icon_w * 4);
-            if (ico) {
-                SDL_SetWindowIcon(win, ico);
-                SDL_DestroySurface(ico);
-                OPL_INFO_F("native", "window icon applied (%dx%d)",
-                           s_icon_w, s_icon_h);
-            }
-        } else {
-            /* Weakly linked: a build without the icon generator step resolves
-             * the symbol to NULL and silently ships a default icon. Say so. */
-            OPL_WARN_F("native", "%s", "no window icon available (icon data not linked)");
-        }
-
-        /* --fullscreen 1: launch in borderless-desktop fullscreen - the exact
-         * state openpete_native_toggle_fullscreen switches into, so Alt+Enter /
-         * the O-menu DISPLAY row toggle straight back to the windowed size
-         * above. Before rhi_create so the swapchain sizes to the monitor. */
-        s_background_requested = opts->background > 0;
-        if (opts->fullscreen && s_background_requested) {
-            /* A fullscreen window covers the screen, which is the one thing
-             * the background window must not do, so the background wins. */
-            OPL_WARN_F("native", "%s", "--background with --fullscreen 1: "
-                       "--background wins, staying windowed");
-        } else if (opts->fullscreen) {
-            SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
-            SDL_SetWindowFullscreen(win, true);
-            OPL_INFO_F("native", "%s", "--fullscreen: borderless desktop at launch");
-        }
-        if (s_background_requested)
-            openpete_window_send_to_back(win);
-        nr_log_window_state(win, "bring-up");
-
-        dev = rhi_create(win, "openpete-native", created_vsync);
-        if (!dev) {
-            OPL_ERROR_F("native", "rhi_create failed; continuing without native A/B");
-            SDL_DestroyWindow(win);
-            return 1;
-        }
-        nr_apply_scoped_present(dev, opts, created_vsync);
-        /* M-key dev config overlay: imgui context + SDL3/Vulkan backends bound
-         * to this window/device. Failure just leaves the overlay unavailable
-         * (logged inside); never fatal to the renderer. */
-        openpete_devui_init(dev, win, opts);
+    } else if (nr_adopt_launcher(opts, w, h, &win, &dev) != 0) {
+        return 1;
     }
     /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
      * rather than spin failed frames forever. */

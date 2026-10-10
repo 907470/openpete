@@ -2612,7 +2612,9 @@ int openpete_get_render_fps(void) {
  * PsyCross raster. A windowed run with any screenshot request keeps the GL
  * path, --screenshot-native-only included. A headless
  * --screenshot-native-only run reads only the native capture, whose scene
- * is composed from game state. In every run the CPU VRAM mirror stays
+ * is composed from game state. A windowed run whose launcher found no
+ * Vulkan device (opts->native_unavailable) keeps the GL path: PsyCross's
+ * GL window is then its display. In every run the CPU VRAM mirror stays
  * live, so StoreImage reads what LoadImage, MoveImage and ClearImage
  * wrote; null-GPU mode stops only the copy-back of the PsyCross
  * framebuffer into the mirror, and a run that rasterizes no OT never
@@ -2621,11 +2623,33 @@ int openpete_get_render_fps(void) {
  * @return true when PsyCross is to open no window, no GL context and no
  *         PSX GPU state. */
 static bool psycross_raster_unread(const openpete_options_t* opts) {
-    if (opts->renderer != OPENPETE_RENDERER_VK || opts->screenshot_presents_start >= 0)
+    if (opts->renderer != OPENPETE_RENDERER_VK || opts->screenshot_presents_start >= 0
+        || opts->native_unavailable)
         return false;
     if (!opts->headless)
         return opts->screenshot_frame_count == 0;
     return opts->screenshot_native_only && !opts->record_path;
+}
+
+void openpete_game_window_size(const openpete_options_t* opts, int* out_w, int* out_h)
+{
+    int w = (opts->window_w > 0) ? opts->window_w : game_default_window_w();
+    int h = (opts->window_h > 0) ? opts->window_h : game_default_window_h();
+    /* If --aspect is set but the user didn't pin --window, scale the
+     * default window so the *cropped* (post-overscan) src exactly fills
+     * it - otherwise the present blit letterboxes the un-rendered
+     * disp/clip difference. The cropped aspect = requested_aspect ×
+     * game_display_crop_factor(), the game's own disp_h/clip_h. The
+     * PsyCross reference renderer has no Hor+ path and draws canonical 4:3
+     * only, so a widened window would stretch it; native modes keep
+     * --aspect (window-driven Hor+). An explicit --window always wins. */
+    if (opts->aspect_w_over_h > 0.0f && opts->renderer != OPENPETE_RENDERER_PSYCROSS &&
+        opts->window_w <= 0 && opts->window_h <= 0) {
+        h = game_default_window_h();
+        w = (int)((float)h * opts->aspect_w_over_h * game_display_crop_factor() + 0.5f);
+    }
+    *out_w = w;
+    *out_h = h;
 }
 
 /** @brief Bring up the host side of a run: guest CPU and PSX runtime, knobs, mods, PsyCross, audio, input, windows and the native renderer.
@@ -2756,30 +2780,19 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_mods_init(opts);
     openpete_boot_mark(OP_BOOT_MODS_INIT);
 
-    int win_w = (opts->window_w > 0) ? opts->window_w : game_default_window_w();
-    int win_h = (opts->window_h > 0) ? opts->window_h : game_default_window_h();
+    int win_w, win_h;
+    openpete_game_window_size(opts, &win_w, &win_h);
     openpete_knob_default_window_set(game_default_window_w(), game_default_window_h());
-    /* If --aspect is set but the user didn't pin --window, scale the
-     * default window so the *cropped* (post-overscan) src exactly fills
-     * it - otherwise the present blit letterboxes the un-rendered
-     * disp/clip difference. The cropped aspect = requested_aspect ×
-     * game_display_crop_factor(), the game's own disp_h/clip_h.
-     * An explicit --window always wins. */
     if (opts->aspect_w_over_h > 0.0f &&
         opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
-        /* The PsyCross reference renderer has no Hor+ path and draws
-         * canonical 4:3 only, so a widened window would stretch it. Native
-         * modes keep --aspect (window-driven Hor+). */
         OPL_WARN_F("aspect", "--aspect is native-renderer-only (the PsyCross "
                    "Hor+ substitution stack was retired); the PsyCross "
                    "reference renders canonical 4:3 - flag ignored");
     } else if (opts->aspect_w_over_h > 0.0f &&
         opts->window_w <= 0 && opts->window_h <= 0) {
-        const float crop_factor = game_display_crop_factor();
-        win_h = game_default_window_h();
-        win_w = (int)((float)win_h * opts->aspect_w_over_h * crop_factor + 0.5f);
         OPL_INFO_F("aspect", "auto window size %dx%d (--aspect=%.4f × crop %.4f)",
-                   win_w, win_h, (double)opts->aspect_w_over_h, (double)crop_factor);
+                   win_w, win_h, (double)opts->aspect_w_over_h,
+                   (double)game_display_crop_factor());
     }
 
     /* --fov and --aspect are native-renderer display policies: every

@@ -1,9 +1,10 @@
 // games/common/game_main.cpp - the entry point of a game with no host-side
 // services of its own.
 //
-// Parse options, register the recompiled module, hand off to core's run loop.
-// A game that resolves a disc library, drives a splash, or registers mod
-// services supplies its own main TU instead (games/spyro-1/main.cpp).
+// Parse options, resolve the disc through the common launcher, register the
+// recompiled module, hand off to core's run loop. A game that loads its
+// module from the library or registers mod services supplies its own main
+// TU instead (games/spyro-1/main.cpp).
 // SDL3's SDL_main.h re-#defines main -> SDL_main and supplies the platform
 // entry shim; it must be included by the TU defining main().
 
@@ -14,6 +15,7 @@
 #include "openpete_log.h"
 #include "openpete_boot_timing.h"
 #include "openpete_keymap.h"
+#include "openpete_launcher.h"
 #include "openpete_surface.h"
 #include "game_extras.h"
 #include "openpete_psx.h"
@@ -27,44 +29,110 @@ extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
 extern "C" const openpete_recomp_module openpete_game_recomp_module;
 
-/** @brief Name the game from the game-neutral options: the --disc image, else --game, else this executable's game.
+/** @brief Name the game from the game-neutral options and an optional library pick: the disc image, else --game, else this executable's game.
  *
  * @param opts The game-neutral options.
+ * @param library_game The booted library entry's game ("" when unidentified), or NULL when the library booted nothing.
  * @param id Receives the identification.
  * @return OPENPETE_EXIT_OK or OPENPETE_EXIT_SETUP_ERROR. */
-static int identify(const openpete_options_t* opts, openpete_ident_t* id) {
+static int identify(const openpete_options_t* opts, const char* library_game,
+                    openpete_ident_t* id) {
     openpete_ident_in_t in = {};
     in.selector = opts->game_selector;
     in.disc_path = opts->disc_path;
+    in.from_library = library_game != nullptr;
+    in.recorded_game = (library_game && *library_game) ? library_game : nullptr;
     in.linked_game = game_get_id();
     return openpete_identify(&in, id);
 }
 
-/** @brief Run a game that has no host-side services of its own.
+/** @brief The launcher's view of this game: its id and name; no known discs and no library module (the module is linked).
  *
- * Resolves the game-neutral settings, identifies the game from the disc
- * (--game, else this executable's game, when no disc names one), refuses a
- * game this executable does not run, then runs the one full parse, opens the
- * log, registers the recompiled module, the gameplay-state regions, and the
- * interpolation and re-extract tables, sets the root counter 2 the game's
- * boot reads, and runs the core loop. Writes the surface dump and exits when
- * OPENPETE_SURFACE_DUMP is set. Returns at once with the option parser's
- * status on a parse failure, after --help, after printing the configuration
- * or keys report when one is requested, or when the executable source is
- * unavailable.
+ * @return The descriptor, built on first call. */
+static const openpete_launcher_game* launcher_game_desc(void) {
+    static openpete_launcher_game g;
+    g.game_id = game_get_id();
+    g.display_name = game_get_display_name();
+    return &g;
+}
+
+/** @brief Answer --config-report or --keys-report from the identified resolution, without reading the library.
+ *
  * @param argc The argument count.
  * @param argv The arguments.
- * @return The exit status: openpete_run's result, 0 after --help or a
- *         configuration or keys report, OPENPETE_EXIT_SETUP_ERROR on a refused
- *         identification, 1 when the recompiled module fails to register. */
+ * @param neutral The game-neutral options.
+ * @return 0 when the report is written, else the identification's or the parser's exit code. */
+static int report_mode(int argc, char** argv, const openpete_options_t* neutral) {
+    openpete_ident_t id;
+    int rc = identify(neutral, nullptr, &id);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    openpete_options_t opts;
+    rc = openpete_options_parse_identified(&opts, argc, argv, &id, game_get_display_name());
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    if (opts.config_report) openpete_config_report(stdout);
+    else openpete_keymap_report(stdout);
+    return 0;
+}
+
+/** @brief Take the session from the game-neutral options to the hand-off: the launcher's disc, identification, the full parse and the recompiled module.
+ *
+ * The launcher resolves the disc through the library (the drop screen, the
+ * version selector) when none is named, and the hand-off gives the game
+ * its window, Vulkan device and imgui context in a windowed run.
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @param neutral The game-neutral options; receives the library's disc.
+ * @param opts Receives the full resolution.
+ * @param exit_now Set to 1 when the run ends in the launcher.
+ * @return OPENPETE_EXIT_OK, OPENPETE_EXIT_SETUP_ERROR on a refused
+ *         identification, the parser's status, or 1 when the recompiled
+ *         module fails to register. */
+static int start_session(int argc, char** argv, openpete_options_t* neutral,
+                         openpete_options_t* opts, int* exit_now) {
+    openpete_launcher_begin(launcher_game_desc(), neutral, !neutral->headless);
+    int rc = openpete_launcher_resolve(neutral, nullptr, 0, exit_now);
+    if (rc != OPENPETE_EXIT_OK || *exit_now) return rc;
+    openpete_ident_t id;
+    rc = identify(neutral, openpete_launcher_selected_game(), &id);
+    if (rc == OPENPETE_EXIT_OK) rc = openpete_identify_require_linked(&id, game_get_id());
+    if (rc != OPENPETE_EXIT_OK) return rc;
+
+    /* The one full resolution: the identified game's and disc's scopes
+     * join the tiers, and the environment and argv are written once. */
+    rc = openpete_options_parse_identified(opts, argc, argv, &id, game_get_display_name());
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    rc = openpete_options_require_exe_source(opts);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+
+    /* The runtime reaches recompiled code only through this descriptor. */
+    if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
+    return openpete_launcher_handoff(opts);
+}
+
+/** @brief Run a game that has no host-side services of its own.
+ *
+ * Resolves the game-neutral settings, answers --help and the configuration
+ * or keys report, opens the log, then runs the launcher (the disc from the
+ * library when none is named), identifies the game and refuses one this
+ * executable does not run, runs the one full parse, registers the
+ * recompiled module, hands the launcher's window and device to the game,
+ * registers the gameplay-state regions and the interpolation and
+ * re-extract tables, sets the root counter 2 the game's boot reads, and
+ * runs the core loop. Writes the surface dump and exits when
+ * OPENPETE_SURFACE_DUMP is set.
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @return The exit status: openpete_run's result, 0 after --help, a report
+ *         or a quit in the launcher, or start_session's failure status. */
 int main(int argc, char** argv) {
     openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* abort() does not flush, and the PSYQ stubs use it to surface an
      * unimplemented surface. Unbuffer so that diagnostic survives. */
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    /* The [disc.SERIAL] scopes' key for the identified disc. */
-    openpete_config_set_disc_identity_fn(openpete_disc_identity_serial);
+    /* The [disc.*] scopes' keys for the identified disc: its serial, and
+     * the hash its library entry recorded. */
+    openpete_config_set_disc_identity_fn(openpete_library_disc_identity);
 
     /* OPENPETE_SURFACE_DUMP: write the surface and exit, before any config
      * or env layer runs. */
@@ -76,39 +144,24 @@ int main(int argc, char** argv) {
     int rc = openpete_options_parse_neutral(&neutral, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
     if (neutral.help) return 0;
+    if (neutral.config_report || neutral.keys_report)
+        return report_mode(argc, argv, &neutral);
 
-    openpete_ident_t id;
-    rc = identify(&neutral, &id);
-    if (rc != OPENPETE_EXIT_OK) return rc;
-    const int report = neutral.config_report || neutral.keys_report;
-    if (!report) {
-        /* Format and file are device-creation knobs: the game-neutral
-         * tiers decide them. */
-        openpete_log_init(neutral.log_format, neutral.log_level_spec
-                                                  ? neutral.log_level_spec
-                                                  : openpete_config_env("OPENPETE_LOG"));
-        openpete_log_file_open(neutral.log_file ? neutral.log_file
-                                                : openpete_config_env("OPENPETE_LOG_FILE"));
-        rc = openpete_identify_require_linked(&id, game_get_id());
-        if (rc != OPENPETE_EXIT_OK) return rc;
-    }
+    /* Format and file are device-creation knobs: the game-neutral tiers
+     * decide them. */
+    openpete_log_init(neutral.log_format, neutral.log_level_spec
+                                              ? neutral.log_level_spec
+                                              : openpete_config_env("OPENPETE_LOG"));
+    openpete_log_file_open(neutral.log_file ? neutral.log_file
+                                            : openpete_config_env("OPENPETE_LOG_FILE"));
 
-    /* The one full resolution: the identified game's and disc's scopes
-     * join the tiers, and the environment and argv are written once. */
     openpete_options_t opts;
-    rc = openpete_options_parse_identified(&opts, argc, argv, &id,
-                                           game_get_display_name());
-    if (rc != OPENPETE_EXIT_OK) return rc;
-    if (opts.config_report) { openpete_config_report(stdout); return 0; }
-    if (opts.keys_report) { openpete_keymap_report(stdout); return 0; }
-
-    {
-        int src_rc = openpete_options_require_exe_source(&opts);
-        if (src_rc != OPENPETE_EXIT_OK) return src_rc;
+    int exit_now = 0;
+    rc = start_session(argc, argv, &neutral, &opts, &exit_now);
+    if (rc != OPENPETE_EXIT_OK || exit_now) {
+        openpete_launcher_close();
+        return rc;
     }
-
-    /* The runtime reaches recompiled code only through this descriptor. */
-    if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
 
     /* The gameplay-state region table the oracle hashes (games/common/
      * state_regions.c); explicit, before openpete_run(). */

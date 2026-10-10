@@ -53,7 +53,7 @@ static void boot_line_print(void)
                "timing (ms after launcher start, op_now clock): identified=%s materialized=%s "
                "mods_init=%s device_created=%s "
                "precompile_start=%s precompile_end=%s first_frame=%s first_tick=%s; "
-               "materializations=%d; "
+               "materializations=%d devices_created=%u; "
                "bringup_pipes=%u bringup_pipe_ms=%.1f; cache_file_bytes=%llu cache_offered_bytes=%llu "
                "cache_load_ms=%.2f app_cold=%d mesa_cache_disabled=%s",
                boot_ms(g, sizeof g, t0, atomic_load(&s_mark[OP_BOOT_IDENTIFIED])),
@@ -64,7 +64,7 @@ static void boot_line_print(void)
                boot_ms(d, sizeof d, t0, atomic_load(&s_mark[OP_BOOT_PRECOMPILE_END])),
                boot_ms(e, sizeof e, t0, rb.first_frame_ns),
                boot_ms(f, sizeof f, t0, s_first_tick_ns),
-               openpete_config_materializations(),
+               openpete_config_materializations(), rb.devices_created,
                rb.bringup_creates, (double)rb.bringup_ns / 1e6,
                (unsigned long long)rb.cache_file_bytes, (unsigned long long)rb.cache_offered_bytes,
                (double)rb.cache_load_ns / 1e6, rb.cache_cold, (mesa && *mesa) ? mesa : "unset");

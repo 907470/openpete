@@ -119,6 +119,12 @@ add_library(openpete_core STATIC
 
     renderer/openpete_ui_moby.c
 
+    # The launcher common to every game: the disc library (ingest, entries
+    # per game, the [disc.*] identity) and the window, Vulkan device and
+    # imgui screens (drop, version selector, progress) it hands the game.
+    launcher/library.cpp
+    launcher/launcher.cpp
+
     # Debug and in-game UI: the O settings menu; the placement ledger for
     # on-screen chrome (six anchors, a usable-x range that dodges the open
     # settings panel, a per-anchor stacking cursor so two surfaces never

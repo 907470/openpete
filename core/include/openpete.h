@@ -492,14 +492,11 @@ typedef struct openpete_options {
      * --renderer still wins and the help text still names what it will get. */
     openpete_renderer_t default_renderer;
 
-    /* In-process continuation from the first-run splash: when non-NULL, an
-     * SDL_Window* (void* keeps this header SDL-free) that the windowed vk
-     * renderer adopts - retitle/resize/make-resizable - instead of opening
-     * a second window, so one OS window carries splash and game. Set by the
-     * game's main between splash teardown and openpete_run(); only handed
-     * over in any windowed run, since every windowed mode displays through the
-     * native window. Headless closes the splash instead. Display-only. */
-    void* adopted_window;
+    /* Set by the launcher's hand-off (openpete_launcher_handoff) when it
+     * could not create the Vulkan device in a windowed run. Bring-up then
+     * creates no device, PsyCross keeps its GL path, and its GL window is
+     * the display. Not a knob: no flag or env var sets it. Display-only. */
+    int native_unavailable;
 
     /* --ssaa N (default 1): supersampling factor for the native vk LIVE window.
      * The offscreen render target is allocated at N× the swapchain extent per
@@ -998,6 +995,19 @@ const openpete_help_only_t* openpete_options_help_only(size_t* count);
  * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR after printing
  *         the ways to name a game. */
 int openpete_options_require_exe_source(const openpete_options_t* opts);
+
+/** @brief Resolve the game window's size: --window, else the game's default, widened for --aspect.
+ *
+ * The default is game_default_window_w/h. With --aspect and no --window on
+ * a native renderer the width becomes the default height times the aspect
+ * times game_display_crop_factor(), so the cropped source fills the
+ * window; the PsyCross reference renderer keeps the 4:3 default. The
+ * launcher creates its window at this size and bring-up uses it, so the
+ * hand-off resizes nothing.
+ * @param opts The options.
+ * @param out_w Receives the width in pixels.
+ * @param out_h Receives the height in pixels. */
+void openpete_game_window_size(const openpete_options_t* opts, int* out_w, int* out_h);
 
 /** @brief Run the program: boot the guest and drive the host loop until exit.
  *

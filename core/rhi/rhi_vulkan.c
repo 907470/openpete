@@ -301,6 +301,22 @@ static int fault_submit_due(void)
     return at > 0 && ++n == at;
 }
 
+/** @brief Return whether OPENPETE_VK_FAULT=enumerate makes physical-device enumeration list no device.
+ *
+ * Exercises a missing or broken Vulkan driver on a working one: every
+ * device creation of the process then fails at the device pick.
+ * @return 1 when the fault is armed, else 0. */
+static int fault_enumerate_due(void)
+{
+    static int armed = -1;
+    if (armed < 0) {
+        const char *e = getenv("OPENPETE_VK_FAULT");
+        armed = (e && !strcmp(e, "enumerate")) ? 1 : 0;
+        if (armed) RHI_LOG("fault injection: physical-device enumeration lists no device\n");
+    }
+    return armed;
+}
+
 /** @brief Route a fence wait or status result to the device-lost handler when it reports loss.
  *
  * @param r The vkWaitForFences or vkGetFenceStatus result.
@@ -723,10 +739,17 @@ void rhi_pipe_phase_set(rhi_pipe_phase phase) { t_pipe_phase = phase; }
  * @return ns on the installed clock. */
 static int64_t boot_now(void) { return s_clock ? s_clock() : 0; }
 
-/** @brief Record the first frame submission: its time, and the end of the bring-up create phase. */
+/* Set while the launcher draws (rhi_boot_launcher_frames). */
+static atomic_bool s_launcher_frames;
+
+void rhi_boot_launcher_frames(bool on) { atomic_store(&s_launcher_frames, on); }
+
+/** @brief Record the first frame submission: its time, and the end of the bring-up create phase.
+ *
+ * A launcher frame records nothing. */
 static void boot_frame_submitted(void)
 {
-    if (atomic_load(&s_first_frame_done)) return;
+    if (atomic_load(&s_first_frame_done) || atomic_load(&s_launcher_frames)) return;
     atomic_store(&s_first_frame_done, true);
     s_boot.first_frame_ns = boot_now();
 }
@@ -1157,6 +1180,7 @@ static VkPhysicalDevice *enumerate_physical_devices(VkInstance instance, uint32_
 {
     uint32_t n = 0;
     VkResult r = vkEnumeratePhysicalDevices(instance, &n, NULL);
+    if (fault_enumerate_due()) n = 0;
     VkPhysicalDevice *devs = (r >= 0 && n > 0) ? calloc(n, sizeof(*devs)) : NULL;
     if (devs) r = vkEnumeratePhysicalDevices(instance, &n, devs);
     if (r < 0 || n == 0) {
@@ -3395,6 +3419,20 @@ static void pipeline_cache_close(rhi_device *dev)
     rhi_pc_keyset_free(&dev->pc_keys);
 }
 
+/* The reason the last device creation failed (rhi_create_error). */
+static char s_create_error[160];
+
+const char *rhi_create_error(void) { return s_create_error; }
+
+/** @brief Record the reason a device creation failed, logged and kept for rhi_create_error.
+ *
+ * @param why A sentence naming the failed step. */
+static void create_error_set(const char *why)
+{
+    snprintf(s_create_error, sizeof s_create_error, "%s", why);
+    RHI_LOG("device creation failed: %s\n", why);
+}
+
 /**
  * @brief Creates the Vulkan instance, device, queues and presentation target.
  *
@@ -3423,21 +3461,27 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
      * no loader import library is linked on any platform. */
     if (volkInitialize() != VK_SUCCESS) {
         RHI_LOG("volkInitialize failed - no Vulkan loader found\n");
+        create_error_set("No Vulkan loader was found (libvulkan / vulkan-1.dll).");
         free(dev);
         return NULL;
     }
 
+    /* The step under way, named in rhi_create_error when it fails. */
+    const char *step = "The Vulkan instance could not be created.";
     if (!create_instance(dev, app_name)) goto fail;
     volkLoadInstance(dev->instance);   /* load instance- + device-level fns */
 
+    step = "The window's Vulkan surface could not be created.";
     if (!headless) {
         if (!SDL_Vulkan_CreateSurface(window, dev->instance, NULL, &dev->surface)) {
             RHI_LOG("SDL_Vulkan_CreateSurface failed: %s\n", SDL_GetError());
             goto fail;
         }
     }
+    step = "No Vulkan graphics device that can draw to the window was found.";
     if (!pick_physical_and_device(dev)) goto fail;
     volkLoadDevice(dev->device);        /* device-specific dispatch (faster) */
+    step = "The Vulkan swapchain could not be created.";
     if (!headless) {
         if (!create_swapchain(dev)) goto fail;
     } else {
@@ -3451,6 +3495,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
             dev->images_in_flight[i] = VK_NULL_HANDLE;
     }
     pipeline_cache_open(dev);
+    step = "The Vulkan device's render targets could not be created.";
     if (!create_render_pass(dev))       goto fail;
     if (!create_rt_render_pass(dev))    goto fail;
     if (!create_rt_ds_render_pass(dev)) goto fail;
@@ -3478,9 +3523,11 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
             rhi_driver_version(dev), drv.driverInfo, (int)dev->sc_format, (int)RHI_RT_FORMAT,
             dev->sc_extent.width, dev->sc_extent.height, dev->sc_count);
     s_boot.device_created_ns = boot_now();
+    s_boot.devices_created++;
     return dev;
 
 fail:
+    create_error_set(step);
     rhi_destroy(dev);
     return NULL;
 }
@@ -3563,7 +3610,9 @@ void rhi_destroy(rhi_device *dev)
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
     if (dev->ubo_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo_set_layout, NULL);
     if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
-    vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);  /* null: no-op */
+    /* A device that failed before vkCreateDevice has no device-level
+     * dispatch to call through, so even a null handle is not destroyed. */
+    if (dev->pair_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 

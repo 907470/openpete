@@ -15,6 +15,7 @@
 // Windows requires the bundled llvm-mingw next to the exe
 // (recomp/tools/llvm-mingw) and links against the staged exe-export
 // implib (recomp/tools/libopenpete-exe-exports.a).
+#include "openpete_launcher.h"
 #include "openpete_log.h"
 #include "sha256.h"
 
@@ -41,13 +42,13 @@
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
 
-/* Optional UI progress hook (splash); NULL = console-only. Defined in
- * disc_library.cpp (linked in both linkage modes). */
-extern "C" {
-extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
-}
+/** @brief Report a build stage to the launcher's progress screen (a no-op without one).
+ *
+ * @param stage The stage text.
+ * @param done Completed units.
+ * @param total Total units, or 0 for no bar. */
 static void progress(const char* stage, int done, int total) {
-    if (spyro1_progress_cb) spyro1_progress_cb(stage, done, total);
+    openpete_launcher_progress(stage, done, total);
 }
 
 namespace fs = std::filesystem;

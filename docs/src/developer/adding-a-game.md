@@ -145,9 +145,12 @@ control failing at its record ([`duckstation-oracle.md`](duckstation-oracle.md))
 
 ## 7. What stays Spyro-1-specific
 
-- The mod SDK, the disc library, the splash and the shared-linkage
-  distribution build are `games/spyro-1/` sources listed in its
-  `CMakeLists.txt`.
+- The mod SDK and the shared-linkage distribution build are
+  `games/spyro-1/` sources listed in its `CMakeLists.txt`. The launcher
+  (the disc library, the drop screen, the version selector, the progress
+  screen, and the window and Vulkan device it hands the game) is
+  `core/launcher/`, called by every game's main; a game describes itself to
+  it in an `openpete_launcher_game` (`core/include/openpete_launcher.h`).
 - The dragon-rescue golden tier (`tests/golden/spyro-1/dragons/`) exists
   for Spyro 1 alone. The presentation golden itself is per game
   (`tests/golden/<game>/presentation/blessed.tsv` for spyro-1, spyro-2 and
