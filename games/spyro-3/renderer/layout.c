@@ -42,7 +42,7 @@ static const game_moby_director_t s_moby_director[] = {
     { NULL, "g_Spyro", 0u, 0u, 0x250u },
 };
 
-const game_layout_t game_layout = {
+const game_layout_t spyro3_game_layout = {
     .display = {
         /* warp.c func_80059038: SetDefDrawEnv(..., 0, 12, 512, 216) paired with
          * SetDefDispEnv(..., 0, 0, 512, 240) - 12 undrawn rows per side. */
@@ -616,7 +616,7 @@ const game_layout_t game_layout = {
  * and letterbox primitives carry the same psyq word order as Spyro 1's and
  * reach the same kind of chokepoint; the text chain does not and is fed by
  * renderer/text_sprt.c instead. */
-const ui_game_t ui_game = {
+const ui_game_t spyro3_ui_game = {
     .ot_insert    = F_UI_OT_INSERT,
     .fade_emitter = F_UI_FADE,
 

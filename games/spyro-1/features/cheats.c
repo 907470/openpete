@@ -170,8 +170,7 @@ static int parse_spec(const char* spec, uint32_t* out_mask) {
     return 0;
 }
 
-/* The --cheats validation hook game_extras.h declares. */
-int game_validate_cheats_arg(const char* spec) {
+int spyro1_cheats_validate(const char* spec) {
     uint32_t mask = 0;
     if (!spec || !*spec) {
         fprintf(stderr, "openpete: --cheats: expected a cheat name\n");

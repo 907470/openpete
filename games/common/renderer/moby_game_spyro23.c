@@ -2192,7 +2192,7 @@ static int s23_cutpath_jump(uint32_t moby, const uint8_t* prev_rec, const uint8_
     return dx*dx + dy*dy + dz*dz >= snap * snap;
 }
 
-const moby_game_t moby_game = {
+const moby_game_t moby_game_spyro23 = {
     .vstream_init      = s23_vstream_init,
     .vstream_next      = s23_vstream_next,
     .decode_faces      = s23_decode_faces,

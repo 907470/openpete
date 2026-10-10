@@ -15,8 +15,8 @@
  * a second time.
  *
  * A NULL function slot or a zero address makes the walk skip the path that
- * would read it; a game with no player feeder links
- * games/common/renderer/player_game_none.c. */
+ * would read it; a game with no player feeder names no table and binds the
+ * all-NULL one. */
 #ifndef OPENPETE_COMMON_RENDERER_PLAYER_GAME_H
 #define OPENPETE_COMMON_RENDERER_PLAYER_GAME_H
 
@@ -216,7 +216,9 @@ typedef struct player_game {
     int  (*verify_enabled)(void);
 } player_game_t;
 
-extern const player_game_t player_game;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern player_game_t player_game;
 
 #ifdef __cplusplus
 }

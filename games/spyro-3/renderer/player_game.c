@@ -8,7 +8,7 @@
 #include "renderer/player_game_spyro23.h"
 #include "spyro3_symbols.gen.h"
 
-const player_game_s23_consts_t player_game_s23 = {
+const player_game_s23_consts_t spyro3_player_game_s23 = {
     .anim_table  = D_SPYRO_ANIMS,    /* spyrodraw.s:33-34, dereferenced at :35 */
     .blend_table = D_SPYRO_BLEND,    /* spyrodraw.s:39-40, indexed by g_Spyro+0x1C */
 };

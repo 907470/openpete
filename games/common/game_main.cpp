@@ -1,8 +1,9 @@
 // games/common/game_main.cpp - the entry point of a game with no host-side
 // services of its own.
 //
-// Parse options, resolve the disc through the common launcher, register the
-// mod-layer descriptor and the recompiled module, compile stale mods on a
+// Register the game's runtime descriptor, parse options, resolve the disc
+// through the common launcher, register the mod-layer descriptor and the
+// recompiled module, compile stale mods on a
 // launcher wait, hand off to core's run loop. A game that loads its module
 // from the library or configures game-specific mod services (the Spyro 1 WAD
 // overlay) supplies its own main TU instead (games/spyro-1/main.cpp).
@@ -19,7 +20,7 @@
 #include "openpete_launcher.h"
 #include "openpete_surface.h"
 #include "game_extras.h"
-#include "game_mod_desc.h"
+#include "game_host_desc.h"
 #include "openpete_mods.h"
 #include "openpete_psx.h"
 #include "psyq/psyq_game_hooks.h"
@@ -31,6 +32,9 @@
 extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
 extern "C" const openpete_recomp_module openpete_game_recomp_module;
+/* This executable's game descriptor, `<tag>_game_runtime` in the game's
+ * game_extras_impl.c (OPENPETE_GAME_RUNTIME, cmake/openpete_game.cmake). */
+extern "C" const openpete_game_runtime_t OPENPETE_GAME_RUNTIME;
 
 /** @brief Name the game from the game-neutral options and an optional library pick: the disc image, else --game, else this executable's game.
  *
@@ -111,7 +115,8 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
 
     /* The mod layer, once, at identification: before the compile below
      * and the load inside openpete_run(). */
-    (void)openpete_mods_set_game_desc(game_mod_desc());
+    if (openpete_game_runtime()->mod_desc)
+        (void)openpete_mods_set_game_desc(openpete_game_runtime()->mod_desc());
 
     /* The runtime reaches recompiled code only through this descriptor. */
     if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
@@ -124,7 +129,8 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
 
 /** @brief Run a game that has no host-side services of its own.
  *
- * Resolves the game-neutral settings, answers --help and the configuration
+ * Registers the game's runtime descriptor, resolves the game-neutral
+ * settings, answers --help and the configuration
  * or keys report, opens the log; --compile-mods compiles every mod for each
  * staged game and exits before any game is identified. Otherwise runs the
  * launcher (the disc from the library when none is named), identifies the
@@ -141,6 +147,9 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
  *         or a quit in the launcher, or start_session's failure status;
  *         under --compile-mods 0 when every mod compiled, else 1. */
 int main(int argc, char** argv) {
+    /* The game's descriptor binds every per-game hook and table; nothing
+     * that reads one runs before it. */
+    game_runtime_install(&OPENPETE_GAME_RUNTIME);
     openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* abort() does not flush, and the PSYQ stubs use it to surface an
      * unimplemented surface. Unbuffer so that diagnostic survives. */

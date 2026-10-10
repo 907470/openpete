@@ -2,7 +2,7 @@
 //
 // Each feature (Hor+ widescreen, internal-resolution upscale, FPS unlock,
 // ...) provides a `feature_module_t` and gets listed in the per-game
-// `feature_list.c`. The registry walks that list at boot to apply
+// `feature_list.c`, which the game's runtime descriptor carries. The registry walks that list at boot to apply
 // command-line options and at every translated-function entry to
 // dispatch per-vaddr overrides.
 //
@@ -47,12 +47,9 @@ typedef struct {
     const feature_dispatch_entry_t*   dispatch_table;  /* nullable; addr=0 terminates */
 } feature_module_t;
 
-/* Per-game feature list. Defined in games/<game>/feature_list.c, or in
- * games/common/feature_list_none.c for a game with no modules. The pointer
- * array form lets us add/remove features by editing one file without
- * touching the registry core. */
-extern const feature_module_t* const openpete_features[];
-extern const size_t                  openpete_feature_count;
+/* The modules walked are the registered game descriptor's feature list
+ * (openpete_game_runtime.h), defined in games/<game>/feature_list.c; a
+ * descriptor without one registers no module. */
 
 /** @brief Hand the parsed options to every registered feature module.
  *
@@ -81,7 +78,7 @@ uint32_t (*feature_registry_overlay_probe(void))(void);
  *
  * An address whose bit is clear in a prefilter built from every table on
  * the first call returns 0 without walking. Otherwise walks every module of
- * openpete_features in list order and every entry of its dispatch_table. A matching entry with a nonzero `overlay` runs only
+ * the registered feature list in order and every entry of its dispatch_table. A matching entry with a nonzero `overlay` runs only
  * while the probe reports that overlay resident. The walk stops at the
  * first hook that returns nonzero; a hook returning 0 lets later matches
  * run and the recompiled body run after them. Under --profile-out each

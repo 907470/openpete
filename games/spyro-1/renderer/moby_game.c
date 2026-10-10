@@ -449,7 +449,7 @@ static int s1_anim_frame_count(CPUState* cpu, uint32_t header) {
     return (int)(int16_t)(uint16_t)cpu->read_half(header + offsetof(AnimationHeader, m_NumFrames));
 }
 
-const moby_game_t moby_game = {
+const moby_game_t spyro1_moby_game = {
     .vstream_init      = s1_vstream_init,
     .vstream_next      = s1_vstream_next,
     .anim_frame_count  = s1_anim_frame_count,

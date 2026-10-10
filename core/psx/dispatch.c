@@ -420,8 +420,13 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
 }
 
 /* Per-function intercept gate emitted at the top of every generated body.
- * The game supplies psx_override_dispatch_game for its per-game quirks. */
-__attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t addr);
+ * The registered game's override_dispatch runs its per-game arms; NULL
+ * until registration and for a game without one. */
+static int (*s_override_game)(CPUState* cpu, uint32_t addr);
+
+void psx_set_override_dispatch_game(int (*fn)(CPUState* cpu, uint32_t addr)) {
+    s_override_game = fn;
+}
 
 /* The oracle's clock replay counts the guest's own entries of each
  * function. Two kinds of gate hit are not the guest's: every hit inside a
@@ -459,10 +464,11 @@ static void gate_clock(CPUState* cpu, uint32_t addr) {
  * @param addr Guest address of the function entered.
  * @return The game's verdict: nonzero when the original must not run; 0 when the game has no override. */
 static int gate_override(CPUState* cpu, uint32_t addr) {
-    if (!psx_override_dispatch_game) return 0;
+    int (*const game)(CPUState*, uint32_t) = s_override_game;
+    if (!game) return 0;
     const uint32_t outer = s_gate_redispatch;
     s_gate_redispatch = addr;
-    const int handled = psx_override_dispatch_game(cpu, addr);
+    const int handled = game(cpu, addr);
     s_gate_redispatch = outer;
     return handled;
 }

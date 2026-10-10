@@ -43,7 +43,7 @@ static int s2_lp_artfix(int level, int sec, int face, uint32_t* rgb) {
     (void)level; (void)sec; (void)face; (void)rgb; return 0;
 }
 
-const terrain_game_t terrain_game = {
+const terrain_game_t spyro2_terrain_game = {
     .portal_sky_recent   = portal_s23_sky_recent,
     .portal_sky_planes   = portal_s23_sky_planes,
     .env_feed_waits_for_portals = portal_s23_capture_follows,

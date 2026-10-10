@@ -510,7 +510,8 @@ static void fpos_put(uint32_t key, const double p[3]) {
     if (!d) return;
     d[0] = p[0]; d[1] = p[1]; d[2] = p[2];
 }
-int openpete_native_interp_pos(unsigned int key, double out[3]) {
+/** @brief Return the un-rounded interpolated position of a camera, player or moby the present in flight bracketed (openpete_native_interp_pos). */
+static int orch_interp_pos(unsigned int key, double out[3]) {
     if (!s_fpos_active) return 0;   /* canonical render path -> use live RAM */
     if (s_prod_cam_active && key == G_CAMERA) return 0;   /* held producer camera: integer RAM */
     int i = fpos_find(key);
@@ -1083,7 +1084,8 @@ static void cut_locate_mobys(void) {
     }
 }
 
-void spyro_native_canon_capture_camera(void* cpu_v, int producer) {
+/** @brief Record the camera transform block a producer drew under and stamp it with the in-flight epoch (spyro_native_canon_capture_camera). */
+static void orch_capture_camera(void* cpu_v, int producer) {
     (void)cpu_v;
     if (producer < 0 || producer >= SPROD_COUNT) return;
     const uint8_t* h = (const uint8_t*)openpete_psx_to_host_span(G_CAMERA, CAM_XFORM_BYTES);
@@ -1092,7 +1094,8 @@ void spyro_native_canon_capture_camera(void* cpu_v, int producer) {
     s_prod_cam_epoch[producer] = s_canon_epoch_now;
 }
 
-int spyro_native_prod_camera_enter(int producer) {
+/** @brief Install a producer's captured camera over the re-extract's camera when the producer drew under another (spyro_native_prod_camera_enter). */
+static int orch_prod_camera_enter(int producer) {
     if (producer < 0 || producer >= SPROD_COUNT) return 0;
     if (!s_body_cam || s_prod_cam_active) return 0;
     if (s_prod_cam_epoch[producer] != s_canon_epoch_ok || !s_prod_cam_hold[producer]) return 0;
@@ -1102,13 +1105,15 @@ int spyro_native_prod_camera_enter(int producer) {
     return 1;
 }
 
-void spyro_native_prod_camera_leave(void) {
+/** @brief Restore the camera orch_prod_camera_enter replaced (spyro_native_prod_camera_leave). */
+static void orch_prod_camera_leave(void) {
     if (!s_prod_cam_active) return;
     memcpy(s_body_cam, s_prod_cam_saved, CAM_XFORM_BYTES);
     s_prod_cam_active = 0;
 }
 
-void spyro_native_canon_epoch_commit(void) {
+/** @brief Latch which producers drew under another camera, latch the in-flight epoch as fresh, start the next and close the player hooks' record epoch (spyro_native_canon_epoch_commit). */
+static void orch_epoch_commit(void) {
     if (cut_census_on()) { cut_locate_camera(cut_desc()); cut_locate_mobys(); }
     const uint8_t* h = (const uint8_t*)openpete_psx_to_host_span(G_CAMERA, CAM_XFORM_BYTES);
     for (int p = 0; p < SPROD_COUNT; ++p)
@@ -1118,16 +1123,21 @@ void spyro_native_canon_epoch_commit(void) {
     s_canon_epoch_now++;
     player_records_epoch_commit();               /* close the hooks' record epoch */
 }
-void spyro_native_canon_epoch_supersede(void) { s_canon_epoch_now++; }
-uint32_t spyro_native_canon_epoch_stamp(void) { return s_canon_epoch_now; }
-int spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }
-int spyro_native_canon_mobyreg_fresh(void) { return s_prod_epoch[SPROD_MOBYREG] == s_canon_epoch_ok; }
-int spyro_native_canon_shaded_fresh(void)  { return s_prod_epoch[SPROD_SHADED]  == s_canon_epoch_ok; }
+/** @brief Move the in-flight epoch past the captures of a render no canonical present showed (spyro_native_canon_epoch_supersede). */
+static void orch_epoch_supersede(void) { s_canon_epoch_now++; }
+/** @brief Return the in-flight canonical-render epoch (spyro_native_canon_epoch_stamp). */
+static uint32_t orch_epoch_stamp(void) { return s_canon_epoch_now; }
+/** @brief Report whether a capture stamp is the last closed epoch (spyro_native_canon_epoch_fresh). */
+static int orch_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }
+/** @brief Report whether the moby-record producer stamped the last closed epoch (spyro_native_canon_mobyreg_fresh). */
+static int orch_mobyreg_fresh(void) { return s_prod_epoch[SPROD_MOBYREG] == s_canon_epoch_ok; }
+/** @brief Report whether the shaded producer stamped the last closed epoch (spyro_native_canon_shaded_fresh). */
+static int orch_shaded_fresh(void)  { return s_prod_epoch[SPROD_SHADED]  == s_canon_epoch_ok; }
 /** @brief Reports whether producer p captured during the last closed canonical render.
  *
  * Compares the producer's last-capture stamp with the last closed epoch,
- * the test spyro_native_canon_mobyreg_fresh and
- * spyro_native_canon_shaded_fresh apply to their own producers. */
+ * the test orch_mobyreg_fresh and orch_shaded_fresh apply to their own
+ * producers. */
 static int scratch_prod_fresh(sprod_t p)   { return s_prod_epoch[p] == s_canon_epoch_ok; }
 
 /* Registry engine: row lookup + capture. Captures fire at the producer hooks
@@ -1160,8 +1170,8 @@ static void scratch_row_capture(scratch_region_t* r) {
     }
 }
 
-/* off is from G_SCRATCH and must match a registry row's base; an unmapped offset logs and captures nothing. */
-void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
+/** @brief Capture the scratch registry row at G_SCRATCH + off; an offset no row starts at logs and captures nothing (spyro_native_canon_capture_range). */
+static void orch_capture_range(void* cpu_v, unsigned off, unsigned len) {
     (void)cpu_v;
     scratch_region_t* r = scratch_row_by_base(G_SCRATCH + off);
     if (!r) {
@@ -1176,16 +1186,17 @@ void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     scratch_row_capture(r);
 }
 
-/* Captures the registry row at SXY_BASE, the PSX scratchpad. */
-void spyro_native_canon_capture_sxy(void* cpu_v) {
+/** @brief Capture the registry row at SXY_BASE, the PSX scratchpad (spyro_native_canon_capture_sxy). */
+static void orch_capture_sxy(void* cpu_v) {
     (void)cpu_v;
     scratch_row_capture(scratch_row_by_base(SXY_BASE));
 }
 
-/* Capture the FULL regular cull-record region [0x1600,0x2400) at the MOBY hook -
- * while the records are still live, BEFORE the later Spyro pass reuses 0x1900
- * for its seg scratch (whose own row is captured later at the Spyro hook). */
-void spyro_native_canon_capture_recs(void* cpu_v) {
+/** @brief Capture the whole regular cull-record region [0x1600,0x2400) at the moby hook (spyro_native_canon_capture_recs).
+ *
+ * The records are still live there; the later Spyro pass reuses 0x1900 for
+ * its seg scratch, whose own row is captured at the Spyro hook. */
+static void orch_capture_recs(void* cpu_v) {
     (void)cpu_v;
     scratch_row_capture(scratch_row_by_base(G_SCRATCH + 0x1600u));
 }
@@ -2695,6 +2706,25 @@ static void game_reextract_body(void* cpu_v) {
     game_interp_hud_batch_end();
 }
 
-void game_reextract_init(void) {
+/** @brief Install the sub-tick re-extract body with the native renderer (game_reextract_init). */
+static void orch_reextract_init(void) {
     game_reextract_view_install(game_reextract_body);
 }
+
+/* The orchestrator spyro1_game_runtime carries (game_extras_impl.c). */
+const game_orchestrator_t spyro1_orchestrator = {
+    .reextract_init    = orch_reextract_init,
+    .interp_pos        = orch_interp_pos,
+    .epoch_commit      = orch_epoch_commit,
+    .epoch_supersede   = orch_epoch_supersede,
+    .epoch_stamp       = orch_epoch_stamp,
+    .epoch_fresh       = orch_epoch_fresh,
+    .mobyreg_fresh     = orch_mobyreg_fresh,
+    .shaded_fresh      = orch_shaded_fresh,
+    .capture_range     = orch_capture_range,
+    .capture_recs      = orch_capture_recs,
+    .capture_sxy       = orch_capture_sxy,
+    .capture_camera    = orch_capture_camera,
+    .prod_camera_enter = orch_prod_camera_enter,
+    .prod_camera_leave = orch_prod_camera_leave,
+};

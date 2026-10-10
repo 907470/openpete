@@ -22,7 +22,7 @@
  * spyro_overlay_table.c). */
 #define OVL_TITLESCREEN_AND_LOADING 34u
 
-const game_layout_t game_layout = {
+const game_layout_t spyro2_game_layout = {
     .display = {
         /* func_80011BBC: SetDefDrawEnv(a2=0xC, a3=0x200, sp+0x10=0xD8) and
          * SetDefDispEnv(a3=0x200, sp+0x10=0xF0) (init.s:80011C00-80011C48) -
@@ -632,7 +632,7 @@ const game_layout_t game_layout = {
  * and letterbox primitives carry the same psyq word order as the other game's
  * and reach the same kind of chokepoint; the text chain does not and is fed by
  * games/common/renderer/text_sprt.c instead. */
-const ui_game_t ui_game = {
+const ui_game_t spyro2_ui_game = {
     .ot_insert    = F_UI_OT_INSERT,
     /* The title and credits screens order their 2D by depth slot and link
      * every primitive through the slotted insert instead, so it is a second

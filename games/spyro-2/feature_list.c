@@ -1,9 +1,9 @@
 // games/spyro-2/feature_list.c, Spyro 2's registered feature modules.
-#include "feature_registry.h"
+#include "openpete_game_runtime.h"
 #include <stddef.h>
 
 extern const feature_module_t render_paths_module;
-extern const feature_module_t levelwarp_module;
+extern const feature_module_t spyro2_levelwarp_module;
 extern const feature_module_t cutscene_skip_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
@@ -21,10 +21,10 @@ extern const feature_module_t zap_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
 
-const feature_module_t* const openpete_features[] = {
+static const feature_module_t* const k_modules[] = {
     /* The dev-overlay level warp (M): registers its two rows at
      * apply-options time and writes nothing until one is clicked. */
-    &levelwarp_module,
+    &spyro2_levelwarp_module,
     /* --skip-to-cutscene: the Dragon Shores theater's func_80019230(k) call
      * and stores, from a draw-function (func_800156FC) entry hook on the
      * first gameplay tick of level 65. Inert unless armed by
@@ -90,4 +90,7 @@ const feature_module_t* const openpete_features[] = {
      * primitive chain and so never reach the chokepoint. */
     &text_sprt_module,
 };
-const size_t openpete_feature_count = sizeof(openpete_features) / sizeof(openpete_features[0]);
+/* The list spyro2_game_runtime carries (game_extras_impl.c). */
+const openpete_feature_list_t spyro2_feature_list = {
+    k_modules, sizeof(k_modules) / sizeof(k_modules[0])
+};

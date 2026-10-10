@@ -11,8 +11,8 @@
  * emitter, the signature of the freeze-frame backdrop quad, the VRAM block a
  * texture pack may replace by name, and the addresses of a text chain that
  * links itself and so never reaches the chokepoint. A zero address makes the
- * feeder register no hook for that path; a game with no 2D feeder links
- * games/common/renderer/layout_none.c. */
+ * feeder register no hook for that path; a game with no 2D feeder names no
+ * table and binds the all-zero one. */
 #ifndef OPENPETE_COMMON_RENDERER_UI_GAME_H
 #define OPENPETE_COMMON_RENDERER_UI_GAME_H
 
@@ -90,7 +90,9 @@ typedef struct ui_game {
     uint32_t sprt_chain_overlay[3];
 } ui_game_t;
 
-extern const ui_game_t ui_game;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern ui_game_t ui_game;
 
 /** @brief Feeds one glyph SPRT into the native HUD layer at emission.
  *

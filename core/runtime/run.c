@@ -43,6 +43,7 @@
 #include "openpete_native_render.h"
 #include "openpete_build_id.h"
 #include "game_layout.h"
+#include "openpete_game_runtime.h"
 #include "openpete_terrain_cache.h"
 #include "openpete_fb_snapshot.h"
 #include "openpete_ident_audit.h"
@@ -2771,7 +2772,7 @@ static int run_host_init(const openpete_options_t* opts) {
     }
 
     /* Feature modules apply their CLI-derived knobs; a game with no
-     * feature modules (openpete_feature_count == 0) makes this a no-op. */
+     * feature list in its descriptor makes this a no-op. */
     feature_registry_apply_options(opts);
 
     /* Modding framework: discover, build and load mods. No mods directory
@@ -2893,40 +2894,27 @@ static int run_host_init(const openpete_options_t* opts) {
      * was already attached. */
     openpete_host_input_load_mappings(opts->controller_db);
 
-    /* App icon, emitted at build time by the game's own icon step as
-     * RGBA8 plus its dimensions. The Win32 .rc resource handles taskbar /
-     * .exe shortcut / alt-tab on Windows; SDL_SetWindowIcon covers the
-     * live window on every platform. Weakly referenced so a build that
-     * opts out of the icon generator step still links. */
-    if (g_window) {
-        extern const uint8_t openpete_game_icon_rgba[]
-            __attribute__((weak));
-        extern const int openpete_game_icon_w __attribute__((weak));
-        extern const int openpete_game_icon_h __attribute__((weak));
-        if (&openpete_game_icon_w && openpete_game_icon_w > 0) {
-            SDL_Surface* icon = SDL_CreateSurfaceFrom(
-                openpete_game_icon_w, openpete_game_icon_h,
-                SDL_PIXELFORMAT_RGBA32,
-                (void*)openpete_game_icon_rgba,
-                openpete_game_icon_w * 4);
-            if (icon) {
-                SDL_SetWindowIcon(g_window, icon);
-                SDL_DestroySurface(icon);
-            }
+    /* App icon: the registered descriptor's RGBA8 image, emitted at build
+     * time by the game's own icon step; a descriptor without one sets
+     * none. The Win32 .rc resource handles taskbar / .exe shortcut /
+     * alt-tab on Windows; SDL_SetWindowIcon covers the live window on
+     * every platform. */
+    const openpete_game_icon_t* game_icon = openpete_game_runtime()->icon;
+    if (game_icon && game_icon->w <= 0) game_icon = NULL;
+    if (g_window && game_icon) {
+        SDL_Surface* icon = SDL_CreateSurfaceFrom(
+            game_icon->w, game_icon->h, SDL_PIXELFORMAT_RGBA32,
+            (void*)game_icon->rgba, game_icon->w * 4);
+        if (icon) {
+            SDL_SetWindowIcon(g_window, icon);
+            SDL_DestroySurface(icon);
         }
     }
     /* Same icon for the native Vulkan window, which is the visible one in the
      * default path (PsyCross runs null-GPU and creates no window at all).
      * Handed over rather than applied: that window does not exist yet. */
-    {
-        extern const uint8_t openpete_game_icon_rgba[] __attribute__((weak));
-        extern const int openpete_game_icon_w __attribute__((weak));
-        extern const int openpete_game_icon_h __attribute__((weak));
-        if (&openpete_game_icon_w && openpete_game_icon_w > 0)
-            openpete_native_set_icon(openpete_game_icon_rgba,
-                                     openpete_game_icon_w,
-                                     openpete_game_icon_h);
-    }
+    if (game_icon)
+        openpete_native_set_icon(game_icon->rgba, game_icon->w, game_icon->h);
 
     if (opts->headless && g_window) {
         /* Window was created unmapped (PsyX_Initialise startHidden=1) - no

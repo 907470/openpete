@@ -18,7 +18,7 @@
  * otherwise comes from game_layout; these four are tables the draw reaches
  * through a lui/addiu pair of its own, and the fifth field is the one
  * behavioural difference between the two draws. Each game's
- * renderer/moby_game.c defines the instance.
+ * renderer/moby_game.c defines its instance.
  *
  *   vertex_adjust_table  the 32-bit table the one-byte vertex form indexes
  *   anim_blend_table     the table the cull maps Moby+0x40 through into the
@@ -46,7 +46,12 @@ typedef struct moby_game_s23_consts {
     int      mode0_ir0_from_colour_sum;
 } moby_game_s23_consts_t;
 
-extern const moby_game_s23_consts_t moby_game_s23;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern moby_game_s23_consts_t moby_game_s23;
+
+/* The moby provider the two games share, built over moby_game_s23. */
+extern const moby_game_t moby_game_spyro23;
 
 /** @brief Advances the vertex stream by one vertex under the moby draw's literal Y decode.
  *

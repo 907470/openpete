@@ -1,9 +1,9 @@
 // games/spyro-3/feature_list.c - Spyro 3's registered feature modules.
-#include "feature_registry.h"
+#include "openpete_game_runtime.h"
 #include <stddef.h>
 
 extern const feature_module_t render_paths_module;
-extern const feature_module_t levelwarp_module;
+extern const feature_module_t spyro3_levelwarp_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
 extern const feature_module_t portal_module;
@@ -22,10 +22,10 @@ extern const feature_module_t text_sprt_module;
 extern const feature_module_t terrain_probe_module;
 extern const feature_module_t transition_call_module;
 
-const feature_module_t* const openpete_features[] = {
+static const feature_module_t* const k_modules[] = {
     /* The dev-overlay level warp (M): registers its two rows at
      * apply-options time and writes nothing until one is clicked. */
-    &levelwarp_module,
+    &spyro3_levelwarp_module,
     /* The transition queue: drains a queued WarpToLevel / EnterSubArea call
      * at Draw's entry. Inert while the queue is empty. */
     &transition_call_module,
@@ -87,4 +87,7 @@ const feature_module_t* const openpete_features[] = {
     /* The calibrated terrain probe: inert unless OPENPETE_TERRAIN_PROBE is set. */
     &terrain_probe_module,
 };
-const size_t openpete_feature_count = sizeof(openpete_features) / sizeof(openpete_features[0]);
+/* The list spyro3_game_runtime carries (game_extras_impl.c). */
+const openpete_feature_list_t spyro3_feature_list = {
+    k_modules, sizeof(k_modules) / sizeof(k_modules[0])
+};

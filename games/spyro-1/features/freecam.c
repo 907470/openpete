@@ -140,7 +140,7 @@ static int spyro1_resolve_named_pose(CPUState* cpu, const char* name, int32_t v[
     return 0;
 }
 
-const freecam_game_desc freecam_desc = {
+const freecam_game_desc spyro1_freecam_desc = {
     .angle_bits = 16,
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
     /* ~87° up/down so the camera can't flip (practice ROM value). */

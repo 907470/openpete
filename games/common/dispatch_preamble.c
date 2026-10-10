@@ -1,5 +1,5 @@
 // games/common/dispatch_preamble.c - the shared front of every game's
-// psx_override_dispatch_game, and the resident-overlay probe.
+// override_dispatch (the runtime descriptor's), and the resident-overlay probe.
 
 #include "dispatch_preamble.h"
 #include "freecam_game.h"

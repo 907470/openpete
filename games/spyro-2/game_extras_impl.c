@@ -1,13 +1,18 @@
 // games/spyro-2/game_extras_impl.c, Spyro 2: Ripto's Rage!'s per-game contract.
 //
-// Identity is generated from recomp.conf (game_identity.c). The PSYQ address
-// hooks defined below (rand seed slot, root counter 2) are hand-written and
-// named in psyq_game_provides.h, which suppresses their inert defaults.
-// Bring-up state: the overlay hooks, --skip-to-level and the freecam wiring
-// carry real values; the remaining per-tick and CLI entries are stubs that
-// core calls and that must not crash.
+// Defines the runtime descriptor spyro2_game_runtime (openpete_game_runtime.h)
+// over the hooks below and the tables of the game's other TUs. Identity is
+// generated from recomp.conf (game_identity.c). The PSYQ address hooks
+// defined below (rand seed slot, root counter 2) are hand-written and named
+// in psyq_game_provides.h, which suppresses their inert defaults. Bring-up
+// state: the overlay hooks, --skip-to-level and the freecam wiring carry
+// real values; the descriptor leaves the hooks the game does not implement
+// NULL.
 
 #include "game_extras.h"
+#include "game_host_desc.h"
+#include "game_mod_desc.h"
+#include "psyq/psyq_thunk_state.h"
 #include "openpete_psx.h"
 #include "spyro_overlay_table.h"
 #include "psyq/psyq_game_hooks.h"
@@ -26,28 +31,16 @@
 #include <stdint.h>
 #include <string.h>
 
-/* The pad-read site is not localised for this game yet. Returning 0 makes the
- * pacing census report the pad-read phase as unmeasured rather than as zero
- * reads. */
-uint32_t game_get_pad_read_pc(void) { return 0u; }
-
-/* No load-read classifier for this game yet, so loads are instant. */
-uint32_t game_get_load_delay_default(void) { return 0u; }
-
-/* --- Overlay handling --- */
-int  game_on_overlay_load(uint32_t overlay_id) {
-    spyro_set_active_overlay_by_magic(overlay_id);
-    return 0;
-}
-void game_on_overlay_init(CPUState* cpu) { (void)cpu; }
-
-
-void game_apply_runtime_quirks(CPUState* cpu) { (void)cpu; }
-/* game_on_boot and game_on_state_loaded are the shared bodies in
+/* The boot and savestate-restore hooks are the shared bodies in
  * games/common/game_extras_overlay_resync.c. */
+void game_overlay_resync_on_boot(CPUState* cpu);
+void game_overlay_resync_on_state_loaded(CPUState* cpu);
 
-/* --- Per-tick hooks --- */
-void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
+/** @brief Run Spyro 2's per-tick host hooks before the game fiber runs a tick: the level skip and warp, the scripted free camera, the write census phase and the host text layers.
+ *
+ * @param cpu Guest CPU state.
+ * @param frame_counter The openpete_frame counter before the tick. */
+static void spyro2_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* --skip-to-level: drives the title's demo-timeout transition toward the
      * target and holds the demo flag clear. Inert without the flag. */
     spyro2_skip_on_tick(cpu, frame_counter);
@@ -88,37 +81,24 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
  * @param cpu The guest CPU state.
  * @param addr The guest address of the function being entered.
  * @return 1 when the recompiled body must return at once, else 0. */
-int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
+static int spyro2_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (game_dispatch_preamble(cpu, addr, NULL)) return 1;
     return feature_registry_dispatch(cpu, addr);
 }
-void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
-    (void)cpu; (void)frame_counter;
-}
-void game_on_hash_emit(uint32_t frame) { (void)frame; }
 
-/* --- Savestate --- */
-
-/* The extra savestate payload is the shared thunk layer's latch pack
- * (games/common/psyq/psyq_thunk_state.c). */
-
-/* A level overlay resident with its state machine running (loader state -1).
- * Title, loading and the exit transition report "not live", which keeps the
- * in-memory snapshot users (rewind keyframes, runahead) out of them. */
-int game_is_gameplay_live(CPUState* cpu) { return spyro2_skip_gameplay_live(cpu); }
-
-/* --- CLI --- */
-void game_set_skip_to_level(int level_id) { spyro2_skip_set(level_id); }
-int  game_resolve_level_arg(const char* arg) { return spyro2_level_resolve(arg); }
-int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
-void game_surface(struct openpete_surface_sink* sink) {
+/** @brief Report Spyro 2's feature rows and its level and cutscene vocabularies to the surface dump.
+ *
+ * @param sink The dump's collector. */
+static void spyro2_surface(struct openpete_surface_sink* sink) {
     levelwarp_ui_surface(sink);
     spyro2_level_surface(sink);
     spyro2_cutscene_surface(sink);
 }
 
-/* The target rides a --skip-to-level to its source level; a different explicit --skip-to-level refuses it. */
-void game_set_skip_to_cutscene(int cutscene_id) {
+/** @brief Arm a --skip-to-cutscene target, riding a --skip-to-level to its source level; a different explicit --skip-to-level refuses it.
+ *
+ * @param cutscene_id The cutscene id; 0 or less disables it. */
+static void spyro2_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id <= 0) return;
     int source = spyro2_cutscene_source_level(cutscene_id);
     if (source <= 0) return;
@@ -132,33 +112,11 @@ void game_set_skip_to_cutscene(int cutscene_id) {
     spyro2_cutscene_skip_arm(cutscene_id);
     if (level <= 0) spyro2_skip_set(source);
 }
-int game_resolve_cutscene_arg(const char* arg) { return spyro2_cutscene_resolve(arg); }
-/* No sub-area targets: every --skip-to-area value is refused. */
-void game_set_skip_to_area(int level_id, int area) { (void)level_id; (void)area; }
-int  game_resolve_area_arg(const char* arg, int* out_area) {
-    (void)arg; (void)out_area;
-    fprintf(stderr, "%s has no --skip-to-area targets\n", game_get_display_name());
-    return -1;
-}
-
-/* The recompiler carries a compiled-in substitution for a `lui 0x8007` +
- * `addiu` pair composing into [0x8006FCF4, 0x80072E94), rewriting it to
- * `psx_runtime_g_sony_image_base + offset`. That window is Spyro 1's
- * g_SonyImage scratch pool, but the substitution is not data-driven, so it
- * fires on any game whose code composes an address in that span. Holding the
- * base at the canonical value makes the emitted expression reduce to the
- * original address, so the rewrite is identity here. Making the window
- * per-game belongs to the recompiler, not to this file. */
-uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
-
 /* D_8006D144 (psyq .bss): rand (func_80059D2C) steps it, srand (func_80059D5C) overwrites it. */
 uint32_t psyq_game_rand_seed_addr(void) { return 0x8006D144u; }
 
 /* The reference boot's `lhu` at 0x8001C2DC (func_8001C2D8, stdutil.s) read this; it seeds srand. */
 uint16_t psyq_game_root_counter2(void) { return 0x4876u; }
-
-/* Disc layout is not mapped for this game yet. */
-const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }
 
 /* Stream reads. The disc reader in str.c has two entries over the same
  * request words: func_80013918 issues a read (CdRead returns to 0x800139F0)
@@ -182,3 +140,74 @@ int psyq_game_cd_read_streamed(CPUState* cpu) {
 int psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr) {
     return addr >= 0x80013690u && addr < 0x8001379Cu && (cpu->ra == 0x80013848u || cpu->ra == 0x800138F0u);
 }
+
+/* The tables of the game's other TUs the descriptor carries. */
+extern const openpete_game_identity_t spyro2_game_identity;   /* gen/game_identity.c */
+extern const openpete_game_icon_t     spyro2_game_icon;       /* gen/openpete_spyro2_icon.c */
+extern const game_layout_t            spyro2_game_layout;     /* renderer/layout.c */
+extern const ui_game_t                spyro2_ui_game;         /* renderer/layout.c */
+extern const terrain_game_t           spyro2_terrain_game;    /* renderer/terrain_game.c */
+extern const moby_game_s23_consts_t   spyro2_moby_game_s23;   /* renderer/moby_game.c */
+extern const player_game_s23_consts_t spyro2_player_game_s23; /* renderer/player_game.c */
+extern const portal_game_s23_consts_t spyro2_portal_game_s23; /* renderer/portal_game.c */
+extern const freecam_game_desc        spyro2_freecam_desc;    /* features/freecam.c */
+extern const game_orchestrator_t      spyro2_orchestrator;    /* renderer/reextract.c */
+extern const openpete_feature_list_t  spyro2_feature_list;    /* feature_list.c */
+void spyro2_interp_register(void);                             /* renderer/interp_regions.c */
+
+static const game_host_desc_t k_host = {
+    .ui              = &spyro2_ui_game,
+    .terrain         = &spyro2_terrain_game,
+    .moby            = &moby_game_spyro23,
+    .player          = &player_game_spyro23,
+    .moby_s23        = &spyro2_moby_game_s23,
+    .player_s23      = &spyro2_player_game_s23,
+    .portal_s23      = &spyro2_portal_game_s23,
+    .freecam         = &spyro2_freecam_desc,
+    .orchestrator    = &spyro2_orchestrator,
+    .interp_register = spyro2_interp_register,
+};
+
+/* Unset: the pad-read site is not localised for this game yet, so the
+ * pacing census reports the pad-read phase as unmeasured rather than as
+ * zero reads; no load-read classifier, so loads are instant; no WAD disc
+ * layout; no cheats and no sub-area targets, so --cheats and
+ * --skip-to-area are refused.
+ *
+ * sony_image_base: the recompiler carries a compiled-in substitution for a
+ * `lui 0x8007` + `addiu` pair composing into [0x8006FCF4, 0x80072E94),
+ * rewriting it to `psx_runtime_g_sony_image_base + offset`. That window is
+ * Spyro 1's g_SonyImage scratch pool, but the substitution is not
+ * data-driven, so it fires on any game whose code composes an address in
+ * that span. Holding the base at the canonical value makes the emitted
+ * expression reduce to the original address, so the rewrite is identity
+ * here. Making the window per-game belongs to the recompiler, not to this
+ * file.
+ *
+ * is_gameplay_live: a level overlay resident with its state machine running
+ * (loader state -1). Title, loading and the exit transition report "not
+ * live", which keeps the in-memory snapshot users (rewind keyframes,
+ * runahead) out of them. The extra savestate payload is the shared thunk
+ * layer's latch pack. */
+const openpete_game_runtime_t spyro2_game_runtime = {
+    .identity             = &spyro2_game_identity,
+    .icon                 = &spyro2_game_icon,
+    .layout               = &spyro2_game_layout,
+    .sony_image_base      = 0x8006FCF4u,
+    .on_boot              = game_overlay_resync_on_boot,
+    .on_frame_pre         = spyro2_on_frame_pre,
+    .on_state_loaded      = game_overlay_resync_on_state_loaded,
+    .state_extra_size     = psyq_thunk_state_size,
+    .state_extra_save     = psyq_thunk_state_save,
+    .state_extra_load     = psyq_thunk_state_extra_load,
+    .is_gameplay_live     = spyro2_skip_gameplay_live,
+    .set_skip_to_level    = spyro2_skip_set,
+    .resolve_level_arg    = spyro2_level_resolve,
+    .set_skip_to_cutscene = spyro2_set_skip_to_cutscene,
+    .resolve_cutscene_arg = spyro2_cutscene_resolve,
+    .surface              = spyro2_surface,
+    .features             = &spyro2_feature_list,
+    .host                 = &k_host,
+    .override_dispatch    = spyro2_override_dispatch,
+    .mod_desc             = game_mod_desc,
+};

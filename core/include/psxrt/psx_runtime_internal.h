@@ -45,11 +45,18 @@ void call_by_address(CPUState* cpu, uint32_t addr);
  *
  * Runs the engine's per-entry hooks (hang watchdog, pad-read probe,
  * halt-at-PC dump, oracle anchors, the oracle's clock replay) and then the
- * game's own psx_override_dispatch_game, when the game defines one.
+ * registered game's override (psx_set_override_dispatch_game), when it has one.
  * @param cpu The CPU state at function entry.
  * @param addr The guest address of the function entered.
  * @return Nonzero when a hook handled the call and the recompiled body must not run. */
 int psx_override_dispatch(CPUState* cpu, uint32_t addr);
+
+/** @brief Install the per-game arm psx_override_dispatch runs after the engine's own hooks.
+ *
+ * openpete_game_runtime_register installs the registered descriptor's
+ * override_dispatch; NULL runs no game arm.
+ * @param fn Returns nonzero when the recompiled body must not run. */
+void psx_set_override_dispatch_game(int (*fn)(CPUState* cpu, uint32_t addr));
 
 /** @brief Handle a recompiled `syscall` instruction.
  *
@@ -77,10 +84,11 @@ OPENPETE_ABI_DATA extern uint32_t openpete_gte_caller_pc;
 /**
  * @brief Guest base address of Spyro 1's g_SonyImage scratch pool.
  *
- * Each game defines it, initialised to the pool's address in that game's
- * executable; a game that relocates the pool writes the new base. The
- * recompiler replaces every `lui`/`addiu` address pair that lands inside
- * the pool with this base plus the pair's offset into it.
+ * Core defines it once; openpete_game_runtime_register sets it to the
+ * registered descriptor's sony_image_base, the pool's address in that
+ * game's executable, before any recompiled code runs. The recompiler
+ * replaces every `lui`/`addiu` address pair that lands inside the pool with
+ * this base plus the pair's offset into it.
  */
 OPENPETE_ABI_DATA extern uint32_t psx_runtime_g_sony_image_base;
 

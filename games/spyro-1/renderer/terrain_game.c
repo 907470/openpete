@@ -90,7 +90,7 @@ static int s1_lp_artfix(int level, int sec, int face, uint32_t* rgb) {
     return 0;
 }
 
-const terrain_game_t terrain_game = {
+const terrain_game_t spyro1_terrain_game = {
     .portal_sky_recent   = openpete_portal_sky_recent,
     .portal_sky_planes   = openpete_portal_sky_planes,
     .portal_plane_margin = openpete_portal_plane_margin,

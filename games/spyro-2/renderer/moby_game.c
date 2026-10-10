@@ -9,7 +9,7 @@
  * the asm/mobydraw.s line that forms it. */
 #include "renderer/moby_game_spyro23.h"
 
-const moby_game_s23_consts_t moby_game_s23 = {
+const moby_game_s23_consts_t spyro2_moby_game_s23 = {
     .vertex_adjust_table = 0x80062674u,  /* mobydraw.s:918, XORed with record word-0 bit 0 */
     .anim_blend_table    = 0x80062868u,  /* mobydraw.s:460-462, indexed by Moby+0x40 */
     .simple_skip_lowpoly = 0x80066FA4u,  /* mobydraw.s:34,36, parked in GTE data 3 */

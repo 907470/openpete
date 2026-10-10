@@ -63,7 +63,8 @@ static double s_fpos[3];
 static int    s_ppos_active;
 static double s_ppos[3];
 
-int openpete_native_interp_pos(unsigned int key, double out[3]) {
+/** @brief Return the un-rounded interpolated position of the camera or the player the present in flight installed (openpete_native_interp_pos). */
+static int orch_interp_pos(unsigned int key, double out[3]) {
     const double* src = NULL;
     if (s_fpos_active && key == game_layout.cam.base)          src = s_fpos;
     else if (s_ppos_active && key == game_layout.player.base)  src = s_ppos;
@@ -129,7 +130,8 @@ static const cut_cam_desc_t* cut_desc(void) {
     return &d;
 }
 
-void spyro_native_canon_epoch_commit(void) {
+/** @brief Latch the in-flight canonical-render epoch as fresh, start the next and close the player hooks' record epoch (spyro_native_canon_epoch_commit). */
+static void orch_epoch_commit(void) {
     if (cam_dbg_on())
         cam_dbg_line("CANON", (const uint8_t*)openpete_psx_to_host_span(game_layout.cam.base, CAM_OFF_POS + 12u));
 
@@ -144,13 +146,18 @@ void spyro_native_canon_epoch_commit(void) {
  * stage the queue must not walk it. */
 static int s_recs_staged;
 
-void spyro_native_canon_epoch_supersede(void) { s_epoch_now++; }
-uint32_t spyro_native_canon_epoch_stamp(void) { return s_epoch_now; }
-int  spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
-int  spyro_native_canon_mobyreg_fresh(void) {
+/** @brief Move the in-flight epoch past the captures of a render no canonical present showed (spyro_native_canon_epoch_supersede). */
+static void orch_epoch_supersede(void) { s_epoch_now++; }
+/** @brief Return the in-flight canonical-render epoch (spyro_native_canon_epoch_stamp). */
+static uint32_t orch_epoch_stamp(void) { return s_epoch_now; }
+/** @brief Report whether a capture stamp is the last closed epoch (spyro_native_canon_epoch_fresh). */
+static int orch_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
+/** @brief Report whether the moby cull queue is staged and its producer stamped the last closed epoch (spyro_native_canon_mobyreg_fresh). */
+static int orch_mobyreg_fresh(void) {
     return s_recs_staged && s_prod_epoch[SPYRO_PROD_MOBYREG] == s_epoch_ok;
 }
-int  spyro_native_canon_shaded_fresh(void) { return 0; }   /* no second material pass */
+/* No second material pass: the shaded producer is never fresh (the inert
+ * entry). */
 /* The moby cull records live in the draw scratch this tick carved out of the
  * polybuf, and the draw passes that follow the moby draw reuse that memory
  * before any sub-tick present runs, so the queue's leading records read back
@@ -164,15 +171,15 @@ static uint8_t  s_recs_copy[0x1000];
 static uint32_t s_recs_base;
 static uint32_t s_recs_len;
 
-void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
+/** @brief Capture a render-scratch sub-range into the player range slots (spyro_native_canon_capture_range). */
+static void orch_capture_range(void* cpu_v, unsigned off, unsigned len) {
     player_ranges_capture((CPUState*)cpu_v, off, len);
 }
 
-/* No capture: the player walk decodes the captured part records, not the SXY block. */
-void spyro_native_canon_capture_sxy(void* cpu) {
-    (void)cpu;
-}
-void spyro_native_canon_capture_recs(void* cpu) {
+/* The SXY capture is the inert entry: the player walk decodes the captured
+ * part records, not the SXY block. */
+/** @brief Copy the moby cull-record queue at the moby hook for staging on the sub-tick presents (spyro_native_canon_capture_recs). */
+static void orch_capture_recs(void* cpu) {
     (void)cpu;
     s_recs_len = 0;
     uint32_t base = moby_canon_rec_base();
@@ -187,7 +194,7 @@ void spyro_native_canon_capture_recs(void* cpu) {
 
 /** @brief Stages the captured moby cull queue over its own address for this present.
  *
- * Sets the staged flag that spyro_native_canon_mobyreg_fresh reads. With no
+ * Sets the staged flag that orch_mobyreg_fresh reads. With no
  * capture, or when the sub-tick view cannot stage it, the caller skips the
  * replay rather than reading whatever now lives there.
  * @return 1 when staged, else 0. */
@@ -200,13 +207,14 @@ static int stage_moby_records(void) {
     s_recs_staged = 1;
     return 1;
 }
-void spyro_native_canon_capture_camera(void* cpu, int producer) {
+/** @brief Stamp a producer's capture with the in-flight epoch; the camera itself is not recorded (spyro_native_canon_capture_camera). */
+static void orch_capture_camera(void* cpu, int producer) {
     (void)cpu;
     if ((unsigned)producer < sizeof s_prod_epoch / sizeof s_prod_epoch[0])
         s_prod_epoch[producer] = s_epoch_now;
 }
-int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
-void spyro_native_prod_camera_leave(void) {}
+/* The producer-camera bracket is the inert entry: every producer draws under
+ * the tick-end camera. */
 
 /** @brief The player's ground shadow, at its own place in the record order.
  *
@@ -555,6 +563,22 @@ static void game_reextract_body_v(void* cpu_v) {
     game_reextract_body((CPUState*)cpu_v);
 }
 
-void game_reextract_init(void) {
+/** @brief Install the sub-tick re-extract body with the native renderer (game_reextract_init). */
+static void orch_reextract_init(void) {
     game_reextract_view_install(game_reextract_body_v);
 }
+
+/* The orchestrator spyro3_game_runtime carries (game_extras_impl.c); the
+ * slots left NULL take the inert entries. */
+const game_orchestrator_t spyro3_orchestrator = {
+    .reextract_init  = orch_reextract_init,
+    .interp_pos      = orch_interp_pos,
+    .epoch_commit    = orch_epoch_commit,
+    .epoch_supersede = orch_epoch_supersede,
+    .epoch_stamp     = orch_epoch_stamp,
+    .epoch_fresh     = orch_epoch_fresh,
+    .mobyreg_fresh   = orch_mobyreg_fresh,
+    .capture_range   = orch_capture_range,
+    .capture_recs    = orch_capture_recs,
+    .capture_camera  = orch_capture_camera,
+};

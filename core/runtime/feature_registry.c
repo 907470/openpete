@@ -2,6 +2,7 @@
 
 #include "feature_registry.h"
 
+#include "openpete_game_runtime.h"
 #include "openpete_profile.h"
 
 #include <stddef.h>
@@ -23,7 +24,7 @@ static int s_hook_id_init = 0;
  * The cache holds FR_PROF_MAX entries and is initialised lazily on the
  * thread that dispatches, so the function is not safe to call concurrently.
  * A null name interns "hook.?".
- * @param i Module index in openpete_features.
+ * @param i Module index in the registered feature list.
  * @param name The module's name.
  * @return The bucket id, or -1 when i is FR_PROF_MAX or more. */
 static int hook_prof_id(size_t i, const char* name) {
@@ -45,6 +46,13 @@ static int hook_prof_id(size_t i, const char* name) {
  * every qualified entry inert. */
 static uint32_t (*s_overlay_probe)(void);
 
+/** @brief Return the registered game's feature list, or the empty list when its descriptor has none. */
+static const openpete_feature_list_t* feature_list(void) {
+    static const openpete_feature_list_t k_none = { NULL, 0u };
+    const openpete_feature_list_t* l = openpete_game_runtime()->features;
+    return l ? l : &k_none;
+}
+
 void feature_registry_set_overlay_probe(uint32_t (*fn)(void)) {
     s_overlay_probe = fn;
 }
@@ -54,8 +62,9 @@ uint32_t (*feature_registry_overlay_probe(void))(void) {
 }
 
 void feature_registry_apply_options(const openpete_options_t* opts) {
-    for (size_t i = 0; i < openpete_feature_count; i++) {
-        const feature_module_t* m = openpete_features[i];
+    const openpete_feature_list_t* fl = feature_list();
+    for (size_t i = 0; i < fl->count; i++) {
+        const feature_module_t* m = fl->modules[i];
         if (m && m->apply_options) m->apply_options(opts);
     }
 }
@@ -74,8 +83,9 @@ static uint32_t fr_filter_bit(uint32_t addr) { return (addr >> 2) & 0xFFFFu; }
 
 /** @brief Set the prefilter bit of every dispatch-table entry of every module. */
 static void fr_filter_build(void) {
-    for (size_t i = 0; i < openpete_feature_count; i++) {
-        const feature_module_t* m = openpete_features[i];
+    const openpete_feature_list_t* fl = feature_list();
+    for (size_t i = 0; i < fl->count; i++) {
+        const feature_module_t* m = fl->modules[i];
         if (!m || !m->dispatch_table) continue;
         for (const feature_dispatch_entry_t* e = m->dispatch_table; e->addr != 0u; e++) {
             const uint32_t b = fr_filter_bit(e->addr);
@@ -89,8 +99,9 @@ int feature_registry_dispatch(CPUState* cpu, uint32_t addr) {
     if (!s_fr_filter_ready) fr_filter_build();
     const uint32_t fb = fr_filter_bit(addr);
     if (!(s_fr_filter[fb >> 3] & (1u << (fb & 7u)))) return 0;   /* no entry has this address */
-    for (size_t i = 0; i < openpete_feature_count; i++) {
-        const feature_module_t* m = openpete_features[i];
+    const openpete_feature_list_t* fl = feature_list();
+    for (size_t i = 0; i < fl->count; i++) {
+        const feature_module_t* m = fl->modules[i];
         if (!m || !m->dispatch_table) continue;
         for (const feature_dispatch_entry_t* e = m->dispatch_table;
              e->addr != 0u; e++) {

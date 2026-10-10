@@ -107,6 +107,13 @@ void     psyq_thunk_state_save(void* dst);   /* dst has PSYQ_THUNK_STATE_BYTES *
  *         PSYQ_THUNK_STATE_PACK_VER). */
 int      psyq_thunk_state_load(const void* src, uint32_t size);
 
+/** @brief Restore the latches from a savestate's game-extra payload, the descriptor's state_extra_load of a game whose payload is the pack alone.
+ *
+ * A payload psyq_thunk_state_load does not apply leaves the latches alone.
+ * @param src The payload.
+ * @param size The payload's length in bytes. */
+void     psyq_thunk_state_extra_load(const void* src, uint32_t size);
+
 /** @brief Restore the latches from the layout Spyro 1's extras carried before the pack.
  *
  * The layout holds the two callback vaddrs and one word with the XA armed

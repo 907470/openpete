@@ -52,15 +52,6 @@ UNSCORED = (
     "tests/recomp/gte_sideeffects/harness.c",   # built by check_recomp_gte.sh
     "tests/unit/sdk_windows_include_test.c",    # cross-compiled by check_sdk_windows_include.sh
     "core/mods/sdk/openpete_mod_abi.c",         # shipped SDK source, built with mods
-    # openpete_add_game() defaults that every linux-release game overrides
-    "games/common/feature_list_none.c",
-    "games/common/game_icon_none.c",
-    "games/common/renderer/interp_regions_none.c",
-    "games/common/renderer/layout_none.c",
-    "games/common/renderer/moby_game_none.c",
-    "games/common/renderer/orchestrator_none.c",
-    "games/common/renderer/player_game_none.c",
-    "games/common/renderer/terrain_game_none.c",
 )
 
 # Tracked sources outside games/ that a target compiles only when the named

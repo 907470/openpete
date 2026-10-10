@@ -68,14 +68,15 @@ option(OPENPETE_ROM_FREE_ICON
 set(_spyro_icon_c ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_spyro1_icon.c)
 if(OPENPETE_ROM_FREE_ICON)
     set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py)
-    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} --c ${_spyro_icon_c})
+    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} --c ${_spyro_icon_c}
+        --c-name spyro1_game_icon)
     set(_spyro_icon_deps ${_spyro_icon_tool})
 else()
     set(_spyro_icon_src
         ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/assets/save_header.databin.bin)
     set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/mcs_icon_to_ico.py)
     set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
-        --c ${_spyro_icon_c})
+        --c ${_spyro_icon_c} --c-name spyro1_game_icon)
     set(_spyro_icon_deps ${_spyro_icon_src} ${_spyro_icon_tool})
 endif()
 add_custom_command(

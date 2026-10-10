@@ -40,7 +40,7 @@ add_custom_command(
     OUTPUT  ${_spyro3_icon_c}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
     COMMAND python3 ${_spyro3_icon_tool} ${_spyro3_icon_args}
-            --c ${_spyro3_icon_c}
+            --c ${_spyro3_icon_c} --c-name spyro3_game_icon
     DEPENDS ${_spyro3_icon_deps}
     COMMENT "Generating openpete_spyro3_icon.c")
 

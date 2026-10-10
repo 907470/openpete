@@ -2,18 +2,15 @@
 #
 # openpete_add_game(<id>
 #     [MAIN <file>]                   # entry TU; default games/common/game_main.cpp
-#     [FEATURE_LIST <file>]           # default games/common/feature_list_none.c
-#     [ORCHESTRATOR <file>]           # sub-tick re-extract orchestrator; default
-#                                     # games/common/renderer/orchestrator_none.c
-#     [INTERP_REGIONS <file>]         # interp ring region table; default
-#                                     # games/common/renderer/interp_regions_none.c
-#     [TERRAIN_GAME <file>]           # the terrain feeder's per-game data; default
-#                                     # games/common/renderer/terrain_game_none.c
+#     [FEATURE_LIST <file>]           # the feature list; default none
+#     [ORCHESTRATOR <file>]           # sub-tick re-extract orchestrator; default none
+#     [INTERP_REGIONS <file>]         # interp ring region table; default none
+#     [TERRAIN_GAME <file>]           # the terrain feeder's per-game data; default none
 #     [MOBY_GAME <file>]              # the moby feeder's per-game decoders and data;
-#                                     # default games/common/renderer/moby_game_none.c
+#                                     # default none
 #     [PLAYER_GAME <file>]            # the player feeder's per-game decoders and data;
-#                                     # default games/common/renderer/player_game_none.c
-#     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
+#                                     # default none
+#     [ICON_SOURCE <file>]            # the generated icon TU; default none
 #     [MODULE_LINKAGE static|shared]  # default static
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
 #     [MOD_SDK]                       # generate and stage the game's mod SDK
@@ -35,7 +32,11 @@
 # A game supplies games/<id>/recomp.conf, game_extras_impl.c and
 # psyq_game_provides.h; everything else is shared, including the game_extras
 # entries whose body reduces to a game_layout field
-# (games/common/game_extras_default.c, always linked):
+# (games/common/game_extras_default.c, always linked). game_extras_impl.c
+# defines the game's runtime descriptor (core/include/openpete_game_runtime.h)
+# as `<tag>_game_runtime`, the name the entry TU registers through the
+# OPENPETE_GAME_RUNTIME definition; a slot file above is reached only through
+# that descriptor, which names no table for an omitted slot.
 #
 #  - The module: the recompiled main EXE plus every overlay translated by
 #    scripts/regen-recomp.sh. Each overlay is recompiled with a unique
@@ -49,8 +50,9 @@
 #    PsyCross layer with the inert default for every hook the game does not
 #    name in psyq_game_provides.h, the freecam body, the write census, the
 #    shared renderer TUs (the GTE float mirror and the render-path isolation
-#    registry) with the game's sub-tick orchestrator or the inert default,
-#    and the generated abort-on-call PSYQ stubs with their runtime.
+#    registry) with the orchestrator entries forwarded to the game's
+#    descriptor, and the generated abort-on-call PSYQ stubs with their
+#    runtime.
 #
 # Shared linkage builds the module as <tag>-recomp.{so,dll} for dlopen at
 # boot; the exe-side attach TU, export surface and implib are the game's
@@ -94,27 +96,6 @@ function(openpete_add_game GAME_ID)
 
     if(NOT G_MAIN)
         set(G_MAIN ${_common}/game_main.cpp)
-    endif()
-    if(NOT G_FEATURE_LIST)
-        set(G_FEATURE_LIST ${_common}/feature_list_none.c)
-    endif()
-    if(NOT G_ORCHESTRATOR)
-        set(G_ORCHESTRATOR ${_common}/renderer/orchestrator_none.c)
-    endif()
-    if(NOT G_INTERP_REGIONS)
-        set(G_INTERP_REGIONS ${_common}/renderer/interp_regions_none.c)
-    endif()
-    if(NOT G_TERRAIN_GAME)
-        set(G_TERRAIN_GAME ${_common}/renderer/terrain_game_none.c)
-    endif()
-    if(NOT G_MOBY_GAME)
-        set(G_MOBY_GAME ${_common}/renderer/moby_game_none.c)
-    endif()
-    if(NOT G_PLAYER_GAME)
-        set(G_PLAYER_GAME ${_common}/renderer/player_game_none.c)
-    endif()
-    if(NOT G_ICON_SOURCE)
-        set(G_ICON_SOURCE ${_common}/game_icon_none.c)
     endif()
     if(NOT G_MODULE_LINKAGE)
         set(G_MODULE_LINKAGE static)
@@ -313,6 +294,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/state_regions.c
         ${_common}/disc_boot_order.c
         ${_common}/game_extras_default.c
+        ${_common}/game_host_desc.c
         ${_regions_sources}
         ${_boot_order_sources}
         ${G_FEATURE_LIST}
@@ -341,6 +323,7 @@ function(openpete_add_game GAME_ID)
         # cyclorama, moby and moby-shadow feeders (reached only through a
         # game's feature list).
         ${_common}/renderer/native_gte.c
+        ${_common}/renderer/orchestrator.c
         ${_common}/renderer/hook_bracket.c
         ${_common}/renderer/render_paths.c
         ${_common}/renderer/portal_plane.c
@@ -390,6 +373,9 @@ function(openpete_add_game GAME_ID)
         ${_common}
         ${_generated}
         ${_gen_dir})
+    # The entry TU registers the game's runtime descriptor by this name.
+    target_compile_definitions(${_exe} PRIVATE
+        OPENPETE_GAME_RUNTIME=${_tag}_game_runtime)
     if(NOT EXISTS ${_regions_manifest})
         set_source_files_properties(${_common}/state_regions.c PROPERTIES
             COMPILE_DEFINITIONS OPENPETE_STATE_REGIONS_NONE)

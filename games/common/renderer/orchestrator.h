@@ -1,10 +1,13 @@
 /* orchestrator.h - the interface a game's sub-tick re-extract orchestrator
  * provides to the shared renderer translation units.
  *
- * A game that runs sub-tick re-extraction defines these; a game that does not
- * links games/common/renderer/orchestrator_none.c, whose definitions report
- * "no bracket active" and make each commit a no-op. A shared TU therefore
- * calls them unconditionally and falls back to canonical RAM on its own. */
+ * The entries below are forwarders (renderer/orchestrator.c) over the
+ * running game's game_orchestrator_t, which its runtime descriptor carries
+ * (game_host_desc.h). A game that runs sub-tick re-extraction fills the
+ * slots; a slot it leaves NULL, and every slot of a game with no
+ * orchestrator, reports "no bracket active" and makes each commit a no-op.
+ * A shared TU therefore calls them unconditionally and falls back to
+ * canonical RAM on its own. */
 
 #ifndef OPENPETE_COMMON_RENDERER_ORCHESTRATOR_H
 #define OPENPETE_COMMON_RENDERER_ORCHESTRATOR_H
@@ -163,18 +166,45 @@ void spyro_native_prod_camera_leave(void);
 
 /** @brief Registers the game's interp region table and per-object capture with the interp ring.
  *
- * Defined by the game's interp_regions TU, or as a no-op by
- * interp_regions_none.c for a game with no sub-tick presentation. main()
- * calls it once before openpete_run(), so openpete_interp_init() sees the
- * regions. An explicit call replaces a weak-symbol override, which the
- * PE/COFF linker mis-resolves. */
+ * Runs the game's interp_regions TU's registration, or nothing for a game
+ * with no sub-tick presentation. main() calls it once before
+ * openpete_run(), so openpete_interp_init() sees the regions. An explicit
+ * call replaces a weak-symbol override, which the PE/COFF linker
+ * mis-resolves. */
 void game_interp_register(void);
 /** @brief Registers the game's sub-tick re-extract body with the native renderer.
  *
  * The game's reextract TU passes its body to game_reextract_view_install;
- * orchestrator_none.c defines it as a no-op. main() calls it beside
+ * a game with no orchestrator registers nothing. main() calls it beside
  * game_interp_register, as an explicit call for the same reason. */
 void game_reextract_init(void);
+
+/* One game's orchestrator: the implementation behind each entry above but
+ * game_interp_register. A NULL slot takes the inert entry. */
+typedef struct game_orchestrator {
+    void     (*reextract_init)(void);
+    int      (*interp_pos)(unsigned int key, double out[3]);
+    void     (*epoch_commit)(void);
+    void     (*epoch_supersede)(void);
+    uint32_t (*epoch_stamp)(void);
+    int      (*epoch_fresh)(uint32_t stamp);
+    int      (*mobyreg_fresh)(void);
+    int      (*shaded_fresh)(void);
+    void     (*capture_range)(void* cpu, unsigned off, unsigned len);
+    void     (*capture_recs)(void* cpu);
+    void     (*capture_sxy)(void* cpu);
+    void     (*capture_camera)(void* cpu, int producer);
+    int      (*prod_camera_enter)(int producer);
+    void     (*prod_camera_leave)(void);
+} game_orchestrator_t;
+
+/** @brief Bind the running game's orchestrator and interp registration behind the entries above.
+ *
+ * game_runtime_install calls it once, before any entry runs; each slot the
+ * game leaves NULL keeps the inert entry.
+ * @param o The game's orchestrator, or NULL for none.
+ * @param interp_register The game's interp registration, or NULL for none. */
+void game_orchestrator_bind(const game_orchestrator_t* o, void (*interp_register)(void));
 
 #ifdef __cplusplus
 }

@@ -5,8 +5,8 @@
  * planes the portal feeder derives (the OT-conformance clamp), the frozen list
  * of LP faces allowed to back-fill sightlines, the level-name spelling of the
  * fill-tag verdict files, and authored-data art corrections. A game supplies
- * them through `terrain_game`; a game with none of them links
- * games/common/renderer/terrain_game_none.c. */
+ * them through `terrain_game`; a game with none of them names no table and
+ * binds the inert provider (games/common/game_host_desc.c). */
 #ifndef OPENPETE_COMMON_RENDERER_TERRAIN_GAME_H
 #define OPENPETE_COMMON_RENDERER_TERRAIN_GAME_H
 #include <stddef.h>
@@ -91,7 +91,9 @@ typedef struct terrain_game {
     int   (*env_feed_waits_for_portals)(CPUState* cpu);
 } terrain_game_t;
 
-extern const terrain_game_t terrain_game;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern terrain_game_t terrain_game;
 
 #ifdef __cplusplus
 }

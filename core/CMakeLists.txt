@@ -145,6 +145,7 @@ add_library(openpete_core STATIC
     renderer/fillpick.c
     renderer/glitch_mark.c
     runtime/feature_registry.c
+    runtime/game_runtime.c
 
     # Modding framework: per-address override chains riding the
     # psx_override_dispatch prologue chokepoint, the compile-on-load mod

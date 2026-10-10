@@ -38,7 +38,8 @@ static const game_interp_row_t s_rows[] = {
     { "g_GameState", G_GAMESTATE, 4u, 1 },
 };
 
-void game_interp_register(void) {
+/** @brief Register Spyro 3's interp region table and per-object capture with the interp ring; the descriptor's interp_register. */
+void spyro3_interp_register(void) {
     /* g_SpyroFlame: the fire-breath state block, whose base and length come
      * from the layout descriptor rather than a symbol, so the row is built
      * here instead of in the static table. Its origin and attach matrix both

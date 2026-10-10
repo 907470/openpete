@@ -1,9 +1,12 @@
 // core/include/game_extras.h - the per-game abstraction.
 //
-// Every behavior that differs between Spyro 1, 2, 3 (identity, overlay
-// handling, runtime quirks, per-tick hooks, disc layout) is declared here and
-// implemented by the per-game `games/<game>/game_extras_impl.c`, except the
-// identity group, which the build generates from `games/<game>/recomp.conf`.
+// Every behavior that differs between Spyro 1, 2, 3 (identity, per-tick
+// hooks, savestate payload, CLI targets, disc layout) is declared here. Each entry is a
+// core forwarder (core/runtime/game_runtime.c) over the registered runtime
+// descriptor (openpete_game_runtime.h); a game fills the descriptor from
+// its games/<game>/game_extras_impl.c and, for the identity group, from the
+// TU the build generates from `games/<game>/recomp.conf`. An entry whose
+// descriptor field is NULL returns the default its comment names.
 //
 // Rule: nothing in core/ may reference a game-specific address, symbol,
 // or struct. If `grep -r "0x800" core/` returns a hit, it's a bug.
@@ -22,11 +25,21 @@ struct CPUState;
 typedef struct CPUState CPUState;
 
 /* --- Identity ---
- * Defined by the generated game_identity.c (tools/gen_game_identity.py over
- * games/<id>/recomp.conf), not by the game's hand-written sources. */
-const char* game_get_exe_filename(void);      /* e.g. "SCUS_942.28" */
-const char* game_get_display_name(void);      /* "Spyro the Dragon" */
-const char* game_get_id(void);                /* "spyro-1" - the [game.<id>] config scope */
+ * The descriptor's identity, generated as game_identity.c
+ * (tools/gen_game_identity.py over games/<id>/recomp.conf), not written in
+ * the game's hand-written sources. */
+/** @brief Return the registered game's executable file name on its disc, such as "SCUS_942.28".
+ *
+ * @return The name; "" before registration. */
+const char* game_get_exe_filename(void);
+/** @brief Return the registered game's display name, such as "Spyro the Dragon".
+ *
+ * @return The name; "" before registration. */
+const char* game_get_display_name(void);
+/** @brief Return the registered game's id, such as "spyro-1", which keys its [game.<id>] config scope.
+ *
+ * @return The id; "" before registration. */
+const char* game_get_id(void);
 
 /** @brief Guest address of the function through which this game reads its pad buffer.
  *
@@ -45,28 +58,6 @@ uint32_t    game_get_pad_read_pc(void);
  * needs a floor here.
  * @return The delay in VBLs; 0 = instant loads. */
 uint32_t    game_get_load_delay_default(void);
-
-/* --- Overlay handling --- */
-/** @brief Handles a game-issued overlay load by overlay id.
- *
- * No core code calls it. The Spyro 2 and 3 implementations re-point the
- * active-overlay dispatcher at the overlay whose id word matches
- * `overlay_id`; the Spyro 1 implementation does nothing.
- * @param overlay_id The overlay's id word.
- * @return 0 on success. */
-int  game_on_overlay_load(uint32_t overlay_id);
-/** @brief Placeholder for one-time per-game setup after WadInit; every implementation is empty.
- *
- * No core or game code calls it.
- * @param cpu Guest CPU state. */
-void game_on_overlay_init(CPUState* cpu);
-
-/* --- Per-game runtime quirks --- */
-/** @brief Applies per-game runtime patches such as preamble fixes and known-bad-instruction workarounds.
- *
- * No core code calls it, and every implementation is empty.
- * @param cpu Guest CPU state. */
-void game_apply_runtime_quirks(CPUState* cpu);
 
 /* --- Post-boot, pre-execution --- */
 /** @brief Run the game's one-time boot setup once the EXE image is in guest RAM, before any guest instruction runs.
@@ -95,8 +86,8 @@ void game_on_boot(CPUState* cpu);
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter);
 /** @brief Runs after the game fiber yields back, on host-loop iterations that ran a tick.
  *
- * Called before the runahead speculation of the iteration. Every
- * implementation is empty.
+ * Called before the runahead speculation of the iteration. No game fills
+ * the descriptor's on_frame, so it does nothing.
  * @param cpu Guest CPU state.
  * @param frame_counter The openpete_frame counter after the tick. */
 void game_on_frame(CPUState* cpu, uint32_t frame_counter);
@@ -106,7 +97,8 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter);
  *
  * The host loop calls it on each ticked iteration once fast boot has ended,
  * while the gameplay hash log is open, so a game can dump state aligned
- * with the hash log's timing. Every implementation is empty.
+ * with the hash log's timing. No game fills the descriptor's on_hash_emit,
+ * so it does nothing.
  * @param frame The openpete_frame counter. */
 void game_on_hash_emit(uint32_t frame);
 
@@ -131,7 +123,8 @@ void game_on_state_loaded(CPUState* cpu);
  * is not guest RAM: the shared thunk layer's latch pack, and on Spyro 1
  * also the WAD-overlay disc cursor the guest's next mod-asset read depends
  * on, the active-overlay id, and the level-warp state machine. The size
- * is fixed per game build and may be 0; core writes and reads
+ * is fixed per game build and may be 0 (0 for a descriptor without the
+ * hook); core writes and reads
  * the payload as an opaque section through game_state_extra_save and
  * game_state_extra_load. The file loader calls game_state_extra_load after
  * game_on_state_loaded, the in-memory loader before it.
@@ -140,15 +133,18 @@ uint32_t game_state_extra_size(void);
 
 /** @brief Write the game's host-side savestate payload.
  *
- * The default writes the shared thunk layer's latch pack.
+ * Spyro 2 and 3 write the shared thunk layer's latch pack
+ * (psyq_thunk_state_extra_save); a descriptor without the hook writes
+ * nothing.
  * @param dst Receives game_state_extra_size() bytes. */
 void     game_state_extra_save(void* dst);
 
 /** @brief Restore the game's host-side state from a payload game_state_extra_save wrote.
  *
- * The caller passes the size stored in the savestate header. The default
- * hands the payload to the thunk layer's latch-pack loader, which leaves
- * state unchanged for a payload it does not recognize.
+ * The caller passes the size stored in the savestate header. Spyro 2 and
+ * 3 hand the payload to the thunk layer's latch-pack loader, which leaves
+ * state unchanged for a payload it does not recognize; a descriptor
+ * without the hook ignores the payload.
  * @param src The payload.
  * @param size The payload's length in bytes. */
 void     game_state_extra_load(const void* src, uint32_t size);
@@ -228,14 +224,16 @@ void game_set_skip_to_cutscene(int cutscene_id);
 /** @brief Resolves a --skip-to-cutscene argument to a cutscene id.
  *
  * Follows game_resolve_level_arg: an empty argument asks for the list of
- * valid names, and a game without cutscene targets says so.
+ * valid names, and a game without cutscene targets (no resolve_cutscene_arg
+ * in its descriptor) says so.
  * @param arg The argument.
  * @return The cutscene id, or -1 after printing the valid names. */
 int game_resolve_cutscene_arg(const char* arg);
 
 /** @brief Resolves a --skip-to-area LEVEL:AREA argument.
  *
- * A game without sub-area targets prints that it has none.
+ * A game without sub-area targets (no resolve_area_arg in its descriptor)
+ * prints that it has none.
  * @param arg The argument.
  * @param out_area Receives the sub-area index.
  * @return The level id, or -1 after printing the valid targets for an

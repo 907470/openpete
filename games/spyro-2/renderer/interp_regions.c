@@ -27,8 +27,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Rows: the player avatar, its fire breath, and the game-state regime word. */
-void game_interp_register(void) {
+/** @brief Register Spyro 2's interp region table (the player avatar, its fire breath and the game-state regime word) with the interp ring; the descriptor's interp_register. */
+void spyro2_interp_register(void) {
     const game_interp_row_t rows[] = {
         /* g_Spyro (the whole struct): the player avatar. It is not in the moby
          * array, so the shared moby-array capture never reaches it; position

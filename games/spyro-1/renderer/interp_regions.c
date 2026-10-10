@@ -8,10 +8,11 @@
  * game_interp_moby_key.
  *
  * Registration model:
- *   This TU defines game_interp_register(), which hands the descriptor rows
+ *   This TU defines spyro1_interp_register(), which hands the descriptor rows
  *   below to the shared generator (renderer/interp_regions_gen.h); the
  *   generator assigns each row its ring region index and registers the built
- *   table. main.cpp calls it once at startup before openpete_run(). The
+ *   table. main.cpp calls it once at startup before openpete_run(), through
+ *   game_interp_register and the runtime descriptor. The
  *   weak-symbol override pattern is avoided because MinGW's PE/COFF linker
  *   mis-resolves it, leaving the weak NULL in place at runtime and crashing
  *   the recomp boot path; explicit registration works identically across
@@ -479,7 +480,8 @@ static void spyro_interp_extra_pools(void) {
     game_interp_hud_batch_end();
 }
 
-void game_interp_register(void) {
+/** @brief Register Spyro 1's interp region table and per-object capture with the interp ring; the descriptor's interp_register. */
+void spyro1_interp_register(void) {
     /* The camera's capture spans the projection matrix through the follow
      * state (0x110 bytes), past the cam.xform_end descriptor boundary the
      * draw-time transform ends at, so the span is stated here rather than

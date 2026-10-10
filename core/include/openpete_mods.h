@@ -6,7 +6,7 @@
 // Interposition rides the recompiler's universal function-entry
 // chokepoint: every recompiled function's prologue calls
 // psx_override_dispatch(cpu, addr) (code_generator.cpp), which fans into
-// psx_override_dispatch_game(), which calls openpete_mods_dispatch()
+// the registered game's override_dispatch, which calls openpete_mods_dispatch()
 // below. Direct jal calls, indirect calls, and dispatched calls all pass
 // through the callee's own prologue, so a per-address chain here
 // intercepts every call to a chosen function with zero generated-C edits.

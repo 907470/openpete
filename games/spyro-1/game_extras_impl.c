@@ -1,13 +1,17 @@
 // games/spyro-1/game_extras_impl.c - Spyro 1's per-game hooks.
 //
-// Identity is generated from recomp.conf (game_identity.c); this file holds
-// the behavioural hooks: overlay handling, runtime quirks, the per-tick
-// entries, savestate, and the CLI resolvers.
+// Defines the runtime descriptor spyro1_game_runtime (openpete_game_runtime.h)
+// over the hooks below and the tables of the game's other TUs. Identity is
+// generated from recomp.conf (game_identity.c); this file holds the
+// behavioural hooks: boot, the per-tick entries, savestate, the CLI
+// resolvers and the per-function-entry overrides.
 //
 // Disc image: games/spyro-1/spyro-1/build/SCUS-94228.cue
 // Disc BIN SHA256: fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37
 
 #include "game_extras.h"
+#include "game_host_desc.h"
+#include "game_mod_desc.h"
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
 #include "openpete_mods.h"
@@ -35,37 +39,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-uint32_t game_get_pad_read_pc(void) {
-    /* PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68 - the game's once-per-
-     * VSync consumption of g_PadBuffer: it reads status, size_type, inputs[]
-     * and sticks and folds them into g_Pad. Every other reader in the game
-     * works from g_Pad, so this entry is where the host's latched sample
-     * actually becomes the tick's input. PadDemoUpdate (0x800539FC) also
-     * touches the buffer but only on the demo-record path, which is not a
-     * play path. */
-    return 0x80053C68u;
-}
-
-/* 0: deferred reads never complete in the title demo load's LoadLevel spin or CDLoadSync; goldens and bk2s carry 0. */
-uint32_t game_get_load_delay_default(void) { return 0u; }
-
-/* --- Overlays / quirks / per-frame --- */
-
-int  game_on_overlay_load(uint32_t overlay_id) {
-    (void)overlay_id;
-    /* No work: no core code calls this hook. */
-    return 0;
-}
-
-void game_on_overlay_init(CPUState* cpu) {
-    (void)cpu;
-    /* No work: no code calls this hook. */
-}
-
 /* mods/mod_level_ops.c - same private-decl pattern main.cpp uses. */
 void spyro1_mod_level_capture_stock_counts(CPUState* cpu);
 
-void game_on_boot(CPUState* cpu) {
+/** @brief Snapshot the shipped level target tables, install the write census and register the resident-overlay probe, before any guest instruction runs.
+ *
+ * @param cpu Guest CPU state. */
+static void spyro1_on_boot(CPUState* cpu) {
     /* The target gem/dragon/egg tables are EXE .data that the custom-level
      * registry overwrites per level; snapshot the shipped values while
      * they are still the only thing in those bytes. */
@@ -80,11 +60,6 @@ void game_on_boot(CPUState* cpu) {
 }
 
 extern unsigned openpete_frame;
-
-void game_apply_runtime_quirks(CPUState* cpu) {
-    (void)cpu;
-    /* No runtime quirks. */
-}
 
 /* Terrain-reproject probe; documented at its declaration in psx_runtime_internal.h. */
 void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
@@ -166,7 +141,10 @@ static int s_skip_applied     = 0;
  * frames in - an absolute cap would clear the latter instantly). */
 static uint32_t s_skip_ffwd_deadline = 0;
 
-void game_set_skip_to_level(int level_id) {
+/** @brief Arm a skip into a level through the title screen and fast-forward presents to it in a windowed run.
+ *
+ * @param level_id The target level id; 0 disables the skip. */
+static void spyro1_set_skip_to_level(int level_id) {
     s_skip_to_level = level_id;
     s_skip_applied  = 0;
     /* Fast-forward presents to the level for runtime warps exactly as for
@@ -180,8 +158,10 @@ void game_set_skip_to_level(int level_id) {
     }
 }
 
-/* Targets in features/credits_skip.c; `intro` runs no level skip, the credits default to Artisans (10). */
-void game_set_skip_to_cutscene(int cutscene_id) {
+/** @brief Arm a --skip-to-cutscene target from features/credits_skip.c; `intro` runs no level skip and the credits default to Artisans (10).
+ *
+ * @param cutscene_id The cutscene id; 0 or less disables it. */
+static void spyro1_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id <= 0) return;
     int source = spyro1_cutscene_source_level(cutscene_id);
     if (source >= 0 && s_skip_to_level > 0 && s_skip_to_level != source) {
@@ -200,33 +180,17 @@ void game_set_skip_to_cutscene(int cutscene_id) {
         }
         return;
     }
-    if (s_skip_to_level <= 0) game_set_skip_to_level(source > 0 ? source : 10);
-}
-int game_resolve_cutscene_arg(const char* arg) { return spyro1_cutscene_resolve(arg); }
-/* No sub-area targets: every --skip-to-area value is refused. */
-void game_set_skip_to_area(int level_id, int area) { (void)level_id; (void)area; }
-int  game_resolve_area_arg(const char* arg, int* out_area) {
-    (void)arg; (void)out_area;
-    fprintf(stderr, "%s has no --skip-to-area targets\n", game_get_display_name());
-    return -1;
+    if (s_skip_to_level <= 0) spyro1_set_skip_to_level(source > 0 ? source : 10);
 }
 
-/* The table is features/levelwarp.c's, shared with the dev-overlay warp dropdown. */
-int game_resolve_level_arg(const char* arg) {
-    return spyro1_level_resolve(arg);
-}
-
-void game_surface(struct openpete_surface_sink* sink) {
+/** @brief Report Spyro 1's cheat and level-warp rows and its cheat, level and cutscene vocabularies to the surface dump.
+ *
+ * @param sink The dump's collector. */
+static void spyro1_surface(struct openpete_surface_sink* sink) {
     spyro1_cheats_surface(sink);
     levelwarp_ui_surface(sink);
     spyro1_level_surface(sink);
     spyro1_cutscene_surface(sink);
-}
-
-void game_on_hash_emit(uint32_t frame) {
-    (void)frame;
-    /* Hook point for per-game state dumps aligned with the hash log's
-     * timing. Spyro needs none. */
 }
 
 /** @brief Releases a skip's present fast-forward on the playable edge or the fail-safe deadline.
@@ -267,7 +231,11 @@ static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
     spyro1_cutscene_skip_finish();
 }
 
-void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
+/** @brief Run Spyro 1's per-tick host hooks before the game fiber runs a tick: the HUD range, the scripted player pose and free camera, the features, the level skip and its release.
+ *
+ * @param cpu Guest CPU state.
+ * @param frame_counter The openpete_frame counter before the tick. */
+static void spyro1_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
 
     static int s_ui_range_done = 0;
@@ -445,23 +413,22 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     skip_release_on_tick(cpu, frame_counter);
 }
 
-void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
-    (void)cpu; (void)frame_counter;
-    /* Fires once per canonical tick, after the fiber yields with consistent
-     * RAM. Spyro needs no post-tick work. */
-}
-
 /* Each overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON burns LONG(id) at +0x00). */
 extern void spyro_set_active_overlay_by_magic(uint32_t magic);
 
-void game_on_state_loaded(CPUState* cpu) {
+/** @brief Re-point the active-overlay dispatcher after a savestate restore at the overlay whose id word 0x8007AA38 holds.
+ *
+ * @param cpu Guest CPU state. */
+static void spyro1_on_state_loaded(CPUState* cpu) {
     uint32_t magic = cpu->read_word(0x8007AA38u);
     spyro_set_active_overlay_by_magic(magic);
 
 }
 
-/* g_Gamestate GS_Playing and a nonzero g_LevelId: GS_Playing is 0, which boot's BSS also reads. */
-int game_is_gameplay_live(CPUState* cpu) {
+/** @brief Report gameplay live: g_Gamestate GS_Playing and a nonzero g_LevelId, since GS_Playing is 0, which boot's BSS also reads.
+ *
+ * @param cpu Guest CPU state. */
+static int spyro1_is_gameplay_live(CPUState* cpu) {
     if (cpu->read_word(0x800757D8u) != 0u) return 0; /* g_Gamestate != GS_Playing */
     return cpu->read_word(0x8007596Cu) != 0u;        /* g_LevelId */
 }
@@ -496,9 +463,13 @@ extern void     spyro1_mod_wad_cursor_set(uint32_t s);
 #define EXTRA_V5_WARP_OFF (EXTRA_V5_PACK_OFF + PSYQ_THUNK_STATE_BYTES)
 #define EXTRA_V5_SIZE     (EXTRA_V5_WARP_OFF + 12u)
 
-uint32_t game_state_extra_size(void) { return EXTRA_V5_SIZE; }
+/** @brief Return the v5 payload's byte size. */
+static uint32_t spyro1_state_extra_size(void) { return EXTRA_V5_SIZE; }
 
-void game_state_extra_save(void* dst) {
+/** @brief Write the v5 payload: version, WAD cursor, active overlay, thunk latch pack and level-warp words.
+ *
+ * @param dst Receives EXTRA_V5_SIZE bytes. */
+static void spyro1_state_extra_save(void* dst) {
     uint8_t* p = (uint8_t*)dst;
     uint32_t ver = 5u, cur = spyro1_mod_wad_cursor_get();
     uint32_t ovl = spyro_get_active_overlay_magic();
@@ -513,7 +484,11 @@ void game_state_extra_save(void* dst) {
     memcpy(p + EXTRA_V5_WARP_OFF + 8, &wticks, 4);
 }
 
-void game_state_extra_load(const void* src, uint32_t size) {
+/** @brief Restore the host state from a v1 to v5 payload, leaving it alone for a foreign or short one.
+ *
+ * @param src The payload.
+ * @param size The payload's length in bytes. */
+static void spyro1_state_extra_load(const void* src, uint32_t size) {
     if (size < 8u) return;   /* older/foreign blob - leave live state alone */
     const uint8_t* p = (const uint8_t*)src;
     uint32_t ver, cur;
@@ -563,10 +538,6 @@ static const game_disc_layout_t k_disc_layout = {
     .wad_header_addr = 0x80100000u,   /* unread; the guest header is g_WadHeader at 0x8007A6D0 */
 };
 
-const game_disc_layout_t* game_get_disc_layout(void) {
-    return &k_disc_layout;
-}
-
 /* Recomp self-instrumentation. On entry to func_80023AC4 (Spyro's renderer, hand-written asm), wrap
  * cpu->write_word with a frame-gated tracer to capture the prim-buffer
  * write stream and diff bad vs good frames. The depth flag prevents the
@@ -575,19 +546,12 @@ extern void func_80023AC4(CPUState* cpu);
 extern void openpete_trace_writes_begin(CPUState* cpu);
 extern void openpete_trace_writes_end(CPUState* cpu);
 
-/* Base of the g_SonyImage / D_8006FCF4 scratch pool. The recompiler rewrites
- * a `lui 0x8007` + `addiu` pair composing an address in
- * [0x8006FCF4, 0x80072E94) to `psx_runtime_g_sony_image_base + offset`; at
- * the canonical value the expression equals the original address. The
- * terrain renderer reads it (games/common/renderer/terrain.c). */
-uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
-
 /** @brief Reports whether OPENPETE_NOOP_SREND suppresses the handwritten renderer at a guest address.
  *
  * The mask is latched on first use, since this sits on the per-call dispatch
  * path and getenv is expensive on Windows; a nonzero mask logs one warning
  * line. The bits are listed at the OPENPETE_NOOP_SREND arm in
- * psx_override_dispatch_game.
+ * spyro1_override_dispatch.
  * @param addr The guest function address being entered.
  * @return 1 when the mask suppresses that renderer, else 0. */
 static int srend_noop_hit(uint32_t addr) {
@@ -645,7 +609,7 @@ static int srend_noop_hit(uint32_t addr) {
  * @param addr Guest address of the function being entered.
  * @return 1 when the call was handled or replaced and the original must not
  *     run, else 0. */
-int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
+static int spyro1_override_dispatch(CPUState* cpu, uint32_t addr) {
     /* Shared preamble: the debug free camera (F), which while engaged
      * drives the camera in place of CameraFollowSpyro and suppresses it and
      * UpdateSpyro; the write census's entry note; the mod override chains.
@@ -657,7 +621,7 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     }
 
     /* Feature modules registered via core/include/feature_registry.h;
-     * a game with none (openpete_feature_count == 0) makes this a no-op. */
+     * a game with no feature list makes this a no-op. */
     if (feature_registry_dispatch(cpu, addr)) {
         return 1;
     }
@@ -761,3 +725,71 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
 
     return 0;
 }
+
+/* The tables of the game's other TUs the descriptor carries. */
+extern const openpete_game_identity_t spyro1_game_identity;   /* gen/game_identity.c */
+extern const openpete_game_icon_t     spyro1_game_icon;       /* gen/openpete_spyro1_icon.c */
+extern const game_layout_t            spyro1_game_layout;     /* renderer/layout.c */
+extern const ui_game_t                spyro1_ui_game;         /* renderer/layout.c */
+extern const terrain_game_t           spyro1_terrain_game;    /* renderer/terrain_game.c */
+extern const moby_game_t              spyro1_moby_game;       /* renderer/moby_game.c */
+extern const player_game_t            spyro1_player_game;     /* renderer/player_game.c */
+extern const freecam_game_desc        spyro1_freecam_desc;    /* features/freecam.c */
+extern const game_orchestrator_t      spyro1_orchestrator;    /* renderer/reextract.c */
+extern const openpete_feature_list_t  spyro1_feature_list;    /* feature_list.c */
+void spyro1_interp_register(void);                             /* renderer/interp_regions.c */
+
+static const game_host_desc_t k_host = {
+    .ui              = &spyro1_ui_game,
+    .terrain         = &spyro1_terrain_game,
+    .moby            = &spyro1_moby_game,
+    .player          = &spyro1_player_game,
+    .freecam         = &spyro1_freecam_desc,
+    .orchestrator    = &spyro1_orchestrator,
+    .interp_register = spyro1_interp_register,
+};
+
+/* pad_read_pc: PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68, the game's
+ * once-per-VSync consumption of g_PadBuffer: it reads status, size_type,
+ * inputs[] and sticks and folds them into g_Pad. Every other reader in the
+ * game works from g_Pad, so this entry is where the host's latched sample
+ * becomes the tick's input. PadDemoUpdate (0x800539FC) also touches the
+ * buffer but only on the demo-record path, which is not a play path.
+ *
+ * load_delay_default (unset, 0): deferred reads never complete in the title
+ * demo load's LoadLevel spin or CDLoadSync; goldens and bk2s carry 0.
+ *
+ * sony_image_base: the g_SonyImage / D_8006FCF4 scratch pool. The
+ * recompiler rewrites a `lui 0x8007` + `addiu` pair composing an address in
+ * [0x8006FCF4, 0x80072E94) to `psx_runtime_g_sony_image_base + offset`; at
+ * the canonical value the expression equals the original address. The
+ * terrain renderer reads it (games/common/renderer/terrain.c).
+ *
+ * No sub-area targets: every --skip-to-area value is refused. The level
+ * table is features/levelwarp.c's, shared with the dev-overlay warp
+ * dropdown. */
+const openpete_game_runtime_t spyro1_game_runtime = {
+    .identity             = &spyro1_game_identity,
+    .icon                 = &spyro1_game_icon,
+    .layout               = &spyro1_game_layout,
+    .disc_layout          = &k_disc_layout,
+    .pad_read_pc          = 0x80053C68u,
+    .sony_image_base      = 0x8006FCF4u,
+    .on_boot              = spyro1_on_boot,
+    .on_frame_pre         = spyro1_on_frame_pre,
+    .on_state_loaded      = spyro1_on_state_loaded,
+    .state_extra_size     = spyro1_state_extra_size,
+    .state_extra_save     = spyro1_state_extra_save,
+    .state_extra_load     = spyro1_state_extra_load,
+    .is_gameplay_live     = spyro1_is_gameplay_live,
+    .set_skip_to_level    = spyro1_set_skip_to_level,
+    .resolve_level_arg    = spyro1_level_resolve,
+    .set_skip_to_cutscene = spyro1_set_skip_to_cutscene,
+    .resolve_cutscene_arg = spyro1_cutscene_resolve,
+    .validate_cheats_arg  = spyro1_cheats_validate,
+    .surface              = spyro1_surface,
+    .features             = &spyro1_feature_list,
+    .host                 = &k_host,
+    .override_dispatch    = spyro1_override_dispatch,
+    .mod_desc             = game_mod_desc,
+};

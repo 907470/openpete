@@ -43,10 +43,12 @@ Copy `games/spyro-2/recomp.conf` and set:
 | `CHANNEL_MANIFEST` | render-channel substitution table; empty for a game without one |
 | `MAIN_EXE_THIRD_PASS`, `RA_SPILL_RETURNS`, `LEVEL_ID_ADDR` | recompiler passes and the level-switch word, per the comments in the file |
 
-The build generates `game_identity.c` from these (`game_get_id`,
-`game_get_display_name`, `game_get_exe_filename`, `psyq_game_overlay_vaddr`,
-`psyq_game_libcd_block_addr`, `psyq_game_cd_read_cb_addr`), so no
-hand-written source carries an identity constant.
+The build generates `game_identity.c` from these (the runtime descriptor's
+identity `<tag>_game_identity`, which `game_get_id`,
+`game_get_display_name` and `game_get_exe_filename` return, and
+`psyq_game_overlay_vaddr`, `psyq_game_libcd_block_addr`,
+`psyq_game_cd_read_cb_addr`), so no hand-written source carries an identity
+constant.
 
 ## 3. Manifests and codegen
 
@@ -90,22 +92,27 @@ the generated abort-on-call PSYQ stubs. `MAIN`, `FEATURE_LIST`,
 `ICON_SOURCE`, `MODULE_LINKAGE`, `MODULE_SOURCES` and `SYMBOLS_MANIFEST`
 override the defaults. `ORCHESTRATOR`, `INTERP_REGIONS`, `TERRAIN_GAME`,
 `MOBY_GAME` and `PLAYER_GAME` name the game's native-renderer TUs; each
-defaults to an inert `*_none.c` under `games/common/`
-(`cmake/openpete_game.cmake:92-112`). A game whose `generated/`
-holds no recompiled output is skipped with a warning.
+is optional, and a game without one names no table for it in its runtime
+descriptor, which binds the inert default (`games/common/game_host_desc.c`,
+`games/common/renderer/orchestrator.c`). A game whose `generated/` holds no
+recompiled output is skipped with a warning.
 
 Append the game to `OPENPETE_GAMES` in the top-level `CMakeLists.txt`, or
 pass `-DOPENPETE_GAMES="spyro-1;<game>"` at configure time.
 
 ## 5. `game_extras_impl.c` and `psyq_game_provides.h`
 
-`core/include/game_extras.h` declares the per-game hooks; every one outside
-the generated identity group must be defined, as a stub if nothing is known
-yet. Copy `games/spyro-2/game_extras_impl.c`: overlay handling
-(`spyro_set_active_overlay_by_magic` on load and after a savestate restore),
-the per-tick entries, `psx_override_dispatch_game` (the per-function
+`core/include/game_extras.h` declares the per-game hooks, which core
+forwards to the game's runtime descriptor
+(`core/include/openpete_game_runtime.h`). `game_extras_impl.c` defines that
+descriptor as `<tag>_game_runtime`, the name the entry TU registers; a hook
+or table it leaves NULL takes the default `game_extras.h` documents. Copy
+`games/spyro-2/game_extras_impl.c`: the boot and savestate-restore hooks
+(`games/common/game_extras_overlay_resync.c`, which re-point the overlay
+dispatcher), the per-tick hook, `override_dispatch` (the per-function
 intercept, here the freecam freeze and the write census), the gameplay-live
-predicate, the player position, and the CLI resolvers.
+predicate, the CLI resolvers, and the `game_host_desc_t` naming the tables
+of the game's renderer TUs.
 
 `psyq_game_provides.h` names the PSYQ hooks (`games/common/psyq/psyq_game_hooks.h`)
 the game defines; each unnamed hook takes its inert default from

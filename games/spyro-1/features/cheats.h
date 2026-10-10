@@ -18,7 +18,7 @@ typedef struct CPUState CPUState;
  * gets it again. Live means game state play, pause or inventory, a level
  * loaded, and no attract demo. Also refreshes the live state the overlay's
  * buttons gate on, so it runs every tick even without --cheats; called once
- * per tick from game_on_frame_pre. Does nothing on a runahead speculative
+ * per tick from the game's on_frame_pre. Does nothing on a runahead speculative
  * tick.
  * @param cpu The guest CPU state. */
 void spyro1_cheats_on_tick(CPUState* cpu);
@@ -28,3 +28,11 @@ struct openpete_surface_sink;
  *
  * @param sink The dump's collector. */
 void spyro1_cheats_surface(struct openpete_surface_sink* sink);
+
+/** @brief Validate a --cheats spec of comma-separated cheat names; the runtime descriptor's validate_cheats_arg.
+ *
+ * Runs in CLI-parse context; on failure prints the valid names to stderr.
+ * @param spec The --cheats argument.
+ * @return 0 when the spec names at least one cheat and every name is known,
+ *         else -1. */
+int spyro1_cheats_validate(const char* spec);

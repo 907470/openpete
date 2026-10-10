@@ -538,7 +538,7 @@ static int s23_call_is_mirror(CPUState* cpu) {
     return cpu->read_word(PL.base + SPYRO_MIRROR_GATE) != 0u;
 }
 
-const player_game_t player_game = {
+const player_game_t player_game_spyro23 = {
     .run_draw         = s23_run_draw,
     .part_count       = NULL,            /* the fixed two of game_layout.player */
     .part_record      = s23_part_record,  /* the draw's own block does not survive

@@ -1,5 +1,5 @@
 // games/common/dispatch_preamble.h - the shared front of every game's
-// psx_override_dispatch_game, and the resident-overlay probe.
+// override_dispatch (the runtime descriptor's), and the resident-overlay probe.
 
 #ifndef OPENPETE_DISPATCH_PREAMBLE_H
 #define OPENPETE_DISPATCH_PREAMBLE_H

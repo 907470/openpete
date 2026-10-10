@@ -1,6 +1,6 @@
 // games/spyro-1/feature_list.c - Spyro 1's registered feature modules.
 
-#include "feature_registry.h"
+#include "openpete_game_runtime.h"
 
 #include <stddef.h>
 
@@ -19,12 +19,12 @@ extern const feature_module_t portal_module;
 extern const feature_module_t transition_module;
 extern const feature_module_t cheats_module;
 extern const feature_module_t credits_skip_module;
-extern const feature_module_t levelwarp_module;
+extern const feature_module_t spyro1_levelwarp_module;
 extern const feature_module_t text_moby_id_module;
 extern const feature_module_t crash_demo_woah_module;
 extern const feature_module_t polybuf_guard_module;
 
-const feature_module_t* const openpete_features[] = {
+static const feature_module_t* const k_modules[] = {
     /* --render-paths: parse the path-isolation selection at startup (apply_options
      * only; the per-path polybuf brackets live in the native feature modules and
      * the OT-walk filter in psyq_DrawOTag). */
@@ -112,7 +112,7 @@ const feature_module_t* const openpete_features[] = {
      * rides the game's own exit-level -> load sequence to any level, plus
      * the shared level id/name table --skip-to-level resolves against.
      * Writes nothing until the button is clicked. */
-    &levelwarp_module,
+    &spyro1_levelwarp_module,
     /* Records the emitter-call provenance of every HUD text glyph
      * (func_80017FE4 / func_800181AC entry hooks, read-only, always fall
      * through) so the sub-tick interpolator can tell one tick's letters from
@@ -134,5 +134,7 @@ const feature_module_t* const openpete_features[] = {
     &polybuf_guard_module,
 };
 
-const size_t openpete_feature_count =
-    sizeof(openpete_features) / sizeof(openpete_features[0]);
+/* The list spyro1_game_runtime carries (game_extras_impl.c). */
+const openpete_feature_list_t spyro1_feature_list = {
+    k_modules, sizeof(k_modules) / sizeof(k_modules[0])
+};

@@ -6,12 +6,13 @@
  * axes, the speed step, mouse counts and the teleport request; it carries no
  * addresses. This half drives the camera bytes and freezes the game's camera
  * follow and player update while engaged. Everything address- or
- * game-specific comes through `freecam_desc`, one per game target; the body
- * (freecam_game.c) reads only CPUState and the descriptor.
+ * game-specific comes through `freecam_desc`, the running game's
+ * descriptor; the body (freecam_game.c) reads only CPUState and the
+ * descriptor.
  *
- * Called from the game's game_extras_impl.c: game_on_frame_pre ->
- * freecam_maybe_autoengage; psx_override_dispatch_game ->
- * freecam_should_freeze. */
+ * Called from the game's game_extras_impl.c: its on_frame_pre ->
+ * freecam_maybe_autoengage; its override_dispatch (through
+ * game_dispatch_preamble) -> freecam_should_freeze. */
 
 #include <stdint.h>
 
@@ -74,11 +75,13 @@ typedef struct freecam_game_desc {
     const int* turn_speed;
 } freecam_game_desc;
 
-extern const freecam_game_desc freecam_desc;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern freecam_game_desc freecam_desc;
 
 /** @brief Decide at a guest function entry whether the free camera short-circuits it.
  *
- * Called from psx_override_dispatch_game. While disengaged nothing is frozen.
+ * Called from the game's override_dispatch. While disengaged nothing is frozen.
  * player_update and the extra_freeze entries are frozen, only while
  * level_live when freeze_only_when_live is set. At cam_follow outside a live
  * level under freeze_only_when_live, the follow runs and the host pose is
@@ -93,7 +96,7 @@ int freecam_should_freeze(CPUState* cpu, uint32_t addr);
 
 /** @brief Engage the free camera once from OPENPETE_FREECAM, OPENPETE_FREECAM_POSE or OPENPETE_FREECAM_PATH.
  *
- * Called once per tick from game_on_frame_pre; acts at most once per
+ * Called once per tick from the game's on_frame_pre; acts at most once per
  * process. Waits while a scripted player placement is pending, then for the
  * VBL OPENPETE_FREECAM_AT_VBL names when set, then for a live level; engaging
  * during a load would freeze the player update while the level sets up. A
@@ -110,7 +113,7 @@ void freecam_maybe_autoengage(CPUState* cpu);
  * with other than three or four integers is logged and not applied. The
  * placement writes the position and previous position, the facing when a yaw
  * is given, cancels momentum, and re-seats the follow camera. Called once
- * per tick from game_on_frame_pre before freecam_maybe_autoengage, which
+ * per tick from the game's on_frame_pre before freecam_maybe_autoengage, which
  * waits for it, so a free-camera view of the placed player needs no second
  * run.
  * @param cpu The guest CPU state. */

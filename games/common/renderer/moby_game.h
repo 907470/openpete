@@ -16,7 +16,7 @@
  * the one-shot instance table - and the addresses of scratch windows and
  * material assets a game keeps outside the descriptor. A NULL function slot or
  * a zero address makes the walk skip the path that would read it; a game with
- * no moby feeder links games/common/renderer/moby_game_none.c. */
+ * no moby feeder names no table and binds the all-NULL one. */
 #ifndef OPENPETE_COMMON_RENDERER_MOBY_GAME_H
 #define OPENPETE_COMMON_RENDERER_MOBY_GAME_H
 
@@ -410,7 +410,9 @@ typedef struct moby_game {
     uint32_t shade_coltab, metal_coltab;
 } moby_game_t;
 
-extern const moby_game_t moby_game;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern moby_game_t moby_game;
 
 /** @brief Read one word of a cull record, from the copy taken at the cull hook when it holds the address.
  *

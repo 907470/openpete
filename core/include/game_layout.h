@@ -1,7 +1,7 @@
 // game_layout.h - the engine-layout descriptor: where a game keeps the RAM
 // the presentation feeders read.
 //
-// Each game defines one `game_layout` (games/<game>/renderer/layout.c) from
+// Each game defines one game_layout_t (games/<game>/renderer/layout.c) from
 // its symbol aliases and, where the game has a generated typed header, from
 // `offsetof` against that header, whose `_Static_assert`s pin every member to
 // the probed MIPS layout. A feeder reads a field of this struct, never a
@@ -1041,7 +1041,9 @@ typedef struct game_layout {
 #define GAME_FONT_CLASS_PER_GLYPH 1
 #define GAME_FONT_WAD_MODEL       2
 
-extern const game_layout_t game_layout;
+/* The running game's layout: openpete_game_runtime_register copies the
+ * registered descriptor's layout here before any feeder runs. */
+extern game_layout_t game_layout;
 
 /** @brief Return the default window width in window pixels: the 4:3 width of twice the DISPENV height.
  *

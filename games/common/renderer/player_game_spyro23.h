@@ -13,9 +13,10 @@
 #define OPENPETE_COMMON_RENDERER_PLAYER_GAME_SPYRO23_H
 
 #include <stdint.h>
+#include "renderer/player_game.h"
 
 /* What the two games do not share. Every other engine address the provider
- * reads comes from game_layout. Each game's renderer/player_game.c defines the
+ * reads comes from game_layout. Each game's renderer/player_game.c defines its
  * instance.
  *
  *   anim_table   pointer to the 256-entry Animation table the draw indexes by
@@ -28,6 +29,11 @@ typedef struct player_game_s23_consts {
     uint32_t blend_table;
 } player_game_s23_consts_t;
 
-extern const player_game_s23_consts_t player_game_s23;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern player_game_s23_consts_t player_game_s23;
+
+/* The player provider the two games share, built over player_game_s23. */
+extern const player_game_t player_game_spyro23;
 
 #endif /* OPENPETE_COMMON_RENDERER_PLAYER_GAME_SPYRO23_H */

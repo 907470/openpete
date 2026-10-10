@@ -4,7 +4,7 @@
 // Technique (from C0mposer's Spyro-1-Practice-Rom, src/freecam.c):
 //
 //   1. Freeze the camera-follow and player-update functions so nothing
-//      overwrites the camera each tick. psx_override_dispatch_game returning
+//      overwrites the camera each tick. The game's override_dispatch returning
 //      1 for a function entry makes the generated body early-return
 //      (core/psx/dispatch.c); freecam_should_freeze() drives that.
 //

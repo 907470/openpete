@@ -18,7 +18,7 @@
 #include "openpete_surface.h"
 #include "recomp_attach.h"
 #include "mods/mod_wad_overlay.h"
-#include "game_mod_desc.h"
+#include "game_host_desc.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -81,6 +81,8 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
 extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap);
 extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
+/* Spyro 1's runtime descriptor (game_extras_impl.c). */
+extern "C" const openpete_game_runtime_t spyro1_game_runtime;
 #include "renderer/interp_regions.h"
 #include "renderer/reextract.h"
 
@@ -209,7 +211,7 @@ static int report_mode(int argc, char** argv, const openpete_options_t* neutral)
     return 0;
 }
 
-/** @brief Register this game's mod layer: the game descriptor (mods/mod_game_desc.c) and the WAD overlay.
+/** @brief Register this game's mod layer: the runtime descriptor's mod-layer descriptor (mods/mod_game_desc.c) and the WAD overlay.
  *
  * Runs once, after the game is identified and before any mod compile or
  * load, so mods override by name ("CameraUpdate") against the identified
@@ -217,7 +219,7 @@ static int report_mode(int argc, char** argv, const openpete_options_t* neutral)
  * CdRead.
  * @param disc_path The identified disc. */
 static void register_mod_layer(const char* disc_path) {
-    (void)openpete_mods_set_game_desc(game_mod_desc());
+    (void)openpete_mods_set_game_desc(openpete_game_runtime()->mod_desc());
     spyro1_mod_wad_configure(disc_path);
 }
 
@@ -333,12 +335,15 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     return openpete_launcher_handoff(opts);
 }
 
-/** @brief Spyro 1 entry point: resolve the game-neutral settings, identify the game, apply its settings once, attach the recomp module, and run the game.
+/** @brief Spyro 1 entry point: register the runtime descriptor, resolve the game-neutral settings, identify the game, apply its settings once, attach the recomp module, and run the game.
  *
  * @param argc Argument count.
  * @param argv Arguments.
  * @return The process exit code (OPENPETE_EXIT_*, or 1 on a startup failure). */
 int main(int argc, char** argv) {
+    /* The game's descriptor binds every per-game hook and table; nothing
+     * that reads one runs before it. */
+    game_runtime_install(&spyro1_game_runtime);
     openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* Reconnect stdout/stderr to the parent terminal on a GUI-subsystem
      * (distribution) Windows build; no-op elsewhere. Before any output. */

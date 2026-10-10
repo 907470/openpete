@@ -415,7 +415,7 @@ void spyro1_levelwarp_on_tick(CPUState* cpu) {
     }
 }
 
-const feature_module_t levelwarp_module = {
+const feature_module_t spyro1_levelwarp_module = {
     .name           = "levelwarp",
     .apply_options  = levelwarp_apply_options,
     .dispatch_table = NULL,

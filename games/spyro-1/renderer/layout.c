@@ -87,7 +87,7 @@ static const game_moby_director_t s_moby_director[] = {
     { "g_BalloonState", "g_BalloonMoby", 4u, 5u },
 };
 
-const game_layout_t game_layout = {
+const game_layout_t spyro1_game_layout = {
     .display = {
         /* initialization.c GraphicsInitialize: SetDefDispEnv(..., 0, 240, 512, 240)
          * and SetDefDrawEnv(..., 0, 8, 512, 224) - 8 undrawn rows per side. */
@@ -407,7 +407,7 @@ const game_layout_t game_layout = {
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). */
-const ui_game_t ui_game = {
+const ui_game_t spyro1_ui_game = {
     .ot_insert    = F_UI_OT_INSERT,
     .fade_emitter = F_UI_FADE,
 

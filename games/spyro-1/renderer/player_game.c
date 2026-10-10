@@ -412,7 +412,7 @@ static int s1_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     return 1;
 }
 
-const player_game_t player_game = {
+const player_game_t spyro1_player_game = {
     .run_draw         = s1_run_draw,
     .part_count       = NULL,          /* the fixed three of game_layout.player */
     .part_xform       = s1_part_xform,

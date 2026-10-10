@@ -42,7 +42,7 @@ static int player_placeable(CPUState* cpu) {
 static const int s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 500, 800 };
 static const int s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
 
-const freecam_game_desc freecam_desc = {
+const freecam_game_desc spyro3_freecam_desc = {
     .angle_bits = 12,
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
     /* The rotation builder composes rotX(pitch)·rotY(yaw)·rotZ(roll); at

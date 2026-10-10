@@ -78,7 +78,9 @@ typedef struct portal_game_s23_consts {
     uint32_t env_wrap_ret;
 } portal_game_s23_consts_t;
 
-extern const portal_game_s23_consts_t portal_game_s23;
+/* The running game's table: game_runtime_install (game_host_desc.h) copies
+ * the registered descriptor's table here before any feeder runs. */
+extern portal_game_s23_consts_t portal_game_s23;
 
 /** @brief Feeds the tick's captured portal previews again on a sub-tick present.
  *
