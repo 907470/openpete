@@ -1071,7 +1071,10 @@ int main(int argc, char **argv)
     const char *legs = argc > 4 ? argv[4] : NULL;
     SDL_setenv_unsafe("MESA_SHADER_CACHE_DISABLE", "true", 1);   /* no driver file IO on workers */
     op_atomic_file_set_env_guard(rhi_env_read_guard);   /* the guest's file commits read the environment */
-    snprintf(s_mod_dir, sizeof s_mod_dir, "%s", "rhi_compile_stress.d");
+    /* Beside the executable (the build tree), so a run from any working
+     * directory leaves the source tree untouched. */
+    const char *base = SDL_GetBasePath();
+    snprintf(s_mod_dir, sizeof s_mod_dir, "%s%s", base ? base : "", "rhi_compile_stress.d");
     SDL_CreateDirectory(s_mod_dir);
     s_q.mx = SDL_CreateMutex();
     s_q.cv = SDL_CreateCondition();
