@@ -442,6 +442,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # camera traverses a level while the baseline's two poses are static.
     # Without the level-edge replacement the marks never fall and climb
     # toward the caps over a session, far past any single level's demand.
+    # The demo rows it measures go to a scratch copy of the baseline, never
+    # into baselines/terrain-arena/ (`demo --write` regenerates those).
     add_test(NAME terrain_arena_demo
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/baseline-terrain-arena.py demo
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})

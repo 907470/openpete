@@ -35,7 +35,9 @@ Modes:
   bk2-corpus  replay the presentation-golden movie corpus and write the bk2
               rows.
   demo        the 40,000-VBL attract demo: the cross-level accumulation
-              assertions, plus the demo rows.
+              assertions. The demo rows go to a scratch copy of the committed
+              tree, deleted on exit; `demo --write` writes them into
+              baselines/terrain-arena/.
   check       three legs. `regen` repeats all three generating runs at the
               raised cap and diffs the result against the committed files,
               refusing any censored row (a high equal to its cap) and any
@@ -45,8 +47,9 @@ Modes:
               the overflow buffer: one level at a cap that cannot hold it,
               against the same level at the generated caps.
 
-Every mode rewrites only the rows it owns and then recomputes union.tsv from
-the files, so the four row kinds accumulate across modes.
+Every generating mode rewrites only the rows it owns and then recomputes
+union.tsv from the files, so the four row kinds accumulate across modes.
+`check` and `demo` without --write leave the committed files untouched.
 
 Exit: 0 pass, 1 fail or a missing corpus manifest (check and bk2-corpus; the
 message names the path), 64 skip (binary or disc missing).
@@ -629,9 +632,25 @@ def read_union_rows(out_dir=OUT_DIR, kinds=None):
     return per_level
 
 
-def cmd_demo(out_dir=OUT_DIR):
+def scratch_baseline(work):
+    """Copy the committed per-level files and union.tsv into `work`/baseline
+    and return that directory, so a mode that merges rows reads the committed
+    rows and writes none of them back."""
+    out = os.path.join(work, "baseline")
+    os.makedirs(out)
+    for name in os.listdir(OUT_DIR):
+        if name.endswith(".tsv"):
+            shutil.copyfile(os.path.join(OUT_DIR, name), os.path.join(out, name))
+    return out
+
+
+def cmd_demo(out_dir=None):
+    """The attract-demo row: the accumulation assertions, and the demo rows
+    merged into `out_dir` (a scratch copy of the committed tree when None)."""
     work = tempfile.mkdtemp(prefix="terarena-demo-")
     try:
+        if out_dir is None:
+            out_dir = scratch_baseline(work)
         per_level = read_union_rows(out_dir)
         # A level's own demand measured without a predecessor in the same
         # buffers: its static and movie rows, never the demo row this mode
@@ -853,6 +872,8 @@ def main():
                                      "overflow", "report"))
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--levels", default="")
+    ap.add_argument("--write", action="store_true",
+                    help="demo: write the demo rows into baselines/terrain-arena/")
     args = ap.parse_args()
     if args.mode == "report":
         print_static_vs_traversal()
@@ -874,7 +895,7 @@ def main():
         return cmd_bk2corpus(args.jobs)
     if args.mode == "overflow":
         return cmd_overflow()
-    return cmd_demo()
+    return cmd_demo(OUT_DIR if args.write else None)
 
 
 if __name__ == "__main__":
