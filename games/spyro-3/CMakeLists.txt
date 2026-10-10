@@ -106,6 +106,7 @@ add_custom_command(
     COMMENT "Generating SoundTable slot names (gen_sfx_names.py)")
 add_custom_target(spyro3_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro3_sfx_names.h)
 add_dependencies(${OPENPETE_GAME_EXE} spyro3_sfx_names)
+add_dependencies(openpete_generated_headers spyro3_sfx_names)
 
 # The Win32 icon resource: the same source as the window icon, upscaled into
 # a multi-size .ico.
