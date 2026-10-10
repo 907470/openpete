@@ -390,7 +390,8 @@ void texture_pack_init(void);
 /** @brief Stop the decode worker, free decoded pixels and empty the registry.
  *
  * Dumps through texture_pack_debug_dump when OPENPETE_TEXPACK_DUMP_REGISTRY
- * is set. Joins the decode worker, frees every entry's pixels, clears the
+ * is set, and with a replacement pack active prints the draws
+ * texture_pack_match served, symbolic and hash, to stderr. Joins the decode worker, frees every entry's pixels, clears the
  * pack table and the registry, and clears the initialized state so a later
  * texture_pack_init rescans. Takes no registry lock: the caller ensures no
  * thread is resolving or matching. */

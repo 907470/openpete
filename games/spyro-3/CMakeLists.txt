@@ -92,6 +92,21 @@ openpete_add_game(spyro-3
         renderer/portal_game.c
         renderer/terrain_probe.c)
 
+# SoundTable slot names (tools/gen_sfx_names.py over the decomp's spu.h,
+# padded to the 256 slots the loader reads): the sfx resolver's names.
+add_custom_command(
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro3_sfx_names.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
+            --prefix spyro3 --pad
+            --header ${CMAKE_CURRENT_SOURCE_DIR}/spyro-3/include/spu.h
+            --out ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro3_sfx_names.h
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/spyro-3/include/spu.h
+            ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
+    COMMENT "Generating SoundTable slot names (gen_sfx_names.py)")
+add_custom_target(spyro3_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro3_sfx_names.h)
+add_dependencies(${OPENPETE_GAME_EXE} spyro3_sfx_names)
+
 # The Win32 icon resource: the same source as the window icon, upscaled into
 # a multi-size .ico.
 if(WIN32)

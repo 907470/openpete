@@ -36,6 +36,14 @@
 #                   "override registered" lines for the mod equal the
 #                   game's expected count, and every bound address counts
 #                   calls above 0 on the attract demo.
+#   asset variants  sfx-single-sound, hd-single-texture and
+#                   declarative-example register their game's assets/<game>/
+#                   subtree; on the attract demo the symbolic sound replaces
+#                   a keyed voice and the atlas serves draws at title-screen
+#                   presents.
+#   sfx_replace     sfx-replace-probe's buzz over its game's default slot
+#                   serves, and every key-on and end transition the guest
+#                   reads lands on the stock VBL.
 #   pose-report     the mod's source built as a "*" object
 #                   (-DOPENPETE_MOD_ANY_GAME, no per-game include path)
 #                   loads from .build/any/ and reports the player's pose
@@ -390,6 +398,85 @@ if printf '%s\n' "$out" | grep -q "natural call Sin(1024) -> 4096"; then
     ok "natural-gems: Sin(1024) -> 4096"
 else
     bad "natural-gems: Sin call missing or wrong"
+fi
+
+# ── M8b. per-game asset variants and sfx_replace ────────────────────────
+# sfx-single-sound and hd-single-texture each ship one subtree per game,
+# named in that game's own terms (Spyro 1 gemPickup and title_ui, Spyro 2
+# and 3 gemCollect and ui_atlas). Each mod's root must be its game's
+# subtree, the symbolic sound must replace a keyed voice (the gem pickup
+# lies inside DEMO_FRAMES) and the symbolic atlas must serve draws at
+# title-screen presents (a headless run presents only at a screenshot
+# VBL). declarative-example's texture and sound subtrees take the same
+# checks; its texture serves in either form.
+asset_shots=""
+for k in 300 600 900 1200 1500 1800 2400; do asset_shots="${asset_shots:+$asset_shots,}$k"; done
+asset_engage() { # asset_engage <fixture dir> <mods...> -> report lines
+    local dir="$1" out m replaced served
+    shift
+    out="$( RUN_TIMEOUT=600 run_game "$dir" "$DEMO_FRAMES" --mute 0 \
+            --renderer vk --screenshot-native-only \
+            --screenshot-on-frame "$asset_shots" \
+            --screenshot-output "$dir-shot__{n}.png" )"
+    for m in "$@"; do
+        if printf '%s\n' "$out" | grep -q "asset root registered: .*/$m/assets/$PG_GAME ($m)"; then
+            ok "$m: root assets/$PG_GAME"
+        else
+            bad "$m: root assets/$PG_GAME not registered"
+            printf '%s\n' "$out" | grep "asset root" | head -3
+        fi
+    done
+    replaced="$(printf '%s\n' "$out" | sed -n 's/^\[sfxpack\].* replaced=\([0-9]*\).*/\1/p' | head -1)"
+    served="$(printf '%s\n' "$out" | sed -n 's/^\[texpack\] served=\([0-9]*\) .*/\1/p' | head -1)"
+    if [ "${replaced:-0}" -gt 0 ] && [ "${served:-0}" -gt 0 ]; then
+        ok "$*: sfx replaced=$replaced, texture served=$served draws ($DEMO_FRAMES VBLs)"
+    else
+        bad "$*: sfx replaced=${replaced:-0}, texture served=${served:-0} - vacuous"
+        printf '%s\n' "$out" | grep -E '^\[sfxpack\]|^\[texpack\]' | head -5
+    fi
+}
+say "asset variants: sfx-single-sound + hd-single-texture engage on $PG_GAME"
+fixture "$WORK/assetvar" sfx-single-sound hd-single-texture
+asset_engage "$WORK/assetvar" sfx-single-sound hd-single-texture
+say "asset variants: declarative-example's sound and texture engage on $PG_GAME"
+fixture "$WORK/declvar" declarative-example
+asset_engage "$WORK/declvar" declarative-example
+
+# sfx_replace: the guest sees every voice end on the STOCK tick. The mod
+# API's sfx_replace registers a symbolic sfx-pack entry from memory; the
+# swap happens at the PCM upload below the voice mirror, so the one-shot
+# duration the game polls through SpuGetKeyStatus (and with it the tick it
+# frees the sound slot and writes the sound-ref byte) is the stock
+# sample's. sfx-replace-probe replaces its game's default slot (Spyro 1
+# pickupDing, keyed ~11 times in 6000 VBLs of the attract demo; Spyro 2
+# and 3 flame, first keyed near VBL 5950 and 4600) with a 2 s buzz.
+# OPENPETE_SFX_END_LOG names every key-on and every ON/RESET transition
+# the guest reads; the two logs must match line for line, and the pack
+# census must show the replacement actually served (a green that did not
+# engage is vacuous). Re-pointing the voice's addr/pitch instead moved the
+# end and shifted the voice allocator's later choices from that tick on.
+case "$PG_GAME" in
+    spyro-2) SFXREP_FRAMES=8000 ;;
+    *)       SFXREP_FRAMES=6000 ;;
+esac
+say "sfx_replace: end-tick neutrality on $PG_GAME - replaced voices end on the stock tick"
+fixture "$WORK/sfxrep" sfx-replace-probe
+mkdir -p "$WORK/nomods"; : > "$WORK/nomods/enabled.txt"
+stock_keys="$(OPENPETE_SFX_END_LOG=1 run_game "$WORK/nomods" "$SFXREP_FRAMES" --mute 0 | grep '^\[sfx-key ' || true)"
+probe_out="$(OPENPETE_SFX_END_LOG=1 run_game "$WORK/sfxrep" "$SFXREP_FRAMES" --mute 0)"
+probe_keys="$(printf '%s\n' "$probe_out" | grep '^\[sfx-key ' || true)"
+n_stock="$(printf '%s\n' "$stock_keys" | grep -c . || true)"
+replaced="$(printf '%s\n' "$probe_out" | grep -o '^\[sfxpack\].*replaced=[0-9]*' | grep -o 'replaced=[0-9]*' | cut -d= -f2)"
+if [ "${n_stock:-0}" -lt 50 ]; then
+    bad "end-tick log too short to judge ($n_stock transitions)"
+elif [ "${replaced:-0}" -lt 1 ]; then
+    bad "replacement never served (replaced=${replaced:-0}) - vacuous"
+    printf '%s\n' "$probe_out" | grep -i "sfx" | head -5
+elif [ "$stock_keys" = "$probe_keys" ]; then
+    ok "$n_stock key transitions identical with $replaced replaced plays"
+else
+    bad "sfx_replace moved a guest-visible key transition"
+    diff <(printf '%s\n' "$stock_keys") <(printf '%s\n' "$probe_keys") | head -10
 fi
 
 # ── M9. Spyro 2 and 3 copies of the Spyro 1 arms rungs ───────────────────

@@ -311,6 +311,7 @@ function(openpete_add_game GAME_ID)
         # per-game hook this game does not name in psyq_game_provides.h.
         ${_common}/psyq/psyq_thunks.cpp
         ${_common}/psyq/psyq_game_hooks_default.c
+        ${_common}/psyq/psyq_sfx_slots.c
         ${_common}/psyq/psyq_thunk_state.c
         ${_common}/write_census.c
         ${_common}/dispatch_census.c

@@ -496,39 +496,6 @@ else
     bad "census dump failed"; tail -3 "$WORK/sfxdump.log"
 fi
 
-# ── 8c. sfx_replace: the guest sees every voice end on the STOCK tick ──
-# The mod API's sfx_replace registers a symbolic sfx-pack entry from
-# memory; the swap happens at the PCM upload below the voice mirror, so
-# the one-shot duration the game polls through SpuGetKeyStatus (and with
-# it the tick it frees the sound slot and writes the sound-ref byte) is
-# the stock sample's. The fixture replaces pickupDing - keyed ~11 times
-# in 6000 VBLs of the attract demo - with a 2 s buzz, ~12x the stock
-# length. OPENPETE_SFX_END_LOG names every key-on and every ON/RESET
-# transition the guest reads; the two logs must match line for line, and
-# the pack census must show the replacement actually served (a green
-# that did not engage is vacuous). Re-pointing the voice's addr/
-# pitch instead - the route this replaced - moved the end and shifted
-# the voice allocator's later choices from that tick on.
-say "sfx_replace: end-tick neutrality - replaced voices end on the stock tick"
-fixture "$WORK/sfxrep" sfx-replace-probe
-mkdir -p "$WORK/nomods"; : > "$WORK/nomods/enabled.txt"
-stock_keys="$(OPENPETE_SFX_END_LOG=1 run_game "$WORK/nomods" 6000 --mute 0 | grep '^\[sfx-key ' || true)"
-probe_out="$(OPENPETE_SFX_END_LOG=1 run_game "$WORK/sfxrep" 6000 --mute 0)"
-probe_keys="$(printf '%s\n' "$probe_out" | grep '^\[sfx-key ' || true)"
-n_stock="$(printf '%s\n' "$stock_keys" | grep -c . || true)"
-replaced="$(printf '%s\n' "$probe_out" | grep -o '^\[sfxpack\].*replaced=[0-9]*' | grep -o 'replaced=[0-9]*' | cut -d= -f2)"
-if [ "${n_stock:-0}" -lt 50 ]; then
-    bad "end-tick log too short to judge ($n_stock transitions)"
-elif [ "${replaced:-0}" -lt 1 ]; then
-    bad "replacement never served (replaced=${replaced:-0}) - vacuous"
-    printf '%s\n' "$probe_out" | grep -i "sfx" | head -5
-elif [ "$stock_keys" = "$probe_keys" ]; then
-    ok "$n_stock key transitions identical with $replaced replaced plays"
-else
-    bad "sfx_replace moved a guest-visible key transition"
-    diff <(printf '%s\n' "$stock_keys") <(printf '%s\n' "$probe_keys") | head -10
-fi
-
 # ── 9. level-segment overlay: CdRead chokepoint ─────────────────────────
 say "wad overlay: byte-identical blob - chokepoint provably transparent"
 mkdir -p "$WORK/wadsrc/wad-identity/assets/wad"

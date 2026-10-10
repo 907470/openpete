@@ -45,6 +45,20 @@ sample rate and bit depth (16, 24, float) is accepted. Stereo is
 downmixed to mono with a warning: the SPU voice is mono and the game pans
 it.
 
+## Slot names per game
+
+Each game's slot names are its own. A mod for several games ships one
+`assets/<game>/sfx/` subtree per game.
+
+| Game | Slots named | Source |
+|---|---|---|
+| Spyro 1 | 256 (`gemPickup`, `spyroCharge`, ...; unnamed slots `sound_0xNN`) | the decompilation's `SoundTable` |
+| Spyro 3 | 34 (`gemChime`, `gemCollect`, `flame`, `jump`, ...; the rest `sound_0xNN`) | the decompilation's `SoundTable` |
+| Spyro 2 | 7: `gemChime`, `gemCollect`, `flame`, `underwater`, `spyroSkid`, `spyroStop`, `jump`; the rest `sound_0xNN` | Spyro 3's name for the same slot index, where both games key a byte-identical sample from it |
+
+The gem pickup is `gemPickup` on Spyro 1 and `gemCollect` on Spyro 2 and
+3. `--dump-sfx-pack` reads Spyro 1's disc only.
+
 ## Name forms
 
 | Form | Matches | The WAV is |

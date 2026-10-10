@@ -334,20 +334,45 @@ int  psyq_game_render_path_addr_visible(uint32_t addr);
  * into it. */
 void psyq_overlay_resync_from_ram(void);
 
+/* --- Sound-effect slots ------------------------------------------------- */
+
+/* Where a game keeps its sound tables. All three games load a level's
+ * tables through one routine (Spyro 1 SetNewSoundTable, Spyro 2
+ * func_8001D5FC, Spyro 3 func_8002C9F4): the SoundTable pointer gets the
+ * blob's address, 256 one-byte slots map each semantic sound to a
+ * definition index, the definition count follows as a word, and the
+ * SoundDefinition pointer gets the address right after it, so a live level
+ * table satisfies defs == table + 0x104. A SoundDefinition is 0x14 bytes
+ * with the SPU address first. One ActiveSound per SPU voice holds the base
+ * pitch the game keeps writing to that voice. */
+typedef struct {
+    uint32_t table_ptr_va;      /* word holding the SoundTable pointer */
+    uint32_t defs_ptr_va;       /* word holding the SoundDefinition pointer */
+    uint32_t active_va;         /* ActiveSound[24], index = SPU voice */
+    uint32_t active_stride;     /* bytes per ActiveSound */
+    uint32_t active_pitch_off;  /* offset of the pitch word in an ActiveSound */
+    uint32_t bank_blast_len;    /* SpuWrite length of a level bank upload */
+    const char* const* names;   /* 256 slot names */
+} psyq_sfx_slots_t;
+
+/** @brief Return the game's sound table layout, or NULL when the game names no sounds.
+ * @return A descriptor with static lifetime, or NULL. */
+const psyq_sfx_slots_t* psyq_game_sfx_slots(void);
+
 /** @brief Register the game's sound-effect tables with the sfx pack.
  *
  * The SpuInit thunk calls it on every entry and the SpuWrite thunk on every
- * entry whose source span maps, so it must be idempotent. Spyro 1 installs
- * its pitch reader and slot-name resolver in the sfx pack once; the default
- * does nothing. */
+ * entry whose source span maps, so it must be idempotent. Installs the pitch
+ * reader and slot-name resolver of psyq_sfx_slots.c in the sfx pack once
+ * when psyq_game_sfx_slots() returns a descriptor. */
 void psyq_game_sfx_arm(void);
 
 /** @brief Return the SPU transfer length that means a whole new level sound bank, as opposed to a smaller write landing over part of it.
  *
  * A SpuWrite of this length bumps the sfx pack's generation and stops
  * orphaned voices; any other length invalidates only the range it covers.
- * @return The length in bytes, or 0 when the game has not measured it, in
- *         which case every transfer is a partial write. */
+ * @return The descriptor's bank_blast_len, or 0 when the game names no
+ *         sounds, in which case every transfer is a partial write. */
 unsigned psyq_game_spu_bank_blast_len(void);
 /** @brief Resolve an SPU sample address to the game's own sound-effect slot names.
  *

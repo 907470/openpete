@@ -31,6 +31,9 @@ modtest.toml schema (CI-side, next to mod.toml):
                                #   derived locally from a disc and are
                                #   never committed.
 
+    [test.spyro-2]             # optional, per game slug: assertions
+    expect_log = ["..."]       #   added when --game names that game
+
 The fixture is composed automatically: the mod + its hard-dependency
 closure (deps resolved as sibling directories), enabled in
 dependency-first order.
@@ -89,7 +92,7 @@ def parse_manifest(mod_dir: Path):
     if mt.exists():
         text += "\n" + mt.read_text(encoding="utf-8")
     section = None
-    m = {"id": mod_dir.name, "deps": [], "test": None}
+    m = {"id": mod_dir.name, "deps": [], "test": None, "test_game": {}}
     lines = []
     for line in text.splitlines():
         line = strip_comment(line)
@@ -104,6 +107,8 @@ def parse_manifest(mod_dir: Path):
             continue
         if line.startswith("["):
             section = line.strip("[]").strip()
+            if section.startswith("test."):
+                m["test_game"].setdefault(section[5:], {"expect_log": []})
             if section == "test":
                 m["test"] = {"frames": 8000, "expect_oracle": "skip",
                              "expect_log": [], "input": None, "args": None,
@@ -130,6 +135,8 @@ def parse_manifest(mod_dir: Path):
                 m["test"]["args"] = val.strip('"')
             elif key == "requires":
                 m["test"]["requires"] = ARR_RE.findall(val)
+        elif section and section.startswith("test.") and key == "expect_log":
+            m["test_game"][section[5:]]["expect_log"] = ARR_RE.findall(val)
     return m
 
 
@@ -204,6 +211,8 @@ def run_one(mod_dir: Path, game, verbose: bool, emit,
         reason = "no [test] block"
         emit(f"[modtest] {mid}: SKIP - {reason}")
         return "skip", reason
+    expect_log = test["expect_log"] + \
+        man["test_game"].get(slug, {}).get("expect_log", [])
 
     # A test whose inputs are derived locally (converted from a disc) and
     # never committed cannot run on a fresh clone. Skip it by name rather
@@ -276,7 +285,7 @@ def run_one(mod_dir: Path, game, verbose: bool, emit,
             emit(f"[modtest] {mid}: FAIL - oracle did not FAIL "
                  "(expected divergence missing)")
             ok = False
-        missing = [n for n in test["expect_log"] if n not in out]
+        missing = [n for n in expect_log if n not in out]
         for needle in missing:
             emit(f"[modtest] {mid}: FAIL - log missing: {needle!r}")
             ok = False
@@ -284,7 +293,7 @@ def run_one(mod_dir: Path, game, verbose: bool, emit,
             print_audio_device_lines(mid, out, emit)
         if ok:
             emit(f"[modtest] {mid}: PASS ({mode}, {frames} frames, "
-                 f"{len(test['expect_log'])} log asserts)")
+                 f"{len(expect_log)} log asserts)")
         elif verbose:
             emit(out[-3000:])
         return ("pass" if ok else "fail"), ""

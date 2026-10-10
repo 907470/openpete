@@ -7,6 +7,16 @@
 #include <openpete_mod_api.h>
 #include <string.h>
 
+/* The default slot: a one-shot each game's attract demo keys repeatedly,
+ * named in that game's own sound-table terms. */
+#if OPENPETE_GAME_SPYRO1
+#define PROBE_DEFAULT_SOUND "pickupDing"
+#elif OPENPETE_GAME_SPYRO2 || OPENPETE_GAME_SPYRO3
+#define PROBE_DEFAULT_SOUND "flame"
+#else
+#error "sfx-replace-probe: no default sound for this game"
+#endif
+
 #define BLOCKS_MAX 7875               /* 5.0 s at 28 samples per 16-byte block */
 
 static unsigned char g_body[BLOCKS_MAX * 16];
@@ -33,7 +43,7 @@ static unsigned build_body(double seconds) {
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     char name[64];
-    api->config_str(self, "probe.sound", "pickupDing", name, sizeof name);
+    api->config_str(self, "probe.sound", PROBE_DEFAULT_SOUND, name, sizeof name);
     double seconds = api->config_float(self, "probe.seconds", 2.0);
     unsigned len = build_body(seconds);
     int rc = api->sfx_replace(self, name, g_body, len, 0);

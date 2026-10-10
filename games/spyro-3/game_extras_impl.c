@@ -63,6 +63,7 @@
 #include "features/levelwarp_ui.h"
 #include "openpete_fiber.h"
 #include "renderer/text_moby.h"
+#include "spyro3_sfx_names.h" /* generated: the 256 SoundTable slot names */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -162,6 +163,19 @@ uint32_t psyq_game_rand_seed_addr(void) { return 0x80073F3Cu; }
 
 /* The reference boot's `lhu` at 0x8004F6A4 (func_8004F6A0, stdutil.s) read this; it seeds srand. */
 uint16_t psyq_game_root_counter2(void) { return 0x58C7u; }
+
+/* The level sound tables, loaded by func_8002C9F4 (loaders.c):
+ * g_SoundTablePtr (0x8006C654) and g_SpuDefinitionsPtr (0x8006C6A0).
+ * g_ActiveSounds[24] at 0x8006FCE4, 0x2C bytes each, voice i at entry i;
+ * the pitch word unk18 (func_8003C0B0) is the voice's SpuVoiceAttr
+ * pitch. */
+static const psyq_sfx_slots_t k_sfx_slots = {
+    0x8006C654u, 0x8006C6A0u, 0x8006FCE4u, 0x2Cu, 0x18u,
+    0u, /* the level bank uploads in chunks: every SpuWrite is a partial write */
+    spyro3_sfx_slot_names,
+};
+
+const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return &k_sfx_slots; }
 
 /** @brief Log whether the level-load checksum walk passed, once per load, at entry to func_8002CA50.
  *

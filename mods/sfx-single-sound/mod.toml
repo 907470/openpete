@@ -1,10 +1,12 @@
 # sfx-single-sound: one replacement sound effect, no code.
 #
-# Ships assets/sfx/gemPickup.wav, a replacement for the sound-table slot
-# the game plays when Spyro collects a gem. The file is a synthesised
-# two-note chime, original content and not derived from a disc.
+# Ships one replacement for the sound-table slot each game plays when
+# Spyro collects a gem, under that game's own subtree and slot name:
+# assets/spyro-1/sfx/gemPickup.wav, assets/spyro-2/sfx/gemCollect.wav and
+# assets/spyro-3/sfx/gemCollect.wav. The file is a synthesised two-note
+# chime, original content and not derived from a disc.
 #
-# The file is named by symbolic identity, so it replaces that role in
+# Each file is named by symbolic identity, so it replaces that role in
 # every level. To replace one specific recording instead, name the file
 # by its content hash from --dump-sfx-pack; the Sounds page describes
 # both forms. A mod with no src/ never loads code, so an asset-only mod
@@ -14,5 +16,5 @@
 id      = "sfx-single-sound"
 name    = "SFX Single Sound"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1

@@ -13,7 +13,7 @@ Two name forms match:
 | Form | Matches |
 |---|---|
 | `<label>-<thash>-<bx>x<by>+<bw>x<bh>-<phash>-<bpp>bpp.png` | One texture by content: the upload hash, the texel box within the upload, the palette hash, and the bit depth. The label is the draw's scene category and is ignored by the matcher. |
-| `<name>.png` | A symbolic identity the game layer annotates, such as `title_ui` for the title-screen UI atlas. |
+| `<name>.png` | A symbolic identity the game layer annotates: the 512x256 title-screen UI atlas is `title_ui` on Spyro 1 and `ui_atlas` on Spyro 2 and 3. |
 
 To obtain the content names, run the game with
 `OPENPETE_TEXPACK_DUMP_DIR=<dir>` set: every texture drawn is decoded from

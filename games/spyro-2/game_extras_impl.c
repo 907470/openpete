@@ -25,6 +25,7 @@
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
 #include "renderer/text_moby.h"
+#include "spyro2_sfx_names.h" /* generated: the 256 SoundTable slot names */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -117,6 +118,19 @@ uint32_t psyq_game_rand_seed_addr(void) { return 0x8006D144u; }
 
 /* The reference boot's `lhu` at 0x8001C2DC (func_8001C2D8, stdutil.s) read this; it seeds srand. */
 uint16_t psyq_game_root_counter2(void) { return 0x4876u; }
+
+/* The level sound tables, loaded by func_8001D5FC (loaders.s): the
+ * SoundTable pointer D_80067020 and the SoundDefinition pointer D_80067068.
+ * ActiveSound[24] at D_80069A10, 0x2C bytes each, voice i at entry i
+ * (func_80050FDC keys voice 1 << i from entry i); the pitch word at +0x18
+ * (D_80069A28) is the voice's SpuVoiceAttr pitch. */
+static const psyq_sfx_slots_t k_sfx_slots = {
+    0x80067020u, 0x80067068u, 0x80069A10u, 0x2Cu, 0x18u,
+    0u, /* the level bank uploads in chunks: every SpuWrite is a partial write */
+    spyro2_sfx_slot_names,
+};
+
+const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return &k_sfx_slots; }
 
 /* Stream reads. The disc reader in str.c has two entries over the same
  * request words: func_80013918 issues a read (CdRead returns to 0x800139F0)

@@ -89,6 +89,25 @@ openpete_add_game(spyro-2
         ${CMAKE_SOURCE_DIR}/games/common/renderer/wad_subfile.c
         renderer/portal_game.c)
 
+# SoundTable slot names (tools/gen_sfx_names.py). The decomp declares no
+# SoundTable. Each --name slot keys, on the attract demo, a sample whose
+# ADPCM bytes equal the sample Spyro 3 keys from the same slot index, and
+# takes Spyro 3's decomp name for it; the rest of the 256 slots the loader
+# reads are sound_0xNN.
+add_custom_command(
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro2_sfx_names.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
+            --prefix spyro2 --pad
+            --name 0x00=gemChime --name 0x01=gemCollect --name 0x03=flame
+            --name 0x06=underwater --name 0x10=spyroSkid
+            --name 0x12=spyroStop --name 0x22=jump
+            --out ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro2_sfx_names.h
+    DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
+    COMMENT "Generating SoundTable slot names (gen_sfx_names.py)")
+add_custom_target(spyro2_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro2_sfx_names.h)
+add_dependencies(${OPENPETE_GAME_EXE} spyro2_sfx_names)
+
 # The Win32 icon resource: the same source as the window icon, upscaled into
 # a multi-size .ico.
 if(WIN32)

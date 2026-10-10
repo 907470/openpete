@@ -1,13 +1,15 @@
 # hd-single-texture - one replacement texture, no code.
 #
-# Ships assets/textures/title_ui.png, a symbolic-identity replacement for
-# the 512x256 title-screen UI atlas. The magenta/cyan checker makes the
-# override visible on the title screen (native renderer).
+# Ships a symbolic-identity replacement for the 512x256 title-screen UI
+# atlas under each game's subtree and atlas name:
+# assets/spyro-1/textures/title_ui.png, assets/spyro-2/textures/ui_atlas.png
+# and assets/spyro-3/textures/ui_atlas.png. The magenta/cyan checker makes
+# the override visible on the title screen (native renderer).
 
 [mod]
 id      = "hd-single-texture"
 name    = "HD Single Texture"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 

@@ -2,7 +2,9 @@
 
 `assets/music/track_NN.wav` replaces music track NN, where NN is the
 zero-padded index into the game's music table (`track_20.wav` is the
-title theme). Nothing here reaches guest RAM: the substitution happens on
+title theme). Spyro 1 only: Spyro 2 and 3 select music by disc position
+and channel and have no track index, so they have no music override.
+Nothing here reaches guest RAM: the substitution happens on
 the host side, so a music-only mod is non-mutative.
 
 When several enabled mods ship the same file, the mod listed later in

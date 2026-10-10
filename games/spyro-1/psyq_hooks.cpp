@@ -23,25 +23,11 @@ extern "C" {
 }
 
 #include "mods/mod_wad_overlay.h"
-#include "sfx_pack.h"
 #include "psx/libcd.h"
 
 #include <string.h>
 
 extern "C" void openpete_logf(int level, const char* subsystem, const char* fmt, ...);
-
-/** @brief Read a little-endian guest word through a bounds-checked span.
- *
- * @param va Guest address of the word.
- * @return The word, or 0 when the four bytes do not lie inside one mapped
- *         region (main RAM, the scratchpad, or a registered presentation
- *         region). */
-static uint32_t guest_word(uint32_t va) {
-    const void* p = openpete_psx_to_host_span(va, 4u);
-    uint32_t v = 0;
-    if (p) memcpy(&v, p, 4);
-    return v;
-}
 
 /* --- PSYQ prologue frames ----------------------------------------------
  *
@@ -376,86 +362,18 @@ extern "C" const char* spyro1_sfx_canon(const char* name) {
     return name;
 }
 
-#define SPYRO_SPU_SOUNDDEFS_VA  0x800761D0u /* g_Spu.m_SoundDefinitions */
-#define SPYRO_SPU_SOUNDTABLE_VA 0x800761D4u /* g_Spu.m_SoundTable */
-#define SPYRO_CUTSCENE_DEF_VA   0x800778F0u /* g_CutsceneSoundDef: a ONE-entry
-                                             * def the cutscene/title/speech
-                                             * code points m_SoundDefinitions
-                                             * at while the level TABLE stays */
-#define SPYRO_SOUNDDEF_STRIDE   0x14u
-#define SPYRO_SPU_BANK_BLAST    (0x80000u - 0x1010u) /* level SPU upload */
+/* The level sound tables (SetNewSoundTable, loaders.c): g_Spu.m_SoundTable
+ * and g_Spu.m_SoundDefinitions. g_Spu.m_ActiveSounds[24] follows
+ * SpuCommonAttr (0x28 bytes) in g_Spu; ActiveSound is 0x1C bytes with
+ * m_Pitch at +8. The level SPU upload is 0x80000 - 0x1010 bytes. */
+static const psyq_sfx_slots_t k_sfx_slots = {
+    0x800761D4u,                 /* g_Spu.m_SoundTable */
+    0x800761D0u,                 /* g_Spu.m_SoundDefinitions */
+    0x80075F08u + 0x28u,         /* g_Spu.m_ActiveSounds */
+    0x1Cu,
+    8u,                          /* m_Pitch */
+    0x80000u - 0x1010u,
+    spyro1_sfx_slot_names,
+};
 
-/** @brief Resolves an SPU sample address to the names of the sound slots whose definition owns it.
- *
- * Walks the 256-entry slot table at g_Spu.m_SoundTable, maps each slot
- * through its definition id to g_Spu.m_SoundDefinitions (0x14-byte
- * entries, SPU address first), and names every slot whose definition's
- * address equals `spu_addr`. Returns no names while m_SoundDefinitions
- * points at the one-entry g_CutsceneSoundDef, since the level slot table
- * does not index it, or while either table pointer is NULL or the table's
- * definition count (the word after the 256 slot bytes) is outside 1..256.
- * @param spu_addr SPU RAM address of the sample.
- * @param out Receives up to `max` slot name pointers.
- * @param max The capacity of `out`.
- * @return The number of names written. */
-static int spyro_sfx_slot_names(uint32_t spu_addr, const char** out, int max) {
-    uint32_t defs_va  = guest_word(SPYRO_SPU_SOUNDDEFS_VA);
-    uint32_t table_va = guest_word(SPYRO_SPU_SOUNDTABLE_VA);
-    if (!defs_va || !table_va || defs_va == SPYRO_CUTSCENE_DEF_VA) return 0;
-    /* 256 slot bytes, then the definition count word. */
-    const uint8_t* table = (const uint8_t*)openpete_psx_to_host_span(table_va, 256u + 4u);
-    if (!table) return 0;
-    int32_t count;
-    memcpy(&count, table + 256, 4);
-    if (count <= 0 || count > 256) return 0;
-    const uint8_t* defs = (const uint8_t*)openpete_psx_to_host_span(
-        defs_va, (uint32_t)count * SPYRO_SOUNDDEF_STRIDE);
-    if (!defs) return 0;
-    int n = 0;
-    for (int slot = 0; slot < SPYRO1_SFX_SLOT_COUNT && n < max; slot++) {
-        uint8_t id = table[slot];
-        if (id >= count) continue;
-        uint32_t addr;
-        memcpy(&addr, defs + id * SPYRO_SOUNDDEF_STRIDE, 4);
-        if (addr == spu_addr) out[n++] = spyro1_sfx_slot_names[slot];
-    }
-    return n;
-}
-
-/* ── sfx pack glue ──
- * The pack folds a replacement's pitch into its buffer rate using the
- * base pitch the game will keep refreshing the voice with: the
- * ActiveSound's m_Pitch (the def's, or the per-play override), read
- * from guest RAM. g_Spu.m_ActiveSounds[24] follows SpuCommonAttr (0x28
- * bytes); ActiveSound is 0x1C bytes with m_Pitch at +8. */
-#define SPYRO_SPU_VA            0x80075F08u /* g_Spu */
-#define SPYRO_ACTIVESOUND_OFF   0x28u
-#define SPYRO_ACTIVESOUND_SIZE  0x1Cu
-/** @brief The m_Pitch of voice's ActiveSound in g_Spu, or 0 when out of range (0 or 0x4000 and above). */
-static int spyro_sfx_base_pitch(int voice) {
-    if (voice < 0 || voice >= 24) return 0;
-    uint32_t p = guest_word(SPYRO_SPU_VA + SPYRO_ACTIVESOUND_OFF +
-                            (uint32_t)voice * SPYRO_ACTIVESOUND_SIZE + 8u);
-    return (p > 0 && p < 0x4000u) ? (int)p : 0;
-}
-
-/** @brief Installs the pitch reader and slot-name resolver in the sfx pack, once.
- *
- * Later calls return without effect. */
-static void spyro_sfx_pack_arm(void) {
-    static int s_armed = 0;
-    if (s_armed) return;
-    s_armed = 1;
-    sfx_pack_set_pitch_reader(spyro_sfx_base_pitch);
-    sfx_pack_set_name_resolver(spyro_sfx_slot_names);
-}
-
-extern "C" void psyq_game_sfx_arm(void) {
-    spyro_sfx_pack_arm();
-}
-
-extern "C" unsigned psyq_game_spu_bank_blast_len(void) { return SPYRO_SPU_BANK_BLAST; }
-
-extern "C" int psyq_game_sfx_slot_names(unsigned spu_addr, const char** out, int max) {
-    return spyro_sfx_slot_names(spu_addr, out, max);
-}
+extern "C" const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return &k_sfx_slots; }

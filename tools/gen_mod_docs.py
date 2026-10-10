@@ -1183,6 +1183,7 @@ def gen_structs_from_headers(linker: SourceLinker) -> str:
 
 
 # Where a "uses:" row points, from examples.md in pages/reference/. An
+# asset path matches with or without a per-game assets/<game>/ level. An
 # api-> entry has its own section in api.md; everything else lands on the
 # page that documents the surface, since neither the widget vtable nor the
 # function table gives its members anchors. {game} is the first game the
@@ -1195,9 +1196,9 @@ USES_LINK = (
     (re.compile(r"openpete_mod_ui\.h|`OPENPETE_MOD_UI_\w+`|`ui->\w+`"),
      "api.md#ui-widgets"),
     (re.compile(r"\[\[material\]\]"), "../shaders.md#materials"),
-    (re.compile(r"assets/textures/"), "../textures.md"),
-    (re.compile(r"assets/music/"), "../music.md"),
-    (re.compile(r"assets/sfx/"), "../sounds.md"),
+    (re.compile(r"assets/(?:[^/`]+/)?textures/"), "../textures.md"),
+    (re.compile(r"assets/(?:[^/`]+/)?music/"), "../music.md"),
+    (re.compile(r"assets/(?:[^/`]+/)?sfx/"), "../sounds.md"),
     (re.compile(r"shaders/"), "../shaders.md"),
 )
 

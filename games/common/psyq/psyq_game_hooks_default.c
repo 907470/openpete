@@ -115,16 +115,6 @@ void psyq_game_music_route(int sector, psyq_music_route_t* out) {
 /* psyq_game_render_paths_active and psyq_game_render_path_addr_visible have no
  * default here: renderer/render_paths.c defines them for every game. */
 
-#ifndef PSYQ_GAME_PROVIDES_SFX_ARM
-void psyq_game_sfx_arm(void) {}
-#endif
-#ifndef PSYQ_GAME_PROVIDES_SPU_BANK_BLAST_LEN
-unsigned psyq_game_spu_bank_blast_len(void) { return 0u; }
-#endif
-#ifndef PSYQ_GAME_PROVIDES_SFX_SLOT_NAMES
-int  psyq_game_sfx_slot_names(unsigned spu_addr,
-                                             const char** out, int max) {
-    (void)spu_addr; (void)out; (void)max;
-    return 0;
-}
+#ifndef PSYQ_GAME_PROVIDES_SFX_SLOTS
+const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return NULL; }
 #endif

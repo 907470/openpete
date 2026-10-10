@@ -3,6 +3,19 @@
 [test]
 frames        = 4000
 expect_oracle = "pass"
-expect_log    = ["declarative-example/assets/music/title_theme.wav",
-                 "declarative-example: 5 declarative material row(s)",
-                 "loaded declarative-example"]
+expect_log    = ["loaded declarative-example",
+                 "asset root registered:"]
+
+# Spyro 1 serves every material channel and has the music override.
+[test.spyro-1]
+expect_log    = ["declarative-example/assets/spyro-1/music/title_theme.wav",
+                 "declarative-example: 5 declarative material row(s)"]
+
+# Spyro 2 and 3 serve no material channel: each row is skipped.
+[test.spyro-2]
+expect_log    = ["declarative-example/assets/spyro-2",
+                 "unsupported on spyro-2 - skipped"]
+
+[test.spyro-3]
+expect_log    = ["declarative-example/assets/spyro-3",
+                 "unsupported on spyro-3 - skipped"]

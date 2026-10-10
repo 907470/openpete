@@ -9,14 +9,15 @@
 # demo with and without this mod under OPENPETE_SFX_END_LOG=1 and requires
 # every key-on and end transition to land on the same VBL.
 #
-# config.toml: probe.sound = the slot name to replace (default pickupDing,
-# a one-shot the attract demo keys about every 500 VBLs).
+# config.toml: probe.sound = the slot name to replace (default pickupDing
+# on Spyro 1, a one-shot the attract demo keys about every 500 VBLs;
+# flame on Spyro 2 and 3, keyed 15 times on each attract demo).
 
 [mod]
 id      = "sfx-replace-probe"
 name    = "SFX Replace Probe"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"
 runahead = "pure"

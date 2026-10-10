@@ -710,6 +710,10 @@ static void tp_repl_scan(void)
     tp_decode_prefetch_all();
 }
 
+/* Draws texture_pack_match served, by the matched file's form; reported at
+ * shutdown so a harness can require a replacement to have engaged. */
+static uint64_t s_served[2]; /* [0] by content hash, [1] symbolic */
+
 void texture_pack_init(void)
 {
     if (s_inited) return;
@@ -777,6 +781,11 @@ void texture_pack_on_restore(void) { SDL_LockMutex(reg_mx()); texture_pack_on_re
 void texture_pack_shutdown(void)
 {
     if (getenv("OPENPETE_TEXPACK_DUMP_REGISTRY")) texture_pack_debug_dump();
+    if (s_repl_active)
+        fprintf(stderr, "[texpack] served=%llu draws (symbolic=%llu hash=%llu)\n",
+                (unsigned long long)(s_served[0] + s_served[1]),
+                (unsigned long long)s_served[1],
+                (unsigned long long)s_served[0]);
     tp_decode_stop();
     for (int i = 0; i < pack_count(); i++) {
         tp_pack_entry *e = pack_at(i);
@@ -1120,6 +1129,7 @@ static int texture_pack_match_locked(const texture_pack_id *id, texture_pack_rep
     SDL_MemoryBarrierAcquire();                 /* pairs with the worker */
     if (!e->px) return 0;
     out->pixels = e->px; out->w = e->w; out->h = e->h;
+    s_served[e->symbolic != 0]++;
     if (e->symbolic) {
         /* A symbolic file covers the FULL upload in this draw's bpp texels. */
         out->box_x = 0; out->box_y = 0;

@@ -1,25 +1,31 @@
 # declarative-example: every feature a mod can use with no code, in one
 # mod. No src/, no entry point, nothing compiled on the host: the mod is
-# this manifest, three asset files and one fragment shader.
+# this manifest, its asset files and one fragment shader.
 #
 # Each asset root is matched by filename, so replacing a texture, a track
-# or a sound is a matter of naming a file correctly. The [[material]] rows
-# then reshade the engine's own draws through selector keys alone. Custom
-# levels are the one declarative feature not shown here; the Custom levels
-# page covers them. [[binding]] and [[config]] rows are read by a mod's own
-# code, so they belong to a code mod, and hud-stopwatch shows both.
+# or a sound is a matter of naming a file correctly. The assets sit in one
+# subtree per game, assets/<game>/, each named in that game's own terms;
+# Spyro 2 and 3 have no music override, so their subtrees carry no track.
+# The [[material]] rows then reshade the engine's own draws through
+# selector keys alone; Spyro 2 and 3 serve no material channel, so each row
+# is skipped there with a log line. Custom levels are the one declarative
+# feature not shown here; the Custom levels page covers them. [[binding]]
+# and [[config]] rows are read by a mod's own code, so they belong to a code
+# mod, and hud-stopwatch shows both.
 #
 # uses: `[[material]]` rows - five selectors, each pairing one fragment shader with a different channel, so the same shader shades a different subset per row
-# uses: `assets/textures/` - one HD replacement named by content identity, the form the texture dump writes
-# uses: `assets/music/` - a track replacement plus a manifest.txt mapping index to file
-# uses: `assets/sfx/` - a symbolic slot replacement, the form that follows whatever the current level maps to that slot
+# uses: `assets/<game>/` - one asset subtree per game, chosen by the running game
+# uses: `assets/spyro-1/textures/` - one HD replacement named by content identity, the form the texture dump writes
+# uses: `assets/spyro-2/textures/`, `assets/spyro-3/textures/` - the UI atlas replaced by its symbolic name, ui_atlas
+# uses: `assets/spyro-1/music/` - a track replacement plus a manifest.txt mapping index to file
+# uses: `assets/<game>/sfx/` - a symbolic slot replacement (gemPickup on Spyro 1, gemCollect on Spyro 2 and 3), the form that follows whatever the current level maps to that slot
 # uses: `shaders/*.frag` - the material shader the rows share, written against openpete_psx_material.glsl
 
 [mod]
 id      = "declarative-example"
 name    = "Declarative Example"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 5            # [[material]] rows; a mod with assets only could omit the pin
 state    = "none"      # nothing derived from guest history
 runahead = "pure"      # no tick hooks
