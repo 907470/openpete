@@ -2,7 +2,7 @@
 # level	artisans
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=89
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=89
-# pose	bk2	movies=28	artisans-balloonist,artisans-bridge,artisans-bridge-hq,artisans-distant-water-gaps,artisans-distant-water-gaps-2,artisans-lp-waterfall,artisans-water-platform-missing-polys,camera-rotate-taps,cyclorama-portal,exit-level,flame,glide-flutter,hq-texture-switch,level-transition,level-transition-framebuffer,level-transition-gems,moving-terrain,nestor,pause-menu-text-moby-swim,portal-cyclorama-cull,portal-ground-disocclusion,roll-animation,rotation,spyro-dragon-pedastal-depth,sunny-flight-exit,sunny-flight-wall-punch,town-square-portal-entry,widescreen-culling
+# pose	bk2	movies=29	artisans-balloonist,artisans-bridge,artisans-bridge-hq,artisans-distant-water-gaps,artisans-distant-water-gaps-2,artisans-lp-waterfall,artisans-water-platform-missing-polys,camera-rotate-taps,cyclorama-portal,exit-level,flame,glide-flutter,hq-texture-switch,level-transition,level-transition-framebuffer,level-transition-gems,moving-terrain,nestor,pause-menu-text-moby-swim,pause-unpause,portal-cyclorama-cull,portal-ground-disocclusion,roll-animation,rotation,spyro-dragon-pedastal-depth,sunny-flight-exit,sunny-flight-wall-punch,town-square-portal-entry,widescreen-culling
 pose	arena	high	afail
 spawn	OPAQUE	73299	0
 spawn	ALPHA	0	0

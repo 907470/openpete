@@ -3,11 +3,11 @@
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=125
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=125
 pose	arena	high	afail
-spawn	OPAQUE	202386	0
+spawn	OPAQUE	199698	0
 spawn	ALPHA	0	0
 spawn	ADD	20592	0
 spawn	SUB	0	0
-spawn	LP	15723	0
+spawn	LP	15600	0
 spawn	A_OPAQUE	0	0
 spawn	A_ALPHA	0	0
 spawn	A_ADD	0	0
@@ -22,7 +22,7 @@ spawn	CN_OPAQUE	534	0
 spawn	CN_ALPHA	0	0
 spawn	CN_ADD	0	0
 spawn	CN_SUB	0	0
-spawn	CA_OPAQUE	2938	0
+spawn	CA_OPAQUE	2846	0
 spawn	CA_ALPHA	0	0
 spawn	CA_ADD	0	0
 spawn	CA_SUB	0	0
