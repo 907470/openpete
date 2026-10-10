@@ -46,7 +46,12 @@ static const psyq_game_frame_t k_frames[PSYQ_FRAME__COUNT] = {
     [PSYQ_FRAME_MEMCARDINIT] = { 0x18u, 0x10u, 0 },
 };
 
-extern "C" int psyq_game_stack_frame(psyq_frame_site_t site, psyq_game_frame_t* out) {
+/** @brief Describe the PSYQ 4.0 stack frame at a site from k_frames.
+ *
+ * @param site The PSYQ function whose prologue is replayed.
+ * @param out Receives the frame descriptor when the return is 1.
+ * @return 1 when the site has a frame, else 0. */
+static int spyro1_stack_frame(psyq_frame_site_t site, psyq_game_frame_t* out) {
     if (site < 0 || site >= PSYQ_FRAME__COUNT) return 0;
     if (k_frames[site].frame_size == 0u) return 0;
     *out = k_frames[site];
@@ -55,14 +60,21 @@ extern "C" int psyq_game_stack_frame(psyq_frame_site_t site, psyq_game_frame_t* 
 
 /* --- PSYQ-internal RAM mirrors ----------------------------------------- */
 
-extern "C" void psyq_game_mirror_main(CPUState* cpu) {
+/** @brief Set the library's initialized flag at 0x800730BC to 1 when it reads 0, as PSYQ's __main does.
+ *
+ * @param cpu Guest CPU state. */
+static void spyro1_mirror_main(CPUState* cpu) {
     const uint32_t INIT_FLAG_ADDR = 0x800730BCu;
     if (cpu->read_word(INIT_FLAG_ADDR) == 0u) {
         cpu->write_word(INIT_FLAG_ADDR, 1u);
     }
 }
 
-extern "C" void psyq_game_mirror_resetgraph(CPUState* cpu, int mode) {
+/** @brief Write the libgpu environment, control structures and fill-packet block PSYQ 4.0 ResetGraph leaves for modes 0, 3 and 5.
+ *
+ * @param cpu Guest CPU state.
+ * @param mode The ResetGraph mode, from a0. */
+static void spyro1_mirror_resetgraph(CPUState* cpu, int mode) {
     int sub = mode & 7;
     if (sub == 0 || sub == 3 || sub == 5) {
         const uint32_t ENV = 0x80074A64u;
@@ -131,7 +143,11 @@ extern "C" void psyq_game_mirror_resetgraph(CPUState* cpu, int mode) {
 
 }
 
-extern "C" void psyq_game_mirror_vsync_callback(CPUState* cpu, uint32_t cb) {
+/** @brief Store the VSync callback (a0) in libgpu's vtable slot at 0x800749D0.
+ *
+ * @param cpu Guest CPU state.
+ * @param cb The registered handler's guest address (a0 holds the same). */
+static void spyro1_mirror_vsync_callback(CPUState* cpu, uint32_t cb) {
     /* Real PSYQ VSyncCallback also stashes the cb pointer in libgpu's
      * vtable at 0x800749D0 (the slot func_8005DE58 reads on each VSync
      * IRQ). PsyCross dispatches the cb host-side, so we mirror the write
@@ -139,7 +155,12 @@ extern "C" void psyq_game_mirror_vsync_callback(CPUState* cpu, uint32_t cb) {
     cpu->write_word(0x800749D0u, cpu->a0);
 }
 
-extern "C" void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t buf1) {
+/** @brief Write libpad's pad-state dispatch table, control block and per-slot words as PSYQ 4.0 PadInitDirect leaves them.
+ *
+ * @param cpu Guest CPU state.
+ * @param buf0 Guest address of the first port's pad buffer.
+ * @param buf1 Guest address of the second port's pad buffer. */
+static void spyro1_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t buf1) {
     /* Real PSYQ PadInitDirect (0x8006A4xx region) sets up libpad's pad-state
      * machine: a 10-entry dispatch table at 0x800751BC (one fnptr per
      * PadStateXxx), plus per-slot bookkeeping at 0x80075C58+ and 0x80075D40+
@@ -199,14 +220,20 @@ extern "C" void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t
     cpu->write_word(0x80075E68u, 0x00FFFFFFu);
 }
 
-extern "C" void psyq_game_mirror_pad_slot2(CPUState* cpu) {
+/** @brief Rewrite the empty second controller slot's buffer at 0x80078E50 and its word at 0x80078E9C.
+ *
+ * @param cpu Guest CPU state. */
+static void spyro1_mirror_pad_slot2(CPUState* cpu) {
     /* slot-2 buffer: 8 bytes packed as two LE u32 writes. */
     cpu->write_word(0x80078E50u, 0x000000FFu);  /* FF 00 00 00 */
     cpu->write_word(0x80078E54u, 0x00000000u);  /* 00 00 00 00 */
     cpu->write_word(0x80078E9Cu, 0x00000190u);
 }
 
-extern "C" void psyq_game_mirror_memcard_init(CPUState* cpu) {
+/** @brief Write the card control struct and handler count PSYQ 4.0 MemCardInit leaves.
+ *
+ * @param cpu Guest CPU state. */
+static void spyro1_mirror_memcard_init(CPUState* cpu) {
     /* Real PSYQ MemCardInit (0x8006626C) clears two state words then
      * jumps into func_80067E70, which OpenEvent-registers a chain of
      * BIOS events and threads handlers through PSYQ's libgpu-style
@@ -223,23 +250,23 @@ extern "C" void psyq_game_mirror_memcard_init(CPUState* cpu) {
 
 }
 
-/* PSYQ's rand seed, in the library's own data at D_80075AC0. */
-extern "C" uint32_t psyq_game_rand_seed_addr(void) { return 0x80075AC0u; }
-
 /* --- Feature couplings -------------------------------------------------- */
 
-extern "C" void psyq_game_cd_setloc(const void* cdl_loc) {
+/** @brief Pass a CdlSetloc position to the WAD overlay as a sector.
+ *
+ * @param cdl_loc The CdlLOC the game passed to CdControl, as a host pointer. */
+static void spyro1_cd_setloc(const void* cdl_loc) {
     mod_wad_setloc((uint32_t)CdPosToInt((CdlLOC*)cdl_loc));
 }
 
-extern "C" void psyq_game_cd_apply_buf(unsigned char* buf, int sectors) {
+/** @brief Let the WAD overlay substitute mod bytes in a landed read.
+ *
+ * @param buf The landed sectors, as a host pointer.
+ * @param sectors Sector count of the read. */
+static void spyro1_cd_apply_buf(unsigned char* buf, int sectors) {
     mod_wad_apply((uint8_t*)buf, sectors);
 }
 
-/* libgpu's environment block and fill-packet block (psx.map D_80074A64,
- * D_80075978). */
-extern "C" uint32_t psyq_game_libgpu_env_addr(void) { return 0x80074A64u; }
-extern "C" uint32_t psyq_game_libgpu_clear_block_addr(void) { return 0x80075978u; }
 
 /* --- Music route -------------------------------------------------------- */
 
@@ -258,7 +285,11 @@ static int spyro_current_music_track(void) {
     return (track >= 0 && track < SPYRO_MUSIC_TRACKS) ? (int)track : -1;
 }
 
-extern "C" void psyq_game_music_route(int sector, psyq_music_route_t* out) {
+/** @brief Route a streaming read to m_CurrentTrack and the level's mod-mapped song.
+ *
+ * @param sector The read's start LBA.
+ * @param out Receives the track index and the custom song path. */
+static void spyro1_music_route(int sector, psyq_music_route_t* out) {
     (void)sector;
     const int track = spyro_current_music_track();
     out->track = track;
@@ -322,8 +353,11 @@ extern "C" void psyq_game_music_route(int sector, psyq_music_route_t* out) {
 }
 
 
-/* g_CdState.m_IsReading must be clear once the completion callback has run. */
-extern "C" void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
+/** @brief Warn when g_CdState.m_IsReading is still set after a data read's completion callback has run.
+ *
+ * @param cpu Guest CPU state.
+ * @param read_cb The guest completion callback, 0 when none. */
+static void spyro1_cd_read_done(CPUState* cpu, uint32_t read_cb) {
     (void)cpu;
     const uint8_t* ram = (const uint8_t*)openpete_psx_get_ram();
     uint32_t after = 0;
@@ -376,4 +410,30 @@ static const psyq_sfx_slots_t k_sfx_slots = {
     spyro1_sfx_slot_names,
 };
 
-extern "C" const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return &k_sfx_slots; }
+extern "C" const psyq_game_conf_t  spyro1_psyq_conf;        /* gen/game_identity.c */
+extern "C" const psyq_stub_table_t spyro1_psyq_stub_table;  /* gen/psyq_stub_table.c */
+
+/* The shared PSYQ thunk layer's hooks, in psyq_game_hooks_t's member order;
+ * the runtime descriptor's psyq (game_extras_impl.c). */
+extern "C" const psyq_game_hooks_t spyro1_psyq_hooks = {
+    .conf                    = &spyro1_psyq_conf,
+    .stubs                   = &spyro1_psyq_stub_table,
+    .stack_frame             = spyro1_stack_frame,
+    .mirror_main             = spyro1_mirror_main,
+    .mirror_resetgraph       = spyro1_mirror_resetgraph,
+    .mirror_vsync_callback   = spyro1_mirror_vsync_callback,
+    .mirror_pad_init         = spyro1_mirror_pad_init,
+    .mirror_pad_slot2        = spyro1_mirror_pad_slot2,
+    .mirror_memcard_init     = spyro1_mirror_memcard_init,
+    /* PSYQ's rand seed, in the library's own data at D_80075AC0. */
+    .rand_seed_addr          = 0x80075AC0u,
+    /* libgpu's environment block and fill-packet block (psx.map
+     * D_80074A64, D_80075978). */
+    .libgpu_env_addr         = 0x80074A64u,
+    .libgpu_clear_block_addr = 0x80075978u,
+    .cd_setloc               = spyro1_cd_setloc,
+    .cd_apply_buf            = spyro1_cd_apply_buf,
+    .cd_read_done            = spyro1_cd_read_done,
+    .music_route             = spyro1_music_route,
+    .sfx_slots               = &k_sfx_slots,
+};

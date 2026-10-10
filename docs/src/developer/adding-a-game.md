@@ -7,8 +7,8 @@ recompiler, no mod SDK). All three draw through the native renderer: the
 walks are under `games/common/renderer/`, and each game supplies its engine
 layout and decoder addresses under `games/<game>/renderer/`. The second and
 third are the template: a fourth game is `games/<game>/` holding a
-`recomp.conf`, a `game_extras_impl.c`, a `psyq_game_provides.h`, a
-`manifest/` and a `CMakeLists.txt` that calls `openpete_add_game`.
+`recomp.conf`, a `game_extras_impl.c`, a `manifest/` and a
+`CMakeLists.txt` that calls `openpete_add_game`.
 
 ## Prerequisites
 
@@ -45,10 +45,11 @@ Copy `games/spyro-2/recomp.conf` and set:
 
 The build generates `game_identity.c` from these (the runtime descriptor's
 identity `<tag>_game_identity`, which `game_get_id`,
-`game_get_display_name` and `game_get_exe_filename` return, and
-`psyq_game_overlay_vaddr`, `psyq_game_libcd_block_addr`,
-`psyq_game_cd_read_cb_addr`), so no hand-written source carries an identity
-constant.
+`game_get_display_name` and `game_get_exe_filename` return, and the PSYQ
+descriptor's recomp.conf addresses `<tag>_psyq_conf`, which
+`psyq_game_overlay_vaddr`, `psyq_game_libcd_block_addr` and
+`psyq_game_cd_read_cb_addr` return), so no hand-written source carries an
+identity constant.
 
 ## 3. Manifests and codegen
 
@@ -86,9 +87,14 @@ openpete_add_game(<game>
 generated code plus `games/common/overlay_dispatch.c` and `module_main.c`)
 and the executable (`openpete-<tag>`, `<tag>` = the id without its hyphen):
 the entry TU, `game_extras_impl.c`, the generated identity TU, the shared
-PSYQ-to-PsyCross layer with the inert default for every hook the game does
-not name in `psyq_game_provides.h`, the freecam body, the write census, and
-the generated abort-on-call PSYQ stubs. `MAIN`, `FEATURE_LIST`,
+PSYQ-to-PsyCross layer with its per-game hooks forwarded to the game's
+descriptor, the freecam body, the write census, and the game's PSYQ stub
+address table (`gen/psyq_stub_table.c`, `<tag>_psyq_stub_table`). The
+abort-on-call PSYQ stubs are compiled once for every built game
+(`openpete_psyq_stubs`, the top-level `CMakeLists.txt`): the union of the
+games' generated `psyq_stubs.c` names minus the names the shared thunk layer
+defines (`tools/filter_psyq_stubs.py`); a reached stub reports the running
+game's address from its table. `MAIN`, `FEATURE_LIST`,
 `ICON_SOURCE`, `MODULE_LINKAGE`, `MODULE_SOURCES` and `SYMBOLS_MANIFEST`
 override the defaults. `ORCHESTRATOR`, `INTERP_REGIONS`, `TERRAIN_GAME`,
 `MOBY_GAME` and `PLAYER_GAME` name the game's native-renderer TUs; each
@@ -100,7 +106,7 @@ recompiled output is skipped with a warning.
 Append the game to `OPENPETE_GAMES` in the top-level `CMakeLists.txt`, or
 pass `-DOPENPETE_GAMES="spyro-1;<game>"` at configure time.
 
-## 5. `game_extras_impl.c` and `psyq_game_provides.h`
+## 5. `game_extras_impl.c`
 
 `core/include/game_extras.h` declares the per-game hooks, which core
 forwards to the game's runtime descriptor
@@ -114,11 +120,13 @@ intercept, here the freecam freeze and the write census), the gameplay-live
 predicate, the CLI resolvers, and the `game_host_desc_t` naming the tables
 of the game's renderer TUs.
 
-`psyq_game_provides.h` names the PSYQ hooks (`games/common/psyq/psyq_game_hooks.h`)
-the game defines; each unnamed hook takes its inert default from
-`games/common/psyq/psyq_game_hooks_default.c`. Defining a hook without naming it
-is a duplicate-symbol error; naming one without defining it is an undefined
-reference.
+The descriptor's `psyq` member is the game's `psyq_game_hooks_t`
+(`games/common/psyq/psyq_game_hooks.h`): the PSYQ-internal RAM mirrors and
+prologue frames, the library addresses, the CD-read classifiers, the music
+route and the sound tables, plus the generated `<tag>_psyq_conf` and
+`<tag>_psyq_stub_table`. The shared `psyq_game_*` entries the thunk layer
+calls forward to it (`games/common/psyq/psyq_game_hooks.c`); a member left 0
+or NULL takes the inert default the header documents.
 
 ## 6. Running
 

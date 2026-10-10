@@ -29,14 +29,18 @@
 # OPENPETE_GAME_MODULE, OPENPETE_GAME_GENERATED and OPENPETE_GAME_GEN_DIR
 # (the build-tree gen/ directory), for the sources a game adds on top.
 #
-# A game supplies games/<id>/recomp.conf, game_extras_impl.c and
-# psyq_game_provides.h; everything else is shared, including the game_extras
+# A game supplies games/<id>/recomp.conf and game_extras_impl.c; everything
+# else is shared, including the game_extras
 # entries whose body reduces to a game_layout field
 # (games/common/game_extras_default.c, always linked). game_extras_impl.c
 # defines the game's runtime descriptor (core/include/openpete_game_runtime.h)
 # as `<tag>_game_runtime`, the name the entry TU registers through the
 # OPENPETE_GAME_RUNTIME definition; a slot file above is reached only through
-# that descriptor, which names no table for an omitted slot.
+# that descriptor, which names no table for an omitted slot. The descriptor's
+# `psyq` member is the game's psyq_game_hooks_t
+# (games/common/psyq/psyq_game_hooks.h), which names the generated
+# `<tag>_psyq_conf` (game_identity.c) and `<tag>_psyq_stub_table`
+# (gen/psyq_stub_table.c).
 #
 #  - The module: the recompiled main EXE plus every overlay translated by
 #    scripts/regen-recomp.sh. Each overlay is recompiled with a unique
@@ -47,12 +51,12 @@
 #    the host resolves.
 #  - The executable: the entry TU, the generated identity TU
 #    (tools/gen_game_identity.py over recomp.conf), the shared PSYQ-to-
-#    PsyCross layer with the inert default for every hook the game does not
-#    name in psyq_game_provides.h, the freecam body, the write census, the
-#    shared renderer TUs (the GTE float mirror and the render-path isolation
-#    registry) with the orchestrator entries forwarded to the game's
-#    descriptor, and the generated abort-on-call PSYQ stubs with their
-#    runtime.
+#    PsyCross layer with its per-game hooks forwarded to the game's
+#    descriptor, the freecam body, the write census, the shared renderer TUs
+#    (the GTE float mirror and the render-path isolation registry) with the
+#    orchestrator entries forwarded to the game's descriptor, the game's
+#    PSYQ stub address table, and the compile-once abort-on-call PSYQ stubs
+#    with their runtime (openpete_psyq_stubs, top-level CMakeLists.txt).
 #
 # Shared linkage builds the module as <tag>-recomp.{so,dll} for dlopen at
 # boot; the exe-side attach TU, export surface and implib are the game's
@@ -263,28 +267,21 @@ function(openpete_add_game GAME_ID)
         set(_symbols_sources ${_symbols_header})
     endif()
 
-    # PSYQ abort-on-call stubs for the symbols no thunk defines, filtered
-    # from the generated psyq_stubs.c by scanning the thunk-bearing sources
-    # (tools/filter_psyq_stubs.py). Every stub left is a strong definition,
-    # so the executable links with the linker's duplicate-definition check
-    # on and resolves each symbol the same way on ELF and PE: a thunk the
-    # scan misses fails the link as a multiple definition, and a name it
-    # matches that no source compiles fails it as an undefined reference.
-    set(_stubs_filtered ${CMAKE_CURRENT_BINARY_DIR}/psyq_stubs_unthunked.c)
-    set(_thunk_sources
-        ${G_MAIN}
-        ${G_SOURCES}
-        ${_common}/psyq/psyq_thunks.cpp
-        ${_common}/psyq/psyq_game_hooks_default.c
-        ${_common}/psyq/psyq_thunk_state.c
-        ${_common}/psyq/psyq_stub_runtime.c)
+    # The game's guest address for each PSYQ abort-on-call stub, from its
+    # generated psyq_stubs.c minus the shared thunk layer's names
+    # (tools/filter_psyq_stubs.py table); the stub bodies themselves are the
+    # compile-once union in openpete_psyq_stubs.
+    set(_stub_table ${_gen_dir}/psyq_stub_table.c)
     add_custom_command(
-        OUTPUT  ${_stubs_filtered}
+        OUTPUT  ${_stub_table}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_gen_dir}
         COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/filter_psyq_stubs.py
-                ${_generated}/psyq_stubs.c ${_stubs_filtered} ${_thunk_sources}
-        DEPENDS ${_generated}/psyq_stubs.c ${_thunk_sources}
+                table ${_stub_table} --tag ${_tag}
+                --stubs ${_generated}/psyq_stubs.c
+                --thunks ${OPENPETE_PSYQ_THUNK_SOURCES}
+        DEPENDS ${_generated}/psyq_stubs.c ${OPENPETE_PSYQ_THUNK_SOURCES}
                 ${CMAKE_SOURCE_DIR}/tools/filter_psyq_stubs.py
-        COMMENT "Filtering ${_tag} PSYQ stubs against the thunks"
+        COMMENT "Generating ${_tag} PSYQ stub address table"
         VERBATIM)
 
     add_executable(${_exe}
@@ -307,10 +304,10 @@ function(openpete_add_game GAME_ID)
         ${G_SOURCES}
         ${_symbols_sources}
 
-        # The shared PSYQ-to-PsyCross layer, plus the default for every
-        # per-game hook this game does not name in psyq_game_provides.h.
+        # The shared PSYQ-to-PsyCross layer and its per-game hooks,
+        # forwarded to the game's descriptor.
         ${_common}/psyq/psyq_thunks.cpp
-        ${_common}/psyq/psyq_game_hooks_default.c
+        ${_common}/psyq/psyq_game_hooks.c
         ${_common}/psyq/psyq_sfx_slots.c
         ${_common}/psyq/psyq_thunk_state.c
         ${_common}/write_census.c
@@ -353,12 +350,8 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/reextract_view.c
         ${_common}/renderer/cut_guard.c
 
-        # PSYQ symbol stubs, abort-on-call, for the symbols no thunk defines
-        # (filtered above). They stay exe-side: PE has no dynamic symbol
-        # preemption, so module-side stubs would shadow the thunks on
-        # Windows.
-        ${_stubs_filtered}
-        ${_common}/psyq/psyq_stub_runtime.c)
+        # This game's PSYQ stub addresses (generated above).
+        ${_stub_table})
 
     # The region table and symbol aliases as a target of their own, so the
     # source parsers order after them without waiting for the executable.
@@ -396,7 +389,7 @@ function(openpete_add_game GAME_ID)
     else()
         target_link_libraries(${_exe} PRIVATE ${CMAKE_DL_LIBS})
     endif()
-    target_link_libraries(${_exe} PRIVATE openpete_core)
+    target_link_libraries(${_exe} PRIVATE openpete_core openpete_psyq_stubs)
 
     # The executable and the recompiled module read guest RAM (uint8_t
     # arrays) through wider pointer casts; -fno-strict-aliasing keeps the

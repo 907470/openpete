@@ -2,7 +2,7 @@
 //
 // Defines the runtime descriptor spyro3_game_runtime (openpete_game_runtime.h)
 // over the hooks below and the tables of the game's other TUs. Identity and
-// the address-only PSYQ hooks are generated from recomp.conf
+// the PSYQ descriptor's recomp.conf addresses are generated from recomp.conf
 // (game_identity.c). Bring-up state: the overlay hooks, the CD-load
 // classifier, --skip-to-level and the freecam wiring carry real values; the
 // descriptor leaves the hooks the game does not implement NULL.
@@ -19,7 +19,7 @@
 // cap stays under it. 66 VBLs on that read is the measured floor: 64 leaves
 // the loader in state 7, 66 loads every demo level.
 //
-// Load-read classifier (psyq_game_cd_read_in_load): a read belongs to a level
+// Load-read classifier (spyro3_cd_read_in_load): a read belongs to a level
 // load while loadStage (the loading overlay's state machine, entry
 // 0x8007494C) is 2..7, the window the checksum walk runs in; those reads go
 // through the asynchronous path func_80050680 and are polled from the main
@@ -137,8 +137,12 @@ static void spyro3_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id > 0) spyro3_cutscene_arm(cutscene_id, spyro3_skip_target());
 }
 
-/* Asynchronous-reader reads in loadStage 2..7 except the portal loading-image fetch (the load-read classifier note in the file header). */
-int psyq_game_cd_read_in_load(CPUState* cpu) {
+/** @brief Classify a data read as part of a level load: asynchronous-reader reads in loadStage 2..7 except the portal loading-image fetch.
+ *
+ * The load-read classifier note in the file header gives the reasons.
+ * @param cpu Guest CPU state at the CdRead call (ra is the call site).
+ * @return 1 when the read is part of a level load, else 0. */
+static int spyro3_cd_read_in_load(CPUState* cpu) {
     if (cpu->ra != 0x80050758u) return 0;
     uint32_t state = cpu->read_word(0x8006C518u);
     if (state < 2u || state > 7u) return 0;
@@ -146,23 +150,6 @@ int psyq_game_cd_read_in_load(CPUState* cpu) {
         return 0;
     return 1;
 }
-uint32_t psyq_game_cd_read_delay_cap(void) { return 100u; }
-
-/* loadStage: 2..7 the checksum walk, one step per iteration, 8..12 the level reads and parses, then -1. */
-uint32_t psyq_game_load_window_word(void) { return 0x8006C518u; }
-
-/* The overlay base: the title overlay's disc check writes CD-ROM commands from 0x8007BB3C, libcd below it. */
-uint32_t psyq_game_cd_raw_pc_min(void) { return 0x800742D0u; }
-
-/* func_800503F8's CdSync(1) at 0x800504E0, taken when D_8006E480 (cleared by callback func_80050504) is 0. */
-uint32_t psyq_game_cd_done_witness_ra(void) { return 0x800504E8u; }
-int      psyq_game_load_window_active(uint32_t value) { (void)value; return 0; }
-
-/* D_80073F3C (psyq .bss): rand (func_8005C644) steps it, srand (func_8005C674) overwrites it. */
-uint32_t psyq_game_rand_seed_addr(void) { return 0x80073F3Cu; }
-
-/* The reference boot's `lhu` at 0x8004F6A4 (func_8004F6A0, stdutil.s) read this; it seeds srand. */
-uint16_t psyq_game_root_counter2(void) { return 0x58C7u; }
 
 /* The level sound tables, loaded by func_8002C9F4 (loaders.c):
  * g_SoundTablePtr (0x8006C654) and g_SpuDefinitionsPtr (0x8006C6A0).
@@ -174,8 +161,6 @@ static const psyq_sfx_slots_t k_sfx_slots = {
     0u, /* the level bank uploads in chunks: every SpuWrite is a partial write */
     spyro3_sfx_slot_names,
 };
-
-const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return &k_sfx_slots; }
 
 /** @brief Log whether the level-load checksum walk passed, once per load, at entry to func_8002CA50.
  *
@@ -246,16 +231,21 @@ static int spyro3_override_dispatch(CPUState* cpu, uint32_t addr) {
  * reports the closing CdlPause complete. A cutscene plays with game.state
  * 0x8006E344 at 6, and each cutscene overlay streams through
  * func_80050680. */
-/* Classify a read as a cutscene stream read: the asynchronous reader's CdRead while game.state is cutscene playback (6). */
-int psyq_game_cd_read_streamed(CPUState* cpu) {
+/** @brief Classify a read as a cutscene stream read: the asynchronous reader's CdRead while game.state is cutscene playback (6).
+ *
+ * @param cpu Guest CPU state at the CdRead call (ra is the call site).
+ * @return 1 for a stream read, else 0. */
+static int spyro3_cd_read_streamed(CPUState* cpu) {
     return cpu->ra == 0x80050758u && cpu->read_word(0x8006E344u) == 6u;
 }
-/* Whether the entry is inside func_800503F8 called from func_80050578's spins.
+/** @brief Whether the entry is inside func_800503F8 called from func_80050578's spins.
  *
  * The recompiled body can enter through more than one block, so any
  * address of the function counts.
- */
-int psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr) {
+ * @param cpu Guest CPU state at the entry (ra is the caller's return address).
+ * @param addr Guest address of the function being entered.
+ * @return 1 for the spin's poll, else 0. */
+static int spyro3_cd_spin_wait(CPUState* cpu, uint32_t addr) {
     return addr >= 0x800503F8u && addr < 0x80050504u && (cpu->ra == 0x800505B0u || cpu->ra == 0x80050658u);
 }
 
@@ -272,6 +262,35 @@ extern const freecam_game_desc        spyro3_freecam_desc;    /* features/freeca
 extern const game_orchestrator_t      spyro3_orchestrator;    /* renderer/reextract.c */
 extern const openpete_feature_list_t  spyro3_feature_list;    /* feature_list.c */
 void spyro3_interp_register(void);                             /* renderer/interp_regions.c */
+extern const psyq_game_conf_t         spyro3_psyq_conf;       /* gen/game_identity.c */
+extern const psyq_stub_table_t        spyro3_psyq_stub_table; /* gen/psyq_stub_table.c */
+
+/* The shared PSYQ thunk layer's hooks. load_window_active is NULL: no
+ * loader-state value opens a window the verifier skips. */
+static const psyq_game_hooks_t k_psyq = {
+    .conf               = &spyro3_psyq_conf,
+    .stubs              = &spyro3_psyq_stub_table,
+    /* D_80073F3C (psyq .bss): rand (func_8005C644) steps it, srand
+     * (func_8005C674) overwrites it. */
+    .rand_seed_addr     = 0x80073F3Cu,
+    /* The reference boot's `lhu` at 0x8004F6A4 (func_8004F6A0, stdutil.s)
+     * read this; it seeds srand. */
+    .root_counter2      = 0x58C7u,
+    .cd_read_in_load    = spyro3_cd_read_in_load,
+    .cd_read_delay_cap  = 100u,
+    .cd_read_streamed   = spyro3_cd_read_streamed,
+    .cd_spin_wait       = spyro3_cd_spin_wait,
+    /* loadStage: 2..7 the checksum walk, one step per iteration, 8..12 the
+     * level reads and parses, then -1. */
+    .load_window_word   = 0x8006C518u,
+    /* The overlay base: the title overlay's disc check writes CD-ROM
+     * commands from 0x8007BB3C, libcd below it. */
+    .cd_raw_pc_min      = 0x800742D0u,
+    /* func_800503F8's CdSync(1) at 0x800504E0, taken when D_8006E480
+     * (cleared by callback func_80050504) is 0. */
+    .cd_done_witness_ra = 0x800504E8u,
+    .sfx_slots          = &k_sfx_slots,
+};
 
 static const game_host_desc_t k_host = {
     .ui              = &spyro3_ui_game,
@@ -330,6 +349,7 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .surface              = spyro3_surface,
     .features             = &spyro3_feature_list,
     .host                 = &k_host,
+    .psyq                 = &k_psyq,
     .override_dispatch    = spyro3_override_dispatch,
     .mod_desc             = game_mod_desc,
 };

@@ -90,7 +90,7 @@ REQUIREMENT_LINE = ("@brief of one sentence on one line on every function; "
 FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "tests", "doc_fixture")
 
-# Definitions under #ifdef _WIN32 or a provides guard: invisible to the
+# Definitions under #ifdef _WIN32: invisible to the
 # linux-release parse, governed by review. `check --list` prints them.
 WINDOWS_ONLY = (
     "core/diag/crash.c:on_seh",
@@ -101,7 +101,6 @@ WINDOWS_ONLY = (
     "core/host/host_spawn.c:spawn_line",
     "core/runtime/openpete_time.c:sleep_until_win",
     "core/runtime/openpete_time.c:thread_timer",
-    "games/common/psyq/psyq_game_hooks_default.c:psyq_game_rand_seed_addr",
     "games/spyro-1/main.cpp:reconnect_std",
 )
 

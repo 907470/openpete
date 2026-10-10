@@ -157,6 +157,50 @@ add_custom_command(
 add_custom_target(code_docs DEPENDS ${_code_docs_stamp})
 add_dependencies(code_docs openpete_generated_headers)
 
+# PSYQ abort-on-call stubs, compiled once: the union of every built game's
+# generated stub names minus the names the shared thunk layer defines
+# (tools/filter_psyq_stubs.py union), with the runtime that reports a reached
+# stub. Every executable links the objects (openpete_add_game); each game's
+# guest address for a stub is in its own table, reached through its runtime
+# descriptor. The stubs stay exe-side: PE has no dynamic symbol preemption,
+# so module-side stubs would shadow the thunks on Windows.
+set(OPENPETE_PSYQ_THUNK_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/games/common/psyq/psyq_thunks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/games/common/psyq/psyq_game_hooks.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/games/common/psyq/psyq_sfx_slots.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/games/common/psyq/psyq_thunk_state.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/games/common/psyq/psyq_stub_runtime.c)
+set(_psyq_stub_inputs "")
+foreach(game IN LISTS OPENPETE_GAMES)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/generated/psyq_stubs.c")
+        list(APPEND _psyq_stub_inputs
+             "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/generated/psyq_stubs.c")
+    endif()
+endforeach()
+if(_psyq_stub_inputs)
+    set(_psyq_stubs_union ${CMAKE_CURRENT_BINARY_DIR}/psyq/psyq_stubs_union.c)
+    add_custom_command(
+        OUTPUT  ${_psyq_stubs_union}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/psyq
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/filter_psyq_stubs.py
+                union ${_psyq_stubs_union}
+                --stubs ${_psyq_stub_inputs}
+                --thunks ${OPENPETE_PSYQ_THUNK_SOURCES}
+        DEPENDS ${_psyq_stub_inputs} ${OPENPETE_PSYQ_THUNK_SOURCES}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/filter_psyq_stubs.py
+        COMMENT "Generating the PSYQ stub union (filter_psyq_stubs.py)"
+        VERBATIM)
+    add_library(openpete_psyq_stubs OBJECT
+        ${_psyq_stubs_union}
+        games/common/psyq/psyq_stub_runtime.c)
+    target_include_directories(openpete_psyq_stubs PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/games/common)
+    target_link_libraries(openpete_psyq_stubs PRIVATE openpete_core)
+    set_target_properties(openpete_psyq_stubs PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON)
+endif()
+
 foreach(game IN LISTS OPENPETE_GAMES)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/CMakeLists.txt")
         add_subdirectory(games/${game})

@@ -31,6 +31,9 @@ struct openpete_surface_sink;
 /* The shared host TUs' per-game tables (games/common/game_host_desc.h);
  * opaque to core. */
 struct game_host_desc;
+/* The shared PSYQ thunk layer's per-game hooks and tables
+ * (games/common/psyq/psyq_game_hooks.h); opaque to core. */
+struct psyq_game_hooks;
 
 /* The identity a game's recomp.conf declares (tools/gen_game_identity.py). */
 typedef struct openpete_game_identity {
@@ -86,6 +89,7 @@ typedef struct openpete_game_runtime {
     /* Host feature sets. */
     const openpete_feature_list_t* features;   /* NULL: no modules */
     const struct game_host_desc*   host;       /* the shared host TUs' tables */
+    const struct psyq_game_hooks*  psyq;       /* NULL: every PSYQ hook inert */
 
     /* Interception: the game's arms at every recompiled function entry,
      * after the engine's own (psx_override_dispatch). */

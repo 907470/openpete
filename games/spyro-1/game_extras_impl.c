@@ -737,6 +737,7 @@ extern const player_game_t            spyro1_player_game;     /* renderer/player
 extern const freecam_game_desc        spyro1_freecam_desc;    /* features/freecam.c */
 extern const game_orchestrator_t      spyro1_orchestrator;    /* renderer/reextract.c */
 extern const openpete_feature_list_t  spyro1_feature_list;    /* feature_list.c */
+extern const struct psyq_game_hooks   spyro1_psyq_hooks;      /* psyq_hooks.cpp */
 void spyro1_interp_register(void);                             /* renderer/interp_regions.c */
 
 static const game_host_desc_t k_host = {
@@ -790,6 +791,7 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .surface              = spyro1_surface,
     .features             = &spyro1_feature_list,
     .host                 = &k_host,
+    .psyq                 = &spyro1_psyq_hooks,
     .override_dispatch    = spyro1_override_dispatch,
     .mod_desc             = game_mod_desc,
 };

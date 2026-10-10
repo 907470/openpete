@@ -15,11 +15,14 @@
 //  - Couplings to one game's own features (its asset overlay, its render-path
 //    filter, its sfx tables).
 //
-// Every hook has an inert default (psyq_game_hooks_default.c), so a game
-// supplies only what it has; a game with no mirror declared writes no PSX RAM
-// from the thunk layer rather than writing another game's addresses. The
-// three address-only hooks marked below come from the generated
-// game_identity.c instead.
+// A game supplies what it has as one psyq_game_hooks_t, carried by its
+// runtime descriptor (openpete_game_runtime_t.psyq). Every psyq_game_* entry
+// below is a forwarder over that descriptor (psyq_game_hooks.c) with an inert
+// default for a field the game leaves 0 or NULL, so a game with no mirror
+// declared writes no PSX RAM from the thunk layer rather than writing another
+// game's addresses. The recomp.conf addresses come from the generated
+// game_identity.c and the abort-stub address table from the build's stub
+// filter (tools/filter_psyq_stubs.py).
 
 #ifndef OPENPETE_PSYQ_GAME_HOOKS_H
 #define OPENPETE_PSYQ_GAME_HOOKS_H
@@ -147,10 +150,11 @@ uint16_t psyq_game_root_counter2(void);
 
 /* --- Game feature couplings -------------------------------------------- */
 
-/* The vaddr every overlay of this game loads at (game_identity.c, from
- * recomp.conf OVERLAY_LOAD_ADDR). After a disc read lands there, the first
- * word is the overlay id and the dispatcher is re-pointed at that overlay's
- * translated code. */
+/** @brief Return the vaddr every overlay of this game loads at (recomp.conf OVERLAY_LOAD_ADDR).
+ *
+ * After a disc read lands there, the first word is the overlay id and the
+ * dispatcher is re-pointed at that overlay's translated code.
+ * @return The vaddr, or 0 when the game names none. */
 uint32_t psyq_game_overlay_vaddr(void);
 
 /** @brief Return the address of libgpu's 128-byte environment block.
@@ -170,10 +174,12 @@ uint32_t psyq_game_libgpu_env_addr(void);
  * @return The block's address, or 0 when not located. */
 uint32_t psyq_game_libgpu_clear_block_addr(void);
 
-/* libcd's state block (game_identity.c, from recomp.conf LIBCD_BLOCK_ADDR):
- * status byte at +0xC, the last CdlSetloc position at +0x18 (4 bytes), the
- * mode byte at +0x1C and the last command at +0x1D, which the library's
- * CdStatus, CdLastPos, CdMode and CdLastCom read. */
+/** @brief Return the address of libcd's state block (recomp.conf LIBCD_BLOCK_ADDR).
+ *
+ * The block holds the status byte at +0xC, the last CdlSetloc position at
+ * +0x18 (4 bytes), the mode byte at +0x1C and the last command at +0x1D,
+ * which the library's CdStatus, CdLastPos, CdMode and CdLastCom read.
+ * @return The block's address, or 0 when the game names none. */
 uint32_t psyq_game_libcd_block_addr(void);
 
 /* Asset overlay: a game may redirect a disc read at its own granularity. */
@@ -301,19 +307,20 @@ typedef struct {
  * @param out Receives the track index and the custom song path. */
 void psyq_game_music_route(int sector, psyq_music_route_t* out);
 
-/* Address of libcd's read-completion callback slot in PSX RAM
- * (game_identity.c, from recomp.conf CD_READ_CB_ADDR), for a game that links
- * libcd's own CdReadCallback rather than reaching the thunk: the registration
- * stores the guest handler there and never reaches psyq_CdRead's tracked
- * callback. 0 when the game registers through the thunk. */
+/** @brief Return the address of libcd's read-completion callback slot in PSX RAM (recomp.conf CD_READ_CB_ADDR).
+ *
+ * For a game that links libcd's own CdReadCallback rather than reaching the
+ * thunk: the registration stores the guest handler there and never reaches
+ * psyq_CdRead's tracked callback.
+ * @return The slot's address, or 0 when the game registers through the
+ *         thunk. */
 uint32_t psyq_game_cd_read_cb_addr(void);
 
-/* Render-path filter consumed by the OT walk. The two
- * render-path hooks are the one exception to the per-game rule above: the
- * isolation registry they forward to is shared code linked into every game
- * (renderer/render_paths.c), which defines them there. They take no
- * psyq_game_provides.h entry and have no inert default, so a game cannot link
- * the registry without arming the OT filter. */
+/* Render-path filter consumed by the OT walk. The two render-path hooks are
+ * the one exception to the per-game rule above: the isolation registry they
+ * forward to is shared code linked into every game (renderer/render_paths.c),
+ * which defines them there. They take no descriptor field and have no inert
+ * default, so a game cannot link the registry without arming the OT filter. */
 /** @brief Reports whether a --render-paths selection is in effect; forwards render_paths_active.
  *
  * @return Nonzero when the OT walk filters geometry prims by path. */
@@ -381,6 +388,73 @@ unsigned psyq_game_spu_bank_blast_len(void);
  * @param max Capacity of `out`.
  * @return How many names were written; 0 when the game names no sounds. */
 int  psyq_game_sfx_slot_names(unsigned spu_addr, const char** out, int max);
+
+/* --- The game's descriptor --------------------------------------------- */
+
+/* recomp.conf's PSYQ addresses, generated into game_identity.c as
+ * <tag>_psyq_conf (tools/gen_game_identity.py). */
+typedef struct psyq_game_conf {
+    uint32_t overlay_vaddr;     /* OVERLAY_LOAD_ADDR */
+    uint32_t libcd_block_addr;  /* LIBCD_BLOCK_ADDR */
+    uint32_t cd_read_cb_addr;   /* CD_READ_CB_ADDR; 0: through the thunk */
+} psyq_game_conf_t;
+
+/* A PSYQ symbol of the game's manifest that no thunk defines, with its guest
+ * address in this game. */
+typedef struct psyq_stub_addr {
+    const char* name;           /* "psyq_<symbol>", the stub's link name */
+    uint32_t    addr;
+} psyq_stub_addr_t;
+
+/* The game's abort-stub addresses, generated by tools/filter_psyq_stubs.py
+ * from the game's psyq_stubs.c as <tag>_psyq_stub_table. One stub body serves
+ * every game (the union stub set), so psyq_stub_hit looks the running game's
+ * address up here by name. */
+typedef struct psyq_stub_table {
+    const psyq_stub_addr_t* entries;
+    size_t                  count;
+} psyq_stub_table_t;
+
+/* What one game supplies to the shared thunk layer. Each field backs the
+ * psyq_game_* entry of the same name above; a 0 or NULL field takes that
+ * entry's documented default. */
+typedef struct psyq_game_hooks {
+    const psyq_game_conf_t*  conf;     /* NULL: every address 0 */
+    const psyq_stub_table_t* stubs;    /* NULL: stub addresses report 0 */
+
+    int  (*stack_frame)(psyq_frame_site_t site, psyq_game_frame_t* out);
+    void (*mirror_main)(CPUState* cpu);
+    void (*mirror_resetgraph)(CPUState* cpu, int mode);
+    void (*mirror_vsync_callback)(CPUState* cpu, uint32_t cb);
+    void (*mirror_pad_init)(CPUState* cpu, uint32_t buf0, uint32_t buf1);
+    void (*mirror_pad_slot2)(CPUState* cpu);
+    void (*mirror_memcard_init)(CPUState* cpu);
+    uint32_t rand_seed_addr;
+    uint16_t root_counter2;
+    uint32_t libgpu_env_addr;
+    uint32_t libgpu_clear_block_addr;
+
+    void (*cd_setloc)(const void* cdl_loc);
+    void (*cd_apply_buf)(unsigned char* buf, int sectors);
+    void (*cd_read_done)(CPUState* cpu, uint32_t read_cb);
+    int  (*cd_read_in_load)(CPUState* cpu);
+    uint32_t cd_read_delay_cap;
+    int  (*cd_read_streamed)(CPUState* cpu);
+    int  (*cd_spin_wait)(CPUState* cpu, uint32_t addr);
+    uint32_t load_window_word;
+    int  (*load_window_active)(uint32_t value);
+    uint32_t cd_raw_pc_min;            /* 0: none (the entry answers 0xFFFFFFFF) */
+    uint32_t cd_done_witness_ra;
+
+    void (*music_route)(int sector, psyq_music_route_t* out);
+    const psyq_sfx_slots_t* sfx_slots;
+} psyq_game_hooks_t;
+
+/** @brief Return the running game's PSYQ descriptor, or an all-zero one when the game registers none.
+ *
+ * @return The descriptor named by the registered openpete_game_runtime_t;
+ *         never NULL. */
+const psyq_game_hooks_t* psyq_game_hooks(void);
 
 #ifdef __cplusplus
 }

@@ -4,8 +4,8 @@ recomp module.
 
 The dynamically-loaded recomp module imports two families from the exe:
 
-  * psyq_<name> for every PSYQ symbol in manifest/psyq.toml (the strong
-    thunks + weak abort stubs both live exe-side), and
+  * psyq_<name> for every PSYQ symbol in manifest/psyq.toml (the thunks
+    and the abort stubs both live exe-side), and
   * the psx_runtime ABI surface it calls directly, maintained by hand in
     games/spyro-1/manifest/module_abi_exports.txt (lines: `symbol` or
     `symbol DATA`; '#' comments). Self-enforcing: a module import missing

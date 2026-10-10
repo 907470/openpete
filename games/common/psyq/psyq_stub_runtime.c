@@ -1,9 +1,13 @@
-// games/common/psyq/psyq_stub_runtime.c - backing implementation for the generated
-// psyq_stubs.c. It lives outside the generated file because that file avoids
+// games/common/psyq/psyq_stub_runtime.c - backing implementation for the
+// generated PSYQ abort-on-call stubs (tools/filter_psyq_stubs.py union). It
+// lives outside the generated file because that file avoids
 // <stdio.h>/<stdlib.h>: PSYQ exports names like printf, exit and sprintf,
-// which would collide with libc.
+// which would collide with libc. Compiled once with the stubs; the reached
+// symbol's address comes from the running game's stub table.
 
 #include "psx_runtime_internal.h"
+#include "openpete_game_runtime.h"
+#include "psyq/psyq_game_hooks.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,18 +23,33 @@ static const char* s_seen[STUB_SEEN_CAP];
 static int s_seen_n;
 static int s_continue = -1;
 
+/** @brief Return the running game's guest address of a stub, or 0 when its table does not name it.
+ *
+ * A linear scan of the game's stub table; reached only on a stub hit.
+ * @param name The stub's link name. */
+static uint32_t stub_addr(const char* name) {
+    const psyq_stub_table_t* t = psyq_game_hooks()->stubs;
+    if (!t) return 0u;
+    for (size_t i = 0; i < t->count; i++) {
+        if (strcmp(t->entries[i].name, name) == 0) return t->entries[i].addr;
+    }
+    return 0u;
+}
+
 /** @brief Report a call to a PSYQ symbol that has no thunk, then abort.
  *
- * Every generated stub of an unimplemented PSYQ function calls it. Unless
+ * Every generated stub of an unimplemented PSYQ function calls it. The
+ * symbol's guest address is the running game's, from its stub table (0 when
+ * the table does not name it). Unless
  * OPENPETE_PSYQ_STUB_CONTINUE is set and not "0" (read once), it prints the
  * symbol, its address and ra, sp and gp, and aborts. With the variable set
  * it logs each distinct symbol once (up to 256) as `psyq-missing:` and
  * returns, leaving the guest to run on with the call having done nothing.
  * @param name The symbol's name; the pointer is retained, so it must outlive
  *        the process.
- * @param addr The symbol's guest address.
  * @param cpu Guest CPU state; may be NULL. */
-void psyq_stub_hit(const char* name, uint32_t addr, CPUState* cpu) {
+void psyq_stub_hit(const char* name, CPUState* cpu) {
+    const uint32_t addr = stub_addr(name);
     if (s_continue < 0) {
         const char* e = getenv("OPENPETE_PSYQ_STUB_CONTINUE");
         s_continue = (e && *e && *e != '0') ? 1 : 0;

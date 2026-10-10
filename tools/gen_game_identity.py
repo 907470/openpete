@@ -7,9 +7,9 @@ recomp.conf is a shell fragment of KEY=value lines; the keys read here are
 DISPLAY_NAME, EXE_FILENAME, OVERLAY_LOAD_ADDR, LIBCD_BLOCK_ADDR and
 CD_READ_CB_ADDR (0 when absent: the game registers its read callback through
 the thunk). The output defines the game's runtime-descriptor identity,
-`<tag>_game_identity` (<tag> is <id> without its hyphens), and the three
-address-only PSYQ hooks, so a game's hand-written sources carry no identity
-constants.
+`<tag>_game_identity` (<tag> is <id> without its hyphens), and its PSYQ
+descriptor's recomp.conf addresses, `<tag>_psyq_conf`, so a game's
+hand-written sources carry no identity constants.
 """
 import argparse
 import re
@@ -79,14 +79,16 @@ const openpete_game_identity_t {tag}_game_identity = {{
     .exe_filename = {c_string(conf['EXE_FILENAME'])},
 }};
 
-/* Every overlay loads at this one vaddr; the first word landed there is the
- * overlay id that re-points the dispatcher. */
-uint32_t psyq_game_overlay_vaddr(void)    {{ return 0x{overlay:08X}u; }}
-/* libcd's state block, read by CdStatus, CdLastPos, CdMode and CdLastCom. */
-uint32_t psyq_game_libcd_block_addr(void) {{ return 0x{libcd:08X}u; }}
-/* The guest slot libcd's own CdReadCallback stores the handler in; 0 when
- * the game registers through the thunk instead. */
-uint32_t psyq_game_cd_read_cb_addr(void)  {{ return 0x{cd_cb:08X}u; }}
+/* overlay_vaddr: every overlay loads there; the first word landed there is
+ * the overlay id that re-points the dispatcher. libcd_block_addr: libcd's
+ * state block, read by CdStatus, CdLastPos, CdMode and CdLastCom.
+ * cd_read_cb_addr: the guest slot libcd's own CdReadCallback stores the
+ * handler in; 0 when the game registers through the thunk instead. */
+const psyq_game_conf_t {tag}_psyq_conf = {{
+    .overlay_vaddr    = 0x{overlay:08X}u,
+    .libcd_block_addr = 0x{libcd:08X}u,
+    .cd_read_cb_addr  = 0x{cd_cb:08X}u,
+}};
 '''
     with open(a.out, 'w', encoding='utf-8') as f:
         f.write(text)

@@ -2,9 +2,9 @@
 //
 // Defines the runtime descriptor spyro2_game_runtime (openpete_game_runtime.h)
 // over the hooks below and the tables of the game's other TUs. Identity is
-// generated from recomp.conf (game_identity.c). The PSYQ address hooks
-// defined below (rand seed slot, root counter 2) are hand-written and named
-// in psyq_game_provides.h, which suppresses their inert defaults. Bring-up
+// generated from recomp.conf (game_identity.c). The PSYQ descriptor below
+// carries the hand-written PSYQ addresses (rand seed slot, root counter 2),
+// the sound tables and the stream-read classifiers. Bring-up
 // state: the overlay hooks, --skip-to-level and the freecam wiring carry
 // real values; the descriptor leaves the hooks the game does not implement
 // NULL.
@@ -113,12 +113,6 @@ static void spyro2_set_skip_to_cutscene(int cutscene_id) {
     spyro2_cutscene_skip_arm(cutscene_id);
     if (level <= 0) spyro2_skip_set(source);
 }
-/* D_8006D144 (psyq .bss): rand (func_80059D2C) steps it, srand (func_80059D5C) overwrites it. */
-uint32_t psyq_game_rand_seed_addr(void) { return 0x8006D144u; }
-
-/* The reference boot's `lhu` at 0x8001C2DC (func_8001C2D8, stdutil.s) read this; it seeds srand. */
-uint16_t psyq_game_root_counter2(void) { return 0x4876u; }
-
 /* The level sound tables, loaded by func_8001D5FC (loaders.s): the
  * SoundTable pointer D_80067020 and the SoundDefinition pointer D_80067068.
  * ActiveSound[24] at D_80069A10, 0x2C bytes each, voice i at entry i
@@ -130,8 +124,6 @@ static const psyq_sfx_slots_t k_sfx_slots = {
     spyro2_sfx_slot_names,
 };
 
-const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return &k_sfx_slots; }
-
 /* Stream reads. The disc reader in str.c has two entries over the same
  * request words: func_80013918 issues a read (CdRead returns to 0x800139F0)
  * and returns, its callers polling the busy check func_80013690 from their
@@ -142,16 +134,21 @@ const psyq_sfx_slots_t* psyq_game_sfx_slots(void) { return &k_sfx_slots; }
  * reports the closing CdlPause complete. A cutscene plays with the top
  * state D_800681C8 at 6, and its loop func_titlescreen_and_loading_800742F8
  * streams through func_80013918 (0x800748D4). */
-/* Classify a read as a cutscene stream read: the asynchronous reader's CdRead while the top state is cutscene playback (6). */
-int psyq_game_cd_read_streamed(CPUState* cpu) {
+/** @brief Classify a read as a cutscene stream read: the asynchronous reader's CdRead while the top state is cutscene playback (6).
+ *
+ * @param cpu Guest CPU state at the CdRead call (ra is the call site).
+ * @return 1 for a stream read, else 0. */
+static int spyro2_cd_read_streamed(CPUState* cpu) {
     return cpu->ra == 0x800139F0u && cpu->read_word(0x800681C8u) == 6u;
 }
-/* Whether the entry is inside func_80013690 called from func_80013810's spins.
+/** @brief Whether the entry is inside func_80013690 called from func_80013810's spins.
  *
  * The recompiled body enters through more than one block (0x80013690,
  * 0x80013698), so any address of the function counts.
- */
-int psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr) {
+ * @param cpu Guest CPU state at the entry (ra is the caller's return address).
+ * @param addr Guest address of the function being entered.
+ * @return 1 for the spin's poll, else 0. */
+static int spyro2_cd_spin_wait(CPUState* cpu, uint32_t addr) {
     return addr >= 0x80013690u && addr < 0x8001379Cu && (cpu->ra == 0x80013848u || cpu->ra == 0x800138F0u);
 }
 
@@ -168,6 +165,23 @@ extern const freecam_game_desc        spyro2_freecam_desc;    /* features/freeca
 extern const game_orchestrator_t      spyro2_orchestrator;    /* renderer/reextract.c */
 extern const openpete_feature_list_t  spyro2_feature_list;    /* feature_list.c */
 void spyro2_interp_register(void);                             /* renderer/interp_regions.c */
+extern const psyq_game_conf_t         spyro2_psyq_conf;       /* gen/game_identity.c */
+extern const psyq_stub_table_t        spyro2_psyq_stub_table; /* gen/psyq_stub_table.c */
+
+/* The shared PSYQ thunk layer's hooks. */
+static const psyq_game_hooks_t k_psyq = {
+    .conf             = &spyro2_psyq_conf,
+    .stubs            = &spyro2_psyq_stub_table,
+    /* D_8006D144 (psyq .bss): rand (func_80059D2C) steps it, srand
+     * (func_80059D5C) overwrites it. */
+    .rand_seed_addr   = 0x8006D144u,
+    /* The reference boot's `lhu` at 0x8001C2DC (func_8001C2D8, stdutil.s)
+     * read this; it seeds srand. */
+    .root_counter2    = 0x4876u,
+    .cd_read_streamed = spyro2_cd_read_streamed,
+    .cd_spin_wait     = spyro2_cd_spin_wait,
+    .sfx_slots        = &k_sfx_slots,
+};
 
 static const game_host_desc_t k_host = {
     .ui              = &spyro2_ui_game,
@@ -222,6 +236,7 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .surface              = spyro2_surface,
     .features             = &spyro2_feature_list,
     .host                 = &k_host,
+    .psyq                 = &k_psyq,
     .override_dispatch    = spyro2_override_dispatch,
     .mod_desc             = game_mod_desc,
 };
