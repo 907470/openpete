@@ -24,7 +24,8 @@ next to the program; among mods, the later one in load order wins.
 ## Music
 
 `assets/music/track_NN.wav` replaces music track NN, a two-digit index
-from `00` to `47` in Spyro 1. The Modding site's
+from `00` to `47` in Spyro 1. Spyro 2 and Spyro 3 have no track index
+and no music replacement. The Modding site's
 [Music](../../modding/music.md) page lists which
 track plays where.
 

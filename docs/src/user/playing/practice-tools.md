@@ -43,8 +43,11 @@ same ticks at any speed; only the time between them changes.
 `--skip-to-level L` <!-- id: knob:skip_to_level --> starts a new game directly
 in level L, given as the game's level number or its name in
 `lower_snake_case`. `--skip-to-level` with no value, or an unknown name,
-prints the list; [Spyro the Dragon](../games/spyro-1.md) lists the Spyro 1
-names. In a window, the logos, title screen and loading run fast-forwarded
+prints the list. The game pages list each game's names:
+[Spyro the Dragon](../games/spyro-1.md),
+[Spyro 2](../games/spyro-2.md#levels),
+[Spyro 3](../games/spyro-3.md#levels); Spyro 3 also has
+[sub-area targets](../games/spyro-3.md#sub-areas). In a window, the logos, title screen and loading run fast-forwarded
 behind a black window with the audio muted until the level is playable.
 
 ```
@@ -55,7 +58,9 @@ To change level during a session, use the level warp in the
 [dev overlay](dev-overlay.md#level-warp).
 
 `--skip-to-cutscene C` <!-- id: knob:skip_to_cutscene --> plays a named
-cutscene. The Spyro 1 names:
+cutscene. The Spyro 2 and Spyro 3 names are on
+[Spyro 2](../games/spyro-2.md#cutscenes) and
+[Spyro 3](../games/spyro-3.md#cutscenes). The Spyro 1 names:
 
 | Name | Plays |
 | --- | --- |
@@ -68,7 +73,8 @@ cutscene. The Spyro 1 names:
 ## Cheats
 
 `--cheats A,B` <!-- id: knob:cheats --> applies the game's own built-in cheat
-codes without entering them on the pad. Spyro 1 has two:
+codes without entering them on the pad. Spyro 2 and Spyro 3 have none
+and refuse the flag. Spyro 1 has two:
 
 | Name | Effect | The game's code |
 | --- | --- | --- |

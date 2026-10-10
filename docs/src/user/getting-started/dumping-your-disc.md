@@ -16,6 +16,10 @@ pair. It does not read the disc drive directly.
 These are the Redump-verified image's hashes; Redump's database entry for
 the disc lists the same SHA-1 and MD5.
 
+Spyro 2 (SCUS-94425) and Spyro 3 (SCUS-94467) are dumped the same way; their
+images and hashes are on [Spyro 2](../games/spyro-2.md#disc) and
+[Spyro 3](../games/spyro-3.md#disc).
+
 ## Making the dump
 
 Use a disc-imaging program that writes raw 2352-byte sectors to a `.bin` with
