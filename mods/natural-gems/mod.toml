@@ -12,7 +12,7 @@
 # uses: `OP_REGISTER_OVERRIDE_CollectItem` - attaches that body without naming an address or a string
 # uses: `op_base_CollectItem` - falls through to the original with the same typed arguments
 # uses: `op_call_Sin` - calls an unrelated game function from inside the override, saving and restoring the argument registers around it
-# uses: `api->override_addr`, `api->base` - the Spyro 2 and 3 arms: a raw-register override at the collect function's address, since only Spyro 1 prototypes CollectItem and Sin
+# uses: `api->override_addr`, `api->base`, `api->call` - the Spyro 2 and 3 arms: a raw-register override at the collect function's address and a by-address call of the game's sine, since only Spyro 1 prototypes CollectItem and Sin
 # uses: `api->log` - reports the doubled pickup and the result of the nested call
 # uses: `api->ui_status` - shows the running totals in the Mods panel
 

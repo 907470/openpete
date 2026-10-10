@@ -27,8 +27,12 @@
  * Spyro 1 carries for CollectItem and Sin. On Spyro 2 and 3 the mod falls
  * back to a raw-register override at the collect function's address
  * (Spyro 2 func_80039678, Spyro 3 func_80036E60) with the gem total read
- * by address (0x800670CC, 0x8006C71C), and skips the nested Sin call,
- * which has no binding on those games.
+ * by address (0x800670CC, 0x8006C71C), and makes the nested sine call by
+ * address with the argument registers saved by hand. Those games' sine
+ * (Spyro 2 func_8001B61C, Spyro 3 func_8004E9E4) is Spyro 1's Sin
+ * (0x80016C58) instruction for instruction: angle masked to 0xFFF, a
+ * 257-entry halfword table identical to Spyro 1's, linear interpolation
+ * over the low 4 bits.
  */
 
 #include <openpete_mod_api.h>
@@ -40,18 +44,18 @@
 #elif OPENPETE_GAME_SPYRO2
 #define GEM_TOTAL_ADDR 0x800670CCu
 #define COLLECT_ADDR   0x80039678u
+#define SIN_ADDR       0x8001B61Cu
 #elif OPENPETE_GAME_SPYRO3
 #define GEM_TOTAL_ADDR 0x8006C71Cu
 #define COLLECT_ADDR   0x80036E60u
+#define SIN_ADDR       0x8004E9E4u
 #else
 #error "natural-gems: no collect or gem total binding for this game"
 #endif
 
 static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
-#if OPENPETE_GAME_SPYRO1
 static int                       g_first = 1;  /**< First pickup not yet seen. */
-#endif
 
 /** @brief Result of the one-shot Sin(1024) call; -1 until the first pickup. */
 static int32_t                   g_sin = -1;
@@ -69,10 +73,7 @@ static uint32_t                  g_bonus_gems;
  * not on the game.
  */
 static void publish_status(void) {
-    if (!OPENPETE_GAME_SPYRO1)
-        g_api->ui_status(g_self, "natural call skipped: no Sin binding "
-                         "on this game");
-    else if (g_sin < 0)
+    if (g_sin < 0)
         g_api->ui_status(g_self, "natural call not made yet "
                          "(runs on the first gem pickup)");
     else
@@ -134,13 +135,41 @@ OP_OVERRIDE_IMPL_CollectItem(my_collect) {
 }
 #else
 /**
+ * @brief Call the game's sine at SIN_ADDR with @p angle, keeping the caller's registers.
+ *
+ * The raw-register counterpart of op_call_Sin: a0-a3, ra, v0 and v1 are
+ * saved before api->call and restored after it, so the pending collect
+ * arguments reach base() unchanged.
+ * @param cpu The guest register file of the enclosing override.
+ * @param angle The angle on the 4096-unit circle.
+ * @return The sine scaled to 4096.
+ */
+static int32_t call_sin(CPUState* cpu, int32_t angle) {
+    uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2, a3 = cpu->a3;
+    uint32_t ra = cpu->ra, v0 = cpu->v0, v1 = cpu->v1;
+    cpu->a0 = (uint32_t)angle;
+    g_api->call(cpu, SIN_ADDR);
+    int32_t s = (int32_t)cpu->v0;
+    cpu->a0 = a0; cpu->a1 = a1; cpu->a2 = a2; cpu->a3 = a3;
+    cpu->ra = ra; cpu->v0 = v0; cpu->v1 = v1;
+    return s;
+}
+
+/**
  * @brief Raw-register override of the collect function on Spyro 2 and 3.
  *
- * The same post-hook as the Spyro 1 body: base() runs the original, then
- * the gem total's rise across it is added again.
+ * The same post-hook as the Spyro 1 body: the first pickup makes the
+ * nested sine call, base() runs the original, then the gem total's rise
+ * across it is added again.
  * @param cpu The guest register file at the call.
  */
 static void my_collect(CPUState* cpu) {
+    if (g_first) {
+        g_first = 0;
+        g_sin = call_sin(cpu, 1024);
+        g_api->log(g_self, OP_MOD_LOG_INFO,
+                   "natural call Sin(1024) -> %d", (int)g_sin);
+    }
     uint32_t before = op_read_u32(g_api, GEM_TOTAL_ADDR);
     g_api->base(cpu);
     double_award(before);

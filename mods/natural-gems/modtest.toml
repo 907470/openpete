@@ -1,6 +1,7 @@
 # modtest.toml - this repo's CI declaration for tools/modtest.py.
 # Engine-repo concern, not part of the mod manifest format.
 [test]
-frames        = 8000
+# Spyro 2's first gem pickup under the oracle replay lands at VBL 17737.
+frames        = 18500
 expect_oracle = "fail"
 expect_log    = ["natural call Sin(1024) -> 4096", "natural gem double"]
