@@ -243,6 +243,37 @@ void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st);
  * @param out Receives the status; NULL does nothing. */
 void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
 
+/* The game-neutral state the mod api's game services return
+ * (openpete_mod_api::gameplay_live, player_pose, level_id). */
+typedef struct {
+    int32_t  live;     /* game_is_gameplay_live                           */
+    int32_t  pose_rc;  /* game_read_player_pose: 1 placeable, 0 live, -1 none */
+    int32_t  x, y, z;  /* player position; valid when pose_rc >= 0        */
+    int32_t  yaw;      /* 12-bit facing, -1 when not located              */
+    int32_t  level;    /* level id, -1 when pose_rc < 0                   */
+    uint32_t tick;     /* canonical tick sampled at; 0 for a live read    */
+} openpete_mods_game_state_t;
+/** @brief Read the game-neutral state from guest RAM at the call.
+ *
+ * Reads only; tick context.
+ * @param cpu The game CPU.
+ * @param out Receives the state, tick 0. */
+void openpete_mods_game_state_read(CPUState* cpu, openpete_mods_game_state_t* out);
+/** @brief Sample the game-neutral state for calls from outside tick context.
+ *
+ * openpete_mods_tick_boundary calls it on the sim thread. The record is
+ * published under a sequence counter, so a reader on the compose thread
+ * never sees a mix of two ticks.
+ * @param cpu The game CPU.
+ * @param canonical_tick The canonical tick the sample belongs to. */
+void openpete_mods_game_state_sample(CPUState* cpu, unsigned canonical_tick);
+/** @brief Copy out the last sampled game-neutral state.
+ *
+ * Before the first sample it reads as no level live (live 0, pose_rc -1,
+ * level -1). Legal from any thread.
+ * @param out Receives the state. */
+void openpete_mods_game_state_sampled(openpete_mods_game_state_t* out);
+
 /* Guest scratch arena (core/mods/mod_arena.c): session-lifetime bump
  * allocator in the >2MB expansion window, registered as a psx_runtime
  * region - guest-addressable through the standard accessors, host-

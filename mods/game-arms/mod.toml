@@ -1,0 +1,23 @@
+# game-arms: one source, one override arm per game, closed by #error.
+#
+# The per-game SDK defines one of OPENPETE_GAME_SPYRO1/2/3, and each arm
+# binds that game's camera update, item-collect function and sine with a
+# counting pre-hook. Spyro 1 binds by name; Spyro 2 and 3 bind the
+# main-executable addresses until the decomp names the functions. A
+# fourth game's SDK stops the compile at the #error. The mod reads and
+# writes no guest RAM.
+#
+# uses: `api->override_name` - the Spyro 1 arm, which binds by name
+# uses: `api->override_addr` - the Spyro 2 and 3 arms, which bind by address
+# uses: `api->base` - each override is a pre-hook and runs the rest of the chain
+# uses: `api->log` - one line on each override's first call
+
+[mod]
+id      = "game-arms"
+name    = "Game Arms"
+version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
+api     = 13
+state    = "none"      # call counters only
+runahead = "host-fx"   # logs the first call of each override
+sim_mutative = false

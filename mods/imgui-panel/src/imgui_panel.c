@@ -55,8 +55,7 @@ static openpete_mod_t*           g_self;
 
 /** Stride of the level moby array. Field offsets come from the typed Moby
  * view in openpete_game_structs.h, so a layout change fails this compile
- * instead of silently reading the wrong bytes. g_Spyro's own moby is the
- * head of the Spyro struct, so the same offsets apply to it. */
+ * instead of silently reading the wrong bytes. */
 #define MOBY_STRIDE ((uint32_t)sizeof(Moby))
 #define MOBY_POS    ((uint32_t)offsetof(Moby, m_Position))
 #define MOBY_CLASS  ((uint32_t)offsetof(Moby, m_Class))
@@ -127,11 +126,15 @@ static void near_insert(int cls, int x, int y, int z, unsigned dist) {
     s_near[i].dist = dist;
 }
 
-static void sample_mobys(void) {
+/** @brief Count the live mobys and, while a level is live, keep the ten nearest to Spyro.
+ *
+ * Spyro's position comes from the api's player_pose service, the game's
+ * own player-object reader, so the distance needs no player layout.
+ * @param cpu The tick hook's CPU, which player_pose reads through. */
+static void sample_mobys(CPUState* cpu) {
     uint32_t m = op_read_u32(g_api, OP_GADDR_g_LevelMobys);
-    const int sx = op_read_s32(g_api, OP_GADDR_g_Spyro + MOBY_POS);
-    const int sy = op_read_s32(g_api, OP_GADDR_g_Spyro + MOBY_POS + 4u);
-    const int sz = op_read_s32(g_api, OP_GADDR_g_Spyro + MOBY_POS + 8u);
+    openpete_mod_pose_t p = { .struct_size = sizeof(openpete_mod_pose_t) };
+    const int have_pose = g_api->player_pose(g_self, cpu, &p) == 0;
     int n;
 
     s_near_n = 0;
@@ -146,9 +149,10 @@ static void sample_mobys(void) {
         x = op_read_s32(g_api, m + MOBY_POS);
         y = op_read_s32(g_api, m + MOBY_POS + 4u);
         z = op_read_s32(g_api, m + MOBY_POS + 8u);
+        if (!have_pose) continue;
         near_insert((int)(int16_t)op_read_u16(g_api, m + MOBY_CLASS),
                     x, y, z,
-                    abs_diff(x, sx) + abs_diff(y, sy) + abs_diff(z, sz));
+                    abs_diff(x, p.x) + abs_diff(y, p.y) + abs_diff(z, p.z));
     }
 }
 
@@ -161,7 +165,7 @@ static void on_gamestate_update(CPUState* cpu) {
          * and the two dispatch sites could not be told apart. */
         ImGui_TextUnformatted("imgui-panel: nor does this one");
     }
-    sample_mobys();
+    sample_mobys(cpu);
     s_ring[s_ring_head] = (float)s_live_count;
     s_ring_head = (s_ring_head + 1) % RING_N;
     if (s_ring_filled < RING_N) s_ring_filled++;
@@ -300,7 +304,7 @@ OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
-    if (api->api_version < 11u) return -1;
+    if (api->api_version < 13u) return -1;
 
     s_break_end = api->config_bool(self, "break_end", 0);
     s_hook_call = api->config_bool(self, "hook_call", 0);

@@ -192,6 +192,23 @@ int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z);
 int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
                          int32_t* out_yaw, int32_t* out_level);
 
+/** @brief Read the player's position, facing and level id while a level is live, placeable or not.
+ *
+ * The reader under game_get_player_pose, without its placeable gate, so
+ * the attract demo and the fly-in report a pose. Reads only. Nothing is
+ * written on a negative return.
+ * @param cpu The guest CPU state.
+ * @param out_x Receives x in world units.
+ * @param out_y Receives y in world units.
+ * @param out_z Receives z in world units.
+ * @param out_yaw Receives the 12-bit facing, or -1 when the game has none
+ *        located.
+ * @param out_level Receives the level id, or -1 when none located.
+ * @return 1 when the player is placeable, 0 when live but not placeable,
+ *         -1 when no level is live. */
+int game_read_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
+                          int32_t* out_yaw, int32_t* out_level);
+
 /* --- CLI overrides forwarded by core --- */
 /** @brief Arms a skip into a level through the game's own title-screen transition.
  *

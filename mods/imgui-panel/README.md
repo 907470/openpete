@@ -6,7 +6,8 @@ what the other path looks like.
 
 A tick hook - an override on `GamestateUpdate`, which runs every tick from
 the title screen on - walks the level moby array, counts the live mobys
-into a host-side ring and copies the ten nearest to Spyro. The UI section
+into a host-side ring and copies the ten nearest to Spyro, whose position
+it reads through `api->player_pose`. The UI section
 then draws that copy with the full C API: `ImGui_PlotLines` over the ring,
 an `ImGui_BeginTable` of the ten nearest, an `ImGui_ColorEdit3`, and a
 circle on the foreground draw list.

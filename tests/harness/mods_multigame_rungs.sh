@@ -32,6 +32,16 @@
 #                   each double a pickup, and a later pickup in the same
 #                   run starts from the doubled total, so the write landed
 #                   in guest RAM.
+#   game arms       game-arms registers its game's arm: the loader's
+#                   "override registered" lines for the mod equal the
+#                   game's expected count, and every bound address counts
+#                   calls above 0 on the attract demo.
+#   pose-report     the mod's source built as a "*" object
+#                   (-DOPENPETE_MOD_ANY_GAME, no per-game include path)
+#                   loads from .build/any/ and reports the player's pose
+#                   through the game services at screenshot presents: a
+#                   level id, gameplay live, the pose's level equal to
+#                   level_id, and at least two distinct positions.
 #   arms copies     (Spyro 2 and 3; Spyro 1 runs its own in check_mods.sh)
 #                   chain-duo nesting in both enabled orders, crash-dummy
 #                   attribution, arena-canary armed with no DESYNC across a
@@ -285,7 +295,7 @@ double_chain() {
         awk 'NR > 1 && $2 - $1 == prev { ok = 1 } { prev = $3 } END { print ok + 0 }'
 }
 
-ARMS_MODS="hello-anchor hud-stopwatch pad-probe mouse-probe sfx-play-probe chain-duo-a chain-duo-b arena-canary double-gems"
+ARMS_MODS="hello-anchor hud-stopwatch pad-probe mouse-probe sfx-play-probe chain-duo-a chain-duo-b arena-canary double-gems game-arms"
 say "per-game arms: $ARMS_MODS engage on $PG_GAME ($DEMO_FRAMES VBLs)"
 # shellcheck disable=SC2086
 fixture "$WORK/arms" $ARMS_MODS
@@ -307,6 +317,63 @@ else
     bad "double-gems: $n_dbl pickups doubled, no pickup started from a doubled total"
 fi
 
+# game-arms binds the camera update, the collect function and the sine on
+# every game: by name on Spyro 1, by address on Spyro 2 and 3.
+case "$PG_GAME" in
+    spyro-1|spyro-2|spyro-3) want_reg=3 ;;
+    *) want_reg=0 ;;
+esac
+n_reg="$(printf '%s\n' "$out" | grep -c "mod:game-arms.*override registered")"
+arm_calls="$(printf '%s\n' "$out" |
+    sed -n 's/.*link-calls owner=game-arms addr=\(0x[0-9A-F]*\) .* calls=\([0-9]*\)$/\1 \2/p' |
+    awk '{ n[$1] += $2 } END { for (a in n) if (n[a] > 0) printf "%s=%d ", a, n[a] }')"
+n_addr="$(printf '%s' "$arm_calls" | wc -w)"
+if [ "$n_reg" -eq "$want_reg" ] && [ "$n_addr" -eq "$want_reg" ]; then
+    ok "game-arms: $n_reg/$want_reg overrides registered, $n_addr/$want_reg addresses called (${arm_calls% })"
+else
+    bad "game-arms: $n_reg/$want_reg overrides registered, $n_addr/$want_reg addresses called"
+    printf '%s\n' "$out" | grep -E "game-arms" | head -8
+fi
+
+say "pose-report: a \"*\" object reports the pose on $PG_GAME"
+d="$WORK/pose/pose-report"
+mkdir -p "$WORK/pose"
+cp -r "$MODS_SRC/pose-report" "$d"
+rm -rf "${d:?}/.build" "${d:?}/src"
+mkdir -p "$d/.build/any"
+echo pose-report > "$WORK/pose/enabled.txt"
+if "$CC_MOD" -shared -fPIC -O2 -fno-strict-aliasing -Wall -Wundef -Werror \
+        -DOPENPETE_MOD_ANY_GAME -I"$SDK_ROOT" "$SDK_ROOT/openpete_mod_abi.c" \
+        "$MODS_SRC/pose-report/src/pose_report.c" -o "$d/.build/any/pose-report.so" \
+        > "$WORK/pose-cc.log" 2>&1; then
+    ok "pose-report builds as a \"*\" object"
+else
+    bad "pose-report \"*\" build failed"
+    head -5 "$WORK/pose-cc.log"
+fi
+# A headless run presents only at a screenshot VBL, so the run takes ten,
+# spread over the demo window.
+shots=""
+for k in 1 2 3 4 5 6 7 8 9 10; do
+    shots="${shots:+$shots,}$((DEMO_FRAMES * k / 11))"
+done
+out="$( RUN_TIMEOUT=600 run_game "$WORK/pose" "$DEMO_FRAMES" \
+        --renderer vk --screenshot-native-only --screenshot-on-frame "$shots" \
+        --screenshot-output "$WORK/pose/shot__{n}.png" )"
+pose_lines="$(printf '%s\n' "$out" |
+    sed -n 's/.*pose tick \([0-9]*\) live \(-\?[0-9]*\) level \(-\?[0-9]*\)\/\(-\?[0-9]*\) pos (\(-\?[0-9]*\), \(-\?[0-9]*\), \(-\?[0-9]*\)).*/\1 \2 \3 \4 \5 \6 \7/p')"
+n_pose="$(printf '%s\n' "$pose_lines" | grep -c .)"
+n_pos="$(printf '%s\n' "$pose_lines" | awk 'NF { seen[$5 " " $6 " " $7] = 1 } END { print length(seen) }')"
+n_bad="$(printf '%s\n' "$pose_lines" | awk 'NF && ($1 == 0 || $2 != 1 || $3 < 0 || $3 != $4) { n++ } END { print n + 0 }')"
+if printf '%s\n' "$out" | grep -q "loaded pose-report " &&
+   printf '%s\n' "$out" | grep -q "running on $PG_GAME" &&
+   [ "$n_pose" -ge 2 ] && [ "$n_pos" -ge 2 ] && [ "$n_bad" -eq 0 ]; then
+    ok "pose-report: $n_pose reports, $n_pos distinct positions; first [$(printf '%s\n' "$pose_lines" | awk 'NF { print; exit }')] last [$(printf '%s\n' "$pose_lines" | awk 'NF { l = $0 } END { print l }')] (tick live level level_id x y z)"
+else
+    bad "pose-report: $n_pose reports, $n_pos distinct positions, $n_bad inconsistent"
+    printf '%s\n' "$out" | grep -E "pose-report|pose tick" | head -8
+fi
+
 say "per-game arms: natural-gems engages on $PG_GAME"
 fixture "$WORK/natural" natural-gems
 out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
@@ -319,12 +386,10 @@ if [ "$n" -gt 0 ] && [ "$n_dbl" -gt 0 ] &&
 else
     bad "natural-gems: $n calls, $n_dbl pickups doubled or the doubled total not carried"
 fi
-if [ "$PG_GAME" = "spyro-1" ]; then
-    if printf '%s\n' "$out" | grep -q "natural call Sin(1024) -> 4096"; then
-        ok "natural-gems: Sin(1024) -> 4096"
-    else
-        bad "natural-gems: typed Sin call missing or wrong"
-    fi
+if printf '%s\n' "$out" | grep -q "natural call Sin(1024) -> 4096"; then
+    ok "natural-gems: Sin(1024) -> 4096"
+else
+    bad "natural-gems: Sin call missing or wrong"
 fi
 
 # ── M9. Spyro 2 and 3 copies of the Spyro 1 arms rungs ───────────────────

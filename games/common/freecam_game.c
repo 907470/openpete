@@ -668,12 +668,18 @@ int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t*
                          int32_t* out_yaw, int32_t* out_level) {
     if (!level_live(cpu)) return -1;
     if (!player_placeable(cpu)) return -2;
+    return game_read_player_pose(cpu, out_x, out_y, out_z, out_yaw, out_level) >= 0 ? 0 : -1;
+}
+
+int game_read_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
+                          int32_t* out_yaw, int32_t* out_level) {
+    if (!level_live(cpu)) return -1;
     *out_x = (int32_t)cpu->read_word(D->player_pos + 0);
     *out_y = (int32_t)cpu->read_word(D->player_pos + 4);
     *out_z = (int32_t)cpu->read_word(D->player_pos + 8);
     *out_yaw   = D->player_facing ? (int32_t)(cpu->read_word(D->player_facing) & 0xFFFu) : -1;
     *out_level = D->level_id ? (int32_t)cpu->read_word(D->level_id) : -1;
-    return 0;
+    return player_placeable(cpu) ? 1 : 0;
 }
 
 /** @brief Read OPENPETE_FREECAM_AT_VBL, the VBL the scripted engage waits for.

@@ -136,6 +136,24 @@ typedef struct openpete_mod_pad {
     uint8_t  libpad[8];   /**< The slot as a libpad PADRAW buffer. */
 } openpete_mod_pad_t;
 
+/**
+ * @brief The player's pose as read by openpete_mod_api::player_pose.
+ *
+ * Set `struct_size` to `sizeof(openpete_mod_pose_t)` before the call; the
+ * engine refuses any other size. Positions are the game's world units, in
+ * the same space on all three games.
+ */
+typedef struct openpete_mod_pose {
+    uint32_t struct_size; /**< sizeof(openpete_mod_pose_t) at the mod's compile time. */
+    int32_t  x;           /**< World x. */
+    int32_t  y;           /**< World y. */
+    int32_t  z;           /**< World z (up). */
+    int32_t  yaw;         /**< Facing, 4096 per turn; -1 on a game whose facing field is not located. */
+    int32_t  level;       /**< The level id (openpete_mod_api::level_id). */
+    uint32_t placeable;   /**< 1 while the player is under pad control in the ordinary follow camera; 0 in the attract demo, a fly-in or an exit sequence. */
+    uint32_t tick;        /**< The canonical tick the record was sampled at; 0 for a live read from tick context. */
+} openpete_mod_pose_t;
+
 /** @brief Context handed to a present hook (openpete_mod_api::register_present_hook). */
 typedef struct openpete_present_ctx {
     uint32_t tick;   /**< Sim tick counter. */
@@ -1081,6 +1099,63 @@ typedef struct openpete_mod_api {
      */
     int (*override_ovl)(openpete_mod_t* self, uint32_t overlay_id,
                         uint32_t addr, openpete_mod_override_fn fn);
+    /** @} */
+
+    /** @name Game-neutral services
+     * The running game's identity, its gameplay state, the player's pose
+     * and the level, through each game's own reader, so one source reads
+     * them on every game without a per-game header.
+     *
+     * A call with a non-NULL `cpu` from tick context (entry, an override,
+     * a toggle hook) reads guest RAM through it at the call. A call with
+     * `cpu` NULL, and every call from a present hook or a UI section,
+     * returns the record the engine sampled at the last canonical tick
+     * boundary: the state after that tick, the state every present of the
+     * tick shows. Before the first boundary that record reads as no level
+     * live.
+     * @{ */
+    /**
+     * @brief The running game's id: "spyro-1", "spyro-2" or "spyro-3".
+     *
+     * The id a manifest's `game` key names. Legal from any context.
+     * @return A string owned by the engine, valid for the session.
+     * @since api 13
+     */
+    const char* (*game_id)(openpete_mod_t* self);
+    /**
+     * @brief Whether gameplay is live: in a level, not booting, loading or on the title screen.
+     *
+     * True in the attract demo's levels.
+     * @param cpu The tick hook's CPU, or NULL for the sampled record.
+     * @return 1 while live, 0 otherwise.
+     * @since api 13
+     */
+    int (*gameplay_live)(openpete_mod_t* self, CPUState* cpu);
+    /**
+     * @brief Read the player's position, facing and level while a level is live.
+     *
+     * The game's player-object position and the level id word, read
+     * during the attract demo as during play; `placeable` tells the two
+     * apart.
+     * @param cpu The tick hook's CPU, or NULL for the sampled record.
+     * @param out `struct_size` set by the caller; filled on success.
+     * @return 0 on success; -1, writing nothing, for a wrong
+     *         `struct_size` or while no level is live.
+     * @since api 13
+     */
+    int (*player_pose)(openpete_mod_t* self, CPUState* cpu,
+                       openpete_mod_pose_t* out);
+    /**
+     * @brief The id of the level being played.
+     *
+     * The game's own level number: Spyro 1 `g_LevelId` (10 = Artisans),
+     * Spyro 2 the level the loader loaded (10..66), Spyro 3
+     * `currentLevel`. Each game numbers its levels differently.
+     * @param cpu The tick hook's CPU, or NULL for the sampled record.
+     * @return The id, or -1 while no level is live.
+     * @since api 13
+     */
+    int (*level_id)(openpete_mod_t* self, CPUState* cpu);
     /** @} */
 } openpete_mod_api_t;
 

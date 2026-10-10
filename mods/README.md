@@ -43,8 +43,9 @@ In-tree mods: `declarative-example`, `music-swap`,
 `recolored-artisans` are declarative; `hello-anchor`, `double-gems`,
 `natural-gems`, `hud-stopwatch`, `crt-filter`, `crt-beans`, `scene-sepia`,
 `channel-gallery`, `moby-instance-tint`, `egg-hud-3d`, `teapot-dragons`,
-`crash3-models`, `supercharge-anywhere`, `imgui-panel`, and
-`glyph-v-fix` ship code.
+`crash3-models`, `supercharge-anywhere`, `imgui-panel`, `glyph-v-fix`,
+`game-arms` (one override arm per game), and `pose-report` (one source
+for every game, through the game services) ship code.
 
 CI fixtures, not examples: `arena-canary`, `arena-probe`, `chain-duo-a`,
 `chain-duo-b`, `crash-dummy`, `demo-lib`, `lib-and-client`, `raw-probe`,

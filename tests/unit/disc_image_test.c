@@ -270,10 +270,10 @@ int main(void) {
 
     cache_cases(path);
 
-    /* The api table's read_sector slot is appended after disc_path, last. */
-    check(offsetof(openpete_mod_api_t, read_sector) > offsetof(openpete_mod_api_t, disc_path) &&
-          offsetof(openpete_mod_api_t, read_sector) + sizeof(void*) == sizeof(openpete_mod_api_t),
-          "read_sector is the api table's last slot");
+    /* The api table's read_sector slot is appended after disc_path, the
+     * last api 12 slot. */
+    check(offsetof(openpete_mod_api_t, read_sector) == offsetof(openpete_mod_api_t, disc_path) + sizeof(void*),
+          "read_sector follows disc_path");
     check(OPENPETE_MOD_API_VERSION >= 13u, "api version covers read_sector");
 
     remove(path); remove(cooked); remove(odd);

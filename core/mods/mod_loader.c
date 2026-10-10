@@ -1392,6 +1392,79 @@ static int api_read_sector(openpete_mod_t* self, uint32_t lba, uint8_t* buf) {
     return disc_image_game_read_sector(lba, buf);
 }
 
+/** @brief Return the running game's id for the game_id api entry.
+ *
+ * @param self The calling mod; unused, since the id is the session's.
+ * @return The registered game's id string. */
+static const char* api_game_id(openpete_mod_t* self) {
+    (void)self;
+    return game_get_id();
+}
+
+/** @brief Fill the game-neutral state a game-service call reads.
+ *
+ * A non-NULL @p cpu outside a present hook or UI section reads guest RAM
+ * at the call; otherwise the record sampled at the last canonical tick
+ * boundary is returned, since off tick context the guest is mid-tick or
+ * on another thread.
+ * @param cpu The calling tick hook's CPU, or NULL.
+ * @param out Receives the state. */
+static void api_game_state(CPUState* cpu, openpete_mods_game_state_t* out) {
+    if (cpu && !openpete_mods_in_present) openpete_mods_game_state_read(cpu, out);
+    else openpete_mods_game_state_sampled(out);
+}
+
+/** @brief Report whether gameplay is live, for the gameplay_live api entry.
+ *
+ * @param self The calling mod; NULL reads as not live.
+ * @param cpu The calling tick hook's CPU, or NULL for the sampled record.
+ * @return 1 while gameplay is live, else 0. */
+static int api_gameplay_live(openpete_mod_t* self, CPUState* cpu) {
+    if (!self) return 0;
+    openpete_mods_game_state_t st;
+    api_game_state(cpu, &st);
+    return st.live;
+}
+
+/** @brief Fill an openpete_mod_pose_t for the player_pose api entry.
+ *
+ * @param self The calling mod; NULL fails.
+ * @param cpu The calling tick hook's CPU, or NULL for the sampled record.
+ * @param out The caller's record; its struct_size must match the engine's.
+ * @return 0 when filled; -1, writing nothing, for a NULL argument, a wrong
+ *         struct_size or while no level is live. */
+static int api_player_pose(openpete_mod_t* self, CPUState* cpu,
+                           openpete_mod_pose_t* out) {
+    if (!self || !out) return -1;
+    if (out->struct_size != (uint32_t)sizeof(openpete_mod_pose_t)) {
+        OPL_ERROR_F(self->log_tag, "player_pose: struct_size %u, engine expects %u "
+                    "(rebuild against this SDK)", out->struct_size,
+                    (unsigned)sizeof(openpete_mod_pose_t));
+        return -1;
+    }
+    openpete_mods_game_state_t st;
+    api_game_state(cpu, &st);
+    if (st.pose_rc < 0) return -1;
+    out->x = st.x; out->y = st.y; out->z = st.z;
+    out->yaw = st.yaw;
+    out->level = st.level;
+    out->placeable = st.pose_rc > 0 ? 1u : 0u;
+    out->tick = st.tick;
+    return 0;
+}
+
+/** @brief Return the level being played, for the level_id api entry.
+ *
+ * @param self The calling mod; NULL reads as no level.
+ * @param cpu The calling tick hook's CPU, or NULL for the sampled record.
+ * @return The game's level id, or -1 while no level is live. */
+static int api_level_id(openpete_mod_t* self, CPUState* cpu) {
+    if (!self) return -1;
+    openpete_mods_game_state_t st;
+    api_game_state(cpu, &st);
+    return st.level;
+}
+
 /** @brief Report whether the host key with the given SDL name is held.
  *
  * Reads the host input snapshot rather than SDL's live keyboard array, since
@@ -2134,6 +2207,7 @@ static void cfg_apply_schedule_run(unsigned canonical_tick) {
 
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     s_current_tick = canonical_tick;
+    openpete_mods_game_state_sample(cpu, canonical_tick);
     for (size_t i = 0; i < mod_fvec_count(&s_toggle_sched); i++) {
         const toggle_sched_t* t =
             (const toggle_sched_t*)mod_fvec_at(&s_toggle_sched, i);
@@ -2736,6 +2810,11 @@ static const openpete_mod_api_t s_api = {
     .disc_path     = api_disc_path,
     .read_sector   = api_read_sector,
     .override_ovl  = api_override_ovl,
+    /* game-neutral services (api 13) */
+    .game_id       = api_game_id,
+    .gameplay_live = api_gameplay_live,
+    .player_pose   = api_player_pose,
+    .level_id      = api_level_id,
     /* declared input bindings */
     .binding_down  = api_binding_down,
     /* pillar 9: game data + texture packs (api 2) */

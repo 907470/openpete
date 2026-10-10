@@ -20,6 +20,7 @@
 # uses: `ui->text`, `ui->text_disabled` - the vtable and the ImGui calls mix freely in one body
 # uses: `api->override_name` - a GamestateUpdate hook, the per-tick sampler
 # uses: `api->base` - hands control back after sampling
+# uses: `api->player_pose` - Spyro's position for the nearest-ten distances, through the game's own player reader
 # uses: `api->register_present_hook` - registered only by the containment toggle, to make a call from the wrong context
 # uses: `api->config_bool` - the two containment toggles
 # uses: `api->ui_status` - explains in the Mods panel what the toggles do
@@ -30,7 +31,7 @@ id      = "imgui-panel"
 name    = "ImGui Panel"
 version = "0.1.0"
 game    = "spyro-1"
-api     = 11
+api     = 13
 state   = "none"       # host-side ring only; nothing to save
 runahead = "pure"      # reads guest RAM, writes none
 sim_mutative = false

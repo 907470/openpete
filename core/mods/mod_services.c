@@ -10,7 +10,9 @@
 #include "openpete_log.h"
 #include "openpete_state.h"
 #include "mod_vec.h"
+#include "game_extras.h" /* game_is_gameplay_live, game_read_player_pose */
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +32,58 @@ void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st) {
 /* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out) {
     if (out) *out = s_bk2_status;
+}
+
+/* The game-neutral state sampled at each canonical tick boundary, as eight
+ * words in openpete_mods_game_state_t order, under a sequence counter: odd
+ * while the sim thread writes, so a compose-thread reader retries rather
+ * than copy a record split across two ticks. The initial words read as no
+ * level live. */
+enum { GAME_STATE_WORDS = 8 };
+static atomic_uint     s_game_seq;
+static _Atomic int32_t s_game_words[GAME_STATE_WORDS] = { 0, -1, 0, 0, 0, -1, -1, 0 };
+
+/* Documented at the declaration in openpete_mods.h. */
+void openpete_mods_game_state_read(CPUState* cpu, openpete_mods_game_state_t* out) {
+    memset(out, 0, sizeof *out);
+    out->live    = game_is_gameplay_live(cpu) ? 1 : 0;
+    out->pose_rc = game_read_player_pose(cpu, &out->x, &out->y, &out->z,
+                                         &out->yaw, &out->level);
+    if (out->pose_rc < 0) {
+        out->x = out->y = out->z = 0;
+        out->yaw = out->level = -1;
+    }
+}
+
+/* Documented at the declaration in openpete_mods.h. */
+void openpete_mods_game_state_sample(CPUState* cpu, unsigned canonical_tick) {
+    openpete_mods_game_state_t st;
+    openpete_mods_game_state_read(cpu, &st);
+    st.tick = canonical_tick;
+    const int32_t w[GAME_STATE_WORDS] = { st.live, st.pose_rc, st.x, st.y, st.z,
+                                          st.yaw, st.level, (int32_t)st.tick };
+    const unsigned seq = atomic_load_explicit(&s_game_seq, memory_order_relaxed);
+    atomic_store_explicit(&s_game_seq, seq + 1u, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    for (int i = 0; i < GAME_STATE_WORDS; i++)
+        atomic_store_explicit(&s_game_words[i], w[i], memory_order_relaxed);
+    atomic_store_explicit(&s_game_seq, seq + 2u, memory_order_release);
+}
+
+/* Documented at the declaration in openpete_mods.h. */
+void openpete_mods_game_state_sampled(openpete_mods_game_state_t* out) {
+    int32_t w[GAME_STATE_WORDS];
+    unsigned a, b;
+    do {
+        a = atomic_load_explicit(&s_game_seq, memory_order_acquire);
+        for (int i = 0; i < GAME_STATE_WORDS; i++)
+            w[i] = atomic_load_explicit(&s_game_words[i], memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        b = atomic_load_explicit(&s_game_seq, memory_order_relaxed);
+    } while ((a & 1u) || a != b);
+    out->live = w[0]; out->pose_rc = w[1];
+    out->x = w[2]; out->y = w[3]; out->z = w[4];
+    out->yaw = w[5]; out->level = w[6]; out->tick = (uint32_t)w[7];
 }
 
 static int         s_pending_op = 0; /* 0 none, 1 save, 2 load */

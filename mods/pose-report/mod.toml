@@ -1,0 +1,26 @@
+# pose-report: one source for every game, reading the player's pose and
+# the level through the game-neutral services.
+#
+# The source includes openpete_mod_api.h alone and has no per-game
+# branch, so it also builds as a "*" object (-DOPENPETE_MOD_ANY_GAME, no
+# per-game include path) that loads from .build/any/ on all three games.
+# A present hook reads the record the engine samples at each tick
+# boundary and reports it at most once a second, and on every level
+# change, as a toast and a log line.
+#
+# uses: `api->game_id` - names the running game in the entry line
+# uses: `api->gameplay_live` - reported beside the pose
+# uses: `api->player_pose` - the player's position, facing and level, read in the attract demo as in play
+# uses: `api->level_id` - the level being played, reported beside the pose's own level
+# uses: `api->register_present_hook` - the one context a game-neutral object reaches on every game without a per-game override address
+# uses: `api->notify` - the pose as a coalescing toast
+# uses: `api->log` - the entry line and one line per report
+
+[mod]
+id      = "pose-report"
+name    = "Pose Report"
+version = "0.1.0"
+api     = 13
+state    = "none"      # report pacing only; nothing to carry across a state load
+runahead = "host-fx"   # logs and toasts; reads no guest RAM itself
+sim_mutative = false

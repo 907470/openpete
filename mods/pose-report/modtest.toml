@@ -1,0 +1,12 @@
+# modtest.toml - this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+#
+# Headless runs present nothing, so the present hook stays silent here:
+# this run proves the source compiles for the game's SDK, loads, and that
+# the tick-boundary sampler leaves gameplay byte-identical. The pose
+# reports, and the "*" build of the same source, are asserted by
+# tests/harness/mods_multigame_rungs.sh, which takes screenshots.
+[test]
+frames        = 8000
+expect_oracle = "pass"
+expect_log    = ["running on spyro-"]

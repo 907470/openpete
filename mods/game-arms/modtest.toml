@@ -1,0 +1,9 @@
+# modtest.toml - this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+#
+# The per-game override counts and each override's call counter are
+# asserted by tests/harness/mods_multigame_rungs.sh.
+[test]
+frames        = 8000
+expect_oracle = "pass"
+expect_log    = ["camera clock: first call", "sine: first call"]
