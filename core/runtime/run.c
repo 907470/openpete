@@ -1780,11 +1780,11 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
                        op_time_t span_end, op_time_t prod_end)
 {
     eager_close_span();   /* the previous span's books first */
-    /* The render grid's next slot may lead now by more than a period (the
-     * host loop steps it once per iteration and catches it up only when it
-     * falls behind); a slot that far out would leave this tick's span one
-     * slot, or none past the clamp to it. Its earliest instant at or after
-     * now, on the same phase, is the span's first. */
+    /* Precondition check: under eager the host loop keeps the render grid's
+     * next slot within one period of now, so this trims nothing. A slot that
+     * led by more would leave this tick's span one slot, or none past the
+     * clamp to it; its earliest instant at or after now, on the same phase,
+     * is the span's first, and s_eager.trimmed counts the breach. */
     const op_time_t first_in = first;
     if (first - now > period) {
         first -= ((first - now) / period) * period;
@@ -6734,20 +6734,23 @@ static int run_host_loop(const openpete_options_t* opts) {
                                "of wall time)", (double)behind / 1e6, (long long)skip);
                 }
             }
-            op_deadline_advance(&next_render, s_render_period, 1);
             if (s_eager.active) {
                 /* Under eager production the render grid is the present
                  * thread's business: this loop only borrows its PHASE when it
-                 * plans a span. Step it silently to the present (no slip
-                 * accounting - nothing was missed) and sleep to the sim
-                 * deadline alone, instead of waking once per slot to do
-                 * nothing, or spinning flat out at an uncapped --render-fps. */
+                 * plans a span. Place it on the grid's first instant after
+                 * now (no slip accounting - nothing was missed) and sleep to
+                 * the sim deadline alone, instead of waking once per slot to
+                 * do nothing, or spinning flat out at an uncapped
+                 * --render-fps. It never steps while already ahead of now, so
+                 * back-to-back catch-up iterations cannot push it more than
+                 * one period past now. */
                 const op_time_t rp = op_period_ns(s_render_period);
-                if (rp > 0 && now2 > next_render.at)
+                if (rp > 0 && now2 >= next_render.at)
                     op_deadline_advance(&next_render, s_render_period,
                                         (now2 - next_render.at) / rp + 1);
                 pace_sleep_until(next_sim.at, next_sim.at);
             } else {
+                op_deadline_advance(&next_render, s_render_period, 1);
             {
                 const op_time_t rp = op_period_ns(s_render_period);
                 if (rp > 0 && now2 - next_render.at > slip_threshold_ns) {
