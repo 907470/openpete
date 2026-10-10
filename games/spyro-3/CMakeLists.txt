@@ -70,6 +70,9 @@ openpete_add_game(spyro-3
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
 
+        # OPENPETE_S3_STATE_LOG: the read-only game.state change log.
+        features/state_log.c
+
         # The overlay-id boot and restore hooks, shared with Spyro 2.
         ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c
 

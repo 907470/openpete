@@ -52,6 +52,7 @@
 #include "features/levelwarp.h"
 #include "features/cutscene_skip.h"
 #include "features/skip_to_area.h"
+#include "features/state_log.h"
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
 #include "features/levelwarp_ui.h"
@@ -99,6 +100,9 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* Dev-overlay level warp (M): drains a queued Jump into the game's
      * own level transition. Inert until one is clicked. */
     spyro3_levelwarp_on_tick(cpu);
+    /* OPENPETE_S3_STATE_LOG: one stderr line per change of the game's
+     * state words, read after the skip's own stores for this tick. */
+    spyro3_state_log_on_tick(cpu, frame_counter);
     /* Scripted player placement (--player-pose) on the first placeable
      * tick, then scripted engage of the debug free camera (OPENPETE_FREECAM=1
      * / OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live;
