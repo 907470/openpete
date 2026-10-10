@@ -10,3 +10,5 @@ declarative-example
 channel-gallery
 teapot-dragons
 imgui-panel
+pose-report
+game-arms

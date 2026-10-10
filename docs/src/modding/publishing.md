@@ -25,6 +25,12 @@ that asks for a newer API than it has, before the entry point runs. The
 API struct is append-only, so a mod built for api N loads on every later
 engine.
 
+The pin also selects the overlay-address behaviour and, for a manifest
+with no `game` key, the games the mod loads on: raising a pin to 13 for
+any other api entry turns the mod's window `override_addr` and ambiguous
+raw `override_name` calls into refusals, and a game-less manifest below 13
+loads on Spyro 1 only ([Manifest](manifest.md)).
+
 ## Prefer source
 
 A mod that ships `src/*.c` compiles on the player's machine against the
@@ -68,6 +74,39 @@ only when its game fits:
 A `"*"` object reads no per-game header, so `override_addr` and a
 `func_`-spelled `override_name` resolve through the running game's
 addresses; each such call logs a warning.
+
+## Build by hand
+
+`<sdk>` is the engine's `sdk/` directory and `<game>` one of `spyro-1`,
+`spyro-2`, `spyro-3`; build once per game the manifest selects. These are
+the engine's own compile flags.
+
+Linux:
+
+``` sh
+cc -shared -fPIC -O2 -fno-strict-aliasing -Wall -Wundef \
+   -I <sdk>/games/<game> -I <sdk> \
+   -o .build/<game>/<id>.so src/*.c <sdk>/openpete_mod_abi.c
+```
+
+Windows, with the bundled llvm-mingw or any x86_64 MinGW compiler:
+
+``` sh
+x86_64-w64-mingw32-gcc -shared -Wl,--export-all-symbols -O2 \
+   -fno-strict-aliasing -Wall -Wundef -static-libgcc \
+   -I <sdk>/games/<game> -I <sdk> \
+   -o .build/<game>/<id>.dll src/*.c <sdk>/openpete_mod_abi.c
+```
+
+A `"*"` object for every game (a source with no per-game header, see
+[Code mods](code.md#one-mod-for-several-games)) drops the per-game path and
+defines `OPENPETE_MOD_ANY_GAME`:
+
+``` sh
+cc -shared -fPIC -O2 -fno-strict-aliasing -Wall -Wundef \
+   -DOPENPETE_MOD_ANY_GAME -I <sdk> \
+   -o .build/any/<id>.so src/*.c <sdk>/openpete_mod_abi.c
+```
 
 ## Package
 

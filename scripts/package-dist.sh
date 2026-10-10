@@ -168,19 +168,44 @@ stage_common() {  # stage_common <build-game-dir>
         # Mod SDK: mods ship mod.toml +
         # src/ and compile at boot against <exe>/sdk with the bundled
         # toolchain. The SDK is a handful of headers, and read-only -
-        # unlike mods/ it belongs in the install.
+        # unlike mods/ it belongs in the install. The game-neutral headers
+        # sit at sdk/ root and the packaged game's generated headers
+        # (symbols, wrappers, structs, openpete_game.h) under
+        # sdk/games/<game>/; the compile line puts -I sdk/games/<game>
+        # before -I sdk, so an archive whose SDK lacks its game's tree
+        # compiles no mod and is refused here.
         cp -a "$B/sdk" "$STAGE/sdk"
+        [[ -f "$STAGE/sdk/games/$GAME/openpete_game.h" ]] \
+            || { echo "[package-dist] $B/sdk has no games/$GAME/openpete_game.h:" \
+                      "build the ${GAME} sdk stage target" >&2; exit 1; }
         # The example mods named in mods/examples.txt ride with the SDK,
         # so a zip holder has working mods without the repository; the
         # Modding section of docs/ (below) is their reference. Examples
         # live under sdk/, not mods/: a mod dropped into mods/ is live on
         # the next boot, and an example is copied there on purpose.
+        # An example whose manifest selects no packaged game (the loader's
+        # rule, tools/gen_mod_docs.py mod_games) would be dropped at
+        # discovery on this game, so it stays out of this game's SDK.
         mkdir -p "$STAGE/sdk/examples"
         while read -r ex; do
             [[ -z "$ex" || "$ex" == \#* ]] && continue
             [[ -f "mods/$ex/mod.toml" ]] \
                 || { echo "[package-dist] mods/examples.txt names $ex but" \
                           "mods/$ex/mod.toml does not exist" >&2; exit 1; }
+            # Exit 3 = not selected; any other failure fails the package.
+            local sel=0
+            python3 -c '
+import sys
+sys.path.insert(0, "tools")
+from gen_mod_docs import mod_games
+sys.exit(0 if sys.argv[2] in mod_games(open(sys.argv[1], encoding="utf-8").read()) else 3)
+' "mods/$ex/mod.toml" "$GAME" || sel=$?
+            if [[ $sel -eq 3 ]]; then
+                echo "[package-dist] example $ex selects no $GAME; not staged"
+                continue
+            fi
+            [[ $sel -eq 0 ]] \
+                || { echo "[package-dist] cannot read the games of mods/$ex/mod.toml" >&2; exit 1; }
             # Leaves build products (.build/) and the CI harness file
             # (modtest.toml) behind; config.toml is the mod's shipped
             # knob defaults and stays.

@@ -1280,6 +1280,9 @@ def gen_examples(mods_dir: Path, api_names: set) -> str:
         mutative = (sm == "true") if sm in ("true", "false") \
             else bool(srcs) or bool(re.search(r"^\[\[level\]\]", text, re.M))
         bits = [f"v{fields.get('version', '?')}"]
+        names = {"spyro-1": "Spyro 1", "spyro-2": "Spyro 2",
+                 "spyro-3": "Spyro 3"}
+        bits.append(", ".join(names.get(g, g) for g in mod_games(text)))
         bits.append("writes guest RAM" if mutative else "writes no guest RAM")
         blocks = sorted({b for b in re.findall(r"^\[\[(\w+)\]\]", text, re.M)})
         if blocks:

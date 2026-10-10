@@ -8,9 +8,9 @@
 [mod]
 id      = "my-mod"        # the directory or zip name; enabled.txt and --mods use that name
 name    = "My Mod"        # shown in the Mods section; defaults to id
-game    = "spyro-1"       # or ["spyro-1", "spyro-3"]; omit = all
+game    = "spyro-1"       # or ["spyro-1", "spyro-3"]; omitted: see below
 version = "0.1.0"
-api     = 1               # minimum OPENPETE_MOD_API_VERSION; omit for a mod with no src/
+api     = 13              # minimum OPENPETE_MOD_API_VERSION; also selects the overlay-address rules
 deps    = ["other-mod"]   # hard dependencies: their entry points run first
 sim_mutative = false      # see below
 state    = "none"         # "none" | "rebuildable": permits rewind with this mod loaded
@@ -22,10 +22,40 @@ runahead = "pure"         # "pure" | "host-fx": permits runahead with this mod l
 openpete ports, so a mod that only makes sense under one of them names it
 here and the others never see it: a mod naming no game this exe runs is dropped
 during discovery, before it is compiled, listed in the Mods panel, or
-counted by `enabled.txt`. Omitting the key targets every title, which is
-right for a mod built entirely from portable engine surfaces (e.g. shaders).
-Ids are matched exactly against the running game's id, so a misspelling
-matches nothing and the mod loads nowhere.
+counted by `enabled.txt`. Ids are matched exactly against the running
+game's id, so a misspelling matches nothing and the mod loads nowhere.
+Without the key, the `api` pin decides: at `api = 13` or later the mod
+targets every game; below 13, or with no `api` key, it targets Spyro 1
+only, since every such mod was written against the Spyro 1 SDK. A mod
+with `src/` compiles once per game it names, against that game's SDK
+(see [Code mods](code.md#one-mod-for-several-games)).
+
+**`api`.** The lowest engine API version the mod needs (see
+[Publishing](publishing.md#pin-the-api-as-a-minimum)). The pin also
+selects the overlay-address behaviour, and the boundary is api 13, the
+version that adds `override_ovl`:
+
+| pin | `override_addr` inside the overlay window, `override_name` on a raw `func_XXXXXXXX` name found in more than one overlay | `game` key absent |
+|---|---|---|
+| 13 or later | refused on every game: the call returns -1 and logs every overlay the address or name occurs in, with that overlay's names for it | every game |
+| below 13, or no `api` key | Spyro 1: binds in every overlay with a function at that address, and logs a deprecation once per mod; Spyro 2 and 3: refused | Spyro 1 only |
+
+Raising a pin to the boundary for any other api entry therefore turns
+the mod's window `override_addr` and ambiguous raw `override_name` calls
+into refusals, and a game-less manifest below the boundary loads on
+Spyro 1 only. Bind an overlay function with `override_ovl` or the
+`OP_OVLID_<name>` wrappers (see the game's
+[functions page](reference/spyro-1/functions.md)).
+
+**Per-game support of the other keys.** `[[binding]]`, `[[config]]`,
+`deps`, `sim_mutative`, `state`, `runahead` and `assets/` work on every
+game. `assets/<game>/` (for example `assets/spyro-2/`), when present, is
+used in place of `assets/` on that game. `[[material]]` rows take their
+own `game` key; Spyro 1 serves every render channel and Spyro 2 and 3
+serve none, so a row reaching Spyro 2 or 3 is logged and skipped
+([Shaders](shaders.md#declare-a-material-in-the-manifest)). `[[level]]`
+rows load on Spyro 1 only; on Spyro 2 and 3 they are refused with one
+log line and the rest of the mod loads ([Custom levels](levels.md)).
 
 **`deps`.** Dependencies are topologically sorted ahead of enabled-list
 order, so a library's entry point runs before its clients' regardless of

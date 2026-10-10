@@ -148,6 +148,89 @@ after the mod is enabled or disabled from the Mods section. The engine
 freezes a disabled mod's registrations but never rewinds guest state, so a
 mod that wrote guest bytes restores the stock bytes on `on = 0`.
 
+## One mod for several games
+
+A mod with `src/` compiles once for each game its manifest selects
+([`game`](manifest.md)), against that game's SDK: the compile line puts
+`-I <sdk>/games/<game>` (the game's `openpete_sdk_symbols.h`,
+`openpete_sdk_wrappers.h`, `openpete_game_structs.h` and
+`openpete_game.h`) before `-I <sdk>` (the game-neutral headers), and the
+object lands in `.build/<game>/`. `openpete_game.h` defines
+`OPENPETE_GAME_ID` (`"spyro-1"`, ...) and all three of
+`OPENPETE_GAME_SPYRO1`, `OPENPETE_GAME_SPYRO2` and
+`OPENPETE_GAME_SPYRO3`, the compiled game's as 1 and the others as 0.
+Function names, addresses and struct layouts differ per game, so a mod
+selects them with one arm per game and closes the chain with
+`#else #error`, so that a game with no arm fails the compile instead of
+building a mod that registers nothing:
+
+``` c
+#if OPENPETE_GAME_SPYRO1
+    rc = api->override_name(self, "CameraUpdate", on_clock);
+#elif OPENPETE_GAME_SPYRO2
+    rc = api->override_addr(self, 0x8001D87Cu, on_clock);
+#elif OPENPETE_GAME_SPYRO3
+    rc = api->override_addr(self, 0x8001204Cu, on_clock);
+#else
+#error "no arm for this game"
+#endif
+```
+
+The compile line has `-Wundef`, so a misspelt game macro is a warning
+rather than a silent 0. The `game-arms` example is this pattern across
+three overrides.
+
+**Game-neutral services** (api 13): `game_id` names the running game,
+`gameplay_live` reports whether a level is being played, `player_pose`
+fills the player's position, facing and level, and `level_id` returns the
+level. Called from a tick hook with its `cpu` they read live; from a
+present hook or a UI section, with `cpu` NULL, they read the record the
+engine sampled at the last tick boundary.
+
+**`"*"` objects.** A source that includes `openpete_mod_api.h` alone and
+names no game function, address or struct can be built once as an object
+that loads on every game: compile with `-DOPENPETE_MOD_ANY_GAME` and
+`-I <sdk>` only, and ship it as `.build/any/<id>.so` or `.dll` (see
+[Publishing](publishing.md#build-by-hand)). Under that define every
+per-game header stops the compile with `#error`. Limits:
+
+- No compile-on-boot. The engine compiles a source mod per game with the
+  per-game include path, where `openpete_game.h` stops an
+  `OPENPETE_MOD_ANY_GAME` compile; a `"*"` object is built by hand and
+  shipped.
+- No tick hook. The api has no game-neutral tick hook: tick context comes
+  from overrides, whose targets differ per game. A `"*"` mod works from
+  present hooks and the sampled game services; a mod that needs tick
+  context uses per-game arms.
+- `override_addr` and every `func_`-spelled `override_name` from a `"*"`
+  object resolve through the running game's addresses, a different
+  function on another game; each such call logs a warning.
+
+The `pose-report` example builds both ways: per game by compile-on-boot,
+or as a `"*"` object by hand.
+
+### Per-game support
+
+Every api entry exists on every game. An entry whose game surface is
+missing on a game returns the value the table names.
+
+| Entry | Spyro 1 | Spyro 2 and Spyro 3 |
+|---|---|---|
+| `override_name`, `override_ovl`, `base`, `call` | yes | yes |
+| `override_addr` | yes | main-executable addresses; an address inside the overlay window is refused, use `override_ovl` |
+| `guest`, `guest_addr`, `guest_alloc`, `log`, `data_dir`, `register_toggle_hook`, `config_*`, `ui_status`, `register_present_hook`, `binding_down`, `notify`, `mouse_*`, `pad_*`, `disc_path`, `read_sector` | yes | yes |
+| `game_id`, `gameplay_live`, `player_pose`, `level_id` | yes | yes |
+| `shader_register`, `postfx_*` | yes | yes |
+| `sfx_replace`, `sfx_play` | yes | yes; slot names per game ([Sounds](sounds.md)) |
+| `draw_text` | yes | no text rasterizer: draws nothing, logs once per mod naming the game |
+| `[[material]]` rows | every render channel | no render channel is served: rows logged and skipped |
+| `material_register`, `material_register_refine`, `material_enable`, `material_set_params`, `material_set_selector` | yes | register, but the renderer applies no material on these games |
+| `moby_classes` | yes | no moby census: returns 0 |
+| `read_level_data`, `[[level]]` | yes | returns -1; rows refused with one log line |
+| `vstream_handle` | yes | returns a handle, but the game's frame readers do not resolve handles |
+| `texpack_fog_shift` | yes | applies to the terrain the native renderer draws |
+| music replacement ([Music](music.md)) | yes | no |
+
 ## Services
 
 | Goal | Service | Writes guest RAM |
