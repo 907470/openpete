@@ -70,6 +70,13 @@ void feature_registry_apply_options(const openpete_options_t* opts);
  * @param fn Returns the id of the overlay resident in guest RAM. */
 void feature_registry_set_overlay_probe(uint32_t (*fn)(void));
 
+/** @brief Return the registered resident-overlay probe.
+ *
+ * The mods dispatcher qualifies override links inside the overlay window
+ * by the same probe the registry uses for its entries.
+ * @return The probe, or NULL when none is registered. */
+uint32_t (*feature_registry_overlay_probe(void))(void);
+
 /** @brief Run the feature hooks registered for a guest function address.
  *
  * An address whose bit is clear in a prefilter built from every table on

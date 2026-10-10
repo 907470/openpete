@@ -22,6 +22,17 @@
 #   windows        the same fixtures cross-built as DLLs export
 #                  openpete_mod_entry, openpete_mod_abi and, where built
 #                  with a game, openpete_mod_game (skips with no mingw).
+#   override_ovl   each argument refusal (id not in the overlay table, id 0
+#                  with a window address, an overlay id with an EXE
+#                  address, a window address that is no entry of the
+#                  overlay) returns -1, logs mod, id, address and game and
+#                  binds nothing; a valid call in the same fixture binds.
+#   api pin        overlay-window override_addr and override_name by the
+#                  [mod] api pin: refused at the boundary pin (every game)
+#                  and below it on Spyro 2 and 3; an unscoped link with a
+#                  once-per-mod deprecation on Spyro 1 below it; a
+#                  game-less api 12 manifest loads on Spyro 1 only; an
+#                  unknown override name is refused naming the game.
 
 # The other game a rung pairs with the running one.
 sdk_other_game() { [ "$PG_GAME" = "spyro-1" ] && echo spyro-3 || echo spyro-1; }
@@ -47,11 +58,12 @@ run_other() {
     ( unset OPENPETE_BIN OPENPETE_DISC; pg_resolve "$g"; run_game "$@" )
 }
 
-# mod_toml <dir> <id> [game-line]: a manifest pinned at the current api.
+# mod_toml <dir> <id> [game-line] [api]: a manifest pinned at the current
+# api, or at [api].
 mod_toml() {
     mkdir -p "$1"
     printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = %s\n%s' \
-        "$2" "$API_VER" "${3:+$3$'\n'}" > "$1/mod.toml"
+        "$2" "${4:-$API_VER}" "${3:+$3$'\n'}" > "$1/mod.toml"
 }
 
 SDK_ROOT="$(dirname "$BIN")/sdk"
@@ -415,4 +427,151 @@ else
         bad "\"*\" cross-compile with games/$PG_GAME/ did not stop at #error"
     fi
     [ "$n_dll" -eq 6 ] && ok "windows: 6/6 export and #error checks ($(basename "$WCC"))"
+fi
+
+# ── S9. override_ovl argument refusals ──────────────────────────────────
+# Per game: an address that is an entry of two overlays the demo visits
+# (A and B), and an EXE address.
+case "$PG_GAME" in
+    spyro-1) OVL_A=26 OVL_ADDR=0x800897A4 EXE_ADDR=0x8003385C ;;
+    spyro-2) OVL_A=10 OVL_ADDR=0x80081B90 EXE_ADDR=0x80020000 ;;
+    spyro-3) OVL_A=23 OVL_ADDR=0x800983C0 EXE_ADDR=0x80020000 ;;
+esac
+say "override_ovl: four refusals and one binding on $PG_GAME (overlay $OVL_A, $OVL_ADDR)"
+d="$WORK/ovlsrc/ovl-args"
+mkdir -p "$d/src"
+mod_toml "$d" ovl-args "game = \"$PG_GAME\""
+cat > "$d/src/ovl.c" <<CEOF
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* g_api;
+static void pass(CPUState* cpu) { g_api->base(cpu); }
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    g_api = api;
+    int r1 = api->override_ovl(self, 9999u, ${OVL_ADDR}u, pass);
+    int r2 = api->override_ovl(self, 0u, ${OVL_ADDR}u, pass);
+    int r3 = api->override_ovl(self, ${OVL_A}u, ${EXE_ADDR}u, pass);
+    int r4 = api->override_ovl(self, ${OVL_A}u, ${OVL_ADDR}u + 2u, pass);
+    int r5 = api->override_ovl(self, ${OVL_A}u, ${OVL_ADDR}u, pass);
+    api->log(self, OP_MOD_LOG_INFO, "ovl-args rc %d %d %d %d %d",
+             r1, r2, r3, r4, r5);
+    return 0;
+}
+CEOF
+mkdir -p "$WORK/ovlargs"
+ln -sfn "$d" "$WORK/ovlargs/ovl-args"
+echo ovl-args > "$WORK/ovlargs/enabled.txt"
+out="$(run_game "$WORK/ovlargs" 300)"
+printf '%s\n' "$out" > "$WORK/ovl-args.log"
+n_ref="$(grep -c "mod:ovl-args.*override_ovl(.*) refused on $PG_GAME" "$WORK/ovl-args.log" || true)"
+if grep -q "ovl-args rc -1 -1 -1 -1 0" "$WORK/ovl-args.log" &&
+   [ "$n_ref" -eq 4 ] &&
+   grep -q "override_ovl(9999, $OVL_ADDR) refused on $PG_GAME: the id is not in" "$WORK/ovl-args.log" &&
+   [ "$(grep -c "mod:ovl-args.*override registered" "$WORK/ovl-args.log")" -eq 1 ] &&
+   grep -q "mod:ovl-args.*override registered at $OVL_ADDR in overlay .* (id $OVL_A)" "$WORK/ovl-args.log"; then
+    ok "4 refusals (rc -1, mod/id/address/game logged), 1 binding in overlay $OVL_A"
+else
+    bad "override_ovl: refusal lines $n_ref/4 (see $WORK/ovl-args.log)"
+    grep -E "ovl-args" "$WORK/ovl-args.log" | head -8
+fi
+
+# ── S10. the [mod] api pin and overlay-window overrides ─────────────────
+# pin_mod <id> <api> <game-line or ""> <body>: a fixture whose entry
+# returns the last override's rc, so a refusal leaves it unloaded.
+pin_mod() {
+    local id="$1" api="$2" gl="$3" body="$4"
+    local md="$WORK/pinsrc/$id"
+    mkdir -p "$md/src"
+    mod_toml "$md" "$id" "$gl" "$api"
+    cat > "$md/src/pin.c" <<CEOF
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* g_api;
+static void pass(CPUState* cpu) { g_api->base(cpu); }
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    int rc = 0;
+    g_api = api;
+    $body
+    return rc;
+}
+CEOF
+    ln -sfn "$md" "$WORK/pin/$id"
+    echo "$id" >> "$WORK/pin/enabled.txt"
+}
+say "api pin: overlay-window overrides by [mod] api on $PG_GAME"
+mkdir -p "$WORK/pin"; : > "$WORK/pin/enabled.txt"
+G_LINE="game = \"$PG_GAME\""
+pin_mod pin-new-addr "$API_VER" "$G_LINE" "rc = api->override_addr(self, ${OVL_ADDR}u, pass);"
+pin_mod pin-old-addr 12 "$G_LINE" "rc = api->override_addr(self, ${OVL_ADDR}u, pass); rc |= api->override_addr(self, ${OVL_ADDR}u, pass);"
+pin_mod pin-gameless 12 "" "rc = api->override_addr(self, ${OVL_ADDR}u, pass);"
+pin_mod pin-nosuch "$API_VER" "$G_LINE" "rc = api->override_name(self, \"NoSuchFn\", pass);"
+if [ "$PG_GAME" = "spyro-1" ]; then
+    pin_mod pin-new-name "$API_VER" "$G_LINE" "rc = api->override_name(self, \"func_8007AE08\", pass);"
+    pin_mod pin-old-name 12 "$G_LINE" "rc = api->override_name(self, \"func_8007AE08\", pass);"
+    pin_mod pin-scoped-name "$API_VER" "$G_LINE" "rc = api->override_name(self, \"func_level_15_8007AE08\", pass);"
+fi
+out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
+        run_game "$WORK/pin" 600 )"
+printf '%s\n' "$out" > "$WORK/pin.log"
+# loaded <id>: 1 when the loader reports the mod loaded.
+loaded() { grep -q "loaded $1 v" "$WORK/pin.log" && echo 1 || echo 0; }
+n_pin=0; want_pin=0
+pin_ok() { want_pin=$((want_pin + 1)); if eval "$2"; then ok "$1"; n_pin=$((n_pin + 1)); else bad "$1"; fi; }
+pin_ok "boundary pin, window override_addr: refused and not loaded" \
+    '[ "$(loaded pin-new-addr)" = 0 ] && grep -q "mod:pin-new-addr.*override_addr(${OVL_ADDR}) refused on $PG_GAME: .*occurs in .*override_ovl" "$WORK/pin.log"'
+pin_ok "override_name(\"NoSuchFn\"): refused naming the game, not loaded" \
+    '[ "$(loaded pin-nosuch)" = 0 ] && grep -q "mod:pin-nosuch.*\"NoSuchFn\" not in the $PG_GAME SDK symbol table" "$WORK/pin.log"'
+if [ "$PG_GAME" = "spyro-1" ]; then
+    pin_ok "api 12, window override_addr: unscoped link, deprecation once" \
+        '[ "$(loaded pin-old-addr)" = 1 ] && [ "$(grep -c "mod:pin-old-addr.*binds every overlay with a function there" "$WORK/pin.log")" = 1 ]'
+    pin_ok "game-less api 12: loads on spyro-1" '[ "$(loaded pin-gameless)" = 1 ]'
+    pin_ok "boundary pin, ambiguous func_8007AE08: refused listing its overlays, stable name first" \
+        '[ "$(loaded pin-new-name)" = 0 ] && grep -q "mod:pin-new-name.*override_name(func_8007AE08) refused on spyro-1: .*level_15 (Flight1_level_15, func_level_15_8007AE08" "$WORK/pin.log"'
+    pin_ok "api 12, ambiguous func_8007AE08: unscoped link, deprecation and legacy warning" \
+        '[ "$(loaded pin-old-name)" = 1 ] && grep -q "mod:pin-old-name.*binds every overlay" "$WORK/pin.log" && grep -q "mod:pin-old-name.*legacy raw alias" "$WORK/pin.log"'
+    pin_ok "boundary pin, func_level_15_8007AE08: binds its overlay" \
+        '[ "$(loaded pin-scoped-name)" = 1 ] && ! grep -q "mod:pin-scoped-name.*binds every overlay" "$WORK/pin.log"'
+else
+    pin_ok "api 12 with game = $PG_GAME, window override_addr: refused, not loaded" \
+        '[ "$(loaded pin-old-addr)" = 0 ] && grep -q "mod:pin-old-addr.*refused on $PG_GAME: .*$PG_GAME binds overlay-window overrides to one overlay" "$WORK/pin.log"'
+    pin_ok "game-less api 12: neither compiled nor listed on $PG_GAME" \
+        '[ "$(loaded pin-gameless)" = 0 ] && grep -q "pin-gameless targets game \"spyro-1\" (no \[mod\] game key, api pin below 13 or absent) - skipped" "$WORK/pin.log" && ! grep -q "pin-gameless \[$PG_GAME\]: compiling" "$WORK/pin.log"'
+fi
+[ "$n_pin" -eq "$want_pin" ] && ok "api pin: $n_pin/$want_pin"
+
+# ── S11. a hello-anchor port: a named override on the per-tick camera ────
+# function, engaged (its link's call counter above 0).
+case "$PG_GAME" in
+    spyro-1) CAM_FN=CameraUpdate ;;
+    spyro-2) CAM_FN=func_8001D87C ;;
+    spyro-3) CAM_FN=func_8001204C ;;
+esac
+say "hello-anchor port: override_name(\"$CAM_FN\") engages on $PG_GAME"
+d="$WORK/anchorsrc/anchor-port"
+mkdir -p "$d/src"
+mod_toml "$d" anchor-port "game = \"$PG_GAME\""
+cat > "$d/src/anchor.c" <<CEOF
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* g_api;
+static openpete_mod_t* g_self;
+static unsigned g_calls;
+static void on_camera(CPUState* cpu) {
+    if (g_calls++ == 0)
+        g_api->log(g_self, OP_MOD_LOG_INFO, "anchor-port: first call");
+    g_api->base(cpu);
+}
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    g_api = api; g_self = self;
+    return api->override_name(self, "$CAM_FN", on_camera);
+}
+CEOF
+mkdir -p "$WORK/anchor"
+ln -sfn "$d" "$WORK/anchor/anchor-port"
+echo anchor-port > "$WORK/anchor/enabled.txt"
+out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
+        run_game "$WORK/anchor" 6000 )"
+calls="$(printf '%s\n' "$out" | sed -n 's/.*link-calls owner=anchor-port addr=\(0x[0-9A-F]*\) overlay=0 resident=- calls=\([0-9]*\).*/\2/p' | head -1)"
+if printf '%s\n' "$out" | grep -q "anchor-port: first call" && [ "${calls:-0}" -gt 0 ]; then
+    ok "override on $CAM_FN engaged: $calls calls in 6000 VBLs"
+else
+    bad "override on $CAM_FN not engaged (calls ${calls:-none})"
+    printf '%s\n' "$out" | grep -E 'anchor-port|link-calls' | head -5
 fi

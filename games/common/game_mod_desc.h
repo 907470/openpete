@@ -26,6 +26,14 @@ const game_mod_desc_t* game_mod_desc(void);
 extern const openpete_sdk_symbol_t openpete_sdk_symbols[];
 extern const size_t                openpete_sdk_symbol_count;
 
+/* The overlays with their sorted entry addresses and the overlay window
+ * (tools/gen_overlay_entries.py,
+ * <game build dir>/mod_sdk_gen/mod_overlay_entries.c). */
+extern const game_mod_overlay_t game_mod_overlays[];
+extern const size_t             game_mod_overlay_count;
+extern const uint32_t           game_mod_window_lo;
+extern const uint32_t           game_mod_window_hi;
+
 #ifdef __cplusplus
 }
 #endif

@@ -264,6 +264,7 @@ add_custom_command(
     COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
             --sections user,modding
             --structs ${_mod_sdk_gen}/openpete_game_structs.h
+            --sdk-dir ${CMAKE_BINARY_DIR}/mod-sdk-test/sdk
             --site-dir ${CMAKE_CURRENT_BINARY_DIR}/docs-site
     COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-docs.sh
             --sections user

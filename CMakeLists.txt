@@ -165,6 +165,18 @@ foreach(game IN LISTS OPENPETE_GAMES)
     endif()
 endforeach()
 
+# The Modding reference pages (the docs target, games/spyro-1) decide which
+# games have a mod SDK from mod-sdk-test/sdk/games/<id>/, so every game's
+# staging runs first.
+if(TARGET docs)
+    foreach(game IN LISTS OPENPETE_GAMES)
+        string(REPLACE "-" "" _docs_tag "${game}")
+        if(TARGET ${_docs_tag}_mod_sdk_test_stage)
+            add_dependencies(docs ${_docs_tag}_mod_sdk_test_stage)
+        endif()
+    endforeach()
+endif()
+
 # surface_dump: each built game writes its OPENPETE_SURFACE_DUMP to
 # <build>/surface/<game>.json. Not ALL and absent from a cross build, which
 # cannot run the binaries. tools/surface_docs.py baseline turns a dump into

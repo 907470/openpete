@@ -254,10 +254,12 @@ def emit_wrappers(out_path: Path, protos, manifest, rows, game_guard):
     """Emit openpete_sdk_wrappers.h: per-function natural-signature
     override/register/base/call wrappers over the cpu-context ABI, plus
     object-like forwards of all four families under each alias spelling
-    (wrapper_aliases). Bindings use the row's address."""
+    (wrapper_aliases). An overlay row's registration binds through
+    override_ovl with its overlay id, an EXE row's through override_addr."""
     by_name = {n: (a, oid, ovl) for n, a, _, oid, ovl in manifest}
     opaques = set()
     fns = []  # (name, addr, ret, params[(kind, pname)], overlay name)
+    oid_of = {}  # name -> overlay id (0 = EXE)
     for name in sorted(protos):
         if name not in by_name:
             continue
@@ -266,8 +268,9 @@ def emit_wrappers(out_path: Path, protos, manifest, rows, game_guard):
             _, op = c_type(kind)
             if op:
                 opaques.add(op)
-        addr, _, ovl = by_name[name]
+        addr, oid, ovl = by_name[name]
         fns.append((name, addr, ret, params, ovl))
+        oid_of[name] = oid
     aliases = wrapper_aliases(fns, set(by_name), name_overlays(rows))
 
     L = []
@@ -281,7 +284,9 @@ def emit_wrappers(out_path: Path, protos, manifest, rows, game_guard):
              " * - `OP_OVERRIDE_IMPL_Foo(my_fn) { ... }` defines an override body\n"
              " *   with natural arguments; `cpu` is also in scope.\n"
              " * - `OP_REGISTER_OVERRIDE_Foo(api, self, my_fn)` registers it and\n"
-             " *   binds the api slot below.\n"
+             " *   binds the api slot below; an overlay function registers\n"
+             " *   through `api->override_ovl` with its overlay id, so the\n"
+             " *   override runs only while that overlay is resident.\n"
              " * - `op_base_Foo(cpu, ...)` runs the next override or the original\n"
              " *   with the given arguments.\n"
              " * - `op_call_Foo(cpu, ...)` calls the game function through its own\n"
@@ -361,11 +366,17 @@ static inline void op__restore(CPUState* c, const uint32_t* s) {
             f"    static void IMPL##__op_tramp(CPUState* cpu) "
             f"{{ {tramp_body} }} \\\n"
             f"    static {rtype} IMPL({sig})\n")
+        # An overlay function binds its own overlay (override_ovl, the
+        # overlay id a literal as the address is); an EXE function binds
+        # by address.
+        bind = (f"(api)->override_ovl((self), {oid_of[name]}u, "
+                f"0x{addr:08X}u, IMPL##__op_tramp)" if ovl else
+                f"(api)->override_addr((self), 0x{addr:08X}u, "
+                f"IMPL##__op_tramp)")
         L.append(
             f"#define OP_REGISTER_OVERRIDE_{name}(api, self, IMPL) \\\n"
             f"    (op_sdk_bind(api), \\\n"
-            f"     (api)->override_addr((self), 0x{addr:08X}u, "
-            f"IMPL##__op_tramp))\n")
+            f"     {bind})\n")
         # base
         # pointer returns are opaque guest vaddrs: cast through intptr_t
         # so Win64 compiles clean (value identical - the sign-extension

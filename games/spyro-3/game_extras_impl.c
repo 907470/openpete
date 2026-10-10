@@ -47,6 +47,7 @@
 #include "spyro_overlay_table.h"
 #include "psyq/psyq_game_hooks.h"
 #include "write_census.h"
+#include "dispatch_preamble.h"
 #include "freecam_game.h"
 #include "skip_to_level.h"
 #include "features/levelwarp.h"
@@ -231,24 +232,28 @@ static void checksum_verdict(CPUState* cpu) {
     s_last_state = state;
 }
 
+/** @brief Run Spyro 3's verdict hooks at a function entry: the level-load checksum log at func_8002CA50.
+ *
+ * @param cpu Guest CPU state.
+ * @param addr The entered function's guest vaddr. */
+static void spyro3_entry_verdicts(CPUState* cpu, uint32_t addr) {
+    if (addr == 0x8002CA50u) checksum_verdict(cpu);
+}
+
 /** @brief Runs the Spyro 3 intercepts at the entry of every recompiled function.
  *
- * In order: the free camera's freeze test, which ends the function at once
- * while it drives the camera in place of func_8001204C or suppresses the player
- * update func_8003E83C; the level-load checksum log at func_8002CA50; the write
- * census's entry note; then the feature modules' dispatch tables. Called from
+ * In order, through game_dispatch_preamble: the free camera's freeze test,
+ * which ends the function at once while it drives the camera in place of
+ * func_8001204C or suppresses the player update func_8003E83C; the
+ * level-load checksum log at func_8002CA50; the write census's entry note;
+ * the mod override chains. Then the feature modules' dispatch tables. Called from
  * psx_override_dispatch, which the generated bodies call before their own code.
  *
  * @param cpu The guest CPU state.
  * @param addr The entry address of the function being dispatched.
  * @return 1 when the recompiled body must return at once, else 0. */
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
-    /* Debug free camera (F): while engaged and gameplay is live, drive the
-     * camera in place of func_8001204C and suppress it and the player update
-     * func_8003E83C. Inactive: one bool test. */
-    if (freecam_should_freeze(cpu, addr)) return 1;
-    if (addr == 0x8002CA50u) checksum_verdict(cpu);
-    if (write_census_active()) write_census_note_entry(addr);
+    if (game_dispatch_preamble(cpu, addr, spyro3_entry_verdicts)) return 1;
     return feature_registry_dispatch(cpu, addr);
 }
 

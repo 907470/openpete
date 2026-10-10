@@ -15,6 +15,7 @@
 #include "features/levelwarp.h"
 #include "features/cutscene_skip.h"
 #include "write_census.h"
+#include "dispatch_preamble.h"
 #include "freecam_game.h"
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
@@ -75,21 +76,20 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     text_moby_native_version(cpu);
 }
 
-/** @brief Runs this game's intercepts at a recompiled function's entry: the free camera, the write census, then the feature modules.
+/** @brief Runs this game's intercepts at a function entry: the shared preamble, then the feature modules.
  *
- * The debug free camera (F), while engaged and gameplay is live, drives the
- * camera in place of the camera follow (0x8001D87C) and suppresses it and the
- * player update (0x8002A07C); disengaged it costs one bool test. Under the
- * write census the address becomes the entry column of later rows. An address
- * the free camera does not claim goes to the registered feature modules
- * (feature_list.c), which is how the shared presentation feeders reach their
- * hook addresses.
+ * The preamble (game_dispatch_preamble) runs the debug free camera (F),
+ * which while engaged and gameplay is live drives the camera in place of
+ * the camera follow (0x8001D87C) and suppresses it and the player update
+ * (0x8002A07C), the write census's entry note, and the mod override
+ * chains. An address none of them claims goes to the registered feature
+ * modules (feature_list.c), which is how the shared presentation feeders
+ * reach their hook addresses.
  * @param cpu The guest CPU state.
  * @param addr The guest address of the function being entered.
  * @return 1 when the recompiled body must return at once, else 0. */
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
-    if (freecam_should_freeze(cpu, addr)) return 1;
-    if (write_census_active()) write_census_note_entry(addr);
+    if (game_dispatch_preamble(cpu, addr, NULL)) return 1;
     return feature_registry_dispatch(cpu, addr);
 }
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {

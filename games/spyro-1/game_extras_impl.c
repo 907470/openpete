@@ -25,6 +25,7 @@
 #include "features/crash_demo_woah.h"
 #include "freecam_game.h"
 #include "write_census.h"
+#include "dispatch_preamble.h"
 #include "openpete_fillpick.h"
 #include "features/levelwarp.h"
 #include "psyq/psyq_thunk_state.h"
@@ -72,6 +73,10 @@ void game_on_boot(CPUState* cpu) {
     /* The write census installs over the store hooks before any guest
      * instruction runs; inert without OPENPETE_WRITE_CENSUS. */
     write_census_install(cpu);
+    /* The mods dispatcher qualifies overlay-window overrides by the
+     * resident overlay; no feature entry of this game carries an overlay
+     * id, so the registry's own use of the probe changes nothing. */
+    feature_registry_set_overlay_probe(game_resident_overlay_probe);
 }
 
 extern unsigned openpete_frame;
@@ -629,7 +634,8 @@ static int srend_noop_hit(uint32_t addr) {
 /** @brief Runs Spyro 1's per-function-entry overrides in priority order and reports whether one handled the call.
  *
  * Called from the dispatcher on every translated-function entry, after the
- * PSX-trace hooks. Order: debug free-camera freeze, mod override chains,
+ * PSX-trace hooks. Order: the shared preamble (game_dispatch_preamble:
+ * debug free-camera freeze, write-census entry note, mod override chains),
  * the feature registry, OPENPETE_NOOP_SREND renderer suppression, then two
  * diagnostics: the OPENPETE_GEM_TRACE gem-cull dump at func_80022A2C
  * (openpete_frame 2999 and 3000, falls through to the original), and a
@@ -640,24 +646,13 @@ static int srend_noop_hit(uint32_t addr) {
  * @return 1 when the call was handled or replaced and the original must not
  *     run, else 0. */
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
-    /* Debug free camera (F): while engaged, drive the camera in place of
-     * CameraFollowSpyro (on this game fiber) and suppress it + UpdateSpyro so
-     * nothing overwrites the camera and Spyro holds still. Inactive -> returns
-     * 0 (the hot path is one bool test), so the normal build is unaffected. */
-    if (freecam_should_freeze(cpu, addr)) {
-        return 1;
-    }
-
-    /* Mod override chains. One global-flag branch when no mods are loaded
-     * (inertness gate). Runs before the feature arm: a mod that replaces a
-     * function replaces it, full stop; freecam (a user debug tool) still wins
-     * above so freezing behaves identically with mods loaded.
-     *
-     * NOT trace-scoped, unlike the feature-registry hooks below: this arm
-     * runs on EVERY translated-function entry, so a pair of clock reads here
-     * would cost more than the thing being measured. The registry's own scopes
-     * start only after an address match, which is rare. */
-    if (openpete_mods_active && openpete_mods_dispatch(cpu, addr)) {
+    /* Shared preamble: the debug free camera (F), which while engaged
+     * drives the camera in place of CameraFollowSpyro and suppresses it and
+     * UpdateSpyro; the write census's entry note; the mod override chains.
+     * Freecam (a user debug tool) wins over a mod, so freezing behaves
+     * identically with mods loaded; a mod that replaces a function replaces
+     * it ahead of the feature arm. */
+    if (game_dispatch_preamble(cpu, addr, NULL)) {
         return 1;
     }
 

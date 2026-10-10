@@ -168,12 +168,14 @@ int openpete_mods_compile_all(const openpete_options_t* opts);
 
 /** @brief Run the override chain registered for a guest function at its entry.
  *
- * Called from Spyro 1's psx_override_dispatch_game behind the
- * openpete_mods_active gate. Returns 0 without running anything when a
- * base() fallthrough armed a bypass for addr (the bypass is consumed and
- * the recompiled body runs), when no link on any chain is enabled, when
- * addr has no chain, or when every link on its chain is disabled.
- * Otherwise runs the first enabled link.
+ * Called from every game's dispatch preamble (game_dispatch_preamble)
+ * behind the openpete_mods_active gate. Returns 0 without running anything
+ * when a base() fallthrough armed a bypass for addr (the bypass is
+ * consumed and the recompiled body runs), when no link on any chain is
+ * enabled, when addr has no chain, or when every link on its chain is
+ * disabled or, for an address inside the game's overlay window, bound to
+ * an overlay other than the resident one. Otherwise runs the first such
+ * link.
  * @param cpu the guest CPU.
  * @param addr the entered function's guest vaddr.
  * @return 1 when a chain ran (skip the recompiled body), 0 to run the
@@ -182,6 +184,40 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr);
 
 /* 1 while at least one override chain is registered. Hot-path gate. */
 extern int openpete_mods_active;
+
+/* The overlay id of an unscoped override link: it runs whichever overlay
+ * is resident. 0 binds an EXE target; any other value is an overlay id. */
+#define OPENPETE_MODS_OVERLAY_ANY 0xFFFFFFFFu
+
+/** @brief Report whether base() armed the one-shot bypass for an address.
+ *
+ * The dispatch preamble reads it before the mod arm consumes the bypass,
+ * so the re-entry a base() fallthrough makes is not noted twice by the
+ * write census.
+ * @param addr the entered function's vaddr.
+ * @return 1 while the bypass is armed for addr, else 0. */
+int openpete_mods_bypass_pending(uint32_t addr);
+
+/* One per-link call counter row: calls of the link (owner, addr, overlay)
+ * made while `resident` was the resident overlay
+ * (OPENPETE_MODS_OVERLAY_ANY for an address outside the overlay window). */
+typedef void (*openpete_mods_link_calls_fn)(void* ctx, const char* owner,
+                                            uint32_t addr, uint32_t overlay,
+                                            uint32_t resident,
+                                            uint64_t calls);
+
+/** @brief Visit every per-link call counter row of the override chains.
+ *
+ * A row is (owner, chain address, the link's bound overlay, the resident
+ * overlay of the counted calls, calls); it is added on the link's first
+ * call under that resident overlay and outlives the link. With
+ * OPENPETE_MOD_LINK_CALLS set the rows are also printed to stderr at
+ * process exit, one "[mods] link-calls owner=... addr=0x... overlay=...
+ * resident=... calls=..." line each.
+ * @param fn called once per row; NULL only counts.
+ * @param ctx passed to fn.
+ * @return The number of rows. */
+int openpete_mods_link_calls(openpete_mods_link_calls_fn fn, void* ctx);
 
 /* bk2 input-movie status (read-only v1 of the bk2 access service):
  * run.c publishes once per sim frame while a movie is loaded; mods
@@ -1034,6 +1070,17 @@ int openpete_mods_registry_ensure_driver(const char* log_tag);
  * before they are stored. */
 typedef const char* (*openpete_mods_sfx_canon_fn)(const char* name);
 
+/* One overlay of a game, as the mod layer validates override_ovl against
+ * it: the overlay table's id and name, and the sorted entry addresses of
+ * its generated dispatch (the `case` labels of
+ * generated/<overlay>/<overlay>.bin_dispatch.c). */
+typedef struct {
+    uint32_t        id;
+    const char*     name;
+    const uint32_t* entries;
+    size_t          entry_count;
+} game_mod_overlay_t;
+
 /* The game-specific half of the mod layer: one descriptor per game,
  * registered once after the game is identified and before any mod is
  * compiled or loaded. The descriptor and every table it reaches are static
@@ -1065,6 +1112,19 @@ typedef struct {
     /* Guest base of the mod arena; 0 keeps the core default,
      * 0x80700000. */
     uint32_t                     arena_base;
+    /* The game's overlays (generated mod_overlay_entries.c) and their
+     * shared vaddr window [window_lo, window_hi); NULL, 0 and an empty
+     * window for a game with no overlays. */
+    const game_mod_overlay_t*    overlays;
+    size_t                       overlay_count;
+    uint32_t                     window_lo;
+    uint32_t                     window_hi;
+    /* Nonzero when a mod pinned below the api that adds override_ovl may
+     * bind an unscoped link with override_addr at a window address or
+     * override_name on a name whose rows lie in several overlays (it fires
+     * in every overlay with a function there); 0 refuses both at every
+     * pin. */
+    int                          legacy_window_links;
 } game_mod_desc_t;
 
 /** @brief Register the identified game's mod-layer descriptor.

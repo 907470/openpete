@@ -373,14 +373,25 @@ typedef struct openpete_mod_api {
      * @{ */
     /**
      * @brief Attach an override by PSX vaddr.
-     * @return 0 on success, non-zero for invalid arguments.
+     *
+     * An address inside the overlay window names one function per
+     * overlay: with `[mod] api` at 13 or later it is refused (bind it with
+     * `override_ovl`); below 13 or with no pin it binds every overlay
+     * with a function there, on Spyro 1 only, with a deprecation warning.
+     * @return 0 on success, non-zero for invalid arguments or a refusal.
      * @since api 1
      */
     int (*override_addr)(openpete_mod_t* self, uint32_t addr,
                          openpete_mod_override_fn fn);
     /**
      * @brief Attach an override by symbol name.
-     * @return 0 on success, non-zero for an unknown name.
+     *
+     * The name binds its row's address and overlay, so an overlay
+     * function fires only in its own overlay. A raw `func_XXXXXXXX` name
+     * whose rows lie in several overlays is refused with `[mod] api` at 13
+     * or later; below 13 or with no pin it binds every one of them, on
+     * Spyro 1 only, with a deprecation warning.
+     * @return 0 on success, non-zero for an unknown or refused name.
      * @since api 1
      */
     int (*override_name)(openpete_mod_t* self, const char* name,
@@ -1037,6 +1048,39 @@ typedef struct openpete_mod_api {
      * @since api 13
      */
     int (*read_sector)(openpete_mod_t* self, uint32_t lba, uint8_t* buf);
+    /** @} */
+
+    /** @name Overlay-scoped overrides
+     * @{ */
+    /**
+     * @brief Attach an override to the function at a PSX vaddr in one overlay.
+     *
+     * Every overlay of a game loads at one vaddr window, so an address
+     * inside it names one function per overlay. The override runs only
+     * while @p overlay_id is the resident overlay; while another overlay
+     * is resident the call runs that overlay's function untouched. Id 0
+     * is the EXE. The generated `OP_OVLID_<name>` of an overlay function
+     * is its id, and its `OP_REGISTER_OVERRIDE_<name>` wrapper binds
+     * through this entry.
+     *
+     * Refused, binding nothing and logging the mod, id, address and game:
+     * an id that is neither 0 nor in the game's overlay table; id 0 with
+     * an address inside the overlay window; a nonzero id with an address
+     * outside it; an address that is not a function entry of that
+     * overlay.
+     *
+     * A mod pinning `[mod] api` at 13 or later binds every overlay-window
+     * address through this entry or through `override_name` on a name of
+     * one overlay: `override_addr` at a window address, and
+     * `override_name` on a raw `func_XXXXXXXX` name whose rows lie in
+     * several overlays, are refused.
+     * @param overlay_id The overlay id, or 0 for the EXE.
+     * @param addr The function's vaddr.
+     * @return 0 on success, -1 when refused.
+     * @since api 13
+     */
+    int (*override_ovl)(openpete_mod_t* self, uint32_t overlay_id,
+                        uint32_t addr, openpete_mod_override_fn fn);
     /** @} */
 } openpete_mod_api_t;
 

@@ -131,7 +131,22 @@ function(openpete_mod_sdk GAME_ID)
             ${CMAKE_SOURCE_DIR}/games/common/game_structs_check.c)
     endif()
 
-    target_sources(${_exe} PRIVATE ${_gen}/sdk_symbols_table.c)
+    # Per-overlay sorted entry addresses (the `case` labels of each
+    # overlay's generated dispatch), which override_ovl checks a binding
+    # against; compiled into the exe beside the symbol table.
+    file(GLOB _overlay_dispatch CONFIGURE_DEPENDS
+         ${CMAKE_CURRENT_SOURCE_DIR}/generated/*/*.bin_dispatch.c)
+    add_custom_command(
+        OUTPUT  ${_gen}/mod_overlay_entries.c
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_overlay_entries.py
+                --generated ${CMAKE_CURRENT_SOURCE_DIR}/generated
+                --out ${_gen}/mod_overlay_entries.c
+        DEPENDS ${_overlay_table} ${_overlay_dispatch}
+                ${CMAKE_SOURCE_DIR}/tools/gen_overlay_entries.py
+        COMMENT "Generating the ${GAME_ID} overlay entry arrays (gen_overlay_entries.py)")
+
+    target_sources(${_exe} PRIVATE ${_gen}/sdk_symbols_table.c
+                                   ${_gen}/mod_overlay_entries.c)
     target_include_directories(${_exe} PRIVATE ${_gen})
     add_custom_target(${_tag}_game_structs DEPENDS ${_game_files})
     add_dependencies(${_exe} ${_tag}_game_structs)

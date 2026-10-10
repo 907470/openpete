@@ -49,6 +49,10 @@ void feature_registry_set_overlay_probe(uint32_t (*fn)(void)) {
     s_overlay_probe = fn;
 }
 
+uint32_t (*feature_registry_overlay_probe(void))(void) {
+    return s_overlay_probe;
+}
+
 void feature_registry_apply_options(const openpete_options_t* opts) {
     for (size_t i = 0; i < openpete_feature_count; i++) {
         const feature_module_t* m = openpete_features[i];

@@ -18,15 +18,19 @@
 // happens on the sim thread (guest-call semantics); the TLS frame stack
 // is belt-and-braces.
 //
-// Overlay caveat (documented, raw tier): all level overlays share the
-// same vaddr window, so a chain keyed on an overlay-window addr fires
-// for whichever overlay is resident. Named-tier symbols avoid this
-// (main-EXE addresses are unique).
+// Overlay scoping: every overlay of a game loads at one vaddr window, so
+// one chain per address holds links for several overlays. Each link
+// carries the overlay it is bound to (0 for an EXE target,
+// OPENPETE_MODS_OVERLAY_ANY for an unscoped link); inside the game's
+// window the dispatch reads the resident overlay once through the feature
+// registry's probe and treats a link bound to another overlay as it treats
+// a disabled link.
 
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
 #include "openpete_time.h" /* per-mod time instrument */
+#include "feature_registry.h" /* resident-overlay probe */
 #include "mod_vec.h"
 #include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 
@@ -51,6 +55,11 @@ typedef struct {
     const char*              owner_id; /* for diagnostics/attribution */
     int                      disabled; /* live toggle: skipped, not removed
                                         * - re-enable restores in place */
+    uint32_t                 overlay;  /* bound overlay id: 0 = EXE target,
+                                        * OPENPETE_MODS_OVERLAY_ANY =
+                                        * every overlay */
+    int                      stat;     /* call-counter row last charged,
+                                        * -1 before the first call */
 } mod_link_t;
 
 typedef struct {
@@ -166,6 +175,9 @@ static void owner_state_set(const char* owner_id, int disabled) {
 typedef struct {
     mod_chain_t* chain;
     int          link;
+    uint32_t     resident; /* overlay resident at dispatch, or
+                            * OPENPETE_MODS_OVERLAY_ANY for an address
+                            * outside the overlay window (no filter) */
     op_time_t    child_ns; /* time spent in base() descent - subtracted
                             * so the instrument reports SELF time */
 } mod_frame_t;
@@ -190,9 +202,144 @@ static mod_chain_t* chain_find(uint32_t addr) {
     return NULL;
 }
 
+/** @brief Return 1 when a link is skipped for a call made with the given resident overlay.
+ *
+ * A disabled link is skipped everywhere. With a resident filter (an
+ * address inside the overlay window), a link bound to neither
+ * OPENPETE_MODS_OVERLAY_ANY nor the resident overlay is skipped too.
+ * @param l the link.
+ * @param resident the frame's resident overlay, or OPENPETE_MODS_OVERLAY_ANY
+ *        for no filter. */
+static int link_skipped(const mod_link_t* l, uint32_t resident) {
+    if (l->disabled) return 1;
+    if (resident == OPENPETE_MODS_OVERLAY_ANY) return 0;
+    return l->overlay != OPENPETE_MODS_OVERLAY_ANY && l->overlay != resident;
+}
+
+/** @brief Return the overlay filter for a dispatch at addr.
+ *
+ * Outside the registered game's overlay window there is no filter. Inside
+ * it the feature registry's resident-overlay probe names the overlay; with
+ * no probe registered the resident id reads as 0, so only unscoped links
+ * run.
+ * @param addr the entered function's vaddr.
+ * @return the resident overlay id, or OPENPETE_MODS_OVERLAY_ANY. */
+static uint32_t resident_filter(uint32_t addr) {
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    if (addr < gd->window_lo || addr >= gd->window_hi)
+        return OPENPETE_MODS_OVERLAY_ANY;
+    uint32_t (*probe)(void) = feature_registry_overlay_probe();
+    return probe ? probe() : 0u;
+}
+
+/* ── Per-link call counter ──────────────────────────────────────────────
+ * One row per (owner, addr, link overlay, resident overlay), so a test can
+ * read whether an unscoped link ran while each overlay was resident. Rows
+ * outlive their links (hot reload, unload); a link caches the row it last
+ * charged, so a call while the resident overlay is unchanged costs one
+ * compare. */
+#define MOD_STAT_INIT 32
+
+typedef struct {
+    char     owner[MOD_OWNER_ID_MAX];
+    uint32_t addr;
+    uint32_t overlay;
+    uint32_t resident;
+    uint64_t calls;
+} mod_link_stat_t;
+static mod_fvec s_stats;   /* mod_link_stat_t */
+
+/** @brief Find or add the counter row for a link run with a resident overlay.
+ *
+ * @param chain the link's chain.
+ * @param l the link.
+ * @param resident the frame's resident overlay.
+ * @return the row index, or -1 on an allocation failure (the call goes
+ *         uncounted). */
+static int stat_row(const mod_chain_t* chain, const mod_link_t* l,
+                    uint32_t resident) {
+    const char* owner = l->owner_id ? l->owner_id : "?";
+    for (size_t i = 0; i < mod_fvec_count(&s_stats); i++) {
+        const mod_link_stat_t* r = (const mod_link_stat_t*)mod_fvec_at(&s_stats, i);
+        if (r->addr == chain->addr && r->overlay == l->overlay &&
+            r->resident == resident && strcmp(r->owner, owner) == 0)
+            return (int)i;
+    }
+    if (!s_stats.elem_size)
+        mod_fvec_init(&s_stats, sizeof(mod_link_stat_t), MOD_STAT_INIT,
+                      "chain_link_stats", MOD_STAT_INIT);
+    mod_link_stat_t* r = (mod_link_stat_t*)mod_fvec_push(&s_stats);
+    if (!r) return -1;
+    snprintf(r->owner, MOD_OWNER_ID_MAX, "%s", owner);
+    r->addr     = chain->addr;
+    r->overlay  = l->overlay;
+    r->resident = resident;
+    r->calls    = 0;
+    return (int)(mod_fvec_count(&s_stats) - 1);
+}
+
+/** @brief Count one call of a link under a resident overlay.
+ *
+ * @param chain the link's chain.
+ * @param l the link; its cached row is updated.
+ * @param resident the frame's resident overlay. */
+static void stat_count(const mod_chain_t* chain, mod_link_t* l,
+                       uint32_t resident) {
+    if (l->stat >= 0) {
+        mod_link_stat_t* r = (mod_link_stat_t*)mod_fvec_at(&s_stats, (size_t)l->stat);
+        if (r->resident == resident) { r->calls++; return; }
+    }
+    l->stat = stat_row(chain, l, resident);
+    if (l->stat >= 0)
+        ((mod_link_stat_t*)mod_fvec_at(&s_stats, (size_t)l->stat))->calls++;
+}
+
+int openpete_mods_link_calls(openpete_mods_link_calls_fn fn, void* ctx) {
+    int n = (int)mod_fvec_count(&s_stats);
+    if (!fn) return n;
+    for (int i = 0; i < n; i++) {
+        const mod_link_stat_t* r = (const mod_link_stat_t*)mod_fvec_at(&s_stats, (size_t)i);
+        fn(ctx, r->owner, r->addr, r->overlay, r->resident, r->calls);
+    }
+    return n;
+}
+
+/** @brief Print one counter row to stderr in the link-calls dump format.
+ *
+ * @param ctx unused.
+ * @param owner the link's owner.
+ * @param addr the chain address.
+ * @param overlay the link's bound overlay.
+ * @param resident the resident overlay of the counted calls.
+ * @param calls the call count. */
+static void link_calls_print(void* ctx, const char* owner, uint32_t addr,
+                             uint32_t overlay, uint32_t resident,
+                             uint64_t calls) {
+    (void)ctx;
+    char ov[16], rs[16];
+    if (overlay == OPENPETE_MODS_OVERLAY_ANY) snprintf(ov, sizeof ov, "any");
+    else snprintf(ov, sizeof ov, "%u", overlay);
+    if (resident == OPENPETE_MODS_OVERLAY_ANY) snprintf(rs, sizeof rs, "-");
+    else snprintf(rs, sizeof rs, "%u", resident);
+    fprintf(stderr, "[mods] link-calls owner=%s addr=0x%08X overlay=%s "
+            "resident=%s calls=%llu\n", owner, addr, ov, rs,
+            (unsigned long long)calls);
+}
+
+/** @brief Print every counter row at process exit (OPENPETE_MOD_LINK_CALLS). */
+static void link_calls_dump(void) {
+    openpete_mods_link_calls(link_calls_print, NULL);
+}
+
+int openpete_mods_bypass_pending(uint32_t addr) {
+    return s_bypass_armed && s_bypass_addr == addr;
+}
+
 /** @brief Run the first enabled link of a chain at or after idx, or the recompiled original when none is left.
  *
- * base() is run_link(current + 1). A link runs inside a pushed frame with
+ * base() is run_link(current + 1) with the frame's resident overlay. A
+ * link bound to an overlay other than the resident one is skipped
+ * (link_skipped), and every run is counted per resident overlay. A link runs inside a pushed frame with
  * the ImGui guard's hook owner set to the link's owner. Its self time
  * (span minus the time credited to its frame's child_ns by its base()
  * descent and nested overrides) is charged to the owner through
@@ -204,11 +351,14 @@ static mod_chain_t* chain_find(uint32_t addr) {
  * the prologue's dispatch returns 0 and the recompiled body runs.
  * @param cpu the guest CPU.
  * @param chain the chain.
- * @param idx the first link index to consider. */
-static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
-    /* Live toggle: disabled links are transparent - base() descends
-     * straight past them. */
-    while (idx < link_count(chain) && link_at(chain, idx)->disabled) idx++;
+ * @param idx the first link index to consider.
+ * @param resident the overlay filter (resident_filter) the frame carries. */
+static void run_link(CPUState* cpu, mod_chain_t* chain, int idx,
+                     uint32_t resident) {
+    /* Live toggle and overlay scope: a skipped link is transparent -
+     * base() descends straight past it. */
+    while (idx < link_count(chain) && link_skipped(link_at(chain, idx), resident))
+        idx++;
     const op_time_t t0 = op_now();
     if (idx < link_count(chain)) {
         if (s_frame_depth >= MOD_FRAME_STACK_MAX) {
@@ -219,7 +369,9 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
             mod_frame_t* f = &s_frames[s_frame_depth++];
             f->chain = chain;
             f->link  = idx;
+            f->resident = resident;
             f->child_ns = 0;
+            stat_count(chain, link_at(chain, idx), resident);
             /* Names the mod in an ImGui refusal: an override runs on
              * the sim thread, outside any UI section body, so the guard has
              * no mod index. Restored rather than cleared, since a link's
@@ -367,23 +519,27 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
     if (s_live_links == 0) return 0;
     mod_chain_t* chain = chain_find(addr);
     if (!chain) return 0;
+    const uint32_t resident = resident_filter(addr);
     int idx = 0;
-    while (idx < link_count(chain) && link_at(chain, idx)->disabled) idx++;
-    /* Every link toggled off: run the recompiled body IN PLACE. Entering
+    while (idx < link_count(chain) && link_skipped(link_at(chain, idx), resident))
+        idx++;
+    /* Every link toggled off or bound to another overlay: run the
+     * recompiled body IN PLACE. Entering
      * run_link here would still produce the right result (it bottoms out
      * on the original), but only by re-calling the function through
      * call_by_address - a second pass over every dispatch arm of the
      * prologue (freecam freeze, feature registry) for a
      * call no mod is servicing. */
     if (idx >= link_count(chain)) return 0;
-    run_link(cpu, chain, idx);
+    run_link(cpu, chain, idx, resident);
     return 1;
 }
 
 /** @brief Run the next override below the running one, bottoming out at the recompiled original.
  *
  * The mod api's base(). It continues from the link the innermost live
- * frame is executing, skipping disabled links. Refused with an error log
+ * frame is executing with that frame's resident overlay, skipping
+ * disabled links and links bound to another overlay. Refused with an error log
  * and no effect inside a present hook (openpete_mods_in_present set) and
  * when no override is running on this thread.
  * @param cpu the guest CPU passed to the running override. */
@@ -398,7 +554,7 @@ void openpete_mods_base(CPUState* cpu) {
         return;
     }
     mod_frame_t f = s_frames[s_frame_depth - 1];
-    run_link(cpu, f.chain, f.link + 1);
+    run_link(cpu, f.chain, f.link + 1, f.resident);
 }
 
 /* Reads this thread's frame stack; documented in openpete_mods.h. */
@@ -421,14 +577,23 @@ const char* openpete_mods_crash_attribution(uint32_t* addr_out) {
  * link's disabled flag is taken from its owner's live-toggle state. Live
  * frames on the chain have their link index advanced past the insert, so
  * registration from inside a running chain keeps base() pointing at the
- * next link. Sets openpete_mods_active.
+ * next link. Sets openpete_mods_active. With OPENPETE_MOD_LINK_CALLS set,
+ * the first registration arms a stderr dump of every call-counter row at
+ * process exit.
  * @param addr the guest function's vaddr; 0 fails.
+ * @param overlay the overlay the link is bound to: 0 for an EXE target,
+ *        an overlay id, or OPENPETE_MODS_OVERLAY_ANY.
  * @param fn the override; NULL fails.
  * @param owner_id the registering mod's id, or NULL.
  * @return 0, or -1 for a 0 addr, a NULL fn, or an allocation failure. */
-int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
-                            const char* owner_id) {
+int openpete_mods_chain_add_ovl(uint32_t addr, uint32_t overlay,
+                                openpete_mod_override_fn fn,
+                                const char* owner_id) {
     if (addr == 0 || !fn) return -1;
+    if (getenv("OPENPETE_MOD_LINK_CALLS")) {
+        static int s_dump_armed = 0;
+        if (!s_dump_armed) { s_dump_armed = 1; atexit(link_calls_dump); }
+    }
     mod_chain_t* chain = chain_find(addr);
     if (!chain) {
         if (!s_chains.elem_size)
@@ -457,6 +622,8 @@ int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
         *link_at(chain, j) = *link_at(chain, j - 1);
     link_at(chain, 0)->fn       = fn;
     link_at(chain, 0)->owner_id = owner_id;
+    link_at(chain, 0)->overlay  = overlay;
+    link_at(chain, 0)->stat     = -1;
     /* Seed from the OWNER, never from the slot: the memmove leaves the
      * previous head link's bytes in [0], so an inherited flag would make
      * a fresh link dead (registering behind a toggled-off mod) or live
@@ -472,4 +639,18 @@ int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
         if (s_frames[f].chain == chain) s_frames[f].link++;
     openpete_mods_active = 1;
     return 0;
+}
+
+/** @brief Register an unscoped override link (OPENPETE_MODS_OVERLAY_ANY) at the front of the chain for a guest function.
+ *
+ * The engine's own links (the content registry's driver, the level ops'
+ * aliases) use it; a mod's links bind through openpete_mods_chain_add_ovl.
+ * @param addr the guest function's vaddr; 0 fails.
+ * @param fn the override; NULL fails.
+ * @param owner_id the registering owner's id, or NULL.
+ * @return 0, or -1 as openpete_mods_chain_add_ovl. */
+int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
+                            const char* owner_id) {
+    return openpete_mods_chain_add_ovl(addr, OPENPETE_MODS_OVERLAY_ANY, fn,
+                                       owner_id);
 }

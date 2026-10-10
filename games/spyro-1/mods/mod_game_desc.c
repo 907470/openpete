@@ -1,8 +1,9 @@
 // games/spyro-1/mods/mod_game_desc.c - Spyro 1's mod-layer descriptor.
 //
 // Every game-specific surface the mod layer reaches: the generated SDK
-// symbol table, the moby and level ops (mod_moby_ops.c, mod_level_ops.c),
-// the gold text-moby rasterizer, the sfx alias canonicaliser
+// symbol table and overlay entry arrays, the unscoped overlay-window links
+// of mods pinned below the api adding override_ovl, the moby and level ops
+// (mod_moby_ops.c, mod_level_ops.c), the gold text-moby rasterizer, the sfx alias canonicaliser
 // (psyq_hooks.cpp) and the PSX render functions the native renderer does
 // not rasterize.
 
@@ -34,6 +35,11 @@ const game_mod_desc_t* game_mod_desc(void) {
         s_desc.text_emit      = text_moby_native_mod_emit;
         s_desc.sfx_canon      = spyro1_sfx_canon;
         s_desc.psx_render_fns = k_psx_render_fns;
+        s_desc.overlays       = game_mod_overlays;
+        s_desc.overlay_count  = game_mod_overlay_count;
+        s_desc.window_lo      = game_mod_window_lo;
+        s_desc.window_hi      = game_mod_window_hi;
+        s_desc.legacy_window_links = 1;
         s_built = 1;
     }
     return &s_desc;

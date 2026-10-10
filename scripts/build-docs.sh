@@ -13,13 +13,16 @@
 #
 # Usage:
 #   scripts/build-docs.sh [--sections <a,b>] [--structs <openpete_game_structs.h>]
-#                         [--no-code-docs] [--site-dir <dir>] [--serve]
+#                         [--sdk-dir <staged sdk>] [--no-code-docs]
+#                         [--site-dir <dir>] [--serve]
 #
 # --sections names the top-level sections to build (user, modding,
 # developer, spyro); without it every section builds. It is passed to the
 # mkdocs hook tools/mkdocs_sections.py as OPENPETE_DOCS_SECTIONS.
 # --no-code-docs skips gen_code_docs.py when the caller has already run it
-# (the `code_docs` CMake target).
+# (the `code_docs` CMake target). --sdk-dir names a staged SDK whose
+# games/<id>/ marks the games with a mod SDK (gen_mod_docs.py; default the
+# first build directory's mod-sdk-test/sdk/).
 #
 # The `docs` CMake target runs this for the shipped sections (stamp-guarded:
 # a no-op unless an input changed).
@@ -29,6 +32,7 @@ cd "$(dirname "$0")/.."
 
 SECTIONS=""
 STRUCTS=""
+SDK_DIR=""
 SITE_DIR="build/docs-site"
 SERVE=0
 CODE_DOCS=1
@@ -36,6 +40,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --sections)     SECTIONS="$2"; shift 2 ;;
         --structs)      STRUCTS="$2"; shift 2 ;;
+        --sdk-dir)      SDK_DIR="$2"; shift 2 ;;
         --site-dir)     SITE_DIR="$2"; shift 2 ;;
         --no-code-docs) CODE_DOCS=0; shift ;;
         --serve)        SERVE=1; shift ;;
@@ -49,6 +54,7 @@ builds() { [ -z "$SECTIONS" ] || [[ ",$SECTIONS," == *",$1,"* ]]; }
 if builds modding; then
     GEN_ARGS=()
     [ -n "$STRUCTS" ] && GEN_ARGS+=(--structs "$STRUCTS")
+    [ -n "$SDK_DIR" ] && GEN_ARGS+=(--sdk-dir "$SDK_DIR")
     python3 tools/gen_mod_docs.py "${GEN_ARGS[@]}"
 fi
 if builds developer && [ "$CODE_DOCS" = 1 ]; then

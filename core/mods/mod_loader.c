@@ -141,6 +141,14 @@ static const char* mod_dlerror(void) { return dlerror(); }
 /* mod_chain.c internals shared within core/mods. */
 int  openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                              const char* owner_id);
+int  openpete_mods_chain_add_ovl(uint32_t addr, uint32_t overlay,
+                                 openpete_mod_override_fn fn,
+                                 const char* owner_id);
+
+/* The first api whose manifests are read on the overlay-scoped rules: the
+ * api that adds override_ovl. A manifest pinned below it, or with no pin,
+ * was written against the Spyro 1 SDK. */
+#define MOD_API_SCOPED 13
 void openpete_mods_base(CPUState* cpu);
 
 /* Mods the live table's first block holds; it grows by whole blocks. */
@@ -253,6 +261,11 @@ struct openpete_mod {
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
     mod_fvec deps;       /* mod_dep_t */
     int   raw_warned;  /* raw-tier warning issued (once per mod) */
+    uint32_t api_pin;  /* [mod] api, the minimum api the mod's calls need;
+                        * 0 when the key is absent. Below MOD_API_SCOPED
+                        * it selects the unscoped overlay-window path. */
+    int   unscoped_warned; /* unscoped overlay-window deprecation issued
+                            * (once per mod, apart from raw_warned) */
     char  state_decl;  /* manifest state: 0 undeclared, 'n' none,
                         * 'r' rebuildable (host state re-derives from
                         * guest RAM) - gates savestate/rewind arming */
@@ -685,24 +698,196 @@ const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out) {
 
 /* ---- mod-facing API impl ------------------------------------------- */
 
-/** @brief Find an SDK symbol by exact name with a binary search.
+/** @brief Find the SDK symbol rows of an exact name with a binary search.
  *
- * The generator sorts the table by strcmp, so the search needs no index.
+ * The generator sorts the table by strcmp on name, then overlay id, and
+ * keeps one row per (name, overlay), so a name whose rows lie in several
+ * overlays occupies adjacent rows; the search finds the first.
+ * @param name Symbol name; NULL returns NULL.
+ * @param count Receives the number of rows; may be NULL.
+ * @return The first row, or NULL (count 0) when absent or no table is
+ *         registered. */
+static const openpete_sdk_symbol_t* sym_find_range(const char* name,
+                                                   size_t* count) {
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    if (count) *count = 0;
+    if (!name || !gd->symbols) return NULL;
+    size_t lo = 0, hi = gd->symbol_count;
+    while (lo < hi) { /* lower bound: first row not below name */
+        size_t mid = lo + (hi - lo) / 2;
+        if (strcmp(gd->symbols[mid].name, name) < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    size_t n = 0;
+    while (lo + n < gd->symbol_count && strcmp(gd->symbols[lo + n].name, name) == 0)
+        n++;
+    if (!n) return NULL;
+    if (count) *count = n;
+    return &gd->symbols[lo];
+}
+
+/** @brief Find an SDK symbol by exact name: the first of its rows (sym_find_range).
+ *
  * @param name Symbol name; NULL returns NULL.
  * @return The table row, or NULL when absent or no table is registered. */
 static const openpete_sdk_symbol_t* sym_find(const char* name) {
+    return sym_find_range(name, NULL);
+}
+
+/* ---- overlay-scoped overrides ----------------------------------------
+ * Every overlay of a game loads at one vaddr window, so an address inside
+ * it names one function per overlay that has an entry there. A link binds
+ * (address, overlay): override_ovl names the overlay, a name resolves to
+ * its row's overlay, and only a mod pinned below MOD_API_SCOPED on a game
+ * that allows it (game_mod_desc_t.legacy_window_links) binds an unscoped
+ * link that fires in every overlay. */
+
+/** @brief Return 1 when addr lies in the registered game's overlay window. */
+static int in_overlay_window(uint32_t addr) {
     const game_mod_desc_t* gd = openpete_mods_game_desc();
-    if (!name || !gd->symbols) return NULL;
-    size_t lo = 0, hi = gd->symbol_count;
-    while (lo < hi) { /* table is sorted by strcmp at generation time */
-        size_t mid = lo + (hi - lo) / 2;
-        int c = strcmp(gd->symbols[mid].name, name);
-        if (c == 0) return &gd->symbols[mid];
-        if (c < 0) lo = mid + 1; else hi = mid;
-    }
+    return addr >= gd->window_lo && addr < gd->window_hi;
+}
+
+/** @brief Find an overlay of the registered game by its overlay table id.
+ *
+ * @param id The overlay id.
+ * @return The overlay, or NULL when the game has none with that id. */
+static const game_mod_overlay_t* overlay_by_id(uint32_t id) {
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    for (size_t i = 0; i < gd->overlay_count; i++)
+        if (gd->overlays[i].id == id) return &gd->overlays[i];
     return NULL;
 }
 
+/** @brief Report whether addr is a function entry of an overlay, by binary search of its sorted entry array.
+ *
+ * @param o The overlay.
+ * @param addr The guest vaddr.
+ * @return 1 when addr is an entry, else 0. */
+static int overlay_has_entry(const game_mod_overlay_t* o, uint32_t addr) {
+    size_t lo = 0, hi = o->entry_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (o->entries[mid] == addr) return 1;
+        if (o->entries[mid] < addr) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+
+/** @brief Rank a symbol row for listing: the stable name, then func_<overlay>_<addr>, then legacy raw aliases. */
+static int sym_rank(const openpete_sdk_symbol_t* r) {
+    if (r->legacy) return 2;
+    return strncmp(r->name, "func_", 5) == 0 ? 1 : 0;
+}
+
+/** @brief Append to buf every SDK name of (addr, overlay), stable name first.
+ *
+ * @param buf The text being built.
+ * @param cap Size of buf.
+ * @param used Bytes already in buf.
+ * @param addr The guest vaddr.
+ * @param overlay The overlay id.
+ * @return The new length, at most cap - 1. */
+static size_t append_names_at(char* buf, size_t cap, size_t used,
+                              uint32_t addr, uint32_t overlay) {
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    int first = 1;
+    for (int rank = 0; rank < 3; rank++)
+        for (size_t i = 0; gd->symbols && i < gd->symbol_count; i++) {
+            const openpete_sdk_symbol_t* r = &gd->symbols[i];
+            if (r->addr != addr || r->overlay != overlay || sym_rank(r) != rank)
+                continue;
+            int w = snprintf(buf + used, cap - used, "%s%s",
+                             first ? " (" : ", ", r->name);
+            if (w < 0 || (size_t)w >= cap - used) return cap - 1;
+            used += (size_t)w;
+            first = 0;
+        }
+    if (!first) {
+        int w = snprintf(buf + used, cap - used, ")");
+        if (w < 0 || (size_t)w >= cap - used) return cap - 1;
+        used += (size_t)w;
+    }
+    return used;
+}
+
+/** @brief List every overlay where addr is a function entry or holds an SDK row, with that overlay's names for it.
+ *
+ * Form: "level_15 (Flight1_level_15, func_level_15_8007AE08); level_25
+ * (...)", in overlay table order, truncated to the buffer.
+ * @param buf Receives the text.
+ * @param cap Size of buf.
+ * @param addr The guest vaddr. */
+static void list_overlays_at(char* buf, size_t cap, uint32_t addr) {
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    size_t used = 0;
+    buf[0] = 0;
+    for (size_t k = 0; k < gd->overlay_count && used < cap - 1; k++) {
+        const game_mod_overlay_t* o = &gd->overlays[k];
+        int has = overlay_has_entry(o, addr);
+        for (size_t i = 0; !has && gd->symbols && i < gd->symbol_count; i++)
+            has = gd->symbols[i].addr == addr && gd->symbols[i].overlay == o->id;
+        if (!has) continue;
+        int w = snprintf(buf + used, cap - used, "%s%s", used ? "; " : "",
+                         o->name);
+        if (w < 0 || (size_t)w >= cap - used) { used = cap - 1; break; }
+        used = append_names_at(buf, cap, used + (size_t)w, addr, o->id);
+    }
+    if (!buf[0]) snprintf(buf, cap, "no overlay");
+}
+
+/** @brief Refuse an overlay-window binding that names no single overlay, logging every overlay it occurs in.
+ *
+ * Names the mod (log tag), the call and target, the game and the reason:
+ * the pin at or above MOD_API_SCOPED, or a game that binds such targets
+ * scoped only. Points to override_ovl and OP_OVLID_<name>.
+ * @param self The calling mod.
+ * @param call "override_addr" or "override_name".
+ * @param target The address or name as the mod passed it.
+ * @param addr The guest vaddr the target resolves to.
+ * @return -1, the api's refusal value. */
+static int refuse_unscoped(const openpete_mod_t* self, const char* call,
+                           const char* target, uint32_t addr) {
+    char where[2048];
+    list_overlays_at(where, sizeof where, addr);
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    char why[96];
+    if (!gd->legacy_window_links)
+        snprintf(why, sizeof why, "%s binds overlay-window overrides to one "
+                 "overlay at every api pin", game_get_id());
+    else
+        snprintf(why, sizeof why, "the mod pins api %u (overlay-scoped from "
+                 "api %d)", self->api_pin, MOD_API_SCOPED);
+    OPL_ERROR_F(self->log_tag,
+                "%s(%s) refused on %s: 0x%08X lies in the overlay window, "
+                "where it occurs in %s; %s. Bind one overlay with "
+                "override_ovl(self, OP_OVLID_<name>, OP_FNADDR_<name>, fn) or "
+                "override_name on a name of one overlay",
+                call, target, game_get_id(), addr, where, why);
+    return -1;
+}
+
+/** @brief Report whether a mod may bind an unscoped overlay-window link: a pin below MOD_API_SCOPED (or none) on a game with legacy_window_links. */
+static int unscoped_allowed(const openpete_mod_t* self) {
+    return self->api_pin < MOD_API_SCOPED &&
+           openpete_mods_game_desc()->legacy_window_links;
+}
+
+/** @brief Log the unscoped overlay-window deprecation once per mod.
+ *
+ * Its own flag (unscoped_warned), apart from the raw-tier warning's, so a
+ * mod whose first raw call targets the EXE still gets it.
+ * @param self The calling mod.
+ * @param addr The guest vaddr bound unscoped. */
+static void warn_unscoped(openpete_mod_t* self, uint32_t addr) {
+    if (self->unscoped_warned) return;
+    self->unscoped_warned = 1;
+    OPL_WARN_F(self->log_tag,
+               "override at 0x%08X in the overlay window binds every overlay "
+               "with a function there (api pin %u, below %d): deprecated; "
+               "bind one overlay with override_ovl", addr, self->api_pin,
+               MOD_API_SCOPED);
+}
 
 /** @brief Refuse a sim-affecting mod API call made from inside a present hook.
  *
@@ -793,26 +978,37 @@ static void warn_any_game_target(const openpete_mod_t* self,
 
 /** @brief Register a mod's override at a raw guest address on the chain.
  *
- * Refused inside a present hook. A first success also warns once per mod
- * that raw addresses are unstable across engine and decomp updates, and
- * warns when the address is a PSX render function the native renderer does
- * not rasterize. Every call from a "*" object warns (warn_any_game_target).
+ * Refused inside a present hook. An address outside the overlay window
+ * binds an EXE link. One inside it names a function per overlay, so it is
+ * refused (refuse_unscoped) unless unscoped_allowed, where it binds an
+ * unscoped link with a once-per-mod deprecation warning. A first success
+ * also warns once per mod that raw addresses are unstable across engine
+ * and decomp updates, and warns when the address is a PSX render function
+ * the native renderer does not rasterize. Every call from a "*" object
+ * warns (warn_any_game_target).
  * @param self The calling mod; NULL returns -1.
  * @param addr Guest function address; 0 fails in the chain.
  * @param fn The override; NULL fails in the chain.
- * @return 0, or -1 for a NULL self, a present-hook call or a chain
- *         failure. */
+ * @return 0, or -1 for a NULL self, a present-hook call, a refused
+ *         window address or a chain failure. */
 static int api_override_addr(openpete_mod_t* self, uint32_t addr,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
     if (purity_violation("override_addr")) return -1;
+    uint32_t overlay = 0;
     {
         char a[16];
         snprintf(a, sizeof a, "0x%08X", addr);
         warn_any_game_target(self, "override_addr", a);
+        if (in_overlay_window(addr)) {
+            if (!unscoped_allowed(self))
+                return refuse_unscoped(self, "override_addr", a, addr);
+            overlay = OPENPETE_MODS_OVERLAY_ANY;
+        }
     }
-    int rc = openpete_mods_chain_add(addr, fn, self->id);
+    int rc = openpete_mods_chain_add_ovl(addr, overlay, fn, self->id);
     if (rc == 0) {
+        if (overlay == OPENPETE_MODS_OVERLAY_ANY) warn_unscoped(self, addr);
         OPL_INFO_F(self->log_tag, "override registered at 0x%08X", addr);
         /* Raw addresses are region-pinned and drift across decomp
          * progress - warn from the actual use, once per mod (the old
@@ -831,28 +1027,41 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
 
 /** @brief Register a mod's override on a function named in the SDK symbol table.
  *
- * Refused inside a present hook. A legacy alias resolves to its address
- * with a warning naming the stable spelling; a name absent from the table
- * is an error. Warns when the target is a PSX render function the native
+ * Refused inside a present hook. A name with one row binds that row's
+ * (address, overlay), so an overlay function fires in its own overlay
+ * only. A name with rows in several overlays (a raw func_XXXXXXXX alias)
+ * is refused (refuse_unscoped) unless unscoped_allowed, where it binds an
+ * unscoped link with the once-per-mod deprecation warning. A legacy alias
+ * resolves to its address with a warning naming the stable spelling; a
+ * name absent from the table is an error. Warns when the target is a PSX render function the native
  * renderer does not rasterize, and on every func_ name from a "*" object
  * (warn_any_game_target).
  * @param self The calling mod; NULL returns -1.
  * @param name Symbol name; NULL is treated as absent.
  * @param fn The override.
- * @return 0, or -1 for a NULL self, a present-hook call, an unknown name
- *         or a chain failure. */
+ * @return 0, or -1 for a NULL self, a present-hook call, an unknown or
+ *         refused name or a chain failure. */
 static int api_override_name(openpete_mod_t* self, const char* name,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
     if (purity_violation("override_name")) return -1;
     if (name && strncmp(name, "func_", 5) == 0)
         warn_any_game_target(self, "override_name", name);
-    const openpete_sdk_symbol_t* sym = sym_find(name);
+    size_t nrows = 0;
+    const openpete_sdk_symbol_t* sym = sym_find_range(name, &nrows);
     if (!sym) {
         OPL_ERROR_F(self->log_tag,
                     "override target \"%s\" not in the %s SDK symbol table",
                     name ? name : "(null)", game_get_id());
         return -1;
+    }
+    /* One row per (name, overlay): one row binds (address, overlay) from
+     * the row; several rows are a raw name shared by several overlays. */
+    uint32_t overlay = sym->overlay;
+    if (nrows > 1) {
+        if (!unscoped_allowed(self))
+            return refuse_unscoped(self, "override_name", name, sym->addr);
+        overlay = OPENPETE_MODS_OVERLAY_ANY;
     }
     if (sym->legacy) {
         /* Decomp promotion contract: historical raw names resolve
@@ -862,11 +1071,60 @@ static int api_override_name(openpete_mod_t* self, const char* name,
                    "renamed) - resolved to 0x%08X; update the mod to the "
                    "stable name", name, sym->addr);
     }
-    int rc = openpete_mods_chain_add(sym->addr, fn, self->id);
+    int rc = openpete_mods_chain_add_ovl(sym->addr, overlay, fn, self->id);
     if (rc == 0) {
+        if (overlay == OPENPETE_MODS_OVERLAY_ANY) warn_unscoped(self, sym->addr);
         OPL_INFO_F(self->log_tag, "override registered: %s (0x%08X)",
                    name, sym->addr);
         warn_render_bypassed(self, sym->addr);
+    }
+    return rc;
+}
+
+/** @brief Register a mod's override on the function at an address in one overlay, or in the EXE for id 0.
+ *
+ * Refused inside a present hook. Refused with an error naming the mod, the
+ * id, the address and the game, binding nothing: an id that is neither 0
+ * nor in the game's overlay table; id 0 with an address inside the overlay
+ * window; a nonzero id with an address outside it; an address that is not
+ * a function entry of that overlay (its generated dispatch). The link fires
+ * only while that overlay is resident. Warns when the target is a PSX
+ * render function the native renderer does not rasterize.
+ * @param self The calling mod; NULL returns -1.
+ * @param overlay_id The overlay table id, or 0 for the EXE.
+ * @param addr Guest function address; 0 fails in the chain.
+ * @param fn The override; NULL fails in the chain.
+ * @return 0, or -1 for a NULL self, a present-hook call, a refused
+ *         argument or a chain failure. */
+static int api_override_ovl(openpete_mod_t* self, uint32_t overlay_id,
+                            uint32_t addr, openpete_mod_override_fn fn) {
+    if (!self) return -1;
+    if (purity_violation("override_ovl")) return -1;
+    const game_mod_overlay_t* o = overlay_id ? overlay_by_id(overlay_id) : NULL;
+    const char* why = NULL;
+    if (overlay_id && !o)
+        why = "the id is not in this game's overlay table";
+    else if (!overlay_id && in_overlay_window(addr))
+        why = "id 0 is the EXE and the address lies in the overlay window";
+    else if (overlay_id && !in_overlay_window(addr))
+        why = "the address lies outside the overlay window";
+    else if (o && !overlay_has_entry(o, addr))
+        why = "the address is not a function entry of that overlay";
+    if (why) {
+        OPL_ERROR_F(self->log_tag,
+                    "override_ovl(%u%s%s, 0x%08X) refused on %s: %s",
+                    overlay_id, o ? " = " : "", o ? o->name : "", addr,
+                    game_get_id(), why);
+        return -1;
+    }
+    int rc = openpete_mods_chain_add_ovl(addr, overlay_id, fn, self->id);
+    if (rc == 0) {
+        if (o)
+            OPL_INFO_F(self->log_tag, "override registered at 0x%08X in "
+                       "overlay %s (id %u)", addr, o->name, overlay_id);
+        else
+            OPL_INFO_F(self->log_tag, "override registered at 0x%08X", addr);
+        warn_render_bypassed(self, addr);
     }
     return rc;
 }
@@ -2474,6 +2732,7 @@ static const openpete_mod_api_t s_api = {
     /* pillar 9: the booted disc (disc_path api 12, read_sector api 13) */
     .disc_path     = api_disc_path,
     .read_sector   = api_read_sector,
+    .override_ovl  = api_override_ovl,
     /* declared input bindings */
     .binding_down  = api_binding_down,
     /* pillar 9: game data + texture packs (api 2) */
@@ -2566,7 +2825,8 @@ static int mod_id_valid(const char* id) {
  * id and version are required; name defaults to the id; dir and log_tag
  * are filled. api is the minimum mod API the mod needs: source mods
  * recompile against the current SDK and the api struct is append-only, so
- * only an api above OPENPETE_MOD_API_VERSION refuses. sim_mutative stays
+ * only an api above OPENPETE_MOD_API_VERSION refuses. It is stored as
+ * api_pin, which selects the overlay-window override rules (MOD_API_SCOPED). sim_mutative stays
  * -1 when absent so mod_is_mutative decides; the obsolete sim_neutral key,
  * of inverted sense, is honoured with a warning when sim_mutative is
  * absent. state ("none" or "rebuildable") and runahead ("pure" or
@@ -2609,6 +2869,7 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
     }
     snprintf(mod->id, sizeof mod->id, "%s", id.u.s);
     snprintf(mod->version, sizeof mod->version, "%s", ver.u.s);
+    mod->api_pin = (api.ok && api.u.i > 0) ? (uint32_t)api.u.i : 0u;
     snprintf(mod->dir, sizeof mod->dir, "%s", mod_dir);
     snprintf(mod->log_tag, sizeof mod->log_tag, "mod:%s", mod->id);
     free(id.u.s);
@@ -4320,11 +4581,6 @@ static size_t want_append(char* want, size_t cap, size_t used,
     used += (size_t)wrote;
     return used >= cap ? cap - 1 : used;
 }
-
-/* The first api whose manifests are read on the overlay-scoped rules. A
- * manifest pinned below it, or with no pin, was written against the
- * Spyro 1 SDK. */
-#define MOD_API_SCOPED 13
 
 /** @brief Test whether a [mod] game array names @p game, collecting the declared ids into @p want.
  *
