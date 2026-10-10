@@ -1503,6 +1503,8 @@ static struct {
     op_time_t lag_pin;                /* OPENPETE_EAGER_LAG_US */
     int       lag_headroom;
     int       dbg_level;
+    unsigned  trimmed;                /* spans whose render-grid slot was pulled back to within a period of now */
+    op_time_t anchor_age;             /* now - the span anchor at the last plan: 0 when anchored on now */
     op_time_t last_target;            /* the previous span's final display instant */
     int       world_live;             /* canonical presents are flowing (see the inline gate) */
     unsigned  spans, produced, skipped_late, cut, refused, level_up, level_down;
@@ -1639,32 +1641,154 @@ static void eager_shed_unplanned(op_time_t first, op_time_t span_end,
  * and the driver's own lead to the flip (a submit 0.33 ms before a vblank
  * still made it; one 0.13 ms before did not). */
 #define EAGER_PUBLISH_LEAD_NS 2000000
+/* The present thread's fitted vblank lattice, when targets go on it. */
+typedef struct { int on; int64_t base; double period; } eager_lattice_t;
+/* One span's display instants, as eager_span_slots enumerates them. */
+typedef struct { op_time_t first, end; int ns; op_time_t slots[EAGER_MAX_TARGETS]; } eager_span_t;
+
+/** @brief Enumerate the display instants of one span from its first render-grid slot.
+ *
+ * Raises span_end to first, puts first on the vblank lattice (no earlier than
+ * EAGER_PUBLISH_LEAD_NS past now) when one is fitted, extends span_end by the
+ * lag and, when the previous span's last target plus a period lies past
+ * first, continues on the previous span's grid (unless it drifted a whole
+ * period from this one). The slots step period from first through span_end;
+ * a span holds at least the slot at first. Reads s_eager.lag and
+ * s_eager.last_target and writes nothing else.
+ * @param now The plan instant.
+ * @param first The span's first render-grid slot.
+ * @param span_end The instant the next tick lands.
+ * @param period The planned grid period.
+ * @param lat The vblank lattice.
+ * @param out Receives first, the extended span_end, the slot count and the slots. */
+static void eager_span_slots(op_time_t now, op_time_t first, op_time_t span_end,
+                             op_time_t period, const eager_lattice_t *lat, eager_span_t *out)
+{
+    if (span_end < first) span_end = first;
+    if (lat->on) {
+        /* The canonical scene is produced right after this plan and
+         * shown at once; its vblank must leave room for that. */
+        op_time_t f = now + EAGER_PUBLISH_LEAD_NS;
+        if (f < first) f = first;
+        first = eager_lattice_ceil(f, lat->base, lat->period);
+    }
+    /* Display instants whose animation instant (t - lag) is inside the span.
+     * The previous span already covers the instants up to its last target
+     * (that is what the lag is for: its late scenes show through this tick's
+     * execution), so this span begins at the slot after it -- a scene for an
+     * instant the old span covers would sit at negative alpha of the new
+     * bracket, a backward extrapolation the old bracket renders exactly. */
+    /* The extension below moves the SLOT ENUMERATION past the instant
+     * production stops at, which is correct - those late instants are shown
+     * through the next tick's execution - but it is not time in which to
+     * produce them. eager_plan's `prod_end` is that separate quantity. */
+    span_end += s_eager.lag;
+    if (s_eager.last_target && s_eager.last_target + period > first) {
+        op_time_t f = s_eager.last_target + period;
+        /* the old span's grid, unless it drifted a whole slot from ours */
+        if (f - first > period) f = first + ((f - first) / period) * period;
+        /* re-snapped: the lattice fit moves by microseconds between spans */
+        if (lat->on) f = eager_lattice_ceil(f - period / 2, lat->base, lat->period);
+        first = f;
+    }
+    int ns = 0;
+    for (op_time_t t = first; t <= span_end && ns < EAGER_MAX_TARGETS; t += period) out->slots[ns++] = t;
+    if (ns == 0) out->slots[ns++] = first;
+    out->first = first; out->end = span_end; out->ns = ns;
+}
+
+/** @brief Write eager_plan's OPENPETE_EAGER_DBG lines for the span just planned.
+ *
+ * OPENPETE_EAGER_DBG=1 writes the plan line on a cut span or a level change.
+ * 2 or more also writes one span line per plan: the offsets from now of the
+ * render-grid slot passed in (in), the span's first display instant, its end
+ * after the lag extension and the previous span's last target, the lag, the
+ * anchor source (cap: the newest capture stamp, now: the plan instant) with
+ * the capture stamp's age, the slot count, the level and the count of spans
+ * whose slot was pulled back. 3 or more also writes the slot list beside the
+ * one the untrimmed slot and the caller-side span_end clamp enumerate, and
+ * whether the two are equal. Runs before the plan stores its targets, so
+ * last_target is still the previous span's.
+ * @param now The plan instant.
+ * @param first_in The render-grid slot eager_plan was called with.
+ * @param end_in The span_end eager_plan was called with.
+ * @param period The planned grid period.
+ * @param lat The vblank lattice.
+ * @param sp The planned span.
+ * @param budget The production budget in nanoseconds.
+ * @param afford The number of scenes the budget affords. */
+static void eager_plan_dbg(op_time_t now, op_time_t first_in, op_time_t end_in, op_time_t period,
+                           const eager_lattice_t *lat, const eager_span_t *sp,
+                           op_time_t budget, int afford)
+{
+    static int dbg = -1;
+    if (dbg < 0) { const char *e = getenv("OPENPETE_EAGER_DBG"); dbg = (e && *e) ? atoi(e) : 0; }
+    if (dbg <= 0) return;
+    if (s_eager.span_cut || s_eager.level != s_eager.dbg_level) {
+        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d cut=%d lag=%.2fms vbl=%.2fms\n",
+                openpete_frame, sp->ns, (double)budget / 1e6, (double)eager_tail_cost() / 1e6, afford,
+                s_eager.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6);
+        s_eager.dbg_level = s_eager.level;
+    }
+    if (dbg < 2) return;
+    const double last = s_eager.last_target ? (double)(s_eager.last_target - now) / 1e6 : 0.0;
+    const op_time_t curr = openpete_interp_curr_tick_ns();
+    const double age = curr ? (double)(now - curr) / 1e6 : -1.0;
+    fprintf(stderr, "[eager f=%u] span: now=%.6f in=%.3f first=%.3f end=%.3f last=%.3f lag=%.3f anchor=%s age=%.3f ns=%d level=%d trimmed=%u\n",
+            openpete_frame, (double)now / 1e9, (double)(first_in - now) / 1e6,
+            (double)(sp->first - now) / 1e6, (double)(sp->end - now) / 1e6, last,
+            (double)s_eager.lag / 1e6, s_eager.anchor_age ? "cap" : "now",
+            age, sp->ns, s_eager.level, s_eager.trimmed);
+    if (dbg < 3) return;
+    eager_span_t old;
+    eager_span_slots(now, first_in, end_in > first_in ? end_in : first_in, period, lat, &old);
+    const int same = old.ns == sp->ns && old.first == sp->first && old.end == sp->end &&
+                     memcmp(old.slots, sp->slots, sizeof(op_time_t) * (size_t)sp->ns) == 0;
+    char buf[1024]; int o = snprintf(buf, sizeof(buf), "[eager f=%u] slots: same=%d new", openpete_frame, same);
+    for (int q = 0; q < sp->ns && o < 900; q++) o += snprintf(buf + o, sizeof(buf) - (size_t)o, " %.3f", (double)(sp->slots[q] - now) / 1e6);
+    o += snprintf(buf + o, sizeof(buf) - (size_t)o, " | old");
+    for (int q = 0; q < old.ns && o < 1000; q++) o += snprintf(buf + o, sizeof(buf) - (size_t)o, " %.3f", (double)(old.slots[q] - now) / 1e6);
+    fprintf(stderr, "%s\n", buf);
+}
+
 /** @brief Plan the display instants of the span that starts now and adjust the decimation level.
  *
- * Counts the previous span as cut when it left targets unproduced. Moves the
+ * Counts the previous span as cut when it left targets unproduced. Pulls
+ * first back by whole render periods to the grid's earliest instant at or
+ * after now, counting each span it pulls back in s_eager.trimmed. Moves the
  * lag (unless pinned) up to the decaying tick-time peak plus 0.3 ms at once
  * and down only after 30 spans of headroom. Chooses the grid: on the
  * present thread's locked lattice a whole number of refreshes per render
  * slot with the first target on a vblank; otherwise, on a vsynced display
  * slower than the render grid, the refresh period; the period never falls
  * below the scene production cost, the present thread's cost, or 250 us
- * before the cost is measured. Extends span_end by the lag and continues
- * after the previous span's last target. Estimates how many scenes fit
+ * before the cost is measured. Enumerates the slots with eager_span_slots
+ * (span_end raised to first and extended by the lag, continuing after the
+ * previous span's last target). Estimates how many scenes fit
  * before prod_end (afford), raises the level at once when the slots need it
  * or the last span was cut, and lowers it after a run of spans with a
  * quarter margin. Stores every level-th slot (policy 0) or afford evenly
  * spaced instants (policy 1) in s_eager.target, sets last_target and counts
  * the span.
  * @param now Current time on the op_now() clock.
- * @param first The next render-grid instant not yet passed.
+ * @param first A render-grid instant at or after now.
  * @param period The render grid period in nanoseconds.
- * @param span_end The instant the next tick lands (alpha reaches 1); at
- *        least first.
+ * @param span_end The instant the next tick lands (alpha reaches 1).
  * @param prod_end The pacer grid instant production must finish before. */
 static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
                        op_time_t span_end, op_time_t prod_end)
 {
     eager_close_span();   /* the previous span's books first */
+    /* The render grid's next slot may lead now by more than a period (the
+     * host loop steps it once per iteration and catches it up only when it
+     * falls behind); a slot that far out would leave this tick's span one
+     * slot, or none past the clamp to it. Its earliest instant at or after
+     * now, on the same phase, is the span's first. */
+    const op_time_t first_in = first;
+    if (first - now > period) {
+        first -= ((first - now) / period) * period;
+        s_eager.trimmed++;
+    }
     /* The lag follows the tick's execution tail: up at once (a slot at
      * alpha > 1 is a lost frame), down only after a second of headroom (a
      * lag that flickers warps animation time). */
@@ -1684,28 +1808,23 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * (480 on a 60 Hz panel): a scene per grid slot would be produced 8x
      * faster than any can be shown and superseded unpresented. Plan on the
      * coarser of the two grids, phase-preserving. */
-    int64_t lat_base = 0; double lat_period = 0.0;
+    eager_lattice_t lat = { 0, 0, 0.0 };
     op_time_t grid_period;            /* the display grid before the cost floor */
-    const int on_lattice = openpete_native_display_vsync() &&
-                           openpete_present_thread_lattice(&lat_base, &lat_period);
+    lat.on = openpete_native_display_vsync() &&
+             openpete_present_thread_lattice(&lat.base, &lat.period);
     {
         const float hz = openpete_native_display_refresh_hz();
-        if (on_lattice) {
+        if (lat.on) {
             /* The present thread has fitted the display's vblank lattice
              * from observed flips: targets go ON it, a whole number of
              * refreshes apart, so each target is a vblank and the
              * animation instant (target - lag) is exact. The nominal mode
              * rate is not good enough for this -- it was 2e-5 off the
              * measured one, a full slot of phase every ~50 s. */
-            const op_time_t lp = (op_time_t)(lat_period + 0.5);
+            const op_time_t lp = (op_time_t)(lat.period + 0.5);
             op_time_t k = (period + lp / 2) / lp;             /* refreshes per render slot */
             if (k < 1) k = 1;
-            period = (op_time_t)(lat_period * (double)k + 0.5);
-            /* The canonical scene is produced right after this plan and
-             * shown at once; its vblank must leave room for that. */
-            op_time_t f = now + EAGER_PUBLISH_LEAD_NS;
-            if (f < first) f = first;
-            first = eager_lattice_ceil(f, lat_base, lat_period);
+            period = (op_time_t)(lat.period * (double)k + 0.5);
         } else
         if (hz > 1.0f && openpete_native_display_vsync()) {
             const op_time_t rp = (op_time_t)(1e9 / hz);
@@ -1726,28 +1845,9 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
         if (pc > floor_ns) floor_ns = pc;
         if (period < floor_ns) period = floor_ns;
     }
-    /* Display instants whose ANIMATION instant (t - lag) is inside the span.
-     * The previous span already covers the instants up to its last target
-     * (that is what the lag is for: its late scenes show through this tick's
-     * execution), so this span begins at the slot after it -- a scene for an
-     * instant the old span covers would sit at NEGATIVE alpha of the new
-     * bracket, a backward extrapolation the old bracket renders exactly. */
-    /* The extension below moves the SLOT ENUMERATION past the instant
-     * production stops at, which is correct - those late instants are shown
-     * through the next tick's execution - but it is not time in which to
-     * produce them. `prod_end` is that separate quantity. */
-    span_end += s_eager.lag;
-    if (s_eager.last_target && s_eager.last_target + period > first) {
-        op_time_t f = s_eager.last_target + period;
-        /* the old span's grid, unless it drifted a whole slot from ours */
-        if (f - first > period) f = first + ((f - first) / period) * period;
-        /* re-snapped: the lattice fit moves by microseconds between spans */
-        if (on_lattice) f = eager_lattice_ceil(f - period / 2, lat_base, lat_period);
-        first = f;
-    }
-    op_time_t slots[EAGER_MAX_TARGETS]; int ns = 0;
-    for (op_time_t t = first; t <= span_end && ns < EAGER_MAX_TARGETS; t += period) slots[ns++] = t;
-    if (ns == 0) { slots[ns++] = first; }
+    eager_span_t sp;
+    eager_span_slots(now, first, span_end, period, &lat, &sp);
+    const int ns = sp.ns;
 
     /* Budget on the tail of the per-scene cost, against what this thread
      * has left of the span once the update VBL has run.
@@ -1801,26 +1901,19 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
             } else s_eager.headroom_runs = 0;
         }
     }
-    static int dbg = -1;
-    if (dbg < 0) { const char *e = getenv("OPENPETE_EAGER_DBG"); dbg = (e && *e && *e != '0'); }
-    if (dbg && (s_eager.span_cut || s_eager.level != s_eager.dbg_level)) {
-        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d cut=%d lag=%.2fms vbl=%.2fms\n",
-                openpete_frame, ns, (double)budget / 1e6, (double)tail / 1e6, afford,
-                s_eager.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6);
-        s_eager.dbg_level = s_eager.level;
-    }
+    eager_plan_dbg(now, first_in, span_end, period, &lat, &sp, budget, afford);
     s_eager.span_cut = 0;
 
     s_eager.n = 0; s_eager.i = 0;
     if (s_eager.policy == 1) {
         int k = afford < ns ? afford : ns;
-        const op_time_t len = span_end - first;
-        for (int q = 0; q < k; q++) s_eager.target[s_eager.n++] = first + (len * q) / k;
+        const op_time_t len = sp.end - sp.first;
+        for (int q = 0; q < k; q++) s_eager.target[s_eager.n++] = sp.first + (len * q) / k;
     } else {
-        for (int q = 0; q < ns; q += s_eager.level) s_eager.target[s_eager.n++] = slots[q];
+        for (int q = 0; q < ns; q += s_eager.level) s_eager.target[s_eager.n++] = sp.slots[q];
     }
     s_eager.last_target = s_eager.n ? s_eager.target[s_eager.n - 1] : 0;
-    eager_shed_unplanned(first, span_end, grid_period, period, ns);
+    eager_shed_unplanned(sp.first, sp.end, grid_period, period, ns);
     s_eager.spans++;
 }
 
@@ -1926,7 +2019,8 @@ static int eager_produce(op_time_t deadline, op_time_t period)
  * instant passed, refused because the ring was full, and cut short; the
  * divisor level and its moves (shown as n/a under the greedy policy, where
  * the level does not decide the plan); scene cost mean and deviation; the
- * lag and the tick execution-time mean and deviation; the policy. Silent
+ * lag and the tick execution-time mean and deviation; the policy; the spans
+ * whose render-grid slot was pulled back to within a period of now. Silent
  * when no span ran. */
 static void eager_report(void)
 {
@@ -1935,12 +2029,13 @@ static void eager_report(void)
      * comes from `afford`), so it is reported as such. */
     OPL_INFO_F("eager", "%u span(s): %u scene(s) produced, %u skipped (instant passed), "
                "%u refused (ring full), %u cut short; level now %s%d (%u down, %u up); "
-               "scene cost %.3f ms ema, %.3f ms dev; lag %.3f ms (tick %.3f ms ema, %.3f dev); policy %s",
+               "scene cost %.3f ms ema, %.3f ms dev; lag %.3f ms (tick %.3f ms ema, %.3f dev); policy %s; "
+               "%u first slot(s) pulled back",
                s_eager.spans, s_eager.produced, s_eager.skipped_late, s_eager.refused,
                s_eager.cut, s_eager.policy ? "n/a " : "", s_eager.level, s_eager.level_down, s_eager.level_up,
                (double)s_eager.cost_ema / 1e6, (double)s_eager.cost_dev / 1e6,
                (double)s_eager.lag / 1e6, (double)s_eager.tick_ema / 1e6, (double)s_eager.tick_dev / 1e6,
-               s_eager.policy ? "greedy" : "divisor");
+               s_eager.policy ? "greedy" : "divisor", s_eager.trimmed);
 }
 
 /** @brief Drop the eager scene plan on a guest discontinuity (savestate load, rewind, level load).
@@ -5796,8 +5891,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * on this tick's landing instead. */
                     const op_time_t tp = (op_time_t)g_openpete_tick_period_ns;
                     const op_time_t anchor = (curr && now - curr < 2 * tp) ? curr : now;
+                    s_eager.anchor_age = now - anchor;
                     const op_time_t span_end = anchor + tp;
-                    eager_plan(now, first, period, span_end > first ? span_end : first,
+                    eager_plan(now, first, period, span_end,
                                next_sim.at + 2 * sim_period_ns);
                     /* The canonical scene, then as much of the span as fits
                      * before the update VBL is due - the latter only while
