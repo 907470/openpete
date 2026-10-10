@@ -5,17 +5,23 @@
 #
 # For each binary: run PSXRecomp once with manifest/recomp/<sku>/'s funcs
 # list, apply the same dispatch-rename regen applies, and byte-diff the
-# generated C against games/spyro-1/generated/. Any diff = the manifest
+# generated C against games/<game>/generated/. Any diff = the manifest
 # under-captures discovery = the first-boot single-pass path would build
 # a different game. Exit 0 only if every binary is byte-identical.
+#
+#   GAME=spyro-2 bash scripts/verify-recomp-manifest.sh   # default spyro-1
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+GAME="${GAME:-spyro-1}"
+# shellcheck source=/dev/null
+source "games/$GAME/recomp.conf"
+SERIAL="${EXE_FILENAME/_/-}"; SERIAL="${SERIAL/./}"
 PSXRECOMP=third_party/psxrecomp/build/PSXRecomp
-OUT=games/spyro-1/generated
-MAN=games/spyro-1/manifest/recomp/SCUS-94228
-PSYQ=games/spyro-1/manifest/psyq.toml
-EXE=games/spyro-1/spyro-1/build/PSX.EXE
+OUT=games/$GAME/generated
+MAN=games/$GAME/manifest/recomp/$SERIAL
+PSYQ=games/$GAME/manifest/psyq.toml
+EXE=$PSX_EXE
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/openpete-manifest-verify.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
@@ -35,12 +41,16 @@ check() {  # check <label> <regen_file> <singlepass_file>
 
 # --- main EXE -------------------------------------------------------------
 mkdir -p "$TMP/main_exe"
+channel=()
+if grep -qx 'channel_sites = true' "$MAN/manifest.toml"; then
+    channel=(--channel-sites="$OUT/channel_sites.txt")
+fi
 "$PSXRECOMP" "$EXE" \
     --output-dir="$TMP/main_exe" \
     --external-symbols="$PSYQ" \
     --external-prefix=psyq_ \
     --extra-funcs="$MAN/main_exe.funcs.txt" \
-    --channel-sites="$OUT/channel_sites.txt" \
+    "${channel[@]}" \
     --skip-on-error >/dev/null
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' "$TMP/main_exe/PSX.EXE_dispatch.c"
 check "main_exe (full)"     "$OUT/PSX.EXE_full.c"     "$TMP/main_exe/PSX.EXE_full.c"
@@ -49,11 +59,10 @@ check "main_exe (dispatch)" "$OUT/PSX.EXE_dispatch.c" "$TMP/main_exe/PSX.EXE_dis
 # --- overlays ---------------------------------------------------------------
 # Boot-shaped invocation: raw .ovl straight from the WAD dir + --raw-bin,
 # exactly what the first-boot pipeline runs against carved segments.
-WAD_DIR=games/spyro-1/spyro-1/build/wad
-while IFS=$'\t' read -r name wad; do
+while IFS=$'\t' read -r name wad load; do
     mkdir -p "$TMP/$name"
     "$PSXRECOMP" "$WAD_DIR/$wad" \
-        --raw-bin --load-addr=0x8007AA38 --output-stem="$name.bin" \
+        --raw-bin --load-addr="$load" --output-stem="$name.bin" \
         --output-dir="$TMP/$name" \
         --external-symbols="$PSYQ" \
         --external-prefix=psyq_ \
@@ -67,9 +76,9 @@ while IFS=$'\t' read -r name wad; do
 done < <(python3 - "$MAN/manifest.toml" <<'PYEOF'
 import re, sys
 toml = open(sys.argv[1]).read()
-for m in re.finditer(r'\[\[overlay\]\]\nname = "([^"]+)"(?:.*?)wad_file = "([^"]+)"',
+for m in re.finditer(r'\[\[overlay\]\]\nname = "([^"]+)"(?:.*?)load_addr = (\S+)(?:.*?)wad_file = "([^"]+)"',
                      toml, re.S):
-    print(f"{m.group(1)}\t{m.group(2)}")
+    print(f"{m.group(1)}\t{m.group(3)}\t{m.group(2)}")
 PYEOF
 )
 

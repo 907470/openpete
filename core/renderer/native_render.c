@@ -14118,17 +14118,17 @@ int  openpete_native_version_osd(void) { return s_version_osd; }
 
 /* Version-line gate; documented at the declaration. */
 int openpete_native_version_line_enabled(void) {
-    if (!openpete_build_shared_recomp()) return 0;
+    if (!openpete_build_distributed()) return 0;
     if (!openpete_build_tagged()) return 1;
     return s_version_osd;
 }
 
 /* One phrase naming the state above, for the shutdown census. */
 const char *openpete_native_version_reason(void) {
-    if (!openpete_build_shared_recomp())
-        return "not a shared-recomp build, no line";
+    if (!openpete_build_distributed())
+        return "not a distribution build, no line";
     if (!openpete_build_tagged())
-        return "untagged shared build, whole session, not suppressible";
+        return "untagged distribution build, whole session, not suppressible";
     return s_version_osd ? "release build, brief"
                          : "release build, suppressed by --version-osd off";
 }

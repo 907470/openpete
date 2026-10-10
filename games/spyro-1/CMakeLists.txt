@@ -1,10 +1,10 @@
 # games/spyro-1/CMakeLists.txt - Spyro 1 binary.
 #
 # The module and executable skeleton come from cmake/openpete_game.cmake;
-# this file adds what only this game has: the shared-linkage attach and
-# export surface, the mod SDK and its docs, the build-time mod compile, the
-# decomp-derived icon, the SoundTable names, the state-region tables, the
-# Windows subsystem choice, and the browser link.
+# this file adds what only this game has: its first-boot extraction, the
+# mod SDK and its docs, the build-time mod compile,
+# the decomp-derived icon, the SoundTable names, the state-region tables,
+# the Windows subsystem choice, and the browser link.
 
 set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
 
@@ -15,42 +15,11 @@ set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
 option(OPENPETE_FUNC_TRACE
        "Instrument the generated EXE for per-function CPU tracing"
        OFF)
-
-# --- ROM-derived recomp module -----------------------------------------
-#
-# OPENPETE_RECOMP_LINKAGE selects how the spyro1_recomp_module built by
-# openpete_add_game reaches the exe:
-#   static - OBJECT library linked straight in (dev default;
-#            byte-identical link semantics, no archive member pulling).
-#   shared - spyro1-recomp.{so,dll} + dlopen loader (the distribution
-#            build; the same sources users boot-compile at first run).
-set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
-    "Recomp module linkage: static (dev) or shared (distribution)")
-set_property(CACHE OPENPETE_RECOMP_LINKAGE PROPERTY STRINGS static shared)
-
-# Host-side attach TU + (shared) the generated export surface.
-if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
-    set(_module_def       ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_module_exports.def)
-    set(_module_keepalive ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_abi_keepalive.gen.c)
-    add_custom_command(
-        OUTPUT  ${_module_def} ${_module_keepalive}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
-        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_module_exports.py
-                --psyq   ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
-                --extras ${CMAKE_CURRENT_SOURCE_DIR}/manifest/module_abi_exports.txt
-                --image  openpete-spyro1.exe
-                --def-out ${_module_def}
-                --keepalive-out ${_module_keepalive}
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
-                ${CMAKE_CURRENT_SOURCE_DIR}/manifest/module_abi_exports.txt
-                ${CMAKE_SOURCE_DIR}/tools/gen_module_exports.py
-        COMMENT "Generating recomp-module export surface (.def + keep-alive)")
-    set(SPYRO_RECOMP_ATTACH_SOURCES
-        recomp_attach_shared.c
-        dist/recomp_build.cpp
-        ${_module_keepalive})
-else()
-    set(SPYRO_RECOMP_ATTACH_SOURCES recomp_attach_static.c)
+# The pointer->name symtab takes the address of every recompiled function in
+# the exe, which links them only under static linkage.
+if(OPENPETE_FUNC_TRACE AND NOT OPENPETE_RECOMP_LINKAGE STREQUAL "static")
+    message(FATAL_ERROR "OPENPETE_FUNC_TRACE needs the module linked into the "
+                        "exe: configure with -DOPENPETE_RECOMP_LINKAGE=static")
 endif()
 
 # App icon. Two sources:
@@ -97,7 +66,6 @@ openpete_add_game(spyro-1
     MOBY_GAME      renderer/moby_game.c
     PLAYER_GAME    renderer/player_game.c
     ICON_SOURCE    ${_spyro_icon_c}
-    MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
     MOD_SDK
     SDK_ROOT_COPIES
@@ -131,9 +99,6 @@ openpete_add_game(spyro-1
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
 
-        # The attach TU registers the module (static) or dlopens it (shared).
-        ${SPYRO_RECOMP_ATTACH_SOURCES}
-
         sfx_census.cpp
         write_trace.cpp
 
@@ -145,12 +110,16 @@ openpete_add_game(spyro-1
         mods/mod_game_desc.c
 
         # First-run distribution: the WAD extraction (the disc library and
-        # the launcher are core/launcher/; the module build,
-        # dist/recomp_build.cpp, is a shared-linkage attach source above).
-        dist/recomp_extract.cpp)
+        # the launcher are core/launcher/; the module build is
+        # FIRST_BOOT_SOURCES below).
+        dist/recomp_extract.cpp
+    FIRST_BOOT_SOURCES
+        # The first-boot module build: extract (dist/recomp_extract.cpp
+        # above), recompile, compile, link.
+        ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-    if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+    if(OPENPETE_DIST_PRESET)
         # Distribution build: GUI subsystem so no console window pops up
         # for end users. main.cpp reattaches stdout/stderr to the parent
         # console when launched from a terminal (dev/CI keep their logs).
@@ -389,84 +358,6 @@ if(OPENPETE_COMPILE_MODS)
             COMMENT "Compiling mods (openpete-spyro1 --compile-mods)"
             VERBATIM)
         add_dependencies(spyro1_mods openpete-spyro1 spyro1_sdk_stage)
-    endif()
-endif()
-if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared" AND WIN32)
-    # The exe exports exactly the curated surface (the .def rides the
-    # link line); the module DLL links an implib generated from the
-    # same .def so its imports name openpete-spyro1.exe.
-    target_link_options(openpete-spyro1 PRIVATE ${_module_def})
-    set_property(TARGET openpete-spyro1 APPEND PROPERTY
-        LINK_DEPENDS ${_module_def})
-    # GNU LTO does not treat .def exports as liveness roots: with IPO
-    # on, the otherwise-unreferenced ABI surface (psyq_* thunks,
-    # dispatch, GTE entry points) is dead-code-eliminated and ld
-    # silently emits the exports as absolute-0 - the module's first
-    # PSYQ import then jumps to image_base+0xC0000000 (DEP crash).
-    # Force IPO off for the exe regardless of cache/preset state.
-    set_target_properties(openpete-spyro1 PROPERTIES
-        INTERPROCEDURAL_OPTIMIZATION OFF)
-    if(NOT CMAKE_DLLTOOL)
-        set(CMAKE_DLLTOOL x86_64-w64-mingw32-dlltool)
-    endif()
-    set(_module_implib
-        ${CMAKE_CURRENT_BINARY_DIR}/gen/libopenpete-exe-exports.a)
-    add_custom_command(
-        OUTPUT  ${_module_implib}
-        COMMAND ${CMAKE_DLLTOOL} -d ${_module_def} -l ${_module_implib}
-                -D openpete-spyro1.exe
-        DEPENDS ${_module_def}
-        COMMENT "dlltool: exe-export implib for the recomp module")
-    add_custom_target(spyro1_module_implib DEPENDS ${_module_implib})
-    add_dependencies(spyro1_recomp_module spyro1_module_implib)
-    target_link_libraries(spyro1_recomp_module PRIVATE ${_module_implib})
-endif()
-
-# Shared-linkage builds stage the first-boot inputs next to the exe:
-# the converged manifests, the 5-file module source kit, and (when
-# built) PSXRecomp. See dist/recomp_build.cpp.
-if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
-    set(_rdir $<TARGET_FILE_DIR:openpete-spyro1>/recomp)
-    add_custom_command(TARGET openpete-spyro1 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/recomp/SCUS-94228
-            ${_rdir}/manifest
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
-            ${SPYRO_GENERATED}/channel_sites.txt
-            ${_rdir}/manifest
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/src
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/../common/overlay_dispatch.c
-            ${CMAKE_SOURCE_DIR}/games/common/module_main.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/../common/spyro_overlay_table.h
-            ${CMAKE_SOURCE_DIR}/core/include/openpete_recomp_module.h
-            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime.h
-            ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime_internal.h
-            ${_rdir}/src
-        VERBATIM)
-    if(WIN32)
-        set(_psxrecomp_bin ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build-mingw/PSXRecomp.exe)
-    else()
-        set(_psxrecomp_bin ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp)
-    endif()
-    if(EXISTS ${_psxrecomp_bin})
-        add_custom_command(TARGET openpete-spyro1 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/tools
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${_psxrecomp_bin}
-                ${_rdir}/tools
-            VERBATIM)
-    endif()
-    if(WIN32)
-        # The module DLL links against the exe's export implib at first
-        # boot - stage it with the tools.
-        add_custom_command(TARGET openpete-spyro1 POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/tools
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${_module_implib}
-                ${_rdir}/tools
-            VERBATIM)
     endif()
 endif()
 # Emscripten / WebAssembly browser link.

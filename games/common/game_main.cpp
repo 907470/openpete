@@ -24,14 +24,13 @@
 #include "openpete_mods.h"
 #include "openpete_psx.h"
 #include "psyq/psyq_game_hooks.h"
-#include "openpete_recomp_module.h"
+#include "recomp_attach.h"
 #include "renderer/orchestrator.h"   /* game_interp_register, game_reextract_init */
 
 #include <cstdio>
 
 extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
-extern "C" const openpete_recomp_module openpete_game_recomp_module;
 /* This executable's game descriptor, `<tag>_game_runtime` in the game's
  * game_extras_impl.c (OPENPETE_GAME_RUNTIME, cmake/openpete_game.cmake). */
 extern "C" const openpete_game_runtime_t OPENPETE_GAME_RUNTIME;
@@ -53,13 +52,14 @@ static int identify(const openpete_options_t* opts, const char* library_game,
     return openpete_identify(&in, id);
 }
 
-/** @brief The launcher's view of this game: its id and name; no known discs and no library module (the module is linked).
+/** @brief The launcher's view of this game: its id, name and library module path; no known discs.
  *
  * @return The descriptor, built on first call. */
 static const openpete_launcher_game* launcher_game_desc(void) {
     static openpete_launcher_game g;
     g.game_id = game_get_id();
     g.display_name = game_get_display_name();
+    g.module_path = openpete_game_library_module_path;
     return &g;
 }
 
@@ -95,11 +95,13 @@ static int report_mode(int argc, char** argv, const openpete_options_t* neutral)
  * @param exit_now Set to 1 when the run ends in the launcher.
  * @return OPENPETE_EXIT_OK, OPENPETE_EXIT_SETUP_ERROR on a refused
  *         identification, the parser's status, or 1 when the recompiled
- *         module fails to register. */
+ *         module cannot be attached. */
 static int start_session(int argc, char** argv, openpete_options_t* neutral,
                          openpete_options_t* opts, int* exit_now) {
     openpete_launcher_begin(launcher_game_desc(), neutral, !neutral->headless);
-    int rc = openpete_launcher_resolve(neutral, nullptr, 0, exit_now);
+    static char library_module_path[4096];
+    int rc = openpete_launcher_resolve(neutral, library_module_path,
+                                       sizeof library_module_path, exit_now);
     if (rc != OPENPETE_EXIT_OK || *exit_now) return rc;
     openpete_ident_t id;
     rc = identify(neutral, openpete_launcher_selected_game(), &id);
@@ -119,8 +121,20 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
         (void)openpete_mods_set_game_desc(openpete_game_runtime()->mod_desc());
     openpete_boot_mark(OP_BOOT_MODS_STAGED);
 
-    /* The runtime reaches recompiled code only through this descriptor. */
-    if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
+    /* The runtime reaches recompiled code only through the recomp-module
+     * descriptor: the linked-in module (static linkage) or the one loaded
+     * from --recomp-module, the library entry's module, or <tag>-recomp
+     * beside the executable (shared linkage). Must precede any dispatch.
+     * Only a build with the first-boot pipeline builds a missing module, and
+     * never into an explicit --recomp-module path. */
+    const char* module_override = opts->recomp_module_path;
+    if (!module_override && library_module_path[0])
+        module_override = library_module_path;
+    openpete_boot_mark(OP_BOOT_MODULE_ATTACH_START);
+    if (openpete_game_recomp_attach(module_override, opts->disc_path,
+                                    opts->recomp_module_path == NULL) != 0)
+        return 1;
+    openpete_boot_mark(OP_BOOT_MODULE_ATTACHED);
 
     /* Mod compile-on-boot: every stale enabled source mod compiles on a
      * launcher task, so openpete_mods_init only loads. */
@@ -137,7 +151,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
  * staged game and exits before any game is identified. Otherwise runs the
  * launcher (the disc from the library when none is named), identifies the
  * game and refuses one this executable does not run, runs the one full
- * parse, registers the mod-layer descriptor and the recompiled module,
+ * parse, registers the mod-layer descriptor, attaches the recompiled module,
  * compiles stale mods, hands the launcher's window and device to the game,
  * registers the gameplay-state regions and the interpolation and
  * re-extract tables, sets the root counter 2 the game's boot reads, and

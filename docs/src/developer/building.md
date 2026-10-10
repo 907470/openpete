@@ -407,32 +407,46 @@ Every build sits on two axes: the target (which OS) and the recomp linkage
 
 ### The two linkage modes
 
-`OPENPETE_RECOMP_LINKAGE` (`games/spyro-1/CMakeLists.txt:27`) selects how
-the recompiled module joins the runtime:
+`OPENPETE_RECOMP_LINKAGE` (top-level `CMakeLists.txt`) selects how each
+game's recompiled module joins the runtime (`cmake/openpete_game.cmake`):
 
-- `static` (default) - the dev build. The recompiled C is an OBJECT library
-  linked straight into the exe. One self-contained binary; run it with
-  `--disc` and it boots immediately.
-- `shared` - the distribution build. The recompiled code is not in the exe.
-  The exe ships with a recompiler plus a compiler and builds
-  `spyro1-recomp.{so,dll}` from the user's disc on first run
-  (`games/spyro-1/dist/recomp_build.cpp`), keying the cache on a hash of the
-  PSXRecomp binary, its emission metadata and the disc's SHA-256. Discs live
-  in a content-addressed library under the user data dir, or beside the exe
-  for a portable install (`core/launcher/library.cpp`, `library_root`).
+- `static` - the recompiled C is an OBJECT library linked straight into the
+  exe. One image holds one game's recompiled code, since the recompiled
+  names collide across games.
+- `shared` - the recompiled code is `<tag>-recomp.{so,dll}` (`spyro1-recomp`,
+  `spyro2-recomp`, `spyro3-recomp`), built beside the exe and loaded at
+  boot (`games/common/recomp_attach_shared.c`). Host code reaches the
+  recompiled functions it names through forwarders bound at load, listed
+  per game in `games/<game>/module_imports.h`. On Linux the build runs
+  `tools/check_module_imports.py` over each exe and module pair
+  (`<tag>_module_imports`) and fails unless every module import resolves
+  to exactly one definition; on Windows the module's link against the exe's
+  export implib is that check.
 
-Both modes build from the same sources; `shared` is an additive second
-linkage, not a fork.
+`OPENPETE_RECOMP_FIRST_BOOT` (default OFF) adds the first-boot module build
+(`games/common/recomp_build.cpp`) to a shared exe of a game that has one
+(`FIRST_BOOT_SOURCES`: Spyro 1 and Spyro 2; each needs a converged manifest,
+`games/<game>/manifest/recomp/<serial>/`, from
+`scripts/emit-recomp-manifest.sh`). Such an exe ships with a recompiler
+plus a compiler and builds its module from the user's disc on first run,
+keying the cache on a hash of the PSXRecomp binary, its emission metadata
+and the compiler. Discs live in a content-addressed library under the user
+data dir, or beside the exe for a portable install
+(`core/launcher/library.cpp`, `library_root`). With it OFF, a shared exe
+loads the module its build tree produced and refuses to start when it is
+missing, so a gate run never compiles a module from the disc.
+
+Both linkages build from the same sources.
 
 ### Preset table
 
 | Preset                   | Target                          | Linkage | Notes |
 |--------------------------|---------------------------------|---------|-------|
 | `linux-debug`            | Linux native, Debug             | static  | dev build at -O0 with assertions |
-| `linux-release`          | Linux native, RelWithDebInfo    | static  | the default dev build |
+| `linux-release`          | Linux native, RelWithDebInfo    | shared  | the default dev build and the gates' tree |
 | `windows-mingw`          | Windows x64 cross (MinGW)       | static  | dev build, run via WSL2 interop |
-| `linux-release-launcher` | Linux native, RelWithDebInfo    | shared  | distribution build |
-| `windows-mingw-launcher` | Windows x64 cross (MinGW)       | shared  | distribution build |
+| `linux-release-launcher` | Linux native, RelWithDebInfo    | shared  | distribution build, first-boot module build |
+| `windows-mingw-launcher` | Windows x64 cross (MinGW)       | shared  | distribution build, first-boot module build |
 | `windows-msvc`           | Windows native MSVC             | static  | placeholder, unvalidated |
 | `macos-universal`        | macOS x86_64 + arm64            | static  | placeholder, unvalidated |
 | `wasm`                   | Emscripten / browser            | static  | placeholder |
@@ -465,11 +479,12 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 
 | Variable | Set by preset file | Why |
 |----------|--------------------|-----|
-| `OPENPETE_FUNC_TRACE=OFF` | `linux-release*`, `windows-mingw*` | `-finstrument-functions` per-function tracing is a dev-only drill-down (1-8 ms/tick). Pinned as a tracked knob so no dist build inherits a stale ON; enable in a throwaway dir with `-DOPENPETE_FUNC_TRACE=ON` |
+| `OPENPETE_FUNC_TRACE=OFF` | `linux-release*`, `windows-mingw*` | `-finstrument-functions` per-function tracing is a dev-only drill-down (1-8 ms/tick). Pinned as a tracked knob so no dist build inherits a stale ON; enable in a throwaway dir with `-DOPENPETE_FUNC_TRACE=ON -DOPENPETE_RECOMP_LINKAGE=static` (the trace symtab names the recompiled functions in the exe; configure refuses it with shared linkage) |
 | `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA (not left implicit - toolchains differ in their default) so the distributable runs on any x86-64 CPU. `x86-64-v3` (AVX2/FMA/BMI2) measures flat: the hot path is the recompiled game's scalar integer code with no vectorizable loops, so the pre-Haswell/Zen1 cutoff would buy nothing |
 | `-ffile-prefix-map` on source and binary dir | `*-launcher` | `__FILE__`/assert strings are referenced `.rdata` that package-time stripping cannot remove; without the mapping they leak the build machine's username and layout |
-| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-launcher` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:406-407` forces IPO off on the exe target as a guard, and `cmake/openpete_game.cmake:151` keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
-| `OPENPETE_RECOMP_LINKAGE=shared` | `*-launcher` | the linkage axis |
+| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-launcher` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `cmake/openpete_game.cmake` (`_openpete_game_shared_link`) forces IPO off on every shared-linkage Windows exe target as a guard, and keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
+| `OPENPETE_RECOMP_LINKAGE=shared` | `linux-release*`, `windows-mingw-launcher` | the linkage axis |
+| `OPENPETE_RECOMP_FIRST_BOOT=ON` | `*-launcher` | the exe builds a missing module from the disc |
 | `OPENPETE_ROM_FREE_ICON=ON` | `*-launcher` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-launcher` | compiles out `--record`, dropping the libav dependency |
 | `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-launcher` | `--help` shows only the user-facing flag block. Display-only: `core/config/options.c` splits the help text, every flag still parses |
@@ -609,7 +624,7 @@ developer's real directories; `--appimage` gates the AppImage instead, and
 build tree present.
 
 `OPENPETE_PSXRECOMP` and `OPENPETE_CC`
-(`games/spyro-1/dist/recomp_build.cpp:300,320`) override the bundled tools for
+(`find_psxrecomp` and `find_cc` in `games/common/recomp_build.cpp`) override the bundled tools for
 dev testing of the shared path; without them the exe looks in
 `recomp/tools/` next to itself, then the repo build dir, then the system
 compiler.

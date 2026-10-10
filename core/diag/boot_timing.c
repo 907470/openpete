@@ -80,6 +80,20 @@ static const char *boot_ms(char *buf, size_t n, int64_t t0, int64_t t)
     return buf;
 }
 
+/** @brief Format the recomp-module attach's duration in ms, or "-" when either of its marks was never reached.
+ *
+ * @param buf Destination.
+ * @param n Its size.
+ * @return buf. */
+static const char *module_attach_ms(char *buf, size_t n)
+{
+    const int64_t t0 = atomic_load(&s_mark[OP_BOOT_MODULE_ATTACH_START]);
+    const int64_t t1 = atomic_load(&s_mark[OP_BOOT_MODULE_ATTACHED]);
+    if (!t0 || !t1) snprintf(buf, n, "-");
+    else snprintf(buf, n, "%.2f", (double)(t1 - t0) / 1e6);
+    return buf;
+}
+
 /** @brief Print the boot timing line from the marks and the RHI's boot facts. */
 static void boot_line_print(void)
 {
@@ -87,7 +101,7 @@ static void boot_line_print(void)
     rhi_boot_stats_get(&rb);
     int64_t t0 = atomic_load(&s_mark[OP_BOOT_LAUNCHER_START]);
     if (!t0) t0 = atomic_load(&s_mark[OP_BOOT_MODS_INIT]);
-    char a[32], b[32], c[32], d[32], e[32], f[32], g[32], h[32];
+    char a[32], b[32], c[32], d[32], e[32], f[32], g[32], h[32], m[32];
     const char *mesa = getenv("MESA_SHADER_CACHE_DISABLE");
     OPL_INFO_F("boot",
                "timing (ms after launcher start, op_now clock): identified=%s materialized=%s "
@@ -95,7 +109,7 @@ static void boot_line_print(void)
                "precompile_start=%s precompile_end=%s first_frame=%s first_tick=%s; "
                "materializations=%d devices_created=%u; "
                "bringup_pipes=%u bringup_pipe_ms=%.1f; cache_file_bytes=%llu cache_offered_bytes=%llu "
-               "cache_load_ms=%.2f app_cold=%d mesa_cache_disabled=%s",
+               "cache_load_ms=%.2f app_cold=%d mesa_cache_disabled=%s; module_attach_ms=%s",
                boot_ms(g, sizeof g, t0, atomic_load(&s_mark[OP_BOOT_IDENTIFIED])),
                boot_ms(h, sizeof h, t0, atomic_load(&s_mark[OP_BOOT_MATERIALIZED])),
                boot_ms(a, sizeof a, t0, atomic_load(&s_mark[OP_BOOT_MODS_INIT])),
@@ -107,7 +121,8 @@ static void boot_line_print(void)
                openpete_config_materializations(), rb.devices_created,
                rb.bringup_creates, (double)rb.bringup_ns / 1e6,
                (unsigned long long)rb.cache_file_bytes, (unsigned long long)rb.cache_offered_bytes,
-               (double)rb.cache_load_ns / 1e6, rb.cache_cold, (mesa && *mesa) ? mesa : "unset");
+               (double)rb.cache_load_ns / 1e6, rb.cache_cold, (mesa && *mesa) ? mesa : "unset",
+               module_attach_ms(m, sizeof m));
 }
 
 void openpete_boot_tick(void)

@@ -7,9 +7,11 @@ The dynamically-loaded recomp module imports two families from the exe:
   * psyq_<name> for every PSYQ symbol in manifest/psyq.toml (the thunks
     and the abort stubs both live exe-side), and
   * the psx_runtime ABI surface it calls directly, maintained by hand in
-    games/spyro-1/manifest/module_abi_exports.txt (lines: `symbol` or
-    `symbol DATA`; '#' comments). Self-enforcing: a module import missing
-    here fails the module link with an undefined symbol.
+    games/common/module_abi_exports.txt (every game's module) and the
+    game's own games/<game>/manifest/module_abi_exports.txt when it has one
+    (lines: `symbol` or `symbol DATA`; '#' comments), each passed with
+    --extras. A module import missing here fails the module link on PE and
+    tools/check_module_imports.py on ELF.
 
 Emits:
   --def       PE .def exporting exactly this surface (linked into the exe
@@ -24,7 +26,10 @@ import sys
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--psyq", required=True)
-ap.add_argument("--extras", required=True)
+ap.add_argument("--extras", required=True, action="append",
+                help="an ABI list; repeatable, concatenated in order")
+ap.add_argument("--tag", required=True,
+                help="the game's tag, prefixing the keep-alive symbols")
 ap.add_argument("--image", required=True, help="exe image name for LIBRARY")
 ap.add_argument("--def-out")
 ap.add_argument("--keepalive-out")
@@ -35,12 +40,17 @@ if not psyq_names:
     sys.exit("no [[symbols]] names parsed from " + args.psyq)
 
 extras = []  # (symbol, is_data)
-for raw in open(args.extras):
-    line = raw.split("#", 1)[0].strip()
-    if not line:
-        continue
-    parts = line.split()
-    extras.append((parts[0], len(parts) > 1 and parts[1].upper() == "DATA"))
+seen = set()
+for path in args.extras:
+    for raw in open(path):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        if parts[0] in seen:
+            sys.exit(f"{path}: {parts[0]} is listed twice")
+        seen.add(parts[0])
+        extras.append((parts[0], len(parts) > 1 and parts[1].upper() == "DATA"))
 
 if args.def_out:
     with open(args.def_out, "w") as f:
@@ -78,16 +88,16 @@ if args.keepalive_out:
             f.write(f"extern unsigned char {sym}[];\n" if is_data
                     else f"extern void {sym}(void);\n")
         f.write("\nOPENPETE_KEEPALIVE\n"
-                "const void* const spyro1_recomp_abi_keepalive[] = {\n")
+                f"const void* const {args.tag}_recomp_abi_keepalive[] = {{\n")
         for sym, is_data in extras:
             f.write(f"    (const void*)&{sym},\n")
         f.write("    0,\n};\n\n")
         # A used, noinline anchor that actually reads the array - LTO cannot
         # prove the array (hence the address-taken ABI symbols) is dead.
         f.write("OPENPETE_KEEPALIVE\n"
-                "const void* spyro1_recomp_abi_anchor(unsigned i);\n"
-                "const void* spyro1_recomp_abi_anchor(unsigned i) {\n"
-                "    return spyro1_recomp_abi_keepalive[i];\n"
+                f"const void* {args.tag}_recomp_abi_anchor(unsigned i);\n"
+                f"const void* {args.tag}_recomp_abi_anchor(unsigned i) {{\n"
+                f"    return {args.tag}_recomp_abi_keepalive[i];\n"
                 "}\n")
 
 print(f"module exports: {len(extras)} ABI + {len(psyq_names)} psyq", file=sys.stderr)

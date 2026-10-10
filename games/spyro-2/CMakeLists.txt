@@ -87,7 +87,12 @@ openpete_add_game(spyro-2
         # readout, drawn with the credits font read from the disc.
         ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         ${CMAKE_SOURCE_DIR}/games/common/renderer/wad_subfile.c
-        renderer/portal_game.c)
+        renderer/portal_game.c
+    FIRST_BOOT_SOURCES
+        # The first-boot module build: each overlay carved from the WAD.WAD
+        # entry its converged manifest names, then recompile, compile, link.
+        ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp
+        ${CMAKE_SOURCE_DIR}/games/common/recomp_extract_wad_entry.cpp)
 
 # SoundTable slot names (tools/gen_sfx_names.py). The decomp declares no
 # SoundTable. Each --name slot keys, on the attract demo, a sample whose

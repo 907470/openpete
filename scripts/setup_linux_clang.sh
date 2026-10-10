@@ -3,7 +3,7 @@
 # AppImage bundles for the first-boot module compile.
 #
 # Produces .tools/clang/ (gitignored), which package-dist.sh stages as
-# recomp/tools/clang - where find_cc (games/spyro-1/dist/recomp_build.cpp) looks before the
+# recomp/tools/clang - where find_cc (games/common/recomp_build.cpp) looks before the
 # system compiler.
 #
 # Version choice: 18.1.8 is the NEWEST llvm.org release whose Linux

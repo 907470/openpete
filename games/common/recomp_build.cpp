@@ -1,9 +1,15 @@
-// games/spyro-1/dist/recomp_build.cpp - the first-boot module build.
+// games/common/recomp_build.cpp - the first-boot module build.
 //
-// Turns a disc into spyro1-recomp.so with no python and no discovery:
+// Turns a disc into <tag>-recomp.{so,dll} with no python and no discovery:
 //
-//   extract (in-process, recomp_extract.cpp) ──► PSXRecomp ×38 (single
-//   pass, staged converged manifests) ──► cc -O2 -fPIC fan-out ──► link
+//   extract (in-process, the game's openpete_game_extract_recomp_inputs)
+//   ──► PSXRecomp once per binary (single pass, staged converged manifest)
+//   ──► cc -O2 -fPIC fan-out ──► link
+//
+// Every per-game fact comes from the staged manifest (each overlay's name,
+// id, load address and reference hash; whether the main EXE takes channel
+// sites) or from the build: OPENPETE_GAME_OVERLAY_WINDOW_LO/_HI are the
+// game's recomp.conf OVERLAY_RANGE.
 //
 // Inputs staged next to the exe by the shared-linkage build
 // (CMake): recomp/manifest/ (converged funcs lists + manifest.toml +
@@ -16,6 +22,7 @@
 // (recomp/tools/llvm-mingw) and links against the staged exe-export
 // implib (recomp/tools/libopenpete-exe-exports.a).
 #include "openpete_launcher.h"
+#include "recomp_attach.h"
 #include "openpete_log.h"
 #include "sha256.h"
 
@@ -39,8 +46,6 @@
 #include <limits.h>
 #endif
 
-extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
-                                            const char* out_dir);
 
 /** @brief Report a build stage to the launcher's progress screen (a no-op without one).
  *
@@ -64,7 +69,8 @@ namespace {
 struct Overlay {
     std::string name;
     int magic = 0;
-    std::string sha256;   /* of the reference binary (manifest) */
+    std::string load_addr;   /* the manifest's load_addr, as written */
+    std::string sha256;      /* of the reference binary (manifest) */
 };
 
 std::string exe_dir() {
@@ -224,7 +230,7 @@ bool rename_token(const fs::path& p, const std::string& from, const std::string&
 }
 
 bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out,
-                    std::string* main_exe_sha) {
+                    std::string* main_exe_sha, bool* channel_sites) {
     std::ifstream f(toml);
     if (!f) return false;
     std::string line;
@@ -239,16 +245,21 @@ bool parse_manifest(const fs::path& toml, std::vector<Overlay>& out,
         if (!in_overlay) {
             if (main_exe_sha && line.rfind("sha256 = \"", 0) == 0)
                 *main_exe_sha = line.substr(10, line.size() - 11);
+            if (line == "channel_sites = true") *channel_sites = true;
             continue;
         }
         if (line.rfind("name = \"", 0) == 0)
             cur.name = line.substr(8, line.size() - 9);
         else if (line.rfind("magic = ", 0) == 0)
             cur.magic = std::atoi(line.c_str() + 8);
+        else if (line.rfind("load_addr = ", 0) == 0)
+            cur.load_addr = line.substr(12);
         else if (line.rfind("sha256 = \"", 0) == 0)
             cur.sha256 = line.substr(10, line.size() - 11);
     }
     flush();
+    for (const Overlay& o : out)
+        if (o.load_addr.empty()) return false;
     return !out.empty();
 }
 
@@ -283,9 +294,9 @@ bool emit_overlay_table(const fs::path& out, const std::vector<Overlay>& ovls) {
           << o.name << " },\n";
     f << "};\nconst size_t spyro_overlay_table_count = "
          "sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);\n"
-         /* The overlay window of games/spyro-1/recomp.conf (OVERLAY_RANGE). */
-         "const uint32_t spyro_overlay_window_lo = 0x8007AA38u;\n"
-         "const uint32_t spyro_overlay_window_hi = 0x8008EA38u;\n";
+         /* The overlay window of the game's recomp.conf (OVERLAY_RANGE). */
+         "const uint32_t spyro_overlay_window_lo = " OPENPETE_GAME_OVERLAY_WINDOW_LO "u;\n"
+         "const uint32_t spyro_overlay_window_hi = " OPENPETE_GAME_OVERLAY_WINDOW_HI "u;\n";
     return f.good();
 }
 
@@ -438,25 +449,29 @@ std::string compute_codegen_stamp(const fs::path& base) {
 
 }  // namespace
 
-extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap) {
+extern "C" int openpete_game_library_module_path(const char* entry_dir, char* out,
+                                                 size_t cap) {
     const std::string stamp = compute_codegen_stamp(exe_dir());
     if (stamp.empty()) return -1;
-    std::snprintf(out, cap, "%s", stamp.c_str());
+#ifdef _WIN32
+    const char* name = OPENPETE_GAME_MODULE_NAME ".dll";
+#else
+    const char* name = OPENPETE_GAME_MODULE_NAME ".so";
+#endif
+    const fs::path mod = fs::path(entry_dir) / "modules" / stamp / name;
+    std::error_code ec;
+    fs::create_directories(mod.parent_path(), ec);
+    std::snprintf(out, cap, "%s", mod.string().c_str());
     return 0;
 }
 
-/** @brief Build the recompiled game module on the player's machine from the disc.
- *
- * Extracts the executables from the disc, runs PSXRecomp over them with the
- * shipped manifests, compiles the emitted C and the source kit with the
- * compiler find_cc locates at -O2 -fno-strict-aliasing, and links the
- * module.
- * @param disc_path The disc image (a .cue or .bin).
- * @param out_module_path Where the linked module is written; its build
- *        directory is created beside it.
- * @return 0 on success, -1 on any failure (reported on stderr). */
-extern "C" int spyro1_recomp_build_module(const char* disc_path,
-                                          const char* out_module_path) {
+/* The pipeline: extracts the executables from the disc, runs
+ * PSXRecomp over them with the shipped manifests, compiles the emitted C and
+ * the source kit with the compiler find_cc locates at -O2
+ * -fno-strict-aliasing, and links the module. Its build directory is created
+ * beside out_module_path. */
+extern "C" int openpete_game_recomp_build_module(const char* disc_path,
+                                                 const char* out_module_path) {
     if (!disc_path) {
         std::fprintf(stderr, "openpete: first-boot module build needs --disc\n");
         return -1;
@@ -500,7 +515,8 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
 
     std::vector<Overlay> ovls;
     std::string main_exe_sha;
-    if (!parse_manifest(man / "manifest.toml", ovls, &main_exe_sha)) {
+    bool channel_sites = false;
+    if (!parse_manifest(man / "manifest.toml", ovls, &main_exe_sha, &channel_sites)) {
         std::fprintf(stderr, "openpete: cannot parse %s\n",
                      (man / "manifest.toml").string().c_str());
         return -1;
@@ -527,7 +543,8 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     /* 1. extract ---------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] extracting game code from disc...\n");
     progress("READING GAME CODE FROM YOUR DISC", 0, 0);
-    if (spyro1_extract_recomp_inputs(disc_path, inputs.string().c_str()) != 0)
+    if (openpete_game_extract_recomp_inputs(disc_path, inputs.string().c_str(),
+                                            (man / "manifest.toml").string().c_str()) != 0)
         return -1;
 
     /* Per-binary identity: the manifests were converged against the
@@ -579,9 +596,10 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
           << " --output-dir=" << q << gen.string() << q
           << " --external-symbols=" << q << (man / "psyq.toml").string() << q
           << " --external-prefix=psyq_"
-          << " --extra-funcs=" << q << (man / "main_exe.funcs.txt").string() << q
-          << " --channel-sites=" << q << (man / "channel_sites.txt").string() << q
-          << " --skip-on-error" << QUIET_REDIR;
+          << " --extra-funcs=" << q << (man / "main_exe.funcs.txt").string() << q;
+        if (channel_sites)
+            c << " --channel-sites=" << q << (man / "channel_sites.txt").string() << q;
+        c << " --skip-on-error" << QUIET_REDIR;
         if (!run(c.str())) return -1;
         if (!rename_token(gen / "PSX.EXE_dispatch.c",
                           "psx_dispatch_compiled", "psx_dispatch_main_exe"))
@@ -592,7 +610,7 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     for (auto& o : ovls) {
         std::ostringstream c;
         c << q << psxrecomp << q << " " << q << (inputs / (o.name + ".ovl")).string() << q
-          << " --raw-bin --load-addr=0x8007AA38"
+          << " --raw-bin --load-addr=" << o.load_addr
           << " --output-stem=" << o.name << ".bin"
           << " --output-dir=" << q << gen.string() << q
           << " --external-symbols=" << q << (man / "psyq.toml").string() << q

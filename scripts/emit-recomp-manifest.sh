@@ -6,11 +6,20 @@
 # forced-entry address lists. For a known ROM those lists are facts:
 # this script snapshots the final per-binary union list + the overlay
 # registry + per-binary input hashes into
-#   games/spyro-1/manifest/recomp/SCUS-94228/
+#   games/<game>/manifest/recomp/<serial>/
+# (the serial is recomp.conf's EXE_FILENAME, SCUS_942.28 -> SCUS-94228)
 # so the first-boot pipeline can run a SINGLE psxrecomp pass per binary
-# with no discovery and no python. Called by regen-recomp.sh after a
-# regen; runnable standalone off the last regen's outputs.
-# scripts/verify-recomp-manifest.sh proves single-pass ≡ multi-pass.
+# with no discovery and no python. Called by regen-recomp.sh after a full
+# regen of a game whose recomp.conf sets FIRST_BOOT=1; runnable standalone
+# off the last regen's outputs:
+#   GAME=spyro-2 bash scripts/emit-recomp-manifest.sh
+# scripts/verify-recomp-manifest.sh proves single-pass == multi-pass.
+#
+# A game whose recomp.conf sets FIRST_BOOT_CARVE=wad_entry also records,
+# per overlay, the index of the WAD.WAD entry holding it (wad_entry), which
+# its first-boot extractor carves; tools/wad_entry_map.py finds each index
+# on the decomp's rebuilt disc image by content. Spyro 1's extractor reads
+# the entries from the WAD header's own layout instead.
 #
 # The committed snapshot is a distribution input, so it never changes as a
 # side effect of a regen: the snapshot is emitted to a scratch directory and
@@ -21,18 +30,24 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-OUT=games/spyro-1/generated
-COMMITTED=games/spyro-1/manifest/recomp/SCUS-94228
+GAME="${GAME:-spyro-1}"
+GAME_CONF="games/$GAME/recomp.conf"
+[[ -f "$GAME_CONF" ]] || { echo "[emit-manifest] no $GAME_CONF" >&2; exit 1; }
+# shellcheck source=/dev/null
+source "$GAME_CONF"
+SERIAL="${EXE_FILENAME/_/-}"; SERIAL="${SERIAL/./}"
+OUT=games/$GAME/generated
+COMMITTED=games/$GAME/manifest/recomp/$SERIAL
 MAN=$(mktemp -d "${TMPDIR:-/tmp}/openpete-manifest-emit.XXXXXX")
-trap 'rm -rf "$MAN"' EXIT
-FORCED=games/spyro-1/manifest/forced_entries
-WAD_DIR=games/spyro-1/spyro-1/build/wad
-EXE=games/spyro-1/spyro-1/build/PSX.EXE
-OVERLAY_LOAD_ADDR=0x8007AA38
+trap 'rm -rf "${MAN:?}"' EXIT
+FORCED=games/$GAME/manifest/forced_entries
+EXE=$PSX_EXE
 REGISTRY_SRC=$OUT/spyro_overlay_table.c
+REGISTRY_LIST=$OUT/overlay_registry.txt
+DISC_BIN="$DECOMP_DIR/build/$SERIAL.bin"
 
-[[ -f "$OUT/PSX.EXE_full.c" && -f "$REGISTRY_SRC" ]] || {
-    echo "[emit-manifest] generated/ incomplete - run scripts/regen-recomp.sh first" >&2
+[[ -f "$OUT/PSX.EXE_full.c" && -f "$REGISTRY_SRC" && -f "$REGISTRY_LIST" ]] || {
+    echo "[emit-manifest] generated/ incomplete - run GAME=$GAME scripts/regen-recomp.sh first" >&2
     exit 1
 }
 
@@ -70,22 +85,30 @@ mapfile -t ROWS < <(grep -oP '\{\s*\d+,\s*"[^"]+"' "$REGISTRY_SRC" \
     echo "input = \"PSX.EXE\""
     echo "sha256 = \"$MAIN_SHA\""
     echo "funcs = \"main_exe.funcs.txt\""
-    echo "channel_sites = true"
+    if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then echo "channel_sites = true"
+    else echo "channel_sites = false"; fi
 } > "$MAN/manifest.toml"
+
+# The overlay blob regen translated, by section name (overlay_registry.txt
+# rows: `<magic> <name> <ovl path>`).
+declare -A OVL_PATH=()
+while read -r _magic _name _path; do
+    [[ -n "${_name:-}" ]] && OVL_PATH[$_name]=$_path
+done < "$REGISTRY_LIST"
+
+declare -A WAD_ENTRY=()
+if [[ "${FIRST_BOOT_CARVE:-}" == "wad_entry" ]]; then
+    [[ -f "$DISC_BIN" ]] || { echo "[emit-manifest] $DISC_BIN missing" >&2; exit 1; }
+    while read -r _name _entry; do
+        WAD_ENTRY[$_name]=$_entry
+    done < <(python3 tools/wad_entry_map.py "$DISC_BIN" "$REGISTRY_LIST")
+fi
 
 count=0
 for row in "${ROWS[@]}"; do
     magic="${row%% *}"; name="${row#* }"
-    # WAD source file for the hash (same naming the regen discovery uses).
-    case "$name" in
-        titlescreen) ovl="$WAD_DIR/titlescreen_code.ovl" ;;
-        credits)     ovl="$WAD_DIR/credits.ovl" ;;
-        level_*)     H=$(( ${name#level_} / 10 )); S=$(( ${name#level_} % 10 ))
-                     F=$(( (H - 1) * 6 + S ))
-                     ovl=$(ls "$WAD_DIR"/level_${F}_*_code.ovl 2>/dev/null | head -1) ;;
-        *)           echo "[emit-manifest] unknown overlay name $name" >&2; exit 1 ;;
-    esac
-    [[ -f "$ovl" ]] || { echo "[emit-manifest] missing $ovl for $name" >&2; exit 1; }
+    ovl="${OVL_PATH[$name]:-}"
+    [[ -f "$ovl" ]] || { echo "[emit-manifest] missing overlay blob for $name" >&2; exit 1; }
 
     final="$OUT/$name/extra_funcs.combined.txt"
     [[ -f "$final" ]] || final="$OUT/$name/extra_funcs.second.txt"
@@ -100,6 +123,10 @@ for row in "${ROWS[@]}"; do
         echo "func_prefix = \"func_${name}_\""
         echo "load_addr = $OVERLAY_LOAD_ADDR"
         echo "wad_file = \"$(basename "$ovl")\""
+        if [[ "${FIRST_BOOT_CARVE:-}" == "wad_entry" ]]; then
+            [[ -n "${WAD_ENTRY[$name]:-}" ]] || { echo "[emit-manifest] no WAD entry holds $name" >&2; exit 1; }
+            echo "wad_entry = ${WAD_ENTRY[$name]}"
+        fi
         echo "sha256 = \"$(sha "$ovl")\""
         echo "funcs = \"$name.funcs.txt\""
     } >> "$MAN/manifest.toml"

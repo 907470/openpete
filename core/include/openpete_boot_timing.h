@@ -11,7 +11,9 @@
  * line also carries the count of full configuration materializations
  * (openpete_config_materializations), 1 on a normal boot, and the count of
  * Vulkan devices created (the launcher's device is the renderer's, so 1 on
- * a windowed boot).
+ * a windowed boot). module_attach_ms is the recomp-module attach's own
+ * duration (the shared build's load and bind, or a static build's
+ * registration), "-" when either mark was not reached.
  *
  * Each mark also takes the next ordinal of one process-wide sequence at its
  * first call, and the first tick takes one too; a second line, "boot-order",
@@ -47,6 +49,8 @@ typedef enum {
     OP_BOOT_MODS_STAGED,         /* the game's mod-layer descriptor registered */
     OP_BOOT_MODS_COMPILED,       /* compile-on-boot (openpete_mods_prepare) returned */
     OP_BOOT_SLOT_CONTEST,        /* the game's SLOT_CONTEST unit was set      */
+    OP_BOOT_MODULE_ATTACH_START, /* the recomp-module attach began            */
+    OP_BOOT_MODULE_ATTACHED,     /* the recomp module was registered          */
     OP_BOOT_MARKS
 } op_boot_mark;
 

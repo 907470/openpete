@@ -465,7 +465,7 @@ package_linux() {  # package_linux <build-game-dir>
     # 3 MB download for users who already have cc. The AppImage always
     # carries one (build_appimage stages it) - the squashfs keeps it
     # compressed and its whole point is that first boot needs nothing
-    # installed. find_cc (games/spyro-1/dist/recomp_build.cpp) prefers
+    # installed. find_cc (games/common/recomp_build.cpp) prefers
     # recomp/tools/clang/bin/clang over the system cc either way.
     if [[ -n "$TOOLCHAIN" ]]; then
         echo "[package] bundling clang from $TOOLCHAIN"

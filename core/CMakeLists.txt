@@ -398,20 +398,19 @@ else()
         endif()
     endif()
 endif()
-# Whether this is a shared-recomp build - the linkage the distribution
-# presets select (cmake/presets/*-launcher.cmake set OPENPETE_RECOMP_LINKAGE),
-# and so the only builds that leave this machine. The version line draws on
-# those alone; a locally built static-linkage binary shows nothing. The
-# presets set the cache variable from CMAKE_PROJECT_openpete_INCLUDE, which
-# runs before this directory is added, so the value is already resolved here;
-# a configure that never sets it reads the static default.
-# An explicit -DOPENPETE_BUILD_SHARED_RECOMP wins, so the gate can be exercised
-# in both states without configuring and building a whole shared module.
-if(NOT DEFINED OPENPETE_BUILD_SHARED_RECOMP)
-    if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
-        set(OPENPETE_BUILD_SHARED_RECOMP 1)
+# Whether this is a distribution build - one of the presets that set
+# OPENPETE_DIST_PRESET (cmake/presets/*-launcher.cmake), and so the only
+# builds that leave this machine. The version line draws on those alone; any
+# other build shows nothing. The presets set the variable from
+# CMAKE_PROJECT_openpete_INCLUDE, which runs before this directory is added,
+# so the value is already resolved here. An explicit
+# -DOPENPETE_BUILD_DISTRIBUTED wins, so the gate can be exercised in both
+# states without configuring a distribution preset.
+if(NOT DEFINED OPENPETE_BUILD_DISTRIBUTED)
+    if(OPENPETE_DIST_PRESET)
+        set(OPENPETE_BUILD_DISTRIBUTED 1)
     else()
-        set(OPENPETE_BUILD_SHARED_RECOMP 0)
+        set(OPENPETE_BUILD_DISTRIBUTED 0)
     endif()
 endif()
 # The Windows VERSIONINFO resource (games/*/openpete-*.rc.in) takes the same
@@ -436,7 +435,7 @@ message(STATUS "openpete: VERSIONINFO ${OPENPETE_VERSION_NUM} \"${OPENPETE_BUILD
 target_compile_definitions(openpete_core
     PRIVATE OPENPETE_BUILD_VERSION="${OPENPETE_BUILD_VERSION}"
             OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED}
-            OPENPETE_BUILD_SHARED_RECOMP=${OPENPETE_BUILD_SHARED_RECOMP})
+            OPENPETE_BUILD_DISTRIBUTED=${OPENPETE_BUILD_DISTRIBUTED})
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);

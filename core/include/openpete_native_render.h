@@ -572,9 +572,10 @@ void openpete_native_get_overlay_extent(float *w, float *h);
  * the renderer's buffer; the rect is stored as one packed word and keeps its
  * previous value when either dimension is not positive. The renderer pins
  * the line to the bottom-left anchor. A tagged release build holds it for
- * 2 s and fades it over 300 ms, a shared-recomp build that is not a tagged
- * release keeps it for the whole run, and a build that is not shared-recomp
- * draws none (openpete_native_version_line_enabled). Display-only.
+ * 2 s and fades it over 300 ms, a distribution build that is not a tagged
+ * release keeps it for the whole run, and a build that is not a
+ * distribution build draws none (openpete_native_version_line_enabled).
+ * Display-only.
  * @param verts Triangle-list vertices, region-local, in overlay space.
  * @param nverts Vertex count; 0 clears the line.
  * @param region_w Region width in window-height units.
@@ -584,9 +585,9 @@ void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nver
 
 /** @brief Set the --version-osd value, which governs only the tagged release build's two-second version line.
  *
- * An untagged shared-recomp build keeps its line for the whole run and no
- * knob suppresses it; a build that is not shared-recomp shows none either
- * way. Live-settable.
+ * An untagged distribution build keeps its line for the whole run and no
+ * knob suppresses it; a build that is not a distribution build shows none
+ * either way. Live-settable.
  * @param on Non-zero to show the release build's line. */
 void openpete_native_set_version_osd(int on);
 /** @brief Return the --version-osd value in force.
@@ -598,9 +599,9 @@ int  openpete_native_version_osd(void);
 
 /** @brief Return 1 when this build draws a version line.
  *
- * 0 for a build whose recomp module is not linked shared, as the
- * distribution presets link it: such a build is never distributed. 1 for a
- * shared-recomp build that is not a tagged release, whatever the knob: the
+ * 0 for a build no distribution preset made (openpete_build_distributed):
+ * such a build is never distributed. 1 for a
+ * distribution build that is not a tagged release, whatever the knob: the
  * line is what names the build in a screenshot of it. For a tagged release,
  * the --version-osd value. The game-side builder asks before building glyph
  * geometry.
@@ -609,8 +610,8 @@ int openpete_native_version_line_enabled(void);
 
 /** @brief Return a phrase naming the build class and the version-line policy it gets, for the shutdown census.
  *
- * The classes are the three of openpete_native_version_line_enabled: not
- * shared-recomp, untagged shared-recomp, and tagged release (brief, or
+ * The classes are the three of openpete_native_version_line_enabled: not a
+ * distribution build, untagged distribution build, and tagged release (brief, or
  * suppressed by --version-osd off).
  * @return A static string, never NULL. */
 const char *openpete_native_version_reason(void);

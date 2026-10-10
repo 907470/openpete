@@ -520,14 +520,11 @@ if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then
 fi
 
 # Snapshot the converged per-binary inputs as committed metadata for the
-# single-pass first-boot pipeline. Skipped in scoped
-# mode - the converged manifest describes the STOCK full-regen state, and
-# a mod-site bake is a local dev configuration, not a distribution input.
-# The converged manifest feeds the single-pass first-boot pipeline, which is
-# Spyro 1's distribution path only. A scoped regen describes a local mod-site
-# bake rather than the stock full-regen state, so it emits nothing either.
-if [[ "$GAME" != "spyro-1" ]]; then
-    echo "[regen] converged manifest is spyro-1's distribution path - not emitted for $GAME"
+# single-pass first-boot pipeline of a game whose recomp.conf sets
+# FIRST_BOOT=1. A scoped regen describes a local mod-site bake rather than
+# the stock full-regen state, so it emits nothing.
+if [[ "${FIRST_BOOT:-0}" != "1" ]]; then
+    echo "[regen] $GAME has no first-boot module build - no converged manifest emitted"
 elif [[ "$REGEN_SCOPE" != "full" ]]; then
     echo "[regen] SCOPED regen: skipping converged-manifest emission"
 else
@@ -536,7 +533,7 @@ else
     # OPENPETE_MANIFEST_BLESS=1 moves the snapshot (commit it with the
     # input change that moved it).
     echo "[regen] Emitting converged recomp manifest"
-    bash scripts/emit-recomp-manifest.sh
+    GAME="$GAME" bash scripts/emit-recomp-manifest.sh
 fi
 
 echo "[regen] Done - rebuild the project to pick up the new C output."

@@ -125,12 +125,17 @@ fi
 
 # ── S2. per-game header edit: rebuild at the next boot ───────────────────
 # A sandbox binary directory: a hard link of the binary beside a copy of
-# its sdk/, so the edit never touches the build tree's staged SDK.
+# its sdk/, so the edit never touches the build tree's staged SDK, and a
+# link to the recomp module a shared-linkage binary loads from its own
+# directory.
 say "header edit: games/$PG_GAME/ header change rebuilds at the next boot"
 BOOT="$WORK/bootbin"
 mkdir -p "$BOOT"
 ln "$(realpath "$BIN")" "$BOOT/" 2>/dev/null || cp "$(realpath "$BIN")" "$BOOT/"
 [ -d "$(dirname "$BIN")/assets" ] && ln -sfn "$(realpath "$(dirname "$BIN")/assets")" "$BOOT/assets"
+for mod in "$(dirname "$BIN")"/*-recomp.so "$(dirname "$BIN")"/*-recomp.dll; do
+    [ -f "$mod" ] && ln -sfn "$(realpath "$mod")" "$BOOT/$(basename "$mod")"
+done
 cp -r "$SDK_ROOT" "$BOOT/sdk"
 BOOT_BIN="$BOOT/$(basename "$BIN")"
 EDIT_HDR="$BOOT/sdk/games/$PG_GAME/openpete_sdk_symbols.h"

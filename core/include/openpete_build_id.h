@@ -34,13 +34,13 @@ const char *openpete_build_version(void);
  * @return 1 for a release build, 0 otherwise */
 int openpete_build_tagged(void);
 
-/** @brief Whether the recomp module is linked the way the distribution presets link it.
+/** @brief Whether this binary was built by a distribution preset.
  *
- * True for OPENPETE_RECOMP_LINKAGE=shared, the linkage every distributed
- * binary is built with, or an explicit -DOPENPETE_BUILD_SHARED_RECOMP=1. A
- * static-linkage binary shows no version line.
- * @return 1 for a shared-recomp build, 0 otherwise */
-int openpete_build_shared_recomp(void);
+ * True for a preset that sets OPENPETE_DIST_PRESET (the *-launcher presets,
+ * the only builds that leave the machine), or an explicit
+ * -DOPENPETE_BUILD_DISTRIBUTED=1. Any other binary shows no version line.
+ * @return 1 for a distribution build, 0 otherwise */
+int openpete_build_distributed(void);
 
 #ifdef __cplusplus
 }

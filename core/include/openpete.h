@@ -534,7 +534,7 @@ typedef struct openpete_options {
      * bottom left. A distributed build that is not exactly a release keeps its
      * line up for the whole session and this does not suppress it - the line
      * is what names the build in a screenshot of it - and a build that is not
-     * shared-recomp draws none either way. Display-only. */
+     * a distribution build draws none either way. Display-only. */
     int version_osd;
 
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present

@@ -1934,8 +1934,9 @@ def write_list(path, files):
 
 
 def binary_paths(root):
-    """Return the tree-relative game binaries present under root's build tree."""
-    rels = [f"{BUILD_TREE}/games/{g}/openpete-{g.replace('-', '')}" for g in GAMES]
+    """Return the tree-relative game binaries and recomp modules present under root's build tree."""
+    rels = [f"{BUILD_TREE}/games/{g}/{name}" for g in GAMES
+            for name in (f"openpete-{g.replace('-', '')}", f"{g.replace('-', '')}-recomp.so")]
     return [r for r in rels if os.path.isfile(os.path.join(root, r))]
 
 

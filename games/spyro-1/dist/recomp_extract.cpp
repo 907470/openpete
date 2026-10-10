@@ -12,6 +12,7 @@
 // 2048 bytes of WAD.WAD at disc LBA 37 (g_CdState.m_WadSector); every
 // entry is {int byte_offset, int byte_length} into the WAD; reads
 // resolve to LBA 37 + offset/2048 (offsets are sector-aligned).
+#include "recomp_attach.h"
 #include "openpete_log.h"
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
@@ -167,4 +168,13 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
     OPL_INFO_F("extract", "recomp inputs: PSX.EXE + %d/%d overlays -> %s",
                carved, expected, out_dir);
     return (carved == expected) ? 0 : -1;
+}
+
+/* Spyro 1 carves by the WAD header's own layout, so the manifest is not
+ * read. */
+extern "C" int openpete_game_extract_recomp_inputs(const char* cue_path,
+                                                   const char* out_dir,
+                                                   const char* manifest_path) {
+    (void)manifest_path;
+    return spyro1_extract_recomp_inputs(cue_path, out_dir);
 }

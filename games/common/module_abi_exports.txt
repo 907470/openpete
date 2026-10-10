@@ -1,0 +1,19 @@
+# module_abi_exports.txt - the non-psyq symbols every game's shared-linkage
+# recomp module imports from the exe. One symbol per line; append ` DATA`
+# for data symbols (PE .def needs the distinction). A game whose module
+# imports more lists them in games/<game>/manifest/module_abi_exports.txt.
+#
+# Source of truth for tools/gen_module_exports.py, which emits both the PE
+# export .def and the archive-pull keep-alive TU. Enforced in both
+# directions: a module import missing here fails the module link on PE and
+# tools/check_module_imports.py on ELF; an entry the exe does not define
+# fails the exe link (keep-alive reference).
+call_by_address
+gte_execute
+psx_syscall
+psx_override_dispatch
+openpete_logf
+dispatch_census_open
+dispatch_census_append
+openpete_gte_caller_pc DATA
+psx_runtime_g_sony_image_base DATA

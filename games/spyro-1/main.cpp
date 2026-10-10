@@ -78,7 +78,6 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
                                     const char* extra_wads);
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
-extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap);
 extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
 /* Spyro 1's runtime descriptor (game_extras_impl.c). */
@@ -87,29 +86,6 @@ extern "C" const openpete_game_runtime_t spyro1_game_runtime;
 #include "renderer/reextract.h"
 
 #include <cstdio>
-#include <filesystem>
-
-/** @brief Write a library entry's recompiled-module path: modules/<codegen stamp>/spyro1-recomp.so (.dll on Windows), creating its directory.
- *
- * @param entry_dir The library entry's directory.
- * @param out Receives the path.
- * @param cap Its capacity.
- * @return 0, or -1 when this build has no codegen stamp (a static build
- *         loads no module from the library). */
-static int spyro1_library_module_path(const char* entry_dir, char* out, size_t cap) {
-    char stamp[128];
-    if (spyro1_recomp_codegen_stamp(stamp, sizeof stamp) != 0) return -1;
-#ifdef _WIN32
-    const char* name = "spyro1-recomp.dll";
-#else
-    const char* name = "spyro1-recomp.so";
-#endif
-    const std::filesystem::path mod = std::filesystem::path(entry_dir) / "modules" / stamp / name;
-    std::error_code ec;
-    std::filesystem::create_directories(mod.parent_path(), ec);
-    std::snprintf(out, cap, "%s", mod.string().c_str());
-    return 0;
-}
 
 /* The README-pinned retail NTSC-U disc, labelled by name in the library. */
 static const openpete_launcher_known_disc k_known_discs[] = {
@@ -126,7 +102,7 @@ static const openpete_launcher_game* launcher_game_desc(void) {
     g.display_name = game_get_display_name();
     g.known_discs = k_known_discs;
     g.known_disc_count = (int)(sizeof k_known_discs / sizeof k_known_discs[0]);
-    g.module_path = spyro1_library_module_path;
+    g.module_path = openpete_game_library_module_path;
     return &g;
 }
 
@@ -318,16 +294,19 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
 
     /* The runtime reaches recompiled code only through the recomp-module
      * descriptor. Static builds register the linked-in module;
-     * shared-linkage builds dlopen spyro1-recomp and resolve the same
+     * shared-linkage builds load spyro1-recomp and resolve the same
      * descriptor. Must precede any dispatch. Auto-building into the module
-     * location is fine for the default path and for library entries; an
-     * explicit --recomp-module points at a module the user asserts exists. */
+     * location (a build with the first-boot pipeline only) is fine for the
+     * default path and for library entries; an explicit --recomp-module
+     * points at a module the user asserts exists. */
     const char* module_override = opts->recomp_module_path;
     if (!module_override && library_module_path[0])
         module_override = library_module_path;
     const int allow_build = (opts->recomp_module_path == NULL);
-    if (spyro1_recomp_attach(module_override, opts->disc_path, allow_build) != 0)
+    openpete_boot_mark(OP_BOOT_MODULE_ATTACH_START);
+    if (openpete_game_recomp_attach(module_override, opts->disc_path, allow_build) != 0)
         return fatal_start(1, "The game code built from the disc could not be loaded or built.");
+    openpete_boot_mark(OP_BOOT_MODULE_ATTACHED);
 
     /* Mod compile-on-boot: compile any stale enabled source mods on a
      * launcher task; the window opens only if there is real work. Loading

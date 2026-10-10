@@ -157,6 +157,25 @@ add_custom_command(
 add_custom_target(code_docs DEPENDS ${_code_docs_stamp})
 add_dependencies(code_docs openpete_generated_headers)
 
+# How each game's recompiled module reaches its executable
+# (cmake/openpete_game.cmake):
+#   static - the module's objects link into the executable; one image holds
+#            one game's recompiled code, since the names collide across
+#            games.
+#   shared - <tag>-recomp.{so,dll} beside the executable, loaded at boot
+#            (games/common/recomp_attach_shared.c); linux-release and the
+#            launcher presets.
+set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
+    "Recomp module linkage: static or shared")
+set_property(CACHE OPENPETE_RECOMP_LINKAGE PROPERTY STRINGS static shared)
+# Whether a shared-linkage executable builds a missing or unusable module
+# from the disc (the first-boot pipeline of a game that has one). OFF: the
+# module comes from the build tree alone and a missing one is refused, so a
+# gate run never compiles a module from the disc. The distribution presets
+# turn it on.
+option(OPENPETE_RECOMP_FIRST_BOOT
+       "Shared linkage: build a missing recomp module from the disc at boot" OFF)
+
 # PSYQ abort-on-call stubs, compiled once: the union of every built game's
 # generated stub names minus the names the shared thunk layer defines
 # (tools/filter_psyq_stubs.py union), with the runtime that reports a reached

@@ -4,7 +4,7 @@ The PSX Geometry Transformation Engine (coprocessor 2) is implemented in
 `core/psx/gte.c`, written from the register-level hardware description.
 Every recompiled cop2 command, in every game and overlay, calls
 `gte_execute(CPUState*, uint32_t cmd)`; the module ABI exports the symbol
-(`games/spyro-1/manifest/module_abi_exports.txt`). The diagnostics around
+(`games/common/module_abi_exports.txt`). The diagnostics around
 it live in `core/psx/gte_instruments.cpp`, declared in
 `core/include/openpete_gte.h`; the per-record hash that compares it with
 the reference lives in `core/diag/psxtrace_verify.c`.
