@@ -55,7 +55,9 @@ static const openpete_moby_ops_t s_spyro1_moby_ops = {
     .classes_loaded   = ops_classes_loaded,
 };
 
-/** @brief Registers Spyro 1's moby ops with the mod registry. */
-void spyro1_moby_ops_register(void) {
-    openpete_mods_set_moby_ops(&s_spyro1_moby_ops);
+/** @brief Returns Spyro 1's moby ops, the game descriptor's moby_ops member.
+ *
+ * @return The static ops table. */
+const openpete_moby_ops_t* spyro1_moby_ops(void) {
+    return &s_spyro1_moby_ops;
 }

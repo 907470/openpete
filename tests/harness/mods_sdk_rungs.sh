@@ -11,7 +11,7 @@
 #   header edit    an edit to a per-game header rebuilds a mod that
 #                  includes it at the next boot and during hot reload.
 #   --compile-mods OPENPETE_MOD_SDK_DIR points --compile-mods at the test
-#                  SDK directory.
+#                  SDK directory; each staged game gets its own pass.
 #   wrappers       (spyro-1) the overlay-qualified and raw wrapper aliases
 #                  of TitlescreenDraw compile and register at 0x8007CEE4.
 #   identity       hand-built objects in every lookup path: an object built
@@ -159,22 +159,27 @@ else
     grep -E "hot reload|sdk-probe" "$WORK/sdk-hot.log" | head -5
 fi
 
-# ── S4. (spyro-1) --compile-mods against the test SDK directory ──────────
-# --compile-mods is parsed by Spyro 1's entry point only; the shared entry
-# point of the other games gains it with the shared mod wiring.
-if [ "$PG_GAME" = "spyro-1" ]; then
-    say "--compile-mods: OPENPETE_MOD_SDK_DIR selects mod-sdk-test/sdk/"
-    rm -rf "$WORK/sdkprobe-src/sdk-probe/.build"
-    out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_SDK_DIR="$(realpath "$TEST_SDK")")
-            run_game "$WORK/sdkprobe" 1 --compile-mods )"
-    if printf '%s\n' "$out" | grep -q "SDK $(realpath "$TEST_SDK") (OPENPETE_MOD_SDK_DIR)" &&
-       printf '%s\n' "$out" | grep -q -- "--compile-mods \[$PG_GAME\]: 1 compiled" &&
-       [ -f "$WORK/sdkprobe-src/sdk-probe/.build/$PG_GAME/sdk-probe.so" ]; then
-        ok "1 compiled against the test SDK into .build/$PG_GAME/"
-    else
-        bad "--compile-mods did not use the test SDK"
-        printf '%s\n' "$out" | grep -E 'compile-mods|SDK' | head -5
-    fi
+# ── S4. --compile-mods against the test SDK directory ───────────────────
+# The test SDK stages every game; --compile-mods makes one pass per staged
+# game, and sdk-probe (game = this game) compiles in this game's pass only.
+say "--compile-mods: OPENPETE_MOD_SDK_DIR selects mod-sdk-test/sdk/, one pass per staged game"
+rm -rf "${WORK:?}/sdkprobe-src/sdk-probe/.build"
+out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_SDK_DIR="$(realpath "$TEST_SDK")")
+        run_game "$WORK/sdkprobe" 1 --compile-mods )"
+n_staged=0
+for g in spyro-1 spyro-2 spyro-3; do
+    printf '%s\n' "$out" | grep -q -- "--compile-mods: staged $g " && n_staged=$((n_staged + 1))
+done
+n_objs="$(find "$WORK/sdkprobe-src/sdk-probe/.build" -name 'sdk-probe.so' | wc -l)"
+if printf '%s\n' "$out" | grep -q "SDK $(realpath "$TEST_SDK") (OPENPETE_MOD_SDK_DIR)" &&
+   [ "$n_staged" -eq 3 ] &&
+   printf '%s\n' "$out" | grep -q -- "--compile-mods \[$PG_GAME\]: 1 compiled" &&
+   [ "$n_objs" -eq 1 ] &&
+   [ -f "$WORK/sdkprobe-src/sdk-probe/.build/$PG_GAME/sdk-probe.so" ]; then
+    ok "3 games staged; 1 compiled against the test SDK, into .build/$PG_GAME/ only"
+else
+    bad "--compile-mods: staged $n_staged of 3, objects $n_objs (want 1 under .build/$PG_GAME/)"
+    printf '%s\n' "$out" | grep -E 'compile-mods|SDK' | head -8
 fi
 
 # ── S5. (spyro-1) overlay and raw wrapper aliases register ───────────────

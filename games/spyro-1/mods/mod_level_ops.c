@@ -822,7 +822,9 @@ static const openpete_level_ops_t s_spyro1_level_ops = {
     .replace_sky_tick = ops_replace_sky_tick,
 };
 
-/** @brief Registers Spyro 1's level ops with the mod registry. */
-void spyro1_level_ops_register(void) {
-    openpete_mods_set_level_ops(&s_spyro1_level_ops);
+/** @brief Returns Spyro 1's level ops, the game descriptor's level_ops member.
+ *
+ * @return The static ops table. */
+const openpete_level_ops_t* spyro1_level_ops(void) {
+    return &s_spyro1_level_ops;
 }

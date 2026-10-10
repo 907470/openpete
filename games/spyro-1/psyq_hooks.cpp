@@ -367,9 +367,10 @@ static const struct { const char* alias; uint8_t slot; } k_sfx_aliases[] = {
 };
 /** @brief Maps a mod-facing sound alias to the sound slot name the sfx pack resolves.
  *
+ * The game mod descriptor's sfx_canon member (mods/mod_game_desc.c).
  * @param name A sound name from a mod; not NULL.
  * @return The slot name for an alias in k_sfx_aliases, else name itself. */
-static const char* spyro_sfx_canon(const char* name) {
+extern "C" const char* spyro1_sfx_canon(const char* name) {
     for (const auto& a : k_sfx_aliases)
         if (strcmp(a.alias, name) == 0) return spyro1_sfx_slot_names[a.slot];
     return name;
@@ -451,7 +452,6 @@ static void spyro_sfx_pack_arm(void) {
 
 extern "C" void psyq_game_sfx_arm(void) {
     spyro_sfx_pack_arm();
-    openpete_mods_sfx_set_canon(spyro_sfx_canon);
 }
 
 extern "C" unsigned psyq_game_spu_bank_blast_len(void) { return SPYRO_SPU_BANK_BLAST; }

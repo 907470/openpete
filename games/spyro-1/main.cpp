@@ -18,6 +18,7 @@
 #include "openpete_surface.h"
 #include "recomp_attach.h"
 #include "mods/mod_wad_overlay.h"
+#include "game_mod_desc.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -80,21 +81,6 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
 extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap);
 extern "C" void game_state_regions_register(void);
 extern "C" void game_disc_boot_order_register(void);
-/* Mod SDK name->vaddr table, generated from manifest/symbols.toml by
- * tools/gen_mod_sdk.py into the build dir (sdk_symbols_table.c). */
-extern "C" {
-extern const openpete_sdk_symbol_t openpete_sdk_symbols[];
-extern const size_t                openpete_sdk_symbol_count;
-/* Draw-service text rasterizer (renderer/text_moby.c - that header
- * has no C++ guards, so declare the one symbol we need directly). */
-int text_moby_native_mod_emit(const char* str, float x, float y,
-                              float cap_h, unsigned rgb,
-                              void* out_verts, int cap);
-/* Moby-type registry game ops (mods/mod_moby_ops.c). */
-void spyro1_moby_ops_register(void);
-/* Level-slot registry game ops (mods/mod_level_ops.c). */
-void spyro1_level_ops_register(void);
-}
 #include "renderer/interp_regions.h"
 #include "renderer/reextract.h"
 
@@ -223,7 +209,7 @@ static int report_mode(int argc, char** argv, const openpete_options_t* neutral)
     return 0;
 }
 
-/** @brief Register this game's mod layer: the symbol table, the draw text rasterizer, the content registries' game ops and the WAD overlay.
+/** @brief Register this game's mod layer: the game descriptor (mods/mod_game_desc.c) and the WAD overlay.
  *
  * Runs once, after the game is identified and before any mod compile or
  * load, so mods override by name ("CameraUpdate") against the identified
@@ -231,12 +217,7 @@ static int report_mode(int argc, char** argv, const openpete_options_t* neutral)
  * CdRead.
  * @param disc_path The identified disc. */
 static void register_mod_layer(const char* disc_path) {
-    openpete_mods_set_symbol_table(openpete_sdk_symbols,
-                                   openpete_sdk_symbol_count);
-    /* Spyro's 3D gold text-moby glyphs - the same font as the FPS overlay. */
-    openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
-    spyro1_moby_ops_register();
-    spyro1_level_ops_register();
+    (void)openpete_mods_set_game_desc(game_mod_desc());
     spyro1_mod_wad_configure(disc_path);
 }
 

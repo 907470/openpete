@@ -67,6 +67,9 @@ openpete_add_game(spyro-2
         # The overlay-id boot and restore hooks, shared with Spyro 3.
         ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c
 
+        # The mod-layer descriptor: the SDK symbol table, no game ops.
+        ${CMAKE_SOURCE_DIR}/games/common/game_mod_desc_symbols.c
+
         # The engine layout: the terrain and texture groups, the environment
         # header and animations, the visibility verdict, the fog terms, the
         # draw buffers, the primitive allocator and the camera.

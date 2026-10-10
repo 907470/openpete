@@ -619,23 +619,60 @@ static int mod_resolve_imgui(struct openpete_mod* mod, void* dl,
     return openpete_imgui_bind(d, mod->id, path) ? 0 : -1;
 }
 
-static const openpete_sdk_symbol_t* s_symbols = NULL;
-static size_t                       s_symbol_count = 0;
+/* The registered game descriptor; s_desc_none (every member NULL) stands
+ * in until one is registered. s_mods_init_ran closes registration once the
+ * loader has compiled or loaded anything. */
+static const game_mod_desc_t  s_desc_none;
+static const game_mod_desc_t* s_desc = NULL;
+static int                    s_mods_init_ran = 0;
 
-void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
-                                    size_t count) {
-    s_symbols = table;
-    s_symbol_count = count;
+int openpete_mods_set_game_desc(const game_mod_desc_t* desc) {
+    if (!desc) {
+        OPL_ERROR_F("mods", "game descriptor for %s: NULL - refused",
+                    game_get_id());
+        return -1;
+    }
+    if (s_desc) {
+        OPL_ERROR_F("mods", "game descriptor for %s: already registered - "
+                    "second registration refused", game_get_id());
+        return -1;
+    }
+    if (s_mods_init_ran) {
+        OPL_ERROR_F("mods", "game descriptor for %s: registered after mod "
+                    "init - refused", game_get_id());
+        return -1;
+    }
+    s_desc = desc;
+    return 0;
+}
+
+const game_mod_desc_t* openpete_mods_game_desc(void) {
+    return s_desc ? s_desc : &s_desc_none;
+}
+
+/* The game id --compile-mods is compiling for; empty outside that mode. */
+static char s_build_game[32];
+
+/** @brief Return the game mods are discovered and compiled for.
+ *
+ * The staged game --compile-mods is working through, else the running
+ * game. Object, stamp and compile-log paths, the SDK resolution and build
+ * key, and the [mod] game filter all read it; loading an object checks it
+ * against the running game (mod_check_game).
+ * @return The game id. */
+static const char* mods_build_game(void) {
+    return s_build_game[0] ? s_build_game : game_get_id();
 }
 
 /* Bound on addr minus the symbol openpete_mods_symbol_for_addr names. */
 #define SYM_ADDR_SPAN_MAX 0x10000u
 
 const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out) {
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
     const openpete_sdk_symbol_t* best = NULL;
-    if (!addr || !s_symbols) return NULL;
-    for (size_t i = 0; i < s_symbol_count; i++) {
-        const openpete_sdk_symbol_t* c = &s_symbols[i];
+    if (!addr || !gd->symbols) return NULL;
+    for (size_t i = 0; i < gd->symbol_count; i++) {
+        const openpete_sdk_symbol_t* c = &gd->symbols[i];
         if (c->addr > addr) continue;
         if (!best || c->addr > best->addr ||
             (c->addr == best->addr && !c->legacy && best->legacy))
@@ -654,12 +691,13 @@ const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out) {
  * @param name Symbol name; NULL returns NULL.
  * @return The table row, or NULL when absent or no table is registered. */
 static const openpete_sdk_symbol_t* sym_find(const char* name) {
-    if (!name || !s_symbols) return NULL;
-    size_t lo = 0, hi = s_symbol_count;
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    if (!name || !gd->symbols) return NULL;
+    size_t lo = 0, hi = gd->symbol_count;
     while (lo < hi) { /* table is sorted by strcmp at generation time */
         size_t mid = lo + (hi - lo) / 2;
-        int c = strcmp(s_symbols[mid].name, name);
-        if (c == 0) return &s_symbols[mid];
+        int c = strcmp(gd->symbols[mid].name, name);
+        if (c == 0) return &gd->symbols[mid];
         if (c < 0) lo = mid + 1; else hi = mid;
     }
     return NULL;
@@ -695,29 +733,23 @@ static int purity_violation(const char* what) {
  * concern this advisory deliberately does not cover. */
 static int s_native_hides_psx = 0;   /* set in openpete_mods_init from opts */
 
-/* Original PSX render / GPU-submission functions whose rasterized output the
- * native renderer replaces. Matched by resolved address, so both override_addr
- * and override_name are covered. */
-static const char* const k_psx_render_fns[] = {
-    "GamestateDraw",                                   /* top-level world draw */
-    "DrawOTag", "DrawSync",                            /* OT submit / GPU sync */
-    "PutDrawEnv", "SetDefDrawEnv", "SetDrawMode",      /* PsyQ GPU draw state   */
-    "TitlescreenDraw", "TitlescreenDrawSprite",        /* titlescreen render    */
-};
-
 /** @brief Name the native-bypassed PSX render function at a guest address.
  *
- * Resolves each k_psx_render_fns name against the SDK symbol table and
- * compares addresses. warn_render_bypassed uses it to warn a mod whose
- * override targets a function the native renderer does not rasterize.
+ * Resolves each name of the game descriptor's psx_render_fns list (the
+ * original PSX render and GPU-submission functions whose rasterized
+ * output the native renderer replaces) against the SDK symbol table and
+ * compares addresses, so override_addr and override_name are both
+ * covered. warn_render_bypassed uses it to warn a mod whose override
+ * targets a function the native renderer does not rasterize.
  * @param addr Guest address; 0 returns NULL.
- * @return The function name, or NULL when addr is none of them or no
- *         symbol table is registered. */
+ * @return The function name, or NULL when addr is none of them, or the
+ *         game registers no list or no symbol table. */
 static const char* psx_render_fn_name(uint32_t addr) {
-    if (!addr || !s_symbols) return NULL;
-    for (size_t i = 0; i < sizeof k_psx_render_fns / sizeof k_psx_render_fns[0]; i++) {
-        const openpete_sdk_symbol_t* s = sym_find(k_psx_render_fns[i]);
-        if (s && s->addr == addr) return k_psx_render_fns[i];
+    const game_mod_desc_t* gd = openpete_mods_game_desc();
+    if (!addr || !gd->symbols || !gd->psx_render_fns) return NULL;
+    for (const char* const* n = gd->psx_render_fns; *n; n++) {
+        const openpete_sdk_symbol_t* s = sym_find(*n);
+        if (s && s->addr == addr) return *n;
     }
     return NULL;
 }
@@ -818,8 +850,8 @@ static int api_override_name(openpete_mod_t* self, const char* name,
     const openpete_sdk_symbol_t* sym = sym_find(name);
     if (!sym) {
         OPL_ERROR_F(self->log_tag,
-                    "override target \"%s\" not in the SDK symbol table",
-                    name ? name : "(null)");
+                    "override target \"%s\" not in the %s SDK symbol table",
+                    name ? name : "(null)", game_get_id());
         return -1;
     }
     if (sym->legacy) {
@@ -1136,7 +1168,7 @@ typedef enum {
  * @param out Output buffer; the path is truncated to @p cap.
  * @param cap Size of @p out. */
 static void mod_game_build_dir(const char* mod_dir, char* out, size_t cap) {
-    snprintf(out, cap, "%s/.build/%s", mod_dir, game_get_id());
+    snprintf(out, cap, "%s/.build/%s", mod_dir, mods_build_game());
 }
 
 /** @brief Format the path of a mod's object for the running game, <mod_dir>/.build/<game-id>/<id> plus the platform extension.
@@ -1147,7 +1179,7 @@ static void mod_game_build_dir(const char* mod_dir, char* out, size_t cap) {
  * @param cap Size of @p out. */
 static void mod_obj_path(const char* mod_dir, const char* id, char* out,
                          size_t cap) {
-    snprintf(out, cap, "%s/.build/%s/%s" MOD_DL_EXT, mod_dir, game_get_id(),
+    snprintf(out, cap, "%s/.build/%s/%s" MOD_DL_EXT, mod_dir, mods_build_game(),
              id);
 }
 
@@ -1337,7 +1369,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     static unsigned s_hot_n = 0;
     char hot_path[MOD_PATH_MAX + 32];
     snprintf(hot_path, sizeof hot_path, "%s/.build/%s/%s.hot%u" MOD_DL_EXT,
-             mod->dir, game_get_id(), mod->id, ++s_hot_n);
+             mod->dir, mods_build_game(), mod->id, ++s_hot_n);
     const char* src_obj = mod->obj_path;
     int obj_kind = mod->obj_kind;   /* a compile below makes it MOD_OBJ_GAME */
     if (need_compile) {
@@ -3306,7 +3338,7 @@ static const char* const sdk_inputs[] = {
 static int sdk_input_path(const char* sdk_dir, const char* name, char* out,
                           size_t cap) {
     struct stat st;
-    snprintf(out, cap, "%s/games/%s/%s", sdk_dir, game_get_id(), name);
+    snprintf(out, cap, "%s/games/%s/%s", sdk_dir, mods_build_game(), name);
     if (stat(out, &st) == 0) return 1;
     snprintf(out, cap, "%s/%s", sdk_dir, name);
     return 0;
@@ -3342,7 +3374,7 @@ static uint64_t sdk_prefix_stamp(const char* sdk_dir) {
 static void sdk_prefix_recheck(const char* sdk_dir) {
     if (!s_sdk_prefix_ok) return;
     if (strcmp(s_sdk_prefix_dir, sdk_dir) != 0 ||
-        strcmp(s_sdk_prefix_game, game_get_id()) != 0 ||
+        strcmp(s_sdk_prefix_game, mods_build_game()) != 0 ||
         sdk_prefix_stamp(sdk_dir) != s_sdk_prefix_stamp)
         s_sdk_prefix_ok = 0;
 }
@@ -3358,7 +3390,7 @@ static void sdk_prefix_recheck(const char* sdk_dir) {
  * @param sdk_dir The staged SDK directory.
  * @return The cached state, owned by the function; not thread-safe. */
 static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
-    const char* game = game_get_id();
+    const char* game = mods_build_game();
     if (s_sdk_prefix_ok && strcmp(s_sdk_prefix_dir, sdk_dir) == 0 &&
         strcmp(s_sdk_prefix_game, game) == 0)
         return &s_sdk_prefix;
@@ -3441,7 +3473,7 @@ static int config_compute_key(const char* mod_dir, char key_out[65]) {
  * @param cap Size of @p out. */
 static void mod_stamp_path(const char* mod_dir, const char* id,
                            char* out, size_t cap) {
-    snprintf(out, cap, "%s/.build/%s/%s.hash", mod_dir, game_get_id(), id);
+    snprintf(out, cap, "%s/.build/%s/%s.hash", mod_dir, mods_build_game(), id);
 }
 
 /** @brief Read a mod's stored build key from its stamp file.
@@ -3548,7 +3580,7 @@ static int mod_compile(const char* mod_dir, const char* id,
     char build_dir[MOD_PATH_MAX];
     mod_make_build_dir(mod_dir); /* EEXIST is fine */
     mod_game_build_dir(mod_dir, build_dir, sizeof build_dir);
-    const char* game = game_get_id();
+    const char* game = mods_build_game();
 
     char stamp_path[MOD_PATH_MAX + 16];
     mod_stamp_path(mod_dir, id, stamp_path, sizeof stamp_path);
@@ -4289,22 +4321,85 @@ static size_t want_append(char* want, size_t cap, size_t used,
     return used >= cap ? cap - 1 : used;
 }
 
-/** @brief Test whether a mod's manifest [mod] game key names this game.
+/* The first api whose manifests are read on the overlay-scoped rules. A
+ * manifest pinned below it, or with no pin, was written against the
+ * Spyro 1 SDK. */
+#define MOD_API_SCOPED 13
+
+/** @brief Test whether a [mod] game array names @p game, collecting the declared ids into @p want.
+ *
+ * An empty array, or one holding no strings, names no game: nothing
+ * matches, which is the same narrowing direction as a misspelling. On a
+ * match @p want is cleared.
+ * @param ga The game array.
+ * @param game The game id.
+ * @param want Receives the declared ids, comma-separated.
+ * @param want_cap Size of @p want.
+ * @return 1 when an element equals @p game, else 0. */
+static int game_array_names(toml_array_t* ga, const char* game, char* want,
+                            size_t want_cap) {
+    const int n = toml_array_nelem(ga);
+    size_t used = 0;
+    int match = 0;
+    for (int i = 0; i < n; i++) {
+        toml_datum_t d = toml_string_at(ga, i);
+        if (!d.ok) continue;
+        if (strcmp(d.u.s, game) == 0) match = 1;
+        used = want_append(want, want_cap, used, d.u.s);
+        free(d.u.s);
+    }
+    if (match) want[0] = 0;
+    return match;
+}
+
+/** @brief Apply the game selection rule of a manifest's [mod] table to @p game.
+ *
+ * The game key is one id or an array of them, matched exactly. An absent
+ * key selects every game when the table pins api MOD_API_SCOPED or later,
+ * and spyro-1 alone otherwise (pin below it or absent), since such a mod
+ * was written against the Spyro 1 SDK; *implied is then set. A value
+ * naming no game the exe knows matches nothing, so a misspelling narrows a
+ * mod's reach instead of widening it. On a mismatch @p want receives the
+ * selected ids, comma-separated, so the log can name them.
+ * @param t The [mod] table.
+ * @param game The game id.
+ * @param want Receives the selected ids on a mismatch; the caller clears it.
+ * @param want_cap Size of @p want.
+ * @param implied Set to 1 when the legacy rule selected spyro-1.
+ * @return 1 when the table selects @p game, 0 otherwise. */
+static int mod_table_selects_game(toml_table_t* t, const char* game,
+                                  char* want, size_t want_cap, int* implied) {
+    toml_array_t* ga = toml_array_in(t, "game");
+    if (ga) return game_array_names(ga, game, want, want_cap);
+    toml_datum_t g = toml_string_in(t, "game");
+    const char* sel = NULL;
+    if (!g.ok) {
+        toml_datum_t api = toml_int_in(t, "api");
+        if (api.ok && api.u.i >= MOD_API_SCOPED) return 1;
+        *implied = 1;
+        sel = "spyro-1";
+    }
+    const int match = strcmp(g.ok ? g.u.s : sel, game) == 0;
+    if (!match) (void)want_append(want, want_cap, 0, g.ok ? g.u.s : sel);
+    if (g.ok) free(g.u.s);
+    return match;
+}
+
+/** @brief Test whether a mod's manifest selects the game mods are built for.
  *
  * Read here rather than in parse_manifest because discovery feeds the
  * pre-boot compile pass as well as the loader: a mod for another title
  * has to leave the candidate set before its C is handed to this game's
- * SDK. The value is one id or an array of them, matched exactly against
- * game_get_id(); an absent key targets every game. A value naming no game
- * the exe knows matches nothing, so a misspelling narrows a mod's reach
- * instead of widening it; an empty array, or one with no strings, also
- * matches nothing. On a mismatch `want` receives the declared ids,
- * comma-separated, so the log can name them; the caller clears it first.
- * A manifest that will not open or parse stays a candidate; parse_manifest
- * reports that case.
+ * SDK. Applies mod_table_selects_game to the [mod] table with
+ * mods_build_game(). A manifest that will not open or parse, or has no
+ * [mod] table, stays a candidate; parse_manifest reports that case.
+ * @param mod_dir The mod directory.
+ * @param want Receives the selected ids on a mismatch; the caller clears it.
+ * @param want_cap Size of @p want.
+ * @param implied Set to 1 when the legacy rule selected spyro-1.
  * @return 1 when the mod targets this game, 0 otherwise. */
 static int mod_targets_this_game(const char* mod_dir, char* want,
-                                 size_t want_cap) {
+                                 size_t want_cap, int* implied) {
     char path[MOD_PATH_MAX + 12];
     snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
     FILE* fp = fopen(path, "r");
@@ -4313,34 +4408,9 @@ static int mod_targets_this_game(const char* mod_dir, char* want,
     toml_table_t* root = toml_parse_file(fp, errbuf, sizeof errbuf);
     fclose(fp);
     if (!root) return 1;
-
-    int match = 1;
     toml_table_t* t = toml_table_in(root, "mod");
-    if (t) {
-        const char* self = game_get_id();
-        toml_datum_t g = toml_string_in(t, "game");
-        toml_array_t* ga = toml_array_in(t, "game");
-        if (g.ok) {
-            match = self && strcmp(g.u.s, self) == 0;
-            if (!match) (void)want_append(want, want_cap, 0, g.u.s);
-            free(g.u.s);
-        } else if (ga) {
-            /* An empty array, or one holding no strings, names no game:
-             * nothing matches, which is the same narrowing direction as
-             * a misspelling. */
-            int n = toml_array_nelem(ga);
-            size_t used = 0;
-            match = 0;
-            for (int i = 0; i < n; i++) {
-                toml_datum_t d = toml_string_at(ga, i);
-                if (!d.ok) continue;
-                if (self && strcmp(d.u.s, self) == 0) match = 1;
-                used = want_append(want, want_cap, used, d.u.s);
-                free(d.u.s);
-            }
-            if (match) want[0] = 0;
-        }
-    }
+    const int match = !t || mod_table_selects_game(t, mods_build_game(),
+                                                   want, want_cap, implied);
     toml_free(root);
     return match;
 }
@@ -4357,13 +4427,17 @@ static int scan_keep_for_game(const char* mods_dir, const char* id) {
     mod_ref_t r;
     mod_ref_resolve(mods_dir, id, &r);
     char want[96];
+    int implied = 0;
     want[0] = 0;
-    if (mod_targets_this_game(r.dir, want, sizeof want)) return 1;
-    char shown[112];
-    if (want[0]) snprintf(shown, sizeof shown, "game \"%s\"", want);
-    else         snprintf(shown, sizeof shown, "no game");
+    if (mod_targets_this_game(r.dir, want, sizeof want, &implied)) return 1;
+    char shown[160];
+    if (implied)
+        snprintf(shown, sizeof shown, "game \"%s\" (no [mod] game key, api "
+                 "pin below %d or absent)", want, MOD_API_SCOPED);
+    else if (want[0]) snprintf(shown, sizeof shown, "game \"%s\"", want);
+    else              snprintf(shown, sizeof shown, "no game");
     OPL_INFO_F("mods", "%s targets %s - skipped (this is %s)",
-               id, shown, game_get_id());
+               id, shown, mods_build_game());
     return 0;
 }
 
@@ -4658,6 +4732,20 @@ static void mods_sdk_dir(char* out, size_t cap) {
     snprintf(out, cap, "%ssdk", base ? base : "./");
 }
 
+/** @brief Test whether @p sdk_dir holds the SDK root's openpete_mod_api.h and games/<game>/openpete_game.h as regular files.
+ *
+ * @param sdk_dir The SDK directory.
+ * @param game The game id.
+ * @return 1 when both exist, else 0. */
+static int sdk_game_staged(const char* sdk_dir, const char* game) {
+    char p[MOD_PATH_MAX + 64];
+    struct stat st;
+    snprintf(p, sizeof p, "%s/openpete_mod_api.h", sdk_dir);
+    if (stat(p, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+    snprintf(p, sizeof p, "%s/games/%s/openpete_game.h", sdk_dir, game);
+    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 /** @brief Test whether the staged SDK serves the running game, probing for its openpete_mod_api.h and games/<game-id>/openpete_game.h.
  *
  * An install packaged without --with-mod-sdk has no <exe>/sdk, and a
@@ -4670,13 +4758,7 @@ static void mods_sdk_dir(char* out, size_t cap) {
  * @param sdk_dir The staged SDK directory.
  * @return 1 when both exist as regular files, else 0. */
 static int mods_sdk_present(const char* sdk_dir) {
-    char p[MOD_PATH_MAX + 64];
-    struct stat st;
-    snprintf(p, sizeof p, "%s/openpete_mod_api.h", sdk_dir);
-    if (stat(p, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
-    snprintf(p, sizeof p, "%s/games/%s/openpete_game.h", sdk_dir,
-             game_get_id());
-    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+    return sdk_game_staged(sdk_dir, mods_build_game());
 }
 
 /** @brief Write the SDK directory --compile-mods compiles against into @p out.
@@ -4709,8 +4791,8 @@ static void mods_sdk_missing_notice(const char* sdk_dir) {
     OPL_WARN_F("mods", "no mod SDK for %s at %s (openpete_mod_api.h and "
                "games/%s/): this build was packaged without it - source "
                "mods are not compiled; a prebuilt object in .build/%s/, "
-               ".build/any/ or .build/ still loads", game_get_id(), sdk_dir,
-               game_get_id(), game_get_id());
+               ".build/any/ or .build/ still loads", mods_build_game(), sdk_dir,
+               mods_build_game(), mods_build_game());
 }
 
 /* ---- compile-on-boot prepare (openpete-mod-compile-on-boot) ---------- */
@@ -4818,46 +4900,22 @@ int openpete_mods_prepare(const openpete_options_t* opts,
     return c.n_stale;
 }
 
-int openpete_mods_compile_all(const openpete_options_t* opts) {
-    {
-        char cc[MOD_PATH_MAX];
-        mods_resolve_cc(cc, sizeof cc);
-        if (!cc[0]) {
-            OPL_ERROR_F("mods", "--compile-mods: no compiler - expected "
-                        "the bundled toolchain at recomp/tools/ next to "
-                        "the exe, or set OPENPETE_MOD_CC");
-            return -1;
-        }
-    }
-    char mods_dir[MOD_PATH_MAX];
-    if (mods_root(opts, mods_dir, sizeof mods_dir) != 0) {
-        OPL_ERROR_F("mods", "--compile-mods: no mods dir resolvable");
-        return -1;
-    }
-
-    /* EVERY candidate in the dir - enabled.txt is a runtime concern;
-     * the build gate wants a disabled mod's breakage surfaced too. */
+/** @brief Compile every mod in @p mods_dir whose manifest targets mods_build_game(), for --compile-mods.
+ *
+ * Scans every candidate, ignoring enabled.txt so a disabled mod's breakage
+ * still surfaces; the scan's game filter drops, with one log line each,
+ * the mods for other games. A mod whose cached build matches its key is
+ * counted up to date; assets-only and binary-only mods are skipped.
+ * @param mods_dir The mods root.
+ * @param sdk_dir The SDK directory holding games/<mods_build_game()>/.
+ * @return The number of failed compiles. */
+static int compile_all_for_game(const char* mods_dir, const char* sdk_dir) {
     mod_fvec ids;
     mod_fvec_init(&ids, sizeof(mod_id_row_t), 64, NULL, 0);
     int n_ids = mods_scan(mods_dir, &ids);
-    if (n_ids == 0) {
-        mod_fvec_free(&ids);
-        OPL_INFO_F("mods", "--compile-mods: nothing to compile in %s",
-                   mods_dir);
-        return 0;
-    }
-    qsort(mod_fvec_data(&ids), (size_t)n_ids, sizeof(mod_id_row_t),
-          cmp_id_row);
-
-    char sdk_dir[MOD_PATH_MAX];
-    mods_compile_sdk_dir(sdk_dir, sizeof sdk_dir);
-    if (!mods_sdk_present(sdk_dir)) {
-        mod_fvec_free(&ids);
-        mods_sdk_missing_notice(sdk_dir);
-        OPL_ERROR_F("mods", "--compile-mods: no SDK at %s", sdk_dir);
-        return -1;
-    }
-
+    if (n_ids > 1)
+        qsort(mod_fvec_data(&ids), (size_t)n_ids, sizeof(mod_id_row_t),
+              cmp_id_row);
     int n_compiled = 0, n_cached = 0, n_failed = 0;
     for (int i = 0; i < n_ids; i++) {
         mod_ref_t r;
@@ -4878,8 +4936,77 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
     }
     mod_fvec_free(&ids);
     OPL_INFO_F("mods", "--compile-mods [%s]: %d compiled, %d up to date, "
-               "%d failed (%s)", game_get_id(), n_compiled, n_cached,
+               "%d failed (%s)", mods_build_game(), n_compiled, n_cached,
                n_failed, mods_dir);
+    return n_failed;
+}
+
+/** @brief Collect the ids of the games staged under <sdk_dir>/games/, sorted.
+ *
+ * A staged game is a subdirectory holding openpete_game.h beside the SDK
+ * root's openpete_mod_api.h (sdk_game_staged).
+ * @param sdk_dir The SDK directory.
+ * @param ids Row vector of mod_id_row_t the ids are appended to.
+ * @return The number of staged games. */
+static int sdk_staged_games(const char* sdk_dir, mod_fvec* ids) {
+    char games_dir[MOD_PATH_MAX];
+    snprintf(games_dir, sizeof games_dir, "%s/games", sdk_dir);
+    DIR* d = opendir(games_dir);
+    if (!d) return 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.' || strlen(e->d_name) >= sizeof s_build_game ||
+            !sdk_game_staged(sdk_dir, e->d_name))
+            continue;
+        mod_id_row_t* row = (mod_id_row_t*)mod_fvec_push(ids);
+        if (row) snprintf(row->id, sizeof row->id, "%s", e->d_name);
+    }
+    closedir(d);
+    const size_t n = mod_fvec_count(ids);
+    if (n > 1) qsort(mod_fvec_data(ids), n, sizeof(mod_id_row_t), cmp_id_row);
+    return (int)n;
+}
+
+int openpete_mods_compile_all(const openpete_options_t* opts) {
+    {
+        char cc[MOD_PATH_MAX];
+        mods_resolve_cc(cc, sizeof cc);
+        if (!cc[0]) {
+            OPL_ERROR_F("mods", "--compile-mods: no compiler - expected "
+                        "the bundled toolchain at recomp/tools/ next to "
+                        "the exe, or set OPENPETE_MOD_CC");
+            return -1;
+        }
+    }
+    char mods_dir[MOD_PATH_MAX];
+    if (mods_root(opts, mods_dir, sizeof mods_dir) != 0) {
+        OPL_ERROR_F("mods", "--compile-mods: no mods dir resolvable");
+        return -1;
+    }
+    char sdk_dir[MOD_PATH_MAX];
+    mods_compile_sdk_dir(sdk_dir, sizeof sdk_dir);
+
+    /* One pass per staged game: the per-game headers, the [mod] game
+     * filter, the build key and the object directory all follow the
+     * staged id, not the game this executable links. */
+    mod_fvec games;
+    mod_fvec_init(&games, sizeof(mod_id_row_t), 4, NULL, 0);
+    const int n_games = sdk_staged_games(sdk_dir, &games);
+    if (n_games == 0) {
+        mod_fvec_free(&games);
+        mods_sdk_missing_notice(sdk_dir);
+        OPL_ERROR_F("mods", "--compile-mods: no SDK at %s", sdk_dir);
+        return -1;
+    }
+    int n_failed = 0;
+    for (int g = 0; g < n_games; g++) {
+        snprintf(s_build_game, sizeof s_build_game, "%s", id_row(&games, g));
+        OPL_INFO_F("mods", "--compile-mods: staged %s (%s/games/%s)",
+                   s_build_game, sdk_dir, s_build_game);
+        n_failed += compile_all_for_game(mods_dir, sdk_dir);
+    }
+    s_build_game[0] = 0;
+    mod_fvec_free(&games);
     return n_failed;
 }
 
@@ -4902,6 +5029,9 @@ void openpete_mods_register_key_defaults(const openpete_options_t* opts) {
 }
 
 int openpete_mods_init(const openpete_options_t* opts) {
+    /* The game descriptor is fixed from here on (openpete_mods_set_game_desc). */
+    s_mods_init_ran = 1;
+
     /* The ImGui guard attributes a refused call by mod index; the loader
      * owns the index-to-id mapping. */
     openpete_imgui_guard_set_mod_id_fn(openpete_mods_id);

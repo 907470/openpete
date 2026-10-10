@@ -22,16 +22,13 @@
 
 #include <string.h>
 
-static openpete_mods_sfx_canon_fn s_canon;
-
-/* Documented at the declaration in openpete_mods.h. */
-void openpete_mods_sfx_set_canon(openpete_mods_sfx_canon_fn fn) { s_canon = fn; }
 
 int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
                               const void* body, uint32_t len,
                               uint16_t pitch) {
     if (!name || !body || !len) return -1;
-    if (s_canon) name = s_canon(name); /* alias -> slot name */
+    const openpete_mods_sfx_canon_fn canon = openpete_mods_game_desc()->sfx_canon;
+    if (canon) name = canon(name); /* alias -> slot name */
     const char* owner = openpete_mods_id_of(self);
     int rc = sfx_pack_register_symbolic_adpcm(owner, name, body, len, pitch);
     if (rc == 0)

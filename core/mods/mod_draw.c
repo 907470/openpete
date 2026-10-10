@@ -120,10 +120,6 @@ static void assert_one_owner(void) {
  * would let either clear the other's purity guard. */
 OPENPETE_THREAD_LOCAL int openpete_mods_in_present = 0;
 
-static openpete_mods_text_emit_fn s_text_fn = NULL;
-void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn) {
-    s_text_fn = fn;
-}
 
 typedef struct {
     openpete_mod_present_fn fn;
@@ -301,13 +297,15 @@ static int emit_buf(const cmd_buf_t* b, int n) {
      * The one text straddling the boundary keeps the glyphs that fit and
      * is not reported: it drew. */
     int emitted_any = 0;
-    if (!s_text_fn) return n;
+    const openpete_mods_text_emit_fn text_fn =
+        openpete_mods_game_desc()->text_emit;
+    if (!text_fn) return n;
     for (int i = 0; i < buf_count(b); i++) {
         const cmd_text_t* t = (const cmd_text_t*)mod_fvec_at(&b->texts,
                                                              (size_t)i);
         int avail = MOD_DRAW_VERTS_MAX - n;
         int wrote = avail > 0
-                  ? s_text_fn(t->str, t->x, t->y, t->cap_h, t->rgb,
+                  ? text_fn(t->str, t->x, t->y, t->cap_h, t->rgb,
                               &s_verts[n], avail)
                   : 0;
         n += wrote;

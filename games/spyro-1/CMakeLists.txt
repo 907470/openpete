@@ -136,11 +136,12 @@ openpete_add_game(spyro-1
         sfx_census.cpp
         write_trace.cpp
 
-        # Mods: the WAD asset overlay and the moby-type and level-slot
-        # registry game ops.
+        # Mods: the WAD asset overlay, the moby-type and level-slot
+        # registry game ops, and the game descriptor that carries them.
         mods/mod_wad_overlay.c
         mods/mod_moby_ops.c
         mods/mod_level_ops.c
+        mods/mod_game_desc.c
 
         # First-run distribution: the WAD extraction (the disc library and
         # the launcher are core/launcher/; the module build,

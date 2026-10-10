@@ -2,9 +2,10 @@
 // services of its own.
 //
 // Parse options, resolve the disc through the common launcher, register the
-// recompiled module, hand off to core's run loop. A game that loads its
-// module from the library or registers mod services supplies its own main
-// TU instead (games/spyro-1/main.cpp).
+// mod-layer descriptor and the recompiled module, compile stale mods on a
+// launcher wait, hand off to core's run loop. A game that loads its module
+// from the library or configures game-specific mod services (the Spyro 1 WAD
+// overlay) supplies its own main TU instead (games/spyro-1/main.cpp).
 // SDL3's SDL_main.h re-#defines main -> SDL_main and supplies the platform
 // entry shim; it must be included by the TU defining main().
 
@@ -18,6 +19,8 @@
 #include "openpete_launcher.h"
 #include "openpete_surface.h"
 #include "game_extras.h"
+#include "game_mod_desc.h"
+#include "openpete_mods.h"
 #include "openpete_psx.h"
 #include "psyq/psyq_game_hooks.h"
 #include "openpete_recomp_module.h"
@@ -74,11 +77,13 @@ static int report_mode(int argc, char** argv, const openpete_options_t* neutral)
     return 0;
 }
 
-/** @brief Take the session from the game-neutral options to the hand-off: the launcher's disc, identification, the full parse and the recompiled module.
+/** @brief Take the session from the game-neutral options to the hand-off: the launcher's disc, identification, the full parse, the mod layer, the recompiled module and the mod compile.
  *
  * The launcher resolves the disc through the library (the drop screen, the
- * version selector) when none is named, and the hand-off gives the game
- * its window, Vulkan device and imgui context in a windowed run.
+ * version selector) when none is named and draws the mod compile's wait,
+ * opening its window only when a stale mod has to compile. The hand-off
+ * gives the game its window, Vulkan device and imgui context in a windowed
+ * run.
  * @param argc The argument count.
  * @param argv The arguments.
  * @param neutral The game-neutral options; receives the library's disc.
@@ -104,18 +109,28 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     rc = openpete_options_require_exe_source(opts);
     if (rc != OPENPETE_EXIT_OK) return rc;
 
+    /* The mod layer, once, at identification: before the compile below
+     * and the load inside openpete_run(). */
+    (void)openpete_mods_set_game_desc(game_mod_desc());
+
     /* The runtime reaches recompiled code only through this descriptor. */
     if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
+
+    /* Mod compile-on-boot: every stale enabled source mod compiles on a
+     * launcher task, so openpete_mods_init only loads. */
+    openpete_mods_prepare(opts, openpete_launcher_progress, openpete_launcher_run_task);
     return openpete_launcher_handoff(opts);
 }
 
 /** @brief Run a game that has no host-side services of its own.
  *
  * Resolves the game-neutral settings, answers --help and the configuration
- * or keys report, opens the log, then runs the launcher (the disc from the
- * library when none is named), identifies the game and refuses one this
- * executable does not run, runs the one full parse, registers the
- * recompiled module, hands the launcher's window and device to the game,
+ * or keys report, opens the log; --compile-mods compiles every mod for each
+ * staged game and exits before any game is identified. Otherwise runs the
+ * launcher (the disc from the library when none is named), identifies the
+ * game and refuses one this executable does not run, runs the one full
+ * parse, registers the mod-layer descriptor and the recompiled module,
+ * compiles stale mods, hands the launcher's window and device to the game,
  * registers the gameplay-state regions and the interpolation and
  * re-extract tables, sets the root counter 2 the game's boot reads, and
  * runs the core loop. Writes the surface dump and exits when
@@ -123,7 +138,8 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
  * @param argc The argument count.
  * @param argv The arguments.
  * @return The exit status: openpete_run's result, 0 after --help, a report
- *         or a quit in the launcher, or start_session's failure status. */
+ *         or a quit in the launcher, or start_session's failure status;
+ *         under --compile-mods 0 when every mod compiled, else 1. */
 int main(int argc, char** argv) {
     openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* abort() does not flush, and the PSYQ stubs use it to surface an
@@ -154,6 +170,18 @@ int main(int argc, char** argv) {
                                               : openpete_config_env("OPENPETE_LOG"));
     openpete_log_file_open(neutral.log_file ? neutral.log_file
                                             : openpete_config_env("OPENPETE_LOG_FILE"));
+
+    /* --compile-mods: compile every mod for each game staged under the
+     * SDK and exit. No game is identified, so the settings are the
+     * game-neutral tiers, materialized once. */
+    if (neutral.compile_mods) {
+        openpete_ident_t none = {};
+        openpete_options_t batch;
+        rc = openpete_options_parse_identified(&batch, argc, argv, &none,
+                                               game_get_display_name());
+        if (rc != OPENPETE_EXIT_OK) return rc;
+        return openpete_mods_compile_all(&batch) == 0 ? 0 : 1;
+    }
 
     openpete_options_t opts;
     int exit_now = 0;

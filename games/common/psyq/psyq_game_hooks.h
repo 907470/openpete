@@ -334,12 +334,12 @@ int  psyq_game_render_path_addr_visible(uint32_t addr);
  * into it. */
 void psyq_overlay_resync_from_ram(void);
 
-/** @brief Register the game's sound-effect tables with the sfx pack and the mod layer.
+/** @brief Register the game's sound-effect tables with the sfx pack.
  *
  * The SpuInit thunk calls it on every entry and the SpuWrite thunk on every
- * entry whose source span maps, so it must be idempotent. Spyro 1 installs its pitch reader and slot-name resolver in
- * the sfx pack once and sets its sound-name canonicaliser (mod-facing alias
- * to slot name) in the mod layer on every call; the default does nothing. */
+ * entry whose source span maps, so it must be idempotent. Spyro 1 installs
+ * its pitch reader and slot-name resolver in the sfx pack once; the default
+ * does nothing. */
 void psyq_game_sfx_arm(void);
 
 /** @brief Return the SPU transfer length that means a whole new level sound bank, as opposed to a smaller write landing over part of it.

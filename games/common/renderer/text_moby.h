@@ -64,8 +64,8 @@ int text_moby_native_emit(const char* str,
 /** @brief Rasterizes a string for the mod draw service, with the signature of openpete_mods_text_emit_fn.
  *
  * Forwards to text_moby_native_emit; the untyped buffer keeps the core-side
- * function type free of openpete_hud_vert. Registered with
- * openpete_mods_draw_set_text_fn in games/spyro-1/main.cpp. Reads the
+ * function type free of openpete_hud_vert. Spyro 1's game mod descriptor
+ * carries it as text_emit (games/spyro-1/mods/mod_game_desc.c). Reads the
  * snapshot only, so mod text is absent until the game has loaded the font
  * once; there is no bitmap fallback.
  * @param str The string.

@@ -50,8 +50,8 @@ typedef int (*openpete_mod_material_fn)(
 typedef struct CPUState CPUState;
 
 /* Name->vaddr symbol table (generated from manifest/symbols.toml by
- * tools/gen_mod_sdk.py into sdk_symbols_table.c, game-side). The game's
- * main registers it before openpete_run(). Entries sorted by name, then
+ * tools/gen_mod_sdk.py into sdk_symbols_table.c, game-side). The game
+ * registers it through game_mod_desc_t. Entries sorted by name, then
  * overlay id; one row per (name, overlay), so a name whose rows lie in
  * several overlays occupies adjacent rows. */
 typedef struct {
@@ -63,18 +63,6 @@ typedef struct {
                          * warns so mods migrate to the stable name. */
     uint32_t    overlay; /* overlay table id of the row's function; 0 = EXE */
 } openpete_sdk_symbol_t;
-
-/** @brief Register the generated name-to-address table that override names resolve against.
- *
- * Stores the pointer without copying, so the table must outlive the mod
- * loader. The name lookup binary-searches it, so rows must be sorted by
- * strcmp on name; the address-to-name lookup scans it linearly. Later
- * calls replace the table, and a NULL table makes every lookup fail. The
- * game's main calls it once before openpete_run().
- * @param table First row, or NULL.
- * @param count Number of rows. */
-void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
-                                    size_t count);
 
 /** @brief Name the guest function that contains a guest address.
  *
@@ -161,17 +149,21 @@ int openpete_mods_prepare(const openpete_options_t* opts,
 
 /** @brief Compile every source mod in the resolved mods root, for the --compile-mods utility mode.
  *
- * Scans every candidate in the directory, ignoring enabled.txt so a
- * disabled mod's breakage still surfaces, and compiles against <exe>/sdk
- * through the same key, stamp and compile path boot uses: a mod whose
- * cached build matches its key is skipped, so a boot after a clean pass
- * recompiles nothing. Assets-only and binary-only mods are skipped. The
- * CMake target spyro1_mods runs it on native presets; cross presets
- * compile the staged mods in CMake instead (games/spyro-1/CMakeLists.txt).
+ * Runs before any game is identified and reads no game descriptor. The SDK
+ * is <exe>/sdk, or OPENPETE_MOD_SDK_DIR when set. For each game staged
+ * under the SDK's games/ (in id order; logged "--compile-mods: staged
+ * <id>") it scans every candidate, ignoring enabled.txt so a disabled
+ * mod's breakage still surfaces, keeps the mods whose [mod] game selects
+ * that id, and compiles them against games/<id>/ into .build/<id>/ through
+ * the same key, stamp and compile path boot uses: a mod whose cached build
+ * matches its key is skipped, so a boot after a clean pass recompiles
+ * nothing. Assets-only and binary-only mods are skipped. The CMake target
+ * spyro1_mods runs it on native presets; cross presets compile the staged
+ * mods in CMake instead (games/spyro-1/CMakeLists.txt).
  * @param opts Parsed options; opts->mods_dir overrides the mods root.
- * @return The number of failed compiles (0 on success), or -1 when no
- *         compiler resolves, no mods root resolves, or the SDK is
- *         missing. */
+ * @return The number of failed compiles over every staged game (0 on
+ *         success), or -1 when no compiler resolves, no mods root
+ *         resolves, or no game is staged. */
 int openpete_mods_compile_all(const openpete_options_t* opts);
 
 /** @brief Run the override chain registered for a guest function at its entry.
@@ -701,16 +693,10 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical);
 /* Game-registered text rasterizer: lays out `str` at (x, y) with glyph
  * cap-height cap_h (overlay space) and tint rgb into out_verts (an
  * openpete_hud_vert array, cap entries), returning the vertex count.
- * Spyro registers a text_moby_native wrapper (main.cpp). */
+ * Spyro 1 registers a text_moby_native wrapper (game_mod_desc_t.text_emit). */
 typedef int (*openpete_mods_text_emit_fn)(const char* str, float x, float y,
                                           float cap_h, unsigned rgb,
                                           void* out_verts, int cap);
-/** @brief Register the game's text rasterizer for the mod overlay.
- *
- * The flush calls it once per queued text. Without one, or while it
- * returns 0, queued text draws nothing.
- * @param fn the emitter; NULL unregisters it. */
-void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn);
 
 /* Loader-facing submission entry points (wired into the mod api). */
 /** @brief Queue one text for the mod overlay.
@@ -761,7 +747,7 @@ extern OPENPETE_THREAD_LOCAL int openpete_mods_in_present;
  * registered = no hook = inert). */
 
 /* Game ops the registry delegates to (game addresses stay game-side;
- * Spyro registers spyro1_moby_ops from main.cpp). */
+ * Spyro 1 supplies its table as game_mod_desc_t.moby_ops). */
 typedef struct {
     uint32_t update_hook_addr; /* master per-tick update fn (chain anchor) */
     /* Current level id, 0 = none/not in gameplay yet. */
@@ -773,15 +759,6 @@ typedef struct {
      * with a live instance right now. */
     int (*classes_loaded)(CPUState* cpu, uint16_t* out, int cap);
 } openpete_moby_ops_t;
-
-/** @brief Register the game's moby ops table.
- *
- * The registry keeps the pointer, so the table outlives the process. It
- * supplies the chain anchor (update_hook_addr) the per-tick driver is
- * added at, the level id the driver reads each tick, and the loaded-class
- * query the census calls. Registrations made before it is set fail.
- * @param ops The ops table; NULL clears it. */
-void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops);
 
 /* Host-side snapshot of the loaded-class set, refreshed once per tick from
  * the ops above. Mods read it through the api's moby_classes, which must be
@@ -854,13 +831,6 @@ typedef struct {
                             const char* stem, int on);
 } openpete_level_ops_t;
 
-/** @brief Register the game's level ops table.
- *
- * The registry keeps the pointer, so the table outlives the process. Level
- * slot and custom-level registration and their per-tick driver work need
- * it; the driver does nothing while it is unset.
- * @param ops The ops table; NULL clears it. */
-void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
 
 /* ── Declarative custom levels ([[level]] manifest blocks) ───────────
  * A mod ships assets/levels/<stem>.WAD (+ optional .OVL) and a
@@ -1063,12 +1033,57 @@ int openpete_mods_registry_ensure_driver(const char* log_tag);
  * result on as the name and fails on NULL. Applied to sfx_replace names
  * before they are stored. */
 typedef const char* (*openpete_mods_sfx_canon_fn)(const char* name);
-/** @brief Register the game's alias canonicaliser for sfx_replace names.
+
+/* The game-specific half of the mod layer: one descriptor per game,
+ * registered once after the game is identified and before any mod is
+ * compiled or loaded. The descriptor and every table it reaches are static
+ * storage; the loader keeps the pointer. A NULL member is a surface the
+ * game does not serve. */
+typedef struct {
+    /* The generated SDK symbol table (sdk_symbols_table.c): sorted by
+     * strcmp on name, then overlay id. override_name binary-searches it;
+     * openpete_mods_symbol_for_addr scans it. NULL makes every lookup
+     * fail. */
+    const openpete_sdk_symbol_t* symbols;
+    size_t                       symbol_count;
+    /* Chain anchor, level id and loaded-class query of the moby registry;
+     * registrations fail while NULL. */
+    const openpete_moby_ops_t*   moby_ops;
+    /* Level-slot and custom-level operations; the registry's level work
+     * does nothing while NULL. */
+    const openpete_level_ops_t*  level_ops;
+    /* The mod overlay's text rasterizer; queued text draws nothing while
+     * NULL. */
+    openpete_mods_text_emit_fn   text_emit;
+    /* Alias canonicaliser applied to sfx_replace names; names pass
+     * unchanged while NULL. */
+    openpete_mods_sfx_canon_fn   sfx_canon;
+    /* Names of the game's PSX render and GPU-submission functions, which
+     * the native renderer does not rasterize; an override on one warns
+     * under pure vk. NULL-terminated; NULL for none. */
+    const char* const*           psx_render_fns;
+    /* Guest base of the mod arena; 0 keeps the core default,
+     * 0x80700000. */
+    uint32_t                     arena_base;
+} game_mod_desc_t;
+
+/** @brief Register the identified game's mod-layer descriptor.
  *
- * openpete_mods_sfx_replace applies it to each name before the pack
- * lookup. Stored in a plain global, set once at game boot.
- * @param fn The canonicaliser; NULL disables the mapping. */
-void openpete_mods_sfx_set_canon(openpete_mods_sfx_canon_fn fn);
+ * Accepted once, before openpete_mods_init. A second call, or a call
+ * after openpete_mods_init ran, logs an error and changes nothing, so the
+ * symbol table and ops every mod compiled or loaded against stay fixed for
+ * the process.
+ * @param desc The descriptor, static storage; NULL is refused.
+ * @return 0 when registered, -1 when refused. */
+int openpete_mods_set_game_desc(const game_mod_desc_t* desc);
+
+/** @brief Return the registered game descriptor.
+ *
+ * Never NULL: before registration, and on a refused registration's
+ * process, it returns an all-NULL descriptor, so every game surface reads
+ * as unsupported.
+ * @return The descriptor. */
+const game_mod_desc_t* openpete_mods_game_desc(void);
 
 /** @brief Return a mod's stable id string.
  *

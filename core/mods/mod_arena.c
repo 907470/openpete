@@ -57,7 +57,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define ARENA_BASE 0x80700000u /* clear of the no-lod/polybuf windows */
+#define ARENA_BASE_DEFAULT 0x80700000u /* above the 2 MB of main RAM */
 #define ARENA_SIZE (8u * 1024u * 1024u) /* v1 static; a total conversion at ~3000 streams fits */
 
 /* The arena is never realloc'd: every host_view handed out must stay
@@ -65,6 +65,12 @@
  * into the runtime's region table. Growth, when it comes, is one
  * reserve-then-commit mapping in place of this array. */
 static uint8_t  s_arena[ARENA_SIZE];
+
+/** @brief The guest base of the arena: the game descriptor's arena_base, else ARENA_BASE_DEFAULT. */
+static uint32_t arena_base(void) {
+    const uint32_t b = openpete_mods_game_desc()->arena_base;
+    return b ? b : ARENA_BASE_DEFAULT;
+}
 static uint32_t s_used = 0;
 static int      s_state = 0; /* 0 unregistered, 1 ok, -1 failed */
 
@@ -102,7 +108,7 @@ typedef struct {
     uint32_t size;       /* alloc: bytes; handle: stream vaddr */
     uint32_t align;
     uint32_t flags;      /* OP_GALLOC_* as passed */
-    uint32_t off;        /* alloc: arena offset (vaddr = ARENA_BASE + off); handle: index */
+    uint32_t off;        /* alloc: arena offset (vaddr = arena_base() + off); handle: index */
     uint32_t superseded; /* replaced by a later row on a mismatching replay */
     /* Immutable digest, held on the row rather than in a parallel array
      * so a row and its promise cannot drift apart: 0 none, 1 captured,
@@ -173,14 +179,14 @@ static arena_owner_t* owner_slot(const char* owner, int create) {
  * @return 1 when the region is registered, else 0. */
 static int arena_register(void) {
     if (s_state == 0) {
-        s_state = (psx_runtime_register_region(ARENA_BASE, ARENA_SIZE,
+        s_state = (psx_runtime_register_region(arena_base(), ARENA_SIZE,
                                                s_arena) == 0) ? 1 : -1;
         if (s_state < 0)
             OPL_ERROR_F("mods", "guest arena: region registration failed "
                         "(window overlap?) - allocations disabled");
         else
             OPL_INFO_F("mods", "guest arena live @ 0x%08X (%u KiB)",
-                       ARENA_BASE, ARENA_SIZE / 1024u);
+                       arena_base(), ARENA_SIZE / 1024u);
     }
     return s_state > 0;
 }
@@ -221,8 +227,8 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
             if (host_view) *host_view = &s_arena[r->off];
             OPL_INFO_F("mods", "guest arena: %s call #%u replayed "
                        "(%u B @0x%08X, bytes kept)", owner, call_idx,
-                       size, ARENA_BASE + r->off);
-            return ARENA_BASE + r->off;
+                       size, arena_base() + r->off);
+            return arena_base() + r->off;
         }
         r->superseded = 1;
         OPL_WARN_F("mods", "guest arena: %s call #%u changed shape "
@@ -256,7 +262,7 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
     r->size = size; r->align = align; r->flags = flags; r->off = off;
 
     if (host_view) *host_view = &s_arena[off];
-    return ARENA_BASE + off;
+    return arena_base() + off;
 }
 
 /* ── Stream handles ─────────────────────────────────────────────────
@@ -378,7 +384,7 @@ void openpete_mods_arena_immutable_check(const char* when) {
                        "IMMUTABLE but its bytes changed (%u B @0x%08X, "
                        "seen at %s) - the promise is broken; drop the "
                        "flag or stop writing the block", r->owner,
-                       r->call_idx, r->size, ARENA_BASE + r->off,
+                       r->call_idx, r->size, arena_base() + r->off,
                        when ? when : "snapshot");
         }
     }

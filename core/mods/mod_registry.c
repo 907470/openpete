@@ -10,6 +10,7 @@
 // design (content mods), gated behind mods being loaded at all.
 
 #include "openpete_mods.h"
+#include "game_extras.h" /* game_get_id */
 #include "openpete_log.h"
 #include "mod_vec.h"
 #include "openpete_str.h"
@@ -30,7 +31,10 @@ void openpete_mods_base(CPUState* cpu);
 #define MOBY_NAME_MAX   48
 #define MOBY_OWNER_MAX  64 /* mirrors the loader's MOD_ID_MAX */
 
-static const openpete_moby_ops_t* s_ops = NULL;
+/** @brief The game descriptor's moby ops, or NULL when the game serves none. */
+static const openpete_moby_ops_t* moby_ops(void) {
+    return openpete_mods_game_desc()->moby_ops;
+}
 static int s_hooked = 0;
 static int s_level  = -1;
 
@@ -76,11 +80,6 @@ static level_hook_t* level_hook_at(int i) {
     return (level_hook_t*)mod_fvec_at(&s_level_hooks, (size_t)i);
 }
 
-/* Documented at the declaration in openpete_mods.h. */
-void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
-    s_ops = ops;
-}
-
 /* ── Loaded moby classes ────────────────────────────────────────────────
  * Which classes a level loaded is a fact about guest RAM, but its consumer
  * is a mod's UI section, which runs inside a present where guest access is
@@ -91,8 +90,8 @@ static int      s_moby_class_count;
 
 /* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_moby_class_census(CPUState* cpu) {
-    if (!s_ops || !s_ops->classes_loaded) return;
-    int n = s_ops->classes_loaded(cpu, s_moby_classes,
+    if (!moby_ops() || !moby_ops()->classes_loaded) return;
+    int n = moby_ops()->classes_loaded(cpu, s_moby_classes,
                                   OPENPETE_MOBY_CLASSES_MAX);
     /* -1 means mid-load: keep the last good answer rather than blanking the
      * set every time the player walks through a portal. */
@@ -121,11 +120,12 @@ static void counts_tick(CPUState* cpu);
  *         chain add fails. */
 static int ensure_hooked(const char* log_tag) {
     if (s_hooked) return 0;
-    if (!s_ops) {
-        OPL_ERROR_F(log_tag, "content registry: no game ops registered");
+    if (!moby_ops()) {
+        OPL_ERROR_F(log_tag, "content registry: %s serves no moby ops",
+                    game_get_id());
         return -1;
     }
-    if (openpete_mods_chain_add(s_ops->update_hook_addr, registry_tick,
+    if (openpete_mods_chain_add(moby_ops()->update_hook_addr, registry_tick,
                                 "content-registry") != 0)
         return -1;
     s_hooked = 1;
@@ -145,7 +145,7 @@ static int ensure_hooked(const char* log_tag) {
  * @param cpu Live game CPU. */
 static void registry_tick(CPUState* cpu) {
     openpete_mods_base(cpu);
-    if (!s_ops) return;
+    if (!moby_ops()) return;
 
     level_slots_tick(cpu);
     custom_tick(cpu);
@@ -154,7 +154,7 @@ static void registry_tick(CPUState* cpu) {
      * this tick - the all-gems test reads them before the next one. */
     counts_tick(cpu);
 
-    int lvl = s_ops->level_id(cpu);
+    int lvl = moby_ops()->level_id(cpu);
     /* Any live level ends an in-flight slot transition: either we arrived
      * (lvl == the slot id) or the load went somewhere else. */
     if (lvl > 0) { s_slot_entering = 0; s_resident_level = lvl; }
@@ -197,11 +197,9 @@ static int level_slot_count(void) {
 static level_slot_t* level_slot_at(int i) {
     return (level_slot_t*)mod_fvec_at(&s_levels, (size_t)i);
 }
-static const openpete_level_ops_t* s_level_ops = NULL;
-
-/* Documented at the declaration in openpete_mods.h. */
-void openpete_mods_set_level_ops(const openpete_level_ops_t* ops) {
-    s_level_ops = ops;
+/** @brief The game descriptor's level ops, or NULL when the game serves none. */
+static const openpete_level_ops_t* level_ops(void) {
+    return openpete_mods_game_desc()->level_ops;
 }
 
 /** @brief Claim a level slot for each enabled level-slot row that has none.
@@ -211,11 +209,11 @@ void openpete_mods_set_level_ops(const openpete_level_ops_t* ops) {
  * nothing while no level ops are registered.
  * @param cpu Live game CPU. */
 static void level_slots_tick(CPUState* cpu) {
-    if (!s_level_ops) return;
+    if (!level_ops()) return;
     for (int i = 0; i < level_slot_count(); i++) {
         level_slot_t* s = level_slot_at(i);
         if (s->disabled || s->slot_id) continue;
-        s->slot_id = s_level_ops->claim_slot(cpu, s->donor_level_id);
+        s->slot_id = level_ops()->claim_slot(cpu, s->donor_level_id);
         if (s->slot_id)
             OPL_INFO_F("mods", "level slot %s:%s live (id=%d, donor %d)",
                        s->mod_id, s->name, s->slot_id, s->donor_level_id);
@@ -288,7 +286,7 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
 int openpete_mods_level_register(const char* mod_id, const char* name,
                                  int donor_level_id, const char* log_tag) {
     if (!mod_id || !name || !name[0]) return -1;
-    if (!s_level_ops) {
+    if (!level_ops()) {
         OPL_ERROR_F(log_tag, "level registry: no game ops registered");
         return -1;
     }
@@ -330,7 +328,7 @@ int openpete_mods_level_slot_id(const char* mod_id, const char* name) {
 
 /* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_level_enter(CPUState* cpu, int level_id) {
-    if (!s_level_ops || !cpu || level_id <= 0) return -1;
+    if (!level_ops() || !cpu || level_id <= 0) return -1;
     /* Entering a slot commits the session to a level its owner defines.
      * With the owner disabled the id still loads - the donor alias that
      * services the id-keyed load functions is engine-owned, not mod-owned
@@ -347,7 +345,7 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
         }
         break;
     }
-    int rc = s_level_ops->enter_level(cpu, level_id);
+    int rc = level_ops()->enter_level(cpu, level_id);
     if (rc == 0) {
         for (int i = 0; i < level_slot_count(); i++)
             if (level_slot_at(i)->slot_id == level_id) {
@@ -553,8 +551,8 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     if (!mod_id || !name || !name[0] || !stem || !stem[0] || !dir)
         return -1;
     int donor_id = 0;
-    if (s_level_ops && s_level_ops->resolve_name)
-        donor_id = s_level_ops->resolve_name(donor ? donor : "");
+    if (level_ops() && level_ops()->resolve_name)
+        donor_id = level_ops()->resolve_name(donor ? donor : "");
     if (donor_id < 10 || donor_id > 64) {
         OPL_ERROR_F(log_tag, "level \"%s\": donor \"%s\" is not a retail "
                     "level (lower_snake name or id) - skipped", name,
@@ -780,7 +778,7 @@ static void counts_collect_ids(mod_fvec* ids) {
 static void counts_apply_one(CPUState* cpu, int id) {
     int d = counts_declarer_for(id);
     const openpete_level_counts_t* c = d >= 0 ? &custom_at(d)->counts : NULL;
-    int wrote = s_level_ops->set_level_counts(
+    int wrote = level_ops()->set_level_counts(
         cpu, id, c ? c->dragons : -1, c ? c->gems : -1, c ? c->eggs : -1);
     if (wrote <= 0) return;
     s_counts_writes += (unsigned long)wrote;
@@ -805,7 +803,7 @@ static void counts_apply_one(CPUState* cpu, int id) {
  * nothing without the level ops' set_level_counts.
  * @param cpu Live game CPU. */
 static void counts_tick(CPUState* cpu) {
-    if (!s_level_ops || !s_level_ops->set_level_counts) return;
+    if (!level_ops() || !level_ops()->set_level_counts) return;
 
     /* Static, cleared per call: this runs every tick and the storage is
      * worth keeping. */
@@ -845,19 +843,19 @@ unsigned long openpete_mods_registry_counts_writes(void) {
 static void custom_tick(CPUState* cpu) {
     static unsigned s_tickno = 0;
     custom_env_schedule(++s_tickno);
-    if (!s_level_ops || !custom_count()) return;
+    if (!level_ops() || !custom_count()) return;
 
     for (int i = 0; i < custom_count(); i++) {
         custom_level_t* r = custom_at(i);
         int want = r->data_size && r->replace_mode &&
                    openpete_mods_is_enabled(r->mod_id);
         if (want && !r->declared_replace) {
-            if (s_level_ops->declare_data_len &&
-                s_level_ops->declare_data_len(cpu, r->donor_id,
+            if (level_ops()->declare_data_len &&
+                level_ops()->declare_data_len(cpu, r->donor_id,
                                               r->data_size) == 0) {
                 r->declared_replace = 1;
-                if (s_level_ops->set_level_name)
-                    (void)s_level_ops->set_level_name(
+                if (level_ops()->set_level_name)
+                    (void)level_ops()->set_level_name(
                         cpu, r->donor_id,
                         r->title[0] ? r->title : r->name);
                 OPL_INFO_F("mods", "custom level \"%s\": replacing level "
@@ -865,11 +863,11 @@ static void custom_tick(CPUState* cpu) {
                            r->data_size);
             }
         } else if (!want && r->declared_replace) {
-            if (s_level_ops->declare_data_len &&
-                s_level_ops->declare_data_len(cpu, r->donor_id, 0) == 0) {
+            if (level_ops()->declare_data_len &&
+                level_ops()->declare_data_len(cpu, r->donor_id, 0) == 0) {
                 r->declared_replace = 0;
-                if (s_level_ops->set_level_name)
-                    (void)s_level_ops->set_level_name(cpu, r->donor_id,
+                if (level_ops()->set_level_name)
+                    (void)level_ops()->set_level_name(cpu, r->donor_id,
                                                       NULL);
                 OPL_INFO_F("mods", "custom level \"%s\": level %d back "
                            "to stock", r->name, r->donor_id);
@@ -877,8 +875,8 @@ static void custom_tick(CPUState* cpu) {
         }
         /* Portal preview: while the replace is declared, the donor's
          * homeworld portal shows the custom level's own sky. */
-        if (r->replace_mode && s_level_ops->replace_sky_tick)
-            (void)s_level_ops->replace_sky_tick(cpu, r->donor_id, r->dir,
+        if (r->replace_mode && level_ops()->replace_sky_tick)
+            (void)level_ops()->replace_sky_tick(cpu, r->donor_id, r->dir,
                                                 r->stem,
                                                 r->declared_replace);
     }
@@ -890,31 +888,31 @@ static void custom_tick(CPUState* cpu) {
         return;
     }
     if (r->replace_mode) {
-        if (s_level_ops->enter_level(cpu, r->donor_id) == 0)
+        if (level_ops()->enter_level(cpu, r->donor_id) == 0)
             s_custom_warp = -1;
         return; /* refused = not in gameplay yet; retry next tick */
     }
     if (!s_custom_slot_id) {
-        int got = s_level_ops->claim_slot(cpu, r->donor_id);
+        int got = level_ops()->claim_slot(cpu, r->donor_id);
         if (!got) return; /* TOC not read yet, or the slot is another
                            * mod's - keep retrying quietly */
         s_custom_slot_id = got;
     } else if (s_custom_active != s_custom_warp) {
-        if (!s_level_ops->retarget_slot ||
-            s_level_ops->retarget_slot(cpu, r->donor_id) != 0) {
+        if (!level_ops()->retarget_slot ||
+            level_ops()->retarget_slot(cpu, r->donor_id) != 0) {
             s_custom_warp = -1;
             return;
         }
     }
     s_custom_active = s_custom_warp;
-    if (s_level_ops->declare_data_len)
-        (void)s_level_ops->declare_data_len(cpu, s_custom_slot_id,
+    if (level_ops()->declare_data_len)
+        (void)level_ops()->declare_data_len(cpu, s_custom_slot_id,
                                             r->data_size);
-    if (s_level_ops->set_level_name)
-        (void)s_level_ops->set_level_name(cpu, s_custom_slot_id,
+    if (level_ops()->set_level_name)
+        (void)level_ops()->set_level_name(cpu, s_custom_slot_id,
                                           r->title[0] ? r->title
                                                       : r->name);
-    if (s_level_ops->enter_level(cpu, s_custom_slot_id) == 0) {
+    if (level_ops()->enter_level(cpu, s_custom_slot_id) == 0) {
         s_slot_entering = s_custom_slot_id;
         s_custom_warp = -1;
         OPL_INFO_F("mods", "custom level \"%s\" entering (id %d, donor "
@@ -943,6 +941,6 @@ int openpete_mods_registry_owner_busy(const char* mod_id) {
 
 /* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap) {
-    if (!s_level_ops || !s_level_ops->read_level_data || level_id <= 0) return -1;
-    return s_level_ops->read_level_data(level_id, buf, cap);
+    if (!level_ops() || !level_ops()->read_level_data || level_id <= 0) return -1;
+    return level_ops()->read_level_data(level_id, buf, cap);
 }
