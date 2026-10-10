@@ -160,9 +160,10 @@ DIGEST_RULE = ('sha256(b"RGB\\n" + width + b"\\n" + height + b"\\n" + '
 # recorded and never compared: two builds of one recipe produce different
 # image digests, and the loader version is fixed by the recipe hash. host
 # (the machine's hostname, host_here) and cpu (the /proc/cpuinfo model name)
-# are written to the capture record only, never to a manifest header: they
-# name the machine that captured, a promote refuses a capture record whose
-# host is not its own (cmd_promote), and a committed header names no machine.
+# are written to the capture record only, never to a manifest header or row:
+# they name the machine that captured, a promote admits a capture record whose
+# host is not its own only from a golden-fleet pull (fleet_refusal), and a
+# committed file names no machine.
 # lp-num-threads (the llvmpipe thread count of the capture) is recorded the
 # same way: every value is pixel-identical and it only sets throughput.
 ENV_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
@@ -1694,6 +1695,64 @@ def foreign_host(rec):
             "promote from that capture" % (theirs, ours))
 
 
+# A golden-fleet pull appends these to the pulled capture record: the run id,
+# the fleet host name the unit ran on (the hosts-file table name, which the
+# canary verdict is keyed by) and the coordinator's local run directory, which
+# holds CANARY_VERDICT_NAME.
+FLEET_KEYS = ("fleet-run", "fleet-host", "fleet-run-dir")
+CANARY_VERDICT_NAME = "canary-verdict.txt"
+# Header fields a capture from another host must equal: the image recipe and
+# the image and loader it ran. A local promote compares only SURFACE_KEYS.
+REMOTE_PINNED_KEYS = ("recipe-hash", "image-digest", "libvulkan")
+
+
+def read_canary_verdict(run_dir):
+    """The `key=value` lines of a fleet run directory's canary verdict
+    file as a dict; None when the file is absent or unreadable."""
+    try:
+        with open(os.path.join(run_dir, CANARY_VERDICT_NAME)) as fh:
+            return dict(ln.rstrip("\n").partition("=")[::2] for ln in fh
+                        if "=" in ln)
+    except OSError:
+        return None
+
+
+def fleet_refusal(rec, header):
+    """Why a capture record taken on another host may not be promoted, or
+    None. The record must come from a golden-fleet pull (FLEET_KEYS), the
+    run's canary verdict file must name the same run and record `pass` for
+    the fleet host the unit ran on, and each REMOTE_PINNED_KEYS field must
+    be measured and equal to the manifest header's."""
+    run, fhost, rdir = (rec.get(k, "") for k in FLEET_KEYS)
+    if not run:
+        return ("the capture record carries no fleet-run id; a capture from "
+                "another host is promoted only from a golden-fleet pull")
+    if not fhost or not rdir:
+        return ("the capture record of fleet run %s names no %s" % (
+            run, "fleet-host" if not fhost else "fleet-run-dir"))
+    verdict = read_canary_verdict(rdir)
+    if verdict is None:
+        return ("fleet run %s has no %s in %s; the run's canary verdict is "
+                "missing" % (run, CANARY_VERDICT_NAME, rdir))
+    if verdict.get("run") != run:
+        return ("%s in %s names run %s, not %s" % (
+            CANARY_VERDICT_NAME, rdir, verdict.get("run", "none"), run))
+    v = verdict.get("canary." + fhost, "").strip()
+    if not v:
+        return ("fleet run %s recorded no canary verdict for host %s "
+                "(canary=%s)" % (run, fhost, verdict.get("canary", "absent")))
+    if v.split()[0] != "pass":
+        return "the canary of fleet run %s failed on host %s: %s" % (
+            run, fhost, v)
+    for k in REMOTE_PINNED_KEYS:
+        h, c = header.get(k, "unrecorded"), rec.get(k, "unrecorded")
+        if c == "unrecorded" or h != c:
+            return ("the capture's %s %s differs from the manifest header's "
+                    "%s; a capture from another host must run the pinned "
+                    "image" % (k, c, h))
+    return None
+
+
 def cmd_promote(a):
     """Rewrite the manifest rows of promoted candidate tiles (digest,
     blessed revision, recomp identity, origin) and file the tiles into the
@@ -1702,16 +1761,25 @@ def cmd_promote(a):
     size and its environment fields set from the capture's. A capture
     whose comparison surface departs from the header's, or a promote run
     outside the capture image, is refused unless --environment-accept
-    names the reason, which the header records."""
+    names the reason, which the header records. A capture from another
+    host is admitted only under fleet_refusal's conditions, which
+    --environment-accept does not relax; its host and fleet run are
+    printed, and the rows and header it writes name neither."""
     root = repo_root()
     rec = read_record(a.candidate)
     foreign = foreign_host(rec)
-    if foreign:
-        print("[presentation-promote] REFUSED: %s" % foreign, file=sys.stderr)
-        return 1
     m = promote_manifest(a, rec)
     if m is None:
         return 1
+    if foreign:
+        why = fleet_refusal(rec, m.header)
+        if why:
+            print("[presentation-promote] REFUSED: %s; %s" % (foreign, why),
+                  file=sys.stderr)
+            return 1
+        print("[presentation-promote] capture from fleet host %s (host %s), "
+              "fleet run %s, canary passed" % (
+                  rec["fleet-host"], rec.get("host"), rec["fleet-run"]))
     env = capture_environment(a.candidate)
     if environment_refused("presentation-promote",
                            environment_problems(m.header, env),

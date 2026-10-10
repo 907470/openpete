@@ -33,6 +33,13 @@ write. Cases (each prints its counts):
               unknown-unit refusals (function and `run --expect`), resumed
               counts equal uninterrupted ones, summary counts equal the
               tagged lines of stream.log
+  canary-verdict  canary-verdict.txt over identical canaries (both hosts
+              pass), a differing tile (both fail), a canary leg that did not
+              capture (it fails, the lone captured host fails with no
+              cross-host comparison) and one host (canary=off); a pulled
+              capture record stamped with fleet-run, fleet-host and
+              fleet-run-dir, and presentation-blessed.py's fleet_refusal
+              admitting it only on the passing verdict
 
 Exit: 0 every case holds, 1 a case failed (named).
 """
@@ -574,6 +581,64 @@ def case_expect(tmp):
           f"summary {fmt(c8)}")
 
 
+def case_canary_verdict(tmp):
+    """canary-verdict.txt per host, the pulled record's fleet stamp, and fleet_refusal reading both."""
+    from PIL import Image
+    pb = gf.load_pb(TREE)
+    co = FakeCo(tmp, "canary-verdict")
+    dirs = os.path.join(co.tmp, "canary")
+    co.canary_dir = lambda h: os.path.join(dirs, h)
+
+    def scenario(pixels, rcs):
+        """Canary tiles per host (`pixels` maps host to a pixel value), leg rcs; return the verdict dict."""
+        shutil.rmtree(dirs, ignore_errors=True)
+        jobs = []
+        for h, rc in rcs.items():
+            os.makedirs(os.path.join(dirs, h))
+            Image.new("RGB", (4, 4), (pixels[h], 0, 0)).save(os.path.join(dirs, h, "c__canon__1-vk.png"))
+            j = gf.Job("canary", GAME, TIER, pinned=h)
+            j.result = {"rc": rc, "status": "verdict" if rc in (0, 1) else "leg failed"}
+            jobs.append(j)
+        co.hosts = [co.hs] * len(rcs)
+        rrc = co.compare_canaries(jobs)
+        got = pb.read_canary_verdict(co.local_run_dir)
+        return rrc, got
+
+    rc_same, same = scenario({"a": 1, "b": 1}, {"a": 0, "b": 1})
+    rc_diff, diff = scenario({"a": 1, "b": 2}, {"a": 0, "b": 0})
+    rc_leg, leg = scenario({"a": 1, "b": 1}, {"a": 0, "b": 2})
+    rc_one, one = scenario({"a": 1}, {"a": 0})
+    first = lambda d, h: d.get(f"canary.{h}", "").split(" ")[0]  # noqa: E731
+    ok_verdicts = (rc_same == 0 and same["run"] == co.run_id and same["canary"] == "on"
+                   and first(same, "a") == first(same, "b") == "pass"
+                   and rc_diff == 1 and first(diff, "a") == first(diff, "b") == "fail"
+                   and first(leg, "b") == "fail" and first(leg, "a") == "fail"
+                   and one["canary"].startswith("off") and "canary.a" not in one)
+    check("canary-verdict", ok_verdicts,
+          f"same {rc_same} {same}; diff {rc_diff} {diff}; leg {rc_leg} {leg}; one {rc_one} {one}")
+
+    pull = os.path.join(co.tmp, "pull")
+    os.makedirs(pull, exist_ok=True)
+    with open(os.path.join(pull, gf.RECORD_NAME), "w") as f:
+        f.write("game=spyro-2\nhost=remote-box\nfleet-run=stale\nimage-digest=sha256:i\n"
+                "libvulkan=1.3\nrecipe-hash=r\n")
+    co.hs.name = "b"
+    co.stamp_record(pull, co.hs)
+    recd = pb.read_record(pull)
+    stamped = (recd.get("fleet-run") == co.run_id and recd.get("fleet-host") == "b"
+               and recd.get("fleet-run-dir") == os.path.abspath(co.local_run_dir)
+               and recd.get("host") == "remote-box"
+               and open(os.path.join(pull, gf.RECORD_NAME)).read().count("fleet-run=") == 1)
+    header = {"image-digest": "sha256:i", "libvulkan": "1.3", "recipe-hash": "r"}
+    scenario({"a": 1, "b": 1}, {"a": 0, "b": 0})
+    admitted = pb.fleet_refusal(recd, header)
+    scenario({"a": 1, "b": 2}, {"a": 0, "b": 0})
+    refused = pb.fleet_refusal(recd, header)
+    check("canary-verdict-record", stamped and admitted is None and refused
+          and "failed on host b" in refused,
+          f"record {recd}; pass verdict -> {admitted}; differing verdict -> {refused}")
+
+
 def main():
     """Run every case in a temporary directory with the ledger redirected."""
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
@@ -581,7 +646,7 @@ def main():
     try:
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
-                     case_expect):
+                     case_expect, case_canary_verdict):
             case(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -135,7 +135,12 @@ coordinator:
      attempt's output and captures only the other rows;
   5. runs a canary (one bk2 and one freecam level of the first unit's game)
      on every host first when two or more hosts capture, and refuses the run
-     when a canary tile's digest differs between hosts;
+     when a canary tile's digest differs between hosts; at the run's end
+     writes <local run dir>/canary-verdict.txt: `run=<run-id>`, `canary=on`
+     or `canary=off (<reason>)`, and one `canary.<host>=pass <detail>` or
+     `canary.<host>=fail <reason>` line per host whose canary was placed (a
+     host passes when its canary captured and every canary tile is identical
+     on two or more hosts);
   6. decides each unit on its capturing host (the harness's capture, then
      --verdict-only in the image), pulls verdict-report.txt, the capture
      record, capture-device.txt, credits-verdict.txt, the divergent tiles
@@ -143,7 +148,11 @@ coordinator:
      the cleared local candidate directory (build/presentation-candidate and
      its per-game and dragon forms, or PRESENTATION_GOLDEN_OUT), refuses a
      unit whose report's blessed.tsv or identity-baseline hash or census
-     differs from the local files, prints the report's census (captured,
+     differs from the local files, appends fleet-run=<run-id>,
+     fleet-host=<host> and fleet-run-dir=<local run dir> to the pulled
+     capture record (presentation-blessed.py promote reads the canary
+     verdict of a capture from another host through them), prints the
+     report's census (captured,
      imported and compared tiles), and renders heat diffs locally
      (presentation-corpus-diff.py --expect-subset);
   7. pulls every attempt's crashed capture legs (u-<unit>/cand.crashes, the
@@ -151,8 +160,8 @@ coordinator:
      dumps) from every touched host into <local run dir>/crashes/<host>/
      and names each kept leg in the coordinator log, then deletes
      runs/<run-id>/ on every host on every exit path (the local directory
-     keeps its log, done marker, stream.log, expect.txt, stop-request and
-     crashes/).
+     keeps its log, done marker, stream.log, expect.txt, stop-request,
+     canary-verdict.txt and crashes/).
 Stream: a unit's supervisor sets OPENPETE_STREAM_FILE=<attempt base>.stream;
 each finished row appends one SAME|DIVERGE|EXTRA|IDENT|EXCEED line per tile
 (classified by the end verdict's functions), the credits leg `CREDITS rc=N`,
@@ -270,7 +279,10 @@ MAX_ATTEMPTS = 2
 TREE_MAX_AGE_S = 14 * 86400
 # Files of the coordinator's local run directory that outlive the run.
 RUN_KEEP = ("coordinator.log", "done", "active.lock", "stream.log", "expect.txt", "stop-request",
-            "crashes")
+            "crashes", "canary-verdict.txt")
+CANARY_VERDICT = "canary-verdict.txt"
+RECORD_NAME = "capture-record.txt"
+FLEET_RECORD_KEYS = ("fleet-run", "fleet-host", "fleet-run-dir")
 STREAM_K = 20                 # divergent tiles and identity pairs pulled per poll per unit
 STREAM_DIR = os.path.join("build", "fleet-stream")
 TILE_VERBS = ("SAME", "DIVERGE", "EXTRA", "IDENT", "EXCEED")
@@ -2958,11 +2970,24 @@ class Coordinator:
         errs = [f"pulled file absent: {f}" for f in want
                 if not os.path.exists(os.path.join(local, f))]
         errs += self.check_report(job, report)
+        if os.path.exists(os.path.join(local, RECORD_NAME)):
+            self.stamp_record(local, hs)
         print(f"[fleet] {job.name}: pulled into {local}: report, record, device, credits, "
               f"{len(tiles)} divergent tile(s), {len(pairs)} identity tile(s)")
         if tiles and not errs:
             self.heat_diffs(job, local)
         return errs
+
+    def stamp_record(self, local, hs):
+        """Append the run id, the fleet host name and the local run directory to a pulled capture record."""
+        path = os.path.join(local, RECORD_NAME)
+        with open(path, encoding="utf-8") as f:
+            keep = [ln for ln in f if ln.partition("=")[0] not in FLEET_RECORD_KEYS]
+        vals = (self.run_id, hs.name, os.path.abspath(self.local_run_dir))
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.writelines(keep)
+            f.writelines(f"{k}={v}\n" for k, v in zip(FLEET_RECORD_KEYS, vals))
+        os.replace(path + ".tmp", path)
 
     def note_census(self, job, report):
         """Print a verdict report's census (captured, imported and compared tiles) and keep it in the result."""
@@ -3023,11 +3048,21 @@ class Coordinator:
                        "norm_s": int(r["wall"] * r["speed"]), "cand_bytes": r["cand_bytes"]})
 
     def compare_canaries(self, jobs):
-        """Refuse the run when a canary tile's digest differs between hosts (step 8)."""
-        done = [j for j in jobs if j.kind == "canary" and j.result and j.result["rc"] in (0, 1)]
+        """Refuse the run when a canary tile's digest differs between hosts (step 8); write the per-host verdict file."""
+        canaries = [j for j in jobs if j.kind == "canary"]
+        done = [j for j in canaries if j.result and j.result["rc"] in (0, 1)]
+        verdict = {j.pinned: "fail canary did not capture (" + (
+            f"rc {j.result['rc']}: {j.result.get('status', '')}" if j.result else "no result")
+            + ")" for j in canaries if j not in done}
+        rc, why = 0, None
+        if not self.canary_on():
+            self.write_canary_verdict({}, "fewer than two hosts")
+            return 0
         if len(done) < 2:
-            if self.canary_on():
-                print(f"[fleet] canary: {len(done)} host(s) captured it; no cross-host comparison")
+            print(f"[fleet] canary: {len(done)} host(s) captured it; no cross-host comparison")
+            why = f"{len(done)} host(s) captured the canary; no cross-host comparison"
+            verdict.update({j.pinned: f"fail {why}" for j in done})
+            self.write_canary_verdict(verdict, None)
             return 0
         digests = {j.pinned: self.canary_digests(j.pinned) for j in done}
         names = sorted(set().union(*digests.values()))
@@ -3035,16 +3070,29 @@ class Coordinator:
         hosts = ", ".join(sorted(digests))
         if not names:
             print(f"[fleet] canary: VACUOUS: no canary tile on {hosts}")
-            return 1
-        if bad:
+            rc, why = 1, f"VACUOUS: no canary tile on {hosts}"
+        elif bad:
             for n in bad:
                 print(f"[fleet] canary: {n}: " + ", ".join(
                     f"{h}={digests[h].get(n, 'absent')[:12]}" for h in sorted(digests)))
             print(f"[fleet] canary: REFUSED: {len(bad)} of {len(names)} tile(s) differ between "
                   f"{hosts}")
-            return 1
-        print(f"[fleet] canary: {len(names)} tile(s) identical on {hosts}")
-        return 0
+            rc, why = 1, f"{len(bad)} of {len(names)} tile(s) differ between {hosts}"
+        else:
+            print(f"[fleet] canary: {len(names)} tile(s) identical on {hosts}")
+        ok = f"pass {len(names)} tile(s) identical on {hosts}"
+        verdict.update({h: f"fail {why}" if why else ok for h in digests})
+        self.write_canary_verdict(verdict, None)
+        return rc
+
+    def write_canary_verdict(self, verdict, off_reason):
+        """Write CANARY_VERDICT in the local run directory: the run id, whether a canary ran, and each host's verdict."""
+        lines = [f"run={self.run_id}", f"canary=off ({off_reason})" if off_reason else "canary=on"]
+        lines += [f"canary.{h}={v}" for h, v in sorted(verdict.items())]
+        path = os.path.join(self.local_run_dir, CANARY_VERDICT)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(path + ".tmp", path)
 
     def canary_digests(self, host_name):
         """Return {tile: verdict digest} of the canary tiles pulled from one host."""

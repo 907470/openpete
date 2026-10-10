@@ -8,7 +8,12 @@ drives generated_tree_digest over a stale file, a changed output, a missing
 output and an unregistered overlay source. ReblessTest runs
 rebless-identity in a scratch repository: refused outside the capture image
 (the image recipe file absent), refused on a recomp input that differs from
-HEAD, and otherwise rewriting only the two identity columns.
+HEAD, and otherwise rewriting only the two identity columns. PromoteTest
+runs promote in a scratch repository with a scratch store over synthetic
+capture records: a local record promotes as before; a record from another
+host promotes only with a fleet-run id whose run's canary verdict passed for
+its fleet host and with the header's recipe hash, image digest and libvulkan,
+and the rewritten manifest names no host, CPU or run id.
 
 Run: python3 scripts/fences/tests/test_presentation_identity.py
 """
@@ -23,6 +28,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
@@ -218,25 +225,31 @@ def run_git(top, *args):
                    capture_output=True)
 
 
+def commit_scratch(t):
+    """Write the image recipe and .gitignore into Scratch `t`'s checkout
+    and commit it; return (HEAD, recipe hash)."""
+    t.recipe = os.path.join(t.top, "image-recipe")
+    write(t.recipe, "FROM scratch\n")
+    write(t.path(".gitignore"),
+          "/image-recipe\n/games/*/generated/\n/games/*/*/build/\n"
+          "/games/*/manifest/globals.toml\n"
+          "/games/*/manifest/symbols.toml\n")
+    run_git(t.top, "init", "-q")
+    run_git(t.top, "add", ".")
+    run_git(t.top, "-c", "user.name=t", "-c", "user.email=t@t",
+            "commit", "-qm", "base")
+    rev = subprocess.run(["git", "-C", t.top, "rev-parse", "HEAD"],
+                         capture_output=True, text=True,
+                         check=True).stdout.strip()
+    return rev, hashlib.sha256(b"FROM scratch\n").hexdigest()
+
+
 class ReblessTest(Scratch):
     OLD_IN, OLD_GEN = "a" * 64, "b" * 64
 
     def setUp(self):
         super().setUp()
-        self.recipe = os.path.join(self.top, "image-recipe")
-        write(self.recipe, "FROM scratch\n")
-        recipe_hash = hashlib.sha256(b"FROM scratch\n").hexdigest()
-        write(self.path(".gitignore"),
-              "/image-recipe\n/games/*/generated/\n/games/*/*/build/\n"
-              "/games/*/manifest/globals.toml\n"
-              "/games/*/manifest/symbols.toml\n")
-        run_git(self.top, "init", "-q")
-        run_git(self.top, "add", ".")
-        run_git(self.top, "-c", "user.name=t", "-c", "user.email=t@t",
-                "commit", "-qm", "base")
-        rev = subprocess.run(["git", "-C", self.top, "rev-parse", "HEAD"],
-                             capture_output=True, text=True,
-                             check=True).stdout.strip()
+        rev, recipe_hash = commit_scratch(self)
         m = pb.Manifest({"game": GAME, "tier": "presentation",
                          "recipe-hash": recipe_hash}, [
             dict(tile="t%d-vk.png" % i, digest=("%d" % i) * 64, revision=rev,
@@ -297,6 +310,189 @@ class ReblessTest(Scratch):
             self.assertEqual((r["recomp_input"], r["generated_tree"]),
                              (rin, gen))
             self.assertNotEqual(r["recomp_input"], self.OLD_IN)
+
+
+class PromoteTest(Scratch):
+    """promote of a local and of a fleet-pulled capture record."""
+    HERE_HOST, REMOTE, CPU = "here-box", "remote-box", "Fake CPU 9000"
+    FLEET_HOST = "fleethost-b"
+    RUN = "20261010-120000-abcd"
+    ENV = {"mesa": "Mesa 24.0.0", "device": "llvmpipe",
+           "compiler": "cc 13", "preset": "linux-release-container",
+           "disc-bin": "d" * 64, "disc-cue": "e" * 64,
+           "image-digest": "sha256:" + "f" * 64, "libvulkan": "1.3.275"}
+
+    def setUp(self):
+        super().setUp()
+        # source_tree adds every SOURCE_ROOTS path, so each must exist.
+        for rel in ("core/a.c", "scripts/a.sh", "CMakeLists.txt",
+                    "cmake/a.cmake"):
+            write(self.path(rel), "# %s\n" % rel)
+        self.rev, recipe_hash = commit_scratch(self)
+        self.env = dict(self.ENV, **{"recipe-hash": recipe_hash})
+        header = {"game": GAME, "tier": "presentation", "size": "4x4"}
+        header.update(self.env)
+        m = pb.Manifest(header, [dict(
+            tile="t1-vk.png", digest="1" * 64, revision=self.rev,
+            recomp_input="a" * 64, generated_tree="b" * 64,
+            origin="mapped")])
+        self.man = self.path(pb.manifest_path(GAME, "presentation"))
+        write(self.man, pb.format_manifest(m))
+        self.work = tempfile.mkdtemp(prefix="pb-promote-")
+        self.cand = os.path.join(self.work, "cand")
+        self.run_dir = os.path.join(self.work, "runs", self.RUN)
+        os.makedirs(self.run_dir)
+        Image.new("RGB", (4, 4), (9, 8, 7)).save(
+            os.path.join(self.cand_dir(), "t1-vk.png"))
+        write(os.path.join(self.cand, pb.DEVICE_NAME),
+              "[rhi/vk] device='llvmpipe' api=1.3 driver-info='Mesa 24.0.0'\n")
+        self.saved_recipe = pb.IMAGE_RECIPE
+        pb.IMAGE_RECIPE = self.recipe
+        self.saved_env = {k: os.environ.get(k) for k in
+                          ("OPENPETE_CAPTURE_HOST", "OPENPETE_GOLDEN_REF_DIR")}
+        os.environ["OPENPETE_CAPTURE_HOST"] = self.HERE_HOST
+        os.environ["OPENPETE_GOLDEN_REF_DIR"] = os.path.join(self.work,
+                                                             "store")
+
+    def tearDown(self):
+        pb.IMAGE_RECIPE = self.saved_recipe
+        for k, v in self.saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.work)
+        super().tearDown()
+
+    def cand_dir(self):
+        """The candidate directory, created."""
+        os.makedirs(self.cand, exist_ok=True)
+        return self.cand
+
+    def record(self, host, **extra):
+        """Write the candidate's capture record: this checkout's tree
+        fields, the pinned environment, `host`, then `extra` (a None value
+        drops the key)."""
+        rec = {"game": GAME, "tier": "presentation"}
+        rec.update(pb.tree_fields(GAME))
+        rec.update(self.env)
+        rec.update(host=host, cpu=self.CPU)
+        rec.update(extra)
+        write(os.path.join(self.cand, pb.RECORD_NAME), "".join(
+            "%s=%s\n" % (k, v) for k, v in rec.items() if v is not None))
+
+    def fleet(self, **extra):
+        """A remote record stamped as a golden-fleet pull of FLEET_HOST."""
+        self.record(self.REMOTE, **dict({"fleet-run": self.RUN,
+                                          "fleet-host": self.FLEET_HOST,
+                                          "fleet-run-dir": self.run_dir},
+                                         **extra))
+
+    def verdict(self, b="pass 2 tile(s) identical on a, b", run=None):
+        """Write the run's canary verdict file with FLEET_HOST's verdict
+        `b` (no line when None)."""
+        write(os.path.join(self.run_dir, pb.CANARY_VERDICT_NAME),
+              "run=%s\ncanary=on\ncanary.a=pass 2 tile(s) identical on a, b\n"
+              "%s" % (run or self.RUN, "canary.%s=%s\n" % (self.FLEET_HOST, b)
+                       if b else ""))
+
+    def promote(self):
+        """Run promote --all; (rc, manifest text, stdout, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = pb.main(["promote", GAME, self.cand, "--all"])
+        with open(self.man) as fh:
+            return rc, fh.read(), out.getvalue(), err.getvalue()
+
+    def assert_promoted(self, res):
+        """The row of t1 carries the candidate's digest, HEAD, origin
+        `mapped`, and the tile is in the store."""
+        rc, text, _out, err = res
+        self.assertEqual(rc, 0, err)
+        row = pb.parse_manifest(text).rows[0]
+        dig = pb.digest_file(os.path.join(self.cand, "t1-vk.png"))[0]
+        self.assertEqual((row["digest"], row["revision"], row["origin"]),
+                         (dig, self.rev, "mapped"))
+        self.assertTrue(os.path.isfile(pb.blob_path(dig)))
+
+    def assert_refused(self, res, why):
+        """Exit 1, the manifest unchanged, `why` in the refusal."""
+        with open(self.man) as fh:
+            before = fh.read()
+        rc, text, _out, err = res
+        self.assertEqual((rc, text), (1, before))
+        self.assertIn(why, err)
+
+    def test_local_record(self):
+        self.record(self.HERE_HOST)
+        self.assert_promoted(self.promote())
+
+    def test_local_record_needs_no_fleet_fields(self):
+        self.record("unrecorded")
+        self.assert_promoted(self.promote())
+
+    def test_remote_passed_canary(self):
+        self.fleet()
+        self.verdict()
+        res = self.promote()
+        self.assert_promoted(res)
+        self.assertIn("fleet host %s (host %s), fleet run %s, canary passed"
+                      % (self.FLEET_HOST, self.REMOTE, self.RUN), res[2])
+
+    def test_remote_writes_no_machine_names(self):
+        self.fleet()
+        self.verdict()
+        rc, text, _out, err = self.promote()
+        self.assertEqual(rc, 0, err)
+        for word in (self.REMOTE, self.CPU, self.RUN, "fleet",
+                     self.FLEET_HOST, self.HERE_HOST, self.run_dir):
+            self.assertNotIn(word, text)
+
+    def test_remote_failed_canary(self):
+        self.fleet()
+        self.verdict(b="fail 1 of 2 tile(s) differ between a, b")
+        self.assert_refused(self.promote(), "canary of fleet run %s failed "
+                            "on host %s" % (self.RUN, self.FLEET_HOST))
+
+    def test_remote_missing_canary(self):
+        self.fleet()
+        self.verdict(b=None)
+        self.assert_refused(self.promote(), "no canary verdict for host %s"
+                            % self.FLEET_HOST)
+
+    def test_remote_missing_verdict_file(self):
+        self.fleet()
+        self.assert_refused(self.promote(), "canary verdict is missing")
+
+    def test_remote_verdict_of_other_run(self):
+        self.fleet()
+        self.verdict(run="20261009-000000-ffff")
+        self.assert_refused(self.promote(), "not %s" % self.RUN)
+
+    def test_remote_no_run_id(self):
+        self.record(self.REMOTE)
+        self.verdict()
+        self.assert_refused(self.promote(), "carries no fleet-run id")
+
+    def test_remote_image_digest_mismatch(self):
+        self.fleet(**{"image-digest": "sha256:" + "0" * 64})
+        self.verdict()
+        self.assert_refused(self.promote(), "image-digest")
+
+    def test_remote_mismatch_not_admitted_by_accept(self):
+        self.fleet(**{"libvulkan": "1.3.999"})
+        self.verdict()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = pb.main(["promote", GAME, self.cand, "--all",
+                          "--environment-accept", "test"])
+        self.assertEqual(rc, 1)
+        self.assertIn("libvulkan", err.getvalue())
+
+    def test_remote_other_source_tree(self):
+        self.fleet(**{"source-tree": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"})
+        self.verdict()
+        self.assert_refused(self.promote(), "source tree")
 
 
 if __name__ == "__main__":
