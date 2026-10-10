@@ -58,6 +58,10 @@ if(NOT TARGET openpete_mod_sdk_test_root)
                 ${OPENPETE_MOD_SDK_SHADERS} ${OPENPETE_MOD_SDK_TEST_DIR}/shaders
         COMMENT "Staging the game-neutral mod SDK into mod-sdk-test/sdk/"
         VERBATIM)
+    # The two ImGui table headers are outputs of a custom command in
+    # core/, which a target in another directory cannot name in DEPENDS;
+    # the target-level edge orders the generator before the copy.
+    add_dependencies(openpete_mod_sdk_test_root openpete_imgui_table)
 endif()
 
 function(openpete_mod_sdk GAME_ID)
