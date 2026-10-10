@@ -191,6 +191,12 @@ stop: writes <local run dir>/stop-request (`unit=<job>`, or `all` without
 coordinator reads it once per loop iteration: a named running or pending
 job gets rc 1, `stopped by user`, no ledger row, before its kill, so it is
 not re-queued; a job whose done marker was read first keeps its result.
+Before the legs (preflight, image ship, build, sync, recheck, base refresh)
+a request naming `all` or every unit is polled every STOP_POLL_S while a
+child runs: the child's process group is killed (SIGTERM, SIGKILL after
+STOP_KILL_GRACE_S) and every unit is recorded stopped before it started. A
+running run's remote commands carry OPENPETE_FLEET_RUN=<run id>; teardown
+signals every remote process still carrying it (REAP_SCRIPT).
 The run is FAIL with reason=stopped by user.
 
 clean: per host, under its golden lock (a busy host is skipped): removes
@@ -287,6 +293,141 @@ class FleetError(Exception):
         """Store the message and the exit code."""
         super().__init__(msg)
         self.code = code
+
+
+class StopRequested(FleetError):
+    """A stop request covering every unit arrived before the run's legs started."""
+
+
+# ---- child processes ----------------------------------------------------------
+
+STOP_POLL_S = 1.0             # stop-request poll interval while a child runs before the legs
+STOP_KILL_GRACE_S = 5         # SIGTERM to SIGKILL of a child's process group
+RUN_TAG_VAR = "OPENPETE_FLEET_RUN"
+
+# While a run is outside its leg loop, its stop predicate: run_proc polls it
+# every STOP_POLL_S while a child runs and before starting one. None otherwise.
+_stop_watch = None
+# While a run executes, its run id: every remote command (ssh scripts, image
+# loads, rsync servers) carries RUN_TAG_VAR=<run id> in its environment, which
+# REAP_SCRIPT finds. None otherwise.
+_run_tag = None
+
+
+class stop_watch:
+    """Context manager installing (or, with None, suspending) the stop predicate run_proc polls."""
+
+    def __init__(self, pred):
+        """Bind the predicate; nothing is installed yet."""
+        self.pred, self.prev = pred, None
+
+    def __enter__(self):
+        """Install the predicate, keeping the previous one."""
+        global _stop_watch
+        self.prev, _stop_watch = _stop_watch, self.pred
+        return self
+
+    def __exit__(self, *_exc):
+        """Restore the previous predicate."""
+        global _stop_watch
+        _stop_watch = self.prev
+        return False
+
+
+class run_tag:
+    """Context manager setting the run id remote commands carry in RUN_TAG_VAR."""
+
+    def __init__(self, run_id):
+        """Bind the run id; nothing is set yet."""
+        self.run_id, self.prev = run_id, None
+
+    def __enter__(self):
+        """Set the tag, keeping the previous one."""
+        global _run_tag
+        self.prev, _run_tag = _run_tag, self.run_id
+        return self
+
+    def __exit__(self, *_exc):
+        """Restore the previous tag."""
+        global _run_tag
+        _run_tag = self.prev
+        return False
+
+
+def stop_point():
+    """Raise StopRequested when the installed stop predicate holds."""
+    if _stop_watch is not None and _stop_watch():
+        raise StopRequested(STOP_STATUS)
+
+
+def kill_group(proc):
+    """End a child started with start_new_session: SIGTERM its process group, SIGKILL after STOP_KILL_GRACE_S; reap it."""
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(STOP_KILL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+    try:
+        proc.communicate(timeout=STOP_KILL_GRACE_S)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+
+def run_proc(argv, input=None, timeout=None, text=False, cwd=None, env=None, stdin=None,
+             stdout=subprocess.PIPE, stderr=subprocess.PIPE):
+    """Run argv to completion as subprocess.run with capture does, in its own process group.
+
+    The child's group (rsync's ssh, a script's children) is killed by
+    kill_group when the timeout expires (TimeoutExpired is raised), when any
+    exception (a signal turned into Interrupted) leaves this function, and,
+    while a stop predicate is installed, when it holds at a STOP_POLL_S poll
+    (StopRequested is raised). stdin is DEVNULL without input or stdin.
+    @param argv the command
+    @param input bytes or str written to stdin, then closed
+    @param timeout seconds before the child is killed, or None
+    @param text decode stdout and stderr (and encode input) as text
+    @param cwd working directory, or None
+    @param env environment, or None for this process's
+    @param stdin a file or pipe for stdin when input is None
+    @param stdout PIPE to capture, or a file
+    @param stderr PIPE to capture, a file, or subprocess.STDOUT
+    @return a subprocess.CompletedProcess
+    """
+    stop_point()
+    if input is not None:
+        stdin = subprocess.PIPE
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL if stdin is None else stdin,
+                            stdout=stdout, stderr=stderr, text=text, cwd=cwd, env=env,
+                            start_new_session=True)
+    end = None if timeout is None else time.monotonic() + timeout
+    feed = input
+    try:
+        while True:
+            wait = STOP_POLL_S if _stop_watch is not None else None
+            if end is not None:
+                left = max(0.0, end - time.monotonic())
+                wait = left if wait is None else min(wait, left)
+            try:
+                out, err = proc.communicate(feed, timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                feed = None
+                if end is not None and time.monotonic() >= end:
+                    kill_group(proc)
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                stop_point()
+    except BaseException:
+        kill_group(proc)
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
 # ---- host file --------------------------------------------------------------
@@ -483,18 +624,25 @@ class Host:
         """The configured fleet_root, unexpanded (`~` resolves on the host)."""
         return self.cfg.get("fleet_root", DEFAULT_FLEET_ROOT)
 
-    def argv(self, remote_cmd):
-        """Return the argv that runs a shell command string on the host."""
+    def argv(self, remote_cmd, tag=True):
+        """Return the argv that runs a shell command string on the host.
+
+        A remote command of a running run is prefixed with RUN_TAG_VAR=<run id>
+        (unless tag is false), so it and its children carry the tag REAP_SCRIPT
+        finds.
+        """
         if self.local:
             return ["bash", "-c", remote_cmd]
+        if tag and _run_tag:
+            remote_cmd = f"{RUN_TAG_VAR}={shlex.quote(_run_tag)} {remote_cmd}"
         return ["ssh", *SSH_OPTS, self.cfg["ssh"], remote_cmd]
 
-    def run_script(self, script, args=(), timeout=120, check=False, binary=False):
+    def run_script(self, script, args=(), timeout=120, check=False, binary=False, tag=True):
         """Run a bash script on the host via `bash -s`, script on stdin; binary keeps stdout as bytes."""
         cmd = "bash -s -- " + " ".join(shlex.quote(str(a)) for a in args)
         try:
-            cp = subprocess.run(self.argv(cmd), input=script.encode() if binary else script,
-                                capture_output=True, text=not binary, timeout=timeout)
+            cp = run_proc(self.argv(cmd, tag), input=script.encode() if binary else script,
+                          text=not binary, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise FleetError(f"{self.name}: script timed out after {timeout} s")
         if check and cp.returncode != 0:
@@ -731,9 +879,14 @@ def transfer_image(host, engine, host_engine, local_id, dry_run):
         return
     before = set(host.run_script(NAMES_PRESENT, [host_engine, *LOAD_NAMES]).stdout.split())
     t0 = time.monotonic()
-    src = subprocess.Popen(save, stdout=subprocess.PIPE)
-    dst = subprocess.run(load, stdin=src.stdout, capture_output=True, text=True)
-    src.stdout.close()
+    src = subprocess.Popen(save, stdout=subprocess.PIPE, start_new_session=True)
+    try:
+        dst = run_proc(load, stdin=src.stdout, text=True)
+    except BaseException:
+        kill_group(src)
+        raise
+    finally:
+        src.stdout.close()
     if src.wait() != 0 or dst.returncode != 0:
         raise FleetError(f"{host.name}: image transfer failed (save {src.returncode}, "
                          f"load {dst.returncode}): {dst.stderr.strip()[-300:]}")
@@ -1556,6 +1709,32 @@ else
 fi
 '''
 
+# Signal every process of this user whose environment holds RUN_TAG_VAR=<run
+# id> (the run's ssh scripts, image load and rsync servers, with their
+# children): SIGTERM, then SIGKILL after 10 s. The script itself runs untagged.
+# args: tag-variable run-id
+REAP_SCRIPT = r'''
+set -u
+tag="$1=$2"
+tagged() {
+    local p
+    for p in /proc/[0-9]*; do
+        [ "${p#/proc/}" = $$ ] && continue
+        tr '\0' '\n' 2>/dev/null <"$p/environ" | grep -qxF -- "$tag" && echo "${p#/proc/}"
+    done
+}
+m="$(tagged)"
+[ -n "$m" ] || { echo "reaped 0 process(es)"; exit 0; }
+kill -TERM $m 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -n "$(tagged)" ] || break
+    sleep 1
+done
+left="$(tagged)"
+[ -n "$left" ] && kill -KILL $left 2>/dev/null
+echo "reaped $(echo $m | wc -w) process(es)"
+'''
+
 # sha256 of each named file under a directory. args: dir files...
 HASH_SCRIPT = r'''
 set -u
@@ -1762,8 +1941,11 @@ def sha256_path(path):
 # ---- run: transfer ----------------------------------------------------------
 
 def rsync_base(host):
-    """Return rsync's transport arguments for a host."""
-    return [] if host.local else ["-e", "ssh " + " ".join(SSH_OPTS)]
+    """Return rsync's transport arguments for a host; a running run's remote rsync server carries its tag."""
+    if host.local:
+        return []
+    tag = [f"--rsync-path={RUN_TAG_VAR}={shlex.quote(_run_tag)} rsync"] if _run_tag else []
+    return ["-e", "ssh " + " ".join(SSH_OPTS), *tag]
 
 
 def remote_path(host, path):
@@ -1779,7 +1961,7 @@ def rsync_push(host, src, listfile, dest, link_dest=None):
         argv.append(f"--link-dest={link_dest}")
     argv += [src.rstrip("/") + "/", remote_path(host, dest.rstrip("/")) + "/"]
     t0 = time.monotonic()
-    cp = subprocess.run(argv, capture_output=True, text=True)
+    cp = run_proc(argv, text=True)
     if cp.returncode != 0:
         raise FleetError(f"{host.name}: rsync to {dest} exited {cp.returncode}: "
                          f"{cp.stderr.strip()[-400:]}")
@@ -1791,7 +1973,7 @@ def rsync_recheck(host, src, listfile, dest):
     """Return the content changes between local src and dest over a list (empty when equal)."""
     argv = ["rsync", "-n", "-i", "-c", "-L", "--from0", f"--files-from={listfile}",
             *rsync_base(host), src.rstrip("/") + "/", remote_path(host, dest.rstrip("/")) + "/"]
-    cp = subprocess.run(argv, capture_output=True, text=True)
+    cp = run_proc(argv, text=True)
     changes = [ln for ln in cp.stdout.splitlines()
                if ln[:1] in "<>ch*" and ln[1:2] in "fLS" or ln.startswith("*deleting")]
     if cp.returncode != 0:
@@ -1813,7 +1995,7 @@ def rsync_pull(host, src_dir, dst_dir, names=None, includes=None):
     if includes:
         argv.append("--exclude=*")
     argv += [remote_path(host, src_dir.rstrip("/")) + "/", dst_dir.rstrip("/") + "/"]
-    cp = subprocess.run(argv, capture_output=True, text=True)
+    cp = run_proc(argv, text=True)
     if lst:
         os.unlink(lst)
     return cp.returncode, cp.stderr.strip()[-300:]
@@ -1839,15 +2021,21 @@ class CheckoutSpan:
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def take_build_lock(self):
-        """Take build/linux-release-container.build-lock, waiting while a build holds it."""
+        """Take build/linux-release-container.build-lock, waiting while a build holds it (a stop request ends the wait)."""
         path = os.path.join(self.tree, "build", "linux-release-container.build-lock")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.lock_fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print(f"[fleet] {path} held by a build; waiting")
-            fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
+        waiting = False
+        while True:
+            try:
+                fcntl.flock(self.lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if not waiting:
+                    print(f"[fleet] {path} held by a build; waiting")
+                    waiting = True
+            stop_point()
+            time.sleep(STOP_POLL_S)
 
     def release(self):
         """Release the build lock and stop the marker."""
@@ -1959,6 +2147,7 @@ class Coordinator:
         self.local_run_dir = local_run_dir
         self.ship_dir = os.path.join(local_run_dir, "ship")
         self.hosts = []
+        self.sel = []
         self.golden_fd = None
         self.span = CheckoutSpan(self.tree)
         self.jobs = []
@@ -2026,6 +2215,7 @@ class Coordinator:
         """Preflight, take the local golden lock, clean each host and ship the image."""
         _path, hosts = load_hosts()
         sel = self.pick_hosts(hosts)
+        self.sel = sel
         check_recipe(self.tree)
         results = preflight(sel, self.need_bytes(src_bytes))
         usable = print_preflight(results)
@@ -2145,9 +2335,9 @@ class Coordinator:
         print(f"[fleet] {self.build_hs.name}: in-image build in {self.tree} (log {log})")
         t0 = time.monotonic()
         with open(log, "w") as f:
-            rc = subprocess.run(["nice", "-n", str(self.build_hs.nice),
-                                 "scripts/golden-capture-container.sh", "build"], cwd=self.tree,
-                                env=env, stdout=f, stderr=subprocess.STDOUT).returncode
+            rc = run_proc(["nice", "-n", str(self.build_hs.nice),
+                           "scripts/golden-capture-container.sh", "build"], cwd=self.tree,
+                          env=env, stdout=f, stderr=subprocess.STDOUT).returncode
         if rc != 0:
             raise FleetError(f"in-image build failed (exit {rc}); log {log}")
         print(f"[fleet] build done in {time.monotonic() - t0:.0f} s")
@@ -2203,6 +2393,8 @@ class Coordinator:
         self.push_ship(bh)
         job = Job("build", pinned=bh.name)
         self.run_jobs([job], deadline=lambda j, hs: BUILD_DEADLINE_S / hs.speed)
+        if job.stopped:
+            raise StopRequested(STOP_STATUS)
         if not job.result or job.result["rc"] != 0:
             raise FleetError(f"{bh.name}: in-image build failed: "
                              f"{(job.result or {}).get('status', 'no result')}; log "
@@ -2363,15 +2555,17 @@ class Coordinator:
         """Place jobs on free hosts until every job has a result; on_done may return follow-up jobs."""
         pending = list(jobs)
         deadline = deadline or self.deadline
-        while True:
-            self.apply_stop(pending)
-            self.place(pending, deadline)
-            running = [hs for hs in self.hosts if hs.current]
-            if not running:
-                break
-            time.sleep(POLL_S)
-            for hs in running:
-                self.poll(hs, pending, on_done)
+        # apply_stop owns stops here; a poll or kill must not raise StopRequested.
+        with stop_watch(None):
+            while True:
+                self.apply_stop(pending)
+                self.place(pending, deadline)
+                running = [hs for hs in self.hosts if hs.current]
+                if not running:
+                    break
+                time.sleep(POLL_S)
+                for hs in running:
+                    self.poll(hs, pending, on_done)
         for job in pending:
             job.result = {"rc": EXIT_SKIP, "status": "no usable host left", "host": "-"}
             print(f"[fleet] {job.name}: SKIP: no usable host left")
@@ -2471,6 +2665,33 @@ class Coordinator:
         for job in [j for j in pending if hit(j)]:
             pending.remove(job)
             self.mark_stopped(job, "-", None)
+
+    def stop_covers_run(self):
+        """True when the stop request names `all` or every unit of the run (the predicate run_proc polls before the legs)."""
+        want = read_stop_request(self.stop_path)
+        return "all" in want or {f"{g}-{t}" for g, t in self.units} <= want
+
+    def stop_before_legs(self):
+        """Record a stop acted on before the legs: every unit stopped before it started, the run's verdict printed; return rc 1."""
+        print("[fleet] stop request acted on before the legs; child processes ended")
+        self.jobs = [Job("unit", g, t) for g, t in self.units]
+        for job in self.jobs:
+            self.mark_stopped(job, "-", None)
+        rc = self.run_rc()
+        self.print_summary(rc)
+        return rc
+
+    def reap_remote(self):
+        """Run REAP_SCRIPT on every remote host the run selected: no process tagged with the run id outlives it."""
+        for h in self.sel:
+            if h.local:
+                continue
+            try:
+                cp = h.run_script(REAP_SCRIPT, [RUN_TAG_VAR, self.run_id], timeout=60, tag=False)
+                out = cp.stdout.strip() if cp.returncode == 0 else f"exited {cp.returncode}"
+            except FleetError as e:
+                out = str(e)
+            print(f"[fleet] {h.name}: {out}")
 
     def mark_stopped(self, job, host, attempt):
         """Record a job's result as stopped by the user (no ledger row, no re-queue) and mark its stream directory."""
@@ -2871,6 +3092,8 @@ class Coordinator:
         for hs in self.hosts:
             if hs.current:
                 self.stop_current(hs)
+        self.reap_remote()
+        for hs in self.hosts:
             if not hs.touched:
                 continue
             try:
@@ -2899,15 +3122,27 @@ class Coordinator:
     # -- the whole run --
 
     def run(self):
-        """Execute the run; return the exit code (1 > 64 > 0 over units)."""
-        src_bytes = set_bytes(self.tree, source_set(self.tree, self.pb,
-                                                    sorted({g for g, _t in self.units})))
-        self.load_expect()
-        self.prepare_hosts(src_bytes)
-        self.measure_skew()
-        self.build_and_sync()
-        self.jobs = self.make_jobs()
-        self.run_jobs(self.jobs, on_done=self.unit_done)
+        """Execute the run; return the exit code (1 > 64 > 0 over units).
+
+        Before the legs (preflight, image ship, build, sync, recheck) a stop
+        request covering every unit is polled every STOP_POLL_S: the running
+        child's process group is killed and every unit is recorded stopped.
+        """
+        with run_tag(self.run_id):
+            try:
+                with stop_watch(self.stop_covers_run):
+                    stop_point()
+                    src_bytes = set_bytes(self.tree, source_set(self.tree, self.pb,
+                                                                sorted({g for g, _t in self.units})))
+                    self.load_expect()
+                    self.prepare_hosts(src_bytes)
+                    self.measure_skew()
+                    self.build_and_sync()
+                    stop_point()
+            except StopRequested:
+                return self.stop_before_legs()
+            self.jobs = self.make_jobs()
+            self.run_jobs(self.jobs, on_done=self.unit_done)
         rc = self.run_rc()
         self.print_summary(rc)
         return rc
@@ -3583,7 +3818,7 @@ def cmd_stop(a):
         f.write("".join(("all" if w == "all" else f"unit={w}") + "\n" for w in sorted(want)))
     os.replace(path + ".tmp", path)
     print(f"[fleet] run {a.run_id}: stop requested for {a.unit or 'every running and pending unit'}; "
-          f"the coordinator acts within {POLL_S} s")
+          f"the coordinator acts within {POLL_S} s ({STOP_POLL_S:.0f} s before the legs)")
     return 0
 
 

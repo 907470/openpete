@@ -21,6 +21,12 @@ write. Cases (each prints its counts):
               run's and pass the unit-end check
   stop        running, pending, local (golden lock held until teardown),
               racing completion both ways; no ledger row for a stopped unit
+  stop-sync   a stop during a sync stand-in (a host script with a sleeping
+              child) ends the run within STOP_POLL_S + 2 s: both processes
+              gone, every unit stopped, done reason=stopped by user; a
+              request naming another unit does not cover the run
+  reap        REAP_SCRIPT ends a process carrying the run tag and spares an
+              untagged one; a remote command and rsync's server carry the tag
   clean       build/fleet-stream/<run-id> removed once its run directory is gone
   expect      EXPECTED 1/0/0, UNEXPECTED 0/1/0, EXPECTED-NOT-MOVED 0/0/1,
               NOT-REACHED on a stopped unit and a timed-out row, typo and
@@ -35,6 +41,7 @@ import fcntl
 import importlib.util
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -419,6 +426,77 @@ def case_stop_cli(tmp):
           f"exits {rc1}, {rc2}, {rc3} (done), {rc4} (no run); request {text.split()}")
 
 
+class SyncCo(FakeCo):
+    """A FakeCo whose preflight is skipped and whose sync is a host script sleeping in a child, its pids recorded."""
+
+    def prepare_hosts(self, src_bytes):
+        """Select the local host without preflight, clean or image ship."""
+        self.sel = [self.hs.host]
+
+    def build_and_sync(self):
+        """Run a 60 s sync stand-in (a script and its sleeping child) on the host."""
+        self.mkdirs(self.hs)
+        self.script(self.hs, 'echo $$ >"$1/sync.pid"; sleep 60 & echo $! >"$1/child.pid"; wait',
+                    [self.tmp], timeout=300)
+        raise AssertionError("the sync stand-in returned")
+
+
+def case_stop_sync(tmp):
+    """Stop during the sync: the sync's process group dies, every unit is stopped, the done marker says so."""
+    co = SyncCo(tmp, "stop-sync")
+    co.stop_later(2.0, "all")
+    t_req = time.monotonic() + 2.0
+    prev = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+    try:
+        rc, _co = gf.drive(co.run_id, co.local_run_dir, lambda: co)
+    finally:
+        for s, h in prev.items():
+            signal.signal(s, h)
+    lag = time.monotonic() - t_req
+    pids = [open(os.path.join(co.tmp, n)).read().split()[0] for n in ("sync.pid", "child.pid")]
+    alive = [p for p in pids if os.path.exists(f"/proc/{p}")]
+    done = gf.parse_kv(open(os.path.join(co.local_run_dir, "done")).read())
+    job = co.jobs[0] if co.jobs else None
+    marker = job is not None and os.path.exists(os.path.join(co.stream_dir(job), "STOPPED"))
+    bound = gf.STOP_POLL_S + 2.0
+    check("stop-sync", rc == 1 and done.get("reason") == gf.STOP_STATUS and job is not None
+          and job.stopped and job.result["host"] == "-" and marker and not alive and lag < bound,
+          f"run ended {lag:.1f} s after the request (bound {bound:.1f} s), rc {rc}, done "
+          f"reason={done.get('reason')}, units stopped {sum(j.stopped for j in co.jobs)}/"
+          f"{len(co.jobs)}, STOPPED marker: {marker}, sync processes alive: {len(alive)} of 2")
+
+    co = SyncCo(tmp, "stop-sync-scope")
+    got = []
+    for line in ("unit=other", f"unit={UNIT}", "all"):
+        with open(co.stop_path, "w") as f:
+            f.write(line + "\n")
+        got.append(co.stop_covers_run())
+    check("stop-sync-scope", got == [False, True, True],
+          f"covers the run for unit=other, unit={UNIT}, all: {got}")
+
+
+def case_reap(tmp):
+    """REAP_SCRIPT ends a process carrying the run tag and spares an untagged one; remote argv and rsync carry the tag."""
+    tag = f"test-reap-{os.getpid()}"
+    tagged = subprocess.Popen(["sleep", "60"], env=dict(os.environ, **{gf.RUN_TAG_VAR: tag}))
+    other = subprocess.Popen(["sleep", "60"])
+    host = gf.Host("local", {"transport": "local"})
+    out = host.run_script(gf.REAP_SCRIPT, [gf.RUN_TAG_VAR, tag], timeout=60, tag=False).stdout.strip()
+    tagged_rc, other_alive = tagged.wait(5), other.poll() is None
+    other.kill()
+    other.wait()
+    remote = gf.Host("r", {"transport": "ssh", "ssh": "u@h"})
+    with gf.run_tag(tag):
+        argv = remote.argv("bash -s --")
+        rsync = gf.rsync_base(remote)
+    plain = remote.argv("bash -s --")
+    check("reap", tagged_rc is not None and other_alive and out == "reaped 1 process(es)"
+          and argv[-1] == f"{gf.RUN_TAG_VAR}={tag} bash -s --" and plain[-1] == "bash -s --"
+          and f"--rsync-path={gf.RUN_TAG_VAR}={tag} rsync" in rsync,
+          f"reaper: {out!r}; tagged exit {tagged_rc}, untagged alive: {other_alive}; "
+          f"remote command {argv[-1]!r}; rsync {rsync[-1]!r}")
+
+
 def case_clean(tmp):
     """clean removes build/fleet-stream/<run-id> (STOPPED marker included) once the run directory is gone."""
     tree, root = os.path.join(tmp, "clean-tree"), os.path.join(tmp, "clean-root")
@@ -502,7 +580,8 @@ def main():
     gf.ledger_path = lambda: os.path.join(tmp, "ledger.tsv")
     try:
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_exempt,
-                     case_kill, case_stop, case_stop_cli, case_clean, case_expect):
+                     case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
+                     case_expect):
             case(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
