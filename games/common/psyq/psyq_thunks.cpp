@@ -505,12 +505,6 @@ static uint32_t g_cd_read_cb     = 0;
 #define PSYQ_INTR_SLOTS 11
 #define PSYQ_INTR_PAD_CARD 7
 static uint32_t g_intr_cb[PSYQ_INTR_SLOTS];
-/* Native cd.c (post-rewriter) registers a host-side callback via
- * openpete_CdReadCallback. psyq_CdRead checks both this and g_cd_read_cb;
- * one-or-the-other is set depending on whether the registrar was native
- * or recompiled code. */
-typedef void (*native_cd_read_cb_t)(unsigned char intr, unsigned char* result);
-static native_cd_read_cb_t g_native_cd_read_cb = nullptr;
 static uint32_t g_vsync_cb       = 0;
 
 /** @brief Run the compiled guest function at cb_addr with a0 and a1 set.
@@ -1165,9 +1159,9 @@ static void cd_charge_pending(CPUState* cpu, const char* what) {
 
 /** @brief Deliver a data read's completion, the tail the game waits on.
  *
- * Fires the read callback: a host callback a native registrar set, else the
- * guest handler registered through the thunk or, when libcd is translated in
- * the image, the one in the slot at psyq_game_cd_read_cb_addr(). Then lets
+ * Fires the read callback: the guest handler registered through the thunk
+ * or, when libcd is translated in the image, the one in the slot at
+ * psyq_game_cd_read_cb_addr(). Then lets
  * the game check its bookkeeping (psyq_game_cd_read_done), records libcd's
  * closing CdlPause as the last command with the reference's response status
  * and completion VBLANK or else the idle status, clears the streaming latch,
@@ -1178,20 +1172,14 @@ static void cd_charge_pending(CPUState* cpu, const char* what) {
 static void cd_read_complete(CPUState* cpu) {
     OPL_INFO_F("cd", "read complete (hit=%u vbl=%d)", openpete_psxtrace_anchor_hits,
                SDL_GetAtomicInt(&openpete_vbl));
-    if (g_native_cd_read_cb != nullptr) {
-        /* Native registrar (post-rewriter init.c). Fire the host cb
-         * directly - no cpu dispatch round-trip needed. */
-        g_native_cd_read_cb(/*intr=CdlComplete=*/2u, /*result=*/nullptr);
-    } else {
-        uint32_t cb = g_cd_read_cb;
-        if (cb == 0u) {
-            /* libcd is translated in this game's image: CdReadCallback stored
-             * the handler in guest RAM instead of reaching the thunk. */
-            uint32_t slot = psyq_game_cd_read_cb_addr();
-            if (slot != 0u) cb = cpu->read_word(slot);
-        }
-        invoke_psx_callback(cpu, cb, /*intr=CdlComplete=*/2u, 0u);
+    uint32_t cb = g_cd_read_cb;
+    if (cb == 0u) {
+        /* libcd is translated in this game's image: CdReadCallback stored
+         * the handler in guest RAM instead of reaching the thunk. */
+        uint32_t slot = psyq_game_cd_read_cb_addr();
+        if (slot != 0u) cb = cpu->read_word(slot);
     }
+    invoke_psx_callback(cpu, cb, /*intr=CdlComplete=*/2u, 0u);
     psyq_game_cd_read_done(cpu, g_cd_read_cb);
     /* libcd's ready callback issues CdlPause after the last sector; the
      * command byte and the idle status are what the game reads afterwards.
@@ -2974,10 +2962,8 @@ static int cd_command_host(u_char com, u_char* param) {
 
 /** @brief Run a CdControl command: the shared host body, then PsyCross's CdControl when the host body did not consume it.
  *
- * psyq_CdControl (recompiled callers, arguments translated from guest
- * addresses) and openpete_CdControl (native callers, arguments already host
- * pointers) share it; the native path avoids the host_to_psx round trip,
- * which fails when a caller passes a stack-local u_char or CdlLOC buffer.
+ * psyq_CdControl calls it with the parameter and response buffers already
+ * translated from guest addresses to host pointers.
  * @param com The command byte.
  * @param param The parameter bytes, or NULL.
  * @param result The response buffer, or NULL.
@@ -3026,22 +3012,6 @@ void psyq_CdControl(CPUState* cpu) {
                (unsigned)com, cpu->a1, cpu->a2);
     cpu->v0 = (uint32_t)cdcontrol_host(com, param, result);
     cd_charge_pending(cpu, "CdControl");
-}
-
-/** @brief CdControl for native callers, taking host pointers.
- *
- * It bypasses the cpu->aN packing, so a caller can pass a stack-local
- * buffer, which has no guest address and would translate to NULL. It logs
- * the command and runs cdcontrol_host.
- * @param com The command byte.
- * @param param The parameter bytes, or NULL.
- * @param result The response buffer, or NULL.
- * @return 1 when the host body consumed the command, else PsyCross's
- *         CdControl return. */
-extern "C" int openpete_CdControl(u_char com, u_char* param, u_char* result) {
-    OPL_INFO_F("thunks", "CdControl com=0x%02X param=%p result=%p (native)",
-               (unsigned)com, (void*)param, (void*)result);
-    return cdcontrol_host(com, param, result);
 }
 
 /** @brief Thunk for libcd CdControlB: the host body, then PsyCross's CdControlB when the host body did not consume the command.
@@ -3620,23 +3590,10 @@ void psyq_CdMix(CPUState* cpu) {
     cpu->v0 = 1u;
 }
 
-/** @brief Register a host read-completion callback for native code; psyq_compat.h maps CdReadCallback to it.
- *
- * The rewritten decomp's cd.c registers a host C function through
- * CdReadCallback. It is stored for cd_read_complete to call directly, in
- * place of a guest handler dispatched through the recompiler.
- * @param cb Host callback, called with the interrupt code CdlComplete and a
- *        NULL result pointer. */
-extern "C" void openpete_CdReadCallback(native_cd_read_cb_t cb) {
-    OPL_INFO_F("thunks", "openpete_CdReadCallback registered host cb=%p",
-               (void*)cb);
-    g_native_cd_read_cb = cb;
-}
-
 /** @brief Thunk for libcd CdReadCallback: records the guest read-completion handler a0.
  *
- * v0 is the handler it replaced. cd_read_complete calls the recorded handler
- * when no native handler is registered.
+ * v0 is the handler it replaced. cd_read_complete calls the recorded
+ * handler.
  * @param cpu Guest CPU state. */
 void psyq_CdReadCallback(CPUState* cpu) {
     /* Save the recompiled cb address; our psyq_CdRead thunk fires it

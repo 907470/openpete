@@ -249,8 +249,8 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
     s_bypass_armed = 1;
     call_by_address(cpu, chain->addr);
     /* Normally consumed at the prologue; clear defensively in case
-     * another dispatch arm (freecam freeze, native decomp) swallowed the
-     * call before our arm saw it. */
+     * another dispatch arm (freecam freeze) swallowed the call before our
+     * arm saw it. */
     s_bypass_armed = 0;
     if (s_frame_depth > 0)
         s_frames[s_frame_depth - 1].child_ns += op_now() - t0;
@@ -373,7 +373,7 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
      * run_link here would still produce the right result (it bottoms out
      * on the original), but only by re-calling the function through
      * call_by_address - a second pass over every dispatch arm of the
-     * prologue (freecam freeze, native decomp, feature registry) for a
+     * prologue (freecam freeze, feature registry) for a
      * call no mod is servicing. */
     if (idx >= link_count(chain)) return 0;
     run_link(cpu, chain, idx);

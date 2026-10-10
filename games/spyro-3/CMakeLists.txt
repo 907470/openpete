@@ -5,7 +5,6 @@
 # terrain probe, the terrain feeder's per-game data, and the sub-tick
 # orchestrator and interp region table the shared terrain feeder presents
 # through, and its mod SDK (MOD_SDK, cmake/openpete_mod_sdk.cmake).
-# Every PSX vaddr routes through the recompiler: no native-decomp TUs.
 
 # App icon, as in Spyro 1. OPENPETE_ROM_FREE_ICON=OFF decodes frame 0 of the
 # memory-card save-file header (D_title_8007ECA0 in the title overlay, 512

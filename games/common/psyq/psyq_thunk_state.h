@@ -9,9 +9,8 @@
  * timeline's next read then routes down the wrong path.
  *
  * Not packed: the CD and SPU main volumes (host gain only; a rewind past a
- * fade holds the post-fade gain until the guest's next fader write), and the
- * native-decomp read callback (a host function pointer). The virtual music
- * head is in the core CD section already.
+ * fade holds the post-fade gain until the guest's next fader write). The
+ * virtual music head is in the core CD section already.
  *
  * Layout, little-endian words, PSYQ_THUNK_STATE_BYTES total:
  *   [0]      pack_ver (PSYQ_THUNK_STATE_PACK_VER)

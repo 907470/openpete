@@ -367,7 +367,7 @@ cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
       -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build third_party/psxrecomp/build -j
 GAME=spyro-1 bash scripts/regen-recomp.sh     # -> games/spyro-1/generated/*.c
-GAME=spyro-1 bash scripts/regen-manifest.sh   # -> manifest/{symbols,globals}.toml + defsyms
+GAME=spyro-1 bash scripts/regen-manifest.sh   # -> manifest/{symbols,globals}.toml
 ```
 
 `regen-recomp.sh` reads `third_party/psxrecomp/build/PSXRecomp` and the
@@ -407,7 +407,7 @@ Every build sits on two axes: the target (which OS) and the recomp linkage
 
 ### The two linkage modes
 
-`OPENPETE_RECOMP_LINKAGE` (`games/spyro-1/CMakeLists.txt:91`) selects how
+`OPENPETE_RECOMP_LINKAGE` (`games/spyro-1/CMakeLists.txt:27`) selects how
 the recompiled module joins the runtime:
 
 - `static` (default) - the dev build. The recompiled C is an OBJECT library
@@ -428,7 +428,7 @@ linkage, not a fork.
 
 | Preset                  | Target                          | Linkage | Notes |
 |-------------------------|---------------------------------|---------|-------|
-| `linux-debug`           | Linux native, Debug             | static  | the only preset that builds the WIP hybrid decomp path |
+| `linux-debug`           | Linux native, Debug             | static  | dev build at -O0 with assertions |
 | `linux-release`         | Linux native, RelWithDebInfo    | static  | the default dev build |
 | `windows-mingw`         | Windows x64 cross (MinGW)       | static  | dev build, run via WSL2 interop |
 | `linux-release-shared`  | Linux native, RelWithDebInfo    | shared  | distribution build |
@@ -436,12 +436,6 @@ linkage, not a fork.
 | `windows-msvc`          | Windows native MSVC             | static  | placeholder, unvalidated |
 | `macos-universal`       | macOS x86_64 + arm64            | static  | placeholder, unvalidated |
 | `wasm`                  | Emscripten / browser            | static  | placeholder |
-
-Every preset except `linux-debug` sets `OPENPETE_SKIP_DECOMP=ON`
-(full-recompilation mode). `shared` requires it: configure aborts with a
-`FATAL_ERROR` otherwise, because the hybrid decomp path's `--defsym` aliases
-and native thunks assume one image
-(`games/spyro-1/CMakeLists.txt:95-100`).
 
 ### Where preset knobs live: `cmake/presets/<preset>.cmake`
 
@@ -471,11 +465,10 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 
 | Variable | Set by preset file | Why |
 |----------|--------------------|-----|
-| `OPENPETE_SKIP_DECOMP=ON` | `linux-release*`, `windows-mingw*`, `wasm` | full-recompilation mode |
 | `OPENPETE_FUNC_TRACE=OFF` | `linux-release*`, `windows-mingw*` | `-finstrument-functions` per-function tracing is a dev-only drill-down (1-8 ms/tick). Pinned as a tracked knob so no dist build inherits a stale ON; enable in a throwaway dir with `-DOPENPETE_FUNC_TRACE=ON` |
 | `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA (not left implicit - toolchains differ in their default) so the distributable runs on any x86-64 CPU. `x86-64-v3` (AVX2/FMA/BMI2) measures flat: the hot path is the recompiled game's scalar integer code with no vectorizable loops, so the pre-Haswell/Zen1 cutoff would buy nothing |
 | `-ffile-prefix-map` on source and binary dir | `*-shared` | `__FILE__`/assert strings are referenced `.rdata` that package-time stripping cannot remove; without the mapping they leak the build machine's username and layout |
-| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:565-566` forces IPO off on the exe target as a guard, and `cmake/openpete_game.cmake:145` keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
+| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:406-407` forces IPO off on the exe target as a guard, and `cmake/openpete_game.cmake:151` keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
 | `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis |
 | `OPENPETE_ROM_FREE_ICON=ON` | `*-shared` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record`, dropping the libav dependency |

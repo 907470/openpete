@@ -21,7 +21,7 @@ python3
 python3-pip
 # The build-time fences: TOML for vstream_sites.py on Python 3.10;
 # clang-tidy 14 for complexity_ratchet.py; libclang 14 and its bindings
-# for doc_ratchet.py, gen_code_docs.py and tools/rewrite/parser.py.
+# for doc_ratchet.py and gen_code_docs.py.
 python3-tomli
 clang-14
 clang-tidy-14

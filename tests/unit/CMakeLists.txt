@@ -43,23 +43,6 @@ if(WIN32)
 endif()
 add_test(NAME openpete_time_test COMMAND openpete_time_test)
 
-# openpete_hook_test - verifies the OPENPETE_HOOK decomp-seam macro. Built
-# twice from one source: the "matching" variant (no OPENPETE_BUILD) asserts
-# the macro is a no-op (byte-match-preserving); the "openpete" variant
-# (-DOPENPETE_BUILD) asserts it calls the named host hook. Header-only.
-add_executable(openpete_hook_test_matching openpete_hook_test.c)
-target_include_directories(openpete_hook_test_matching PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include)
-set_target_properties(openpete_hook_test_matching PROPERTIES C_STANDARD 99)
-add_test(NAME openpete_hook_test_matching COMMAND openpete_hook_test_matching)
-
-add_executable(openpete_hook_test_openpete openpete_hook_test.c)
-target_include_directories(openpete_hook_test_openpete PRIVATE
-    ${CMAKE_SOURCE_DIR}/core/include)
-target_compile_definitions(openpete_hook_test_openpete PRIVATE OPENPETE_BUILD)
-set_target_properties(openpete_hook_test_openpete PROPERTIES C_STANDARD 99)
-add_test(NAME openpete_hook_test_openpete COMMAND openpete_hook_test_openpete)
-
 # keymap_test - the [keys] action registry, token parser, layered store
 # and conflict scan. keymap.c reaches SDL only through the lookup/input
 # seams, so this installs fakes for both: the link line stays SDL-free

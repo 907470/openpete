@@ -8,7 +8,7 @@
   "configurePresets": [
     {
       "name": "linux-debug",
-      "displayName": "Linux native (Debug, hybrid decomp mode)",
+      "displayName": "Linux native (Debug)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-debug",
       "cacheVariables": {

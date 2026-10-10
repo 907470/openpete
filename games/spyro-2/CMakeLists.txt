@@ -3,8 +3,7 @@
 # The targets come from cmake/openpete_game.cmake; this game adds its
 # --skip-to-level driver, its freecam descriptor, its engine layout and its
 # sub-tick re-extract spine (ORCHESTRATOR plus INTERP_REGIONS), and its mod
-# SDK (MOD_SDK, cmake/openpete_mod_sdk.cmake). Every PSX vaddr routes
-# through the recompiler: no native-decomp TUs.
+# SDK (MOD_SDK, cmake/openpete_mod_sdk.cmake).
 
 # App icon, as in Spyro 1. OPENPETE_ROM_FREE_ICON=OFF decodes frame 0 of the
 # memory-card save-file header (D_8006410C in the EXE data, 512 bytes: "SC",

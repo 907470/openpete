@@ -9,8 +9,7 @@ compile_commands.json
 *.swp
 .DS_Store
 games/*/generated/
-# Auto-generated from spyro-1/build/psx.map by tools/build_manifest.py;
-# native.toml is hand-curated and is checked in.
+# Auto-generated from spyro-1/build/psx.map by tools/build_manifest.py.
 games/*/manifest/symbols.toml
 games/*/manifest/globals.toml
 third_party/psxrecomp/build/

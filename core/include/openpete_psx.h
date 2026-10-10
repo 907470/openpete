@@ -239,18 +239,6 @@ void* openpete_psx_to_host_span(uint32_t addr, uint32_t len);
  *         string that runs off its region's end. */
 const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_out);
 
-/** @brief Map a host pointer back to its PSX address.
- *
- * A pointer into main RAM maps to its KSEG0 address and one into the
- * scratchpad to 0x9F800000 + offset. Any other pointer whose low 32 bits
- * already form a KSEG0, KSEG1 or KUSEG RAM address returns those bits;
- * decompiled source that computes a pointer by arithmetic on an address
- * literal produces such values. The source rewriter calls it when native
- * code stores a host pointer into a PSX-aliased slot.
- * @param host_ptr Host pointer.
- * @return The PSX address, or 0 (PSX NULL) for NULL or any other pointer. */
-uint32_t openpete_host_to_psx(const void* host_ptr);
-
 /** @brief Copy bytes into main RAM at a PSX virtual address.
  *
  * The copy is clamped, with a warning, to the bytes between the target and
@@ -267,19 +255,6 @@ void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
  * descriptor (openpete_recomp_module.h) - core carries no link-time
  * reference to generated code. Game code that needs to re-enter the
  * recompiled world uses openpete_recomp_module_get()->dispatch. */
-
-/* Call a PSX function by vaddr from native C/C++ code. Used by the source
- * rewriter for `(*FN_PTR_GLOBAL)(args...)` call sites in matching-decomp,
- * where FN_PTR_GLOBAL stores a PSX vaddr. Routes through call_by_address
- * - tries the native dispatch table first, falls back to compiled, then
- * to MIPS interpretation for overlay code. Saves/restores the caller's
- * cpu scratch slots. Pointer args must already be converted to PSX
- * vaddrs (use openpete_host_to_psx); int args pass through as uint32_t.
- * Up to 4 register args (a0..a3); 5+ args not yet supported. Returns
- * cpu->v0 - caller casts to int / pointer / etc. as appropriate. */
-uint32_t openpete_psx_call_fnptr(uint32_t vaddr,
-                                 uint32_t a0, uint32_t a1,
-                                 uint32_t a2, uint32_t a3);
 
 /* --- Root counter 2 ------------------------------------------------------ */
 

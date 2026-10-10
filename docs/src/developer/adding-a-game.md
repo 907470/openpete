@@ -68,11 +68,8 @@ points the recompiler's scanner misses), `asm_dispatch_targets/`,
 `ram_diff_expect.toml` for `scripts/check_ram_diff.sh`, and
 `disc_boot_order.toml`, the disc cache loader's boot-order profile, generated
 from a boot trace ([disc-io.md](disc-io.md#boot-order-profile)).
-`symbols.toml` and `globals.toml` are generated and gitignored, as is
-`generated/`.
-
-A game that compiles decomp TUs natively adds `manifest/native.toml`; without
-it `regen-manifest.sh` writes the two symbol tables and stops.
+`symbols.toml` and `globals.toml` are written by `regen-manifest.sh` and
+gitignored, as is `generated/`.
 
 ## 4. `CMakeLists.txt`
 

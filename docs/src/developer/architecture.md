@@ -40,7 +40,7 @@ presentation layer.
 
 ## Code that runs the game
 
-Three bodies of C are linked into one binary and share one address space
+Two bodies of C are linked into one binary and share one address space
 model.
 
 - **Recompiled C.** `third_party/psxrecomp/recompiler` translates `PSX.EXE`
@@ -52,33 +52,21 @@ model.
   sharing one PSX load address coexist at link time;
   `games/common/overlay_dispatch.c` routes a call to the resident overlay.
   Regenerate with `scripts/regen-recomp.sh`.
-- **Rewritten decomp C.** Functions with a matching decompile in the sibling
-  `spyro-1/src/` can be compiled directly instead of recompiled. `tools/rewrite_tu.py`
-  (passes under `tools/rewrite/`) rewrites a whole translation unit for an
-  LP64/LLP64 host - pointer widths, struct relayout, PSYQ boundary
-  stride - and the result lands in `generated/rewritten/<tu>.rewritten.c`.
-  Which TUs take this path, and which globals and calls need link-time
-  aliasing or dispatch interception, is curated in
-  `games/spyro-1/manifest/native.toml`. The unit is the translation unit, not
-  the function; there is no per-function `kind` switch.
 - **PsyCross.** `third_party/PsyCross` re-implements the PSYQ system library
   (`libgpu`, `libcd`, `libspu`, ...) on SDL and OpenGL. Its ABI boundary,
   including the `u_long` and `OT_TAG` width traps, is documented in
   `psycross-boundary.md`; the fork's per-change record is under `psycross/`.
 
-Decomp mode is work in progress. `linux-release`, `windows-mingw`, and `wasm`
-pin `OPENPETE_SKIP_DECOMP=ON` (`cmake/presets/linux-release.cmake:4`), which
-drops the rewritten TUs and routes every vaddr through the recompiler;
-`linux-debug` leaves it OFF.
+Every function of the game runs as recompiled code, in every preset. The
+matching decompile supplies the recompiler's inputs (`PSX.EXE`, the
+overlays, `asm/` and `psx.map`); its C is not compiled into the port.
 
 ## Shared memory
 
-`core/psx/cpu.c:30` defines `g_ram`, the 2 MiB main RAM array, plus a
-1 KiB scratchpad. All three bodies of code address the same buffer:
+`core/psx/cpu.c:28` defines `g_ram`, the 2 MiB main RAM array, plus a
+1 KiB scratchpad. Recompiled code and host code address the same buffer:
 recompiled code through the `psx_runtime.h` load/store callbacks bound in
-`core/psx/cpu.c`, rewritten decomp C through link-time
-`--defsym=<symbol>=g_ram+<offset>` aliases generated from
-`manifest/globals.toml`, and host code through `openpete_psx_get_ram()`.
+`core/psx/cpu.c`, host code through `openpete_psx_get_ram()`.
 `g_ram` is page-aligned so the sub-tick view can `mprotect` it.
 
 Dispatch glue lives in `core/psx/dispatch.c`: `call_by_address` for

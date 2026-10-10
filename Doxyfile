@@ -41,7 +41,6 @@ INPUT                  = core/config \
                          games/common/psyq \
                          games/common/renderer \
                          games/spyro-1 \
-                         games/spyro-1/decomp \
                          games/spyro-1/dist \
                          games/spyro-1/features \
                          games/spyro-1/mods \

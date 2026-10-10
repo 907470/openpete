@@ -21,13 +21,10 @@
 #define RAM_SIZE      OPENPETE_PSX_RAM_SIZE
 #define SCRATCH_SIZE  OPENPETE_PSX_SCRATCH_SIZE
 
-/* g_ram is non-static so per-game decomp builds can use linker
- * `--defsym=<game-symbol>=g_ram+<offset>` to alias native C globals to
- * fixed PSX RAM addresses. Recompiler-emitted accesses index it directly;
- * host code reaches it through `openpete_psx_get_ram()`. */
-/* Page-aligned so the sub-tick RAM guard can mprotect it (see
- * openpete_subtick_view.h). Alignment is free here and preserves every
- * --defsym alias, which are all g_ram+offset. */
+/* g_ram is non-static because recompiler-emitted accesses index it
+ * directly; host code reaches it through `openpete_psx_get_ram()`.
+ * Page-aligned so the sub-tick RAM guard can mprotect it (see
+ * openpete_subtick_view.h). */
 uint8_t g_ram[RAM_SIZE] __attribute__((aligned(4096)));
 static uint8_t g_scratch[SCRATCH_SIZE];
 
@@ -204,34 +201,6 @@ const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_
     else return NULL;
     if (len_out != NULL) *len_out = len;
     return (const char*)p;
-}
-
-/* Inverse of openpete_psx_to_host_ptr for RAM and scratchpad pointers. */
-uint32_t openpete_host_to_psx(const void* host_ptr) {
-    if (host_ptr == NULL) return 0u;
-    const uint8_t* p = (const uint8_t*)host_ptr;
-    if (p >= g_ram && p < g_ram + RAM_SIZE) {
-        return OPENPETE_PSX_KSEG0_BASE | (uint32_t)(p - g_ram);
-    }
-    if (p >= g_scratch && p < g_scratch + SCRATCH_SIZE) {
-        return OPENPETE_PSX_SCRATCH_BASE | (uint32_t)(p - g_scratch);
-    }
-    /* Integer-cast-to-pointer fallback: matching-decomp source occasionally
-     * computes a "pointer" by arithmetic on a vaddr literal - e.g.
-     *   levelVram = (char *)0x80200000 - _stacksize - 0x40000;
-     * On the host this evaluates to a uintptr whose low 32 bits hold the
-     * intended PSX vaddr but whose value lies outside g_ram. If those low
-     * bits already look like a KSEG0/KSEG1/KUSEG vaddr, propagate them
-     * through; the rewriter's cleaner Pass-4 cast handling is not yet in. */
-    uintptr_t raw = (uintptr_t)host_ptr;
-    uint32_t lo = (uint32_t)raw;
-    uint32_t phys = lo & 0x1FFFFFFFu;
-    if ((lo >= OPENPETE_PSX_KSEG0_BASE && lo < OPENPETE_PSX_KSEG0_END) ||
-        (lo >= OPENPETE_PSX_KSEG1_BASE && lo < OPENPETE_PSX_KSEG1_END) ||
-        (lo < RAM_SIZE && phys < RAM_SIZE)) {
-        return lo;
-    }
-    return 0u;
 }
 
 /** @brief Map a PSX access of @p n bytes to a host pointer for the bus callbacks; NULL when unmapped.

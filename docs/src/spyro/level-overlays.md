@@ -236,26 +236,20 @@ rather than re-deriving it from the RAM marker, because a cutscene-style load
 can legitimately overwrite that word before the snapshot is taken.
 `game_on_state_loaded` re-reads the word as the fallback path.
 
-## 5. Decomp ⇄ recomp boundary for overlays
+## 5. Decompiled overlay sources
 
-Every overlay currently runs as psxrecomp's translated C. No overlay TU appears
-in `SPYRO_NATIVE_SOURCES` in `games/spyro-1/CMakeLists.txt`; only the main-EXE
-side `overlay_pointers.rewritten.c` is rewritten, and the shipping presets
-(`cmake/presets/linux-release.cmake`, `windows-mingw.cmake`, `wasm.cmake`) pin
-`OPENPETE_SKIP_DECOMP=ON`, which drops the rewritten TUs entirely and runs the
-full recomp path.
-
-The decomp has partially matched overlay sources under
+Every overlay runs as psxrecomp's translated C, as does the main EXE. The
+decomp has partially matched overlay sources under
 `spyro-1/src/overlays/level_<NN>/`, split into `moby.c`, `particle.c`,
 `terminator.c`, plus `balloonist.c` or `flight.c` where the level has one. Each
-file is a mix of `INCLUDE_ASM` stubs and shared `.inc.h` bodies. Swapping such a
-function into openpete uses the same manifest/thunk infrastructure as any other
-function; nothing in the overlay path is special-cased against it.
+file is a mix of `INCLUDE_ASM` stubs and shared `.inc.h` bodies. openpete
+compiles none of them: the recompiler reads the decomp's matching build output
+and `asm/`.
 
-Either way the function-pointer slot mechanism (§3) is unchanged: a decomped
-overlay installs the same `g_SpawnMoby` pointers the recompiled one would. The
-seam is address-stable, which is why the named-anchor hooks and the modding
-framework can target overlay behaviour by anchor.
+The function-pointer slot mechanism (§3) installs the same `g_SpawnMoby`
+pointers whichever way the overlay's code was produced. The seam is
+address-stable, which is why the named-anchor hooks and the modding framework
+can target overlay behaviour by anchor.
 
 ## 6. Gotchas for openpete work
 

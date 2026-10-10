@@ -577,14 +577,6 @@ extern void openpete_trace_writes_end(CPUState* cpu);
  * terrain renderer reads it (games/common/renderer/terrain.c). */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
-/* Native-decomp dispatch table, generated from manifest/native.toml by
- * tools/gen_dispatch.py into generated/native_dispatch.c. Each [[dispatch]]
- * entry names a decomp C function that takes over its PSX vaddr; the
- * generator emits the cpu-stash, psyq___main bootstrap (for main), arg
- * unpacking from a0..a3/stack, and return code. A new entry point is added
- * to native.toml and scripts/regen-manifest.sh re-run. */
-extern int spyro_native_dispatch(CPUState* cpu, uint32_t addr);
-
 /** @brief Reports whether OPENPETE_NOOP_SREND suppresses the handwritten renderer at a guest address.
  *
  * The mask is latched on first use, since this sits on the per-call dispatch
@@ -638,12 +630,11 @@ static int srend_noop_hit(uint32_t addr) {
  *
  * Called from the dispatcher on every translated-function entry, after the
  * PSX-trace hooks. Order: debug free-camera freeze, mod override chains,
- * the generated native-decomp dispatch, the feature registry,
- * OPENPETE_NOOP_SREND renderer suppression, then two diagnostics: the
- * OPENPETE_GEM_TRACE gem-cull dump at func_80022A2C (openpete_frame 2999
- * and 3000, falls through to the original), and a write-trace bracket
- * around every entry to func_80023AC4 (Spyro's renderer), which runs the
- * function itself.
+ * the feature registry, OPENPETE_NOOP_SREND renderer suppression, then two
+ * diagnostics: the OPENPETE_GEM_TRACE gem-cull dump at func_80022A2C
+ * (openpete_frame 2999 and 3000, falls through to the original), and a
+ * write-trace bracket around every entry to func_80023AC4 (Spyro's
+ * renderer), which runs the function itself.
  * @param cpu Guest CPU state.
  * @param addr Guest address of the function being entered.
  * @return 1 when the call was handled or replaced and the original must not
@@ -658,19 +649,15 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     }
 
     /* Mod override chains. One global-flag branch when no mods are loaded
-     * (inertness gate). Runs before the native-decomp/feature arms: a mod
-     * that replaces a function replaces it, full stop; freecam (a user debug
-     * tool) still wins above so freezing behaves identically with mods
-     * loaded. */
-    if (openpete_mods_active && openpete_mods_dispatch(cpu, addr)) {
-        return 1;
-    }
-
-    /* NOT trace-scoped, unlike the feature-registry hooks below: these two arms
-     * run on EVERY translated-function entry, so a pair of clock reads here
+     * (inertness gate). Runs before the feature arm: a mod that replaces a
+     * function replaces it, full stop; freecam (a user debug tool) still wins
+     * above so freezing behaves identically with mods loaded.
+     *
+     * NOT trace-scoped, unlike the feature-registry hooks below: this arm
+     * runs on EVERY translated-function entry, so a pair of clock reads here
      * would cost more than the thing being measured. The registry's own scopes
      * start only after an address match, which is rare. */
-    if (spyro_native_dispatch(cpu, addr)) {
+    if (openpete_mods_active && openpete_mods_dispatch(cpu, addr)) {
         return 1;
     }
 

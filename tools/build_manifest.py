@@ -7,10 +7,7 @@ Emits two TOML files into <out_dir>:
   globals.toml   globals:   addr, name, kind=decomp|recomp, source_file, section
 
 `kind` is derived from the .o path: build/src/* (matching-decomp C) ->
-"decomp"; build/asm/* (handwritten MIPS) -> "recomp". The downstream
-generators (gen_defsyms, gen_dispatch, gen_thunks) consume these
-manifests to emit the per-game plumbing that today is hand-written in
-games/spyro-1/decomp/ and game_extras_impl.c.
+"decomp"; build/asm/* (handwritten MIPS) -> "recomp".
 
 Map file format (GNU ld):
 

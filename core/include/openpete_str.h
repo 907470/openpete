@@ -1,12 +1,10 @@
 /* openpete_str.h - small string helpers with no libc portability traps.
  *
- * Why this exists rather than <strings.h>: the tree carries more than a
- * dozen headers of its own named strings.h: one per Spyro overlay under
- * games/spyro-1/generated/rewritten, plus PsyCross's psx/strings.h.
- * Any translation unit compiled with one of those directories on its
- * include path resolves #include <strings.h> to a game header, so the
- * POSIX declaration never arrives and strcasecmp compiles as an implicit
- * int(). Windows hides it behind a different spelling again. */
+ * Why this exists rather than <strings.h>: PsyCross carries a header of its
+ * own named strings.h (psx/strings.h). Any translation unit compiled with
+ * that directory on its include path resolves #include <strings.h> to it,
+ * so the POSIX declaration never arrives and strcasecmp compiles as an
+ * implicit int(). Windows hides it behind a different spelling again. */
 
 #ifndef OPENPETE_STR_H
 #define OPENPETE_STR_H

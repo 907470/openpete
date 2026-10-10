@@ -1,24 +1,12 @@
 # games/spyro-1/CMakeLists.txt - Spyro 1 binary.
 #
 # The module and executable skeleton come from cmake/openpete_game.cmake;
-# this file adds what only this game has: the native-decomp TUs and their
-# link-time aliases, the shared-linkage attach and export surface, the mod
-# SDK and its docs, the build-time mod compile, the decomp-derived icon, the
-# SoundTable names, the state-region tables, the Windows subsystem and ASLR
-# choices, and the browser link.
+# this file adds what only this game has: the shared-linkage attach and
+# export surface, the mod SDK and its docs, the build-time mod compile, the
+# decomp-derived icon, the SoundTable names, the state-region tables, the
+# Windows subsystem choice, and the browser link.
 
 set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
-
-# Build switch: drop the native-decomp TUs entirely and route every PSX
-# vaddr through the recompiler. Useful for bisecting decomp-introduced
-# regressions and for confirming the recomp path is self-sufficient.
-# When ON we omit the rewritten/*.c TUs, native_thunks.cpp, the
-# generated native_dispatch.c, and the link-time --defsym aliases; a
-# tiny stub provides spyro_native_dispatch() returning 0 so
-# psx_override_dispatch_game falls straight through to recomp.
-option(OPENPETE_SKIP_DECOMP
-       "Skip native-decomp TUs and run the full recomp path"
-       OFF)
 
 # Per-function CPU tracing for the perf profiler: instrument the main
 # generated EXE with -finstrument-functions so func_trace.c can attribute
@@ -27,58 +15,6 @@ option(OPENPETE_SKIP_DECOMP
 option(OPENPETE_FUNC_TRACE
        "Instrument the generated EXE for per-function CPU tracing"
        OFF)
-
-# Native-decomp TU list. Centralized so OPENPETE_SKIP_DECOMP can drop
-# them in one place - both from add_executable() and from the per-source
-# flag/include loop further down.
-set(SPYRO_NATIVE_SOURCES
-    ${SPYRO_GENERATED}/rewritten/main.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cd.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/rand.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/checkpoint.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/moby_interpolation_check.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cyclorama.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/environment.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/specular_and_metal.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cutscene.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/4BEF8.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/music.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/special_surfaces.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/save_file.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/strings.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/cheats.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/hud.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/gamepad.rewritten.c
-    # camera.rewritten.c - deferred (SIGSEGV during demo gameplay).
-    ${SPYRO_GENERATED}/rewritten/spu.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/overlay_pointers.rewritten.c
-    ${SPYRO_GENERATED}/rewritten/moby_helpers.rewritten.c
-    # pete.rewritten.c - deferred (Pass 5c splice corruption).
-    # loaders.rewritten.c - re-deferred. Pass 1/4 sentinel-cast fix
-    # cleared the early PatchMobyModelPointers crash but exposed
-    # non-deterministic downstream crashes (SoundsUpdate at slot
-    # 11 with m_Moby=0x0e11e96d junk vaddr -> psx_to_host_ptr=NULL
-    # -> SIGSEGV; PutDrawEnv(NULL) on later runs). State corruption
-    # from a still-unidentified loaders.c write site; needs deeper
-    # debugging beyond this session.
-    # initialization.c / completion.c re-enable gated on Pass 4/5
-    # (integer-cast pointer arithmetic + struct-by-value boundary).
-)
-
-if(OPENPETE_SKIP_DECOMP)
-    # native_dispatch_stub.c provides spyro_native_dispatch returning 0,
-    # so psx_override_dispatch_game falls straight through to recomp.
-    set(SPYRO_DECOMP_TUS native_dispatch_stub.c)
-else()
-    set(SPYRO_DECOMP_TUS
-        ${SPYRO_NATIVE_SOURCES}
-        # Generated from manifest/native.toml by tools/gen_dispatch.py +
-        # tools/gen_thunks.py. native_dispatch.c is the inbound override
-        # switch (recomp -> native); native_thunks.cpp is the outbound side
-        # (native -> recomp / native -> PSYQ).
-        ${SPYRO_GENERATED}/native_dispatch.c
-        ${SPYRO_GENERATED}/native_thunks.cpp)
-endif()
 
 # --- ROM-derived recomp module -----------------------------------------
 #
@@ -91,13 +27,6 @@ endif()
 set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
     "Recomp module linkage: static (dev) or shared (distribution)")
 set_property(CACHE OPENPETE_RECOMP_LINKAGE PROPERTY STRINGS static shared)
-
-if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared" AND NOT OPENPETE_SKIP_DECOMP)
-    message(FATAL_ERROR
-        "OPENPETE_RECOMP_LINKAGE=shared requires OPENPETE_SKIP_DECOMP=ON "
-        "(hybrid decomp mode is static-only: --defsym aliases + native "
-        "thunks assume one image)")
-endif()
 
 # Host-side attach TU + (shared) the generated export surface.
 if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
@@ -201,15 +130,6 @@ openpete_add_game(spyro-1
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
 
-        # Native translations of spyro-1/src/*.c compiled via the AST
-        # rewriter (tools/rewrite_tu.py). Each native TU is rewritten by
-        # scripts/regen-manifest.sh into
-        # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c - Pass 2 redirects
-        # diverging bare globals through __psx_<name> uint32 storage that
-        # gen_defsyms.py aliases into g_ram. CMake compiles the rewritten
-        # source, never the original. Suppressed when OPENPETE_SKIP_DECOMP=ON.
-        ${SPYRO_DECOMP_TUS}
-
         # The attach TU registers the module (static) or dlopens it (shared).
         ${SPYRO_RECOMP_ATTACH_SOURCES}
 
@@ -239,21 +159,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
         # Dev build: console subsystem so stdout/stderr land in the parent
         # terminal (incl. WSL2 interop) with no extra plumbing.
         target_link_options(openpete-spyro1 PRIVATE -mconsole)
-    endif()
-    if(NOT OPENPETE_SKIP_DECOMP)
-        # Disable ASLR - DECOMP MODE ONLY. The native-decomp globals are
-        # link-aliased into g_ram via -Wl,--defsym=name=g_ram+offset. On ELF
-        # this produces a PIE-aware relocation; on PE/COFF the MinGW linker
-        # can't represent the absolute symbol ("stripping non-representable
-        # symbol ..."), so the absolute address gets baked into call sites
-        # with no entry in .reloc. ASLR then moves g_ram at load time, the
-        # baked addresses rot, and the first decomp global access faults.
-        # Full-recomp builds (SKIP_DECOMP=ON - every release/dist preset)
-        # have no defsym aliases, so they keep ASLR (helps the AV/SmartScreen
-        # posture).
-        target_link_options(openpete-spyro1 PRIVATE
-            -Wl,--disable-dynamicbase
-            -Wl,--disable-high-entropy-va)
     endif()
 endif()
 
@@ -664,54 +569,4 @@ if(OPENPETE_FUNC_TRACE)
         PROPERTIES
             COMPILE_FLAGS "${_functrace_full_flags}"
     )
-endif()
-
-# Common compile flags for any spyro-1/src/*.c TU compiled natively.
-#
-#   -std=gnu11 + -include assert.h: PsyCross's libgpu.h uses C11 static_assert
-#   -fcommon: tentative file-scope defs become COMMON so --defsym aliases win
-#   -include psyq_compat.h: bridges PSYQ-renamed types (RECT vs RECT16)
-#   -include native_renames.h: auto-generated symbol redirects (manifest ->
-#     openpete_/spyro_native_ prefixes) - see tools/gen_renames.py
-#   -w: mutes matching-decomp warnings (unused decls from gameplay headers)
-set(SPYRO_DECOMP_INCLUDES
-    "${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include;${CMAKE_SOURCE_DIR}/third_party/PsyCross/include/psx")
-set(SPYRO_DECOMP_BASE_FLAGS
-    "-std=gnu11 -fcommon -include assert.h \
--include ${CMAKE_CURRENT_SOURCE_DIR}/decomp/psyq_compat.h \
--include ${SPYRO_GENERATED}/native_renames.h -w")
-
-# Per-TU compile flags / shadow include trees (Pass 1 struct relayout).
-# Each native TU gets ${SPYRO_GENERATED}/rewritten/<stem>/include/
-# prepended to its -I list so PSX-laid struct definitions win over the
-# originals in spyro-1/include. The shadow trees are populated by
-# tools/rewrite_tu.py during scripts/regen-manifest.sh.
-#
-# Skipped under OPENPETE_SKIP_DECOMP - none of the rewritten TUs are
-# in the build, native_thunks.cpp is gone, and the --defsym aliases
-# would dangle (the rewritten symbols they alias don't exist).
-if(NOT OPENPETE_SKIP_DECOMP)
-    foreach(SRC ${SPYRO_NATIVE_SOURCES})
-        get_filename_component(_stem "${SRC}" NAME_WE)  # main, cd, ...
-        set(_shadow "${SPYRO_GENERATED}/rewritten/${_stem}/include")
-        set_source_files_properties(
-            ${SRC}
-            PROPERTIES
-                COMPILE_FLAGS "${SPYRO_DECOMP_BASE_FLAGS}"
-                INCLUDE_DIRECTORIES "${_shadow};${SPYRO_DECOMP_INCLUDES}"
-        )
-    endforeach()
-    set_source_files_properties(
-        ${SPYRO_GENERATED}/native_thunks.cpp
-        PROPERTIES
-            INCLUDE_DIRECTORIES "${SPYRO_DECOMP_INCLUDES}"
-    )
-
-    # Link-time aliasing of native-decomp globals into PSX RAM (g_ram + offset).
-    # The defsym list is generated from manifest/native.toml + the parsed
-    # psx.map (manifest/globals.toml) by tools/gen_defsyms.py - see
-    # scripts/regen-manifest.sh. g_ram is the public symbol exposed by
-    # core/psx/cpu.c.
-    include(${SPYRO_GENERATED}/native_aliases.cmake)
-    target_link_options(openpete-spyro1 PRIVATE ${SPYRO_NATIVE_DEFSYMS})
 endif()

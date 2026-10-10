@@ -511,10 +511,8 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         s_hang_recent_head = (s_hang_recent_head + 1u) % HANG_RECENT;
     }
     /* Pad-read probe: the guest function that consumes the pad buffer. Sited
-     * here rather than in the game's native-dispatch switch because every
-     * translated function entry passes through this call in BOTH build modes,
-     * so the probe reads the same moment whether the tick ran the recompiled
-     * function or its decompiled twin. */
+     * here because every translated function entry passes through this call,
+     * ahead of every game and mod override arm. */
     if (openpete_pad_read_pc != 0u && addr == openpete_pad_read_pc)
         openpete_pace_pad_read();
 

@@ -4,10 +4,11 @@ Called by the bench entry points before any timed run. Refuses - with the
 failed precondition named - rather than producing a number that measures
 the wrong thing:
 
-  1. Untuned binary: an exe whose build cache says OPENPETE_SKIP_DECOMP=OFF
-     (read from CMakeCache, never set for a child - wslenv-guard: no-launch)
-     (the -O0 dev hybrid) or that lives outside a linux-release /
-     windows-mingw build tree. A dev-build fps figure is not a result.
+  1. Untuned binary: an exe whose build cache names a preset include other
+     than linux-release*.cmake / windows-mingw*.cmake (the -O0 linux-debug
+     build, or a configure that named no preset), whose C/C++ flags carry
+     -fsanitize, or that lives outside a linux-release / windows-mingw
+     build tree. A dev-build fps figure is not a result.
   2. Contention: another openpete process already running - machine load
      has produced 10-20x phantom "regressions" before.
 
@@ -20,6 +21,7 @@ Shell callers run it as a command:
     python3 scripts/fences/bench_guard.py --exe "$EXE" || exit 65
 """
 import argparse
+import fnmatch
 import os
 import subprocess
 import sys
@@ -62,18 +64,44 @@ def _build_cache(exe):
     return None
 
 
+def _cache_entries(cache):
+    """Return (preset include path or None, [C/C++ flag values]) from a cache.
+
+    The include entry is matched by its `CMAKE_PROJECT_openpete_INCLUDE:`
+    prefix with any type: a preset's cacheVariables set it untyped, so every
+    cache spells it `:UNINITIALIZED=`."""
+    include, flags = None, []
+    for line in open(cache, errors="replace"):
+        key, sep, val = line.rstrip("\n").partition("=")
+        if not sep:
+            continue
+        name = key.split(":", 1)[0]
+        if name == "CMAKE_PROJECT_openpete_INCLUDE":
+            include = val
+        elif name in ("CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS"):
+            flags.append(val)
+    return include, flags
+
+
 def check(exe, allow_untuned=False):
     _wslenv_scan()
     exe = os.path.abspath(exe)
     if not allow_untuned:
         cache = _build_cache(exe)
         if cache:
-            txt = open(cache, errors="replace").read()
-            if "OPENPETE_SKIP_DECOMP:BOOL=OFF" in txt:
-                _die("exe's build cache has OPENPETE_SKIP_DECOMP=OFF (dev "
-                     "hybrid, -O0 recomp) - not a benchmark binary. Use "
-                     "build/linux-release or windows-mingw, or pass "
-                     "--allow-untuned. cache: %s" % cache)
+            include, flags = _cache_entries(cache)
+            base = os.path.basename(include or "")
+            if not (fnmatch.fnmatch(base, "linux-release*.cmake")
+                    or fnmatch.fnmatch(base, "windows-mingw*.cmake")):
+                _die("exe's build cache names preset include %r, not "
+                     "linux-release*.cmake or windows-mingw*.cmake - not a "
+                     "benchmark binary. Use build/linux-release or "
+                     "windows-mingw, or pass --allow-untuned. cache: %s"
+                     % (base or "(none)", cache))
+            if any("-fsanitize" in f for f in flags):
+                _die("exe's build cache compiles with -fsanitize - not a "
+                     "benchmark binary. Pass --allow-untuned to override. "
+                     "cache: %s" % cache)
         if not ("linux-release" in exe or "windows-mingw" in exe):
             _die("exe is outside a linux-release/windows-mingw tree (%s); "
                  "numbers from other builds are not comparable. Pass "

@@ -38,8 +38,9 @@ at --at REV. Per blessed revision the rows name:
  5. psxrecomp: configure and build third_party/psxrecomp/recompiler into the
     worktree's third_party/psxrecomp/build on the host.
  6. regen: scripts/regen-manifest.sh, then scripts/regen-recomp.sh, in the
-    worktree on the host (the AST rewriter pointed at the worktree's decomp,
-    see rewriter_decomp).
+    worktree on the host (for a revision that still carries the AST
+    rewriter, the rewriter pointed at the worktree's decomp, see
+    rewriter_decomp).
  7. identity: the recomp input digest and the generated-tree digest of the
     worktree against the row's columns; a mismatch refuses.
  8. build: a fresh configure and engine build in the capture image
