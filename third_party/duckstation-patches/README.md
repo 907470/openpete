@@ -4,7 +4,7 @@ The openpete project's own changes to DuckStation: the `duckstation-regtest`
 psxtrace capture module and its recorders, which write the reference trace
 the oracle gate (`tests/harness/check_psx_oracle.sh`) replays and the
 per-record GTE hash sidecar (`<trace>.gte`, patch 0028) it compares, plus a
-headless EGL build fix and an SPU final-mix WAV dump. Each file is
+headless EGL build fix, an SPU final-mix WAV dump, and the card probes (PC-keyed RAM snapshots, the card window recorder, bk2 playback, card export and import). Each file is
 `git format-patch` output, one commit per file, applied in the order
 `series` lists.
 
@@ -31,6 +31,11 @@ Patches that change what a capture records, by number:
 | 0032 | the `OPENPETE_SPU_DUMP` final-mix dump is written on the SPU's final-mix output path (before, the dump held a header and no frames) and shutdown closes it, writing the RIFF and data sizes |
 | 0033 | `-psxtrace-spuq spuwrite:HEX`: a `.spuq` row per SpuWrite call with source, size and the head of every sounding voice |
 | 0034 | `-pad-script PATH`: port 1 presses from steps that wait on guest RAM; `quit` ends the run |
+| 0035 | `-ram-dump-at PC[,t1=HEX][,a0=HEX][,hit=N][,ret]=PATH`: main RAM to PATH and the registers to `PATH.txt` at the Nth execution of PC with the register conditions true, or at that call's return; `PcHooks` shares one breakpoint per address among probes |
+| 0036 | `-card-window PATH`: OpenEvent calls, DeliverEvent entries, card commands on SIO0 (command and sector), card event handler entries, and main-path loads of card-handler bytes between a VBLANK and the card completion |
+| 0037 | `-bk2 PATH`: a BizHawk Octoshock movie on the port 1 analog controller, one Input Log line per frame |
+| 0038 | `-card-export SLOT:FRAME:PATH`: the card image (131072 raw bytes) after FRAME frames, `0` before the first, `end` at shutdown |
+| 0039 | `-card1 PATH`: slot 1's non-persistent card holds the image at PATH, never written back |
 
 Apply (from the openpete checkout root; `--no-build` skips the build):
 

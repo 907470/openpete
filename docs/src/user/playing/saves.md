@@ -17,6 +17,8 @@ Every write the game makes goes to the file at once. The files are standard
 | `--card-dir PATH` <!-- id: knob:card_dir --> | Use another folder for both cards |
 | `--card1 PATH` <!-- id: flag:--card1 home -->, `--card2 PATH` <!-- id: flag:--card2 home --> | Use a specific image for port A or port B |
 | {{ flag("flag:--no-card") }} <!-- id: flag:--no-card --> | Insert no card; the game cannot save |
+| {{ flag("flag:--no-card1") }} <!-- id: flag:--no-card1 --> | Leave port A empty; port B keeps its card |
+| {{ flag("flag:--no-card2") }} <!-- id: flag:--no-card2 --> | Leave port B empty; port A keeps its card |
 | {{ flag("flag:--card-unformatted") }} <!-- id: flag:--card-unformatted --> | Provision a blank unformatted card, so the game's own format screen runs |
 
 ### Mods and memory cards

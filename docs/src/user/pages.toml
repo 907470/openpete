@@ -35,6 +35,8 @@
 "flag:--music" = "customizing/audio.md#audio"
 "flag:--mute" = "customizing/audio.md#audio"
 "flag:--no-card" = "playing/saves.md#memory-cards"
+"flag:--no-card1" = "playing/saves.md#memory-cards"
+"flag:--no-card2" = "playing/saves.md#memory-cards"
 "flag:--no-config" = "customizing/config-file.md#commands"
 "flag:--no-log-file" = "help/file-locations.md#other-files"
 "flag:--notex" = "playing/dev-overlay.md#sections"

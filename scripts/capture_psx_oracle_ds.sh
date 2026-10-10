@@ -85,6 +85,11 @@
 #                                  refuses a capture in which a named kind
 #                                  recorded no access
 #           --no-card              reference boots with no memory card
+#           --card-export PATH     write the slot 1 card as the fork formatted
+#                                  it, before the first frame (regtest
+#                                  -card-export 1:0:PATH), to PATH: the card
+#                                  fixture openpete's card-present runs copy;
+#                                  refuses a run that wrote no 131072-byte image
 #           --pad-script PATH      drive the port 1 controller from PATH
 #                                  (RAM-conditioned steps, regtest -pad-script);
 #                                  the full log is kept in <out>.log and a run
@@ -116,7 +121,7 @@ MAX_RUNTIME=""
 VBLPOS=0; SPUQ=(); SPUREG=()
 CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
-PAD_SCRIPT=""; SPU_DUMP=0
+PAD_SCRIPT=""; SPU_DUMP=0; CARD_EXPORT=""
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 MANIFEST="${OPENPETE_REGIONS_MANIFEST:-games/spyro-1/manifest/gameplay_state_regions.toml}"
 
@@ -166,6 +171,7 @@ while [[ $# -gt 0 ]]; do
         --vsync-query-skip) VSYNC_QUERY_SKIP="$2"; shift 2 ;;
         --cd-read-pc-min) CD_READ_PC_MIN="$2"; shift 2 ;;
         --no-card) NO_CARD=1; shift ;;
+        --card-export) CARD_EXPORT="$2"; shift 2 ;;
         --vblpos) VBLPOS=1; shift ;;
         --spuq) SPUQ+=("$2"); shift 2 ;;
         --spureg) SPUREG+=("$2"); shift 2 ;;
@@ -236,6 +242,12 @@ for pc in "${VSYNC_CB_PCS[@]}"; do REC_ARGS+=(-psxtrace-vsync-cb-pc "$pc"); done
 [[ -n "$VSYNC_QUERY_SKIP" ]] && REC_ARGS+=(-psxtrace-vsync-query-skip "$VSYNC_QUERY_SKIP")
 [[ -n "$CD_READ_PC_MIN" ]] && REC_ARGS+=(-psxtrace-cd-read-pc-min "$CD_READ_PC_MIN")
 [[ "$NO_CARD" == 1 ]] && REC_ARGS+=(-card1 none)
+if [[ -n "$CARD_EXPORT" ]]; then
+    [[ "$NO_CARD" == 1 ]] && { echo "[capture-ds] --card-export needs a card in slot 1 (drop --no-card)" >&2; exit 64; }
+    mkdir -p "$(dirname "$CARD_EXPORT")"
+    rm -f "${CARD_EXPORT:?}"
+    REC_ARGS+=(-card-export "1:0:$CARD_EXPORT")
+fi
 REC_ARGS+=(-psxtrace-gte)
 if [[ "$VBLPOS" == 1 ]]; then
     [[ -n "$GAME" && -n "$VSYNC_PC" ]] || {
@@ -294,6 +306,13 @@ if [[ -n "$PAD_SCRIPT" ]]; then
         echo "[capture-ds] FAIL: the run ended at pad-script step ${LAST:-none} of ${STEPS:-?} (see $OUT.log)" >&2
         exit 1
     fi
+fi
+if [[ -n "$CARD_EXPORT" ]]; then
+    if [[ "$(stat -c %s "$CARD_EXPORT" 2>/dev/null || echo 0)" != 131072 ]]; then
+        echo "[capture-ds] FAIL: card export $CARD_EXPORT is missing or not 131072 bytes" >&2
+        exit 1
+    fi
+    echo "[capture-ds] card fixture: $CARD_EXPORT"
 fi
 if [[ "$SPU_DUMP" == 1 ]]; then
     WAV_FRAMES="$(python3 -c 'import sys, wave; print(wave.open(sys.argv[1]).getnframes())' "$OUT.wav" 2>/dev/null || true)"

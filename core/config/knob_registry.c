@@ -670,6 +670,10 @@ static double nologfile_get(const knob_desc_t *k) {
 static double compilemods_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->compile_mods : 0.0; }
 /** @brief 1 when --no-card removed both memory cards, else 0. */
 static double nocard_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_a_present) ? 1.0 : 0.0; }
+/** @brief 1 when port A holds no memory card (--no-card or --no-card1), else 0. */
+static double nocard1_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_a_present) ? 1.0 : 0.0; }
+/** @brief 1 when port B holds no memory card (--no-card or --no-card2), else 0. */
+static double nocard2_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_b_present) ? 1.0 : 0.0; }
 /** @brief 1 when --card-unformatted was given, else 0. */
 static double cardunf_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->card_unformatted : 0.0; }
 /** @brief 1 when --adopt-saves was given, else 0. */
@@ -1601,6 +1605,24 @@ static const knob_desc_t g_builtin[] = {
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
       .help_arg = NULL, .help_order = 440,
       .help_text = "present no memory card in either port (saving disabled)" },
+
+    { "no_card1", "No memory card 1", "Paths", "--no-card1", NULL,
+      "Present no memory card in port A; port B keeps its card. Read once "
+      "at startup.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      nocard1_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
+      .help_arg = NULL, .help_order = 442,
+      .help_text = "present no memory card in port A; port B keeps its card" },
+
+    { "no_card2", "No memory card 2", "Paths", "--no-card2", NULL,
+      "Present no memory card in port B; port A keeps its card. Read once "
+      "at startup.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      nocard2_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
+      .help_arg = NULL, .help_order = 445,
+      .help_text = "present no memory card in port B; port A keeps its card" },
 
     { "card_unformatted", "Unformatted card", "Paths", "--card-unformatted", NULL,
       "Provision a blank unformatted card, so the game's own format screen "

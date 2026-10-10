@@ -32,3 +32,8 @@
 0032-spu-the-final-mix-dump-writes-in-the-VU-meter-build-.patch
 0033-regtest-spuwrite-kind-of-the-libspu-call-recorder-wi.patch
 0034-regtest-pad-script-drives-the-port-1-controller-from.patch
+0035-regtest-PC-keyed-main-RAM-snapshot-with-registers.patch
+0036-regtest-card-window-recorder-card-window-PATH.patch
+0037-regtest-bk2-movie-playback-on-the-port-1-controller-.patch
+0038-regtest-card-export-card-export-SLOT-FRAME-PATH.patch
+0039-regtest-card-import-card1-PATH.patch

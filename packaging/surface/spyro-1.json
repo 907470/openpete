@@ -1,5 +1,5 @@
 {
- "source_sha": "66eb56b0b7a890950920763d7bfd261253d0fb8f",
+ "source_sha": "c033a55195e02051f36ee49c2a99db5fe2054b3e",
  "format": 1,
  "game": "spyro-1",
  "entries": [
@@ -803,6 +803,38 @@
    "default_note": null
   },
   {
+   "id": "knob:pause",
+   "flag": null,
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Pacing",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "off",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:frame_step",
+   "flag": null,
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "action",
+   "section": "Pacing",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "game": "core"
+  },
+  {
    "id": "knob:runahead",
    "flag": "--runahead",
    "env": null,
@@ -1377,6 +1409,32 @@
    "default_note": "none"
   },
   {
+   "id": "knob:game",
+   "flag": "--game",
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Paths",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": true,
+   "def": null,
+   "default_note": "the disc's game, else the library entry's, else this executable's",
+   "game": "core"
+  },
+  {
+   "id": "flag:--game",
+   "flag": "--game",
+   "takes_arg": "required",
+   "knob": "game",
+   "build_cond": null,
+   "def": null,
+   "default_note": "the disc's game, else the library entry's, else this executable's"
+  },
+  {
    "id": "knob:compile_mods",
    "flag": "--compile-mods",
    "env": null,
@@ -1476,6 +1534,58 @@
    "flag": "--no-card",
    "takes_arg": "none",
    "knob": "no_card",
+   "build_cond": null,
+   "def": "off",
+   "default_note": null
+  },
+  {
+   "id": "knob:no_card1",
+   "flag": "--no-card1",
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Paths",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "off",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--no-card1",
+   "flag": "--no-card1",
+   "takes_arg": "none",
+   "knob": "no_card1",
+   "build_cond": null,
+   "def": "off",
+   "default_note": null
+  },
+  {
+   "id": "knob:no_card2",
+   "flag": "--no-card2",
+   "env": null,
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Paths",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "off",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--no-card2",
+   "flag": "--no-card2",
+   "takes_arg": "none",
+   "knob": "no_card2",
    "build_cond": null,
    "def": "off",
    "default_note": null
@@ -4233,6 +4343,23 @@
    "game": "core"
   },
   {
+   "id": "knob:MOBY_JUMP_HOLD",
+   "flag": null,
+   "env": "OPENPETE_MOBY_JUMP_HOLD",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:MOBY_MIRROR_HOLD",
    "flag": null,
    "env": "OPENPETE_MOBY_MIRROR_HOLD",
@@ -4981,6 +5108,23 @@
    "game": "core"
   },
   {
+   "id": "knob:TERRAIN_OCCL_AUDIT",
+   "flag": null,
+   "env": "OPENPETE_TERRAIN_OCCL_AUDIT",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug diagnostics",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": null,
+   "game": "core"
+  },
+  {
    "id": "knob:TERRAIN_TIMERS",
    "flag": null,
    "env": "OPENPETE_TERRAIN_TIMERS",
@@ -5414,7 +5558,7 @@
    "vocab": [],
    "aliases": [],
    "type": "action",
-   "section": "Gameplay",
+   "section": "Cheats",
    "block": "release",
    "build_cond": null,
    "cli_only": false,
@@ -5429,7 +5573,7 @@
    "vocab": [],
    "aliases": [],
    "type": "action",
-   "section": "Gameplay",
+   "section": "Cheats",
    "block": "release",
    "build_cond": null,
    "cli_only": false,
@@ -7632,22 +7776,22 @@
  "selfcheck": {
   "flag": {
    "checked": 40,
-   "unchecked": 32,
+   "unchecked": 33,
    "failed": 0
   },
   "switch": {
-   "checked": 7,
+   "checked": 9,
    "unchecked": 0,
    "failed": 0
   },
   "row": {
-   "checked": 1,
+   "checked": 2,
    "unchecked": 5,
    "failed": 0
   },
   "env": {
    "checked": 0,
-   "unchecked": 185,
+   "unchecked": 187,
    "failed": 0
   },
   "failures": []

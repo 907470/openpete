@@ -1618,6 +1618,10 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
     } else if (strcmp(a, "--no-card") == 0) {
         opts->card_a_present = 0;
         opts->card_b_present = 0;
+    } else if (strcmp(a, "--no-card1") == 0) {
+        opts->card_a_present = 0;
+    } else if (strcmp(a, "--no-card2") == 0) {
+        opts->card_b_present = 0;
     } else if (strcmp(a, "--card-unformatted") == 0) {
         opts->card_unformatted = 1;
     } else if (strcmp(a, "--adopt-saves") == 0) {
