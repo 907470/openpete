@@ -4891,6 +4891,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * whose two classes do not share a table keeps the world-distance rule.
      * Per-game data, baked here before the pipelines below are built. */
     rhi_set_slot_contest(game_layout.terrain.slot_ot_contest);
+    openpete_boot_mark(OP_BOOT_SLOT_CONTEST);
     /* (--texture-mapping was resolved near the top of this function - before
      * the dev overlay snapshotted knob boot values - so every pipeline below
      * bakes the right AFFINE_UV constant.) */

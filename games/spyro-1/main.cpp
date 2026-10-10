@@ -314,6 +314,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     /* The mod layer, once, at identification: before the compile-on-boot
      * pass below and the load inside openpete_run(). */
     register_mod_layer(opts->disc_path);
+    openpete_boot_mark(OP_BOOT_MODS_STAGED);
 
     /* The runtime reaches recompiled code only through the recomp-module
      * descriptor. Static builds register the linked-in module;
@@ -332,6 +333,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
      * launcher task; the window opens only if there is real work. Loading
      * stays in openpete_run(); this pass only warms the build cache. */
     openpete_mods_prepare(opts, openpete_launcher_progress, openpete_launcher_run_task);
+    openpete_boot_mark(OP_BOOT_MODS_COMPILED);
     return openpete_launcher_handoff(opts);
 }
 

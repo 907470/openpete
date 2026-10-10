@@ -14,6 +14,9 @@
 #include <string.h>
 
 static _Atomic int64_t s_mark[OP_BOOT_MARKS];
+static _Atomic int     s_seq[OP_BOOT_MARKS];   /* ordinal of each mark, 0 unreached */
+static _Atomic int     s_seq_next;             /* last ordinal handed out           */
+static int      s_first_tick_seq;
 static int64_t  s_first_tick_ns;
 static unsigned s_ticks;
 static int      s_line_done;
@@ -23,7 +26,44 @@ void openpete_boot_mark(op_boot_mark mark)
     if ((unsigned)mark >= OP_BOOT_MARKS) return;
     int64_t zero = 0;
     const int64_t now = op_now();
-    atomic_compare_exchange_strong(&s_mark[mark], &zero, now ? now : 1);
+    if (atomic_compare_exchange_strong(&s_mark[mark], &zero, now ? now : 1))
+        atomic_store(&s_seq[mark], atomic_fetch_add(&s_seq_next, 1) + 1);
+}
+
+/* The boot steps the order line checks, in their required order. */
+#define BOOT_ORDER_STEPS 7
+
+/** @brief Print the boot-order line: each step's ordinal ("-" when unreached) and the order verdict. */
+static void boot_order_print(void)
+{
+    static const char *const k_name[BOOT_ORDER_STEPS] = {
+        "identified", "mods_staged", "mods_compiled", "mods_init",
+        "slot_contest", "precompile", "first_tick"
+    };
+    const int seq[BOOT_ORDER_STEPS] = {
+        atomic_load(&s_seq[OP_BOOT_IDENTIFIED]),   atomic_load(&s_seq[OP_BOOT_MODS_STAGED]),
+        atomic_load(&s_seq[OP_BOOT_MODS_COMPILED]), atomic_load(&s_seq[OP_BOOT_MODS_INIT]),
+        atomic_load(&s_seq[OP_BOOT_SLOT_CONTEST]), atomic_load(&s_seq[OP_BOOT_PRECOMPILE_START]),
+        s_first_tick_seq
+    };
+    char text[256];
+    size_t len = 0;
+    int last = 0, reached = 0, ordered = 1;
+    for (int i = 0; i < BOOT_ORDER_STEPS; i++) {
+        char v[16];
+        if (seq[i]) snprintf(v, sizeof v, "%d", seq[i]);
+        else snprintf(v, sizeof v, "-");
+        len += (size_t)snprintf(text + len, sizeof text - len, "%s%s=%s", i ? " " : "", k_name[i], v);
+        if (len >= sizeof text) len = sizeof text - 1;
+        if (!seq[i]) continue;
+        reached++;
+        if (seq[i] < last) ordered = 0;
+        last = seq[i];
+    }
+    const char *verdict = !ordered ? "OUT-OF-ORDER"
+                        : reached == BOOT_ORDER_STEPS ? "ordered" : "partial";
+    OPL_INFO_F("boot", "boot-order: %s; steps_reached=%d/%d verdict=%s", text, reached,
+               BOOT_ORDER_STEPS, verdict);
 }
 
 /** @brief Format an instant as ms after the launcher-start mark, or "-" when it was never reached.
@@ -73,12 +113,16 @@ static void boot_line_print(void)
 void openpete_boot_tick(void)
 {
     if (s_line_done) return;
-    if (!s_first_tick_ns) s_first_tick_ns = op_now();
+    if (!s_first_tick_ns) {
+        s_first_tick_ns = op_now();
+        s_first_tick_seq = atomic_fetch_add(&s_seq_next, 1) + 1;
+    }
     rhi_boot_stats rb;
     rhi_boot_stats_get(&rb);
     if (!rb.first_frame_ns && ++s_ticks < OP_BOOT_LINE_MAX_TICKS) return;
     s_line_done = 1;
     boot_line_print();
+    boot_order_print();
 }
 
 /* One OPENPETE_LIVE_SWITCH entry. */

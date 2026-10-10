@@ -117,6 +117,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
      * and the load inside openpete_run(). */
     if (openpete_game_runtime()->mod_desc)
         (void)openpete_mods_set_game_desc(openpete_game_runtime()->mod_desc());
+    openpete_boot_mark(OP_BOOT_MODS_STAGED);
 
     /* The runtime reaches recompiled code only through this descriptor. */
     if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
@@ -124,6 +125,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     /* Mod compile-on-boot: every stale enabled source mod compiles on a
      * launcher task, so openpete_mods_init only loads. */
     openpete_mods_prepare(opts, openpete_launcher_progress, openpete_launcher_run_task);
+    openpete_boot_mark(OP_BOOT_MODS_COMPILED);
     return openpete_launcher_handoff(opts);
 }
 

@@ -13,6 +13,17 @@
  * Vulkan devices created (the launcher's device is the renderer's, so 1 on
  * a windowed boot).
  *
+ * Each mark also takes the next ordinal of one process-wide sequence at its
+ * first call, and the first tick takes one too; a second line, "boot-order",
+ * printed with the timing line, lists the ordinals of the seven boot steps
+ * (identified, mods staged, mods compiled, mods_init, SLOT_CONTEST,
+ * precompile start, first tick) and its verdict: "ordered" when all seven
+ * were reached in that order, "partial" when the reached steps are in order
+ * and one or more was not reached (the precompile is skipped in a
+ * synchronous run unless forced), "OUT-OF-ORDER" otherwise. Ordinals rather
+ * than instants decide the verdict, so two marks on one clock tick still
+ * order.
+ *
  * The harness knob OPENPETE_LIVE_SWITCH=<vbl>:<row>=<value>[,...] (rows
  * texture-mapping, notex, wireframe; value 0 or 1, texture-mapping 1 =
  * affine) queues the named live switch when the VBL counter reaches <vbl>;
@@ -33,6 +44,9 @@ typedef enum {
     OP_BOOT_PRECOMPILE_END,      /* the pipeline precompile ended             */
     OP_BOOT_IDENTIFIED,          /* the game was identified                   */
     OP_BOOT_MATERIALIZED,        /* the full configuration parse returned     */
+    OP_BOOT_MODS_STAGED,         /* the game's mod-layer descriptor registered */
+    OP_BOOT_MODS_COMPILED,       /* compile-on-boot (openpete_mods_prepare) returned */
+    OP_BOOT_SLOT_CONTEST,        /* the game's SLOT_CONTEST unit was set      */
     OP_BOOT_MARKS
 } op_boot_mark;
 
