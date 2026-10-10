@@ -62,18 +62,19 @@ static int pcf_cmp_recent(const void *a, const void *b)
     return ta > tb ? -1 : ta < tb ? 1 : 0;
 }
 
-/** @brief Collect the windowed-class cache files of a directory other than the run's own, with their mtimes.
+/** @brief Collect the cache files of one class in a directory other than the run's own, with their mtimes.
  *
  * @param dir The directory.
  * @param own The run's own file path.
+ * @param headless true for the -headless.bin class, false for the windowed class.
  * @param out Receives up to PCF_MAX_FILES entries; each path is malloc'd.
  * @return The number of entries. */
-static int pcf_collect(const char *dir, const char *own, pcf_entry *out)
+static int pcf_collect(const char *dir, const char *own, bool headless, pcf_entry *out)
 {
     int count = 0, n = 0;
     char **names = SDL_GlobDirectory(dir, "vk-pipelines-*.bin", 0, &count);
     for (int i = 0; names && i < count && n < PCF_MAX_FILES; i++) {
-        if (strstr(names[i], "-headless")) continue;
+        if ((strstr(names[i], "-headless.bin") != NULL) != headless) continue;
         const size_t len = strlen(dir) + strlen(names[i]) + 2;
         char *path = malloc(len);
         if (!path) break;
@@ -90,12 +91,12 @@ static int pcf_collect(const char *dir, const char *own, pcf_entry *out)
     return n;
 }
 
-int rhi_pcf_prune(const char *dir, const char *own)
+int rhi_pcf_prune(const char *dir, const char *own, bool headless)
 {
     if (!dir || !dir[0] || !own || !own[0]) return 0;
     pcf_entry *e = calloc(PCF_MAX_FILES, sizeof *e);
     if (!e) return 0;
-    const int n = pcf_collect(dir, own, e);
+    const int n = pcf_collect(dir, own, headless, e);
     qsort(e, (size_t)n, sizeof *e, pcf_cmp_recent);
     SDL_Time now = 0;
     SDL_GetCurrentTime(&now);

@@ -277,15 +277,63 @@ void openpete_tercache_shutdown(struct rhi_device *dev);
  * @return 1 when the cache is ready, 0 otherwise. */
 int  openpete_tercache_ready(void);
 
+/* Kinds of lazy pipeline slot (openpete_lazy_ref). */
+enum {
+    OPENPETE_LAZY_BUILTIN = 0,  /* the engine's raster quantize (index 0) or dither (index 1) pass */
+    OPENPETE_LAZY_POSTFX,       /* a mod postfx pass                                             */
+    OPENPETE_LAZY_MATERIAL,     /* a mod material's scene, sky, portal or decal slot             */
+    OPENPETE_LAZY_TERRAIN       /* a mod material's retained-terrain slot                        */
+};
+
+/* Where a lazy pipeline slot lives in the registry: the late compile path
+ * finds the slot again from this when the compile returns, never from a
+ * pointer kept since the request. */
+typedef struct {
+    int         kind;        /* OPENPETE_LAZY_*                                            */
+    int         index;       /* built-in pass id, postfx pass index or material index      */
+    int         sub;         /* MATERIAL: the packed draw-site request; TERRAIN: pipe index */
+    unsigned    generation;  /* the slot's generation at the request                       */
+    int         point;       /* POSTFX: the insertion point; otherwise -1                  */
+    const char *owner;       /* owning mod id, or the built-in pass name                   */
+} openpete_lazy_ref;
+
+struct rhi_pipeline_desc;
+
+/** @brief Fill a lazy pipeline slot for a draw site or the precompile: build now, queue on the batch, or queue a late compile.
+ *
+ * Display owner only. A failed slot stays failed (-1). A synchronous
+ * context (a headless or deterministic run, any compose other than the
+ * live present's, the precompile) builds an empty slot now through
+ * rhi_create_pipeline_slot, which queues it instead inside an open
+ * pipeline batch, and first waits for and installs the compile of a slot
+ * left pending by an earlier live present. The live present of a windowed
+ * run instead sets an empty slot to OPENPETE_POSTFX_PIPE_PENDING and
+ * queues its compile on the compile pool; the result is installed by a
+ * later present's compose, and until then the caller draws the stock path.
+ * @param desc Pipeline description.
+ * @param vert_words Vertex SPIR-V words, or NULL to use desc->vert_spv.
+ * @param vert_n Their count.
+ * @param frag_words Fragment SPIR-V words, or NULL to use desc->frag_spv.
+ * @param frag_n Their count.
+ * @param slot The slot.
+ * @param ref Where the slot lives.
+ * @return 0 when the slot holds a pipeline, 1 when its build is queued or
+ *         pending, -1 when it failed. */
+int openpete_native_lazy_pipe(const struct rhi_pipeline_desc *desc,
+                              const uint32_t *vert_words, size_t vert_n,
+                              const uint32_t *frag_words, size_t frag_n,
+                              void **slot, const openpete_lazy_ref *ref);
+
 /** @brief Return a mod material's retained-terrain pipeline for a vertex variant and colour slot, building it into its slot when the slot is empty.
  *
  * The one description builder of the terrain material site, shared by the
  * draw and the pipeline precompile: the variant's terrain vertex stage, the
  * colour slot's stencil, blend and depth-write rule, and the material's
- * terrain-profile fragment stage. A failed build is logged and cached as
- * OPENPETE_POSTFX_PIPE_FAILED, never retried. Inside an open pipeline
- * batch (rhi_pipeline_batch_begin) the build is queued and the slot is
- * filled when the batch ends. Display owner only.
+ * terrain-profile fragment stage. The slot is filled through
+ * openpete_native_lazy_pipe: a failed build is logged and cached as
+ * OPENPETE_POSTFX_PIPE_FAILED, never retried; a build queued on the open
+ * pipeline batch or as a late compile leaves the draw on the stock pipeline
+ * meanwhile. Display owner only.
  * @param pslot The material's pipeline slot for (variant, slot).
  * @param variant Vertex variant: 0 plain, 1 anim, 2 near, 3 anim cells, 4 near cells.
  * @param slot Colour slot: 0 world, 1 world with stencil mark, 2 fill,
@@ -293,11 +341,13 @@ int  openpete_tercache_ready(void);
  * @param frag Terrain-profile fragment SPIR-V words.
  * @param frag_words Their count.
  * @param owner Owning mod id for the failure log, or NULL.
+ * @param mat_index The material's registry index.
+ * @param generation The material's slot generation.
  * @return The pipeline (an rhi_pipeline*), or NULL when the slot failed,
- *         the build was queued, or the cache has no device. */
+ *         the build was queued or is pending, or the cache has no device. */
 void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
                                       const uint32_t *frag, size_t frag_words,
-                                      const char *owner);
+                                      const char *owner, int mat_index, unsigned generation);
 
 /* Per-build protocol (driven by the terrain feeder). The sub-tick spine
  * presents the PREVIOUS canonical extraction (the canonical-lag leg), so

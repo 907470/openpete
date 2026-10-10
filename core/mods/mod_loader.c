@@ -317,6 +317,10 @@ struct openpete_mod {
                           * defer it to their first enable so a
                           * boot-disabled mod runs zero code */
     int   has_assets;    /* assets/ overlay root exists (boot-scoped) */
+    /* Set by a deferred entry on the guest thread, taken by the renderer's
+     * next compose (openpete_mods_take_entered), which queues the mod's
+     * pipelines. */
+    _Atomic int late_entered;
     /* Atomic for the same reason as enabled, plus hot reload: the swap
      * happens on the sim thread while the compose thread may be about to
      * call through the pointer. The old object stays resident, so a body
@@ -3873,6 +3877,15 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
     return 0;
 }
 
+int openpete_mods_take_entered(const char** out, int cap) {
+    int n = 0;
+    for (int i = 0; i < mod_count() && n < cap; i++) {
+        struct openpete_mod* m = mod_at(i);
+        if (atomic_exchange(&m->late_entered, 0)) out[n++] = m->id;
+    }
+    return n;
+}
+
 /** @brief Enter a deferred-entry mod on its first enable, at a tick boundary.
  *
  * Enters its dependencies first, recursively (a library's entry must have
@@ -3882,8 +3895,9 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
  * invalidates the modset tag. Boot-scanned asset consumers (texture pack)
  * see the root only after a restart; per-play consumers (music) apply
  * immediately. Late entry registers at the chain tail, the highest
- * priority; a restart slots the mod into enabled.txt order. A no-op for a
- * mod already entered.
+ * priority; a restart slots the mod into enabled.txt order. Each mod it
+ * enters gets its late_entered flag set, which the renderer's next compose
+ * takes (openpete_mods_take_entered). A no-op for a mod already entered.
  * @return 0, or -1 when a dependency is not loaded or an entry fails. */
 static int mod_enter_deferred(struct openpete_mod* mod) {
     if (mod->entered) return 0;
@@ -3910,6 +3924,7 @@ static int mod_enter_deferred(struct openpete_mod* mod) {
     }
     mod_register_assets(mod);
     s_tag_built = 0; /* the modset tag now includes this mod if divergent */
+    atomic_store(&mod->late_entered, 1);
     return 0;
 }
 

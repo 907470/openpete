@@ -5,11 +5,13 @@
  * <build> eight hex digits of a digest of the engine's build string and its
  * embedded SPIR-V, so builds that share the per-user state directory keep
  * their own files. A file's mtime is its last-use time: every open refreshes
- * it. At a windowed open, cache files of the windowed class unused for
- * RHI_PCF_MAX_AGE_DAYS days or ranked beyond the RHI_PCF_KEEP most recently
- * used are removed; the opening run's own file ranks first and is never
- * removed. A file is never removed because its build differs. Headless runs
- * remove nothing: no cache file of a headless class exists yet. */
+ * it. A file name ending in -headless.bin is of the headless class (headless
+ * and other synchronous runs), any other of the windowed class. At an open,
+ * cache files of the opening run's class unused for RHI_PCF_MAX_AGE_DAYS
+ * days or ranked beyond the RHI_PCF_KEEP most recently used are removed;
+ * the opening run's own file ranks first and is never removed. A file is
+ * never removed because its build differs, and an open never removes a
+ * file of the other class. */
 #ifndef RHI_PCACHE_FILE_H
 #define RHI_PCACHE_FILE_H
 
@@ -33,14 +35,15 @@ void rhi_pcf_build_tag(const char *build, char out[9]);
  * @param path The file. */
 void rhi_pcf_touch(const char *path);
 
-/** @brief Remove the cache files of the windowed class in a directory that are unused for RHI_PCF_MAX_AGE_DAYS or ranked beyond RHI_PCF_KEEP by last use.
+/** @brief Remove the cache files of one class in a directory that are unused for RHI_PCF_MAX_AGE_DAYS or ranked beyond RHI_PCF_KEEP by last use.
  *
- * The class is the files matching vk-pipelines-*.bin without "-headless" in
- * the name. @p own ranks first whether or not it exists and is never
- * removed. Each removal is logged.
+ * The headless class is the files matching vk-pipelines-*-headless.bin, the
+ * windowed class every other vk-pipelines-*.bin. @p own ranks first whether
+ * or not it exists and is never removed. Each removal is logged.
  * @param dir The cache directory.
  * @param own The opening run's own file path.
+ * @param headless true to prune the headless class, false the windowed class.
  * @return The number of files removed. */
-int rhi_pcf_prune(const char *dir, const char *own);
+int rhi_pcf_prune(const char *dir, const char *own, bool headless);
 
 #endif /* RHI_PCACHE_FILE_H */

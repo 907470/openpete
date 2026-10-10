@@ -705,14 +705,17 @@ static mod_fvec s_retired_pipelines; /* void*, drained by the renderer */
 
 /** @brief Append a cached pipeline to the retirement list the renderer drains.
  *
- * NULL and OPENPETE_POSTFX_PIPE_FAILED are ignored. The list grows, so a
+ * NULL, OPENPETE_POSTFX_PIPE_FAILED and OPENPETE_POSTFX_PIPE_PENDING (a
+ * compile in flight, which the stale generation discards) are ignored. The
+ * list grows, so a
  * sweep that retires every variant of a material at once keeps them all;
  * an allocation failure logs an error and leaks that pipeline. The
  * renderer takes the list with openpete_mods_postfx_take_retired() and
  * destroys each pipeline. */
 static void retire_pipeline(void* pipe) {
     void** slot;
-    if (!pipe || pipe == OPENPETE_POSTFX_PIPE_FAILED) return;
+    if (!pipe || pipe == OPENPETE_POSTFX_PIPE_FAILED || pipe == OPENPETE_POSTFX_PIPE_PENDING)
+        return;
     if (!s_retired_pipelines.elem_size)
         mod_fvec_init(&s_retired_pipelines, sizeof(void*),
                       MOD_POSTFX_BLOCK, "postfx_retired", MOD_POSTFX_BLOCK);
@@ -830,6 +833,28 @@ static void postfx_truncation_notice(int point, int have, int cap) {
                point, have, cap, have - cap);
 }
 
+/* Owners whose postfx passes and materials the compose in progress leaves
+ * out (openpete_mods_hold_owners). Written and read by the display owner
+ * only, inside the compose: only the compose-side lookups below read it. */
+#define MOD_HOLD_MAX 16
+static const char* s_hold_ids[MOD_HOLD_MAX];
+static int s_hold_n;
+
+void openpete_mods_hold_owners(const char* const* ids, int n) {
+    s_hold_n = 0;
+    for (int i = 0; ids && i < n && s_hold_n < MOD_HOLD_MAX; i++) s_hold_ids[s_hold_n++] = ids[i];
+}
+
+/** @brief Return whether the compose in progress holds an owner's passes and materials back.
+ *
+ * @param owner Mod id.
+ * @return 1 when held, else 0. */
+static int owner_held(const char* owner) {
+    for (int i = 0; i < s_hold_n; i++)
+        if (strcmp(s_hold_ids[i], owner) == 0) return 1;
+    return 0;
+}
+
 int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
                                  int cap) {
     /* The whole enabled set is collected and sorted before the cap is
@@ -846,6 +871,7 @@ int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
         int* slot;
         if (!f->live || !f->enabled || f->point != point) continue;
         if (!openpete_mods_is_enabled(f->owner)) continue;  /* live toggle */
+        if (owner_held(f->owner)) continue;                 /* activates next present */
         slot = (int*)mod_fvec_push(&s_idx);
         if (!slot) break;
         *slot = i;
@@ -868,9 +894,13 @@ int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
         n = cap;
     }
     for (int i = 0; i < n; i++) {
-        mod_postfx_t* fx = fx_at(*(int*)mod_fvec_at(&s_idx, (size_t)i));
+        const int idx = *(int*)mod_fvec_at(&s_idx, (size_t)i);
+        mod_postfx_t* fx = fx_at(idx);
         out[i].frag_spv = openpete_mods_shader_spv(fx->shader,
                                                    &out[i].frag_words, NULL);
+        out[i].index = idx;
+        out[i].point = fx->point;
+        out[i].generation = fx->generation;
         out[i].uniforms = fx->uniforms;
         out[i].uniforms_len = fx->uniforms_len;
         out[i].pipeline_slot = &fx->pipeline;
@@ -891,6 +921,8 @@ int openpete_mods_postfx_enum_at(int i, openpete_postfx_pass_t* out) {
     out->pipeline_slot = &fx->pipeline;
     out->owner = fx->owner;
     out->generation = fx->generation;
+    out->index = i;
+    out->point = fx->point;
     return 0;
 }
 
@@ -1214,7 +1246,8 @@ int openpete_mods_material_terrain_bucket_gpu(
     if (!out || bucket <= 0 || bucket > s_mat_count) return -1;
     if (pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES) return -1;
     mod_material_t* m = &s_mats[bucket - 1];
-    if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner))
+    if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner) ||
+        owner_held(m->owner))
         return -1;
     if (m->frag < 0) return -1;
     if (m->per_instance) {
@@ -1232,6 +1265,7 @@ int openpete_mods_material_terrain_bucket_gpu(
     out->pipeline_slot = &m->pipeline_ter[pipe_idx];
     out->owner = m->owner;
     out->generation = m->generation;
+    out->index = bucket - 1;
     return 0;
 }
 
@@ -1743,6 +1777,7 @@ static int material_fill_gpu(int best, int uniform_slot,
         out->pipeline_portal_slot[b] = &m->pipeline_portal[b];
     out->owner = m->owner;
     out->generation = m->generation;
+    out->index = best;
     /* A per-instance slot always wins; otherwise fall back to this
      * material's static block (0 = no params at all). */
     out->uniform_slot = uniform_slot > 0 ? uniform_slot : view_static_slot(best);
@@ -1893,13 +1928,13 @@ int openpete_mods_material_resolve(uint32_t tag, int contract,
     case 1:
         /* A slot whose material has another contract draws stock. */
         best = view_slot_mat(slot);
-        if (s_mats[best].contract != contract) return -1;
+        if (s_mats[best].contract != contract || owner_held(s_mats[best].owner)) return -1;
         return material_fill_gpu(best, slot, out);
     case -1: return -1;
     default: break;   /* declarative resolve */
     }
     best = material_winner(&k, contract);
-    if (best < 0) return -1;
+    if (best < 0 || owner_held(s_mats[best].owner)) return -1;
     return material_fill_gpu(best, 0, out);
 }
 
@@ -1932,6 +1967,7 @@ int openpete_mods_material_enum_terrain(int i, int pipe_idx,
     out->pipeline_slot = &m->pipeline_ter[pipe_idx];
     out->owner = m->owner;
     out->generation = m->generation;
+    out->index = i;
     return 0;
 }
 

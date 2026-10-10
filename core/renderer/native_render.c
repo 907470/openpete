@@ -4016,6 +4016,10 @@ static struct {
      * native scene exists to walk. */
     bool          scene_live;
     bool          headless;     /* surfaceless capture (no window/present); screenshots only */
+    /* Synchronous run: headless, or a deterministic capture (intermediate
+     * screenshots). Pipelines compile on the display owner at first draw and
+     * the precompile does not run by default. */
+    bool          sync_run;
     SDL_Window   *window;
     rhi_device   *dev;
     int           win_w, win_h; /* last-known pixel size, for resize detection */
@@ -4538,6 +4542,19 @@ static void nr_apply_scoped_present(rhi_device *dev, const openpete_options_t *o
 
 static void nr_precompile(void);
 
+/** @brief Report whether this run compiles its pipelines synchronously at first draw.
+ *
+ * A headless run and a run that captures intermediate presents are
+ * synchronous: no compile worker races the captured image, and their
+ * pipelines go to the headless class of the pipeline cache.
+ * @param headless The run has no window.
+ * @param opts The parsed options; reads the intermediate-screenshot count.
+ * @return true for a synchronous run. */
+static bool nr_run_is_synchronous(bool headless, const openpete_options_t *opts)
+{
+    return headless || opts->screenshot_intermediate_count > 0;
+}
+
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
     if (!opts)
@@ -4571,6 +4588,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         return 0;
     }
     s_nr.headless = headless;
+    s_nr.sync_run = nr_run_is_synchronous(headless, opts);
 
     /* --texpack-dir: point the HD texture-replacement scan at a chosen dir. Set
      * before openpete_vram_install_ops() below runs texture_pack_init(). NULL is
@@ -4616,6 +4634,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     SDL_Window *win = NULL;
     rhi_device *dev = NULL;
     const int created_vsync = nr_device_knobs_install();
+    rhi_set_pipeline_cache_sync_class(s_nr.sync_run);
     nr_set_pipeline_cache_dir();
     if (headless) {
         /* No window: render into the offscreen/RTT and read back for screenshots.
@@ -9377,6 +9396,344 @@ static void** nr_material_slot(const openpete_mod_material_gpu_t* mg, const nr_m
     }
 }
 
+/* ---- late compiles ----------------------------------------------------
+ * A windowed run's live present never compiles a pipeline on the display
+ * owner. A lazy slot it finds empty (a mod pass or material registered or
+ * swept after the precompile, a slot the precompile did not reach) is set
+ * to OPENPETE_POSTFX_PIPE_PENDING and its compile job queued on the compile
+ * pool; every reader draws the stock path for a pending slot. The pool's
+ * install callback only records the result (it may run outside a compose,
+ * from rhi_rebuild_poll's drain); the next live compose installs it under
+ * the registry read side, finding the slot again from its openpete_lazy_ref.
+ * A result whose slot generation moved (a sweep, a hot reload) was never
+ * linked or recorded: it is destroyed as Vulkan objects and the slot is left
+ * as the sweep left it. A result whose create info a variant switch changed
+ * is recompiled for the variant drawn now. A mod's pending postfx passes at
+ * one insertion point install together. Synchronous contexts (headless and
+ * deterministic runs, dump and snapshot composes, the precompile) compile at
+ * once, waiting for a slot an earlier live present left pending. */
+
+static void* s_rq_pipe;      /* rhi_pipeline* / PFX_PIPE_FAILED / PENDING; defined with the pass */
+static void* s_dither_pipe;  /* rhi_pipeline* / PFX_PIPE_FAILED / PENDING; defined with the pass */
+
+/* One late compile: queued, then arrived, until the compose installs it. */
+typedef struct late_ent {
+    struct late_ent*   next;
+    openpete_lazy_ref  ref;
+    void**             slot_id;         /* identity for the stock-draw count only; never written */
+    rhi_compile_job*   job;             /* the result, once arrived */
+    int                rc;              /* its run's result */
+    bool               arrived;
+    bool               from_enable;     /* reached by an enable's enumeration */
+    uint64_t           serial0;         /* frame serial at the request */
+    Uint64             t0_ns;           /* wall clock at the request */
+    unsigned           stock_presents;  /* presents a draw site found the slot pending */
+    uint64_t           stock_serial;    /* the present last counted */
+} late_ent;
+
+static late_ent* s_late_head;
+static bool      s_late_async;       /* the live present of a non-synchronous run is recording */
+static bool      s_late_enumerating; /* an enable's enumeration is queueing */
+/* Late-compile counts, reported at shutdown. */
+static struct {
+    unsigned queued, installed, failed, stale_gen, requeued, duplicate, cancelled;
+    unsigned stock_visits, stock_presents, stock_presents_max;
+    unsigned lat_presents_max; uint64_t lat_presents_sum; double lat_ms_max, lat_ms_sum;
+    unsigned groups_held;          /* composes a postfx group waited for a member  */
+    unsigned enables, enum_slots, enum_queued, enum_pending;
+    unsigned enum_before_draw, enum_after_draw;
+    unsigned waits;                /* synchronous waits on a pending slot           */
+} s_late;
+
+/** @brief Return the pipeline a slot holds, or NULL for an empty, failed or pending slot.
+ *
+ * @param v A slot's content.
+ * @return The pipeline, or NULL. */
+static rhi_pipeline* nr_pipe_of(void* v) {
+    return (v && v != PFX_PIPE_FAILED && v != OPENPETE_POSTFX_PIPE_PENDING) ? (rhi_pipeline*)v
+                                                                           : NULL;
+}
+
+/** @brief Return whether lazy slots compile at once on the display owner: anywhere but the live present of a non-synchronous run.
+ *
+ * @return true for a synchronous context. */
+static bool late_sync(void) { return !s_late_async; }
+
+/** @brief Pack a material draw-site request into an openpete_lazy_ref sub field.
+ *
+ * @param q The request.
+ * @return The packed value. */
+static int late_pack_req(const nr_mat_req* q) {
+    return (int)q->kind | (q->blend_class & 15) << 4 | (q->pslot & 15) << 8 | (q->mark & 1) << 12;
+}
+
+/** @brief Unpack a material draw-site request from an openpete_lazy_ref sub field.
+ *
+ * @param sub The packed value.
+ * @return The request. */
+static nr_mat_req late_unpack_req(int sub) {
+    return (nr_mat_req){ (nr_mat_kind)(sub & 15), (sub >> 4) & 15, (sub >> 8) & 15, (sub >> 12) & 1 };
+}
+
+/** @brief Find a lazy slot again from where it lives, with the slot's current generation.
+ *
+ * @param r Where the slot lives.
+ * @param gen Receives the slot's generation (0 for a built-in pass).
+ * @return The slot, or NULL when the pass or material is no longer live. */
+static void** late_slot(const openpete_lazy_ref* r, unsigned* gen) {
+    *gen = 0;
+    switch (r->kind) {
+    case OPENPETE_LAZY_BUILTIN:
+        return r->index == 0 ? &s_rq_pipe : &s_dither_pipe;
+    case OPENPETE_LAZY_POSTFX: {
+        openpete_postfx_pass_t pass;
+        if (openpete_mods_postfx_enum_at(r->index, &pass) != 0) return NULL;
+        *gen = pass.generation;
+        return pass.pipeline_slot;
+    }
+    case OPENPETE_LAZY_MATERIAL: {
+        openpete_mod_material_gpu_t mg;
+        if (openpete_mods_material_enum_at(r->index, NULL, NULL, &mg) != 0) return NULL;
+        const nr_mat_req q = late_unpack_req(r->sub);
+        *gen = mg.generation;
+        return nr_material_slot(&mg, &q);
+    }
+    default: {
+        openpete_mod_material_terrain_t tm;
+        if (openpete_mods_material_enum_terrain(r->index, r->sub, &tm) != 0) return NULL;
+        *gen = tm.generation;
+        return tm.pipeline_slot;
+    }
+    }
+}
+
+/** @brief Unlink a late entry from the list.
+ *
+ * @param e The entry, linked. */
+static void late_unlink(late_ent* e) {
+    for (late_ent** pp = &s_late_head; *pp; pp = &(*pp)->next)
+        if (*pp == e) { *pp = e->next; return; }
+}
+
+/** @brief Compile-pool install callback of a late compile: record the result for the next compose.
+ *
+ * Display owner. A job the pool's stop dropped is destroyed with its entry.
+ * @param dev Device.
+ * @param job The job, owned from here.
+ * @param rc Its run's result, or RHI_POOL_CANCELLED.
+ * @param tag Its late entry. */
+static void late_arrive(rhi_device* dev, rhi_compile_job* job, int rc, void* tag) {
+    late_ent* e = tag;
+    if (rc == RHI_POOL_CANCELLED) {
+        rhi_compile_job_discard(dev, job);
+        late_unlink(e);
+        free(e);
+        s_late.cancelled++;
+        return;
+    }
+    e->job = job;
+    e->rc = rc;
+    e->arrived = true;
+}
+
+/** @brief Return whether a postfx entry's group (its mod's pending passes at its point) still has a compile out.
+ *
+ * @param e An arrived postfx entry.
+ * @return true while another member has not arrived. */
+static bool late_group_open(const late_ent* e) {
+    for (const late_ent* o = s_late_head; o; o = o->next)
+        if (o != e && !o->arrived && o->ref.kind == OPENPETE_LAZY_POSTFX &&
+            o->ref.point == e->ref.point && o->ref.owner && e->ref.owner &&
+            strcmp(o->ref.owner, e->ref.owner) == 0)
+            return true;
+    return false;
+}
+
+/** @brief Install one arrived late compile into its slot, or destroy it, or recompile it for the variant drawn now.
+ *
+ * @param e The entry, arrived.
+ * @return true when the entry is done (the caller frees it), false when it was queued again. */
+static bool late_install_one(late_ent* e) {
+    unsigned gen = 0;
+    void** slot = late_slot(&e->ref, &gen);
+    if (!slot || gen != e->ref.generation || *slot != OPENPETE_POSTFX_PIPE_PENDING) {
+        /* Swept or retired since the request: never linked or recorded. */
+        if (!slot || gen != e->ref.generation) s_late.stale_gen++;
+        else s_late.duplicate++;
+        rhi_compile_job_discard(s_nr.dev, e->job);
+        return true;
+    }
+    if (e->rc == 0 && rhi_compile_job_variant_stale(s_nr.dev, e->job)) {
+        rhi_compile_job_retarget(s_nr.dev, e->job);
+        e->arrived = false;
+        rhi_compile_job* job = e->job;
+        e->job = NULL;
+        s_late.requeued++;
+        rhi_compile_pool_submit(s_nr.dev, job, 0, late_arrive, e);
+        return false;
+    }
+    rhi_pipeline* p = e->rc == 0 ? rhi_compile_job_install(s_nr.dev, e->job) : NULL;
+    if (e->rc != 0) rhi_compile_job_discard(s_nr.dev, e->job);
+    *slot = p ? (void*)p : PFX_PIPE_FAILED;
+    if (p) s_late.installed++;
+    else {
+        s_late.failed++;
+        fprintf(stderr, "[native] late compile: pipeline build FAILED for %s (kind %d) - "
+                        "it draws the stock path\n",
+                e->ref.owner ? e->ref.owner : "?", e->ref.kind);
+    }
+    const unsigned pres = (unsigned)(rhi_frame_serial(s_nr.dev) - e->serial0);
+    const double ms = (double)(SDL_GetTicksNS() - e->t0_ns) / 1e6;  /* clock-guard: wall: late-compile latency for the census */
+    s_late.lat_presents_sum += pres;
+    if (pres > s_late.lat_presents_max) s_late.lat_presents_max = pres;
+    s_late.lat_ms_sum += ms;
+    if (ms > s_late.lat_ms_max) s_late.lat_ms_max = ms;
+    if (e->stock_presents > s_late.stock_presents_max) s_late.stock_presents_max = e->stock_presents;
+    if (e->from_enable) {
+        if (e->stock_presents) s_late.enum_after_draw++;
+        else s_late.enum_before_draw++;
+    }
+    return true;
+}
+
+/** @brief Install every arrived late compile; a postfx pass waits for the rest of its group unless @p all.
+ *
+ * Display owner, inside a compose (the live present's under the registry
+ * read side, or a synchronous wait).
+ * @param all true installs every arrived result regardless of its group. */
+static void late_install(bool all) {
+    bool held = false;
+    for (late_ent** pp = &s_late_head; *pp;) {
+        late_ent* e = *pp;
+        if (!e->arrived) { pp = &e->next; continue; }
+        if (!all && e->ref.kind == OPENPETE_LAZY_POSTFX && late_group_open(e)) {
+            held = true;
+            pp = &e->next;
+            continue;
+        }
+        if (late_install_one(e)) { *pp = e->next; free(e); }
+        else pp = &e->next;
+    }
+    s_late.groups_held += held;
+}
+
+/** @brief Wait until a pending slot's compile returns and install it, on a synchronous path.
+ *
+ * Waits for the whole compile pool, installing what arrives, until the slot
+ * holds something other than the pending value.
+ * @param slot The slot, pending. */
+static void late_wait(void** slot) {
+    s_late.waits++;
+    for (int guard = 0; *slot == OPENPETE_POSTFX_PIPE_PENDING && guard < 64; guard++) {
+        rhi_compile_pool_wait(s_nr.dev, NULL, NULL);
+        late_install(true);
+    }
+}
+
+/** @brief Count a draw site's visit to a pending slot: one stock draw, and one stock present per present it happens in.
+ *
+ * @param slot The slot, pending. */
+static void late_note_stock(void** slot) {
+    s_late.stock_visits++;
+    const uint64_t serial = rhi_frame_serial(s_nr.dev);
+    for (late_ent* e = s_late_head; e; e = e->next) {
+        if (e->slot_id != slot || e->stock_serial == serial) continue;
+        e->stock_serial = serial;
+        e->stock_presents++;
+        s_late.stock_presents++;
+        return;
+    }
+}
+
+/** @brief Mark the late entry of a pending slot as reached by an enable's enumeration.
+ *
+ * @param slot The slot, pending. */
+static void late_mark_enabled(void** slot) {
+    for (late_ent* e = s_late_head; e; e = e->next)
+        if (e->slot_id == slot) { e->from_enable = true; return; }
+}
+
+/** @brief Queue a late compile for an empty slot and set the slot pending.
+ *
+ * @return 1 queued, -1 when the job could not be made (the slot is failed). */
+static int late_queue(const rhi_pipeline_desc* desc, const uint32_t* vw, size_t vn,
+                      const uint32_t* fw, size_t fn, void** slot, const openpete_lazy_ref* ref) {
+    rhi_compile_job* job = rhi_compile_job_new(s_nr.dev, desc, vw, vn, fw, fn,
+                                               rhi_pipe_variant_current(), ref->generation,
+                                               rhi_pipe_variant_epoch());
+    late_ent* e = job ? calloc(1, sizeof *e) : NULL;
+    if (!e) {
+        rhi_compile_job_discard(s_nr.dev, job);
+        *slot = PFX_PIPE_FAILED;
+        return -1;
+    }
+    *e = (late_ent){ .ref = *ref, .slot_id = slot, .from_enable = s_late_enumerating,
+                     .serial0 = rhi_frame_serial(s_nr.dev),
+                     .t0_ns = SDL_GetTicksNS() };  /* clock-guard: wall: late-compile latency for the census */
+    late_ent** tail = &s_late_head;
+    while (*tail) tail = &(*tail)->next;
+    *tail = e;
+    *slot = OPENPETE_POSTFX_PIPE_PENDING;
+    s_late.queued++;
+    if (s_late_enumerating) s_late.enum_queued++;
+    rhi_compile_pool_submit(s_nr.dev, job, 0, late_arrive, e);
+    return 1;
+}
+
+int openpete_native_lazy_pipe(const rhi_pipeline_desc* desc, const uint32_t* vert_words,
+                              size_t vert_n, const uint32_t* frag_words, size_t frag_n,
+                              void** slot, const openpete_lazy_ref* ref) {
+    if (*slot == PFX_PIPE_FAILED) return -1;
+    if (*slot == OPENPETE_POSTFX_PIPE_PENDING) {
+        if (!late_sync()) {
+            if (s_late_enumerating) { s_late.enum_pending++; late_mark_enabled(slot); }
+            else late_note_stock(slot);
+            return 1;
+        }
+        late_wait(slot);
+        if (*slot == OPENPETE_POSTFX_PIPE_PENDING) return 1;
+    }
+    if (*slot) return 0;
+    if (!late_sync()) return late_queue(desc, vert_words, vert_n, frag_words, frag_n, slot, ref);
+    return rhi_create_pipeline_slot(s_nr.dev, desc, vert_words, vert_n, frag_words, frag_n, slot,
+                                    PFX_PIPE_FAILED);
+}
+
+/** @brief Destroy every arrived late compile and log the late-compile counts; shutdown, before the device goes.
+ *
+ * Compiles still out are counted as in flight and dropped later by the
+ * pool's stop, which hands them back cancelled (late_arrive). */
+static void late_shutdown(void) {
+    unsigned in_flight = 0;
+    for (late_ent** pp = &s_late_head; *pp;) {
+        late_ent* e = *pp;
+        if (!e->arrived) { in_flight++; pp = &e->next; continue; }
+        rhi_compile_job_discard(s_nr.dev, e->job);
+        *pp = e->next;
+        free(e);
+    }
+    if (!s_late.queued && !s_late.waits && !s_late.enables) return;
+    const unsigned done = s_late.installed + s_late.failed;
+    OPL_INFO_F("native", "late compiles: %u queued, %u installed, %u failed, %u stale (swept), "
+               "%u recompiled for a switch, %u duplicate, %u cancelled; stock draws %u over %u "
+               "pending presents (max %u per pipeline); install latency mean %.1f max %u presents, "
+               "mean %.1f max %.1f ms; postfx group held %u composes; synchronous waits %u; "
+               "%u in flight at shutdown",
+               s_late.queued, s_late.installed, s_late.failed, s_late.stale_gen, s_late.requeued,
+               s_late.duplicate, s_late.cancelled, s_late.stock_visits, s_late.stock_presents,
+               s_late.stock_presents_max,
+               done ? (double)s_late.lat_presents_sum / done : 0.0, s_late.lat_presents_max,
+               done ? s_late.lat_ms_sum / done : 0.0, s_late.lat_ms_max, s_late.groups_held,
+               s_late.waits, in_flight);
+    if (s_late.enables)
+        OPL_INFO_F("native", "late enable path: %u mod(s) entered, %u slots enumerated (%u queued, "
+                   "%u already pending, %u already installed); of the queued and pending, %u "
+                   "installed before their first draw, %u after drawing stock",
+                   s_late.enables, s_late.enum_slots, s_late.enum_queued, s_late.enum_pending,
+                   s_late.enum_slots - s_late.enum_queued - s_late.enum_pending,
+                   s_late.enum_before_draw, s_late.enum_after_draw);
+}
+
 /** @brief Return a mod material's pipeline for one draw-site request, building it into its slot when the slot is empty.
  *
  * The one description builder of the mod material scene sites, shared by
@@ -9391,16 +9748,17 @@ static void** nr_material_slot(const openpete_mod_material_gpu_t* mg, const nr_m
  * portal's opening. DECAL: the shadow_decal_tex stages as fallbacks,
  * subtract blend, no depth test, the opaque depth at set 1 and the decal push
  * block. No depth bias on any: binding a bias pipeline invalidates the
- * dynamic bias state. A failed build is logged and cached as
- * PFX_PIPE_FAILED, never retried. Inside an open pipeline batch the build is
- * queued and the slot is filled when the batch ends.
+ * dynamic bias state. The slot is filled through openpete_native_lazy_pipe:
+ * a failed build is logged and cached as PFX_PIPE_FAILED, never retried; a
+ * build queued on the open pipeline batch leaves the slot NULL until the
+ * batch ends, and a late compile leaves it pending.
  * @param mg Resolved or enumerated mod material.
  * @param q The request.
- * @return The slot's content: an rhi_pipeline*, PFX_PIPE_FAILED, or NULL
- *         while a batch holds the build. */
+ * @return The slot's content: an rhi_pipeline*, PFX_PIPE_FAILED,
+ *         OPENPETE_POSTFX_PIPE_PENDING, or NULL while a batch holds the build. */
 static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_mat_req* q) {
     void** slot = nr_material_slot(mg, q);
-    if (*slot) return *slot;
+    if (*slot && *slot != OPENPETE_POSTFX_PIPE_PENDING) return *slot;
     const int b = (q->blend_class >= 0 && q->blend_class < 4) ? q->blend_class : 0;
     rhi_pipeline_desc md = {
         .vert_spv = "psx_scene.vert.spv",
@@ -9429,8 +9787,11 @@ static void* nr_material_pipe(const openpete_mod_material_gpu_t* mg, const nr_ma
             .push_const_size = sizeof(shadow_decal_tex_pc),
         };
     }
-    if (rhi_create_pipeline_slot(s_nr.dev, &md, mg->vert_spv, mg->vert_words, frag, frag_n, slot,
-                                 PFX_PIPE_FAILED) < 0)
+    const openpete_lazy_ref ref = { .kind = OPENPETE_LAZY_MATERIAL, .index = mg->index,
+                                    .sub = late_pack_req(q), .generation = mg->generation,
+                                    .point = -1, .owner = mg->owner };
+    if (openpete_native_lazy_pipe(&md, mg->vert_spv, mg->vert_words, frag, frag_n, slot, &ref) < 0 &&
+        *slot == PFX_PIPE_FAILED)
         fprintf(stderr, "[native] material: pipeline build FAILED for %s "
                         "(kind %d, blend %d, portal slot %d, mark %d)\n",
                 mg->owner, (int)q->kind, b, q->pslot, q->mark);
@@ -9469,7 +9830,7 @@ static int ut_mat_spans_ok(int gi, int gb, int gc) {
  * at location 1, is the mod-material fragment contract for textured and
  * untextured draws), and a stencil-MARK twin for the hole-fill WORLD and
  * ACTOR groups so overridden coverage still masks the LP fill. A span whose
- * material fails to resolve or build draws with the stock pipe. The
+ * material fails to resolve or build, or whose compile is pending, draws with the stock pipe. The
  * pipeline inherits the group's blend class, so a material changes colour
  * math and never how the group composites; the quarter-add class has no
  * material slot, and a group drawn with it draws no spans here.
@@ -9497,9 +9858,8 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
         if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
             rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
             const nr_mat_req q = { NR_MAT_SCENE, blend_class, 0, want_mark };
-            void* built = nr_material_pipe(&mg, &q);
-            if (built != PFX_PIPE_FAILED) {
-                pipe = (rhi_pipeline*)built;
+            pipe = nr_pipe_of(nr_material_pipe(&mg, &q));
+            if (pipe) {
                 bind_scene_pipe(pipe);
                 rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                 if (s_nr.mat_pack_dummy)   /* op_pack_tex: no pack art for gouraud */
@@ -10146,7 +10506,7 @@ static void texsel_draw_forensics(const scene_tri_t* s0, int allow_override, int
  * @param ov_mark Nonzero for the stencil-MARK variant.
  * @param blend_class Blend class index into k_blend_class_rhi, 0 opaque.
  * @param portal 0 none, 1 the blended cover rule, 2 the inner-rim rule.
- * @return The pipeline, or NULL when it has no portal profile or its build failed. */
+ * @return The pipeline, or NULL when it has no portal profile, its build failed, or its compile is pending. */
 static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
                                        int ov_mark, int blend_class, int portal) {
     if (portal && (!mg->frag_portal_spv || rhi_device_max_descriptor_sets(s_nr.dev) < 8u))
@@ -10156,8 +10516,7 @@ static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
                                   : blend_class;
     rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
     const nr_mat_req q = { portal ? NR_MAT_PORTAL : NR_MAT_SCENE, blend_class, pslot, ov_mark };
-    void* built = nr_material_pipe(mg, &q);
-    return built == PFX_PIPE_FAILED ? NULL : (rhi_pipeline*)built;
+    return nr_pipe_of(nr_material_pipe(mg, &q));
 }
 
 /** @brief Draw a material-overridden run with its texture-pack replacements (op_pack_shade).
@@ -12857,8 +13216,8 @@ static bool draw_native_scene(bool full_extent)
                         openpete_mods_material_resolve(s0_decal_tag, OPENPETE_MATERIAL_CONTRACT_DECAL, &dmg) >= 0) {
                         rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
                         const nr_mat_req dq = { NR_MAT_DECAL, 0, 0, 0 };
-                        void* ds = nr_material_pipe(&dmg, &dq);
-                        if (ds != PFX_PIPE_FAILED) { dpipe = (rhi_pipeline*)ds; dslot_ok = 1; }
+                        rhi_pipeline* ds = nr_pipe_of(nr_material_pipe(&dmg, &dq));
+                        if (ds) { dpipe = ds; dslot_ok = 1; }
                     }
                 }
                 bind_scene_pipe(dpipe);
@@ -13053,9 +13412,8 @@ static bool draw_native_scene(bool full_extent)
                             openpete_mods_material_resolve(pseg[sg].tag, OPENPETE_MATERIAL_CONTRACT_SCENE, &mg) >= 0) {
                             rhi_pipe_site_visit(RHI_PIPE_SITE_MOD_MATERIAL, 1);
                             const nr_mat_req sq = { NR_MAT_SKY, 0, 0, 0 };
-                            void* built = nr_material_pipe(&mg, &sq);
-                            if (built != PFX_PIPE_FAILED) {
-                                pipe = (rhi_pipeline*)built;
+                            pipe = nr_pipe_of(nr_material_pipe(&mg, &sq));
+                            if (pipe) {
                                 bind_scene_pipe(pipe);
                                 rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                                 if (s_nr.mat_pack_dummy)
@@ -13482,12 +13840,22 @@ static void variant_apply_pending(void) {
     variant_request(want, openpete_interp_deterministic());
 }
 
-/** @brief Apply an OPENPETE_MOBY_TRUESCOPE change before a dump compose, synchronously: the swap lands before this compose.
+/** @brief Apply a queued variant change before a dump compose, synchronously: the swap lands before this compose.
  *
- * Headless runs reach the pipelines only through the dump compose; the
- * other queued variant fields are left as last requested. */
+ * Headless runs reach the pipelines only through the dump compose, so there
+ * every queued field (texture mapping, notex, wireframe, the
+ * OPENPETE_MOBY_TRUESCOPE value) applies here. A windowed run applies only
+ * an OPENPETE_MOBY_TRUESCOPE change; its live presents apply the rest. */
 static void truescope_apply_pending(void) {
     if (!s_nr.dev) return;
+    if (s_nr.headless) {
+        const rhi_pipe_variant want = { .affine = s_texmap_pending != 0,
+                                        .notex = s_notex_pending != 0,
+                                        .wireframe = s_wireframe_pending != 0,
+                                        .truescope = truescope_wanted() != 0 };
+        variant_request(want, true);
+        return;
+    }
     variant_request_init();
     rhi_pipe_variant want = s_variant_req;
     want.truescope = truescope_wanted() != 0;
@@ -15573,31 +15941,49 @@ static void pfx_drain_retired(void) {
  * quantize and dither passes and every mod pass), shared by the executor
  * and the pipeline precompile: the fullscreen-triangle vertex stage, no
  * blend, the postfx layout, and the pass's fragment stage, an embedded
- * .spv name for an engine pass or SPIR-V words for a mod pass. A failed
- * build is logged and cached as PFX_PIPE_FAILED, which makes the executor
- * skip the pass, and is never retried. Inside an open pipeline batch
- * (rhi_pipeline_batch_begin) the build is queued and the slot is filled
- * when the batch ends.
+ * .spv name for an engine pass or SPIR-V words for a mod pass. The slot is
+ * filled through openpete_native_lazy_pipe: a failed build is logged and
+ * cached as PFX_PIPE_FAILED, which makes the executor skip the pass, and is
+ * never retried; a build queued on the open pipeline batch leaves the slot
+ * NULL until the batch ends, and a late compile leaves it pending, which
+ * the executor also skips.
  * @param slot The pass's pipeline slot.
  * @param frag_name Embedded fragment .spv name, or NULL for words.
  * @param words Fragment SPIR-V words, or NULL.
  * @param n Their count.
- * @param owner Owner named in the failure log.
- * @return The slot's content: an rhi_pipeline*, PFX_PIPE_FAILED, or NULL
- *         while a batch holds the build. */
+ * @param ref Where the slot lives; its owner is named in the failure log.
+ * @return The slot's content: an rhi_pipeline*, PFX_PIPE_FAILED,
+ *         OPENPETE_POSTFX_PIPE_PENDING, or NULL while a batch holds the build. */
 static void* nr_postfx_pipe(void** slot, const char* frag_name, const uint32_t* words,
-                            size_t n, const char* owner) {
-    if (*slot) return *slot;
+                            size_t n, const openpete_lazy_ref* ref) {
+    if (*slot && *slot != OPENPETE_POSTFX_PIPE_PENDING) return *slot;
     rhi_pipeline_desc pd = {
         .vert_spv = "postfx_fs.vert.spv",
         .frag_spv = frag_name,
         .blend = RHI_BLEND_NONE,
         .postfx = true,
     };
-    if (rhi_create_pipeline_slot(s_nr.dev, &pd, NULL, 0, words, n, slot, PFX_PIPE_FAILED) < 0)
+    if (openpete_native_lazy_pipe(&pd, NULL, 0, words, n, slot, ref) < 0)
         fprintf(stderr, "[native] postfx: pipeline build FAILED for %s - pass disabled\n",
-                owner);
+                ref->owner ? ref->owner : "?");
     return *slot;
+}
+
+/* Where the engine's raster quantize and dither pass slots live. */
+static const openpete_lazy_ref k_rq_ref = { .kind = OPENPETE_LAZY_BUILTIN, .index = 0,
+                                            .point = -1, .owner = "raster-quantize" };
+static const openpete_lazy_ref k_dither_ref = { .kind = OPENPETE_LAZY_BUILTIN, .index = 1,
+                                                .point = -1, .owner = "psx-dither" };
+
+/** @brief Return a mod postfx pass's pipeline, building it into its slot when the slot is empty (nr_postfx_pipe).
+ *
+ * @param pass The pass, as collected or enumerated.
+ * @return The slot's content, as nr_postfx_pipe returns it. */
+static void* nr_postfx_mod_pipe(const openpete_postfx_pass_t* pass) {
+    const openpete_lazy_ref ref = { .kind = OPENPETE_LAZY_POSTFX, .index = pass->index,
+                                    .generation = pass->generation, .point = pass->point,
+                                    .owner = pass->owner };
+    return nr_postfx_pipe(pass->pipeline_slot, NULL, pass->frag_spv, pass->frag_words, &ref);
 }
 
 /* Run the chain. target == NULL -> over off_image (live present);
@@ -15607,7 +15993,7 @@ static void* nr_postfx_pipe(void** slot, const char* frag_name, const uint32_t* 
  * composed scene. Rides the postfx executor as pass 0 with a pre-built
  * pipeline (embedded raster_quantize.frag) so it stacks under any mod chain
  * (a CRT filter processes the quantized scene, as it should). */
-static void* s_rq_pipe;                        /* rhi_pipeline* / PFX_PIPE_FAILED */
+static void* s_rq_pipe;                        /* rhi_pipeline* / PFX_PIPE_FAILED / PENDING */
 static struct {                                /* std140 mirror of rq_params */
     float scale, od_ok;
     float od_uvmax[2];                         /* last valid alloc uv of the raster */
@@ -15629,7 +16015,7 @@ static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || s_raster_mult <= 0) return 0;
     rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
-    nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, "raster-quantize");
+    nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, &k_rq_ref);
     s_rq_params.scale = (float)s_raster_mult;
     /* Depth-majority vote input: the WORLD-opaque pre-pass depth, addressed
      * through its PSX-screen->uv affine scaled from the raster extent to the
@@ -15661,7 +16047,7 @@ static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
  * dither -> composite -> CRT order that made the pattern invisible on
  * period hardware. Needs no custom uniforms: the grid mapping rides the
  * shared engine UBO (op_scene_rect/op_scene_grid). */
-static void* s_dither_pipe;                    /* rhi_pipeline* / PFX_PIPE_FAILED */
+static void* s_dither_pipe;                    /* rhi_pipeline* / PFX_PIPE_FAILED / PENDING */
 
 /** @brief Write the engine's PS1 dither pass into a postfx chain.
  *
@@ -15676,7 +16062,7 @@ static int psx_dither_append(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || !s_dither) return 0;
     rhi_pipe_site_visit(RHI_PIPE_SITE_BUILTIN_LAZY, 1);
-    nr_postfx_pipe(&s_dither_pipe, "psx_dither.frag.spv", NULL, 0, "psx-dither");
+    nr_postfx_pipe(&s_dither_pipe, "psx_dither.frag.spv", NULL, 0, &k_dither_ref);
     memset(&pass[0], 0, sizeof pass[0]);
     pass[0].pipeline_slot = &s_dither_pipe;
     pass[0].owner         = "psx-dither";
@@ -15760,10 +16146,10 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
 
     int out_idx = 0, ran = 0;
     for (int i = 0; i < n; i++) {
-        if (*pass[i].pipeline_slot == NULL)
-            nr_postfx_pipe(pass[i].pipeline_slot, NULL, pass[i].frag_spv, pass[i].frag_words,
-                           pass[i].owner);
-        if (*pass[i].pipeline_slot == PFX_PIPE_FAILED) continue;
+        /* The engine passes (before the mod passes) were built by their
+         * prepend; a pending or failed pass is left out of the chain. */
+        if (i >= n - n_mod) nr_postfx_mod_pipe(&pass[i]);
+        if (!nr_pipe_of(*pass[i].pipeline_slot)) continue;
         rhi_texture* out = ping[out_idx];
         /* Per-mod GPU attribution: one zone per pass, named by the
          * owning mod id (loader-stable string). Live path only - the dump
@@ -15812,21 +16198,63 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
     return ran;
 }
 
-/** @brief Return whether OPENPETE_PRECOMPILE_FORCE asks for the pipeline precompile in this run.
+/** @brief Return whether the pipeline precompile runs in this run.
  *
- * Read at the one call, during bring-up.
- * @return 1 when set to a value not starting with 0. */
-static int nr_precompile_forced(void) {
+ * OPENPETE_PRECOMPILE_FORCE set to a value starting with 0 skips it, any
+ * other non-empty value runs it, in any run mode. Unset, it runs in a
+ * windowed run on a hardware device and is skipped in a synchronous run
+ * (headless or deterministic capture), whose pipelines compile at first
+ * draw, and on a software device, whose pipeline cache keeps nothing it
+ * could reuse. Read at the one call, during bring-up.
+ * @return 1 to run the precompile. */
+static int nr_precompile_wanted(void) {
     const char* e = getenv("OPENPETE_PRECOMPILE_FORCE");
-    return e && *e && *e != '0';
+    if (e && *e) return *e != '0';
+    return !s_nr.sync_run && !rhi_device_is_software(s_nr.dev);
 }
 
-/** @brief Pump the window's events between precompile creates, so the window answers the compositor throughout.
+/* The precompile's progress panel appears once the precompile has run this
+ * long. Warm and app-cold boots on the timing hosts finish well inside it
+ * and draw nothing; a driver-cold boot runs past it. */
+#define NR_PRECOMPILE_PANEL_NS (400ll * 1000000ll)
+/* The panel redraws at most this often. */
+#define NR_PRECOMPILE_PANEL_PERIOD_NS (16ll * 1000000ll)
+
+/* Precompile pump state: start, last panel draw, panel draws. */
+static struct {
+    Uint64   t0_ns, last_ns;
+    unsigned draws;
+} s_pre_panel;
+
+/** @brief Draw one present of the precompile progress panel: a cleared window with the imgui panel.
  *
+ * @param done Compiles finished.
+ * @param total Compiles queued. */
+static void nr_precompile_panel(unsigned done, unsigned total) {
+    if (!rhi_begin_frame(s_nr.dev)) return;
+    rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+    openpete_devui_render_progress(s_nr.dev, "Compiling shaders", done, total);
+    rhi_end_offscreen(s_nr.dev);
+    rhi_blit_to_swapchain(s_nr.dev);
+    rhi_end_frame(s_nr.dev);
+    s_pre_panel.draws++;
+}
+
+/** @brief Pump the window's events between precompile creates, and draw the progress panel once the precompile has run past NR_PRECOMPILE_PANEL_NS.
+ *
+ * Runs on the display owner (bring-up, before the first tick).
  * @param ctx Unused. */
 static void nr_precompile_pump(void* ctx) {
     (void)ctx;
     SDL_PumpEvents();
+    const Uint64 now = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the progress panel */
+    if (now - s_pre_panel.t0_ns < (Uint64)NR_PRECOMPILE_PANEL_NS ||
+        now - s_pre_panel.last_ns < (Uint64)NR_PRECOMPILE_PANEL_PERIOD_NS)
+        return;
+    s_pre_panel.last_ns = now;
+    unsigned done = 0, total = 0;
+    rhi_precompile_progress(s_nr.dev, &done, &total);
+    nr_precompile_panel(done, total);
 }
 
 /** @brief Install the current variant of every mod material slot a scene or terrain draw site can request for one material, enabled or not.
@@ -15868,14 +16296,64 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
         if (openpete_mods_material_enum_terrain(i, idx, &tm) != 0) continue;
         openpete_tercache_material_pipe(tm.pipeline_slot, idx / OPENPETE_MATERIAL_TER_SLOTS,
                                         idx % OPENPETE_MATERIAL_TER_SLOTS, tm.frag_spv,
-                                        tm.frag_words, tm.owner);
+                                        tm.frag_words, tm.owner, i, tm.generation);
         n++;
         if (pump) pump(NULL);
     }
     return n;
 }
 
-/** @brief Run the pipeline precompile when OPENPETE_PRECOMPILE_FORCE asks for it.
+/** @brief Queue the current variant of every lazy slot of the mods a live toggle entered since the last present.
+ *
+ * Each entered mod's postfx passes and materials are enumerated as the
+ * precompile enumerates them (nr_precompile_material), enabled or not; an
+ * empty slot is set pending and queued, a slot already pending or installed
+ * (a draw reached it first) is left as it is. The entered mods are held
+ * back from this present's compose (openpete_mods_hold_owners), released at
+ * its end, so their passes first draw at the next present. Live present
+ * only, under the registry read side. */
+static void late_queue_entered(void) {
+    static const char* ids[16];
+    const int n = openpete_mods_take_entered(ids, (int)(sizeof ids / sizeof ids[0]));
+    if (n <= 0) return;
+    /* The entered mods' passes and materials first draw at the next present,
+     * by when their compiles have had a present to return. */
+    openpete_mods_hold_owners(ids, n);
+    s_late_enumerating = true;
+    for (int m = 0; m < n; m++) {
+        s_late.enables++;
+        for (int i = 0; i < openpete_mods_postfx_enum_count(); i++) {
+            openpete_postfx_pass_t pass;
+            if (openpete_mods_postfx_enum_at(i, &pass) != 0 || strcmp(pass.owner, ids[m]) != 0)
+                continue;
+            nr_postfx_mod_pipe(&pass);
+            s_late.enum_slots++;
+        }
+        for (int i = 0; i < openpete_mods_material_enum_count(); i++) {
+            openpete_mod_material_gpu_t mg;
+            if (openpete_mods_material_enum_at(i, NULL, NULL, &mg) != 0 ||
+                strcmp(mg.owner, ids[m]) != 0)
+                continue;
+            s_late.enum_slots += nr_precompile_material(i, NULL);
+        }
+    }
+    s_late_enumerating = false;
+}
+
+/** @brief Open the late-compile window of a live present: install the late compiles that returned, then queue the slots of mods entered since the last present.
+ *
+ * Called by the live present right after it takes the registry read side.
+ * A synchronous run leaves the window closed, so its lazy slots compile at
+ * once. */
+static void late_present_begin(void) {
+    s_late_async = !s_nr.sync_run && !openpete_interp_deterministic();
+    if (!s_late_async) return;
+    rhi_compile_pool_drain(s_nr.dev);
+    late_install(false);
+    late_queue_entered();
+}
+
+/** @brief Run the pipeline precompile when nr_precompile_wanted asks for it.
  *
  * First the current variant of every lazy slot is installed through the
  * draw sites' own description builders, whether its feature or material is
@@ -15889,20 +16367,21 @@ static unsigned nr_precompile_material(int i, void (*pump)(void*)) {
  * it changed. Creates count in the precompile phase; creates after it count as
  * first use. The window's events are pumped between creates. */
 static void nr_precompile(void) {
-    if (!s_nr.dev || !nr_precompile_forced()) return;
+    if (!s_nr.dev || !nr_precompile_wanted()) return;
     void (*pump)(void*) = s_nr.headless ? NULL : nr_precompile_pump;
     openpete_boot_mark(OP_BOOT_PRECOMPILE_START);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
+    s_pre_panel.t0_ns = t0;
     rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
     openpete_mods_registry_read_lock();
     rhi_pipeline_batch_begin(s_nr.dev);
-    nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, "raster-quantize");
-    nr_postfx_pipe(&s_dither_pipe, "psx_dither.frag.spv", NULL, 0, "psx-dither");
+    nr_postfx_pipe(&s_rq_pipe, "raster_quantize.frag.spv", NULL, 0, &k_rq_ref);
+    nr_postfx_pipe(&s_dither_pipe, "psx_dither.frag.spv", NULL, 0, &k_dither_ref);
     unsigned slots = 2, fx = 0, mats = 0;
     for (int i = 0; i < openpete_mods_postfx_enum_count(); i++) {
         openpete_postfx_pass_t pass;
         if (openpete_mods_postfx_enum_at(i, &pass) != 0) continue;
-        nr_postfx_pipe(pass.pipeline_slot, NULL, pass.frag_spv, pass.frag_words, pass.owner);
+        nr_postfx_mod_pipe(&pass);
         fx++;
         if (pump) pump(NULL);
     }
@@ -15925,10 +16404,11 @@ static void nr_precompile(void) {
     OPL_INFO_F("native", "precompile: installed %u lazy slots (%u mod postfx passes, %u mod "
                "materials; %u queued, %u installed, %u failed, %u duplicate) in %.1f ms; "
                "%u distinct create infos, %u created, %u probe hits, %u manifest skips, "
-               "%u failed; %u compile worker(s); %.1f ms total",
+               "%u failed; %u compile worker(s); %.1f ms total; progress panel %u present(s)",
                slots + fx, fx, mats, bs.queued, bs.installed, bs.failed, bs.duplicate, install_ms,
                st.keys, st.created, st.probe_hits, st.manifest_skips, st.failed, ps.workers,
-               (double)(SDL_GetTicksNS() - t0) / 1e6);  /* clock-guard: wall: precompile duration for the log */
+               (double)(SDL_GetTicksNS() - t0) / 1e6,  /* clock-guard: wall: precompile duration for the log */
+               s_pre_panel.draws);
 }
 
 /* GPU per-pass zone report (OPENPETE_GPU_TIMERS=1): EMA per zone name over
@@ -16689,6 +17169,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * present blocks on the display, and a tick-boundary mutator on the
      * other thread must not wait behind a vblank. */
     openpete_mods_registry_read_lock();
+    late_present_begin();
     /* Retained terrain: select against the stamp of the scene this present
      * composes (freeze/lag included), so retained content follows the same
      * timeline and stale states never repaint. */
@@ -16793,6 +17274,8 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
         rhi_gpu_zone_end(s_nr.dev);
     }
 
+    s_late_async = false;
+    openpete_mods_hold_owners(NULL, 0);
     openpete_mods_registry_read_unlock();
     { OP_PROF_ACCUM_SCOPE("gpu.endframe");   /* submit + present (or submit into a stage) */
       if (s_stage_target >= 0) rhi_end_frame_to_stage(s_nr.dev, s_stage_target);
@@ -17666,6 +18149,7 @@ void openpete_native_render_shutdown(void)
     if (s_cover_ubo) { rhi_destroy_ubo(s_nr.dev, s_cover_ubo); s_cover_ubo = NULL; }
     if (s_mat_ubo) { rhi_destroy_ubo(s_nr.dev, s_mat_ubo); s_mat_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
+    late_shutdown();
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
         openpete_mods_material_retire_all();

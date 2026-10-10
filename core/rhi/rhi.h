@@ -850,7 +850,7 @@ typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST,
 typedef enum { RHI_DEPTH_SCENE = 0, RHI_DEPTH_FORWARD = 1,
                RHI_DEPTH_CLASSES } rhi_depth_class;
 
-typedef struct {
+typedef struct rhi_pipeline_desc {
     const char    *vert_spv;    /* filename within RHI_SHADER_DIR */
     const char    *frag_spv;
     rhi_blend_mode blend;
@@ -1324,8 +1324,9 @@ void          rhi_boot_stats_get(rhi_boot_stats *out);
  * match. The file carries a key manifest of the pipeline variants created
  * into it. It is rewritten through write_file after a precompile and at
  * rhi_destroy when the cache bytes or the manifest changed. Each open
- * refreshes the file's mtime; a windowed open removes the other cache files
- * unused for 30 days or ranked beyond the 4 most recently used. A NULL or ""
+ * refreshes the file's mtime and removes the other cache files of its class
+ * (windowed, or headless: rhi_set_pipeline_cache_sync_class) unused for 30
+ * days or ranked beyond the 4 most recently used. A NULL or ""
  * dir, or a NULL write_file, keeps the cache in memory only (the default).
  * Process-global; call before rhi_create.
  * @param dir Existing directory, or NULL.
@@ -1333,6 +1334,14 @@ void          rhi_boot_stats_get(rhi_boot_stats *out);
  * @param write_file Replaces path with n bytes in one step; returns 0 on success. */
 void          rhi_set_pipeline_cache_dir(const char *dir, const char *build,
                                          int (*write_file)(const char *path, const void *data, size_t n));
+
+/** @brief Put devices created afterwards in the headless cache-file class: their file name ends in -headless.bin.
+ *
+ * A headless device is in that class without this call. A synchronous run
+ * (deterministic capture) sets it so a harness never writes a windowed
+ * run's file. Process-global; call before rhi_create.
+ * @param on true for the headless class. */
+void          rhi_set_pipeline_cache_sync_class(bool on);
 
 /* What rhi_precompile_variants did. */
 typedef struct {
@@ -1368,6 +1377,15 @@ typedef struct {
  * @return 0, or -1 for a NULL device. */
 int           rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
                                       rhi_precompile_stats *out);
+
+/** @brief Read the progress of the precompile in flight: compiles finished and queued in the open pipeline batch and the variant walk.
+ *
+ * The variant walk's total is known before its first submit. Display owner
+ * only (the pump of rhi_pipeline_batch_end or rhi_precompile_variants).
+ * @param dev Device, or NULL (zeros).
+ * @param done Receives the finished count, or NULL.
+ * @param total Receives the queued count, or NULL. */
+void          rhi_precompile_progress(const rhi_device *dev, unsigned *done, unsigned *total);
 
 /** @brief Mark the precompile ended: pipeline creates after it count as first use, before the first frame too. */
 void          rhi_pipe_precompile_done(void);
@@ -1475,6 +1493,26 @@ uint32_t      rhi_compile_job_generation(const rhi_compile_job *job);
  * @param job The job.
  * @return The epoch. */
 uint32_t      rhi_compile_job_epoch(const rhi_compile_job *job);
+
+/** @brief Return whether a variant switch since a job was made changed its create info.
+ *
+ * Display owner only. The job is stale when its create info under the
+ * variant drawn now (rhi_pipe_variant_current, which a rebuild's swap
+ * changes without an epoch bump) differs from the one it was compiled for;
+ * a switch that leaves its create info alone (its stages declare none of
+ * the switched constants) does not make it stale.
+ * @param dev Device the job was made for.
+ * @param job The job.
+ * @return true when the result must not be installed. */
+bool          rhi_compile_job_variant_stale(const rhi_device *dev, const rhi_compile_job *job);
+
+/** @brief Point a job at the variant drawn now and the current epoch, destroying any result it holds.
+ *
+ * Display owner only. The job keeps its desc, stage bytes and generation,
+ * so it can be submitted again without the registry it was made from.
+ * @param dev Device the job was made for.
+ * @param job The job. */
+void          rhi_compile_job_retarget(rhi_device *dev, rhi_compile_job *job);
 
 /** @brief Wrap a job's result in an rhi_pipeline, link it into the rebuild registry and free the job.
  *

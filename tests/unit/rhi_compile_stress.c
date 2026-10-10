@@ -325,6 +325,9 @@ typedef struct {
     /* Pool leg: live rebuild requests and what their swaps reported. */
     unsigned rb_requests, rb_swaps, rb_rebuilt, rb_failed, rb_late, rb_stale, rb_retired,
              rb_superseding, env_writes;
+    /* Pool leg: slots set pending, pending results a switch made stale and
+     * recompiled, pending slots a sweep dropped. */
+    unsigned pending_set, pending_requeued, pending_swept;
 } run_stats;
 
 /* Where a leg's jobs go. */
@@ -521,7 +524,10 @@ static void enqueue_mod_slots(leg_mode mode)
         if (openpete_mods_postfx_enum_at(i, &p) != 0 || *p.pipeline_slot || s_pending[0][i]) continue;
         rhi_compile_job *job = rhi_compile_job_new(s_dev, &k_postfx_desc, NULL, 0, p.frag_spv,
                                                    p.frag_words, var, p.generation, epoch);
-        if (job && hand_off(mode, job, JOB_POSTFX, i)) s_pending[0][i] = 1;
+        if (job && hand_off(mode, job, JOB_POSTFX, i)) {
+            s_pending[0][i] = 1;
+            if (mode == MODE_POOL) { *p.pipeline_slot = OPENPETE_POSTFX_PIPE_PENDING; s_st.pending_set++; }
+        }
     }
     for (int i = 0; i < openpete_mods_material_enum_count() && i < 1024; i++) {
         openpete_mod_material_gpu_t g;
@@ -529,9 +535,17 @@ static void enqueue_mod_slots(leg_mode mode)
         if (openpete_mods_material_enum_at(i, &contract, &terrain, &g) != 0 ||
             *g.pipeline_slot[0] || s_pending[1][i])
             continue;
-        rhi_compile_job *job = rhi_compile_job_new(s_dev, &k_postfx_desc, NULL, 0, g.frag_spv,
-                                                   g.frag_words, var, g.generation, epoch);
-        if (job && hand_off(mode, job, JOB_MATERIAL, i)) s_pending[1][i] = 1;
+        /* The pool leg compiles the material slot from the scene stages,
+         * which declare AFFINE_UV, so a variant switch can make its pending
+         * result stale. */
+        rhi_compile_job *job = mode == MODE_POOL
+            ? rhi_compile_job_new(s_dev, &k_scene_desc, NULL, 0, NULL, 0, var, g.generation, epoch)
+            : rhi_compile_job_new(s_dev, &k_postfx_desc, NULL, 0, g.frag_spv, g.frag_words, var,
+                                  g.generation, epoch);
+        if (job && hand_off(mode, job, JOB_MATERIAL, i)) {
+            s_pending[1][i] = 1;
+            if (mode == MODE_POOL) { *g.pipeline_slot[0] = OPENPETE_POSTFX_PIPE_PENDING; s_st.pending_set++; }
+        }
     }
 }
 
@@ -550,8 +564,10 @@ static void enqueue_builtin(unsigned cycle, leg_mode mode)
     }
 }
 
-/** @brief Install a mod slot's result: only when its slot, re-resolved by index, still holds no pipeline and its generation equals the job's; otherwise destroy it as Vulkan objects.
+/** @brief Install a mod slot's result: only when its slot, re-resolved by index, still holds no pipeline (or the pending value) and its generation equals the job's; otherwise destroy it as Vulkan objects.
  *
+ * A pending slot's result whose create info a variant switch changed is
+ * recompiled for the variant drawn now and stays pending.
  * @param kind JOB_POSTFX or JOB_MATERIAL.
  * @param index Pass or material index.
  * @param job The job, consumed. */
@@ -568,16 +584,26 @@ static void install_mod(job_kind kind, int index, rhi_compile_job *job)
                openpete_mods_material_enum_at(index, &contract, &terrain, &g) == 0) {
         slot = g.pipeline_slot[0]; gen = g.generation;
     }
+    const bool pend = slot && *slot == OPENPETE_POSTFX_PIPE_PENDING;
+    if (pend && gen == rhi_compile_job_generation(job) &&
+        rhi_compile_job_variant_stale(s_dev, job)) {
+        rhi_compile_job_retarget(s_dev, job);
+        s_st.pending_requeued++;
+        rhi_compile_pool_submit(s_dev, job, 0, pool_mod_install,
+                                (void *)(uintptr_t)((unsigned)kind << 16 | (unsigned)index));
+        return;
+    }
     s_pending[kind == JOB_MATERIAL][index] = 0;
     if (!slot || gen != rhi_compile_job_generation(job)) {
         rhi_compile_job_discard(s_dev, job);
         s_st.stale++;
-    } else if (*slot) {
+    } else if (*slot && !pend) {
         rhi_compile_job_discard(s_dev, job);
         s_st.slot_taken++;
     } else {
         rhi_pipeline *p = rhi_compile_job_install(s_dev, job);
-        if (p) { *slot = p; s_st.installed++; }
+        *slot = p;
+        if (p) s_st.installed++;
     }
 }
 
@@ -919,6 +945,8 @@ static int judge_pool(const rhi_compile_pool_stats *p0)
            "late=%u stale_results=%u retired_in_flight=%u guarded_env_writes=%u\n",
            s_st.rb_requests, s_st.rb_swaps, s_st.rb_superseding, s_st.rb_rebuilt, s_st.rb_failed,
            s_st.rb_late, s_st.rb_stale, s_st.rb_retired, s_st.env_writes);
+    printf("leg=pool pending_set=%u pending_requeued=%u stale_discarded=%u\n", s_st.pending_set,
+           s_st.pending_requeued, s_st.stale);
     const struct { const char *what; unsigned n; } need[] = {
         { "pool runs", p1.run - p0->run }, { "staged results", p1.staged - p0->staged },
         { "variant jobs", p1.variant_created + p1.variant_probe_hits - p0->variant_created -
@@ -926,6 +954,7 @@ static int judge_pool(const rhi_compile_pool_stats *p0)
         { "rebuild swaps", s_st.rb_swaps }, { "superseding swaps", s_st.rb_superseding },
         { "stale results", s_st.rb_stale }, { "members retired in flight", s_st.rb_retired },
         { "guarded env writes", s_st.env_writes },
+        { "pending slots", s_st.pending_set },
     };
     int fail = 0;
     for (size_t i = 0; i < sizeof need / sizeof need[0]; i++) {
@@ -934,6 +963,39 @@ static int judge_pool(const rhi_compile_pool_stats *p0)
         fail = 1;
     }
     return fail || p1.variant_failed != p0->variant_failed || s_st.rb_failed;
+}
+
+/** @brief A result compiled for the shown variant turns stale when a swap shows another variant that changes its create info, and is not stale after a retarget.
+ *
+ * Runs the scene pipeline's job for the shown variant, swaps a synchronous
+ * rebuild to the variant with the other texture mapping, and reads
+ * rhi_compile_job_variant_stale before and after rhi_compile_job_retarget.
+ * Display owner, with no rebuild in flight.
+ * @return 1 when a reading is wrong, else 0. */
+static int stale_control(void)
+{
+    rhi_compile_job *job = rhi_compile_job_new(s_dev, &k_scene_desc, NULL, 0, NULL, 0,
+                                               rhi_pipe_variant_current(), 0,
+                                               rhi_pipe_variant_epoch());
+    if (!job || rhi_compile_job_run(s_dev, job, 0) != 0) {
+        rhi_compile_job_discard(s_dev, job);
+        printf("stale_control: job failed\n");
+        return 1;
+    }
+    const bool before = rhi_compile_job_variant_stale(s_dev, job);
+    rhi_pipe_variant var = rhi_pipe_variant_current();
+    var.affine = !var.affine;
+    rhi_rebuild_request(s_dev, var, true);
+    rhi_rebuild_stats r;
+    rhi_rebuild_poll(s_dev, &r);
+    const bool after = rhi_compile_job_variant_stale(s_dev, job);
+    rhi_compile_job_retarget(s_dev, job);
+    const bool retargeted = rhi_compile_job_variant_stale(s_dev, job);
+    rhi_compile_job_discard(s_dev, job);
+    const bool ok = !before && after && !retargeted;
+    printf("stale_control: stale before switch %d, after %d, after retarget %d: %s\n", before,
+           after, retargeted, ok ? "engaged" : "WRONG");
+    return ok ? 0 : 1;
 }
 
 /** @brief Stop the pool with jobs queued and in flight: every job must be run or cancelled, none lost.
@@ -1068,6 +1130,7 @@ int main(int argc, char **argv)
     printf("seam_control: off-owner link+unlink counted %u violation(s) (want 2): %s\n", seam_hits,
            seam_hits == 2 ? "engaged" : "NOT ENGAGED");
     if (seam_hits != 2) fail = 1;
+    fail |= stale_control();
     fail |= stop_control();
 
     openpete_mods_postfx_retire_all();

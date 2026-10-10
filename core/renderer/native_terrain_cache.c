@@ -1992,10 +1992,10 @@ static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
 
 void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
                                       const uint32_t *frag, size_t frag_words,
-                                      const char *owner)
+                                      const char *owner, int mat_index, unsigned generation)
 {
     if (*pslot == OPENPETE_POSTFX_PIPE_FAILED) return NULL;
-    if (*pslot) return *pslot;
+    if (*pslot && *pslot != OPENPETE_POSTFX_PIPE_PENDING) return *pslot;
     if (!s_tc.dev || variant < 0 || variant >= OPENPETE_MATERIAL_TER_VARIANTS) return NULL;
     static const char *k_vert[OPENPETE_MATERIAL_TER_VARIANTS] = {
         "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
@@ -2022,8 +2022,12 @@ void *openpete_tercache_material_pipe(void **pslot, int variant, int slot,
         case 5: d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true; break;
         default: break;
     }
-    const int rc = rhi_create_pipeline_slot(s_tc.dev, &d, NULL, 0, frag, frag_words, pslot,
-                                            OPENPETE_POSTFX_PIPE_FAILED);
+    const openpete_lazy_ref ref = {
+        .kind = OPENPETE_LAZY_TERRAIN, .index = mat_index,
+        .sub = variant * OPENPETE_MATERIAL_TER_SLOTS + slot, .generation = generation,
+        .point = -1, .owner = owner,
+    };
+    const int rc = openpete_native_lazy_pipe(&d, NULL, 0, frag, frag_words, pslot, &ref);
     if (rc < 0)
         fprintf(stderr, "[tercache] material: terrain pipeline build "
                         "FAILED for %s (variant %d slot %d) - its faces "
@@ -2059,7 +2063,7 @@ static int tc_bind_material(int bucket, int variant, int slot,
         goto draw_stock;
     rhi_pipe_site_visit(RHI_PIPE_SITE_TERRAIN_MATERIAL, 1);
     if (!openpete_tercache_material_pipe(mg.pipeline_slot, variant, slot, mg.frag_spv,
-                                         mg.frag_words, mg.owner))
+                                         mg.frag_words, mg.owner, mg.index, mg.generation))
         goto draw_stock;
     {
         rhi_ubo *mu = openpete_native_material_ubo();

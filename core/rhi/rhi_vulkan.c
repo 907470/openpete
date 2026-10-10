@@ -391,6 +391,8 @@ struct rhi_device {
     bool                     batch_open; /* rhi_pipeline_batch_begin .. _end */
     rhi_pipeline_batch_stats batch;
     uint64_t                 batch_t0;   /* wall clock at rhi_pipeline_batch_begin */
+    unsigned                 pv_total;   /* variant jobs the precompile walk queues (rhi_precompile_progress) */
+    unsigned                 pv_base;    /* pool variant outcomes counted before the walk */
     VkQueue                  gfx_queue;
     char                     device_name[256];
     char                     driver_version[64];
@@ -2888,6 +2890,9 @@ static void rhi_balloon_free(rhi_device *dev)
 static char s_pcache_dir[1024];   /* rhi_set_pipeline_cache_dir; "" = not persisted */
 static char s_pcache_build[9];    /* rhi_pcf_build_tag of the engine build */
 static int (*s_pcache_write)(const char *path, const void *data, size_t n);
+static bool s_pcache_sync_class;  /* rhi_set_pipeline_cache_sync_class */
+
+void rhi_set_pipeline_cache_sync_class(bool on) { s_pcache_sync_class = on; }
 
 void rhi_set_pipeline_cache_dir(const char *dir, const char *build,
                                 int (*write_file)(const char *path, const void *data, size_t n))
@@ -3040,7 +3045,10 @@ static bool pcache_manifest_calibrated(uint32_t driver_id)
 /** @brief Name a device's pipeline cache file under pcache_dir, or leave the path empty when the cache is not persisted.
  *
  * vk-pipelines-<build>-<vendor>-<device>-<pipelineCacheUUID>.bin, so a
- * driver update, another GPU or another engine build starts its own file.
+ * driver update, another GPU or another engine build starts its own file;
+ * a headless device or a run in the synchronous class
+ * (rhi_set_pipeline_cache_sync_class) ends the name in -headless.bin, so a
+ * harness never writes a windowed run's file.
  * @param dev Device whose pcache_path is written.
  * @param props Its properties. */
 static void pcache_name(rhi_device *dev, const VkPhysicalDeviceProperties *props)
@@ -3054,7 +3062,9 @@ static void pcache_name(rhi_device *dev, const VkPhysicalDeviceProperties *props
     for (int i = 0; i < VK_UUID_SIZE && n > 0 && (size_t)n + 3 < sizeof dev->pcache_path; i++)
         n += snprintf(dev->pcache_path + n, sizeof dev->pcache_path - (size_t)n, "%02x",
                       props->pipelineCacheUUID[i]);
-    if (n > 0 && (size_t)n + 5 < sizeof dev->pcache_path) memcpy(dev->pcache_path + n, ".bin", 5);
+    const char *ext = (dev->headless || s_pcache_sync_class) ? "-headless.bin" : ".bin";
+    const size_t en = strlen(ext) + 1;
+    if (n > 0 && (size_t)n + en < sizeof dev->pcache_path) memcpy(dev->pcache_path + n, ext, en);
     else dev->pcache_path[0] = '\0';
 }
 
@@ -3075,7 +3085,7 @@ static void pcache_load_keys(rhi_device *dev, const pcache_parts *parts)
 /** @brief Create the device's pipeline cache, seeded from its file when pcache_payload accepts the file.
  *
  * The file is named by pcache_name; its mtime is refreshed as its last-use
- * time, and a windowed open ages out the other cache files of its class
+ * time, and the open ages out the other cache files of its class
  * (rhi_pcf_prune). Without a directory the cache lives for the process
  * only. A failure leaves dev->pcache VK_NULL_HANDLE, which every pipeline
  * create accepts. The file's key manifest seeds dev->pc_keys, trusted for
@@ -3097,7 +3107,7 @@ static void pipeline_cache_open(rhi_device *dev)
     pcache_name(dev, props);
     s_boot.cache_cold = pcache_cold_remove(dev->pcache_path);
     rhi_pcf_touch(dev->pcache_path);
-    if (!dev->headless) rhi_pcf_prune(pcache_dir(), dev->pcache_path);
+    rhi_pcf_prune(pcache_dir(), dev->pcache_path, dev->headless || s_pcache_sync_class);
     const int64_t t0 = boot_now();
     size_t n = 0;
     void *data = dev->pcache_path[0] ? read_whole_file(dev->pcache_path, &n) : NULL;
@@ -7194,6 +7204,29 @@ void rhi_compile_job_discard(rhi_device *dev, rhi_compile_job *job)
     job_free(job);
 }
 
+static bool variant_eq(rhi_pipe_variant a, rhi_pipe_variant b);
+
+bool rhi_compile_job_variant_stale(const rhi_device *dev, const rhi_compile_job *job)
+{
+    if (!dev || !job) return false;
+    const rhi_pipe_variant cur = rhi_pipe_variant_current();
+    if (variant_eq(cur, job->variant)) return false;
+    rhi_pc_variant now, was;
+    pipe_variant_view(dev, &job->desc, &job->info, cur, job->slot_contest, &now);
+    pipe_variant_view(dev, &job->desc, &job->info, job->variant, job->slot_contest, &was);
+    return rhi_pc_variant_key(&now) != rhi_pc_variant_key(&was);
+}
+
+void rhi_compile_job_retarget(rhi_device *dev, rhi_compile_job *job)
+{
+    if (!dev || !job) return;
+    if (job->out.pipeline) vkDestroyPipeline(dev->device, job->out.pipeline, NULL);
+    if (job->out.layout)   vkDestroyPipelineLayout(dev->device, job->out.layout, NULL);
+    job->out = (pipe_compiled){0};
+    job->variant = rhi_pipe_variant_current();
+    job->epoch = rhi_pipe_variant_epoch();
+}
+
 /** @brief Link a pipeline at the head of the device's rebuild registry.
  *
  * Display owner only (checked).
@@ -7367,7 +7400,7 @@ static void rebuild_swap(rhi_device *dev, rhi_pipeline *p, const pipe_compiled *
  * already in progress. A short read (rhi_env_read_guard) waits only while a
  * write is in progress, never behind a waiting writer, so it never waits
  * for a compile. */
-static SDL_InitState  s_env_init;
+static _Atomic int    s_env_state;   /* 0 none, 1 being created, 2 ready (env_guard_ready) */
 static SDL_Mutex     *s_env_mx;
 static SDL_Condition *s_env_cv;
 static unsigned       s_env_readers, s_env_writers_waiting;
@@ -7375,13 +7408,22 @@ static bool           s_env_writing;
 
 /** @brief Create the environment guard's lock on first use.
  *
+ * The first caller creates it; a concurrent caller waits until it is
+ * published. The state is a C11 atomic with acquire and release ordering,
+ * so the lock's creation happens before any use on another thread.
  * @return true when the lock exists. */
 static bool env_guard_ready(void)
 {
-    if (SDL_ShouldInit(&s_env_init)) {
-        s_env_mx = SDL_CreateMutex();
-        s_env_cv = SDL_CreateCondition();
-        SDL_SetInitialized(&s_env_init, true);
+    int st = atomic_load_explicit(&s_env_state, memory_order_acquire);
+    if (st != 2) {
+        int expect = 0;
+        if (atomic_compare_exchange_strong(&s_env_state, &expect, 1)) {
+            s_env_mx = SDL_CreateMutex();
+            s_env_cv = SDL_CreateCondition();
+            atomic_store_explicit(&s_env_state, 2, memory_order_release);
+        } else {
+            while (atomic_load_explicit(&s_env_state, memory_order_acquire) != 2) SDL_Delay(0);
+        }
     }
     return s_env_mx && s_env_cv;
 }
@@ -8162,14 +8204,22 @@ typedef struct {
     void                *ctx;
 } precompile_walk;
 
-/** @brief Queue one non-current variant of a pipeline unless its key was seen or the manifest lists it: the worker probes or creates it and destroys the result.
+/* One variant the precompile walk queues: the pipeline and the variant. */
+typedef struct {
+    const rhi_pipeline *p;
+    rhi_pipe_variant    var;
+} precompile_item;
+
+/** @brief Collect one non-current variant of a pipeline unless its key was seen or the manifest lists it.
  *
  * @param w The walk.
  * @param p The pipeline.
  * @param var The variant.
- * @param epoch The variant epoch. */
-static void precompile_variant(precompile_walk *w, const rhi_pipeline *p, rhi_pipe_variant var,
-                               uint32_t epoch)
+ * @param items Receives the variant when it is to be queued.
+ * @param n Count of @p items, advanced on a collect.
+ * @param cap Capacity of @p items. */
+static void precompile_collect(precompile_walk *w, const rhi_pipeline *p, rhi_pipe_variant var,
+                               precompile_item *items, unsigned *n, unsigned cap)
 {
     rhi_device *dev = w->dev;
     rhi_pc_variant v;
@@ -8182,7 +8232,19 @@ static void precompile_variant(precompile_walk *w, const rhi_pipeline *p, rhi_pi
         SDL_UnlockMutex(dev->pc_mx);
         if (listed) { w->st.manifest_skips++; return; }
     }
-    rhi_compile_job *job = rhi_compile_job_of(dev, p, var, 0u, epoch);
+    if (*n < cap) items[(*n)++] = (precompile_item){ p, var };
+    else w->st.failed++;
+}
+
+/** @brief Queue one collected variant: the worker probes or creates it and destroys the result.
+ *
+ * @param w The walk.
+ * @param it The variant.
+ * @param epoch The variant epoch. */
+static void precompile_variant(precompile_walk *w, const precompile_item *it, uint32_t epoch)
+{
+    rhi_device *dev = w->dev;
+    rhi_compile_job *job = rhi_compile_job_of(dev, it->p, it->var, 0u, epoch);
     if (!job) { w->st.failed++; return; }
     rhi_compile_pool_submit(dev, job,
                             RHI_COMPILE_VARIANT | (dev->has_cache_control ? RHI_COMPILE_PROBE : 0u),
@@ -8201,14 +8263,26 @@ int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
     rhi_compile_pool_stats_get(dev, &p0);
     precompile_walk w = { .dev = dev, .pump = pump, .ctx = ctx,
                           .cap = PRECOMPILE_QUEUE_PER_WORKER * (unsigned)(pl && pl->n ? pl->n : 1) };
+    unsigned bases = 0;
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
         w.st.bases++;
+        bases++;
         if (rhi_pc_keyset_insert(&w.seen, p->vkey)) { w.st.keys++; w.st.current++; }
     }
+    /* Collect first, so the progress total is known before the first submit. */
+    const unsigned cap = bases * 6u;
+    precompile_item *items = cap ? malloc(cap * sizeof *items) : NULL;
+    unsigned n = 0;
+    for (rhi_pipeline *p = dev->pipes_head; items && p; p = p->next)
+        for (int view = 0; view < 6; view++)
+            precompile_collect(&w, p, pipe_view_variant(view), items, &n, cap);
+    dev->pv_base = p0.variant_created + p0.variant_probe_hits + p0.variant_failed;
+    dev->pv_total = n;
     const uint32_t epoch = rhi_pipe_variant_epoch();
-    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next)
-        for (int view = 0; view < 6; view++) precompile_variant(&w, p, pipe_view_variant(view), epoch);
+    for (unsigned i = 0; i < n; i++) precompile_variant(&w, &items[i], epoch);
+    free(items);
     rhi_compile_pool_wait(dev, pump, ctx);
+    dev->pv_total = 0;
     rhi_compile_pool_stats p1;
     rhi_compile_pool_stats_get(dev, &p1);
     w.st.created = p1.variant_created - p0.variant_created;
@@ -8225,6 +8299,27 @@ int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
             p1.workers, p1.run_ms - p0.run_ms);
     if (out) *out = w.st;
     return 0;
+}
+
+void rhi_precompile_progress(const rhi_device *dev, unsigned *done, unsigned *total)
+{
+    unsigned d = 0, t = 0;
+    if (dev) {
+        const rhi_pipeline_batch_stats *b = &dev->batch;
+        if (dev->batch_open) {
+            t += b->queued;
+            d += b->installed + b->failed + b->duplicate;
+        }
+        if (dev->pv_total) {
+            rhi_compile_pool_stats ps;
+            rhi_compile_pool_stats_get(dev, &ps);
+            const unsigned now = ps.variant_created + ps.variant_probe_hits + ps.variant_failed;
+            t += dev->pv_total;
+            d += now - dev->pv_base < dev->pv_total ? now - dev->pv_base : dev->pv_total;
+        }
+    }
+    if (done) *done = d;
+    if (total) *total = t;
 }
 
 void rhi_pipe_precompile_done(void) { atomic_store(&s_precompile_done, true); }

@@ -1,0 +1,36 @@
+# late-pipes - harness fixture for late pipeline compiles.
+#
+# Registers postfx passes and materials after boot, so their pipelines
+# are first needed while the game is running: two SCENE passes and one
+# COMPOSITE pass, and two declarative materials (terrain and moby
+# channels). late.at_entry = true registers them at entry, which a mod
+# loaded with its entry deferred runs at its first enable (the enable
+# path); false registers them from the toggle hook at the first enable
+# after the entry (the lazy path). Each shader is a faint tint, so a
+# pass or material that never installed is visible as an unchanged
+# image. Never enable it to play.
+
+[mod]
+id      = "late-pipes"
+name    = "Late Pipes"
+version = "0.1.0"
+api     = 5
+state    = "none"
+runahead = "pure"
+sim_mutative = false
+
+[[config]]
+key = "late.at_entry"
+type = "bool"
+default = true
+label = "Register at entry"
+group = "Late"
+help = "true: register at entry; false: register at the first enable after the entry"
+
+[[config]]
+key = "late.materials"
+type = "bool"
+default = true
+label = "Register materials"
+group = "Late"
+help = "Also register the terrain and moby materials"

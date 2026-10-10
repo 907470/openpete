@@ -1204,6 +1204,10 @@ int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
 #define OPENPETE_POSTFX_UNIFORMS_MAX 1024u
 /* pipeline_slot sentinel: build failed, don't retry or destroy. */
 #define OPENPETE_POSTFX_PIPE_FAILED ((void*)(uintptr_t)1)
+/* pipeline_slot sentinel: a compile for the slot is in flight on the
+ * compile pool. Every reader draws the stock path and does not compile;
+ * retirement, sweeps and shutdown leave it out (it is not a pipeline). */
+#define OPENPETE_POSTFX_PIPE_PENDING ((void*)(uintptr_t)2)
 typedef struct {
     const uint32_t* frag_spv;
     size_t          frag_words;
@@ -1212,6 +1216,8 @@ typedef struct {
     void**          pipeline_slot;
     const char*     owner;
     unsigned        generation;  /* the slot's generation (openpete_mods_postfx_enum_at) */
+    int             index;       /* the pass's registry index (openpete_mods_postfx_enum_at) */
+    int             point;       /* its insertion point (OP_POSTFX_*) */
 } openpete_postfx_pass_t;
 /** @brief Fill @p out with the enabled postfx passes at one insertion point, highest priority first.
  *
@@ -1235,6 +1241,27 @@ int  openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
  * @param cap Capacity of @p out.
  * @return The number of pointers written. */
 int  openpete_mods_postfx_take_retired(void** out, int cap);
+/** @brief Take the ids of the mods a live toggle entered (deferred entry) since the last call.
+ *
+ * The toggle drain sets a per-mod flag on each mod whose entry it ran,
+ * dependencies included; this call clears the flags it reads. Any thread;
+ * the mod table is fixed after openpete_mods_init.
+ * @param out Receives the mod ids, valid while the mods stay loaded.
+ * @param cap Capacity of @p out; flags past it stay set for the next call.
+ * @return The ids written. */
+int  openpete_mods_take_entered(const char** out, int cap);
+/** @brief Hold the postfx passes and materials of a set of mods back from the compose in progress; n 0 releases.
+ *
+ * While held, openpete_mods_postfx_collect leaves the owners' passes out and
+ * openpete_mods_material_resolve and openpete_mods_material_terrain_bucket_gpu
+ * resolve none of their materials, so their geometry draws through the stock
+ * path. The renderer holds a mod entered by a live toggle for the present
+ * that queues its compiles, so the mod's passes first draw one present
+ * later. Display owner only, inside a compose; the ids must stay valid while
+ * held.
+ * @param ids Mod ids, or NULL.
+ * @param n Count of @p ids; 0 releases the hold. */
+void openpete_mods_hold_owners(const char* const* ids, int n);
 /** @brief Retire the pipelines of every postfx pass a mod registered and mark the passes dead.
  *
  * Takes the registry write lock. The slots stay allocated with live 0 and
@@ -1304,6 +1331,7 @@ typedef struct {
     const char* owner;
     int   uniform_slot;
     unsigned generation;  /* the material's slot generation: moves when its pipelines are retired */
+    int   index;          /* the material's registry index (openpete_mods_material_enum_at) */
 } openpete_mod_material_gpu_t;
 /** @brief Resolve a draw's provenance tag to the material override that applies.
  *
@@ -1466,6 +1494,7 @@ typedef struct {
     const char*     owner;
     int             uniform_slot;  /* material-UBO block (0 = no params)    */
     unsigned        generation;    /* the material's slot generation        */
+    int             index;         /* the material's registry index         */
 } openpete_mod_material_terrain_t;
 /** @brief Fill the GPU binding of one retained-terrain material bucket for one pipeline variant.
  *

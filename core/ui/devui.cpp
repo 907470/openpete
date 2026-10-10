@@ -2430,3 +2430,32 @@ void openpete_devui_render(struct rhi_device *dev)
     devui_publish_io_wants();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
 }
+
+int openpete_devui_render_progress(struct rhi_device *dev, const char *title,
+                                   unsigned done, unsigned total)
+{
+    if (!s_inited || dev != s_dev) return 0;
+    void *cb = rhi_current_command_buffer(dev);
+    if (!cb) return 0;
+    ImGuiIO &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    const ImVec2 size(io.DisplaySize.x * 0.5f, 0.0f);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+    ImGui::Begin("##precompile", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+    ImGui::TextUnformatted(title ? title : "");
+    char line[64];
+    snprintf(line, sizeof line, "%u / %u", done, total);
+    ImGui::ProgressBar(total ? (float)done / (float)total : 0.0f, ImVec2(-1.0f, 0.0f), line);
+    ImGui::End();
+    ImGui::Render();
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
+    return 1;
+}
