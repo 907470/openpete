@@ -4,8 +4,9 @@
 //
 // Overlay-window overrides bind through override_ovl or a name scoped to one
 // overlay only (legacy_window_links 0). Moby ops, level ops, the text rasterizer, the sfx canonicaliser and the
-// render-function list stay NULL, so the loader treats those surfaces as
-// unsupported on this game; the arena keeps the core default base.
+// render-function list stay NULL and the material channel mask stays 0, so
+// the loader treats those surfaces as unsupported on this game; the arena
+// keeps the core default base.
 
 #include "game_mod_desc.h"
 

@@ -17,7 +17,10 @@
 # Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded to runs + oracle.
 #
 # Fixture sets are per game. Every game runs the mod SDK and object
-# identity rungs (tests/harness/mods_sdk_rungs.sh). The rest of this
+# identity rungs (tests/harness/mods_sdk_rungs.sh) and the rungs of the
+# in-tree mods that load on every game (tests/harness/mods_multigame_rungs.sh:
+# lib-and-client, arena-probe, the postfx mods, per-game asset roots,
+# [[material]] and [[level]] rows by game). The rest of this
 # script is Spyro 1's corpus: its fixtures, level names and golden are
 # Spyro 1's, so it runs under --game spyro-1 only.
 
@@ -106,6 +109,8 @@ finish() {
 # ── 0. per-game fixture set: SDK tree, header edits, object identity ────
 # shellcheck source=tests/harness/mods_sdk_rungs.sh
 source tests/harness/mods_sdk_rungs.sh
+# shellcheck source=tests/harness/mods_multigame_rungs.sh
+source tests/harness/mods_multigame_rungs.sh
 [ "$PG_GAME" = "spyro-1" ] || finish
 
 # ── 1+2. chain-duo matrix (order A,B then B,A) - also observer-neutral ──
@@ -187,58 +192,6 @@ if printf '%s\n' "$out" | grep -q "uses raw-tier addresses"; then
     ok "raw-tier warning printed"
 else
     bad "raw-tier warning missing"
-fi
-
-# ── 4. lib-and-client: deps topo-sort ───────────────────────────────────
-say "lib-and-client: client listed FIRST - topo-sort must load lib first"
-fixture "$WORK/libclient" lib-and-client demo-lib
-out="$(run_game "$WORK/libclient" 600)"
-lib_line=$(printf '%s\n' "$out" | grep -n "demo-lib: entry ran" | head -1 | cut -d: -f1)
-cli_line=$(printf '%s\n' "$out" | grep -n "lib-and-client: entry ran" | head -1 | cut -d: -f1)
-if [ -n "$lib_line" ] && [ -n "$cli_line" ] && [ "$lib_line" -lt "$cli_line" ]; then
-    ok "dependency entry ran first despite reversed enabled order"
-else
-    bad "dependency order wrong or entries missing (lib=$lib_line cli=$cli_line)"
-fi
-
-
-say "lib-and-client: missing dep - actionable error, run survives"
-fixture "$WORK/nodep" lib-and-client
-out="$(run_game "$WORK/nodep" 600)"
-if printf '%s\n' "$out" | grep -q 'requires "demo-lib", which is not enabled'; then
-    ok "missing-dep error is actionable"
-else
-    bad "missing-dep error absent/wrong"
-fi
-if printf '%s\n' "$out" | grep -q "openpete-exit: reason=frame-limit"; then
-    ok "run survived the disabled mod"
-else
-    bad "run did not reach the frame limit"
-fi
-
-say "lib-and-client: dependency cycle - both disabled, run survives"
-for m in cycle-x cycle-y; do
-    other=cycle-y; [ "$m" = cycle-y ] && other=cycle-x
-    mkdir -p "$WORK/cycsrc/$m/src"
-    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\ndeps = ["%s"]\n' \
-        "$m" "$other" > "$WORK/cycsrc/$m/mod.toml"
-    printf '#include <openpete_mod_api.h>\nint openpete_mod_entry(const openpete_mod_api_t* a, openpete_mod_t* s){(void)a;(void)s;return 0;}\n' \
-        > "$WORK/cycsrc/$m/src/m.c"
-done
-mkdir -p "$WORK/cycle"
-ln -sfn "$WORK/cycsrc/cycle-x" "$WORK/cycle/cycle-x"
-ln -sfn "$WORK/cycsrc/cycle-y" "$WORK/cycle/cycle-y"
-printf 'cycle-x\ncycle-y\n' > "$WORK/cycle/enabled.txt"
-out="$(run_game "$WORK/cycle" 600)"
-if printf '%s\n' "$out" | grep -q "dependency cycle through"; then
-    ok "cycle detected and reported"
-else
-    bad "cycle error absent"
-fi
-if printf '%s\n' "$out" | grep -q "mods:.*mod.* active"; then
-    bad "cycle mods loaded anyway"
-else
-    ok "neither cycle mod loaded"
 fi
 
 # ── 5. crash-dummy: attribution names the offending mod ─────────────────

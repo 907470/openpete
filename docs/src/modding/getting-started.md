@@ -39,7 +39,7 @@ it. The [Examples](reference/examples.md) page lists them first.
 | `config.toml` | Optional player-editable settings, read through `api->config_*`. |
 | `src/*.c` | C sources, compiled on load against `<exe>/sdk/games/<game>/` and `<exe>/sdk/`. |
 | `shaders/*.vert`, `*.frag` | GLSL, compiled on load. See [Shaders](shaders.md). |
-| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, `wad/`, `levels/`. See [Textures](textures.md), [Music](music.md), [Sounds](sounds.md), [Custom levels](levels.md). |
+| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, `wad/`, `levels/`. A mod for several games may ship `assets/<game>/` (for example `assets/spyro-2/`); the engine uses it in place of `assets/` on that game. See [Textures](textures.md), [Music](music.md), [Sounds](sounds.md), [Custom levels](levels.md). |
 | `data/` | Per-mod persistent directory, created on first `api->data_dir()` call. |
 | `.build/` | The engine's compile cache, one `.build/<game>/` per game. Not part of a release. |
 

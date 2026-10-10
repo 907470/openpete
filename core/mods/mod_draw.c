@@ -36,6 +36,7 @@
 #include "openpete_fiber.h" /* openpete_frame */
 #include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 #include "mod_vec.h"
+#include "game_extras.h"      /* game_get_id: unsupported-surface lines */
 
 #include <SDL3/SDL.h>   /* SDL_GetCurrentThreadID - the single-owner check */
 
@@ -233,9 +234,31 @@ static cmd_buf_t* target_buf(void) {
     return openpete_mods_in_present ? &s_present : s_tick_staging;
 }
 
+/** @brief Log once per owner that the running game serves no text rasterizer.
+ *
+ * Owners are matched by pointer (the loader's session-lifetime id); the
+ * first 32 are remembered, and an owner past that logs on every call. A
+ * draw with no published owner is reported under "?".
+ * @param owner The submitting mod's id, or NULL. */
+static void note_text_unsupported(const char* owner) {
+    static const char* s_noted[32];
+    static int s_noted_n = 0;
+    for (int i = 0; i < s_noted_n; i++)
+        if (s_noted[i] == owner) return;
+    if (s_noted_n < (int)(sizeof s_noted / sizeof s_noted[0]))
+        s_noted[s_noted_n++] = owner;
+    OPL_WARN_F("mods", "%s: draw_text unsupported on %s (no text "
+               "rasterizer) - text dropped", owner ? owner : "?",
+               game_get_id());
+}
+
 void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
                              const char* str) {
     if (!str || !str[0]) return;
+    if (!openpete_mods_game_desc()->text_emit) {
+        note_text_unsupported(openpete_imgui_guard_hook_owner());
+        return;
+    }
     cmd_buf_t* b = target_buf();
     cmd_text_t* t;
     buf_init(b, b == &s_present ? "draw_text_present"

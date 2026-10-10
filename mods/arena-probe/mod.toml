@@ -8,6 +8,7 @@
 id      = "arena-probe"
 name    = "Guest Arena Probe"
 version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"      # one-shot entry probe, no hooks
 runahead = "pure"      # no tick hooks at all

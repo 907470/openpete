@@ -124,10 +124,14 @@ Every selector key is optional; an omitted key matches everything:
 | `env_anim` | `true` selects only animated terrain env faces |
 | `params` | Floats handed to the shader as its uniform block |
 | `enabled` | `false` ships the row switched off |
+| `game` | One game id or an array of them; the row registers on those games only. Omit for every game the mod loads on |
 
 A key the engine does not recognise is refused with an error, since a
 typo that silently widened a selector would repaint geometry the row
-never named. `declarative-example` is a complete example: one manifest,
+never named. A row whose channel the running game does not serve, or
+with channel `any` on a game that serves none, is logged and skipped;
+today Spyro 1 serves every channel and Spyro 2 and 3 serve none.
+`declarative-example` is a complete example: one manifest,
 asset files and one `.frag`.
 
 Terrain is drawn two ways: near and changing geometry is walked per

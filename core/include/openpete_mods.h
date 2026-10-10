@@ -1125,7 +1125,17 @@ typedef struct {
      * in every overlay with a function there); 0 refuses both at every
      * pin. */
     int                          legacy_window_links;
+    /* Render channels whose draws consult mod materials: bit
+     * (1u << OP_CHAN_*) per channel. A declarative [[material]] row naming
+     * a channel outside the mask, or channel "any" under an empty mask, is
+     * logged and skipped. 0 serves no channel. */
+    uint32_t                     channel_mask;
 } game_mod_desc_t;
+
+/* Every render channel, OP_CHAN_MOBY through OP_CHAN_PORTAL, as a
+ * game_mod_desc_t.channel_mask. */
+#define OPENPETE_MODS_CHANNELS_ALL \
+    (((1u << (OP_CHAN_PORTAL + 1)) - 1u) & ~((1u << OP_CHAN_MOBY) - 1u))
 
 /** @brief Register the identified game's mod-layer descriptor.
  *

@@ -20,6 +20,7 @@
 id      = "crt-beans"
 name    = "CRT (crt-beans)"
 version = "1.0.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"      # GPU-only chain; nothing to carry across a state load
 runahead = "pure"      # no tick hooks; nothing to suppress during speculation

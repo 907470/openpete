@@ -9,6 +9,7 @@
 id      = "lib-and-client"
 name    = "Lib And Client"
 version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"    # entry log only
 runahead = "pure"      # no hooks

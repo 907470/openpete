@@ -8,6 +8,7 @@
 id = "scene-sepia"
 name = "Scene Sepia"
 version = "0.1.0"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"      # GPU-only postfx + present hook
 runahead = "pure"      # no tick hooks

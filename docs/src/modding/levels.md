@@ -6,7 +6,9 @@
     will load them into game memory, but they are not currently recompiled and executed.
 
 A `[[level]]` block plus two files under `assets/levels/` makes a
-playable custom level with no C. The engine claims the level slot,
+playable custom level with no C. Custom levels run on Spyro 1; on Spyro 2
+and 3 the rows are refused with one log line and the rest of the mod
+loads. The engine claims the level slot,
 declares the WAD table-of-contents entry, and serves the files when the
 game streams the level.
 

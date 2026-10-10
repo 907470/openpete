@@ -4,8 +4,8 @@
 // symbol table and overlay entry arrays, the unscoped overlay-window links
 // of mods pinned below the api adding override_ovl, the moby and level ops
 // (mod_moby_ops.c, mod_level_ops.c), the gold text-moby rasterizer, the sfx alias canonicaliser
-// (psyq_hooks.cpp) and the PSX render functions the native renderer does
-// not rasterize.
+// (psyq_hooks.cpp), the PSX render functions the native renderer does
+// not rasterize, and every render channel as a material channel.
 
 #include "game_mod_desc.h"
 #include "renderer/text_moby.h" /* text_moby_native_mod_emit */
@@ -40,6 +40,7 @@ const game_mod_desc_t* game_mod_desc(void) {
         s_desc.window_lo      = game_mod_window_lo;
         s_desc.window_hi      = game_mod_window_hi;
         s_desc.legacy_window_links = 1;
+        s_desc.channel_mask   = OPENPETE_MODS_CHANNELS_ALL;
         s_built = 1;
     }
     return &s_desc;

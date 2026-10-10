@@ -258,6 +258,9 @@ struct openpete_mod {
     char  name[64];      /* manifest display name (fallback: id) */
     char  dir[MOD_PATH_MAX];
     char  data_dir[MOD_PATH_MAX + 8]; /* "<dir>/data", made on demand */
+    char  assets_dir[MOD_PATH_MAX + 48]; /* "<dir>/assets/<game id>" when
+                                          * that directory exists, else
+                                          * "<dir>/assets"; set at load */
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
     mod_fvec deps;       /* mod_dep_t */
     int   raw_warned;  /* raw-tier warning issued (once per mod) */
@@ -2584,7 +2587,7 @@ static uint32_t api_vstream_handle(openpete_mod_t* self,
 }
 
 
-/** @brief Play `<mod dir>/assets/sfx/own/<name>.wav` once through openpete_mod_sound_play.
+/** @brief Play `<asset dir>/sfx/own/<name>.wav` once through openpete_mod_sound_play.
  *
  * Host-side and additive, so it carries no purity gate and is legal from
  * present hooks. A name containing ".." is refused.
@@ -2593,7 +2596,7 @@ static int api_sfx_play(openpete_mod_t* self, const char* name,
                           float gain) {
     if (!self || !name || strstr(name, "..")) return -1;
     char path[MOD_PATH_MAX + 96];
-    snprintf(path, sizeof path, "%s/assets/sfx/own/%s.wav", self->dir, name);
+    snprintf(path, sizeof path, "%s/sfx/own/%s.wav", self->assets_dir, name);
     return openpete_mod_sound_play(path, gain);
 }
 
@@ -3269,13 +3272,68 @@ static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
     return 0;
 }
 
+/** @brief Test whether a [[material]] row's game key selects the running game.
+ *
+ * The key is one id or an array of ids, matched exactly; an absent key
+ * selects every game the mod loads on. A row for another game is logged
+ * and dropped.
+ * @param mt The [[material]] table.
+ * @param path Manifest path for log lines.
+ * @param row Row index, for log lines.
+ * @return 1 when the row applies to this game, 0 otherwise. */
+static int material_row_selects_game(toml_table_t* mt, const char* path,
+                                     int row) {
+    const char* game = mods_build_game();
+    toml_array_t* ga = toml_array_in(mt, "game");
+    int match = 0;
+    if (ga) {
+        for (int i = 0; i < toml_array_nelem(ga); i++) {
+            toml_datum_t d = toml_string_at(ga, i);
+            if (!d.ok) continue;
+            if (strcmp(d.u.s, game) == 0) match = 1;
+            free(d.u.s);
+        }
+    } else {
+        toml_datum_t d = toml_string_in(mt, "game");
+        if (!d.ok) return 1;
+        match = strcmp(d.u.s, game) == 0;
+        free(d.u.s);
+    }
+    if (!match)
+        OPL_INFO_F("mods", "%s: [[material]] row %d targets other games - "
+                   "skipped (this is %s)", path, row, game);
+    return match;
+}
+
+/** @brief Test whether the running game's material channel mask serves a row's channel.
+ *
+ * A named channel needs its bit in game_mod_desc_t.channel_mask; channel
+ * "any" needs a nonempty mask. A row the game cannot serve is logged,
+ * naming the game, and dropped; the rest of the mod loads.
+ * @param r The parsed row.
+ * @param path Manifest path for log lines.
+ * @param row Row index, for log lines.
+ * @return 1 when the row's channel is served, 0 otherwise. */
+static int material_row_channel_served(const mod_material_row_t* r,
+                                       const char* path, int row) {
+    const uint32_t mask = openpete_mods_game_desc()->channel_mask;
+    const int served = r->channel < 0 ? mask != 0
+                                      : (mask >> r->channel) & 1u;
+    if (!served)
+        OPL_WARN_F("mods", "%s: [[material]] row %d: channel %d unsupported "
+                   "on %s - skipped", path, row, r->channel, game_get_id());
+    return served;
+}
+
 /** @brief Parse the [[material]] tables, declarative reshade rows that need no C, into the mod's material rows.
  *
  * A row needs frag or vert. Selector fields default to -1 (match any) and
  * enabled to 1. An unknown channel or tier spelling refuses the row
  * instead of defaulting: a typo that widened the selection would repaint
  * geometry the author did not select, and a selector never matches wider
- * than written. Logs the row count when nonzero.
+ * than written. A row whose game key excludes the running game, or whose
+ * channel the game's channel mask does not serve, is logged and skipped.
+ * Logs the row count when nonzero.
  * @param root The manifest root table.
  * @param mod The mod being parsed.
  * @param path Manifest path for log lines. */
@@ -3307,7 +3365,9 @@ static void parse_materials(toml_table_t* root, struct openpete_mod* mod,
                         "skipped", path);
             continue;
         }
+        if (!material_row_selects_game(mt, path, i)) continue;
         if (parse_material_selector(mt, &r, path) != 0) continue;
+        if (!material_row_channel_served(&r, path, i)) continue;
         if (parse_material_params(mt, &r, path) != 0) continue;
         mod_material_row_t* slot =
             (mod_material_row_t*)mod_fvec_push(&mod->mat_rows);
@@ -4042,15 +4102,63 @@ static void mod_register_materials(struct openpete_mod* mod) {
     }
 }
 
-/** @brief Register a mod's assets/ directory as an overlay root when it has one.
+/** @brief Register a mod's selected asset directory as an overlay root when it has one.
  *
- * Called after entry, so roots register in entry order; the texture and
- * music namespaces consume them. */
+ * The directory is mod->assets_dir, chosen by mod_select_assets. Called
+ * after entry, so roots register in entry order; the texture and music
+ * namespaces consume them. */
 static void mod_register_assets(struct openpete_mod* mod) {
     if (!mod->has_assets) return;
-    char assets[MOD_PATH_MAX + 8];
-    snprintf(assets, sizeof assets, "%s/assets", mod->dir);
-    (void)openpete_mods_register_asset_root(assets, mod->id);
+    (void)openpete_mods_register_asset_root(mod->assets_dir, mod->id);
+}
+
+/** @brief Choose a mod's asset directory for the running game and record whether it exists.
+ *
+ * `assets/<game id>/` when that directory exists, else `assets/`: a mod
+ * shipping content for several games keeps one subtree per game, named in
+ * that game's own terms, and a single-game mod keeps its flat tree. Sets
+ * mod->assets_dir and mod->has_assets. */
+static void mod_select_assets(struct openpete_mod* mod) {
+    struct stat st;
+    snprintf(mod->assets_dir, sizeof mod->assets_dir, "%s/assets/%s",
+             mod->dir, game_get_id());
+    if (stat(mod->assets_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+        mod->has_assets = 1;
+        return;
+    }
+    snprintf(mod->assets_dir, sizeof mod->assets_dir, "%s/assets", mod->dir);
+    mod->has_assets = stat(mod->assets_dir, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/** @brief Register a mod's [[level]] rows with the content registry from its asset directory.
+ *
+ * On a game whose descriptor serves no level ops every row is refused with
+ * one line naming the game, and the rest of the mod loads. */
+static void mod_register_levels(struct openpete_mod* mod) {
+    const int n = mod_level_count(mod);
+    if (n > 0 && !openpete_mods_game_desc()->level_ops) {
+        OPL_WARN_F("mods", "%s: %d [[level]] row(s) refused - %s serves no "
+                   "level ops", mod->id, n, game_get_id());
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        const mod_level_row_t* L = mod_level_at(mod, i);
+        openpete_level_counts_t counts = {
+            L->dragons,
+            L->gems,
+            L->eggs,
+        };
+        (void)openpete_mods_custom_register(mod->id,
+                                            L->name,
+                                            L->files,
+                                            mod->assets_dir,
+                                            L->donor,
+                                            L->replace,
+                                            L->music,
+                                            L->title,
+                                            &counts,
+                                            mod->log_tag);
+    }
 }
 
 /** @brief Load one parsed mod: register its custom levels, obtain and dlopen its object, and optionally enter it.
@@ -4076,30 +4184,8 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
         struct stat st;
         mod->has_src = (stat(src_dir, &st) == 0 && S_ISDIR(st.st_mode));
     }
-    {
-        char assets[MOD_PATH_MAX + 8];
-        snprintf(assets, sizeof assets, "%s/assets", mod->dir);
-        struct stat st;
-        mod->has_assets = (stat(assets, &st) == 0 && S_ISDIR(st.st_mode));
-        for (int i = 0; i < mod_level_count(mod); i++) {
-            const mod_level_row_t* L = mod_level_at(mod, i);
-            openpete_level_counts_t counts = {
-                L->dragons,
-                L->gems,
-                L->eggs,
-            };
-            (void)openpete_mods_custom_register(mod->id,
-                                                L->name,
-                                                L->files,
-                                                assets,
-                                                L->donor,
-                                                L->replace,
-                                                L->music,
-                                                L->title,
-                                                &counts,
-                                                mod->log_tag);
-        }
-    }
+    mod_select_assets(mod);
+    mod_register_levels(mod);
     if (!mod->has_src) {
         const int kind = mod_find_prebuilt(mod->dir, mod->id, so_path,
                                            sizeof so_path);
