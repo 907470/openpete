@@ -67,12 +67,12 @@
       }
     },
     {
-      "name": "linux-release-shared",
+      "name": "linux-release-launcher",
       "displayName": "linux-release + shared recomp module (distribution D1)",
       "inherits": "linux-release",
-      "binaryDir": "${sourceDir}/build/linux-release-shared",
+      "binaryDir": "${sourceDir}/build/linux-release-launcher",
       "cacheVariables": {
-        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/linux-release-shared.cmake"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/linux-release-launcher.cmake"
       }
     },
     {
@@ -86,12 +86,12 @@
       }
     },
     {
-      "name": "windows-mingw-shared",
+      "name": "windows-mingw-launcher",
       "displayName": "windows-mingw + shared recomp module (distribution D1)",
       "inherits": "windows-mingw",
-      "binaryDir": "${sourceDir}/build/windows-mingw-shared",
+      "binaryDir": "${sourceDir}/build/windows-mingw-launcher",
       "cacheVariables": {
-        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/windows-mingw-shared.cmake"
+        "CMAKE_PROJECT_openpete_INCLUDE": "${sourceDir}/cmake/presets/windows-mingw-launcher.cmake"
       }
     }
   ],
@@ -121,16 +121,16 @@
       "configurePreset": "wasm"
     },
     {
-      "name": "linux-release-shared",
-      "configurePreset": "linux-release-shared"
+      "name": "linux-release-launcher",
+      "configurePreset": "linux-release-launcher"
     },
     {
       "name": "linux-release-container",
       "configurePreset": "linux-release-container"
     },
     {
-      "name": "windows-mingw-shared",
-      "configurePreset": "windows-mingw-shared"
+      "name": "windows-mingw-launcher",
+      "configurePreset": "windows-mingw-launcher"
     }
   ]
 }

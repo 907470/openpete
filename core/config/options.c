@@ -774,7 +774,7 @@ static void help_put_block(int block, const char* renderer) {
  * fixed text. The flag blocks are generated from the knob registry rows and
  * the help-only table: the release block always prints; the libav block
  * ("Video recording") prints only under OPENPETE_HAS_LIBAV; the debug block
- * is compiled out under OPENPETE_HIDE_DEBUG_FLAGS, set by the *-shared
+ * is compiled out under OPENPETE_HIDE_DEBUG_FLAGS, set by the *-launcher
  * distribution presets, and a one-line note replaces it. The omission is
  * display-only: every flag parses in every build.
  * @param display_name Game title printed in the heading.

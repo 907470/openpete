@@ -50,7 +50,7 @@
 #   --out DIR        write <DIR>/<id>/.build/<game>/<id>.dll instead of
 #                    building in place under the mods root. Sources are not
 #                    copied.
-#   --sdk DIR        staged SDK root. Default: the windows-mingw-shared
+#   --sdk DIR        staged SDK root. Default: the windows-mingw-launcher
 #                    build's games/<game>/sdk/, else the windows-mingw build's.
 #   --game ID        the game to build for: its per-game SDK directory
 #                    <sdk>/games/ID/ and object directory .build/ID/.
@@ -98,7 +98,7 @@ MODS_DIR=$(cd -- "$MODS_DIR" && pwd)
 
 # --- SDK ------------------------------------------------------------------
 if [[ -z "$SDK_DIR" ]]; then
-    for c in "$REPO/build/windows-mingw-shared/games/$GAME/sdk" \
+    for c in "$REPO/build/windows-mingw-launcher/games/$GAME/sdk" \
              "$REPO/build/windows-mingw/games/$GAME/sdk"; do
         [[ -f "$c/openpete_mod_abi.c" ]] && { SDK_DIR="$c"; break; }
     done

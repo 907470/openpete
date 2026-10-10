@@ -5,7 +5,7 @@ Reads, per built game, the OPENPETE_SURFACE_DUMP output and the `--help`
 output of its linux-release binary, the User docs map
 (docs/src/user/pages.toml), the shipped games (games/shipped.toml), the
 shipped settings (packaging/openpete-dist.toml), the shipped presets
-(cmake/presets/*-shared.cmake), the parser literals of
+(cmake/presets/*-launcher.cmake), the parser literals of
 core/config/options.c and the schema rows of core/config/config_schema.c.
 
 Audience (derived per shipped game, never typed):
@@ -90,8 +90,8 @@ USER_DIR = ROOT / "docs" / "src" / "user"
 MAP_TOML = USER_DIR / "pages.toml"
 SHIPPED_TOML = ROOT / "games" / "shipped.toml"
 DIST_TOML = ROOT / "packaging" / "openpete-dist.toml"
-PRESETS = (ROOT / "cmake" / "presets" / "linux-release-shared.cmake",
-           ROOT / "cmake" / "presets" / "windows-mingw-shared.cmake")
+PRESETS = (ROOT / "cmake" / "presets" / "linux-release-launcher.cmake",
+           ROOT / "cmake" / "presets" / "windows-mingw-launcher.cmake")
 OPTIONS_C = ROOT / "core" / "config" / "options.c"
 SCHEMA_C = ROOT / "core" / "config" / "config_schema.c"
 ALL_GAMES = ("spyro-1", "spyro-2", "spyro-3")

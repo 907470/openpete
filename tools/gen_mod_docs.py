@@ -1624,7 +1624,7 @@ OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
 
 # Build directories searched for a staged SDK, in order.
 BUILD_DIRS = ("build/linux-release", "build/dev", "build/windows-mingw",
-              "build/windows-mingw-shared")
+              "build/windows-mingw-launcher")
 
 
 def main():

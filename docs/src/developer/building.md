@@ -53,7 +53,7 @@ scripts/container.sh shell                   # interactive shell, set up for com
   `--headless --no-config --disc <cue> --frame-limit 600` (plus the game's
   `RUN_ARGS` from its oracle recipe) and requires exit 0 and the line
   `openpete-exit: reason=frame-limit`; the hang watchdog's exit 2 fails it.
-  For Spyro 1 it also builds `linux-release-shared` and boots it the same
+  For Spyro 1 it also builds `linux-release-launcher` and boots it the same
   way, which compiles the first-boot recompiled module with the image's
   `cc`. `--oracle` then runs `scripts/setup_duckstation.sh` and
   `tests/harness/check_psx_oracle.sh --game <game>` on the container
@@ -221,7 +221,7 @@ brew install cmake ninja python glslang openal-soft ffmpeg
 Visual Studio 2022 with the "Desktop development with C++" workload plus
 CMake. The `windows-msvc` preset exists in `CMakePresets.json` but is not
 validated; the supported Windows build is the MinGW cross-build from Linux
-(`windows-mingw-shared`), which is what releases ship.
+(`windows-mingw-launcher`), which is what releases ship.
 
 ## Step 0: before the first configure
 
@@ -254,7 +254,7 @@ first; ... To configure without this game: -DOPENPETE_GAMES="spyro-2;spyro-3"
 (an empty list configures the core alone).
 ```
 
-This holds for every preset, including the `*-shared` distribution ones.
+This holds for every preset, including the `*-launcher` distribution ones.
 
 ### 1. Clone with submodules
 
@@ -426,16 +426,16 @@ linkage, not a fork.
 
 ### Preset table
 
-| Preset                  | Target                          | Linkage | Notes |
-|-------------------------|---------------------------------|---------|-------|
-| `linux-debug`           | Linux native, Debug             | static  | dev build at -O0 with assertions |
-| `linux-release`         | Linux native, RelWithDebInfo    | static  | the default dev build |
-| `windows-mingw`         | Windows x64 cross (MinGW)       | static  | dev build, run via WSL2 interop |
-| `linux-release-shared`  | Linux native, RelWithDebInfo    | shared  | distribution build |
-| `windows-mingw-shared`  | Windows x64 cross (MinGW)       | shared  | distribution build |
-| `windows-msvc`          | Windows native MSVC             | static  | placeholder, unvalidated |
-| `macos-universal`       | macOS x86_64 + arm64            | static  | placeholder, unvalidated |
-| `wasm`                  | Emscripten / browser            | static  | placeholder |
+| Preset                   | Target                          | Linkage | Notes |
+|--------------------------|---------------------------------|---------|-------|
+| `linux-debug`            | Linux native, Debug             | static  | dev build at -O0 with assertions |
+| `linux-release`          | Linux native, RelWithDebInfo    | static  | the default dev build |
+| `windows-mingw`          | Windows x64 cross (MinGW)       | static  | dev build, run via WSL2 interop |
+| `linux-release-launcher` | Linux native, RelWithDebInfo    | shared  | distribution build |
+| `windows-mingw-launcher` | Windows x64 cross (MinGW)       | shared  | distribution build |
+| `windows-msvc`           | Windows native MSVC             | static  | placeholder, unvalidated |
+| `macos-universal`        | macOS x86_64 + arm64            | static  | placeholder, unvalidated |
+| `wasm`                   | Emscripten / browser            | static  | placeholder |
 
 ### Where preset knobs live: `cmake/presets/<preset>.cmake`
 
@@ -444,8 +444,8 @@ linkage, not a fork.
 `cmake/presets/<preset>.cmake` that CMake re-executes at the end of
 `project()` on every reconfigure. The real knobs are `set()`s and
 `openpete_preset_default()`s in those files; inheritance is an explicit
-`include()` (`windows-mingw-shared.cmake` includes `windows-mingw.cmake`,
-`linux-release-shared.cmake` includes `linux-release.cmake`). The preset
+`include()` (`windows-mingw-launcher.cmake` includes `windows-mingw.cmake`,
+`linux-release-launcher.cmake` includes `linux-release.cmake`). The preset
 files are configure inputs, so editing one auto-reconfigures every build dir
 - every worktree - on its next plain `cmake --build`, and
 adding/changing/removing a knob never needs a `cmake --preset` re-run.
@@ -467,13 +467,13 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 |----------|--------------------|-----|
 | `OPENPETE_FUNC_TRACE=OFF` | `linux-release*`, `windows-mingw*` | `-finstrument-functions` per-function tracing is a dev-only drill-down (1-8 ms/tick). Pinned as a tracked knob so no dist build inherits a stale ON; enable in a throwaway dir with `-DOPENPETE_FUNC_TRACE=ON` |
 | `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA (not left implicit - toolchains differ in their default) so the distributable runs on any x86-64 CPU. `x86-64-v3` (AVX2/FMA/BMI2) measures flat: the hot path is the recompiled game's scalar integer code with no vectorizable loops, so the pre-Haswell/Zen1 cutoff would buy nothing |
-| `-ffile-prefix-map` on source and binary dir | `*-shared` | `__FILE__`/assert strings are referenced `.rdata` that package-time stripping cannot remove; without the mapping they leak the build machine's username and layout |
-| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:406-407` forces IPO off on the exe target as a guard, and `cmake/openpete_game.cmake:151` keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
-| `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis |
-| `OPENPETE_ROM_FREE_ICON=ON` | `*-shared` | no game bytes baked into the exe |
-| `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record`, dropping the libav dependency |
-| `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-shared` | `--help` shows only the user-facing flag block. Display-only: `core/config/options.c` splits the help text, every flag still parses |
-| `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-shared` | stage mod sources only, no cmake-side DLLs - the dist exe's first-boot mod compile is the validation surface, and pre-seeding `.build/` would mask it. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/spyro-1/` |
+| `-ffile-prefix-map` on source and binary dir | `*-launcher` | `__FILE__`/assert strings are referenced `.rdata` that package-time stripping cannot remove; without the mapping they leak the build machine's username and layout |
+| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-launcher` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:406-407` forces IPO off on the exe target as a guard, and `cmake/openpete_game.cmake:151` keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
+| `OPENPETE_RECOMP_LINKAGE=shared` | `*-launcher` | the linkage axis |
+| `OPENPETE_ROM_FREE_ICON=ON` | `*-launcher` | no game bytes baked into the exe |
+| `OPENPETE_ENABLE_RECORD=OFF` | `*-launcher` | compiles out `--record`, dropping the libav dependency |
+| `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-launcher` | `--help` shows only the user-facing flag block. Display-only: `core/config/options.c` splits the help text, every flag still parses |
+| `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-launcher` | stage mod sources only, no cmake-side DLLs - the dist exe's first-boot mod compile is the validation surface, and pre-seeding `.build/` would mask it. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/spyro-1/` |
 | `OPENPETE_BUILD_TESTS=OFF` | `wasm` | trim non-browser components |
 
 Related non-preset knobs, defaults applying everywhere:
@@ -492,7 +492,7 @@ two failure modes followed - an added or changed variable silently did not
 apply until a `cmake --preset` re-run, and a removed variable stayed in the
 cache forever, since `cmake --preset` never unsets anything. The removed-var
 case kept `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` alive in
-`build/windows-mingw-shared` after the preset dropped it, producing the DEP
+`build/windows-mingw-launcher` after the preset dropped it, producing the DEP
 crash above; it reproduced at known-good commits, because checking out old
 code does not touch a poisoned cache, and so read as a toolchain regression.
 Worktrees multiplied the exposure: every build dir configured at a different
@@ -557,14 +557,14 @@ Output binary: `build/<preset>/games/spyro-1/openpete-spyro1[.exe]`.
 ### Distribution build (shared)
 
 ```bash
-cmake --preset windows-mingw-shared      # or linux-release-shared
-cmake --build build/windows-mingw-shared -j
+cmake --preset windows-mingw-launcher      # or linux-release-launcher
+cmake --build build/windows-mingw-launcher -j
 ```
 
 This does not produce a playable folder by itself: the shared exe needs its
 recomp inputs staged next to it (manifests, module source kit, PSXRecomp,
 and a bundled compiler). `scripts/package-dist.sh` assembles the shippable
-archive from a `*-shared` build tree, staging `packaging/openpete-dist.toml` as
+archive from a `*-launcher` build tree, staging `packaging/openpete-dist.toml` as
 the shipped `openpete.toml`. It packages one archive per game listed in
 `games/shipped.toml`; an AppImage carries one game, so `--appimage` refuses
 a list of more than one.

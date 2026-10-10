@@ -11,7 +11,7 @@
 #   scripts/package-dist.sh {linux|windows} --dry-run
 #
 # One archive per game listed in games/shipped.toml, each from that game's
-# *-shared build. --dry-run prints the games, each build input and archive
+# *-launcher build. --dry-run prints the games, each build input and archive
 # name, and exits without packaging anything.
 #
 # --appimage additionally emits OpenPete-<ver>-x86_64.AppImage from the
@@ -26,8 +26,8 @@
 # folder). Releases ship without it; the dist gate passes it to keep that
 # path exercised.
 #
-# Inputs: the corresponding *-shared preset build (linux-release-shared /
-# windows-mingw-shared) with its staged recomp/ directory. --toolchain
+# Inputs: the corresponding *-launcher preset build (linux-release-launcher /
+# windows-mingw-launcher) with its staged recomp/ directory. --toolchain
 # points at an UNPACKED compiler tree to bundle: llvm-mingw (ucrt
 # x86_64) for Windows, a trimmed llvm.org clang for Linux
 # (scripts/setup_linux_clang.sh produces one in .tools/clang). Without
@@ -424,7 +424,7 @@ build_appimage() {  # build_appimage <stage-dir>
 
 package_linux() {  # package_linux <build-game-dir>
     local B="$1"
-    [[ -x "$B/$EXE" ]] || { echo "build linux-release-shared first ($B/$EXE)" >&2; exit 64; }
+    [[ -x "$B/$EXE" ]] || { echo "build linux-release-launcher first ($B/$EXE)" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
     cp "$B/$EXE" "$STAGE/"
     # Strip debug info from the SHIPPED copy only (RelWithDebInfo embeds
@@ -464,7 +464,7 @@ package_linux() {  # package_linux <build-game-dir>
 
 package_windows() {  # package_windows <build-game-dir>
     local B="$1"
-    [[ -f "$B/$EXE.exe" ]] || { echo "build windows-mingw-shared first ($B/$EXE.exe)" >&2; exit 64; }
+    [[ -f "$B/$EXE.exe" ]] || { echo "build windows-mingw-launcher first ($B/$EXE.exe)" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
     cp "$B/$EXE.exe" "$STAGE/"
     # Strip debug info from the SHIPPED copy only (same rationale as the
@@ -527,8 +527,8 @@ for GAME in "${GAMES[@]}"; do
     NAME="${EXE}-${VERSION}-${PLATFORM}-x86_64"
     STAGE="$OUT/$NAME"
     case "$PLATFORM" in
-    linux)   B="build/linux-release-shared/games/$GAME"; ART="$NAME.tar.xz" ;;
-    windows) B="build/windows-mingw-shared/games/$GAME"; ART="$NAME.zip" ;;
+    linux)   B="build/linux-release-launcher/games/$GAME"; ART="$NAME.tar.xz" ;;
+    windows) B="build/windows-mingw-launcher/games/$GAME"; ART="$NAME.zip" ;;
     esac
     if [[ $DRY_RUN -eq 1 ]]; then
         echo "[package] dry run: $GAME: $B/$EXE$([[ $PLATFORM == windows ]] && echo .exe) -> $OUT/$ART"

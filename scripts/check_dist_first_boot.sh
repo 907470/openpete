@@ -83,8 +83,8 @@ if [[ -n "$ARTIFACT" ]]; then
     [[ -f "$ARTIFACT" ]] || { echo "[dist-gate] artifact missing: $ARTIFACT" >&2; exit 64; }
     case "$ARTIFACT" in *.AppImage) APPIMAGE=1 ;; esac
 else
-    [[ -x build/linux-release-shared/games/spyro-1/openpete-spyro1 ]] \
-        || { echo "[dist-gate] build linux-release-shared first" >&2; exit 64; }
+    [[ -x build/linux-release-launcher/games/spyro-1/openpete-spyro1 ]] \
+        || { echo "[dist-gate] build linux-release-launcher first" >&2; exit 64; }
 fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/openpete-dist-gate.XXXXXX")

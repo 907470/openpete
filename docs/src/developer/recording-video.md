@@ -3,8 +3,8 @@
 `--record PATH` captures gameplay to a video file. The `--record` family
 exists only in a build with libav (`OPENPETE_ENABLE_RECORD`, default ON,
 `core/CMakeLists.txt:537`); both distribution presets turn it off
-(`cmake/presets/linux-release-shared.cmake:10`,
-`cmake/presets/windows-mingw-shared.cmake:17`), and the MinGW cross build
+(`cmake/presets/linux-release-launcher.cmake:10`,
+`cmake/presets/windows-mingw-launcher.cmake:17`), and the MinGW cross build
 links libav only when a static FFmpeg exists at `third_party/ffmpeg-mingw/`
 (`scripts/setup_mingw_ffmpeg.sh` builds one; see
 [Building](building.md#troubleshooting)). Without libav `record.c` is a stub that warns once and

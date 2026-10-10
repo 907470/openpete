@@ -1,4 +1,4 @@
-# windows-mingw-shared: windows-mingw + shared recomp module.
+# windows-mingw-launcher: windows-mingw + shared recomp module.
 # Mod sources are staged but NOT pre-compiled -
 # this exe's mods dir is the first-boot-compile validation surface.
 # NOTE: no LTO here - GNU LTO DCEs the .def-exported psyq_* thunks

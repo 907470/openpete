@@ -98,26 +98,26 @@ git diff --quiet HEAD -- \
 env_args=(-e OPENPETE_NO_COMMITS=1 -e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION")
 
 # The release builds from nothing, in directories only the container uses.
-# The host tree's third_party/psxrecomp/build and build/linux-release-shared
+# The host tree's third_party/psxrecomp/build and build/linux-release-launcher
 # are dev-box builds (a newer glibc floor, objects ninja would call up to
 # date); the private directories are mounted over those paths inside the
 # container, where package-dist.sh reads them, and emptied first.
 PRIV="build/release-container"
 rm -rf "$PRIV"
-mkdir -p "$PRIV/psxrecomp" "$PRIV/linux-release-shared" \
-         third_party/psxrecomp/build build/linux-release-shared
+mkdir -p "$PRIV/psxrecomp" "$PRIV/linux-release-launcher" \
+         third_party/psxrecomp/build build/linux-release-launcher
 mounts=(-v "$PWD:/src"
         -v "$PWD/$PRIV/psxrecomp:/src/third_party/psxrecomp/build"
-        -v "$PWD/$PRIV/linux-release-shared:/src/build/linux-release-shared")
+        -v "$PWD/$PRIV/linux-release-launcher:/src/build/linux-release-launcher")
 "$ENGINE" run --rm "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build third_party/psxrecomp/build -j
-    cmake --preset linux-release-shared
-    cmake --build build/linux-release-shared -j
+    cmake --preset linux-release-launcher
+    cmake --build build/linux-release-launcher -j
     surf=$(mktemp -d)
     for game in $(python3 scripts/fences/surface_coverage.py shipped); do
-        exe=build/linux-release-shared/games/$game/openpete-${game//-/}
+        exe=build/linux-release-launcher/games/$game/openpete-${game//-/}
         OPENPETE_SURFACE_DUMP=$surf/$game.json "$exe" >/dev/null
         "$exe" --help >"$surf/$game.help" 2>&1
         python3 scripts/fences/surface_coverage.py compare --game "$game" \

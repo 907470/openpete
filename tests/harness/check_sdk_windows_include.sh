@@ -44,7 +44,7 @@ done
 
 if [[ -z "$SDK_DIR" ]]; then
     for c in "$REPO/build/linux-release/games/spyro-1/sdk" \
-             "$REPO/build/windows-mingw-shared/games/spyro-1/sdk" \
+             "$REPO/build/windows-mingw-launcher/games/spyro-1/sdk" \
              "$REPO/build/windows-mingw/games/spyro-1/sdk"; do
         [[ -f "$c/games/$GAME/openpete_game_structs.h" ]] && { SDK_DIR="$c"; break; }
     done

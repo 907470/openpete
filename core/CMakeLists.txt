@@ -399,7 +399,7 @@ else()
     endif()
 endif()
 # Whether this is a shared-recomp build - the linkage the distribution
-# presets select (cmake/presets/*-shared.cmake set OPENPETE_RECOMP_LINKAGE),
+# presets select (cmake/presets/*-launcher.cmake set OPENPETE_RECOMP_LINKAGE),
 # and so the only builds that leave this machine. The version line draws on
 # those alone; a locally built static-linkage binary shows nothing. The
 # presets set the cache variable from CMAKE_PROJECT_openpete_INCLUDE, which
@@ -551,7 +551,7 @@ set_target_properties(openpete_imgui PROPERTIES
 target_link_libraries(openpete_core PUBLIC openpete_imgui)
 
 # Hide the debug/diagnostic CLI flags from `--help` (options.c only splits the
-# text; every flag still parses and works). Enabled by the *-shared
+# text; every flag still parses and works). Enabled by the *-launcher
 # distribution presets so the distributed build shows a clean, user-facing flag
 # list; OFF everywhere else (dev builds list everything). It is the one switch
 # that says "this build carries the development surface", so the keymap reads

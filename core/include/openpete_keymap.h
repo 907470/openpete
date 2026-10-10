@@ -117,7 +117,7 @@ typedef enum {
                             * build that compiles the debug flags in, and is
                             * withheld exactly as a plain KM_DEV row in the
                             * shipped build (OPENPETE_HIDE_DEBUG_FLAGS, set by
-                            * the *-shared distribution presets). The key it
+                            * the *-launcher distribution presets). The key it
                             * occupies is therefore spent only where the rest
                             * of the debug surface is already present. */
 

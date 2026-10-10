@@ -286,23 +286,23 @@ form_game() {
     if [[ "$game" == spyro-1 ]]; then
         t0=$SECONDS
         in_image "$DEV_IMAGE" none "
-            cmake --preset linux-release-shared -B '$BUILD/linux-release-shared' -DOPENPETE_GAMES=$game
-            cmake --build '$BUILD/linux-release-shared' -j $JOBS"
+            cmake --preset linux-release-launcher -B '$BUILD/linux-release-launcher' -DOPENPETE_GAMES=$game
+            cmake --build '$BUILD/linux-release-launcher' -j $JOBS"
         say "game $game shared build: $((SECONDS - t0)) s"
         # A copy of the exe in a directory with no module beside it builds
         # the module from the disc (extract, PSXRecomp, the image's cc, link)
         # before it boots, as on a first boot; beside the CMake-built module
         # the exe would load that one instead.
-        local fb="$BUILD/linux-release-shared/first-boot"
+        local fb="$BUILD/linux-release-launcher/first-boot"
         local module="$fb/spyro1-recomp.so"
         rm -rf "$fb"
         mkdir -p "$fb"
         # recomp/ holds the inputs the build stages beside the exe (manifest,
         # module sources; tools/ empty, so find_cc takes the image's cc and
         # OPENPETE_PSXRECOMP names the recompiler).
-        cp -a "$BUILD/linux-release-shared/games/$game/openpete-$gg" \
-              "$BUILD/linux-release-shared/games/$game/recomp" "$fb/"
-        boot_check "$fb/openpete-$gg" linux-release-shared
+        cp -a "$BUILD/linux-release-launcher/games/$game/openpete-$gg" \
+              "$BUILD/linux-release-launcher/games/$game/recomp" "$fb/"
+        boot_check "$fb/openpete-$gg" linux-release-launcher
         [[ -f "$module" ]] || fail "the shared exe built no module at $module"
         say "first-boot module: $module ($(stat -c %s "$module") bytes)"
     fi

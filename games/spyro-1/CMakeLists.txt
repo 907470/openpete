@@ -316,7 +316,7 @@ add_custom_target(docs ALL DEPENDS ${_docs_stamp})
 #    when the host has no compiler, recompiles+stamps once when it
 #    does). DLLs compile from the REPO src/*.c (identical to the staged
 #    mirror), so neither staged sources nor staged DLLs can rot.
-#    OPENPETE_STAGE_MOD_DLLS=OFF (windows-mingw-shared, the distribution
+#    OPENPETE_STAGE_MOD_DLLS=OFF (windows-mingw-launcher, the distribution
 #    preset) stages sources only, no cmake-side DLLs: that exe's mods
 #    dir is the first-boot-compile validation surface - the bundled
 #    llvm-mingw must build every mod at boot exactly as it would on an
