@@ -39,6 +39,7 @@ add_library(openpete_core STATIC
     # SDL-free for the same reason config.c is).
     config/options.c
     config/surface_dump.c
+    config/tooltip_vocab.c
     config/config.c
     config/config_schema.c
     config/identify.c

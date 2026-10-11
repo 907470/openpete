@@ -702,7 +702,19 @@ static int surface_dump(const char* path, const char* argv0, const char* broken)
     return (bad || sink.dropped) ? 1 : 0;
 }
 
+/** @brief Run the tooltip vocabulary check over the registry and the game's rows and exit when OPENPETE_TOOLTIP_VOCAB is set. */
+static void tooltip_vocab_run_if_requested(void) {
+    const char* v = getenv("OPENPETE_TOOLTIP_VOCAB");
+    if (!v || !*v || *v == '0') return;
+    static openpete_surface_sink_t sink;
+    game_surface(&sink);
+    exit(openpete_tooltip_vocab_check(sink.rows, sink.row_n,
+                                      getenv("OPENPETE_TOOLTIP_VOCAB_BREAK"),
+                                      stdout));
+}
+
 void openpete_surface_dump_run_if_requested(const char* argv0) {
+    tooltip_vocab_run_if_requested();
     const char* p = getenv("OPENPETE_SURFACE_DUMP");
     if (!p || !*p) return;
     static char path[1024];

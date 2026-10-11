@@ -208,6 +208,109 @@ static const char* km_sdl_key_label(int scancode) {
     return SDL_GetKeyName(kc);
 }
 
+/* The controller families whose non-face buttons carry their own names. */
+typedef enum { PADFAM_XBOX, PADFAM_PLAYSTATION, PADFAM_NINTENDO } pad_family_t;
+
+/** @brief Return the button-naming family of an SDL gamepad type.
+ *
+ * An unknown, standard or virtual pad takes the Xbox names, as SDL's own
+ * face labels do for SDL_GAMEPAD_TYPE_STANDARD. */
+static pad_family_t pad_family(SDL_GamepadType t) {
+    switch (t) {
+    case SDL_GAMEPAD_TYPE_PS3:
+    case SDL_GAMEPAD_TYPE_PS4:
+    case SDL_GAMEPAD_TYPE_PS5:
+        return PADFAM_PLAYSTATION;
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+        return PADFAM_NINTENDO;
+    default:
+        return PADFAM_XBOX;
+    }
+}
+
+/** @brief Return the face-button label SDL gives a button on a gamepad type, or NULL for a non-face button. */
+static const char* pad_face_label(SDL_GamepadType t, SDL_GamepadButton b) {
+    switch (SDL_GetGamepadButtonLabelForType(t, b)) {
+    case SDL_GAMEPAD_BUTTON_LABEL_A:        return "A";
+    case SDL_GAMEPAD_BUTTON_LABEL_B:        return "B";
+    case SDL_GAMEPAD_BUTTON_LABEL_X:        return "X";
+    case SDL_GAMEPAD_BUTTON_LABEL_Y:        return "Y";
+    case SDL_GAMEPAD_BUTTON_LABEL_CROSS:    return "Cross";
+    case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:   return "Circle";
+    case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:   return "Square";
+    case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE: return "Triangle";
+    default:                                return NULL;
+    }
+}
+
+/* Per family: back, guide, start, left stick, right stick, left shoulder,
+ * right shoulder, left trigger, right trigger. */
+enum { PADN_BACK, PADN_GUIDE, PADN_START, PADN_LSTICK, PADN_RSTICK,
+       PADN_LSHOULDER, PADN_RSHOULDER, PADN_LTRIGGER, PADN_RTRIGGER, PADN_COUNT };
+static const char* const k_pad_names[3][PADN_COUNT] = {
+    [PADFAM_XBOX]        = { "View", "Guide", "Menu", "LS", "RS",
+                             "LB", "RB", "LT", "RT" },
+    [PADFAM_PLAYSTATION] = { "Share", "PS", "Options", "L3", "R3",
+                             "L1", "R1", "L2", "R2" },
+    [PADFAM_NINTENDO]    = { "-", "Home", "+", "Left Stick", "Right Stick",
+                             "L", "R", "ZL", "ZR" },
+};
+
+/** @brief Return the family name of a non-face, non-d-pad button, or NULL. */
+static const char* pad_named_button(pad_family_t f, SDL_GamepadButton b) {
+    switch (b) {
+    case SDL_GAMEPAD_BUTTON_BACK:           return k_pad_names[f][PADN_BACK];
+    case SDL_GAMEPAD_BUTTON_GUIDE:          return k_pad_names[f][PADN_GUIDE];
+    case SDL_GAMEPAD_BUTTON_START:          return k_pad_names[f][PADN_START];
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK:     return k_pad_names[f][PADN_LSTICK];
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK:    return k_pad_names[f][PADN_RSTICK];
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:  return k_pad_names[f][PADN_LSHOULDER];
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return k_pad_names[f][PADN_RSHOULDER];
+    case SDL_GAMEPAD_BUTTON_DPAD_UP:        return "D-pad Up";
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:      return "D-pad Down";
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:      return "D-pad Left";
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:     return "D-pad Right";
+    default:                                return NULL;
+    }
+}
+
+/** @brief Return the label of an axis source in a family's names: a stick direction or a trigger. */
+static const char* pad_axis_label(pad_family_t f, SDL_GamepadAxis a, int invert) {
+    const int neg = invert < 0;
+    switch (a) {
+    case SDL_GAMEPAD_AXIS_LEFTX:         return neg ? "Left Stick Left"  : "Left Stick Right";
+    case SDL_GAMEPAD_AXIS_LEFTY:         return neg ? "Left Stick Up"    : "Left Stick Down";
+    case SDL_GAMEPAD_AXIS_RIGHTX:        return neg ? "Right Stick Left" : "Right Stick Right";
+    case SDL_GAMEPAD_AXIS_RIGHTY:        return neg ? "Right Stick Up"   : "Right Stick Down";
+    case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:  return k_pad_names[f][PADN_LTRIGGER];
+    case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: return k_pad_names[f][PADN_RTRIGGER];
+    default:                             return NULL;
+    }
+}
+
+/** @brief Label a pad source by the family of player 1's connected controller.
+ *
+ * The family comes from the published snapshot's slot-0 gamepad type, so the
+ * label follows the pad in hand: "A" on an Xbox pad and "Cross" on a
+ * PlayStation pad for the same south button. With no pad connected the Xbox
+ * names apply. A pad trigger bound as a button reads as the trigger.
+ * @param kind KM_SRC_PADBTN or KM_SRC_PADAXIS.
+ * @param code the SDL button or axis.
+ * @param invert the source's sign; -1 selects the negative stick direction.
+ * @return a static label, or NULL for another kind or an unnamed code. */
+static const char* km_sdl_pad_label(int kind, int code, int invert) {
+    const SDL_GamepadType t = (SDL_GamepadType)openpete_host_input_pad_type(0);
+    const pad_family_t f = pad_family(t);
+    if (kind == KM_SRC_PADAXIS)
+        return pad_axis_label(f, (SDL_GamepadAxis)code, invert);
+    if (kind != KM_SRC_PADBTN) return NULL;
+    const char* face = pad_face_label(t, (SDL_GamepadButton)code);
+    return face ? face : pad_named_button(f, (SDL_GamepadButton)code);
+}
+
 void openpete_keymap_install_sdl(void) {
     static const openpete_keymap_input_fns fns = {
         km_sdl_key_down, km_sdl_pad_button, km_sdl_pad_axis,
@@ -218,4 +321,5 @@ void openpete_keymap_install_sdl(void) {
     openpete_keymap_set_lookup(km_sdl_name_to_code, km_sdl_code_to_name,
                                km_sdl_key_label);
     openpete_keymap_set_input(&fns);
+    openpete_keymap_set_pad_label(km_sdl_pad_label);
 }

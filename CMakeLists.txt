@@ -756,6 +756,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # The tooltip vocabulary (OPENPETE_TOOLTIP_VOCAB): every registry row's
+    # tooltip and --help description, the game's rows, the help-only flags,
+    # the settings-menu hints and the mod notes, read from each game binary
+    # at runtime, carry no mutability class or gameplay-neutrality claim, and
+    # the strings a player reads no instrument term. A barred term planted in
+    # one tooltip (the negative control) must fail it. No disc.
+    foreach(_vocab_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME tooltip_vocab_${_vocab_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tooltip_vocab.sh
+                         --game ${_vocab_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(tooltip_vocab_${_vocab_game} PROPERTIES
+            LABELS "tooling"
+            TIMEOUT 120
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # The User docs' surface macros: each committed macro is what
     # tools/surface_docs.py's converter writes for the literal it expands
     # to, and a per-kind negative control (a mutated def, binding, config

@@ -651,6 +651,10 @@ typedef struct openpete_options {
      * over the screen or the keyboard. Wins over --fullscreen. -1 = unset
      * (off). Ignored with --headless. Host-side only. */
     int background;
+    /* --pad-unfocused: keep accepting gamepad input, and driving rumble,
+     * while the window does not have focus. -1 = unset (off). Host-side
+     * only: it changes which SDL events arrive, never guest RAM. */
+    int pad_unfocused;
 
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on
@@ -963,7 +967,7 @@ void openpete_options_set_strict(int on);
 
 /** @brief Copy in to out, resolving each unset field whose unset and resolved values behave the same at every consumer.
  *
- * mouse -1 becomes 1, input_lock and background -1 become 0,
+ * mouse -1 becomes 1, input_lock, background and pad_unfocused -1 become 0,
  * mouse_sensitivity -1 becomes 1.0, load_delay -1 becomes
  * game_get_load_delay_default(), and notex, wireframe, terrain_cache,
  * disc_cache, scan_guard and terrain_visibility take their built-in defaults

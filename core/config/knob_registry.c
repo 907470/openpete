@@ -24,6 +24,7 @@
 #include "openpete_camlock.h"
 #include "openpete_fillpick.h"
 #include "openpete_freecam.h"
+#include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
 #include "openpete_record.h"
 #include "openpete_rewind.h"
@@ -578,6 +579,10 @@ static int mousesens_set(knob_desc_t *k, double v) {
 static double mouse_get(const knob_desc_t *k) { (void)k; return openpete_host_mouse_enabled() ? 1.0 : 0.0; }
 /** @brief Enable or disable host mouse input from `v` (nonzero enables). */
 static int mouse_set(knob_desc_t *k, double v) { (void)k; openpete_host_mouse_set_enabled(v != 0.0); return 0; }
+/** @brief 1 when gamepad input is accepted while the window is unfocused, else 0. */
+static double padunf_get(const knob_desc_t *k) { (void)k; return openpete_host_input_pad_unfocused() ? 1.0 : 0.0; }
+/** @brief Accept or refuse unfocused gamepad input from `v` (nonzero accepts). */
+static int padunf_set(knob_desc_t *k, double v) { (void)k; openpete_host_input_set_pad_unfocused(v != 0.0); return 0; }
 /** @brief The host rumble strength.
  *
  * The setter moves this host request; the per-game feature writes the guest
@@ -927,14 +932,15 @@ static int camlock_set(knob_desc_t *k, double v) {
 static const knob_desc_t g_builtin[] = {
     /* -------- Display -------- */
     { "fullscreen", "Fullscreen", "Display", "--fullscreen", NULL,
-      "Borderless-desktop fullscreen (same toggle as Alt+Enter / double-click).",
+      "Borderless-desktop fullscreen (Alt+Enter and a double-click toggle it too).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fullscreen_get, fullscreen_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 110,
       .help_text = "launch in borderless-desktop fullscreen (default {def} = windowed;\n"
-          "on|off also accepted). Alt+Enter / double-click / the O-menu\n"
-          "DISPLAY row toggle it live. Display-only." },
+          "on|off also accepted). Alt+Enter, a double-click and the\n"
+          "settings menu's DISPLAY row toggle it live.",
+      .key_action = "fullscreen" },
 
     { "aspect", "Aspect ratio", "Display", "--aspect", NULL,
       "Hor+ render aspect; auto follows the window shape. Picking a fixed "
@@ -972,7 +978,7 @@ static const knob_desc_t g_builtin[] = {
           "window at NxN res and box-downsamples. The 4x ceiling keeps the\n"
           "render targets inside an 8GB card at 1080p; higher factors are\n"
           "clamped, and the extent is further capped to the GPU's max image\n"
-          "size. Display-only." },
+          "size." },
 
     { "vsync", "VSync", "Display", "--vsync", "OPENPETE_PRESENT_MODE",
       "FIFO (on) vs immediate/mailbox (off). Applying rebuilds the swapchain "
@@ -983,7 +989,7 @@ static const knob_desc_t g_builtin[] = {
       .device_creation = 2,
       .help_arg = "0|1", .help_order = 100,
       .help_text = "native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
-          "for uncapped fps / low latency; on|off also accepted). Display-only." },
+          "for uncapped fps / low latency; on|off also accepted)." },
 
     { "perf_stats", "Performance stats", "Display", "--perf-stats", NULL,
       "Corner overlay (native renderer): off, the FPS counter, or the "
@@ -995,7 +1001,7 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "LEVEL", .help_order = 130,
       .help_text = "on-screen performance stats: off | {def} (default) | detailed.\n"
           "detailed adds the VBL rate, slips, late ticks per 1000 and the\n"
-          "shed / interpolation share. 0|1|2 also accepted. Display-only." },
+          "shed / interpolation share. 0|1|2 also accepted." },
 
     { "perf_position", "Stats position", "Display", "--perf-position", NULL,
       "Which corner or edge the performance-stats block anchors to. Shares "
@@ -1051,7 +1057,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "vertex_precision", "Vertex precision", "Display", "--vertex-precision", NULL,
       "PSX integer-grid vertex snap (authentic polygon wobble) vs smooth "
-      "subpixel. Display-only.",
+      "subpixel.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_vprec_names), 0, 0,
       vprec_get, vprec_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "subpixel",
@@ -1059,13 +1065,13 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "native vk vertex screen-coordinate precision: {def} (default =\n"
           "smooth sub-pixel projection) | integer (snap 3D-world vertices to the\n"
           "PSX 512x240 pixel grid = the original PS1 polygon wobble). 2D HUD stays\n"
-          "smooth; depth/UVs untouched. Native renderer only. Display-only." },
+          "smooth; depth/UVs untouched. Native renderer only." },
 
     { "raster_quantize", "Raster quantize", "Display", "--raster-quantize", NULL,
       "Point-resample the 3D scene to N x the PSX raster (1 = the authentic "
       "512x240 grid - 224 lines visible on screen, letterbands trimmed; "
       "0 = off). One sample per cell, as the hardware rasterizer produced, "
-      "always aligned with the integer vertex snap. Display-only.",
+      "always aligned with the integer vertex snap.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       rquant_get, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "0 (off), or 1 under --vertex-precision integer",
@@ -1075,12 +1081,12 @@ static const knob_desc_t g_builtin[] = {
           "screen - the letterband rows are trimmed, so on-screen this is\n"
           "512x224 as on a real TV; every N stays aligned with the\n"
           "--vertex-precision integer grid). 0 = off. Default: 1 under\n"
-          "--vertex-precision integer, else off. Display-only." },
+          "--vertex-precision integer, else off." },
 
     { "extract_threads", "Extraction threads", "Display", "--extract-threads", NULL,
       "Worker threads for the native render extraction (terrain sector walk). "
       "Shows the resolved count (0 = auto at launch). Output is byte-identical "
-      "at any count; 1 = serial. Boot-latched; display-only.",
+      "at any count; 1 = serial.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 1, 8,
       exthreads_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
@@ -1088,7 +1094,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "worker threads for the native render extraction (terrain sector\n"
           "walk). 0 = auto (logical cores / 2, max 8), 1 = serial (no\n"
           "threads). Output is byte-identical at any count (item-order\n"
-          "merge). Boot-latched. Display-only." },
+          "merge)." },
 
     { "terrain_cache", "Terrain GPU cache", "Display", "--terrain-cache", NULL,
       "Retained GPU terrain (default on): unclaimed sectors render from "
@@ -1096,14 +1102,14 @@ static const knob_desc_t g_builtin[] = {
       "vertex stage; claimed sectors (near / blended-over-portal / safety) "
       "stay on the CPU walk. Shows whether the cache came up (needs a "
       "hardware GPU with fp64; software vk runs the CPU walk). 0 = kill "
-      "switch. Boot-latched; display-only.",
+      "switch.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       tercache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "1",
       .help_arg = "0|1", .help_order = 260,
       .help_text = "retained-terrain GPU cache: static sectors render from persistent\n"
           "GPU meshes with the per-face verdicts mirrored in the vertex\n"
-          "stage (default {def}; display-only; needs a hardware GPU with fp64,\n"
+          "stage (default {def}; needs a hardware GPU with fp64,\n"
           "else the CPU walk runs as before). 0 = kill switch." },
 
     { "terrain_visibility", "Terrain visibility", "Display", "--terrain-visibility",
@@ -1115,8 +1121,7 @@ static const knob_desc_t g_builtin[] = {
       "4:3 - draws and the depth buffer decides what is seen; a departure "
       "from the original presentation. game takes the game's own visibility "
       "verdict (faithful). Either way the frustum test, the per-sector tier "
-      "verdicts, the retained GPU cache and the occlusion pre-pass still cull. "
-      "Display-only.",
+      "verdicts, the retained GPU cache and the occlusion pre-pass still cull.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_tervis_names), 0, 0,
       tervis_get, tervis_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "frustum",
@@ -1134,20 +1139,19 @@ static const knob_desc_t g_builtin[] = {
       "GPU cache (atlas + per-entry fog) instead of claiming their sectors "
       "back to the CPU walk; unbakeable faces (blended targets, overflow) "
       "still claim. Inert without a pack. 0 = kill switch (tier-1 per-sector "
-      "claims). Boot-latched; display-only."),
+      "claims)."),
 
     { "notex", "Untextured (lighting)", "Display", "--notex", "OPENPETE_NOTEX",
       "Debug view: draw the 3D scene with textures replaced by neutral grey, "
       "showing the raw gouraud vertex lighting. Cutout silhouettes stay real. "
-      "Applying re-bakes every scene pipeline (one-time hitch). Display-only.",
+      "Applying re-bakes every scene pipeline (one-time hitch).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       notex_get, notex_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
       .help_arg = "0|1", .help_order = 330,
       .help_text = "1 = draw the 3D scene with textures replaced by neutral grey,\n"
           "showing the raw vertex lighting; cutout silhouettes stay real.\n"
-          "Default: env OPENPETE_NOTEX, else {def}. Native renderer only.\n"
-          "Display-only." },
+          "Default: env OPENPETE_NOTEX, else {def}. Native renderer only." },
 
     { "wireframe", "Wireframe (lighting)", "Display", "--wireframe", "OPENPETE_WIREFRAME",
       "Debug view: draw every 3D scene triangle as its three edges, coloured "
@@ -1156,7 +1160,7 @@ static const knob_desc_t g_builtin[] = {
       "Depth-tested: a line hides the lines behind it, not the faces. HUD and "
       "menus stay filled. Falls back to the filled untextured view on a GPU "
       "without line rasterization. Applying re-bakes every scene pipeline "
-      "(one-time hitch). Display-only.",
+      "(one-time hitch).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       wireframe_get, wireframe_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
@@ -1164,13 +1168,12 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "1 = draw every 3D scene triangle as its three edges, coloured by the\n"
           "vertex lighting (textures replaced by neutral grey, as NOTEX); the\n"
           "HUD and menus stay filled. Shows the terrain subdivision as drawn.\n"
-          "Default: env OPENPETE_WIREFRAME, else {def}. Native renderer only.\n"
-          "Display-only." },
+          "Default: env OPENPETE_WIREFRAME, else {def}. Native renderer only." },
 
     { "dither", "Color depth", "Display", "--dither", NULL,
       "PS1 15-bit colour: quantize the 3D scene to RGB555 with the GPU's 4x4 "
       "ordered dither matrix on the PSX framebuffer grid (authentic banding + "
-      "crosshatch). Display-only.",
+      "crosshatch).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       dither_get, dither_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
@@ -1178,19 +1181,19 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "1 = PS1 15-bit colour: quantize the 3D scene to RGB555 with the\n"
           "GPU's 4x4 ordered dither matrix on the PSX 512x240 framebuffer\n"
           "grid (the authentic banding + crosshatch the smooth float\n"
-          "pipeline removed). {def} = off (default). Display-only." },
+          "pipeline removed). {def} = off (default)." },
 
     { "texture_mapping", "Texture mapping", "Display", "--texture-mapping", NULL,
       "perspective = modern perspective-correct interpolation; affine = the "
       "PSX screen-linear texture swim/warp. Applying re-bakes every scene "
-      "pipeline at the next present (brief hitch). Display-only.",
+      "pipeline at the next present (brief hitch).",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_texmap_names), 0, 0,
       texmap_get, texmap_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "perspective",
       .help_arg = "MODE", .help_order = 320,
       .help_text = "texture/colour interpolation: {def} (default = modern\n"
           "perspective-correct) | affine (PSX screen-linear = the original\n"
-          "PS1 texture swim/warp). Native renderer only. Display-only." },
+          "PS1 texture swim/warp). Native renderer only." },
 
     { "lod", "LOD", "Display", "--lod", NULL,
       "original = authentic PSX detail bands; extended = full detail at any "
@@ -1202,7 +1205,8 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "MODE", .help_order = 240,
       .help_text = "sector level-of-detail: {def} (default = authentic PSX LOD band) |\n"
           "extended (draw every visible sector at high-poly, out to the cull\n"
-          "distance and beyond). Native renderer only. (--no-lod = extended.)" },
+          "distance and beyond). Native renderer only. (--no-lod = extended.)",
+      .key_action = "lod_toggle" },
 
     { "fog", "Fog", "Display", NULL, NULL,
       "Distance fog on/off (off = the 100x far-scale sentinel). LOD switches "
@@ -1248,9 +1252,8 @@ static const knob_desc_t g_builtin[] = {
       "Open the window visible and at its normal size but unfocused, not "
       "activated on show, and behind the other windows where the platform "
       "allows it; clicking it or its taskbar button focuses it. Presents, pacing and "
-      "screenshots are unchanged. Wins over Fullscreen. Read once while the "
-      "window is created, so the row shows the boot value; raising or "
-      "focusing the window afterwards does not change it.",
+      "screenshots are unchanged. Wins over Fullscreen. Raising or "
+      "focusing the window after launch does not change it.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0", .flag_arg = KNOB_FLAG_ARG_OPTIONAL,
@@ -1261,8 +1264,7 @@ static const knob_desc_t g_builtin[] = {
           "where the platform allows it. Presents, pacing and screenshots are\n"
           "unchanged; clicking the window or its taskbar button focuses it. Wins over\n"
           "--fullscreen. For an unattended windowed run alongside\n"
-          "--input-lock (default {def} = off; ignored with --headless).\n"
-          "Display-only." },
+          "--input-lock (default {def} = off; ignored with --headless)." },
 
     /* -------- Pacing -------- */
     { "render_fps", "Render FPS", "Pacing", "--render-fps", NULL,
@@ -1286,21 +1288,22 @@ static const knob_desc_t g_builtin[] = {
       .help_arg = "F", .help_order = 230,
       .help_text = "engine speed x F (default {def}); scales sim AND present cadence\n"
           "together so sub-tick frames-per-tick is invariant. 0.5 = half-\n"
-          "speed slow-mo to inspect high-FPS interpolation. Display-only." },
+          "speed slow-mo to inspect high-FPS interpolation." },
 
     { "pause", "Pause sim", "Pacing", NULL, NULL,
-      "Pause the game's ticks while presents continue (same toggle as the "
-      "pause key, F7 by default). Audio mutes and rumble stops while paused.",
+      "Pause the game's ticks while presents continue. Audio mutes and "
+      "rumble stops while paused.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       pause_get, pause_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .def_str = "off" },
+      .def_str = "off",
+      .key_action = "pause" },
 
     { "frame_step", "Step tick", "Pacing", NULL, NULL,
-      "Advance the paused game by one tick (same as the step key, F8 by "
-      "default).",
+      "Advance the paused game by one tick.",
       KNOB_ACTION, KNOB_LIVE, NULL, 0, 0, 0,
       step_ready, step_fire, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .action_label = "Step tick" },
+      .action_label = "Step tick",
+      .key_action = "frame_step" },
 
     { "runahead", "Runahead", "Pacing", "--runahead", NULL,
       "Present-timeline lead of N sim ticks (latency cut, ~N extra ticks of "
@@ -1315,22 +1318,23 @@ static const knob_desc_t g_builtin[] = {
           "PSX input feel with high-fps motion, every animation frame\n"
           "shown. 2 = sub-console latency but input edges skip one\n"
           "animation onset frame (reads as 'uncanny'). Costs ~N extra\n"
-          "sim ticks/tick of CPU; gameplay state is UNCHANGED." },
+          "sim ticks/tick of CPU." },
 
     { "rewind", "Rewind window", "Pacing", "--rewind", NULL,
-      "Backspace-rewind window in seconds (0 = off). APPLYING CLEARS the "
+      "Rewind window in seconds (0 = off). APPLYING CLEARS the "
       "accumulated rewind history; ~3.1 MiB per second.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 600,
       get_stored, rewind_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
       .help_arg = "N", .help_order = 200,
-      .help_text = "hold Backspace to rewind up to N seconds (default {def} = off;\n"
-          "~2 MiB RAM per second of window; same-level only)" },
+      .help_text = "hold the rewind key to rewind up to N seconds (default {def} = off;\n"
+          "~2 MiB RAM per second of window; same-level only)",
+      .key_action = "rewind" },
 
     /* -------- Audio -------- */
     { "mute", "Mute", "Audio", "--mute", NULL,
       "Mute all audio at the OpenAL layer (SPU SFX + XA music + WAV "
-      "override). Live; the F7 pause exit restores this baseline.",
+      "override). Leaving pause restores this setting.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       mute_get, mute_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
@@ -1365,7 +1369,8 @@ static const knob_desc_t g_builtin[] = {
       "own vibration setting alone (the default, which means on). 10 applies "
       "the measured motor response unscaled. The game's enable flag is stamped at a "
       "tick boundary and released if the player toggles vibration in the "
-      "options menu; the motors are always silent headless or unfocused.",
+      "options menu; the motors are silent headless, and unfocused unless "
+      "Pad while unfocused is on.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
       vibration_get, vibration_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "-1",
@@ -1374,7 +1379,8 @@ static const knob_desc_t g_builtin[] = {
           "Default {def} leaves the game's own setting alone (= on);\n"
           "0 silences the motors without changing that setting.\n"
           "10 is the full measured response. Always silent when\n"
-          "headless or when the window is not focused." },
+          "headless; silent while the window is not focused unless\n"
+          "--pad-unfocused is on." },
 
     { "mouse", "Mouse", "Input", "--mouse", "OPENPETE_MOUSE",
       "The host mouse channel. Off drops every mouse motion, button and wheel "
@@ -1395,8 +1401,9 @@ static const knob_desc_t g_builtin[] = {
       "Ignore every host input device: the keyboard (game keys and every "
       "hotkey, this overlay's included), the mouse (as Mouse off) and "
       "gamepads. A bk2 replay and the scripted injection stream still drive "
-      "the run, and closing the window still exits. Display-only: switched on "
-      "from here it would take away the input needed to switch it off.",
+      "the run, and closing the window still exits. Set at launch only: "
+      "switched on from here it would take away the input needed to switch "
+      "it off.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0", .flag_arg = KNOB_FLAG_ARG_OPTIONAL,
@@ -1405,6 +1412,20 @@ static const knob_desc_t g_builtin[] = {
           "hotkey), mouse (as --mouse 0) and gamepads. A --bk2 replay still\n"
           "drives the game and closing the window still exits. For a window\n"
           "that must not react to host input (default {def} = off)" },
+
+    { "pad_unfocused", "Pad while unfocused", "Input", "--pad-unfocused", "OPENPETE_PAD_UNFOCUSED",
+      "Keep reading every controller while another window has focus, so a "
+      "pad drives the game behind a timer, a split tool or a stream window; "
+      "rumble follows. Off, the game ignores a controller while its window "
+      "is in the background. Input lock still ignores every physical pad.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      padunf_get, padunf_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "0", .flag_arg = KNOB_FLAG_ARG_OPTIONAL,
+      .help_arg = "[0|1]", .help_order = 525,
+      .help_text = "keep reading controllers, and driving their rumble, while the\n"
+          "window does not have focus: a pad plays the game behind a timer,\n"
+          "a split tool or a stream window (default {def} = off; on|off also\n"
+          "accepted). Keyboard and mouse still need focus" },
 
     { "mouse_sensitivity", "Mouse sensitivity", "Input", "--mouse-sensitivity", NULL,
       "Mouse look scale for the free camera and the camlock: angle units per "
@@ -1438,8 +1459,8 @@ static const knob_desc_t g_builtin[] = {
       "memcpy and a missing one is read from the file at once (a read over "
       "a network share costs tens of ms per burst and lands as a late tick). "
       "Shows whether "
-      "the cache attached. 0 = read the file per sector (A/B). Boot-latched; "
-      "bytes identical either way.",
+      "the cache attached. 0 = read the file per sector. The game reads the "
+      "same bytes either way.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       disccache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "1",
@@ -1447,14 +1468,14 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "keep the disc image resident in memory, filled by a background\n"
           "loader in the game's boot order (default {def}): a resident sector is\n"
           "a copy, a missing one is read from the file at once. 0 = read\n"
-          "the file per sector (A/B). Bytes identical either way." },
+          "the file per sector. The game reads the same bytes either way." },
 
     { "load_delay", "Load delay (VBLs)", "Paths", "--load-delay", "OPENPETE_LOAD_DELAY",
       "VBLs of guest time every level load waits: the load's disc reads land "
       "at once and their completion is deferred, so the game's own wait runs "
       "for the same count on every machine (0 = instant). Omitted = the game's "
-      "default. A bk2 records the value and replays only under it. Boot-"
-      "latched; a load in flight reads the value it started with.",
+      "default. A bk2 records the value and replays only under it. A "
+      "load in flight keeps the value it started with.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 3600,
       loaddelay_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .help_arg = "N", .help_order = 40,
@@ -1463,7 +1484,7 @@ static const knob_desc_t g_builtin[] = {
           "checked on replay." },
 
     { "texpack_dir", "Texture pack dir", "Paths", "--texpack-dir", "OPENPETE_TEXPACK_DIR",
-      "HD texture-replacement PNG directory (scanned once at renderer init).",
+      "HD texture-replacement PNG directory, scanned when the renderer starts.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "env OPENPETE_TEXPACK_DIR, else assets/textures next to the executable",
@@ -1475,8 +1496,7 @@ static const knob_desc_t g_builtin[] = {
       "Extra SDL controller-mapping database, loaded after the shipped "
       "gamecontrollerdb.txt and the per-user one and outranking both. A pad "
       "SDL has no mapping for never reaches the decode path; one line for one "
-      "GUID is enough to fix that. Read once while the gamepad subsystem "
-      "comes up.",
+      "GUID is enough to fix that.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "env OPENPETE_CONTROLLER_DB, else none",
@@ -1491,7 +1511,7 @@ static const knob_desc_t g_builtin[] = {
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "env OPENPETE_SFXPACK_DIR, else assets/sfx next to the executable",
       .help_arg = "PATH", .help_order = 350,
-      .help_text = "directory of drop-in sound-effect WAVs named by the sfx census\n"
+      .help_text = "directory of drop-in sound-effect WAVs named by sound-effect id\n"
           "(default: env OPENPETE_SFXPACK_DIR, else assets/sfx next to the exe)" },
 
     { "mods_dir", "Mods dir", "Paths", "--mods-dir", "OPENPETE_MODS_DIR",
@@ -1520,7 +1540,7 @@ static const knob_desc_t g_builtin[] = {
       "hash is reverted and logged with the mod's name (default on). 0 "
       "skips the check, so such a store persists and can trip the game's "
       "anti-piracy measures. Accepted and without effect on Spyro the Dragon "
-      "and Spyro 2. Read once at startup.",
+      "and Spyro 2.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       scanguard_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "1",
@@ -1541,7 +1561,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "log_file", "Log file", "Paths", "--log-file", "OPENPETE_LOG_FILE",
       "Path stderr is mirrored to for bug reports; empty = disabled "
-      "(--no-log-file). Opened once at startup, so read-only here.",
+      "(--no-log-file).",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, logfile_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "env OPENPETE_LOG_FILE, else <state dir>/logs/openpete.log",
@@ -1551,7 +1571,7 @@ static const knob_desc_t g_builtin[] = {
           "<state>/logs/openpete.log; env OPENPETE_LOG_FILE=..." },
 
     { "no_log_file", "No log file", "Paths", "--no-log-file", NULL,
-      "Write no log file at all. Read once at startup.",
+      "Write no log file at all.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       nologfile_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
@@ -1562,7 +1582,7 @@ static const knob_desc_t g_builtin[] = {
     { "ingest", "Ingest disc image", "Paths", "--ingest", NULL,
       "Disc image copied into the game library next to the executable and "
       "booted; later runs boot it with no --disc. A bare disc-image path on "
-      "the command line means the same. Read once at startup.",
+      "the command line means the same.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none",
@@ -1576,7 +1596,7 @@ static const knob_desc_t g_builtin[] = {
       "The game this session runs (spyro-1, spyro-2, spyro-3), which "
       "selects the [game.<id>] scope of openpete.toml. A disc of another "
       "game refuses the launch, as does a game this executable does not "
-      "run. Read once at startup.",
+      "run.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "the disc's game, else the library entry's, else this executable's",
@@ -1598,7 +1618,7 @@ static const knob_desc_t g_builtin[] = {
           "on any failed compile (the cmake build-time mods gate)" },
 
     { "card1", "Memory card 1", "Paths", "--card1", NULL,
-      "The .mcr memory-card image in port A. Read once at startup.",
+      "The .mcr memory-card image in port A.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "card1.mcr in the memory-card directory",
@@ -1606,7 +1626,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "use a specific .mcr memory-card image for port A (default: <card-dir>/card1.mcr)" },
 
     { "card2", "Memory card 2", "Paths", "--card2", NULL,
-      "The .mcr memory-card image in port B. Read once at startup.",
+      "The .mcr memory-card image in port B.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "card2.mcr in the memory-card directory",
@@ -1614,8 +1634,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "use a specific .mcr memory-card image for port B (default: <card-dir>/card2.mcr)" },
 
     { "no_card", "No memory cards", "Paths", "--no-card", NULL,
-      "Present no memory card in either port, so the game cannot save. Read "
-      "once at startup.",
+      "Present no memory card in either port, so the game cannot save.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       nocard_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
@@ -1623,8 +1642,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "present no memory card in either port (saving disabled)" },
 
     { "no_card1", "No memory card 1", "Paths", "--no-card1", NULL,
-      "Present no memory card in port A; port B keeps its card. Read once "
-      "at startup.",
+      "Present no memory card in port A; port B keeps its card.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       nocard1_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
@@ -1632,8 +1650,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "present no memory card in port A; port B keeps its card" },
 
     { "no_card2", "No memory card 2", "Paths", "--no-card2", NULL,
-      "Present no memory card in port B; port A keeps its card. Read once "
-      "at startup.",
+      "Present no memory card in port B; port A keeps its card.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       nocard2_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
@@ -1642,7 +1659,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "card_unformatted", "Unformatted card", "Paths", "--card-unformatted", NULL,
       "Provision a blank unformatted card, so the game's own format screen "
-      "runs. Read once at startup.",
+      "runs.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       cardunf_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
@@ -1651,8 +1668,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "adopt_saves", "Adopt saves", "Paths", "--adopt-saves", NULL,
       "Re-tag the memory-card saves to the running modset; a save written "
-      "under another modset warns on load until adopted. Read once at "
-      "startup.",
+      "under another modset warns on load until adopted.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       adopt_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "off", .flag_arg = KNOB_FLAG_ARG_NONE,
@@ -1663,8 +1679,7 @@ static const knob_desc_t g_builtin[] = {
 
     /* -------- Gameplay entry -------- */
     { "skip_to_level", "Skip to level", "Gameplay", "--skip-to-level", NULL,
-      "Boot straight into a level id, fast-forwarding logos/title. One-shot "
-      "at boot.",
+      "Boot straight into a level id, fast-forwarding logos/title.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 99,
       skiplevel_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none: the game boots to its title",
@@ -1684,8 +1699,7 @@ static const knob_desc_t g_builtin[] = {
       "(idol_springs_intro, metropolis_outro, ...), from the homeworld "
       "portal / the completed level; Spyro 3: the "
       "19 story cutscenes by their loading captions, an_evil_plot_unfolds "
-      "and its chain from the title, the rest from their trigger's level). "
-      "One-shot at boot.",
+      "and its chain from the title, the rest from their trigger's level).",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 99,
       skipcutscene_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none: the game boots to its title",
@@ -1721,7 +1735,7 @@ static const knob_desc_t g_builtin[] = {
     { "skip_to_area", "Skip to sub-area", "Gameplay", "--skip-to-area", NULL,
       "Boot into a level's sub-area, level:area (Spyro 3: the skate parks and "
       "the areas behind a level's portals), entered through the game's own "
-      "sub-area transition once the level is live. One-shot at boot.",
+      "sub-area transition once the level is live.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, skiparea_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none: the game boots to its title",
@@ -1732,17 +1746,17 @@ static const knob_desc_t g_builtin[] = {
           "valid indices. Replaces --skip-to-level's level (Spyro 3)" },
 
     { "freecam", "Freecam", "Gameplay", NULL, "OPENPETE_FREECAM",
-      "Debug free camera (same toggle as the F key / stick click). "
-      "Intentionally divergent debug tool - the one non-presentation row.",
+      "Fly the camera freely, detached from the player.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       freecam_get, freecam_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .def_str = "off" },
+      .def_str = "off",
+      .key_action = "freecam" },
 
     /* Both pose flags set their env spelling from the parser, so the env
      * getter shows either spelling. One-shot at boot. */
     { "freecam_pose", "Freecam pose", "Gameplay", "--freecam-pose", "OPENPETE_FREECAM_POSE",
       "Engage the debug free camera at this pose once the level is live "
-      "(\"pos=(x, y, z) yaw=N pitch=N\"). Intentionally divergent debug tool.",
+      "(\"pos=(x, y, z) yaw=N pitch=N\").",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, env_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none: the camera follows the player",
@@ -1754,8 +1768,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "player_pose", "Player pose", "Gameplay", "--player-pose", "OPENPETE_PLAYER_POSE",
       "Place the player at this position and facing once gameplay is live "
-      "and under pad control (\"x,y,z[,yaw]\"). Intentionally divergent "
-      "gameplay state.",
+      "and under pad control (\"x,y,z[,yaw]\").",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, env_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none: the player starts where the game places him",
@@ -1767,12 +1780,12 @@ static const knob_desc_t g_builtin[] = {
           "state as openpete-pose: after openpete-exit:." },
 
     { "camlock", "Camera lock (render)", "Gameplay", NULL, "OPENPETE_CAMLOCK",
-      "Lock/fly the presented view while the sim keeps running (G key). "
-      "Render-only: gameplay state is untouched, so cutscenes play on "
-      "underneath - the close-up inspection tool.",
+      "Lock or fly the presented view while the game keeps running, so "
+      "cutscenes play on underneath - the close-up inspection tool.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       camlock_get, camlock_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .def_str = "off" },
+      .def_str = "off",
+      .key_action = "camlock" },
 
     /* A movie drives the pad, so it belongs with what shapes the session
      * rather than with the video-capture rows it used to sit among. */
@@ -1785,8 +1798,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)" },
 
     { "bk2_frame_offset", "bk2 frame offset", "Gameplay", "--bk2-frame-offset", NULL,
-      "Map bk2 frame 0 to this openpete_frame (VBL) of the replay. Read once "
-      "when the movie loads.",
+      "Map bk2 frame 0 to this openpete_frame (VBL) of the replay.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       bk2offset_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "0: bk2 frame 0 plays at openpete_frame 0",
@@ -1803,7 +1815,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "bk2_record", "bk2 recording", "Gameplay", "--bk2-record", NULL,
       "BizHawk movie the live pad input is written to, with a .args sidecar "
-      "of the typed launch flags. Read once at startup.",
+      "of the typed launch flags.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none; the flag without a path records to "
@@ -1819,7 +1831,7 @@ static const knob_desc_t g_builtin[] = {
     { "cheats", "Cheats at launch", "Gameplay", "--cheats", NULL,
       "Built-in cheat codes this run starts each session with. The rows below "
       "fire the same cheats on demand; this one only shows the launch "
-      "selection. Intentionally divergent gameplay state.",
+      "selection.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, cheats_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "none",
@@ -1827,14 +1839,14 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "Spyro 1 only: apply the game's own built-in cheat codes without\n"
           "entering them on the pad: 99_lives, unlock_all_levels (an unknown\n"
           "name prints the list). Applied once a level is live, and again for\n"
-          "each new session started from the title screen. Changes gameplay\n"
-          "state by design. Spyro 2 and 3 refuse the flag" },
+          "each new session started from the title screen. Spyro 2 and 3\n"
+          "refuse the flag" },
 
     /* -------- Recording --------
      * Every row here is hidden unless this run is recording; see
      * recording_visible. */
     { "record", "Record video", "Recording", "--record", NULL,
-      "True-VFR gameplay capture to a video file (latched at boot).",
+      "True-VFR gameplay capture to a video file.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1844,8 +1856,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "record_cfr", "Constant-rate capture", "Recording", "--record-cfr", NULL,
       "Capture at a fixed frame rate (an integer multiple of the 29.913 Hz "
-      "tick rate) on an offline clock, instead of true VFR. 0 = VFR. "
-      "Latched at boot.",
+      "tick rate) on an offline clock, instead of true VFR. 0 = VFR.",
       KNOB_FLOAT, KNOB_RESTART_ONLY, NULL, 0, 0.0f, 480.0f,
       get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1858,7 +1869,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "record_frames", "Capture frame budget", "Recording", "--record-frames", NULL,
       "Finish the recording and exit after this many encoded frames. "
-      "0 = until the run ends. Latched at boot.",
+      "0 = until the run ends.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 1000000,
       get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1877,10 +1888,10 @@ static const knob_desc_t g_builtin[] = {
       .default_note = "env OPENPETE_FPS_IN_RECORD, else 0",
       .help_arg = "0|1", .help_order = 80,
       .help_text = "burn the native FPS overlay into --record video (default 0 = clean\n"
-          "capture; on|off also accepted). Display-only." },
+          "capture; on|off also accepted)." },
 
     { "record_encoder", "Video encoder", "Recording", "--record-encoder", NULL,
-      "libavcodec video encoder of the recording. Latched at boot.",
+      "libavcodec video encoder of the recording.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1889,8 +1900,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "libavcodec encoder (default {def}; e.g. h264_nvenc, libopenh264)" },
 
     { "record_crf", "Encoder quality", "Recording", "--record-crf", NULL,
-      "Constant-rate-factor quality of libx264 and libx265 (lower is better). "
-      "Latched at boot.",
+      "Constant-rate-factor quality of libx264 and libx265 (lower is better).",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 51,
       reccrf_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1899,7 +1909,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "encoder quality for libx264/libx265 (default {def}; lower = better)" },
 
     { "record_gop", "Keyframe interval", "Recording", "--record-gop", NULL,
-      "Encoded frames between keyframes. Latched at boot.",
+      "Encoded frames between keyframes.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 1000,
       recgop_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1908,7 +1918,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "keyframe interval in frames (default {def})" },
 
     { "record_pixfmt", "Pixel format", "Recording", "--record-pixfmt", NULL,
-      "Encoder pixel format. Latched at boot.",
+      "Encoder pixel format.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1917,7 +1927,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "encoder pixel format (default {def})" },
 
     { "no_record_audio", "No audio track", "Recording", "--no-record-audio", NULL,
-      "Record video only, without the mixed SPU audio. Latched at boot.",
+      "Record video only, without the mixed SPU audio.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       norecaudio_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1926,7 +1936,7 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "record video only (default: also capture mixed SPU audio)" },
 
     { "record_audio_encoder", "Audio encoder", "Recording", "--record-audio-encoder", NULL,
-      "libavcodec audio encoder of the recording. Latched at boot.",
+      "libavcodec audio encoder of the recording.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, optstr_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .visible = recording_visible, .build_cond = "OPENPETE_HAS_LIBAV",
@@ -1945,14 +1955,14 @@ static const knob_desc_t g_builtin_debug[] = {
       "Render only the named paths in isolation (cyclorama,spyro,moby,"
       "terrain,shadow,flame,particles,tracer,transition,portal,glow,sparkle,"
       "moby_shadow,ui); none renders no path. Empty or \"(all)\" clears the "
-      "selection. Live once the game module binds its setter.",
+      "selection.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .help_arg = "LIST", .help_order = 100,
       .help_text = "render ONLY these paths in both renderers, e.g.\n"
           "cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
           "tracer,transition,portal,moby_shadow,ui. Lets a path be\n"
-          "compared in isolation. Presentation-only; gameplay state unaffected." },
+          "compared in isolation." },
 
     { "log_level", "Log level", "Debug", "--log-level", "OPENPETE_LOG",
       "Per-subsystem stderr log levels, e.g. cd:debug,*:info. Applying "
@@ -1966,7 +1976,7 @@ static const knob_desc_t g_builtin_debug[] = {
       "--psycross-native-raster", NULL,
       "1 renders the PsyCross reference on the console's own 512x240 display "
       "grid instead of a square-pixel 4:3 grid sized from the window. "
-      "Reference renderer only. Read once at startup.",
+      "Reference renderer only.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       pcnative_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
@@ -1978,7 +1988,7 @@ static const knob_desc_t g_builtin_debug[] = {
 
     ENVROW_LATCHED("RUN_RECOMP", "Debug", "",
         "Guest address (hex) the game fiber dispatches instead of the EXE "
-        "header's entry point. Read once at boot."),
+        "header's entry point."),
     ENVROW_LATCHED_NOTE("SURFACE_DUMP", "Debug", "none: the game runs",
         "Path the binary writes its flags, registry rows, menu rows, key "
         "actions and vocabularies to as JSON, with their declared defaults "
@@ -1999,12 +2009,12 @@ static const knob_desc_t g_builtin_debug[] = {
         "and .spuq sidecars, each of the reference's in-work VBLANKs is "
         "delivered at the function entry it recorded and the SPU envelope is "
         "charged to the reference's exact clock at every wait, poll, query "
-        "and libspu call. Read once when the golden opens; "
+        "and libspu call. "
         "tests/harness/check_psx_oracle.sh sets it under OPENPETE_ORACLE_CLOCK=1."),
     ENVROW_LATCHED("CRASH_TEST", "Debug", "",
         "Fault injection for the crash handler: segv (a null store) or "
         "overflow (unbounded recursion) on the game fiber before the game's "
-        "entry runs. Read once at boot."),
+        "entry runs."),
     ENVROW_LIVE("WRITE_FAIL", "Debug", "",
         "Fault injection for persisted files: <substring>[:<bytes>] makes "
         "every atomic save (memory card, save state, config, mod config, "
@@ -2019,26 +2029,24 @@ static const knob_desc_t g_builtin_debug[] = {
         "1 runs the pipeline precompile at bring-up in any run mode (headless, "
         "deterministic capture, a software device); 0 skips it in any mode. "
         "Unset, it runs in a windowed run on a hardware device and is skipped "
-        "in headless and deterministic runs and on a software device. Read "
-        "once at bring-up."),
+        "in headless and deterministic runs and on a software device."),
     ENVROW_LATCHED("EAGER", "Debug", "1",
       "Eager production (default on): the span of presents is extracted "
       "AHEAD of each tick and presented from a dedicated thread's scene "
       "ring, so the tick's execution leaves no hole in the display. 0 = "
       "present from the sim thread (the first A/B for any pacing "
       "regression). Windowed native-vk only; a --screenshot-on-frame "
-      "target disengages it unless OPENPETE_EAGER_SHOT=1. Latched at "
-      "startup."),
+      "target disengages it unless OPENPETE_EAGER_SHOT=1."),
     ENVROW_LATCHED("THREAD_SPLIT", "Debug", "1",
       "Run the sim on a worker thread while the main thread owns the window "
       "and the event pump, so dragging or resizing the window cannot stall "
       "the game. On by default; set 0 to put the loop back on the main "
-      "thread. Windowed native-vk only. Latched at startup."),
+      "thread. Windowed native-vk only."),
     ENVROW_LATCHED("GLINT", "Debug", "2",
       "What the gem-glint feeder emits: 0 nothing, 1 the near four-point "
       "stars alone, 2 the near stars and the far crosses. The guest draw "
       "runs at every setting, so 0 and 1 price the feed's painted pixels "
-      "against 2 from one binary. Latched at first use."),
+      "against 2 from one binary."),
     ENVROW_DEVICE("VK_VALIDATION", "Debug", "0",
         "1 = enable the Khronos Vulkan validation layer and log its warnings "
         "and errors as 'validation:' lines. Needs the Vulkan SDK (the layer "
@@ -2246,27 +2254,26 @@ static const knob_desc_t g_builtin_debug[] = {
         "Draw only LP (1) or only HP (2) tier."),
 
     { "devui_open", "Open this overlay at boot", "Debug", "--devui-open", "OPENPETE_DEVUI_OPEN",
-      "Open this panel as soon as it initializes instead of waiting for the "
-      "M key, expanding the Mods list and every mod node once so an "
-      "unattended windowed run reaches a mod UI section body. Read once by "
-      "the overlay's init, so the row shows the boot value; M toggles the "
-      "panel live.",
+      "Open this panel as soon as it initializes instead of waiting for its "
+      "toggle key, expanding the Mods list and every mod node once so an "
+      "unattended windowed run reaches a mod UI section body. The "
+      "overlay's toggle opens and closes the panel at any time.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .help_arg = "0|1", .help_order = 120,
-      .help_text = "open the dev config overlay (M panel) as soon as it\n"
-          "initializes instead of waiting for the M key, with the Mods\n"
+      .help_text = "open the dev config overlay as soon as it initializes\n"
+          "instead of waiting for its toggle key, with the Mods\n"
           "list and every mod node expanded once, so an unattended run\n"
           "reaches a mod UI section body (on|off also accepted).\n"
-          "Windowed native-vk runs only; inert elsewhere." },
+          "Windowed native-vk runs only; inert elsewhere.",
+      .key_action = "devui" },
 
     { "devui_inject_mouse", "Park the overlay mouse", "Debug",
       NULL, "OPENPETE_DEVUI_INJECT_MOUSE",
       "Post a fixed cursor position (window pixels, \"X,Y\") into this "
       "overlay's input every present, so an unattended run can hover a "
       "widget and read the result out of the log instead of needing a hand "
-      "on the mouse. Parsed once by the overlay's init, so the row shows "
-      "the boot value.",
+      "on the mouse.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, injectmouse_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
@@ -2275,40 +2282,41 @@ static const knob_desc_t g_builtin_debug[] = {
         "up b | click2 b | rel dx dy | wheel n | menu 0|1 | capture 0|1 | shot | "
         "keydown k | keyup k\") "
         "pushed through the event pump as SDL events, so an unattended run "
-        "drives every mouse consumer. Read once at boot."),
+        "drives every mouse consumer."),
     ENVROW_LATCHED("MOUSE_PROBE", "Debug", "0",
         "Log the mouse channel on change and every consumer gesture with its "
-        "outcome. Read once at boot."),
+        "outcome."),
     ENVROW_DEVICE("WINDOW_STATE", "Debug", "0",
         "Log the window's flags and input focus at bring-up and at exit for a "
         "window created without --background, which prints them anyway. The "
-        "comparison of the two is what proves the flag changed the state. "
-        "Read once per line."),
+        "comparison of the two is what proves the flag changed the state."),
 
     { "fillpick", "Fill-tag inspector", "Debug", NULL, "OPENPETE_FILLPICK",
       "Pick the terrain face under the crosshair and re-judge its LP fill "
-      "tag live (P key). Display-only audit tool for the frozen list in "
+      "tag live. Audit tool for the frozen list in "
       "tests/freecam/fill-tags.verdicts; verdicts land in a session file.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
-      fillpick_get, fillpick_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      fillpick_get, fillpick_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .key_action = "fillpick" },
 
     { "fillpick_preview", "Fill-tag preview", "Debug", NULL, "OPENPETE_FILLPICK_PREVIEW",
       "With the inspector engaged, draw every LP face - not just the tagged "
-      "ones - tinting the untagged candidates magenta (H key). This is how a "
+      "ones - tinting the untagged candidates magenta. This is how a "
       "face that should be filling a hole is found before it is tagged.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
-      fillpick_prev_get, fillpick_prev_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      fillpick_prev_get, fillpick_prev_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .key_action = "fillpick_preview" },
 
     ENVROW_LATCHED("GLITCH_MARK_N", "Debug", "600",
         "Depth of the glitch-mark rings, in presents and in terrain walks "
-        "(600 is about 1.25 s of presents at 480 Hz). Read once at boot, "
-        "when the rings are allocated."),
+        "(600 is about 1.25 s of presents at 480 Hz); the rings are "
+        "allocated at launch."),
     ENVROW_LATCHED("GLITCH_MARK_AT", "Debug", "",
         "Raise the glitch mark automatically instead of on the glitch_mark "
         "binding: \"<n>\" or \"p<n>\" at present serial n, \"w<n>\" at "
         "terrain-walk ordinal n (the only spelling a headless run reaches, "
         "since headless composes no presents), \"<n>ms\" n milliseconds "
-        "after boot. One shot. Read once at boot."),
+        "after boot. One shot."),
     ENVROW_LATCHED("ACTOR_OWN_KEY", "Debug", "1",
         "Actor faces contest only other mobys' keys (0 = own keys too)."),
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
@@ -2343,7 +2351,7 @@ static const knob_desc_t g_builtin_debug[] = {
         "Sub-tick hold threshold for a moby's one-tick turn, in byte angles "
         "(256 = one turn); 0 interpolates every interval."),
     ENVROW_LATCHED("MOBY_IDLE", "Debug", "0",
-        "Display-only idle animation for frozen mobys."),
+        "Idle animation for frozen mobys."),
     ENVROW_LATCHED("MOBY_HOLD_PX", "Debug", "10",
         "Max screen motion for tier-2 moby hold replay (default 10)."),
     ENVROW_LATCHED("SHADED_NOHL", "Debug", "0",

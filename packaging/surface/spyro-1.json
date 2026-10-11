@@ -1,5 +1,5 @@
 {
- "source_sha": "c033a55195e02051f36ee49c2a99db5fe2054b3e",
+ "source_sha": "c7d759eb10dcdc2429baab8c8d6c603b4c0a4d75",
  "format": 1,
  "game": "spyro-1",
  "entries": [
@@ -1063,6 +1063,32 @@
    "default_note": null
   },
   {
+   "id": "knob:pad_unfocused",
+   "flag": "--pad-unfocused",
+   "env": "OPENPETE_PAD_UNFOCUSED",
+   "config_key": "pad_unfocused",
+   "schema_type": "bool",
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Input",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "0",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--pad-unfocused",
+   "flag": "--pad-unfocused",
+   "takes_arg": "optional",
+   "knob": "pad_unfocused",
+   "build_cond": null,
+   "def": "0",
+   "default_note": null
+  },
+  {
    "id": "knob:mouse_sensitivity",
    "flag": "--mouse-sensitivity",
    "env": null,
@@ -1303,6 +1329,32 @@
    "build_cond": null,
    "def": null,
    "default_note": "env OPENPETE_MODS, else the mods directory's enabled.txt"
+  },
+  {
+   "id": "knob:scan_guard",
+   "flag": "--scan-guard",
+   "env": "OPENPETE_SCAN_GUARD",
+   "config_key": "scan_guard",
+   "schema_type": "bool",
+   "vocab": [],
+   "aliases": [],
+   "type": "bool",
+   "section": "Paths",
+   "block": "release",
+   "build_cond": null,
+   "cli_only": false,
+   "def": "1",
+   "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "flag:--scan-guard",
+   "flag": "--scan-guard",
+   "takes_arg": "required",
+   "knob": "scan_guard",
+   "build_cond": null,
+   "def": "1",
+   "default_note": null
   },
   {
    "id": "knob:card_dir",
@@ -2427,6 +2479,23 @@
    "cli_only": false,
    "def": "0",
    "default_note": null,
+   "game": "core"
+  },
+  {
+   "id": "knob:PRECOMPILE_FORCE",
+   "flag": null,
+   "env": "OPENPETE_PRECOMPILE_FORCE",
+   "config_key": null,
+   "schema_type": null,
+   "vocab": [],
+   "aliases": [],
+   "type": "string",
+   "section": "Debug",
+   "block": "debug",
+   "build_cond": null,
+   "cli_only": false,
+   "def": null,
+   "default_note": "unset: runs in a windowed run on a hardware device",
    "game": "core"
   },
   {
@@ -7775,7 +7844,7 @@
  ],
  "selfcheck": {
   "flag": {
-   "checked": 40,
+   "checked": 42,
    "unchecked": 33,
    "failed": 0
   },
@@ -7791,7 +7860,7 @@
   },
   "env": {
    "checked": 0,
-   "unchecked": 187,
+   "unchecked": 188,
    "failed": 0
   },
   "failures": []

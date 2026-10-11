@@ -40,6 +40,7 @@ extern "C" {
 #include "openpete_host_input.h"   /* C-only header: the mouse snapshot read */
 }
 #include "openpete_host_mouse.h"
+#include "openpete_keymap.h"
 #include "openpete_knobs.h"
 #include "openpete_config.h"
 #include "openpete_log.h"
@@ -178,6 +179,11 @@ int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
         ImGui::DestroyContext();
         return 0;
     }
+    /* The backend's automatic gamepad modes call SDL_OpenGamepad and read the
+     * pad from the thread that renders the frame, while the pump thread owns
+     * every gamepad handle. Manual mode with an empty list opens and reads
+     * none; imgui then sees no gamepad. */
+    ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, nullptr, 0);
     /* The backend's IME hook calls SDL_StartTextInput from the thread that
      * renders the frame, which is not the thread that owns the window;
      * openpete_devui_pump_text_input does it on the pump thread instead. The
@@ -225,7 +231,9 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
     s_inited = true;
     s_open   = openpete_devui_open_requested(opts) != 0;
     s_boot_reveal = s_open;
-    OPL_INFO_F("devui", "dev config overlay ready (M toggles)%s",
+    char key[160];
+    openpete_keymap_action_label(OPK_DEVUI, key, sizeof key);
+    OPL_INFO_F("devui", "dev config overlay ready (%s toggles)%s", key,
                s_open ? " - open at boot (--devui-open)" : "");
     return 1;
 }
@@ -492,8 +500,10 @@ static void row_context_menu(knob_desc_t *k)
     ImGui::EndPopup();
 }
 
-/** @brief Write a knob's help and its flag and variable spellings into the open tooltip.
+/** @brief Write a knob's help and its flag, variable and key spellings into the open tooltip.
  *
+ * The key line carries the resolved binding of the row's key_action, in the
+ * spelling of the current keyboard layout and the connected pad's family.
  * Adds a "restart to apply" line for a restart-only knob. */
 static void knob_tooltip_body(const knob_desc_t *k)
 {
@@ -501,6 +511,12 @@ static void knob_tooltip_body(const knob_desc_t *k)
     ImGui::Separator();
     if (k->cli) ImGui::Text("flag: %s", k->cli);
     if (k->env) ImGui::Text("env:  %s", k->env);
+    const int act = openpete_keymap_host_action(k->key_action);
+    if (act >= 0) {
+        char key[160];
+        openpete_keymap_action_label((openpete_action_t)act, key, sizeof key);
+        ImGui::Text("Key:  %s", key);
+    }
     if (k->mut == KNOB_RESTART_ONLY)
         ImGui::TextDisabled("restart to apply");
 }
@@ -967,36 +983,54 @@ static const openpete_mod_ui_t s_mod_ui = {
     {},
 };
 
+/* The state notes a mod row's tooltip can show, indexed by mod_note_t. The
+ * surface's vocabulary check reads them through openpete_devui_mod_notes. */
+enum mod_note_t {
+    MOD_NOTE_NOT_STARTED,
+    MOD_NOTE_ASSETS,
+    MOD_NOTE_OWNER_BUSY,
+    MOD_NOTE_NO_CONTROLS,
+    MOD_NOTE_COUNT
+};
+static const char *const k_mod_notes[MOD_NOTE_COUNT] = {
+    "not started yet - enabling runs the mod at the next tick boundary",
+    "asset overlay: textures/music follow the toggle; level data applies at "
+    "the next level load",
+    "can't be turned off while you're inside its level",
+    "no controls registered",
+};
+
+const char *const *openpete_devui_mod_notes(size_t *count)
+{
+    if (count) *count = MOD_NOTE_COUNT;
+    return k_mod_notes;
+}
+
 /** @brief Draw the hover tooltip of a mod's row: id and version plus the state notes that apply.
  *
- * Notes cover a mod that writes no guest RAM, one not yet started, an asset
- * overlay, an enabled mod that cannot be disabled while its level is
- * active, an enabled mod with no controls, and last present's ImGui call
- * count. */
+ * Notes cover a mod not yet started, an asset overlay, an enabled mod that
+ * cannot be disabled while its level is active, and an enabled mod with no
+ * controls. A build with the debug flags compiled in adds last present's
+ * ImGui call count. */
 static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
 {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
     ImGui::Text("%s v%s", mi->id, mi->version);
-    if (!mi->sim_mutative)
-        ImGui::TextDisabled("writes no guest RAM (outside the save "
-                            "modset tag)");
     if (!mi->entered)
-        ImGui::TextDisabled("not started yet - enabling runs the mod at "
-                            "the next tick boundary");
+        ImGui::TextDisabled("%s", k_mod_notes[MOD_NOTE_NOT_STARTED]);
     if (mi->has_assets)
-        ImGui::TextDisabled("asset overlay: textures/music follow the "
-                            "toggle; level data applies at the next "
-                            "level load");
+        ImGui::TextDisabled("%s", k_mod_notes[MOD_NOTE_ASSETS]);
     if (mi->enabled && openpete_mods_registry_owner_busy(mi->id))
-        ImGui::TextDisabled("can't be turned off while you're inside "
-                            "its level");
+        ImGui::TextDisabled("%s", k_mod_notes[MOD_NOTE_OWNER_BUSY]);
     if (mi->enabled && !mi->has_ui && !mi->has_cfg)
-        ImGui::TextDisabled("no controls registered");
+        ImGui::TextDisabled("%s", k_mod_notes[MOD_NOTE_NO_CONTROLS]);
+#ifndef OPENPETE_HIDE_DEBUG_FLAGS
     if (mi->imgui_calls)
         ImGui::TextDisabled("ImGui: %llu calls last present",
                             (unsigned long long)mi->imgui_calls);
+#endif
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
 }

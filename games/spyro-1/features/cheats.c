@@ -94,13 +94,12 @@ static const cheat_def_t k_cheats[] = {
       "cheat_99_lives", "99 lives",
       "Sets Spyro's extra lives to 99 - the game's own \"99 LIVES\" code. "
       "Applies on the next tick in a level; click again to top back up after "
-      "dying. Intentionally divergent gameplay state." },
+      "dying." },
     { "unlock_all_levels", CHEAT_UNLOCK_ALL,
       "every level visited + every homeworld unlocked (the \"LEVELS OPEN\" code)",
       "cheat_unlock_all_levels", "Unlock all levels",
       "Marks every level visited and every homeworld unlocked - the game's own "
-      "\"LEVELS OPEN\" code. Applies on the next tick in a level. "
-      "Intentionally divergent gameplay state." },
+      "\"LEVELS OPEN\" code. Applies on the next tick in a level." },
 };
 #define CHEAT_COUNT (sizeof(k_cheats) / sizeof(k_cheats[0]))
 

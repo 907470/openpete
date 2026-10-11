@@ -18,6 +18,7 @@
  */
 
 #include "openpete_rumble.h"
+#include "openpete_host_input.h"   /* --pad-unfocused */
 #include "openpete_input_log.h"   /* OPENPETE_PAD_SLOTS */
 #include "openpete_log.h"
 
@@ -240,7 +241,8 @@ static int driving_test_device(SDL_Gamepad* gp)
  * The refusals shared by every slot: headless and missing keyboard focus
  * protect a connected physical controller and are lifted for a registered test device;
  * pause silences every pad. Focus is polled with SDL_GetKeyboardFocus rather
- * than tracked through focus events.
+ * than tracked through focus events. --pad-unfocused lifts the focus
+ * refusal: a player whose pad drives an unfocused window feels its rumble.
  * @param gp the gamepad about to be driven, or NULL (never a test device).
  * @return 1 when the pad must stay silent, 0 otherwise. */
 static int rumble_gates_block(SDL_Gamepad* gp)
@@ -248,7 +250,7 @@ static int rumble_gates_block(SDL_Gamepad* gp)
     if (!driving_test_device(gp)) {
         if (SDL_GetAtomicInt(&s_headless))
             return 1;
-        if (!SDL_GetKeyboardFocus())
+        if (!SDL_GetKeyboardFocus() && !openpete_host_input_pad_unfocused())
             return 1;
     }
     return SDL_GetAtomicInt(&s_paused) ? 1 : 0;

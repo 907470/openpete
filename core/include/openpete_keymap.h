@@ -342,6 +342,48 @@ void openpete_keymap_set_lookup(openpete_keymap_name_to_code_fn to_code,
                                 openpete_keymap_code_to_name_fn to_name,
                                 openpete_keymap_key_label_fn label);
 
+/* The label a player reads for a pad source on the connected controller's
+ * own family ("A" on an Xbox pad, "Cross" on a PlayStation pad, "L1",
+ * "Left Stick Up"), or NULL when the source has no label.
+ * `kind` is KM_SRC_PADBTN or KM_SRC_PADAXIS; `invert` is the source's sign
+ * (-1 for "pad:-lefty"). */
+typedef const char* (*openpete_keymap_pad_label_fn)(int kind, int code, int invert);
+
+/** @brief Install the pad-label lookup openpete_keymap_action_label uses.
+ *
+ * NULL makes a pad source print its config spelling ("pad:south").
+ * @param fn the lookup. */
+void openpete_keymap_set_pad_label(openpete_keymap_pad_label_fn fn);
+
+/** @brief Return the host action a config id names.
+ *
+ * @param id the action id as `[keys.host]` spells it ("pause").
+ * @return the action, or -1 when no host action has that id. */
+int openpete_keymap_host_action(const char* id);
+
+/** @brief Write an action's resolved binding in the spelling a player reads.
+ *
+ * A key prints the current layout's label for it (its positional name when
+ * the layout gives none); a pad source prints the pad-label lookup's label
+ * (openpete_keymap_set_pad_label), a "PadN " prefix for a source qualified
+ * to player N; a mouse source prints "Mouse " and its name. Sources are
+ * joined by " / "; an action with no source prints "unbound".
+ * @param a the action; out of range prints "unbound".
+ * @param out receives the text, always NUL-terminated; truncated to fit.
+ * @param cap capacity of out in bytes; at least 1. */
+void openpete_keymap_action_label(openpete_action_t a, char* out, size_t cap);
+
+/** @brief Write an action's built-in binding in the config spelling.
+ *
+ * The registry default ("Escape", "Right,pad:dpright") with its sources
+ * joined by ", "; "unbound" for a default of "none" and for a KM_DEV row
+ * this build withholds. Reads only the registry, so it is valid before
+ * openpete_keymap_init and before any config layer.
+ * @param a the action; out of range prints "unbound".
+ * @param out receives the text, always NUL-terminated; truncated to fit.
+ * @param cap capacity of out in bytes; at least 1. */
+void openpete_keymap_action_default_label(openpete_action_t a, char* out, size_t cap);
+
 /* ---- live input seam ------------------------------------------------- */
 
 /* Where the resolved bindings are actually READ. Behind a seam for the
@@ -443,7 +485,8 @@ int   openpete_keymap_action_bound(openpete_action_t a);
  *
  * Passes the name-to-code, code-to-name and key-label functions to
  * openpete_keymap_set_lookup and the key, pad, mouse and mouse-owner reads
- * to openpete_keymap_set_input. Call before openpete_keymap_init, which
+ * to openpete_keymap_set_input, and the controller-family pad labels to
+ * openpete_keymap_set_pad_label. Call before openpete_keymap_init, which
  * parses every registry default through the name lookup. */
 void openpete_keymap_install_sdl(void);
 

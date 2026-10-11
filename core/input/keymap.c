@@ -81,12 +81,17 @@ static long long g_delta[OPK_ACTION_COUNT];
 static openpete_keymap_name_to_code_fn  s_to_code;
 static openpete_keymap_code_to_name_fn  s_to_name;
 static openpete_keymap_key_label_fn     s_key_label;
+static openpete_keymap_pad_label_fn     s_pad_label;
 static openpete_keymap_input_fns        s_in;
 
 void openpete_keymap_set_lookup(openpete_keymap_name_to_code_fn to_code,
                                 openpete_keymap_code_to_name_fn to_name,
                                 openpete_keymap_key_label_fn label) {
     s_to_code = to_code; s_to_name = to_name; s_key_label = label;
+}
+
+void openpete_keymap_set_pad_label(openpete_keymap_pad_label_fn fn) {
+    s_pad_label = fn;
 }
 
 void openpete_keymap_set_input(const openpete_keymap_input_fns* fns) {
@@ -1284,6 +1289,74 @@ static void km_format_binding(const km_binding_t* b, char* out, size_t cap) {
         used += (size_t)wrote;
     }
     if (!b->n) snprintf(out, cap, "-");
+}
+
+int openpete_keymap_host_action(const char* id) {
+    return id ? km_find("host", id) : -1;
+}
+
+/** @brief Write one source in the spelling a player reads, for openpete_keymap_action_label.
+ *
+ * @param s the source.
+ * @param out receives the text, always NUL-terminated.
+ * @param cap capacity of out in bytes. */
+static void km_player_piece(const km_source_t* s, char* out, size_t cap) {
+    const char* nm = s_to_name ? s_to_name(s->kind, s->code) : NULL;
+    if (km_is_mouse_kind(s->kind)) {
+        const char* mn = km_mouse_name(s->kind, s->code);
+        snprintf(out, cap, "Mouse %s%s",
+                 (s->kind == KM_SRC_MOUSEAXIS && s->invert < 0) ? "-" : "",
+                 mn ? mn : "?");
+        return;
+    }
+    if (s->kind == KM_SRC_KEY) {
+        const char* lbl = s_key_label ? s_key_label(s->code) : NULL;
+        snprintf(out, cap, "%s", lbl && *lbl ? lbl : nm ? nm : "?");
+        return;
+    }
+    const char* pl = s_pad_label ? s_pad_label(s->kind, s->code, s->invert) : NULL;
+    char pfx[12] = "";
+    if (s->device) snprintf(pfx, sizeof pfx, "Pad%d ", s->device);
+    if (pl)
+        snprintf(out, cap, "%s%s", pfx, pl);
+    else
+        snprintf(out, cap, "%spad:%s%s", pfx,
+                 (s->kind == KM_SRC_PADAXIS && s->invert < 0) ? "-" : "",
+                 nm ? nm : "?");
+}
+
+void openpete_keymap_action_label(openpete_action_t a, char* out, size_t cap) {
+    out[0] = '\0';
+    if ((unsigned)a >= OPK_ACTION_COUNT || !g_bind[a].n) {
+        snprintf(out, cap, "unbound");
+        return;
+    }
+    size_t used = 0;
+    for (int i = 0; i < g_bind[a].n; i++) {
+        char piece[64];
+        km_player_piece(&g_bind[a].src[i], piece, sizeof piece);
+        int wrote = snprintf(out + used, cap - used, "%s%s",
+                             used ? " / " : "", piece);
+        if (wrote < 0 || (size_t)wrote >= cap - used) break;
+        used += (size_t)wrote;
+    }
+}
+
+void openpete_keymap_action_default_label(openpete_action_t a, char* out, size_t cap) {
+    if ((unsigned)a >= OPK_ACTION_COUNT) { snprintf(out, cap, "unbound"); return; }
+    const km_action_def_t* d = &g_actions[a];
+    if (((d->flags & KM_DEV) && !km_devbuild_bound(d->flags)) ||
+        km_streq_ci(d->def, "none")) {
+        snprintf(out, cap, "unbound");
+        return;
+    }
+    size_t used = 0;
+    out[0] = '\0';
+    for (const char* p = d->def; *p && used + 3 < cap; p++) {
+        out[used++] = *p;
+        if (*p == ',') out[used++] = ' ';
+    }
+    out[used] = '\0';
 }
 
 void openpete_keymap_report(FILE* out) {

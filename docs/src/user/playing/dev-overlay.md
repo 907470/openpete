@@ -18,7 +18,7 @@ hotkey bindings pause and the PlayStation pad is released.
 | --- | --- |
 | Search field | Shows the rows whose name, flag or environment variable contains the text, with every section holding a match opened. |
 | Row value | Changes apply at once on a live row. A row that needs a restart is drawn greyed out. |
-| Row title tooltip | The setting's description, its flag and variable spellings, "restart to apply" on a restart row, and where the value came from: the command line, the environment or the default, "edited this session" once changed, and the `openpete.toml` section that set it, for example `[saved]`. **pinned** marks a setting that a flag or variable of this launch overrides; saving it takes effect once that override is gone. |
+| Row title tooltip | The setting's description, its flag and variable spellings, the key bound to it (as the current keyboard layout and the connected controller label it) when a key action changes it, "restart to apply" on a restart row, and where the value came from: the command line, the environment or the default, "edited this session" once changed, and the `openpete.toml` section that set it, for example `[saved]`. **pinned** marks a setting that a flag or variable of this launch overrides; saving it takes effect once that override is gone. |
 | Button tooltip | A button's status, such as **not in a level**, above its description. |
 | Right click on a row title | **Reset to boot value**, **Copy as CLI flag**, **Copy as env line**. |
 

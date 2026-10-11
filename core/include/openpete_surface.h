@@ -15,6 +15,8 @@
 
 #include "openpete_knobs.h"
 
+#include <stdio.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -45,6 +47,24 @@ void openpete_surface_row(openpete_surface_sink_t* sink, const knob_desc_t* row)
  * the dump is written and the selfcheck passes, 1 otherwise.
  * @param argv0 The program path, argv[0], for the selfcheck's parses. */
 void openpete_surface_dump_run_if_requested(const char* argv0);
+
+/** @brief Scan every tooltip, --help description, menu hint and mod note for the barred vocabulary.
+ *
+ * Every string is scanned for mutability classes and gameplay-neutrality
+ * claims; a string a player reads (a row outside the debug block, a game
+ * row, a help-only entry outside the debug block, a menu hint, a mod note)
+ * is also scanned for instrument terms. Prints one HIT line per term found
+ * and a summary line with the row, string and hit counts.
+ * OPENPETE_TOOLTIP_VOCAB runs it from openpete_surface_dump_run_if_requested.
+ * @param game_rows The rows the game's features contribute.
+ * @param game_row_n Their count.
+ * @param broken Registry row id whose tooltip gains a barred term first, the
+ *        negative control; NULL or empty for none.
+ * @param out Output stream.
+ * @return 0 when no term is found and at least one row and string were
+ *         scanned, 1 otherwise. */
+int openpete_tooltip_vocab_check(const knob_desc_t* game_rows, int game_row_n,
+                                 const char* broken, FILE* out);
 
 #ifdef __cplusplus
 }

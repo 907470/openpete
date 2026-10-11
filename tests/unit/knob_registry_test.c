@@ -39,6 +39,9 @@ void   openpete_set_mute(int on)               { (void)on; }
 static int s_mouse_enabled = 1;
 int    openpete_host_mouse_enabled(void)       { return s_mouse_enabled; }
 void   openpete_host_mouse_set_enabled(int on) { s_mouse_enabled = on ? 1 : 0; }
+static int s_pad_unfocused;
+int    openpete_host_input_pad_unfocused(void)        { return s_pad_unfocused; }
+void   openpete_host_input_set_pad_unfocused(int on)  { s_pad_unfocused = on ? 1 : 0; }
 static int s_record_supported = 1;
 int    openpete_record_supported(void)         { return s_record_supported; }
 int    openpete_get_sfx_volume(void)           { return -1; }

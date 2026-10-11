@@ -2704,6 +2704,8 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_host_mouse_set_enabled(opts->mouse != 0);
     /* --input-lock: seeded here for the same reason. -1 (unset) is off. */
     openpete_input_lock_set(opts->input_lock > 0);
+    /* --pad-unfocused: seeded here for the same reason; -1 (unset) is off. */
+    openpete_host_input_set_pad_unfocused(opts->pad_unfocused > 0);
     if (opts->input_lock > 0)
         OPL_INFO_F("input", "input lock on: keyboard, mouse and gamepad "
                    "devices are ignored");

@@ -565,6 +565,7 @@ typedef struct {
     bool     buttons[SDL_GAMEPAD_BUTTON_COUNT];
     Sint16   axes[SDL_GAMEPAD_AXIS_COUNT];
     bool     have_pad;
+    int      type;      /* SDL_GamepadType; UNKNOWN for an empty slot */
 } host_pad_state_t;
 
 typedef struct {
@@ -973,6 +974,29 @@ static void host_slot_gamepads(SDL_Gamepad* out[OPENPETE_PAD_SLOTS])
     SDL_free(ids);
 }
 
+/** @brief Fill one pad slot of the snapshot from its gamepad.
+ *
+ * Copies every button and axis and the gamepad type; a NULL gamepad (an
+ * empty slot, or a physical pad the input lock hides) reads as absent, all
+ * released and centred.
+ * @param ps the slot's snapshot entry.
+ * @param gp the slot's gamepad, or NULL. */
+static void host_pad_state_fill(host_pad_state_t* ps, SDL_Gamepad* gp)
+{
+    ps->have_pad = (gp != NULL);
+    ps->type = (int)SDL_GAMEPAD_TYPE_UNKNOWN;
+    if (!gp) {
+        memset(ps->buttons, 0, sizeof(ps->buttons));
+        memset(ps->axes, 0, sizeof(ps->axes));
+        return;
+    }
+    ps->type = (int)SDL_GetGamepadType(gp);
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+        ps->buttons[b] = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b);
+    for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
+        ps->axes[a] = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a);
+}
+
 void openpete_host_input_publish_sdl(void)
 {
     int cur  = SDL_GetAtomicInt(&s_sdl_state_cur);
@@ -1016,20 +1040,8 @@ void openpete_host_input_publish_sdl(void)
 
     SDL_Gamepad* slot_gp[OPENPETE_PAD_SLOTS];
     host_slot_gamepads(slot_gp);
-    for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++) {
-        host_pad_state_t* ps = &d->pads[sl];
-        SDL_Gamepad* gp = lock_filter_gamepad(slot_gp[sl]);
-        ps->have_pad = (gp != NULL);
-        if (gp) {
-            for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
-                ps->buttons[b] = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b);
-            for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
-                ps->axes[a] = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a);
-        } else {
-            memset(ps->buttons, 0, sizeof(ps->buttons));
-            memset(ps->axes, 0, sizeof(ps->axes));
-        }
-    }
+    for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++)
+        host_pad_state_fill(&d->pads[sl], lock_filter_gamepad(slot_gp[sl]));
 
     /* Release: the buffer's contents must be visible before the index that
      * publishes it. */
@@ -1077,6 +1089,29 @@ int openpete_host_input_pad_connected(int slot)
 {
     if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return 0;
     return host_sdl_read()->pads[slot].have_pad ? 1 : 0;
+}
+
+/* --pad-unfocused; read by the rumble path on the pump thread and by the
+ * overlay row on the frame thread. */
+static SDL_AtomicInt s_pad_unfocused;
+
+void openpete_host_input_set_pad_unfocused(int on)
+{
+    SDL_SetAtomicInt(&s_pad_unfocused, on ? 1 : 0);
+    SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,
+                            on ? "1" : "0", SDL_HINT_OVERRIDE);
+}
+
+int openpete_host_input_pad_unfocused(void)
+{
+    return SDL_GetAtomicInt(&s_pad_unfocused);
+}
+
+int openpete_host_input_pad_type(int slot)
+{
+    if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return (int)SDL_GAMEPAD_TYPE_UNKNOWN;
+    const host_pad_state_t* ps = &host_sdl_read()->pads[slot];
+    return ps->have_pad ? ps->type : (int)SDL_GAMEPAD_TYPE_UNKNOWN;
 }
 
 int openpete_host_input_pad_button(int button)

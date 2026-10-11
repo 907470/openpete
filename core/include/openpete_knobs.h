@@ -163,6 +163,11 @@ typedef struct knob_desc {
     const char *help_arg;
     const char *help_text;
     unsigned short help_order;
+
+    /* The [keys.host] action that changes this row's setting ("pause"):
+     * the overlay's tooltip shows its resolved binding and --help its
+     * built-in one, as a Key field. NULL for a setting no action changes. */
+    const char *key_action;
 } knob_desc_t;
 
 /* Arity of a row's flag: the default, a flag that takes no value

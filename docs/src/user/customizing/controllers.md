@@ -61,8 +61,22 @@ controller the mapping used and where it came from.
 `0`<!-- id: knob:vibration --> (off) to `10`<!-- id: knob:vibration --> (full
 strength). The default, `{{ default("knob:vibration") }}`<!-- id: knob:vibration -->,
 leaves the game's own vibration setting alone, which is on. `on` and `off`
-are also accepted. The motors are silent while the window is not focused.
-Turning vibration off in the game's own options menu takes effect as usual.
+are also accepted. The motors are silent while the window is not focused,
+unless `--pad-unfocused` is on (below). Turning vibration off in the game's
+own options menu takes effect as usual.
+
+## Controller in the background
+
+`--pad-unfocused`<!-- id: flag:--pad-unfocused --> keeps reading every
+controller while another window has focus, so the pad plays the game behind
+a split timer, a stream window or a chat. Rumble follows the same setting.
+The default, `{{ default("knob:pad_unfocused") }}`<!-- id: knob:pad_unfocused -->,
+ignores a controller while the window is in the background. `--pad-unfocused 0`
+turns it off again from the command line; the config key is
+`pad_unfocused`, the variable `OPENPETE_PAD_UNFOCUSED`. The
+[dev overlay](../help/glossary.md#dev-overlay)'s Input section switches it
+while the game runs. The keyboard and the mouse still need the window
+focused.
 
 ## Mouse
 

@@ -136,7 +136,7 @@ static const knob_desc_t k_warp_rows[] = {
               "transition. From the title screen, and on the games whose "
               "transition goes by way of it, that is a fresh session in the "
               "chosen level and progress and lives reset, as with "
-              "--skip-to-level. Intentionally divergent gameplay state.",
+              "--skip-to-level.",
       .type = KNOB_ACTION, .mut = KNOB_LIVE, .action_label = "Warp" },
 };
 

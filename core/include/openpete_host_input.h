@@ -171,6 +171,29 @@ int      openpete_host_input_pad_axis_slot(int slot, int axis);
  * @return 1 when a device drove the slot, 0 when none did or the slot is out of
  *        range. */
 int      openpete_host_input_pad_connected(int slot);
+/** @brief Return the SDL_GamepadType of a pad slot's device in the published snapshot.
+ *
+ * Names the controller family whose button labels the player reads.
+ * @param slot pad slot, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @return the type, or SDL_GAMEPAD_TYPE_UNKNOWN (0) for an empty slot or one
+ *        out of range. */
+int      openpete_host_input_pad_type(int slot);
+
+/** @brief Accept or refuse gamepad input while the window does not have focus (--pad-unfocused).
+ *
+ * Sets SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS at override priority, so
+ * SDL keeps delivering every gamepad's button and axis events to an
+ * unfocused window, and lets the rumble path drive the motors while
+ * unfocused. SDL reads the hint through a hint callback, so any thread may
+ * call this, before or after the gamepad subsystem starts. The input lock
+ * still hides physical pads.
+ * @param on nonzero accepts unfocused pad input; 0 restores SDL's default
+ *        of dropping it. */
+void     openpete_host_input_set_pad_unfocused(int on);
+/** @brief Return whether gamepad input is accepted while the window is unfocused.
+ *
+ * @return 1 after openpete_host_input_set_pad_unfocused(1), else 0. */
+int      openpete_host_input_pad_unfocused(void);
 /** @brief Return the SDL keyboard modifier mask of the published snapshot.
  *
  * The mask is SDL_GetModState at the publish, or 0 while the input lock is on.

@@ -25,6 +25,8 @@
  * watching the live scene while flipping knobs is the point.
  */
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -220,6 +222,14 @@ void openpete_devui_render(struct rhi_device *dev);
  *         on @p dev or no command buffer is recording. */
 int  openpete_devui_render_progress(struct rhi_device *dev, const char *title,
                                     unsigned done, unsigned total);
+
+/** @brief The state notes a mod row's tooltip can show.
+ *
+ * The table the tooltip draws from, exposed so the surface vocabulary check
+ * scans the same strings the player reads.
+ * @param count Receives the note count; may be NULL.
+ * @return The static table. */
+const char *const *openpete_devui_mod_notes(size_t *count);
 
 #ifdef __cplusplus
 }
