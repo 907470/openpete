@@ -231,24 +231,35 @@ void openpete_psx_bios_card_state_set(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS
  * @param out Receives the byte.
  * @return 1 when @p phys is in the window, else 0 with @p out unwritten. */
 int      openpete_psx_bios_rom_read8(uint32_t phys, uint8_t* out);
-/** @brief Write the kernel's fixed low-RAM words into a 2 MB RAM image.
+/** @brief Write the kernel RAM the SCPH-1001 boot leaves into a 2 MB RAM image.
  *
- * These are the words a game can observe after the SCPH-1001 boot
- * (OpenBIOS kernel/handlers.c installKernelHandlers and main/main.c set
- * the same words): the general exception vector at 0x80 and its copy at
- * 0x00 (lui k0,0; addiu k0,k0,0xC80; jr k0; nop), the A0/B0/C0 function
- * call vectors (lui t0,0; addiu t0,t0,0x5C4|0x5E0|0x600; jr t0; nop), the
- * RAM size in megabytes at 0x60 and the boot flags word 0xFF at 0x68. Of
- * the kernel's code and tables above 0x100 only the words libcard's patch
- * routine reads are reproduced, so its stores land where they land on
- * hardware: C0 table entry 6 (0x68C: the exception handler, 0xC80), the
- * lui/addiu pair at handler+0x70 whose immediates compose the card
- * fast-track patch slot (0x641C + 0x28), and B0 table entry 0x5B (0x9E0:
- * ChangeClearPAD, 0x43D0), 0x9C8 past which the patch's second copy lands.
- * Called at boot before the EXE loads and after a savestate load
- * (idempotent on RAM that already carries the words).
+ * The general exception vector at 0x80 (lui k0,0; addiu k0,k0,0xC80; jr
+ * k0; nop) and its copy at 0x00, whose first word the boot leaves as 3;
+ * the A0/B0/C0 function call vectors (lui t0,0; addiu t0,t0,
+ * 0x5C4|0x5E0|0x600; jr t0; nop); the RAM size in megabytes at 0x60 and
+ * the boot flags word 0xFF at 0x68 (OpenBIOS kernel/handlers.c
+ * installKernelHandlers and main/main.c set the same words). Then the
+ * kernel's tables as the ROM leaves them at the EXE entry: the table of
+ * tables at 0x100, the A0, C0 and B0 function tables, the device control
+ * blocks, errno, the file control blocks (fds 0 and 1 open on the tty,
+ * file 2 closed with the words the boot EXE's open left, per game), and
+ * the kernel heap from 0xE000 (exception chain, event table, process and
+ * thread blocks). libcard's patch routine reads C0 entry 6 (0x68C, 0xC80)
+ * and B0 entry 0x5B (0x9E0, 0x43D0) among them, and the lui/addiu pair at
+ * 0xCF0 (handler+0x70, also written here) whose immediates compose the
+ * card fast-track patch slot (0x641C + 0x28), so its stores land where
+ * they land on hardware. The kernel's code outside these tables is not
+ * written. Called at boot before the EXE loads.
  * @param ram Host pointer to guest RAM. */
 void     openpete_psx_bios_seed_ram(uint8_t* ram);
+/** @brief Seed the kernel RAM of a loaded savestate that predates the seed.
+ *
+ * A state whose table of tables (the word at 0x100) is zero was written
+ * before the boot seeded the kernel tables and gets the boot seed; any
+ * other state carries the kernel RAM the run left and is not touched, since
+ * the file calls and the game write it after boot.
+ * @param ram Host pointer to guest RAM. */
+void     openpete_psx_bios_reseed_ram(uint8_t* ram);
 /** @brief Return the number of BIOS ROM window reads served so far.
  *
  * @return The count of openpete_psx_bios_rom_read8 calls that fell in the window. */

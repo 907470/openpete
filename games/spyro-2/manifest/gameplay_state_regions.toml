@@ -19,7 +19,8 @@
 #
 # Row fields beyond the generator's (start/length or the indirect_array
 # keys, mask_offsets/mask_per_element, cd_load_transient, gameplay_neutral,
-# constant_ok): `class` is gameplay | render_scratch | psyq_mirror. No row
+# constant_ok): `class` is gameplay | render_scratch | psyq_mirror |
+# kernel (kernel RAM below 0x10000, not derived from the image). No row
 # is render_scratch yet: no OT or primitive buffer of this game has been
 # located inside the main image (Spyro 2's DR_MODE packets and both games'
 # ordering tables sit in level RAM, outside these rows). A render-side
@@ -267,4 +268,179 @@ start       = 0x80067188
 length      = 0x4
 class       = "psyq_mirror"
 description = "BIOS Exec return address stored by the crt0"
+constant_ok = true
+
+# Kernel RAM (SCPH-1001), seeded at boot as the ROM leaves it at the EXE
+# entry (openpete_psx_bios_seed_ram) and written by the file calls
+# (B(32h), B(33h), B(35h), B(36h)) and A(39h) InitHeap. Every row is a
+# struct extent; the gaps between them are uncompared:
+# - open, the card-event phase's: the event table 0xE028-0xE28F,
+#   InitCard's hook 0xCF0-0xCFB, card driver state 0x7264-0x75CD, the bu
+#   state words 0xB9D0 and 0xB9D8, exception chain slot 1's head
+#   0xE00C-0xE00F (the kernel enqueues the card driver's handler 0x7540
+#   there at a card operation and dequeues it at completion); the
+#   card-wait phase's: the bu broken lists, directory cache and sector
+#   buffers 0xB9E8-0xBE51;
+# - open, written by thunked libraries: B(19h) 0x75D0-0x75D3 and C(03h)
+#   0x91E0-0x91E1 (libetc ResetCallback), exception chain slot 0's head
+#   0xE004-0xE007 (C(03h)) and slot 2's head 0xE014-0xE017 (InitCard,
+#   then libpad PadStartCom's C(02h)), fd 1's buffer and count
+#   0x867C-0x8683 (printf's write(1)), event table entry 0 (libspu
+#   SpuStart);
+# - open, kernel code and ROM-copied data outside these tables
+#   (0x500-0x673, 0x9F4-0x6EDF, 0x7200-0x863F, 0x8908-0x8FFF,
+#   0x9010-0xDFFF, 0xE59C-0xFFFF): a read census of guest loads from
+#   0x0-0xFFFF over the cardless gate run (236 address-width-caller rows,
+#   1766220 loads)
+#   finds 4 game loads there, each once at boot: PC 0x8005C298 (the
+#   C0 exception-handler patch check) reads 0xCA8, PCs 0x8007EEDC and
+#   0x8007EEEC (libcard InitCARD) read 0xCF0 and 0xCF4, PC 0x8007EF70
+#   reads 0x4D98;
+# - carved out, uncompared: thread 0's register save 0xE2A4-0xE337 (the
+#   registers at the last exception; the reference rewrites it from
+#   0xE2A8 on) and the kernel stack 0x84BC-0x85D1 (frames of kernel and
+#   interrupt code): the same census finds 0 game loads in either range.
+
+[[region]]
+name        = "kernel_low_words"
+start       = 0x80000000
+length      = 0x80
+class       = "kernel"
+description = "Exception vector copy (first word 3, as the boot leaves it), the RAM size word at 0x60 and the boot flags at 0x68; card sector 0x3F is written from these bytes"
+constant_ok = true
+
+[[region]]
+name        = "kernel_table_of_tables"
+start       = 0x80000100
+length      = 0x80
+class       = "kernel"
+description = "The kernel table of tables: each table's address and size"
+constant_ok = true
+
+[[region]]
+name        = "kernel_a0_table"
+start       = 0x80000200
+length      = 0x300
+class       = "kernel"
+description = "A0 function table"
+constant_ok = true
+
+[[region]]
+name        = "kernel_c0_table"
+start       = 0x80000674
+length      = 0x80
+class       = "kernel"
+description = "C0 function table"
+constant_ok = true
+
+[[region]]
+name        = "kernel_b0_table"
+start       = 0x80000874
+length      = 0x180
+class       = "kernel"
+description = "B0 function table"
+constant_ok = true
+
+[[region]]
+name        = "kernel_dcb"
+start       = 0x80006EE0
+length      = 0x320
+class       = "kernel"
+description = "Device control blocks (tty, cdrom, bu, 7 free), 10 x 0x50"
+constant_ok = true
+
+[[region]]
+name        = "kernel_errno"
+start       = 0x80008640
+length      = 0x4
+class       = "kernel"
+description = "Kernel errno (B(54h)); 9 at boot"
+constant_ok = true
+
+[[region]]
+name        = "kernel_fcb_8648"
+start       = 0x80008648
+length      = 0x34
+class       = "kernel"
+description = "File control blocks: fd 0 (tty, read) and fd 1 up to its buffer field"
+constant_ok = true
+
+[[region]]
+name        = "kernel_fcb_8684"
+start       = 0x80008684
+length      = 0x284
+class       = "kernel"
+description = "File control blocks from fd 1's offset field to the end of the 16 x 0x2C table (file 2 holds the boot EXE's residue until a bu open takes it)"
+constant_ok = true
+
+[[region]]
+name        = "kernel_init_heap"
+start       = 0x80009000
+length      = 0x10
+class       = "kernel"
+description = "A(39h) InitHeap's start, size, end and zero words"
+constant_ok = true
+
+[[region]]
+name        = "kernel_heap_e000"
+start       = 0x8000E000
+length      = 0x4
+class       = "kernel"
+description = "Kernel heap allocation header before the exception chain"
+constant_ok = true
+
+[[region]]
+name        = "kernel_excb_e008"
+start       = 0x8000E008
+length      = 0x4
+class       = "kernel"
+description = "Exception chain: slot 0's second word"
+constant_ok = true
+
+[[region]]
+name        = "kernel_excb_e010"
+start       = 0x8000E010
+length      = 0x4
+class       = "kernel"
+description = "Exception chain: slot 1's second word"
+constant_ok = true
+
+[[region]]
+name        = "kernel_excb_e018"
+start       = 0x8000E018
+length      = 0xC
+class       = "kernel"
+description = "Exception chain: slot 2's second word and slot 3"
+constant_ok = true
+
+[[region]]
+name        = "kernel_heap_e024"
+start       = 0x8000E024
+length      = 0x4
+class       = "kernel"
+description = "Kernel heap allocation header before the event table"
+constant_ok = true
+
+[[region]]
+name        = "kernel_heap_pcb_e290"
+start       = 0x8000E290
+length      = 0xC
+class       = "kernel"
+description = "Allocation header, process control block (current thread), allocation header"
+constant_ok = true
+
+[[region]]
+name        = "kernel_tcb_e29c"
+start       = 0x8000E29C
+length      = 0x8
+class       = "kernel"
+description = "Thread 0 status and the word before its register save"
+constant_ok = true
+
+[[region]]
+name        = "kernel_tcb_e338"
+start       = 0x8000E338
+length      = 0x264
+class       = "kernel"
+description = "Thread 0 after the register save, and threads 1-3 (4 x 0xC0 from 0xE29C)"
 constant_ok = true

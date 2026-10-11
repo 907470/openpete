@@ -107,6 +107,7 @@ add_library(openpete_core STATIC
     psx/boot.c
     psx/dispatch.c
     psx/psx_bios.c
+    psx/psx_bios_kernel_seed.c
     psx/cdrom_mmio.c
     psx/disc_cache.c
     psx/disc_image.c

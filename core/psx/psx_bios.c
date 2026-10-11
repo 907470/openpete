@@ -6,11 +6,18 @@
  * 0xC0, which resolves to no translated function, because the BIOS is not
  * part of the recompiled image.
  *
- * PSYQ's libraries mostly wrap these services, and those wrappers are
- * intercepted by name in the thunk layer, so a game that reaches the memory
- * card through libmcrd never arrives here. A game that drives the BIOS card
- * API itself does: it opens an event on the HwCARD class, issues frame reads
- * and writes, and waits for the event its handler receives on completion.
+ * Several PSYQ libraries that wrap these services are intercepted by name in
+ * the thunk layer (Spyro 1's libmcrd among them), so their calls never
+ * arrive here. Every library that runs recompiled does arrive: Spyro 2's
+ * and Spyro 3's libmcrd open events on the HwCARD and bu classes, issue
+ * frame commands, and reach the card's files through the kernel's file
+ * calls (B(32h) open, B(33h) lseek, B(35h) write, B(36h) close) on the bu
+ * device.
+ *
+ * The kernel's file table, errno and the tables around them live in guest
+ * RAM at the SCPH-1001 addresses, seeded at boot as the ROM leaves them
+ * (openpete_psx_bios_seed_ram), and the file calls read and write them
+ * there, so the game and the oracle see the kernel's bytes.
  *
  * The card frames come from the same host-backed images the libmcrd surface
  * uses (core/host/memcard.c), so both routes see one card.
@@ -25,6 +32,8 @@
 #include "openpete_psx.h"
 #include "openpete_recomp_module.h"
 #include "openpete_psxtrace.h"
+#include "game_extras.h"
+#include "psx_bios_kernel_seed.h"
 
 /* Event classes and specs from libapi.h. */
 #define EV_CLASS_CARD   0xF0000011u   /* HwCARD */
@@ -308,6 +317,286 @@ void openpete_psx_bios_vbl(CPUState* cpu) {
     mc_start(cpu, port);
 }
 
+/* The kernel's file layer, at the SCPH-1001 addresses: errno at 0x8640 and
+ * 16 file control blocks of 0x2C bytes from 0x8648, the fd being the
+ * index (the ROM's getFileFromHandle, RAM 0x30C8). The calls follow the
+ * ROM's RAM-resident code, B0 entries 0x32 open (0x2958), 0x33 lseek
+ * (0x2A64), 0x35 write (0x2C94), 0x36 close (0x2E00), 0x54 _get_errno
+ * (0x2EEC) and 0x55 _get_error (0x2E98), whose control flow OpenBIOS
+ * fileio/stdio.c psxopen, psxlseek, psxwrite and psxclose reproduce. */
+#define K_ERRNO        0x8640u
+#define K_FCB          0x8648u
+#define K_FCB_SIZE     0x2Cu
+#define K_FCB_COUNT    16u
+#define FCB_FLAGS      0x00u   /* the open mode; 0 marks the entry free */
+#define FCB_DEVICE_ID  0x04u   /* the digits after the device name: bu00 0, bu10 0x10 */
+#define FCB_BUFFER     0x08u
+#define FCB_COUNT      0x0Cu
+#define FCB_OFFSET     0x10u
+#define FCB_DEV_FLAGS  0x14u   /* the device's DCB flags */
+#define FCB_ERRNO      0x18u
+#define FCB_DCB        0x1Cu   /* the device control block */
+#define FCB_LENGTH     0x20u
+#define FCB_LBA        0x24u   /* bu: the first directory index */
+#define FCB_FD         0x28u
+#define DCB_FLAGS      0x04u
+#define DT_FS          0x10u   /* PSXDTTYPE_FS: read and write go to the device */
+#define DT_BLOCK       0x04u
+/* The device control blocks the ROM installs, from 0x6EE0, 0x50 each. */
+#define K_DCB_TTY      0x6EE0u
+#define K_DCB_CDROM    0x6F30u
+#define K_DCB_BU       0x6F80u
+/* The bu device's directory cache: 15 entries of 32 bytes per port, port 1
+ * 0x1E0 after port 0 (allocation state word, file size word, next-block
+ * half, name), filled by _bu_init and _card_load (OpenBIOS
+ * card/backupunit.h struct BuDirectoryEntry; the SCPH-1001 address is the
+ * one its _card_load fills). */
+#define K_BU_DIR       0xBA88u
+#define K_BU_DIR_PORT  0x1E0u
+#define BU_DIR_ENTRY   0x20u
+#define BU_DIR_FIRST   0x51u   /* a file's first block */
+#define PSXF_CREAT     0x0200u
+#define PSXF_ASYNC     0x8000u
+#define PSX_ENOENT     2u
+#define PSX_EBADF      9u
+#define PSX_EBUSY      16u
+#define PSX_ENODEV     19u
+#define PSX_EINVAL     22u
+#define PSX_EMFILE     24u
+
+/** @brief Read the guest word at a kernel RAM address.
+ *
+ * @param addr Guest address; its low 21 bits select the word.
+ * @return The word. */
+static uint32_t kw(uint32_t addr) {
+    uint32_t v;
+    memcpy(&v, openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 1u)), 4);
+    return v;
+}
+
+/** @brief Write the guest word at a kernel RAM address.
+ *
+ * @param addr Guest address; its low 21 bits select the word.
+ * @param v The value. */
+static void kw_set(uint32_t addr, uint32_t v) {
+    memcpy(openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 1u)), &v, 4);
+}
+
+/** @brief Return the file control block of an fd, or 0 when the fd is outside 0-15.
+ *
+ * @param fd The fd as the game passed it.
+ * @return The block's RAM address, or 0. */
+static uint32_t fcb_of(uint32_t fd) {
+    return (int32_t)fd >= 0 && fd < K_FCB_COUNT ? K_FCB + fd * K_FCB_SIZE : 0u;
+}
+
+/** @brief Return the open file control block of an fd, setting errno to EBADF when there is none.
+ *
+ * @param fd The fd as the game passed it.
+ * @return The block's RAM address, or 0 when the fd names no open file. */
+static uint32_t fcb_open(uint32_t fd) {
+    uint32_t f = fcb_of(fd);
+    if (!f || kw(f + FCB_FLAGS) == 0u) { kw_set(K_ERRNO, PSX_EBADF); return 0u; }
+    return f;
+}
+
+/** @brief Test a bu directory name against an open pattern whose question marks match any character.
+ *
+ * OpenBIOS card/device.c patternMatch: every name character must match the
+ * pattern's, and the pattern may run on only with a '?'.
+ * @param name The entry's name, NUL-terminated within @p max bytes.
+ * @param max Bytes of @p name.
+ * @param pat The pattern.
+ * @return 1 on a match. */
+static int bu_name_match(const char* name, size_t max, const char* pat) {
+    for (size_t i = 0; i < max && name[i]; i++, pat++)
+        if (*pat != '?' && *pat != name[i]) return 0;
+    return !*pat || *pat == '?';
+}
+
+/** @brief Run the bu device's open on a file control block (OpenBIOS card/device.c dev_bu_open).
+ *
+ * The block's errno starts as EBUSY, the value a refused open leaves: a port
+ * whose bu operation is in flight refuses. The open searches the cached
+ * directory for the file's first block; the synchronous open's sector-0
+ * read (buDevInit) and O_CREAT's allocation and directory write-back wait
+ * on card operations inside the call, which this gate does not model, so a
+ * synchronous open searches the cache as an asynchronous one does and
+ * O_CREAT is refused with EBUSY. A miss leaves ENOENT; a hit sets the first
+ * index, offset 0, errno 0 and the length from the entry.
+ * @param f The file control block.
+ * @param path The file name after "buXX:".
+ * @param mode The open mode.
+ * @return 0 on success, 1 on failure (the block's errno says why). */
+static int bu_open(uint32_t f, const char* path, uint32_t mode) {
+    int port = mc_port(kw(f + FCB_DEVICE_ID));
+    kw_set(f + FCB_ERRNO, PSX_EBUSY);
+    if (s_mc.bu_op[port]) return 1;
+    if (mode & PSXF_CREAT) {
+        OPL_WARN_F("bios", "bu open with O_CREAT (\"%s\", mode 0x%X) is not modelled; refused", path, mode);
+        return 1;
+    }
+    const uint8_t* ram = openpete_psx_get_ram();
+    for (uint32_t i = 0; i < 15u; i++) {
+        uint32_t e = K_BU_DIR + (uint32_t)port * K_BU_DIR_PORT + i * BU_DIR_ENTRY;
+        if (kw(e) != BU_DIR_FIRST) continue;
+        const char* name = (const char*)ram + e + 0xA;
+        if (!name[0] || !bu_name_match(name, 22, path)) continue;
+        kw_set(f + FCB_LBA, i);
+        kw_set(f + FCB_OFFSET, 0u);
+        kw_set(f + FCB_ERRNO, 0u);
+        kw_set(f + FCB_LENGTH, kw(e + 4));
+        return 0;
+    }
+    kw_set(f + FCB_ERRNO, PSX_ENOENT);
+    return 1;
+}
+
+/** @brief B(32h) open(path, mode) over the file table in guest RAM.
+ *
+ * Takes the first free block (EMFILE when none), splits "name[digits]:file"
+ * into the device and its id (the digits read as hex), and runs the
+ * device's open with the block's mode, id, device and device flags set.
+ * Only the bu device is served; another device name fails with ENODEV.
+ * @param cpu Guest CPU; a0 the path, a1 the mode; v0 receives the fd or -1. */
+static void bios_open(CPUState* cpu) {
+    uint32_t f = 0u;
+    for (uint32_t fd = 0; fd < K_FCB_COUNT && !f; fd++)
+        if (kw(K_FCB + fd * K_FCB_SIZE + FCB_FLAGS) == 0u) f = K_FCB + fd * K_FCB_SIZE;
+    if (!f) { kw_set(K_ERRNO, PSX_EMFILE); cpu->v0 = 0xFFFFFFFFu; return; }
+    char path[64] = { 0 };
+    for (uint32_t i = 0; i + 1 < sizeof(path); i++) {
+        const char* c = (const char*)guest_ptr(cpu->a0 + i, 1);
+        if (!c || !*c) break;
+        path[i] = *c;
+    }
+    const char* p = path;
+    while (*p == ' ') p++;
+    char dev[32] = { 0 };
+    size_t n = 0;
+    for (; *p && *p != ':' && n + 1 < sizeof(dev); p++) dev[n++] = *p;
+    uint32_t id = 0u;
+    if (*p == ':') {
+        p++;
+        char* d = dev;
+        while (*d && (*d < '0' || *d > '9')) d++;
+        for (char* q = d; *q; q++) id = id * 0x10u + (uint32_t)((*q >= '0' && *q <= '9' ? *q : '0') - '0');
+        *d = 0;
+    }
+    if (strcmp(dev, "bu") != 0) {
+        OPL_WARN_F("bios", "open(\"%s\"): device \"%s\" is not modelled", path, dev);
+        kw_set(K_ERRNO, PSX_ENODEV);
+        kw_set(f + FCB_FLAGS, 0u);
+        cpu->v0 = 0xFFFFFFFFu;
+        return;
+    }
+    kw_set(f + FCB_FLAGS, cpu->a1);
+    kw_set(f + FCB_DEVICE_ID, id);
+    kw_set(f + FCB_DCB, K_DCB_BU);
+    kw_set(f + FCB_DEV_FLAGS, kw(K_DCB_BU + DCB_FLAGS));
+    if (bu_open(f, p, cpu->a1)) {
+        kw_set(K_ERRNO, kw(f + FCB_ERRNO));
+        kw_set(f + FCB_FLAGS, 0u);
+        cpu->v0 = 0xFFFFFFFFu;
+        return;
+    }
+    uint32_t fd = (f - K_FCB) / K_FCB_SIZE;
+    kw_set(f + FCB_OFFSET, 0u);
+    kw_set(f + FCB_FD, fd);
+    cpu->v0 = fd;
+}
+
+/** @brief B(33h) lseek(fd, offset, whence): set (0), add (1) or keep (2) the offset; no I/O.
+ *
+ * Another whence sets errno and the block's errno to EINVAL and returns -1.
+ * @param cpu Guest CPU; a0..a2 the arguments; v0 receives the offset or -1. */
+static void bios_lseek(CPUState* cpu) {
+    uint32_t f = fcb_open(cpu->a0);
+    cpu->v0 = 0xFFFFFFFFu;
+    if (!f) return;
+    if (cpu->a2 == 0u) kw_set(f + FCB_OFFSET, cpu->a1);
+    else if (cpu->a2 == 1u) kw_set(f + FCB_OFFSET, kw(f + FCB_OFFSET) + cpu->a1);
+    else if (cpu->a2 != 2u) {
+        kw_set(K_ERRNO, PSX_EINVAL);
+        kw_set(f + FCB_ERRNO, PSX_EINVAL);
+        return;
+    }
+    cpu->v0 = kw(f + FCB_OFFSET);
+}
+
+/** @brief B(35h) write(fd, buf, n) on a character device, the tty fds 0 and 1.
+ *
+ * The block records the buffer and count, and the tty device's action (the
+ * ROM's dummy console, 0xBFC06FDC) returns 0, so the offset and errno stay
+ * and the call returns 0. A write to a file-system device (bu) is not
+ * modelled here.
+ * @param cpu Guest CPU; a0..a2 the arguments; v0 receives the result.
+ * @return 1 when handled, 0 for a file-system device. */
+static int bios_write(CPUState* cpu) {
+    uint32_t f = fcb_open(cpu->a0);
+    if (!f) { cpu->v0 = 0xFFFFFFFFu; return 1; }
+    if (kw(f + FCB_DEV_FLAGS) & DT_FS) return 0;
+    kw_set(f + FCB_BUFFER, cpu->a1);
+    kw_set(f + FCB_COUNT, cpu->a2);
+    if (kw(kw(f + FCB_DCB) + DCB_FLAGS) & DT_BLOCK) {
+        OPL_WARN_F("bios", "write to a block device on fd %u is not modelled", cpu->a0);
+    }
+    cpu->v0 = 0u;
+    return 1;
+}
+
+/** @brief B(36h) close(fd): run the device's close, free the block, return the fd.
+ *
+ * The bu device refuses while its port has a bu operation in flight (the
+ * block's errno is then the caller's errno and the call returns -1); the
+ * tty device's close succeeds. The block is freed either way.
+ * @param cpu Guest CPU; a0 the fd; v0 receives the fd or -1. */
+static void bios_close(CPUState* cpu) {
+    uint32_t f = fcb_open(cpu->a0);
+    if (!f) { cpu->v0 = 0xFFFFFFFFu; return; }
+    int busy = kw(f + FCB_DCB) == K_DCB_BU && s_mc.bu_op[mc_port(kw(f + FCB_DEVICE_ID))];
+    kw_set(f + FCB_FLAGS, 0u);
+    if (busy) { kw_set(K_ERRNO, kw(f + FCB_ERRNO)); cpu->v0 = 0xFFFFFFFFu; return; }
+    cpu->v0 = cpu->a0;
+}
+
+/** @brief B(55h) _get_error(fd): the file's errno, or -1 with errno EBADF when the fd names no open file.
+ *
+ * @param cpu Guest CPU; a0 the fd; v0 receives the result. */
+static void bios_get_error(CPUState* cpu) {
+    uint32_t f = fcb_open(cpu->a0);
+    cpu->v0 = f ? kw(f + FCB_ERRNO) : 0xFFFFFFFFu;
+}
+
+/** @brief A(39h) InitHeap(addr, size): record the heap and clear its first word.
+ *
+ * The SCPH-1001 routine (ROM 0xBFC01E24) stores the start at 0x9000, the
+ * size at 0x9004, the end addr + (size & ~3) + 4 at 0x9008 and 0 at
+ * 0x900C, and clears the word at addr; it sets no return value. OpenBIOS
+ * kernel/alloc.c user_initheap keeps a different heap layout.
+ * @param cpu Guest CPU; a0 the heap start, a1 its size. */
+static void bios_init_heap(CPUState* cpu) {
+    kw_set(0x9000u, cpu->a0);
+    void* head = guest_ptr(cpu->a0, 4);
+    if (head) memset(head, 0, 4);
+    kw_set(0x9008u, cpu->a0 + (cpu->a1 & ~3u) + 4u);
+    kw_set(0x9004u, cpu->a1);
+    kw_set(0x900Cu, 0u);
+}
+
+/* The words of file 2 the boot leaves from opening the disc's EXE through
+ * cdrom: (flags 0 once closed): the uninitialised device id the ROM's path
+ * split writes for a device name without digits, the offset and length
+ * (the EXE's size in whole sectors) and the EXE's first sector, read from
+ * the reference's RAM (Spyro 2 and 3 at the EXE entry, Spyro 1 at VBL 481,
+ * before any file call). */
+typedef struct { const char* game; uint32_t device_id, length, lba; } boot_file_t;
+static const boot_file_t s_boot_files[] = {
+    { "spyro-1", 0x6C0D45FCu, 0x66000u, 0xD273u },
+    { "spyro-2", 0x0001D4C1u, 0x57800u, 0x18u },
+    { "spyro-3", 0x101489A4u, 0x5D000u, 0x18u },
+};
+
 /* Kernel low-RAM words; see openpete_memcard.h. */
 void openpete_psx_bios_seed_ram(uint8_t* ram) {
     static const uint32_t vec80[4] = { 0x3C1A0000u, 0x275A0C80u, 0x03400008u, 0u };
@@ -318,17 +607,36 @@ void openpete_psx_bios_seed_ram(uint8_t* ram) {
     };
     memcpy(ram + 0x00u, vec80, sizeof(vec80));
     memcpy(ram + 0x80u, vec80, sizeof(vec80));
+    const uint32_t word0 = 3u;
+    memcpy(ram + 0x00u, &word0, 4);
     memcpy(ram + 0xA0u, call[0], sizeof(call[0]));
     memcpy(ram + 0xB0u, call[1], sizeof(call[1]));
     memcpy(ram + 0xC0u, call[2], sizeof(call[2]));
     const uint32_t ram_mb = 2u, boot_flags = 0xFFu;
     memcpy(ram + 0x60u, &ram_mb, 4);
     memcpy(ram + 0x68u, &boot_flags, 4);
-    static const uint32_t c0_6 = 0xC80u, b0_5b = 0x43D0u;
+    for (unsigned i = 0; i < g_psx_kernel_seed_count; i++) {
+        const psx_kernel_seed_run_t* r = &g_psx_kernel_seed[i];
+        memcpy(ram + r->addr, r->words, r->count * 4u);
+    }
+    const char* game = game_get_id();
+    for (size_t i = 0; game && i < sizeof(s_boot_files) / sizeof(s_boot_files[0]); i++) {
+        const boot_file_t* b = &s_boot_files[i];
+        if (strcmp(game, b->game) != 0) continue;
+        const uint32_t f2 = K_FCB + 2u * K_FCB_SIZE;
+        memcpy(ram + f2 + FCB_DEVICE_ID, &b->device_id, 4);
+        memcpy(ram + f2 + FCB_OFFSET, &b->length, 4);
+        memcpy(ram + f2 + FCB_LENGTH, &b->length, 4);
+        memcpy(ram + f2 + FCB_LBA, &b->lba, 4);
+    }
     static const uint32_t slot_pair[2] = { 0x3C020000u, 0x2442641Cu };
-    memcpy(ram + 0x68Cu, &c0_6, 4);
-    memcpy(ram + 0x9E0u, &b0_5b, 4);
     memcpy(ram + 0xCF0u, slot_pair, sizeof(slot_pair));
+}
+
+void openpete_psx_bios_reseed_ram(uint8_t* ram) {
+    uint32_t tables;
+    memcpy(&tables, ram + 0x100u, 4);
+    if (tables == 0u) openpete_psx_bios_seed_ram(ram);
 }
 
 /* The identification block of the SCPH-1001 ROM, the bytes a game reads
@@ -359,15 +667,19 @@ int openpete_psx_bios_rom_read8(uint32_t phys, uint8_t* out) {
 }
 uint32_t openpete_psx_bios_rom_reads(void) { return s_rom_reads; }
 
-/** @brief Handle a call through the A0 table: FlushCache, _bu_init, _card_info and _card_load.
+/** @brief Handle a call through the A0 table: InitHeap, FlushCache, _bu_init, _card_info and _card_load.
  *
- * FlushCache and _bu_init return 0. _card_info and _card_load queue an
+ * InitHeap records the heap in kernel RAM. FlushCache and _bu_init return
+ * 0. _card_info and _card_load queue an
  * info command through the bu layer and return whether it was queued.
  * @param cpu Guest CPU; a0 carries the device id and v0 receives the result.
  * @param fn Function number.
  * @return 1 when the function is implemented, 0 otherwise. */
 static int bios_a0(CPUState* cpu, uint32_t fn) {
     switch (fn) {
+    case 0x39:      /* InitHeap(addr, size) */
+        bios_init_heap(cpu);
+        return 1;
     case 0x44:      /* FlushCache */
     case 0x70:      /* _bu_init */
         cpu->v0 = 0u;
@@ -386,8 +698,9 @@ static int bios_a0(CPUState* cpu, uint32_t fn) {
  * Implements OpenEvent, CloseEvent, WaitEvent, TestEvent, EnableEvent,
  * DisableEvent, DeliverEvent and UnDeliverEvent over the event table, and
  * InitCARD2, StartCARD2, StopCARD2, _new_card, ChangeClearPAD, GetC0Table,
- * GetB0Table, _card_write, _card_read, _get_errno, _get_error, _card_chan,
- * _card_status and _card_wait over the card driver state. WaitEvent
+ * GetB0Table, _card_write, _card_read, _card_chan, _card_status and
+ * _card_wait over the card driver state, and open, lseek, write (tty fds),
+ * close, _get_errno and _get_error over the file table in guest RAM. WaitEvent
  * returns at once with the latch cleared: the gate cannot suspend the guest,
  * and a queued card command completes in a later vblank step.
  * @param cpu Guest CPU; the argument registers are read and v0 receives the
@@ -494,9 +807,22 @@ static int bios_b0(CPUState* cpu, uint32_t fn) {
     case 0x4F:      /* _card_read(chan, frame, buf) */
         cpu->v0 = mc_queue(cpu->a0, MC_OP_READ, cpu->a1, cpu->a2, 0);
         return 1;
-    case 0x54:      /* _get_errno */
-    case 0x55:      /* _get_error */
-        cpu->v0 = 0u;
+    case 0x32:      /* open(path, mode) */
+        bios_open(cpu);
+        return 1;
+    case 0x33:      /* lseek(fd, offset, whence) */
+        bios_lseek(cpu);
+        return 1;
+    case 0x35:      /* write(fd, buf, n): the tty fds; a bu write is unmodelled */
+        return bios_write(cpu);
+    case 0x36:      /* close(fd) */
+        bios_close(cpu);
+        return 1;
+    case 0x54:      /* _get_errno: the kernel's errno word */
+        cpu->v0 = kw(K_ERRNO);
+        return 1;
+    case 0x55:      /* _get_error(fd) */
+        bios_get_error(cpu);
         return 1;
     case 0x58:      /* _card_chan: the device id of the last finished command */
         cpu->v0 = s_mc.device[s_mc_last_port];

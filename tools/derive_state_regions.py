@@ -30,7 +30,7 @@ proves the assembled table hashes every byte the table it replaces hashed.
 re-derives the direct rows from the manifest's own `[derivation]` table
 (`named`, `overlay`, `min_row`: the arguments above) against the current
 expect file and fails (exit 2) when the manifest's direct rows (every row
-with a start/length whose class is not psyq_mirror) differ in extent from
+with a start/length whose class is neither psyq_mirror nor kernel) differ in extent from
 the derivation, or when the derivation drops a fragment. An expect row
 deleted by a fix therefore forces the manifest to be re-derived in the
 same change (ctest `state_regions_derivation_<game>`).
@@ -126,7 +126,7 @@ def check_manifest(path: Path) -> int:
                 cur = {}
     manifest = {(int(r["start"]), int(r["length"])) for r in man.get("region", [])
                 if "start" in r and r.get("kind", "direct") == "direct"
-                and r.get("class") != "psyq_mirror"}
+                and r.get("class") not in ("psyq_mirror", "kernel")}
     missing = sorted(derived - manifest)
     extra = sorted(manifest - derived)
     for s0, n in missing:

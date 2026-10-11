@@ -135,7 +135,7 @@ def flatten_regions(regions: list) -> list:
             # Ratchet on the records a tolerated row diverges on; only a
             # cd_load_transient or gameplay_neutral row carries one.
             "diverge_baseline": int(r.get("diverge_baseline", -1)),
-            # gameplay | render_scratch | psyq_mirror; manifest annotation,
+            # gameplay | render_scratch | psyq_mirror | kernel; manifest annotation,
             # not part of the table.
             "cls": r.get("class"),
         })
@@ -148,7 +148,7 @@ FLAT_FIELD_COUNT = 8
 NAME_MAX_BYTES = 63
 
 
-ROW_CLASSES = ("gameplay", "render_scratch", "psyq_mirror")
+ROW_CLASSES = ("gameplay", "render_scratch", "psyq_mirror", "kernel")
 
 
 def check_names(rows: list) -> None:
