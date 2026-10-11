@@ -82,6 +82,56 @@ std::string CodeGenerator::emit_channel_replace_call(const ChannelSite& cs,
                        dest, cs.symbol, channel_arg_list(cs, instr));
 }
 
+void CodeGenerator::note_label(uint32_t label) {
+    if (facts_.empty()) return;
+    EmittedRegion r;
+    r.label = label;
+    facts_.back().regions.push_back(std::move(r));
+}
+
+void CodeGenerator::note_instruction(uint32_t instr) {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    EmittedRegion& r = facts_.back().regions.back();
+    uint32_t op = (instr >> 26) & 0x3F;
+    uint32_t fn = instr & 0x3F;
+    r.insns++;
+    // lb lh lwl lw lbu lhu lwr, lwc2; a load to $zero is emitted as a nop
+    bool zero_dest = config_.optimize_zero_reg && get_rt(instr) == 0;
+    if ((op >= 0x20 && op <= 0x26 && !zero_dest) || op == 0x32) r.loads = true;
+    // sb sh swl sw swr, swc2
+    if ((op >= 0x28 && op <= 0x2B) || op == 0x2E || op == 0x3A) r.stores = true;
+    // syscall -> psx_syscall; jr <reg> outside the exit position -> call_by_address
+    if (op == 0x00 && (fn == 0x0C || (fn == 0x08 && get_rs(instr) != 31)))
+        r.opaque_call = true;
+}
+
+void CodeGenerator::note_goto(uint32_t target, GotoArm arm) {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().gotos.push_back({target, arm});
+}
+
+void CodeGenerator::note_call(uint32_t target) {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().callees.push_back(target);
+}
+
+void CodeGenerator::note_opaque_call() {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().opaque_call = true;
+}
+
+void CodeGenerator::note_foreign_call(uint32_t target) {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().foreign.push_back(target);
+}
+
+void CodeGenerator::note_call_to(uint32_t target) {
+    if (external_name_for(target) || manual_name_for(target))
+        note_opaque_call();
+    else
+        note_call(target);
+}
+
 std::string CodeGenerator::translate_addiu(uint32_t instr) {
     uint32_t rs = get_rs(instr);
     uint32_t rt = get_rt(instr);
@@ -1731,6 +1781,7 @@ std::string CodeGenerator::translate_basic_block(
     // (MinGW) treats it as an error; GCC 11 only warns. The mid-block
     // branch-target emitter further down already does this.
     ss << fmt::format("block_{:08X}:;\n", block.start_addr);
+    note_label(block.start_addr);
 
     // Translate each instruction in the block
     uint32_t addr = block.start_addr;
@@ -1773,6 +1824,7 @@ std::string CodeGenerator::translate_basic_block(
         // Emit inline label for mid-block jump table targets
         if (addr != block.start_addr && extra_labels_.count(addr)) {
             ss << fmt::format("block_{:08X}:;\n", addr);
+            note_label(addr);
         }
 
         // Instruction-level annotation (skipped at function start — already shown above signature)
@@ -1784,6 +1836,7 @@ std::string CodeGenerator::translate_basic_block(
 
         if (!is_cf) {
             ss << translate_instruction(addr, instr) << "\n";
+            note_instruction(instr);
         } else {
             // Control flow is handled at block exit
             if (addr == exit_branch_addr) {
@@ -1801,6 +1854,7 @@ std::string CodeGenerator::translate_basic_block(
                             ss << config_.indent << "/* delay slot (likely) - conditional execution */\n";
                             ss << config_.indent << "if (" << generate_branch_condition(block.exit_instr.instruction) << ") {\n";
                             ss << config_.indent << translate_instruction(delay_slot_addr, delay_instr) << "\n";
+                            note_instruction(delay_instr);
                             ss << config_.indent << "}\n";
                         } else {
                             // Normal delay slot - always executes.
@@ -1816,6 +1870,7 @@ std::string CodeGenerator::translate_basic_block(
                             }
                             ss << config_.indent << "/* delay slot (always executes) */\n";
                             ss << translate_instruction(delay_slot_addr, delay_instr) << "\n";
+                            note_instruction(delay_instr);
                         }
                     }
                 }
@@ -1845,9 +1900,11 @@ std::string CodeGenerator::translate_basic_block(
                         ss << config_.indent << "if (" << condition << ") {\n";
                         ss << config_.indent << config_.indent
                            << fmt::format("goto block_{:08X};  /* taken */\n", block.successors[0]);
+                        note_goto(block.successors[0], GotoArm::Taken);
                         ss << config_.indent << "} else {\n";
                         ss << config_.indent << config_.indent
                            << fmt::format("goto block_{:08X};  /* not taken */\n", block.successors[1]);
+                        note_goto(block.successors[1], GotoArm::NotTaken);
                         ss << config_.indent << "}\n";
                     } else {
                         // Split-function: one or both branch targets are outside
@@ -1862,23 +1919,29 @@ std::string CodeGenerator::translate_basic_block(
                         if (target_in) {
                             ss << config_.indent << config_.indent
                                << fmt::format("goto block_{:08X};  /* taken */\n", branch_target);
+                            note_goto(branch_target, GotoArm::Taken);
                         } else if (known_functions_.count(branch_target)) {
                             ss << config_.indent << config_.indent
                                << fmt::format("{}{:08X}(cpu); return;  /* taken: split piece */\n", config_.func_prefix, branch_target);
+                            note_call(branch_target);
                         } else {
                             ss << config_.indent << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* taken: split (mid-func) */\n", branch_target);
+                            note_foreign_call(branch_target);
                         }
                         ss << config_.indent << "} else {\n";
                         if (fallthru_in) {
                             ss << config_.indent << config_.indent
                                << fmt::format("goto block_{:08X};  /* not taken */\n", fall_through_addr);
+                            note_goto(fall_through_addr, GotoArm::NotTaken);
                         } else if (known_functions_.count(fall_through_addr)) {
                             ss << config_.indent << config_.indent
                                << fmt::format("{}{:08X}(cpu); return;  /* not taken: split piece */\n", config_.func_prefix, fall_through_addr);
+                            note_call(fall_through_addr);
                         } else {
                             ss << config_.indent << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* not taken: split (mid-func) */\n", fall_through_addr);
+                            note_foreign_call(fall_through_addr);
                         }
                         ss << config_.indent << "}\n";
                     }
@@ -1888,22 +1951,27 @@ std::string CodeGenerator::translate_basic_block(
                     if (!block.successors.empty()) {
                         ss << config_.indent
                            << fmt::format("goto block_{:08X};  /* j */\n", block.successors[0]);
+                        note_goto(block.successors[0], GotoArm::Jump);
                     } else if (jt != 0 && external_name_for(jt)) {
                         ss << config_.indent
                            << fmt::format("{}(cpu); return;  /* j -> external */\n",
                                           *external_name_for(jt));
+                        note_opaque_call();
                     } else if (jt != 0 && manual_name_for(jt)) {
                         ss << config_.indent
                            << fmt::format("{}(cpu); return;  /* j -> manual */\n",
                                           *manual_name_for(jt));
+                        note_opaque_call();
                     } else if (jt != 0 && known_functions_.count(jt)) {
                         // Jump target is out-of-function and is a known function start
                         ss << config_.indent
                            << fmt::format("{}{:08X}(cpu); return;  /* j to split piece */\n", config_.func_prefix, jt);
+                        note_call(jt);
                     } else if (jt != 0) {
                         // Jump target is a mid-function address — dispatch dynamically
                         ss << config_.indent
                            << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* j to split (mid-func) */\n", jt);
+                        note_foreign_call(jt);
                     }
                 } else if (block.exit_instr.type == ControlFlowType::Return) {
                     // Return instruction
@@ -2091,24 +2159,30 @@ std::string CodeGenerator::translate_basic_block(
                                 if (cfg.blocks.count(t) || extra_labels_.count(t)) {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: goto block_{:08X};\n", i, t);
+                                    note_goto(t, GotoArm::Case);
                                 } else if (auto* ext = external_name_for(t)) {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: {}(cpu); return;\n", i, *ext);
+                                    note_opaque_call();
                                 } else if (auto* man = manual_name_for(t)) {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: {}(cpu); return;\n", i, *man);
+                                    note_opaque_call();
                                 } else if (known_functions_.count(t)) {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: {}{:08X}(cpu); return;\n",
                                         i, config_.func_prefix, t);
+                                    note_call(t);
                                 } else {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: call_by_address(cpu, 0x{:08X}u); return;\n", i, t);
+                                    note_foreign_call(t);
                                 }
                             }
                             ss << config_.indent << fmt::format(
                                 "    default: call_by_address(cpu, {}); return;  /* out-of-range index */\n",
                                 reg_name(jr_rs));
+                            note_opaque_call();
                             ss << config_.indent << "}\n";
                             emitted_switch = true;
                         }
@@ -2131,8 +2205,10 @@ std::string CodeGenerator::translate_basic_block(
                             ss << config_.indent << fmt::format("switch ({}) {{\n", reg_name(jr_rs));
                             for (uint32_t t : targets) {
                                 ss << config_.indent << fmt::format("    case 0x{:08X}u: goto block_{:08X};\n", t, t);
+                                note_goto(t, GotoArm::Case);
                             }
                             ss << config_.indent << "    default: call_by_address(cpu, " << reg_name(jr_rs) << "); return;\n";
+                            note_opaque_call();
                             ss << config_.indent << "}\n";
                             emitted_switch = true;
                         }
@@ -2141,6 +2217,7 @@ std::string CodeGenerator::translate_basic_block(
                         // BIOS call or unrecognised indirect jump
                         ss << config_.indent << fmt::format("call_by_address(cpu, {});  /* jr {} */\n",
                                                             reg_name(jr_rs), reg_name(jr_rs));
+                        note_opaque_call();
                         ss << config_.indent << "return;\n";
                     }
                     }  // end of !jr_is_saved_ra branch
@@ -2150,16 +2227,21 @@ std::string CodeGenerator::translate_basic_block(
                     uint32_t target = block.exit_instr.target;
                     if (auto* ext = external_name_for(target)) {
                         ss << config_.indent << fmt::format("{}(cpu);  /* jal -> external */\n", *ext);
+                        note_opaque_call();
                     } else if (auto* man = manual_name_for(target)) {
                         ss << config_.indent << fmt::format("{}(cpu);  /* jal -> manual */\n", *man);
+                        note_opaque_call();
                     } else if (known_functions_.count(target) > 0) {
                         ss << config_.indent << fmt::format("{}{:08X}(cpu);  /* jal */\n", config_.func_prefix, target);
+                        note_call(target);
                     } else {
                         ss << config_.indent << fmt::format("call_by_address(cpu, 0x{:08X}u);  /* external jal */\n", target);
+                        note_foreign_call(target);
                     }
                     if (!block.successors.empty()) {
                         ss << config_.indent
                            << fmt::format("goto block_{:08X};  /* continue after call */\n", block.successors[0]);
+                        note_goto(block.successors[0], GotoArm::Continue);
                     } else {
                         // Split-function: JAL continuation is outside this function piece.
                         // Tail-call to the continuation piece (at exit_addr + 8, past delay slot).
@@ -2167,15 +2249,19 @@ std::string CodeGenerator::translate_basic_block(
                         if (auto* ext = external_name_for(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("{}(cpu); return;  /* jal cont: external */\n", *ext);
+                            note_opaque_call();
                         } else if (auto* man = manual_name_for(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("{}(cpu); return;  /* jal cont: manual */\n", *man);
+                            note_opaque_call();
                         } else if (known_functions_.count(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("{}{:08X}(cpu); return;  /* jal cont: split piece */\n", config_.func_prefix, cont_addr);
+                            note_call(cont_addr);
                         } else {
                             ss << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* jal cont: split */\n", cont_addr);
+                            note_foreign_call(cont_addr);
                         }
                     }
                 } else if (block.exit_instr.type == ControlFlowType::JumpLinkReg) {
@@ -2194,21 +2280,25 @@ std::string CodeGenerator::translate_basic_block(
                     ss << config_.indent << "psx_dispatch_from_jalr = 1;\n";
                     ss << config_.indent << fmt::format("call_by_address(cpu, {});  /* jalr {} */\n",
                                                         reg_name(rs), reg_name(rs));
+                    note_opaque_call();
 
                     // Continue to successor block (instruction at return address)
                     if (!block.successors.empty()) {
                         ss << config_.indent
                            << fmt::format("goto block_{:08X};  /* continue after jalr */\n",
                                           block.successors[0]);
+                        note_goto(block.successors[0], GotoArm::Continue);
                     } else {
                         // Split-function: JALR continuation is outside this function piece.
                         uint32_t cont_addr = block.exit_instr.address + 8;
                         if (known_functions_.count(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("{}{:08X}(cpu); return;  /* jalr cont: split piece */\n", config_.func_prefix, cont_addr);
+                            note_call(cont_addr);
                         } else {
                             ss << config_.indent
                                << fmt::format("call_by_address(cpu, 0x{:08X}u); return;  /* jalr cont: split */\n", cont_addr);
+                            note_foreign_call(cont_addr);
                         }
                     }
                 }
@@ -2238,6 +2328,7 @@ GeneratedFunction CodeGenerator::generate_function(
 
     std::stringstream body_ss;
     body_ss << "{\n";
+    facts_.push_back(FunctionFacts{func.start_addr, func.name, false, {}});
 
     // Override preamble: allows external code to intercept this function
     // without patching the generated file. psx_override_dispatch() is
@@ -2329,6 +2420,7 @@ GeneratedFunction CodeGenerator::generate_function(
             if (is_reachable) {
                 body_ss << fmt::format("    {}(cpu);  /* fallthrough to next function */\n",
                                        fallthrough_name);
+                note_call_to(func.start_addr + func.size);
             }
         }
     }
@@ -2357,6 +2449,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_all_functions(
 
     std::vector<GeneratedFunction> results;
     results.reserve(functions.size());
+    facts_.clear();
 
     fmt::print("\n=== C Code Generation ===\n\n");
     fmt::print("Generating C code for {} functions...\n", functions.size());
@@ -2411,6 +2504,7 @@ std::vector<GeneratedFunction> CodeGenerator::generate_all_functions(
             stub.full_code = stub.signature + "\n" + stub.body;
             stub.line_count = 4;
             results.push_back(stub);
+            facts_.push_back(FunctionFacts{func.start_addr, func.name, false, {}});
             continue;
         }
 
@@ -2456,6 +2550,10 @@ std::vector<GeneratedFunction> CodeGenerator::generate_all_functions(
                 gen_func.full_code = gen_func.signature + "\n" + gen_func.body;
                 gen_func.line_count = 5;
                 n_skipped_err++;
+                if (facts_.empty() || facts_.back().start != func.start_addr)
+                    facts_.push_back(FunctionFacts{func.start_addr, func.name, false, {}});
+                facts_.back().stub = true;
+                facts_.back().regions.clear();
             }
         } else {
             gen_func = generate_function(func, cfg, fallthrough_name);

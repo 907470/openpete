@@ -60,6 +60,7 @@ add_executable(PSXRecomp
     src/control_flow.cpp
     src/function_analysis.cpp
     src/code_generator.cpp
+    src/loop_classification.cpp
     src/annotations.cpp
     src/main_psx.cpp
 )

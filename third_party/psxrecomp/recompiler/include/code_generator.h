@@ -9,6 +9,7 @@
 #include "ps1_exe_parser.h"
 #include "function_analysis.h"
 #include "control_flow.h"
+#include "loop_classification.h"
 #include "../src/annotations.hpp"
 
 namespace PSXRecomp {
@@ -176,6 +177,13 @@ public:
     uint32_t external_range_start() const { return external_range_start_; }
     uint32_t external_range_end()   const { return external_range_end_; }
 
+    /** @brief The emitted facts of every function the last generate pass wrote.
+     *
+     * Recorded as the C is emitted, so each region's loads, stores, calls
+     * and gotos are those of the text itself; classify_loops() reads them.
+     * @return one entry per generated function, in emission order */
+    const std::vector<FunctionFacts>& emitted_facts() const { return facts_; }
+
 private:
     const PS1Executable& exe_;
     CodeGenConfig config_;
@@ -188,6 +196,32 @@ private:
     std::map<uint32_t, std::string> manual_impls_;
     std::map<uint32_t, ChannelSite> channel_sites_;  // from render_channels.toml
     bool skip_on_error_ = false;
+    std::vector<FunctionFacts> facts_;   // see emitted_facts()
+
+    /** @brief Open a new emitted region at a label.
+     * @param label address the label names */
+    void note_label(uint32_t label);
+    /** @brief Record one translated instruction in the current region.
+     *
+     * Loads and stores are read off the opcode; `syscall` and a `jr` other
+     * than `jr $ra` translate to runtime calls and mark the region opaque.
+     * @param instr the instruction word */
+    void note_instruction(uint32_t instr);
+    /** @brief Record an emitted `goto block_X` in the current region.
+     * @param target the block address
+     * @param arm    which arm the goto was emitted as */
+    void note_goto(uint32_t target, GotoArm arm);
+    /** @brief Record a call to a generated function of this unit.
+     * @param target the callee's start address */
+    void note_call(uint32_t target);
+    /// Record a call whose callee body this unit does not hold.
+    void note_opaque_call();
+    /** @brief Record a constant `call_by_address` in the current region.
+     * @param target the constant callee address */
+    void note_foreign_call(uint32_t target);
+    /** @brief Record a call to a symbol: generated if this unit translates it.
+     * @param target the callee address */
+    void note_call_to(uint32_t target);
 
     // Resolve one operand register-role to its C expression for this insn.
     std::string resolve_channel_operand(const std::string& role,

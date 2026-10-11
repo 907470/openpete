@@ -1,0 +1,109 @@
+#pragma once
+
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace PSXRecomp {
+
+/// Which emitted `goto` arm a control transfer was written as.
+enum class GotoArm {
+    Taken,      ///< conditional branch, taken arm (ordinary or split-piece form)
+    NotTaken,   ///< conditional branch, fall-through arm (always forward)
+    Jump,       ///< unconditional `j` to a block of the same function
+    Continue,   ///< continuation after a `jal`/`jalr` (always forward)
+    Case,       ///< a `case` of a jump-table `switch`
+};
+
+/// One `goto block_X` the generator wrote.
+struct EmittedGoto {
+    uint32_t target;
+    GotoArm  arm;
+};
+
+/** @brief What the C emitted under one label can do.
+ *
+ * A region is the text from one emitted label (a block start, or a mid-block
+ * jump-table landing label) to the next label or the end of the function,
+ * so a function's regions partition its emitted body. */
+struct EmittedRegion {
+    uint32_t label = 0;
+    uint32_t insns = 0;          ///< instructions translated (branch and jump words excluded)
+    bool loads = false;          ///< reads guest memory (lb..lwr, lwc2)
+    bool stores = false;         ///< writes guest memory (sb..swr, swc2)
+    bool opaque_call = false;    ///< calls code no leaf summary can describe: a PSYQ
+                                 ///< or manual symbol, call_by_address on a register,
+                                 ///< or psx_syscall
+    std::vector<uint32_t> callees;   ///< generated functions of this unit called, one entry per call
+    std::vector<uint32_t> foreign;   ///< constant `call_by_address` targets, one entry per call;
+                                     ///< each disqualifies a body unless a leaf summary of
+                                     ///< another unit names it
+    std::vector<EmittedGoto> gotos;  ///< in emission order
+};
+
+/// The emitted regions of one generated function, in emission order.
+struct FunctionFacts {
+    uint32_t start = 0;
+    std::string name;
+    bool stub = false;           ///< body replaced by a translation-failure stub
+    std::vector<EmittedRegion> regions;
+};
+
+/** @brief A loop back-edge whose body may receive a VBL delivery.
+ *
+ * The body is every region whose label lies in [header, source]; it stores
+ * nothing, calls only pure leaves, and it or one of its leaves loads. */
+struct LoopSite {
+    std::string function;
+    uint32_t header = 0;         ///< goto target
+    uint32_t source = 0;         ///< label of the region holding the goto
+    GotoArm arm = GotoArm::Taken;
+    uint32_t insns = 0;          ///< body instructions plus each called leaf's, per call
+    std::vector<uint32_t> leaves;    ///< pure leaves the body calls, one entry per call
+};
+
+/// A pure leaf as another unit's summary states it.
+struct LeafSummary {
+    uint32_t insns = 0;
+    bool loads = false;
+};
+
+/** @brief Classify every back-edge of a translation unit.
+ *
+ * A back-edge is an emitted `goto` whose target is at or below the label of
+ * the region it sits in. A pure leaf is a function of the unit that is not a
+ * stub, stores nothing, makes no call of any kind, and has no back-edge.
+ * A constant `call_by_address` target qualifies as a leaf when `foreign`,
+ * the pure leaves of another unit (the main EXE, which is resident whenever
+ * an overlay runs), names it.
+ * @param facts   every function the unit emitted
+ * @param foreign pure leaves of other units, by address
+ * @return the back-edges that qualify, in function then emission order */
+std::vector<LoopSite> classify_loops(const std::vector<FunctionFacts>& facts,
+                                     const std::map<uint32_t, LeafSummary>& foreign);
+
+/** @brief Write the unit's pure leaves as tab-separated rows.
+ *
+ * Columns: address, insns, loads (0 or 1); read back by read_leaf_summary().
+ * @param path  output file
+ * @param facts every function the unit emitted
+ * @return false when the file cannot be opened */
+bool write_leaf_summary(const std::string& path, const std::vector<FunctionFacts>& facts);
+
+/** @brief Read a leaf summary written by write_leaf_summary().
+ * @param path input file
+ * @param out  receives one entry per row
+ * @return false when the file cannot be opened */
+bool read_leaf_summary(const std::string& path, std::map<uint32_t, LeafSummary>& out);
+
+/** @brief Write the classified sites as tab-separated rows.
+ *
+ * Columns: function, header, source, arm, insns, leaves (comma-separated,
+ * `-` when none). A `#` header line names them.
+ * @param path  output file
+ * @param sites the sites classify_loops() returned
+ * @return false when the file cannot be opened */
+bool write_loop_sites(const std::string& path, const std::vector<LoopSite>& sites);
+
+} // namespace PSXRecomp

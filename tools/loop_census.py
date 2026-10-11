@@ -7,7 +7,8 @@ loop body is every emitted block in [T, B]. The classes:
   call-free            the body reaches no function, thunk, syscall or
                        register-indirect call, so nothing outside the guest
                        can run while it spins;
-  store-free           the body writes no guest RAM;
+  store-free           the body writes no guest RAM (a void channel
+                       replace_call replaces a store and counts as one);
   with a load          the body reads guest RAM, so it can be a poll;
   pure spin            no register carries a value from one iteration to the
                        next except through a load (a bare poll: which
@@ -28,7 +29,11 @@ Usage:
   tools/loop_census.py GAME [--list CLASS] [--range LO HI] FILE...
   GAME is spyro-1 | spyro-2 | spyro-3 (selects games/GAME/manifest/psyq.toml).
   --list CLASS prints the members of one class: pure, counted, novsync,
-  callpoll (call-containing, store-free, back-edge condition on v0).
+  callpoll (call-containing, store-free, back-edge condition on v0),
+  emit (the emission criterion: store-free, every call to a pure leaf, and a
+  load in the body or a leaf; a pure leaf is a generated function with no
+  store, no call in any form and no back-edge; insns adds each called leaf's
+  count per call; rows carry the back-edge source block and the leaves).
   --range LO HI restricts to functions whose address is in [LO, HI).
 """
 import argparse, collections, re, sys
@@ -40,7 +45,7 @@ CALLF = re.compile(r'\b(func_\w+)\(cpu\)')
 CALLP = re.compile(r'\b(psyq_\w+)\(cpu\)')
 CALLC = re.compile(r'call_by_address\(cpu, 0x([0-9A-Fa-f]{8})u\)')
 CALLR = re.compile(r'call_by_address\(cpu, cpu->|psx_syscall\(')
-STORE = re.compile(r'cpu->write_|cpu->sw[lr]\(')
+STORE = re.compile(r'cpu->write_|cpu->sw[lr]\(|channel replace_call \(void\)')
 LOAD  = re.compile(r'cpu->read_|cpu->lw[lr]\(')
 INSN  = re.compile(r'/\* 0x[0-9A-Fa-f]{8}: 0x[0-9A-Fa-f]{8} \*/')
 ASSIGN= re.compile(r'\s*cpu->(\w+) = (.*);')
@@ -77,13 +82,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('game')
     ap.add_argument('files', nargs='+')
-    ap.add_argument('--list', choices=['pure', 'counted', 'novsync', 'callpoll'])
+    ap.add_argument('--list', choices=['pure', 'counted', 'novsync', 'callpoll', 'emit'])
     ap.add_argument('--range', nargs=2)
     a = ap.parse_args()
     lo, hi = (int(a.range[0], 16), int(a.range[1], 16)) if a.range else (0, 1 << 32)
     psyq = load_psyq(a.game)
 
-    bodies, byaddr, loops = {}, {}, []
+    bodies, byaddr, loops, looping = {}, {}, [], set()
     for path in a.files:
         src = open(path).read()
         fs = [(m.start(), m.group(1) + '_' + m.group(2), int(m.group(2), 16))
@@ -93,14 +98,17 @@ def main():
             body = src[pos:end]
             bodies[fname] = body
             byaddr.setdefault(faddr, fname)
-            if not (lo <= faddr < hi):
-                continue
             blks = [(int(m.group(1), 16), m.start()) for m in BLK.finditer(body)]
             bounds = {}
             for j, (addr, st) in enumerate(blks):
                 en = blks[j + 1][1] if j + 1 < len(blks) else len(body)
                 bounds[addr] = (st, en)
             order = [addr for addr, _ in blks]
+            if any(int(g.group(1), 16) <= sa for sa in order
+                   for g in GOTO.finditer(body[bounds[sa][0]:bounds[sa][1]])):
+                looping.add(fname)
+            if not (lo <= faddr < hi):
+                continue
             for sa in order:
                 st, en = bounds[sa]
                 for g in GOTO.finditer(body[st:en]):
@@ -110,6 +118,29 @@ def main():
                     span = [x for x in order if t <= x <= sa]
                     text = ''.join(body[bounds[x][0]:bounds[x][1]] for x in span)
                     loops.append((path.split('/')[-1], fname, t, sa, text, body[st:en]))
+
+    def pure_leaf(f):
+        b = bodies.get(f)
+        return (b is not None and f not in looping and not STORE.search(b)
+                and not CALLF.search(b) and not CALLP.search(b)
+                and not CALLC.search(b) and not CALLR.search(b))
+
+    def emit_row(text):
+        """(insns, leaves) when the body meets the emission criterion, else None."""
+        if STORE.search(text) or CALLP.search(text) or CALLR.search(text):
+            return None
+        calls = CALLF.findall(text)
+        for h in CALLC.findall(text):
+            addr = int(h, 16)
+            if addr in psyq or addr not in byaddr:
+                return None
+            calls.append(byaddr[addr])
+        if not all(pure_leaf(c) for c in calls):
+            return None
+        if not (LOAD.search(text) or any(LOAD.search(bodies[c]) for c in calls)):
+            return None
+        n = len(INSN.findall(text)) + sum(len(INSN.findall(bodies[c])) for c in calls)
+        return n, calls
 
     def calls_of(text):
         fs = set(CALLF.findall(text))
@@ -149,6 +180,11 @@ def main():
     thunks = collections.Counter()
     for src, fname, t, sa, text, tail in loops:
         n = len(INSN.findall(text))
+        if a.list == 'emit':
+            row = emit_row(text)
+            if row:
+                cnt['emission sites (pure-leaf calls)'] += 1
+                listed.append((src, fname, t, row[0], 'src=0x%08X %s' % (sa, ','.join(row[1]) or '-')))
         fs, ps, ind = calls_of(text)
         cnt['back-edges'] += 1
         if fs or ps or ind:
@@ -191,7 +227,7 @@ def main():
     for k in ('back-edges', 'with a call', '  VSync in body', '  VSync via callees',
               '  unknown (indirect call)', '  no path to VSync', 'call-free',
               'call-free, store-free', '  with a load (emission sites)',
-              '    pure', '    counted'):
+              '    pure', '    counted', 'emission sites (pure-leaf calls)'):
         print('  %-34s %d' % (k, cnt[k]))
     print('  thunks called from loops with no path to VSync:',
           ', '.join('%s x%d' % kv for kv in thunks.most_common()))

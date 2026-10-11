@@ -256,6 +256,8 @@ int main(int argc, char** argv) {
         fmt::print("  --emit-external-jals=<file>   Write KSEG0 JAL targets that fall outside this binary's range\n");
         fmt::print("  --channel-sites=<file>        Render-channel substitution table (from render_channels.toml)\n");
         fmt::print("  --skip-on-error               On codegen failure, emit a stub and continue\n");
+        fmt::print("  --leaf-summary=<file>         Another unit's <stem>_leaves.tsv: its pure leaves count\n");
+        fmt::print("                                as leaves of this unit's loop classification (repeatable)\n");
         fmt::print("  --raw-bin                     Input is a raw code blob (no PS-X EXE header);\n");
         fmt::print("                                requires --load-addr. Replaces the out-of-tree\n");
         fmt::print("                                synth_overlay_exe.py wrapper for overlay blobs.\n");
@@ -281,6 +283,7 @@ int main(int argc, char** argv) {
     std::string emit_external_jals_path;
     std::string channel_sites_path;
     bool emit_pc_tracking = false;
+    std::vector<std::string> leaf_summary_paths;
 
     auto take_value = [](const std::string& a, const char* prefix) -> std::string {
         size_t plen = std::strlen(prefix);
@@ -311,6 +314,7 @@ int main(int argc, char** argv) {
         else if (a == "--channel-sites" && i + 1 < argc)              channel_sites_path = argv[++i];
         else if (a == "--skip-on-error")                              skip_on_error = true;
         else if (a == "--emit-pc-tracking")                           emit_pc_tracking = true;
+        else if (!(v = take_value(a, "--leaf-summary")).empty())     leaf_summary_paths.push_back(v);
         // Legacy form: `--extra-funcs <file>` (space-separated).
         else if (a == "--extra-funcs" && i + 1 < argc)                extra_funcs_path = argv[++i];
         else if (a == "--external-symbols" && i + 1 < argc)           external_syms_path = argv[++i];
@@ -804,6 +808,33 @@ int main(int argc, char** argv) {
     } else {
         fmt::print(stderr, "⚠ Failed to write output file: {}\n\n", output_filename);
         return 1;
+    }
+
+    // Loop classification: the back-edges whose body stores nothing, calls
+    // only pure leaves (of this unit, or of another unit's --leaf-summary),
+    // and loads. Written beside the C with this unit's own pure leaves; the
+    // generated C is unchanged by it.
+    {
+        std::string sites_path = output_dir + "/" + exe_stem + "_loop_sites.tsv";
+        std::map<uint32_t, PSXRecomp::LeafSummary> foreign;
+        for (const std::string& f : leaf_summary_paths) {
+            if (!PSXRecomp::read_leaf_summary(f, foreign)) {
+                fmt::print(stderr, "⚠ Cannot open --leaf-summary file: {}\n", f);
+                return 1;
+            }
+        }
+        auto sites = PSXRecomp::classify_loops(codegen.emitted_facts(), foreign);
+        std::string leaves_path = output_dir + "/" + exe_stem + "_leaves.tsv";
+        if (!PSXRecomp::write_leaf_summary(leaves_path, codegen.emitted_facts())) {
+            fmt::print(stderr, "⚠ Failed to write leaf summary: {}\n\n", leaves_path);
+            return 1;
+        }
+        if (PSXRecomp::write_loop_sites(sites_path, sites)) {
+            fmt::print("✓ Wrote {} classified loop sites to {}\n\n", sites.size(), sites_path);
+        } else {
+            fmt::print(stderr, "⚠ Failed to write loop sites: {}\n\n", sites_path);
+            return 1;
+        }
     }
 
     // Discovered-functions log — every function the analyzer landed on, in

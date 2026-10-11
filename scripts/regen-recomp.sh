@@ -279,7 +279,39 @@ process_overlay() {
     fi
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
         "$OUT/$name/$name.bin_dispatch.c"
+    local final="$second_funcs"
+    [[ -f "$combined" ]] && final="$combined"
+    OVERLAY_FINAL[$name]="$ovl_path|$prefix|$load_addr|$final"
     return 0
+}
+
+# classify_overlay <name>
+#
+# Re-runs an overlay's converged final pass with the main EXE's leaf
+# summary, so the loop classification (<name>.bin_loop_sites.tsv) counts a
+# constant call into a main-EXE pure leaf as a leaf call. The main EXE is
+# resident whenever an overlay runs. The pass has the same inputs as the
+# converged one, so the C it writes is identical; process_overlay's extra
+# arguments are not replayed (the registry loop passes none).
+classify_overlay() {
+    local name="$1"
+    local ovl_path prefix load_addr final
+    IFS='|' read -r ovl_path prefix load_addr final <<< "${OVERLAY_FINAL[$name]}"
+    run_psxrecomp "$ovl_path" \
+        --raw-bin \
+        --load-addr="$load_addr" \
+        --output-stem="$name.bin" \
+        --output-dir="$OUT/$name" \
+        --external-symbols="$PSYQ_MANIFEST" \
+        --external-prefix=psyq_ \
+        --func-prefix="$prefix" \
+        --skip-on-error \
+        ${PCTRACK_FLAG:+$PCTRACK_FLAG} \
+        --extra-funcs="$final" \
+        --emit-external-jals="$OUT/$name/external_jals.txt" \
+        --leaf-summary="$OUT/PSX.EXE_leaves.tsv" >/dev/null
+    sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
+        "$OUT/$name/$name.bin_dispatch.c"
 }
 
 # --- Overlay registry ---------------------------------------------------
@@ -300,6 +332,7 @@ process_overlay() {
 
 OVERLAY_NAMES=()
 declare -A OVERLAY_MAGIC=()
+declare -A OVERLAY_FINAL=()
 
 register_overlay() {
     OVERLAY_NAMES+=("$1")
@@ -466,6 +499,13 @@ if [[ "${MAIN_EXE_THIRD_PASS:-0}" != "0" ]]; then
 fi
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' \
     "$OUT/PSX.EXE_dispatch.c"
+
+if [[ "$REGEN_SCOPE" == "full" ]]; then
+    echo "[regen] Classifying overlay loops against $OUT/PSX.EXE_leaves.tsv"
+    for name in "${OVERLAY_NAMES[@]}"; do
+        classify_overlay "$name"
+    done
+fi
 
 # --- Generate the dispatch table ----------------------------------------
 
