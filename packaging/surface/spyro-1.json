@@ -1,5 +1,5 @@
 {
- "source_sha": "c7d759eb10dcdc2429baab8c8d6c603b4c0a4d75",
+ "source_sha": "3be295926d1fdd16e68d5765ef591b3d3410b701",
  "format": 1,
  "game": "spyro-1",
  "entries": [
@@ -6258,12 +6258,6 @@
    "id": "menu:menu.freecam",
    "knob": "freecam",
    "hint": "FLY THE CAMERA FREELY",
-   "displayed": true
-  },
-  {
-   "id": "menu:menu.settings",
-   "knob": null,
-   "hint": "SAVE OR CLEAR YOUR SETTINGS",
    "displayed": true
   },
   {

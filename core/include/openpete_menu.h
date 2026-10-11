@@ -40,7 +40,9 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz);
  * Opening re-syncs the rows a hotkey or the dev overlay can change while the
  * menu is closed (SHOW FPS, LOD, FOG, FREECAM, WOBBLE, PIXELATION, TEXTURES,
  * DITHER) from their live state, disarms EXIT, and snaps the mouse markers
- * so a press made before the open is never a click. Both edges are logged.
+ * so a press made before the open is never a click. Closing writes the
+ * settings writer's pending changes (openpete_settings_save_flush), so
+ * called on the host loop only. Both edges are logged.
  * @return The new state: 1 open, 0 closed. */
 int  openpete_menu_toggle(void);
 
@@ -196,16 +198,15 @@ void openpete_menu_set_cursor(int row);
  * pointer never overrides keyboard navigation. Each left press closes the
  * menu on the close glyph, activates EXIT, or adjusts the hit row by +1; each
  * right press adjusts by -1 and each wheel notch by one step in its
- * direction, on value rows only (DISPLAY, SETTINGS and EXIT ignore both).
+ * direction, on value rows only (DISPLAY and EXIT ignore both).
  * Presses outside every row are ignored. No-op unless open. */
 void openpete_menu_mouse_poll(void);
 
 /** @brief Step the cursor row's value one entry, wrapping, and apply it live.
  *
  * Applies through the row's setter, logs it, and raises the row's OSD toast.
- * DISPLAY requests a fullscreen toggle in either direction. On SETTINGS the
- * step picks the action (SAVE, CLEAR SAVED, or none) and the apply performs
- * it at once. FREECAM toggles the free camera when the row disagrees with
+ * DISPLAY requests a fullscreen toggle in either direction. A saved row
+ * marks its knob for the settings writer (openpete_settings_save.h). FREECAM toggles the free camera when the row disagrees with
  * the live state. No-op unless open, and on the EXIT row, so cycling a value
  * never fires it.
  * @param dx Positive steps to the next entry; zero or negative to the

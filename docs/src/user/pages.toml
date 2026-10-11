@@ -179,7 +179,6 @@
 "knob:window" = "graphics/display.md#window"
 "knob:wireframe" = "playing/dev-overlay.md#sections"
 "menu:menu.quit" = "playing/settings-menu.md#exit-game"
-"menu:menu.settings" = "playing/settings-menu.md#saving-your-settings"
 
 [game.spyro-1]
 "flag:--cheats" = "games/spyro-1.md#cheats"

@@ -1319,6 +1319,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Settings-menu autosave gate. Drives the menu with an injected key
+    # script against a --config file per leg: a change written at the
+    # debounce deadline (a typed-flag-pinned knob included, freecam left
+    # out, the hand-written section above the marker kept), a change equal
+    # to the global value removed on menu close, and an injected write
+    # failure that keeps the file and retries its dirty knob at shutdown.
+    # Exit 2 when no write engaged.
+    add_test(NAME settings_autosave
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_settings_autosave.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(settings_autosave PROPERTIES
+        LABELS "slow;input"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Performance benchmark pipeline smoke - replays a few bk2 movies through
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the

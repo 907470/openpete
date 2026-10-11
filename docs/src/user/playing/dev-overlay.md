@@ -23,10 +23,10 @@ hotkey bindings pause and the PlayStation pad is released.
 | Right click on a row title | **Reset to boot value**, **Copy as CLI flag**, **Copy as env line**. |
 
 **Save settings**, beside the search field, writes every row changed this
-session into the `[saved]` block of the config file, as the settings menu's
-**SETTINGS** row does; its tooltip shows the result of the last save. The
-settings menu's **CLEAR SAVED** empties that block. Closing the panel writes
-nothing. See
+session into the `[saved]` block of the config file; its tooltip shows the
+result of the last save. Changes made in the panel are saved only by this
+button, and closing the panel writes nothing; changes made in the settings
+menu are saved as they are made. See
 [Saving your settings](settings-menu.md#saving-your-settings).
 
 ## Sections

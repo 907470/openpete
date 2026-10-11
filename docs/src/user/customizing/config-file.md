@@ -42,7 +42,7 @@ exist, and which one the menus save to.
 
 ### Which file the menus save to
 
-The [settings menu](../help/glossary.md#settings-menu) (**SETTINGS** row) and the [dev overlay](../help/glossary.md#dev-overlay) (**Save settings**)
+The [settings menu](../help/glossary.md#settings-menu) (every change) and the [dev overlay](../help/glossary.md#dev-overlay) (**Save settings**)
 write into one file, the save target:
 
 | Layout | Default on | Save target |

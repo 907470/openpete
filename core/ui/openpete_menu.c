@@ -14,8 +14,7 @@
 #include "openpete.h"                /* openpete_options_t, openpete_set_render_fps */
 #include "openpete_native_render.h"  /* set_aspect / set_ssaa / set_vsync */
 #include "openpete_log.h"
-#include "openpete_config.h"        /* saved-settings persistence (SETTINGS row) */
-#include "openpete_knobs.h"         /* knob_registry_save_edited */
+#include "openpete_settings_save.h" /* autosave of the persisted rows */
 #include "openpete_osd.h"           /* announce every change the player makes */
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
@@ -31,7 +30,7 @@
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_WOBBLE, ROW_PIXEL, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM,
-       ROW_SAVE, ROW_QUIT,
+       ROW_QUIT,
        ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
@@ -43,41 +42,42 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "FOV", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
-    "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS",
-    "EXIT GAME",
+    "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "EXIT GAME",
 };
 
 
 /* Per row: the id, which is also the OSD coalescing key, the knob registry
- * row the row moves (NULL for the SETTINGS and EXIT action rows), and a hint
+ * row the row moves (NULL for the EXIT action row and the mod rows), a hint
  * naming what the row changes, written in the glyph set notify_row
- * documents. The key is NAMED, not indexed, because the hotkeys that front
- * the same settings (L, F, Alt+Enter) raise their toasts from run.c and
- * native_render.c and must land on the SAME toast - a player who flips LOD
- * with the key and then with the row should see one toast repaint, not two
- * stack. Indexed by row through ROW_FOG, the parked rows included; the
+ * documents, and whether a change is saved to openpete.toml. FREECAM is a
+ * session toggle: saving it would start the next launch with Spyro frozen
+ * under the free camera. FOG has no config key, and the LOD row rewrites it
+ * from openpete_fog_enabled, so it follows LOD, which is saved. The key is
+ * NAMED, not indexed, because the hotkeys that front the same settings (L,
+ * F, Alt+Enter) raise their toasts from run.c and native_render.c and must
+ * land on the SAME toast - a player who flips LOD with the key and then with
+ * the row should see one toast repaint, not two stack. Indexed by row through ROW_FOG, the parked rows included; the
  * surface dump reads it through openpete_menu_surface_row. */
-static const struct { const char* id; const char* knob; const char* hint; }
+static const struct { const char* id; const char* knob; const char* hint; int persist; }
 ROW_SURFACE[ROW_FOG + 1] = {
-    [ROW_DISPLAY] = { "menu.display",    "fullscreen",       "WINDOW OR FULLSCREEN" },
-    [ROW_ASPECT]  = { "menu.aspect",     "aspect",           "WIDTH TO HEIGHT OF THE PICTURE" },
-    [ROW_FPS]     = { "menu.fps",        "render_fps",       "PICTURES DRAWN PER SECOND" },
-    [ROW_FOV]     = { "menu.fov",        "fov",              "HOW WIDE THE CAMERA SEES" },
-    [ROW_SHOWFPS] = { "menu.showfps",    "perf_stats",       "FPS READOUT IN THE CORNER" },
-    [ROW_VSYNC]   = { "menu.vsync",      "vsync",            "WAIT FOR THE DISPLAY REFRESH" },
-    [ROW_SSAA]    = { "menu.ssaa",       "ssaa",             "RENDER AT A HIGHER RESOLUTION" },
-    [ROW_WOBBLE]  = { "menu.wobble",     "vertex_precision", "SNAP CORNERS TO THE PSX PIXEL GRID" },
-    [ROW_PIXEL]   = { "menu.pixelation", "raster_quantize",  "DRAW THE SCENE ON THE PSX PIXEL GRID" },
-    [ROW_TEXMAP]  = { "menu.texmap",     "texture_mapping",  "AFFINE TEXTURES AS ON THE PSX" },
-    [ROW_DITHER]  = { "menu.dither",     "dither",           "PSX 15 BIT COLOUR AND DITHER" },
-    [ROW_LOD]     = { "menu.lod",        "lod",              "ORIGINAL OR FULL DETAIL AT ANY DISTANCE" },
-    [ROW_FREECAM] = { "menu.freecam",    "freecam",          "FLY THE CAMERA FREELY" },
-    [ROW_SAVE]    = { "menu.settings",   NULL,               "SAVE OR CLEAR YOUR SETTINGS" },
-    [ROW_QUIT]    = { "menu.quit",       NULL,               "QUIT THE GAME" },
-    [ROW_COUNT]   = { NULL,              NULL,               NULL },
-    [ROW_MODSEL]  = { "menu.modsel",     NULL,               "CHOOSE A MOD" },
-    [ROW_MODEN]   = { "menu.moden",      NULL,               "TURN THE MOD ON OR OFF" },
-    [ROW_FOG]     = { "menu.fog",        "fog",              "DISTANCE FOG" },
+    [ROW_DISPLAY] = { "menu.display",    "fullscreen",       "WINDOW OR FULLSCREEN",                    1 },
+    [ROW_ASPECT]  = { "menu.aspect",     "aspect",           "WIDTH TO HEIGHT OF THE PICTURE",          1 },
+    [ROW_FPS]     = { "menu.fps",        "render_fps",       "PICTURES DRAWN PER SECOND",               1 },
+    [ROW_FOV]     = { "menu.fov",        "fov",              "HOW WIDE THE CAMERA SEES",                1 },
+    [ROW_SHOWFPS] = { "menu.showfps",    "perf_stats",       "FPS READOUT IN THE CORNER",               1 },
+    [ROW_VSYNC]   = { "menu.vsync",      "vsync",            "WAIT FOR THE DISPLAY REFRESH",            1 },
+    [ROW_SSAA]    = { "menu.ssaa",       "ssaa",             "RENDER AT A HIGHER RESOLUTION",           1 },
+    [ROW_WOBBLE]  = { "menu.wobble",     "vertex_precision", "SNAP CORNERS TO THE PSX PIXEL GRID",      1 },
+    [ROW_PIXEL]   = { "menu.pixelation", "raster_quantize",  "DRAW THE SCENE ON THE PSX PIXEL GRID",    1 },
+    [ROW_TEXMAP]  = { "menu.texmap",     "texture_mapping",  "AFFINE TEXTURES AS ON THE PSX",           1 },
+    [ROW_DITHER]  = { "menu.dither",     "dither",           "PSX 15 BIT COLOUR AND DITHER",            1 },
+    [ROW_LOD]     = { "menu.lod",        "lod",              "ORIGINAL OR FULL DETAIL AT ANY DISTANCE", 1 },
+    [ROW_FREECAM] = { "menu.freecam",    "freecam",          "FLY THE CAMERA FREELY",                   0 },
+    [ROW_QUIT]    = { "menu.quit",       NULL,               "QUIT THE GAME",                           0 },
+    [ROW_COUNT]   = { NULL,              NULL,               NULL,                                      0 },
+    [ROW_MODSEL]  = { "menu.modsel",     NULL,               "CHOOSE A MOD",                            0 },
+    [ROW_MODEN]   = { "menu.moden",      NULL,               "TURN THE MOD ON OR OFF",                  0 },
+    [ROW_FOG]     = { "menu.fog",        "fog",              "DISTANCE FOG",                            0 },
 };
 
 int openpete_menu_surface_row(int i, openpete_menu_surface_t* out) {
@@ -99,14 +99,6 @@ int openpete_menu_surface_row(int i, openpete_menu_surface_t* out) {
  * cursor wraps, so a one-press exit sits one stray keypress away from throwing
  * out the progress since their last save. Moving the cursor disarms. */
 static int s_quit_armed;
-
-/* SETTINGS is an action row, not a value: each left/right step picks SAVE or
- * CLEAR SAVED and applies it at once (openpete_menu_adjust). Persisting is
- * explicit - closing the menu must never rewrite the user's config file
- * behind them. */
-enum { SAVE_IDLE, SAVE_DO, SAVE_CLEAR };
-static int s_save_idx;      /* SAVE_* */
-static int s_save_result;   /* 0 none, >0 saved n, -1 failed, -2 cleared */
 
 /* Aspect presets (label + width/height). */
 static const struct { const char* label; float wh; } s_aspect[] = {
@@ -269,10 +261,8 @@ static int s_modsel_idx = 0;
 
 /** @brief Spell a row's current value for the glyph builder, the OSD, and the log.
  *
- * DISPLAY and MOD ENABLED read live state; SETTINGS shows the last save
- * result (SAVED n, CLEARED, FAILED) until the row is stepped, else the picked
- * action; FOV shows DEFAULT or both angles for the live aspect; EXIT is
- * empty. An unknown row reads "?".
+ * DISPLAY and MOD ENABLED read live state; FOV shows DEFAULT or both angles
+ * for the live aspect; EXIT is empty. An unknown row reads "?".
  * @param row The row index.
  * @param buf Scratch space for formatted values.
  * @param buflen Size of @p buf in bytes.
@@ -311,14 +301,6 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return on_off(s_fog_idx);
     case ROW_FREECAM:  return on_off(s_freecam_idx);
-    case ROW_SAVE:
-        if (s_save_result == -1) return "FAILED";
-        if (s_save_result == -2) return "CLEARED";
-        if (s_save_result > 0) {
-            snprintf(buf, (size_t)buflen, "SAVED %d", s_save_result);
-            return buf;
-        }
-        return s_save_idx == SAVE_CLEAR ? "CLEAR SAVED" : "SAVE";
     case ROW_QUIT:     return "";   /* centered: the label IS the row */
     case ROW_MODSEL: {
         const char* id = openpete_mods_id(s_modsel_idx);
@@ -363,12 +345,13 @@ static void log_state(const char* what) {
 
 /** @brief Push a row's selected value to its live setter, or perform the row's action.
  *
- * SETTINGS saves the edited knobs or clears the saved settings, per its
- * selected action, records the result for its value string, and returns to
- * idle. FREECAM toggles the free camera only when the row disagrees with the
- * live state. LOD also re-reads the fog state the LOD setter resolved. EXIT
+ * FREECAM toggles the free camera only when the row disagrees with the live
+ * state. LOD also re-reads the fog state the LOD setter resolved. EXIT
  * requests a cooperative shutdown once armed twice. DISPLAY and the mod rows
- * apply nothing here.
+ * apply nothing here. A row whose ROW_SURFACE persist flag is set marks its
+ * knob for the settings writer, which saves it after the debounce interval,
+ * on menu close or at shutdown; DISPLAY is marked too, since the writer
+ * reads the window state the request has settled by then.
  * @param row The row index. */
 static void apply_row(int row) {
     switch (row) {
@@ -393,17 +376,6 @@ static void apply_row(int row) {
         s_fog_idx = openpete_fog_enabled();
         break;
     case ROW_FOG:      openpete_fog_set(s_fog_idx);                           break;
-    case ROW_SAVE:
-        /* Fires on apply (the same keypress every other row uses), so the
-         * file is only ever written when the user asked for it. */
-        if (s_save_idx == SAVE_CLEAR) {
-            s_save_result = (openpete_config_reset_saved() == 0) ? -2 : -1;
-        } else if (s_save_idx == SAVE_DO) {
-            int n = knob_registry_save_edited();
-            s_save_result = (n < 0) ? -1 : (n > 0 ? n : -2);
-        }
-        s_save_idx = SAVE_IDLE;
-        break;
     case ROW_FREECAM:
         /* The freecam API is a toggle (shared with the F key), not a setter:
          * flip only when the row disagrees with the live state. The toggle
@@ -422,6 +394,8 @@ static void apply_row(int row) {
 
     default: break;
     }
+    if (row >= 0 && row <= ROW_FOG && ROW_SURFACE[row].persist)
+        openpete_settings_save_mark(ROW_SURFACE[row].knob);
 }
 
 /* --- public -------------------------------------------------------------- */
@@ -535,9 +509,9 @@ static int64_t wheel_notches(int64_t total) {
  * The mouse poll gives these rows a left click only; a right click or a
  * wheel notch on them is ignored.
  * @param row The row index.
- * @return Non-zero for DISPLAY, SETTINGS and EXIT. */
+ * @return Non-zero for DISPLAY and EXIT. */
 static int row_action_only(int row) {
-    return row == ROW_DISPLAY || row == ROW_SAVE || row == ROW_QUIT;
+    return row == ROW_DISPLAY || row == ROW_QUIT;
 }
 
 /* The close glyph's drawn ink, in overlay units, as the text builder emitted
@@ -693,6 +667,7 @@ int openpete_menu_toggle(void) {
         log_state("opened");
     } else {
         OPL_INFO_F("menu", "%s", "closed");
+        openpete_settings_save_flush("menu-close");
     }
     return s_open;
 }
@@ -816,13 +791,6 @@ void openpete_menu_adjust(int dx) {
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
     case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 2);           break;
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;
-    case ROW_SAVE:
-        /* The step picks the action and the apply_row below performs it, so
-         * one step saves or clears. Any move also clears the previous result
-         * string. */
-        s_save_idx    = wrap_idx(s_save_idx + step, 3);
-        s_save_result = 0;
-        break;
     case ROW_MODSEL:
         if (openpete_mods_count() > 0)
             s_modsel_idx = wrap_idx(s_modsel_idx + step,
@@ -854,11 +822,8 @@ void openpete_menu_activate(void) {
     if (s_quit_armed < 2) s_quit_armed++;   /* first press arms, second fires */
     apply_row(s_cursor);
     log_state("activate");
-    /* Only EXIT passes the centred-row check above, so the SETTINGS test
-     * below never holds; SETTINGS announces its result through
-     * openpete_menu_adjust. EXIT deliberately raises no toast: arming already
-     * changes the row's own label to REALLY EXIT?. */
-    if (s_cursor == ROW_SAVE) notify_row(s_cursor);
+    /* EXIT raises no toast: arming already changes the row's own label to
+     * REALLY EXIT?. */
 }
 
 void openpete_menu_tick(void) { s_tick++; }

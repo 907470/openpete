@@ -47,6 +47,7 @@ extern "C" {
 #include "openpete_menu.h"
 #include "openpete_mods.h"
 #include "openpete_mod_ui.h"
+#include "openpete_settings_save.h"
 
 #include <deque>
 #include <utility>
@@ -834,39 +835,40 @@ static void draw_row(knob_desc_t *k)
 /* Save bar                                                           */
 /* ------------------------------------------------------------------ */
 
-/** @brief Draw the Save settings button at a given width; the last save's result is in its tooltip.
+/** @brief Draw the Save settings button at a given width; the writer's last result is in its tooltip.
  *
- * Save writes every row edited this session into the config file's [saved]
- * block and is disabled while no row is edited. Persisting is explicit and
- * never happens on close, so the config file changes only on a click. The
- * settings menu's SETTINGS row clears the block.
+ * Save enqueues every row edited this session to the settings writer
+ * (openpete_settings_save_request), which writes them into the config
+ * file's [saved] block at the host loop's next iteration; the button is
+ * disabled while no row is edited. Overlay edits are saved only on a click.
  * @param w The button width. */
 static void draw_save_button(float w)
 {
-    static char s_status[256];
-
+    const char *ids[256];
     int edited = 0;
     size_t n = 0;
     knob_desc_t *ks = knob_registry(&n);
     for (size_t i = 0; i < n; i++)
-        if (ks[i].type != KNOB_ACTION && row_edited(&ks[i])) edited++;
+        if (ks[i].type != KNOB_ACTION && row_edited(&ks[i]) &&
+            edited < (int)(sizeof ids / sizeof ids[0]))
+            ids[edited++] = ks[i].id;
 
     if (edited == 0) ImGui::BeginDisabled();
-    if (ImGui::Button("Save settings", ImVec2(w, 0.0f))) {
-        int saved = knob_registry_save_edited();
-        if (saved < 0)
-            snprintf(s_status, sizeof s_status, "save FAILED (see the log)");
-        else
-            snprintf(s_status, sizeof s_status, "saved %d setting(s) to %s",
-                     saved, openpete_config_save_path());
-    }
+    if (ImGui::Button("Save settings", ImVec2(w, 0.0f)))
+        openpete_settings_save_request(ids, edited);
     if (edited == 0) ImGui::EndDisabled();
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip |
                               ImGuiHoveredFlags_AllowWhenDisabled))
         return;
     ImGui::BeginTooltip();
-    if (s_status[0]) {
-        ImGui::TextUnformatted(s_status);
+    unsigned writes = 0;
+    int rows = 0, failed = 0, pending = 0;
+    openpete_settings_save_status(&writes, &rows, &failed, &pending);
+    if (failed) {
+        ImGui::Text("save FAILED, %d setting(s) kept for the next save (see the log)", pending);
+        ImGui::Separator();
+    } else if (writes > 0) {
+        ImGui::Text("last save: %d setting(s) to %s", rows, openpete_config_save_path());
         ImGui::Separator();
     }
     ImGui::Text("Write every row you changed this session into the\n"

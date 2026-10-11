@@ -2772,31 +2772,70 @@ int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap) {
     return 0;
 }
 
-int knob_registry_save_edited(void) {
-    size_t n;
-    knob_desc_t *ks = knob_registry(&n);
-    int saved = 0;
-    for (size_t i = 0; i < n; i++) {
-        knob_desc_t *k = &ks[i];
-        if (k->type == KNOB_ACTION) continue;
-
-        /* Only what the user actually moved. Saving unchanged rows would
-         * bake this launch's whole resolved state into the file, so a knob
-         * they never touched would stop following its default. */
-        char now[KNOB_STR_MAX];
-        if (k->type == KNOB_STRING) {
-            if (!k->get_str) continue;
-            k->get_str(k, now, sizeof now);
-            if (!strcmp(now, k->boot_str)) continue;
-        } else {
-            double v = k->get_num ? k->get_num(k) : k->stored_num;
-            if (v == k->boot_num) continue;
-        }
-        if (knob_config_value_str(k, now, sizeof now) != 0) continue;
-        if (openpete_config_save_knob(k->id, now) == 0) saved++;
+/** @brief Parse a bool spelling: 1 for "1", "on", "true", "yes"; 0 for "0", "off", "false", "no"; -1 otherwise. */
+static int knob_bool_word(const char *v) {
+    static const char *const on[]  = { "1", "on", "true", "yes" };
+    static const char *const off[] = { "0", "off", "false", "no" };
+    for (size_t i = 0; i < sizeof on / sizeof on[0]; i++) {
+        if (!strcmp(v, on[i]))  return 1;
+        if (!strcmp(v, off[i])) return 0;
     }
+    return -1;
+}
+
+/** @brief Whether two config-vocabulary values of a row are the same setting.
+ *
+ * Bools compare by truth ("off" equals "0"), two values that both parse
+ * whole as numbers compare numerically ("90" equals "90.0"), anything else
+ * by exact text. An unparseable bool is unequal to everything.
+ * @param k The row.
+ * @param a One value.
+ * @param b The other.
+ * @return 1 when equal, else 0. */
+static int knob_config_values_equal(const knob_desc_t *k, const char *a,
+                                    const char *b) {
+    if (k->type == KNOB_BOOL) {
+        const int x = knob_bool_word(a), y = knob_bool_word(b);
+        return x >= 0 && x == y;
+    }
+    char *ea = NULL, *eb = NULL;
+    const double da = strtod(a, &ea), db = strtod(b, &eb);
+    if (ea != a && *ea == '\0' && eb != b && *eb == '\0') return da == db;
+    return !strcmp(a, b);
+}
+
+int knob_registry_save_ids(const char *const *ids, int n) {
+    size_t count;
+    knob_desc_t *ks = knob_registry(&count);
+    int rows = 0;
+    for (int i = 0; i < n; i++) {
+        knob_desc_t *k = NULL;
+        for (size_t j = 0; j < count && !k; j++)
+            if (ids[i] && !strcmp(ks[j].id, ids[i])) k = &ks[j];
+        char now[KNOB_STR_MAX];
+        if (!k || knob_config_value_str(k, now, sizeof now) != 0) continue;
+
+        /* A launch-tier pin does not stop the save: the value is recorded
+         * and takes effect on a launch without the pin. */
+        char below[KNOB_STR_MAX];
+        int r = openpete_config_knob_value_below_saved(k->id, below, sizeof below);
+        if (r == 0 && k->def_str && *k->def_str) {
+            snprintf(below, sizeof below, "%s", k->def_str);
+            r = 1;
+        }
+        if (r == 1 && knob_config_values_equal(k, now, below)) {
+            (void)openpete_config_unsave_knob(k->id);
+            rows++;
+        } else if (openpete_config_save_knob(k->id, now) == 0) {
+            rows++;
+        }
+    }
+    /* The file is written whenever a row was settled, changed in memory or
+     * not: a removal that a failed write left only in memory reaches disk
+     * on the retry. */
+    if (rows == 0) return 0;
     if (openpete_config_save_flush() != 0) return -1;
-    return saved;
+    return rows;
 }
 
 void knob_registry_late_stamp(void) {

@@ -48,6 +48,7 @@
 #include "openpete_fb_snapshot.h"
 #include "openpete_ident_audit.h"
 #include "openpete_menu.h"
+#include "openpete_settings_save.h"
 #include "openpete_devui.h"
 #include "openpete_camlock.h"
 #include "openpete_glitch_mark.h"
@@ -4494,6 +4495,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                 prev_menu_close = false;
             }
         }
+        /* The settings writer: menu changes and the dev overlay's Save
+         * settings reach openpete.toml from this thread only. */
+        openpete_settings_save_poll();
 
         bool rewound_this_iter = false;   /* rewind driver stepped: skip
                                            * this iteration's forward tick */
@@ -6800,6 +6804,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_present_thread_stop();
     sim_teardown_progress();
     sim_teardown_injected_stall();
+    openpete_settings_save_flush("shutdown");   /* changes still inside the debounce */
 
     if (bk2_active) {
         bk2_movie_free(&bk2);

@@ -40,7 +40,6 @@ notification naming the row and its new value; see
 | **DITHER** | **OFF**, **15-BIT** | {{ config_key("knob:dither") }} <!-- id: knob:dither --> | [PlayStation look](../graphics/retro-look.md#dither) |
 | **LOD** | **ORIGINAL**, **EXTENDED** | {{ config_key("knob:lod") }} <!-- id: knob:lod --> | [Quality](../graphics/quality.md#level-of-detail) |
 | **FREECAM** | **OFF**, **ON** | `freecam` <!-- id: knob:freecam --> | [Practice tools](practice-tools.md#free-camera) |
-| **SETTINGS** | **SAVE**, **CLEAR SAVED** | | [below](#saving-your-settings) |
 | **EXIT GAME** | | | [below](#exit-game) |
 
 **SHOW FPS** **OFF** hides the performance readout and **ON** shows it. The
@@ -53,20 +52,23 @@ you step the row.
 
 ## Saving your settings
 
-Changes made in the menu last for the session. To keep them:
+Every change made in the menu is written into the `[saved]` block of your
+`openpete.toml` half a second after the last change, when the menu closes,
+and when the program exits. **FREECAM** is not saved. The block applies to
+every game that reads the file: a change made in one game is the starting
+value in the others.
 
-- ++right++ (or Cross, or a left click) on **SETTINGS**
-  <!-- id: menu:menu.settings --> writes every setting
-  changed this session into the `[saved]` block of your `openpete.toml`. The
-  row reports **SAVED** and the count, or **FAILED**.
-- ++left++ on **SETTINGS** empties the `[saved]` block and reports
-  **CLEARED**. The current session keeps its values; the next start uses the
-  rest of the file.
+A change back to the value the file's top-level settings give, or the
+built-in default when they give none, removes the setting from the block.
+If the file cannot be written, a **SAVE FAILED** notification appears and
+the next save writes the changes. To clear the block, delete it from the
+file.
 
-Closing the menu never writes the file. Hand-written lines above the
-`[saved]` block stay as they are. Saved settings beat the rest of the file,
-but a flag typed on the command line or an exported environment variable
-beats them for that launch; see [The config file](../customizing/config-file.md).
+Hand-written lines above the `[saved]` block stay as they are. Saved
+settings beat the rest of the file, but a flag typed on the command line or
+an exported environment variable beats them for that launch; a menu change
+to such a setting is still saved and applies on a launch without the flag or
+variable. See [The config file](../customizing/config-file.md).
 
 ## EXIT GAME
 

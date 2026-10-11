@@ -1806,6 +1806,45 @@ int openpete_config_save_knob(const char *knob_id, const char *value) {
     return 0;
 }
 
+int openpete_config_unsave_knob(const char *knob_id) {
+    if (!knob_id) return 0;
+    for (int i = 0; i < s_saved_n; i++) {
+        if (strcmp(s_saved[i].id, knob_id)) continue;
+        memmove(&s_saved[i], &s_saved[i + 1],
+                (size_t)(s_saved_n - i - 1) * sizeof s_saved[0]);
+        s_saved_n--;
+        return 1;
+    }
+    return 0;
+}
+
+int openpete_config_knob_value_below_saved(const char *knob_id, char *buf,
+                                           size_t cap) {
+    const int ki = cfg_schema_find_id(knob_id);
+    if (ki < 0 || !buf || cap == 0) return -1;
+    const contrib_t *win = NULL;
+    for (int i = 0; i < s_contrib_n; i++) {
+        const contrib_t *c = &s_contrib[i];
+        if (c->knob != ki) continue;
+        /* A game or disc scope sits between the global tier and [saved]:
+         * with the key removed the scope would decide this game's value,
+         * so no global comparison can stand in for it. */
+        if (scoped_tier(c)) return -1;
+        if (c->rank / 1000 > TIER_GLOBAL) continue;
+        if (!win || c->rank > win->rank) win = c;
+    }
+    if (!win) return 0;
+    /* [env] spells the variable's vocabulary and [args] = false withholds
+     * the flag; neither is a value in the CLI's vocabulary. */
+    if (win->spelling == SP_ENV || win->suppress || win->valueless ||
+        !win->has_value)
+        return -1;
+    snprintf(buf, cap, "%s", win->value);
+    return 1;
+}
+
+int openpete_config_has_save_target(void) { return s_save_path[0] != '\0'; }
+
 /** @brief Write a [saved] value and newline as the TOML type its knob declares.
  *
  * A bool is `false` for "0" or "off" and `true` otherwise; an int or float

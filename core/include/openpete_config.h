@@ -259,6 +259,33 @@ int openpete_config_save_flush(void);
  * @return openpete_config_save_flush's result. */
 int openpete_config_reset_saved(void);
 
+/** @brief Remove a knob's entry from the in-memory [saved] zone.
+ *
+ * Nothing reaches disk until openpete_config_save_flush.
+ * @param knob_id Schema knob id.
+ * @return 1 when an entry was removed, 0 when the zone held none. */
+int openpete_config_unsave_knob(const char* knob_id);
+
+/** @brief The value a knob takes from the layers below [saved] that every game reads: the global tier of either file.
+ *
+ * The highest-ranked global contribution decides. [saved] sits above the
+ * game and disc tiers, so a comparison under the active game's scope would
+ * describe that game only; a knob the active game's or disc's scope sets is
+ * reported as not comparable.
+ * @param knob_id Schema knob id.
+ * @param buf Receives the value in the flag's vocabulary when 1 is returned.
+ * @param cap Size of @p buf.
+ * @return 1 with the value in @p buf; 0 when no global layer sets the knob
+ *         (the built-in default decides); -1 for an unknown id, a knob a
+ *         game or disc scope sets, or a global winner spelled in [env] or
+ *         withheld by [args] = false. */
+int openpete_config_knob_value_below_saved(const char* knob_id, char* buf, size_t cap);
+
+/** @brief Whether the resolver chose a file for the [saved] zone.
+ *
+ * @return 0 under --no-config or when no config location is writable, else 1. */
+int openpete_config_has_save_target(void);
+
 /** @brief The file the managed [saved] zone is written to, for UI display.
  *
  * openpete_config_apply sets it to the write target: the --config file,

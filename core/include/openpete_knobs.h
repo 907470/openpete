@@ -251,17 +251,23 @@ void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
  *         a row with no config schema entry, or a placeholder. */
 int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
 
-/** @brief Write every row whose live value differs from its boot value into openpete.toml's [saved] zone.
+/** @brief Settle the named rows in openpete.toml's [saved] zone and write the file once.
  *
- * Action rows, string rows without a getter, and rows knob_config_value_str
- * cannot persist are skipped. Each changed row goes through
- * openpete_config_save_knob, then openpete_config_save_flush writes the file
- * once. A row pinned by a launch tier (a typed flag or an exported variable)
- * is saved like any other; that tier keeps winning while it is present, and
- * the M overlay marks such rows "pinned by ...". Called by the O menu's save
- * row and the M overlay's Save settings button.
- * @return The number of rows saved, or -1 when the flush failed. */
-int knob_registry_save_edited(void);
+ * Each row's live value, in the CLI's vocabulary (knob_config_value_str),
+ * is compared with the value the global tier gives it
+ * (openpete_config_knob_value_below_saved), or its def_str when no global
+ * layer sets it: an equal value removes the row's [saved] entry, so the
+ * knob follows the file and the default again; any other value, or a
+ * comparison that cannot be made, writes the entry. A row pinned by a
+ * launch tier (a typed flag or an exported variable) is saved like any
+ * other; the pin keeps winning while it is present. Unknown ids, action
+ * rows and rows knob_config_value_str cannot persist are skipped. Called
+ * only by the settings writer (openpete_settings_save.h) on the host loop.
+ * @param ids Knob registry ids.
+ * @param n Number of ids.
+ * @return The number of rows settled (0 writes nothing), or -1 when the
+ *         write failed. */
+int knob_registry_save_ids(const char *const *ids, int n);
 
 /** @brief Re-stamp the boot values of the rows that settle after knob_registry_init.
  *
