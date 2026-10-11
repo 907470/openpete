@@ -4032,6 +4032,7 @@ static struct {
      * native scene exists to walk. */
     bool          scene_live;
     bool          headless;     /* surfaceless capture (no window/present); screenshots only */
+    bool          shot_overlays; /* --screenshot-overlays: recomposed captures draw the chrome */
     /* Synchronous run: headless, or a deterministic capture (intermediate
      * screenshots). Pipelines compile on the display owner at first draw and
      * the precompile does not run by default. */
@@ -4802,6 +4803,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
     s_nr.headless = headless;
     s_nr.sync_run = nr_run_is_synchronous(headless, opts);
+    s_nr.shot_overlays = opts->screenshot_overlays > 0;
 
     /* --texpack-dir: point the HD texture-replacement scan at a chosen dir. Set
      * before openpete_vram_install_ops() below runs texture_pack_init(). NULL is
@@ -14954,10 +14956,11 @@ static void prepare_menu_ss(void) {
  * composites from the supersampled menu_ss layer that prepare_menu_ss built
  * when that path is ready, with a MENU_OUTLINE_PX dark outline around the
  * glyphs (the border's vertices carry OPENPETE_HUD_ALPHA_NO_OUTLINE and take
- * none), else draws directly as depth-isolated 3D glyphs without one. */
-static void draw_menu_overlay(void) {
+ * none), else draws directly as depth-isolated 3D glyphs without one.
+ * @return The glyph-layer vertices drawn, 0 when no glyph layer drew. */
+static int draw_menu_overlay(void) {
     if (!openpete_menu_is_open() || !s_nr.menu_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0)
-        return;
+        return 0;
     openpete_menu_layout_t L;
     openpete_menu_get_layout(&L);
     const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
@@ -14979,7 +14982,7 @@ static void draw_menu_overlay(void) {
      * border is built game-side (text_moby_native_menu / emit_menu_border) as a
      * lit frame and arrives through the depth-isolated glyph pass below. */
 
-    if (n <= 0) return;
+    if (n <= 0) return 0;
     rhi_update_buffer(s_nr.menu_vb, buf, (size_t)n * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
 
@@ -15005,6 +15008,7 @@ static void draw_menu_overlay(void) {
     } else {
         draw_menu_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f);
     }
+    return s_menu_glyph_n >= 3 ? s_menu_glyph_n : 0;
 }
 
 /* --- OSD toast overlay ---------------------------------------------------
@@ -17608,6 +17612,132 @@ void openpete_native_occl_service_headless(void)
     rhi_end_frame(s_nr.dev);
 }
 
+/* Screenshot chrome (--screenshot-overlays). The live present draws the
+ * chrome into the window-sized offscreen in overlay space, whose x unit is
+ * the window height; a recomposed capture draws into a render target of the
+ * capture's own extent. The window extent is therefore swapped for the
+ * capture's around every chrome call, so overlay space, the anchor ledger
+ * and the supersample targets all resolve against the image being written,
+ * and swapped back before anything else reads it. */
+typedef struct {
+    int       win_w, win_h;   /* the window extent the swap replaced */
+    op_time_t target;         /* the present target the swap replaced */
+} shot_chrome_save_t;
+
+/* Capture composes that drew chrome, and the menu glyph-layer vertices
+ * they drew, cumulative; the per-capture log line reports both. */
+static unsigned s_shot_chrome_composes = 0;
+static unsigned long long s_shot_chrome_menu_verts = 0;
+
+/** @brief Point the window extent at a capture of @p w by @p h for the chrome calls that follow.
+ *
+ * A headless run has no present clock: openpete_interp_present_now would
+ * read the wall clock, which would make the toast fades and the version
+ * line's dwell depend on host speed. When no present target is set, a
+ * headless capture pins it to the VBL counter's instant (openpete_frame
+ * VBLs of half a tick each, plus 1 ns so VBL 0 is not read as unset), so
+ * the chrome a capture shows depends on the VBL alone. A windowed capture keeps the live present clock, which its
+ * toasts already run on.
+ * @param w Capture width in pixels.
+ * @param h Capture height in pixels.
+ * @param sv Receives the replaced extent and present target. */
+static void shot_chrome_enter(int w, int h, shot_chrome_save_t *sv)
+{
+    extern unsigned openpete_frame;
+    sv->win_w = s_nr.win_w; sv->win_h = s_nr.win_h;
+    sv->target = openpete_interp_present_target();
+    s_nr.win_w = w; s_nr.win_h = h;
+    if (s_nr.headless && sv->target == 0)
+        openpete_interp_set_present_target(
+            (op_time_t)openpete_frame * (g_openpete_tick_period_ns / 2) + 1);
+}
+
+/** @brief Restore the window extent and present target shot_chrome_enter replaced.
+ *
+ * @param sv The values shot_chrome_enter saved. */
+static void shot_chrome_leave(const shot_chrome_save_t *sv)
+{
+    s_nr.win_w = sv->win_w; s_nr.win_h = sv->win_h;
+    openpete_interp_set_present_target(sv->target);
+}
+
+/** @brief Latch the chrome's glyph lists and layout and size its targets for a capture of @p w by @p h.
+ *
+ * Runs outside a frame, before the capture's frames open: the targets it
+ * sizes wait the device idle. The latch takes the glyph lists the tick's
+ * builders published, which no live present takes in a headless run.
+ * No-op unless --screenshot-overlays is set.
+ * @param w Capture width in pixels.
+ * @param h Capture height in pixels. */
+static void shot_chrome_setup(int w, int h)
+{
+    if (!s_nr.shot_overlays) return;
+    shot_chrome_save_t sv;
+    shot_chrome_enter(w, h, &sv);
+    glyph_lists_latch();
+    overlay_layout_update();
+    ensure_ovl_ss();
+    ensure_menu_ss();
+    ensure_osd_ss();
+    ensure_version_ss();
+    shot_chrome_leave(&sv);
+}
+
+/** @brief Render the chrome's supersampled layers for a capture of @p w by @p h.
+ *
+ * Each layer is its own render pass, so the call sits inside the frame and
+ * outside the capture target's pass. No-op unless --screenshot-overlays is
+ * set.
+ * @param w Capture width in pixels.
+ * @param h Capture height in pixels. */
+static void shot_chrome_prepare(int w, int h)
+{
+    if (!s_nr.shot_overlays) return;
+    shot_chrome_save_t sv;
+    shot_chrome_enter(w, h, &sv);
+    prepare_perf_overlay_ss();
+    prepare_menu_ss();
+    prepare_osd_ss();
+    prepare_version_ss();
+    shot_chrome_leave(&sv);
+}
+
+/** @brief Draw the chrome into the open capture target pass of @p w by @p h, in the live compose's order.
+ *
+ * The stats readout, the version line, the toasts, then the settings menu
+ * on top. The capture target cannot reopen with its contents kept, so the
+ * chrome lands before the SCENE postfx point runs over the target, where
+ * the live compose draws it after that point. No-op unless
+ * --screenshot-overlays is set.
+ * @param w Capture width in pixels.
+ * @param h Capture height in pixels.
+ * @return The settings menu's glyph-layer vertices drawn. */
+static int shot_chrome_draw(int w, int h)
+{
+    if (!s_nr.shot_overlays) return 0;
+    shot_chrome_save_t sv;
+    shot_chrome_enter(w, h, &sv);
+    draw_perf_overlay();
+    draw_version_overlay();
+    draw_osd_overlay();
+    const int menu_verts = draw_menu_overlay();
+    shot_chrome_leave(&sv);
+    return menu_verts;
+}
+
+/** @brief Log one capture's chrome engagement and add it to the cumulative counts.
+ *
+ * No-op unless --screenshot-overlays is set.
+ * @param menu_verts Settings menu glyph-layer vertices the capture drew. */
+static void shot_chrome_note(int menu_verts)
+{
+    if (!s_nr.shot_overlays) return;
+    s_shot_chrome_composes++;
+    s_shot_chrome_menu_verts += (unsigned long long)(menu_verts > 0 ? menu_verts : 0);
+    OPL_INFO_F("native", "screenshot overlays: menu glyph verts %d (captures %u, total %llu)",
+               menu_verts, s_shot_chrome_composes, s_shot_chrome_menu_verts);
+}
+
 /** @brief Render the widescreen (Hor+) native-only screenshot into shot_rtt and write it as the -vk PNG or hand it back in memory.
  *
  * The scene is composed at the widened extent, ref_w * cap_wf by @p H,
@@ -17649,6 +17779,8 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
      * pre-pass affine and the scene draw agree. */
     float prev_wf = s_render_freeze_wf;
     s_render_freeze_wf = cap_wf;
+    shot_chrome_setup(Wc, H);
+    int menu_verts = 0;
     for (int attempt = 0; ; attempt++) {
         if (!rhi_begin_frame(s_nr.dev)) { s_render_freeze_wf = prev_wf; return 1; }
         upload_synced_textures();
@@ -17659,9 +17791,11 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
          * same rationale as the 4:3 dump compose (see screenshot_all_impl). */
         { int kw, kh; rhi_texture_extent(rt, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
+        shot_chrome_prepare(Wc, H);
         rhi_begin_render_target(s_nr.dev, rt, 0.0f, 0.0f, 0.0f, 1.0f);
         draw_native_scene(true);
         draw_mod_overlay();
+        menu_verts = shot_chrome_draw(Wc, H);
         rhi_end_render_target(s_nr.dev, rt);
         native_postfx_run(1 /* SCENE */, rt, Wc, H);
         native_postfx_run(0 /* COMPOSITE */, rt, Wc, H);
@@ -17673,6 +17807,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
                              openpete_native_hdfold_pending() == 0)) break;
     }
     s_render_freeze_wf = prev_wf;
+    shot_chrome_note(menu_verts);
 
     const size_t px = (size_t)Wc * (size_t)H;
     unsigned char *nat = malloc(px * 4);
@@ -18118,6 +18253,8 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     /* Render the native scene into the ref-sized RTT (full extent, no panels).
      * The offscreen + present are kept valid with a plain bg clear so the window
      * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
+    shot_chrome_setup(W, H);
+    int menu_verts = 0;
     for (int attempt = 0; ; attempt++) {
         if (!rhi_begin_frame(s_nr.dev)) return 1;
         upload_synced_textures();  /* pending VRAM/ref uploads ride this frame */
@@ -18132,6 +18269,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
          * identical. */
         { int kw, kh; rhi_texture_extent(s_nr.native_rtt, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
+        shot_chrome_prepare(W, H);
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
         draw_native_scene(true);
         /* Mod draw-service content (3D meshes under the mod HUD) - the live
@@ -18144,6 +18282,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
          * here (visible only when a SCENE-point pass AND a mod overlay are
          * both active). */
         draw_mod_overlay();
+        menu_verts = shot_chrome_draw(W, H);   /* --screenshot-overlays */
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
         /* Postfx over the dump compose too: this path bypasses off_image, so
          * without these calls a headless or screenshot-all capture would
@@ -18166,6 +18305,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         if (attempt >= 8 || (s_hd_pending_n == 0 &&
                              openpete_native_hdfold_pending() == 0)) break;
     }
+    shot_chrome_note(menu_verts);
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */
     unsigned char *ref = with_ref ? malloc(frame_px * 4)     : NULL;  /* reference, top-down  */

@@ -355,6 +355,12 @@ typedef struct openpete_options {
      * it only for bk2s/poses that reach a freeze state. */
     bool        screenshot_freeze_backdrop;
 
+    /* `--screenshot-overlays [0|1]` (env OPENPETE_SCREENSHOT_OVERLAYS): the
+     * recomposed screenshot (headless and intermediate captures) also draws
+     * the chrome - settings menu, OSD toasts, stats readout, version line -
+     * over the scene, as the live present does. -1 = unset (resolved to 0). */
+    int         screenshot_overlays;
+
     /* Main-RAM dump - writes the 2MB g_ram to disk once the feed key
      * reaches N. Used as the openpete side of the PCSX-Redux comparison
      * loop (see scripts/pcsx-redux-ram-dump.lua). */

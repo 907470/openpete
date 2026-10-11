@@ -49,6 +49,7 @@
 "flag:--scan-guard" = "customizing/mods.md#mods-and-spyro-3s-anti-piracy-checks"
 "flag:--screenshot-intermediate-on-frame" = "help/glossary.md#ids-that-contain-frame"
 "flag:--screenshot-on-frame" = "help/glossary.md#ids-that-contain-frame"
+"flag:--screenshot-overlays" = "playing/recording.md#screenshots"
 "flag:--sfx" = "customizing/audio.md#audio"
 "flag:--sfxpack-dir" = "customizing/music-and-sound-packs.md#sound-effects"
 "flag:--show-fps" = "graphics/performance.md#the-performance-readout"

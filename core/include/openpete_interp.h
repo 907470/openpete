@@ -176,6 +176,12 @@ void      openpete_interp_set_present_target(op_time_t t);
  * Every sub-tick alpha reads this clock, never op_now() directly.
  * @return The display instant of the present being produced. */
 op_time_t openpete_interp_present_now(void);
+/** @brief Return the present target as last set, 0 when none is set.
+ *
+ * Lets a caller that overrides the target for a span restore the value it
+ * found.
+ * @return The forced display instant, or 0. */
+op_time_t openpete_interp_present_target(void);
 
 /** @brief Arm or disarm deterministic capture stamps.
  *

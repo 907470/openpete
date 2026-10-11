@@ -858,6 +858,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->input_lock          = -1;    /* -1 = unset; host input is taken */
     opts->pad_unfocused       = -1;    /* -1 = unset; unfocused pads are ignored */
     opts->background          = -1;    /* -1 = unset; the window activates normally */
+    opts->screenshot_overlays = -1;    /* -1 = unset; recomposed screenshots draw no chrome */
     opts->mouse_sensitivity   = -1.0f; /* -1 = unset (1.0) */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
@@ -1754,6 +1755,14 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
             if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->pad_unfocused = 1; i++; }
             else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->pad_unfocused = 0; i++; }
         }
+    } else if (strcmp(a, "--screenshot-overlays") == 0) {
+        /* Optional value, as --input-lock. */
+        opts->screenshot_overlays = 1;
+        if (i + 1 < argc) {
+            const char* n = argv[i + 1];
+            if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->screenshot_overlays = 1; i++; }
+            else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->screenshot_overlays = 0; i++; }
+        }
     } else if (strcmp(a, "--background") == 0) {
         /* Optional value, as --input-lock. */
         opts->background = 1;
@@ -1950,8 +1959,8 @@ static int env_onoff_fallback(const char* name, int* slot) {
  *
  * Runs after the flag chain, so a typed flag has already claimed its slot.
  * Covers OPENPETE_VIBRATION, OPENPETE_MOUSE, OPENPETE_INPUT_LOCK,
- * OPENPETE_BACKGROUND and OPENPETE_PAD_UNFOCUSED, and refuses --input-lock
- * with OPENPETE_INPUT_LEGACY.
+ * OPENPETE_BACKGROUND, OPENPETE_PAD_UNFOCUSED and OPENPETE_SCREENSHOT_OVERLAYS,
+ * and refuses --input-lock with OPENPETE_INPUT_LEGACY.
  * @param opts The options block. */
 static int apply_env_spellings(openpete_options_t* opts) {
     /* OPENPETE_VIBRATION: the env spelling of --vibration, applied only when
@@ -1979,6 +1988,8 @@ static int apply_env_spellings(openpete_options_t* opts) {
         || env_onoff_fallback("OPENPETE_INPUT_LOCK", &opts->input_lock) != 0
         || env_onoff_fallback("OPENPETE_BACKGROUND", &opts->background) != 0
         || env_onoff_fallback("OPENPETE_PAD_UNFOCUSED", &opts->pad_unfocused) != 0)
+        return OPENPETE_EXIT_SETUP_ERROR;
+    if (env_onoff_fallback("OPENPETE_SCREENSHOT_OVERLAYS", &opts->screenshot_overlays) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
 
     /* The legacy input path hands the event pump and the pad decode to
@@ -2048,6 +2059,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->mouse < 0)                 out->mouse = 1;
     if (out->input_lock < 0)            out->input_lock = 0;
     if (out->background < 0)            out->background = 0;
+    if (out->screenshot_overlays < 0)   out->screenshot_overlays = 0;
     if (out->pad_unfocused < 0)         out->pad_unfocused = 0;
     if (out->mouse_sensitivity < 0.0f)  out->mouse_sensitivity = 1.0f;
     if (out->load_delay < 0)            out->load_delay = (int)game_get_load_delay_default();

@@ -174,3 +174,8 @@ intro-cutpath-block-switch|4246|2||4250,4252,4254|--skip-to-cutscene intro
 # screen space in place on state 1 -> 2 (a placement); a distance bound held
 # or lerped it on the sub-tick view. Blessed pre-fix.
 attract-collect-hud-jump|13058|2||13060,13061,13062,13063,13064
+# settings-menu: the settings menu (OPENPETE_MENU_DEMO opens it at boot)
+# drawn into the capture by --screenshot-overlays, over Artisans. Its rows
+# are the menu's row table; the SETTINGS save row's removal diverges it.
+# Blessed pre-fix.
+settings-menu|1700|100||1760|--skip-to-level artisans OPENPETE_MENU_DEMO=1 --screenshot-overlays

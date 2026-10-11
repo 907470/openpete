@@ -2269,6 +2269,22 @@ static const knob_desc_t g_builtin_debug[] = {
           "Windowed native-vk runs only; inert elsewhere.",
       .key_action = "devui" },
 
+    { "screenshot_overlays", "Screenshot overlays", "Debug", "--screenshot-overlays",
+      "OPENPETE_SCREENSHOT_OVERLAYS",
+      "Draw the settings menu, notifications, stats readout and version line "
+      "into recomposed screenshots (headless and intermediate captures), as "
+      "the window shows them. Off, those captures hold the picture without "
+      "them. A windowed capture that reads back the presented image carries "
+      "them either way.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "0", .flag_arg = KNOB_FLAG_ARG_OPTIONAL,
+      .help_arg = "[0|1]", .help_order = 175,
+      .help_text = "draw the settings menu, notifications, stats readout and\n"
+          "version line into recomposed screenshots (headless and\n"
+          "intermediate captures), as the window shows them (default {def}\n"
+          "= off; on|off also accepted)" },
+
     { "devui_inject_mouse", "Park the overlay mouse", "Debug",
       NULL, "OPENPETE_DEVUI_INJECT_MOUSE",
       "Post a fixed cursor position (window pixels, \"X,Y\") into this "

@@ -176,6 +176,7 @@ int openpete_interp_enabled(void) {
 /* Virtual present clock - see the header note. */
 static op_time_t s_present_target = 0;
 void openpete_interp_set_present_target(op_time_t t) { s_present_target = t; }
+op_time_t openpete_interp_present_target(void) { return s_present_target; }
 op_time_t openpete_interp_present_now(void) {
     return s_present_target ? s_present_target : op_now(); /* clock-guard: wall */ /* inline presents: display instant == now */
 }

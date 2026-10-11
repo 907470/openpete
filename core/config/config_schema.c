@@ -116,6 +116,7 @@ static const cfg_knob_t g_schema[] = {
     { "log_level",        "--log-level",        "OPENPETE_LOG",          CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "log_format",       "--log-format",       NULL,                    CFG_ENUM,   v_logfmt,   NULL,       NULL,       0 },
     { "devui_open",       "--devui-open",       "OPENPETE_DEVUI_OPEN",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "screenshot_overlays", "--screenshot-overlays", "OPENPETE_SCREENSHOT_OVERLAYS", CFG_BOOL, NULL, NULL, NULL, 0 },
     { "devui_inject_mouse", NULL,                   "OPENPETE_DEVUI_INJECT_MOUSE", CFG_STRING, NULL, NULL,   NULL,       0 },
     { "fillpick",         NULL,                 "OPENPETE_FILLPICK",     CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "fillpick_preview", NULL,                 "OPENPETE_FILLPICK_PREVIEW", CFG_BOOL, NULL,     NULL,       NULL,       0 },
