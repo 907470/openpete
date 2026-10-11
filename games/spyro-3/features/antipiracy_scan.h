@@ -5,9 +5,11 @@
  * a CRC-16 over EXE .text and then over the overlay's own .text, a few
  * dozen bytes per call; 8 of them carry a second scanner over one EXE
  * function. A failed scan clears an egg-collected byte in D_80070300. The
- * observer reads each scanner's cursor and CRC words at the scanner's
- * entry, logs one line when a scan reaches its end with the game's own
- * pass test, and counts the scans. Reads only.
+ * observer reads each scanner's cursor at the scanner's entry and takes the
+ * CRC word at the store that ends the scan (a one-function scan: at the
+ * entry of the call that compares), logs one line per completed scan with
+ * the game's own pass test, and counts the scans. It stores nothing to
+ * guest RAM: its store hook passes every store down the chain unchanged.
  *
  * Called from game_extras_impl.c (the entry verdict hook). */
 
@@ -17,11 +19,18 @@ typedef struct CPUState CPUState;
 
 /** @brief Observe a level overlay's anti-piracy scanner when one is entered.
  *
- * Returns at once below the lowest scanner address. Otherwise the resident
- * overlay (spyro_get_active_overlay_magic) selects its scanner rows; an
- * entry at a row's address reads the scanner moby's data block (the word
- * at a0), its cursor and its CRC word. A cursor that moved counts one scan
- * step; a cursor at the scan's end logs, once per scan, a line
+ * First removes the end-store hook once the call it was installed for has
+ * returned (the stack pointer is back at that call's entry value). Returns
+ * at once below the lowest scanner address. Otherwise the resident overlay
+ * (spyro_get_active_overlay_magic) selects its scanner rows; an entry at a
+ * row's address reads the scanner moby's data block (the word at a0) and
+ * its cursor. A cursor that moved counts one scan step. An EXE plus overlay
+ * scan within 64 bytes of its end installs a hook on the guest word store;
+ * the store that sets the cursor to the end reads the CRC word, which is
+ * the value the game's compare reads before a failing compare (in the
+ * scanner or in a companion moby) zeroes it. A one-function scan reads its
+ * CRC word at the entry that finds the cursor at the end, the call whose
+ * compare runs. Each completed scan logs, once, a line
  * `level <n> scan <addr> moby <data> complete: PASS|FAIL crc 0x<crc> steps
  * <k> vbl <v>` under the `antipiracy` subsystem with the run's cumulative
  * counts. The pass test is the scanner's own: the CRC word is 0 for an EXE
@@ -30,7 +39,9 @@ typedef struct CPUState CPUState;
  * word in the overlay header. A FAIL goes through
  * spyro3_antipiracy_report_fail. A scan left unfinished when its overlay
  * is replaced or the process exits logs an `incomplete` line with its
- * cursor.
+ * cursor; an EXE plus overlay scan first seen at its end without its end
+ * store (a state loaded past it) logs `complete: UNOBSERVED` at warning
+ * level and is not counted.
  * Speculative ticks are skipped.
  * @param cpu The guest CPU state at the entry (a0 is the moby).
  * @param addr The entered function's guest vaddr. */

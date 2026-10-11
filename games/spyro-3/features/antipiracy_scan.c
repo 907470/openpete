@@ -16,6 +16,27 @@
 // ((crc >> 12) & 0xFFFF0) | (D_800722B8 & 0xFFF0000F) with a word of the
 // overlay header once the cursor reaches its end. The rows below are read
 // off the decomp's asm (asm/nonmatchings/overlays/level_NN/moby/).
+//
+// The verdict of an EXE plus overlay scan is taken at the store that ends
+// it: the overlay pass's `sw` of the cursor that makes it equal to the
+// row's end. The CRC word is final there (each byte's CRC stores precede the
+// cursor store, and the loop exits on the cursor test), and it is the value
+// the game's compare (cursor == end, CRC word != 0) reads next. A compare
+// that fails stores 0 to the CRC word in most overlays, with no call between
+// the scan's last step and that store (func_level_33_8008DF54 compare
+// 0x8008E1FC..0x8008E218, store 0x8008E238; func_level_44_80081188 cursor
+// store 0x80081234, compare 0x80081244..0x80081260, store 0x80081284) or in
+// another moby's update before the scanner's next call
+// (func_level_22_8008E278 0x8008E2D8..0x8008E318, func_level_11_8007F630
+// 0x8007F9E8..0x8007FA14), so neither the scanner's next entry nor any
+// function entry in between sees the CRC the compare read. A store hook on the guest word store is installed at the
+// entry of a scanner call that starts within one overlay-pass call (64
+// bytes) of the end and removed at the first function entry after that call
+// returns (stack pointer back at the entry's value) or at the end store.
+// A one-function scan compares in the call after the one that ends it
+// (func_level_16_80079654 0x80079934..0x80079968, reached only when the
+// cursor test at 0x800798C8 fails), so its verdict is read at that call's
+// entry.
 
 #include "antipiracy_scan.h"
 
@@ -33,6 +54,8 @@
 #define S3_SCAN_ADDR_MIN  0x80077000u
 #define S3_SCAN_ADDR_MAX  0x8008DF54u
 #define S3_SECONDARY_HI   0x800722B8u /* D_800722B8, OR-ed into the check */
+#define S3_OVERLAY_STRIDE 64u          /* overlay-pass bytes per scanner call (slti a1, 0x40) */
+#define S3_KSEG_MASK      0x1FFFFFFFu
 
 typedef enum { SCAN_EXE_OVERLAY, SCAN_FUNCTION } scan_kind_t;
 
@@ -96,6 +119,13 @@ typedef struct {
     int               reported;
 } scan_slot_t;
 
+/* The scanner call whose end store the hook waits for: its slot, the
+ * cursor and CRC word addresses, and the stack pointer at its entry. */
+static scan_slot_t* s_arm_slot;
+static CPUState*    s_arm_cpu;
+static uint32_t     s_arm_cursor, s_arm_crc, s_arm_sp;
+static void       (*s_arm_next)(uint32_t, uint32_t); /* the hook chain below this one */
+
 #define MAX_SLOTS 16
 
 static uint32_t    s_magic;              /* resident overlay the rows below belong to */
@@ -122,8 +152,55 @@ void spyro3_antipiracy_counts(uint32_t* completed, uint32_t* failed, uint32_t* s
     if (steps) *steps = s_steps;
 }
 
+static void scan_end_store(uint32_t addr, uint32_t value);
+static void report_completion(CPUState* cpu, scan_slot_t* s, uint32_t crc);
+
+/** @brief Remove the end-store hook, leaving the store chain as it was when it was installed.
+ *
+ * A hook chain replaced since the hook went in (a store bracket that began
+ * inside the call) is left alone. */
+static void disarm(void) {
+    if (!s_arm_slot) return;
+    if (s_arm_cpu->write_word == scan_end_store) s_arm_cpu->write_word = s_arm_next;
+    s_arm_slot = NULL;
+}
+
+/** @brief Install the end-store hook for one scanner call.
+ *
+ * @param cpu The guest CPU state at the scanner's entry.
+ * @param s The scan's slot. */
+static void arm(CPUState* cpu, scan_slot_t* s) {
+    disarm();
+    s_arm_slot   = s;
+    s_arm_cpu    = cpu;
+    s_arm_cursor = (s->data + s->row->cursor_off) & S3_KSEG_MASK;
+    s_arm_crc    = s->data + s->row->crc_off;
+    s_arm_sp     = cpu->sp;
+    s_arm_next   = cpu->write_word;
+    cpu->write_word = scan_end_store;
+}
+
+/** @brief Word-store hook: pass the store down the chain, then take the verdict when it is the store that ends the armed scan.
+ *
+ * @param addr Guest address of the store.
+ * @param value Stored word. */
+static void scan_end_store(uint32_t addr, uint32_t value) {
+    s_arm_next(addr, value);
+    if (!s_arm_slot || openpete_speculative || (addr & S3_KSEG_MASK) != s_arm_cursor ||
+        value != s_arm_slot->row->hi)
+        return;
+    scan_slot_t* s = s_arm_slot;
+    CPUState* cpu  = s_arm_cpu;
+    disarm();
+    s->steps++;
+    s_steps++;
+    s->last_cursor = value;
+    report_completion(cpu, s, cpu->read_word(s_arm_crc));
+}
+
 /** @brief Log the scans of the outgoing overlay that never reached their end, then forget every slot. */
 static void flush_slots(void) {
+    disarm();
     for (int i = 0; i < s_n_slots; i++) {
         const scan_slot_t* s = &s_slots[i];
         if (s->reported) continue;
@@ -185,38 +262,75 @@ static int scan_passes(CPUState* cpu, const scan_row_t* row, uint32_t crc) {
     return got == cpu->read_word(row->check);
 }
 
+/** @brief Log a scan that reached its end with its verdict, once, and count it.
+ *
+ * @param cpu The guest CPU state.
+ * @param s The scan's slot.
+ * @param crc The CRC word the game's compare reads. */
+static void report_completion(CPUState* cpu, scan_slot_t* s, uint32_t crc) {
+    const scan_row_t* row = s->row;
+    s->reported = 1;
+    s_completed++;
+    int pass = scan_passes(cpu, row, crc);
+    char detail[200];
+    snprintf(detail, sizeof detail, "level %d scan 0x%08X moby 0x%08X crc 0x%08X steps %u vbl %d",
+             s_level, (unsigned)row->func, (unsigned)s->data, (unsigned)crc, (unsigned)s->steps,
+             SDL_GetAtomicInt(&openpete_vbl));
+    if (!pass) spyro3_antipiracy_report_fail("scan", detail);
+    OPL_INFO_F("antipiracy", "level %d scan 0x%08X moby 0x%08X complete: %s crc 0x%08X steps %u "
+               "vbl %d (completed %u failed %u steps %u)",
+               s_level, (unsigned)row->func, (unsigned)s->data, pass ? "PASS" : "FAIL",
+               (unsigned)crc, (unsigned)s->steps, SDL_GetAtomicInt(&openpete_vbl),
+               (unsigned)s_completed, (unsigned)s_failed, (unsigned)s_steps);
+}
+
+/** @brief Return the resident level's scanner row at a function address.
+ *
+ * @param addr The entered function's guest vaddr.
+ * @return The row, or NULL when no scanner of the resident level starts there. */
+static const scan_row_t* row_at(uint32_t addr) {
+    for (size_t i = 0; i < N_ROWS; i++)
+        if (k_rows[i].level == s_level && k_rows[i].func == addr) return &k_rows[i];
+    return NULL;
+}
+
+/** @brief Observe one scanner call at its entry: count a step, take a one-function scan's verdict, or arm the end store of an EXE plus overlay scan.
+ *
+ * @param cpu The guest CPU state at the entry (a0 is the moby).
+ * @param row The scanner's row. */
+static void observe_scanner(CPUState* cpu, const scan_row_t* row) {
+    uint32_t data   = cpu->read_word(cpu->a0);
+    uint32_t cursor = cpu->read_word(data + row->cursor_off);
+    scan_slot_t* s = slot_for(row, data, cursor);
+    if (!s) return;
+    if (cursor != s->last_cursor) {
+        s->steps++;
+        s_steps++;
+        if (s->reported && cursor != row->hi) s->reported = 0; /* restarted (state load) */
+        s->last_cursor = cursor;
+    }
+    if (s->reported) return;
+    if (cursor == row->hi && row->kind == SCAN_FUNCTION) {
+        report_completion(cpu, s, cpu->read_word(data + row->crc_off));
+    } else if (cursor == row->hi) {
+        /* Ended where the end store was not watched (a state loaded past it). */
+        s->reported = 1;
+        OPL_WARN_F("antipiracy", "level %d scan 0x%08X moby 0x%08X complete: UNOBSERVED "
+                   "(end store not seen) steps %u vbl %d",
+                   s_level, (unsigned)row->func, (unsigned)data, (unsigned)s->steps,
+                   SDL_GetAtomicInt(&openpete_vbl));
+    } else if (row->kind == SCAN_EXE_OVERLAY && cursor >= row->lo &&
+               row->hi - cursor <= S3_OVERLAY_STRIDE) {
+        arm(cpu, s);
+    }
+}
+
 void spyro3_antipiracy_scan_on_entry(CPUState* cpu, uint32_t addr) {
-    if (addr < S3_SCAN_ADDR_MIN || addr > S3_SCAN_ADDR_MAX || openpete_speculative) return;
+    if (openpete_speculative) return;
+    if (s_arm_slot && cpu->sp >= s_arm_sp) disarm();
+    if (addr < S3_SCAN_ADDR_MIN || addr > S3_SCAN_ADDR_MAX) return;
     sync_overlay();
     if (s_level == 0) return;
-    for (size_t i = 0; i < N_ROWS; i++) {
-        const scan_row_t* row = &k_rows[i];
-        if (row->level != s_level || row->func != addr) continue;
-        uint32_t data   = cpu->read_word(cpu->a0);
-        uint32_t cursor = cpu->read_word(data + row->cursor_off);
-        uint32_t crc    = cpu->read_word(data + row->crc_off);
-        scan_slot_t* s = slot_for(row, data, cursor);
-        if (!s) return;
-        if (cursor != s->last_cursor) {
-            s->steps++;
-            s_steps++;
-            if (s->reported && cursor != row->hi) s->reported = 0; /* restarted (state load) */
-            s->last_cursor = cursor;
-        }
-        if (s->reported || cursor != row->hi) return;
-        s->reported = 1;
-        s_completed++;
-        int pass = scan_passes(cpu, row, crc);
-        char detail[200];
-        snprintf(detail, sizeof detail, "level %d scan 0x%08X moby 0x%08X crc 0x%08X steps %u vbl %d",
-                 s_level, (unsigned)row->func, (unsigned)data, (unsigned)crc, (unsigned)s->steps,
-                 SDL_GetAtomicInt(&openpete_vbl));
-        if (!pass) spyro3_antipiracy_report_fail("scan", detail);
-        OPL_INFO_F("antipiracy", "level %d scan 0x%08X moby 0x%08X complete: %s crc 0x%08X steps %u "
-                   "vbl %d (completed %u failed %u steps %u)",
-                   s_level, (unsigned)row->func, (unsigned)data, pass ? "PASS" : "FAIL",
-                   (unsigned)crc, (unsigned)s->steps, SDL_GetAtomicInt(&openpete_vbl),
-                   (unsigned)s_completed, (unsigned)s_failed, (unsigned)s_steps);
-        return;
-    }
+    const scan_row_t* row = row_at(addr);
+    if (row) observe_scanner(cpu, row);
 }

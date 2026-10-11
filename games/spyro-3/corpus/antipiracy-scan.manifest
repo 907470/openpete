@@ -35,3 +35,6 @@ scorchs-pit-fight-scan 12000 4
 # sorceresss-lair-fight-scan: func_level_47_80079AC4 passes at VBL 5791 and
 # 7989, func_level_47_8007CF38 at VBL 9887.
 sorceresss-lair-fight-scan 9700 3
+# sunny-villa-area-2-idle-scan: func_level_11_80080CE0 (class 313, placed
+# only in Sunny Villa's area 2) passes at VBL 9581.
+sunny-villa-area-2-idle-scan 10000 1
