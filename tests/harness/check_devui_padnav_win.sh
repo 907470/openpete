@@ -19,10 +19,10 @@
 #           recorded port-0 records hold no Cross and exactly two runs of
 #           Down (the presses before and after the overlay).
 #   keys    M opens and closes the overlay, Escape opens and closes the
-#           settings menu (the keyboard paths), then Guide opens the
-#           settings menu and East closes it. Pass: two overlay opens and
+#           settings menu (the keyboard paths), then a 700 ms hold of Start
+#           opens the settings menu and East closes it. Pass: two overlay opens and
 #           closes and two menu opens and closes by key, and one menu open by
-#           Guide.
+#           the Start hold.
 #   save    savestate_save bound to pad:misc1 by a harness config file
 #           (--config: no other file is read). misc1 before the overlay
 #           opens saves; misc1 while it is open does not. Pass: one save.
@@ -177,8 +177,8 @@ cat >"$OUT/keys.txt" <<'EOF'
 10100ms keyup Escape
 11000ms keydown Escape
 11100ms keyup Escape
-12000ms pad guide 1
-12400ms pad guide 0
+12000ms pad start 1
+12700ms pad start 0
 13000ms pad east 1
 13150ms pad east 0
 EOF
@@ -190,9 +190,9 @@ m_open=$(count "$OUT/keys.log" "menu: opened")
 m_close=$(count "$OUT/keys.log" "menu: closed")
 detail="devui opens=$d_open closes=$d_close; menu opens=$m_open closes=$m_close"
 if [ "$d_open" = 1 ] && [ "$d_close" = 1 ] && [ "$m_open" = 2 ] && [ "$m_close" = 2 ]; then
-    verdict keys PASS "$detail (Guide opened the menu)"
+    verdict keys PASS "$detail (the Start hold opened the menu)"
 else
-    verdict keys FAIL "$detail (want 1/1 and 2/2: M, Escape, Guide)"
+    verdict keys FAIL "$detail (want 1/1 and 2/2: M, Escape, Start hold)"
 fi
 
 fi

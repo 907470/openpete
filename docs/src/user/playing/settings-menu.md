@@ -2,11 +2,10 @@
 
 The settings menu is a panel drawn over the game in the game's own lettering.
 It opens and closes with {{ key("key:host.menu") }} <!-- id: key:host.menu home -->;
-on a controller, Guide (the Xbox or PS button) opens it, where the system
-passes that button to games; see [Controls](controls.md#openpete-keys).
-Windows opens Xbox Game Bar on Guide unless that is turned off in its
-settings, and Steam takes Guide as its own button; bind `menu` to another
-source there (see [Key bindings](../customizing/key-bindings.md)).
+on a controller, holding Start for half a second opens it; see
+[Controls](controls.md#openpete-keys). Start also reaches the game as
+usual, so the game's own pause screen opens under the menu. The binding
+can be changed in [Key bindings](../customizing/key-bindings.md).
 
 !!! note
     The game keeps running while the menu is open. The PlayStation pad is

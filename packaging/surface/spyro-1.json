@@ -6290,8 +6290,8 @@
    "kind": "digital",
    "dev": false,
    "devbuild": false,
-   "def": "Escape,pad:guide",
-   "suggested": "Escape,pad:guide"
+   "def": "Escape,hold:pad:start",
+   "suggested": "Escape,hold:pad:start"
   },
   {
    "id": "key:host.devui",

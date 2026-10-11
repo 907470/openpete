@@ -144,7 +144,7 @@ typedef enum {
    * overlay's pad source is a hold of Back: every other button is a PSX
    * input, and a tap of Back still reaches the game as select. */             \
   X(MENU,      "menu",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_REQUIRED,          \
-        "Escape,pad:guide", "open/close the settings menu")                    \
+        "Escape,hold:pad:start", "open/close the settings menu")                    \
   X(DEVUI,     "devui",     KM_DIGITAL, KM_CTX_ALWAYS,   KM_LEVEL,             \
         "M,hold:pad:back", "open/close the dev config overlay (closes on release)") \
   /* Dev overlay pad navigation, read while the overlay is open and fed to
