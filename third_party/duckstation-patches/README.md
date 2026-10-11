@@ -32,7 +32,7 @@ Patches that change what a capture records, by number:
 | 0033 | `-psxtrace-spuq spuwrite:HEX`: a `.spuq` row per SpuWrite call with source, size and the head of every sounding voice |
 | 0034 | `-pad-script PATH`: port 1 presses from steps that wait on guest RAM; `quit` ends the run |
 | 0035 | `-ram-dump-at PC[,t1=HEX][,a0=HEX][,hit=N][,ret]=PATH`: main RAM to PATH and the registers to `PATH.txt` at the Nth execution of PC with the register conditions true, or at that call's return; `PcHooks` shares one breakpoint per address among probes |
-| 0036 | `-card-window PATH`: OpenEvent calls, DeliverEvent entries, card commands on SIO0 (command and sector), card event handler entries, and main-path loads of card-handler bytes between a VBLANK and the card completion |
+| 0036 | `-card-window PATH`: OpenEvent calls, DeliverEvent entries, card commands on SIO0 (command and sector), card event handler entries (a jal/jalr to the handler's address), main-path loads of card-handler bytes between a VBLANK and the card completion, and the handler-written set's size at every 2000th VBLANK |
 | 0037 | `-bk2 PATH`: a BizHawk Octoshock movie on the port 1 analog controller, one Input Log line per frame |
 | 0038 | `-card-export SLOT:FRAME:PATH`: the card image (131072 raw bytes) after FRAME frames, `0` before the first, `end` at shutdown |
 | 0039 | `-card1 PATH`: slot 1's non-persistent card holds the image at PATH, never written back |
