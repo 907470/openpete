@@ -275,27 +275,34 @@ constant_ok = true
 # (B(32h), B(33h), B(35h), B(36h)) and A(39h) InitHeap. Every row is a
 # struct extent; the gaps between them are uncompared:
 # - open, the card-event phase's: the event table 0xE028-0xE28F,
-#   InitCard's hook 0xCF0-0xCFB, card driver state 0x7264-0x75CD, the bu
-#   state words 0xB9D0 and 0xB9D8, exception chain slot 1's head
-#   0xE00C-0xE00F (the kernel enqueues the card driver's handler 0x7540
-#   there at a card operation and dequeues it at completion); the
-#   card-wait phase's: the bu broken lists, directory cache and sector
-#   buffers 0xB9E8-0xBE51;
+#   InitCard's hook 0xCF0-0xCFB (libcard _patch_card, PCs 0x8007EEDC and
+#   0x8007EEEC, reads once at boot the lui/addiu pair InitCard writes at
+#   0xCF0 and 0xCF4; openpete seeds the same two words), card driver
+#   state 0x7264-0x75CD, the bu state words 0xB9D0 and 0xB9D8, exception
+#   chain slot 1's head 0xE00C-0xE00F (the kernel enqueues the card
+#   driver's handler 0x7540 there at a card operation and dequeues it at
+#   completion); the card-wait phase's: the bu broken lists, directory
+#   cache and sector buffers 0xB9E8-0xBE51;
 # - open, written by thunked libraries: B(19h) 0x75D0-0x75D3 and C(03h)
 #   0x91E0-0x91E1 (libetc ResetCallback), exception chain slot 0's head
 #   0xE004-0xE007 (C(03h)) and slot 2's head 0xE014-0xE017 (InitCard,
 #   then libpad PadStartCom's C(02h)), fd 1's buffer and count
 #   0x867C-0x8683 (printf's write(1)), event table entry 0 (libspu
 #   SpuStart);
-# - open, kernel code and ROM-copied data outside these tables
-#   (0x500-0x673, 0x9F4-0x6EDF, 0x7200-0x863F, 0x8908-0x8FFF,
-#   0x9010-0xDFFF, 0xE59C-0xFFFF): a read census of guest loads from
-#   0x0-0xFFFF over the cardless gate run (236 address-width-caller rows,
-#   1766220 loads)
-#   finds 4 game loads there, each once at boot: PC 0x8005C298 (the
-#   C0 exception-handler patch check) reads 0xCA8, PCs 0x8007EEDC and
-#   0x8007EEEC (libcard InitCARD) read 0xCF0 and 0xCF4, PC 0x8007EF70
-#   reads 0x4D98;
+# - carved out, uncompared, proven inert: kernel code and ROM-copied
+#   data outside these tables (0x500-0x673, 0x9F4-0x6EDF, 0x7200-0x863F,
+#   0x8908-0x8FFF, 0x9010-0xDFFF, 0xE59C-0xFFFF, less the ranges listed
+#   here): a read census of guest loads from 0x0-0xFFFF over the
+#   cardless gate run (236 address-width-caller rows, 1766220 loads)
+#   finds 2 game loads there, each once at boot, and neither changes a
+#   store or a branch. PC 0x8005C298 (libgte InitGeom's exception-
+#   handler patch) compares the words from 0xCA8 against its 6-word
+#   template and patches only on a full match; hardware's ROM handler
+#   mismatches at the fifth word (loads 0xCA8-0xCBB), openpete's zeros
+#   at the first, and neither stores. PC 0x8007EF70 (libcard
+#   _patch_card2) loads 0x4D98-0x4D9B into a register it never reads,
+#   then stores its 5-word stub there unconditionally. The binary
+#   carries no ROM content for these ranges;
 # - carved out, uncompared: thread 0's register save 0xE2A4-0xE337 (the
 #   registers at the last exception; the reference rewrites it from
 #   0xE2A8 on) and the kernel stack 0x84BC-0x85D1 (frames of kernel and
