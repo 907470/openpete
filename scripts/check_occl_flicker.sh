@@ -126,9 +126,9 @@ case "$GAME" in
     WP_A="39414,13687,18388,1206,-67"
     WP_B="27442,55589,22914,1206,-67"
     LEGS="240:240:admitted 60:120:queries"
-    DUMP_FROM=1100
+    DUMP_FROM=1673
     MIN_WALKS=200
-    BK2_LEGS="sunrise-spring-camera-swing:1500:2300:0.1"
+    BK2_LEGS="sunrise-spring-camera-swing:2073:2873:0.1"
     ;;
   *) LEVEL="";;
 esac

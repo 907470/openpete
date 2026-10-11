@@ -6,14 +6,14 @@
 #
 # The zap's records are spawned by the level overlays' Zoe update, so the pool
 # is empty wherever Zoe is not zapping: none of the bk2 rows holds a live
-# record, and the plain boot holds exactly one, 0x8006B400, from VBL 10334 to
-# 10354. Inside that window the record's head sweeps while its tail stays
-# anchored, and the interval closing at 10354 carries the largest canonical
+# record, and the plain boot holds exactly one, 0x8006B400, from VBL 10907 to
+# 10927. Inside that window the record's head sweeps while its tail stays
+# anchored, and the interval closing at 10927 carries the largest canonical
 # motion of the window, 22.83 px at the head against 1.46 px at the tail. Both
 # ends are judged: the head prices the sweep and the tail proves the anchored
 # end is not dragged along with it.
 #
 # The width cell is reported, not judged (wengage=0): the canonical width over
 # this interval steps 8.099 -> 8.144 px, 0.045 px, below the 1.0 px floor, while
-# the per-call jitter moves it 7.36-9.12 px tick to tick over VBL 10334-10354.
-title-demo-zap | 10354 | tol=0.5 step=4 wengage=0
+# the per-call jitter moves it 7.36-9.12 px tick to tick over VBL 10907-10927.
+title-demo-zap | 10927 | tol=0.5 step=4 wengage=0

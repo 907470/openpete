@@ -75,12 +75,11 @@ GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
 case "$GAME" in
-  spyro-1) LEVEL=artisans;;
-  spyro-2) LEVEL=summer_forest;;
-  spyro-3) LEVEL=sunrise_spring;;
+  spyro-1) LEVEL=artisans;       FRAME_LIMIT=5400;;
+  spyro-2) LEVEL=summer_forest;  FRAME_LIMIT=5973;;
+  spyro-3) LEVEL=sunrise_spring; FRAME_LIMIT=5973;;
   *) echo "ring-pressure: SKIP ($GAME has no row)"; exit 64;;
 esac
-FRAME_LIMIT=5400
 MIN_CANON=20
 ROW_RUNTIME=900
 ROW_TIMEOUT=960

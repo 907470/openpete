@@ -4,9 +4,9 @@
 #   span   a range of intermediate-present VBLs, two apart; every VBL of it
 #          but the first is a leg, compared with the capture two VBLs earlier
 # Ice skating: the body advances one keyframe per four ticks with long head
-# travel; the advances fall on legs 921, 929, 1121, 1129 and 1161. The
+# travel; the advances fall on legs 1494, 1502, 1694, 1702 and 1734. The
 # reflective ice draws the mirrored copy, measured as its own series.
-colossus-ice-skating.bk2 | 913-931,1113-1131,1153-1167
+colossus-ice-skating.bk2 | 1486-1504,1686-1704,1726-1740
 # Walking and a portal entry: a keyframe advance nearly every tick at short
 # head travel.
-autumn-plains-skelos-badlands-portal-entry.bk2 | 951-1077
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1524-1650

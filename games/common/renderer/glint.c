@@ -78,6 +78,7 @@
 // the shared bracket and keeps its own verdicts, including the lifetime byte it
 // decrements in each record; this feeder only reads them afterwards.
 
+#include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
 #include "glint.h"
 #include "feature_registry.h"
 #include "renderer/native_gte.h"
@@ -978,12 +979,12 @@ static void glint_trace(const char* leg, double alpha) {
         if (acc[r].n <= 0) continue;
         fprintf(stderr, "[glint-ext vbl=%u leg=%s alpha=%.3f] rec=%08X ext=%.4f n=%d"
                         " at=(%.2f,%.2f) c=(%.3f,%.3f)\n",
-                openpete_frame, leg, alpha, acc[r].addr, acc[r].sum / (double)acc[r].n,
+                openpete_feed_key_now(), leg, alpha, acc[r].addr, acc[r].sum / (double)acc[r].n,
                 acc[r].n, acc[r].px, acc[r].py, acc[r].cx / (double)acc[r].n,
                 acc[r].cy / (double)acc[r].n);
         fprintf(stderr, "[glint-rot vbl=%u leg=%s alpha=%.3f] rec=%08X ori=%.4f ph=%.4f"
                         " ext=%.4f n=%d life=%d near=%d vz=%.1f\n",
-                openpete_frame, leg, alpha, acc[r].addr, glint_drawn_orientation(&acc[r]),
+                openpete_feed_key_now(), leg, alpha, acc[r].addr, glint_drawn_orientation(&acc[r]),
                 acc[r].ph, acc[r].sum / (double)acc[r].n, acc[r].n, acc[r].life,
                 acc[r].near_mode, acc[r].vz);
     }

@@ -6,11 +6,13 @@
 # voice's key-off, under OPENPETE_AUDIO_HEAD_LOG, OPENPETE_AUDIO_DUMP and
 # OPENPETE_SPU_WRITE_DUMP. Rows (game, cutscene, --frame-limit, ring runs,
 # reference capture):
-#   spyro-2 intro                 3100  1  psxtrace-cutscene-intro
+#   spyro-2 intro                 3673  1  psxtrace-cutscene-intro
 #                                          (key-off at openpete_frame 2957)
-#   spyro-2 ending                6000  1  -  (key-off at frame 5877)
-#   spyro-3 the_second_warning    4400  1  -  (VBL 4907, frame 4334)
-#   spyro-3 an_evil_plot_unfolds  9600  3  -  (last key-off at frame 9384)
+#   spyro-2 ending                6573  1  -  (key-off at frame 5877)
+#   spyro-3 the_second_warning    4973  1  -  (VBL 4907, frame 4334)
+#   spyro-3 an_evil_plot_unfolds 10173  3  -  (last key-off at frame 9384)
+# The --frame-limit column is the feed key's (VBLs on Spyro 2 and 3); the
+# key-off columns are openpete_frame, 573 fast-boot VBLs behind it.
 # A row whose ring run has no key-off stopped mid-cutscene and fails.
 #
 # Instrument: tools/audio_ring_check.py over the head log (the guest voice
@@ -59,10 +61,10 @@ for a in "$@"; do
 done
 
 ROWS=(
-    "spyro-2 intro 3100 1 psxtrace-cutscene-intro.bin"
-    "spyro-2 ending 6000 1 -"
-    "spyro-3 the_second_warning 4400 1 -"
-    "spyro-3 an_evil_plot_unfolds 9600 3 -"
+    "spyro-2 intro 3673 1 psxtrace-cutscene-intro.bin"
+    "spyro-2 ending 6573 1 -"
+    "spyro-3 the_second_warning 4973 1 -"
+    "spyro-3 an_evil_plot_unfolds 10173 3 -"
 )
 
 ROOT="${PG_BUILD_DIR:-build/linux-release}/cutscene-audio"

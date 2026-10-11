@@ -93,6 +93,17 @@ void openpete_yield_to_host(void) {
     op_functrace_resume();
 }
 
+static openpete_feed_key_t s_feed_key = OPENPETE_FEED_KEY_FRAME;
+
+void openpete_feed_key_select(openpete_feed_key_t key) { s_feed_key = key; }
+
+openpete_feed_key_t openpete_feed_key(void) { return s_feed_key; }
+
+unsigned openpete_feed_key_now(void) {
+    return s_feed_key == OPENPETE_FEED_KEY_VBL
+               ? (unsigned)SDL_GetAtomicInt(&openpete_vbl) : openpete_frame;
+}
+
 int openpete_fiber_in_game(void) {
     return openpete_game_fiber != NULL && co_active() == (cothread_t)openpete_game_fiber;
 }

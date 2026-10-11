@@ -682,7 +682,7 @@ int game_read_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t
     return player_placeable(cpu) ? 1 : 0;
 }
 
-/** @brief Read OPENPETE_FREECAM_AT_VBL, the VBL the scripted engage waits for.
+/** @brief Read OPENPETE_FREECAM_AT_VBL, the feed-key value the scripted engage waits for.
  *
  * A timed engage passes a replaying bk2's refusal; the movie desyncs from
  * that VBL on, since the camera follow is frozen, so it serves captures of a
@@ -720,7 +720,7 @@ void freecam_maybe_autoengage(CPUState* cpu) {
                (eng && *eng && *eng != '0');
     if (!want || openpete_freecam_active()) { s_done = 1; return; }
     const int at_vbl = freecam_engage_vbl();
-    if (at_vbl >= 0 && openpete_frame < (unsigned)at_vbl) return;
+    if (at_vbl >= 0 && openpete_feed_key_now() < (unsigned)at_vbl) return;
     if (level_live(cpu)) {
         s_done = 1;
         if (!freecam_engage_scripted(at_vbl >= 0)) return;   /* refused (bk2 replay/record) */

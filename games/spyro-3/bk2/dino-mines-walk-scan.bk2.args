@@ -1,4 +1,4 @@
-# Up held VBL 1300-1800 walks Spyro within the update radius (byte 0x4A = 16,
+# Up held VBL 1873-2373 walks Spyro within the update radius (byte 0x4A = 16,
 # 16384 units) of the scanner moby func_level_44_80081188, then idles
-# (scripts/make_bk2.py --frames 10500 --hold 1300:1800:Up).
+# (scripts/make_bk2.py --feed-key vbl --frames 11073 --hold 1873:2373:Up).
 --skip-to-level dino_mines

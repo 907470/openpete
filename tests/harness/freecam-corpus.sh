@@ -78,9 +78,6 @@ FILTER="${3:-}"
 
 CAP_ASPECT="$PG_CAP_ASPECT"
 CAP_LODS="$PG_CAP_LODS"
-# Pinned post-load frame for the canonical leg (+HALF for the intermediate).
-# --skip-to-level is playable well before this (loads ~f1700); a row may override.
-START_DEFAULT="$PG_FREECAM_START"
 LEG_TIMEOUT="${PRESENTATION_LEG_TIMEOUT:-300}"
 if ! [[ "$LEG_TIMEOUT" =~ ^[0-9]+$ ]] || (( LEG_TIMEOUT <= 20 )); then
   echo "freecam-corpus: PRESENTATION_LEG_TIMEOUT must be an integer above 20 (got '$LEG_TIMEOUT')" >&2; exit 64; fi
@@ -90,6 +87,11 @@ for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; es
 
 GAME="$(pg_parse_game "$@")" || exit 64
 PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME"
+# Pinned post-load feed-key value for the canonical leg (+50 for the
+# intermediate), per game (pg_cap_settings). --skip-to-level is playable well
+# before it; a row may override.
+pg_cap_settings
+START_DEFAULT="$PG_FREECAM_START"
 BIN="$PG_BIN"
 DISC="$PG_DISC"
 MANIFEST="$PG_FREECAM_MANIFEST"

@@ -50,6 +50,8 @@ static struct {
     int          start_idx;  /* input_log index of the movie's first frame */
     int          active;
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
+    unsigned*    rows;       /* Input Log lines per entry, indexed from start_idx */
+    int          rows_cap;
 } s_rec = {0};
 
 /** @brief Finalize the recording when guest state is replaced (a savestate load).
@@ -128,8 +130,24 @@ void bk2_format_button_diff(uint16_t prev, uint16_t cur,
     release_out[rn] = '\0';
 }
 
-void bk2_record_note(uint16_t bits, int log_idx) {
+void bk2_record_note(uint16_t bits, int log_idx, unsigned rows) {
     if (!s_rec.active) return;
+    const int at = log_idx - s_rec.start_idx;
+    if (at >= 0) {
+        if (at >= s_rec.rows_cap) {
+            int cap = s_rec.rows_cap ? s_rec.rows_cap : 4096;
+            while (cap <= at) cap *= 2;
+            unsigned* grown = (unsigned*)realloc(s_rec.rows, (size_t)cap * sizeof *grown);
+            if (!grown) {
+                OPL_ERROR_F("bk2-record", "out of memory growing the row counts");
+                return;
+            }
+            for (int i = s_rec.rows_cap; i < cap; i++) grown[i] = 1u;
+            s_rec.rows = grown;
+            s_rec.rows_cap = cap;
+        }
+        s_rec.rows[at] = rows ? rows : 1u;
+    }
     /* Diff against the previous frame and log press/release transitions
      * so a debug-level run shows the same input timeline that lands in
      * the .bk2. The bits are already in the input log; nothing buffers. */
@@ -236,11 +254,13 @@ static const char* const kHeader =
     "Core Octoshock\r\n"
     "rerecordCount 0\r\n";
 
-/** @brief Write Header.txt's text: the fixed header plus the load delay the movie was recorded under.
+/** @brief Write Header.txt's text: the fixed header, the load delay the movie was recorded under, and its row key.
  *
  * Loads consume VBLs, so every input after a load lands on a different
  * tick under another delay; replay refuses the mismatch. A delay of 0
- * writes no LoadDelay line.
+ * writes no LoadDelay line. A game keyed on the VBL counter writes one
+ * line per VBL and marks it with "OpenpeteFeedKey vbl"; without the line a
+ * movie has one row per yield.
  * @param out Destination.
  * @param cap Capacity of @p out.
  * @return Bytes written, excluding the NUL. */
@@ -249,7 +269,68 @@ static int build_header(char* out, size_t cap) {
     if (openpete_cd_load_delay > 0)
         n += snprintf(out + n, cap - (size_t)n, "LoadDelay %d\r\n",
                       openpete_cd_load_delay);
+    if (openpete_feed_key() == OPENPETE_FEED_KEY_VBL)
+        n += snprintf(out + n, cap - (size_t)n, "OpenpeteFeedKey vbl\r\n");
     return n;
+}
+
+/** @brief Return the Input Log lines a recorded entry expands to.
+ *
+ * One per VBL the entry's yield advanced the feed key by, as noted by
+ * bk2_record_note; 1 for an entry never noted.
+ * @param i The entry's index from the movie's first entry.
+ * @return The line count. */
+static unsigned entry_rows(int i) {
+    return (s_rec.rows && i < s_rec.rows_cap) ? s_rec.rows[i] : 1u;
+}
+
+/** @brief Release the recorder's buffers and clear its state. */
+static void rec_reset(void) {
+    free(s_rec.path); free(s_rec.args); free(s_rec.rows);
+    memset(&s_rec, 0, sizeof(s_rec));
+}
+
+/** @brief Serialise the recorded window of the input log as Input Log.txt text.
+ *
+ * The [Input] header and LogKey for @p players ports, then each entry's line
+ * repeated entry_rows times, then the trailer. Every line has the same width,
+ * so one probe line sizes the buffer.
+ * @param frame_count Entries in the window [start_idx, start_idx + frame_count).
+ * @param players Ports per line, 1 or 2.
+ * @param out_len Receives the text's length, excluding the NUL.
+ * @param out_lines Receives the number of movie rows written.
+ * @return The malloc'd, NUL-terminated text; NULL when allocation fails,
+ *         with the reason logged. */
+static char* build_input_log(int frame_count, int players, size_t* out_len,
+                             size_t* out_lines) {
+    char key_buf[1024];
+    size_t key_len     = (size_t)format_log_key(key_buf, sizeof key_buf, players);
+    size_t trailer_len = strlen(kInputTrailer);
+    char frame_buf[192];
+    openpete_input_rec_t probe;
+    for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) input_port_clear(&probe.port[i]);
+    int  frame_line_len = format_frame_rec(frame_buf, &probe, players);
+    size_t line_count = 0;
+    for (int i = 0; i < frame_count; i++) line_count += entry_rows(i);
+    size_t log_size = key_len + line_count * (size_t)frame_line_len + trailer_len;
+    char* log = (char*)malloc(log_size + 1);
+    if (!log) {
+        OPL_ERROR_F("bk2-record", "out of memory at finalize (%zu bytes)", log_size);
+        return NULL;
+    }
+    char* p = log;
+    memcpy(p, key_buf, key_len); p += key_len;
+    for (int i = 0; i < frame_count; i++) {
+        const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
+        if (!r) break;   /* defensive; log frozen mid-recording */
+        for (unsigned k = entry_rows(i); k > 0; k--)
+            p += format_frame_rec(p, r, players);
+    }
+    memcpy(p, kInputTrailer, trailer_len); p += trailer_len;
+    *p = '\0';
+    *out_len = (size_t)(p - log);
+    *out_lines = line_count;
+    return log;
 }
 
 int bk2_record_finalize(void) {
@@ -270,34 +351,13 @@ int bk2_record_finalize(void) {
         if (r && r->port[1].present) { players = 2; break; }
     }
 
-    /* Build Input Log.txt in memory: header + N frame lines + trailer. */
-    char key_buf[1024];
-    size_t key_len     = (size_t)format_log_key(key_buf, sizeof key_buf, players);
-    size_t trailer_len = strlen(kInputTrailer);
-    /* Every line is the same width, so one probe sizes the buffer. */
-    char frame_buf[192];
-    openpete_input_rec_t probe;
-    for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) input_port_clear(&probe.port[i]);
-    int  frame_line_len = format_frame_rec(frame_buf, &probe, players);
-    size_t log_size = key_len
-                    + (size_t)frame_count * (size_t)frame_line_len
-                    + trailer_len;
-    char* log = (char*)malloc(log_size + 1);
+    /* Build Input Log.txt in memory: header + one line per movie row + trailer. */
+    size_t log_len = 0, line_count = 0;
+    char* log = build_input_log(frame_count, players, &log_len, &line_count);
     if (!log) {
-        OPL_ERROR_F("bk2-record", "out of memory at finalize (%zu bytes)", log_size);
-        free(s_rec.path); free(s_rec.args);
-        memset(&s_rec, 0, sizeof(s_rec));
+        rec_reset();
         return -1;
     }
-    char* p = log;
-    memcpy(p, key_buf, key_len); p += key_len;
-    for (int i = 0; i < frame_count; i++) {
-        const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
-        if (!r) break;   /* defensive; log frozen mid-recording */
-        p += format_frame_rec(p, r, players);
-    }
-    memcpy(p, kInputTrailer, trailer_len); p += trailer_len;
-    *p = '\0';
 
     /* The launch-args sidecar goes first, so a movie on disk always has the
      * sidecar it was recorded under (`--bk2 <path>` reads it on replay). */
@@ -325,7 +385,7 @@ int bk2_record_finalize(void) {
         OPL_ERROR_F("bk2-record", "Header.txt add failed");
         goto out_close;
     }
-    if (!mz_zip_writer_add_mem(&zip, "Input Log.txt", log, (size_t)(p - log),
+    if (!mz_zip_writer_add_mem(&zip, "Input Log.txt", log, log_len,
                                MZ_DEFAULT_COMPRESSION)) {
         OPL_ERROR_F("bk2-record", "Input Log.txt add failed");
         goto out_close;
@@ -347,14 +407,13 @@ int bk2_record_finalize(void) {
         OPL_ERROR_F("bk2-record", "cannot write %s", s_rec.path);
         goto out_close;
     }
-    OPL_INFO_F("bk2-record", "wrote %d frames to %s", frame_count, s_rec.path);
+    OPL_INFO_F("bk2-record", "wrote %zu frames to %s", line_count, s_rec.path);
     rc = 0;
 out_close:
     mz_zip_writer_end(&zip);
     mz_free(zbuf);
 out:
     free(log);
-    free(s_rec.path); free(s_rec.args);
-    memset(&s_rec, 0, sizeof(s_rec));
+    rec_reset();
     return rc;
 }

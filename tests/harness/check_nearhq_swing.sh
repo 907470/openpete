@@ -70,7 +70,7 @@ pg_resolve "$GAME"
 # Per game: the bk2, the VBL window it swings over, and the walk-count floor.
 # A game with no row has no measured swing corpus and the check skips.
 case "$GAME" in
-  spyro-3) BK2="sunrise-spring-camera-swing.bk2"; VBL_LO=1500; VBL_HI=2300; MIN_WALKS=300;;
+  spyro-3) BK2="sunrise-spring-camera-swing.bk2"; VBL_LO=2073; VBL_HI=2873; MIN_WALKS=300;;
   *)       BK2="";;
 esac
 [[ -n "$BK2" ]] || { echo "nearhq-swing: SKIP ($GAME has no camera-swing corpus)"; exit 64; }

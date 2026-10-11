@@ -15,7 +15,7 @@
 # (generated, never committed). The run writes through to its card file,
 # so the row copies the fixture to a scratch path it deletes first.
 #
-# Run: headless, --card1 <scratch copy> --no-card2, --frame-limit 3000,
+# Run: headless, --card1 <scratch copy> --no-card2, --frame-limit 3573,
 # OPENPETE_BIOS_CENSUS=2 streamed through a counter (the log is not kept:
 # a spinning lseek writes one census line per call).
 #
@@ -47,7 +47,7 @@ done
 GAME=spyro-3
 pg_resolve "$GAME"
 FIXTURE="tests/golden/$GAME/card-v6-blank.mcd"
-LIMIT=3000
+LIMIT=3573
 
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "card-boot: SKIP (binary or disc missing)"; exit 64; }

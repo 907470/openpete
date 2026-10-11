@@ -99,7 +99,11 @@ pg_resolve "$GAME"
 # measured in; the pinned frame is the corpus's own post-load canonical frame.
 WIDTH=664
 HEIGHT=448
-START_DEFAULT="${OPENPETE_TERCACHE_HOLES_START:-1900}"
+# The pinned value is the feed key's: 1900 yields on Spyro 1, 2473 VBLs on
+# Spyro 2 and 3 (the same present; their key counts the 573 fast-boot VBLs).
+START_FALLBACK=1900
+case "$GAME" in spyro-2|spyro-3) START_FALLBACK=2473;; esac
+START_DEFAULT="${OPENPETE_TERCACHE_HOLES_START:-$START_FALLBACK}"
 # Per-channel tolerance when matching a pixel against the engine's clear
 # colour: the native path tone-maps and dithers, so the backdrop is not a
 # single exact triple.

@@ -3,11 +3,11 @@
 #   bk2    a movie under games/spyro-3/bk2
 #   span   a range of intermediate-present VBLs, two apart; every VBL of it
 #          but the first is a leg, compared with the capture two VBLs earlier
-# Walking on the reflective ice: keyframe advances on legs 1905 + 8k, avatar
+# Walking on the reflective ice: keyframe advances on legs 2478 + 8k, avatar
 # and mirrored copy.
-icy-peak-reflective-mirror.bk2 | 1901-2019
+icy-peak-reflective-mirror.bk2 | 2474-2592
 # Portal entry: walking, then the entry glide.
-sunrise-spring-sunny-villa-portal-entry.bk2 | 1541-1599
-# Held camera cuts after the portal entry: legs 1927 and 2493 hold the cut at
+sunrise-spring-sunny-villa-portal-entry.bk2 | 2114-2172
+# Held camera cuts after the portal entry: legs 2500 and 3066 hold the cut at
 # alpha 0 and end on the tick at alpha 1.
-sunrise-spring-sunny-villa-portal-entry.bk2 | 1919-1935,2485-2501
+sunrise-spring-sunny-villa-portal-entry.bk2 | 2492-2508,3058-3074

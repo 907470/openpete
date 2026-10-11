@@ -116,7 +116,7 @@ CEOF
 mkdir -p "$WORK/sdkprobe"
 ln -sfn "$WORK/sdkprobe-src/sdk-probe" "$WORK/sdkprobe/sdk-probe"
 echo sdk-probe > "$WORK/sdkprobe/enabled.txt"
-out="$(run_game "$WORK/sdkprobe" 300)"
+out="$(run_game "$WORK/sdkprobe" $((300 + KEY0)))"
 arm="${PG_GAME//-/}"
 if printf '%s\n' "$out" | grep -q "sdk-probe: game=$PG_GAME arm=$arm" &&
    [ -f "$WORK/sdkprobe-src/sdk-probe/.build/$PG_GAME/sdk-probe.so" ] &&
@@ -300,7 +300,7 @@ say "header edit: games/$PG_GAME/ header change hot-reloads a running mod"
 # pg_capture writes the log as the run goes, so the edit waits for the load.
 ( PG_BIN="$BOOT_BIN"; PG_CAPTURE_ENV=(OPENPETE_MOD_HOT_RELOAD=1)
   PG_CAPTURE_TIMEOUT=300
-  pg_capture "$WORK/sdk-hot.log" "" -- --frame-limit 4000 \
+  pg_capture "$WORK/sdk-hot.log" "" -- --frame-limit $((4000 + KEY0)) \
       --mods-dir "$WORK/sdkprobe" ) &
 hotpid=$!
 for _ in $(seq 1 1200); do
@@ -361,7 +361,7 @@ CEOF
         ln -sfn "$d" "$WORK/wrap/wrap-$alias"
         echo "wrap-$alias" >> "$WORK/wrap/enabled.txt"
     done
-    out="$(run_game "$WORK/wrap" 300)"
+    out="$(run_game "$WORK/wrap" $((300 + KEY0)))"
     n_reg="$(printf '%s\n' "$out" | grep -c 'mod:wrap-func_.*override registered at 0x8007CEE4' || true)"
     if [ "$n_reg" -eq 2 ]; then
         ok "2/2 wrapper fixtures registered at 0x8007CEE4"
@@ -424,7 +424,7 @@ id_obj id-any-ingame   "$PG_GAME/" "${G_ANY[@]}"
 id_obj id-own-inany    "any/"      "${G_OWN[@]}"
 id_obj id-own-legacy   ""          "${G_OWN[@]}"
 id_obj id-legacy       ""          "${G_NONE[@]}"
-out="$(run_game "$WORK/id" 600)"
+out="$(run_game "$WORK/id" $((600 + KEY0)))"
 printf '%s\n' "$out" > "$WORK/id.log"
 # expect <id> load|refuse [pattern]
 id_expect() {
@@ -509,7 +509,7 @@ CEOF
     mkdir -p "$WORK/two"
     ln -sfn "$d" "$WORK/two/two-game"
     echo two-game > "$WORK/two/enabled.txt"
-    out_a="$(run_game "$WORK/two" 120)"
+    out_a="$(run_game "$WORK/two" $((120 + KEY0)))"
     out_b="$(run_other "$OTHER" "$WORK/two" 120)"
     if printf '%s\n' "$out_a" | grep -q "two-game \[$PG_GAME\]: compiling" &&
        printf '%s\n' "$out_b" | grep -q "two-game \[$OTHER\]: compiling" &&
@@ -608,7 +608,7 @@ CEOF
 mkdir -p "$WORK/ovlargs"
 ln -sfn "$d" "$WORK/ovlargs/ovl-args"
 echo ovl-args > "$WORK/ovlargs/enabled.txt"
-out="$(run_game "$WORK/ovlargs" 300)"
+out="$(run_game "$WORK/ovlargs" $((300 + KEY0)))"
 printf '%s\n' "$out" > "$WORK/ovl-args.log"
 n_ref="$(grep -c "mod:ovl-args.*override_ovl(.*) refused on $PG_GAME" "$WORK/ovl-args.log" || true)"
 if grep -q "ovl-args rc -1 -1 -1 -1 0" "$WORK/ovl-args.log" &&
@@ -657,7 +657,7 @@ if [ "$PG_GAME" = "spyro-1" ]; then
     pin_mod pin-scoped-name "$API_VER" "$G_LINE" "rc = api->override_name(self, \"func_level_15_8007AE08\", pass);"
 fi
 out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
-        run_game "$WORK/pin" 600 )"
+        run_game "$WORK/pin" $((600 + KEY0)) )"
 printf '%s\n' "$out" > "$WORK/pin.log"
 # loaded <id>: 1 when the loader reports the mod loaded.
 loaded() { grep -q "loaded $1 v" "$WORK/pin.log" && echo 1 || echo 0; }
@@ -715,7 +715,7 @@ mkdir -p "$WORK/anchor"
 ln -sfn "$d" "$WORK/anchor/anchor-port"
 echo anchor-port > "$WORK/anchor/enabled.txt"
 out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
-        run_game "$WORK/anchor" 6000 )"
+        run_game "$WORK/anchor" $((6000 + KEY0)) )"
 calls="$(printf '%s\n' "$out" | sed -n 's/.*link-calls owner=anchor-port addr=\(0x[0-9A-F]*\) overlay=0 resident=- calls=\([0-9]*\).*/\2/p' | head -1)"
 if printf '%s\n' "$out" | grep -q "anchor-port: first call" && [ "${calls:-0}" -gt 0 ]; then
     ok "override on $CAM_FN engaged: $calls calls in 6000 VBLs"

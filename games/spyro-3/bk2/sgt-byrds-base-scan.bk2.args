@@ -1,5 +1,5 @@
-# Cross every 60 VBLs from 1300 to 1720 dismisses the opening speech; the
+# Cross every 60 VBLs from 1873 to 2293 dismisses the opening speech; the
 # player stands within the update radius of three func_level_26_8007C6F8
-# scanners, then idles (scripts/make_bk2.py --frames 9600, Cross 6 VBLs at
-# 1300, 1360, ... 1720).
+# scanners, then idles (scripts/make_bk2.py --feed-key vbl --frames 10173,
+# Cross 6 VBLs at 1873, 1933, ... 2293).
 --skip-to-level sgt_byrds_base

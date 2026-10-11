@@ -3,7 +3,7 @@
 # games/spyro-1/corpus/terrain-canim-subtick-corpus.manifest.
 #
 # Census of the colour sub-list (sectors named at --skip-to-level, VBL
-# 2300): idol_springs 6, aquaria_towers 4, mystic_marsh 4, summer_forest 3,
+# 2873): idol_springs 6, aquaria_towers 4, mystic_marsh 4, summer_forest 3,
 # sunny_beach 2, autumn_plains 1, dragon_shores 1, every other level 0. No
 # movie in this game's corpus visits one, so the row boots Idol Springs with
 # --skip-to-level at its spawn view, where the legs separate by 2562 px at
@@ -11,4 +11,4 @@
 # animated sectors (the capture under OPENPETE_TERRAIN_CACHE_FORCE=1 is
 # pixel-identical to the walk's). aquaria_towers at its spawn view differs in
 # 0 px at every alpha.
-idol-springs | 2400 | level=idol_springs
+idol-springs | 2973 | level=idol_springs

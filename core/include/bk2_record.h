@@ -8,6 +8,10 @@
  * and through our own bk2_movie_load. The log is shared with the
  * rewind/runahead drivers.
  *
+ * One Input Log line per unit of the feed key (openpete_feed_key_now): per
+ * yield on a yield-keyed game, per VBL on a VBL-keyed one, which marks the
+ * movie with the Header.txt line "OpenpeteFeedKey vbl".
+ *
  * Each port's 16 digital buttons and 4 analog axes are recorded; the MODE
  * column is always '.'. Port 2 is recorded when it was present for any
  * recorded VBL, and the movie then also carries SyncSettings.json.
@@ -35,15 +39,18 @@ extern "C" {
  *         cannot be copied, with the reason logged. */
 int  bk2_record_begin(const char* path, const char* args_sidecar);
 
-/** @brief Log the press/release transitions of a just-logged VBL's pad bits while recording.
+/** @brief Record how many movie rows a just-logged entry spans and log its pad transitions while recording.
  *
- * The bits already live in the input log; nothing is buffered. A line is
- * logged only when the bits differ from the previous call's. No effect
- * when recording is not active.
+ * The bits already live in the input log. The entry is written @p rows
+ * times at finalize: one row per unit the feed key advanced across the
+ * entry's yield (1 on a yield-keyed game; the VBLs the yield spanned on a
+ * VBL-keyed one). A line is logged only when the bits differ from the
+ * previous call's. No effect when recording is not active.
  * @param bits Player 1 pad bitfield (1 released, 0 pressed).
  * @param log_idx Input log index input_log_append_staged returned; the line shows
- *        it relative to the movie's first entry. */
-void bk2_record_note(uint16_t bits, int log_idx);
+ *        it relative to the movie's first entry.
+ * @param rows Movie rows the entry spans; 0 is taken as 1. */
+void bk2_record_note(uint16_t bits, int log_idx, unsigned rows);
 
 /** @brief Write the recorded window of the input log as a .bk2 zip and end recording.
  *

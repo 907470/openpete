@@ -2,8 +2,9 @@
 # (tests/harness/check_portal_subtick.sh).
 #   <bk2> | <V> | vertex=<x>,<y> ... [tol=<px>] [step=<px>] [judge=<a>,...]
 # V is the canonical VBL the intermediate present at V+1 sits above; V-2 opens
-# the interval that present covers. V is even because a tick spans two VBLs
-# here: the intermediate present at V+1 has to fall inside V's own tick.
+# the interval that present covers. V is odd because a tick spans two VBLs
+# opening on an odd VBL here: the intermediate present at V+1 has to fall inside
+# V's own tick.
 #
 # The statistic is the aperture polygon's corners, read from the feeder's own
 # emitted list, not a pixel mask: the aperture spans most of the frame.
@@ -22,5 +23,5 @@
 # The bound is 1.0 px: the rect is captured as integers and the aperture is
 # their clip against the pentagon, so a corner's expected position carries the
 # rounding of both.
-autumn-plains-skelos-badlands-portal-entry.bk2 | 1096 | vertex=472.17,12 vertex=403,216 vertex=92.62,228 tol=1.0
-autumn-plains-skelos-badlands-portal-entry.bk2 | 1100 | vertex=491.27,12 vertex=69.71,228 vertex=0,131.02 tol=1.0
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1669 | vertex=472.17,12 vertex=403,216 vertex=92.62,228 tol=1.0
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1673 | vertex=491.27,12 vertex=69.71,228 vertex=0,131.02 tol=1.0

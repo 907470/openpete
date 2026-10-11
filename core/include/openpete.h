@@ -295,16 +295,17 @@ typedef struct openpete_options {
      * different value is refused. --load-delay / OPENPETE_LOAD_DELAY. */
     int         load_delay;
 
-    /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
-     * listed frame; the path template can contain `{n}` to substitute the
-     * frame number per shot. Output extension `.png` writes PNG via
+    /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on the
+     * first present at or past each listed value of the feed key
+     * (openpete_feed_key_now); the path template can contain `{n}` to
+     * substitute the listed value per shot. Output extension `.png` writes PNG via
      * stb_image_write; any other extension writes BMP via SDL_SaveBMP. */
 #define OPENPETE_MAX_SCREENSHOT_FRAMES 64
     int         screenshot_frames[OPENPETE_MAX_SCREENSHOT_FRAMES];
     int         screenshot_frame_count;   /* 0 = disabled */
     /* `--screenshot-on-tick N[,...]` fills the same targets but keys them
      * on `openpete_canon_tick` (canonical presents = game draw-ticks)
-     * instead of `openpete_frame` (VBL yields). Tick-keyed captures sample
+     * instead of the feed key. Tick-keyed captures sample
      * the SAME sim moment run-to-run - the frame<->tick mapping drifts with
      * host timing (see openpete_fiber.h) - so the visual-regression gates
      * use ticks. Mutually exclusive with --screenshot-on-frame. */
@@ -340,7 +341,7 @@ typedef struct openpete_options {
      * present clock is forced to the tick midpoint (curr_tick_ns + period/2) and
      * the re-extract callback is invoked once, so the shot lands on the exact
      * interpolated pose the sub-tick spine would present - reproducibly, with no
-     * wall-clock pacing. VBL-keyed (openpete_frame), like --screenshot-on-frame.
+     * wall-clock pacing. Keyed on the feed key, like --screenshot-on-frame.
      * Implies --screenshot-native-only capture. Fills a SEPARATE target list so a
      * run can carry canonical and intermediate legs together. */
     int         screenshot_intermediate_frames[OPENPETE_MAX_SCREENSHOT_FRAMES];
@@ -354,17 +355,17 @@ typedef struct openpete_options {
      * it only for bk2s/poses that reach a freeze state. */
     bool        screenshot_freeze_backdrop;
 
-    /* Main-RAM dump - writes the 2MB g_ram to disk after frame N's game
-     * code yields. Used as the openpete side of the PCSX-Redux comparison
+    /* Main-RAM dump - writes the 2MB g_ram to disk once the feed key
+     * reaches N. Used as the openpete side of the PCSX-Redux comparison
      * loop (see scripts/pcsx-redux-ram-dump.lua). */
     int         ram_dump_on_frame;     /* -1 = disabled */
     const char* ram_dump_output;       /* path; default ./ram.bin */
 
     /* Scheduled savestate ops - fire once at the savestate quiescent point
-     * (game fiber yielded) when openpete_frame (a VBL counter) reaches N.
+     * (game fiber yielded) when the feed key reaches N.
      * Headless-friendly: this is the autonomous test vehicle for the
      * restore-correctness checks (save->tick->restore->tick hash A/B).
-     * Load re-anchors openpete_frame exactly like the hotkey path. */
+     * Load re-anchors both counters exactly like the hotkey path. */
     int         state_save_on_frame;   /* -1 = disabled */
     const char* state_save_output;     /* path; default ./frameN.state */
     int         state_load_on_frame;   /* -1 = disabled */
@@ -578,12 +579,10 @@ typedef struct openpete_options {
      * releases, gamepad, analog). NULL = disabled. */
     const char* bk2_path;
 
-    /* Map bk2 frame 0 to openpete_frame `bk2_frame_offset`. Negative is
-     * legal - a positive value here means "skip the first N bk2 frames".
-     * INT_MIN = "unset"; the host loop then auto-picks
-     * -bk2.first_input_frame so the first pressed bk2 frame lands at
-     * openpete_frame=0 (which is itself anchored to the first DrawOTag,
-     * so splash frames are naturally excluded from the bk2 timeline). */
+    /* Map bk2 frame 0 to value `bk2_frame_offset` of the counter the
+     * movie's rows are indexed by (the feed key, or openpete_frame for a
+     * movie recorded one row per yield). Negative is legal; unset
+     * (bk2_frame_offset_set false) means 0. */
     int  bk2_frame_offset;
     bool bk2_frame_offset_set;
 
@@ -680,12 +679,12 @@ typedef struct openpete_options {
     const char* bk2_record_path;
 
     /* Scheduled fast-forward windows: forces openpete_unlock_fps = 1
-     * while openpete_frame is inside any [lo,hi] range. Used by the
+     * while the feed key is inside any [lo,hi] range. Used by the
      * BK2 determinism harness to inject pacing variation without
      * requiring a human to hold Tab. NULL = disabled. Format:
      *   "100-200,500-600"
-     * Inclusive on both ends. Frame numbers are openpete_frame (yield-
-     * driven), the same anchor BK2 uses. */
+     * Inclusive on both ends. Values are the feed key's, the counter bk2
+     * rows are indexed by. */
     const char* unlock_frames_spec;
 #define OPENPETE_UNLOCK_RANGES_MAX 32
     struct { int lo, hi; } unlock_ranges[OPENPETE_UNLOCK_RANGES_MAX];

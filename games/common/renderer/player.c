@@ -918,7 +918,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
                 }
             fprintf(stderr, "[player-screen f=%u] leg=%s slot=%d ntri=%d nv=%d "
                             "c=(%.3f,%.3f) bb=(%.3f,%.3f,%.3f,%.3f) mirror=%d\n",
-                    openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
+                    openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
                     s_player_slot, s_swtri_n, nv, cx / nv, cy / nv, x0, y0, x1, y1,
                     s_mirror_pass);
         }
@@ -1861,7 +1861,7 @@ void player_records_epoch_commit(void) {
 
         fprintf(stderr, "[recdbg f=%u e=%u] calls m=%d s=%d f=%d spec=%u led=%d@%u cap=%u epochs_vbl=%d ring=%d recchg=%d "
                 "mm=%d/%d/%d mdelta=%.0f B=%.0f sep=%.0f store=%d pos=",
-                openpete_frame, s_epochs, m->n + m->over, s_obs[1].n + s_obs[1].over, s_obs[2].n + s_obs[2].over,
+                openpete_feed_key_now(), s_epochs, m->n + m->over, s_obs[1].n + s_obs[1].over, s_obs[2].n + s_obs[2].over,
                 s_spec_refused_epoch, s_led_fires_epoch ? s_led.n : 0, s_led_fires_epoch ? s_led.frame : 0u,
                 s_cap_refused_epoch, s_epochs_this_vbl, ring_rolled, rec_changed,
                 mm[0], mm[1], mm[2], model_delta, B, sep, s_store[0].list.n);
@@ -1989,7 +1989,7 @@ void player_records_shadow_note(int j, const int32_t* staged_anchor) {
     if (!d) return;
     const player_shadow_rec_t* p = player_records_shadow_prev(j);
     fprintf(stderr, "[recdbg shadow f=%u j=%d] model=%d drawn=%d lerp=%d anchor=(%d,%d,%d)\n",
-            openpete_frame, j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
+            openpete_feed_key_now(), j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
             staged_anchor ? staged_anchor[0] : 0, staged_anchor ? staged_anchor[1] : 0, staged_anchor ? staged_anchor[2] : 0);
 }
 int player_records_flame_count(void) { return s_pres_n ? s_store[s_pres_b].list.nfl : 0; }
@@ -2012,7 +2012,7 @@ void player_records_flame_note(int j, const int32_t* staged_origin) {
     if (!d) return;
     const player_flame_rec_t* p = player_records_flame_prev(j);
     fprintf(stderr, "[recdbg flame f=%u j=%d] model=%d drawn=%d lerp=%d origin=(%d,%d,%d)\n",
-            openpete_frame, j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
+            openpete_feed_key_now(), j, d->model, d->drawn, player_records_lerps(d->model) && p != NULL,
             staged_origin ? staged_origin[0] : 0, staged_origin ? staged_origin[1] : 0, staged_origin ? staged_origin[2] : 0);
 }
 void player_records_present_note(int k, const int32_t* staged_pos) {
@@ -2020,7 +2020,7 @@ void player_records_present_note(int k, const int32_t* staged_pos) {
     const player_model_rec_t* c = player_records_curr(k);
     if (!c) return;
     fprintf(stderr, "[recdbg present f=%u k=%d] drawn=%d pair=%d pair2=%d lerp=%d alpha=%.3f pos=(%d,%d,%d)\n",
-            openpete_frame, k, c->drawn, c->pair, c->pair2, player_records_lerps(k), s_pres_alpha,
+            openpete_feed_key_now(), k, c->drawn, c->pair, c->pair2, player_records_lerps(k), s_pres_alpha,
             staged_pos ? staged_pos[0] : 0, staged_pos ? staged_pos[1] : 0, staged_pos ? staged_pos[2] : 0);
 }
 void player_records_present_end(void) { s_pres_n = 0; s_pres_lerp = 0; s_pres_b = 0; }

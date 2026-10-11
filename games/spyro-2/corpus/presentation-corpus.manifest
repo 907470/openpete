@@ -6,131 +6,131 @@
 # last pin, so every frame it wants is pinned.
 #
 # The pins are the demo's level-loaded stretches, read off the native terrain
-# feed's per-present triangle count over a 19010-VBL boot. The count holds at
+# feed's per-present triangle count over a 19583-VBL boot. The count holds at
 # 1985 between segments (the title-screen world) and departs from it while a
-# demo level is resident: 2731-3149, 3153-3785, 5877-7201, 9293-11111,
-# 13203-14743 and 16835-17985. Each pin sits inside one of those stretches,
+# demo level is resident: 3304-3722, 3726-4358, 6450-7774, 9866-11684,
+# 13776-15316 and 17408-18558. Each pin sits inside one of those stretches,
 # clear of its load transient, so the row covers five distinct levels of world
 # geometry and texture data. The grid samples between them hold the
 # title-screen world.
-# 3785 is a camera cut: the demo's second segment ends with the camera stepping
+# 4358 is a camera cut: the demo's second segment ends with the camera stepping
 # 98094 world units in one tick, with every drawn record carrying a previous
 # tick of its own. The intermediate leg there shows the previous tick for the
 # whole interval; the canonical leg is unaffected.
-# 700 and 1400 are the title screen: the logo sprite and the "press start"
+# 1273 and 1973 are the title screen: the logo sprite and the "press start"
 # text, linked into the ordering table at an explicit depth slot
 # (func_8001B354) rather than at the head (func_8001B390); pinned for the
 # slotted-insert hook. Pins below start are unioned with the grid.
-# 484 is the boot scene before the title: under --lod extended the distant
+# 1057 is the boot scene before the title: under --lod extended the distant
 # low-poly spires between the left cliffs and the skull do not draw, where
 # --lod original and the guest reference draw them (64533 px differ).
-attract-demo|3400|3000||484,700,1400,3400,3785,6500,10200,14000,17400
+attract-demo|3973|3000||1057,1273,1973,3973,4358,7073,10773,14573,17973
 #
 # autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
-# world, the in-gameplay level change. 1150 is the portal transition, 1250 and
-# 1350 the flight with the treasure tally, 1550 the flight with the level name,
-# 1700 the arrival cutscene in the entered level.
-# 1073, 1085, 1139 and 1201 are the transition's quiet regime edges: the ticks
+# world, the in-gameplay level change. 1723 is the portal transition, 1823 and
+# 1923 the flight with the treasure tally, 2123 the flight with the level name,
+# 2273 the arrival cutscene in the entered level.
+# 1646, 1658, 1712 and 1774 are the transition's quiet regime edges: the ticks
 # where g_GameState steps -1 -> 0 -> 1 -> 2 and 6 -> 7, each stepping the
 # camera by at most 116 world units, three orders under the cut guard's
 # position threshold and inside its rotation threshold. The pair across such an
 # edge spans two simulation regimes rather than one motion, so the
 # intermediate leg holds the previous tick instead of lerping the chord; the
 # canonical leg is unaffected.
-autumn-plains-skelos-badlands-portal-entry|1150|200||850,851,852,1073,1085,1139,1150,1201,1250,1350,1550,1700
+autumn-plains-skelos-badlands-portal-entry|1723|200||1423,1424,1425,1646,1658,1712,1723,1774,1823,1923,2123,2273
 #
 # colossus-ice-skating: the player on the Colossus rink with the mirrored copy
-# under the ice. 921, 1121 and 1161 are intermediate legs whose tick pair spans a
-# body keyframe advance; 1123 is the leg after one.
-colossus-ice-skating|900|200||921,930,1121,1123,1161
+# under the ice. 1494, 1694 and 1734 are intermediate legs whose tick pair spans a
+# body keyframe advance; 1696 is the leg after one.
+colossus-ice-skating|1473|200||1494,1503,1694,1696,1734
 
 # summer-forest-collect-orb: the orb pickup with the 3D orb HUD icon at the
-# bottom edge. 882 is the reported tick where the guest frames the orb icon
-# with four golden facets and the native draws the orb alone; 870 and 894
-# bracket it. The bk2 is 884 frames, so the grid stops at 886.
-summer-forest-collect-orb|882|2||870,882,894
+# bottom edge. 1455 is the reported tick where the guest frames the orb icon
+# with four golden facets and the native draws the orb alone; 1443 and 1467
+# bracket it. The bk2 is 1457 frames, so the grid stops at 1459.
+summer-forest-collect-orb|1455|2||1443,1455,1467
 #
 # shady-oasis-flame: two flame breaths in Shady Oasis. The flame's primitives
-# are written at VBL 842-858 (peak 846) and 960-976 (peak 964); 848 is an
+# are written at VBL 1415-1431 (peak 1419) and 1533-1549 (peak 1537); 1421 is an
 # intermediate leg inside the first breath.
-shady-oasis-flame|840|200||846,848,850,964
+shady-oasis-flame|1413|200||1419,1421,1423,1537
 #
-# open-pause-menu: the pause menu open over Summer Forest, 900 and 918. The
+# open-pause-menu: the pause menu open over Summer Forest, 1473 and 1491. The
 # menu box is an opaque flat quad under ten tiled panels, a frame and six
 # rows of sprite text; the guidebook page beside it carries quad-form glyphs
 # (the level banner, the two gem-row slashes).
-open-pause-menu|900|200||900,918
+open-pause-menu|1473|200||1473,1491
 #
-# open-guidebook: the guidebook open on its contents page, 980 and 998. The
+# open-guidebook: the guidebook open on its contents page, 1553 and 1571. The
 # right-hand column (entry names, placeholder dashes, per-cent signs) is
 # quad-form glyph text; the digits are sprite text.
-open-guidebook|960|200||980,998
+open-guidebook|1533|200||1553,1571
 #
-# glimmer-pogo-dialogue: the first dialogue in Glimmer. At 1000 the large
+# glimmer-pogo-dialogue: the first dialogue in Glimmer. At 1573 the large
 # semi-transparent text box and the speaker's name box are both open; the
-# large box's four corners are the stepped corner pieces. 700 is the title
+# large box's four corners are the stepped corner pieces. 1273 is the title
 # fly-in before the level, where the game's logo slides in at the top.
-# 897, 901 and 903 straddle Pogo's blend from anim 0 into anim 3 (the id
-# changes at 903); 987 and 989 straddle two NPCs' blend from anim 0 into
+# 1470, 1474 and 1476 straddle Pogo's blend from anim 0 into anim 3 (the id
+# changes at 1476); 1560 and 1562 straddle two NPCs' blend from anim 0 into
 # anim 1: the intermediate legs show whether the sub-tick pose is continuous
 # across a tick while the game blends toward the next animation.
-glimmer-pogo-dialogue|900|200||700,897,901,903,987,989,1000
+glimmer-pogo-dialogue|1473|200||1273,1470,1474,1476,1560,1562,1573
 # Pause menu mid-level: the framebuffer window copies draw buffer 0 at VBL
-# 1469 and shrinks over 1454-1469 from full screen to the lower-left
+# 2042 and shrinks over 2027-2042 from full screen to the lower-left
 # quarter; pins at the first full-window frame, mid-shrink and settled.
-# Synthesized: idle to 1450 then Start (make_bk2.py --hold 1450:1460:Start).
-pause-menu-midlevel|1440|200||1454,1462,1500
+# Synthesized: idle to 2023 then Start (make_bk2.py --hold 2023:2033:Start).
+pause-menu-midlevel|2013|200||2027,2035,2073
 # pause-menu-midlevel@shrink: the same movie pinned on every VBL of the shrink and the
 # settle (one game tick per VBL): the window must show the scaled image of
 # the tick being drawn, not the first shrink tick's scene. Blessed pre-fix.
-pause-menu-midlevel@shrink|1440|200||1454,1455,1456,1457,1458,1459,1460,1461,1462,1463,1464,1465,1466,1467,1468,1469,1470,1471,1472,1473,1474,1475,1476
+pause-menu-midlevel@shrink|2013|200||2027,2028,2029,2030,2031,2032,2033,2034,2035,2036,2037,2038,2039,2040,2041,2042,2043,2044,2045,2046,2047,2048,2049
 # pause-menu-midlevel@shrink-freeze: the first shrink steps with the frozen-world
 # backdrop, so the 16:9 side strips show whether the window's border stays inside
 # the 4:3 window (without the backdrop the strips are black and hide it).
-pause-menu-midlevel@shrink-freeze|1440|200|freeze|1454,1455,1456
-# pause-unpause: Start again at 1600; the game grows the window back over
-# 1617-1624 from the other draw buffer, then draws the live world. Blessed
+pause-menu-midlevel@shrink-freeze|2013|200|freeze|2027,2028,2029
+# pause-unpause: Start again at 2173; the game grows the window back over
+# 2190-2197 from the other draw buffer, then draws the live world. Blessed
 # pre-fix.
-pause-unpause|1600|200||1616,1618,1620,1622,1624,1626
+pause-unpause|2173|200||2189,2191,2193,2195,2197,2199
 #
 # start-new-game: same-moby self-interpenetration. Two faces of one
 # moby that cross in 3D show their crossing contour under true depth, where
 # the PSX paints each face whole in OT order; the same-moby rank applies the
-# game's paint order between such faces only. At 92 a pink sliver shows
-# through a near dark shape. Start 470 (the movie is 473 VBLs) keeps the grid
+# game's paint order between such faces only. At 665 a pink sliver shows
+# through a near dark shape. Start 1043 (the movie is 1046 VBLs) keeps the grid
 # to two samples.
-start-new-game|470|10||92
-# intro cutscene, VBL 1094: one of the sheep's eyes is covered by its own
+start-new-game|1043|10||665
+# intro cutscene, VBL 1667: one of the sheep's eyes is covered by its own
 # face geometry (native); the guest draws the eye.
-intro-sheep-eye|1084|10||1094|--skip-to-cutscene intro
-# intro cutscene, VBL 1597-1605 at 16:9: on intermediate presents the static
+intro-sheep-eye|1657|10||1667|--skip-to-cutscene intro
+# intro cutscene, VBL 2170-2178 at 16:9: on intermediate presents the static
 # tree moby on the left leaves the screen and returns.
-intro-tree-subtick|1597|2||1597,1599,1600,1601,1602,1603,1605|--skip-to-cutscene intro
-# intro_arrival cutscene, VBL 1130-1146: a face of the left green wall gem
+intro-tree-subtick|2170|2||2170,2172,2173,2174,2175,2176,2178|--skip-to-cutscene intro
+# intro_arrival cutscene, VBL 1703-1719: a face of the left green wall gem
 # flickers as the camera moves, the gem and the wall it is set into trading
 # visibility at the gem's outline (native); the guest's outline is steady.
-intro-arrival-gem|1128|2||1136,1137,1138,1139,1140|--skip-to-cutscene intro_arrival
-# intro_arrival cutscene, VBL 1410-1416: the base of the portal moby slides
+intro-arrival-gem|1701|2||1709,1710,1711,1712,1713|--skip-to-cutscene intro_arrival
+# intro_arrival cutscene, VBL 1983-1989: the base of the portal moby slides
 # against the ground terrain from tick to tick (native).
-intro-arrival-portal-base|1406|2||1410,1411,1412,1413,1414,1415,1416|--skip-to-cutscene intro_arrival
-# intro cutscene at 32:9, VBL 1022-1026: two terrain faces at the far right
+intro-arrival-portal-base|1979|2||1983,1984,1985,1986,1987,1988,1989|--skip-to-cutscene intro_arrival
+# intro cutscene at 32:9, VBL 1595-1599: two terrain faces at the far right
 # of the frame do not draw (native).
-intro-32x9-farright|1018|2||1022,1024,1026|--skip-to-cutscene intro --aspect 32:9
-# intro_arrival cutscene, VBL 5256-5260: the roof of Ripto's mouth speckles
+intro-32x9-farright|1591|2||1595,1597,1599|--skip-to-cutscene intro --aspect 32:9
+# intro_arrival cutscene, VBL 5829-5833: the roof of Ripto's mouth speckles
 # dark through its red face (native); the guest draws it clean.
-intro-arrival-ripto-mouth|5250|2||5256,5258,5260|--skip-to-cutscene intro_arrival
-# crush_intro cutscene, VBL 1012: orb geometry stretches across the screen
+intro-arrival-ripto-mouth|5823|2||5829,5831,5833|--skip-to-cutscene intro_arrival
+# crush_intro cutscene, VBL 1585: orb geometry stretches across the screen
 # on the sub-tick view (native); the canonical tick draws clean.
-crush-intro-orb-stretch|1004|2||1010,1011,1012,1013,1014|--skip-to-cutscene crush_intro
-# crush_intro cutscene, VBL 1603: on a camera cut the mobys vanish for a
+crush-intro-orb-stretch|1577|2||1583,1584,1585,1586,1587|--skip-to-cutscene crush_intro
+# crush_intro cutscene, VBL 2176: on a camera cut the mobys vanish for a
 # moment on the sub-tick view (native); the canonical ticks draw them.
-crush-intro-cut-mobys|1597|2||1601,1602,1603,1604,1605|--skip-to-cutscene crush_intro
+crush-intro-cut-mobys|2170|2||2174,2175,2176,2177,2178|--skip-to-cutscene crush_intro
 # attract-demo-spawn-jump: a class 0x1e3 moby placed without a marker the
 # native path reads (named residual); the sub-tick view lerps across it.
 # Blessed pre-fix.
-attract-demo-spawn-jump|14039|2||14041,14042,14043,14044,14045
+attract-demo-spawn-jump|14612|2||14614,14615,14616,14617,14618
 # glimmer-32x9-leftedge: the reported free-camera pose at 32:9; the terrain
 # occlusion cull's frustum half bounded each sector's sphere with a square
 # box too small off-axis and culled sector 69 at the left edge (pink
 # background). Blessed on the headless-occlusion build, before the fix.
-glimmer-32x9-leftedge|1898|2||1900|--skip-to-level glimmer --aspect 32:9 OPENPETE_FREECAM_POSE=30338,87973,7965,-194,52
+glimmer-32x9-leftedge|2471|2||2473|--skip-to-level glimmer --aspect 32:9 OPENPETE_FREECAM_POSE=30338,87973,7965,-194,52

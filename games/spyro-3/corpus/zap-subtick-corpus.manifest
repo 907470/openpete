@@ -6,16 +6,16 @@
 #
 # The zap's records are spawned by the level overlays' Zoe update, so the pool
 # is empty wherever Zoe is not zapping: none of the bk2 rows holds a live
-# record, and the plain boot holds exactly one from VBL 4901 to 4921. Inside
+# record, and the plain boot holds exactly one from VBL 5474 to 5494. Inside
 # that window the record's head sweeps while its tail stays anchored, and the
-# interval closing at 4905 carries the largest canonical motion of the window,
+# interval closing at 5478 carries the largest canonical motion of the window,
 # 109.50 px at the head against 1.21 px at the tail. Both ends are judged: the
 # head prices the sweep and the tail proves the anchored end is not dragged
 # along with it.
 #
-# The width cell is judged: canon4903 8.527 px, canon4905 12.195 px. Before the
+# The width cell is judged: canon5476 8.527 px, canon5478 12.195 px. Before the
 # replay scaled the width the alpha-0.5 ratio read 0.98 SNAP with own 3.553 of
 # the 3.668 step; with the scale 0.33 PARTIAL, own 1.431. The residual is the
-# canonical corner sets differing (14 widened corners at 4903, 8 at 4905, as
+# canonical corner sets differing (14 widened corners at 5476, 8 at 5478, as
 # the head passes behind the camera). Bound wtol=0.45 over the 0.33 reading.
-title-demo-zap | 4905 | tol=0.5 step=4 wtol=0.45
+title-demo-zap | 5478 | tol=0.5 step=4 wtol=0.45

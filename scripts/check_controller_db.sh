@@ -41,7 +41,11 @@ pg_resolve "$GAME"
 EXE="${OPENPETE_EXE:-$PG_BIN}"
 PG_BIN="$EXE"
 DISC="$PG_DISC"
-FRAMES="${OPENPETE_FRAME_LIMIT:-500}"
+# 500 yields on Spyro 1; Spyro 2 and 3 key on VBLs and add the boot's 573
+# fast-boot VBLs.
+FRAMES_DEFAULT=500
+case "$GAME" in spyro-2|spyro-3) FRAMES_DEFAULT=1073;; esac
+FRAMES="${OPENPETE_FRAME_LIMIT:-$FRAMES_DEFAULT}"
 OUT="${TMPDIR:-/tmp}/openpete_controllerdb"
 
 [[ -x "$EXE"  ]] || { echo "[controllerdb] no binary at $EXE - SKIP" >&2; exit 64; }

@@ -1,8 +1,8 @@
-# No input until VBL 3050, so the one-function scanner func_level_37_8007EFFC
-# completes once while the opening speech waits; Cross every 60 VBLs from 3050
-# dismisses the speech and starts the fight; from 3800 Left and Right alternate
+# No input until VBL 3623, so the one-function scanner func_level_37_8007EFFC
+# completes once while the opening speech waits; Cross every 60 VBLs from 3623
+# dismisses the speech and starts the fight; from 4373 Left and Right alternate
 # every 120 VBLs with Cross every 40, which keeps Spyro alive until
-# func_level_37_8007BD9C ends its overlay pass (scripts/make_bk2.py --frames
-# 12000, Cross 6 VBLs at 3050, 3110, ... 3770 and 3800, 3840, ... 11960, Left
-# [s, s+120) and Right [s+120, s+240) for s = 3800, 4040, ...).
+# func_level_37_8007BD9C ends its overlay pass (scripts/make_bk2.py --feed-key
+# vbl --frames 12573, Cross 6 VBLs at 3623, 3683, ... 4343 and 4373, 4413, ...
+# 12533, Left [s, s+120) and Right [s+120, s+240) for s = 4373, 4613, ...).
 --skip-to-level scorchs_pit

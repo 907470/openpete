@@ -501,7 +501,7 @@ static const openpete_help_only_t k_help_only[] = {
       "into DIR and exit (recomp pipeline stage)" },
     { "--frame-limit",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N", 30,
-      "exit after N rendered frames" },
+      "exit once the feed key reaches N (yields on Spyro 1, VBLs on Spyro 2 and 3)" },
     { "--frame-time-log",                    KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "PATH", 510,
       "write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py" },
@@ -562,7 +562,7 @@ static const openpete_help_only_t k_help_only[] = {
       "consume per-frame .psxtrace + diff against PSX oracle" },
     { "--ram-dump-on-frame",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N", 230,
-      "write 2MB main RAM to --ram-dump-output after frame N" },
+      "write 2MB main RAM to --ram-dump-output once the feed key reaches N" },
     { "--ram-dump-output",                   KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "PATH", 240,
       "RAM dump path (default ./ram.bin)" },
@@ -576,19 +576,20 @@ static const openpete_help_only_t k_help_only[] = {
       "(written by the handoff exec; not for manual use)" },
     { "--rewind-hold",                       KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "A:N", 310,
-      "headless: simulate holding the rewind key for N iterations at frame A" },
+      "headless: simulate holding the rewind key for N iterations once the feed key reaches A" },
     { "--screenshot-freeze-backdrop",        KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
       NULL, 190,
       "maintain the green freeze backdrop during headless capture so pause/results/exit dumps aren't dark (renders an extra frame per present)" },
     { "--screenshot-intermediate-on-frame",  KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N[,...]", 180,
-      "deterministic sub-tick (alpha 0.5) native captures at each VBL, headless-capable; implies --screenshot-native-only" },
+      "deterministic sub-tick (alpha 0.5) native captures at each feed-key value, headless-capable; implies --screenshot-native-only" },
     { "--screenshot-native-only",            KNOB_FLAG_ARG_NONE,     NULL, "debug",    NULL,
       NULL, 170,
       "capture the native -vk variant alone: skip PsyCross OT rasterization and -og (presentation-golden corpus path)" },
     { "--screenshot-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N[,N2,...]", 150,
-      "save image at each listed frame; can be passed once with a comma list.\n"
+      "save image at each listed feed-key value (yields on Spyro 1, VBLs on\n"
+      "Spyro 2 and 3); can be passed once with a comma list.\n"
       "In a windowed pure-vk run, -vk.png is a READBACK of the exact\n"
       "presented frame (sub-tick interp, mods, overlays included);\n"
       "headless runs recompose the canonical scene instead." },
@@ -606,7 +607,7 @@ static const openpete_help_only_t k_help_only[] = {
       "number of consecutive presents to capture when --screenshot-presents-start is set (default 1)" },
     { "--screenshot-presents-start",         KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N", 210,
-      "capture every present (canonical + intermediate) starting at sim frame N (default -1 = off)" },
+      "capture every present (canonical + intermediate) once the feed key reaches N (default -1 = off)" },
     { "--seed-cpu",                          KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "PATH", 330,
       "pre-fill CPUState (GPRs/pc/hi/lo/cop0/GTE) from 528B dump" },
@@ -618,10 +619,10 @@ static const openpete_help_only_t k_help_only[] = {
       "state file for the scheduled load" },
     { "--state-load-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N", 270,
-      "load --state-load-input once openpete_frame reaches N (re-anchors the frame counter)" },
+      "load --state-load-input once the feed key reaches N (re-anchors the counters)" },
     { "--state-save-on-frame",               KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "N", 250,
-      "savestate to --state-save-output once openpete_frame (VBL) reaches N" },
+      "savestate to --state-save-output once the feed key reaches N" },
     { "--state-save-output",                 KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "PATH", 260,
       "scheduled-save path (default ./frameN.state)" },
@@ -645,7 +646,7 @@ static const openpete_help_only_t k_help_only[] = {
       "deliberately raise SIGSEGV (crash-handler smoke test)" },
     { "--unlock-frames",                     KNOB_FLAG_ARG_REQUIRED, NULL, "debug",    NULL,
       "LIST", 480,
-      "force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)" },
+      "force fast-forward inside feed-key ranges, e.g. 100-200,500-600" },
 };
 
 const openpete_help_only_t* openpete_options_help_only(size_t* count) {

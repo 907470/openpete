@@ -170,19 +170,21 @@ resolve_disc() {
     ctr_mount "$DISC_DIR" "$DISC_DIR" ro
 }
 
-# boot_check EXE TAG [ARGS...]: --frame-limit 600 exits 0 and prints the
+# boot_check EXE TAG [ARGS...]: --frame-limit 600 (1173 on Spyro 2 and 3, whose
+# feed key counts the boot's 573 fast-boot VBLs) exits 0 and prints the
 # frame-limit exit line; the hang watchdog's 2 and every other code fail.
 # The log is build/container/boot-<game>-<TAG>.log.
 boot_check() {
     local exe="$1" tag="$2"
     shift 2
     local log="$BUILD/boot-$game-$tag.log"
-    local run_args=() code=0
+    local run_args=() code=0 limit=600
+    case "$game" in spyro-2|spyro-3) limit=1173;; esac
     # The game's own boot flags (RUN_ARGS of its oracle recipe).
     read -ra run_args <<<"$(bash -c 'source "$1"; echo "${RUN_ARGS[@]}"' _ "games/$game/oracle.conf")"
     rm -f "$log"
     in_image "$DEV_IMAGE" none "\"\$@\" >$(printf %q "$log") 2>&1" _ \
-        "$exe" --headless --no-config --disc "$CUE" "${run_args[@]}" "$@" --frame-limit 600 \
+        "$exe" --headless --no-config --disc "$CUE" "${run_args[@]}" "$@" --frame-limit "$limit" \
         || code=$?
     [[ -f "$log" ]] || fail "boot check wrote no log $log"
     local line

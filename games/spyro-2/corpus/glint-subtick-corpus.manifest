@@ -17,4 +17,4 @@
 # Geometric centroid at alpha 0.5, PSX px: 0.075 before, 0.050 after (alpha 0
 # 0.350 before, 0.255 after, the cross's extent no longer scaled by view-Z);
 # identity 0.000.
-autumn-plains-skelos-badlands-portal-entry.bk2 | 850 | gem=512.3,138.8 rec=80067D00 tol=0.5 step=10
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1423 | gem=512.3,138.8 rec=80067D00 tol=0.5 step=10

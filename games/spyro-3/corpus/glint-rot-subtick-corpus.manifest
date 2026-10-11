@@ -2,12 +2,12 @@
 # glint-rot). Rows: <bk2> | <V> | rec=<addr> [rtol=] [step=]. rec is the pool
 # record whose drawn orientation is judged, in sine-table entries modulo 64.
 #
-# sunrise-spring-surface-swim.bk2 1482, rec 8006DF48 (near star, 4.8 px
-# extent): canon1480 8.86, canon1482 16.59, phase 138 to 146. With the replay
+# sunrise-spring-surface-swim.bk2 2055, rec 8006DF48 (near star, 4.8 px
+# extent): canon2053 8.86, canon2055 16.59, phase 138 to 146. With the replay
 # rotating the corners against the routine's sense the alpha-0.5 ratio read
 # 2.03; with the routine's sense 0.03 LERPED.
-sunrise-spring-surface-swim.bk2 | 1482 | rec=8006DF48 rtol=0.25
-# sunrise-spring-surface-swim.bk2 1284, rec 8006DF98 (near star, 10.5 px
-# extent, the largest in the movie): canon1282 33.27, canon1284 41.41, phase 33
+sunrise-spring-surface-swim.bk2 | 2055 | rec=8006DF48 rtol=0.25
+# sunrise-spring-surface-swim.bk2 1857, rec 8006DF98 (near star, 10.5 px
+# extent, the largest in the movie): canon1855 33.27, canon1857 41.41, phase 33
 # to 41. 1.98 against the routine's sense, 0.02 with it.
-sunrise-spring-surface-swim.bk2 | 1284 | rec=8006DF98 rtol=0.25
+sunrise-spring-surface-swim.bk2 | 1857 | rec=8006DF98 rtol=0.25

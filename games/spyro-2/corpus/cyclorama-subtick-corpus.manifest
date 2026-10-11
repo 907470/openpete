@@ -11,8 +11,8 @@
 #
 # The cyclorama is a 360-degree surround whose texture the camera's yaw scrolls
 # across the frame; a row therefore needs a turning camera, not a moving one.
-# At V=1350 of this same movie the camera holds its heading and the whole
+# At V=1923 of this same movie the camera holds its heading and the whole
 # 241676-px sky mask displaces 0.4 px over the interval, below every floor. At
-# V=852 the camera swings through the portal entry and the cloud the row names
+# V=1425 the camera swings through the portal entry and the cloud the row names
 # crosses 26 px.
-autumn-plains-skelos-badlands-portal-entry.bk2 | 852 | blob=82.2,38.0 tol=1.0 step=10
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1425 | blob=82.2,38.0 tol=1.0 step=10

@@ -3,8 +3,8 @@
 # <source> is a movie under games/spyro-2/bk2, or any other name for the plain
 # boot (title screen + attract demo), which needs no input.
 #
-# At VBL 6400 of the attract demo the guest links Ripto's flame ribbon ahead of
+# At VBL 6973 of the attract demo the guest links Ripto's flame ribbon ahead of
 # the terrain and of a two-triangle subtractive particle quad; the replay's body
 # feeds particles before the flame. The additive ribbon and the subtractive quad
 # overlap, and they do not commute once the red channel clamps.
-attract-demo | 6400
+attract-demo | 6973

@@ -54,8 +54,8 @@ pg_resolve "$GAME"
 # --skip-to-level has finished loading and the level is drawing.
 case "$GAME" in
     spyro-1) LEVEL=artisans;       VBL=1900;;
-    spyro-2) LEVEL=summer_forest;  VBL=1900;;
-    spyro-3) LEVEL=sunrise_spring; VBL=1900;;
+    spyro-2) LEVEL=summer_forest;  VBL=2473;;
+    spyro-3) LEVEL=sunrise_spring; VBL=2473;;
     *) echo "vk-validation: SKIP ($GAME has no level row)"; exit 64;;
 esac
 

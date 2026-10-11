@@ -2,5 +2,5 @@
 # carry the class-313 moby whose update func_level_11_80080CE0 runs the
 # level's second scan; area 0 places none (--skip-to-level and the
 # Sunrise Spring portal both load area 0). The scan completes near VBL 9600
-# (scripts/make_bk2.py --frames 10000).
+# (scripts/make_bk2.py --feed-key vbl --frames 10573).
 --skip-to-area sunny_villa:2

@@ -30,6 +30,7 @@
 // keyframe faceblock patch mirror, which writes patch words into a faceblock
 // and restores the originals within one decode (moby_frame_patch_apply).
 
+#include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
 #include "feature_registry.h"
 #include "renderer/orchestrator.h"  /* the canonical-render epoch + producer-camera brackets */
 #include "renderer/moby.h"          /* this feeder's exported entries */
@@ -11656,7 +11657,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             if (s_atcls >= 0 && (s_atcls == 0xFFFF || tcls2 == (uint16_t)s_atcls)) {
                 uint32_t mrot = cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u);
                 fprintf(stderr, "[moby-anim vbl=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u nid=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x hdr=%08x hdrp=%08x rot=%06x\n",
-                        openpete_frame, mobys[i], tcls2,
+                        openpete_feed_key_now(), mobys[i], tcls2,
                         prevkf, balpha,
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 2u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 3u),
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 4u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 0u),
@@ -11700,7 +11701,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                  * present's phase carries. */
                 double dmob[3]; moby_record_world_offset(mobys[i], dmob);
                 fprintf(stderr, "[moby-world vbl=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
-                        openpete_frame, mobys[i],
+                        openpete_feed_key_now(), mobys[i],
                         cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u),
                         f.frameA, f.frameB, (unsigned)((f.w0 >> 8) & 0xFFu),
                         (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 0u),
@@ -11708,7 +11709,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 8u),
                         dmob[0], dmob[1], dmob[2]);
                 fprintf(stderr, "[moby-screen vbl=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
-                        openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
+                        openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
                         (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
                         mobys[i], sccls, got,
                         mx / got, my / got, mz / got,

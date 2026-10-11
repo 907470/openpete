@@ -552,7 +552,7 @@ void cut_jump_census_capture(uint32_t key) {
     const int marked = cut_moby_marked(key, o->prev, o->curr, 0, 0, &mw);
     fprintf(stderr, "[jump-census vbl=%u] obj=%08x cls=%03x st=%02x->%02x d=%.1f "
                     "cutpath=%d table=%d load=%d bound=%.0f verdict=%s why=%s\n",
-            openpete_frame, key, (unsigned)cc, o->prev[game_layout.moby.state_off],
+            openpete_feed_key_now(), key, (unsigned)cc, o->prev[game_layout.moby.state_off],
             o->curr[game_layout.moby.state_off], d, cutpath,
             marked, cut_regime(0), cut_jump_bound(),
             v ? "jump" : "lerp", why);

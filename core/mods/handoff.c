@@ -94,7 +94,7 @@ void openpete_handoff_poll(CPUState* cpu) {
 
     /* Checkpoint leg. */
     int due = s_requested ||
-              (s_trigger_at && openpete_frame >= s_trigger_at);
+              (s_trigger_at && openpete_feed_key_now() >= s_trigger_at);
     if (!due || s_exec_done) return;
     s_exec_done = 1;
     s_requested = 0;

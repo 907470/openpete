@@ -192,12 +192,17 @@ pg_device_line() {
 #   PG_CAP_ASPECT     OPENPETE_CAP_ASPECT, default 16:9 (the golden is widescreen)
 #   PG_CAP_LODS       OPENPETE_CAP_LODS, default "original extended"
 #   PG_MAX_SAMPLES    OPENPETE_MAX_SAMPLES, canonical samples per bk2, default 5
-#   PG_FREECAM_START  OPENPETE_FREECAM_START, a freecam row's default canonical VBL, 1900
+#   PG_FREECAM_START  OPENPETE_FREECAM_START, a freecam row's default canonical
+#                     feed-key value: 1900 on Spyro 1 (a yield count), 2473 on
+#                     Spyro 2 and 3 (a VBL count: the same present, 573 fast-boot
+#                     VBLs later); read after pg_resolve, PG_GAME picks the default
 pg_cap_settings() {
   PG_CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
   PG_CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
   PG_MAX_SAMPLES="${OPENPETE_MAX_SAMPLES:-5}"
-  PG_FREECAM_START="${OPENPETE_FREECAM_START:-1900}"
+  local fc_default=1900
+  case "${PG_GAME:-}" in spyro-2|spyro-3) fc_default=2473;; esac
+  PG_FREECAM_START="${OPENPETE_FREECAM_START:-$fc_default}"
 }
 
 # A freecam row's tile key: the row's level field plus the first six hex

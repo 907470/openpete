@@ -43,12 +43,16 @@ typedef struct {
     int          load_delay;        /* Header.txt "LoadDelay N": the VBLs every
                                       * level load waited when the movie was
                                       * recorded; 0 when the header has no line */
+    int          vbl_keyed;         /* Header.txt "OpenpeteFeedKey vbl": one row
+                                      * per VBL (openpete_vbl); 0 when absent,
+                                      * one row per yield (openpete_frame) */
 } bk2_movie_t;
 
 /** @brief Load a .bk2 zip into a movie.
  *
- * Parses the "Input Log.txt" entry with bk2_movie_parse_log and reads the
- * optional "LoadDelay N" line of "Header.txt" into load_delay.
+ * Parses the "Input Log.txt" entry with bk2_movie_parse_log, reads the
+ * optional "LoadDelay N" line of "Header.txt" into load_delay and sets
+ * vbl_keyed when Header.txt carries the line "OpenpeteFeedKey vbl".
  * @param path Path to the .bk2 file.
  * @param out Receives the movie; release it with bk2_movie_free.
  * @return 0 on success; -1 when the zip cannot be opened, has no input

@@ -14,6 +14,7 @@
  * Determinism: nothing here touches PSX RAM or the `.s` verdict producers.
  */
 
+#include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
 #include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
 #include "openpete_present_thread.h"
@@ -1224,6 +1225,9 @@ void openpete_native_scene_begin(void) {
 /* VBL stamp of the scene accumulating in s_scene; 0xFFFFFFFF before the
  * first openpete_native_scene_begin_frame. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
+/* The feed key (openpete_feed_key_now) when the scene began: the frame number
+ * the instrument lines a harness matches against its capture targets carry. */
+static unsigned s_scene_key = 0xFFFFFFFFu;
 /* Stamp of the last begin_frame made outside the sub-tick view: the game's own
  * render, never a re-extract. 0xFFFFFFFF before the first. */
 static unsigned s_scene_game_frame = 0xFFFFFFFFu;
@@ -1430,7 +1434,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_cur_seq = 0;
         s_cur_prim = 0;
         s_cur_fb_cell = 0;
-        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame;
+        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
@@ -3540,7 +3544,7 @@ static void carry_census_flush(const carry_census_t* cz, int carried, int paired
                     " lerped=%d far_both=%d uv_mismatch=%d crossed=%d static_moved=%d"
                     " runs=%d runs_lerped=%d runs_snapped_disagree=%d"
                     " runs_segmented=%d segments_lerped=%d ambiguous_lerp=%d nearer_twin=%d",
-            s_scene_frame, s_ix++, oalpha, carried, paired,
+            s_scene_key, s_ix++, oalpha, carried, paired,
             cz->lerped, cz->far_both, cz->uv_mismatch, cz->crossed, cz->static_moved,
             st->runs, st->lerped, st->disagree, st->segmented, st->segs,
             cz->ambiguous, cz->nearer_twin);
@@ -11980,7 +11984,8 @@ static void bw_fam_census_pass(const scene_tri_t* sc, int n, int refined,
 
 /** @brief Print the burst census of a completed scene, on stderr, for OPENPETE_BWFAMCENSUS.
  *
- * OPENPETE_BWFAMCENSUS=N or N-M selects the scene stamps censused; the value
+ * OPENPETE_BWFAMCENSUS=N or N-M selects the scenes censused by the feed key at
+ * their start (s_scene_key); the value
  * is read once. A present in range prints a header line, then bw_fam_census_pass
  * keyed by tag family alone ("fam") and by bw_rank_key ("rank"). */
 static void bw_fam_census(const scene_tri_t* sc, int n) {
@@ -11991,7 +11996,7 @@ static void bw_fam_census(const scene_tri_t* sc, int n) {
         if (e && sscanf(e, "%u-%u", &a, &b) == 2) { lo = a; hi = b; }
         else if (e && *e) { lo = (unsigned)atoi(e); hi = lo; }
     }
-    if (on != 1 || s_scene_frame < lo || s_scene_frame > hi) return;
+    if (on != 1 || s_scene_key < lo || s_scene_key > hi) return;
     fprintf(stderr, "[bwfam f=%u leg=%s] n=%d\n", s_scene_frame,
             s_scene_replay ? "replay" : "inline", n);
     bw_fam_census_pass(sc, n, 0, "fam");
@@ -12005,7 +12010,8 @@ static void bw_fam_census(const scene_tri_t* sc, int n) {
 
 /** @brief Print a blended-world block as the ordered pass draws it, on stderr, for OPENPETE_BWDRAWORDER.
  *
- * OPENPETE_BWDRAWORDER=N or N-M selects the scene stamps dumped.
+ * OPENPETE_BWDRAWORDER=N or N-M selects the scenes dumped by the feed key at
+ * their start (s_scene_key).
  * One line per maximal run of one provenance key, blend class and texturing
  * mode, with its triangle count, then the totals. Scene indices are left
  * out: the game render and the re-extract build different scenes, so only
@@ -12023,7 +12029,7 @@ static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) 
         if (e && sscanf(e, "%u-%u", &a, &b) == 2) { lo = a; hi = b; }
         else if (e && *e) { lo = (unsigned)atoi(e); hi = lo; }
     }
-    if (on != 1 || s_scene_frame < lo || s_scene_frame > hi) return;
+    if (on != 1 || s_scene_key < lo || s_scene_key > hi) return;
     int runs = 0, tris = 0, i = 0;
     while (i < n) {
         const scene_tri_t* s0 = &scene[idx[i]];
@@ -12185,9 +12191,9 @@ static void scene_probes(scene_tri_t* sc, int n)
     { static int sd = -2; static unsigned sdf = 0;
       if (sd == -2) { const char* e = getenv("OPENPETE_SCENEDUMP");
           sd = (e && *e) ? 1 : -1; sdf = (e && *e) ? (unsigned)atoi(e) : 0; }
-      if (sd == 1 && s_scene_frame >= sdf) {
+      if (sd == 1 && s_scene_key >= sdf) {
         sd = -1;
-        fprintf(stderr, "[scenedump f=%u] n=%d\n", s_scene_frame, n);
+        fprintf(stderr, "[scenedump f=%u] n=%d\n", s_scene_key, n);
         for (int ti = 0; ti < n; ti++) {
             const scene_tri_t* T = &sc[ti];
             fprintf(stderr, "[sd] #%d cat=%d blend=%d tex=%d grp=%d ko=%.1f "
@@ -15619,7 +15625,7 @@ static void compose_variant(void)
         const size_t gblen = strlen(gb);
         openpete_tercache_frame_slots(gb + gblen, (int)(sizeof gb - gblen));
         fprintf(stderr, "[freeze f=%u stamp=%08x] world=%d n=%d W=%d A=%d freeze=%08x tc_src=%d drawn=%d | %s\n",
-                s_scene_frame, scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
+                s_scene_key, scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
                 openpete_tercache_frame_source(), td, gb);
     }
     /* The freeze backdrop is snapshotted from the clean, correctly-projected

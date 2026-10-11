@@ -5,6 +5,7 @@
 
 #include "game_extras.h"
 #include "game_layout.h"
+#include "openpete_fiber.h"
 #include "psx_runtime_internal.h"
 
 #include <stdio.h>
@@ -26,6 +27,8 @@ void openpete_game_runtime_register(const openpete_game_runtime_t* rt) {
     if (s_rt->layout) game_layout = *s_rt->layout;
     else memset(&game_layout, 0, sizeof game_layout);
     psx_runtime_g_sony_image_base = s_rt->sony_image_base;
+    openpete_feed_key_select(s_rt->feed_key == OPENPETE_FEED_KEY_VBL
+                                 ? OPENPETE_FEED_KEY_VBL : OPENPETE_FEED_KEY_FRAME);
     psx_set_override_dispatch_game(s_rt->override_dispatch);
 }
 

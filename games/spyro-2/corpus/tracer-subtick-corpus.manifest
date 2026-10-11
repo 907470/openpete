@@ -6,15 +6,15 @@
 # terrain and moby in both.
 #
 # The source is not a movie: the plain boot's attract demo, the presentation
-# corpus's attract-demo row, whose pin 14000 reads tracers=30 on the
+# corpus's attract-demo row, whose pin 14573 reads tracers=30 on the
 # intermediate present. Four live ribbon records draw 10 segments and one mesh
-# descriptor 5 quads per tick over VBL 13990-14010. A tick spans two VBLs
-# starting at an even VBL here, so V=14002 and the intermediate present at
-# 14003 covers [14000, 14002]. The ribbon at (471.9,201.3) crosses 9.4 px over
+# descriptor 5 quads per tick over VBL 14563-14583. A tick spans two VBLs
+# starting at an odd VBL here, so V=14575 and the intermediate present at
+# 14576 covers [14573, 14575]. The ribbon at (471.9,201.3) crosses 9.4 px over
 # the interval. The component at (344.6,219.3) is the mesh: two rings of five
 # vertices, the leading ring moving about 350 world units per tick, so it
 # crosses 2.9 px while its area ramps 780 to 1021 px, which is why the row's
 # step floor is 2. Its vertices move toward the camera, so the projection of
 # the lerped world vertices is not the screen lerp the cells compare against:
 # its centroid and area cells read PARTIAL (0.40 px, 38.5 px) inside `tol`.
-attract-demo | 14002 | blob=471.9,201.3 blob=344.6,219.3 tol=1.0 step=2
+attract-demo | 14575 | blob=471.9,201.3 blob=344.6,219.3 tol=1.0 step=2

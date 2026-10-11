@@ -29,8 +29,9 @@
 #     [--game SLUG]                  (default spyro-1; the bk2 corpus and the
 #                                     disc follow it)
 #     [--build-dir=build/linux-release]
-#     [--frames=N]                   (default per game: 2000; spyro-3 2600,
-#                                     its longest default movie is 2589 rows)
+#     [--frames=N]                   (default per game: 2000; spyro-2 2573;
+#                                     spyro-3 3173, its longest default movie
+#                                     is 3162 rows)
 #     [--aspects=4:3,16:9,21:9]      (comma list; baseline 4:3)
 #     [--fovs=default,90]            ("default" = no --fov flag)
 #     [--scenarios=LIST]             ("title" = no --bk2; otherwise a stem
@@ -90,10 +91,10 @@ ASPECTS_CSV="4:3,16:9,21:9"
 FOVS_CSV="default,90"
 case "$GAME" in
     spyro-2)
-        FRAMES=2000
+        FRAMES=2573
         SCENARIOS_CSV="title,start-new-game,summer-forest-collect-orb,autumn-plains-skelos-badlands-portal-entry" ;;
     spyro-3)
-        FRAMES=2600
+        FRAMES=3173
         SCENARIOS_CSV="title,new-game-title,crystal-islands-flame,sunrise-spring-sunny-villa-portal-entry" ;;
     *)
         FRAMES=2000

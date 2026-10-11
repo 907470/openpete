@@ -2,8 +2,9 @@
 # (tests/harness/check_shadow_subtick.sh).
 #   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [judge=<a>,...]
 # V is the canonical VBL the intermediate present at V+1 sits above; V-2 opens
-# the interval that present covers. V is even because a tick spans two VBLs
-# here: the intermediate present at V+1 has to fall inside V's own tick.
+# the interval that present covers. V is odd because a tick spans two VBLs
+# opening on an odd VBL here: the intermediate present at V+1 has to fall inside
+# V's own tick.
 #
 # Sheila kicks a rock across the ledge over these two ticks. Each row names two
 # shadows: the rock's, which moves through the world, and a second shadow near
@@ -19,5 +20,5 @@
 # and its membership are the newest tick's, so the mask's area ramps across the
 # interval and the visible centroid follows it wherever the decal is clipped by
 # terrain.
-sheilas-alp-sheila-water-invisible.bk2 | 4532 | blob=490.2,271.4 blob=397.4,314.5 tol=1.0
-sheilas-alp-sheila-water-invisible.bk2 | 4534 | blob=469.2,274.0 blob=391.5,320.8 tol=1.0
+sheilas-alp-sheila-water-invisible.bk2 | 5105 | blob=490.2,271.4 blob=397.4,314.5 tol=1.0
+sheilas-alp-sheila-water-invisible.bk2 | 5107 | blob=469.2,274.0 blob=391.5,320.8 tol=1.0

@@ -62,6 +62,36 @@ extern SDL_AtomicInt openpete_vbl;
  * during the splash sequence. */
 extern unsigned openpete_frame;
 
+/* The counter that indexes the input feed and every number a run is told
+ * from outside (bk2 rows and --bk2-frame-offset, --frame-limit,
+ * --screenshot-on-frame and the other one-shot frame triggers, the
+ * presentation corpus pins). Per game: OPENPETE_FEED_KEY_FRAME keys them on
+ * `openpete_frame`, OPENPETE_FEED_KEY_VBL on `openpete_vbl`. Presentation
+ * stamps, logs and the in-session rewind and runahead logs stay on
+ * `openpete_frame` in every game. */
+typedef enum openpete_feed_key {
+    OPENPETE_FEED_KEY_FRAME = 0,
+    OPENPETE_FEED_KEY_VBL   = 1,
+} openpete_feed_key_t;
+
+/** @brief Select the counter the input feed and the run's frame triggers key on.
+ *
+ * Called once when the game descriptor registers, before the host loop runs.
+ * @param key OPENPETE_FEED_KEY_FRAME or OPENPETE_FEED_KEY_VBL. */
+void openpete_feed_key_select(openpete_feed_key_t key);
+
+/** @brief Return the selected feed key.
+ * @return OPENPETE_FEED_KEY_FRAME until a game selects another. */
+openpete_feed_key_t openpete_feed_key(void);
+
+/** @brief Return the current value of the selected feed key's counter.
+ *
+ * `openpete_frame`, or `openpete_vbl` read atomically. Both counters advance
+ * only on the game fiber, so between yields the host loop reads a stable
+ * value.
+ * @return The counter's value. */
+unsigned openpete_feed_key_now(void);
+
 /* Canonical-present counter: increments exactly once per CANONICAL game
  * draw (the host loop's `openpete_present_pending` block), i.e. once per
  * game draw-tick. Unlike `openpete_frame` - a VBL/yield counter whose

@@ -42,6 +42,7 @@
 //
 // Gated by OPENPETE_TERRAIN_VERIFY (dump/A/B) or a native renderer mode (feed).
 
+#include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
 #include "openpete_glitch_mark.h"
@@ -8768,7 +8769,7 @@ static void tgpu_arena_census_line(void) {
     tgpu_fmt_arenas(ovf, (int)sizeof ovf, st.overflow_adopted, NULL);
     fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s ovf=%s caps=%.1fMiB svc=%u/%u "
             "draws-retired=%u rebake=%ld cell-draws=%u/%llu keycell-faces=%ld\n",
-            openpete_frame, hwm, afail, ovf,
+            openpete_feed_key_now(), hwm, afail, ovf,
             (double)st.cap_bytes / (1024.0 * 1024.0),
             st.svc_calls, st.svc_fulfilled, st.draws_retired, s_tgpu_rebake,
             st.cell_draws, (unsigned long long)st.cell_instances, s_tgpu_keycell_faces);
@@ -8806,7 +8807,7 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
             "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld tp=%ld "
             "nearb=%ld nodraw=%ld prim=%ld pcov=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
-            openpete_frame, s_tgpu_secs, s_tgpu_nvsecs, s_tgpu_claims,
+            openpete_feed_key_now(), s_tgpu_secs, s_tgpu_nvsecs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
             s_tgcl_texpack, s_tgcl_nearb, s_tgcl_nodraw,
@@ -10778,7 +10779,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * the trigger frame, so an intermediate re-extract (which runs after the
      * tick's canonical walk) is reachable; N=1 is the single-walk form. */
     s_fardbg_active = s_fardbg && !s_fardbg_done
-                      && (s_fardbg == 1 || openpete_frame >= (unsigned)s_fardbg);
+                      && (s_fardbg == 1 || openpete_feed_key_now() >= (unsigned)s_fardbg);
     /* OPENPETE_TERRAIN_FACEMAP=<frame>: one-shot per-LP-face screen-footprint
      * dump (fires on the first build at/after <frame> - no VBL-parity trap) for
      * offline hole->face attribution: rasterize the dumped footprints and
@@ -10787,7 +10788,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * would not otherwise run, so DROPPED candidates are attributable too -
      * the pixels needing attribution are exactly the ones nothing drew. */
     if (s_facemap < 0) { const char* e = getenv("OPENPETE_TERRAIN_FACEMAP"); s_facemap = (e && *e) ? atoi(e) : 0; }
-    s_facemap_active = s_facemap && !s_facemap_done && openpete_frame >= (unsigned)s_facemap;
+    s_facemap_active = s_facemap && !s_facemap_done && openpete_feed_key_now() >= (unsigned)s_facemap;
     int M[3][3]; memcpy(M, s_view.cam_M, sizeof M);   /* m_ProjectionMatrix */
     int Mbin[3][3]; ngte_read_matrix(cpu, game_layout.cam.view_matrix, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
     {   /* World->view scale bound for the rim broadphase's sphere radius: M is
@@ -10961,7 +10962,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         ENV_FLAG_LATCH(s_camdbg, "OPENPETE_TERRAIN_CAMDBG");
         if (s_camdbg)
             fprintf(stderr, "[cam f=%u] pos=(%d, %d, %d) yaw=%d pitch=%d sub=%d\n",
-                    openpete_frame,
+                    openpete_feed_key_now(),
                     (int32_t)rd(cpu, game_layout.cam.position),
                     (int32_t)rd(cpu, game_layout.cam.position + 4u),
                     (int32_t)rd(cpu, game_layout.cam.position + 8u),
@@ -11439,7 +11440,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     "tri4Faces=%d tri4Subs=%d tri4StraddleCulls=%d tri4MatDiff=%d "
                     "tri2Faces=%d tri2Subs=%d tri2StraddleCulls=%d tri2MatDiff=%d "
                     "cells4Faces=%d cells4Pinned=%d\n",
-                    openpete_frame, s_dbg_spike, s_dbg_spike_tris, s_tri_n, s_walk_sectors,
+                    openpete_feed_key_now(), s_dbg_spike, s_dbg_spike_tris, s_tri_n, s_walk_sectors,
                     s_trisplit_faces[0], s_trisplit_subs[0], s_trisplit_scull[0],
                     s_trisplit_matdiff[0], s_trisplit_faces[1], s_trisplit_subs[1],
                     s_trisplit_scull[1], s_trisplit_matdiff[1], s_cells4_faces[0],
@@ -11467,7 +11468,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
                     "arena=%ld col=%ld slot=%ld tp=%ld nearb=%ld "
                     "nodraw=%ld prim=%ld pcov=%ld canim=%d canim_moved=%d\n",
-                    openpete_frame, s_vanim_sub,
+                    openpete_feed_key_now(), s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
                     s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
                     s_tgcl_anim - cen0[2], s_tgcl_scroll - cen0[3],
@@ -11632,7 +11633,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         fprintf(stderr, "[fardbg-hdr] frame=%u walk=%d sub=%d alpha=%.4f occl=%ld gridage=%d "
                         "prims=%u sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X "
                         "latoff=%d offadm=%d\n",
-                openpete_frame, s_fardbg_walk, s_vanim_sub,
+                openpete_feed_key_now(), s_fardbg_walk, s_vanim_sub,
                 (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0,
                 s_tocc_culled - s_fardbg_occl0, openpete_native_occl_grid_age(),
                 s_prim_total, s_gte_n, fogRefBase, cullRefS2,

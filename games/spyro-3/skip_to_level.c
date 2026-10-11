@@ -218,10 +218,10 @@ static void skip_release_tick(CPUState* cpu, uint32_t frame_counter) {
     s_prev_state = state;
     if (target_released(cpu, eng, sizeof eng)) {
         fprintf(stderr, "[skip-to-level] level playable - presents resume "
-                        "at frame=%u%s\n", (unsigned)frame_counter, eng);
+                        "at frame=%u%s\n", openpete_feed_key_now(), eng);
     } else if (frame_counter > s_ffwd_deadline) {
         fprintf(stderr, "[skip-to-level] fail-safe release (no playable edge) "
-                        "at frame=%u\n", (unsigned)frame_counter);
+                        "at frame=%u\n", openpete_feed_key_now());
     } else {
         return;
     }
@@ -250,14 +250,14 @@ void spyro3_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
             s_phase = SKIP_SEEDED;
             fprintf(stderr, "[skip-to-level] induced demo-timeout: level=%d "
                             "(slot=%u) at frame=%u\n",
-                    s_target, (unsigned)idx, (unsigned)frame_counter);
+                    s_target, (unsigned)idx, openpete_feed_key_now());
         }
     } else if (s_phase == SKIP_SEEDED) {
         if (cpu->read_word(S3_GAME_STATE) == S3_GS_LOADING_IMG &&
             cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_target) {
             s_phase = SKIP_PICKED;
             fprintf(stderr, "[skip-to-level] loader took level=%d at "
-                            "frame=%u\n", s_target, (unsigned)frame_counter);
+                            "frame=%u\n", s_target, openpete_feed_key_now());
         }
     }
     if (s_phase == SKIP_PICKED) {

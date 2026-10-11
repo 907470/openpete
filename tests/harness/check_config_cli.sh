@@ -146,8 +146,10 @@ leg fov_ten 0 --config "$OUT/fovten.toml" --config-report || true
 has fov_ten "--fov clamped to [30,120]; got 10.00"
 
 if [[ -f "$PG_DISC" ]]; then
+    boot_limit=120
+    case "$PG_GAME" in spyro-2|spyro-3) boot_limit=693;; esac
     leg boot 0 --headless --config "$OUT/bootenv.toml" --disc "$PG_DISC" \
-        --no-card --mute 1 --vibration 0 --frame-limit 120 || true
+        --no-card --mute 1 --vibration 0 --frame-limit "$boot_limit" || true
     has boot 'fov = "abc" is not accepted'
     has boot 'load delay: 7 VBL(s) per level load'
 else

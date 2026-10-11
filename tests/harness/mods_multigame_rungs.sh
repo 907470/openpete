@@ -1,6 +1,6 @@
 # mods_multigame_rungs.sh - the rungs of tests/harness/check_mods.sh whose
 # fixtures load on every game. SOURCED by it after mods_sdk_rungs.sh (helpers
-# say, ok, bad, fixture, run_game, mod_toml; WORK, MODS_SRC, PG_GAME,
+# say, ok, bad, fixture, run_game, mod_toml; WORK, MODS_SRC, PG_GAME, KEY0,
 # TEST_SDK, API_VER); runs for every game.
 #
 # Rungs:
@@ -74,7 +74,7 @@ copy_mod() { # copy_mod <id> <dest dir>
 # ── M1. lib-and-client: dependency order, missing dependency, cycle ──────
 say "lib-and-client: client listed FIRST - topo-sort must load lib first"
 fixture "$WORK/libclient" lib-and-client demo-lib
-out="$(run_game "$WORK/libclient" 600)"
+out="$(run_game "$WORK/libclient" $((600 + KEY0)))"
 lib_line=$(printf '%s\n' "$out" | grep -n "demo-lib: entry ran" | head -1 | cut -d: -f1)
 cli_line=$(printf '%s\n' "$out" | grep -n "lib-and-client: entry ran" | head -1 | cut -d: -f1)
 if [ -n "$lib_line" ] && [ -n "$cli_line" ] && [ "$lib_line" -lt "$cli_line" ]; then
@@ -85,7 +85,7 @@ fi
 
 say "lib-and-client: missing dep - actionable error, run survives"
 fixture "$WORK/nodep" lib-and-client
-out="$(run_game "$WORK/nodep" 600)"
+out="$(run_game "$WORK/nodep" $((600 + KEY0)))"
 if printf '%s\n' "$out" | grep -q 'requires "demo-lib", which is not enabled'; then
     ok "missing-dep error is actionable"
 else
@@ -110,7 +110,7 @@ mkdir -p "$WORK/cycle"
 ln -sfn "$WORK/cycsrc/cycle-x" "$WORK/cycle/cycle-x"
 ln -sfn "$WORK/cycsrc/cycle-y" "$WORK/cycle/cycle-y"
 printf 'cycle-x\ncycle-y\n' > "$WORK/cycle/enabled.txt"
-out="$(run_game "$WORK/cycle" 600)"
+out="$(run_game "$WORK/cycle" $((600 + KEY0)))"
 if printf '%s\n' "$out" | grep -q "dependency cycle through"; then
     ok "cycle detected and reported"
 else
@@ -125,7 +125,7 @@ fi
 # ── M2. arena-probe: guest arena round trip ──────────────────────────────
 say "arena-probe: guest arena live and round trip on $PG_GAME"
 fixture "$WORK/arena" arena-probe
-out="$(run_game "$WORK/arena" 600)"
+out="$(run_game "$WORK/arena" $((600 + KEY0)))"
 if printf '%s\n' "$out" | grep -q "guest arena live @ 0x80700000" &&
    printf '%s\n' "$out" | grep -q "arena-probe: guest/host roundtrip OK"; then
     ok "arena live at 0x80700000, round trip OK"
@@ -144,8 +144,8 @@ for m in crt-beans crt-filter scene-sepia; do
 done
 # A headless run reaches the present hooks only on a rendered present, so
 # the run takes one native screenshot.
-out="$(RUN_OUTS="$WORK/postfx/shot-vk.png" run_game "$WORK/postfx" 320 \
-        --renderer vk --screenshot-on-frame 300 \
+out="$(RUN_OUTS="$WORK/postfx/shot-vk.png" run_game "$WORK/postfx" $((320 + KEY0)) \
+        --renderer vk --screenshot-on-frame $((300 + KEY0)) \
         --screenshot-output "$WORK/postfx/shot.png")"
 n_compiled="$(printf '%s\n' "$out" |
     grep -cE '(crt-beans|crt-filter|scene-sepia): shader shaders/[a-z_]+\.frag compiled')"
@@ -199,7 +199,7 @@ mkdir -p "$d/assets/spyro-2"
 mkdir -p "$WORK/assets"
 ln -sfn "$d" "$WORK/assets/asset-variant"
 echo asset-variant > "$WORK/assets/enabled.txt"
-out="$(run_game "$WORK/assets" 60)"
+out="$(run_game "$WORK/assets" $((60 + KEY0)))"
 # The loader names the root through the fixture's link.
 want="$WORK/assets/asset-variant/assets"
 [ "$PG_GAME" = "spyro-2" ] && want="$want/spyro-2"
@@ -242,7 +242,7 @@ TEOF
 mkdir -p "$WORK/mat"
 ln -sfn "$d" "$WORK/mat/mat-games"
 echo mat-games > "$WORK/mat/enabled.txt"
-out="$(run_game "$WORK/mat" 60)"
+out="$(run_game "$WORK/mat" $((60 + KEY0)))"
 n_game="$(printf '%s\n' "$out" | grep -c "\[\[material\]\] row [0-9] targets other games - skipped (this is $PG_GAME)")"
 n_chan="$(printf '%s\n' "$out" | grep -c "\[\[material\]\] row [0-9]: channel -\?[0-9] unsupported on $PG_GAME - skipped")"
 n_kept="$(printf '%s\n' "$out" | sed -n 's/.*mat-games: \([0-9]*\) declarative material row(s).*/\1/p' | head -1)"
@@ -274,7 +274,7 @@ TEOF
     mkdir -p "$WORK/lvl"
     ln -sfn "$d" "$WORK/lvl/lvl-games"
     echo lvl-games > "$WORK/lvl/enabled.txt"
-    out="$(run_game "$WORK/lvl" 60)"
+    out="$(run_game "$WORK/lvl" $((60 + KEY0)))"
     n_ref="$(printf '%s\n' "$out" |
         grep -c "lvl-games: 1 \[\[level\]\] row(s) refused - $PG_GAME serves no level ops")"
     if [ "$n_ref" -eq 1 ] &&
@@ -314,7 +314,7 @@ echo unsup-probe > "$WORK/unsup/enabled.txt"
 if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
         -I"$SDK_ROOT" "$SDK_ROOT/openpete_mod_abi.c" "$WORK/unsup-probe.c" \
         -o "$d/.build/any/unsup-probe.so" > "$WORK/unsup-cc.log" 2>&1; then
-    out="$(run_game "$WORK/unsup" 60)"
+    out="$(run_game "$WORK/unsup" $((60 + KEY0)))"
     calls="$(printf '%s\n' "$out" | sed -n 's/.*unsup-probe call [01] read_level_data \(-\?[0-9]*\) moby_classes \(-\?[0-9]*\) (unsupported \(-\?[0-9]*\)).*/\1 \2 \3/p')"
     n_calls="$(printf '%s\n' "$calls" | grep -c .)"
     n_unsup="$(printf '%s\n' "$calls" | awk 'NF { n += ($1 == $3) + ($2 == $3) } END { print n + 0 }')"
@@ -335,11 +335,12 @@ fi
 
 # ── M8. per-game arms: engagement on the attract demo ────────────────────
 # DEMO_FRAMES covers each game's first two consecutive CollectItem-class
-# pickups on the attract demo: Spyro 1 near VBL 4100, Spyro 2 near VBL
-# 14300, Spyro 3 near VBL 3000.
+# pickups on the attract demo: Spyro 1 near yield 4100, Spyro 2 near VBL
+# 14873, Spyro 3 near VBL 3573.
 case "$PG_GAME" in
     spyro-1) DEMO_FRAMES=6000 ;;
-    spyro-2) DEMO_FRAMES=15500 ;;
+    spyro-2) DEMO_FRAMES=16073 ;;
+    spyro-3) DEMO_FRAMES=6573 ;;
     *)       DEMO_FRAMES=6000 ;;
 esac
 
@@ -474,7 +475,7 @@ fi
 # VBL). declarative-example's texture and sound subtrees take the same
 # checks; its texture serves in either form.
 asset_shots=""
-for k in 300 600 900 1200 1500 1800 2400; do asset_shots="${asset_shots:+$asset_shots,}$k"; done
+for k in 300 600 900 1200 1500 1800 2400; do asset_shots="${asset_shots:+$asset_shots,}$((k + KEY0))"; done
 asset_engage() { # asset_engage <fixture dir> <mods...> -> report lines
     local dir="$1" out m replaced served
     shift
@@ -512,15 +513,16 @@ asset_engage "$WORK/declvar" declarative-example
 # duration the game polls through SpuGetKeyStatus (and with it the tick it
 # frees the sound slot and writes the sound-ref byte) is the stock
 # sample's. sfx-replace-probe replaces its game's default slot (Spyro 1
-# pickupDing, keyed ~11 times in 6000 VBLs of the attract demo; Spyro 2
-# and 3 flame, first keyed near VBL 5950 and 4600) with a 2 s buzz.
+# pickupDing, keyed ~11 times in 6000 yields of the attract demo; Spyro 2
+# and 3 flame, first keyed near VBL 6523 and 5173) with a 2 s buzz.
 # OPENPETE_SFX_END_LOG names every key-on and every ON/RESET transition
 # the guest reads; the two logs must match line for line, and the pack
 # census must show the replacement actually served (a green that did not
 # engage is vacuous). Re-pointing the voice's addr/pitch instead moved the
 # end and shifted the voice allocator's later choices from that tick on.
 case "$PG_GAME" in
-    spyro-2) SFXREP_FRAMES=8000 ;;
+    spyro-2) SFXREP_FRAMES=8573 ;;
+    spyro-3) SFXREP_FRAMES=6573 ;;
     *)       SFXREP_FRAMES=6000 ;;
 esac
 say "sfx_replace: end-tick neutrality on $PG_GAME - replaced voices end on the stock tick"
@@ -576,15 +578,15 @@ if [ "$PG_GAME" != "spyro-1" ]; then
     say "arena-canary: armed, saved and restored on $PG_GAME"
     fixture "$WORK/canary-$PG_GAME" arena-canary
     st="$WORK/canary-$PG_GAME.state"
-    out="$(RUN_OUTS="$st" run_game "$WORK/canary-$PG_GAME" 5000 \
-            --state-save-on-frame 4500 --state-save-output "$st")"
+    out="$(RUN_OUTS="$st" run_game "$WORK/canary-$PG_GAME" $((5000 + KEY0)) \
+            --state-save-on-frame $((4500 + KEY0)) --state-save-output "$st")"
     if printf '%s\n' "$out" | grep -q "arena-canary: armed" &&
        printf '%s\n' "$out" | grep -q "savestate: saved"; then
         ok "canary armed; savestate written"
     else
         bad "canary not armed or savestate not written"
     fi
-    out="$(run_game "$WORK/canary-$PG_GAME" 6000 --state-load-on-frame 5000 \
+    out="$(run_game "$WORK/canary-$PG_GAME" $((6000 + KEY0)) --state-load-on-frame $((5000 + KEY0)) \
             --state-load-input "$st")"
     if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 64 B restored" &&
        printf '%s\n' "$out" | grep -q "savestate: loaded" &&
@@ -605,7 +607,7 @@ fi
 # per-tick Draw and on its 300th call, after base(), stores the complement
 # of the word at 0x8001200C and of the byte at 0x8001200B (one below the
 # range) through op_write_u32/op_write_u8; the next call reads both back:
-# the guard must restore the word and leave the byte. At frame 900
+# the guard must restore the word and leave the byte. At VBL 1473
 # OPENPETE_S3_SCAN_POKE stores an EXE word from the host fiber: the watch
 # must report one host poke, and that poke fails the next loading walk, whose
 # verdict must name scan-probe while the game's own zeroing store is
@@ -658,8 +660,8 @@ CEOF
     echo scan-probe > "$WORK/scanprobe/enabled.txt"
 
     say "scan watch: mod guard restore, a store below the range, a host poke and the overlay load on $PG_GAME"
-    out="$( PG_CAPTURE_ENV=(OPENPETE_S3_SCAN_WATCH=1 OPENPETE_S3_SCAN_POKE=900:0x80030000:0x13579BDF)
-            RUN_TIMEOUT=600 run_game "$WORK/scanprobe" 3000 )"
+    out="$( PG_CAPTURE_ENV=(OPENPETE_S3_SCAN_WATCH=1 OPENPETE_S3_SCAN_POKE=1473:0x80030000:0x13579BDF)
+            RUN_TIMEOUT=600 run_game "$WORK/scanprobe" 3573 )"
     n_restore="$(scan_count "$out" restores)"
     n_stretch="$(scan_count "$out" stretches)"
     n_host="$(scan_count "$out" host)"
@@ -703,7 +705,7 @@ CEOF
 
     say "scan guard off: --scan-guard 0 lets the probe's store persist on $PG_GAME"
     out="$( PG_CAPTURE_ENV=(OPENPETE_S3_SCAN_WATCH=1)
-            RUN_TIMEOUT=600 run_game "$WORK/scanprobe" 1500 --scan-guard 0 )"
+            RUN_TIMEOUT=600 run_game "$WORK/scanprobe" 2073 --scan-guard 0 )"
     n_off_lines="$(printf '%s\n' "$out" | grep -c 'scan guard off (--scan-guard 0)')"
     n_restore="$(scan_count "$out" restores)"
     n_stretch="$(scan_count "$out" stretches)"
@@ -720,7 +722,7 @@ CEOF
     fi
 else
     say "scan guard: --scan-guard 0 is accepted and inert on $PG_GAME"
-    if out="$(run_game "$WORK/noscan-empty" 200 --scan-guard 0)" &&
+    if out="$(run_game "$WORK/noscan-empty" $((200 + KEY0)) --scan-guard 0)" &&
        ! printf '%s\n' "$out" | grep -q '\[s3-scan\]'; then
         ok "--scan-guard 0 accepted on $PG_GAME, no [s3-scan] line"
     else

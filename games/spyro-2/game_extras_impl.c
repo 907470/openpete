@@ -13,6 +13,7 @@
 #include "game_host_desc.h"
 #include "game_mod_desc.h"
 #include "psyq/psyq_thunk_state.h"
+#include "openpete_fiber.h"
 #include "openpete_psx.h"
 #include "spyro_overlay_table.h"
 #include "psyq/psyq_game_hooks.h"
@@ -233,6 +234,10 @@ static const game_host_desc_t k_host = {
  * here. Making the window per-game belongs to the recompiler, not to this
  * file.
  *
+ * feed_key: the input feed, the bk2 rows and every frame trigger a run is
+ * given count VBLs (openpete_vbl): the game waits with VSync(n > 1) and its
+ * boot runs VBLs without a yield, so a yield count is not a VBL count.
+ *
  * is_gameplay_live: a level overlay resident with its state machine running
  * (loader state -1). Title, loading and the exit transition report "not
  * live", which keeps the in-memory snapshot users (rewind keyframes,
@@ -243,6 +248,7 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .icon                 = &spyro2_game_icon,
     .layout               = &spyro2_game_layout,
     .sony_image_base      = 0x8006FCF4u,
+    .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = game_overlay_resync_on_boot,
     .on_frame_pre         = spyro2_on_frame_pre,
     .on_state_loaded      = game_overlay_resync_on_state_loaded,

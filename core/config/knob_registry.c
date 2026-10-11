@@ -1798,12 +1798,13 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "replay BizHawk movie (Octoshock P1 pad: buttons + analog sticks)" },
 
     { "bk2_frame_offset", "bk2 frame offset", "Gameplay", "--bk2-frame-offset", NULL,
-      "Map bk2 frame 0 to this openpete_frame (VBL) of the replay.",
+      "Map bk2 frame 0 to this value of the movie's row counter (yields on "
+      "Spyro 1, VBLs on Spyro 2 and 3).",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       bk2offset_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .default_note = "0: bk2 frame 0 plays at openpete_frame 0",
+      .default_note = "0: bk2 frame 0 plays at counter value 0",
       .help_arg = "N", .help_order = 610,
-      .help_text = "map bk2 frame 0 to openpete_frame N (default 0)" },
+      .help_text = "map bk2 frame 0 to row-counter value N (default 0)" },
 
     { "bk2_stop_on_end", "Exit at bk2 end", "Gameplay", "--bk2-stop-on-end", NULL,
       "Exit after the last bk2 frame instead of holding its input.",

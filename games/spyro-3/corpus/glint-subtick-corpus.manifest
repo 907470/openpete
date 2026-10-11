@@ -13,24 +13,24 @@
 #
 # The gem judged is record 8006DF38, a near star (eight quads, 24 traced outline
 # corners, extent 4.14 -> 4.00 PSX px over the interval), the only glint
-# component in view: its mask is 25 px at canon(1540) and 29 px at canon(1542),
+# component in view: its mask is 25 px at canon(2113) and 29 px at canon(2115),
 # so one flipped pixel is 1/29 of the mask; a rim pixel at the star's ~4 px
 # native radius moves the centroid ~0.14 px against the 0.5 bound. Before the
 # extent fix (OPENPETE_GLINT_EXTENT=0) the alpha-0.5 centroid read 0.14 px, with
 # the fix 0.08 px; identity 0.00 on both.
 #
-# The row judged record 8006DF08 at V=1518 until the extent fix: a far cross
+# The row judged record 8006DF08 at V=2091 until the extent fix: a far cross
 # with 3.0 px arms whose 21-22 px mask moves ~0.1 px per flipped pixel. It read
 # 0.43 px before the fix, most of it the tick's corner truncation that the
 # replay translates (the alpha-0 carve-out of the glint rebase), and 0.54 after,
 # the whole change one pixel of the mask; the outline's own centre moved 0.003
-# PSX px. No near star shows at 1518. The nearer VBLs with a visible near star
-# fail the bound on the build without the fix as well (1536 1.12 px, 1538 1.60,
-# 1540 0.57), the star partly covered by the terrain it rises from, so 1542 is
+# PSX px. No near star shows at 2091. The nearer VBLs with a visible near star
+# fail the bound on the build without the fix as well (2109 1.12 px, 2111 1.60,
+# 2113 0.57), the star partly covered by the terrain it rises from, so 2115 is
 # the nearest V whose reading measures the rebase rather than the depth test.
 # Mask centroid at alpha 0.5, capture px: 0.08 with the replay rotating
 # against the routine's sense, 0.74 with its sense (the 29 px mask of a star
 # turning 4 table entries between two rasters, no translation change).
 # Geometric centroid at alpha 0.5, PSX px: 0.076 before, 0.107 after (alpha 0
 # 0.221 before, 0.183 after); identity 0.000.
-sunrise-spring-camera-swing.bk2 | 1542 | gem=417.1,241.8 rec=8006DF38 tol=0.5 step=10
+sunrise-spring-camera-swing.bk2 | 2115 | gem=417.1,241.8 rec=8006DF38 tol=0.5 step=10

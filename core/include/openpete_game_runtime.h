@@ -64,6 +64,7 @@ typedef struct openpete_game_runtime {
     uint32_t pad_read_pc;          /* game_get_pad_read_pc */
     uint32_t load_delay_default;   /* game_get_load_delay_default */
     uint32_t sony_image_base;      /* psx_runtime_g_sony_image_base */
+    uint32_t feed_key;             /* openpete_feed_key_t; 0 = openpete_frame */
 
     /* Host-loop hooks (game_extras.h). */
     void     (*on_boot)(CPUState* cpu);

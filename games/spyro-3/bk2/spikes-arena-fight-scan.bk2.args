@@ -1,6 +1,6 @@
-# Cross every 60 VBLs from 1200 starts the fight (the scan of
-# func_level_27_8007797C); from 2000 Left and Right alternate every 120 VBLs,
-# which keeps Spyro alive until the scan ends (scripts/make_bk2.py --frames
-# 10000, Cross 6 VBLs at 1200, 1260, ... 9960, Left [s, s+120) and Right
-# [s+120, s+240) for s = 2000, 2240, ...).
+# Cross every 60 VBLs from 1773 starts the fight (the scan of
+# func_level_27_8007797C); from 2573 Left and Right alternate every 120 VBLs,
+# which keeps Spyro alive until the scan ends (scripts/make_bk2.py --feed-key
+# vbl --frames 10573, Cross 6 VBLs at 1773, 1833, ... 10533, Left [s, s+120)
+# and Right [s+120, s+240) for s = 2573, 2813, ...).
 --skip-to-level spikes_arena

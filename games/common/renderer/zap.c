@@ -81,6 +81,7 @@
 // and the alternating jitter shift it stores into each record; this feeder only
 // reads them afterwards.
 
+#include "openpete_fiber.h"  /* openpete_feed_key_now: instrument line labels */
 #include "zap.h"
 #include "feature_registry.h"
 #include "renderer/native_gte.h"
@@ -689,7 +690,7 @@ static void zap_trace(const char* leg, double alpha) {
     if (!on) return;
     fprintf(stderr, "[zap-screen vbl=%u leg=%s alpha=%.3f] live=%d rec=%08X "
                     "head=(%.2f,%.2f) tail=(%.2f,%.2f) width=%.3f wn=%d\n",
-            openpete_frame, leg, alpha, s_live, s_rec,
+            openpete_feed_key_now(), leg, alpha, s_live, s_rec,
             s_head_p.sx + s_reb.dhx, s_head_p.sy + s_reb.dhy,
             s_tail_p.sx + s_reb.dtx, s_tail_p.sy + s_reb.dty,
             s_hw_n ? 2.0 * s_hw_sum / (double)s_hw_n : 0.0, s_hw_n);

@@ -236,6 +236,22 @@ int bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out) {
     return 0;
 }
 
+/** @brief Find a Header.txt line opening with a key and return the text after the key.
+ *
+ * @param hdr Header text, not NUL-terminated.
+ * @param size Length of @p hdr.
+ * @param key The key with its trailing space, e.g. "LoadDelay ".
+ * @return The first character after the key on the first matching line, or
+ *         NULL when no line opens with it. */
+static const char* header_value(const char* hdr, size_t size, const char* key) {
+    const size_t klen = strlen(key);
+    for (size_t i = 0; i + klen < size; i++) {
+        if ((i == 0 || hdr[i - 1] == '\n') && memcmp(hdr + i, key, klen) == 0)
+            return hdr + i + klen;
+    }
+    return NULL;
+}
+
 int bk2_movie_load(const char* path, bk2_movie_t* out) {
     memset(out, 0, sizeof(*out));
 
@@ -261,20 +277,18 @@ int bk2_movie_load(const char* path, bk2_movie_t* out) {
     int rc = bk2_movie_parse_log((const char*)log_data, log_size, out);
     mz_free(log_data);
 
-    /* Header.txt is optional metadata; the one line replay depends on is the
-     * load delay the movie was recorded under (absent = instant). */
+    /* Header.txt is optional metadata; replay depends on two lines: the load
+     * delay the movie was recorded under (absent = instant) and the counter
+     * its rows are indexed by (absent = one row per yield). */
     size_t hdr_size = 0;
     char* hdr = (char*)mz_zip_reader_extract_file_to_heap(&zip, "Header.txt",
                                                           &hdr_size, 0);
     if (hdr) {
-        const char* key = "LoadDelay ";
-        for (size_t i = 0; i + strlen(key) < hdr_size; i++) {
-            if ((i == 0 || hdr[i - 1] == '\n') &&
-                memcmp(hdr + i, key, strlen(key)) == 0) {
-                out->load_delay = atoi(hdr + i + strlen(key));
-                break;
-            }
-        }
+        const char* v = header_value(hdr, hdr_size, "LoadDelay ");
+        if (v) out->load_delay = atoi(v);
+        v = header_value(hdr, hdr_size, "OpenpeteFeedKey ");
+        if (v && hdr_size - (size_t)(v - hdr) >= 3 && memcmp(v, "vbl", 3) == 0)
+            out->vbl_keyed = 1;
         mz_free(hdr);
     }
     mz_zip_reader_end(&zip);

@@ -1,102 +1,102 @@
 # Presentation-golden corpus manifest for Spyro 3 (fields as in
 # games/spyro-1/corpus/presentation-corpus.manifest: name|start|interval|freeze|pins).
-# The level loads by VBL ~841 under --skip-to-level and gameplay is live by
-# ~1200; 1500 leaves the fade settled.
-# The pin holds VBL 1500 on the sub-tick leg as well as the canonical one: the
+# The level loads by VBL ~1414 under --skip-to-level and gameplay is live by
+# ~1773; 2073 leaves the fade settled.
+# The pin holds VBL 2073 on the sub-tick leg as well as the canonical one: the
 # grid's intermediate samples land at +interval/2, so the pose the player walk
 # was measured against had no __inter__ tile of its own.
-# 2560 pins the camera inside the portal (VBLs 2544-2589), where the
+# 3133 pins the camera inside the portal (VBLs 3117-3162), where the
 # destination's preview picture fills the screen.
-# 2700 pins the level transition past the grid's last sample: the movie's
-# inputs end at 2589 and the run continues, so the sub-tick leg there is
+# 3273 pins the level transition past the grid's last sample: the movie's
+# inputs end at 3162 and the run continues, so the sub-tick leg there is
 # the transition gamestate, where the re-extract draws the cyclorama and the
-# player and every other producer returns empty. The grid's own 2650
-# intermediate sample covers the transition's start; 2700 covers it 50 VBLs
+# player and every other producer returns empty. The grid's own 3223
+# intermediate sample covers the transition's start; 3273 covers it 50 VBLs
 # further in, where the canonical frame no longer moves between ticks.
-# 1666: Bianca's trail effect blends toward dark where the PSX blends toward
+# 2239: Bianca's trail effect blends toward dark where the PSX blends toward
 # light; blessed pre-fix.
-sunrise-spring-sunny-villa-portal-entry|1500|100||1500,1666,2560,2700
+sunrise-spring-sunny-villa-portal-entry|2073|100||2073,2239,3133,3273
 
 # sunrise-spring-surface-swim arms the player draw's water-plane split.
 # g_Spyro+0x28 is zero on every frame of the other three bk2s and of the whole
-# 20k attract demo (six levels); it is non-zero from VBL 1889 to this movie's
+# 20k attract demo (six levels); it is non-zero from VBL 2462 to this movie's
 # end, with animationState 0x2B (SWIM_MOVE_SURFACE) and movementState 0x0A
 # (SWIM_SURFACE), so the split's classification, its depth cue and its cut have
 # no other row in the corpus.
-sunrise-spring-surface-swim|1900|150||1900,2000,2200
+sunrise-spring-surface-swim|2473|150||2473,2573,2773
 
 # icy-peak-reflective-mirror arms the player draw's mirrored copy.
 # g_Spyro+0x2C is the avatar's height above a material-class-4 surface; of the
 # 37 levels only Icy Peak, Midday Gardens, Frozen Altars and Bugbot Factory
 # carry a class-4 material at all, and the word is zero on every frame of the
 # other four bk2s and of the whole 20k attract demo. Icy Peak spawns beside
-# such a surface: idle to VBL 1300, then Up + Circle (charge) with a 60-frame
-# Right every 400 to hold the rink, and the word is non-zero from VBL 1858 to
+# such a surface: idle to VBL 1873, then Up + Circle (charge) with a 60-frame
+# Right every 400 to hold the rink, and the word is non-zero from VBL 2431 to
 # this movie's end, so the reflection's matrix negation, its inverted
 # back-face test and its ordering bias have no other row in the corpus. The
 # pins are the frames where the copy is least occluded by the surface above
 # it: 5011 to 7167 pixels of the frame move when the reflection is suppressed,
-# against 588 to 1421 on the grid samples after 2025.
-icy-peak-reflective-mirror|1900|150||1900,1921,1950,1961,2000,2001
+# against 588 to 1421 on the grid samples after 2598.
+icy-peak-reflective-mirror|2473|150||2473,2494,2523,2534,2573,2574
 # icy-peak-reflective-mirror@1856: the same movie at the tick that shows
-# Spyro's reflection on the ice (VBL 1856), before the row above starts; the
+# Spyro's reflection on the ice (VBL 2429), before the row above starts; the
 # player colour-block swap is measured here.
-icy-peak-reflective-mirror@1856|1856|600||1856
+icy-peak-reflective-mirror@1856|2429|600||2429
 # icy-peak-reflective-mirror@1864: the same movie where the player shadow fan,
 # cast onto the reflective floor's plane, lands on the ice ramp that stands
 # above that plane; the decal's raised-occluder test is measured here.
-icy-peak-reflective-mirror@1864|1864|600||1864,1870
+icy-peak-reflective-mirror@1864|2437|600||2437,2443
 # an-evil-plot-unfolds-egg-edge: the opening cutscene under 16:9; animated-kind
 # mobys inside the cull's distance box that fail its 4:3 lateral arm get no
-# widened-view re-admission, so two eggs are absent from the right band at 1206
-# and 1210. The left egg's disappearance between 1208 and 1209 is the game
+# widened-view re-admission, so two eggs are absent from the right band at 1779
+# and 1783. The left egg's disappearance between 1781 and 1782 is the game
 # moving it (its 4:3 staging, kept).
-an-evil-plot-unfolds-egg-edge|1200|10||1200,1206,1210,1220|--skip-to-cutscene an_evil_plot_unfolds
-# a-powerful-villain-emerges-throne: the throne record switches clip at VBL 5068
+an-evil-plot-unfolds-egg-edge|1773|10||1773,1779,1783,1793|--skip-to-cutscene an_evil_plot_unfolds
+# a-powerful-villain-emerges-throne: the throne record switches clip at VBL 5641
 # after a static span; the interp store's dedupe stretches its pair across the
 # span, the COUNTSW hold re-derives the previous pose from a header the game
-# has rewritten, and the throne vanishes on intermediate presents 5070-5158.
-a-powerful-villain-emerges-throne|5080|10||5094|--skip-to-cutscene a_powerful_villain_emerges
+# has rewritten, and the throne vanishes on intermediate presents 5643-5731.
+a-powerful-villain-emerges-throne|5653|10||5667|--skip-to-cutscene a_powerful_villain_emerges
 
-# sunrise-spring-camera-swing holds R2 from VBL 1500 so the camera orbits the
+# sunrise-spring-camera-swing holds R2 from VBL 2073 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
 # chest stay in view. The pins hold sub-tick presents mid-swing, where an
 # animated record replayed in the tick camera's view space is displaced from
 # the interpolated camera by half a tick of rotation.
-# 1760 and 2000 pin the swing's distant-band poses, where the far world is HP
+# 2333 and 2573 pin the swing's distant-band poses, where the far world is HP
 # geometry under --lod extended and the sub-tick re-extract has the most to
 # lose. They cover the pose, not the sector-occlusion class itself: the
 # occluder depth grid is a GPU readback and headless holds none, so a headless
 # tile cannot see a cull verdict change. That class is measured windowed, per
 # walk.
-# 1756 (lod extended canonical): the terrain feed of the world draw used the
+# 2329 (lod extended canonical): the terrain feed of the world draw used the
 # previous tick's portal openings while this tick's portal pass captured a
 # different set; a sliver shows through the arch edge. Blessed pre-fix.
-sunrise-spring-camera-swing|1500|100||1518,1519,1520,1540,1560,1756,1760,2000
+sunrise-spring-camera-swing|2073|100||2091,2092,2093,2113,2133,2329,2333,2573
 
-# 1500 pins the opening dialogue, complete and static from 1494: a large
+# 2073 pins the opening dialogue, complete and static from 2067: a large
 # semi-transparent text box whose corners are semi-transparent textured quads.
 # sheilas-alp-sheila-water-invisible: Sheila, the playable moby, turns invisible
-# in the water at VBL 4556; that pin holds the present on both legs. The 4520 pin
+# in the water at VBL 5129; that pin holds the present on both legs. The 5093 pin
 # holds a sub-tick present while she moves through the world under a moving
 # camera: her own motion must interpolate as her camera-relative motion does.
-# 4494, 4498, 4508, 4512 and 4528 hold sub-tick presents while Sheila and the
+# 5067, 5071, 5081, 5085 and 5101 hold sub-tick presents while Sheila and the
 # NPCs beside her blend into their next animations.
-sheilas-alp-sheila-water-invisible|4400|100||1500,4494,4498,4508,4512,4520,4528,4556
+sheilas-alp-sheila-water-invisible|4973|100||2073,5067,5071,5081,5085,5093,5101,5129
 
-# icy-peak-ice-crystal-destruction: an ice crystal shot at VBL ~1670 shatters on the
+# icy-peak-ice-crystal-destruction: an ice crystal shot at VBL ~2243 shatters on the
 # PSX and its model stays on screen natively; the pins bracket the shatter.
-icy-peak-ice-crystal-destruction|1500|100||1660,1674,1690
+icy-peak-ice-crystal-destruction|2073|100||2233,2247,2263
 # title-demo: the plain boot with no movie; the title screen's rhynoc animates
-# under a fixed camera. 510 pins the frame the jitter was reported at, on the
-# canonical and the sub-tick leg alike. 2210 pins the present where particles
+# under a fixed camera. 1083 pins the frame the jitter was reported at, on the
+# canonical and the sub-tick leg alike. 2783 pins the present where particles
 # streak on the intermediate leg: a primitive lerped from a previous-tick
 # record that is not its own.
-title-demo|500|20||510,2210
-# title-demo-early: the title screen at VBL 90 (user report 2026-10-08):
+title-demo|1073|20||1083,2783
+# title-demo-early: the title screen at VBL 663 (user report 2026-10-08):
 # terrain polys of the left building missing, the purple clear colour shows
 # through. Blessed pre-fix.
-title-demo-early|60|20||90
+title-demo-early|633|20||663
 
 # open-options and open-atlas are the corpus rows for the 2D UI layer: they are
 # the only movies whose frames carry its classes inside the visible band. At
@@ -106,98 +106,98 @@ title-demo-early|60|20||90
 # screen as 290 POLY_FT4 covering x 1..512 y 12..228. The in-game HUD sprites
 # sit at y -28..2 - retracted above the visible band - on every frame of every
 # other movie in this corpus, so no row shows the HUD extended yet.
-# Both rows are freeze-marked. From VBL 869 the loading screen suppresses the
-# framebuffer clear, and from VBL 1165 so does open-options' save prompt: the
-# game draws no world and the last rendered frame is the backdrop of the 900
-# pin on both movies and of open-options 1200 and 1300. That backdrop comes
+# Both rows are freeze-marked. From VBL 1442 the loading screen suppresses the
+# framebuffer clear, and from VBL 1738 so does open-options' save prompt: the
+# game draws no world and the last rendered frame is the backdrop of the 1473
+# pin on both movies and of open-options 1773 and 1873. That backdrop comes
 # from the capture-time snapshot, which only a freeze-marked row maintains.
-# open-atlas 1000, 1200 and 1300 sit on cleared frames and are byte-identical
+# open-atlas 1573, 1773 and 1873 sit on cleared frames and are byte-identical
 # with the flag and without it.
-# The atlas pages at 1200 and 1300 hold vertical seams between the page's
+# The atlas pages at 1773 and 1873 hold vertical seams between the page's
 # POLY_FT4 tiles (a black column at 16:9 x 163 and fainter ones about 52 px
 # apart, each ending in a black dot) that the PSX does not draw.
-# 1242: a blurred centered rectangle around the options panel outside its
+# 1815: a blurred centered rectangle around the options panel outside its
 # semi-transparent box, and the box corners darker than the box; PsyCross
 # shows the same, the PSX does not. Blessed pre-fix.
-open-options|900|100|freeze|1200,1242,1300
+open-options|1473|100|freeze|1773,1815,1873
 # open-options@terrain: the same window under --render-paths terrain,ui; the
 # window composes the copied scene, whose textures and CLUTs lie in the page
 # the copy overwrites. Blessed pre-fix.
-open-options@terrain|900|100|freeze|1242|--render-paths terrain,ui
-# open-atlas 1300: the guest draws Sparx over the atlas page beside the
+open-options@terrain|1473|100|freeze|1815|--render-paths terrain,ui
+# open-atlas 1873: the guest draws Sparx over the atlas page beside the
 # highlighted world; native draws the page with no Sparx. Blessed pre-fix.
-open-atlas|900|100|freeze|1200,1300
+open-atlas|1473|100|freeze|1773,1873
 
 # open-atlas-turn-pages holds the atlas page-turn animation: the turning
 # sheet is a skewed per-vertex-shaded quad (POLY_GT4) covering up to half the
 # screen for 8 to 17 drawn ticks per turn, the only POLY_GT4 in the corpus.
-# The pins bracket four turns: 1244/1252/1268/1276 (forward 1),
-# 1320/1328/1344/1352 (forward 2), 1500/1510 (reverse 1) and 1524/1532
+# The pins bracket four turns: 1817/1825/1841/1849 (forward 1),
+# 1893/1901/1917/1925 (forward 2), 2073/2083 (reverse 1) and 2097/2105
 # (reverse 2), each a turning tick where the sheet covers the most screen.
-open-atlas-turn-pages|1240|100|freeze|1244,1252,1268,1276,1320,1328,1344,1352,1500,1510,1524,1532
+open-atlas-turn-pages|1813|100|freeze|1817,1825,1841,1849,1893,1901,1917,1925,2073,2083,2097,2105
 
 # title-demo-tracers: the attract demo's tracer ribbons, the only geometry the
-# ribbon producer (func_8002FB68) emits anywhere in the corpus (VBL 4487-4535).
-title-demo-tracers|4480|20||4501
+# ribbon producer (func_8002FB68) emits anywhere in the corpus (VBL 5060-5108).
+title-demo-tracers|5053|20||5074
 
 # title-demo-zap: the attract demo's jittered beams, the only geometry the
 # ribbon producer (func_8002F5B4) emits anywhere in the corpus: the live byte
 # at +0x1C of the eight records of D_80072430 reads zero on all six gameplay
-# rows and on open-atlas, and one live record on the plain boot from VBL 4901
-# to VBL 4922. The 4900 grid sample sits before that window, so the row carries
+# rows and on open-atlas, and one live record on the plain boot from VBL 5474
+# to VBL 5495. The 5473 grid sample sits before that window, so the row carries
 # its own negative.
-title-demo-zap|4900|10||4910
+title-demo-zap|5473|10||5483
 #
 # crystal-islands-flame: a flame breath over the water in Crystal Islands with
-# the HUD fully extended. The flame's primitives are written at VBL 1066-1090
-# (peak 1078); 1080 is an intermediate leg inside the breath.
-crystal-islands-flame|1060|200||1074,1078,1080,1086
+# the HUD fully extended. The flame's primitives are written at VBL 1639-1663
+# (peak 1651); 1653 is an intermediate leg inside the breath.
+crystal-islands-flame|1633|200||1647,1651,1653,1659
 
-# spikes-arena: the fight with Spike opens at ~VBL 4100. From 4120 the guest
+# spikes-arena: the fight with Spike opens at ~VBL 4673. From 4693 the guest
 # draws the boss health bar at the bottom right, a green-to-red gradient
-# beside the boss icon; the pins 4140 and 4158 hold it on both legs.
-spikes-arena|4100|100||4140,4158
+# beside the boss icon; the pins 4713 and 4731 hold it on both legs.
+spikes-arena|4673|100||4713,4731
 
-# title-demo-camcut: the attract demo's third segment ends at VBL 5852 with the
+# title-demo-camcut: the attract demo's third segment ends at VBL 6425 with the
 # camera stepping 76110 world units in one tick, and every record the tick drew
 # carries a previous tick of its own. The intermediate leg there shows the
 # previous tick for the whole interval; the canonical leg is unaffected. Its own
 # row rather than a pin on title-demo, whose 20-VBL grid would otherwise fan out
 # over the 3600 VBLs between them.
-title-demo-camcut|5800|100||5852
+title-demo-camcut|6373|100||6425
 # title-demo-hold-player / -particles: held presents on attract-demo camera
-# cuts with the player (7130-7131) and particles (10479-10480) on screen; a
+# cuts with the player (7703-7704) and particles (11052-11053) on screen; a
 # held cut draws tick N-1's sets under tick N-1's camera. Blessed pre-fix.
-title-demo-hold-player|7100|100||7130,7131
-title-demo-hold-particles|10400|100||10479,10480
+title-demo-hold-player|7673|100||7703,7704
+title-demo-hold-particles|10973|100||11052,11053
 # title-demo-segment-fade / -2: attract-demo segment changes, where the
 # loading image fades in on ticks with no 3D producer; the canonical present
 # drew the previous presented scene and its fade. Blessed pre-fix.
-title-demo-segment-fade|3000|100||3096,3100,3124
-title-demo-segment-fade-2|14500|100||14521
+title-demo-segment-fade|3573|100||3669,3673,3697
+title-demo-segment-fade-2|15073|100||15094
 # sunny-villa @heldfx: held presents where glint and tracers drew tick N's
 # set (or none) instead of tick N-1's. Blessed pre-fix.
-sunrise-spring-sunny-villa-portal-entry@heldfx|1900|100||1927,2431,2493
-# the_second_warning cutscene, VBL 1293-1301: Bianca interpolates wrongly on
+sunrise-spring-sunny-villa-portal-entry@heldfx|2473|100||2500,3004,3066
+# the_second_warning cutscene, VBL 1866-1874: Bianca interpolates wrongly on
 # the sub-tick view just before she steps out from behind the tree (native).
-second-warning-bianca-tree|1289|2||1293,1295,1297,1298,1299,1300,1301|--skip-to-cutscene the_second_warning
-# the_second_warning cutscene, VBL 1785-1793: Hunter interpolates wrongly on
+second-warning-bianca-tree|1862|2||1866,1868,1870,1871,1872,1873,1874|--skip-to-cutscene the_second_warning
+# the_second_warning cutscene, VBL 2358-2366: Hunter interpolates wrongly on
 # the sub-tick view (native).
-second-warning-hunter|1781|2||1785,1787,1788,1789,1790,1791,1793|--skip-to-cutscene the_second_warning
+second-warning-hunter|2354|2||2358,2360,2361,2362,2363,2364,2366|--skip-to-cutscene the_second_warning
 # attract-projectile-jump: class 0x1a2 copies a source moby's position into
 # a hidden record on state 30 -> 4 (a placement). Blessed pre-fix.
-attract-projectile-jump|4424|2||4426,4427,4428,4429,4430
-# second-warning-hunter-cut: an authored camera cut at VBL 1351 while Hunter
+attract-projectile-jump|4997|2||4999,5000,5001,5002,5003
+# second-warning-hunter-cut: an authored camera cut at VBL 1924 while Hunter
 # steps one 1639-unit sampler key; the held cut keeps the camera at tick N-1
 # while his record interpolated. Blessed pre-fix.
-second-warning-hunter-cut|1347|2||1349,1350,1351,1352,1353|--skip-to-cutscene the_second_warning
-# second-warning-held-particles: held camera cuts at VBL 1799 and 2063 where
-# tick N-1 drew particles and tick N captured none, and 1989 where tick N-1
+second-warning-hunter-cut|1920|2||1922,1923,1924,1925,1926|--skip-to-cutscene the_second_warning
+# second-warning-held-particles: held camera cuts at VBL 2372 and 2636 where
+# tick N-1 drew particles and tick N captured none, and 2562 where tick N-1
 # captured none; a held present draws exactly tick N-1's set. Blessed pre-fix.
-second-warning-held-particles|1799|264||1799,1989,2063|--skip-to-cutscene the_second_warning
+second-warning-held-particles|2372|264||2372,2562,2636|--skip-to-cutscene the_second_warning
 
 # cloud-spires-game-over: the game-over reload. The game-over image is read
 # through the synchronous reader with loadStage already 2; deferring that
 # read's completion hangs the reader's no-VSync spin (watchdog exit at VBL
-# 5916). 5400 is the game-over screen, 7300 the reloaded level live.
-cloud-spires-game-over|5400|1000||5400,7300
+# 5916). 5973 is the game-over screen, 7873 the reloaded level live.
+cloud-spires-game-over|5973|1000||5973,7873

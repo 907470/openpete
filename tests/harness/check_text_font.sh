@@ -22,7 +22,8 @@
 #
 # Exit 0 PASS, 1 FAIL or a missing corpus manifest (the message names the
 # path), 64 SKIP (binary, disc or display missing).
-# OPENPETE_FRAME_LIMIT overrides the 1800 VBLs per row.
+# OPENPETE_FRAME_LIMIT overrides the per-row limit: 1800 on Spyro 1, 2373 on
+# Spyro 2 and 3 (their feed key counts the 573 fast-boot VBLs).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
@@ -34,7 +35,9 @@ GAME="$(pg_parse_game "$@")" || exit 64
 PG_BUILD_DIR="$BUILD" pg_resolve "$GAME" || exit 64
 MANIFEST="$(pg_corpus_manifest "$GAME" text-font-corpus.manifest)"
 pg_manifest "$MANIFEST" pipe
-FRAMES="${OPENPETE_FRAME_LIMIT:-1800}"
+FRAMES_DEFAULT=1800
+case "$GAME" in spyro-2|spyro-3) FRAMES_DEFAULT=2373;; esac
+FRAMES="${OPENPETE_FRAME_LIMIT:-$FRAMES_DEFAULT}"
 OUT="${TEXT_FONT_OUT:-$BUILD/text-font/$GAME}"
 
 if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" ]]; then

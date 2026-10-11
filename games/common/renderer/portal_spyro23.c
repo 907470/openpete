@@ -113,7 +113,7 @@ static int p3_dbg(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_DBG"); v = (e && *e && *e != '0'); }
     return v;
 }
-/** @brief The first VBL the OPENPETE_PORTAL3_DBG reports print from, read from OPENPETE_PORTAL3_DBG_FROM.
+/** @brief The first feed-key value the OPENPETE_PORTAL3_DBG reports print from, read from OPENPETE_PORTAL3_DBG_FROM.
  *
  * Latched on the first call; unset reads 0. The value parses in any base
  * strtoul accepts.
@@ -652,7 +652,7 @@ static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, const p3_em
     openpete_native_scene_add_tri_grouped(&t, category, 0, e->group);
     if (p3_dbg() && category == OPENPETE_SCENE_PORTAL_CYCLORAMA) {
         static unsigned s_dumps = 0;
-        if (s_dumps < 12 && openpete_frame >= p3_dbg_from()) {
+        if (s_dumps < 12 && openpete_feed_key_now() >= p3_dbg_from()) {
             s_dumps++;
             fprintf(stderr, "[portal3-native f=%u] rgb=%06X/%06X/%06X xy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) off=(%.0f,%.0f)\n",
                     openpete_frame, a->rgb & 0xFFFFFF, b->rgb & 0xFFFFFF, c->rgb & 0xFFFFFF,
@@ -891,7 +891,7 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const p3_opening*
 static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) {
     const float offx = (float)(vw->ofx - P3_CX), offy = (float)(vw->ofy - P3_CY);
     fprintf(stderr, "[portal3-feed f=%u src=%s a=%.3f portals=%d tris=%d emitted=%d]\n",
-            openpete_frame, s_feed_src, (double)s_feed_alpha, T->n, s_cen_tris, s_emitted);
+            openpete_feed_key_now(), s_feed_src, (double)s_feed_alpha, T->n, s_cen_tris, s_emitted);
     for (int i = 0; i < T->n; i++) {
         p3_preview q; p3_opening op;
         p3_resolve(cpu, vw, &T->p[i], &q, &op);
@@ -899,7 +899,7 @@ static void p3_census(CPUState* cpu, const p3_tick* T, const ngte_view* vw) {
         p3_v poly[32];
         const int pn = p3_opening_poly(p, &op, poly, 32);
         fprintf(stderr, "[portal3-ap f=%u src=%s a=%.3f slot=%d arg=%d n=%d d7=%d dw=%.1f ir0=%d far=%06X rec=%08X native=%d]",
-                openpete_frame, s_feed_src, (double)s_feed_alpha, p->slot, p->arg, pn,
+                openpete_feed_key_now(), s_feed_src, (double)s_feed_alpha, p->slot, p->arg, pn,
                 p->depth7, (double)p->depth_w, p->ir0, p->far_rgb, p->rec, op.ok);
         for (int k = 0; k < pn; k++)
             fprintf(stderr, " (%.2f,%.2f)", (double)(poly[k].x + offx), (double)(poly[k].y + offy));
@@ -940,7 +940,7 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
         p3_extract_one(cpu, &q, &op, &vw, sky_ir0, env_far, mask_done);
     }
     if (s_emitted) s_sky_fed_frame = openpete_frame;
-    if (p3_dbg() && openpete_frame >= p3_dbg_from()) p3_census(cpu, T, &vw);
+    if (p3_dbg() && openpete_feed_key_now() >= p3_dbg_from()) p3_census(cpu, T, &vw);
 }
 
 /* ---- opening planes for the shared terrain feeder ----------------------
@@ -1079,7 +1079,7 @@ int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_sky
         if (pn < 3) continue;                 /* no bounded opening */
         openpete_portal_skyplane* o = &out[n++];
         p3_skyplane_fill(o, &q, &op, poly, pn, offx, offy);
-        if (p3_dbg() && openpete_frame >= p3_dbg_from()) {
+        if (p3_dbg() && openpete_feed_key_now() >= p3_dbg_from()) {
             static unsigned s_lines = 0;
             if (s_lines < 24) {
                 s_lines++;
@@ -1571,7 +1571,7 @@ static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
         /* The leaf's prims, for the census: F3 0x14 bytes, G3 0x1C, the size
          * byte of the link word naming the type. */
         static unsigned s_dumps = 0;
-        if (s_dumps < 6 && openpete_frame >= p3_dbg_from()) {
+        if (s_dumps < 6 && openpete_feed_key_now() >= p3_dbg_from()) {
             s_dumps++;
             fprintf(stderr, "[portal3-prims f=%u arg=%d] bytes=%u:", openpete_frame, arg, end - start);
             uint32_t q = start; int n = 0;
@@ -1651,7 +1651,7 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
     s_in_pass = 0;
     render_path_record(RP_PORTAL, s_pass_start, end);
-    if (p3_dbg() && openpete_frame >= p3_dbg_from()) p3_band_census(cpu, &s_curr);
+    if (p3_dbg() && openpete_feed_key_now() >= p3_dbg_from()) p3_band_census(cpu, &s_curr);
     if (feed) {
         p3_band_admit(cpu, &s_curr);
         p3_feed(cpu, &s_curr);
@@ -1663,7 +1663,7 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
         /* The first passes report even with nothing captured: a pass that runs
          * and captures nothing is the reading that separates "no portal in
          * view" from "the hook never fired". */
-        if (s_reports < 64 && (s_curr.n || s_passes <= 4) && openpete_frame >= p3_dbg_from()) {
+        if (s_reports < 64 && (s_curr.n || s_passes <= 4) && openpete_feed_key_now() >= p3_dbg_from()) {
             s_reports++;
             fprintf(stderr, "[portal3 f=%u] leaf-calls=%d captured=%d band=%d band-disagree=%d prim-bytes=%u emitted=%d faces=%d idx-drop=%d oc-drop=%d edge-drop=%d tris=%d",
                     openpete_frame, s_leaf_calls, s_curr.n, s_band_admit, s_band_disagree, end - s_pass_start, s_emitted,

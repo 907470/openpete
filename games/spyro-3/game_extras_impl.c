@@ -378,6 +378,10 @@ static const game_host_desc_t k_host = {
  * here. Making the window per-game belongs to the recompiler, not to this
  * file.
  *
+ * feed_key: the input feed, the bk2 rows and every frame trigger a run is
+ * given count VBLs (openpete_vbl): the game waits with VSync(n > 1) and its
+ * boot runs VBLs without a yield, so a yield count is not a VBL count.
+ *
  * is_gameplay_live: a level overlay resident (loadStage -1) with game.state
  * in gameplay. Title, loading, fade-in and the exit transition report "not
  * live", which keeps the in-memory snapshot users (rewind keyframes,
@@ -389,6 +393,7 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .layout               = &spyro3_game_layout,
     .load_delay_default   = 66u,
     .sony_image_base      = 0x8006FCF4u,
+    .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = spyro3_on_boot,
     .on_frame_pre         = spyro3_on_frame_pre,
     .on_state_loaded      = spyro3_on_state_loaded,

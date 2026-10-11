@@ -42,6 +42,13 @@ source scripts/lib/game.sh
 
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
+# Every frame number the rungs pass is the feed key's (--frame-limit,
+# --screenshot-on-frame, --state-*-on-frame, OPENPETE_S3_SCAN_POKE). Spyro 1 keys
+# on openpete_frame; Spyro 2 and 3 key on openpete_vbl, which counts the boot's
+# 573 fast-boot VBLs before the first yield, so a moment written as a Spyro 1
+# yield count N is N + KEY0 there.
+KEY0=0
+case "$PG_GAME" in spyro-2|spyro-3) KEY0=573;; esac
 
 MODS_SRC="$PWD/mods"
 WORK="$(mktemp -d /tmp/openpete-modtest.XXXXXX)"

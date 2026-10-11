@@ -12,6 +12,10 @@ R3 MODE, '.' released and any other character pressed.
 
 A --hold span is [start, end) in movie frames, its button named as in the
 column list above (case-insensitive). --axes sets the left stick over a span.
+--feed-key vbl marks the movie as one row per VBL (Header.txt
+"OpenpeteFeedKey vbl"), the row key of Spyro 2 and 3; without it a row is one
+yield (openpete_frame), Spyro 1's key, and Spyro 2 or 3 converts the movie on
+load.
 """
 import argparse, sys, zipfile
 
@@ -42,6 +46,8 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--frames", type=int, required=True)
     ap.add_argument("--load-delay", type=int, default=66)
+    ap.add_argument("--feed-key", choices=["frame", "vbl"], default="frame",
+                    help="the counter rows are indexed by (vbl for Spyro 2 and 3)")
     ap.add_argument("--hold", action="append", default=[],
                     help="START:END:Button[,Button...]")
     ap.add_argument("--axes", action="append", default=[],
@@ -74,7 +80,10 @@ def main():
     lines.append("[/Input]")
 
     with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("Header.txt", HEADER.format(delay=args.load_delay))
+        header = HEADER.format(delay=args.load_delay)
+        if args.feed_key == "vbl":
+            header += "OpenpeteFeedKey vbl\n"
+        z.writestr("Header.txt", header)
         z.writestr("Input Log.txt", "\n".join(lines) + "\n")
 
 

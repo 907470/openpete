@@ -4,14 +4,14 @@
 # surface-swim: Spyro swims across the Sunrise Spring pond, so the animated
 # water fills the lower frame. sheilas-alp: a second level, its waterfall and
 # stream.
-sunrise-spring-surface-swim.bk2 | 2000 |
-sheilas-alp-sheila-water-invisible.bk2 | 4498 |
+sunrise-spring-surface-swim.bk2 | 2573 |
+sheilas-alp-sheila-water-invisible.bk2 | 5071 |
 #
 # Under --path terrain (the vertex-animation knob) both rows read VACUOUS: the
 # two legs render the same present at every alpha, so no poly-animated vertex
 # stands in either frame. Under --path terrain-tanim (the UV-scroll knob) both
 # engage, 42894 px and 2076 px at alpha 0. Spyro 2 has no terrain manifest for
-# the same reason on both knobs: shady-oasis-flame at V=848 and
-# colossus-ice-skating at V=1120 each differ in 0 px at every alpha under both.
+# the same reason on both knobs: shady-oasis-flame at V=1421 and
+# colossus-ice-skating at V=1693 each differ in 0 px at every alpha under both.
 # The instrument is calibrated by Spyro 1, where the vertex-animation knob
 # separates the legs by 53803 px at alpha 0.

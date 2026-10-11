@@ -15,4 +15,4 @@
 # channel, and the lerped words sit on the RGB888 grid the terrain colour path
 # carries, so a 1-level step reads 0 below alpha 0.5 and 1 from it. The row is
 # kept out of the ctest list until that path carries fractional colour.
-evening-lake | 2400 | level=evening_lake pose=36800,70400,40000,0,992
+evening-lake | 2973 | level=evening_lake pose=36800,70400,40000,0,992

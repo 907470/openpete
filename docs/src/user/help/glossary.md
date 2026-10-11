@@ -171,6 +171,13 @@ clock each one counts.
 | `--frame-time-log PATH`<!-- id: flag:--frame-time-log --> | presents: one record per image shown |
 | {{ flag("flag:--wireframe") }}<!-- id: flag:--wireframe --> | no clock: draws polygon edges only |
 
+The VBL-counting ids count per game. On Spyro 1 they count the VBLs at which
+the game hands control back to the program (`openpete_frame`); the boot runs
+VBLs before the first one without counting them. On Spyro 2 and 3 they count
+every VBL (`openpete_vbl`), the boot's included, so the same moment of a
+Spyro 2 or 3 run carries a number 573 higher than the yield count earlier
+versions used.
+
 `--bk2-frame-offset` and `--wireframe` are listed in `--help`. `--record-frames` exists only in
 builds with video recording, which no release package includes. The others
 are developer flags, which a release package's `--help` does not list.

@@ -26,13 +26,15 @@
 #       judged: those targets are the recompiler's own discovery.
 #
 # Spyro 3 has no --skip-to-level, so its row is one plain boot through the
-# attract loop, long enough (OPENPETE_BOOT_FRAME_LIMIT, 9000 VBLs) for three
-# demo levels to become resident; G2 fails if none does.
+# attract loop, long enough (OPENPETE_BOOT_FRAME_LIMIT, 9000, plus the 573
+# fast-boot VBLs Spyro 2 and 3 count) for three demo levels to become resident;
+# G2 fails if none does.
 #
 #   scripts/check_overlay_callbacks.sh [spyro-1|spyro-2|spyro-3 ...]
 #
 # Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing). OPENPETE_FRAME_LIMIT
-# overrides the 2400 VBLs per row; OPENPETE_CALLBACK_JOBS the parallelism.
+# overrides the 2400 per row (plus 573 on Spyro 2 and 3); OPENPETE_CALLBACK_JOBS
+# the parallelism.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -95,9 +97,13 @@ for game in "${GAMES[@]}"; do
             > "$dir/$name.log" 2>&1 || echo "[overlay-callbacks] $name: exit $?" >> "$dir/$name.log"
     }
     export -f run_row
-    export OPENPETE_BOOT_FRAMES_RESOLVED="$BOOT_FRAMES"
+    # The limits are the feed key's: Spyro 2 and 3 count the boot's 573
+    # fast-boot VBLs before the first yield, Spyro 1 counts yields.
+    key0=0
+    case "$game" in spyro-2|spyro-3) key0=573;; esac
+    export OPENPETE_BOOT_FRAMES_RESOLVED="$((BOOT_FRAMES + key0))"
     while read -r name _ flag; do echo "$name ${flag:---skip-to-level}"; done < "$rows" \
-        | xargs -P "$JOBS" -L1 bash -c 'run_row "$5" "$1" "$2" "$3" "$4" "$6"' _ "$exe" "$disc" "$dir" "$FRAMES"
+        | xargs -P "$JOBS" -L1 bash -c 'run_row "$5" "$1" "$2" "$3" "$4" "$6"' _ "$exe" "$disc" "$dir" "$((FRAMES + key0))"
 
     if ! python3 - "$game" "$dir" "$rows" <<'EOF'; then status=1; fi
 import re, sys

@@ -14,27 +14,27 @@
 # passes at VBL 8091 (3261 calls each). The one-function scanner
 # func_level_16_80079654 takes one step and stops while idle; it is not
 # counted.
-sheilas-alp-idle-scan 8600 3
+sheilas-alp-idle-scan 9173 3
 # cloud-spires-npc-scan: func_level_12_8007C2B8 (data byte 0 == 1) passes
 # at VBL 9367.
-cloud-spires-npc-scan 9800 1
+cloud-spires-npc-scan 10373 1
 # dino-mines-walk-scan: func_level_44_80081188 passes at VBL 10163.
-dino-mines-walk-scan 10500 1
+dino-mines-walk-scan 11073 1
 # sgt-byrds-base-scan: three func_level_26_8007C6F8 scanners pass at VBL
 # 5111, func_level_26_8007FC74 at VBL 9133.
-sgt-byrds-base-scan 9600 4
+sgt-byrds-base-scan 10173 4
 # buzzs-dungeon-fight-scan: func_level_17_8007A770 passes at VBL 2321, 3953
 # and 8027 (it restarts after each pass), func_level_17_8007774C at VBL 8685.
-buzzs-dungeon-fight-scan 9200 4
+buzzs-dungeon-fight-scan 9773 4
 # spikes-arena-fight-scan: func_level_27_8007A3C0 passes at VBL 2321, 3961,
 # 7981 and 10265, func_level_27_8007797C at VBL 9551.
-spikes-arena-fight-scan 10000 5
+spikes-arena-fight-scan 10573 5
 # scorchs-pit-fight-scan: func_level_37_8007EFFC passes at VBL 2993, 7773
 # and 9669, func_level_37_8007BD9C at VBL 11551.
-scorchs-pit-fight-scan 12000 4
+scorchs-pit-fight-scan 12573 4
 # sorceresss-lair-fight-scan: func_level_47_80079AC4 passes at VBL 5791 and
 # 7989, func_level_47_8007CF38 at VBL 9887.
-sorceresss-lair-fight-scan 9700 3
+sorceresss-lair-fight-scan 10273 3
 # sunny-villa-area-2-idle-scan: func_level_11_80080CE0 (class 313, placed
 # only in Sunny Villa's area 2) passes at VBL 9581.
-sunny-villa-area-2-idle-scan 10000 1
+sunny-villa-area-2-idle-scan 10573 1

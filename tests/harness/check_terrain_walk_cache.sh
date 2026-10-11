@@ -102,8 +102,10 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 OUT="$BUILD_DIR/walk-cache/$PG_GAME"
 mkdir -p "$OUT"
 
-# The freecam corpus's canonical post-load VBL (tests/harness/freecam-corpus.sh).
-START=1900
+# The freecam corpus's canonical post-load feed-key value, per game
+# (pg_cap_settings, read by tests/harness/freecam-corpus.sh).
+pg_cap_settings
+START="$PG_FREECAM_START"
 
 # run_leg ID LEG VBL SHOTFLAG [ENV=VAL...] -- <boot args>: one capture at VBL;
 # writes $OUT/ID__LEG.log and $OUT/ID__LEG-vk.png, both deleted first by

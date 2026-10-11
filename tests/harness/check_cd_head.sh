@@ -15,7 +15,7 @@
 # Engagement: answers compared, nonzero. The golden is generated, never
 # committed (check_psx_oracle.sh captures it).
 #
-# Row xa/spyro-2: one headless boot run to --frame-limit 3400 under
+# Row xa/spyro-2: one headless boot run to --frame-limit 3973 under
 # OPENPETE_XA_LOG (the decoder's next LBA once per VBL) and no audio dump:
 # the decoder follows the drive head, so it advances whether or not any
 # sink drains the render. tools/xa_head_check.py fits the head's LBA on VBL
@@ -85,7 +85,7 @@ else
     PG_CAPTURE_ENV=("OPENPETE_XA_LOG=$out/xa.log")
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$out/run.log" "$out/xa.log" -- \
-        --mute 1 --mods "" --frame-limit 3400 </dev/null
+        --mute 1 --mods "" --frame-limit 3973 </dev/null
     rc=$?
     if (( rc )); then
         echo "[cd-head] xa/spyro-2 verdict=FAIL: run exited $rc (see $out/run.log)"

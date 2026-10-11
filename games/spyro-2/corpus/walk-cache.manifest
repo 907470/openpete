@@ -9,19 +9,19 @@
 # (OPENPETE_TERRAIN_CACHE_FORCE=1); the differing pixel count per row is
 # compared with tests/golden/spyro-2/walk-cache-baseline.tsv.
 #
-# Plain boot (no attract-demo.bk2: the title screen and attract demo), VBL 3400
+# Plain boot (no attract-demo.bk2: the title screen and attract demo), VBL 3973
 # sub-tick present at alpha 0.5, --lod original: 1 px at (357,185) on one
 # untextured LP face (sector 96 face 5, one level in blue); the canonical
 # present at the same VBL reads 0.
-attract-demo | 3400 | inter | original
+attract-demo | 3973 | inter | original
 #
 # Near-band sub-cell keys: the drain inserts a near face's sub-cells at their
 # own keys, finer than the 2x2 and the whole triangles the mesh draws, and on
 # both feeds each fragment of those triangles keys and contests at the key of
 # the sub-cell containing it. Close camera over near-band ground under a moby
-# shadow, canonical present and the sub-tick present. autumn-plains 850: 3 px
+# shadow, canonical present and the sub-tick present. autumn-plains 1423: 3 px
 # (canonical) and 4 px (sub-tick), each one level in one channel on
 # upper-screen terrain.
-glimmer-pogo-dialogue | 903 | canon | original
-autumn-plains-skelos-badlands-portal-entry | 850 | canon | original
-autumn-plains-skelos-badlands-portal-entry | 850 | inter | original
+glimmer-pogo-dialogue | 1476 | canon | original
+autumn-plains-skelos-badlands-portal-entry | 1423 | canon | original
+autumn-plains-skelos-badlands-portal-entry | 1423 | inter | original

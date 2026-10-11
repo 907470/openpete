@@ -43,8 +43,8 @@
 #
 # Rows (one per game, level 10 of each, paused after the level has run):
 #   spyro-1 artisans        pause at VBL 2600
-#   spyro-2 summer_forest   pause at VBL 2100
-#   spyro-3 sunrise_spring  pause at VBL 2200
+#   spyro-2 summer_forest   pause at VBL 2673
+#   spyro-3 sunrise_spring  pause at VBL 2773
 #
 # Every launch passes --input-lock --vibration 0 --background 1: physical input
 # cannot reach the run and the window takes no focus.
@@ -79,8 +79,8 @@ pg_resolve "$GAME"
 
 case "$GAME" in
   spyro-1) LEVEL=artisans;       PAUSE_VBL=2600;;
-  spyro-2) LEVEL=summer_forest;  PAUSE_VBL=2100;;
-  spyro-3) LEVEL=sunrise_spring; PAUSE_VBL=2200;;
+  spyro-2) LEVEL=summer_forest;  PAUSE_VBL=2673;;
+  spyro-3) LEVEL=sunrise_spring; PAUSE_VBL=2773;;
   *) echo "pause-repaint: SKIP ($GAME has no row)"; exit 64;;
 esac
 EVERY=30         # paused repaints before the step, and again before the resume

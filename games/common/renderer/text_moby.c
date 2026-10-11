@@ -729,7 +729,7 @@ static void glyph_census(int consumer, int nverts, int glyph_verts) {
     static const char* const name[4] = { "perf", "menu", "osd", "version" };
     static const char* const src[3]  = { "none", "ram", "disc" };
     fprintf(stderr, "[text-glyph vbl=%u] consumer=%s verts=%d glyph_verts=%d source=%s\n",
-            openpete_frame, name[consumer], nverts, glyph_verts, src[s_cache_source]);
+            openpete_feed_key_now(), name[consumer], nverts, glyph_verts, src[s_cache_source]);
 }
 
 /* ---- performance-stats overlay (the first consumer) --------------------- */

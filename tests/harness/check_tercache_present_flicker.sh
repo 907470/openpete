@@ -93,6 +93,7 @@ case "$GAME" in
     LEVEL="cliff_town"
     POSE="pos=(138997, 98065, 22037) yaw=1370 pitch=8"
     PRESENTS_START=1900
+    PATH_START=1900
     MASKS="780,0,10000,20 113,163,188,314"
     ;;
   spyro-3)
@@ -102,7 +103,8 @@ case "$GAME" in
     ASPECT="16:10"
     # Terrain alone: the level's actors and effects move every present.
     PATHS="terrain"
-    PRESENTS_START=1900
+    PRESENTS_START=2473
+    PATH_START=2473
     MASKS=""
     # Path leg: an approach-and-sweep over the factory floor, terrain path
     # alone at 16:10 (waypoints x,y,z,yaw,pitch; 24 ticks per segment).
@@ -114,7 +116,6 @@ esac
 [[ -n "$LEVEL" ]] || { echo "tercache-flicker: SKIP ($GAME has no measured pose)"; exit 64; }
 PRESENTS_N=64
 PATH_SPEC="${PATH_SPEC:-}"
-PATH_START=1900
 PATH_N=300
 PATH_THIN_MAX=60
 PATH_MIN_INTER=100

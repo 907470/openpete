@@ -444,7 +444,7 @@ void spyro3_scan_watch_tick(CPUState* cpu) {
     if (!s_armed) return;
     flush_pending();
     (void)adopt_all();
-    if (s_poke_armed && openpete_frame == s_poke_frame) {
+    if (s_poke_armed && openpete_feed_key_now() >= s_poke_frame) {
         s_poke_armed = 0;
         OPL_INFO_F("s3-scan", "poke: host store 0x%08X -> 0x%08X at frame %u",
                    s_poke_value, s_poke_addr, s_poke_frame);

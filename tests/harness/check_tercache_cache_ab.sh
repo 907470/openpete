@@ -84,7 +84,7 @@ pg_resolve "$GAME"
 # near/HQ band in. A tick is two VBLs, so the window is sampled every second
 # VBL.
 case "$GAME" in
-  spyro-3) BK2="sunrise-spring-camera-swing.bk2"; VBL_LO=1900; VBL_HI=1980; VBL_STEP=2;;
+  spyro-3) BK2="sunrise-spring-camera-swing.bk2"; VBL_LO=2473; VBL_HI=2553; VBL_STEP=2;;
   *) echo "tercache-ab: SKIP ($GAME has no measured camera swing)"; exit 64;;
 esac
 

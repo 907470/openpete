@@ -1,4 +1,4 @@
 # Sub-tick interpolation of Spyro's flame breath. Row grammar and the
 # leave-one-out: see games/spyro-1/corpus/flame-subtick-corpus.manifest. The centroid
 # crosses 2.0 px here and the ribbon grows from 4294 px to 4978 px.
-crystal-islands-flame.bk2 | 1080 | blob=320.9,220.3 tol=1.0 step=4
+crystal-islands-flame.bk2 | 1653 | blob=320.9,220.3 tol=1.0 step=4

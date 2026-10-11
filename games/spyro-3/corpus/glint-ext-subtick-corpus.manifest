@@ -2,8 +2,8 @@
 # glint-ext). Rows: <bk2> | <V> | rec=<addr> [rtol=] [step=]. rec is the pool
 # record whose extent is judged, a near star (24 traced corners).
 #
-# sunrise-spring-surface-swim.bk2 1482, rec 8006DF48: canon1480 3.961 px,
-# canon1482 4.784 px. Before the replay scaled the extent the alpha-0.5 ratio
+# sunrise-spring-surface-swim.bk2 2055, rec 8006DF48: canon2053 3.961 px,
+# canon2055 4.784 px. Before the replay scaled the extent the alpha-0.5 ratio
 # read 1.00 SNAP with own 0.822 (the whole step); with the scale 0.17 LERPED,
 # own 0.143. Bound rtol=0.25, the LERPED boundary.
-sunrise-spring-surface-swim.bk2 | 1482 | rec=8006DF48 rtol=0.25 step=0.5
+sunrise-spring-surface-swim.bk2 | 2055 | rec=8006DF48 rtol=0.25 step=0.5

@@ -2,34 +2,34 @@
 #
 # <bk2> | <lo>-<hi> | lerps=<floor on the interpolated carry triangles>
 #
-# sheilas-alp: a dialogue box is on screen over VBL 4361-4377 and the 2D feed
-# inserts one primitive into the middle of the set at 4375 while the total
+# sheilas-alp: a dialogue box is on screen over VBL 4934-4950 and the 2D feed
+# inserts one primitive into the middle of the set at 4948 while the total
 # count is unchanged, which is the composition change an index pairing cannot
 # see. The box's four corner quads are the same 12x8 quad, the top and bottom
 # pair 58 px apart.
-sheilas-alp-sheila-water-invisible.bk2 | 4025-4045 | lerps=600
-sheilas-alp-sheila-water-invisible.bk2 | 4361-4381 | lerps=3000
+sheilas-alp-sheila-water-invisible.bk2 | 4598-4618 | lerps=600
+sheilas-alp-sheila-water-invisible.bk2 | 4934-4954 | lerps=3000
 #
-# The 4025-4045 span is the same box sliding off screen at up to 64 px/tick
+# The 4598-4618 span is the same box sliding off screen at up to 64 px/tick
 # while the HUD reuses one primitive slot for a different glyph: the slide must
 # still interpolate and the reuse must not.
 #
 # open-atlas-turn-pages: the atlas glyph run, whose primitives are one 0x28
 # stride apart and whose population grows by one primitive between the brackets
-# of VBL 1291. Both spans carry a presentation-golden intermediate tile (1244 is
-# the present at VBL 1245, 1290 the present at 1291).
-open-atlas-turn-pages.bk2 | 1241-1247 | lerps=1500
-open-atlas-turn-pages.bk2 | 1287-1293 | lerps=3000
+# of VBL 1864. Both spans carry a presentation-golden intermediate tile (1817 is
+# the present at VBL 1818, 1863 the present at 1864).
+open-atlas-turn-pages.bk2 | 1814-1820 | lerps=1500
+open-atlas-turn-pages.bk2 | 1860-1866 | lerps=3000
 #
-# open-atlas-turn-pages 1271-1281: the page text re-flows between the brackets
-# of VBL 1276, so the glyph run's entries displace by different amounts and the
+# open-atlas-turn-pages 1844-1854: the page text re-flows between the brackets
+# of VBL 1849, so the glyph run's entries displace by different amounts and the
 # run must snap whole rather than carry its unique letters alone.
-open-atlas-turn-pages.bk2 | 1271-1281 | lerps=18000
+open-atlas-turn-pages.bk2 | 1844-1854 | lerps=18000
 #
 # HUD glyph runs sliding in at level start (crystal-islands-flame, the gem
-# and egg counters at 1074-1080) and the mirror row's top-centre counter
-# (icy-peak 2000-2001), and the sunny-villa portal-entry banner at 2350: the
+# and egg counters at 1647-1653) and the mirror row's top-centre counter
+# (icy-peak 2573-2574), and the sunny-villa portal-entry banner at 2923: the
 # run pass carries each as one body; a repeated digit lerps with its run.
-crystal-islands-flame.bk2 | 1072-1082 | lerps=150
-icy-peak-reflective-mirror.bk2 | 1997-2003 | lerps=100
-sunrise-spring-sunny-villa-portal-entry.bk2 | 2347-2353 | lerps=500
+crystal-islands-flame.bk2 | 1645-1655 | lerps=150
+icy-peak-reflective-mirror.bk2 | 2570-2576 | lerps=100
+sunrise-spring-sunny-villa-portal-entry.bk2 | 2920-2926 | lerps=500
