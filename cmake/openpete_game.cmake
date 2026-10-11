@@ -23,8 +23,6 @@
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
 #     [MOD_SDK]                       # generate and stage the game's mod SDK
 #                                     # (cmake/openpete_mod_sdk.cmake)
-#     [SDK_ROOT_COPIES]               # with MOD_SDK: also stage the generated
-#                                     # headers at <exe>/sdk/ root
 #     [SOURCES <file>...]             # host TUs beyond the skeleton
 #     [MODULE_SOURCES <file>...])     # module TUs beyond the generated code
 #
@@ -343,7 +341,7 @@ endfunction()
 
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
-        "MOD_SDK;SDK_ROOT_COPIES"
+        "MOD_SDK"
         "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST;FIRST_BOOT_EXTRACT"
         "SOURCES;MODULE_SOURCES;FIRST_BOOT_SOURCES"
         ${ARGN})
@@ -776,15 +774,9 @@ function(openpete_add_game GAME_ID)
     set(OPENPETE_GAME_HOST    ${_host})
     set(OPENPETE_GAME_EXE_DIR ${_exe_dir})
     if(G_MOD_SDK)
-        if(G_SDK_ROOT_COPIES)
-            openpete_mod_sdk(${GAME_ID} ROOT_COPIES)
-        else()
-            openpete_mod_sdk(${GAME_ID})
-        endif()
+        openpete_mod_sdk(${GAME_ID})
         set(OPENPETE_GAME_SDK_GEN   ${OPENPETE_GAME_SDK_GEN}   PARENT_SCOPE)
         set(OPENPETE_GAME_SDK_FILES ${OPENPETE_GAME_SDK_FILES} PARENT_SCOPE)
-    elseif(G_SDK_ROOT_COPIES)
-        message(FATAL_ERROR "openpete_add_game(${GAME_ID}): SDK_ROOT_COPIES needs MOD_SDK")
     endif()
 
     set(OPENPETE_GAME_FIRST_BOOT ${_first_boot} PARENT_SCOPE)

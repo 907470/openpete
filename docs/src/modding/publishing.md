@@ -98,6 +98,21 @@ x86_64-w64-mingw32-gcc -shared -Wl,--export-all-symbols -O2 \
    -o .build/<game>/<id>.dll src/*.c <sdk>/openpete_mod_abi.c
 ```
 
+The root of `<sdk>` also holds `openpete_sdk_symbols.h`,
+`openpete_sdk_wrappers.h` and `openpete_game_structs.h` as dispatchers: a
+line with `-I <sdk>` alone reaches them, and each includes the header of
+the same name under `<sdk>/games/spyro-1/` unless the line defines
+`OPENPETE_GAME_ID` and sets `OPENPETE_GAME_SPYRO2` or
+`OPENPETE_GAME_SPYRO3` to 1, which selects `games/spyro-2/` or
+`games/spyro-3/`. A line with `-I <sdk>` alone therefore builds a Spyro 1
+mod whose object records no game. A line with `-I <sdk>/games/<game>`
+first never opens a dispatcher. A packaged SDK carries one game's
+directory; a dispatcher that selects a game the package does not carry
+stops the compile with `#error` naming the game. A compiler ignores an
+`-I` directory that does not exist, so `-I <sdk>/games/spyro-2` against a
+Spyro 1 package falls through to the dispatchers and builds for Spyro 1;
+`-Wmissing-include-dirs` reports the missing directory.
+
 A `"*"` object for every game (a source with no per-game header, see
 [Code mods](code.md#one-mod-for-several-games)) drops the per-game path and
 defines `OPENPETE_MOD_ANY_GAME`:

@@ -177,7 +177,10 @@ stage_common() {  # stage_common <exe-dir>
         # (symbols, wrappers, structs, openpete_game.h) under
         # sdk/games/<game>/; the compile line puts -I sdk/games/<game>
         # before -I sdk, so an archive whose SDK lacks its game's tree
-        # compiles no mod and is refused here.
+        # compiles no mod and is refused here. The root's dispatchers of
+        # the per-game headers stay: on a line with -I sdk alone they
+        # include the packaged game's tree, or stop with #error naming a
+        # game whose tree this archive does not carry.
         cp -a "$B/sdk" "$STAGE/sdk"
         # The one executable's SDK holds every built game's tree; the
         # archive carries its own game's.

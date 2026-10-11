@@ -68,7 +68,6 @@ openpete_add_game(spyro-1
     ICON_SOURCE    ${_spyro_icon_c}
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
     MOD_SDK
-    SDK_ROOT_COPIES
     SOURCES
         main.cpp
         psyq_hooks.cpp
@@ -176,9 +175,9 @@ add_dependencies(${OPENPETE_GAME_HOST} spyro1_sfx_names)
 
 
 # --- Mod SDK ---
-# Generated and staged by openpete_add_game(MOD_SDK SDK_ROOT_COPIES)
-# (cmake/openpete_mod_sdk.cmake): <exe>/sdk/ and <exe>/sdk/games/spyro-1/,
-# with Spyro 1's generated headers also at the root for build lines that
+# Generated and staged by openpete_add_game(MOD_SDK)
+# (cmake/openpete_mod_sdk.cmake): <exe>/sdk/ and <exe>/sdk/games/spyro-1/;
+# the root's dispatchers select Spyro 1's headers for build lines that
 # pass `-I sdk` alone. renderer/layout.c takes its member offsets from the
 # typed structs header in the generation directory.
 set(_mod_sdk_gen ${OPENPETE_GAME_SDK_GEN})

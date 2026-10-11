@@ -8,6 +8,10 @@
 #                  hold the game-neutral root and games/<game>/ with
 #                  openpete_game.h; a source mod compiles against them,
 #                  reads its game's macros and records its game.
+#   dispatchers    a Spyro 1 mod built with `-I sdk` alone has the symbols
+#                  of the `-I sdk/games/spyro-1 -I sdk` build; no
+#                  game-selected line opens a root dispatcher; a one-game
+#                  SDK refuses a line naming another game with #error.
 #   header edit    an edit to a per-game header rebuilds a mod that
 #                  includes it at the next boot and during hot reload.
 #   --compile-mods OPENPETE_MOD_SDK_DIR points --compile-mods at the test
@@ -122,6 +126,145 @@ else
     bad "sdk-probe did not compile and report $PG_GAME"
     printf '%s\n' "$out" | grep -E 'sdk-probe|error' | head -5
 fi
+
+# ── S1b. root dispatchers: -I sdk alone, game-selected lines, one-game SDK ──
+# The root openpete_sdk_symbols.h, openpete_sdk_wrappers.h and
+# openpete_game_structs.h dispatch to games/<game>/ on the game macros,
+# Spyro 1 when OPENPETE_GAME_ID is undefined.
+say "root dispatchers: -I sdk alone is Spyro 1; a game-selected line never opens one; a one-game SDK refuses another game"
+DISP_HDRS=(openpete_sdk_symbols.h openpete_sdk_wrappers.h openpete_game_structs.h)
+mkdir -p "$WORK/disp"
+cat > "$WORK/disp/all.c" <<'CEOF'
+#include <openpete_mod_api.h>
+#include <openpete_sdk_symbols.h>
+#include <openpete_sdk_wrappers.h>
+#include <openpete_game_structs.h>
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    (void)api; (void)self;
+    return 0;
+}
+CEOF
+cat > "$WORK/disp/s1.c" <<'CEOF'
+#include <openpete_mod_api.h>
+#include <openpete_sdk_symbols.h>
+#include <openpete_sdk_wrappers.h>
+#include <openpete_game_structs.h>
+unsigned disp_camera_addr = OP_FNADDR_CameraUpdate;
+unsigned disp_color_size = sizeof(Color);
+OP_OVERRIDE_IMPL_func_8007CEE4(disp_hook) { op_base_func_8007CEE4(cpu); }
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    return OP_REGISTER_OVERRIDE_func_8007CEE4(api, self, disp_hook);
+}
+CEOF
+# game_defs <game>: the -D spelling of games/<game>/openpete_game.h.
+game_defs() {
+    local n="${1#spyro-}"
+    printf '%s\n' "-DOPENPETE_GAME_ID=\"$1\""
+    for i in 1 2 3; do
+        printf '%s\n' "-DOPENPETE_GAME_SPYRO$i=$([ "$i" = "$n" ] && echo 1 || echo 0)"
+    done
+}
+DISP_CC=("$CC_MOD" -O2 -fPIC -fno-strict-aliasing -Wall -Wundef -Werror=undef)
+n_disp=0; want_disp=0
+disp_ok() { want_disp=$((want_disp + 1)); n_disp=$((n_disp + 1)); ok "$1"; }
+disp_bad() { want_disp=$((want_disp + 1)); bad "$1"; }
+
+# (a) a Spyro 1 mod with -I sdk alone: the same symbols as the
+# game-selected line.
+if [ -d "$SDK_ROOT/games/spyro-1" ]; then
+    rm -f "${WORK:?}/disp/s1-root.o" "${WORK:?}/disp/s1-game.o"
+    "${DISP_CC[@]}" -c -I"$SDK_ROOT" -o "$WORK/disp/s1-root.o" \
+        "$WORK/disp/s1.c" > "$WORK/disp/s1-root.log" 2>&1
+    "${DISP_CC[@]}" -c -I"$SDK_ROOT/games/spyro-1" -I"$SDK_ROOT" \
+        -o "$WORK/disp/s1-game.o" "$WORK/disp/s1.c" > "$WORK/disp/s1-game.log" 2>&1
+    if [ -f "$WORK/disp/s1-root.o" ] && [ -f "$WORK/disp/s1-game.o" ]; then
+        nm -S "$WORK/disp/s1-root.o" > "$WORK/disp/s1-root.nm"
+        nm -S "$WORK/disp/s1-game.o" > "$WORK/disp/s1-game.nm"
+        n_sym="$(wc -l < "$WORK/disp/s1-game.nm")"
+        if [ "$n_sym" -gt 0 ] && cmp -s "$WORK/disp/s1-root.nm" "$WORK/disp/s1-game.nm"; then
+            disp_ok "(a) -I sdk alone and -I sdk/games/spyro-1 -I sdk: $n_sym symbols, nm -S identical$(cmp -s "$WORK/disp/s1-root.o" "$WORK/disp/s1-game.o" && echo ', objects byte-identical')"
+        else
+            disp_bad "(a) nm -S differs or is empty ($n_sym lines): $WORK/disp/s1-root.nm vs s1-game.nm"
+        fi
+    else
+        disp_bad "(a) Spyro 1 mod did not compile (see $WORK/disp/s1-root.log, s1-game.log)"
+        head -5 "$WORK/disp/s1-root.log" "$WORK/disp/s1-game.log"
+    fi
+else
+    say "root dispatchers (a): SKIP - $SDK_ROOT has no games/spyro-1/"
+fi
+
+# (b) game-selected lines never open a root dispatcher: a copy of the SDK
+# whose root dispatchers each start with a planted #error. A line with
+# -I sdk alone stops on it (the plant engages); a line per staged game
+# with -I sdk/games/<game> first compiles.
+PLANT="$WORK/disp/sdk-planted"
+rm -rf "${PLANT:?}"; cp -r "$SDK_ROOT" "$PLANT"
+for h in "${DISP_HDRS[@]}"; do
+    { echo "#error \"planted: root $h opened\""; cat "$SDK_ROOT/$h"; } > "$PLANT/$h"
+done
+if ! "${DISP_CC[@]}" -fsyntax-only -I"$PLANT" "$WORK/disp/all.c" \
+        > "$WORK/disp/planted-root.log" 2>&1 &&
+   grep -q 'planted: root openpete_sdk_symbols.h opened' "$WORK/disp/planted-root.log"; then
+    disp_ok "(b) control: -I sdk alone stops at the planted #error"
+else
+    disp_bad "(b) control: -I sdk alone did not reach the planted #error"
+fi
+n_sel=0; n_games=0
+for gdir in "$PLANT"/games/*/; do
+    g="$(basename "$gdir")"; n_games=$((n_games + 1))
+    if "${DISP_CC[@]}" -fsyntax-only -I"$PLANT/games/$g" -I"$PLANT" \
+            "$WORK/disp/all.c" > "$WORK/disp/planted-$g.log" 2>&1 &&
+       ! grep -q planted "$WORK/disp/planted-$g.log"; then
+        n_sel=$((n_sel + 1))
+    else
+        bad "(b) $g: a game-selected line opened a root dispatcher (see $WORK/disp/planted-$g.log)"
+    fi
+done
+if [ "$n_games" -gt 0 ] && [ "$n_sel" -eq "$n_games" ]; then
+    disp_ok "(b) $n_sel/$n_games game-selected lines compile with every root dispatcher planted"
+else
+    disp_bad "(b) $n_sel/$n_games game-selected lines clean"
+fi
+
+# (c) a one-game SDK, pruned as scripts/package-dist.sh prunes it: its own
+# game compiles through the dispatcher; a line naming another game stops
+# at the dispatcher's #error naming that game.
+ONE="$WORK/disp/sdk-$PG_GAME"
+rm -rf "${ONE:?}"; cp -r "$SDK_ROOT" "$ONE"
+for gdir in "$ONE"/games/*/; do
+    [ "$(basename "$gdir")" = "$PG_GAME" ] || rm -rf "${gdir:?}"
+done
+mapfile -t own_defs < <(game_defs "$PG_GAME")
+if "${DISP_CC[@]}" -fsyntax-only "${own_defs[@]}" -I"$ONE" "$WORK/disp/all.c" \
+        > "$WORK/disp/one-own.log" 2>&1; then
+    disp_ok "(c) one-game SDK: a line naming $PG_GAME with -I sdk alone compiles through the dispatcher"
+else
+    disp_bad "(c) one-game SDK: a line naming $PG_GAME failed (see $WORK/disp/one-own.log)"
+fi
+for o in spyro-1 spyro-2 spyro-3; do
+    [ "$o" = "$PG_GAME" ] && continue
+    mapfile -t o_defs < <(game_defs "$o")
+    want="has no Spyro ${o#spyro-} headers (sdk/games/$o/ is absent)"
+    if ! "${DISP_CC[@]}" -fsyntax-only "${o_defs[@]}" -I"$ONE" "$WORK/disp/all.c" \
+            > "$WORK/disp/one-$o.log" 2>&1 &&
+       grep -qF "$want" "$WORK/disp/one-$o.log" &&
+       ! grep -q "No such file" "$WORK/disp/one-$o.log"; then
+        disp_ok "(c) one-game $PG_GAME SDK, line naming $o: #error \"...$want...\""
+    else
+        disp_bad "(c) one-game $PG_GAME SDK, line naming $o: no #error naming $o (see $WORK/disp/one-$o.log)"
+    fi
+done
+if [ "$PG_GAME" != "spyro-1" ]; then
+    if ! "${DISP_CC[@]}" -fsyntax-only -I"$ONE" "$WORK/disp/all.c" \
+            > "$WORK/disp/one-bare.log" 2>&1 &&
+       grep -qF "has no Spyro 1 headers" "$WORK/disp/one-bare.log"; then
+        disp_ok "(c) one-game $PG_GAME SDK, -I sdk alone (Spyro 1 by default): #error naming Spyro 1"
+    else
+        disp_bad "(c) one-game $PG_GAME SDK, -I sdk alone: no #error naming Spyro 1"
+    fi
+fi
+[ "$n_disp" -eq "$want_disp" ] && ok "root dispatchers: $n_disp/$want_disp"
 
 # ── S2. per-game header edit: rebuild at the next boot ───────────────────
 # A sandbox binary directory: a hard link of the binary beside a copy of
@@ -325,7 +468,7 @@ fi
 
 # A "*" compile that reads a per-game header stops at its #error: through
 # the per-game include path (openpete_mod_api.h finds openpete_game.h), and
-# on spyro-1 through a root copy of openpete_game_structs.h.
+# on spyro-1 through the root dispatcher of openpete_game_structs.h.
 n_err=0
 if ! "$CC_MOD" -fsyntax-only -DOPENPETE_MOD_ANY_GAME -I"$SDK_GAME_DIR" -I"$SDK_ROOT" \
         "$WORK/idsrc/body.c" > "$WORK/any-pergame.log" 2>&1 &&

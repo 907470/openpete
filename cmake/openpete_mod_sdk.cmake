@@ -1,7 +1,7 @@
 # cmake/openpete_mod_sdk.cmake - one game's mod SDK: generation and staging.
 #
-# openpete_mod_sdk(<game-id> [ROOT_COPIES]) is called by openpete_add_game
-# for a game given MOD_SDK, in the game's directory scope.
+# openpete_mod_sdk(<game-id>) is called by openpete_add_game for a game
+# given MOD_SDK, in the game's directory scope.
 #
 # Generated into <game build dir>/mod_sdk_gen/ from the game's manifests:
 #   openpete_sdk_symbols.h, openpete_sdk_wrappers.h, openpete_game.h and
@@ -13,9 +13,13 @@
 #   <exe>/sdk/                 the game-neutral files (OPENPETE_MOD_SDK_ROOT_FILES)
 #                              and shaders/ (OPENPETE_MOD_SDK_SHADERS)
 #   <exe>/sdk/games/<id>/      the game's generated headers
-#   <exe>/sdk/ (ROOT_COPIES)   the game's generated headers except
-#                              openpete_game.h, so a build line using
-#                              `-I sdk` alone still compiles
+#
+# The game-neutral files include one dispatcher per per-game header except
+# openpete_game.h (OPENPETE_MOD_SDK_DISPATCHERS, configured from
+# core/mods/sdk/openpete_sdk_dispatch.h.in): a build line using `-I sdk`
+# alone reaches it and it includes games/spyro-1/'s header, or another
+# game's on that game's OPENPETE_GAME_* macro; a line with
+# `-I sdk/games/<id>` first never opens it.
 #   <build>/mod-sdk-test/sdk/  the test SDK directory: the root files from
 #                              openpete_mod_sdk_test_root, and games/<id>/
 #                              from <tag>_mod_sdk_test_stage, which removes
@@ -33,7 +37,15 @@
 # (core/mods/mod_loader.c sdk_inputs), resolving each in `games/<id>/`
 # before the root.
 
+set(OPENPETE_MOD_SDK_DISPATCHERS "")
+foreach(_h openpete_sdk_symbols.h openpete_sdk_wrappers.h openpete_game_structs.h)
+    set(OPENPETE_SDK_DISPATCH_HEADER ${_h})
+    configure_file(${CMAKE_SOURCE_DIR}/core/mods/sdk/openpete_sdk_dispatch.h.in
+                   ${CMAKE_BINARY_DIR}/mod_sdk_dispatch/${_h} @ONLY)
+    list(APPEND OPENPETE_MOD_SDK_DISPATCHERS ${CMAKE_BINARY_DIR}/mod_sdk_dispatch/${_h})
+endforeach()
 set(OPENPETE_MOD_SDK_ROOT_FILES
+    ${OPENPETE_MOD_SDK_DISPATCHERS}
     ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
     ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
     ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime.h
@@ -73,7 +85,6 @@ if(NOT TARGET openpete_mod_sdk_test_root)
 endif()
 
 function(openpete_mod_sdk GAME_ID)
-    cmake_parse_arguments(S "ROOT_COPIES" "" "" ${ARGN})
     string(REPLACE "-" "" _tag "${GAME_ID}")
     # The game's executable target, the host library its generated tables
     # compile into, and the executable's directory, where the SDK stages
@@ -179,19 +190,10 @@ const int ${_tag}_game_structs_checked = 1;
     add_dependencies(${_host} ${_tag}_game_structs)
     add_dependencies(openpete_generated_headers ${_tag}_game_structs)
 
-    set(_root_copies "")
-    set(_root_copy_cmd "")
-    if(S_ROOT_COPIES)
-        set(_root_copies ${_game_files})
-        list(REMOVE_ITEM _root_copies ${_gen}/openpete_game.h)
-        set(_root_copy_cmd COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${_root_copies} ${_exe_dir}/sdk)
-    endif()
     if(OPENPETE_ONE_EXECUTABLE)
         # Staged by openpete_sdk_stage with every other game's.
         set_property(GLOBAL APPEND PROPERTY OPENPETE_SDK_GAMES ${GAME_ID})
         set_property(GLOBAL PROPERTY OPENPETE_SDK_FILES_${GAME_ID} ${_game_files})
-        set_property(GLOBAL PROPERTY OPENPETE_SDK_ROOT_COPIES_${GAME_ID} ${_root_copies})
         add_custom_target(${_tag}_sdk_stage ALL)
         add_dependencies(${_tag}_sdk_stage openpete_sdk_stage)
     else()
@@ -211,7 +213,6 @@ const int ${_tag}_game_structs_checked = 1;
                     ${OPENPETE_MOD_SDK_SHADERS} ${_exe_dir}/sdk/shaders
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     ${_game_files} ${_exe_dir}/sdk/games/${GAME_ID}
-            ${_root_copy_cmd}
             DEPENDS ${_game_files}
             COMMENT "Staging the ${GAME_ID} mod SDK into <exe>/sdk/"
             VERBATIM)
@@ -235,8 +236,8 @@ const int ${_tag}_game_structs_checked = 1;
 endfunction()
 
 # The one executable's SDK, <build>/sdk/: removed, then the game-neutral
-# files, then each game's generated headers under games/<id>/ and, for a
-# game given ROOT_COPIES, at the root. Defined once, after every game.
+# files, then each game's generated headers under games/<id>/. Defined
+# once, after every game.
 function(openpete_mod_sdk_stage_all)
     get_property(_games GLOBAL PROPERTY OPENPETE_SDK_GAMES)
     if(NOT _games)
@@ -247,13 +248,9 @@ function(openpete_mod_sdk_stage_all)
     set(_deps "")
     foreach(_g IN LISTS _games)
         get_property(_files GLOBAL PROPERTY OPENPETE_SDK_FILES_${_g})
-        get_property(_roots GLOBAL PROPERTY OPENPETE_SDK_ROOT_COPIES_${_g})
         list(APPEND _cmds
              COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}/games/${_g}
              COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_files} ${_dir}/games/${_g})
-        if(_roots)
-            list(APPEND _cmds COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_roots} ${_dir})
-        endif()
         list(APPEND _deps ${_files})
     endforeach()
     add_custom_target(openpete_sdk_stage ALL

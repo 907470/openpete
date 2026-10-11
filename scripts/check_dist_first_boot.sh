@@ -335,5 +335,23 @@ grep -q "loaded hello-anchor" "$WORK/mod-boot.log" \
     || { echo "[dist-gate] FAIL: drop-in mod compiled but did not load" >&2;
          tail -20 "$WORK/mod-boot.log" >&2; exit 2; }
 
+# The packaged SDK carries games/spyro-1/ only: a line with -I sdk alone
+# compiles through the root dispatchers, and a line naming Spyro 2 stops
+# at the dispatcher's #error naming it rather than a missing file.
+echo "[dist-gate] packaged SDK root dispatchers: -I sdk alone compiles, Spyro 2 refused..."
+printf '#include <openpete_mod_api.h>\n#include <openpete_sdk_symbols.h>\n#include <openpete_sdk_wrappers.h>\n#include <openpete_game_structs.h>\n' \
+    > "$WORK/dispatch.c"
+cc -fsyntax-only -Wall -Wundef -I "$sdkdir" "$WORK/dispatch.c" \
+      > "$WORK/dispatch-s1.log" 2>&1 \
+    || { echo "[dist-gate] FAIL: -I sdk alone did not compile against the packaged SDK" >&2;
+         head -5 "$WORK/dispatch-s1.log" >&2; exit 2; }
+if cc -fsyntax-only -Wall -Wundef -DOPENPETE_GAME_ID='"spyro-2"' \
+      -DOPENPETE_GAME_SPYRO1=0 -DOPENPETE_GAME_SPYRO2=1 -DOPENPETE_GAME_SPYRO3=0 \
+      -I "$sdkdir" "$WORK/dispatch.c" > "$WORK/dispatch-s2.log" 2>&1 \
+   || ! grep -qF "has no Spyro 2 headers (sdk/games/spyro-2/ is absent)" "$WORK/dispatch-s2.log"; then
+    echo "[dist-gate] FAIL: a Spyro 2 line against the packaged SDK did not stop at the dispatcher #error" >&2
+    head -5 "$WORK/dispatch-s2.log" >&2; exit 2
+fi
+
 what=$([[ $APPIMAGE -eq 1 ]] && echo AppImage || echo tarball)
 echo "[dist-gate] PASS - $what: unpack -> ingest -> self-build -> oracle-clean -> mod drop-in"
