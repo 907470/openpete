@@ -168,6 +168,14 @@ add_dependencies(code_docs openpete_generated_headers)
 set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
     "Recomp module linkage: static or shared")
 set_property(CACHE OPENPETE_RECOMP_LINKAGE PROPERTY STRINGS static shared)
+# The resolved linkage, one word, at the tree root for tools that read a
+# build tree's arm (tests/harness/bench-corpus.py). The cache entry keeps the
+# declaration default where a preset file sets the knob as a normal variable,
+# and a module file beside the executable survives a reconfigure to static,
+# so neither answers the question. Rewritten on every configure; the file's
+# timestamp moves only when the value changes.
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/openpete-recomp-linkage.txt"
+     CONTENT "${OPENPETE_RECOMP_LINKAGE}\n")
 # Whether a shared-linkage executable builds a missing or unusable module
 # from the disc (the first-boot pipeline of a game that has one). OFF: the
 # module comes from the build tree alone and a missing one is refused, so a
@@ -583,6 +591,12 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME golden_png_guard_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_golden_png_guard.py)
     set_tests_properties(golden_png_guard_selftest PROPERTIES LABELS "fence")
+    # The WSLENV fence's own tests: the per-launch rule on Python sources
+    # (refused and passing shapes), the shell file-wide clearance, and the
+    # checkout clean.
+    add_test(NAME wslenv_guard_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_wslenv_guard.py)
+    set_tests_properties(wslenv_guard_selftest PROPERTIES LABELS "fence")
     # The recomp identity pair of the blessed manifests: the psx.map symbol
     # digest is invariant under the build path, address width and section
     # order; the generated-tree digest ignores stale files and refuses a

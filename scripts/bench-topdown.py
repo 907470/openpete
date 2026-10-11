@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """bench-topdown.py - per-level whole-level-visible perf sweep.
 
-For every Spyro 1 level this skips straight in, engages the freecam at the
+For every level of the selected game (--game, default spyro-1; Spyro 1's
+level list is built in, another game names its levels with --levels) this
+skips straight in, engages the freecam at the
 computed whole-level top-down pose (`--freecam-pose topdown`: centre of the
 sector bounds, looking straight down, high enough that every sector fits the
 frame), and profiles a fixed window with --profile-out. It is the worst-case
@@ -19,7 +21,7 @@ windows-mingw .exe on the real GPU (--exe; path args are wslpath-translated,
 and the exe runs from its build dir so DLLs/assets resolve).
 
 Usage:
-  scripts/bench-topdown.py [--exe PATH] [--levels a,b,c] [--lod extended|original]
+  scripts/bench-topdown.py [--game G] [--exe PATH] [--levels a,b,c] [--lod extended|original]
       [--extract-threads N] [--terrain-cache 0|1] [--render-fps N] [--out-dir DIR]
       [--frame-limit N] [--skip-ticks N] [--no-screenshot]
 
@@ -34,24 +36,24 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fences"))
 import bench_guard
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from hostenv import child_env  # noqa: E402
+import game_conf  # noqa: E402
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a scripted run - no player uses the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set in the environment
-# rather than at each invocation because this script builds its argument list
-# in more than one place, and a flag appended to the wrong one is a silent
-# miss. (scripts/fences/rumble_guard.py enforces this.)
-os.environ.setdefault("OPENPETE_VIBRATION", "0")
+# Unattended launcher: every run this script starts has controller vibration
+# off. Vibration ships on by default, which is right for a player and wrong
+# for a scripted run - no player uses the pad, and the buzzing shows up in no
+# log. Forwarded through child_env, since a Windows exe launched from WSL
+# receives only the names WSLENV lists.
+# (scripts/fences/rumble_guard.py, scripts/fences/wslenv_guard.py)
+RUN_KNOBS = {"OPENPETE_VIBRATION": "0"}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
-DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
-DEFAULT_EXE = os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1")
 EXIT_SKIP = 64
 
 # games/spyro-1/features/levelwarp.c k_levels - every warpable level.
-LEVELS = [
+SPYRO1_LEVELS = [
     "artisans", "stone_hill", "dark_hollow", "town_square", "toasty",
     "sunny_flight",
     "peace_keepers", "dry_canyon", "cliff_town", "ice_cavern", "doctor_shemp",
@@ -76,13 +78,13 @@ def wslpath_w(p):
         return p
 
 
-def run_level(exe, level, args, out_dir):
+def run_level(exe, game, level, args, out_dir):
     is_win = exe.endswith(".exe")
     tr = lambda p: wslpath_w(p) if is_win else p
     opp = os.path.join(out_dir, "%s.opp" % level)
     shot = os.path.join(out_dir, "%s.png" % level)
     cmd = [
-        exe, "--disc", tr(DISC),
+        exe, "--disc", tr(game["disc"])] + game["run_args"] + [
         "--skip-to-level", level, "--freecam-pose", "topdown",
         "--lod", args.lod,
         "--extract-threads", str(args.extract_threads),
@@ -112,6 +114,7 @@ def run_level(exe, level, args, out_dir):
     # PIPE, not a file FD: a redirected fd collides with the exe's
     # --profile-out fopen on Windows (see bench-corpus.py).
     p = subprocess.run(cmd, cwd=os.path.dirname(exe) or None,
+                       env=child_env(RUN_KNOBS),
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = (p.stdout or b"").decode("utf-8", "replace")
     with open(os.path.join(out_dir, "%s.log" % level), "w") as lf:
@@ -143,7 +146,10 @@ def scope_p50(summary, scope, kind):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exe", default=DEFAULT_EXE)
+    ap.add_argument("--game", default="spyro-1", choices=game_conf.GAMES,
+                    help="disc, boot flags and default exe")
+    ap.add_argument("--exe", default=None,
+                    help="default: build/linux-release/games/<game>/openpete-<tag>")
     ap.add_argument("--allow-untuned", action="store_true",
                     help="skip the bench_guard tuned-binary refusal")
     ap.add_argument("--levels", default=None, help="comma list (default: all)")
@@ -167,27 +173,30 @@ def main():
     ap.add_argument("--out-dir", default=None)
     args = ap.parse_args()
 
-    args.exe = os.path.abspath(args.exe)
+    game = game_conf.resolve(ROOT, args.game)
+    args.exe = os.path.abspath(args.exe or game["default_exe"])
     if not os.path.isfile(args.exe):
         print("SKIP: exe not found: %s" % args.exe)
         return EXIT_SKIP
-    if not os.path.isfile(DISC):
-        print("SKIP: disc not found: %s" % DISC)
+    if not os.path.isfile(game["disc"]):
+        print("SKIP: disc not found: %s" % game["disc"])
         return EXIT_SKIP
+    if not args.levels and args.game != "spyro-1":
+        ap.error("--game %s has no built-in level list; pass --levels" % args.game)
 
     bench_guard.check(args.exe, allow_untuned=args.allow_untuned)
     bench_guard.print_surface(args.exe, args.mods_dir, args.texpack_dir)
 
-    levels = args.levels.split(",") if args.levels else LEVELS
+    levels = args.levels.split(",") if args.levels else SPYRO1_LEVELS
     out_dir = os.path.abspath(args.out_dir) if args.out_dir else os.path.join(
         ROOT, "build", "bench-topdown",
-        "%s-x%d%s" % (args.lod, args.extract_threads,
+        "%s-%s-x%d%s" % (args.game, args.lod, args.extract_threads,
                       "-tc" if args.terrain_cache else ""))
     os.makedirs(out_dir, exist_ok=True)
 
     rows, failed = [], 0
     for lv in levels:
-        run = run_level(args.exe, lv, args, out_dir)
+        run = run_level(args.exe, game, lv, args, out_dir)
         s = summarize(run["opp"], args.skip_ticks, lv)
         row = {"level": lv, "pose": run["pose"], "rc": run["returncode"]}
         if s:
@@ -216,7 +225,8 @@ def main():
                   run["pose"] or "(no pose - level never went live?)"))
 
     with open(os.path.join(out_dir, "rollup.json"), "w") as f:
-        json.dump({"lod": args.lod, "extract_threads": args.extract_threads,
+        json.dump({"game": args.game, "build": bench_guard.build_identity(args.exe),
+                   "lod": args.lod, "extract_threads": args.extract_threads,
                    "terrain_cache": args.terrain_cache,
                    "render_fps": args.render_fps, "rows": rows}, f, indent=1)
     print("rollup: %s" % os.path.join(out_dir, "rollup.json"))

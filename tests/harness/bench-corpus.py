@@ -1,24 +1,45 @@
 #!/usr/bin/env python3
-"""bench-corpus.py - replay the bk2 corpus through the profiler and produce
-per-movie + rollup performance reports, with optional regression compare.
+"""bench-corpus.py - replay a game's bk2 corpus through the profiler and
+produce per-movie + rollup performance reports, with optional regression
+compare.
 
-For each games/spyro-1/bk2/*.bk2 (its .args sidecar is auto-spliced by --bk2)
-this runs the game WINDOWED (never --headless: headless disables the native
-renderer and intermediate frames) with --profile-out + --frame-time-log, then
-summarizes each trace via profile-summary.py. A rollup aggregates every movie;
---baseline compares against a blessed rollup and fails on regressions.
+For each games/<game>/bk2/*.bk2 (its .args sidecar is auto-spliced by --bk2;
+the game's boot flags, RUN_ARGS of games/<game>/oracle.conf, precede it) this
+runs the game WINDOWED (headless disables the native renderer and
+intermediate frames) with --profile-out, then summarizes each trace via
+profile-summary.py. A rollup aggregates every movie; --baseline compares
+against a blessed rollup and fails on regressions.
+
+A rollup records what makes two rollups comparable: the game, the movie set,
+the platform tag (the device plus the preset class, the basename of the
+tree's CMAKE_PROJECT_openpete_INCLUDE file, so two trees of one preset class
+on one device compare), the arm (the linkage the configure wrote to
+openpete-recomp-linkage.txt at the tree root; a tree without the file is
+refused), the source commit, and the mode. Every movie's engaged ticks (the
+canonical presents the summary counted) are recorded; a movie with none
+makes the run VACUOUS.
+
+--functional runs headless and does not refuse on contention: it proves the
+path runs, produces no timing verdict, and its rollup compares only against
+another functional rollup (identity only). tests/harness/bench-ab.py refuses
+it.
 
 Platform note: on WSL/llvmpipe the CPU scopes are valid but the GPU numbers are
 a software rasterizer - real GPU measurement needs the windows-mingw .exe
 (pass it with --exe; path args are wslpath-translated automatically).
 
 Usage:
-  tests/harness/bench-corpus.py [--exe PATH] [--movies a,b,c] [--frame-limit N]
-      [--render-fps N] [--out-dir DIR] [--skip-ticks N] [--gpu-timers]
-      [--baseline rollup.json] [--threshold-pct P] [--threshold-us U]
-      [--keep-traces] [--max-runtime-seconds N]
+  tests/harness/bench-corpus.py [--game G] [--exe PATH] [--movies a,b,c]
+      [--frame-limit N] [--render-fps N] [--out-dir DIR] [--skip-ticks N]
+      [--gpu-timers] [--functional] [--baseline rollup.json]
+      [--threshold-pct P] [--threshold-us U] [--keep-traces]
+      [--max-runtime-seconds N]
+  tests/harness/bench-corpus.py --compare-only CURRENT.json --baseline BASE.json
 
-Exit: 0 clean, 1 regression vs baseline, 64 skip (missing exe/disc/corpus).
+Exit: 0 clean, 1 regression vs baseline, 2 VACUOUS (a movie engaged no
+tick), 64 skip (missing exe/disc/corpus) or a refused compare (platform tag,
+mode, game or arm differ), 65 refused precondition (bench_guard, missing arm
+file).
 """
 import argparse
 import glob
@@ -29,27 +50,29 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parents[2] / "scripts" / "lib"))
 from hostenv import child_env  # noqa: E402
 import re
+import shlex
 import subprocess
 import sys
+
+import game_conf  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts", "fences"))
 import bench_guard
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a scripted run - no player uses the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set in the environment
-# rather than at each invocation because this script builds its argument list
-# in more than one place, and a flag appended to the wrong one is a silent
-# miss. (scripts/fences/rumble_guard.py enforces this.)
-os.environ.setdefault("OPENPETE_VIBRATION", "0")
+# Unattended launcher: every run this script starts has controller vibration
+# off. Vibration ships on by default, which is right for a player and wrong
+# for a scripted run - no player uses the pad, and the buzzing shows up in no
+# log. Forwarded through child_env with the run's other knobs, since a
+# Windows exe launched from WSL receives only the names WSLENV lists.
+# (scripts/fences/rumble_guard.py, scripts/fences/wslenv_guard.py)
+RUN_KNOBS = {"OPENPETE_VIBRATION": "0"}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = os.path.join(ROOT, "scripts")
-DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
-BK2_DIR = os.path.join(ROOT, "games/spyro-1/bk2")
-DEFAULT_EXE = os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1")
+EXIT_VACUOUS = 2
 EXIT_SKIP = 64
+EXIT_REFUSED = 65
+ROLLUP_SCHEMA = 2
 
 DEVICE_RE = re.compile(r"device='([^']*)'")
 EXIT_RE = re.compile(r"exit: reason=([a-z0-9-]+)")
@@ -62,16 +85,16 @@ def wslpath_w(p):
         return p
 
 
-def run_movie(exe, movie_path, opp_path, args, log_path):
+def run_movie(exe, game, movie_path, opp_path, args, log_path):
     is_win = exe.endswith(".exe")
-    disc = wslpath_w(DISC) if is_win else DISC
+    disc = wslpath_w(game["disc"]) if is_win else game["disc"]
     bk2 = wslpath_w(movie_path) if is_win else movie_path
     opp = wslpath_w(opp_path) if is_win else opp_path
     # NOTE: do NOT also pass --frame-time-log - a second concurrent file open
     # collides with --profile-out's fopen on the Windows exe and leaks stderr
     # into the .opp. fps comes from the trace's own present cadence anyway.
     cmd = [
-        exe, "--disc", disc,
+        exe, "--disc", disc] + game["run_args"] + [
         "--bk2", bk2, "--bk2-stop-on-end",
         "--renderer", "vk", "--vsync", "0",
         "--render-fps", str(args.render_fps),
@@ -82,17 +105,21 @@ def run_movie(exe, movie_path, opp_path, args, log_path):
         # The flag, not the env spelling, so it also reaches a Windows exe.
         # (scripts/fences/input_lock_guard.py)
         "--input-lock",
-    ]
-    # Through child_env so the knob survives a Windows launch from WSL: set
-    # directly it would be dropped by interop and the run would quietly have
-    # no GPU timers at all.
-    env = child_env({"OPENPETE_GPU_TIMERS": "1"} if args.gpu_timers else {})
+    ] + (["--headless"] if args.functional else [])
+    # Through child_env so every knob survives a Windows launch from WSL: set
+    # directly it would be dropped by interop and the run would quietly use
+    # the default.
+    knobs = dict(RUN_KNOBS)
+    if args.gpu_timers:
+        knobs["OPENPETE_GPU_TIMERS"] = "1"
+    env = child_env(knobs)
     # Capture via PIPE, not a file FD: redirecting a Windows .exe's stdout to a
     # real file descriptor makes its --profile-out fopen collide with the
     # redirected fd, leaking late stderr into the .opp trace. PIPE avoids it.
     p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = p.stdout or b""
     with open(log_path, "wb") as lf:
+        lf.write(("# %s\n" % shlex.join(cmd)).encode())
         lf.write(out)
     stderr_txt = out.decode("utf-8", "replace")
     dev = DEVICE_RE.search(stderr_txt)
@@ -117,14 +144,18 @@ def summarize(opp_path, json_path, txt_path, label, skip_ticks):
         return None
 
 
-def platform_tag(exe, device):
-    build = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(exe))))
+def platform_tag(identity, device):
+    """The comparison tag: the preset class plus the device. The tree's
+    directory name and absolute path stay out of it, so two trees of one
+    preset class on one device (a checkout's and a worktree's) compare."""
     soft = any(s in device.lower() for s in ("llvmpipe", "swiftshader", "software"))
-    return {"build": build, "device": device, "software_gpu": soft,
-            "tag": "%s/%s" % (build, "SOFTWARE" if soft else device.split("(")[0].strip())}
+    preset = identity["preset_class"] or "unknown-preset"
+    return {"tree": identity["tree"], "preset_class": preset,
+            "device": device, "software_gpu": soft,
+            "tag": "%s/%s" % (preset, "SOFTWARE" if soft else device.split("(")[0].strip())}
 
 
-def build_rollup(per_movie, platform):
+def build_rollup(per_movie, platform, meta):
     """Aggregate cpu_scopes / gpu_zones across movies by (scope, kind)."""
     agg = {}   # kind -> {"cpu"/"gpu": {scope: {"sum_ms":, "p99_max":, "p99_movie":}}}
     for m in per_movie:
@@ -147,23 +178,46 @@ def build_rollup(per_movie, platform):
                      "sum_ms": round(a["sum_ms"], 1), "p99_max_us": a["p99_max"],
                      "p99_worst_movie": a["p99_movie"], "movies": a["movies"]})
     rows.sort(key=lambda r: (r["group"], -r["sum_ms"]))
-    return {"platform": platform, "movies": len(per_movie), "scopes": rows,
-            "per_movie": [{"movie": m["movie"], "exit_reason": m["run"]["exit_reason"],
-                           "presents": (m["summary"] or {}).get("presents_total", 0),
-                           "fps": (m["summary"] or {}).get("fps", {})}
-                          for m in per_movie]}
+    pm_rows = [{"movie": m["movie"], "exit_reason": m["run"]["exit_reason"],
+                "returncode": m["run"]["returncode"],
+                "args_sidecar": m["args_sidecar"],
+                "presents": (m["summary"] or {}).get("presents_total", 0),
+                "engaged_ticks": engaged_ticks(m["summary"]),
+                "fps": (m["summary"] or {}).get("fps", {})}
+               for m in per_movie]
+    roll = {"schema": ROLLUP_SCHEMA, "platform": platform,
+            "movies": len(per_movie),
+            "movie_set": sorted(m["movie"] for m in per_movie),
+            "engaged_ticks": sum(r["engaged_ticks"] for r in pm_rows),
+            "scopes": rows, "per_movie": pm_rows}
+    roll.update(meta)
+    return roll
+
+
+def engaged_ticks(summary):
+    """Canonical presents the summary counted (after --skip-ticks and the
+    transient filter): the ticks the run measured."""
+    return ((summary or {}).get("kinds", {}).get("canonical", {})
+            .get("presents", 0))
 
 
 def render_rollup_text(roll):
     L = []
     p = roll["platform"]
     banner = "SOFTWARE-GPU (CPU valid, GPU numbers invalid)" if p["software_gpu"] else "real-GPU"
-    L.append("# openpete bench-corpus rollup  platform=%s  %s" % (p["tag"], banner))
-    L.append("# movies=%d  device=%s" % (roll["movies"], p["device"]))
-    L.append("[per-movie]           presents   fps_avg  exit")
+    if roll["mode"] == "functional":
+        banner = "FUNCTIONAL (headless, contention not refused: no timing verdict)"
+    L.append("# openpete bench-corpus rollup  game=%s  platform=%s  arm=%s  %s"
+             % (roll["game"], p["tag"], roll["build"]["arm"], banner))
+    L.append("# movies=%d  engaged_ticks=%d  device=%s  commit=%s%s"
+             % (roll["movies"], roll["engaged_ticks"], p["device"],
+                (roll["build"]["commit"] or "?")[:12],
+                " (dirty)" if roll["build"]["dirty"] else ""))
+    L.append("[per-movie]            presents   ticks    fps_avg  exit")
     for pm in roll["per_movie"]:
-        L.append("%-22s%-11d%-9s%s" % (pm["movie"][:22], pm["presents"],
-                                       pm["fps"].get("avg", "?"), pm["exit_reason"]))
+        L.append("%-22s %-11d%-9d%-9s%s" % (pm["movie"][:22], pm["presents"],
+                                           pm["engaged_ticks"],
+                                           pm["fps"].get("avg", "?"), pm["exit_reason"]))
     for group, title in (("cpu_scopes", "cpu.scope"), ("gpu_zones", "gpu.zone")):
         rows = [r for r in roll["scopes"] if r["group"] == group]
         if not rows:
@@ -177,14 +231,41 @@ def render_rollup_text(roll):
     return "\n".join(L)
 
 
+def comparability(base, roll):
+    """Why two rollups do not compare, or None when they do: a rollup without
+    the recorded identity, or a different platform tag (preset class or
+    device), mode, game or arm. A differing arm is an A/B, which
+    tests/harness/bench-ab.py prices."""
+    for name, r in (("baseline", base), ("current", roll)):
+        if r.get("schema", 1) < ROLLUP_SCHEMA:
+            return ("%s rollup predates the recorded game/arm/commit (schema %s); "
+                    "re-run it" % (name, r.get("schema", 1)))
+    checks = (("platform", base["platform"]["tag"], roll["platform"]["tag"]),
+              ("mode", base["mode"], roll["mode"]),
+              ("game", base["game"], roll["game"]),
+              ("arm", base["build"]["arm"], roll["build"]["arm"]))
+    for what, b, c in checks:
+        if b != c:
+            return "baseline %s %s != current %s" % (what, b, c)
+    return None
+
+
 def compare_baseline(roll, baseline_path, thr_pct, thr_us):
     with open(baseline_path) as f:
         base = json.load(f)
-    bp, cp = base["platform"]["tag"], roll["platform"]["tag"]
-    if bp != cp:
-        print("[bench] baseline platform %s != current %s - refusing cross-platform "
-              "compare" % (bp, cp), file=sys.stderr)
+    why = comparability(base, roll)
+    if why:
+        print("[bench] %s - refusing the compare" % why, file=sys.stderr)
         return EXIT_SKIP
+    if base["movie_set"] != roll["movie_set"]:
+        print("[bench] note: movie sets differ (baseline %d, current %d movies)"
+              % (len(base["movie_set"]), len(roll["movie_set"])), file=sys.stderr)
+    if roll["mode"] == "functional":
+        print("[bench] identity accepted (platform %s, game %s, arm %s); "
+              "functional rollups carry no timing verdict"
+              % (roll["platform"]["tag"], roll["game"], roll["build"]["arm"]),
+              file=sys.stderr)
+        return 0
     bmap = {(r["group"], r["kind"], r["scope"]): r for r in base["scopes"]}
     regressions = []
     for r in roll["scopes"]:
@@ -210,9 +291,14 @@ def compare_baseline(roll, baseline_path, thr_pct, thr_us):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exe", default=DEFAULT_EXE)
+    ap.add_argument("--game", default="spyro-1", choices=game_conf.GAMES,
+                    help="disc, boot flags, bk2 corpus and default exe")
+    ap.add_argument("--exe", default=None,
+                    help="default: build/linux-release/games/<game>/openpete-<tag>")
     ap.add_argument("--allow-untuned", action="store_true",
                     help="skip the bench_guard tuned-binary refusal")
+    ap.add_argument("--functional", action="store_true",
+                    help="headless, contention reported not refused; no timing verdict")
     ap.add_argument("--movies", default=None, help="comma list of bk2 stems (default: all)")
     ap.add_argument("--frame-limit", type=int, default=20000)
     ap.add_argument("--render-fps", type=int, default=120)
@@ -221,23 +307,42 @@ def main():
     ap.add_argument("--skip-ticks", type=int, default=60)
     ap.add_argument("--gpu-timers", action="store_true")
     ap.add_argument("--baseline", default=None)
+    ap.add_argument("--compare-only", default=None, metavar="ROLLUP",
+                    help="compare this rollup against --baseline without running")
     ap.add_argument("--threshold-pct", type=float, default=10.0)
     ap.add_argument("--threshold-us", type=int, default=100)
     ap.add_argument("--keep-traces", action="store_true")
     ap.add_argument("--run-id", default="run")
     args = ap.parse_args()
 
-    if not os.path.exists(args.exe):
-        print("[bench] exe not found: %s" % args.exe, file=sys.stderr)
+    if args.compare_only:
+        if not args.baseline:
+            ap.error("--compare-only needs --baseline")
+        with open(args.compare_only) as f:
+            roll = json.load(f)
+        return compare_baseline(roll, args.baseline, args.threshold_pct, args.threshold_us)
+
+    game = game_conf.resolve(ROOT, args.game)
+    exe = os.path.abspath(args.exe or game["default_exe"])
+    if not os.path.exists(exe):
+        print("[bench] exe not found: %s" % exe, file=sys.stderr)
         return EXIT_SKIP
-    if not os.path.exists(DISC):
-        print("[bench] disc not found: %s" % DISC, file=sys.stderr)
+    if not os.path.exists(game["disc"]):
+        print("[bench] disc not found: %s" % game["disc"], file=sys.stderr)
         return EXIT_SKIP
 
-    bench_guard.check(args.exe, allow_untuned=args.allow_untuned)
-    bench_guard.print_surface(args.exe)
+    bench_guard.check(exe, allow_untuned=args.allow_untuned,
+                      functional=args.functional)
+    bench_guard.print_surface(exe)
+    identity = bench_guard.build_identity(exe)
+    if not identity or not identity["arm"]:
+        print("[bench] REFUSED: no arm file %s - the tree was configured "
+              "before the configure wrote it; reconfigure the tree"
+              % (identity["arm_file"] if identity else "(no CMakeCache.txt above the exe)"),
+              file=sys.stderr)
+        return EXIT_REFUSED
 
-    movies = sorted(glob.glob(os.path.join(BK2_DIR, "*.bk2")))
+    movies = sorted(glob.glob(os.path.join(game["bk2_dir"], "*.bk2")))
     if args.movies:
         want = set(args.movies.split(","))
         movies = [m for m in movies
@@ -248,6 +353,10 @@ def main():
 
     out = os.path.join(args.out_dir, args.run_id)
     os.makedirs(out, exist_ok=True)
+    # A stale rollup from an earlier run must never be read as this one's.
+    for stale in ("rollup.json", "rollup.txt"):
+        if os.path.exists(os.path.join(out, stale)):
+            os.remove(os.path.join(out, stale))
 
     per_movie = []
     platform = None
@@ -255,22 +364,29 @@ def main():
         stem = os.path.basename(mp)[:-4]
         opp = os.path.join(out, stem + ".opp")
         log = os.path.join(out, stem + ".log")
+        for stale in (opp, log, os.path.join(out, stem + ".json"),
+                      os.path.join(out, stem + ".txt")):
+            if os.path.exists(stale):
+                os.remove(stale)
         print("[bench] %s ..." % stem, file=sys.stderr, flush=True)
-        run = run_movie(args.exe, mp, opp, args, log)
+        run = run_movie(exe, game, mp, opp, args, log)
         if platform is None:
-            platform = platform_tag(args.exe, run["device"])
+            platform = platform_tag(identity, run["device"])
         summ = None
         if os.path.exists(opp):
             summ = summarize(opp, os.path.join(out, stem + ".json"),
                              os.path.join(out, stem + ".txt"), stem, args.skip_ticks)
         if not args.keep_traces and os.path.exists(opp):
             os.remove(opp)
-        per_movie.append({"movie": stem, "run": run, "summary": summ})
-        print("[bench]   exit=%s presents=%s" %
-              (run["exit_reason"], (summ or {}).get("presents_total", "?")),
-              file=sys.stderr)
+        per_movie.append({"movie": stem, "run": run, "summary": summ,
+                          "args_sidecar": os.path.exists(mp + ".args")})
+        print("[bench]   exit=%s presents=%s ticks=%d" %
+              (run["exit_reason"], (summ or {}).get("presents_total", "?"),
+               engaged_ticks(summ)), file=sys.stderr)
 
-    roll = build_rollup(per_movie, platform)
+    meta = {"game": args.game, "mode": "functional" if args.functional else "timed",
+            "run_args": game["run_args"], "build": identity}
+    roll = build_rollup(per_movie, platform, meta)
     with open(os.path.join(out, "rollup.json"), "w") as f:
         json.dump(roll, f, indent=2)
     txt = render_rollup_text(roll)
@@ -279,6 +395,11 @@ def main():
     print("\n" + txt)
     print("\n[bench] wrote %s" % os.path.join(out, "rollup.json"), file=sys.stderr)
 
+    vacuous = [pm["movie"] for pm in roll["per_movie"] if pm["engaged_ticks"] == 0]
+    if vacuous:
+        print("[bench] VACUOUS: no engaged tick in %s" % ", ".join(vacuous),
+              file=sys.stderr)
+        return EXIT_VACUOUS
     if args.baseline:
         return compare_baseline(roll, args.baseline, args.threshold_pct, args.threshold_us)
     return 0
