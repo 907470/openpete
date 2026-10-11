@@ -1,0 +1,14 @@
+# Determinism-matrix rows on which a level overlay's anti-piracy scan runs
+# to its end (tests/harness/check_determinism_matrix.sh, games/spyro-3/
+# features/antipiracy_scan.c). One row per line: the bk2 stem under
+# games/spyro-3/bk2/, the cell's VBL limit, and the least number of
+# `antipiracy: ... complete: PASS` lines each cell's log must carry. A cell
+# below that count, or carrying an `antipiracy: FAIL` line, fails the run:
+# a scan that stops running or fails is a gate failure.
+#
+# sheilas-alp-idle-scan: no input after --skip-to-level sheilas_alp; the
+# three scanner mobies of func_level_16_80079AF4 end their EXE and overlay
+# passes at VBL 8091 (3261 calls each). The one-function scanner
+# func_level_16_80079654 takes one step and stops while idle; it is not
+# counted.
+sheilas-alp-idle-scan 8600 3

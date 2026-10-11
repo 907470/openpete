@@ -1,0 +1,3 @@
+# Idle (no input) from the level skip; the level scanner func_level_16_80079AF4
+# completes its EXE and overlay passes near VBL 8100.
+--skip-to-level sheilas_alp

@@ -58,6 +58,7 @@
 #include "features/cutscene_skip.h"
 #include "features/skip_to_area.h"
 #include "features/state_log.h"
+#include "features/antipiracy_scan.h"
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
 #include "features/levelwarp_ui.h"
@@ -194,12 +195,13 @@ static void checksum_verdict(CPUState* cpu) {
     s_last_state = state;
 }
 
-/** @brief Run Spyro 3's verdict hooks at a function entry: the level-load checksum log at func_8002CA50.
+/** @brief Run Spyro 3's verdict hooks at a function entry: the level-load checksum log and the level overlays' scan observer.
  *
  * @param cpu Guest CPU state.
  * @param addr The entered function's guest vaddr. */
 static void spyro3_entry_verdicts(CPUState* cpu, uint32_t addr) {
     if (addr == 0x8002CA50u) checksum_verdict(cpu);
+    spyro3_antipiracy_scan_on_entry(cpu, addr);
 }
 
 /** @brief Runs the Spyro 3 intercepts at the entry of every recompiled function.
@@ -207,7 +209,8 @@ static void spyro3_entry_verdicts(CPUState* cpu, uint32_t addr) {
  * In order, through game_dispatch_preamble: the free camera's freeze test,
  * which ends the function at once while it drives the camera in place of
  * func_8001204C or suppresses the player update func_8003E83C; the
- * level-load checksum log at func_8002CA50; the write census's entry note;
+ * level-load checksum log at func_8002CA50 and the level overlays' scan
+ * observer; the write census's entry note;
  * the mod override chains. Then the feature modules' dispatch tables. Called from
  * psx_override_dispatch, which the generated bodies call before their own code.
  *

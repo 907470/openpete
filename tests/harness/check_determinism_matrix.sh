@@ -41,7 +41,8 @@
 #       spyro-2  title,start-new-game,summer-forest-collect-orb,
 #                autumn-plains-skelos-badlands-portal-entry
 #       spyro-3  title,new-game-title,crystal-islands-flame,
-#                sunrise-spring-sunny-villa-portal-entry
+#                sunrise-spring-sunny-villa-portal-entry,
+#                sheilas-alp-idle-scan
 #     [--out=/tmp/determinism-matrix]
 #     [--full]                       (4:3,16:9,21:9,32:9 × default,50,90,120
 #                                     × all *.bk2 scenarios + title)
@@ -54,11 +55,20 @@
 #                                    skip (default: tas,frame-time-test).
 #     [--keep-logs]                  (don't delete per-cell stdout)
 #
+# Anti-piracy verdicts (Spyro 3): a cell whose log carries an
+# `antipiracy: FAIL` line (a failed level scan or a store-watch hit,
+# games/spyro-3/features/antipiracy_scan.h) fails the run. A scenario
+# listed in games/<game>/corpus/antipiracy-scan.manifest runs to the row's
+# VBL limit in place of --frames, and each of its cells must log at least
+# the row's count of `complete: PASS` scan lines, so a scan that stops
+# running fails the run too.
+#
 # Exit codes:
 #   0 - every cell either matches its baseline or diverges only in
 #       open-status channels (documented expected red), and at least one
 #       row was compared.
-#   1 - a cell is a REGRESSION or BROKEN, or no row was compared.
+#   1 - a cell is a REGRESSION or BROKEN, a cell failed an anti-piracy
+#       verdict, or no row was compared.
 #   2 - setup error.
 
 set -uo pipefail
@@ -78,7 +88,7 @@ case "$GAME" in
         SCENARIOS_CSV="title,start-new-game,summer-forest-collect-orb,autumn-plains-skelos-badlands-portal-entry" ;;
     spyro-3)
         FRAMES=2600
-        SCENARIOS_CSV="title,new-game-title,crystal-islands-flame,sunrise-spring-sunny-villa-portal-entry" ;;
+        SCENARIOS_CSV="title,new-game-title,crystal-islands-flame,sunrise-spring-sunny-villa-portal-entry,sheilas-alp-idle-scan" ;;
     *)
         FRAMES=2000
         SCENARIOS_CSV="title,stone-hill-entry,inventory" ;;
@@ -105,7 +115,7 @@ for arg in "$@"; do
         --keep-logs)   KEEP_LOGS=1 ;;
         --game|--game=*) ;;   # consumed by pg_parse_game above
         spyro-*)       ;;     # the two-word --game SLUG spelling
-        --help|-h)     sed -n '1,62p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h)     sed -n '1,72p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
@@ -165,6 +175,41 @@ cell_tag() {
     echo "$scenario--${aspect/:/x}--fov-$fov"
 }
 
+# The anti-piracy scan rows: stem -> "frames min_pass".
+declare -A SCAN_ROWS=()
+SCAN_MANIFEST="games/$GAME/corpus/antipiracy-scan.manifest"
+if [[ -f "$SCAN_MANIFEST" ]]; then
+    while read -r _stem _frames _min _rest; do
+        [[ -z "$_stem" || "$_stem" == \#* ]] && continue
+        SCAN_ROWS[$_stem]="$_frames $_min"
+    done < "$SCAN_MANIFEST"
+fi
+declare -i antipiracy_failures=0 scan_passes_total=0
+
+# Check a cell's log for anti-piracy verdicts: any FAIL line fails the cell,
+# and a scan row's cell must log at least the row's count of passing scans.
+check_antipiracy() {
+    local scenario="$1" tag="$2" log="$3"
+    local fails passes
+    fails=$(grep -c 'antipiracy: FAIL' "$log" || true)
+    passes=$(grep -c 'antipiracy: .* complete: PASS' "$log" || true)
+    scan_passes_total+=passes
+    if (( fails > 0 )); then
+        antipiracy_failures+=1
+        echo "    cell $tag: $fails anti-piracy FAIL line(s):" >&2
+        grep 'antipiracy: FAIL' "$log" | head -5 | sed 's/^/      /' >&2
+    fi
+    if [[ -n "${SCAN_ROWS[$scenario]:-}" ]]; then
+        local min="${SCAN_ROWS[$scenario]#* }"
+        if (( passes < min )); then
+            antipiracy_failures+=1
+            echo "    cell $tag: $passes passing scan(s), the row needs $min (scan stopped or never ran)" >&2
+        else
+            echo "    cell $tag: $passes passing scan(s) (row needs $min)"
+        fi
+    fi
+}
+
 # Run a single cell. Writes hash csv to $OUT_DIR/h-<tag>.csv. Returns
 # 0 on successful run (exit code of openpete), nonzero otherwise.
 run_cell() {
@@ -172,7 +217,9 @@ run_cell() {
     local tag; tag=$(cell_tag "$scenario" "$aspect" "$fov")
     local hash="$OUT_DIR/h-$tag.csv"
     local log="$OUT_DIR/log-$tag.txt"
-    local args=(--frame-limit "$FRAMES"
+    local frames="$FRAMES"
+    [[ -n "${SCAN_ROWS[$scenario]:-}" ]] && frames="${SCAN_ROWS[$scenario]%% *}"
+    local args=(--frame-limit "$frames"
                 --gameplay-hash-log "$hash"
                 --max-runtime-seconds 300)
     [[ "$aspect" != "4:3" ]] && args+=(--aspect "$aspect")
@@ -189,6 +236,7 @@ run_cell() {
     pg_capture "$log" "$hash" -- "${args[@]}"
     local rc=$?
     [[ -s "$hash" ]] || { echo "    cell $tag: openpete rc=$rc, no hash log produced" >&2; return 1; }
+    check_antipiracy "$scenario" "$tag" "$log"
     return 0
 }
 
@@ -282,7 +330,7 @@ else
 fi
 
 echo
-echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared"
+echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared  antipiracy-failures=$antipiracy_failures  scans-passed=$scan_passes_total"
 
 if [[ $KEEP_LOGS -eq 0 ]]; then
     rm -f "$OUT_DIR"/log-*.txt
@@ -293,6 +341,10 @@ fi
 # Exit code: 1 on any regression, any broken cell, or zero rows
 # compared; 0 if every cell was clean or expected-red.
 if (( regressions > 0 )); then
+    exit 1
+fi
+if (( antipiracy_failures > 0 )); then
+    echo "[$mode_tag] FAIL: $antipiracy_failures cell(s) with a failed or missing anti-piracy verdict" >&2
     exit 1
 fi
 if (( broken_runs > 0 )); then

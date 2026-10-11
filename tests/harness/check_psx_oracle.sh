@@ -464,6 +464,15 @@ if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; th
     fi
 fi
 
+# Anti-piracy verdicts: a failed level scan or a store-watch hit logs an
+# `antipiracy: FAIL` line (games/spyro-3/features/antipiracy_scan.h); such a
+# run fails whatever its hashes say.
+if grep -q 'antipiracy: FAIL' "$LOG"; then
+    echo "[psx-oracle] anti-piracy: $(grep -c 'antipiracy: FAIL' "$LOG") FAIL line(s):" >&2
+    grep 'antipiracy: FAIL' "$LOG" | head -5 | sed 's/^/    /' >&2
+    rc=2
+fi
+
 # Engaged form: with OPENPETE_IDENT_AUDIT=<VBL> set, the native
 # feeders compose every canonical present surfaceless and print one
 # `[ident-audit ..]` row per present. A PASS with zero rows never ran the
