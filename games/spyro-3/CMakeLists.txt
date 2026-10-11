@@ -60,6 +60,8 @@ openpete_add_game(spyro-3
 
         # The watch and mod guard over the anti-piracy scans' code ranges.
         scan_watch.c
+        # The entry guard over EXE functions a level overlay stubs out.
+        code_patch_guard.c
         features/freecam.c
 
         # The queue of host-requested calls into the game's transition

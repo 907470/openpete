@@ -66,6 +66,7 @@
 #include "renderer/text_moby.h"
 #include "spyro-3/gen/spyro3_sfx_names.h" /* generated: the 256 SoundTable slot names */
 #include "scan_watch.h"
+#include "code_patch_guard.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -80,10 +81,12 @@ void game_overlay_resync_on_state_loaded(CPUState* cpu);
 
 /** @brief Install the resident-overlay resync and the write census, then arm the scanned-range watch over them.
  *
+ * Last, registers the exit report of the stub guard (code_patch_guard.h).
  * @param cpu Guest CPU state. */
 static void spyro3_on_boot(CPUState* cpu) {
     game_overlay_resync_on_boot(cpu);
     spyro3_scan_watch_boot(cpu);
+    spyro3_code_patch_guard_boot();
 }
 
 /** @brief Re-point the overlay dispatcher after a savestate restore, then report the scanned bytes the restore changed.
@@ -234,7 +237,10 @@ static void spyro3_entry_verdicts(CPUState* cpu, uint32_t addr) {
  * func_8001204C or suppresses the player update func_8003E83C; the
  * level-load checksum log at func_8002CA50 and the level overlays' scan
  * observer; the write census's entry note;
- * the mod override chains. Then the feature modules' dispatch tables. Called from
+ * the mod override chains. Then the stub guard (code_patch_guard.h), which
+ * ends a call of func_8005663C or func_800512E4 whose entry words in guest
+ * RAM are `jr ra; nop`; it follows the mod chains, so a mod's base() into a
+ * stubbed function reaches the stub. Then the feature modules' dispatch tables. Called from
  * psx_override_dispatch, which the generated bodies call before their own code.
  *
  * @param cpu The guest CPU state.
@@ -242,6 +248,7 @@ static void spyro3_entry_verdicts(CPUState* cpu, uint32_t addr) {
  * @return 1 when the recompiled body must return at once, else 0. */
 static int spyro3_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (game_dispatch_preamble(cpu, addr, spyro3_entry_verdicts)) return 1;
+    if (spyro3_code_patch_guard(cpu, addr)) return 1;
     return feature_registry_dispatch(cpu, addr);
 }
 

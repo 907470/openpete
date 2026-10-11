@@ -132,6 +132,15 @@ GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLE
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
 BIN="${OPENPETE_BIN:-build/linux-release/openpete}"
+# Spyro 3: arm the store watch over the code ranges the anti-piracy scans
+# hash (games/spyro-3/scan_watch.h). A store there logs `antipiracy: FAIL
+# watch:`, which fails the run below; the run must print the watch's exit
+# row, so a watch that never armed fails too.
+SCAN_WATCH=0
+if [[ "$GAME" == "spyro-3" ]]; then
+    export OPENPETE_S3_SCAN_WATCH=1
+    SCAN_WATCH=1
+fi
 DISC="${OPENPETE_DISC:-$DISC}"
 
 # The golden is generated, not committed: a missing default golden is
@@ -471,6 +480,15 @@ if grep -q 'antipiracy: FAIL' "$LOG"; then
     echo "[psx-oracle] anti-piracy: $(grep -c 'antipiracy: FAIL' "$LOG") FAIL line(s):" >&2
     grep 'antipiracy: FAIL' "$LOG" | head -5 | sed 's/^/    /' >&2
     rc=2
+fi
+if [[ "$SCAN_WATCH" == 1 ]]; then
+    WATCH_ROW=$(grep -o '\[s3-scan\] watch: .*' "$LOG" | tail -1 || true)
+    if [[ -z "$WATCH_ROW" ]]; then
+        echo "[psx-oracle] anti-piracy: OPENPETE_S3_SCAN_WATCH=1 and no watch exit row (the watch never armed)" >&2
+        rc=2
+    else
+        echo "[psx-oracle] $WATCH_ROW"
+    fi
 fi
 
 # Engaged form: with OPENPETE_IDENT_AUDIT=<VBL> set, the native

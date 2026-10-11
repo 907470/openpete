@@ -58,7 +58,9 @@
 #
 # Anti-piracy verdicts (Spyro 3): a cell whose log carries an
 # `antipiracy: FAIL` line (a failed level scan or a store-watch hit,
-# games/spyro-3/features/antipiracy_scan.h) fails the run. A scenario
+# games/spyro-3/features/antipiracy_scan.h) fails the run. Every Spyro 3
+# cell arms the store watch (OPENPETE_S3_SCAN_WATCH=1,
+# games/spyro-3/scan_watch.h) and must print its exit row. A scenario
 # listed in games/<game>/corpus/antipiracy-scan.manifest runs to the row's
 # VBL limit in place of --frames, and each of its cells must log at least
 # the row's count of `complete: PASS` scan lines, so a scan that stops
@@ -120,7 +122,7 @@ for arg in "$@"; do
         --keep-logs)   KEEP_LOGS=1 ;;
         --game|--game=*) ;;   # consumed by pg_parse_game above
         spyro-*)       ;;     # the two-word --game SLUG spelling
-        --help|-h)     sed -n '1,76p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h)     sed -n '1,78p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
@@ -198,8 +200,20 @@ cell_tag() {
 
 declare -i antipiracy_failures=0 scan_passes_total=0 scan_cells=0
 
+# Spyro 3: every cell arms the store watch over the code ranges the
+# anti-piracy scans hash (games/spyro-3/scan_watch.h); a store there logs an
+# `antipiracy: FAIL watch:` line, and a cell without the watch's exit row
+# never armed it.
+SCAN_WATCH=0
+if [[ "$GAME" == "spyro-3" ]]; then
+    PG_CAPTURE_ENV=(OPENPETE_S3_SCAN_WATCH=1)
+    SCAN_WATCH=1
+fi
+declare -i watch_hits_total=0
+
 # Check a cell's log for anti-piracy verdicts: any FAIL line fails the cell,
-# and a scan row's cell must log at least the row's count of passing scans.
+# a watched cell must print the watch's exit row, and a scan row's cell must
+# log at least the row's count of passing scans.
 check_antipiracy() {
     local scenario="$1" tag="$2" log="$3"
     local fails passes
@@ -210,6 +224,17 @@ check_antipiracy() {
         antipiracy_failures+=1
         echo "    cell $tag: $fails anti-piracy FAIL line(s):" >&2
         grep 'antipiracy: FAIL' "$log" | head -5 | sed 's/^/      /' >&2
+    fi
+    if (( SCAN_WATCH )); then
+        local row hits
+        row=$(grep -o '\[s3-scan\] watch: .*' "$log" | tail -1 || true)
+        if [[ -z "$row" ]]; then
+            antipiracy_failures+=1
+            echo "    cell $tag: no store-watch exit row (the watch never armed)" >&2
+        else
+            hits=$(sed -n 's/.* hits=\([0-9]*\).*/\1/p' <<<"$row")
+            watch_hits_total+=${hits:-0}
+        fi
     fi
     if [[ -n "${SCAN_ROWS[$scenario]:-}" ]]; then
         local min="${SCAN_ROWS[$scenario]#* }"
@@ -348,7 +373,9 @@ else
 fi
 
 echo
-echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared  antipiracy-failures=$antipiracy_failures  scan-row-cells=$scan_cells  scans-passed=$scan_passes_total"
+WATCH_SUMMARY=""
+(( SCAN_WATCH )) && WATCH_SUMMARY="  watch-hits=$watch_hits_total"
+echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared  antipiracy-failures=$antipiracy_failures  scan-row-cells=$scan_cells  scans-passed=$scan_passes_total$WATCH_SUMMARY"
 
 if [[ $KEEP_LOGS -eq 0 ]]; then
     rm -f "$OUT_DIR"/log-*.txt
