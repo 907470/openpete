@@ -18,9 +18,6 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
-- Mod SDK: the Spyro 1 generated headers copied to the root of `sdk/` are deprecated and are removed in the
-  first release that ships the per-game SDK for Spyro 2 and 3. A build line that compiles with `-I sdk` alone
-  adds `-I sdk/games/spyro-1` before it.
 - A setting in `openpete.toml` or an `OPENPETE_*` environment variable whose value is the wrong type or out of range
   (`ssaa = 0`, `lod = "turbo"`, `OPENPETE_MOUSE=maybe`) no longer stops the game from starting: it prints a warning
   and the setting keeps its default. The same value typed on the command line, and any refused value under
