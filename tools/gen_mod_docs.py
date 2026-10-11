@@ -207,7 +207,8 @@ def split_members(body: str):
 
 def scan_types(pre: str):
     """(comment, code) pairs for the documented items between extern "C"
-    and the api struct: typedefs, enums and the version define. Static
+    and the api struct: typedefs, enums, the version define and the
+    OPENPETE_MOD_ERR_ codes. Static
     inline helpers and bare forward declarations are skipped."""
     items, i, n, comment = [], 0, len(pre), ""
     while i < n:
@@ -225,7 +226,8 @@ def scan_types(pre: str):
             while pre[end - 1] == "\\":
                 end = pre.index("\n", end + 1)
             line = pre[i:end]
-            if line.startswith("#define OPENPETE_MOD_API_VERSION"):
+            if line.startswith(("#define OPENPETE_MOD_API_VERSION",
+                                "#define OPENPETE_MOD_ERR_")):
                 items.append((comment, line))
             comment = ""
             i = end

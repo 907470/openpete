@@ -2693,13 +2693,53 @@ const char* openpete_mods_sdk_dir(void) {
 
 /* ---- pillar 9: game data + texture packs (api 2) ----------------------- */
 
+/* api entries that answer OPENPETE_MOD_ERR_UNSUPPORTED on a game whose
+ * descriptor leaves their member NULL; each logs that once per mod. */
+enum { UNSUP_READ_LEVEL_DATA, UNSUP_MOBY_CLASSES, UNSUP_ENTRIES };
+
+/** @brief Log an api entry the running game does not serve once per mod, and return OPENPETE_MOD_ERR_UNSUPPORTED.
+ *
+ * Mods are remembered by id, so a reloaded mod stays silent; the first 64
+ * ids are remembered per entry and a mod past that logs on every call. A
+ * NULL self logs under "?" on every call.
+ * @param self The calling mod, or NULL.
+ * @param entry The UNSUP_* index of the entry.
+ * @param call The entry's api member name.
+ * @param what The surface the game leaves out, for the log line.
+ * @return OPENPETE_MOD_ERR_UNSUPPORTED. */
+static int api_unsupported(const openpete_mod_t* self, int entry,
+                           const char* call, const char* what) {
+    static char s_noted[UNSUP_ENTRIES][64][MOD_ID_MAX];
+    static int  s_noted_n[UNSUP_ENTRIES];
+    if (self) {
+        for (int i = 0; i < s_noted_n[entry]; i++)
+            if (strcmp(s_noted[entry][i], self->id) == 0)
+                return OPENPETE_MOD_ERR_UNSUPPORTED;
+        if (s_noted_n[entry] < 64)
+            snprintf(s_noted[entry][s_noted_n[entry]++], MOD_ID_MAX, "%s",
+                     self->id);
+    }
+    OPL_WARN_F(self ? self->log_tag : "mods", "%s: %s serves no %s - "
+               "unsupported (%d)", call, game_get_id(), what,
+               OPENPETE_MOD_ERR_UNSUPPORTED);
+    return OPENPETE_MOD_ERR_UNSUPPORTED;
+}
+
 /** @brief Copy a level's data blob through openpete_mods_read_level_data.
  *
- * @return the game layer's result, or -1 when no game layer provides level
- *         data or level_id is not positive. */
+ * @param self The calling mod; names it in the unsupported log line.
+ * @param level_id The level id.
+ * @param buf Destination of cap bytes.
+ * @param cap Capacity of buf.
+ * @return the game layer's result; OPENPETE_MOD_ERR_UNSUPPORTED when the
+ *         game descriptor provides no level-data reader; -1 when level_id
+ *         is not positive. */
 static int api_read_level_data(openpete_mod_t* self, int level_id,
                                void* buf, uint32_t cap) {
-    (void)self;
+    const openpete_level_ops_t* lo = openpete_mods_game_desc()->level_ops;
+    if (!lo || !lo->read_level_data)
+        return api_unsupported(self, UNSUP_READ_LEVEL_DATA,
+                               "read_level_data", "level data");
     return openpete_mods_read_level_data(level_id, buf, cap);
 }
 
@@ -2737,14 +2777,18 @@ static int api_material_register(openpete_mod_t* self,
  * Forwards to openpete_mods_moby_classes, which reports the set the last
  * tick-boundary census found and keeps the previous answer while a level is
  * loading.
- * @param self Unused.
+ * @param self The calling mod; names it in the unsupported log line.
  * @param out Receives up to cap ids; NULL, or a cap of 0 or less, copies
  *        nothing.
  * @param cap Capacity of out in entries.
  * @return The number of ids copied, or the full class count when nothing
- *         is copied. */
+ *         is copied; OPENPETE_MOD_ERR_UNSUPPORTED when the game descriptor
+ *         provides no moby class census. */
 static int api_moby_classes(openpete_mod_t* self, uint16_t* out, int cap) {
-    (void)self;   /* the loaded-class set is a property of the level */
+    const openpete_moby_ops_t* mo = openpete_mods_game_desc()->moby_ops;
+    if (!mo || !mo->classes_loaded)
+        return api_unsupported(self, UNSUP_MOBY_CLASSES, "moby_classes",
+                               "moby class census");
     return openpete_mods_moby_classes(out, cap);
 }
 

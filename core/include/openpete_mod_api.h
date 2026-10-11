@@ -375,6 +375,19 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
 /** @brief The api version this header describes. */
 #define OPENPETE_MOD_API_VERSION 13u
 
+/**
+ * @brief Return value of an api entry whose surface the running game does not serve.
+ *
+ * `read_level_data` and `moby_classes` read a game-specific layer (level
+ * data, the moby class census) that a game may leave out; on such a game
+ * they return this code and log one line per mod naming the game, the
+ * first time the mod calls each of them. Every other failure keeps its
+ * documented value (-1 throughout the api), so `rc < 0` still tests for
+ * failure and `rc == OPENPETE_MOD_ERR_UNSUPPORTED` tells an absent
+ * surface from a refused call. Query `game_id` to branch per game.
+ */
+#define OPENPETE_MOD_ERR_UNSUPPORTED (-2)
+
 /** @brief The engine's function table, passed to the mod entry point. */
 typedef struct openpete_mod_api {
     /** @brief The engine's #OPENPETE_MOD_API_VERSION; compare with `<`, never `!=`.
@@ -755,8 +768,9 @@ typedef struct openpete_mod_api {
      * Lets a mod use another level's sky, palette or geometry without
      * shipping derived data.
      * @param buf  Destination of @p cap bytes; NULL queries the length.
-     * @return The blob length, or < 0 when no game layer provides level
-     *         data or the id is unknown.
+     * @return The blob length; #OPENPETE_MOD_ERR_UNSUPPORTED on a game
+     *         that serves no level data; -1 for an unknown id or a failed
+     *         read.
      * @since api 2
      */
     int (*read_level_data)(openpete_mod_t* self, int level_id,
@@ -863,7 +877,8 @@ typedef struct openpete_mod_api {
      * finishes loading.
      * @param out  Destination of @p cap entries; `out = NULL, cap = 0`
      *             sizes the buffer.
-     * @return The count.
+     * @return The count; #OPENPETE_MOD_ERR_UNSUPPORTED on a game that
+     *         serves no moby class census.
      * @since api 6
      */
     int (*moby_classes)(openpete_mod_t* self, uint16_t* out, int cap);

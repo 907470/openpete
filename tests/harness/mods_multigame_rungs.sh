@@ -25,6 +25,10 @@
 #                   material channel mask.
 #   levels          (a game with no level ops) a [[level]] row is refused
 #                   with one line naming the game; the mod still loads.
+#   unsupported     read_level_data and moby_classes, called twice each,
+#                   return OPENPETE_MOD_ERR_UNSUPPORTED on a game whose
+#                   descriptor leaves their member NULL, with one log line
+#                   per entry naming the game; none on Spyro 1.
 #   engagement      every in-tree mod with per-game arms (the camera-clock
 #                   mods, double-gems, natural-gems) loads and its own
 #                   override link counts calls above 0 on the attract demo
@@ -275,6 +279,53 @@ TEOF
         bad "level refusal lines $n_ref (want 1) or the mod did not load"
         printf '%s\n' "$out" | grep -E 'lvl-games|level' | head -5
     fi
+fi
+
+# ── M7b. OPENPETE_MOD_ERR_UNSUPPORTED from descriptor-backed entries ─────
+# A "*" object calls read_level_data and moby_classes twice each at entry.
+# A game whose descriptor leaves the member NULL (Spyro 2 and 3) returns
+# OPENPETE_MOD_ERR_UNSUPPORTED from all four calls and logs one line per
+# entry naming the game; Spyro 1 returns no such code and logs none.
+say "unsupported: read_level_data and moby_classes on $PG_GAME"
+d="$WORK/unsup/unsup-probe"
+mod_toml "$d" unsup-probe
+mkdir -p "$d/.build/any"
+cat > "$WORK/unsup-probe.c" <<'CEOF'
+#include <openpete_mod_api.h>
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    uint8_t  buf[16];
+    uint16_t cls[8];
+    for (int i = 0; i < 2; i++) {
+        int a = api->read_level_data(self, 10, buf, sizeof buf);
+        int b = api->moby_classes(self, cls, 8);
+        api->log(self, OP_MOD_LOG_INFO, "unsup-probe call %d read_level_data %d "
+                 "moby_classes %d (unsupported %d)", i, a, b,
+                 OPENPETE_MOD_ERR_UNSUPPORTED);
+    }
+    return 0;
+}
+CEOF
+echo unsup-probe > "$WORK/unsup/enabled.txt"
+if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
+        -I"$SDK_ROOT" "$SDK_ROOT/openpete_mod_abi.c" "$WORK/unsup-probe.c" \
+        -o "$d/.build/any/unsup-probe.so" > "$WORK/unsup-cc.log" 2>&1; then
+    out="$(run_game "$WORK/unsup" 60)"
+    calls="$(printf '%s\n' "$out" | sed -n 's/.*unsup-probe call [01] read_level_data \(-\?[0-9]*\) moby_classes \(-\?[0-9]*\) (unsupported \(-\?[0-9]*\)).*/\1 \2 \3/p')"
+    n_calls="$(printf '%s\n' "$calls" | grep -c .)"
+    n_unsup="$(printf '%s\n' "$calls" | awk 'NF { n += ($1 == $3) + ($2 == $3) } END { print n + 0 }')"
+    n_rld="$(printf '%s\n' "$out" | grep -c "read_level_data: $PG_GAME serves no level data - unsupported")"
+    n_moby="$(printf '%s\n' "$out" | grep -c "moby_classes: $PG_GAME serves no moby class census - unsupported")"
+    if [ "$PG_GAME" = "spyro-1" ]; then want_unsup=0 want_log=0; else want_unsup=4 want_log=1; fi
+    if [ "$n_calls" -eq 2 ] && [ "$n_unsup" -eq "$want_unsup" ] &&
+       [ "$n_rld" -eq "$want_log" ] && [ "$n_moby" -eq "$want_log" ]; then
+        ok "unsupported returns $n_unsup/4, log lines read_level_data $n_rld moby_classes $n_moby; returns [$(printf '%s\n' "$calls" | paste -sd ';')]"
+    else
+        bad "calls $n_calls/2, unsupported returns $n_unsup/$want_unsup, log lines $n_rld/$want_log and $n_moby/$want_log"
+        printf '%s\n' "$out" | grep -E 'unsup-probe|unsupported' | head -8
+    fi
+else
+    bad "unsup-probe \"*\" build failed"
+    head -5 "$WORK/unsup-cc.log"
 fi
 
 # ── M8. per-game arms: engagement on the attract demo ────────────────────

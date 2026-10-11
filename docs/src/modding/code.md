@@ -213,6 +213,11 @@ or as a `"*"` object by hand.
 
 Every api entry exists on every game. An entry whose game surface is
 missing on a game returns the value the table names.
+`OPENPETE_MOD_ERR_UNSUPPORTED` (-2, in `openpete_mod_api.h`) is the return
+of an entry whose surface the running game does not serve; the entry
+logs one line naming the game the first time each mod calls it. Every
+other failure returns -1, so `rc < 0` tests for any failure and
+`rc == OPENPETE_MOD_ERR_UNSUPPORTED` for the missing surface.
 
 | Entry | Spyro 1 | Spyro 2 and Spyro 3 |
 |---|---|---|
@@ -225,8 +230,9 @@ missing on a game returns the value the table names.
 | `draw_text` | yes | no text rasterizer: draws nothing, logs once per mod naming the game |
 | `[[material]]` rows | every render channel | no render channel is served: rows logged and skipped |
 | `material_register`, `material_register_refine`, `material_enable`, `material_set_params`, `material_set_selector` | yes | register, but the renderer applies no material on these games |
-| `moby_classes` | yes | no moby census: returns 0 |
-| `read_level_data`, `[[level]]` | yes | returns -1; rows refused with one log line |
+| `moby_classes` | yes | no moby census: returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
+| `read_level_data` | yes | returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
+| `[[level]]` rows | yes | refused with one log line |
 | `vstream_handle` | yes | returns a handle, but the game's frame readers do not resolve handles |
 | `texpack_fog_shift` | yes | applies to the terrain the native renderer draws |
 | music replacement ([Music](music.md)) | yes | no |
