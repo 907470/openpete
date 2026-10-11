@@ -7,12 +7,12 @@
  * renderer/moby_game.h. */
 
 #include "renderer/moby_game.h"
-#include "renderer/interp_regions.h"   /* game_interp_moby_key */
+#include "interp_regions.h"   /* game_interp_moby_key */
 #include "renderer/native_gte.h"       /* ngte_read_matrix */
 #include "openpete_vstream.h"          /* frame-word field -> stream address (handles) */
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
-#include "openpete_game_structs.h"   /* offsets pinned to the probed MIPS layout */
+#include "spyro-1/mod_sdk_gen/openpete_game_structs.h"   /* offsets pinned to the probed MIPS layout */
 #include "openpete_interp.h"         /* openpete_interp_present_now */
 #include "openpete_interp_objs.h"    /* the g_DragonCutscene tick pair */
 #include "openpete_subtick_view.h"   /* openpete_subtick_view_active */

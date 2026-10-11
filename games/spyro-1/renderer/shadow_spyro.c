@@ -18,7 +18,7 @@
 
 #include "feature_registry.h"
 #include "openpete_vstream.h"
-#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "reextract.h"  /* sub-tick re-extract entry */
 #include "renderer/player.h"           /* per-call records of the player hooks */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "renderer/shadow.h"        /* shared prim capture, projection, decal params */
@@ -32,7 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_80059A48(CPUState* cpu);  /* the real SPYRO-shadow renderer */

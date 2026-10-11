@@ -2,14 +2,14 @@
 //
 // Turns a disc into <tag>-recomp.{so,dll} with no python and no discovery:
 //
-//   extract (in-process, the game's openpete_game_extract_recomp_inputs)
+//   extract (in-process, the running game's extract_recomp_inputs)
 //   ──► PSXRecomp once per binary (single pass, staged converged manifest)
 //   ──► cc -O2 -fPIC fan-out ──► link
 //
 // Every per-game fact comes from the staged manifest (each overlay's name,
 // id, load address and reference hash; whether the main EXE takes channel
-// sites) or from the build: OPENPETE_GAME_OVERLAY_WINDOW_LO/_HI are the
-// game's recomp.conf OVERLAY_RANGE.
+// sites) or from the running game's build record (game_build.h): the module
+// name, and the overlay window of the game's recomp.conf OVERLAY_RANGE.
 //
 // Inputs staged next to the exe by the shared-linkage build
 // (CMake): recomp/manifest/ (converged funcs lists + manifest.toml +
@@ -22,6 +22,7 @@
 // (recomp/tools/llvm-mingw) and links against the staged exe-export
 // implib (recomp/tools/libopenpete-exe-exports.a).
 #include "openpete_launcher.h"
+#include "game_build.h"
 #include "recomp_attach.h"
 #include "openpete_log.h"
 #include "sha256.h"
@@ -295,8 +296,10 @@ bool emit_overlay_table(const fs::path& out, const std::vector<Overlay>& ovls) {
     f << "};\nconst size_t spyro_overlay_table_count = "
          "sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);\n"
          /* The overlay window of the game's recomp.conf (OVERLAY_RANGE). */
-         "const uint32_t spyro_overlay_window_lo = " OPENPETE_GAME_OVERLAY_WINDOW_LO "u;\n"
-         "const uint32_t spyro_overlay_window_hi = " OPENPETE_GAME_OVERLAY_WINDOW_HI "u;\n";
+         "const uint32_t spyro_overlay_window_lo = "
+      << openpete_game_build()->overlay_window_lo << "u;\n"
+         "const uint32_t spyro_overlay_window_hi = "
+      << openpete_game_build()->overlay_window_hi << "u;\n";
     return f.good();
 }
 
@@ -449,14 +452,14 @@ std::string compute_codegen_stamp(const fs::path& base) {
 
 }  // namespace
 
-extern "C" int openpete_game_library_module_path(const char* entry_dir, char* out,
-                                                 size_t cap) {
+extern "C" int openpete_recomp_first_boot_module_path(const char* entry_dir, char* out,
+                                                      size_t cap) {
     const std::string stamp = compute_codegen_stamp(exe_dir());
     if (stamp.empty()) return -1;
 #ifdef _WIN32
-    const char* name = OPENPETE_GAME_MODULE_NAME ".dll";
+    const std::string name = std::string(openpete_game_build()->module_name) + ".dll";
 #else
-    const char* name = OPENPETE_GAME_MODULE_NAME ".so";
+    const std::string name = std::string(openpete_game_build()->module_name) + ".so";
 #endif
     const fs::path mod = fs::path(entry_dir) / "modules" / stamp / name;
     std::error_code ec;
@@ -470,8 +473,8 @@ extern "C" int openpete_game_library_module_path(const char* entry_dir, char* ou
  * the source kit with the compiler find_cc locates at -O2
  * -fno-strict-aliasing, and links the module. Its build directory is created
  * beside out_module_path. */
-extern "C" int openpete_game_recomp_build_module(const char* disc_path,
-                                                 const char* out_module_path) {
+extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
+                                                const char* out_module_path) {
     if (!disc_path) {
         std::fprintf(stderr, "openpete: first-boot module build needs --disc\n");
         return -1;
@@ -543,8 +546,8 @@ extern "C" int openpete_game_recomp_build_module(const char* disc_path,
     /* 1. extract ---------------------------------------------------------- */
     std::fprintf(stderr, "[first-boot] extracting game code from disc...\n");
     progress("READING GAME CODE FROM YOUR DISC", 0, 0);
-    if (openpete_game_extract_recomp_inputs(disc_path, inputs.string().c_str(),
-                                            (man / "manifest.toml").string().c_str()) != 0)
+    if (openpete_game_build()->extract_recomp_inputs(
+            disc_path, inputs.string().c_str(), (man / "manifest.toml").string().c_str()) != 0)
         return -1;
 
     /* Per-binary identity: the manifests were converged against the

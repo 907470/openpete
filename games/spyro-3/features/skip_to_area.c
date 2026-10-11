@@ -24,13 +24,13 @@
 // store) seen after the call, then gameplay live with the area word
 // 0x8006C5C8 == the target.
 
-#include "features/skip_to_area.h"
+#include "skip_to_area.h"
 
-#include "features/transition_call.h"
+#include "transition_call.h"
 #include "openpete_fiber.h"          /* openpete_speculative */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
-#include "skip_to_level.h"
+#include "spyro-3/skip_to_level.h"
 #include "openpete_surface.h"
 
 #include <ctype.h>

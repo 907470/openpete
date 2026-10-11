@@ -23,7 +23,7 @@
 #include "renderer/interp_regions_gen.h"
 #include "renderer/orchestrator.h"
 #include "game_layout.h"
-#include "spyro2_symbols.gen.h"
+#include "spyro-2/gen/spyro2_symbols.gen.h"
 #include <stddef.h>
 #include <stdint.h>
 

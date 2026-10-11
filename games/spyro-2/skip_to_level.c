@@ -30,7 +30,7 @@
 #include "openpete_skip.h"
 #include "named_target.h"
 #include "features/cutscene_skip.h"
-#include "spyro2_symbols.gen.h"
+#include "spyro-2/gen/spyro2_symbols.gen.h"
 
 #include <ctype.h>
 #include <stdio.h>

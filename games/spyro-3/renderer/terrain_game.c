@@ -4,7 +4,7 @@
 #include "renderer/terrain_game.h"
 #include "renderer/portal_spyro23.h"  /* the opening-plane provider */
 #include "renderer/portal_plane.h"   /* the shared plane-cover margin */
-#include "skip_to_level.h"           /* level id -> name */
+#include "spyro-3/skip_to_level.h"           /* level id -> name */
 #include <stdio.h>
 
 /** @brief Writes a level's name into a buffer, or "level<N>" when the level table lacks it.

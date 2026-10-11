@@ -31,7 +31,7 @@
 #include "renderer/player_game.h"
 #include "renderer/native_gte.h"
 #include "openpete_profile.h"
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 
 #include <math.h>
 #include <stdint.h>

@@ -67,8 +67,6 @@ openpete_add_game(spyro-2
         # The overlay-id boot and restore hooks, shared with Spyro 3.
         ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c
 
-        # The mod-layer descriptor: the SDK symbol table, no game ops.
-        ${CMAKE_SOURCE_DIR}/games/common/game_mod_desc_symbols.c
 
         # The engine layout: the terrain and texture groups, the environment
         # header and animations, the visibility verdict, the fog terms, the
@@ -92,7 +90,8 @@ openpete_add_game(spyro-2
         # The first-boot module build: each overlay carved from the WAD.WAD
         # entry its converged manifest names, then recompile, compile, link.
         ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp
-        ${CMAKE_SOURCE_DIR}/games/common/recomp_extract_wad_entry.cpp)
+        ${CMAKE_SOURCE_DIR}/games/common/recomp_extract_wad_entry.cpp
+    FIRST_BOOT_EXTRACT openpete_extract_wad_entry_inputs)
 
 # SoundTable slot names (tools/gen_sfx_names.py). The decomp declares no
 # SoundTable. Each --name slot keys, on the attract demo, a sample whose
@@ -111,7 +110,7 @@ add_custom_command(
     DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
     COMMENT "Generating SoundTable slot names (gen_sfx_names.py)")
 add_custom_target(spyro2_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro2_sfx_names.h)
-add_dependencies(${OPENPETE_GAME_EXE} spyro2_sfx_names)
+add_dependencies(${OPENPETE_GAME_HOST} spyro2_sfx_names)
 add_dependencies(openpete_generated_headers spyro2_sfx_names)
 
 # The Win32 icon resource: the same source as the window icon, upscaled into

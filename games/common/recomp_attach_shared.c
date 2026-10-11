@@ -2,7 +2,8 @@
 //
 // The ROM-derived code lives in <tag>-recomp.{so,dll}, built from the same
 // sources as the static OBJECT library. This TU is the host half of the
-// boundary:
+// boundary, compiled once for every game the executable links; the running
+// game's build record (game_build.h) names its module and forwarders:
 //
 //   1. dlopen/LoadLibrary the module (default: the platform library name
 //      next to the exe; --recomp-module or a library entry overrides).
@@ -14,18 +15,16 @@
 // dispatcher by name. In the static build those names resolve at link; here
 // each is a forwarder through a pointer filled at attach. The overlay
 // dispatcher's four entry points are common to every game
-// (overlay_dispatch.c); the recompiled functions are the game's
-// OPENPETE_GAME_MODULE_FUNCS list (module_imports.h in the game's
-// directory). The list is self-enforcing: host code naming a func_* the
-// list lacks links in the static build and fails this build's exe link with
+// (overlay_dispatch.c) and defined here; the recompiled functions are the
+// game's module_imports.h list, whose forwarders the game's generated build
+// record defines and binds (bind_module_funcs). The list is self-enforcing:
+// host code naming a func_* the list lacks fails this build's exe link with
 // an undefined symbol.
 //
-// OPENPETE_GAME_MODULE_NAME ("<tag>-recomp") comes from the game's CMake
-// target; OPENPETE_RECOMP_FIRST_BOOT is 1 only in a build whose game has a
-// first-boot pipeline and whose preset ships one (the distribution
-// presets).
+// A first-boot rebuild runs only for a game whose build record names the
+// pipeline (the distribution presets).
 #include "recomp_attach.h"
-#include "module_imports.h"
+#include "game_build.h"
 #include "openpete_recomp_module.h"
 #include "spyro_overlay_table.h"
 #include "openpete_log.h"
@@ -37,13 +36,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef OPENPETE_RECOMP_FIRST_BOOT
-#define OPENPETE_RECOMP_FIRST_BOOT 0
-#endif
-
 #ifdef _WIN32
 #include <windows.h>
-#define MODULE_DEFAULT_NAME OPENPETE_GAME_MODULE_NAME ".dll"
+#define MODULE_SUFFIX ".dll"
 #define MODULE_SEP '\\'
 /** @brief Load the recomp module at path; an absolute path resolves the module's own imports from its directory.
  *
@@ -72,7 +67,7 @@ static void* mod_sym(void* h, const char* n) { return (void*)GetProcAddress((HMO
 static void mod_close(void* h) { FreeLibrary((HMODULE)h); }
 #else
 #include <dlfcn.h>
-#define MODULE_DEFAULT_NAME OPENPETE_GAME_MODULE_NAME ".so"
+#define MODULE_SUFFIX ".so"
 #define MODULE_SEP '/'
 /** @brief Load the recomp module at path with every symbol bound now and none made global.
  *
@@ -93,19 +88,10 @@ static void mod_close(void* h) { dlclose(h); }
 
 typedef struct CPUState CPUState;
 
-#define DECL_PTR(n) static void (*p_##n)(CPUState*);
-OPENPETE_GAME_MODULE_FUNCS(DECL_PTR)
-#undef DECL_PTR
-
 static void (*p_set_overlay)(uint32_t);
 static uint32_t (*p_get_overlay_magic)(void);
 static const spyro_overlay_entry_t* (*p_overlay_find)(uint32_t);
 static void (*p_overlay_set_resync)(void (*)(void));
-
-#define DEF_FWD(n) \
-    void n(CPUState* cpu) { p_##n(cpu); }
-OPENPETE_GAME_MODULE_FUNCS(DEF_FWD)
-#undef DEF_FWD
 
 void spyro_set_active_overlay_by_magic(uint32_t magic) { p_set_overlay(magic); }
 uint32_t spyro_get_active_overlay_magic(void) { return p_get_overlay_magic(); }
@@ -130,7 +116,7 @@ static void* need(const char* name) {
     return s;
 }
 
-/** @brief Write the default module path, MODULE_DEFAULT_NAME in the executable's directory, into buf.
+/** @brief Write the default module path, the running game's module name and the platform suffix in the executable's directory, into buf.
  *
  * Absolute on every platform, so the existence check, the loader and a
  * first-boot build all name the same file whatever the working directory.
@@ -139,11 +125,12 @@ static void* need(const char* name) {
  * @param buf Receives the path.
  * @param n Capacity of buf. */
 static void default_module_path(char* buf, size_t n) {
-    char dir[4000]; /* leaves room in a 4096-byte buf for the separator and name */
+    const char* name = openpete_game_build()->module_name;
+    char dir[3800]; /* leaves room in a 4096-byte buf for the separator and name */
     if (openpete_exe_dir(dir, sizeof dir) == 0)
-        snprintf(buf, n, "%s%c%s", dir, MODULE_SEP, MODULE_DEFAULT_NAME);
+        snprintf(buf, n, "%s%c%s%s", dir, MODULE_SEP, name, MODULE_SUFFIX);
     else
-        snprintf(buf, n, "%s", MODULE_DEFAULT_NAME);
+        snprintf(buf, n, "%s%s", name, MODULE_SUFFIX);
 }
 
 /** @brief Whether a file can be opened for reading.
@@ -180,9 +167,8 @@ static const openpete_recomp_module* bind_module(const char* path,
         /* Bind the forwarders only once the descriptor vouches for the
          * ABI; a mismatched module's symbols are not to be trusted. */
         s_missing = 0;
-#define LOAD_PTR(n) p_##n = (void (*)(CPUState*))need(#n);
-        OPENPETE_GAME_MODULE_FUNCS(LOAD_PTR)
-#undef LOAD_PTR
+        const openpete_game_build_t* b = openpete_game_build();
+        if (b->bind_module_funcs) s_missing += b->bind_module_funcs(need);
         p_set_overlay = (void (*)(uint32_t))need("spyro_set_active_overlay_by_magic");
         p_get_overlay_magic = (uint32_t (*)(void))need("spyro_get_active_overlay_magic");
         p_overlay_find = (const spyro_overlay_entry_t* (*)(uint32_t))need("spyro_overlay_find");
@@ -194,7 +180,6 @@ static const openpete_recomp_module* bind_module(const char* path,
     return desc;
 }
 
-#if OPENPETE_RECOMP_FIRST_BOOT
 /* First-boot build as a launcher task: the extract -> recomp -> compile ->
  * link pipeline must not run on the window's thread. */
 struct build_task { const char* disc; const char* out; };
@@ -204,7 +189,7 @@ struct build_task { const char* disc; const char* out; };
  * @return The build's status. */
 static int build_task_fn(void* p) {
     struct build_task* t = (struct build_task*)p;
-    return openpete_game_recomp_build_module(t->disc, t->out);
+    return openpete_game_build()->build_module(t->disc, t->out);
 }
 
 /** @brief Rebuild a missing or unusable module from the disc and bind it.
@@ -234,14 +219,13 @@ static const openpete_recomp_module* rebuild_module(const char* path,
     }
     return bind_module(path, why);
 }
-#else
-/* No first-boot pipeline: the module comes from the build tree alone, and
- * no library entry carries one. */
 int openpete_game_library_module_path(const char* entry_dir, char* out, size_t cap) {
-    (void)entry_dir; (void)out; (void)cap;
-    return -1;
+    /* Without a first-boot pipeline the module comes from the build tree
+     * alone, and no library entry carries one. */
+    const openpete_game_build_t* b = openpete_game_build();
+    if (!b || !b->library_module_path) return -1;
+    return b->library_module_path(entry_dir, out, cap);
 }
-#endif
 
 int openpete_game_recomp_attach(const char* module_path_override,
                                 const char* disc_path,
@@ -258,21 +242,18 @@ int openpete_game_recomp_attach(const char* module_path_override,
     if (file_readable(path)) desc = bind_module(path, &why);
     else why = "is not there";
 
-#if OPENPETE_RECOMP_FIRST_BOOT
-    if (!desc && allow_build && disc_path)
+    const openpete_game_build_t* b = openpete_game_build();
+    const int first_boot = b->build_module != NULL;
+    if (!desc && first_boot && allow_build && disc_path)
         desc = rebuild_module(path, disc_path, &why);
-#else
-    (void)disc_path;
-    (void)allow_build;
-#endif
 
     if (!desc) {
         fprintf(stderr,
                 "openpete: recomp module '%s' %s\n"
                 "  (shared-linkage build: the module is built separately as "
-                OPENPETE_GAME_MODULE_NAME "; %s)\n",
-                path, why ? why : "could not be loaded",
-                OPENPETE_RECOMP_FIRST_BOOT
+                "%s; %s)\n",
+                path, why ? why : "could not be loaded", b->module_name,
+                first_boot
                     ? "pass --recomp-module PATH to override"
                     : "this build never compiles one from the disc - build "
                       "its CMake target or pass --recomp-module PATH");

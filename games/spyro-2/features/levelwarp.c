@@ -51,13 +51,13 @@
 //
 // Addresses from spyro-2/psx.map and the asm cited above.
 
-#include "features/levelwarp.h"
+#include "levelwarp.h"
 
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"   /* CPUState + its read/write callbacks */
-#include "skip_to_level.h"
+#include "spyro-2/skip_to_level.h"
 
 #include <stdio.h>
 

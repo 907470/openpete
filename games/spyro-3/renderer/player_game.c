@@ -6,7 +6,7 @@
  * Each address is the literal the draw's own pair forms, cited at the
  * asm/spyrodraw.s line that forms it. */
 #include "renderer/player_game_spyro23.h"
-#include "spyro3_symbols.gen.h"
+#include "spyro-3/gen/spyro3_symbols.gen.h"
 
 const player_game_s23_consts_t spyro3_player_game_s23 = {
     .anim_table  = D_SPYRO_ANIMS,    /* spyrodraw.s:33-34, dereferenced at :35 */

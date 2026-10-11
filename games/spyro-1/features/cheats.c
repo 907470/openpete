@@ -37,7 +37,7 @@
 // CheatApplyEffect's own loop bounds (32 level flags, 6 homeworlds), not the
 // declared array sizes.
 
-#include "features/cheats.h"
+#include "cheats.h"
 
 #include "feature_registry.h"
 #include "game_extras.h"

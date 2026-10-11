@@ -34,13 +34,13 @@
 #include "openpete_native_render.h" /* native scene API */
 #include "renderer/render_paths.h"           /* render_paths_active */
 #include "renderer/hook_bracket.h"           /* hook_reextract_ready */
-#include "renderer/reextract.h" /* transition_reextract decl */
+#include "reextract.h" /* transition_reextract decl */
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 

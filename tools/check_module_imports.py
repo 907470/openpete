@@ -78,9 +78,10 @@ def main():
     ap.add_argument("--exe", required=True)
     ap.add_argument("--forwarder", action="append", default=[],
                     help="a host->module forwarder the executable defines")
-    ap.add_argument("--forwarder-header",
+    ap.add_argument("--forwarder-header", action="append", default=[],
                     help="a module_imports.h whose X(name) entries are "
-                         "forwarders")
+                         "forwarders (repeatable: the one executable "
+                         "defines every linked game's)")
     ap.add_argument("--stamp", help="written on success")
     a = ap.parse_args()
 
@@ -107,8 +108,8 @@ def main():
             errors.append(f"import {sym}: {len(where)} definitions "
                           f"({', '.join(where)})")
     forwarders = set(a.forwarder)
-    if a.forwarder_header:
-        with open(a.forwarder_header) as f:
+    for header in a.forwarder_header:
+        with open(header) as f:
             forwarders |= set(re.findall(r"\bX\((\w+)\)", f.read()))
     for sym in sorted((mod_def & exe_def) - forwarders - RESERVED):
         errors.append(f"symbol {sym}: defined by both the module and the "

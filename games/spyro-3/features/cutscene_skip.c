@@ -47,14 +47,14 @@
 // module is inert until armed (the attract demo never arms it) and does
 // nothing on a speculative (runahead) tick.
 
-#include "features/cutscene_skip.h"
+#include "cutscene_skip.h"
 
-#include "features/transition_call.h"
+#include "transition_call.h"
 #include "named_target.h"
 #include "openpete_fiber.h"          /* openpete_speculative, openpete_frame */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
-#include "skip_to_level.h"
+#include "spyro-3/skip_to_level.h"
 
 #include <stdio.h>
 

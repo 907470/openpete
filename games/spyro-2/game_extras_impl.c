@@ -25,7 +25,7 @@
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
 #include "renderer/text_moby.h"
-#include "spyro2_sfx_names.h" /* generated: the 256 SoundTable slot names */
+#include "spyro-2/gen/spyro2_sfx_names.h" /* generated: the 256 SoundTable slot names */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -183,6 +183,27 @@ static const psyq_game_hooks_t k_psyq = {
     .sfx_slots        = &k_sfx_slots,
 };
 
+GAME_MOD_TABLES_DECLARE(spyro2);
+
+/** @brief Return Spyro 2's mod-layer descriptor: its generated SDK symbol table and overlay entry arrays, and no game-specific surface.
+ *
+ * Built on the first call into static storage. Overlay-window overrides
+ * bind through override_ovl or a name scoped to one overlay only
+ * (legacy_window_links 0). Moby ops, level ops, the text rasterizer, the sfx
+ * canonicaliser and the render-function list stay NULL and the material
+ * channel mask stays 0, so the loader treats those surfaces as unsupported
+ * on this game; the arena keeps the core default base.
+ * @return The descriptor, never NULL. */
+static const game_mod_desc_t* spyro2_mod_desc(void) {
+    static game_mod_desc_t s_desc;
+    static int             s_built = 0;
+    if (!s_built) {
+        GAME_MOD_TABLES_FILL(&s_desc, spyro2);
+        s_built = 1;
+    }
+    return &s_desc;
+}
+
 static const game_host_desc_t k_host = {
     .ui              = &spyro2_ui_game,
     .terrain         = &spyro2_terrain_game,
@@ -238,5 +259,5 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .host                 = &k_host,
     .psyq                 = &k_psyq,
     .override_dispatch    = spyro2_override_dispatch,
-    .mod_desc             = game_mod_desc,
+    .mod_desc             = spyro2_mod_desc,
 };

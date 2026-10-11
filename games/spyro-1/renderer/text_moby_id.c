@@ -36,7 +36,7 @@
 #include "openpete_subtick_view.h"      /* openpete_subtick_host_span */
 #include "psx_runtime_internal.h"
 
-#include "renderer/text_moby_id.h"
+#include "text_moby_id.h"
 
 /* g_HudMobys (bump-down pool cursor) and D_800756FC (the pool's base for this
  * tick - the sentinel func_80018880 drains back to). */

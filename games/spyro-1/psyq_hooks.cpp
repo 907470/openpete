@@ -370,7 +370,7 @@ static void spyro1_cd_read_done(CPUState* cpu, uint32_t read_cb) {
 }
 
 
-#include "spyro1_sfx_names.h" /* generated: all 256 slot names */
+#include "spyro-1/gen/spyro1_sfx_names.h" /* generated: all 256 slot names */
 
 /* Mod-facing aliases that predate the generated table; they resolve to
  * the slot name and keep working forever. */

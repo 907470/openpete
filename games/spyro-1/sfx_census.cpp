@@ -30,7 +30,7 @@
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "sfx_ident.h"
-#include "spyro1_sfx_names.h"
+#include "spyro-1/gen/spyro1_sfx_names.h"
 
 extern "C" {
 #include "../../third_party/PsyCross/src/audio/PsyX_SPUAL.h"

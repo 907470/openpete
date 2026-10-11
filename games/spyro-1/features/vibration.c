@@ -49,7 +49,7 @@
 //
 // Addresses from manifest/globals.toml.
 
-#include "features/vibration.h"
+#include "vibration.h"
 
 #include "openpete.h"        /* openpete_get/set_vibration */
 #include "psx_runtime_internal.h"     /* CPUState + its read/write callbacks */

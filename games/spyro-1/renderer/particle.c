@@ -25,7 +25,7 @@
 // (--renderer vk; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
-#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "reextract.h"  /* sub-tick re-extract entry */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
@@ -42,7 +42,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_800573C8(CPUState* cpu);  /* RenderParticles  */

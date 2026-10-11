@@ -1,16 +1,14 @@
-// games/common/game_main.cpp - the entry point of a game with no host-side
-// services of its own.
+// games/common/game_main.cpp - the entry of a game with no host-side
+// services of its own (openpete_game_main, game_build.h).
 //
-// Register the game's runtime descriptor, parse options, resolve the disc
-// through the common launcher, register the mod-layer descriptor and the
-// recompiled module, compile stale mods on a
-// launcher wait, hand off to core's run loop. A game that loads its module
-// from the library or configures game-specific mod services (the Spyro 1 WAD
-// overlay) supplies its own main TU instead (games/spyro-1/main.cpp).
-// SDL3's SDL_main.h re-#defines main -> SDL_main and supplies the platform
-// entry shim; it must be included by the TU defining main().
+// Parse options, resolve the disc through the common launcher, register
+// the mod-layer descriptor and the recompiled module, compile stale mods on
+// a launcher wait, hand off to core's run loop. The process entry
+// (game_entry.cpp) has registered the game's runtime descriptor before this
+// runs. A game that loads its module from the library or configures
+// game-specific mod services (the Spyro 1 WAD overlay) names its own entry
+// instead (games/spyro-1/main.cpp).
 
-#include <SDL3/SDL_main.h>
 #include "openpete.h"
 #include "openpete_config.h"
 #include "openpete_identify.h"
@@ -19,6 +17,7 @@
 #include "openpete_keymap.h"
 #include "openpete_launcher.h"
 #include "openpete_surface.h"
+#include "game_build.h"
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "openpete_mods.h"
@@ -28,12 +27,6 @@
 #include "renderer/orchestrator.h"   /* game_interp_register, game_reextract_init */
 
 #include <cstdio>
-
-extern "C" void game_state_regions_register(void);
-extern "C" void game_disc_boot_order_register(void);
-/* This executable's game descriptor, `<tag>_game_runtime` in the game's
- * game_extras_impl.c (OPENPETE_GAME_RUNTIME, cmake/openpete_game.cmake). */
-extern "C" const openpete_game_runtime_t OPENPETE_GAME_RUNTIME;
 
 /** @brief Name the game from the game-neutral options and an optional library pick: the disc image, else --game, else this executable's game.
  *
@@ -143,29 +136,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     return openpete_launcher_handoff(opts);
 }
 
-/** @brief Run a game that has no host-side services of its own.
- *
- * Registers the game's runtime descriptor, resolves the game-neutral
- * settings, answers --help and the configuration
- * or keys report, opens the log; --compile-mods compiles every mod for each
- * staged game and exits before any game is identified. Otherwise runs the
- * launcher (the disc from the library when none is named), identifies the
- * game and refuses one this executable does not run, runs the one full
- * parse, registers the mod-layer descriptor, attaches the recompiled module,
- * compiles stale mods, hands the launcher's window and device to the game,
- * registers the gameplay-state regions and the interpolation and
- * re-extract tables, sets the root counter 2 the game's boot reads, and
- * runs the core loop. Writes the surface dump and exits when
- * OPENPETE_SURFACE_DUMP is set.
- * @param argc The argument count.
- * @param argv The arguments.
- * @return The exit status: openpete_run's result, 0 after --help, a report
- *         or a quit in the launcher, or start_session's failure status;
- *         under --compile-mods 0 when every mod compiled, else 1. */
-int main(int argc, char** argv) {
-    /* The game's descriptor binds every per-game hook and table; nothing
-     * that reads one runs before it. */
-    game_runtime_install(&OPENPETE_GAME_RUNTIME);
+int openpete_game_main(int argc, char** argv) {
     openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* abort() does not flush, and the PSYQ stubs use it to surface an
      * unimplemented surface. Unbuffer so that diagnostic survives. */

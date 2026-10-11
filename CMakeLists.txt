@@ -220,6 +220,11 @@ if(_psyq_stub_inputs)
         C_STANDARD_REQUIRED ON)
 endif()
 
+# The host code every game links, compiled once (games/common/CMakeLists.txt),
+# then each game's targets (cmake/openpete_game.cmake), then, with shared
+# linkage on Linux, the one executable linking them all.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/openpete_game.cmake)
+add_subdirectory(games/common)
 foreach(game IN LISTS OPENPETE_GAMES)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/CMakeLists.txt")
         add_subdirectory(games/${game})
@@ -227,6 +232,7 @@ foreach(game IN LISTS OPENPETE_GAMES)
         message(WARNING "OPENPETE_GAMES requested '${game}' but games/${game}/CMakeLists.txt is missing - skipping")
     endif()
 endforeach()
+openpete_link_games()
 
 # The Modding reference pages (the docs target, games/spyro-1) decide which
 # games have a mod SDK from mod-sdk-test/sdk/games/<id>/, so every game's
@@ -254,7 +260,7 @@ if(NOT CMAKE_CROSSCOMPILING)
             list(APPEND _surface_cmds
                  COMMAND ${CMAKE_COMMAND} -E env
                          OPENPETE_SURFACE_DUMP=${CMAKE_BINARY_DIR}/surface/${game}.json
-                         $<TARGET_FILE:${_surface_exe}>)
+                         ${CMAKE_BINARY_DIR}/games/${game}/${_surface_exe}${CMAKE_EXECUTABLE_SUFFIX})
             list(APPEND _surface_deps ${_surface_exe})
         endif()
     endforeach()
@@ -1279,12 +1285,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the
     # baseline regression check (tests/harness/bench-corpus.py --baseline) is a
-    # manually-run tool. Registered only when spyro-1 is configured: the
-    # $<TARGET_FILE> expression fails generation on an absent target.
+    # manually-run tool. Registered only when spyro-1 is configured.
     if(TARGET openpete-spyro1)
         add_test(NAME bench_corpus_smoke
                  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/bench-corpus.py
-                         --exe $<TARGET_FILE:openpete-spyro1>
+                         --exe ${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1${CMAKE_EXECUTABLE_SUFFIX}
                          --movies artisans-bridge,stone-hill-entry
                          --frame-limit 4000 --max-runtime-seconds 90
                          --skip-ticks 30

@@ -16,8 +16,8 @@
 #include "renderer/interp_regions_gen.h"
 #include "renderer/orchestrator.h"
 #include "game_layout.h"
-#include "spyro3_symbols.gen.h"
-#include "openpete_game_structs.h"   /* sizeof(Spyro) */
+#include "spyro-3/gen/spyro3_symbols.gen.h"
+#include "spyro-3/mod_sdk_gen/openpete_game_structs.h"   /* sizeof(Spyro) */
 #include <stdint.h>
 
 /* The plain-global rows: an address, a length and which timeline the region is

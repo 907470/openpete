@@ -75,9 +75,9 @@ uint32_t le32(const uint8_t* p, size_t o) {
 /* Writes PSX.EXE (the game's executable, by its ISO 9660 name) and
  * <name>.ovl for every manifest overlay, each the exact bytes of its WAD
  * entry. A failed carve is logged and the remaining entries still run. */
-extern "C" int openpete_game_extract_recomp_inputs(const char* cue_path,
-                                                   const char* out_dir,
-                                                   const char* manifest_path) {
+extern "C" int openpete_extract_wad_entry_inputs(const char* cue_path,
+                                                 const char* out_dir,
+                                                 const char* manifest_path) {
     if (!cue_path || !out_dir || !manifest_path) {
         std::fprintf(stderr, "extract-recomp-inputs: needs a disc, a directory and a manifest\n");
         return -1;

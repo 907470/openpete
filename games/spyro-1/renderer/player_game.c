@@ -23,7 +23,7 @@
 #include "renderer/native_gte.h"
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
 #include "game_layout.h"
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 
 #include <stdlib.h>
 #include <string.h>

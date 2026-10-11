@@ -15,7 +15,7 @@ extern const feature_module_t particle_module;
 extern const feature_module_t tracer_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t ui_sprite_module;
-extern const feature_module_t portal_module;
+extern const feature_module_t spyro1_portal_module;
 extern const feature_module_t transition_module;
 extern const feature_module_t cheats_module;
 extern const feature_module_t credits_skip_module;
@@ -88,7 +88,7 @@ static const feature_module_t* const k_modules[] = {
      * so portal previews were missing. Capture/dump harness under
      * OPENPETE_PORTAL_DUMP now; float extraction + clip + feed are the next
      * increment. Inert unless a native renderer mode or the dump is set. */
-    &portal_module,
+    &spyro1_portal_module,
     /* Native feeder for the level-transition / balloonist cross-fade backdrop
      * (func_8004F000): captures the screen-space gouraud mesh it emits into the
      * shared polybuf and feeds it as the backmost layer, so the soft gradient

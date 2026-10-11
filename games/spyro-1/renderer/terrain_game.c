@@ -3,8 +3,8 @@
  * list, the verdict-file level names and the authored-data art corrections.
  * See renderer/terrain_game.h. */
 #include "renderer/terrain_game.h"
-#include "renderer/portal.h"        /* the sky-plane provider (OT-conformance clamp) */
-#include "features/levelwarp.h"     /* level id -> verdicts-file spelling */
+#include "portal.h"        /* the sky-plane provider (OT-conformance clamp) */
+#include "spyro-1/features/levelwarp.h"     /* level id -> verdicts-file spelling */
 #include <stdio.h>
 #include <string.h>
 
@@ -21,7 +21,7 @@
  * fails loud (an unfilled hole at a new camera) instead of silently shipping
  * a guess - the failure mode is visible and local, unlike a threshold
  * classifier patched per newly discovered misprediction. */
-#include "renderer/terrain_fill_tags.h"
+#include "terrain_fill_tags.h"
 
 /** @brief Reports whether (level, sec, face) is in the frozen LP fill-face table.
  *

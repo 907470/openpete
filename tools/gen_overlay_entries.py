@@ -5,13 +5,14 @@ Reads the game's generated spyro_overlay_table.c (overlay ids, names and
 the shared vaddr window) and, per overlay, the `case 0x...u:` labels of
 generated/<overlay>/<overlay>.bin_dispatch.c, the addresses the overlay's
 recompiled dispatch accepts as function entries. Writes one C file
-defining, for the mod layer's override_ovl argument checks:
+defining, for the mod layer's override_ovl argument checks, under the
+game's tag (games/common/game_mod_desc.h):
 
-  game_mod_overlays[]        {id, name, sorted entries, count} per overlay
-  game_mod_overlay_count
-  game_mod_window_lo, game_mod_window_hi
+  <tag>_mod_overlays[]        {id, name, sorted entries, count} per overlay
+  <tag>_mod_overlay_count
+  <tag>_mod_window_lo, <tag>_mod_window_hi
 
-Usage: gen_overlay_entries.py --generated <dir> --out <file.c>
+Usage: gen_overlay_entries.py --tag <tag> --generated <dir> --out <file.c>
 """
 
 import argparse
@@ -27,6 +28,8 @@ CASE_RE = re.compile(r"^\s*case (0x[0-9A-Fa-f]+)u:", re.M)
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--tag", required=True,
+                    help="the game's tag (spyro2), the tables' name prefix")
     ap.add_argument("--generated", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
@@ -52,15 +55,16 @@ def main():
         for i, a in enumerate(entries):
             L.append(("\n    " if i % 6 == 0 else " ") + f"0x{a:08X}u,")
         L.append("\n};\n")
-    L.append("\nconst game_mod_overlay_t game_mod_overlays[] = {\n")
+    t = args.tag
+    L.append(f"\nconst game_mod_overlay_t {t}_mod_overlays[] = {{\n")
     for oid, name in rows:
         L.append(f'    {{ {oid}u, "{name}", k_entries_{oid}, '
                  f"sizeof k_entries_{oid} / sizeof k_entries_{oid}[0] }},\n")
     L.append("};\n"
-             "const size_t game_mod_overlay_count = "
-             "sizeof game_mod_overlays / sizeof game_mod_overlays[0];\n"
-             f"const uint32_t game_mod_window_lo = {lo.group(1)}u;\n"
-             f"const uint32_t game_mod_window_hi = {hi.group(1)}u;\n")
+             f"const size_t {t}_mod_overlay_count = "
+             f"sizeof {t}_mod_overlays / sizeof {t}_mod_overlays[0];\n"
+             f"const uint32_t {t}_mod_window_lo = {lo.group(1)}u;\n"
+             f"const uint32_t {t}_mod_window_hi = {hi.group(1)}u;\n")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("".join(L), encoding="utf-8")
     print(f"gen_overlay_entries: {len(rows)} overlays, {total} entries")

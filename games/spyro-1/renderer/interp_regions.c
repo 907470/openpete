@@ -26,9 +26,9 @@
 #include "openpete_interp_objs.h"
 #include "renderer/interp_regions_gen.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_span */
-#include "renderer/interp_regions.h"
-#include "renderer/reextract.h"   /* moby_native_canon_drawn_mobys */
-#include "renderer/text_moby_id.h"    /* text_moby_id_lookup */
+#include "interp_regions.h"
+#include "reextract.h"   /* moby_native_canon_drawn_mobys */
+#include "text_moby_id.h"    /* text_moby_id_lookup */
 #include "renderer/cut_guard.h"     /* cut_jump_census_capture */
 
 #include <math.h>
@@ -36,7 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
 
 /* DIRECT singleton regions - captured whole into the interp ring each tick.

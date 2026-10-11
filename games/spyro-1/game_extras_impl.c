@@ -740,6 +740,9 @@ extern const openpete_feature_list_t  spyro1_feature_list;    /* feature_list.c 
 extern const struct psyq_game_hooks   spyro1_psyq_hooks;      /* psyq_hooks.cpp */
 void spyro1_interp_register(void);                             /* renderer/interp_regions.c */
 
+/* Spyro 1's mod-layer descriptor (mods/mod_game_desc.c). */
+const game_mod_desc_t* spyro1_mod_desc(void);
+
 static const game_host_desc_t k_host = {
     .ui              = &spyro1_ui_game,
     .terrain         = &spyro1_terrain_game,
@@ -793,5 +796,5 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .host                 = &k_host,
     .psyq                 = &spyro1_psyq_hooks,
     .override_dispatch    = spyro1_override_dispatch,
-    .mod_desc             = game_mod_desc,
+    .mod_desc             = spyro1_mod_desc,
 };

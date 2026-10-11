@@ -151,10 +151,10 @@ order, a VBL past `window_end_vbl`).
 A game ships a profile by committing the toml and its source trace
 (`tests/harness/disc_boot_order/<game>.tsv`). `cmake/openpete_game.cmake`
 runs `disc_boot_order.py header` into `gen/disc_boot_order.gen.h`, and game
-main calls `game_disc_boot_order_register()` (`games/common/disc_boot_order.c`)
-before `openpete_run()` attaches the cache. A game without the toml
-compiles that file with `OPENPETE_DISC_BOOT_ORDER_NONE` and loads in file
-order.
+main calls `game_disc_boot_order_register()` (`games/common/game_build.c`),
+which installs the table through the game's generated build record
+(`games/common/game_build.c.in`), before `openpete_run()` attaches the
+cache. A game without the toml loads in file order.
 
 Regenerate the trace and the profile together when what the game reads
 between boot and the end of its first level load changes (the disc, the

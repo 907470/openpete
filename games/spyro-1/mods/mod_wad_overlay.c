@@ -32,7 +32,7 @@
 // user's machine from their own disc - the CI fixtures do exactly this)
 // and (b) genuinely novel content (custom levels).
 
-#include "mods/mod_wad_overlay.h"
+#include "mod_wad_overlay.h"
 
 #include "game_extras.h"
 #include "openpete_disc_image.h"

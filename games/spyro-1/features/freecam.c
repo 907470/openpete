@@ -4,7 +4,7 @@
 // hooks.
 
 #include "freecam_game.h"
-#include "renderer/reextract.h"   /* terrain_native_topdown_pose / _sweep_pose */
+#include "spyro-1/renderer/reextract.h"   /* terrain_native_topdown_pose / _sweep_pose */
 #include "openpete_freecam.h"         /* OPENPETE_FREECAM_SPEED_STEPS */
 #include "psx_runtime_internal.h"     /* CPUState + its read/write callbacks */
 

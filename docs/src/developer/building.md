@@ -423,6 +423,21 @@ game's recompiled module joins the runtime (`cmake/openpete_game.cmake`):
   to exactly one definition; on Windows the module's link against the exe's
   export implib is that check.
 
+With shared linkage on Linux (`linux-release`, `linux-release-launcher`)
+every game links into one executable, `build/<preset>/openpete`. Each
+game's host sources compile once into its object library `<tag>_host`, the
+code the games share compiles once into `openpete_game_common`
+(`games/common/CMakeLists.txt`), and the executable's entry
+(`games/common/game_entry.cpp`) selects the game: the serial of the disc
+named by `--disc` or `--ingest`, then `--game`, then the name the executable
+was invoked by, then Spyro 1. `build/<preset>/games/<game>/openpete-<tag>`
+is a hard link to it, beside that game's module, SDK and assets, so the
+per-game path runs that game. The build refuses a host TU whose include
+path leads into a game's directory (`tools/check_game_includes.py`,
+target `openpete_game_include_check`): a game's header is named relative to
+the including file or by its game-qualified path (`spyro-1/gen/...`). Other
+presets build one executable per game.
+
 `OPENPETE_RECOMP_FIRST_BOOT` (default OFF) adds the first-boot module build
 (`games/common/recomp_build.cpp`) to a shared exe of a game that has one
 (`FIRST_BOOT_SOURCES`: Spyro 1 and Spyro 2; each needs a converged manifest,

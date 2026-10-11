@@ -58,7 +58,7 @@
 // Addresses from spyro-1/build/psx.map; g_Spyro/g_Camera field offsets
 // verified against spyro-1/include/{spyro,camera}.h.
 
-#include "features/levelwarp.h"
+#include "levelwarp.h"
 
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"  /* the shared dropdown, button and queue */

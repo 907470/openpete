@@ -3,7 +3,8 @@
 // descriptor and the overlay dispatcher alone.
 //
 // Under shared linkage each listed name is a forwarder in
-// games/common/recomp_attach_shared.c, bound from the loaded module at
+// the game's generated build record (games/common/game_build.c.in),
+// bound from the loaded module at
 // attach; every entry is `void f(CPUState*)`. A host reference to a func_*
 // missing here fails the shared build's exe link.
 #ifndef SPYRO2_MODULE_IMPORTS_H

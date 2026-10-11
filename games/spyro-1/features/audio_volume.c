@@ -38,7 +38,7 @@
 // Addresses from manifest/globals.toml; g_Spu field offsets from
 // spyro-1/include/spu.h.
 
-#include "features/audio_volume.h"
+#include "audio_volume.h"
 
 #include "openpete.h"        /* openpete_get/set_{sfx,music}_volume */
 #include "music_override.h"  /* music_override_set_gain */

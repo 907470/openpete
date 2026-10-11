@@ -55,7 +55,7 @@
 // does nothing on a speculative (runahead) tick: a request acted on there
 // is rolled back with RAM while the host latch would read it as done.
 
-#include "features/credits_skip.h"
+#include "credits_skip.h"
 
 #include "feature_registry.h"
 #include "named_target.h"

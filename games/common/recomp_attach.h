@@ -3,9 +3,9 @@
 // Two implementations, selected by OPENPETE_RECOMP_LINKAGE in
 // cmake/openpete_game.cmake:
 //   recomp_attach_static.c - registers the descriptor linked into the exe.
-//   recomp_attach_shared.c - loads <tag>-recomp.{so,dll}, binds its
-//                            descriptor and the host->module forwarders the
-//                            game's module_imports.h lists.
+//   recomp_attach_shared.c - loads the running game's <tag>-recomp.{so,dll}
+//                            and binds its descriptor and the host->module
+//                            forwarders (game_build.h).
 #ifndef OPENPETE_GAME_RECOMP_ATTACH_H
 #define OPENPETE_GAME_RECOMP_ATTACH_H
 
@@ -36,39 +36,49 @@ int openpete_game_recomp_attach(const char* module_path_override,
 
 /** @brief Writes a library entry's module path, modules/<codegen stamp>/<tag>-recomp.{so,dll} under the entry, creating its directory.
  *
- * Defined by the first-boot pipeline in a build that has one: the codegen
- * stamp hashes PSXRecomp, the staged manifest and source kit, and the
- * compiler, so a module built by another version is never loaded. Every
- * other build defines it to fail, and such a build loads no module from
- * the disc library.
+ * Forwards to the running game's first-boot pipeline (game_build.h): the
+ * codegen stamp hashes PSXRecomp, the staged manifest and source kit, and
+ * the compiler, so a module built by another version is never loaded. A
+ * game or build without the pipeline fails, and such a build loads no
+ * module from the disc library.
  * @param entry_dir The library entry's directory.
  * @param out Receives the path.
  * @param cap Capacity of out.
- * @return 0 on success, -1 when this build has no first-boot pipeline or
- *         PSXRecomp is not found. */
+ * @return 0 on success, -1 when the running game has no first-boot pipeline
+ *         or PSXRecomp is not found. */
 int openpete_game_library_module_path(const char* entry_dir, char* out, size_t cap);
 
-/** @brief Builds the game's recomp module from the disc on the player's machine.
+/** @brief Builds the running game's recomp module from the disc on the player's machine.
  *
- * Defined by the game's first-boot pipeline; called by the shared attach
- * only in a build configured with OPENPETE_RECOMP_FIRST_BOOT.
+ * The first-boot pipeline (games/common/recomp_build.cpp), reached through
+ * the running game's build record; the shared attach calls it only for a
+ * game whose record names it.
  * @param disc_path The disc image (a .cue or .bin).
  * @param out_module_path Where the linked module is written.
  * @return 0 on success, -1 on any failure (reported on stderr). */
-int openpete_game_recomp_build_module(const char* disc_path,
-                                      const char* out_module_path);
+int openpete_recomp_first_boot_build(const char* disc_path,
+                                     const char* out_module_path);
 
-/** @brief Writes the executables the first-boot module build recompiles, carved from the disc, to a directory.
+/** @brief Writes a library entry's module path for the running game's first-boot pipeline, creating its directory.
  *
- * Defined by the game's first-boot pipeline: PSX.EXE and one <name>.ovl
- * per overlay of the staged converged manifest.
+ * The pipeline half of openpete_game_library_module_path.
+ * @param entry_dir The library entry's directory.
+ * @param out Receives the path.
+ * @param cap Capacity of out.
+ * @return 0 on success, -1 when PSXRecomp is not found. */
+int openpete_recomp_first_boot_module_path(const char* entry_dir, char* out, size_t cap);
+
+/** @brief Writes a game's first-boot inputs to a directory: PSX.EXE and one <name>.ovl per overlay of the staged converged manifest, each the bytes of the WAD.WAD entry the manifest names.
+ *
+ * games/common/recomp_extract_wad_entry.cpp; the extract_recomp_inputs of
+ * a game whose manifest names each overlay's WAD entry.
  * @param cue_path The disc image (a .cue or .bin).
  * @param out_dir The output directory, created when absent.
  * @param manifest_path The staged manifest.toml naming the overlays.
  * @return 0 when every file was written, else -1. */
-int openpete_game_extract_recomp_inputs(const char* cue_path,
-                                        const char* out_dir,
-                                        const char* manifest_path);
+int openpete_extract_wad_entry_inputs(const char* cue_path,
+                                      const char* out_dir,
+                                      const char* manifest_path);
 
 #ifdef __cplusplus
 }

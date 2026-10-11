@@ -342,7 +342,7 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
     add_dependencies(mod_shader_compile_test spyro1_sdk_stage)
     add_test(NAME mod_shader_compile
              COMMAND mod_shader_compile_test ${CMAKE_SOURCE_DIR}/mods
-                     $<TARGET_FILE_DIR:openpete-spyro1>/sdk)
+                     ${CMAKE_BINARY_DIR}/games/spyro-1/sdk)
     set_tests_properties(mod_shader_compile PROPERTIES LABELS "mods")
 endif()
 

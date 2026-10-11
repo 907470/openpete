@@ -50,7 +50,7 @@
 // 5-char name into 6-bit fields; "arg0A" (Crash's woah/aargh yell) is
 // 0x14DA0049.
 
-#include "features/crash_demo_woah.h"
+#include "crash_demo_woah.h"
 
 #include "feature_registry.h"
 

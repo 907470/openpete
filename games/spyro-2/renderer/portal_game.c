@@ -3,7 +3,7 @@
  * games/common/renderer/portal_spyro23.c; the contract is
  * renderer/portal_spyro23.h. */
 #include "renderer/portal_spyro23.h"
-#include "spyro2_symbols.gen.h"
+#include "spyro-2/gen/spyro2_symbols.gen.h"
 
 const portal_game_s23_consts_t spyro2_portal_game_s23 = {
     .block   = D_PORTAL_BLOCK, /* written per portal by the pass, read by the leaf */

@@ -13,7 +13,7 @@
 // have paused or started a transition of its own since the request was
 // queued; a request that fails it is dropped with a log line.
 
-#include "features/transition_call.h"
+#include "transition_call.h"
 
 #include "feature_registry.h"
 #include "openpete_fiber.h"          /* openpete_speculative */

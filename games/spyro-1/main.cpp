@@ -1,10 +1,10 @@
-// games/spyro-1/main.cpp - Spyro 1 binary entry point.
+// games/spyro-1/main.cpp - Spyro 1's entry (spyro1_main), run by the
+// process entry (games/common/game_entry.cpp) once Spyro 1 is selected and
+// installed.
 //
-// Tiny wrapper: parse opts, set the display name, hand off to core's run loop.
-// SDL3's SDL_main.h re-#defines main -> SDL_main and supplies the platform
-// entry shim (links SDL3::SDL3main); must be included by the TU with main().
+// Parse opts, identify the game, attach the module, hand off to core's run
+// loop.
 
-#include <SDL3/SDL_main.h>
 #include "openpete.h"
 #include "openpete_fatal.h"
 #include "openpete_config.h"
@@ -18,6 +18,7 @@
 #include "openpete_surface.h"
 #include "recomp_attach.h"
 #include "mods/mod_wad_overlay.h"
+#include "game_build.h"
 #include "game_host_desc.h"
 
 #ifdef _WIN32
@@ -78,10 +79,6 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
                                     const char* extra_wads);
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
-extern "C" void game_state_regions_register(void);
-extern "C" void game_disc_boot_order_register(void);
-/* Spyro 1's runtime descriptor (game_extras_impl.c). */
-extern "C" const openpete_game_runtime_t spyro1_game_runtime;
 #include "renderer/interp_regions.h"
 #include "renderer/reextract.h"
 
@@ -316,15 +313,14 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     return openpete_launcher_handoff(opts);
 }
 
-/** @brief Spyro 1 entry point: register the runtime descriptor, resolve the game-neutral settings, identify the game, apply its settings once, attach the recomp module, and run the game.
+/** @brief Spyro 1 entry point: resolve the game-neutral settings, identify the game, apply its settings once, attach the recomp module, and run the game.
  *
+ * The process entry has installed Spyro 1's runtime descriptor before this
+ * runs.
  * @param argc Argument count.
  * @param argv Arguments.
  * @return The process exit code (OPENPETE_EXIT_*, or 1 on a startup failure). */
-int main(int argc, char** argv) {
-    /* The game's descriptor binds every per-game hook and table; nothing
-     * that reads one runs before it. */
-    game_runtime_install(&spyro1_game_runtime);
+extern "C" int spyro1_main(int argc, char** argv) {
     openpete_boot_mark(OP_BOOT_LAUNCHER_START);
     /* Reconnect stdout/stderr to the parent terminal on a GUI-subsystem
      * (distribution) Windows build; no-op elsewhere. Before any output. */

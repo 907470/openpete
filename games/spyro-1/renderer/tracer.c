@@ -41,10 +41,10 @@
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
-#include "renderer/reextract.h"   /* sub-tick re-extract entry */
+#include "reextract.h"   /* sub-tick re-extract entry */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
-#include "spyro1_symbols.gen.h"
-#include "renderer/tracer_snapshot.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
+#include "tracer_snapshot.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
 extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */

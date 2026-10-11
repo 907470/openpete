@@ -13,7 +13,7 @@
 
 #include "game_layout.h"
 #include "renderer/ui_game.h"
-#include "spyro2_symbols.gen.h"
+#include "spyro-2/gen/spyro2_symbols.gen.h"
 
 #include <stddef.h>
 

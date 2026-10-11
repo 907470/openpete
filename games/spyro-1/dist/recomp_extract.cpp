@@ -170,11 +170,17 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
     return (carved == expected) ? 0 : -1;
 }
 
-/* Spyro 1 carves by the WAD header's own layout, so the manifest is not
- * read. */
-extern "C" int openpete_game_extract_recomp_inputs(const char* cue_path,
-                                                   const char* out_dir,
-                                                   const char* manifest_path) {
+/** @brief Write Spyro 1's first-boot inputs, PSX.EXE and every code overlay carved from the disc, to a directory.
+ *
+ * Spyro 1's extract_recomp_inputs (game_build.h). It carves by the WAD
+ * header's own layout, so the manifest is not read.
+ * @param cue_path The disc image (a .cue or .bin).
+ * @param out_dir The output directory.
+ * @param manifest_path Unused.
+ * @return 0 when every file was written, else -1. */
+extern "C" int spyro1_extract_first_boot_inputs(const char* cue_path,
+                                               const char* out_dir,
+                                               const char* manifest_path) {
     (void)manifest_path;
     return spyro1_extract_recomp_inputs(cue_path, out_dir);
 }

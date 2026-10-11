@@ -58,7 +58,7 @@ add_custom_command(
 
 include(${CMAKE_SOURCE_DIR}/cmake/openpete_game.cmake)
 openpete_add_game(spyro-1
-    MAIN           main.cpp
+    MAIN           spyro1_main
     FEATURE_LIST   feature_list.c
     ORCHESTRATOR   renderer/reextract.c
     INTERP_REGIONS renderer/interp_regions.c
@@ -70,6 +70,7 @@ openpete_add_game(spyro-1
     MOD_SDK
     SDK_ROOT_COPIES
     SOURCES
+        main.cpp
         psyq_hooks.cpp
 
         # The native renderer's game half: the feeders and the interp region
@@ -116,7 +117,8 @@ openpete_add_game(spyro-1
     FIRST_BOOT_SOURCES
         # The first-boot module build: extract (dist/recomp_extract.cpp
         # above), recompile, compile, link.
-        ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp)
+        ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp
+    FIRST_BOOT_EXTRACT spyro1_extract_first_boot_inputs)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     if(OPENPETE_DIST_PRESET)
@@ -170,7 +172,7 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
     COMMENT "Generating SoundTable slot names (gen_sfx_names.py)")
 add_custom_target(spyro1_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_sfx_names.h)
-add_dependencies(openpete-spyro1 spyro1_sfx_names)
+add_dependencies(${OPENPETE_GAME_HOST} spyro1_sfx_names)
 
 
 # --- Mod SDK ---
@@ -334,10 +336,10 @@ if(OPENPETE_COMPILE_MODS)
                 # links -static), so the mod DLL must be self-contained.
                 COMMAND ${CMAKE_C_COMPILER} -shared -Wl,--export-all-symbols
                         -O2 -g -fno-strict-aliasing -Wall -Wundef -static-libgcc
-                        -I$<TARGET_FILE_DIR:openpete-spyro1>/sdk/games/spyro-1
-                        -I$<TARGET_FILE_DIR:openpete-spyro1>/sdk
+                        -I${OPENPETE_GAME_EXE_DIR}/sdk/games/spyro-1
+                        -I${OPENPETE_GAME_EXE_DIR}/sdk
                         -o ${_dll} ${_mod_srcs}
-                        $<TARGET_FILE_DIR:openpete-spyro1>/sdk/openpete_mod_abi.c
+                        ${OPENPETE_GAME_EXE_DIR}/sdk/openpete_mod_abi.c
                 COMMAND ${CMAKE_COMMAND} -E rm -f
                         ${_mod_build_dir}/${_mod_id}.hash
                 DEPENDS ${_mod_srcs} ${_mod_hdrs} ${_mod_sdk_deps}
@@ -353,7 +355,7 @@ if(OPENPETE_COMPILE_MODS)
         # Always runs (cheap: the exe's pass-1 content-hash check skips
         # up-to-date mods in milliseconds); nonzero exit fails the build.
         add_custom_target(spyro1_mods ALL
-            COMMAND $<TARGET_FILE:openpete-spyro1> --compile-mods
+            COMMAND ${OPENPETE_GAME_EXE_DIR}/openpete-spyro1${CMAKE_EXECUTABLE_SUFFIX} --compile-mods
                     --mods-dir ${OPENPETE_COMPILE_MODS_DIR}
             COMMENT "Compiling mods (openpete-spyro1 --compile-mods)"
             VERBATIM)
@@ -408,7 +410,7 @@ if(EMSCRIPTEN)
     add_custom_command(TARGET openpete-spyro1 POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
-            "$<TARGET_FILE_DIR:openpete-spyro1>/index.html"
+            "${OPENPETE_GAME_EXE_DIR}/index.html"
         VERBATIM)
 endif()
 
@@ -424,10 +426,10 @@ endif()
 # user-edited manifest on rebuild.
 add_custom_command(TARGET openpete-spyro1 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:openpete-spyro1>/assets/music"
+        "${OPENPETE_GAME_EXE_DIR}/assets/music"
     COMMAND ${CMAKE_COMMAND}
         -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/assets/music/manifest.txt
-        -DDST=$<TARGET_FILE_DIR:openpete-spyro1>/assets/music/manifest.txt
+        -DDST=${OPENPETE_GAME_EXE_DIR}/assets/music/manifest.txt
         -P ${CMAKE_SOURCE_DIR}/cmake/copy_if_missing.cmake
     VERBATIM)
 

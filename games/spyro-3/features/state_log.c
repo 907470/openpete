@@ -6,11 +6,11 @@
 // 5 loading image, 9 game over, 11 title screen, 13 loading sub-level)
 // without a savestate or RAM dump per sample. Reads only.
 
-#include "features/state_log.h"
+#include "state_log.h"
 
 #include "openpete_fiber.h"          /* openpete_speculative */
 #include "psx_runtime_internal.h"    /* CPUState + its read callbacks */
-#include "skip_to_level.h"           /* spyro3_skip_gameplay_live */
+#include "spyro-3/skip_to_level.h"           /* spyro3_skip_gameplay_live */
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -57,8 +57,8 @@
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"   /* hook_reextract_ready */
-#include "renderer/reextract.h"   /* portal_reextract export */
-#include "renderer/portal.h"         /* cross-feeder exports (terrain OT-conformance clamp) */
+#include "reextract.h"   /* portal_reextract export */
+#include "portal.h"         /* cross-feeder exports (terrain OT-conformance clamp) */
 #include "renderer/portal_plane.h"   /* openpete_portal_plane_margin (shared) */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "renderer/terrain.h"       /* terrain_native_flush_deferred */
@@ -69,7 +69,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE - fiber-hook cost split */
 
@@ -3198,7 +3198,7 @@ static const feature_dispatch_entry_t portal_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t portal_module = {
+const feature_module_t spyro1_portal_module = {
     .name           = "portal_native",
     .apply_options  = portal_native_apply_options,
     .dispatch_table = portal_dispatch,

@@ -3,8 +3,8 @@
 //
 // Native feature code calls these leaves directly (sub-tick re-extraction
 // replays render functions). Under shared linkage each name is a forwarder
-// in games/common/recomp_attach_shared.c, bound from the loaded module at
-// attach; under static linkage the names resolve at link and this list is
+// defined by the game's generated build record (games/common/game_build.c.in),
+// bound from the loaded module at attach; under static linkage the names resolve at link and this list is
 // unused. Every entry is `void f(CPUState*)`. A host reference to a func_*
 // missing here fails the shared build's exe link.
 #ifndef SPYRO1_MODULE_IMPORTS_H

@@ -33,15 +33,15 @@
 //
 // Addresses from spyro-3/symbol_addrs.txt.
 
-#include "features/levelwarp.h"
+#include "levelwarp.h"
 
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
-#include "features/transition_call.h"
+#include "transition_call.h"
 #include "openpete_fiber.h"         /* openpete_frame */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"   /* CPUState + its read/write callbacks */
-#include "skip_to_level.h"
+#include "spyro-3/skip_to_level.h"
 
 #include <stdio.h>
 

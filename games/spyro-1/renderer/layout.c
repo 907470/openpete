@@ -4,8 +4,8 @@
 
 #include "game_layout.h"
 #include "renderer/ui_game.h"
-#include "spyro1_symbols.gen.h"
-#include "openpete_game_structs.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
+#include "spyro-1/mod_sdk_gen/openpete_game_structs.h"
 #include "psx_runtime_internal.h"
 
 #include <stddef.h>

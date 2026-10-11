@@ -1,7 +1,7 @@
 /* games/spyro-1/renderer/reextract.c - Spyro 1's sub-tick re-feed orchestrator.
  * See reextract.h for the contract. */
 
-#include "renderer/reextract.h"
+#include "reextract.h"
 #include "openpete_camlock.h"       /* render camera lock (G) - bracket override */
 #include "openpete_interp.h"
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
@@ -15,7 +15,7 @@
 #include "openpete_subtick_view.h"           /* openpete_psx_to_host_span */
 #include "psx_runtime_internal.h"            /* CPUState (read_word) */
 #include "renderer/render_paths.h"  /* canon-drawn mask (load-window census) */
-#include "renderer/interp_regions.h"   /* game_interp_moby_key */
+#include "interp_regions.h"   /* game_interp_moby_key */
 #include "renderer/cut_guard.h"        /* the shared camera-cut guard and its census */
 #include "renderer/flame.h"          /* the shared fire-breath producer + its bracket */
 
@@ -49,7 +49,7 @@ static int ra_rebase_on(void) {
     return v;
 }
 /* shown-state buffers live below the region defines (CAM_BYTES) */
-#include "spyro1_symbols.gen.h"
+#include "spyro-1/gen/spyro1_symbols.gen.h"
 #include "game_layout.h"
 #include "renderer/player.h"   /* per-call records of the player hooks */
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */

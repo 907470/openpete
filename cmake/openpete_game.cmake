@@ -1,7 +1,10 @@
-# cmake/openpete_game.cmake - one game's targets from its directory.
+# cmake/openpete_game.cmake - one game's targets from its directory, and the
+# executables that link the games.
 #
 # openpete_add_game(<id>
-#     [MAIN <file>]                   # entry TU; default games/common/game_main.cpp
+#     [MAIN <symbol>]                 # the game's entry, `int f(int, char**)`
+#                                     # in one of its sources; default
+#                                     # openpete_game_main (games/common/game_main.cpp)
 #     [FEATURE_LIST <file>]           # the feature list; default none
 #     [ORCHESTRATOR <file>]           # sub-tick re-extract orchestrator; default none
 #     [INTERP_REGIONS <file>]         # interp ring region table; default none
@@ -15,35 +18,39 @@
 #     [FIRST_BOOT_SOURCES <file>...]  # the first-boot module build (shared
 #                                     # linkage under OPENPETE_RECOMP_FIRST_BOOT);
 #                                     # default none: a missing module is refused
+#     [FIRST_BOOT_EXTRACT <symbol>]   # with FIRST_BOOT_SOURCES: the carve of the
+#                                     # pipeline's inputs (game_build.h)
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
 #     [MOD_SDK]                       # generate and stage the game's mod SDK
 #                                     # (cmake/openpete_mod_sdk.cmake)
 #     [SDK_ROOT_COPIES]               # with MOD_SDK: also stage the generated
 #                                     # headers at <exe>/sdk/ root
-#     [SOURCES <file>...]             # exe TUs beyond the skeleton
+#     [SOURCES <file>...]             # host TUs beyond the skeleton
 #     [MODULE_SOURCES <file>...])     # module TUs beyond the generated code
 #
 # Called from games/<id>/CMakeLists.txt; a game whose generated/ holds no
 # recompiled output stops the configure with FATAL_ERROR. <id> is the
 # directory name and the game's config-scope id ("spyro-2"); the target
-# names drop its hyphen:
-# module `<tag>_recomp_module`, executable `openpete-<tag>`. After the call
-# the caller's scope holds OPENPETE_GAME_TAG, OPENPETE_GAME_EXE,
-# OPENPETE_GAME_MODULE, OPENPETE_GAME_GENERATED and OPENPETE_GAME_GEN_DIR
-# (the build-tree gen/ directory), for the sources a game adds on top.
+# names drop its hyphen: module `<tag>_recomp_module`, host library
+# `<tag>_host`, executable `openpete-<tag>`. After the call the caller's
+# scope holds OPENPETE_GAME_TAG, OPENPETE_GAME_EXE (the target that writes
+# <build>/games/<id>/openpete-<tag>), OPENPETE_GAME_HOST (the target that
+# compiles the game's sources), OPENPETE_GAME_EXE_DIR, OPENPETE_GAME_MODULE,
+# OPENPETE_GAME_GENERATED and OPENPETE_GAME_GEN_DIR (the build-tree gen/
+# directory), for the sources a game adds on top.
 #
 # A game supplies games/<id>/recomp.conf and game_extras_impl.c; everything
-# else is shared, including the game_extras
-# entries whose body reduces to a game_layout field
-# (games/common/game_extras_default.c, always linked). game_extras_impl.c
-# defines the game's runtime descriptor (core/include/openpete_game_runtime.h)
-# as `<tag>_game_runtime`, the name the entry TU registers through the
-# OPENPETE_GAME_RUNTIME definition; a slot file above is reached only through
-# that descriptor, which names no table for an omitted slot. The descriptor's
-# `psyq` member is the game's psyq_game_hooks_t
-# (games/common/psyq/psyq_game_hooks.h), which names the generated
-# `<tag>_psyq_conf` (game_identity.c) and `<tag>_psyq_stub_table`
-# (gen/psyq_stub_table.c).
+# else is shared. game_extras_impl.c defines the game's runtime descriptor
+# (core/include/openpete_game_runtime.h) as `<tag>_game_runtime`; a slot file
+# above is reached only through that descriptor, which names no table for an
+# omitted slot. The descriptor's `psyq` member is the game's
+# psyq_game_hooks_t (games/common/psyq/psyq_game_hooks.h), which names the
+# generated `<tag>_psyq_conf` (game_identity.c) and `<tag>_psyq_stub_table`
+# (gen/psyq_stub_table.c). The game's build record `<tag>_game_build`
+# (games/common/game_build.h) is generated from games/common/game_build.c.in
+# into gen/: the entry, the module name and host->module forwarders, the
+# first-boot pipeline, and the registration of the tables generated from the
+# game's manifests.
 #
 #  - The module: the recompiled main EXE plus every overlay translated by
 #    scripts/regen-recomp.sh. Each overlay is recompiled with a unique
@@ -52,14 +59,34 @@
 #    overlay_dispatch.c fans calls out to the active overlay through the
 #    generated spyro_overlay_table.c, and module_main.c is the descriptor
 #    the host resolves.
-#  - The executable: the entry TU, the generated identity TU
-#    (tools/gen_game_identity.py over recomp.conf), the shared PSYQ-to-
-#    PsyCross layer with its per-game hooks forwarded to the game's
-#    descriptor, the freecam body, the write census, the shared renderer TUs
-#    (the GTE float mirror and the render-path isolation registry) with the
-#    orchestrator entries forwarded to the game's descriptor, the game's
-#    PSYQ stub address table, and the compile-once abort-on-call PSYQ stubs
-#    with their runtime (openpete_psyq_stubs, top-level CMakeLists.txt).
+#  - The host library <tag>_host: the game's own sources and the TUs
+#    generated for it (identity, build record, PSYQ stub address table, mod
+#    SDK tables). An OBJECT library in the game's directory, so the
+#    directory's per-source settings apply to its sources.
+#  - The shared host code: openpete_game_common (games/common/CMakeLists.txt)
+#    and one object library per further games/common source a game names
+#    (_openpete_common_object), each compiled once whatever the number of
+#    games linking it, and the compile-once abort-on-call PSYQ stubs with
+#    their runtime (openpete_psyq_stubs, top-level CMakeLists.txt).
+#
+# Invariant: no host TU resolves a game-local header through its include
+# path. A host TU's include directories are games/common, core's, and the
+# two game roots (games/ in the source and build trees), under which a game's
+# header is named by its game-qualified path ("spyro-1/gen/x.h"); a game
+# source names a header of its own directory or below relative to itself.
+# tools/check_game_includes.py refuses the build otherwise
+# (openpete_game_include_check).
+#
+# The executables. With shared linkage on Linux every game links into one
+# executable, `openpete` at the build root (openpete_link_games, called by
+# the top-level CMakeLists.txt after the games), whose entry selects the
+# game (games/common/game_build.h); each game's target `openpete-<tag>`
+# hard-links it as <build>/games/<id>/openpete-<tag>, beside the game's
+# module, SDK and assets, and that name selects the game when no disc or
+# --game does. Elsewhere (static linkage, and Windows until its shared
+# linkage is measured) each game has its own executable `openpete-<tag>`
+# linking its host library, the shared host code and, under static linkage,
+# its module.
 #
 # Shared linkage builds the module as <tag>-recomp.{so,dll} beside the
 # executable, which loads it at boot (games/common/recomp_attach_shared.c)
@@ -67,13 +94,115 @@
 # executable's export surface is generated from the game's psyq.toml and the
 # module ABI lists (tools/gen_module_exports.py): a PE .def plus an implib
 # the module links against on Windows, and on every platform a keep-alive TU
-# that pulls the ABI's archive members into the executable. The host->module
-# forwarders are the game's module_imports.h. On ELF the target
-# <tag>_module_imports refuses the build unless every module import resolves
-# to exactly one definition in the merged image (tools/check_module_imports.py);
-# on PE the module's link against the implib is that refusal.
+# that pulls the ABI's archive members into the executable. The
+# host->module forwarders are the game's module_imports.h, defined in its
+# build record. On ELF the target <tag>_module_imports refuses the build
+# unless every module import resolves to exactly one definition in the
+# merged image (tools/check_module_imports.py); on PE the module's link
+# against the implib is that refusal.
 
 include(${CMAKE_SOURCE_DIR}/cmake/openpete_mod_sdk.cmake)
+
+# One executable links every game: shared linkage, on Linux. Set in every
+# directory that includes this file.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+    set(OPENPETE_ONE_EXECUTABLE ON)
+else()
+    set(OPENPETE_ONE_EXECUTABLE OFF)
+endif()
+
+# The compile settings of every host object library: the game-neutral
+# include path (games/common, core's usage requirements, and the two game
+# roots under which a game's headers are named by game-qualified paths),
+# the language standards, and -fno-strict-aliasing (the host reads guest RAM,
+# uint8_t arrays, through wider pointer casts; the first-boot module build,
+# games/common/recomp_build.cpp, passes the same flag).
+function(openpete_game_common_settings TGT)
+    target_include_directories(${TGT} PRIVATE
+        ${CMAKE_SOURCE_DIR}/games/common
+        ${CMAKE_SOURCE_DIR}/games
+        ${CMAKE_BINARY_DIR}/games)
+    target_link_libraries(${TGT} PRIVATE openpete_core)
+    target_compile_options(${TGT} PRIVATE -fno-strict-aliasing)
+    set_target_properties(${TGT} PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON)
+endfunction()
+
+# The object library compiling one games/common source once, created at its
+# first use: `opc_<path under games/common, / and . as _>`. OUT receives the
+# target name.
+function(_openpete_common_object SRC OUT)
+    file(RELATIVE_PATH _rel ${CMAKE_SOURCE_DIR}/games/common ${SRC})
+    string(REGEX REPLACE "[/.]" "_" _name "opc_${_rel}")
+    if(NOT TARGET ${_name})
+        add_library(${_name} OBJECT ${SRC})
+        openpete_game_common_settings(${_name})
+    endif()
+    set(${OUT} ${_name} PARENT_SCOPE)
+endfunction()
+
+# Split SOURCES into the game's own (relative, or under its directory) and
+# games/common sources. OWN receives the former; COMMON_LIBS the object
+# libraries compiling the latter.
+function(_openpete_game_partition OWN COMMON_LIBS)
+    set(_own "")
+    set(_libs "")
+    foreach(_s IN LISTS ARGN)
+        get_filename_component(_abs ${_s} ABSOLUTE BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+        if(_abs MATCHES "^${CMAKE_SOURCE_DIR}/games/common/")
+            _openpete_common_object(${_abs} _lib)
+            list(APPEND _libs ${_lib})
+        else()
+            list(APPEND _own ${_s})
+        endif()
+    endforeach()
+    set(${OWN} ${_own} PARENT_SCOPE)
+    set(${COMMON_LIBS} ${_libs} PARENT_SCOPE)
+endfunction()
+
+# The C file listing the games an executable links (`openpete_game_builds`,
+# games/common/game_build.h), written at configure time to OUT.
+function(_openpete_game_list OUT)
+    set(_decl "")
+    set(_rows "")
+    foreach(_t IN LISTS ARGN)
+        string(APPEND _decl "extern const openpete_game_build_t ${_t}_game_build;\n")
+        string(APPEND _rows "    &${_t}_game_build,\n")
+    endforeach()
+    list(LENGTH ARGN _n)
+    file(CONFIGURE OUTPUT ${OUT} CONTENT
+"/* Generated by cmake/openpete_game.cmake - the games this executable links,
+ * in OPENPETE_GAMES order (games/common/game_build.h). */
+#include \"game_build.h\"
+
+${_decl}
+const openpete_game_build_t* const openpete_game_builds[] = {
+${_rows}};
+const size_t openpete_game_build_count = ${_n};
+")
+endfunction()
+
+# The link settings of an executable linking the games' host objects: core,
+# the PSYQ stubs, the SDL main shim, and on Linux -rdynamic (non-static
+# functions resolve to names in the crash handler's backtrace, and a shared
+# module resolves its host imports against these exports).
+function(_openpete_game_exe_link EXE)
+    target_link_libraries(${EXE} PRIVATE openpete_core openpete_psyq_stubs)
+    if(TARGET SDL3::SDL3main)
+        target_link_libraries(${EXE} PRIVATE SDL3::SDL3main)
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(${EXE} PRIVATE -rdynamic)
+    endif()
+    set_target_properties(${EXE} PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON)
+endfunction()
 
 # The shared-linkage wiring between one game's executable and module.
 #
@@ -83,48 +212,53 @@ include(${CMAKE_SOURCE_DIR}/cmake/openpete_mod_sdk.cmake)
 # GNU LTO does not treat .def exports as liveness roots (with IPO the
 # otherwise-unreferenced ABI surface is dead-code-eliminated and ld emits
 # the exports as absolute 0), so IPO is forced off for the executable.
-#
-# ELF: <tag>_module_imports runs tools/check_module_imports.py over the
-# built pair and fails the build on an import with no definition or more
-# than one, or a symbol both images define outside the forwarders listed in
-# module_imports.h and the four overlay-dispatch entry points.
-function(_openpete_game_shared_link TAG EXE MODULE MODULE_DEF IMPORTS_HEADER)
-    if(WIN32)
-        target_link_options(${EXE} PRIVATE ${MODULE_DEF})
-        set_property(TARGET ${EXE} APPEND PROPERTY LINK_DEPENDS ${MODULE_DEF})
-        set_target_properties(${EXE} PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
-        if(NOT CMAKE_DLLTOOL)
-            set(CMAKE_DLLTOOL x86_64-w64-mingw32-dlltool)
-        endif()
-        set(_implib ${CMAKE_CURRENT_BINARY_DIR}/gen/libopenpete-exe-exports.a)
-        add_custom_command(
-            OUTPUT  ${_implib}
-            COMMAND ${CMAKE_DLLTOOL} -d ${MODULE_DEF} -l ${_implib} -D ${EXE}.exe
-            DEPENDS ${MODULE_DEF}
-            COMMENT "dlltool: ${EXE} export implib for the recomp module")
-        add_custom_target(${TAG}_module_implib DEPENDS ${_implib})
-        add_dependencies(${MODULE} ${TAG}_module_implib)
-        target_link_libraries(${MODULE} PRIVATE ${_implib})
-        set(OPENPETE_GAME_MODULE_IMPLIB ${_implib} PARENT_SCOPE)
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        set(_stamp ${CMAKE_CURRENT_BINARY_DIR}/gen/${TAG}_module_imports.stamp)
-        add_custom_command(
-            OUTPUT  ${_stamp}
-            COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/check_module_imports.py
-                    --module $<TARGET_FILE:${MODULE}>
-                    --exe    $<TARGET_FILE:${EXE}>
-                    --forwarder-header ${IMPORTS_HEADER}
-                    --forwarder spyro_set_active_overlay_by_magic
-                    --forwarder spyro_get_active_overlay_magic
-                    --forwarder spyro_overlay_find
-                    --forwarder spyro_overlay_set_resync
-                    --stamp  ${_stamp}
-            DEPENDS ${MODULE} ${EXE} ${IMPORTS_HEADER}
-                    ${CMAKE_SOURCE_DIR}/tools/check_module_imports.py
-            COMMENT "Checking ${TAG}-recomp's imports against ${EXE}"
-            VERBATIM)
-        add_custom_target(${TAG}_module_imports ALL DEPENDS ${_stamp})
+function(_openpete_game_shared_link_pe TAG EXE MODULE MODULE_DEF)
+    target_link_options(${EXE} PRIVATE ${MODULE_DEF})
+    set_property(TARGET ${EXE} APPEND PROPERTY LINK_DEPENDS ${MODULE_DEF})
+    set_target_properties(${EXE} PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
+    if(NOT CMAKE_DLLTOOL)
+        set(CMAKE_DLLTOOL x86_64-w64-mingw32-dlltool)
     endif()
+    set(_implib ${CMAKE_CURRENT_BINARY_DIR}/gen/libopenpete-exe-exports.a)
+    add_custom_command(
+        OUTPUT  ${_implib}
+        COMMAND ${CMAKE_DLLTOOL} -d ${MODULE_DEF} -l ${_implib} -D ${EXE}.exe
+        DEPENDS ${MODULE_DEF}
+        COMMENT "dlltool: ${EXE} export implib for the recomp module")
+    add_custom_target(${TAG}_module_implib DEPENDS ${_implib})
+    add_dependencies(${MODULE} ${TAG}_module_implib)
+    target_link_libraries(${MODULE} PRIVATE ${_implib})
+    set(OPENPETE_GAME_MODULE_IMPLIB ${_implib} PARENT_SCOPE)
+endfunction()
+
+# ELF: <tag>_module_imports runs tools/check_module_imports.py over the
+# module and the executable that loads it and fails the build on an import
+# with no definition or more than one, or a symbol both images define
+# outside the forwarders the linked games' module_imports.h list and the
+# four overlay-dispatch entry points.
+function(_openpete_game_shared_link_elf TAG IMAGE MODULE STAMP)
+    set(_headers "")
+    set(_args "")
+    foreach(_h IN LISTS ARGN)
+        list(APPEND _headers ${_h})
+        list(APPEND _args --forwarder-header ${_h})
+    endforeach()
+    add_custom_command(
+        OUTPUT  ${STAMP}
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/check_module_imports.py
+                --module $<TARGET_FILE:${MODULE}>
+                --exe    $<TARGET_FILE:${IMAGE}>
+                ${_args}
+                --forwarder spyro_set_active_overlay_by_magic
+                --forwarder spyro_get_active_overlay_magic
+                --forwarder spyro_overlay_find
+                --forwarder spyro_overlay_set_resync
+                --stamp  ${STAMP}
+        DEPENDS ${MODULE} ${IMAGE} ${_headers}
+                ${CMAKE_SOURCE_DIR}/tools/check_module_imports.py
+        COMMENT "Checking ${TAG}-recomp's imports against ${IMAGE}"
+        VERBATIM)
+    add_custom_target(${TAG}_module_imports ALL DEPENDS ${STAMP})
 endfunction()
 
 # The first-boot module build's inputs, staged next to the executable as
@@ -133,14 +267,14 @@ endfunction()
 # channel_sites.txt), src/ (the module source kit) and tools/ (PSXRecomp when
 # built; on Windows the exe-export implib the module links against). The
 # serial is recomp.conf's EXE_FILENAME with `_` -> `-` and the dot dropped.
-function(_openpete_game_stage_first_boot GAME_ID EXE GENERATED SERIAL)
+function(_openpete_game_stage_first_boot GAME_ID EXE EXE_DIR GENERATED SERIAL)
     set(_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/recomp/${SERIAL})
     if(NOT EXISTS ${_manifest}/manifest.toml)
         message(FATAL_ERROR "openpete_add_game(${GAME_ID}): FIRST_BOOT_SOURCES "
                             "needs the converged manifest ${_manifest} "
                             "(GAME=${GAME_ID} bash scripts/emit-recomp-manifest.sh)")
     endif()
-    set(_rdir $<TARGET_FILE_DIR:${EXE}>/recomp)
+    set(_rdir ${EXE_DIR}/recomp)
     set(_manifest_files ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml)
     if(EXISTS ${GENERATED}/channel_sites.txt)
         list(APPEND _manifest_files ${GENERATED}/channel_sites.txt)
@@ -181,7 +315,7 @@ endfunction()
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         "MOD_SDK;SDK_ROOT_COPIES"
-        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
+        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST;FIRST_BOOT_EXTRACT"
         "SOURCES;MODULE_SOURCES;FIRST_BOOT_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -190,10 +324,12 @@ function(openpete_add_game GAME_ID)
 
     string(REPLACE "-" "" _tag "${GAME_ID}")
     set(_exe openpete-${_tag})
+    set(_host ${_tag}_host)
     set(_module ${_tag}_recomp_module)
     set(_common ${CMAKE_SOURCE_DIR}/games/common)
     set(_generated ${CMAKE_CURRENT_SOURCE_DIR}/generated)
     set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/gen)
+    set(_exe_dir ${CMAKE_CURRENT_BINARY_DIR})
 
     # The recompiled C under generated/ is gitignored and produced only by
     # scripts/regen-recomp.sh. A game listed in OPENPETE_GAMES without it
@@ -213,7 +349,7 @@ function(openpete_add_game GAME_ID)
     endif()
 
     if(NOT G_MAIN)
-        set(G_MAIN ${_common}/game_main.cpp)
+        set(G_MAIN openpete_game_main)
     endif()
     if(NOT G_MODULE_LINKAGE)
         set(G_MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE})
@@ -221,15 +357,23 @@ function(openpete_add_game GAME_ID)
     if(NOT G_MODULE_LINKAGE MATCHES "^(static|shared)$")
         message(FATAL_ERROR "openpete_add_game(${GAME_ID}): MODULE_LINKAGE '${G_MODULE_LINKAGE}' is neither static nor shared")
     endif()
+    if(OPENPETE_ONE_EXECUTABLE AND NOT G_MODULE_LINKAGE STREQUAL "shared")
+        message(FATAL_ERROR "openpete_add_game(${GAME_ID}): the one executable "
+                            "loads every game's module; MODULE_LINKAGE must be shared")
+    endif()
     # The first-boot module build is compiled in only where it can run: a
     # shared module, a preset that ships one, a game that has one.
     set(_first_boot OFF)
     if(G_MODULE_LINKAGE STREQUAL "shared" AND OPENPETE_RECOMP_FIRST_BOOT AND G_FIRST_BOOT_SOURCES)
         set(_first_boot ON)
+        if(NOT G_FIRST_BOOT_EXTRACT)
+            message(FATAL_ERROR "openpete_add_game(${GAME_ID}): FIRST_BOOT_SOURCES needs FIRST_BOOT_EXTRACT")
+        endif()
     endif()
 
     # The module attach and, for shared linkage, the executable's export
     # surface: the PE .def and the keep-alive TU.
+    set(_attach_sources "")
     if(G_MODULE_LINKAGE STREQUAL "shared")
         set(_module_def       ${_gen_dir}/${_tag}_module_exports.def)
         set(_module_keepalive ${_gen_dir}/${_tag}_abi_keepalive.gen.c)
@@ -255,14 +399,12 @@ function(openpete_add_game GAME_ID)
                     ${_abi_lists}
                     ${CMAKE_SOURCE_DIR}/tools/gen_module_exports.py
             COMMENT "Generating the ${GAME_ID} recomp-module export surface (.def + keep-alive)")
-        set(_attach_sources
-            ${_common}/recomp_attach_shared.c
-            ${_module_keepalive})
+        list(APPEND _attach_sources ${_common}/recomp_attach_shared.c ${_module_keepalive})
         if(_first_boot)
             list(APPEND _attach_sources ${G_FIRST_BOOT_SOURCES})
         endif()
     else()
-        set(_attach_sources ${_common}/recomp_attach_static.c)
+        list(APPEND _attach_sources ${_common}/recomp_attach_static.c)
     endif()
 
     # CONFIGURE_DEPENDS re-runs the GLOB so newly regenerated overlays are
@@ -319,6 +461,10 @@ function(openpete_add_game GAME_ID)
     set_target_properties(${_module} PROPERTIES
         C_STANDARD 99
         C_STANDARD_REQUIRED ON)
+    # The recompiled module reads guest RAM (uint8_t arrays) through wider
+    # pointer casts; -fno-strict-aliasing keeps the optimizer from
+    # reordering or dropping those accesses.
+    target_compile_options(${_module} PRIVATE -fno-strict-aliasing)
 
     # The generated translation units are enormous and entirely machine-
     # written: warnings on them are noise. The hand-written module TUs keep
@@ -345,13 +491,15 @@ function(openpete_add_game GAME_ID)
         COMMENT "Generating ${GAME_ID} game_identity.c (gen_game_identity.py)")
 
     # Gameplay-state region table: the manifest the oracle hashes, generated
-    # into the C header the exe compiles, the flat text the DuckStation
-    # capture module reads (-psxtrace-regions), and the PCSX-Redux Lua
-    # mirror. A game without the manifest registers an empty table and no
-    # oracle golden can verify it.
+    # into the C header the build record compiles, the flat text the
+    # DuckStation capture module reads (-psxtrace-regions), and the
+    # PCSX-Redux Lua mirror. A game without the manifest registers an empty
+    # table and no oracle golden can verify it.
     set(_regions_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/gameplay_state_regions.toml)
     set(_regions_sources)
+    set(GB_REGIONS 0)
     if(EXISTS ${_regions_manifest})
+        set(GB_REGIONS 1)
         set(_regions_header ${_gen_dir}/gameplay_state_regions.gen.h)
         set(_regions_flat   ${_gen_dir}/gameplay_state_regions.flat)
         set(_regions_lua    ${_gen_dir}/openpete_state_regions.gen.lua)
@@ -387,11 +535,13 @@ function(openpete_add_game GAME_ID)
                          PROPERTIES LABELS "fence" SKIP_RETURN_CODE 64)
 
     # Disc boot-order profile: the sector ranges the disc cache loader
-    # reads first, generated into the C table games/common/disc_boot_order.c
-    # installs. A game without the manifest loads in file order.
+    # reads first, generated into the C table the build record installs. A
+    # game without the manifest loads in file order.
     set(_boot_order_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/disc_boot_order.toml)
     set(_boot_order_sources)
+    set(GB_BOOT_ORDER 0)
     if(EXISTS ${_boot_order_manifest})
+        set(GB_BOOT_ORDER 1)
         set(_boot_order_header ${_gen_dir}/disc_boot_order.gen.h)
         add_custom_command(
             OUTPUT  ${_boot_order_header}
@@ -444,150 +594,127 @@ function(openpete_add_game GAME_ID)
         COMMENT "Generating ${_tag} PSYQ stub address table"
         VERBATIM)
 
-    add_executable(${_exe}
-        ${G_MAIN}
-        game_extras_impl.c
-        ${_identity_c}
-        ${_common}/state_regions.c
-        ${_common}/disc_boot_order.c
-        ${_common}/game_extras_default.c
-        ${_common}/game_host_desc.c
-        ${_regions_sources}
-        ${_boot_order_sources}
+    # The build record (games/common/game_build.h), beside the generated
+    # headers it includes.
+    set(GB_ID ${GAME_ID})
+    set(GB_TAG ${_tag})
+    set(GB_EXE ${_exe})
+    set(GB_MAIN ${G_MAIN})
+    set(GB_IMPORTS_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/module_imports.h)
+    set(GB_EXTRACT ${G_FIRST_BOOT_EXTRACT})
+    set(GB_WINDOW_LO "")
+    set(GB_WINDOW_HI "")
+    if(G_MODULE_LINKAGE STREQUAL "shared")
+        set(GB_SHARED 1)
+    else()
+        set(GB_SHARED 0)
+    endif()
+    if(_first_boot)
+        set(GB_FIRST_BOOT 1)
+        # The first-boot pipeline's per-game facts from recomp.conf: the
+        # overlay window its generated overlay table carries, and the
+        # serial naming the staged manifest.
+        file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/recomp.conf _range
+             REGEX "^OVERLAY_RANGE=")
+        file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/recomp.conf _exe_name
+             REGEX "^EXE_FILENAME=")
+        if(NOT _range MATCHES "^OVERLAY_RANGE=(0x[0-9A-Fa-f]+):(0x[0-9A-Fa-f]+)$")
+            message(FATAL_ERROR "openpete_add_game(${GAME_ID}): recomp.conf has no OVERLAY_RANGE=<lo>:<hi>")
+        endif()
+        set(GB_WINDOW_LO ${CMAKE_MATCH_1})
+        set(GB_WINDOW_HI ${CMAKE_MATCH_2})
+        if(NOT _exe_name MATCHES "^EXE_FILENAME=\"([A-Z]+)_([0-9]+)\.([0-9]+)\"$")
+            message(FATAL_ERROR "openpete_add_game(${GAME_ID}): recomp.conf has no EXE_FILENAME=\"XXXX_NNN.NN\"")
+        endif()
+        set(_serial "${CMAKE_MATCH_1}-${CMAKE_MATCH_2}${CMAKE_MATCH_3}")
+    else()
+        set(GB_FIRST_BOOT 0)
+    endif()
+    set(_build_c ${_gen_dir}/${_tag}_game_build.c)
+    configure_file(${_common}/game_build.c.in ${_build_c} @ONLY)
+
+    _openpete_game_partition(_own_sources _common_libs
         ${G_FEATURE_LIST}
         ${G_ORCHESTRATOR}
         ${G_INTERP_REGIONS}
         ${G_TERRAIN_GAME}
         ${G_MOBY_GAME}
         ${G_PLAYER_GAME}
-        ${G_ICON_SOURCE}
         ${G_SOURCES}
-        ${_attach_sources}
+        ${_attach_sources})
+
+    add_library(${_host} OBJECT
+        game_extras_impl.c
+        ${_identity_c}
+        ${_build_c}
+        ${_regions_sources}
+        ${_boot_order_sources}
+        ${G_ICON_SOURCE}
         ${_symbols_sources}
-
-        # The shared PSYQ-to-PsyCross layer and its per-game hooks,
-        # forwarded to the game's descriptor.
-        ${_common}/psyq/psyq_thunks.cpp
-        ${_common}/psyq/psyq_game_hooks.c
-        ${_common}/psyq/psyq_sfx_slots.c
-        ${_common}/psyq/psyq_thunk_state.c
-        ${_common}/write_census.c
-        ${_common}/dispatch_census.c
-        ${_common}/dispatch_preamble.c
-        ${_common}/freecam_game.c
-        ${_common}/named_target.c
-
-        # Shared renderer TUs: the GTE float mirror every feeder projects
-        # through, the --render-paths isolation registry, and the terrain,
-        # cyclorama, moby and moby-shadow feeders (reached only through a
-        # game's feature list).
-        ${_common}/renderer/native_gte.c
-        ${_common}/renderer/orchestrator.c
-        ${_common}/renderer/hook_bracket.c
-        ${_common}/renderer/render_paths.c
-        ${_common}/renderer/portal_plane.c
-        ${_common}/renderer/terrain.c
-        ${_common}/renderer/cyclorama.c
-        ${_common}/renderer/shadow.c
-        ${_common}/renderer/shadow_player.c
-        ${_common}/renderer/flame.c
-        # The glow/glint/tracer effect family: five self-linking producers,
-        # registered only by a game whose game_layout names their routines.
-        ${_common}/renderer/glow.c
-        ${_common}/renderer/glint.c
-        ${_common}/renderer/zap.c
-        ${_common}/renderer/tracers.c
-        ${_common}/renderer/particles.c
-        ${_common}/renderer/moby.c
-        ${_common}/renderer/moby_rank.c
-        ${_common}/renderer/moby_rank_cal.c
-        ${_common}/renderer/player.c
-        ${_common}/renderer/player_ranges.c
-        ${_common}/renderer/ui_sprite.c
-        # The SPRT text feeder: registered only by a game whose ui_game names a
-        # self-linking chain emitter, inert in the others.
-        ${_common}/renderer/text_sprt.c
-        ${_common}/renderer/interp_regions_gen.c
-        ${_common}/renderer/reextract_view.c
-        ${_common}/renderer/cut_guard.c
-
+        ${_own_sources}
         # This game's PSYQ stub addresses (generated above).
         ${_stub_table})
+    openpete_game_common_settings(${_host})
 
-    # The region table and symbol aliases as a target of their own, so the
-    # source parsers order after them without waiting for the executable.
+    # The generated headers as a target of their own, so the source parsers
+    # order after them without waiting for the host library.
     add_custom_target(${_tag}_generated_headers
         DEPENDS ${_regions_sources} ${_boot_order_sources} ${_symbols_sources})
-    add_dependencies(${_exe} ${_tag}_generated_headers)
+    add_dependencies(${_host} ${_tag}_generated_headers)
     add_dependencies(openpete_generated_headers ${_tag}_generated_headers)
 
-    # Generated C addresses psx_runtime.h via the include path provided by
-    # openpete_core (which adds core/include/psxrt).
-    target_include_directories(${_exe} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${_common}
-        ${_generated}
-        ${_gen_dir})
-    # The entry TU registers the game's runtime descriptor by this name.
-    target_compile_definitions(${_exe} PRIVATE
-        OPENPETE_GAME_RUNTIME=${_tag}_game_runtime)
-    if(NOT EXISTS ${_regions_manifest})
-        set_source_files_properties(${_common}/state_regions.c PROPERTIES
-            COMPILE_DEFINITIONS OPENPETE_STATE_REGIONS_NONE)
-    endif()
-    if(NOT EXISTS ${_boot_order_manifest})
-        set_source_files_properties(${_common}/disc_boot_order.c PROPERTIES
-            COMPILE_DEFINITIONS OPENPETE_DISC_BOOT_ORDER_NONE)
-    endif()
-    set_target_properties(${_exe} PROPERTIES
-        C_STANDARD 99
-        C_STANDARD_REQUIRED ON
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON)
+    set(_objects $<TARGET_OBJECTS:${_host}>)
+    foreach(_lib IN LISTS _common_libs)
+        list(APPEND _objects $<TARGET_OBJECTS:${_lib}>)
+    endforeach()
+    set_property(GLOBAL APPEND PROPERTY OPENPETE_LINKED_GAMES ${_tag})
+    set_property(GLOBAL APPEND PROPERTY OPENPETE_HOST_OBJECT_LIBS ${_host} ${_common_libs})
+    set_property(GLOBAL APPEND PROPERTY OPENPETE_GAME_MODULES ${_module})
+    set_property(GLOBAL APPEND PROPERTY OPENPETE_GAME_IMPORTS_HEADERS
+                 ${CMAKE_CURRENT_SOURCE_DIR}/module_imports.h)
 
-    if(G_MODULE_LINKAGE STREQUAL "static")
-        target_link_libraries(${_exe} PRIVATE ${_module})
+    if(OPENPETE_ONE_EXECUTABLE)
+        # The game's name for the one executable: a hard link, so the
+        # executable's directory (/proc/self/exe) is the game's, beside its
+        # module, SDK and assets.
+        set(_link ${_exe_dir}/${_exe})
+        add_custom_target(${_exe} ALL
+            COMMAND ${CMAKE_COMMAND} -E rm -f ${_link}
+            COMMAND ${CMAKE_COMMAND} -E create_hardlink $<TARGET_FILE:openpete> ${_link}
+            COMMENT "Linking ${_exe} to the one executable"
+            VERBATIM)
+        add_dependencies(${_exe} openpete ${_module})
+        set(_image openpete)
     else()
-        target_link_libraries(${_exe} PRIVATE ${CMAKE_DL_LIBS})
-        # The default module path is the executable's directory, where the
-        # module target writes; building the executable builds its module.
-        add_dependencies(${_exe} ${_module})
-        target_compile_definitions(${_exe} PRIVATE
-            OPENPETE_GAME_MODULE_NAME="${_tag}-recomp"
-            OPENPETE_RECOMP_FIRST_BOOT=$<BOOL:${_first_boot}>)
-        _openpete_game_shared_link(${_tag} ${_exe} ${_module}
-            ${_module_def} ${CMAKE_CURRENT_SOURCE_DIR}/module_imports.h)
+        set(_list_c ${_gen_dir}/${_tag}_game_list.c)
+        _openpete_game_list(${_list_c} ${_tag})
+        add_executable(${_exe} ${_list_c} $<TARGET_OBJECTS:openpete_game_common> ${_objects})
+        target_include_directories(${_exe} PRIVATE ${_common})
+        _openpete_game_exe_link(${_exe})
+        if(G_MODULE_LINKAGE STREQUAL "static")
+            target_link_libraries(${_exe} PRIVATE ${_module})
+        else()
+            target_link_libraries(${_exe} PRIVATE ${CMAKE_DL_LIBS})
+            # The default module path is the executable's directory, where
+            # the module target writes; building the executable builds its
+            # module.
+            add_dependencies(${_exe} ${_module})
+        endif()
+        set(_image ${_exe})
+    endif()
+
+    if(G_MODULE_LINKAGE STREQUAL "shared")
+        if(WIN32)
+            _openpete_game_shared_link_pe(${_tag} ${_exe} ${_module} ${_module_def})
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT OPENPETE_ONE_EXECUTABLE)
+            _openpete_game_shared_link_elf(${_tag} ${_image} ${_module}
+                ${_gen_dir}/${_tag}_module_imports.stamp
+                ${CMAKE_CURRENT_SOURCE_DIR}/module_imports.h)
+        endif()
         if(_first_boot)
-            # The first-boot pipeline's per-game facts from recomp.conf: the
-            # overlay window its generated overlay table carries, and the
-            # serial naming the staged manifest.
-            file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/recomp.conf _range
-                 REGEX "^OVERLAY_RANGE=")
-            file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/recomp.conf _exe_name
-                 REGEX "^EXE_FILENAME=")
-            if(NOT _range MATCHES "^OVERLAY_RANGE=(0x[0-9A-Fa-f]+):(0x[0-9A-Fa-f]+)$")
-                message(FATAL_ERROR "openpete_add_game(${GAME_ID}): recomp.conf has no OVERLAY_RANGE=<lo>:<hi>")
-            endif()
-            set(_window_lo ${CMAKE_MATCH_1})
-            set(_window_hi ${CMAKE_MATCH_2})
-            if(NOT _exe_name MATCHES "^EXE_FILENAME=\"([A-Z]+)_([0-9]+)\.([0-9]+)\"$")
-                message(FATAL_ERROR "openpete_add_game(${GAME_ID}): recomp.conf has no EXE_FILENAME=\"XXXX_NNN.NN\"")
-            endif()
-            set(_serial "${CMAKE_MATCH_1}-${CMAKE_MATCH_2}${CMAKE_MATCH_3}")
-            target_compile_definitions(${_exe} PRIVATE
-                OPENPETE_GAME_OVERLAY_WINDOW_LO="${_window_lo}"
-                OPENPETE_GAME_OVERLAY_WINDOW_HI="${_window_hi}")
-            _openpete_game_stage_first_boot(${GAME_ID} ${_exe} ${_generated} ${_serial})
+            _openpete_game_stage_first_boot(${GAME_ID} ${_exe} ${_exe_dir} ${_generated} ${_serial})
         endif()
     endif()
-    target_link_libraries(${_exe} PRIVATE openpete_core openpete_psyq_stubs)
-
-    # The executable and the recompiled module read guest RAM (uint8_t
-    # arrays) through wider pointer casts; -fno-strict-aliasing keeps the
-    # optimizer from reordering or dropping those accesses. The first-boot
-    # module build (games/common/recomp_build.cpp) passes the same flag.
-    target_compile_options(${_exe} PRIVATE -fno-strict-aliasing)
-    target_compile_options(${_module} PRIVATE -fno-strict-aliasing)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
         # OpenAL on Windows is always a runtime DLL load (no static .a in the
@@ -597,23 +724,14 @@ function(openpete_add_game GAME_ID)
         add_custom_command(TARGET ${_exe} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll"
-                "$<TARGET_FILE_DIR:${_exe}>/OpenAL32.dll"
+                "${_exe_dir}/OpenAL32.dll"
             VERBATIM)
     endif()
 
-    # Backtrace symbols: non-static functions resolve to names in the crash
-    # handler's backtrace_symbols_fd output, and a shared module resolves
-    # its host imports against these exports.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_link_options(${_exe} PRIVATE -rdynamic)
-    endif()
-
-    # SDL3's platform entry shim, required by the TU including
-    # <SDL3/SDL_main.h>.
-    if(TARGET SDL3::SDL3main)
-        target_link_libraries(${_exe} PRIVATE SDL3::SDL3main)
-    endif()
-
+    # Variables the mod SDK and the game's CMakeLists read.
+    set(OPENPETE_GAME_EXE     ${_exe})
+    set(OPENPETE_GAME_HOST    ${_host})
+    set(OPENPETE_GAME_EXE_DIR ${_exe_dir})
     if(G_MOD_SDK)
         if(G_SDK_ROOT_COPIES)
             openpete_mod_sdk(${GAME_ID} ROOT_COPIES)
@@ -630,9 +748,70 @@ function(openpete_add_game GAME_ID)
     set(OPENPETE_GAME_MODULE_IMPLIB "${OPENPETE_GAME_MODULE_IMPLIB}" PARENT_SCOPE)
     set(OPENPETE_GAME_TAG       ${_tag}       PARENT_SCOPE)
     set(OPENPETE_GAME_EXE       ${_exe}       PARENT_SCOPE)
+    set(OPENPETE_GAME_HOST      ${_host}      PARENT_SCOPE)
+    set(OPENPETE_GAME_EXE_DIR   ${_exe_dir}   PARENT_SCOPE)
     set(OPENPETE_GAME_MODULE    ${_module}    PARENT_SCOPE)
     set(OPENPETE_GAME_GENERATED ${_generated} PARENT_SCOPE)
     set(OPENPETE_GAME_GEN_DIR   ${_gen_dir}   PARENT_SCOPE)
     set(OPENPETE_GAME_OVERLAY_FULL_C     ${_overlay_full_c}     PARENT_SCOPE)
     set(OPENPETE_GAME_OVERLAY_DISPATCH_C ${_overlay_dispatch_c} PARENT_SCOPE)
+endfunction()
+
+# The one executable (OPENPETE_ONE_EXECUTABLE), declared after every game:
+# `openpete` at the build root, linking each game's host library, the
+# shared host code once, and the list of the linked games its entry selects
+# from. It depends on every game's module, and two build-time refusals
+# guard the merged image: each module's imports against it
+# (<tag>_module_imports) and the include-path invariant over every host TU
+# (openpete_game_include_check, tools/check_game_includes.py).
+function(openpete_link_games)
+    if(NOT OPENPETE_ONE_EXECUTABLE)
+        return()
+    endif()
+    get_property(_tags GLOBAL PROPERTY OPENPETE_LINKED_GAMES)
+    get_property(_libs GLOBAL PROPERTY OPENPETE_HOST_OBJECT_LIBS)
+    get_property(_modules GLOBAL PROPERTY OPENPETE_GAME_MODULES)
+    get_property(_headers GLOBAL PROPERTY OPENPETE_GAME_IMPORTS_HEADERS)
+    if(NOT _tags)
+        return()
+    endif()
+    list(REMOVE_DUPLICATES _libs)
+    list(PREPEND _libs openpete_game_common)
+
+    set(_list_c ${CMAKE_BINARY_DIR}/gen/openpete_game_list.c)
+    _openpete_game_list(${_list_c} ${_tags})
+    set(_objects "")
+    foreach(_lib IN LISTS _libs)
+        list(APPEND _objects $<TARGET_OBJECTS:${_lib}>)
+    endforeach()
+    add_executable(openpete ${_list_c} ${_objects})
+    target_include_directories(openpete PRIVATE ${CMAKE_SOURCE_DIR}/games/common)
+    _openpete_game_exe_link(openpete)
+    target_link_libraries(openpete PRIVATE ${CMAKE_DL_LIBS})
+    add_dependencies(openpete ${_modules})
+
+    # Each module's imports against the one executable; the forwarders are
+    # every linked game's, since the executable defines them all.
+    foreach(_t _m IN ZIP_LISTS _tags _modules)
+        _openpete_game_shared_link_elf(${_t} openpete ${_m}
+            ${CMAKE_BINARY_DIR}/gen/${_t}_module_imports.stamp ${_headers})
+    endforeach()
+
+    # The include-path invariant, before the executable links.
+    set(_stamp ${CMAKE_BINARY_DIR}/gen/openpete_game_include_check.stamp)
+    add_custom_command(
+        OUTPUT  ${_stamp}
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/check_game_includes.py
+                --compile-db ${CMAKE_BINARY_DIR}/compile_commands.json
+                --source-dir ${CMAKE_SOURCE_DIR}
+                --build-dir  ${CMAKE_BINARY_DIR}
+                --games ${OPENPETE_GAMES}
+                --targets ${_libs} openpete
+                --stamp ${_stamp}
+        DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json
+                ${CMAKE_SOURCE_DIR}/tools/check_game_includes.py
+        COMMENT "Checking that no host TU resolves a game-local header through its include path"
+        VERBATIM)
+    add_custom_target(openpete_game_include_check DEPENDS ${_stamp})
+    add_dependencies(openpete openpete_game_include_check)
 endfunction()
