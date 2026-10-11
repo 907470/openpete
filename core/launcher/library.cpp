@@ -10,6 +10,7 @@
 // own copy.
 #include "launcher_internal.h"
 
+#include "openpete_atomic_file.h"
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
 #include "openpete_identify.h" /* openpete_game_for_serial */
@@ -25,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -121,9 +123,10 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
 
 /** @brief Writes an entry's meta.toml with its label, source, hash, last-played time and game.
  *
- * Truncates the file. String values are written between double quotes
- * without escaping; write errors are not reported. An empty game writes no
- * game line.
+ * Replaces the file atomically (synced); a failed write is logged by the
+ * helper and leaves the previous file whole. String values are written
+ * between double quotes without escaping. An empty game writes no game
+ * line.
  * @param entry The library entry's directory.
  * @param label The display name.
  * @param source The file name the image was ingested from.
@@ -133,12 +136,14 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
 void write_meta(const fs::path& entry, const std::string& label,
                 const std::string& source, const std::string& sha,
                 long long last_played, const std::string& game) {
-    std::ofstream f(entry / "meta.toml", std::ios::trunc);
+    std::ostringstream f;
     f << "label = \"" << label << "\"\n"
       << "source = \"" << source << "\"\n"
       << "sha256 = \"" << sha << "\"\n"
       << "last_played = " << last_played << "\n";
     if (!game.empty()) f << "game = \"" << game << "\"\n";
+    const std::string text = f.str();
+    (void)op_atomic_write_file((entry / "meta.toml").string().c_str(), text.data(), text.size());
 }
 
 struct Meta {
@@ -212,13 +217,14 @@ void record_game(Meta& m) {
 /** @brief Writes a library entry's disc.cue, the file the runtime boots.
  *
  * The cue declares one MODE2/2352 data track referencing the entry's copy
- * by its fixed name disc.bin, and replaces any existing cue.
+ * by its fixed name disc.bin, and replaces any existing cue atomically
+ * (synced).
  * @param entry The library entry's directory. */
 void write_cue(const fs::path& entry) {
-    std::ofstream f(entry / "disc.cue", std::ios::trunc);
-    f << "FILE \"disc.bin\" BINARY\n"
-         "  TRACK 01 MODE2/2352\n"
-         "    INDEX 01 00:00:00\n";
+    static const char kCue[] = "FILE \"disc.bin\" BINARY\n"
+                               "  TRACK 01 MODE2/2352\n"
+                               "    INDEX 01 00:00:00\n";
+    (void)op_atomic_write_file((entry / "disc.cue").string().c_str(), kCue, sizeof kCue - 1);
 }
 
 /** @brief Report whether an entry is this game's: recorded for it, or unidentified.

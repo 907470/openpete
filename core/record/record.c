@@ -29,6 +29,7 @@
 // init warns once if --record was requested). See core/CMakeLists.txt.
 
 #include "openpete_record.h"
+#include "openpete_atomic_file.h"
 #include "openpete_crash.h"
 #include "openpete_log.h"
 #include "openpete_time.h"   /* OP_VBL_HZ_DEN / OP_VBL_HZ_NUM / OP_TICK_HZ */
@@ -91,6 +92,9 @@ static struct {
 
     /* Encoder parameters (copied from opts; opts strings outlive us). */
     const char*  path;
+    /* "<path>.part": the stream is written here and renamed over path once
+     * the trailer is written; empty when the muxer opens no file. */
+    char         part_path[OP_ATOMIC_PATH_MAX + 8];
     const char*  encoder_name;
     const char*  pixfmt_name;
     int          crf;
@@ -548,10 +552,12 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
     rec_setup_audio();
 
     if (!(g_rec.fmt->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&g_rec.fmt->pb, g_rec.path, AVIO_FLAG_WRITE);
+        snprintf(g_rec.part_path, sizeof g_rec.part_path, "%s.part", g_rec.path);
+        ret = avio_open(&g_rec.fmt->pb, g_rec.part_path, AVIO_FLAG_WRITE);
         if (ret < 0) {
             OPL_ERROR_F("record", "avio_open(%s) failed: %s",
-                        g_rec.path, av_err2str(ret));
+                        g_rec.part_path, av_err2str(ret));
+            g_rec.part_path[0] = '\0';
             return -1;
         }
     }
@@ -850,6 +856,28 @@ static void rec_teardown(void) {
     if (g_rec.mutex) { SDL_DestroyMutex(g_rec.mutex);    g_rec.mutex = NULL; }
 }
 
+/** @brief Rename the closed `<path>.part` stream over path, or leave it in place after a failure.
+ *
+ * Runs after rec_teardown closed the stream. The rename is the unsynced
+ * capture class (op_atomic_rename), so a previous file at path stays whole
+ * until a finished recording replaces it. A stream whose encoder setup
+ * failed holds no picture and is removed; after a later encoder or trailer
+ * failure the `.part` file is kept and named in the log. */
+static void rec_publish_part(void) {
+    if (!g_rec.part_path[0]) return;
+    if (!g_rec.initialized) {
+        (void)remove(g_rec.part_path);
+        return;
+    }
+    if (g_rec.failed) {
+        OPL_WARN_F("record", "recording incomplete; %s left in place, %s not replaced",
+                   g_rec.part_path, g_rec.path);
+        return;
+    }
+    if (op_atomic_rename(g_rec.part_path, g_rec.path, OP_ATOMIC_NOSYNC) == 0)
+        OPL_INFO_F("record", "renamed %s to %s", g_rec.part_path, g_rec.path);
+}
+
 void openpete_record_shutdown(void) {
     if (!g_rec.enabled)
         return;
@@ -880,9 +908,11 @@ void openpete_record_shutdown(void) {
                 rec_encode_audio_frame(NULL);      /* flush the AAC encoder */
             }
             int ret = av_write_trailer(g_rec.fmt);
-            if (ret < 0)
+            if (ret < 0) {
                 OPL_ERROR_F("record", "av_write_trailer failed: %s",
                             av_err2str(ret));
+                g_rec.failed = 1;
+            }
         }
         OPL_INFO_F("record", "finalized %s: %llu frame(s) captured, "
                              "%llu dropped, audio=%s",
@@ -896,6 +926,7 @@ void openpete_record_shutdown(void) {
     }
 
     rec_teardown();
+    rec_publish_part();
     memset(&g_rec, 0, sizeof(g_rec));
 }
 

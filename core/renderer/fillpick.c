@@ -4,6 +4,7 @@
 // (games/common/renderer/terrain.c).
 
 #include "openpete_fillpick.h"
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 
 #include <stdio.h>
@@ -114,11 +115,12 @@ static const char* fp_word(int verdict) {
 
 int openpete_fillpick_save(void) {
     const char* path = openpete_fillpick_session_path();
-    FILE* f = fopen(path, "w");
-    if (!f) {
+    op_atomic_file_t af;
+    if (op_atomic_file_open(&af, path) != 0) {
         OPL_WARN_F("fillpick", "cannot write %s", path);
         return 0;
     }
+    FILE* f = af.f;
     fprintf(f, "# openpete fill-tag pick session - verdicts recorded in-game "
                "with the P-key inspector.\n"
                "# Fold into tests/freecam/fill-tags.verdicts (and regenerate\n"
@@ -134,7 +136,10 @@ int openpete_fillpick_save(void) {
         fprintf(f, "%-6s %s %d %d\n", fp_word(e->verdict), e->level_name,
                 e->sec, e->face);
     }
-    fclose(f);
+    if (op_atomic_file_commit(&af) != 0) {
+        OPL_WARN_F("fillpick", "cannot write %s", path);
+        return 0;
+    }
     return 1;
 }
 

@@ -1758,21 +1758,11 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         /* copy: a fresh inode (a fresh path on Windows) guarantees the
          * loader opens a fresh object rather than handing back the one
          * already resident */
-        FILE* in = fopen(src_obj, "rb");
-        FILE* outf = in ? fopen(hot_path, "wb") : NULL;
-        if (!in || !outf) {
-            if (in) fclose(in);
-            if (outf) fclose(outf);
+        if (op_atomic_copy_file(src_obj, hot_path) != 0) {
             OPL_ERROR_F("mods", "%s: reload stage copy failed - keeping "
                         "the running object", mod->id);
             return;
         }
-        unsigned char cbuf[8192];
-        size_t got;
-        while ((got = fread(cbuf, 1, sizeof cbuf, in)) > 0)
-            fwrite(cbuf, 1, got, outf);
-        fclose(in);
-        fclose(outf);
     }
     void* dl = NULL;
     mod_entry_fn entry = mod_reload_open(mod, hot_path, obj_kind, &dl);
@@ -4104,8 +4094,9 @@ static int mod_compile(const char* mod_dir, const char* id,
         return -1;
     }
     if (stamp) {
-        FILE* f = fopen(stamp_path, "wb");
-        if (f) { fprintf(f, "%s\n", key); fclose(f); }
+        char line[80];
+        int ln = snprintf(line, sizeof line, "%s\n", key);
+        (void)op_atomic_write_file(stamp_path, line, (size_t)ln);
     }
     return 0;
 }
@@ -4656,9 +4647,10 @@ static int zip_extract_all(mz_zip_archive* zip, const char* dest, size_t wrap_le
  * zip root, or inside a single top-level directory that wraps every
  * entry (the layout zipping the folder produces); that wrapper is
  * stripped on extraction. A changed zip is extracted into
- * `.unpacked/<id>.new/`, which then replaces the previous tree whole, so
- * a file the new version dropped (a source, a texture, a shader) does not
- * survive, and a failed extraction leaves the previous tree untouched.
+ * `.unpacked/<id>.new/`, which then replaces the previous tree whole by
+ * renaming it aside (op_atomic_replace_dir), so a file the new version
+ * dropped (a source, a texture, a shader) does not survive, and a failed
+ * extraction or swap leaves the previous tree in place.
  * An entry path that is absolute or contains ".." aborts the archive.
  * @return 0 when unpacked or already current; -1 when the zip is missing
  *         or unreadable, an entry is unsafe or fails to extract, no
@@ -4723,7 +4715,7 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
         (void)mod_rmtree(staging);
         return -1;
     }
-    if (mod_rmtree(dest) != 0 || rename(staging, dest) != 0) {
+    if (op_atomic_replace_dir(staging, dest, mod_rmtree) != 0) {
         OPL_ERROR_F("mods", "%s.zip: cannot replace %s (a file in it is in "
                     "use?) - skipped", id, dest);
         (void)mod_rmtree(staging);

@@ -136,6 +136,23 @@ int openpete_devui_seed_ini(void)
     return 1;
 }
 
+/** @brief Write imgui's window state to the overlay's ini path when imgui asks for a save, or unconditionally when forced.
+ *
+ * io.IniFilename is NULL, so imgui never writes the file itself: it raises
+ * io.WantSaveIniSettings and this replaces the file atomically (synced) from
+ * SaveIniSettingsToMemory. A failed write leaves the previous file whole and
+ * is retried at the next request.
+ * @param force Save even without a pending request once settings are
+ *        loaded (at shutdown, where imgui itself would have saved). */
+static void devui_save_ini(bool force)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    if (force ? !ImGui::GetCurrentContext()->SettingsLoaded : !io.WantSaveIniSettings) return;
+    size_t n = 0;
+    const char *text = ImGui::SaveIniSettingsToMemory(&n);
+    if (op_atomic_write_file(s_ini_path, text, n) == 0) io.WantSaveIniSettings = false;
+}
+
 int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
 {
     if (s_ctx) return dev == s_dev ? 1 : 0;
@@ -152,7 +169,8 @@ int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
      * file per game: the games' overlays differ in their windows. */
     (void)openpete_devui_seed_ini();
     devui_ini_path(s_ini_path, sizeof s_ini_path, game_get_id());
-    io.IniFilename = s_ini_path;
+    io.IniFilename = nullptr;   /* saved by devui_save_ini */
+    ImGui::LoadIniSettingsFromDisk(s_ini_path);
     ImGui::StyleColorsDark();
     ImGui::GetStyle().Alpha = 0.96f;
 
@@ -215,6 +233,7 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
 void openpete_devui_shutdown(void)
 {
     if (!s_ctx) return;
+    devui_save_ini(true);
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -2477,6 +2496,7 @@ void openpete_devui_render(struct rhi_device *dev)
     if (always_n > 0) draw_always_sections();
     if (fillpick) { draw_fillpick_crosshair(); draw_fillpick_panel(); }
     ImGui::Render();
+    devui_save_ini(false);
     devui_publish_io_wants();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
 }

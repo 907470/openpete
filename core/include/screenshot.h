@@ -13,8 +13,8 @@ extern "C" {
  *
  * Reads the pixels with SDL_RenderReadPixels and converts them to RGBA32
  * when the renderer's format differs; the rows are already top-down. A path
- * ending in `.png` (any case) is written with stb_image_write, any other
- * path as BMP with SDL_SaveBMP. Used by run.c's SDL-renderer screenshot
+ * ending in `.png` (any case) is written with
+ * openpete_write_png_rgba_stride, any other path as BMP with SDL_SaveBMP. Used by run.c's SDL-renderer screenshot
  * path.
  * @param renderer Renderer to read.
  * @param path Output path.
@@ -45,11 +45,28 @@ void openpete_screenshot_format_path(const char* tmpl, int frame,
  * @return 1 for a `.png` suffix, else 0. */
 int  openpete_screenshot_path_is_png(const char* path);
 
-/** @brief Write a top-down RGBA8 buffer to a PNG file with stb_image_write.
+/** @brief Write a top-down RGBA8 buffer with a row stride to a PNG file, replacing it atomically.
  *
- * No flip or channel swap is applied; the native renderer's readbacks
- * already return top-down R,G,B,A. Alpha is written as given. Used by the
- * native screenshot paths and the identity audit.
+ * The PNG is encoded with stb_image_write into a temporary beside @p path
+ * and renamed over it without a device flush (OP_ATOMIC_NOSYNC, the
+ * capture class), so a failed or interrupted write leaves any previous
+ * file whole. No flip or channel swap is applied; alpha is written as
+ * given.
+ * @param path Output path.
+ * @param pixels h rows of w*4 bytes, @p stride bytes apart.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @param stride Bytes from one row's start to the next.
+ * @return 0 on success; 1 on a NULL argument, a non-positive dimension,
+ *         or a write failure. */
+int  openpete_write_png_rgba_stride(const char* path, const void* pixels, int w, int h,
+                                    int stride);
+
+/** @brief Write a top-down, packed RGBA8 buffer to a PNG file, replacing it atomically.
+ *
+ * openpete_write_png_rgba_stride with a stride of w*4. The native
+ * renderer's readbacks already return top-down R,G,B,A. Alpha is written
+ * as given. Used by the native screenshot paths and the identity audit.
  * @param path Output path.
  * @param pixels w*h*4 bytes, rows packed.
  * @param w Width in pixels.

@@ -51,6 +51,7 @@ static SDL_Mutex *reg_mx(void) { if (!s_reg_mx) s_reg_mx = SDL_CreateMutex(); re
 
 #include <SDL3/SDL.h>  /* SDL_GetBasePath - same discovery music_override uses */
 #include "openpete_paths.h" /* the writable user pack root */
+#include "screenshot.h"     /* openpete_write_png_rgba: the dump's PNGs */
 #include "mod_vec.h"
 #include <dirent.h>
 
@@ -1503,8 +1504,6 @@ void texture_pack_cat_census(const texture_pack_id *id, int category, unsigned t
 
 /* ---- dump tool ------------------------------------------------------------ */
 
-int stbi_write_png(const char *filename, int w, int h, int comp,
-                   const void *data, int stride_in_bytes);   /* impl: screenshot.c TU */
 
 /* Dump granularity: per-tri query boxes explode into clipped variants
  * (11k files/run measured), so boxes accumulate rather than dumping per draw.
@@ -1683,7 +1682,7 @@ void texture_pack_dump_draw(const texture_pack_id *id,
              (unsigned long long)id->phash, id->bpp);
     char path[740];
     snprintf(path, sizeof path, "%s/%s", dir, u->name);
-    stbi_write_png(path, Wout, Hout, 4, px, Wout * 4);
+    (void)openpete_write_png_rgba(path, px, Wout, Hout);
     free(px);
 }
 

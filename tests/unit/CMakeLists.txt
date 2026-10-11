@@ -178,6 +178,24 @@ if(NOT WIN32)
              COMMAND memcard_test ${CMAKE_CURRENT_BINARY_DIR}/memcard_test.d)
 endif()
 
+# atomic_write_test - every write class of the atomic-file helper (synced,
+# copy, unsynced, the .part rename, the directory swap) against an injected
+# OPENPETE_WRITE_FAIL: the previous file or tree must be byte-identical, and
+# the run refuses success when no failure was injected. POSIX only: the
+# directory case uses dirent and rmdir.
+if(NOT WIN32)
+    add_executable(atomic_write_test
+        atomic_write_test.c
+        ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(atomic_write_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/include/psxrt)
+    set_target_properties(atomic_write_test PROPERTIES C_STANDARD 11)
+    add_test(NAME atomic_write_test
+             COMMAND atomic_write_test ${CMAKE_CURRENT_BINARY_DIR}/atomic_write_test.d)
+endif()
+
 # config_resolve_test - openpete.toml precedence. The resolver decides which
 # of ~10 layers wins each knob and then materializes exactly one spelling of
 # it; this pins that ordering down so an edit can't quietly re-order the

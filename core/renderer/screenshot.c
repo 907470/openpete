@@ -1,6 +1,7 @@
 // core/renderer/screenshot.c - read renderer pixels and save as PNG.
 
 #include "screenshot.h"
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_paths.h"
 
@@ -14,6 +15,35 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+
+/** @brief stb_image_write output callback: append the encoded bytes to the atomic replacement's temporary.
+ *
+ * A short write sets the stream's error flag, which op_atomic_file_commit
+ * refuses.
+ * @param ctx The op_atomic_file_t.
+ * @param data Encoded bytes.
+ * @param size Their count. */
+static void png_to_atomic(void* ctx, void* data, int size) {
+    op_atomic_file_t* af = (op_atomic_file_t*)ctx;
+    if (size > 0) (void)fwrite(data, 1, (size_t)size, af->f);
+}
+
+int openpete_write_png_rgba_stride(const char* path, const void* pixels, int w, int h,
+                                   int stride) {
+    if (!path || !pixels || w <= 0 || h <= 0) return 1;
+    op_atomic_file_t af;
+    if (op_atomic_file_open_ex(&af, path, OP_ATOMIC_NOSYNC) != 0) return 1;
+    if (!stbi_write_png_to_func(png_to_atomic, &af, w, h, 4, pixels, stride)) {
+        OPL_ERROR_F("screenshot", "PNG encode for %s failed", path);
+        op_atomic_file_abort(&af);
+        return 1;
+    }
+    return op_atomic_file_commit(&af) == 0 ? 0 : 1;
+}
+
+int openpete_write_png_rgba(const char* path, const void* pixels, int w, int h) {
+    return openpete_write_png_rgba_stride(path, pixels, w, h, w * 4);
+}
 
 int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path) {
     if (!renderer || !path) return -1;
@@ -41,8 +71,8 @@ int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path) {
     /* SDL_RenderReadPixels gives top-down; both PNG and SDL_SaveBMP want
      * top-down, so no flip needed. */
     if (openpete_screenshot_path_is_png(path)) {
-        if (!stbi_write_png(path, w, h, 4, surface->pixels, surface->pitch)) {
-            OPL_ERROR_F("screenshot", "stbi_write_png to %s failed", path);
+        if (openpete_write_png_rgba_stride(path, surface->pixels, w, h, surface->pitch) != 0) {
+            OPL_ERROR_F("screenshot", "PNG write to %s failed", path);
             rc = -1;
         } else {
             OPL_INFO_F("screenshot", "saved %dx%d PNG to %s", w, h, path);

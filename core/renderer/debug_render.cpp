@@ -14,7 +14,6 @@
 #include "PsyX/PsyX_public.h"
 #include "PsyX/PsyX_render.h"
 #include "screenshot.h"
-#include "stb_image_write.h"
 #include <SDL3/SDL.h>
 
 #include <cstdlib>
@@ -148,7 +147,7 @@ extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
          * exe did not. RGBA byte order: alpha is byte 3 of each pixel. */
         for (size_t i = 0; i < (size_t)w * (size_t)h; ++i)
             pixels[i * 4u + 3u] = 0xFFu;
-        stbi_write_png(out_path, w, h, 4, pixels, (int)pitch);
+        (void)openpete_write_png_rgba_stride(out_path, pixels, w, h, (int)pitch);
     } else {
         /* glReadPixels(GL_BGRA, GL_UNSIGNED_BYTE) stores bytes B,G,R,A -
          * the 32-bit little-endian value 0xAARRGGBB, i.e. ARGB8888. */
@@ -171,13 +170,6 @@ extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
  *        SCREENSHOT.BMP. */
 extern "C" void openpete_psyx_take_screenshot(const char* path) {
     openpete_psyx_take_screenshot_ext(path, nullptr, nullptr);
-}
-
-/* Top-down RGBA8 to PNG, with no flip or swizzle. */
-extern "C" int openpete_write_png_rgba(const char* path, const void* pixels,
-                                       int w, int h) {
-    if (!path || !pixels || w <= 0 || h <= 0) return 1;
-    return stbi_write_png(path, w, h, 4, pixels, w * 4) ? 0 : 1;
 }
 
 /** @brief Submit the debug triangle for the current scene through PsyCross.

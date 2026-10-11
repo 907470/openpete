@@ -9,6 +9,7 @@
 // content, so a modified binary is carved and recompiled like the retail one
 // (recomp_build.cpp warns when its hash differs).
 #include "recomp_attach.h"
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
@@ -101,10 +102,10 @@ extern "C" int openpete_extract_wad_entry_inputs(const char* cue_path,
     uint8_t* exe = openpete_psx_read_exe_from_image(reader, game_get_exe_filename(), &exe_size);
     if (!exe) return -1;
     {
-        std::ofstream f(std::filesystem::path(out_dir) / "PSX.EXE", std::ios::binary);
-        f.write(reinterpret_cast<const char*>(exe), (std::streamsize)exe_size);
+        const std::string exe_path = (std::filesystem::path(out_dir) / "PSX.EXE").string();
+        const int wrc = op_atomic_write_file(exe_path.c_str(), exe, exe_size);
         std::free(exe);
-        if (!f.good()) return -1;
+        if (wrc != 0) return -1;
     }
 
     disc_image_entry_t wad;
@@ -132,9 +133,9 @@ extern "C" int openpete_extract_wad_entry_inputs(const char* cue_path,
         for (uint32_t i = 0; ok && i < n; i++)
             ok = disc_image_read_user(reader, wad.lba + off / kSector + i,
                                       buf.data() + (size_t)i * kSector) == 0;
-        std::ofstream f(std::filesystem::path(out_dir) / (name + ".ovl"), std::ios::binary);
-        if (ok) f.write(reinterpret_cast<const char*>(buf.data()), len);
-        if (ok && f.good()) carved++;
+        const std::string ovl_path = (std::filesystem::path(out_dir) / (name + ".ovl")).string();
+        if (ok) ok = op_atomic_write_file(ovl_path.c_str(), buf.data(), len) == 0;
+        if (ok) carved++;
         else OPL_ERROR_F("extract", "carve failed: %s (WAD entry %d)", name.c_str(), e);
     }
     OPL_INFO_F("extract", "recomp inputs: PSX.EXE + %d/%zu overlays -> %s",

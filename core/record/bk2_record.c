@@ -20,6 +20,7 @@
  */
 #include "bk2_record.h"
 #include "bk2_movie.h"   /* bk2_frame_t */
+#include "openpete_atomic_file.h"
 #include "openpete_discontinuity.h"
 #include "openpete_fiber.h"      /* openpete_cd_load_delay */
 #include "openpete_input_log.h"
@@ -90,9 +91,10 @@ int bk2_record_begin(const char* path, const char* args_sidecar) {
     return 0;
 }
 
-/** @brief Write "<bk2_path>.args" with the sidecar content.
+/** @brief Replace "<bk2_path>.args" with the sidecar content atomically (synced).
  *
- * Best-effort: a failure is logged and never fails the recording.
+ * Best-effort: a failure is logged, leaves any previous sidecar whole, and
+ * never fails the recording.
  * @param bk2_path The .bk2 path.
  * @param content Sidecar text, written verbatim. */
 static void write_args_sidecar(const char* bk2_path, const char* content) {
@@ -105,18 +107,10 @@ static void write_args_sidecar(const char* bk2_path, const char* content) {
     memcpy(apath, bk2_path, plen);
     memcpy(apath + plen, ".args", 6);
 
-    FILE* f = fopen(apath, "wb");
-    if (!f) {
-        OPL_ERROR_F("bk2-record", "cannot open %s for write: %s", apath, strerror(errno));
-        free(apath);
-        return;
-    }
-    size_t clen = strlen(content);
-    if (clen && fwrite(content, 1, clen, f) != clen)
-        OPL_ERROR_F("bk2-record", "short write on %s", apath);
+    if (op_atomic_write_file(apath, content, strlen(content)) != 0)
+        OPL_ERROR_F("bk2-record", "args sidecar %s not written", apath);
     else
         OPL_INFO_F("bk2-record", "wrote args sidecar %s", apath);
-    fclose(f);
     free(apath);
 }
 
@@ -305,12 +299,21 @@ int bk2_record_finalize(void) {
     memcpy(p, kInputTrailer, trailer_len); p += trailer_len;
     *p = '\0';
 
-    /* Pack into a .bk2 zip alongside Header.txt. */
+    /* The launch-args sidecar goes first, so a movie on disk always has the
+     * sidecar it was recorded under (`--bk2 <path>` reads it on replay). */
+    if (s_rec.args)
+        write_args_sidecar(s_rec.path, s_rec.args);
+
+    /* Pack into a .bk2 zip alongside Header.txt, on the heap; the finished
+     * archive replaces the file in one rename, so a failed or interrupted
+     * write leaves the previous movie whole. */
     mz_zip_archive zip;
     memset(&zip, 0, sizeof(zip));
     int rc = -1;
-    if (!mz_zip_writer_init_file(&zip, s_rec.path, 0)) {
-        OPL_ERROR_F("bk2-record", "cannot open %s for write: %s",
+    void* zbuf = NULL;
+    size_t zlen = 0;
+    if (!mz_zip_writer_init_heap(&zip, 0, 0)) {
+        OPL_ERROR_F("bk2-record", "cannot start the archive for %s: %s",
                     s_rec.path,
                     mz_zip_get_error_string(mz_zip_get_last_error(&zip)));
         goto out;
@@ -336,18 +339,19 @@ int bk2_record_finalize(void) {
         OPL_ERROR_F("bk2-record", "SyncSettings.json add failed");
         goto out_close;
     }
-    if (!mz_zip_writer_finalize_archive(&zip)) {
+    if (!mz_zip_writer_finalize_heap_archive(&zip, &zbuf, &zlen)) {
         OPL_ERROR_F("bk2-record", "finalize failed");
         goto out_close;
     }
+    if (op_atomic_write_file(s_rec.path, zbuf, zlen) != 0) {
+        OPL_ERROR_F("bk2-record", "cannot write %s", s_rec.path);
+        goto out_close;
+    }
     OPL_INFO_F("bk2-record", "wrote %d frames to %s", frame_count, s_rec.path);
-    /* Drop the launch-args sidecar next to the movie now that the .bk2
-     * exists, so `--bk2 <path>` picks it up on replay. */
-    if (s_rec.args)
-        write_args_sidecar(s_rec.path, s_rec.args);
     rc = 0;
 out_close:
     mz_zip_writer_end(&zip);
+    mz_free(zbuf);
 out:
     free(log);
     free(s_rec.path); free(s_rec.args);

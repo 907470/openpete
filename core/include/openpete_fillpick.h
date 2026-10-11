@@ -175,9 +175,11 @@ const char* openpete_fillpick_session_path(void);
  *
  * Writes a header naming scripts/fill-tags-apply.py, then one
  * "<verdict> <level name> <sector> <face>" line per FILL or NOFILL record
- * in record order; cleared records are omitted. Called by
- * openpete_fillpick_mark and openpete_fillpick_undo; no other caller.
- * @return 1 on success, 0 when the file cannot be opened for writing. */
+ * in record order; cleared records are omitted. The file is replaced
+ * atomically (synced), so a failed write leaves the previous session whole.
+ * Called by openpete_fillpick_mark and openpete_fillpick_undo; no other
+ * caller.
+ * @return 1 on success, 0 when the file cannot be written. */
 int  openpete_fillpick_save(void);
 
 #ifdef __cplusplus

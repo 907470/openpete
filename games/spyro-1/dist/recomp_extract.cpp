@@ -13,6 +13,7 @@
 // entry is {int byte_offset, int byte_length} into the WAD; reads
 // resolve to LBA 37 + offset/2048 (offsets are sector-aligned).
 #include "recomp_attach.h"
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_disc_image.h"
 #include "openpete_disc_trace.h"
@@ -23,7 +24,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,7 +69,7 @@ OffsetLength read_entry(const uint8_t* hdr, size_t off) {
  * negative or non-sector-aligned offset and a failed sector read are logged.
  * @param reader The opened disc.
  * @param e The entry: byte offset into WAD.WAD and byte length.
- * @param out The output file, created or truncated.
+ * @param out The output file, replaced atomically (synced).
  * @return true when every sector read and the file write succeed, else
  *         false. */
 bool carve(disc_image_t* reader, const OffsetLength& e,
@@ -90,10 +90,7 @@ bool carve(disc_image_t* reader, const OffsetLength& e,
             return false;
         }
     }
-    std::ofstream f(out, std::ios::binary);
-    if (!f) return false;
-    f.write(reinterpret_cast<const char*>(buf.data()), e.length);
-    return f.good();
+    return op_atomic_write_file(out.string().c_str(), buf.data(), (size_t)e.length) == 0;
 }
 
 }  // namespace
@@ -133,10 +130,10 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
     uint8_t* exe = openpete_psx_read_exe_from_image(reader, game_get_exe_filename(), &exe_size);
     if (!exe) return -1;
     {
-        std::ofstream f(std::filesystem::path(out_dir) / "PSX.EXE", std::ios::binary);
-        f.write(reinterpret_cast<const char*>(exe), (std::streamsize)exe_size);
+        const std::string exe_path = (std::filesystem::path(out_dir) / "PSX.EXE").string();
+        const int wrc = op_atomic_write_file(exe_path.c_str(), exe, exe_size);
         std::free(exe);
-        if (!f.good()) return -1;
+        if (wrc != 0) return -1;
     }
 
     uint8_t hdr[kSectorSize];
