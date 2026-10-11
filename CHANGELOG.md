@@ -18,6 +18,9 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
+- Mod SDK: the headers at the root of `sdk/` now include the selected game's headers from `sdk/games/<game>/`;
+  a build line using `-I sdk` alone still compiles as Spyro 1, and naming a game the SDK does not carry stops
+  with an error naming that game.
 - A setting in `openpete.toml` or an `OPENPETE_*` environment variable whose value is the wrong type or out of range
   (`ssaa = 0`, `lod = "turbo"`, `OPENPETE_MOUSE=maybe`) no longer stops the game from starting: it prints a warning
   and the setting keeps its default. The same value typed on the command line, and any refused value under
