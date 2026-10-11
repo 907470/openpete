@@ -81,7 +81,7 @@ case "$GAME" in
   *) echo "unknown game: $GAME" >&2; exit 64;;
 esac
 case "$EXE" in
-  linux)   BIN="build/linux-release/games/$GAME/openpete-spyro$N";;
+  linux)   BIN="build/linux-release/openpete";;
   windows) BIN="build/windows-mingw/games/$GAME/openpete-spyro$N.exe"
            # The Mesa overrides below are Linux loader settings and do not
            # reach a Windows child (see scripts/lib/wslenv.sh); the exe uses
@@ -120,7 +120,7 @@ capture_level() {
   local lvl="$1" log="$OUT/$1.log"
   env "${WSLENV_ARGS[@]}" \
   "$BIN" --headless --disc "$DISC" --disc-cache 0 --skip-to-level "$lvl" \
-         --no-card --mute 1 --vibration 0 \
+         --no-card --mute 1 --vibration 0 --input-lock \
          --screenshot-on-tick "$TICK" \
          --screenshot-output "$OUT/$lvl-{n}.png" \
          --frame-limit "$FRAME_LIMIT" --max-runtime-seconds 300 \

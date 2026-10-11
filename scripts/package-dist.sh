@@ -27,7 +27,11 @@
 # path exercised.
 #
 # Inputs: the corresponding *-launcher preset build (linux-release-launcher /
-# windows-mingw-launcher) with its staged recomp/ directory. --toolchain
+# windows-mingw-launcher) with its staged recomp/ directory: on Linux the one
+# executable `openpete` at the tree root, staged into the archive under the
+# game's executable name (openpete-<tag>, which selects the game when no disc
+# does), with the files beside it; on Windows the game's own executable in
+# games/<game>/. --toolchain
 # points at an UNPACKED compiler tree to bundle: llvm-mingw (ucrt
 # x86_64) for Windows, a trimmed llvm.org clang for Linux
 # (scripts/setup_linux_clang.sh produces one in .tools/clang). Without
@@ -156,10 +160,10 @@ fi
 # subshells, where a relative --out no longer resolves.
 OUT=$(realpath -m "$OUT")
 
-stage_common() {  # stage_common <build-game-dir>
+stage_common() {  # stage_common <exe-dir>
     local B="$1"
-    mkdir -p "$STAGE/recomp"
-    cp -a "$B/recomp/manifest" "$STAGE/recomp/"
+    mkdir -p "$STAGE/recomp/manifest"
+    cp -a "$B/recomp/manifest/$GAME" "$STAGE/recomp/manifest/"
     cp -a "$B/recomp/src"      "$STAGE/recomp/"
     # The kit is compiled on the user's machine, so it ships as readable
     # C - but its comments are engineering notes about the host tree.
@@ -175,6 +179,12 @@ stage_common() {  # stage_common <build-game-dir>
         # before -I sdk, so an archive whose SDK lacks its game's tree
         # compiles no mod and is refused here.
         cp -a "$B/sdk" "$STAGE/sdk"
+        # The one executable's SDK holds every built game's tree; the
+        # archive carries its own game's.
+        local g
+        for g in "$STAGE"/sdk/games/*/; do
+            [[ "$(basename "$g")" == "$GAME" ]] || rm -rf "${g:?}"
+        done
         [[ -f "$STAGE/sdk/games/$GAME/openpete_game.h" ]] \
             || { echo "[package-dist] $B/sdk has no games/$GAME/openpete_game.h:" \
                       "build the ${GAME} sdk stage target" >&2; exit 1; }
@@ -238,8 +248,8 @@ sys.exit(0 if sys.argv[2] in mod_games(open(sys.argv[1], encoding="utf-8").read(
     # The documentation site (the `docs` CMake target) beside the exe:
     # User always, Modding with the SDK. The target builds both sets, so a
     # missing one means mkdocs was absent at build time.
-    local site="$B/docs-site-user"
-    [[ $WITH_MOD_SDK -eq 1 ]] && site="$B/docs-site"
+    local site="$DOCS/docs-site-user"
+    [[ $WITH_MOD_SDK -eq 1 ]] && site="$DOCS/docs-site"
     [[ -f "$site/index.html" ]] \
         || { echo "[package-dist] $site/index.html missing: install" \
                   "mkdocs-material and build the docs target" >&2; exit 1; }
@@ -447,11 +457,11 @@ build_appimage() {  # build_appimage <stage-dir>
     echo "[package] $IMG ready"
 }
 
-package_linux() {  # package_linux <build-game-dir>
+package_linux() {  # package_linux <exe-dir>
     local B="$1"
-    [[ -x "$B/$EXE" ]] || { echo "build linux-release-launcher first ($B/$EXE)" >&2; exit 64; }
+    [[ -x "$BIN" ]] || { echo "build linux-release-launcher first ($BIN)" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
-    cp "$B/$EXE" "$STAGE/"
+    cp "$BIN" "$STAGE/$EXE"
     # Strip debug info from the SHIPPED copy only (RelWithDebInfo embeds
     # thousands of absolute build paths - a username/layout leak). The
     # build-tree exe keeps its symbols for dev debugging. Exports live in
@@ -487,11 +497,11 @@ package_linux() {  # package_linux <build-game-dir>
     if [[ $APPIMAGE -eq 1 ]]; then build_appimage "$STAGE"; fi
 }
 
-package_windows() {  # package_windows <build-game-dir>
+package_windows() {  # package_windows <exe-dir>
     local B="$1"
-    [[ -f "$B/$EXE.exe" ]] || { echo "build windows-mingw-launcher first ($B/$EXE.exe)" >&2; exit 64; }
+    [[ -f "$BIN" ]] || { echo "build windows-mingw-launcher first ($BIN)" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
-    cp "$B/$EXE.exe" "$STAGE/"
+    cp "$BIN" "$STAGE/"
     # Strip debug info from the SHIPPED copy only (same rationale as the
     # Linux branch). PE exports live in the export table data directory,
     # not the COFF symbol table, and the first-boot module links against
@@ -551,12 +561,18 @@ for GAME in "${GAMES[@]}"; do
     EXE="openpete-${GAME//-/}"
     NAME="${EXE}-${VERSION}-${PLATFORM}-x86_64"
     STAGE="$OUT/$NAME"
+    # B: the directory of the executable that runs the game, where its
+    # recomp/ and sdk/ stage; BIN: that executable; DOCS: the directory the
+    # docs target writes the sites into.
     case "$PLATFORM" in
-    linux)   B="build/linux-release-launcher/games/$GAME"; ART="$NAME.tar.xz" ;;
-    windows) B="build/windows-mingw-launcher/games/$GAME"; ART="$NAME.zip" ;;
+    linux)   TREE=build/linux-release-launcher; B="$TREE"; BIN="$B/openpete"
+             ART="$NAME.tar.xz" ;;
+    windows) TREE=build/windows-mingw-launcher; B="$TREE/games/$GAME"
+             BIN="$B/$EXE.exe"; ART="$NAME.zip" ;;
     esac
+    DOCS="$TREE/games/spyro-1"
     if [[ $DRY_RUN -eq 1 ]]; then
-        echo "[package] dry run: $GAME: $B/$EXE$([[ $PLATFORM == windows ]] && echo .exe) -> $OUT/$ART"
+        echo "[package] dry run: $GAME: $BIN -> $OUT/$ART"
         continue
     fi
     "package_$PLATFORM" "$B"

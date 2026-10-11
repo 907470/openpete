@@ -11,7 +11,7 @@ Building is covered in [`building.md`](building.md).
 ```bash
 cmake --build --preset linux-release
 
-./build/linux-release/games/spyro-1/openpete-spyro1 \
+./build/linux-release/openpete \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
     --headless \
     --frame-limit 60 \

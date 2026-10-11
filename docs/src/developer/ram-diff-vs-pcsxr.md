@@ -106,7 +106,7 @@ PCSXR_DUMP_PC=$ORACLE_PC PCSXR_DUMP_OUT=/tmp/oracle.ram PCSXR_DUMP_CPU=/tmp/orac
         --bios $BIOS --iso $DISC --run --dofile $SCRIPT
 
 OPENPETE_RUN_RECOMP=$SEED_PC \
-openpete/build/linux-release/games/spyro-1/openpete-spyro1 \
+openpete/build/linux-release/openpete \
     --disc $DISC --headless \
     --seed-ram /tmp/seed.ram --seed-cpu /tmp/seed.cpu \
     --halt-at-pc $ORACLE_PC --ram-dump-output /tmp/op.ram

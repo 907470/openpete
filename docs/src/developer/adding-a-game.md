@@ -85,8 +85,10 @@ openpete_add_game(<game>
 
 `openpete_add_game` builds the recomp module (`<tag>_recomp_module`, the
 generated code plus `games/common/overlay_dispatch.c` and `module_main.c`)
-and the executable (`openpete-<tag>`, `<tag>` = the id without its hyphen):
-the entry TU, `game_extras_impl.c`, the generated identity TU, the shared
+and the game's target (`openpete-<tag>`, `<tag>` = the id without its
+hyphen), whose host object library `<tag>_host` links into the one
+executable `build/<preset>/openpete` on Linux (a per-game executable of that
+name elsewhere): the entry TU, `game_extras_impl.c`, the generated identity TU, the shared
 PSYQ-to-PsyCross layer with its per-game hooks forwarded to the game's
 descriptor, the freecam body, the write census, and the game's PSYQ stub
 address table (`gen/psyq_stub_table.c`, `<tag>_psyq_stub_table`). The
@@ -131,7 +133,7 @@ or NULL takes the inert default the header documents.
 ## 6. Running
 
 ```bash
-build/linux-release/games/<game>/openpete-<tag> --headless --no-card \
+build/linux-release/openpete --headless --no-card \
   --disc games/<game>/<game>/build/<serial>.cue
 ```
 

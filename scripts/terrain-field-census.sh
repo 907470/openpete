@@ -4,7 +4,7 @@
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="${FIELD_CENSUS_CACHE:-$REPO/build/field-census}"; mkdir -p "$S"; S="$(cd "$S" && pwd)"
-BIN=$REPO/build/linux-release/games/spyro-1/openpete-spyro1
+BIN=$REPO/build/linux-release/openpete
 DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
 export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe

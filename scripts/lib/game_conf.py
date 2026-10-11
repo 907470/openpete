@@ -17,6 +17,29 @@ def exe_name(game):
     return "openpete-" + game.replace("-", "")
 
 
+def tree_exe(tree, game):
+    """The executable that runs `game` in the build tree `tree`.
+
+    A shared-linkage Linux tree builds one executable, `openpete` at its
+    root, whose disc argument selects the game; a static tree builds the
+    game's own, games/<game>/openpete-<tag>. The configure deletes the one a
+    tree no longer builds, so the file present decides; with neither built,
+    the root name."""
+    one = os.path.join(tree, "openpete")
+    own = os.path.join(tree, "games", game, exe_name(game))
+    return own if not os.path.exists(one) and os.path.exists(own) else one
+
+
+def tree_argv(tree, game):
+    """The argv prefix running `game` in the build tree `tree` with no disc:
+    tree_exe, followed by `--game <game>` when it is the one executable
+    (which otherwise runs Spyro 1)."""
+    exe = tree_exe(tree, game)
+    if os.path.basename(exe) == "openpete":
+        return [exe, "--game", game]
+    return [exe]
+
+
 def resolve(root, game, build="build/linux-release"):
     """Paths and boot flags of `game` under the source tree `root`.
 
@@ -37,5 +60,5 @@ def resolve(root, game, build="build/linux-release"):
         "disc": os.path.join(root, words[0]),
         "run_args": words[1:],
         "bk2_dir": os.path.join(root, "games", game, "bk2"),
-        "default_exe": os.path.join(root, build, "games", game, exe_name(game)),
+        "default_exe": tree_exe(os.path.join(root, build), game),
     }

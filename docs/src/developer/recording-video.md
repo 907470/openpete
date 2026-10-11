@@ -30,12 +30,12 @@ recording.
 
 ```bash
 # Record the attract demo to an .mkv (recommended container).
-./build/linux-release/games/spyro-1/openpete-spyro1 \
+./build/linux-release/openpete \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
     --record gameplay.mkv
 
 # Widescreen, higher internal resolution, custom quality.
-./build/linux-release/games/spyro-1/openpete-spyro1 \
+./build/linux-release/openpete \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
     --aspect 21:9 --window 1920x1080 \
     --record gameplay.mkv --record-crf 18
@@ -85,7 +85,7 @@ with 1x, 2x and 4x the encoded frames. CFR implies `--no-record-audio`.
 # The same 1220-tick window at three rates: 1220 / 2440 / 4880 encoded
 # frames, 40.785 s of game time each.
 for r in 29.913:1220 59.826:2440 119.652:4880; do
-  ./build/linux-release/games/spyro-1/openpete-spyro1 \
+  ./build/linux-release/openpete \
       --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
       --aspect 16:9 --window 1280x720 --mute 1 \
       --record-cfr "${r%%:*}" --record-frames "${r##*:}" \

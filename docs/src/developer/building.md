@@ -115,7 +115,7 @@ and the hook refuses a staged path there, naming the configure it needs.
 
 | Gate | Native | Container |
 |------|--------|-----------|
-| Oracle | `tests/harness/check_psx_oracle.sh --game <game>` | `scripts/container.sh game <game> --oracle`, or after a `game <game>` build: `scripts/container.sh shell env OPENPETE_BIN=build/container/linux-release/games/<game>/openpete-<spyroN> OPENPETE_DISC=<cue> tests/harness/check_psx_oracle.sh --game <game>` |
+| Oracle | `tests/harness/check_psx_oracle.sh --game <game>` | `scripts/container.sh game <game> --oracle`, or after a `game <game>` build: `scripts/container.sh shell env OPENPETE_BIN=build/container/linux-release/openpete OPENPETE_DISC=<cue> tests/harness/check_psx_oracle.sh --game <game>` |
 | Unit tests and fences | `ctest --test-dir build/linux-release -L fence` | `scripts/container.sh shell ctest --test-dir build/container/linux-release -L fence` |
 | Presentation golden | `tests/harness/check_presentation_golden.sh --game <game>` | `scripts/golden-capture-container.sh gate -- tests/harness/check_presentation_golden.sh --build-dir=build/linux-release-container --game <game>` (the capture image, the only image a bless or promote is accepted from) |
 | Documentation | `scripts/build-docs.sh` | `scripts/container.sh shell scripts/build-docs.sh` |
@@ -230,8 +230,9 @@ A clone builds at two scopes:
 - The engine: `openpete_core`, `openpete_rhi` and the unit tests. It needs
   the clone (step 1) and the prerequisites above, and no disc image,
   decompilation build or PSYQ SDK. See [Engine only](#engine-only).
-- A game executable (`openpete-spyro1`, `openpete-spyro2`,
-  `openpete-spyro3`). It is built from recompiled C under
+- A game: its module and its share of the executable (`build/<preset>/openpete`
+  on Linux; `openpete-spyro1`, `openpete-spyro2`, `openpete-spyro3` per game
+  elsewhere), built by the game's target `openpete-<tag>` from recompiled C under
   `games/<game>/generated/`, which is gitignored (`.gitignore:8`) and
   produced outside CMake by steps 2 and 3 from the game's decompilation
   build. Building the decompilation needs your own copy of the PSYQ SDK
@@ -430,13 +431,18 @@ code the games share compiles once into `openpete_game_common`
 (`games/common/CMakeLists.txt`), and the executable's entry
 (`games/common/game_entry.cpp`) selects the game: the serial of the disc
 named by `--disc` or `--ingest`, then `--game`, then the name the executable
-was invoked by, then Spyro 1. `build/<preset>/games/<game>/openpete-<tag>`
-is a hard link to it, beside that game's module, SDK and assets, so the
-per-game path runs that game. The build refuses a host TU whose include
+was invoked by, then Spyro 1. Every game's module (`<tag>-recomp.so`), the
+mod SDK (`sdk/`, each game's headers under `sdk/games/<game>/`), the
+assets and the first-boot inputs (`recomp/`) stage beside it at the tree
+root, so `build/<preset>/openpete --disc <cue>` boots the game on the disc
+with no `--recomp-module`. Each game's target `openpete-<tag>` builds the
+executable and that game's files. The build refuses a host TU whose include
 path leads into a game's directory (`tools/check_game_includes.py`,
 target `openpete_game_include_check`): a game's header is named relative to
 the including file or by its game-qualified path (`spyro-1/gen/...`). Other
-presets build one executable per game.
+presets build one executable per game,
+`build/<preset>/games/<game>/openpete-<tag>[.exe]`, with the game's files
+beside it.
 
 `OPENPETE_RECOMP_FIRST_BOOT` (default OFF) adds the first-boot module build
 (`games/common/recomp_build.cpp`) to a shared exe of a game that has one
@@ -557,7 +563,7 @@ or the toolchain.
 ```bash
 cmake --preset linux-release          # first time only
 cmake --build --preset linux-release
-./build/linux-release/games/spyro-1/openpete-spyro1 \
+./build/linux-release/openpete \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue --headless \
     --bk2 games/spyro-1/bk2/<name>.bk2 --screenshot-on-frame 3600 \
     --screenshot-output shot.png
@@ -582,7 +588,8 @@ from the working directory, and no such file is staged into a dev build dir.
 uses only that file; `--no-config` ignores every config file, which is what
 the gate scripts do so a personal config cannot change a verdict.
 
-Output binary: `build/<preset>/games/spyro-1/openpete-spyro1[.exe]`.
+Output binary: `build/linux-release/openpete` (every game);
+`build/windows-mingw/games/<game>/openpete-<tag>.exe` (one per game).
 
 ### Distribution build (shared)
 

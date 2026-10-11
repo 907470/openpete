@@ -84,7 +84,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 from surface_macros import tomllib  # noqa: E402
+import game_conf  # noqa: E402
 
 USER_DIR = ROOT / "docs" / "src" / "user"
 MAP_TOML = USER_DIR / "pages.toml"
@@ -124,8 +126,9 @@ class Finding:
 # -- inputs ------------------------------------------------------------
 
 
-def exe_of(build_dir, game):
-    return Path(build_dir) / "games" / game / f"openpete-{game.replace('-', '')}"
+def exe_argv(build_dir, game):
+    """The argv prefix running `game` from the build tree with no disc."""
+    return game_conf.tree_argv(str(build_dir), game)
 
 
 def scrubbed_env():
@@ -144,21 +147,22 @@ def capture(build_dir, out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
     games = []
     for g in ALL_GAMES:
-        exe = exe_of(build_dir, g)
+        argv = exe_argv(build_dir, g)
+        exe = argv[0]
         dump, helptxt = out_dir / f"{g}.json", out_dir / f"{g}.help"
         for p in (dump, helptxt):
             if p.exists():
                 p.unlink()
-        if not exe.is_file():
+        if not os.path.isfile(exe):
             continue
         env = scrubbed_env()
         env["OPENPETE_SURFACE_DUMP"] = str(dump)
-        r = subprocess.run([str(exe)], env=env, capture_output=True,
+        r = subprocess.run(argv, env=env, capture_output=True,
                            text=True, timeout=120)
         if r.returncode != 0 or not dump.is_file():
             raise RuntimeError(f"{exe}: the surface dump exited "
                                f"{r.returncode}: {r.stderr.strip()[-400:]}")
-        r = subprocess.run([str(exe), "--help"], env=scrubbed_env(),
+        r = subprocess.run(argv + ["--help"], env=scrubbed_env(),
                            capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
             raise RuntimeError(f"{exe} --help exited {r.returncode}")

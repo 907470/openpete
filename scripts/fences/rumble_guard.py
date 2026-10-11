@@ -36,10 +36,15 @@ import os
 import re
 import sys
 
-# A file only matters if it names the game binary. Matching a bare `$EXE`
+# A file only matters if it names the game binary: a per-game name, or the
+# one executable `openpete` as a build-tree path (`build/linux-release/openpete`,
+# `$BUILD_DIR/openpete`, `... / "openpete"`), never a longer name that starts
+# with it (openpete-recomp-linkage.txt, openpete.toml). Matching a bare `$EXE`
 # swept in icon converters and a toolchain wrapper - a fence whose output
 # nobody can read is a fence nobody runs.
-LAUNCH = re.compile(r"openpete-spyro1|openpete_spyro1")
+LAUNCH = re.compile(r"""openpete-spyro1|openpete_spyro1
+    | (?:build|BUILD[A-Z_]*\}?|linux-release[\w-]*|\$\{?[A-Z_]*BUILD[A-Z_]*\}?)/openpete\b(?![-_.])
+    | /\s*["']openpete["']""", re.X)
 
 # ...and only the UNATTENDED launchers are in scope. A scripted run is the
 # hazard: no player uses the pad, and the run passes either way so the

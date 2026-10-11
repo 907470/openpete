@@ -23,7 +23,7 @@ def exe_for(platform):
     if platform == "windows":
         p = REPO / "build/windows-mingw/games/spyro-1/openpete-spyro1.exe"
     else:
-        p = REPO / "build/linux-release/games/spyro-1/openpete-spyro1"
+        p = REPO / "build/linux-release/openpete"
     if not p.exists():
         sys.exit(f"no binary at {p} - build the preset first")
     return p

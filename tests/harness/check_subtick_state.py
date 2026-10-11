@@ -81,7 +81,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # linux-release; CTest passes the configured binary this way.
 EXE = Path(os.environ.get(
     "OPENPETE_BIN",
-    ROOT / "build" / "linux-release" / "games" / "spyro-1" / "openpete-spyro1"))
+    ROOT / "build" / "linux-release" / "openpete"))
 DISC = Path(os.environ.get(
     "OPENPETE_DISC",
     ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"))

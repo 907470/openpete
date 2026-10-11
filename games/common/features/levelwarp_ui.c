@@ -168,7 +168,7 @@ void levelwarp_ui_surface(struct openpete_surface_sink* sink) {
  * through the game's own state machine, so firing it from a script is what
  * makes it testable from a script. Deliberately not a knob
  * registry row (harness variable, not a config knob):
- *   OPENPETE_LEVELWARP_TEST=2200:tree_tops openpete-spyro1 --skip-to-level artisans
+ *   OPENPETE_LEVELWARP_TEST=2200:tree_tops build/linux-release/openpete --skip-to-level artisans
  */
 static int s_test_frame = -1;
 static int s_test_id    = 0;

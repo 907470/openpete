@@ -149,7 +149,8 @@ def main():
     ap.add_argument("--game", default="spyro-1", choices=game_conf.GAMES,
                     help="disc, boot flags and default exe")
     ap.add_argument("--exe", default=None,
-                    help="default: build/linux-release/games/<game>/openpete-<tag>")
+                    help="default: the executable running <game> in build/linux-release "
+                         "(openpete at the tree root)")
     ap.add_argument("--allow-untuned", action="store_true",
                     help="skip the bench_guard tuned-binary refusal")
     ap.add_argument("--levels", default=None, help="comma list (default: all)")

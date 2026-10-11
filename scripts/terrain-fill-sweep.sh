@@ -17,7 +17,7 @@ for a in "$@"; do
   esac
 done
 exec python3 tests/freecam/fill_sweep.py \
-  --binary "$BUILD_DIR/games/spyro-1/openpete-spyro1" \
+  --binary "$BUILD_DIR/openpete" \
   --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
   --manifest tests/freecam/fill-sweep-poses.manifest \
   --cache build/fill-sweep-cache \

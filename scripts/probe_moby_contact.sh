@@ -24,7 +24,7 @@ export OPENPETE_VIBRATION=0
 
 
 cd "$(dirname "$0")/.."
-BIN=build/linux-release/games/spyro-1/openpete-spyro1
+BIN=build/linux-release/openpete
 DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
 OUT=${1:-build/moby-contact}
 mkdir -p "$OUT"

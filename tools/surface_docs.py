@@ -60,7 +60,9 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "lib"))
 import surface_macros as sm  # noqa: E402
+import game_conf  # noqa: E402
 
 ROOT = sm.ROOT
 USER_DIR = sm.USER_DIR
@@ -441,7 +443,7 @@ def command_argv(cmd, exe, fixture):
         else:
             args.append(w)
         i += 1
-    return [str(exe), "--no-config"] + args + ["--config-report"]
+    return list(exe) + ["--no-config"] + args + ["--config-report"]
 
 
 def exe_game(cmd):
@@ -471,21 +473,22 @@ class SnippetRunner:
         self.runs, self.fails, self.missing = 0, [], set()
 
     def exe(self, game):
-        return self.build / "games" / game / f"openpete-{game.replace('-', '')}"
+        """The argv prefix running `game` from the build tree."""
+        return game_conf.tree_argv(str(self.build), game)
 
     def argv(self, kind, payload, exe):
         if kind == "toml":
             cfg = self.tmp / "snippet.toml"
             cfg.write_text(payload + "\n")
-            return [str(exe), "--config", str(cfg), "--config-report"]
+            return list(exe) + ["--config", str(cfg), "--config-report"]
         return command_argv(payload, exe, str(self.fixture))
 
     def run(self, kind, payload, game):
         """Exit code of one snippet under one game's executable, or None
         when the executable is missing."""
         exe = self.exe(game)
-        if not exe.is_file():
-            self.missing.add(str(exe))
+        if not os.path.isfile(exe[0]):
+            self.missing.add(exe[0])
             return None
         argv = self.argv(kind, payload, exe)
         res = subprocess.run(argv, capture_output=True, text=True,

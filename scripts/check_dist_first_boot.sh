@@ -83,7 +83,7 @@ if [[ -n "$ARTIFACT" ]]; then
     [[ -f "$ARTIFACT" ]] || { echo "[dist-gate] artifact missing: $ARTIFACT" >&2; exit 64; }
     case "$ARTIFACT" in *.AppImage) APPIMAGE=1 ;; esac
 else
-    [[ -x build/linux-release-launcher/games/spyro-1/openpete-spyro1 ]] \
+    [[ -x build/linux-release-launcher/openpete ]] \
         || { echo "[dist-gate] build linux-release-launcher first" >&2; exit 64; }
 fi
 
@@ -274,8 +274,8 @@ fi
 # version's module, with no crash and nothing that looked stale.
 echo "[dist-gate] an emission-input change re-keys the module cache..."
 before_dir=$(dirname "$module")
-for input in "$appdir"/usr/recomp/manifest/channel_sites.txt \
-             "$appdir"/recomp/manifest/channel_sites.txt; do
+for input in "$appdir"/usr/recomp/manifest/spyro-1/channel_sites.txt \
+             "$appdir"/recomp/manifest/spyro-1/channel_sites.txt; do
     [[ -f "$input" ]] && { echo "# dist-gate upgrade probe" >> "$input"; break; }
 done
 "${APP[@]}" --headless --frame-limit 60 \

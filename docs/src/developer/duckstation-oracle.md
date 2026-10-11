@@ -562,7 +562,7 @@ tests/harness/check_psx_oracle.sh --game spyro-3
 
 `--game` (default `spyro-1`) sources `games/SLUG/oracle.conf` for the
 golden path, the disc (`OPENPETE_DISC` overrides), the binary
-(`build/linux-release/games/SLUG/openpete-<slug without the dash>`,
+(`build/linux-release/openpete`,
 `OPENPETE_BIN` overrides) and the flags the run adds before the caller's
 (Spyro 3: `--no-card`). A missing default golden is captured first, which
 takes about fifteen minutes for 20000 records; the script exits 64 when

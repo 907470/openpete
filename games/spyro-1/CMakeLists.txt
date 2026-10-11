@@ -355,9 +355,9 @@ if(OPENPETE_COMPILE_MODS)
         # Always runs (cheap: the exe's pass-1 content-hash check skips
         # up-to-date mods in milliseconds); nonzero exit fails the build.
         add_custom_target(spyro1_mods ALL
-            COMMAND ${OPENPETE_GAME_EXE_DIR}/openpete-spyro1${CMAKE_EXECUTABLE_SUFFIX} --compile-mods
+            COMMAND ${OPENPETE_GAME_BIN} ${OPENPETE_GAME_BIN_ARGS} --compile-mods
                     --mods-dir ${OPENPETE_COMPILE_MODS_DIR}
-            COMMENT "Compiling mods (openpete-spyro1 --compile-mods)"
+            COMMENT "Compiling mods (${OPENPETE_GAME_BIN} --compile-mods)"
             VERBATIM)
         add_dependencies(spyro1_mods openpete-spyro1 spyro1_sdk_stage)
     endif()

@@ -319,7 +319,7 @@ set_target_properties(text_moby_id_test PROPERTIES C_STANDARD 99)
 add_test(NAME text_moby_id_test COMMAND text_moby_id_test)
 
 # mod_shader_compile_test - compiles every shipped mod shader (mods/*/**.vert
-# and .frag) against the SDK staged next to openpete-spyro1, through the
+# and .frag) against the SDK staged next to Spyro 1's executable, through the
 # compile-on-boot front end (core/mods/mod_glsl.c) - same glslang settings,
 # include path and profiles - and fails on any error or when no material
 # fragment was compiled. The shaders are otherwise compiled only when a mod
@@ -340,9 +340,11 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
     set_target_properties(mod_shader_compile_test PROPERTIES C_STANDARD 99)
     # The staged SDK is the directory compile-on-boot resolves includes in.
     add_dependencies(mod_shader_compile_test spyro1_sdk_stage)
+    openpete_game_bin(spyro-1 _shader_bin _shader_args)
+    get_filename_component(_shader_dir "${_shader_bin}" DIRECTORY)
     add_test(NAME mod_shader_compile
              COMMAND mod_shader_compile_test ${CMAKE_SOURCE_DIR}/mods
-                     ${CMAKE_BINARY_DIR}/games/spyro-1/sdk)
+                     ${_shader_dir}/sdk)
     set_tests_properties(mod_shader_compile PROPERTIES LABELS "mods")
 endif()
 

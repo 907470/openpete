@@ -51,7 +51,7 @@ for a in "$@"; do
 done
 [[ "$CORPUS_JOBS" -lt 1 ]] && CORPUS_JOBS=1
 
-BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
+BIN="${OPENPETE_BIN:-$BUILD_DIR/openpete}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 MANIFEST="$(pg_corpus_manifest spyro-1 presentation-corpus.manifest)"
 OUTDIR="build/ident-audit"

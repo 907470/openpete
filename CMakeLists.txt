@@ -265,10 +265,11 @@ if(NOT CMAKE_CROSSCOMPILING)
         string(REPLACE "-" "" _surface_exe "${game}")
         set(_surface_exe "openpete-${_surface_exe}")
         if(TARGET ${_surface_exe})
+            openpete_game_bin(${game} _surface_bin _surface_args)
             list(APPEND _surface_cmds
                  COMMAND ${CMAKE_COMMAND} -E env
                          OPENPETE_SURFACE_DUMP=${CMAKE_BINARY_DIR}/surface/${game}.json
-                         ${CMAKE_BINARY_DIR}/games/${game}/${_surface_exe}${CMAKE_EXECUTABLE_SUFFIX})
+                         ${_surface_bin} ${_surface_args})
             list(APPEND _surface_deps ${_surface_exe})
         endif()
     endforeach()
@@ -300,6 +301,12 @@ endif()
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
     add_subdirectory(tests/unit)
 
+    # The executables the game-launching tests below run (OPENPETE_BIN); each
+    # harness passes --disc, which selects the game in the one executable.
+    openpete_game_bin(spyro-1 _spyro1_bin _spyro1_args)
+    openpete_game_bin(spyro-3 _spyro3_bin _spyro3_args)
+    get_filename_component(_spyro1_dir "${_spyro1_bin}" DIRECTORY)
+
     # RESOURCE_LOCK openpete_game: every test below that launches a game
     # process holds it, so ctest never co-schedules two of them. A second
     # game process invalidates any timing measurement and is refused
@@ -319,7 +326,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "slow;mods"
         RESOURCE_LOCK openpete_game
         TIMEOUT 1800
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # ImGui containment gate: the mods fixture proves the table binds
@@ -334,7 +341,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         RESOURCE_LOCK openpete_game
         TIMEOUT 900
         SKIP_RETURN_CODE 64
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Per-channel material gate: turns every mods/channel-gallery row into
@@ -352,7 +359,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # A Windows mod may include the SDK headers and <windows.h>, whose
@@ -361,7 +368,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # fails on a redefinition. Skips (64) with no mingw cross compiler.
     add_test(NAME sdk_windows_include
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_sdk_windows_include.sh
-                     --sdk ${CMAKE_BINARY_DIR}/games/spyro-1/sdk)
+                     --sdk ${_spyro1_dir}/sdk)
     set_tests_properties(sdk_windows_include PROPERTIES
         LABELS "mods"
         TIMEOUT 300
@@ -1303,7 +1310,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     if(TARGET openpete-spyro1)
         add_test(NAME bench_corpus_smoke
                  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/bench-corpus.py
-                         --exe ${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1${CMAKE_EXECUTABLE_SUFFIX}
+                         --exe ${_spyro1_bin}
                          --movies artisans-bridge,stone-hill-entry
                          --frame-limit 4000 --max-runtime-seconds 90
                          --skip-ticks 30
@@ -1393,11 +1400,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1")
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}")
 
     # One row per game with a recipe; the Spyro 1 row keeps its name above.
     foreach(_g spyro-2 spyro-3)
-        string(REPLACE "-" "" _tag "${_g}")
+        openpete_game_bin(${_g} _gbin _gargs)
         add_test(NAME psx_oracle_match_${_g}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh --game ${_g})
         set_tests_properties(psx_oracle_match_${_g} PROPERTIES
@@ -1406,7 +1413,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 1800
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-            ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/${_g}/openpete-${_tag}")
+            ENVIRONMENT "OPENPETE_BIN=${_gbin}")
     endforeach()
 
     # The windowed oracle row: the same golden verified with the native
@@ -1424,7 +1431,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1;OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=6000")
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin};OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=6000")
 
     # The Spyro 3 windowed row. Same contract as the row above on the Spyro 3
     # golden: --render-fps 60 is above the 29.913 Hz tick rate, so every
@@ -1442,7 +1449,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-3/openpete-spyro3;OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=4000")
+        ENVIRONMENT "OPENPETE_BIN=${_spyro3_bin};OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=4000")
 
     # Matrix determinism gate - broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
@@ -1507,7 +1514,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         # Each leg self-limits at `timeout 600`; headroom for ~20 of them.
         TIMEOUT 7200
         SKIP_RETURN_CODE 64
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Sub-tick present gameplay-state gate. The psx oracle replays canonical
@@ -1528,7 +1535,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         # Four headless legs, each self-limited at --max-runtime-seconds 280.
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
-        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Retained-terrain GPU cache vs CPU terrain walk, pixel-exact, headless on

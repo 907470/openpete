@@ -11,7 +11,7 @@
 #
 #   --sdk DIR        staged SDK root; the unit compiles with -I DIR/games/ID
 #                    before -I DIR, as the mod compiler does. Default: the
-#                    linux-release build's games/spyro-1/sdk, else a
+#                    linux-release build's sdk/ (beside its executable), else a
 #                    windows-mingw build's.
 #   --game ID        the per-game SDK directory under DIR/games/. Default
 #                    spyro-1.
@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$SDK_DIR" ]]; then
-    for c in "$REPO/build/linux-release/games/spyro-1/sdk" \
+    for c in "$REPO/build/linux-release/sdk" \
              "$REPO/build/windows-mingw-launcher/games/spyro-1/sdk" \
              "$REPO/build/windows-mingw/games/spyro-1/sdk"; do
         [[ -f "$c/games/$GAME/openpete_game_structs.h" ]] && { SDK_DIR="$c"; break; }

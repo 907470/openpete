@@ -21,6 +21,14 @@
 #                              from <tag>_mod_sdk_test_stage, which removes
 #                              and rewrites only its own game's directory
 #
+# <exe> is the directory of the executable that runs the game. With the one
+# executable (OPENPETE_ONE_EXECUTABLE) every game shares <build>/sdk/, which
+# one target, openpete_sdk_stage (openpete_mod_sdk_stage_all, called by
+# openpete_link_games), removes and rewrites whole; each game's
+# <tag>_sdk_stage depends on it. Per-game targets each rewriting the shared
+# root would race, and one removing only its own games/<id>/ would leave a
+# file dropped from the root lists in place.
+#
 # The mod compiler hashes, compiles against and stamps exactly these files
 # (core/mods/mod_loader.c sdk_inputs), resolving each in `games/<id>/`
 # before the root.
@@ -171,6 +179,7 @@ const int ${_tag}_game_structs_checked = 1;
     add_dependencies(${_host} ${_tag}_game_structs)
     add_dependencies(openpete_generated_headers ${_tag}_game_structs)
 
+    set(_root_copies "")
     set(_root_copy_cmd "")
     if(S_ROOT_COPIES)
         set(_root_copies ${_game_files})
@@ -178,26 +187,36 @@ const int ${_tag}_game_structs_checked = 1;
         set(_root_copy_cmd COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${_root_copies} ${_exe_dir}/sdk)
     endif()
-    # The directory is removed first: a file dropped from these lists would
-    # otherwise survive in the build tree and ship with the archive, since
-    # package-dist copies the staged directory whole. Mod build keys hash
-    # the SDK file contents, so fresh timestamps force no recompile.
-    add_custom_target(${_tag}_sdk_stage ALL
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${_exe_dir}/sdk
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-                ${_exe_dir}/sdk/shaders
-                ${_exe_dir}/sdk/games/${GAME_ID}
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${OPENPETE_MOD_SDK_ROOT_FILES} ${_exe_dir}/sdk
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${OPENPETE_MOD_SDK_SHADERS} ${_exe_dir}/sdk/shaders
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${_game_files} ${_exe_dir}/sdk/games/${GAME_ID}
-        ${_root_copy_cmd}
-        DEPENDS ${_game_files}
-        COMMENT "Staging the ${GAME_ID} mod SDK into <exe>/sdk/"
-        VERBATIM)
-    add_dependencies(${_tag}_sdk_stage ${_exe})
+    if(OPENPETE_ONE_EXECUTABLE)
+        # Staged by openpete_sdk_stage with every other game's.
+        set_property(GLOBAL APPEND PROPERTY OPENPETE_SDK_GAMES ${GAME_ID})
+        set_property(GLOBAL PROPERTY OPENPETE_SDK_FILES_${GAME_ID} ${_game_files})
+        set_property(GLOBAL PROPERTY OPENPETE_SDK_ROOT_COPIES_${GAME_ID} ${_root_copies})
+        add_custom_target(${_tag}_sdk_stage ALL)
+        add_dependencies(${_tag}_sdk_stage openpete_sdk_stage)
+    else()
+        # The directory is removed first: a file dropped from these lists
+        # would otherwise survive in the build tree and ship with the
+        # archive, since package-dist copies the staged directory whole.
+        # Mod build keys hash the SDK file contents, so fresh timestamps
+        # force no recompile.
+        add_custom_target(${_tag}_sdk_stage ALL
+            COMMAND ${CMAKE_COMMAND} -E rm -rf ${_exe_dir}/sdk
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${_exe_dir}/sdk/shaders
+                    ${_exe_dir}/sdk/games/${GAME_ID}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${OPENPETE_MOD_SDK_ROOT_FILES} ${_exe_dir}/sdk
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${OPENPETE_MOD_SDK_SHADERS} ${_exe_dir}/sdk/shaders
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${_game_files} ${_exe_dir}/sdk/games/${GAME_ID}
+            ${_root_copy_cmd}
+            DEPENDS ${_game_files}
+            COMMENT "Staging the ${GAME_ID} mod SDK into <exe>/sdk/"
+            VERBATIM)
+        add_dependencies(${_tag}_sdk_stage ${_exe})
+    endif()
 
     add_custom_target(${_tag}_mod_sdk_test_stage ALL
         COMMAND ${CMAKE_COMMAND} -E rm -rf
@@ -213,4 +232,40 @@ const int ${_tag}_game_structs_checked = 1;
 
     set(OPENPETE_GAME_SDK_GEN   ${_gen}        PARENT_SCOPE)
     set(OPENPETE_GAME_SDK_FILES ${_game_files} PARENT_SCOPE)
+endfunction()
+
+# The one executable's SDK, <build>/sdk/: removed, then the game-neutral
+# files, then each game's generated headers under games/<id>/ and, for a
+# game given ROOT_COPIES, at the root. Defined once, after every game.
+function(openpete_mod_sdk_stage_all)
+    get_property(_games GLOBAL PROPERTY OPENPETE_SDK_GAMES)
+    if(NOT _games)
+        return()
+    endif()
+    set(_dir ${CMAKE_BINARY_DIR}/sdk)
+    set(_cmds "")
+    set(_deps "")
+    foreach(_g IN LISTS _games)
+        get_property(_files GLOBAL PROPERTY OPENPETE_SDK_FILES_${_g})
+        get_property(_roots GLOBAL PROPERTY OPENPETE_SDK_ROOT_COPIES_${_g})
+        list(APPEND _cmds
+             COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}/games/${_g}
+             COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_files} ${_dir}/games/${_g})
+        if(_roots)
+            list(APPEND _cmds COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_roots} ${_dir})
+        endif()
+        list(APPEND _deps ${_files})
+    endforeach()
+    add_custom_target(openpete_sdk_stage ALL
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${_dir}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_dir}/shaders
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${OPENPETE_MOD_SDK_ROOT_FILES} ${_dir}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${OPENPETE_MOD_SDK_SHADERS} ${_dir}/shaders
+        ${_cmds}
+        DEPENDS ${_deps}
+        COMMENT "Staging every game's mod SDK into sdk/"
+        VERBATIM)
+    add_dependencies(openpete_sdk_stage openpete openpete_imgui_table)
 endfunction()

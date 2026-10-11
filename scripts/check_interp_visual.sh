@@ -62,7 +62,7 @@ rm -f "$OUT"/fps*.png
 # on the real GPU. A Windows child reads no Linux environment, so the
 # vibration knob crosses through WSLENV (scripts/lib/wslenv.sh); the exe
 # writes CRLF, stripped before the grep.
-BIN=${OPENPETE_INTERP_VISUAL_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}
+BIN=${OPENPETE_INTERP_VISUAL_BIN:-build/linux-release/openpete}
 if [[ ! -x "$BIN" ]]; then
     echo "openpete binary missing at $BIN - run cmake --build --preset linux-release" >&2
     exit 1

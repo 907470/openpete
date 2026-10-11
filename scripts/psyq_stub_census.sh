@@ -50,8 +50,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-TAG="${GAME//-/}"
-BIN="build/linux-release/games/$GAME/openpete-$TAG"
+BIN="build/linux-release/openpete"
 DISC="$(ls games/"$GAME"/"$GAME"/build/*.cue 2>/dev/null | head -1)"
 OUTDIR="${OUTDIR:-build/psyq-census/$GAME}"
 

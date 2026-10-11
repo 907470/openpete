@@ -58,14 +58,25 @@ pg_parse_game() {
   echo "$game"
 }
 
-# The binary is named after the slug with the separator dropped, matching the
-# per-game executable target name.
+# A per-game executable (games/<game>/<name> in a static or Windows tree) is
+# named after the slug with the separator dropped, matching the game's target
+# name.
 pg_bin_name() { echo "openpete-${1//-/}"; }
+
+# pg_tree_bin BUILD GAME: the executable that runs GAME in the tree BUILD. A
+# shared-linkage Linux tree builds one executable, `openpete` at its root,
+# whose disc argument selects the game; a static tree builds the game's own
+# executable. The configure deletes the one a tree no longer builds, so the
+# file present decides; with neither built, the root name.
+pg_tree_bin() {
+  local own="$1/games/$2/$(pg_bin_name "$2")"
+  if [[ ! -e "$1/openpete" && -e "$own" ]]; then echo "$own"; else echo "$1/openpete"; fi
+}
 
 pg_resolve() {
   PG_GAME="$1"
   local build="${PG_BUILD_DIR:-build/linux-release}"
-  PG_BIN="${OPENPETE_BIN:-$build/games/$PG_GAME/$(pg_bin_name "$PG_GAME")}"
+  PG_BIN="${OPENPETE_BIN:-$(pg_tree_bin "$build" "$PG_GAME")}"
 
   # The disc path and the game's own boot flags already have one authority,
   # the oracle recipe. It is sourced in a subshell so its other variables

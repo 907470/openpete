@@ -49,8 +49,7 @@ done
 GDIR="$ROOT/games/$GAME"
 EXPECT="$GDIR/manifest/ram_diff_expect.toml"
 [[ -f "$EXPECT" ]] || { echo "[ram-diff] SKIP: no $EXPECT" >&2; exit 64; }
-N="${GAME#spyro-}"
-BIN="$ROOT/build/linux-release/games/$GAME/openpete-spyro$N"
+BIN="$ROOT/build/linux-release/openpete"
 DS_BIN="$ROOT/third_party/duckstation/build-regtest/bin/duckstation-regtest"
 [[ -x "$BIN" ]]    || { echo "[ram-diff] SKIP: binary missing: $BIN" >&2; exit 64; }
 [[ -x "$DS_BIN" ]] || { echo "[ram-diff] SKIP: module missing: $DS_BIN (scripts/setup_duckstation.sh)" >&2; exit 64; }

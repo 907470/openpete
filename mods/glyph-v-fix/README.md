@@ -50,7 +50,7 @@ already points at the arena.
 the `V` filling a good part of the screen:
 
 ```
-build/linux-release/games/spyro-1/openpete-spyro1 --headless --no-config \
+build/linux-release/openpete --headless --no-config \
   --disc games/spyro-1/spyro-1/build/SCUS-94228.cue --run-recomp 0x80012204 \
   --renderer vk --mute 1 --aspect 16:9 --mods-dir mods --mods glyph-v-fix \
   --bk2 games/spyro-1/bk2/town-square-delvin-rescue.bk2 \

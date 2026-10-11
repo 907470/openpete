@@ -12,8 +12,9 @@
 // name, and the overlay window of the game's recomp.conf OVERLAY_RANGE.
 //
 // Inputs staged next to the exe by the shared-linkage build
-// (CMake): recomp/manifest/ (converged funcs lists + manifest.toml +
-// psyq.toml + channel_sites.txt), recomp/src/ (the 5-file module source
+// (CMake): recomp/manifest/<game id>/ (converged funcs lists +
+// manifest.toml + psyq.toml + channel_sites.txt; one directory per game,
+// since one executable stages every game's), recomp/src/ (the 5-file module source
 // kit), recomp/tools/PSXRecomp when packaged. The host compiler is
 // the bundled clang when packaged, else $OPENPETE_CC or `cc`.
 //
@@ -442,7 +443,7 @@ std::string compute_codegen_stamp(const fs::path& base) {
     const std::string psxrecomp = find_psxrecomp(base);
     if (psxrecomp.empty()) return "";
     uint64_t h = fnv1a_file(psxrecomp);
-    h = fnv1a_tree(base / "recomp" / "manifest", h);
+    h = fnv1a_tree(base / "recomp" / "manifest" / openpete_game_build()->id, h);
     h = fnv1a_tree(base / "recomp" / "src", h);
     const std::string cc = find_cc(base);
     for (char c : cc_identity(cc))          { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
@@ -481,7 +482,7 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
     }
     const fs::path base = exe_dir();
     const fs::path R    = base / "recomp";
-    const fs::path man  = R / "manifest";
+    const fs::path man  = R / "manifest" / openpete_game_build()->id;
     const fs::path src  = R / "src";
     /* Work beside the output module: obj/ is deliberately kept (the
      * modding framework's link-time override chains re-link from these
@@ -506,7 +507,8 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
         !fs::exists(src / "psx_runtime_internal.h")) {
         std::fprintf(stderr,
             "openpete: recomp inputs not staged next to the exe (%s) - "
-            "expected recomp/manifest + recomp/src\n", R.string().c_str());
+            "expected recomp/manifest/%s + recomp/src\n", R.string().c_str(),
+            openpete_game_build()->id);
         return -1;
     }
     const std::string psxrecomp = find_psxrecomp(base);

@@ -117,9 +117,9 @@ mounts=(-v "$PWD:/src"
     cmake --build build/linux-release-launcher -j
     surf=$(mktemp -d)
     for game in $(python3 scripts/fences/surface_coverage.py shipped); do
-        exe=build/linux-release-launcher/games/$game/openpete-${game//-/}
-        OPENPETE_SURFACE_DUMP=$surf/$game.json "$exe" >/dev/null
-        "$exe" --help >"$surf/$game.help" 2>&1
+        exe=build/linux-release-launcher/openpete
+        OPENPETE_SURFACE_DUMP=$surf/$game.json "$exe" --game "$game" >/dev/null
+        "$exe" --game "$game" --help >"$surf/$game.help" 2>&1
         python3 scripts/fences/surface_coverage.py compare --game "$game" \
             --dump "$surf/$game.json" --help-file "$surf/$game.help" \
             --baseline "packaging/surface/$game.json"

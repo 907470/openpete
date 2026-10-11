@@ -42,7 +42,7 @@ loading/fade (near-black) and were excluded.
 ## Regenerate
 
 ```sh
-BIN=build/linux-release/games/spyro-1/openpete-spyro1
+BIN=build/linux-release/openpete
 DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
 REF=tests/golden/spyro-1/psycross-ref
 

@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import corpus_manifest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BIN = os.environ.get("OPENPETE_BIN", os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1"))
+BIN = os.environ.get("OPENPETE_BIN", os.path.join(ROOT, "build/linux-release/openpete"))
 DISC = os.environ.get("OPENPETE_DISC", os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
 EXIT_RE = re.compile(r"particle path census: ticks=(\d+) glow: active=(\d+) ran=(\d+) exposed=(\d+) first=(\d+) \| "
                      r"sparkle: active=(\d+) ran=(\d+) exposed=(\d+) first=(\d+) \| "

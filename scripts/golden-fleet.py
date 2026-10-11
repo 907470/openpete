@@ -1933,11 +1933,17 @@ def write_list(path, files):
         f.write(b"".join(x.encode() + b"\0" for x in files))
 
 
+def binary_rels():
+    """Return the build tree's tree-relative executable and every game's recomp module.
+
+    The tree is a shared-linkage Linux build: one executable, `openpete` at its
+    root, with each game's <tag>-recomp.so beside it."""
+    return [f"{BUILD_TREE}/openpete"] + [f"{BUILD_TREE}/{g.replace('-', '')}-recomp.so" for g in GAMES]
+
+
 def binary_paths(root):
-    """Return the tree-relative game binaries and recomp modules present under root's build tree."""
-    rels = [f"{BUILD_TREE}/games/{g}/{name}" for g in GAMES
-            for name in (f"openpete-{g.replace('-', '')}", f"{g.replace('-', '')}-recomp.so")]
-    return [r for r in rels if os.path.isfile(os.path.join(root, r))]
+    """Return the tree-relative executable and recomp modules present under root's build tree."""
+    return [r for r in binary_rels() if os.path.isfile(os.path.join(root, r))]
 
 
 def sha256_path(path):
@@ -2520,8 +2526,7 @@ class Coordinator:
                "SLOTS": slots, "LEG_TIMEOUT": self.leg_timeout_s(job, hs), "FILTERS": filters,
                "POKE": poke, "RESUME": int(self.resume),
                "STREAM": int(self.stream and job.kind == "unit"),
-               "STREAM_POKE": self.poke_for(self.row_poke, job, hs), "BINARIES": " ".join(
-                   f"{BUILD_TREE}/games/{g}/openpete-{g.replace('-', '')}" for g in GAMES),
+               "STREAM_POKE": self.poke_for(self.row_poke, job, hs), "BINARIES": " ".join(binary_rels()),
                "TARGETS": " ".join(GAME_TARGETS),
                "PIN_LP_NUM_THREADS": lp_threads(hs.info, slots)}
         return [f"{k}={v}" for k, v in env.items()]

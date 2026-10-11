@@ -23,7 +23,7 @@ rm -f /tmp/openpete-gte.csv
 OPENPETE_GTE_TRACE=/tmp/openpete-gte.csv \
 OPENPETE_GTE_TRACE_LO=250 OPENPETE_GTE_TRACE_HI=261 \
 OPENPETE_GTE_TRACE_OPS='01,06,30,2D,2E' \
-build/linux-release/games/spyro-1/openpete-spyro1 --headless \
+build/linux-release/openpete --headless \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
  --frame-limit 265
 ```

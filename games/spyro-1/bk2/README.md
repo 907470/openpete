@@ -38,7 +38,7 @@ prevents a future "I can't reproduce that" hour.
 Capture is a one-flag operation:
 
 ```sh
-build/linux-release/games/spyro-1/openpete-spyro1 \
+build/linux-release/openpete \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
     --bk2-record games/spyro-1/bk2/<descriptive-name>.bk2
 ```

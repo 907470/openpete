@@ -9,6 +9,9 @@
 # exe, and diffs a later build against the record after the declared renames
 # are applied.
 #
+# Reads symbols with nm and never runs the executable: rumble-guard: no-launch,
+# input-lock-guard: no-launch.
+#
 # Usage:
 #   scripts/check_move_symbols.sh record                 # before the first move
 #   scripts/check_move_symbols.sh check [renames-file]   # after each content commit
@@ -38,7 +41,7 @@ RECORD=${OPENPETE_MOVE_SYMBOLS_RECORD:-$BUILD_DIR/move_symbols.record}
 TAG=${GAME//-/}
 
 CORE_LIB=$BUILD_DIR/core/libopenpete_core.a
-EXE=$BUILD_DIR/games/$GAME/openpete-$TAG
+EXE=$BUILD_DIR/openpete
 MODULE_DIR=$BUILD_DIR/games/$GAME/CMakeFiles/${TAG}_recomp_module.dir
 
 usage() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }

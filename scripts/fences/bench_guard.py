@@ -46,7 +46,8 @@ import sys
 ARM_FILE = "openpete-recomp-linkage.txt"
 
 # Exact process names of an openpete game process: the one executable, each
-# game's name (hard links until they are retired) and the Windows spellings.
+# game's own executable (static trees, packaged copies) and the Windows
+# spellings.
 # Linux truncates a process name to 15 characters, which every Linux
 # spelling fits and which cuts "openpete-spyroN.exe" to "openpete-spyroN".
 OPENPETE_PROC_RE = r"openpete|openpete-spyro[0-9]|openpete(-spyro[0-9])?\.exe"

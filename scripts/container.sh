@@ -270,7 +270,7 @@ form_game() {
         fi
     fi
     dev_images 0
-    local t0=$SECONDS exe gg="${game//-/}"
+    local t0=$SECONDS exe
     in_image "$DEV_IMAGE" none "
         if [[ ! -x third_party/psxrecomp/build/PSXRecomp ]]; then
             cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -281,7 +281,7 @@ form_game() {
         cmake --preset linux-release -B '$BUILD/linux-release' -DOPENPETE_GAMES=$game
         cmake --build '$BUILD/linux-release' -j $JOBS"
     say "game $game build: $((SECONDS - t0)) s"
-    exe="$BUILD/linux-release/games/$game/openpete-$gg"
+    exe="$BUILD/linux-release/openpete"
     boot_check "$exe" linux-release
     if [[ "$game" == spyro-1 ]]; then
         t0=$SECONDS
@@ -300,9 +300,9 @@ form_game() {
         # recomp/ holds the inputs the build stages beside the exe (manifest,
         # module sources; tools/ empty, so find_cc takes the image's cc and
         # OPENPETE_PSXRECOMP names the recompiler).
-        cp -a "$BUILD/linux-release-launcher/games/$game/openpete-$gg" \
-              "$BUILD/linux-release-launcher/games/$game/recomp" "$fb/"
-        boot_check "$fb/openpete-$gg" linux-release-launcher
+        cp -a "$BUILD/linux-release-launcher/openpete" \
+              "$BUILD/linux-release-launcher/recomp" "$fb/"
+        boot_check "$fb/openpete" linux-release-launcher
         [[ -f "$module" ]] || fail "the shared exe built no module at $module"
         say "first-boot module: $module ($(stat -c %s "$module") bytes)"
     fi

@@ -163,7 +163,7 @@ boot path, the load delay). `check` fails while the committed profile differs fr
 
 ```
 OPENPETE_VIBRATION=0 OPENPETE_DISC_TRACE=tests/harness/disc_boot_order/spyro-1.tsv \
-  build/linux-release/games/spyro-1/openpete-spyro1 --headless --no-config \
+  build/linux-release/openpete --headless --no-config \
   --disc games/spyro-1/spyro-1/build/SCUS-94228.cue --renderer vk --aspect 4:3 \
   --lod original --no-card --mute 1 --frame-limit 3700
 python3 tools/disc_boot_order.py generate --trace tests/harness/disc_boot_order/spyro-1.tsv \
@@ -171,8 +171,8 @@ python3 tools/disc_boot_order.py generate --trace tests/harness/disc_boot_order/
 python3 tools/disc_boot_order.py check --game spyro-1
 ```
 
-Spyro 2 runs `openpete-spyro2` on `SCUS-94425.cue` to VBL 3400 with
-`--end-vbl 3277`; Spyro 3 runs `openpete-spyro3` on `SCUS-94467.cue` to
+Spyro 2 runs the same executable on `SCUS-94425.cue` to VBL 3400 with
+`--end-vbl 3277`; Spyro 3 runs it on `SCUS-94467.cue` to
 VBL 2600 with `--end-vbl 2459`. `--end-vbl` is the VBL of the last `libcd`
 row of the first level load's read burst in the new trace (Spyro 1 reads
 it at VBL 3547-3553).

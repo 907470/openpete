@@ -77,7 +77,7 @@ os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
-EXE = os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1")
+EXE = os.path.join(ROOT, "build/linux-release/openpete")
 OUT_DIR = os.path.join(ROOT, "baselines/terrain-arena")
 BK2_DIR = os.path.join(ROOT, "games/spyro-1/bk2")
 MANIFEST = corpus_manifest.corpus_manifest(ROOT, "spyro-1", "presentation-corpus.manifest")

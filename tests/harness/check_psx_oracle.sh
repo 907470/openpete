@@ -42,7 +42,7 @@
 # Defaults (from games/SLUG/oracle.conf):
 #   trace-path: tests/golden/spyro-1/psxtrace-demo-20k.bin (20k-tick
 #               attract-demo soak - 4+ level loads + gameplay)
-#   binary:     build/linux-release/games/spyro-1/openpete-spyro1
+#   binary:     build/linux-release/openpete
 #   disc:       env $OPENPETE_DISC or the recipe's
 #
 # Sibling artifacts (auto-detected - produced by pcsx-redux-trace.lua):
@@ -131,7 +131,7 @@ GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLE
 # shellcheck disable=SC1090
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
-BIN="${OPENPETE_BIN:-build/linux-release/games/$GAME/openpete-${GAME//-/}}"
+BIN="${OPENPETE_BIN:-build/linux-release/openpete}"
 DISC="${OPENPETE_DISC:-$DISC}"
 
 # The golden is generated, not committed: a missing default golden is

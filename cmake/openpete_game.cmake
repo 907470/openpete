@@ -32,12 +32,17 @@
 # recompiled output stops the configure with FATAL_ERROR. <id> is the
 # directory name and the game's config-scope id ("spyro-2"); the target
 # names drop its hyphen: module `<tag>_recomp_module`, host library
-# `<tag>_host`, executable `openpete-<tag>`. After the call the caller's
-# scope holds OPENPETE_GAME_TAG, OPENPETE_GAME_EXE (the target that writes
-# <build>/games/<id>/openpete-<tag>), OPENPETE_GAME_HOST (the target that
-# compiles the game's sources), OPENPETE_GAME_EXE_DIR, OPENPETE_GAME_MODULE,
+# `<tag>_host`, game target `openpete-<tag>`. After the call the caller's
+# scope holds OPENPETE_GAME_TAG, OPENPETE_GAME_EXE (the game target: the
+# per-game executable, or with the one executable the target that builds it
+# and stages the game's files beside it), OPENPETE_GAME_HOST (the target that
+# compiles the game's sources), OPENPETE_GAME_EXE_DIR (the directory of the
+# executable that runs the game, where its module, SDK and assets stage),
+# OPENPETE_GAME_BIN (that executable's path) with OPENPETE_GAME_BIN_ARGS (the
+# arguments selecting the game in it), OPENPETE_GAME_MODULE,
 # OPENPETE_GAME_GENERATED and OPENPETE_GAME_GEN_DIR (the build-tree gen/
-# directory), for the sources a game adds on top.
+# directory), for the sources a game adds on top. openpete_game_bin() returns
+# the executable's path and arguments from any directory after the call.
 #
 # A game supplies games/<id>/recomp.conf and game_extras_impl.c; everything
 # else is shared. game_extras_impl.c defines the game's runtime descriptor
@@ -80,13 +85,16 @@
 # The executables. With shared linkage on Linux every game links into one
 # executable, `openpete` at the build root (openpete_link_games, called by
 # the top-level CMakeLists.txt after the games), whose entry selects the
-# game (games/common/game_build.h); each game's target `openpete-<tag>`
-# hard-links it as <build>/games/<id>/openpete-<tag>, beside the game's
-# module, SDK and assets, and that name selects the game when no disc or
-# --game does. Elsewhere (static linkage, and Windows until its shared
-# linkage is measured) each game has its own executable `openpete-<tag>`
-# linking its host library, the shared host code and, under static linkage,
-# its module.
+# game (games/common/game_build.h). Every game's module, SDK, assets and
+# first-boot inputs stage beside it at the build root; each game's target
+# `openpete-<tag>` builds the executable and the game's files and writes no
+# executable of its own. Elsewhere (static linkage, and Windows until its
+# shared linkage is measured) each game has its own executable
+# <build>/games/<id>/openpete-<tag> linking its host library, the shared host
+# code and, under static linkage, its module, with the game's files beside
+# it. The configure deletes the executable and module files the tree no
+# longer builds (the root `openpete`, or a game directory's executable,
+# module and SDK), so no harness runs a stale one.
 #
 # Shared linkage builds the module as <tag>-recomp.{so,dll} beside the
 # executable, which loads it at boot (games/common/recomp_attach_shared.c)
@@ -262,11 +270,14 @@ function(_openpete_game_shared_link_elf TAG IMAGE MODULE STAMP)
 endfunction()
 
 # The first-boot module build's inputs, staged next to the executable as
-# <exe dir>/recomp/: manifest/ (the game's converged manifest
+# <exe dir>/recomp/: manifest/<id>/ (the game's converged manifest
 # manifest/recomp/<serial>/, its psyq.toml and, when the regen wrote one, its
 # channel_sites.txt), src/ (the module source kit) and tools/ (PSXRecomp when
 # built; on Windows the exe-export implib the module links against). The
 # serial is recomp.conf's EXE_FILENAME with `_` -> `-` and the dot dropped.
+# The game-neutral src/ and tools/ stage once per executable directory: with
+# the one executable, by the target openpete_first_boot_kit, which every
+# game's target depends on, so no two targets write one file.
 function(_openpete_game_stage_first_boot GAME_ID EXE EXE_DIR GENERATED SERIAL)
     set(_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/recomp/${SERIAL})
     if(NOT EXISTS ${_manifest}/manifest.toml)
@@ -280,8 +291,26 @@ function(_openpete_game_stage_first_boot GAME_ID EXE EXE_DIR GENERATED SERIAL)
         list(APPEND _manifest_files ${GENERATED}/channel_sites.txt)
     endif()
     add_custom_command(TARGET ${EXE} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${_manifest} ${_rdir}/manifest
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_manifest_files} ${_rdir}/manifest
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${_rdir}/manifest/${GAME_ID}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${_manifest} ${_rdir}/manifest/${GAME_ID}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_manifest_files} ${_rdir}/manifest/${GAME_ID}
+        VERBATIM)
+    if(OPENPETE_ONE_EXECUTABLE)
+        if(NOT TARGET openpete_first_boot_kit)
+            add_custom_target(openpete_first_boot_kit ALL)
+            _openpete_stage_first_boot_kit(openpete_first_boot_kit ${_rdir})
+        endif()
+        add_dependencies(${EXE} openpete_first_boot_kit)
+    else()
+        _openpete_stage_first_boot_kit(${EXE} ${_rdir})
+    endif()
+endfunction()
+
+# The game-neutral half of the first-boot inputs: src/ and tools/ under RDIR,
+# staged after TGT builds.
+function(_openpete_stage_first_boot_kit TGT RDIR)
+    set(_rdir ${RDIR})
+    add_custom_command(TARGET ${TGT} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/src
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/games/common/overlay_dispatch.c
@@ -305,7 +334,7 @@ function(_openpete_game_stage_first_boot GAME_ID EXE EXE_DIR GENERATED SERIAL)
         list(APPEND _tools ${OPENPETE_GAME_MODULE_IMPLIB})
     endif()
     if(_tools)
-        add_custom_command(TARGET ${EXE} POST_BUILD
+        add_custom_command(TARGET ${TGT} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/tools
             COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tools} ${_rdir}/tools
             VERBATIM)
@@ -329,7 +358,17 @@ function(openpete_add_game GAME_ID)
     set(_common ${CMAKE_SOURCE_DIR}/games/common)
     set(_generated ${CMAKE_CURRENT_SOURCE_DIR}/generated)
     set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/gen)
-    set(_exe_dir ${CMAKE_CURRENT_BINARY_DIR})
+    if(OPENPETE_ONE_EXECUTABLE)
+        set(_exe_dir ${CMAKE_BINARY_DIR})
+        set(_bin ${CMAKE_BINARY_DIR}/openpete)
+        set(_bin_args --game ${GAME_ID})
+    else()
+        set(_exe_dir ${CMAKE_CURRENT_BINARY_DIR})
+        set(_bin ${_exe_dir}/${_exe}${CMAKE_EXECUTABLE_SUFFIX})
+        set(_bin_args "")
+    endif()
+    set_property(GLOBAL PROPERTY OPENPETE_GAME_BIN_${GAME_ID} ${_bin})
+    set_property(GLOBAL PROPERTY OPENPETE_GAME_BIN_ARGS_${GAME_ID} ${_bin_args})
 
     # The recompiled C under generated/ is gitignored and produced only by
     # scripts/regen-recomp.sh. A game listed in OPENPETE_GAMES without it
@@ -431,6 +470,10 @@ function(openpete_add_game GAME_ID)
         set_target_properties(${_module} PROPERTIES
             OUTPUT_NAME "${_tag}-recomp"
             PREFIX ""                       # <tag>-recomp.so, not lib*.so
+            # Beside the executable that loads it (the .so is a library
+            # output, the .dll a runtime one).
+            LIBRARY_OUTPUT_DIRECTORY ${_exe_dir}
+            RUNTIME_OUTPUT_DIRECTORY ${_exe_dir}
             POSITION_INDEPENDENT_CODE ON
             # The shipped module is compiled at first boot at plain -O2, so
             # this CMake-built .so/.dll is a dev artifact and gets no LTO
@@ -674,16 +717,16 @@ function(openpete_add_game GAME_ID)
                  ${CMAKE_CURRENT_SOURCE_DIR}/module_imports.h)
 
     if(OPENPETE_ONE_EXECUTABLE)
-        # The game's name for the one executable: a hard link, so the
-        # executable's directory (/proc/self/exe) is the game's, beside its
-        # module, SDK and assets.
-        set(_link ${_exe_dir}/${_exe})
-        add_custom_target(${_exe} ALL
-            COMMAND ${CMAKE_COMMAND} -E rm -f ${_link}
-            COMMAND ${CMAKE_COMMAND} -E create_hardlink $<TARGET_FILE:openpete> ${_link}
-            COMMENT "Linking ${_exe} to the one executable"
-            VERBATIM)
+        # The game's target: the one executable and the game's module; the
+        # SDK, assets and first-boot inputs attach to it below. The game
+        # directory holds no executable, module or SDK; a tree configured
+        # before the move holds them, and they are deleted here.
+        add_custom_target(${_exe} ALL)
         add_dependencies(${_exe} openpete ${_module})
+        file(REMOVE ${CMAKE_CURRENT_BINARY_DIR}/${_exe}
+                    ${CMAKE_CURRENT_BINARY_DIR}/${_tag}-recomp.so)
+        file(REMOVE_RECURSE ${CMAKE_CURRENT_BINARY_DIR}/sdk
+                            ${CMAKE_CURRENT_BINARY_DIR}/recomp)
         set(_image openpete)
     else()
         set(_list_c ${_gen_dir}/${_tag}_game_list.c)
@@ -750,6 +793,8 @@ function(openpete_add_game GAME_ID)
     set(OPENPETE_GAME_EXE       ${_exe}       PARENT_SCOPE)
     set(OPENPETE_GAME_HOST      ${_host}      PARENT_SCOPE)
     set(OPENPETE_GAME_EXE_DIR   ${_exe_dir}   PARENT_SCOPE)
+    set(OPENPETE_GAME_BIN       ${_bin}       PARENT_SCOPE)
+    set(OPENPETE_GAME_BIN_ARGS  "${_bin_args}" PARENT_SCOPE)
     set(OPENPETE_GAME_MODULE    ${_module}    PARENT_SCOPE)
     set(OPENPETE_GAME_GENERATED ${_generated} PARENT_SCOPE)
     set(OPENPETE_GAME_GEN_DIR   ${_gen_dir}   PARENT_SCOPE)
@@ -766,6 +811,8 @@ endfunction()
 # (openpete_game_include_check, tools/check_game_includes.py).
 function(openpete_link_games)
     if(NOT OPENPETE_ONE_EXECUTABLE)
+        # A tree reconfigured from the one executable keeps its file.
+        file(REMOVE ${CMAKE_BINARY_DIR}/openpete)
         return()
     endif()
     get_property(_tags GLOBAL PROPERTY OPENPETE_LINKED_GAMES)
@@ -814,4 +861,17 @@ function(openpete_link_games)
         VERBATIM)
     add_custom_target(openpete_game_include_check DEPENDS ${_stamp})
     add_dependencies(openpete openpete_game_include_check)
+
+    openpete_mod_sdk_stage_all()
+endfunction()
+
+# The executable that runs GAME_ID and the arguments selecting the game in
+# it: OUT_BIN receives the path (the one executable, or the game's own), and
+# OUT_ARGS `--game <id>` for the one executable, else nothing. Valid after
+# openpete_add_game(GAME_ID); OUT_BIN is empty for a game not configured.
+function(openpete_game_bin GAME_ID OUT_BIN OUT_ARGS)
+    get_property(_bin GLOBAL PROPERTY OPENPETE_GAME_BIN_${GAME_ID})
+    get_property(_args GLOBAL PROPERTY OPENPETE_GAME_BIN_ARGS_${GAME_ID})
+    set(${OUT_BIN} "${_bin}" PARENT_SCOPE)
+    set(${OUT_ARGS} "${_args}" PARENT_SCOPE)
 endfunction()
