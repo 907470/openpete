@@ -103,8 +103,8 @@ Linux AppImage bundle the compiler; the Linux `.tar.xz` uses `cc` on
 3. Add `hello` to `mods/enabled.txt` and launch.
 
 The engine hashes the sources, compiles them when the hash changed (a
-"COMPILING MODS" splash stage), loads the object, and runs
-`openpete_mod_entry`. A compile failure disables the mod and writes the
+"COMPILING MODS" stage of the launcher's progress screen), loads the
+object, and runs `openpete_mod_entry`. A compile failure disables the mod and writes the
 error to `mods/hello/.build/<game>/compile.log`; the game still starts. A
 non-zero return from the entry point disables the mod.
 

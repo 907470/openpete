@@ -79,9 +79,10 @@ The level notes are in the Spyro section.
 
 ## Porting
 
-- [`adding-a-game.md`](adding-a-game.md) - how a PSX title becomes an
-  `openpete-<game>` executable: `recomp.conf`, manifests and codegen,
-  `openpete_add_game`, the per-game hooks, and what stays Spyro-1-specific.
+- [`adding-a-game.md`](adding-a-game.md) - how a PSX title becomes a game
+  the `openpete` executable runs: `recomp.conf`, manifests and codegen,
+  `openpete_add_game`, the build record and runtime descriptor, the
+  registration lists, and what stays Spyro-1-specific.
 
 ## Distribution
 

@@ -1,7 +1,8 @@
 # Architecture
 
-openpete runs Spyro the Dragon (SCUS-94228) as a native executable. There is
-no emulator: the game's MIPS code is translated to C at build time, the PSYQ
+openpete runs Spyro the Dragon (SCUS-94228), Spyro 2: Ripto's Rage!
+(SCUS-94425) and Spyro: Year of the Dragon (SCUS-94467) as native code. There
+is no emulator: the game's MIPS code is translated to C at build time, the PSYQ
 system library is replaced by a host re-implementation, and a native Vulkan
 renderer draws the scene from gameplay state. The binding constraint: every
 gameplay-readable byte matches SCPH-1001 hardware, tick for tick, under any
@@ -18,11 +19,13 @@ presentation layer.
   config file, knob registry), `ui/` (settings menu, dev overlay,
   notifications, free camera), `diag/` (logs, traces, profiling), `mods/`,
   `include/`.
-- `games/<game>/` - one executable per game: `recomp.conf`, `manifest/`,
-  `generated/` (recompiler output, gitignored), `game_extras_impl.c`,
-  per-game `features/`, `renderer/` and `corpus/`; `games/<game>/<game>/`
-  is the matching-decomp submodule. `games/common/` holds code shared by
-  the games (PSYQ thunks, overlay dispatch, the default hooks).
+- `games/<game>/` - one game: `recomp.conf`, `manifest/`, `generated/`
+  (recompiler output, gitignored), `game_extras_impl.c`,
+  `module_imports.h`, per-game `features/`, `renderer/`, `corpus/` and
+  `bk2/`; `games/<game>/<game>/` is the matching-decomp submodule.
+  `games/common/` holds code shared by the games and compiled once (the
+  process entry, PSYQ thunks, overlay dispatch, the default hooks, the
+  shared renderer walks).
 - `mods/` - shipped and example mods.
 - `tests/` - `golden/`, `harness/`, `unit/`, `recomp/`, `bench/`,
   `freecam/`, `state-baselines/`.
@@ -40,8 +43,7 @@ presentation layer.
 
 ## Code that runs the game
 
-Two bodies of C are linked into one binary and share one address space
-model.
+Two bodies of C run in one process and share one address space model.
 
 - **Recompiled C.** `third_party/psxrecomp/recompiler` translates `PSX.EXE`
   and each level overlay into C ahead of time; there is no JIT. The main EXE
@@ -73,8 +75,10 @@ Dispatch glue lives in `core/psx/dispatch.c`: `call_by_address` for
 jump-register targets, `psx_override_dispatch` for per-vaddr interception,
 and `psx_syscall`. Core holds no link-time reference to the recompiled code;
 the game registers a descriptor through `openpete_recomp_register()`, which
-is what lets the distribution presets ship the recompiled code as a separate
-module.
+is what lets the recompiled code be a separate module: under shared linkage
+(`linux-release`, the launcher presets) each game's is `<tag>-recomp.so`
+(`.dll`) beside the executable, loaded at boot by
+`games/common/recomp_attach_shared.c`.
 
 ## Execution model
 
@@ -105,11 +109,19 @@ into gameplay state until the oracle clears them.
 
 ## Per-game boundary
 
-`core/` contains nothing Spyro-specific. Entry point, CRC, overlay layout,
-disc layout, and runtime quirks are declared in `core/include/game_extras.h`
-and implemented in `games/<game>/game_extras_impl.c`. `OPENPETE_GAMES`
-(`CMakeLists.txt:60`) builds `games/spyro-1/`, `games/spyro-2/` and
-`games/spyro-3/` by default, one executable each.
+`core/` contains nothing Spyro-specific. Each game defines one runtime
+descriptor (`openpete_game_runtime_t`, `core/include/openpete_game_runtime.h`)
+in `games/<game>/game_extras_impl.c`; core reaches the game only through it,
+and the `core/include/game_extras.h` entries are forwarders over it. The
+build derives a second record per game, `<tag>_game_build`
+(`games/common/game_build.h`): its entry, module name, host-to-module
+forwarders and manifest tables. `OPENPETE_GAMES` (`CMakeLists.txt:60`)
+builds `games/spyro-1/`, `games/spyro-2/` and `games/spyro-3/` by default.
+On Linux under shared linkage they link into one executable,
+`build/<preset>/openpete`, whose entry (`games/common/game_entry.cpp`)
+selects the game from the disc serial, `--game` or the invoked name and
+installs its descriptor; on Windows each game still has its own
+executable. [Adding a game](adding-a-game.md) walks the files.
 
 ## Mods
 

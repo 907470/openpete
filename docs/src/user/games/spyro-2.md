@@ -1,8 +1,10 @@
 # Spyro 2: Ripto's Rage!
 
 No OpenPete release package includes Spyro 2 yet; the release packages
-contain only `openpete-spyro1`. A build from source runs it as
-`openpete-spyro2` (`openpete-spyro2.exe` on Windows). Its config sections
+contain only `openpete-spyro1`. A build from source runs it with
+`openpete` on Linux, the one program that runs every game and picks the
+game from the disc, and with `openpete-spyro2.exe` on Windows. Its config
+sections
 are `[game.spyro-2]` and `[disc.SCUS-94425]`
 ([Config file](../customizing/config-file.md)).
 
@@ -27,7 +29,7 @@ file name. Drag the image onto the window, or pass it on the command line,
 as for Spyro 1 ([First run](../getting-started/first-run.md)):
 
 ```
-openpete-spyro2 --no-card "Spyro 2 - Ripto's Rage.cue"
+openpete --no-card "Spyro 2 - Ripto's Rage.cue"
 ```
 
 `--no-card` is required for now; see [Memory cards](#memory-cards).

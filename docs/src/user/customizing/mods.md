@@ -66,7 +66,7 @@ A mod with `src/` is compiled on the first start after it is installed or
 changed, against the SDK in the `sdk` folder next to the program. The
 compiler is the one bundled in `recomp/tools/` next to the program; a Linux
 install without one uses the system `cc` (the variable `OPENPETE_CC` names
-another). The splash screen shows
+another). The launcher's progress screen shows
 **COMPILING MODS** meanwhile. An unchanged mod is not compiled again.
 
 A mod that fails to compile or load is switched off and the game starts

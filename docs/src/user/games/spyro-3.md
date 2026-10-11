@@ -1,8 +1,10 @@
 # Spyro: Year of the Dragon
 
 No OpenPete release package includes Spyro 3 yet; the release packages
-contain only `openpete-spyro1`. A build from source runs it as
-`openpete-spyro3` (`openpete-spyro3.exe` on Windows). Its config sections
+contain only `openpete-spyro1`. A build from source runs it with
+`openpete` on Linux, the one program that runs every game and picks the
+game from the disc, and with `openpete-spyro3.exe` on Windows. Its config
+sections
 are `[game.spyro-3]` and `[disc.SCUS-94467]`
 ([Config file](../customizing/config-file.md)).
 
@@ -29,7 +31,7 @@ name. Drag the image onto the window, or pass it on the command line, as
 for Spyro 1 ([First run](../getting-started/first-run.md)):
 
 ```
-openpete-spyro3 --no-card "Spyro - Year of the Dragon (v1.0).cue"
+openpete --no-card "Spyro - Year of the Dragon (v1.0).cue"
 ```
 
 `--no-card` is required for now; see [Memory cards](#memory-cards).
@@ -86,7 +88,7 @@ replaces `--skip-to-level`'s level.
 | `dino_mines` (44), `super_bonus_round` (50) | 1, 2, 3 |
 
 ```
-openpete-spyro3 --no-card --skip-to-area seashell_shore:2
+openpete --game spyro-3 --no-card --skip-to-area seashell_shore:2
 ```
 
 ## Cutscenes
