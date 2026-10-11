@@ -49,6 +49,19 @@ union SDL_Event;
  *         initialise, or the context exists on another device. */
 int  openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win);
 
+/** @brief Seed the running game's overlay ini from the one every game shared, once per process.
+ *
+ * When openpete-devui-<game id>.ini does not exist beside the executable
+ * and openpete-devui.ini does, the shared file is copied to the game's
+ * name through a temporary renamed into place; the shared file is only
+ * read. The game's file existing is the record that seeding is done, since
+ * imgui writes it when a context that ran a frame is destroyed. Runs
+ * headless too: it touches files only. openpete_devui_create calls it
+ * before naming the ini.
+ * @return 1 when the file was copied, 0 when nothing was due, -1 when the
+ *         copy failed. */
+int  openpete_devui_seed_ini(void);
+
 /** @brief Attach the dev overlay to the session: create the imgui context unless the launcher did, then seed the knob registry.
  *
  * Call after rhi_create. Creates the context through openpete_devui_create

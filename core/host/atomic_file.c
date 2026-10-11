@@ -190,6 +190,32 @@ int op_atomic_write_file(const char* path, const void* data, size_t n) {
     return op_atomic_file_commit(&af);
 }
 
+int op_atomic_copy_file(const char* src, const char* dst) {
+    FILE* in = fopen(src, "rb");
+    if (!in) {
+        OPL_ERROR_F("atomic-file", "cannot open %s for copying: %s", src, strerror(errno));
+        return -1;
+    }
+    op_atomic_file_t af;
+    if (op_atomic_file_open(&af, dst) != 0) {
+        fclose(in);
+        return -1;
+    }
+    char buf[65536];
+    size_t got;
+    while ((got = fread(buf, 1, sizeof buf, in)) > 0) {
+        if (fwrite(buf, 1, got, af.f) != got) break;
+    }
+    int read_err = ferror(in) || !feof(in);
+    fclose(in);
+    if (read_err) {
+        OPL_ERROR_F("atomic-file", "%s: copy from %s incomplete - target unchanged", dst, src);
+        op_atomic_file_abort(&af);
+        return -1;
+    }
+    return op_atomic_file_commit(&af);
+}
+
 int op_file_write_at(const char* path, long offset, const void* data, size_t n) {
     long keep = 0;
     if (write_fail_injected(path, &keep)) {

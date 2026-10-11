@@ -65,6 +65,16 @@ void op_atomic_file_abort(op_atomic_file_t* af);
  * @return 0 when the target holds exactly the n bytes, -1 with the target unchanged otherwise. */
 int op_atomic_write_file(const char* path, const void* data, size_t n);
 
+/** @brief Replace dst with a copy of src atomically.
+ *
+ * The bytes of @p src are streamed into a temporary beside @p dst, which
+ * op_atomic_file_commit renames over @p dst, so @p dst is either absent (or
+ * its old content) or the whole copy, never a prefix. @p src is only read.
+ * @param src The file to copy.
+ * @param dst The target file; its directory must exist.
+ * @return 0 when dst holds the whole of src, -1 with dst unchanged otherwise. */
+int op_atomic_copy_file(const char* src, const char* dst);
+
 /** @brief Overwrite n bytes at offset of an existing file in place and flush them to the device.
  *
  * For a fixed-layout image whose unit of change is a record no larger than

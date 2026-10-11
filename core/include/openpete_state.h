@@ -149,6 +149,28 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);
 
+/** @brief Seed the running game's states directory from the shared one, once per process and once per game.
+ *
+ * Slot files (slot<N>.state) in the shared "states" directory that belong
+ * to the running game are copied into "states/<game id>/": a file whose
+ * header names the running game, and a file naming no game when the
+ * running module carries a ROM hash and the file's identity is the
+ * module's (the one case the loader accepts it). A file naming another
+ * game, naming no game under a module without a ROM hash, or not readable
+ * as a state is left where it is and logged with the reason. A slot the
+ * game's directory already holds is never overwritten. Each copy is
+ * written to a temporary and renamed into place. The shared files are
+ * only read. When every copy succeeds and every file was attributed, a
+ * marker file ".seeded" is written in the game's directory, and a later
+ * call finds it and copies nothing. A failed copy, or a file naming no game
+ * under a module without a ROM hash, leaves no marker, so a later run
+ * retries the slots still missing; the slots copied are not copied again,
+ * since a slot the game's directory holds is skipped. With no slot file in
+ * the shared directory nothing is created.
+ * @return The number of files copied, 0 when nothing was due, -1 when a
+ *         directory does not resolve or a copy or the marker write failed. */
+int openpete_state_seed_game_dir(void);
+
 /** @brief Resolve the running game's states directory, creating it when missing.
  *
  * The directory is "states/<game id>", "states" lying beside the shared

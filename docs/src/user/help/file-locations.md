@@ -78,6 +78,32 @@ and `gamecontrollerdb.txt`; `recomp/`, the compiler and recompiler that
 build the game code on [first run](glossary.md#first-run-compile); and `sdk/`, the mod SDK with its
 documentation and examples, in packages built with it.
 
+## Files from earlier versions
+
+Earlier versions kept every game's savestate slots in `states/` and the
+[dev overlay](../playing/dev-overlay.md)'s window layout in one
+`openpete-devui.ini` next to the program. The first time a game runs on
+this version, it copies its own files to its per-game names and leaves
+the originals where they are; nothing is moved or deleted:
+
+- A slot file in `states/` made by this game is copied into the game's
+  folder (`states/spyro-1/slot3.state`). A slot file made by another game
+  is copied when that game first runs. A slot the game's folder already
+  holds is not overwritten. When the copying is done the game's folder
+  gets a `.seeded` file, and later runs copy nothing; delete it to copy
+  again.
+- A slot file from a version that did not record its game is copied only
+  when the game code was compiled from your disc on
+  [first run](glossary.md#first-run-compile), which lets the program prove
+  the file came from this game. Otherwise it stays in `states/`, the log
+  names it, no `.seeded` file is written, and each later run checks it
+  again.
+- `openpete-devui.ini` is copied to `openpete-devui-spyro-1.ini` (one per
+  game) when the game's file does not exist yet.
+
+The log lists every file copied and every file left in place, with the
+reason.
+
 ## Other files
 
 - `hang-trace.bin`: written into the folder the program was started from

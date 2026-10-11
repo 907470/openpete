@@ -33,6 +33,7 @@ extern "C" {
 }
 #include "game_extras.h"   /* game_get_id: the per-game ini name */
 #include "openpete.h"
+#include "openpete_atomic_file.h"
 #include "openpete_devui.h"
 #include "openpete_fillpick.h"
 extern "C" {
@@ -100,6 +101,41 @@ int openpete_devui_inject_mouse_requested(float *x, float *y)
     return 1;
 }
 
+/** @brief Format the overlay's ini path beside the executable: openpete-devui-<game>.ini, or openpete-devui.ini for a NULL or empty game.
+ *
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @param game The game id, or NULL. */
+static void devui_ini_path(char *out, size_t cap, const char *game)
+{
+    const char *base = SDL_GetBasePath();
+    snprintf(out, cap, "%sopenpete-devui%s%s.ini", base ? base : "",
+             (game && *game) ? "-" : "", game ? game : "");
+}
+
+int openpete_devui_seed_ini(void)
+{
+    static bool s_done = false;
+    if (s_done) return 0;
+    s_done = true;
+    const char *game = game_get_id();
+    if (!game || !*game) return 0;
+    char shared[1024], own[1024];
+    devui_ini_path(shared, sizeof shared, NULL);
+    devui_ini_path(own, sizeof own, game);
+    FILE *probe = fopen(own, "rb");
+    if (probe) {
+        fclose(probe);
+        return 0;
+    }
+    probe = fopen(shared, "rb");
+    if (!probe) return 0;
+    fclose(probe);
+    if (op_atomic_copy_file(shared, own) != 0) return -1;
+    OPL_INFO_F("devui", "copied %s to %s; the original stays in place", shared, own);
+    return 1;
+}
+
 int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
 {
     if (s_ctx) return dev == s_dev ? 1 : 0;
@@ -114,10 +150,8 @@ int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     /* UI state (window pos/collapse) next to the exe, not the CWD, one
      * file per game: the games' overlays differ in their windows. */
-    const char *base = SDL_GetBasePath();
-    const char *game = game_get_id();
-    snprintf(s_ini_path, sizeof s_ini_path, "%sopenpete-devui%s%s.ini", base ? base : "",
-             (game && *game) ? "-" : "", game ? game : "");
+    (void)openpete_devui_seed_ini();
+    devui_ini_path(s_ini_path, sizeof s_ini_path, game_get_id());
     io.IniFilename = s_ini_path;
     ImGui::StyleColorsDark();
     ImGui::GetStyle().Alpha = 0.96f;

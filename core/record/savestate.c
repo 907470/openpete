@@ -287,32 +287,162 @@ static void game_fill(char out[OPENPETE_STATE_GAME_LEN]) {
     if (id) strncpy(out, id, OPENPETE_STATE_GAME_LEN - 1);
 }
 
-/** @brief Log once that the shared states directory still holds slot files from the layout without per-game directories.
+/** @brief Format "<dir>/<name>" with the platform separator.
  *
- * Slots resolve inside the running game's directory, so files left in the
- * shared directory are no longer listed or loaded as slots; nothing is
- * moved. A migration of those files replaces this notice: it is the one
- * place that sees both the shared directory and the game's directory when a
- * slot path is first resolved.
- * @param shared The shared states directory.
- * @param game_dir The running game's states directory. */
-static void legacy_slots_notice(const char* shared, const char* game_dir) {
-    static int s_done;
-    if (s_done) return;
-    s_done = 1;
-    for (unsigned slot = 0; slot < OPENPETE_STATE_NUM_SLOTS; slot++) {
-        char path[1280];
+ * @param dir A directory.
+ * @param name A file name inside it.
+ * @param out Receives the path.
+ * @param out_size Capacity of @p out.
+ * @return 0 on success, -1 when the path does not fit. */
+static int state_file_path(const char* dir, const char* name, char* out, size_t out_size) {
 #ifdef _WIN32
-        int n = snprintf(path, sizeof path, "%s\\slot%u.state", shared, slot);
+    int n = snprintf(out, out_size, "%s\\%s", dir, name);
 #else
-        int n = snprintf(path, sizeof path, "%s/slot%u.state", shared, slot);
+    int n = snprintf(out, out_size, "%s/%s", dir, name);
 #endif
-        struct stat st;
-        if (n < 0 || (size_t)n >= sizeof path || stat(path, &st) != 0) continue;
-        OPL_INFO_F("savestate", "slots now live in %s; %s still holds slot files "
-                   "saved before savestates were kept per game", game_dir, shared);
+    return (n < 0 || (size_t)n >= out_size) ? -1 : 0;
+}
+
+/** @brief 1 when path names an existing regular file, else 0. */
+static int state_file_exists(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG;
+}
+
+/** @brief Decide whether a slot file in the shared states directory belongs to the running game.
+ *
+ * Applies the loader's game test (state_game_check) to the file's header
+ * without logging: a header naming a game belongs to that game, whatever
+ * its identity; a header naming none belongs to the running game only when
+ * the running module carries a ROM hash and the file's identity equals the
+ * module's, the one case in which it would load. A file whose magic or
+ * version this build does not read belongs to no game. A file naming no game
+ * under a module without a ROM hash is undecided: a later run under a
+ * module with one can attribute it.
+ * @param path The shared slot file.
+ * @param why Receives the reason when the file does not belong.
+ * @return 1 when it belongs to the running game, 0 when it does not, -1
+ *         when this module cannot tell. */
+static int shared_slot_belongs(const char* path, const char** why) {
+    openpete_state_header_t hdr;
+    FILE* fp = fopen(path, "rb");
+    size_t got = fp ? fread(&hdr, 1, sizeof hdr, fp) : 0;
+    if (fp) fclose(fp);
+    if (got != sizeof hdr || hdr.magic != OPENPETE_STATE_MAGIC ||
+        hdr.version != OPENPETE_STATE_VERSION) {
+        *why = "not a state this build reads";
+        return 0;
+    }
+    char want[OPENPETE_STATE_GAME_LEN];
+    game_fill(want);
+    if (hdr.game[0]) {
+        *why = "saved by another game";
+        return memcmp(hdr.game, want, OPENPETE_STATE_GAME_LEN) == 0;
+    }
+    const openpete_recomp_module* m = openpete_recomp_module_get();
+    if (!(m && m->rom_sha256 && *m->rom_sha256)) {
+        *why = "names no game and this module carries no ROM hash to prove its game";
+        return -1;
+    }
+    char ident[OPENPETE_STATE_HASH_LEN];
+    ident_fill(ident);
+    *why = "names no game and its identity is another game's or build's";
+    return memcmp(hdr.ident, ident, OPENPETE_STATE_HASH_LEN) == 0;
+}
+
+/** @brief Report whether the shared states directory holds a slot's file, formatting its path.
+ *
+ * @param shared The shared states directory.
+ * @param slot The slot number.
+ * @param out Receives the path, or NULL to only test.
+ * @param out_size Capacity of @p out.
+ * @return 1 when slot<N>.state exists there as a regular file, else 0. */
+static int shared_slot_src(const char* shared, unsigned slot, char* out, size_t out_size) {
+    char name[32], path[1280];
+    snprintf(name, sizeof name, "slot%u.state", slot);
+    if (state_file_path(shared, name, path, sizeof path) != 0 || !state_file_exists(path))
+        return 0;
+    if (out) snprintf(out, out_size, "%s", path);
+    return 1;
+}
+
+/** Tallies of one seeding pass over the shared slot files. */
+typedef struct {
+    unsigned found;   /* slot files present in the shared directory */
+    unsigned copied;  /* copied into the game's directory */
+    unsigned failed;  /* copies that failed; the pass leaves no marker */
+    unsigned undecided; /* files this module cannot attribute; no marker */
+} state_seed_counts_t;
+
+/** @brief Copy one shared slot file into the game's directory when it belongs to the running game and the game's slot is empty.
+ *
+ * The copy goes through a temporary renamed into place, so an interrupted
+ * copy leaves no slot file. The shared file is only read. Each file
+ * present and not copied is logged with the reason.
+ * @param shared The shared states directory.
+ * @param game_dir The running game's states directory.
+ * @param slot The slot number.
+ * @param c Tallies, updated. */
+static void seed_one_slot(const char* shared, const char* game_dir, unsigned slot,
+                          state_seed_counts_t* c) {
+    char name[32], src[1280], dst[1280];
+    if (!shared_slot_src(shared, slot, src, sizeof src)) return;
+    snprintf(name, sizeof name, "slot%u.state", slot);
+    c->found++;
+    const char* why = NULL;
+    int belongs = shared_slot_belongs(src, &why);
+    if (belongs != 1) {
+        if (belongs < 0) c->undecided++;
+        OPL_INFO_F("savestate", "%s left in place, not copied: %s", src, why);
         return;
     }
+    if (state_file_path(game_dir, name, dst, sizeof dst) != 0) {
+        c->failed++;
+        return;
+    }
+    if (state_file_exists(dst)) {
+        OPL_INFO_F("savestate", "%s left in place, not copied: %s already exists", src, dst);
+        return;
+    }
+    if (op_atomic_copy_file(src, dst) != 0) {
+        c->failed++;
+        return;
+    }
+    c->copied++;
+    OPL_INFO_F("savestate", "copied %s to %s", src, dst);
+}
+
+int openpete_state_seed_game_dir(void) {
+    static int s_done;
+    if (s_done) return 0;
+    s_done = 1;
+    const char* game = game_get_id();
+    char shared[1024], game_dir[1024], marker[1280];
+    if (!game || !*game ||
+        openpete_paths_state_dir("states", shared, sizeof shared, 0) != 0 ||
+        openpete_paths_game_state_dir("states", game, game_dir, sizeof game_dir, 0) != 0 ||
+        state_file_path(game_dir, ".seeded", marker, sizeof marker) != 0)
+        return -1;
+    if (state_file_exists(marker)) return 0;
+
+    unsigned any = 0;
+    for (unsigned slot = 0; slot < OPENPETE_STATE_NUM_SLOTS; slot++)
+        any |= (unsigned)shared_slot_src(shared, slot, NULL, 0);
+    if (!any) return 0; /* nothing to seed: no marker, no directory */
+    state_seed_counts_t c = {0, 0, 0, 0};
+    if (openpete_paths_game_state_dir("states", game, game_dir, sizeof game_dir, 1) != 0)
+        return -1;
+    for (unsigned slot = 0; slot < OPENPETE_STATE_NUM_SLOTS; slot++)
+        seed_one_slot(shared, game_dir, slot, &c);
+    OPL_INFO_F("savestate", "seeding %s from %s: %u of %u slot files copied, %u failed, "
+               "%u undecided; the originals stay in %s", game_dir, shared, c.copied, c.found,
+               c.failed, c.undecided, shared);
+    if (c.failed) return -1;
+    if (c.undecided) return (int)c.copied; /* no marker: a later module may attribute them */
+    static const char kMarker[] =
+        "Slot files of the shared states directory were copied here once.\n";
+    if (op_atomic_write_file(marker, kMarker, sizeof kMarker - 1) != 0) return -1;
+    return (int)c.copied;
 }
 
 /** @brief Resolve the running game's states directory, creating it when missing.
@@ -321,19 +451,16 @@ static void legacy_slots_notice(const char* shared, const char* game_dir) {
  * directory under whichever layout openpete_paths_state_dir resolves: the
  * executable's folder for a portable install, the per-user state directory
  * otherwise. The cards stay shared by every game; savestates do not, so one
- * game's slots never list or load another's. No trailing separator.
+ * game's slots never list or load another's. The first call in a process
+ * seeds the directory from the shared one (openpete_state_seed_game_dir).
+ * No trailing separator.
  * @param out Receives the path.
  * @param out_size Capacity of @p out.
  * @return 0 on success, -1 when no base resolves or the path does not
  *         fit. */
 static int resolve_state_dir(char* out, size_t out_size) {
-    if (openpete_paths_game_state_dir("states", game_get_id(), out, out_size, 1) != 0)
-        return -1;
-    char shared[1024];
-    if (openpete_paths_state_dir("states", shared, sizeof shared, 0) == 0 &&
-        strcmp(shared, out) != 0)
-        legacy_slots_notice(shared, out);
-    return 0;
+    (void)openpete_state_seed_game_dir();
+    return openpete_paths_game_state_dir("states", game_get_id(), out, out_size, 1);
 }
 
 /** @brief Build the path of a slot's state file, "<states dir>/slot<N>.state".
@@ -351,14 +478,10 @@ static int slot_path(unsigned slot, char* out, size_t out_size) {
                     slot, OPENPETE_STATE_NUM_SLOTS - 1);
         return -1;
     }
-    char dir[1024];
+    char dir[1024], name[32];
     if (resolve_state_dir(dir, sizeof(dir)) != 0) return -1;
-#ifdef _WIN32
-    int n = snprintf(out, out_size, "%s\\slot%u.state", dir, slot);
-#else
-    int n = snprintf(out, out_size, "%s/slot%u.state", dir, slot);
-#endif
-    if (n < 0 || (size_t)n >= out_size) {
+    snprintf(name, sizeof name, "slot%u.state", slot);
+    if (state_file_path(dir, name, out, out_size) != 0) {
         OPL_ERROR_F("savestate", "slot path too long");
         return -1;
     }
