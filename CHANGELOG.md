@@ -18,6 +18,8 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
+- Mod SDK: `OPENPETE_MOD_ERR_UNSUPPORTED` (-2) is returned by `read_level_data` and `moby_classes` on a game that
+  does not provide them; every other return value is unchanged.
 - Mod SDK: the headers at the root of `sdk/` now include the selected game's headers from `sdk/games/<game>/`;
   a build line using `-I sdk` alone still compiles as Spyro 1, and naming a game the SDK does not carry stops
   with an error naming that game.
