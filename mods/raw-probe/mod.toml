@@ -1,14 +1,16 @@
 # raw-probe - CI fixture: an override by raw address.
 #
-# Hooks a bare vaddr (an un-decompiled func_XXXXXXXX) and reads its
-# arguments from cpu->a0..a3. Raw addresses are pinned to this binary and
-# the loader warns once on the first raw registration. Log-only.
+# Hooks each game's player draw by bare vaddr (an un-decompiled
+# func_XXXXXXXX: Spyro 1 func_80023AC4, Spyro 2 func_80041DBC, Spyro 3
+# func_8003CDA0) and reads its registers from the cpu context. Raw
+# addresses are pinned to this binary and the loader warns once on the
+# first raw registration. Log-only.
 
 [mod]
 id      = "raw-probe"
 name    = "Raw Probe"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 1
 state    = "none"      # counters + last-seen registers
 runahead = "host-fx"   # periodic logs - suppressible

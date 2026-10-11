@@ -30,7 +30,7 @@
 #                   descriptor leaves their member NULL, with one log line
 #                   per entry naming the game; none on Spyro 1.
 #   engagement      every in-tree mod with per-game arms (the camera-clock
-#                   mods, double-gems, natural-gems) loads and its own
+#                   mods, double-gems, natural-gems, raw-probe) loads and its own
 #                   override link counts calls above 0 on the attract demo
 #                   (OPENPETE_MOD_LINK_CALLS); double-gems and natural-gems
 #                   each double a pickup, and a later pickup in the same
@@ -359,7 +359,7 @@ double_chain() {
         awk 'NR > 1 && $2 - $1 == prev { ok = 1 } { prev = $3 } END { print ok + 0 }'
 }
 
-ARMS_MODS="hello-anchor hud-stopwatch pad-probe mouse-probe sfx-play-probe chain-duo-a chain-duo-b arena-canary double-gems game-arms"
+ARMS_MODS="hello-anchor hud-stopwatch pad-probe mouse-probe sfx-play-probe chain-duo-a chain-duo-b arena-canary double-gems game-arms raw-probe"
 say "per-game arms: $ARMS_MODS engage on $PG_GAME ($DEMO_FRAMES VBLs)"
 # shellcheck disable=SC2086
 fixture "$WORK/arms" $ARMS_MODS
@@ -379,6 +379,14 @@ if [ "$n_dbl" -gt 0 ] && [ "$(double_chain "$out" "gem pickup doubled")" -eq 1 ]
     ok "double-gems: $n_dbl pickups doubled; a later pickup started from the doubled total"
 else
     bad "double-gems: $n_dbl pickups doubled, no pickup started from a doubled total"
+fi
+
+# raw-probe binds the game's player draw by address and logs its registers
+# on the first call and every 500th.
+if printf '%s\n' "$out" | grep -q "raw probe #1: a0=0x"; then
+    ok "raw-probe: $(printf '%s\n' "$out" | grep -c "raw probe #") register log lines"
+else
+    bad "raw-probe: no first-call register log line"
 fi
 
 # game-arms binds the camera update, the collect function and the sine on
