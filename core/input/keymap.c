@@ -66,6 +66,11 @@ typedef struct {
     char        origin[KM_ORIGIN_MAX];
     char        shadowed[KM_ORIGIN_MAX]; /* previous winner, for the report */
     unsigned char unbound_by_config;     /* "none"/[] rather than KM_DEV */
+    /* Per "hold:" source: the poll's clock reading plus one when its input
+     * was first seen held in the current hold, 0 while released; and
+     * whether it has been held for KM_HOLD_MS. Written by km_hold_update. */
+    unsigned long long hold_since[KM_MAX_SOURCES];
+    unsigned char      hold_on[KM_MAX_SOURCES];
 } km_binding_t;
 
 static km_binding_t g_bind[OPK_ACTION_COUNT];
@@ -179,6 +184,8 @@ static int km_is_mouse_kind(int kind) {
 
 static int km_find(const char* domain, const char* action);
 static int km_streq_ci(const char* a, const char* b);
+static int km_parse_hold(const char* inner, km_source_t* src, const char* where,
+                         const char* domain, const char* action);
 
 /** @brief Compare two strings for equality, ignoring ASCII letter case. */
 static int km_streq_ci(const char* a, const char* b) {
@@ -197,6 +204,50 @@ static void km_trim(char* s) {
     if (p != s) memmove(s, p, strlen(p) + 1);
     size_t n = strlen(s);
     while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = '\0';
+}
+
+/** @brief Parse the name after a "pad:" or "padN:" prefix into a button or axis source.
+ *
+ * Buttons are tried first, then axes; a leading '-' inverts an axis and is
+ * an error on a button.
+ * @param pad_name the text after the prefix.
+ * @param pad_device 0 for an unqualified "pad:", else the player number.
+ * @param src receives the source on success; zeroed by the caller.
+ * @param where the config file or manifest named in error messages.
+ * @param domain the binding domain.
+ * @param action the action or mod binding name.
+ * @return 1 when src is filled, -1 when the name is no button or axis. */
+static int km_parse_pad(const char* pad_name, int pad_device, km_source_t* src,
+                        const char* where, const char* domain, const char* action) {
+    const char* name = pad_name;
+    int invert = 0;
+    if (*name == '-') { invert = 1; name++; }
+    src->device = (unsigned char)pad_device;
+
+    /* Buttons first, then axes: SDL names them from disjoint tables,
+     * and trying the button table first means "pad:start" is never
+     * mistaken for an axis. */
+    int code = s_to_code ? s_to_code(KM_SRC_PADBTN, name) : -1;
+    if (code >= 0) {
+        if (invert) {
+            OPL_ERROR_F("keys", "%s: %s.%s: '-' inverts an axis, and "
+                        "'%s' is a button", where, domain, action, name);
+            return -1;
+        }
+        src->kind = KM_SRC_PADBTN;
+        src->code = (short)code;
+        return 1;
+    }
+    code = s_to_code ? s_to_code(KM_SRC_PADAXIS, name) : -1;
+    if (code >= 0) {
+        src->kind   = KM_SRC_PADAXIS;
+        src->code   = (short)code;
+        src->invert = (signed char)(invert ? -1 : 1);
+        return 1;
+    }
+    OPL_ERROR_F("keys", "%s: %s.%s: no gamepad button or axis named '%s'",
+                where, domain, action, name);
+    return -1;
 }
 
 /** @brief Parse one binding token into a source.
@@ -224,6 +275,9 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
     km_trim(buf);
     if (!buf[0] || km_streq_ci(buf, "none")) return 0;
 
+    if (strncmp(buf, "hold:", 5) == 0)
+        return km_parse_hold(buf + 5, src, where, domain, action);
+
     memset(src, 0, sizeof *src);
 
     /* "pad:" is player 1; "pad2:".."pad4:" address the other host pad slots.
@@ -240,37 +294,8 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
         pad_name = buf + 5;
     }
 
-    if (pad_device >= 0) {
-        const char* name = pad_name;
-        int invert = 0;
-        if (*name == '-') { invert = 1; name++; }
-        src->device = (unsigned char)pad_device;
-
-        /* Buttons first, then axes: SDL names them from disjoint tables,
-         * and trying the button table first means "pad:start" is never
-         * mistaken for an axis. */
-        int code = s_to_code ? s_to_code(KM_SRC_PADBTN, name) : -1;
-        if (code >= 0) {
-            if (invert) {
-                OPL_ERROR_F("keys", "%s: %s.%s: '-' inverts an axis, and "
-                            "'%s' is a button", where, domain, action, name);
-                return -1;
-            }
-            src->kind = KM_SRC_PADBTN;
-            src->code = (short)code;
-            return 1;
-        }
-        code = s_to_code ? s_to_code(KM_SRC_PADAXIS, name) : -1;
-        if (code >= 0) {
-            src->kind   = KM_SRC_PADAXIS;
-            src->code   = (short)code;
-            src->invert = (signed char)(invert ? -1 : 1);
-            return 1;
-        }
-        OPL_ERROR_F("keys", "%s: %s.%s: no gamepad button or axis named '%s'",
-                    where, domain, action, name);
-        return -1;
-    }
+    if (pad_device >= 0)
+        return km_parse_pad(pad_name, pad_device, src, where, domain, action);
 
     /* "mouse:" sources. Accepted in the host and mod.<id> domains only: the
      * player-1 pad domain is pushed to PsyCross as gamepad codes and the
@@ -370,6 +395,44 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
                 "\"pad2:south\" for player 2)",
                 where, domain, action, buf);
     return -1;
+}
+
+/** @brief Parse the source after a "hold:" prefix and mark it a hold source.
+ *
+ * A hold source is read only by the live host poll, which times it, so it
+ * binds a digital host action and nothing else: the pad domains are decoded
+ * through a reader and mod bindings are read as levels from a game-tick
+ * hook, and neither times a hold. The inner source must have a level: a
+ * mouse motion or wheel source, a nested "hold:" and "none" are refused.
+ * @param inner the token text after "hold:".
+ * @param src receives the source on success.
+ * @param where the config file or manifest named in error messages.
+ * @param domain the binding domain.
+ * @param action the action or mod binding name.
+ * @return 1 when src is filled, -1 when refused. */
+static int km_parse_hold(const char* inner, km_source_t* src, const char* where,
+                         const char* domain, const char* action) {
+    const int idx = km_streq_ci(domain, "host") ? km_find(domain, action) : -1;
+    if (idx < 0 || g_actions[idx].kind != KM_DIGITAL) {
+        OPL_ERROR_F("keys", "%s: %s.%s: a hold: source binds a [keys.host] "
+                    "button action only", where, domain, action);
+        return -1;
+    }
+    if (strncmp(inner, "hold:", 5) == 0) {
+        OPL_ERROR_F("keys", "%s: %s.%s: hold: is written once", where,
+                    domain, action);
+        return -1;
+    }
+    int r = km_parse_token(inner, src, where, domain, action);
+    if (r < 0) return -1;
+    if (r == 0 || src->kind == KM_SRC_MOUSEAXIS ||
+        (src->kind == KM_SRC_MOUSEBTN && KM_MOUSE_IS_PULSE(src->code))) {
+        OPL_ERROR_F("keys", "%s: %s.%s: 'hold:%s' needs a key or button "
+                    "that stays down", where, domain, action, inner);
+        return -1;
+    }
+    src->hold = 1;
+    return 1;
 }
 
 /** @brief Split binding values on commas and parse each piece with km_parse_token.
@@ -605,6 +668,8 @@ int openpete_keymap_set(const char* domain, const char* action,
     if (b->rank >= 0 || b->n > 0)
         snprintf(b->shadowed, sizeof b->shadowed, "%s", b->origin);
     memcpy(b->src, src, sizeof src);
+    memset(b->hold_since, 0, sizeof b->hold_since);
+    memset(b->hold_on, 0, sizeof b->hold_on);
     b->n = cnt;
     b->rank = rank;
     b->unbound_by_config = (cnt == 0) ? 1u : 0u;
@@ -623,8 +688,12 @@ int openpete_keymap_set(const char* domain, const char* action,
  * holds the game pad neutral and zeroes the freecam axes; GAMEPLAY and
  * FREECAM are disjoint because the free camera freezes Spyro. FILLPICK
  * overlaps GAMEPLAY and FREECAM because the inspector runs with the game
- * live underneath it. openpete_keymap_resolve reports a shared source only
- * between actions whose contexts overlap.
+ * live underneath it. DEVUI is disjoint from GAMEPLAY, FREECAM, FILLPICK and
+ * MENU: while the dev overlay navigates with the pad, the game pad is held
+ * neutral, every other live pad source is suspended and the freecam axes are
+ * zeroed, and the overlay and the settings menu are never open together.
+ * openpete_keymap_resolve reports a shared source only between actions
+ * whose contexts overlap.
  * @param a first KM_CTX_* value.
  * @param b second KM_CTX_* value.
  * @return 1 when the contexts overlap, 0 otherwise. */
@@ -654,6 +723,11 @@ static int km_overlap_is_intentional(int a, int b, const char** why) {
     if (lo == OPK_FREECAM && hi == OPK_PAD_L3) {
         *why = "Spyro 1 never reads L3, so the stick click is free for the "
                "debug camera";
+        return 1;
+    }
+    if (lo == OPK_DEVUI && hi == OPK_PAD_SELECT) {
+        *why = "devui reads Back only once it has been held for half a "
+               "second; a tap of Back is select";
         return 1;
     }
     if (lo == OPK_MENU_RIGHT && hi == OPK_MENU_SELECT) {
@@ -868,9 +942,10 @@ int openpete_keymap_resolve(void) {
 static unsigned char g_held[OPK_ACTION_COUNT];
 static unsigned char g_prev[OPK_ACTION_COUNT];
 static int           g_suspend_kbd;
-/* The one action that stays readable through a keyboard suspension, or
- * OPK_ACTION_COUNT for none. */
-static openpete_action_t g_suspend_exempt = OPK_ACTION_COUNT;
+static int           g_suspend_pad;
+/* Actions that stay readable through a keyboard or a pad suspension. */
+static unsigned char g_kbd_exempt[OPK_ACTION_COUNT];
+static unsigned char g_pad_exempt[OPK_ACTION_COUNT];
 
 /* Past this fraction of full throw an axis counts as a digital press -
  * generous, because the only digital-from-axis bindings are the analog
@@ -898,12 +973,15 @@ typedef struct {
      * and OPK_MENU_CLOSE, so a mouse-bound `menu` can close what it opened).
      * Never exempt from the dev overlay's. */
     int menu_exempt;
-    /* The action is the one named by openpete_keymap_suspend_keyboard, so its
-     * keyboard sources are read through a suspension. */
+    /* The action is in openpete_keymap_suspend_keyboard's exempt set, so
+     * its keyboard sources are read through a suspension. */
     int kbd_exempt;
+    /* The action is in openpete_keymap_suspend_pad's exempt set, so its
+     * live pad sources are read through a suspension. */
+    int pad_exempt;
 } km_resolve_t;
 
-static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0, 0, 0 };
+static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0, 0, 0, 0 };
 
 /** @brief Return the current mouse owner from the input seam.
  *
@@ -967,12 +1045,14 @@ static int km_read_key(const km_resolve_t* c, int code) {
 /** @brief Read a pad button source's level from the caller's reader or the live seams.
  *
  * Slot 0 reads the pad_button seam; a higher slot reads pad_button_slot and
- * reads 0 when that seam is not installed.
+ * reads 0 when that seam is not installed. A live read reads 0 while the pad
+ * is suspended and the action is not exempt.
  * @param c the resolution context.
  * @param s a KM_SRC_PADBTN source.
  * @return 1 when held, 0 otherwise. */
 static int km_read_btn(const km_resolve_t* c, const km_source_t* s) {
     const int slot = km_src_slot(c, s);
+    if (!c->rd && g_suspend_pad && !c->pad_exempt) return 0;
     if (c->rd)
         return c->rd->pad_button ? c->rd->pad_button(c->rd->ctx, slot, s->code) : 0;
     if (slot > 0)
@@ -986,7 +1066,8 @@ static int km_read_btn(const km_resolve_t* c, const km_source_t* s) {
  * slot for an unqualified source. The caller's reader serves every slot
  * when set; otherwise slot 0 reads s_in.pad_axis and other slots
  * s_in.pad_axis_slot. The digital-press test and the analog reads share
- * this reader, so both honour the slot.
+ * this reader, so both honour the slot. A live read reads 0 while the pad is
+ * suspended and the action is not exempt.
  * @param c the resolution context.
  * @param s a KM_SRC_PADAXIS source; invert < 0 negates the value.
  * @return the read value (nominally [-32768, 32767]), negated for an
@@ -994,6 +1075,7 @@ static int km_read_btn(const km_resolve_t* c, const km_source_t* s) {
 static int km_src_axis_raw(const km_resolve_t* c, const km_source_t* s) {
     const int slot = km_src_slot(c, s);
     int v;
+    if (!c->rd && g_suspend_pad && !c->pad_exempt) return 0;
     if (c->rd) {
         if (!c->rd->pad_axis) return 0;
         v = c->rd->pad_axis(c->rd->ctx, slot, s->code);
@@ -1045,10 +1127,48 @@ static int km_action_down(const km_resolve_t* c, openpete_action_t a) {
     const km_binding_t* b = &g_bind[a];
     km_resolve_t cc = *c;
     cc.menu_exempt = km_menu_exempt(a);
-    cc.kbd_exempt  = (a == g_suspend_exempt);
-    for (int i = 0; i < b->n; i++)
+    cc.kbd_exempt  = g_kbd_exempt[a];
+    cc.pad_exempt  = g_pad_exempt[a];
+    for (int i = 0; i < b->n; i++) {
+        if (b->src[i].hold) {
+            /* Timed by the live poll; a reader never sees a hold. */
+            if (!c->rd && b->hold_on[i]) return 1;
+            continue;
+        }
         if (km_src_down(&cc, &b->src[i])) return 1;
+    }
     return 0;
+}
+
+/** @brief Advance every "hold:" source's timer from its input's live level.
+ *
+ * The input is read as a plain source of its action, with the action's
+ * keyboard, pad and mouse exemptions, so a suspension stops a hold the same
+ * way it stops a press. A held input starts its timer at the first poll
+ * that sees it; the source reads held once KM_HOLD_MS has passed, and a
+ * release clears both. Without the now_ms seam no hold source reads held.
+ * Called by openpete_keymap_poll before the levels are sampled. */
+static void km_hold_update(void) {
+    const unsigned long long now = s_in.now_ms ? s_in.now_ms() : 0;
+    for (int a = 0; a < OPK_ACTION_COUNT; a++) {
+        km_binding_t* b = &g_bind[a];
+        km_resolve_t cc = KM_RESOLVE_LIVE;
+        cc.menu_exempt = km_menu_exempt((openpete_action_t)a);
+        cc.kbd_exempt  = g_kbd_exempt[a];
+        cc.pad_exempt  = g_pad_exempt[a];
+        for (int i = 0; i < b->n; i++) {
+            if (!b->src[i].hold) continue;
+            km_source_t plain = b->src[i];
+            plain.hold = 0;
+            if (!s_in.now_ms || !km_src_down(&cc, &plain)) {
+                b->hold_since[i] = 0;
+                b->hold_on[i] = 0;
+                continue;
+            }
+            if (!b->hold_since[i]) b->hold_since[i] = now + 1;
+            b->hold_on[i] = (now + 1 - b->hold_since[i]) >= KM_HOLD_MS;
+        }
+    }
 }
 
 /** @brief Return an action's level in [-1, 1] from its first active source.
@@ -1068,6 +1188,7 @@ static float km_action_axis(const km_resolve_t* c, openpete_action_t a) {
      * bias the other. Deterministic and order-stable. */
     for (int i = 0; i < b->n; i++) {
         const km_source_t* s = &b->src[i];
+        if (s->hold) continue;   /* timed by the poll; it has no level here */
         if (s->kind == KM_SRC_PADAXIS) {
             int v = km_src_axis_raw(c, s);
             if (v > KM_AXIS_DEAD || v < -KM_AXIS_DEAD) {
@@ -1135,6 +1256,7 @@ static long long km_floordiv_unit(long long v) {
 void openpete_keymap_poll(void) {
     km_release_consumed();
     memcpy(g_prev, g_held, sizeof g_prev);
+    km_hold_update();
     for (int i = 0; i < OPK_ACTION_COUNT; i++)
         g_held[i] = (unsigned char)km_action_down(&KM_RESOLVE_LIVE,
                                                   (openpete_action_t)i);
@@ -1201,10 +1323,25 @@ float openpete_key_axis(openpete_action_t a) {
     return km_action_axis(&KM_RESOLVE_LIVE, a);
 }
 
-void openpete_keymap_suspend_keyboard(int on, openpete_action_t exempt) {
+/** @brief Replace an exemption set with the in-range members of a list.
+ *
+ * @param set one byte per action, written 1 for a member and 0 otherwise.
+ * @param list the members; NULL exempts none.
+ * @param n number of members of list. */
+static void km_set_exempt(unsigned char* set, const openpete_action_t* list, int n) {
+    memset(set, 0, OPK_ACTION_COUNT);
+    for (int i = 0; list && i < n; i++)
+        if ((unsigned)list[i] < OPK_ACTION_COUNT) set[list[i]] = 1;
+}
+
+void openpete_keymap_suspend_keyboard(int on, const openpete_action_t* exempt, int n) {
     g_suspend_kbd = on ? 1 : 0;
-    g_suspend_exempt = (unsigned)exempt < OPK_ACTION_COUNT ? exempt
-                                                           : OPK_ACTION_COUNT;
+    km_set_exempt(g_kbd_exempt, exempt, n);
+}
+
+void openpete_keymap_suspend_pad(int on, const openpete_action_t* exempt, int n) {
+    g_suspend_pad = on ? 1 : 0;
+    km_set_exempt(g_pad_exempt, exempt, n);
 }
 
 int openpete_keymap_sources(openpete_action_t a, km_source_t* out, int cap) {
@@ -1244,13 +1381,50 @@ static int s_report_requested;
 void openpete_keymap_request_report(void) { s_report_requested = 1; }
 int  openpete_keymap_report_requested(void) { return s_report_requested; }
 
+/** @brief Write one source in the config spelling, for km_format_binding.
+ *
+ * A key prints its scancode name, with the current layout's label in
+ * brackets when the two differ; a mouse source prints "mouse:" and its
+ * name; a pad source its "padN:" prefix and a '-' for an inverted axis; a
+ * hold source is prefixed "hold:". A name the lookup cannot give prints as
+ * "?".
+ * @param s the source.
+ * @param out receives the text, always NUL-terminated.
+ * @param cap capacity of out in bytes; at least 6. */
+static void km_config_piece(const km_source_t* s, char* out, size_t cap) {
+    const char* nm = s_to_name ? s_to_name(s->kind, s->code) : NULL;
+    const char* hold = s->hold ? "hold:" : "";
+    if (km_is_mouse_kind(s->kind)) {
+        const char* mn = km_mouse_name(s->kind, s->code);
+        snprintf(out, cap, "%smouse:%s%s", hold,
+                 (s->kind == KM_SRC_MOUSEAXIS && s->invert < 0) ? "-" : "",
+                 mn ? mn : "?");
+        return;
+    }
+    if (s->kind == KM_SRC_KEY) {
+        /* Print the layout's own label next to the (positional) scancode
+         * name when they differ, so a non-QWERTY user can see which
+         * physical key to press without guessing. */
+        const char* lbl = s_key_label ? s_key_label(s->code) : NULL;
+        if (lbl && nm && strcmp(lbl, nm) != 0)
+            snprintf(out, cap, "%s%s [%s]", hold, nm, lbl);
+        else
+            snprintf(out, cap, "%s%s", hold, nm ? nm : "?");
+        return;
+    }
+    char padpfx[8];
+    if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device);
+    else           snprintf(padpfx, sizeof padpfx, "pad:");
+    snprintf(out, cap, "%s%s%s%s", hold, padpfx,
+             (s->kind == KM_SRC_PADAXIS && s->invert < 0) ? "-" : "",
+             nm ? nm : "?");
+}
+
 /** @brief Format a binding's sources as a comma-separated list for the report.
  *
- * A key shows the layout label in brackets when it differs from the
- * positional name; a pad source shows its "padN:" prefix and a '-' for an
- * inverted axis; a name the lookup cannot give prints as "?". An unbound
- * binding prints "-". Output longer than the buffer is truncated and no
- * further piece is written.
+ * Each source is spelled by km_config_piece. An unbound binding prints
+ * "-". Output longer than the buffer is truncated and no further piece is
+ * written.
  * @param b the binding.
  * @param out receives the text, always NUL-terminated.
  * @param cap capacity of out in bytes; must be at least 1. */
@@ -1258,31 +1432,8 @@ static void km_format_binding(const km_binding_t* b, char* out, size_t cap) {
     out[0] = '\0';
     size_t used = 0;
     for (int i = 0; i < b->n; i++) {
-        const km_source_t* s = &b->src[i];
-        const char* nm = s_to_name ? s_to_name(s->kind, s->code) : NULL;
-        char piece[80];
-        if (km_is_mouse_kind(s->kind)) {
-            const char* mn = km_mouse_name(s->kind, s->code);
-            snprintf(piece, sizeof piece, "mouse:%s%s",
-                     (s->kind == KM_SRC_MOUSEAXIS && s->invert < 0) ? "-" : "",
-                     mn ? mn : "?");
-        } else if (s->kind == KM_SRC_KEY) {
-            /* Print the layout's own label next to the (positional)
-             * scancode name when they differ, so a non-QWERTY user can
-             * see which physical key to press without guessing. */
-            const char* lbl = s_key_label ? s_key_label(s->code) : NULL;
-            if (lbl && nm && strcmp(lbl, nm) != 0)
-                snprintf(piece, sizeof piece, "%s [%s]", nm, lbl);
-            else
-                snprintf(piece, sizeof piece, "%s", nm ? nm : "?");
-        } else {
-            char padpfx[8];
-            if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device);
-            else           snprintf(padpfx, sizeof padpfx, "pad:");
-            snprintf(piece, sizeof piece, "%s%s%s", padpfx,
-                     (s->kind == KM_SRC_PADAXIS && s->invert < 0) ? "-" : "",
-                     nm ? nm : "?");
-        }
+        char piece[96];
+        km_config_piece(&b->src[i], piece, sizeof piece);
         int wrote = snprintf(out + used, cap - used, "%s%s",
                              used ? ", " : "", piece);
         if (wrote < 0 || (size_t)wrote >= cap - used) break;
@@ -1325,6 +1476,19 @@ static void km_player_piece(const km_source_t* s, char* out, size_t cap) {
                  nm ? nm : "?");
 }
 
+/** @brief Write one source for openpete_keymap_action_label: km_player_piece, and " (hold)" after a hold source.
+ *
+ * @param s the source.
+ * @param out receives the text, always NUL-terminated.
+ * @param cap capacity of out in bytes. */
+static void km_player_source(const km_source_t* s, char* out, size_t cap) {
+    km_player_piece(s, out, cap);
+    if (s->hold) {
+        size_t len = strlen(out);
+        if (len < cap) snprintf(out + len, cap - len, " (hold)");
+    }
+}
+
 void openpete_keymap_action_label(openpete_action_t a, char* out, size_t cap) {
     out[0] = '\0';
     if ((unsigned)a >= OPK_ACTION_COUNT || !g_bind[a].n) {
@@ -1334,7 +1498,7 @@ void openpete_keymap_action_label(openpete_action_t a, char* out, size_t cap) {
     size_t used = 0;
     for (int i = 0; i < g_bind[a].n; i++) {
         char piece[64];
-        km_player_piece(&g_bind[a].src[i], piece, sizeof piece);
+        km_player_source(&g_bind[a].src[i], piece, sizeof piece);
         int wrote = snprintf(out + used, cap - used, "%s%s",
                              used ? " / " : "", piece);
         if (wrote < 0 || (size_t)wrote >= cap - used) break;

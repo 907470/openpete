@@ -518,6 +518,27 @@ static void vpad_selfprobe(int v, SDL_JoystickID id)
                    v);
 }
 
+/* Scripted state of the first virtual pad (openpete_host_input_vpad_script_button):
+ * once scripted, the synthetic pattern stops for the run. */
+static bool s_vpad_scripted;
+static bool s_vpad_script_btn[SDL_GAMEPAD_BUTTON_COUNT];
+
+void openpete_host_input_vpad_script_button(int button, int down)
+{
+    if (button < 0 || button >= SDL_GAMEPAD_BUTTON_COUNT) return;
+    s_vpad_scripted = true;
+    s_vpad_script_btn[button] = down != 0;
+}
+
+/** @brief Apply the scripted button state to the first virtual pad, axes centred. */
+static void vgamepad_drive_scripted(void)
+{
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+        SDL_SetJoystickVirtualButton(s_vpad, b, s_vpad_script_btn[b]);
+    for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
+        SDL_SetJoystickVirtualAxis(s_vpad, a, 0);
+}
+
 /** @brief Set every attached virtual pad's buttons and left stick from the VBL-indexed synthetic pattern.
  *
  * The pattern matches synth_pad's (one of seven buttons per 8-VBL phase,
@@ -526,11 +547,13 @@ static void vpad_selfprobe(int v, SDL_JoystickID id)
  * continuously, held or not. Pad v is shifted by 3 * v VBLs so no two
  * virtual pads hold the same button on the same VBL, which exposes a
  * routing defect that swaps two slots. Does nothing when no virtual pad is
- * attached.
+ * attached; once the injection script has scripted a button, applies the
+ * scripted state instead (vgamepad_drive_scripted).
  * @param frame the VBL counter (openpete_frame). */
 static void vgamepad_drive(unsigned frame)
 {
     if (!s_vpad) return;
+    if (s_vpad_scripted) { vgamepad_drive_scripted(); return; }
 
     static const int kBtn[] = {
         SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST,

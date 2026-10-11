@@ -369,6 +369,16 @@ int  openpete_host_input_vpad_rumble_live(int pad);
  * @param low receives the large-motor value; NULL is ignored.
  * @param high receives the small-motor value; NULL is ignored. */
 void openpete_host_input_vpad_rumble_last(int pad, unsigned* low, unsigned* high);
+/** @brief Hold or release one button of the first virtual pad from the injection script.
+ *
+ * The first call switches the virtual pads from their synthetic pattern to
+ * the scripted state for the rest of the run: buttons as scripted, axes
+ * centred. Pump thread only, where the script steps and the pads are driven.
+ * A button outside the SDL gamepad button range is ignored.
+ * @param button an SDL_GamepadButton.
+ * @param down nonzero to hold, 0 to release. */
+void openpete_host_input_vpad_script_button(int button, int down);
+
 /** @brief Return how many OPENPETE_INPUT_VGAMEPAD virtual pads are open.
  *
  * @return the count, 0 when the variable is unset or attach failed. */

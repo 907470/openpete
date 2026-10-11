@@ -1,5 +1,5 @@
 {
- "source_sha": "3be295926d1fdd16e68d5765ef591b3d3410b701",
+ "source_sha": "cb78a471dfb907d516b5490d16629b4ee92a927d",
  "format": 1,
  "game": "spyro-1",
  "entries": [
@@ -6290,8 +6290,8 @@
    "kind": "digital",
    "dev": false,
    "devbuild": false,
-   "def": "Escape",
-   "suggested": "Escape"
+   "def": "Escape,pad:guide",
+   "suggested": "Escape,pad:guide"
   },
   {
    "id": "key:host.devui",
@@ -6299,8 +6299,89 @@
    "kind": "digital",
    "dev": false,
    "devbuild": false,
-   "def": "M",
-   "suggested": "M"
+   "def": "M,hold:pad:back",
+   "suggested": "M,hold:pad:back"
+  },
+  {
+   "id": "key:host.devui_up",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:dpup,pad:-lefty",
+   "suggested": "pad:dpup,pad:-lefty"
+  },
+  {
+   "id": "key:host.devui_down",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:dpdown,pad:lefty",
+   "suggested": "pad:dpdown,pad:lefty"
+  },
+  {
+   "id": "key:host.devui_left",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:dpleft,pad:-leftx",
+   "suggested": "pad:dpleft,pad:-leftx"
+  },
+  {
+   "id": "key:host.devui_right",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:dpright,pad:leftx",
+   "suggested": "pad:dpright,pad:leftx"
+  },
+  {
+   "id": "key:host.devui_activate",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:south",
+   "suggested": "pad:south"
+  },
+  {
+   "id": "key:host.devui_cancel",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:east",
+   "suggested": "pad:east"
+  },
+  {
+   "id": "key:host.devui_menu",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:west",
+   "suggested": "pad:west"
+  },
+  {
+   "id": "key:host.devui_slower",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:leftshoulder",
+   "suggested": "pad:leftshoulder"
+  },
+  {
+   "id": "key:host.devui_faster",
+   "domain": "host",
+   "kind": "digital",
+   "dev": false,
+   "devbuild": false,
+   "def": "pad:rightshoulder",
+   "suggested": "pad:rightshoulder"
   },
   {
    "id": "key:host.menu_up",

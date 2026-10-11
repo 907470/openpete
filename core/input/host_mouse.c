@@ -88,7 +88,7 @@ static SDL_MouseID inj_mouse_id(void)
 
 typedef enum {
     INJ_MOVE, INJ_DOWN, INJ_UP, INJ_CLICK2, INJ_REL, INJ_WHEEL, INJ_MENU, INJ_CAPTURE,
-    INJ_SHOT, INJ_KEYDOWN, INJ_KEYUP
+    INJ_SHOT, INJ_KEYDOWN, INJ_KEYUP, INJ_PAD
 } inj_verb_t;
 
 typedef struct {
@@ -96,7 +96,8 @@ typedef struct {
     int        is_ms;
     inj_verb_t verb;
     float      a, b;
-    int        button;   /* SDL_BUTTON_* for DOWN/UP/CLICK2; SDL_Scancode for KEYDOWN/KEYUP */
+    int        button;   /* SDL_BUTTON_* for DOWN/UP/CLICK2; SDL_Scancode for KEYDOWN/KEYUP;
+                          * SDL_GamepadButton for PAD */
 } inj_line_t;
 
 static inj_line_t* s_inj;
@@ -116,12 +117,79 @@ static int inj_button(const char* s)
     return 0;
 }
 
+/** @brief Map an injection-script pad button name to its SDL_GamepadButton.
+ *
+ * The face buttons take their positional names (south, east, west, north);
+ * every other name is SDL's own (back, guide, start, dpup, misc1, ...).
+ * @return the button, or SDL_GAMEPAD_BUTTON_INVALID for an unknown name. */
+static int inj_pad_button(const char* s)
+{
+    if (!strcmp(s, "south")) return SDL_GAMEPAD_BUTTON_SOUTH;
+    if (!strcmp(s, "east"))  return SDL_GAMEPAD_BUTTON_EAST;
+    if (!strcmp(s, "west"))  return SDL_GAMEPAD_BUTTON_WEST;
+    if (!strcmp(s, "north")) return SDL_GAMEPAD_BUTTON_NORTH;
+    return (int)SDL_GetGamepadButtonFromString(s);
+}
+
+/** @brief Parse a script line's verb and arguments into its injection line.
+ *
+ * One arm per verb of the OPENPETE_MOUSE_INJECT grammar (see inj_load). A
+ * `pad` line also switches the virtual pad to its scripted state at load,
+ * so it holds still from the start of the run.
+ * @param L the line; its verb, button and value fields are written.
+ * @param verb the verb word.
+ * @param n the number of words sscanf read (time and verb included).
+ * @param arg1 the first argument word.
+ * @param arg2 the second argument word.
+ * @return 1 when the verb, its arity and its arguments are valid, else 0. */
+static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
+                          const char* arg1, const char* arg2)
+{
+    int ok = 1;
+    if (!strcmp(verb, "move") && n == 4) {
+        L->verb = INJ_MOVE; L->a = strtof(arg1, NULL); L->b = strtof(arg2, NULL);
+    } else if (!strcmp(verb, "rel") && n == 4) {
+        L->verb = INJ_REL; L->a = strtof(arg1, NULL); L->b = strtof(arg2, NULL);
+    } else if ((!strcmp(verb, "down") || !strcmp(verb, "up") ||
+                !strcmp(verb, "click2")) && n >= 3) {
+        L->verb = !strcmp(verb, "down") ? INJ_DOWN
+               : !strcmp(verb, "up")   ? INJ_UP : INJ_CLICK2;
+        L->button = inj_button(arg1);
+        ok = L->button != 0;
+    } else if (!strcmp(verb, "wheel") && n >= 3) {
+        L->verb = INJ_WHEEL; L->a = strtof(arg1, NULL);
+    } else if (!strcmp(verb, "menu") && n >= 3) {
+        L->verb = INJ_MENU; L->a = (float)atoi(arg1);
+    } else if (!strcmp(verb, "capture") && n >= 3) {
+        L->verb = INJ_CAPTURE; L->a = (float)atoi(arg1);
+    } else if (!strcmp(verb, "shot")) {
+        L->verb = INJ_SHOT;
+    } else if ((!strcmp(verb, "keydown") || !strcmp(verb, "keyup")) && n >= 3) {
+        /* The key is an SDL scancode name ("F", "O", "Escape"). */
+        L->verb = !strcmp(verb, "keydown") ? INJ_KEYDOWN : INJ_KEYUP;
+        L->button = (int)SDL_GetScancodeFromName(arg1);
+        ok = L->button != (int)SDL_SCANCODE_UNKNOWN;
+    } else if (!strcmp(verb, "pad") && n == 4) {
+        L->verb = INJ_PAD;
+        L->button = inj_pad_button(arg1);
+        L->a = (float)atoi(arg2);
+        ok = L->button != (int)SDL_GAMEPAD_BUTTON_INVALID;
+        /* A scripted pad holds still from the start of the run rather
+         * than running its synthetic pattern until the first line. */
+        if (ok) openpete_host_input_vpad_script_button(L->button, 0);
+    } else {
+        ok = 0;
+    }
+    return ok;
+}
+
 /** @brief Parse an OPENPETE_MOUSE_INJECT script into the s_inj line list.
  *
  * A line is `<when> <verb> [args]`; text from `#` to the end of the line is a
  * comment. `<when>` is a pump iteration or `<n>ms`. The verbs are move x y, rel
- * dx dy, down|up|click2 button, wheel notches, menu 0|1, capture 0|1, shot, and
- * keydown|keyup with an SDL scancode name. A line with a bad time, verb, arity
+ * dx dy, down|up|click2 button, wheel notches, menu 0|1, capture 0|1, shot,
+ * keydown|keyup with an SDL scancode name, and pad with an SDL gamepad button
+ * name and 0|1 (the first OPENPETE_INPUT_VGAMEPAD virtual pad). A line with a bad time, verb, arity
  * or button name is logged and skipped. An unreadable file is logged and loads
  * nothing. Growth stops at the first failed allocation, keeping the lines
  * already read. Lines are read into a 256-byte buffer, so a longer line is
@@ -162,33 +230,7 @@ static void inj_load(const char* path)
                 continue;
             }
         }
-        int ok = 1;
-        if (!strcmp(verb, "move") && n == 4) {
-            L.verb = INJ_MOVE; L.a = strtof(arg1, NULL); L.b = strtof(arg2, NULL);
-        } else if (!strcmp(verb, "rel") && n == 4) {
-            L.verb = INJ_REL; L.a = strtof(arg1, NULL); L.b = strtof(arg2, NULL);
-        } else if ((!strcmp(verb, "down") || !strcmp(verb, "up") ||
-                    !strcmp(verb, "click2")) && n >= 3) {
-            L.verb = !strcmp(verb, "down") ? INJ_DOWN
-                   : !strcmp(verb, "up")   ? INJ_UP : INJ_CLICK2;
-            L.button = inj_button(arg1);
-            ok = L.button != 0;
-        } else if (!strcmp(verb, "wheel") && n >= 3) {
-            L.verb = INJ_WHEEL; L.a = strtof(arg1, NULL);
-        } else if (!strcmp(verb, "menu") && n >= 3) {
-            L.verb = INJ_MENU; L.a = (float)atoi(arg1);
-        } else if (!strcmp(verb, "capture") && n >= 3) {
-            L.verb = INJ_CAPTURE; L.a = (float)atoi(arg1);
-        } else if (!strcmp(verb, "shot")) {
-            L.verb = INJ_SHOT;
-        } else if ((!strcmp(verb, "keydown") || !strcmp(verb, "keyup")) && n >= 3) {
-            /* The key is an SDL scancode name ("F", "O", "Escape"). */
-            L.verb = !strcmp(verb, "keydown") ? INJ_KEYDOWN : INJ_KEYUP;
-            L.button = (int)SDL_GetScancodeFromName(arg1);
-            ok = L.button != (int)SDL_SCANCODE_UNKNOWN;
-        } else {
-            ok = 0;
-        }
+        const int ok = inj_parse_verb(&L, verb, n, arg1, arg2);
         if (!ok) {
             OPL_ERROR_F("mouse", "OPENPETE_MOUSE_INJECT: %s:%d: bad line: %s",
                         path, lineno, line);
@@ -342,6 +384,9 @@ static void inj_step(unsigned iter)
             break;
         case INJ_KEYDOWN: inj_push_key(L->button, 1); break;
         case INJ_KEYUP:   inj_push_key(L->button, 0); break;
+        case INJ_PAD:
+            openpete_host_input_vpad_script_button(L->button, L->a != 0.0f);
+            break;
         }
         if (s_probe)
             OPL_INFO_F("mouse", "inject iter=%u ms=%u line=%d verb=%d", iter, ms,

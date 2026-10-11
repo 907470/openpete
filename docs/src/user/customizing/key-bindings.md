@@ -65,6 +65,13 @@ A `-` before an axis inverts it: `pad:-lefty`. `pad:` means the first
 controller; `pad2:` ... `pad4:` name the others. Inside `[keys.pad2]`, a bare
 `pad:` reads that player's own controller.
 
+### Holding
+
+`hold:` before a key or button source makes it act only once it has been
+held for half a second: `devui = ["M", "hold:pad:back"]`. It binds the
+actions of `[keys.host]` that a press triggers; the PlayStation pad tables,
+the axes and the mouse wheel do not take it.
+
 ### Mouse
 
 `mouse:` sources bind in `[keys.host]` and `[keys.mod.<id>]` only:
@@ -104,7 +111,11 @@ changes none of them.
 | Action | Default | Does |
 | --- | --- | --- |
 | `menu` | {{ key("key:host.menu") }}<!-- id: key:host.menu --> | open or close the [settings menu](../help/glossary.md#settings-menu) |
-| `devui` | {{ key("key:host.devui") }}<!-- id: key:host.devui --> | open or close the [dev overlay](../playing/dev-overlay.md) |
+| `devui` | {{ key("key:host.devui") }}<!-- id: key:host.devui --> | open the [dev overlay](../playing/dev-overlay.md); close it on release |
+| `devui_up` `devui_down` `devui_left` `devui_right` | d-pad, left stick<!-- id: key:host.devui_up --> | move in the dev overlay |
+| `devui_activate` / `devui_cancel` | `pad:south` / `pad:east`<!-- id: key:host.devui_activate --> | activate or leave the focused item in the dev overlay |
+| `devui_menu` | `pad:west`<!-- id: key:host.devui_menu --> | dev overlay: change a value with the d-pad; hold to switch windows |
+| `devui_slower` / `devui_faster` | `pad:leftshoulder` / `pad:rightshoulder`<!-- id: key:host.devui_slower --> | dev overlay: smaller or larger steps; previous or next window |
 | `menu_up` `menu_down` `menu_left` `menu_right` | arrow keys, d-pad, left stick<!-- id: key:host.menu_up --> | move in the settings menu; `menu_right` is also `pad:south` |
 | `menu_select` | ++enter++, `pad:south`<!-- id: key:host.menu_select --> | activate the selected row |
 | `menu_close` | `pad:start`, `pad:east`<!-- id: key:host.menu_close --> | close the settings menu |

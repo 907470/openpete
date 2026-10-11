@@ -243,8 +243,9 @@ class Surface:
 
 
 def keyboard_elems(binding):
+    """The keyboard sources of a binding; a `hold:` source is not one."""
     return [t.strip() for t in binding.split(",")
-            if t.strip() and not t.strip().startswith(("pad:", "mouse:"))
+            if t.strip() and not t.strip().startswith(("pad:", "mouse:", "hold:"))
             and t.strip() != "none"]
 
 

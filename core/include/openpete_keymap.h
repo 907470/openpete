@@ -70,7 +70,14 @@ typedef struct {
      * actions, unqualified means player 1, as it always did.
      * Meaningless for KM_SRC_KEY: there is one keyboard. */
     unsigned char device;
+    /* "hold:" prefix: the source reads held only after its input has been
+     * held without a break for KM_HOLD_MS. Live host reads only; a reader
+     * (the pad decode) sees a hold source as not held. */
+    unsigned char hold;
 } km_source_t;
+
+/* How long a "hold:" source's input is held before the source reads held. */
+#define KM_HOLD_MS 500
 
 /* Most actions bind one key plus one pad source; four is slack enough
  * that no real config hits the cap, and it keeps the store flat. */
@@ -95,6 +102,7 @@ typedef enum {
     KM_CTX_MENU,         /* the settings menu is open */
     KM_CTX_FREECAM,      /* freecam or camlock engaged */
     KM_CTX_FILLPICK,     /* the fill-tag inspector is engaged */
+    KM_CTX_DEVUI,        /* dev overlay pad navigation is engaged */
     KM_CTX_COUNT
 } km_ctx_t;
 
@@ -132,10 +140,34 @@ typedef enum {
 
 #define OPENPETE_KEYMAP_HOST_ACTIONS(X)                                        \
   /* --- overlays ----------------------------------------------------- */     \
+  /* Guide is no PSX input, so the settings menu takes it whole. The dev
+   * overlay's pad source is a hold of Back: every other button is a PSX
+   * input, and a tap of Back still reaches the game as select. */             \
   X(MENU,      "menu",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_REQUIRED,          \
-        "Escape",         "open/close the settings menu")                      \
-  X(DEVUI,     "devui",     KM_DIGITAL, KM_CTX_ALWAYS,   0,                    \
-        "M",              "open/close the dev config overlay")                 \
+        "Escape,pad:guide", "open/close the settings menu")                    \
+  X(DEVUI,     "devui",     KM_DIGITAL, KM_CTX_ALWAYS,   KM_LEVEL,             \
+        "M,hold:pad:back", "open/close the dev config overlay (closes on release)") \
+  /* Dev overlay pad navigation, read while the overlay is open and fed to
+   * imgui as its gamepad keys. Pad sources only: the keyboard drives the
+   * overlay through imgui's own keyboard navigation. */                       \
+  X(DEVUI_UP,    "devui_up",    KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+        "pad:dpup,pad:-lefty",      "dev overlay: move up")                    \
+  X(DEVUI_DOWN,  "devui_down",  KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+        "pad:dpdown,pad:lefty",     "dev overlay: move down")                  \
+  X(DEVUI_LEFT,  "devui_left",  KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+        "pad:dpleft,pad:-leftx",    "dev overlay: move left / decrease")       \
+  X(DEVUI_RIGHT, "devui_right", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+        "pad:dpright,pad:leftx",    "dev overlay: move right / increase")      \
+  X(DEVUI_ACTIVATE,"devui_activate", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,       \
+        "pad:south",      "dev overlay: activate or open the focused item")    \
+  X(DEVUI_CANCEL,"devui_cancel", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,           \
+        "pad:east",       "dev overlay: cancel, leave a field or popup")       \
+  X(DEVUI_MENU,  "devui_menu",  KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,            \
+        "pad:west",       "dev overlay: tweak with the d-pad; hold to switch windows") \
+  X(DEVUI_SLOWER,"devui_slower", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,           \
+        "pad:leftshoulder", "dev overlay: slower tweak; previous window")      \
+  X(DEVUI_FASTER,"devui_faster", KM_DIGITAL, KM_CTX_DEVUI, KM_LEVEL,           \
+        "pad:rightshoulder", "dev overlay: faster tweak; next window")         \
   /* The d-pad AND the left stick drive menu nav, and cross doubles as
    * "increase" - the analog fallbacks matter because the settings menu is
    * reachable on a pad with no keyboard attached. */                          \
@@ -412,6 +444,9 @@ typedef struct {
     long long (*mouse_motion_total)(int axis);
     long long (*mouse_wheel_total)(void);
     int       (*mouse_owned)(void);
+    /* Monotonic milliseconds, read by "hold:" sources at each poll. NULL
+     * leaves every hold source not held. */
+    unsigned long long (*now_ms)(void);
 } openpete_keymap_input_fns;
 
 /** @brief Install the reads the resolver evaluates bindings with.
@@ -678,10 +713,25 @@ void openpete_keymap_mouse_markers(long long* wheel, long long* mx, long long* m
  * openpete_keymap_scancode_down also reads 0 while suspended. The run loop
  * calls this every iteration with the dev overlay's keyboard want.
  * @param on nonzero to suspend.
- * @param exempt one action whose keyboard sources are read anyway, so the
- *        key that opened an overlay can close it; OPK_ACTION_COUNT or any
- *        out-of-range value exempts none. */
-void openpete_keymap_suspend_keyboard(int on, openpete_action_t exempt);
+ * @param exempt actions whose keyboard sources are read anyway, so the key
+ *        that opened an overlay can close it; NULL or n 0 exempts none.
+ *        Members out of range are ignored.
+ * @param n number of members of exempt. */
+void openpete_keymap_suspend_keyboard(int on, const openpete_action_t* exempt, int n);
+
+/** @brief Suspend or resume every live pad source while an overlay navigates with the pad.
+ *
+ * Pad buttons and pad axes read through the live seams (host actions,
+ * openpete_key_axis) read neutral; a caller-supplied reader (the pad
+ * decode of every player) is untouched, and keyboard and mouse sources
+ * keep working. The run loop calls this every iteration with the dev
+ * overlay's pad navigation state.
+ * @param on nonzero to suspend.
+ * @param exempt actions whose pad sources are read anyway (the overlay's
+ *        own toggle and navigation); NULL or n 0 exempts none. Members out
+ *        of range are ignored.
+ * @param n number of members of exempt. */
+void openpete_keymap_suspend_pad(int on, const openpete_action_t* exempt, int n);
 
 /* ---- diagnostics / consumers ---------------------------------------- */
 

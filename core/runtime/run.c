@@ -3320,15 +3320,99 @@ static uint16_t s_p1_stage_first_read_bits = 0;
 static unsigned char s_p1_stage_first_staged_axes[4] = {0};
 static unsigned char s_p1_stage_first_read_axes[4] = {0};
 
-/** @brief Return the action that keeps reading the keyboard while the dev overlay holds it.
+/** @brief Return the actions that keep reading through the dev overlay's keyboard and pad suspensions.
  *
- * imgui's nav focus covers the whole panel while it is open, so suspending
- * every keyboard action would leave the key that opened the panel unable to
- * close it. A focused text field must swallow that key too.
- * @return OPK_DEVUI, or OPK_ACTION_COUNT (no exempt action) while a text
- *         field takes input. */
-static openpete_action_t devui_suspend_exempt(void) {
-    return openpete_devui_wants_text_input() ? OPK_ACTION_COUNT : OPK_DEVUI;
+ * imgui's nav focus covers the whole panel while it is focused, so
+ * suspending every action would leave the source that opened the panel
+ * unable to close it, and the pad unable to navigate it: `devui` and every
+ * KM_CTX_DEVUI action are exempt.
+ * @param n receives the number of actions.
+ * @return the actions, a static list. */
+static const openpete_action_t* devui_suspend_exempt(int* n) {
+    static const openpete_action_t kExempt[] = {
+        OPK_DEVUI, OPK_DEVUI_UP, OPK_DEVUI_DOWN, OPK_DEVUI_LEFT,
+        OPK_DEVUI_RIGHT, OPK_DEVUI_ACTIVATE, OPK_DEVUI_CANCEL, OPK_DEVUI_MENU,
+        OPK_DEVUI_SLOWER, OPK_DEVUI_FASTER,
+    };
+    *n = (int)(sizeof kExempt / sizeof kExempt[0]);
+    return kExempt;
+}
+
+/** @brief Write player 1's override channel as all buttons released and sticks centred.
+ *
+ * @param active 1 to make the neutral record the pad's input, 0 to hand the
+ *        channel back to live decode (the overlays' clear-once latch). */
+static void pad_override_neutral(int active) {
+    g_PsyX_Pad_InputOverride  = 0xFFFF;
+    g_PsyX_Pad_OverrideActive = active;
+    g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
+    g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
+}
+
+/** @brief Return whether a bk2 movie holds a frame for this VBL.
+ *
+ * @param active a movie is loaded for replay.
+ * @param frame openpete_frame.
+ * @param offset the movie's frame offset.
+ * @param count the movie's frame count.
+ * @return true when frame - offset indexes a movie frame. */
+static bool bk2_frame_in_range(bool active, unsigned frame, int offset, int count) {
+    const int rel = (int)frame - offset;
+    return active && rel >= 0 && rel < count;
+}
+
+/** @brief Hold player 1's pad neutral while an overlay owns it, through the override channel.
+ *
+ * The settings menu owns the pad while open; the dev overlay while imgui
+ * owns the keyboard (a text field or navigation focus, so typed characters
+ * cannot reach the PSX pad through PsyCross's keyboard map) or navigates
+ * with the pad (an overlay window holds navigation focus, so the buttons
+ * that move through the panel do not also move Spyro; a click outside
+ * every overlay window drops the focus and the pad returns to the game).
+ * The sim keeps running behind either, so settings preview live. A bk2
+ * frame in range outranks both: the movie's input stays the pad's input.
+ * On the iteration an overlay lets go the channel is handed back to live
+ * decode once, unless a movie is loaded, whose stamp rewrites it.
+ * @param bk2_active a movie is loaded for replay.
+ * @param bk2_in_range the movie holds a frame for this VBL.
+ * @param prev_hold the previous iteration's hold, updated.
+ * @return true when this call claimed the override channel. */
+static bool overlay_pad_stamp(bool bk2_active, bool bk2_in_range, bool* prev_hold) {
+    const bool hold = openpete_menu_is_open() ||
+                      openpete_devui_wants_keyboard() ||
+                      openpete_devui_padnav_engaged();
+    const bool was = *prev_hold;
+    *prev_hold = hold;
+    if (hold && !bk2_in_range) {
+        pad_override_neutral(1);
+        return true;
+    }
+    if (!hold && was && !bk2_active) pad_override_neutral(0);
+    return false;
+}
+
+/** @brief Suspend the hotkey sources the dev overlay owns this iteration.
+ *
+ * While imgui owns the keyboard every keyboard-sourced action goes inert;
+ * while the overlay navigates with the pad every live pad-sourced action
+ * does too, so the buttons that move through the panel fire no savestate,
+ * freecam or other pad-bound action, and the freecam axes are zeroed as
+ * the settings menu zeroes them. `devui` and the KM_CTX_DEVUI actions are
+ * exempt (devui_suspend_exempt), except from the keyboard suspension while
+ * a text field takes input, which swallows every key. Esc-close works
+ * through the event pump. */
+static void overlay_input_suspend(void) {
+    int n_exempt = 0;
+    const openpete_action_t* exempt = devui_suspend_exempt(&n_exempt);
+    const bool padnav = openpete_devui_padnav_engaged() != 0;
+    openpete_keymap_suspend_keyboard(
+        openpete_devui_wants_keyboard() ? 1 : 0,
+        openpete_devui_wants_text_input() ? NULL : exempt, n_exempt);
+    openpete_keymap_suspend_pad(padnav ? 1 : 0, exempt, n_exempt);
+    if (!padnav || !(openpete_freecam_active() || openpete_camlock_active()))
+        return;
+    openpete_freecam_axes ax = {0};
+    openpete_freecam_set_axes(&ax);
 }
 
 /** @brief Log the vibration census: PadSetAct registrations, motor commands, per-pad recorders, mod slots.
@@ -4100,8 +4184,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * once on the closing transition. */
     bool prev_menu_close = false;   /* Start/Circle closes on RELEASE */
     int  prev_mouse_owner = OPENPETE_MOUSE_OWNED_NONE;
-    bool prev_menu_open = false;
-    bool prev_devui_kb = false;
+    bool prev_overlay_hold = false;   /* an overlay held the pad neutral */
 
     /* Seed the in-game settings menu from the launch flags, and build its FPS
      * ladder from the monitor refresh queried above (60 if unknown/headless).
@@ -4323,63 +4406,16 @@ static int run_host_loop(const openpete_options_t* opts) {
             if (ovr_active) ovr_claimed = true;
         }
 
-        /* Settings menu open: neutralise the game pad so the arrow keys drive
-         * the menu (not Spyro). Reuses the bk2 override channel (all buttons
-         * released, sticks centred). On the frame the menu closes, clear it -
-         * unless a bk2 movie is driving the override, in which case bk2 re-stamps
-         * on the next sim-due iter. The sim keeps running (input just goes
-         * nowhere), so aspect/ssaa/draw-distance changes preview live. */
-        if (openpete_menu_is_open()) {
+        /* A bk2 frame in range for openpete_frame owns the override
+         * channel; the overlays' neutral stamp yields to it. Evaluated on
+         * every iteration, not only sim-due ones, because the overlays stamp
+         * on every iteration and the movie restamps only on a tick. */
+        if (overlay_pad_stamp(bk2_active,
+                              bk2_frame_in_range(bk2_active, openpete_frame,
+                                                 bk2_offset, bk2.frame_count),
+                              &prev_overlay_hold))
             ovr_claimed = true;
-            g_PsyX_Pad_InputOverride  = 0xFFFF;
-            g_PsyX_Pad_OverrideActive = 1;
-            g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
-            g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
-        } else if (prev_menu_open && !bk2_active) {
-            g_PsyX_Pad_InputOverride  = 0xFFFF;
-            g_PsyX_Pad_OverrideActive = 0;
-            g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
-            g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
-        }
-        prev_menu_open = openpete_menu_is_open();
-
-        /* Dev overlay typing: neutralise the pad only while imgui owns the
-         * keyboard (a text field / nav focus), so typed characters can't reach
-         * the PSX pad through PsyCross's keyboard->pad map. Mouse-only
-         * interaction leaves the game fully playable behind the panel - this
-         * is a dev tool; watching the live scene while flipping knobs is the
-         * point. Same bk2 override channel + clear-once latch as the menu. */
-        {
-            bool devui_kb = openpete_devui_wants_keyboard() != 0;
-            if (devui_kb && !openpete_menu_is_open()) {
-                ovr_claimed = true;
-                g_PsyX_Pad_InputOverride  = 0xFFFF;
-                g_PsyX_Pad_OverrideActive = 1;
-                g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
-                g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
-            } else if (prev_devui_kb && !devui_kb && !bk2_active &&
-                       !openpete_menu_is_open()) {
-                g_PsyX_Pad_InputOverride  = 0xFFFF;
-                g_PsyX_Pad_OverrideActive = 0;
-                g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
-                g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
-            }
-            prev_devui_kb = devui_kb;
-        }
-
-        /* While imgui owns the keyboard, every KEYBOARD-sourced hotkey goes
-         * inert in one stroke. Pad sources stay live on purpose: mouse-only
-         * interaction with the dev panel is meant to leave the game
-         * playable, and the same override block above only neutralises the
-         * PSX pad while imgui actually wants typing. Esc-close and the
-         * overlay toggle still work: Esc via the event pump, and the
-         * toggle action itself is exempt from the suspension so the key
-         * that opened the panel also closes it. Bare nav focus, which the
-         * panel holds the whole time it is open, must not swallow that key;
-         * a focused text field must, so while imgui wants text input the
-         * suspension has no exemption. */
-        openpete_keymap_suspend_keyboard(
-            openpete_devui_wants_keyboard() ? 1 : 0, devui_suspend_exempt());
+        overlay_input_suspend();
 
         /* Under the thread split the cursor is main's business (see
          * openpete_cursor_update): SetCursor only reaches a window from the
@@ -4419,10 +4455,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Dev config overlay. Mutually exclusive with the settings menu -
          * two input-owning overlays with different capture models is
          * complexity with no payoff. */
-        if (openpete_key_pressed(OPK_DEVUI)) {
-            if (openpete_devui_toggle() && openpete_menu_is_open())
-                openpete_menu_toggle();   /* close the settings menu underneath */
-        }
+        openpete_devui_host_poll();
 
         /* The in-game settings menu. While open it captures the nav keys and
          * the game pad is neutralised above, so the other hotkeys and

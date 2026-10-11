@@ -58,6 +58,7 @@ static const struct { int kind; const char* name; int code; } g_names[] = {
     { KM_SRC_PADBTN, "rightstick", 109 },
     { KM_SRC_PADBTN, "dpup", 110 },   { KM_SRC_PADBTN, "dpdown", 111 },
     { KM_SRC_PADBTN, "dpleft", 112 }, { KM_SRC_PADBTN, "dpright", 113 },
+    { KM_SRC_PADBTN, "guide", 114 },  { KM_SRC_PADBTN, "misc1", 115 },
 
     { KM_SRC_PADAXIS, "leftx", 200 },  { KM_SRC_PADAXIS, "lefty", 201 },
     { KM_SRC_PADAXIS, "rightx", 202 }, { KM_SRC_PADAXIS, "righty", 203 },
@@ -98,6 +99,10 @@ static long long fake_mouse_motion(int a) { return (a >= 0 && a < 2) ? g_mouse_m
 static long long fake_mouse_wheel(void)   { return g_mouse_wheel; }
 static int       fake_mouse_owned(void)   { return g_mouse_owned; }
 
+/* The fake clock the hold sources read. */
+static unsigned long long g_now_ms;
+static unsigned long long fake_now_ms(void) { return g_now_ms; }
+
 static void fake_reset(void) {
     memset(g_keys, 0, sizeof g_keys);
     memset(g_btns, 0, sizeof g_btns);
@@ -106,12 +111,14 @@ static void fake_reset(void) {
     memset(g_mouse_motion, 0, sizeof g_mouse_motion);
     g_mouse_wheel = 0;
     g_mouse_owned = OPENPETE_MOUSE_OWNED_NONE;
+    g_now_ms = 1000;
 }
 
 static void install_fakes(void) {
     static const openpete_keymap_input_fns fns = {
         fake_key, fake_btn, fake_axis, NULL, NULL,
-        fake_mouse_btn, fake_mouse_motion, fake_mouse_wheel, fake_mouse_owned
+        fake_mouse_btn, fake_mouse_motion, fake_mouse_wheel, fake_mouse_owned,
+        fake_now_ms
     };
     openpete_keymap_set_lookup(fake_to_code, fake_to_name, NULL);
     openpete_keymap_set_input(&fns);
@@ -177,12 +184,12 @@ static void test_dev_unbound_by_default(void) {
 }
 
 /* devui, interp_toggle and lod_toggle are player controls, not KM_DEV
- * rows: each defaults to its one key. */
+ * rows: each defaults to its key; devui also to a hold of Back. */
 static void test_overlay_toggles_bound_by_default(void) {
     openpete_keymap_init();
-    CHECK(n_sources(OPK_DEVUI) == 1 &&
+    CHECK(n_sources(OPK_DEVUI) == 2 &&
           has_source(OPK_DEVUI, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "M")),
-          "devui should default to M");
+          "devui should default to M and a pad source");
     CHECK(n_sources(OPK_INTERP_TOGGLE) == 1 &&
           has_source(OPK_INTERP_TOGGLE, KM_SRC_KEY, fake_to_code(KM_SRC_KEY, "I")),
           "interp_toggle should default to I");
@@ -508,7 +515,7 @@ static void test_suspend_is_keyboard_only(void) {
     g_keys[fake_to_code(KM_SRC_KEY, "F")]           = 1;
     g_btns[fake_to_code(KM_SRC_PADBTN, "leftstick")] = 1;
 
-    openpete_keymap_suspend_keyboard(1, OPK_ACTION_COUNT);
+    openpete_keymap_suspend_keyboard(1, NULL, 0);
     openpete_keymap_poll();
     CHECK(openpete_key_down(OPK_FREECAM),
           "a pad source must survive a keyboard suspend");
@@ -518,9 +525,120 @@ static void test_suspend_is_keyboard_only(void) {
     CHECK(!openpete_key_down(OPK_FREECAM),
           "the keyboard source must be inert while suspended");
 
-    openpete_keymap_suspend_keyboard(0, OPK_ACTION_COUNT);
+    openpete_keymap_suspend_keyboard(0, NULL, 0);
     openpete_keymap_poll();
     CHECK(openpete_key_down(OPK_FREECAM), "and live again after resume");
+}
+
+/* The pad suspension: live pad sources go neutral except for the exempt
+ * set; keyboard sources and the pad decode's reader stay live. */
+static int rd_btn(void* ctx, int slot, int b) { (void)ctx; (void)slot; return fake_btn(b); }
+
+static void test_suspend_pad_exempt_set(void) {
+    openpete_keymap_init();
+    fake_reset();
+    CHECK(set1("host", "savestate_save", "1,pad:misc1", 100, "g") == 0,
+          "savestate_save -> 1 + pad:misc1");
+    const int misc1 = fake_to_code(KM_SRC_PADBTN, "misc1");
+    const int south = fake_to_code(KM_SRC_PADBTN, "south");
+    g_btns[misc1] = 1;
+    g_btns[south] = 1;
+    const openpete_action_t ex[] = { OPK_DEVUI, OPK_DEVUI_ACTIVATE };
+    openpete_keymap_suspend_pad(1, ex, 2);
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_STATE_SAVE), "a pad hotkey is inert under the pad suspension");
+    CHECK(openpete_key_down(OPK_DEVUI_ACTIVATE), "an exempt action reads its pad source");
+    openpete_keymap_reader_t rd;
+    memset(&rd, 0, sizeof rd);
+    rd.pad_button = rd_btn;
+    CHECK(openpete_keymap_action_down_via(OPK_PAD_CROSS, 0, &rd),
+          "the pad decode's reader is not suspended");
+    g_btns[misc1] = 0;
+    g_keys[fake_to_code(KM_SRC_KEY, "1")] = 1;
+    openpete_keymap_poll();
+    CHECK(openpete_key_down(OPK_STATE_SAVE), "a key source survives the pad suspension");
+    openpete_keymap_suspend_pad(0, NULL, 0);
+    g_keys[fake_to_code(KM_SRC_KEY, "1")] = 0;
+    g_btns[misc1] = 1;
+    openpete_keymap_poll();
+    CHECK(openpete_key_down(OPK_STATE_SAVE), "and the pad source is live after resume");
+
+    /* The keyboard exemption is a set too. */
+    fake_reset();
+    CHECK(set1("host", "devui_up", "Up", 100, "g") == 0, "devui_up -> Up");
+    g_keys[fake_to_code(KM_SRC_KEY, "M")]  = 1;
+    g_keys[fake_to_code(KM_SRC_KEY, "Up")] = 1;
+    g_keys[fake_to_code(KM_SRC_KEY, "F")]  = 1;
+    const openpete_action_t kex[] = { OPK_DEVUI, OPK_DEVUI_UP };
+    openpete_keymap_suspend_keyboard(1, kex, 2);
+    openpete_keymap_poll();
+    CHECK(openpete_key_down(OPK_DEVUI) && openpete_key_down(OPK_DEVUI_UP),
+          "both members of the keyboard exempt set read");
+    CHECK(!openpete_key_down(OPK_FREECAM), "a non-member is suspended");
+    openpete_keymap_suspend_keyboard(0, NULL, 0);
+}
+
+/* A hold: source reads held only after KM_HOLD_MS of unbroken hold, fires
+ * one press edge, and resets on release. */
+static void test_hold_source(void) {
+    openpete_keymap_init();
+    fake_reset();
+    const int back = fake_to_code(KM_SRC_PADBTN, "back");
+    CHECK(has_source(OPK_DEVUI, KM_SRC_PADBTN, back), "devui defaults to a Back source");
+    km_source_t src[KM_MAX_SOURCES];
+    int n = openpete_keymap_sources(OPK_DEVUI, src, KM_MAX_SOURCES);
+    int holds = 0;
+    for (int i = 0; i < n; i++) holds += src[i].hold;
+    CHECK(holds == 1, "the Back source is a hold source");
+
+    g_btns[back] = 1;
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_DEVUI), "a fresh hold reads not held");
+    g_now_ms += KM_HOLD_MS - 1;
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_DEVUI), "one ms short of the hold reads not held");
+    g_now_ms += 1;
+    openpete_keymap_poll();
+    CHECK(openpete_key_pressed(OPK_DEVUI), "the hold fires one press edge");
+    openpete_keymap_poll();
+    CHECK(openpete_key_down(OPK_DEVUI) && !openpete_key_pressed(OPK_DEVUI),
+          "and stays down without re-firing");
+    g_btns[back] = 0;
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_DEVUI), "a release ends it");
+    g_btns[back] = 1;
+    g_now_ms += 10000;
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_DEVUI), "a new hold starts its own timer");
+
+    /* The pad decode never sees a hold, and select still reads Back. */
+    openpete_keymap_reader_t rd;
+    memset(&rd, 0, sizeof rd);
+    rd.pad_button = rd_btn;
+    CHECK(openpete_keymap_action_down_via(OPK_PAD_SELECT, 0, &rd), "select reads Back");
+
+    /* Refusals: the pad domains, an axis action, a wheel, a nested hold. */
+    CHECK(set1("pad", "select", "hold:pad:back", 100, "g") < 0, "hold refused in [keys.pad]");
+    CHECK(set1("host", "fly_axis_x", "hold:pad:south", 100, "g") < 0, "hold refused on an axis action");
+    CHECK(set1("host", "pause", "hold:mouse:wheel_up", 100, "g") < 0, "hold refused on a wheel pulse");
+    CHECK(set1("host", "pause", "hold:hold:pad:south", 100, "g") < 0, "hold refused nested");
+    CHECK(set1("host", "pause", "hold:F7", 100, "g") == 0, "hold accepted on a key");
+
+    char lbl[128];
+    openpete_keymap_init();
+    openpete_keymap_action_label(OPK_DEVUI, lbl, sizeof lbl);
+    CHECK(strstr(lbl, "(hold)") != NULL, "the player label marks the hold: %s", lbl);
+}
+
+/* KM_CTX_DEVUI shares the pad with GAMEPLAY and the menu without a report:
+ * the contexts are never live together. */
+static void test_devui_ctx_disjoint(void) {
+    openpete_keymap_init();
+    CHECK(has_source(OPK_DEVUI_ACTIVATE, KM_SRC_PADBTN, fake_to_code(KM_SRC_PADBTN, "south")),
+          "devui_activate is pad:south, as cross is");
+    CHECK(openpete_keymap_resolve() == 0, "devui navigation beside the PSX pad stays quiet");
+    CHECK(set1("host", "pause", "pad:dpup", 100, "g") == 0, "pause -> pad:dpup");
+    CHECK(openpete_keymap_resolve() > 0, "an ALWAYS action on devui_up's source is reported");
 }
 
 static void test_axis(void) {
@@ -975,6 +1093,9 @@ int main(void) {
     test_required_warns_only_when_fully_unbound();
     test_edge_latch();
     test_suspend_is_keyboard_only();
+    test_suspend_pad_exempt_set();
+    test_hold_source();
+    test_devui_ctx_disjoint();
     test_axis();
     test_axis_as_digital();
     test_quit_binding();

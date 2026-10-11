@@ -236,7 +236,7 @@ def binding_cell(surface, b):
         return "none"
     parts = []
     for t in (x.strip() for x in b.split(",")):
-        if t.startswith(("pad:", "mouse:")):
+        if t.startswith(("pad:", "mouse:", "hold:")):
             parts.append(code(t))
         else:
             parts.append(surface.keycap(t))

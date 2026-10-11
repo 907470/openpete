@@ -311,12 +311,17 @@ static const char* km_sdl_pad_label(int kind, int code, int invert) {
     return face ? face : pad_named_button(f, (SDL_GamepadButton)code);
 }
 
+/** @brief SDL's monotonic millisecond clock, for the keymap's hold sources. */
+static unsigned long long km_sdl_now_ms(void) {
+    return (unsigned long long)SDL_GetTicks(); /* clock-guard: wall (a hold lasts a wall-clock interval) */
+}
+
 void openpete_keymap_install_sdl(void) {
     static const openpete_keymap_input_fns fns = {
         km_sdl_key_down, km_sdl_pad_button, km_sdl_pad_axis,
         km_sdl_pad_button_slot, km_sdl_pad_axis_slot,
         km_sdl_mouse_button, km_sdl_mouse_motion_total,
-        km_sdl_mouse_wheel_total, km_sdl_mouse_owned
+        km_sdl_mouse_wheel_total, km_sdl_mouse_owned, km_sdl_now_ms
     };
     openpete_keymap_set_lookup(km_sdl_name_to_code, km_sdl_code_to_name,
                                km_sdl_key_label);

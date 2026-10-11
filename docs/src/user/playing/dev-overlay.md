@@ -5,12 +5,31 @@ OpenPete has, grouped by section, with each row's current value and where it
 came from. It changes live settings without a restart, saves them to the
 config file, and carries the cheat buttons and the level warp.
 
-{{ key("key:host.devui") }} <!-- id: key:host.devui home --> opens and closes it. ++esc++ also closes it. It is drawn
-by the native renderer in the game window.
+{{ key("key:host.devui") }} <!-- id: key:host.devui home --> opens it, and
+closes it when released. On a controller, hold Back (View on Xbox, Select
+on PlayStation) for half a second; a tap of Back is still the PlayStation
+pad's Select. ++esc++ also closes it. It is drawn by the native renderer in
+the game window.
 
-The game keeps running behind the panel. Mouse use leaves the game playable;
-while a text field in the panel has the keyboard, the keyboard's game and
-hotkey bindings pause and the PlayStation pad is released.
+The game keeps running behind the panel. While the panel has focus (it
+takes focus when it opens), the PlayStation pad is released, the
+controller moves through the panel, and the keyboard's game and hotkey
+bindings and the controller's OpenPete bindings pause. Click the game
+outside the panel to give the game the keyboard and controller back; click
+the panel to take them again. Mouse use alone leaves the game playable.
+
+## Controller
+
+| Action | Controller | Does |
+| --- | --- | --- |
+| `devui_up` `devui_down` `devui_left` `devui_right` | d-pad, left stick<!-- id: key:host.devui_up home --><!-- id: key:host.devui_down home --><!-- id: key:host.devui_left home --><!-- id: key:host.devui_right home --> | move between rows; left and right also change a slider or a value |
+| `devui_activate` | South (A, Cross)<!-- id: key:host.devui_activate home --> | press a button, tick a box, open a section or a field |
+| `devui_cancel` | East (B, Circle)<!-- id: key:host.devui_cancel home --> | leave a field or a popup |
+| `devui_menu` | West (X, Square)<!-- id: key:host.devui_menu home --> | hold with the d-pad to change a value; hold to switch between windows |
+| `devui_slower` / `devui_faster` | left / right shoulder<!-- id: key:host.devui_slower home --><!-- id: key:host.devui_faster home --> | change a value in smaller or larger steps; while switching windows, the previous or next window |
+
+These actions are rebindable in `[keys.host]`; see
+[Key bindings](../customizing/key-bindings.md).
 
 ## Reading the panel
 

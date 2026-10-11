@@ -35,6 +35,7 @@ extern "C" {
 #include "openpete.h"
 #include "openpete_atomic_file.h"
 #include "openpete_devui.h"
+#include "openpete_fiber.h"      /* openpete_frame, for the open and close log lines */
 #include "openpete_fillpick.h"
 extern "C" {
 #include "openpete_host_input.h"   /* C-only header: the mouse snapshot read */
@@ -167,6 +168,9 @@ int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    /* Gamepad navigation reads the KM_CTX_DEVUI actions the host loop
+     * publishes (devui_feed_padnav), never the backend's own pad reads. */
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     /* UI state (window pos/collapse) next to the exe, not the CWD, one
      * file per game: the games' overlays differ in their windows. */
     (void)openpete_devui_seed_ini();
@@ -371,12 +375,15 @@ static void devui_drain_events(void)
 static SDL_AtomicInt s_wants_kb;
 static SDL_AtomicInt s_wants_text;
 static SDL_AtomicInt s_wants_mouse;
+/* Open with an imgui window holding navigation focus (io.NavActive). */
+static SDL_AtomicInt s_nav_engaged;
 
 /** @brief Publish imgui's keyboard, text-input and mouse capture wants for the pump's threads.
  *
  * Called after ImGui::Render. The keyboard and text wants are 0 while the
  * panel is closed; the mouse want also counts while the fill-tag inspector
- * is active. */
+ * is active. Also publishes pad navigation engagement: open with
+ * io.NavActive, which holds while an imgui window has navigation focus. */
 static void devui_publish_io_wants(void)
 {
     const ImGuiIO &io = ImGui::GetIO();
@@ -392,9 +399,10 @@ static void devui_publish_io_wants(void)
      * also reach the game or the settings menu under it. */
     const bool mouse_frame = s_open || openpete_fillpick_active() != 0;
     SDL_SetAtomicInt(&s_wants_mouse, (mouse_frame && io.WantCaptureMouse) ? 1 : 0);
+    SDL_SetAtomicInt(&s_nav_engaged, (s_open && io.NavActive) ? 1 : 0);
 }
 
-/** @brief Publish all three imgui capture wants (keyboard, text input, mouse) as 0.
+/** @brief Publish all three imgui capture wants (keyboard, text input, mouse) and pad navigation engagement as 0.
  *
  * Called on each early return of openpete_devui_render that skips
  * devui_publish_io_wants, so no want from an earlier drawn present stays
@@ -405,6 +413,7 @@ static void devui_publish_none(void)
     SDL_SetAtomicInt(&s_wants_kb, 0);
     SDL_SetAtomicInt(&s_wants_text, 0);
     SDL_SetAtomicInt(&s_wants_mouse, 0);
+    SDL_SetAtomicInt(&s_nav_engaged, 0);
 }
 
 int openpete_devui_wants_keyboard(void)
@@ -424,6 +433,160 @@ int openpete_devui_wants_mouse(void)
     if (!s_inited) return 0;
     if (!s_open && !openpete_fillpick_active()) return 0;
     return SDL_GetAtomicInt(&s_wants_mouse);
+}
+
+int openpete_devui_padnav_engaged(void)
+{
+    if (!s_inited || !s_open) return 0;
+    return SDL_GetAtomicInt(&s_nav_engaged);
+}
+
+/* ------------------------------------------------------------------ */
+/* pad navigation                                                     */
+/* ------------------------------------------------------------------ */
+
+/* The host loop owns the pad (the keymap reads it there, through the input
+ * lock and every remap); the imgui frame owns imgui. The host loop publishes
+ * the levels of the KM_CTX_DEVUI actions as one word, and the frame turns
+ * each change into an imgui gamepad key event before its NewFrame. */
+enum {
+    PADNAV_UP = 1u << 0, PADNAV_DOWN = 1u << 1, PADNAV_LEFT = 1u << 2,
+    PADNAV_RIGHT = 1u << 3, PADNAV_ACTIVATE = 1u << 4, PADNAV_CANCEL = 1u << 5,
+    PADNAV_MENU = 1u << 6, PADNAV_SLOWER = 1u << 7, PADNAV_FASTER = 1u << 8,
+    PADNAV_HAVE_PAD = 1u << 15,   /* player 1's pad is connected */
+};
+
+static const struct { unsigned bit; ImGuiKey key; } kPadnavKeys[] = {
+    { PADNAV_UP,       ImGuiKey_GamepadDpadUp },
+    { PADNAV_DOWN,     ImGuiKey_GamepadDpadDown },
+    { PADNAV_LEFT,     ImGuiKey_GamepadDpadLeft },
+    { PADNAV_RIGHT,    ImGuiKey_GamepadDpadRight },
+    { PADNAV_ACTIVATE, ImGuiKey_GamepadFaceDown },
+    { PADNAV_CANCEL,   ImGuiKey_GamepadFaceRight },
+    { PADNAV_MENU,     ImGuiKey_GamepadFaceLeft },
+    { PADNAV_SLOWER,   ImGuiKey_GamepadL1 },
+    { PADNAV_FASTER,   ImGuiKey_GamepadR1 },
+};
+
+static SDL_AtomicInt s_padnav_bits;        /* host loop -> frame */
+static unsigned      s_padnav_fed;         /* frame: the bits imgui holds */
+static ImGuiID       s_padnav_prev_nav_id; /* frame: NavId after the last NewFrame */
+/* Frame-side engagement: imgui's navigation moved to another item, or
+ * activated one, on a frame whose navigation input source is the gamepad. */
+static SDL_AtomicInt s_imgui_moves;
+static SDL_AtomicInt s_imgui_activations;
+
+/** @brief Turn the host loop's published pad navigation levels into imgui gamepad key events.
+ *
+ * Runs on the imgui frame thread before ImGui_ImplSDL3_NewFrame. Only a
+ * level that changed since the last fed frame is queued, and a closed
+ * overlay feeds all-released, so imgui never holds a gamepad key the pad
+ * no longer holds.
+ * @param io the overlay's imgui IO. */
+static void devui_feed_padnav(ImGuiIO &io)
+{
+    const unsigned bits = s_open ? (unsigned)SDL_GetAtomicInt(&s_padnav_bits) : 0u;
+    const unsigned diff = bits ^ s_padnav_fed;
+    for (const auto &m : kPadnavKeys)
+        if (diff & m.bit) io.AddKeyEvent(m.key, (bits & m.bit) != 0);
+    s_padnav_fed = bits;
+}
+
+/** @brief Count imgui's gamepad-sourced navigation moves and activations of the frame just begun.
+ *
+ * Runs after ImGui::NewFrame, where imgui's navigation update has applied
+ * this frame's input. */
+static void devui_count_padnav(void)
+{
+    const ImGuiContext &g = *ImGui::GetCurrentContext();
+    if (g.NavInputSource == ImGuiInputSource_Gamepad) {
+        if (g.NavId != s_padnav_prev_nav_id && g.NavId != 0)
+            SDL_AddAtomicInt(&s_imgui_moves, 1);
+        if (g.NavActivatePressedId != 0)
+            SDL_AddAtomicInt(&s_imgui_activations, 1);
+    }
+    s_padnav_prev_nav_id = g.NavId;
+}
+
+/* Host-loop state of the toggle and the per-open counters. */
+static bool               s_host_prev_open;
+static bool               s_close_armed;
+static unsigned           s_open_count;
+static unsigned long long s_open_engaged, s_open_moves, s_open_activations;
+static int                s_open_imgui_moves0, s_open_imgui_activations0;
+
+/** @brief Log the close of the current open with its pad navigation counts. */
+static void devui_log_close(void)
+{
+    OPL_INFO_F("devui",
+               "pad nav #%u closed at frame %u: engaged_iterations=%llu "
+               "moves=%llu activations=%llu imgui_moves=%d imgui_activations=%d",
+               s_open_count, openpete_frame, s_open_engaged, s_open_moves,
+               s_open_activations,
+               SDL_GetAtomicInt(&s_imgui_moves) - s_open_imgui_moves0,
+               SDL_GetAtomicInt(&s_imgui_activations) - s_open_imgui_activations0);
+}
+
+/** @brief Apply this iteration's `devui` edges: a press opens a closed overlay, a release after a press closes an open one. */
+static void devui_host_toggle(void)
+{
+    if (!s_open) {
+        s_close_armed = false;
+        if (openpete_key_pressed(OPK_DEVUI)) {
+            s_open = true;
+            if (openpete_menu_is_open())
+                openpete_menu_toggle();   /* close the settings menu underneath */
+        }
+        return;
+    }
+    if (openpete_key_pressed(OPK_DEVUI)) {
+        s_close_armed = true;
+    } else if (s_close_armed && !openpete_key_down(OPK_DEVUI)) {
+        s_close_armed = false;
+        s_open = false;
+    }
+}
+
+/** @brief Read the KM_CTX_DEVUI levels into a snapshot word, and player 1's pad presence. */
+static unsigned devui_padnav_levels(void)
+{
+    unsigned bits = 0;
+    if (openpete_key_down(OPK_DEVUI_UP))       bits |= PADNAV_UP;
+    if (openpete_key_down(OPK_DEVUI_DOWN))     bits |= PADNAV_DOWN;
+    if (openpete_key_down(OPK_DEVUI_LEFT))     bits |= PADNAV_LEFT;
+    if (openpete_key_down(OPK_DEVUI_RIGHT))    bits |= PADNAV_RIGHT;
+    if (openpete_key_down(OPK_DEVUI_ACTIVATE)) bits |= PADNAV_ACTIVATE;
+    if (openpete_key_down(OPK_DEVUI_CANCEL))   bits |= PADNAV_CANCEL;
+    if (openpete_key_down(OPK_DEVUI_MENU))     bits |= PADNAV_MENU;
+    if (openpete_key_down(OPK_DEVUI_SLOWER))   bits |= PADNAV_SLOWER;
+    if (openpete_key_down(OPK_DEVUI_FASTER))   bits |= PADNAV_FASTER;
+    if (openpete_host_input_pad_connected(0))  bits |= PADNAV_HAVE_PAD;
+    return bits;
+}
+
+void openpete_devui_host_poll(void)
+{
+    if (!s_inited) return;
+    devui_host_toggle();
+
+    if (s_open && !s_host_prev_open) {
+        s_open_count++;
+        s_open_engaged = s_open_moves = s_open_activations = 0;
+        s_open_imgui_moves0 = SDL_GetAtomicInt(&s_imgui_moves);
+        s_open_imgui_activations0 = SDL_GetAtomicInt(&s_imgui_activations);
+        OPL_INFO_F("devui", "open #%u at frame %u", s_open_count, openpete_frame);
+    } else if (!s_open && s_host_prev_open) {
+        devui_log_close();
+    }
+    s_host_prev_open = s_open;
+
+    SDL_SetAtomicInt(&s_padnav_bits, s_open ? (int)devui_padnav_levels() : 0);
+    if (!openpete_devui_padnav_engaged()) return;
+    s_open_engaged++;
+    if (openpete_key_pressed(OPK_DEVUI_UP) || openpete_key_pressed(OPK_DEVUI_DOWN) ||
+        openpete_key_pressed(OPK_DEVUI_LEFT) || openpete_key_pressed(OPK_DEVUI_RIGHT))
+        s_open_moves++;
+    if (openpete_key_pressed(OPK_DEVUI_ACTIVATE)) s_open_activations++;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2507,8 +2670,14 @@ void openpete_devui_render(struct rhi_device *dev)
     if (s_open) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     else        io.ConfigFlags |=  ImGuiConfigFlags_NoMouseCursorChange;
 
+    devui_feed_padnav(io);
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    /* The backend clears HasGamepad on every NewFrame because it holds no
+     * pad (manual mode, empty list); imgui navigates with the gamepad only
+     * while the flag is set, so it is set after the backend's update. */
+    if (s_open && (SDL_GetAtomicInt(&s_padnav_bits) & PADNAV_HAVE_PAD))
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     /* After the backend's own IO update, which would otherwise overwrite
      * the parked position with the real pointer. */
     if (s_inject_mouse) {
@@ -2528,6 +2697,7 @@ void openpete_devui_render(struct rhi_device *dev)
         io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
     ImGui::NewFrame();
+    devui_count_padnav();
     if (s_open) draw_panel();
     if (always_n > 0) draw_always_sections();
     if (fillpick) { draw_fillpick_crosshair(); draw_fillpick_panel(); }

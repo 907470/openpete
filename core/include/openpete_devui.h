@@ -152,6 +152,27 @@ int  openpete_devui_is_open(void);
  * later frame still runs while the inspector or an always mod section is up. */
 void openpete_devui_close(void);
 
+/** @brief Run the overlay's host-loop input step: the `devui` toggle and the pad navigation snapshot.
+ *
+ * Call once per host-loop iteration after openpete_keymap_poll. A press of
+ * `devui` opens the overlay (closing the settings menu); while it is open a
+ * press arms the close and the release closes it, so a held button never
+ * reaches the game after the overlay lets the pad go. While open, publishes
+ * the levels of the KM_CTX_DEVUI actions and whether player 1's pad is
+ * connected for the imgui frame, and counts, per open, the iterations with
+ * pad navigation engaged and the presses of the move and activate actions
+ * made while engaged. Each open and close is logged; the close line carries
+ * the counts and imgui's own gamepad move and activation counts. */
+void openpete_devui_host_poll(void);
+
+/** @brief Report whether the overlay navigates with the pad: open, and an imgui window holds navigation focus.
+ *
+ * Published by the imgui frame after it records (one present stale). A
+ * click outside every overlay window clears imgui's navigation focus and
+ * returns 0, which hands the pad back to the game.
+ * @return 1 while engaged; 0 before init, while closed, or otherwise. */
+int  openpete_devui_padnav_engaged(void);
+
 /** @brief Queue one SDL event for imgui; call for every event, open or closed.
  *
  * The pump and the imgui frame may run on different threads, so the event
