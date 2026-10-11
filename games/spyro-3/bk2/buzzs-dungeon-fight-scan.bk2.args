@@ -1,0 +1,4 @@
+# Cross every 60 VBLs from 1200 dismisses the speech and keeps Spyro out of
+# state 0, which starts the fight and the scan of func_level_17_8007774C
+# (scripts/make_bk2.py --frames 9200, Cross 6 VBLs at 1200, 1260, ... 9140).
+--skip-to-level buzzs_dungeon

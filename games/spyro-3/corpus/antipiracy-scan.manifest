@@ -4,7 +4,10 @@
 # games/spyro-3/bk2/, the cell's VBL limit, and the least number of
 # `antipiracy: ... complete: PASS` lines each cell's log must carry. A cell
 # below that count, or carrying an `antipiracy: FAIL` line, fails the run:
-# a scan that stops running or fails is a gate failure.
+# a scan that stops running or fails is a gate failure. Without
+# --scenarios, every row joins the matrix's default scenario list; a row
+# runs the baseline cell (4:3, default fov) only. Each
+# movie's .bk2.args holds its input and the make_bk2.py spans that wrote it.
 #
 # sheilas-alp-idle-scan: no input after --skip-to-level sheilas_alp; the
 # three scanner mobies of func_level_16_80079AF4 end their EXE and overlay
@@ -12,3 +15,23 @@
 # func_level_16_80079654 takes one step and stops while idle; it is not
 # counted.
 sheilas-alp-idle-scan 8600 3
+# cloud-spires-npc-scan: func_level_12_8007C2B8 (data byte 0 == 1) passes
+# at VBL 9367.
+cloud-spires-npc-scan 9800 1
+# dino-mines-walk-scan: func_level_44_80081188 passes at VBL 10163.
+dino-mines-walk-scan 10500 1
+# sgt-byrds-base-scan: three func_level_26_8007C6F8 scanners pass at VBL
+# 5111, func_level_26_8007FC74 at VBL 9133.
+sgt-byrds-base-scan 9600 4
+# buzzs-dungeon-fight-scan: func_level_17_8007A770 passes at VBL 2321, 3953
+# and 8027 (it restarts after each pass), func_level_17_8007774C at VBL 8685.
+buzzs-dungeon-fight-scan 9200 4
+# spikes-arena-fight-scan: func_level_27_8007A3C0 passes at VBL 2321, 3961,
+# 7981 and 10265, func_level_27_8007797C at VBL 9551.
+spikes-arena-fight-scan 10000 5
+# scorchs-pit-fight-scan: func_level_37_8007EFFC passes at VBL 2993, 7773
+# and 9669, func_level_37_8007BD9C at VBL 11551.
+scorchs-pit-fight-scan 12000 4
+# sorceresss-lair-fight-scan: func_level_47_80079AC4 passes at VBL 5791 and
+# 7989, func_level_47_8007CF38 at VBL 9887.
+sorceresss-lair-fight-scan 9700 3

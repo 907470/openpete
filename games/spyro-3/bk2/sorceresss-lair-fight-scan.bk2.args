@@ -1,0 +1,5 @@
+# Cross every 60 VBLs from 1200 to 1980 starts the fight; Left held and Square
+# every 90 VBLs from 2000 keep Spyro alive until func_level_47_8007CF38 ends
+# its overlay pass (scripts/make_bk2.py --frames 9700, Cross 6 VBLs at 1200,
+# ... 1980, --hold 2000:9700:Left, Square 6 VBLs at 2000, 2090, ... 9650).
+--skip-to-level sorceresss_lair

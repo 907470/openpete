@@ -1,0 +1,4 @@
+# Up held VBL 1300-1660 walks Spyro within 0x2000 of the scanning NPC
+# (func_level_12_8007C2B8, data byte 0 == 1); it leaves state 10 and returns
+# to state 0, where its scan runs (scripts/make_bk2.py --frames 9800 --hold 1300:1660:Up).
+--skip-to-level cloud_spires

@@ -41,8 +41,9 @@
 #       spyro-2  title,start-new-game,summer-forest-collect-orb,
 #                autumn-plains-skelos-badlands-portal-entry
 #       spyro-3  title,new-game-title,crystal-islands-flame,
-#                sunrise-spring-sunny-villa-portal-entry,
-#                sheilas-alp-idle-scan
+#                sunrise-spring-sunny-villa-portal-entry
+#                                     plus every row of the game's
+#                                     antipiracy-scan.manifest (below)
 #     [--out=/tmp/determinism-matrix]
 #     [--full]                       (4:3,16:9,21:9,32:9 × default,50,90,120
 #                                     × all *.bk2 scenarios + title)
@@ -61,7 +62,10 @@
 # listed in games/<game>/corpus/antipiracy-scan.manifest runs to the row's
 # VBL limit in place of --frames, and each of its cells must log at least
 # the row's count of `complete: PASS` scan lines, so a scan that stops
-# running fails the run too.
+# running fails the run too. Without --scenarios, every manifest row joins
+# the default scenario list. A scan row runs its baseline cell (4:3, default
+# fov) only: the scans read code and data, never the presentation knobs, so
+# the other cells would repeat the same verdict.
 #
 # Exit codes:
 #   0 - every cell either matches its baseline or diverges only in
@@ -88,7 +92,7 @@ case "$GAME" in
         SCENARIOS_CSV="title,start-new-game,summer-forest-collect-orb,autumn-plains-skelos-badlands-portal-entry" ;;
     spyro-3)
         FRAMES=2600
-        SCENARIOS_CSV="title,new-game-title,crystal-islands-flame,sunrise-spring-sunny-villa-portal-entry,sheilas-alp-idle-scan" ;;
+        SCENARIOS_CSV="title,new-game-title,crystal-islands-flame,sunrise-spring-sunny-villa-portal-entry" ;;
     *)
         FRAMES=2000
         SCENARIOS_CSV="title,stone-hill-entry,inventory" ;;
@@ -100,6 +104,7 @@ FULL=0
 SOAK=0
 EXCLUDE_CSV="tas,frame-time-test"
 BK2_STOP_ON_END=0
+SCENARIOS_GIVEN=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -107,7 +112,7 @@ for arg in "$@"; do
         --frames=*)    FRAMES="${arg#--frames=}" ;;
         --aspects=*)   ASPECTS_CSV="${arg#--aspects=}" ;;
         --fovs=*)      FOVS_CSV="${arg#--fovs=}" ;;
-        --scenarios=*) SCENARIOS_CSV="${arg#--scenarios=}" ;;
+        --scenarios=*) SCENARIOS_CSV="${arg#--scenarios=}"; SCENARIOS_GIVEN=1 ;;
         --out=*)       OUT_DIR="${arg#--out=}" ;;
         --full)        FULL=1 ;;
         --soak)        SOAK=1 ;;
@@ -115,7 +120,7 @@ for arg in "$@"; do
         --keep-logs)   KEEP_LOGS=1 ;;
         --game|--game=*) ;;   # consumed by pg_parse_game above
         spyro-*)       ;;     # the two-word --game SLUG spelling
-        --help|-h)     sed -n '1,72p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h)     sed -n '1,76p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
@@ -164,6 +169,22 @@ DISC="$PG_DISC"
 [[ -x "$BIN"  ]] || { echo "missing binary: $BIN (run cmake --build --preset linux-release)" >&2; exit 2; }
 [[ -f "$DISC" ]] || { echo "missing disc: $DISC" >&2; exit 2; }
 
+# The anti-piracy scan rows: stem -> "frames min_pass", in manifest order.
+# Without --scenarios (and outside --full/--soak, which take every bk2), each
+# row joins the default scenario list.
+declare -A SCAN_ROWS=()
+SCAN_MANIFEST="games/$GAME/corpus/antipiracy-scan.manifest"
+if [[ -f "$SCAN_MANIFEST" ]]; then
+    while read -r _stem _frames _min _rest; do
+        [[ -z "$_stem" || "$_stem" == \#* ]] && continue
+        SCAN_ROWS[$_stem]="$_frames $_min"
+        if [[ $SCENARIOS_GIVEN -eq 0 && $FULL -eq 0 && $SOAK -eq 0 \
+              && ",$SCENARIOS_CSV," != *",$_stem,"* ]]; then
+            SCENARIOS_CSV+=",$_stem"
+        fi
+    done < "$SCAN_MANIFEST"
+fi
+
 mkdir -p "$OUT_DIR"
 IFS=',' read -ra ASPECTS   <<< "$ASPECTS_CSV"
 IFS=',' read -ra FOVS      <<< "$FOVS_CSV"
@@ -175,16 +196,7 @@ cell_tag() {
     echo "$scenario--${aspect/:/x}--fov-$fov"
 }
 
-# The anti-piracy scan rows: stem -> "frames min_pass".
-declare -A SCAN_ROWS=()
-SCAN_MANIFEST="games/$GAME/corpus/antipiracy-scan.manifest"
-if [[ -f "$SCAN_MANIFEST" ]]; then
-    while read -r _stem _frames _min _rest; do
-        [[ -z "$_stem" || "$_stem" == \#* ]] && continue
-        SCAN_ROWS[$_stem]="$_frames $_min"
-    done < "$SCAN_MANIFEST"
-fi
-declare -i antipiracy_failures=0 scan_passes_total=0
+declare -i antipiracy_failures=0 scan_passes_total=0 scan_cells=0
 
 # Check a cell's log for anti-piracy verdicts: any FAIL line fails the cell,
 # and a scan row's cell must log at least the row's count of passing scans.
@@ -301,6 +313,12 @@ for scenario in "${SCENARIOS[@]}"; do
         total_cells+=1
         continue
     fi
+    if [[ -n "${SCAN_ROWS[$scenario]:-}" ]]; then
+        scan_cells+=1
+        printf "  %-50s baseline only (anti-piracy scan row)\n" "$scenario / 4:3 / default"
+        echo
+        continue
+    fi
     for aspect in "${ASPECTS[@]}"; do
         for fov in "${FOVS[@]}"; do
             [[ "$aspect" == "4:3" && "$fov" == "default" ]] && continue
@@ -330,7 +348,7 @@ else
 fi
 
 echo
-echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared  antipiracy-failures=$antipiracy_failures  scans-passed=$scan_passes_total"
+echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared  antipiracy-failures=$antipiracy_failures  scan-row-cells=$scan_cells  scans-passed=$scan_passes_total"
 
 if [[ $KEEP_LOGS -eq 0 ]]; then
     rm -f "$OUT_DIR"/log-*.txt
