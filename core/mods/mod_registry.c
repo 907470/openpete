@@ -167,9 +167,14 @@ static void registry_tick(CPUState* cpu) {
         if (h->disabled || h->fired_level == lvl) continue;
         h->fired_level = lvl;
         /* Read out before the call: a hook body may register another
-         * level hook, which moves the table. */
+         * level hook, which moves the table. The owner is copied for the
+         * guest-byte guard, which names it after the call. */
         fn = h->fn;
+        char owner[MOBY_OWNER_MAX];
+        memcpy(owner, h->mod_id, sizeof owner);
+        openpete_mods_guard_enter(owner);
         fn(cpu, lvl);
+        openpete_mods_guard_leave();
     }
 }
 

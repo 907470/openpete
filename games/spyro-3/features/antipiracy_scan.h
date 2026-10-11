@@ -51,8 +51,8 @@ void spyro3_antipiracy_report_fail(const char* source, const char* detail);
  *
  * The failure path of a store watch over EXE .text 0x8001200C..0x80064F9C
  * and the resident overlay's scanned text: formats the store and its
- * writer and calls spyro3_antipiracy_report_fail with source `watch`. No
- * watch calls it yet.
+ * writer and calls spyro3_antipiracy_report_fail with source `watch`.
+ * games/spyro-3/scan_watch.c's store watch calls it for each reported hit.
  * @param addr Guest address of the store.
  * @param size Bytes stored.
  * @param writer Who stored: a mod name, `host poke`, `savestate load`, or

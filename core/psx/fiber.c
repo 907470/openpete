@@ -93,6 +93,10 @@ void openpete_yield_to_host(void) {
     op_functrace_resume();
 }
 
+int openpete_fiber_in_game(void) {
+    return openpete_game_fiber != NULL && co_active() == (cothread_t)openpete_game_fiber;
+}
+
 void openpete_yield_to_host_no_tick(void) {
     if (!openpete_host_fiber) return;
     op_functrace_pause();

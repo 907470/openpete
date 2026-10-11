@@ -203,6 +203,12 @@ int openpete_mods_load_index_of(openpete_mod_t *self) { (void)self; return 0; }
  *
  * @return 0. */
 unsigned openpete_mods_toggle_epoch(void) { return 0; }
+/** @brief Open no guarded stretch: the test installs no guest-byte guard.
+ *
+ * @param mod_id Unused. */
+void openpete_mods_guard_enter(const char *mod_id) { (void)mod_id; }
+/** @brief Close no guarded stretch. */
+void openpete_mods_guard_leave(void) {}
 /** @brief Accept the material tag-split arming.
  *
  * @param on Unused. */

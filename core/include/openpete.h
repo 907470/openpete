@@ -817,6 +817,13 @@ typedef struct openpete_options {
      * mods in lexicographic order). */
     const char* mods_enabled;
 
+    /* --scan-guard 0|1 (OPENPETE_SCAN_GUARD): 1 (default) has the game's
+     * guest-byte guard restore and log a mod's store into the code ranges
+     * Spyro 3's anti-piracy scans hash; 0 turns the guard's compares off,
+     * so such a store persists. No effect on a game without a guard.
+     * -1 = unset between openpete_options_init and the end of the parse. */
+    int         scan_guard;
+
     /* --compile-mods: utility mode - compile EVERY mod with src/ in the
      * resolved mods dir (ignoring enabled.txt) against <exe>/sdk through
      * the loader's own key/stamp/compile path, then exit (nonzero if any
@@ -932,8 +939,8 @@ int  openpete_options_parse_neutral(openpete_options_t* opts, int argc, char** a
  * typed arguments, then walks them with the last write winning. After the
  * walk it resolves the default --bk2-record path and its sidecar, then
  * applies the env spellings of the flags that were not typed and resolves
- * notex, wireframe, terrain_cache, disc_cache and terrain_visibility to their
- * defaults (load_delay stays -1 for run.c). The EXE-source check is left to
+ * notex, wireframe, terrain_cache, disc_cache, scan_guard and
+ * terrain_visibility to their defaults (load_delay stays -1 for run.c). The EXE-source check is left to
  * openpete_options_require_exe_source. --help prints the help, sets
  * opts->help and returns OPENPETE_EXIT_OK at once; the caller exits 0. A
  * value refused by type or range fails the parse when typed or from a bk2
@@ -959,7 +966,8 @@ void openpete_options_set_strict(int on);
  * mouse -1 becomes 1, input_lock and background -1 become 0,
  * mouse_sensitivity -1 becomes 1.0, load_delay -1 becomes
  * game_get_load_delay_default(), and notex, wireframe, terrain_cache,
- * disc_cache and terrain_visibility take their built-in defaults when still unset.
+ * disc_cache, scan_guard and terrain_visibility take their built-in defaults
+ * when still unset.
  * Every runtime consumer reads the raw fields; this serves the surface
  * dump's selfcheck, which compares a parse of a flag at its declared default
  * with a parse without it.

@@ -921,6 +921,21 @@ static int purity_violation(const char* what) {
  * concern this advisory deliberately does not cover. */
 static int s_native_hides_psx = 0;   /* set in openpete_mods_init from opts */
 
+/* --scan-guard: 0 turns the guest-byte guard's compares off; set in
+ * openpete_mods_init from opts. */
+static int s_guest_guard_compares = 1;
+
+int openpete_mods_guest_guard_compares(void) { return s_guest_guard_compares; }
+
+/** @brief Install the game's guest-byte guard and latch whether it compares.
+ *
+ * --scan-guard 0 keeps the guard's brackets and turns its compares off.
+ * @param opts Parsed options, or NULL for the defaults. */
+static void mods_guard_install(const openpete_options_t* opts) {
+    s_guest_guard_compares = !(opts && opts->scan_guard == 0);
+    openpete_mods_set_guest_guard(openpete_mods_game_desc()->guest_guard);
+}
+
 /** @brief Name the native-bypassed PSX render function at a guest address.
  *
  * Resolves each name of the game descriptor's psx_render_fns list (the
@@ -1230,7 +1245,9 @@ void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime_internal.h */
 static void api_call_addr(CPUState* cpu, uint32_t addr) {
     if (purity_violation("call_addr")) return;
     openpete_psxtrace_gate_host_enter();
+    openpete_mods_guard_suspend();
     call_by_address(cpu, addr);
+    openpete_mods_guard_resume();
     openpete_psxtrace_gate_host_leave();
 }
 
@@ -1783,7 +1800,10 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     (void)config_compute_key(mod->dir, mod->cfg_key);
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
     openpete_mods_arena_entry_begin(mod->id); /* replay its allocations */
-    if (entry(&s_api, mod) != 0) {
+    openpete_mods_guard_enter(mod->id);
+    const int entry_rc = entry(&s_api, mod);
+    openpete_mods_guard_leave();
+    if (entry_rc != 0) {
         OPL_ERROR_F("mods", "%s: reload entry failed - mod is now INERT",
                     mod->id);
         mod_strip_registrations(mod);
@@ -2287,7 +2307,11 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         /* Notify AFTER the flip: tick context, so the mod may undo (or
          * re-stage) its guest-side effects with the surfaces already in
          * the new state. */
-        if (mod->toggle_fn) mod->toggle_fn(cpu, on);
+        if (mod->toggle_fn) {
+            openpete_mods_guard_enter(mod->id);
+            mod->toggle_fn(cpu, on);
+            openpete_mods_guard_leave();
+        }
     }
     mod_fvec_truncate(&s_toggle_q, kept);
 }
@@ -4167,7 +4191,9 @@ static int mod_run_entry(struct openpete_mod* mod) {
         return -1; /* keep the .so resident; it is inert without chains */
     }
     openpete_mods_arena_entry_begin(mod->id);
+    openpete_mods_guard_enter(mod->id);
     int rc = entry(&s_api, mod);
+    openpete_mods_guard_leave();
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d - disabled",
                     mod->id, rc);
@@ -5510,6 +5536,9 @@ int openpete_mods_init(const openpete_options_t* opts) {
      * psycross / ab / diff / headless the PSX path still rasterizes. */
     s_native_hides_psx = opts && opts->renderer == OPENPETE_RENDERER_VK
                               && !opts->headless;
+
+    /* Before the first mod entry below, which the guard brackets. */
+    mods_guard_install(opts);
 
     mods_capture_disc_path(opts);
 

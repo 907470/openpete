@@ -85,6 +85,20 @@ load as usual. A mod that ships a prebuilt library in
 `.build/<game>/<id>.dll` (Windows) or `.build/<game>/<id>.so` (Linux) and
 no `src/` loads that library as-is when it was built for the running game.
 
+## Mods and Spyro 3's anti-piracy checks
+
+Spyro: Year of the Dragon checks its own program code while it runs, and a
+check that finds a changed byte damages saves and levels. When a code mod
+changes that code, openpete puts the original bytes back and `openpete.log`
+names the mod.
+
+`--scan-guard 0|1`<!-- id: flag:--scan-guard --> (config key `scan_guard`,
+variable `OPENPETE_SCAN_GUARD`, default `1`<!-- id: knob:scan_guard -->)
+turns this off with `0`: the mod's change stays, the log says once at
+start that the guard is off, and mod code runs without the check's cost. A
+mod's change can then set off the game's anti-piracy measures. The flag has
+no effect on Spyro the Dragon and Spyro 2.
+
 ## Mods and saves
 
 Memory-card saves record which mods were active. Loading a save made under

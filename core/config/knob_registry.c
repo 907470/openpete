@@ -670,6 +670,8 @@ static double nologfile_get(const knob_desc_t *k) {
 static double compilemods_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->compile_mods : 0.0; }
 /** @brief 1 when --no-card removed both memory cards, else 0. */
 static double nocard_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_a_present) ? 1.0 : 0.0; }
+/** @brief 0 when the run turned the mod guard's compares off (--scan-guard 0), else 1. */
+static double scanguard_get(const knob_desc_t *k) { (void)k; return (g_opts && g_opts->scan_guard == 0) ? 0.0 : 1.0; }
 /** @brief 1 when port A holds no memory card (--no-card or --no-card1), else 0. */
 static double nocard1_get(const knob_desc_t *k) { (void)k; return (g_opts && !g_opts->card_a_present) ? 1.0 : 0.0; }
 /** @brief 1 when port B holds no memory card (--no-card or --no-card2), else 0. */
@@ -1512,6 +1514,20 @@ static const knob_desc_t g_builtin[] = {
       .help_text = "run exactly these mods, overriding mods/enabled.txt (order IS\n"
           "priority, later = higher). --mods \"\" enables none (vanilla run).\n"
           "Default: env OPENPETE_MODS, else enabled.txt." },
+
+    { "scan_guard", "Mod scan guard", "Paths", "--scan-guard", "OPENPETE_SCAN_GUARD",
+      "Spyro 3 only: a mod's store into the code its anti-piracy checks "
+      "hash is reverted and logged with the mod's name (default on). 0 "
+      "skips the check, so such a store persists and can trip the game's "
+      "anti-piracy measures. Accepted and without effect on Spyro the Dragon "
+      "and Spyro 2. Read once at startup.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      scanguard_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "1",
+      .help_arg = "0|1", .help_order = 395,
+      .help_text = "Spyro 3: revert and log a mod's store into the code the game's\n"
+          "anti-piracy checks hash (default {def}). 0 = let such a store\n"
+          "persist. No effect on Spyro 1 and 2." },
 
     { "card_dir", "Memory card dir", "Paths", "--card-dir", "OPENPETE_CARD_DIR",
       "Directory holding the .mcr memory-card images.",

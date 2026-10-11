@@ -198,6 +198,69 @@ extern int openpete_mods_active;
  * @return 1 while the bypass is armed for addr, else 0. */
 int openpete_mods_bypass_pending(uint32_t addr);
 
+/* A game's guard over guest bytes a mod may not change. A mod writes guest
+ * RAM through api->guest() host pointers, which no guest store hook sees, so
+ * the guard brackets every stretch of mod code instead: begin() before it
+ * runs, end() after it returns or descends into guest code (base(), call()).
+ * end() compares the guarded bytes against their state at begin(), restores
+ * any changed byte and names the mod. NULL members are not allowed.
+ *
+ * The bracketed stretches: an override link, each half of it around base()
+ * and call(), a mod's entry and hot-reload entry, its toggle hook, its
+ * level-ready hooks, and its material refine callbacks. One stretch is open
+ * at a time: entering a stretch inside an open one closes the outer stretch
+ * first (its changes are restored and named against its owner) and reopens
+ * it when the inner one leaves, so no stretch adopts another's change as its
+ * baseline. Stretches run only on the thread openpete_mods_guard_claim_thread
+ * names; a bracket on any other thread is skipped.
+ *
+ * Outside the guard's reach: a store through a pointer kept from an earlier
+ * stretch and used from a present hook, a UI body, a refine callback the
+ * renderer's present thread runs, or a thread the mod started. The next
+ * begin() takes such a change as its baseline and nothing restores it. */
+typedef struct openpete_mods_guest_guard {
+    void (*begin)(void);
+    void (*end)(const char* mod_id);
+} openpete_mods_guest_guard_t;
+
+/** @brief Install the game's guest-byte guard, or remove it with NULL.
+ *
+ * openpete_mods_init installs game_mod_desc_t.guest_guard before any mod's
+ * entry runs.
+ * @param guard The guard; the pointer is kept, so it must outlive the run. */
+void openpete_mods_set_guest_guard(const openpete_mods_guest_guard_t* guard);
+
+/** @brief Name the calling thread as the one guarded stretches run on.
+ *
+ * Called on the thread that runs the game's ticks, before the game fiber
+ * first runs. Until then every thread's bracket runs, which covers the
+ * entries openpete_mods_init calls before the host loop's threads start. */
+void openpete_mods_guard_claim_thread(void);
+
+/** @brief Report whether the guard compares and restores guarded bytes, which --scan-guard 0 turns off.
+ *
+ * With compares off a guard still sees every bracket, does no comparison
+ * and restores nothing, so a mod's stores into the guarded bytes persist.
+ * @return 0 under --scan-guard 0 (or OPENPETE_SCAN_GUARD=0), else 1. */
+int openpete_mods_guest_guard_compares(void);
+
+/** @brief Open a guarded stretch of a mod's code and push its id as the stretch's owner.
+ *
+ * No effect with no guard installed or off the claimed thread. An open
+ * outer stretch is closed first and reopened by the matching leave. Every
+ * call pairs with one openpete_mods_guard_leave.
+ * @param mod_id The id of the mod whose code is about to run. */
+void openpete_mods_guard_enter(const char* mod_id);
+
+/** @brief Close the innermost guarded stretch, attributing any guarded-byte change to its owner, and pop it, reopening an outer stretch its enter closed. */
+void openpete_mods_guard_leave(void);
+
+/** @brief Close the innermost guarded stretch without popping it, before mod code descends into guest code. */
+void openpete_mods_guard_suspend(void);
+
+/** @brief Reopen the innermost guarded stretch after the guest code a suspend bracketed returns. */
+void openpete_mods_guard_resume(void);
+
 /* One per-link call counter row: calls of the link (owner, addr, overlay)
  * made while `resident` was the resident overlay
  * (OPENPETE_MODS_OVERLAY_ANY for an address outside the overlay window). */
@@ -1161,6 +1224,10 @@ typedef struct {
      * a channel outside the mask, or channel "any" under an empty mask, is
      * logged and skipped. 0 serves no channel. */
     uint32_t                     channel_mask;
+    /* The guard over guest bytes a mod may not change
+     * (openpete_mods_guest_guard_t), installed before any mod's entry
+     * runs; NULL for none. */
+    const openpete_mods_guest_guard_t* guest_guard;
 } game_mod_desc_t;
 
 /* Every render channel, OP_CHAN_MOBY through OP_CHAN_PORTAL, as a
@@ -1501,7 +1568,8 @@ int  openpete_mods_material_has_instance(void);
  *
  * Takes no lock. Returns 0 when no live selector has a callback, or the
  * winning material for the class is declarative or absent. Otherwise runs
- * the winner's callback with a moby key; its block, capped at
+ * the winner's callback with a moby key, inside a guarded stretch owned by
+ * the material's mod (openpete_mods_guard_enter); its block, capped at
  * OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned slot of the same
  * material with identical bytes, else takes a new one. The slot table is
  * reset by openpete_mods_material_frame_reset(), so a slot is valid for one

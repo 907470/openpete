@@ -1611,7 +1611,9 @@ int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
     key.u.moby.vaddr   = moby_vaddr;
     key.u.moby.moby_class = moby_class;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    openpete_mods_guard_enter(s_mats[w].owner);
     int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
+    openpete_mods_guard_leave();
     if (rc < 0) return OPENPETE_MATERIAL_SLOT_STOCK;   /* declined -> stock */
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
 
@@ -1680,7 +1682,8 @@ static int material_terrain_tex_winner(int texid) {
  * untextured band, so the material's outcome is the outcome of every face
  * it reaches and one memo per material serves the walked and the retained
  * terrain alike. The memo is keyed on the present counter
- * openpete_mods_material_frame_reset() advances. The callback receives a
+ * openpete_mods_material_frame_reset() advances. The callback runs inside
+ * a guarded stretch owned by the material's mod and receives a
  * terrain key with the selector's texture (-1 for the untextured band);
  * its block, capped at OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned
  * slot of the same material with identical bytes, else takes a new slot.
@@ -1705,7 +1708,9 @@ static int terrain_refine_slot(int w) {
     key.u.terrain.texture = untex ? -1 : m->sel.texture;
     key.u.terrain.flags   = untex ? OP_SEL_UNTEXTURED : m->sel.flags;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    openpete_mods_guard_enter(m->owner);
     int rc = m->per_instance(&key, buf, sizeof buf);
+    openpete_mods_guard_leave();
     if (rc < 0) return m->refine_slot;          /* declined -> stock */
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
     for (int s = 1; s < s_mat_slot_n; s++)

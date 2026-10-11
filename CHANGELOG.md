@@ -18,6 +18,9 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
+- Spyro 3: a code mod's change to the program code the game's anti-piracy checks hash is reverted, and the log
+  names the mod. `--scan-guard 0` (config key `scan_guard`, variable `OPENPETE_SCAN_GUARD`) lets the change stay;
+  the flag has no effect on Spyro 1 and 2.
 - Mod SDK: `OPENPETE_MOD_ERR_UNSUPPORTED` (-2) is returned by `read_level_data` and `moby_classes` on a game that
   does not provide them; every other return value is unchanged.
 - Mod SDK: the headers at the root of `sdk/` now include the selected game's headers from `sdk/games/<game>/`;

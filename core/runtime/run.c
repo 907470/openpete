@@ -3635,6 +3635,9 @@ static int run_host_loop(const openpete_options_t* opts) {
      * loader and the seed blocks put there: the fiber below is what first
      * executes guest code, and a --state-load-on-frame restore happens
      * later still, inside the frame loop. */
+    /* Mod code that may change guarded guest bytes runs on this thread
+     * from here on: the guest-byte guard brackets it here and nowhere else. */
+    openpete_mods_guard_claim_thread();
     game_on_boot(&g_game.cpu);
 
     openpete_host_fiber = co_active();

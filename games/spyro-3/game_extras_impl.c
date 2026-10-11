@@ -65,6 +65,7 @@
 #include "openpete_fiber.h"
 #include "renderer/text_moby.h"
 #include "spyro-3/gen/spyro3_sfx_names.h" /* generated: the 256 SoundTable slot names */
+#include "scan_watch.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -72,16 +73,35 @@
 #include <stdint.h>
 #include <string.h>
 
-/* The boot and savestate-restore hooks are the shared bodies in
- * games/common/game_extras_overlay_resync.c. */
+/* The boot and savestate-restore hooks run the shared bodies in
+ * games/common/game_extras_overlay_resync.c, then the scanned-range watch. */
 void game_overlay_resync_on_boot(CPUState* cpu);
 void game_overlay_resync_on_state_loaded(CPUState* cpu);
+
+/** @brief Install the resident-overlay resync and the write census, then arm the scanned-range watch over them.
+ *
+ * @param cpu Guest CPU state. */
+static void spyro3_on_boot(CPUState* cpu) {
+    game_overlay_resync_on_boot(cpu);
+    spyro3_scan_watch_boot(cpu);
+}
+
+/** @brief Re-point the overlay dispatcher after a savestate restore, then report the scanned bytes the restore changed.
+ *
+ * @param cpu Guest CPU state. */
+static void spyro3_on_state_loaded(CPUState* cpu) {
+    game_overlay_resync_on_state_loaded(cpu);
+    spyro3_scan_watch_state_loaded();
+}
 
 /** @brief Run Spyro 3's per-tick host hooks before the game fiber runs a tick: the area, cutscene and level skips, the level warp, the state log, the scripted free camera, the write census phase and the host text layers.
  *
  * @param cpu Guest CPU state.
  * @param frame_counter The openpete_frame counter before the tick. */
 static void spyro3_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
+    /* The scanned-range watch: resolves the last tick's held overlay-window
+     * stores and resyncs its shadow before this tick's hooks store. */
+    spyro3_scan_watch_tick(cpu);
     /* --skip-to-area: queues the sub-area entry once the level is live and
      * reads its release, before the level skip's fast-forward consults it.
      * Inert without the flag. */
@@ -175,7 +195,8 @@ static const psyq_sfx_slots_t k_sfx_slots = {
  * it: a warning on failure, an info line on pass. A failure on the retail
  * disc means the walk ran over the wrong bytes or too few main-loop passes
  * (a load path the classifier above does not cover, or a load delay below
- * the floor).
+ * the floor). Each verdict is counted for the exit report, and a failure
+ * names the enabled mods.
  * @param cpu Guest CPU state. */
 static void checksum_verdict(CPUState* cpu) {
     static uint32_t s_last_state = 0;
@@ -183,7 +204,8 @@ static void checksum_verdict(CPUState* cpu) {
     if (state == 8u && s_last_state != 8u) {
         uint32_t cursor = cpu->read_word(0x8006C6B8u);
         uint32_t crc    = cpu->read_word(0x8006C6B4u);
-        if (cursor != 0x8007B6E4u || crc != 0u)
+        const int passed = cursor == 0x8007B6E4u && crc == 0u;
+        if (!passed)
             OPL_WARN_F("cd", "checksum walk failed: cursor 0x%08X (end 0x8007B6E4), "
                        "crc 0x%08X (want 0) at vbl=%d; the game will zero a word "
                        "of func_8002AB38",
@@ -191,6 +213,7 @@ static void checksum_verdict(CPUState* cpu) {
         else
             OPL_INFO_F("cd", "checksum walk passed (vbl=%d)",
                        SDL_GetAtomicInt(&openpete_vbl));
+        spyro3_scan_watch_verdict(passed);
     }
     s_last_state = state;
 }
@@ -297,20 +320,22 @@ static const psyq_game_hooks_t k_psyq = {
 
 GAME_MOD_TABLES_DECLARE(spyro3);
 
-/** @brief Return Spyro 3's mod-layer descriptor: its generated SDK symbol table and overlay entry arrays, and no game-specific surface.
+/** @brief Return Spyro 3's mod-layer descriptor: its generated SDK symbol table and overlay entry arrays, and the scanned-range guard.
  *
  * Built on the first call into static storage. Overlay-window overrides
  * bind through override_ovl or a name scoped to one overlay only
  * (legacy_window_links 0). Moby ops, level ops, the text rasterizer, the sfx
  * canonicaliser and the render-function list stay NULL and the material
  * channel mask stays 0, so the loader treats those surfaces as unsupported
- * on this game; the arena keeps the core default base.
+ * on this game; the arena keeps the core default base. The guest-byte
+ * guard is scan_watch.h's spyro3_scan_guard.
  * @return The descriptor, never NULL. */
 static const game_mod_desc_t* spyro3_mod_desc(void) {
     static game_mod_desc_t s_desc;
     static int             s_built = 0;
     if (!s_built) {
         GAME_MOD_TABLES_FILL(&s_desc, spyro3);
+        s_desc.guest_guard = &spyro3_scan_guard;
         s_built = 1;
     }
     return &s_desc;
@@ -357,9 +382,9 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .layout               = &spyro3_game_layout,
     .load_delay_default   = 66u,
     .sony_image_base      = 0x8006FCF4u,
-    .on_boot              = game_overlay_resync_on_boot,
+    .on_boot              = spyro3_on_boot,
     .on_frame_pre         = spyro3_on_frame_pre,
-    .on_state_loaded      = game_overlay_resync_on_state_loaded,
+    .on_state_loaded      = spyro3_on_state_loaded,
     .state_extra_size     = psyq_thunk_state_size,
     .state_extra_save     = psyq_thunk_state_save,
     .state_extra_load     = psyq_thunk_state_extra_load,

@@ -141,6 +141,22 @@ handle with `api->vstream_handle(self, stream_vaddr)` and write the handle
 into the field; the game's readers resolve it. Request handles at entry,
 in a fixed order, once per stream: they are ledgered like allocations.
 
+### Spyro 3's checked code
+
+Spyro: Year of the Dragon hashes its own code while it runs: the EXE's
+code, 0x8001200C up to 0x80064F9C, and the code of the resident overlay.
+A hash over a changed byte fails, and the game then damages save and level
+state. A store a mod makes into those ranges is reverted and logged with
+the mod's id, unless the player runs with `--scan-guard 0`, under which it
+persists. The check's cost counts in an override's reported time.
+
+The game's code bytes are not what runs: openpete runs the recompiled
+functions, so a store into code changes no behaviour. Change behaviour with
+an [override](#the-override-chain) instead.
+
+A store through a kept host pointer from a present hook, a UI body or a
+thread the mod starts is not reverted.
+
 ## Toggling and reload
 
 `register_toggle_hook` installs a callback that runs at the tick boundary

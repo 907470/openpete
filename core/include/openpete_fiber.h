@@ -163,6 +163,13 @@ void openpete_yield_to_host(void);
  * effect when no host fiber exists. */
 void openpete_yield_to_host_no_tick(void);
 
+/** @brief Report whether the calling code runs on the game fiber.
+ *
+ * Recompiled guest code, the thunks it calls and mod overrides run there;
+ * the host loop's per-tick hooks run on the host fiber.
+ * @return 1 on the game fiber, 0 on the host fiber or before the game fiber exists. */
+int openpete_fiber_in_game(void);
+
 /* openpete_no_lod is declared in core/include/no_lod.h. */
 
 #ifdef __cplusplus

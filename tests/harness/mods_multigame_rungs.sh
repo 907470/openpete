@@ -58,6 +58,11 @@
 #                   chain-duo nesting in both enabled orders, crash-dummy
 #                   attribution, arena-canary armed with no DESYNC across a
 #                   file save and load that restores its 64 B block.
+#   scan watch      (Spyro 3) the mod guard restores and names a mod's store
+#                   into a scanned code range, a store below the range
+#                   lands, a host poke is reported, the overlay load is not;
+#                   under --scan-guard 0 the store persists with no compare.
+#                   (Spyro 1 and 2) --scan-guard 0 is accepted and inert.
 
 # Copy an in-tree mod into <dest dir> without its .build/.
 copy_mod() { # copy_mod <id> <dest dir>
@@ -580,5 +585,138 @@ if [ "$PG_GAME" != "spyro-1" ]; then
     else
         bad "file load: arena not restored, or DESYNC"
         printf '%s\n' "$out" | grep -E 'arena|savestate' | head -5
+    fi
+fi
+
+# ── M10. (Spyro 3) the anti-piracy scanned-range watch and mod guard ─────
+# Spyro 3's loading, title and level scans hash EXE .text
+# 0x8001200C..0x80064F9C and the resident overlay's text. The mod guard
+# restores a byte a mod changed there through a guest() pointer, naming the
+# mod; the store watch (OPENPETE_S3_SCAN_WATCH=1) reports a store there and
+# names its writer. One run carries every rung. scan-probe overrides the
+# per-tick Draw and on its 300th call, after base(), stores the complement
+# of the word at 0x8001200C and of the byte at 0x8001200B (one below the
+# range) through op_write_u32/op_write_u8; the next call reads both back:
+# the guard must restore the word and leave the byte. At frame 900
+# OPENPETE_S3_SCAN_POKE stores an EXE word from the host fiber: the watch
+# must report one host poke, and that poke fails the next loading walk, whose
+# verdict must name scan-probe while the game's own zeroing store is
+# counted apart. Over the level load no recompiler store may be reported:
+# the level overlay's decryption pass is the load and is counted apart.
+# A second run under --scan-guard 0: boot logs the guard off once, the
+# probe's store at 0x8001200C persists, no restore is logged, the guard
+# makes no compare, and its cost per stretch falls to the bracket alone.
+# On Spyro 1 and 2 --scan-guard 0 is accepted and changes nothing: the run
+# exits 0 and logs no [s3-scan] line.
+if [ "$PG_GAME" = "spyro-3" ]; then
+    scan_count() { # scan_count <log> <key> -> the key's value on an [s3-scan] exit line
+        printf '%s\n' "$1" | grep -E '^\[s3-scan\] (watch|guard|checksum)' |
+            grep -oE "(^| |\()$2=[0-9]+" | head -1 | cut -d= -f2
+    }
+    mkdir -p "$WORK/scanprobe-src/scan-probe/src"
+    mod_toml "$WORK/scanprobe-src/scan-probe" scan-probe 'game = "spyro-3"'
+    cat > "$WORK/scanprobe-src/scan-probe/src/probe.c" <<'CEOF'
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* g_api;
+static openpete_mod_t* g_self;
+static unsigned s_calls;
+static uint32_t s_word;
+static uint8_t  s_byte;
+static void tick(CPUState* cpu) {
+    g_api->base(cpu);
+    if (++s_calls == 300u) {
+        s_word = op_read_u32(g_api, 0x8001200Cu);
+        s_byte = op_read_u8(g_api, 0x8001200Bu);
+        op_write_u32(g_api, 0x8001200Cu, ~s_word);
+        op_write_u8(g_api, 0x8001200Bu, (uint8_t)~s_byte);
+        g_api->log(g_self, OP_MOD_LOG_INFO, "scan-probe: stored");
+    } else if (s_calls == 301u) {
+        uint32_t w = op_read_u32(g_api, 0x8001200Cu);
+        uint8_t  b = op_read_u8(g_api, 0x8001200Bu);
+        g_api->log(g_self, OP_MOD_LOG_INFO, "scan-probe: in-range %s, below %s",
+                   w == s_word ? "restored" : "CHANGED",
+                   b == (uint8_t)~s_byte ? "landed" : "LOST");
+        op_write_u8(g_api, 0x8001200Bu, s_byte);
+    }
+}
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    g_api = api;
+    g_self = self;
+    return api->override_name(self, "Draw", tick);
+}
+CEOF
+    mkdir -p "$WORK/scanprobe"
+    ln -sfn "$WORK/scanprobe-src/scan-probe" "$WORK/scanprobe/scan-probe"
+    echo scan-probe > "$WORK/scanprobe/enabled.txt"
+
+    say "scan watch: mod guard restore, a store below the range, a host poke and the overlay load on $PG_GAME"
+    out="$( PG_CAPTURE_ENV=(OPENPETE_S3_SCAN_WATCH=1 OPENPETE_S3_SCAN_POKE=900:0x80030000:0x13579BDF)
+            RUN_TIMEOUT=600 run_game "$WORK/scanprobe" 3000 )"
+    n_restore="$(scan_count "$out" restores)"
+    n_stretch="$(scan_count "$out" stretches)"
+    n_host="$(scan_count "$out" host)"
+    n_rec="$(scan_count "$out" recompiler)"
+    n_decrypt="$(scan_count "$out" decrypt)"
+    n_fail="$(scan_count "$out" fail)"
+    n_vstore="$(scan_count "$out" verdict-store)"
+    if printf '%s\n' "$out" | grep -q "guard: mod 'scan-probe' stored into scanned range exe: 4 byte(s) from 0x8001200C restored" &&
+       printf '%s\n' "$out" | grep -q "scan-probe: in-range restored" &&
+       [ "${n_restore:-0}" -eq 1 ]; then
+        ok "scan-probe: 4 bytes at 0x8001200C restored and named; $n_restore restore over $n_stretch guarded stretches"
+    else
+        bad "scan-probe: restore not logged or the word not restored (restores=${n_restore:-0}, stretches=${n_stretch:-0})"
+        printf '%s\n' "$out" | grep -E "s3-scan|scan-probe" | head -6
+    fi
+    if printf '%s\n' "$out" | grep -q "scan-probe: in-range .*, below landed"; then
+        ok "scan-probe: the store at 0x8001200B landed (1 byte, outside the range)"
+    else
+        bad "scan-probe: the store one byte below the range did not land"
+    fi
+    if printf '%s\n' "$out" | grep -q "FAIL watch: store of 4 byte(s) at 0x80030000 by host poke into scanned range exe" &&
+       [ "${n_host:-0}" -eq 1 ]; then
+        ok "host poke at 0x80030000 reported ($n_host host hit)"
+    else
+        bad "host poke not reported (host=${n_host:-0})"
+        printf '%s\n' "$out" | grep -E "s3-scan" | head -6
+    fi
+    if [ "${n_fail:-0}" -eq 1 ] && [ "${n_vstore:-0}" -eq 1 ] &&
+       printf '%s\n' "$out" | grep -q "loading walk failed with mods active: scan-probe"; then
+        ok "the poked walk failed once naming scan-probe; the game's zeroing store counted apart ($n_vstore)"
+    else
+        bad "poked walk: fail=${n_fail:-0} verdict-store=${n_vstore:-0}, mods named: $(printf '%s\n' "$out" | grep -o 'mods active: .*' | head -1)"
+    fi
+    if [ "${n_decrypt:-0}" -gt 0 ] && [ "${n_rec:-1}" -eq 0 ]; then
+        ok "overlay load not reported: $n_decrypt decryption-pass stores counted apart, 0 recompiler hits"
+    else
+        bad "overlay load: decrypt=${n_decrypt:-0} recompiler=${n_rec:-?} (want >0 and 0)"
+    fi
+    n_cmp_on="$(scan_count "$out" compares)"
+    cost_on="$(printf '%s\n' "$out" | grep -oE 'cost=[0-9.]+ us/stretch' | head -1)"
+
+    say "scan guard off: --scan-guard 0 lets the probe's store persist on $PG_GAME"
+    out="$( PG_CAPTURE_ENV=(OPENPETE_S3_SCAN_WATCH=1)
+            RUN_TIMEOUT=600 run_game "$WORK/scanprobe" 1500 --scan-guard 0 )"
+    n_off_lines="$(printf '%s\n' "$out" | grep -c 'scan guard off (--scan-guard 0)')"
+    n_restore="$(scan_count "$out" restores)"
+    n_stretch="$(scan_count "$out" stretches)"
+    n_cmp="$(scan_count "$out" compares)"
+    cost_off="$(printf '%s\n' "$out" | grep -oE 'cost=[0-9.]+ us/stretch' | head -1)"
+    if [ "$n_off_lines" -eq 1 ] &&
+       printf '%s\n' "$out" | grep -q "scan-probe: in-range CHANGED, below landed" &&
+       ! printf '%s\n' "$out" | grep -q "guard: mod '" &&
+       [ "${n_restore:--1}" -eq 0 ] && [ "${n_cmp:--1}" -eq 0 ] && [ "${n_stretch:-0}" -gt 0 ]; then
+        ok "guard off: store at 0x8001200C persisted, 0 restores, 0 compares over $n_stretch stretches ($cost_off; on: ${n_cmp_on:-?} compares, $cost_on)"
+    else
+        bad "guard off: off-lines=$n_off_lines restores=${n_restore:-?} compares=${n_cmp:-?} stretches=${n_stretch:-?}"
+        printf '%s\n' "$out" | grep -E "s3-scan|scan-probe" | head -6
+    fi
+else
+    say "scan guard: --scan-guard 0 is accepted and inert on $PG_GAME"
+    if out="$(run_game "$WORK/noscan-empty" 200 --scan-guard 0)" &&
+       ! printf '%s\n' "$out" | grep -q '\[s3-scan\]'; then
+        ok "--scan-guard 0 accepted on $PG_GAME, no [s3-scan] line"
+    else
+        bad "--scan-guard 0 on $PG_GAME: refused or logged an [s3-scan] line"
+        printf '%s\n' "$out" | grep -E "scan|error" | head -4
     fi
 fi

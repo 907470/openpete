@@ -905,6 +905,7 @@ void openpete_options_init(openpete_options_t* opts) {
      * (OPENPETE_TERRAIN_CACHE, OPENPETE_DISC_CACHE) or the default. */
     opts->terrain_cache = -1;
     opts->disc_cache    = -1;
+    opts->scan_guard    = -1;   /* resolve_env_spellings: OPENPETE_SCAN_GUARD, else 1 */
     /* -1 = the game's own default (game_get_load_delay_default), resolved by
      * run.c; resolve_env_spellings applies OPENPETE_LOAD_DELAY. */
     opts->load_delay    = -1;
@@ -1587,6 +1588,13 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
     } else if (strcmp(a, "--mods") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
         opts->mods_enabled = v; i++;
+    } else if (strcmp(a, "--scan-guard") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (strcmp(v, "0") != 0 && strcmp(v, "1") != 0) {
+            fprintf(stderr, "openpete: --scan-guard takes 0 or 1, got '%s'\n", v);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        opts->scan_guard = v[0] == '1'; i++;
     } else if (strcmp(a, "--compile-mods") == 0) {
         opts->compile_mods = 1;
     } else if (strcmp(a, "--dump-sfx-pack") == 0) {
@@ -1983,7 +1991,8 @@ static int env_value(const char* name, const char** out) {
  * Runs after the flag walk, so a typed flag has claimed its field already,
  * and after the config resolver has applied the openpete.toml [env] tables.
  * OPENPETE_NOTEX and OPENPETE_WIREFRAME are on unless they start with '0'; OPENPETE_TERRAIN_CACHE
- * and OPENPETE_DISC_CACHE take atoi's verdict (default 1);
+ * and OPENPETE_DISC_CACHE take atoi's verdict (default 1); OPENPETE_SCAN_GUARD
+ * is off when it starts with '0' (default 1);
  * OPENPETE_TERRAIN_VISIBILITY=game selects the game's verdict (default
  * frustum). OPENPETE_LOAD_DELAY is applied with atoi when set; unset,
  * load_delay stays -1 and run.c applies the game's default.
@@ -1999,6 +2008,8 @@ static void resolve_env_spellings(openpete_options_t* opts) {
         opts->terrain_cache = env_value("OPENPETE_TERRAIN_CACHE", &e) ? (atoi(e) != 0) : 1;
     if (opts->disc_cache < 0)
         opts->disc_cache = env_value("OPENPETE_DISC_CACHE", &e) ? (atoi(e) != 0) : 1;
+    if (opts->scan_guard < 0)
+        opts->scan_guard = !(env_value("OPENPETE_SCAN_GUARD", &e) && *e == '0');
     if (opts->load_delay < 0 && env_value("OPENPETE_LOAD_DELAY", &e))
         opts->load_delay = atoi(e);
     if (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
@@ -2021,6 +2032,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->wireframe < 0)             out->wireframe = 0;
     if (out->terrain_cache < 0)         out->terrain_cache = 1;
     if (out->disc_cache < 0)            out->disc_cache = 1;
+    if (out->scan_guard < 0)            out->scan_guard = 1;
     if (out->terrain_visibility == OPENPETE_TERRAIN_VIS_UNSET)
         out->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
 }

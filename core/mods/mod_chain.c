@@ -29,6 +29,7 @@
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
+#include <SDL3/SDL.h> /* SDL_GetCurrentThreadID - the guard thread claim */
 #include "openpete_time.h" /* per-mod time instrument */
 #include "feature_registry.h" /* resident-overlay probe */
 #include "mod_vec.h"
@@ -335,6 +336,75 @@ int openpete_mods_bypass_pending(uint32_t addr) {
     return s_bypass_armed && s_bypass_addr == addr;
 }
 
+/* The installed guest-byte guard; NULL on a game that installs none. The
+ * stack holds each open stretch's owner and state: open, closed by a
+ * suspend (base(), call()), or closed by a nested enter, which its leave
+ * reopens. A stretch nested deeper than the stack is not guarded. */
+#define MOD_GUARD_STACK_MAX 64
+enum { GUARD_OPEN, GUARD_SUSPENDED, GUARD_NESTED };
+static const openpete_mods_guest_guard_t* s_guest_guard = NULL;
+static const char*  s_guard_owner[MOD_GUARD_STACK_MAX];
+static signed char  s_guard_state[MOD_GUARD_STACK_MAX];
+static int          s_guard_depth = 0;
+static SDL_ThreadID s_guard_thread = 0; /* 0: unclaimed, every thread */
+
+void openpete_mods_set_guest_guard(const openpete_mods_guest_guard_t* guard) {
+    s_guest_guard = guard;
+}
+
+void openpete_mods_guard_claim_thread(void) {
+    s_guard_thread = SDL_GetCurrentThreadID();
+}
+
+/** @brief Report whether a bracket on the calling thread reaches the installed guard.
+ *
+ * @return 1 with a guard installed and the thread unclaimed or claimed by the caller, else 0. */
+static int guard_live(void) {
+    return s_guest_guard &&
+           (s_guard_thread == 0 || s_guard_thread == SDL_GetCurrentThreadID());
+}
+
+void openpete_mods_guard_enter(const char* mod_id) {
+    if (!guard_live()) return;
+    const int top = s_guard_depth - 1;
+    s_guard_depth++;
+    if (s_guard_depth > MOD_GUARD_STACK_MAX) return;
+    if (top >= 0 && s_guard_state[top] == GUARD_OPEN) {
+        s_guest_guard->end(s_guard_owner[top]);
+        s_guard_state[top] = GUARD_NESTED;
+    }
+    s_guard_owner[s_guard_depth - 1] = mod_id;
+    s_guard_state[s_guard_depth - 1] = GUARD_OPEN;
+    s_guest_guard->begin();
+}
+
+void openpete_mods_guard_leave(void) {
+    if (!guard_live() || s_guard_depth <= 0) return;
+    const int top = --s_guard_depth;
+    if (top >= MOD_GUARD_STACK_MAX) return;
+    if (s_guard_state[top] == GUARD_OPEN) s_guest_guard->end(s_guard_owner[top]);
+    if (top > 0 && s_guard_state[top - 1] == GUARD_NESTED) {
+        s_guard_state[top - 1] = GUARD_OPEN;
+        s_guest_guard->begin();
+    }
+}
+
+void openpete_mods_guard_suspend(void) {
+    if (!guard_live() || s_guard_depth <= 0 || s_guard_depth > MOD_GUARD_STACK_MAX) return;
+    const int top = s_guard_depth - 1;
+    if (s_guard_state[top] != GUARD_OPEN) return;
+    s_guest_guard->end(s_guard_owner[top]);
+    s_guard_state[top] = GUARD_SUSPENDED;
+}
+
+void openpete_mods_guard_resume(void) {
+    if (!guard_live() || s_guard_depth <= 0 || s_guard_depth > MOD_GUARD_STACK_MAX) return;
+    const int top = s_guard_depth - 1;
+    if (s_guard_state[top] != GUARD_SUSPENDED) return;
+    s_guard_state[top] = GUARD_OPEN;
+    s_guest_guard->begin();
+}
+
 /** @brief Run the first enabled link of a chain at or after idx, or the recompiled original when none is left.
  *
  * base() is run_link(current + 1) with the frame's resident overlay. A
@@ -383,7 +453,9 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx,
             const char* owner = link_at(chain, idx)->owner_id;
             openpete_mod_override_fn fn = link_at(chain, idx)->fn;
             openpete_imgui_guard_set_hook_owner(owner);
+            openpete_mods_guard_enter(owner);
             fn(cpu);
+            openpete_mods_guard_leave();
             openpete_imgui_guard_set_hook_owner(owner_save);
             const op_time_t span = op_now() - t0;
             s_frame_depth--;
@@ -554,7 +626,12 @@ void openpete_mods_base(CPUState* cpu) {
         return;
     }
     mod_frame_t f = s_frames[s_frame_depth - 1];
+    /* The calling override's code stops here and resumes after the
+     * continuation returns: its stretch is closed and reopened around the
+     * guest code below it, which may store into guarded bytes itself. */
+    openpete_mods_guard_suspend();
     run_link(cpu, f.chain, f.link + 1, f.resident);
+    openpete_mods_guard_resume();
 }
 
 /* Reads this thread's frame stack; documented in openpete_mods.h. */

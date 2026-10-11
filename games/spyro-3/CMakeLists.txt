@@ -57,6 +57,9 @@ openpete_add_game(spyro-3
     PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c
     SOURCES
         skip_to_level.c
+
+        # The watch and mod guard over the anti-piracy scans' code ranges.
+        scan_watch.c
         features/freecam.c
 
         # The queue of host-requested calls into the game's transition
