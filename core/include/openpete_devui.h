@@ -39,7 +39,8 @@ union SDL_Event;
  * Call after rhi_create. The launcher calls it on the device it creates and
  * draws through openpete_devui_render_frame; the overlay itself stays
  * unattached until openpete_devui_init. Stores window state in
- * openpete-devui.ini beside the executable. A second call on the same
+ * openpete-devui-<game id>.ini beside the executable (openpete-devui.ini
+ * before a game is registered). A second call on the same
  * device returns 1 at once.
  * @param dev The device.
  * @param win Its window.

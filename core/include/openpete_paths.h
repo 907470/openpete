@@ -106,6 +106,21 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create);
  * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
 
+/** @brief Resolve one game's directory inside a state leaf: <state dir>/<leaf>/<game>.
+ *
+ * The leaf resolves as openpete_paths_state_dir does; the game's directory
+ * is joined under it, so every game keeps its files apart inside one leaf
+ * ("states/spyro-1/"). A NULL or empty @p game names the leaf itself. With
+ * @p create both directories are made.
+ * @param leaf A leaf openpete_paths_state_dir accepts ("states").
+ * @param game The game id ("spyro-1"), or NULL.
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @param create Non-zero to create the directories.
+ * @return 0 on success, -1 when no base resolves or the path does not fit. */
+int openpete_paths_game_state_dir(const char* leaf, const char* game, char* out,
+                                  size_t cap, int create);
+
 /** @brief Resolve the directory holding one class of bulk user data.
  *
  * Portable layout: <exe dir>/<leaf>. Otherwise, when <exe dir>/<leaf>

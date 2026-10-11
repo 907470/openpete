@@ -17,7 +17,7 @@ extern "C" {
 
 #define OPENPETE_STATE_NUM_SLOTS 10
 
-/** @brief Write the running state to slot file slot<N>.state in the states directory.
+/** @brief Write the running state to slot file slot<N>.state in the running game's states directory.
  *
  * Resolves the path and delegates to openpete_state_save_file.
  * @param slot Slot number, below OPENPETE_STATE_NUM_SLOTS.
@@ -30,7 +30,8 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame);
 /** @brief Load slot file slot<N>.state into the running state.
  *
  * Resolves the path and delegates to openpete_state_load_file, which
- * refuses a file with a different identity, section sizes or modset.
+ * refuses a file from another game or with a different identity, section
+ * sizes or modset.
  * @param slot Slot number, below OPENPETE_STATE_NUM_SLOTS.
  * @param cpu Guest CPU state whose register prefix is overwritten.
  * @param out_frame Receives the saved openpete_frame, so the caller can
@@ -41,7 +42,8 @@ int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame);
 
 /** @brief Write the running state to a file.
  *
- * Writes the header (magic, version, content identity, openpete_frame,
+ * Writes the header (magic, version, content identity, the running game's
+ * id, openpete_frame,
  * section sizes, the guest-visible VBL counter) and then every section.
  * The host mirrors (VRAM, SPU, game extra, mod arena) are copied to heap
  * buffers before the disk writes. Checks the mod arena's immutable rows
@@ -56,9 +58,11 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
                              unsigned frame);
 /** @brief Load a state file into the running state.
  *
- * Refuses the load when the run follows the reference schedule, or when
- * the magic, version, content identity, a section size, the mod arena
- * ledger or the enabled-modset tag differs; every section is read before
+ * Refuses the load when the run follows the reference schedule, when the
+ * header names another game, or names none and the running module carries
+ * no ROM hash to prove the game through the identity, or when the magic,
+ * version, content identity, a section size, the mod arena ledger or the
+ * enabled-modset tag differs; every section is read before
  * any is applied, so a refusal leaves the running state untouched. On
  * commit it restores the register prefix, RAM (re-seeding the kernel's
  * fixed low-RAM words), scratchpad, VRAM, SPU, CD cursors and the VBL
@@ -75,7 +79,9 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
 /* ── In-memory snapshot (rewind keyframes / runahead speculation) ──────
  * Same-process only: no header, no identity gating, no file I/O - pure
  * memcpy of the volatile state (CPU regs + RAM + scratch + SPU
- * deterministic mirror + CD cursors + frame/vbl counters).
+ * deterministic mirror + CD cursors + frame/vbl counters). A process
+ * runs one game, installed once before its entry, so a snapshot is always
+ * the running game's and carries no game check.
  *
  * Carried: CPU regs, RAM, scratch, the SPU deterministic mirror, CD
  * cursors + queue, the game-extra blob, VRAM (row-delta restore) and the
@@ -143,11 +149,12 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);
 
-/** @brief Resolve the states directory, creating it when missing.
+/** @brief Resolve the running game's states directory, creating it when missing.
  *
- * The directory is "states" beside the memory-card "cards" directory:
- * under the executable in a portable install, else under the per-user
- * state base (openpete_paths_state_dir). No trailing separator.
+ * The directory is "states/<game id>", "states" lying beside the shared
+ * memory-card "cards" directory: under the executable in a portable
+ * install, else under the per-user state base
+ * (openpete_paths_game_state_dir). No trailing separator.
  * @param out Receives the path.
  * @param out_size Capacity of @p out.
  * @return 0 on success, -1 when no base resolves or the path does not

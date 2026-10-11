@@ -20,7 +20,9 @@
 //   uint32_t  game_extra_bytes - opaque per-game host blob (game_extras)
 //   uint32_t  modset_tag_bytes - enabled-modset tag string (no NUL)
 //   uint32_t  arena_bytes      - mod arena section (ledger rows + used bytes)
-//   uint32_t  reserved[3]   = 0 (DRAWENV/DISPENV later)
+//   char      game[12]      - the saving game's id ("spyro-1"), NUL-padded;
+//                             all zero in a file written before the field
+//                             existed (it was reserved and written as 0)
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
 //   uint8_t   scratch[scratch_bytes]
@@ -55,6 +57,12 @@
 // below still catch gross drift). Residual dev-only risk: a layout-only
 // change under an unbumped ABI on a "dev-static" codegen stamp - accepted,
 // same curation contract as OPENPETE_RECOMP_ABI_VERSION.
+//
+// Game gating: the ident does not tell games apart when the module carries
+// no ROM hash (a CMake-built module), so the header names the saving game
+// and a load under another game is refused. The field took over bytes every
+// earlier file wrote as zero, so the ABI is unchanged and an earlier file
+// reads as naming no game (see state_game_check).
 
 #include "openpete_state.h"
 #include "openpete_discontinuity.h"
@@ -118,6 +126,8 @@ extern int g_cdXaStartVBL;
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
 #define OPENPETE_STATE_VERSION  3u
 #define OPENPETE_STATE_HASH_LEN 32
+/* Bytes of the header's game id field; an id fills at most LEN - 1. */
+#define OPENPETE_STATE_GAME_LEN 12
 
 /* Curated state-layout ABI. Bump on ANY change to a section's layout
  * (header fields, SPUALVoiceState packing, cd_state_t, mods-section
@@ -150,8 +160,11 @@ typedef struct {
     uint32_t game_extra_bytes;
     uint32_t modset_tag_bytes;
     uint32_t arena_bytes;      /* mod arena section: ledger rows + used bytes */
-    uint32_t reserved[3];
+    char     game[OPENPETE_STATE_GAME_LEN]; /* saving game's id, NUL-padded */
 } openpete_state_header_t;
+
+/* The header's size is fixed: the game field replaced reserved[3]. */
+typedef char state_header_size_check[sizeof(openpete_state_header_t) == 100 ? 1 : -1];
 
 /* CD head-position section (fixed layout, ABI-covered). */
 typedef struct {
@@ -264,18 +277,63 @@ static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
     /* 15 bytes of digest as 30 hex chars + NUL padding to 32. */
 }
 
-/** @brief Resolve the states directory, creating it when missing.
+/** @brief Fill a header's game field with the running game's id, NUL-padded and truncated to OPENPETE_STATE_GAME_LEN - 1 bytes.
  *
- * A sibling of memcard.c's "cards" directory under whichever layout
- * openpete_paths_state_dir resolves: the executable's folder for a
- * portable install, the per-user state directory otherwise. No trailing
- * separator.
+ * @param out Receives OPENPETE_STATE_GAME_LEN bytes; all zero before a game
+ *        is registered. */
+static void game_fill(char out[OPENPETE_STATE_GAME_LEN]) {
+    memset(out, 0, OPENPETE_STATE_GAME_LEN);
+    const char* id = game_get_id();
+    if (id) strncpy(out, id, OPENPETE_STATE_GAME_LEN - 1);
+}
+
+/** @brief Log once that the shared states directory still holds slot files from the layout without per-game directories.
+ *
+ * Slots resolve inside the running game's directory, so files left in the
+ * shared directory are no longer listed or loaded as slots; nothing is
+ * moved. A migration of those files replaces this notice: it is the one
+ * place that sees both the shared directory and the game's directory when a
+ * slot path is first resolved.
+ * @param shared The shared states directory.
+ * @param game_dir The running game's states directory. */
+static void legacy_slots_notice(const char* shared, const char* game_dir) {
+    static int s_done;
+    if (s_done) return;
+    s_done = 1;
+    for (unsigned slot = 0; slot < OPENPETE_STATE_NUM_SLOTS; slot++) {
+        char path[1280];
+#ifdef _WIN32
+        int n = snprintf(path, sizeof path, "%s\\slot%u.state", shared, slot);
+#else
+        int n = snprintf(path, sizeof path, "%s/slot%u.state", shared, slot);
+#endif
+        struct stat st;
+        if (n < 0 || (size_t)n >= sizeof path || stat(path, &st) != 0) continue;
+        OPL_INFO_F("savestate", "slots now live in %s; %s still holds slot files "
+                   "saved before savestates were kept per game", game_dir, shared);
+        return;
+    }
+}
+
+/** @brief Resolve the running game's states directory, creating it when missing.
+ *
+ * "<states>/<game id>", where <states> is a sibling of memcard.c's "cards"
+ * directory under whichever layout openpete_paths_state_dir resolves: the
+ * executable's folder for a portable install, the per-user state directory
+ * otherwise. The cards stay shared by every game; savestates do not, so one
+ * game's slots never list or load another's. No trailing separator.
  * @param out Receives the path.
  * @param out_size Capacity of @p out.
  * @return 0 on success, -1 when no base resolves or the path does not
  *         fit. */
 static int resolve_state_dir(char* out, size_t out_size) {
-    return openpete_paths_state_dir("states", out, out_size, 1);
+    if (openpete_paths_game_state_dir("states", game_get_id(), out, out_size, 1) != 0)
+        return -1;
+    char shared[1024];
+    if (openpete_paths_state_dir("states", shared, sizeof shared, 0) == 0 &&
+        strcmp(shared, out) != 0)
+        legacy_slots_notice(shared, out);
+    return 0;
 }
 
 /** @brief Build the path of a slot's state file, "<states dir>/slot<N>.state".
@@ -328,6 +386,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     hdr.magic         = OPENPETE_STATE_MAGIC;
     hdr.version       = OPENPETE_STATE_VERSION;
     ident_fill(hdr.ident);
+    game_fill(hdr.game);
     hdr.frame         = (uint32_t)frame;
     hdr.cpu_bytes     = CPU_REG_BYTES;
     hdr.ram_bytes     = OPENPETE_PSX_RAM_SIZE;
@@ -446,7 +505,38 @@ static int state_sections_fit(FILE* fp, const char* path, const openpete_state_h
     return -1;
 }
 
-/** @brief Check a state file's header against this build: magic, version, identity, the fixed section sizes, and the variable sections against the file's length.
+/** @brief Refuse a state saved by another game, or one naming no game whose identity does not prove the game.
+ *
+ * A header naming a game must name the running one. A header naming none
+ * was written before the field existed; its identity check has already
+ * passed, and that proves the same disc only when the running module
+ * carries a ROM hash (a boot-compiled module), so it loads then and is
+ * refused otherwise (a CMake-built module's identity is the same for every
+ * game). Each refusal is logged naming both games.
+ * @param path The state file, for the log line.
+ * @param hdr The header read from it.
+ * @return 0 when the state belongs to the running game, -1 otherwise. */
+static int state_game_check(const char* path, const openpete_state_header_t* hdr) {
+    char want[OPENPETE_STATE_GAME_LEN];
+    game_fill(want);
+    char have[OPENPETE_STATE_GAME_LEN + 1];
+    memcpy(have, hdr->game, OPENPETE_STATE_GAME_LEN);
+    have[OPENPETE_STATE_GAME_LEN] = '\0';
+    if (have[0]) {
+        if (!strncmp(have, want, OPENPETE_STATE_GAME_LEN)) return 0;
+        OPL_ERROR_F("savestate", "%s: state saved by %s, running %s (%s); load refused "
+                    "- running state untouched", path, have, want, game_get_display_name());
+        return -1;
+    }
+    const openpete_recomp_module* m = openpete_recomp_module_get();
+    if (m && m->rom_sha256 && *m->rom_sha256) return 0;
+    OPL_ERROR_F("savestate", "%s: state names no game and this module's identity carries "
+                "no ROM hash to prove it is %s (%s); load refused - running state untouched",
+                path, want, game_get_display_name());
+    return -1;
+}
+
+/** @brief Check a state file's header against this build: magic, version, game, identity, the fixed section sizes, and the variable sections against the file's length.
  *
  * Each refusal is logged with the values that differ.
  * @param fp The state file, positioned just past the header.
@@ -464,6 +554,9 @@ static int state_header_check(FILE* fp, const char* path, const openpete_state_h
                     path, hdr->version, OPENPETE_STATE_VERSION);
         return -1;
     }
+    /* Before the identity, so a state from another game is reported as
+     * that rather than as an identity mismatch. */
+    if (state_game_check(path, hdr) != 0) return -1;
 
     char want_ident[OPENPETE_STATE_HASH_LEN];
     ident_fill(want_ident);

@@ -284,6 +284,26 @@ int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create
     return 0;
 }
 
+int openpete_paths_game_state_dir(const char* leaf, const char* game, char* out,
+                                  size_t cap, int create) {
+    char dir[OPP_PATH_MAX];
+    if (openpete_paths_state_dir(leaf, dir, sizeof dir, create) != 0) return -1;
+    if (!game || !*game) {
+        if (strlen(dir) >= cap) return -1;
+        snprintf(out, cap, "%s", dir);
+        return 0;
+    }
+    char sub[OPP_PATH_MAX + 64];
+    openpete_paths_join(sub, sizeof sub, dir, game);
+    if (strlen(sub) >= cap || strlen(sub) >= sizeof sub - 1) {
+        OPL_ERROR_F("paths", "%s/%s path too long", leaf, game);
+        return -1;
+    }
+    if (create) (void)OPP_MKDIR(sub);
+    snprintf(out, cap, "%s", sub);
+    return 0;
+}
+
 /** @brief Adopt <exe dir>/<leaf> when it exists and is writable, writing it to out.
  *
  * The library, mods, user assets and recordings were exe-relative on every

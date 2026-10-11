@@ -1667,6 +1667,30 @@ void openpete_config_set_game_id(const char *id) {
 /* report                                                             */
 /* ------------------------------------------------------------------ */
 
+/** @brief Print the layout and every directory openpete writes, as this install resolves them.
+ *
+ * The knob table never shows these: they are directories, not knobs, and
+ * the answer moves with the layout. Savestates are kept per game, under the
+ * identified game's id; the other state leaves are shared by every game.
+ * Nothing is created.
+ * @param out The report stream. */
+static void report_layout(FILE *out) {
+    static const struct { const char *leaf; int per_game; } kState[] = {
+        { "cards", 0 }, { "states", 1 }, { "logs", 0 },
+    };
+    static const char *const kData[] = { "library", "mods", "assets", "bk2", "screenshots" };
+    char dir[CFG_PATH_MAX];
+    fprintf(out, "  layout: %s\n",
+            openpete_paths_portable() ? "portable (next to the exe)" : "per-user directories");
+    for (size_t i = 0; i < sizeof kState / sizeof kState[0]; i++)
+        if (openpete_paths_game_state_dir(kState[i].leaf, kState[i].per_game ? s_scope_game : NULL,
+                                          dir, sizeof dir, 0) == 0)
+            fprintf(out, "  %-8s %s\n", kState[i].leaf, dir);
+    for (size_t i = 0; i < sizeof kData / sizeof kData[0]; i++)
+        if (openpete_paths_data_dir(kData[i], dir, sizeof dir, 0) == 0)
+            fprintf(out, "  %-8s %s\n", kData[i], dir);
+}
+
 void openpete_config_report(FILE *out) {
     if (!out) out = stderr;
     fprintf(out, "openpete config\n");
@@ -1691,25 +1715,7 @@ void openpete_config_report(FILE *out) {
     fprintf(out, "  identified by: %s\n", s_ident_source[0] ? s_ident_source : "-");
     fprintf(out, "  save target: %s\n", s_save_path[0] ? s_save_path : "(none)");
 
-    /* Where the things openpete writes go, which the knob table below
-     * never shows: they are directories, not knobs. Worth printing in
-     * full because the answer moves with the layout - "where did my disc
-     * library go?" should be answerable without reading the source. */
-    {
-        char dir[CFG_PATH_MAX];
-        fprintf(out, "  layout: %s\n",
-                openpete_paths_portable() ? "portable (next to the exe)"
-                                          : "per-user directories");
-        static const char* const kState[] = { "cards", "states", "logs" };
-        static const char* const kData[]  = { "library", "mods", "assets", "bk2",
-                                             "screenshots" };
-        for (size_t i = 0; i < sizeof kState / sizeof kState[0]; i++)
-            if (openpete_paths_state_dir(kState[i], dir, sizeof dir, 0) == 0)
-                fprintf(out, "  %-8s %s\n", kState[i], dir);
-        for (size_t i = 0; i < sizeof kData / sizeof kData[0]; i++)
-            if (openpete_paths_data_dir(kData[i], dir, sizeof dir, 0) == 0)
-                fprintf(out, "  %-8s %s\n", kData[i], dir);
-    }
+    report_layout(out);
 
     fprintf(out, "\n  %-22s %-14s %-26s %s\n", "knob", "value", "won at", "shadowed");
     for (int i = 0; i < s_decision_n; i++) {

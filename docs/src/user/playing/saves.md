@@ -55,8 +55,10 @@ mods running now and ends the warnings.
 
 There are 10 slots, numbered 0 to 9; the active slot starts at 0 each run and
 the slot key wraps from 9 to 0. Each slot is a file, `slot0.state` to
-`slot9.state`, in the states folder
-([File locations](../help/file-locations.md)). Saving overwrites the slot.
+`slot9.state`, in the game's own folder inside the states folder
+(`states/spyro-1/`, [File locations](../help/file-locations.md)). Slot
+files saved before the per-game folders existed stay in `states/`, where
+the slots no longer read them. Saving overwrites the slot.
 The log records each save, load and slot change; there is no on-screen
 message.
 
@@ -64,6 +66,7 @@ The savestate keys do nothing while the settings menu is open.
 
 A load is refused, and the running game left untouched, when:
 
+- the state was made by another game; the log names both games;
 - the state was made by a build whose compiled game differs from this one,
   which includes most upgrades;
 - the state was made under a different set of game-changing mods (the log

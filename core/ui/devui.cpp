@@ -31,6 +31,7 @@
 extern "C" {
 #include "../rhi/rhi.h"          /* no C++ guard of its own */
 }
+#include "game_extras.h"   /* game_get_id: the per-game ini name */
 #include "openpete.h"
 #include "openpete_devui.h"
 #include "openpete_fillpick.h"
@@ -111,9 +112,12 @@ int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    /* UI state (window pos/collapse) next to the exe, not the CWD. */
+    /* UI state (window pos/collapse) next to the exe, not the CWD, one
+     * file per game: the games' overlays differ in their windows. */
     const char *base = SDL_GetBasePath();
-    snprintf(s_ini_path, sizeof s_ini_path, "%sopenpete-devui.ini", base ? base : "");
+    const char *game = game_get_id();
+    snprintf(s_ini_path, sizeof s_ini_path, "%sopenpete-devui%s%s.ini", base ? base : "",
+             (game && *game) ? "-" : "", game ? game : "");
     io.IniFilename = s_ini_path;
     ImGui::StyleColorsDark();
     ImGui::GetStyle().Alpha = 0.96f;
