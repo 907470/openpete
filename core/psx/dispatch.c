@@ -689,10 +689,86 @@ static void loop_site_note(uint32_t header) {
     s_loop_sites++;
 }
 
+/* Idle check of loops classified pure (OPENPETE_LOOP_PURE_CHECK=1): a store-free
+ * poll loop rereads the same memory into the same registers, so between two
+ * consecutive back-edge polls of one header inside one VBL every general
+ * register, hi and lo hold the same values unless the polled memory changed,
+ * which exits the loop. An iteration that changes a register is counted
+ * against the header as a misclassification candidate. */
+#define PURE_REGS 33u /* at..ra, hi, lo */
+static int      s_pure_check = -1;
+static uint32_t s_pure_hdr[LOOP_SITES], s_pure_iters[LOOP_SITES], s_pure_changed[LOOP_SITES];
+static int32_t  s_pure_first_reg[LOOP_SITES];
+static uint32_t s_pure_sites = 0u;
+static uint32_t s_pure_last_hdr = 0u;
+static int32_t  s_pure_last_vbl = -1;
+static uint64_t s_pure_last_poll = 0u;
+static uint32_t s_pure_last_regs[PURE_REGS];
+
+/** @brief Copy the general registers (at..ra), hi and lo into a snapshot.
+ * @param cpu Guest CPU state.
+ * @param out PURE_REGS words. */
+static void pure_snapshot(const CPUState* cpu, uint32_t* out) {
+    memcpy(out, &cpu->at, 31u * sizeof(uint32_t));
+    out[31] = cpu->hi;
+    out[32] = cpu->lo;
+}
+
+/** @brief Compare a pure site's registers with its previous back-edge poll and count an iteration that changed one.
+ * @param cpu Guest CPU state at the back edge.
+ * @param header The loop's header address. */
+static void loop_pure_check(const CPUState* cpu, uint32_t header) {
+    if (s_pure_check < 0) {
+        const char* env = getenv("OPENPETE_LOOP_PURE_CHECK");
+        s_pure_check = (env && *env && *env != '0');
+    }
+    if (!s_pure_check) return;
+    uint32_t regs[PURE_REGS];
+    pure_snapshot(cpu, regs);
+    int32_t vbl = SDL_GetAtomicInt(&openpete_vbl);
+    int consecutive = header == s_pure_last_hdr && vbl == s_pure_last_vbl &&
+                      s_loop_polls == s_pure_last_poll + 1u;
+    if (consecutive) {
+        uint32_t i = 0;
+        while (i < s_pure_sites && s_pure_hdr[i] != header) i++;
+        if (i == s_pure_sites && s_pure_sites < LOOP_SITES) {
+            s_pure_hdr[i] = header;
+            s_pure_first_reg[i] = -1;
+            s_pure_sites++;
+        }
+        if (i < s_pure_sites) {
+            s_pure_iters[i]++;
+            for (uint32_t r = 0; r < PURE_REGS; r++) {
+                if (regs[r] == s_pure_last_regs[r]) continue;
+                s_pure_changed[i]++;
+                if (s_pure_first_reg[i] < 0) s_pure_first_reg[i] = (int32_t)r + 1;
+                break;
+            }
+        }
+    }
+    s_pure_last_hdr = header;
+    s_pure_last_vbl = vbl;
+    s_pure_last_poll = s_loop_polls;
+    memcpy(s_pure_last_regs, regs, sizeof regs);
+}
+
 void openpete_loop_site_census_log(void) {
     for (uint32_t i = 0; i < s_loop_sites; i++)
         OPL_INFO_F("delivery", "loop site 0x%08X: %u quanta, first at vbl %d",
                    s_loop_site_hdr[i], s_loop_site_trips[i], s_loop_site_first_vbl[i]);
+    if (s_pure_check <= 0) return;
+    /* Register numbering: 1..31 = at..ra, 32 = hi, 33 = lo. */
+    uint32_t flagged = 0u;
+    for (uint32_t i = 0; i < s_pure_sites; i++) {
+        if (s_pure_changed[i]) flagged++;
+        OPL_INFO_F("delivery", "pure check 0x%08X: %u iterations compared, %u changed a register%s",
+                   s_pure_hdr[i], s_pure_iters[i], s_pure_changed[i],
+                   s_pure_changed[i] ? " (misclassified candidate)" : "");
+        if (s_pure_changed[i])
+            OPL_INFO_F("delivery", "pure check 0x%08X: first changed register %d",
+                       s_pure_hdr[i], s_pure_first_reg[i]);
+    }
+    OPL_INFO_F("delivery", "pure check: %u site(s) compared, %u flagged", s_pure_sites, flagged);
 }
 
 void openpete_loop_vbl(void) {
@@ -712,6 +788,7 @@ void openpete_loop_report(uint64_t* polls, uint64_t* trips, uint64_t* acc_max_in
 
 void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure) {
     s_loop_polls++;
+    if (pure) loop_pure_check(cpu, header);
     s_loop_insns_anchor += insns;
     s_loop_acc += (uint64_t)insns * LOOP_SCALE;
     if (s_loop_acc > s_loop_acc_max) s_loop_acc_max = s_loop_acc;
