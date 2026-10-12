@@ -48,8 +48,16 @@ done
 echo "[regen] game=$GAME  exe=$PSX_EXE  overlays=$WAD_DIR @ $OVERLAY_LOAD_ADDR"
 
 PSXRECOMP="third_party/psxrecomp/build/PSXRecomp"
+if [[ ! -f third_party/psxrecomp/build/CMakeCache.txt ]]; then
+    echo "psxrecomp not configured at third_party/psxrecomp/build - run cmake on third_party/psxrecomp first" >&2
+    exit 1
+fi
+# Translate with a binary built from the recompiler source in this tree: a
+# binary older than its source emits C the current recompiler would not.
+echo "[regen] building psxrecomp from source"
+cmake --build third_party/psxrecomp/build --target PSXRecomp
 if [[ ! -x "$PSXRECOMP" ]]; then
-    echo "psxrecomp not found at $PSXRECOMP - run cmake on third_party/psxrecomp first" >&2
+    echo "psxrecomp not found at $PSXRECOMP after the build" >&2
     exit 1
 fi
 
@@ -85,6 +93,19 @@ FORCED_ENTRIES_DIR="games/$GAME/manifest/forced_entries"
 CHANNEL_SITES="$OUT/channel_sites.txt"
 
 mkdir -p "$OUT"
+
+# The stamp names the recompiler source this generated tree came from
+# (scripts/fences/recomp_stamp.py; the build refuses a missing or different
+# one). A full regen removes it now and writes it only after every step
+# passed, so a failed regen leaves the game unstamped. A scoped regen
+# re-translates part of the tree and keeps a stamp only when it already
+# names the current source.
+STAMP_FILE="${OUT:?}/psxrecomp.id"
+if [[ "${OPENPETE_REGEN_SCOPE:-full}" == "full" ]]; then
+    rm -f "${STAMP_FILE:?}"
+elif [[ -f "$STAMP_FILE" && "$(cat "$STAMP_FILE")" != "$(python3 scripts/fences/recomp_stamp.py id)" ]]; then
+    rm -f "${STAMP_FILE:?}"
+fi
 
 # Render-channel substitution table: generated from the single source of
 # truth, games/spyro-1/manifest/render_channels.toml, and passed to the recompiler via
@@ -578,4 +599,7 @@ else
     GAME="$GAME" bash scripts/emit-recomp-manifest.sh
 fi
 
+if [[ "$REGEN_SCOPE" == "full" ]]; then
+    python3 scripts/fences/recomp_stamp.py write "$GAME"
+fi
 echo "[regen] Done - rebuild the project to pick up the new C output."

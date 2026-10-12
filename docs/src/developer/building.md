@@ -388,7 +388,13 @@ cmake --preset linux-release -DOPENPETE_GAMES=spyro-1
 ```
 
 Re-run `regen-recomp.sh` after bumping psxrecomp, changing a forced
-entry, or pulling a new EXE dump. For the Windows distribution build,
+entry, or pulling a new EXE dump. It rebuilds `PSXRecomp` from
+`third_party/psxrecomp/recompiler` before translating, and a full regen
+writes `games/<game>/generated/psxrecomp.id`, a hash of that recompiler
+source. Each game's build refuses while its stamp is missing or names
+other source, so a recompiler change regenerates every game the build
+configures (`scripts/fences/recomp_stamp.py`; the escape is
+`OPENPETE_RECOMP_STAMP_SKIP="<reason>"`). For the Windows distribution build,
 `package-dist.sh` also needs the cross-built recompiler at
 `third_party/psxrecomp/build-mingw/PSXRecomp.exe` (same source tree,
 configured with `-DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64.cmake`).

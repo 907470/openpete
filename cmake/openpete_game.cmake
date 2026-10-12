@@ -492,6 +492,17 @@ function(openpete_add_game GAME_ID)
         # do not embed their dependencies.
         target_link_libraries(${_module} PRIVATE openpete_core)
     endif()
+    # The generated C must come from the recompiler source in this tree:
+    # regen-recomp.sh stamps generated/psxrecomp.id with that source's hash
+    # after a full regen, and the module does not compile while the stamp
+    # is missing or names other source (scripts/fences/recomp_stamp.py).
+    # Runs on every build; OPENPETE_RECOMP_STAMP_SKIP="<reason>" is its escape.
+    add_custom_target(${_tag}_recomp_stamp
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/recomp_stamp.py
+                check ${GAME_ID} --root ${CMAKE_SOURCE_DIR}
+        COMMENT "${GAME_ID}: generated C matches the recompiler source"
+        VERBATIM)
+    add_dependencies(${_module} ${_tag}_recomp_stamp)
     target_include_directories(${_module} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${_common}
