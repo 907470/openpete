@@ -273,6 +273,14 @@ typedef struct moby_game {
                          uint32_t c[4], const float ev[4][3], int* textured,
                          moby_face_tex_t* tex);
 
+    /* ---- whole-table material tint ------------------------------------
+     * A material word that recolours the record's whole colour table after
+     * the LOD fade: every colour is depth-cued (GTE DPCS) toward one 12-bit
+     * far colour at one IR0, and every face draws from the result. Returns 1
+     * and fills `fc` (12-bit R, G, B) and `ir0` when `material` selects the
+     * tint, else 0. NULL where the game has no such material. */
+    int  (*material_tint)(uint32_t material, int fc[3], int* ir0);
+
     /* 1 = the walk may rebuild cull records from gamestate for the mobys the
      * canonical cull never queued (the widescreen and extended-LOD reveal).
      * The rebuild writes the record fields in this game's own encoding, so a

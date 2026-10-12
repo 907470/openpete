@@ -2209,6 +2209,15 @@ static unsigned s_cen_bit4_vbl, s_cen_at;
 #define CEN_MATS 12
 static uint32_t s_cen_mat[CEN_MATS];
 static long     s_cen_mat_n[CEN_MATS];
+/* Records whose colour table took the material tint (moby_game.material_tint),
+ * run-cumulative under OPENPETE_MOBY_SPECIAL_CENSUS: one count per record walk
+ * (canonical and sub-tick), and the distinct mobys with their first material
+ * word and VBL. */
+#define CEN_TINT 16
+static long     s_cen_tint;
+static uint32_t s_cen_tint_moby[CEN_TINT], s_cen_tint_mat[CEN_TINT];
+static unsigned s_cen_tint_vbl[CEN_TINT];
+static long     s_cen_tint_n[CEN_TINT];
 /** @brief Whether the special-face census is on (OPENPETE_MOBY_SPECIAL_CENSUS).
  *
  * Read on the first call and latched.
@@ -2222,8 +2231,9 @@ static int special_census_on(void) {
 /** @brief Print the special-face census line to stderr and restart the screen box.
  *
  * The line carries the face totals, the first moby and VBL per material mode
- * and for the bit-4 flag, the distinct material words seen, and the screen
- * box of the bit-5 faces since the last report.
+ * and for the bit-4 flag, the distinct material words seen, the screen
+ * box of the bit-5 faces since the last report, and the tinted record walks
+ * with their distinct mobys (moby_tint_census).
  * Clears the box count. */
 static void special_census_report(void) {
     fprintf(stderr, "[moby-special vbl=%u] faces=%ld bit5=%ld(mat0=%ld) bit4=%ld(m=%08X vbl=%u) modes",
@@ -2239,6 +2249,10 @@ static void special_census_report(void) {
     if (s_cen_box_n)
         fprintf(stderr, " | box=(%.0f,%.0f)-(%.0f,%.0f) n=%d",
                 s_cen_bx0, s_cen_by0, s_cen_bx1, s_cen_by1, s_cen_box_n);
+    fprintf(stderr, " | tint=%ld", s_cen_tint);
+    for (int i = 0; i < CEN_TINT && s_cen_tint_n[i]; i++)
+        fprintf(stderr, " %08X:%ld(mat=%08X vbl=%u)", s_cen_tint_moby[i], s_cen_tint_n[i],
+                s_cen_tint_mat[i], s_cen_tint_vbl[i]);
     fprintf(stderr, "\n");
     s_cen_box_n = 0;
 }
@@ -2287,6 +2301,24 @@ static void special_census_face(const moby_wface_t* F, uint32_t mscol, uint32_t 
         }
     }
     if (openpete_frame >= s_cen_at + 200u) { s_cen_at = openpete_frame; special_census_report(); }
+}
+
+/** @brief Count one tinted record walk into the special-face census.
+ *
+ * Does nothing while the census is off.
+ * @param R The record. */
+static void moby_tint_census(const rec_meta* R) {
+    if (!special_census_on()) return;
+    s_cen_tint++;
+    for (int i = 0; i < CEN_TINT; i++) {
+        if (s_cen_tint_n[i] && s_cen_tint_moby[i] != R->moby) continue;
+        if (!s_cen_tint_n[i]) {
+            s_cen_tint_moby[i] = R->moby; s_cen_tint_mat[i] = R->mscol;
+            s_cen_tint_vbl[i] = openpete_frame;
+        }
+        s_cen_tint_n[i]++;
+        break;
+    }
 }
 
 /** @brief Appends one line to the file OPENPETE_ROWSCALE_CENSUS names.
@@ -3819,7 +3851,11 @@ static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_
  * row is the fogged-CLUT row the textured faces sample (IR0 >> 9 on the
  * integer path) and tmix the second row and its weight, packed as a textured
  * scene vertex's alpha byte (moby_texel_fog_mix); 0 = the one row alone. */
-typedef struct { int ir0; double ir0f; int frac; int row; uint8_t tmix; } moby_fade_t;
+typedef struct { int ir0; double ir0f; int frac; int row; uint8_t tmix;
+                 /* The material's whole-table tint, applied after the fade
+                  * (moby_game.material_tint): tint 1 recolours every colour
+                  * toward the 12-bit tfc at tir0. */
+                 int tint; int tfc[3]; int tir0; } moby_fade_t;
 
 /** @brief DPCS of one 8-bit channel toward a 12-bit far colour at a fractional IR0.
  *
@@ -3860,6 +3896,21 @@ static uint32_t moby_fade_rgb(uint32_t col, int fcr, int fcg, int fcb, const mob
     return (uint32_t)(r | (g << 8) | (b << 16));
 }
 
+/** @brief One packed 0x00BBGGRR colour after the record's material tint, unchanged when it has none.
+ *
+ * The bit-exact DPCS mirror per channel toward fd->tfc at fd->tir0, the
+ * GTE's own arithmetic on the faded table the guest writes back to scratch.
+ * @param col The faded colour.
+ * @param fd The record's fade, carrying the tint.
+ * @return The tinted colour. */
+static uint32_t moby_tint_rgb(uint32_t col, const moby_fade_t* fd) {
+    if (!fd->tint) return col;
+    int r = dpcs_ch((int)(col & 0xFFu), fd->tfc[0], fd->tir0);
+    int g = dpcs_ch((int)((col >> 8) & 0xFFu), fd->tfc[1], fd->tir0);
+    int b = dpcs_ch((int)((col >> 16) & 0xFFu), fd->tfc[2], fd->tir0);
+    return (uint32_t)(r | (g << 8) | (b << 16));
+}
+
 /** @brief Whether a fade leaves every channel at its own colour.
  *
  * @param fd The record's fade.
@@ -3874,6 +3925,7 @@ static int moby_fade_none(const moby_fade_t* fd) {
  * the word at farbase + ci with each of its three low bytes expanded to 12
  * bits (the fog band, .s 8001FE14-FE2C), or the constant fcc (the LP band
  * fades every vertex toward the one cyclorama fog colour, .s 8001FEE4-FF08).
+ * The record's material tint (moby_tint_rgb) then applies to the result.
  * @param cpu The guest CPU state, read only.
  * @param cbase The colour table.
  * @param farbase The far palette, read only when fcc is NULL and the fade is not none.
@@ -3884,11 +3936,11 @@ static int moby_fade_none(const moby_fade_t* fd) {
 static uint32_t moby_color_at(CPUState* cpu, uint32_t cbase, uint32_t farbase,
                               const int* fcc, const moby_fade_t* fd, uint32_t ci) {
     uint32_t col = cpu->read_word(cbase + ci) & 0xFFFFFFu;
-    if (moby_fade_none(fd)) return col;
-    if (fcc) return moby_fade_rgb(col, fcc[0], fcc[1], fcc[2], fd);
+    if (moby_fade_none(fd)) return moby_tint_rgb(col, fd);
+    if (fcc) return moby_tint_rgb(moby_fade_rgb(col, fcc[0], fcc[1], fcc[2], fd), fd);
     uint32_t fw = cpu->read_word(farbase + ci);
-    return moby_fade_rgb(col, (int)((fw << 4) & 0xFF0u), (int)((fw >> 4) & 0xFF0u),
-                         (int)((fw >> 12) & 0xFF0u), fd);
+    return moby_tint_rgb(moby_fade_rgb(col, (int)((fw << 4) & 0xFF0u), (int)((fw >> 4) & 0xFF0u),
+                                       (int)((fw >> 12) & 0xFF0u), fd), fd);
 }
 
 /** @brief Load a little-endian 32-bit word from host memory.
@@ -3913,11 +3965,11 @@ static inline uint32_t le32_at(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4);
 static uint32_t moby_color_at_host(const uint8_t* cb, const uint8_t* fbp,
                                    const int* fcc, const moby_fade_t* fd, uint32_t ci) {
     uint32_t col = le32_at(cb + ci) & 0xFFFFFFu;
-    if (moby_fade_none(fd)) return col;
-    if (fcc) return moby_fade_rgb(col, fcc[0], fcc[1], fcc[2], fd);
+    if (moby_fade_none(fd)) return moby_tint_rgb(col, fd);
+    if (fcc) return moby_tint_rgb(moby_fade_rgb(col, fcc[0], fcc[1], fcc[2], fd), fd);
     uint32_t fw = le32_at(fbp + ci);
-    return moby_fade_rgb(col, (int)((fw << 4) & 0xFF0u), (int)((fw >> 4) & 0xFF0u),
-                         (int)((fw >> 12) & 0xFF0u), fd);
+    return moby_tint_rgb(moby_fade_rgb(col, (int)((fw << 4) & 0xFF0u), (int)((fw >> 4) & 0xFF0u),
+                                       (int)((fw >> 12) & 0xFF0u), fd), fd);
 }
 
 /** @brief The fog band's IR0 at a ZSF4, (1024 - ZSF4) * 4 clamped to the band's CLUT-row range 0..4092.
@@ -3962,6 +4014,19 @@ static void moby_texel_fog_mix(const rec_meta* R, moby_fade_t* fd) {
     if (wq > 0) fd->tmix = (uint8_t)(((other - base + 7) << 4) | wq);
 }
 
+/** @brief Set a record's material tint in its fade from the game's material_tint hook.
+ *
+ * tint 0 when the game has no hook or the record's material word is 0 or
+ * selects no tint; a tinted record is counted into the special-face census.
+ * @param R The record.
+ * @param fd The record's fade: tint, tfc and tir0 out. */
+static void moby_fade_tint(const rec_meta* R, moby_fade_t* fd) {
+    fd->tint = 0;
+    if (!moby_game.material_tint || !R->mscol) return;
+    fd->tint = moby_game.material_tint(R->mscol, fd->tfc, &fd->tir0);
+    if (fd->tint) moby_tint_census(R);
+}
+
 /** @brief The record's per-vertex colour base and colour fade for this present, by its LOD tier.
  *
  * The ladder is documented at moby_tier_faceblock; the tier is always the
@@ -3980,7 +4045,9 @@ static void moby_texel_fog_mix(const rec_meta* R, moby_fade_t* fd) {
  * row past the 8-row fogged-CLUT ladder), the LP table toward the fog colour
  * by 2 * min(-(zf + 2048), 2047) floored at 0, the latter only while
  * g_SkipLowPolyWorld (moby_game.skip_lowpoly) > 0. Every other record runs
- * the integer path above unchanged.
+ * the integer path above unchanged. Every band then takes the material's
+ * whole-table tint when moby_game.material_tint selects one for the
+ * record's material word; fd carries it to the colour fetch.
  * @param cpu The guest CPU state, read only.
  * @param R The record.
  * @param farbase Receives the far palette the HP colours fade toward, 0 for
@@ -3999,6 +4066,7 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
     const int hdr_ok = R->header >= 0x80000000u;
     *farbase = 0; *fcc = NULL;
     fd->ir0 = 0; fd->ir0f = 0.0; fd->frac = frac; fd->row = 0; fd->tmix = 0;
+    moby_fade_tint(R, fd);
     if (R->zsf4 > 0) {
         if (!frac) {
             fd->ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, farbase);
@@ -5447,6 +5515,53 @@ static int box_pass_latched(const char** seen, int* n) {
     return 0;
 }
 
+/* One moby class's paired vertex colours on one compare pass
+ * (OPENPETE_MOBY_VERIFY_CLASS=<hex class>): the pair count, the exact count
+ * and the distinct walk->prim colour pairs, so one class's colour path is
+ * scored apart from the frame's. cls -1 = off. */
+#define CLASS_TALLY_PAIRS 8
+typedef struct {
+    int cls; long n, exact; int np;
+    uint32_t w[CLASS_TALLY_PAIRS], p[CLASS_TALLY_PAIRS]; long k[CLASS_TALLY_PAIRS];
+} class_colour_tally_t;
+/** @brief Start a class colour tally, its class read once from OPENPETE_MOBY_VERIFY_CLASS.
+ *
+ * @param t The tally, zeroed; cls -1 when the variable is unset or empty. */
+static void class_colour_tally_begin(class_colour_tally_t* t) {
+    static int s_cls = -2;
+    if (s_cls == -2) { const char* e = getenv("OPENPETE_MOBY_VERIFY_CLASS");
+                       s_cls = (e && *e) ? (int)strtol(e, NULL, 16) : -1; }
+    memset(t, 0, sizeof *t);
+    t->cls = s_cls;
+}
+/** @brief Count one paired walk/prim vertex colour into the tally when its tri's class is the tally's.
+ *
+ * The first CLASS_TALLY_PAIRS distinct colour pairs are kept with their counts.
+ * @param t The tally.
+ * @param cls The emitting moby's class.
+ * @param wrgb The walk vertex colour; the low 24 bits are compared.
+ * @param prgb The paired prim vertex colour. */
+static void class_colour_tally_add(class_colour_tally_t* t, uint16_t cls, uint32_t wrgb, uint32_t prgb) {
+    if (t->cls < 0 || cls != (uint16_t)t->cls) return;
+    uint32_t wv = wrgb & 0xFFFFFFu, pv = prgb & 0xFFFFFFu;
+    t->n++; t->exact += (wv == pv);
+    for (int q = 0; q < t->np; q++)
+        if (t->w[q] == wv && t->p[q] == pv) { t->k[q]++; return; }
+    if (t->np == CLASS_TALLY_PAIRS) return;
+    t->w[t->np] = wv; t->p[t->np] = pv; t->k[t->np++] = 1;
+}
+/** @brief Print the class colour tally line to stderr; nothing when the tally is off.
+ *
+ * @param t The tally. */
+static void class_colour_tally_report(const class_colour_tally_t* t) {
+    if (t->cls < 0) return;
+    fprintf(stderr, "[moby-walk-class %s vbl=%u cls=%03X] pairedVerts=%ld exact=%ld |",
+            s_cur_mat, openpete_frame, t->cls, t->n, t->exact);
+    for (int q = 0; q < t->np; q++)
+        fprintf(stderr, " %06X->%06X:%ld", t->w[q], t->p[q], t->k[q]);
+    fprintf(stderr, "\n");
+}
+
 /** @brief Match the walked triangles to the captured prims and print the topology and colour A/B to stderr.
  *
  * Builds the prim triangles (build_prim_tris), then assigns walk triangles to
@@ -5458,7 +5573,8 @@ static int box_pass_latched(const char** seen, int* n) {
  * nclip sign split of matched and unmatched triangles, per-vertex colour and UV
  * agreement, walk triangles that duplicate another walk triangle, the walk
  * shape counters of s_wdiag[0], and the per-channel colour error of the
- * special-material faces against their prim.
+ * special-material faces against their prim. OPENPETE_MOBY_VERIFY_CLASS adds
+ * one line scoring the paired vertex colours of one moby class.
  *
  * OPENPETE_MOBY_PRIMBOX and OPENPETE_MOBY_WALKBOX dump the prims and the walk
  * triangles with a vertex in a screen box, once per pass (box_pass_latched).
@@ -5535,6 +5651,8 @@ static void compare_walk_vs_prims(void) {
      * feeder, not read from the model, so it is priced against the prim the
      * draw emitted rather than scored pass/fail with the rest. */
     long spc_n=0, spc_sum=0, spc_max=0;
+    class_colour_tally_t vcls;
+    class_colour_tally_begin(&vcls);
     /* On-screen subset (centroid within the disp rect): the off-screen extras
      * the .s clip-rejects are scissored by panel 0 anyway, so the visually-
      * meaningful match is the on-screen one. */
@@ -5626,6 +5744,8 @@ static void compare_walk_vs_prims(void) {
                     }
                     if (bd <= 2.5*2.5 && bk >= 0) {
                         paired++;
+                        class_colour_tally_add(&vcls, s_wtri_cls[wi], w->v[kv].rgb,
+                                               s_ptri[bp].rgb[bk]);
                         if (s_wtri_special[wi] && s_wtri_special[wi] < 4u) {
                             uint32_t wv = w->v[kv].rgb & 0xFFFFFFu;
                             uint32_t pv = s_ptri[bp].rgb[bk] & 0xFFFFFFu;
@@ -5722,6 +5842,7 @@ static void compare_walk_vs_prims(void) {
         s_wdiag[0].coinc_pairs, s_wdiag[0].coinc_pulls);
     fprintf(stderr, "[moby-walk-special vbl=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
             openpete_frame, spc_n, spc_n ? (double)spc_sum/(double)spc_n : 0.0, spc_max);
+    class_colour_tally_report(&vcls);
     #undef ONSCR
 }
 

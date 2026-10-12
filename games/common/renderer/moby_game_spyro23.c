@@ -453,11 +453,40 @@ static int s23_mode0_ir0_sum(void) {
     return s >= 0 ? s : moby_game_s23.mode0_ir0_from_colour_sum;
 }
 
+/** @brief The material_tint hook: mode 3's whole-table depth cue toward the material colour.
+ *
+ * After the LOD fade has resolved the record's colour table, a material word
+ * of mode 3 (bits 28-30) DPCSes every colour of the table (count = model
+ * header byte 1) toward FC = the word's bytes 0-2 each shifted into 12 bits
+ * at IR0 = bits 24-27 shifted into 0xF00, writes the result to the scratch
+ * table at +0x1600 and draws every face from it (S2 mobydraw.s:2004-2035,
+ * S3 mobydraw.s:2000-2031, reached from the material branch after every fade
+ * band, S2 :1462-1464). The second model kind's draw has no material branch.
+ * OPENPETE_MOBY_TINT_OFF=1 skips the tint, the negative control of the colour
+ * compare.
+ * @param mat The record's material word.
+ * @param fc Receives the 12-bit far colour, R, G, B.
+ * @param ir0 Receives the IR0.
+ * @return 1 when the word selects the tint, else 0. */
+static int s23_material_tint(uint32_t mat, int fc[3], int* ir0) {
+    static int s_off = -1;
+    if (s_off < 0) { const char* e = getenv("OPENPETE_MOBY_TINT_OFF"); s_off = (e && *e && *e != '0'); }
+    if (s_off || ((mat >> 28) & 7u) != 3u) return 0;
+    fc[0] = (int)((mat <<  4) & 0xFF0u);   /* sll 4,  andi 0xFF0 -> ctc2 RFC */
+    fc[1] = (int)((mat >>  4) & 0xFF0u);   /* srl 4,  andi 0xFF0 -> ctc2 GFC */
+    fc[2] = (int)((mat >> 12) & 0xFF0u);   /* srl 12, andi 0xFF0 -> ctc2 BFC */
+    *ir0  = (int)((mat >> 16) & 0xF00u);   /* srl 16, andi 0xF00 -> mtc2 IR0 */
+    return 1;
+}
+
 /** @brief Applies the special material's treatment to one triangle's vertex colours and texture.
  *
  * The special_face hook of the animated kind. A face whose flag field selects
  * the other dispatcher (`hl` 2, bit 4) or a material whose mode (bits 28-30 of
- * `mat`, 0 for a zero word) exceeds 2 is left to the ordinary emit. Mode 0
+ * `mat`, 0 for a zero word) exceeds 2 is left to the ordinary emit: mode 3
+ * recolours the whole colour table before any face is drawn
+ * (s23_material_tint), and modes 3-7 then set the draw's mode register to 3,
+ * which no face treatment matches (mobydraw.s:1988-2003). Mode 0
  * depth-cues each vertex colour toward the material's far colour; mode 1 does
  * the same at one IR0 for the moby and also names a substitute texture page,
  * CLUT and generated environment coordinates in `tex`; mode 2 replaces all
@@ -481,7 +510,7 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
     (void)textured;   /* every treatment keeps the face's own textured flag */
     if (F->hl != 1) return 0;                      /* bit 4: the other dispatcher */
     int mode = mat ? (int)((mat >> 28) & 7u) : 0;
-    if (mode > 2) return 0;                        /* the treatment is disarmed */
+    if (mode > 2) return 0;                        /* no face treatment; mode 3 tints the table */
 
     /* The three 12-bit channels the material word carries. */
     int mc[3] = { (int)((mat <<  4) & 0xFF0u),
@@ -2211,6 +2240,7 @@ const moby_game_t moby_game_spyro23 = {
     .reveal_record      = s23_reveal_record,
     .cull_view_admits   = s23_cull_view_admits,
     .special_face      = s23_special_face,
+    .material_tint     = s23_material_tint,
     .otkey_record      = s23_otkey_record,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so
      * nothing the host widens may reach it and the walk feeds the records the
