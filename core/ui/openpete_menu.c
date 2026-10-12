@@ -21,6 +21,7 @@
 #include "no_lod.h"         /* openpete_no_lod_set */
 #include "openpete_host_input.h"     /* the published mouse snapshot */
 #include "openpete_host_mouse.h"     /* totals, ownership, probe */
+#include "openpete_devui.h"          /* ADVANCED opens the overlay */
 
 #include <math.h>
 #include <stddef.h>
@@ -30,7 +31,7 @@
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_WOBBLE, ROW_PIXEL, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM,
-       ROW_QUIT,
+       ROW_ADVANCED, ROW_QUIT,
        ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
@@ -42,7 +43,7 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "FOV", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
-    "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "EXIT GAME",
+    "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "ADVANCED", "EXIT GAME",
 };
 
 
@@ -73,6 +74,7 @@ ROW_SURFACE[ROW_FOG + 1] = {
     [ROW_DITHER]  = { "menu.dither",     "dither",           "PSX 15 BIT COLOUR AND DITHER",            1 },
     [ROW_LOD]     = { "menu.lod",        "lod",              "ORIGINAL OR FULL DETAIL AT ANY DISTANCE", 1 },
     [ROW_FREECAM] = { "menu.freecam",    "freecam",          "FLY THE CAMERA FREELY",                   0 },
+    [ROW_ADVANCED] = { "menu.advanced",  NULL,               "MORE SETTINGS AND CONTROLS",              0 },
     [ROW_QUIT]    = { "menu.quit",       NULL,               "QUIT THE GAME",                           0 },
     [ROW_COUNT]   = { NULL,              NULL,               NULL,                                      0 },
     [ROW_MODSEL]  = { "menu.modsel",     NULL,               "CHOOSE A MOD",                            0 },
@@ -301,6 +303,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return on_off(s_fog_idx);
     case ROW_FREECAM:  return on_off(s_freecam_idx);
+    case ROW_ADVANCED: return "OPEN";
     case ROW_QUIT:     return "";   /* centered: the label IS the row */
     case ROW_MODSEL: {
         const char* id = openpete_mods_id(s_modsel_idx);
@@ -347,8 +350,10 @@ static void log_state(const char* what) {
  *
  * FREECAM toggles the free camera only when the row disagrees with the live
  * state. LOD also re-reads the fog state the LOD setter resolved. EXIT
- * requests a cooperative shutdown once armed twice. DISPLAY and the mod rows
- * apply nothing here. A row whose ROW_SURFACE persist flag is set marks its
+ * requests a cooperative shutdown once armed twice. ADVANCED closes the menu
+ * and opens the dev overlay on its Controls section, or toasts NOT
+ * AVAILABLE without an overlay. DISPLAY and the mod rows apply nothing
+ * here. A row whose ROW_SURFACE persist flag is set marks its
  * knob for the settings writer, which saves it after the debounce interval,
  * on menu close or at shutdown; DISPLAY is marked too, since the writer
  * reads the window state the request has settled by then.
@@ -382,6 +387,16 @@ static void apply_row(int row) {
          * clears the latched axes, so no stale intent carries over. */
         if ((s_freecam_idx != 0) != (openpete_freecam_active() ? 1 : 0))
             openpete_freecam_toggle();
+        break;
+    case ROW_ADVANCED:
+        /* The dev overlay is the full settings UI; this row closes the menu
+         * and opens the overlay on its Controls section. */
+        if (!openpete_devui_available()) {
+            openpete_osd_notify("host", ROW_SURFACE[ROW_ADVANCED].id, 0, "NOT AVAILABLE");
+            break;
+        }
+        if (s_open) openpete_menu_toggle();
+        openpete_devui_open_section("Controls");
         break;
     case ROW_QUIT:
         /* Cooperative: the host-fiber loop drains and tears down on its next
@@ -509,9 +524,9 @@ static int64_t wheel_notches(int64_t total) {
  * The mouse poll gives these rows a left click only; a right click or a
  * wheel notch on them is ignored.
  * @param row The row index.
- * @return Non-zero for DISPLAY and EXIT. */
+ * @return Non-zero for DISPLAY, ADVANCED and EXIT. */
 static int row_action_only(int row) {
-    return row == ROW_DISPLAY || row == ROW_QUIT;
+    return row == ROW_DISPLAY || row == ROW_ADVANCED || row == ROW_QUIT;
 }
 
 /* The close glyph's drawn ink, in overlay units, as the text builder emitted
@@ -806,6 +821,12 @@ void openpete_menu_adjust(int dx) {
                 id, !openpete_mods_is_enabled(id));
         break;
     }
+    /* ADVANCED acts on any step and announces nothing: the menu closes
+     * under it and the overlay opens. */
+    case ROW_ADVANCED:
+        log_state("set");
+        apply_row(ROW_ADVANCED);
+        return;
     /* Action rows have no value to cycle - left/right are inert on them.
      * openpete_menu_activate() is the only way in. */
     case ROW_QUIT: return;

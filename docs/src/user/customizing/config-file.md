@@ -145,7 +145,14 @@ below the line
 ```
 
 Everything above that line is kept byte for byte, comments included.
-Anything written below it by hand is replaced on the next save. If the
+Anything written below it by hand is replaced on the next save. Bindings
+changed on the dev overlay's [Controls](../playing/dev-overlay.md#controls)
+section are written below the settings as `[saved.keys.pad]` and
+`[saved.keys.host]` tables in the [key binding](key-bindings.md) spelling;
+`[saved.keys]` tables already in the block, for other controllers or mods,
+are kept. A save is refused, with a **SAVE FAILED** notification, while a
+`[saved` table sits above the line, since the file would then define it
+twice. If the
 per-user file has a `[saved]` block while the save target is the shipped
 file, the per-user block outranks every later save and the log warns.
 

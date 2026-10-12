@@ -7,6 +7,7 @@
 #include "openpete_host_input.h"
 #include "openpete_input_lock.h"
 #include "openpete_keymap.h"
+#include "openpete_rebind.h"
 #include "openpete_log.h"
 #include "openpete_menu.h"
 #include "openpete_native_render.h"
@@ -88,7 +89,8 @@ static SDL_MouseID inj_mouse_id(void)
 
 typedef enum {
     INJ_MOVE, INJ_DOWN, INJ_UP, INJ_CLICK2, INJ_REL, INJ_WHEEL, INJ_MENU, INJ_CAPTURE,
-    INJ_SHOT, INJ_KEYDOWN, INJ_KEYUP, INJ_PAD
+    INJ_SHOT, INJ_KEYDOWN, INJ_KEYUP, INJ_PAD, INJ_PADAXIS, INJ_REBIND, INJ_UNBIND,
+    INJ_RESTORE
 } inj_verb_t;
 
 typedef struct {
@@ -97,7 +99,10 @@ typedef struct {
     inj_verb_t verb;
     float      a, b;
     int        button;   /* SDL_BUTTON_* for DOWN/UP/CLICK2; SDL_Scancode for KEYDOWN/KEYUP;
-                          * SDL_GamepadButton for PAD */
+                          * SDL_GamepadButton for PAD; SDL_GamepadAxis for PADAXIS;
+                          * the action for REBIND/UNBIND/RESTORE */
+    int        slot;     /* REBIND/UNBIND: the source index, -1 to add */
+    int        hold;     /* REBIND: a hold: source */
 } inj_line_t;
 
 static inj_line_t* s_inj;
@@ -131,6 +136,60 @@ static int inj_pad_button(const char* s)
     return (int)SDL_GetGamepadButtonFromString(s);
 }
 
+/** @brief Parse a `pad` line: a button name and 0|1, or an axis name and its value (-32768..32767).
+ *
+ * Either form switches the virtual pad to its scripted state at load, so it
+ * holds still from the start of the run rather than running its synthetic
+ * pattern until the first line.
+ * @param L the line; its verb, button and value fields are written.
+ * @param name the button or axis name.
+ * @param value the button state or axis value.
+ * @return 1 when the name is a button or an axis, else 0. */
+static int inj_parse_pad(inj_line_t* L, const char* name, const char* value)
+{
+    L->a = (float)atoi(value);
+    const SDL_GamepadAxis ax = SDL_GetGamepadAxisFromString(name);
+    if (ax != SDL_GAMEPAD_AXIS_INVALID) {
+        L->verb = INJ_PADAXIS;
+        L->button = (int)ax;
+        openpete_host_input_vpad_script_axis(L->button, 0);
+        return 1;
+    }
+    L->verb = INJ_PAD;
+    L->button = inj_pad_button(name);
+    if (L->button == (int)SDL_GAMEPAD_BUTTON_INVALID) return 0;
+    openpete_host_input_vpad_script_button(L->button, 0);
+    return 1;
+}
+
+/** @brief Parse a binding-page verb: rebind <domain.action> <slot|add> [hold], unbind <domain.action> <slot>, restore <domain.action>.
+ *
+ * @param L the line; its verb, action, slot and hold fields are written.
+ * @param verb the verb word.
+ * @param n the number of words read (time and verb included).
+ * @param arg1 the action, "pad.cross" or "host.pause".
+ * @param arg2 the slot, or "add".
+ * @param arg3 "hold" or empty.
+ * @return 1 when the line is valid, 0 otherwise or for another verb. */
+static int inj_parse_rebind(inj_line_t* L, const char* verb, int n, const char* arg1,
+                            const char* arg2, const char* arg3)
+{
+    const int is_rebind = !strcmp(verb, "rebind"), is_unbind = !strcmp(verb, "unbind");
+    if (!is_rebind && !is_unbind && strcmp(verb, "restore")) return 0;
+    if (n < ((is_rebind || is_unbind) ? 4 : 3)) return 0;
+    char domain[16];
+    const char* dot = strchr(arg1, '.');
+    if (!dot || (size_t)(dot - arg1) >= sizeof domain) return 0;
+    memcpy(domain, arg1, (size_t)(dot - arg1));
+    domain[dot - arg1] = '\0';
+    L->button = openpete_keymap_find_action(domain, dot + 1);
+    if (L->button < 0) return 0;
+    L->verb = is_rebind ? INJ_REBIND : is_unbind ? INJ_UNBIND : INJ_RESTORE;
+    L->slot = (!strcmp(arg2, "add") || !*arg2) ? -1 : atoi(arg2);
+    L->hold = !strcmp(arg3, "hold");
+    return 1;
+}
+
 /** @brief Parse a script line's verb and arguments into its injection line.
  *
  * One arm per verb of the OPENPETE_MOUSE_INJECT grammar (see inj_load). A
@@ -141,10 +200,12 @@ static int inj_pad_button(const char* s)
  * @param n the number of words sscanf read (time and verb included).
  * @param arg1 the first argument word.
  * @param arg2 the second argument word.
+ * @param arg3 the third argument word.
  * @return 1 when the verb, its arity and its arguments are valid, else 0. */
 static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
-                          const char* arg1, const char* arg2)
+                          const char* arg1, const char* arg2, const char* arg3)
 {
+    if (inj_parse_rebind(L, verb, n, arg1, arg2, arg3)) return 1;
     int ok = 1;
     if (!strcmp(verb, "move") && n == 4) {
         L->verb = INJ_MOVE; L->a = strtof(arg1, NULL); L->b = strtof(arg2, NULL);
@@ -170,13 +231,7 @@ static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
         L->button = (int)SDL_GetScancodeFromName(arg1);
         ok = L->button != (int)SDL_SCANCODE_UNKNOWN;
     } else if (!strcmp(verb, "pad") && n == 4) {
-        L->verb = INJ_PAD;
-        L->button = inj_pad_button(arg1);
-        L->a = (float)atoi(arg2);
-        ok = L->button != (int)SDL_GAMEPAD_BUTTON_INVALID;
-        /* A scripted pad holds still from the start of the run rather
-         * than running its synthetic pattern until the first line. */
-        if (ok) openpete_host_input_vpad_script_button(L->button, 0);
+        ok = inj_parse_pad(L, arg1, arg2);
     } else {
         ok = 0;
     }
@@ -188,8 +243,11 @@ static int inj_parse_verb(inj_line_t* L, const char* verb, int n,
  * A line is `<when> <verb> [args]`; text from `#` to the end of the line is a
  * comment. `<when>` is a pump iteration or `<n>ms`. The verbs are move x y, rel
  * dx dy, down|up|click2 button, wheel notches, menu 0|1, capture 0|1, shot,
- * keydown|keyup with an SDL scancode name, and pad with an SDL gamepad button
- * name and 0|1 (the first OPENPETE_INPUT_VGAMEPAD virtual pad). A line with a bad time, verb, arity
+ * keydown|keyup with an SDL scancode name, pad with an SDL gamepad button
+ * name and 0|1 or an SDL gamepad axis name and its value (the first
+ * OPENPETE_INPUT_VGAMEPAD virtual pad), and the binding page's requests:
+ * rebind <domain.action> <slot|add> [hold], unbind <domain.action> <slot>
+ * and restore <domain.action>. A line with a bad time, verb, arity
  * or button name is logged and skipped. An unreadable file is logged and loads
  * nothing. Growth stops at the first failed allocation, keeping the lines
  * already read. Lines are read into a 256-byte buffer, so a longer line is
@@ -207,10 +265,10 @@ static void inj_load(const char* path)
     int lineno = 0;
     while (fgets(line, sizeof line, f)) {
         lineno++;
-        char when[24] = {0}, verb[16] = {0}, arg1[32] = {0}, arg2[32] = {0};
+        char when[24] = {0}, verb[16] = {0}, arg1[32] = {0}, arg2[32] = {0}, arg3[32] = {0};
         char* hash = strchr(line, '#');
         if (hash) *hash = '\0';
-        int n = sscanf(line, "%23s %15s %31s %31s", when, verb, arg1, arg2);
+        int n = sscanf(line, "%23s %15s %31s %31s %31s", when, verb, arg1, arg2, arg3);
         if (n < 2) continue;   /* blank or comment */
         inj_line_t L;
         memset(&L, 0, sizeof L);
@@ -230,7 +288,7 @@ static void inj_load(const char* path)
                 continue;
             }
         }
-        const int ok = inj_parse_verb(&L, verb, n, arg1, arg2);
+        const int ok = inj_parse_verb(&L, verb, n, arg1, arg2, arg3);
         if (!ok) {
             OPL_ERROR_F("mouse", "OPENPETE_MOUSE_INJECT: %s:%d: bad line: %s",
                         path, lineno, line);
@@ -387,6 +445,12 @@ static void inj_step(unsigned iter)
         case INJ_PAD:
             openpete_host_input_vpad_script_button(L->button, L->a != 0.0f);
             break;
+        case INJ_PADAXIS:
+            openpete_host_input_vpad_script_axis(L->button, (int)L->a);
+            break;
+        case INJ_REBIND: openpete_rebind_request_capture(L->button, L->slot, L->hold); break;
+        case INJ_UNBIND: openpete_rebind_request_remove(L->button, L->slot); break;
+        case INJ_RESTORE: openpete_rebind_request_restore(L->button); break;
         }
         if (s_probe)
             OPL_INFO_F("mouse", "inject iter=%u ms=%u line=%d verb=%d", iter, ms,
@@ -736,6 +800,7 @@ int openpete_host_mouse_take_screenshot_request(void)
 int openpete_host_mouse_double_click_allowed(void)
 {
     return !openpete_menu_is_open()
+        && !openpete_keymap_capture_active()
         && !openpete_host_mouse_capture_requested()
         && !openpete_keymap_mouse_left_bound();
 }

@@ -56,6 +56,7 @@
 #include "openpete_fillpick.h"
 #include "openpete_keymap.h"  /* [keys] - every host hotkey below */
 #include "openpete_osd.h"     /* toast the changes the player makes */
+#include "openpete_rebind.h"  /* the binding page: drain, pad restamp */
 #include "feature_registry.h"
 #include "openpete_mods.h"
 #include "openpete_vstream.h"
@@ -76,6 +77,7 @@
 #include <math.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -371,6 +373,27 @@ static SDL_AtomicInt g_sim_teardown;
 /** @brief Report teardown progress to the pump's liveness check: one heartbeat. */
 static void sim_teardown_progress(void) { SDL_AddAtomicInt(&g_sim_heartbeat, 1); }
 
+/** @brief Take a key event while a binding capture owns the keyboard.
+ *
+ * From the capture's start until the inputs it latched are released,
+ * Escape posts the cancel (the key is latched so the poll does not also
+ * fire Escape's binding), the quit test is skipped, and no key event or
+ * repeat reaches PsyCross's debug keys, so Backspace stays capturable.
+ * @param ev the event.
+ * @return true when the event is a key event the capture owns. */
+static bool capture_owns_key_event(const SDL_Event* ev) {
+    if ((ev->type != SDL_EVENT_KEY_DOWN && ev->type != SDL_EVENT_KEY_UP) ||
+        !openpete_keymap_capture_active())
+        return false;
+    if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat &&
+        ev->key.scancode == SDL_SCANCODE_ESCAPE &&
+        KM_CAPWORD_STATE(openpete_keymap_capture_word()) != KM_CAP_IDLE) {
+        openpete_keymap_consume_key(ev->key.scancode);
+        openpete_rebind_request_cancel("escape");
+    }
+    return true;
+}
+
 /** @brief Stall teardown for OPENPETE_TEARDOWN_STALL_MS milliseconds with no heartbeat.
  *
  * A fault-injection knob for the quit watchdog: it stands in for a
@@ -524,6 +547,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
      * from a controller-emulation layer can quit; `quit = "none"` unbinds
      * it (see km_sdl_key_down in keymap_sdl.c). The window-close path above
      * quits regardless of any binding. */
+    if (capture_owns_key_event(ev)) return false;
     if (ev->type == SDL_EVENT_KEY_DOWN) {
         const bool esc = (ev->key.scancode == SDL_SCANCODE_ESCAPE);
 
@@ -1140,33 +1164,37 @@ extern SDL_Window* g_window;
  *
  * PsyCross reads both exported structs on every internal pad update and
  * fills them only from its hardcoded table in PsyX_Sys_InitialiseInput, so
- * the callers run this right after PsyX_Initialise. Each field holds one
- * keyboard scancode or one gamepad button or axis: an action bound to
- * several of either keeps the first and warns about the rest; lifting that
- * limit means synthesizing the pad bits through g_PsyX_Pad_InputOverride,
- * which is on the replay path. An unbound half is set to PsyCross's unbound
- * value (SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_INVALID) so a PsyCross
- * default does not stay bound beside it. The four WASD stick directions take
- * a keyboard key only, since they share the gc_axis_left_* fields; the four
- * stick axes take a gamepad axis only. The stamp covers player 1: players
- * 2-4 decode through the shared controller mapping, and a row bound under
- * [keys.pad2..4] draws a warning that it does not re-map that player. */
-static void stamp_psx_pad_bindings(void) {
-    /* Every field of both structs, paired with the action that feeds it.
-     * A table rather than 20 assignments so a new pad action is one row. */
+ * the boot stamp runs right after PsyX_Initialise; a binding edit restamps
+ * on the thread that samples the pad (pad_restamp_if_due), the structs'
+ * only reader. Each field holds one keyboard scancode or one gamepad button
+ * or axis; the field shape of each action is the keymap's table
+ * (openpete_keymap_pad_shape), which the binding page admits by: one key
+ * and one pad source per button, a key only for the four WASD stick
+ * directions (they share the gc_axis_left_* fields), and one gamepad axis
+ * for the four stick axes. A source the shape has no field for is ignored.
+ * An unbound field is set to PsyCross's unbound value
+ * (SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_INVALID,
+ * SDL_GAMEPAD_AXIS_INVALID), so a removed source unbinds live. The stamp
+ * covers player 1: players 2-4 decode through the shared controller
+ * mapping.
+ * @param warn nonzero at boot: warn about ignored sources and [keys.pad2..4]
+ *        rows. */
+static void stamp_psx_pad_bindings(int warn) {
+    /* Every field of both structs, paired with the action that feeds it;
+     * SIZE_MAX marks the half an action's shape has no field for. */
     static const struct {
         openpete_action_t action;
         size_t kbd_off;    /* offset into PsyXKeyboardMapping */
         size_t pad_off;    /* offset into PsyXControllerMapping */
-        int    kbd_only;   /* pad_off is shared with another row: don't write */
         const char* name;
     } map[] = {
 #define KM_PAD_FIELD(act, kfield, gfield, nm) \
         { act, offsetof(PsyXKeyboardMapping, kfield), \
-               offsetof(PsyXControllerMapping, gfield), 0, nm }
-#define KM_PAD_KEYONLY(act, kfield, gfield, nm) \
-        { act, offsetof(PsyXKeyboardMapping, kfield), \
-               offsetof(PsyXControllerMapping, gfield), 1, nm }
+               offsetof(PsyXControllerMapping, gfield), nm }
+#define KM_PAD_KEY(act, kfield, nm) \
+        { act, offsetof(PsyXKeyboardMapping, kfield), SIZE_MAX, nm }
+#define KM_PAD_AXIS(act, gfield, nm) \
+        { act, SIZE_MAX, offsetof(PsyXControllerMapping, gfield), nm }
         KM_PAD_FIELD(OPK_PAD_CROSS,      kc_cross,      gc_cross,      "cross"),
         KM_PAD_FIELD(OPK_PAD_CIRCLE,     kc_circle,     gc_circle,     "circle"),
         KM_PAD_FIELD(OPK_PAD_SQUARE,     kc_square,     gc_square,     "square"),
@@ -1183,15 +1211,16 @@ static void stamp_psx_pad_bindings(void) {
         KM_PAD_FIELD(OPK_PAD_DPAD_DOWN,  kc_dpad_down,  gc_dpad_down,  "dpad_down"),
         KM_PAD_FIELD(OPK_PAD_DPAD_LEFT,  kc_dpad_left,  gc_dpad_left,  "dpad_left"),
         KM_PAD_FIELD(OPK_PAD_DPAD_RIGHT, kc_dpad_right, gc_dpad_right, "dpad_right"),
-        /* The WASD-as-left-stick synthesis. Keyboard-only: all four share
-         * the two gc_axis_left_* fields with each other and with the
-         * left_x / left_y actions below, so a pad source here would fight
-         * its opposite number. Bind the stick itself with pad.left_x. */
-        KM_PAD_KEYONLY(OPK_PAD_STICK_UP,    kc_axis_left_up,    gc_axis_left_y, "stick_up"),
-        KM_PAD_KEYONLY(OPK_PAD_STICK_DOWN,  kc_axis_left_down,  gc_axis_left_y, "stick_down"),
-        KM_PAD_KEYONLY(OPK_PAD_STICK_LEFT,  kc_axis_left_left,  gc_axis_left_x, "stick_left"),
-        KM_PAD_KEYONLY(OPK_PAD_STICK_RIGHT, kc_axis_left_right, gc_axis_left_x, "stick_right"),
-#undef KM_PAD_KEYONLY
+        KM_PAD_KEY(OPK_PAD_STICK_UP,     kc_axis_left_up,    "stick_up"),
+        KM_PAD_KEY(OPK_PAD_STICK_DOWN,   kc_axis_left_down,  "stick_down"),
+        KM_PAD_KEY(OPK_PAD_STICK_LEFT,   kc_axis_left_left,  "stick_left"),
+        KM_PAD_KEY(OPK_PAD_STICK_RIGHT,  kc_axis_left_right, "stick_right"),
+        KM_PAD_AXIS(OPK_PAD_LEFT_X,  gc_axis_left_x,  "left_x"),
+        KM_PAD_AXIS(OPK_PAD_LEFT_Y,  gc_axis_left_y,  "left_y"),
+        KM_PAD_AXIS(OPK_PAD_RIGHT_X, gc_axis_right_x, "right_x"),
+        KM_PAD_AXIS(OPK_PAD_RIGHT_Y, gc_axis_right_y, "right_y"),
+#undef KM_PAD_AXIS
+#undef KM_PAD_KEY
 #undef KM_PAD_FIELD
     };
 
@@ -1199,80 +1228,56 @@ static void stamp_psx_pad_bindings(void) {
     unsigned char* pad = (unsigned char*)&g_cfg_controllerMapping;
 
     for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
+        const km_pad_shape_t shape = openpete_keymap_pad_shape(map[i].action);
         km_source_t src[KM_MAX_SOURCES];
         int n = openpete_keymap_sources(map[i].action, src, KM_MAX_SOURCES);
-        int have_kbd = 0, have_pad = 0;
+        int have_kbd = 0, have_pad = 0, ignored = 0;
 
         for (int s = 0; s < n; s++) {
-            if (src[s].kind == KM_SRC_KEY) {
-                if (have_kbd++) continue;
+            const int is_key = src[s].kind == KM_SRC_KEY;
+            const int fits = is_key ? shape != KM_PADSHAPE_AXIS_ONLY
+                           : shape == KM_PADSHAPE_KEY_AND_PAD ||
+                             (shape == KM_PADSHAPE_AXIS_ONLY && src[s].kind == KM_SRC_PADAXIS);
+            if (!fits) { ignored++; continue; }
+            if (is_key) {
+                if (have_kbd++) { ignored++; continue; }
                 *(int*)(kbd + map[i].kbd_off) = src[s].code;
-            } else {
-                if (map[i].kbd_only) {
-                    OPL_WARN_F("keys", "pad.%s takes a keyboard key only "
-                               "(bind the stick itself with pad.left_x / "
-                               "pad.left_y)", map[i].name);
-                    continue;
-                }
-                if (have_pad++) continue;
-                int code = src[s].code;
-                if (src[s].kind == KM_SRC_PADAXIS) {
-                    code |= CONTROLLER_MAP_FLAG_AXIS;
-                    if (src[s].invert < 0) code |= CONTROLLER_MAP_FLAG_INVERSE;
-                }
-                *(int*)(pad + map[i].pad_off) = code;
+                continue;
             }
+            if (have_pad++) { ignored++; continue; }
+            int code = src[s].code;
+            if (src[s].kind == KM_SRC_PADAXIS) {
+                code |= CONTROLLER_MAP_FLAG_AXIS;
+                if (src[s].invert < 0) code |= CONTROLLER_MAP_FLAG_INVERSE;
+            }
+            *(int*)(pad + map[i].pad_off) = code;
         }
         /* An unbound half must be cleared, not left at PsyCross's default -
          * otherwise `cross = "pad:south"` would silently keep C bound too.
-         * Both sentinels are PsyCross's own "NONE" values, the ones
-         * PsyX_LookupKeyboardMapping / PsyX_LookupGameControllerMapping
-         * hand back, so its readers already treat them as unbound: scancode
-         * 0 indexes a key that is never down, and button -1 matches no
-         * gamepad binding and reads 0. */
-        if (!have_kbd) *(int*)(kbd + map[i].kbd_off) = SDL_SCANCODE_UNKNOWN;
-        if (!have_pad && !map[i].kbd_only)
-            *(int*)(pad + map[i].pad_off) = SDL_GAMEPAD_BUTTON_INVALID;
+         * The sentinels are PsyCross's own "NONE" values: scancode 0
+         * indexes a key that is never down, and -1 (button or axis) reads
+         * 0 in GetControllerButtonState. */
+        if (!have_kbd && map[i].kbd_off != SIZE_MAX)
+            *(int*)(kbd + map[i].kbd_off) = SDL_SCANCODE_UNKNOWN;
+        if (!have_pad && map[i].pad_off != SIZE_MAX)
+            *(int*)(pad + map[i].pad_off) = shape == KM_PADSHAPE_AXIS_ONLY
+                                              ? (int)SDL_GAMEPAD_AXIS_INVALID
+                                              : (int)SDL_GAMEPAD_BUTTON_INVALID;
 
-        if (have_kbd > 1 || have_pad > 1)
-            OPL_WARN_F("keys", "pad.%s: PsyCross holds one keyboard and one "
-                       "gamepad binding per button; the extra source%s "
-                       "%s ignored", map[i].name,
-                       (have_kbd + have_pad > 3) ? "s" : "",
-                       (have_kbd + have_pad > 3) ? "are" : "is");
-    }
-
-    /* The four analog-stick axes are their own actions, and unlike the
-     * buttons they only accept a gamepad axis. */
-    static const struct { openpete_action_t action; size_t off; const char* name; }
-    axes[] = {
-        { OPK_PAD_LEFT_X,  offsetof(PsyXControllerMapping, gc_axis_left_x),  "left_x"  },
-        { OPK_PAD_LEFT_Y,  offsetof(PsyXControllerMapping, gc_axis_left_y),  "left_y"  },
-        { OPK_PAD_RIGHT_X, offsetof(PsyXControllerMapping, gc_axis_right_x), "right_x" },
-        { OPK_PAD_RIGHT_Y, offsetof(PsyXControllerMapping, gc_axis_right_y), "right_y" },
-    };
-    for (size_t i = 0; i < sizeof axes / sizeof axes[0]; i++) {
-        km_source_t src[KM_MAX_SOURCES];
-        int n = openpete_keymap_sources(axes[i].action, src, KM_MAX_SOURCES);
-        int done = 0;
-        for (int s = 0; s < n && !done; s++) {
-            if (src[s].kind != KM_SRC_PADAXIS) {
-                OPL_WARN_F("keys", "pad.%s needs a gamepad axis "
-                           "(e.g. \"pad:leftx\"); ignoring", axes[i].name);
-                continue;
-            }
-            int code = src[s].code | CONTROLLER_MAP_FLAG_AXIS;
-            if (src[s].invert < 0) code |= CONTROLLER_MAP_FLAG_INVERSE;
-            *(int*)(pad + axes[i].off) = code;
-            done = 1;
-        }
+        if (warn && ignored)
+            OPL_WARN_F("keys", "pad.%s: PsyCross holds %s; %d source%s ignored",
+                       map[i].name,
+                       shape == KM_PADSHAPE_KEY_ONLY ? "one keyboard key here"
+                       : shape == KM_PADSHAPE_AXIS_ONLY ? "one gamepad axis here"
+                       : "one keyboard and one gamepad binding per button",
+                       ignored, ignored > 1 ? "s" : "");
     }
 
     /* Players 2-4 have working pads without any binding here, but their
      * decode still runs the shared controller merge, so a row bound under
      * [keys.pad2..4] does not yet change what that player's buttons do.
      * Only say so if the user actually bound something there. */
-    for (int a = OPK_PAD2_CROSS; a < OPK_ACTION_COUNT; a++) {
+    for (int a = OPK_PAD2_CROSS; warn && a < OPK_ACTION_COUNT; a++) {
         km_source_t src[KM_MAX_SOURCES];
         if (openpete_keymap_sources((openpete_action_t)a, src, KM_MAX_SOURCES)) {
             OPL_WARN_F("keys", "[keys.pad2..4] rows are parsed but do not "
@@ -1282,6 +1287,27 @@ static void stamp_psx_pad_bindings(void) {
         }
     }
 }
+
+/** @brief Restamp PsyCross's pad maps when a binding edit changed a player-1 pad action since this thread last stamped.
+ *
+ * Runs on the thread about to sample the pad (main's pump loop under the
+ * thread split, the host loop unsplit and on the legacy path), so the
+ * mapping structs have one reader and one writer on one thread. Counts the
+ * restamp per thread for the exit summary.
+ * @param on_main nonzero on main's pump loop. */
+static void pad_restamp_if_due(int on_main) {
+    static unsigned s_stamped_main, s_stamped_host;
+    unsigned* stamped = on_main ? &s_stamped_main : &s_stamped_host;
+    const unsigned gen = openpete_rebind_restamp_generation();
+    if (gen == *stamped) return;
+    *stamped = gen;
+    stamp_psx_pad_bindings(0);
+    openpete_rebind_count_restamp(on_main);
+    OPL_INFO_F("keys", "pad restamp on %s (generation %u)", on_main ? "main" : "host", gen);
+}
+#else
+/** @brief Without PsyCross there are no pad maps to restamp. */
+static void pad_restamp_if_due(int on_main) { (void)on_main; }
 #endif
 
 /** @brief Open the sector image behind --disc as the session's disc and attach the disc cache to it.
@@ -1442,7 +1468,7 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
 
     /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
      * them with the resolved [keys.pad] bindings. */
-    stamp_psx_pad_bindings();
+    stamp_psx_pad_bindings(1);
 
     /* Wire PsyCross's CDFS to the disc image so CdRead has real data.
      * Without --disc CdRead returns failure, which the leaf smoke test
@@ -2973,7 +2999,7 @@ static int run_host_init(const openpete_options_t* opts) {
 
     /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
      * them with the resolved [keys.pad] bindings. */
-    stamp_psx_pad_bindings();
+    stamp_psx_pad_bindings(1);
 
     /* The gamepad subsystem is up now, which is the earliest point a mapping
      * can be added and the latest one at which it still reaches a pad that
@@ -3448,7 +3474,9 @@ static bool bk2_frame_in_range(bool active, unsigned frame, int offset, int coun
 
 /** @brief Hold player 1's pad neutral while an overlay owns it, through the override channel.
  *
- * The settings menu owns the pad while open; the dev overlay while imgui
+ * The settings menu owns the pad while open; a binding capture from its
+ * start until the inputs it latched are released
+ * (openpete_keymap_capture_neutral); the dev overlay while imgui
  * owns the keyboard (a text field or navigation focus, so typed characters
  * cannot reach the PSX pad through PsyCross's keyboard map) or navigates
  * with the pad (an overlay window holds navigation focus, so the buttons
@@ -3465,7 +3493,8 @@ static bool bk2_frame_in_range(bool active, unsigned frame, int offset, int coun
 static bool overlay_pad_stamp(bool bk2_active, bool bk2_in_range, bool* prev_hold) {
     const bool hold = openpete_menu_is_open() ||
                       openpete_devui_wants_keyboard() ||
-                      openpete_devui_padnav_engaged();
+                      openpete_devui_padnav_engaged() ||
+                      openpete_keymap_capture_neutral();
     const bool was = *prev_hold;
     *prev_hold = hold;
     if (hold && !bk2_in_range) {
@@ -3484,8 +3513,12 @@ static bool overlay_pad_stamp(bool bk2_active, bool bk2_in_range, bool* prev_hol
  * freecam or other pad-bound action, and the freecam axes are zeroed as
  * the settings menu zeroes them. `devui` and the KM_CTX_DEVUI actions are
  * exempt (devui_suspend_exempt), except from the keyboard suspension while
- * a text field takes input, which swallows every key. Esc-close works
- * through the event pump. */
+ * a text field takes input, which swallows every key. While the settings
+ * menu is open every live pad source outside the menu's own actions and
+ * the overlay toggles (openpete_keymap_menu_pad_exempt) is suspended the
+ * same way, so a hold: pad hotkey sharing a button with menu navigation
+ * never fires in the menu. A binding capture zeroes the freecam axes too.
+ * Esc-close works through the event pump. */
 static void overlay_input_suspend(void) {
     int n_exempt = 0;
     const openpete_action_t* exempt = devui_suspend_exempt(&n_exempt);
@@ -3493,8 +3526,17 @@ static void overlay_input_suspend(void) {
     openpete_keymap_suspend_keyboard(
         openpete_devui_wants_keyboard() ? 1 : 0,
         openpete_devui_wants_text_input() ? NULL : exempt, n_exempt);
-    openpete_keymap_suspend_pad(padnav ? 1 : 0, exempt, n_exempt);
-    if (!padnav || !(openpete_freecam_active() || openpete_camlock_active()))
+    if (padnav) {
+        openpete_keymap_suspend_pad(1, exempt, n_exempt);
+    } else if (openpete_menu_is_open()) {
+        int n_menu = 0;
+        const openpete_action_t* menu_ex = openpete_keymap_menu_pad_exempt(&n_menu);
+        openpete_keymap_suspend_pad(1, menu_ex, n_menu);
+    } else {
+        openpete_keymap_suspend_pad(0, NULL, 0);
+    }
+    const bool zero = padnav || openpete_keymap_capture_neutral();
+    if (!zero || !(openpete_freecam_active() || openpete_camlock_active()))
         return;
     openpete_freecam_axes ax = {0};
     openpete_freecam_set_axes(&ax);
@@ -4822,7 +4864,10 @@ static int run_host_loop(const openpete_options_t* opts) {
          * this must run before the first hotkey test, and the turbo peek at
          * the top of the loop deliberately sees the previous sample.
          * openpete_handle_event consumes QUIT/CLOSE/ESC without forwarding
-         * them, so PsyCross's exit-on-quit path never fires. */
+         * them, so PsyCross's exit-on-quit path never fires. The binding
+         * page's requests apply first, so a capture's Escape cancel and its
+         * commit land between two polls. */
+        openpete_rebind_drain();
         openpete_keymap_poll();
         if (openpete_host_mouse_probe()) {
             /* Across an ownership change the poll's markers show the snap:
@@ -5200,6 +5245,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * pumps and decodes, and the override channel carries only what
              * bk2/menu/devui stamped. The two paths must produce identical
              * gameplay for any input the host is not driving. */
+            pad_restamp_if_due(0);
             PsyX_UpdateInput();
         } else {
             /* Under the thread split main owns the pump, the SDL-state
@@ -5213,6 +5259,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * and this iteration's consumers see current state rather than
                  * the pre-pump snapshot taken above. */
                 openpete_host_input_publish_sdl();
+                pad_restamp_if_due(0);
                 openpete_host_input_sample(
                     (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
             }
@@ -6975,6 +7022,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     sim_teardown_progress();
     sim_teardown_injected_stall();
     openpete_settings_save_flush("shutdown");   /* changes still inside the debounce */
+    openpete_rebind_log_summary();
 
     if (bk2_active) {
         bk2_movie_free(&bk2);
@@ -7561,6 +7609,7 @@ static int run_split_threaded(const openpete_options_t* opts)
         openpete_pump_events();
         const int64_t hp_pumped = (int64_t)op_now();
         openpete_host_input_publish_sdl();
+        pad_restamp_if_due(1);
         openpete_host_input_sample(
             (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
         const int64_t hp_input = (int64_t)op_now();

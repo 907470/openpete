@@ -1,7 +1,9 @@
 # Key bindings
 
 Every key and pad button OpenPete reads is rebindable in
-[`openpete.toml`](config-file.md), in four tables:
+[`openpete.toml`](config-file.md), in four tables, or, for the first
+controller and OpenPete's keys, on the [dev overlay](../playing/dev-overlay.md#controls)'s
+**Controls** section, which writes the file's `[saved.keys]` block:
 
 | Table | Holds |
 | --- | --- |
@@ -160,7 +162,11 @@ own file to use it.
 
 Two actions may share a key when they are never live at the same moment:
 the arrow keys drive both the d-pad and the settings menu, and ++w++ ++a++
-++s++ ++d++ drive both the left stick and the free camera. `--keys-report`
+++s++ ++d++ drive both the left stick and the free camera. A `hold:`
+controller source on one of OpenPete's keys may share its button with the
+PlayStation pad (a tap reaches the game) and with the settings menu's and
+dev overlay's navigation (a held button acts only as navigation while
+either is open); `menu` and `devui` share Start and Back this way. `--keys-report`
 lists intended overlaps under "shared inputs". The log warns about a source
 bound to two actions that can be live at the same moment, and about a
 required action, such as `menu`, left with no binding.

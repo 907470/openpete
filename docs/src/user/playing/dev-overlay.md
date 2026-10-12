@@ -62,6 +62,7 @@ closed; click a title to open it.
 | Gameplay, Audio (collapsed) | Mute, SFX volume, Music volume |
 | Gameplay, Input (collapsed) | Vibration, Mouse sensitivity |
 | Gameplay, Cheats (collapsed) | one button per cheat, on games that have them |
+| Controls (collapsed) | every binding of the PlayStation pad in port 1 and of OpenPete's keys; see [below](#controls) |
 | Mods | one row per installed mod |
 | Info (collapsed) | the launch-only rows: Skip to level, Skip to cutscene, Skip to sub-area, Freecam pose, Player pose, bk2 replay, bk2 frame offset, bk2 recording, Renderer, Extraction threads, Window size |
 | Info, Paths (collapsed) | every path and memory card row |
@@ -112,6 +113,49 @@ view, and lets it fly with the free camera keys, while the game keeps running
 underneath: cutscenes play on. It changes only the picture, not the game.
 Turning it on turns the free camera off. It has no row in the panel; its
 key, `camlock`, is unbound unless configured <!-- id: key:host.camlock -->.
+
+## Controls
+
+The **Controls** section edits key and button bindings in place of
+`[keys.pad]` and `[keys.host]` lines in [`openpete.toml`](../customizing/key-bindings.md).
+**ADVANCED** in the [settings menu](settings-menu.md#advanced) opens the
+overlay on this section.
+
+**Player 1** lists the PlayStation pad in port 1; **Hotkeys** lists
+OpenPete's own keys, grouped by when they are read. Each row shows the
+action, one button per bound input and:
+
+| Control | Does |
+| --- | --- |
+| an input's button | replace that input with the next one pressed |
+| **x** beside it | remove that input |
+| **+** | add an input (an action holds up to four) |
+| **+ hold** | add an input that acts only after a half-second hold; OpenPete's keys only |
+| **Reset** | return to the binding below the saved one (the file's own line, or the default); its tooltip names it |
+
+After a click a prompt asks for the input: a key, a controller button or
+trigger, a mouse button pressed inside the prompt, or a wheel notch. A stick
+or mouse movement is taken only on a stick or look action, in the positive
+direction. ++esc++, a click outside the prompt, or 5 seconds without input
+cancels; ++esc++ itself cannot be assigned here (it can in the file). The
+input is assigned when it is released.
+
+An input another action already uses moves: the two actions swap, and a
+notification names the action that changed. A controller button the
+PlayStation pad uses binds one of OpenPete's in-play keys only through
+**+ hold**: a tap still reaches the game, and the key acts on a
+half-second hold. While the settings menu or this overlay is open, a held
+button acts only as their navigation. A change is refused, with the reason
+shown, when it would leave the settings menu or this overlay without a
+controller button, when the PlayStation pad cannot hold it (one key and one
+controller input per button, a key only for `stick_up` ... `stick_right`, a
+stick only for `left_x` ... `right_y`), or when the key cannot be written
+back to the file (++comma++ and **Keypad ,**).
+
+A change to **Player 1** re-maps every connected controller that has no
+`[keys.padN]` lines of its own. Players 2 to 4 and mod keys are edited in
+the file. Each change is saved to the `[saved.keys]` block of the config
+file half a second later; see [Saved settings](../customizing/config-file.md#saved-settings).
 
 ## Cheat buttons
 

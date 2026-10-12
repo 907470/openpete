@@ -1336,6 +1336,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Binding page gate: captures, swaps, restores and refusals driven by the
+    # injection script's rebind verbs and the virtual pad, [saved.keys] rows
+    # written through the settings writer, port-0 records held neutral
+    # through a capture and its latched inputs, replay and record identity,
+    # and the mutation controls that must fail. Exit 2 when a leg's capture
+    # did not engage.
+    add_test(NAME rebind
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_rebind.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(rebind PROPERTIES
+        LABELS "slow;input"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Performance benchmark pipeline smoke - replays a few bk2 movies through
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the

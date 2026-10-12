@@ -269,6 +269,14 @@ int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
  *         write failed. */
 int knob_registry_save_ids(const char *const *ids, int n);
 
+/** @brief Settle knob ids into the in-memory [saved] zone as knob_registry_save_ids does, without writing the file.
+ *
+ * The settings writer settles knobs and bindings and then writes once.
+ * @param ids Knob registry ids.
+ * @param n Number of ids.
+ * @return The number of rows settled. */
+int knob_registry_settle_ids(const char *const *ids, int n);
+
 /** @brief Re-stamp the boot values of the rows that settle after knob_registry_init.
  *
  * The pacer resolves the render_fps target, tick_scale and the gated

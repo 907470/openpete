@@ -152,6 +152,14 @@ int  openpete_devui_is_open(void);
  * later frame still runs while the inspector or an always mod section is up. */
 void openpete_devui_close(void);
 
+/** @brief Open the config panel with one section expanded and scrolled into view.
+ *
+ * Host loop: sets the open flag and posts a one-shot request the next
+ * panel frame consumes. Logs "open section <title>" here and "section
+ * <title> expanded" when the frame consumes it. No-op before init.
+ * @param title the section's header title ("Controls"). */
+void openpete_devui_open_section(const char *title);
+
 /** @brief Run the overlay's host-loop input step: the `devui` toggle and the pad navigation snapshot.
  *
  * Call once per host-loop iteration after openpete_keymap_poll. A press of

@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: c04885f8f1ea8cc7c0d9560c55fcbd435d234369
+# head: ab4ead7724e6f9563f3ded2182ab0127de339fcc
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -26,13 +26,12 @@ core/host/texture_pack.c	texture_pack_grade_fit	48	0
 core/host/texture_pack.c	texture_pack_match_locked	52	0	
 core/host/texture_pack.c	tp_census_report	67	0	
 core/input/host_input.c	vgamepad_maybe_attach	29	0	
-core/input/host_mouse.c	inj_parse_verb	29	0	
+core/input/host_mouse.c	inj_parse_verb	28	0	
 core/input/host_mouse.c	openpete_host_mouse_handle_event	27	0	
 core/input/keymap.c	km_parse_token	52	0	
 core/input/keymap.c	openpete_keymap_mod_effective_key	33	0	
 core/input/keymap.c	openpete_keymap_report	30	0	
-core/input/keymap.c	openpete_keymap_resolve	57	0	
-core/input/keymap.c	openpete_keymap_set	32	0	
+core/input/keymap.c	openpete_keymap_resolve	43	0	
 core/mods/mod_config.c	cfgw_apply_one	126	0	
 core/mods/mod_loader.c	mods_discover	44	0	
 core/mods/mod_loader.c	openpete_mods_init	64	0	
@@ -94,8 +93,8 @@ core/runtime/run.c	eager_plan	56	0
 core/runtime/run.c	gameplay_hash_compute_ex	81	0	
 core/runtime/run.c	openpete_run	38	0	
 core/runtime/run.c	run_host_init	89	0	
-core/runtime/run.c	run_host_loop	1254	0	
-core/runtime/run.c	stamp_psx_pad_bindings	49	0	
+core/runtime/run.c	run_host_loop	1253	0	
+core/runtime/run.c	stamp_psx_pad_bindings	44	0	
 core/ui/devui.cpp	draw_custom_level_rows	26	0	
 core/ui/devui.cpp	draw_mod_config_rows	76	0	
 core/ui/devui.cpp	draw_mod_row	26	0	

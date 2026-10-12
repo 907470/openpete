@@ -245,16 +245,38 @@ int openpete_config_save_knob(const char* knob_id, const char* value);
  * Everything above the managed marker is copied through byte for byte, so
  * hand-written config and its comments survive; a file without the marker
  * is copied whole. The marker, a note and a [saved] table of every saved
- * knob with a schema row, each written as its knob's type, follow. The file
- * is written to a temporary beside the target and renamed over it
+ * knob with a schema row, each written as its knob's type, follow, then a
+ * [saved.keys.<domain>] table per domain holding the saved bindings (arrays
+ * of strings with backslash and quote escaped; a mod.<id> row one string).
+ * The file is written to a temporary beside the target and renamed over it
  * (op_atomic_file_commit), so a failed write, sync or rename leaves the
- * previous file whole.
+ * previous file whole. A file whose text above the marker holds a `[saved`
+ * table header is refused unwritten: the zone would define the table twice.
  * @return 0 on success, -1 when there is no save target, the source file
- *         cannot be buffered, the temporary cannot be opened, or the commit
- *         fails. */
+ *         cannot be buffered, a [saved] table sits above the marker, the
+ *         temporary cannot be opened, or the commit fails. */
 int openpete_config_save_flush(void);
 
-/** @brief Drop every saved knob and rewrite the save target with an empty managed zone.
+/** @brief Store a [saved.keys.<domain>] row in the in-memory zone, replacing the row of the same action.
+ *
+ * Nothing reaches disk until openpete_config_save_flush.
+ * @param domain "host", "pad".."pad4" or "mod.<id>".
+ * @param action the action id or mod binding name.
+ * @param toks the binding tokens in the [keys] spelling.
+ * @param n their count; 0 stores an unbinding row.
+ * @return 0, or -1 for a NULL argument, a full table or an over-long name. */
+int openpete_config_save_binding(const char* domain, const char* action,
+                                 const char* const* toks, int n);
+
+/** @brief Remove a [saved.keys.<domain>] row from the in-memory zone.
+ *
+ * Nothing reaches disk until openpete_config_save_flush.
+ * @param domain the row's domain.
+ * @param action the row's action.
+ * @return 1 when a row was removed, 0 when the zone held none. */
+int openpete_config_unsave_binding(const char* domain, const char* action);
+
+/** @brief Drop every saved knob and binding and rewrite the save target with an empty managed zone.
  *
  * @return openpete_config_save_flush's result. */
 int openpete_config_reset_saved(void);

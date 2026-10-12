@@ -49,6 +49,7 @@ extern "C" {
 #include "openpete_mods.h"
 #include "openpete_mod_ui.h"
 #include "openpete_settings_save.h"
+#include "openpete_rebind.h"
 
 #include <deque>
 #include <utility>
@@ -262,6 +263,36 @@ int  openpete_devui_available(void) { return s_inited; }
 int  openpete_devui_is_open(void)   { return s_inited && s_open; }
 void openpete_devui_close(void)     { s_open = false; }
 
+/* A section the next panel frame expands and scrolls to
+ * (openpete_devui_open_section): written on the host loop, consumed on the
+ * frame thread. */
+static SDL_AtomicInt s_section_req;
+static char          s_section_title[32];
+
+void openpete_devui_open_section(const char *title)
+{
+    if (!s_inited || !title) return;
+    snprintf(s_section_title, sizeof s_section_title, "%s", title);
+    SDL_MemoryBarrierRelease();
+    SDL_SetAtomicInt(&s_section_req, 1);
+    s_open = true;
+    OPL_INFO_F("devui", "open section %s", title);
+}
+
+/** @brief Take the pending section request when it names this section; frame thread.
+ *
+ * @param title the section's header title.
+ * @return true once per request for the section it names. */
+static bool section_requested(const char *title)
+{
+    if (!SDL_GetAtomicInt(&s_section_req)) return false;
+    SDL_MemoryBarrierAcquire();
+    if (strcmp(s_section_title, title) != 0) return false;
+    SDL_SetAtomicInt(&s_section_req, 0);
+    OPL_INFO_F("devui", "section %s expanded", title);
+    return true;
+}
+
 int openpete_devui_toggle(void)
 {
     if (!s_inited) return 0;
@@ -386,14 +417,26 @@ void openpete_devui_pump_text_input(void)
 
 /** @brief Feed every queued SDL event to imgui's SDL3 backend and advance the ring's tail.
  *
- * Runs on the thread that records the imgui frame, immediately before it. */
+ * Runs on the thread that records the imgui frame, immediately before it.
+ * While openpete_keymap_capture_active reads 1 the press, wheel, text and
+ * axis events are dropped and the releases fed. */
 static void devui_drain_events(void)
 {
     int tail = SDL_GetAtomicInt(&s_evq_tail);
     int head = SDL_GetAtomicInt(&s_evq_head);
     SDL_MemoryBarrierAcquire();
+    /* While a binding capture runs (and its latched inputs are held) the
+     * captured input must not also drive imgui: presses, wheel, text and
+     * stick motion are dropped. Releases pass, so a key or button imgui
+     * saw go down before the capture is not left held. */
+    const bool capturing = openpete_keymap_capture_active() != 0;
     while (tail != head) {
-        ImGui_ImplSDL3_ProcessEvent(&s_evq[tail]);
+        const Uint32 t = s_evq[tail].type;
+        const bool drop = capturing &&
+            (t == SDL_EVENT_KEY_DOWN || t == SDL_EVENT_TEXT_INPUT ||
+             t == SDL_EVENT_MOUSE_BUTTON_DOWN || t == SDL_EVENT_MOUSE_WHEEL ||
+             t == SDL_EVENT_GAMEPAD_BUTTON_DOWN || t == SDL_EVENT_GAMEPAD_AXIS_MOTION);
+        if (!drop) ImGui_ImplSDL3_ProcessEvent(&s_evq[tail]);
         tail = (tail + 1) % DEVUI_EVQ_CAP;
     }
     SDL_SetAtomicInt(&s_evq_tail, tail);
@@ -1785,12 +1828,16 @@ struct lay_row {
     int                fallback;  /* LAY_ONOFF first on value */
 };
 
+/* What a section draws: its layout rows, or one of the sections with a
+ * drawer of their own. */
+enum lay_section_kind { LAY_SEC_ROWS, LAY_SEC_MODS, LAY_SEC_CONTROLS };
+
 struct lay_section {
-    const char    *title;
-    bool           open;      /* expanded until the user collapses it */
-    bool           mods;      /* the Mods section in place of rows */
-    const lay_row *rows;
-    size_t         n;
+    const char       *title;
+    bool              open;      /* expanded until the user collapses it */
+    lay_section_kind  kind;
+    const lay_row    *rows;
+    size_t            n;
 };
 
 #define LAY_N(a) (sizeof(a) / sizeof((a)[0]))
@@ -1871,12 +1918,13 @@ static const lay_row k_lay_debug[] = {
 };
 
 static const lay_section k_layout[] = {
-    { "Display",   true,  false, k_lay_display,   LAY_N(k_lay_display) },
-    { "Gameplay",  true,  false, k_lay_gameplay,  LAY_N(k_lay_gameplay) },
-    { "Mods",      true,  true,  nullptr,         0 },
-    { "Info",      false, false, k_lay_info,      LAY_N(k_lay_info) },
-    { "Recording", true,  false, k_lay_recording, LAY_N(k_lay_recording) },
-    { "Debug",     false, false, k_lay_debug,     LAY_N(k_lay_debug) },
+    { "Display",   true,  LAY_SEC_ROWS,     k_lay_display,   LAY_N(k_lay_display) },
+    { "Gameplay",  true,  LAY_SEC_ROWS,     k_lay_gameplay,  LAY_N(k_lay_gameplay) },
+    { "Controls",  false, LAY_SEC_CONTROLS, nullptr,         0 },
+    { "Mods",      true,  LAY_SEC_MODS,     nullptr,         0 },
+    { "Info",      false, LAY_SEC_ROWS,     k_lay_info,      LAY_N(k_lay_info) },
+    { "Recording", true,  LAY_SEC_ROWS,     k_lay_recording, LAY_N(k_lay_recording) },
+    { "Debug",     false, LAY_SEC_ROWS,     k_lay_debug,     LAY_N(k_lay_debug) },
 };
 
 /* Registry rows the panel does not show. They stay in the registry, so
@@ -2479,6 +2527,193 @@ static void draw_search(ImGuiTextFilter &f)
     draw_save_button(save_w);
 }
 
+/* ------------------------------------------------------------------ */
+/* Controls: the binding page                                         */
+/* ------------------------------------------------------------------ */
+
+/** @brief Name the layer a Reset returns an action to: "default", "global", "game" or "disc", from the layer's origin label. */
+static const char *reset_layer_word(const char *origin)
+{
+    if (!strncmp(origin, "game", 4)) return "game";
+    if (!strncmp(origin, "disc", 4)) return "disc";
+    if (!strcmp(origin, "default")) return "default";
+    return "global";
+}
+
+/** @brief Report whether an action's row is listed: KM_DEV rows only in a build that compiles the debug flags in. */
+static bool controls_row_listed(const openpete_keymap_action_info_t &info)
+{
+#ifdef OPENPETE_HIDE_DEBUG_FLAGS
+    if (info.flags & KM_DEV) return false;
+#endif
+    (void)info;
+    return true;
+}
+
+/** @brief Draw a button per bound source (click: replace it) with a remove button beside each, all on one line. */
+static void draw_source_buttons(openpete_action_t a, const km_source_t *src, int n)
+{
+    for (int i = 0; i < n; i++) {
+        char label[80];
+        openpete_keymap_source_label(&src[i], label, sizeof label);
+        if (src[i].hold) strncat(label, " (hold)", sizeof label - strlen(label) - 1);
+        ImGui::PushID(i);
+        if (ImGui::Button(label)) openpete_rebind_request_capture((int)a, i, 0);
+        if (tooltip_hovered()) ImGui::SetTooltip("Click, then press the input that replaces it");
+        ImGui::SameLine(0.0f, 2.0f);
+        if (ImGui::SmallButton("x")) openpete_rebind_request_remove((int)a, i);
+        if (tooltip_hovered()) ImGui::SetTooltip("Remove this input");
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+}
+
+/** @brief Show Reset's tooltip: the layer it returns to ("default", "global", "game", "disc") and that layer's binding. */
+static void reset_tooltip(openpete_action_t a)
+{
+    km_source_t below[KM_MAX_SOURCES];
+    char origin[64];
+    const int nb = openpete_keymap_below_saved(a, below, KM_MAX_SOURCES, origin, sizeof origin);
+    char text[256];
+    size_t used = (size_t)snprintf(text, sizeof text, "Restore the %s binding: ",
+                                   reset_layer_word(origin));
+    for (int i = 0; i < nb && used < sizeof text; i++) {
+        char label[80];
+        openpete_keymap_source_label(&below[i], label, sizeof label);
+        used += (size_t)snprintf(text + used, sizeof text - used, "%s%s", i ? " / " : "", label);
+    }
+    if (nb <= 0 && used < sizeof text) snprintf(text + used, sizeof text - used, "unbound");
+    ImGui::SetTooltip("%s", text);
+}
+
+/** @brief Draw one action's row: its purpose, a button per source (replace) with a remove button beside it, "+" (add), "+ hold" on a host button action, and Reset.
+ *
+ * Every button posts a request to the binding page's queue
+ * (openpete_rebind.h); the host loop applies it. */
+static void draw_binding_row(openpete_action_t a, const openpete_keymap_action_info_t &info)
+{
+    km_source_t src[KM_MAX_SOURCES];
+    const int n = openpete_keymap_sources(a, src, KM_MAX_SOURCES);
+    ImGui::PushID((int)a);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(info.purpose);
+    if (tooltip_hovered()) {
+        tooltip_begin();
+        ImGui::Text("%s.%s", openpete_keymap_domain_name(a), info.id);
+        tooltip_end();
+    }
+    ImGui::TableNextColumn();
+    draw_source_buttons(a, src, n);
+    ImGui::BeginDisabled(n >= KM_MAX_SOURCES);
+    if (ImGui::Button("+")) openpete_rebind_request_capture((int)a, -1, 0);
+    if (tooltip_hovered()) ImGui::SetTooltip("Add an input");
+    if (info.domain == KM_DOM_HOST && info.kind == KM_DIGITAL) {
+        ImGui::SameLine();
+        if (ImGui::Button("+ hold")) openpete_rebind_request_capture((int)a, -1, 1);
+        if (tooltip_hovered())
+            ImGui::SetTooltip("Add an input that acts only after a half-second hold; "
+                              "a controller button the game uses keeps its game role");
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    const bool saved = openpete_keymap_has_saved(a) != 0;
+    ImGui::BeginDisabled(!saved);
+    if (ImGui::Button("Reset")) openpete_rebind_request_restore((int)a);
+    ImGui::EndDisabled();
+    if (saved && tooltip_hovered()) reset_tooltip(a);
+    ImGui::PopID();
+}
+
+/** @brief Draw one group of rows (a domain, and for host actions one context) as a two-column table. */
+static void draw_binding_group(const ImGuiTextFilter &filter, const char *table_id, int first,
+                               int last, int ctx)
+{
+    if (!ImGui::BeginTable(table_id, 2, ImGuiTableFlags_SizingFixedFit)) return;
+    for (int a = first; a < last; a++) {
+        openpete_keymap_action_info_t info;
+        if (!openpete_keymap_action_info((openpete_action_t)a, &info)) continue;
+        if (ctx >= 0 && info.ctx != ctx) continue;
+        if (!controls_row_listed(info)) continue;
+        if (filter.IsActive() && !filter.PassFilter(info.purpose) && !filter.PassFilter(info.id))
+            continue;
+        draw_binding_row((openpete_action_t)a, info);
+    }
+    ImGui::EndTable();
+}
+
+/** @brief Draw the Controls section: player 1's PlayStation pad, then the host hotkeys grouped by the context that reads them.
+ *
+ * A section request (openpete_devui_open_section) expands it and scrolls
+ * to it once. The last edit's message (committed, refused or cancelled)
+ * shows under the header. */
+static void draw_controls_section(const ImGuiTextFilter &filter)
+{
+    const bool requested = section_requested("Controls");
+    if (requested || filter.IsActive()) ImGui::SetNextItemOpen(true);
+    if (!ImGui::CollapsingHeader("Controls")) return;
+    if (requested) ImGui::SetScrollHereY(0.0f);
+    char msg[224];
+    (void)openpete_rebind_last_message(msg, sizeof msg);
+    if (msg[0]) ImGui::TextWrapped("%s", msg);
+
+    ImGui::SeparatorText("Player 1");
+    ImGui::TextDisabled("A controller change here re-maps every connected gamepad that "
+                        "has no [keys.padN] rows of its own.");
+    draw_binding_group(filter, "##pad", OPK_PAD_CROSS, OPK_PAD2_CROSS, -1);
+
+    ImGui::SeparatorText("Hotkeys");
+    static const struct { int ctx; const char *label; } groups[] = {
+        { KM_CTX_ALWAYS,   "Anywhere" },
+        { KM_CTX_GAMEPLAY, "During play" },
+        { KM_CTX_MENU,     "Settings menu" },
+        { KM_CTX_FREECAM,  "Free camera" },
+        { KM_CTX_FILLPICK, "Fill-tag inspector" },
+        { KM_CTX_DEVUI,    "This overlay" },
+    };
+    for (const auto &g : groups) {
+        ImGui::TextDisabled("%s", g.label);
+        char id[32];
+        snprintf(id, sizeof id, "##host%d", g.ctx);
+        draw_binding_group(filter, id, 0, OPK_PAD_CROSS, g.ctx);
+    }
+}
+
+/** @brief Draw the capture prompt while a capture runs and publish its rect; publish an empty rect otherwise.
+ *
+ * A mouse press inside the published rect is a candidate and one outside it
+ * cancels (openpete_keymap_capture_set_rect). */
+static void draw_capture_prompt(void)
+{
+    const unsigned w = openpete_keymap_capture_word();
+    const int state = KM_CAPWORD_STATE(w);
+    if (state == KM_CAP_IDLE) {
+        openpete_keymap_capture_set_rect(0, 0, 0, 0);
+        return;
+    }
+    openpete_keymap_action_info_t info;
+    if (!openpete_keymap_action_info((openpete_action_t)KM_CAPWORD_ACTION(w), &info)) return;
+    const ImGuiIO &io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowFocus();
+    if (ImGui::Begin("Press an input", nullptr,
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) {
+        ImGui::Text("%s%s", info.purpose, KM_CAPWORD_HOLD(w) ? " (hold)" : "");
+        ImGui::Separator();
+        ImGui::TextUnformatted(state == KM_CAP_WAITING ? "Release every key and button..."
+                               : state == KM_CAP_CANDIDATE ? "Release to assign"
+                               : "Press a key, a controller button, or a mouse button here");
+        if (info.kind == KM_AXIS)
+            ImGui::TextUnformatted("For a stick or the mouse, move it in the positive direction.");
+        ImGui::TextDisabled("Esc, a click outside this box, or 5 s without input cancels.");
+        const ImVec2 p = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
+        openpete_keymap_capture_set_rect(p.x, p.y, p.x + sz.x, p.y + sz.y);
+    }
+    ImGui::End();
+}
+
 /** @brief Draw the "openpete config" window: search field and Save button, the laid-out sections, then any unplaced registry section.
  *
  * Writes the window's close state back to the open flag and clears the boot
@@ -2493,6 +2728,7 @@ static void draw_panel(void)
     bool open = s_open;
     if (!ImGui::Begin("openpete config", &open)) {
         ImGui::End();
+        draw_capture_prompt();
         s_open = open;
         return;
     }
@@ -2507,12 +2743,16 @@ static void draw_panel(void)
     title_edge_roll();
 
     for (const lay_section &s : k_layout) {
-        if (s.mods) draw_mods_section(s_filter);
-        else        lay_draw_section(c, s.title, s.open, s.rows, s.n);
+        switch (s.kind) {
+        case LAY_SEC_MODS:     draw_mods_section(s_filter); break;
+        case LAY_SEC_CONTROLS: draw_controls_section(s_filter); break;
+        default:               lay_draw_section(c, s.title, s.open, s.rows, s.n); break;
+        }
     }
     lay_draw_unplaced(c);
 
     ImGui::End();
+    draw_capture_prompt();
     s_open = open;
     s_boot_reveal = false;
 }
@@ -2731,6 +2971,7 @@ void openpete_devui_render(struct rhi_device *dev)
     ImGui::NewFrame();
     devui_count_padnav();
     if (s_open) draw_panel();
+    else        openpete_keymap_capture_set_rect(0, 0, 0, 0);   /* no prompt drawn */
     if (always_n > 0) draw_always_sections();
     if (fillpick) { draw_fillpick_crosshair(); draw_fillpick_panel(); }
     ImGui::Render();

@@ -50,21 +50,26 @@ static const struct { int kind; const char* name; int code; } g_names[] = {
     { KM_SRC_KEY, "F10", 43 }, { KM_SRC_KEY, "Escape", 44 },
     { KM_SRC_KEY, "F9", 45 },  { KM_SRC_KEY, "F12", 46 },
 
-    { KM_SRC_PADBTN, "south", 100 }, { KM_SRC_PADBTN, "east", 101 },
-    { KM_SRC_PADBTN, "west", 102 },  { KM_SRC_PADBTN, "north", 103 },
-    { KM_SRC_PADBTN, "start", 104 }, { KM_SRC_PADBTN, "back", 105 },
-    { KM_SRC_PADBTN, "leftshoulder", 106 },
-    { KM_SRC_PADBTN, "rightshoulder", 107 },
-    { KM_SRC_PADBTN, "leftstick", 108 },
-    { KM_SRC_PADBTN, "rightstick", 109 },
-    { KM_SRC_PADBTN, "dpup", 110 },   { KM_SRC_PADBTN, "dpdown", 111 },
-    { KM_SRC_PADBTN, "dpleft", 112 }, { KM_SRC_PADBTN, "dpright", 113 },
-    { KM_SRC_PADBTN, "guide", 114 },  { KM_SRC_PADBTN, "misc1", 115 },
+    { KM_SRC_KEY, ",", 47 },   { KM_SRC_KEY, "\\", 48 },
+    { KM_SRC_KEY, "E", 49 },   { KM_SRC_KEY, "Q", 50 },
 
-    { KM_SRC_PADAXIS, "leftx", 200 },  { KM_SRC_PADAXIS, "lefty", 201 },
-    { KM_SRC_PADAXIS, "rightx", 202 }, { KM_SRC_PADAXIS, "righty", 203 },
-    { KM_SRC_PADAXIS, "lefttrigger", 204 },
-    { KM_SRC_PADAXIS, "righttrigger", 205 },
+    /* Pad codes in SDL3's ranges, which the capture scans. */
+    { KM_SRC_PADBTN, "south", 0 },  { KM_SRC_PADBTN, "east", 1 },
+    { KM_SRC_PADBTN, "west", 2 },   { KM_SRC_PADBTN, "north", 3 },
+    { KM_SRC_PADBTN, "back", 4 },   { KM_SRC_PADBTN, "guide", 5 },
+    { KM_SRC_PADBTN, "start", 6 },
+    { KM_SRC_PADBTN, "leftstick", 7 },
+    { KM_SRC_PADBTN, "rightstick", 8 },
+    { KM_SRC_PADBTN, "leftshoulder", 9 },
+    { KM_SRC_PADBTN, "rightshoulder", 10 },
+    { KM_SRC_PADBTN, "dpup", 11 },   { KM_SRC_PADBTN, "dpdown", 12 },
+    { KM_SRC_PADBTN, "dpleft", 13 }, { KM_SRC_PADBTN, "dpright", 14 },
+    { KM_SRC_PADBTN, "misc1", 15 },
+
+    { KM_SRC_PADAXIS, "leftx", 0 },  { KM_SRC_PADAXIS, "lefty", 1 },
+    { KM_SRC_PADAXIS, "rightx", 2 }, { KM_SRC_PADAXIS, "righty", 3 },
+    { KM_SRC_PADAXIS, "lefttrigger", 4 },
+    { KM_SRC_PADAXIS, "righttrigger", 5 },
 };
 
 static int fake_to_code(int kind, const char* name) {
@@ -104,6 +109,10 @@ static int       fake_mouse_owned(void)   { return g_mouse_owned; }
 static unsigned long long g_now_ms;
 static unsigned long long fake_now_ms(void) { return g_now_ms; }
 
+/* The fake pointer the capture prompt's rect test reads. */
+static float g_mouse_x, g_mouse_y;
+static int fake_mouse_pos(float* x, float* y) { *x = g_mouse_x; *y = g_mouse_y; return 1; }
+
 static void fake_reset(void) {
     memset(g_keys, 0, sizeof g_keys);
     memset(g_btns, 0, sizeof g_btns);
@@ -113,13 +122,14 @@ static void fake_reset(void) {
     g_mouse_wheel = 0;
     g_mouse_owned = OPENPETE_MOUSE_OWNED_NONE;
     g_now_ms = 1000;
+    g_mouse_x = g_mouse_y = 0.0f;
 }
 
 static void install_fakes(void) {
     static const openpete_keymap_input_fns fns = {
         fake_key, fake_btn, fake_axis, NULL, NULL,
         fake_mouse_btn, fake_mouse_motion, fake_mouse_wheel, fake_mouse_owned,
-        fake_now_ms
+        fake_now_ms, fake_mouse_pos
     };
     openpete_keymap_set_lookup(fake_to_code, fake_to_name, NULL);
     openpete_keymap_set_input(&fns);
@@ -1072,6 +1082,448 @@ static void test_mod_defaults(void) {
           "the effective key of a default is its parsed spelling");
 }
 
+
+/* ---- binding editor ------------------------------------------------- */
+
+static int K(const char* n)  { return fake_to_code(KM_SRC_KEY, n); }
+static int PB(const char* n) { return fake_to_code(KM_SRC_PADBTN, n); }
+static int PA(const char* n) { return fake_to_code(KM_SRC_PADAXIS, n); }
+
+/* A fresh store with the fakes released and the saved layer's bounds set. */
+static void editor_reset(void) {
+    fake_reset();
+    openpete_keymap_set_layer_bounds(5000, 2000);
+    openpete_keymap_init();
+    (void)openpete_keymap_resolve();
+    openpete_keymap_poll();
+    openpete_keymap_poll();
+}
+
+static openpete_keymap_edit_t g_edit;
+
+/* Take the result of the capture that just ended; KM_EDIT_NONE when none. */
+static int take(void) {
+    memset(&g_edit, 0, sizeof g_edit);
+    return openpete_keymap_capture_take_result(&g_edit) ? g_edit.kind : KM_EDIT_NONE;
+}
+
+/* Begin a capture and poll once so it arms. */
+static int begin(openpete_action_t a, int slot, int hold) {
+    int rc = openpete_keymap_capture_begin(a, slot, hold, &g_edit);
+    openpete_keymap_poll();
+    return rc;
+}
+
+/* Press and release one fake input across the capture: candidate, then commit. */
+static int tap_key(const char* name) {
+    g_keys[K(name)] = 1; openpete_keymap_poll();
+    g_keys[K(name)] = 0; openpete_keymap_poll();
+    return take();
+}
+static int tap_btn(const char* name) {
+    g_btns[PB(name)] = 1; openpete_keymap_poll();
+    g_btns[PB(name)] = 0; openpete_keymap_poll();
+    return take();
+}
+
+/* Whether an action's binding is exactly the listed tokens, in order. */
+static int binding_is(openpete_action_t a, const char* want) {
+    km_source_t s[KM_MAX_SOURCES];
+    int n = openpete_keymap_sources(a, s, KM_MAX_SOURCES);
+    char got[256] = "";
+    for (int i = 0; i < n; i++) {
+        char t[64];
+        openpete_keymap_source_token(&s[i], t, sizeof t);
+        strcat(got, i ? "," : "");
+        strcat(got, t);
+    }
+    if (strcmp(got, want) != 0) printf("  binding: '%s' want '%s'\n", got, want);
+    return strcmp(got, want) == 0;
+}
+
+/* The keys report, for the shared-input list. */
+static int report_has(const char* needle) {
+    FILE* f = tmpfile();
+    if (!f) return 0;
+    openpete_keymap_report(f);
+    rewind(f);
+    char line[512];
+    int hit = 0;
+    while (!hit && fgets(line, sizeof line, f)) hit = strstr(line, needle) != NULL;
+    fclose(f);
+    return hit;
+}
+
+static void test_capture_commit_on_release(void) {
+    editor_reset();
+    CHECK(begin(OPK_SCREENSHOT, 0, 0) == 0, "capture begins");
+    CHECK(KM_CAPWORD_STATE(openpete_keymap_capture_word()) == KM_CAP_ARMED, "armed");
+    CHECK(openpete_keymap_capture_active(), "active while capturing");
+    g_keys[K("Q")] = 1; openpete_keymap_poll();
+    CHECK(KM_CAPWORD_STATE(openpete_keymap_capture_word()) == KM_CAP_CANDIDATE,
+          "the press is the candidate");
+    CHECK(take() == KM_EDIT_NONE, "no commit while the candidate is held");
+    CHECK(!openpete_key_down(OPK_SCREENSHOT), "nothing reads held during a capture");
+    g_keys[K("Q")] = 0; openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_COMMITTED, "the release commits");
+    CHECK(binding_is(OPK_SCREENSHOT, "Q"), "screenshot = Q");
+    CHECK(!openpete_key_pressed(OPK_SCREENSHOT), "no press edge on commit");
+    CHECK(openpete_keymap_has_saved(OPK_SCREENSHOT), "the edit is a saved binding");
+    CHECK(!openpete_keymap_capture_active(), "inactive once nothing is latched");
+}
+
+static void test_capture_wheel_and_ignored_motion(void) {
+    editor_reset();
+    begin(OPK_PAUSE, -1, 0);
+    /* Motion and a stick throw on a digital action are ignored. */
+    g_mouse_motion[0] += 500;
+    g_axes[PA("leftx")] = 30000;
+    openpete_keymap_poll();
+    CHECK(KM_CAPWORD_STATE(openpete_keymap_capture_word()) == KM_CAP_ARMED,
+          "motion and a stick throw leave the capture armed");
+    CHECK(take() == KM_EDIT_NONE, "nothing committed");
+    g_axes[PA("leftx")] = 0;
+    openpete_keymap_poll();
+    g_mouse_wheel += OPENPETE_MOUSE_WHEEL_UNIT;
+    openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_COMMITTED, "a wheel notch commits on its pulse");
+    CHECK(binding_is(OPK_PAUSE, "F7,mouse:wheel_up"), "pause gains wheel_up");
+}
+
+static void test_capture_latch(void) {
+    editor_reset();
+    begin(OPK_SCREENSHOT, 0, 0);
+    g_keys[K("Q")] = 1; openpete_keymap_poll();
+    g_keys[K("F7")] = 1; g_btns[PB("west")] = 1; openpete_keymap_poll();
+    g_keys[K("Q")] = 0; openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_COMMITTED, "commit with other inputs held");
+    CHECK(openpete_keymap_capture_active(), "active while latched inputs are held");
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_PAUSE), "F7 held through the commit reads consumed");
+    CHECK(!openpete_keymap_action_down_via(OPK_PAD_SQUARE, 0, NULL), "west reads consumed");
+    g_keys[K("F7")] = 0; g_btns[PB("west")] = 0; openpete_keymap_poll();
+    CHECK(!openpete_keymap_capture_active(), "inactive once released");
+    g_keys[K("F7")] = 1; openpete_keymap_poll();
+    CHECK(openpete_key_pressed(OPK_PAUSE), "a fresh press is live");
+
+    /* Nine inputs held at commit all read consumed. */
+    editor_reset();
+    begin(OPK_SCREENSHOT, 0, 0);
+    g_keys[K("Q")] = 1; openpete_keymap_poll();
+    const char* held[] = { "1", "2", "3", "F7", "F8", "Tab", "T", "I", "L" };
+    for (int i = 0; i < 9; i++) g_keys[K(held[i])] = 1;
+    openpete_keymap_poll();
+    g_keys[K("Q")] = 0; openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_COMMITTED, "commit with nine held");
+    openpete_keymap_poll();
+    int live = 0;
+    for (int i = 0; i < 9; i++) {
+        km_source_t s = { KM_SRC_KEY, 0, (short)K(held[i]), 0, 0 };
+        live += openpete_keymap_source_down(&s);
+    }
+    CHECK(live == 0, "nine held keys read consumed (%d live)", live);
+    CHECK(openpete_keymap_capture_active(), "still active");
+    for (int i = 0; i < 9; i++) g_keys[K(held[i])] = 0;
+    openpete_keymap_poll();
+    CHECK(!openpete_keymap_capture_active(), "inactive after all nine release");
+}
+
+static void test_capture_cancels(void) {
+    /* Escape: the event handler's cancel. Escape held at a poll before the
+     * cancel is drained is no candidate and reads consumed. */
+    editor_reset();
+    begin(OPK_PAD_CROSS, 1, 0);
+    g_keys[K("Escape")] = 1; openpete_keymap_poll();
+    CHECK(KM_CAPWORD_STATE(openpete_keymap_capture_word()) == KM_CAP_ARMED,
+          "Escape is not a candidate");
+    openpete_keymap_capture_cancel("escape");
+    CHECK(take() == KM_EDIT_CANCELLED && !strcmp(g_edit.reason, "escape"), "escape cancels");
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_MENU), "Escape reads consumed after the cancel");
+    g_keys[K("Escape")] = 0; openpete_keymap_poll();
+    CHECK(binding_is(OPK_PAD_CROSS, "C,pad:south"), "cross unchanged");
+
+    /* Timeout, and a stick throw on a digital action does not stop it. */
+    editor_reset();
+    begin(OPK_PAD_CROSS, 1, 0);
+    g_axes[PA("leftx")] = 30000;
+    g_now_ms += KM_CAPTURE_TIMEOUT_MS + 1;
+    openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_CANCELLED && !strcmp(g_edit.reason, "timeout"),
+          "the timeout cancels with a stick thrown");
+    openpete_keymap_poll();
+    CHECK(openpete_keymap_capture_active(), "the stick held past the cancel stays latched");
+    CHECK(openpete_keymap_action_axis_raw_via(OPK_FLY_AXIS_X, 0, NULL) == 0,
+          "the stick reads consumed");
+    g_axes[PA("leftx")] = 10000;   /* under KM_AXIS_PRESS */
+    openpete_keymap_poll();
+    CHECK(!openpete_keymap_capture_active(), "released under KM_AXIS_PRESS");
+
+    /* A held candidate stops the timeout. */
+    editor_reset();
+    begin(OPK_PAD_CROSS, 1, 0);
+    g_btns[PB("east")] = 1; openpete_keymap_poll();
+    g_now_ms += KM_CAPTURE_TIMEOUT_MS + 1;
+    openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_NONE, "no timeout while the candidate is held");
+    g_btns[PB("east")] = 0; openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_COMMITTED, "its release commits");
+
+    /* A click outside the prompt cancels; inside it is a candidate. */
+    editor_reset();
+    openpete_keymap_capture_set_rect(100, 100, 200, 200);
+    begin(OPK_PAUSE, -1, 0);
+    g_mouse_x = 10; g_mouse_y = 10;
+    g_mouse_mask = 1u << KM_MOUSE_LEFT; openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_CANCELLED, "a click outside cancels");
+    g_mouse_mask = 0; openpete_keymap_poll();
+    begin(OPK_PAUSE, -1, 0);
+    g_mouse_x = 150; g_mouse_y = 150;
+    g_mouse_mask = 1u << KM_MOUSE_MIDDLE; openpete_keymap_poll();
+    g_mouse_mask = 0; openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_COMMITTED, "a click inside is a candidate");
+    CHECK(binding_is(OPK_PAUSE, "F7,mouse:middle"), "pause gains mouse:middle");
+    openpete_keymap_capture_set_rect(0, 0, 0, 0);
+
+    /* A pad button held through an Escape cancel stays consumed. */
+    editor_reset();
+    begin(OPK_PAD_CROSS, 1, 0);
+    g_btns[PB("east")] = 1; openpete_keymap_poll();
+    openpete_keymap_capture_cancel("escape");
+    CHECK(take() == KM_EDIT_CANCELLED, "cancel with the candidate held");
+    openpete_keymap_poll();
+    CHECK(openpete_keymap_capture_active(), "active until east is released");
+    g_btns[PB("east")] = 0; openpete_keymap_poll();
+    CHECK(!openpete_keymap_capture_active(), "released");
+}
+
+static void test_capture_refusals(void) {
+    editor_reset();
+    CHECK(openpete_keymap_capture_begin(OPK_PAD_CROSS, -1, 1, &g_edit) != 0,
+          "hold on a pad action refused at begin");
+    begin(OPK_PAD_CROSS, -1, 0);
+    CHECK(tap_key("Q") == KM_EDIT_REFUSED, "a second key on a pad action refused: %s",
+          g_edit.reason);
+    CHECK(binding_is(OPK_PAD_CROSS, "C,pad:south"), "cross unchanged");
+
+    CHECK(openpete_keymap_set_live(OPK_PAUSE, NULL, 0) == 0, "clear pause");
+    for (int i = 0; i < KM_MAX_SOURCES; i++) {
+        begin(OPK_PAUSE, -1, 0);
+        const char* k[] = { "1", "2", "3", "T" };
+        (void)tap_key(k[i]);
+    }
+    CHECK(openpete_keymap_capture_begin(OPK_PAUSE, -1, 0, &g_edit) != 0,
+          "a fifth source refused");
+
+    editor_reset();
+    begin(OPK_PAD_STICK_UP, -1, 0);
+    CHECK(tap_btn("south") == KM_EDIT_REFUSED, "a pad source on stick_up refused");
+    begin(OPK_PAD_LEFT_X, 0, 0);
+    CHECK(tap_btn("south") == KM_EDIT_REFUSED, "a button on left_x refused");
+    begin(OPK_SCREENSHOT, 0, 0);
+    CHECK(tap_key(",") == KM_EDIT_REFUSED, "',' does not round-trip: %s", g_edit.reason);
+    begin(OPK_SCREENSHOT, 0, 0);
+    CHECK(tap_key("\\") == KM_EDIT_COMMITTED, "'\\' round-trips");
+    CHECK(binding_is(OPK_SCREENSHOT, "\\"), "screenshot = backslash");
+    begin(OPK_TURBO, -1, 0);
+    g_mouse_wheel += OPENPETE_MOUSE_WHEEL_UNIT; openpete_keymap_poll();
+    CHECK(take() == KM_EDIT_REFUSED, "a wheel notch on a level action refused");
+}
+
+static void test_capture_swaps(void) {
+    /* Two ALWAYS hotkeys swap keys. */
+    editor_reset();
+    begin(OPK_SCREENSHOT, 0, 0);
+    CHECK(tap_key("F7") == KM_EDIT_COMMITTED, "F7 onto screenshot");
+    CHECK(binding_is(OPK_SCREENSHOT, "F7") && binding_is(OPK_PAUSE, "F12"),
+          "screenshot and pause swap");
+    CHECK(g_edit.n_changed == 2 && g_edit.changed[1].action == OPK_PAUSE &&
+          !strcmp(g_edit.changed[1].old_tok, "F7") &&
+          !strcmp(g_edit.changed[1].new_tok, "F12"), "the swap names pause F7 -> F12");
+
+    /* WASD shared across GAMEPLAY and FREECAM is no conflict. */
+    editor_reset();
+    km_source_t w = { KM_SRC_KEY, 0, (short)K("W"), 0, 0 };
+    CHECK(openpete_keymap_conflicts(OPK_FLY_FORWARD, &w, NULL, 0) == 0,
+          "W on fly_forward does not conflict with stick_up");
+
+    /* pad:east onto cross's pad slot conflicts with circle only. */
+    editor_reset();
+    km_source_t east = { KM_SRC_PADBTN, 0, (short)PB("east"), 0, 0 };
+    openpete_action_t out[8];
+    CHECK(openpete_keymap_conflicts(OPK_PAD_CROSS, &east, out, 8) == 1 &&
+          out[0] == OPK_PAD_CIRCLE, "pad:east on cross conflicts with circle only");
+    begin(OPK_PAD_CROSS, 1, 0);
+    CHECK(tap_btn("east") == KM_EDIT_COMMITTED, "east onto cross");
+    CHECK(binding_is(OPK_PAD_CROSS, "C,pad:east") && binding_is(OPK_PAD_CIRCLE, "V,pad:south"),
+          "cross pad:east, circle pad:south");
+    CHECK(g_edit.pad_changed, "a pad action changed");
+
+    /* V onto cross's key slot. */
+    editor_reset();
+    begin(OPK_PAD_CROSS, 0, 0);
+    CHECK(tap_key("V") == KM_EDIT_COMMITTED, "V onto cross");
+    CHECK(binding_is(OPK_PAD_CROSS, "V,pad:south") && binding_is(OPK_PAD_CIRCLE, "C,pad:east"),
+          "cross V, circle C");
+}
+
+static void test_capture_v22(void) {
+    /* A plain controller button onto an in-play hotkey is refused. */
+    editor_reset();
+    begin(OPK_SCREENSHOT, -1, 0);
+    CHECK(tap_btn("south") == KM_EDIT_REFUSED, "plain pad:south onto screenshot refused");
+    CHECK(strstr(g_edit.reason, "only as a hold") != NULL, "the V22 reason: %s", g_edit.reason);
+    CHECK(binding_is(OPK_PAD_CROSS, "C,pad:south"), "cross unchanged");
+
+    /* The hold form is admitted and cross keeps the button. */
+    editor_reset();
+    begin(OPK_SCREENSHOT, -1, 1);
+    CHECK(tap_btn("south") == KM_EDIT_COMMITTED, "hold:pad:south onto screenshot: %s",
+          g_edit.reason);
+    CHECK(binding_is(OPK_SCREENSHOT, "F12,hold:pad:south"), "screenshot gains the hold");
+    CHECK(binding_is(OPK_PAD_CROSS, "C,pad:south"), "cross keeps pad:south");
+    CHECK(openpete_keymap_resolve() == 0, "resolve warns about no pair");
+
+    /* Keys follow the swap, plain or held. */
+    editor_reset();
+    begin(OPK_SCREENSHOT, 0, 0);
+    CHECK(tap_key("C") == KM_EDIT_COMMITTED, "C onto screenshot");
+    CHECK(binding_is(OPK_PAD_CROSS, "F12,pad:south"), "cross takes F12");
+    CHECK(g_edit.n_changed == 2 && g_edit.changed[1].action == OPK_PAD_CROSS,
+          "the swap names cross (its toast)");
+    editor_reset();
+    begin(OPK_SCREENSHOT, -1, 1);
+    CHECK(tap_key("C") == KM_EDIT_COMMITTED, "hold:C onto screenshot");
+    CHECK(binding_is(OPK_PAD_CROSS, "pad:south"), "cross loses C on an add");
+
+    /* pad:start onto cross: menu's hold is no conflict. */
+    editor_reset();
+    km_source_t start = { KM_SRC_PADBTN, 0, (short)PB("start"), 0, 0 };
+    openpete_action_t out[8];
+    const int n = openpete_keymap_conflicts(OPK_PAD_CROSS, &start, out, 8);
+    int has_menu = 0;
+    for (int i = 0; i < n && i < 8; i++) has_menu |= out[i] == OPK_MENU;
+    CHECK(!has_menu, "pad:start on cross does not conflict with menu");
+
+    /* plain pad:start onto menu is refused. */
+    editor_reset();
+    begin(OPK_MENU, -1, 0);
+    CHECK(tap_btn("start") == KM_EDIT_REFUSED, "plain pad:start onto menu refused");
+    CHECK(binding_is(OPK_MENU, "Escape,hold:pad:start"), "menu unchanged");
+
+    /* hold:pad:back onto screenshot strips devui's only pad source. */
+    editor_reset();
+    begin(OPK_SCREENSHOT, -1, 1);
+    CHECK(tap_btn("back") == KM_EDIT_REFUSED, "hold:pad:back onto screenshot refused");
+    CHECK(strstr(g_edit.reason, "devui") != NULL, "names devui: %s", g_edit.reason);
+    /* hold:pad:start onto screenshot strips menu's. */
+    begin(OPK_SCREENSHOT, -1, 1);
+    CHECK(tap_btn("start") == KM_EDIT_REFUSED, "hold:pad:start onto screenshot refused");
+    CHECK(strstr(g_edit.reason, "menu") != NULL, "names menu: %s", g_edit.reason);
+
+    /* Remove refused on menu's last pad source. */
+    editor_reset();
+    CHECK(openpete_keymap_remove_source(OPK_MENU, 1, &g_edit) != 0,
+          "removing menu's last pad source refused");
+    CHECK(openpete_keymap_remove_source(OPK_MENU, 0, &g_edit) == 0, "removing Escape allowed");
+}
+
+static void test_resolve_hold_rule(void) {
+    editor_reset();
+    CHECK(openpete_keymap_resolve() == 0, "a stock resolve logs no warning");
+    CHECK(report_has("host.menu + pad.start - intentional: a tap reaches the game"),
+          "menu/pad.start collected with the hold reason");
+    CHECK(report_has("host.devui + pad.select - intentional: a tap reaches the game"),
+          "devui/pad.select collected with the hold reason");
+
+    /* A plain pad:back on a host action is a real pair. */
+    editor_reset();
+    CHECK(set1("host", "screenshot", "pad:back", 100, "global") == 0, "screenshot pad:back");
+    CHECK(openpete_keymap_resolve() > 0, "devui hold:pad:back + screenshot pad:back warns");
+    CHECK(report_has("host.devui + host.screenshot  <-- unintended"), "reported as a pair");
+}
+
+static void test_layers_and_restore(void) {
+    editor_reset();
+    CHECK(set1("host", "pause", "P", 1000, "global") == 0, "global P");
+    CHECK(set1("host", "pause", "O", 3000, "game.spyro-1") == 0, "game O");
+    CHECK(set1("host", "pause", "U", 5000, "saved") == 0, "saved U");
+    CHECK(binding_is(OPK_PAUSE, "U") && openpete_keymap_has_saved(OPK_PAUSE), "saved wins");
+    km_source_t g[KM_MAX_SOURCES];
+    int scoped = 0;
+    CHECK(openpete_keymap_global_layer(OPK_PAUSE, g, KM_MAX_SOURCES, &scoped) == 1 &&
+          g[0].code == K("P") && scoped, "global layer P, game-scoped");
+    char origin[48];
+    CHECK(openpete_keymap_below_saved(OPK_PAUSE, g, KM_MAX_SOURCES, origin, sizeof origin) == 1 &&
+          g[0].code == K("O") && !strcmp(origin, "game.spyro-1"), "below saved: game O");
+    CHECK(openpete_keymap_restore(OPK_PAUSE, &g_edit) == 0, "restore");
+    CHECK(binding_is(OPK_PAUSE, "O") && !openpete_keymap_has_saved(OPK_PAUSE),
+          "restore returns to the game layer and clears has-saved");
+}
+
+/* A hold of a controller button onto an in-play hotkey leaves the settings
+ * menu's and the overlay's navigation sources alone, and with the menu's
+ * pad suspension a held Cross in the menu fires no hold hotkey. */
+static void test_hold_leaves_overlay_nav(void) {
+    editor_reset();
+    begin(OPK_SCREENSHOT, -1, 1);
+    CHECK(tap_btn("south") == KM_EDIT_COMMITTED, "hold:pad:south onto screenshot");
+    CHECK(g_edit.n_changed == 1, "no action swapped (%d changed)", g_edit.n_changed);
+    CHECK(binding_is(OPK_MENU_SELECT, "Return,pad:south"), "menu_select untouched");
+    CHECK(binding_is(OPK_MENU_RIGHT, "Right,pad:dpright,pad:leftx,pad:south"),
+          "menu_right untouched");
+    CHECK(binding_is(OPK_DEVUI_ACTIVATE, "pad:south"), "devui_activate untouched");
+    CHECK(!openpete_keymap_has_saved(OPK_MENU_SELECT) &&
+          !openpete_keymap_has_saved(OPK_DEVUI_ACTIVATE), "no saved navigation rows");
+    CHECK(openpete_keymap_resolve() == 0, "no warning");
+    CHECK(report_has("host.menu_select + host.screenshot - intentional: the overlay"),
+          "the navigation pair carries its reason");
+
+    static const struct { const char* btn; openpete_action_t nav; const char* want; } k[] = {
+        { "east",          OPK_MENU_CLOSE,   "pad:start,pad:east" },
+        { "east",          OPK_DEVUI_CANCEL, "pad:east" },
+        { "west",          OPK_DEVUI_MENU,   "pad:west" },
+        { "leftshoulder",  OPK_DEVUI_SLOWER, "pad:leftshoulder" },
+        { "rightshoulder", OPK_DEVUI_FASTER, "pad:rightshoulder" },
+    };
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+        editor_reset();
+        begin(OPK_SCREENSHOT, -1, 1);
+        CHECK(tap_btn(k[i].btn) == KM_EDIT_COMMITTED, "hold:pad:%s onto screenshot: %s",
+              k[i].btn, g_edit.reason);
+        CHECK(binding_is(k[i].nav, k[i].want), "navigation keeps pad:%s", k[i].btn);
+    }
+
+    /* Menu open: the run loop suspends live pad sources outside the menu. */
+    editor_reset();
+    begin(OPK_PAUSE, -1, 1);
+    CHECK(tap_btn("south") == KM_EDIT_COMMITTED, "hold:pad:south onto pause");
+    CHECK(set1("host", "screenshot", "hold:pad:south", 6000, "saved") == 0,
+          "screenshot holds south too (two hotkeys on one hold report a pair)");
+    int n = 0;
+    const openpete_action_t* ex = openpete_keymap_menu_pad_exempt(&n);
+    openpete_keymap_suspend_pad(1, ex, n);
+    g_btns[PB("south")] = 1;
+    int fired = 0, nav = 0;
+    for (int i = 0; i < 20; i++) {
+        g_now_ms += 100;
+        openpete_keymap_poll();
+        fired += openpete_key_pressed(OPK_PAUSE) + openpete_key_pressed(OPK_SCREENSHOT);
+        nav += openpete_key_down(OPK_MENU_SELECT);
+    }
+    CHECK(fired == 0, "a held Cross in the menu fires no hold hotkey (%d)", fired);
+    CHECK(nav > 0, "menu_select reads the held Cross");
+    g_btns[PB("south")] = 0;
+    openpete_keymap_suspend_pad(0, NULL, 0);
+    openpete_keymap_poll();
+    g_btns[PB("south")] = 1;
+    for (int i = 0; i < 7; i++) { g_now_ms += 100; openpete_keymap_poll();
+        fired += openpete_key_pressed(OPK_PAUSE) + openpete_key_pressed(OPK_SCREENSHOT); }
+    CHECK(fired == 2, "outside the menu the hold fires pause and screenshot once (%d)", fired);
+    g_btns[PB("south")] = 0;
+    openpete_keymap_poll();
+}
+
 int main(void) {
     install_fakes();
 
@@ -1109,6 +1561,16 @@ int main(void) {
     test_mouse_owned();
     test_mouse_reader_and_format();
     test_mod_defaults();
+    test_capture_commit_on_release();
+    test_capture_wheel_and_ignored_motion();
+    test_capture_latch();
+    test_capture_cancels();
+    test_capture_refusals();
+    test_capture_swaps();
+    test_capture_v22();
+    test_resolve_hold_rule();
+    test_layers_and_restore();
+    test_hold_leaves_overlay_nav();
 
     if (g_fail) {
         printf("keymap_test: %d failure(s)\n", g_fail);

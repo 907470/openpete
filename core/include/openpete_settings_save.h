@@ -2,7 +2,9 @@
  *
  * The settings menu and the dev overlay never write the file themselves:
  * they add knob ids to a dirty set, and the host loop writes the set through
- * knob_registry_save_ids. The menu marks a row's knob on every change and
+ * knob_registry_settle_ids, openpete_rebind_settle_ids for the binding ids
+ * (`keys.<domain>.<action>`, marked by the binding page at every edit) and
+ * one openpete_config_save_flush. The menu marks a row's knob on every change and
  * arms a 500 ms debounce deadline, so stepping through a ladder writes the
  * file once; the overlay's Save settings button enqueues its edited rows
  * with an immediate deadline. The host loop flushes when the deadline
@@ -31,9 +33,11 @@ extern "C" {
 
 /** @brief Add a knob to the dirty set and move the write deadline to the debounce interval from now.
  *
- * Called by the settings menu on every change of a persisted row. An id
- * already in the set keeps one entry. Safe from any thread.
- * @param knob_id Knob registry id; NULL or empty is ignored. */
+ * Called by the settings menu on every change of a persisted row and by the
+ * binding page on every edit. An id already in the set keeps one entry.
+ * Safe from any thread.
+ * @param knob_id Knob registry id or `keys.<domain>.<action>`; NULL or
+ *        empty is ignored. */
 void openpete_settings_save_mark(const char *knob_id);
 
 /** @brief Add knobs to the dirty set and make the write due at the host loop's next poll.

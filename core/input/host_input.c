@@ -523,6 +523,8 @@ static void vpad_selfprobe(int v, SDL_JoystickID id)
 static bool s_vpad_scripted;
 static bool s_vpad_script_btn[SDL_GAMEPAD_BUTTON_COUNT];
 
+static Sint16 s_vpad_script_axis[SDL_GAMEPAD_AXIS_COUNT];
+
 void openpete_host_input_vpad_script_button(int button, int down)
 {
     if (button < 0 || button >= SDL_GAMEPAD_BUTTON_COUNT) return;
@@ -530,13 +532,20 @@ void openpete_host_input_vpad_script_button(int button, int down)
     s_vpad_script_btn[button] = down != 0;
 }
 
-/** @brief Apply the scripted button state to the first virtual pad, axes centred. */
+void openpete_host_input_vpad_script_axis(int axis, int value)
+{
+    if (axis < 0 || axis >= SDL_GAMEPAD_AXIS_COUNT) return;
+    s_vpad_scripted = true;
+    s_vpad_script_axis[axis] = (Sint16)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
+}
+
+/** @brief Apply the scripted button and axis state to the first virtual pad. */
 static void vgamepad_drive_scripted(void)
 {
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
         SDL_SetJoystickVirtualButton(s_vpad, b, s_vpad_script_btn[b]);
     for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
-        SDL_SetJoystickVirtualAxis(s_vpad, a, 0);
+        SDL_SetJoystickVirtualAxis(s_vpad, a, s_vpad_script_axis[a]);
 }
 
 /** @brief Set every attached virtual pad's buttons and left stick from the VBL-indexed synthetic pattern.

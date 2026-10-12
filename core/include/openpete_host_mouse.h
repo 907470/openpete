@@ -259,7 +259,8 @@ int  openpete_host_mouse_take_screenshot_request(void);
 
 /** @brief Return 1 when a left double-click may toggle fullscreen.
  *
- * Allowed when the O menu is closed, no owner has requested capture, and
+ * Allowed when the O menu is closed, no binding capture is active
+ * (openpete_keymap_capture_active), no owner has requested capture, and
  * no host or mod action binds mouse:left. The caller separately excludes a
  * click the dev overlay wants. Pump thread.
  * @return 1 when allowed, else 0. */

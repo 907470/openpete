@@ -7,6 +7,7 @@
 #include "openpete_log.h"
 #include "openpete_mutex_once.h"
 #include "openpete_osd.h"
+#include "openpete_rebind.h"     /* openpete_rebind_settle_ids */
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -71,7 +72,7 @@ void openpete_settings_save_request(const char *const *ids, int n) {
     SDL_UnlockMutex(mx);
 }
 
-/** @brief Write the dirty set through knob_registry_save_ids and settle the set by the result.
+/** @brief Settle the dirty knobs and bindings, write the file once, and settle the set by the result.
  *
  * The set is copied under the mutex and written without it, so a mark from
  * the imgui frame thread never waits on the file. On success the copied
@@ -96,9 +97,20 @@ static int flush_now(const char *cause) {
         return 0;
     }
 
-    const char *ids[SAVE_DIRTY_MAX];
-    for (int i = 0; i < n; i++) ids[i] = copy[i].id;
-    const int rows = knob_registry_save_ids(ids, n);
+    /* Knob ids and binding ids (`keys.<domain>.<action>`) settle into the
+     * in-memory zone separately; the file is written once. */
+    const char *knob_ids[SAVE_DIRTY_MAX], *key_ids[SAVE_DIRTY_MAX];
+    int nk = 0, nb = 0;
+    for (int i = 0; i < n; i++) {
+        if (!strncmp(copy[i].id, "keys.", 5)) key_ids[nb++] = copy[i].id;
+        else knob_ids[nk++] = copy[i].id;
+    }
+    int rows = knob_registry_settle_ids(knob_ids, nk) +
+               openpete_rebind_settle_ids(key_ids, nb);
+    /* The file is written whenever a row was settled, changed in memory or
+     * not: a removal that a failed write left only in memory reaches disk
+     * on the retry. */
+    if (rows > 0 && openpete_config_save_flush() != 0) rows = -1;
 
     SDL_LockMutex(mx);
     if (rows >= 0) {

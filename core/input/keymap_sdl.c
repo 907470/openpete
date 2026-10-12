@@ -316,12 +316,26 @@ static unsigned long long km_sdl_now_ms(void) {
     return (unsigned long long)SDL_GetTicks(); /* clock-guard: wall (a hold lasts a wall-clock interval) */
 }
 
+/** @brief Read the pointer position in window points from the published input snapshot, for the capture prompt's rect test.
+ *
+ * @param x receives the x position.
+ * @param y receives the y position.
+ * @return 1, the snapshot always holds a position. */
+static int km_sdl_mouse_pos(float* x, float* y) {
+    openpete_mouse_state_t st;
+    openpete_host_input_mouse(&st);
+    *x = st.px;
+    *y = st.py;
+    return 1;
+}
+
 void openpete_keymap_install_sdl(void) {
     static const openpete_keymap_input_fns fns = {
         km_sdl_key_down, km_sdl_pad_button, km_sdl_pad_axis,
         km_sdl_pad_button_slot, km_sdl_pad_axis_slot,
         km_sdl_mouse_button, km_sdl_mouse_motion_total,
-        km_sdl_mouse_wheel_total, km_sdl_mouse_owned, km_sdl_now_ms
+        km_sdl_mouse_wheel_total, km_sdl_mouse_owned, km_sdl_now_ms,
+        km_sdl_mouse_pos
     };
     openpete_keymap_set_lookup(km_sdl_name_to_code, km_sdl_code_to_name,
                                km_sdl_key_label);

@@ -56,6 +56,10 @@ add_library(openpete_core STATIC
     # turns binding names into codes and reads whether they are held.
     input/keymap.c
     input/keymap_sdl.c
+    # The binding page's request queue and the side effects of an edit
+    # (toasts, log lines, save marks, the pad restamp generation), drained
+    # on the host loop. See openpete_rebind.h.
+    input/rebind.c
     # Host-owned pad decode: producer publishes an SDL-decoded snapshot, the
     # sim-side consumer arbitrates it against the other override writers and
     # stamps the PsyCross override channel. Split producer/consumer because

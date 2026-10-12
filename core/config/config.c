@@ -104,6 +104,20 @@ typedef struct { char id[CFG_KEY_MAX]; char value[CFG_VALUE_MAX]; } saved_t;
 static saved_t s_saved[CFG_MAX_SAVED];
 static int     s_saved_n;
 
+/* The zone's [saved.keys.<domain>] rows, round-tripped the same way: every
+ * row of the write target is copied at harvest (pad2..pad4 and mod.<id>
+ * included), so a flush rewrites the rows the binding page does not edit. */
+#define CFG_MAX_SAVED_KEYS 128
+#define CFG_SAVED_KEY_TOKS (KM_MAX_SOURCES * 2)
+typedef struct {
+    char domain[CFG_KEY_MAX];                    /* "pad", "host", "mod.<id>" */
+    char action[CFG_KEY_MAX];
+    char tok[CFG_SAVED_KEY_TOKS][CFG_KEY_MAX];
+    int  n;
+} saved_key_t;
+static saved_key_t s_saved_keys[CFG_MAX_SAVED_KEYS];
+static int         s_saved_keys_n;
+
 static char s_file_path[2][CFG_PATH_MAX];   /* [0] exe dir, [1] user dir */
 static int  s_file_present[2];
 static int  s_file_n;
@@ -951,6 +965,92 @@ static int harvest_disc_sha(int file) {
     return harvest_named(file, "disc", match, TIER_DISC_SHA, "disc");
 }
 
+/** @brief Find the in-memory [saved.keys] row of (domain, action).
+ *
+ * @return its index, or -1. */
+static int saved_key_find(const char *domain, const char *action) {
+    for (int i = 0; i < s_saved_keys_n; i++)
+        if (!strcmp(s_saved_keys[i].domain, domain) &&
+            !strcmp(s_saved_keys[i].action, action))
+            return i;
+    return -1;
+}
+
+/** @brief Store a [saved.keys] row in memory, replacing an existing row of the same (domain, action).
+ *
+ * @param domain "host", "pad".."pad4" or "mod.<id>".
+ * @param action the action id or mod binding name.
+ * @param toks the binding tokens; at most CFG_SAVED_KEY_TOKS are kept.
+ * @param n their count; 0 stores an unbinding row.
+ * @return 0, or -1 for a full table or an over-long name. */
+static int saved_key_put(const char *domain, const char *action,
+                         const char *const *toks, int n) {
+    if (strlen(domain) >= CFG_KEY_MAX || strlen(action) >= CFG_KEY_MAX) return -1;
+    int i = saved_key_find(domain, action);
+    if (i < 0) {
+        if (s_saved_keys_n >= CFG_MAX_SAVED_KEYS) return -1;
+        i = s_saved_keys_n++;
+        snprintf(s_saved_keys[i].domain, CFG_KEY_MAX, "%s", domain);
+        snprintf(s_saved_keys[i].action, CFG_KEY_MAX, "%s", action);
+    }
+    saved_key_t *k = &s_saved_keys[i];
+    k->n = 0;
+    for (int j = 0; j < n && k->n < CFG_SAVED_KEY_TOKS; j++)
+        snprintf(k->tok[k->n++], CFG_KEY_MAX, "%s", toks[j] ? toks[j] : "");
+    return 0;
+}
+
+/** @brief Copy every row of one [saved.keys.<domain>] table into memory: a string or an array of strings. */
+static void saved_keys_copy_table(const toml_table_t *tab, const char *domain) {
+    for (int i = 0;; i++) {
+        const char *key = toml_key_in(tab, i);
+        if (!key) break;
+        const char *toks[CFG_SAVED_KEY_TOKS];
+        char bufs[CFG_SAVED_KEY_TOKS][CFG_KEY_MAX];
+        int n = 0;
+        const toml_array_t *arr = toml_array_in(tab, key);
+        if (arr) {
+            const int m = toml_array_nelem(arr);
+            for (int j = 0; j < m && n < CFG_SAVED_KEY_TOKS; j++) {
+                toml_datum_t d = toml_string_at(arr, j);
+                if (!d.ok) continue;
+                snprintf(bufs[n], CFG_KEY_MAX, "%s", d.u.s);
+                free(d.u.s);
+                toks[n] = bufs[n];
+                n++;
+            }
+        } else {
+            toml_raw_t raw = toml_raw_in(tab, key);
+            char val[CFG_VALUE_MAX];
+            int ib = 0, bv = 0;
+            if (!raw || toml_scalar_to_string(raw, val, sizeof val, &ib, &bv) != 0)
+                continue;
+            snprintf(bufs[0], CFG_KEY_MAX, "%s", val);
+            toks[0] = bufs[0];
+            n = 1;
+        }
+        (void)saved_key_put(domain, key, toks, n);
+    }
+}
+
+/** @brief Copy the write target's [saved.keys.*] rows into memory, the mod.<id> tables included. */
+static void saved_keys_copy(const toml_table_t *keys) {
+    static const char *const domains[] = { "pad", "pad2", "pad3", "pad4", "host" };
+    for (size_t d = 0; d < sizeof domains / sizeof domains[0]; d++) {
+        const toml_table_t *tab = toml_table_in(keys, domains[d]);
+        if (tab) saved_keys_copy_table(tab, domains[d]);
+    }
+    const toml_table_t *mods = toml_table_in(keys, "mod");
+    for (int i = 0; mods; i++) {
+        const char *id = toml_key_in(mods, i);
+        if (!id) break;
+        const toml_table_t *mt = toml_table_in(mods, id);
+        char dom[CFG_KEY_MAX];
+        snprintf(dom, sizeof dom, "mod.%s", id);
+        if (mt) saved_keys_copy_table(mt, dom);
+    }
+}
+
 /** @brief Harvest the managed [saved] zone of file `file`: its bare keys and [saved.keys.*].
  *
  * Read like any other layer; written by the menus through
@@ -969,14 +1069,16 @@ static int harvest_saved(int file) {
     if (harvest_base(tab, TIER_SAVED, file, "saved", where, 0) != 0) return -1;
 
     /* [saved.keys.*] reads like any other scope, so the ladder has no
-     * hole at its top. Nothing WRITES it yet - the managed-zone writer is
-     * knob-id keyed and there is no rebind UI - and note that anything
-     * hand-written below the managed marker is regenerated away on the
-     * next menu save, so a hand-edited binding belongs in a normal scope
-     * (global, [game.*], [disc.*]) rather than here. */
+     * hole at its top. The binding page writes it through the settings
+     * writer (openpete_config_save_binding); the write target's rows are
+     * copied below so a flush rewrites every row it did not edit. Anything
+     * hand-written below the managed marker is regenerated on the next
+     * save, so a hand-edited binding belongs in a normal scope (global,
+     * [game.*], [disc.*]). */
     const toml_table_t *keys = toml_table_in(tab, "keys");
     if (keys && harvest_keys(keys, TIER_SAVED, file, "saved", where) != 0)
         return -1;
+    if (keys && file == s_write_file) saved_keys_copy(keys);
 
     /* A managed zone in a file that outranks the write target would beat
      * everything the menus save from here on - the settings screen would
@@ -1426,6 +1528,7 @@ static void reset_resolution(void) {
         s_file_present[f] = 0;
     }
     s_contrib_n = s_token_n = s_decision_n = s_saved_n = 0;
+    s_saved_keys_n = 0;
     s_pending_env_n = s_not_applied_n = 0;
     s_file_n = 0;
     s_write_file = 1;
@@ -1566,7 +1669,13 @@ static int resolve_stage(int argc, char **argv, int typed_argc,
     /* Seed the keymap from its registry defaults before any [keys] table
      * is read, so config rows layer on top of a populated store rather
      * than defining it. The game-neutral stage reads no [keys] table. */
-    if (!s_neutral) openpete_keymap_init();
+    if (!s_neutral) {
+        /* The binding page compares against the layers below [saved] and
+         * below the game scopes; every [keys] row is ranked against these. */
+        openpete_keymap_set_layer_bounds(RANK(TIER_SAVED, 0, SP_BASE),
+                                         RANK(TIER_GAME, 0, SP_BASE));
+        openpete_keymap_init();
+    }
 
     if (harvest_launch_and_global(argc, argv, typed_argc) != 0) return -1;
 
@@ -1818,6 +1927,22 @@ int openpete_config_unsave_knob(const char *knob_id) {
     return 0;
 }
 
+int openpete_config_save_binding(const char *domain, const char *action,
+                                 const char *const *toks, int n) {
+    if (!domain || !action || n < 0 || (n && !toks)) return -1;
+    return saved_key_put(domain, action, toks, n);
+}
+
+int openpete_config_unsave_binding(const char *domain, const char *action) {
+    if (!domain || !action) return 0;
+    const int i = saved_key_find(domain, action);
+    if (i < 0) return 0;
+    memmove(&s_saved_keys[i], &s_saved_keys[i + 1],
+            (size_t)(s_saved_keys_n - i - 1) * sizeof s_saved_keys[0]);
+    s_saved_keys_n--;
+    return 1;
+}
+
 int openpete_config_knob_value_below_saved(const char *knob_id, char *buf,
                                            size_t cap) {
     const int ki = cfg_schema_find_id(knob_id);
@@ -1866,6 +1991,85 @@ static void write_saved_value(FILE *f, const cfg_knob_t *k, const char *v) {
     }
 }
 
+/** @brief Write a TOML basic string, escaping backslash and quote (SDL names the backslash key "\\"). */
+static void write_toml_string(FILE *f, const char *v) {
+    fputc('"', f);
+    for (const char *p = v ? v : ""; *p; p++) {
+        if (*p == '\\' || *p == '"') fputc('\\', f);
+        fputc(*p, f);
+    }
+    fputc('"', f);
+}
+
+/** @brief Write a TOML key: bare when it is all letters, digits, '_' and '-', else quoted. */
+static void write_toml_key(FILE *f, const char *k) {
+    int bare = *k != '\0';
+    for (const char *p = k; *p && bare; p++)
+        bare = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+               (*p >= '0' && *p <= '9') || *p == '_' || *p == '-';
+    if (bare) fputs(k, f);
+    else      write_toml_string(f, k);
+}
+
+/** @brief Write one [saved.keys] row: an array of strings, or for a mod.<id> row one string with the tokens joined by ',' ("none" when empty). */
+static void write_saved_key_row(FILE *out, const saved_key_t *k) {
+    write_toml_key(out, k->action);
+    fputs(" = ", out);
+    if (!strncmp(k->domain, "mod.", 4)) {
+        char joined[CFG_VALUE_MAX] = "";
+        for (int t = 0; t < k->n; t++) {
+            if (t) strncat(joined, ",", sizeof joined - strlen(joined) - 1);
+            strncat(joined, k->tok[t], sizeof joined - strlen(joined) - 1);
+        }
+        write_toml_string(out, k->n ? joined : "none");
+    } else {
+        fputc('[', out);
+        for (int t = 0; t < k->n; t++) {
+            if (t) fputs(", ", out);
+            write_toml_string(out, k->tok[t]);
+        }
+        fputc(']', out);
+    }
+    fputc('\n', out);
+}
+
+/** @brief Write the [saved.keys.<domain>] tables, one per domain in first-seen order.
+ *
+ * A host or pad row is an array of strings. A mod.<id> row is one string,
+ * the tokens joined by ',', since the [keys.mod.<id>] reader takes a
+ * string only. */
+static void write_saved_keys(FILE *out) {
+    for (int i = 0; i < s_saved_keys_n; i++) {
+        int seen = 0;
+        for (int j = 0; j < i && !seen; j++)
+            seen = !strcmp(s_saved_keys[j].domain, s_saved_keys[i].domain);
+        if (seen) continue;
+        const char *dom = s_saved_keys[i].domain;
+        fputs("[saved.keys.", out);
+        if (!strncmp(dom, "mod.", 4)) { fputs("mod.", out); write_toml_key(out, dom + 4); }
+        else                          fputs(dom, out);
+        fputs("]\n", out);
+        for (int j = i; j < s_saved_keys_n; j++)
+            if (!strcmp(s_saved_keys[j].domain, dom)) write_saved_key_row(out, &s_saved_keys[j]);
+    }
+}
+
+/** @brief Return whether a span of config text holds a `[saved` table header at the start of a line. */
+static int text_has_saved_header(const char *text, size_t len) {
+    size_t i = 0;
+    while (i < len) {
+        size_t j = i;
+        while (j < len && (text[j] == ' ' || text[j] == '\t')) j++;
+        if (len - j >= 6 && !strncmp(text + j, "[saved", 6) &&
+            (j + 6 == len || text[j + 6] == ']' || text[j + 6] == '.' ||
+             text[j + 6] == ' ' || text[j + 6] == '\t'))
+            return 1;
+        while (i < len && text[i] != '\n') i++;
+        i++;
+    }
+    return 0;
+}
+
 int openpete_config_save_flush(void) {
     if (!s_save_path[0]) {
         fprintf(stderr, "openpete: config: nowhere to save (no writable config path)\n");
@@ -1893,6 +2097,17 @@ int openpete_config_save_flush(void) {
         fclose(in);
     }
 
+    /* The reader cannot tell [saved] rows above the marker from the zone's,
+     * so writing the zone under a hand-written [saved] table would define
+     * the table twice and fail the next parse. */
+    if (head && text_has_saved_header(head, head_len)) {
+        fprintf(stderr, "openpete: config: %s has a [saved] table above the "
+                "managed marker; not saving (move it below the marker or "
+                "delete it)\n", s_save_path);
+        free(head);
+        return -1;
+    }
+
     op_atomic_file_t af;
     if (op_atomic_file_open(&af, s_save_path) != 0) {
         fprintf(stderr, "openpete: config: cannot write beside %s\n", s_save_path);
@@ -1915,6 +2130,7 @@ int openpete_config_save_flush(void) {
             write_saved_value(out, &cfg_schema(NULL)[ki], s_saved[i].value);
         }
     }
+    write_saved_keys(out);
     /* The commit checks every write above (the stream's error flag), the
      * flush, sync and close, and replaces the file in one rename; on any
      * failure the previous file stays whole. */
@@ -1923,13 +2139,14 @@ int openpete_config_save_flush(void) {
                 s_save_path);
         return -1;
     }
-    fprintf(stderr, "openpete: config: saved %d setting(s) to %s\n",
-            s_saved_n, s_save_path);
+    fprintf(stderr, "openpete: config: saved %d setting(s) and %d binding(s) to %s\n",
+            s_saved_n, s_saved_keys_n, s_save_path);
     return 0;
 }
 
 int openpete_config_reset_saved(void) {
     s_saved_n = 0;
+    s_saved_keys_n = 0;
     return openpete_config_save_flush();
 }
 

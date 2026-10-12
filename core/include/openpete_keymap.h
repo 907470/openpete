@@ -444,9 +444,14 @@ typedef struct {
     long long (*mouse_motion_total)(int axis);
     long long (*mouse_wheel_total)(void);
     int       (*mouse_owned)(void);
-    /* Monotonic milliseconds, read by "hold:" sources at each poll. NULL
-     * leaves every hold source not held. */
+    /* Monotonic milliseconds, read by "hold:" sources at each poll and by
+     * the capture timeout. NULL leaves every hold source not held and the
+     * capture without a timeout. */
     unsigned long long (*now_ms)(void);
+    /* The pointer position in window points, for the capture prompt's rect
+     * test. Returns 0 when no position is known; NULL places the pointer
+     * outside every rect. */
+    int (*mouse_pos)(float* x, float* y);
 } openpete_keymap_input_fns;
 
 /** @brief Install the reads the resolver evaluates bindings with.
@@ -733,6 +738,16 @@ void openpete_keymap_suspend_keyboard(int on, const openpete_action_t* exempt, i
  * @param n number of members of exempt. */
 void openpete_keymap_suspend_pad(int on, const openpete_action_t* exempt, int n);
 
+/** @brief Return the actions whose live pad sources stay readable while the settings menu is open.
+ *
+ * The run loop suspends every other live pad source while the menu is
+ * open, as it does under the dev overlay's pad navigation, so a hold: pad
+ * hotkey sharing a button with menu navigation never fires in the menu:
+ * the KM_CTX_MENU actions and the two overlay toggles (menu, devui).
+ * @param n receives the number of actions, or NULL.
+ * @return the actions, a static list. */
+const openpete_action_t* openpete_keymap_menu_pad_exempt(int* n);
+
 /* ---- diagnostics / consumers ---------------------------------------- */
 
 /** @brief Copy an action's stored sources, for consumers that need the binding rather than a live read.
@@ -824,10 +839,24 @@ int openpete_keymap_key_binds(openpete_action_t a, int scancode);
  * consumes (Escape dismissing the dev overlay or the settings menu); the
  * key then reads released to every polled binding until
  * openpete_keymap_poll sees it physically released, so one press produces
- * one action and the next press is live. The list holds 8 keys; a
- * duplicate is ignored and a key past the eighth is not recorded.
+ * one action and the next press is live. Equivalent to
+ * openpete_keymap_consume_input(KM_SRC_KEY, scancode); safe from any
+ * thread.
  * @param scancode the SDL scancode. */
 void openpete_keymap_consume_key(int scancode);
+
+/** @brief Latch one input as consumed until openpete_keymap_poll sees it released.
+ *
+ * The latch is one bitset per kind: keys (KM_SCAN_KEYS scancodes), player
+ * 1's pad buttons (KM_SCAN_PADBTNS), pad axes (KM_SCAN_PADAXES; released
+ * once the axis reads under KM_AXIS_PRESS either way) and mouse buttons
+ * (KM_MOUSE_LEFT..KM_MOUSE_X2). A consumed input reads released to every
+ * live keymap read; the pad decode of the game reads SDL directly and is
+ * not affected. Safe from any thread.
+ * @param kind KM_SRC_KEY, KM_SRC_PADBTN, KM_SRC_PADAXIS or KM_SRC_MOUSEBTN;
+ *        another kind or an out-of-range code is ignored.
+ * @param code the scancode, button, axis or KM_MOUSE_* code. */
+void openpete_keymap_consume_input(int kind, int code);
 
 /** @brief Return the display spelling of a mod binding's stored first source.
  *
@@ -842,6 +871,292 @@ void openpete_keymap_consume_key(int scancode);
 const char* openpete_keymap_mod_effective_key(const char* mod_id,
                                               const char* name,
                                               const char* fallback);
+
+/* ---- binding editor -------------------------------------------------- */
+
+/* The input ranges the capture scans and the consume latch covers: SDL3's
+ * scancode, gamepad button and gamepad axis counts. */
+#define KM_SCAN_KEYS    512
+#define KM_SCAN_PADBTNS 32
+#define KM_SCAN_PADAXES 8
+
+/* Past this throw a pad axis reads as pressed (a trigger as a button, a
+ * stick direction in the capture and the consume latch). */
+#define KM_AXIS_PRESS  16384
+
+/* The capture cancels when no candidate arrives in this many milliseconds
+ * of the now_ms seam. */
+#define KM_CAPTURE_TIMEOUT_MS 5000
+
+/* Mouse motion past this many counts since the capture armed is a
+ * candidate on an axis action. */
+#define KM_CAPTURE_MOTION 64
+
+/* Which PsyCross fields a player-1 pad action feeds (stamp_psx_pad_bindings
+ * writes them; the binding editor admits only what they hold). */
+typedef enum {
+    KM_PADSHAPE_NONE = 0,     /* not a player-1 pad action */
+    KM_PADSHAPE_KEY_AND_PAD,  /* one key and one gamepad button or axis */
+    KM_PADSHAPE_KEY_ONLY,     /* one key: the WASD stick directions */
+    KM_PADSHAPE_AXIS_ONLY     /* one gamepad axis: the four stick axes */
+} km_pad_shape_t;
+
+/** @brief Return the PsyCross field shape of a player-1 pad action.
+ *
+ * @param a the action.
+ * @return the shape; KM_PADSHAPE_NONE for any action outside the player-1
+ *         pad block. */
+km_pad_shape_t openpete_keymap_pad_shape(openpete_action_t a);
+
+/* One registry row, for the binding page. */
+typedef struct {
+    const char* id;        /* "cross", "pause" */
+    const char* purpose;   /* the registry's one-line purpose */
+    int         domain;    /* KM_DOM_* */
+    int         kind;      /* KM_DIGITAL or KM_AXIS */
+    int         ctx;       /* KM_CTX_* */
+    unsigned    flags;     /* KM_DEV, KM_REQUIRED, KM_LEVEL, KM_DELTA, ... */
+} openpete_keymap_action_info_t;
+
+/** @brief Copy an action's registry row.
+ *
+ * @param a the action.
+ * @param out receives the row; NULL fails.
+ * @return 1 when a is a valid action, 0 otherwise. */
+int openpete_keymap_action_info(openpete_action_t a,
+                                openpete_keymap_action_info_t* out);
+
+/** @brief Return the action a config domain and id name.
+ *
+ * @param domain "host" or "pad".."pad4", any case.
+ * @param id the action id.
+ * @return the action, or -1 when none matches. */
+int openpete_keymap_find_action(const char* domain, const char* id);
+
+/** @brief Return the config spelling of an action's domain.
+ *
+ * @param a the action; out of range returns "host".
+ * @return "host" or "pad".."pad4". */
+const char* openpete_keymap_domain_name(openpete_action_t a);
+
+/** @brief Write one source in the config spelling a saved row stores.
+ *
+ * The spelling openpete_keymap_report prints without the layout label
+ * ("hold:pad:south", "mouse:wheel_up", "Q"), so the token parses back
+ * through the [keys] parser.
+ * @param s the source; NULL writes "".
+ * @param out receives the text, always NUL-terminated.
+ * @param cap capacity of out in bytes; at least 1. */
+void openpete_keymap_source_token(const km_source_t* s, char* out, size_t cap);
+
+/** @brief Write one source in the spelling a player reads, as openpete_keymap_action_label does for one source without the hold suffix.
+ *
+ * @param s the source; NULL writes "".
+ * @param out receives the text, always NUL-terminated.
+ * @param cap capacity of out in bytes; at least 1. */
+void openpete_keymap_source_label(const km_source_t* s, char* out, size_t cap);
+
+/** @brief List the actions a capture of a source onto an action conflicts with.
+ *
+ * Action B conflicts when it is not a, is a host or player-1 pad action
+ * whose context overlaps a's, holds a source contesting src (kind and
+ * code, an axis also its polarity; hold and device ignored), is not a
+ * deliberate pair with a, and the two sources are not an intended overlap:
+ * a hold: pad source on a host button action against the same plain pad
+ * button or trigger on a pad action, whichever side holds which.
+ * @param a the action being edited.
+ * @param src the candidate source.
+ * @param out receives up to cap conflicting actions, or NULL.
+ * @param cap capacity of out.
+ * @return the number of conflicting actions (may exceed cap). */
+int openpete_keymap_conflicts(openpete_action_t a, const km_source_t* src,
+                              openpete_action_t* out, int cap);
+
+/** @brief Replace an action's live binding, as a [saved] row would set it.
+ *
+ * Writes the list at the saved layer's rank with origin "saved", marks the
+ * action's has-saved bit, clears its hold timers and reruns
+ * openpete_keymap_resolve. Takes the store lock.
+ * @param a the action.
+ * @param src the new sources.
+ * @param n number of sources, 0..KM_MAX_SOURCES.
+ * @return 0, or -1 for an invalid action or count. */
+int openpete_keymap_set_live(openpete_action_t a, const km_source_t* src, int n);
+
+/** @brief Set the ranks that bound the saved layer and the global layer.
+ *
+ * openpete_keymap_set records per action the best call ranked below
+ * saved_rank (the binding a restore returns to) and below game_rank (the
+ * global layer), and whether a call ranked in [game_rank, saved_rank)
+ * bound the action (a game or disc scope). A call at saved_rank or above
+ * sets the has-saved bit. Until called every call is below both bounds.
+ * @param saved_rank the lowest rank of the saved layer.
+ * @param game_rank the lowest rank of the game scopes. */
+void openpete_keymap_set_layer_bounds(int saved_rank, int game_rank);
+
+/** @brief Return whether an action's live binding comes from the saved layer.
+ *
+ * Set by a [saved.keys] row at boot and by every edit; cleared by a
+ * restore and by openpete_keymap_clear_saved. Takes the store lock.
+ * @param a the action; out of range reads 0.
+ * @return 1 when saved, 0 otherwise. */
+int openpete_keymap_has_saved(openpete_action_t a);
+
+/** @brief Clear an action's has-saved bit after its saved row was removed.
+ *
+ * @param a the action; out of range is ignored. */
+void openpete_keymap_clear_saved(openpete_action_t a);
+
+/** @brief Copy the binding below the saved layer, the one a restore returns to.
+ *
+ * @param a the action.
+ * @param out receives up to cap sources.
+ * @param cap capacity of out.
+ * @param origin receives the layer's origin label ("default", "global",
+ *        "game.spyro-1"), or NULL.
+ * @param origin_cap capacity of origin.
+ * @return the number of sources copied, or -1 for an invalid action. */
+int openpete_keymap_below_saved(openpete_action_t a, km_source_t* out, int cap,
+                                char* origin, size_t origin_cap);
+
+/** @brief Copy the global layer's binding of an action, and whether a game or disc scope binds it.
+ *
+ * The settings writer removes a saved row whose live binding equals the
+ * global layer when no game or disc scope binds the action.
+ * @param a the action.
+ * @param out receives up to cap sources.
+ * @param cap capacity of out.
+ * @param scoped receives 1 when a game or disc scope binds the action, or
+ *        NULL.
+ * @return the number of sources copied, or -1 for an invalid action. */
+int openpete_keymap_global_layer(openpete_action_t a, km_source_t* out, int cap,
+                                 int* scoped);
+
+/* What one binding edit did. The capture, a remove and a restore each
+ * produce one; the caller turns it into toasts, log lines, save marks and
+ * the pad restamp. */
+typedef enum {
+    KM_EDIT_NONE = 0,
+    KM_EDIT_COMMITTED,   /* a captured source was written */
+    KM_EDIT_REFUSED,     /* nothing written; reason says why */
+    KM_EDIT_CANCELLED,   /* the capture ended without a candidate */
+    KM_EDIT_REMOVED,     /* one source was removed */
+    KM_EDIT_RESTORED     /* the binding below the saved layer is live again */
+} km_edit_kind_t;
+
+#define KM_EDIT_MAX_CHANGED 8
+
+typedef struct {
+    int  kind;            /* km_edit_kind_t */
+    int  action;          /* the action edited (A) */
+    char reason[192];     /* refusal reason or cancel cause */
+    char token[64];       /* the committed source in the config spelling */
+    /* Every action the edit wrote: [0] is A, the rest the actions the
+     * conflict rule swapped. old_tok/new_tok name the swapped source of a B
+     * ("none" when it lost the source). */
+    int  n_changed;
+    struct { int action; char old_tok[64]; char new_tok[64]; } changed[KM_EDIT_MAX_CHANGED];
+    int  pad_changed;     /* a player-1 pad action changed */
+} openpete_keymap_edit_t;
+
+/* The capture states, published in the low bits of the capture word. */
+typedef enum {
+    KM_CAP_IDLE = 0,
+    KM_CAP_WAITING,      /* waiting for every input to be released */
+    KM_CAP_ARMED,        /* the next press is the candidate */
+    KM_CAP_CANDIDATE     /* the candidate is held; its release commits */
+} km_cap_state_t;
+
+/* Capture word layout: state in bits 0-3, slot in bits 4-7 (15 = add),
+ * hold in bit 8, the action from bit 16. */
+#define KM_CAPWORD_STATE(w)  ((int)((w) & 0xFu))
+#define KM_CAPWORD_SLOT(w)   ((int)(((w) >> 4) & 0xFu))
+#define KM_CAPWORD_HOLD(w)   ((int)(((w) >> 8) & 1u))
+#define KM_CAPWORD_ACTION(w) ((int)((w) >> 16))
+#define KM_CAPWORD_ADD       15
+
+/** @brief Start capturing a source for one slot of an action.
+ *
+ * The capture waits for every input to be released, takes the next press
+ * as the candidate and commits on its release (a wheel notch or mouse
+ * motion commits at once); openpete_keymap_poll advances it. While it runs
+ * every action reads neutral. Host loop only.
+ * @param a a host or player-1 pad action.
+ * @param slot the source index to replace, or -1 to add a source.
+ * @param hold nonzero to add a "hold:" source (host button actions only;
+ *        a replace keeps the slot's own hold flag).
+ * @param refused receives the refusal when the capture cannot start, or
+ *        NULL.
+ * @return 0 when the capture started, -1 when refused. */
+int openpete_keymap_capture_begin(openpete_action_t a, int slot, int hold,
+                                  openpete_keymap_edit_t* refused);
+
+/** @brief End a running capture without a commit.
+ *
+ * Every input still held is latched consumed until released. The result
+ * (KM_EDIT_CANCELLED with the cause) is taken through
+ * openpete_keymap_capture_take_result. No-op when no capture runs. Host
+ * loop only.
+ * @param cause the cancel cause for the log ("escape", "timeout"). */
+void openpete_keymap_capture_cancel(const char* cause);
+
+/** @brief Take the result of the capture that last ended.
+ *
+ * @param out receives the result.
+ * @return 1 when a result was pending, 0 otherwise. */
+int openpete_keymap_capture_take_result(openpete_keymap_edit_t* out);
+
+/** @brief Return the published capture word; safe from any thread.
+ *
+ * @return the word, decoded by the KM_CAPWORD_* macros; 0 while idle. */
+unsigned openpete_keymap_capture_word(void);
+
+/** @brief Return whether a capture runs or the inputs latched at its end are still held.
+ *
+ * True from openpete_keymap_capture_begin until the capture ends and every
+ * input it latched is released. Safe from any thread.
+ * @return 1 while active, 0 otherwise. */
+int openpete_keymap_capture_active(void);
+
+/** @brief Return whether the capture holds input neutral: openpete_keymap_capture_active, unless OPENPETE_REBIND_MUTATE_NO_CAPTURE_TERM is set.
+ *
+ * While it reads 1 every action reads neutral to the live reads
+ * (openpete_key_down, openpete_key_pressed, pulses, deltas,
+ * openpete_key_axis), openpete_keymap_scancode_down and
+ * openpete_keymap_source_down read 0, and the run loop holds player 1's pad
+ * neutral. The environment variable is the harness's negative control.
+ * Safe from any thread.
+ * @return 1 while input is held neutral, 0 otherwise. */
+int openpete_keymap_capture_neutral(void);
+
+/** @brief Publish the capture prompt's rect in window points; a mouse press inside it is a candidate, outside it cancels.
+ *
+ * An empty rect (x1 <= x0 or y1 <= y0) places every press outside. Safe
+ * from any thread.
+ * @param x0 left edge.
+ * @param y0 top edge.
+ * @param x1 right edge.
+ * @param y1 bottom edge. */
+void openpete_keymap_capture_set_rect(float x0, float y0, float x1, float y1);
+
+/** @brief Remove one source from an action.
+ *
+ * Refused when it would leave `menu` or `devui` without a pad source.
+ * Host loop only.
+ * @param a the action.
+ * @param slot the source index.
+ * @param out receives the result.
+ * @return 0 when removed, -1 when refused. */
+int openpete_keymap_remove_source(openpete_action_t a, int slot,
+                                  openpete_keymap_edit_t* out);
+
+/** @brief Make the binding below the saved layer live again and clear the has-saved bit.
+ *
+ * Host loop only.
+ * @param a the action.
+ * @param out receives the result.
+ * @return 0 when restored, -1 for an invalid action. */
+int openpete_keymap_restore(openpete_action_t a, openpete_keymap_edit_t* out);
 
 #ifdef __cplusplus
 }

@@ -2826,7 +2826,7 @@ static int knob_config_values_equal(const knob_desc_t *k, const char *a,
     return !strcmp(a, b);
 }
 
-int knob_registry_save_ids(const char *const *ids, int n) {
+int knob_registry_settle_ids(const char *const *ids, int n) {
     size_t count;
     knob_desc_t *ks = knob_registry(&count);
     int rows = 0;
@@ -2852,6 +2852,11 @@ int knob_registry_save_ids(const char *const *ids, int n) {
             rows++;
         }
     }
+    return rows;
+}
+
+int knob_registry_save_ids(const char *const *ids, int n) {
+    const int rows = knob_registry_settle_ids(ids, n);
     /* The file is written whenever a row was settled, changed in memory or
      * not: a removal that a failed write left only in memory reaches disk
      * on the retry. */

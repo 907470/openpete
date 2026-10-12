@@ -43,6 +43,7 @@ notification naming the row and its new value; see
 | **DITHER** | **OFF**, **15-BIT** | {{ config_key("knob:dither") }} <!-- id: knob:dither --> | [PlayStation look](../graphics/retro-look.md#dither) |
 | **LOD** | **ORIGINAL**, **EXTENDED** | {{ config_key("knob:lod") }} <!-- id: knob:lod --> | [Quality](../graphics/quality.md#level-of-detail) |
 | **FREECAM** | **OFF**, **ON** | `freecam` <!-- id: knob:freecam --> | [Practice tools](practice-tools.md#free-camera) |
+| **ADVANCED** | **OPEN** | | [below](#advanced) |
 | **EXIT GAME** | | | [below](#exit-game) |
 
 **SHOW FPS** **OFF** hides the performance readout and **ON** shows it. The
@@ -72,6 +73,14 @@ settings beat the rest of the file, but a flag typed on the command line or
 an exported environment variable beats them for that launch; a menu change
 to such a setting is still saved and applies on a launch without the flag or
 variable. See [The config file](../customizing/config-file.md).
+
+## ADVANCED
+
+Changing **ADVANCED** <!-- id: menu:menu.advanced --> closes the menu and
+opens the [dev overlay](dev-overlay.md) on its
+[Controls](dev-overlay.md#controls) section, where every other setting and
+the key bindings are. When the overlay is not available it shows
+**NOT AVAILABLE**.
 
 ## EXIT GAME
 
