@@ -1,0 +1,7 @@
+# Savestate round-trip corpus for Spyro 2, read by
+# tests/harness/check_state_roundtrip.sh. Fields and values: see
+# games/spyro-1/corpus/state-roundtrip.manifest. Spyro 2 runs cardless
+# (oracle.conf RUN_ARGS carries --no-card).
+pause-menu-midlevel.bk2                          | none | - | -    |
+autumn-plains-skelos-badlands-portal-entry.bk2   | none | - | -    |
+shady-oasis-flame.bk2                            | none | - | 1500 |

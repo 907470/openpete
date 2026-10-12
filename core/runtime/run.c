@@ -3576,6 +3576,27 @@ static state_op_t s_state_ops[STATE_OP_QUEUE_LEN];
 static int s_state_op_n = 0;
 static unsigned long long s_state_ops_deferred[2];  /* requests that waited: [0] saves, [1] loads */
 static unsigned long long s_state_yields_skipped = 0;  /* drains at an intermediate yield */
+/* Runahead's share of s_state_ops_deferred: [0] snapshots owed to a later
+ * yield (ra_owed), [1] rollbacks whose speculation ended below a non-final
+ * yield. */
+static unsigned long long s_ra_deferred[2];
+static unsigned long long s_ra_adopted_nofinal = 0;  /* speculations adopted: no final yield within the bound */
+
+/** @brief Count one runahead snapshot (kind 0) or rollback (kind 1) deferred to a final yield.
+ * @param kind 0 for a snapshot, 1 for a rollback. */
+static void ra_count_deferral(int kind) {
+    s_ra_deferred[kind]++;
+    s_state_ops_deferred[kind]++;
+}
+
+/** @brief Carry a runahead snapshot owed to a later yield, counting the request once when it first waits.
+ * @param owe Nonzero when this yield owes the snapshot (due, not at a final yield).
+ * @param owed The value carried from the previous yield.
+ * @return The value to carry to the next yield. */
+static int ra_note_owed(int owe, int owed) {
+    if (owe && !owed) ra_count_deferral(0);
+    return owe;
+}
 
 /** @brief Queue one savestate request for the next final yield.
  * @param kind The operation.
@@ -3631,6 +3652,57 @@ static int state_ops_drain(void) {
     for (int i = 0; i < s_state_op_n; i++) state_op_run(&s_state_ops[i]);
     s_state_op_n = 0;
     return 1;
+}
+
+/** @brief Continue a runahead speculation until the game fiber parks at a final yield, so the rollback loads only there.
+ *
+ * The rollback restores a snapshot taken at a final yield and the fiber then
+ * resumes wherever it is parked; below any other yield its host call stack is
+ * not the one the snapshot continues from. The speculation loop ends at a
+ * final yield when it breaks on the tick count, but its yield bound and its
+ * no-advance break (the no-tick yield after a stubbed dispatch) can leave the
+ * fiber at an intermediate yield. Speculation then continues with the same
+ * held input, the rollback counted as deferred, until a final yield or the
+ * bound.
+ * @param live_lost Nonzero when the speculation already left gameplay (it is
+ *        adopted; nothing runs).
+ * @param cap Further yields allowed.
+ * @param nofinal Set to 1 when no final yield came within `cap`.
+ * @return 0 when parked at a final yield (the rollback may load), 1 when the
+ *         speculation is adopted instead: gameplay stopped being live, or
+ *         no final yield came within `cap`. */
+static int ra_speculate_to_final(int live_lost, int cap, int* nofinal) {
+    if (live_lost) return 1;
+    if (openpete_yield_final) return 0;
+    ra_count_deferral(1);
+    OPL_DEBUG_F("runahead", "speculation ended below an intermediate yield at f=%u; "
+                "rollback deferred to the next final yield", openpete_frame);
+    for (int v = 0; v < cap && !openpete_yield_final; v++) {
+        game_on_frame_pre(&g_game.cpu, openpete_frame);
+        g_openpete_guest_running = 1;
+        co_switch((cothread_t)openpete_game_fiber);
+        g_openpete_guest_running = 0;
+        if (!game_is_gameplay_live(&g_game.cpu)) return 1;
+    }
+    if (openpete_yield_final) return 0;
+    s_ra_adopted_nofinal++;
+    *nofinal = 1;
+    return 1;
+}
+
+/** @brief Log the adoption of a speculation into the real timeline, naming why no rollback ran.
+ * @param nofinal Nonzero when no final yield came within the bound; zero when
+ *        the speculation crossed out of gameplay. */
+static void ra_adopt_log(int nofinal) {
+    if (nofinal)
+        OPL_WARN_F("runahead",
+                   "speculation reached no final yield within its bound; adopted "
+                   "the led timeline through f=%u", openpete_frame);
+    else
+        OPL_INFO_F("runahead",
+                   "speculation crossed into a transition; adopted "
+                   "the led timeline through f=%u (runahead idle "
+                   "until gameplay resumes)", openpete_frame);
 }
 
 /** @brief Queue the savestate requests raised this iteration: the hotkeys, a mod's request and the scheduled one-shots.
@@ -5476,6 +5548,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 int ra_want = (runahead_n > 0 && ra_snap &&
                                game_is_gameplay_live(&g_game.cpu));
                 int ra_live_lost = 0;
+                int ra_nofinal = 0;   /* adopted: no final yield within the bound */
                 /* The snapshot is taken at a final yield only: a tick whose
                  * draw is first seen at an intermediate yield of its wait
                  * owes its speculation to the wait's final yield. */
@@ -5483,7 +5556,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 if (!ra_want) openpete_ra_input_edge = 0;
                 const int ra_due = ra_want && (openpete_present_pending || ra_owed);
                 const int ra_now = ra_due && openpete_yield_final;
-                ra_owed = ra_due && !ra_now;
+                ra_owed = ra_note_owed(ra_due && !ra_now, ra_owed);
                 if (ra_now &&
                     openpete_state_mem_save(ra_snap, &g_game.cpu,
                                             openpete_frame) == 0) {
@@ -5618,6 +5691,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                             break;
                         }
                     }
+                    /* The rollback below loads only at a final yield. */
+                    ra_live_lost = ra_speculate_to_final(ra_live_lost, 8 * runahead_n + 16,
+                                                         &ra_nofinal);
                     openpete_speculative = 0;
                     openpete_pace_vbl_suspend(0);
                     /* An adopted speculation is the timeline: its frames
@@ -5674,10 +5750,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * across the adopted VBLs. */
                     openpete_interp_reset();
                     openpete_interp_objs_reset();
-                    OPL_INFO_F("runahead",
-                               "speculation crossed into a transition; adopted "
-                               "the led timeline through f=%u (runahead idle "
-                               "until gameplay resumes)", openpete_frame);
+                    ra_adopt_log(ra_nofinal);
                 }
 
                 /* Snapshot the transform-bearing regions into the
@@ -7312,8 +7385,11 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     rumble_census_report();
     OPL_INFO_F("savestate", "deferred to a final yield: %llu snapshot request(s), %llu load request(s); "
-               "periodic state work sat out %llu intermediate yield(s)",
-               s_state_ops_deferred[0], s_state_ops_deferred[1], s_state_yields_skipped);
+               "periodic state work sat out %llu intermediate yield(s); "
+               "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "
+               "%llu adopted with no final yield",
+               s_state_ops_deferred[0], s_state_ops_deferred[1], s_state_yields_skipped,
+               s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted_nofinal);
     {
         /* The VBL delivery census (games/common/psyq/psyq_thunks.cpp). */
         extern void psyq_vbl_delivery_report(void) __attribute__((weak));

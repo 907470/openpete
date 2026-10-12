@@ -1,0 +1,4 @@
+# Savestate round-trip corpus for Spyro 3, read by
+# tests/harness/check_state_roundtrip.sh. Fields and values: see
+# games/spyro-1/corpus/state-roundtrip.manifest.
+- | none | - | 1500 |

@@ -20,7 +20,8 @@
 # pixels). Headless presents one canonical picture per tick, so both members
 # of a tick's VBL pair carry the same image.
 #
-# Per row of games/<slug>/corpus/runahead-corpus.manifest (bk2 | vbl | depth), two
+# Per row of games/<slug>/corpus/runahead-corpus.manifest
+# (bk2 | vbl | depth | deferral, the last optional), two
 # headless replays of the movie:
 #   (a) --runahead <depth>, native capture at <vbl>;
 #   (b) no runahead, native capture at <vbl> + 2*<depth>.
@@ -35,12 +36,22 @@
 # OPENPETE_RA_PREDICT_CHECK=1, which counts led predictions retired against
 # the committed timeline. A run that never speculated would meet the pixel
 # criterion trivially, so it is VACUOUS instead of PASS. A row whose
-# speculation was adopted into the real timeline (`crossed into a transition`)
-# before its VBL is also VACUOUS: nothing led that capture.
+# speculation was adopted into the real timeline (`crossed into a transition`,
+# or `reached no final yield`) before its VBL is also VACUOUS: nothing led
+# that capture.
+#
+# Deferral: the runahead leg's `deferred to a final yield:` line is printed
+# per row; its `runahead:` part counts the speculation snapshots owed to a
+# later yield (the tick's draw first seen below an intermediate yield of its
+# wait) and the rollbacks whose speculation ended below one. A run without
+# the line is FAIL. A row whose deferral field is `>0` FAILs when both runahead
+# counts are zero: its intermediate yields (a mode-2 tick's VSync(2), an
+# emitted site, the spin tick) never met a snapshot request.
 #
 # Verdict line, one per row:
 #   [runahead-ident] game=<g> row=<bk2>@<vbl> depth=<n> diffpx=<n>
-#                    maxabs=<n> checked=<n> verdict=PASS|FAIL|VACUOUS
+#                    maxabs=<n> checked=<n> ra_deferred=<owed>/<rollbacks>
+#                    verdict=PASS|FAIL|VACUOUS
 #
 # Usage: tests/harness/check_runahead_ident.sh [--game SLUG] [--filter SUBSTR]
 #                                        [--build-dir=DIR] [--help]
@@ -78,8 +89,8 @@ mkdir -p "$OUT"
 
 fail=0
 rows=0
-while IFS='|' read -r bk2 vbl depth; do
-    bk2="${bk2// /}"; vbl="${vbl// /}"; depth="${depth// /}"
+while IFS='|' read -r bk2 vbl depth want_def; do
+    bk2="${bk2// /}"; vbl="${vbl// /}"; depth="${depth// /}"; want_def="${want_def//[[:space:]]/}"
     [[ -z "$bk2" || "$bk2" == \#* ]] && continue
     [[ -n "$FILTER" && "$bk2" != *"$FILTER"* ]] && continue
     MOVIE="$PG_BK2_DIR/$bk2"
@@ -115,7 +126,7 @@ while IFS='|' read -r bk2 vbl depth; do
     armed=0
     grep -q 'armed: leading presentation by' "$RA_LOG" && armed=1
     adopted=0
-    grep -q 'crossed into a transition' "$RA_LOG" && adopted=1
+    grep -q 'crossed into a transition\|reached no final yield' "$RA_LOG" && adopted=1
     checked=$(grep -o '\[ra-predict\] checked=[0-9]*' "$RA_LOG" | tail -1)
     checked="${checked##*checked=}"
     [[ -n "$checked" ]] || checked=0
@@ -139,14 +150,25 @@ print(n, mx)
 PYEOF
     )
 
+    def_line="$(grep -o 'deferred to a final yield: .*' "$RA_LOG" | tail -1)"
+    ra_owed="$(sed -n 's/.*runahead: \([0-9]*\) snapshot.*/\1/p' <<<"$def_line")"
+    ra_rb="$(sed -n 's/.*, \([0-9]*\) rollback.*/\1/p' <<<"$def_line")"
+    echo "[runahead-ident] game=$GAME row=$bk2@$vbl ${def_line:-no deferral line}"
+
     verdict=PASS
     if [[ $armed -eq 0 || "$checked" -eq 0 || $adopted -eq 1 ]]; then
         verdict=VACUOUS; fail=1
     elif [[ "$diffpx" -ne 0 ]]; then
         verdict=FAIL; fail=1
+    elif [[ -z "$ra_owed" || -z "$ra_rb" ]]; then
+        verdict=FAIL; fail=1
+        echo "[runahead-ident]   no runahead deferral count in $RA_LOG"
+    elif [[ "$want_def" == ">0" && $((ra_owed + ra_rb)) -eq 0 ]]; then
+        verdict=FAIL; fail=1
+        echo "[runahead-ident]   deferral field >0, runahead deferred nothing"
     fi
     echo "[runahead-ident] game=$GAME row=$bk2@$vbl depth=$depth diffpx=$diffpx" \
-         "maxabs=$maxabs checked=$checked verdict=$verdict"
+         "maxabs=$maxabs checked=$checked ra_deferred=${ra_owed:-?}/${ra_rb:-?} verdict=$verdict"
     [[ "$verdict" == VACUOUS ]] && echo "[runahead-ident]   armed=$armed adopted=$adopted checked=$checked ($RA_LOG)"
     [[ "$verdict" == FAIL ]] && echo "[runahead-ident]   led $RA_PNG vs $CN_PNG"
 done < "$MANIFEST"
