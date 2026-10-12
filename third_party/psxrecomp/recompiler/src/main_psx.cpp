@@ -741,6 +741,7 @@ int main(int argc, char** argv) {
     // translated by the recompiler — they're emitted as extern declarations
     // and PsyCross supplies the C bodies at link time.
     ExternalManifest extman;
+    PSXRecomp::ThunkClasses thunks;
     if (!external_syms_path.empty()) {
         std::string err;
         if (!parse_toml_manifest(external_syms_path, extman, err)) {
@@ -750,6 +751,10 @@ int main(int argc, char** argv) {
         fmt::print("✓ Loaded {} external symbols from {} (range 0x{:08X}..0x{:08X})\n\n",
                    extman.by_addr.size(), external_syms_path,
                    extman.range_start, extman.range_end);
+        for (const auto& [a, n] : extman.by_addr) {
+            if (n == "VSync") thunks.vsync.insert(a);
+            if (PSXRecomp::is_device_status_thunk(n)) thunks.status.insert(a);
+        }
         if (!external_prefix.empty()) {
             std::map<uint32_t, std::string> prefixed;
             for (auto& [a, n] : extman.by_addr)
@@ -778,6 +783,7 @@ int main(int argc, char** argv) {
             manman.by_addr = std::move(prefixed);
             fmt::print("  ↪ applied --manual-prefix='{}'\n\n", manual_prefix);
         }
+        for (const auto& [a, n] : manman.by_addr) thunks.untraced.insert(a);
         codegen.set_manual_impls(manman.by_addr);
     }
 
@@ -800,7 +806,9 @@ int main(int argc, char** argv) {
 
     // Loop classification: the back-edges whose body stores nothing, calls
     // only pure leaves (of this unit, or of another unit's --leaf-summary),
-    // and loads. Each such back-edge's placeholder becomes a psx_loop_poll
+    // and loads, and the device-status polls (one call whose returned v0 the
+    // back-edge tests, into a traced closure that reaches CdSync, CdReady,
+    // SpuIsTransferCompleted or MemCardSync and never VSync). Each such back-edge's placeholder becomes a psx_loop_poll
     // call and every other placeholder is removed; the sites are written
     // beside the C with this unit's own pure leaves.
     {
@@ -812,7 +820,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        auto sites = PSXRecomp::classify_loops(codegen.emitted_facts(), foreign);
+        auto sites = PSXRecomp::classify_loops(codegen.emitted_facts(), foreign, thunks);
         size_t polls = 0;
         full_c_code = PSXRecomp::apply_loop_polls(full_c_code, sites, polls);
         if (polls != sites.size()) {
@@ -821,7 +829,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::string leaves_path = output_dir + "/" + exe_stem + "_leaves.tsv";
-        if (!PSXRecomp::write_leaf_summary(leaves_path, codegen.emitted_facts())) {
+        if (!PSXRecomp::write_leaf_summary(leaves_path, codegen.emitted_facts(), foreign, thunks)) {
             fmt::print(stderr, "⚠ Failed to write leaf summary: {}\n\n", leaves_path);
             return 1;
         }

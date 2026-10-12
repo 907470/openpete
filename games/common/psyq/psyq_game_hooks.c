@@ -92,10 +92,6 @@ int psyq_game_cd_read_streamed(CPUState* cpu) {
     const psyq_game_hooks_t* h = psyq_game_hooks();
     return h->cd_read_streamed ? h->cd_read_streamed(cpu) : 0;
 }
-int psyq_game_cd_spin_wait(CPUState* cpu, uint32_t addr) {
-    const psyq_game_hooks_t* h = psyq_game_hooks();
-    return h->cd_spin_wait ? h->cd_spin_wait(cpu, addr) : 0;
-}
 uint32_t psyq_game_load_window_word(void) { return psyq_game_hooks()->load_window_word; }
 int psyq_game_load_window_active(uint32_t value) {
     const psyq_game_hooks_t* h = psyq_game_hooks();

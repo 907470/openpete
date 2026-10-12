@@ -490,9 +490,9 @@ static uint32_t s_spin_last_vbl = 0u;
 /** @brief Pass one VBL to a guest spin that has entered 2048 functions without one.
  *
  * Counts function entries since `openpete_vbl` last changed; every 2048th
- * calls psyq_sched_spin_tick, whose per-game predicate decides whether the
- * spin is a disc wait a VBL is owed to. The entries are counted whether or
- * not the hang watchdog is armed.
+ * calls psyq_sched_spin_tick, which under the schedule charges one VBL
+ * while a disc read's completion is deferred. The entries are counted
+ * whether or not the hang watchdog is armed.
  * @param cpu Guest CPU state.
  * @param vbl_now `openpete_vbl` at this entry.
  * @param addr Guest address of the function entered. */
@@ -504,7 +504,7 @@ static void spin_tick(CPUState* cpu, uint32_t vbl_now, uint32_t addr) {
     }
     /* A spin that polls a deferred disc read without waiting on VSync
      * spent VBLs on the reference; every so many entries without a VBL,
-     * the schedule or the drive model passes one here (psyq_thunks.cpp). */
+     * the schedule passes one here (psyq_thunks.cpp). */
     if ((++s_spin_calls_since_vbl & 2047u) != 2047u) return;
     extern void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) __attribute__((weak));
     openpete_psxtrace_gate_host_enter();
@@ -788,7 +788,7 @@ void openpete_loop_report(uint64_t* polls, uint64_t* trips, uint64_t* acc_max_in
 
 void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure) {
     s_loop_polls++;
-    if (pure) loop_pure_check(cpu, header);
+    if (pure == 1u) loop_pure_check(cpu, header);
     s_loop_insns_anchor += insns;
     s_loop_acc += (uint64_t)insns * LOOP_SCALE;
     if (s_loop_acc > s_loop_acc_max) s_loop_acc_max = s_loop_acc;

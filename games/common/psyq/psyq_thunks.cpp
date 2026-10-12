@@ -1138,12 +1138,12 @@ static uint64_t s_loop_counted_only = 0;
  * charges to the VBLANK the reference's rows show due before their next
  * row point (openpete_sched_loop_due), or delivers nothing; before the
  * first anchor hit nothing is due. Off the schedule a pure spin, where the
- * iteration a VBL lands on is unobservable, takes one VBL; a counted poll,
- * where the static instruction count is not the CPU's time, is counted
- * only.
+ * iteration a VBL lands on is unobservable, and a device-status poll, which
+ * spins on a device the VBLs pass for, take one VBL; a counted poll, where
+ * the static instruction count is not the CPU's time, is counted only.
  * @param cpu Guest CPU state, mid-loop.
  * @param header The loop's header address.
- * @param pure 1 for a pure spin. */
+ * @param pure The site kind: 1 pure spin, 2 device-status poll, 0 counted poll. */
 extern "C" void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t pure) {
     (void)header;
     if (openpete_sched_active()) {
@@ -1337,7 +1337,6 @@ static uint32_t s_cd_load_prev     = 0;  /* in_load of the previous read (edge) 
 static uint32_t s_cd_defer_stream  = 0;  /* 1 while the deferred read is a stream read (drive-timed) */
 static uint32_t s_cd_pause_owed    = 0;  /* VBLs until the closing CdlPause of a stream read completes */
 static uint32_t s_cd_stream_reads  = 0;  /* stream reads timed by the drive model (engagement count) */
-static uint32_t s_cd_stream_spin_vbls = 0; /* VBLs passed in the game's synchronous-reader spins (engagement count) */
 
 /* Stream reads (psyq_game_cd_read_streamed) run on a drive model instead of
  * the level-load budget: a read the game polls from its main loop while a
@@ -1549,35 +1548,22 @@ static uint32_t cd_read_or_stream_delay_for(CPUState* cpu, int sectors) {
     s_cd_defer_stream = 1u;
     s_cd_stream_reads++;
     OPL_INFO_F("cd", "stream read %u: %d sectors at 0x%08X complete in %u VBL(s), "
-               "CdlPause %u later (vbl=%d, spin VBLs so far %u)", s_cd_stream_reads, sectors,
-               cpu->a1, delay, CD_STREAM_PAUSE_VBLS, SDL_GetAtomicInt(&openpete_vbl_device),
-               s_cd_stream_spin_vbls);
+               "CdlPause %u later (vbl=%d)", s_cd_stream_reads, sectors,
+               cpu->a1, delay, CD_STREAM_PAUSE_VBLS, SDL_GetAtomicInt(&openpete_vbl_device));
     return delay;
 }
 
 /** @brief Charge one VBL to a guest spin that polls a deferred disc read without calling VSync.
  *
  * The reference spent the read's VBLs, interrupts included, inside such a
- * spin. The dispatcher calls this every 2048 dispatches without a VBL. Off
- * the schedule it delivers one VBL when a stream read or its closing
- * CdlPause is owed and the entry is the game's synchronous reader polling
- * the drive (psyq_game_cd_spin_wait); on the schedule it charges one VBL
- * when a read's completion is deferred; otherwise nothing.
+ * spin. The dispatcher calls this every 2048 dispatches without a VBL. On
+ * the schedule it charges one VBL when a read's completion is deferred;
+ * otherwise nothing. Off the schedule a spin on the drive receives its VBLs
+ * at its classified back-edge (psyq_deliver_loop_vbl, device-status poll).
  * @param cpu Guest CPU state.
- * @param addr Guest address of the function being entered. */
+ * @param addr Unused. */
 extern "C" void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) {
-    /* A stream read the game spins on without VSync (its synchronous
-     * reader waiting for the drive to go idle before or after its own
-     * read): the VBLs the drive still owes pass in the spin, one per call,
-     * as the VBL interrupts did on hardware. */
-    if (!openpete_sched_active() && (s_cd_defer_stream || s_cd_pause_owed) &&
-        psyq_game_cd_spin_wait(cpu, addr)) {
-        s_cd_stream_spin_vbls++;
-        OPL_DEBUG_F("cd", "stream read polled in a spin, 1 VBL passes (%u + %u owed)",
-                    s_cd_defer_owed, s_cd_pause_owed);
-        deliver_vbl(cpu, VBL_SRC_SPIN, 0);
-        return;
-    }
+    (void)addr;
     if (!openpete_sched_active() || !s_cd_defer_pending) return;
     OPL_DEBUG_F("cd", "schedule: deferred read polled in a spin, 1 VBL passes (%u owed)", s_cd_defer_owed);
     sched_charge_to(cpu, openpete_sched_pos() + 1u, "spin", VBL_SRC_SPIN);

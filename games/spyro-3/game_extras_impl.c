@@ -271,16 +271,6 @@ static int spyro3_override_dispatch(CPUState* cpu, uint32_t addr) {
 static int spyro3_cd_read_streamed(CPUState* cpu) {
     return cpu->ra == 0x80050758u && cpu->read_word(0x8006E344u) == 6u;
 }
-/** @brief Whether the entry is inside func_800503F8 called from func_80050578's spins.
- *
- * The recompiled body can enter through more than one block, so any
- * address of the function counts.
- * @param cpu Guest CPU state at the entry (ra is the caller's return address).
- * @param addr Guest address of the function being entered.
- * @return 1 for the spin's poll, else 0. */
-static int spyro3_cd_spin_wait(CPUState* cpu, uint32_t addr) {
-    return addr >= 0x800503F8u && addr < 0x80050504u && (cpu->ra == 0x800505B0u || cpu->ra == 0x80050658u);
-}
 
 /* The tables of the game's other TUs the descriptor carries. */
 extern const openpete_game_identity_t spyro3_game_identity;   /* gen/game_identity.c */
@@ -312,7 +302,6 @@ static const psyq_game_hooks_t k_psyq = {
     .cd_read_in_load    = spyro3_cd_read_in_load,
     .cd_read_delay_cap  = 100u,
     .cd_read_streamed   = spyro3_cd_read_streamed,
-    .cd_spin_wait       = spyro3_cd_spin_wait,
     /* loadStage: 2..7 the checksum walk, one step per iteration, 8..12 the
      * level reads and parses, then -1. */
     .load_window_word   = 0x8006C518u,

@@ -142,16 +142,6 @@ static const psyq_sfx_slots_t k_sfx_slots = {
 static int spyro2_cd_read_streamed(CPUState* cpu) {
     return cpu->ra == 0x800139F0u && cpu->read_word(0x800681C8u) == 6u;
 }
-/** @brief Whether the entry is inside func_80013690 called from func_80013810's spins.
- *
- * The recompiled body enters through more than one block (0x80013690,
- * 0x80013698), so any address of the function counts.
- * @param cpu Guest CPU state at the entry (ra is the caller's return address).
- * @param addr Guest address of the function being entered.
- * @return 1 for the spin's poll, else 0. */
-static int spyro2_cd_spin_wait(CPUState* cpu, uint32_t addr) {
-    return addr >= 0x80013690u && addr < 0x8001379Cu && (cpu->ra == 0x80013848u || cpu->ra == 0x800138F0u);
-}
 
 /* The tables of the game's other TUs the descriptor carries. */
 extern const openpete_game_identity_t spyro2_game_identity;   /* gen/game_identity.c */
@@ -180,7 +170,6 @@ static const psyq_game_hooks_t k_psyq = {
      * read this; it seeds srand. */
     .root_counter2    = 0x4876u,
     .cd_read_streamed = spyro2_cd_read_streamed,
-    .cd_spin_wait     = spyro2_cd_spin_wait,
     .sfx_slots        = &k_sfx_slots,
 };
 

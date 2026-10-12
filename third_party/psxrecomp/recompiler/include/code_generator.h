@@ -226,8 +226,19 @@ private:
     /** @brief Record a call to a generated function of this unit.
      * @param target the callee's start address */
     void note_call(uint32_t target);
-    /// Record a call whose callee body this unit does not hold.
+    /// @brief Record a jump table's out-of-range default dispatch: opaque to the leaf test, not a call to the closure test.
     void note_opaque_call();
+    /** @brief Record a call of a PSYQ or manual symbol in the current region.
+     * @param target the symbol's address */
+    void note_named_call(uint32_t target);
+    /// @brief Record a call through a register or a syscall in the current region.
+    void note_indirect_call();
+    /** @brief Record the conditional branch that exits the current region, before its delay slot is noted.
+     *
+     * Sets EmittedRegion::v0_test for a `beq`/`bne` (or the likely forms)
+     * of v0 against zero that no instruction of the region precedes.
+     * @param instr the branch word */
+    void note_branch(uint32_t instr);
     /** @brief Record a constant `call_by_address` in the current region.
      * @param target the constant callee address */
     void note_foreign_call(uint32_t target);

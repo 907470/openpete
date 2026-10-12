@@ -89,6 +89,33 @@ void CodeGenerator::note_label(uint32_t label) {
     facts_.back().regions.push_back(std::move(r));
 }
 
+namespace {
+
+/** @brief Classify what a non-control-flow instruction leaves in v0.
+ * @param instr the instruction word
+ * @return None when it writes no v0, else the constant class or Unknown */
+V0Out v0_written(uint32_t instr) {
+    const uint32_t op = (instr >> 26) & 0x3F, fn = instr & 0x3F;
+    const uint32_t rs = (instr >> 21) & 0x1F, rt = (instr >> 16) & 0x1F, rd = (instr >> 11) & 0x1F;
+    const uint32_t imm = instr & 0xFFFF;
+    if (op == 0x00) {
+        const bool no_rd = fn == 0x08 || fn == 0x0C || fn == 0x0D || fn == 0x11 || fn == 0x13 ||
+                           (fn >= 0x18 && fn <= 0x1B);
+        if (no_rd || rd != 2) return V0Out::None;
+        const bool zero_op = fn == 0x21 || fn == 0x23 || fn == 0x25 || fn == 0x20 || fn == 0x22;
+        return (zero_op && rs == 0 && rt == 0) ? V0Out::Zero : V0Out::Unknown;
+    }
+    const bool writes_rt = (op >= 0x08 && op <= 0x0F) || (op >= 0x20 && op <= 0x26) ||
+                           ((op >= 0x10 && op <= 0x13) && (rs == 0 || rs == 2));
+    if (!writes_rt || rt != 2) return V0Out::None;
+    if (op == 0x0F) return imm ? V0Out::NonZero : V0Out::Zero;                 // lui
+    if ((op == 0x08 || op == 0x09 || op == 0x0D) && rs == 0)                   // addi(u)/ori from zero
+        return imm ? V0Out::NonZero : V0Out::Zero;
+    return V0Out::Unknown;
+}
+
+}  // namespace
+
 void CodeGenerator::note_fallthrough() {
     if (facts_.empty() || facts_.back().regions.empty()) return;
     facts_.back().regions.back().falls_through = true;
@@ -100,14 +127,17 @@ void CodeGenerator::note_instruction(uint32_t instr) {
     uint32_t op = (instr >> 26) & 0x3F;
     uint32_t fn = instr & 0x3F;
     r.insns++;
+    if (V0Out v = v0_written(instr); v != V0Out::None) r.v0_out = v;
     // lb lh lwl lw lbu lhu lwr, lwc2; a load to $zero is emitted as a nop
     bool zero_dest = config_.optimize_zero_reg && get_rt(instr) == 0;
     if ((op >= 0x20 && op <= 0x26 && !zero_dest) || op == 0x32) r.loads = true;
     // sb sh swl sw swr, swc2
     if ((op >= 0x28 && op <= 0x2B) || op == 0x2E || op == 0x3A) r.stores = true;
     // syscall -> psx_syscall; jr <reg> outside the exit position -> call_by_address
-    if (op == 0x00 && (fn == 0x0C || (fn == 0x08 && get_rs(instr) != 31)))
+    if (op == 0x00 && (fn == 0x0C || (fn == 0x08 && get_rs(instr) != 31))) {
         r.opaque_call = true;
+        r.indirect = true;
+    }
 }
 
 void CodeGenerator::note_goto(uint32_t target, GotoArm arm) {
@@ -126,6 +156,7 @@ std::string CodeGenerator::back_edge_marker(uint32_t target, GotoArm arm,
 void CodeGenerator::note_call(uint32_t target) {
     if (facts_.empty() || facts_.back().regions.empty()) return;
     facts_.back().regions.back().callees.push_back(target);
+    facts_.back().regions.back().v0_out = V0Out::Unknown;
 }
 
 void CodeGenerator::note_opaque_call() {
@@ -133,14 +164,40 @@ void CodeGenerator::note_opaque_call() {
     facts_.back().regions.back().opaque_call = true;
 }
 
+void CodeGenerator::note_named_call(uint32_t target) {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().opaque_call = true;
+    facts_.back().regions.back().named.push_back(target);
+    facts_.back().regions.back().v0_out = V0Out::Unknown;
+}
+
+void CodeGenerator::note_indirect_call() {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().opaque_call = true;
+    facts_.back().regions.back().indirect = true;
+    facts_.back().regions.back().v0_out = V0Out::Unknown;
+}
+
+void CodeGenerator::note_branch(uint32_t instr) {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    EmittedRegion& r = facts_.back().regions.back();
+    const uint32_t op = (instr >> 26) & 0x3F;
+    const bool eq_ne = op == 0x04 || op == 0x05 || op == 0x14 || op == 0x15;
+    const uint32_t rs = get_rs(instr), rt = get_rt(instr);
+    if (!eq_ne || r.insns != 0 || !((rs == 2 && rt == 0) || (rs == 0 && rt == 2))) return;
+    r.v0_test = (op == 0x04 || op == 0x14) ? V0Test::TakenZero : V0Test::TakenNonZero;
+}
+
+
 void CodeGenerator::note_foreign_call(uint32_t target) {
     if (facts_.empty() || facts_.back().regions.empty()) return;
     facts_.back().regions.back().foreign.push_back(target);
+    facts_.back().regions.back().v0_out = V0Out::Unknown;
 }
 
 void CodeGenerator::note_call_to(uint32_t target) {
     if (external_name_for(target) || manual_name_for(target))
-        note_opaque_call();
+        note_named_call(target);
     else
         note_call(target);
 }
@@ -1854,6 +1911,8 @@ std::string CodeGenerator::translate_basic_block(
         } else {
             // Control flow is handled at block exit
             if (addr == exit_branch_addr) {
+                if (block.exit_instr.type == ControlFlowType::Branch)
+                    note_branch(block.exit_instr.instruction);
                 // MIPS delay slot handling: emit delay slot instruction BEFORE branch/jump
                 std::string delay_saved_cond;  // non-empty if condition was pre-captured
                 if (block.exit_instr.has_delay_slot) {
@@ -1975,12 +2034,12 @@ std::string CodeGenerator::translate_basic_block(
                         ss << config_.indent
                            << fmt::format("{}(cpu); return;  /* j -> external */\n",
                                           *external_name_for(jt));
-                        note_opaque_call();
+                        note_named_call(jt);
                     } else if (jt != 0 && manual_name_for(jt)) {
                         ss << config_.indent
                            << fmt::format("{}(cpu); return;  /* j -> manual */\n",
                                           *manual_name_for(jt));
-                        note_opaque_call();
+                        note_named_call(jt);
                     } else if (jt != 0 && known_functions_.count(jt)) {
                         // Jump target is out-of-function and is a known function start
                         ss << config_.indent
@@ -2182,11 +2241,11 @@ std::string CodeGenerator::translate_basic_block(
                                 } else if (auto* ext = external_name_for(t)) {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: {}(cpu); return;\n", i, *ext);
-                                    note_opaque_call();
+                                    note_named_call(t);
                                 } else if (auto* man = manual_name_for(t)) {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: {}(cpu); return;\n", i, *man);
-                                    note_opaque_call();
+                                    note_named_call(t);
                                 } else if (known_functions_.count(t)) {
                                     ss << config_.indent << fmt::format(
                                         "    case {}u: {}{:08X}(cpu); return;\n",
@@ -2236,7 +2295,7 @@ std::string CodeGenerator::translate_basic_block(
                         // BIOS call or unrecognised indirect jump
                         ss << config_.indent << fmt::format("call_by_address(cpu, {});  /* jr {} */\n",
                                                             reg_name(jr_rs), reg_name(jr_rs));
-                        note_opaque_call();
+                        note_indirect_call();
                         ss << config_.indent << "return;\n";
                     }
                     }  // end of !jr_is_saved_ra branch
@@ -2246,10 +2305,10 @@ std::string CodeGenerator::translate_basic_block(
                     uint32_t target = block.exit_instr.target;
                     if (auto* ext = external_name_for(target)) {
                         ss << config_.indent << fmt::format("{}(cpu);  /* jal -> external */\n", *ext);
-                        note_opaque_call();
+                        note_named_call(target);
                     } else if (auto* man = manual_name_for(target)) {
                         ss << config_.indent << fmt::format("{}(cpu);  /* jal -> manual */\n", *man);
-                        note_opaque_call();
+                        note_named_call(target);
                     } else if (known_functions_.count(target) > 0) {
                         ss << config_.indent << fmt::format("{}{:08X}(cpu);  /* jal */\n", config_.func_prefix, target);
                         note_call(target);
@@ -2268,11 +2327,11 @@ std::string CodeGenerator::translate_basic_block(
                         if (auto* ext = external_name_for(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("{}(cpu); return;  /* jal cont: external */\n", *ext);
-                            note_opaque_call();
+                            note_named_call(cont_addr);
                         } else if (auto* man = manual_name_for(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("{}(cpu); return;  /* jal cont: manual */\n", *man);
-                            note_opaque_call();
+                            note_named_call(cont_addr);
                         } else if (known_functions_.count(cont_addr)) {
                             ss << config_.indent
                                << fmt::format("{}{:08X}(cpu); return;  /* jal cont: split piece */\n", config_.func_prefix, cont_addr);
@@ -2299,7 +2358,7 @@ std::string CodeGenerator::translate_basic_block(
                     ss << config_.indent << "psx_dispatch_from_jalr = 1;\n";
                     ss << config_.indent << fmt::format("call_by_address(cpu, {});  /* jalr {} */\n",
                                                         reg_name(rs), reg_name(rs));
-                    note_opaque_call();
+                    note_indirect_call();
 
                     // Continue to successor block (instruction at return address)
                     if (!block.successors.empty()) {

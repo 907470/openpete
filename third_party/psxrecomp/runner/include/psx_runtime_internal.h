@@ -100,7 +100,8 @@ void psx_syscall(CPUState* cpu, uint32_t code);
  * @param cpu The looping function's CPU state.
  * @param header The loop's header address.
  * @param insns The body's instruction count.
- * @param pure 1 for a pure spin, 0 for a counted poll. */
+ * @param pure The site kind: 1 for a pure spin, 2 for a device-status
+ *        poll, 0 for a counted poll. */
 void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure);
 
 /** @brief GTE coprocessor command.
