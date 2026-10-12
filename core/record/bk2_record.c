@@ -224,7 +224,7 @@ static int format_log_key(char* out, size_t cap, int players) {
         int p = pl;
         n += snprintf(out + n, cap - (size_t)n, kPortKeyFmt,
                       p, p, p, p, p, p, p, p, p, p, p,
-                      p, p, p, p, p, p, p, p, p, p, p);
+                      p, p, p, p, p, p, p, p, p, p);
     }
     n += snprintf(out + n, cap - (size_t)n, "\r\n");
     return n;
