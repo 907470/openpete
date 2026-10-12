@@ -1388,7 +1388,11 @@ static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int 
  * the record is skipped when MAC3 >> 5 exceeds 63000 [.L8001F888, spec twin
  * @8002103C], since the game draws nothing past that depth. The depth written
  * for a GPF record stays at the unscaled distance, as the .s OT key derives
- * from the raw TR.z; only sx and sy take the scaled projection. The vertex
+ * from the raw TR.z; only sx and sy take the scaled projection. Where the
+ * cull stored a translation it scaled by the moby's size byte
+ * (rec_tr_final), depth_k (moby_record_depth_k) multiplies the written depth
+ * back to the true distance; sx, sy and the perspective W keep the scaled
+ * projection. The vertex
  * count is the tier's (Spyro 1 [hdr + 8 + (ZSF4 >> 31)] @8001F9D4..FA04: the
  * LP count below ZSF4 0 unless --no-lod), and a count of 0 skips the record.
  * OPENPETE_MOBY_VERIFY_NEGCTL=1 reads the other tier's count, the negative
@@ -1427,6 +1431,7 @@ static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int 
  * @param prev The previous pose for the two-pose shape lerp, or NULL for a single-pose decode.
  * @param blend_alpha The lerp phase from prev (0) to the current pose (1).
  * @param gpf_frac The sub-tick-lerped GPF scale on the TR_frac path; negative takes w0's byte.
+ * @param depth_k The factor from the projected view-Z to the depth written (moby_record_depth_k); 1 writes the projected view-Z.
  * @param TR_raw The stored translation, before the (<< 2) >> m_Scale rescale.
  * @param TR_frac The full-precision centre on TR_raw's scale (moby_centre_at), or NULL for the integer path.
  * @param M The model-to-view rotation, 4096 = 1.0.
@@ -1439,7 +1444,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
                                uint32_t frameA,
                                uint32_t frameB, uint32_t w0,
                                const moby_pose_t* prev, double blend_alpha, double gpf_frac,
-                               const int TR_raw[3],
+                               double depth_k, const int TR_raw[3],
                                const double TR_frac[3],
                                const int M[3][3], int zsf4, const ngte_view* v,
                                proj_xy* out, int cap) {
@@ -1635,7 +1640,10 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
          * the saturation flag keep the unscaled GTE-faithful mac3 (vz is depth-only). */
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
         out[i].sx = (float)sx; out[i].sy = (float)sy;
-        double fvz = (vzz + vz_bias) * (double)(1 << ds);
+        /* depth_k is 1 except for a sized record of a rec_tr_final cull, whose
+         * true view-Z is the projected one times 32 / size (the moby drawn
+         * 32 / size times larger at its true distance). */
+        double fvz = (vzz + vz_bias) * (double)(1 << ds) * depth_k;
         /* Fed depth is TRUE per-vertex view-Z. The game's OT is per-FACE -
          * each face inserts at its own average-Z slot minus the authored
          * bias, so one moby's faces bracket other producers' prims in the
@@ -1708,6 +1716,7 @@ static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
 static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t header, double tr[3]);
 static void moby_centre_census(const char* pass);
+static double moby_record_depth_k(CPUState* cpu, uint32_t moby);
 
 /** @brief Project one live cull record, whose fields the game's record reader already extracted.
  *
@@ -1743,7 +1752,8 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
         TR_frac = tr;
     }
     return moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
-                               NULL, 0.0, -1.0, R->TR_raw, TR_frac, R->M,
+                               NULL, 0.0, -1.0, moby_record_depth_k(cpu, R->moby),
+                               R->TR_raw, TR_frac, R->M,
                                zsf4, v, out, cap);
 }
 
@@ -2994,7 +3004,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           pose_hold_begin(m, f.header, f.header_b, f.frameA, f.frameB, f.w0);
-          got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0, NULL, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
+          got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0, NULL, 0.0, -1.0, moby_record_depth_k(cpu, m), f.TR_raw, f.TR_frac, f.M,
                                     rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           pose_hold_end(got);
           if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
@@ -10980,24 +10990,70 @@ int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out) {
 
 /* Records whose translation moby_record_centre_final replaced, per pass:
  * replaced counts every replacement, sized the ones carrying a nonzero size
- * byte, wrapped the sized ones left on the record's translation. */
-static struct { long replaced, sized, wrapped; } s_ctr_census;
+ * byte, wrapped the sized ones left on the record's translation; resized
+ * counts the decodes whose depth moby_record_depth_k rescaled (a size byte
+ * other than 0 and 32). */
+static struct { long replaced, sized, wrapped, resized; } s_ctr_census;
 
 /** @brief OPENPETE_MOBY_CENSUS: log one line for a pass that replaced a record centre, then reset the counts.
  *
  * The line carries s_ctr_census: the centres moby_record_centre_final
- * replaced, those with a nonzero size byte, and the sized ones left on the
- * record's translation (wrapped). The counts reset whether or not the line
- * prints.
+ * replaced, those with a nonzero size byte, the sized ones left on the
+ * record's translation (wrapped), and the decodes whose depth
+ * moby_record_depth_k rescaled (resized). The counts reset whether or not
+ * the line prints.
  * @param pass The pass name; NULL prints "rex". */
 static void moby_centre_census(const char* pass) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }
-    if (s && (s_ctr_census.replaced || s_ctr_census.wrapped))
-        fprintf(stderr, "[moby-centre-census vbl=%u] pass=%s replaced=%ld sized=%ld wrapped=%ld\n",
+    if (s && (s_ctr_census.replaced || s_ctr_census.wrapped || s_ctr_census.resized))
+        fprintf(stderr, "[moby-centre-census vbl=%u] pass=%s replaced=%ld sized=%ld wrapped=%ld resized=%ld\n",
                 openpete_frame, pass ? pass : "rex", s_ctr_census.replaced, s_ctr_census.sized,
-                s_ctr_census.wrapped);
+                s_ctr_census.wrapped, s_ctr_census.resized);
     memset(&s_ctr_census, 0, sizeof s_ctr_census);
+}
+
+/** @brief The moby's size byte (+0x4F) at this present, lerped from the previous tick's to this tick's where both are nonzero.
+ *
+ * A byte of 0 on either tick is the cull's unscaled branch, a discontinuity,
+ * so it does not lerp; without a live interp pair the byte is this tick's.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @return The size byte, fractional between ticks; 0 for an unsized moby. */
+static double moby_record_size_at(CPUState* cpu, uint32_t moby) {
+    double size = (double)(cpu->read_byte(moby + game_layout.moby.size_off) & 0xFFu);
+    if (size == 0.0) return 0.0;
+    double t = 0.0;
+    const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
+    if (o && game_layout.moby.size_off < (uint32_t)o->blob_len &&
+        o->prev[game_layout.moby.size_off] && o->curr[game_layout.moby.size_off])
+        size += ((double)o->prev[game_layout.moby.size_off]
+               - (double)o->curr[game_layout.moby.size_off]) * (1.0 - t);
+    return size;
+}
+
+/** @brief The factor that returns a sized moby's projected view-Z to its true depth: 32 over the size byte where a rec_tr_final cull scaled the translation by it.
+ *
+ * The Spyro 2/3 cull runs the stored translation through GPF with IR0 = the
+ * moby's size byte (+0x4F) and shifts right 5 (Spyro 3 func_80030478 GPF at
+ * 0x80030C74, sra 5 at 0x80030C84..8C; Spyro 2 func_80043858), so the record
+ * projects at size/32 of its distance while its vertices keep their model
+ * size: a vertex at view position s * TR + M.v (s = size / 32) projects to
+ * the same screen point as TR + M.v / s, the moby scaled by 1/s at its true
+ * distance, whose view-Z is the projected one over s. The byte is the one
+ * moby_record_centre_final scales the centre by (moby_record_size_at). Each
+ * call that returns a factor other than 1 counts one decode into the
+ * centre census (resized).
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @return 32 / size; 1 on a game whose cull stores the unscaled translation,
+ *         for a moby that is not an address, and for a size byte of 0 or 32. */
+static double moby_record_depth_k(CPUState* cpu, uint32_t moby) {
+    if (!game_layout.moby.rec_tr_final || moby < 0x80000000u) return 1.0;
+    const double size = moby_record_size_at(cpu, moby);
+    if (size <= 0.0 || size == 32.0) return 1.0;
+    s_ctr_census.resized++;
+    return 32.0 / size;
 }
 
 /** @brief The translation a rec_tr_final cull stores, at full precision.
@@ -11034,17 +11090,10 @@ static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t heade
     double mw[3], c[3];
     moby_record_world_offset(moby, mw);
     moby_centre_at(cpu, moby, mw, c);
-    double size = (double)(cpu->read_byte(moby + game_layout.moby.size_off) & 0xFFu);
+    const double size = moby_record_size_at(cpu, moby);
     if (size != 0.0) {
         for (int i = 0; i < 3; i++)
             if (fabs(c[i] * k) >= 32768.0) { s_ctr_census.wrapped++; return 0; }
-        double ds = 0.0, t = 0.0;
-        const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
-        if (o && game_layout.moby.size_off < (uint32_t)o->blob_len &&
-            o->prev[game_layout.moby.size_off] && o->curr[game_layout.moby.size_off])
-            ds = ((double)o->prev[game_layout.moby.size_off]
-                - (double)o->curr[game_layout.moby.size_off]) * (1.0 - t);
-        size += ds;
         s_ctr_census.sized++;
     }
     const double ks = size != 0.0 ? k * size / 32.0 : k;
@@ -11676,7 +11725,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
-                                    dprev, dalpha, gpf_frac,
+                                    dprev, dalpha, gpf_frac, moby_record_depth_k(cpu, mobys[i]),
                                     f.TR_raw, f.TR_frac, f.M, zsf4, moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
@@ -11708,13 +11757,15 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 4u),
                         (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 8u),
                         dmob[0], dmob[1], dmob[2]);
-                fprintf(stderr, "[moby-screen vbl=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
+                double ctr[3]; build_moby_record_tr(cpu, mobys[i], ctr);
+                fprintf(stderr, "[moby-screen vbl=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f) size=%.3f ctrue=%.1f\n",
                         openpete_feed_key_now(), g_openpete_canon_lag_leg ? "CANON" : "inter",
                         (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
                         mobys[i], sccls, got,
                         mx / got, my / got, mz / got,
                         ch, mh2, cf[0], cf[1], cf[2], mf[0], mf[1], mf[2],
-                        f.TR_frac[0], f.TR_frac[1], f.TR_frac[2]);
+                        f.TR_frac[0], f.TR_frac[1], f.TR_frac[2],
+                        moby_record_size_at(cpu, mobys[i]), ctr[2] * 4.0);
             }
         }
         if (ver_check) occl_verify_end(mobys[i], s_proj + off, got);
