@@ -39,7 +39,10 @@
 # carries the recipe at /etc/openpete/capture.Dockerfile. An image whose label
 # differs from the tracked recipe's hash is stale: `image`, `build` and `run`
 # rebuild it, `gate` skips. OPENPETE_CAPTURE_IMAGE_DIGEST passes the image's
-# digest into the container, where the capture record reads it.
+# ID (`sha256:` and the digest of its config, which names its layers) into the
+# container, where the capture record reads it. The ID survives the fleet's
+# save and load to another host; the manifest digest (`.Digest`) does not,
+# since the load re-serialises the manifest.
 #
 # `build` configures the `linux-release-container` preset fresh into
 # build/linux-release-container with the image's gcc-11, never the host's
@@ -163,9 +166,8 @@ fi
 # Under OPENPETE_CAPTURE_MOUNT_AS (CTREE differs) the worktree mounts are
 # skipped.
 ctr_tree_mounts "$TREE" "$CTREE"
-image_digest="$("$ENGINE" image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/null || true)"
-[[ -z "$image_digest" || "$image_digest" == "<none>" ]] && \
-    image_digest="$("$ENGINE" image inspect --format '{{.Id}}' "$IMAGE")"
+image_digest="$("$ENGINE" image inspect --format '{{.Id}}' "$IMAGE")"
+image_digest="sha256:${image_digest#sha256:}"
 # A container's hostname is its container id, so the machine's hostname
 # enters as OPENPETE_CAPTURE_HOST for the capture record's host field.
 env_args=(-e OPENPETE_NO_COMMITS=1 -e OPENPETE_VIBRATION=0

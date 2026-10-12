@@ -6,7 +6,7 @@
 # device: llvmpipe (LLVM 15.0.7, 256 bits)
 # compiler: gcc-11 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
 # preset: linux-release-container
-# image-digest: sha256:85443b3bf7f717efaacd3fcb5732cb7dd2acabdc448aed236a0c6cb0001371dd
+# image-digest: sha256:9114c46397a484e87593d53286cca89aa1fdb7acdcb92e24815a546ea1f93382
 # libvulkan: 1.3.204.1-2
 # disc-bin: b29c2a3c41e2af13ce0b1d6526217df43a395d4bf53860c29a7bcec47bd76be5 games/spyro-1/spyro-1/build/SCUS-94228.bin
 # disc-cue: 7305aa586d195a617de5998d56a5e9188222616f252ae492e646154e110e274d games/spyro-1/spyro-1/build/SCUS-94228.cue

@@ -156,9 +156,12 @@ DIGEST_RULE = ('sha256(b"RGB\\n" + width + b"\\n" + height + b"\\n" + '
 # Environment fields of a manifest header; a value not measured is written
 # `unrecorded`. SURFACE_KEYS are the comparison surface: a bless or promote
 # whose capture differs from the header in one of them is refused unless
-# --environment-accept records the reason. image-digest and libvulkan are
-# recorded and never compared: two builds of one recipe produce different
-# image digests, and the loader version is fixed by the recipe hash. host
+# --environment-accept records the reason. image-digest (the capture image's
+# ID, `sha256:` and the digest of its config, identical on every host the
+# image is shipped to) and libvulkan are recorded and not compared for a
+# local capture: two builds of one recipe produce different image IDs, and
+# the loader version is fixed by the recipe hash; a capture from another host
+# must equal both (REMOTE_PINNED_KEYS). host
 # (the machine's hostname, host_here) and cpu (the /proc/cpuinfo model name)
 # are written to the capture record only, never to a manifest header or row:
 # they name the machine that captured, a promote admits a capture record whose
