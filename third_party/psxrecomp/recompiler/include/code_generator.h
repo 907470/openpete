@@ -201,6 +201,8 @@ private:
     /** @brief Open a new emitted region at a label.
      * @param label address the label names */
     void note_label(uint32_t label);
+    /** @brief Record that the current region continues into the next emitted region without a goto. */
+    void note_fallthrough();
     /** @brief Record one translated instruction in the current region.
      *
      * Loads and stores are read off the opcode; `syscall` and a `jr` other

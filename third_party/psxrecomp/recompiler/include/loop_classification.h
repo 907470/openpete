@@ -40,6 +40,9 @@ struct EmittedRegion {
                                      ///< each disqualifies a body unless a leaf summary of
                                      ///< another unit names it
     std::vector<EmittedGoto> gotos;  ///< in emission order
+    bool falls_through = false;  ///< control continues into the next region in emission
+                                 ///< order without a goto (a mid-block label, or a block
+                                 ///< with no control-transfer exit)
 };
 
 /// The emitted regions of one generated function, in emission order.
@@ -50,10 +53,23 @@ struct FunctionFacts {
     std::vector<EmittedRegion> regions;
 };
 
+/// One region of a loop body, as the register-carry test walks it.
+struct LoopBodyRegion {
+    uint32_t label = 0;
+    std::vector<uint32_t> successors;  ///< labels of the body regions control reaches next
+    bool calls = false;                ///< ends in a call of a pure leaf
+};
+
 /** @brief A loop back-edge whose body may receive a VBL delivery.
  *
- * The body is every region whose label lies in [header, source]; it stores
- * nothing, calls only pure leaves, and it or one of its leaves loads. */
+ * The back-edge is a retreating `goto` whose target (the header) reaches the
+ * region holding it (the source) in the function's region graph, so the
+ * edge closes a cycle. The body is the header and every region the header
+ * reaches that reaches the source without passing through the header: the
+ * edge's natural loop when the header dominates the source, else every
+ * region on a header-to-source path of the irreducible cycle. The body
+ * stores nothing, calls only pure leaves, and it or one of its leaves
+ * loads. */
 struct LoopSite {
     std::string function;
     uint32_t header = 0;         ///< goto target
@@ -61,8 +77,10 @@ struct LoopSite {
     GotoArm arm = GotoArm::Taken;
     uint32_t insns = 0;          ///< body instructions plus each called leaf's, per call
     std::vector<uint32_t> leaves;    ///< pure leaves the body calls, one entry per call
-    bool pure = false;           ///< pure spin: no register carries a value across iterations
-                                 ///< except through a load (set by apply_loop_polls)
+    std::vector<LoopBodyRegion> body;  ///< the body regions, header first, then emission order
+    bool pure = false;           ///< pure spin: no register is read before its first
+                                 ///< definition in an iteration and defined in the body
+                                 ///< (set by apply_loop_polls)
 };
 
 /// A pure leaf as another unit's summary states it.
@@ -74,7 +92,10 @@ struct LeafSummary {
 /** @brief Classify every back-edge of a translation unit.
  *
  * A back-edge is an emitted `goto` whose target is at or below the label of
- * the region it sits in. A pure leaf is a function of the unit that is not a
+ * the region it sits in and reaches that region (see LoopSite). The region
+ * graph's edges are the gotos and the fall-throughs; its entry is the
+ * function's first region; a region unreachable from the entry holds no
+ * back-edge. A pure leaf is a function of the unit that is not a
  * stub, stores nothing, makes no call of any kind, and has no back-edge.
  * A constant `call_by_address` target qualifies as a leaf when `foreign`,
  * the pure leaves of another unit (the main EXE, which is resident whenever
@@ -129,10 +150,11 @@ std::string loop_poll_marker(const std::string& indent, const std::string& funct
  * `psx_loop_poll(cpu, 0x<header>u, <insns>u, <pure>u);` at the same indent;
  * every other placeholder line is removed, so the text without sites is the
  * text the generator writes with no placeholders at all. Each site's `pure`
- * is decided on the body's emitted text, from `block_<header>:` to the end of
- * the block holding the goto, as tools/loop_census.py decides it: the body is
- * a counted poll when some assignment `cpu->R = ...;` reads R before the
- * body's first assignment to R (R not zero, hi or lo), else a pure spin.
+ * is decided on the emitted text of its body regions: a register (not zero)
+ * that some path from the header through the body reads before defining it,
+ * and that the body defines, carries a value across iterations and makes
+ * the site a counted poll; with no such register the site is a pure spin.
+ * A call of a leaf defines v0, v1, a0-a3, t0-t9 and at.
  * @param code  generated C holding placeholder lines
  * @param sites the sites classify_loops() returned for the same unit; each
  *              site's `pure` is set

@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <cctype>
 #include <cstring>
-#include <set>
 #include <map>
 #include <sstream>
 
@@ -67,20 +66,106 @@ bool take_leaf(const std::map<uint32_t, LeafSummary>& leaves, uint32_t target,
     return true;
 }
 
-/** @brief Classify the body [header, source] of one back-edge.
- * @param f      function holding the back-edge
- * @param header goto target
- * @param source label of the region holding the goto
+/// A function's regions as a graph: successor and predecessor indices.
+struct RegionGraph {
+    std::vector<std::vector<size_t>> succ;
+    std::vector<std::vector<size_t>> pred;
+};
+
+/** @brief Build the region graph of a function.
+ *
+ * Edges are the emitted gotos to labels of the function plus each region's
+ * fall-through into the next region.
+ * @param f the function's emitted facts
+ * @return the graph */
+RegionGraph build_graph(const FunctionFacts& f) {
+    const size_t n = f.regions.size();
+    RegionGraph g;
+    g.succ.resize(n);
+    g.pred.resize(n);
+    std::map<uint32_t, size_t> index;
+    for (size_t i = 0; i < n; i++) index[f.regions[i].label] = i;
+    for (size_t i = 0; i < n; i++) {
+        for (const EmittedGoto& e : f.regions[i].gotos) {
+            auto it = index.find(e.target);
+            if (it != index.end()) g.succ[i].push_back(it->second);
+        }
+        if (f.regions[i].falls_through && i + 1 < n) g.succ[i].push_back(i + 1);
+        for (size_t s : g.succ[i]) g.pred[s].push_back(i);
+    }
+    return g;
+}
+
+/** @brief Mark every region reachable from `from` along successor edges.
+ * @param g    the function's region graph
+ * @param from the start region, marked itself
+ * @return membership flag per region */
+std::vector<char> reachable(const RegionGraph& g, size_t from) {
+    std::vector<char> in(g.succ.size(), 0);
+    std::vector<size_t> work{from};
+    in[from] = 1;
+    while (!work.empty()) {
+        const size_t b = work.back();
+        work.pop_back();
+        for (size_t s : g.succ[b])
+            if (!in[s]) {
+                in[s] = 1;
+                work.push_back(s);
+            }
+    }
+    return in;
+}
+
+/** @brief Collect the loop body closed by the edge source -> header.
+ *
+ * The body is the header and every region that the header reaches and that
+ * reaches the source without passing through the header. When the header
+ * dominates the source this is the edge's natural loop; otherwise the cycle
+ * has a second entry (an irreducible loop) and the body is every region on
+ * a path from the header to the source.
+ * @param g      the function's region graph
+ * @param header region the edge targets
+ * @param source region holding the edge; reachable from `header`
+ * @param from_header regions reachable from `header`
+ * @return membership flag per region */
+std::vector<char> loop_body(const RegionGraph& g, size_t header, size_t source,
+                            const std::vector<char>& from_header) {
+    std::vector<char> in(g.succ.size(), 0);
+    in[header] = 1;
+    std::vector<size_t> work;
+    if (!in[source]) {
+        in[source] = 1;
+        work.push_back(source);
+    }
+    while (!work.empty()) {
+        const size_t b = work.back();
+        work.pop_back();
+        for (size_t p : g.pred[b]) {
+            if (in[p] || !from_header[p]) continue;
+            in[p] = 1;
+            work.push_back(p);
+        }
+    }
+    return in;
+}
+
+/** @brief Classify the loop body of one back-edge.
+ * @param f       function holding the back-edge
+ * @param g       its region graph
+ * @param in      body membership per region, from loop_body()
+ * @param header  index of the header region
  * @param leaves  pure leaves of this unit
  * @param foreign pure leaves of other units
- * @param site   filled with insns and leaves when the body qualifies
+ * @param site    filled with insns, leaves and body regions when the body qualifies
  * @return true when the body is store-free, calls only pure leaves, and loads */
-bool classify_body(const FunctionFacts& f, uint32_t header, uint32_t source,
-                   const std::map<uint32_t, LeafSummary>& leaves,
+bool classify_body(const FunctionFacts& f, const RegionGraph& g, const std::vector<char>& in,
+                   size_t header, const std::map<uint32_t, LeafSummary>& leaves,
                    const std::map<uint32_t, LeafSummary>& foreign, LoopSite& site) {
     bool loads = false;
-    for (const EmittedRegion& r : f.regions) {
-        if (r.label < header || r.label > source) continue;
+    std::vector<LoopBodyRegion> rest;
+    for (size_t i = 0; i < f.regions.size(); i++) {
+        if (!in[i]) continue;
+        const EmittedRegion& r = f.regions[i];
         if (r.stores || r.opaque_call) return false;
         loads = loads || r.loads;
         site.insns += r.insns;
@@ -88,7 +173,17 @@ bool classify_body(const FunctionFacts& f, uint32_t header, uint32_t source,
             if (!take_leaf(leaves, c, loads, site)) return false;
         for (uint32_t c : r.foreign)
             if (!take_leaf(foreign, c, loads, site)) return false;
+        LoopBodyRegion b;
+        b.label = r.label;
+        b.calls = !r.callees.empty() || !r.foreign.empty();
+        for (size_t s : g.succ[i])
+            if (in[s]) b.successors.push_back(f.regions[s].label);
+        if (i == header)
+            site.body.insert(site.body.begin(), std::move(b));
+        else
+            rest.push_back(std::move(b));
     }
+    site.body.insert(site.body.end(), rest.begin(), rest.end());
     return loads;
 }
 
@@ -114,15 +209,27 @@ std::vector<LoopSite> classify_loops(const std::vector<FunctionFacts>& facts,
     std::vector<LoopSite> sites;
     for (const FunctionFacts& f : facts) {
         if (f.stub) continue;
-        for (const EmittedRegion& r : f.regions) {
-            for (const EmittedGoto& g : r.gotos) {
-                if (g.target > r.label) continue;
+        const RegionGraph g = build_graph(f);
+        if (f.regions.empty()) continue;
+        const std::vector<char> live = reachable(g, 0);
+        std::map<uint32_t, size_t> index;
+        for (size_t i = 0; i < f.regions.size(); i++) index[f.regions[i].label] = i;
+        for (size_t i = 0; i < f.regions.size(); i++) {
+            const EmittedRegion& r = f.regions[i];
+            if (!live[i]) continue;
+            for (const EmittedGoto& e : r.gotos) {
+                if (e.target > r.label) continue;
+                auto h = index.find(e.target);
+                if (h == index.end() || !live[h->second]) continue;
+                const std::vector<char> from_header = reachable(g, h->second);
+                if (!from_header[i]) continue;
                 LoopSite site;
                 site.function = f.name;
-                site.header = g.target;
+                site.header = e.target;
                 site.source = r.label;
-                site.arm = g.arm;
-                if (classify_body(f, g.target, r.label, leaves, foreign, site))
+                site.arm = e.arm;
+                if (classify_body(f, g, loop_body(g, h->second, i, from_header), h->second,
+                                  leaves, foreign, site))
                     sites.push_back(std::move(site));
             }
         }
@@ -161,72 +268,158 @@ std::string marker_key(const std::string& function, uint32_t header, uint32_t so
     return fmt::format("{} 0x{:08X} 0x{:08X} {}", function, header, source, arm_name(arm));
 }
 
-/** @brief Report whether `text` contains `cpu-><reg>` as a whole token.
- * @param text the right-hand side of an assignment
- * @param reg  the register name
- * @return true when the register is read */
-bool reads_reg(const std::string& text, const std::string& reg) {
-    const std::string tok = "cpu->" + reg;
-    for (size_t at = text.find(tok); at != std::string::npos; at = text.find(tok, at + 1)) {
-        const bool word_before = at > 0 && (std::isalnum((unsigned char)text[at - 1]) || text[at - 1] == '_');
-        const size_t end = at + tok.size();
-        const bool word_after = end < text.size() &&
-                                (std::isalnum((unsigned char)text[end]) || text[end] == '_');
-        if (!word_before && !word_after) return true;
-    }
-    return false;
+/// GPR names as the generator spells them after `cpu->`, then hi and lo; bit i of a RegSet.
+constexpr const char* kRegNames[] = {
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2",
+    "t3",   "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5",
+    "s6",   "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra", "hi", "lo"};
+using RegSet = uint64_t;
+
+/** @brief Map a name to its RegSet bit.
+ * @param name text after `cpu->`
+ * @return the bit, 0 for zero and for any name that is no register */
+RegSet reg_bit(const std::string& name) {
+    for (size_t i = 1; i < sizeof(kRegNames) / sizeof(kRegNames[0]); i++)
+        if (name == kRegNames[i]) return RegSet{1} << i;
+    return 0;
 }
 
-/** @brief Decide whether a loop body's text carries a register across iterations other than through a load.
- *
- * Walks the lines in order; an assignment `cpu->R = RHS;` whose RHS reads R
- * before any earlier assignment to R in the body carries R (R not zero, hi
- * or lo).
- * @param body the body's emitted text
- * @return true for a counted poll, false for a pure spin */
-bool carried_register(const std::string& body) {
-    std::set<std::string> defined;
+/** @brief Collect every register a piece of C reads as `cpu-><reg>`.
+ * @param text the text
+ * @return the registers */
+RegSet regs_read(const std::string& text) {
+    RegSet out = 0;
+    for (size_t at = text.find("cpu->"); at != std::string::npos; at = text.find("cpu->", at + 1)) {
+        if (at > 0 && (std::isalnum((unsigned char)text[at - 1]) || text[at - 1] == '_')) continue;
+        size_t end = at + 5;
+        while (end < text.size() && (std::isalnum((unsigned char)text[end]) || text[end] == '_')) end++;
+        out |= reg_bit(text.substr(at + 5, end - at - 5));
+    }
+    return out;
+}
+
+/** @brief Remove C comments from emitted text.
+ * @param text the text
+ * @return the text without its comments */
+std::string strip_comments(const std::string& text) {
+    std::string out;
     size_t pos = 0;
-    while (pos < body.size()) {
-        size_t eol = body.find('\n', pos);
-        if (eol == std::string::npos) eol = body.size();
-        const std::string line = body.substr(pos, eol - pos);
-        pos = eol + 1;
-        size_t i = line.find_first_not_of(" \t");
-        if (i == std::string::npos || line.compare(i, 5, "cpu->") != 0) continue;
-        i += 5;
-        size_t j = i;
-        while (j < line.size() && (std::isalnum((unsigned char)line[j]) || line[j] == '_')) j++;
-        if (line.compare(j, 3, " = ") != 0) continue;
-        const size_t semi = line.rfind(';');
-        if (semi == std::string::npos || semi < j + 3) continue;
-        const std::string reg = line.substr(i, j - i);
-        const std::string rhs = line.substr(j + 3, semi - (j + 3));
-        if (!defined.count(reg) && reg != "zero" && reg != "lo" && reg != "hi" && reads_reg(rhs, reg))
-            return true;
-        defined.insert(reg);
+    for (size_t open = text.find("/*"); open != std::string::npos; open = text.find("/*", pos)) {
+        out.append(text, pos, open - pos);
+        const size_t close = text.find("*/", open + 2);
+        if (close == std::string::npos) return out;
+        pos = close + 2;
     }
-    return false;
+    out.append(text, pos, std::string::npos);
+    return out;
 }
 
-/** @brief Return the emitted body text of the back-edge whose placeholder sits at `marker`.
+/// Upward-exposed reads and definitions of one body region.
+struct RegionUse {
+    RegSet use = 0;  ///< read before any definition in the region
+    RegSet def = 0;  ///< defined in the region
+};
+
+/** @brief Compute a region's upward-exposed reads and its definitions from its emitted text.
  *
- * From the `block_<header>:` label of the enclosing function to the next
- * block label after the placeholder (or the function's end).
+ * The text is split into statements at `;`, `{`, `}` and line ends. A
+ * statement `cpu->R = RHS` reads the registers of RHS, then defines R; any
+ * other statement only reads. A region that ends in a call then defines v0,
+ * v1, a0-a3, t0-t9 and at (the callee's own reads are not seen).
+ * @param text  the region's emitted text, comments removed
+ * @param calls whether the region ends in a call
+ * @return the sets */
+RegionUse region_use(const std::string& text, bool calls) {
+    RegionUse u;
+    auto read = [&](RegSet r) { u.use |= r & ~u.def; };
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t end = text.find_first_of(";{}\n", pos);
+        if (end == std::string::npos) end = text.size();
+        const std::string stmt = text.substr(pos, end - pos);
+        pos = end + 1;
+        const size_t i = stmt.find_first_not_of(" \t");
+        RegSet def = 0;
+        size_t rhs = 0;
+        if (i != std::string::npos && stmt.compare(i, 5, "cpu->") == 0) {
+            size_t j = i + 5;
+            while (j < stmt.size() && (std::isalnum((unsigned char)stmt[j]) || stmt[j] == '_')) j++;
+            if (stmt.compare(j, 3, " = ") == 0) {
+                def = reg_bit(stmt.substr(i + 5, j - i - 5));
+                rhs = j + 3;
+            }
+        }
+        read(regs_read(stmt.substr(rhs)));
+        u.def |= def;
+    }
+    if (calls)
+        for (const char* r : {"at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3",
+                              "t4", "t5", "t6", "t7", "t8", "t9"})
+            u.def |= reg_bit(r);
+    return u;
+}
+
+/** @brief Find the emitted text of the region labelled `label` in the function enclosing `marker`.
  * @param code   generated C
- * @param marker offset of the placeholder
- * @param header the goto's target
- * @return the body text, empty when the header label is not found */
-std::string body_text(const std::string& code, size_t marker, uint32_t header) {
+ * @param marker an offset inside the function
+ * @param label  the region's label
+ * @param text   receives the text from the end of the `block_<label>:` line to the next
+ *               label or the function's end
+ * @return false when the label is not found in the function */
+bool region_text(const std::string& code, size_t marker, uint32_t label, std::string& text) {
     const size_t fn = code.rfind("\nvoid ", marker);
-    const std::string label = fmt::format("\nblock_{:08X}:", header);
-    const size_t start = code.find(label, fn == std::string::npos ? 0 : fn);
-    if (start == std::string::npos || start > marker) return {};
-    size_t end = code.find("\nblock_", marker);
-    const size_t next_fn = code.find("\nvoid ", marker);
-    if (end == std::string::npos || (next_fn != std::string::npos && next_fn < end)) end = next_fn;
-    if (end == std::string::npos) end = code.size();
-    return code.substr(start + 1, end - start - 1);
+    size_t fn_end = code.find("\nvoid ", marker);
+    if (fn_end == std::string::npos) fn_end = code.size();
+    const std::string tag = fmt::format("\nblock_{:08X}:", label);
+    const size_t start = code.find(tag, fn == std::string::npos ? 0 : fn);
+    if (start == std::string::npos || start >= fn_end) return false;
+    size_t body = code.find('\n', start + 1);
+    size_t end = code.find("\nblock_", start + 1);
+    if (end == std::string::npos || end > fn_end) end = fn_end;
+    if (body == std::string::npos || body > end) body = end;
+    text = code.substr(body, end - body);
+    return true;
+}
+
+/** @brief Decide whether a loop body carries a register value from one iteration into the next.
+ *
+ * Backward liveness over the body regions, with the edges back into the
+ * header removed: a register live into the header (read on some path from
+ * the header before any definition) that some body region defines carries.
+ * @param code   generated C
+ * @param marker offset of the site's placeholder
+ * @param site   the classified site, with its body regions
+ * @return true for a counted poll (also when a body region's text is not found),
+ *         false for a pure spin */
+bool carried_register(const std::string& code, size_t marker, const LoopSite& site) {
+    const size_t n = site.body.size();
+    std::map<uint32_t, size_t> index;
+    std::vector<RegionUse> u(n);
+    RegSet defs = 0;
+    for (size_t i = 0; i < n; i++) {
+        index[site.body[i].label] = i;
+        std::string text;
+        if (!region_text(code, marker, site.body[i].label, text)) return true;
+        u[i] = region_use(strip_comments(text), site.body[i].calls);
+        defs |= u[i].def;
+    }
+    std::vector<RegSet> live_in(n, 0);
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (size_t k = n; k-- > 0;) {
+            RegSet out = 0;
+            for (uint32_t s : site.body[k].successors) {
+                const size_t j = index.at(s);
+                if (j != 0) out |= live_in[j];
+            }
+            const RegSet in = u[k].use | (out & ~u[k].def);
+            if (in != live_in[k]) {
+                live_in[k] = in;
+                changed = true;
+            }
+        }
+    }
+    return (live_in[0] & defs) != 0;
 }
 
 }  // namespace
@@ -257,7 +450,7 @@ std::string apply_loop_polls(const std::string& code, std::vector<LoopSite>& sit
         auto it = by_key.find(code.substr(key_at, close - key_at));
         if (it != by_key.end()) {
             LoopSite& site = *it->second;
-            site.pure = !carried_register(body_text(code, open, site.header));
+            site.pure = !carried_register(code, open, site);
             out.append(code, line, open - line);
             out += fmt::format("psx_loop_poll(cpu, 0x{:08X}u, {}u, {}u);\n", site.header,
                                site.insns, site.pure ? 1 : 0);

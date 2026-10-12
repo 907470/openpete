@@ -89,6 +89,11 @@ void CodeGenerator::note_label(uint32_t label) {
     facts_.back().regions.push_back(std::move(r));
 }
 
+void CodeGenerator::note_fallthrough() {
+    if (facts_.empty() || facts_.back().regions.empty()) return;
+    facts_.back().regions.back().falls_through = true;
+}
+
 void CodeGenerator::note_instruction(uint32_t instr) {
     if (facts_.empty() || facts_.back().regions.empty()) return;
     EmittedRegion& r = facts_.back().regions.back();
@@ -1832,6 +1837,7 @@ std::string CodeGenerator::translate_basic_block(
         // Emit inline label for mid-block jump table targets
         if (addr != block.start_addr && extra_labels_.count(addr)) {
             ss << fmt::format("block_{:08X}:;\n", addr);
+            note_fallthrough();
             note_label(addr);
         }
 
@@ -2325,6 +2331,7 @@ std::string CodeGenerator::translate_basic_block(
     if (block.exit_instr.type == ControlFlowType::None && !block.successors.empty()) {
         ss << config_.indent << fmt::format("/* fall through to block_{:08X} */\n",
                                            block.successors[0]);
+        note_fallthrough();
     }
 
     return ss.str();
