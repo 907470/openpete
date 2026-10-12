@@ -474,19 +474,25 @@ and image records, every fleet-labelled container and the `:fleet` tag
 nothing else is in it. On the local host `clean` also removes the
 checkout's `build/fleet-stream/<run-id>/` whose run directory is gone.
 
-## Promote stays local
+## Promote
 
-Pulled tiles are adjudication material. `presentation-corpus-promote.sh`
-refuses a candidate whose `capture-record.txt` names another host. Started on
-the host, the script enters the capture image itself. Re-capture
-each adjudicated row on the dev box and promote from that capture:
+A pull appends `fleet-run`, `fleet-host` and `fleet-run-dir` to the pulled
+`capture-record.txt`. `presentation-corpus-promote.sh` admits a candidate
+captured on another host only when `canary-verdict.txt` in that run
+directory names the same run and records `pass` for the fleet host, and the
+record's `recipe-hash`, `image-digest` and `libvulkan` equal the manifest
+header's; `--environment-accept` does not relax this. The coordinator writes
+the verdict at the run's end, after every pull, so the promote reads it in
+the run directory: started on the host, the script enters the capture image
+with that directory mounted read-only at its own path
+(`OPENPETE_CAPTURE_RO_MOUNTS`). Promote on the coordinator, before
+`clean` removes the run directory:
 
 ```sh
-tests/harness/check_presentation_golden.sh --game spyro-2 --filter <bk2>
 tests/harness/presentation-corpus-promote.sh build/presentation-candidate-spyro-2 <tile>... --game spyro-2
 ```
 
-A full re-bless (`--bless`) also runs on the dev box.
+A full re-bless (`--bless`) runs on the dev box.
 
 ## Environment
 

@@ -72,6 +72,11 @@
 # home, the lock files, the store) uses the real path. The worktree mounts
 # are skipped: such a copy has no .git and its build inputs are real files.
 #
+# OPENPETE_CAPTURE_RO_MOUNTS=<dir>[:<dir>...] mounts each named absolute
+# directory read-only at its own path, for a host file an in-container step
+# reads outside the tree and the store (a golden-fleet run directory's canary
+# verdict, read by a promote of a fleet pull).
+#
 # Every container runs with --network=none. OPENPETE_CAPTURE_LABEL=<value>
 # adds the container label org.openpete.fleet=<value>. OPENPETE_CAPTURE_FIELDS
 # (the capture record's tree fields for a tree without .git) passes into the
@@ -194,6 +199,14 @@ for v in CORPUS_JOBS PRESENTATION_TIER PRESENTATION_GOLDEN_OUT PRESENTATION_GOLD
          OPENPETE_CAPTURE_FIELDS OPENPETE_RESUME_RUN OPENPETE_STREAM_FILE OPENPETE_STREAM_POKE; do
     [[ -n "${!v:-}" ]] && env_args+=(-e "$v=${!v}")
 done
+
+if [[ -n "${OPENPETE_CAPTURE_RO_MOUNTS:-}" ]]; then
+    IFS=: read -r -a ro_dirs <<<"$OPENPETE_CAPTURE_RO_MOUNTS"
+    for d in "${ro_dirs[@]}"; do
+        [[ "$d" == /* && -d "$d" ]] || { echo "[capture-container] OPENPETE_CAPTURE_RO_MOUNTS: not an absolute directory: $d" >&2; exit 64; }
+        ctr_mount "$d" "$d" ro
+    done
+fi
 
 ctr_uidmap
 uidmap=("${CTR_UIDMAP[@]}")

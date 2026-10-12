@@ -37,9 +37,14 @@
 # the script re-executes itself inside it through
 # `scripts/golden-capture-container.sh run` (pg_enter_capture_image
 # --no-engine), which passes the machine's hostname as OPENPETE_CAPTURE_HOST;
-# the container mounts this tree and the reference store's parent directory
-# only, so candidate_dir lies under one of them. Exit 64 when no container
-# engine is present.
+# the container mounts this tree and the reference store's parent directory,
+# so candidate_dir lies under one of them. A candidate pulled by
+# scripts/golden-fleet.py names the coordinator's run directory as
+# fleet-run-dir in its capture-record.txt; that directory, which holds the
+# run's canary-verdict.txt (written at the run's end, after every pull), is
+# mounted read-only at its own path through OPENPETE_CAPTURE_RO_MOUNTS so the
+# promote reads the verdict where the record names it. Exit 64 when no
+# container engine is present.
 #
 # After running, review `git -C <openpete> diff --cached` and commit deliberately.
 #
@@ -51,6 +56,10 @@ cd "$(dirname "$0")/../.." || exit 2
 source scripts/presentation-game.sh
 
 if ! pg_in_capture_image; then
+  run_dir="$(sed -n 's/^fleet-run-dir=//p' "${1:-}/capture-record.txt" 2>/dev/null | tail -1)"
+  if [[ -n "$run_dir" && -d "$run_dir" ]]; then
+    export OPENPETE_CAPTURE_RO_MOUNTS="$run_dir${OPENPETE_CAPTURE_RO_MOUNTS:+:$OPENPETE_CAPTURE_RO_MOUNTS}"
+  fi
   pg_enter_capture_image --no-engine tests/harness/presentation-corpus-promote.sh "$@"
   exit $?
 fi
