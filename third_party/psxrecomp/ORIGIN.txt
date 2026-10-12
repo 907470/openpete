@@ -2,3 +2,7 @@ upstream: https://github.com/mstan/psxrecomp
 commit: 3c2b87cb883d67db984fcabed30c5195f39ee3cd
 vendored: 2026-04-25T00:10:35Z
 notes: local changes are applied in tree; each is described under PATCHES/.
+upstream-history: upstream restarted its history on 2026-04-11 (7c40d33d,
+  a runtime that recompiles the BIOS); the vendored commit above shares no
+  merge base with upstream after that date, so a rebase onto upstream is not
+  possible.
