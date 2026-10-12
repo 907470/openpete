@@ -207,10 +207,23 @@ pg_cap_settings() {
 
 # A freecam row's tile key: the row's level field plus the first six hex
 # digits of the pose's md5, so two poses in one level never collide and the
-# key survives re-ordering the manifest. args: level-field pose
+# key survives re-ordering the manifest. A sub-area row's `:` is written `-`,
+# so the key is a valid file name on Windows. args: level-field pose
 pg_pose_slug() {
   local h; h="$(printf '%s' "$2" | md5sum | cut -c1-6)"
-  echo "${1}-${h}"
+  echo "${1//:/-}-${h}"
+}
+
+# The skip arguments of a freecam row's level (the level field before any
+# `@<variant>`): `<level>:<area>` with an integer area enters that sub-area
+# (--skip-to-area), any other level the level itself (--skip-to-level).
+# Result in the caller's PG_SKIP_ARGS. args: level
+pg_skip_args() {
+  if [[ "$1" =~ ^(.+):([0-9]+)$ ]]; then
+    PG_SKIP_ARGS=(--skip-to-area "$1")
+  else
+    PG_SKIP_ARGS=(--skip-to-level "$1")
+  fi
 }
 
 # ---- corpus manifests ------------------------------------------------------

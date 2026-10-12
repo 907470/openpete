@@ -1,6 +1,6 @@
 # freecam-corpus.manifest - (level, pose) tuples for the Spyro 3 debug-freecam
 # golden. Same row form as games/spyro-1/corpus/freecam-corpus.manifest:
-#   <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
+#   <level>[:<area>] | pos=(x, y, z) yaw=Y pitch=P | [start]
 # Each row is a reported defect; the class it belongs to is named on
 # the row's comment.
 # animated terrain holds its tick pose on intermediate presents
@@ -55,3 +55,6 @@ sunrise_spring | pos=(24392, 51564, 21691) yaw=-690 pitch=70
 # The homeworld portal turned into the 16:9 side band, outside the 4:3
 # screen: the game's portal pass rejects it on the X outcode bits.
 sunrise_spring | pos=(25844, 47069, 20665) yaw=256 pitch=123
+# moby vs terrain depth: the submarine draws at the wrong depth against the
+# ground
+super_bonus_round:1 | pos=(63716, 66117, 15554) yaw=507 pitch=155

@@ -17,9 +17,11 @@
 # run-to-run); the intermediate leg then exercises the moving terrain / mobys at
 # that pose (the toasty platform is a freecam case).
 #
-# A row is `<level>[@<variant>] | <pose> | [start] | [launch]`. The level is
-# everything before the first `@`; the whole field keys the tiles, so a variant
-# row never collides with a plain row at the same pose. `launch` holds tokens
+# A row is `<level>[:<area>][@<variant>] | <pose> | [start] | [launch]`. The
+# level is everything before the first `@`; `<level>:<area>` with an integer
+# area enters that sub-area (--skip-to-area) instead of the level's area 0. The
+# whole field keys the tiles (a `:` written `-`), so a variant row never
+# collides with a plain row at the same pose. `launch` holds tokens
 # applied to every leg of that row only (KEY=VALUE with an upper-case key is an
 # environment entry, anything else a command-line argument), so the row
 # measures that mode's own pixels. Rows without the field launch as before.
@@ -124,7 +126,7 @@ lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
 run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-line
   local slug="$1" flim="$2" leg="$3" flag="$4" target="$5" lod="$6" level="$7" pose="$8" launch="${9:-}" row="${10:-}"
-  local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
+  local -a ROW_ENV=() ROW_ARGS=() PG_SKIP_ARGS=(); pg_split_launch "$launch"; pg_skip_args "$level"
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
   local legdir; legdir="$(pg_leg_begin)" || return 1
@@ -135,7 +137,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch row-li
   # independent of any openpete.toml in the capturing machine's home.
   local -a cmd=(env "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}"
-    --skip-to-level "$level" --freecam-pose "$pose"
+    "${PG_SKIP_ARGS[@]}" --freecam-pose "$pose"
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out"
     --frame-limit "$flim" --max-runtime-seconds "$((LEG_TIMEOUT - 20))" "${ROW_ARGS[@]}")
   "${cmd[@]}" >"$log" 2>&1

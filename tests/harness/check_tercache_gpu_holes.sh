@@ -174,6 +174,7 @@ DISC_ARG="$(hostpath "$DISC_ABS")"
 # stdin, and a child that inherits it consumes the rows that have not run yet.
 run_leg() {  # tag level pose start extra-args...
     local tag="$1" level="$2" pose="$3" start="$4"; shift 4
+    local -a PG_SKIP_ARGS=(); pg_skip_args "$level"
     local log="$OUT/$tag.log"
     local shot="$OUT/$tag.png"
     local shot_vk="$OUT/$tag-vk.png"
@@ -188,7 +189,7 @@ run_leg() {  # tag level pose start extra-args...
             --disc "$DISC_ARG" --no-config --no-card --mute 1 \
             --vibration 0 --mouse 0 --input-lock --perf-stats off --osd off \
             --renderer vk --lod extended --window "${WIDTH}x${HEIGHT}" --vsync 0 \
-            --skip-to-level "$level" --freecam-pose "$pose" \
+            "${PG_SKIP_ARGS[@]}" --freecam-pose "$pose" \
             --screenshot-native-only --screenshot-on-frame "$start" \
             --screenshot-output "$(hostpath "$shot")" \
             --frame-limit $((start + 20)) --max-runtime-seconds "$LEG_RUNTIME" \
@@ -212,8 +213,7 @@ run_leg() {  # tag level pose start extra-args...
 }
 
 pose_slug() {  # level pose
-    local h; h="$(printf '%s' "$2" | md5sum | cut -c1-6)"
-    echo "${1}-${h}"
+    pg_pose_slug "$1" "$2"
 }
 
 rows=0; engaged=0; skipped=0; failed=0; missing=0

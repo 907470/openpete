@@ -640,7 +640,7 @@ def engine_build(wt, game, logf):
 def corpus_rows(wt, game, tier):
     """{tile prefix: (kind, row name)} over the worktree's corpus
     manifests: a bk2 row keys by its name, a freecam row by its pose slug
-    (the name plus the first six hex of the pose's md5, as
+    (the name, a `:` written `-`, plus the first six hex of the pose's md5, as
     freecam-corpus.sh forms it)."""
     script = ('source scripts/presentation-game.sh >/dev/null 2>&1; '
               'PRESENTATION_TIER="$2" pg_resolve "$1" >/dev/null 2>&1; '
@@ -668,7 +668,7 @@ def corpus_rows(wt, game, tier):
                 if not pose:
                     continue
                 h = hashlib.md5(pose.encode()).hexdigest()[:6]
-                out["%s-%s" % (name, h)] = ("freecam", name)
+                out["%s-%s" % (name.replace(":", "-"), h)] = ("freecam", name)
     return out
 
 
