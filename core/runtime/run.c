@@ -2979,6 +2979,7 @@ static int run_host_init(const openpete_options_t* opts) {
      * can be added and the latest one at which it still reaches a pad that
      * was already attached. */
     openpete_host_input_load_mappings(opts->controller_db);
+    openpete_host_input_drop_unread_events();
 
     /* App icon: the registered descriptor's RGBA8 image, emitted at build
      * time by the game's own icon step; a descriptor without one sets

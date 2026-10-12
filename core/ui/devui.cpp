@@ -293,6 +293,37 @@ static SDL_AtomicInt s_evq_head;   /* producer writes */
 static SDL_AtomicInt s_evq_tail;   /* consumer writes */
 static unsigned   s_evq_dropped;
 
+/** @brief Return whether imgui's SDL3 backend reads events of this type.
+ *
+ * Mirrors the cases of ImGui_ImplSDL3_ProcessEvent: mouse motion, wheel and
+ * buttons, text input, keys, the window's mouse enter and leave and focus
+ * changes, and gamepad arrival and removal. Every other type (joystick
+ * axes and buttons, sensor and UPDATE_COMPLETE reports, display and window
+ * geometry) would only occupy a slot the backend skips.
+ * @param type The SDL event type.
+ * @return true when the backend handles the type. */
+static bool devui_event_feeds_imgui(Uint32 type)
+{
+    switch (type) {
+    case SDL_EVENT_MOUSE_MOTION:
+    case SDL_EVENT_MOUSE_WHEEL:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+    case SDL_EVENT_TEXT_INPUT:
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
+    case SDL_EVENT_WINDOW_MOUSE_ENTER:
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+    case SDL_EVENT_GAMEPAD_ADDED:
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /** @brief Append one event to the ring, or count it dropped when the ring is full.
  *
  * A text-input event's text is copied into the slot's buffer, at most
@@ -326,6 +357,7 @@ void openpete_devui_process_event(const union SDL_Event *ev)
 {
     if (!s_ctx || !ev) return;
     const SDL_Event *e = (const SDL_Event *)ev;
+    if (!devui_event_feeds_imgui(e->type)) return;
     if (e->type != SDL_EVENT_TEXT_INPUT) {
         (void)devui_enqueue(e);
         return;

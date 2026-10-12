@@ -180,7 +180,8 @@ int  openpete_devui_padnav_engaged(void);
  * openpete_devui_render drains on the frame's thread. A full ring drops the
  * newest event, not the oldest, so a press is never lost ahead of its
  * release; the drop count is logged on the first drop and every 256th.
- * No-op before openpete_devui_create.
+ * Only the types imgui's SDL3 backend reads are queued; the rest are
+ * ignored. No-op before openpete_devui_create.
  * @param ev The event; NULL is ignored. */
 void openpete_devui_process_event(const union SDL_Event *ev);
 

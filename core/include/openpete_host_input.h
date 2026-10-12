@@ -51,6 +51,18 @@ int openpete_host_input_legacy(void);
  *        OPENPETE_CONTROLLER_DB environment variable is the fallback. */
 void openpete_host_input_load_mappings(const char* cli_path);
 
+/** @brief Disable the SDL event types no openpete, PsyCross or imgui consumer reads: joystick and gamepad UPDATE_COMPLETE.
+ *
+ * SDL_UpdateJoysticks pushes an UPDATE_COMPLETE per joystick with new state
+ * on every pump, and on every pump while a Guide release shorter than
+ * SDL_MINIMUM_GUIDE_BUTTON_DELAY_MS (250 ms) is held back, although that
+ * pump sends no button event; the pump loop then dequeues one pair per
+ * iteration for the whole delay. A disabled type is never queued
+ * (SDL_UpdateJoysticks tests SDL_EventEnabled before the push). Call on the
+ * pumping thread after SDL_Init; the setting lasts until the events
+ * subsystem quits. */
+void openpete_host_input_drop_unread_events(void);
+
 /** @brief Log one arriving device's mapping provenance, for pads not attached when the databases loaded.
  *
  * Called on SDL_EVENT_JOYSTICK_ADDED, not GAMEPAD_ADDED: the latter fires

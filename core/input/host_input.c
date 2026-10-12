@@ -820,6 +820,15 @@ void openpete_host_input_pad_arrived(unsigned int joystick_id)
     map_log_one((SDL_JoystickID)joystick_id);
 }
 
+void openpete_host_input_drop_unread_events(void)
+{
+    /* GAMEPAD_UPDATE_COMPLETE is translated from JOYSTICK_UPDATE_COMPLETE by
+     * SDL's gamepad event watcher, and enabling it re-enables the joystick
+     * type, so both are disabled. */
+    SDL_SetEventEnabled(SDL_EVENT_JOYSTICK_UPDATE_COMPLETE, false);
+    SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_UPDATE_COMPLETE, false);
+}
+
 void openpete_host_input_load_mappings(const char* cli_path)
 {
     const char* hint = SDL_GetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE);

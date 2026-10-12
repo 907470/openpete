@@ -82,6 +82,8 @@ static const cfg_knob_t g_schema[] = {
     { "card1",            "--card1",            NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "card2",            "--card2",            NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "no_card",          "--no-card",          NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
+    { "no_card1",         "--no-card1",         NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
+    { "no_card2",         "--no-card2",         NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
     { "card_unformatted", "--card-unformatted", NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
 
     /* -------- Gameplay entry -------- */
