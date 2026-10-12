@@ -80,11 +80,15 @@ void openpete_rewind_on_iter(const CPUState* cpu, unsigned frame, int live) {
     s_next_due = frame + OPENPETE_REWIND_KF_VBLS;
 }
 
-const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target) {
+const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target, const openpete_park_site_t* site) {
     const openpete_rewind_kf_t* best = NULL;
     for (int i = 0; i < s_ring_n; i++) {
         const openpete_rewind_kf_t* kf = &s_ring[i];
         if (!kf->valid || kf->frame > target) continue;
+        if (site) {
+            const openpete_park_site_t ks = openpete_state_mem_site(kf->mem);
+            if (ks.ra != 0u && (ks.ra != site->ra || ks.sp != site->sp)) continue;
+        }
         if (!best || kf->frame > best->frame) best = kf;
     }
     return best;

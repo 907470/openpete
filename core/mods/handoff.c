@@ -39,6 +39,11 @@ static int         s_resume_done = 0;
 static unsigned    s_trigger_at = 0;     /* 0 = disarmed */
 static int         s_exec_done = 0;
 static int         s_requested = 0;
+static unsigned    s_resume_waits = 0;   /* polls the resume load found another park site */
+
+/* Polls a resume load waits for the fresh process to park at the
+ * checkpoint's park site before it gives up and continues fresh. */
+#define HANDOFF_RESUME_SITE_WAIT 1800u
 
 static int    s_argc = 0;
 static char** s_argv = NULL;
@@ -77,11 +82,15 @@ void openpete_handoff_poll(CPUState* cpu) {
      * without this the resumed frame counter (>= the trigger) would
      * re-fire it every quiescent pass, exec-looping forever. */
     if (s_resume_path && !s_resume_done) {
-        s_resume_done = 1;
         s_trigger_at = 0;
         s_exec_done = 1;
         unsigned frame = openpete_frame;
-        if (openpete_state_load_file(s_resume_path, cpu, &frame) == 0) {
+        const int rc = openpete_state_load_file(s_resume_path, cpu, &frame);
+        /* The checkpoint loads only where the fresh process's fiber parks
+         * at the checkpoint's park site. */
+        if (rc == 1 && ++s_resume_waits < HANDOFF_RESUME_SITE_WAIT) return;
+        s_resume_done = 1;
+        if (rc == 0) {
             openpete_frame = frame;
             remove(s_resume_path);
             OPL_INFO_F("handoff", "session resumed at frame %u", frame);

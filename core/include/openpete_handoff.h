@@ -30,8 +30,9 @@ void openpete_handoff_request(void);
 
 /** @brief Run the pending handoff leg at a run-loop quiescent point.
  *
- * On the first call of a --resume-handoff process, loads the handoff file,
- * restores openpete_frame, deletes the file, and disarms the checkpoint leg
+ * On the first call of a --resume-handoff process at which the game fiber is
+ * parked at the handoff file's park site (waiting up to 1800 calls, then
+ * continuing fresh), loads the handoff file, restores openpete_frame, deletes the file, and disarms the checkpoint leg
  * so a frame trigger that fired in the previous process does not fire
  * again; a failed load logs an error and the process continues from its
  * fresh state. Otherwise, when a handoff was requested or the

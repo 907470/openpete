@@ -3550,6 +3550,18 @@ static void overlay_input_suspend(void) {
  * the stack is not snapshotted, so a state taken there or loaded there
  * resumes the wrong continuation.
  *
+ * A load also needs the right final yield: each records its park site (the
+ * psyq_VSync call's guest ra and sp, openpete_yield_site), every snapshot
+ * stores the site it was taken at, and a load applies only while the fiber
+ * is parked at a final yield with that site. At another site the loaded
+ * registers would run the parked call's continuation (its caller's code
+ * with the saved call's s-registers). A load that finds another site waits:
+ * a queued file or slot load up to STATE_LOAD_SITE_WAIT final yields and
+ * is refused after them; the rewind seek takes the newest keyframe saved
+ * at the current site; the stress rollback waits up to its bound and then
+ * re-arms; the runahead rollback continues the speculation to the
+ * snapshot's site and adopts it at the bound.
+ *
  * One-shot requests (the save and load hotkeys, a mod's request, the
  * scheduled --state-save-on-frame / --state-load-on-frame) enter a queue
  * whenever they are raised; state_ops_drain runs the queue in arrival order
@@ -3569,7 +3581,22 @@ typedef struct {
     unsigned slot;        /* the slot of a slot op */
     const char* path;     /* the path of a file op */
     int deferred;         /* counted once in s_state_ops_deferred */
+    unsigned site_waits;  /* final yields a load spent at another park site */
 } state_op_t;
+
+/* Final yields a queued load waits for the fiber to park at its site. A
+ * game's tick parks at each of its frame-wait sites every tick, so a site
+ * absent this long belongs to a mode the run has left (a pause menu, a
+ * transition): loading at another site corrupts the timeline, so the load
+ * is refused instead. 1800 final yields is at least 30 s of play. */
+#define STATE_LOAD_SITE_WAIT 1800u
+
+/* Park-site deferrals by kind: a load whose snapshot was saved at another
+ * park site than the current final yield's. */
+enum { SITE_DEF_LOAD, SITE_DEF_REWIND, SITE_DEF_STRESS, SITE_DEF_RUNAHEAD, SITE_DEF_N };
+static unsigned long long s_site_deferred[SITE_DEF_N];
+static unsigned long long s_site_refused = 0;    /* queued loads refused at STATE_LOAD_SITE_WAIT */
+static unsigned long long s_site_abandoned = 0;  /* stress rollbacks re-armed at their bound */
 
 #define STATE_OP_QUEUE_LEN 8
 static state_op_t s_state_ops[STATE_OP_QUEUE_LEN];
@@ -3607,7 +3634,7 @@ static void state_op_push(state_op_kind kind, unsigned slot, const char* path) {
         OPL_WARN_F("savestate", "state-op queue full (%d): request dropped", STATE_OP_QUEUE_LEN);
         return;
     }
-    s_state_ops[s_state_op_n++] = (state_op_t){kind, slot, path, 0};
+    s_state_ops[s_state_op_n++] = (state_op_t){kind, slot, path, 0, 0u};
 }
 
 /** @brief Run one queued savestate request; a load that succeeds re-anchors the host frame counter.
@@ -3615,17 +3642,19 @@ static void state_op_push(state_op_kind kind, unsigned slot, const char* path) {
  * The re-anchor makes the one-shot triggers (screenshot-on-frame,
  * ram-dump-on-frame, frame-limit) reason about time from the load as on a
  * fresh run.
- * @param op The request. */
-static void state_op_run(const state_op_t* op) {
+ * @param op The request.
+ * @return 1 when a load found the fiber parked at another site than its
+ *         state's (nothing restored), else 0. */
+static int state_op_run(const state_op_t* op) {
     unsigned lf = openpete_frame;
     int rc = -1;
     switch (op->kind) {
     case STATE_OP_SAVE_SLOT:
         (void)openpete_state_save(op->slot, &g_game.cpu, openpete_frame);
-        return;
+        return 0;
     case STATE_OP_SAVE_FILE:
         (void)openpete_state_save_file(op->path, &g_game.cpu, openpete_frame);
-        return;
+        return 0;
     case STATE_OP_LOAD_SLOT:
         rc = openpete_state_load(op->slot, &g_game.cpu, &lf);
         break;
@@ -3634,9 +3663,28 @@ static void state_op_run(const state_op_t* op) {
         break;
     }
     if (rc == 0) openpete_frame = lf;
+    return rc == 1;
+}
+
+/** @brief Keep a load that found another park site, or refuse it once it has waited STATE_LOAD_SITE_WAIT final yields.
+ * @param op The load request.
+ * @return 1 when the request stays queued, 0 when it was refused. */
+static int state_op_site_wait(state_op_t* op) {
+    if (op->site_waits++ == 0u) s_site_deferred[SITE_DEF_LOAD]++;
+    if (op->site_waits < STATE_LOAD_SITE_WAIT) return 1;
+    s_site_refused++;
+    OPL_ERROR_F("savestate", "load of %s refused: the fiber did not park at the state's "
+                "site within %u final yields (parked at ra=0x%08X sp=0x%08X); running "
+                "state untouched", op->kind == STATE_OP_LOAD_FILE ? op->path : "the slot",
+                STATE_LOAD_SITE_WAIT, openpete_yield_site.ra, openpete_yield_site.sp);
+    return 0;
 }
 
 /** @brief Run every queued savestate request at a final yield, or keep the queue and count the wait.
+ *
+ * Requests run in arrival order. A load whose state was saved at another
+ * park site stops the drain there: it and every later request stay queued
+ * for the next final yield (state_op_site_wait).
  * @return 1 at a final yield (the queue ran and the periodic state work may run), else 0. */
 static int state_ops_drain(void) {
     if (!openpete_yield_final) {
@@ -3649,42 +3697,56 @@ static int state_ops_drain(void) {
         }
         return 0;
     }
-    for (int i = 0; i < s_state_op_n; i++) state_op_run(&s_state_ops[i]);
-    s_state_op_n = 0;
+    int done = 0;
+    while (done < s_state_op_n) {
+        state_op_t* op = &s_state_ops[done];
+        if (state_op_run(op) && state_op_site_wait(op)) break;
+        done++;
+    }
+    memmove(s_state_ops, s_state_ops + done, (size_t)(s_state_op_n - done) * sizeof s_state_ops[0]);
+    s_state_op_n -= done;
     return 1;
 }
 
-/** @brief Continue a runahead speculation until the game fiber parks at a final yield, so the rollback loads only there.
+/** @brief Continue a runahead speculation until the game fiber parks at a final yield at the snapshot's park site, so the rollback loads only there.
  *
  * The rollback restores a snapshot taken at a final yield and the fiber then
- * resumes wherever it is parked; below any other yield its host call stack is
- * not the one the snapshot continues from. The speculation loop ends at a
- * final yield when it breaks on the tick count, but its yield bound and its
- * no-advance break (the no-tick yield after a stubbed dispatch) can leave the
- * fiber at an intermediate yield. Speculation then continues with the same
- * held input, the rollback counted as deferred, until a final yield or the
- * bound.
+ * resumes wherever it is parked; below any other yield, or below a final
+ * yield of another psyq_VSync call site, its host call stack is not the one
+ * the snapshot continues from. The speculation loop ends at a final yield
+ * when it breaks on the tick count, but that yield can be another site
+ * than the snapshot's (a game with two frame-wait sites), and its yield
+ * bound and its no-advance break (the no-tick yield after a stubbed
+ * dispatch) can leave the fiber at an intermediate yield. Speculation then
+ * continues with the same held input, the rollback counted as deferred
+ * (and as a park-site deferral when the fiber was at a final yield), until
+ * the site or the bound. A site that does not recur within the bound
+ * leaves the speculation adopted: no rollback can be applied at another
+ * site.
  * @param live_lost Nonzero when the speculation already left gameplay (it is
  *        adopted; nothing runs).
+ * @param site The snapshot's park site.
  * @param cap Further yields allowed.
- * @param nofinal Set to 1 when no final yield came within `cap`.
- * @return 0 when parked at a final yield (the rollback may load), 1 when the
+ * @param nofinal Set to 1 when the site did not recur within `cap`.
+ * @return 0 when parked at the site (the rollback may load), 1 when the
  *         speculation is adopted instead: gameplay stopped being live, or
- *         no final yield came within `cap`. */
-static int ra_speculate_to_final(int live_lost, int cap, int* nofinal) {
+ *         the site did not recur within `cap`. */
+static int ra_speculate_to_final(int live_lost, openpete_park_site_t site, int cap, int* nofinal) {
     if (live_lost) return 1;
-    if (openpete_yield_final) return 0;
+    if (openpete_park_site_matches(&site)) return 0;
     ra_count_deferral(1);
-    OPL_DEBUG_F("runahead", "speculation ended below an intermediate yield at f=%u; "
-                "rollback deferred to the next final yield", openpete_frame);
-    for (int v = 0; v < cap && !openpete_yield_final; v++) {
+    if (openpete_yield_final) s_site_deferred[SITE_DEF_RUNAHEAD]++;
+    OPL_DEBUG_F("runahead", "speculation ended at f=%u %s; rollback deferred to the "
+                "snapshot's park site", openpete_frame,
+                openpete_yield_final ? "at another park site" : "below an intermediate yield");
+    for (int v = 0; v < cap && !openpete_park_site_matches(&site); v++) {
         game_on_frame_pre(&g_game.cpu, openpete_frame);
         g_openpete_guest_running = 1;
         co_switch((cothread_t)openpete_game_fiber);
         g_openpete_guest_running = 0;
         if (!game_is_gameplay_live(&g_game.cpu)) return 1;
     }
-    if (openpete_yield_final) return 0;
+    if (openpete_park_site_matches(&site)) return 0;
     s_ra_adopted_nofinal++;
     *nofinal = 1;
     return 1;
@@ -3696,8 +3758,8 @@ static int ra_speculate_to_final(int live_lost, int cap, int* nofinal) {
 static void ra_adopt_log(int nofinal) {
     if (nofinal)
         OPL_WARN_F("runahead",
-                   "speculation reached no final yield within its bound; adopted "
-                   "the led timeline through f=%u", openpete_frame);
+                   "speculation reached no final yield at the snapshot's park site within "
+                   "its bound; adopted the led timeline through f=%u", openpete_frame);
     else
         OPL_INFO_F("runahead",
                    "speculation crossed into a transition; adopted "
@@ -3753,7 +3815,10 @@ static void state_stress_roundtrip(openpete_state_mem_t* sm, unsigned every) {
  * steady-state gameplay: the mem snapshot excludes the boot and load-window
  * sections (VRAM, SPU sample RAM) by contract, so a pending rollback whose
  * window crosses into a transition is abandoned, as runahead is gated off
- * around loads.
+ * around loads. The rollback applies only at the snapshot's park site: at
+ * another site it waits (counted once per rollback), up to 8K + 16
+ * iterations past K, the runahead speculation's bound; a site that does not
+ * recur by then abandons the rollback and re-arms at the current site.
  * @param sm The stress snapshot.
  * @param k K. */
 static void state_stress_rewind(openpete_state_mem_t* sm, unsigned k) {
@@ -3768,7 +3833,16 @@ static void state_stress_rewind(openpete_state_mem_t* sm, unsigned k) {
     if (s_stress_it < k) return;
     if (armed == 2) { armed = 0; return; }   /* replay done: re-arm here */
     unsigned lf = openpete_frame;
-    if (openpete_state_mem_load(sm, &g_game.cpu, &lf, 1) == 0) {
+    const int rc = openpete_state_mem_load(sm, &g_game.cpu, &lf, 1);
+    if (rc == 1) {
+        if (s_stress_it == k) s_site_deferred[SITE_DEF_STRESS]++;
+        if (s_stress_it >= 9u * k + 16u) {
+            s_site_abandoned++;
+            armed = 0;
+        }
+        return;
+    }
+    if (rc == 0) {
         openpete_frame = lf;
         if ((++s_stress_ops & 0xFFu) == 1u)
             OPL_INFO_F("savestate", "stress-rewind: %u rollbacks (back to f=%u)", s_stress_ops, lf);
@@ -3822,12 +3896,25 @@ static void rewind_stage_logged_input(const openpete_input_rec_t* r) {
  * iteration. Replayed ticks run the main loop's pre-yield hook (per-tick
  * guest mutations are part of the timeline) with presentation
  * announcements and pad-read pacing suspended.
+ * The keyframe is the newest at or before the target saved at the park
+ * site the fiber is parked at: only that keyframe can be loaded here, and
+ * the logged-input replay reaches the target from it whatever its age. With
+ * no such keyframe in the window the step is deferred (counted) and the
+ * tick runs forward, so a held rewind resumes at the next final yield whose
+ * site a keyframe carries.
  * @param bk2_active A movie is loaded for replay (it keeps the pad override).
  * @return true when the timeline moved. */
 static bool rewind_seek_one_tick(bool bk2_active) {
     const unsigned target = openpete_frame > 2u ? openpete_frame - 2u : 0u;
-    const openpete_rewind_kf_t* kf = openpete_rewind_pick(target);
+    const openpete_rewind_kf_t* kf = openpete_rewind_pick(target, &openpete_yield_site);
     if (!kf) {
+        if (openpete_rewind_pick(target, NULL)) {
+            s_site_deferred[SITE_DEF_REWIND]++;
+            OPL_DEBUG_F("rewind", "no keyframe at or before f=%u was saved at the park site "
+                        "ra=0x%08X sp=0x%08X; step deferred", target,
+                        openpete_yield_site.ra, openpete_yield_site.sp);
+            return false;
+        }
         OPL_WARN_F("rewind", "no keyframe covers f=%u (window exhausted or none captured)", target);
         return false;
     }
@@ -5692,8 +5779,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                         }
                     }
                     /* The rollback below loads only at a final yield. */
-                    ra_live_lost = ra_speculate_to_final(ra_live_lost, 8 * runahead_n + 16,
-                                                         &ra_nofinal);
+                    ra_live_lost = ra_speculate_to_final(ra_live_lost, openpete_state_mem_site(ra_snap),
+                                                         8 * runahead_n + 16, &ra_nofinal);
                     openpete_speculative = 0;
                     openpete_pace_vbl_suspend(0);
                     /* An adopted speculation is the timeline: its frames
@@ -7387,9 +7474,14 @@ static int run_host_loop(const openpete_options_t* opts) {
     OPL_INFO_F("savestate", "deferred to a final yield: %llu snapshot request(s), %llu load request(s); "
                "periodic state work sat out %llu intermediate yield(s); "
                "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "
-               "%llu adopted with no final yield",
+               "%llu adopted with no final yield; "
+               "park site: loads=%llu rewind=%llu stress=%llu runahead=%llu "
+               "refused=%llu stress-abandoned=%llu",
                s_state_ops_deferred[0], s_state_ops_deferred[1], s_state_yields_skipped,
-               s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted_nofinal);
+               s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted_nofinal,
+               s_site_deferred[SITE_DEF_LOAD], s_site_deferred[SITE_DEF_REWIND],
+               s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
+               s_site_refused, s_site_abandoned);
     {
         /* The VBL delivery census (games/common/psyq/psyq_thunks.cpp). */
         extern void psyq_vbl_delivery_report(void) __attribute__((weak));

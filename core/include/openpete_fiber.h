@@ -14,6 +14,8 @@
 #include <SDL3/SDL_atomic.h>
 #include <stdint.h>
 
+#include "openpete_park_site.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -192,6 +194,18 @@ extern int      openpete_skip_ffwd_windowed;
  * other yield is not the one a snapshot's state continues from. Written by
  * the game fiber around the yield, read by the host loop between yields. */
 extern int openpete_yield_final;
+
+/* The site of the final yield the fiber is parked at; written by the game
+ * fiber before each final yield, meaningful while openpete_yield_final is
+ * set. */
+extern openpete_park_site_t openpete_yield_site;
+
+/** @brief Report whether the game fiber is parked at a final yield whose site equals @p site.
+ *
+ * A site with ra 0 (none recorded) matches any final yield.
+ * @param site The site a snapshot was taken at.
+ * @return 1 when parked at a final yield at @p site, else 0. */
+int openpete_park_site_matches(const openpete_park_site_t* site);
 
 /** @brief Switch from the game fiber to the host fiber, advancing openpete_frame.
  *

@@ -1,10 +1,10 @@
 // core/record/savestate.c - save/load of openpete game state to slot files.
 //
-// v4 file layout (little-endian throughout, no padding inside the header
+// v5 file layout (little-endian throughout, no padding inside the header
 // thanks to fixed-size fields):
 //
 //   uint32_t  magic         = 'OSv1' (0x3176534F LE)
-//   uint32_t  version       = 4
+//   uint32_t  version       = 5
 //   char      ident[32]     - content identity, see ident_fill()
 //   uint32_t  frame         - openpete_frame (VBL counter) at save
 //   uint32_t  cpu_bytes
@@ -25,6 +25,10 @@
 //                             existed (it was reserved and written as 0)
 //   uint32_t  vbl_device    - openpete_vbl_device (every VBLANK elapsed,
 //                             held ones included); the drive head's clock
+//   uint32_t  park_ra       - park site of the save: the guest ra of the
+//   uint32_t  park_sp         psyq_VSync call whose final yield the fiber
+//                             was parked at, and the guest sp there
+//                             (openpete_yield_site); v5 only
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
 //   uint8_t   scratch[scratch_bytes]
@@ -38,9 +42,20 @@
 //
 // Note on the libco game fiber: its host call stack is NOT snapshotted.
 // On resume the fiber unwinds through whatever frames were live at load
-// time, but recompiled C reads cpu->fields fresh on every access, so
-// after at most 1-2 outer-loop iterations execution stabilises against
-// the loaded cpu+RAM. An attempt to memcpy the fiber memory was reverted
+// time. A load therefore applies only while the fiber is parked at the
+// final yield of a psyq_VSync call with the save's park site (same ra,
+// same sp), so the host frames directly below the yield are the recompiled
+// continuation of the call the state was saved in; a load at another site
+// returns 1 with nothing restored and the caller retries at a later final
+// yield. The caller frames further out are the live run's; recompiled C
+// reads cpu->fields fresh on every access, so after at most 1-2 outer-loop
+// iterations execution stabilises against the loaded cpu+RAM.
+//
+// Compat (unsited load): a v4 file carries no park site. It is read with
+// park_ra = park_sp = 0 and loads at any final yield, the rule before
+// sites were recorded, with a warning. The header layout is versioned by
+// `version` alone; OPENPETE_STATE_ABI is unchanged, so a v4 file keeps its
+// identity. An attempt to memcpy the fiber memory was reverted
 // because libco's Windows backend uses an opaque OS-fiber handle that
 // can't be serialised, and the cross-platform split wasn't worth the
 // small fidelity gain.
@@ -126,7 +141,10 @@ extern int g_cdXaStartVBL;
 #endif
 
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
-#define OPENPETE_STATE_VERSION  4u
+#define OPENPETE_STATE_VERSION  5u
+/* The oldest header version this build reads: v4, the v5 header without
+ * the park site. */
+#define OPENPETE_STATE_VERSION_MIN 4u
 #define OPENPETE_STATE_HASH_LEN 32
 /* Bytes of the header's game id field; an id fills at most LEN - 1. */
 #define OPENPETE_STATE_GAME_LEN 12
@@ -166,11 +184,35 @@ typedef struct {
     uint32_t arena_bytes;      /* mod arena section: ledger rows + used bytes */
     char     game[OPENPETE_STATE_GAME_LEN]; /* saving game's id, NUL-padded */
     uint32_t vbl_device;       /* openpete_vbl_device: every VBLANK elapsed */
+    uint32_t park_ra;          /* v5: openpete_yield_site.ra at the save */
+    uint32_t park_sp;          /* v5: openpete_yield_site.sp at the save */
 } openpete_state_header_t;
 
-/* The header's size is fixed: the game field replaced reserved[3]; v4
- * appended vbl_device. */
-typedef char state_header_size_check[sizeof(openpete_state_header_t) == 104 ? 1 : -1];
+/* The header's size is fixed per version: the game field replaced
+ * reserved[3]; v4 appended vbl_device (104 bytes); v5 appended the park
+ * site (112 bytes). */
+#define STATE_HEADER_V4_BYTES ((size_t)offsetof(openpete_state_header_t, park_ra))
+typedef char state_header_size_check[sizeof(openpete_state_header_t) == 112 ? 1 : -1];
+typedef char state_header_v4_size_check[STATE_HEADER_V4_BYTES == 104 ? 1 : -1];
+
+/** @brief Read a state header of any version this build reads, leaving the file just past it.
+ *
+ * Reads the v4 prefix, then the v5 park site when the version carries it;
+ * a v4 header reads with the park site zero (none). Magic and version are
+ * left to the caller's checks; a version outside the readable range reads
+ * only the prefix.
+ * @param fp The state file, at offset 0.
+ * @param hdr Receives the header.
+ * @return 0 when the header's bytes were read, -1 on a short read. */
+static int state_header_read(FILE* fp, openpete_state_header_t* hdr) {
+    memset(hdr, 0, sizeof *hdr);
+    if (fread(hdr, 1, STATE_HEADER_V4_BYTES, fp) != STATE_HEADER_V4_BYTES) return -1;
+    if (hdr->magic != OPENPETE_STATE_MAGIC || hdr->version < 5u ||
+        hdr->version > OPENPETE_STATE_VERSION)
+        return 0;
+    const size_t tail = sizeof *hdr - STATE_HEADER_V4_BYTES;
+    return fread((uint8_t*)hdr + STATE_HEADER_V4_BYTES, 1, tail, fp) == tail ? 0 : -1;
+}
 
 /* CD head-position section (fixed layout, ABI-covered). */
 typedef struct {
@@ -332,10 +374,10 @@ static int state_file_exists(const char* path) {
 static int shared_slot_belongs(const char* path, const char** why) {
     openpete_state_header_t hdr;
     FILE* fp = fopen(path, "rb");
-    size_t got = fp ? fread(&hdr, 1, sizeof hdr, fp) : 0;
+    const int got = fp ? state_header_read(fp, &hdr) : -1;
     if (fp) fclose(fp);
-    if (got != sizeof hdr || hdr.magic != OPENPETE_STATE_MAGIC ||
-        hdr.version != OPENPETE_STATE_VERSION) {
+    if (got != 0 || hdr.magic != OPENPETE_STATE_MAGIC ||
+        hdr.version < OPENPETE_STATE_VERSION_MIN || hdr.version > OPENPETE_STATE_VERSION) {
         *why = "not a state this build reads";
         return 0;
     }
@@ -528,6 +570,12 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
      * timeline leads the post-save one by exactly one row). */
     hdr.vbl              = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     hdr.vbl_device       = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
+    /* Saves run only at a final yield; the site is the one a load must
+     * find the fiber parked at. */
+    if (openpete_yield_final) {
+        hdr.park_ra = openpete_yield_site.ra;
+        hdr.park_sp = openpete_yield_site.sp;
+    }
     hdr.spu_state_bytes  = PsyX_SPUAL_StateSize();
     hdr.spu_mem_bytes    = PsyX_SPUAL_MemSize();
     hdr.cd_state_bytes   = (uint32_t)sizeof(state_cd_t);
@@ -666,22 +714,40 @@ static int state_game_check(const char* path, const openpete_state_header_t* hdr
     return -1;
 }
 
-/** @brief Check a state file's header against this build: magic, version, game, identity, the fixed section sizes, and the variable sections against the file's length.
+/** @brief Admit a state file's park site: the fiber must be parked at a final yield of the psyq_VSync call the state was saved in.
+ *
+ * A header with no park site (v4) is admitted at any final yield, with a
+ * warning naming the site it loads at.
+ * @param path The state file, for the log line.
+ * @param hdr The header read from it.
+ * @return 0 when the load may apply now, 1 when the fiber is parked elsewhere. */
+static int state_site_check(const char* path, const openpete_state_header_t* hdr) {
+    const openpete_park_site_t site = {hdr->park_ra, hdr->park_sp};
+    if (!openpete_park_site_matches(&site)) return 1;
+    if (site.ra == 0u)
+        OPL_WARN_F("savestate", "%s: v%u state carries no park site; loaded at the current "
+                   "final yield (ra=0x%08X sp=0x%08X) unchecked", path, hdr->version,
+                   openpete_yield_site.ra, openpete_yield_site.sp);
+    return 0;
+}
+
+/** @brief Check a state file's header against this build: magic, version, game, identity, the fixed section sizes, the variable sections against the file's length, and the park site.
  *
  * Each refusal is logged with the values that differ.
  * @param fp The state file, positioned just past the header.
  * @param path Its path, for the log lines.
  * @param hdr The header read from it.
- * @return 0 when the file can be loaded by this build, -1 otherwise. */
+ * @return 0 when the file can be loaded by this build now, 1 when the fiber
+ *         is not parked at the file's park site, -1 otherwise. */
 static int state_header_check(FILE* fp, const char* path, const openpete_state_header_t* hdr) {
     if (hdr->magic != OPENPETE_STATE_MAGIC) {
         OPL_ERROR_F("savestate", "%s: bad magic 0x%08X (expected 0x%08X)",
                     path, hdr->magic, OPENPETE_STATE_MAGIC);
         return -1;
     }
-    if (hdr->version != OPENPETE_STATE_VERSION) {
-        OPL_ERROR_F("savestate", "%s: version %u not supported (expected %u)",
-                    path, hdr->version, OPENPETE_STATE_VERSION);
+    if (hdr->version < OPENPETE_STATE_VERSION_MIN || hdr->version > OPENPETE_STATE_VERSION) {
+        OPL_ERROR_F("savestate", "%s: version %u not supported (expected %u..%u)",
+                    path, hdr->version, OPENPETE_STATE_VERSION_MIN, OPENPETE_STATE_VERSION);
         return -1;
     }
     /* Before the identity, so a state from another game is reported as
@@ -723,7 +789,8 @@ static int state_header_check(FILE* fp, const char* path, const openpete_state_h
                     hdr->cd_state_bytes, (uint32_t)sizeof(state_cd_t));
         return -1;
     }
-    return state_sections_fit(fp, path, hdr);
+    if (state_sections_fit(fp, path, hdr) != 0) return -1;
+    return state_site_check(path, hdr);
 }
 
 /** @brief Refuse a state load, with a logged error, while the run follows the reference's schedule.
@@ -753,15 +820,16 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     }
 
     openpete_state_header_t hdr;
-    if (fread(&hdr, sizeof(hdr), 1, fp) != 1) {
+    if (state_header_read(fp, &hdr) != 0) {
         fclose(fp);
         OPL_ERROR_F("savestate", "%s: short read on header", path);
         return -1;
     }
 
-    if (state_header_check(fp, path, &hdr) != 0) {
+    const int hrc = state_header_check(fp, path, &hdr);
+    if (hrc != 0) {
         fclose(fp);
-        return -1;
+        return hrc;
     }
 
     /* Read into temp buffers first so a short read doesn't leave any
@@ -910,6 +978,7 @@ int openpete_state_resolve_dir(char* out, unsigned long out_size) {
 struct openpete_state_mem {
     int        valid;
     unsigned   frame;
+    openpete_park_site_t site;  /* the park site at the save */
     uint32_t   vbl;
     uint32_t   vbl_device;
     uint8_t    cpu_buf[CPU_REG_BYTES];
@@ -982,6 +1051,7 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
                             unsigned frame) {
     if (!m) return -1;
     m->frame = frame;
+    m->site  = openpete_yield_final ? openpete_yield_site : (openpete_park_site_t){0u, 0u};
     m->vbl   = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     m->vbl_device = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
     memcpy(m->cpu_buf,     cpu,                        CPU_REG_BYTES);
@@ -1018,6 +1088,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                             unsigned* out_frame, int quiet) {
     if (!m || !m->valid) return -1;
     if (sched_refuses_load("in-memory state load")) return -1;
+    if (!openpete_park_site_matches(&m->site)) return 1;
     memcpy(cpu,                        m->cpu_buf,     CPU_REG_BYTES);
     memcpy(openpete_psx_get_ram(),     m->ram,         OPENPETE_PSX_RAM_SIZE);
     memcpy(openpete_psx_get_scratch(), m->scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
@@ -1048,4 +1119,8 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     }
     if (out_frame) *out_frame = m->frame;
     return 0;
+}
+
+openpete_park_site_t openpete_state_mem_site(const openpete_state_mem_t* m) {
+    return m->site;
 }

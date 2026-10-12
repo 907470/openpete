@@ -10,6 +10,7 @@
 #define OPENPETE_STATE_H
 
 #include "openpete_psx.h"
+#include "openpete_park_site.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,15 +37,18 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame);
  * @param cpu Guest CPU state whose register prefix is overwritten.
  * @param out_frame Receives the saved openpete_frame, so the caller can
  *        re-anchor it; may be NULL.
- * @return 0 on success; -1 on refusal or failure, with the running state
- *         untouched and the reason logged. */
+ * @return 0 on success; 1 when the fiber is not parked at the file's park
+ *         site (nothing restored; retry at a later final yield); -1 on
+ *         refusal or failure, with the running state untouched and the
+ *         reason logged. */
 int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame);
 
 /** @brief Write the running state to a file.
  *
  * Writes the header (magic, version, content identity, the running game's
  * id, openpete_frame,
- * section sizes, the guest-visible VBL counter) and then every section.
+ * section sizes, the guest-visible VBL counter, the park site when the
+ * fiber is parked at a final yield) and then every section.
  * The host mirrors (VRAM, SPU, game extra, mod arena) are copied to heap
  * buffers before the disk writes. Checks the mod arena's immutable rows
  * once per save. Used by the slot saves, the mod process handoff, and
@@ -63,7 +67,11 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
  * no ROM hash to prove the game through the identity, or when the magic,
  * version, content identity, a section size, the mod arena ledger or the
  * enabled-modset tag differs; every section is read before
- * any is applied, so a refusal leaves the running state untouched. On
+ * any is applied, so a refusal leaves the running state untouched. A
+ * file whose park site is not the one the fiber is parked at (a final
+ * yield of a psyq_VSync call with the same ra and sp) is not applied and
+ * returns 1; a file with no park site (v4) applies at any final yield,
+ * with a warning. On
  * commit it restores the register prefix, RAM (re-seeding the kernel's
  * fixed low-RAM words), scratchpad, VRAM, SPU, CD cursors and the VBL
  * counter, runs the game's post-load resync and extra-blob load, applies
@@ -71,8 +79,9 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
  * @param path Source file.
  * @param cpu Guest CPU state whose register prefix is overwritten.
  * @param out_frame Receives the saved openpete_frame; may be NULL.
- * @return 0 on success; -1 on refusal or failure, with the reason
- *         logged. */
+ * @return 0 on success; 1 when the fiber is not parked at the file's park
+ *         site (nothing restored); -1 on refusal or failure, with the
+ *         reason logged. */
 int openpete_state_load_file(const char* path, CPUState* cpu,
                              unsigned* out_frame);
 
@@ -117,7 +126,8 @@ void openpete_state_mem_free(openpete_state_mem_t* m);
  *
  * Copies the register prefix, RAM, scratchpad, the SPU state, the CD
  * cursors and queue, the game-extra blob, VRAM, the used prefix of the mod
- * arena and the guest-visible VBL counter. The arena copy buffer only
+ * arena, the guest-visible VBL counter and the park site (none when the
+ * fiber is not parked at a final yield). The arena copy buffer only
  * grows. A failed SPU, VRAM or arena-growth step returns -1 partway: the
  * buffers already copied stay overwritten and the snapshot's valid flag
  * is left as it was, so a snapshot that was valid stays valid over a
@@ -132,7 +142,9 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
 /** @brief Restore the running state from an in-memory snapshot.
  *
  * Refuses, restoring nothing, when the snapshot is NULL or was never
- * saved, or when the run follows the reference schedule. Otherwise
+ * saved, or when the run follows the reference schedule; restores nothing
+ * and returns 1 when the fiber is not parked at a final yield at the
+ * snapshot's park site. Otherwise
  * restores the register prefix, RAM, scratchpad, SPU state, CD cursors
  * and queue, the game-extra blob, VRAM (by row delta), the mod arena and
  * the VBL counter, in that order. A failed SPU restore returns -1 after
@@ -145,9 +157,15 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
  * @param quiet Nonzero for a speculative rollback: no resync, no
  *        discontinuity broadcast, and the SPU's ring-out tails keep
  *        playing.
- * @return 0 on success; -1 on refusal or a failed SPU restore. */
+ * @return 0 on success; 1 when the fiber is not parked at the snapshot's
+ *         site; -1 on refusal or a failed SPU restore. */
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);
+
+/** @brief Return the park site an in-memory snapshot was saved at.
+ * @param m A snapshot (valid or not).
+ * @return The site; ra 0 when the save was not at a final yield. */
+openpete_park_site_t openpete_state_mem_site(const openpete_state_mem_t* m);
 
 /** @brief Seed the running game's states directory from the shared one, once per process and once per game.
  *

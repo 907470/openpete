@@ -22,6 +22,7 @@ SDL_AtomicInt openpete_vbl             = {0};
 SDL_AtomicInt openpete_vbl_device      = {0};
 int openpete_speculative               = 0;
 int openpete_yield_final               = 0;
+openpete_park_site_t openpete_yield_site = {0u, 0u};
 int openpete_replaying                 = 0;
 int openpete_ra_input_edge             = 0;
 unsigned     openpete_frame            = 0u;
@@ -115,4 +116,10 @@ void openpete_yield_to_host_no_tick(void) {
     op_functrace_pause();
     co_switch((cothread_t)openpete_host_fiber);
     op_functrace_resume();
+}
+
+int openpete_park_site_matches(const openpete_park_site_t* site) {
+    if (!openpete_yield_final) return 0;
+    if (site->ra == 0u) return 1;
+    return site->ra == openpete_yield_site.ra && site->sp == openpete_yield_site.sp;
 }

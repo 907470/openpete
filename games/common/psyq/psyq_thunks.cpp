@@ -696,6 +696,9 @@ static int s_dlv_depth = 0;              /* deliveries in progress */
 /* VSync waits off the schedule by VBLs waited (1, 2, 3, 4 or more): the
  * waits whose earlier VBLs yield at an intermediate yield. */
 static uint64_t s_vsync_waits_by_n[4];
+/* The innermost psyq_VSync wait in progress: its call's guest ra and sp,
+ * published as openpete_yield_site at the wait's final yield. */
+static openpete_park_site_t s_wait_site = {0u, 0u};
 
 /** @brief Thunk for libetc VSync: returns the VBL counter, waiting first when a0 is not negative.
  *
@@ -704,7 +707,8 @@ static uint64_t s_vsync_waits_by_n[4];
  * yield per VBL), the last of them the wait's final yield. Under an active
  * schedule the wait charges VBLs up to the reference's return instead, and
  * the returned counter is the reference's value at that call site. The
- * wait is taken whether or not interrupts are masked.
+ * wait is taken whether or not interrupts are masked. The call's ra and sp
+ * are the park site its final yield publishes (openpete_yield_site).
  * @param cpu Guest CPU state; a0 is the mode, v0 receives the counter. */
 void psyq_VSync(CPUState* cpu) {
     /* libetc semantics:
@@ -750,6 +754,8 @@ void psyq_VSync(CPUState* cpu) {
         return;
     }
     if (masked) s_masked_vsync_waits++;
+    const openpete_park_site_t outer_site = s_wait_site;
+    s_wait_site = openpete_park_site_t{cpu->ra, cpu->sp};
     int wait = (mode == 0) ? 1 : mode;
     uint32_t sched_target = 0;
     if (openpete_sched_active() && openpete_sched_next_vsync(mode, &sched_target)) {
@@ -779,6 +785,7 @@ void psyq_VSync(CPUState* cpu) {
         int32_t sc = openpete_sched_counter();
         cpu->v0 = (sc >= 0) ? (uint32_t)sc : (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     }
+    s_wait_site = outer_site;
     if (openpete_sched_active()) cd_defer_after_call(cpu);
 }
 
@@ -896,7 +903,8 @@ static void vbl_device_mmio(void) {
  * run without yielding; with no host fiber the wait goes through
  * PsyCross's VSync. libpad's command sequence advances when the schedule
  * records a pad command at `key`; a VBLANK without a poll restores the
- * first pad buffer.
+ * first pad buffer. A final yield publishes the innermost wait's park site
+ * before it switches.
  * @param cpu Guest CPU state.
  * @param key Reference VBLANK index the card step and pad command belong to.
  * @param final_wait Nonzero when this yield ends a psyq_VSync wait. */
@@ -925,6 +933,7 @@ static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
          * SDL, which this thread does not own. */
         if (g_PsyX_Pad_OverrideActive) PsyX_Pad_InternalPadUpdates();
     } else if (openpete_host_fiber) {
+        if (final_wait) openpete_yield_site = s_wait_site;
         openpete_yield_final = final_wait ? 1 : 0;
         openpete_yield_to_host();
         openpete_yield_final = 0;

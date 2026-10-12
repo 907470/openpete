@@ -9,7 +9,7 @@
  *   for VBL `frame`; entry (log_idx + k) is the input for frame+1+k.
  *
  * The DRIVER lives in run.c (it needs the game fiber + pad overrides):
- * hold Backspace -> pick(target) -> quiet mem-load -> stamp inputs from
+ * hold Backspace -> pick(target, park site) -> quiet mem-load -> stamp inputs from
  * the log per VBL -> co_switch to target -> truncate log + drop_after.
  *
  * Scope: same level only. Keyframes are cleared whenever gameplay
@@ -68,12 +68,16 @@ int  openpete_rewind_enabled(void);
  *        excludes. */
 void openpete_rewind_on_iter(const CPUState* cpu, unsigned frame, int live);
 
-/** @brief Find the newest valid keyframe at or before a VBL.
+/** @brief Find the newest valid keyframe at or before a VBL, optionally only among those saved at one park site.
  *
+ * A keyframe loads only while the game fiber is parked at the park site it
+ * was saved at, so the driver asks for the current site's.
  * @param target openpete_frame value to rewind to.
+ * @param site The park site the keyframe must carry (a keyframe with no
+ *        site matches any), or NULL for any site.
  * @return The keyframe with the largest frame not above @p target, or
  *         NULL when none is valid there. */
-const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target);
+const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target, const openpete_park_site_t* site);
 
 /** @brief Invalidate every keyframe captured after a VBL.
  *
