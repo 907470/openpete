@@ -3668,6 +3668,28 @@ static void pause_at_vbl_drive(bool paused, bool step_one)
     }
 }
 
+/** @brief Report whether this poll is the menu_close release that closes the open settings menu.
+ *
+ * The close fires on the release edge of a menu_close source. A source held
+ * while the menu was still closed (Start held through the hold that opens
+ * the menu, which binds both `menu` as hold:pad:start and `menu_close` as
+ * pad:start) is stale: its release clears the stale flag instead of closing
+ * the menu, so only a press that began with the menu open closes it.
+ * @param close_k Whether menu_close reads held on this poll.
+ * @param prev_close Whether menu_close read held on the previous open poll.
+ * @param owner_changed Whether the mouse owner changed on this poll; a
+ *        release on such a poll is the arbitrated view going neutral.
+ * @param stale In: a menu_close source has been held since before the menu
+ *        opened. Cleared once menu_close reads released.
+ * @return True when the menu closes on this poll. */
+static bool menu_close_released(bool close_k, bool prev_close,
+                                bool owner_changed, bool *stale)
+{
+    const bool edge = !close_k && prev_close && !owner_changed && !*stale;
+    if (!close_k) *stale = false;
+    return edge;
+}
+
 /** @brief Decide whether the VBL about to run belongs to a paused step, clearing the step flag when it does not.
  *
  * @param paused The host loop's paused flag.
@@ -4245,6 +4267,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * open/closed state itself so the pad override is cleared exactly
      * once on the closing transition. */
     bool prev_menu_close = false;   /* Start/Circle closes on RELEASE */
+    bool menu_close_stale = false;  /* menu_close held from before the open */
     int  prev_mouse_owner = OPENPETE_MOUSE_OWNED_NONE;
     bool prev_overlay_hold = false;   /* an overlay held the pad neutral */
 
@@ -4559,7 +4582,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                 const int mouse_owner = openpete_host_mouse_owned();
                 const bool owner_changed = mouse_owner != prev_mouse_owner;
                 prev_mouse_owner = mouse_owner;
-                if (!close_k && prev_menu_close && !owner_changed) {
+                if (menu_close_released(close_k, prev_menu_close, owner_changed,
+                                        &menu_close_stale)) {
                     /* Close on the RELEASE edge of Start/Circle. The game pad
                      * is held neutral only while the menu is open, so closing
                      * on the press would let the still-held button bleed into
@@ -4589,6 +4613,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 }
             } else {
                 prev_menu_close = false;
+                menu_close_stale = openpete_key_down(OPK_MENU_CLOSE) != 0;
             }
         }
         /* The settings writer: menu changes and the dev overlay's Save

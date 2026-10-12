@@ -48,6 +48,7 @@ static const struct { int kind; const char* name; int code; } g_names[] = {
     { KM_SRC_KEY, "[", 39 },  { KM_SRC_KEY, "]", 40 },
     { KM_SRC_KEY, "F5", 41 }, { KM_SRC_KEY, "F6", 42 },
     { KM_SRC_KEY, "F10", 43 }, { KM_SRC_KEY, "Escape", 44 },
+    { KM_SRC_KEY, "F9", 45 },  { KM_SRC_KEY, "F12", 46 },
 
     { KM_SRC_PADBTN, "south", 100 }, { KM_SRC_PADBTN, "east", 101 },
     { KM_SRC_PADBTN, "west", 102 },  { KM_SRC_PADBTN, "north", 103 },

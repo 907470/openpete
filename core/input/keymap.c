@@ -709,9 +709,13 @@ static int km_ctx_overlap(int a, int b) {
 
 /** @brief Test whether two actions sharing an input is a known, deliberate overlap.
  *
- * Two pairs are deliberate: OPK_FREECAM with OPK_PAD_L3 (Spyro 1 never
- * reads L3) and OPK_MENU_RIGHT with OPK_MENU_SELECT (a menu row is either a
- * value row or an action row). openpete_keymap_resolve() logs no warning for them, so a
+ * Five pairs are deliberate: OPK_FREECAM with OPK_PAD_L3 (Spyro 1 never
+ * reads L3), OPK_DEVUI with OPK_PAD_SELECT and OPK_MENU with OPK_PAD_START
+ * (the overlay reads only a half-second hold; a tap reaches the game),
+ * OPK_MENU with OPK_MENU_CLOSE (the host loop ignores the release of a
+ * menu_close source held from before the menu opened), and OPK_MENU_RIGHT
+ * with OPK_MENU_SELECT (a menu row is either a value row or an action
+ * row). openpete_keymap_resolve() logs no warning for them, so a
  * stock boot stays silent, but still collects them, and --keys-report prints
  * them with the reason.
  * @param a First action index (OPK_*).
@@ -728,6 +732,16 @@ static int km_overlap_is_intentional(int a, int b, const char** why) {
     if (lo == OPK_DEVUI && hi == OPK_PAD_SELECT) {
         *why = "devui reads Back only once it has been held for half a "
                "second; a tap of Back is select";
+        return 1;
+    }
+    if (lo == OPK_MENU && hi == OPK_PAD_START) {
+        *why = "menu reads Start only once it has been held for half a "
+               "second; a tap of Start is the game's start";
+        return 1;
+    }
+    if (lo == OPK_MENU && hi == OPK_MENU_CLOSE) {
+        *why = "a held Start opens the menu; its release is ignored and "
+               "only a new press of Start closes the menu";
         return 1;
     }
     if (lo == OPK_MENU_RIGHT && hi == OPK_MENU_SELECT) {
