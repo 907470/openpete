@@ -6848,7 +6848,9 @@ static void prepass_draw_world_footprints(void);
  * samples the result by PSX screen coordinate through the recorded affine,
  * so one raster serves native_rtt, SSAA, the offscreen panel and
  * screenshots. Records before the first consumer pass, in its own render
- * pass. Display-only. */
+ * pass. Display-only. Under OPENPETE_GPU_TIMERS the colour run records as
+ * GPU zone "prepass" and the depth-only run as "prepass_depth"; a present
+ * that skips the pass records neither. */
 static void native_depth_prepass(void)
 {
     s_od_ready = 0;
@@ -7028,6 +7030,9 @@ static void native_depth_prepass(void)
      * backing, so the depth aspect the decal reads keeps both. It runs after
      * every colour draw, so no colour-writing fragment is depth-rejected by a
      * depth-run face and the colour keeps the nearest painted WORLD depth. */
+    /* GPU zones: "prepass" times the colour run (with the pass begin and
+     * its clears), "prepass_depth" the depth run (with the pass end). */
+    rhi_gpu_zone_begin(s_nr.dev, "prepass");
     rhi_begin_render_target(s_nr.dev, s_nr.opaque_depth, 1.0f, 1.0f, 1.0f, 1.0f);
     rhi_set_viewport(s_nr.dev, vw, vh);
     prepass_draw_world_runs();
@@ -7037,6 +7042,8 @@ static void native_depth_prepass(void)
     const int tc_open = openpete_tercache_frame_open();
     if (tc_open)
         openpete_tercache_draw(OPTC_DRAW_PREPASS, &s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
+    rhi_gpu_zone_end(s_nr.dev);   /* prepass */
+    rhi_gpu_zone_begin(s_nr.dev, "prepass_depth");
     prepass_draw_world_footprints();
     if (m > mw) {
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
@@ -7046,6 +7053,7 @@ static void native_depth_prepass(void)
     if (tc_open)
         openpete_tercache_draw(OPTC_DRAW_PREPASS_DEPTH, &s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
     rhi_end_render_target(s_nr.dev, s_nr.opaque_depth);
+    rhi_gpu_zone_end(s_nr.dev);   /* prepass_depth */
     s_od_vw = (float)vw; s_od_vh = (float)vh;
     s_od_ready = 1;
 }
@@ -17334,9 +17342,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
     /* Shared WORLD-opaque depth pre-pass (its own render pass) - must record
      * before every consumer pass; one raster serves rtt/SSAA/offscreen alike. */
-    rhi_gpu_zone_begin(s_nr.dev, "prepass");
-    native_depth_prepass();
-    rhi_gpu_zone_end(s_nr.dev);
+    native_depth_prepass();   /* GPU zones "prepass" + "prepass_depth" */
     /* Moby occlusion grid: reduce + ring-readback (live presents only). */
     rhi_gpu_zone_begin(s_nr.dev, "occl");
     native_occl_downsample();
