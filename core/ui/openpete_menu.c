@@ -303,7 +303,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return on_off(s_fog_idx);
     case ROW_FREECAM:  return on_off(s_freecam_idx);
-    case ROW_ADVANCED: return "OPEN";
+    case ROW_ADVANCED: return "";   /* centered: the label IS the row */
     case ROW_QUIT:     return "";   /* centered: the label IS the row */
     case ROW_MODSEL: {
         const char* id = openpete_mods_id(s_modsel_idx);
@@ -754,7 +754,7 @@ const char* openpete_menu_row_label(int row) {
     return (row >= 0 && row < ROW_COUNT) ? ROW_LABEL[row] : "";
 }
 
-int openpete_menu_row_centered(int row) { return row == ROW_QUIT; }
+int openpete_menu_row_centered(int row) { return row == ROW_ADVANCED || row == ROW_QUIT; }
 
 const char* openpete_menu_row_value(int row, char* buf, int buflen) {
     if (row < 0 || row >= ROW_COUNT) return "";
@@ -840,7 +840,7 @@ void openpete_menu_adjust(int dx) {
 void openpete_menu_activate(void) {
     if (!s_open) return;
     if (!openpete_menu_row_centered(s_cursor)) return;   /* value rows: no-op */
-    if (s_quit_armed < 2) s_quit_armed++;   /* first press arms, second fires */
+    if (s_cursor == ROW_QUIT && s_quit_armed < 2) s_quit_armed++;   /* first press arms, second fires */
     apply_row(s_cursor);
     log_state("activate");
     /* EXIT raises no toast: arming already changes the row's own label to

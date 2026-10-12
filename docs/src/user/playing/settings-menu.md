@@ -19,7 +19,7 @@ can be changed in [Key bindings](../customizing/key-bindings.md).
 | --- | --- | --- | --- |
 | Previous / next row | ++up++ <!-- id: key:host.menu_up home --> / ++down++ <!-- id: key:host.menu_down --> | D-pad, left stick | Point at the row |
 | Change the value | ++left++ <!-- id: key:host.menu_left --> / {{ key("key:host.menu_right") }} <!-- id: key:host.menu_right --> | D-pad, left stick; Cross also steps forward | Left click steps forward, right click back, wheel either way |
-| Activate **EXIT GAME** | {{ key("key:host.menu_select") }} <!-- id: key:host.menu_select home --> | Cross | Left click |
+| Activate **ADVANCED** or **EXIT GAME** | {{ key("key:host.menu_select") }} <!-- id: key:host.menu_select home --> | Cross | Left click |
 | Close | the menu key, ++esc++ | Start or Circle, on release <!-- id: key:host.menu_close home --> | The close mark in the corner |
 
 Values wrap around at either end. Each change raises an on-screen
@@ -43,7 +43,7 @@ notification naming the row and its new value; see
 | **DITHER** | **OFF**, **15-BIT** | {{ config_key("knob:dither") }} <!-- id: knob:dither --> | [PlayStation look](../graphics/retro-look.md#dither) |
 | **LOD** | **ORIGINAL**, **EXTENDED** | {{ config_key("knob:lod") }} <!-- id: knob:lod --> | [Quality](../graphics/quality.md#level-of-detail) |
 | **FREECAM** | **OFF**, **ON** | `freecam` <!-- id: knob:freecam --> | [Practice tools](practice-tools.md#free-camera) |
-| **ADVANCED** | **OPEN** | | [below](#advanced) |
+| **ADVANCED** | | | [below](#advanced) |
 | **EXIT GAME** | | | [below](#exit-game) |
 
 **SHOW FPS** **OFF** hides the performance readout and **ON** shows it. The

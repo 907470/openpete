@@ -165,12 +165,12 @@ unsigned    openpete_menu_wobble_phase(void);
 
 /** @brief Report whether a row is the centred action row with no value column.
  *
- * Only EXIT GAME is centred. The glyph builder centres its label instead of
- * splitting it across the label and value columns; the label carries the
- * row's state, reading REALLY EXIT? once armed. openpete_menu_activate acts
- * only on this row.
+ * ADVANCED and EXIT GAME are centred. The glyph builder centres their
+ * labels instead of splitting them across the label and value columns; EXIT
+ * GAME's label carries its state, reading REALLY EXIT? once armed.
+ * openpete_menu_activate acts only on these rows.
  * @param row The row index.
- * @return 1 for the EXIT row, else 0. */
+ * @return 1 for the ADVANCED and EXIT rows, else 0. */
 int         openpete_menu_row_centered(int row);
 
 /** @brief Move the row cursor one row, wrapping at either end.
