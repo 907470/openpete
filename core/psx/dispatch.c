@@ -662,6 +662,15 @@ static uint64_t s_loop_polls = 0u, s_loop_trips = 0u;
 static uint32_t s_loop_last_header = 0u;
 static int      s_loop_delivery = -1;       /* OPENPETE_LOOP_DELIVERY, read once */
 
+/** @brief Return whether loop delivery is on, reading OPENPETE_LOOP_DELIVERY on the first call (unset or empty means on). */
+static int loop_delivery_enabled(void) {
+    if (s_loop_delivery < 0) {
+        const char* env = getenv("OPENPETE_LOOP_DELIVERY");
+        s_loop_delivery = (env && *env) ? (atoi(env) != 0) : 1;
+    }
+    return s_loop_delivery;
+}
+
 /* Quanta per loop header, the first LOOP_SITES distinct headers. */
 #define LOOP_SITES 64u
 static uint32_t s_loop_site_hdr[LOOP_SITES], s_loop_site_trips[LOOP_SITES];
@@ -698,7 +707,7 @@ void openpete_loop_report(uint64_t* polls, uint64_t* trips, uint64_t* acc_max_in
     *acc_max_insns = s_loop_acc_max / LOOP_SCALE;
     *quanta_max = s_loop_quanta_max;
     *last_header = s_loop_last_header;
-    *enabled = s_loop_delivery != 0;
+    *enabled = loop_delivery_enabled();
 }
 
 void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure) {
@@ -713,11 +722,7 @@ void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure
     loop_site_note(header);
     s_loop_acc -= LOOP_QUANTUM;
     if (++s_loop_quanta > s_loop_quanta_max) s_loop_quanta_max = s_loop_quanta;
-    if (s_loop_delivery < 0) {
-        const char* env = getenv("OPENPETE_LOOP_DELIVERY");
-        s_loop_delivery = (env && *env) ? (atoi(env) != 0) : 1;
-    }
-    if (!s_loop_delivery) return;
+    if (!loop_delivery_enabled()) return;
     extern void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t pure) __attribute__((weak));
     if (psyq_deliver_loop_vbl) psyq_deliver_loop_vbl(cpu, header, pure);
 }
