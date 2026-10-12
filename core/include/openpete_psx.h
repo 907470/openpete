@@ -385,6 +385,66 @@ int openpete_psx_resolve_disc_bin(const char* disc_path,
 int openpete_psx_read_disc_serial(const char* image_path,
                                   char* out, size_t out_cap);
 
+/** @brief Report whether interrupts are masked: the kernel's critical-section flag.
+ *
+ * Set at boot (the kernel enters a critical section before the executable
+ * runs), by EnterCriticalSection and for the duration of a delivered VBL;
+ * cleared by ExitCriticalSection and the kernel calls that leave the
+ * section (StartCARD2, StopCARD2).
+ * @return 1 while masked, else 0. */
+int openpete_crit_masked(void);
+
+/** @brief Overwrite the critical-section flag, without taking a latched VBLANK.
+ *
+ * The delivery side sets it around a delivered VBL and restores the
+ * interrupted code's value afterwards; savestates restore it.
+ * @param masked Nonzero to mask. */
+void openpete_crit_set(int masked);
+
+/** @brief Leave the critical section from a host-modelled kernel call, taking a VBLANK latched inside it.
+ * @param cpu Guest CPU state at the call. */
+void openpete_crit_leave(CPUState* cpu);
+
+/** @brief Read the critical-section probe: the first clearing site and the call counts.
+ * @param first_clear_ra Receives the return address of the first call that enabled interrupts, 0 before one.
+ * @param first_clear_vbl Receives `openpete_vbl` there, -1 before one.
+ * @param enters Receives the EnterCriticalSection count.
+ * @param exits Receives the ExitCriticalSection count.
+ * @param kernel_leaves Receives the count of leaving kernel calls. */
+void openpete_crit_report(uint32_t* first_clear_ra, int32_t* first_clear_vbl,
+                          uint32_t* enters, uint32_t* exits, uint32_t* kernel_leaves);
+
+/** @brief Name the game's loop anchor: the function its main loop calls first, once per game tick.
+ *
+ * The dispatcher counts its entries (openpete_loop_anchor_ticks), the
+ * host's tick marker.
+ * @param pc The anchor's address; 0 counts nothing. */
+void openpete_loop_anchor_set(uint32_t pc);
+
+/** @brief Return how many times the game's loop anchor has been entered: game ticks begun since boot.
+ * @return The entry count; 0 without an anchor. */
+uint32_t openpete_loop_anchor_ticks(void);
+
+/** @brief Log the per-site quantum census: each loop header that reached a quantum, its count and the VBL of its first. */
+void openpete_loop_site_census_log(void);
+
+/** @brief Return the classified-loop instructions counted since the loop anchor's last entry.
+ * @return The static body counts summed over every back-edge poll since the anchor. */
+uint64_t openpete_loop_insns_since_anchor(void);
+
+/** @brief Restart the polling-loop accumulator: a VBLANK elapsed, taken or held. */
+void openpete_loop_vbl(void);
+
+/** @brief Read the polling-loop accumulator's run counters.
+ * @param polls Receives the back-edge polls counted.
+ * @param trips Receives the quanta reached.
+ * @param acc_max_insns Receives the most loop instructions accumulated between two VBLs.
+ * @param quanta_max Receives the most quanta reached between two VBLs.
+ * @param last_header Receives the loop header of the last quantum reached, 0 before one.
+ * @param enabled Receives 0 when OPENPETE_LOOP_DELIVERY=0 disabled delivery at a quantum. */
+void openpete_loop_report(uint64_t* polls, uint64_t* trips, uint64_t* acc_max_insns,
+                          uint32_t* quanta_max, uint32_t* last_header, int* enabled);
+
 #ifdef __cplusplus
 }
 #endif

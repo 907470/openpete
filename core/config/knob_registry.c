@@ -2038,6 +2038,11 @@ static const knob_desc_t g_builtin_debug[] = {
       "present from the sim thread (the first A/B for any pacing "
       "regression). Windowed native-vk only; a --screenshot-on-frame "
       "target disengages it unless OPENPETE_EAGER_SHOT=1."),
+    ENVROW_LATCHED("LOOP_DELIVERY", "Debug", "1",
+      "Deliver a VBL inside a guest polling loop once a VBL of the loop's "
+      "instructions has run without one, so a driver spinning on a word its "
+      "own VBL handler writes can finish. Set 0 to stop the loop deliveries "
+      "and keep only their count (the oracle's control run)."),
     ENVROW_LATCHED("THREAD_SPLIT", "Debug", "1",
       "Run the sim on a worker thread while the main thread owns the window "
       "and the event pump, so dragging or resizing the window cannot stall "

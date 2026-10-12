@@ -26,11 +26,30 @@ pg_resolve "$GAME" || exit 64
 BIN="$PG_BIN"
 DISC="$PG_DISC"
 
-# The corpus movies, the level ids the portal leg greps for and the hold frame
-# are Spyro 1's, so --game names the game whose binary and disc are used and
-# every other slug is refused rather than replayed against movies recorded for
-# a different game.
-[ "$PG_GAME" = "spyro-1" ] || { echo "SKIP: $PG_GAME has no savestate corpus"; exit 64; }
+# Each game's corpus: the movies, the runahead and rewind-driver movie, the
+# rewind hold point (the game's feed key) and the portal leg. Spyro 2 runs
+# cardless (its oracle.conf RUN_ARGS) and has no portal leg; every other slug
+# is refused rather than replayed against movies recorded for a different game.
+case "$PG_GAME" in
+    spyro-1)
+        DEF_MOVIES=(games/spyro-1/bk2/artisans-lp-waterfall.bk2
+                    games/spyro-1/bk2/town-square-portal-entry.bk2
+                    games/spyro-1/bk2/exit-level.bk2
+                    games/spyro-1/bk2/beast_makers_wall.bk2)
+        RA_MOVIE=games/spyro-1/bk2/beast_makers_wall.bk2
+        XL_MOVIE=games/spyro-1/bk2/exit-level.bk2
+        HOLD=1700:40
+        PORTAL=1 ;;
+    spyro-2)
+        DEF_MOVIES=(games/spyro-2/bk2/pause-menu-midlevel.bk2
+                    games/spyro-2/bk2/autumn-plains-skelos-badlands-portal-entry.bk2
+                    games/spyro-2/bk2/shady-oasis-flame.bk2)
+        RA_MOVIE=games/spyro-2/bk2/shady-oasis-flame.bk2
+        XL_MOVIE=games/spyro-2/bk2/autumn-plains-skelos-badlands-portal-entry.bk2
+        HOLD=1500:40
+        PORTAL=0 ;;
+    *) echo "SKIP: $PG_GAME has no savestate corpus"; exit 64 ;;
+esac
 
 # Exit 64 = SKIP (the CTest SKIP_RETURN_CODE), so a checkout without a built
 # binary or without the disc reports "not run" rather than a failure.
@@ -53,12 +72,7 @@ for a in "$@"; do
     esac
 done
 if [ ${#MOVIES[@]} -eq 0 ]; then
-    MOVIES=(
-        games/spyro-1/bk2/artisans-lp-waterfall.bk2
-        games/spyro-1/bk2/town-square-portal-entry.bk2
-        games/spyro-1/bk2/exit-level.bk2
-        games/spyro-1/bk2/beast_makers_wall.bk2
-    )
+    MOVIES=("${DEF_MOVIES[@]}")
 fi
 
 for m in "${MOVIES[@]}"; do
@@ -76,6 +90,12 @@ run() { # $1 movie  $2 csv  $3 extra-args...
         --gameplay-hash-log "$csv" "$@"
 }
 
+# A snapshot or load requested below a yield other than a VSync wait's final
+# one waits for the next final yield; each leg reports the count.
+deferred() { # $1 run log
+    grep -o 'deferred to a final yield: .*' "$1" | tail -1
+}
+
 fail=0
 for movie in "${MOVIES[@]}"; do
     name=$(basename "$movie" .bk2)
@@ -86,6 +106,8 @@ for movie in "${MOVIES[@]}"; do
     run "$movie" "$OUT/$name-rw.csv" --state-stress-rewind 25 \
                                                    || { echo "  rewind-stress run FAILED"; fail=1; continue; }
 
+    echo "  stress(1) $(deferred "$OUT/$name-stress.csv.log")"
+    echo "  rewind(25) $(deferred "$OUT/$name-rw.csv.log")"
     if cmp -s "$OUT/$name-clean.csv" "$OUT/$name-stress.csv"; then
         echo "  stress(1): byte-identical PASS"
     else
@@ -128,17 +150,18 @@ done
 # predictions while every determinism gate stays green. A nonzero check
 # count also proves speculation actually engaged (a driver regression
 # that never speculates would pass the cmp trivially).
-echo "== runahead (beast_makers_wall, --runahead 2)"
-run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/ra-clean.csv" \
+echo "== runahead ($(basename "$RA_MOVIE" .bk2), --runahead 2)"
+run "$RA_MOVIE" "$OUT/ra-clean.csv" \
     || { echo "  clean run FAILED"; fail=1; }
 OPENPETE_RA_PREDICT_CHECK=1 \
-run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/ra-on.csv" --runahead 2 \
+run "$RA_MOVIE" "$OUT/ra-on.csv" --runahead 2 \
     || { echo "  runahead run FAILED"; fail=1; }
 if cmp -s "$OUT/ra-clean.csv" "$OUT/ra-on.csv"; then
     echo "  runahead(2): real timeline byte-identical PASS"
 else
     echo "  runahead(2): real timeline DIVERGED FAIL"; fail=1
 fi
+echo "  runahead(2) $(deferred "$OUT/ra-on.csv.log")"
 pc=$(grep -o '\[ra-predict\] checked=[0-9]* mismatch=[0-9]* invalidated=[0-9]*' \
      "$OUT/ra-on.csv.log" | tail -1)
 pc_checked=${pc#*checked=}; pc_checked=${pc_checked%% *}
@@ -160,6 +183,7 @@ fi
 #     the level MUST still load under --runahead 2;
 #   - level exit (crossing lands between ticks, no adoption): committed
 #     timeline MUST stay byte-identical to clean.
+if [ "$PORTAL" = 1 ]; then
 echo "== runahead-transitions (town-square portal, exit-level)"
 PG_CAPTURE_TIMEOUT=600 pg_capture "$OUT/tsq-ra.log" "$OUT/tsq-ra.csv" -- \
     --bk2 games/spyro-1/bk2/town-square-portal-entry.bk2 --frame-limit 12000 \
@@ -171,24 +195,27 @@ if grep -q "level_10 -> level_13" "$OUT/tsq-ra.log"; then
 else
     echo "  portal entry under runahead(2): LEVEL NEVER LOADED FAIL"; fail=1
 fi
-run games/spyro-1/bk2/exit-level.bk2 "$OUT/xl-ra.csv" --runahead 2 \
+fi
+echo "== runahead-transition ($(basename "$XL_MOVIE" .bk2))"
+run "$XL_MOVIE" "$OUT/xl-ra.csv" --runahead 2 \
     || { echo "  exit runahead run FAILED"; fail=1; }
-if cmp -s "$OUT/exit-level-clean.csv" "$OUT/xl-ra.csv"; then
-    echo "  exit-level under runahead(2): byte-identical PASS"
+if cmp -s "$OUT/$(basename "$XL_MOVIE" .bk2)-clean.csv" "$OUT/xl-ra.csv"; then
+    echo "  $(basename "$XL_MOVIE" .bk2) under runahead(2): byte-identical PASS"
 else
-    echo "  exit-level under runahead(2): DIVERGED FAIL"; fail=1
+    echo "  $(basename "$XL_MOVIE" .bk2) under runahead(2): DIVERGED FAIL"; fail=1
 fi
 
 # Rewind driver gate: hold rewind for 40 iterations mid-gameplay via
 # --rewind-hold; the scrub must be a single backward jump and the
 # post-release timeline must match the clean run bit-for-bit (movie
 # inputs are frame-locked, so resuming re-runs the same future).
-echo "== rewind-driver (beast_makers_wall, hold@1700 x40)"
-run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/drv-clean.csv" \
+echo "== rewind-driver ($(basename "$RA_MOVIE" .bk2), hold@${HOLD%%:*} x${HOLD##*:})"
+run "$RA_MOVIE" "$OUT/drv-clean.csv" \
     || { echo "  clean run FAILED"; fail=1; }
-run games/spyro-1/bk2/beast_makers_wall.bk2 "$OUT/drv-rw.csv" \
-    --rewind 30 --rewind-hold 1700:40 \
+run "$RA_MOVIE" "$OUT/drv-rw.csv" \
+    --rewind 30 --rewind-hold "$HOLD" \
     || { echo "  driver run FAILED"; fail=1; }
+echo "  driver $(deferred "$OUT/drv-rw.csv.log")"
 python3 - "$OUT/drv-clean.csv" "$OUT/drv-rw.csv" <<'EOF' || fail=1
 import csv, sys
 clean = {r[0]: r[2] for r in csv.reader(open(sys.argv[1])) if r and r[0] != 'frame'}

@@ -6,6 +6,7 @@
 #include "game_extras.h"
 #include "game_layout.h"
 #include "openpete_fiber.h"
+#include "openpete_psx.h"
 #include "psx_runtime_internal.h"
 
 #include <stdio.h>
@@ -30,6 +31,7 @@ void openpete_game_runtime_register(const openpete_game_runtime_t* rt) {
     openpete_feed_key_select(s_rt->feed_key == OPENPETE_FEED_KEY_VBL
                                  ? OPENPETE_FEED_KEY_VBL : OPENPETE_FEED_KEY_FRAME);
     psx_set_override_dispatch_game(s_rt->override_dispatch);
+    openpete_loop_anchor_set(s_rt->loop_anchor_pc);
 }
 
 const openpete_game_runtime_t* openpete_game_runtime(void) { return s_rt; }

@@ -11,6 +11,7 @@
 call_by_address
 gte_execute
 psx_syscall
+psx_loop_poll
 psx_override_dispatch
 openpete_logf
 dispatch_census_open

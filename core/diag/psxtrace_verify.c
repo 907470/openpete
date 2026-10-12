@@ -12,6 +12,7 @@
 
 #include <SDL3/SDL.h>
 extern SDL_AtomicInt openpete_vbl;
+extern SDL_AtomicInt openpete_vbl_device;
 
 /* Provided by run.c (gameplay_hash_compute_ex). Mirrors the Lua dumper's
  * scripts/openpete_state_hash.lua so the value-equality check is
@@ -639,7 +640,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
      * with openpete's, so a load whose cadence differs, or a skipped state,
      * fails at its first record with both deltas named. */
     if (t->has_vbl_stamps) {
-        const int32_t op_vbl = SDL_GetAtomicInt(&openpete_vbl);
+        const int32_t op_vbl = SDL_GetAtomicInt(&openpete_vbl_device);
         if (t->records_consumed > 0) {
             const int64_t d_trace = (int64_t)pad2 - (int64_t)t->prev_trace_vbl;
             const int64_t d_op    = (int64_t)op_vbl - (int64_t)t->prev_op_vbl;
@@ -725,9 +726,9 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
      * compared, and the re-alignment at the window's end skips the rest. */
     if (openpete_sched_in_load()) {
         t->records_uncompared++;
-        gte_hash_on_record(t->records_consumed, 0, (uint32_t)SDL_GetAtomicInt(&openpete_vbl));
+        gte_hash_on_record(t->records_consumed, 0, (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device));
         t->prev_trace_vbl = pad2;
-        t->prev_op_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+        t->prev_op_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
         t->frames_compared++;
         t->records_consumed++;
         return 1;
@@ -871,7 +872,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             t->hard_fail_reason = "total-only";
         }
     }
-    gte_hash_on_record(t->records_consumed, 1, (uint32_t)SDL_GetAtomicInt(&openpete_vbl));
+    gte_hash_on_record(t->records_consumed, 1, (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device));
     t->frames_compared++;
     t->records_consumed++;
     return 1;

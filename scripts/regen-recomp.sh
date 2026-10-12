@@ -291,8 +291,10 @@ process_overlay() {
 # summary, so the loop classification (<name>.bin_loop_sites.tsv) counts a
 # constant call into a main-EXE pure leaf as a leaf call. The main EXE is
 # resident whenever an overlay runs. The pass has the same inputs as the
-# converged one, so the C it writes is identical; process_overlay's extra
-# arguments are not replayed (the registry loop passes none).
+# converged one plus the summary, so the C it writes differs only by the
+# psx_loop_poll calls at the back-edges the summary qualifies; it is the
+# overlay's final C. process_overlay's extra arguments are not replayed
+# (the registry loop passes none).
 classify_overlay() {
     local name="$1"
     local ovl_path prefix load_addr final

@@ -798,22 +798,11 @@ int main(int argc, char** argv) {
 
     std::string full_c_code = codegen.generate_file(analysis_result.functions, all_cfgs);
 
-    std::ofstream out_file(output_filename, std::ios::binary);
-    if (out_file.is_open()) {
-        out_file << full_c_code;
-        out_file.close();
-        fmt::print("✓ Saved {} lines to {}\n\n",
-                  std::count(full_c_code.begin(), full_c_code.end(), '\n'),
-                  output_filename);
-    } else {
-        fmt::print(stderr, "⚠ Failed to write output file: {}\n\n", output_filename);
-        return 1;
-    }
-
     // Loop classification: the back-edges whose body stores nothing, calls
     // only pure leaves (of this unit, or of another unit's --leaf-summary),
-    // and loads. Written beside the C with this unit's own pure leaves; the
-    // generated C is unchanged by it.
+    // and loads. Each such back-edge's placeholder becomes a psx_loop_poll
+    // call and every other placeholder is removed; the sites are written
+    // beside the C with this unit's own pure leaves.
     {
         std::string sites_path = output_dir + "/" + exe_stem + "_loop_sites.tsv";
         std::map<uint32_t, PSXRecomp::LeafSummary> foreign;
@@ -824,6 +813,13 @@ int main(int argc, char** argv) {
             }
         }
         auto sites = PSXRecomp::classify_loops(codegen.emitted_facts(), foreign);
+        size_t polls = 0;
+        full_c_code = PSXRecomp::apply_loop_polls(full_c_code, sites, polls);
+        if (polls != sites.size()) {
+            fmt::print(stderr, "⚠ {} loop sites classified, {} poll calls written\n",
+                       sites.size(), polls);
+            return 1;
+        }
         std::string leaves_path = output_dir + "/" + exe_stem + "_leaves.tsv";
         if (!PSXRecomp::write_leaf_summary(leaves_path, codegen.emitted_facts())) {
             fmt::print(stderr, "⚠ Failed to write leaf summary: {}\n\n", leaves_path);
@@ -835,6 +831,18 @@ int main(int argc, char** argv) {
             fmt::print(stderr, "⚠ Failed to write loop sites: {}\n\n", sites_path);
             return 1;
         }
+    }
+
+    std::ofstream out_file(output_filename, std::ios::binary);
+    if (out_file.is_open()) {
+        out_file << full_c_code;
+        out_file.close();
+        fmt::print("✓ Saved {} lines to {}\n\n",
+                  std::count(full_c_code.begin(), full_c_code.end(), '\n'),
+                  output_filename);
+    } else {
+        fmt::print(stderr, "⚠ Failed to write output file: {}\n\n", output_filename);
+        return 1;
     }
 
     // Discovered-functions log — every function the analyzer landed on, in

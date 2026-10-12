@@ -202,9 +202,18 @@ struct CPUState;
  * and starts that port's pending command. A vblank the trace schedule marks
  * unserved is skipped; a transfer in progress is still aborted on an
  * unserved vblank when the following vblank is served. A command to an
- * empty port therefore signals its timeout from here.
+ * empty port therefore signals its timeout from here. The VBLANK is the
+ * schedule position plus one (openpete_psx_bios_vbl_at).
  * @param cpu Guest CPU the event handlers run on. */
 void openpete_psx_bios_vbl(struct CPUState* cpu);
+/** @brief Run the BIOS card driver's vblank step for reference VBLANK vbl.
+ *
+ * openpete_psx_bios_vbl with the VBLANK given: a VBLANK a critical section
+ * held runs its step when the section ends, keyed on the VBLANK it fell
+ * due at, so the served-set lookup reads that VBLANK's row.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param vbl The reference VBLANK index the step belongs to. */
+void openpete_psx_bios_vbl_at(struct CPUState* cpu, uint32_t vbl);
 /* The card driver's state, for the savestate's thunk latch pack: a flag
  * word and the two ports' pending command (sector, buffer, device id). */
 #define PSX_BIOS_CARD_STATE_WORDS 7u

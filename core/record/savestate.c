@@ -1,10 +1,10 @@
 // core/record/savestate.c - save/load of openpete game state to slot files.
 //
-// v3 file layout (little-endian throughout, no padding inside the header
+// v4 file layout (little-endian throughout, no padding inside the header
 // thanks to fixed-size fields):
 //
 //   uint32_t  magic         = 'OSv1' (0x3176534F LE)
-//   uint32_t  version       = 3
+//   uint32_t  version       = 4
 //   char      ident[32]     - content identity, see ident_fill()
 //   uint32_t  frame         - openpete_frame (VBL counter) at save
 //   uint32_t  cpu_bytes
@@ -23,6 +23,8 @@
 //   char      game[12]      - the saving game's id ("spyro-1"), NUL-padded;
 //                             all zero in a file written before the field
 //                             existed (it was reserved and written as 0)
+//   uint32_t  vbl_device    - openpete_vbl_device (every VBLANK elapsed,
+//                             held ones included); the drive head's clock
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
 //   uint8_t   scratch[scratch_bytes]
@@ -124,7 +126,7 @@ extern int g_cdXaStartVBL;
 #endif
 
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
-#define OPENPETE_STATE_VERSION  3u
+#define OPENPETE_STATE_VERSION  4u
 #define OPENPETE_STATE_HASH_LEN 32
 /* Bytes of the header's game id field; an id fills at most LEN - 1. */
 #define OPENPETE_STATE_GAME_LEN 12
@@ -137,8 +139,10 @@ extern int g_cdXaStartVBL;
 /* 6 = arena section v2: high-arena ledger + the arena's used bytes.
  * 7 = arena section v3: one ledger with allocation + stream-handle rows;
  *     the low-park ledger is gone with the low allocator.
- * 8 = SPUALVoiceState carries the voice head (consumed_dec_fp). */
-#define OPENPETE_STATE_ABI 8u
+ * 8 = SPUALVoiceState carries the voice head (consumed_dec_fp).
+ * 9 = header v4 carries the device VBL count; the PSYQ latch pack v9 the
+ *     critical-section flag, the latched VBLANK and the dropped count. */
+#define OPENPETE_STATE_ABI 9u
 
 /* Just the register file - the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
@@ -161,10 +165,12 @@ typedef struct {
     uint32_t modset_tag_bytes;
     uint32_t arena_bytes;      /* mod arena section: ledger rows + used bytes */
     char     game[OPENPETE_STATE_GAME_LEN]; /* saving game's id, NUL-padded */
+    uint32_t vbl_device;       /* openpete_vbl_device: every VBLANK elapsed */
 } openpete_state_header_t;
 
-/* The header's size is fixed: the game field replaced reserved[3]. */
-typedef char state_header_size_check[sizeof(openpete_state_header_t) == 100 ? 1 : -1];
+/* The header's size is fixed: the game field replaced reserved[3]; v4
+ * appended vbl_device. */
+typedef char state_header_size_check[sizeof(openpete_state_header_t) == 104 ? 1 : -1];
 
 /* CD head-position section (fixed layout, ABI-covered). */
 typedef struct {
@@ -521,6 +527,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
      * exits early - a one-VBL timeline skew (measured: post-load hash
      * timeline leads the post-save one by exactly one row). */
     hdr.vbl              = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    hdr.vbl_device       = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
     hdr.spu_state_bytes  = PsyX_SPUAL_StateSize();
     hdr.spu_mem_bytes    = PsyX_SPUAL_MemSize();
     hdr.cd_state_bytes   = (uint32_t)sizeof(state_cd_t);
@@ -858,6 +865,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * save-side comment): without this the first post-load wait loop sees
      * a wild delta and the timeline leads by one VBL. */
     SDL_SetAtomicInt(&openpete_vbl, (int)hdr.vbl);
+    SDL_SetAtomicInt(&openpete_vbl_device, (int)hdr.vbl_device);
 
     /* Per-game post-load resync - restores any host-side state that
      * mirrors RAM (e.g. Spyro's active-overlay dispatcher pointer). */
@@ -903,6 +911,7 @@ struct openpete_state_mem {
     int        valid;
     unsigned   frame;
     uint32_t   vbl;
+    uint32_t   vbl_device;
     uint8_t    cpu_buf[CPU_REG_BYTES];
     uint8_t    scratch_buf[OPENPETE_PSX_SCRATCH_SIZE];
     uint8_t*   ram;        /* 2 MiB */
@@ -974,6 +983,7 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     if (!m) return -1;
     m->frame = frame;
     m->vbl   = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    m->vbl_device = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
     memcpy(m->cpu_buf,     cpu,                        CPU_REG_BYTES);
     memcpy(m->ram,         openpete_psx_get_ram(),     OPENPETE_PSX_RAM_SIZE);
     memcpy(m->scratch_buf, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
@@ -1031,6 +1041,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     (void)PsyX_VRAM_RestoreDelta(m->vram, m->vram_bytes);
     openpete_mods_arena_mem_restore(m->arena, m->arena_used);
     SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
+    SDL_SetAtomicInt(&openpete_vbl_device, (int)m->vbl_device);
     if (!quiet) {
         game_on_state_loaded(cpu);
         openpete_guest_discontinuity_notify();

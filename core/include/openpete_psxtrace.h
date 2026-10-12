@@ -245,6 +245,42 @@ uint32_t openpete_sched_pos(void);
  * @param vbls VBLANKs to add. */
 void     openpete_sched_advance_pos(uint32_t vbls);
 
+/** @brief Count one VBLANK the position advanced over that the CPU did not take (D).
+ *
+ * Called for a VBLANK a critical section holds. The libetc counter the
+ * schedule answers with is position - K - D at every conversion. */
+void     openpete_sched_drop_vbl(void);
+
+/** @brief Uncount one dropped VBLANK: the latched VBLANK was taken when the critical section ended. */
+void     openpete_sched_take_dropped(void);
+
+/** @brief Return D, the VBLANKs the position counts that the CPU has not taken.
+ * @return D; 0 from anchor 0's rebase until a hold. */
+int32_t  openpete_sched_dropped(void);
+
+/** @brief Decide what a polling-loop quantum delivers under the schedule: the next VBLANK the reference's rows show taken before its next row point, or nothing.
+ *
+ * Nothing is due before the first anchor hit, inside a load window, after
+ * a schedule failure or past the trace. On the clock row the record's next
+ * pending `.vblpos` row is consumed and its VBLANK is the target; on the
+ * default row the target is the position plus one when that is at or below
+ * the bound the record's next `.vsync` row puts on in-work VBLANKs. Every
+ * call is counted (delivered or no row due) for the loop summary line.
+ * @param op_insns openpete's classified-loop instructions since the
+ *        record's anchor, paired with the clock row's `insns` column.
+ * @param target_out Receives the VBLANK to charge to.
+ * @return 1 when a VBLANK is due, else 0. */
+int      openpete_sched_loop_due(uint64_t op_insns, uint32_t* target_out);
+
+/** @brief Restore D from a savestate.
+ * @param d The dropped count the state carried. */
+void     openpete_sched_set_dropped(int32_t d);
+
+/** @brief Read the conversions made while D was nonzero, per site, and those that broke counter = position - K - D.
+ * @param hits Receives the counts: [0] wait return, [1] VSync(-1) answer, [2] replay row skip, [3] charge target.
+ * @param bad Receives the mismatches per site. */
+void     openpete_sched_conv_report(uint32_t hits[4], uint32_t bad[4]);
+
 /** @brief Report whether the position has been set.
  *
  * The position is set at openpete_sched_open() to the earlier of the first

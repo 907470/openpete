@@ -199,7 +199,7 @@ static void anchor_vbl_log(uint32_t hit) {
     }
     if (s_anchor_vbl_log) {
         /* The halt path exits without flushing stdio. */
-        fprintf(s_anchor_vbl_log, "%u %d\n", hit, SDL_GetAtomicInt(&openpete_vbl));
+        fprintf(s_anchor_vbl_log, "%u %d\n", hit, SDL_GetAtomicInt(&openpete_vbl_device));
         fflush(s_anchor_vbl_log);
     }
 }
@@ -472,14 +472,54 @@ static int gate_override(CPUState* cpu, uint32_t addr) {
     s_gate_redispatch = outer;
     return handled;
 }
+/* The game's loop anchor and its entries: one per game tick. */
+static uint32_t s_loop_anchor_pc = 0u;
+static uint32_t s_loop_anchor_ticks = 0u;
+static uint64_t s_loop_insns_anchor = 0u;   /* loop instructions since the loop anchor's last entry */
+
+uint64_t openpete_loop_insns_since_anchor(void) { return s_loop_insns_anchor; }
+
+void openpete_loop_anchor_set(uint32_t pc) { s_loop_anchor_pc = pc; }
+
+uint32_t openpete_loop_anchor_ticks(void) { return s_loop_anchor_ticks; }
+
+/* Function entries since openpete_vbl last changed, for the spin tick. */
+static uint32_t s_spin_calls_since_vbl = 0u;
+static uint32_t s_spin_last_vbl = 0u;
+
+/** @brief Pass one VBL to a guest spin that has entered 2048 functions without one.
+ *
+ * Counts function entries since `openpete_vbl` last changed; every 2048th
+ * calls psyq_sched_spin_tick, whose per-game predicate decides whether the
+ * spin is a disc wait a VBL is owed to. The entries are counted whether or
+ * not the hang watchdog is armed.
+ * @param cpu Guest CPU state.
+ * @param vbl_now `openpete_vbl` at this entry.
+ * @param addr Guest address of the function entered. */
+static void spin_tick(CPUState* cpu, uint32_t vbl_now, uint32_t addr) {
+    if (vbl_now != s_spin_last_vbl) {
+        s_spin_last_vbl = vbl_now;
+        s_spin_calls_since_vbl = 0u;
+        return;
+    }
+    /* A spin that polls a deferred disc read without waiting on VSync
+     * spent VBLs on the reference; every so many entries without a VBL,
+     * the schedule or the drive model passes one here (psyq_thunks.cpp). */
+    if ((++s_spin_calls_since_vbl & 2047u) != 2047u) return;
+    extern void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) __attribute__((weak));
+    openpete_psxtrace_gate_host_enter();
+    if (psyq_sched_spin_tick) psyq_sched_spin_tick(cpu, addr);
+    openpete_psxtrace_gate_host_leave();
+}
+
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (!s_hang_threshold_inited) {
         const char* env = getenv("OPENPETE_HANG_THRESHOLD");
         if (env && *env) s_hang_threshold = (uint32_t)strtoul(env, NULL, 0);
         s_hang_threshold_inited = 1;
     }
+    const uint32_t vbl_now = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     if (s_hang_threshold && !s_hang_tripped) {
-        uint32_t vbl_now = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
         if (vbl_now != s_hang_last_vbl) {
             /* Vbl boundary: snapshot the ring before the next vbl interval's
              * dispatches overwrite it. If a hang trips during the next
@@ -490,16 +530,6 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
             s_hang_calls_since_tick = 0u;
         } else if (++s_hang_calls_since_tick > s_hang_threshold) {
             openpete_hang_dump_and_exit(addr);
-        }
-        /* A spin that polls a deferred disc read without waiting on VSync
-         * spent VBLs on the reference; every so many entries without a
-         * VBL, the schedule or the drive model passes one here
-         * (psyq_thunks.cpp). */
-        if ((s_hang_calls_since_tick & 2047u) == 2047u) {
-            extern void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) __attribute__((weak));
-            openpete_psxtrace_gate_host_enter();
-            if (psyq_sched_spin_tick) psyq_sched_spin_tick(cpu, addr);
-            openpete_psxtrace_gate_host_leave();
         }
         /* Only fill the ring for the first HANG_RING dispatches of each
          * frame. A tight loop produces 2-3 distinct addrs and trivially
@@ -516,6 +546,8 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         s_hang_recent[s_hang_recent_head].sp   = cpu ? cpu->sp : 0u;
         s_hang_recent_head = (s_hang_recent_head + 1u) % HANG_RECENT;
     }
+    spin_tick(cpu, vbl_now, addr);
+    if (addr == s_loop_anchor_pc) { s_loop_anchor_ticks++; s_loop_insns_anchor = 0u; }
     /* Pad-read probe: the guest function that consumes the pad buffer. Sited
      * here because every translated function entry passes through this call,
      * ahead of every game and mod override arm. */
@@ -550,7 +582,142 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     return gate_override(cpu, addr);
 }
 
+/* --- Critical sections ---------------------------------------------------
+ * The kernel masks interrupts before it jumps to the executable, so the
+ * flag starts set. EnterCriticalSection (syscall a0 = 1) sets it and returns
+ * whether interrupts were enabled; ExitCriticalSection (a0 = 2) and the
+ * kernel calls whose bodies end in leaveCriticalSection clear it. A VBLANK
+ * that falls due while it is set is latched by the delivery side and taken
+ * when it clears (openpete_crit_leave). */
+static int      s_crit = 1;
+static uint32_t s_crit_first_clear_ra = 0u;     /* return address of the first clearing call */
+static int32_t  s_crit_first_clear_vbl = -1;    /* openpete_vbl there, -1 before it */
+static uint32_t s_crit_enters = 0u, s_crit_exits = 0u, s_crit_kernel_leaves = 0u;
+
+int openpete_crit_masked(void) { return s_crit; }
+
+void openpete_crit_set(int masked) { s_crit = masked ? 1 : 0; }
+
+/** @brief Clear the critical-section flag and take a VBLANK latched while it was set.
+ *
+ * Records the first clearing call's return address for the probe. The
+ * latched VBLANK runs through the delivery side's flush.
+ * @param cpu Guest CPU state at the leaving call. */
+static void crit_clear(CPUState* cpu) {
+    if (!s_crit) return;
+    s_crit = 0;
+    if (s_crit_first_clear_vbl < 0) {
+        s_crit_first_clear_ra = cpu ? cpu->ra : 0u;
+        s_crit_first_clear_vbl = SDL_GetAtomicInt(&openpete_vbl);
+        OPL_INFO_F("crit", "interrupts first enabled at ra=0x%08X vbl=%d",
+                   s_crit_first_clear_ra, s_crit_first_clear_vbl);
+    }
+    extern void psyq_crit_flush(CPUState* cpu) __attribute__((weak));
+    if (psyq_crit_flush && cpu) psyq_crit_flush(cpu);
+}
+
+void openpete_crit_leave(CPUState* cpu) {
+    s_crit_kernel_leaves++;
+    crit_clear(cpu);
+}
+
+void openpete_crit_report(uint32_t* first_clear_ra, int32_t* first_clear_vbl,
+                          uint32_t* enters, uint32_t* exits, uint32_t* kernel_leaves) {
+    *first_clear_ra = s_crit_first_clear_ra;
+    *first_clear_vbl = s_crit_first_clear_vbl;
+    *enters = s_crit_enters;
+    *exits = s_crit_exits;
+    *kernel_leaves = s_crit_kernel_leaves;
+}
+
 void psx_syscall(CPUState* cpu, uint32_t code) {
-    OPL_WARN_F("dispatch", "syscall code=0x%X (ra=0x%08X) - ignored",
-               code, cpu ? cpu->ra : 0u);
+    if (cpu && cpu->a0 == 1u) {
+        /* EnterCriticalSection: 1 when interrupts were enabled. */
+        s_crit_enters++;
+        cpu->v0 = s_crit ? 0u : 1u;
+        s_crit = 1;
+        return;
+    }
+    if (cpu && cpu->a0 == 2u) {
+        s_crit_exits++;
+        crit_clear(cpu);
+        return;
+    }
+    OPL_WARN_F("dispatch", "syscall code=0x%X a0=%u (ra=0x%08X) - ignored",
+               code, cpu ? cpu->a0 : 0u, cpu ? cpu->ra : 0u);
+}
+
+/* --- Polling-loop delivery -----------------------------------------------
+ * The accumulator holds the instructions the classified loops have run
+ * since the last VBL, scaled by 2250000 so that one VBL of instructions at
+ * one instruction per cycle, 33868800 x 37609 / 2250000 = 566120.755, is
+ * the whole number LOOP_QUANTUM. */
+#define LOOP_SCALE   2250000ull
+#define LOOP_QUANTUM (33868800ull * 37609ull)
+static uint64_t s_loop_acc = 0u;
+static uint64_t s_loop_acc_max = 0u;        /* per-run maximum before a VBL */
+static uint32_t s_loop_quanta = 0u;         /* quanta since the last VBL */
+static uint32_t s_loop_quanta_max = 0u;
+static uint64_t s_loop_polls = 0u, s_loop_trips = 0u;
+static uint32_t s_loop_last_header = 0u;
+static int      s_loop_delivery = -1;       /* OPENPETE_LOOP_DELIVERY, read once */
+
+/* Quanta per loop header, the first LOOP_SITES distinct headers. */
+#define LOOP_SITES 64u
+static uint32_t s_loop_site_hdr[LOOP_SITES], s_loop_site_trips[LOOP_SITES];
+static int32_t  s_loop_site_first_vbl[LOOP_SITES];
+static uint32_t s_loop_sites = 0u;
+
+/** @brief Count one quantum against its loop header in the per-site census.
+ * @param header The loop's header address. */
+static void loop_site_note(uint32_t header) {
+    for (uint32_t i = 0; i < s_loop_sites; i++)
+        if (s_loop_site_hdr[i] == header) { s_loop_site_trips[i]++; return; }
+    if (s_loop_sites == LOOP_SITES) return;
+    s_loop_site_hdr[s_loop_sites] = header;
+    s_loop_site_trips[s_loop_sites] = 1u;
+    s_loop_site_first_vbl[s_loop_sites] = SDL_GetAtomicInt(&openpete_vbl);
+    s_loop_sites++;
+}
+
+void openpete_loop_site_census_log(void) {
+    for (uint32_t i = 0; i < s_loop_sites; i++)
+        OPL_INFO_F("delivery", "loop site 0x%08X: %u quanta, first at vbl %d",
+                   s_loop_site_hdr[i], s_loop_site_trips[i], s_loop_site_first_vbl[i]);
+}
+
+void openpete_loop_vbl(void) {
+    s_loop_acc = 0u;
+    s_loop_quanta = 0u;
+}
+
+void openpete_loop_report(uint64_t* polls, uint64_t* trips, uint64_t* acc_max_insns,
+                          uint32_t* quanta_max, uint32_t* last_header, int* enabled) {
+    *polls = s_loop_polls;
+    *trips = s_loop_trips;
+    *acc_max_insns = s_loop_acc_max / LOOP_SCALE;
+    *quanta_max = s_loop_quanta_max;
+    *last_header = s_loop_last_header;
+    *enabled = s_loop_delivery != 0;
+}
+
+void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure) {
+    s_loop_polls++;
+    s_loop_insns_anchor += insns;
+    s_loop_acc += (uint64_t)insns * LOOP_SCALE;
+    if (s_loop_acc > s_loop_acc_max) s_loop_acc_max = s_loop_acc;
+    if (s_loop_acc < LOOP_QUANTUM) return;
+    /* One VBL of instructions has run since the last VBL. */
+    s_loop_trips++;
+    s_loop_last_header = header;
+    loop_site_note(header);
+    s_loop_acc -= LOOP_QUANTUM;
+    if (++s_loop_quanta > s_loop_quanta_max) s_loop_quanta_max = s_loop_quanta;
+    if (s_loop_delivery < 0) {
+        const char* env = getenv("OPENPETE_LOOP_DELIVERY");
+        s_loop_delivery = (env && *env) ? (atoi(env) != 0) : 1;
+    }
+    if (!s_loop_delivery) return;
+    extern void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t pure) __attribute__((weak));
+    if (psyq_deliver_loop_vbl) psyq_deliver_loop_vbl(cpu, header, pure);
 }

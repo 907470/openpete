@@ -462,6 +462,9 @@ if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; th
         else
             echo "[psx-oracle] schedule: consumed $SCHED"
         fi
+        # Polling-loop quanta under the schedule (reported, not a criterion).
+        LOOPQ=$(sed -n 's/.*psxtrace: loop: //p' "$LOG" | tail -1)
+        [[ -n "$LOOPQ" ]] && echo "[psx-oracle] loop: $LOOPQ"
     fi
     UNJUST=$(sed -n 's/.*zero-change regions unjustified: *//p' "$LOG" | tail -1)
     if [[ -z "$UNJUST" ]]; then

@@ -54,6 +54,14 @@ int openpete_fiber_guard_contains(uintptr_t addr);
  * frame waited - plus absolute restores from the savestate path. */
 extern SDL_AtomicInt openpete_vbl;
 
+/* Device VBL counter: every VBLANK that elapsed, whether the CPU took it or
+ * a critical section held it. Advanced once per VBLANK by the device half of
+ * the VBL body (psyq_thunks.cpp), so it equals `openpete_vbl` until a
+ * VBLANK is held and leads it by the held VBLANKs not yet taken afterwards.
+ * Device time (the CD drive head, the XA stream anchor, the oracle's
+ * per-record VBL delta and the device-side log labels) reads it. */
+extern SDL_AtomicInt openpete_vbl_device;
+
 /* Host-facing render-frame counter. Stays at 0 until the first DrawOTag
  * (i.e. until the game actually starts rendering), then increments on each
  * VSync(0) yield. Every host-side consumer - frame-limit, screenshot/RAM-dump
@@ -175,6 +183,15 @@ extern int      openpete_skip_present_until_level;
  * (already unlocked; skipping presents there would break frame-keyed
  * screenshot capture). */
 extern int      openpete_skip_ffwd_windowed;
+
+/* 1 while the game fiber is parked at the final yield of a psyq_VSync wait
+ * (the last VBL the wait delivers), 0 at every other yield: an intermediate
+ * yield of VSync(n > 1), a polling-loop or spin-tick delivery, a schedule
+ * charge, a flushed VBLANK, the no-tick stub-miss yield. The host takes and
+ * applies snapshots only while it is set; the guest call stack below any
+ * other yield is not the one a snapshot's state continues from. Written by
+ * the game fiber around the yield, read by the host loop between yields. */
+extern int openpete_yield_final;
 
 /** @brief Switch from the game fiber to the host fiber, advancing openpete_frame.
  *

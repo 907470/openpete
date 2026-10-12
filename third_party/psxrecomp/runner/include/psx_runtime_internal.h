@@ -93,6 +93,16 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr);
  * @param code The 20-bit code field of the instruction. */
 void psx_syscall(CPUState* cpu, uint32_t code);
 
+/** @brief Count one iteration of a classified polling loop at its back-edge.
+ *
+ * The engine accumulates the body's instruction count and delivers a VBL
+ * once a VBL's worth has accumulated.
+ * @param cpu The looping function's CPU state.
+ * @param header The loop's header address.
+ * @param insns The body's instruction count.
+ * @param pure 1 for a pure spin, 0 for a counted poll. */
+void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure);
+
 /** @brief GTE coprocessor command.
  *
  * Runs the command on cpu->gte_data/gte_ctrl and leaves the register file

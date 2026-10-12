@@ -779,6 +779,7 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .disc_layout          = &k_disc_layout,
     .pad_read_pc          = 0x80053C68u,
     .sony_image_base      = 0x8006FCF4u,
+    .loop_anchor_pc       = 0x8001ED5Cu,
     .on_boot              = spyro1_on_boot,
     .on_frame_pre         = spyro1_on_frame_pre,
     .on_state_loaded      = spyro1_on_state_loaded,

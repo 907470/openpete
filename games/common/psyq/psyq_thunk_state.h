@@ -54,6 +54,12 @@
  *   [49]     head_rate      0 idle, 1 single speed, 2 double speed
  *   [50]     head_speed     speed factor of the last read or play
  *                           (pack_ver 8)
+ *   [51]     crit           the interrupted code's critical-section flag
+ *                           (the delivery in progress holds it saved)
+ *   [52]     latched        1 while a held VBLANK waits for the flag to clear
+ *   [53]     latch_key      that VBLANK's reference index
+ *   [54]     dropped        D: VBLANKs the schedule position counts that the
+ *                           CPU has not taken, as int32 (pack_ver 9)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -64,8 +70,8 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 8u
-#define PSYQ_THUNK_STATE_WORDS    51u
+#define PSYQ_THUNK_STATE_PACK_VER 9u
+#define PSYQ_THUNK_STATE_WORDS    55u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
 #define PSYQ_THUNK_STATE_V2_BYTES 100u
@@ -74,6 +80,7 @@ extern "C" {
 #define PSYQ_THUNK_STATE_V5_BYTES 172u
 #define PSYQ_THUNK_STATE_V6_BYTES 180u
 #define PSYQ_THUNK_STATE_V7_BYTES 184u
+#define PSYQ_THUNK_STATE_V8_BYTES 204u
 
 /** @brief Return the byte length of a pack whose first word is `ver`.
  *

@@ -110,6 +110,14 @@ void CodeGenerator::note_goto(uint32_t target, GotoArm arm) {
     facts_.back().regions.back().gotos.push_back({target, arm});
 }
 
+std::string CodeGenerator::back_edge_marker(uint32_t target, GotoArm arm,
+                                            const std::string& indent) const {
+    if (facts_.empty() || facts_.back().regions.empty()) return {};
+    const uint32_t label = facts_.back().regions.back().label;
+    if (target > label) return {};
+    return loop_poll_marker(indent, facts_.back().name, target, label, arm);
+}
+
 void CodeGenerator::note_call(uint32_t target) {
     if (facts_.empty() || facts_.back().regions.empty()) return;
     facts_.back().regions.back().callees.push_back(target);
@@ -1898,6 +1906,8 @@ std::string CodeGenerator::translate_basic_block(
                         : delay_saved_cond;
                     if (block.successors.size() == 2) {
                         ss << config_.indent << "if (" << condition << ") {\n";
+                        ss << back_edge_marker(block.successors[0], GotoArm::Taken,
+                                               config_.indent + config_.indent);
                         ss << config_.indent << config_.indent
                            << fmt::format("goto block_{:08X};  /* taken */\n", block.successors[0]);
                         note_goto(block.successors[0], GotoArm::Taken);
@@ -1917,6 +1927,8 @@ std::string CodeGenerator::translate_basic_block(
 
                         ss << config_.indent << "if (" << condition << ") {\n";
                         if (target_in) {
+                            ss << back_edge_marker(branch_target, GotoArm::Taken,
+                                                   config_.indent + config_.indent);
                             ss << config_.indent << config_.indent
                                << fmt::format("goto block_{:08X};  /* taken */\n", branch_target);
                             note_goto(branch_target, GotoArm::Taken);
@@ -1949,6 +1961,7 @@ std::string CodeGenerator::translate_basic_block(
                     // Unconditional jump
                     uint32_t jt = block.exit_instr.target;
                     if (!block.successors.empty()) {
+                        ss << back_edge_marker(block.successors[0], GotoArm::Jump, config_.indent);
                         ss << config_.indent
                            << fmt::format("goto block_{:08X};  /* j */\n", block.successors[0]);
                         note_goto(block.successors[0], GotoArm::Jump);

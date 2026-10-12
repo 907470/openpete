@@ -211,6 +211,16 @@ private:
      * @param target the block address
      * @param arm    which arm the goto was emitted as */
     void note_goto(uint32_t target, GotoArm arm);
+    /** @brief Spell the loop-poll placeholder for a `goto` about to be written in the current region.
+     *
+     * A goto to a label at or below the current region's is a back-edge and
+     * gets the placeholder apply_loop_polls() resolves; any other goto gets
+     * nothing.
+     * @param target the block address
+     * @param arm    which arm the goto is written as
+     * @param indent leading whitespace of the goto line
+     * @return the placeholder line, or an empty string */
+    std::string back_edge_marker(uint32_t target, GotoArm arm, const std::string& indent) const;
     /** @brief Record a call to a generated function of this unit.
      * @param target the callee's start address */
     void note_call(uint32_t target);

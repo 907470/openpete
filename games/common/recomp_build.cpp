@@ -624,6 +624,10 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
           << " --external-prefix=psyq_"
           << " --func-prefix=func_" << o.name << "_"
           << " --extra-funcs=" << q << (man / (o.name + ".funcs.txt")).string() << q
+          /* The main EXE's pure leaves, written by its translation above:
+           * an overlay loop polling through one is a delivery site, as in
+           * scripts/regen-recomp.sh. */
+          << " --leaf-summary=" << q << (gen / "PSX.EXE_leaves.tsv").string() << q
           << " --skip-on-error" << QUIET_REDIR;
         if (!run(c.str())) return -1;
         if (!rename_token(gen / (o.name + ".bin_dispatch.c"),

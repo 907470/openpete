@@ -61,6 +61,8 @@ struct LoopSite {
     GotoArm arm = GotoArm::Taken;
     uint32_t insns = 0;          ///< body instructions plus each called leaf's, per call
     std::vector<uint32_t> leaves;    ///< pure leaves the body calls, one entry per call
+    bool pure = false;           ///< pure spin: no register carries a value across iterations
+                                 ///< except through a load (set by apply_loop_polls)
 };
 
 /// A pure leaf as another unit's summary states it.
@@ -100,10 +102,43 @@ bool read_leaf_summary(const std::string& path, std::map<uint32_t, LeafSummary>&
 /** @brief Write the classified sites as tab-separated rows.
  *
  * Columns: function, header, source, arm, insns, leaves (comma-separated,
- * `-` when none). A `#` header line names them.
+ * `-` when none), pure (1 for a pure spin). A `#` header line names them.
  * @param path  output file
  * @param sites the sites classify_loops() returned
  * @return false when the file cannot be opened */
 bool write_loop_sites(const std::string& path, const std::vector<LoopSite>& sites);
+
+/** @brief Spell the placeholder line the generator writes before a back-edge `goto`.
+ *
+ * The line is a C comment naming the function, the goto's target, the label
+ * of the region holding it and its arm; apply_loop_polls() replaces it with
+ * the poll call when the back-edge is a classified site and removes it
+ * otherwise.
+ * @param indent   leading whitespace of the line
+ * @param function the generated function's name
+ * @param header   the goto's target
+ * @param source   label of the region holding the goto
+ * @param arm      which arm the goto is written as
+ * @return the line, newline included */
+std::string loop_poll_marker(const std::string& indent, const std::string& function,
+                             uint32_t header, uint32_t source, GotoArm arm);
+
+/** @brief Resolve every placeholder line of generated C against the classified sites.
+ *
+ * A placeholder whose back-edge is a site becomes
+ * `psx_loop_poll(cpu, 0x<header>u, <insns>u, <pure>u);` at the same indent;
+ * every other placeholder line is removed, so the text without sites is the
+ * text the generator writes with no placeholders at all. Each site's `pure`
+ * is decided on the body's emitted text, from `block_<header>:` to the end of
+ * the block holding the goto, as tools/loop_census.py decides it: the body is
+ * a counted poll when some assignment `cpu->R = ...;` reads R before the
+ * body's first assignment to R (R not zero, hi or lo), else a pure spin.
+ * @param code  generated C holding placeholder lines
+ * @param sites the sites classify_loops() returned for the same unit; each
+ *              site's `pure` is set
+ * @param emitted receives the number of poll calls written
+ * @return the resolved C */
+std::string apply_loop_polls(const std::string& code, std::vector<LoopSite>& sites,
+                             size_t& emitted);
 
 } // namespace PSXRecomp

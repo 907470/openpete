@@ -27,6 +27,7 @@
 
 extern "C" {
 #include "openpete_fiber.h"
+#include "openpete_guest_regs.h"
 #include "openpete_psxtrace.h"
 #include "openpete_log.h"
 #include "openpete_ticker.h"
@@ -103,7 +104,7 @@ static void audio_dump_drain(void) {
         if (idx) fputs("# vbl file_frames produced\n", idx);
         else OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP: cannot open %s", ipath);
         OPL_INFO_F("audio", "dump: %s (s16 stereo 44100) vbl_now=%d",
-                   path, SDL_GetAtomicInt(&openpete_vbl));
+                   path, SDL_GetAtomicInt(&openpete_vbl_device));
     }
     int16_t buf[4096 * 2];
     int n;
@@ -117,14 +118,14 @@ static void audio_dump_drain(void) {
     if (first && total > 0) {
         first = 0;
         OPL_INFO_F("audio", "dump: first drain %llu frames at vbl %d",
-                   total, SDL_GetAtomicInt(&openpete_vbl));
+                   total, SDL_GetAtomicInt(&openpete_vbl_device));
     }
     /* A frame the ring dropped before this drain is a hole in the file:
      * every later sample is early by it. */
     unsigned long long produced = 0, dropped = 0;
     PsyX_SPUAL_CaptureStats(&produced, &dropped);
     if (idx) {
-        fprintf(idx, "%d %llu %llu\n", SDL_GetAtomicInt(&openpete_vbl), total, produced);
+        fprintf(idx, "%d %llu %llu\n", SDL_GetAtomicInt(&openpete_vbl_device), total, produced);
         fflush(idx);
     }
     static unsigned long long reported = 0;
@@ -247,9 +248,9 @@ static uint32_t s_head_speed = 2;   /* speed factor of the last read or play */
 #define CD_SEEK_C2_PER_1E5     73043u   /* per 1/1000 sqrt(LBA), x 1e5 */
 #define CD_SEEK_SPEED_CHANGE  520500u   /* 17.35 VBL */
 
-/// @brief The guest VBL count as drive-head time (CD_HEAD_TU per VBL).
+/// @brief The device VBL count (every VBLANK elapsed, held ones included) as drive-head time (CD_HEAD_TU per VBL).
 static uint64_t cd_head_now(void) {
-    return (uint64_t)(uint32_t)SDL_GetAtomicInt(&openpete_vbl) * CD_HEAD_TU;
+    return (uint64_t)(uint32_t)SDL_GetAtomicInt(&openpete_vbl_device) * CD_HEAD_TU;
 }
 
 /** @brief The head's position at time `t` in units of 1/`per` LBA, floored.
@@ -293,7 +294,7 @@ static void cd_head_read(int lba, uint32_t rate) {
     if (!openpete_speculative)
         OPL_INFO_F("cd", "head: read at LBA %d from LBA %lld (x%u), seek %llu/%u VBL (vbl %d)",
                    lba, (long long)from, rate, (unsigned long long)seek, CD_HEAD_TU,
-                   SDL_GetAtomicInt(&openpete_vbl));
+                   SDL_GetAtomicInt(&openpete_vbl_device));
     s_head_lba = (uint32_t)lba;
     s_head_t = now + seek;
     s_head_rate = rate;
@@ -496,25 +497,28 @@ static inline uint64_t psyq_image_bytes(const RECT16* r) {
 
 static uint32_t g_cd_read_cb     = 0;
 
-/* PSYQ's interrupt-callback table: one guest handler per PSX interrupt line,
- * installed through the libetc setter the thunk below intercepts. Index 7 is
- * the controller/memory-card port, whose handler is the pump a BIOS-driven
- * card driver advances its state machine in. openpete has no interrupt
- * controller, so each installed handler is driven from the VBL the transfer
- * it services would have completed within. */
+/* libetc's VSyncCallbacks array (eight slots at 0x800665F8 in Spyro 2),
+ * called in slot order from libetc's VBLANK handler. Slot 4 is the one
+ * VSyncCallback writes and lives in g_vsync_cb; the others live in
+ * g_intr_cb, whose eleven words the savestate latch pack carries (slots 8
+ * to 10 are never written). A BIOS-driven card driver installs its
+ * per-VBLANK step in slot 7. */
 #define PSYQ_INTR_SLOTS 11
-#define PSYQ_INTR_PAD_CARD 7
+#define PSYQ_VSYNC_SLOTS 8u
+#define PSYQ_VSYNC_SLOT_CB 4u
 static uint32_t g_intr_cb[PSYQ_INTR_SLOTS];
 static uint32_t g_vsync_cb       = 0;
 
 /** @brief Run the compiled guest function at cb_addr with a0 and a1 set.
  *
- * Saves a0..a3, ra, v0 and v1 and restores them afterwards, so the caller's
- * registers survive the call; the callee's return value is discarded. ra is
- * set to a sentinel, since the dispatcher runs the body to its return. A
- * zero cb_addr does nothing, and an address with no compiled body logs a
- * warning. The handler's gate hits are host-initiated for the oracle's
- * clock replay. OPENPETE_CB_DEBUG (read once) logs entry and exit.
+ * Saves the general-purpose registers, hi and lo and restores them
+ * afterwards, as the kernel's exception return does (openpete_guest_regs.h),
+ * so the interrupted code's registers survive the call; the callee's return
+ * value is discarded. ra is set to a sentinel, since the dispatcher runs the
+ * body to its return. A zero cb_addr does nothing, and an address with no
+ * compiled body logs a warning. The handler's gate hits are host-initiated
+ * for the oracle's clock replay. OPENPETE_CB_DEBUG (read once) logs entry
+ * and exit.
  * @param cpu Guest CPU state.
  * @param cb_addr Guest address of the handler.
  * @param a0 First argument.
@@ -522,9 +526,8 @@ static uint32_t g_vsync_cb       = 0;
 static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
                                 uint32_t a0, uint32_t a1) {
     if (cb_addr == 0) return;
-    /* Save caller's a-regs / ra; the recompiled function will trash them. */
-    uint32_t s_a0 = cpu->a0, s_a1 = cpu->a1, s_a2 = cpu->a2, s_a3 = cpu->a3;
-    uint32_t s_ra = cpu->ra, s_v0 = cpu->v0, s_v1 = cpu->v1;
+    openpete_guest_regs_t saved;
+    openpete_guest_regs_save(cpu, &saved);
     cpu->a0 = a0; cpu->a1 = a1; cpu->ra = 0xDEADBEEF;
     static int s_cbdbg = -1; if (s_cbdbg < 0) s_cbdbg = getenv("OPENPETE_CB_DEBUG") ? 1 : 0;
     if (s_cbdbg) OPL_INFO_F("thunks", "DBG callback 0x%08X enter pos=%u sp=0x%08X", cb_addr, openpete_sched_pos(), cpu->sp);
@@ -534,20 +537,22 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
     }
     openpete_psxtrace_gate_host_leave();
     if (s_cbdbg) OPL_INFO_F("thunks", "DBG callback 0x%08X leave pos=%u sp=0x%08X", cb_addr, openpete_sched_pos(), cpu->sp);
-    cpu->a0 = s_a0; cpu->a1 = s_a1; cpu->a2 = s_a2; cpu->a3 = s_a3;
-    cpu->ra = s_ra; cpu->v0 = s_v0; cpu->v1 = s_v1;
+    openpete_guest_regs_restore(cpu, &saved);
 }
 
-/** @brief Run the guest's controller/memory-card interrupt handler once, for one VBL.
+/** @brief Run libetc's VSync slots 0 through 7 in order, once, for one VBLANK.
  *
- * Calls the handler registered in interrupt-callback slot
- * PSYQ_INTR_PAD_CARD, if any. On hardware the port raises this line once
- * per transfer and the pad is polled every VBL, so one call per VBL
- * advances the driver at the rate the game expects.
+ * libetc's line-0 handler calls the eight-entry VSyncCallbacks array in
+ * slot order after incrementing its counter; slot 4 is the VSyncCallback
+ * function (g_vsync_cb), the others are g_intr_cb. The Spyro games fill
+ * slot 4 (the game's per-VBL function) and slot 7 (a BIOS card driver's
+ * per-VBLANK step).
  * @param cpu Guest CPU state. */
-static void psyq_pump_pad_card_intr(CPUState* cpu) {
-    uint32_t cb = g_intr_cb[PSYQ_INTR_PAD_CARD];
-    if (cb) invoke_psx_callback(cpu, cb, 0, 0);
+static void psyq_run_vsync_slots(CPUState* cpu) {
+    for (uint32_t i = 0; i < PSYQ_VSYNC_SLOTS; i++) {
+        const uint32_t cb = (i == PSYQ_VSYNC_SLOT_CB) ? g_vsync_cb : g_intr_cb[i];
+        if (cb) invoke_psx_callback(cpu, cb, 0, 0);
+    }
 }
 
 /* --- libgcc/crt0 --------------------------------------------------------- */
@@ -583,12 +588,28 @@ void psyq___main(CPUState* cpu) {
 
 /* Forward decls: defined later, called from inside psyq_VSync below. */
 static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu);
-static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what);
+/* Who delivers a VBL (deliver_vbl): psyq_VSync's own wait and the VSync
+ * and VSync(-1) charges are taken whatever the critical-section flag says;
+ * every other source is held while it is set. */
+enum vbl_src {
+    VBL_SRC_VSYNC = 0,  /* psyq_VSync's wait, its VSync and VSync(-1) charges */
+    VBL_SRC_CHARGE,     /* the schedule's other charges (registration, anchor, load window, clock gate, CdRead, CdControl, CdSync) */
+    VBL_SRC_SPIN,       /* the dispatcher's spin tick */
+    VBL_SRC_PAUSE,      /* a blocking CdSync waiting out a stream read's CdlPause */
+    VBL_SRC_LOOP,       /* an emitted polling-loop back-edge */
+    VBL_SRC_INCALL,     /* a device wait inside a kernel call */
+    VBL_SRC_N
+};
+static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what,
+                            vbl_src src = VBL_SRC_CHARGE, int final_wait = 0);
+static void deliver_vbl(CPUState* cpu, vbl_src src, int final_wait);
 extern "C" uint32_t openpete_psxtrace_anchor_hits;
 extern "C" uint32_t openpete_psxtrace_anchor_hit_target;
-static void psyq_vbl_body(CPUState* cpu, int wait);
+static void psyq_vbl_body(CPUState* cpu, int final_wait);
 static void cd_stream_pump(int wait);
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
+static void cd_defer_countdown(uint32_t vbls);
+static void cd_defer_due(CPUState* cpu, uint32_t vbls, uint32_t left);
 static void cd_defer_before_call(CPUState* cpu);
 static void cd_defer_after_call(CPUState* cpu);
 static void pad_busy_tick(uint32_t vbls);
@@ -667,32 +688,39 @@ extern "C" void psyq_sched_clock_gate(CPUState* cpu, uint32_t addr) {
     openpete_psxtrace_gate_host_leave();
 }
 
+/* The critical-section probe: VSync waits and VSync(-1) charges the game
+ * made with interrupts masked (outside a delivery). Both are taken anyway;
+ * on hardware a masked VSync wait spins until libetc's timeout. */
+static uint64_t s_masked_vsync_waits = 0, s_masked_query_charges = 0;
+static int s_dlv_depth = 0;              /* deliveries in progress */
+/* VSync waits off the schedule by VBLs waited (1, 2, 3, 4 or more): the
+ * waits whose earlier VBLs yield at an intermediate yield. */
+static uint64_t s_vsync_waits_by_n[4];
+
 /** @brief Thunk for libetc VSync: returns the VBL counter, waiting first when a0 is not negative.
  *
  * A0 below 0 only reads the counter. A0 of 0 waits one VBL and any other
- * value waits that many. Each waited VBL runs psyq_vbl_body (the VSync
- * callback, the pad and card interrupt, the pad mirror and the CD ticks) and
- * yields once. Under an active schedule the wait charges VBLs up to the
- * reference's return instead, and the returned counter is the reference's
- * value at that call site.
+ * value waits that many, each through deliver_vbl (one VBL body and one
+ * yield per VBL), the last of them the wait's final yield. Under an active
+ * schedule the wait charges VBLs up to the reference's return instead, and
+ * the returned counter is the reference's value at that call site. The
+ * wait is taken whether or not interrupts are masked.
  * @param cpu Guest CPU state; a0 is the mode, v0 receives the counter. */
 void psyq_VSync(CPUState* cpu) {
     /* libetc semantics:
      *   mode  < 0 : query - return current vbl counter, no wait
      *   mode == 0 : wait for next vblank, return updated counter
-     *   mode  > 0 : wait that many vblanks (Spyro doesn't seem to use this)
+     *   mode  > 0 : wait that many vblanks
      *
-     * vbl is yield-driven: each VSync(0) bumps the counter by exactly the
-     * wait count and yields once. That keeps Spyro's wait-loop pattern
+     * vbl is yield-driven: each waited VBL bumps the counter by one and
+     * yields once. That keeps Spyro's wait-loop pattern
      * (`while VSync(-1)-s < 2 VSync(0)`) deterministic - the loop always
      * exits after exactly 2 yields per logical frame regardless of wall-
      * clock pacing, which is the invariant BK2 replay relies on.
      *
      * Wall-clock pacing lives elsewhere: the host loop (run.c) sleeps to
-     * its own phase-locked deadline between game slices, so 1 yield ≈
-     * 16.67 ms. Single-VSync(0) flyby -> 1 yield/logical frame = 60 fps;
-     * wait-loop gameplay -> 2 yields/logical frame = 30 fps. No per-game
-     * predicate needed. Tab / --headless skip the host-loop wait, which
+     * its own phase-locked deadline between game slices, so 1 yield is one
+     * VBL period. Tab / --headless skip the host-loop wait, which
      * fast-forwards wall clock without changing yield-per-frame counts -
      * so BK2 state at any frame is identical regardless of pacing. */
     int mode = (int)cpu->a0;
@@ -702,6 +730,7 @@ void psyq_VSync(CPUState* cpu) {
         OPL_INFO_F("thunks", "VSync(%d) vbl=%d frame=%u (call #%u)",
                    mode, observed, openpete_frame, calls);
     }
+    const int masked = openpete_crit_masked() && s_dlv_depth == 0;
 
     if (mode < 0) {
         /* Query: read the counter, wait for nothing. Every Spyro game's
@@ -712,11 +741,15 @@ void psyq_VSync(CPUState* cpu) {
          * reference had seen by then are charged first. */
         uint32_t target = 0;
         int32_t sc = openpete_sched_query(cpu->ra, &target);
-        if (sc >= 0 && target > openpete_sched_pos()) sched_charge_to(cpu, target, "VSync(-1)");
+        if (sc >= 0 && target > openpete_sched_pos()) {
+            if (masked) s_masked_query_charges++;
+            sched_charge_to(cpu, target, "VSync(-1)", VBL_SRC_VSYNC);
+        }
         spu_clock_charge(openpete_sched_query_tick());
         cpu->v0 = (sc >= 0) ? (uint32_t)sc : (uint32_t)observed;
         return;
     }
+    if (masked) s_masked_vsync_waits++;
     int wait = (mode == 0) ? 1 : mode;
     uint32_t sched_target = 0;
     if (openpete_sched_active() && openpete_sched_next_vsync(mode, &sched_target)) {
@@ -729,13 +762,17 @@ void psyq_VSync(CPUState* cpu) {
                 OPL_INFO_F("thunks", "VSync(%d) charged nothing: pos=%u ra=0x%08X (#%u)", mode, openpete_sched_pos(), cpu->ra, s_nocharge);
         }
         (void)openpete_sched_vblpos_late(sched_target);
-        sched_charge_to(cpu, sched_target, "VSync");
+        sched_charge_to(cpu, sched_target, "VSync", VBL_SRC_VSYNC, 1);
         spu_clock_charge(openpete_sched_wait_tick());
     } else {
-        psyq_vbl_body(cpu, wait);
-        /* Past the schedule's rows (the trace's end) the position follows
-         * openpete's own count so the game-visible counter keeps moving. */
-        if (openpete_sched_active()) openpete_sched_advance_pos((uint32_t)wait);
+        /* One VBL body per waited VBL. Past the schedule's rows (the
+         * trace's end) each advances the position, so the game-visible
+         * counter keeps moving. */
+        s_vsync_waits_by_n[(wait >= 4) ? 3 : wait - 1]++;
+        if (wait > 1)
+            OPL_INFO_F("delivery", "VSync(%d) off the schedule: %d VBLs from vbl %d (ra=0x%08X)",
+                       mode, wait, SDL_GetAtomicInt(&openpete_vbl), cpu->ra);
+        for (int i = 0; i < wait; i++) deliver_vbl(cpu, VBL_SRC_VSYNC, i == wait - 1);
     }
     {
         /* A waited call's own value: the counter at its return. */
@@ -745,18 +782,23 @@ void psyq_VSync(CPUState* cpu) {
     if (openpete_sched_active()) cd_defer_after_call(cpu);
 }
 
-/** @brief Run one VBL body per VBL from the schedule position up to `target`, advancing the position with each.
+/** @brief Deliver one VBL per VBLANK from the schedule position up to `target`.
  *
  * Under the schedule every VBL openpete charges is one the reference spent;
- * running one body per VBL fires the VSync callback per VBL as the
- * interrupt did. A target behind the position charges nothing; once the
- * first anchor hit is reached and outside a load window it records a
- * schedule failure (an extra wait, or a read the reference completed
+ * each runs through deliver_vbl, which advances the position by one whether
+ * the VBL is taken or held. A target behind the position charges nothing;
+ * once the first anchor hit is reached and outside a load window it records
+ * a schedule failure (an extra wait, or a read the reference completed
  * sooner). Before that hit the boot runs under openpete's own count.
  * @param cpu Guest CPU state.
  * @param target The reference VBLANK to charge up to.
- * @param what The charging site, for the failure message. */
-static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
+ * @param what The charging site, for the failure message.
+ * @param src The delivery source: VBL_SRC_VSYNC for psyq_VSync's charges,
+ *        whose VBLs are taken whatever the critical-section flag says.
+ * @param final_wait Nonzero when the last VBL ends a psyq_VSync wait (its
+ *        yield is the wait's final yield). */
+static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what,
+                            vbl_src src, int final_wait) {
     uint32_t pos = openpete_sched_pos();
     if (target < pos) {
         /* Before the first anchor hit the boot runs under openpete's own
@@ -768,9 +810,9 @@ static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
         return;
     }
     while (pos < target) {
-        psyq_vbl_body(cpu, 1);
-        openpete_sched_advance_pos(1);
         pos++;
+        deliver_vbl(cpu, src, final_wait && pos == target);
+        if (!openpete_sched_active()) openpete_sched_advance_pos(1);
     }
 }
 
@@ -823,37 +865,43 @@ extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
 }
 
 
-/** @brief Run `wait` waited VBLs: the counter, the SPU envelope, the BIOS card step, the yield, the game's VSync callback and the port pump, then the pad and disc bookkeeping.
+/** @brief Run the device half of one VBLANK, rows the drive, the SPU and the CD-ROM controller do whether or not the CPU takes it: the stream pump, the SPU envelope and the audio drain.
  *
- * After the callbacks it mirrors libpad's empty second slot, advances
- * libpad's command sequence per VBL the schedule records a pad command at,
- * restores the first pad buffer when none of the VBLs polled it, steps the
- * CD-ROM MMIO model, and delivers a deferred disc completion that came due.
- * Under fast boot it runs the callbacks without yielding; with no host
- * fiber it waits through PsyCross's VSync. The VSync callback is
- * gameplay-visible (tick counters, the pad read), so every VBL the guest
- * waits runs this.
- * @param cpu Guest CPU state.
- * @param wait VBLs to run. */
-static void psyq_vbl_body(CPUState* cpu, int wait) {
-    SDL_AddAtomicInt(&openpete_vbl, wait);
-
-    /* Run the SPU for the VBLs' output samples: the voices' envelopes and
+ * Advances the device VBL count first, so the drive head reads the VBLANK
+ * being run. Under the oracle's seeded clock replay the reference's clock
+ * charges the SPU instead (spu_vbl_samples). */
+static void vbl_device_head(void) {
+    SDL_AddAtomicInt(&openpete_vbl_device, 1);
+    /* Run the SPU for the VBL's output samples: the voices' envelopes and
      * heads the guest reads back (key status, ENVX) and the mix, on the
      * same clock, with or without an audio device, after the XA decoder
-     * has delivered the sectors the drive head reads in them. Under the
-     * oracle's seeded clock replay the reference's clock charges it
-     * instead (spu_vbl_samples). */
-    cd_stream_pump(wait);
-    PsyX_SPUAL_TickEnvelope(spu_vbl_samples(wait));
+     * has delivered the sectors the drive head reads in it. */
+    cd_stream_pump(1);
+    PsyX_SPUAL_TickEnvelope(spu_vbl_samples(1));
     audio_dump_drain();
+}
 
-    /* The kernel's card driver runs from the vblank interrupt before the
-     * game's VSync callback (its handler precedes libetc's in the kernel's
-     * chain): a command the callback issues is first served by the next
-     * vblank's step, and an event the step delivers is visible to the
-     * callback of the same vblank. */
-    for (int i = 0; i < wait; i++) openpete_psx_bios_vbl(cpu);
+/** @brief Step the CD-ROM controller model by one VBLANK: the interrupts it raises for a game that drives the controller's registers itself. */
+static void vbl_device_mmio(void) {
+    static int s_cd_raw_set = 0;
+    if (!s_cd_raw_set) { s_cd_raw_set = 1; openpete_cdrom_mmio_set_raw_pc_min(psyq_game_cd_raw_pc_min()); }
+    openpete_cdrom_mmio_vbl(1u);
+}
+
+/** @brief Run the CPU half's interrupt work for one VBLANK: the yield, then libetc's VSync slots, with the pad buffer kept unless libpad polled.
+ *
+ * The kernel's card step runs first, keyed on reference VBLANK `key` (its
+ * handler precedes libetc's in the kernel's chain, so an event it delivers
+ * is visible to the slots of the same VBLANK). Under fast boot the slots
+ * run without yielding; with no host fiber the wait goes through
+ * PsyCross's VSync. libpad's command sequence advances when the schedule
+ * records a pad command at `key`; a VBLANK without a poll restores the
+ * first pad buffer.
+ * @param cpu Guest CPU state.
+ * @param key Reference VBLANK index the card step and pad command belong to.
+ * @param final_wait Nonzero when this yield ends a psyq_VSync wait. */
+static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
+    openpete_psx_bios_vbl_at(cpu, key);
 
     /* The port's pad buffer as the game left it: libpad's handler rewrites
      * it only from a poll (0x42), and a vblank spent on a configuration
@@ -865,11 +913,9 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
         /* Fast-boot: don't yield to the host, so the boot spins run at full
          * CPU speed and openpete_frame stays anchored at 0 until the first
          * frame of real content. The game's own per-frame callbacks still
-         * run: a loader that advances its state machine from the VSync
-         * handler or the pad/card interrupt line makes no progress without
-         * them, and would spin here forever. */
-        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-        psyq_pump_pad_card_intr(cpu);
+         * run: a loader that advances its state machine from a VSync slot
+         * makes no progress without them, and would spin here forever. */
+        psyq_run_vsync_slots(cpu);
         /* libpad rewrites the pad buffers from every vblank interrupt, so a
          * value the game stores into its buffer (its stick recentre on
          * detecting an analog pad) lasts one VBL on hardware. The host loop's
@@ -879,15 +925,15 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
          * SDL, which this thread does not own. */
         if (g_PsyX_Pad_OverrideActive) PsyX_Pad_InternalPadUpdates();
     } else if (openpete_host_fiber) {
+        openpete_yield_final = final_wait ? 1 : 0;
         openpete_yield_to_host();
-        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-        psyq_pump_pad_card_intr(cpu);
+        openpete_yield_final = 0;
+        psyq_run_vsync_slots(cpu);
     } else {
         /* No fiber loop (smoke-test path) - fall back to PsyCross's busy
          * wait so audio/timer semantics still match. */
-        if (wait == 1) (void)VSync(0);
-        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-        psyq_pump_pad_card_intr(cpu);
+        (void)VSync(0);
+        psyq_run_vsync_slots(cpu);
     }
 
     /* PSYQ libpad parity: PsyCross's input poll (which fired during the
@@ -900,22 +946,268 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
     /* libpad's command sequence advances one command per vsync the
      * controller accepted one on. */
     int polls = 0;
-    for (int i = 0; i < wait; i++)
-        if (openpete_sched_padcmd_at(openpete_sched_pos() + (uint32_t)i + 1u, NULL)) {
-            polls += pad_polls(1u);
-            pad_busy_tick(1u);
-        }
-    if (s_pad_buf0 && wait > 0 && polls == 0)
+    if (openpete_sched_padcmd_at(key, NULL)) {
+        polls = pad_polls(1u);
+        pad_busy_tick(1u);
+    }
+    if (s_pad_buf0 && polls == 0)
         for (uint32_t k = 0; k < 8u; k++) cpu->write_byte(s_pad_buf0 + k, pad_prev[k]);
-    /* The CD-ROM controller's interrupts due at this VBL, for a game that
-     * drives the controller's registers itself. */
-    static int s_cd_raw_set = 0;
-    if (!s_cd_raw_set) { s_cd_raw_set = 1; openpete_cdrom_mmio_set_raw_pc_min(psyq_game_cd_raw_pc_min()); }
-    openpete_cdrom_mmio_vbl((uint32_t)wait);
+}
 
+/** @brief Run one VBL: the counters, the device half, the CPU's interrupt work, the CD-ROM controller and the deferred disc read, in the console's order.
+ *
+ * The VSync slots are gameplay-visible (tick counters, the pad read), so
+ * every VBLANK the CPU takes runs this, once.
+ * @param cpu Guest CPU state.
+ * @param final_wait Nonzero when the yield ends a psyq_VSync wait. */
+static void psyq_vbl_body(CPUState* cpu, int final_wait) {
+    SDL_AddAtomicInt(&openpete_vbl, 1);
+    vbl_device_head();
+    vbl_cpu_interrupt(cpu, openpete_sched_pos() + 1u, final_wait);
+    vbl_device_mmio();
     /* A disc read the drive would still be busy with: its completion is the
      * last thing this VBL delivers, after the frame's own callbacks. */
-    cd_defer_tick(cpu, (uint32_t)wait);
+    cd_defer_tick(cpu, 1u);
+}
+
+/* --- VBL delivery -------------------------------------------------------
+ * deliver_vbl is the one place a VBLANK reaches the guest. A source other
+ * than psyq_VSync's own wait is held while the critical-section flag is
+ * set: the device half runs, the position counts the VBLANK and D the drop,
+ * and at most one VBLANK latches, keyed on the first held VBLANK's index.
+ * The CPU half runs once when the flag clears (psyq_crit_flush). A taken
+ * VBL sets the flag for its duration, as the exception runs masked, so a
+ * delivery falling due inside one is latched and flushed on return. */
+static const char* const k_vbl_src_name[VBL_SRC_N] = {
+    "vsync", "charge", "spin", "pause", "loop", "in-call"};
+static uint64_t s_dlv_taken[VBL_SRC_N], s_dlv_held[VBL_SRC_N];
+static uint64_t s_dlv_flushes = 0;
+static uint32_t s_dlv_since_wait = 0, s_dlv_since_wait_max = 0;  /* taken VBLs between two VSync waits */
+static uint32_t s_hold_run = 0, s_hold_run_max = 0;             /* held VBLs before a flush */
+static int      s_latched = 0;
+static uint32_t s_latch_key = 0;        /* reference VBLANK index of the first held VBLANK */
+static int      s_dlv_outer_crit = 1;   /* the interrupted code's flag while a delivery runs */
+
+/* OPENPETE_VBL_HOLD=<source>:<skip>:<count>: a diagnostic critical
+ * section over a window of gated deliveries. After `skip` deliveries of
+ * <source> (a vbl_src name, or "any") the next `count` are held as if the
+ * flag were set, and the window's end flushes as ExitCriticalSection
+ * would. */
+static int      s_hw_parsed = 0;
+static int      s_hw_src = -1;          /* -1 off, VBL_SRC_N any */
+static uint32_t s_hw_skip = 0, s_hw_count = 0;
+static uint64_t s_hw_held = 0, s_hw_flushes = 0;
+static uint64_t s_hw_head_after = 0;    /* drive-head time after the window's flush */
+static uint32_t s_hw_dev_vbl = 0;       /* device VBL count there */
+static uint32_t s_hw_vbl_before = 0, s_hw_vbl_after = 0;   /* openpete_vbl across the window */
+
+/** @brief Parse OPENPETE_VBL_HOLD once. */
+static void hold_window_parse(void) {
+    if (s_hw_parsed) return;
+    s_hw_parsed = 1;
+    const char* e = std::getenv("OPENPETE_VBL_HOLD");
+    if (!e || !*e) return;
+    char name[16] = {0};
+    unsigned skip = 0, count = 0;
+    if (std::sscanf(e, "%15[^:]:%u:%u", name, &skip, &count) != 3) {
+        OPL_WARN_F("delivery", "OPENPETE_VBL_HOLD=%s: expected <source>:<skip>:<count>", e);
+        return;
+    }
+    if (!std::strcmp(name, "any")) s_hw_src = VBL_SRC_N;
+    for (int i = 1; i < VBL_SRC_N; i++) if (!std::strcmp(name, k_vbl_src_name[i])) s_hw_src = i;
+    if (s_hw_src < 0) { OPL_WARN_F("delivery", "OPENPETE_VBL_HOLD: unknown source %s", name); return; }
+    s_hw_skip = skip;
+    s_hw_count = count;
+    OPL_INFO_F("delivery", "hold window: %s after %u, %u VBL(s)", name, skip, count);
+}
+
+/** @brief Report whether the diagnostic hold window holds this gated delivery, consuming it.
+ * @param src The delivery's source.
+ * @return 1 when the delivery is held by the window. */
+static int hold_window_takes(vbl_src src) {
+    hold_window_parse();
+    if (s_hw_src < 0 || !s_hw_count) return 0;
+    if (s_hw_src != VBL_SRC_N && s_hw_src != (int)src) return 0;
+    if (s_hw_skip) { s_hw_skip--; return 0; }
+    if (!s_hw_held) s_hw_vbl_before = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    s_hw_count--;
+    s_hw_held++;
+    return 1;
+}
+
+/** @brief Hold one VBLANK: run its device half, count it on the position and in D, latch it.
+ * @param src The delivery's source. */
+static void hold_vbl(vbl_src src) {
+    vbl_device_head();
+    vbl_device_mmio();
+    cd_defer_countdown(1u);
+    if (!s_latched) { s_latched = 1; s_latch_key = openpete_sched_pos() + 1u; }
+    if (openpete_sched_active()) { openpete_sched_advance_pos(1); openpete_sched_drop_vbl(); }
+    s_dlv_held[src]++;
+    if (++s_hold_run > s_hold_run_max) s_hold_run_max = s_hold_run;
+}
+
+/** @brief Take the VBLANK latched while interrupts were masked: the CPU half, once.
+ *
+ * The held VBLANKs already ran the device half and advanced the position,
+ * so the flush advances `openpete_vbl` by one, runs the card step and the
+ * pad command keyed on the first held VBLANK, the yield and the VSync
+ * slots, and the drive events at the current position (cd_defer_due with 0
+ * VBLs ahead); a completion that fell due during the hold is delivered
+ * here and its closing CdlPause owes its full count. D drops by one. Every
+ * register is preserved. Does nothing without a latched VBLANK.
+ * @param cpu Guest CPU state at the call that cleared the flag. */
+extern "C" void psyq_crit_flush(CPUState* cpu) {
+    if (!s_latched) return;
+    s_latched = 0;
+    s_hold_run = 0;
+    s_dlv_flushes++;
+    openpete_guest_regs_t saved;
+    openpete_guest_regs_save(cpu, &saved);
+    openpete_crit_set(1);
+    s_dlv_depth++;
+    openpete_loop_vbl();
+    SDL_AddAtomicInt(&openpete_vbl, 1);
+    vbl_cpu_interrupt(cpu, s_latch_key, 0);
+    cd_defer_due(cpu, 0u, 0u);
+    if (openpete_sched_active()) openpete_sched_take_dropped();
+    s_dlv_depth--;
+    openpete_crit_set(0);
+    openpete_guest_regs_restore(cpu, &saved);
+}
+
+/** @brief End the diagnostic hold window when its last VBLANK was held: flush as ExitCriticalSection would, and record the drive head and the VBL counters there.
+ * @param cpu Guest CPU state. */
+static void hold_window_close(CPUState* cpu) {
+    if (s_hw_src < 0 || s_hw_count || !s_hw_held || s_hw_flushes) return;
+    if (!openpete_crit_masked()) psyq_crit_flush(cpu);
+    s_hw_flushes++;
+    s_hw_vbl_after = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    s_hw_dev_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
+    s_hw_head_after = cd_head_now();
+    OPL_INFO_F("delivery", "hold window closed: %llu held, flush at device vbl %u, vbl %u -> %u, "
+               "head t=%llu lba=%u, D=%d",
+               (unsigned long long)s_hw_held, s_hw_dev_vbl, s_hw_vbl_before, s_hw_vbl_after,
+               (unsigned long long)s_hw_head_after, s_head_lba, openpete_sched_dropped());
+}
+
+/** @brief Deliver one VBLANK from `src`: taken (one VBL body, the position advanced under a schedule) or, for a gated source while interrupts are masked, held.
+ *
+ * Restarts the polling-loop accumulator either way. A taken VBL from a
+ * source other than psyq_VSync's wait preserves every register, since it
+ * can land inside a guest loop; psyq_VSync's wait is a call boundary and
+ * its final yield is where the host may load a snapshot.
+ * @param cpu Guest CPU state.
+ * @param src The delivery's source.
+ * @param final_wait Nonzero when the VBL ends a psyq_VSync wait. */
+static void deliver_vbl(CPUState* cpu, vbl_src src, int final_wait) {
+    openpete_loop_vbl();
+    if (src != VBL_SRC_VSYNC && (openpete_crit_masked() || hold_window_takes(src))) {
+        hold_vbl(src);
+        hold_window_close(cpu);
+        return;
+    }
+    /* The interrupted code's flag: the outermost delivery keeps it in
+     * s_dlv_outer_crit, which a snapshot taken at this delivery's yield
+     * carries and a load replaces. */
+    const int crit_nested = openpete_crit_masked();
+    if (s_dlv_depth == 0) s_dlv_outer_crit = crit_nested;
+    openpete_guest_regs_t saved;
+    if (src != VBL_SRC_VSYNC) openpete_guest_regs_save(cpu, &saved);
+    openpete_crit_set(1);
+    s_dlv_depth++;
+    psyq_vbl_body(cpu, final_wait);
+    if (openpete_sched_active()) openpete_sched_advance_pos(1);
+    s_dlv_depth--;
+    const int crit = (s_dlv_depth == 0) ? s_dlv_outer_crit : crit_nested;
+    openpete_crit_set(crit);
+    if (src != VBL_SRC_VSYNC) openpete_guest_regs_restore(cpu, &saved);
+    s_dlv_taken[src]++;
+    if (src == VBL_SRC_VSYNC) s_dlv_since_wait = 0;
+    else if (++s_dlv_since_wait > s_dlv_since_wait_max) s_dlv_since_wait_max = s_dlv_since_wait;
+    if (!crit) psyq_crit_flush(cpu);
+}
+
+/* Polling-loop quanta off the schedule at counted polls: counted, not
+ * delivered, until a guest cycle clock supplies their quantum. */
+static uint64_t s_loop_counted_only = 0;
+
+/** @brief Act on the quantum an emitted polling-loop back-edge reached (psx_loop_poll).
+ *
+ * Under the schedule a quantum is a charge, never a count of its own: it
+ * charges to the VBLANK the reference's rows show due before their next
+ * row point (openpete_sched_loop_due), or delivers nothing; before the
+ * first anchor hit nothing is due. Off the schedule a pure spin, where the
+ * iteration a VBL lands on is unobservable, takes one VBL; a counted poll,
+ * where the static instruction count is not the CPU's time, is counted
+ * only.
+ * @param cpu Guest CPU state, mid-loop.
+ * @param header The loop's header address.
+ * @param pure 1 for a pure spin. */
+extern "C" void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t pure) {
+    (void)header;
+    if (openpete_sched_active()) {
+        uint32_t target = 0;
+        if (openpete_sched_loop_due(openpete_loop_insns_since_anchor(), &target) &&
+            target > openpete_sched_pos())
+            sched_charge_to(cpu, target, "loop", VBL_SRC_LOOP);
+        return;
+    }
+    if (!pure) { s_loop_counted_only++; return; }
+    deliver_vbl(cpu, VBL_SRC_LOOP, 0);
+}
+
+/** @brief Deliver one VBL for a device wait inside a kernel call.
+ *
+ * Held like any gated delivery while interrupts are masked; a synchronous
+ * kernel wait entered masked waits forever on hardware too.
+ * @param cpu Guest CPU state at the call. */
+extern "C" void psyq_deliver_incall_vbl(CPUState* cpu) {
+    deliver_vbl(cpu, VBL_SRC_INCALL, 0);
+}
+
+/** @brief Log the delivery census: taken and held VBLs per source, flushes, the per-run maxima, the critical-section probe, the loop accumulator, D and the hold window. */
+extern "C" void psyq_vbl_delivery_report(void) {
+    char taken[256], held[256];
+    int nt = 0, nh = 0;
+    for (int i = 0; i < VBL_SRC_N; i++) {
+        nt += std::snprintf(taken + nt, sizeof taken - (size_t)nt, "%s%s=%llu", i ? " " : "",
+                            k_vbl_src_name[i], (unsigned long long)s_dlv_taken[i]);
+        nh += std::snprintf(held + nh, sizeof held - (size_t)nh, "%s%s=%llu", i ? " " : "",
+                            k_vbl_src_name[i], (unsigned long long)s_dlv_held[i]);
+    }
+    OPL_INFO_F("delivery", "taken: %s", taken);
+    OPL_INFO_F("delivery", "held: %s; flushes=%llu; max taken between waits=%u; max held run=%u",
+               held, (unsigned long long)s_dlv_flushes, s_dlv_since_wait_max, s_hold_run_max);
+    OPL_INFO_F("delivery", "VSync waits off the schedule by VBLs: 1=%llu 2=%llu 3=%llu 4+=%llu",
+               (unsigned long long)s_vsync_waits_by_n[0], (unsigned long long)s_vsync_waits_by_n[1],
+               (unsigned long long)s_vsync_waits_by_n[2], (unsigned long long)s_vsync_waits_by_n[3]);
+    uint32_t ra = 0, enters = 0, exits = 0, leaves = 0; int32_t vbl = -1;
+    openpete_crit_report(&ra, &vbl, &enters, &exits, &leaves);
+    OPL_INFO_F("delivery", "crit: first enabled ra=0x%08X vbl=%d; enters=%u exits=%u kernel leaves=%u; "
+               "masked VSync waits=%llu, masked VSync(-1) charges=%llu, masked at exit=%d",
+               ra, vbl, enters, exits, leaves, (unsigned long long)s_masked_vsync_waits,
+               (unsigned long long)s_masked_query_charges,
+               s_dlv_depth ? s_dlv_outer_crit : openpete_crit_masked());
+    uint64_t polls = 0, trips = 0, acc_max = 0; uint32_t qmax = 0, hdr = 0; int on = 1;
+    openpete_loop_report(&polls, &trips, &acc_max, &qmax, &hdr, &on);
+    OPL_INFO_F("delivery", "loop: polls=%llu quanta=%llu max insns between VBLs=%llu max quanta between VBLs=%u "
+               "last header=0x%08X delivery=%s",
+               (unsigned long long)polls, (unsigned long long)trips, (unsigned long long)acc_max, qmax, hdr,
+               on ? "on" : "off");
+    OPL_INFO_F("delivery", "loop quanta at counted polls off the schedule, counted only: %llu",
+               (unsigned long long)s_loop_counted_only);
+    openpete_loop_site_census_log();
+    uint32_t hits[4], bad[4];
+    openpete_sched_conv_report(hits, bad);
+    OPL_INFO_F("delivery", "D=%d; conversions with D>0 (hits/bad): wait %u/%u, query %u/%u, row skip %u/%u, "
+               "charge target %u/%u; vbl=%d device=%d",
+               openpete_sched_dropped(), hits[0], bad[0], hits[1], bad[1], hits[2], bad[2], hits[3], bad[3],
+               SDL_GetAtomicInt(&openpete_vbl), SDL_GetAtomicInt(&openpete_vbl_device));
+    if (s_hw_src >= 0)
+        OPL_INFO_F("delivery", "hold window: held=%llu flushes=%llu vbl %u -> %u device=%u head=%llu",
+                   (unsigned long long)s_hw_held, (unsigned long long)s_hw_flushes,
+                   s_hw_vbl_before, s_hw_vbl_after, s_hw_dev_vbl, (unsigned long long)s_hw_head_after);
 }
 
 /** @brief Charge the VBLs the reference's tick spent before a callback registration at this call site, so the new callback does not run for them.
@@ -953,15 +1245,25 @@ void psyq_StopCallback(CPUState* cpu) {
     cpu->v0 = (uint32_t)StopCallback();
 }
 
-/** @brief Thunk for libetc ResetCallback: calls PsyCross's ResetCallback.
+/** @brief Thunk for libetc ResetCallback: calls PsyCross's ResetCallback, and on the first call leaves the critical section.
  *
  * PsyCross's ResetCallback clears only its own host VSync callback pointer
  * and returns it truncated to 32 bits; the guest callbacks the thunks record
  * (the VSync, interrupt and DMA tables) are left registered. v0 is 0 unless
- * something set PsyCross's host pointer.
+ * something set PsyCross's host pointer. libetc's ResetCallback runs
+ * startIntr, which on its first call (interrupts not yet initialized) ends
+ * in ExitCriticalSection (Spyro 2 0x800549F0, the `jal 0x8005AFF4` at
+ * 0x80054AAC) and on later calls returns at once; the kernel enters the
+ * executable masked, so this is where the game's interrupts are first
+ * enabled.
  * @param cpu Guest CPU state. */
 void psyq_ResetCallback(CPUState* cpu) {
+    static int s_intr_started = 0;
     cpu->v0 = (uint32_t)ResetCallback();
+    if (!s_intr_started) {
+        s_intr_started = 1;
+        openpete_crit_leave(cpu);
+    }
 }
 
 /* DMA completion handlers, by channel.
@@ -1248,7 +1550,7 @@ static uint32_t cd_read_or_stream_delay_for(CPUState* cpu, int sectors) {
     s_cd_stream_reads++;
     OPL_INFO_F("cd", "stream read %u: %d sectors at 0x%08X complete in %u VBL(s), "
                "CdlPause %u later (vbl=%d, spin VBLs so far %u)", s_cd_stream_reads, sectors,
-               cpu->a1, delay, CD_STREAM_PAUSE_VBLS, SDL_GetAtomicInt(&openpete_vbl),
+               cpu->a1, delay, CD_STREAM_PAUSE_VBLS, SDL_GetAtomicInt(&openpete_vbl_device),
                s_cd_stream_spin_vbls);
     return delay;
 }
@@ -1257,7 +1559,7 @@ static uint32_t cd_read_or_stream_delay_for(CPUState* cpu, int sectors) {
  *
  * The reference spent the read's VBLs, interrupts included, inside such a
  * spin. The dispatcher calls this every 2048 dispatches without a VBL. Off
- * the schedule it runs one VBL body when a stream read or its closing
+ * the schedule it delivers one VBL when a stream read or its closing
  * CdlPause is owed and the entry is the game's synchronous reader polling
  * the drive (psyq_game_cd_spin_wait); on the schedule it charges one VBL
  * when a read's completion is deferred; otherwise nothing.
@@ -1273,12 +1575,12 @@ extern "C" void psyq_sched_spin_tick(CPUState* cpu, uint32_t addr) {
         s_cd_stream_spin_vbls++;
         OPL_DEBUG_F("cd", "stream read polled in a spin, 1 VBL passes (%u + %u owed)",
                     s_cd_defer_owed, s_cd_pause_owed);
-        psyq_vbl_body(cpu, 1);
+        deliver_vbl(cpu, VBL_SRC_SPIN, 0);
         return;
     }
     if (!openpete_sched_active() || !s_cd_defer_pending) return;
     OPL_DEBUG_F("cd", "schedule: deferred read polled in a spin, 1 VBL passes (%u owed)", s_cd_defer_owed);
-    sched_charge_to(cpu, openpete_sched_pos() + 1u, "spin");
+    sched_charge_to(cpu, openpete_sched_pos() + 1u, "spin", VBL_SRC_SPIN);
 }
 
 /* One VBL elapsed: a deferred completion owed nothing more fires now. */
@@ -1400,30 +1702,50 @@ static void cd_defer_after_call(CPUState* cpu) {
     }
 }
 
-/** @brief Advance the deferred read by vbls VBLs and deliver its completion when due.
+/* VBLs of the last countdown beyond the deferred read's owed count: how
+ * far the read's closing CdlPause has already run when the read completes
+ * in the same VBL body. */
+static uint32_t s_cd_defer_left = 0u;
+
+/** @brief Count vbls elapsed VBLANKs off the deferred read's owed VBLs, or off its closing CdlPause.
  *
- * Applies the reference's drive events first (cd_events_tick). A completion
- * deferred to a reference VBLANK is due when the position reaches it;
- * otherwise the owed VBL count drops by vbls and the completion is due at 0.
- * Delivery lands the remaining sectors and fires the read callbacks.
- * @param cpu Guest CPU state.
- * @param vbls VBLs the position advances by; 0 checks the current one. */
-static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
-    cd_events_tick(vbls);
+ * The device half of the deferral: the drive keeps working through a
+ * VBLANK the CPU does not take. A read deferred to a reference VBLANK is
+ * not counted here (cd_defer_due compares the position).
+ * @param vbls VBLANKs elapsed. */
+static void cd_defer_countdown(uint32_t vbls) {
+    s_cd_defer_left = 0u;
     if (!s_cd_defer_pending) {
         s_cd_pause_owed = (vbls >= s_cd_pause_owed) ? 0u : s_cd_pause_owed - vbls;
         return;
     }
-    uint32_t left = 0u;
+    if (s_cd_defer_vbl) return;
+    s_cd_defer_left = (vbls > s_cd_defer_owed) ? vbls - s_cd_defer_owed : 0u;
+    s_cd_defer_owed = (vbls >= s_cd_defer_owed) ? 0u : s_cd_defer_owed - vbls;
+}
+
+/** @brief Apply the reference's drive events and deliver the deferred read's completion when it is due.
+ *
+ * The CPU half of the deferral (libcd's interrupt handler does this work):
+ * cd_events_tick lands sectors and mirrors libcd's status, then a
+ * completion deferred to a reference VBLANK is due when the position
+ * reaches it, and one deferred by a VBL count when the countdown reached
+ * 0. Delivery lands the remaining sectors and fires the read callbacks; a
+ * stream read's closing CdlPause starts with `left` of its VBLs already run.
+ * @param cpu Guest CPU state.
+ * @param vbls VBLs the position check looks ahead; 0 checks the current one.
+ * @param left VBLs of the countdown beyond the owed count. */
+static void cd_defer_due(CPUState* cpu, uint32_t vbls, uint32_t left) {
+    cd_events_tick(vbls);
+    if (!s_cd_defer_pending) return;
     if (s_cd_defer_vbl) {
         /* The completion callback ran at the reference's VBLANK inside its
          * record; it is delivered when the position reaches it there. */
         if (!cd_ref_seen(s_cd_defer_rec, s_cd_defer_vbl, vbls)) return;
         s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
-    } else {
-        left = (vbls > s_cd_defer_owed) ? vbls - s_cd_defer_owed : 0u;
-        s_cd_defer_owed = (vbls >= s_cd_defer_owed) ? 0u : s_cd_defer_owed - vbls;
-        if (s_cd_defer_owed) return;
+        left = 0u;
+    } else if (s_cd_defer_owed) {
+        return;
     }
     cd_defer_log("tick");
     s_cd_defer_pending = 0u;
@@ -1435,6 +1757,17 @@ static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
         s_cd_defer_stream = 0u;
         s_cd_pause_owed = (left >= CD_STREAM_PAUSE_VBLS) ? 0u : CD_STREAM_PAUSE_VBLS - left;
     }
+}
+
+/** @brief Advance the deferred read by vbls VBLs and deliver its completion when due.
+ *
+ * The countdown (cd_defer_countdown) then the drive events and the due
+ * check (cd_defer_due) with the countdown's excess.
+ * @param cpu Guest CPU state.
+ * @param vbls VBLs the position advances by; 0 checks the current one. */
+static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
+    cd_defer_countdown(vbls);
+    cd_defer_due(cpu, vbls, s_cd_defer_left);
 }
 
 /* --- The latch pack (psyq_thunk_state.h) --------------------------------- */
@@ -1491,6 +1824,10 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 48, (uint32_t)(s_head_t >> 32));
     put_word(p, 49, s_head_rate);
     put_word(p, 50, s_head_speed);
+    put_word(p, 51, (uint32_t)(s_dlv_depth ? s_dlv_outer_crit : openpete_crit_masked()));
+    put_word(p, 52, (uint32_t)s_latched);
+    put_word(p, 53, s_latch_key);
+    put_word(p, 54, (uint32_t)openpete_sched_dropped());
 }
 
 extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
@@ -1501,7 +1838,8 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 5u) return PSYQ_THUNK_STATE_V5_BYTES;
     if (ver == 6u) return PSYQ_THUNK_STATE_V6_BYTES;
     if (ver == 7u) return PSYQ_THUNK_STATE_V7_BYTES;
-    if (ver == 8u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 8u) return PSYQ_THUNK_STATE_V8_BYTES;
+    if (ver == 9u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -1586,6 +1924,14 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     if (ver >= 5u)
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = get_word(p, 31u + i);
     openpete_psx_bios_card_state_set(card);
+    /* A pack without the critical-section words predates the mask: the
+     * interrupted code ran with interrupts enabled and nothing latched. */
+    const int crit = (ver >= 9u) ? (get_word(p, 51) != 0u) : 0;
+    if (s_dlv_depth) s_dlv_outer_crit = crit;
+    else openpete_crit_set(crit);
+    s_latched   = (ver >= 9u) ? (int)get_word(p, 52) : 0;
+    s_latch_key = (ver >= 9u) ? get_word(p, 53) : 0u;
+    openpete_sched_set_dropped((ver >= 9u) ? (int32_t)get_word(p, 54) : 0);
     return 0;
 }
 
@@ -1620,6 +1966,11 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_head_t           = 0xD5D50023D5D50021ull;
     s_head_rate        = 0x25u;
     s_head_speed       = 0x27u;
+    if (s_dlv_depth) s_dlv_outer_crit = !s_dlv_outer_crit;
+    else openpete_crit_set(!openpete_crit_masked());
+    s_latched          = !s_latched;
+    s_latch_key        = 0xD5D50029u;
+    openpete_sched_set_dropped(openpete_sched_dropped() + 0x2B);
     {
         uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
         for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = 0xE5E50001u + 2u * i;
@@ -1669,25 +2020,26 @@ extern "C" int psyq_thunk_state_selftest(void) {
  * first registration also sees on hardware.
  * @param cpu Guest CPU state. */
 void psyq_InterruptCallback(CPUState* cpu) { cpu->v0 = 0u; }
-/** @brief Thunk for libetc VSyncCallbacks: installs a guest handler in the interrupt-callback table.
+/** @brief Thunk for libetc VSyncCallbacks: installs a guest handler in one of the eight VSync slots.
  *
  * a0 selects the slot, a1 is the handler, and v0 is the handler it replaced.
- * The VBLs the reference spent before the registration are charged first. A
- * slot at or above PSYQ_INTR_SLOTS (11) records nothing and returns 0.
+ * Slot 4 is the VSyncCallback slot. The VBLs the reference spent before the
+ * registration are charged first. A slot at or above 8 records nothing and
+ * returns 0.
  * @param cpu Guest CPU state. */
 void psyq_VSyncCallbacks(CPUState* cpu) {
     sched_charge_registration(cpu);
     uint32_t slot = cpu->a0;
-    if (slot >= PSYQ_INTR_SLOTS) {
-        OPL_WARN_F("thunks", "interrupt callback for line %u out of range",
-                   slot);
+    if (slot >= PSYQ_VSYNC_SLOTS) {
+        OPL_WARN_F("thunks", "VSync callback slot %u out of range", slot);
         cpu->v0 = 0u;
         return;
     }
-    OPL_INFO_F("thunks", "interrupt callback line %u -> 0x%08X", slot,
-               cpu->a1);
-    uint32_t prev = g_intr_cb[slot];
-    g_intr_cb[slot] = cpu->a1;
+    /* The wording is matched by skip-target log tokens. */
+    OPL_INFO_F("thunks", "interrupt callback line %u -> 0x%08X", slot, cpu->a1);
+    uint32_t* const cell = (slot == PSYQ_VSYNC_SLOT_CB) ? &g_vsync_cb : &g_intr_cb[slot];
+    const uint32_t prev = *cell;
+    *cell = cpu->a1;
     cpu->v0 = prev;
 }
 
@@ -2750,7 +3102,7 @@ static void cd_stream_host_start(int lba, int vbl, const psyq_music_route_t* rou
      * of these is the loop period the guest measured. */
     s_cnt_stream_starts++;
     OPL_INFO_F("music", "stream start: track %d LBA %d chan %d vbl %d (at vbl %d)",
-               route->track, lba, s_xa_filter_chan, vbl, SDL_GetAtomicInt(&openpete_vbl));
+               route->track, lba, s_xa_filter_chan, vbl, SDL_GetAtomicInt(&openpete_vbl_device));
     if (route->custom_path && music_override_try_start_path(route->custom_path, lba)) {
         if (PsyX_XA_IsActive()) PsyX_XA_Stop();
         return;
@@ -2774,7 +3126,7 @@ static void cd_stream_host_start(int lba, int vbl, const psyq_music_route_t* rou
  * @param sector The read's start LBA. */
 static void start_music_stream(int sector) {
     g_cdXaStartLBA = sector;
-    g_cdXaStartVBL = SDL_GetAtomicInt(&openpete_vbl);
+    g_cdXaStartVBL = SDL_GetAtomicInt(&openpete_vbl_device);
     s_cd_reading |= 2u;
 
     /* The game's route runs before the speculation check: its guest RAM
@@ -3327,14 +3679,14 @@ void psyq_CD_initvol(CPUState* cpu) { cpu->v0 = 0u; }
 
 /** @brief Pass the VBLs a blocking CdSync spends in libcd until a stream read's closing CdlPause completes.
  *
- * Runs one VBL body per owed VBL for mode 0 off the schedule; does nothing
- * for a poll, under the schedule, or while the read itself is still in
- * flight.
+ * Delivers one VBL per owed VBL for mode 0 off the schedule (a held VBL
+ * still counts the CdlPause down); does nothing for a poll, under the
+ * schedule, or while the read itself is still in flight.
  * @param cpu Guest CPU state.
  * @param mode The CdSync mode. */
 static void cd_stream_pause_wait(CPUState* cpu, int mode) {
     if (mode != 0 || openpete_sched_active()) return;
-    while (s_cd_pause_owed && !s_cd_defer_pending) psyq_vbl_body(cpu, 1);
+    while (s_cd_pause_owed && !s_cd_defer_pending) deliver_vbl(cpu, VBL_SRC_PAUSE, 0);
 }
 /** @brief Answer a CdSync poll as libcd does while a stream read's closing CdlPause is in flight: no command complete.
  *
@@ -3374,7 +3726,7 @@ static void xa_head_log(void) {
         }
     }
     if (!s_f || openpete_speculative) return;
-    const int vbl = (int)SDL_GetAtomicInt(&openpete_vbl);
+    const int vbl = (int)SDL_GetAtomicInt(&openpete_vbl_device);
     const int active = PsyX_XA_IsActive();
     if (!active) {
         if (s_was_active) { std::fprintf(s_f, "x %d\n", vbl); std::fflush(s_f); }
@@ -3444,7 +3796,7 @@ static void getlocp_ab_compare(const u_char* result) {
     if (ad > 2) s_getlocp_ab_over++;
     if (ad > s_getlocp_ab_max) s_getlocp_ab_max = ad;
     fprintf(stderr, "[getlocp-ab] vbl=%d anchor=%d@%d model=%d ref=%d diff=%+d\n",
-            (int)SDL_GetAtomicInt(&openpete_vbl), g_cdXaStartLBA, g_cdXaStartVBL, model, ref, d);
+            (int)SDL_GetAtomicInt(&openpete_vbl_device), g_cdXaStartLBA, g_cdXaStartVBL, model, ref, d);
 }
 
 /** @brief Write the drive head's position into a CdlGetlocP answer: the reference drive's answer under the golden's sidecar, else the head model's once a music stream has been anchored.
@@ -3732,7 +4084,7 @@ static long long audio_head_log_out(void) {
 static void audio_head_log_write(unsigned int lo, unsigned int hi) {
     FILE* f = audio_head_log();
     if (!f || hi <= lo) return;
-    const int vbl = SDL_GetAtomicInt(&openpete_vbl);
+    const int vbl = SDL_GetAtomicInt(&openpete_vbl_device);
     const long long out = audio_head_log_out();
     for (int v = 0; v < 24; v++) {
         PsyX_SPUAL_VoiceHead h;
@@ -3756,7 +4108,7 @@ static void audio_head_log_write(unsigned int lo, unsigned int hi) {
 static void audio_head_log_key(int on, unsigned int mask) {
     FILE* f = audio_head_log();
     if (!f) return;
-    const int vbl = SDL_GetAtomicInt(&openpete_vbl);
+    const int vbl = SDL_GetAtomicInt(&openpete_vbl_device);
     const long long out = audio_head_log_out();
     for (int v = 0; v < 24; v++) {
         if (!(mask & (1u << v))) continue;
@@ -3775,7 +4127,7 @@ static void audio_head_log_key(int on, unsigned int mask) {
 static void audio_head_log_pitch(const SpuVoiceAttr* attr) {
     FILE* f = audio_head_log();
     if (!f || !(attr->mask & SPU_VOICE_PITCH)) return;
-    const int vbl = SDL_GetAtomicInt(&openpete_vbl);
+    const int vbl = SDL_GetAtomicInt(&openpete_vbl_device);
     const long long out = audio_head_log_out();
     for (int v = 0; v < 24; v++) {
         if (!(attr->voice & (1u << v))) continue;

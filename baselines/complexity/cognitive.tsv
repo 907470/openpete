@@ -13,8 +13,8 @@ core/config/options.c	tokenize_sidecar_args	43	0
 core/diag/ident_audit.c	openpete_ident_audit_present	32	0	
 core/diag/log.c	parse_spec	30	0	
 core/diag/psxtrace_schedule.c	openpete_sched_anchor_window	29	0	
-core/diag/psxtrace_schedule.c	openpete_sched_next_vsync	46	0	
-core/diag/psxtrace_schedule.c	openpete_sched_query	42	0	
+core/diag/psxtrace_schedule.c	openpete_sched_next_vsync	48	0	
+core/diag/psxtrace_schedule.c	openpete_sched_query	46	0	
 core/diag/psxtrace_schedule.c	openpete_sched_read	38	0	
 core/diag/psxtrace_verify.c	openpete_psxtrace_advance	132	0	
 core/diag/psxtrace_verify.c	openpete_psxtrace_finalize	30	0	
@@ -43,7 +43,7 @@ core/mods/mod_loader.c	parse_mod_header	35	0
 core/mods/mod_registry.c	custom_tick	51	0	
 core/mods/mod_shader.c	terrain_winner	42	0	
 core/psx/cdrom_mmio.c	openpete_cdrom_mmio_open	49	0	
-core/psx/dispatch.c	psx_override_dispatch	42	0	
+core/psx/dispatch.c	psx_override_dispatch	38	0	
 core/psx/exe_loader.cpp	openpete_psx_resolve_disc_bin	29	0	
 core/psx/psx_bios.c	bios_b0	29	0	
 core/record/bk2_movie.c	bk2_decode_port	28	0	
@@ -94,7 +94,7 @@ core/runtime/run.c	eager_plan	56	0
 core/runtime/run.c	gameplay_hash_compute_ex	81	0	
 core/runtime/run.c	openpete_run	38	0	
 core/runtime/run.c	run_host_init	89	0	
-core/runtime/run.c	run_host_loop	1451	0	
+core/runtime/run.c	run_host_loop	1254	0	
 core/runtime/run.c	stamp_psx_pad_bindings	49	0	
 core/ui/devui.cpp	draw_custom_level_rows	26	0	
 core/ui/devui.cpp	draw_mod_config_rows	76	0	
@@ -107,6 +107,8 @@ games/common/psyq/psyq_thunks.cpp	format_from_mips	79	0
 games/common/psyq/psyq_thunks.cpp	psyq_CdRead	36	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	34	0	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0	
+games/common/psyq/psyq_thunks.cpp	psyq_VSync	29	0	
+games/common/psyq/psyq_thunks.cpp	psyq_thunk_state_load	28	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
 games/common/renderer/cyclorama.c	cyc_extract_m	139	0	
 games/common/renderer/cyclorama.c	cyclorama_reextract	56	0	

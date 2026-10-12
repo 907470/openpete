@@ -5386,6 +5386,15 @@ void psx_syscall(CPUState* cpu, uint32_t code) {
     cpu->v0 = 0;
 }
 
+/** @brief Accept a polling-loop back-edge; the standalone runner delivers no interrupts.
+ * @param cpu Unused.
+ * @param header Unused.
+ * @param insns Unused.
+ * @param pure Unused. */
+void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure) {
+    (void)cpu; (void)header; (void)insns; (void)pure;
+}
+
 /* Joypad state injection — called from psx_present_frame() every frame.
  * FUN_80028D70 (compiled MIPS, not intercepted — JAL, not JALR) reads
  * _DAT_8009eb5a (g_ram[0x9eb5a]) as active-low pad data, then inverts it.

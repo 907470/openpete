@@ -248,6 +248,7 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .icon                 = &spyro2_game_icon,
     .layout               = &spyro2_game_layout,
     .sony_image_base      = 0x8006FCF4u,
+    .loop_anchor_pc       = 0x8001B140u,
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = game_overlay_resync_on_boot,
     .on_frame_pre         = spyro2_on_frame_pre,

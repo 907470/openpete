@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "openpete_guest_regs.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
 #include "openpete_psx.h"
@@ -96,26 +97,26 @@ static void bios_census(CPUState* cpu, uint32_t table, uint32_t fn) {
     }
 }
 
-/** @brief Run a guest event handler through the recomp dispatch and restore the argument registers.
+/** @brief Run a guest event handler through the recomp dispatch and restore every register.
  *
- * Calls the function at addr with ra set to 0xDEADBEEF, then restores a0..a3,
- * ra, v0 and v1 to their values on entry. Other registers are left as the
- * handler set them. A handler with no compiled body logs a warning. Its
- * gate hits are host-initiated for the oracle's clock replay.
+ * Calls the function at addr with ra set to 0xDEADBEEF, then restores the
+ * general-purpose registers, hi and lo to their values on entry, as the
+ * kernel's exception return does (openpete_guest_regs.h). A handler with
+ * no compiled body logs a warning. Its gate hits are host-initiated for
+ * the oracle's clock replay.
  * @param cpu Guest CPU the handler runs on.
  * @param addr Handler address; 0 does nothing. */
 static void invoke_guest(CPUState* cpu, uint32_t addr) {
     if (!addr) return;
-    uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2, a3 = cpu->a3;
-    uint32_t ra = cpu->ra, v0 = cpu->v0, v1 = cpu->v1;
+    openpete_guest_regs_t saved;
+    openpete_guest_regs_save(cpu, &saved);
     cpu->ra = 0xDEADBEEFu;
     openpete_psxtrace_gate_host_enter();
     if (!openpete_recomp_module_get()->dispatch(cpu, addr)) {
         OPL_WARN_F("bios", "event handler 0x%08X has no compiled body", addr);
     }
     openpete_psxtrace_gate_host_leave();
-    cpu->a0 = a0; cpu->a1 = a1; cpu->a2 = a2; cpu->a3 = a3;
-    cpu->ra = ra; cpu->v0 = v0; cpu->v1 = v1;
+    openpete_guest_regs_restore(cpu, &saved);
 }
 
 #define PSX_RAM_BYTES 0x200000u
@@ -298,8 +299,11 @@ void openpete_psx_bios_card_state_set(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS
  * the abort's own vblank (the abort returns before the pad poll, so the
  * recorder saw no command there either). */
 void openpete_psx_bios_vbl(CPUState* cpu) {
+    openpete_psx_bios_vbl_at(cpu, openpete_sched_pos() + 1u);
+}
+
+void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
     if (!s_mc.started) return;
-    const uint32_t vbl = openpete_sched_pos() + 1u;
     int known = 0;
     int served = openpete_sched_sio0_served(vbl, &known);
     if (s_mc.in_progress) {
@@ -782,14 +786,17 @@ static int bios_b0(CPUState* cpu, uint32_t fn) {
         s_mc.flags[0] = s_mc.flags[1] = 1u;
         cpu->v0 = 1u;
         return 1;
-    case 0x4B:      /* StartCARD2: hook the vblank step */
+    case 0x4B:      /* StartCARD2: hook the vblank step; the kernel body
+                     * ends in leaveCriticalSection */
         if (s_census > 0) OPL_INFO_F("bios", "StartCARD at record %u, position %u", openpete_sched_current_record(), openpete_sched_pos());
         s_mc.started = 1u;
         cpu->v0 = 1u;
+        openpete_crit_leave(cpu);
         return 1;
-    case 0x4C:      /* StopCARD2 */
+    case 0x4C:      /* StopCARD2; leaves the critical section */
         s_mc.started = 0u;
         cpu->v0 = 1u;
+        openpete_crit_leave(cpu);
         return 1;
     case 0x50:      /* _new_card */
     case 0x5B:      /* ChangeClearPAD */

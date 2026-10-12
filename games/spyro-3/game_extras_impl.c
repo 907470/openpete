@@ -393,6 +393,7 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .layout               = &spyro3_game_layout,
     .load_delay_default   = 66u,
     .sony_image_base      = 0x8006FCF4u,
+    .loop_anchor_pc       = 0x80055400u,
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = spyro3_on_boot,
     .on_frame_pre         = spyro3_on_frame_pre,

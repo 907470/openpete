@@ -60,10 +60,30 @@ void psx_set_override_dispatch_game(int (*fn)(CPUState* cpu, uint32_t addr));
 
 /** @brief Handle a recompiled `syscall` instruction.
  *
- * The engine logs the code and the return address and changes no state.
+ * `a0` = 1 (EnterCriticalSection) masks interrupts and returns in `v0` 1
+ * when they were enabled, else 0; `a0` = 2 (ExitCriticalSection) unmasks
+ * them and delivers a VBLANK latched while they were masked. Any other
+ * function is logged and changes no state.
  * @param cpu The caller's CPU state.
  * @param code Bits 6 to 25 of the instruction word. */
 void psx_syscall(CPUState* cpu, uint32_t code);
+
+/** @brief Count one iteration of a polling loop and, once a VBL's worth of guest instructions has accumulated, offer a VBL.
+ *
+ * The recompiler emits the call on the back-edge of a loop whose body
+ * stores nothing, calls only pure leaves and loads. Each call adds the
+ * body's static instruction count; at one VBL of instructions at one
+ * instruction per cycle (33868800 x 37609 / 2250000) a quantum is reached.
+ * Under the oracle's schedule the quantum delivers only a VBLANK the
+ * reference shows taken before its next row; off it, only a pure spin
+ * receives a VBL. Every register is preserved. The count restarts at every
+ * VBL.
+ * @param cpu The looping function's CPU state.
+ * @param header The loop's header address.
+ * @param insns The body's instruction count, its pure leaves' included.
+ * @param pure 1 when the loop is a pure spin (no register carries a value
+ *        across iterations except through a load), 0 for a counted poll. */
+void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure);
 
 /** @brief Execute one GTE command against the GTE register banks in @p cpu.
  *
