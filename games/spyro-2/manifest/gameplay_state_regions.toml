@@ -272,17 +272,17 @@ constant_ok = true
 
 # Kernel RAM (SCPH-1001), seeded at boot as the ROM leaves it at the EXE
 # entry (openpete_psx_bios_seed_ram) and written by the file calls
-# (B(32h), B(33h), B(35h), B(36h)) and A(39h) InitHeap. Every row is a
-# struct extent; the gaps between them are uncompared:
-# - open, the card-event phase's: the event table 0xE028-0xE28F,
-#   InitCard's hook 0xCF0-0xCFB (libcard _patch_card, PCs 0x8007EEDC and
-#   0x8007EEEC, reads once at boot the lui/addiu pair InitCard writes at
-#   0xCF0 and 0xCF4; openpete seeds the same two words), card driver
-#   state 0x7264-0x75CD, the bu state words 0xB9D0 and 0xB9D8, exception
-#   chain slot 1's head 0xE00C-0xE00F (the kernel enqueues the card
-#   driver's handler 0x7540 there at a card operation and dequeues it at
-#   completion); the card-wait phase's: the bu broken lists, directory
-#   cache and sector buffers 0xB9E8-0xBE51;
+# (B(32h)-B(36h)), A(39h) InitHeap, the event calls, the card driver
+# (B(4Ah)-B(5Dh), its vblank step and completion) and the bu layer
+# (A(ABh), A(ACh)). Every row is a struct extent; the gaps between them
+# are uncompared:
+# - open, the card-wait phase's: the bu broken lists, directory cache and
+#   sector buffers 0xB9E8-0xBE51 (_bu_init fills them inside the call), and
+#   the card driver's select bit and handler nodes 0x74A0-0x74C3, per-port
+#   state 0x74F8-0x756F and fast track 0x75C0-0x75CF: _bu_init's reads of
+#   both ports leave handler, buffer, device id, status and fast-track
+#   bytes there that the game's first commands overwrite, and the oracle's
+#   first records fall before them;
 # - open, written by thunked libraries: B(19h) 0x75D0-0x75D3 and C(03h)
 #   0x91E0-0x91E1 (libetc ResetCallback), exception chain slot 0's head
 #   0xE004-0xE007 (C(03h)) and slot 2's head 0xE014-0xE017 (InitCard,
@@ -450,4 +450,52 @@ start       = 0x8000E338
 length      = 0x264
 class       = "kernel"
 description = "Thread 0 after the register save, and threads 1-3 (4 x 0xC0 from 0xE29C)"
+constant_ok = true
+
+[[region]]
+name        = "kernel_card_hook"
+start       = 0x80000CF0
+length      = 0xC
+class       = "kernel"
+description = "InitCARD's patch in the exception handler: lui/addiu/jalr of the card fast track 0x641C (libcard _patch_card decodes the pair at 0xCF0)"
+constant_ok = true
+
+[[region]]
+name        = "kernel_card_flip"
+start       = 0x80007264
+length      = 0x1
+class       = "kernel"
+description = "Card driver: the port the vblank step serves"
+constant_ok = true
+
+[[region]]
+name        = "kernel_card_ft_count"
+start       = 0x800072F0
+length      = 0x4
+class       = "kernel"
+description = "Card driver: the fast track's byte count"
+constant_ok = true
+
+[[region]]
+name        = "kernel_bu_ll_flags"
+start       = 0x8000B9D0
+length      = 0x14
+class       = "kernel"
+description = "bu layer: the card driver's completion, error, timeout, new-card and write-error callback flags (A(A7h)-A(AAh), A(AEh))"
+constant_ok = true
+
+[[region]]
+name        = "kernel_excb_e00c"
+start       = 0x8000E00C
+length      = 0x4
+class       = "kernel"
+description = "Exception chain: slot 1's head (the card driver's SIO0 node 0x7540 while a transfer runs)"
+constant_ok = true
+
+[[region]]
+name        = "kernel_evcb_e044"
+start       = 0x8000E044
+length      = 0x24C
+class       = "kernel"
+description = "Event table entries 1-21 (22 x 0x1C from 0xE028): libmcrd's card and bu events, boot residue"
 constant_ok = true

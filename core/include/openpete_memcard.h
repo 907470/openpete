@@ -196,10 +196,12 @@ int  openpete_memcard_present(int chan);
 struct CPUState;
 /** @brief Run one vblank interrupt of the BIOS card driver.
  *
- * Does nothing until StartCARD2 has hooked the step. Follows OpenBIOS
- * firstStageCardAction: a step that finds a transfer in progress finishes
- * it with status 0x11 and EvSpTIMOUT; otherwise it flips the port it serves
- * and starts that port's pending command. A vblank the trace schedule marks
+ * Does nothing until StartCARD2 has hooked the step. Follows the ROM's
+ * firstStageCardAction (RAM 0x5000): the step undelivers HwCARD's five
+ * specs; a step that finds a transfer in progress aborts it with status
+ * 0x11 and EvSpTIMOUT; otherwise it flips the port it serves and starts
+ * that port's pending command, which a present card completes in
+ * openpete_psx_bios_vbl_complete. A vblank the trace schedule marks
  * unserved is skipped; a transfer in progress is still aborted on an
  * unserved vblank when the following vblank is served. A command to an
  * empty port therefore signals its timeout from here. The VBLANK is the
@@ -214,20 +216,36 @@ void openpete_psx_bios_vbl(struct CPUState* cpu);
  * @param cpu Guest CPU the event handlers run on.
  * @param vbl The reference VBLANK index the step belongs to. */
 void openpete_psx_bios_vbl_at(struct CPUState* cpu, uint32_t vbl);
-/* The card driver's state, for the savestate's thunk latch pack: a flag
- * word and the two ports' pending command (sector, buffer, device id). */
+/** @brief Run the completion of the card transfer the vblank step started, when a card answers on the port it serves.
+ *
+ * The kernel completes a present card's transfer in the SIO0 interrupt
+ * about 0.3 VBL after the VBLANK that started it, after the VBLANK
+ * handlers; the VBL body calls this after the VSync callbacks and the
+ * CD-ROM controller's step and before the deferred disc completion. The
+ * sector moves between the host card and guest RAM here, the bu layer
+ * chains or finishes its operation, and HwCARD is signalled. A transfer to
+ * an empty port stays in progress for the next step's abort.
+ * @param cpu Guest CPU the event handlers run on. */
+void openpete_psx_bios_vbl_complete(struct CPUState* cpu);
+/** @brief Close the five events the ROM's boot opened, as libetc's ResetCallback does through _96_remove (A0 0x72).
+ *
+ * The thunked ResetCallback calls this so the event table's first entries
+ * are free for the game's own events, as on hardware. */
+void openpete_psx_bios_reset_callback_events(void);
+/** @brief Open and enable libspu's DMA-completion event (HwSPU, EvSpCOMP, EvMdNOINTR), as SpuStart does.
+ *
+ * The thunked SpuInit calls this once. */
+void openpete_psx_bios_spu_start_events(void);
+/* The card driver's state as savestate latch packs of versions 5-9 carried
+ * it, before the driver moved into guest RAM. */
 #define PSX_BIOS_CARD_STATE_WORDS 7u
-/** @brief Pack the card driver's state into words.
+/** @brief Load the card driver's state from a latch pack of version 5-9 into the driver's guest RAM.
  *
  * Word 0 packs the started, flip and in-progress bits, each port's status,
  * bu flag and pending op, and the last finished port; words 1..3 and 4..6
  * hold the sector, buffer and device id of port 0 and port 1.
- * @param w Receives PSX_BIOS_CARD_STATE_WORDS words. */
-void openpete_psx_bios_card_state_get(uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
-/** @brief Restore the card driver's state from words packed by openpete_psx_bios_card_state_get.
- *
  * @param w PSX_BIOS_CARD_STATE_WORDS words. */
-void openpete_psx_bios_card_state_set(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
+void openpete_psx_bios_card_state_load_legacy(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
 /** @brief Read one byte of the BIOS ROM window (physical 0x1FC00000..0x1FC7FFFF).
  *
  * Only the SCPH-1001 identification block is modelled: the date and

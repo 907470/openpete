@@ -11,22 +11,25 @@
  * arrive here. Every library that runs recompiled does arrive: Spyro 2's
  * and Spyro 3's libmcrd open events on the HwCARD and bu classes, issue
  * frame commands, and reach the card's files through the kernel's file
- * calls (B(32h) open, B(33h) lseek, B(35h) write, B(36h) close) on the bu
- * device.
+ * calls (B(32h) open, B(33h) lseek, B(34h) read, B(35h) write, B(36h)
+ * close) on the bu device.
  *
- * The kernel's file table, errno and the tables around them live in guest
- * RAM at the SCPH-1001 addresses, seeded at boot as the ROM leaves them
- * (openpete_psx_bios_seed_ram), and the file calls read and write them
- * there, so the game and the oracle see the kernel's bytes.
+ * The kernel's file table, errno, event table, card driver and bu layer
+ * state live in guest RAM at the SCPH-1001 addresses, seeded at boot as the
+ * ROM leaves them (openpete_psx_bios_seed_ram), and the calls read and
+ * write them there, so the game, the oracle and a savestate see the
+ * kernel's bytes.
  *
  * The card frames come from the same host-backed images the libmcrd surface
  * uses (core/host/memcard.c), so both routes see one card.
  */
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "openpete_fiber.h"
 #include "openpete_guest_regs.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h"
@@ -39,22 +42,15 @@
 /* Event classes and specs from libapi.h. */
 #define EV_CLASS_CARD   0xF0000011u   /* HwCARD */
 #define EV_CLASS_CARD_BU 0xF4000001u  /* the bu driver's own class */
+#define EV_CLASS_SPU    0xF0000009u   /* HwSPU */
 #define EV_SPEC_IOE     0x0004u       /* EvSpIOE - transfer finished */
+#define EV_SPEC_COMP    0x0020u       /* EvSpCOMP - DMA transfer complete */
 #define EV_SPEC_ERROR   0x8000u       /* EvSpERROR */
 #define EV_SPEC_TIMOUT  0x0100u       /* EvSpTIMOUT */
 #define EV_SPEC_NEW     0x2000u       /* EvSpNEW - card newly inserted */
 #define EV_MODE_INTR    0x1000u       /* EvMdINTR - run the handler */
 #define EV_MODE_NOINTR  0x2000u       /* EvMdNOINTR - latch for TestEvent */
-
-#define EV_MAX          32
 #define EV_HANDLE_BASE  0xF1000000u
-
-struct bios_event {
-    uint32_t cls, spec, mode, func;
-    int      open, enabled, delivered;
-};
-static struct bios_event s_ev[EV_MAX];
-
 
 /* Census: with OPENPETE_BIOS_CENSUS=1 every distinct (table, function) pair
  * is logged with the arguments it carried, so a service this gate does not
@@ -97,6 +93,42 @@ static void bios_census(CPUState* cpu, uint32_t table, uint32_t fn) {
     }
 }
 
+/* Card window: with OPENPETE_CARD_WINDOW=<path> every card-layer event is
+ * one row of <path>, stamped with openpete_vbl and openpete_frame:
+ *   A vbl frame fn a0 v0              A0 card call (70h, ABh, ACh) and its result
+ *   B vbl frame fn a0 a1 a2 v0        B0 file call (32h-36h) and its result
+ *   C vbl frame port op sector        a transfer started by the vblank step
+ *   F vbl frame port flags            a transfer finished, with the port's status
+ *   D vbl frame class spec            DeliverEvent of a card or bu class, or an fd
+ *   H vbl frame func                  an EvMdINTR handler that delivery ran
+ *   E vbl frame class spec mode func handle   OpenEvent
+ *   X vbl frame handle                CloseEvent
+ * The rows are the openpete side of the reference recorder's card-window
+ * file (C, D, H, E rows), so the two compare per operation. */
+static FILE* s_cw = NULL;
+static int s_cw_state = -1;
+
+/** @brief Write one card-window row, opening the file on first use.
+ *
+ * @param fmt printf format of the row's fields after the stamp.
+ * @param ... The fields. */
+static void cw_row(const char* fmt, ...) {
+    if (s_cw_state < 0) {
+        const char* p = getenv("OPENPETE_CARD_WINDOW");
+        s_cw = (p && *p) ? fopen(p, "w") : NULL;
+        s_cw_state = s_cw ? 1 : 0;
+        if (s_cw) fprintf(s_cw, "# card window: A/B calls, C start, F finish, D deliver, H handler, E open, X close\n");
+    }
+    if (!s_cw_state) return;
+    fprintf(s_cw, "%c %d %u", fmt[0], SDL_GetAtomicInt(&openpete_vbl), openpete_frame);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(s_cw, fmt + 1, ap);
+    va_end(ap);
+    fputc('\n', s_cw);
+    fflush(s_cw);
+}
+
 /** @brief Run a guest event handler through the recomp dispatch and restore every register.
  *
  * Calls the function at addr with ra set to 0xDEADBEEF, then restores the
@@ -134,191 +166,6 @@ static void* guest_ptr(uint32_t addr, uint32_t len) {
     uint32_t phys = addr & 0x1FFFFFFFu;
     if (phys >= PSX_RAM_BYTES || len > PSX_RAM_BYTES - phys) return NULL;
     return openpete_psx_get_ram() + phys;
-}
-
-/** @brief Map an event handle to its slot in the event table.
- *
- * @param handle Handle as OpenEvent returned it (EV_HANDLE_BASE | slot).
- * @return The slot index, or -1 when the handle has another base, names a
- *         slot beyond the table, or names a slot that is not open. */
-static int ev_index(uint32_t handle) {
-    if ((handle & 0xFFFF0000u) != EV_HANDLE_BASE) return -1;
-    uint32_t i = handle & 0xFFFFu;
-    return (i < EV_MAX && s_ev[i].open) ? (int)i : -1;
-}
-
-/** @brief Signal every open, enabled, undelivered event of exactly this class and spec.
- *
- * The kernel compares both words for equality (OpenBIOS kernel/events.c
- * deliverEvent). An EvMdINTR event runs its handler now, which is where
- * the card driver does its bookkeeping; an EvMdNOINTR event latches, for
- * TestEvent to observe; any other mode ignores the delivery.
- * @param cpu Guest CPU the handlers run on.
- * @param cls Event class.
- * @param spec Event spec. */
-static void deliver_event(CPUState* cpu, uint32_t cls, uint32_t spec) {
-    for (int i = 0; i < EV_MAX; i++) {
-        if (!s_ev[i].open || !s_ev[i].enabled || s_ev[i].delivered) continue;
-        if (s_ev[i].cls != cls || s_ev[i].spec != spec) continue;
-        if (s_ev[i].mode == EV_MODE_INTR) invoke_guest(cpu, s_ev[i].func);
-        else if (s_ev[i].mode == EV_MODE_NOINTR) s_ev[i].delivered = 1;
-    }
-}
-
-/* The kernel's memory-card driver, after OpenBIOS sio0/driver.c and
- * card/backupunit.c. A card command (_card_info, _card_read, _card_write)
- * only marks its port pending and returns 1; it is refused with 0 while
- * the port's previous command has not finished. The driver runs from the
- * vblank interrupt once StartCARD has hooked it: a vblank that finds a
- * transfer in progress gives up on it (no card answered) and signals
- * EvSpTIMOUT, on the bu class first when the command came through the bu
- * layer (_card_info does; the frame commands do not) and then on HwCARD;
- * otherwise it flips the port it serves and, when the port it lands on has
- * a command pending, starts the transfer. A present card answers within
- * the same vblank, so its completion (EvSpIOE, same two-class order) is
- * signalled from the step that started it; an empty port leaves the
- * transfer in progress for the next vblank's timeout. The timeout thus
- * lands two or three vblanks after the call, by the port flip's parity.
- *
- * Per-port status as _card_status reports it: 1 ready, 0 an info command
- * pending, 2 a read, 4 a write, 0x11 timed out, 0x21 failed. */
-enum { MC_OP_NONE = 0, MC_OP_INFO, MC_OP_READ, MC_OP_WRITE };
-static struct {
-    uint32_t started;        /* StartCARD hooked the vblank step */
-    uint32_t flip;           /* the port the step serves next */
-    uint32_t in_progress;    /* a transfer started, no answer yet */
-    uint32_t flags[2];       /* _card_status value per port */
-    uint32_t bu_op[2];       /* the command came through the bu layer */
-    uint32_t op[2];          /* MC_OP_* pending or in progress */
-    uint32_t sector[2], buffer[2];
-    uint32_t device[2];      /* the device id of the last command */
-} s_mc;
-static uint32_t s_mc_last_port = 0u;
-
-/** @brief Return the card port a device id addresses.
- *
- * The id divided by 16 with truncation toward zero, low bit, so 0x00 is
- * port 0 and 0x10 is port 1.
- * @param device_id Device id as the game passed it.
- * @return 0 or 1. */
-static int mc_port(uint32_t device_id) {
-    int32_t d = (int32_t)device_id;
-    return ((d >= 0 ? d : d + 15) >> 4) & 1;
-}
-
-/** @brief Queue a _card_info, _card_read or _card_write command on its port.
- *
- * The port comes from the device id (0x00 port 0, 0x10 port 1). The
- * port's _card_status becomes 0 (info), 2 (read) or 4 (write); the vblank
- * step starts the transfer.
- * @param device_id Device id as the game passed it.
- * @param op MC_OP_INFO, MC_OP_READ or MC_OP_WRITE.
- * @param sector Frame number for a read or write.
- * @param buffer Guest address of the 128-byte frame buffer.
- * @param via_bu Nonzero when the command came through the bu layer, so its
- *        completion also signals the bu class.
- * @return 1 when queued; 0 when the port's previous command has not
- *         finished or a read or write names a sector above 0x400. */
-static uint32_t mc_queue(uint32_t device_id, uint32_t op, uint32_t sector, uint32_t buffer, int via_bu) {
-    int port = mc_port(device_id);
-    if (s_census > 0) OPL_INFO_F("bios", "card command %u on port %d queued at record %u, position %u (flip %u, flags %u)", op, port, openpete_sched_current_record(), openpete_sched_pos(), s_mc.flip, s_mc.flags[port]);
-    if ((s_mc.flags[port] & 1u) == 0u) return 0u;
-    if (op != MC_OP_INFO && sector > 0x400u) return 0u;
-    s_mc.op[port] = op;
-    s_mc.device[port] = device_id;
-    s_mc.sector[port] = sector;
-    s_mc.buffer[port] = buffer;
-    s_mc.bu_op[port] = via_bu ? 1u : 0u;
-    s_mc.flags[port] = op == MC_OP_INFO ? 0u : (op == MC_OP_READ ? 2u : 4u);
-    return 1u;
-}
-
-/** @brief Complete the command on a port and signal its event.
- *
- * Clears the in-progress state and the port's pending command, stores the
- * status, and delivers spec on the bu class first when the command came
- * through the bu layer and then on HwCARD.
- * @param cpu Guest CPU the event handlers run on.
- * @param port Port 0 or 1.
- * @param flags New _card_status value of the port.
- * @param spec Event spec to deliver. */
-static void mc_finish(CPUState* cpu, int port, uint32_t flags, uint32_t spec) {
-    s_mc.in_progress = 0u;
-    s_mc.op[port] = MC_OP_NONE;
-    s_mc.flags[port] = flags;
-    s_mc_last_port = (uint32_t)port;
-    if (s_mc.bu_op[port]) { s_mc.bu_op[port] = 0u; deliver_event(cpu, EV_CLASS_CARD_BU, spec); }
-    deliver_event(cpu, EV_CLASS_CARD, spec);
-}
-
-/** @brief Start the pending command on a port; a present host card answers at once.
- *
- * An empty port leaves the transfer in progress, for the next vblank's
- * timeout. Otherwise a read or write copies one frame between the card and
- * guest RAM, and the command finishes with status 1 and EvSpIOE, or with
- * 0x21 and EvSpERROR when the 128-byte buffer does not lie wholly in
- * main RAM or the card
- * access fails; an info command finishes with status 1.
- * @param cpu Guest CPU the event handlers run on.
- * @param port Port 0 or 1. */
-static void mc_start(CPUState* cpu, int port) {
-    int chan = port;
-    if (!openpete_memcard_present(chan)) { s_mc.in_progress = 1u; return; }
-    int ok = 1;
-    if (s_mc.op[port] == MC_OP_READ) {
-        void* dst = guest_ptr(s_mc.buffer[port], MC_FRAME_BYTES);
-        ok = dst && openpete_memcard_read_frame(chan, (int)s_mc.sector[port], dst) == 0;
-    } else if (s_mc.op[port] == MC_OP_WRITE) {
-        void* src = guest_ptr(s_mc.buffer[port], MC_FRAME_BYTES);
-        ok = src && openpete_memcard_write_frame(chan, (int)s_mc.sector[port], src) == 0;
-    }
-    mc_finish(cpu, port, ok ? 1u : 0x21u, ok ? EV_SPEC_IOE : EV_SPEC_ERROR);
-}
-
-void openpete_psx_bios_card_state_get(uint32_t w[PSX_BIOS_CARD_STATE_WORDS]) {
-    w[0] = (s_mc.started & 1u) | (s_mc.flip & 1u) << 1 | (s_mc.in_progress & 1u) << 2
-         | (s_mc.flags[0] & 0xFFu) << 8 | (s_mc.flags[1] & 0xFFu) << 16
-         | (s_mc.bu_op[0] & 1u) << 24 | (s_mc.bu_op[1] & 1u) << 25
-         | (s_mc.op[0] & 3u) << 26 | (s_mc.op[1] & 3u) << 28 | (s_mc_last_port & 1u) << 30;
-    w[1] = s_mc.sector[0]; w[2] = s_mc.buffer[0]; w[3] = s_mc.device[0];
-    w[4] = s_mc.sector[1]; w[5] = s_mc.buffer[1]; w[6] = s_mc.device[1];
-}
-void openpete_psx_bios_card_state_set(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]) {
-    s_mc.started = w[0] & 1u; s_mc.flip = (w[0] >> 1) & 1u; s_mc.in_progress = (w[0] >> 2) & 1u;
-    s_mc.flags[0] = (w[0] >> 8) & 0xFFu; s_mc.flags[1] = (w[0] >> 16) & 0xFFu;
-    s_mc.bu_op[0] = (w[0] >> 24) & 1u; s_mc.bu_op[1] = (w[0] >> 25) & 1u;
-    s_mc.op[0] = (w[0] >> 26) & 3u; s_mc.op[1] = (w[0] >> 28) & 3u; s_mc_last_port = (w[0] >> 30) & 1u;
-    s_mc.sector[0] = w[1]; s_mc.buffer[0] = w[2]; s_mc.device[0] = w[3];
-    s_mc.sector[1] = w[4]; s_mc.buffer[1] = w[5]; s_mc.device[1] = w[6];
-}
-
-/* One vblank interrupt of the card driver (OpenBIOS firstStageCardAction).
- * The handler runs only on the vblanks the reference's controller handler
- * ran on: a vblank the schedule marks unserved is skipped, unless a
- * transfer is in progress and the following vblank is served, which is
- * the abort's own vblank (the abort returns before the pad poll, so the
- * recorder saw no command there either). */
-void openpete_psx_bios_vbl(CPUState* cpu) {
-    openpete_psx_bios_vbl_at(cpu, openpete_sched_pos() + 1u);
-}
-
-void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
-    if (!s_mc.started) return;
-    int known = 0;
-    int served = openpete_sched_sio0_served(vbl, &known);
-    if (s_mc.in_progress) {
-        if (known && !served && !openpete_sched_sio0_served(vbl + 1u, NULL)) return;
-        int port = (int)s_mc.flip;
-        if (s_census > 0) OPL_INFO_F("bios", "card timeout on port %d delivered at record %u, position %u", port, openpete_sched_current_record(), openpete_sched_pos());
-        mc_finish(cpu, port, 0x11u, EV_SPEC_TIMOUT);
-        return;
-    }
-    if (known && !served) return;
-    s_mc.flip = 1u - s_mc.flip;
-    int port = (int)s_mc.flip;
-    if ((s_mc.flags[port] & 1u) != 0u) return;
-    if (s_census > 0) OPL_INFO_F("bios", "card command on port %d started at record %u, position %u", port, openpete_sched_current_record(), openpete_sched_pos());
-    mc_start(cpu, port);
 }
 
 /* The kernel's file layer, at the SCPH-1001 addresses: errno at 0x8640 and
@@ -374,7 +221,7 @@ void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
  * @return The word. */
 static uint32_t kw(uint32_t addr) {
     uint32_t v;
-    memcpy(&v, openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 1u)), 4);
+    memcpy(&v, openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 4u)), 4);
     return v;
 }
 
@@ -383,8 +230,1040 @@ static uint32_t kw(uint32_t addr) {
  * @param addr Guest address; its low 21 bits select the word.
  * @param v The value. */
 static void kw_set(uint32_t addr, uint32_t v) {
-    memcpy(openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 1u)), &v, 4);
+    memcpy(openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 4u)), &v, 4);
 }
+
+/** @brief Read the guest byte at a kernel RAM address.
+ *
+ * @param addr Guest address; its low 21 bits select the byte.
+ * @return The byte. */
+static uint32_t kb(uint32_t addr) {
+    return openpete_psx_get_ram()[addr & (PSX_RAM_BYTES - 1u)];
+}
+
+/** @brief Write the guest byte at a kernel RAM address.
+ *
+ * @param addr Guest address; its low 21 bits select the byte.
+ * @param v The value; its low 8 bits are stored. */
+static void kb_set(uint32_t addr, uint32_t v) {
+    openpete_psx_get_ram()[addr & (PSX_RAM_BYTES - 1u)] = (uint8_t)v;
+}
+
+/** @brief Read the guest halfword at a kernel RAM address.
+ *
+ * @param addr Guest address; its low 21 bits select the halfword.
+ * @return The halfword. */
+static uint32_t kh(uint32_t addr) {
+    uint16_t v;
+    memcpy(&v, openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 2u)), 2);
+    return v;
+}
+
+/** @brief Write the guest halfword at a kernel RAM address.
+ *
+ * @param addr Guest address; its low 21 bits select the halfword.
+ * @param v The value; its low 16 bits are stored. */
+static void kh_set(uint32_t addr, uint32_t v) {
+    uint16_t h = (uint16_t)v;
+    memcpy(openpete_psx_get_ram() + (addr & (PSX_RAM_BYTES - 2u)), &h, 2);
+}
+
+/* --- Event control blocks ------------------------------------------------
+ * The kernel's event table, in guest RAM where the table of tables names
+ * it (word 0x120 the address, 0x124 the size; SCPH-1001 0xE028, 22 entries
+ * of 0x1C bytes). Each entry holds the class, the status, the spec, the
+ * mode and the handler; the handle OpenEvent returns is 0xF1000000 | index.
+ * The calls follow the ROM's RAM-resident code, B0 entries 0x07 DeliverEvent
+ * (0x1B44), 0x08 OpenEvent (0x1D8C), 0x09 CloseEvent (0x1E1C), 0x0A
+ * WaitEvent (0x1E44), 0x0B TestEvent (0x1EC8), 0x0C EnableEvent (0x1F10),
+ * 0x0D DisableEvent (0x1F4C) and 0x20 UnDeliverEvent (0x1C5C); OpenBIOS
+ * kernel/events.c is the same table with other status values. */
+#define K_TOT_EVCB         0x120u
+#define EVCB_BYTES         0x1Cu
+#define EVCB_CLASS         0x00u
+#define EVCB_STATUS        0x04u
+#define EVCB_SPEC          0x08u
+#define EVCB_MODE          0x0Cu
+#define EVCB_FUNC          0x10u
+#define EV_STATUS_FREE     0x0000u
+#define EV_STATUS_DISABLED 0x1000u
+#define EV_STATUS_ENABLED  0x2000u
+#define EV_STATUS_DELIVERED 0x4000u
+
+/** @brief Return the event table's first entry and its entry count from the table of tables.
+ *
+ * @param count Receives the entry count (the table's size over 0x1C).
+ * @return The first entry's guest address. */
+static uint32_t ev_table(uint32_t* count) {
+    *count = kw(K_TOT_EVCB + 4u) / EVCB_BYTES;
+    return kw(K_TOT_EVCB);
+}
+
+/** @brief Return the entry an event handle names, as the ROM indexes it: the handle's low 16 bits, unchecked.
+ *
+ * @param handle The handle.
+ * @return The entry's guest address. */
+static uint32_t ev_entry(uint32_t handle) {
+    uint32_t n;
+    return ev_table(&n) + (handle & 0xFFFFu) * EVCB_BYTES;
+}
+
+/** @brief Signal every enabled event of exactly this class and spec.
+ *
+ * An entry matches with status enabled and equal class and spec (an entry
+ * already delivered is not signalled again). An EvMdNOINTR entry becomes
+ * delivered, for TestEvent and WaitEvent; an EvMdINTR entry with a handler
+ * runs the handler now, which is where the card driver's clients do their
+ * bookkeeping; any other mode ignores the delivery.
+ * @param cpu Guest CPU the handlers run on.
+ * @param cls Event class.
+ * @param spec Event spec. */
+static void deliver_event(CPUState* cpu, uint32_t cls, uint32_t spec) {
+    if (cls == EV_CLASS_CARD || cls == EV_CLASS_CARD_BU || cls < 16u) cw_row("D %08x %04x", cls, spec);
+    uint32_t n, e = ev_table(&n);
+    for (uint32_t i = 0; i < n; i++, e += EVCB_BYTES) {
+        if (kw(e + EVCB_STATUS) != EV_STATUS_ENABLED) continue;
+        if (kw(e + EVCB_CLASS) != cls || kw(e + EVCB_SPEC) != spec) continue;
+        const uint32_t mode = kw(e + EVCB_MODE), func = kw(e + EVCB_FUNC);
+        if (mode == EV_MODE_NOINTR) {
+            kw_set(e + EVCB_STATUS, EV_STATUS_DELIVERED);
+        } else if (mode == EV_MODE_INTR && func) {
+            cw_row("H 0x%08X", func);
+            invoke_guest(cpu, func);
+        }
+    }
+}
+
+/** @brief Return every delivered EvMdNOINTR event of exactly this class and spec to enabled.
+ *
+ * @param cls Event class.
+ * @param spec Event spec. */
+static void undeliver_event(uint32_t cls, uint32_t spec) {
+    uint32_t n, e = ev_table(&n);
+    for (uint32_t i = 0; i < n; i++, e += EVCB_BYTES) {
+        if (kw(e + EVCB_STATUS) == EV_STATUS_DELIVERED && kw(e + EVCB_CLASS) == cls
+            && kw(e + EVCB_SPEC) == spec && kw(e + EVCB_MODE) == EV_MODE_NOINTR)
+            kw_set(e + EVCB_STATUS, EV_STATUS_ENABLED);
+    }
+}
+
+/** @brief Open an event in the first free entry, disabled.
+ *
+ * @param cls Event class.
+ * @param spec Event spec.
+ * @param mode EvMdINTR or EvMdNOINTR.
+ * @param func Handler address, for EvMdINTR.
+ * @return The handle, or 0xFFFFFFFF when every entry is in use. */
+static uint32_t ev_open(uint32_t cls, uint32_t spec, uint32_t mode, uint32_t func) {
+    uint32_t n, e = ev_table(&n);
+    for (uint32_t i = 0; i < n; i++, e += EVCB_BYTES) {
+        if (kw(e + EVCB_STATUS) != EV_STATUS_FREE) continue;
+        kw_set(e + EVCB_CLASS, cls);
+        kw_set(e + EVCB_SPEC, spec);
+        kw_set(e + EVCB_MODE, mode);
+        kw_set(e + EVCB_STATUS, EV_STATUS_DISABLED);
+        kw_set(e + EVCB_FUNC, func);
+        return EV_HANDLE_BASE | i;
+    }
+    OPL_WARN_F("bios", "OpenEvent: all %u entries in use", n);
+    return 0xFFFFFFFFu;
+}
+
+/** @brief Set an open event's status, leaving a free entry free (EnableEvent and DisableEvent).
+ *
+ * @param handle The handle.
+ * @param status EV_STATUS_ENABLED or EV_STATUS_DISABLED. */
+static void ev_set_open_status(uint32_t handle, uint32_t status) {
+    const uint32_t e = ev_entry(handle);
+    if (kw(e + EVCB_STATUS) != EV_STATUS_FREE) kw_set(e + EVCB_STATUS, status);
+}
+
+/** @brief Consume an event's delivery: a delivered entry returns to enabled (TestEvent).
+ *
+ * @param handle The handle.
+ * @return 1 when the entry was delivered, else 0. */
+static uint32_t ev_test(uint32_t handle) {
+    const uint32_t e = ev_entry(handle);
+    if (kw(e + EVCB_STATUS) != EV_STATUS_DELIVERED) return 0u;
+    kw_set(e + EVCB_STATUS, EV_STATUS_ENABLED);
+    return 1u;
+}
+
+/** @brief Handle the B0 event services 0x07-0x0D and 0x20 over the event table.
+ *
+ * WaitEvent returns 1 at once for an enabled entry, where the kernel spins
+ * until a delivery: the gate cannot suspend the guest. It returns 0 for an
+ * entry neither enabled nor delivered, and consumes a delivery as TestEvent
+ * does.
+ * @param cpu Guest CPU; the argument registers are read and v0 receives the result.
+ * @param fn Function number.
+ * @return 1 when the function is one of these services, 0 otherwise. */
+static int bios_b0_event(CPUState* cpu, uint32_t fn) {
+    switch (fn) {
+    case 0x07:      /* DeliverEvent(class, spec) */
+        deliver_event(cpu, cpu->a0, cpu->a1);
+        cpu->v0 = 0u;
+        return 1;
+    case 0x08:      /* OpenEvent(class, spec, mode, func) */
+        if (s_census > 0) OPL_INFO_F("bios", "OpenEvent(class=0x%08X spec=0x%04X mode=0x%04X func=0x%08X)", cpu->a0, cpu->a1, cpu->a2, cpu->a3);
+        cpu->v0 = ev_open(cpu->a0, cpu->a1, cpu->a2, cpu->a3);
+        cw_row("E %08x %04x %04x %08x %08x", cpu->a0, cpu->a1, cpu->a2, cpu->a3, cpu->v0);
+        return 1;
+    case 0x09:      /* CloseEvent(ev) */
+        cw_row("X %08x", cpu->a0);
+        kw_set(ev_entry(cpu->a0) + EVCB_STATUS, EV_STATUS_FREE);
+        cpu->v0 = 1u;
+        return 1;
+    case 0x0A: {    /* WaitEvent(ev) */
+        const uint32_t st = kw(ev_entry(cpu->a0) + EVCB_STATUS);
+        if (st == EV_STATUS_ENABLED) OPL_WARN_F("bios", "WaitEvent(0x%08X) on an undelivered event returns without waiting", cpu->a0);
+        cpu->v0 = (st == EV_STATUS_ENABLED) ? 1u : ev_test(cpu->a0);
+        return 1;
+    }
+    case 0x0B:      /* TestEvent(ev) */
+        cpu->v0 = ev_test(cpu->a0);
+        return 1;
+    case 0x0C:      /* EnableEvent(ev): a delivery is dropped */
+    case 0x0D:      /* DisableEvent(ev) */
+        ev_set_open_status(cpu->a0, fn == 0x0C ? EV_STATUS_ENABLED : EV_STATUS_DISABLED);
+        cpu->v0 = 1u;
+        return 1;
+    case 0x20:      /* UnDeliverEvent(class, spec) */
+        undeliver_event(cpu->a0, cpu->a1);
+        cpu->v0 = 0u;
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+void openpete_psx_bios_reset_callback_events(void) {
+    for (uint32_t h = 0; h < 5u; h++) kw_set(ev_entry(EV_HANDLE_BASE | h) + EVCB_STATUS, EV_STATUS_FREE);
+}
+
+void openpete_psx_bios_spu_start_events(void) {
+    const uint32_t h = ev_open(EV_CLASS_SPU, EV_SPEC_COMP, EV_MODE_NOINTR, 0u);
+    if (h != 0xFFFFFFFFu) ev_set_open_status(h, EV_STATUS_ENABLED);
+}
+
+/* --- Interrupt handler queues ----------------------------------------------
+ * The exception control blocks, one list head per priority at the address
+ * word 0x100 names (SCPH-1001 0xE004, 8 bytes per priority); a node's first
+ * word links the next node. C0 entries 0x02 SysEnqIntRP (RAM 0x1420) and
+ * 0x03 SysDeqIntRP (0x1444). */
+#define K_TOT_EXCB 0x100u
+
+/** @brief Push a handler node at the head of a priority's queue (SysEnqIntRP).
+ *
+ * @param pri The priority.
+ * @param node The node's guest address. */
+static void int_enq(uint32_t pri, uint32_t node) {
+    const uint32_t head = kw(K_TOT_EXCB) + 8u * pri;
+    kw_set(node, kw(head));
+    kw_set(head, node);
+}
+
+/** @brief Unlink a handler node from a priority's queue, leaving its own link word (SysDeqIntRP).
+ *
+ * The walk stops at the end of the list, or after 64 nodes.
+ * @param pri The priority.
+ * @param node The node's guest address. */
+static void int_deq(uint32_t pri, uint32_t node) {
+    uint32_t link = kw(K_TOT_EXCB) + 8u * pri;
+    for (int i = 0; i < 64; i++) {
+        const uint32_t cur = kw(link);
+        if (!cur) return;
+        if (cur == node) { kw_set(link, kw(cur)); return; }
+        link = cur;
+    }
+}
+
+/* --- The memory-card driver ------------------------------------------------
+ * The SCPH-1001 card driver, kept in guest RAM at the addresses its
+ * RAM-resident code (0x4C70-0x6578) uses, so the game, the oracle and a
+ * savestate see the kernel's bytes. OpenBIOS sio0/driver.c is the same
+ * driver; the names below are its.
+ *
+ * A command (_card_read, _card_write, _card_info) records the port's device
+ * id, buffer, sector and handler and sets the port's status byte to 2, 4 or
+ * 8; it is refused while the status lacks bit 0 (the port's previous
+ * command has not finished). The vblank step (firstStageCardAction, RAM
+ * 0x5000) undelivers the card class's five specs, then either aborts a
+ * transfer still in progress (no card answered: status 0x11, EvSpTIMOUT) or
+ * flips the port it serves and, when that port has a command, starts the
+ * transfer: the fast-track pointers, the handler node on exception queue 1,
+ * and the handler's first byte (the select), which marks the transfer in
+ * progress. A present card answers through the SIO0 interrupt, which on
+ * hardware completes the transfer about 0.3 VBL later, after the VBLANK
+ * handlers have returned; openpete_psx_bios_vbl_complete runs that
+ * completion after the VBL's VSync callbacks, leaving the bytes the
+ * handler's last byte leaves (mcHandler, RAM 0x4D6C), and delivers HwCARD.
+ * An empty port leaves the transfer in progress for the next step's abort.
+ * The handlers' per-byte states between those points are not modelled. */
+#define K_MC_FLIP        0x7264u  /* byte: the port the step serves */
+#define K_MC_FT_COUNT    0x72F0u  /* fast track: bytes moved */
+#define K_MC_SIO_MASK    0x74A0u  /* the port select bit, 0 or 0x2000 */
+#define K_MC_74A4        0x74A4u  /* cleared by each command and each end */
+#define K_SIO0_NODE      0x74A8u  /* the VBLANK handler node {next, handler, verifier, pad} */
+#define K_PAD_ENABLE     0x74B8u  /* InitCARD's pad_enable */
+#define K_MC_STARTED     0x74BCu  /* StartCARD hooked the step */
+#define K_MC_SKIP_NEW    0x74C0u  /* _new_card: skip the next new-card error */
+#define K_MC_WFLAG       0x74F8u  /* per port: the FLAG byte a write read */
+#define K_MC_DEVICE      0x7500u  /* per port: device id */
+#define K_MC_SECTOR      0x7508u  /* per port: sector */
+#define K_MC_OPERATION   0x7514u  /* the handler's byte counter */
+#define K_MC_LAST_PORT   0x751Cu  /* the port of the last finished command */
+#define K_MC_GOT_ERROR   0x7520u  /* a handler delivered its own error */
+#define K_MC_HANDLER     0x7528u  /* per port: the handler of the command */
+#define K_MC_NODE        0x7540u  /* the SIO0 handler node {next, handler, verifier, pad} */
+#define K_MC_BUFFER      0x7550u  /* per port: buffer */
+#define K_MC_RD_BYTE     0x7558u  /* byte per port: the read handler's pad byte */
+#define K_MC_ACTIVE      0x755Au  /* byte: a transfer started and not finished */
+#define K_MC_CHECKSUM    0x7560u  /* per port: running checksum */
+#define K_MC_FLAGS       0x7568u  /* byte per port: _card_status */
+#define K_MC_INITED      0x756Cu  /* InitCARD ran */
+#define K_MC_FT_ACTIVE   0x75C0u  /* fast track moving data bytes */
+#define K_MC_FT_BUFFER   0x75C4u  /* fast track: next data byte */
+#define K_MC_FT_FLAGSP   0x75C8u  /* fast track: the port's status byte */
+#define K_MC_FT_SUMP     0x75CCu  /* fast track: the port's checksum */
+#define K_PAD_CLEAR      0x8914u  /* ChangeClearPad's flag */
+#define K_TIMER3_ACK     0x860Cu  /* setTimerAutoAck(3, ...) */
+#define K_EXC_HOOK       0x0CF0u  /* the exception handler's card patch */
+/* The ROM's handler and node routine addresses, as the driver stores them. */
+#define MC_HANDLER_WRITE 0x51F4u
+#define MC_HANDLER_READ  0x5688u
+#define MC_HANDLER_INFO  0x5B64u
+#define MC_NODE_HANDLER  0x4D6Cu
+#define MC_NODE_VERIFIER 0x4F90u
+#define SIO0_NODE_HANDLER  0x49BCu
+#define SIO0_NODE_VERIFIER 0x4A4Cu
+#define MC_STATUS_READ   2u
+#define MC_STATUS_WRITE  4u
+#define MC_STATUS_INFO   8u
+/* Bytes the card answers, from the card's protocol: the ID bytes 0x5A 0x5D,
+ * the command acknowledges 0x5C 0x5D, and the end byte 'G' (good). */
+#define MC_FLAG_WRITE_ERROR 0x04u
+#define MC_FLAG_NEW         0x08u
+
+/* The card's own FLAG byte per slot, which the card answers to every
+ * command: bit 3 set from insertion until the card's first successful
+ * write. A card present at boot counts as inserted then. */
+static uint8_t s_card_flag[2];
+static int s_card_flag_init = 0;
+
+/** @brief Return a slot's FLAG byte, setting bit 3 on both slots on first use.
+ *
+ * @param port Port 0 or 1.
+ * @return The FLAG byte. */
+static uint32_t card_flag(int port) {
+    if (!s_card_flag_init) { s_card_flag_init = 1; s_card_flag[0] = s_card_flag[1] = MC_FLAG_NEW; }
+    return s_card_flag[port & 1];
+}
+
+/** @brief Return the card port a device id addresses.
+ *
+ * The id divided by 16 with truncation toward zero, low bit, so 0x00 is
+ * port 0 and 0x10 is port 1.
+ * @param device_id Device id as the game passed it.
+ * @return 0 or 1. */
+static int mc_port(uint32_t device_id) {
+    int32_t d = (int32_t)device_id;
+    return ((d >= 0 ? d : d + 15) >> 4) & 1;
+}
+
+/** @brief Record a card command on its port (B0 0x4D _card_info, 0x4E _card_write, 0x4F _card_read).
+ *
+ * The ROM's mcGetInfo (RAM 0x5FB8), mcWriteSector (0x5F04) and mcReadSector
+ * (0x5E50): refused while the port's status lacks bit 0, and a read or
+ * write of a sector outside 0-1024; otherwise the handler's counter and
+ * the word at 0x74A4 clear, and the port's device id, buffer, handler,
+ * sector and status are stored.
+ * @param device_id Device id as the game passed it.
+ * @param handler MC_HANDLER_INFO, MC_HANDLER_READ or MC_HANDLER_WRITE.
+ * @param sector Sector of a read or write; 0 for info.
+ * @param buffer Guest address of the 128-byte buffer; 0 for info.
+ * @return 1 when recorded, 0 when refused. */
+static uint32_t mc_queue(uint32_t device_id, uint32_t handler, uint32_t sector, uint32_t buffer) {
+    const int port = mc_port(device_id);
+    const uint32_t status = handler == MC_HANDLER_READ ? MC_STATUS_READ
+                          : handler == MC_HANDLER_WRITE ? MC_STATUS_WRITE : MC_STATUS_INFO;
+    if (s_census > 0) OPL_INFO_F("bios", "card command 0x%X on port %d queued at record %u, position %u (flip %u, status 0x%X)", handler, port, openpete_sched_current_record(), openpete_sched_pos(), kb(K_MC_FLIP), kb(K_MC_FLAGS + port));
+    if ((kb(K_MC_FLAGS + (uint32_t)port) & 1u) == 0u) return 0u;
+    if (handler != MC_HANDLER_INFO && sector > 0x400u) return 0u;
+    kw_set(K_MC_OPERATION, 0u);
+    kw_set(K_MC_74A4, 0u);
+    kw_set(K_MC_DEVICE + 4u * (uint32_t)port, device_id);
+    kw_set(K_MC_BUFFER + 4u * (uint32_t)port, buffer);
+    kw_set(K_MC_HANDLER + 4u * (uint32_t)port, handler);
+    kw_set(K_MC_SECTOR + 4u * (uint32_t)port, sector);
+    kb_set(K_MC_FLAGS + (uint32_t)port, status);
+    return 1u;
+}
+
+static void bu_ll_done(CPUState* cpu);
+static void bu_ll_error(CPUState* cpu, uint32_t flag_addr, uint32_t spec);
+
+/** @brief Deliver a handler's own error for the port being served: status 1, the bu callback, then HwCARD.
+ *
+ * The read, write and info handlers' new-card and write-error arms
+ * (RAM 0x5CA4, 0x57E8, 0x534C, 0x55D0): the skip flag clears, the port's
+ * status becomes 1 and the last port the served one, the bu layer's
+ * callback runs, HwCARD signals spec, and the error is marked so mcHandler
+ * delivers nothing more.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param flag_addr The bu callback's flag word (0xB9D4, 0xB9DC or 0xB9E0).
+ * @param spec HwCARD spec: 0x8000, 0x2000 or 0x8001. */
+static void mc_handler_error(CPUState* cpu, uint32_t flag_addr, uint32_t spec) {
+    const uint32_t port = kb(K_MC_FLIP);
+    kw_set(K_MC_SKIP_NEW, 0u);
+    kb_set(K_MC_FLAGS + port, 1u);
+    kw_set(K_MC_LAST_PORT, port);
+    bu_ll_error(cpu, flag_addr, spec == 0x2000u ? EV_SPEC_NEW : EV_SPEC_ERROR);
+    deliver_event(cpu, EV_CLASS_CARD, spec);
+    kw_set(K_MC_GOT_ERROR, 1u);
+}
+
+/** @brief Move a sector's 128 data bytes through the fast track, leaving its counter, pointer and the checksum as its last byte does.
+ *
+ * The exception handler's card patch (RAM 0x641C) moves the data bytes one
+ * per interrupt: a read stores 127 of them (the handler's last state
+ * stores the 128th), a write sends 128; each byte advances the pointer
+ * and the halfword counter and is XORed into the port's checksum, and
+ * the patch stops itself at the end.
+ * @param port The port.
+ * @param data The 128 data bytes.
+ * @param moved 127 for a read, 128 for a write. */
+static void mc_fast_track(int port, const uint8_t* data, uint32_t moved) {
+    uint32_t sum = kw(K_MC_CHECKSUM + 4u * (uint32_t)port);
+    for (uint32_t i = 0; i < moved; i++) sum ^= data[i];
+    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, sum);
+    kw_set(K_MC_FT_BUFFER, kw(K_MC_FT_BUFFER) + moved);
+    kh_set(K_MC_FT_COUNT, moved);
+    kh_set(K_MC_FT_ACTIVE, 0u);
+}
+
+/** @brief Run an info command's remaining bytes on a present card (handler RAM 0x5B64, states 2-4).
+ *
+ * The FLAG byte is checked unless _new_card set the skip flag: bit 2
+ * (write error) delivers EvSpERROR, bit 3 (new card) EvSpNEW.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @return 1 when the command succeeded, -1 when it failed. */
+static int mc_info_transfer(CPUState* cpu, int port) {
+    const uint32_t flag = card_flag(port);
+    kw_set(K_MC_OPERATION, 3u);
+    if (!kw(K_MC_SKIP_NEW) && (flag & MC_FLAG_WRITE_ERROR)) { mc_handler_error(cpu, 0xB9D4u, EV_SPEC_ERROR); return -1; }
+    if (!kw(K_MC_SKIP_NEW) && (flag & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
+    kw_set(K_MC_OPERATION, 4u);
+    return 1;
+}
+
+/** @brief Run a read command's remaining bytes on a present card (handler RAM 0x5688, states 2-13).
+ *
+ * After the FLAG check (bit 3 delivers EvSpNEW unless skipped) the sector
+ * comes from the host card into the buffer, and the checksum, the pad byte
+ * and the fast track end as the handler leaves them.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @return 1 when the sector was read, -1 otherwise. */
+static int mc_read_transfer(CPUState* cpu, int port) {
+    kw_set(K_MC_OPERATION, 3u);
+    if (!kw(K_MC_SKIP_NEW) && (card_flag(port) & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
+    const uint32_t sector = kw(K_MC_SECTOR + 4u * (uint32_t)port);
+    uint8_t* dst = guest_ptr(kw(K_MC_BUFFER + 4u * (uint32_t)port), MC_FRAME_BYTES);
+    uint8_t data[MC_FRAME_BYTES];
+    if (!dst || openpete_memcard_read_frame(port, (int)sector, data) != 0) return -1;
+    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, ((sector >> 8) & 0xFFu) ^ (sector & 0xFFu));
+    kb_set(K_MC_RD_BYTE + (uint32_t)port, 0u);
+    kw_set(K_MC_FT_ACTIVE, 1u);
+    mc_fast_track(port, data, MC_FRAME_BYTES - 1u);
+    memcpy(dst, data, MC_FRAME_BYTES);
+    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, kw(K_MC_CHECKSUM + 4u * (uint32_t)port) ^ data[MC_FRAME_BYTES - 1u]);
+    kw_set(K_MC_OPERATION, 13u);
+    return 1;
+}
+
+/** @brief Run a write command's remaining bytes on a present card (handler RAM 0x51F4, states 2-10).
+ *
+ * The FLAG byte is stored for the port; bit 3 delivers EvSpNEW unless
+ * skipped. The buffer goes to the host card, the checksum and fast track
+ * end as the handler leaves them, a stored write-error bit delivers the
+ * handler's 0x8001, and the card clears its new-card bit.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @return 1 when the sector was written, -1 otherwise. */
+static int mc_write_transfer(CPUState* cpu, int port) {
+    kw_set(K_MC_OPERATION, 3u);
+    kw_set(K_MC_WFLAG + 4u * (uint32_t)port, card_flag(port));
+    if (!kw(K_MC_SKIP_NEW) && (card_flag(port) & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
+    const uint32_t sector = kw(K_MC_SECTOR + 4u * (uint32_t)port);
+    const uint8_t* src = guest_ptr(kw(K_MC_BUFFER + 4u * (uint32_t)port), MC_FRAME_BYTES);
+    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, ((sector >> 8) & 0xFFu) ^ (sector & 0xFFu));
+    kw_set(K_MC_FT_ACTIVE, 1u);
+    if (!src) return -1;
+    mc_fast_track(port, src, MC_FRAME_BYTES);
+    kw_set(K_MC_OPERATION, 10u);
+    if (!kw(K_MC_SKIP_NEW) && (kw(K_MC_WFLAG + 4u * (uint32_t)port) & MC_FLAG_WRITE_ERROR))
+        mc_handler_error(cpu, 0xB9E0u, 0x8001u);
+    if (openpete_memcard_write_frame(port, (int)sector, src) != 0) return -1;
+    s_card_flag[port & 1] &= (uint8_t)~MC_FLAG_NEW;
+    return 1;
+}
+
+/** @brief End the served port's transfer with the handler's result (mcHandler's result arms, RAM 0x4DE4 and 0x4E34).
+ *
+ * Success (1) clears the transfer, the handler's counter and the
+ * exception-queue node and, unless a handler error was delivered, sets the
+ * port's status to 1, runs the bu layer's completion and delivers EvSpIOE
+ * on HwCARD. Failure clears the transfer and, unless a handler error was
+ * delivered, sets status 0x21, runs the bu layer's error and delivers
+ * EvSpERROR; the error mark clears.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param result 1 or -1. */
+static void mc_end(CPUState* cpu, int result) {
+    const uint32_t port = kb(K_MC_FLIP);
+    if (result == 1) {
+        kw_set(K_MC_74A4, 0u);
+        kb_set(K_MC_ACTIVE, 0u);
+        kw_set(K_MC_OPERATION, 0u);
+        int_deq(1u, K_MC_NODE);
+        if (!kw(K_MC_GOT_ERROR)) {
+            kw_set(K_MC_SKIP_NEW, 0u);
+            kb_set(K_MC_FLAGS + port, 1u);
+            kw_set(K_MC_LAST_PORT, port);
+            bu_ll_done(cpu);
+            deliver_event(cpu, EV_CLASS_CARD, EV_SPEC_IOE);
+        }
+    } else {
+        kb_set(K_MC_ACTIVE, 0u);
+        if (!kw(K_MC_GOT_ERROR)) {
+            kw_set(K_MC_SKIP_NEW, 0u);
+            kb_set(K_MC_FLAGS + port, 0x21u);
+            kw_set(K_MC_LAST_PORT, port);
+            bu_ll_error(cpu, 0xB9D4u, EV_SPEC_ERROR);
+            deliver_event(cpu, EV_CLASS_CARD, EV_SPEC_ERROR);
+        }
+        kw_set(K_MC_OPERATION, 0u);
+        kw_set(K_MC_GOT_ERROR, 0u);
+        int_deq(1u, K_MC_NODE);
+    }
+    cw_row("F %u %02x", port, kb(K_MC_FLAGS + port));
+}
+
+/** @brief Start the served port's command: the fast track, the handler node, and the handler's select byte (firstStageCardAction's start, then mcHandler's first call).
+ *
+ * @param port The port the step flipped to. */
+static void mc_begin(uint32_t port) {
+    kw_set(K_MC_FT_COUNT, 0u);
+    kw_set(K_MC_FT_ACTIVE, 0u);
+    kw_set(K_MC_FT_BUFFER, kw(K_MC_BUFFER + 4u * port));
+    kw_set(K_MC_FT_FLAGSP, K_MC_FLAGS + port);
+    kw_set(K_MC_FT_SUMP, K_MC_CHECKSUM + 4u * port);
+    int_deq(1u, K_MC_NODE);
+    int_enq(1u, K_MC_NODE);
+    kw_set(K_MC_OPERATION, 0u);
+    kw_set(K_MC_GOT_ERROR, 0u);
+    const uint32_t mask = port ? 0x2000u : 0u;
+    kw_set(K_MC_SIO_MASK, mask);
+    kw_set(K_MC_OPERATION, 1u);
+    kb_set(K_MC_ACTIVE, 1u);
+    cw_row("C %u %x %u", port, kb(K_MC_FLAGS + port), kw(K_MC_SECTOR + 4u * port));
+}
+
+/** @brief Abort the transfer no card answered (firstStageCardAction, RAM 0x5068): status 0x11, the bu timeout, EvSpTIMOUT.
+ *
+ * @param cpu Guest CPU the event handlers run on. */
+static void mc_timeout(CPUState* cpu) {
+    const uint32_t port = kb(K_MC_FLIP);
+    if (s_census > 0) OPL_INFO_F("bios", "card timeout on port %u delivered at record %u, position %u", port, openpete_sched_current_record(), openpete_sched_pos());
+    kb_set(K_MC_ACTIVE, 0u);
+    kw_set(K_MC_74A4, 0u);
+    kw_set(K_MC_OPERATION, 0u);
+    kw_set(K_MC_SKIP_NEW, 0u);
+    kb_set(K_MC_FLAGS + port, 0x11u);
+    kw_set(K_MC_LAST_PORT, port);
+    bu_ll_error(cpu, 0xB9D8u, EV_SPEC_TIMOUT);
+    deliver_event(cpu, EV_CLASS_CARD, EV_SPEC_TIMOUT);
+    int_deq(1u, K_MC_NODE);
+    cw_row("F %u %02x", port, 0x11u);
+}
+
+/* One vblank interrupt of the card driver (firstStageCardAction).
+ * The handler runs only on the vblanks the reference's controller handler
+ * ran on: a vblank the schedule marks unserved is skipped, unless a
+ * transfer is in progress and the following vblank is served, which is
+ * the abort's own vblank (the abort returns before the pad poll, so the
+ * recorder saw no command there either). */
+void openpete_psx_bios_vbl(CPUState* cpu) {
+    openpete_psx_bios_vbl_at(cpu, openpete_sched_pos() + 1u);
+}
+
+void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
+    if (!kw(K_MC_STARTED)) return;
+    int known = 0;
+    const int served = openpete_sched_sio0_served(vbl, &known);
+    const int active = kb(K_MC_ACTIVE) != 0u;
+    if (known && !served && !(active && openpete_sched_sio0_served(vbl + 1u, NULL))) return;
+    static const uint16_t k_specs[5] = { EV_SPEC_IOE, EV_SPEC_ERROR, EV_SPEC_TIMOUT, 0x0200u, EV_SPEC_NEW };
+    for (int i = 0; i < 5; i++) undeliver_event(EV_CLASS_CARD, k_specs[i]);
+    if (active) { mc_timeout(cpu); return; }
+    const uint32_t port = 1u - (kb(K_MC_FLIP) & 1u);
+    kb_set(K_MC_FLIP, port);
+    if (kb(K_MC_FLAGS + port) & 1u) return;
+    if (s_census > 0) OPL_INFO_F("bios", "card command on port %u started at record %u, position %u", port, openpete_sched_current_record(), openpete_sched_pos());
+    mc_begin(port);
+}
+
+void openpete_psx_bios_vbl_complete(CPUState* cpu) {
+    if (!kb(K_MC_ACTIVE)) return;
+    const int port = (int)(kb(K_MC_FLIP) & 1u);
+    if (!openpete_memcard_present(port)) return;
+    int result;
+    switch (kw(K_MC_HANDLER + 4u * (uint32_t)port)) {
+    case MC_HANDLER_INFO:  result = mc_info_transfer(cpu, port); break;
+    case MC_HANDLER_READ:  result = mc_read_transfer(cpu, port); break;
+    case MC_HANDLER_WRITE: result = mc_write_transfer(cpu, port); break;
+    default:               result = -1; break;
+    }
+    mc_end(cpu, result);
+}
+
+/** @brief Handle the B0 card driver services 0x4A-0x4F, 0x50, 0x58 and 0x5B-0x5D over the driver's RAM.
+ *
+ * InitCARD (RAM 0x5DA8), StartCARD (0x4C70), StopCARD (0x4CF4), _card_info
+ * (0x5FB8), _card_write (0x5F04), _card_read (0x5E50), _new_card (0x4D3C),
+ * _card_chan (0x5E30), ChangeClearPAD (0x43D0), _card_status (0x605C) and
+ * _card_wait (0x6070). _card_wait spins on hardware until the port's status
+ * has bit 0; the vblank steps that spin needs run in the VBL body, which
+ * this gate cannot enter, so the status is returned as it stands.
+ * @param cpu Guest CPU; the argument registers are read and v0 receives the result.
+ * @param fn Function number.
+ * @return 1 when the function is one of these services, 0 otherwise. */
+static int bios_b0_card(CPUState* cpu, uint32_t fn) {
+    switch (fn) {
+    case 0x4A: {    /* InitCARD(pad_enable) */
+        static const uint32_t hook[4] = { 0x3C020000u, 0x2442641Cu, 0x0040F809u, 0u };
+        kw_set(K_SIO0_NODE, 0u);
+        kw_set(K_SIO0_NODE + 4u, SIO0_NODE_HANDLER);
+        kw_set(K_SIO0_NODE + 8u, SIO0_NODE_VERIFIER);
+        kw_set(K_SIO0_NODE + 12u, 0u);
+        kb_set(K_MC_ACTIVE, 0u);
+        kb_set(K_MC_FLIP, 0u);
+        kb_set(K_MC_FLAGS, 1u);
+        kb_set(K_MC_FLAGS + 1u, 1u);
+        kw_set(K_MC_NODE + 4u, MC_NODE_HANDLER);
+        kw_set(K_MC_NODE + 8u, MC_NODE_VERIFIER);
+        kw_set(K_MC_NODE, 0u);
+        kw_set(K_MC_NODE + 12u, 0u);
+        kw_set(K_MC_FT_ACTIVE, 0u);
+        for (uint32_t i = 0; i < 4u; i++) kw_set(K_EXC_HOOK + 4u * i, hook[i]);
+        cpu->v0 = kw(K_MC_INITED);
+        kw_set(K_MC_INITED, 1u);
+        kw_set(K_PAD_ENABLE, cpu->a0);
+        return 1;
+    }
+    case 0x4B:      /* StartCARD: hook the vblank step; the kernel body
+                     * ends in leaveCriticalSection */
+        if (s_census > 0) OPL_INFO_F("bios", "StartCARD at record %u, position %u", openpete_sched_current_record(), openpete_sched_pos());
+        kw_set(K_MC_SKIP_NEW, 0u);
+        int_deq(2u, K_SIO0_NODE);
+        int_enq(2u, K_SIO0_NODE);
+        kw_set(K_PAD_CLEAR, 1u);
+        kw_set(K_TIMER3_ACK, 0u);
+        kw_set(K_MC_STARTED, 1u);
+        cpu->v0 = 1u;
+        openpete_crit_leave(cpu);
+        return 1;
+    case 0x4C:      /* StopCARD; leaves the critical section */
+        kw_set(K_TIMER3_ACK, 1u);
+        int_deq(2u, K_SIO0_NODE);
+        kw_set(K_MC_STARTED, 0u);
+        cpu->v0 = 1u;
+        openpete_crit_leave(cpu);
+        return 1;
+    case 0x4D:      /* _card_info(chan) */
+    case 0x4E:      /* _card_write(chan, sector, buf) */
+    case 0x4F: {    /* _card_read(chan, sector, buf) */
+        const uint32_t h = fn == 0x4D ? MC_HANDLER_INFO : fn == 0x4E ? MC_HANDLER_WRITE : MC_HANDLER_READ;
+        cpu->v0 = fn == 0x4D ? mc_queue(cpu->a0, h, 0u, 0u) : mc_queue(cpu->a0, h, cpu->a1, cpu->a2);
+        cw_row("B %02x %08x %08x %08x %08x", fn, cpu->a0, cpu->a1, cpu->a2, cpu->v0);
+        return 1;
+    }
+    case 0x50:      /* _new_card: v0 is left as the caller set it */
+        kw_set(K_MC_SKIP_NEW, 1u);
+        return 1;
+    case 0x58:      /* _card_chan: the device id of the last finished command */
+        cpu->v0 = kw(K_MC_DEVICE + 4u * (kw(K_MC_LAST_PORT) & 1u));
+        return 1;
+    case 0x5B:      /* ChangeClearPAD(on): the previous value */
+        cpu->v0 = kw(K_PAD_CLEAR);
+        kw_set(K_PAD_CLEAR, cpu->a0);
+        return 1;
+    case 0x5C:      /* _card_status(chan) */
+    case 0x5D:      /* _card_wait(chan) */
+        if (fn == 0x5D && (kb(K_MC_FLAGS + cpu->a0) & 1u) == 0u)
+            OPL_WARN_F("bios", "_card_wait on a pending command returns without waiting");
+        cpu->v0 = kb(K_MC_FLAGS + cpu->a0);
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* --- The bu layer -----------------------------------------------------------
+ * The kernel's backup-unit layer over the card driver, at the SCPH-1001
+ * addresses its ROM code uses (OpenBIOS card/backupunit.c and
+ * card/device.c are the same layer): per port the bu operation (1 info, 2
+ * read, 4 directory load), the directory load's stage and index, a read's
+ * sector index, sectors left, file and buffer; the low-level callbacks'
+ * flags; the broken-sector lists, the directory cache and the sector
+ * buffers. The card driver calls the layer at each command's end (A0
+ * 0xA7 done, 0xA8 error, 0xA9 timeout, 0xAA new card, 0xAE write error),
+ * before HwCARD; an operation chains its next sector from there and ends
+ * by delivering on the bu class. */
+#define K_BU_OP       0x9F20u   /* per port */
+#define K_BU_STAGE    0x9F28u   /* per port: directory load stage 1-3 */
+#define K_BU_INDEX    0x9F30u   /* per port: directory entry or broken-list index */
+#define K_BU_SECTOR   0x9F50u   /* per port: a read's sector index in the file */
+#define K_BU_REMAIN   0x9F58u   /* per port: a read's sectors left */
+#define K_BU_FILE     0x9F70u   /* per port: a read's file control block */
+#define K_BU_BUFFER   0x9F78u   /* per port: a read's buffer */
+#define K_BU_LL_DONE  0xB9D0u   /* A0 0xA7 ran; 0xB9D4-0xB9E0 the error callbacks */
+#define K_BU_BROKEN   0xB9E8u   /* per port 20 words: the broken sectors */
+#define K_BU_BROKEN_PORT 0x50u
+#define K_BU_SECBUF   0xA000BE48u  /* per port 128 bytes, as the ROM addresses them */
+#define BU_OP_INFO    1u
+#define BU_OP_READ    2u
+#define BU_OP_TOC     4u
+
+/** @brief Finish a port's bu operation and signal the bu class (buFinishAndTrigger, ROM 0xBFC0BFF0).
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @param spec The bu spec. */
+static void bu_finish(CPUState* cpu, uint32_t port, uint32_t spec) {
+    kw_set(K_BU_OP + 4u * port, 0u);
+    kw_set(K_BU_STAGE + 4u * port, 0u);
+    kw_set(K_BU_INDEX + 4u * port, 0u);
+    deliver_event(cpu, EV_CLASS_CARD_BU, spec);
+}
+
+/** @brief Return the port of the last finished card command, as _card_chan names it.
+ *
+ * @return 0 or 1. */
+static uint32_t bu_chan_port(void) {
+    return (uint32_t)mc_port(kw(K_MC_DEVICE + 4u * (kw(K_MC_LAST_PORT) & 1u)));
+}
+
+/** @brief Fail a bu operation whose next sector could not be issued: the done flag clears, the error flag sets, EvSpERROR on the bu class.
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port. */
+static void bu_issue_failed(CPUState* cpu, uint32_t port) {
+    kw_set(K_BU_LL_DONE, 0u);
+    kw_set(K_BU_LL_DONE + 4u, 1u);
+    bu_finish(cpu, port, EV_SPEC_ERROR);
+}
+
+/** @brief Run a low-level error callback: its flag, then the port's bu operation ends with spec (A0 0xA8, 0xA9, 0xAA, 0xAE).
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param flag_addr The callback's flag word.
+ * @param spec The bu spec. */
+static void bu_ll_error(CPUState* cpu, uint32_t flag_addr, uint32_t spec) {
+    kw_set(flag_addr, 1u);
+    const uint32_t port = bu_chan_port();
+    if (kw(K_BU_OP + 4u * port)) bu_finish(cpu, port, spec);
+}
+
+/** @brief Return the card sector holding a file's n-th sector, following the directory's block links (ROM 0xBFC0A3D4).
+ *
+ * @param port The port.
+ * @param first The file's first directory index.
+ * @param n The sector index in the file.
+ * @return The card sector, or -1 when the chain ends first. */
+static int32_t bu_file_sector(uint32_t port, uint32_t first, int32_t n) {
+    uint32_t block = first;
+    while (n >= 64) {
+        block = kh(K_BU_DIR + port * K_BU_DIR_PORT + block * BU_DIR_ENTRY + 8u);
+        n -= 64;
+        if (block == 0xFFFFu) return -1;
+    }
+    return (int32_t)(block * 64u) + n + 64;
+}
+
+/** @brief Return the replacement sector of a broken card sector, or -1 (ROM 0xBFC09540).
+ *
+ * @param port The port.
+ * @param sector The card sector.
+ * @return 36 plus the broken-list index holding the sector, or -1. */
+static int32_t bu_broken_sector(uint32_t port, int32_t sector) {
+    for (uint32_t i = 0; i < 20u; i++)
+        if ((int32_t)kw(K_BU_BROKEN + port * K_BU_BROKEN_PORT + 4u * i) == (int32_t)(int16_t)sector) return (int32_t)(36u + i);
+    return -1;
+}
+
+/** @brief Test a directory or broken-list sector's checksum: the XOR of its first 127 bytes equals its last (ROM 0xBFC08720).
+ *
+ * @param addr Guest address of the 128-byte sector.
+ * @return 1 when the checksum holds. */
+static int bu_sector_ok(uint32_t addr) {
+    uint32_t x = 0;
+    for (uint32_t i = 0; i < 127u; i++) x ^= kb(addr + i);
+    return x == kb(addr + 127u);
+}
+
+/** @brief Clear a directory entry to free: state 0xA0, size 0, no next block.
+ *
+ * @param e The entry's guest address. */
+static void bu_dir_free(uint32_t e) {
+    kw_set(e, 0xA0u);
+    kw_set(e + 4u, 0u);
+    kh_set(e + 8u, 0xFFFFu);
+}
+
+/** @brief Free a file whose block chain reaches a block in the wrong state (ROM 0xBFC08FFC).
+ *
+ * A first block (state 0x51) whose chain meets a free block (state 0xA_),
+ * or a deleted first block (0xA1) whose chain meets a used block (0x5_),
+ * is freed with every block its size covers.
+ * @param port The port.
+ * @param s The entry index.
+ * @return 1 when the file was freed, 0 otherwise. */
+static int bu_dir_check(uint32_t port, uint32_t s) {
+    const uint32_t dir = K_BU_DIR + port * K_BU_DIR_PORT, e = dir + s * BU_DIR_ENTRY;
+    const uint32_t st = kb(e);
+    if (st != 0x51u && st != 0xA1u) return 0;
+    const uint32_t bad = st == 0x51u ? 0xA0u : 0x50u;
+    const int32_t blocks = (int32_t)kw(e + 4u) / 8192 - 1;
+    const uint32_t first_next = kh(e + 8u);
+    int broken = 0;
+    uint32_t next = first_next;
+    for (int32_t b = blocks; b > 0 && next != 0xFFFFu; b--) {
+        if ((kw(dir + next * BU_DIR_ENTRY) & 0xF0u) == bad) { broken = 1; break; }
+        next = kh(dir + next * BU_DIR_ENTRY + 8u);
+    }
+    if (!broken) return 0;
+    kb_set(e + 10u, 0u);
+    bu_dir_free(e);
+    next = first_next;
+    for (int32_t b = blocks; b > 0 && next != 0xFFFFu; b--) {
+        const uint32_t le = dir + next * BU_DIR_ENTRY;
+        next = kh(le + 8u);
+        bu_dir_free(le);
+    }
+    return 1;
+}
+
+/** @brief Free every directory entry no file reaches (the directory load's pass after its last sector, ROM 0xBFC0BCD0).
+ *
+ * @param port The port. */
+static void bu_dir_settle(uint32_t port) {
+    const uint32_t dir = K_BU_DIR + port * K_BU_DIR_PORT;
+    uint32_t used[15];
+    for (uint32_t s = 0; s < 15u; s++) used[s] = bu_dir_check(port, s) ? 82u : 0u;
+    for (uint32_t s = 0; s < 15u; s++) {
+        const uint32_t e = dir + s * BU_DIR_ENTRY;
+        if (kw(e) != 0x51u) continue;
+        used[s] = 1u;
+        uint32_t next = kh(e + 8u);
+        for (int32_t b = (int32_t)kw(e + 4u) / 8192 - 1; b > 0 && next != 0xFFFFu; b--) {
+            if (next < 15u) used[next]++;
+            next = kh(dir + next * BU_DIR_ENTRY + 8u);
+        }
+    }
+    for (uint32_t s = 0; s < 15u; s++)
+        if (!used[s]) kw_set(dir + s * BU_DIR_ENTRY, 0xA0u);
+}
+
+/** @brief Directory load stage 1, sector 0 arrived: without "MC" the load ends with EvSpNEW; otherwise the port's 15 directory entries are cleared to free and sector 1 is read.
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @param dev The device id the commands address. */
+static void bu_toc_header(CPUState* cpu, uint32_t port, uint32_t dev) {
+    const uint32_t buf = K_BU_SECBUF + port * MC_FRAME_BYTES;
+    const uint32_t dir = K_BU_DIR + port * K_BU_DIR_PORT;
+    if (kb(buf) != 'M' || kb(buf + 1u) != 'C') {
+        kw_set(K_BU_LL_DONE, 0u);
+        kw_set(K_BU_LL_DONE + 12u, 1u);
+        bu_finish(cpu, port, EV_SPEC_NEW);
+        return;
+    }
+    for (uint32_t s = 0; s < 15u; s++) {
+        void* e = guest_ptr(dir + s * BU_DIR_ENTRY, BU_DIR_ENTRY);
+        if (e) memset(e, 0, BU_DIR_ENTRY);
+        bu_dir_free(dir + s * BU_DIR_ENTRY);
+    }
+    if (mc_queue(dev, MC_HANDLER_READ, 1u, buf) != 1u) { bu_issue_failed(cpu, port); return; }
+    kw_set(K_BU_INDEX + 4u * port, 0u);
+    kw_set(K_BU_STAGE + 4u * port, 2u);
+}
+
+/** @brief Directory load stage 2, a directory sector arrived: its first 32 bytes become the next entry when its checksum holds; after the 15th the directory settles, the broken list resets to -1 and sector 16 is read.
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @param dev The device id the commands address. */
+static void bu_toc_dir(CPUState* cpu, uint32_t port, uint32_t dev) {
+    const uint32_t buf = K_BU_SECBUF + port * MC_FRAME_BYTES;
+    const uint32_t idx_at = K_BU_INDEX + 4u * port;
+    const void* src = guest_ptr(buf, BU_DIR_ENTRY);
+    void* dst = guest_ptr(K_BU_DIR + port * K_BU_DIR_PORT + kw(idx_at) * BU_DIR_ENTRY, BU_DIR_ENTRY);
+    if (bu_sector_ok(buf) && src && dst) memcpy(dst, src, BU_DIR_ENTRY);
+    kw_set(idx_at, kw(idx_at) + 1u);
+    if ((int32_t)kw(idx_at) < 15) {
+        if (mc_queue(dev, MC_HANDLER_READ, kw(idx_at) + 1u, buf) != 1u) bu_issue_failed(cpu, port);
+        return;
+    }
+    bu_dir_settle(port);
+    for (uint32_t i = 0; i < 20u; i++) kw_set(K_BU_BROKEN + port * K_BU_BROKEN_PORT + 4u * i, 0xFFFFFFFFu);
+    if (mc_queue(dev, MC_HANDLER_READ, 16u, buf) != 1u) bu_finish(cpu, port, EV_SPEC_ERROR);
+    kw_set(idx_at, 0u);
+    kw_set(K_BU_STAGE + 4u * port, 3u);
+}
+
+/** @brief Directory load stage 3, a broken-list sector arrived: its first word becomes the next broken sector when its checksum holds; after the 20th the load ends with EvSpIOE.
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @param dev The device id the commands address. */
+static void bu_toc_broken(CPUState* cpu, uint32_t port, uint32_t dev) {
+    const uint32_t buf = K_BU_SECBUF + port * MC_FRAME_BYTES;
+    const uint32_t idx_at = K_BU_INDEX + 4u * port;
+    if (bu_sector_ok(buf)) kw_set(K_BU_BROKEN + port * K_BU_BROKEN_PORT + 4u * kw(idx_at), kw(buf));
+    kw_set(idx_at, kw(idx_at) + 1u);
+    if ((int32_t)kw(idx_at) >= 20) { bu_finish(cpu, port, EV_SPEC_IOE); return; }
+    if (mc_queue(dev, MC_HANDLER_READ, kw(idx_at) + 16u, buf) != 1u) bu_issue_failed(cpu, port);
+}
+
+/** @brief Advance the directory load after a sector arrived (ROM 0xBFC0BAA0), by its stage: sector 0's "MC", the 15 directory sectors, the 20 broken-list sectors; another stage fails the load.
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @param dev The device id the commands address. */
+static void bu_toc_step(CPUState* cpu, uint32_t port, uint32_t dev) {
+    switch (kw(K_BU_STAGE + 4u * port)) {
+    case 1u: bu_toc_header(cpu, port, dev); return;
+    case 2u: bu_toc_dir(cpu, port, dev); return;
+    case 3u: bu_toc_broken(cpu, port, dev); return;
+    default: bu_issue_failed(cpu, port); return;
+    }
+}
+
+/** @brief Advance an asynchronous read after a sector arrived (ROM 0xBFC0B6BC).
+ *
+ * The last sector finishes the bu operation with EvSpIOE and then signals
+ * the file's own class (its fd) with 0x0004; otherwise the buffer and the
+ * file offset advance by 128 and the next sector, through the block chain
+ * and the broken-sector list, is issued.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @param dev The device id the commands address. */
+static void bu_read_step(CPUState* cpu, uint32_t port, uint32_t dev) {
+    const uint32_t remain = kw(K_BU_REMAIN + 4u * port) - 1u;
+    kw_set(K_BU_REMAIN + 4u * port, remain);
+    const uint32_t f = kw(K_BU_FILE + 4u * port);
+    if (remain == 0u) {
+        bu_finish(cpu, port, EV_SPEC_IOE);
+        deliver_event(cpu, kw(f + 0x28u), EV_SPEC_IOE);
+        return;
+    }
+    kw_set(K_BU_BUFFER + 4u * port, kw(K_BU_BUFFER + 4u * port) + MC_FRAME_BYTES);
+    kw_set(f + 0x10u, kw(f + 0x10u) + MC_FRAME_BYTES);
+    const uint32_t n = kw(K_BU_SECTOR + 4u * port) + 1u;
+    kw_set(K_BU_SECTOR + 4u * port, n);
+    int32_t sector = bu_file_sector(port, kw(f + 0x24u), (int32_t)n);
+    const int32_t sub = bu_broken_sector(port, sector);
+    if (sub != -1) sector = sub;
+    if (mc_queue(dev, MC_HANDLER_READ, (uint32_t)sector, kw(K_BU_BUFFER + 4u * port)) != 1u) bu_issue_failed(cpu, port);
+}
+
+/** @brief Run the bu layer's completion callback for the last finished command (A0 0xA7, ROM 0xBFC0C220 and 0xBFC0B648).
+ *
+ * @param cpu Guest CPU the event handlers run on. */
+static void bu_ll_done(CPUState* cpu) {
+    kw_set(K_BU_LL_DONE, 1u);
+    const uint32_t port = bu_chan_port();
+    const uint32_t dev = kw(K_MC_DEVICE + 4u * (kw(K_MC_LAST_PORT) & 1u));
+    switch (kw(K_BU_OP + 4u * port)) {
+    case 0u:          return;
+    case BU_OP_INFO:
+    case 8u:          bu_finish(cpu, port, EV_SPEC_IOE); return;
+    case BU_OP_READ:  bu_read_step(cpu, port, dev); return;
+    case BU_OP_TOC:   bu_toc_step(cpu, port, dev); return;
+    default:
+        OPL_WARN_F("bios", "bu operation %u on port %u is not modelled; ended with EvSpERROR", kw(K_BU_OP + 4u * port), port);
+        bu_issue_failed(cpu, port);
+        return;
+    }
+}
+
+/** @brief Leave each present card as _bu_init's card operations leave it: the new-card bit clear.
+ *
+ * _bu_init (A0 0x70, ROM 0xBFC09914) runs buInit on both ports inside the
+ * call; on a formatted card its sector-63 write, issued after _new_card,
+ * succeeds, and the card clears FLAG bit 3. The call's card operations and
+ * the VBLs they span are not modelled; this keeps the card's FLAG byte
+ * what later commands read on hardware.
+ */
+static void bu_init_card_side(void) {
+    for (int p = 0; p < 2; p++)
+        if (openpete_memcard_present(p)) s_card_flag[p] = (uint8_t)(card_flag(p) & ~MC_FLAG_NEW);
+}
+
+/** @brief A0 0xAB cardInfo(chan): bu operation 1 over a card info command (ROM 0xBFC0C0DC).
+ *
+ * @param dev The device id.
+ * @return 1 when the command was recorded, else 0. */
+static uint32_t bu_card_info(uint32_t dev) {
+    const uint32_t port = (uint32_t)mc_port(dev);
+    kw_set(K_BU_OP + 4u * port, BU_OP_INFO);
+    if (mc_queue(dev, MC_HANDLER_INFO, 0u, 0u)) return 1u;
+    kw_set(K_BU_OP + 4u * port, 0u);
+    return 0u;
+}
+
+/** @brief A0 0xAC buReadTOC(chan): bu operation 4, reading sector 0 into the port's sector buffer (ROM 0xBFC0C140).
+ *
+ * @param dev The device id.
+ * @return 1 when the read was recorded, else 0. */
+static uint32_t bu_read_toc(uint32_t dev) {
+    const uint32_t port = (uint32_t)mc_port(dev);
+    kw_set(K_BU_OP + 4u * port, BU_OP_TOC);
+    if (!mc_queue(dev, MC_HANDLER_READ, 0u, K_BU_SECBUF + port * MC_FRAME_BYTES)) {
+        kw_set(K_BU_OP + 4u * port, 0u);
+        return 0u;
+    }
+    kw_set(K_BU_STAGE + 4u * port, 1u);
+    return 1u;
+}
+
+/** @brief Clear the low-level callback flags and undeliver the bu class's EvMdNOINTR specs (ROM 0xBFC0884C).
+ */
+static void bu_ll_reset(void) {
+    for (uint32_t i = 0; i < 5u; i++) kw_set(K_BU_LL_DONE + 4u * i, 0u);
+    static const uint16_t k_specs[4] = { EV_SPEC_IOE, EV_SPEC_ERROR, EV_SPEC_NEW, EV_SPEC_TIMOUT };
+    for (int i = 0; i < 4; i++) undeliver_event(EV_CLASS_CARD_BU, k_specs[i]);
+}
+
+void openpete_psx_bios_card_state_load_legacy(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]) {
+    static const uint32_t k_handler[4] = { 0u, MC_HANDLER_INFO, MC_HANDLER_READ, MC_HANDLER_WRITE };
+    kw_set(K_MC_STARTED, w[0] & 1u);
+    kb_set(K_MC_FLIP, (w[0] >> 1) & 1u);
+    kb_set(K_MC_ACTIVE, (w[0] >> 2) & 1u);
+    kw_set(K_MC_LAST_PORT, (w[0] >> 30) & 1u);
+    for (uint32_t p = 0; p < 2u; p++) {
+        const uint32_t op = (w[0] >> (26u + 2u * p)) & 3u, flags = (w[0] >> (8u + 8u * p)) & 0xFFu;
+        kb_set(K_MC_FLAGS + p, op == 1u && flags == 0u ? MC_STATUS_INFO : flags);
+        if (op) kw_set(K_MC_HANDLER + 4u * p, k_handler[op]);
+        kw_set(K_BU_OP + 4u * p, (w[0] >> (24u + p)) & 1u ? BU_OP_INFO : 0u);
+        kw_set(K_MC_SECTOR + 4u * p, w[1u + 3u * p]);
+        kw_set(K_MC_BUFFER + 4u * p, w[2u + 3u * p]);
+        kw_set(K_MC_DEVICE + 4u * p, w[3u + 3u * p]);
+    }
+}
+
 
 /** @brief Return the file control block of an fd, or 0 when the fd is outside 0-15.
  *
@@ -435,7 +1314,7 @@ static int bu_name_match(const char* name, size_t max, const char* pat) {
 static int bu_open(uint32_t f, const char* path, uint32_t mode) {
     int port = mc_port(kw(f + FCB_DEVICE_ID));
     kw_set(f + FCB_ERRNO, PSX_EBUSY);
-    if (s_mc.bu_op[port]) return 1;
+    if (kw(K_BU_OP + 4u * (uint32_t)port)) return 1;
     if (mode & PSXF_CREAT) {
         OPL_WARN_F("bios", "bu open with O_CREAT (\"%s\", mode 0x%X) is not modelled; refused", path, mode);
         return 1;
@@ -528,6 +1407,70 @@ static void bios_lseek(CPUState* cpu) {
     cpu->v0 = kw(f + FCB_OFFSET);
 }
 
+/** @brief The bu device's asynchronous read (ROM dev_bu_read, 0xBFC09D3C, its O_NOWAIT arm).
+ *
+ * The block's errno starts as EBUSY; a port whose bu operation is in flight
+ * refuses. An offset off a 128-byte boundary or at or past the file's
+ * length fails with EINVAL. Otherwise the port takes bu operation 2 with
+ * the file, buffer, the offset's sector index and n / 128 sectors, and the
+ * first sector's read is recorded; a read of no whole sector finishes at
+ * once with EvSpIOE on the bu class. Each completion chains the next
+ * sector (bu_read_step).
+ * @param cpu Guest CPU the event handlers run on.
+ * @param f The file control block.
+ * @param buf Guest address of the buffer.
+ * @param n Bytes requested.
+ * @return 0 when the read started or finished, -1 on failure (the block's errno says why). */
+static int32_t bu_read_async(CPUState* cpu, uint32_t f, uint32_t buf, uint32_t n) {
+    kw_set(f + FCB_ERRNO, PSX_EBUSY);
+    const uint32_t dev = kw(f + FCB_DEVICE_ID), port = (uint32_t)mc_port(dev);
+    if (kw(K_BU_OP + 4u * port)) return -1;
+    bu_ll_reset();
+    const uint32_t off = kw(f + FCB_OFFSET);
+    if ((off & 0x7Fu) || off >= kw(f + FCB_LENGTH)) { kw_set(f + FCB_ERRNO, PSX_EINVAL); return -1; }
+    const int32_t count = (int32_t)n / 128;
+    kw_set(K_BU_OP + 4u * port, BU_OP_READ);
+    kw_set(K_BU_SECTOR + 4u * port, off >> 7);
+    kw_set(K_BU_REMAIN + 4u * port, (uint32_t)count);
+    kw_set(K_BU_BUFFER + 4u * port, buf);
+    kw_set(K_BU_FILE + 4u * port, f);
+    bu_ll_reset();
+    if (count == 0) {
+        kw_set(f + FCB_ERRNO, 0u);
+        kw_set(K_BU_LL_DONE, 1u);
+        bu_finish(cpu, port, EV_SPEC_IOE);
+        return 0;
+    }
+    int32_t sector = bu_file_sector(port, kw(f + FCB_LBA), (int32_t)(off >> 7));
+    const int32_t sub = bu_broken_sector(port, sector);
+    if (sub != -1) sector = sub;
+    kw_set(f + FCB_ERRNO, PSX_EBUSY);
+    if (mc_queue(dev, MC_HANDLER_READ, (uint32_t)sector, buf) != 1u) return -1;
+    kw_set(f + FCB_ERRNO, 0u);
+    return 0;
+}
+
+/** @brief B(34h) read(fd, buf, n) on a bu file opened with O_NOWAIT.
+ *
+ * The kernel's read (RAM 0x2B28) hands a file-system device's read to the
+ * device and, on a negative result, copies the block's errno to errno. A
+ * synchronous read waits on card operations inside the call, and a read of
+ * another device is not reached by the games; neither is modelled here.
+ * @param cpu Guest CPU; a0..a2 the arguments; v0 receives the result.
+ * @return 1 when handled, 0 for a read this gate does not model. */
+static int bios_read(CPUState* cpu) {
+    const uint32_t f = fcb_open(cpu->a0);
+    if (!f) { cpu->v0 = 0xFFFFFFFFu; return 1; }
+    if (kw(f + FCB_DCB) != K_DCB_BU || !(kw(f + FCB_FLAGS) & PSXF_ASYNC)) {
+        OPL_WARN_F("bios", "read on fd %u (mode 0x%X) is not modelled", cpu->a0, kw(f + FCB_FLAGS));
+        return 0;
+    }
+    const int32_t r = bu_read_async(cpu, f, cpu->a1, cpu->a2);
+    if (r < 0) kw_set(K_ERRNO, kw(f + FCB_ERRNO));
+    cpu->v0 = (uint32_t)r;
+    return 1;
+}
+
 /** @brief B(35h) write(fd, buf, n) on a character device, the tty fds 0 and 1.
  *
  * The block records the buffer and count, and the tty device's action (the
@@ -558,7 +1501,7 @@ static int bios_write(CPUState* cpu) {
 static void bios_close(CPUState* cpu) {
     uint32_t f = fcb_open(cpu->a0);
     if (!f) { cpu->v0 = 0xFFFFFFFFu; return; }
-    int busy = kw(f + FCB_DCB) == K_DCB_BU && s_mc.bu_op[mc_port(kw(f + FCB_DEVICE_ID))];
+    int busy = kw(f + FCB_DCB) == K_DCB_BU && kw(K_BU_OP + 4u * (uint32_t)mc_port(kw(f + FCB_DEVICE_ID)));
     kw_set(f + FCB_FLAGS, 0u);
     if (busy) { kw_set(K_ERRNO, kw(f + FCB_ERRNO)); cpu->v0 = 0xFFFFFFFFu; return; }
     cpu->v0 = cpu->a0;
@@ -671,11 +1614,12 @@ int openpete_psx_bios_rom_read8(uint32_t phys, uint8_t* out) {
 }
 uint32_t openpete_psx_bios_rom_reads(void) { return s_rom_reads; }
 
-/** @brief Handle a call through the A0 table: InitHeap, FlushCache, _bu_init, _card_info and _card_load.
+/** @brief Handle a call through the A0 table: InitHeap, FlushCache, _bu_init, cardInfo and buReadTOC.
  *
  * InitHeap records the heap in kernel RAM. FlushCache and _bu_init return
- * 0. _card_info and _card_load queue an
- * info command through the bu layer and return whether it was queued.
+ * 0 (_bu_init's card operations inside the call are not modelled).
+ * cardInfo (_card_info) and buReadTOC (_card_load) start bu operations 1
+ * and 4 and return whether the card command was recorded.
  * @param cpu Guest CPU; a0 carries the device id and v0 receives the result.
  * @param fn Function number.
  * @return 1 when the function is implemented, 0 otherwise. */
@@ -685,169 +1629,56 @@ static int bios_a0(CPUState* cpu, uint32_t fn) {
         bios_init_heap(cpu);
         return 1;
     case 0x44:      /* FlushCache */
-    case 0x70:      /* _bu_init */
         cpu->v0 = 0u;
         return 1;
-    case 0xAB:      /* _card_info(chan): probe the card, answer by event */
+    case 0x70:      /* _bu_init */
+        bu_init_card_side();
+        cpu->v0 = 0u;
+        cw_row("A %02x %08x %08x", fn, cpu->a0, cpu->v0);
+        return 1;
+    case 0xAB:      /* _card_info(chan) */
     case 0xAC:      /* _card_load(chan) */
-        cpu->v0 = mc_queue(cpu->a0, MC_OP_INFO, 0u, 0u, 1);
+        cpu->v0 = fn == 0xAB ? bu_card_info(cpu->a0) : bu_read_toc(cpu->a0);
+        cw_row("A %02x %08x %08x", fn, cpu->a0, cpu->v0);
         return 1;
     default:
         return 0;
     }
 }
 
-/** @brief Handle a call through the B0 table: the event services and the card driver services.
+/** @brief Handle the B0 file services over the file table in guest RAM: open, lseek, read, write, close, _get_errno, _get_error.
  *
- * Implements OpenEvent, CloseEvent, WaitEvent, TestEvent, EnableEvent,
- * DisableEvent, DeliverEvent and UnDeliverEvent over the event table, and
- * InitCARD2, StartCARD2, StopCARD2, _new_card, ChangeClearPAD, GetC0Table,
- * GetB0Table, _card_write, _card_read, _card_chan, _card_status and
- * _card_wait over the card driver state, and open, lseek, write (tty fds),
- * close, _get_errno and _get_error over the file table in guest RAM. WaitEvent
- * returns at once with the latch cleared: the gate cannot suspend the guest,
- * and a queued card command completes in a later vblank step.
- * @param cpu Guest CPU; the argument registers are read and v0 receives the
- *        result.
+ * @param cpu Guest CPU; the argument registers are read and v0 receives the result.
+ * @param fn Function number.
+ * @return 1 when the function is handled, 0 otherwise. */
+static int bios_b0_file(CPUState* cpu, uint32_t fn) {
+    int handled = 1;
+    switch (fn) {
+    case 0x32: bios_open(cpu); break;            /* open(path, mode) */
+    case 0x33: bios_lseek(cpu); break;           /* lseek(fd, offset, whence) */
+    case 0x34: handled = bios_read(cpu); break;  /* read(fd, buf, n) */
+    case 0x35: handled = bios_write(cpu); break; /* write(fd, buf, n) */
+    case 0x36: bios_close(cpu); break;           /* close(fd) */
+    case 0x54: cpu->v0 = kw(K_ERRNO); break;     /* _get_errno */
+    case 0x55: bios_get_error(cpu); break;       /* _get_error(fd) */
+    default:   return 0;
+    }
+    if (handled && fn <= 0x36) cw_row("B %02x %08x %08x %08x %08x", fn, cpu->a0, cpu->a1, cpu->a2, cpu->v0);
+    return handled;
+}
+
+/** @brief Handle a call through the B0 table: the event services, the card driver services and the file services.
+ *
+ * GetC0Table and GetB0Table return the kernel's table addresses.
+ * @param cpu Guest CPU; the argument registers are read and v0 receives the result.
  * @param fn Function number.
  * @return 1 when the function is implemented, 0 otherwise. */
 static int bios_b0(CPUState* cpu, uint32_t fn) {
-    switch (fn) {
-    case 0x07:      /* DeliverEvent(class, spec) */
-        deliver_event(cpu, cpu->a0, cpu->a1);
-        cpu->v0 = 0u;
-        return 1;
-    case 0x08: {    /* OpenEvent(class, spec, mode, func) */
-        if (s_census > 0) OPL_INFO_F("bios", "OpenEvent(class=0x%08X spec=0x%04X mode=0x%04X func=0x%08X)", cpu->a0, cpu->a1, cpu->a2, cpu->a3);
-        /* Slot 0 of the kernel's event table is in use before a game opens
-         * its first event (SCPH-1001: the first handle a game receives is
-         * 0xF1000001), so the game's events take the slots from 1. */
-        for (int i = 1; i < EV_MAX; i++) {
-            if (s_ev[i].open) continue;
-            s_ev[i].cls = cpu->a0;
-            s_ev[i].spec = cpu->a1;
-            s_ev[i].mode = cpu->a2;
-            s_ev[i].func = cpu->a3;
-            s_ev[i].open = 1;
-            s_ev[i].enabled = 0;
-            s_ev[i].delivered = 0;
-            cpu->v0 = EV_HANDLE_BASE | (uint32_t)i;
-            return 1;
-        }
-        OPL_WARN_F("bios", "OpenEvent: all %d slots in use", EV_MAX);
-        cpu->v0 = 0xFFFFFFFFu;
+    if (fn == 0x56 || fn == 0x57) {     /* GetC0Table, GetB0Table */
+        cpu->v0 = fn == 0x56 ? 0x674u : 0x874u;
         return 1;
     }
-    case 0x09: {    /* CloseEvent(ev) */
-        int i = ev_index(cpu->a0);
-        if (i >= 0) memset(&s_ev[i], 0, sizeof(s_ev[i]));
-        cpu->v0 = 1u;
-        return 1;
-    }
-    case 0x0A: {    /* WaitEvent(ev): returns at once, latch cleared */
-        int i = ev_index(cpu->a0);
-        if (i >= 0) s_ev[i].delivered = 0;
-        cpu->v0 = 1u;
-        return 1;
-    }
-    case 0x0B: {    /* TestEvent(ev): 1 once, then the latch clears */
-        int i = ev_index(cpu->a0);
-        cpu->v0 = 0u;
-        if (i >= 0 && s_ev[i].delivered) {
-            s_ev[i].delivered = 0;
-            cpu->v0 = 1u;
-        }
-        return 1;
-    }
-    case 0x0C: {    /* EnableEvent(ev): a latched delivery is dropped */
-        int i = ev_index(cpu->a0);
-        if (i >= 0) { s_ev[i].enabled = 1; s_ev[i].delivered = 0; }
-        cpu->v0 = 1u;
-        return 1;
-    }
-    case 0x0D: {    /* DisableEvent(ev): a latched delivery is dropped */
-        int i = ev_index(cpu->a0);
-        if (i >= 0) { s_ev[i].enabled = 0; s_ev[i].delivered = 0; }
-        cpu->v0 = 1u;
-        return 1;
-    }
-    case 0x20: {    /* UnDeliverEvent(class, spec) */
-        for (int i = 0; i < EV_MAX; i++) {
-            if (s_ev[i].open && s_ev[i].cls == cpu->a0
-                && s_ev[i].spec == cpu->a1 && s_ev[i].mode == EV_MODE_NOINTR) {
-                s_ev[i].delivered = 0;
-            }
-        }
-        cpu->v0 = 0u;
-        return 1;
-    }
-    case 0x4A:      /* InitCARD2(pad_enable): both ports ready, port 0 next */
-        memset(&s_mc, 0, sizeof(s_mc));
-        s_mc.flags[0] = s_mc.flags[1] = 1u;
-        cpu->v0 = 1u;
-        return 1;
-    case 0x4B:      /* StartCARD2: hook the vblank step; the kernel body
-                     * ends in leaveCriticalSection */
-        if (s_census > 0) OPL_INFO_F("bios", "StartCARD at record %u, position %u", openpete_sched_current_record(), openpete_sched_pos());
-        s_mc.started = 1u;
-        cpu->v0 = 1u;
-        openpete_crit_leave(cpu);
-        return 1;
-    case 0x4C:      /* StopCARD2; leaves the critical section */
-        s_mc.started = 0u;
-        cpu->v0 = 1u;
-        openpete_crit_leave(cpu);
-        return 1;
-    case 0x50:      /* _new_card */
-    case 0x5B:      /* ChangeClearPAD */
-        cpu->v0 = 1u;
-        return 1;
-    case 0x56:      /* GetC0Table: the kernel's table address, 0x674 */
-        cpu->v0 = 0x674u;
-        return 1;
-    case 0x57:      /* GetB0Table: 0x874 */
-        cpu->v0 = 0x874u;
-        return 1;
-    case 0x4E:      /* _card_write(chan, frame, buf) */
-        cpu->v0 = mc_queue(cpu->a0, MC_OP_WRITE, cpu->a1, cpu->a2, 0);
-        return 1;
-    case 0x4F:      /* _card_read(chan, frame, buf) */
-        cpu->v0 = mc_queue(cpu->a0, MC_OP_READ, cpu->a1, cpu->a2, 0);
-        return 1;
-    case 0x32:      /* open(path, mode) */
-        bios_open(cpu);
-        return 1;
-    case 0x33:      /* lseek(fd, offset, whence) */
-        bios_lseek(cpu);
-        return 1;
-    case 0x35:      /* write(fd, buf, n): the tty fds; a bu write is unmodelled */
-        return bios_write(cpu);
-    case 0x36:      /* close(fd) */
-        bios_close(cpu);
-        return 1;
-    case 0x54:      /* _get_errno: the kernel's errno word */
-        cpu->v0 = kw(K_ERRNO);
-        return 1;
-    case 0x55:      /* _get_error(fd) */
-        bios_get_error(cpu);
-        return 1;
-    case 0x58:      /* _card_chan: the device id of the last finished command */
-        cpu->v0 = s_mc.device[s_mc_last_port];
-        return 1;
-    case 0x5C:      /* _card_status(chan) */
-        cpu->v0 = s_mc.flags[mc_port(cpu->a0)];
-        return 1;
-    case 0x5D:      /* _card_wait(chan): the kernel spins until the port is
-                     * ready; the vblank steps that spin needs run in the
-                     * VBL body, which this gate cannot enter, so the status
-                     * is returned as it stands. */
-        if ((s_mc.flags[mc_port(cpu->a0)] & 1u) == 0u)
-            OPL_WARN_F("bios", "_card_wait on a pending command returns without waiting");
-        cpu->v0 = s_mc.flags[mc_port(cpu->a0)];
-        return 1;
-    default:
-        return 0;
-    }
+    return bios_b0_event(cpu, fn) || bios_b0_card(cpu, fn) || bios_b0_file(cpu, fn);
 }
 
 /** @brief Service a guest call to a BIOS function table entry (0xA0, 0xB0, 0xC0).

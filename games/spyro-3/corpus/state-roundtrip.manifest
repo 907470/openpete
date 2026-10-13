@@ -2,3 +2,7 @@
 # tests/harness/check_state_roundtrip.sh. Fields and values: see
 # games/spyro-1/corpus/state-roundtrip.manifest.
 - | none | - | 1500 |
+# The check_card_boot.sh fixture boot, saved and loaded at VBL 600: the
+# directory load's read of sector 9 is in flight between the vblank step
+# that started it and its completion.
+- | card-v6-blank.mcd | - | 600 |

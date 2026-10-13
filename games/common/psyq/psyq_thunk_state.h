@@ -30,11 +30,14 @@
  *   [28]     load_budget    VBLs the current level load has left to spend
  *   [29]     load_prev      in-load bit of the previous read (pack_ver 4)
  *   [30]     pad_busy       vsyncs left in libpad's controller command sequence
- *   [31..37] card_state[7] the BIOS card driver: its flag word (started,
+ *   [31..37] reserved, written 0 (pack_ver 10). Versions 5-9 held the
+ *                           BIOS card driver here: its flag word (started,
  *                           port flip, transfer in progress, per-port
  *                           status, bu-layer and command kind bits) and
  *                           each port's pending sector, buffer and device
- *                           id (pack_ver 5)
+ *                           id; from version 10 the driver lives in guest
+ *                           RAM, and a version 5-9 pack's words load into
+ *                           it
  *   [38]     pad_seq        length of that sequence (pack_ver 5)
  *   [39..40] defer_rec/vbl  the reference's completion record and VBLANK
  *                           of the deferred read under the schedule
@@ -70,9 +73,11 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 9u
+#define PSYQ_THUNK_STATE_PACK_VER 10u
 #define PSYQ_THUNK_STATE_WORDS    55u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
+#define PSYQ_THUNK_STATE_RESERVED_FIRST 31u
+#define PSYQ_THUNK_STATE_RESERVED_LAST  37u
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
 #define PSYQ_THUNK_STATE_V2_BYTES 100u
 #define PSYQ_THUNK_STATE_V3_BYTES 104u
@@ -95,16 +100,18 @@ uint32_t psyq_thunk_state_bytes_for(uint32_t ver);
 uint32_t psyq_thunk_state_size(void);
 /** @brief Write the latches to `dst` as a pack of the current pack_ver.
  *
- * The layout is the one in this file's header comment; the card driver state
- * is included.
+ * The layout is the one in this file's header comment; the reserved words
+ * are written 0.
  * @param dst Buffer of at least PSYQ_THUNK_STATE_BYTES bytes. */
 void     psyq_thunk_state_save(void* dst);   /* dst has PSYQ_THUNK_STATE_BYTES */
 /** @brief Restore the latches from a pack of any known pack_ver.
  *
  * A field the pack's version predates is set to its idle value: the
  * streaming latch, the load-delay words, the pad countdowns, the deferred
- * read's reference position and the card driver state become 0; the
- * CdlSetloc sector of a version-1 pack keeps its current value. A
+ * read's reference position become 0; the card driver state of a
+ * version 5-9 pack loads into the driver's guest RAM, and an earlier pack
+ * leaves that RAM as the state's RAM image holds it; the CdlSetloc sector
+ * of a version-1 pack keeps its current value. A
  * version-1 mode word holds an armed bit and is widened to the drive mode it
  * stood for.
  * @param src The pack.
@@ -137,9 +144,9 @@ void     psyq_thunk_state_load_v4(uint32_t cd_cb, uint32_t vs_cb,
 /** @brief Overwrite every latch the pack covers with a value no guest registration produces.
  *
  * Callback slots get distinct odd vaddrs, the XA filter fields values
- * outside 0..255, the mode byte its complement, and the counters and card
- * driver words distinct sentinels, so a save after it differs from a save
- * of guest-produced state in every word but pack_ver. */
+ * outside 0..255, the mode byte its complement, and the counters distinct
+ * sentinels, so a save after it differs from a save of guest-produced state
+ * in every word but pack_ver and the reserved words. */
 void     psyq_thunk_state_scramble(void);
 /** @brief Run the latch pack's round-trip check.
  *

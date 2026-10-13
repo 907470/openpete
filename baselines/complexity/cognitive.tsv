@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: ab4ead7724e6f9563f3ded2182ab0127de339fcc
+# head: 9b03064bf7d171003602f7444ab0cb0cd9fe62ed
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -44,7 +44,6 @@ core/mods/mod_shader.c	terrain_winner	42	0
 core/psx/cdrom_mmio.c	openpete_cdrom_mmio_open	49	0	
 core/psx/dispatch.c	psx_override_dispatch	38	0	
 core/psx/exe_loader.cpp	openpete_psx_resolve_disc_bin	29	0	
-core/psx/psx_bios.c	bios_b0	29	0	
 core/record/bk2_movie.c	bk2_decode_port	28	0	
 core/record/bk2_movie.c	bk2_movie_parse_log	42	0	
 core/record/record.c	rec_lazy_init	32	0	
@@ -107,7 +106,7 @@ games/common/psyq/psyq_thunks.cpp	psyq_CdRead	36	0
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	34	0	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0	
 games/common/psyq/psyq_thunks.cpp	psyq_VSync	29	0	
-games/common/psyq/psyq_thunks.cpp	psyq_thunk_state_load	28	0	
+games/common/psyq/psyq_thunks.cpp	psyq_thunk_state_load	27	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
 games/common/renderer/cyclorama.c	cyc_extract_m	139	0	
 games/common/renderer/cyclorama.c	cyclorama_reextract	56	0	

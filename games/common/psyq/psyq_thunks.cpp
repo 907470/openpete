@@ -974,6 +974,9 @@ static void psyq_vbl_body(CPUState* cpu, int final_wait) {
     vbl_device_head();
     vbl_cpu_interrupt(cpu, openpete_sched_pos() + 1u, final_wait);
     vbl_device_mmio();
+    /* The card transfer the step started completes in the SIO0 interrupt,
+     * after the VBLANK handlers and, in most VBLs, after the disc's. */
+    openpete_psx_bios_vbl_complete(cpu);
     /* A disc read the drive would still be busy with: its completion is the
      * last thing this VBL delivers, after the frame's own callbacks. */
     cd_defer_tick(cpu, 1u);
@@ -1078,6 +1081,7 @@ extern "C" void psyq_crit_flush(CPUState* cpu) {
     openpete_loop_vbl();
     SDL_AddAtomicInt(&openpete_vbl, 1);
     vbl_cpu_interrupt(cpu, s_latch_key, 0);
+    openpete_psx_bios_vbl_complete(cpu);
     cd_defer_due(cpu, 0u, 0u);
     if (openpete_sched_active()) openpete_sched_take_dropped();
     s_dlv_depth--;
@@ -1264,13 +1268,16 @@ void psyq_StopCallback(CPUState* cpu) {
  * in ExitCriticalSection (Spyro 2 0x800549F0, the `jal 0x8005AFF4` at
  * 0x80054AAC) and on later calls returns at once; the kernel enters the
  * executable masked, so this is where the game's interrupts are first
- * enabled.
+ * enabled. Its first call also runs _96_remove (A0 0x72), which closes the
+ * five CD-ROM events the ROM's boot opened, freeing the event table's first
+ * entries for the game's own events.
  * @param cpu Guest CPU state. */
 void psyq_ResetCallback(CPUState* cpu) {
     static int s_intr_started = 0;
     cpu->v0 = (uint32_t)ResetCallback();
     if (!s_intr_started) {
         s_intr_started = 1;
+        openpete_psx_bios_reset_callback_events();
         openpete_crit_leave(cpu);
     }
 }
@@ -1803,9 +1810,7 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 28, s_cd_load_budget);
     put_word(p, 29, s_cd_load_prev);
     put_word(p, 30, s_pad_busy_vbls);
-    uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
-    openpete_psx_bios_card_state_get(card);
-    for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) put_word(p, 31u + i, card[i]);
+    for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) put_word(p, 31u + i, 0u);
     put_word(p, 38, s_pad_seq_vbls);
     put_word(p, 39, s_cd_defer_rec);
     put_word(p, 40, s_cd_defer_vbl);
@@ -1834,7 +1839,7 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 6u) return PSYQ_THUNK_STATE_V6_BYTES;
     if (ver == 7u) return PSYQ_THUNK_STATE_V7_BYTES;
     if (ver == 8u) return PSYQ_THUNK_STATE_V8_BYTES;
-    if (ver == 9u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 9u || ver == 10u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -1877,6 +1882,19 @@ static void cd_head_load(const uint8_t* p, uint32_t ver) {
     s_head_rate = 2u;
 }
 
+/** @brief Load the card driver words of a version 5-9 pack into the driver's guest RAM.
+ *
+ * From version 10 the driver lives in guest RAM and the state's RAM image
+ * carries it; earlier packs leave that RAM as the image holds it.
+ * @param p The pack.
+ * @param ver Its version. */
+static void card_state_load_legacy(const uint8_t* p, uint32_t ver) {
+    if (ver < 5u || ver > 9u) return;
+    uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
+    for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = get_word(p, 31u + i);
+    openpete_psx_bios_card_state_load_legacy(card);
+}
+
 extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     const uint8_t* p = (const uint8_t*)src;
     if (size < PSYQ_THUNK_STATE_V1_BYTES) return -1;
@@ -1915,10 +1933,7 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
      * the next VBL starts a fresh one. */
     s_spu_clk_frac     = (ver >= 7u) ? get_word(p, 45) : 0u;
     cd_head_load(p, ver);
-    uint32_t card[PSX_BIOS_CARD_STATE_WORDS] = { 0u };
-    if (ver >= 5u)
-        for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = get_word(p, 31u + i);
-    openpete_psx_bios_card_state_set(card);
+    card_state_load_legacy(p, ver);
     /* A pack without the critical-section words predates the mask: the
      * interrupted code ran with interrupts enabled and nothing latched. */
     const int crit = (ver >= 9u) ? (get_word(p, 51) != 0u) : 0;
@@ -1966,12 +1981,6 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_latched          = !s_latched;
     s_latch_key        = 0xD5D50029u;
     openpete_sched_set_dropped(openpete_sched_dropped() + 0x2B);
-    {
-        uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
-        for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = 0xE5E50001u + 2u * i;
-        card[0] = 0x7FFFFFFFu;
-        openpete_psx_bios_card_state_set(card);
-    }
     s_xa_filter_file = 0x1FF;
     s_xa_filter_chan = 0x2FF;
     for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
@@ -1992,17 +2001,21 @@ extern "C" int psyq_thunk_state_selftest(void) {
     const int same = memcmp(before, after, sizeof before) == 0;
     /* The scrambled image must differ from the saved one in every field the
      * pack carries, or a field the scramble missed is one the check cannot
-     * see. Field 0 is the version and is the same in both. */
+     * see. Field 0 is the version and is the same in both; the reserved
+     * words are written as 0. */
     uint32_t fields_unchanged = 0;
-    for (uint32_t i = 1; i < PSYQ_THUNK_STATE_WORDS; i++)
+    for (uint32_t i = 1; i < PSYQ_THUNK_STATE_WORDS; i++) {
+        if (i >= PSYQ_THUNK_STATE_RESERVED_FIRST && i <= PSYQ_THUNK_STATE_RESERVED_LAST) continue;
         if (get_word(before, i) == get_word(scrambled, i)) fields_unchanged++;
+    }
+    const uint32_t fields = PSYQ_THUNK_STATE_WORDS - 1u
+                          - (PSYQ_THUNK_STATE_RESERVED_LAST - PSYQ_THUNK_STATE_RESERVED_FIRST + 1u);
     const int ok = engaged && loaded && same && fields_unchanged == 0;
     OPL_INFO_F("savestate",
                "thunk-state selftest: %s (%u bytes, scramble changed %u/%u "
                "fields, load=%d, roundtrip=%s)",
                ok ? "PASS" : "FAIL", (unsigned)PSYQ_THUNK_STATE_BYTES,
-               (unsigned)(PSYQ_THUNK_STATE_WORDS - 1u - fields_unchanged),
-               (unsigned)(PSYQ_THUNK_STATE_WORDS - 1u), loaded,
+               (unsigned)(fields - fields_unchanged), (unsigned)fields, loaded,
                same ? "identical" : "DIFFERS");
     return ok ? 0 : -1;
 }
@@ -3990,10 +4003,18 @@ static uint32_t s_spu_xfer_addr; /* SpuSetTransferStartAddr, advanced by SpuWrit
 
 /** @brief Thunk for libspu SpuInit: PsyCross's SpuInit, then registers the game's sound tables.
  *
+ * libspu's SpuInit ends in SpuStart, whose first call opens and enables
+ * the DMA-completion event (HwSPU, EvSpCOMP, EvMdNOINTR) in the kernel's
+ * event table; the thunk opens it there once.
  * @param cpu Guest CPU state, unused. */
 void psyq_SpuInit(CPUState* cpu) {
+    static int s_spu_started = 0;
     (void)cpu;
     SpuInit();
+    if (!s_spu_started) {
+        s_spu_started = 1;
+        openpete_psx_bios_spu_start_events();
+    }
     psyq_game_sfx_arm();
 }
 
