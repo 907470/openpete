@@ -126,20 +126,15 @@ static void cam_dbg_line(const char* tag, const uint8_t* c) {
             m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], sk[0]);
 }
 
-/** @brief Returns the shared cut guard's descriptor of this game's camera fields, resolving the ring rows on first call.
+/** @brief Returns the shared cut guard's descriptor of this game's camera fields, resolving the ring row on first call.
  *
- * The sky matrix (+0x00) decides the rotation test and the world position
- * (+0x28) the jump test. The regime row is the loader/simulation regime word,
- * so the guard marks a pair that straddles one of its edges as a cut. The
- * camera and regime row indices are looked up once and cached in the static
- * descriptor.
+ * The sky matrix (+0x00) decides the rotation tests and the world position
+ * (+0x28) the position tests. The camera row index is looked up once and
+ * cached in the static descriptor.
  * @return The descriptor, valid for the process lifetime. */
 static const cut_cam_desc_t* cut_desc(void) {
-    static cut_cam_desc_t d = { -2, -2, CAM_OFF_POS, CAM_OFF_SKY };
-    if (d.cam_region == -2) {
-        d.cam_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
-        d.gs_region  = game_interp_row_index(GAME_INTERP_GS_ROW);
-    }
+    static cut_cam_desc_t d = { -2, CAM_OFF_POS, CAM_OFF_SKY };
+    if (d.cam_region == -2) d.cam_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
     return &d;
 }
 
@@ -441,7 +436,7 @@ static void game_reextract_body(CPUState* cpu) {
      * shared guard owns the predicate, the hold verdict and the census. */
     if (paired && cam && prev && curr) {
         cam_bracket_t br;
-        cam_bracket_run(cam, prev, curr, cut_desc(), CAM_OFF_VIEW, &br);
+        cam_bracket_run(cam, prev2, prev, curr, cut_desc(), CAM_OFF_VIEW, &br);
         cam_cut    = br.cut;
         bracketed  = br.bracketed;
         alpha      = br.alpha;

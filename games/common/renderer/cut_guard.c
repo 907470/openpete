@@ -18,14 +18,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* A position step above this in one tick is a jump, not a move: measured
- * continuous motion reaches 1218 units/tick and a cut 140k. */
-#define CUT_POS_LIMIT   5000.0
-/* Row-dot sum of two Q12 rotation matrices, in units of 4096^2: the sum is
- * 1 + 2*cos(angle) for an orthonormal pair, so below one unit the camera turned
- * more than 90 degrees in one tick. No smooth camera move does that (it is
- * 2700 degrees/s); a 46-degree pan reads about 2.4. */
-#define CUT_ROT_LIMIT   (4096.0 * 4096.0)
+/* The camera cut rule's limits, in world units per tick and in rotation units
+ * (4096 to a full turn) of the largest per-row angle. Continuous camera motion
+ * reaches 1304 units and 487 rotation units per tick (fast whip pans);
+ * position-only shot changes start at 1576 units. */
+#define CUT_POS_LIMIT        1440.0
+#define CUT_ROT_LIMIT        768.0
+/* A rotation step above this floor is a cut when it is also more than
+ * CUT_ROT_ONSET_RATIO times the previous step's rotation: continuous pans
+ * ramp (at most 3.6x a step), shot changes that only re-aim jump from rest. */
+#define CUT_ROT_ONSET        256.0
+#define CUT_ROT_ONSET_RATIO  8.0
+/* A position step whose change from the previous step exceeds this is a cut:
+ * a teleport from rest or a re-target mid-move. */
+#define CUT_STEP_CHANGE      800.0
+/* A position step above CUT_START_STEP is a cut when the step before it is at
+ * rest (position at most CUT_REST_POS units, rotation at most CUT_REST_ROT):
+ * a camera at rest that moves this far in one tick is repositioned. */
+#define CUT_START_STEP       400.0
+#define CUT_REST_POS         2.0
+#define CUT_REST_ROT         2.0
+/* A pair whose snapshots are this many VBLs apart or more follows a hold: the
+ * step before it is not the previous motion, and counts as zero. */
+#define CUT_HOLD_VBL         4u
 /* Presents this far past the forward endpoint are replaying a pair the sim
  * stopped advancing: there is no interval left to hold. */
 #define CUT_PAIR_STALE_TICKS 4.0
@@ -113,35 +128,100 @@ void cut_census_camera(const int32_t* pos, const int16_t* mat,
             mat[0], mat[1], mat[2]);
 }
 
-const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
-                              uint32_t pos_off, uint32_t mat_off,
-                              const void* pgs, const void* cgs,
-                              cut_cam_metrics_t* out) {
-    cut_cam_metrics_t m = { 0.0, 0.0, 0u, 0u, 0 };
-    const char* why = NULL;
-    if (pcam && ccam) {
-        const int32_t* pp = (const int32_t*)(pcam + pos_off);
-        const int32_t* cp = (const int32_t*)(ccam + pos_off);
-        double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
-        m.d2 = dx*dx + dy*dy + dz*dz;
-        const int16_t* pm = (const int16_t*)(pcam + mat_off);
-        const int16_t* cm = (const int16_t*)(ccam + mat_off);
-        for (int i = 0; i < 9; i++) m.frob += (double)pm[i] * (double)cm[i];
-        /* Rotation: linearly lerping a large rotation drives the matrix through
-         * a near-singular midpoint, which warps the whole scene on the
-         * intermediate presents. */
-        if (m.d2 > CUT_POS_LIMIT * CUT_POS_LIMIT) why = "pos";
-        else if (m.frob < CUT_ROT_LIMIT) why = "rot";
+/* One camera step between two snapshots. */
+typedef struct cut_cam_step {
+    double d[3];   /* position step, world units */
+    double len;    /* its length */
+    double rot;    /* largest per-row angle, 4096 to a full turn */
+} cut_cam_step_t;
+
+/** @brief Measure the camera step between two snapshots' camera rows.
+ *
+ * The rotation is the largest angle any row of the rotation matrix turns,
+ * from the per-row normalised dot products: the matrix is row-orthogonal but
+ * not orthonormal (the game bakes an aspect scale into one row), so the trace
+ * formula misreads it.
+ * @param a The earlier snapshot.
+ * @param b The later snapshot.
+ * @param desc The game's camera descriptor.
+ * @param out Receives the step; zeroed when a camera row is missing.
+ * @return 1 when both snapshots carry the camera row, else 0. */
+static int cut_cam_step(const openpete_interp_snapshot_t* a, const openpete_interp_snapshot_t* b,
+                        const cut_cam_desc_t* desc, cut_cam_step_t* out) {
+    memset(out, 0, sizeof *out);
+    if (!a || !b || desc->cam_region < 0) return 0;
+    const uint8_t* ac = a->data + a->region_offsets[desc->cam_region];
+    const uint8_t* bc = b->data + b->region_offsets[desc->cam_region];
+    int32_t ap[3], bp[3];
+    int16_t am[9], bm[9];
+    memcpy(ap, ac + desc->pos_off, 12);
+    memcpy(bp, bc + desc->pos_off, 12);
+    memcpy(am, ac + desc->mat_off, 18);
+    memcpy(bm, bc + desc->mat_off, 18);
+    for (int i = 0; i < 3; i++) out->d[i] = (double)bp[i] - (double)ap[i];
+    out->len = sqrt(out->d[0]*out->d[0] + out->d[1]*out->d[1] + out->d[2]*out->d[2]);
+    double worst = 1.0;
+    for (int r = 0; r < 3; r++) {
+        double dp = 0.0, na = 0.0, nb = 0.0;
+        for (int k = 0; k < 3; k++) {
+            const double x = am[r*3+k], y = bm[r*3+k];
+            dp += x * y; na += x * x; nb += y * y;
+        }
+        const double den = sqrt(na * nb);
+        const double c = den > 0.0 ? dp / den : 1.0;
+        if (c < worst) worst = c;
     }
-    /* The two ticks came from different simulation regimes (gameplay to level
-     * transition, transition to load, cutscene in or out). The camera re-targets
-     * on such an edge by less than either threshold above, and a lerp presents
-     * the chord of that swing; the regimes are not one motion, so the pair is a
-     * cut by definition. */
-    if (pgs && cgs) {
-        memcpy(&m.pgs, pgs, 4);
-        memcpy(&m.cgs, cgs, 4);
-        if (m.pgs != m.cgs) { m.gs_edge = 1; if (!why) why = "gs-edge"; }
+    if (worst < -1.0) worst = -1.0;
+    out->rot = acos(worst) * (4096.0 / (2.0 * M_PI));
+    return 1;
+}
+
+/** @brief Apply the cut rule's terms to one step against the step before it.
+ *
+ * @param s The step.
+ * @param before The step before it (zero after a hold or when unknown).
+ * @param before_cut Nonzero when the step before it was itself a cut one tick earlier, which exempts the step-change term.
+ * @param before_known Nonzero when `before` is the measured previous step or
+ *        the rest a hold implies; zero when it stands in for an unknown step,
+ *        which disables the rest-start term.
+ * @param jerk Receives the length of the step change.
+ * @return "pos", "rot", "rot-onset", "step-change" or "rest-start", or NULL for one motion. */
+static const char* cut_cam_terms(const cut_cam_step_t* s, const cut_cam_step_t* before,
+                                 int before_cut, int before_known, double* jerk) {
+    double j2 = 0.0;
+    for (int i = 0; i < 3; i++) { const double e = s->d[i] - before->d[i]; j2 += e * e; }
+    *jerk = sqrt(j2);
+    if (s->len > CUT_POS_LIMIT) return "pos";
+    if (s->rot > CUT_ROT_LIMIT) return "rot";
+    if (s->rot > CUT_ROT_ONSET && s->rot > CUT_ROT_ONSET_RATIO * before->rot) return "rot-onset";
+    if (*jerk > CUT_STEP_CHANGE && !before_cut) return "step-change";
+    if (before_known && s->len > CUT_START_STEP &&
+        before->len <= CUT_REST_POS && before->rot <= CUT_REST_ROT) return "rest-start";
+    return NULL;
+}
+
+const char* cut_camera_reason(const openpete_interp_snapshot_t* prev2,
+                              const openpete_interp_snapshot_t* prev,
+                              const openpete_interp_snapshot_t* curr,
+                              const cut_cam_desc_t* desc, cut_cam_metrics_t* out) {
+    cut_cam_metrics_t m;
+    memset(&m, 0, sizeof m);
+    cut_cam_step_t s, before, zero;
+    memset(&zero, 0, sizeof zero);
+    const char* why = NULL;
+    if (desc && cut_cam_step(prev, curr, desc, &s)) {
+        /* The step before this one is the previous motion only when this pair
+         * follows it within one tick; after a hold the camera starts from rest. */
+        const int adjacent = curr->tick > prev->tick && curr->tick - prev->tick < CUT_HOLD_VBL;
+        if (!adjacent || !cut_cam_step(prev2, prev, desc, &before)) before = zero;
+        /* The previous pair's own verdict, from the snapshots the ring keeps:
+         * its predecessor is unknown and counts as rest, as after a hold. */
+        double pj = 0.0;
+        m.prev_cut = adjacent && cut_cam_terms(&before, &zero, 0, 0, &pj) != NULL;
+        why = cut_cam_terms(&s, &before, m.prev_cut, 1, &m.jerk);
+        m.step = s.len;
+        m.rot = s.rot;
+        m.prev_rot = before.rot;
     }
     if (out) *out = m;
     return why;
@@ -793,14 +873,14 @@ int cut_scene_holdable(void) {
     return na == 0 && nd == 0 && np == 0;
 }
 
-int cut_camera_hold(double period_ns, op_time_t curr_tick_ns, int gs_edge) {
+int cut_camera_hold(double period_ns, op_time_t curr_tick_ns) {
     double a = (period_ns > 0.0)
              ? (double)(openpete_interp_present_now() - curr_tick_ns) / period_ns : 1.0;
     if (openpete_interp_curr_is_stale()) a = 1.0;
     const char* why = (a < 1.0) ? (cut_scene_holdable() ? "hold" : "scene") : "stale";
     const int hold = (why[0] == 'h');
     s_held_ns = (hold && cut_hold_all_on()) ? curr_tick_ns : 0;
-    cut_census_note(CUT_CAM, gs_edge ? 1u : 0u, hold, why, NULL, NULL);
+    cut_census_note(CUT_CAM, 0u, hold, why, NULL, NULL);
     return hold;
 }
 
@@ -843,20 +923,18 @@ void cut_locate_camera(const cut_cam_desc_t* desc) {
     const uint8_t* ccam = snap_region(cu, desc->cam_region);
     if (!pcam || !ccam) return;
     cut_cam_metrics_t m;
-    const char* why = cut_camera_reason(pcam, ccam, desc->pos_off, desc->mat_off,
-                                        snap_region(pv, desc->gs_region),
-                                        snap_region(cu, desc->gs_region), &m);
+    const char* why = cut_camera_reason(p2, pv, cu, desc, &m);
     if (!why) return;
     const int32_t* pp = (const int32_t*)(pcam + desc->pos_off);
     const int32_t* cp = (const int32_t*)(ccam + desc->pos_off);
-    fprintf(stderr, "[cut-census vbl=%u] locate=camcut why=%s |d|=%.0f frob=%.2f "
-                    "gs=%u->%u ptick=%u ctick=%u prev=(%d,%d,%d) curr=(%d,%d,%d)\n",
-            openpete_frame, why, sqrt(m.d2), m.frob / CUT_ROT_LIMIT,
-            m.pgs, m.cgs, pv->tick, cu->tick,
-            pp[0], pp[1], pp[2], cp[0], cp[1], cp[2]);
+    fprintf(stderr, "[cut-census vbl=%u] locate=camcut why=%s |d|=%.0f rot=%.1f prot=%.1f "
+                    "jerk=%.0f prevcut=%d ptick=%u ctick=%u prev=(%d,%d,%d) curr=(%d,%d,%d)\n",
+            openpete_frame, why, m.step, m.rot, m.prev_rot, m.jerk, m.prev_cut,
+            pv->tick, cu->tick, pp[0], pp[1], pp[2], cp[0], cp[1], cp[2]);
 }
 
-void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev,
+void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
+                     const openpete_interp_snapshot_t* prev,
                      const openpete_interp_snapshot_t* curr,
                      const cut_cam_desc_t* desc, uint32_t view_off,
                      cam_bracket_t* out) {
@@ -867,10 +945,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev,
     const uint8_t* ccam = snap_region(curr, desc->cam_region);
     if (!cam || !pcam || !ccam) { if (out) *out = r; return; }
 
-    cut_cam_metrics_t m;
-    r.cut = cut_camera_reason(pcam, ccam, desc->pos_off, desc->mat_off,
-                              snap_region(prev, desc->gs_region),
-                              snap_region(curr, desc->gs_region), &m) != NULL;
+    r.cut = cut_camera_reason(prev2, prev, curr, desc, NULL) != NULL;
     const double period = cut_period_ns(prev, curr);
     /* A cut the ring is still replaying long after the fact has no open
      * interval: it shows the head, as it did before the hold existed. */
@@ -878,7 +953,7 @@ void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev,
                                      - (int64_t)curr->tick_ns)
                           / (double)g_openpete_tick_period_ns;
     r.hold = r.cut && pair_age <= CUT_PAIR_STALE_TICKS &&
-             cut_camera_hold(period, curr->tick_ns, m.gs_edge);
+             cut_camera_hold(period, curr->tick_ns);
     if (r.cut && !r.hold) { s_cam_snap = 1; if (out) *out = r; return; }
 
     r.alpha = (double)(openpete_interp_present_now() - curr->tick_ns) / period;

@@ -10,3 +10,9 @@ colossus-ice-skating.bk2 | 1486-1504,1686-1704,1726-1740
 # Walking and a portal entry: a keyframe advance nearly every tick at short
 # head travel.
 autumn-plains-skelos-badlands-portal-entry.bk2 | 1524-1650
+# The same movie across the regime edge at engine VBL 1139 (capture VBL
+# 1712), where the portal fly-in hands over to the load with the camera
+# static: the camera rule does not cut there, so the player is interpolated
+# through the edge. A run captures at most 64 presents, so the span is its
+# own row.
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1700-1724

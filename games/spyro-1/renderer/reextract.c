@@ -83,7 +83,6 @@ REGION_ACCESSOR(CAM_REGION,    "g_Camera")
 REGION_ACCESSOR(SPYRO_REGION,  "g_Spyro")
 REGION_ACCESSOR(FLAME_REGION,  "g_SpyroFlame")
 REGION_ACCESSOR(SHADOW_REGION, "g_SpyroShadow")
-REGION_ACCESSOR(GS_REGION,     "g_GameState")
 #define SPYRO_SAVE    0x28u         /* g_Spyro bytes bracketed: pos(0x00) + per-seg anim(..0x26) */
 
 /* Runahead rebase shown-state stores (see ra_rebase_on above). */
@@ -1034,13 +1033,13 @@ static int moby_step_jumps(uint32_t m, const openpete_interp_obj_t* o) {
     return cut_held_rolled(o) < 0 && cut_obj_jump(m, o->prev, o->curr);
 }
 
-/** @brief Returns the g_Camera and g_GameState region indices and camera field offsets for the shared cut guard.
+/** @brief Returns the g_Camera region index and camera field offsets for the shared cut guard.
  *
  * The region indices resolve on the first call.
  * @return The descriptor, static storage. */
 static const cut_cam_desc_t* cut_desc(void) {
-    static cut_cam_desc_t d = { -2, -2, CAM_OFF_POS, CAM_OFF_PROJ };
-    if (d.cam_region == -2) { d.cam_region = CAM_REGION(); d.gs_region = GS_REGION(); }
+    static cut_cam_desc_t d = { -2, CAM_OFF_POS, CAM_OFF_PROJ };
+    if (d.cam_region == -2) d.cam_region = CAM_REGION();
     return &d;
 }
 
@@ -1508,27 +1507,19 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
 
 /** @brief Reports whether the camera snapshots of two ticks are not one camera motion.
  *
- * cut_camera_reason decides from the camera position, the rotation matrix
- * and the g_GameState regime. OPENPETE_CAMCUT_DBG logs up to four lines a
+ * cut_camera_reason decides from the camera's position and rotation steps
+ * over the three ring snapshots. OPENPETE_CAMCUT_DBG logs up to four lines a
  * second of the guard's inputs.
+ * @param prev2 The snapshot before prev, or NULL.
  * @param prev The earlier snapshot.
  * @param curr The later snapshot.
  * @param pair_age The pair's age, logged only.
- * @param out_gs_edge Receives 1 when the g_GameState regime changed, which callers count separately.
  * @return 1 for a cut, else 0. */
-static int camera_cut(const openpete_interp_snapshot_t* prev,
-                      const openpete_interp_snapshot_t* curr,
-                      double pair_age, int* out_gs_edge) {
-    const cut_cam_desc_t* d = cut_desc();
+static int camera_cut(const openpete_interp_snapshot_t* prev2,
+                      const openpete_interp_snapshot_t* prev,
+                      const openpete_interp_snapshot_t* curr, double pair_age) {
     cut_cam_metrics_t m;
-    const char* why = cut_camera_reason(
-        prev->data + prev->region_offsets[d->cam_region],
-        curr->data + curr->region_offsets[d->cam_region],
-        d->pos_off, d->mat_off,
-        d->gs_region >= 0 ? prev->data + prev->region_offsets[d->gs_region] : NULL,
-        d->gs_region >= 0 ? curr->data + curr->region_offsets[d->gs_region] : NULL,
-        &m);
-    *out_gs_edge = m.gs_edge;
+    const char* why = cut_camera_reason(prev2, prev, curr, cut_desc(), &m);
     /* OPENPETE_CAMCUT_DBG: rate-limited census of the guard's inputs. A cut
      * costs both the sub-tick camera bracket and the occlusion cull, so a
      * view that reads as cut every present needs its span and delta named. */
@@ -1540,10 +1531,10 @@ static int camera_cut(const openpete_interp_snapshot_t* prev,
             uint64_t now = openpete_phase_now_us();
             if (now - t0 >= 1000000u) { t0 = now; n = 0; }
             if (n < 4) { n++;
-                fprintf(stderr, "[camcut f=%u] cut=%d gs_edge=%d age=%.1f |d|=%.0f lim=%.0f "
-                        "frob=%.2f ptick=%u ctick=%u\n",
-                        openpete_frame, why != NULL, m.gs_edge, pair_age,
-                        sqrt(m.d2), 5000.0, m.frob / (4096.0 * 4096.0),
+                fprintf(stderr, "[camcut f=%u] cut=%d why=%s age=%.1f |d|=%.0f rot=%.1f prot=%.1f "
+                        "jerk=%.0f prevcut=%d ptick=%u ctick=%u\n",
+                        openpete_frame, why != NULL, why ? why : "-", pair_age,
+                        m.step, m.rot, m.prev_rot, m.jerk, m.prev_cut,
                         prev->tick, curr->tick); }
         }
     }
@@ -1907,11 +1898,10 @@ static void game_reextract_body(void* cpu_v) {
     int      part_save_n = 0;
     double   alpha = 0.0;
 
-    /* Discontinuity guard: if the camera jumped this tick (level transition,
-     * cutscene cut, teleport) interpolating across it produces a visible swoop.
-     * Detect via the camera position delta (threshold calibrated at 5000
-     * units/tick: continuous ≤1218, cuts ≥140k - game_extras_impl.c) and snap
-     * (present the live curr scene, no bracket) instead. */
+    /* Discontinuity guard: if the camera jumped, turned or broke its motion
+     * this tick (level transition, cutscene shot change, teleport),
+     * interpolating across it produces a visible swoop; cut_camera_reason
+     * decides from the camera's steps over the three ring snapshots. */
     /* How old the forward endpoint is, in ticks of present time. Normally under
      * one - the ring captures every tick - but the sim can stop producing new
      * states while presents continue: a paused update, a load, the debug freecam
@@ -1922,9 +1912,8 @@ static void game_reextract_body(void* cpu_v) {
                                   - (int64_t)curr->tick_ns) / (double)TICK_PERIOD_NS;
     const int pair_stale = (pair_age > 4.0);
 
-    int gs_edge = 0;
     const int cam_cut = (paired && cam && prev && curr)
-                      ? camera_cut(prev, curr, pair_age, &gs_edge) : 0;
+                      ? camera_cut(prev2, prev, curr, pair_age) : 0;
     /* Moby occlusion-cull steering: suspend culling around camera cuts (the
      * few-presents-old occlusion grid is wrong everywhere across a cut) and
      * feed the measured per-tick pan speed (in screen px) so the feeder's
@@ -1975,7 +1964,7 @@ static void game_reextract_body(void* cpu_v) {
      * (pair_stale) has no open interval to hold and shows the head. */
     const int cam_hold = cam_cut && !pair_stale &&
                          cut_camera_hold(interp_period_ns(prev->tick_ns, curr->tick_ns),
-                                         curr->tick_ns, gs_edge);
+                                         curr->tick_ns);
     const int cam_snap = cam_cut && !cam_hold;
     cut_set_camera_snap(cam_snap);
 

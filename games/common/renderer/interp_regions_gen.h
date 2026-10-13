@@ -71,11 +71,6 @@ int game_interp_row_index(const char* name);
  * under this one name, and every consumer resolves the ring index by it. */
 #define GAME_INTERP_CAM_ROW "g_Camera"
 
-/* The simulation-regime word's ring row. A game that has not located one
- * registers no such row and the lookup resolves to -1, which the consumers
- * read as "this game marks no regime edge". */
-#define GAME_INTERP_GS_ROW "g_GameState"
-
 /** @brief Snapshot one record per live moby of the game's moby array into the keyed prev/curr table.
  *
  * The array (game_layout.moby: array_head/array_direct, array_stride,

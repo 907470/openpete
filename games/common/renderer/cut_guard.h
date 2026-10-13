@@ -4,7 +4,7 @@
  * linear lerp.
  *
  * A guard fires when the two ticks of the pair are not one motion: the camera
- * jumped or spun, or the two ticks came from different simulation regimes.
+ * jumped, turned or broke its motion, or an object jumped.
  * The interval between the two ticks shows tick N-1 and reaches tick N at
  * alpha 1, so a guard holds N-1 for every present below alpha 1 and lets N
  * show at alpha 1 - the discontinuity lands on the present where every
@@ -41,8 +41,7 @@ int cut_census_on(void);
  * is armed, so they are complete from the first present. A kind outside
  * 0..CUT_KINDS-1 is ignored.
  * @param kind CUT_CAM, CUT_CLASS, CUT_TELEPORT or CUT_HELD.
- * @param addr The object's address; the camera guard passes its regime-edge
- *        flag instead.
+ * @param addr The object's address; the camera guard passes 0.
  * @param held Nonzero when the guard held tick N-1, zero when it snapped.
  * @param why The verdict's reason.
  * @param prev_pos World position of tick N-1; NULL reads as the origin.
@@ -128,45 +127,49 @@ void cut_census_camera(const int32_t* pos, const int16_t* mat,
                        double alpha, int cam_cut);
 
 /* Where the camera's fields sit inside a game's camera transform block, and
- * which ring rows carry the transform and the simulation-regime word. A game
- * that registers no regime row passes gs_region < 0 and the regime test is
- * skipped. */
+ * which ring row carries the transform. */
 typedef struct cut_cam_desc {
     int      cam_region;     /* ring row index of the camera transform */
-    int      gs_region;      /* ring row index of the regime word, or -1 */
     uint32_t pos_off;        /* int32 x/y/z world position */
     uint32_t mat_off;        /* the 3x3 int16 rotation the cut test reads */
 } cut_cam_desc_t;
 
 /* The measured inputs of one cut decision, for the callers' diagnostics. */
 typedef struct cut_cam_metrics {
-    double   d2;        /* squared position step, world units */
-    double   frob;      /* row-dot sum of the two rotation matrices */
-    uint32_t pgs, cgs;  /* the two regime words (0 when the game has no row) */
-    int      gs_edge;   /* the pair crossed a regime edge */
+    double   step;      /* position step length, world units */
+    double   rot;       /* largest per-row rotation angle, 4096 to a full turn */
+    double   prev_rot;  /* the previous step's rotation (0 after a hold) */
+    double   jerk;      /* length of the change from the previous position step */
+    int      prev_cut;  /* the previous pair is a cut one tick earlier */
 } cut_cam_metrics_t;
 
-/** @brief Decide whether two camera snapshots are a discontinuity rather than one motion.
+/** @brief Decide whether the newest camera step is a discontinuity rather than one motion.
  *
- * The pair is a cut when the position steps more than CUT_POS_LIMIT (5000
- * world units) in one tick ("pos"), when the row-dot sum of the two
- * rotations falls below one unit of 4096^2, a turn of more than 90 degrees
- * ("rot"), or when the two regime words differ ("gs-edge", reported only
- * when neither of the others fires). The position and rotation tests run
- * only when both camera pointers are non-NULL, the regime test only when
- * both regime pointers are.
- * @param pcam The previous tick's camera block.
- * @param ccam The current tick's camera block.
- * @param pos_off Offset of the int32 x/y/z position in the block.
- * @param mat_off Offset of the 3x3 int16 rotation in the block.
- * @param pgs The previous tick's regime word, or NULL.
- * @param cgs The current tick's regime word, or NULL.
+ * The step is prev to curr; the previous step is prev2 to prev, counted as
+ * zero (rest) when prev2 is NULL or curr follows prev by CUT_HOLD_VBL (4)
+ * VBLs or more. The rotation of a step is the largest angle a row of the
+ * rotation matrix turns, 4096 units to a full turn. The step is a cut when
+ * its position moves more than 1440 world units ("pos"), its rotation
+ * exceeds 768 ("rot"), its rotation exceeds 256 and eight times the previous
+ * step's ("rot-onset"), or its position step differs from the previous one
+ * by more than 800 units ("step-change") unless the previous pair is itself
+ * a cut one tick earlier, or its position moves more than 400 units after a
+ * previous step at rest, at most 2 units and 2 rotation units ("rest-start").
+ * The previous pair's verdict is taken from prev2 and prev alone, its own
+ * predecessor counted as rest for the first four terms; the rest-start term
+ * does not apply to it.
+ * @param prev2 The snapshot before prev, or NULL.
+ * @param prev The previous tick's snapshot.
+ * @param curr The current tick's snapshot.
+ * @param desc The game's camera descriptor; NULL, or a snapshot without the
+ *        camera row, yields NULL.
  * @param out Receives the measured inputs when non-NULL, whatever the verdict.
- * @return "pos", "rot" or "gs-edge", or NULL when the pair is one motion. */
-const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
-                              uint32_t pos_off, uint32_t mat_off,
-                              const void* pgs, const void* cgs,
-                              cut_cam_metrics_t* out);
+ * @return "pos", "rot", "rot-onset", "step-change" or "rest-start", or NULL
+ *         when the pair is one motion. */
+const char* cut_camera_reason(const openpete_interp_snapshot_t* prev2,
+                              const openpete_interp_snapshot_t* prev,
+                              const openpete_interp_snapshot_t* curr,
+                              const cut_cam_desc_t* desc, cut_cam_metrics_t* out);
 
 /** @brief Whether an object's prev/curr pair is two consecutive ticks.
  *
@@ -342,10 +345,8 @@ int cut_scene_holdable(void);
  * cut_held_rolled reads for the rest of the present.
  * @param period_ns The pair's tick period.
  * @param curr_tick_ns The current snapshot's tick stamp.
- * @param gs_edge Nonzero when the pair crossed a regime edge; noted in the
- *        census.
  * @return 1 to hold tick N-1, 0 to show tick N. */
-int cut_camera_hold(double period_ns, op_time_t curr_tick_ns, int gs_edge);
+int cut_camera_hold(double period_ns, op_time_t curr_tick_ns);
 
 /** @brief Print a `locate=camcut` line when the ring pair at the present instant is a camera cut.
  *
@@ -383,12 +384,15 @@ typedef struct cam_bracket {
  * camera row is missing, nothing is written and the caller presents the
  * live tick-N camera. Guest memory is never written.
  * @param cam The staged camera copy.
+ * @param prev2 The snapshot before prev, or NULL; the cut rule reads the
+ *        step it ends.
  * @param prev The previous snapshot.
  * @param curr The current snapshot.
  * @param desc The game's camera descriptor.
  * @param view_off Offset of the world matrix in the camera block.
  * @param out Receives the result when non-NULL. */
-void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev,
+void cam_bracket_run(uint8_t* cam, const openpete_interp_snapshot_t* prev2,
+                     const openpete_interp_snapshot_t* prev,
                      const openpete_interp_snapshot_t* curr,
                      const cut_cam_desc_t* desc, uint32_t view_off,
                      cam_bracket_t* out);
