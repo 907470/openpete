@@ -33,6 +33,7 @@
 #include "openpete_fb_snapshot.h"
 #include "game_layout.h"          /* the draw-buffer pair the retained freeze reads */
 #include "openpete_subtick_view.h"   /* PSX RAM through the sub-tick-consistent view */
+#include "openpete_fiber.h"          /* openpete_feed_key_now */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -46,6 +47,11 @@ extern unsigned openpete_frame;
 
 
 static unsigned s_cap_frame = 0xFFFFFFFFu;  /* build frame whose batch the last capture released */
+/* VBL stamp of the scene the last canonical capture took; 0xFFFFFFFF before
+ * the first capture. */
+static unsigned s_presented_scene = 0xFFFFFFFFu;
+static unsigned s_presented_reopen;         /* 2D feeds that opened a new scene because the
+                                             * live one was already captured (engagement) */
 static int s_last_abr;                      /* the tracked draw-mode ABR (defined with the dispatch state) */
 static unsigned s_post_claim, s_post_sprt, s_post_fade;
 
@@ -575,7 +581,7 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
 }
 
 /* ---- 2D prim decode + feed ----------------------------------------------- */
-/** @brief Opens the live native scene for a 2D feed, or the current VBL's scene when none is live.
+/** @brief Opens the scene a 2D feed appends to: the live one unless absent or already presented.
  *
  * A claimed primitive is fed from a batch release (the canonical capture,
  * the frame close or the ordering-table walk), where openpete_frame may
@@ -584,10 +590,31 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
  * into the history ring a VBL early and start a new scene holding only this
  * primitive, and the lagged headless compose would read the wrong slot. The
  * primitive is appended to the live scene instead, the one of the VBL that
- * built it. */
+ * built it.
+ *
+ * A late release always precedes the capture of the scene it belongs to,
+ * since the capture releases the pending batch first (on_overlay_precapture).
+ * A live scene whose stamp equals the one the last capture took
+ * (s_presented_scene) was therefore already presented, and the feed belongs
+ * to a later VBL whose render opened no scene of its own: a tick that draws
+ * 2D alone with no 3D producer and no claim, such as Spyro 3's loading
+ * picture (func_80059358, SPRTs fed at emission). Appending there would put
+ * the primitive into the presented scene, under that scene's fade and over
+ * its world, so the scene of openpete_frame is opened instead. */
 static void scene_begin_for_feed(void) {
     unsigned live = openpete_native_scene_frame();
-    openpete_native_scene_begin_frame(live != 0xFFFFFFFFu ? live : openpete_frame);
+    if (live != 0xFFFFFFFFu && (live != s_presented_scene || live == openpete_frame)) {
+        openpete_native_scene_begin_frame(live);
+        return;
+    }
+    if (live != 0xFFFFFFFFu) {
+        s_presented_reopen++;
+        static int tr = -1;
+        ENV_FLAG_LATCH(tr, "OPENPETE_UISPRITE_TRACE");
+        if (tr) fprintf(stderr, "[uireopen f=%u key=%u live=%u]\n", openpete_frame,
+                        openpete_feed_key_now(), live);
+    }
+    openpete_native_scene_begin_frame(openpete_frame);
 }
 
 /** @brief Feeds one screen-space POLY_FT4 (textured quad) into the native HUD layer.
@@ -1005,8 +1032,8 @@ static void post_capture_report(void) {
     static int tr = -1;
     ENV_FLAG_LATCH(tr, "OPENPETE_UISPRITE_TRACE");
     if (tr && s_cap_frame != 0xFFFFFFFFu)
-        fprintf(stderr, "[uipost built=%u] claim=%u sprt=%u fade=%u\n",
-                s_cap_frame, s_post_claim, s_post_sprt, s_post_fade);
+        fprintf(stderr, "[uipost built=%u] claim=%u sprt=%u fade=%u reopen=%u\n",
+                s_cap_frame, s_post_claim, s_post_sprt, s_post_fade, s_presented_reopen);
     s_post_claim = s_post_sprt = s_post_fade = 0;
 }
 
@@ -1589,7 +1616,8 @@ static void on_scene_frame_close(unsigned frame) {
  * VBL that composes no image. Each release here counts in
  * s_claim_at_capture. s_cap_frame becomes the released batch's build VBL,
  * or 0xFFFFFFFF when no batch was pending, from the claim count read before
- * the release zeroes it. */
+ * the release zeroes it. s_presented_scene becomes the stamp of the live
+ * scene, the one this capture takes. */
 static void on_overlay_precapture(void) {
     post_capture_report();
     const unsigned built = s_claim_frame;
@@ -1600,6 +1628,7 @@ static void on_overlay_precapture(void) {
      * which puts the bar 2 PSX rows out on every tick of the slide. */
     if (s_claim_n) { s_claim_at_capture++; release_batch(s_claim_n); }
     s_cap_frame = pending ? built : 0xFFFFFFFFu;
+    s_presented_scene = openpete_native_scene_frame();
 }
 
 /* Re-sums the primitives released since the last walk against their fed sums. */
