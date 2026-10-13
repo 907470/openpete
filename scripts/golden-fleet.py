@@ -123,10 +123,12 @@ coordinator:
      marker process, which a build lock can test for; it then hashes the
      synced disc bytes against the blessed headers;
   4. places units longest first (ledger fleet-unit-times.tsv beside the
-     store; a unit without a record is scaled from the spyro-1 presentation
-     unit's 60 min by candidate size) on free hosts, one per host, each under
-     a detached supervisor holding the host golden lock, with CORPUS_JOBS =
-     slots, PRESENTATION_LEG_TIMEOUT = 300 / speed x 1.5 and the deadline
+     store, one row per accepted whole unit: a filtered run's unit or one
+     whose accepted attempt imported stamped rows captured part of it and
+     writes no row; a unit without a record is scaled from the spyro-1
+     presentation unit's 60 min by candidate size) on free hosts, one per
+     host, each under a detached supervisor holding the host golden lock,
+     with CORPUS_JOBS = slots, PRESENTATION_LEG_TIMEOUT = 300 / speed x 1.5 and the deadline
      expected time / speed x 2; a lost, dead or overdue attempt is killed
      (supervisor by PID and start time, containers by the label
      org.openpete.fleet=<run-id>) and re-queued once the golden lock is free,
@@ -216,9 +218,10 @@ child runs: the child's process group is killed (SIGTERM, SIGKILL after
 STOP_KILL_GRACE_S) and every unit is recorded stopped before it started. A
 running run's remote commands carry OPENPETE_FLEET_RUN=<run id>; teardown
 signals every remote process still carrying it (REAP_SCRIPT).
-The run is FAIL with reason=stopped by user. At the run's end each stopped
-unit's stamped rows (resume/*.stamp and the files they name, from its last
-attempt's host), the ship directory and, with the local host in the run, its
+The run is FAIL with reason=stopped by user. At the run's end the stamped
+rows (resume/*.stamp and the files they name, from the last attempt's host)
+of each stopped unit and each unit that ended `attempts exhausted` or `host
+lost`, the ship directory and, with the local host in the run, its
 snapshot (hard links) are kept in <local run dir>/kept/ (u-<unit>/cand,
 u-<unit>/host naming the capturing host, ship/, tree/) beside canary/, for
 `resume`; clean removes them with the run
@@ -364,6 +367,7 @@ STREAM_DIR = os.path.join("build", "fleet-stream")
 TILE_VERBS = ("SAME", "DIVERGE", "EXTRA", "IDENT", "EXCEED")
 MOVED_VERBS = ("DIVERGE", "EXTRA", "EXCEED")
 STOP_STATUS = "stopped by user"
+UNFINISHED_STATUS = ("attempts exhausted", "host lost")   # requeue's results of a unit out of attempts
 
 HOST_KEYS = {
     "transport": str, "ssh": str, "fleet_root": str, "engine": str,
@@ -3038,13 +3042,19 @@ class Coordinator:
         return (f"{name} {'attempt ' + str(att.n) + ' on ' if att else ''}{src} -> {to}: "
                 f"carried {rows} row(s), {png} tile(s); re-queued pinned to {to}")
 
-    def keep_stopped(self):
-        """Keep each stopped unit's stamped rows, the ship directory and the local snapshot under <local run dir>/kept, which `resume` reads."""
-        stopped = [j for j in self.jobs if j.kind == "unit" and j.stopped and j.atts]
-        if not stopped:
+    def keep_unfinished(self):
+        """Keep each unfinished unit's stamped rows, the ship directory and the local snapshot under <local run dir>/kept, which `resume` reads.
+
+        A unit is unfinished when it was stopped or its last attempt ended
+        without a done marker on its final try (UNFINISHED_STATUS: attempts
+        exhausted, host lost); the rows of its last attempt are kept.
+        """
+        unfinished = [j for j in self.jobs if j.kind == "unit" and j.atts and (
+            j.stopped or (j.result or {}).get("status") in UNFINISHED_STATUS)]
+        if not unfinished:
             return
         kept = os.path.join(self.local_run_dir, "kept")
-        for job in stopped:
+        for job in unfinished:
             att = job.atts[max(job.atts)]
             try:
                 rows, png = self.fetch_rows(att.hs.host, f"{att.unit_dir}/cand",
@@ -3289,7 +3299,7 @@ class Coordinator:
             print(f"[fleet] {job.name}: re-queued (attempt {job.attempts - job.moves} of "
                   f"{MAX_ATTEMPTS} lost)")
         else:
-            job.result = {"rc": 1, "status": "attempts exhausted" if killed else "host lost",
+            job.result = {"rc": 1, "status": UNFINISHED_STATUS[0] if killed else UNFINISHED_STATUS[1],
                           "host": att.hs.name, "attempt": att.n}
 
     def finish_attempt(self, att, done, pending, on_done):
@@ -3347,7 +3357,8 @@ class Coordinator:
                 job.result.update(rc=1, status="; ".join(errs))
                 for e in errs:
                     print(f"[fleet] {job.name}: REFUSED: {e}")
-            elif job.result["rc"] in (0, 1) and not job.moved and not self.resumed:
+            elif job.result["rc"] in (0, 1) and not job.moved and not self.resumed \
+                    and not self.partial(job):
                 self.record_time(job)
         if self.stream:
             self.check_stream(job, os.path.join(self.pull_target(job.game, job.tier),
@@ -3405,6 +3416,7 @@ class Coordinator:
                   f"({f.get('imported-rows', '0')} rows) compared={f.get('compared', '?')} "
                   f"of {f.get('manifest-rows', '?')}")
         job.result["census"] = census
+        job.result["imported_rows"] = int(f.get("imported-rows") or 0)
         print(f"[fleet] {job.name}: census {census}")
 
     def canary_dir(self, host_name):
@@ -3450,6 +3462,15 @@ class Coordinator:
         for line in cp.stdout.splitlines():
             if not line.startswith("ok "):
                 print(f"[fleet] {job.name}: {line}")
+
+    def partial(self, job):
+        """True when a unit's accepted attempt captured part of the unit: a filtered run, or an attempt that imported stamped rows.
+
+        Its wall time does not price the whole unit, so it writes no ledger
+        row: expected_s reads the latest row as the whole unit's time and
+        the deadline is that time / speed x 2.
+        """
+        return self.filtered() or job.result.get("imported_rows", 0) > 0
 
     def record_time(self, job):
         """Append an accepted unit's time to the ledger."""
@@ -3554,9 +3575,9 @@ class Coordinator:
                 self.stop_current(hs)
         self.reap_remote()
         try:
-            self.keep_stopped()
+            self.keep_unfinished()
         except (FleetError, OSError) as e:
-            print(f"[fleet] keeping stopped units failed: {e}")
+            print(f"[fleet] keeping unfinished units failed: {e}")
         for hs in self.hosts:
             if not hs.touched:
                 continue

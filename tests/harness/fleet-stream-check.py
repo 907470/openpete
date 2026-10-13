@@ -51,6 +51,13 @@ write. Cases (each prints its counts):
   keep        a stopped unit's stamped rows and ship kept under kept/ at
               teardown, read by resolve_saved; unit_results reads the
               logged results `resume` decides on
+  keep-exhausted  a unit past its deadline on every attempt ends `attempts
+              exhausted` and its last attempt's stamped rows are kept the
+              same way
+  ledger      a whole unit writes a ledger row; a filtered run's unit and an
+              accepted attempt that imported stamped rows write none, so the
+              deadline on a speed-0.25 host stays the whole unit's time /
+              speed x 2
 
 Exit: 0 every case holds, 1 a case failed (named).
 """
@@ -96,7 +103,7 @@ emit() { printf '%s %s\n' "$*" "$(date +%s.%3N)" >>"$ATTEMPT_BASE.stream"; }
 emit_imported() { printf '%s %s imported\n' "$*" "$(date +%s.%3N)" >>"$ATTEMPT_BASE.stream"; }
 report() { printf '%s\n' "$@" >"$UNIT_DIR/cand/verdict-report.txt"; }
 finish() {
-    printf 'rc=%s\nstatus=%s\nattempt=%s\nwall=1\ncand-bytes=0\nmin-memavail-kib=0\n' "$1" "$2" "$ATTEMPT" \
+    printf 'rc=%s\nstatus=%s\nattempt=%s\nwall=%s\ncand-bytes=0\nmin-memavail-kib=0\n' "$1" "$2" "$ATTEMPT" "${WALL:-1}" \
         >"$ATTEMPT_BASE.done.tmp"
     mv -f "$ATTEMPT_BASE.done.tmp" "$ATTEMPT_BASE.done"
     exit 0
@@ -152,6 +159,7 @@ class FakeCo(gf.Coordinator):
         shutil.rmtree(local, ignore_errors=True)
         rc, err = gf.rsync_pull(hs.host, f"{job.result['unit_dir']}/cand", local,
                                 names=["verdict-report.txt"])
+        self.note_census(job, gf.parse_report(os.path.join(local, "verdict-report.txt")))
         return [] if rc == 0 else [err]
 
     def poll(self, hs, pending, on_done):
@@ -738,6 +746,67 @@ def case_keep_and_resume_inputs(tmp):
           f"{res}")
 
 
+def case_keep_exhausted(tmp):
+    """A unit past its deadline on every attempt ends attempts exhausted; its last attempt's stamped rows are kept for `resume`."""
+    co = FakeCo(tmp, "keep-exhausted")
+    co.golden_fd = gf.try_golden_lock(co.hs.root)
+    co.plan(UNIT, 'mkdir -p "$UNIT_DIR/cand/resume"\n'
+                  f'echo png >"$UNIT_DIR/cand/{TILES[0]}"\n'
+                  f'printf "run: r\\ntile: 00 {TILES[0]}\\n" >"$UNIT_DIR/cand/resume/bk2.k.stamp"\n'
+                  'echo partial >"$UNIT_DIR/cand/unstamped-vk.png"\n'
+                  f"emit SAME {TILES[0]} 0123456789abcdef\nsleep 60\n")
+    os.makedirs(co.ship_dir, exist_ok=True)
+    with open(os.path.join(co.ship_dir, "fields-spyro-2.txt"), "w") as f:
+        f.write("head: x\n")
+    job = gf.Job("unit", GAME, TIER)
+    co.go([job], deadline_s=1)
+    co.teardown()
+    kept = os.path.join(co.local_run_dir, "kept", f"u-{UNIT}")
+    files = gf.stamp_files(os.path.join(kept, "cand")) if os.path.isdir(kept) else []
+    host = open(os.path.join(kept, "host")).read().strip() if os.path.exists(os.path.join(kept, "host")) else "-"
+    unstamped = os.path.exists(os.path.join(kept, "cand", "unstamped-vk.png"))
+    saved = gf.resolve_saved(os.path.join(co.local_run_dir, "kept"), UNIT, co.local_run_dir) if files else {}
+    check("keep-exhausted", job.result["status"] == "attempts exhausted" and not job.stopped
+          and job.result.get("attempt") == gf.MAX_ATTEMPTS and gf.row_counts(files) == (1, 1)
+          and host == "local" and not unstamped and saved.get("host") == "local",
+          f"result {job.result['status']} (attempt {job.result.get('attempt')}), kept rows "
+          f"{gf.row_counts(files)}, host {host}, unstamped tile kept: {unstamped}")
+
+
+def case_ledger(tmp):
+    """Only a whole unit writes a ledger row; a filtered unit and an attempt that imported rows keep the deadline at the whole unit's time."""
+    done = "report 'verdict: PASS' 'exit: 0' 'imported-rows: {n}'\nWALL={w}\nfinish 0 verdict\n"
+    slow = gf.HostState(gf.Host("slow", {"transport": "local", "speed": 0.25}), {"root": "/nonexistent"}, 1, "x")
+    n0 = len(ledger_rows())
+    co = FakeCo(tmp, "ledger-whole")
+    co.plan(UNIT, done.format(n=0, w=900))
+    whole = gf.Job("unit", GAME, TIER)
+    co.go([whole])
+    n1 = len(ledger_rows())
+    norm = float(ledger_rows()[-1].split("\t")[gf.LEDGER_COLS.index("norm_s")])
+    co.ledger = gf.read_ledger()
+    before = co.deadline(whole, slow)
+    co = FakeCo(tmp, "ledger-filtered")
+    co.a.filter, co.a.freecam_filter = "summer_forest", None
+    co.plan(UNIT, done.format(n=0, w=200))
+    filt = gf.Job("unit", GAME, TIER)
+    co.go([filt])
+    n2 = len(ledger_rows())
+    co = FakeCo(tmp, "ledger-imported")
+    co.plan(UNIT, done.format(n=3, w=300))
+    imp = gf.Job("unit", GAME, TIER)
+    co.go([imp])
+    n3 = len(ledger_rows())
+    co.ledger = gf.read_ledger()
+    after = co.deadline(imp, slow)
+    check("ledger", whole.result["rc"] == filt.result["rc"] == imp.result["rc"] == 0
+          and n1 == n0 + 1 and n2 == n1 and n3 == n1 and imp.result.get("imported_rows") == 3
+          and before == after == norm / 0.25 * 2,
+          f"rows +{n1 - n0} whole, +{n2 - n1} filtered, +{n3 - n2} imported "
+          f"(imported_rows {imp.result.get('imported_rows')}); deadline at speed 0.25 {before:.0f} s "
+          f"before, {after:.0f} s after (norm_s {norm:.0f} / 0.25 x 2)")
+
+
 def case_canary_verdict(tmp):
     """canary-verdict.txt per host, the pulled record's fleet stamp, and fleet_refusal reading both."""
     from PIL import Image
@@ -804,7 +873,7 @@ def main():
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
                      case_expect, case_canary_verdict, case_move, case_move_cli,
-                     case_keep_and_resume_inputs):
+                     case_keep_and_resume_inputs, case_keep_exhausted, case_ledger):
             case(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
