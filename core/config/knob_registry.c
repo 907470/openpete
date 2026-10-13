@@ -2312,6 +2312,13 @@ static const knob_desc_t g_builtin_debug[] = {
         "Log the window's flags and input focus at bring-up and at exit for a "
         "window created without --background, which prints them anyway. The "
         "comparison of the two is what proves the flag changed the state."),
+    ENVROW_LATCHED_NOTE("PSYX_DITHER", "Debug",
+        "0 in a run that writes -og screenshots, else 1",
+        "1 = the PsyCross raster (the -og screenshot reference, --renderer "
+        "psycross, the framebuffer copy-back StoreImage reads) adds the PSX "
+        "GPU's 4x4 ordered dither to shaded polygons whose draw state "
+        "requests it. 0 = no dither, so the reference compares with the "
+        "undithered native render. Read at launch."),
 
     { "fillpick", "Fill-tag inspector", "Debug", NULL, "OPENPETE_FILLPICK",
       "Pick the terrain face under the crosshair and re-judge its LP fill "

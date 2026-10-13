@@ -1029,6 +1029,29 @@ static int load_cpu_seed(CPUState* cpu, const char* path) {
 extern int PsyX_Initialise(char* windowName, int screenWidth,
                            int screenHeight, int fullscreen, int startHidden);
 extern void PsyX_Shutdown(void);
+extern void PsyX_SetDithering(int enable);
+
+/** @brief Set PsyCross's ordered dither: off in a run that writes -og screenshots, on otherwise.
+ *
+ * The PsyCross raster adds the 4x4 dither matrix to every shaded polygon
+ * whose draw state asks for it. A run that writes the -og reference
+ * (--screenshot-on-frame/-tick or --screenshot-presents-start without
+ * --screenshot-native-only) draws it undithered, so the reference compares
+ * with the native render, which is undithered unless --dither is set. Every
+ * other run keeps the dither: PsyCross's framebuffer is copied back into the
+ * VRAM mirror that StoreImage reads into guest RAM, so those bytes stay as
+ * they were. OPENPETE_PSYX_DITHER=0|1 overrides either default. Read once at
+ * boot.
+ * @param opts Resolved launch options. */
+static void apply_psyx_dither_env(const openpete_options_t* opts)
+{
+    const bool og_written = !opts->screenshot_native_only
+        && (opts->screenshot_frame_count > 0 || opts->screenshot_presents_start >= 0);
+    const char* v = getenv("OPENPETE_PSYX_DITHER");
+    int on = !og_written;
+    if (v && (strcmp(v, "0") == 0 || strcmp(v, "1") == 0)) on = v[0] == '1';
+    PsyX_SetDithering(on);
+}
 #include "openpete_disc_cache.h"
 extern char PsyX_BeginScene(void);
 extern void PsyX_EndScene(void);
@@ -1469,6 +1492,7 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
      * them with the resolved [keys.pad] bindings. */
     stamp_psx_pad_bindings(1);
+    apply_psyx_dither_env(opts);
 
     /* Wire PsyCross's CDFS to the disc image so CdRead has real data.
      * Without --disc CdRead returns failure, which the leaf smoke test
@@ -3000,6 +3024,7 @@ static int run_host_init(const openpete_options_t* opts) {
     /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
      * them with the resolved [keys.pad] bindings. */
     stamp_psx_pad_bindings(1);
+    apply_psyx_dither_env(opts);
 
     /* The gamepad subsystem is up now, which is the earliest point a mapping
      * can be added and the latest one at which it still reaches a pad that
