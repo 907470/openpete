@@ -489,6 +489,17 @@ class PromoteTest(Scratch):
         self.assertEqual(rc, 1)
         self.assertIn("libvulkan", err.getvalue())
 
+    def test_no_record_refused(self):
+        self.assert_refused(self.promote(), "holds no %s" % pb.RECORD_NAME)
+
+    def test_remote_device_mismatch(self):
+        self.fleet()
+        self.verdict()
+        write(os.path.join(self.cand, pb.DEVICE_NAME),
+              "[rhi/vk] device='other' api=1.3 driver-info='Mesa 99.0.0'\n")
+        self.assert_refused(self.promote(), "capture environment is not the "
+                            "pinned one")
+
     def test_remote_other_source_tree(self):
         self.fleet(**{"source-tree": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"})
         self.verdict()

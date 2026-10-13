@@ -160,7 +160,14 @@ coordinator:
      verdict of a capture from another host through them), prints the
      report's census (captured,
      imported and compared tiles), and renders heat diffs locally
-     (presentation-corpus-diff.py --expect-subset);
+     (presentation-corpus-diff.py --expect-subset); an accepted pull is then
+     copied (hard links) into build/fleet-stream/<run-id>/<unit>/, the run's
+     own candidate, which the next run or local capture does not clear
+     (streamed tiles the pull does not hold move to its stream-only/), and
+     the coordinator prints the promote command for it:
+     tests/harness/presentation-corpus-promote.sh
+     build/fleet-stream/<run-id>/<unit> <tile>... (game and tier read from
+     its capture record);
   7. pulls every attempt's crashed capture legs (u-<unit>/cand.crashes, the
      harness's crash directory: leg log, argv, exit code, hang and core
      dumps) from every touched host into <local run dir>/crashes/<host>/
@@ -366,6 +373,7 @@ STREAM_K = 20                 # divergent tiles and identity pairs pulled per po
 STREAM_DIR = os.path.join("build", "fleet-stream")
 TILE_VERBS = ("SAME", "DIVERGE", "EXTRA", "IDENT", "EXCEED")
 MOVED_VERBS = ("DIVERGE", "EXTRA", "EXCEED")
+STREAM_ONLY_DIR = "stream-only"  # streamed tiles the accepted pull does not hold
 STOP_STATUS = "stopped by user"
 UNFINISHED_STATUS = ("attempts exhausted", "host lost")   # requeue's results of a unit out of attempts
 
@@ -2086,6 +2094,17 @@ def rsync_recheck(host, src, listfile, dest):
     return changes
 
 
+def link_or_copy(src, dst):
+    """Replace dst with a hard link to src, or a copy where the link fails (another filesystem); return dst."""
+    if os.path.lexists(dst):
+        os.unlink(dst)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+    return dst
+
+
 def rsync_pull(host, src_dir, dst_dir, names=None, includes=None):
     """Copy named files (or include patterns, or everything) from src_dir on the host to dst_dir."""
     os.makedirs(dst_dir, exist_ok=True)
@@ -3396,7 +3415,39 @@ class Coordinator:
               f"{len(tiles)} divergent tile(s), {len(pairs)} identity tile(s)")
         if tiles and not errs:
             self.heat_diffs(job, local)
+        if not errs:
+            self.keep_run_candidate(job, local)
         return errs
+
+    def keep_run_candidate(self, job, local):
+        """Copy an accepted unit pull into build/fleet-stream/<run id>/<unit>/, the run's own promotable candidate.
+
+        The pull target is shared: the next local capture or fleet run of the
+        tier clears it. The stream directory is the run's alone, so it receives
+        every pulled file and directory (hard links where the filesystem allows,
+        copies otherwise), the stamped capture record among them. A top-level
+        golden tile the stream pulled that the accepted pull does not hold (an
+        identity pair member, or a tile of a superseded attempt) moves to
+        STREAM_ONLY_DIR, so promote_select sees exactly the accepted attempt's
+        tiles under the record that describes them.
+        """
+        dest = self.stream_dir(job)
+        os.makedirs(dest, exist_ok=True)
+        pulled = set(os.listdir(local))
+        for n in os.listdir(dest):
+            if n.endswith("-vk.png") and n not in pulled and os.path.isfile(os.path.join(dest, n)):
+                os.makedirs(os.path.join(dest, STREAM_ONLY_DIR), exist_ok=True)
+                os.replace(os.path.join(dest, n), os.path.join(dest, STREAM_ONLY_DIR, n))
+        for n in sorted(pulled):
+            src, dst = os.path.join(local, n), os.path.join(dest, n)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=link_or_copy)
+            else:
+                link_or_copy(src, dst)
+        flags = "" if job.tier == "presentation" else f"PRESENTATION_TIER={job.tier} "
+        print(f"[fleet] {job.name}: run candidate {os.path.relpath(dest, self.tree)}; promote with "
+              f"{flags}tests/harness/presentation-corpus-promote.sh "
+              f"{os.path.relpath(dest, self.tree)} --game {job.game} <tile>...")
 
     def stamp_record(self, local, hs):
         """Append the run id, the fleet host name and the local run directory to a pulled capture record."""

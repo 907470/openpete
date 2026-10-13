@@ -1770,6 +1770,12 @@ def cmd_promote(a):
     printed, and the rows and header it writes name neither."""
     root = repo_root()
     rec = read_record(a.candidate)
+    if not rec:
+        print("[presentation-promote] REFUSED: %s holds no %s; promote from "
+              "the directory a capture wrote (a gate's candidate directory, "
+              "or build/fleet-stream/<run-id>/<unit>/ of a golden-fleet run)"
+              % (a.candidate, RECORD_NAME), file=sys.stderr)
+        return 1
     foreign = foreign_host(rec)
     m = promote_manifest(a, rec)
     if m is None:

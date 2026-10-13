@@ -21,14 +21,21 @@
 #     tile    a golden basename (e.g. cliff-town-vista__canon__300-vk.png) OR a
 #             substring filter; only matching candidate tiles are promoted
 #     --all   promote every -vk tile in candidate_dir (full re-bless)
-#     --game  game slug (default spyro-1); selects the manifest
+#     --game  game slug; selects the manifest (default: the candidate's
+#             capture record's game=, else spyro-1)
 #     --exclude=SUBSTR
 #             leave out tiles whose basename contains SUBSTR (repeatable), e.g.
 #             rows held unblessed under --all
 #     --environment-accept=REASON
 #             admit a capture environment that departs from the manifest
 #             header; the header records REASON
-#   PRESENTATION_TIER=dragons selects the dragon-rescue tier's manifest.
+#   PRESENTATION_TIER=dragons selects the dragon-rescue tier's manifest; unset,
+#   the capture record's tier= selects it.
+#
+# A golden-fleet run leaves each unit's promotable candidate in
+# build/fleet-stream/<run-id>/<unit>/ (its pulled tiles, verdict report,
+# capture-device.txt and capture record), so after a run:
+#   tests/harness/presentation-corpus-promote.sh build/fleet-stream/<run-id>/<unit> <tile>...
 #
 # The promote runs inside the capture image, on a candidate captured there:
 # the manifest header records the capture environment, and a promote whose
@@ -54,6 +61,15 @@ set -u
 cd "$(dirname "$0")/../.." || exit 2
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
+
+# The candidate's capture record names the game and tier it was captured for;
+# they apply when the caller names neither (promote refuses a mismatch).
+rec_game="$(sed -n 's/^game=//p' "${1:-}/capture-record.txt" 2>/dev/null | tail -1)"
+rec_tier="$(sed -n 's/^tier=//p' "${1:-}/capture-record.txt" 2>/dev/null | tail -1)"
+if [[ -n "$rec_game" && " $* " != *" --game "* && " $*" != *" --game="* ]]; then
+  set -- "$@" --game "$rec_game"
+fi
+if [[ -n "$rec_tier" && -z "${PRESENTATION_TIER:-}" ]]; then export PRESENTATION_TIER="$rec_tier"; fi
 
 if ! pg_in_capture_image; then
   run_dir="$(sed -n 's/^fleet-run-dir=//p' "${1:-}/capture-record.txt" 2>/dev/null | tail -1)"

@@ -865,6 +865,47 @@ def case_canary_verdict(tmp):
           f"record {recd}; pass verdict -> {admitted}; differing verdict -> {refused}")
 
 
+def case_run_candidate(tmp):
+    """An accepted pull becomes the run's own promotable candidate in the stream directory."""
+    from PIL import Image
+    pb = gf.load_pb(TREE)
+    co = FakeCo(tmp, "run-candidate")
+    job = gf.Job("unit", GAME, TIER)
+    pull, dest = os.path.join(co.tmp, "pull"), co.stream_dir(job)
+    for d in (pull, os.path.join(pull, "identity"), os.path.join(dest, "diff")):
+        os.makedirs(d)
+    for name, px in (("a__canon__1-vk.png", 1), ("b__canon__1-vk.png", 2)):
+        Image.new("RGB", (4, 4), (px, 0, 0)).save(os.path.join(pull, name))
+    Image.new("RGB", (4, 4), (3, 0, 0)).save(os.path.join(pull, "identity", "c__ident__1-vk.png"))
+    for name in ("verdict-report.txt", "capture-device.txt"):
+        with open(os.path.join(pull, name), "w") as f:
+            f.write(name + "\n")
+    with open(os.path.join(pull, gf.RECORD_NAME), "w") as f:
+        f.write(f"game={GAME}\ntier={TIER}\nhost=remote-box\n")
+    co.hs.name = "b"
+    co.stamp_record(pull, co.hs)
+    # The stream pulled a's superseded-attempt capture and a tile the accepted pull lacks.
+    Image.new("RGB", (4, 4), (9, 0, 0)).save(os.path.join(dest, "a__canon__1-vk.png"))
+    Image.new("RGB", (4, 4), (8, 0, 0)).save(os.path.join(dest, "z__canon__1-vk.png"))
+    with open(os.path.join(dest, "diff", "a__canon__1-diff.png"), "wb") as f:
+        f.write(b"heat")
+    co.keep_run_candidate(job, pull)
+    shutil.rmtree(pull)  # the next capture clears the shared pull target
+    rec = pb.read_record(dest)
+    a_px = Image.open(os.path.join(dest, "a__canon__1-vk.png")).getpixel((0, 0))[0]
+    tiles = pb.promote_select(dest, True, [])
+    ok = (tiles == ["a__canon__1-vk.png", "b__canon__1-vk.png"] and a_px == 1
+          and os.path.isfile(os.path.join(dest, gf.STREAM_ONLY_DIR, "z__canon__1-vk.png"))
+          and os.path.isfile(os.path.join(dest, "identity", "c__ident__1-vk.png"))
+          and os.path.isfile(os.path.join(dest, "diff", "a__canon__1-diff.png"))
+          and os.path.isfile(os.path.join(dest, "verdict-report.txt"))
+          and os.path.isfile(os.path.join(dest, "capture-device.txt"))
+          and rec.get("fleet-run") == co.run_id and rec.get("fleet-host") == "b"
+          and rec.get("fleet-run-dir") == os.path.abspath(co.local_run_dir))
+    check("run-candidate", ok, f"tiles {tiles}, a pixel {a_px}, record {rec}, "
+          f"entries {sorted(os.listdir(dest))}")
+
+
 def main():
     """Run every case in a temporary directory with the ledger redirected."""
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
@@ -872,7 +913,7 @@ def main():
     try:
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
-                     case_expect, case_canary_verdict, case_move, case_move_cli,
+                     case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
                      case_keep_and_resume_inputs, case_keep_exhausted, case_ledger):
             case(tmp)
     finally:
