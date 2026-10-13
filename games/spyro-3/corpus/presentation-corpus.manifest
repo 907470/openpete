@@ -168,8 +168,12 @@ title-demo-camcut|6373|100||6425
 # title-demo-hold-player / -particles: held presents on attract-demo camera
 # cuts with the player (7703-7704) and particles (11052-11053) on screen; a
 # held cut draws tick N-1's sets under tick N-1's camera. Blessed pre-fix.
+# -particles is freeze-marked: at its 10973 sample the game is in gamestate 5
+# with DRAWENV isbg=0, retaining the last rendered frame, which only the
+# capture-time snapshot maintains; 11052, 11053 and 11073 are byte-identical
+# with the flag and without it.
 title-demo-hold-player|7673|100||7703,7704
-title-demo-hold-particles|10973|100||11052,11053
+title-demo-hold-particles|10973|100|freeze|11052,11053
 # title-demo-segment-fade / -2: attract-demo segment changes, where the
 # loading image fades in on ticks with no 3D producer; the canonical present
 # drew the previous presented scene and its fade. Blessed pre-fix.
