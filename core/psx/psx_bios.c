@@ -97,7 +97,8 @@ static void bios_census(CPUState* cpu, uint32_t table, uint32_t fn) {
  * one row of <path>, stamped with openpete_vbl and openpete_frame:
  *   A vbl frame fn a0 v0              A0 card call (70h, ABh, ACh) and its result
  *   B vbl frame fn a0 a1 a2 v0        B0 file call (32h-36h) and its result
- *   C vbl frame port op sector        a transfer started by the vblank step
+ *   C vbl frame port op sector key    a transfer started by the vblank step
+ *                                     keyed on reference VBLANK `key`
  *   F vbl frame port flags            a transfer finished, with the port's status
  *   D vbl frame class spec            DeliverEvent of a card or bu class, or an fd
  *   H vbl frame func                  an EvMdINTR handler that delivery ran
@@ -750,6 +751,8 @@ static void mc_end(CPUState* cpu, int result) {
     cw_row("F %u %02x", port, kb(K_MC_FLAGS + port));
 }
 
+static uint32_t s_step_key = 0;   /* the reference VBLANK index of the vblank step running */
+
 /** @brief Start the served port's command: the fast track, the handler node, and the handler's select byte (firstStageCardAction's start, then mcHandler's first call).
  *
  * @param port The port the step flipped to. */
@@ -767,7 +770,7 @@ static void mc_begin(uint32_t port) {
     kw_set(K_MC_SIO_MASK, mask);
     kw_set(K_MC_OPERATION, 1u);
     kb_set(K_MC_ACTIVE, 1u);
-    cw_row("C %u %x %u", port, kb(K_MC_FLAGS + port), kw(K_MC_SECTOR + 4u * port));
+    cw_row("C %u %x %u %u", port, kb(K_MC_FLAGS + port), kw(K_MC_SECTOR + 4u * port), s_step_key);
 }
 
 /** @brief Abort the transfer no card answered (firstStageCardAction, RAM 0x5068): status 0x11, the bu timeout, EvSpTIMOUT.
@@ -800,6 +803,7 @@ void openpete_psx_bios_vbl(CPUState* cpu) {
 
 void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
     if (!kw(K_MC_STARTED)) return;
+    s_step_key = vbl;
     int known = 0;
     const int served = openpete_sched_sio0_served(vbl, &known);
     const int active = kb(K_MC_ACTIVE) != 0u;
@@ -914,10 +918,10 @@ static int bios_b0_card(CPUState* cpu, uint32_t fn) {
  * The kernel's backup-unit layer over the card driver, at the SCPH-1001
  * addresses its ROM code uses (OpenBIOS card/backupunit.c and
  * card/device.c are the same layer): per port the bu operation (1 info, 2
- * read, 4 directory load), the directory load's stage and index, a read's
- * sector index, sectors left, file and buffer; the low-level callbacks'
- * flags; the broken-sector lists, the directory cache and the sector
- * buffers. The card driver calls the layer at each command's end (A0
+ * read, 3 write, 4 directory load, 7 a write's closing info), the
+ * directory load's stage and index, a transfer's sector index, sectors
+ * left, file and buffer; the low-level callbacks' flags; the broken-sector
+ * lists, the directory cache and the sector buffers. The card driver calls the layer at each command's end (A0
  * 0xA7 done, 0xA8 error, 0xA9 timeout, 0xAA new card, 0xAE write error),
  * before HwCARD; an operation chains its next sector from there and ends
  * by delivering on the bu class. */
@@ -926,8 +930,13 @@ static int bios_b0_card(CPUState* cpu, uint32_t fn) {
 #define K_BU_INDEX    0x9F30u   /* per port: directory entry or broken-list index */
 #define K_BU_SECTOR   0x9F50u   /* per port: a read's sector index in the file */
 #define K_BU_REMAIN   0x9F58u   /* per port: a read's sectors left */
-#define K_BU_FILE     0x9F70u   /* per port: a read's file control block */
-#define K_BU_BUFFER   0x9F78u   /* per port: a read's buffer */
+#define K_BU_FILE     0x9F70u   /* per port: a read's or write's file control block */
+#define K_BU_BUFFER   0x9F78u   /* per port: a read's or write's buffer */
+#define K_BU_OP_ERROR 0x9F80u   /* per port: a synchronous transfer's failing status index */
+#define K_BU_ACTUAL   0x9F88u   /* halfword per port: the card sector a write issued */
+#define K_BU_FOUND    0x9F8Cu   /* the last directory index a name search found */
+#define K_BU_AUTOFMT  0x9F90u   /* format a card without "MC" (cleared by _bu_init) */
+#define K_DEV_STATUS  0x8644u   /* C(1Ah) setDeviceStatus, RAM 0x3E5C */
 #define K_BU_LL_DONE  0xB9D0u   /* A0 0xA7 ran; 0xB9D4-0xB9E0 the error callbacks */
 #define K_BU_BROKEN   0xB9E8u   /* per port 20 words: the broken sectors */
 #define K_BU_BROKEN_PORT 0x50u
@@ -935,6 +944,8 @@ static int bios_b0_card(CPUState* cpu, uint32_t fn) {
 #define BU_OP_INFO    1u
 #define BU_OP_READ    2u
 #define BU_OP_TOC     4u
+#define BU_OP_WRITE   3u
+#define BU_OP_WRITE_INFO 7u     /* a write's trailing card info */
 
 /** @brief Finish a port's bu operation and signal the bu class (buFinishAndTrigger, ROM 0xBFC0BFF0).
  *
@@ -1179,8 +1190,59 @@ static void bu_read_step(CPUState* cpu, uint32_t port, uint32_t dev) {
     if (mc_queue(dev, MC_HANDLER_READ, (uint32_t)sector, kw(K_BU_BUFFER + 4u * port)) != 1u) bu_issue_failed(cpu, port);
 }
 
+static uint32_t bu_card_info(uint32_t dev);
+
+/** @brief Advance an asynchronous write after a sector was written (ROM 0xBFC0B7F4).
+ *
+ * After the last sector the done flag clears and a card info command is
+ * recorded (its failure ends the operation with EvSpERROR), and the port's
+ * operation becomes 7 either way. Otherwise the buffer and the file offset
+ * advance by 128 and the next sector, through the block chain and the
+ * broken-sector list, is recorded at 0x9F88 and written.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port.
+ * @param dev The device id the commands address. */
+static void bu_write_step(CPUState* cpu, uint32_t port, uint32_t dev) {
+    const uint32_t remain = kw(K_BU_REMAIN + 4u * port) - 1u;
+    kw_set(K_BU_REMAIN + 4u * port, remain);
+    if (remain == 0u) {
+        kw_set(K_BU_LL_DONE, 0u);
+        if (bu_card_info(dev) != 1u) {
+            kw_set(K_BU_LL_DONE + 4u, 1u);
+            bu_finish(cpu, port, EV_SPEC_ERROR);
+        }
+        kw_set(K_BU_OP + 4u * port, BU_OP_WRITE_INFO);
+        return;
+    }
+    const uint32_t f = kw(K_BU_FILE + 4u * port);
+    kw_set(K_BU_BUFFER + 4u * port, kw(K_BU_BUFFER + 4u * port) + MC_FRAME_BYTES);
+    kw_set(f + 0x10u, kw(f + 0x10u) + MC_FRAME_BYTES);
+    const uint32_t n = kw(K_BU_SECTOR + 4u * port) + 1u;
+    kw_set(K_BU_SECTOR + 4u * port, n);
+    int32_t sector = bu_file_sector(port, kw(f + 0x24u), (int32_t)n);
+    const int32_t sub = bu_broken_sector(port, sector);
+    if (sub != -1) sector = sub;
+    kh_set(K_BU_ACTUAL + 2u * port, (uint32_t)sector);
+    if (mc_queue(dev, MC_HANDLER_WRITE, (uint32_t)sector, kw(K_BU_BUFFER + 4u * port)) != 1u) bu_issue_failed(cpu, port);
+}
+
+/** @brief End an asynchronous write when its trailing card info finished (ROM 0xBFC0BA44): the file's class (its fd) gets 0x0004, the offset advances by 128, the operation ends with EvSpIOE.
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The port. */
+static void bu_write_end(CPUState* cpu, uint32_t port) {
+    const uint32_t f = kw(K_BU_FILE + 4u * port);
+    deliver_event(cpu, kw(f + 0x28u), EV_SPEC_IOE);
+    kw_set(f + 0x10u, kw(f + 0x10u) + MC_FRAME_BYTES);
+    bu_finish(cpu, port, EV_SPEC_IOE);
+}
+
 /** @brief Run the bu layer's completion callback for the last finished command (A0 0xA7, ROM 0xBFC0C220 and 0xBFC0B648).
  *
+ * The port's operation selects the step (the ROM's table at 0xBFC0DC90):
+ * 1 and 8 finish, 2 reads on, 3 writes on, 4 loads the directory, 6
+ * becomes 3 and writes on, 7 ends a write. Operation 5, the rewrite of a
+ * broken sector's replacement, is not modelled and ends with EvSpERROR.
  * @param cpu Guest CPU the event handlers run on. */
 static void bu_ll_done(CPUState* cpu) {
     kw_set(K_BU_LL_DONE, 1u);
@@ -1191,25 +1253,15 @@ static void bu_ll_done(CPUState* cpu) {
     case BU_OP_INFO:
     case 8u:          bu_finish(cpu, port, EV_SPEC_IOE); return;
     case BU_OP_READ:  bu_read_step(cpu, port, dev); return;
+    case 6u:          kw_set(K_BU_OP + 4u * port, BU_OP_WRITE); /* fall through */
+    case BU_OP_WRITE: bu_write_step(cpu, port, dev); return;
+    case BU_OP_WRITE_INFO: bu_write_end(cpu, port); return;
     case BU_OP_TOC:   bu_toc_step(cpu, port, dev); return;
     default:
         OPL_WARN_F("bios", "bu operation %u on port %u is not modelled; ended with EvSpERROR", kw(K_BU_OP + 4u * port), port);
         bu_issue_failed(cpu, port);
         return;
     }
-}
-
-/** @brief Leave each present card as _bu_init's card operations leave it: the new-card bit clear.
- *
- * _bu_init (A0 0x70, ROM 0xBFC09914) runs buInit on both ports inside the
- * call; on a formatted card its sector-63 write, issued after _new_card,
- * succeeds, and the card clears FLAG bit 3. The call's card operations and
- * the VBLs they span are not modelled; this keeps the card's FLAG byte
- * what later commands read on hardware.
- */
-static void bu_init_card_side(void) {
-    for (int p = 0; p < 2; p++)
-        if (openpete_memcard_present(p)) s_card_flag[p] = (uint8_t)(card_flag(p) & ~MC_FLAG_NEW);
 }
 
 /** @brief A0 0xAB cardInfo(chan): bu operation 1 over a card info command (ROM 0xBFC0C0DC).
@@ -1245,6 +1297,447 @@ static void bu_ll_reset(void) {
     for (uint32_t i = 0; i < 5u; i++) kw_set(K_BU_LL_DONE + 4u * i, 0u);
     static const uint16_t k_specs[4] = { EV_SPEC_IOE, EV_SPEC_ERROR, EV_SPEC_NEW, EV_SPEC_TIMOUT };
     for (int i = 0; i < 4; i++) undeliver_event(EV_CLASS_CARD_BU, k_specs[i]);
+}
+
+/* --- Waits inside a call ----------------------------------------------------
+ * _bu_init, a synchronous open, O_CREAT's directory write-back and a
+ * synchronous read or write spin in the kernel (mcWaitForStatus, ROM
+ * 0xBFC09144; mcWaitForStatusAndReturnIndex, 0xBFC0895C) until the card
+ * driver, run from the VBLANK interrupt, sets one of the low-level callback
+ * flags. The gate reproduces the spin by delivering VBLs from inside the
+ * call through the VBL delivery function, one per VBLANK, until a flag is
+ * set. A wait entered with interrupts masked is counted: its deliveries are
+ * held, and on hardware it never ends. */
+#define BU_WAIT_MAX 600u        /* VBLs one wait may span before it reports and fails */
+static uint64_t s_incall_waits = 0, s_incall_vbls = 0, s_incall_masked = 0, s_incall_capped = 0;
+static uint32_t s_incall_call_vbls = 0;  /* VBLs delivered inside the current call */
+
+/** @brief Wait inside a kernel call for the card driver's next callback flag (mcWaitForStatusAndReturnIndex).
+ *
+ * Delivers one VBL at a time until a flag of 0xB9D0-0xB9E0 is 1, then
+ * clears the flags and undelivers the bu specs as the kernel does
+ * (bu_ll_reset). Without the delivery function, or after BU_WAIT_MAX VBLs,
+ * the wait reports and returns 1 (an error).
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @return The flag's index: 0 done, 1 error, 2 timeout, 3 new card, 4 write error. */
+static int bu_wait_index(CPUState* cpu) {
+    extern void psyq_deliver_incall_vbl(CPUState* cpu) __attribute__((weak));
+    s_incall_waits++;
+    if (openpete_crit_masked()) s_incall_masked++;
+    for (uint32_t n = 0;; n++) {
+        for (uint32_t i = 0; i < 5u; i++)
+            if (kw(K_BU_LL_DONE + 4u * i) == 1u) { bu_ll_reset(); return (int)i; }
+        if (!psyq_deliver_incall_vbl || n >= BU_WAIT_MAX) {
+            s_incall_capped++;
+            OPL_WARN_F("bios", "card wait inside a kernel call ended after %u VBLs with no card callback%s",
+                       n, psyq_deliver_incall_vbl ? "" : " (no VBL delivery)");
+            bu_ll_reset();
+            return 1;
+        }
+        psyq_deliver_incall_vbl(cpu);
+        s_incall_vbls++;
+        s_incall_call_vbls++;
+    }
+}
+
+/** @brief Wait inside a kernel call for the card driver's next callback flag (mcWaitForStatus).
+ *
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @return 1 when the command finished, 0 on any error flag. */
+static int bu_wait(CPUState* cpu) {
+    return bu_wait_index(cpu) == 0;
+}
+
+/** @brief Log the in-call wait census line.
+ *
+ * @param what The call the line names. */
+static void bu_wait_census(const char* what) {
+    if (s_census > 0)
+        OPL_INFO_F("bios", "in-call waits after %s: %u VBLs in this call; totals waits=%llu vbls=%llu masked=%llu capped=%llu",
+                   what, s_incall_call_vbls, (unsigned long long)s_incall_waits, (unsigned long long)s_incall_vbls,
+                   (unsigned long long)s_incall_masked, (unsigned long long)s_incall_capped);
+}
+
+/** @brief The directory and broken-list state a failed buInit leaves: every directory entry zeroed, every broken sector -1 (ROM 0xBFC08F8C).
+ *
+ * @param port The port. */
+static void bu_init_failure(uint32_t port) {
+    void* dir = guest_ptr(K_BU_DIR + port * K_BU_DIR_PORT, 15u * BU_DIR_ENTRY);
+    if (dir) memset(dir, 0, 15u * BU_DIR_ENTRY);
+    for (uint32_t i = 0; i < 20u; i++) kw_set(K_BU_BROKEN + port * K_BU_BROKEN_PORT + 4u * i, 0xFFFFFFFFu);
+}
+
+/** @brief Read a directory or broken-list sector into the port's sector buffer inside the call, checking its checksum.
+ *
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param dev The device id.
+ * @param sector The card sector.
+ * @return 1 when the sector arrived with a good checksum. */
+static int bu_read_checked(CPUState* cpu, uint32_t dev, uint32_t sector) {
+    const uint32_t buf = K_BU_SECBUF + (uint32_t)mc_port(dev) * MC_FRAME_BYTES;
+    return mc_queue(dev, MC_HANDLER_READ, sector, buf) == 1u && bu_wait(cpu) && bu_sector_ok(buf);
+}
+
+/** @brief Count each directory entry a file's block chain reaches and free every entry no file reaches (buInit's pass, ROM 0xBFC08D98).
+ *
+ * Each entry is first checked for a chain that meets a block in the wrong
+ * state (bu_dir_check). A first block (0x51) or deleted first block
+ * (0xA1) marks itself and the blocks its size covers along the chain;
+ * every unmarked entry becomes free with no next block.
+ * @param port The port. */
+static void bu_init_settle(uint32_t port) {
+    const uint32_t dir = K_BU_DIR + port * K_BU_DIR_PORT;
+    uint32_t used[15] = { 0 };
+    for (uint32_t s = 0; s < 15u; s++) (void)bu_dir_check(port, s);
+    for (uint32_t s = 0; s < 15u; s++) {
+        const uint32_t e = dir + s * BU_DIR_ENTRY;
+        if (kw(e) != 0x51u && kw(e) != 0xA1u) continue;
+        used[s] = 1u;
+        uint32_t next = kh(e + 8u);
+        for (int32_t b = (int32_t)kw(e + 4u) / 8192 - 1; b > 0 && next != 0xFFFFu; b--) {
+            if (next < 15u) used[next]++;
+            next = kh(dir + next * BU_DIR_ENTRY + 8u);
+        }
+    }
+    for (uint32_t s = 0; s < 15u; s++) {
+        if (used[s]) continue;
+        const uint32_t e = dir + s * BU_DIR_ENTRY;
+        kw_set(e + 4u, 0u);
+        kw_set(e, 0xA0u);
+        kh_set(e + 8u, 0xFFFFu);
+    }
+}
+
+/** @brief buInit on one port inside the call (ROM 0xBFC08B3C): sector 0, the sector-63 write, the 15 directory sectors and the 20 broken-list sectors, each waited for.
+ *
+ * _new_card precedes the sector-0 read and the sector-63 write. A sector 0
+ * without "MC" fails the port (the auto-format flag is clear after
+ * _bu_init); a failed issue, wait or checksum fails it too, leaving the
+ * directory zeroed and the broken list -1. The sector-63 write's result is
+ * not checked.
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param dev The device id, 0x00 or 0x10.
+ * @return 1 when the port's directory loaded, 0 on failure. */
+static int bu_init_port(CPUState* cpu, uint32_t dev) {
+    const uint32_t port = (uint32_t)mc_port(dev);
+    const uint32_t buf = K_BU_SECBUF + port * MC_FRAME_BYTES;
+    const uint32_t dir = K_BU_DIR + port * K_BU_DIR_PORT;
+    kw_set(K_MC_SKIP_NEW, 1u);
+    if (mc_queue(dev, MC_HANDLER_READ, 0u, buf) != 1u || !bu_wait(cpu) || kb(buf) != 'M' || kb(buf + 1u) != 'C') {
+        if (kw(K_BU_AUTOFMT) == 1u && kb(buf) != 'M')
+            OPL_WARN_F("bios", "_bu_init: card format on port %u is not modelled", port);
+        bu_init_failure(port);
+        return 0;
+    }
+    kw_set(K_MC_SKIP_NEW, 1u);
+    if (mc_queue(dev, MC_HANDLER_WRITE, 0x3Fu, buf) == 1u) (void)bu_wait(cpu);
+    for (uint32_t s = 0; s < 15u; s++) {
+        void* e = guest_ptr(dir + s * BU_DIR_ENTRY, BU_DIR_ENTRY);
+        if (e) memset(e, 0, BU_DIR_ENTRY);
+        kw_set(dir + s * BU_DIR_ENTRY, 0xA0u);
+        kw_set(dir + s * BU_DIR_ENTRY + 4u, 0u);
+    }
+    for (uint32_t s = 0; s < 15u; s++) {
+        if (!bu_read_checked(cpu, dev, s + 1u)) { bu_init_failure(port); return 0; }
+        void* e = guest_ptr(dir + s * BU_DIR_ENTRY, BU_DIR_ENTRY);
+        const void* src = guest_ptr(buf, BU_DIR_ENTRY);
+        if (e && src) memcpy(e, src, BU_DIR_ENTRY);
+    }
+    bu_init_settle(port);
+    for (uint32_t i = 0; i < 20u; i++) {
+        if (!bu_read_checked(cpu, dev, i + 16u)) { bu_init_failure(port); return 0; }
+        kw_set(K_BU_BROKEN + port * K_BU_BROKEN_PORT + 4u * i, kw(buf));
+    }
+    return 1;
+}
+
+/** @brief A0 0x70 _bu_init (ROM 0xBFC09914): clear both ports' bu operations, the auto-format flag and the callback flags, free both directories, then buInit port 0 and port 1 inside the call.
+ *
+ * @param cpu Guest CPU; v0 receives 0. */
+static void bios_bu_init(CPUState* cpu) {
+    const uint32_t vbl0 = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    s_incall_call_vbls = 0;
+    kw_set(K_BU_OP + 4u, 0u);
+    kw_set(K_BU_OP, 0u);
+    kw_set(K_BU_AUTOFMT, 0u);
+    bu_ll_reset();
+    for (uint32_t port = 0; port < 2u; port++) {
+        const uint32_t dir = K_BU_DIR + port * K_BU_DIR_PORT;
+        for (uint32_t s = 0; s < 15u; s++) {
+            const uint32_t e = dir + s * BU_DIR_ENTRY;
+            void* p = guest_ptr(e, BU_DIR_ENTRY);
+            if (p) memset(p, 0, BU_DIR_ENTRY);
+            kw_set(e, 0xA0u);
+            kh_set(e + 8u, 0xFFFFu);
+        }
+    }
+    (void)bu_init_port(cpu, 0x00u);
+    (void)bu_init_port(cpu, 0x10u);
+    cpu->v0 = 0u;
+    cw_row("I 70 %u %u", vbl0, s_incall_call_vbls);
+    bu_wait_census("_bu_init");
+}
+
+/** @brief The synchronous open's card check (buDevInit, ROM 0xBFC089C0): read sector 0 inside the call.
+ *
+ * A failed issue leaves the directory zeroed and the broken list -1 and
+ * fails; a wait ending in the new-card flag runs buInit on the port; any
+ * other error fails; sector 0 must hold "MC" (with the auto-format flag
+ * clear, a card without it fails with the directory zeroed).
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param dev The device id.
+ * @return 1 when the card answered with a formatted sector 0. */
+static int bu_dev_init(CPUState* cpu, uint32_t dev) {
+    const uint32_t port = (uint32_t)mc_port(dev);
+    const uint32_t buf = K_BU_SECBUF + port * MC_FRAME_BYTES;
+    if (mc_queue(dev, MC_HANDLER_READ, 0u, buf) != 1u) { bu_init_failure(port); return 0; }
+    const int st = bu_wait_index(cpu);
+    if (st == 3) return bu_init_port(cpu, dev);
+    if (st != 0) return 0;
+    if (kb(buf) == 'M' && kb(buf + 1u) == 'C') return 1;
+    if (kw(K_BU_AUTOFMT) == 1u) OPL_WARN_F("bios", "open: card format on port %u is not modelled", port);
+    bu_init_failure(port);
+    return 0;
+}
+
+/** @brief One pass of the directory write-back (ROM 0xBFC09720): each admitted entry is copied over the sector buffer's first 32 bytes, checksummed and written to its directory sector, then a card info command closes the pass; every command is waited for.
+ *
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param dev The device id.
+ * @param bitmap The entry states O_CREAT assigned.
+ * @param admit The state this pass writes (0x52 first, then 0x51).
+ * @return 1 on success, 0 when an issue or a wait failed. */
+static int bu_write_toc_pass(CPUState* cpu, uint32_t dev, const uint32_t* bitmap, uint32_t admit) {
+    const uint32_t port = (uint32_t)mc_port(dev);
+    const uint32_t buf = K_BU_SECBUF + port * MC_FRAME_BYTES;
+    for (uint32_t i = 0; i < 15u; i++) {
+        if (bitmap[i] != admit) continue;
+        void* dst = guest_ptr(buf, BU_DIR_ENTRY);
+        const void* src = guest_ptr(K_BU_DIR + port * K_BU_DIR_PORT + i * BU_DIR_ENTRY, BU_DIR_ENTRY);
+        if (dst && src) memmove(dst, src, BU_DIR_ENTRY);
+        uint32_t x = 0;
+        for (uint32_t k = 0; k < 127u; k++) x ^= kb(buf + k);
+        kb_set(buf + 127u, x);
+        if (mc_queue(dev, MC_HANDLER_WRITE, i + 1u, buf) != 1u || !bu_wait(cpu)) return 0;
+    }
+    return bu_card_info(dev) == 1u && bu_wait(cpu);
+}
+
+static int bu_name_match(const char* name, size_t max, const char* pat);
+
+/** @brief Find a file's first directory entry by name (buNextFileInternal from index 0, ROM 0xBFC0A754).
+ *
+ * The state sought is 0x51 while the device status word (0x8644) is 0 and
+ * 0xA1 (deleted) otherwise; an entry with an empty name never matches. A
+ * hit is recorded at 0x9F8C.
+ * @param port The port.
+ * @param path The name pattern ('?' matches any character).
+ * @return The entry index, or -1. */
+static int32_t bu_find(uint32_t port, const char* path) {
+    const uint32_t want = kw(K_DEV_STATUS) ? 0xA1u : BU_DIR_FIRST;
+    const uint8_t* ram = openpete_psx_get_ram();
+    for (uint32_t i = 0; i < 15u; i++) {
+        const uint32_t e = K_BU_DIR + port * K_BU_DIR_PORT + i * BU_DIR_ENTRY;
+        if (kw(e) != want) continue;
+        const char* name = (const char*)ram + e + 0xA;
+        if (!name[0] || !bu_name_match(name, 22, path)) continue;
+        kw_set(K_BU_FOUND, i);
+        return (int32_t)i;
+    }
+    return -1;
+}
+
+/** @brief O_CREAT on the bu device inside the call (dev_bu_open's create arm, ROM 0xBFC09A14).
+ *
+ * The device status word clears; an existing first block of that name
+ * fails with EEXIST; a file of more blocks than are free fails with
+ * ENOSPC (the length, blocks x 8192, is stored first). Free entries in
+ * index order become the file: the first state 0x51 with the length and
+ * name (20 bytes), the rest 0x52 linked from the previous, the last with no
+ * next block and, past one block, state 0x53. The directory is written
+ * back (entries 0x52, then 0x51) and the call returns the first index. A
+ * failed write-back fails with EBUSY; the ROM's cleanup of the new chain
+ * does not terminate on hardware, so the model frees the first entry and
+ * reports.
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param f The file control block.
+ * @param path The file name.
+ * @param mode The open mode; its high half is the block count.
+ * @return The first directory index, or -1 with the block's errno set. */
+static int32_t bu_create(CPUState* cpu, uint32_t f, const char* path, uint32_t mode) {
+    const uint32_t dev = kw(f + FCB_DEVICE_ID), port = (uint32_t)mc_port(dev);
+    const uint32_t dir = K_BU_DIR + port * K_BU_DIR_PORT;
+    kw_set(K_DEV_STATUS, 0u);
+    if (bu_find(port, path) != -1) { kw_set(f + FCB_ERRNO, 17u); return -1; }
+    uint32_t bitmap[15] = { 0 }, free_blocks = 0;
+    for (uint32_t i = 0; i < 15u; i++) if ((kw(dir + i * BU_DIR_ENTRY) & 0xF0u) == 0xA0u) free_blocks++;
+    kw_set(f + FCB_LENGTH, ((mode >> 16) & 0xFFFFu) << 13);
+    if ((free_blocks << 13) < kw(f + FCB_LENGTH)) { kw_set(f + FCB_ERRNO, 28u); return -1; }
+    const uint32_t len = kw(f + FCB_LENGTH);
+    const uint32_t blocks = (len >> 13) + ((len & 0x1FFFu) ? 1u : 0u);
+    uint32_t count = 0, prev = 0, first = 0;
+    for (uint32_t i = 0; i < 15u; i++) {
+        const uint32_t e = dir + i * BU_DIR_ENTRY;
+        if ((kw(e) & 0xF0u) != 0xA0u) continue;
+        if (count == 0u) {
+            kw_set(e, BU_DIR_FIRST);
+            kw_set(e + 4u, len);
+            char* name = (char*)openpete_psx_get_ram() + e + 0xA;
+            strncpy(name, path, 20);
+            bitmap[i] = BU_DIR_FIRST;
+            first = i;
+        } else {
+            kh_set(dir + prev * BU_DIR_ENTRY + 8u, i);
+            kw_set(e, 0x52u);
+            if (bitmap[i] != BU_DIR_FIRST) bitmap[i] = 0x52u;
+        }
+        prev = i;
+        if (++count < blocks) continue;
+        kh_set(e + 8u, 0xFFFFu);
+        if (count >= 2u) kw_set(e, 0x53u);
+        if (bu_write_toc_pass(cpu, dev, bitmap, 0x52u) && bu_write_toc_pass(cpu, dev, bitmap, BU_DIR_FIRST))
+            return (int32_t)first;
+        OPL_WARN_F("bios", "O_CREAT \"%s\": directory write-back failed; the kernel's cleanup does not end on hardware", path);
+        bu_dir_free(dir + first * BU_DIR_ENTRY);
+        kw_set(f + FCB_ERRNO, PSX_EBUSY);
+        return -1;
+    }
+    return (int32_t)first;
+}
+
+/** @brief Write a run of sectors inside the call, then a card info command (buWriteBuffer, ROM 0xBFC092EC).
+ *
+ * Each sector goes to its broken-list replacement when it has one; each
+ * command is waited for. A failed issue returns 0; a failed wait stores its
+ * status index at 0x9F80 and returns -1. The write-error status, which the
+ * ROM answers by moving the sector to a spare, is not modelled and fails
+ * with index 1.
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param dev The device id.
+ * @param sector The first card sector.
+ * @param count Sectors to write.
+ * @param buf Guest address of the data.
+ * @return Bytes written, 0 or -1. */
+static int32_t bu_write_buffer(CPUState* cpu, uint32_t dev, int32_t sector, int32_t count, uint32_t buf) {
+    const uint32_t port = (uint32_t)mc_port(dev);
+    int32_t ret = 0;
+    for (int32_t i = 0; i < count; i++, sector++, buf += MC_FRAME_BYTES, ret += (int32_t)MC_FRAME_BYTES) {
+        const int32_t sub = bu_broken_sector(port, sector);
+        if (mc_queue(dev, MC_HANDLER_WRITE, (uint32_t)(sub != -1 ? sub : sector), buf) != 1u) return 0;
+        const int st = bu_wait_index(cpu);
+        if (st == 4) OPL_WARN_F("bios", "write error on port %u sector %d: the spare-sector rewrite is not modelled", port, sector);
+        if (st != 0) { kw_set(K_BU_OP_ERROR + 4u * port, st == 4 ? 1u : (uint32_t)st); return -1; }
+    }
+    if (bu_card_info(dev) != 1u) return 0;
+    const int st = bu_wait_index(cpu);
+    if (st != 0) { kw_set(K_BU_OP_ERROR + 4u * port, st == 4 ? 1u : (uint32_t)st); return -1; }
+    return ret;
+}
+
+/** @brief Read a run of sectors inside the call (buReadBuffer, ROM 0xBFC091CC).
+ *
+ * Each sector comes from its broken-list replacement when it has one; each
+ * command is waited for. A failed issue returns 0; a failed wait stores its
+ * status index at 0x9F80 and returns the bytes read before it.
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param dev The device id.
+ * @param sector The first card sector.
+ * @param count Sectors to read.
+ * @param buf Guest address of the destination.
+ * @return Bytes read, or 0. */
+static int32_t bu_read_buffer(CPUState* cpu, uint32_t dev, int32_t sector, int32_t count, uint32_t buf) {
+    const uint32_t port = (uint32_t)mc_port(dev);
+    int32_t ret = 0;
+    for (int32_t i = 0; i < count; i++, sector++, buf += MC_FRAME_BYTES, ret += (int32_t)MC_FRAME_BYTES) {
+        const int32_t sub = bu_broken_sector(port, sector);
+        if (mc_queue(dev, MC_HANDLER_READ, (uint32_t)(sub != -1 ? sub : sector), buf) != 1u) return 0;
+        const int st = bu_wait_index(cpu);
+        if (st != 0) { kw_set(K_BU_OP_ERROR + 4u * port, (uint32_t)st); return ret; }
+    }
+    return ret;
+}
+
+/** @brief A synchronous bu read or write inside the call (dev_bu_read and dev_bu_write, their blocking arms).
+ *
+ * The file's sectors from the offset are moved in runs that stop at each
+ * 64-sector block, each run through the block chain; a short run ends the
+ * transfer. The offset advances by the bytes moved, errno and the port's
+ * operation clear, and the call returns the size, or minus the failing
+ * status index at 0x9F80 when fewer bytes moved.
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param f The file control block.
+ * @param buf Guest address of the data.
+ * @param n Bytes requested.
+ * @param write 1 for a write.
+ * @return The result the call returns. */
+static int32_t bu_transfer_sync(CPUState* cpu, uint32_t f, uint32_t buf, int32_t n, int write) {
+    const uint32_t dev = kw(f + FCB_DEVICE_ID), port = (uint32_t)mc_port(dev);
+    s_incall_call_vbls = 0;
+    int32_t start = (int32_t)(kw(f + FCB_OFFSET) >> 7), left = n / 128, moved = 0;
+    while (left > 0) {
+        int32_t lim = start & 0x3F;
+        if (start < 0 && lim != 0) lim -= 64;
+        const int32_t chunk = left < 64 - lim ? left : 64 - lim;
+        const int32_t abs = bu_file_sector(port, kw(f + FCB_LBA), start);
+        const int32_t r = write ? bu_write_buffer(cpu, dev, abs, chunk, buf) : bu_read_buffer(cpu, dev, abs, chunk, buf);
+        left -= chunk;
+        if (r != chunk * (int32_t)MC_FRAME_BYTES) break;
+        start += chunk;
+        buf += (uint32_t)r;
+        moved += chunk;
+    }
+    kw_set(f + FCB_OFFSET, kw(f + FCB_OFFSET) + (uint32_t)moved * MC_FRAME_BYTES);
+    kw_set(f + FCB_ERRNO, 0u);
+    kw_set(K_BU_OP + 4u * port, 0u);
+    bu_wait_census(write ? "write" : "read");
+    return n == moved * (int32_t)MC_FRAME_BYTES ? n : -(int32_t)kw(K_BU_OP_ERROR + 4u * port);
+}
+
+/** @brief The bu device's write (ROM dev_bu_write, 0xBFC0A080).
+ *
+ * The block's errno starts as EBUSY; a port whose bu operation is in flight
+ * refuses; the callback flags clear; an offset off a 128-byte boundary or
+ * at or past the file's length fails with EINVAL. With O_NOWAIT the port
+ * takes bu operation 3 with the file, buffer, the offset's sector index
+ * and n / 128 sectors; a write of no whole sector finishes at once with
+ * EvSpIOE; otherwise the first sector, through the block chain and the
+ * broken-sector list, is recorded at 0x9F88 and written, and each
+ * completion chains the next (bu_write_step). Without O_NOWAIT the
+ * transfer runs inside the call.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param f The file control block.
+ * @param buf Guest address of the data.
+ * @param n Bytes requested.
+ * @return 0 when an asynchronous write started or finished, a synchronous write's result, or -1 on failure. */
+static int32_t bu_write(CPUState* cpu, uint32_t f, uint32_t buf, uint32_t n) {
+    kw_set(f + FCB_ERRNO, PSX_EBUSY);
+    const uint32_t dev = kw(f + FCB_DEVICE_ID), port = (uint32_t)mc_port(dev);
+    if (kw(K_BU_OP + 4u * port)) return -1;
+    bu_ll_reset();
+    const uint32_t off = kw(f + FCB_OFFSET);
+    if ((off & 0x7Fu) || off >= kw(f + FCB_LENGTH)) { kw_set(f + FCB_ERRNO, PSX_EINVAL); return -1; }
+    const int32_t count = (int32_t)n / 128;
+    if (!(kw(f + FCB_FLAGS) & PSXF_ASYNC)) return bu_transfer_sync(cpu, f, buf, (int32_t)n, 1);
+    kw_set(K_BU_OP + 4u * port, BU_OP_WRITE);
+    kw_set(K_BU_SECTOR + 4u * port, off >> 7);
+    kw_set(K_BU_REMAIN + 4u * port, (uint32_t)count);
+    kw_set(K_BU_BUFFER + 4u * port, buf);
+    kw_set(K_BU_FILE + 4u * port, f);
+    bu_ll_reset();
+    if (count == 0) {
+        kw_set(f + FCB_ERRNO, 0u);
+        kw_set(K_BU_LL_DONE, 1u);
+        bu_finish(cpu, port, EV_SPEC_IOE);
+        return 0;
+    }
+    int32_t sector = bu_file_sector(port, kw(f + FCB_LBA), (int32_t)(off >> 7));
+    const int32_t sub = bu_broken_sector(port, sector);
+    if (sub != -1) sector = sub;
+    kh_set(K_BU_ACTUAL + 2u * port, (uint32_t)sector);
+    kw_set(f + FCB_ERRNO, PSX_EBUSY);
+    if (mc_queue(dev, MC_HANDLER_WRITE, (uint32_t)sector, buf) != 1u) return -1;
+    kw_set(f + FCB_ERRNO, 0u);
+    return 0;
 }
 
 void openpete_psx_bios_card_state_load_legacy(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]) {
@@ -1297,42 +1790,54 @@ static int bu_name_match(const char* name, size_t max, const char* pat) {
     return !*pat || *pat == '?';
 }
 
-/** @brief Run the bu device's open on a file control block (OpenBIOS card/device.c dev_bu_open).
+/** @brief Run the bu device's open on a file control block (ROM dev_bu_open, 0xBFC0996C).
  *
  * The block's errno starts as EBUSY, the value a refused open leaves: a port
- * whose bu operation is in flight refuses. The open searches the cached
- * directory for the file's first block; the synchronous open's sector-0
- * read (buDevInit) and O_CREAT's allocation and directory write-back wait
- * on card operations inside the call, which this gate does not model, so a
- * synchronous open searches the cache as an asynchronous one does and
- * O_CREAT is refused with EBUSY. A miss leaves ENOENT; a hit sets the first
- * index, offset 0, errno 0 and the length from the entry.
+ * whose bu operation is in flight refuses. The callback flags clear. An open
+ * without O_NOWAIT first checks the card inside the call (bu_dev_init) and
+ * fails with EBUSY when it does not answer formatted. O_CREAT creates the
+ * file (bu_create); otherwise the device status word clears and the cached
+ * directory is searched for the file's first block, a miss leaving ENOENT.
+ * Success sets the first index, offset 0, errno 0 and the length from the
+ * entry.
+ * @param cpu Guest CPU the VBLs of a synchronous open are delivered on.
  * @param f The file control block.
  * @param path The file name after "buXX:".
  * @param mode The open mode.
  * @return 0 on success, 1 on failure (the block's errno says why). */
-static int bu_open(uint32_t f, const char* path, uint32_t mode) {
-    int port = mc_port(kw(f + FCB_DEVICE_ID));
+static int bu_open(CPUState* cpu, uint32_t f, const char* path, uint32_t mode) {
+    const uint32_t dev = kw(f + FCB_DEVICE_ID);
+    int port = mc_port(dev);
     kw_set(f + FCB_ERRNO, PSX_EBUSY);
     if (kw(K_BU_OP + 4u * (uint32_t)port)) return 1;
+    bu_ll_reset();
+    if (!(mode & PSXF_ASYNC)) {
+        s_incall_call_vbls = 0;
+        const uint32_t vbl0 = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+        const int ok = bu_dev_init(cpu, dev);
+        cw_row("I 32 %u %u", vbl0, s_incall_call_vbls);
+        bu_wait_census("open's card check");
+        if (!ok) return 1;
+    }
+    int32_t first = -1;
     if (mode & PSXF_CREAT) {
-        OPL_WARN_F("bios", "bu open with O_CREAT (\"%s\", mode 0x%X) is not modelled; refused", path, mode);
-        return 1;
+        s_incall_call_vbls = 0;
+        const uint32_t vbl0 = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+        first = bu_create(cpu, f, path, mode);
+        cw_row("I 32 %u %u", vbl0, s_incall_call_vbls);
+        bu_wait_census("O_CREAT");
+        if (first < 0) return 1;
+    } else {
+        kw_set(K_DEV_STATUS, 0u);
+        first = bu_find((uint32_t)port, path);
+        if (first < 0) { kw_set(f + FCB_ERRNO, PSX_ENOENT); return 1; }
     }
-    const uint8_t* ram = openpete_psx_get_ram();
-    for (uint32_t i = 0; i < 15u; i++) {
-        uint32_t e = K_BU_DIR + (uint32_t)port * K_BU_DIR_PORT + i * BU_DIR_ENTRY;
-        if (kw(e) != BU_DIR_FIRST) continue;
-        const char* name = (const char*)ram + e + 0xA;
-        if (!name[0] || !bu_name_match(name, 22, path)) continue;
-        kw_set(f + FCB_LBA, i);
-        kw_set(f + FCB_OFFSET, 0u);
-        kw_set(f + FCB_ERRNO, 0u);
-        kw_set(f + FCB_LENGTH, kw(e + 4));
-        return 0;
-    }
-    kw_set(f + FCB_ERRNO, PSX_ENOENT);
-    return 1;
+    const uint32_t e = K_BU_DIR + (uint32_t)port * K_BU_DIR_PORT + (uint32_t)first * BU_DIR_ENTRY;
+    kw_set(f + FCB_LBA, (uint32_t)first);
+    kw_set(f + FCB_OFFSET, 0u);
+    kw_set(f + FCB_ERRNO, 0u);
+    kw_set(f + FCB_LENGTH, kw(e + 4));
+    return 0;
 }
 
 /** @brief B(32h) open(path, mode) over the file table in guest RAM.
@@ -1377,7 +1882,7 @@ static void bios_open(CPUState* cpu) {
     kw_set(f + FCB_DEVICE_ID, id);
     kw_set(f + FCB_DCB, K_DCB_BU);
     kw_set(f + FCB_DEV_FLAGS, kw(K_DCB_BU + DCB_FLAGS));
-    if (bu_open(f, p, cpu->a1)) {
+    if (bu_open(cpu, f, p, cpu->a1)) {
         kw_set(K_ERRNO, kw(f + FCB_ERRNO));
         kw_set(f + FCB_FLAGS, 0u);
         cpu->v0 = 0xFFFFFFFFu;
@@ -1450,39 +1955,67 @@ static int32_t bu_read_async(CPUState* cpu, uint32_t f, uint32_t buf, uint32_t n
     return 0;
 }
 
-/** @brief B(34h) read(fd, buf, n) on a bu file opened with O_NOWAIT.
+/** @brief The bu device's blocking read (ROM dev_bu_read, 0xBFC09D3C, without O_NOWAIT).
+ *
+ * The block's errno starts as EBUSY; a port whose bu operation is in flight
+ * refuses; the callback flags clear; an offset off a 128-byte boundary or
+ * at or past the file's length fails with EINVAL; otherwise the transfer
+ * runs inside the call (bu_transfer_sync).
+ * @param cpu Guest CPU the VBLs are delivered on.
+ * @param f The file control block.
+ * @param buf Guest address of the buffer.
+ * @param n Bytes requested.
+ * @return The bytes read, or a negative result. */
+static int32_t bu_read_sync(CPUState* cpu, uint32_t f, uint32_t buf, uint32_t n) {
+    kw_set(f + FCB_ERRNO, PSX_EBUSY);
+    if (kw(K_BU_OP + 4u * (uint32_t)mc_port(kw(f + FCB_DEVICE_ID)))) return -1;
+    bu_ll_reset();
+    const uint32_t off = kw(f + FCB_OFFSET);
+    if ((off & 0x7Fu) || off >= kw(f + FCB_LENGTH)) { kw_set(f + FCB_ERRNO, PSX_EINVAL); return -1; }
+    return bu_transfer_sync(cpu, f, buf, (int32_t)n, 0);
+}
+
+/** @brief B(34h) read(fd, buf, n) on a bu file.
  *
  * The kernel's read (RAM 0x2B28) hands a file-system device's read to the
  * device and, on a negative result, copies the block's errno to errno. A
- * synchronous read waits on card operations inside the call, and a read of
- * another device is not reached by the games; neither is modelled here.
+ * read of another device is not reached by the games and is not modelled.
  * @param cpu Guest CPU; a0..a2 the arguments; v0 receives the result.
  * @return 1 when handled, 0 for a read this gate does not model. */
 static int bios_read(CPUState* cpu) {
     const uint32_t f = fcb_open(cpu->a0);
     if (!f) { cpu->v0 = 0xFFFFFFFFu; return 1; }
-    if (kw(f + FCB_DCB) != K_DCB_BU || !(kw(f + FCB_FLAGS) & PSXF_ASYNC)) {
+    if (kw(f + FCB_DCB) != K_DCB_BU) {
         OPL_WARN_F("bios", "read on fd %u (mode 0x%X) is not modelled", cpu->a0, kw(f + FCB_FLAGS));
         return 0;
     }
-    const int32_t r = bu_read_async(cpu, f, cpu->a1, cpu->a2);
+    const int32_t r = (kw(f + FCB_FLAGS) & PSXF_ASYNC) ? bu_read_async(cpu, f, cpu->a1, cpu->a2)
+                                                       : bu_read_sync(cpu, f, cpu->a1, cpu->a2);
     if (r < 0) kw_set(K_ERRNO, kw(f + FCB_ERRNO));
     cpu->v0 = (uint32_t)r;
     return 1;
 }
 
-/** @brief B(35h) write(fd, buf, n) on a character device, the tty fds 0 and 1.
+/** @brief B(35h) write(fd, buf, n) on the bu device or a character device (the tty fds 0 and 1).
  *
- * The block records the buffer and count, and the tty device's action (the
- * ROM's dummy console, 0xBFC06FDC) returns 0, so the offset and errno stay
- * and the call returns 0. A write to a file-system device (bu) is not
- * modelled here.
+ * The kernel's write (RAM 0x2C94) hands a file-system device's write to the
+ * device (bu_write) and, on a negative result, copies the block's errno to
+ * errno. For a character device the block records the buffer and count,
+ * and the tty device's action (the ROM's dummy console, 0xBFC06FDC)
+ * returns 0, so the offset and errno stay and the call returns 0. Another
+ * file-system device is not modelled.
  * @param cpu Guest CPU; a0..a2 the arguments; v0 receives the result.
- * @return 1 when handled, 0 for a file-system device. */
+ * @return 1 when handled, 0 for a file-system device other than bu. */
 static int bios_write(CPUState* cpu) {
     uint32_t f = fcb_open(cpu->a0);
     if (!f) { cpu->v0 = 0xFFFFFFFFu; return 1; }
-    if (kw(f + FCB_DEV_FLAGS) & DT_FS) return 0;
+    if (kw(f + FCB_DEV_FLAGS) & DT_FS) {
+        if (kw(f + FCB_DCB) != K_DCB_BU) return 0;
+        const int32_t r = bu_write(cpu, f, cpu->a1, cpu->a2);
+        if (r < 0) kw_set(K_ERRNO, kw(f + FCB_ERRNO));
+        cpu->v0 = (uint32_t)r;
+        return 1;
+    }
     kw_set(f + FCB_BUFFER, cpu->a1);
     kw_set(f + FCB_COUNT, cpu->a2);
     if (kw(kw(f + FCB_DCB) + DCB_FLAGS) & DT_BLOCK) {
@@ -1494,14 +2027,17 @@ static int bios_write(CPUState* cpu) {
 
 /** @brief B(36h) close(fd): run the device's close, free the block, return the fd.
  *
- * The bu device refuses while its port has a bu operation in flight (the
- * block's errno is then the caller's errno and the call returns -1); the
- * tty device's close succeeds. The block is freed either way.
+ * The bu device (ROM dev_bu_close, 0xBFC09CDC) refuses while its port has a
+ * bu operation in flight (the block's errno is then the caller's errno and
+ * the call returns -1), else clears the callback flags; the tty device's
+ * close succeeds. The block is freed either way.
  * @param cpu Guest CPU; a0 the fd; v0 receives the fd or -1. */
 static void bios_close(CPUState* cpu) {
     uint32_t f = fcb_open(cpu->a0);
     if (!f) { cpu->v0 = 0xFFFFFFFFu; return; }
-    int busy = kw(f + FCB_DCB) == K_DCB_BU && kw(K_BU_OP + 4u * (uint32_t)mc_port(kw(f + FCB_DEVICE_ID)));
+    const int bu = kw(f + FCB_DCB) == K_DCB_BU;
+    const int busy = bu && kw(K_BU_OP + 4u * (uint32_t)mc_port(kw(f + FCB_DEVICE_ID)));
+    if (bu && !busy) bu_ll_reset();
     kw_set(f + FCB_FLAGS, 0u);
     if (busy) { kw_set(K_ERRNO, kw(f + FCB_ERRNO)); cpu->v0 = 0xFFFFFFFFu; return; }
     cpu->v0 = cpu->a0;
@@ -1616,8 +2152,8 @@ uint32_t openpete_psx_bios_rom_reads(void) { return s_rom_reads; }
 
 /** @brief Handle a call through the A0 table: InitHeap, FlushCache, _bu_init, cardInfo and buReadTOC.
  *
- * InitHeap records the heap in kernel RAM. FlushCache and _bu_init return
- * 0 (_bu_init's card operations inside the call are not modelled).
+ * InitHeap records the heap in kernel RAM. FlushCache returns 0; _bu_init
+ * loads both ports' directories inside the call and returns 0.
  * cardInfo (_card_info) and buReadTOC (_card_load) start bu operations 1
  * and 4 and return whether the card command was recorded.
  * @param cpu Guest CPU; a0 carries the device id and v0 receives the result.
@@ -1632,8 +2168,7 @@ static int bios_a0(CPUState* cpu, uint32_t fn) {
         cpu->v0 = 0u;
         return 1;
     case 0x70:      /* _bu_init */
-        bu_init_card_side();
-        cpu->v0 = 0u;
+        bios_bu_init(cpu);
         cw_row("A %02x %08x %08x", fn, cpu->a0, cpu->v0);
         return 1;
     case 0xAB:      /* _card_info(chan) */

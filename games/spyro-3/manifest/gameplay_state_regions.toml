@@ -178,15 +178,8 @@ constant_ok = true
 # entry (openpete_psx_bios_seed_ram) and written by the file calls
 # (B(32h)-B(36h)), A(39h) InitHeap, the event calls, the card driver
 # (B(4Ah)-B(5Dh), its vblank step and completion) and the bu layer
-# (A(ABh), A(ACh)). Every row is a struct extent; the gaps between them
+# (A(70h) with its card waits inside the call, A(ABh), A(ACh)). Every row is a struct extent; the gaps between them
 # are uncompared:
-# - open, the card-wait phase's: the bu broken lists, directory cache and
-#   sector buffers 0xB9E8-0xBE51 (_bu_init fills them inside the call), and
-#   the card driver's select bit and handler nodes 0x74A0-0x74C3, per-port
-#   state 0x74F8-0x756F and fast track 0x75C0-0x75CF: _bu_init's reads of
-#   both ports leave handler, buffer, device id, status and fast-track
-#   bytes there that the game's first commands overwrite, and the oracle's
-#   first records fall before them;
 # - open, written by thunked libraries: B(19h) 0x75D0-0x75D3 and C(03h)
 #   0x91E0-0x91E1 (libetc ResetCallback), exception chain slot 0's head
 #   0xE004-0xE007 (C(03h)) and slot 2's head 0xE014-0xE017 (InitCard,
@@ -386,6 +379,54 @@ start       = 0x8000B9D0
 length      = 0x14
 class       = "kernel"
 description = "bu layer: the card driver's completion, error, timeout, new-card and write-error callback flags (A(A7h)-A(AAh), A(AEh))"
+constant_ok = true
+
+[[region]]
+name        = "kernel_card_sio0"
+start       = 0x800074A0
+length      = 0x24
+class       = "kernel"
+description = "Card driver: the port select mask, the word each command and end clears, the VBLANK handler node, InitCARD's pad_enable, StartCARD's hook flag and _new_card's skip flag (residue of _bu_init's commands on both ports)"
+constant_ok = true
+
+[[region]]
+name        = "kernel_card_ports"
+start       = 0x800074F8
+length      = 0x78
+class       = "kernel"
+description = "Card driver: per port the FLAG byte a write read, device id, sector, handler, buffer, checksum and status; the handler's byte counter, the last finished port, the error mark, the SIO0 handler node, the read pad bytes, the transfer-active byte and InitCARD's done flag"
+constant_ok = true
+
+[[region]]
+name        = "kernel_card_fast_track"
+start       = 0x800075C0
+length      = 0x10
+class       = "kernel"
+description = "Card driver: the fast track's active flag, data pointer and the port's status and checksum pointers"
+constant_ok = true
+
+[[region]]
+name        = "kernel_bu_broken"
+start       = 0x8000B9E8
+length      = 0xA0
+class       = "kernel"
+description = "bu layer: per port the 20 broken sectors _bu_init and _card_load read (-1 after a failed _bu_init)"
+constant_ok = true
+
+[[region]]
+name        = "kernel_bu_dir"
+start       = 0x8000BA88
+length      = 0x3C0
+class       = "kernel"
+description = "bu layer: per port the 15 cached directory entries (allocation state, size, next block, name)"
+constant_ok = true
+
+[[region]]
+name        = "kernel_bu_secbuf"
+start       = 0x8000BE48
+length      = 0x100
+class       = "kernel"
+description = "bu layer: per port the 128-byte sector buffer the directory reads, the sector-63 write and the directory write-back use"
 constant_ok = true
 
 [[region]]

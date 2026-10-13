@@ -1,0 +1,4 @@
+# Synthetic movie (Cross held 6 of every 90 VBLs from VBL 300): a new game
+# on a blank formatted card in slot 1 creates and writes the save
+# BASCUS-94425SP2RR. The slot 1 card is given by the caller (--card1).
+--no-card2

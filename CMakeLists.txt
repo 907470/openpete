@@ -1567,6 +1567,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Memory-card gate over the kernel's bu file device, with a formatted card
+    # in port A and port B empty: Spyro 3 boots past its title's card probe,
+    # and Spyro 2 creates, writes and reads back its save from
+    # games/spyro-2/corpus/s2-create-save.bk2 (directory entry, 40 sectors
+    # written and read). VACUOUS (fail) when no bu call is made; skips (exit
+    # 64) without the binary, the disc or the card fixture.
+    add_test(NAME card_boot
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(card_boot PROPERTIES
+        LABELS "slow;savestate;card"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 2400
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Sub-tick present gameplay-state gate. The psx oracle replays canonical
     # ticks only, so an intermediate present that writes gameplay-readable RAM
     # and mis-restores it is invisible to it. Per movie, two headless legs of
