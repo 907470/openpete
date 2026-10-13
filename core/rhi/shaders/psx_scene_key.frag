@@ -1,6 +1,10 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#ifdef OP_MOBY_SHELL
+/* The _shell variant (opaque ACTOR faces): moby_shell.glsl. */
+#include "moby_shell.glsl"
+#endif
 #include "psx_clut.glsl"
 #include "psx_texel.glsl"
 
@@ -91,6 +95,10 @@ vec3 clut_fog_mix(vec3 rgb, vec4 col, int u, int v)
 
 void main()
 {
+#ifdef OP_MOBY_SHELL
+    /* Written before any discard; a discarded fragment writes nothing. */
+    gl_FragDepth = op_shell_depth(vRank, DEPTH_REVERSED);
+#endif
     /* Set 2 = TERRAIN og KEYS (keyed WORLD faces as their ABSOLUTE og key
      * laid flat - og's per-pixel OT occupancy). Set 1 = MOBY og KEYS
      * (keyed opaque ACTOR faces, same encoding). Set 3 = PROP TRUE DEPTH

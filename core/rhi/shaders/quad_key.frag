@@ -1,6 +1,10 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#ifdef OP_MOBY_SHELL
+/* The _shell variant (opaque ACTOR faces): moby_shell.glsl. */
+#include "moby_shell.glsl"
+#endif
 
 /* Untextured OPAQUE gouraud fragment stage with the terrain KEY-RESOLVE
  * contest - quad.frag plus the LP-vs-HP og-key discard (see
@@ -43,6 +47,10 @@ layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 void main()
 {
+#ifdef OP_MOBY_SHELL
+    /* Written before any discard; a discarded fragment writes nothing. */
+    gl_FragDepth = op_shell_depth(vRank, DEPTH_REVERSED);
+#endif
     bool ranked = vRank.x > 0.5;
     float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
 #ifdef OP_PORTAL_COVER

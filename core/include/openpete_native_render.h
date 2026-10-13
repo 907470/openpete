@@ -1041,6 +1041,13 @@ typedef struct {
                   * three values: a negative drain record tag (terrain), the
                   * mordinal (ranked faces and every non-actor face), or mid
                   * (unranked actor faces), which op_akey_owner selects.   */
+    int shell;   /* 1 = an actor face of a moby record whose draw links all
+                  * its prims into one ordering-table bucket and that emitted
+                  * blended and opaque faces this present (moby_shell.glsl):
+                  * its blended faces raster the front shell, its opaque
+                  * faces write depth inside it. 0 = none, and on a blended
+                  * face whose screen footprint is not the true projection
+                  * (near-plane fixup or coordinate saturation).           */
 } openpete_scene_tri;
 
 /* Rank sentinels for faces that are not ranked but must still be told

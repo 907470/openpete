@@ -926,6 +926,14 @@ typedef struct rhi_pipeline_desc {
                                  * to both stages. Sets 0..4 keep the layout
                                  * the flags above give them; implies sets
                                  * 0..5.                                     */
+    bool           pair_set56;  /* sets 5 and 6 hold the two-sampler pair
+                                 * layout (bind with rhi_bind_depth_tex_pair):
+                                 * the moby front-shell image (depth, owner
+                                 * colour) and its intruder image on the
+                                 * opaque ACTOR stages' _shell variants and
+                                 * the intruder pre-pass. Sets 0..4 keep the
+                                 * layout the flags above give them; implies
+                                 * sets 0..6. Exclusive with uniform_set5.   */
     bool           uniform_set7; /* set 7 holds one dynamic-UBO binding (bind
                                  * with rhi_ubo_bind_at(.., 7, ..)), visible
                                  * to both stages, above the seven sets of a

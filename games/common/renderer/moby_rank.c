@@ -74,6 +74,7 @@ typedef struct {
     int8_t  back_post;
     int16_t back_pre;
     int16_t base_c;
+    uint8_t single;                  /* the array links into one world bucket */
 } otk_spec_t;
 
 static const otk_spec_t k_otk_rows[MOBY_OTK_ROWS] = {
@@ -123,7 +124,7 @@ static const otk_spec_t k_otk_rows[MOBY_OTK_ROWS] = {
         .base_form = OTK_BASE_X4, .base_c = 0x100, .base_min = 0,
         .shift_add = 5, .drop = OTK_DROP_NONPOS, .back_pre = 0x200,
         .bias_tri = OTK_BIAS_POST, .bias_quad = OTK_BIAS_POST, .bias_mul = 1,
-        .choose = OTK_CHOOSE_WHOLE },
+        .choose = OTK_CHOOSE_WHOLE, .single = 1 },
     /* S3 func_80031124 (mobydraw.s; S2's func_80044504 is the same
      * instruction sequence): quad K = SZ0+SZ1+SZ2+SZ3 - s6,
      * triangle K = SZ0 + 2*SZ1 + SZ2 - s6 (mobydraw.s 1592-1650, 1753-1774;
@@ -152,7 +153,7 @@ static const otk_spec_t k_otk_rows[MOBY_OTK_ROWS] = {
         .base_form = OTK_BASE_X4, .base_c = 0x400, .base_min = 1,
         .shift_add = 5, .drop = OTK_DROP_NEG,
         .bias_tri = OTK_BIAS_PRE, .bias_quad = OTK_BIAS_PRE, .bias_mul = 1,
-        .choose = OTK_CHOOSE_DUAL },
+        .choose = OTK_CHOOSE_DUAL, .single = 1 },
     /* The same walk's flat-lit faces (face word 1 bit 1): four SZ3 slots, a
      * triangle's third vertex twice, minus s6, dropped when < 0, >> 5, plus 16
      * buckets on a back face (mobydraw.s 4720-4801); a back face draws only
@@ -163,8 +164,13 @@ static const otk_spec_t k_otk_rows[MOBY_OTK_ROWS] = {
         .base_form = OTK_BASE_X4, .base_c = 0x400, .base_min = 1,
         .shift_add = 5, .drop = OTK_DROP_NEG, .back_post = 16,
         .bias_tri = OTK_BIAS_NONE, .bias_quad = OTK_BIAS_NONE,
-        .choose = OTK_CHOOSE_FLAT },
+        .choose = OTK_CHOOSE_FLAT, .single = 1 },
 };
+
+int moby_otk_row_single_bucket(moby_otk_row_t row)
+{
+    return row > MOBY_OTK_NONE && row < MOBY_OTK_ROWS && k_otk_rows[row].single;
+}
 
 void moby_otk_record(moby_otk_row_t row, int a, int trz, moby_otk_rec_t* out)
 {

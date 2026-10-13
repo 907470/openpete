@@ -47,6 +47,17 @@ typedef enum moby_otk_row {
     MOBY_OTK_ROWS
 } moby_otk_row_t;
 
+/** @brief Whether a row's draw links every prim of a record into one world ordering-table bucket.
+ *
+ * Such a record paints whole against the terrain, its faces in the order of
+ * its local bucket array (S1 func_80022A2C, S2 func_80046FD8 and S3
+ * func_80033C5C, both face families); the other rows splice the array into
+ * consecutive world buckets.
+ * @param row The row.
+ * @return 1 for MOBY_OTK_S1_SHADED, MOBY_OTK_S23_SIMPLE and
+ *         MOBY_OTK_S23_SIMPLE_FLAT, else 0. */
+int moby_otk_row_single_bucket(moby_otk_row_t row);
+
 /* One record's key parameters: `base` the depth base the draw subtracts,
  * `shift` the bucket shift, `trz` the GTE TRZ it loaded. */
 typedef struct moby_otk_rec {

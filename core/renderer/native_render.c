@@ -342,6 +342,7 @@ typedef struct {
     int mordinal;   /* present-local moby ordinal - see openpete_scene_tri */
     float pkey;     /* player ordering key - see openpete_scene_tri */
     uint32_t mid;   /* moby identity - see openpete_scene_tri */
+    int shell;      /* front-shell record member - see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) - add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -506,6 +507,14 @@ typedef struct {
     int rim;                    /* 1: the inner-rim rule, 0: the blended cover rule */
 } nr_cover_twin;
 #define NR_COVER_TWINS 17
+/* An opaque ACTOR pipeline and its front-shell twin: the same description
+ * with the fragment stage's _shell variant (moby_shell.glsl) and the shell
+ * and intruder image pairs at sets 5 and 6. */
+typedef struct {
+    rhi_pipeline *stock;
+    rhi_pipeline *twin;
+} nr_shell_twin;
+#define NR_SHELL_TWINS 6
 /* The portal opening planes as the _cover and _rim fragment stages read them
  * (the std140 PortalCover block of portal_cover_scene.glsl): fc, this pass's
  * gl_FragCoord -> PSX screen affine (fax, fbx, fay, fby), written at bind
@@ -4291,6 +4300,19 @@ static struct {
     rhi_pipeline *moby_rank_cutout_pipe; /* textured: alpha-aware cutout - rank
                                           * exists only on opaque texels */
     int           tk_w, tk_h;         /* current key-image allocations (shared dims) */
+    rhi_texture  *moby_shell_rt;      /* moby front-shell image (set 5 of the
+                                       * ACTOR _shell twins): depth = the
+                                       * nearest blended face of a front-shell
+                                       * record, colour = its owner
+                                       * (moby_shell.glsl); NULL with the shell off */
+    rhi_texture  *moby_shell_intr_rt; /* its intruder image (set 6): depth = the
+                                       * nearest intruder candidate of anything
+                                       * else behind the shell (moby_shell_intr.frag) */
+    rhi_pipeline *moby_shell_pipe;    /* the shell pre-pass: psx_scene.vert + moby_shell.frag */
+    rhi_pipeline *moby_shell_intr_pipe; /* the intruder pre-pass: psx_scene.vert + moby_shell_intr.frag */
+    rhi_buffer   *moby_shell_vb;      /* the shell pre-pass vertices, one generation per scene target */
+    nr_shell_twin shell_twins[NR_SHELL_TWINS]; /* opaque ACTOR pipes and their shell twins */
+    int           shell_twin_n;
     rhi_pipeline *occl_pipe;          /* occl_downsample.frag: prepass depth -> grid (may be NULL) */
     rhi_texture  *occl_grid;          /* OCCL_GW×OCCL_GH grid RT (may be NULL -> no culling) */
 } s_nr;
@@ -4488,6 +4510,113 @@ static void cover_family_destroy(rhi_device* dev, nr_cover_twin* tw, int* n) {
     for (int i = 0; i < *n; i++) {
         if (tw[i].cover) rhi_destroy_pipeline(dev, tw[i].cover);
         tw[i].stock = tw[i].cover = NULL;
+    }
+    *n = 0;
+}
+
+/** @brief Whether the moby front-shell depth is on (OPENPETE_MOBY_SHELL, default on; boot-latched).
+ *
+ * Off, no shell image, pre-pass or twin pipeline is built and the ACTOR group
+ * draws through its stock pipelines.
+ * @return 0 when OPENPETE_MOBY_SHELL starts with '0', else 1. */
+static int moby_shell_on(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_MOBY_SHELL");
+        s_on = (e && *e) ? (*e != '0') : 1;
+    }
+    return s_on;
+}
+
+/** @brief The _shell variant of an opaque scene fragment stage, by its stock SPIR-V name.
+ * @param frag The stock stage's .spv name.
+ * @return The variant's .spv name, or NULL for a stage without one. */
+static const char* shell_frag_of(const char* frag)
+{
+    static const char* const k_map[][2] = {
+        { "quad_key.frag.spv",      "quad_key_shell.frag.spv" },
+        { "psx_scene_key.frag.spv", "psx_scene_key_shell.frag.spv" },
+        { "hd_tex_cutout.frag.spv", "hd_tex_cutout_shell.frag.spv" },
+    };
+    for (size_t i = 0; frag && i < sizeof k_map / sizeof k_map[0]; i++)
+        if (strcmp(frag, k_map[i][0]) == 0) return k_map[i][1];
+    return NULL;
+}
+
+/** @brief A stock opaque ACTOR pipeline and the description it was built from (shell_family_create input). */
+typedef struct {
+    const rhi_pipeline_desc *desc;
+    rhi_pipeline *stock;
+} nr_shell_src;
+
+/** @brief Build the front-shell twin of each opaque ACTOR pipeline.
+ *
+ * Each twin is its stock description with the fragment stage's _shell
+ * variant (shell_frag_of) and the shell and intruder image pairs at sets 5
+ * and 6. A NULL stock
+ * pipeline is skipped; a stage without the variant or a twin that fails to
+ * build leaves the twin NULL, and that pipeline draws stock.
+ * @param dev Device.
+ * @param src The stock pipelines and their descriptions.
+ * @param n Entries in @p src; at most NR_SHELL_TWINS are kept.
+ * @param out Receives the twins.
+ * @return The number of entries written to @p out. */
+static int shell_family_create(rhi_device* dev, const nr_shell_src* src, int n,
+                               nr_shell_twin* out)
+{
+    int k = 0;
+    for (int i = 0; i < n && k < NR_SHELL_TWINS; i++) {
+        if (!src[i].stock) continue;
+        rhi_pipeline_desc d = *src[i].desc;
+        d.frag_spv = shell_frag_of(src[i].desc->frag_spv);
+        d.pair_set56 = true;
+        out[k].stock = src[i].stock;
+        out[k].twin = d.frag_spv ? rhi_create_pipeline(dev, &d) : NULL;
+        k++;
+    }
+    return k;
+}
+
+/** @brief Build the moby front-shell and intruder pre-pass pipelines, their vertex buffer and the opaque ACTOR twins, when the shell is on.
+ *
+ * The pre-pass draws the blended faces of every front-shell record through
+ * the scene vertex stage (psx_scene.vert), so its depth is the main pass's
+ * own for the same faces. Nothing is built with OPENPETE_MOBY_SHELL=0 or
+ * without the rank pass; a missing pre-pass pipeline or buffer is logged and
+ * leaves every ACTOR draw stock (native_moby_shell_pass never draws).
+ * @param dev Device.
+ * @param src The opaque ACTOR pipelines and their descriptions.
+ * @param n Entries in @p src.
+ * @param rank_ok Nonzero when the rank pass pipeline exists. */
+static void shell_pipes_create(rhi_device* dev, const nr_shell_src* src, int n, int rank_ok)
+{
+    if (!moby_shell_on() || !rank_ok) return;
+    s_nr.shell_twin_n = shell_family_create(dev, src, n, s_nr.shell_twins);
+    const rhi_pipeline_desc shell_desc = {
+        .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .push_const_size = 0,
+    };
+    const rhi_pipeline_desc intr_desc = {
+        .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell_intr.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .push_const_size = 0, .pair_set56 = true,
+    };
+    s_nr.moby_shell_pipe = rhi_create_pipeline(dev, &shell_desc);
+    s_nr.moby_shell_intr_pipe = rhi_create_pipeline(dev, &intr_desc);
+    s_nr.moby_shell_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * 768u, 4u);
+    if (!s_nr.moby_shell_pipe || !s_nr.moby_shell_intr_pipe || !s_nr.moby_shell_vb)
+        OPL_ERROR_F("native", "moby front-shell pass unavailable; opaque ACTOR faces draw at true depth");
+}
+
+/** @brief Destroy the twins shell_family_create built and empty the table.
+ * @param dev Device.
+ * @param tw The table.
+ * @param n Its entry count; set to 0. */
+static void shell_family_destroy(rhi_device* dev, nr_shell_twin* tw, int* n)
+{
+    for (int i = 0; i < *n; i++) {
+        if (tw[i].twin) rhi_destroy_pipeline(dev, tw[i].twin);
+        tw[i].stock = tw[i].twin = NULL;
     }
     *n = 0;
 }
@@ -5558,6 +5687,18 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         s_nr.cover_twin_n = cover_family_create(dev, cover_src,
                                                 (int)(sizeof cover_src / sizeof cover_src[0]),
                                                 s_nr.cover_twins);
+    }
+    {
+        /* Moby front shell, built when the rank pass (the key images'
+         * companion) came up: the twins replace the opaque ACTOR pipes on a
+         * present that drew a shell. */
+        const nr_shell_src shell_src[] = {
+            { &gouraud_desc, gouraud_pipe }, { &gouraud_mark_desc, gouraud_mark_pipe },
+            { &scene_tex_desc, scene_tex_pipe }, { &scene_tex_mark_desc, scene_tex_mark_pipe },
+            { &hd_cutout_desc, hd_cutout_pipe }, { &hd_cutout_mark_desc, hd_cutout_mark_pipe },
+        };
+        shell_pipes_create(dev, shell_src, (int)(sizeof shell_src / sizeof shell_src[0]),
+                           moby_rank_pipe != NULL);
     }
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL -> plain sub pipe */
@@ -7098,7 +7239,8 @@ static int terrain_key_readback_on(void)
 static void key_images_release(void)
 {
     rhi_texture** slots[] = { &s_nr.terrain_key_depth, &s_nr.moby_key_depth,
-                              &s_nr.actor_key_depth, &s_nr.moby_rank_rt };
+                              &s_nr.actor_key_depth, &s_nr.moby_rank_rt,
+                              &s_nr.moby_shell_rt, &s_nr.moby_shell_intr_rt };
     for (size_t i = 0; i < sizeof slots / sizeof slots[0]; i++) {
         rhi_destroy_texture(s_nr.dev, *slots[i]);
         *slots[i] = NULL;
@@ -7157,6 +7299,13 @@ static void ensure_terrain_key_depth(int w, int h)
     s_nr.moby_key_depth    = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.actor_key_depth   = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.moby_rank_rt      = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    /* The front shell keeps the scene's depth class: its depth is compared
+     * against, and exported into, the scene's own depth buffer. Optional:
+     * without it the ACTOR group draws stock. */
+    s_nr.moby_shell_rt     = s_nr.moby_shell_pipe
+        ? rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h) : NULL;
+    s_nr.moby_shell_intr_rt = s_nr.moby_shell_pipe
+        ? rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h) : NULL;
     rhi_set_render_target_depth_class(s_nr.terrain_key_depth, RHI_DEPTH_FORWARD);
     rhi_set_render_target_depth_class(s_nr.moby_key_depth, RHI_DEPTH_FORWARD);
     rhi_set_render_target_depth_class(s_nr.actor_key_depth, RHI_DEPTH_FORWARD);
@@ -7984,6 +8133,425 @@ static void drain_records_build(const scene_tri_t* scene, int scene_n)
                                  (size_t)rows * DRAIN_REC_PER_ROW * 64u, &r, 1);
 }
 
+/* ---- moby front shell ------------------------------------------------------
+ * A front-shell record (openpete_scene_tri.shell) is a moby whose draw links
+ * every prim into one ordering-table bucket and that drew blended and opaque
+ * faces this present: the PSX paints it whole against the terrain, so its
+ * opaque back faces cover terrain lying between them and its blended front
+ * faces. The shell pass rasterises the records' blended faces into
+ * moby_shell_rt; the ACTOR group's _shell twins then write each opaque face
+ * of such a record behind its own front at the shell depth plus 1/64 of the
+ * interval to its own (moby_shell.glsl). */
+
+/* Set by the last shell pass: 1 when it drew a shell into moby_shell_rt, so
+ * the ACTOR group of the scene draw that follows uses the _shell twins. */
+static int s_shell_live;
+static mod_fvec s_cz_shell;   /* rhi_vertex: the shell pass's packed faces */
+
+/** @brief The smaller of two ints.
+ * @param a First value.
+ * @param b Second value.
+ * @return min(@p a, @p b). */
+static inline int shell_imin(int a, int b) { return a < b ? a : b; }
+/** @brief The larger of two ints.
+ * @param a First value.
+ * @param b Second value.
+ * @return max(@p a, @p b). */
+static inline int shell_imax(int a, int b) { return a > b ? a : b; }
+
+/** @brief Whether the front-shell census is on (OPENPETE_MOBY_SHELL_CENSUS; boot-latched).
+ * @return 1 when the variable is set and does not start with '0'. */
+static int moby_shell_census_on(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* e = getenv("OPENPETE_MOBY_SHELL_CENSUS");
+        s_on = e && *e && *e != '0';
+    }
+    return s_on;
+}
+
+/** @brief The rank ordinal of a front-shell moby: the mordinal its ranked faces carry, 0 when none is ranked.
+ *
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param mid The moby identity.
+ * @return The ordinal, 0 to 255. */
+static int shell_moby_ordinal(const scene_tri_t* scene, int scene_n, uint32_t mid)
+{
+    for (int t = 0; t < scene_n; t++)
+        if (scene[t].shell && scene[t].mid == mid && scene[t].rank > 0.5f)
+            return scene[t].mordinal;
+    return 0;
+}
+
+/** @brief Pack the shell batch: the blended faces of every front-shell record, in the scene draw's own vertex layout.
+ *
+ * Positions and depths are pack_scene_vert's under the given mapping, so the
+ * shell depth equals the depth the scene draw rasterises for the same face;
+ * the rank pair carries the owner instead: x = the moby identity, y = its
+ * rank ordinal (shell_moby_ordinal), which moby_shell.frag writes as colour.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Nonzero to map in the full-extent PSX space.
+ * @param out Output vertices, room for every blended shell face.
+ * @return Vertices written. */
+static int pack_moby_shell_batch(const scene_tri_t* scene, int scene_n, int full_extent,
+                                 rhi_vertex* out)
+{
+    int prev_fe = s_render_full_extent;
+    s_render_full_extent = full_extent ? 1 : 0;
+    uint32_t last_mid = 0;
+    int last_ord = 0, n = 0;
+    for (int t = 0; t < scene_n; t++) {
+        const scene_tri_t* st = &scene[t];
+        if (!st->shell || st->blend == 0) continue;
+        if (st->mid != last_mid) {
+            last_mid = st->mid;
+            last_ord = shell_moby_ordinal(scene, scene_n, st->mid);
+        }
+        for (int k = 0; k < 3; k++) {
+            pack_scene_vert(&out[n + k], st, k, 0.0f, 0.0f);
+            out[n + k].sx = (float)st->mid;
+            out[n + k].sy = (float)last_ord;
+        }
+        n += 3;
+    }
+    s_render_full_extent = prev_fe;
+    return n;
+}
+
+/** @brief Whether a scene face is a front-shell intruder candidate: a blended face drawn after the ACTOR group, or an opaque moby or player face.
+ *
+ * Blended: every blended face but the shadow decals (drawn before the ACTOR
+ * group) and the screen-space HUD and overlay layers. Opaque: the actor,
+ * cutscene-actor and player faces; terrain is not a candidate, since it is
+ * what the shell paints over. The intruder pass discards the faces of the
+ * moby that owns the shell texel.
+ * @param st Scene face.
+ * @return 1 when the face is a candidate, else 0. */
+static int shell_intruder_face(const scene_tri_t* st)
+{
+    const int c = st->category;
+    if (st->blend == 0)
+        return c == OPENPETE_SCENE_ACTOR || c == OPENPETE_SCENE_ACTOR_FRONT ||
+               c == OPENPETE_SCENE_PLAYER;
+    return c != OPENPETE_SCENE_SHADOW && c != OPENPETE_SCENE_HUD &&
+           c != OPENPETE_SCENE_HUD3D && c != OPENPETE_SCENE_HUD_PANEL &&
+           c != OPENPETE_SCENE_OVERLAY;
+}
+
+/** @brief Pack the intruder batch: every intruder candidate face (shell_intruder_face), its moby identity in the rank pair's x and 1 for a blended face in its y.
+ *
+ * Faces raster their whole footprint, textured or not: a transparent texel
+ * of an intruder then reverts the shell pixel to true depth, the order the
+ * shell would otherwise leave unchanged.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Nonzero to map in the full-extent PSX space.
+ * @param out Output vertices, room for every candidate.
+ * @return Vertices written. */
+static int pack_moby_shell_intruders(const scene_tri_t* scene, int scene_n, int full_extent,
+                                     rhi_vertex* out)
+{
+    int prev_fe = s_render_full_extent;
+    s_render_full_extent = full_extent ? 1 : 0;
+    int n = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (!shell_intruder_face(&scene[t])) continue;
+        for (int k = 0; k < 3; k++) {
+            pack_scene_vert(&out[n + k], &scene[t], k, 0.0f, 0.0f);
+            out[n + k].sx = (float)scene[t].mid;
+            out[n + k].sy = scene[t].blend ? 1.0f : 0.0f;
+        }
+        n += 3;
+    }
+    s_render_full_extent = prev_fe;
+    return n;
+}
+
+/** @brief Render the intruder image from the packed intruder vertices.
+ *
+ * The image clears to depth far, so a present with no intruder still leaves
+ * no stale value. The pass samples the shell image at set 5.
+ * @param first First vertex of the intruders in moby_shell_vb.
+ * @param count Their vertex count.
+ * @param vw Viewport width.
+ * @param vh Viewport height. */
+static void moby_shell_draw_intruders(int first, int count, int vw, int vh)
+{
+    rhi_begin_render_target(s_nr.dev, s_nr.moby_shell_intr_rt, 0.0f, 0.0f, 0.0f, 0.0f);
+    rhi_set_viewport(s_nr.dev, vw, vh);
+    if (count > 0) {
+        rhi_bind_pipeline(s_nr.dev, s_nr.moby_shell_intr_pipe);
+        rhi_bind_depth_tex_pair(s_nr.dev, s_nr.moby_shell_rt, s_nr.moby_shell_rt, 5);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.moby_shell_vb);
+        rhi_draw(s_nr.dev, (uint32_t)count, (uint32_t)first);
+    }
+    rhi_end_render_target(s_nr.dev, s_nr.moby_shell_intr_rt);
+}
+
+/* The front-shell census raster (OPENPETE_MOBY_SHELL_CENSUS) over the
+ * key-image viewport, in the scene's ordering view-Z: per pixel the nearest
+ * blended face of a front-shell record and its moby (fz, fid), whether a
+ * second record's front covers the pixel (multi), the farthest opaque face
+ * of that same moby (bz), the nearest opaque WORLD face (tz) and the nearest
+ * blended (iz) and opaque (oz) intruder candidate of another moby behind
+ * the front. */
+typedef struct {
+    int w, h;
+    float* fz; float* bz; float* tz; float* iz; float* oz;
+    uint32_t* fid;
+    uint8_t* multi;
+    int x0, y0, x1, y1;   /* the fronts' pixel bounds, inclusive */
+} shell_census_t;
+
+enum { SHELL_CEN_FRONT, SHELL_CEN_BACK, SHELL_CEN_TERRAIN, SHELL_CEN_INTRUDER,
+       SHELL_CEN_OPAQUE_INTRUDER };
+
+/** @brief Fold one rasterised sample into the census at pixel p.
+ * @param C The census.
+ * @param p The pixel index.
+ * @param z The sample's view-Z.
+ * @param mid The face's moby identity.
+ * @param mode SHELL_CEN_FRONT, SHELL_CEN_BACK, SHELL_CEN_TERRAIN,
+ *        SHELL_CEN_INTRUDER or SHELL_CEN_OPAQUE_INTRUDER. */
+static void shell_census_sample(shell_census_t* C, int p, float z, uint32_t mid, int mode)
+{
+    if (mode >= SHELL_CEN_INTRUDER) {
+        float* iz = mode == SHELL_CEN_INTRUDER ? C->iz : C->oz;
+        if (C->fid[p] && mid != C->fid[p] && z > C->fz[p] && z < iz[p]) iz[p] = z;
+    } else if (mode == SHELL_CEN_FRONT) {
+        if (C->fid[p] && C->fid[p] != mid) C->multi[p] = 1;
+        if (z < C->fz[p]) { C->fz[p] = z; C->fid[p] = mid; }
+    } else if (mode == SHELL_CEN_BACK) {
+        if (C->fid[p] == mid && z > C->bz[p]) C->bz[p] = z;
+    } else if (C->fid[p] && z < C->tz[p]) {
+        C->tz[p] = z;
+    }
+}
+
+/** @brief Rasterise one scene triangle into the census at pixel centres, with perspective-correct view-Z.
+ *
+ * The pixel of clip (cx, cy) is (w (cx + 1) / 2, h (1 - cy) / 2), the
+ * window transform of every scene pass; the bounds are clamped to the
+ * fronts' bounds outside SHELL_CEN_FRONT.
+ * @param C The census.
+ * @param st The triangle.
+ * @param mode How samples fold (shell_census_sample). */
+static void shell_census_tri(shell_census_t* C, const scene_tri_t* st, int mode)
+{
+    float x[3], y[3], iz[3];
+    for (int k = 0; k < 3; k++) {
+        float cx, cy;
+        scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
+        x[k] = (float)C->w * (cx + 1.0f) * 0.5f;
+        y[k] = (float)C->h * (1.0f - cy) * 0.5f;
+        iz[k] = 1.0f / fmaxf(st->v[k].z, 1.0f);
+    }
+    const float det = (x[1] - x[0]) * (y[2] - y[0]) - (x[2] - x[0]) * (y[1] - y[0]);
+    if (fabsf(det) < 1e-6f) return;
+    const int lim = mode == SHELL_CEN_FRONT;
+    int bx0 = (int)floorf(fminf(x[0], fminf(x[1], x[2])));
+    int bx1 = (int)ceilf(fmaxf(x[0], fmaxf(x[1], x[2])));
+    int by0 = (int)floorf(fminf(y[0], fminf(y[1], y[2])));
+    int by1 = (int)ceilf(fmaxf(y[0], fmaxf(y[1], y[2])));
+    bx0 = shell_imax(bx0, lim ? 0 : C->x0); by0 = shell_imax(by0, lim ? 0 : C->y0);
+    bx1 = shell_imin(bx1, lim ? C->w - 1 : C->x1); by1 = shell_imin(by1, lim ? C->h - 1 : C->y1);
+    for (int py = by0; py <= by1; py++) {
+        for (int px = bx0; px <= bx1; px++) {
+            const float qx = (float)px + 0.5f - x[0], qy = (float)py + 0.5f - y[0];
+            const float b1 = (qx * (y[2] - y[0]) - (x[2] - x[0]) * qy) / det;
+            const float b2 = ((x[1] - x[0]) * qy - qx * (y[1] - y[0])) / det;
+            const float b0 = 1.0f - b1 - b2;
+            if (b0 < 0.0f || b1 < 0.0f || b2 < 0.0f) continue;
+            shell_census_sample(C, py * C->w + px,
+                                1.0f / (b0 * iz[0] + b1 * iz[1] + b2 * iz[2]), st->mid, mode);
+        }
+    }
+}
+
+/** @brief Size and clear the census raster for a w by h viewport.
+ * @param C The census; its arrays grow and keep their storage across calls.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @return 1 when the arrays hold w * h pixels, else 0. */
+static int shell_census_reset(shell_census_t* C, int w, int h)
+{
+    const size_t n = (size_t)w * (size_t)h;
+    if ((size_t)C->w * (size_t)C->h < n) {
+        free(C->fz); free(C->bz); free(C->tz); free(C->iz); free(C->oz);
+        free(C->fid); free(C->multi);
+        C->fz = malloc(n * sizeof(float)); C->bz = malloc(n * sizeof(float));
+        C->tz = malloc(n * sizeof(float)); C->iz = malloc(n * sizeof(float));
+        C->oz = malloc(n * sizeof(float));
+        C->fid = malloc(n * sizeof(uint32_t)); C->multi = malloc(n);
+        C->w = C->h = 0;
+        if (!C->fz || !C->bz || !C->tz || !C->iz || !C->oz || !C->fid || !C->multi) return 0;
+    }
+    C->w = w; C->h = h;
+    for (size_t p = 0; p < n; p++) {
+        C->fz[p] = C->tz[p] = C->iz[p] = C->oz[p] = INFINITY; C->bz[p] = -INFINITY;
+        C->fid[p] = 0; C->multi[p] = 0;
+    }
+    return 1;
+}
+
+/** @brief Count the front-shell records of a scene: the distinct moby identities its stamped faces carry, at most 256.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @return The record count. */
+static int shell_census_records(const scene_tri_t* scene, int scene_n)
+{
+    uint32_t mids[256];
+    int nm = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (!scene[t].shell) continue;
+        int k = 0;
+        while (k < nm && mids[k] != scene[t].mid) k++;
+        if (k == nm && nm < 256) mids[nm++] = scene[t].mid;
+    }
+    return nm;
+}
+
+/** @brief Set the census bounds to the pixels a front covers.
+ * @param C The census, with its fronts rasterised; x1 stays -1 when none is. */
+static void shell_census_bounds(shell_census_t* C)
+{
+    C->x0 = C->w; C->y0 = C->h; C->x1 = -1; C->y1 = -1;
+    for (int p = 0; p < C->w * C->h; p++) {
+        if (!C->fid[p]) continue;
+        C->x0 = shell_imin(C->x0, p % C->w); C->x1 = shell_imax(C->x1, p % C->w);
+        C->y0 = shell_imin(C->y0, p / C->w); C->y1 = shell_imax(C->y1, p / C->w);
+    }
+}
+
+/** @brief The class of a shell pixel (moby_shell_census).
+ * @param C The census.
+ * @param p A pixel a front covers.
+ * @return 0 A (terrain nearer than the front), 1 B (terrain between the
+ *         front and the farthest opaque face of its moby), 2 C (terrain
+ *         beyond it, or none), 3 D (no opaque face of the moby). */
+static int shell_census_class(const shell_census_t* C, int p)
+{
+    if (!isfinite(C->bz[p])) return 3;
+    if (C->tz[p] < C->fz[p]) return 0;
+    return C->tz[p] < C->bz[p] ? 1 : 2;
+}
+
+/** @brief Print the front-shell census of one scene target (OPENPETE_MOBY_SHELL_CENSUS).
+ *
+ * One line per shell pass: the front-shell records, their blended faces, the
+ * shell pixels (covered by a record's front) and their classes against the
+ * opaque WORLD faces of the scene: A the terrain is nearer than the front, B
+ * it lies between the front and the farthest opaque face of the same moby
+ * (the pixels the shell changes), C it lies beyond that face or is absent,
+ * D no opaque face of the moby lies under the front; slivers counts shell
+ * pixels two records' fronts cover, foreign and foreign_opaque those where a
+ * blended or opaque intruder candidate of another moby (shell_intruder_face)
+ * lies between the front and that farthest face. Terrain is the CPU-fed WORLD faces; the
+ * retained terrain cache is not rasterised (the census reads 0 terrain where
+ * the cache drew it).
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Nonzero for the full-extent mapping.
+ * @param vw Viewport width.
+ * @param vh Viewport height.
+ * @param fronts Blended front-shell faces in the scene. */
+static void moby_shell_census(const scene_tri_t* scene, int scene_n, int full_extent,
+                              int vw, int vh, int fronts)
+{
+    static shell_census_t C;
+    if (!shell_census_reset(&C, vw, vh)) return;
+    int prev_fe = s_render_full_extent;
+    s_render_full_extent = full_extent ? 1 : 0;
+    const int nm = shell_census_records(scene, scene_n);
+    for (int t = 0; t < scene_n; t++)
+        if (scene[t].shell && scene[t].blend) shell_census_tri(&C, &scene[t], SHELL_CEN_FRONT);
+    shell_census_bounds(&C);
+    for (int t = 0; t < scene_n && C.x1 >= 0; t++) {
+        if (shell_intruder_face(&scene[t]))
+            shell_census_tri(&C, &scene[t], scene[t].blend ? SHELL_CEN_INTRUDER
+                                                           : SHELL_CEN_OPAQUE_INTRUDER);
+        if (scene[t].blend != 0) continue;
+        if (scene[t].shell) shell_census_tri(&C, &scene[t], SHELL_CEN_BACK);
+        else if (scene[t].category == OPENPETE_SCENE_WORLD)
+            shell_census_tri(&C, &scene[t], SHELL_CEN_TERRAIN);
+    }
+    s_render_full_extent = prev_fe;
+    long cls[4] = { 0, 0, 0, 0 }, px = 0, slivers = 0, foreign = 0, foreign_op = 0;
+    for (int p = 0; p < vw * vh; p++) {
+        if (!C.fid[p]) continue;
+        px++;
+        slivers += C.multi[p];
+        foreign += C.iz[p] < C.bz[p];
+        foreign_op += C.oz[p] < C.bz[p];
+        cls[shell_census_class(&C, p)]++;
+    }
+    extern unsigned openpete_frame;
+    fprintf(stderr, "[moby-shell f=%u %dx%d fe=%d] records=%d fronts=%d shell_px=%ld "
+                    "A=%ld B=%ld C=%ld D=%ld slivers=%ld foreign=%ld foreign_opaque=%ld live=%d\n",
+            openpete_frame, vw, vh, full_extent ? 1 : 0, nm, fronts, px,
+            cls[0], cls[1], cls[2], cls[3], slivers, foreign, foreign_op, s_shell_live);
+}
+
+/** @brief Pack the front-shell and intruder batches and draw them into moby_shell_rt and moby_shell_intr_rt.
+ *
+ * The shell image clears to depth far and owner 0. Each call takes one generation
+ * of moby_shell_vb, so several scene targets in one frame keep their own
+ * vertices.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Nonzero for the full-extent mapping.
+ * @param vw Viewport width in the key images.
+ * @param vh Viewport height in the key images.
+ * @return 1 when the shell was drawn; 0 when the image, pipeline or buffer
+ *         is missing or the buffer cannot grow. */
+static int moby_shell_draw(const scene_tri_t* scene, int scene_n, int full_extent,
+                           int vw, int vh)
+{
+    if (!s_nr.moby_shell_rt || !s_nr.moby_shell_intr_rt || !s_nr.moby_shell_pipe ||
+        !s_nr.moby_shell_intr_pipe || !s_nr.moby_shell_vb) return 0;
+    if (!cz_instrument_run(&s_cz_shell, sizeof(rhi_vertex), "compose.shell_vb", 0, scene_n * 3))
+        return 0;
+    rhi_vertex* buf = (rhi_vertex*)s_cz_shell.data;
+    const int m = pack_moby_shell_batch(scene, scene_n, full_extent, buf);
+    const int mi = pack_moby_shell_intruders(scene, scene_n, full_extent, buf + m);
+    const size_t bytes = sizeof(rhi_vertex) * (size_t)(m + mi);
+    if (m <= 0 || !rhi_vertex_buffer_reserve(s_nr.dev, s_nr.moby_shell_vb, bytes)) return 0;
+    rhi_update_buffer(s_nr.moby_shell_vb, s_cz_shell.data, bytes);
+    rhi_begin_render_target(s_nr.dev, s_nr.moby_shell_rt, 0.0f, 0.0f, 0.0f, 0.0f);
+    rhi_set_viewport(s_nr.dev, vw, vh);
+    rhi_bind_pipeline(s_nr.dev, s_nr.moby_shell_pipe);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.moby_shell_vb);
+    rhi_draw(s_nr.dev, (uint32_t)m, 0);
+    rhi_end_render_target(s_nr.dev, s_nr.moby_shell_rt);
+    moby_shell_draw_intruders(m, mi, vw, vh);
+    return 1;
+}
+
+/** @brief Render the moby front shell for the present's scene and run its census.
+ *
+ * Runs after the key images, in the same mapping and viewport. Sets
+ * s_shell_live when moby_shell_draw drew a shell; a present with no blended
+ * front-shell face draws nothing and leaves the ACTOR group on its stock
+ * pipelines. Under OPENPETE_MOBY_SHELL_CENSUS a present with front-shell
+ * faces prints moby_shell_census, with the shell off as well.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Nonzero for the full-extent mapping.
+ * @param vw Viewport width in the key images.
+ * @param vh Viewport height in the key images. */
+static void native_moby_shell_pass(const scene_tri_t* scene, int scene_n, int full_extent,
+                                   int vw, int vh)
+{
+    int fronts = 0;
+    for (int t = 0; t < scene_n; t++) fronts += scene[t].shell && scene[t].blend != 0;
+    s_shell_live = fronts > 0 && moby_shell_draw(scene, scene_n, full_extent, vw, vh);
+    if (fronts > 0 && moby_shell_census_on())
+        moby_shell_census(scene, scene_n, full_extent, vw, vh, fronts);
+}
+
 /** @brief Pack and render the key images for the present's scene.
  *
  * Returns when the key pass is unavailable or the images do not exist; the
@@ -7995,7 +8563,9 @@ static void drain_records_build(const scene_tri_t* scene, int scene_n)
  * and the contest is off for this target. The terrain image also receives
  * the retained terrain's key draw; each actor face writes its moby identity
  * into the actor key image's colour beside its key. The four images render
- * even from empty batches, so a stale image is never sampled. The OPENPETE_TERRAIN_KEY_*
+ * even from empty batches, so a stale image is never sampled. The moby front
+ * shell follows (native_moby_shell_pass); s_shell_live stays 0 when the pass
+ * returns early. The OPENPETE_TERRAIN_KEY_*
  * and OPENPETE_MOBY_RANK_DBG knobs add stderr and file dumps of the packed
  * batches.
  * @param full_extent Nonzero for the full-extent (widescreen) mapping.
@@ -8003,6 +8573,7 @@ static void drain_records_build(const scene_tri_t* scene, int scene_n)
  * @param vh Viewport height in the key images. */
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
+    s_shell_live = 0;
     if (!openpete_native_key_resolve_on()) return;
     /* The images were sized by ensure_terrain_key_targets before the frame
      * began; a request larger than that clamps to what exists rather than
@@ -8176,6 +8747,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         rhi_end_render_target(s_nr.dev, s_nr.moby_rank_rt);
     }
     s_tk_base += m + mm + am + rr;
+    native_moby_shell_pass(scene, scene_n, full_extent, vw, vh);
 }
 
 /** @brief Bind set 1 of the bound shadow-decal pipeline and return whether binding 1 holds the terrain keys.
@@ -8267,6 +8839,39 @@ static void bind_cover_block(uint32_t set, int rim)
     rhi_ubo_bind_at(s_nr.dev, s_cover_ubo, set, rim ? 1u : 0u);
 }
 
+/** @brief The stock pipeline of a front-shell twin.
+ * @param p Pipeline, or NULL.
+ * @return The stock pipeline when @p p is a shell twin, else @p p. */
+static rhi_pipeline* nr_shell_stock_of(rhi_pipeline* p)
+{
+    for (int i = 0; p && i < s_nr.shell_twin_n; i++)
+        if (p == s_nr.shell_twins[i].twin) return s_nr.shell_twins[i].stock;
+    return p;
+}
+
+/** @brief The pipeline an opaque ACTOR draw takes in place of a stock pipeline.
+ * @param stock Stock pipeline, or NULL.
+ * @return Its front-shell twin while the last shell pass drew a shell
+ *         (s_shell_live) and the twin exists, else @p stock. */
+static rhi_pipeline* nr_shell_twin_of(rhi_pipeline* stock)
+{
+    for (int i = 0; s_shell_live && stock && i < s_nr.shell_twin_n; i++)
+        if (stock == s_nr.shell_twins[i].stock && s_nr.shell_twins[i].twin)
+            return s_nr.shell_twins[i].twin;
+    return stock;
+}
+
+/** @brief The HD replacement pipe of an opaque group's textured pipe: the cutout, its stencil-MARK twin with the MARK pipe, and the front-shell twin of either with a shell twin.
+ * @param tex The group's textured pipe.
+ * @return The HD cutout pipe the group's HD runs draw through. */
+static rhi_pipeline* opaque_group_hd_pipe(rhi_pipeline* tex)
+{
+    rhi_pipeline* const st = nr_shell_stock_of(tex);
+    rhi_pipeline* const hd = st == s_nr.scene_tex_mark_pipe ? s_nr.hd_cutout_mark_pipe
+                                                            : s_nr.hd_cutout_pipe;
+    return st != tex ? nr_shell_twin_of(hd) : hd;
+}
+
 /** @brief Bind a pipeline for scene drawing, with the key images a key-resolve pipe samples.
  *
  * When all three key depth images exist and @p p is a key-resolve pipe
@@ -8275,17 +8880,24 @@ static void bind_cover_block(uint32_t set, int rim)
  * texture at set 2, the moby key depth at set 3 and, when it exists, the
  * moby rank target at set 4. A blended-world cover twin takes, at set 5,
  * the scene's portal cover planes (bind_cover_block), and the key sets
- * when its stock pipeline is a key-resolve pipe. Binding them here keeps
- * every call site correct without per-site handling. Any other pipeline is
- * bound alone.
+ * when its stock pipeline is a key-resolve pipe. A front-shell twin takes
+ * the shell image's depth and owner colour at set 5, the intruder image at
+ * set 6, and the key sets of
+ * its stock pipeline. Binding them here keeps every call site correct
+ * without per-site handling. Any other pipeline is bound alone.
  * @param p Pipeline to bind. */
 static void bind_scene_pipe(rhi_pipeline* p)
 {
     rhi_bind_pipeline(s_nr.dev, p);
     const nr_cover_twin* const tw = nr_cover_entry(p);
     if (tw) bind_cover_block(5, tw->rim);
+    rhi_pipeline* const st = tw ? tw->stock : nr_shell_stock_of(p);
+    if (st != p && !tw) {
+        rhi_bind_depth_tex_pair(s_nr.dev, s_nr.moby_shell_rt, s_nr.moby_shell_rt, 5);
+        rhi_bind_depth_tex_pair(s_nr.dev, s_nr.moby_shell_intr_rt, s_nr.moby_shell_intr_rt, 6);
+    }
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
-    if (nr_is_key_pipe(tw ? tw->stock : p)) {
+    if (nr_is_key_pipe(st)) {
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.actor_key_depth, s_nr.actor_key_depth, 1);
         rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
@@ -10866,8 +11478,9 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           int blend_class) {
     if (blend_class < 0 || blend_class > 4) blend_class = 0;
     if (blend_class == 4) allow_override = 0;   /* no material slot for quarter-add */
-    const int hd_defer_ok = hd_pipe == s_nr.hd_cutout_pipe ||
-                            hd_pipe == s_nr.hd_cutout_mark_pipe;
+    rhi_pipeline* const hd_stock = nr_shell_stock_of(hd_pipe);
+    const int hd_defer_ok = hd_stock == s_nr.hd_cutout_pipe ||
+                            hd_stock == s_nr.hd_cutout_mark_pipe;
     const int ov_mark = (allow_override == 2);
     tp_flags_init();
     const int want_replace = hd_pipe && texture_pack_replacements_active();
@@ -12700,8 +13313,8 @@ static bool draw_native_scene(bool full_extent)
          * the LP hole-fill - drawn after this group - never paints over the
          * moby that hides them. */
         { 0, OPENPETE_SCENE_ACTOR, 2, 2,
-              holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe,
-              holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe    },
+              nr_shell_twin_of(holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe),
+              nr_shell_twin_of(holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe) },
         { 0, OPENPETE_SCENE_PLAYER, 3, 3, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
         { 1, -1, 4, 4,              s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
         { 2, -1, 5, 5,              s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
@@ -13390,9 +14003,7 @@ static bool draw_native_scene(bool full_extent)
                  * draws depend on the caller's dynamic depth-bias state, which
                  * an HD rebind would invalidate. */
                 rhi_pipeline *hd =
-                    (g->blend == 0) ? (g->tex == s_nr.scene_tex_mark_pipe
-                                           ? s_nr.hd_cutout_mark_pipe
-                                           : s_nr.hd_cutout_pipe)
+                    (g->blend == 0) ? opaque_group_hd_pipe(g->tex)
                   : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
                   : (g->blend == 2) ? s_nr.hd_scene_add_pipe
                   : NULL;
@@ -13409,7 +14020,7 @@ static bool draw_native_scene(bool full_extent)
                  * make a mod's reach depend on the host's depth-sampling
                  * support, so neither path takes it. */
                 int mat_ok = (gi == 1) ? 0
-                           : (g->tex == s_nr.scene_tex_mark_pipe ? 2 : 1);
+                           : (nr_shell_stock_of(g->tex) == s_nr.scene_tex_mark_pipe ? 2 : 1);
                 draw_tex_runs(txg_first[txb], txg_count[txb], tx_start, scene, &g->tex, 1, hd,
                               mat_ok, g->blend);
             }
@@ -18457,6 +19068,8 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);
     rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);
     rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);
+    rhi_destroy_texture(s_nr.dev, s_nr.moby_shell_rt);
+    rhi_destroy_texture(s_nr.dev, s_nr.moby_shell_intr_rt);
     rhi_destroy_buffer(s_nr.dev, s_nr.terrain_key_vb);
     rhi_destroy_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.terrain_key_tex_pipe);
@@ -18506,6 +19119,10 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_qadd_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_qadd_pipe);
     cover_family_destroy(s_nr.dev, s_nr.cover_twins, &s_nr.cover_twin_n);
+    shell_family_destroy(s_nr.dev, s_nr.shell_twins, &s_nr.shell_twin_n);
+    rhi_destroy_pipeline(s_nr.dev, s_nr.moby_shell_pipe);
+    rhi_destroy_pipeline(s_nr.dev, s_nr.moby_shell_intr_pipe);
+    rhi_destroy_buffer(s_nr.dev, s_nr.moby_shell_vb);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_blend_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_pipe);

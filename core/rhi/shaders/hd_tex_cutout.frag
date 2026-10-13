@@ -1,6 +1,10 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#ifdef OP_MOBY_SHELL
+/* The _shell variant (opaque ACTOR faces): moby_shell.glsl. */
+#include "moby_shell.glsl"
+#endif
 
 /* HD replacement sampling for OPAQUE (depth-tested, depth-writing) scene
  * geometry: like hd_tex.frag but alpha works as a CUTOUT (discard below 0.5,
@@ -53,6 +57,10 @@ layout(constant_id = 4) const bool SLOT_CONTEST = false;
 
 void main()
 {
+#ifdef OP_MOBY_SHELL
+    /* Written before any discard; a discarded fragment writes nothing. */
+    gl_FragDepth = op_shell_depth(vRank, DEPTH_REVERSED);
+#endif
 #ifdef OP_PORTAL_COVER
     if (op_portal_cover_frag(DEPTH_REVERSED)) discard;
 #endif

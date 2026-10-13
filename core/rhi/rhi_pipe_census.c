@@ -121,6 +121,7 @@ uint64_t rhi_pc_desc_hash(const rhi_pipeline_desc *d)
         d->color_write_off, (uint64_t)(int64_t)d->texel_stp_select,
         d->uses_vram, d->uses_vram2, d->uses_vram3, d->uses_vram4, d->uses_vram5,
         d->set1_vram_depth, d->uniform_set2, d->uniform_set5, d->uniform_set7,
+        d->pair_set56,
         d->push_const_size, d->postfx, d->mod_pipeline, d->material_pipeline,
         d->terrain_pipeline, d->terrain_anim, d->terrain_near, d->terrain_cells,
         d->wire_scene,

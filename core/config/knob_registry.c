@@ -2093,6 +2093,10 @@ static const knob_desc_t g_builtin_debug[] = {
         "Same-moby painter select: between faces of one moby that intersect in 3D, "
         "the game's own paint order (its OT key, evaluated natively) overrides "
         "per-pixel depth (default 1; 0 = true depth only)."),
+    ENVROW_LATCHED("MOBY_SHELL", "Debug", "1",
+        "Front-shell depth: a moby record drawn into one ordering-table bucket with "
+        "blended and opaque faces paints its opaque faces over terrain lying between "
+        "them and its blended front faces (default 1; 0 = true depth only)."),
     ENVROW_LATCHED("MOBY_SHADOW_DECAL", "Debug", "1",
         "Depth-aware moby-shadow decal vs legacy subtract pipe (default 1)."),
     ENVROW_LATCHED("SHADOW_PLAYER", "Debug", "1",

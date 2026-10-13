@@ -3430,7 +3430,12 @@ static uint8_t  s_wtri_special[MAX_NTRI];
  * draw's ordering table does not receive. */
 static int16_t  s_wtri_isxy[MAX_NTRI][6];   /* the draw's integer SXY per vertex (calibration) */
 static int32_t  s_wtri_otk[MAX_NTRI];
+/* 1 when the triangle's record is drawn by a walk whose paint-key row links
+ * every prim of the record into one world ordering-table bucket
+ * (moby_otk_row_single_bucket): the record paints whole against the terrain. */
+static uint8_t  s_wtri_single[MAX_NTRI];
 static _Thread_local int32_t s_emit_otk = -1;
+static _Thread_local uint8_t  s_cur_single;     /* s_wtri_single of the record being walked */
 static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
 static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
 static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (set beside the key) */
@@ -3572,11 +3577,12 @@ typedef struct {
     uint8_t*  ui;   uint8_t*  front; uint8_t* mangle;
     int8_t*   dofs; uint8_t*  special;
     int32_t*  otk;  int16_t (*isxy)[6];
+    uint8_t*  single;
     int n, cap;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
                          s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
-                         s_wtri_otk, s_wtri_isxy, 0, MAX_NTRI };
+                         s_wtri_otk, s_wtri_isxy, s_wtri_single, 0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
 /** @brief Append one float triangle to the current emit target, unless the near-plane cull drops it.
@@ -3657,6 +3663,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     O->fkey[O->n] = s_emit_fkey;
     O->special[O->n] = s_emit_special;
     O->otk[O->n] = s_emit_otk;
+    O->single[O->n] = s_cur_single;
     O->isxy[O->n][0] = a->iv.sx; O->isxy[O->n][1] = a->iv.sy;
     O->isxy[O->n][2] = b->iv.sx; O->isxy[O->n][3] = b->iv.sy;
     O->isxy[O->n][4] = c->iv.sx; O->isxy[O->n][5] = c->iv.sy;
@@ -3712,6 +3719,7 @@ void moby_simple_record(CPUState* cpu, uint32_t moby) {
     s_cur_ui    = moby_hud_tag(moby);
     s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
     s_cur_screen = 0;
+    s_cur_single = 0;
     s_emit_fkey = 0u;
     s_emit_special = 0u;
 }
@@ -3740,6 +3748,7 @@ void moby_simple_project(const double p[3], float* sx, float* sy) {
 }
 
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out) {
+    s_cur_single = (uint8_t)moby_otk_row_single_bucket(row);
     moby_otk_record(moby_otkey_wanted() ? row : MOBY_OTK_NONE, 0, trz, out);
 }
 
@@ -4727,6 +4736,19 @@ static void moby_coincident_pull(mn_out* O, int start) {
     }
 }
 
+/** @brief Whether an animated record's paint-key row links every prim into one world ordering-table bucket.
+ *
+ * The row is the one moby_otk_anim_record decoded at projection, which runs
+ * whether or not the rank is on, and rides the record's first projected
+ * vertex.
+ * @param R The record.
+ * @return 1 for a single-bucket row, 0 otherwise and for a record with no
+ *         projected vertex. */
+static uint8_t rec_single_bucket(const rec_meta* R) {
+    if (R->proj_n <= 0) return 0;
+    return (uint8_t)moby_otk_row_single_bucket((moby_otk_row_t)s_proj[R->proj_off].otk.row);
+}
+
 /** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
  *
  * Per record: the specular pass skips a moby the regular pass already fed
@@ -4752,6 +4774,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             if (dup) continue;
         }
         s_cur_moby_key = mob;     /* face identity for this record's tris */
+        s_cur_single = rec_single_bucket(R);
         s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + game_layout.moby.class_off) : 0; /* m_Class */
         s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + game_layout.moby.angle_off + 3u) : 0; /* og OT bias */
         /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
@@ -5341,9 +5364,11 @@ static int walk_slabs_ready(int nw) {
         O->special= (uint8_t*) malloc(MAX_NTRI);
         O->otk    = (int32_t*) malloc(sizeof(int32_t) * MAX_NTRI);
         O->isxy   = (int16_t (*)[6])malloc(sizeof(int16_t[6]) * MAX_NTRI);
+        O->single = (uint8_t*) malloc(MAX_NTRI);
         O->cap = MAX_NTRI;
         if (!O->tri || !O->fkey || !O->moby || !O->cls || !O->ui || !O->front ||
-            !O->mangle || !O->dofs || !O->special || !O->otk || !O->isxy) return 0;
+            !O->mangle || !O->dofs || !O->special || !O->otk || !O->isxy ||
+            !O->single) return 0;
     }
     return 1;
 }
@@ -5412,6 +5437,7 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         memcpy(&s_wtri_special[s_gout.n],&O->special[st],(size_t)n);
         memcpy(&s_wtri_otk[s_gout.n],    &O->otk[st],    (size_t)n * sizeof(int32_t));
         memcpy(&s_wtri_isxy[s_gout.n],   &O->isxy[st],   (size_t)n * sizeof(int16_t[6]));
+        memcpy(&s_wtri_single[s_gout.n], &O->single[st], (size_t)n);
         s_gout.n += n;
     }
     if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
@@ -7219,6 +7245,39 @@ static float moby_actor_rank_marker(int prop) {
     return prop ? OPENPETE_SCENE_RANK_PROP : OPENPETE_SCENE_RANK_ACTOR;
 }
 
+/* The front-shell verdict of the moby run the scene emit is inside: walk
+ * triangles [.., end) belong to one moby, and on says whether it is a
+ * front-shell record (moby_shell_face). */
+typedef struct { int end; int on; } moby_shell_run_t;
+
+/** @brief The front-shell stamp of one walk triangle (openpete_scene_tri.shell).
+ *
+ * The walk emits each moby's triangles contiguously; on the run's first
+ * triangle the whole run is classified. A run is a front-shell record when
+ * every triangle comes from a single-bucket walk (s_wtri_single), is an
+ * actor face (no UI tag, not a cutscene front-pass actor) and the run holds
+ * at least one blended and one opaque triangle. Its opaque triangles are
+ * stamped, and its blended ones unless mangled (s_wtri_mangle), since a
+ * mangled footprint is not the true projection and would raster a shell
+ * where the record has no front face.
+ * @param i The walk triangle's index; called in increasing order.
+ * @param r The run state, zeroed before the first call.
+ * @return 1 when the triangle is stamped, else 0. */
+static int moby_shell_face(int i, moby_shell_run_t* r)
+{
+    if (i >= r->end) {
+        int blended = 0, opaque = 0, ok = s_wtri_moby[i] != 0;
+        int k = i;
+        for (; k < s_gout.n && s_wtri_moby[k] == s_wtri_moby[i]; k++) {
+            ok = ok && s_wtri_single[k] && !s_wtri_ui[k] && !s_wtri_front[k];
+            if (s_wtri[k].blend) blended = 1; else opaque = 1;
+        }
+        r->end = k;
+        r->on = ok && blended && opaque;
+    }
+    return r->on && (s_wtri[i].blend == 0 || !s_wtri_mangle[i]);
+}
+
 /** @brief Return the scene identity of the moby record at PSX address @p moby.
  *
  * The identity is the record's word index in the 2 MiB of PSX RAM plus one,
@@ -7265,6 +7324,7 @@ static void push_scene_moby_tris(void) {
     /* Per-moby memo for the material-slot resolve below (faces of one moby
      * are contiguous in this stream). */
     uint32_t mat_last_moby = 0; uint16_t mat_last_slot = 0; int mat_have = 0;
+    moby_shell_run_t shell_run = { 0, 0 };
     for (int i = 0; i < s_gout.n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
@@ -7288,6 +7348,7 @@ static void push_scene_moby_tris(void) {
         t.bpp      = s_wtri[i].bpp;
         t.blend    = s_wtri[i].blend;
         t.mid      = moby_scene_identity(s_wtri_moby[i]);
+        t.shell    = moby_shell_face(i, &shell_run);
         /* og OT key channel, moby twin of the terrain emit: the .s inserts
          * each moby face at its average-Z slot minus the authored
          * m_DepthOffset (the angle word's top byte, which the cull packs into record
@@ -10002,6 +10063,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                         : model_3d ? "HUD3D" : "HUDflat");
         }
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* face identity (shaded tris carry no topology key) */
+        s_cur_single = (uint8_t)moby_otk_row_single_bucket(moby_game.shaded_otkey_row);
         s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + game_layout.moby.class_off) : 0;
         s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + game_layout.moby.angle_off + 3u) : 0; /* og OT bias (rot>>24) */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2

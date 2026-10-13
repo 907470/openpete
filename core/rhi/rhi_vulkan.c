@@ -6526,8 +6526,10 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * layout; uniform_set2 replaces set 2 with the single dynamic-UBO layout;
  * uniform_set5 puts the single dynamic-UBO layout at set 5 above the sets the
  * other flags give (the keyed scene pipes' sets 0..4, then the portal cover
- * planes); uniform_set7 puts it at set 7 above a material layout's seven
- * sets (the portal profile of a mod material).
+ * planes); pair_set56 puts the two-sampler pair layout at sets 5 and 6 (the
+ * moby front-shell and intruder images of the _shell variants); uniform_set7
+ * puts the dynamic-UBO layout at set 7 above a material layout's seven sets
+ * (the portal profile of a mod material).
  *
  * material: the mod layout PLUS the engine's occlusion inputs, which a
  * material's fragment stage runs before the mod's colour maths. They sit
@@ -6547,13 +6549,15 @@ static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
  * mod kinds) pair the terrain key image with the drain records at set 2
  * and, once uses_vram4 declares the moby key sets, the actor key image's
  * depth with its owner colour at set 1. A material layout pairs the terrain
- * keys at set 2 and the actor key with its owner at set 5.
+ * keys at set 2 and the actor key with its owner at set 5. pair_set56 makes
+ * sets 5 and 6 pairs on any other layout (the moby front-shell images).
  * @param dev Device holding the set layouts.
  * @param desc Pipeline description.
  * @param out The pipeline's eight set layouts, rewritten in place. */
 static void pair_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
                              VkDescriptorSetLayout out[8])
 {
+    if (desc->pair_set56) out[5] = out[6] = dev->pair_set_layout;
     if (desc->material_pipeline) {
         out[2] = out[5] = dev->pair_set_layout;
         return;
@@ -6595,10 +6599,11 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
                : desc->uses_vram3 ? 3u
                : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
     /* set1_vram_depth implies sets 0..1, uniform_set2 sets 0..2,
-     * uniform_set5 sets 0..5, uniform_set7 sets 0..7 */
+     * uniform_set5 sets 0..5, pair_set56 sets 0..6, uniform_set7 sets 0..7 */
     const uint32_t lo = rhi_max_u32(rhi_max_u32(2u * (uint32_t)desc->set1_vram_depth,
                                                 3u * (uint32_t)desc->uniform_set2),
-                                    rhi_max_u32(6u * (uint32_t)desc->uniform_set5,
+                                    rhi_max_u32(rhi_max_u32(6u * (uint32_t)desc->uniform_set5,
+                                                            7u * (uint32_t)desc->pair_set56),
                                                 8u * (uint32_t)desc->uniform_set7));
     return rhi_max_u32(n, lo);
 }
