@@ -22,23 +22,30 @@
 # captured; every one but the range's first is a leg, measured against the
 # capture two VBLs earlier.
 #
-# Instrument (stderr), OPENPETE_PLAYER_POSTRACE=1 and OPENPETE_PLAYER_RECDBG=1,
-# one run at OPENPETE_INTERMEDIATE_ALPHA=0 and one at 1 per row:
+# Instrument (stderr), OPENPETE_PLAYER_POSTRACE=1, OPENPETE_PLAYER_RECDBG=1 and
+# OPENPETE_CUT_CENSUS=1, one run at OPENPETE_INTERMEDIATE_ALPHA=0 and one at 1
+# per row:
 #   [player-screen f=<VBL>] ... c=(x,y) bb=(x0,y0,x1,y1) mirror=<0|1>
 #   [recdbg present f=<VBL> k=<n>] ... lerp=<0|1> ...
-# The mirrored copy and the avatar are measured separately.
+#   [cut-census vbl=<V>] held-queue kind=player set=<s> ...   (a held present)
+#   [cut-census vbl=<V>] shown=camera a=<a> cut=<0|1> ...     (the present's camera)
+#   screenshot: wrote intermediate ... on frame <V> (target=<VBL>, ...)
+# The census lines carry the engine VBL V; the screenshot line maps V to the
+# present's VBL. The mirrored copy and the avatar are measured separately.
 #
-# A leg is bracketed when its present reports lerp=1 in both runs, and held
-# when it reports lerp=1 at alpha 0 and lerp=0 at alpha 1: a camera cut held
-# for the interval, which cannot be a lerp at alpha 1 (the hold ends on the
-# tick). Any other leg is unbracketed and fails.
+# A leg is bracketed when its present reports lerp=1 in both runs. It is held
+# when the alpha-0 present prints the player held-queue marker (a camera cut
+# held for the interval shows tick N-1's records whole, lerp=0) and the
+# alpha-1 present reports lerp=0 under a camera cut (cut=1: the hold ends on
+# the tick). Any other leg is unbracketed and fails.
 #
 # Pass criterion, every leg, every copy: continuity under LIMIT px on the
 # centroid and on every bounding-box edge; identity exact on the printed
 # values (c and the four bb edges of [player-screen]). A held leg is checked by
-# the cut's identities: identity as above, and continuity only when the leg
-# two VBLs earlier is bracketed (a held leg before it has no lerped alpha-1
-# present to start from).
+# the cut's identities: identity as above, the held identity (the alpha-0
+# present at F equals the tick present at F-3, the tick N-1 it holds), and
+# continuity only when the leg two VBLs earlier is bracketed (a held leg before
+# it has no lerped alpha-1 present to start from).
 # Engagement: a row with no bracketed or held leg, or a leg with no trace line,
 # fails; the verdict line carries the bracketed and held counts.
 #
@@ -80,7 +87,7 @@ run_alpha() {
     local dir="$OUT/$tag-a$alpha"
     mkdir -p "$dir"
     find "$dir" -maxdepth 1 -name '*.png' -delete
-    PG_CAPTURE_ENV=(OPENPETE_PLAYER_POSTRACE=1 OPENPETE_PLAYER_RECDBG=1
+    PG_CAPTURE_ENV=(OPENPETE_PLAYER_POSTRACE=1 OPENPETE_PLAYER_RECDBG=1 OPENPETE_CUT_CENSUS=1
                     OPENPETE_INTERMEDIATE_ALPHA="$alpha")
     PG_CAPTURE_TIMEOUT=600
     pg_capture "$OUT/$tag-a$alpha.log" "$dir/i__$last-vk.png" -- \
@@ -133,9 +140,14 @@ scr = re.compile(r'\[player-screen f=(\d+)\] leg=\w+ slot=\d+ ntri=(\d+) nv=\d+ 
                  r'c=\(([-\d.]+),([-\d.]+)\) '
                  r'bb=\(([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\) mirror=(\d)')
 rec = re.compile(r'\[recdbg present f=(\d+) k=\d+\].* lerp=1 ')
+held_q = re.compile(r'\[cut-census vbl=(\d+)\] held-queue kind=player set=')
+cam_cut = re.compile(r'\[cut-census vbl=(\d+)\] shown=camera a=[-\d.]+ cut=1 ')
+shot = re.compile(r'wrote intermediate alpha=[-\d.]+ native -vk on frame (\d+) \(target=(\d+),')
 
 def load(path):
-    shape, lerp = {}, {}
+    """Shapes by (VBL, mirror), lerp=1 counts by VBL, and the VBLs whose
+    present printed the player held-queue marker and a camera cut."""
+    shape, lerp, held_v, cut_v, target = {}, {}, set(), set(), {}
     for line in open(path, errors='replace'):
         m = scr.search(line)
         if m:
@@ -145,14 +157,28 @@ def load(path):
         m = rec.search(line)
         if m:
             lerp[int(m[1])] = lerp.get(int(m[1]), 0) + 1
-    return shape, lerp
+            continue
+        m = held_q.search(line)
+        if m:
+            held_v.add(int(m[1]))
+            continue
+        m = cam_cut.search(line)
+        if m:
+            cut_v.add(int(m[1]))
+            continue
+        m = shot.search(line)
+        if m:
+            target[int(m[1])] = int(m[2])
+    held = {target[v] for v in held_v if v in target}
+    cut = {target[v] for v in cut_v if v in target}
+    return shape, lerp, held, cut
 
 def dist(a, b):
     c = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
     return c, max(abs(x - y) for x, y in zip(a[2:], b[2:]))
 
-s0, l0 = load(log0)
-s1, l1 = load(log1)
+s0, l0, h0, _ = load(log0)
+s1, l1, _, c1 = load(log1)
 
 legs = []
 for span in ranges.split(','):
@@ -163,7 +189,7 @@ def is_bracketed(F):
     return bool(l0.get(F, 0) and l1.get(F, 0))
 
 def is_held(F):
-    return bool(l0.get(F, 0) and not l1.get(F, 0))
+    return F in h0 and not l0.get(F, 0) and F in c1 and not l1.get(F, 0)
 
 bad, bracketed, held = [], 0, 0
 max_c = max_bb = max_id = 0.0
@@ -174,8 +200,8 @@ for F in legs:
     elif hold:
         held += 1
     else:
-        bad.append("leg=%d unbracketed (lerp=1 presents a0=%d a1=%d)"
-                   % (F, l0.get(F, 0), l1.get(F, 0)))
+        bad.append("leg=%d unbracketed (lerp=1 presents a0=%d a1=%d; held marker a0=%d, "
+                   "camera cut a1=%d)" % (F, l0.get(F, 0), l1.get(F, 0), F in h0, F in c1))
         continue
     check_lag = not hold or is_bracketed(F - 2)
     copies = [mi for mi in (0, 1) if (F, mi) in s0 or (F, mi) in s1]
@@ -185,17 +211,22 @@ for F in legs:
     for mi in copies:
         a0, a1 = s0.get((F, mi)), s1.get((F, mi))
         prev, tick = s1.get((F - 2, mi)), s0.get((F - 1, mi))
-        if None in (a0, a1, prev, tick):
+        held_tick = s0.get((F - 3, mi)) if hold else a0
+        if None in (a0, a1, prev, tick, held_tick):
             bad.append("leg=%d mirror=%d missing a comparand" % (F, mi))
             continue
         c, bb = dist(a0, prev) if check_lag else (0.0, 0.0)
         ic, ibb = dist(a1, tick)
-        max_c, max_bb, max_id = max(max_c, c), max(max_bb, bb), max(max_id, ic, ibb)
+        hc, hbb = dist(a0, held_tick)
+        max_c, max_bb = max(max_c, c), max(max_bb, bb)
+        max_id = max(max_id, ic, ibb, hc, hbb)
         if c >= limit or bb >= limit:
             bad.append("leg=%d mirror=%d%s lagC=%.3f lagBB=%.3f"
                        % (F, mi, " held" if hold else "", c, bb))
         if a1 != tick:
             bad.append("leg=%d mirror=%d identC=%.3f identBB=%.3f" % (F, mi, ic, ibb))
+        if a0 != held_tick:
+            bad.append("leg=%d mirror=%d held identC=%.3f identBB=%.3f" % (F, mi, hc, hbb))
 
 if bracketed == 0 and held == 0:
     print("[player-subtick] game=%s bk2=%s legs=%d bracketed=0 held=0 VACUOUS: no leg is "
