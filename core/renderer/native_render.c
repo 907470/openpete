@@ -13146,6 +13146,25 @@ static void fbsnap_present_census(const scene_tri_t* scene, int n)
             openpete_frame, ps_frame(), s_ps_slot ? s_ps_slot->alpha : 0.0, k, x0, y0, x1, y1);
 }
 
+/** @brief Reports whether the far-plane backdrop fills draw after the WORLD-opaque group.
+ *
+ * OPENPETE_BACKDROP_DEFER=0 selects draw-first; any other value or unset
+ * defers. The value is re-resolved when the knob registry's environment
+ * epoch moves (a live edit), never per VBL.
+ * @return 1 when the backdrop is deferred, 0 when it draws first. */
+static int backdrop_defer_on(void)
+{
+    static int s_defer = -1;
+    static unsigned s_resolved_ep = 0;
+    const unsigned ep = knob_registry_env_epoch();
+    if (s_defer < 0 || s_resolved_ep != ep) {
+        const char* e = getenv("OPENPETE_BACKDROP_DEFER");
+        s_defer = !(e && *e && *e == '0');
+        s_resolved_ep = ep;
+    }
+    return s_defer;
+}
+
 /** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
  *
  * Packs the scene triangles into the vertex buffer and draws the world
@@ -13755,20 +13774,12 @@ static bool draw_native_scene(bool full_extent)
      * everything nearer beats them; their bg -> dome relative order is kept,
      * LESS_OR_EQUAL gives the later dome the z=1.0 ties exactly as before).
      * A large win at SSAA/high-res scene targets. OPENPETE_BACKDROP_DEFER=0
-     * restores draw-first; freeze frames skip the group loop, so they keep
+     * restores draw-first; freeze frames skip the WORLD group, so they keep
      * the up-front order (bg under the freeze overlay, no dome). */
-    /* Re-resolved on a live edit (registry epoch), never per VBL. */
-    static int s_backdrop_defer = -1;
-    static unsigned s_bd_resolved_ep = 0;
-    const unsigned bd_ep = knob_registry_env_epoch();
-    if (s_backdrop_defer < 0 || s_bd_resolved_ep != bd_ep) {
-        const char* e = getenv("OPENPETE_BACKDROP_DEFER");
-        s_backdrop_defer = !(e && *e && *e == '0');
-        s_bd_resolved_ep = bd_ep;
-    }
-    if (!s_backdrop_defer || freeze_first >= 0)
+    const int backdrop_defer = backdrop_defer_on();
+    if (!backdrop_defer || freeze_first >= 0)
         draw_backdrop_fills(bg, ut_first, ut_count,
-                            /*sky*/ freeze_first < 0 && !s_backdrop_defer);
+                            /*sky*/ freeze_first < 0 && !backdrop_defer);
 
     /* Freeze backdrop FIRST (behind world/UI): the frozen native frame sampled
      * by freeze_overlay_pipe (set 0 = frozen_tex), desaturated + green-tinted. On
@@ -13812,8 +13823,17 @@ static bool draw_native_scene(bool full_extent)
          * contrast, blindly re-extracts the still-in-RAM gameplay actors every present;
          * drawing them here would paint full-colour Spyro/mobys over the green-tinted
          * backdrop (a ghost double-image). Skip the gameplay groups; the HUD layers
-         * below still draw, so the animated menu stays smooth at the present rate. */
-        if (freeze_first >= 0) continue;
+         * below still draw, so the animated menu stays smooth at the present rate.
+         *
+         * The PLAYER-opaque group is the exception. Its only feeder is the player
+         * walk, run from inside the game's own player draw (func_80023AC4) on the
+         * canonical tick and, on a sub-tick present, from the records that call
+         * appended for the tick shown; an epoch with no call carries no drawn
+         * record. A non-empty group is therefore the game's own verdict that it
+         * drew the avatar this tick, which GS_ExitLevel case 0 (func_8001C694)
+         * does over its grayscale backdrop; the pause, inventory and flight-result
+         * draws make no such call and leave the group empty. */
+        if (freeze_first >= 0 && gi != 3) continue;
         rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
         const struct scene_group *g = &groups[gi];
         const int utb = g->utb, txb = g->txb;
@@ -13842,7 +13862,7 @@ static bool draw_native_scene(bool full_extent)
          * (The predecessor cleared depth over the actors' whole screen bbox,
          * which handed every later-drawn transparent face a free pass through
          * the terrain inside that rect.) */
-        if (gi == 3 && actor_front) {
+        if (gi == 3 && actor_front && freeze_first < 0) {
             const int punch_ok = s_nr.gouraud_punch_pipe && s_nr.scene_tex_punch_pipe;
             for (int pass = punch_ok ? 0 : 1; pass < 2; pass++) {
                 rhi_pipeline* upipe = pass ? s_nr.gouraud_pipe   : s_nr.gouraud_punch_pipe;
@@ -14228,7 +14248,7 @@ static bool draw_native_scene(bool full_extent)
         /* Deferred backdrops: right after the WORLD opaques so early-Z spares
          * every covered pixel; still before the shadow/actor/portal layers,
          * which depth-test against the z=1.0 they write, exactly as before. */
-        if (gi == 0 && s_backdrop_defer)
+        if (gi == 0 && backdrop_defer)
             draw_backdrop_fills(bg, ut_first, ut_count, 1);
     }
 
