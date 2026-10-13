@@ -41,6 +41,17 @@ write. Cases (each prints its counts):
               fleet-run-dir, and presentation-blessed.py's fleet_refusal
               admitting it only on the passing verdict
 
+  move        `move` requests: an unknown unit, an unadmitted host and the
+              unit's own host refused; an accepted move to a second host of
+              the run carries the stamped rows (not an unstamped tile), the
+              re-queued attempt runs pinned there outside the attempt budget,
+              its stream covers every row, no ledger row; a finished unit
+              refused; the CLI's request line, unknown host, done run and
+              unknown run
+  keep        a stopped unit's stamped rows and ship kept under kept/ at
+              teardown, read by resolve_saved; unit_results reads the
+              logged results `resume` decides on
+
 Exit: 0 every case holds, 1 a case failed (named).
 """
 import argparse
@@ -581,6 +592,152 @@ def case_expect(tmp):
           f"summary {fmt(c8)}")
 
 
+class MoveCo(FakeCo):
+    """A FakeCo with a second local host `b` (its own fleet root) already in the run; add_host admits it without a preflight."""
+
+    def __init__(self, tmp, name):
+        """Add host b beside the FakeCo host."""
+        super().__init__(tmp, name)
+        root = os.path.join(self.tmp, "root-b")
+        host = gf.Host("b", {"transport": "local", "fleet_root": root})
+        hs = gf.HostState(host, {"root": root, "engine": "podman"}, 1, self.run_id)
+        os.makedirs(os.path.join(hs.run_dir, "ship"))
+        shutil.copyfile(os.path.join(self.hs.run_dir, "ship", "supervise.sh"),
+                        os.path.join(hs.run_dir, "ship", "supervise.sh"))
+        self.hosts.append(hs)
+        self.hb = hs
+        self.skew["b"] = 0.0
+
+    def add_host(self, name):
+        """Admit a host of the run as is; refuse any other."""
+        hs = self.host_state(name)
+        if hs is None:
+            raise gf.FleetError(f"{name}: unreachable: test host")
+        return hs
+
+    def plan_on(self, hs, job, body, attempt=None):
+        """Write a job's plan into one host's ship directory."""
+        suffix = f"-{attempt}" if attempt else ""
+        with open(os.path.join(hs.run_dir, "ship", f"plan-{job}{suffix}.sh"), "w") as f:
+            f.write(body)
+
+    def request_move_later(self, delay, lines):
+        """Write move-request lines after delay seconds."""
+        def write():
+            with open(self.move_path + ".tmp", "w") as f:
+                f.write("".join(ln + "\n" for ln in lines))
+            os.replace(self.move_path + ".tmp", self.move_path)
+        threading.Timer(delay, write).start()
+
+
+def case_move(tmp):
+    """`move`: refusals, an accepted move carrying stamped rows to another host, a pinned re-queue outside the attempt budget, no ledger row."""
+    n0 = len(ledger_rows())
+    a, b = TILES[0:2], TILES[2:4]
+    co = MoveCo(tmp, "move")
+    co.hosts = [co.hs, co.hb]
+    stamp = "".join(f"tile: 00 {t}\\n" for t in a)
+    rows_a = "\n".join(f"emit SAME {t} 0123456789abcdef" for t in a)
+    co.plan_on(co.hs, UNIT, f'mkdir -p "$UNIT_DIR/cand/resume"\n'
+               + "".join(f'echo png >"$UNIT_DIR/cand/{t}"\n' for t in a)
+               + f'printf "run: r\\n{stamp}" >"$UNIT_DIR/cand/resume/bk2.rowa.stamp"\n'
+               + 'echo partial >"$UNIT_DIR/cand/unstamped-vk.png"\n'
+               + f"{rows_a}\nsleep 60\n", attempt=1)
+    check_rows = "".join(f'[ -f "$UNIT_DIR/cand/{t}" ] || finish 1 row-missing\n' for t in a)
+    co.plan_on(co.hb, UNIT, check_rows
+               + '[ -f "$UNIT_DIR/cand/resume/bk2.rowa.stamp" ] || finish 1 stamp-missing\n'
+               + '[ ! -e "$UNIT_DIR/cand/unstamped-vk.png" ] || finish 1 unstamped-carried\n'
+               + "\n".join(f"emit_imported SAME {t} 0123456789abcdef" for t in a) + "\n"
+               + "\n".join(f"emit SAME {t} 0123456789abcdef" for t in b)
+               + "\nemit CREDITS rc=0\nemit END\n"
+               + "report 'verdict: PASS' 'exit: 0' 'compared: 4' 'credits-rc: 0'\nfinish 0 verdict\n",
+               attempt=2)
+    co.request_move_later(1.0, ["id=r1 unit=spyro-9-presentation to=b",
+                                f"id=r2 unit={UNIT} to=nowhere",
+                                f"id=r3 unit={UNIT} to=local",
+                                f"id=r4 unit={UNIT} to=b"])
+    job = gf.Job("unit", GAME, TIER)
+    co.go([job], deadline_s=60)
+    log = open(os.path.join(co.local_run_dir, "moves.log")).read().splitlines()
+    verdicts = [ln.split()[1] for ln in log]
+    keys = {gf.stream_key(x) for x in job.atts[2].lines} if 2 in job.atts else set()
+    want = {gf.stream_key(gf.parse_stream_line(f"SAME {t} 0123456789abcdef 1.0"))
+            for t in a + b}
+    check("move", verdicts == ["refused", "refused", "refused", "accepted"]
+          and job.result["rc"] == 0 and job.result["host"] == "b" and job.result["attempt"] == 2
+          and job.moves == 1 and job.moved == [("local", "b")] and job.pinned == "b"
+          and keys >= want and not job.result.get("stream_mismatch") and len(ledger_rows()) == n0,
+          f"moves.log {verdicts}; result rc {job.result['rc']} on {job.result['host']} attempt "
+          f"{job.result.get('attempt')}; moves {job.moves} {job.moved}; stream keys of attempt 2 "
+          f"cover the unmoved tiles: {keys >= want}; ledger rows +{len(ledger_rows()) - n0}; "
+          f"accepted line: {log[-1] if log else '-'}")
+    co.request_move_later(0.0, [f"id=r5 unit={UNIT} to=local"])
+    time.sleep(0.2)
+    co.apply_moves([], None)
+    last = open(os.path.join(co.local_run_dir, "moves.log")).read().splitlines()[-1]
+    check("move-finished", "refused" in last and "has finished" in last, last)
+    co.teardown()
+
+
+def case_move_cli(tmp):
+    """`golden-fleet.py move`: refused once done, unknown run; the request line and --no-wait."""
+    root = os.path.join(tmp, "move-cli-root")
+    run = os.path.join(root, "runs", "r-cli")
+    os.makedirs(run)
+    hosts = os.path.join(tmp, "move-cli-hosts.toml")
+    with open(hosts, "w") as f:
+        f.write(f'[hosts.local]\ntransport = "local"\nfleet_root = "{root}"\n')
+    env = dict(os.environ, OPENPETE_FLEET_HOSTS=hosts)
+    cmd = [sys.executable, os.path.join(TREE, "scripts", "golden-fleet.py"), "move"]
+    unknown_host = subprocess.run(cmd + ["r-cli", "--unit", UNIT, "--to", "zz", "--no-wait"],
+                                  env=env, capture_output=True, text=True)
+    ok = subprocess.run(cmd + ["r-cli", "--unit", UNIT, "--to", "local", "--no-wait"], env=env,
+                        capture_output=True, text=True)
+    req = gf.read_move_requests(os.path.join(run, "move-request"))
+    open(os.path.join(run, "done"), "w").write("rc=0\n")
+    done = subprocess.run(cmd + ["r-cli", "--unit", UNIT, "--to", "local"], env=env,
+                          capture_output=True, text=True)
+    norun = subprocess.run(cmd + ["r-none", "--unit", UNIT, "--to", "local"], env=env,
+                           capture_output=True, text=True)
+    check("move-cli", unknown_host.returncode == 2 and ok.returncode == 0 and len(req) == 1
+          and req[0]["unit"] == UNIT and req[0]["to"] == "local" and done.returncode == 1
+          and "resume" in done.stderr and norun.returncode == 2,
+          f"unknown host {unknown_host.returncode}, request {req}, done {done.returncode}, "
+          f"no run {norun.returncode}")
+
+
+def case_keep_and_resume_inputs(tmp):
+    """A stopped unit's stamped rows and ship are kept at teardown; resolve_saved reads them; resume refuses a finished unit and an active run."""
+    co = FakeCo(tmp, "keep")
+    co.golden_fd = gf.try_golden_lock(co.hs.root)
+    co.plan(UNIT, 'mkdir -p "$UNIT_DIR/cand/resume"\n'
+                  f'echo png >"$UNIT_DIR/cand/{TILES[0]}"\n'
+                  f'printf "run: r\\ntile: 00 {TILES[0]}\\n" >"$UNIT_DIR/cand/resume/bk2.k.stamp"\n'
+                  f"emit SAME {TILES[0]} 0123456789abcdef\nsleep 60\n")
+    os.makedirs(co.ship_dir, exist_ok=True)
+    with open(os.path.join(co.ship_dir, "fields-spyro-2.txt"), "w") as f:
+        f.write("head: x\n")
+    co.stop_later(0.5, f"unit={UNIT}")
+    job = gf.Job("unit", GAME, TIER)
+    co.go([job])
+    co.print_summary(co.run_rc())
+    co.teardown()
+    kept = os.path.join(co.local_run_dir, "kept")
+    files = gf.stamp_files(os.path.join(kept, f"u-{UNIT}", "cand"))
+    saved = gf.resolve_saved(kept, UNIT, co.local_run_dir)
+    left = sorted(os.listdir(co.local_run_dir))
+    check("keep-stopped", gf.row_counts(files) == (1, 1) and saved["fields"].endswith("fields-spyro-2.txt")
+          and "kept" in left and "ship" not in left,
+          f"kept rows {gf.row_counts(files)}, fields {saved['fields']}, run dir {left}")
+    # The summary line names the stopped unit, so `resume` reads its last result.
+    with open(os.path.join(co.local_run_dir, "coordinator.log"), "w") as f:
+        f.write(f"[fleet] result {UNIT}: FAIL on local (rc 1, attempt 1, - s; stopped by user)\n"
+                "[fleet] result spyro-3-presentation: PASS on b (rc 0, attempt 1, 9 s; verdict; census x)\n")
+    res = gf.unit_results(co.local_run_dir)
+    check("resume-results", res[UNIT][3] == gf.STOP_STATUS and res["spyro-3-presentation"][2] == 0,
+          f"{res}")
+
+
 def case_canary_verdict(tmp):
     """canary-verdict.txt per host, the pulled record's fleet stamp, and fleet_refusal reading both."""
     from PIL import Image
@@ -646,7 +803,8 @@ def main():
     try:
         for case in (case_framing, case_pool, case_stream_off, case_equality, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
-                     case_expect, case_canary_verdict):
+                     case_expect, case_canary_verdict, case_move, case_move_cli,
+                     case_keep_and_resume_inputs):
             case(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

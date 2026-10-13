@@ -10,8 +10,11 @@
     golden-fleet.py calibrate [--hosts a,b] [--dry-run]
     golden-fleet.py run [--game G | --all] [--tier T | --all-tiers]
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
-                    [--expect FILE]
+                    [--expect FILE] [--filter S] [--freecam-filter S]
     golden-fleet.py stop <run-id> [--unit U]
+    golden-fleet.py move <run-id> --unit U --to <host> [--no-wait]
+    golden-fleet.py resume <run-id> --unit U --to <host> [--from DIR]
+                    [--pull divergent|all] [--wait]
     golden-fleet.py clean [--hosts a,b] [--tree PATH | --all]
 
 Host file. $OPENPETE_FLEET_HOSTS, else `${XDG_CONFIG_HOME:-~/.config}/
@@ -132,7 +135,8 @@ coordinator:
      finishes is stamped (scripts/corpus-resume.sh), and a re-queued attempt
      on the same host imports the stamped rows whose run, tree, binary,
      manifest line and tile digests match, deletes the rest of the previous
-     attempt's output and captures only the other rows;
+     attempt's output and captures only the other rows (`move` and `resume`
+     carry the stamped rows to another host);
   5. runs a canary (one bk2 and one freecam level of the first unit's game)
      on every host first when two or more hosts capture, and refuses the run
      when a canary tile's digest differs between hosts; at the run's end
@@ -175,6 +179,12 @@ end, when the accepted attempt's stream holds END, SAME + DIVERGE must equal
 the report's compared count and the DIVERGE, EXTRA, EXCEED and CREDITS sets
 the report's; a mismatch sets the unit's rc to 1 (`stream mismatch`).
 Stopped and SKIP units and attempts without END are exempt.
+--filter S / --freecam-filter S: each unit captures only the bk2 rows whose
+name contains S and the freecam rows whose level contains the freecam
+substring (an unset one selects all of its corpus); the unit is decided by
+its capture's own verdict (out-of-scope tiles are not missing) instead of
+--verdict-only, and the report's compared count must be nonzero instead of
+equal to the manifest's rows. A partial run decides nothing for landing.
 --expect FILE: `<unit> <substring> <reason>` lines (unit = job name); a
 unit not in the run or a substring matching no blessed tile and no manifest
 row refuses the run (2). Streamed moves are tagged EXPECTED or UNEXPECTED;
@@ -206,7 +216,71 @@ child runs: the child's process group is killed (SIGTERM, SIGKILL after
 STOP_KILL_GRACE_S) and every unit is recorded stopped before it started. A
 running run's remote commands carry OPENPETE_FLEET_RUN=<run id>; teardown
 signals every remote process still carrying it (REAP_SCRIPT).
-The run is FAIL with reason=stopped by user.
+The run is FAIL with reason=stopped by user. At the run's end each stopped
+unit's stamped rows (resume/*.stamp and the files they name, from its last
+attempt's host), the ship directory and, with the local host in the run, its
+snapshot (hard links) are kept in <local run dir>/kept/ (u-<unit>/cand,
+u-<unit>/host naming the capturing host, ship/, tree/) beside canary/, for
+`resume`; clean removes them with the run
+directory.
+
+move: appends `id=<id> unit=<job> to=<host>` to <local run dir>/move-request
+and waits for the coordinator's outcome line in moves.log (exit 0 accepted,
+1 refused; --no-wait returns at once); refused (1) once the run's done marker
+exists. One host per move: a unit is one capture on one host. The coordinator
+reads the request once per loop iteration after the legs start and:
+  1. refuses when the unit is unknown, stopped, finished, already on the
+     host, or the host was dropped from the run or is busy with another job;
+  2. admits the host on the run-start terms (preflight, its golden lock,
+     clean, image ship) and refuses with the preflight's reasons (unreachable,
+     golden lock held, free space, governor, calibration); a host not in the
+     run joins it: its snapshot is copied from the local host's snapshot when
+     the local host is in the run, else from another host's snapshot pulled
+     into <local run dir>/join-<host> over the run's sync lists (unchanged
+     files copied from the checkout or the build relay) and rechecked against
+     that host with rsync -c; the joiner's copy is rechecked against the
+     source, its binaries against ship/binaries.sha256 and its disc against
+     the blessed header, and its base refreshed. A joiner and every run host
+     without a canary get one, compared at the run's end as at run start;
+  3. stops the unit's running attempt (an attempt that finished first keeps
+     its result and the move is refused); its rows in flight are lost, every
+     stamped row is kept. The stopped attempt does not count against
+     MAX_ATTEMPTS;
+  4. copies that attempt's stamps and the files they name into
+     u-<unit>/cand on the host (through this machine for a remote source)
+     and re-queues the unit first, pinned to the host. The new attempt's
+     import accepts them under the importer's own checks (run, tree, binary,
+     manifest line, tile digests) and streams them tagged `imported`, so the
+     unit's verdict, stream check and expected-move tags cover every row. A
+     moved unit writes no ledger row; its result line names each move. A
+     moved unit whose pinned host is later dropped is unpinned.
+
+resume: finishes a unit whose run is done (a stop, lost host or exhausted
+attempts; refused when its last logged result is a verdict, while the run's
+coordinator holds active.lock, or without a done marker). It detaches a
+coordinator for the same run id (log coordinator-resume-<n>.log in the run
+directory; the done marker becomes done.<n> and the stop request
+stop-request.<n>), which:
+  1. takes the unit filters from --filter/--freecam-filter, else the run's
+     run-args.json (written at run start), else none; reads the saved rows
+     from --from DIR (the unit directory itself, or a
+     directory holding u-<unit>/) or <run dir>/kept, the fields file
+     (ship/fields-<game>.txt, else the unit's fields.txt) and
+     ship/binaries.sha256 from DIR, beside it or in the unit directory, and
+     canary tiles from DIR/canary or <run dir>/canary;
+  2. admits the host as `move` does and gives it the run's snapshot: the
+     kept tree/ (its binaries checked against the saved hashes), else this
+     checkout, built as `run` builds it and refused unless its fields file
+     and binary hashes equal the saved ones, since no row would import;
+  3. copies the saved stamps and stamped files into u-<unit>/cand there and
+     runs the unit (pinned); when the host is not the one that captured the
+     rows (the saved unit directory's `host` file, which kept/ carries, else
+     the last host the run's logs started the unit on), a canary runs
+     first and its tiles are compared with the kept canary tiles of that host,
+     merged into canary-verdict.txt as canary.<host>;
+  4. pulls and checks the unit as `run` does and writes the run's done
+     marker: the worst over this unit, its canary and every other unit's last
+     logged result.
 
 clean: per host, under its golden lock (a busy host is skipped): removes
 runs/ directories no process holds (active.lock) and with no done marker
@@ -279,7 +353,9 @@ MAX_ATTEMPTS = 2
 TREE_MAX_AGE_S = 14 * 86400
 # Files of the coordinator's local run directory that outlive the run.
 RUN_KEEP = ("coordinator.log", "done", "active.lock", "stream.log", "expect.txt", "stop-request",
-            "crashes", "canary-verdict.txt")
+            "crashes", "canary-verdict.txt", "canary", "kept", "move-request", "moves.log", "run-args.json")
+# Name prefixes of further kept files: a resume's log and the done markers it replaced.
+RUN_KEEP_PREFIX = ("coordinator-resume-", "done.", "stop-request.", "move-request.")
 CANARY_VERDICT = "canary-verdict.txt"
 RECORD_NAME = "capture-record.txt"
 FLEET_RECORD_KEYS = ("fleet-run", "fleet-host", "fleet-run-dir")
@@ -1553,6 +1629,12 @@ im.save(fs[0])
 print("poked", fs[0])' "$cand" "$POKE" >>"$UNIT_DIR/capture.log" 2>&1 || finish 1 poke-failed
     fi
     [ "$KIND" = canary ] && finish "$crc" canary-captured
+    # A filtered unit is decided by its capture's own verdict (out-of-scope
+    # tiles are not missing); --verdict-only takes the whole corpus only.
+    if [ -n "$FILTERS" ]; then
+        [ -f "$cand/verdict-report.txt" ] || finish "$([ "$crc" = 64 ] && echo 64 || echo 1)" no-report
+        finish "$crc" verdict
+    fi
     unset OPENPETE_STREAM_FILE OPENPETE_STREAM_POKE
     nice -n "$NICE" tests/harness/check_presentation_golden.sh --verdict-only "$cand" --game "$GAME" \
         >"$UNIT_DIR/verdict.log" 2>&1
@@ -2077,6 +2159,8 @@ class Job:
         self.kind, self.game, self.tier, self.pinned = kind, game, tier, pinned
         self.slots, self.label = slots, label
         self.attempts = 0
+        self.moves = 0            # attempts ended by a move, outside the MAX_ATTEMPTS budget
+        self.moved = []           # (from host, to host) per move, in order
         self.result = None
         self.atts = {}
         self.stopped = False
@@ -2155,6 +2239,8 @@ class Coordinator:
     resume = True
     # A unit's capture streams its rows' verdict lines.
     stream = True
+    # A resume coordinator (golden-fleet.py resume) finishes one stopped unit.
+    resumed = False
 
     def __init__(self, a, run_id, local_run_dir):
         """Bind the arguments and the run's identity."""
@@ -2187,6 +2273,9 @@ class Coordinator:
         self.rows_cache = {}
         self.first_deadline = self.parse_first_deadline(os.environ.get("OPENPETE_FLEET_DEADLINE_S", ""))
         self.canary_only = os.environ.get("OPENPETE_FLEET_CANARY_ONLY", "") == "1"
+        self.src_bytes = 0
+        self.move_path = os.path.join(local_run_dir, "move-request")
+        self.moves_seen = set()
 
     @staticmethod
     def parse_poke(spec):
@@ -2444,12 +2533,12 @@ class Coordinator:
         self.sync_hosts([("build", relay, build_set(relay))], others)
         self.refresh_bases(others)
 
-    def check_discs(self):
-        """Refuse the run unless every host's synced disc bytes hash to the blessed header's."""
+    def check_discs(self, hosts=None):
+        """Refuse the run unless every host's (or the given hosts') synced disc bytes hash to the blessed header's."""
         for g in self.run_games():
             cue, bin_rel = disc_paths(self.tree, self.pb, g)
             want = self.blessed_disc(g)
-            for hs in self.hosts:
+            for hs in hosts or self.hosts:
                 cp = self.script(hs, HASH_SCRIPT, [f"{hs.run_dir}/tree", cue, bin_rel])
                 got = {ln.split(None, 1)[1]: ln.split(None, 1)[0]
                        for ln in cp.stdout.splitlines() if ln.strip()}
@@ -2497,6 +2586,10 @@ class Coordinator:
         jobs += [Job("unit", g, t) for g, t in units]
         return jobs
 
+    def filtered(self):
+        """True when run --filter or --freecam-filter scopes the units to part of their corpus."""
+        return bool(getattr(self.a, "filter", None) or getattr(self.a, "freecam_filter", None))
+
     def deadline(self, job, hs):
         """Return a job's deadline in seconds on a host (first-run rule from the size table)."""
         if job.kind == "canary":
@@ -2517,6 +2610,8 @@ class Coordinator:
         slots = self.job_slots(job, hs)
         canary = CANARY.get(game, ("", "")) if job.kind == "canary" else None
         filters = f"--filter={canary[0]} --freecam-filter={canary[1]}" if canary else ""
+        if job.kind == "unit" and self.filtered():
+            filters = f"--filter={self.a.filter or ''} --freecam-filter={self.a.freecam_filter or ''}"
         poke = self.poke_for(self.poke, job, hs)
         env = {"RUN_ID": self.run_id, "JOB": job.name, "KIND": job.kind, "GAME": game,
                "TIER": tier, "RUN_DIR": hs.run_dir, "UNIT_DIR": att.unit_dir,
@@ -2577,6 +2672,7 @@ class Coordinator:
         with stop_watch(None):
             while True:
                 self.apply_stop(pending)
+                self.apply_moves(pending, on_done)
                 self.place(pending, deadline)
                 running = [hs for hs in self.hosts if hs.current]
                 if not running:
@@ -2598,7 +2694,11 @@ class Coordinator:
                 pending.remove(job)
         for job in [j for j in pending if j.pinned]:
             hs = next((h for h in self.hosts if h.name == job.pinned), None)
-            if hs is None or hs.dropped:
+            if (hs is None or hs.dropped) and job.kind == "unit":
+                print(f"[fleet] {job.name}: pinned host {job.pinned} "
+                      f"{'dropped' if hs else 'not in the run'}; unpinned")
+                job.pinned = None
+            elif hs is None or hs.dropped:
                 pending.remove(job)
                 job.result = {"rc": EXIT_SKIP, "status": f"host {job.pinned} dropped",
                               "host": job.pinned}
@@ -2661,6 +2761,308 @@ class Coordinator:
         """Kill an attempt's supervisor and containers, confirm the lock is free, re-queue."""
         self.kill_attempt(att)
         self.requeue(att, pending, killed=True)
+
+    # -- move (golden-fleet.py move) and the rows a unit carries --
+
+    def host_state(self, name):
+        """Return the run's HostState named name, or None."""
+        return next((h for h in self.hosts if h.name == name), None)
+
+    def add_host(self, name):
+        """Admit a host on the run-start terms: preflight, golden lock, clean, image; return its HostState or raise naming the refusal.
+
+        A host already in the run is preflighted again (its own lock excepted
+        on the local host, which the coordinator holds) and returned as is.
+        """
+        _path, hosts = load_hosts()
+        if name not in hosts:
+            raise FleetError(f"no host {name!r} in the host file (have: {', '.join(hosts)})", 2)
+        h = Host(name, hosts[name])
+        ((_h, info, reasons, slots),) = preflight([h], self.need_bytes(self.src_bytes))
+        have = self.host_state(name)
+        if have and h.local:
+            reasons = [r for r in reasons if not r.startswith("golden lock held")]
+        if reasons:
+            raise FleetError(f"{name}: " + "; ".join(reasons))
+        if have:
+            return have
+        if h.local:
+            self.golden_fd = try_golden_lock(h.fleet_root)
+            if self.golden_fd is None:
+                raise FleetError(f"{name}: golden lock taken since preflight")
+        rc = clean_host(h, "stale", held=h.local)
+        if rc != 0:
+            if h.local:
+                os.close(self.golden_fd)
+                self.golden_fd = None
+            raise FleetError(f"{name}: clean exited {rc}")
+        ship_image(h, info)
+        print(f"[fleet] {name}: usable, slots {slots}")
+        return HostState(h, info, slots, self.run_id)
+
+    def join_snapshot(self, hs):
+        """Give a joining host this run's snapshot: a copy of an in-run host's tree over the run's sync lists, rechecked, then ship, base and disc check.
+
+        The local host's snapshot is the source when the local host is in
+        the run; otherwise another host's snapshot is pulled into
+        <local run dir>/join-<host> (unchanged files copied from the checkout
+        or the build relay) and checked against that host before it is pushed.
+        """
+        self.mkdirs(hs)
+        live = [h for h in self.hosts if h is not hs and h.touched]
+        ref = next((h for h in live if h.host.local), None) or next(iter(live), None)
+        if ref is None:
+            raise FleetError("no host of the run holds a snapshot to copy")
+        lists = [(label, os.path.join(self.local_run_dir, f"{label}.lst"))
+                 for label in ("source", "build", "snapshot")]
+        lists = [(label, p) for label, p in lists if os.path.exists(p)]
+        if ref.host.local:
+            root = f"{ref.run_dir}/tree"
+        else:
+            root = os.path.join(self.local_run_dir, f"join-{hs.name}")
+            lists = self.stage_snapshot(ref, root, lists)
+        print(f"[fleet] {hs.name}: joins the run with {ref.name}'s snapshot")
+        self.sync_hosts([(label, root, read_list(p)) for label, p in lists], [hs])
+        self.check_binaries(hs)
+        self.refresh_base(hs)
+        self.push_ship(hs)
+        self.check_discs([hs])
+        if not ref.host.local:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def stage_snapshot(self, ref, root, lists):
+        """Copy ref's snapshot over the lists into the local root, then refuse unless it equals ref's (rsync -c); return the lists used."""
+        os.makedirs(root, exist_ok=True)
+        relay = os.path.join(self.local_run_dir, "relay")
+        src = remote_path(ref.host, f"{ref.run_dir}/tree") + "/"
+        for label, lst in lists:
+            alt = relay if label == "build" and os.path.isdir(relay) else self.tree
+            argv = ["rsync", "-a", "-c", "--from0", f"--files-from={lst}", *rsync_base(ref.host),
+                    f"--copy-dest={alt}", src, root + "/"]
+            cp = run_proc(argv, text=True)
+            if cp.returncode != 0:
+                raise FleetError(f"{ref.name}: pulling its {label} snapshot exited {cp.returncode}: "
+                                 f"{cp.stderr.strip()[-300:]}")
+        if not any(label == "build" for label, _p in lists):
+            # One remote build host and no relay: its build tree has no list here.
+            dst = os.path.join(root, BUILD_TREE)
+            os.makedirs(dst, exist_ok=True)
+            argv = ["rsync", "-a", "-c", *rsync_base(ref.host), "--exclude=/home",
+                    "--exclude=/golden-disc-hash.tsv",
+                    f"--copy-dest={os.path.join(self.tree, BUILD_TREE)}",
+                    remote_path(ref.host, f"{ref.run_dir}/tree/{BUILD_TREE}") + "/", dst + "/"]
+            cp = run_proc(argv, text=True)
+            if cp.returncode != 0:
+                raise FleetError(f"{ref.name}: pulling its build tree exited {cp.returncode}: "
+                                 f"{cp.stderr.strip()[-300:]}")
+            lst = os.path.join(self.local_run_dir, f"join-{ref.name}-build.lst")
+            write_list(lst, build_set(root))
+            lists = lists + [("build", lst)]
+        for label, lst in lists:
+            argv = ["rsync", "-n", "-i", "-c", "--from0", f"--files-from={lst}",
+                    *rsync_base(ref.host), src, root + "/"]
+            cp = run_proc(argv, text=True)
+            changes = [ln for ln in cp.stdout.splitlines() if ln[:1] in "<>ch*" and ln[1:2] in "fLS"]
+            if cp.returncode != 0 or changes:
+                raise FleetError(f"{ref.name}: staged {label} snapshot differs from it "
+                                 f"({len(changes)} change(s), rsync {cp.returncode}): "
+                                 + "; ".join(changes[:5]))
+        print(f"[fleet] {ref.name}: snapshot staged in {root} and rechecked")
+        return lists
+
+    def check_binaries(self, hs):
+        """Refuse unless the host's snapshot binaries hash to ship/binaries.sha256."""
+        want = {}
+        with open(os.path.join(self.ship_dir, "binaries.sha256"), encoding="utf-8") as f:
+            for ln in f:
+                if ln.strip():
+                    sha, rel = ln.split(None, 1)
+                    want[rel.strip()] = sha
+        cp = self.script(hs, HASH_SCRIPT, [f"{hs.run_dir}/tree", *sorted(want)])
+        got = {ln.split(None, 1)[1]: ln.split(None, 1)[0] for ln in cp.stdout.splitlines()
+               if ln.strip()}
+        bad = [rel for rel, sha in want.items() if got.get(rel) != sha]
+        if bad:
+            raise FleetError(f"{hs.name}: snapshot binaries differ from the run's: {', '.join(bad)}")
+        print(f"[fleet] {hs.name}: snapshot binaries hash to the run's ({len(want)} file(s))")
+
+    def fetch_rows(self, host, cand, dst):
+        """Copy the stamps of a candidate directory on a host and the tiles they name into the local dst; return (rows, -vk.png tiles).
+
+        Files of a local source are hard-linked. A tile that is absent leaves
+        its row for the importer to refuse.
+        """
+        shutil.rmtree(dst, ignore_errors=True)
+        os.makedirs(dst)
+        link = [f"--link-dest={cand}"] if host.local else []
+        src = remote_path(host, cand.rstrip("/")) + "/"
+        argv = ["rsync", "-a", *rsync_base(host), *link, "--include=/resume/",
+                "--include=/resume/*.stamp", "--exclude=*", src, dst + "/"]
+        cp = run_proc(argv, text=True)
+        if cp.returncode != 0:
+            raise FleetError(f"{host.name}: pulling the stamps of {cand} exited {cp.returncode}: "
+                             f"{cp.stderr.strip()[-300:]}")
+        files = stamp_files(dst)
+        tiles = [f for f in files if not f.startswith("resume/")]
+        if tiles:
+            lst = os.path.join(os.path.dirname(dst.rstrip("/")), ".rows.lst")
+            write_list(lst, tiles)
+            cp = run_proc(["rsync", "-a", "--from0", f"--files-from={lst}", *rsync_base(host),
+                           *link, src, dst + "/"], text=True)
+            os.unlink(lst)
+            if cp.returncode not in (0, 23):
+                raise FleetError(f"{host.name}: pulling the stamped tiles of {cand} exited "
+                                 f"{cp.returncode}: {cp.stderr.strip()[-300:]}")
+        return row_counts(files)
+
+    def push_rows(self, hs, job, cand):
+        """Copy a local candidate directory's stamps and stamped tiles into the job's candidate directory on a host; return (rows, -vk.png tiles).
+
+        The host's earlier output of the unit stays; an interrupted import's
+        set-aside directory (cand.resume-prev), whose presence makes the
+        importer discard the fresh directory, is removed first.
+        """
+        files = [f for f in stamp_files(cand) if os.path.exists(os.path.join(cand, f))]
+        unit_dir = f"{hs.run_dir}/u-{job.name}"
+        self.script(hs, 'set -eu; rm -rf "${1:?}/cand.resume-prev"; mkdir -p "$1/cand"', [unit_dir])
+        hs.touched = True
+        if files:
+            lst = os.path.join(self.local_run_dir, f"rows-{job.name}.lst")
+            write_list(lst, files)
+            rsync_push(hs.host, cand, lst, f"{unit_dir}/cand")
+            os.unlink(lst)
+        return row_counts(files)
+
+    def carry_rows(self, att, tgt):
+        """Bring an attempt's stamped rows from its host into the target host's candidate directory; return (rows, -vk.png tiles)."""
+        job, src = att.job, att.hs
+        cand = f"{att.unit_dir}/cand"
+        stage = None
+        if not src.host.local:
+            stage = os.path.join(self.local_run_dir, f"carry-{job.name}", "cand")
+            try:
+                self.fetch_rows(src.host, cand, stage)
+            except FleetError as e:
+                print(f"[fleet] {job.name}: no rows carried from {src.name}: {e}")
+                shutil.rmtree(os.path.dirname(stage), ignore_errors=True)
+                return 0, 0
+            cand = stage
+        try:
+            return self.push_rows(tgt, job, cand)
+        finally:
+            if stage:
+                shutil.rmtree(os.path.dirname(stage), ignore_errors=True)
+
+    def apply_moves(self, pending, on_done):
+        """Act on each new line of the run's move request once its legs have started; record the outcome in moves.log."""
+        if not self.jobs or not os.path.exists(self.move_path):
+            return
+        for req in read_move_requests(self.move_path):
+            if req["id"] in self.moves_seen:
+                continue
+            self.moves_seen.add(req["id"])
+            try:
+                note = self.move(req["unit"], req["to"], pending, on_done)
+                self.log_move(req["id"], "accepted", note)
+            except FleetError as e:
+                self.log_move(req["id"], "refused", str(e))
+
+    def log_move(self, rid, verdict, text):
+        """Append one move outcome to moves.log (read by the move command) and print it."""
+        print(f"[fleet] move {rid}: {verdict}: {text}")
+        with open(os.path.join(self.local_run_dir, "moves.log"), "a", encoding="utf-8") as f:
+            f.write(f"id={rid} {verdict} {text}\n")
+
+    def move(self, name, to, pending, on_done):
+        """Move a running or pending unit to host `to`: admit the host, stop the attempt, carry its stamped rows, re-queue the unit pinned there.
+
+        Every refusal before the attempt is stopped leaves the unit as it
+        was. A host new to the run joins it (run-start preflight, lock,
+        clean, image, snapshot) and gets a canary, as does every run host
+        without one.
+        """
+        job = next((j for j in self.jobs if j.name == name), None)
+        if job is None or job.kind != "unit":
+            units = ", ".join(j.name for j in self.jobs if j.kind == "unit")
+            raise FleetError(f"no unit {name} in this run (units: {units})")
+        if job.stopped:
+            raise FleetError(f"{name} was stopped by user; `resume` it once the run is done")
+        if job.result is not None:
+            raise FleetError(f"{name} has finished (rc {job.result['rc']}, "
+                             f"{job.result.get('status', '')} on {job.result.get('host', '-')})")
+        running = next((h for h in self.hosts if h.current and h.current.job is job), None)
+        if running and running.name == to:
+            raise FleetError(f"{name} already runs on {to}")
+        if not running and job not in pending:
+            raise FleetError(f"{name} is neither running nor pending")
+        tgt = self.host_state(to)
+        if tgt and tgt.dropped:
+            raise FleetError(f"{to} was dropped from this run: {tgt.dropped}")
+        if tgt and tgt.current:
+            raise FleetError(f"{to} is busy with {tgt.current.job.name}")
+        joined = tgt is None
+        tgt = self.add_host(to)
+        if joined:
+            self.hosts.append(tgt)
+            self.sel.append(tgt.host)
+            try:
+                self.join_snapshot(tgt)
+            except FleetError as e:
+                self.drop(tgt, f"join failed: {e}")
+                raise
+        att = running.current if running else (job.atts[max(job.atts)] if job.atts else None)
+        if running:
+            state = self.poll_attempt(att)
+            if state and state[0] == "done":
+                self.finish_attempt(att, parse_kv(state[1].replace(" ", "\n")), pending, on_done)
+                raise FleetError(f"{name} finished before the move; its result stands")
+            self.kill_attempt(att)
+            running.current = None
+            job.moves += 1
+        rows, png = self.carry_rows(att, tgt) if att else (0, 0)
+        src = att.hs.name if att else "-"
+        job.moved.append((src, to))
+        job.pinned = to
+        if job in pending:
+            pending.remove(job)
+        pending.insert(0, job)
+        if joined:
+            have = {j.pinned for j in self.jobs if j.kind == "canary"}
+            for hs in [h for h in self.hosts if not h.dropped and h.name not in have][::-1]:
+                can = Job("canary", self.canary_game(), "presentation", pinned=hs.name)
+                self.jobs.append(can)
+                pending.insert(0, can)
+                print(f"[fleet] {hs.name}: canary queued (the run now spans "
+                      f"{len(self.hosts)} hosts)")
+            self.measure_skew([tgt])
+        return (f"{name} {'attempt ' + str(att.n) + ' on ' if att else ''}{src} -> {to}: "
+                f"carried {rows} row(s), {png} tile(s); re-queued pinned to {to}")
+
+    def keep_stopped(self):
+        """Keep each stopped unit's stamped rows, the ship directory and the local snapshot under <local run dir>/kept, which `resume` reads."""
+        stopped = [j for j in self.jobs if j.kind == "unit" and j.stopped and j.atts]
+        if not stopped:
+            return
+        kept = os.path.join(self.local_run_dir, "kept")
+        for job in stopped:
+            att = job.atts[max(job.atts)]
+            try:
+                rows, png = self.fetch_rows(att.hs.host, f"{att.unit_dir}/cand",
+                                            os.path.join(kept, f"u-{job.name}", "cand"))
+            except FleetError as e:
+                print(f"[fleet] {job.name}: rows not kept: {e}")
+                continue
+            with open(os.path.join(kept, f"u-{job.name}", "host"), "w", encoding="utf-8") as f:
+                f.write(att.hs.name + "\n")
+            print(f"[fleet] {job.name}: kept {rows} stamped row(s), {png} tile(s) of attempt "
+                  f"{att.n} on {att.hs.name} in {kept}")
+        if os.path.isdir(self.ship_dir):
+            shutil.copytree(self.ship_dir, os.path.join(kept, "ship"), dirs_exist_ok=True)
+        local = next((h for h in self.hosts if h.host.local and h.touched), None)
+        tree = f"{local.run_dir}/tree" if local else ""
+        if tree and os.path.isdir(tree) and not os.path.exists(os.path.join(kept, "tree")):
+            subprocess.run(["cp", "-al", tree, os.path.join(kept, "tree")], check=True)
+            print(f"[fleet] local: snapshot kept (hard links) in {kept}/tree")
 
     # -- stop (golden-fleet.py stop) --
 
@@ -2734,9 +3136,9 @@ class Coordinator:
         with open(self.stream_log, "a", encoding="utf-8") as f:
             f.write(text + "\n")
 
-    def measure_skew(self):
-        """Measure each host's clock offset from this machine (host minus local) and log it."""
-        for hs in self.hosts:
+    def measure_skew(self, hosts=None):
+        """Measure each host's (or the given hosts') clock offset from this machine (host minus local) and log it."""
+        for hs in hosts or self.hosts:
             if hs.host.local:
                 self.skew[hs.name] = 0.0
                 continue
@@ -2882,9 +3284,10 @@ class Coordinator:
         """Re-queue an attempt's job while attempts remain, else record its failure."""
         att.hs.current = None
         job = att.job
-        if job.attempts < MAX_ATTEMPTS and job.kind != "build":
+        if job.attempts - job.moves < MAX_ATTEMPTS and job.kind != "build":
             pending.insert(0, job)
-            print(f"[fleet] {job.name}: re-queued (attempt {job.attempts} of {MAX_ATTEMPTS} lost)")
+            print(f"[fleet] {job.name}: re-queued (attempt {job.attempts - job.moves} of "
+                  f"{MAX_ATTEMPTS} lost)")
         else:
             job.result = {"rc": 1, "status": "attempts exhausted" if killed else "host lost",
                           "host": att.hs.name, "attempt": att.n}
@@ -2944,7 +3347,7 @@ class Coordinator:
                 job.result.update(rc=1, status="; ".join(errs))
                 for e in errs:
                     print(f"[fleet] {job.name}: REFUSED: {e}")
-            elif job.result["rc"] in (0, 1):
+            elif job.result["rc"] in (0, 1) and not job.moved and not self.resumed:
                 self.record_time(job)
         if self.stream:
             self.check_stream(job, os.path.join(self.pull_target(job.game, job.tier),
@@ -3026,7 +3429,10 @@ class Coordinator:
                             f"{want[:12] or 'absent'}")
         rows = len(self.pb.load_manifest(job.game, job.tier).rows)
         compared = report["fields"].get("compared", "")
-        if compared != str(rows):
+        if self.filtered():
+            if not compared.isdigit() or int(compared) == 0:
+                errs.append(f"census compared={compared or 'absent'}: the filtered unit compared nothing")
+        elif compared != str(rows):
             errs.append(f"census compared={compared or 'absent'} differs from the local "
                         f"blessed row count {rows}")
         if report["fields"].get("exit") != str(job.result["rc"]):
@@ -3147,6 +3553,10 @@ class Coordinator:
             if hs.current:
                 self.stop_current(hs)
         self.reap_remote()
+        try:
+            self.keep_stopped()
+        except (FleetError, OSError) as e:
+            print(f"[fleet] keeping stopped units failed: {e}")
         for hs in self.hosts:
             if not hs.touched:
                 continue
@@ -3154,7 +3564,7 @@ class Coordinator:
                 self.pull_crashes(hs)
             except OSError as e:
                 print(f"[fleet] {hs.name}: crash pull failed: {e}")
-            keep = list(RUN_KEEP) if hs.host.local else []
+            keep = [e for e in os.listdir(self.local_run_dir) if run_keep(e)] if hs.host.local else []
             try:
                 cp = hs.host.run_script(DELETE_SCRIPT, [hs.run_dir, *keep], timeout=600)
                 ok = cp.returncode == 0
@@ -3163,7 +3573,7 @@ class Coordinator:
             print(f"[fleet] {hs.name}: " + (f"deleted {hs.run_dir}" if ok else
                                             f"{hs.run_dir} kept for clean (host unreachable)"))
         for e in os.listdir(self.local_run_dir):
-            if e not in RUN_KEEP:
+            if not run_keep(e):
                 p = os.path.join(self.local_run_dir, e)
                 shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.unlink(p)
         if self.archive is not None:
@@ -3188,6 +3598,8 @@ class Coordinator:
                     stop_point()
                     src_bytes = set_bytes(self.tree, source_set(self.tree, self.pb,
                                                                 sorted({g for g, _t in self.units})))
+                    self.src_bytes = src_bytes
+                    self.write_run_args()
                     self.load_expect()
                     self.prepare_hosts(src_bytes)
                     self.measure_skew()
@@ -3210,6 +3622,14 @@ class Coordinator:
         if any(j.stopped for j in self.jobs):
             rc, self.done_reason = 1, STOP_STATUS
         return rc
+
+    def write_run_args(self):
+        """Record the unit filters and pull mode in <local run dir>/run-args.json, which `resume` reads."""
+        args = {k: getattr(self.a, k, None) for k in ("filter", "freecam_filter", "pull")}
+        with open(os.path.join(self.local_run_dir, "run-args.json.tmp"), "w") as f:
+            json.dump(args, f)
+        os.replace(os.path.join(self.local_run_dir, "run-args.json.tmp"),
+                   os.path.join(self.local_run_dir, "run-args.json"))
 
     def load_expect(self):
         """Read the run's copy of the expected-moves file; refuse the run (2) on an unknown unit or a substring matching nothing."""
@@ -3247,14 +3667,187 @@ class Coordinator:
             r = j.result or {"rc": 1, "status": "no result", "host": "-"}
             verdict = {0: "PASS", EXIT_SKIP: "SKIP"}.get(r["rc"], "FAIL")
             census = f"; {r['census']}" if r.get("census") else ""
+            moved = "".join(f"; moved {a} -> {b}" for a, b in j.moved)
             print(f"[fleet] result {j.name}: {verdict} on {r['host']} (rc {r['rc']}, "
-                  f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']}{census})")
+                  f"attempt {r.get('attempt', '-')}, {r.get('wall', '-')} s; {r['status']}{census}{moved})")
             if r.get("stream_mismatch"):
                 print(f"[fleet] result {j.name}: stream mismatch: {r['stream_mismatch']}")
         if self.expect:
             self.expect_summary()
         print(f"[fleet] run {self.run_id}: " + {0: "PASS", EXIT_SKIP: "SKIP"}.get(rc, "FAIL")
               + f" (exit {rc}" + (f", reason={self.done_reason}" if self.done_reason else "") + ")")
+
+
+class Resumer(Coordinator):
+    """`resume`: finish one unit of a run whose coordinator has exited, on one host, from its saved stamped rows.
+
+    The run id is the stopped run's, so the rows' stamps (run, tree, binary)
+    match when the snapshot is the run's: its kept tree when present, else
+    the checkout, built and refused unless its fields and binaries equal the
+    run's. The run directory gets a new done marker whose rc is the worst
+    over this unit's result and every other unit's last logged result.
+    """
+
+    resumed = True
+
+    def __init__(self, a, run_id, local_run_dir):
+        """Bind the unit, its target host and the saved rows."""
+        game, tier = split_unit(a.unit)
+        a.game, a.tier, a.all, a.all_tiers = game, tier, False, False
+        try:
+            with open(os.path.join(local_run_dir, "run-args.json"), encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            rec = {}
+        for k in ("filter", "freecam_filter"):
+            if getattr(a, k, None) is None:
+                setattr(a, k, rec.get(k))
+        a.hosts, a.no_local, a.expect = a.to, False, None
+        super().__init__(a, run_id, local_run_dir)
+        self.saved = resolve_saved(a.from_dir or os.path.join(local_run_dir, "kept"), a.unit,
+                                   local_run_dir)
+        prior = unit_hosts(local_run_dir, a.unit)
+        self.rows_host = self.saved["host"] or (prior[-1] if prior else None)
+
+    def canary_needed(self):
+        """True when the target is not the host that captured the saved rows."""
+        return self.rows_host != self.a.to
+
+    def run(self):
+        """Admit the target, give it the run's snapshot and the saved rows, run its canary and the unit; return the run's rc."""
+        with run_tag(self.run_id):
+            game = self.units[0][0]
+            self.src_bytes = set_bytes(self.tree, source_set(self.tree, self.pb, [game]))
+            self.load_resume_expect()
+            print(f"[fleet] resume {self.a.unit} of run {self.run_id} on {self.a.to}; rows from "
+                  f"{self.saved['cand']} (captured on {self.rows_host or 'an unknown host'})")
+            hs = self.add_host(self.a.to)
+            self.hosts, self.sel = [hs], [hs.host]
+            self.measure_skew()
+            self.resume_snapshot(hs)
+            job = Job("unit", game, self.units[0][1], pinned=hs.name)
+            rows, png = self.push_rows(hs, job, self.saved["cand"])
+            print(f"[fleet] {job.name}: {rows} saved row(s), {png} tile(s) placed on {hs.name} "
+                  f"for import")
+            job.moved.append((self.rows_host or "-", hs.name))
+            self.jobs = [job]
+            if self.canary_needed():
+                self.jobs.insert(0, Job("canary", game, "presentation", pinned=hs.name))
+            self.run_jobs(self.jobs, on_done=self.unit_done)
+        rc = self.run_rc()
+        self.print_summary(rc)
+        return rc
+
+    def load_resume_expect(self):
+        """Read the run's expected-moves file, keeping the expectations of the resumed unit."""
+        copy = os.path.join(self.local_run_dir, "expect.txt")
+        if os.path.exists(copy):
+            self.expect = [e for e in parse_expect(copy) if e.unit == self.a.unit]
+
+    def write_resume_ship(self):
+        """Write the ship directory: this script's supervisor, the run's fields file and binary hashes."""
+        os.makedirs(self.ship_dir, exist_ok=True)
+        with open(os.path.join(self.ship_dir, "supervise.sh"), "w") as f:
+            f.write(SUPERVISOR)
+        shutil.copyfile(self.saved["fields"],
+                        os.path.join(self.ship_dir, f"fields-{self.units[0][0]}.txt"))
+        if self.saved["binaries"]:
+            shutil.copyfile(self.saved["binaries"], os.path.join(self.ship_dir, "binaries.sha256"))
+
+    def resume_snapshot(self, hs):
+        """Sync the run's kept tree to the host, or build and sync the checkout and refuse unless its fields and binaries are the run's."""
+        game = self.units[0][0]
+        tree = self.saved["tree"]
+        if tree:
+            if not self.saved["binaries"]:
+                raise FleetError(f"kept tree {tree} without ship/binaries.sha256 beside it", 2)
+            self.mkdirs(hs)
+            self.write_resume_ship()
+            check = subprocess.run(["sha256sum", "-c", "--strict", "--quiet",
+                                    os.path.join(self.ship_dir, "binaries.sha256")],
+                                   cwd=tree, capture_output=True, text=True)
+            if check.returncode != 0:
+                raise FleetError(f"kept tree {tree}: binaries differ from the run's hashes: "
+                                 f"{check.stdout.strip()[-300:]}")
+            skip = (f"{BUILD_TREE}/home/", f"{BUILD_TREE}/golden-disc-hash.tsv")
+            files = [f for f in walk_files(tree, ".") if not f.startswith(skip)]
+            print(f"[fleet] {hs.name}: snapshot from the kept tree {tree} ({len(files)} files)")
+            self.sync_hosts([("snapshot", tree, files)], [hs])
+            self.check_binaries(hs)
+            self.refresh_base(hs)
+            self.push_ship(hs)
+            self.check_discs()
+            return
+        if not hs.host.cfg.get("build", True):
+            raise FleetError(f"no kept tree and {hs.name} may not build (build = false)", 2)
+        self.build_hs = hs
+        self.build_and_sync()
+        built = open(os.path.join(self.ship_dir, f"fields-{game}.txt"), encoding="utf-8").read()
+        want = open(self.saved["fields"], encoding="utf-8").read()
+        if built != want:
+            diff = [f"{a.strip()} (run: {b.strip()})" for a, b in
+                    zip(built.splitlines(), want.splitlines()) if a != b]
+            raise FleetError("the checkout is not the stopped run's tree, so none of its rows "
+                             "would import: " + "; ".join(diff), 1)
+        if self.saved["binaries"]:
+            got = open(os.path.join(self.ship_dir, "binaries.sha256"), encoding="utf-8").read()
+            if got != open(self.saved["binaries"], encoding="utf-8").read():
+                raise FleetError("the rebuilt binaries differ from the stopped run's "
+                                 "(ship/binaries.sha256), so none of its rows would import", 1)
+        else:
+            print("[fleet] no saved binaries.sha256: the importer's binary check decides each row")
+
+    def compare_canaries(self, jobs):
+        """Compare the target's canary tiles with the kept canary tiles of the rows' host; merge canary.<target> into the run's canary verdict."""
+        can = next((j for j in jobs if j.kind == "canary"), None)
+        if can is None:
+            return 0
+        tgt, ref = can.pinned, self.rows_host
+        refdir = os.path.join(self.saved["canary"], ref or "-") if self.saved["canary"] else ""
+        rc, line = 0, ""
+        if not can.result or can.result["rc"] not in (0, 1):
+            line = "fail canary did not capture (" + (
+                f"rc {can.result['rc']}: {can.result.get('status', '')}" if can.result else
+                "no result") + ")"
+        elif not refdir or not glob.glob(os.path.join(refdir, "*-vk.png")):
+            line = f"fail no kept canary tiles of {ref or 'the rows host'} to compare with"
+        else:
+            mine = self.canary_digests(tgt)
+            theirs = {os.path.basename(p): (dg[0] if dg else "undecodable") for p, dg in
+                      self.pb.digest_files(sorted(glob.glob(os.path.join(refdir, "*-vk.png")))).items()}
+            names = sorted(set(mine) | set(theirs))
+            bad = [n for n in names if mine.get(n, "absent") != theirs.get(n, "absent")]
+            if bad:
+                for n in bad:
+                    print(f"[fleet] canary: {n}: {tgt}={mine.get(n, 'absent')[:12]}, "
+                          f"{ref}={theirs.get(n, 'absent')[:12]}")
+                rc, line = 1, f"fail {len(bad)} of {len(names)} tile(s) differ between {ref}, {tgt}"
+            else:
+                line = f"pass {len(names)} tile(s) identical on {ref}, {tgt}"
+            print(f"[fleet] canary: {line[5:]}")
+        path = os.path.join(self.local_run_dir, CANARY_VERDICT)
+        lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else \
+            [f"run={self.run_id}"]
+        lines = [ln for ln in lines if not ln.startswith(f"canary.{tgt}=")
+                 and not ln.startswith("canary=")]
+        lines.insert(1, "canary=on")
+        lines.append(f"canary.{tgt}={line}")
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(path + ".tmp", path)
+        return rc
+
+    def run_rc(self):
+        """Return the worst of this unit's rc (canary included) and every other unit's last logged result."""
+        rc = super().run_rc()
+        others = {n: r for n, r in unit_results(self.local_run_dir).items()
+                  if n != self.a.unit and not n.startswith("canary-") and n != "build"}
+        for n, (verdict, host, orc, status) in sorted(others.items()):
+            print(f"[fleet] run {self.run_id}: {n}: {verdict} on {host} (rc {orc}; {status}) "
+                  f"from an earlier coordinator")
+            if status == STOP_STATUS and not self.done_reason:
+                self.done_reason = f"{n} {STOP_STATUS}"
+        return worst_rc([rc, *(r[2] for r in others.values())])
 
 
 # ---- add and calibrate: the calibration unit through run's machinery ----------
@@ -3784,6 +4377,127 @@ def expect_counts(exps, units):
     return counts, rows
 
 
+def run_keep(name):
+    """True for a file of the coordinator's local run directory that outlives the run (RUN_KEEP, RUN_KEEP_PREFIX)."""
+    return name in RUN_KEEP or name.startswith(RUN_KEEP_PREFIX)
+
+
+def read_list(path):
+    """Read a NUL-separated --files-from list."""
+    with open(path, "rb") as f:
+        return [x.decode() for x in f.read().split(b"\0") if x]
+
+
+def stamp_files(cand):
+    """Return a local candidate directory's row stamps (resume/<kind>.<key>.stamp) and the tile files they name, cand-relative."""
+    out = []
+    for s in sorted(glob.glob(os.path.join(cand, "resume", "*.stamp"))):
+        out.append(os.path.relpath(s, cand))
+        with open(s, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 3 and parts[0] == "tile:" and "/" not in parts[2] \
+                        and not parts[2].startswith("."):
+                    out.append(parts[2])
+    return out
+
+
+def row_counts(files):
+    """Return (rows, -vk.png tiles) of a stamp_files list."""
+    return (sum(1 for f in files if f.startswith("resume/")),
+            sum(1 for f in files if f.endswith("-vk.png")))
+
+
+def read_move_requests(path):
+    """Return the move request's lines as dicts with id, unit and to, in order; malformed lines are skipped."""
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        kv = dict(w.split("=", 1) for w in line.split() if "=" in w)
+        if {"id", "unit", "to"} <= kv.keys():
+            out.append(kv)
+    return out
+
+
+def split_unit(name):
+    """Return the (game, tier) of a unit job name `<game>-<tier>`, or raise."""
+    game, _, tier = name.rpartition("-")
+    if tier not in TIER_GAMES or game not in TIER_GAMES[tier]:
+        raise FleetError(f"{name}: not a unit name (<game>-<tier>, e.g. spyro-1-presentation)", 2)
+    return game, tier
+
+
+RESULT_RE = re.compile(r"^\[fleet\] result (\S+): (\w+) on (\S+) \(rc (-?\d+), attempt [^,]*, "
+                       r"[^;]*; ([^;)]*)")
+STARTED_RE = re.compile(r"^\[fleet\] (\S+): (\S+) attempt \d+ started")
+
+
+def run_logs(run_dir):
+    """Return a run's coordinator logs in order: the run's own, then each resume's."""
+    resumes = sorted(glob.glob(os.path.join(run_dir, "coordinator-resume-*.log")),
+                     key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0))
+    return [p for p in [os.path.join(run_dir, "coordinator.log"), *resumes] if os.path.exists(p)]
+
+
+def unit_results(run_dir):
+    """Return {job name: (verdict, host, rc, status)} from a run's logs, the latest result line of each job winning."""
+    out = {}
+    for path in run_logs(run_dir):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = RESULT_RE.match(line)
+                if m:
+                    out[m.group(1)] = (m.group(2), m.group(3), int(m.group(4)), m.group(5).strip())
+    return out
+
+
+def unit_hosts(run_dir, name):
+    """Return the hosts a job's attempts started on, from a run's logs, in order."""
+    out = []
+    for path in run_logs(run_dir):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = STARTED_RE.match(line)
+                if m and m.group(2) == name:
+                    out.append(m.group(1))
+    return out
+
+
+def resolve_saved(src, unit, run_dir):
+    """Locate a stopped unit's saved rows and the run's ship, snapshot and canary tiles under src.
+
+    Accepted layouts: src is the unit directory itself (cand/ inside it) or
+    holds u-<unit>/ (the `kept` layout); ship/, tree/ and canary/ are looked
+    up in src, then beside it, then (canary) in the run directory. Returns a
+    dict with cand, fields, binaries, tree, canary and host (the unit
+    directory's `host` file, the host that captured the rows; '' when absent).
+    """
+    game, _tier = split_unit(unit)
+    unit_dir = next((d for d in (os.path.join(src, f"u-{unit}"), src)
+                     if os.path.isdir(os.path.join(d, "cand"))), None)
+    if unit_dir is None:
+        raise FleetError(f"no saved candidate directory of {unit} in {src} "
+                         f"(looked for {src}/u-{unit}/cand and {src}/cand)", 2)
+    near = [src, os.path.dirname(os.path.abspath(src)), unit_dir]
+
+    def find(rel):
+        return next((os.path.join(d, rel) for d in near if os.path.exists(os.path.join(d, rel))), "")
+    fields = find(f"ship/fields-{game}.txt") or find("fields.txt")
+    if not fields:
+        raise FleetError(f"no fields file of {unit} (ship/fields-{game}.txt or fields.txt) "
+                         f"near {src}: the rows' tree identity is unknown", 2)
+    canary = find("canary") or (os.path.join(run_dir, "canary")
+                                if os.path.isdir(os.path.join(run_dir, "canary")) else "")
+    host = ""
+    if os.path.exists(os.path.join(unit_dir, "host")):
+        host = open(os.path.join(unit_dir, "host"), encoding="utf-8").read().strip()
+    return {"cand": os.path.join(unit_dir, "cand"), "fields": fields, "host": host,
+            "binaries": find("ship/binaries.sha256"), "tree": find("tree"), "canary": canary}
+
+
 def read_stop_request(path):
     """Return the stop request's targets: {'all'} and/or job names; empty without a request."""
     try:
@@ -3876,6 +4590,105 @@ def cmd_stop(a):
     return 0
 
 
+MOVE_WAIT_S = 4 * 3600       # longest wait of `move` for the coordinator's outcome
+
+
+def cmd_move(a):
+    """Request that a running run move one unit to a host; wait for the coordinator's outcome (exit 0 accepted, 1 refused)."""
+    run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
+    if not os.path.isdir(run_dir):
+        raise FleetError(f"no run {a.run_id} under {os.path.dirname(run_dir)}", 2)
+    if os.path.exists(os.path.join(run_dir, "done")):
+        raise FleetError(f"run {a.run_id} is done; a unit it stopped is finished with "
+                         f"`resume {a.run_id} --unit U --to HOST`", 1)
+    split_unit(a.unit)
+    _p, hosts = load_hosts()
+    if a.to not in hosts:
+        raise FleetError(f"no host {a.to!r} in the host file (have: {', '.join(hosts)})", 2)
+    rid = os.urandom(3).hex()
+    path = os.path.join(run_dir, "move-request")
+    with open(path + ".lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        old = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write(old + f"id={rid} unit={a.unit} to={a.to}\n")
+        os.replace(path + ".tmp", path)
+    print(f"[fleet] run {a.run_id}: move {rid} of {a.unit} to {a.to} requested; the coordinator "
+          f"acts within {POLL_S} s once the legs run (a host joining the run syncs first)")
+    if a.no_wait:
+        return 0
+    log = os.path.join(run_dir, "moves.log")
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < MOVE_WAIT_S:
+        if os.path.exists(log):
+            for line in open(log, encoding="utf-8", errors="replace"):
+                if line.startswith(f"id={rid} "):
+                    verdict, _, text = line[len(f"id={rid} "):].strip().partition(" ")
+                    print(f"[fleet] move {rid}: {verdict}: {text}")
+                    return 0 if verdict == "accepted" else 1
+        if os.path.exists(os.path.join(run_dir, "done")):
+            raise FleetError(f"run {a.run_id} ended before acting on move {rid}", 1)
+        time.sleep(2)
+    raise FleetError(f"no outcome of move {rid} after {MOVE_WAIT_S} s; see {log}", 1)
+
+
+def cmd_resume(a):
+    """Finish a stopped unit of a run whose coordinator has exited, on one host, from its saved rows; detached like run (--wait follows)."""
+    run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
+    if a.foreground:
+        rc, _co = drive(a.run_id, run_dir, lambda: Resumer(a, a.run_id, run_dir))
+        return rc
+    if not os.path.isdir(run_dir):
+        raise FleetError(f"no run {a.run_id} under {os.path.dirname(run_dir)}", 2)
+    split_unit(a.unit)
+    done = os.path.join(run_dir, "done")
+    if not os.path.exists(done):
+        raise FleetError(f"run {a.run_id} has no done marker: its coordinator is running; "
+                         f"use `move {a.run_id} --unit {a.unit} --to {a.to}`", 1)
+    active = os.open(os.path.join(run_dir, "active.lock"), os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(active, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise FleetError(f"run {a.run_id} is held by a coordinator (active.lock)", 1)
+    finally:
+        os.close(active)
+    _p, hosts = load_hosts()
+    if a.to not in hosts:
+        raise FleetError(f"no host {a.to!r} in the host file (have: {', '.join(hosts)})", 2)
+    last = unit_results(run_dir).get(a.unit)
+    if last is None:
+        raise FleetError(f"run {a.run_id} logged no result of {a.unit}", 2)
+    if last[3] == "verdict":
+        raise FleetError(f"{a.unit} has finished: {last[0]} on {last[1]} (rc {last[2]}); "
+                         f"nothing to resume", 1)
+    saved = resolve_saved(a.from_dir or os.path.join(run_dir, "kept"), a.unit, run_dir)
+    rows, png = row_counts(stamp_files(saved["cand"]))
+    n = len(glob.glob(os.path.join(run_dir, "coordinator-resume-*.log"))) + 1
+    os.replace(done, f"{done}.{n}")
+    stop = os.path.join(run_dir, "stop-request")
+    if os.path.exists(stop):
+        os.replace(stop, f"{stop}.{n}")
+    log = os.path.join(run_dir, f"coordinator-resume-{n}.log")
+    argv = [sys.executable, os.path.abspath(__file__), "resume", "--foreground", a.run_id,
+            "--unit", a.unit, "--to", a.to, "--pull", a.pull]
+    if a.from_dir:
+        argv += ["--from", os.path.abspath(a.from_dir)]
+    for flag, val in (("--filter", a.filter), ("--freecam-filter", a.freecam_filter)):
+        if val is not None:
+            argv.append(f"{flag}={val}")
+    with open(log, "w") as f:
+        subprocess.Popen(argv, cwd=script_repo(), stdout=f, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    print(f"[fleet] run {a.run_id}: resume {n} of {a.unit} on {a.to} detached ({rows} saved "
+          f"row(s), {png} tile(s); last result {last[0]}, {last[3]})\n  log:  {log}\n  done: {done}")
+    if not a.wait:
+        return 0
+    while not os.path.exists(done):
+        time.sleep(5)
+    sys.stdout.write(open(log, encoding="utf-8", errors="replace").read())
+    return int(parse_kv(open(done).read()).get("rc", 1))
+
+
 def run_foreground(a):
     """Run the coordinator in this process under drive()."""
     run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
@@ -3895,6 +4708,8 @@ def cmd_run(a):
         errs = expect_refusals(tree, load_pb(tree), units, exps)
         if errs:
             raise FleetError("expected-moves file refused: " + "; ".join(errs), 2)
+    if any(re.search(r"\s", f or "") for f in (a.filter, a.freecam_filter)):
+        raise FleetError("--filter and --freecam-filter take a substring without whitespace", 2)
     a.run_id = new_run_id()
     run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
     os.makedirs(run_dir)
@@ -3957,6 +4772,9 @@ def main(argv=None):
     h.add_argument("--hosts", default="")
     h.add_argument("--no-local", action="store_true", help="leave the local host out")
     p.add_argument("--pull", choices=("divergent", "all"), default="divergent")
+    p.add_argument("--filter", help="bk2-name substring each unit captures (with "
+                   "--freecam-filter: a partial run, decided by the capture's own verdict)")
+    p.add_argument("--freecam-filter", help="freecam level substring each unit captures")
     p.add_argument("--wait", action="store_true", help="follow the detached run to its end")
     p.add_argument("--expect", metavar="FILE",
                    help="expected-moves file: `<unit> <tile substring> <reason>` per line")
@@ -3967,6 +4785,26 @@ def main(argv=None):
     p.add_argument("run_id", metavar="run-id")
     p.add_argument("--unit", help="the job name to stop (default: every running and pending unit)")
     p.set_defaults(fn=cmd_stop)
+    p = sub.add_parser("move")
+    p.add_argument("run_id", metavar="run-id")
+    p.add_argument("--unit", required=True, help="the unit's job name, e.g. spyro-1-presentation")
+    p.add_argument("--to", required=True, help="the host the unit moves to")
+    p.add_argument("--no-wait", action="store_true",
+                   help="return once the request is written, without the coordinator's outcome")
+    p.set_defaults(fn=cmd_move)
+    p = sub.add_parser("resume")
+    p.add_argument("run_id", metavar="run-id")
+    p.add_argument("--unit", required=True, help="the stopped unit's job name")
+    p.add_argument("--to", required=True, help="the host that finishes the unit")
+    p.add_argument("--from", dest="from_dir", metavar="DIR",
+                   help="saved rows (default: <run dir>/kept)")
+    p.add_argument("--pull", choices=("divergent", "all"), default="divergent")
+    p.add_argument("--filter", help="the run's --filter (default: its run-args.json, else none)")
+    p.add_argument("--freecam-filter",
+                   help="the run's --freecam-filter (default: its run-args.json, else none)")
+    p.add_argument("--wait", action="store_true", help="follow the detached resume to its end")
+    p.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_resume)
     p = sub.add_parser("clean")
     p.add_argument("--hosts", default="")
     p.add_argument("--tree", help="remove only the trees this coordinator keyed on PATH")
