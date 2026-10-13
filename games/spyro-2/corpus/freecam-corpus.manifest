@@ -82,3 +82,7 @@ zephyr | pos=(188848, 40008, 31664) yaw=1707 pitch=156
 # natively in both LOD modes (1648 px) that the guest's LP near outcode
 # drops (every corner SZ under the sector's near threshold).
 sunny_beach | pos=(30097, 21908, 44979) yaw=523 pitch=226
+# Gem close-up: terrain lies between the gem's back and front faces. The PSX
+# paints the back face over the terrain; true depth hides it, and the
+# additive front face adds onto the terrain behind.
+winter_tundra | pos=(62261, 102618, 45966) yaw=-7 pitch=143
