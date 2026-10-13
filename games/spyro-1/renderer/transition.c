@@ -68,24 +68,16 @@ extern unsigned openpete_frame;
 #define MAX_DOME_TRI 8192
 static cyclorama_native_tri s_cross[MAX_DOME_TRI];
 static int  s_cross_n;
-/* Backdrop behind the dome. The dome only covers the sky; below its horizon
- * (and above its cap, when the camera pitches) the PSX shows the draw-env
- * clear. Behind the dome we draw (1) a flat full-panel quad in the dome's
- * average colour (catches any area beyond its bbox at extreme aspects), then
- * (2) a bilinear gradient quad spanning the dome's bbox with its four CORNER
- * colours - so the fill matches the dome seamlessly where its silhouette cuts
- * a corner. */
-static uint32_t s_cross_corner[4];   /* TL, TR, BL, BR (PSX 0xBBGGRR) */
-static uint32_t s_cross_avg;
-static float    s_cross_bbox[4];     /* minx, miny, maxx, maxy */
-static int      s_cross_have_bg;
-/* Flat backdrop override for the GS_ExitLevel cyclorama fade (case 1). The dome
- * corner colours the backdrop grid is built from are the DPCS-faded cyclorama,
- * near-black early in the fade - so the grid covers the lerped clear and the
- * homeworld bg appears too late. For the exit-level the true backdrop IS flat
- * (the game clears to ColorLerp(cyclorama_bg, 0)=bg*tick/32), so override the grid
- * with that colour. Bit 31 = set; low 24 = PSX 0xBBGGRR. 0 (balloonist) = use the
- * dome corners. */
+/* Below the dome's horizon (and above its cap, when the camera pitches) the
+ * PSX shows the draw-env clear: ColorLerp(g_Cyclorama.m_BackgroundColor,
+ * 0x401010, D_8007575C) on the balloonist, ColorLerp(m_BackgroundColor, 0,
+ * D_8007575C) on GS_ExitLevel case 1. The native scene draws the clear from
+ * the game's DRAWENV over the whole target (openpete_native_set_clear_color).
+ * During the GS_ExitLevel fade that colour changes every tick and the
+ * DRAWENV it is read from trails the presented tick, so case 1 draws the
+ * clear itself as a flat panel from the tick the hook reads:
+ * m_BackgroundColor * tick / 32. Bit 31 = set; low 24 = PSX 0xBBGGRR; 0 on
+ * the balloonist, which leaves the DRAWENV clear to show. */
 static uint32_t s_cross_bg_flat;
 
 /* Staleness gate: the hook records its emitted polybuf interval as
@@ -93,17 +85,13 @@ static uint32_t s_cross_bg_flat;
  * render_path_canon_drawn(RP_TRANSITION), which drops the moment
  * func_8004F000 stops emitting. */
 
-/** @brief Re-derives the faded cyclorama dome func_8004F000 draws from gamestate against the active frustum, and the backdrop colours behind it.
+/** @brief Re-derives the faded cyclorama dome func_8004F000 draws from gamestate against the active frustum.
  *
  * func_8004F000 culls each face by AND-ing its three vertices' outcodes
  * against the 4:3 box, so its prims stop at the 4:3 edges;
  * cyclorama_native_extract_faded iterates the whole dome and rejects
- * against the widened bounds instead. From the extracted triangles it
- * derives the screen bbox, the overall average colour and the average of
- * each corner quadrant (vertices within 40% of the span from a bbox corner
- * in both axes; an empty quadrant takes the overall average). Does nothing
- * on a speculative runahead tick, whose results the rollback would not
- * revert.
+ * against the widened bounds instead. Does nothing on a speculative
+ * runahead tick, whose results the rollback would not revert.
  * @param cpu The guest CPU state. */
 static void crossfade_extract(CPUState* cpu) {
     /* Runahead lookahead: a speculative tick crossing a level-exit trigger
@@ -112,105 +100,37 @@ static void crossfade_extract(CPUState* cpu) {
     extern int openpete_speculative;
     if (openpete_speculative) return;
     s_cross_n = cyclorama_native_extract_faded(cpu, s_cross, MAX_DOME_TRI);
-
-    /* Backdrop colours: the dome's bbox, its four corner-quadrant average
-     * colours (for the bilinear gradient quad), and the overall average (for the
-     * flat backstop). Corner quadrants are the 40% nearest each bbox corner in
-     * both axes; an empty quadrant falls back to the overall average. */
-    s_cross_have_bg = 0;
-    if (s_cross_n > 0) {
-        float minx=1e9f,maxx=-1e9f,miny=1e9f,maxy=-1e9f;
-        for (int i = 0; i < s_cross_n; i++)
-            for (int k = 0; k < 3; k++) {
-                float X=s_cross[i].sx[k], Y=s_cross[i].sy[k];
-                if(X<minx)minx=X; if(X>maxx)maxx=X; if(Y<miny)miny=Y; if(Y>maxy)maxy=Y;
-            }
-        float spanx = maxx-minx; if (spanx<1.0f) spanx=1.0f;
-        float spany = maxy-miny; if (spany<1.0f) spany=1.0f;
-        float xlo = minx + spanx*0.4f, xhi = maxx - spanx*0.4f;   /* quadrant thresholds */
-        float ylo = miny + spany*0.4f, yhi = maxy - spany*0.4f;
-        double sr[4]={0,0,0,0}, sg[4]={0,0,0,0}, sb[4]={0,0,0,0}; int sn[4]={0,0,0,0};
-        double ar=0, ag=0, ab=0; int an=0;
-        for (int i = 0; i < s_cross_n; i++)
-            for (int k = 0; k < 3; k++) {
-                uint32_t c = s_cross[i].rgb[k];
-                double r = c & 0xFF, g = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
-                ar+=r; ag+=g; ab+=b; an++;
-                float X=s_cross[i].sx[k], Y=s_cross[i].sy[k];
-                int left = X <= xlo, right = X >= xhi, top = Y <= ylo, bot = Y >= yhi;
-                int q = -1;
-                if (top && left) q=0; else if (top && right) q=1;
-                else if (bot && left) q=2; else if (bot && right) q=3;
-                if (q>=0) { sr[q]+=r; sg[q]+=g; sb[q]+=b; sn[q]++; }
-            }
-        if (an==0) an=1;
-        s_cross_avg = (uint32_t)(ar/an) | ((uint32_t)(ag/an)<<8) | ((uint32_t)(ab/an)<<16);
-        for (int q = 0; q < 4; q++)
-            s_cross_corner[q] = sn[q] ? ((uint32_t)(sr[q]/sn[q]) | ((uint32_t)(sg[q]/sn[q])<<8) | ((uint32_t)(sb[q]/sn[q])<<16))
-                                      : s_cross_avg;
-        s_cross_bbox[0]=minx; s_cross_bbox[1]=miny; s_cross_bbox[2]=maxx; s_cross_bbox[3]=maxy;
-        s_cross_have_bg = 1;
-    }
 }
 
-/** @brief Feeds the extracted cross-fade dome and its backdrop grid to the native scene as the backmost world layer.
+/** @brief Feeds the extracted cross-fade dome to the native scene as the backmost world layer.
  *
- * The backdrop is a 3x3 opaque quad grid: the centre cell spans the dome's
- * bbox with the four corner-quadrant colours, the outer cells extend the
- * nearest edge or corner colour to +/-16384 x +/-4096, and s_cross_bg_flat
- * (bit 31 set) replaces all four colours with the flat exit-level
- * background. The grid sits at view-Z 4096 * 0.9995 / 0.0005 and the dome
- * in front of it at 4096 * 0.999 / 0.001, both short of the far clear, so
- * the balloon moby and HUD text draw over them as on the PSX.
- * The dome's vertex colours carry the DPCS fade func_8004F000 applies. */
+ * The dome sits at view-Z 4096 * 0.999 / 0.001, short of the far clear, so
+ * the balloon moby and HUD text draw over it as on the PSX; outside it the
+ * draw-env clear shows, or on GS_ExitLevel case 1 the flat panel
+ * s_cross_bg_flat at view-Z 4096 * 0.9995 / 0.0005, behind the dome and in
+ * front of the clear, spanning +/-16384 x +/-4096 so every aspect is
+ * covered. The dome's vertex colours carry the DPCS fade func_8004F000
+ * applies. */
 static void crossfade_feed_native(void) {
     if (s_cross_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
 
-    /* Backdrop behind the dome: a 3x3 quad grid that EDGE-CLAMP-extends the
-     * dome's bilinear corner gradient outward to a huge scissor-clipped rect.
-     * The centre cell spans the dome's bbox with the real 4-corner gradient (so
-     * it continues seamlessly where the dome silhouette cuts a corner); the 8
-     * outer cells repeat the nearest edge/corner colour, so the gradient fills a
-     * frame of ANY width - including super-ultrawide (96:9) - with no flat block
-     * and no background-clear leak beyond the dome's reach. */
-    if (s_cross_have_bg) {
+    if (s_cross_bg_flat & (1u << 31)) {
         const float BIGX = 16384.0f, BIGY = 4096.0f;
-        float gx[4] = { -BIGX, s_cross_bbox[0], s_cross_bbox[2], BIGX };
-        float gy[4] = { -BIGY, s_cross_bbox[1], s_cross_bbox[3], BIGY };
-        /* grid-vertex colour = nearest bbox corner (col 0/1 -> left, 2/3 -> right;
-         * row 0/1 -> top, 2/3 -> bottom). s_cross_corner: TL=0,TR=1,BL=2,BR=3.
-         * Exit-level case 1 overrides all four with the flat lerped cyclorama bg. */
-        uint32_t corner[4] = { s_cross_corner[0], s_cross_corner[1],
-                               s_cross_corner[2], s_cross_corner[3] };
-        if (s_cross_bg_flat & (1u << 31)) {
-            uint32_t f = s_cross_bg_flat & 0xFFFFFFu;
-            corner[0] = corner[1] = corner[2] = corner[3] = f;
-        }
-        /* View-Z 4096 * 0.9995 / (1 - 0.9995) in float: behind the dome
-         * (below), in front of the far clear. */
+        const float cx[4] = { -BIGX, BIGX, -BIGX, BIGX };
+        const float cy[4] = { -BIGY, -BIGY, BIGY, BIGY };
+        /* View-Z 4096 * 0.9995 / (1 - 0.9995) in float. */
         const float bz = 0x1.f3ba04p+22f;
-        int qi[2][3] = { {0,1,2}, {1,3,2} };
-        for (int ci = 0; ci < 3; ci++)
-            for (int ri = 0; ri < 3; ri++) {
-                float cx[4] = { gx[ci], gx[ci+1], gx[ci], gx[ci+1] };
-                float cy[4] = { gy[ri], gy[ri], gy[ri+1], gy[ri+1] };
-                int col[4] = { ci, ci+1, ci, ci+1 }, row[4] = { ri, ri, ri+1, ri+1 };
-                for (int ti = 0; ti < 2; ti++) {
-                    openpete_scene_tri st = {0};
-                    for (int k = 0; k < 3; k++) {
-                        int vi = qi[ti][k];
-                        int cidx = (row[vi] <= 1 ? 0 : 2) + (col[vi] <= 1 ? 0 : 1);
-                        st.v[k].sx = cx[vi]; st.v[k].sy = cy[vi]; st.v[k].z = bz; st.v[k].pvz = bz;
-                        st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-                        st.v[k].rgba = (corner[cidx] & 0xFFFFFFu) | 0xFF000000u;
-                    }
-                    st.textured = 0;
-                    st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
-                    st.blend = 0;
-                    openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-                }
+        static const int qi[2][3] = { {0,1,2}, {1,3,2} };
+        for (int ti = 0; ti < 2; ti++) {
+            openpete_scene_tri st = {0};
+            for (int k = 0; k < 3; k++) {
+                const int vi = qi[ti][k];
+                st.v[k].sx = cx[vi]; st.v[k].sy = cy[vi]; st.v[k].z = bz; st.v[k].pvz = bz;
+                st.v[k].rgba = (s_cross_bg_flat & 0xFFFFFFu) | 0xFF000000u;
             }
+            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
+        }
     }
 
     /* Far backdrop, still < 1.0 clear: view-Z 4096 * 0.999 / (1 - 0.999) in
@@ -294,10 +214,9 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     if (s_in) return 0;                                   /* re-entrancy guard */
     s_in = 1;
 
-    /* Balloonist take-off (standalone func_8004F000, ra outside func_8001C694) uses
-     * the dome-corner backdrop grid, not the exit-level's flat cyclorama bg -
-     * clear any stale override left from a prior GS_ExitLevel. The exit-level's
-     * nested call (ra inside func_8001C694) keeps the override on_8001C694 just set. */
+    /* The balloonist's standalone call (ra outside func_8001C694) shows the
+     * DRAWENV clear; the exit-level's nested call keeps the panel on_8001C694
+     * just set. */
     if (cpu->ra < GS_EXIT_FN_LO || cpu->ra >= GS_EXIT_FN_HI) s_cross_bg_flat = 0;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
@@ -381,10 +300,8 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
 
     /* Case 1 backdrop: the game clears to ColorLerp(g_Cyclorama.m_BackgroundColor,
      * 0, D_8007575C). D_8007575C = (0x20-tick)*0x80, and ColorLerp (GTE DPCS toward
-     * far-colour 0) gives bg*(1 - D_8007575C/0x1000) = bg*(tick/32) - a linear fade-
-     * in from black. Set the flat backdrop BEFORE the nested func_8004F000 feed so
-     * the cyclorama dome sits over the lerped homeworld bg (not the near-black
-     * faded dome corners), making the bg appear as early as the reference. */
+     * far-colour 0) gives bg*(1 - D_8007575C/0x1000) = bg*(tick/32), a linear
+     * fade-in from black. Set before the nested func_8004F000 feed draws it. */
     if (feed && cpu->read_word(D_GS_EXIT_MODE) == 1) {    /* case 1: cyclorama fade-in */
         uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
         if (tick > 31) tick = 31;
