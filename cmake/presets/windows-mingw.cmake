@@ -12,3 +12,7 @@ set(CMAKE_CXX_FLAGS "-march=x86-64")
 # must never ship. Pinned OFF as a tracked knob so no dist build can inherit a
 # stale ON; enable it deliberately in a throwaway dir with -DOPENPETE_FUNC_TRACE=ON.
 openpete_preset_default(OPENPETE_FUNC_TRACE OFF)
+# Each game's recompiled code links as its own module (<tag>-recomp.dll)
+# beside the executable, as in the distributed Windows build; a static tree
+# for comparison is configured with -DOPENPETE_RECOMP_LINKAGE=static.
+openpete_preset_default(OPENPETE_RECOMP_LINKAGE shared)
