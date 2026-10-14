@@ -451,18 +451,85 @@ static void openpete_cursor_update(bool headless)
     cursor_shown = (int)want_cursor;
 }
 
+/** @brief Read OPENPETE_PUMP_PROBE once: whether the event pump times its steps.
+ *
+ * A diagnostic for a pump that stalls: with it set, each drain first runs
+ * the joystick update and the platform message pump as separate timed
+ * calls, and each step or event handler that takes 20 ms or longer is
+ * logged with its duration and event type.
+ * @return 1 when the variable is set to a value not starting with '0'. */
+static int pump_probe_enabled(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("OPENPETE_PUMP_PROBE");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+/** @brief Log one pump step that took 20 ms or longer, under OPENPETE_PUMP_PROBE.
+ *
+ * @param step The step's name.
+ * @param t0 op_now at the step's start.
+ * @param type The event type the step dequeued or handled, or 0. */
+static void pump_probe_note(const char* step, op_time_t t0, unsigned type)
+{
+    const op_time_t ns = op_now() - t0;
+    if (ns >= 20000000)
+        OPL_INFO_F("pump", "slow %s: %.3f ms (event 0x%x)", step,
+                   (double)ns / 1e6, type);
+}
+
+/** @brief Drain the SDL event queue with each step timed, under OPENPETE_PUMP_PROBE.
+ *
+ * SDL_UpdateJoysticks and SDL_PumpEvents run first as separate calls, so a
+ * stall is attributed to joystick detection and polling or to the
+ * platform message pump; the drain then times each SDL_PollEvent (which
+ * pumps again) and each handler. The summary line counts the drain's
+ * events and its duration when it took 20 ms or longer. */
+static void openpete_pump_events_probed(void) {
+    SDL_Event ev;
+    const op_time_t d0 = op_now();
+    op_time_t t0 = d0;
+    SDL_UpdateJoysticks();
+    pump_probe_note("joystick update", t0, 0);
+    t0 = op_now();
+    SDL_PumpEvents();
+    pump_probe_note("message pump", t0, 0);
+    unsigned n = 0;
+    for (;;) {
+        t0 = op_now();
+        if (!SDL_PollEvent(&ev)) break;
+        pump_probe_note("poll", t0, ev.type);
+        t0 = op_now();
+        if (openpete_handle_event(&ev))
+            PsyX_Sys_HandleEvent(&ev);
+        pump_probe_note("handler", t0, ev.type);
+        n++;
+    }
+    const op_time_t drain = op_now() - d0;
+    if (drain >= 20000000)
+        OPL_INFO_F("pump", "slow drain: %.3f ms, %u event(s)",
+                   (double)drain / 1e6, n);
+}
+
 /** @brief Drain the SDL event queue, forwarding unconsumed events to PsyCross, then apply rumble.
  *
  * Each event goes through openpete_handle_event, and PsyX_Sys_HandleEvent
- * when it is not consumed. The overlay's text-input state and rumble are
+ * when it is not consumed; under OPENPETE_PUMP_PROBE the drain is timed
+ * (openpete_pump_events_probed). The overlay's text-input state and rumble are
  * applied here because this thread owns the window and the SDL gamepad
  * handles. */
 static void openpete_pump_events(void) {
     SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-        if (openpete_handle_event(&ev))
-            PsyX_Sys_HandleEvent(&ev);
-    }
+    if (pump_probe_enabled())
+        openpete_pump_events_probed();
+    else
+        while (SDL_PollEvent(&ev)) {
+            if (openpete_handle_event(&ev))
+                PsyX_Sys_HandleEvent(&ev);
+        }
     /* SDL text input is a window op of this thread; the overlay decides on
      * the present thread whether a field wants it. */
     openpete_devui_pump_text_input();
@@ -7471,7 +7538,22 @@ static int run_split_threaded(const openpete_options_t* opts)
     /* Pump loop. Deliberately fast relative to the sim: the worker latches
      * whatever was last published, so this period bounds input staleness.
      * SDL_WaitEventTimeout parks the thread instead of spinning, and still
-     * wakes immediately when an event arrives. */
+     * wakes immediately when an event arrives: a window or input message
+     * wakes the platform wait, and while a gamepad is open SDL polls it
+     * every 1 ms inside the wait and returns on the event a poll produces.
+     *
+     * The park is about 1 ms on every platform. SDL's Windows wait
+     * (WIN_WaitEventTimeout) converts the time left of the request to whole
+     * milliseconds by truncation, after the time already spent inside the
+     * call is subtracted; a 1 ms request becomes a 0 ms
+     * MsgWaitForMultipleObjects that returns at once, and the loop spins.
+     * Asking Windows for 2 ms leaves a remainder that truncates to 1 ms. X11
+     * and Wayland wait in nanoseconds and take 1 ms as asked. */
+#ifdef _WIN32
+    enum { PUMP_PARK_REQUEST_MS = 2 };
+#else
+    enum { PUMP_PARK_REQUEST_MS = 1 };
+#endif
     sim_liveness_t live;
     sim_liveness_init(&live);
     while (!SDL_GetAtomicInt(&g_worker_done)) {
@@ -7483,7 +7565,7 @@ static int run_split_threaded(const openpete_options_t* opts)
          * indistinguishable from a quiet loop unless the pump is timed apart
          * from the park that precedes it. */
         const int64_t hp_t0 = (int64_t)op_now();
-        SDL_WaitEventTimeout(NULL, 1);
+        SDL_WaitEventTimeout(NULL, PUMP_PARK_REQUEST_MS);
         const int64_t hp_waited = (int64_t)op_now();
         openpete_host_mouse_pump_iteration();
         openpete_pump_events();

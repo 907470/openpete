@@ -21,8 +21,12 @@
 #   keys    M opens and closes the overlay, Escape opens and closes the
 #           settings menu (the keyboard paths), then a 700 ms hold of Start
 #           opens the settings menu and East closes it. Pass: two overlay opens and
-#           closes and two menu opens and closes by key, and one menu open by
-#           the Start hold.
+#           closes and two menu opens and closes by key, and the order of the
+#           Start-hold part in log order: the menu opens after the Start
+#           press fires and before the East press, no close lands between
+#           that open and the East press (the hold's release must not close
+#           the menu it opened), and the menu closes after the East press.
+#           The probe logs each fired script line ("inject ... line=N").
 #   save    savestate_save bound to pad:misc1 by a harness config file
 #           (--config: no other file is read). misc1 before the overlay
 #           opens saves; misc1 while it is open does not. Pass: one save.
@@ -117,6 +121,37 @@ print(runs, n)' "$2"
 
 count() { grep -c -- "$2" "$1" 2>/dev/null || true; }
 
+# Order of the settings menu around a pad hold, in log order. Script lines
+# PRESS, RELEASE and NEXT are the hold's press, its release and the press
+# meant to close the menu. Prints hold_open (a menu open between PRESS and
+# NEXT), closes_before_east (closes after that open and before NEXT) and
+# close_after_east (a close after NEXT).
+keys_order() { # keys_order <log> <press line> <release line> <next line>
+    python3 - "$@" <<'PY'
+import re, sys
+log, press, release, nxt = sys.argv[1], *map(int, sys.argv[2:5])
+fired = {}
+seq = []
+for i, l in enumerate(open(log, errors="replace")):
+    m = re.search(r"inject iter=\d+ ms=\d+ line=(\d+) ", l)
+    if m:
+        fired.setdefault(int(m.group(1)), i)
+    elif "menu: opened" in l:
+        seq.append((i, "open"))
+    elif re.search(r"\bmenu: closed\b", l):
+        seq.append((i, "close"))
+p, n = fired.get(press), fired.get(nxt)
+if p is None or n is None or fired.get(release) is None:
+    print("hold_open=0 closes_before_east=0 close_after_east=0 (script lines missing)")
+    sys.exit()
+opens = [i for i, k in seq if k == "open" and p < i < n]
+o = opens[0] if opens else None
+before = sum(1 for i, k in seq if k == "close" and o is not None and o < i < n)
+after = 1 if any(k == "close" and i > n for i, k in seq) else 0
+print(f"hold_open={1 if o is not None else 0} closes_before_east={before} close_after_east={after}")
+PY
+}
+
 # ---- nav ---------------------------------------------------------------
 if want nav; then
 cat >"$OUT/nav.txt" <<'EOF'
@@ -188,11 +223,15 @@ d_open=$(count "$OUT/keys.log" "devui: open #")
 d_close=$(count "$OUT/keys.log" "devui: pad nav #[0-9]* closed")
 m_open=$(count "$OUT/keys.log" "menu: opened")
 m_close=$(count "$OUT/keys.log" "menu: closed")
-detail="devui opens=$d_open closes=$d_close; menu opens=$m_open closes=$m_close"
-if [ "$d_open" = 1 ] && [ "$d_close" = 1 ] && [ "$m_open" = 2 ] && [ "$m_close" = 2 ]; then
-    verdict keys PASS "$detail (the Start hold opened the menu)"
+order=$(keys_order "$OUT/keys.log" 8 9 10)
+detail="devui opens=$d_open closes=$d_close; menu opens=$m_open closes=$m_close; $order"
+if ! grep -q "inject iter=.* line=10 " "$OUT/keys.log"; then
+    verdict keys VACUOUS "$detail (the script's East press never fired)"
+elif [ "$d_open" = 1 ] && [ "$d_close" = 1 ] && [ "$m_open" = 2 ] && [ "$m_close" = 2 ] &&
+     [ "$order" = "hold_open=1 closes_before_east=0 close_after_east=1" ]; then
+    verdict keys PASS "$detail (the Start hold opened the menu; East closed it)"
 else
-    verdict keys FAIL "$detail (want 1/1 and 2/2: M, Escape, Start hold)"
+    verdict keys FAIL "$detail (want 1/1, 2/2 and hold_open=1 closes_before_east=0 close_after_east=1)"
 fi
 
 fi

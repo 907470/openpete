@@ -814,7 +814,7 @@ void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
  * A Win32 modal size/move loop runs the OS's loop INSIDE the wait, so the
  * iteration parks for the whole drag and does no work at all: judged on
  * active time it is the quietest iteration of the run, while input
- * publication has in fact stopped for seconds. The wait asks for 1 ms, so
+ * publication has in fact stopped for seconds. The wait parks about 1 ms, so
  * anything past four of them is the OS holding the thread rather than the
  * loop idling. */
 #define PACE_HOST_PUMP_PARK_FLOOR_NS ((int64_t)4000000)
