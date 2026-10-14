@@ -1832,11 +1832,80 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
     s_drawenv_clear = v;
 }
 
+/* ---- subtractive fade held in a retained draw area ----------------------
+ *
+ * A draw area the game puts with auto-clear off keeps every primitive drawn
+ * into it, the full-screen fade quad included: the held-frame fade loops (S2
+ * func_8004D810, S3 func_80020168) copy the last frame into both buffers,
+ * zero both DRAWENV.isbg bytes, then per VBL swap the draw buffer, emit one
+ * B-F quad (0x10 on the first pass, 0x20 after) and DrawOTag it into that
+ * buffer while the other one is displayed. Each buffer therefore shows the
+ * sum of the quads drawn into it. Clamped subtraction composes
+ * (max(max(x - a, 0) - b, 0) == max(x - (a + b), 0) for a, b >= 0), so one
+ * quad of the per-channel sum reproduces the buffer exactly.
+ *
+ * A fade emission is pending until the next DrawOTag, which draws it into the
+ * area the game last put (openpete_fb_snapshot_retained_area); the fold keys
+ * the sum to that area's content epoch, so a new retained run, an auto-clear
+ * put or a full-area fill starts it afresh, and an OT that carries the world
+ * restarts it, since the world repaints the buffer under the quad. A fade of
+ * any other blend mode drawn into the area does not compose with the sum and
+ * stops the area's sum until its epoch changes. Reads the emitter's arguments
+ * and the game's draw-env puts only; writes no PSX RAM. */
+static int      s_fade_unput[3];       /* B-F colour sum emitted since the last DrawOTag */
+static int      s_fade_unput_other;    /* a non-subtractive fade emitted since then */
+static int      s_fade_ot_world;       /* the captured scene the next DrawOTag draws holds the world */
+typedef struct {
+    int      sum[3];       /* per-channel B-F total drawn into the area, 0..255 */
+    unsigned epoch;        /* the area content epoch the sum belongs to */
+    int      valid;        /* sum describes the area at epoch */
+} area_fade_t;
+static area_fade_t s_area_fade[OPENPETE_FB_SNAPSHOT_AREA_MAX];
+static unsigned    s_area_fade_presents;   /* canonical captures that took the held sum */
+
+/** @brief Fold the fade emitted since the last DrawOTag into the retained area that DrawOTag draws into.
+ *
+ * Called from openpete_native_note_draw_otag. With no retained area the
+ * pending fade is dropped: an auto-cleared buffer holds no earlier quad. */
+static void area_fade_fold(void) {
+    unsigned ep = 0;
+    const int a = openpete_fb_snapshot_retained_area(&ep);
+    if (a >= 0 && a < OPENPETE_FB_SNAPSHOT_AREA_MAX) {
+        area_fade_t* F = &s_area_fade[a];
+        if (!F->valid || F->epoch != ep || s_fade_ot_world) {
+            F->sum[0] = F->sum[1] = F->sum[2] = 0;
+            F->epoch = ep; F->valid = 1;
+        }
+        if (s_fade_unput_other) F->valid = 0;
+        for (int c = 0; c < 3 && F->valid; c++) {
+            const int s = F->sum[c] + s_fade_unput[c];
+            F->sum[c] = s > 255 ? 255 : s;
+        }
+    }
+    s_fade_unput[0] = s_fade_unput[1] = s_fade_unput[2] = 0;
+    s_fade_unput_other = 0;
+    s_fade_ot_world = 0;
+}
+
+/** @brief Return the fade word for the held B-F sum of a retained area, or 0 when it holds none.
+ *
+ * @param a Area index from openpete_fb_snapshot_retained_area.
+ * @param ep That area's content epoch.
+ * @return A mode-2 fade word (see openpete_native_scene_set_fade), or 0. */
+static uint32_t area_fade_word(int a, unsigned ep) {
+    if (a < 0 || a >= OPENPETE_FB_SNAPSHOT_AREA_MAX) return 0;
+    const area_fade_t* F = &s_area_fade[a];
+    if (!F->valid || F->epoch != ep || !(F->sum[0] | F->sum[1] | F->sum[2])) return 0;
+    return (1u << 31) | (2u << 24) | ((uint32_t)F->sum[0] << 16)
+         | ((uint32_t)F->sum[1] << 8) | (uint32_t)F->sum[2];
+}
+
 void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) {
     s_drawenv_put[0] = (uint8_t)isbg; s_drawenv_put[1] = (uint8_t)r;
     s_drawenv_put[2] = (uint8_t)g;    s_drawenv_put[3] = (uint8_t)b;
 }
 void openpete_native_note_draw_otag(void) {
+    area_fade_fold();
     /* Until the game's first feed since the capture opens a new scene,
      * s_scene still holds the presented one. A scene the game opened
      * without feeding a primitive yet (a draw pass that submits its OT after
@@ -1885,6 +1954,12 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
     }
     s_scene_fade = v;                       /* raw (no-interp) present path */
     s_game_fade = v; s_game_fade_seen = 1;  /* the game set the fade this tick */
+    /* Held for the next DrawOTag (area_fade_fold). */
+    if (s_freeze_retained && mode == 2) {
+        s_fade_unput[0] += r; s_fade_unput[1] += g; s_fade_unput[2] += b;
+    } else if (s_freeze_retained && mode >= 0 && (r | g | b)) {
+        s_fade_unput_other = 1;
+    }
 }
 void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     if (r < 0) { s_scene_freeze = 0; return; }
@@ -2403,20 +2478,38 @@ void openpete_native_scene_front_end(void) {
  * epoch or when the tick renders the world, and extended by the tick's entries; entries painted over by what
  * follows them are dropped (held_prune); the surviving entries of earlier
  * ticks are replayed in front of the scene's 2D. The replay count is kept for the tick's re-extracts
- * (openpete_native_scene_apply_overlay). OPENPETE_FBSNAP_CENSUS prints the
+ * (openpete_native_scene_apply_overlay). Under the retained freeze mode, a
+ * tick without the world presents the area's held fade sum
+ * (area_fade_word) as its fade. Records whether the scene holds the world for
+ * the next DrawOTag's fold. OPENPETE_FBSNAP_CENSUS prints the
  * list per capture. */
 static void held_capture(void) {
     unsigned ep = 0;
     const int a = openpete_fb_snapshot_retained_area(&ep);
+    const bool world = scene_accum_has_world();
+    s_fade_ot_world = world;   /* the OT the next DrawOTag draws carries this scene */
     if (a < 0) s_held_cover_n = 0;
     s_held_area = a;
     s_held_replay = 0;
     if (a < 0) return;
+    /* The area holds the fade quads already drawn into it: the present shows
+     * their sum in place of the tick's own quad, which its DrawOTag has not
+     * drawn yet. Only while the retained backdrop is armed for this present
+     * (commit_fade's freeze word): the area named by the last put stays
+     * retained until the game's next put, after the game has already turned
+     * auto-clear back on in the env the present reads. */
+    const bool armed = s_freeze_retained && (s_overlay_carry_freeze & (1u << 31));
+    const uint32_t held_fade = (armed && !world) ? area_fade_word(a, ep) : 0u;
+    if (held_fade) {
+        s_scene_fade = held_fade;
+        s_fade_curr = held_fade;
+        s_area_fade_presents++;
+    }
     held_list_t* L = &s_held[a];
     if (!L->valid || L->epoch != ep) { L->n = 0; L->epoch = ep; L->valid = 1; }
     /* A tick that renders the world repaints the buffer under its 2D (the
      * world's sky and terrain cover the screen), so nothing earlier shows. */
-    if (scene_accum_has_world()) L->n = 0;
+    if (world) L->n = 0;
     const int before = L->n;
     held_append(L, s_overlay_carry, s_overlay_carry_n);
     const int added = s_overlay_carry_n < HELD_MAX ? s_overlay_carry_n : HELD_MAX;
@@ -2426,8 +2519,8 @@ static void held_capture(void) {
     scene_insert_before_2d(L->t, s_held_replay);
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_FBSNAP_CENSUS"); on = (e && *e && *e != '0'); }
-    if (on) fprintf(stderr, "[fbsnap] held f=%u area=%d epoch=%u replayed=%d held=%d\n",
-                    s_scene_frame, a, ep, s_held_replay, L->n);
+    if (on) fprintf(stderr, "[fbsnap] held f=%u area=%d epoch=%u replayed=%d held=%d fade=%08x\n",
+                    s_scene_frame, a, ep, s_held_replay, L->n, held_fade);
 }
 
 /** @brief Keep the 2D carry for a canonical present that shows the scene the previous capture took.
@@ -13206,6 +13299,39 @@ static int backdrop_defer_on(void)
     return s_defer;
 }
 
+static unsigned s_retained_only_draws;   /* composes drawn for an armed retained backdrop alone */
+
+/** @brief Decide whether a present's scene composes natively or falls back to the PSX VRAM framebuffer.
+ *
+ * An empty scene normally falls back, so load screens, transitions and other
+ * direct-present frames show the framebuffer. In isolation (--render-paths)
+ * the VRAM is the unfiltered frame, so a scene with a background colour
+ * composes just that background (PsyCross's filtered clear). A
+ * retained-terrain frame with content is scene content: a game whose only
+ * feeder is the terrain, with every sector on the GPU cache, has no CPU
+ * triangles. Only the game's own triangles count: host-added geometry on a
+ * frame the game drew nothing on would take the render branch and put the
+ * retained framebuffer backdrop where the game left the frame untouched. An
+ * armed retained backdrop is scene content: it is armed only from the game's
+ * own DRAWENV.isbg = 0 (ui_freeze_retain_commit), the game's statement that
+ * the buffer keeps the image it holds, so the frame shows that image under
+ * whatever the game draws now, a fade quad alone included. Counts the
+ * composes that the backdrop alone admits.
+ * @param scene Scene triangles.
+ * @param n Triangle count.
+ * @param freeze The present's freeze word.
+ * @param bg The present's background colour, 0 for none.
+ * @return true when the scene composes. */
+static bool scene_compose_has_content(const scene_tri_t* scene, int n, uint32_t freeze, uint32_t bg)
+{
+    if (scene_has_game_tris(scene, n)) return true;
+    if (openpete_tercache_frame_open() && openpete_tercache_frame_content()) return true;
+    int retained_ok = 0;
+    if (ps_freeze_retained() && (freeze & (1u << 31))) (void)active_frozen_tex(&retained_ok);
+    if (retained_ok) { s_retained_only_draws++; return true; }
+    return s_isolation && bg != 0;
+}
+
 /** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
  *
  * Packs the scene triangles into the vertex buffer and draws the world
@@ -13295,19 +13421,7 @@ static bool draw_native_scene(bool full_extent)
      * scene_bg is the fallback (no auto-clear). */
     uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
 
-    /* Empty scene: normally return false so the caller re-displays the PSX VRAM
-     * framebuffer (load screens, transitions, and other direct-present frames).
-     * But in ISOLATION (--render-paths) the VRAM is the UNFILTERED frame - falling
-     * back to it would show every path and defeat the isolation. So in isolation
-     * present just the background (= PsyCross's filtered clear) instead.
-     * A retained-terrain frame with content is scene content too: a game
-     * whose only feeder is the terrain, with every sector on the GPU cache,
-     * has no CPU triangles at all.
-     * Only the game's own triangles count: host-added geometry on a frame the
-     * game drew nothing on would take the render branch and put the retained
-     * framebuffer backdrop where the game left the frame untouched. */
-    const bool cache_content = openpete_tercache_frame_open() && openpete_tercache_frame_content();
-    if (!scene_has_game_tris(scene, scene_n) && !cache_content && (!s_isolation || bg == 0))
+    if (!scene_compose_has_content(scene, scene_n, scene_freeze, bg))
         return false;
 
     s_render_full_extent = full_extent ? 1 : 0;
@@ -19124,6 +19238,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
      * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
     shot_chrome_setup(W, H);
     int menu_verts = 0;
+    bool scene_drew = false;
     for (int attempt = 0; ; attempt++) {
         if (!rhi_begin_frame(s_nr.dev)) return 1;
         upload_synced_textures();  /* pending VRAM/ref uploads ride this frame */
@@ -19140,7 +19255,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
           native_terrain_key_pass(1, kw, kh); }
         shot_chrome_prepare(W, H);
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
-        draw_native_scene(true);
+        scene_drew = draw_native_scene(true);
         /* Mod draw-service content (3D meshes under the mod HUD) - the live
          * compose draws these into the offscreen after the scene; without them
          * the dump showed a mod-free frame while the window showed mod content.
@@ -19205,9 +19320,10 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
             memcpy(&ref[(size_t)y * W * 4],
                    &s_nr.readback[(size_t)(H - 1 - y) * W * 4], (size_t)W * 4);
         for (size_t i = 0; i < frame_px; i++) ref[i * 4 + 3] = 0xFF;
-        /* Empty native scene (load/transition frames): mirror the reference so
-         * -vk shows the framebuffer instead of a flat clear. */
-        if (scene_n <= 0) memcpy(nat, ref, frame_px * 4);
+        /* A compose that drew nothing (load/transition frames) is the one the
+         * live present replaces with the VRAM framebuffer: mirror the
+         * reference so -vk shows the framebuffer instead of a flat clear. */
+        if (!scene_drew) memcpy(nat, ref, frame_px * 4);
     }
 
     int rc = 0;
@@ -19256,6 +19372,9 @@ void openpete_native_render_shutdown(void)
     scene_box_summary();
     /* Kept freeze-backdrop sources: a flip is a settle drawn after the
      * present services, which the settle's exactness excludes. */
+    if (s_retained_only_draws || s_area_fade_presents)
+        fprintf(stderr, "held-fade: retained-only composes=%u held-sum captures=%u\n",
+                s_retained_only_draws, s_area_fade_presents);
     if (s_frz.retained || s_frz.settled || s_frz.flips)
         fprintf(stderr, "freeze-src: retained=%u settled=%u superseded=%u flips=%u verify_match=%u verify_differ=%u\n",
                 s_frz.retained, s_frz.settled, s_frz.superseded, s_frz.flips,

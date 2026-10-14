@@ -1757,7 +1757,9 @@ void openpete_native_note_put_draw_env(int isbg, int r, int g, int b);
  * the host presents at has drawn the presented scene with that env; a game
  * that submits after the VSync has fed no primitive of the next scene when
  * its DrawOTag runs, so nothing is recorded. The record holds until the next
- * canonical capture. */
+ * canonical capture. The subtractive fade emitted since the previous
+ * DrawOTag is added to the held fade sum of the retained draw area this
+ * DrawOTag draws into. */
 void openpete_native_note_draw_otag(void);
 /** @brief Report the env of the DrawOTag that already submitted the scene being presented, if one did.
  *
@@ -1774,7 +1776,9 @@ int openpete_native_drawn_env(uint8_t env[4]);
  * blend mode with the depth test passing everywhere. The fade clears at each
  * scene begin, so the game's per-tick call is what keeps it on; the
  * re-extract treats it as active only on a tick the game set it. Colour
- * components are clamped to 0..255. Renderer state only.
+ * components are clamped to 0..255. Under the retained freeze mode the
+ * emission is also held for the next DrawOTag, which adds a subtractive one
+ * to its draw area's held fade sum. Renderer state only.
  * @param mode PSX ABR mode (0 = (B+F)/2, 1 = add, 2 = subtract), or < 0 to clear.
  * @param r Red, 0..255.
  * @param g Green, 0..255.

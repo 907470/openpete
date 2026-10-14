@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 40c710698a116814011f1836b222a999d6fe0c21
+# head: 4bb5b01b7c95df6a60e70cd6e70dc36afc90f9f2
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -52,7 +52,7 @@ core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0
 core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	
 core/renderer/native_render.c	compose_variant	52	0	
-core/renderer/native_render.c	draw_native_scene	582	0	
+core/renderer/native_render.c	draw_native_scene	579	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
 core/renderer/native_render.c	draw_tex_runs	89	0	
 core/renderer/native_render.c	draw_ut_mat_spans	30	0	
@@ -64,6 +64,7 @@ core/renderer/native_render.c	native_render_screenshot_all_impl	52	0
 core/renderer/native_render.c	native_terrain_key_pass	66	0	
 core/renderer/native_render.c	openpete_native_hdfold_intern	32	0	
 core/renderer/native_render.c	openpete_native_render_init	135	0	
+core/renderer/native_render.c	openpete_native_render_shutdown	26	0	
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	43	0	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	83	0	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	49	0	
