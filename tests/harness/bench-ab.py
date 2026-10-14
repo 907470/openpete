@@ -18,7 +18,8 @@ bench-corpus.py's compare_baseline applies.
       median(static). Pass when no scope's delta exceeds the threshold.
 
 Every figure is printed, not only the scopes beyond the threshold. Refused
-(exit 64): a rollup without the recorded identity (schema < 2), a
+(exit 64): a rollup without the recorded identity or launched with a config
+file (schema < 3), a
 functional rollup, rollups whose platform tags, games, movie sets or
 commits differ, a rollup whose recorded arm is missing or differs from its
 role (every calibration rollup static; each A/B side its own arm), or
@@ -42,7 +43,7 @@ import sys
 EXIT_FAIL = 1
 EXIT_UNRESOLVED = 2
 EXIT_REFUSED = 64
-ROLLUP_SCHEMA = 2
+ROLLUP_SCHEMA = 3
 
 
 class Refused(Exception):
@@ -55,7 +56,7 @@ def load(path):
         r = json.load(f)
     if r.get("schema", 1) < ROLLUP_SCHEMA:
         raise Refused("%s: rollup predates the recorded game/arm/commit "
-                      "(schema %s)" % (path, r.get("schema", 1)))
+                      "or --no-config (schema %s)" % (path, r.get("schema", 1)))
     if r.get("mode") != "timed":
         raise Refused("%s: mode %r, not a timed run" % (path, r.get("mode")))
     r["_path"] = path

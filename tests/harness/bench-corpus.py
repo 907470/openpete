@@ -72,7 +72,8 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 EXIT_VACUOUS = 2
 EXIT_SKIP = 64
 EXIT_REFUSED = 65
-ROLLUP_SCHEMA = 2
+# 2: game, arm and commit recorded. 3: every run launched with --no-config.
+ROLLUP_SCHEMA = 3
 
 DEVICE_RE = re.compile(r"device='([^']*)'")
 EXIT_RE = re.compile(r"exit: reason=([a-z0-9-]+)")
@@ -105,6 +106,10 @@ def run_movie(exe, game, movie_path, opp_path, args, log_path):
         # The flag, not the env spelling, so it also reaches a Windows exe.
         # (scripts/fences/input_lock_guard.py)
         "--input-lock",
+        # No openpete.toml: a config file beside the exe (or in the user
+        # config dir) sets render options such as ssaa, lod and aspect, so two
+        # arms with different files would time different work.
+        "--no-config",
     ] + (["--headless"] if args.functional else [])
     # Through child_env so every knob survives a Windows launch from WSL: set
     # directly it would be dropped by interop and the run would quietly use
@@ -238,7 +243,7 @@ def comparability(base, roll):
     tests/harness/bench-ab.py prices."""
     for name, r in (("baseline", base), ("current", roll)):
         if r.get("schema", 1) < ROLLUP_SCHEMA:
-            return ("%s rollup predates the recorded game/arm/commit (schema %s); "
+            return ("%s rollup predates the recorded game/arm/commit or --no-config (schema %s); "
                     "re-run it" % (name, r.get("schema", 1)))
     checks = (("platform", base["platform"]["tag"], roll["platform"]["tag"]),
               ("mode", base["mode"], roll["mode"]),
