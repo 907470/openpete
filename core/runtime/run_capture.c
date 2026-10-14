@@ -18,11 +18,38 @@ extern void openpete_psyx_take_screenshot(const char* path);  /* PNG or BMP by e
 extern void openpete_psyx_take_screenshot_ext(const char* path,
                                               int* out_w, int* out_h);
 
+/* The rule that chose a target's -og present (og_leg). */
+enum {
+    OG_RULE_OTAG,       /* the present that rasterized the native scene's OT */
+    OG_RULE_VRAM,       /* the native present re-displayed PsyCross's framebuffer
+                         * of the keyed present: the keyed present */
+    OG_RULE_ALONGSIDE,  /* the scene had no OT of its own: the keyed present */
+    OG_RULE_UNPAIRED,   /* no present carried the scene's OT: the keyed present */
+    OG_RULE_FIXED,      /* no native scene: one present after the key */
+    OG_RULE_COUNT
+};
+static const char *const k_og_rule_name[OG_RULE_COUNT] = {
+    "otag", "vram", "alongside", "unpaired", "fixed"
+};
+
 /* Every leg's state. A target's fired flag makes it fire once; an armed flag
  * delays a PsyCross-sourced leg by one present (see the leg). */
 static struct {
     bool og_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];   /* -og leg */
     bool og_armed[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    /* The native scene id a target's -og leg waits for (0 until the key is
+     * reached), and the canonical present ordinal of the keyed present. */
+    unsigned og_scene[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    unsigned og_key_present[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    /* The native compose serial (openpete_native_compose_serial) before the
+     * keyed present composed, so og_vram_check knows its compose ran. */
+    unsigned og_key_serial[OPENPETE_MAX_SCREENSHOT_FRAMES];
+    /* The native scene id of the last OT PsyCross rasterized, which the
+     * present FBO holds until the next present (openpete_capture_note_psyx_walk);
+     * the canonical presents counted by og_leg; -og legs written per rule. */
+    unsigned psyx_scene;
+    unsigned canon_presents;
+    unsigned og_rule_n[OG_RULE_COUNT];
     bool vk_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];   /* -vk leg */
     bool vk_armed[OPENPETE_MAX_SCREENSHOT_FRAMES];
     bool int_fired[OPENPETE_MAX_SCREENSHOT_FRAMES];  /* intermediate leg */
@@ -94,8 +121,9 @@ static bool presents_open(const openpete_options_t *opts)
  * The file is the target's path with -og before the extension, so it sits
  * beside the native -vk dump.
  * @param opts Session options.
- * @param si Target index. */
-static void og_write(const openpete_options_t *opts, int si)
+ * @param si Target index.
+ * @param rule The pairing rule's name, logged with the write. */
+static void og_write(const openpete_options_t *opts, int si, const char *rule)
 {
     char base[1024], path[1100];
     openpete_screenshot_format_path(opts->screenshot_output,
@@ -108,32 +136,97 @@ static void og_write(const openpete_options_t *opts, int si)
     else      snprintf(path, sizeof(path), "%s-og", base);
     openpete_psyx_take_screenshot(path);
     OPL_INFO_F("screenshot",
-               "wrote %s on frame %u tick %u (target=%d, %s-keyed)",
+               "wrote %s on frame %u tick %u (target=%d, %s-keyed, rule=%s, "
+               "scene=%u psyx=%u lag=%u)",
                path, openpete_frame, openpete_canon_tick,
                opts->screenshot_frames[si],
-               opts->screenshot_ticks_keyed ? "tick" : "frame");
+               opts->screenshot_ticks_keyed ? "tick" : "frame", rule,
+               s_cap.og_scene[si], s_cap.psyx_scene,
+               s_cap.canon_presents - s_cap.og_key_present[si]);
+}
+
+/** @brief Finish a target's -og leg under a rule and count the rule.
+ *
+ * Writes the file unless the rule keeps the image written provisionally at
+ * the keyed present, then logs the per-rule totals.
+ * @param opts Session options.
+ * @param si Target index.
+ * @param rule The OG_RULE_* that chose the present.
+ * @param write false when the file on disk is already the rule's image. */
+static void og_finish(const openpete_options_t *opts, int si, int rule, bool write)
+{
+    s_cap.og_fired[si] = true;
+    s_cap.og_rule_n[rule]++;
+    if (write) og_write(opts, si, k_og_rule_name[rule]);
+    OPL_INFO_F("screenshot",
+               "og-pair target=%d rule=%s (otag=%u vram=%u alongside=%u unpaired=%u fixed=%u)",
+               opts->screenshot_frames[si], k_og_rule_name[rule],
+               s_cap.og_rule_n[OG_RULE_OTAG], s_cap.og_rule_n[OG_RULE_VRAM],
+               s_cap.og_rule_n[OG_RULE_ALONGSIDE],
+               s_cap.og_rule_n[OG_RULE_UNPAIRED], s_cap.og_rule_n[OG_RULE_FIXED]);
+}
+
+void openpete_capture_note_psyx_walk(void)
+{
+    s_cap.psyx_scene = openpete_native_otag_scene();
+}
+
+/** @brief Advance one reached target's -og leg by the native scene identity of the OT PsyCross holds.
+ *
+ * On the keyed present the target takes the id of the scene this present's
+ * capture presents; a scene the game fed nothing for (a repeat present) has
+ * no OT of its own, so the keyed present's PsyCross image is written. The
+ * leg fires on the first present whose PsyCross scene rasterized that
+ * scene's OT: the keyed present when the game submitted the OT before its
+ * VSync, the next one when it submits after. Until then the keyed present's
+ * image stands provisionally at the path: og_vram_check keeps it when the
+ * native present re-displayed that image, and a later OT of a newer scene
+ * finalizes it unpaired.
+ * @param opts Session options.
+ * @param si Target index. */
+static void og_pair_step(const openpete_options_t *opts, int si)
+{
+    if (!s_cap.og_scene[si]) {
+        s_cap.og_key_present[si] = s_cap.canon_presents;
+        if (openpete_native_scene_canon_repeat()) {
+            og_finish(opts, si, OG_RULE_ALONGSIDE, true);
+            return;
+        }
+        s_cap.og_scene[si] = openpete_native_scene_presenting();
+        s_cap.og_key_serial[si] = openpete_native_compose_serial(NULL);
+        if (s_cap.psyx_scene < s_cap.og_scene[si])
+            og_write(opts, si, "provisional");
+    }
+    if (s_cap.psyx_scene == s_cap.og_scene[si])
+        og_finish(opts, si, OG_RULE_OTAG, true);
+    else if (s_cap.psyx_scene > s_cap.og_scene[si])
+        og_finish(opts, si, OG_RULE_UNPAIRED, false);
 }
 
 /** @brief Write the -og reference of every --screenshot-on-frame target the key reached.
  *
  * --screenshot-native-only skips the leg: PsyCross isn't rasterizing
  * (openpete_psycross_renders == 0), so the present FBO it reads is stale.
- * PsyCross rasterizes an OT on the present AFTER the one that submitted it,
- * so the FBO on the keyed present holds the previous tick; the leg arms on
- * the keyed present and fires one present later, so the -og and -vk files
- * show the same tick.
+ * The FBO read before a present's EndScene holds the OTs submitted since
+ * the previous present. With a native scene the leg pairs by identity
+ * (og_pair_step): the -og file is the PsyCross present that rasterized the
+ * OT of the scene the keyed present shows. Without one it arms on the keyed
+ * present and fires one present later, the offset of a game that submits
+ * its OT after the VSync it presents at.
  * @param opts Session options.
  * @param shot_key The present's capture key. */
 static void og_leg(const openpete_options_t *opts, int shot_key)
 {
+    const bool paired = openpete_native_scene_enabled();
     for (int si = 0; !opts->screenshot_native_only &&
                      si < opts->screenshot_frame_count; ++si) {
         if (s_cap.og_fired[si]) continue;
         if (shot_key < opts->screenshot_frames[si]) continue;
+        if (paired) { og_pair_step(opts, si); continue; }
         if (!s_cap.og_armed[si]) { s_cap.og_armed[si] = true; continue; }
-        s_cap.og_fired[si] = true;
-        og_write(opts, si);
+        og_finish(opts, si, OG_RULE_FIXED, true);
     }
+    s_cap.canon_presents++;
 }
 
 /** @brief Write PsyCross's 1024x512 16-bit VRAM mirror once under OPENPETE_VRAM_DUMP=<path>.
@@ -263,6 +356,25 @@ void openpete_capture_present_begin(const openpete_options_t *opts)
     if (freeze_backdrop_run(opts)) openpete_native_render_snapshot_present_begin();
 }
 
+/** @brief Keep the keyed present's -og image for targets whose -vk compose showed the VRAM framebuffer.
+ *
+ * Runs after the -vk dumps of the keyed present. A native compose with no
+ * triangle of the game's own draws no scene of its own and re-displays the
+ * PSX framebuffer of that present, so its PsyCross counterpart is the image
+ * og_pair_step wrote provisionally at that present, not a later OT.
+ * @param opts Session options. */
+static void og_vram_check(const openpete_options_t *opts)
+{
+    int vram = 0;
+    const unsigned serial = openpete_native_compose_serial(&vram);
+    for (int si = 0; vram && si < opts->screenshot_frame_count; ++si) {
+        if (s_cap.og_fired[si] || !s_cap.og_scene[si]) continue;
+        if (s_cap.og_key_present[si] + 1u != s_cap.canon_presents) continue;
+        if (serial == s_cap.og_key_serial[si]) continue;
+        og_finish(opts, si, OG_RULE_VRAM, false);
+    }
+}
+
 void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
                                    bool presents_owed)
 {
@@ -281,6 +393,8 @@ void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
         openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
     if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0)
         vk_leg(opts, shot_key);
+    if (openpete_native_scene_enabled() && !opts->screenshot_native_only)
+        og_vram_check(opts);
 }
 
 /** @brief Return the sub-tick phase of the intermediate leg, reading OPENPETE_INTERMEDIATE_ALPHA once.

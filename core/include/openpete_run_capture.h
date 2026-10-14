@@ -15,11 +15,18 @@
 extern "C" {
 #endif
 
+/** @brief Record that PsyCross rasterized an OT into the scene the next present stores.
+ *
+ * Called by the DrawOTag thunk after its PsyCross walk. Stamps the native
+ * scene id of that OT (openpete_native_otag_scene), the identity by which
+ * the -og leg pairs a PsyCross present with a native scene. */
+void openpete_capture_note_psyx_walk(void);
+
 /** @brief Write the capture legs read from PsyCross at a canonical present, before the native present step.
  *
  * The legs are the -og reference of each --screenshot-on-frame target, taken
- * one present after the key is reached because PsyCross rasterizes an OT on
- * the present after the one that submitted it; the OPENPETE_VRAM_DUMP
+ * from the PsyCross present that rasterized the OT of the native scene the
+ * keyed present shows (the keyed present or a later one); the OPENPETE_VRAM_DUMP
  * write of PsyCross's VRAM mirror; and the canonical present of
  * --screenshot-presents-start/count when no native scene exists.
  * @param opts Session options.

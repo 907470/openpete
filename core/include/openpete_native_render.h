@@ -1767,6 +1767,20 @@ void openpete_native_note_draw_otag(void);
  * @return 1 when a DrawOTag since the last canonical capture submitted fed
  *         primitives, else 0 (the scene's PutDrawEnv has not run yet). */
 int openpete_native_drawn_env(uint8_t env[4]);
+/** @brief Return the id of the scene whose primitives the last DrawOTag submitted.
+ *
+ * A scene's id is the ordinal of the canonical capture that presents it
+ * (openpete_native_scene_presenting). A DrawOTag that runs after the game fed
+ * the open scene submits that scene; one that runs before any feed since the
+ * last capture submits the scene that capture presented. 0 before the first
+ * DrawOTag.
+ * @return The scene id. */
+unsigned openpete_native_otag_scene(void);
+/** @brief Return the id of the scene the next canonical capture presents.
+ *
+ * The ordinal of that capture, one more than the captures taken so far.
+ * @return The scene id. */
+unsigned openpete_native_scene_presenting(void);
 /** @brief Set this frame's full-screen fade overlay (the game's func_800190D4).
  *
  * Each transition darkens or brightens the whole frame with one
@@ -2138,6 +2152,15 @@ void     openpete_native_scene_ring_report(void);
  * presents whose outcome or kind changed from their predecessor. The census
  * lines are omitted when no present was composed or refused at begin. */
 void     openpete_native_present_census_report(void);
+/** @brief Return how many scene composes ran and whether the last one showed the PSX VRAM framebuffer.
+ *
+ * A compose whose scene holds no triangle of the game's own and no retained
+ * terrain draws no native scene; the caller re-displays the PSX VRAM
+ * framebuffer instead. Live presents and screenshot dumps both count.
+ * @param vram Receives 1 when the last compose showed the VRAM framebuffer,
+ *        else 0; may be NULL.
+ * @return Scene composes so far. */
+unsigned openpete_native_compose_serial(int *vram);
 /** @brief Return the refresh rate of the display the current swapchain presents to.
  *
  * @return The rate in Hz; 0 when unknown or before the device exists. */

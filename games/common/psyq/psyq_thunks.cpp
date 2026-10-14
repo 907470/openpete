@@ -2275,6 +2275,7 @@ extern "C" void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y,
 extern "C" void openpete_native_set_clear_color(int isbg, int r, int g, int b);
 extern "C" void openpete_native_note_put_draw_env(int isbg, int r, int g, int b);
 extern "C" void openpete_native_note_draw_otag(void);
+extern "C" void openpete_capture_note_psyx_walk(void);
 
 /** @brief Thunk for libgpu PutDispEnv: copies the guest DISPENV into libgpu's environment block and hands it to PsyCross and the native renderer.
  *
@@ -2897,6 +2898,8 @@ void psyq_DrawOTag(CPUState* cpu) {
             /* Sim-due display walk of the OT just captured. */
             extern void openpete_render_walk_ot(void);
             openpete_render_walk_ot();
+            /* The capture unit pairs the -og leg by the scene this OT drew. */
+            openpete_capture_note_psyx_walk();
         }
         /* Tell the host loop this iter's GL backbuffer holds fresh game pixels.
          * Spyro is a 30fps game: it calls VSync(0) twice per logical frame, so

@@ -1258,6 +1258,13 @@ static int s_game_fed;
 static uint8_t s_drawenv_put[4];
 static uint8_t s_drawenv_drawn[4];
 static int     s_drawenv_drawn_valid;
+/* Scene identity of the DrawOTag stream. A scene's id is the ordinal of the
+ * canonical capture that presents it: s_capture_seq counts the captures taken
+ * (openpete_native_scene_capture_overlay), so the scene being fed is
+ * s_capture_seq + 1. s_otag_scene is the id of the scene whose primitives the
+ * last DrawOTag submitted (openpete_native_note_draw_otag). */
+static unsigned s_capture_seq;
+static unsigned s_otag_scene;
 /* The canonical present's repeat verdict (openpete_native_scene_canon_repeat),
  * -1 until it is first asked for and again after the capture. */
 static int s_canon_repeat = -1;
@@ -1912,10 +1919,16 @@ void openpete_native_note_draw_otag(void) {
      * its VSync and opens the next tick's scene first) holds nothing this
      * DrawOTag draws. */
     const int fed_tris = s_game_fed && scene_has_game_tris(s_scene, s_scene_n);
-    if (s_overlay_accum_n == 0 && !fed_tris) return;
+    const int fed = s_overlay_accum_n > 0 || fed_tris;
+    /* A fed scene is the one the next capture presents; an unfed one means
+     * the game submits the OT of the scene the last capture presented. */
+    s_otag_scene = s_capture_seq + (unsigned)fed;
+    if (!fed) return;
     memcpy(s_drawenv_drawn, s_drawenv_put, sizeof s_drawenv_drawn);
     s_drawenv_drawn_valid = 1;
 }
+unsigned openpete_native_otag_scene(void) { return s_otag_scene; }
+unsigned openpete_native_scene_presenting(void) { return s_capture_seq + 1u; }
 int openpete_native_drawn_env(uint8_t env[4]) {
     if (!s_drawenv_drawn_valid) return 0;
     memcpy(env, s_drawenv_drawn, sizeof s_drawenv_drawn);
@@ -2565,6 +2578,7 @@ void openpete_native_scene_capture_overlay(void) {
      * prim then) defers that sprite a whole tick and misses this capture. The
      * repeat verdict runs that flush. */
     const int repeat = openpete_native_scene_canon_repeat();
+    s_capture_seq++;
     s_canon_repeat = -1;
     s_game_fed = 0;
     s_drawenv_drawn_valid = 0;   /* the commit before this capture consumed it */
@@ -13332,6 +13346,17 @@ static bool scene_compose_has_content(const scene_tri_t* scene, int n, uint32_t 
     return s_isolation && bg != 0;
 }
 
+/* Scene composes drawn so far (draw_native_scene calls), and whether the last
+ * one fell back to the PSX VRAM framebuffer; openpete_native_compose_serial. */
+static unsigned s_compose_serial;
+static bool s_compose_vram;
+
+unsigned openpete_native_compose_serial(int *vram)
+{
+    if (vram) *vram = s_compose_vram;
+    return s_compose_serial;
+}
+
 /** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
  *
  * Packs the scene triangles into the vertex buffer and draws the world
@@ -13421,8 +13446,10 @@ static bool draw_native_scene(bool full_extent)
      * scene_bg is the fallback (no auto-clear). */
     uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
 
-    if (!scene_compose_has_content(scene, scene_n, scene_freeze, bg))
-        return false;
+    const bool vram = !scene_compose_has_content(scene, scene_n, scene_freeze, bg);
+    s_compose_serial++;
+    s_compose_vram = vram;
+    if (vram) return false;
 
     s_render_full_extent = full_extent ? 1 : 0;
 
