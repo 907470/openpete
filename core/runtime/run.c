@@ -47,6 +47,7 @@
 #include "openpete_terrain_cache.h"
 #include "openpete_fb_snapshot.h"
 #include "openpete_ident_audit.h"
+#include "openpete_run_capture.h"
 #include "openpete_menu.h"
 #include "openpete_settings_save.h"
 #include "openpete_devui.h"
@@ -1124,52 +1125,6 @@ static void audio_feed_exit_summary(void) {
 /* The --debug-triangle infra-triangle (core/renderer/debug_render.cpp). */
 extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
-extern void openpete_psyx_take_screenshot(const char* path);  /* PNG or BMP by extension */
-extern void openpete_psyx_take_screenshot_ext(const char* path,
-                                              int* out_w, int* out_h);
-
-/* --screenshot-presents-start/count bookkeeping: log one line per captured
- * present naming its kind and pixel extent, and warn once if the sequence is
- * not written at a single extent. Images at two extents cannot be differenced
- * against each other, so a mixed-extent sequence invalidates every comparison
- * drawn from it; the warning names both extents so the run is discarded rather
- * than measured. */
-static int s_presents_shot_w = 0, s_presents_shot_h = 0;
-static int s_presents_mixed_warned = 0;
-static int s_presents_native_kind = 0;   /* native-offscreen intermediate captures */
-static int s_presents_written = 0;       /* captures written, all kinds */
-/** @brief Log one captured present and warn once when the sequence mixes pixel extents.
- *
- * Counts the capture. A capture with a nonpositive extent is not compared;
- * the first positive extent becomes the sequence's reference and a later
- * different one logs a single warning naming both.
- * @param path The written file.
- * @param kind The capture kind label.
- * @param present_index The present's index.
- * @param frame The feed key's value (openpete_feed_key_now) at the capture.
- * @param w Image width in pixels.
- * @param h Image height in pixels. */
-static void openpete_presents_note_shot(const char *path, const char *kind,
-                                        int present_index, unsigned frame,
-                                        int w, int h)
-{
-    OPL_INFO_F("screenshot",
-               "wrote %s on frame %u (present=%d, kind=%s, extent=%dx%d)",
-               path, frame, present_index, kind, w, h);
-    s_presents_written++;
-    if (w <= 0 || h <= 0) return;
-    if (s_presents_shot_w == 0) {
-        s_presents_shot_w = w; s_presents_shot_h = h;
-    } else if ((w != s_presents_shot_w || h != s_presents_shot_h)
-               && !s_presents_mixed_warned) {
-        s_presents_mixed_warned = 1;
-        OPL_WARN_F("screenshot",
-                   "present sequence mixes extents: %dx%d and %dx%d; "
-                   "presents from this run are not comparable",
-                   s_presents_shot_w, s_presents_shot_h, w, h);
-    }
-}
-
 
 /* PsyCross internal: set non-zero to bypass SDL_GL_SetSwapInterval at the
  * start of each scene, which uncaps the GL present and lets the host loop
@@ -1652,13 +1607,6 @@ static struct {
  * s_eager.produced_inter so one exit line states how many presents in a run
  * were built from interpolated gamestate rather than from a tick. */
 static unsigned s_inline_rex = 0;
-/* Intermediate-screenshot legs taken, and how many of them the game's
- * re-extract actually bracketed. A leg with no bracket rendered the canonical
- * pose under a sub-tick filename, so a harness that reads only the file
- * reports a pass on an image the sub-tick path never produced. */
-static unsigned s_inter_shots = 0;
-static unsigned s_inter_shots_bracketed = 0;
-
 /** @brief Read the OPENPETE_EAGER_* tuning variables into s_eager, once.
  *
  * OPENPETE_EAGER_POLICY=greedy selects policy 1 (evenly spaced targets),
@@ -6074,12 +6022,6 @@ static int run_host_loop(const openpete_options_t* opts) {
          * frozen-while-stuck semantics. 0 until the first canonical present
          * (spine stays off until there is something real to interpolate). */
         static op_time_t s_last_canon_present_ns = 0;
-        /* Multi-present capture (--screenshot-presents-start/count):
-         * shared between the canonical block immediately below and the
-         * intermediate block further down so both contribute to the
-         * present sequence. Tracks how many presents have fired since
-         * the sim reached the start frame. */
-        static int s_presents_captured = 0;
         if (openpete_present_pending && !openpete_skip_present_until_level) {
             /* Canonical draw-tick counter: the Nth increment is the same sim
              * moment in every run (tick-deterministic sim), unlike
@@ -6089,102 +6031,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             openpete_canon_tick++;
             int shot_key = opts->screenshot_ticks_keyed ? (int)openpete_canon_tick
                                                         : (int)openpete_feed_key_now();
-            static bool s_shot_fired[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
-            static bool s_shot_armed[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
-            /* --screenshot-native-only skips the -og leg: PsyCross isn't rasterizing
-             * (openpete_psycross_renders == 0), so the present FBO this reads is
-             * stale. The native -vk dump below is the sole output. */
-            for (int si = 0; !opts->screenshot_native_only &&
-                             si < opts->screenshot_frame_count; ++si) {
-                if (s_shot_fired[si]) continue;
-                if (shot_key < opts->screenshot_frames[si]) continue;
-                /* PsyCross rasterizes an OT on the present AFTER the one that
-                 * submitted it, so the FBO on the keyed present holds the
-                 * previous tick. The native -vk dump composes the newest tick;
-                 * take the -og one present later so both show the same tick. */
-                if (!s_shot_armed[si]) { s_shot_armed[si] = true; continue; }
-                s_shot_fired[si] = true;
-                char base[1024], path[1100];
-                openpete_screenshot_format_path(opts->screenshot_output,
-                                                opts->screenshot_frames[si],
-                                                /*present=*/0,
-                                                base, sizeof(base));
-                /* PsyCross reference render -> "<base>-og.png" so it sits
-                 * alongside the native "-vk" dumped below. */
-                const char *odot = strrchr(base, '.');
-                if (odot) snprintf(path, sizeof(path), "%.*s-og%s",
-                                   (int)(odot - base), base, odot);
-                else      snprintf(path, sizeof(path), "%s-og", base);
-                openpete_psyx_take_screenshot(path);
-                OPL_INFO_F("screenshot",
-                           "wrote %s on frame %u tick %u (target=%d, %s-keyed)",
-                           path, openpete_frame, openpete_canon_tick,
-                           opts->screenshot_frames[si],
-                           opts->screenshot_ticks_keyed ? "tick" : "frame");
-            }
-            /* OPENPETE_VRAM_DUMP=<path> writes PsyCross's 1024x512 16-bit
-             * VRAM mirror once, on the frame or tick named by
-             * OPENPETE_VRAM_DUMP_FRAME (default: the first keyed screenshot).
-             * The mirror is CPU-side, so this is independent of GL state and
-             * works headless. Raw little-endian u16, row-major. */
-            {
-                static bool s_vram_dumped = false;
-                static int s_vd_read = 0;
-                static const char *vd = NULL;   /* debug knob: read once */
-                if (!s_vd_read) { vd = getenv("OPENPETE_VRAM_DUMP"); s_vd_read = 1; }
-                if (vd && *vd && !s_vram_dumped) {
-                    const char *vf = getenv("OPENPETE_VRAM_DUMP_FRAME");
-                    int want = vf && *vf ? atoi(vf)
-                             : (opts->screenshot_frame_count > 0
-                                    ? opts->screenshot_frames[0] : -1);
-                    if (want >= 0 && shot_key >= want) {
-                        extern void GR_ReadVRAM(unsigned short *dst, int x, int y,
-                                                int dst_w, int dst_h);
-                        static unsigned short vram[1024 * 512];
-                        GR_ReadVRAM(vram, 0, 0, 1024, 512);
-                        FILE *vfh = fopen(vd, "wb");
-                        if (vfh) {
-                            size_t n = fwrite(vram, sizeof vram, 1, vfh);
-                            fclose(vfh);
-                            s_vram_dumped = true;
-                            OPL_INFO_F("vram-dump",
-                                       "wrote %s (1024x512 u16) on frame %u tick %u%s",
-                                       vd, openpete_frame, openpete_canon_tick,
-                                       n == 1 ? "" : " (SHORT WRITE)");
-                        } else {
-                            OPL_WARN_F("vram-dump", "cannot open %s", vd);
-                        }
-                    }
-                }
-            }
-            /* Canonical leg of --screenshot-presents-start/count. The
-             * intermediate leg further down reads the native offscreen at the
-             * window extent, so reading PsyCross's present FBO here would write
-             * the sequence through two renderers at two extents (the guest 4:3
-             * crop against the Hor+-widened native frame) and no adjacent pair
-             * would be comparable. With a native scene the capture is therefore
-             * deferred to after openpete_native_render_frame below, where the
-             * offscreen holds this canonical present through the same compose
-             * the intermediate leg reads. The PsyCross read stays the capture
-             * only when there is no native scene, where it is the only image. */
-            bool capture_canon_present =
-                    opts->screenshot_presents_start >= 0
-                    && (int)openpete_feed_key_now() >= opts->screenshot_presents_start
-                    && s_presents_captured < opts->screenshot_presents_count;
-            if (capture_canon_present && !openpete_native_scene_enabled()) {
-                char path[1024];
-                int sw = 0, sh = 0;
-                openpete_screenshot_format_path(opts->screenshot_output,
-                                                (int)openpete_feed_key_now(),
-                                                s_presents_captured,
-                                                path, sizeof(path));
-                openpete_psyx_take_screenshot_ext(path, &sw, &sh);
-                openpete_presents_note_shot(path, "psycross-canonical",
-                                            s_presents_captured,
-                                            openpete_feed_key_now(), sw, sh);
-                s_presents_captured++;
-                capture_canon_present = false;
-            }
+            const bool capture_canon_present = openpete_capture_canon_reference(opts, shot_key);
             /* --record: capture this presented game frame before EndScene
              * stamps the FPS overlay. PTS is the wall-clock capture instant
              * in microseconds; the first frame anchors t=0. Reads the present
@@ -6360,80 +6207,10 @@ static int run_host_loop(const openpete_options_t* opts) {
              * after the walk: the windowed live present builds it otherwise. */
             openpete_native_occl_service_headless();
 
-            /* Deferred canonical leg of --screenshot-presents-start/count (see
-             * the gate above): the native offscreen now holds this canonical
-             * present, so the sequence's canonical and intermediate images come
-             * from one renderer, one compose and one extent. The device belongs
-             * to the present thread while eager is engaged; take it back for the
-             * readback and return it, as the offscreen reads below do. */
-            if (capture_canon_present && openpete_native_scene_enabled()) {
-                char path[1024];
-                int sw = 0, sh = 0;
-                openpete_screenshot_format_path(opts->screenshot_output,
-                                                (int)openpete_feed_key_now(),
-                                                s_presents_captured,
-                                                path, sizeof(path));
-                const int pt_was = openpete_present_thread_active();
-                if (pt_was) openpete_present_thread_set_active(0);
-                openpete_native_render_screenshot_ext(path, "native-canonical",
-                                                      &sw, &sh);
-                if (pt_was) openpete_present_thread_set_active(1);
-                openpete_presents_note_shot(path, "native-canonical",
-                                            s_presents_captured,
-                                            openpete_feed_key_now(), sw, sh);
-                s_presents_captured++;
-            }
-
-
-            /* Maintain the capture freeze backdrop: render this present's world
-             * frame into the capture freeze texture so a later headless dump of a
-             * freeze frame (pause / flight-results / level-exit) shows the green
-             * frozen-world effect. The live path snapshots frozen_tex only with a
-             * window, so a headless capture must keep it itself. A no-op on
-             * freeze/empty frames, so once the game pauses it holds the last world
-             * frame. Off by default (an extra render per present); enabled only for
-             * bk2s/poses that reach a freeze state. */
-            if (opts->screenshot_freeze_backdrop && openpete_native_scene_enabled()
-                && (opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0))
-                openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
-
-            /* Native screenshot: on the same --screenshot-on-frame targets,
-             * dump "<out>-vk.png" so the native view sits beside the PsyCross
-             * "<out>-og.png" above. */
-            if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0) {
-                static bool s_ab_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
-                static bool s_ab_armed[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
-                for (int si = 0; si < opts->screenshot_frame_count; ++si) {
-                    if (s_ab_shot[si]) continue;
-                    if (shot_key < opts->screenshot_frames[si]) continue;
-                    /* The native leg NEVER lags: it composes the newest tick
-                     * at the keyed present, and every PsyCross-sourced leg
-                     * arms itself to catch up. That is the direction the
-                     * correction runs in, always.
-                     *
-                     * In vk mode this leg is that native compose, so it takes
-                     * no arm. In PsyCross display mode it is a READBACK of
-                     * PsyCross's present FBO and carries the same one-present
-                     * OT lag the -og arm above cancels, so it takes the same
-                     * arm. Both legs of a target then name one tick, and a
-                     * target names the same tick in either mode. */
-                    if (!openpete_native_scene_enabled() && !s_ab_armed[si]) {
-                        s_ab_armed[si] = true;
-                        continue;
-                    }
-                    s_ab_shot[si] = true;
-                    char base[1024];
-                    openpete_screenshot_format_path(opts->screenshot_output,
-                                                    opts->screenshot_frames[si],
-                                                    0, base, sizeof(base));
-                    /* The device is the present thread's while eager is
-                     * engaged: take it back for the dump, then return it. */
-                    const int pt_was = openpete_present_thread_active();
-                    if (pt_was) openpete_present_thread_set_active(0);
-                    openpete_native_render_screenshot_all(base);
-                    if (pt_was) openpete_present_thread_set_active(1);
-                }
-            }
+            /* Target captures read from the native renderer: the owed canonical
+             * present of the present sequence, the capture freeze backdrop and the
+             * -vk dumps. The present's device services above ran first. */
+            openpete_capture_canon_native(opts, shot_key, capture_canon_present);
 
             /* Player screenshot (the `screenshot` binding, F12 by default).
              * One unsuffixed PNG of the frame the window just showed: a
@@ -6480,74 +6257,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                 if (pt_was) openpete_present_thread_set_active(1);
             }
 
-            /* Presentation-golden intermediate leg: deterministic sub-tick
-             * (alpha 0.5) native capture. Force the present clock to the tick
-             * midpoint (curr_tick_ns + period/2) so the re-extract callback
-             * interpolates exactly halfway between the two most-recent DISTINCT
-             * ticks, then dump the native -vk. Headless-capable - this drives an
-             * explicit re-extract; the live sub-tick present path is headless-
-             * blocked. Keyed on the feed key (openpete_feed_key_now): fires on the first present
-             * at/after each target. Deterministic capture (enabled above) pins the
-             * ring stamps to a fixed grid so alpha lands at exactly 0.5. */
-            if (openpete_native_scene_enabled() && opts->screenshot_intermediate_count > 0) {
-                openpete_native_reextract_fn ire = openpete_native_get_reextract();
-                static bool s_int_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
-                for (int si = 0; ire && si < opts->screenshot_intermediate_count; ++si) {
-                    if (s_int_shot[si]) continue;
-                    if ((int)openpete_feed_key_now() < opts->screenshot_intermediate_frames[si]) continue;
-                    s_int_shot[si] = true;
-                    int paired = openpete_interp_paired();
-                    if (!paired)
-                        OPL_WARN_F("screenshot",
-                                   "intermediate frame %d: no interp bracket "
-                                   "(spawn/load/static) - capturing canonical pose",
-                                   opts->screenshot_intermediate_frames[si]);
-                    op_time_t curr_ns = openpete_interp_curr_tick_ns();
-                    /* OPENPETE_INTERMEDIATE_ALPHA=<0..1> (harness): the sub-tick
-                     * phase of the capture as a fraction of the tick period. 0
-                     * sits on the ring's curr stamp and 1 on the identity
-                     * instant, so the re-extract can be diffed against the
-                     * canonical dump of the same tick as an identity check on
-                     * the spine. Default 0.5. */
-                    static double s_int_alpha = -1.0;
-                    if (s_int_alpha < 0.0) {
-                        const char* e = getenv("OPENPETE_INTERMEDIATE_ALPHA");
-                        s_int_alpha = (e && *e) ? atof(e) : 0.5;
-                        if (s_int_alpha < 0.0) s_int_alpha = 0.0; else if (s_int_alpha > 1.0) s_int_alpha = 1.0;
-                    }
-                    /* alpha 1 is the identity leg: every consumer must land on
-                     * its own curr state, and a consumer whose distinct-state
-                     * gap exceeds one tick period is still mid-blend one
-                     * nominal period past the ring's curr stamp. The identity
-                     * instant saturates the slowest live gap; every faster
-                     * consumer clamps its own phase at 1. */
-                    openpete_interp_set_present_target(
-                        s_int_alpha >= 1.0
-                            ? openpete_interp_identity_present_ns()
-                            : curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * s_int_alpha));
-                    ire(&g_game.cpu);                      /* s_scene @ sub-tick midpoint */
-                    openpete_interp_set_present_target(0); /* restore op_now() fallback */
-                    /* The bracket verdict of the pass just run: the game-side
-                     * re-extract publishes it with the alpha it drew at. */
-                    const int bracketed = openpete_pace_last_alpha_paired();
-                    s_inter_shots++;
-                    s_inter_shots_bracketed += bracketed ? 1u : 0u;
-                    char base[1024];
-                    openpete_screenshot_format_path(opts->screenshot_output,
-                                                    opts->screenshot_intermediate_frames[si],
-                                                    0, base, sizeof(base));
-                    /* The re-extract built the interpolated scene into the CURRENT
-                     * scene (never pushed to frame history), so compose depth 0 -
-                     * the normal shot-compose delay reads an empty lagged slot. */
-                    openpete_native_render_set_capture_nodelay(1);
-                    openpete_native_render_screenshot_all(base);
-                    openpete_native_render_set_capture_nodelay(0);
-                    OPL_INFO_F("screenshot",
-                               "wrote intermediate alpha=%.3f native -vk on frame %u (target=%d, paired=%d, bracketed=%d)",
-                               s_int_alpha, openpete_frame, opts->screenshot_intermediate_frames[si],
-                               paired, bracketed);
-                }
-            }
+            /* Presentation-golden intermediate leg: the sub-tick re-extract of
+             * each --screenshot-intermediate-on-frame target reached. */
+            openpete_capture_canon_intermediate(opts, &g_game.cpu);
 
             /* Cache rotate moved to "right before next yield's GTE"
              * (see the yield_now block above) so intermediate renders
@@ -6841,24 +6553,9 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             /* Multi-present capture of native SUB-TICK frames (smoothness check):
              * --screenshot-presents-start/count captures consecutive presents
-             * (canonical p0 from the block above + these intermediates p1+), so
-             * viewing p0..pN shows objects at interpolated sub-tick positions. */
-            if (opts->screenshot_presents_start >= 0
-                    && (int)openpete_feed_key_now() >= opts->screenshot_presents_start
-                    && s_presents_captured < opts->screenshot_presents_count) {
-                char path[1024];
-                openpete_screenshot_format_path(opts->screenshot_output,
-                                                (int)openpete_feed_key_now(),
-                                                s_presents_captured, path, sizeof(path));
-                int sw = 0, sh = 0;
-                openpete_native_render_screenshot_ext(path, "native-intermediate",
-                                                      &sw, &sh);
-                s_presents_native_kind++;
-                openpete_presents_note_shot(path, "native-intermediate",
-                                            s_presents_captured,
-                                            openpete_feed_key_now(), sw, sh);
-                s_presents_captured++;
-            }
+             * (the canonical p0 + these intermediates p1+), so viewing p0..pN
+             * shows objects at interpolated sub-tick positions. */
+            openpete_capture_subtick_present(opts);
         }
 
         /* Paused repaint: no tick runs, so no other present fires. */
@@ -7229,19 +6926,9 @@ static int run_host_loop(const openpete_options_t* opts) {
     sim_teardown_progress();
     openpete_record_shutdown();
     sim_teardown_progress();
-    /* --screenshot-presents-start/count engagement. A sequence holding no
-     * native-intermediate present exercised only the canonical leg, so it
-     * supports no claim about the sub-tick path and the extent agreement it
-     * reports is vacuous. Reported unconditionally when the flag was set,
-     * because that fact is invisible in the images. */
-    if (opts->screenshot_presents_start >= 0)
-        OPL_INFO_F("screenshot",
-                   "present sequence: %d captured, %d native-intermediate, "
-                   "extent %dx%d%s",
-                   s_presents_written,
-                   s_presents_native_kind, s_presents_shot_w, s_presents_shot_h,
-                   s_presents_mixed_warned ? " (MIXED EXTENTS)"
-                   : s_presents_native_kind ? "" : " (VACUOUS: no intermediate)");
+    /* --screenshot-presents-start/count engagement, reported unconditionally
+     * when the flag was set because that fact is invisible in the images. */
+    openpete_capture_report_presents(opts);
     if (position_log_fp) {
         fclose(position_log_fp);
         position_log_fp = NULL;
@@ -7452,10 +7139,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         OPL_INFO_F("sub-tick", "%u re-extract(s) presented: %u eager, %u inline",
                    s_eager.produced_inter + s_inline_rex,
                    s_eager.produced_inter, s_inline_rex);
-    if (s_inter_shots)
-        OPL_INFO_F("sub-tick", "%u intermediate screenshot leg(s): %u bracketed, %u unbracketed",
-                   s_inter_shots, s_inter_shots_bracketed,
-                   s_inter_shots - s_inter_shots_bracketed);
+    openpete_capture_report_intermediate();
 
     disc_cache_exit_census();
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */

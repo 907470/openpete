@@ -1,0 +1,75 @@
+/* Target captures of the host loop: the screenshot legs a run writes at the
+ * frames, ticks and presents its --screenshot-* options name.
+ *
+ * The host loop calls these at fixed points of a present. Each leg keeps its
+ * own fired and armed state here, so a target is written once, and the
+ * present-sequence capture counts its presents across the canonical and the
+ * intermediate calls. */
+#pragma once
+
+#include "openpete.h"
+
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** @brief Write the capture legs read from PsyCross at a canonical present, before the native present step.
+ *
+ * The legs are the -og reference of each --screenshot-on-frame target, taken
+ * one present after the key is reached because PsyCross rasterizes an OT on
+ * the present after the one that submitted it; the OPENPETE_VRAM_DUMP
+ * write of PsyCross's VRAM mirror; and the canonical present of
+ * --screenshot-presents-start/count when no native scene exists.
+ * @param opts Session options.
+ * @param shot_key The present's capture key: the canonical tick under
+ *        --screenshot-on-tick, else the feed key.
+ * @return true when this present owes the native canonical leg of the
+ *         present sequence, which openpete_capture_canon_native writes. */
+bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_key);
+
+/** @brief Write the native capture legs of a canonical present, after the present's device services.
+ *
+ * The legs are the owed native canonical present of the present sequence,
+ * the capture freeze backdrop under --screenshot-freeze-backdrop, and the
+ * -vk dump of each --screenshot-on-frame target reached. In PsyCross display
+ * mode the -vk dump reads PsyCross's present FBO and takes the same
+ * one-present arm as the -og leg.
+ * @param opts Session options.
+ * @param shot_key The present's capture key, as for openpete_capture_canon_reference.
+ * @param presents_owed The value openpete_capture_canon_reference returned. */
+void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
+                                   bool presents_owed);
+
+/** @brief Write the intermediate capture of each --screenshot-intermediate-on-frame target reached.
+ *
+ * Each target re-extracts the scene at a sub-tick phase of the newest tick
+ * (OPENPETE_INTERMEDIATE_ALPHA, default 0.5; 1 is the identity instant) and
+ * composes it at depth 0. Fires on the first present at or after the
+ * target's feed key.
+ * @param opts Session options.
+ * @param cpu The guest CPU the re-extract reads. */
+void openpete_capture_canon_intermediate(const openpete_options_t *opts, void *cpu);
+
+/** @brief Write the native intermediate present of --screenshot-presents-start/count while the sequence is open.
+ *
+ * The present reads the native offscreen at the window extent, the image
+ * the sub-tick present just drew.
+ * @param opts Session options. */
+void openpete_capture_subtick_present(const openpete_options_t *opts);
+
+/** @brief Log the present sequence's engagement when --screenshot-presents-start was given.
+ *
+ * A sequence with no native intermediate present exercised only the
+ * canonical leg and is reported vacuous; a sequence written at two extents
+ * is reported mixed.
+ * @param opts Session options. */
+void openpete_capture_report_presents(const openpete_options_t *opts);
+
+/** @brief Log how many intermediate capture legs ran and how many the re-extract bracketed. */
+void openpete_capture_report_intermediate(void);
+
+#ifdef __cplusplus
+}
+#endif

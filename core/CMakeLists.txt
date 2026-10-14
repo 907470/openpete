@@ -85,6 +85,7 @@ add_library(openpete_core STATIC
     renderer/subtick_view.c
     renderer/screenshot.c
     runtime/run.c
+    runtime/run_capture.c
     runtime/skip_common.c
 
     # Recording and savestates: true-VFR gameplay video capture (--record;
