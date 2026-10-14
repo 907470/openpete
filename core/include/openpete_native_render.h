@@ -1743,6 +1743,28 @@ void openpete_native_scene_set_bg(uint32_t rgba);
  * @param g Green, 0..255.
  * @param b Blue, 0..255. */
 void openpete_native_set_clear_color(int isbg, int r, int g, int b);
+/** @brief Record the DRAWENV the game's PutDrawEnv just applied.
+ *
+ * Called by the PutDrawEnv thunk; openpete_native_note_draw_otag reads it.
+ * @param isbg The PSX DRAWENV auto-clear flag.
+ * @param r Clear red, 0..255.
+ * @param g Clear green, 0..255.
+ * @param b Clear blue, 0..255. */
+void openpete_native_note_put_draw_env(int isbg, int r, int g, int b);
+/** @brief Note a DrawOTag: when the game fed primitives since the last canonical capture, that content's env is the last PutDrawEnv's.
+ *
+ * Called by the DrawOTag thunk. A game that submits its OT before the VSync
+ * the host presents at has drawn the presented scene with that env; a game
+ * that submits after the VSync has fed no primitive of the next scene when
+ * its DrawOTag runs, so nothing is recorded. The record holds until the next
+ * canonical capture. */
+void openpete_native_note_draw_otag(void);
+/** @brief Report the env of the DrawOTag that already submitted the scene being presented, if one did.
+ *
+ * @param env Receives isbg, r0, g0, b0 when the function returns 1.
+ * @return 1 when a DrawOTag since the last canonical capture submitted fed
+ *         primitives, else 0 (the scene's PutDrawEnv has not run yet). */
+int openpete_native_drawn_env(uint8_t env[4]);
 /** @brief Set this frame's full-screen fade overlay (the game's func_800190D4).
  *
  * Each transition darkens or brightens the whole frame with one

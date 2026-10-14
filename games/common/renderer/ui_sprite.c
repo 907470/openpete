@@ -1930,17 +1930,22 @@ unsigned ui_freeze_retain_count(void) { return s_freeze_retain_n; }
 
 void ui_freeze_retain_commit(void) {
     if (!ui_game.freeze_retained) return;
-    if (!game_layout.db.cur_ptr) return;
-    const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
-    if (!curp) return;
-    uint32_t curdb;
-    memcpy(&curdb, curp, 4);
-    if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
-        return;   /* not a valid DB* yet */
-    /* PSYQ DRAWENV through b0 @+0x1B: 0x1C bytes. */
-    const uint8_t* env = (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.drawenv, 0x1Cu);
-    if (!env) return;
-    if (env[0x18]) return;            /* PSYQ DRAWENV isbg @+0x18; 1 = the frame is cleared */
+    uint8_t drawn[4];
+    if (openpete_native_drawn_env(drawn)) {   /* the scene's DrawOTag already ran */
+        if (drawn[0]) return;                 /* isbg 1: the frame is cleared */
+    } else {
+        if (!game_layout.db.cur_ptr) return;
+        const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
+        if (!curp) return;
+        uint32_t curdb;
+        memcpy(&curdb, curp, 4);
+        if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
+            return;   /* not a valid DB* yet */
+        /* PSYQ DRAWENV through b0 @+0x1B: 0x1C bytes. */
+        const uint8_t* env = (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.drawenv, 0x1Cu);
+        if (!env) return;
+        if (env[0x18]) return;        /* PSYQ DRAWENV isbg @+0x18; 1 = the frame is cleared */
+    }
     /* The tint is unused in retained mode (blit.frag passes the snapshot
      * through) but the packed word's active bit lives in the same field, so a
      * full-scale colour is what the encoder expects. */

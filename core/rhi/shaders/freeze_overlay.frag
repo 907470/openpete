@@ -38,9 +38,13 @@ void main()
      * i samples palette[i-tick] - a SUBTRACTIVE luma shift, not a multiply (darks reach
      * black first, then mids, then highlights). vColor.a carries shift = tick/31 (0 for
      * the static pause/inventory backdrop). Continuous here, like the luma above. */
-    lum = max(0.0, lum - vColor.a);
+    lum = lum - vColor.a;
+    /* Luma index 0 (a shifted index at or below 0 also lands on it: the CLUT entries
+     * below the shift keep their contents) is g_GrayscalePalette[0] = 0x0020, RGB555
+     * (0,1,0), not black: index 0 covers luma below 1/31. */
+    vec3 grey = lum < 1.0 / 31.0 ? vec3(0.0, 8.0 / 255.0, 0.0) : vec3(lum);
     /* PSX texture modulation: grey * colour / 128 (colour 0x80 == 1.0x), the same
      * (255/128) factor psx_scene.frag uses. The green tint rides the vertex colour. */
-    vec3 rgb = clamp(vec3(lum) * vColor.rgb * (255.0 / 128.0), 0.0, 1.0);
+    vec3 rgb = clamp(grey * vColor.rgb * (255.0 / 128.0), 0.0, 1.0);
     outColor = vec4(rgb, 1.0);
 }

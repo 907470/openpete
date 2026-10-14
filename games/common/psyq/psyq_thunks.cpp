@@ -2273,6 +2273,8 @@ extern "C" void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y,
                                                    int clip_w, int clip_h,
                                                    int ofs_x, int ofs_y, int isbg);
 extern "C" void openpete_native_set_clear_color(int isbg, int r, int g, int b);
+extern "C" void openpete_native_note_put_draw_env(int isbg, int r, int g, int b);
+extern "C" void openpete_native_note_draw_otag(void);
 
 /** @brief Thunk for libgpu PutDispEnv: copies the guest DISPENV into libgpu's environment block and hands it to PsyCross and the native renderer.
  *
@@ -2355,6 +2357,7 @@ void psyq_PutDrawEnv(CPUState* cpu) {
      * during cyclorama-less states (e.g. the black level-name flyby, where the
      * clear is black but g_Cyclorama still holds the previous level's sky). */
     openpete_native_set_clear_color(env->isbg, env->r0, env->g0, env->b0);
+    openpete_native_note_put_draw_env(env->isbg, env->r0, env->g0, env->b0);
     /* Real PutDrawEnv @0x8005FDD8: sp -= 32; sw s0,16; s1,20; s2,24; ra,28. */
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_PUTDRAWENV);
 }
@@ -2524,6 +2527,9 @@ void psyq_DrawOTag(CPUState* cpu) {
     /* The OT rebuild is openpete's own work on the game fiber, so it lands
      * inside the sim-tick bracket rather than any render-side phase. */
     op_accum_scope prof_("psyq.drawotag");
+    /* Content fed since the last canonical capture is drawn now, under the
+     * last PutDrawEnv's env. */
+    openpete_native_note_draw_otag();
     saved_ot_t* B = g_ot_cur;
     uint8_t*  g_ot_scratch      = B->scratch;
     size_t&   g_ot_scratch_used = B->scratch_used;

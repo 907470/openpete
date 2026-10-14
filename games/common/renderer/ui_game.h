@@ -132,8 +132,10 @@ unsigned ui_sprite_sprt_count(void);
 
 /** @brief Arms the native freeze backdrop for a freeze_retained game when the draw buffer being presented is not cleared.
  *
- * Reads the current draw buffer through game_layout.db and its DRAWENV isbg
- * byte (+0x18); isbg 0 means the game keeps the last rendered image, and the
+ * Reads the isbg byte of the env the scene is drawn with: the one in effect
+ * at the DrawOTag that already submitted it (openpete_native_drawn_env),
+ * else the current draw buffer's DRAWENV (+0x18) through game_layout.db;
+ * isbg 0 means the game keeps the last rendered image, and the
  * backdrop is armed. Called once per canonical present, next to the
  * clear-colour commit that reads the same DRAWENV. A no-op for a game
  * without freeze_retained or before the draw-buffer pointer is valid.

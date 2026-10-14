@@ -1250,12 +1250,21 @@ static int s_game_scene_pending;
 /* 1 from any begin_frame the game's render makes (a scene opened or fed)
  * until the canonical capture. */
 static int s_game_fed;
+/* The DRAWENV of the game's last PutDrawEnv (isbg, r0, g0, b0), and the one in
+ * effect at the last DrawOTag that submitted primitives fed since the previous
+ * canonical capture. Where a game draws its OT before the VSync the host
+ * presents at (Spyro 1 GS_ExitLevel, the loader loops), that DrawOTag drew
+ * the presented scene and its env is the one the scene was cleared with. */
+static uint8_t s_drawenv_put[4];
+static uint8_t s_drawenv_drawn[4];
+static int     s_drawenv_drawn_valid;
 /* The canonical present's repeat verdict (openpete_native_scene_canon_repeat),
  * -1 until it is first asked for and again after the capture. */
 static int s_canon_repeat = -1;
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
 static bool scene_accum_has_world(void);                          /* defined below */
+static bool scene_has_game_tris(const scene_tri_t* scene, int n); /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) - capdbg */
 /** @brief Return the ring slot that still holds the scene an eager publish moved out of the accumulator, or NULL.
  *
@@ -1821,6 +1830,27 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
                     s_scene_frame, isbg, v, s_drawenv_clear);
     }
     s_drawenv_clear = v;
+}
+
+void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) {
+    s_drawenv_put[0] = (uint8_t)isbg; s_drawenv_put[1] = (uint8_t)r;
+    s_drawenv_put[2] = (uint8_t)g;    s_drawenv_put[3] = (uint8_t)b;
+}
+void openpete_native_note_draw_otag(void) {
+    /* Until the game's first feed since the capture opens a new scene,
+     * s_scene still holds the presented one. A scene the game opened
+     * without feeding a primitive yet (a draw pass that submits its OT after
+     * its VSync and opens the next tick's scene first) holds nothing this
+     * DrawOTag draws. */
+    const int fed_tris = s_game_fed && scene_has_game_tris(s_scene, s_scene_n);
+    if (s_overlay_accum_n == 0 && !fed_tris) return;
+    memcpy(s_drawenv_drawn, s_drawenv_put, sizeof s_drawenv_drawn);
+    s_drawenv_drawn_valid = 1;
+}
+int openpete_native_drawn_env(uint8_t env[4]) {
+    if (!s_drawenv_drawn_valid) return 0;
+    memcpy(env, s_drawenv_drawn, sizeof s_drawenv_drawn);
+    return 1;
 }
 /* The game's fade for THIS tick + a "set this tick" flag. The flag (not the
  * begin_frame reset of s_scene_fade) is what tells the re-extract whether the
@@ -2434,6 +2464,7 @@ void openpete_native_scene_capture_overlay(void) {
     const int repeat = openpete_native_scene_canon_repeat();
     s_canon_repeat = -1;
     s_game_fed = 0;
+    s_drawenv_drawn_valid = 0;   /* the commit before this capture consumed it */
     /* A repeat present shows the scene the previous capture took: the carry
      * stays that scene's 2D, standing still. */
     if (repeat) {

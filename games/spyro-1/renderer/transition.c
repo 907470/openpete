@@ -58,8 +58,6 @@ extern unsigned openpete_frame;
  * homeworld's flat background colour. In case 1 the game clears the framebuffer to
  * ColorLerp(bg, 0, D_8007575C) = bg*(tick/32) - a linear fade-in from black, drawn
  * BEHIND the cyclorama dome. */
-/* func_8001C694's address span [start, next fn) - to tell the exit-level's nested
- * func_8004F000 call (ra inside this range) from the balloonist's standalone one. */
 
 #define CRED   "\033[1;31m"
 #define CRESET "\033[0m"
@@ -71,14 +69,11 @@ static int  s_cross_n;
 /* Below the dome's horizon (and above its cap, when the camera pitches) the
  * PSX shows the draw-env clear: ColorLerp(g_Cyclorama.m_BackgroundColor,
  * 0x401010, D_8007575C) on the balloonist, ColorLerp(m_BackgroundColor, 0,
- * D_8007575C) on GS_ExitLevel case 1. The native scene draws the clear from
- * the game's DRAWENV over the whole target (openpete_native_set_clear_color).
- * During the GS_ExitLevel fade that colour changes every tick and the
- * DRAWENV it is read from trails the presented tick, so case 1 draws the
- * clear itself as a flat panel from the tick the hook reads:
- * m_BackgroundColor * tick / 32. Bit 31 = set; low 24 = PSX 0xBBGGRR; 0 on
- * the balloonist, which leaves the DRAWENV clear to show. */
-static uint32_t s_cross_bg_flat;
+ * D_8007575C) on GS_ExitLevel case 1, which writes it into the non-current
+ * draw buffer's DRAWENV and PutDrawEnv's that buffer before its DrawOTag.
+ * The native scene draws the clear from the env the presented scene was
+ * submitted with over the whole target (openpete_native_drawn_env,
+ * openpete_native_set_clear_color). */
 
 /* Staleness gate: the hook records its emitted polybuf interval as
  * RP_TRANSITION; the sub-tick reextract gates on
@@ -106,32 +101,11 @@ static void crossfade_extract(CPUState* cpu) {
  *
  * The dome sits at view-Z 4096 * 0.999 / 0.001, short of the far clear, so
  * the balloon moby and HUD text draw over it as on the PSX; outside it the
- * draw-env clear shows, or on GS_ExitLevel case 1 the flat panel
- * s_cross_bg_flat at view-Z 4096 * 0.9995 / 0.0005, behind the dome and in
- * front of the clear, spanning +/-16384 x +/-4096 so every aspect is
- * covered. The dome's vertex colours carry the DPCS fade func_8004F000
+ * draw-env clear shows. The dome's vertex colours carry the DPCS fade func_8004F000
  * applies. */
 static void crossfade_feed_native(void) {
     if (s_cross_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
-
-    if (s_cross_bg_flat & (1u << 31)) {
-        const float BIGX = 16384.0f, BIGY = 4096.0f;
-        const float cx[4] = { -BIGX, BIGX, -BIGX, BIGX };
-        const float cy[4] = { -BIGY, -BIGY, BIGY, BIGY };
-        /* View-Z 4096 * 0.9995 / (1 - 0.9995) in float. */
-        const float bz = 0x1.f3ba04p+22f;
-        static const int qi[2][3] = { {0,1,2}, {1,3,2} };
-        for (int ti = 0; ti < 2; ti++) {
-            openpete_scene_tri st = {0};
-            for (int k = 0; k < 3; k++) {
-                const int vi = qi[ti][k];
-                st.v[k].sx = cx[vi]; st.v[k].sy = cy[vi]; st.v[k].z = bz; st.v[k].pvz = bz;
-                st.v[k].rgba = (s_cross_bg_flat & 0xFFFFFFu) | 0xFF000000u;
-            }
-            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-        }
-    }
 
     /* Far backdrop, still < 1.0 clear: view-Z 4096 * 0.999 / (1 - 0.999) in
      * float. */
@@ -193,8 +167,7 @@ static void probe_log(const char* name, const char* what, CPUState* cpu, unsigne
 /** @brief Hook on func_8004F000 that runs the cross-fade renderer, records its polybuf range and feeds the re-derived dome natively.
  *
  * Inert (returns 0) when neither the native scene nor render paths are
- * active, and on re-entry. A call whose ra lies outside func_8001C694 is
- * the balloonist take-off and clears the flat exit-level backdrop. The
+ * active, and on re-entry. The
  * range is recorded as RP_TRANSITION, which drives the OT-walk filter and
  * the canon-drawn gate transition_reextract reads; an empty range reads as
  * not drawn. With the native feed on and a non-empty range, the dome is
@@ -213,11 +186,6 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     static int s_in = 0;
     if (s_in) return 0;                                   /* re-entrancy guard */
     s_in = 1;
-
-    /* The balloonist's standalone call (ra outside func_8001C694) shows the
-     * DRAWENV clear; the exit-level's nested call keeps the panel on_8001C694
-     * just set. */
-    if (cpu->ra < GS_EXIT_FN_LO || cpu->ra >= GS_EXIT_FN_HI) s_cross_bg_flat = 0;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     { OP_PROF_ACCUM_SCOPE("transition.srend");
@@ -271,19 +239,17 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/** @brief Hook on GS_ExitLevel (func_8001C694) that sets the cross-fade backdrop and drives the native grayscale freeze.
+/** @brief Hook on GS_ExitLevel (func_8001C694) that drives the native grayscale freeze and runs the game renderer.
  *
  * Inert (returns 0) when neither the native scene nor render paths are
  * active, and on re-entry. Case 1 (D_GS_EXIT_MODE) is the cyclorama
- * fade-in: before the game renderer runs, s_cross_bg_flat is set to
- * g_Cyclorama.m_BackgroundColor * tick / 32 (tick = D_GS_EXIT_TICK, capped
- * at 31), the clear the game draws behind the dome its nested
- * func_8004F000 call emits. Case 0 is the green-tinted grayscale freeze of
- * the level being exited: its POLY_FT4s go through the unhooked world-OT
- * add func_800168A0, so after the game renderer runs the hook drives
- * openpete_native_scene_set_freeze_backdrop with tint (0x4C, 0x80, 0x40)
- * and a fade of tick scaled from 0..31 to 0..127, matching the game's
- * per-tick shrinking of the grayscale CLUT load.
+ * fade-in; its clear reaches the native scene through the env its
+ * PutDrawEnv applies before the DrawOTag. Case 0 is the green-tinted
+ * grayscale freeze of the level being exited: its POLY_FT4s go through the
+ * unhooked world-OT add func_800168A0, so before the game renderer runs the
+ * hook drives openpete_native_scene_set_freeze_backdrop with tint
+ * (0x4C, 0x80, 0x40) and a fade of the entry D_GS_EXIT_TICK scaled from
+ * 0..31 to 0..127, the value the call's grayscale CLUT load uses.
  * @param cpu The guest CPU state.
  * @param addr Unused.
  * @return 1 when the hook ran the renderer, 0 to let normal dispatch run it. */
@@ -298,36 +264,23 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
     if (s_in) return 0;                                   /* re-entrancy guard */
     s_in = 1;
 
-    /* Case 1 backdrop: the game clears to ColorLerp(g_Cyclorama.m_BackgroundColor,
-     * 0, D_8007575C). D_8007575C = (0x20-tick)*0x80, and ColorLerp (GTE DPCS toward
-     * far-colour 0) gives bg*(1 - D_8007575C/0x1000) = bg*(tick/32), a linear
-     * fade-in from black. Set before the nested func_8004F000 feed draws it. */
-    if (feed && cpu->read_word(D_GS_EXIT_MODE) == 1) {    /* case 1: cyclorama fade-in */
-        uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
-        if (tick > 31) tick = 31;
-        uint32_t bg = cpu->read_word(game_layout.cyc.bg_colour);
-        uint32_t r = (bg & 0xFFu) * tick / 32u;
-        uint32_t g = ((bg >> 8) & 0xFFu) * tick / 32u;
-        uint32_t b = ((bg >> 16) & 0xFFu) * tick / 32u;
-        s_cross_bg_flat = (1u << 31) | r | (g << 8) | (b << 16);
-    } else {
-        s_cross_bg_flat = 0;                              /* case 0: freeze owns the screen */
-    }
-
-    { OP_PROF_ACCUM_SCOPE("transition.srend");
-      func_8001C694(cpu); }                               /* real renderer (case 1 nests func_8004F000) */
-
     if (feed && cpu->read_word(D_GS_EXIT_MODE) == 0) {    /* case 0: grayscale freeze */
         /* Fade the frozen level to black over the 32-tick case, matching PSX: the
          * game shrinks the grayscale CLUT load each tick, so a frozen pixel of luma-
-         * index i samples palette[i-tick] (subtractive shift). tick = D_8007568C in
-         * 0..31 -> shift = tick/31, packed as 0..127 for set_freeze_backdrop. */
+         * index i samples palette[i-tick] (subtractive shift). The CLUT load this
+         * call issues uses D_8007568C as it stands at entry. The call submits its
+         * OT and then waits its VSyncs, where the host presents, so the freeze is
+         * set here, before the call, to be part of that present's scene.
+         * tick 0..31 -> shift = tick/31, packed as 0..127 for set_freeze_backdrop. */
         uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
         if (tick > 31) tick = 31;
         int fade = (int)((tick * 127u + 15u) / 31u);      /* 0..31 -> 0..127 (rounded) */
         openpete_native_scene_begin_frame(openpete_frame);
         openpete_native_scene_set_freeze_backdrop(0x4C, 0x80, 0x40, fade);
     }
+
+    { OP_PROF_ACCUM_SCOPE("transition.srend");
+      func_8001C694(cpu); }                               /* real renderer (case 1 nests func_8004F000) */
     s_in = 0;
     return 1;
 }

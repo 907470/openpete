@@ -49,7 +49,11 @@ void spyro_native_canon_epoch_supersede(void);
 
 /** @brief Set the native clear colour from the DRAWENV the game will apply to the scene being presented.
  *
- * Called once per canonical present by render_paths_commit. The game flips
+ * Called once per canonical present by render_paths_commit. When a DrawOTag
+ * since the last canonical capture already submitted the fed scene (a game
+ * that draws before its VSync, such as Spyro 1 GS_ExitLevel or a loader
+ * loop), the env is the PutDrawEnv in effect at that DrawOTag
+ * (openpete_native_drawn_env). Otherwise the game flips
  * g_CurDB at the top of its draw pass, writes the clear into
  * g_CurDB->m_DrawEnv, builds the OT, then waits a VSync (during which the host
  * presents the fed scene) before PutDrawEnv and DrawOTag; a PutDrawEnv latch

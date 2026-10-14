@@ -835,6 +835,11 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
 
 /* ---- present-time draw-env clear sync; documented in orchestrator.h ---- */
 void cyclorama_native_env_clear_commit(void) {
+    uint8_t drawn[4];
+    if (openpete_native_drawn_env(drawn)) {   /* the scene's DrawOTag already ran */
+        openpete_native_set_clear_color(drawn[0], drawn[1], drawn[2], drawn[3]);
+        return;
+    }
     if (!game_layout.db.cur_ptr) return;   /* no draw-buffer pair located */
     const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
     if (!curp) return;

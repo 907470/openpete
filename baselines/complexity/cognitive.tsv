@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: fb97d1ab7269d543af1e8e490a1e3b0236e7e1dd
+# head: b3f5c62ee1d737425f5e3a609f42f2aa7b59d832
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -220,7 +220,7 @@ games/spyro-1/renderer/spyro.c	spyro_matrix_eval	30	0
 games/spyro-1/renderer/spyro.c	spyro_scratchpad_ab	26	0	
 games/spyro-1/renderer/spyro.c	spyro_walk_eval	40	0	
 games/spyro-1/renderer/tracer.c	tracer_build_and_feed	51	0	
-games/spyro-1/renderer/transition.c	on_8004F000_crossfade	65	0	
+games/spyro-1/renderer/transition.c	on_8004F000_crossfade	63	0	
 games/spyro-1/sfx_census.cpp	dump_banks	28	0	
 games/spyro-1/sfx_census.cpp	spyro1_dump_sfx_pack	47	0	
 games/spyro-1/sfx_census.cpp	walk_entry	29	0	
