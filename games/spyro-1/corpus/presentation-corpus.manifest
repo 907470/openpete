@@ -102,6 +102,9 @@ low-fps                                  | 1700  | 100  |        | 3000
 magic-crafters-balloonist                | 1700  | 100  |        | 3580
 magic-crafters-balloonist@heldpart       | 3400  | 100  |        | 3452
 magic-crafters-portal-cyclorama          | 1700  | 100  |        | 2075,2945
+# magic-crafters-portal-cyclorama@heldfade: a present of the held-fade loop
+# (isbg=0, one subtractive quad per VBL over the held picture).
+magic-crafters-portal-cyclorama@heldfade | 3955  | 100  | freeze | 3957
 moby-crossfade                           | 1700  | 100  |        | 1802,1808
 moving-terrain                           | 1700  | 100  |        | 2263,2438
 nestor                                   | 1700  | 100  |        | 1710,1875

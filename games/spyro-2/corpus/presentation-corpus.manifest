@@ -25,6 +25,9 @@
 # low-poly spires between the left cliffs and the skull do not draw, where
 # --lod original and the guest reference draw them (64533 px differ).
 attract-demo|3973|3000||1057,1273,1973,3973,4358,7073,10773,14573,17973
+# attract-demo@heldfade: a present of the held-fade loop after the entry at
+# 3232 (isbg=0, one subtractive quad per VBL over the held picture).
+attract-demo@heldfade|3234|100|freeze|3236
 #
 # autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
 # world, the in-gameplay level change. 1723 is the portal transition, 1823 and
