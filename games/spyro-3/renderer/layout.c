@@ -166,6 +166,18 @@ const game_layout_t spyro3_game_layout = {
         .base    = G_DB,
         .stride  = 0x74u,                           /* func_8001E640: the other buffer is +116 */
         .drawenv = 0x00u,                           /* dump: clip rect and clear colour at +0x00..+0x1B */
+        .repeat_site = {
+            /* func_80020168 entry: MoveImage of the screen, then isbg zeroed
+             * on both buffers (D_8006FC14, D_8006FC88) after the wait
+             * (drawutil/func_80020168.s:10-39). */
+            { 0x80020184u, REPEAT_SITE_HOLD },
+            /* func_8001EBAC: DrawSync, VSync, ClearImage of both buffers
+             * black (drawutil.c:20-33); the caller's next draw has isbg set
+             * again (func_80020168 restores it after its loop,
+             * drawutil/func_80020168.s:94-98) and clears to the colour the
+             * buffer's DRAWENV holds. */
+            { 0x8001EBC4u, REPEAT_SITE_CLEAR_DB },
+        },
     },
     .polybuf = {
         .cursor = D_POLYBUF_CURSOR,

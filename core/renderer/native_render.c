@@ -2454,6 +2454,16 @@ int openpete_native_scene_canon_repeat(void) {
     return s_canon_repeat;
 }
 
+void openpete_native_scene_open_empty(void) {
+    if (s_canon_repeat != 1) return;
+    extern unsigned openpete_frame;
+    /* The previous scene's stamp is an earlier VBL, or this one with the
+     * replay flag a re-extract sets; either way begin_frame opens a new
+     * scene rather than appending to the presented one. */
+    openpete_native_scene_begin_frame(openpete_frame);
+    s_canon_repeat = 0;
+}
+
 void openpete_native_scene_capture_overlay(void) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first - by the canonical present every post-link prim

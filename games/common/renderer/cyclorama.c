@@ -38,6 +38,7 @@
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/cyclorama.h"  /* this feeder's exports */
 #include "renderer/orchestrator.h"  /* cyclorama_native_env_clear_commit */
+#include "openpete_fiber.h"           /* openpete_yield_site: the VSync wait of a repeat present */
 #include "openpete_recomp_module.h"  /* the game's own sky draw, run through the module dispatch */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
@@ -834,24 +835,76 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
 }
 
 /* ---- present-time draw-env clear sync; documented in orchestrator.h ---- */
-void cyclorama_native_env_clear_commit(void) {
-    uint8_t drawn[4];
-    if (openpete_native_drawn_env(drawn)) {   /* the scene's DrawOTag already ran */
-        openpete_native_set_clear_color(drawn[0], drawn[1], drawn[2], drawn[3]);
-        return;
-    }
-    if (!game_layout.db.cur_ptr) return;   /* no draw-buffer pair located */
+
+/* The env a repeat-site row set for the canonical present in flight
+ * (isbg, r0, g0, b0); valid from cyclorama_native_repeat_resolve to the
+ * next one. */
+static uint8_t s_site_env[4];
+static int     s_site_env_valid;
+
+/** @brief Read isbg, r0, g0, b0 of the DRAWENV in the draw buffer g_CurDB points at.
+ *
+ * Reads g_CurDB (game_layout.db.cur_ptr) and the PSYQ DRAWENV through the
+ * sub-tick view: isbg at +0x18, r0/g0/b0 at +0x19..+0x1B.
+ * @param env Receives isbg, r0, g0, b0 when the function returns 1.
+ * @return 1 when the layout names the pair and g_CurDB points at one of its
+ *         two buffers, else 0. */
+static int cur_db_env(uint8_t env[4]) {
+    if (!game_layout.db.cur_ptr) return 0;   /* no draw-buffer pair located */
     const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
-    if (!curp) return;
+    if (!curp) return 0;
     uint32_t curdb;
     memcpy(&curdb, curp, 4);
     if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
-        return;   /* not a valid DB* yet */
+        return 0;   /* not a valid DB* yet */
     /* PSYQ DRAWENV through b0 @+0x1B: 0x1C bytes. */
-    const uint8_t* env = (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.drawenv, 0x1Cu);
-    if (!env) return;
-    /* PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B */
-    openpete_native_set_clear_color(env[0x18], env[0x19], env[0x1A], env[0x1B]);
+    const uint8_t* e = (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.drawenv, 0x1Cu);
+    if (!e) return 0;
+    memcpy(env, e + 0x18, 4);
+    return 1;
+}
+
+/** @brief Return the REPEAT_SITE_* row naming the VSync wait the game is parked in, or REPEAT_SITE_NONE.
+ *
+ * The wait is the guest return address of the VSync call
+ * (openpete_yield_site.ra) the canonical present runs at. */
+static int repeat_site_mode(void) {
+    const uint32_t ra = openpete_yield_site.ra;
+    for (int i = 0; i < GAME_REPEAT_SITE_MAX && game_layout.db.repeat_site[i].yield_ra; i++)
+        if (game_layout.db.repeat_site[i].yield_ra == ra) return game_layout.db.repeat_site[i].mode;
+    return REPEAT_SITE_NONE;
+}
+
+void cyclorama_native_repeat_resolve(void) {
+    s_site_env_valid = 0;
+    if (!openpete_native_scene_canon_repeat()) return;
+    uint8_t env[4];
+    if (!cur_db_env(env)) return;              /* nothing names the env: hold */
+    const int mode = repeat_site_mode();
+    if (mode == REPEAT_SITE_HOLD) return;
+    if (mode == REPEAT_SITE_CLEAR_BLACK) {
+        env[0] = 1; env[1] = env[2] = env[3] = 0;
+    } else if (mode == REPEAT_SITE_CLEAR_DB) {
+        env[0] = 1;                            /* the colour stands; isbg is set again before the draw */
+    }
+    if (mode != REPEAT_SITE_NONE) {
+        memcpy(s_site_env, env, sizeof s_site_env);
+        s_site_env_valid = 1;
+    }
+    if (!env[0]) return;                       /* isbg 0: the screen keeps the presented frame */
+    openpete_native_scene_open_empty();
+}
+
+int cyclorama_native_present_env(uint8_t env[4]) {
+    if (openpete_native_drawn_env(env)) return 1;   /* the scene's DrawOTag already ran */
+    if (s_site_env_valid) { memcpy(env, s_site_env, sizeof s_site_env); return 1; }
+    return cur_db_env(env);
+}
+
+void cyclorama_native_env_clear_commit(void) {
+    uint8_t env[4];
+    if (!cyclorama_native_present_env(env)) return;   /* the PutDrawEnv latch stays */
+    openpete_native_set_clear_color(env[0], env[1], env[2], env[3]);
 }
 
 /* The hook address is the layout's sky-draw site, bound at boot: a static

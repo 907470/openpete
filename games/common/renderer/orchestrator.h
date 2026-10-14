@@ -47,9 +47,37 @@ void spyro_native_canon_epoch_commit(void);
  * game with no sub-tick spine does nothing. */
 void spyro_native_canon_epoch_supersede(void);
 
+/** @brief Decide what a canonical present with no game render since the last one shows: the presented frame held, or an empty frame.
+ *
+ * Called by render_paths_commit before it reads the repeat verdict. A no-op
+ * unless openpete_native_scene_canon_repeat reports 1. The env is the
+ * current draw buffer's DRAWENV (as cyclorama_native_env_clear_commit reads
+ * it) unless game_layout.db.repeat_site has a row for the VSync wait the
+ * game is parked in (openpete_yield_site.ra): REPEAT_SITE_HOLD holds,
+ * REPEAT_SITE_CLEAR_BLACK takes isbg 1 and black, REPEAT_SITE_CLEAR_DB takes
+ * isbg 1 and the buffer's colour; a row's env is what
+ * cyclorama_native_present_env reports for this present. With isbg 1 the
+ * present becomes an empty scene (openpete_native_scene_open_empty) cleared
+ * to that colour; with isbg 0, without a valid g_CurDB, or on a HOLD row it
+ * stays a repeat. Defined by the shared cyclorama feeder for every game. */
+void cyclorama_native_repeat_resolve(void);
+
+/** @brief Report the DRAWENV the scene being presented is cleared with: isbg, r0, g0, b0.
+ *
+ * In order: the env of a DrawOTag that already submitted the fed scene
+ * (openpete_native_drawn_env), the env a repeat-site row set for this
+ * present (cyclorama_native_repeat_resolve), else the DRAWENV g_CurDB
+ * points at (game_layout.db.cur_ptr; isbg at +0x18, r0/g0/b0 at
+ * +0x19..+0x1B) read through the sub-tick view.
+ * @param env Receives isbg, r0, g0, b0 when the function returns 1.
+ * @return 1 when one of the three names the env, else 0 (no g_CurDB located
+ *         or it points at neither draw buffer). */
+int cyclorama_native_present_env(uint8_t env[4]);
+
 /** @brief Set the native clear colour from the DRAWENV the game will apply to the scene being presented.
  *
- * Called once per canonical present by render_paths_commit. When a DrawOTag
+ * Called once per canonical present by render_paths_commit, with the env
+ * cyclorama_native_present_env reports. When a DrawOTag
  * since the last canonical capture already submitted the fed scene (a game
  * that draws before its VSync, such as Spyro 1 GS_ExitLevel or a loader
  * loop), the env is the PutDrawEnv in effect at that DrawOTag
@@ -58,13 +86,10 @@ void spyro_native_canon_epoch_supersede(void);
  * g_CurDB->m_DrawEnv, builds the OT, then waits a VSync (during which the host
  * presents the fed scene) before PutDrawEnv and DrawOTag; a PutDrawEnv latch
  * therefore trails the presented scene by one VSync. Every gamestate writes
- * its clear into that struct before building the OT. This reads g_CurDB
- * (game_layout.db.cur_ptr) through the sub-tick view, returns without effect
- * when the layout names no g_CurDB or unless g_CurDB points at one of the two draw buffers, and passes the DRAWENV's
- * isbg (+0x18) and r0/g0/b0 (+0x19..+0x1B) to
- * openpete_native_set_clear_color. The PutDrawEnv latch stays in effect while
- * g_CurDB is not yet valid. Defined by the shared cyclorama feeder
- * (games/common/renderer/cyclorama.c) for every game. */
+ * its clear into that struct before building the OT. The env's isbg and
+ * r0/g0/b0 go to openpete_native_set_clear_color; without an env (no valid
+ * g_CurDB) the PutDrawEnv latch stays in effect. Defined by the shared
+ * cyclorama feeder (games/common/renderer/cyclorama.c) for every game. */
 void cyclorama_native_env_clear_commit(void);
 
 /* Canonical-render epoch. A feeder that snapshots transient render-pass

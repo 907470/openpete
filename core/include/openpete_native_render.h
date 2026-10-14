@@ -2406,6 +2406,16 @@ void openpete_native_scene_capture_overlay(void);
  * capture.
  * @return 1 for a repeat present, else 0. */
 int openpete_native_scene_canon_repeat(void);
+/** @brief Turn the repeat present in flight into the present of an empty scene.
+ *
+ * For a game that cleared the screen without drawing: the scene the
+ * previous capture took is closed and an empty one is opened at the current
+ * VBL as a game feed opens one (openpete_native_scene_begin_frame), so the
+ * present draws only the clear and the per-present commits roll to that
+ * empty scene (no 2D carry, fade or freeze). A no-op unless
+ * openpete_native_scene_canon_repeat reported 1 for this present; the
+ * verdict reads 0 afterwards. */
+void openpete_native_scene_open_empty(void);
 /** @brief Re-apply the overlay carry to the scene, interpolated to the present instant.
  *
  * Call at the end of every re-extract, after the 3D feeders. Each carry

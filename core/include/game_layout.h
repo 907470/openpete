@@ -33,6 +33,25 @@ enum { TERRAIN_SECTOR_CULL_NONE = 0, TERRAIN_SECTOR_CULL_SPHERE = 1 };
  * screen-extent rejection it applies before emitting a fan. */
 enum { SHADOW_LIST_ADDR = 0, SHADOW_LIST_GTE_DATA = 1 };
 enum { SHADOW_CULL_SPYRO1 = 0, SHADOW_CULL_SPYRO3 = 1 };
+/* What a canonical present with no game render since the last one shows when
+ * the game waits at a known VSync (game_layout.db.repeat_site). Without a row
+ * the present reads the current buffer's DRAWENV: isbg 1 presents an empty
+ * frame cleared to its colour, isbg 0 holds the presented frame.
+ * REPEAT_SITE_HOLD: the screen keeps the presented frame (the game draws
+ * nothing between this wait and its next OT, or copies the screen and
+ * zeroes isbg on both buffers after the wait).
+ * REPEAT_SITE_CLEAR_BLACK: the game ClearImage's both buffers black after the
+ * wait, and its next draw clears black.
+ * REPEAT_SITE_CLEAR_DB: the game ClearImage's both buffers after the wait,
+ * and its next draw clears to the current buffer's DRAWENV colour with isbg
+ * set again (the copy loop before the wait zeroed isbg, not the colour). */
+enum {
+    REPEAT_SITE_NONE        = 0,
+    REPEAT_SITE_HOLD        = 1,
+    REPEAT_SITE_CLEAR_BLACK = 2,
+    REPEAT_SITE_CLEAR_DB    = 3,
+};
+#define GAME_REPEAT_SITE_MAX 8
 
 /* How a game stores its environment animations.
  * ENV_ANIM_LISTS: three independent {count, descriptor-pointer array} pairs
@@ -256,12 +275,17 @@ typedef struct game_layout {
 
     /* The draw-buffer pair (Spyro 1 `DB`): the pointer to the buffer under
      * construction, the pair's base and stride, and the DRAWENV offset
-     * inside a buffer. */
+     * inside a buffer. `repeat_site` names the VSync waits whose canonical
+     * present (one with no game render since the last) the DRAWENV the
+     * present reads does not describe: `yield_ra` is the guest return
+     * address of the VSync call the game waits in (openpete_yield_site.ra),
+     * `mode` a REPEAT_SITE_* value; a row with yield_ra 0 ends the table. */
     struct {
         uint32_t cur_ptr;
         uint32_t base;
         uint32_t stride;
         uint32_t drawenv;
+        struct { uint32_t yield_ra; int mode; } repeat_site[GAME_REPEAT_SITE_MAX];
     } db;
 
     /* The per-frame primitive allocator: the cursor word and the end word. */

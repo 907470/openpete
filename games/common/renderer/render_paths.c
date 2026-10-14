@@ -302,7 +302,8 @@ static void render_paths_census(void) {
  *
  * In order: runs a terrain feed still held for a portal draw that did not
  * release it, feeds the held menu overlay moby pass rebuilt from the moby's
- * current state, latches the canon-drawn mask, prints the census, audits the feed,
+ * current state, turns a repeat present the game cleared into an empty one
+ * (cyclorama_native_repeat_resolve), latches the canon-drawn mask, prints the census, audits the feed,
  * rolls the intervals, commits the canonical-render epoch (none of these five on
  * a repeat present, openpete_native_scene_canon_repeat), then syncs the
  * native background clear and the retained freeze backdrop from the draw
@@ -310,6 +311,9 @@ static void render_paths_census(void) {
 static void render_paths_commit(void) {
     terrain_native_flush_deferred_late();   /* a feed held past its portal draw */
     moby_native_overlay_commit();           /* the menu overlay pass, at the moby's present state */
+    /* A present with no game render where the game cleared the screen shows
+     * an empty frame: it becomes a fresh present of an empty scene. */
+    cyclorama_native_repeat_resolve();
     /* A present with no game render since the last one shows the previous
      * scene: the drawn mask and the fresh epoch stay those of the render that
      * built it, so the sub-tick re-extracts keep replaying it. */

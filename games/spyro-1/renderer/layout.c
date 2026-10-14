@@ -152,6 +152,20 @@ const game_layout_t spyro1_game_layout = {
         .base    = G_DB,
         .stride  = (uint32_t)sizeof(DB),
         .drawenv = offsetof(DB, m_DrawEnv),
+        .repeat_site = {
+            /* GS_Paused entry: the wait after the world DrawOTag; the pause
+             * then StoreImage's the screen and draws nothing before its next
+             * OT (gamestates/draw.c:917-923). */
+            { 0x8001A4CCu, REPEAT_SITE_HOLD },
+            /* Game over entry: MoveImage of the screen and isbg zeroed on
+             * both buffers after the wait (gamestates/draw.c:1669-1677). */
+            { 0x8001CAE8u, REPEAT_SITE_HOLD },
+            /* Game over tick 15: ClearImage black after the wait
+             * (gamestates/draw.c:1789-1791); the next OT is the game-over
+             * scene's first tick, drawn before the following wait, which the
+             * present at this wait cannot show. */
+            { 0x8001CF90u, REPEAT_SITE_HOLD },
+        },
     },
     .polybuf = {
         .cursor = D_POLYBUF_CURSOR,

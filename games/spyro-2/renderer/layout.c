@@ -155,6 +155,29 @@ const game_layout_t spyro2_game_layout = {
         .drawenv = 0x00u,                           /* DRAWENV at +0x00; the primitive buffer base the
                                                      * cursor is reset from sits at +0x70
                                                      * (drawutil/func_8004D810.s:57) */
+        .repeat_site = {
+            /* func_8004D810 entry: MoveImage of the screen, then isbg zeroed
+             * on both buffers (D_80069940, D_800699B4) after the wait
+             * (drawutil/func_8004D810.s:12-41). */
+            { 0x8004D82Cu, REPEAT_SITE_HOLD },
+            /* func_800145AC state 0: the same copy and isbg zeroing inline
+             * (draw/func_800145AC.s:79-88). */
+            { 0x80014678u, REPEAT_SITE_HOLD },
+            /* func_800156FC's draw in gamestates 4 and 9 (D_800681C8,
+             * draw/func_800156FC.s:166-170, 205-208): the pause entry's first
+             * tick submits an empty OT, and the next tick's MoveImage
+             * (draw/func_800145AC.s:79) copies the displayed frame over the
+             * buffer it cleared before a swap shows that clear. */
+            { 0x80015974u, REPEAT_SITE_HOLD },
+            /* func_8004C484: DrawSync, VSync, ClearImage of both buffers
+             * black (drawutil/func_8004C484.s:11-29). */
+            { 0x8004C49Cu, REPEAT_SITE_CLEAR_BLACK },
+            /* func_800145AC waits whose next OT is the level's first tick,
+             * drawn before the following wait, which the present at this
+             * wait cannot show (draw/func_800145AC.s:261, 368). */
+            { 0x80014928u, REPEAT_SITE_HOLD },
+            { 0x80014ACCu, REPEAT_SITE_HOLD },
+        },
     },
     .polybuf = {
         .cursor = D_POLYBUF_CURSOR,
