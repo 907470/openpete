@@ -2557,10 +2557,30 @@ void openpete_native_render_set_capture_nodelay(int on);
  * freeze-source scene is rendered: a freeze, menu or terrain-less scene
  * leaves the backdrop unchanged, so once the game pauses it holds the last
  * world scene. The reference shape is derived from game state when no
- * reference exists. Call each present during a freeze-backdrop capture run.
+ * reference exists. Headless, the source scene is kept instead and rendered
+ * only when a compose or a non-source present follows it
+ * (openpete_native_render_snapshot_present_begin,
+ * openpete_native_render_snapshot_settle); with a window it renders at once.
+ * Call each present during a freeze-backdrop capture run.
  * @param cap_wf The capture's widescreen factor
  *        (openpete_native_widescreen_factor); values below 1 read as 1. */
 void openpete_native_render_snapshot_frozen(float cap_wf);
+
+/** @brief Render a kept freeze-backdrop source at the start of a present that is not a source.
+ *
+ * Headless only, where openpete_native_render_snapshot_frozen keeps a
+ * source present's scene and compose inputs instead of rendering them. A
+ * present that is a source leaves the kept copy for its own snapshot call
+ * to replace. Call at the start of every present of a freeze-backdrop
+ * capture run, before the present's terrain-cache and occlusion services. */
+void openpete_native_render_snapshot_present_begin(void);
+
+/** @brief Render the kept freeze-backdrop source now, when one is pending.
+ *
+ * The capture composes call it themselves; a caller that changes the
+ * scene or the terrain state before a compose (the intermediate capture's
+ * re-extract) calls it first. */
+void openpete_native_render_snapshot_settle(void);
 
 /** @brief Give every pending framebuffer window and draw area a crop of the native image.
  *

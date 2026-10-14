@@ -29,10 +29,19 @@ extern "C" {
  *         present sequence, which openpete_capture_canon_native writes. */
 bool openpete_capture_canon_reference(const openpete_options_t *opts, int shot_key);
 
+/** @brief Start a canonical present's capture state, before the present's device services.
+ *
+ * Under --screenshot-freeze-backdrop a headless run keeps the newest
+ * freeze-source scene instead of rendering it; when this present is not a
+ * source, the kept scene renders here, while the device still holds the
+ * state it was drawn with.
+ * @param opts Session options. */
+void openpete_capture_present_begin(const openpete_options_t *opts);
+
 /** @brief Write the native capture legs of a canonical present, after the present's device services.
  *
  * The legs are the owed native canonical present of the present sequence,
- * the capture freeze backdrop under --screenshot-freeze-backdrop, and the
+ * the capture freeze backdrop source under --screenshot-freeze-backdrop, and the
  * -vk dump of each --screenshot-on-frame target reached. In PsyCross display
  * mode the -vk dump reads PsyCross's present FBO and takes the same
  * one-present arm as the -og leg.

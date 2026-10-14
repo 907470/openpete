@@ -246,21 +246,38 @@ static void vk_leg(const openpete_options_t *opts, int shot_key)
     }
 }
 
+/** @brief Return whether this run maintains the capture freeze backdrop at this present.
+ *
+ * --screenshot-freeze-backdrop with a canonical or intermediate target, and
+ * a native scene to snapshot.
+ * @param opts Session options.
+ * @return true when the freeze-backdrop calls apply. */
+static bool freeze_backdrop_run(const openpete_options_t *opts)
+{
+    return opts->screenshot_freeze_backdrop && openpete_native_scene_enabled()
+        && (opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0);
+}
+
+void openpete_capture_present_begin(const openpete_options_t *opts)
+{
+    if (freeze_backdrop_run(opts)) openpete_native_render_snapshot_present_begin();
+}
+
 void openpete_capture_canon_native(const openpete_options_t *opts, int shot_key,
                                    bool presents_owed)
 {
     if (presents_owed && openpete_native_scene_enabled())
         presents_write(opts, "native-canonical");
-    /* Maintain the capture freeze backdrop: render this present's world frame
-     * into the capture freeze texture so a later headless dump of a freeze
-     * frame (pause / flight-results / level-exit) shows the green frozen-world
-     * effect. The live path snapshots frozen_tex only with a window, so a
-     * headless capture must keep it itself. A no-op on freeze/empty frames,
-     * so once the game pauses it holds the last world frame. Off by default
-     * (an extra render per present); enabled only for bk2s/poses that reach a
-     * freeze state. */
-    if (opts->screenshot_freeze_backdrop && openpete_native_scene_enabled()
-        && (opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0))
+    /* Maintain the capture freeze backdrop: this present's world scene
+     * becomes the capture freeze texture's source, so a later headless dump
+     * of a freeze tick (pause / flight-results / level-exit) shows the green
+     * frozen-world effect. The live path snapshots frozen_tex only with a
+     * window, so a headless capture must keep it itself. A no-op on
+     * freeze/empty scenes, so once the game pauses it holds the last world
+     * scene. Headless keeps the scene and renders it only when a compose or a
+     * non-source present follows; with a window it renders every source
+     * present. */
+    if (freeze_backdrop_run(opts))
         openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
     if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0)
         vk_leg(opts, shot_key);
@@ -304,6 +321,9 @@ static void intermediate_shot(const openpete_options_t *opts,
      * is still mid-blend one nominal period past the ring's curr stamp. The
      * identity instant saturates the slowest live gap; every faster consumer
      * clamps its own phase at 1. */
+    /* The re-extract rebuilds the current scene and its terrain: a kept
+     * freeze-backdrop source renders first (a no-op when none is kept). */
+    openpete_native_render_snapshot_settle();
     openpete_interp_set_present_target(
         alpha >= 1.0
             ? openpete_interp_identity_present_ns()

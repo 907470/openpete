@@ -6181,6 +6181,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                 }
             }
 
+            /* Capture state of this present, ahead of its device services. */
+            openpete_capture_present_begin(opts);
+
             /* Native renderer: present one frame to the Vulkan window now that
              * PsyCross's present FBO is freshly rendered (read back here as the
              * reference). No-op unless --renderer vk. */
