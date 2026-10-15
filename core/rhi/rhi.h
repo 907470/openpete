@@ -1596,14 +1596,15 @@ void          rhi_pcache_autosave_stats_get(const rhi_device *dev, rhi_pcache_au
  * RHI_COMPILE_PROBE), destroys the result and counts the outcome, so its
  * objects never leave the worker. Each run holds off environment writes
  * (rhi_env_write_guard). The worker count is OPENPETE_COMPILE_POOL when
- * set (0 runs every job on the display owner at submit), else the logical
- * core count less one, at most RHI_COMPILE_POOL_DEFAULT_MAX; it is read
- * when the pool starts, at the first submit. With an empty driver cache,
- * workers compiling variants that share a stage each compile that stage
- * where one worker would reuse it from the pipeline cache, so the compile
- * work grows with the worker count; the cap bounds that growth. */
-
-#define RHI_COMPILE_POOL_DEFAULT_MAX 4
+ * set (0 runs every job on the display owner at submit), else half the
+ * logical core count, at least one; it is read when the pool starts, at
+ * the first submit. With an empty driver cache, workers compiling variants
+ * that share a stage each compile that stage where one worker would reuse
+ * it from the pipeline cache, so the compile work grows with the worker
+ * count. Measured driver-cold: NVIDIA on 8 cores and 16 threads falls
+ * from 52.9 s at four workers to 48.9 s at eight; RADV on 6 cores and 12
+ * threads is flat from one to four workers and takes about 18% longer at
+ * six. */
 
 /* The rc an install callback receives for a job the pool's stop dropped:
  * the callback discards the job and releases its tag. */

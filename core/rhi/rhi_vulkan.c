@@ -7643,7 +7643,7 @@ static int SDLCALL pool_worker(void *arg)
     return 0;
 }
 
-/** @brief Return the worker count the pool starts with: OPENPETE_COMPILE_POOL when set, else the logical cores less one, 1 to RHI_COMPILE_POOL_DEFAULT_MAX.
+/** @brief Return the worker count the pool starts with: OPENPETE_COMPILE_POOL when set, else half the logical cores, at least 1.
  *
  * Display owner only (reads the environment).
  * @return The count, 0 to POOL_MAX_WORKERS. */
@@ -7654,8 +7654,7 @@ static int pool_size_wanted(void)
     if (e && *e) {
         n = atoi(e);
     } else {
-        n = SDL_GetNumLogicalCPUCores() - 1;
-        if (n > RHI_COMPILE_POOL_DEFAULT_MAX) n = RHI_COMPILE_POOL_DEFAULT_MAX;
+        n = SDL_GetNumLogicalCPUCores() / 2;
         if (n < 1) n = 1;
     }
     return n < 0 ? 0 : n > POOL_MAX_WORKERS ? POOL_MAX_WORKERS : n;
