@@ -21,60 +21,6 @@
 #include "game_build.h"
 #include "game_host_desc.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#include <io.h>
-#include <fcntl.h>
-#include <cstdio>
-/* Distribution Windows builds link as a GUI subsystem app (-mwindows) so
- * no console window pops up when an end user double-clicks. But when the
- * exe is launched from a terminal or with redirected output - cmd.exe, a
- * `> log` redirect, or WSL2 interop (which passes inherited *pipe*
- * handles, not a console) - we still want logs to flow. So: attach to a
- * parent console if there is one, then bind the C stdio streams to
- * whatever the standard OS handles actually point at (console, pipe, or
- * file). Harmless no-op for console-subsystem (dev) builds. */
-static void reconnect_std(DWORD which, FILE* stream) {
-    HANDLE h = GetStdHandle(which);
-    if (!h || h == INVALID_HANDLE_VALUE) return;
-    int target = _fileno(stream);
-
-    /* Leave a stream that is ALREADY wired to this handle alone. A
-     * console-subsystem build - and any build whose CRT inherited its
-     * handles, which is every WSL-interop launch - arrives here with
-     * working stdio, and "reconnecting" it is destructive: _open_osfhandle
-     * takes a SECOND CRT reference to the same HANDLE, then _dup2 closes
-     * the destination fd first, which shuts that one handle for both
-     * references. The stream is left pointing at a closed handle and every
-     * write is silently dropped. That is what made stdout-based output
-     * (--config-report, --keys-report) vanish while stderr-based output
-     * (--help, the log) kept working. */
-    if (target >= 0 && (HANDLE)_get_osfhandle(target) == h) {
-        setvbuf(stream, NULL, _IONBF, 0);
-        return;
-    }
-
-    int fd = _open_osfhandle((intptr_t)h, _O_TEXT);
-    if (fd == -1) return;
-    if (fd != target) { _dup2(fd, target); _close(fd); }
-    setvbuf(stream, NULL, _IONBF, 0);
-}
-/** @brief Attaches the process to its parent console and rebinds stdout, stderr and stdin to the OS handles.
- *
- * Windows build: AttachConsole failure (parent has no console, or stdio is a
- * pipe or file) is ignored; each stream is then wired by reconnect_std to
- * whatever its standard handle refers to. */
-static void openpete_attach_parent_console(void) {
-    AttachConsole(ATTACH_PARENT_PROCESS);   /* ok if it fails (pipe/file) */
-    reconnect_std(STD_OUTPUT_HANDLE, stdout);
-    reconnect_std(STD_ERROR_HANDLE,  stderr);
-    reconnect_std(STD_INPUT_HANDLE,  stdin);
-}
-#else
-/** @brief Does nothing on a non-Windows build, where stdio is already connected. */
-static void openpete_attach_parent_console(void) {}
-#endif
-
 extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
                                     const char* extra_wads);
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
@@ -322,9 +268,6 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
  * @return The process exit code (OPENPETE_EXIT_*, or 1 on a startup failure). */
 extern "C" int spyro1_main(int argc, char** argv) {
     openpete_boot_mark(OP_BOOT_LAUNCHER_START);
-    /* Reconnect stdout/stderr to the parent terminal on a GUI-subsystem
-     * (distribution) Windows build; no-op elsewhere. Before any output. */
-    openpete_attach_parent_console();
 
     /* MinGW buffers stderr when it isn't a TTY (true for `>file 2>&1`
      * and for WSL2 interop pipes). abort() - which the PSYQ stubs use to

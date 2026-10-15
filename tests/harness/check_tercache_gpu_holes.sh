@@ -126,7 +126,7 @@ pg_manifest "$PG_FREECAM_MANIFEST" pipe
 [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
     { echo "tercache-holes: SKIP (no display)"; exit 64; }
 
-[[ -n "$EXE" ]] || EXE="$WIN_BUILD_DIR/games/$GAME/$(pg_bin_name "$GAME").exe"
+[[ -n "$EXE" ]] || EXE="$(win_tree_exe "$WIN_BUILD_DIR" "$GAME")"
 [[ -x "$EXE" ]] || { echo "tercache-holes: SKIP (no exe at $EXE)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "tercache-holes: SKIP (no disc at $PG_DISC)"; exit 64; }
 python3 -c 'import PIL' 2>/dev/null ||

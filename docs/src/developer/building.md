@@ -579,7 +579,7 @@ Cross-compiled Windows dev build, run straight from WSL2 on the real GPU:
 
 ```bash
 cmake --build --preset windows-mingw
-build/windows-mingw/games/spyro-1/openpete-spyro1.exe [--args]
+build/windows-mingw/openpete.exe [--args]
 ```
 
 Run these from the repo root: the `--disc` and `--bk2` arguments above are
@@ -594,8 +594,9 @@ from the working directory, and no such file is staged into a dev build dir.
 uses only that file; `--no-config` ignores every config file, which is what
 the gate scripts do so a personal config cannot change a verdict.
 
-Output binary: `build/linux-release/openpete` (every game);
-`build/windows-mingw/games/<game>/openpete-<tag>.exe` (one per game).
+Output binary: `build/linux-release/openpete` and
+`build/windows-mingw/openpete.exe`, each running every game, with each
+game's `<tag>-recomp.so` or `<tag>-recomp.dll` beside it.
 
 ### Distribution build (shared)
 

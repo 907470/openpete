@@ -119,24 +119,13 @@ openpete_add_game(spyro-1
         ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp
     FIRST_BOOT_EXTRACT spyro1_extract_first_boot_inputs)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-    if(OPENPETE_DIST_PRESET)
-        # Distribution build: GUI subsystem so no console window pops up
-        # for end users. main.cpp reattaches stdout/stderr to the parent
-        # console when launched from a terminal (dev/CI keep their logs).
-        target_link_options(openpete-spyro1 PRIVATE -mwindows)
-    else()
-        # Dev build: console subsystem so stdout/stderr land in the parent
-        # terminal (incl. WSL2 interop) with no extra plumbing.
-        target_link_options(openpete-spyro1 PRIVATE -mconsole)
-    endif()
-endif()
-
 # The Win32 icon, application manifest and VERSIONINFO resources
-# (openpete-spyro1.rc.in, openpete-spyro1.manifest). The
+# (openpete-spyro1.rc.in, openpete-spyro1.manifest), on the executable that
+# runs Spyro 1, whose file name the VERSIONINFO names. The
 # version (OPENPETE_VERSION_NUM / OPENPETE_VERSION_STR) comes from
 # core/CMakeLists.txt, derived from the build version the game displays.
 if(WIN32)
+    get_filename_component(_spyro_rc_image ${OPENPETE_GAME_BIN} NAME_WE)
     set(_spyro_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.ico)
     set(_spyro_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.rc)
     if(OPENPETE_ROM_FREE_ICON)
@@ -153,9 +142,9 @@ if(WIN32)
     set(_spyro_manifest ${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.manifest)
     configure_file(${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.rc.in
                    ${_spyro_icon_rc} @ONLY)
-    set_source_files_properties(${_spyro_icon_rc} PROPERTIES
-        OBJECT_DEPENDS ${_spyro_manifest})
-    target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_ico} ${_spyro_icon_rc})
+    openpete_game_win32_resource(RC ${_spyro_icon_rc}
+        GENERATED ${_spyro_icon_ico}
+        DEPENDS   ${_spyro_manifest})
 endif()
 
 # SoundTable slot names (tools/gen_sfx_names.py over the decomp's
@@ -308,7 +297,7 @@ if(OPENPETE_COMPILE_MODS)
         add_custom_target(spyro1_mods_stage ALL
             COMMAND ${CMAKE_COMMAND}
                     -DSRC=${OPENPETE_COMPILE_MODS_DIR}
-                    -DDST=${CMAKE_CURRENT_BINARY_DIR}/mods
+                    -DDST=${OPENPETE_GAME_EXE_DIR}/mods
                     -P ${CMAKE_SOURCE_DIR}/cmake/stage_mods.cmake
             COMMENT "Staging mods into <exe>/mods/ (source mirror)"
             VERBATIM)
@@ -325,7 +314,7 @@ if(OPENPETE_COMPILE_MODS)
             endif()
             file(GLOB _mod_hdrs CONFIGURE_DEPENDS ${_src_mod_dir}/src/*.h)
             set(_mod_build_dir
-                ${CMAKE_CURRENT_BINARY_DIR}/mods/${_mod_id}/.build/spyro-1)
+                ${OPENPETE_GAME_EXE_DIR}/mods/${_mod_id}/.build/spyro-1)
             set(_dll ${_mod_build_dir}/${_mod_id}.dll)
             add_custom_command(OUTPUT ${_dll}
                 COMMAND ${CMAKE_COMMAND} -E make_directory ${_mod_build_dir}

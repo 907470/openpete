@@ -121,7 +121,7 @@ LEG_TIMEOUT=960
 [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||
     { echo "tercache-vram: SKIP (no display)"; exit 64; }
 
-[[ -n "$EXE" ]] || EXE="$WIN_BUILD_DIR/games/$GAME/$(pg_bin_name "$GAME").exe"
+[[ -n "$EXE" ]] || EXE="$(win_tree_exe "$WIN_BUILD_DIR" "$GAME")"
 [[ -x "$EXE" ]] || { echo "tercache-vram: SKIP (no exe at $EXE)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "tercache-vram: SKIP (no disc at $PG_DISC)"; exit 64; }
 

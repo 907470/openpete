@@ -504,7 +504,7 @@ package_windows() {  # package_windows <exe-dir>
     local B="$1"
     [[ -f "$BIN" ]] || { echo "build windows-mingw-launcher first ($BIN)" >&2; exit 64; }
     rm -rf "$STAGE"; mkdir -p "$STAGE"
-    cp "$BIN" "$STAGE/"
+    cp "$BIN" "$STAGE/$EXE.exe"
     # Strip debug info from the SHIPPED copy only (same rationale as the
     # Linux branch). PE exports live in the export table data directory,
     # not the COFF symbol table, and the first-boot module links against
@@ -520,7 +520,12 @@ package_windows() {  # package_windows <exe-dir>
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
     cp third_party/psxrecomp/build-mingw/PSXRecomp.exe "$STAGE/recomp/tools/"
-    cp "$B/recomp/tools/libopenpete-exe-exports.a" "$STAGE/recomp/tools/"
+    # A PE module names the image it imports from, and the loader binds that
+    # name only to a loaded module of the same file name: the build tree's
+    # implib names openpete.exe, so the archive's is rebuilt from the same
+    # .def naming the shipped file name.
+    x86_64-w64-mingw32-dlltool -d "$TREE/gen/openpete_module_exports.def" \
+        -l "$STAGE/recomp/tools/libopenpete-exe-exports.a" -D "$EXE.exe"
     if [[ -n "$TOOLCHAIN" ]]; then
         echo "[package] trimming toolchain from $TOOLCHAIN"
         T="$STAGE/recomp/tools/llvm-mingw"
@@ -570,8 +575,8 @@ for GAME in "${GAMES[@]}"; do
     case "$PLATFORM" in
     linux)   TREE=build/linux-release-launcher; B="$TREE"; BIN="$B/openpete"
              ART="$NAME.tar.xz" ;;
-    windows) TREE=build/windows-mingw-launcher; B="$TREE/games/$GAME"
-             BIN="$B/$EXE.exe"; ART="$NAME.zip" ;;
+    windows) TREE=build/windows-mingw-launcher; B="$TREE"; BIN="$B/openpete.exe"
+             ART="$NAME.zip" ;;
     esac
     DOCS="$TREE/games/spyro-1"
     if [[ $DRY_RUN -eq 1 ]]; then

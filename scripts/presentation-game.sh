@@ -58,7 +58,7 @@ pg_parse_game() {
   echo "$game"
 }
 
-# A per-game executable (games/<game>/<name> in a static or Windows tree) is
+# A per-game executable (games/<game>/<name> in a static tree) is
 # named after the slug with the separator dropped, matching the game's target
 # name.
 pg_bin_name() { echo "openpete-${1//-/}"; }

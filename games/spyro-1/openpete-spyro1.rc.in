@@ -1,5 +1,6 @@
-// Windows resources for openpete-spyro1.exe. Configured by CMake
-// (icon path + version). VERSIONINFO matters beyond cosmetics: an exe
+// Windows resources for the executable that runs Spyro 1
+// (@_spyro_rc_image@.exe). Configured by CMake (icon path, file name,
+// version). VERSIONINFO matters beyond cosmetics: an exe
 // with no version metadata reads as illegitimate to SmartScreen/AV
 // heuristics and shows an empty Properties->Details pane; it is also
 // where a future Authenticode signing step expects sane fields.
@@ -22,8 +23,8 @@ BEGIN
       VALUE "ProductName",      "OpenPete"
       VALUE "FileDescription",  "OpenPete - Spyro the Dragon PC port (bring your own disc)"
       VALUE "CompanyName",      "OpenPete project"
-      VALUE "InternalName",     "openpete-spyro1"
-      VALUE "OriginalFilename", "openpete-spyro1.exe"
+      VALUE "InternalName",     "@_spyro_rc_image@"
+      VALUE "OriginalFilename", "@_spyro_rc_image@.exe"
       VALUE "FileVersion",      "@OPENPETE_VERSION_STR@"
       VALUE "ProductVersion",   "@OPENPETE_VERSION_STR@"
       VALUE "LegalCopyright",   "(c) OpenPete contributors. Not affiliated with Sony, Insomniac Games, or Activision."

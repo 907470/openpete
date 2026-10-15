@@ -75,9 +75,8 @@ EXE="$PG_BIN"
 DISC="$PG_DISC"
 if [ "$PLATFORM" = windows ]; then
   # The resolver names the linux-release binary; the Windows leg needs the
-  # cross-built exe of the same game, which is the same target name under the
-  # mingw build tree.
-  EXE="build/windows-mingw/games/$PG_GAME/$(pg_bin_name "$PG_GAME").exe"
+  # cross-built exe that runs the same game in the mingw build tree.
+  EXE="$(win_tree_exe build/windows-mingw "$PG_GAME")"
 fi
 
 # The in-level leg names a Spyro 1 level and the pacing bounds were measured on

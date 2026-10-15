@@ -51,7 +51,8 @@
 #                    building in place under the mods root. Sources are not
 #                    copied.
 #   --sdk DIR        staged SDK root. Default: the windows-mingw-launcher
-#                    build's games/<game>/sdk/, else the windows-mingw build's.
+#                    build's sdk/, else the windows-mingw build's (beside the
+#                    one executable), else a static tree's games/<game>/sdk/.
 #   --game ID        the game to build for: its per-game SDK directory
 #                    <sdk>/games/ID/ and object directory .build/ID/.
 #                    Default spyro-1.
@@ -98,12 +99,13 @@ MODS_DIR=$(cd -- "$MODS_DIR" && pwd)
 
 # --- SDK ------------------------------------------------------------------
 if [[ -z "$SDK_DIR" ]]; then
-    for c in "$REPO/build/windows-mingw-launcher/games/$GAME/sdk" \
+    for c in "$REPO/build/windows-mingw-launcher/sdk" \
+             "$REPO/build/windows-mingw/sdk" \
              "$REPO/build/windows-mingw/games/$GAME/sdk"; do
         [[ -f "$c/openpete_mod_abi.c" ]] && { SDK_DIR="$c"; break; }
     done
 fi
-[[ -n "$SDK_DIR" ]] || die "no staged Windows SDK found under build/windows-mingw*/games/$GAME/sdk; build a windows-mingw preset or pass --sdk DIR" 64
+[[ -n "$SDK_DIR" ]] || die "no staged Windows SDK found under build/windows-mingw*/sdk or build/windows-mingw/games/$GAME/sdk; build a windows-mingw preset or pass --sdk DIR" 64
 [[ -f "$SDK_DIR/openpete_mod_abi.c" ]] \
     || die "$SDK_DIR has no openpete_mod_abi.c - not a staged SDK" 64
 [[ -f "$SDK_DIR/games/$GAME/openpete_game.h" ]] \

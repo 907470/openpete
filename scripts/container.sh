@@ -330,11 +330,11 @@ form_windows() {
     [[ -f "games/$game/generated/PSX.EXE_full.c" ]] \
         || refuse "games/$game/generated holds no recompiled C; run: scripts/container.sh game $game"
     dev_images 1
-    local t0=$SECONDS gg="${game//-/}"
+    local t0=$SECONDS
     in_image "$MINGW_IMAGE" none "
         cmake --preset windows-mingw -B '$BUILD/windows-mingw' -DOPENPETE_GAMES=$game
         cmake --build '$BUILD/windows-mingw' -j $JOBS"
-    local exe="$BUILD/windows-mingw/games/$game/openpete-$gg.exe"
+    local exe="$BUILD/windows-mingw/openpete.exe"
     [[ -f "$exe" ]] || fail "no $exe"
     local dlls bad=() d ok pat
     dlls="$(in_image "$MINGW_IMAGE" none "x86_64-w64-mingw32-objdump -p '$exe' | sed -n 's/^[[:space:]]*DLL Name: //p'")"

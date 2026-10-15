@@ -101,7 +101,7 @@ WINDOWS_ONLY = (
     "core/host/host_spawn.c:spawn_line",
     "core/runtime/openpete_time.c:sleep_until_win",
     "core/runtime/openpete_time.c:thread_timer",
-    "games/spyro-1/main.cpp:reconnect_std",
+    "games/common/game_entry.cpp:reconnect_std",
 )
 
 GROUP_CMDS = ("name", "defgroup", "addtogroup", "ingroup")

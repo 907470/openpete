@@ -163,8 +163,8 @@ add_dependencies(code_docs openpete_generated_headers)
 #            one game's recompiled code, since the names collide across
 #            games.
 #   shared - <tag>-recomp.{so,dll} beside the executable, loaded at boot
-#            (games/common/recomp_attach_shared.c); linux-release and the
-#            launcher presets.
+#            (games/common/recomp_attach_shared.c); linux-release,
+#            windows-mingw and the launcher presets.
 set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
     "Recomp module linkage: static or shared")
 set_property(CACHE OPENPETE_RECOMP_LINKAGE PROPERTY STRINGS static shared)
@@ -230,7 +230,7 @@ endif()
 
 # The host code every game links, compiled once (games/common/CMakeLists.txt),
 # then each game's targets (cmake/openpete_game.cmake), then, with shared
-# linkage on Linux, the one executable linking them all.
+# linkage on Linux and MinGW, the one executable linking them all.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/openpete_game.cmake)
 add_subdirectory(games/common)
 foreach(game IN LISTS OPENPETE_GAMES)

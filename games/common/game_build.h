@@ -9,7 +9,8 @@
 // generates one per game, `<tag>_game_build`, from game_build.c.in, and one
 // list per executable, `openpete_game_builds`, of every game the executable
 // links: one game for a per-game executable, every built game for the one
-// executable of a shared-linkage Linux build. games/common/game_entry.cpp
+// executable of a shared-linkage Linux or MinGW build.
+// games/common/game_entry.cpp
 // selects a game from the list, installs it and runs its entry.
 
 #ifndef OPENPETE_GAME_BUILD_H

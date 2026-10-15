@@ -23,3 +23,13 @@ wslenv_forward() {
   done
   [ -n "$names" ] && WSLENV_ARGS+=("WSLENV=${WSLENV:+$WSLENV:}${names}")
 }
+
+# win_tree_exe BUILD GAME: the Windows executable that runs GAME (spyro-2) in
+# the MinGW build tree BUILD. A shared-linkage tree builds one executable,
+# openpete.exe at its root, whose disc argument selects the game; a static
+# tree builds games/<game>/openpete-<tag>.exe. The file present decides; with
+# neither built, the root name.
+win_tree_exe() {
+  local own="$1/games/$2/openpete-${2//-/}.exe"
+  if [ ! -e "$1/openpete.exe" ] && [ -e "$own" ]; then echo "$own"; else echo "$1/openpete.exe"; fi
+}

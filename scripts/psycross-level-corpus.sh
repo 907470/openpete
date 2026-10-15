@@ -82,7 +82,7 @@ case "$GAME" in
 esac
 case "$EXE" in
   linux)   BIN="build/linux-release/openpete";;
-  windows) BIN="build/windows-mingw/games/$GAME/openpete-spyro$N.exe"
+  windows) BIN="build/windows-mingw/openpete.exe"
            # The Mesa overrides below are Linux loader settings and do not
            # reach a Windows child (see scripts/lib/wslenv.sh); the exe uses
            # whatever GL its own driver provides, which is the point of this

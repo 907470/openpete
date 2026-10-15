@@ -11,9 +11,9 @@
 #   scripts/bench-fps.sh <exe> <out-log> [--fps N] [--frames N] [-- <extra exe args>]
 #
 # Example A/B (before vs after a change, same preset):
-#   scripts/bench-fps.sh build/windows-mingw/games/spyro-1/openpete-spyro1.exe \
+#   scripts/bench-fps.sh build/windows-mingw/openpete.exe \
 #       /tmp/ft-base.bin --fps 480 --frames 20000
-#   scripts/bench-fps.sh build/windows-mingw/games/spyro-1/openpete-spyro1.exe \
+#   scripts/bench-fps.sh build/windows-mingw/openpete.exe \
 #       /tmp/ft-after.bin --fps 480 --frames 20000
 #
 # Windows .exe paths are auto-translated for the disc + log args (wslpath -w);

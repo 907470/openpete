@@ -27,7 +27,7 @@
 set -u
 cd "${OPENPETE_ROOT:-$(pwd)}"
 
-EXE="${1:-build/windows-mingw/games/spyro-1/openpete-spyro1.exe}"
+EXE="${1:-build/windows-mingw/openpete.exe}"
 DISC="games/spyro-1/spyro-1/build/SCUS-94228.cue"
 OUT="build/rebind-win"
 [ -x "$EXE" ] || { echo "[rebind-win] SKIP: no exe at $EXE"; exit 64; }

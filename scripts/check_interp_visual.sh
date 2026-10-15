@@ -58,7 +58,7 @@ mkdir -p "$OUT"
 rm -f "$OUT"/fps*.png
 
 # OPENPETE_INTERP_VISUAL_BIN selects the binary: the Windows exe
-# (build/windows-mingw/games/spyro-1/openpete-spyro1.exe) runs the same check
+# (build/windows-mingw/openpete.exe) runs the same check
 # on the real GPU. A Windows child reads no Linux environment, so the
 # vibration knob crosses through WSLENV (scripts/lib/wslenv.sh); the exe
 # writes CRLF, stripped before the grep.

@@ -148,7 +148,7 @@ esac
 SHIPPED_MOVE=24.0
 SHIPPED_TURN_DEG=0.35
 
-EXE="${OPENPETE_OCCL_FLICKER_EXE:-$PG_BUILD_DIR/games/$GAME/$(pg_bin_name "$GAME").exe}"
+EXE="${OPENPETE_OCCL_FLICKER_EXE:-$(win_tree_exe "$PG_BUILD_DIR" "$GAME")}"
 # The disc reaches the exe as a link-free absolute path. A relative path is
 # resolved against the Windows view of the working directory, and a path with
 # a link in it is not resolved at all: either way the game aborts part way

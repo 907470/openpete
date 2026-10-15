@@ -30,7 +30,7 @@ import wslenv_guard  # noqa: E402
 SETDEFAULT_BESIDE_CHILD_ENV = '''
 import os, subprocess
 from hostenv import child_env
-EXE = "build/windows-mingw/games/spyro-1/openpete-spyro1.exe"
+EXE = "build/windows-mingw/openpete.exe"
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 def run(exe, timers):
     cmd = [exe, "--disc", "x.cue"]

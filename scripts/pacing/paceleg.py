@@ -21,7 +21,7 @@ VBL_HZ = 2250000 / 37609
 
 def exe_for(platform):
     if platform == "windows":
-        p = REPO / "build/windows-mingw/games/spyro-1/openpete-spyro1.exe"
+        p = REPO / "build/windows-mingw/openpete.exe"
     else:
         p = REPO / "build/linux-release/openpete"
     if not p.exists():

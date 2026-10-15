@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- Application manifest of openpete-spyro1.exe, embedded as resource
+<!-- Application manifest of the executable that runs Spyro 1, embedded as resource
      1 of type 24 (RT_MANIFEST) by openpete-spyro1.rc.in.
      activeCodePage UTF-8: the narrow (A) Win32 and CRT file APIs take
        UTF-8, the encoding SDL returns, so an install path or user name

@@ -80,14 +80,14 @@
 # tools/check_game_includes.py refuses the build otherwise
 # (openpete_game_include_check).
 #
-# The executables. With shared linkage on Linux every game links into one
-# executable, `openpete` at the build root (openpete_link_games, called by
-# the top-level CMakeLists.txt after the games), whose entry selects the
-# game (games/common/game_build.h). Every game's module, SDK, assets and
-# first-boot inputs stage beside it at the build root; each game's target
-# `openpete-<tag>` builds the executable and the game's files and writes no
-# executable of its own. Elsewhere (static linkage, and Windows until its
-# shared linkage is measured) each game has its own executable
+# The executables. With shared linkage on Linux and MinGW every game links
+# into one executable, `openpete` (`openpete.exe`) at the build root
+# (openpete_link_games, called by the top-level CMakeLists.txt after the
+# games), whose entry selects the game (games/common/game_build.h). Every
+# game's module, SDK, assets and first-boot inputs stage beside it at the
+# build root; each game's target `openpete-<tag>` builds the executable and
+# the game's files and writes no executable of its own. Elsewhere (static
+# linkage, and MSVC) each game has its own executable
 # <build>/games/<id>/openpete-<tag> linking its host library, the shared host
 # code and, under static linkage, its module, with the game's files beside
 # it. The configure deletes the executable and module files the tree no
@@ -100,18 +100,24 @@
 # executable's export surface is generated from the game's psyq.toml and the
 # module ABI lists (tools/gen_module_exports.py): a PE .def plus an implib
 # the module links against on Windows, and on every platform a keep-alive TU
-# that pulls the ABI's archive members into the executable. The
-# host->module forwarders are the game's module_imports.h, defined in its
-# build record. On ELF the target <tag>_module_imports refuses the build
-# unless every module import resolves to exactly one definition in the
-# merged image (tools/check_module_imports.py); on PE the module's link
-# against the implib is that refusal.
+# that pulls the ABI's archive members into the executable. The one
+# executable on MinGW exports the union of the linked games' .def files
+# (tools/merge_module_defs.py) and every module links the one implib made
+# from that union. The host->module forwarders are the game's
+# module_imports.h, defined in its build record. On ELF the target
+# <tag>_module_imports refuses the build unless every module import resolves
+# to exactly one definition in the merged image
+# (tools/check_module_imports.py); on PE the module's link against the
+# implib is that refusal, and the executable's link refuses a .def export it
+# does not define.
 
 include(${CMAKE_SOURCE_DIR}/cmake/openpete_mod_sdk.cmake)
 
-# One executable links every game: shared linkage, on Linux. Set in every
-# directory that includes this file.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+# One executable links every game: shared linkage, on Linux and MinGW (MSVC
+# links one static executable per game). Set in every directory that
+# includes this file.
+if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared"
+   AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR MINGW))
     set(OPENPETE_ONE_EXECUTABLE ON)
 else()
     set(OPENPETE_ONE_EXECUTABLE OFF)
@@ -203,6 +209,18 @@ function(_openpete_game_exe_link EXE)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_options(${EXE} PRIVATE -rdynamic)
     endif()
+    if(MINGW)
+        # A distribution build links the GUI subsystem, so no console window
+        # opens for a player (main.cpp reattaches stdout/stderr to the parent
+        # console when launched from a terminal); a dev build links the
+        # console subsystem, so stdout/stderr reach the parent terminal (WSL2
+        # interop included).
+        if(OPENPETE_DIST_PRESET)
+            target_link_options(${EXE} PRIVATE -mwindows)
+        else()
+            target_link_options(${EXE} PRIVATE -mconsole)
+        endif()
+    endif()
     set_target_properties(${EXE} PROPERTIES
         C_STANDARD 99
         C_STANDARD_REQUIRED ON
@@ -218,7 +236,10 @@ endfunction()
 # GNU LTO does not treat .def exports as liveness roots (with IPO the
 # otherwise-unreferenced ABI surface is dead-code-eliminated and ld emits
 # the exports as absolute 0), so IPO is forced off for the executable.
-function(_openpete_game_shared_link_pe TAG EXE MODULE MODULE_DEF)
+# IMPLIB_TARGET names the target that writes the implib,
+# <current binary dir>/gen/libopenpete-exe-exports.a; every module in ARGN
+# links it.
+function(_openpete_game_shared_link_pe IMPLIB_TARGET EXE MODULE_DEF)
     target_link_options(${EXE} PRIVATE ${MODULE_DEF})
     set_property(TARGET ${EXE} APPEND PROPERTY LINK_DEPENDS ${MODULE_DEF})
     set_target_properties(${EXE} PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
@@ -230,11 +251,54 @@ function(_openpete_game_shared_link_pe TAG EXE MODULE MODULE_DEF)
         OUTPUT  ${_implib}
         COMMAND ${CMAKE_DLLTOOL} -d ${MODULE_DEF} -l ${_implib} -D ${EXE}.exe
         DEPENDS ${MODULE_DEF}
-        COMMENT "dlltool: ${EXE} export implib for the recomp module")
-    add_custom_target(${TAG}_module_implib DEPENDS ${_implib})
-    add_dependencies(${MODULE} ${TAG}_module_implib)
-    target_link_libraries(${MODULE} PRIVATE ${_implib})
-    set(OPENPETE_GAME_MODULE_IMPLIB ${_implib} PARENT_SCOPE)
+        COMMENT "dlltool: ${EXE} export implib for the recomp modules")
+    add_custom_target(${IMPLIB_TARGET} DEPENDS ${_implib})
+    foreach(_m IN LISTS ARGN)
+        add_dependencies(${_m} ${IMPLIB_TARGET})
+        target_link_libraries(${_m} PRIVATE ${_implib})
+    endforeach()
+endfunction()
+
+# The one executable's export surface on PE: the union of the linked games'
+# .def files, each generated in its game's directory by a target listed in
+# DEF_TARGETS, written to OUT_DEF by tools/merge_module_defs.py, which
+# refuses a name one .def exports as DATA and another as code.
+function(_openpete_merge_module_defs OUT_DEF DEFS DEF_TARGETS)
+    add_custom_command(
+        OUTPUT  ${OUT_DEF}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/merge_module_defs.py
+                --image openpete.exe --out ${OUT_DEF} ${DEFS}
+        DEPENDS ${DEFS} ${CMAKE_SOURCE_DIR}/tools/merge_module_defs.py
+        COMMENT "Merging the recomp-module export surfaces into openpete.exe's .def"
+        VERBATIM)
+    add_custom_target(openpete_module_def DEPENDS ${OUT_DEF})
+    add_dependencies(openpete_module_def ${DEF_TARGETS})
+endfunction()
+
+# The Win32 resource script (icon, application manifest, VERSIONINFO) of the
+# executable that runs the calling game: RC, compiled with GENERATED (files
+# custom commands of the calling directory write) and DEPENDS (other files
+# RC includes) as object dependencies. Called in the game's directory after
+# openpete_add_game. A per-game executable takes its game's script. The one
+# executable takes the first registered (OPENPETE_GAMES order), since every
+# game's script defines resource 1 of each type and two would collide at
+# link; openpete_link_games attaches it.
+function(openpete_game_win32_resource)
+    cmake_parse_arguments(R "" "RC" "GENERATED;DEPENDS" ${ARGN})
+    if(NOT OPENPETE_ONE_EXECUTABLE)
+        set_source_files_properties(${R_RC} PROPERTIES OBJECT_DEPENDS "${R_DEPENDS}")
+        target_sources(${OPENPETE_GAME_EXE} PRIVATE ${R_GENERATED} ${R_RC})
+        return()
+    endif()
+    get_property(_have GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC SET)
+    if(_have)
+        return()
+    endif()
+    add_custom_target(${OPENPETE_GAME_TAG}_win32_resource DEPENDS ${R_GENERATED})
+    set_property(GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC ${R_RC})
+    set_property(GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_DEPENDS ${R_GENERATED} ${R_DEPENDS})
+    set_property(GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_TARGET ${OPENPETE_GAME_TAG}_win32_resource)
 endfunction()
 
 # ELF: <tag>_module_imports runs tools/check_module_imports.py over the
@@ -339,6 +403,18 @@ function(_openpete_stage_first_boot_kit TGT RDIR)
     endif()
 endfunction()
 
+# OpenAL on Windows is always a runtime DLL load (no static .a in the
+# openal-soft prebuilt). The renamed soft_oal.dll is copied next to the .exe
+# after EXE builds, so the loader resolves OpenAL32.dll without a system
+# install; without it the process fails to start before main() runs.
+function(_openpete_stage_openal EXE EXE_DIR)
+    add_custom_command(TARGET ${EXE} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll"
+            "${EXE_DIR}/OpenAL32.dll"
+        VERBATIM)
+endfunction()
+
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         "MOD_SDK"
@@ -358,7 +434,7 @@ function(openpete_add_game GAME_ID)
     set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/gen)
     if(OPENPETE_ONE_EXECUTABLE)
         set(_exe_dir ${CMAKE_BINARY_DIR})
-        set(_bin ${CMAKE_BINARY_DIR}/openpete)
+        set(_bin ${CMAKE_BINARY_DIR}/openpete${CMAKE_EXECUTABLE_SUFFIX})
         set(_bin_args --game ${GAME_ID})
     else()
         set(_exe_dir ${CMAKE_CURRENT_BINARY_DIR})
@@ -412,6 +488,12 @@ function(openpete_add_game GAME_ID)
     # surface: the PE .def and the keep-alive TU.
     set(_attach_sources "")
     if(G_MODULE_LINKAGE STREQUAL "shared")
+        # The PE image the module imports from.
+        if(OPENPETE_ONE_EXECUTABLE)
+            set(_import_image openpete.exe)
+        else()
+            set(_import_image ${_exe}.exe)
+        endif()
         set(_module_def       ${_gen_dir}/${_tag}_module_exports.def)
         set(_module_keepalive ${_gen_dir}/${_tag}_abi_keepalive.gen.c)
         set(_abi_lists ${_common}/module_abi_exports.txt)
@@ -429,7 +511,7 @@ function(openpete_add_game GAME_ID)
                     --psyq   ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
                     ${_abi_args}
                     --tag    ${_tag}
-                    --image  ${_exe}.exe
+                    --image  ${_import_image}
                     --def-out ${_module_def}
                     --keepalive-out ${_module_keepalive}
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/manifest/psyq.toml
@@ -732,8 +814,8 @@ function(openpete_add_game GAME_ID)
         # before the move holds them, and they are deleted here.
         add_custom_target(${_exe} ALL)
         add_dependencies(${_exe} openpete ${_module})
-        file(REMOVE ${CMAKE_CURRENT_BINARY_DIR}/${_exe}
-                    ${CMAKE_CURRENT_BINARY_DIR}/${_tag}-recomp.so)
+        file(REMOVE ${CMAKE_CURRENT_BINARY_DIR}/${_exe}${CMAKE_EXECUTABLE_SUFFIX}
+                    ${CMAKE_CURRENT_BINARY_DIR}/${_tag}-recomp${CMAKE_SHARED_LIBRARY_SUFFIX})
         file(REMOVE_RECURSE ${CMAKE_CURRENT_BINARY_DIR}/sdk
                             ${CMAKE_CURRENT_BINARY_DIR}/recomp)
         set(_image openpete)
@@ -756,8 +838,16 @@ function(openpete_add_game GAME_ID)
     endif()
 
     if(G_MODULE_LINKAGE STREQUAL "shared")
-        if(WIN32)
-            _openpete_game_shared_link_pe(${_tag} ${_exe} ${_module} ${_module_def})
+        if(WIN32 AND OPENPETE_ONE_EXECUTABLE)
+            # openpete_link_games merges this .def with every other linked
+            # game's and links each module against the one implib.
+            add_custom_target(${_tag}_module_def DEPENDS ${_module_def} ${_module_keepalive})
+            set_property(GLOBAL APPEND PROPERTY OPENPETE_GAME_MODULE_DEFS ${_module_def})
+            set_property(GLOBAL APPEND PROPERTY OPENPETE_GAME_MODULE_DEF_TARGETS ${_tag}_module_def)
+            set(OPENPETE_GAME_MODULE_IMPLIB ${CMAKE_BINARY_DIR}/gen/libopenpete-exe-exports.a)
+        elseif(WIN32)
+            _openpete_game_shared_link_pe(${_tag}_module_implib ${_exe} ${_module_def} ${_module})
+            set(OPENPETE_GAME_MODULE_IMPLIB ${_gen_dir}/libopenpete-exe-exports.a)
         elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT OPENPETE_ONE_EXECUTABLE)
             _openpete_game_shared_link_elf(${_tag} ${_image} ${_module}
                 ${_gen_dir}/${_tag}_module_imports.stamp
@@ -768,16 +858,8 @@ function(openpete_add_game GAME_ID)
         endif()
     endif()
 
-    if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-        # OpenAL on Windows is always a runtime DLL load (no static .a in the
-        # openal-soft prebuilt). Copy the renamed soft_oal.dll next to the
-        # .exe so the loader resolves OpenAL32.dll without a system install;
-        # without it the process fails to start before main() runs.
-        add_custom_command(TARGET ${_exe} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll"
-                "${_exe_dir}/OpenAL32.dll"
-            VERBATIM)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW AND NOT OPENPETE_ONE_EXECUTABLE)
+        _openpete_stage_openal(${_exe} ${_exe_dir})
     endif()
 
     # Variables the mod SDK and the game's CMakeLists read.
@@ -809,13 +891,17 @@ endfunction()
 # `openpete` at the build root, linking each game's host library, the
 # shared host code once, and the list of the linked games its entry selects
 # from. It depends on every game's module, and two build-time refusals
-# guard the merged image: each module's imports against it
-# (<tag>_module_imports) and the include-path invariant over every host TU
-# (openpete_game_include_check, tools/check_game_includes.py).
+# guard the merged image: each module's imports against it (on ELF
+# <tag>_module_imports; on PE each module's link against the implib of the
+# merged .def, and the executable's link of that .def) and the include-path
+# invariant over every host TU (openpete_game_include_check,
+# tools/check_game_includes.py). On PE it also carries the first registered
+# Win32 resource script (openpete_game_win32_resource) and OpenAL32.dll
+# beside it.
 function(openpete_link_games)
     if(NOT OPENPETE_ONE_EXECUTABLE)
         # A tree reconfigured from the one executable keeps its file.
-        file(REMOVE ${CMAKE_BINARY_DIR}/openpete)
+        file(REMOVE ${CMAKE_BINARY_DIR}/openpete${CMAKE_EXECUTABLE_SUFFIX})
         return()
     endif()
     get_property(_tags GLOBAL PROPERTY OPENPETE_LINKED_GAMES)
@@ -840,12 +926,36 @@ function(openpete_link_games)
     target_link_libraries(openpete PRIVATE ${CMAKE_DL_LIBS})
     add_dependencies(openpete ${_modules})
 
-    # Each module's imports against the one executable; the forwarders are
-    # every linked game's, since the executable defines them all.
-    foreach(_t _m IN ZIP_LISTS _tags _modules)
-        _openpete_game_shared_link_elf(${_t} openpete ${_m}
-            ${CMAKE_BINARY_DIR}/gen/${_t}_module_imports.stamp ${_headers})
-    endforeach()
+    if(WIN32)
+        # The executable exports the union of the games' .def files and each
+        # module links the one implib naming openpete.exe; the first-boot
+        # kit stages that implib.
+        get_property(_defs GLOBAL PROPERTY OPENPETE_GAME_MODULE_DEFS)
+        get_property(_def_targets GLOBAL PROPERTY OPENPETE_GAME_MODULE_DEF_TARGETS)
+        set(_def ${CMAKE_BINARY_DIR}/gen/openpete_module_exports.def)
+        _openpete_merge_module_defs(${_def} "${_defs}" "${_def_targets}")
+        add_dependencies(openpete openpete_module_def)
+        _openpete_game_shared_link_pe(openpete_module_implib openpete ${_def} ${_modules})
+        if(TARGET openpete_first_boot_kit)
+            add_dependencies(openpete_first_boot_kit openpete_module_implib)
+        endif()
+        _openpete_stage_openal(openpete ${CMAKE_BINARY_DIR})
+        get_property(_rc GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC)
+        if(_rc)
+            get_property(_rc_deps GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_DEPENDS)
+            get_property(_rc_target GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_TARGET)
+            set_source_files_properties(${_rc} PROPERTIES OBJECT_DEPENDS "${_rc_deps}")
+            target_sources(openpete PRIVATE ${_rc})
+            add_dependencies(openpete ${_rc_target})
+        endif()
+    else()
+        # Each module's imports against the one executable; the forwarders
+        # are every linked game's, since the executable defines them all.
+        foreach(_t _m IN ZIP_LISTS _tags _modules)
+            _openpete_game_shared_link_elf(${_t} openpete ${_m}
+                ${CMAKE_BINARY_DIR}/gen/${_t}_module_imports.stamp ${_headers})
+        endforeach()
+    endif()
 
     # The include-path invariant, before the executable links.
     set(_stamp ${CMAKE_BINARY_DIR}/gen/openpete_game_include_check.stamp)
