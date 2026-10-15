@@ -80,11 +80,12 @@ documentation and examples, in packages built with it.
 
 ## Files from earlier versions
 
-Earlier versions kept every game's savestate slots in `states/` and the
-[dev overlay](../playing/dev-overlay.md)'s window layout in one
-`openpete-devui.ini` next to the program. The first time a game runs on
-this version, it copies its own files to its per-game names and leaves
-the originals where they are; nothing is moved or deleted:
+Earlier versions kept every game's savestate slots in `states/`, and
+some kept the [dev overlay](../playing/dev-overlay.md)'s window layout in
+one file per game (`openpete-devui-spyro-1.ini`) next to the program. The
+first time a game runs on this version, it copies these files to their
+current names and leaves the originals where they are; nothing is moved
+or deleted:
 
 - A slot file in `states/` made by this game is copied into the game's
   folder (`states/spyro-1/slot3.state`). A slot file made by another game
@@ -98,14 +99,17 @@ the originals where they are; nothing is moved or deleted:
   the file came from this game. Otherwise it stays in `states/`, the log
   names it, no `.seeded` file is written, and each later run checks it
   again.
-- `openpete-devui.ini` is copied to `openpete-devui-spyro-1.ini` (one per
-  game) when the game's file does not exist yet.
+- When `openpete-devui.ini` does not exist, the most recently written
+  `openpete-devui-<game>.ini` is copied to `openpete-devui.ini`, which every
+  game then reads and writes. The other per-game files are not read.
 
 The log lists every file copied and every file left in place, with the
 reason.
 
 ## Other files
 
+- `openpete-devui.ini`: the [dev overlay](../playing/dev-overlay.md)'s
+  window positions, next to the program, one file shared by every game.
 - `hang-trace.bin`: written into the folder the program was started from
   when the game stops responding and the program exits
   ([Reporting a bug](reporting-a-bug.md)).

@@ -3316,8 +3316,9 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_memcard_startup_check();
     openpete_handoff_init(opts->resume_handoff, opts->handoff_argc,
                           opts->handoff_argv);
-    /* Per-game files first seen by this game: copy the ones every game
-     * shared (savestate slots, the overlay ini) into its own names. */
+    /* Savestate slots every game shared are copied into this game's own
+     * folder; the newest per-game overlay ini is adopted as the one
+     * openpete-devui.ini every game shares. */
     (void)openpete_state_seed_game_dir();
     (void)openpete_devui_seed_ini();
 

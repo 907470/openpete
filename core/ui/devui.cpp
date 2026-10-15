@@ -31,7 +31,6 @@
 extern "C" {
 #include "../rhi/rhi.h"          /* no C++ guard of its own */
 }
-#include "game_extras.h"   /* game_get_id: the per-game ini name */
 #include "openpete.h"
 #include "openpete_atomic_file.h"
 #include "openpete_devui.h"
@@ -105,38 +104,44 @@ int openpete_devui_inject_mouse_requested(float *x, float *y)
     return 1;
 }
 
-/** @brief Format the overlay's ini path beside the executable: openpete-devui-<game>.ini, or openpete-devui.ini for a NULL or empty game.
+/** @brief Format the overlay's ini path, openpete-devui.ini beside the executable.
  *
  * @param out Receives the path.
- * @param cap Capacity of @p out.
- * @param game The game id, or NULL. */
-static void devui_ini_path(char *out, size_t cap, const char *game)
+ * @param cap Capacity of @p out. */
+static void devui_ini_path(char *out, size_t cap)
 {
     const char *base = SDL_GetBasePath();
-    snprintf(out, cap, "%sopenpete-devui%s%s.ini", base ? base : "",
-             (game && *game) ? "-" : "", game ? game : "");
+    snprintf(out, cap, "%sopenpete-devui.ini", base ? base : "");
 }
 
 int openpete_devui_seed_ini(void)
 {
     static bool s_done = false;
     if (s_done) return 0;
-    const char *game = game_get_id();
-    if (!game || !*game) return 0;
     s_done = true;
-    char shared[1024], own[1024];
-    devui_ini_path(shared, sizeof shared, NULL);
-    devui_ini_path(own, sizeof own, game);
-    FILE *probe = fopen(own, "rb");
-    if (probe) {
-        fclose(probe);
-        return 0;
+    char shared[1024];
+    devui_ini_path(shared, sizeof shared);
+    SDL_PathInfo info;
+    if (SDL_GetPathInfo(shared, &info)) return 0;
+    const char *base = SDL_GetBasePath();
+    if (!base) return 0;
+    int count = 0;
+    char **names = SDL_GlobDirectory(base, "openpete-devui-*.ini", 0, &count);
+    char newest[1024] = "";
+    SDL_Time newest_time = 0;
+    for (int i = 0; names && i < count; i++) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s%s", base, names[i]);
+        if (!SDL_GetPathInfo(path, &info) || info.type != SDL_PATHTYPE_FILE) continue;
+        if (newest[0] && info.modify_time <= newest_time) continue;
+        snprintf(newest, sizeof newest, "%s", path);
+        newest_time = info.modify_time;
     }
-    probe = fopen(shared, "rb");
-    if (!probe) return 0;
-    fclose(probe);
-    if (op_atomic_copy_file(shared, own) != 0) return -1;
-    OPL_INFO_F("devui", "copied %s to %s; the original stays in place", shared, own);
+    SDL_free(names);
+    if (!newest[0]) return 0;
+    if (op_atomic_copy_file(newest, shared) != 0) return -1;
+    OPL_INFO_F("devui", "copied %s, the most recently written per-game overlay ini, to %s; "
+               "every per-game ini stays in place", newest, shared);
     return 1;
 }
 
@@ -151,26 +156,23 @@ int openpete_devui_seed_ini(void)
 static void devui_save_ini(bool force)
 {
     ImGuiIO &io = ImGui::GetIO();
-    if (!s_ini_path[0]) return;   /* no game installed: no ini is loaded or written */
+    if (!s_ini_path[0]) return;   /* no context: no ini is loaded or written */
     if (force ? !ImGui::GetCurrentContext()->SettingsLoaded : !io.WantSaveIniSettings) return;
     size_t n = 0;
     const char *text = ImGui::SaveIniSettingsToMemory(&n);
     if (op_atomic_write_file(s_ini_path, text, n) == 0) io.WantSaveIniSettings = false;
 }
 
-/** @brief Seed and load the running game's ini once a game is installed.
+/** @brief Seed and load the overlay ini once per context.
  *
- * UI state (window pos/collapse) lives next to the exe, not the CWD, one
- * file per game: the games' overlays differ in their windows. A context
- * created before a game is installed (the launcher of an executable linking
- * several games) loads, seeds and writes no ini until a later call finds
- * the game. */
-static void devui_load_game_ini(void)
+ * UI state (window position, collapse) lives in one file beside the
+ * executable, not the working directory, shared by every game the
+ * executable runs and by the launcher. */
+static void devui_load_ini(void)
 {
-    const char *game = game_get_id();
-    if (s_ini_path[0] || !game || !*game) return;
+    if (s_ini_path[0]) return;
     (void)openpete_devui_seed_ini();
-    devui_ini_path(s_ini_path, sizeof s_ini_path, game);
+    devui_ini_path(s_ini_path, sizeof s_ini_path);
     ImGui::LoadIniSettingsFromDisk(s_ini_path);
 }
 
@@ -190,7 +192,7 @@ int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
      * publishes (devui_feed_padnav), never the backend's own pad reads. */
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.IniFilename = nullptr;   /* saved by devui_save_ini */
-    devui_load_game_ini();
+    devui_load_ini();
     ImGui::StyleColorsDark();
     ImGui::GetStyle().Alpha = 0.96f;
 
@@ -242,7 +244,6 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
 {
     if (s_inited) return 1;
     if (!openpete_devui_create(dev, win)) return 0;
-    devui_load_game_ini();
 
     knob_registry_init(opts);
     s_inject_mouse =
