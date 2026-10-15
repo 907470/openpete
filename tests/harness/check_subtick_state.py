@@ -77,6 +77,12 @@ from pathlib import Path
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from hostenv import scratch_cards  # noqa: E402
+
+# The player's memory cards are never opened: runs boot on scratch cards.
+scratch_cards()
+
 # OPENPETE_BIN/OPENPETE_DISC let a caller point at a build tree other than
 # linux-release; CTest passes the configured binary this way.
 EXE = Path(os.environ.get(

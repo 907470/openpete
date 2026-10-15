@@ -3,6 +3,8 @@
 # a render, so the census needs a present - the screenshot forces one).
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# The player's memory cards are never opened: runs boot on scratch cards.
+source "$REPO/scripts/lib/scratch_cards.sh"
 S="${FIELD_CENSUS_CACHE:-$REPO/build/field-census}"; mkdir -p "$S"; S="$(cd "$S" && pwd)"
 BIN=$REPO/build/linux-release/openpete
 DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue

@@ -26,6 +26,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
+# The player's memory cards are never opened: runs boot on scratch cards.
+source scripts/lib/scratch_cards.sh
 
 GAME="${1:-}"; shift || true
 [[ -n "$GAME" ]] || { sed -n 's/^# //p' "$0" | head -16; exit 64; }

@@ -113,6 +113,8 @@ set -euo pipefail
 export OPENPETE_VIBRATION=0
 
 cd "$(dirname "$0")/../.."
+# The player's memory cards are never opened: runs boot on scratch cards.
+source scripts/lib/scratch_cards.sh
 
 # Split args at `--`: an optional [trace-path] before, openpete pass-through
 # flags after. Lets `check_psx_oracle.sh -- --no-lod` test a feature flag
@@ -315,6 +317,7 @@ fi
 _oracle_cleanup() {
     [[ -n "${OPENPETE_ORACLE_LOG:-}" ]] || rm -f "${LOG:?}"
     [[ -z "$CARD_DIR" ]] || rm -rf "${CARD_DIR:?}"
+    op_scratch_cards_cleanup
 }
 trap _oracle_cleanup EXIT
 rm -f "$LOG"

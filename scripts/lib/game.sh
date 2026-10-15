@@ -44,6 +44,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../presentation-game.sh"
 # from PG_RUN_ARGS, ahead of the caller's arguments so the caller can override
 # them.
 #
+# Memory cards: the run's default card directory is a fresh directory inside
+# the scratch one scripts/lib/scratch_cards.sh exports, deleted after the
+# run; the player's cards are never opened.
+#
 # Optional, set by the caller before the call:
 #   PG_CAPTURE_ENV      array of KEY=VALUE assignments for the run
 #   PG_CAPTURE_TIMEOUT  wall-clock seconds; unset or 0 runs untimed
@@ -59,7 +63,13 @@ pg_capture() {
     rm -f "$log"
     [[ ${#out_arr[@]} -gt 0 ]] && rm -f "${out_arr[@]}"
 
-    local -a pre=(env OPENPETE_VIBRATION=0)
+    # Each run boots on its own fresh pair of cards, a directory under the
+    # scratch card directory removed after the run, so no run reads what an
+    # earlier one saved. An OPENPETE_CARD_DIR in PG_CAPTURE_ENV comes later
+    # on the env line and wins; a --card1/--card2/--card-dir argument beats both.
+    local cards
+    cards="$(mktemp -d "$OPENPETE_CARD_DIR/run.XXXXXX")" || return 1
+    local -a pre=(env OPENPETE_VIBRATION=0 "OPENPETE_CARD_DIR=$cards")
     [[ -n "${PG_CAPTURE_ENV+set}" ]] && pre+=("${PG_CAPTURE_ENV[@]}")
     [[ -n "${PG_CAPTURE_TIMEOUT:-}" && "${PG_CAPTURE_TIMEOUT:-0}" != 0 ]] &&
         pre+=(timeout "$PG_CAPTURE_TIMEOUT")
@@ -75,6 +85,8 @@ pg_capture() {
             --disc-cache 0 "${PG_RUN_ARGS[@]}" "$@" >"$log" 2>&1
         rc=$?
     fi
+
+    rm -rf "${cards:?}"
 
     local o
     for o in "${out_arr[@]}"; do

@@ -24,6 +24,8 @@ export OPENPETE_VIBRATION=0
 
 
 cd "$(dirname "$0")/.."
+# The player's memory cards are never opened: runs boot on scratch cards.
+source scripts/lib/scratch_cards.sh
 BIN=build/linux-release/openpete
 DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
 OUT=${1:-build/moby-contact}

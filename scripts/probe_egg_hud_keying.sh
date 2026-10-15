@@ -23,6 +23,8 @@
 set -u
 export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."
+# The player's memory cards are never opened: runs boot on scratch cards.
+source scripts/lib/scratch_cards.sh
 BIN="${OPENPETE_BIN:-build/linux-release/openpete}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 WORK="$(mktemp -d /tmp/openpete-eggkey.XXXXXX)"

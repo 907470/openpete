@@ -20,6 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import corpus_manifest
+from hostenv import scratch_cards  # noqa: E402
+
+# The player's memory cards are never opened: runs boot on scratch cards.
+scratch_cards()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.environ.get("OPENPETE_BIN", os.path.join(ROOT, "build/linux-release/openpete"))

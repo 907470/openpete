@@ -13,10 +13,12 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from hostenv import child_env                                  # noqa: E402
+from hostenv import child_env, scratch_cards                   # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 VBL_HZ = 2250000 / 37609
+# The player's memory cards are never opened: runs boot on scratch cards.
+scratch_cards()
 
 
 def exe_for(platform):

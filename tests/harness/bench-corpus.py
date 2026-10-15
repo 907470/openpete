@@ -48,7 +48,7 @@ import os
 import sys as _sys
 from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parents[2] / "scripts" / "lib"))
-from hostenv import child_env  # noqa: E402
+from hostenv import child_env, scratch_cards  # noqa: E402
 import re
 import shlex
 import subprocess
@@ -66,6 +66,8 @@ import bench_guard
 # Windows exe launched from WSL receives only the names WSLENV lists.
 # (scripts/fences/rumble_guard.py, scripts/fences/wslenv_guard.py)
 RUN_KNOBS = {"OPENPETE_VIBRATION": "0"}
+# The player's memory cards are never opened: runs boot on scratch cards.
+scratch_cards()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = os.path.join(ROOT, "scripts")

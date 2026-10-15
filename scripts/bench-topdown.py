@@ -37,7 +37,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fences"))
 import bench_guard
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
-from hostenv import child_env  # noqa: E402
+from hostenv import child_env, scratch_cards  # noqa: E402
 import game_conf  # noqa: E402
 
 # Unattended launcher: every run this script starts has controller vibration
@@ -47,6 +47,8 @@ import game_conf  # noqa: E402
 # receives only the names WSLENV lists.
 # (scripts/fences/rumble_guard.py, scripts/fences/wslenv_guard.py)
 RUN_KNOBS = {"OPENPETE_VIBRATION": "0"}
+# The player's memory cards are never opened: runs boot on scratch cards.
+scratch_cards()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")

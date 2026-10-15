@@ -8,6 +8,8 @@
 # Usage: scripts/terrain-fill-sweep.sh [--build-dir=DIR] [--only=SUBSTR] [--jobs=N]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# The player's memory cards are never opened: runs boot on scratch cards.
+source scripts/lib/scratch_cards.sh
 BUILD_DIR=build/linux-release
 PASS=()
 for a in "$@"; do

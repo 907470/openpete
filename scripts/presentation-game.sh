@@ -31,6 +31,11 @@
 # PG_BUILD_DIR defaults to build/linux-release and is honoured by pg_resolve,
 # so a caller parsing --build-dir=DIR sets it before calling.
 
+# Every game run started by a script that sources this file boots on scratch
+# memory cards, never the player's.
+# shellcheck source=scripts/lib/scratch_cards.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/scratch_cards.sh"
+
 PG_GAMES="spyro-1 spyro-2 spyro-3"
 
 # Read the game slug out of an argument list. Both spellings are accepted;
