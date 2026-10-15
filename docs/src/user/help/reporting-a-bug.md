@@ -6,8 +6,9 @@
    folder ([File locations](file-locations.md)): the version, the startup
    sequence, what it decided about your disc, controllers and graphics
    card, driver errors, and the crash report when it crashed. The previous
-   run's log is kept as `openpete.log.1`; attach that one when a relaunch
-   made the problem go away.
+   run's log is kept as `openpete.log.1`, and earlier runs' as
+   `openpete.log.2` through `openpete.log.15`; attach the run that failed
+   when a relaunch made the problem go away.
 2. **The settings.** The output of
 
     ```

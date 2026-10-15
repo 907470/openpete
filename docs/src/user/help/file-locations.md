@@ -11,7 +11,7 @@ every location below as this install resolves it, then exits.
 | `gamecontrollerdb.txt` | your controller mappings ([Controllers](../customizing/controllers.md)) |
 | `cards/` | memory cards `card1.mcr` and `card2.mcr`: the game's own saves |
 | `states/` | [savestate](glossary.md#savestate) slots, one folder per game (`states/spyro-1/`) |
-| `logs/` | `openpete.log` for the current run, `openpete.log.1` for the one before |
+| `logs/` | `openpete.log` for the current run, `openpete.log.1` for the one before, up to `openpete.log.15` for the oldest kept |
 | `library/` | your ingested disc image and the game code compiled from it |
 | `mods/` | installed mods ([Mods](../customizing/mods.md)) |
 | `assets/` | your texture, music and sound packs |

@@ -229,6 +229,28 @@ static void pump_join(void) {
 }
 #endif
 
+/* Earlier runs' logs kept beside the current one, as <log>.1 (the run
+ * before) through <log>.LOG_GENERATIONS (the oldest): sixteen files in all.
+ * A crash that a relaunch papers over is the common report ("it worked the
+ * second time"), and the run that failed may be several launches back. */
+#define LOG_GENERATIONS 15
+
+/** @brief Shift the kept logs one generation older and move the current log to <path>.1.
+ *
+ * The oldest generation is removed first; a missing generation is skipped.
+ * @param path The current log's path. */
+static void rotate_logs(const char* path) {
+    char from[LOG_PATH_MAX + 8], to[LOG_PATH_MAX + 8];
+    if (snprintf(to, sizeof to, "%s.%d", path, LOG_GENERATIONS) >= (int)sizeof to) return;
+    remove(to);
+    for (int g = LOG_GENERATIONS - 1; g >= 0; g--) {
+        if (g == 0) snprintf(from, sizeof from, "%s", path);
+        else snprintf(from, sizeof from, "%s.%d", path, g);
+        rename(from, to);
+        memcpy(to, from, sizeof to);
+    }
+}
+
 /** @brief Choose the log file path: spec when given, else <state>/logs/openpete.log.
  *
  * The state directory is made when it does not exist.
@@ -345,14 +367,8 @@ int openpete_log_file_open(const char* spec) {
 
     /* Rotate and open only once the tee is certain to go up: a failure
      * above must leave the previous run's log intact, not replaced by an
-     * empty file. One generation is kept because a crash that a relaunch
-     * papers over is the common report ("it worked the second time"), and
-     * the run that failed is the one worth reading. */
-    char prev[LOG_PATH_MAX + 4];
-    if (snprintf(prev, sizeof prev, "%s.1", s_path) < (int)sizeof prev) {
-        remove(prev);
-        rename(s_path, prev);
-    }
+     * empty file. */
+    rotate_logs(s_path);
     s_log_fd = open(s_path, O_CREAT | O_WRONLY | O_TRUNC | O_BINARY,
                     OP_OPEN_MODE);
     if (s_log_fd < 0) { op_close(fds[1]); goto fail_dup; }
