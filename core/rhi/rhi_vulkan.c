@@ -514,6 +514,13 @@ struct rhi_device {
     float          cur_depth_clear;  /* clear value of the current pass (rhi_clear_depth) */
     _Atomic unsigned pipes_by_cmp[8]; /* pipelines compiled per VkCompareOp (engagement) */
     bool           has_depth_bias_clamp; /* depthBiasClamp feature enabled */
+    /* Depth-bias factors set but not yet recorded (depth_bias_set): recorded
+     * only while a depth_bias pipeline is bound, since setting a dynamic state
+     * a bound pipeline holds static and rebinding that pipeline relies on
+     * driver behaviour older conformance versions lack. */
+    float          bias_pending[3];
+    bool           bias_owed;      /* bias_pending awaits a depth_bias pipeline */
+    bool           bias_bound;     /* the bound pipeline was created with depth_bias */
     bool           has_shader_float64;   /* shaderFloat64 feature enabled  */
     bool           has_fill_non_solid;   /* fillModeNonSolid feature enabled */
     bool           has_creation_feedback; /* VK_EXT_pipeline_creation_feedback enabled */
@@ -1951,13 +1958,65 @@ static bool create_swapchain(rhi_device *dev)
     return true;
 }
 
+/* External dependencies every render pass of the device declares. A pipeline
+ * is created against off_rp and drawn in rt_rp and rt_ds_rp too; render-pass
+ * compatibility requires the passes to be identical apart from attachment
+ * layouts and load/store ops, dependencies included, so each pass carries
+ * the union of what any of them needs. */
+#define RP_DEPS 3
+
+/** @brief Fill the external subpass dependencies shared by every render pass of the device.
+ *
+ * In: the previous use's colour and depth-stencil writes (write after
+ * write), the previous use's fragment-shader samples of a render target and
+ * transfer reads of the offscreen image (write after read). Out: colour and
+ * depth-stencil writes made visible to the present blit, the readback copy
+ * and fragment-shader sampling of a render target.
+ * @param deps Receives RP_DEPS dependencies. */
+static void render_pass_deps(VkSubpassDependency deps[RP_DEPS])
+{
+    deps[0] = (VkSubpassDependency){
+        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+    };
+    deps[1] = (VkSubpassDependency){
+        .srcSubpass = 0, .dstSubpass = VK_SUBPASS_EXTERNAL,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT,
+    };
+    /* off_image is one target shared by every frame in flight: the next
+     * frame's colour write waits for the previous frame's transfer reads of
+     * it (the present blit and the async --record copy). */
+    deps[2] = (VkSubpassDependency){
+        .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+}
+
 /** @brief Create the offscreen render passes off_rp (color cleared) and off_load_rp (color loaded).
  *
  * Both share one color and one combined depth-stencil attachment; the color
  * ends in TRANSFER_SRC for the present blit, depth and stencil clear and are
- * not stored. The external dependencies order the previous pass's
- * attachment writes and the previous frame's transfer reads before this
- * pass's attachment access.
+ * not stored. The external dependencies are render_pass_deps'.
  * @param dev Device whose formats are read and whose passes are written.
  * @return true on success, false when vkCreateRenderPass fails. */
 static bool create_render_pass(rhi_device *dev)
@@ -1997,50 +2056,8 @@ static bool create_render_pass(rhi_device *dev)
         .pColorAttachments = &ref,
         .pDepthStencilAttachment = &depth_ref,
     };
-    VkSubpassDependency deps[3] = {
-        { /* external -> subpass: acquire color + depth attachments. The
-           * color and depth images are shared by every frame in flight and by
-           * each pass of a frame, so the previous pass's attachment writes
-           * (late-Z and store included) are the first scope (WAW), and the
-           * LOAD variant's attachment read is in the second. */
-            .srcSubpass = VK_SUBPASS_EXTERNAL,
-            .dstSubpass = 0,
-            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        },
-        { /* subpass -> external: make color writes available to the blit */
-            .srcSubpass = 0,
-            .dstSubpass = VK_SUBPASS_EXTERNAL,
-            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
-            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-        },
-        { /* external -> subpass (WAR): off_image is a SINGLE shared target, so
-           * the next frame's color write must wait for the PREVIOUS frame's
-           * transfer reads of it - the blit AND the async --record copy
-           * (rhi_cycle_readback) - to finish, or an in-flight frame would
-           * overwrite pixels still being read back. The async ring does not
-           * drain the device between frames, so the dependency is explicit
-           * and recordings stay tear-free. WAR => execution dependency. */
-            .srcSubpass = VK_SUBPASS_EXTERNAL,
-            .dstSubpass = 0,
-            .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        },
-    };
+    VkSubpassDependency deps[RP_DEPS];
+    render_pass_deps(deps);
     VkAttachmentDescription atts[2] = { color, depth };
     VkRenderPassCreateInfo rci = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -2048,7 +2065,7 @@ static bool create_render_pass(rhi_device *dev)
         .pAttachments = atts,
         .subpassCount = 1,
         .pSubpasses = &sub,
-        .dependencyCount = 3,
+        .dependencyCount = RP_DEPS,
         .pDependencies = deps,
     };
     VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->off_rp);
@@ -2060,9 +2077,8 @@ static bool create_render_pass(rhi_device *dev)
      * TRANSFER_SRC -> COLOR before begin) instead of clearing, so HUD draws
      * land ON TOP of a scene that a SCENE-point chain already post-
      * processed. Depth still CLEARs (HUD self-clears depth anyway; the
-     * scene pass discarded it). Only the external->subpass color-acquire
-     * dependency differs (LOAD reads the attachment), so keep the same
-     * dep set; drop the WAR dep's relevance by keeping it (harmless). */
+     * scene pass discarded it). The dependencies are off_rp's, which
+     * already order the colour attachment read a LOAD performs. */
     color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     color.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     VkAttachmentDescription atts_load[2] = { color, depth };
@@ -2077,9 +2093,9 @@ static bool create_render_pass(rhi_device *dev)
  * The attachment formats match off_rp (RHI_RT_FORMAT color, depth_format
  * depth-stencil), so pipelines built against off_rp are compatible with it.
  * The color attachment ends in SHADER_READ_ONLY_OPTIMAL, and the outgoing
- * dependency makes its writes visible to fragment-shader reads, so a later
- * pass in the same frame can sample the image. Depth and stencil clear on
- * load and are not stored.
+ * dependency (render_pass_deps) makes its writes visible to fragment-shader
+ * reads, so a later pass in the same frame can sample the image. Depth and
+ * stencil clear on load and are not stored.
  * @param dev Device whose formats are read and whose rt_rp is written.
  * @return true on success, false when vkCreateRenderPass fails. */
 static bool create_rt_render_pass(rhi_device *dev)
@@ -2111,34 +2127,14 @@ static bool create_rt_render_pass(rhi_device *dev)
         .colorAttachmentCount = 1, .pColorAttachments = &ref,
         .pDepthStencilAttachment = &depth_ref,
     };
-    VkSubpassDependency deps[2] = {
-        { /* external -> subpass: the target's color and depth are reused
-           * by every render into it (WAW on both, late-Z included). */
-          .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
-          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-          .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT },
-        { /* subpass -> external: make the color result available to the sampler */
-          .srcSubpass = 0, .dstSubpass = VK_SUBPASS_EXTERNAL,
-          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT },
-    };
+    VkSubpassDependency deps[RP_DEPS];
+    render_pass_deps(deps);
     VkAttachmentDescription atts[2] = { color, depth };
     VkRenderPassCreateInfo rci = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .attachmentCount = 2, .pAttachments = atts,
         .subpassCount = 1, .pSubpasses = &sub,
-        .dependencyCount = 2, .pDependencies = deps,
+        .dependencyCount = RP_DEPS, .pDependencies = deps,
     };
     VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->rt_rp);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateRenderPass(rt) failed: %d\n", (int)r); return false; }
@@ -2150,10 +2146,10 @@ static bool create_rt_render_pass(rhi_device *dev)
  * Used by the shadow-decal depth pre-pass. The attachment formats match rt_rp
  * (pipeline-compatible), but the depth attachment is stored and finishes in
  * SHADER_READ_ONLY_OPTIMAL so a later pass in the same frame can sample the
- * per-pixel depth. The incoming dependency also waits on fragment-shader
- * reads of the previous use (write-after-read, since the image is re-rendered
- * every present); the outgoing one makes color and depth writes visible to
- * fragment-shader reads.
+ * per-pixel depth. The incoming dependency (render_pass_deps) also waits on
+ * fragment-shader reads of the previous use (write-after-read, since the
+ * image is re-rendered every present); the outgoing one makes color and depth
+ * writes visible to fragment-shader reads.
  * @param dev Device whose formats are read and whose rt_ds_rp is written.
  * @return true on success, false when vkCreateRenderPass fails. */
 static bool create_rt_ds_render_pass(rhi_device *dev)
@@ -2185,35 +2181,14 @@ static bool create_rt_ds_render_pass(rhi_device *dev)
         .colorAttachmentCount = 1, .pColorAttachments = &ref,
         .pDepthStencilAttachment = &depth_ref,
     };
-    VkSubpassDependency deps[2] = {
-        { .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
-          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
-                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,   /* WAR vs last frame's sampling */
-          .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-          .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT },
-        { /* subpass -> external: make color AND depth results sample-visible */
-          .srcSubpass = 0, .dstSubpass = VK_SUBPASS_EXTERNAL,
-          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT },
-    };
+    VkSubpassDependency deps[RP_DEPS];
+    render_pass_deps(deps);
     VkAttachmentDescription atts[2] = { color, depth };
     VkRenderPassCreateInfo rci = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .attachmentCount = 2, .pAttachments = atts,
         .subpassCount = 1, .pSubpasses = &sub,
-        .dependencyCount = 2, .pDependencies = deps,
+        .dependencyCount = RP_DEPS, .pDependencies = deps,
     };
     VkResult r = vkCreateRenderPass(dev->device, &rci, NULL, &dev->rt_ds_rp);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateRenderPass(rt-ds) failed: %d\n", (int)r); return false; }
@@ -4216,6 +4191,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     dev->cur_layout = VK_NULL_HANDLE; /* a layout bound last frame may be retired */
     dev->frame_active = true;
     dev->draw_calls = 0;
+    dev->bias_bound = false;          /* a fresh command buffer binds nothing */
     if (dev->gpu_timers) {
         /* Reset must be recorded outside a render pass - here, before any. */
         vkCmdResetQueryPool(cb, dev->gpu_qp[dev->frame], 0, RHI_GPU_ZONES_MAX * 2);
@@ -4228,6 +4204,26 @@ static void image_barrier(VkCommandBuffer cb, VkImage img,
                           VkImageLayout from, VkImageLayout to,
                           VkAccessFlags src_access, VkAccessFlags dst_access,
                           VkPipelineStageFlags src_stage, VkPipelineStageFlags dst_stage);
+
+/** @brief Set the depth-bias factors, recording them now when a depth_bias pipeline is bound and at the next bind of one otherwise.
+ *
+ * A bound pipeline without depth_bias holds the state static; recording
+ * the dynamic value under it is legal but makes a later rebind of the same
+ * pipeline depend on drivers restoring its static state. Deferring keeps
+ * every recorded value under a pipeline that takes it, with the value each
+ * depth_bias draw sees unchanged.
+ * @param dev Device, inside a frame.
+ * @param constant Constant factor.
+ * @param clamp Clamp.
+ * @param slope Slope factor. */
+static void depth_bias_set(rhi_device *dev, float constant, float clamp, float slope)
+{
+    dev->bias_pending[0] = constant;
+    dev->bias_pending[1] = clamp;
+    dev->bias_pending[2] = slope;
+    dev->bias_owed = !dev->bias_bound;
+    if (dev->bias_bound) vkCmdSetDepthBias(dev->cmd[dev->frame], constant, clamp, slope);
+}
 
 void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
 {
@@ -4267,7 +4263,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
      * first in the pass. NOT a guarantee - binding any static-state pipeline
      * invalidates dynamic depth bias, so callers must set it after every
      * depth_bias pipeline bind (see rhi.h). */
-    vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
+    depth_bias_set(dev, 0.0f, 0.0f, 0.0f);
 }
 
 /* Loads off_image from TRANSFER_SRC and resumes the offscreen pass (see rhi.h). */
@@ -4353,11 +4349,13 @@ void rhi_blit_to_swapchain(rhi_device *dev)
     VkImage sc = dev->sc_images[dev->image_index];
 
     /* Swapchain image: undefined -> transfer dst. (Offscreen is already
-     * TRANSFER_SRC_OPTIMAL via the render pass final layout.) */
+     * TRANSFER_SRC_OPTIMAL via the render pass final layout.) The submit
+     * waits for the acquire at TRANSFER, so the transition's first scope is
+     * TRANSFER: it then follows the acquire's semaphore wait. */
     image_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
     VkImageBlit region = {
         .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
@@ -4590,9 +4588,10 @@ bool rhi_present_stage_submit(rhi_device *dev, int stage)
     };
     vkBeginCommandBuffer(cb, &bi);
     VkImage sc = dev->sc_images[dev->image_index];
+    /* First scope TRANSFER, the stage the submit waits for the acquire at. */
     image_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkImageBlit region = {
         .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
         .srcOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
@@ -5612,7 +5611,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
      * first in the pass. NOT a guarantee - binding any static-state pipeline
      * invalidates dynamic depth bias, so callers must set it after every
      * depth_bias pipeline bind (see rhi.h). */
-    vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
+    depth_bias_set(dev, 0.0f, 0.0f, 0.0f);
 }
 
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt)
@@ -9488,6 +9487,7 @@ void rhi_pipeline_lto_step(rhi_device *dev, bool sync)
     seam_check("pipeline_lto_step");   /* the registry is the display owner's */
     rhi_compile_pool_drain(dev);
     lto_swap_ready(dev);
+    lto_report_drained(dev);   /* the last link may return on a step that queues nothing */
     if (!dev->lto.owed || dev->rb.active || dev->cpool_stopped) return;
     if (!dev->headless && !atomic_load(&s_first_frame_done)) return;
     if (!pool_get(dev) || !dev->cpool->n) {   /* a pool of none would link on this thread */
@@ -9840,7 +9840,7 @@ static bool described_info(rhi_device *dev, unsigned i, pipe_stage_info *out)
     return true;
 }
 
-int rhi_precompile_ahead_start(rhi_device *dev)
+int rhi_precompile_ahead_start(rhi_device *dev, bool affine_first)
 {
     if (!dev || dev->walk.state == RHI_WALK_RUNNING || !dev->described_n) return -1;
     seam_check("precompile_ahead_start");   /* job making reads the environment */
@@ -9855,9 +9855,12 @@ int rhi_precompile_ahead_start(rhi_device *dev)
     w->items = (info && ok) ? malloc((size_t)nd * PIPE_WALK_VIEWS * 2u * sizeof *w->items) : NULL;
     for (unsigned i = 0; w->items && i < nd; i++) ok[i] = described_info(dev, i, &info[i]);
     rhi_pc_keyset seen = {0};
-    for (int view = 0; w->items && view < PIPE_WALK_VIEWS; view++)
+    /* Walk views 0 (perspective) and 1 (affine): the first drawn first. */
+    for (int k = 0; w->items && k < PIPE_WALK_VIEWS; k++) {
+        const int view = affine_first ? PIPE_WALK_VIEWS - 1 - k : k;
         for (unsigned i = 0; i < nd; i++)
             if (ok[i]) walk_collect_ahead(dev, w, &seen, (int)i, &info[i], pipe_view_variant(view));
+    }
     rhi_pc_keyset_free(&seen);
     free(info);
     free(ok);
@@ -9865,8 +9868,9 @@ int rhi_precompile_ahead_start(rhi_device *dev)
     w->st.queued = w->n;
     rhi_compile_pool_stats_get(dev, &w->p0);
     RHI_LOG("launcher walk: %u descriptions (%u with SPIR-V words skipped), %u create infos, "
-            "%u queued, %u manifest skips, up to %u jobs out\n", nd, dev->described_words,
-            w->st.keys, w->n, w->st.manifest_skips, w->limit);
+            "%u queued, %u manifest skips, up to %u jobs out, %s first\n", nd,
+            dev->described_words, w->st.keys, w->n, w->st.manifest_skips, w->limit,
+            affine_first ? "affine" : "perspective");
     return (int)w->n;
 }
 
@@ -10370,6 +10374,15 @@ void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)
     dev->cur_layout = pipe->layout; /* for bind_vram / push_constants */
     dev->cur_pc_stages = pipe->pc_stages;
     vkCmdBindPipeline(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipe->pipeline);
+    /* A pipeline holding depth bias static invalidates the dynamic value, so
+     * the next depth_bias pipeline records the last factors again. */
+    dev->bias_owed |= !pipe->desc.depth_bias;
+    dev->bias_bound = pipe->desc.depth_bias;
+    if (dev->bias_bound && dev->bias_owed) {
+        vkCmdSetDepthBias(dev->cmd[dev->frame], dev->bias_pending[0], dev->bias_pending[1],
+                          dev->bias_pending[2]);
+        dev->bias_owed = false;
+    }
 }
 
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf)
@@ -10586,5 +10599,5 @@ void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slop
      * units of the stored value's resolvable step r, 2^-24 near z = 1
      * forward and about z * 2^-23.5 reversed. */
     const float sgn = dev->depth_rev[RHI_DEPTH_SCENE] ? -1.0f : 1.0f;
-    vkCmdSetDepthBias(dev->cmd[dev->frame], sgn * constant, sgn * clamp, sgn * slope);
+    depth_bias_set(dev, sgn * constant, sgn * clamp, sgn * slope);
 }

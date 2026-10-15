@@ -118,8 +118,9 @@ int openpete_native_launcher_shot(struct rhi_device *dev, const char *path, cons
  * exists. Bring-up's eager pipeline builders and the terrain cache's run in
  * description mode (rhi_pipeline_describe_begin) and the descriptions start
  * the ahead walk (rhi_precompile_ahead_start): both SLOT_CONTEST values,
- * perspective before affine, on the compile pool, stepped by each launcher
- * present (openpete_native_launcher_present). Mod pipelines are not known
+ * the texture mapping @p opts resolves (flag, global scope, [saved]) before
+ * the other, on the compile pool, stepped by each launcher present
+ * (openpete_native_launcher_present). Mod pipelines are not known
  * before the pick and are left to bring-up. Bring-up stops the walk before
  * its first create; the keys it did not reach compile at bring-up or in the
  * game's background walk. Skipped where bring-up skips its precompile (a

@@ -2379,6 +2379,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_anim(s_tc.ps.pipe_n_prepass_depth, OPTC_ARENA_N_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.ps.pipe_cn[TC_CP_PREPASS_DEPTH], OPTC_ARENA_CN_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.ps.pipe_n_prepass_depth, OPTC_ARENA_N_LP,     0, clip);
+            /* The base arena takes the base pipeline back: a variant
+             * pipeline bound above reads its binding-1 twin, which a base
+             * arena does not bind. */
+            rhi_bind_pipeline(s_tc.dev, p);
             tc_draw_arena(OPTC_ARENA_LP,     1, clip);
             tc_draw_anim(s_tc.ps.pipe_a_prepass_depth, OPTC_ARENA_A_LP, 1, clip);
             tc_draw_anim(s_tc.ps.pipe_n_prepass_depth, OPTC_ARENA_N_LP, 1, clip);

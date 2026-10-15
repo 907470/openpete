@@ -1489,16 +1489,19 @@ unsigned       rhi_pipeline_describe_end(rhi_device *dev);
  * The walk is the background variant walk's state machine
  * (rhi_precompile_walk_step advances it, rhi_precompile_walk_get reads it)
  * over the descriptions rhi_pipeline_describe_begin recorded instead of the
- * registry: each description at both SLOT_CONTEST values, every
- * perspective create info before any affine one, at the textured view and
- * the current MOBY_TRUESCOPE, each key once. A key is skipped as the
- * variant walk skips one (probe hit, manifest), and its creates count in the
- * launcher create phase. Up to two jobs per worker are out at a time, so a
- * step per present keeps the workers fed. Display owner only.
+ * registry: each description at both SLOT_CONTEST values, every create
+ * info of the texture mapping the game will draw first before any of the
+ * other, at the textured view and the current MOBY_TRUESCOPE, each key once.
+ * A key is skipped as the variant walk skips one (probe hit, manifest), and
+ * its creates count in the launcher create phase. Up to two jobs per worker
+ * are out at a time, so a step per present keeps the workers fed. Display
+ * owner only.
  * @param dev Device.
+ * @param affine_first true to queue the affine create infos before the
+ *        perspective ones: the effective texture mapping is affine.
  * @return The create infos queued, or -1 for a NULL device, a walk already
  *         running or no recorded description. */
-int            rhi_precompile_ahead_start(rhi_device *dev);
+int            rhi_precompile_ahead_start(rhi_device *dev, bool affine_first);
 
 /** @brief Stop the ahead walk: submit nothing more, drop its jobs still queued on the pool, and log what it did.
  *
@@ -2471,7 +2474,9 @@ void rhi_texture_extent(const rhi_texture *tex, int *w, int *h);
  *
  * Recorded inside a frame, before the draws of the offscreen pass or a
  * render-target pass. Stores the pipeline's layout and push-constant stages,
- * which the later descriptor-set and push-constant binds use. Does nothing
+ * which the later descriptor-set and push-constant binds use. A pipeline
+ * created with depth_bias also records the last depth-bias factors set
+ * while no such pipeline was bound (rhi_set_depth_bias). Does nothing
  * outside an active frame.
  * @param dev Device whose current frame records the bind.
  * @param pipe Pipeline to bind. */

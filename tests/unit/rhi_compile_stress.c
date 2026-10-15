@@ -1040,7 +1040,7 @@ static int ahead_control(void)
     rhi_compile_pool_stats p0;
     rhi_compile_pool_stats_get(s_dev, &p0);
     rhi_compile_pool_pause(s_dev, true);
-    const int keys = rhi_precompile_ahead_start(s_dev);
+    const int keys = rhi_precompile_ahead_start(s_dev, false);
     (void)rhi_precompile_walk_step(s_dev);
     const unsigned paused_ran = pool_ran_since(&p0, 1);
     rhi_compile_pool_pause(s_dev, false);

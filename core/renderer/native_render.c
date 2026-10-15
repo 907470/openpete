@@ -5840,10 +5840,14 @@ int openpete_native_launcher_precompile_start(const openpete_options_t *opts)
     }
     const unsigned described = nr_describe_pipelines(dev);
     rhi_compile_pool_pause(dev, s_ahead.paused != 0);
-    const int keys = rhi_precompile_ahead_start(dev);
+    /* The game-neutral options carry the flag, the global scopes and [saved];
+     * a [game.*] or [disc.*] scope is not known before the pick. */
+    const bool affine = opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE;
+    const int keys = rhi_precompile_ahead_start(dev, affine);
     s_ahead.on = keys >= 0;
     OPL_INFO_F("native", "launcher precompile: %u pipeline descriptions, %d create infos queued "
-               "(both SLOT_CONTEST values; perspective, then affine)%s", described, keys,
+               "(both SLOT_CONTEST values; %s)%s", described, keys,
+               affine ? "affine, then perspective" : "perspective, then affine",
                s_ahead.paused ? "; the compile pool is paused" : "");
     return keys > 0 ? keys : 0;
 }
@@ -17544,6 +17548,20 @@ static int psx_dither_append(int point, openpete_postfx_pass_t* pass)
     return 1;
 }
 
+/** @brief Destroy the engine's two postfx pipelines (raster quantize, dither) and empty their slots; shutdown, before the device goes.
+ *
+ * A slot still pending holds no pipeline: its compile is dropped by the
+ * pool's stop. */
+static void nr_builtin_postfx_free(void)
+{
+    void** const slots[2] = { &s_rq_pipe, &s_dither_pipe };
+    for (int i = 0; i < 2; i++) {
+        rhi_pipeline* p = nr_pipe_of(*slots[i]);
+        if (p) rhi_destroy_pipeline(s_nr.dev, p);
+        if (p || *slots[i] == PFX_PIPE_FAILED) *slots[i] = NULL;
+    }
+}
+
 /** @brief Return whether any postfx pass would run at a chain point.
  *
  * The SCENE point (1) is active when the raster-quantize multiplier or the
@@ -19938,6 +19956,7 @@ void openpete_native_render_shutdown(void)
     if (s_mat_ubo) { rhi_destroy_ubo(s_nr.dev, s_mat_ubo); s_mat_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     late_shutdown();
+    nr_builtin_postfx_free();
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
         openpete_mods_material_retire_all();
