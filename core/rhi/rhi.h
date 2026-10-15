@@ -425,6 +425,23 @@ void rhi_notify_resize(rhi_device *dev);
  * @param dev Device, or NULL (ignored). */
 void rhi_notify_resize_immediate(rhi_device *dev);
 
+/** @brief Start a present-extent trace window when OPENPETE_PRESENT_EXTENT_TRACE is set.
+ *
+ * From the call, every present logs the window's pixel size, the swapchain
+ * extent, its source (launcher frame, game scene, stage release) and its
+ * result, up to a budget of lines; every swapchain rebuild and every window
+ * pixel-size and fullscreen event logs as well, on one clock relative to the
+ * arm. The first present whose extent equals the window after a pixel-size
+ * event logs the interval from that event and the count of mismatched
+ * presents since the arm. Until a game present holds non-black pixels
+ * (30 s cap), each game present is read back after a device-idle wait and
+ * the first with any and with at least 1% non-black pixels log their delay
+ * after the first game present. Unset, the call does nothing; headless does
+ * nothing.
+ * @param dev Device, or NULL (ignored).
+ * @param why Label printed on the arm line. */
+void rhi_present_trace_arm(rhi_device *dev, const char *why);
+
 /** @brief Register the handler called when the device is lost.
  *
  * A loss is a VK_ERROR_DEVICE_LOST from a fence wait, swapchain acquire,

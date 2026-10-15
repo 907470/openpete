@@ -5965,20 +5965,84 @@ static void nr_apply_game_window_icon(SDL_Window *win)
     }
 }
 
+/** @brief Present a black frame at the window's current size and wait until the display shows it, ahead of a bring-up window operation.
+ *
+ * A size change makes the compositor pin the last presented image, at its
+ * old size, into the corner of the resized window until a present at the new
+ * size arrives, which follows a swapchain rebuild (tens of ms on some
+ * drivers). Presenting black first makes that pinned image black, the same
+ * as the fill around it. The wait is the present's displayed confirmation
+ * where the device has present timing; otherwise the device is waited idle
+ * and one refresh period passes, the latest point at which the compositor
+ * latches a finished image. Runs on the bring-up thread, which owns the
+ * window and the display.
+ * @param dev The device presenting to the window. */
+static void nr_present_black_shown(rhi_device *dev)
+{
+    if (!dev) return;
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: wait duration for the log */
+    (void)openpete_native_launcher_present(dev, 0.0f, 0.0f, 0.0f, NULL, NULL);
+    const int shown = rhi_present_wait(dev, 100ull * 1000ull * 1000ull, NULL, NULL);
+    if (shown != 1) {
+        rhi_wait_idle(dev);
+        const float hz = rhi_refresh_hz(dev);
+        SDL_DelayNS((Uint64)(1e9 / (hz > 1.0f ? hz : 60.0f)));
+    }
+    OPL_INFO_F("native", "black frame shown before the window operation in %.1f ms (%s)",
+               (double)(SDL_GetTicksNS() - t0) / 1e6,  /* clock-guard: wall: wait duration for the log */
+               shown == 1 ? "present wait" : "idle + one refresh");
+}
+
+/** @brief Rebuild the swapchain at the window's pixel size after a bring-up window operation and present a black frame at that size.
+ *
+ * A window operation (the --fullscreen switch, the resize to the game's
+ * window size) changes the window in one step while the swapchain keeps its
+ * old extent, and until the next present the compositor shows the last image
+ * at its old size in the corner of the resized window. This waits for the
+ * window system to apply the operation (SDL_SyncWindow), rebuilds the
+ * swapchain without the settle window a drag gets, and presents the black
+ * clear through the launcher's present path; the black holds until the
+ * game's first present. Runs on the bring-up thread, which
+ * owns the window and the display until the host loop starts. Does nothing
+ * when the window already has the swapchain's extent.
+ * @param win The window.
+ * @param dev The device presenting to it. */
+static void nr_present_at_window_size(SDL_Window *win, rhi_device *dev)
+{
+    if (!win || !dev) return;
+    (void)SDL_SyncWindow(win);
+    int pw = 0, ph = 0, sw = 0, sh = 0;
+    if (!SDL_GetWindowSizeInPixels(win, &pw, &ph) || pw <= 0 || ph <= 0) return;
+    rhi_swapchain_extent(dev, &sw, &sh);
+    if (pw == sw && ph == sh) return;
+    rhi_notify_resize_immediate(dev);
+    (void)openpete_native_launcher_present(dev, 0.0f, 0.0f, 0.0f, NULL, NULL);
+    rhi_swapchain_extent(dev, &sw, &sh);
+    OPL_INFO_F("native", "window %dx%d: swapchain rebuilt to %dx%d and a black frame presented",
+               pw, ph, sw, sh);
+}
+
 /** @brief Apply the --fullscreen launch state and the --background placement to the game's window once bring-up has compiled its pipelines.
  *
  * Runs after the pipeline precompile, so the compile stage's progress
- * screen draws in the launcher's window and the switch to fullscreen comes
- * with the game's first picture. --fullscreen 1 enters borderless-desktop
- * fullscreen, the state openpete_native_toggle_fullscreen switches into;
- * --background wins over it and keeps the window windowed and behind the
- * others. Logs the window state for a harness. A headless run has no
- * window and applies nothing.
+ * screen draws in the launcher's window. --fullscreen 1 enters
+ * borderless-desktop fullscreen, the state openpete_native_toggle_fullscreen
+ * switches into: a black frame is shown at the windowed size first
+ * (nr_present_black_shown), so the image the compositor holds through the
+ * swapchain rebuild is black, then the swapchain is rebuilt at the
+ * fullscreen size with a black frame presented at once
+ * (nr_present_at_window_size), so the window never shows the launcher image
+ * pinned at its old size; the renderer's window size is set to
+ * the window's pixel size for the first scene. --background wins over
+ * --fullscreen and keeps the window windowed and behind the others. Logs the
+ * window state for a harness. A headless run has no window and applies
+ * nothing.
  * @param win The window, or NULL.
  * @param opts The session options. */
 static void nr_apply_game_window_placement(SDL_Window *win, const openpete_options_t *opts)
 {
     if (!win) return;
+    rhi_present_trace_arm(s_nr.dev, "placement");
     s_background_requested = opts->background > 0;
     if (opts->fullscreen && s_background_requested) {
         /* A fullscreen window covers the screen, which is the one thing
@@ -5986,12 +6050,23 @@ static void nr_apply_game_window_placement(SDL_Window *win, const openpete_optio
         OPL_WARN_F("native", "%s", "--background with --fullscreen 1: "
                    "--background wins, staying windowed");
     } else if (opts->fullscreen) {
+        nr_present_black_shown(s_nr.dev);
         SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
         SDL_SetWindowFullscreen(win, true);
         OPL_INFO_F("native", "%s", "--fullscreen: borderless desktop at launch");
     }
     if (s_background_requested)
         openpete_window_send_to_back(win);
+    nr_present_at_window_size(win, s_nr.dev);
+    /* The first scene's layout takes the window's pixel size as already
+     * adopted, so it neither waits out the resize debounce nor lays out at
+     * the requested (logical) size. */
+    int pw = 0, ph = 0;
+    if (SDL_GetWindowSizeInPixels(win, &pw, &ph) && pw > 0 && ph > 0) {
+        s_nr.win_w = s_nr.pending_w = pw;
+        s_nr.win_h = s_nr.pending_h = ph;
+    }
+    openpete_native_publish_fullscreen();
     nr_log_window_state(win, "bring-up");
 }
 
@@ -6036,8 +6111,12 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     SDL_SetWindowResizable(win, true);
     int cur_w = 0, cur_h = 0;
     SDL_GetWindowSize(win, &cur_w, &cur_h);
-    if (cur_w != w || cur_h != h)
+    if (cur_w != w || cur_h != h) {
+        rhi_present_trace_arm(dev, "adopt resize");
+        nr_present_black_shown(dev);
         SDL_SetWindowSize(win, w, h);
+        nr_present_at_window_size(win, dev);
+    }
     nr_apply_game_window_icon(win);
     nr_apply_scoped_present(dev, opts, created_vsync);
     /* M-key dev config overlay: attaches to the imgui context the launcher
@@ -6521,6 +6600,7 @@ void openpete_native_toggle_fullscreen(void)
     /* The size change this causes lands in ONE step, so neither settle window
      * applies to it: adopt it as soon as it is seen. */
     s_nr.resize_immediate_at_ns = SDL_GetTicksNS(); /* clock-guard: wall */ /* resize debounce */
+    rhi_present_trace_arm(s_nr.dev, fs ? "toggle to windowed" : "toggle to fullscreen");
     SDL_SetWindowFullscreen(s_nr.window, !fs);
     SDL_SetAtomicInt(&s_nr_fullscreen, !fs);
     OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");

@@ -631,6 +631,9 @@ struct rhi_device {
     Uint64   recreate_backoff_until_ns;
     /* Window size as last observed while waiting for a resize to settle. */
     int      last_seen_w, last_seen_h;
+    /* Window pixel size when the swapchain was created; ensure_swapchain
+     * rebuilds before a present once the window no longer has it. */
+    int      sc_win_w, sc_win_h;
     Uint64   size_stable_since_ns;
     /* Display timing (VK_KHR_present_id + VK_KHR_present_wait), when the
      * driver offers both. Each present carries an id; waiting on an id blocks
@@ -1880,6 +1883,7 @@ static bool create_swapchain(rhi_device *dev)
 
     VkExtent2D extent = choose_extent(dev, &caps);
     if (extent.width == 0 || extent.height == 0) return false; /* minimized */
+    SDL_GetWindowSizeInPixels(dev->window, &dev->sc_win_w, &dev->sc_win_h);
 
     uint32_t fn = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, NULL);
@@ -2841,6 +2845,142 @@ static void destroy_swapchain_resources(rhi_device *dev)
     if (dev->swapchain) { vkDestroySwapchainKHR(dev->device, dev->swapchain, NULL); dev->swapchain = VK_NULL_HANDLE; }
 }
 
+/* Present-extent trace (OPENPETE_PRESENT_EXTENT_TRACE); see
+ * rhi_present_trace_arm. The arm instant is 0 until the first arm. */
+#define RHI_PXT_BUDGET 64
+static int s_pxt_on = -1;
+static _Atomic uint64_t s_pxt_t0;
+static _Atomic int s_pxt_left;         /* present and skip lines left in this window */
+static _Atomic uint64_t s_pxt_size_ns; /* last pixel-size event not yet followed by a matching present */
+static _Atomic unsigned s_pxt_mismatch;
+static _Atomic unsigned s_pxt_presents;
+static uint64_t s_pxt_game0_ns;        /* first game present after the arm; presenting thread only */
+static int s_pxt_content;              /* 0 none seen, 1 any non-black pixel seen, 2 >= 1% seen */
+static long pxt_nonblack(rhi_device *dev, VkImage img);
+
+/** @brief Return whether OPENPETE_PRESENT_EXTENT_TRACE is set to a value not starting with 0 (read once). */
+static bool pxt_enabled(void)
+{
+    if (s_pxt_on < 0) {
+        const char *e = getenv("OPENPETE_PRESENT_EXTENT_TRACE");
+        s_pxt_on = (e && *e && *e != '0');
+    }
+    return s_pxt_on > 0;
+}
+
+/** @brief Return milliseconds from the trace arm to @p now.
+ *
+ * @param now ns on the SDL tick clock.
+ * @return The interval in ms. */
+static double pxt_ms(uint64_t now)
+{
+    return (double)(now - atomic_load(&s_pxt_t0)) / 1e6;
+}
+
+/** @brief SDL event watch that logs window pixel-size and fullscreen events and stamps the pixel-size change.
+ *
+ * Runs on the thread that raises the event (on Win32 inside the call that
+ * resized the window).
+ * @param ud Unused.
+ * @param ev The event.
+ * @return true, so the event is queued as usual. */
+static bool SDLCALL pxt_event_watch(void *ud, SDL_Event *ev)
+{
+    (void)ud;
+    const char *what = ev->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ? "pixel-size"
+                     : ev->type == SDL_EVENT_WINDOW_RESIZED ? "resized"
+                     : ev->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ? "enter-fullscreen"
+                     : ev->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN ? "leave-fullscreen" : NULL;
+    if (!what) return true;
+    const uint64_t now = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
+    if (ev->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) atomic_store(&s_pxt_size_ns, now);
+    RHI_LOG("pxt %9.2f ms event %s %dx%d\n", pxt_ms(now), what,
+            (int)ev->window.data1, (int)ev->window.data2);
+    return true;
+}
+
+void rhi_present_trace_arm(rhi_device *dev, const char *why)
+{
+    if (!dev || dev->headless || !pxt_enabled()) return;
+    static bool watched;
+    if (!watched) { SDL_AddEventWatch(pxt_event_watch, NULL); watched = true; }
+    const uint64_t now = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
+    atomic_store(&s_pxt_t0, now);
+    atomic_store(&s_pxt_left, RHI_PXT_BUDGET);
+    atomic_store(&s_pxt_mismatch, 0u);
+    atomic_store(&s_pxt_presents, 0u);
+    s_pxt_game0_ns = 0;
+    s_pxt_content = 0;
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(dev->window, &w, &h);
+    RHI_LOG("pxt %9.2f ms arm (%s): window %dx%d extent %ux%u\n", 0.0, why ? why : "",
+            w, h, dev->sc_extent.width, dev->sc_extent.height);
+}
+
+/** @brief Log one present against the window's pixel size inside an armed trace window, with its content until the game's first picture.
+ *
+ * A game present is read back (the image it presented, waited idle) while
+ * no present since the arm held non-black content, within 30 s of the arm;
+ * the first present with a non-black pixel and the first with at least 1%
+ * non-black pixels each log their time after the arm and after the first
+ * game present.
+ * @param dev Device that presented.
+ * @param src Source label; NULL names it from the launcher-frame flag.
+ * @param pr The vkQueuePresentKHR result.
+ * @param img The image whose content was presented (TRANSFER_SRC), or VK_NULL_HANDLE. */
+static void pxt_present(rhi_device *dev, const char *src, VkResult pr, VkImage img)
+{
+    if (s_pxt_on <= 0 || atomic_load(&s_pxt_t0) == 0) return;
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(dev->window, &w, &h);
+    const bool match = w == (int)dev->sc_extent.width && h == (int)dev->sc_extent.height;
+    const uint64_t now = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
+    if (!src) src = atomic_load(&s_launcher_frames) ? "launcher" : "game";
+    if (!match) atomic_fetch_add(&s_pxt_mismatch, 1u);
+    const unsigned n = atomic_fetch_add(&s_pxt_presents, 1u) + 1u;
+    uint64_t sz = atomic_load(&s_pxt_size_ns);
+    if (match && sz && atomic_compare_exchange_strong(&s_pxt_size_ns, &sz, 0))
+        RHI_LOG("pxt %9.2f ms first present at the window size %dx%d (%s): %.2f ms after the "
+                "pixel-size change; presents since arm %u, mismatched %u\n", pxt_ms(now), w, h,
+                src, (double)(now - sz) / 1e6, n, atomic_load(&s_pxt_mismatch));
+    long nb = -1;
+    const bool game = !strcmp(src, "game");
+    if (game && !s_pxt_game0_ns) s_pxt_game0_ns = now;
+    if (game && img != VK_NULL_HANDLE && s_pxt_content < 2 && pxt_ms(now) < 30000.0) {
+        nb = pxt_nonblack(dev, img);
+        const long total = (long)dev->sc_extent.width * (long)dev->sc_extent.height;
+        const int level = nb >= total / 100 && nb > 0 ? 2 : nb > 0 ? 1 : 0;
+        if (level > s_pxt_content) {
+            for (int l = s_pxt_content + 1; l <= level; l++)
+                RHI_LOG("pxt %9.2f ms content: first game present with %s non-black pixels "
+                        "(#%u, %ld of %ld px), %.2f ms after the first game present\n",
+                        pxt_ms(now), l == 1 ? "any" : ">= 1%", n, nb, total,
+                        (double)(now - s_pxt_game0_ns) / 1e6);
+            s_pxt_content = level;
+        }
+    }
+    if (atomic_fetch_sub(&s_pxt_left, 1) <= 0) return;
+    RHI_LOG("pxt %9.2f ms present #%u %s window %dx%d extent %ux%u %s result %d nonblack %ld\n",
+            pxt_ms(now), n, src, w, h, dev->sc_extent.width, dev->sc_extent.height,
+            match ? "match" : "MISMATCH", (int)pr, nb);
+}
+
+/** @brief Log one present that ensure_swapchain refused inside an armed trace window.
+ *
+ * @param dev Device whose present was refused.
+ * @param why Reason label. */
+static void pxt_skip(rhi_device *dev, const char *why)
+{
+    if (s_pxt_on <= 0 || atomic_load(&s_pxt_t0) == 0) return;
+    if (atomic_fetch_sub(&s_pxt_left, 1) <= 0) return;
+    int w = 0, h = 0;
+    SDL_GetWindowSizeInPixels(dev->window, &w, &h);
+    RHI_LOG("pxt %9.2f ms skip (%s) %s window %dx%d extent %ux%u\n",
+            pxt_ms(SDL_GetTicksNS()), why, /* clock-guard: wall: trace timestamp */
+            atomic_load(&s_launcher_frames) ? "launcher" : "game", w, h,
+            dev->sc_extent.width, dev->sc_extent.height);
+}
+
 /** @brief Rebuild the swapchain and every object sized to it, restarting the acquire and present synchronization.
  *
  * Waits for the device to go idle, resets the present-id counters, replaces
@@ -2855,6 +2995,8 @@ static void destroy_swapchain_resources(rhi_device *dev)
  *         retries because needs_recreate stays set. */
 static bool recreate(rhi_device *dev)
 {
+    const VkExtent2D pxt_old = dev->sc_extent;
+    const uint64_t pxt_t0 = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
     vkDeviceWaitIdle(dev->device);
     /* Present ids belong to a swapchain. The new one starts its sequence over,
      * and any id still outstanding against the old one can never complete. */
@@ -2893,13 +3035,23 @@ static bool recreate(rhi_device *dev)
         dev->pacquired = false;
     }
     destroy_swapchain_resources(dev);
+    const uint64_t pxt_t1 = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
     if (!create_swapchain(dev)) return false;   /* also nulls images_in_flight */
+    const uint64_t pxt_t2 = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
     if (!create_offscreen(dev)) return false;
     if (!create_stages(dev)) return false;
     VkSemaphoreCreateInfo sem = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     for (uint32_t i = 0; i < dev->sc_count; i++)
         VK_CHECK(vkCreateSemaphore(dev->device, &sem, NULL, &dev->render_done[i]));
     dev->needs_recreate = false;
+    if (s_pxt_on > 0 && atomic_load(&s_pxt_t0)) {
+        const uint64_t now = SDL_GetTicksNS(); /* clock-guard: wall: trace timestamp */
+        RHI_LOG("pxt %9.2f ms recreate %ux%u -> %ux%u in %.2f ms (idle+teardown %.2f, "
+                "vkCreateSwapchainKHR+images %.2f, targets %.2f)\n", pxt_ms(now),
+                pxt_old.width, pxt_old.height, dev->sc_extent.width, dev->sc_extent.height,
+                (double)(now - pxt_t0) / 1e6, (double)(pxt_t1 - pxt_t0) / 1e6,
+                (double)(pxt_t2 - pxt_t1) / 1e6, (double)(now - pxt_t2) / 1e6);
+    }
     return true;
 }
 
@@ -3942,6 +4094,7 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
         }
         if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
             dev->needs_recreate = true;
+            pxt_skip(dev, "acquire out of date");
             return 0;
         } else if (acq == VK_ERROR_DEVICE_LOST) {
             rhi_signal_device_lost("acquire");
@@ -3983,10 +4136,26 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
     return 1;
 }
 
+/** @brief Return whether the window's pixel size is no longer the one the swapchain was created for.
+ *
+ * A window reporting no size (minimized, or before it maps) counts as
+ * unchanged.
+ * @param dev Windowed device.
+ * @return true when the window has a nonzero pixel size other than the
+ *         creation-time size. */
+static bool window_left_swapchain_size(const rhi_device *dev)
+{
+    int ww = 0, wh = 0;
+    if (!SDL_GetWindowSizeInPixels(dev->window, &ww, &wh) || ww <= 0 || wh <= 0) return false;
+    return ww != dev->sc_win_w || wh != dev->sc_win_h;
+}
+
 /** @brief Rebuild the swapchain when needs_recreate is set, unless the window is mid-resize or inside the rebuild back-off.
  *
- * Windowed only; headless always returns true. While the window's pixel size
- * changed since the last call, or has been stable for less than
+ * Windowed only; headless always returns true. needs_recreate is also set
+ * when the window's pixel size is no longer the one the swapchain was created
+ * for, so no present goes out at an extent the window does not have. While
+ * the window's pixel size changed since the last call, or has been stable for less than
  * RHI_RESIZE_SETTLE_NS, no rebuild runs (a discrete resize skips this wait).
  * A rebuild is also withheld until recreate_backoff_until_ns, which each
  * attempt sets RHI_ACQUIRE_BACKOFF_NS ahead, so an OUT_OF_DATE reported on
@@ -3996,6 +4165,12 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
  *         skip its present. */
 static bool ensure_swapchain(rhi_device *dev)
 {
+    /* A window resized since the swapchain was built gets a rebuild before
+     * its next present. Not every window system refuses a present of the old
+     * extent (OUT_OF_DATE); one that accepts it shows the image at its old
+     * size in the corner of the window, or scaled. */
+    if (!dev->needs_recreate && !dev->headless && window_left_swapchain_size(dev))
+        dev->needs_recreate = true;
     if (dev->needs_recreate && !dev->headless) {
         /* Rate-limit. A live resize reports OUT_OF_DATE on every frame, and
          * each recreate is a vkDeviceWaitIdle plus a full swapchain teardown
@@ -4015,14 +4190,19 @@ static bool ensure_swapchain(rhi_device *dev)
                 dev->last_seen_w = cw;
                 dev->last_seen_h = ch;
                 dev->size_stable_since_ns = SDL_GetTicksNS();
+                pxt_skip(dev, "size moving");
                 return false;
             }
-            if (SDL_GetTicksNS() - dev->size_stable_since_ns < RHI_RESIZE_SETTLE_NS)
+            if (SDL_GetTicksNS() - dev->size_stable_since_ns < RHI_RESIZE_SETTLE_NS) {
+                pxt_skip(dev, "settle");
                 return false;
+            }
         }
         if (dev->recreate_backoff_until_ns &&
-            SDL_GetTicksNS() < dev->recreate_backoff_until_ns)
+            SDL_GetTicksNS() < dev->recreate_backoff_until_ns) {
+            pxt_skip(dev, "recreate back-off");
             return false;
+        }
         Uint64 t0 = SDL_GetTicksNS();
         bool ok = recreate(dev);
         if (ok && dev->resize_discrete) {
@@ -4461,6 +4641,7 @@ void rhi_end_frame(rhi_device *dev)
     };
     Uint64 pres_t0 = SDL_GetTicksNS();
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    pxt_present(dev, NULL, pr, dev->off_image);
     if (dev->has_present_timing && pr >= 0) {
         dev->present_id_submitted = this_id;
         dev->present_id_next++;
@@ -4636,6 +4817,7 @@ bool rhi_present_stage_submit(rhi_device *dev, int stage)
     };
     Uint64 pres_t0 = SDL_GetTicksNS();
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    pxt_present(dev, NULL, pr, dev->stage_image[stage]);
     if (dev->has_present_timing && pr >= 0) {
         dev->present_id_submitted = this_id;
         dev->present_id_next++;
@@ -4713,6 +4895,7 @@ bool rhi_present_stage_release(rhi_device *dev)
     /* No VkPresentIdKHR on this present: it is not a frame anyone waits on,
      * and the id sequence stays with the real submits. */
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    pxt_present(dev, "release", pr, VK_NULL_HANDLE);
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) dev->needs_recreate = true;
     else if (pr == VK_ERROR_DEVICE_LOST) { rhi_signal_device_lost("stage-release"); return false; }
     return true;
@@ -6048,6 +6231,39 @@ static void readback_swizzle(const rhi_device *dev, const void *src_, void *dst_
 static size_t rt_readback_bytes(int w, int h)
 {
     return (size_t)w * (size_t)h * RHI_RT_TEXEL_BYTES;
+}
+
+/** @brief Count the non-black pixels of a swapchain-sized image in TRANSFER_SRC layout, for the present-extent trace.
+ *
+ * Waits the device idle and copies the image through the readback staging
+ * buffer. A pixel is non-black when any color channel exceeds 8.
+ * @param dev Device owning the image.
+ * @param img Image of the swapchain extent, in TRANSFER_SRC_OPTIMAL.
+ * @return The count, or -1 when staging cannot be allocated. */
+static long pxt_nonblack(rhi_device *dev, VkImage img)
+{
+    const int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
+    const size_t need = rt_readback_bytes(w, h);
+    vkDeviceWaitIdle(dev->device);
+    if (!dev->readback_buf || dev->readback_buf->size < need) {
+        if (dev->readback_buf) rhi_destroy_buffer(dev, dev->readback_buf);
+        dev->readback_buf = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+    }
+    rhi_buffer *rb = dev->readback_buf;
+    if (!rb) return -1;
+    VkCommandBuffer cb = one_shot_begin(dev);
+    if (cb == VK_NULL_HANDLE) return -1;
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+    };
+    vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rb->buffer, 1, &region);
+    one_shot_end(dev, cb);
+    const uint8_t *px = (const uint8_t *)rb->mapped;
+    long n = 0;
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++)
+        n += (px[i * 4] > 8 || px[i * 4 + 1] > 8 || px[i * 4 + 2] > 8);
+    return n;
 }
 
 bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,

@@ -92,9 +92,9 @@ struct SDL_Window *openpete_native_launcher_window(void);
  * @param r Clear red, 0..1.
  * @param g Clear green, 0..1.
  * @param b Clear blue, 0..1.
- * @param draw Issues the frame's imgui calls.
+ * @param draw Issues the frame's imgui calls; NULL presents the clear alone.
  * @param ud Passed to @p draw.
- * @return 1 when a frame was drawn, 0 otherwise. */
+ * @return 1 when a frame was drawn, 0 otherwise (always 0 for a NULL @p draw). */
 int openpete_native_launcher_present(struct rhi_device *dev, float r, float g, float b,
                                      void (*draw)(void *ud), void *ud);
 
