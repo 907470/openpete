@@ -23,10 +23,14 @@ Beside the movie it writes `<movie>.args`, the launch flags of the recorded
 run minus the `--bk2` flags, so a replay starts the same way. Settings that
 came from `openpete.toml` are not in it.
 
-A Spyro 2 or 3 movie holds one input line per VBL and carries the line
-`OpenpeteFeedKey vbl` in its `Header.txt`. A Spyro 1 movie holds one line per
-VBL at which the game hands control back to the program. A Spyro 2 or 3 movie
-without the header line, recorded by an earlier version, is converted when it
+A movie holds one input line per pad read, grouped by the game's input
+step, which runs once per tick: `Input Groups.txt` in the movie holds the
+number of lines of each step, and `Header.txt` carries the line
+`OpenpeteFeedKey consume`. A replay feeds each step the lines it recorded, in
+order, so a movie does not depend on how the program times VBLs against
+ticks. A movie recorded by an earlier version holds one line per VBL (with
+the line `OpenpeteFeedKey vbl`) or one per VBL at which the game hands
+control back to the program (with no such line); it is converted when it
 loads: each VBL replays the line that version read at that point.
 
 Combined with `--bk2 OLD.bk2`, recording replays the old movie and then keeps

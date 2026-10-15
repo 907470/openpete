@@ -1,0 +1,70 @@
+/* core/include/bk2_feed.h - the replayed movie's row at the current row
+ * position, the run's (E, j) map, and the group-count instrument.
+ *
+ * A consume-keyed movie stamps row j of group E (openpete_consume,
+ * openpete_consume_write; bk2_movie_group_row); a movie on an older key
+ * stamps the row its counter indexes (openpete_frame, or openpete_vbl for
+ * "OpenpeteFeedKey vbl"), which replays it as recorded and is the
+ * conversion tools/bk2_rekey.py writes to the consume key.
+ *
+ * The module observes every pad write of a yield and consumer entry
+ * (openpete_feed_observer_t), outside runahead speculation, to:
+ *   - collect each iteration's writes for the recorder (bk2_feed_iter_take);
+ *   - write the OPENPETE_FEED_MAP log: `W row e j` per write, with the row
+ *     the host stamped before it (as bk2_feed_row returned it; -1 with no
+ *     movie), and `P frame vbl e j` per canonical
+ *     present (bk2_feed_map_present);
+ *   - count, for a consume-keyed movie, the groups whose recorded row count
+ *     differs from the writes the replay took in them (bk2_feed_report).
+ */
+#ifndef OPENPETE_BK2_FEED_H
+#define OPENPETE_BK2_FEED_H
+
+#include "bk2_movie.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** @brief Install the write and consumer observer, and select the replayed movie.
+ *
+ * @param m The movie replayed by --bk2, or NULL when none; it must outlive
+ *        the run.
+ * @param offset The counter value at which row 0 (group 0) plays. */
+void bk2_feed_open(const bk2_movie_t* m, int offset);
+
+/** @brief Return the movie row the host stamps at the current row position.
+ *
+ * @return The row index; negative before the movie (-1 with none open);
+ *         the movie's row count or more once it has ended. */
+int  bk2_feed_row(void);
+
+/** @brief Note the row the host stamped for the next yield, for the map's W lines.
+ * @param row The row, as bk2_feed_row returned it. */
+void bk2_feed_stamped(int row);
+
+/** @brief Take the writes the iteration's yield ran, for the recorder, and clear them.
+ *
+ * @param e Receives openpete_consume at the first of them.
+ * @param e_last Receives openpete_consume at the last of them.
+ * @param j Receives openpete_consume_write at the first of them.
+ * @return The number of pad writes of yields since the previous call. */
+unsigned bk2_feed_iter_take(unsigned* e, unsigned* e_last, unsigned* j);
+
+/** @brief Write a `P frame vbl e j` line to the OPENPETE_FEED_MAP log, when it is open. */
+void bk2_feed_map_present(void);
+
+/** @brief Log the group-count instrument of a consume-keyed movie.
+ *
+ * Compared: every group the replay closed (its consumer ran again) and,
+ * once the movie ended, the last group. Logged as `bk2 feed groups:` with
+ * the groups compared, those with fewer writes than rows (unread trailing
+ * rows) and those with more (held rows). Nothing for a movie on an older
+ * key or with no movie. */
+void bk2_feed_report(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

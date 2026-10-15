@@ -904,7 +904,9 @@ static void vbl_device_mmio(void) {
  * PsyCross's VSync. libpad's command sequence advances when the schedule
  * records a pad command at `key`; a VBLANK without a poll restores the
  * first pad buffer. A final yield publishes the innermost wait's park site
- * before it switches.
+ * before it switches. The host's pad write during a yield, and its first
+ * stamp at the first fast-boot VBL, advance the bk2 row position
+ * (openpete_feed_pad_write).
  * @param cpu Guest CPU state.
  * @param key Reference VBLANK index the card step and pad command belong to.
  * @param final_wait Nonzero when this yield ends a psyq_VSync wait. */
@@ -918,6 +920,10 @@ static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
     if (s_pad_buf0) for (uint32_t k = 0; k < 8u; k++) pad_prev[k] = cpu->read_byte(s_pad_buf0 + k);
 
     if (openpete_fast_boot_active) {
+        /* The host's first stamp, made before the fiber first ran, is the
+         * pad write every fast-boot VBL repeats: one write, at (E, j) 0. */
+        static int s_boot_pad_write = 0;
+        if (!s_boot_pad_write) { s_boot_pad_write = 1; openpete_feed_pad_write(); }
         /* Fast-boot: don't yield to the host, so the boot spins run at full
          * CPU speed and openpete_frame stays anchored at 0 until the first
          * frame of real content. The game's own per-frame callbacks still
@@ -937,6 +943,9 @@ static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
         openpete_yield_final = final_wait ? 1 : 0;
         openpete_yield_to_host();
         openpete_yield_final = 0;
+        /* The host wrote the pad buffer from its stamp during the yield; the
+         * slots below read it whether or not libpad polls this VBL. */
+        openpete_feed_pad_write();
         psyq_run_vsync_slots(cpu);
     } else {
         /* No fiber loop (smoke-test path) - fall back to PsyCross's busy

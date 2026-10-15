@@ -481,6 +481,19 @@ uint64_t openpete_loop_insns_since_anchor(void) { return s_loop_insns_anchor; }
 
 void openpete_loop_anchor_set(uint32_t pc) { s_loop_anchor_pc = pc; }
 
+/* The game's pad-ring consumer, whose entries openpete_consume counts. */
+static uint32_t s_consume_pc = 0u;
+
+void openpete_consume_pc_set(uint32_t pc) { s_consume_pc = pc; }
+
+/** @brief Count a function entry against the per-tick anchors: the loop anchor and the pad-ring consumer.
+ *
+ * @param addr The entered function's guest address. */
+static inline void count_entry_anchors(uint32_t addr) {
+    if (addr == s_loop_anchor_pc) { s_loop_anchor_ticks++; s_loop_insns_anchor = 0u; }
+    if (addr == s_consume_pc) openpete_feed_consume_enter();
+}
+
 uint32_t openpete_loop_anchor_ticks(void) { return s_loop_anchor_ticks; }
 
 /* Function entries since openpete_vbl last changed, for the spin tick. */
@@ -547,7 +560,7 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         s_hang_recent_head = (s_hang_recent_head + 1u) % HANG_RECENT;
     }
     spin_tick(cpu, vbl_now, addr);
-    if (addr == s_loop_anchor_pc) { s_loop_anchor_ticks++; s_loop_insns_anchor = 0u; }
+    count_entry_anchors(addr);
     /* Pad-read probe: the guest function that consumes the pad buffer. Sited
      * here because every translated function entry passes through this call,
      * ahead of every game and mod override arm. */

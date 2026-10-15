@@ -100,6 +100,7 @@ add_library(openpete_core STATIC
     record/record.c
     record/bk2_movie.c
     record/bk2_record.c
+    record/bk2_feed.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
     record/savestate.c
     record/rewind.c

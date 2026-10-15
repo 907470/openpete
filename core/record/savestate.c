@@ -1,10 +1,10 @@
 // core/record/savestate.c - save/load of openpete game state to slot files.
 //
-// v5 file layout (little-endian throughout, no padding inside the header
+// v6 file layout (little-endian throughout, no padding inside the header
 // thanks to fixed-size fields):
 //
 //   uint32_t  magic         = 'OSv1' (0x3176534F LE)
-//   uint32_t  version       = 5
+//   uint32_t  version       = 6
 //   char      ident[32]     - content identity, see ident_fill()
 //   uint32_t  frame         - openpete_frame (VBL counter) at save
 //   uint32_t  cpu_bytes
@@ -28,7 +28,11 @@
 //   uint32_t  park_ra       - park site of the save: the guest ra of the
 //   uint32_t  park_sp         psyq_VSync call whose final yield the fiber
 //                             was parked at, and the guest sp there
-//                             (openpete_yield_site); v5 only
+//                             (openpete_yield_site); v5 and later
+//   uint32_t  consume       - openpete_consume (entries of the game's
+//                             pad-ring consumer, E) and openpete_consume_write
+//   uint32_t  consume_write   (pad writes since that entry, j): a
+//                             consume-keyed bk2's row position; v6 only
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
 //   uint8_t   scratch[scratch_bytes]
@@ -53,8 +57,9 @@
 //
 // Compat (unsited load): a v4 file carries no park site. It is read with
 // park_ra = park_sp = 0 and loads at any final yield, the rule before
-// sites were recorded, with a warning. The header layout is versioned by
-// `version` alone; OPENPETE_STATE_ABI is unchanged, so a v4 file keeps its
+// sites were recorded, with a warning. A v4 or v5 file carries no consume
+// position and leaves openpete_consume and openpete_consume_write as they
+// are. The header layout is versioned by `version` alone; OPENPETE_STATE_ABI is unchanged, so a v4 file keeps its
 // identity. An attempt to memcpy the fiber memory was reverted
 // because libco's Windows backend uses an opaque OS-fiber handle that
 // can't be serialised, and the cross-platform split wasn't worth the
@@ -141,9 +146,9 @@ extern int g_cdXaStartVBL;
 #endif
 
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
-#define OPENPETE_STATE_VERSION  5u
-/* The oldest header version this build reads: v4, the v5 header without
- * the park site. */
+#define OPENPETE_STATE_VERSION  6u
+/* The oldest header version this build reads: v4, the v6 header without
+ * the park site and the consume position. */
 #define OPENPETE_STATE_VERSION_MIN 4u
 #define OPENPETE_STATE_HASH_LEN 32
 /* Bytes of the header's game id field; an id fills at most LEN - 1. */
@@ -186,21 +191,25 @@ typedef struct {
     uint32_t vbl_device;       /* openpete_vbl_device: every VBLANK elapsed */
     uint32_t park_ra;          /* v5: openpete_yield_site.ra at the save */
     uint32_t park_sp;          /* v5: openpete_yield_site.sp at the save */
+    uint32_t consume;          /* v6: openpete_consume (E) at the save */
+    uint32_t consume_write;    /* v6: openpete_consume_write (j) at the save */
 } openpete_state_header_t;
 
 /* The header's size is fixed per version: the game field replaced
  * reserved[3]; v4 appended vbl_device (104 bytes); v5 appended the park
- * site (112 bytes). */
+ * site (112 bytes); v6 the consume position (120 bytes). */
 #define STATE_HEADER_V4_BYTES ((size_t)offsetof(openpete_state_header_t, park_ra))
-typedef char state_header_size_check[sizeof(openpete_state_header_t) == 112 ? 1 : -1];
+#define STATE_HEADER_V5_BYTES ((size_t)offsetof(openpete_state_header_t, consume))
+typedef char state_header_size_check[sizeof(openpete_state_header_t) == 120 ? 1 : -1];
 typedef char state_header_v4_size_check[STATE_HEADER_V4_BYTES == 104 ? 1 : -1];
+typedef char state_header_v5_size_check[STATE_HEADER_V5_BYTES == 112 ? 1 : -1];
 
 /** @brief Read a state header of any version this build reads, leaving the file just past it.
  *
- * Reads the v4 prefix, then the v5 park site when the version carries it;
- * a v4 header reads with the park site zero (none). Magic and version are
- * left to the caller's checks; a version outside the readable range reads
- * only the prefix.
+ * Reads the v4 prefix, then the fields each later version appended (v5 the
+ * park site, v6 the consume position); a field the version lacks reads as
+ * zero. Magic and version are left to the caller's checks; a version
+ * outside the readable range reads only the prefix.
  * @param fp The state file, at offset 0.
  * @param hdr Receives the header.
  * @return 0 when the header's bytes were read, -1 on a short read. */
@@ -210,7 +219,8 @@ static int state_header_read(FILE* fp, openpete_state_header_t* hdr) {
     if (hdr->magic != OPENPETE_STATE_MAGIC || hdr->version < 5u ||
         hdr->version > OPENPETE_STATE_VERSION)
         return 0;
-    const size_t tail = sizeof *hdr - STATE_HEADER_V4_BYTES;
+    const size_t end = hdr->version >= 6u ? sizeof *hdr : STATE_HEADER_V5_BYTES;
+    const size_t tail = end - STATE_HEADER_V4_BYTES;
     return fread((uint8_t*)hdr + STATE_HEADER_V4_BYTES, 1, tail, fp) == tail ? 0 : -1;
 }
 
@@ -576,6 +586,8 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
         hdr.park_ra = openpete_yield_site.ra;
         hdr.park_sp = openpete_yield_site.sp;
     }
+    hdr.consume          = openpete_consume;
+    hdr.consume_write    = openpete_consume_write;
     hdr.spu_state_bytes  = PsyX_SPUAL_StateSize();
     hdr.spu_mem_bytes    = PsyX_SPUAL_MemSize();
     hdr.cd_state_bytes   = (uint32_t)sizeof(state_cd_t);
@@ -712,6 +724,16 @@ static int state_game_check(const char* path, const openpete_state_header_t* hdr
                 "no ROM hash to prove it is %s (%s); load refused - running state untouched",
                 path, want, game_get_display_name());
     return -1;
+}
+
+/** @brief Restore the bk2 row position (E, j) a state header carries.
+ *
+ * A header before v6 carries none; the live position stays.
+ * @param hdr The loaded header. */
+static void state_consume_restore(const openpete_state_header_t* hdr) {
+    if (hdr->version < 6u) return;
+    openpete_consume      = hdr->consume;
+    openpete_consume_write = hdr->consume_write;
 }
 
 /** @brief Admit a state file's park site: the fiber must be parked at a final yield of the psyq_VSync call the state was saved in.
@@ -934,6 +956,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * a wild delta and the timeline leads by one VBL. */
     SDL_SetAtomicInt(&openpete_vbl, (int)hdr.vbl);
     SDL_SetAtomicInt(&openpete_vbl_device, (int)hdr.vbl_device);
+    state_consume_restore(&hdr);
 
     /* Per-game post-load resync - restores any host-side state that
      * mirrors RAM (e.g. Spyro's active-overlay dispatcher pointer). */
@@ -981,6 +1004,8 @@ struct openpete_state_mem {
     openpete_park_site_t site;  /* the park site at the save */
     uint32_t   vbl;
     uint32_t   vbl_device;
+    uint32_t   consume;
+    uint32_t   consume_write;
     uint8_t    cpu_buf[CPU_REG_BYTES];
     uint8_t    scratch_buf[OPENPETE_PSX_SCRATCH_SIZE];
     uint8_t*   ram;        /* 2 MiB */
@@ -1054,6 +1079,8 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     m->site  = openpete_yield_final ? openpete_yield_site : (openpete_park_site_t){0u, 0u};
     m->vbl   = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     m->vbl_device = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
+    m->consume    = openpete_consume;
+    m->consume_write = openpete_consume_write;
     memcpy(m->cpu_buf,     cpu,                        CPU_REG_BYTES);
     memcpy(m->ram,         openpete_psx_get_ram(),     OPENPETE_PSX_RAM_SIZE);
     memcpy(m->scratch_buf, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
@@ -1113,6 +1140,8 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     openpete_mods_arena_mem_restore(m->arena, m->arena_used);
     SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
     SDL_SetAtomicInt(&openpete_vbl_device, (int)m->vbl_device);
+    openpete_consume = m->consume;
+    openpete_consume_write = m->consume_write;
     if (!quiet) {
         game_on_state_loaded(cpu);
         openpete_guest_discontinuity_notify();

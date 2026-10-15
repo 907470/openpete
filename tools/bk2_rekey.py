@@ -1,31 +1,40 @@
 #!/usr/bin/env python3
-"""Re-key Spyro 2 and 3 test data from the yield counter to the VBL counter.
+"""Re-key bk2 movies onto the consume key (E, j).
 
-A bk2 row, a --frame-limit, a --screenshot-on-frame pin and every other
-frame number a Spyro 2 or 3 harness passes were indexed by `openpete_frame`,
-the count of the game fiber's yields. The feed key of those games is now
-`openpete_vbl`, the count of VBLs psyq_VSync has run. The two differ by the
-fast-boot VBLs (which run without a yield) and by every VSync(n > 1) excess
-(one yield for n VBLs), so the conversion of a number is read off a run,
-never computed.
+A bk2 row was indexed by `openpete_frame` (the game fiber's yields; Spyro 1,
+and Spyro 2 and 3 movies without a key line) or by `openpete_vbl` (Header.txt
+`OpenpeteFeedKey vbl`; Spyro 2 and 3). The consume key groups rows by E,
+`openpete_consume`, the entries of the game's pad-ring consumer (Spyro 1
+GamestateUpdate 0x8003385C, Spyro 2 func_8001271C, Spyro 3 func_8003A584),
+with one row per host pad write (one per yield of a VBL body) inside a
+group, j being
+`openpete_consume_write`. Before each yield the host stamps row j of group E,
+holding the group's last row past its count. Header.txt carries
+`OpenpeteFeedKey consume`; `Input Groups.txt` holds each group's row count,
+one per line. The conversion of a movie is read off a run, never computed.
 
-  map   Replays one source (a bk2, or the plain boot) on a binary whose bk2
-        feed is keyed on `openpete_frame` and writes the (frame, vbl) pair of
-        every host iteration that ran the game: the --gameplay-hash-log's
-        first two columns, plus (0, 0), the iteration before the first
-        yield. Refuses a log whose frames are not consecutive or whose vbl
-        does not rise strictly with the frame: a VBL two yields share cannot
-        name one of them.
-  bk2   Rewrites a movie to one row per VBL. Row v holds the row the
-        frame-keyed feed latched at the yield that reached the greatest
-        reached VBL not above v; a VBL no yield reached holds the row before
-        it. The movie's length becomes the VBL of the yield at which the
-        frame-keyed feed ran past its end, so a replay leaves the movie at
-        the same yield. Header.txt gains `OpenpeteFeedKey vbl`.
-  pins  Prints the VBL of the yield each frame number names.
+  map   Replays one source (a bk2 under its own key, or the plain boot) with
+        OPENPETE_FEED_MAP and writes the run's map: a `W row e j` line per
+        pad write of a yield, with the old-key row the host stamped before it
+        (negative before the movie, the row count or more past its end), and
+        a `P frame vbl e j` line per canonical present.
+  bk2   Rewrites a frame- or vbl-keyed movie to the consume key: the write
+        at (E, j) takes the old row stamped before it. Old rows no write took
+        are not read by the old replay either and are dropped. Groups start
+        at E 0 when the run's first write reads the movie; otherwise at the E
+        of the first write inside it, which becomes the movie's offset.
+        Reported per movie: lossy spans (writes inside the movie that read no
+        old row: a repeat of an (E, j), a gap in j, a write before the movie
+        inside its first group, or a write outside the movie between two in
+        it; each makes the converted movie differ from the old replay), the
+        old rows no write read, and the groups.
+  pins  Prints, for each run number under the old key, the E of the
+        present a --screenshot-on-frame pin at that number takes, and marks
+        a pin whose present is not the first present of its E.
 
-The binary's own convert-on-load (core/record/bk2_movie.c) applies the
-same rule online to a frame-keyed movie it is handed.
+The binary replays an old-keyed movie under its own key (convert on load),
+so `map` runs on the same binary that replays the converted movie, and
+`--bk2-record` during such a replay writes the same rows `bk2` does.
 """
 import argparse
 import os
@@ -38,7 +47,10 @@ import zipfile
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KEY_LINE = "OpenpeteFeedKey vbl"
+KEY_PREFIX = "OpenpeteFeedKey "
+NEW_KEY = "consume"
+COLS = {"frame": 0, "vbl": 1, "consume": 2}
+GROUPS = "Input Groups.txt"
 
 
 def die(msg):
@@ -47,21 +59,28 @@ def die(msg):
 
 
 def read_map(path):
-    """Return the frame -> vbl list of a map file; index = frame."""
-    vbls = []
+    """Return the (writes, presents) of a map file: (row, e, j) and (frame, vbl, e, j) tuples."""
+    writes, presents = [], []
     with open(path) as f:
         for line in f:
-            if line.startswith("#") or not line.strip():
+            c = line.split()
+            if not c or c[0].startswith("#"):
                 continue
-            fr, vb = (int(x) for x in line.split()[:2])
-            if fr != len(vbls):
-                die(f"{path}: frame {fr} out of sequence (expected {len(vbls)})")
-            if vbls and vb <= vbls[-1]:
-                die(f"{path}: vbl {vb} at frame {fr} does not rise past {vbls[-1]}")
-            vbls.append(vb)
-    if not vbls or vbls[0] != 0:
-        die(f"{path}: the map must open with frame 0 at vbl 0")
-    return vbls
+            if c[0] == "W":
+                writes.append((int(c[1]), int(c[2]), int(c[3])))
+            elif c[0] == "P":
+                presents.append((int(c[1]), int(c[2]), int(c[3]), int(c[4])))
+    if not writes:
+        die(f"{path}: no W lines")
+    for a, b in zip(writes, writes[1:]):
+        if b[1] < a[1]:
+            die(f"{path}: E falls from {a[1]} to {b[1]}")
+    return writes, presents
+
+
+def default_bin(game):
+    n = game.split("-")[1]
+    return os.path.join(ROOT, "build", "linux-release", "games", game, f"openpete-spyro{n}")
 
 
 def cmd_map(a):
@@ -73,60 +92,81 @@ def cmd_map(a):
         disc = os.path.join(ROOT, disc)
     tmp = tempfile.mkdtemp(prefix="bk2_rekey_")
     try:
-        hlog = os.path.join(tmp, "hash.csv")
-        cmd = [a.bin, "--headless", "--no-config", "--disc", disc, "--renderer", "vk",
-               "--aspect", "4:3", "--lod", "original", "--mute", "1",
-               "--frame-limit", str(a.frame_limit), "--gameplay-hash-log", hlog]
+        mlog = os.path.join(tmp, "map.txt")
+        cmd = [a.bin or default_bin(a.game), "--headless", "--no-config", "--disc", disc,
+               "--renderer", "vk", "--aspect", "4:3", "--lod", "original", "--mute", "1",
+               "--frame-limit", str(a.frame_limit)]
         if a.bk2:
-            cmd += ["--bk2", a.bk2]
+            cmd += ["--bk2", a.bk2, "--bk2-stop-on-end"]
         cmd += a.args
-        r = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if not os.path.exists(hlog):
-            die(f"no hash log from {' '.join(cmd)} (rc {r.returncode})")
-        pairs = [(0, 0)]
-        with open(hlog) as f:
-            next(f, None)
-            for line in f:
-                c = line.split(",", 2)
-                pairs.append((int(c[0]), int(c[1])))
+        env = dict(os.environ, OPENPETE_FEED_MAP=mlog)
+        r = subprocess.run(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if not os.path.exists(mlog):
+            die(f"no map from {' '.join(cmd)} (rc {r.returncode})")
+        shutil.copyfile(mlog, a.out + ".tmp")
+        os.replace(a.out + ".tmp", a.out)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    last = pairs[-1][0]
-    if last < a.frame_limit:
-        die(f"run stopped at frame {last}, short of --frame-limit {a.frame_limit}")
-    with open(a.out, "w") as f:
-        f.write(f"# frame vbl: {os.path.basename(a.bk2) if a.bk2 else 'plain boot'} {' '.join(a.args)}\n")
-        for fr, vb in pairs:
-            f.write(f"{fr}\t{vb}\n")
     read_map(a.out)
 
 
-def held_rows(old_rows, vbls, offset_frames):
-    """Return the VBL-keyed rows and the VBL offset for a frame-keyed movie."""
+def old_key_of(hdr):
+    for line in hdr.splitlines():
+        if line.startswith(KEY_PREFIX):
+            return line[len(KEY_PREFIX):].strip()
+    return "frame"
+
+
+def convert(old_rows, writes):
+    """Return (rows, counts, e0, report) converting old_rows by the map's writes."""
     n = len(old_rows)
-    end = n + offset_frames
-    if offset_frames < 0:
-        die("a negative --bk2-frame-offset has no VBL of its own")
-    if end >= len(vbls):
-        die(f"map ends at frame {len(vbls) - 1}, short of the movie end {end}")
-    off_v = vbls[offset_frames]
-    new = []
-    f = offset_frames
-    for v in range(off_v, vbls[end]):
-        while f + 1 <= end and vbls[f + 1] <= v:
-            f += 1
-        new.append(old_rows[f - offset_frames])
-    return new, off_v
+    i0 = next((i for i, p in enumerate(writes) if 0 <= p[0] < n), None)
+    if i0 is None:
+        die("no write of the map reads a row of the movie")
+    i_end = next((i for i in range(i0, len(writes)) if writes[i][0] >= n), len(writes))
+    e0, j0 = writes[i0][1], writes[i0][2]
+    lossy = []
+    if j0:
+        lossy.append(("pre", e0, j0))
+    rows = [old_rows[writes[i0][0]]] * j0
+    counts = {e0: j0}
+    seen = set()
+    read = set()
+    prev = None
+    for i in range(i0, i_end):
+        row, e, j = writes[i]
+        if not 0 <= row < n:
+            lossy.append(("outside", e, j))
+            row = max(0, min(row, n - 1))
+        if (e, j) in seen:
+            lossy.append(("repeat", e, j))
+            continue
+        seen.add((e, j))
+        want = prev[2] + 1 if prev and prev[1] == e else (j0 if e == e0 else 0)
+        if j != want:
+            lossy.append(("gap", e, j))
+        read.add(row)
+        rows.append(old_rows[row])
+        counts[e] = counts.get(e, 0) + 1
+        prev = (row, e, j)
+    e_last = writes[i_end - 1][1]
+    if i0 == 0:
+        e0 = 0   # the movie opens at the run's first write: groups from E 0, offset 0
+    cl = [counts.get(e, 0) for e in range(e0, e_last + 1)]
+    rep = {"writes": i_end - i0, "lossy": lossy, "unread": n - len(read), "groups": len(cl),
+           "empty": sum(1 for c in cl if c == 0)}
+    return rows, cl, e0, rep
 
 
 def cmd_bk2(a):
-    vbls = read_map(a.map)
+    writes, _ = read_map(a.map)
     with zipfile.ZipFile(a.input) as z:
         names = z.namelist()
         files = {n: z.read(n) for n in names}
     hdr = files.get("Header.txt", b"").decode("latin-1")
-    if KEY_LINE in hdr:
-        die(f"{a.input} is already keyed on the VBL counter")
+    key = old_key_of(hdr)
+    if key not in ("frame", "vbl"):
+        die(f"{a.input} is keyed on '{key}', not frame or vbl")
     log = files["Input Log.txt"].decode("latin-1").splitlines(keepends=True)
     rows = [l for l in log if l.startswith("|")]
     head = [l for l in log if not l.startswith("|") and not l.startswith("[/Input]")]
@@ -134,29 +174,41 @@ def cmd_bk2(a):
     first = log.index(rows[0]) if rows else len(log)
     if any(not l.startswith("|") and not l.startswith("[/Input]") for l in log[first:]):
         die(f"{a.input}: non-row line inside the Input Log")
-    new, off_v = held_rows(rows, vbls, a.offset)
+    new, counts, off_e, rep = convert(rows, writes)
     files["Input Log.txt"] = "".join(head + new + tail).encode("latin-1")
-    if hdr and not hdr.endswith("\n"):
-        hdr += "\n"
+    files[GROUPS] = "".join(f"{c}\n" for c in counts).encode("latin-1")
     eol = "\r\n" if "\r\n" in hdr else "\n"
-    files["Header.txt"] = (hdr + KEY_LINE + eol).encode("latin-1")
+    kept = [l for l in hdr.splitlines() if l.strip() and not l.startswith(KEY_PREFIX)]
+    files["Header.txt"] = (eol.join(kept + [KEY_PREFIX + NEW_KEY]) + eol).encode("latin-1")
     if "Header.txt" not in names:
         names.insert(0, "Header.txt")
+    if GROUPS not in names:
+        names.insert(names.index("Input Log.txt") + 1, GROUPS)
     tmp = a.output + ".tmp"
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
         for n in names:
             z.writestr(n, files[n])
     os.replace(tmp, a.output)
-    print(f"{os.path.basename(a.input)}: {len(rows)} frame rows -> {len(new)} VBL rows, offset {a.offset} -> {off_v}")
+    lossy = rep["lossy"]
+    print(f"{os.path.basename(a.input)}: {len(rows)} {key} rows -> {len(new)} consume rows in "
+          f"{rep['groups']} groups ({rep['empty']} empty), offset E {off_e}; lossy spans {len(lossy)}"
+          f"{' (first ' + ','.join(f'{k}@{e}.{j}' for k, e, j in lossy[:5]) + ')' if lossy else ''}; "
+          f"old rows unread {rep['unread']}")
+    if off_e != 0:
+        print(f"  note: offset {off_e} must be passed as --bk2-frame-offset", file=sys.stderr)
 
 
 def cmd_pins(a):
-    vbls = read_map(a.map)
+    _, presents = read_map(a.map)
+    col = COLS[a.key]
     out = []
-    for p in a.frames:
-        if p < 0 or p >= len(vbls):
-            die(f"frame {p} outside the map (0..{len(vbls) - 1})")
-        out.append(str(vbls[p]))
+    for p in a.numbers:
+        idx = next((i for i, pr in enumerate(presents) if pr[col] >= p), None)
+        if idx is None:
+            die(f"{a.key} {p} past the map's last present")
+        e = presents[idx][2]
+        first = next(i for i, pr in enumerate(presents) if pr[2] >= e)
+        out.append(f"{e}" if first == idx else f"{e}!shared")
     print(" ".join(out))
 
 
@@ -164,8 +216,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     m = sub.add_parser("map")
-    m.add_argument("--game", required=True, choices=["spyro-2", "spyro-3"])
-    m.add_argument("--bin", default=os.path.join(ROOT, "build", "linux-release", "openpete"))
+    m.add_argument("--game", required=True, choices=["spyro-1", "spyro-2", "spyro-3"])
+    m.add_argument("--bin", default="")
     m.add_argument("--disc", default="")
     m.add_argument("--bk2", default="")
     m.add_argument("--frame-limit", type=int, required=True)
@@ -173,12 +225,12 @@ def main():
     m.add_argument("args", nargs="*", help="further launch arguments (after --)")
     b = sub.add_parser("bk2")
     b.add_argument("--map", required=True)
-    b.add_argument("--offset", type=int, default=0, help="the movie's --bk2-frame-offset")
     b.add_argument("input")
     b.add_argument("output")
     p = sub.add_parser("pins")
     p.add_argument("--map", required=True)
-    p.add_argument("frames", type=int, nargs="+")
+    p.add_argument("--key", choices=["frame", "vbl"], required=True)
+    p.add_argument("numbers", type=int, nargs="+")
     a = ap.parse_args()
     {"map": cmd_map, "bk2": cmd_bk2, "pins": cmd_pins}[a.cmd](a)
 

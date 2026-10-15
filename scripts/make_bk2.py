@@ -13,9 +13,9 @@ R3 MODE, '.' released and any other character pressed.
 A --hold span is [start, end) in movie frames, its button named as in the
 column list above (case-insensitive). --axes sets the left stick over a span.
 --feed-key vbl marks the movie as one row per VBL (Header.txt
-"OpenpeteFeedKey vbl"), the row key of Spyro 2 and 3; without it a row is one
-yield (openpete_frame), Spyro 1's key, and Spyro 2 or 3 converts the movie on
-load.
+"OpenpeteFeedKey vbl"); without it a row is one yield (openpete_frame). Both
+are the keys before the consume key a recording writes; each game converts
+either on load, and tools/bk2_rekey.py rewrites them to the consume key.
 """
 import argparse, sys, zipfile
 

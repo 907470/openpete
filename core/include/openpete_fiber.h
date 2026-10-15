@@ -72,19 +72,20 @@ extern SDL_AtomicInt openpete_vbl_device;
  * during the splash sequence. */
 extern unsigned openpete_frame;
 
-/* The counter that indexes the input feed and every number a run is told
- * from outside (bk2 rows and --bk2-frame-offset, --frame-limit,
- * --screenshot-on-frame and the other one-shot frame triggers, the
- * presentation corpus pins). Per game: OPENPETE_FEED_KEY_FRAME keys them on
- * `openpete_frame`, OPENPETE_FEED_KEY_VBL on `openpete_vbl`. Presentation
- * stamps, logs and the in-session rewind and runahead logs stay on
- * `openpete_frame` in every game. */
+/* The counter that indexes every number a run is told from outside
+ * (--frame-limit, --screenshot-on-frame and the other one-shot frame
+ * triggers, the presentation corpus pins). Per game: OPENPETE_FEED_KEY_FRAME
+ * keys them on `openpete_frame`, OPENPETE_FEED_KEY_VBL on `openpete_vbl`. A
+ * bk2's rows read the position its header names (openpete_consume and
+ * openpete_consume_write for a recorded movie). Presentation stamps, logs
+ * and the in-session rewind and runahead logs stay on `openpete_frame` in
+ * every game. */
 typedef enum openpete_feed_key {
     OPENPETE_FEED_KEY_FRAME = 0,
     OPENPETE_FEED_KEY_VBL   = 1,
 } openpete_feed_key_t;
 
-/** @brief Select the counter the input feed and the run's frame triggers key on.
+/** @brief Select the counter the run's frame triggers key on.
  *
  * Called once when the game descriptor registers, before the host loop runs.
  * @param key OPENPETE_FEED_KEY_FRAME or OPENPETE_FEED_KEY_VBL. */
@@ -101,6 +102,44 @@ openpete_feed_key_t openpete_feed_key(void);
  * value.
  * @return The counter's value. */
 unsigned openpete_feed_key_now(void);
+
+/* The bk2 row position (E, j). E, openpete_consume: entries of the game's
+ * pad-ring consumer (the descriptor's consume_pc) since boot, counted at
+ * function entry by psx_override_dispatch. j, openpete_consume_write: the
+ * host's pad writes since that entry, one per yield of a VBL body (the host
+ * writes the pad buffer from its stamp during the yield and the game's VSync
+ * slots read it after) and one for the stamp the fast-boot VBLs repeat
+ * before the first yield. A movie keyed `OpenpeteFeedKey consume` stamps row j
+ * of group E before each yield, holding the group's last row past its count,
+ * so its rows follow the game's ticks and every VBL inside one. Before the
+ * first consumer entry (boot) and while none runs (loads) one group grows by
+ * a row per VBL. Both are saved in
+ * savestates and in the in-memory snapshot. */
+extern unsigned openpete_consume;
+extern unsigned openpete_consume_write;
+
+/** @brief Set the guest address whose entries openpete_consume counts.
+ * @param pc The consumer's entry address; 0 counts nothing. */
+void openpete_consume_pc_set(uint32_t pc);
+
+/* Observer of the (E, j) position, set by the host loop: `write` runs at
+ * each pad write of a yield with the (E, j) it took, before j advances;
+ * `close` runs at each consumer entry with the closing E and the pad writes
+ * its group took, before E advances. Either may be NULL. */
+typedef struct openpete_feed_observer {
+    void (*write)(unsigned e, unsigned j);
+    void (*close)(unsigned e, unsigned writes);
+} openpete_feed_observer_t;
+
+/** @brief Install the (E, j) observer; NULL removes it.
+ * @param obs The observer; its storage must outlive the run. */
+void openpete_feed_observer_set(const openpete_feed_observer_t* obs);
+
+/** @brief Count an entry of the pad-ring consumer: report the closing group, advance E and reset j. */
+void openpete_feed_consume_enter(void);
+
+/** @brief Count the host's pad write at a VBL body's yield: report its (E, j), then advance j. */
+void openpete_feed_pad_write(void);
 
 /* Canonical-present counter: increments exactly once per CANONICAL game
  * draw (the host loop's `openpete_present_pending` block), i.e. once per

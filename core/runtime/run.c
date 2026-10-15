@@ -35,6 +35,7 @@
 #include "openpete_interp_objs.h"
 #include "screenshot.h"
 #include "game_extras.h"
+#include "bk2_feed.h"
 #include "bk2_movie.h"
 #include "bk2_record.h"
 #include "openpete_input_log.h"
@@ -685,21 +686,30 @@ static int unlock_frame_in_ranges(const openpete_options_t* opts, unsigned frame
     return 0;
 }
 
+/** @brief Return the name of the counter a movie's rows are indexed by.
+ * @param key The movie's row key.
+ * @return "openpete_consume", "openpete_vbl" or "openpete_frame". */
+static const char* bk2_row_key_name(bk2_row_key_t key) {
+    if (key == BK2_ROW_KEY_CONSUME) return "openpete_consume";
+    return key == BK2_ROW_KEY_VBL ? "openpete_vbl" : "openpete_frame";
+}
+
 /** @brief Load the --bk2 movie and check that this run can replay it.
  *
- * Refuses a movie recorded under another load delay, and a movie with one
- * row per VBL on a game whose feed key counts yields. A movie without the
- * "OpenpeteFeedKey vbl" header line has one row per yield; on a game keyed
- * on the VBL counter it is converted on load, its rows read by
- * openpete_frame (bk2_row_clock), which is the conversion tools/bk2_rekey.py
- * writes to disk. The movie is freed on every refusal.
+ * Refuses a movie recorded under another load delay, and a consume-keyed
+ * movie on a game whose descriptor names no pad-ring consumer. A movie's
+ * rows are read at the row position its Header.txt names (bk2_feed_row): a
+ * recorded movie at (openpete_consume, openpete_consume_write), a movie with
+ * "OpenpeteFeedKey vbl" by openpete_vbl and one without the line by
+ * openpete_frame. A movie on an older key is converted on load by replaying
+ * it under that key, the rows tools/bk2_rekey.py rewrites to the consume
+ * key. The movie is freed on every refusal.
  * @param opts The parsed options; bk2_path names the movie.
  * @param bk2 Receives the movie.
  * @param offset Receives the row counter's value at which row 0 plays.
- * @param rows_on_frame Receives true for a movie whose rows count yields.
  * @return 0 when the movie replays; -1 after logging the refusal. */
 static int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
-                           int* offset, bool* rows_on_frame) {
+                           int* offset) {
     if (bk2_movie_load(opts->bk2_path, bk2) != 0) {
         return -1;
     }
@@ -711,17 +721,15 @@ static int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
         bk2_movie_free(bk2);
         return -1;
     }
-    if (bk2->vbl_keyed && openpete_feed_key() != OPENPETE_FEED_KEY_VBL) {
-        OPL_ERROR_F("bk2", "%s has one row per VBL (OpenpeteFeedKey vbl); "
-                    "%s replays movies with one row per yield",
+    if (bk2->row_key == BK2_ROW_KEY_CONSUME && !openpete_game_runtime()->consume_pc) {
+        OPL_ERROR_F("bk2", "%s is keyed on consume; %s names no pad-ring consumer",
                     opts->bk2_path, game_get_display_name());
         bk2_movie_free(bk2);
         return -1;
     }
-    *rows_on_frame = !bk2->vbl_keyed;
-    if (*rows_on_frame && openpete_feed_key() == OPENPETE_FEED_KEY_VBL)
-        OPL_INFO_F("bk2", "%s has one row per yield: converted on load to "
-                   "the VBL key (rows read by openpete_frame)", opts->bk2_path);
+    if (bk2->row_key != BK2_ROW_KEY_CONSUME)
+        OPL_INFO_F("bk2", "%s is keyed on %s: converted on load (replayed under "
+                   "that key)", opts->bk2_path, bk2_row_key_name(bk2->row_key));
     /* Default offset is 0: both counters start at 0 on record and
      * replay, so the row numbers line up 1:1 and replay sees the same
      * game state the player saw when they pressed the button.
@@ -729,7 +737,7 @@ static int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
      * idle wait and fire input before the game is ready. Use
      * --bk2-frame-offset to opt into a manual skip. */
     *offset = opts->bk2_frame_offset_set ? opts->bk2_frame_offset : 0;
-    const char* clock = *rows_on_frame ? "openpete_frame" : "openpete_vbl";
+    const char* clock = bk2_row_key_name(bk2->row_key);
     OPL_INFO_F("bk2",
                "loaded %d frames from %s, first input at bk2-frame=%d, "
                "%s=%d -> bk2-frame=%s-(%d)%s",
@@ -741,31 +749,44 @@ static int bk2_replay_load(const openpete_options_t* opts, bk2_movie_t* bk2,
 
 /** @brief Append the staged input record once per yield of the iteration and note each entry's movie rows while recording.
  *
- * A recorded movie carries one row per unit of the feed key: the last entry
- * spans the units the iteration advanced the key by beyond one per yield
- * (on a VBL-keyed game, the VBLs a yield spanned), every other entry one.
+ * A recorded movie carries one row per pad write of a yield, grouped by
+ * openpete_consume: the iteration's writes (bk2_feed_iter_take) are noted on
+ * its last entry.
  * @param ticks Yields the iteration ran (openpete_frame's advance).
- * @param key_units The feed key's advance over the iteration.
  * @param recording True while --bk2-record is recording.
  * @param bits Player 1 pad bits the guest read, for the recorder's log. */
-static void input_log_commit_yields(unsigned ticks, unsigned key_units,
-                                    bool recording, uint16_t bits) {
+static void input_log_commit_yields(unsigned ticks, bool recording, uint16_t bits) {
+    unsigned e = 0u, e_last = 0u, j = 0u;
+    const unsigned writes = bk2_feed_iter_take(&e, &e_last, &j);
     for (unsigned t = 0; t < ticks; t++) {
         const int idx = input_log_append_staged();
-        const bool last = t + 1 == ticks && key_units >= ticks;
-        if (recording) bk2_record_note(bits, idx, last ? key_units - (ticks - 1u) : 1u);
+        if (recording) bk2_record_note(bits, idx, t + 1 == ticks ? writes : 0u, e, e_last, j);
     }
 }
 
-/** @brief Return the counter that indexes the replayed movie's rows.
+/** @brief Stamp a movie row into PsyCross's pad-override slot.
  *
- * A movie keyed on the selected feed key reads it; a movie recorded one row
- * per yield reads openpete_frame, which on a VBL-keyed game converts it on
- * load (every reached VBL plays the row latched at the yield that reached it).
- * @param rows_on_frame Nonzero for a movie whose rows count yields.
- * @return The counter's current value. */
-static unsigned bk2_row_clock(bool rows_on_frame) {
-    return rows_on_frame ? openpete_frame : openpete_feed_key_now();
+ * A row outside the movie stamps no override (0xFFFF, inactive), which
+ * hands the pad to live input.
+ * @param m The replayed movie.
+ * @param row The row, as bk2_feed_row returned it.
+ * @return 1 when a movie row was stamped, else 0. */
+static int bk2_stamp_row(const bk2_movie_t* m, int row) {
+    const int in = row >= 0 && row < m->frame_count;
+    unsigned short bits = 0xFFFF;
+    if (in) {
+        const bk2_frame_t* fr = &m->frames[row];
+        bits = fr->buttons;
+        /* bk2 axis order is LX,LY,RX,RY; PSX pad->analog is RX,RY,LX,LY. */
+        g_PsyX_Pad_AnalogOverride[0] = fr->axes[2]; /* RStick X */
+        g_PsyX_Pad_AnalogOverride[1] = fr->axes[3]; /* RStick Y */
+        g_PsyX_Pad_AnalogOverride[2] = fr->axes[0]; /* LStick X */
+        g_PsyX_Pad_AnalogOverride[3] = fr->axes[1]; /* LStick Y */
+    }
+    g_PsyX_Pad_InputOverride = bits;
+    g_PsyX_Pad_OverrideActive = in;
+    bk2_feed_stamped(row);
+    return in;
 }
 
 /** @brief Append a "frame,vbl,x,y,z" row of the player position to the position log.
@@ -3500,17 +3521,14 @@ static void pad_override_neutral(int active) {
     g_PsyX_Pad_AnalogOverride[2] = g_PsyX_Pad_AnalogOverride[3] = 128;
 }
 
-/** @brief Return whether a bk2 movie holds a frame for this VBL.
+/** @brief Return whether a bk2 movie holds a row for this VBL.
  *
  * @param active a movie is loaded for replay.
- * @param frame the movie's row counter (bk2_row_clock: the feed key, or
- *        openpete_frame for a movie with one row per yield).
- * @param offset the movie's frame offset.
- * @param count the movie's frame count.
- * @return true when frame - offset indexes a movie frame. */
-static bool bk2_frame_in_range(bool active, unsigned frame, int offset, int count) {
-    const int rel = (int)frame - offset;
-    return active && rel >= 0 && rel < count;
+ * @param row the movie row at the current row position (bk2_feed_row).
+ * @param count the movie's row count.
+ * @return true when row indexes a movie row. */
+static bool bk2_frame_in_range(bool active, int row, int count) {
+    return active && row >= 0 && row < count;
 }
 
 /** @brief Hold player 1's pad neutral while an overlay owns it, through the override channel.
@@ -4711,11 +4729,11 @@ static int run_host_loop(const openpete_options_t* opts) {
     bk2_movie_t bk2 = {0};
     int  bk2_offset = 0;
     bool bk2_active = (opts->bk2_path && *opts->bk2_path);
-    bool bk2_rows_on_frame = true;   /* the movie's row counter: openpete_frame or the VBL key */
     openpete_bk2_set_active(bk2_active || bk2_recording);
     if (bk2_active &&
-        bk2_replay_load(opts, &bk2, &bk2_offset, &bk2_rows_on_frame) != 0)
+        bk2_replay_load(opts, &bk2, &bk2_offset) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
+    bk2_feed_open(bk2_active ? &bk2 : NULL, bk2_offset);
 
     /* --frame-time-log: per-present binary recorder for the pacing
      * harness. The "deadline" we record against is a pure-ideal
@@ -4994,23 +5012,14 @@ static int run_host_loop(const openpete_options_t* opts) {
          * gamepad input takes over once the movie ends. */
         unsigned bk2_stamped_frame = openpete_frame;  /* see restamp below */
         if (sim_due && bk2_active) {
-            int bk2_frame = (int)bk2_row_clock(bk2_rows_on_frame) - bk2_offset;
-            unsigned short bits = 0xFFFF;
-            int ovr_active = 0;
-            if (bk2_frame >= 0 && bk2_frame < bk2.frame_count) {
-                const bk2_frame_t* fr = &bk2.frames[bk2_frame];
-                bits = fr->buttons;
-                /* bk2 axis order is LX,LY,RX,RY; PSX pad->analog is RX,RY,LX,LY. */
-                g_PsyX_Pad_AnalogOverride[0] = fr->axes[2]; /* RStick X */
-                g_PsyX_Pad_AnalogOverride[1] = fr->axes[3]; /* RStick Y */
-                g_PsyX_Pad_AnalogOverride[2] = fr->axes[0]; /* LStick X */
-                g_PsyX_Pad_AnalogOverride[3] = fr->axes[1]; /* LStick Y */
-                ovr_active = 1;
-            } else if (bk2_frame >= bk2.frame_count && opts->bk2_stop_on_end) {
+            int bk2_frame = bk2_feed_row();
+            if (bk2_frame >= bk2.frame_count && opts->bk2_stop_on_end) {
                 quit = 1;
                 exit_reason = "bk2-end";
                 break;
             }
+            const int ovr_active = bk2_stamp_row(&bk2, bk2_frame);
+            const unsigned short bits = (unsigned short)g_PsyX_Pad_InputOverride;
             {
                 /* Mods' read-only bk2 status (api->bk2_status) - also
                  * published pre-offset / past-end (overriding = 0). */
@@ -5030,8 +5039,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                            openpete_frame, bk2_frame, p_buf, r_buf, bits);
                 last_bits = bits;
             }
-            g_PsyX_Pad_InputOverride = bits;
-            g_PsyX_Pad_OverrideActive = ovr_active;
             /* Pre-offset / past-end frames leave ovr_active 0 on purpose:
              * that is the documented hand-back to live input once a movie
              * ends, which now means the live-decode latch below. */
@@ -5043,9 +5050,8 @@ static int run_host_loop(const openpete_options_t* opts) {
          * every iteration, not only sim-due ones, because the overlays stamp
          * on every iteration and the movie restamps only on a tick. */
         if (overlay_pad_stamp(bk2_active,
-                              bk2_frame_in_range(bk2_active,
-                                                 bk2_row_clock(bk2_rows_on_frame),
-                                                 bk2_offset, bk2.frame_count),
+                              bk2_frame_in_range(bk2_active, bk2_feed_row(),
+                                                 bk2.frame_count),
                               &prev_overlay_hold))
             ovr_claimed = true;
         overlay_input_suspend();
@@ -5213,22 +5219,8 @@ static int run_host_loop(const openpete_options_t* opts) {
              * input (measured: rollback+replay self-mismatch on movies
              * with an input edge inside the window). Silent twin of the
              * stamp block above; logging/status stay main-site-only. */
-            if (bk2_active && openpete_frame != bk2_stamped_frame) {
-                int bf = (int)bk2_row_clock(bk2_rows_on_frame) - bk2_offset;
-                unsigned short bits = 0xFFFF;
-                int ovr = 0;
-                if (bf >= 0 && bf < bk2.frame_count) {
-                    const bk2_frame_t* fr = &bk2.frames[bf];
-                    bits = fr->buttons;
-                    g_PsyX_Pad_AnalogOverride[0] = fr->axes[2];
-                    g_PsyX_Pad_AnalogOverride[1] = fr->axes[3];
-                    g_PsyX_Pad_AnalogOverride[2] = fr->axes[0];
-                    g_PsyX_Pad_AnalogOverride[3] = fr->axes[1];
-                    ovr = 1;
-                }
-                g_PsyX_Pad_InputOverride = bits;
-                g_PsyX_Pad_OverrideActive = ovr;
-            }
+            if (bk2_active && openpete_frame != bk2_stamped_frame)
+                (void)bk2_stamp_row(&bk2, bk2_feed_row());
 
             host_pause_step(&g_paused, &g_step_one);
 
@@ -5512,7 +5504,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * order, so they need no reordering. A movie declaring one port
          * leaves the slot absent, which is what it recorded. */
         if (bk2_active && bk2.players >= 2 && bk2.p2_frames) {
-            int bf2 = (int)bk2_row_clock(bk2_rows_on_frame) - bk2_offset;
+            int bf2 = bk2_feed_row();
             if (bf2 >= 0 && bf2 < bk2.frame_count) {
                 const bk2_frame_t* f2 = &bk2.p2_frames[bf2];
                 input_log_stage_port(1, f2->buttons, f2->axes);
@@ -5548,7 +5540,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * while g_paused the yield only fires while g_step_one is raised
          * (step key or overlay), which stays raised until the game draws. */
         unsigned frame_before_yield = openpete_frame;
-        unsigned key_before_yield = openpete_feed_key_now();
+        { unsigned e_, l_, j_; (void)bk2_feed_iter_take(&e_, &l_, &j_); }   /* writes outside this yield */
         bool ticked_this_iter = false;
         bool yield_now = sim_due && (!g_paused || g_step_one)
                                  && !rewound_this_iter;
@@ -6053,8 +6045,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                         s_slot_differed[a][b] += ticks;
                 }
             }
-            input_log_commit_yields(ticks, openpete_feed_key_now() - key_before_yield,
-                                    bk2_recording, bits);
+            input_log_commit_yields(ticks, bk2_recording, bits);
         }
 
         if (sim_due && opts->debug_triangle) {
@@ -6097,6 +6088,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * Keys --screenshot-on-tick (here and the native-variant dump
              * below). */
             openpete_canon_tick++;
+            bk2_feed_map_present();
             int shot_key = opts->screenshot_ticks_keyed ? (int)openpete_canon_tick
                                                         : (int)openpete_feed_key_now();
             const bool capture_canon_present = openpete_capture_canon_reference(opts, shot_key);
@@ -6977,6 +6969,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_settings_save_flush("shutdown");   /* changes still inside the debounce */
     openpete_rebind_log_summary();
 
+    bk2_feed_report();
     if (bk2_active) {
         bk2_movie_free(&bk2);
         g_PsyX_Pad_InputOverride = 0xFFFF;

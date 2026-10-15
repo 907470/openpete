@@ -68,6 +68,7 @@ typedef struct openpete_game_runtime {
     uint32_t sony_image_base;      /* psx_runtime_g_sony_image_base */
     uint32_t feed_key;             /* openpete_feed_key_t; 0 = openpete_frame */
     uint32_t loop_anchor_pc;       /* the main loop's first call, entered once per game tick; 0 = none */
+    uint32_t consume_pc;           /* the pad-ring consumer, entered once per game tick; keys bk2 rows (openpete_consume); 0 = none */
     /* The disc images the launcher's library labels by content hash. */
     const struct openpete_launcher_known_disc* known_discs;   /* NULL: none */
     int known_disc_count;

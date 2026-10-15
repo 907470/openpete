@@ -374,9 +374,14 @@ static const openpete_launcher_known_disc k_known_discs[] = {
  * here. Making the window per-game belongs to the recompiler, not to this
  * file.
  *
- * feed_key: the input feed, the bk2 rows and every frame trigger a run is
- * given count VBLs (openpete_vbl): the game waits with VSync(n > 1) and its
- * boot runs VBLs without a yield, so a yield count is not a VBL count.
+ * feed_key: every frame trigger a run is given (--frame-limit, the
+ * screenshot and state pins) counts VBLs (openpete_vbl): the game waits with
+ * VSync(n > 1) and its boot runs VBLs without a yield, so a yield count is
+ * not a VBL count.
+ *
+ * consume_pc: func_8003A584, called by Update; it consumes the pad ring the VSync
+ * callback fills once per VBL (count D_8006C7CC, clamped to 4). Its entries
+ * key a consume-keyed bk2's rows.
  *
  * is_gameplay_live: a level overlay resident (loadStage -1) with game.state
  * in gameplay. Title, loading, fade-in and the exit transition report "not
@@ -392,6 +397,7 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .loop_anchor_pc       = 0x80055400u,
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
+    .consume_pc           = 0x8003A584u,
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = spyro3_on_boot,
     .on_frame_pre         = spyro3_on_frame_pre,

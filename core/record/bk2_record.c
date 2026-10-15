@@ -1,9 +1,10 @@
 /* core/record/bk2_record.c - see bk2_record.h.
  *
  * Output schema mirrors what BizHawk Octoshock 2.9.1 writes (the same
- * dialect bk2_movie.c parses). At finalize, one Input Log line is written
- * per input-log entry between bk2_record_begin and bk2_record_finalize,
- * beside a Header.txt.
+ * dialect bk2_movie.c parses). At finalize, the input-log entries between
+ * bk2_record_begin and bk2_record_finalize are written as one Input Log line
+ * per pad write of a yield, beside a Header.txt and the per-E row counts in
+ * Input Groups.txt.
  *
  * Frame line layout (matches the LogKey we emit):
  *   |    1,...|  128,  128,  128,  128,XXXXXXXXXXXXXXXX.|
@@ -44,13 +45,22 @@ static const struct { uint16_t mask; char letter; } kButtonChars[16] = {
     { 0x0002, 'L' }, { 0x0004, 'R' },
 };
 
+/* One recorded entry's pad writes: the (E, j) of its first and the E of the
+ * rest. */
+typedef struct {
+    unsigned writes;
+    unsigned e;
+    unsigned e_rest;
+    unsigned j;
+} bk2_rec_entry_t;
+
 static struct {
     char*        path;
     char*        args;       /* .args sidecar content, or NULL - written at finalize */
     int          start_idx;  /* input_log index of the movie's first frame */
     int          active;
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
-    unsigned*    rows;       /* Input Log lines per entry, indexed from start_idx */
+    bk2_rec_entry_t* rows;   /* per entry, indexed from start_idx */
     int          rows_cap;
 } s_rec = {0};
 
@@ -130,23 +140,24 @@ void bk2_format_button_diff(uint16_t prev, uint16_t cur,
     release_out[rn] = '\0';
 }
 
-void bk2_record_note(uint16_t bits, int log_idx, unsigned rows) {
+void bk2_record_note(uint16_t bits, int log_idx, unsigned writes, unsigned e,
+                     unsigned e_rest, unsigned j) {
     if (!s_rec.active) return;
     const int at = log_idx - s_rec.start_idx;
     if (at >= 0) {
         if (at >= s_rec.rows_cap) {
             int cap = s_rec.rows_cap ? s_rec.rows_cap : 4096;
             while (cap <= at) cap *= 2;
-            unsigned* grown = (unsigned*)realloc(s_rec.rows, (size_t)cap * sizeof *grown);
+            bk2_rec_entry_t* grown = (bk2_rec_entry_t*)realloc(s_rec.rows, (size_t)cap * sizeof *grown);
             if (!grown) {
                 OPL_ERROR_F("bk2-record", "out of memory growing the row counts");
                 return;
             }
-            for (int i = s_rec.rows_cap; i < cap; i++) grown[i] = 1u;
+            memset(grown + s_rec.rows_cap, 0, (size_t)(cap - s_rec.rows_cap) * sizeof *grown);
             s_rec.rows = grown;
             s_rec.rows_cap = cap;
         }
-        s_rec.rows[at] = rows ? rows : 1u;
+        s_rec.rows[at] = (bk2_rec_entry_t){writes, e, e_rest, j};
     }
     /* Diff against the previous frame and log press/release transitions
      * so a debug-level run shows the same input timeline that lands in
@@ -258,9 +269,8 @@ static const char* const kHeader =
  *
  * Loads consume VBLs, so every input after a load lands on a different
  * tick under another delay; replay refuses the mismatch. A delay of 0
- * writes no LoadDelay line. A game keyed on the VBL counter writes one
- * line per VBL and marks it with "OpenpeteFeedKey vbl"; without the line a
- * movie has one row per yield.
+ * writes no LoadDelay line. Every movie has one row per pad write of a yield,
+ * grouped by openpete_consume, and says so with "OpenpeteFeedKey consume".
  * @param out Destination.
  * @param cap Capacity of @p out.
  * @return Bytes written, excluding the NUL. */
@@ -269,19 +279,70 @@ static int build_header(char* out, size_t cap) {
     if (openpete_cd_load_delay > 0)
         n += snprintf(out + n, cap - (size_t)n, "LoadDelay %d\r\n",
                       openpete_cd_load_delay);
-    if (openpete_feed_key() == OPENPETE_FEED_KEY_VBL)
-        n += snprintf(out + n, cap - (size_t)n, "OpenpeteFeedKey vbl\r\n");
+    n += snprintf(out + n, cap - (size_t)n, "OpenpeteFeedKey consume\r\n");
     return n;
 }
 
 /** @brief Return the Input Log lines a recorded entry expands to.
  *
- * One per VBL the entry's yield advanced the feed key by, as noted by
- * bk2_record_note; 1 for an entry never noted.
+ * One per pad write of a yield the entry's yield took, as noted by
+ * bk2_record_note; the first entry that wrote also repeats for the writes
+ * its group took before the recording began (its j).
  * @param i The entry's index from the movie's first entry.
+ * @param first The index of the first entry that wrote, or -1.
  * @return The line count. */
-static unsigned entry_rows(int i) {
-    return (s_rec.rows && i < s_rec.rows_cap) ? s_rec.rows[i] : 1u;
+static unsigned entry_rows(int i, int first) {
+    if (!s_rec.rows || i >= s_rec.rows_cap) return 0u;
+    const bk2_rec_entry_t* r = &s_rec.rows[i];
+    return r->writes + (i == first ? r->j : 0u);
+}
+
+/** @brief Return the index of the first recorded entry that took a write.
+ * @param count Entries in the window.
+ * @return The index, or -1 when no entry wrote. */
+static int first_written_entry(int count) {
+    for (int i = 0; i < count && i < s_rec.rows_cap; i++)
+        if (s_rec.rows && s_rec.rows[i].writes) return i;
+    return -1;
+}
+
+/** @brief Serialise the per-E row counts as Input Groups.txt text.
+ *
+ * One line per E from 0 to the last written entry's E, holding the rows
+ * written for it; an E no recorded write took writes 0, so the movie replays
+ * from boot at offset 0.
+ * @param count Entries in the window.
+ * @param out_len Receives the text's length.
+ * @return The malloc'd text; NULL when no entry wrote or allocation
+ *         fails, with the reason logged. */
+static char* build_groups(int count, size_t* out_len) {
+    const int first = first_written_entry(count);
+    if (first < 0) {
+        OPL_ERROR_F("bk2-record", "no pad write in the recorded window; no rows to write");
+        return NULL;
+    }
+    unsigned e_last = s_rec.rows[first].e;
+    for (int i = first; i < count && i < s_rec.rows_cap; i++)
+        if (s_rec.rows[i].writes) e_last = s_rec.rows[i].e_rest;
+    const size_t groups = (size_t)e_last + 1u;
+    unsigned* counts = (unsigned*)calloc(groups, sizeof *counts);
+    char* text = (char*)malloc(groups * 11u + 1u);
+    if (!counts || !text) {
+        free(counts); free(text);
+        OPL_ERROR_F("bk2-record", "out of memory writing %zu groups", groups);
+        return NULL;
+    }
+    for (int i = first; i < count && i < s_rec.rows_cap; i++) {
+        const bk2_rec_entry_t* r = &s_rec.rows[i];
+        if (!r->writes) continue;
+        counts[r->e] += entry_rows(i, first) - (r->writes - 1u);
+        counts[r->e_rest] += r->writes - 1u;
+    }
+    size_t n = 0;
+    for (size_t g = 0; g < groups; g++) n += (size_t)sprintf(text + n, "%u\n", counts[g]);
+    free(counts);
+    *out_len = n;
+    return text;
 }
 
 /** @brief Release the recorder's buffers and clear its state. */
@@ -311,7 +372,8 @@ static char* build_input_log(int frame_count, int players, size_t* out_len,
     for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) input_port_clear(&probe.port[i]);
     int  frame_line_len = format_frame_rec(frame_buf, &probe, players);
     size_t line_count = 0;
-    for (int i = 0; i < frame_count; i++) line_count += entry_rows(i);
+    const int first = first_written_entry(frame_count);
+    for (int i = 0; i < frame_count; i++) line_count += entry_rows(i, first);
     size_t log_size = key_len + line_count * (size_t)frame_line_len + trailer_len;
     char* log = (char*)malloc(log_size + 1);
     if (!log) {
@@ -323,7 +385,7 @@ static char* build_input_log(int frame_count, int players, size_t* out_len,
     for (int i = 0; i < frame_count; i++) {
         const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
         if (!r) break;   /* defensive; log frozen mid-recording */
-        for (unsigned k = entry_rows(i); k > 0; k--)
+        for (unsigned k = entry_rows(i, first); k > 0; k--)
             p += format_frame_rec(p, r, players);
     }
     memcpy(p, kInputTrailer, trailer_len); p += trailer_len;
@@ -351,10 +413,13 @@ int bk2_record_finalize(void) {
         if (r && r->port[1].present) { players = 2; break; }
     }
 
-    /* Build Input Log.txt in memory: header + one line per movie row + trailer. */
-    size_t log_len = 0, line_count = 0;
+    /* Build Input Log.txt in memory: header + one line per movie row +
+     * trailer; and the per-E row counts. */
+    size_t log_len = 0, line_count = 0, groups_len = 0;
     char* log = build_input_log(frame_count, players, &log_len, &line_count);
-    if (!log) {
+    char* groups = log ? build_groups(frame_count, &groups_len) : NULL;
+    if (!groups) {
+        free(log);
         rec_reset();
         return -1;
     }
@@ -390,6 +455,11 @@ int bk2_record_finalize(void) {
         OPL_ERROR_F("bk2-record", "Input Log.txt add failed");
         goto out_close;
     }
+    if (!mz_zip_writer_add_mem(&zip, "Input Groups.txt", groups, groups_len,
+                               MZ_DEFAULT_COMPRESSION)) {
+        OPL_ERROR_F("bk2-record", "Input Groups.txt add failed");
+        goto out_close;
+    }
     /* Only a multi-player movie carries this: a one-player recording stays
      * byte-identical to what this writer has always produced, and loads
      * against whatever single-pad configuration the user already has. */
@@ -414,6 +484,7 @@ out_close:
     mz_free(zbuf);
 out:
     free(log);
+    free(groups);
     rec_reset();
     return rc;
 }

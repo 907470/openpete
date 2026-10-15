@@ -32,6 +32,7 @@ void openpete_game_runtime_register(const openpete_game_runtime_t* rt) {
                                  ? OPENPETE_FEED_KEY_VBL : OPENPETE_FEED_KEY_FRAME);
     psx_set_override_dispatch_game(s_rt->override_dispatch);
     openpete_loop_anchor_set(s_rt->loop_anchor_pc);
+    openpete_consume_pc_set(s_rt->consume_pc);
 }
 
 const openpete_game_runtime_t* openpete_game_runtime(void) { return s_rt; }

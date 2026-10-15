@@ -8,9 +8,12 @@
  * and through our own bk2_movie_load. The log is shared with the
  * rewind/runahead drivers.
  *
- * One Input Log line per unit of the feed key (openpete_feed_key_now): per
- * yield on a yield-keyed game, per VBL on a VBL-keyed one, which marks the
- * movie with the Header.txt line "OpenpeteFeedKey vbl".
+ * One Input Log line per pad write of a yield, holding the input of the
+ * yield the write took, marked with the Header.txt line "OpenpeteFeedKey
+ * consume". The rows are grouped by openpete_consume (E, an entry of the
+ * game's pad-ring consumer); "Input Groups.txt" holds each group's row
+ * count, one per line from E 0. A recording that opens inside a group
+ * repeats its first row for the group's writes before it.
  *
  * Each port's 16 digital buttons and 4 analog axes are recorded; the MODE
  * column is always '.'. Port 2 is recorded when it was present for any
@@ -39,23 +42,27 @@ extern "C" {
  *         cannot be copied, with the reason logged. */
 int  bk2_record_begin(const char* path, const char* args_sidecar);
 
-/** @brief Record how many movie rows a just-logged entry spans and log its pad transitions while recording.
+/** @brief Record the pad writes a just-logged entry's yield took and log its pad transitions while recording.
  *
- * The bits already live in the input log. The entry is written @p rows
- * times at finalize: one row per unit the feed key advanced across the
- * entry's yield (1 on a yield-keyed game; the VBLs the yield spanned on a
- * VBL-keyed one). A line is logged only when the bits differ from the
- * previous call's. No effect when recording is not active.
+ * The bits already live in the input log. The entry is written @p writes
+ * times at finalize: its first write as row @p j of the group of E @p e,
+ * the rest as rows of the group of E @p e_rest. A
+ * line is logged only when the bits differ from the previous call's. No
+ * effect when recording is not active.
  * @param bits Player 1 pad bitfield (1 released, 0 pressed).
  * @param log_idx Input log index input_log_append_staged returned; the line shows
  *        it relative to the movie's first entry.
- * @param rows Movie rows the entry spans; 0 is taken as 1. */
-void bk2_record_note(uint16_t bits, int log_idx, unsigned rows);
+ * @param writes Yield-path pad writes the entry's yield took; 0 adds no row.
+ * @param e openpete_consume at the entry's first write.
+ * @param e_rest openpete_consume at its last write.
+ * @param j openpete_consume_write at the entry's first write. */
+void bk2_record_note(uint16_t bits, int log_idx, unsigned writes, unsigned e,
+                     unsigned e_rest, unsigned j);
 
 /** @brief Write the recorded window of the input log as a .bk2 zip and end recording.
  *
  * The zip holds Header.txt (with a LoadDelay line when the CD load delay
- * is nonzero), Input Log.txt, and, when any recorded VBL had a second port
+ * is nonzero), Input Log.txt, Input Groups.txt, and, when any recorded VBL had a second port
  * present, SyncSettings.json declaring two DualShock ports; the args
  * sidecar is written after the zip. Recording ends on every path, so the
  * call is safe from an exit path.

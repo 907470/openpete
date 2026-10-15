@@ -142,8 +142,32 @@ static int test_analog_parse(void) {
     return 0;
 }
 
+/* A consume-keyed movie's row at (g, j): row j of group g, the group's last
+ * row past its count, the row before an empty group, the end past the last
+ * group's last row. Groups {2, 0, 3}: rows 0-1, none, 2-4. */
+static int test_group_row(void) {
+    bk2_movie_t m;
+    memset(&m, 0, sizeof m);
+    int rows[3] = {2, 0, 3}, first[3] = {0, 2, 2};
+    m.frame_count = 5;
+    m.row_key = BK2_ROW_KEY_CONSUME;
+    m.group_count = 3;
+    m.group_rows = rows;
+    m.group_first = first;
+    CHECK(bk2_movie_group_row(&m, -1, 0) == -1, "before the movie");
+    CHECK(bk2_movie_group_row(&m, 0, 0) == 0, "group 0 row 0");
+    CHECK(bk2_movie_group_row(&m, 0, 1) == 1, "group 0 row 1");
+    CHECK(bk2_movie_group_row(&m, 0, 7) == 1, "group 0 holds its last row");
+    CHECK(bk2_movie_group_row(&m, 1, 0) == 1, "an empty group holds the row before it");
+    CHECK(bk2_movie_group_row(&m, 2, 2) == 4, "group 2 row 2");
+    CHECK(bk2_movie_group_row(&m, 2, 3) == 5, "past the last group's last row: ended");
+    CHECK(bk2_movie_group_row(&m, 3, 0) == 5, "past the last group: ended");
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
+    failures += test_group_row();
     failures += test_basic_parse();
     failures += test_no_input();
     failures += test_lf_only();

@@ -27,6 +27,8 @@ int openpete_replaying                 = 0;
 int openpete_ra_input_edge             = 0;
 unsigned     openpete_frame            = 0u;
 unsigned     openpete_canon_tick       = 0u;
+unsigned     openpete_consume          = 0u;
+unsigned     openpete_consume_write     = 0u;
 unsigned     openpete_primitives_drawn = 0u;
 int          openpete_present_pending  = 0;
 int          openpete_fast_boot_active = 1;
@@ -122,4 +124,19 @@ int openpete_park_site_matches(const openpete_park_site_t* site) {
     if (!openpete_yield_final) return 0;
     if (site->ra == 0u) return 1;
     return site->ra == openpete_yield_site.ra && site->sp == openpete_yield_site.sp;
+}
+
+static const openpete_feed_observer_t* s_feed_obs = NULL;
+
+void openpete_feed_observer_set(const openpete_feed_observer_t* obs) { s_feed_obs = obs; }
+
+void openpete_feed_consume_enter(void) {
+    if (s_feed_obs && s_feed_obs->close) s_feed_obs->close(openpete_consume, openpete_consume_write);
+    openpete_consume++;
+    openpete_consume_write = 0u;
+}
+
+void openpete_feed_pad_write(void) {
+    if (s_feed_obs && s_feed_obs->write) s_feed_obs->write(openpete_consume, openpete_consume_write);
+    openpete_consume_write++;
 }

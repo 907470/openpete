@@ -252,6 +252,77 @@ static const char* header_value(const char* hdr, size_t size, const char* key) {
     return NULL;
 }
 
+/** @brief Return the row key a Header.txt "OpenpeteFeedKey" value names.
+ *
+ * @param v The text after the key, or NULL when the header has no such line.
+ * @param end One past the header's last byte.
+ * @return BK2_ROW_KEY_VBL for "vbl", BK2_ROW_KEY_CONSUME for "consume",
+ *         else BK2_ROW_KEY_FRAME. */
+static bk2_row_key_t row_key_of(const char* v, const char* end) {
+    if (!v) return BK2_ROW_KEY_FRAME;
+    const size_t left = (size_t)(end - v);
+    if (left >= 7 && memcmp(v, "consume", 7) == 0) return BK2_ROW_KEY_CONSUME;
+    if (left >= 3 && memcmp(v, "vbl", 3) == 0) return BK2_ROW_KEY_VBL;
+    return BK2_ROW_KEY_FRAME;
+}
+
+/** @brief Parse an "Input Groups.txt" blob into the movie's (E, j) groups.
+ *
+ * One decimal row count per line, group 0 first; blank lines and lines
+ * opening with '#' are skipped. The counts must sum to the movie's rows.
+ * @param text The entry's text, not NUL-terminated.
+ * @param len Length of @p text.
+ * @param path The movie, for the log line.
+ * @param m The movie, frames already parsed; receives group_count,
+ *        group_rows and group_first.
+ * @return 0 when the groups cover the rows exactly, -1 otherwise, logged. */
+static int bk2_parse_groups(const char* text, size_t len, const char* path,
+                            bk2_movie_t* m) {
+    int cap = 0;
+    long total = 0;
+    for (size_t i = 0; i < len; ) {
+        size_t e = i;
+        while (e < len && text[e] != '\n') e++;
+        size_t k = i;
+        while (k < e && (text[k] == ' ' || text[k] == '\t' || text[k] == '\r')) k++;
+        if (k < e && text[k] != '#') {
+            if (text[k] < '0' || text[k] > '9') {
+                OPL_ERROR_F("bk2", "%s: Input Groups.txt line at byte %zu is not a row count", path, i);
+                return -1;
+            }
+            if (m->group_count == cap) {
+                cap = cap ? cap * 2 : 1024;
+                int* grown = (int*)realloc(m->group_rows, (size_t)cap * sizeof *grown);
+                if (!grown) { OPL_ERROR_F("bk2", "%s: out of memory reading groups", path); return -1; }
+                m->group_rows = grown;
+            }
+            const int n = atoi(text + k);
+            m->group_rows[m->group_count++] = n;
+            total += n;
+        }
+        i = e + 1;
+    }
+    if (total != m->frame_count || m->group_count == 0) {
+        OPL_ERROR_F("bk2", "%s: Input Groups.txt counts %ld rows in %d groups; the Input Log holds %d",
+                    path, total, m->group_count, m->frame_count);
+        return -1;
+    }
+    m->group_first = (int*)malloc((size_t)m->group_count * sizeof *m->group_first);
+    if (!m->group_first) { OPL_ERROR_F("bk2", "%s: out of memory reading groups", path); return -1; }
+    int at = 0;
+    for (int g = 0; g < m->group_count; g++) { m->group_first[g] = at; at += m->group_rows[g]; }
+    return 0;
+}
+
+int bk2_movie_group_row(const bk2_movie_t* m, int g, unsigned j) {
+    if (g < 0) return -1;
+    if (g >= m->group_count) return m->frame_count;
+    const unsigned n = (unsigned)m->group_rows[g];
+    if (g == m->group_count - 1 && j >= n) return m->frame_count;
+    if (n == 0u) return m->group_first[g] > 0 ? m->group_first[g] - 1 : 0;
+    return m->group_first[g] + (int)(j < n ? j : n - 1u);
+}
+
 int bk2_movie_load(const char* path, bk2_movie_t* out) {
     memset(out, 0, sizeof(*out));
 
@@ -286,10 +357,22 @@ int bk2_movie_load(const char* path, bk2_movie_t* out) {
     if (hdr) {
         const char* v = header_value(hdr, hdr_size, "LoadDelay ");
         if (v) out->load_delay = atoi(v);
-        v = header_value(hdr, hdr_size, "OpenpeteFeedKey ");
-        if (v && hdr_size - (size_t)(v - hdr) >= 3 && memcmp(v, "vbl", 3) == 0)
-            out->vbl_keyed = 1;
+        out->row_key = row_key_of(header_value(hdr, hdr_size, "OpenpeteFeedKey "),
+                                  hdr + hdr_size);
         mz_free(hdr);
+    }
+    /* A consume-keyed movie's rows are grouped by E; the groups are required. */
+    if (rc == 0 && out->row_key == BK2_ROW_KEY_CONSUME) {
+        size_t gsz = 0;
+        char* groups = (char*)mz_zip_reader_extract_file_to_heap(&zip, "Input Groups.txt", &gsz, 0);
+        if (!groups) {
+            OPL_ERROR_F("bk2", "%s is keyed on consume but has no 'Input Groups.txt' entry", path);
+            rc = -1;
+        } else {
+            rc = bk2_parse_groups(groups, gsz, path, out);
+            mz_free(groups);
+        }
+        if (rc != 0) bk2_movie_free(out);
     }
     mz_zip_reader_end(&zip);
     return rc;
@@ -299,5 +382,7 @@ void bk2_movie_free(bk2_movie_t* m) {
     if (!m) return;
     free(m->frames);
     free(m->p2_frames);
+    free(m->group_rows);
+    free(m->group_first);
     memset(m, 0, sizeof(*m));
 }

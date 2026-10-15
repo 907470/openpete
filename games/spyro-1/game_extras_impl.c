@@ -767,6 +767,11 @@ static const openpete_launcher_known_disc k_known_discs[] = {
  * becomes the tick's input. PadDemoUpdate (0x800539FC) also touches the
  * buffer but only on the demo-record path, which is not a play path.
  *
+ * consume_pc: GamestateUpdate (spyro-1/src/gamestates/update.c) @
+ * 0x8003385C, called once per pass of main's loop (src/main.c), which then
+ * resets g_UnprocessedFrames: the tick consumes the m_BufferedInputs ring
+ * PadVSync filled once per VBL. Its entries key a consume-keyed bk2's rows.
+ *
  * load_delay_default (unset, 0): deferred reads never complete in the title
  * demo load's LoadLevel spin or CDLoadSync; goldens and bk2s carry 0.
  *
@@ -789,6 +794,7 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .loop_anchor_pc       = 0x8001ED5Cu,
     .known_discs          = k_known_discs,
     .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
+    .consume_pc           = 0x8003385Cu,
     .on_boot              = spyro1_on_boot,
     .on_frame_pre         = spyro1_on_frame_pre,
     .on_state_loaded      = spyro1_on_state_loaded,
