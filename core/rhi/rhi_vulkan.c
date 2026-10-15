@@ -373,6 +373,37 @@ struct rebuild_set {
     unsigned              hit0, miss0, unk0; /* rebuild tally at the first request */
 };
 
+/* One variant a variant walk visits: its pipeline's registry serial (a
+ * pipeline is looked up when its job is built, never held by pointer), the
+ * variant and its create-info key. */
+typedef struct {
+    uint64_t         serial;
+    rhi_pipe_variant var;
+    uint64_t         key;
+} walk_item;
+
+/* A variant walk (rhi_precompile_variants, rhi_precompile_walk_start): the
+ * enumerated variants, the next to submit, the keys a live rebuild request
+ * covered, and the pool's variant outcomes before the first submit, from
+ * which the returned count follows (no other submitter queues variant
+ * jobs). */
+struct precompile_walk {
+    rhi_walk_state         state;
+    bool                   background; /* one job out at a time; logs and arms the save at the end */
+    unsigned               limit;      /* jobs out at most */
+    walk_item             *items;
+    unsigned               n, next;
+    unsigned               submitted;
+    unsigned               skipped;    /* covered or gone */
+    uint64_t               serial_end; /* the last registry serial enumerated */
+    uint64_t               out_key;    /* key of the last submitted job */
+    bool                   out_dup;    /* a rebuild request already counted it as a duplicate */
+    rhi_pc_keyset          covered;    /* keys live rebuild requests compiled */
+    rhi_compile_pool_stats p0;         /* the pool's counts before the first submit */
+    rhi_precompile_stats   st;
+    uint64_t               t0_ns;
+};
+
 struct rhi_device {
     struct SDL_Window *window;
 
@@ -407,8 +438,8 @@ struct rhi_device {
     bool                     batch_open; /* rhi_pipeline_batch_begin .. _end */
     rhi_pipeline_batch_stats batch;
     uint64_t                 batch_t0;   /* wall clock at rhi_pipeline_batch_begin */
-    unsigned                 pv_total;   /* variant jobs the precompile walk queues (rhi_precompile_progress) */
-    unsigned                 pv_base;    /* pool variant outcomes counted before the walk */
+    struct precompile_walk   walk;       /* the variant walk (rhi_precompile_progress, rhi_precompile_walk_step) */
+    uint64_t                 pipe_serial; /* the last registry serial handed out (registry_link) */
     VkQueue                  gfx_queue;
     char                     device_name[256];
     char                     driver_version[64];
@@ -856,6 +887,7 @@ struct rhi_pipeline {
     uint64_t         vkey;         /* dedupe key of the installed objects' create info */
     uint32_t         rb_gen;       /* the rebuild set's gen while a member, else 0 */
     uint32_t         rb_idx;       /* its entry index in that set */
+    uint64_t         reg_serial;   /* its registry serial: unique, rising with registration */
 };
 
 /* A compile job (rhi.h, variant-explicit compile jobs): every input of one
@@ -6748,13 +6780,18 @@ static uint64_t pipe_manifest_key(const rhi_pc_variant *v)
     return rhi_pc_variant_key(&m);
 }
 
-/* The views a variant walk visits: texture mapping by (notex, wireframe). */
+/* The reachable views of a pipeline, texture mapping by (notex, wireframe):
+ * the census counts all six; a variant walk visits the first PIPE_WALK_VIEWS,
+ * the texture-mapping dimension at the textured view. */
 static const bool k_pipe_views[6][3] = {
     { false, false, false }, { true, false, false }, { false, true, false },
     { true, true, false },   { false, false, true }, { true, false, true },
 };
 
-/** @brief Return a view of the variant walk as a variant, MOBY_TRUESCOPE at its current value.
+/* Views of k_pipe_views a variant walk visits: perspective and affine. */
+#define PIPE_WALK_VIEWS 2
+
+/** @brief Return a reachable view as a variant, MOBY_TRUESCOPE at its current value.
  *
  * @param view Index into k_pipe_views.
  * @return The variant. */
@@ -7281,7 +7318,7 @@ void rhi_compile_job_retarget(rhi_device *dev, rhi_compile_job *job)
     job->epoch = rhi_pipe_variant_epoch();
 }
 
-/** @brief Link a pipeline at the head of the device's rebuild registry.
+/** @brief Link a pipeline at the head of the device's rebuild registry and give it the next registry serial.
  *
  * Display owner only (checked).
  * @param dev Device.
@@ -7289,6 +7326,7 @@ void rhi_compile_job_retarget(rhi_device *dev, rhi_compile_job *job)
 static void registry_link(rhi_device *dev, rhi_pipeline *p)
 {
     seam_check("pipeline_link");
+    p->reg_serial = ++dev->pipe_serial;
     p->prev = NULL;
     p->next = dev->pipes_head;
     if (p->next) p->next->prev = p;
@@ -7812,6 +7850,7 @@ static unsigned pool_cancel_list(rhi_device *dev, pool_item *it)
 }
 
 static void rebuild_abandon(rhi_device *dev);
+static void walk_end(rhi_device *dev, struct precompile_walk *w, bool abandoned);
 
 void rhi_compile_pool_stop(rhi_device *dev)
 {
@@ -7839,6 +7878,7 @@ void rhi_compile_pool_stop(rhi_device *dev)
         pool_free(pl);
     }
     rebuild_abandon(dev);
+    if (dev->walk.state == RHI_WALK_RUNNING) walk_end(dev, &dev->walk, true);
 }
 
 /* ---- pipeline batch (rhi.h) ---------------------------------------------- */
@@ -8076,6 +8116,8 @@ static bool variant_eq(rhi_pipe_variant a, rhi_pipe_variant b)
            a.truescope == b.truescope;
 }
 
+static void walk_cover_variant(rhi_device *dev, const rhi_pipeline *p, rhi_pipe_variant var);
+
 int rhi_rebuild_request(rhi_device *dev, rhi_pipe_variant var, bool sync)
 {
     if (!dev) return -1;
@@ -8099,7 +8141,10 @@ int rhi_rebuild_request(rhi_device *dev, rhi_pipe_variant var, bool sync)
     rb->requests++;
     const uint32_t epoch = rhi_pipe_variant_epoch();
     t_in_rebuild = true;
-    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) rebuild_member(dev, p, var, epoch);
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
+        walk_cover_variant(dev, p, var);
+        rebuild_member(dev, p, var, epoch);
+    }
     t_in_rebuild = false;
     if (sync) rhi_compile_pool_wait(dev, NULL, NULL);
     rb->owner_ns += SDL_GetTicksNS() - t0;  /* clock-guard: wall: rebuild timing for the log */
@@ -8243,41 +8288,37 @@ static void rebuild_abandon(rhi_device *dev)
 
 /* ---- precompile ---------------------------------------------------------- */
 
-/* Queue depth per worker the precompile keeps: bounds the jobs (each holds
+/* Queue depth per worker the blocking walk keeps: bounds the jobs (each holds
  * its stage copies) alive at once. */
 #define PRECOMPILE_QUEUE_PER_WORKER 4u
 
-/* State of one rhi_precompile_variants walk. */
-typedef struct {
-    rhi_device          *dev;
-    rhi_pc_keyset        seen;   /* keys created, probed or installed this walk */
-    rhi_precompile_stats st;
-    unsigned             cap;    /* queue depth the submits wait below */
-    void               (*pump)(void *);
-    void                *ctx;
-} precompile_walk;
-
-/* One variant the precompile walk queues: the pipeline and the variant. */
-typedef struct {
-    const rhi_pipeline *p;
-    rhi_pipe_variant    var;
-} precompile_item;
-
-/** @brief Collect one non-current variant of a pipeline unless its key was seen or the manifest lists it.
+/** @brief Return the pool's variant outcomes (created, probe hits, failed) since a snapshot.
  *
- * @param w The walk.
- * @param p The pipeline.
- * @param var The variant.
- * @param items Receives the variant when it is to be queued.
- * @param n Count of @p items, advanced on a collect.
- * @param cap Capacity of @p items. */
-static void precompile_collect(precompile_walk *w, const rhi_pipeline *p, rhi_pipe_variant var,
-                               precompile_item *items, unsigned *n, unsigned cap)
+ * @param dev Device.
+ * @param p0 The snapshot.
+ * @return The outcomes counted since it. */
+static unsigned walk_returned(const rhi_device *dev, const rhi_compile_pool_stats *p0)
 {
-    rhi_device *dev = w->dev;
+    rhi_compile_pool_stats p;
+    rhi_compile_pool_stats_get(dev, &p);
+    return (p.variant_created + p.variant_probe_hits + p.variant_failed) -
+           (p0->variant_created + p0->variant_probe_hits + p0->variant_failed);
+}
+
+/** @brief Enumerate one view of a pipeline into the walk unless its key was seen or the manifest lists it.
+ *
+ * @param dev Device.
+ * @param w The walk, items allocated for every pipeline and walked view.
+ * @param seen Keys enumerated so far.
+ * @param p The pipeline.
+ * @param var The variant. */
+static void walk_collect(rhi_device *dev, struct precompile_walk *w, rhi_pc_keyset *seen,
+                         const rhi_pipeline *p, rhi_pipe_variant var)
+{
     rhi_pc_variant v;
     pipe_variant_of(dev, p, var, &v);
-    if (!rhi_pc_keyset_insert(&w->seen, rhi_pc_variant_key(&v))) return;
+    const uint64_t key = rhi_pc_variant_key(&v);
+    if (!rhi_pc_keyset_insert(seen, key)) return;
     w->st.keys++;
     if (!dev->has_cache_control && dev->manifest_trusted) {
         SDL_LockMutex(dev->pc_mx);
@@ -8285,24 +8326,178 @@ static void precompile_collect(precompile_walk *w, const rhi_pipeline *p, rhi_pi
         SDL_UnlockMutex(dev->pc_mx);
         if (listed) { w->st.manifest_skips++; return; }
     }
-    if (*n < cap) items[(*n)++] = (precompile_item){ p, var };
-    else w->st.failed++;
+    w->items[w->n++] = (walk_item){ p->reg_serial, var, key };
 }
 
-/** @brief Queue one collected variant: the worker probes or creates it and destroys the result.
+/** @brief Begin a variant walk: enumerate the walked views of every registered pipeline, each key once, the installed keys excluded.
  *
- * @param w The walk.
- * @param it The variant.
- * @param epoch The variant epoch. */
-static void precompile_variant(precompile_walk *w, const precompile_item *it, uint32_t epoch)
+ * The enumeration completes before the first submit, so the walk's total is
+ * known from the start.
+ * @param dev Device, with no walk running.
+ * @param limit Jobs out at most.
+ * @param background true for the background walk (one job per step, the end
+ *        logged and the save armed). */
+static void walk_begin(rhi_device *dev, unsigned limit, bool background)
 {
-    rhi_device *dev = w->dev;
-    rhi_compile_job *job = rhi_compile_job_of(dev, it->p, it->var, 0u, epoch);
-    if (!job) { w->st.failed++; return; }
-    rhi_compile_pool_submit(dev, job,
-                            RHI_COMPILE_VARIANT | (dev->has_cache_control ? RHI_COMPILE_PROBE : 0u),
-                            NULL, NULL);
-    pool_wait_below(dev, w->cap, w->pump, w->ctx);
+    struct precompile_walk *w = &dev->walk;
+    *w = (struct precompile_walk){ .state = RHI_WALK_RUNNING, .background = background,
+                                   .limit = limit ? limit : 1u,
+                                   .t0_ns = SDL_GetTicksNS() };  /* clock-guard: wall: walk duration for the log */
+    (void)pool_get(dev);
+    rhi_pc_keyset seen = {0};
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
+        w->st.bases++;
+        if (rhi_pc_keyset_insert(&seen, p->vkey)) { w->st.keys++; w->st.current++; }
+    }
+    const unsigned cap = w->st.bases * (unsigned)PIPE_WALK_VIEWS;
+    w->items = cap ? malloc(cap * sizeof *w->items) : NULL;
+    for (rhi_pipeline *p = dev->pipes_head; w->items && p; p = p->next)
+        for (int view = 0; view < PIPE_WALK_VIEWS; view++)
+            walk_collect(dev, w, &seen, p, pipe_view_variant(view));
+    rhi_pc_keyset_free(&seen);
+    w->st.queued = w->n;
+    w->serial_end = dev->pipe_serial;
+    rhi_compile_pool_stats_get(dev, &w->p0);
+}
+
+/** @brief Return the registered pipeline with a registry serial.
+ *
+ * @param dev Device.
+ * @param serial The serial.
+ * @return The pipeline, or NULL when it was destroyed. */
+static rhi_pipeline *registry_find(rhi_device *dev, uint64_t serial)
+{
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next)
+        if (p->reg_serial == serial) return p;
+    return NULL;
+}
+
+/** @brief Submit the walk's next variant that is neither covered by a live rebuild nor of a destroyed pipeline, built from its pipeline now.
+ *
+ * The job carries the precompile create phase, so its creates never count as
+ * first use.
+ * @param dev Device.
+ * @param w The walk.
+ * @return true when a job was submitted, false when the enumeration is spent. */
+static bool walk_submit_next(rhi_device *dev, struct precompile_walk *w)
+{
+    while (w->next < w->n) {
+        const walk_item *it = &w->items[w->next++];
+        if (rhi_pc_keyset_has(&w->covered, it->key)) { w->st.covered++; w->skipped++; continue; }
+        const rhi_pipeline *p = registry_find(dev, it->serial);
+        rhi_compile_job *job = p ? rhi_compile_job_of(dev, p, it->var, 0u, rhi_pipe_variant_epoch())
+                                 : NULL;
+        if (!job) {
+            w->st.gone += !p;
+            w->st.failed += p != NULL;
+            w->skipped++;
+            continue;
+        }
+        const rhi_pipe_phase ph = t_pipe_phase;
+        t_pipe_phase = RHI_PIPE_PHASE_PRECOMPILE;
+        rhi_compile_pool_submit(dev, job,
+                                RHI_COMPILE_VARIANT | (dev->has_cache_control ? RHI_COMPILE_PROBE : 0u),
+                                NULL, NULL);
+        t_pipe_phase = ph;
+        w->submitted++;
+        w->out_key = it->key;
+        w->out_dup = false;
+        return true;
+    }
+    return false;
+}
+
+/** @brief Set the debounced first-use save to run at the next begun frame unless a first-use miss restarts its quiet period.
+ *
+ * Display owner only.
+ * @param dev Device. */
+static void pcache_autosave_arm(rhi_device *dev)
+{
+    dev->pcache_fu_pending = true;
+    dev->pcache_fu_serial = s_frame_serial >= PCACHE_SAVE_QUIET_FRAMES
+                          ? s_frame_serial - PCACHE_SAVE_QUIET_FRAMES : 0u;
+}
+
+/** @brief End a walk: take the pool's outcomes into its counts and free its enumeration; a background walk logs its line and, unless abandoned, arms the cache save.
+ *
+ * @param dev Device.
+ * @param w The walk.
+ * @param abandoned true when the pool stopped before every variant returned. */
+static void walk_end(rhi_device *dev, struct precompile_walk *w, bool abandoned)
+{
+    rhi_compile_pool_stats p1;
+    rhi_compile_pool_stats_get(dev, &p1);
+    w->st.created = p1.variant_created - w->p0.variant_created;
+    w->st.probe_hits = p1.variant_probe_hits - w->p0.variant_probe_hits;
+    w->st.failed += p1.variant_failed - w->p0.variant_failed;
+    w->st.ms = (double)(SDL_GetTicksNS() - w->t0_ns) / 1e6;  /* clock-guard: wall: walk duration for the log */
+    if (w->background) {
+        RHI_LOG("background walk: keys %u, created %u, probe hits %u, duplicates %u, %.1f ms "
+                "(%u installed, %u queued, %u manifest skips, %u covered by a rebuild, "
+                "%u pipelines gone, %u failed%s)\n",
+                w->st.keys, w->st.created, w->st.probe_hits, w->st.duplicates, w->st.ms,
+                w->st.current, w->st.queued, w->st.manifest_skips, w->st.covered, w->st.gone,
+                w->st.failed, abandoned ? "; abandoned at the pool's stop" : "");
+        if (!abandoned) pcache_autosave_arm(dev);
+    }
+    free(w->items);
+    w->items = NULL;
+    rhi_pc_keyset_free(&w->covered);
+    w->state = RHI_WALK_DONE;
+}
+
+/** @brief Submit walk jobs up to the walk's limit (one per call for a background walk), and end the walk once every job has returned.
+ *
+ * @param dev Device.
+ * @return The walk's state after the step. */
+static rhi_walk_state walk_advance(rhi_device *dev)
+{
+    struct precompile_walk *w = &dev->walk;
+    if (w->state != RHI_WALK_RUNNING) return w->state;
+    if (dev->cpool_stopped || !dev->cpool) { walk_end(dev, w, true); return w->state; }
+    while (w->submitted - walk_returned(dev, &w->p0) < w->limit) {
+        if (!walk_submit_next(dev, w) || w->background) break;
+    }
+    if (w->next >= w->n && walk_returned(dev, &w->p0) >= w->submitted) walk_end(dev, w, false);
+    return w->state;
+}
+
+/** @brief Record that a live rebuild request compiles a registered pipeline at a variant: the walk skips that key, and a walk job out for it counts one duplicate.
+ *
+ * @param dev Device.
+ * @param p The pipeline.
+ * @param var The requested variant. */
+static void walk_cover_variant(rhi_device *dev, const rhi_pipeline *p, rhi_pipe_variant var)
+{
+    struct precompile_walk *w = &dev->walk;
+    if (w->state != RHI_WALK_RUNNING || p->reg_serial > w->serial_end) return;
+    rhi_pc_variant v;
+    pipe_variant_of(dev, p, var, &v);
+    const uint64_t key = rhi_pc_variant_key(&v);
+    (void)rhi_pc_keyset_insert(&w->covered, key);
+    if (!w->out_dup && w->submitted && key == w->out_key &&
+        walk_returned(dev, &w->p0) < w->submitted) {
+        w->st.duplicates++;
+        w->out_dup = true;
+    }
+}
+
+/** @brief Wait until a pool variant outcome arrives after a count, draining staged results and pumping.
+ *
+ * @param dev Device.
+ * @param seen The walk's returned count the wait starts from.
+ * @param pump Called between waits, or NULL.
+ * @param ctx Passed to @p pump. */
+static void walk_wait_return(rhi_device *dev, unsigned seen, void (*pump)(void *), void *ctx)
+{
+    struct compile_pool *pl = dev->cpool;
+    while (pl && walk_returned(dev, &dev->walk.p0) == seen) {
+        rhi_compile_pool_drain(dev);
+        SDL_LockMutex(pl->mx);
+        if (!pl->s_head) SDL_WaitConditionTimeout(pl->done, pl->mx, 10);
+        SDL_UnlockMutex(pl->mx);
+        if (pump) pump(ctx);
+    }
 }
 
 int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
@@ -8310,48 +8505,59 @@ int rhi_precompile_variants(rhi_device *dev, void (*pump)(void *ctx), void *ctx,
 {
     if (!dev) return -1;
     seam_check("precompile_variants");   /* the registry is the display owner's */
-    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
+    if (dev->walk.state == RHI_WALK_RUNNING) return -1;
     struct compile_pool *pl = pool_get(dev);
-    rhi_compile_pool_stats p0;
-    rhi_compile_pool_stats_get(dev, &p0);
-    precompile_walk w = { .dev = dev, .pump = pump, .ctx = ctx,
-                          .cap = PRECOMPILE_QUEUE_PER_WORKER * (unsigned)(pl && pl->n ? pl->n : 1) };
-    unsigned bases = 0;
-    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
-        w.st.bases++;
-        bases++;
-        if (rhi_pc_keyset_insert(&w.seen, p->vkey)) { w.st.keys++; w.st.current++; }
-    }
-    /* Collect first, so the progress total is known before the first submit. */
-    const unsigned cap = bases * 6u;
-    precompile_item *items = cap ? malloc(cap * sizeof *items) : NULL;
-    unsigned n = 0;
-    for (rhi_pipeline *p = dev->pipes_head; items && p; p = p->next)
-        for (int view = 0; view < 6; view++)
-            precompile_collect(&w, p, pipe_view_variant(view), items, &n, cap);
-    dev->pv_base = p0.variant_created + p0.variant_probe_hits + p0.variant_failed;
-    dev->pv_total = n;
-    const uint32_t epoch = rhi_pipe_variant_epoch();
-    for (unsigned i = 0; i < n; i++) precompile_variant(&w, &items[i], epoch);
-    free(items);
+    struct precompile_walk *w = &dev->walk;
+    walk_begin(dev, PRECOMPILE_QUEUE_PER_WORKER * (unsigned)(pl && pl->n ? pl->n : 1), false);
+    while (walk_advance(dev) == RHI_WALK_RUNNING)
+        walk_wait_return(dev, walk_returned(dev, &w->p0), pump, ctx);
     rhi_compile_pool_wait(dev, pump, ctx);
-    dev->pv_total = 0;
     rhi_compile_pool_stats p1;
     rhi_compile_pool_stats_get(dev, &p1);
-    w.st.created = p1.variant_created - p0.variant_created;
-    w.st.probe_hits = p1.variant_probe_hits - p0.variant_probe_hits;
-    w.st.failed += p1.variant_failed - p0.variant_failed;
-    rhi_pc_keyset_free(&w.seen);
-    w.st.saved = pipeline_cache_save(dev, "precompile");
-    w.st.ms = (double)(SDL_GetTicksNS() - t0) / 1e6;  /* clock-guard: wall: precompile duration for the log */
+    w->st.saved = pipeline_cache_save(dev, "precompile");
+    w->st.ms = (double)(SDL_GetTicksNS() - w->t0_ns) / 1e6;  /* clock-guard: wall: precompile duration for the log */
     RHI_LOG("precompile: %u pipelines, %u distinct create infos (%u installed), %u created, "
             "%u probe hits, %u manifest skips, %u failed, cache %s, %.1f ms on %u worker(s) "
             "(%.1f ms of runs)\n",
-            w.st.bases, w.st.keys, w.st.current, w.st.created, w.st.probe_hits,
-            w.st.manifest_skips, w.st.failed, w.st.saved ? "saved" : "not saved", w.st.ms,
-            p1.workers, p1.run_ms - p0.run_ms);
-    if (out) *out = w.st;
+            w->st.bases, w->st.keys, w->st.current, w->st.created, w->st.probe_hits,
+            w->st.manifest_skips, w->st.failed, w->st.saved ? "saved" : "not saved", w->st.ms,
+            p1.workers, p1.run_ms - w->p0.run_ms);
+    if (out) *out = w->st;
     return 0;
+}
+
+int rhi_precompile_walk_start(rhi_device *dev)
+{
+    if (!dev || dev->walk.state == RHI_WALK_RUNNING) return -1;
+    seam_check("precompile_walk_start");   /* the registry is the display owner's */
+    walk_begin(dev, 1u, true);
+    pcache_autosave_arm(dev);   /* the creates before the walk reach the file without waiting for it */
+    return (int)dev->walk.n;
+}
+
+rhi_walk_state rhi_precompile_walk_step(rhi_device *dev)
+{
+    if (!dev || dev->walk.state != RHI_WALK_RUNNING) return dev ? dev->walk.state : RHI_WALK_IDLE;
+    seam_check("precompile_walk_step");
+    return walk_advance(dev);
+}
+
+rhi_walk_state rhi_precompile_walk_get(const rhi_device *dev, unsigned *done, unsigned *total,
+                                       rhi_precompile_stats *st)
+{
+    const struct precompile_walk *w = dev ? &dev->walk : NULL;
+    unsigned d = 0, t = 0;
+    if (w && w->state == RHI_WALK_RUNNING) {
+        t = w->n;
+        d = w->skipped + walk_returned(dev, &w->p0);
+        if (d > t) d = t;
+    } else if (w && w->state == RHI_WALK_DONE) {
+        t = d = w->st.queued;
+    }
+    if (done) *done = d;
+    if (total) *total = t;
+    if (st) *st = w ? w->st : (rhi_precompile_stats){0};
+    return w ? w->state : RHI_WALK_IDLE;
 }
 
 void rhi_precompile_progress(const rhi_device *dev, unsigned *done, unsigned *total)
@@ -8363,12 +8569,11 @@ void rhi_precompile_progress(const rhi_device *dev, unsigned *done, unsigned *to
             t += b->queued;
             d += b->installed + b->failed + b->duplicate;
         }
-        if (dev->pv_total) {
-            rhi_compile_pool_stats ps;
-            rhi_compile_pool_stats_get(dev, &ps);
-            const unsigned now = ps.variant_created + ps.variant_probe_hits + ps.variant_failed;
-            t += dev->pv_total;
-            d += now - dev->pv_base < dev->pv_total ? now - dev->pv_base : dev->pv_total;
+        if (dev->walk.state == RHI_WALK_RUNNING && !dev->walk.background) {
+            unsigned wd = 0, wt = 0;
+            (void)rhi_precompile_walk_get(dev, &wd, &wt, NULL);
+            t += wt;
+            d += wd;
         }
     }
     if (done) *done = d;

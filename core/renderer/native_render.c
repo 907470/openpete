@@ -4879,6 +4879,20 @@ static int nr_precompile_wanted(const rhi_device *dev) {
     return !s_nr.sync_run && !rhi_device_is_software(dev);
 }
 
+/** @brief Return whether the variant walk runs in the background, stepped once per present after bring-up, instead of inside the boot wait.
+ *
+ * A synchronous run (headless or deterministic capture) and a deterministic
+ * interpolation run keep the blocking walk, so every create they make ends
+ * before the first tick. The harness variable OPENPETE_PRECOMPILE_WALK
+ * overrides: a value starting with 0 blocks, any other non-empty value runs
+ * the walk in the background (a headless run steps it once per tick).
+ * @return true for the background walk. */
+static bool nr_walk_background(void) {
+    const char* e = getenv("OPENPETE_PRECOMPILE_WALK");
+    if (e && *e) return *e != '0';
+    return !s_nr.sync_run && !openpete_interp_deterministic();
+}
+
 /* The compile stage's progress screen appears once bring-up's pipeline
  * compiles have run this long. Warm and app-cold boots on the timing hosts
  * finish well inside it and draw nothing; a driver-cold boot runs past it.
@@ -4902,7 +4916,7 @@ static struct {
     unsigned    base_done;     /* creates finished by the closed batches       */
     unsigned    base_queued;   /* creates queued by the closed batches         */
     unsigned    held_total;    /* the bar's total once final; 0 before         */
-    bool        walk;          /* the variant walk runs: nothing is queued after it */
+    bool        walk;          /* the blocking variant walk runs: nothing is queued after it */
 } s_pre;
 
 /** @brief Draw one present of the compile stage: the launcher's progress screen with the stage "COMPILING SHADERS".
@@ -4918,11 +4932,13 @@ static void nr_precompile_panel(unsigned done, unsigned total) {
 /** @brief Pump the window's events between compiles, and draw the compile stage once it has run past its panel wait.
  *
  * The finished and queued counts are the closed batches' plus the open
- * batch's or the variant walk's (rhi_precompile_progress). The bar's total
- * is held from the first draw inside the variant walk, whose total is known
- * before its first submit and after which nothing is queued; before it the
- * screen shows the finished count over an empty bar, so the bar never moves
- * back. Runs on the display owner (bring-up, before the first tick).
+ * batch's or the blocking variant walk's (rhi_precompile_progress). The
+ * bar's total is the one nr_precompile held once the lazy-slot batch was
+ * queued, or, with the blocking walk, the one held at the first draw inside
+ * the walk, whose total is known before its first submit and after which
+ * nothing is queued; before either the screen shows the finished count over
+ * an empty bar, so the bar never moves back. Runs on the display owner
+ * (bring-up, before the first tick).
  * @param ctx Unused. */
 static void nr_precompile_pump(void* ctx) {
     (void)ctx;
@@ -15017,13 +15033,16 @@ static void variant_request(rhi_pipe_variant want, bool sync) {
  * the old variant keeps drawing. A deterministic capture requests it
  * synchronously, so the swap lands at this present whatever the workers'
  * timing. When the rebuild's set is complete rhi_rebuild_poll swaps it at
- * this present and the getters start returning the new variant. */
+ * this present and the getters start returning the new variant. Then the
+ * background variant walk takes its step (rhi_precompile_walk_step), after
+ * the request, so a key the request compiles is never submitted by it. */
 static void variant_apply_pending(void) {
     if (!s_nr.dev) return;
     const rhi_pipe_variant want = { .affine = s_texmap_pending != 0, .notex = s_notex_pending != 0,
                                     .wireframe = s_wireframe_pending != 0,
                                     .truescope = truescope_wanted() != 0 };
     variant_request(want, openpete_interp_deterministic());
+    rhi_precompile_walk_step(s_nr.dev);
 }
 
 /** @brief Apply a queued variant change before a dump compose, synchronously: the swap lands before this compose.
@@ -17490,16 +17509,21 @@ static void late_present_begin(void) {
  * pass and every live mod material's slots (nr_precompile_material), under
  * the registry read lock. The builds run on the compile pool inside a
  * pipeline batch, whose end installs each result into its slot on this
- * thread. Each installed slot is a registered pipeline. Then
- * rhi_precompile_variants compiles every other reachable variant of every
- * registered pipeline into the cache on the pool and saves the cache when
- * it changed. Creates count in the precompile phase; creates after it count as
- * first use. The window's events are pumped between creates, and the
- * compile stage's progress screen continues from bring-up's eager batches;
- * the stage closes here. */
+ * thread. Each installed slot is a registered pipeline. Then the variant
+ * walk compiles the other texture-mapping variant of every registered
+ * pipeline into the cache on the pool: in the background
+ * (nr_walk_background), started here and stepped once per present by
+ * variant_apply_pending, else here, blocking, ending with a cache save.
+ * Creates count in the precompile phase, the background walk's included;
+ * other creates after this count as first use. The window's events are
+ * pumped between creates, and the compile stage's progress screen
+ * continues from bring-up's eager batches; with the background walk its
+ * total is held once the lazy-slot batch is queued. The stage closes
+ * here. */
 static void nr_precompile(void) {
     if (!s_nr.dev || !s_pre.wanted) { s_pre.dev = NULL; return; }
     void (*pump)(void*) = s_nr.headless ? NULL : nr_precompile_pump;
+    const bool background = nr_walk_background();
     openpete_boot_mark(OP_BOOT_PRECOMPILE_START);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
     rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
@@ -17520,27 +17544,45 @@ static void nr_precompile(void) {
         mats += n > 0;
         slots += n;
     }
+    if (background) {
+        /* Nothing is queued after the lazy slots: the total is final here. */
+        unsigned queued = 0;
+        rhi_precompile_progress(s_nr.dev, NULL, &queued);
+        s_pre.held_total = s_pre.base_queued + queued;
+    }
     rhi_pipeline_batch_stats bs;
     rhi_pipeline_batch_end(s_nr.dev, pump, NULL, &bs);
     openpete_mods_registry_read_unlock();
     s_pre.base_queued += bs.queued;
     s_pre.base_done += bs.installed + bs.failed + bs.duplicate;
     const double install_ms = (double)(SDL_GetTicksNS() - t0) / 1e6;  /* clock-guard: wall: precompile duration for the log */
-    rhi_precompile_stats st;
-    s_pre.walk = true;
-    rhi_precompile_variants(s_nr.dev, pump, NULL, &st);
+    rhi_precompile_stats st = {0};
+    int walk_queued = -1;
+    if (background) {
+        walk_queued = rhi_precompile_walk_start(s_nr.dev);
+    } else {
+        s_pre.walk = true;
+        rhi_precompile_variants(s_nr.dev, pump, NULL, &st);
+    }
     rhi_pipe_phase_set(RHI_PIPE_PHASE_AUTO);
     rhi_pipe_precompile_done();
     openpete_boot_mark(OP_BOOT_PRECOMPILE_END);
     rhi_compile_pool_stats ps;
     rhi_compile_pool_stats_get(s_nr.dev, &ps);
+    char walk[160];
+    if (background)
+        snprintf(walk, sizeof walk, "variant walk in the background, %d variants queued",
+                 walk_queued);
+    else
+        snprintf(walk, sizeof walk, "variant walk: %u distinct create infos, %u created, %u probe "
+                 "hits, %u manifest skips, %u failed", st.keys, st.created, st.probe_hits,
+                 st.manifest_skips, st.failed);
     OPL_INFO_F("native", "precompile: installed %u lazy slots (%u mod postfx passes, %u mod "
                "materials; %u queued, %u installed, %u failed, %u duplicate) in %.1f ms; "
-               "%u distinct create infos, %u created, %u probe hits, %u manifest skips, "
-               "%u failed; %u compile worker(s); %.1f ms total; progress screen %u present(s) "
+               "%s; %u compile worker(s); %.1f ms total; progress screen %u present(s) "
                "(bar total %u, %u eager creates batched)",
                slots + fx, fx, mats, bs.queued, bs.installed, bs.failed, bs.duplicate, install_ms,
-               st.keys, st.created, st.probe_hits, st.manifest_skips, st.failed, ps.workers,
+               walk, ps.workers,
                (double)(SDL_GetTicksNS() - t0) / 1e6,  /* clock-guard: wall: precompile duration for the log */
                s_pre.draws, s_pre.held_total, s_pre.base_queued - bs.queued);
     s_pre.dev = NULL;
@@ -17989,9 +18031,13 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         return;
 
     /* Headless: no window / swapchain, so there is no live present. The
-     * scene is composed on demand by openpete_native_render_screenshot_all. */
-    if (s_nr.headless)
+     * scene is composed on demand by openpete_native_render_screenshot_all.
+     * A background variant walk (OPENPETE_PRECOMPILE_WALK) steps once per
+     * call. */
+    if (s_nr.headless) {
+        rhi_precompile_walk_step(s_nr.dev);
         return;
+    }
 
     /* Queued variant change: request its rebuild, and swap a finished one
      * between render submissions, before any command buffer records; no-op

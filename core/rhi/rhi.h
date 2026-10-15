@@ -1374,20 +1374,28 @@ void          rhi_set_pipeline_cache_sync_class(bool on);
 /* What rhi_precompile_variants did. */
 typedef struct {
     unsigned bases;         /* registered pipelines walked                       */
-    unsigned keys;          /* distinct create infos over every reachable variant */
+    unsigned keys;          /* distinct create infos over the walked variants     */
     unsigned current;       /* of them, a registered pipeline's installed variant */
+    unsigned queued;        /* of them, variants the walk is to probe or create   */
     unsigned created;       /* variants compiled into the cache and destroyed     */
     unsigned probe_hits;    /* variants a probe create found in the cache         */
     unsigned manifest_skips;/* variants the key manifest skipped                  */
     unsigned failed;        /* variant creates that failed                        */
+    unsigned covered;       /* queued variants a live rebuild compiled first      */
+    unsigned gone;          /* queued variants whose pipeline was destroyed first */
+    unsigned duplicates;    /* variants a live rebuild requested while the walk's
+                             * job for the same create info was out            */
     int      saved;         /* the cache file was rewritten afterwards            */
     double   ms;            /* wall time                                          */
 } rhi_precompile_stats;
 
-/** @brief Compile every reachable non-current variant of every registered pipeline into the pipeline cache, then save the cache when it changed.
+/** @brief Compile every walked non-current variant of every registered pipeline into the pipeline cache, then save the cache when it changed.
  *
- * Variants are texture mapping (perspective, affine) by view (textured,
- * notex, wireframe). Each variant's create info is keyed on the full
+ * The walked variants are the texture-mapping dimension (perspective,
+ * affine) at the textured view; a notex or wireframe view compiles when it
+ * is toggled (rhi_rebuild_request). The enumeration is the one
+ * rhi_precompile_walk_start runs, with up to four jobs per worker queued
+ * at once. Each variant's create info is keyed on the full
  * pipeline description (rhi_pc_variant_key); a key already seen, including
  * every registered pipeline's installed key, is not created again. A new
  * key is skipped when a probe create
@@ -1417,6 +1425,45 @@ void          rhi_precompile_progress(const rhi_device *dev, unsigned *done, uns
 
 /** @brief Mark the precompile ended: pipeline creates after it count as first use, before the first frame too. */
 void          rhi_pipe_precompile_done(void);
+
+/* State of the device's background variant walk. */
+typedef enum {
+    RHI_WALK_IDLE,     /* never started                               */
+    RHI_WALK_RUNNING,  /* started; variants left to submit or return  */
+    RHI_WALK_DONE,     /* every variant returned, or the pool stopped */
+} rhi_walk_state;
+
+/** @brief Start the background variant walk: enumerate the variants rhi_precompile_variants visits, to be submitted one at a time by rhi_precompile_walk_step.
+ *
+ * The enumeration identifies each pipeline by its registry serial, never
+ * by pointer, so a pipeline destroyed before its turn is skipped. Only
+ * pipelines registered before this call are walked. Display owner only.
+ * @param dev Device.
+ * @return The variants queued, or -1 for a NULL device or a walk already running. */
+int            rhi_precompile_walk_start(rhi_device *dev);
+
+/** @brief Advance the background walk: when its job has returned, submit the next variant, built from its pipeline now, in the precompile create phase.
+ *
+ * At most one walk job is in the compile pool at a time, so first-use and
+ * rebuild jobs wait behind at most one. A variant a live rebuild request
+ * covered (rhi_rebuild_request) is skipped. When the last job returns the
+ * walk logs one line, "background walk: keys K, created C, probe hits H,
+ * duplicates D, M ms", and arms the debounced off-thread cache save. Call
+ * once per present on the display owner; a no-op unless a walk is running.
+ * @param dev Device, or NULL.
+ * @return The walk's state after the step. */
+rhi_walk_state rhi_precompile_walk_step(rhi_device *dev);
+
+/** @brief Read the background walk's state and progress.
+ *
+ * Display owner only.
+ * @param dev Device, or NULL (RHI_WALK_IDLE, zeros).
+ * @param done Receives the variants returned or skipped, or NULL.
+ * @param total Receives the variants queued, or NULL.
+ * @param st Receives the counts so far, or NULL.
+ * @return The walk's state. */
+rhi_walk_state rhi_precompile_walk_get(const rhi_device *dev, unsigned *done, unsigned *total,
+                                       rhi_precompile_stats *st);
 
 /* ---- variant-explicit compile jobs ------------------------------------
  * A compile job owns every input of one pipeline compile: a copy of the
@@ -1747,6 +1794,8 @@ typedef struct {
  * one requested keeps its job or result, a member it changes gets a new
  * job and the earlier result is discarded when it arrives, and a member
  * the new request returns to its installed create info leaves the set.
+ * Each pipeline's create info under @p var leaves a running background
+ * walk (rhi_precompile_walk_step), which then never submits it.
  * rhi_rebuild_poll performs the swap.
  * @param dev Device, or NULL.
  * @param var The variant to show.
