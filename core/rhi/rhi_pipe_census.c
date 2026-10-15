@@ -16,7 +16,7 @@ static const char *const k_phase_name[RHI_PC_PHASES] = {
     "bringup", "precompile", "rebuild", "first_use", "probe", "launcher"
 };
 static const char *const k_kind_name[RHI_PC_KINDS] = {
-    "pipeline", "lib_preraster", "lib_fragment", "lib_output", "link"
+    "pipeline", "lib_preraster", "lib_fragment", "lib_output", "link", "link_lto"
 };
 static const char *const k_site_name[RHI_PIPE_SITES] = {
     "builtin", "terrain_cache", "builtin_lazy", "mod_postfx",

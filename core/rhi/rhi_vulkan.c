@@ -416,6 +416,24 @@ struct precompile_walk {
     uint64_t               t0_ns;
 };
 
+/* Link-time optimization of the pipelines linked from libraries
+ * (rhi_pipeline_lto_step): each fast-linked pipeline the registry holds is
+ * linked again with link-time optimization on the compile pool's low
+ * queue, and the result replaces its objects at a later step, between
+ * frames. Display owner only, except the counters a compile run adds to. */
+struct lto_state {
+    bool              owed;     /* a fast-linked pipeline was installed since the last queue pass */
+    bool              drained;  /* every queued link returned and the drained line was logged */
+    struct lto_ready *ready;    /* results waiting for their swap */
+    unsigned          out;      /* links submitted and not yet returned */
+    unsigned          queued, returned, swapped, stale, failed;
+    unsigned          swaps_in_frame; /* swaps made while a frame recorded */
+    _Atomic unsigned  direct;   /* pipelines a create linked with optimization at once (cached) */
+    _Atomic unsigned  probe_miss; /* of the creates that tried, those a probe found uncached */
+    uint64_t          serial_first, serial_last; /* frame serials of the first and last swap */
+    uint64_t          t0_ns;    /* wall clock at the first queue pass */
+};
+
 struct rhi_device {
     struct SDL_Window *window;
 
@@ -501,6 +519,9 @@ struct rhi_device {
     bool           has_creation_feedback; /* VK_EXT_pipeline_creation_feedback enabled */
     bool           has_cache_control;    /* pipelineCreationCacheControl enabled */
     bool           has_gpl;              /* graphicsPipelineLibrary enabled, with fast linking */
+    bool           has_lto;              /* library-linked pipelines get a link-time-optimized link (lto_step) */
+    struct lto_state lto;                /* their background links and swaps */
+    unsigned       null_binds;           /* rhi_bind_pipeline calls given a pipeline with no objects */
     /* Graphics pipeline libraries (pipe_uses_library): every part library
      * created this run, keyed by its create info, guarded by gpl_mx; gpl_cv
      * is broadcast when an entry leaves the building state. Destroyed with
@@ -884,13 +905,28 @@ typedef struct {
     uint32_t vs_ids, fs_ids;
 } pipe_stage_info;
 
+/* How a pipeline's objects were made: created whole from its stages, fast
+ * linked from library parts, or linked from them with link-time
+ * optimization. */
+typedef enum { PIPE_LINK_WHOLE = 0, PIPE_LINK_FAST, PIPE_LINK_LTO } pipe_link;
+
 /* The bare result of one pipeline create: no rhi_pipeline, no registry link. */
 typedef struct {
     VkPipeline         pipeline;
     VkPipelineLayout   layout;
     VkShaderStageFlags pc_stages;   /* stage visibility of the push-constant block */
     uint64_t           key;         /* dedupe key of the create info */
+    pipe_link          link;        /* how the pipeline was made */
 } pipe_compiled;
+
+/* A link-time-optimized link waiting for its swap (lto_swap_ready): the
+ * registry serial of the pipeline it replaces and its objects, whose key is
+ * the create info they were linked for. */
+struct lto_ready {
+    struct lto_ready *next;
+    uint64_t          serial;
+    pipe_compiled     c;
+};
 
 struct rhi_pipeline {
     VkPipeline       pipeline;
@@ -915,6 +951,8 @@ struct rhi_pipeline {
     uint32_t         rb_gen;       /* the rebuild set's gen while a member, else 0 */
     uint32_t         rb_idx;       /* its entry index in that set */
     uint64_t         reg_serial;   /* its registry serial: unique, rising with registration */
+    pipe_link        link;         /* how the installed objects were made */
+    bool             lto_out;      /* a link-time-optimized link of it is on the pool */
 };
 
 /* A compile job (rhi.h, variant-explicit compile jobs): every input of one
@@ -932,6 +970,7 @@ struct rhi_compile_job {
     rhi_pipe_variant variant;
     VkBool32         slot_contest;   /* SLOT_CONTEST at the job's making           */
     uint32_t         generation, epoch;
+    bool             lto;            /* link from library parts with link-time optimization, no probe */
     pipe_compiled    out;            /* the result; out.pipeline VK_NULL_HANDLE until a run succeeds */
 };
 
@@ -1281,6 +1320,8 @@ static bool ext_offered(const VkExtensionProperties *avail, uint32_t n, const ch
 #define RHI_GPL_PRE_RASTERIZATION        0x2u
 #define RHI_GPL_FRAGMENT_SHADER          0x4u
 #define RHI_GPL_FRAGMENT_OUTPUT          0x8u
+#define RHI_PIPE_CREATE_LTO              0x00000400u   /* LINK_TIME_OPTIMIZATION_BIT_EXT */
+#define RHI_PIPE_CREATE_RETAIN_LTO       0x00800000u   /* RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT */
 typedef struct {
     VkStructureType sType;
     const void     *pNext;
@@ -1359,10 +1400,13 @@ static rhi_pipe_features query_pipe_features(VkPhysicalDevice phys, bool cc, boo
  * reports graphicsPipelineLibraryFastLinking: the terrain-cache pipelines
  * are then linked from libraries (pipe_uses_library).
  * OPENPETE_PIPELINE_LIBRARY starting with 0 declines the pair, so every
- * pipeline is created whole, for an A/B against the library path. The
- * report line also names extendedDynamicState3PolygonMode, queried only.
+ * pipeline is created whole, for an A/B against the library path. With the
+ * library path on, its pipelines are also linked with link-time
+ * optimization (rhi_pipeline_lto_step) unless OPENPETE_PIPELINE_LTO starts
+ * with 0, which keeps the fast links for an A/B. The report line also names
+ * extendedDynamicState3PolygonMode, queried only.
  * @param dev Device whose phys is read and has_creation_feedback,
- *            has_cache_control and has_gpl are written.
+ *            has_cache_control, has_gpl and has_lto are written.
  * @param avail The device's extension list.
  * @param n Its length.
  * @param out Receives the names to enable (room for four).
@@ -1387,18 +1431,21 @@ static uint32_t pipeline_exts_select(rhi_device *dev, const VkExtensionPropertie
     dev->has_creation_feedback = fb_listed && !declined;
     dev->has_cache_control = cc_ext && f.cache_control && !declined;
     dev->has_gpl = gpl && f.gpl && f.gpl_fast_link && !gpl_declined;
+    const char *o_env = rhi_knob("OPENPETE_PIPELINE_LTO");
+    dev->has_lto = dev->has_gpl && !(o_env && *o_env == '0');
     if (dev->has_creation_feedback) out[k++] = k_fb;
     if (dev->has_cache_control) out[k++] = k_cc;
     if (dev->has_gpl) { out[k++] = k_pl; out[k++] = k_gpl; }
     RHI_LOG("pipeline features: creation_feedback=%s cache_control=%s "
-            "eds3_polygon_mode=%s graphics_pipeline_library=%s gpl_fast_link=%s\n",
+            "eds3_polygon_mode=%s graphics_pipeline_library=%s gpl_fast_link=%s gpl_lto=%s\n",
             dev->has_creation_feedback ? "enabled" : fb_listed ? "declined" : "absent",
             dev->has_cache_control ? "enabled" : !cc_ext ? "absent"
                                    : declined ? "declined" : "listed-no-feature",
             eds3 ? (f.eds3_polygon ? "yes" : "no") : "absent",
             dev->has_gpl ? "enabled" : !gpl ? "absent" : !f.gpl ? "no"
                          : !f.gpl_fast_link ? "no-fast-link" : "declined",
-            gpl ? (f.gpl_fast_link ? "yes" : "no") : "absent");
+            gpl ? (f.gpl_fast_link ? "yes" : "no") : "absent",
+            dev->has_lto ? "enabled" : dev->has_gpl ? "declined" : "off");
     return k;
 }
 
@@ -1436,10 +1483,10 @@ static void *pipeline_features_chain(const rhi_device *dev, pipe_feature_chain *
 
 /** @brief Create the library cache's lock and condition on a device with the graphics pipeline library enabled.
  *
- * A failed creation turns the library path off (has_gpl false): the
- * extension stays enabled and every pipeline is created whole.
- * @param dev Device, created; its has_gpl is read and may be cleared, gpl_mx
- *            and gpl_cv are written. */
+ * A failed creation turns the library path off (has_gpl and has_lto
+ * false): the extension stays enabled and every pipeline is created whole.
+ * @param dev Device, created; its has_gpl is read and may be cleared with
+ *            has_lto, gpl_mx and gpl_cv are written. */
 static void pipeline_library_locks(rhi_device *dev)
 {
     if (!dev->has_gpl) return;
@@ -1448,6 +1495,7 @@ static void pipeline_library_locks(rhi_device *dev)
     if (dev->gpl_mx && dev->gpl_cv) return;
     RHI_LOG("pipeline libraries: lock creation failed; every pipeline is created whole\n");
     dev->has_gpl = false;
+    dev->has_lto = false;
 }
 
 /** @brief Choose the physical device and queue family and create the logical device and its graphics queue.
@@ -3712,6 +3760,7 @@ static void upload_ring_free(rhi_device *dev)
 }
 
 static void gpl_destroy_all(rhi_device *dev);
+static void lto_destroy_ready(rhi_device *dev);
 
 static void described_free(rhi_device *dev);
 
@@ -3726,6 +3775,7 @@ void rhi_destroy(rhi_device *dev)
     described_free(dev);
     rhi_pc_report();
     if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); retired_reclaim(dev, true); }
+    lto_destroy_ready(dev);
     gpl_destroy_all(dev);
 
     if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
@@ -7296,33 +7346,44 @@ typedef struct {
 
 /* XOR'd into the key-manifest key of a pipeline linked from libraries: the
  * pipeline cache holds its libraries and its link, not the whole create of
- * the same key, so the two are listed apart. */
+ * the same key, so the two are listed apart. A link with link-time
+ * optimization is a third cache entry and takes its own salt. */
 #define GPL_MANIFEST_SALT 0x9e3779b97f4a7c15ull
+#define LTO_MANIFEST_SALT 0xc2b2ae3d27d4eb4full
 
 /** @brief Return whether a pipeline is created by linking graphics pipeline libraries rather than whole.
  *
- * The terrain-cache pipelines are, on a device with the library extension
- * and fast linking enabled (pipeline_exts_select): their large vertex
- * stages then compile once per pre-rasterization create info instead of
- * once per (vertex, fragment, state) pairing.
+ * On a device with the library extension and fast linking enabled
+ * (pipeline_exts_select), three site classes are: the terrain-cache
+ * pipelines, whose large vertex stages then compile once per
+ * pre-rasterization create info instead of once per (vertex, fragment,
+ * state) pairing; the terrain materials, which share those vertex parts
+ * (same stages, state and layout) and add one fragment part per mod
+ * fragment stage and depth-stencil state; and the mod materials, whose
+ * fragment stage then compiles once per depth-stencil state instead of once
+ * per blend group, the blend equation living in the output part.
  * @param dev Device.
  * @param desc Pipeline description.
  * @param words True when a stage was given as SPIR-V words.
  * @return true for the library path. */
 static bool pipe_uses_library(const rhi_device *dev, const rhi_pipeline_desc *desc, bool words)
 {
-    return dev->has_gpl && rhi_pc_site_of(desc, words) == RHI_PIPE_SITE_TERRAIN_CACHE;
+    const rhi_pipe_site site = rhi_pc_site_of(desc, words);
+    return dev->has_gpl && (site == RHI_PIPE_SITE_TERRAIN_CACHE ||
+                            site == RHI_PIPE_SITE_TERRAIN_MATERIAL ||
+                            site == RHI_PIPE_SITE_MOD_MATERIAL);
 }
 
 /** @brief Return the key-manifest key of a variant created by the given path.
  *
  * @param v The variant.
- * @param linked True when the pipeline is linked from libraries.
+ * @param link How the pipeline is made.
  * @return The key. */
-static uint64_t pipe_manifest_key_as(const rhi_pc_variant *v, bool linked)
+static uint64_t pipe_manifest_key_as(const rhi_pc_variant *v, pipe_link link)
 {
     const uint64_t k = pipe_manifest_key(v);
-    return linked ? k ^ GPL_MANIFEST_SALT : k;
+    return link == PIPE_LINK_FAST ? k ^ GPL_MANIFEST_SALT
+         : link == PIPE_LINK_LTO  ? k ^ LTO_MANIFEST_SALT : k;
 }
 
 /** @brief Fold n bytes into an FNV-1a 64 hash.
@@ -7430,8 +7491,9 @@ static void gpl_part_keys(const rhi_device *dev, const pipe_state *st, const pip
  *
  * Any thread. The part takes the subset of the pipeline's create-info parts
  * its library flags name; the shader parts carry the layout, which is
- * created here and kept with the library. The create is counted by
- * pipe_create_record under its part's kind.
+ * created here and kept with the library. With link-time optimization on
+ * (has_lto) the part retains what an optimized link of it reads. The create
+ * is counted by pipe_create_record under its part's kind.
  * @param dev Device.
  * @param part GPL_PRERASTER, GPL_FRAGMENT or GPL_OUTPUT.
  * @param src The source.
@@ -7465,7 +7527,7 @@ static bool gpl_build(rhi_device *dev, int part, const gpl_src *src, VkPipeline 
     VkGraphicsPipelineCreateInfo gp = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = &li,
-        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR,
+        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | (dev->has_lto ? RHI_PIPE_CREATE_RETAIN_LTO : 0u),
         .layout = *out_layout,
         .renderPass = dev->off_rp,
         .subpass = 0,
@@ -7615,22 +7677,24 @@ static bool gpl_src_of(const rhi_compile_job *job, const rhi_pc_variant *var, in
 
 /** @brief Link a job's pipeline from its three library parts, acquiring each part first (gpl_acquire).
  *
- * Any thread. The link names no link-time optimization: it is the fast
- * link the device reported. The create is counted by pipe_create_record as
- * a link.
+ * Any thread. Without @p lto the link is the fast link the device
+ * reported; with it the link carries LINK_TIME_OPTIMIZATION and compiles
+ * the parts together from the information they retained. The create is
+ * counted by pipe_create_record as a link or an optimized link.
  * @param dev Device.
  * @param job The job.
  * @param st The pipeline's parts (pipe_state_fill).
  * @param var Its variant view.
  * @param layout The linked pipeline's layout, identically defined to its parts'.
  * @param flags Pipeline create flags (the probe's FAIL_ON_PIPELINE_COMPILE_REQUIRED).
+ * @param lto true for the link-time-optimized link.
  * @param out Receives the pipeline.
  * @param fb Receives the link's creation feedback.
  * @return 0 when linked, 1 when a probe found the link uncached, -1 when a
  *         part or the link failed (the caller creates the pipeline whole). */
 static int pipeline_link(rhi_device *dev, const rhi_compile_job *job, const pipe_state *st,
                          const rhi_pc_variant *var, VkPipelineLayout layout,
-                         VkPipelineCreateFlags flags, VkPipeline *out, pipe_feedback *fb)
+                         VkPipelineCreateFlags flags, bool lto, VkPipeline *out, pipe_feedback *fb)
 {
     uint64_t key[GPL_PARTS];
     gpl_part_keys(dev, st, &job->info, key);
@@ -7649,7 +7713,7 @@ static int pipeline_link(rhi_device *dev, const rhi_compile_job *job, const pipe
     const VkGraphicsPipelineCreateInfo gp = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = &lci,
-        .flags = flags,
+        .flags = flags | (lto ? RHI_PIPE_CREATE_LTO : 0u),
         .layout = layout,
         .renderPass = dev->off_rp,
         .subpass = 0,
@@ -7658,7 +7722,8 @@ static int pipeline_link(rhi_device *dev, const rhi_compile_job *job, const pipe
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: pipeline create timing for the census */
     const VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, out);
     pipe_create_record(dev, rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words),
-                       RHI_PC_KIND_LINK, fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
+                       lto ? RHI_PC_KIND_LINK_LTO : RHI_PC_KIND_LINK, fb,
+                       SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
     if (r == VK_SUCCESS) return 0;
     if (*out) vkDestroyPipeline(dev->device, *out, NULL);
     *out = VK_NULL_HANDLE;
@@ -7714,20 +7779,72 @@ static VkResult pipeline_create_whole(rhi_device *dev, const rhi_compile_job *jo
     return r;
 }
 
+/** @brief Return whether a create should try the link-time-optimized link of a variant first: the key manifest lists it and the create can tell a cached one.
+ *
+ * With pipeline cache control the try is a probe, so an uncached optimized
+ * link costs a lookup; without it only a calibrated driver's manifest is
+ * trusted. Any thread.
+ * @param dev Device.
+ * @param var The variant.
+ * @return true to try it. */
+static bool lto_listed(rhi_device *dev, const rhi_pc_variant *var)
+{
+    if (!dev->has_lto || (!dev->has_cache_control && !dev->manifest_trusted)) return false;
+    SDL_LockMutex(dev->pc_mx);
+    const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(var, PIPE_LINK_LTO));
+    SDL_UnlockMutex(dev->pc_mx);
+    return listed != 0;
+}
+
+/** @brief Link a job's pipeline from library parts: link-time optimized when the job asks for it or the cache holds it, else fast.
+ *
+ * A background optimization job (job->lto) links optimized with the
+ * caller's flags. Any other create tries the optimized link first when
+ * lto_listed says it is cached, as a probe where the device has cache
+ * control, and links fast on a probe miss. Any thread.
+ * @param dev Device.
+ * @param job The job.
+ * @param st The pipeline's parts.
+ * @param var Its variant view.
+ * @param layout The linked pipeline's layout.
+ * @param flags Pipeline create flags (the caller's probe).
+ * @param out Receives the pipeline.
+ * @param fb Receives the link's creation feedback.
+ * @param link Receives how the pipeline was linked.
+ * @return As pipeline_link. */
+static int pipeline_link_choose(rhi_device *dev, const rhi_compile_job *job, const pipe_state *st,
+                                const rhi_pc_variant *var, VkPipelineLayout layout,
+                                VkPipelineCreateFlags flags, VkPipeline *out, pipe_feedback *fb,
+                                pipe_link *link)
+{
+    *link = PIPE_LINK_LTO;
+    if (job->lto) return pipeline_link(dev, job, st, var, layout, flags, true, out, fb);
+    if (lto_listed(dev, var)) {
+        const VkPipelineCreateFlags probe = dev->has_cache_control
+            ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT : 0u;
+        const int r = pipeline_link(dev, job, st, var, layout, flags | probe, true, out, fb);
+        if (r == 0) atomic_fetch_add_explicit(&dev->lto.direct, 1u, memory_order_relaxed);
+        if (r != 1 || !probe) return r;
+        atomic_fetch_add_explicit(&dev->lto.probe_miss, 1u, memory_order_relaxed);
+    }
+    *link = PIPE_LINK_FAST;
+    return pipeline_link(dev, job, st, var, layout, flags, false, out, fb);
+}
+
 /** @brief Compile a job's Vulkan pipeline and layout from its desc, resolved stage bytes and variant.
  *
  * Any thread: reads the job, the device fields fixed at device creation and
  * the pipeline cache (internally synchronized); writes only the job's
  * result, the library entries (under their lock) and the atomic or locked
  * instruments. A pipeline pipe_uses_library selects is linked from its
- * library parts (pipeline_link), each built at most once per run; a part
- * or link failure creates it whole instead. Every create carries a
+ * library parts (pipeline_link_choose), each built at most once per run; a
+ * part or link failure creates it whole instead. Every create carries a
  * creation-feedback chain when the extension is enabled and is counted by
  * pipe_create_record; a successful create adds its manifest key (salted
- * for a linked pipeline) to dev->pc_keys under dev->pc_mx.
+ * per link kind) to dev->pc_keys under dev->pc_mx.
  * @param dev Device the objects are created on.
  * @param job The job; job->out receives the pipeline, layout,
- *            push-constant stage flags and dedupe key on success.
+ *            push-constant stage flags, dedupe key and link kind on success.
  * @param flags Pipeline create flags (the probe's FAIL_ON_PIPELINE_COMPILE_REQUIRED).
  * @param variant True for a precompile variant, which the depth report's
  *                per-compare count leaves out.
@@ -7751,22 +7868,25 @@ static int pipeline_compile(rhi_device *dev, rhi_compile_job *job, VkPipelineCre
     }
     VkPipeline pipeline = VK_NULL_HANDLE;
     pipe_feedback fb;
+    pipe_link link = PIPE_LINK_WHOLE;
     int linked = pipe_uses_library(dev, desc, job->vert_words || job->frag_words)
-                     ? pipeline_link(dev, job, &st, &var, layout, flags, &pipeline, &fb) : -1;
+                     ? pipeline_link_choose(dev, job, &st, &var, layout, flags, &pipeline, &fb, &link)
+                     : -1;
     if (linked == 1) return pipeline_create_failed(dev, VK_PIPELINE_COMPILE_REQUIRED_EXT,
                                                    VK_NULL_HANDLE, layout);
     if (linked != 0) {
+        link = PIPE_LINK_WHOLE;
         const VkResult r = pipeline_create_whole(dev, job, &st, layout, flags, &pipeline, &fb);
         if (r != VK_SUCCESS) return pipeline_create_failed(dev, r, pipeline, layout);
     }
     SDL_LockMutex(dev->pc_mx);
-    const int fresh = rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key_as(&var, linked == 0));
+    const int fresh = rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key_as(&var, link));
     dev->pcache_unhit += !(fb.pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
     SDL_UnlockMutex(dev->pc_mx);
     if (!fresh) rhi_pc_known_add(pipe_phase_now());
     job->out = (pipe_compiled){ .pipeline = pipeline, .layout = layout,
                                 .pc_stages = desc->push_const_size ? st.pcr.stageFlags : 0,
-                                .key = rhi_pc_variant_key(&var) };
+                                .key = rhi_pc_variant_key(&var), .link = link };
     return 0;
 }
 
@@ -7966,6 +8086,19 @@ static void registry_unlink(rhi_device *dev, rhi_pipeline *p)
 static void rebuild_forget(rhi_device *dev, rhi_pipeline *p);
 static void rebuild_join(rhi_device *dev, rhi_pipeline *p);
 
+/** @brief Note that a pipeline's installed objects were made a given way: a fast link owes a link-time-optimized link (rhi_pipeline_lto_step).
+ *
+ * @param dev Device.
+ * @param p The pipeline; its link is written.
+ * @param link How its objects were made. */
+static void lto_note_install(rhi_device *dev, rhi_pipeline *p, pipe_link link)
+{
+    p->link = link;
+    if (!dev->has_lto || link != PIPE_LINK_FAST) return;
+    dev->lto.owed = true;
+    dev->lto.drained = false;
+}
+
 /** @brief Free a pipeline's owned stage copies and the struct; its Vulkan objects are left to the caller.
  *
  * @param p The pipeline, unlinked. */
@@ -7999,6 +8132,7 @@ rhi_pipeline *rhi_compile_job_install(rhi_device *dev, rhi_compile_job *job)
     p->layout = job->out.layout;
     p->pc_stages = job->out.pc_stages;
     p->vkey = job->out.key;
+    lto_note_install(dev, p, job->out.link);
     job_free(job);
     census_add_base(dev, p);
     registry_link(dev, p);
@@ -8097,6 +8231,7 @@ static void rebuild_swap(rhi_device *dev, rhi_pipeline *p, const pipe_compiled *
     p->layout = c->layout;
     p->pc_stages = c->pc_stages;
     p->vkey = c->key;
+    lto_note_install(dev, p, c->link);
     p->swap_serial = s_frame_serial;
     p->swap_idle = !dev->frame_active;
 }
@@ -8195,6 +8330,11 @@ void rhi_env_write_guard(int begin)
  * walk, so rhi_precompile_ahead_stop may drop it while it is queued. */
 #define POOL_AHEAD (1u << 8)
 
+/* A submit flag above the RHI_COMPILE_* bits: the job waits on the low
+ * queue, taken only when no library part and no other job is queued, and a
+ * wait for the pool (pool_wait_below) does not wait for it. */
+#define POOL_LOW (1u << 9)
+
 static uint64_t job_variant_key(const rhi_device *dev, const rhi_compile_job *job);
 
 /* One submitted job and what its run returned, or one graphics pipeline
@@ -8212,6 +8352,7 @@ typedef struct pool_item {
     uint64_t            key;       /* the job's create-info key (job_variant_key) */
     bool                rebuild;   /* the submitter was in a live rebuild */
     bool                ahead;     /* a job of the ahead walk (rhi_precompile_ahead_stop drops it) */
+    bool                low;       /* a job of the low queue (POOL_LOW) */
     bool                key_held;  /* key is in the pool's run_keys while the item runs */
     bool                probe_hit; /* a probe found the create info cached */
     int                 rc;        /* the run's result */
@@ -8227,7 +8368,9 @@ struct compile_pool {
     pool_item     *q_head, *q_tail;   /* queued */
     pool_item     *l_head, *l_tail;   /* library parts queued, taken before q_head */
     pool_item     *s_head, *s_tail;   /* staged for the display owner */
-    unsigned       queued, running;   /* both count library parts too */
+    pool_item     *lo_head, *lo_tail; /* low queue, taken after q_head */
+    unsigned       queued, running;   /* both count library parts and the low queue too */
+    unsigned       lo_queued, lo_running; /* of them, low-queue jobs */
     bool           stop;
     bool           paused;         /* workers take no item (rhi_compile_pool_pause) */
     uint64_t       run_keys[POOL_MAX_WORKERS]; /* create-info keys of the jobs running */
@@ -8428,6 +8571,22 @@ static void pool_key_drop(struct compile_pool *pl, const pool_item *it)
     if (i >= 0) pl->run_keys[i] = pl->run_keys[--pl->run_keys_n];
 }
 
+/** @brief Unlink the next item a worker runs: a library part first (a link waits only on parts already taken), then a job, then a low-queue job.
+ *
+ * @param pl The pool, locked, with an item queued.
+ * @return The item. */
+static pool_item *pool_take_locked(struct compile_pool *pl)
+{
+    pool_item **head = pl->l_head ? &pl->l_head : pl->q_head ? &pl->q_head : &pl->lo_head;
+    pool_item **tail = pl->l_head ? &pl->l_tail : pl->q_head ? &pl->q_tail : &pl->lo_tail;
+    pool_item *it = *head;
+    *head = it->next;
+    if (!*head) *tail = NULL;
+    pl->queued--;
+    pl->lo_queued -= it->low;
+    return it;
+}
+
 /** @brief Worker thread: run queued items until the pool stops; while it is paused take none.
  *
  * @param arg The device.
@@ -8438,27 +8597,19 @@ static int SDLCALL pool_worker(void *arg)
     struct compile_pool *pl = dev->cpool;
     SDL_LockMutex(pl->mx);
     for (;;) {
-        while ((pl->paused || (!pl->q_head && !pl->l_head)) && !pl->stop)
+        while ((pl->paused || (!pl->q_head && !pl->l_head && !pl->lo_head)) && !pl->stop)
             SDL_WaitCondition(pl->work, pl->mx);
         if (pl->stop) break;
-        pool_item *it;
-        if (pl->l_head) {   /* library parts first: a link waits only on parts already taken */
-            it = pl->l_head;
-            pl->l_head = it->next;
-            if (!pl->l_head) pl->l_tail = NULL;
-        } else {
-            it = pl->q_head;
-            pl->q_head = it->next;
-            if (!pl->q_head) pl->q_tail = NULL;
-        }
-        pl->queued--;
+        pool_item *it = pool_take_locked(pl);
         pl->running++;
+        pl->lo_running += it->low;
         pool_key_take(pl, it);
         SDL_UnlockMutex(pl->mx);
         pool_run_item(dev, it);
         SDL_LockMutex(pl->mx);
         pool_key_drop(pl, it);
         pl->running--;
+        pl->lo_running -= it->low;
         pool_finish_locked(pl, it);
     }
     SDL_UnlockMutex(pl->mx);
@@ -8531,9 +8682,11 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
     pool_item *it = calloc(1, sizeof *it);
     pool_item local;
     if (!it) { memset(&local, 0, sizeof local); it = &local; }
-    *it = (pool_item){ .job = job, .flags = flags & ~(unsigned)POOL_AHEAD, .fn = fn, .tag = tag,
-                       .phase = t_pipe_phase, .key = job_variant_key(dev, job),
-                       .rebuild = t_in_rebuild, .ahead = (flags & POOL_AHEAD) != 0 };
+    *it = (pool_item){ .job = job, .flags = flags & ~(unsigned)(POOL_AHEAD | POOL_LOW), .fn = fn,
+                       .tag = tag, .phase = t_pipe_phase,
+                       .key = job_variant_key(dev, job) ^ (job->lto ? LTO_MANIFEST_SALT : 0u),
+                       .rebuild = t_in_rebuild, .ahead = (flags & POOL_AHEAD) != 0,
+                       .low = (flags & POOL_LOW) != 0 };
     if (!pl || it == &local) {   /* no pool: run now, install now */
         pool_run_item(dev, it);
         if (it->fn) it->fn(dev, it->job, it->rc, it->tag);
@@ -8557,9 +8710,12 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
         pl->l_tail = l;
         pl->queued++;
     }
-    if (pl->q_tail) pl->q_tail->next = it; else pl->q_head = it;
-    pl->q_tail = it;
+    pool_item **head = it->low ? &pl->lo_head : &pl->q_head;
+    pool_item **tail = it->low ? &pl->lo_tail : &pl->q_tail;
+    if (*tail) (*tail)->next = it; else *head = it;
+    *tail = it;
     pl->queued++;
+    pl->lo_queued += it->low;
     pl->st.submitted++;
     if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
     if (libs) SDL_BroadcastCondition(pl->work); else SDL_SignalCondition(pl->work);
@@ -8588,6 +8744,8 @@ unsigned rhi_compile_pool_drain(rhi_device *dev)
 
 /** @brief Wait for the pool, draining staged results and pumping, until fewer than @p cap jobs are queued (cap 0: until nothing is queued, running or staged).
  *
+ * Low-queue jobs (POOL_LOW) are not waited for; their staged results are
+ * drained with the rest.
  * Display owner only.
  * @param dev Device.
  * @param cap Queue depth to wait below, or 0.
@@ -8600,8 +8758,8 @@ static void pool_wait_below(rhi_device *dev, unsigned cap, void (*pump)(void *),
     for (;;) {
         rhi_compile_pool_drain(dev);
         SDL_LockMutex(pl->mx);
-        const bool met = cap ? pl->queued < cap
-                             : (!pl->queued && !pl->running && !pl->s_head);
+        const unsigned queued = pl->queued - pl->lo_queued, running = pl->running - pl->lo_running;
+        const bool met = cap ? queued < cap : (!queued && !running && !pl->s_head);
         if (!met && !pl->s_head) SDL_WaitConditionTimeout(pl->done, pl->mx, 10);
         SDL_UnlockMutex(pl->mx);
         if (met) return;
@@ -8659,12 +8817,14 @@ void rhi_compile_pool_stop(rhi_device *dev)
         SDL_UnlockMutex(pl->mx);
         for (int i = 0; i < pl->n; i++) SDL_WaitThread(pl->thr[i], NULL);
         pl->st.cancelled += pool_cancel_list(dev, pl->q_head);
+        pl->st.cancelled += pool_cancel_list(dev, pl->lo_head);
         pl->st.cancelled += pool_cancel_list(dev, pl->s_head);
         for (pool_item *l = pl->l_head, *next; l; l = next) {   /* their entries stay QUEUED */
             next = l->next;
             gpl_item_free(l);
         }
         pl->q_head = pl->q_tail = pl->s_head = pl->s_tail = pl->l_head = pl->l_tail = NULL;
+        pl->lo_head = pl->lo_tail = NULL;
         RHI_LOG("compile pool: stopped; %u workers, %u submitted, %u run (%.1f ms), %u staged, "
                 "variants %u created %u probe hits %u failed, %u cancelled, queue max %u, "
                 "%u library parts run (%.1f ms), %u same-key waits\n",
@@ -9167,6 +9327,196 @@ static void rebuild_abandon(rhi_device *dev)
     rb->cap = 0;
 }
 
+/* ---- link-time optimization (rhi.h) -------------------------------------- */
+
+static rhi_pipeline *registry_find(rhi_device *dev, uint64_t serial);
+static void pcache_autosave_arm(rhi_device *dev);
+
+/** @brief Return the create-info key of a pipeline's installed objects under the variant shown: the key a link-time-optimized link of it must carry.
+ *
+ * @param dev Device.
+ * @param job A job made from the pipeline (rhi_compile_job_of).
+ * @return The key. */
+static uint64_t lto_job_key(const rhi_device *dev, const rhi_compile_job *job)
+{
+    rhi_pc_variant v;
+    pipe_variant_view(dev, &job->desc, &job->info, job->variant, job->slot_contest, &v);
+    return rhi_pc_variant_key(&v);
+}
+
+/** @brief Return whether a registered pipeline may take a link-time-optimized result for a key now: still fast linked to that key and outside a live rebuild's set.
+ *
+ * @param dev Device.
+ * @param p The pipeline, or NULL.
+ * @param key The result's create-info key.
+ * @return true when the result may replace its objects. */
+static bool lto_target_ok(const rhi_device *dev, const rhi_pipeline *p, uint64_t key)
+{
+    if (!p || p->link != PIPE_LINK_FAST || p->vkey != key) return false;
+    return !(dev->rb.active && p->rb_gen == dev->rb.gen);
+}
+
+/** @brief Take a link-time-optimized link's result: park it for the next swap when its pipeline still wants it, else destroy it.
+ *
+ * A link that failed and was created whole instead (pipeline_compile) is
+ * parked the same way: a whole pipeline is the optimized form too.
+ * Display owner (an rhi_pool_install_fn, run by a pool drain at any point
+ * of a present, so the swap waits for rhi_pipeline_lto_step).
+ * @param dev Device.
+ * @param job The job, consumed.
+ * @param rc Its run's result, or RHI_POOL_CANCELLED.
+ * @param tag The pipeline's registry serial, heap-allocated, freed here. */
+static void lto_arrive(rhi_device *dev, rhi_compile_job *job, int rc, void *tag)
+{
+    const uint64_t serial = *(const uint64_t *)tag;
+    free(tag);
+    struct lto_state *l = &dev->lto;
+    l->out--;
+    l->returned++;
+    rhi_pipeline *p = rc == RHI_POOL_CANCELLED ? NULL : registry_find(dev, serial);
+    if (p) p->lto_out = false;
+    struct lto_ready *r = NULL;
+    if (rc == 0 && lto_target_ok(dev, p, job->out.key) && job->out.link != PIPE_LINK_FAST)
+        r = malloc(sizeof *r);
+    if (!r) {
+        l->failed += rc != 0 && rc != RHI_POOL_CANCELLED;
+        l->stale += rc == 0;
+        if (p && rc == 0) l->owed = true;   /* reconsidered at the next queue pass */
+        rhi_compile_job_discard(dev, job);
+        return;
+    }
+    *r = (struct lto_ready){ .next = l->ready, .serial = serial, .c = job->out };
+    l->ready = r;
+    job->out = (pipe_compiled){0};
+    rhi_compile_job_discard(dev, job);
+}
+
+/** @brief Swap every parked link-time-optimized result into its pipeline (rebuild_swap: the replaced objects retire by frame serial); a result its pipeline no longer wants is destroyed.
+ *
+ * @param dev Device. */
+static void lto_swap_ready(rhi_device *dev)
+{
+    struct lto_state *l = &dev->lto;
+    for (struct lto_ready *r = l->ready, *next; r; r = next) {
+        next = r->next;
+        rhi_pipeline *p = registry_find(dev, r->serial);
+        if (lto_target_ok(dev, p, r->c.key)) {
+            rebuild_swap(dev, p, &r->c);
+            l->swapped++;
+            l->swaps_in_frame += dev->frame_active;
+            if (!l->serial_first) l->serial_first = s_frame_serial;
+            l->serial_last = s_frame_serial;
+        } else {
+            l->stale++;
+            vkDestroyPipeline(dev->device, r->c.pipeline, NULL);
+            vkDestroyPipelineLayout(dev->device, r->c.layout, NULL);
+        }
+        free(r);
+    }
+    l->ready = NULL;
+}
+
+/** @brief Submit a link-time-optimized link, on the pool's low queue, of every registered fast-linked pipeline that has none out.
+ *
+ * The job is the pipeline's create info under the variant shown, so its
+ * result replaces objects of the same create info; the creates count in the
+ * precompile phase, beside the background variant walk.
+ * @param dev Device, with no live rebuild in flight. */
+static void lto_queue(rhi_device *dev)
+{
+    struct lto_state *l = &dev->lto;
+    l->owed = false;
+    if (!l->t0_ns) l->t0_ns = SDL_GetTicksNS();  /* clock-guard: wall: optimization duration for the log */
+    const rhi_pipe_phase ph = t_pipe_phase;
+    t_pipe_phase = RHI_PIPE_PHASE_PRECOMPILE;
+    for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
+        if (p->link != PIPE_LINK_FAST || p->lto_out) continue;
+        rhi_compile_job *job = rhi_compile_job_of(dev, p, rhi_pipe_variant_current(), 0u,
+                                                  rhi_pipe_variant_epoch());
+        uint64_t *tag = job ? malloc(sizeof *tag) : NULL;
+        if (!tag || lto_job_key(dev, job) != p->vkey) {
+            free(tag);
+            rhi_compile_job_discard(dev, job);
+            continue;
+        }
+        job->lto = true;
+        *tag = p->reg_serial;
+        p->lto_out = true;
+        l->out++;
+        l->queued++;
+        rhi_compile_pool_submit(dev, job, POOL_LOW, lto_arrive, tag);
+    }
+    t_pipe_phase = ph;
+}
+
+/** @brief Wait until every link-time-optimized link out has returned, draining the pool's staged results.
+ *
+ * @param dev Device. */
+static void lto_wait(rhi_device *dev)
+{
+    struct compile_pool *pl = dev->cpool;
+    while (pl && dev->lto.out && !pl->paused) {
+        rhi_compile_pool_drain(dev);
+        SDL_LockMutex(pl->mx);
+        if (dev->lto.out && !pl->s_head) SDL_WaitConditionTimeout(pl->done, pl->mx, 10);
+        SDL_UnlockMutex(pl->mx);
+    }
+}
+
+/** @brief Log the optimization counts once every queued link has returned and been swapped, and arm the cache save so a warm start finds the links.
+ *
+ * @param dev Device. */
+static void lto_report_drained(rhi_device *dev)
+{
+    struct lto_state *l = &dev->lto;
+    if (l->drained || l->out || l->ready || l->owed || !l->queued) return;
+    l->drained = true;
+    RHI_LOG("pipeline lto: %u queued, %u returned, %u swapped, %u stale, %u failed; "
+            "%u linked optimized at create (%u probe misses); swaps at frame serials "
+            "%llu..%llu, %u inside a frame; %u binds of a pipeline with no objects; %.1f ms\n",
+            l->queued, l->returned, l->swapped, l->stale, l->failed,
+            atomic_load(&l->direct), atomic_load(&l->probe_miss),
+            (unsigned long long)l->serial_first, (unsigned long long)l->serial_last,
+            l->swaps_in_frame, dev->null_binds,
+            (double)(SDL_GetTicksNS() - l->t0_ns) / 1e6);  /* clock-guard: wall: optimization duration for the log */
+    pcache_autosave_arm(dev);
+}
+
+void rhi_pipeline_lto_step(rhi_device *dev, bool sync)
+{
+    if (!dev || !dev->has_lto) return;
+    seam_check("pipeline_lto_step");   /* the registry is the display owner's */
+    rhi_compile_pool_drain(dev);
+    lto_swap_ready(dev);
+    if (!dev->lto.owed || dev->rb.active || dev->cpool_stopped) return;
+    if (!dev->headless && !atomic_load(&s_first_frame_done)) return;
+    if (!pool_get(dev) || !dev->cpool->n) {   /* a pool of none would link on this thread */
+        dev->lto.owed = false;
+        RHI_LOG("pipeline lto: the compile pool has no worker; fast links kept\n");
+        return;
+    }
+    lto_queue(dev);
+    if (sync) {
+        lto_wait(dev);
+        lto_swap_ready(dev);
+    }
+    lto_report_drained(dev);
+}
+
+/** @brief Destroy the parked link-time-optimized results (device destruction, after the pool stopped).
+ *
+ * @param dev Device. */
+static void lto_destroy_ready(rhi_device *dev)
+{
+    for (struct lto_ready *r = dev->lto.ready, *next; r; r = next) {
+        next = r->next;
+        vkDestroyPipeline(dev->device, r->c.pipeline, NULL);
+        vkDestroyPipelineLayout(dev->device, r->c.layout, NULL);
+        free(r);
+    }
+    dev->lto.ready = NULL;
+}
+
 /* ---- precompile ---------------------------------------------------------- */
 
 /* Queue depth per worker the blocking walk keeps: bounds the jobs (each holds
@@ -9198,8 +9548,8 @@ static bool walk_manifest_lists(rhi_device *dev, const rhi_pipeline_desc *desc, 
 {
     if (dev->has_cache_control || !dev->manifest_trusted) return false;
     SDL_LockMutex(dev->pc_mx);
-    const bool linked = pipe_uses_library(dev, desc, words);
-    const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(v, linked));
+    const pipe_link link = pipe_uses_library(dev, desc, words) ? PIPE_LINK_FAST : PIPE_LINK_WHOLE;
+    const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(v, link));
     SDL_UnlockMutex(dev->pc_mx);
     return listed != 0;
 }
@@ -10016,6 +10366,7 @@ void rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 {
     if (!dev->frame_active) return;
+    dev->null_binds += pipe->pipeline == VK_NULL_HANDLE;
     dev->cur_layout = pipe->layout; /* for bind_vram / push_constants */
     dev->cur_pc_stages = pipe->pc_stages;
     vkCmdBindPipeline(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipe->pipeline);

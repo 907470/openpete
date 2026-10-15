@@ -1725,7 +1725,8 @@ typedef struct {
  * thread is in (rhi_pipe_phase_set, a rebuild). A worker that takes a job
  * whose create info another worker is compiling waits for that run and then
  * creates from the pipeline cache, so one create info never compiles twice
- * at once (counted as same_key_waits). Without a pool (start
+ * at once (counted as same_key_waits); a link-time-optimized link is a
+ * create info apart from the fast link of the same pipeline. Without a pool (start
  * failure) the job runs at once and @p fn is called before return.
  * @param dev Device the job was made for.
  * @param job The job, consumed.
@@ -1880,6 +1881,30 @@ int           rhi_rebuild_request(rhi_device *dev, rhi_pipe_variant var, bool sy
  * @param out Receives the rebuild's counts when a swap happened, or NULL.
  * @return 1 when a swap happened in this call, else 0. */
 int           rhi_rebuild_poll(rhi_device *dev, rhi_rebuild_stats *out);
+
+/** @brief Link the pipelines linked fast from library parts again with link-time optimization, in the background, and swap each result in.
+ *
+ * Display owner only; called between frames, before any command buffer
+ * records, once per present after the first tick. A no-op unless the
+ * library path and its optimization are on (OPENPETE_PIPELINE_LTO=0
+ * declines the optimization). First the results that returned since the
+ * last call replace their pipelines' objects; the replaced objects retire
+ * by frame serial, so no draw loses its pipeline and no device idle runs.
+ * Then, unless a live rebuild is in flight, every registered fast-linked
+ * pipeline with no link out gets one, queued on the compile pool's low
+ * queue behind the library parts, the first-use and rebuild jobs and the
+ * background variant walk's job; a wait for the pool does not wait for
+ * them. A result whose pipeline was retired, rebuilt or switched variant
+ * meanwhile is destroyed. A create of a fast-linked pipeline whose
+ * optimized link the key manifest lists links it optimized at once when
+ * the pipeline cache serves it (pipeline_link_choose), so a warm start
+ * queues none. When every link has returned and been swapped, one line
+ * "pipeline lto: ..." is logged and the cache save is armed.
+ * @param dev Device, or NULL.
+ * @param sync true waits for the links queued in this call and swaps them
+ *             before returning (a run whose output must not depend on
+ *             worker timing). */
+void          rhi_pipeline_lto_step(rhi_device *dev, bool sync);
 
 /** @brief Return whether a live rebuild is in flight (requested and not yet swapped).
  *

@@ -14,7 +14,8 @@
  *     specialization constant handed to a stage and once with only the
  *     constants its stages declare.
  * Each create is also counted per site class and kind (a complete pipeline,
- * one of the three graphics-pipeline-library parts, or a link of them).
+ * one of the three graphics-pipeline-library parts, or a fast or
+ * link-time-optimized link of them).
  * The records are reported at device destruction when OPENPETE_PIPE_CENSUS
  * is set (2 adds one line per create). Every entry point is safe on any
  * thread: one mutex guards the records. */
@@ -47,13 +48,14 @@ typedef enum {
 
 /* What one create builds: a complete pipeline, a graphics pipeline library
  * (VK_EXT_graphics_pipeline_library) of one part, or a complete pipeline
- * linked from libraries. */
+ * linked from libraries, fast or with link-time optimization. */
 typedef enum {
     RHI_PC_KIND_PIPELINE = 0,   /* a complete pipeline from its shader stages  */
     RHI_PC_KIND_LIB_PRERASTER,  /* library: vertex input + pre-rasterization   */
     RHI_PC_KIND_LIB_FRAGMENT,   /* library: fragment shader state              */
     RHI_PC_KIND_LIB_OUTPUT,     /* library: fragment output interface          */
     RHI_PC_KIND_LINK,           /* a complete pipeline linked from libraries   */
+    RHI_PC_KIND_LINK_LTO,       /* the same, linked with link-time optimization */
     RHI_PC_KINDS
 } rhi_pc_kind;
 

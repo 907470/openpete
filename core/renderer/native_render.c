@@ -15230,7 +15230,10 @@ static void variant_request(rhi_pipe_variant want, bool sync) {
  * timing. When the rebuild's set is complete rhi_rebuild_poll swaps it at
  * this present and the getters start returning the new variant. Then the
  * background variant walk takes its step (rhi_precompile_walk_step), after
- * the request, so a key the request compiles is never submitted by it. */
+ * the request, so a key the request compiles is never submitted by it, and
+ * the link-time optimization of the library-linked pipelines takes its
+ * step (rhi_pipeline_lto_step), synchronously under a deterministic
+ * capture. */
 static void variant_apply_pending(void) {
     if (!s_nr.dev) return;
     const rhi_pipe_variant want = { .affine = s_texmap_pending != 0, .notex = s_notex_pending != 0,
@@ -15238,6 +15241,7 @@ static void variant_apply_pending(void) {
                                     .truescope = truescope_wanted() != 0 };
     variant_request(want, openpete_interp_deterministic());
     rhi_precompile_walk_step(s_nr.dev);
+    rhi_pipeline_lto_step(s_nr.dev, openpete_interp_deterministic());
 }
 
 /** @brief Apply a queued variant change before a dump compose, synchronously: the swap lands before this compose.
@@ -18297,9 +18301,11 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     /* Headless: no window / swapchain, so there is no live present. The
      * scene is composed on demand by openpete_native_render_screenshot_all.
      * A background variant walk (OPENPETE_PRECOMPILE_WALK) steps once per
-     * call. */
+     * call, and the link-time optimization step runs synchronously, so a
+     * capture never depends on when a worker finished a link. */
     if (s_nr.headless) {
         rhi_precompile_walk_step(s_nr.dev);
+        rhi_pipeline_lto_step(s_nr.dev, true);
         return;
     }
 
