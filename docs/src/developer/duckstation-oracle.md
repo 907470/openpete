@@ -486,9 +486,12 @@ Spyro 2 and 3 anchor
 at the first call of each main-loop iteration, record every sidecar
 (Spyro 2 without the raw-register floor: its own code never touches the
 controller's registers), skip libcd's own `VSync(-1)` polls, and boot
-with `--no-card` (Spyro 3's title card probe answers differ with a card
-present; openpete's Spyro 2 stalls at its first card wait); every PC comes
-from the game's `psyq.toml`. Without
+with `--no-card` on both sides; every PC comes from the game's `psyq.toml`.
+`games/<game>/oracle-card.conf` is the card-present recipe of Spyro 2 and
+3: the same recorders with the fork's formatted card in slot 1 and slot 2
+empty, the card exported to `tests/golden/<game>/card-v6-blank.mcd`;
+`tests/harness/check_psx_oracle.sh --game <game> --recipe
+games/<game>/oracle-card.conf` runs openpete on a scratch copy of it. Without
 `--game`, `--out`, `--disc` and `--manifest` (or `OPENPETE_DISC`,
 `OPENPETE_REGIONS_MANIFEST`) name the inputs directly.
 

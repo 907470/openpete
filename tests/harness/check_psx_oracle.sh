@@ -16,7 +16,7 @@
 # re-converges, is a hard failure.
 #
 # Usage:
-#   tests/harness/check_psx_oracle.sh [--game SLUG] [trace-path] [-- <extra openpete flags>]
+#   tests/harness/check_psx_oracle.sh [--game SLUG [--recipe PATH]] [trace-path] [-- <extra openpete flags>]
 #
 # --game SLUG (default spyro-1) sources games/SLUG/oracle.conf: the golden's
 # path, the disc, the openpete binary and the flags the run needs. The
@@ -24,6 +24,12 @@
 # not committed: when it is missing the script captures it first
 # (scripts/capture_psx_oracle_ds.sh --game SLUG, ~15 min for 20k records)
 # and exits 64 when DuckStation is not built (scripts/setup_duckstation.sh).
+# --recipe PATH sources another recipe of the game in place of its
+# oracle.conf (games/spyro-3/oracle-card.conf: the card-present golden),
+# and the missing-golden capture uses the same recipe. A recipe that sets
+# CARD1_FIXTURE (the slot 1 card image its capture exported) runs openpete
+# with a scratch copy of that image as --card1, so the fixture itself is
+# never written; a missing fixture beside a present golden exits 64.
 #
 # Anything after `--` is forwarded verbatim to the openpete binary, so the
 # same golden can be used to prove a feature with a game-side producer is
@@ -116,18 +122,24 @@ TRACE=""
 GAME="spyro-1"
 _sep=0
 _game_next=0
+RECIPE=""
+_recipe_next=0
 for _a in "$@"; do
     if   (( _game_next ));      then GAME="$_a"; _game_next=0
+    elif (( _recipe_next ));    then RECIPE="$_a"; _recipe_next=0
     elif (( _sep ));            then PASSTHRU+=("$_a")
     elif [[ "$_a" == "--" ]];   then _sep=1
     elif [[ "$_a" == "--game" ]]; then _game_next=1
+    elif [[ "$_a" == "--recipe" ]]; then _recipe_next=1
     elif [[ -z "$TRACE" ]];     then TRACE="$_a"
     else                             PASSTHRU+=("$_a")
     fi
 done
-CONF="games/$GAME/oracle.conf"
+CONF="${RECIPE:-games/$GAME/oracle.conf}"
 [[ -f "$CONF" ]] || { echo "[psx-oracle] no recipe: $CONF" >&2; exit 64; }
-GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""
+CAPTURE_RECIPE=()
+[[ -n "$RECIPE" ]] && CAPTURE_RECIPE=(--recipe "$RECIPE")
+GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""
 # shellcheck disable=SC1090
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
@@ -156,8 +168,8 @@ if [[ ! -f "$TRACE" ]]; then
         echo "[psx-oracle] run scripts/setup_duckstation.sh, then rerun (the golden is captured on the first run)" >&2
         exit 64
     fi
-    echo "[psx-oracle] golden $TRACE missing: capturing it (scripts/capture_psx_oracle_ds.sh --game $GAME)"
-    scripts/capture_psx_oracle_ds.sh --game "$GAME" || {
+    echo "[psx-oracle] golden $TRACE missing: capturing it (scripts/capture_psx_oracle_ds.sh --game $GAME ${CAPTURE_RECIPE[*]})"
+    scripts/capture_psx_oracle_ds.sh --game "$GAME" "${CAPTURE_RECIPE[@]}" || {
         echo "[psx-oracle] capture failed" >&2
         exit 64
     }
@@ -268,6 +280,21 @@ if [[ -f "$TRACE.gte" ]]; then
     echo "[psx-oracle] gte hash: $TRACE.gte"
 fi
 
+# A card-present recipe: openpete runs on a scratch copy of the card the
+# reference booted with, so a write the game makes never reaches the fixture
+# and every run starts from the captured image.
+CARD_DIR=""
+if [[ -n "$CARD1_FIXTURE" ]]; then
+    if [[ "$(stat -c %s "$CARD1_FIXTURE" 2>/dev/null || echo 0)" != 131072 ]]; then
+        echo "[psx-oracle] card fixture $CARD1_FIXTURE is missing or not 131072 bytes; recapture (rm $GOLDEN*)" >&2
+        exit 64
+    fi
+    CARD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/psx-oracle-card.XXXXXX")"
+    cp "$CARD1_FIXTURE" "$CARD_DIR/card1.mcr"
+    RUN_ARGS+=(--card1 "$CARD_DIR/card1.mcr")
+    echo "[psx-oracle] card fixture: $CARD1_FIXTURE (slot 1, scratch copy)"
+fi
+
 # The recipe's flags first: a caller's pass-through flag overrides them (the
 # options parser takes the last occurrence).
 PASSTHRU=("${RUN_ARGS[@]}" "${PASSTHRU[@]}")
@@ -283,8 +310,13 @@ if [[ -n "${OPENPETE_ORACLE_LOG:-}" ]]; then
     LOG="$OPENPETE_ORACLE_LOG"
 else
     LOG="${TMPDIR:-/tmp}/psx-oracle.$$.log"
-    trap 'rm -f "$LOG"' EXIT
 fi
+# The temporary log and the card scratch copy go with the run.
+_oracle_cleanup() {
+    [[ -n "${OPENPETE_ORACLE_LOG:-}" ]] || rm -f "${LOG:?}"
+    [[ -z "$CARD_DIR" ]] || rm -rf "${CARD_DIR:?}"
+}
+trap _oracle_cleanup EXIT
 rm -f "$LOG"
 
 # OPENPETE_ORACLE_WINDOWED=1: the windowed row. Headless never starts the
