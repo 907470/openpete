@@ -5112,16 +5112,12 @@ void openpete_native_launcher_close(void)
     memset(&s_launch, 0, sizeof s_launch);
 }
 
-/** @brief Apply the game's window icon, the --fullscreen launch state and the --background placement to the adopted window.
+/** @brief Apply the game's window icon to the adopted window.
  *
  * The icon is set on the native window rather than PsyCross's: in the
- * default (null-GPU) path PsyCross never creates one. --fullscreen 1 enters
- * borderless-desktop fullscreen, the state openpete_native_toggle_fullscreen
- * switches into; --background wins over it and keeps the window windowed and
- * behind the others. Logs the window state for a harness.
- * @param win The window.
- * @param opts The session options. */
-static void nr_apply_game_window_state(SDL_Window *win, const openpete_options_t *opts)
+ * default (null-GPU) path PsyCross never creates one.
+ * @param win The window. */
+static void nr_apply_game_window_icon(SDL_Window *win)
 {
     if (s_icon_rgba && s_icon_w > 0 && s_icon_h > 0) {
         SDL_Surface* ico = SDL_CreateSurfaceFrom(
@@ -5137,6 +5133,22 @@ static void nr_apply_game_window_state(SDL_Window *win, const openpete_options_t
          * the symbol to NULL and silently ships a default icon. Say so. */
         OPL_WARN_F("native", "%s", "no window icon available (icon data not linked)");
     }
+}
+
+/** @brief Apply the --fullscreen launch state and the --background placement to the game's window once bring-up has compiled its pipelines.
+ *
+ * Runs after the pipeline precompile, so the compile stage's progress
+ * screen draws in the launcher's window and the switch to fullscreen comes
+ * with the game's first picture. --fullscreen 1 enters borderless-desktop
+ * fullscreen, the state openpete_native_toggle_fullscreen switches into;
+ * --background wins over it and keeps the window windowed and behind the
+ * others. Logs the window state for a harness. A headless run has no
+ * window and applies nothing.
+ * @param win The window, or NULL.
+ * @param opts The session options. */
+static void nr_apply_game_window_placement(SDL_Window *win, const openpete_options_t *opts)
+{
+    if (!win) return;
     s_background_requested = opts->background > 0;
     if (opts->fullscreen && s_background_requested) {
         /* A fullscreen window covers the screen, which is the one thing
@@ -5196,7 +5208,7 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     SDL_GetWindowSize(win, &cur_w, &cur_h);
     if (cur_w != w || cur_h != h)
         SDL_SetWindowSize(win, w, h);
-    nr_apply_game_window_state(win, opts);
+    nr_apply_game_window_icon(win);
     nr_apply_scoped_present(dev, opts, created_vsync);
     /* M-key dev config overlay: attaches to the imgui context the launcher
      * created on this window and device. Failure leaves the overlay
@@ -6143,6 +6155,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * and after openpete_mods_init registered the mods' passes and
      * materials; before the first tick. */
     nr_precompile();
+    nr_apply_game_window_placement(win, opts);
 
     OPL_INFO_F("native", "Vulkan vk window up (%dx%d, device='%s'); PsyCross hidden",
                w, h, rhi_device_name(dev));
