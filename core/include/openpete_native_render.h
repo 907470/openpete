@@ -29,6 +29,8 @@
 extern "C" {
 #endif
 
+struct rhi_device;
+
 /** @brief Hand the window icon to the renderer before bring-up.
  *
  * Stores the pointer and size; bring-up applies the image to the native
@@ -78,30 +80,34 @@ struct SDL_Window *openpete_native_launcher_window(void);
 /** @brief Present one launcher frame: clear to a colour and record the imgui frame a callback draws.
  *
  * The launcher's per-present hook, on the display owner (the thread that
- * opened the device). The begin waits for the frame slot (blocking
- * present); a refused begin (a pending swapchain rebuild, a minimized
- * window) draws nothing. The frame is a launcher frame for the boot facts
- * (rhi_boot_launcher_frames).
+ * opened the device): the launcher's screens on its own device, and the
+ * pipeline precompile's progress screen on the device bring-up adopted.
+ * The begin waits for the frame slot (blocking present); a refused begin (a
+ * pending swapchain rebuild, a minimized window) draws nothing. The frame
+ * is a launcher frame for the boot facts (rhi_boot_launcher_frames), so it
+ * neither sets the first-frame fact nor ends the bring-up create phase.
+ * @param dev The device; NULL for the launcher's own.
  * @param r Clear red, 0..1.
  * @param g Clear green, 0..1.
  * @param b Clear blue, 0..1.
  * @param draw Issues the frame's imgui calls.
  * @param ud Passed to @p draw.
  * @return 1 when a frame was drawn, 0 otherwise. */
-int openpete_native_launcher_present(float r, float g, float b,
+int openpete_native_launcher_present(struct rhi_device *dev, float r, float g, float b,
                                      void (*draw)(void *ud), void *ud);
 
 /** @brief Read back the last launcher frame, count the pixels that differ from the clear colour, and write it as a PNG.
  *
  * A pixel differs when a channel is more than 8 levels from @p bg. Waits
  * the device idle.
+ * @param dev The device the frame was presented on; NULL for the launcher's own.
  * @param path PNG to write, or NULL or "" to only count.
  * @param bg The clear colour as R, G, B bytes.
  * @param differ Receives the differing pixel count.
  * @param total Receives the frame's pixel count.
- * @return 0 on success, -1 when there is no launcher device, the readback
+ * @return 0 on success, -1 when there is no device, the readback
  *         fails, or the PNG cannot be written. */
-int openpete_native_launcher_shot(const char *path, const uint8_t bg[3],
+int openpete_native_launcher_shot(struct rhi_device *dev, const char *path, const uint8_t bg[3],
                                   unsigned *differ, unsigned *total);
 
 /** @brief Destroy the launcher's imgui context, device and window when the run ends before bring-up adopts them.

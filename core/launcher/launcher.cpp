@@ -8,10 +8,13 @@
 //   selector  - several library entries, or any while no game is named:
 //               pick one, or drop a disc image to add and boot it.
 //   progress  - the ingest copy, the first-boot module build and the mod
-//               compile report a stage and a bar.
+//               compile report a stage and a bar; after the hand-off the
+//               renderer's pipeline precompile draws the same screen on the
+//               device it adopted (openpete_launcher_draw_progress).
 // Every screen draws in a 640x448 layout space scaled into the window. The
 // harness variable OPENPETE_LAUNCHER_SHOT=<base> reads back the first frame
-// of each screen, logs how many pixels it drew, and writes <base>.<screen>.png.
+// of each screen, logs how many pixels it drew, and writes <base>.<screen>.png;
+// the precompile's progress screen is the screen "precompile".
 #include "launcher_internal.h"
 
 #include "imgui.h"
@@ -45,6 +48,7 @@ enum class Screen { Progress, Drop, Select };
 /* One screen's content for one frame, and what the player did in it. */
 struct View {
     Screen screen = Screen::Progress;
+    const char* name = nullptr;   /* the game's display name; NULL or "" for none */
     const char* stage = "";
     int done = 0, total = 0;
     const char* const* labels = nullptr;
@@ -79,15 +83,21 @@ struct State {
 };
 State s;
 
-/** @brief Return the display name the screens show, upper-cased for their headings.
+/** @brief Return the display name a view shows, upper-cased for the screens' headings.
  *
- * @return The game's display name in capitals, or "" while the launcher
- *         names no game (no game is installed yet). */
-std::string upper_name() {
-    std::string n = (s.game && s.game->display_name) ? s.game->display_name : "";
+ * @param v The view.
+ * @return The view's game name in capitals, or "" when it names none. */
+std::string upper_name(const View& v) {
+    std::string n = v.name ? v.name : "";
     for (char& c : n) c = (char)toupper((unsigned char)c);
     return n;
 }
+
+/** @brief Return the display name of the game the launcher was started for.
+ *
+ * @return The name, or NULL while the launcher names no game (no game is
+ *         installed yet). */
+const char* game_name() { return s.game ? s.game->display_name : nullptr; }
 
 /* The layout-to-window mapping of the frame being drawn. */
 struct Frame { float scale, ox, oy; };
@@ -118,20 +128,46 @@ void text_centred(const Frame& f, float y, float size, ImU32 col, const char* te
     ImGui::PopFont();
 }
 
+/* The banner and footer of a progress stage, chosen by the stage text's
+ * prefix; counted stages show their counts after the stage. The last row's
+ * empty prefix matches every other stage. */
+struct StageLook {
+    const char* prefix;
+    const char* banner;
+    const char* footer;
+    bool counted;
+};
+constexpr StageLook kStageLooks[] = {
+    {"COMPILING MODS", "PREPARING MODS", "CHANGED MOD SOURCES ARE COMPILED FOR THIS PC.", true},
+    {"COMPILING SHADERS", "PREPARING GRAPHICS",
+     "SHADERS ARE COMPILED FOR THIS PC'S GRAPHICS DRIVER.", true},
+    {"", "FIRST-TIME SETUP", "YOUR DISC IS REBUILT FOR THIS PC. THIS HAPPENS ONCE.", false},
+};
+
+/** @brief Return the look of a progress stage: the first row of kStageLooks whose prefix starts the stage text.
+ *
+ * @param stage The stage text.
+ * @return The row; the last row when no other matches. */
+const StageLook& stage_look(const char* stage) {
+    for (const StageLook& l : kStageLooks)
+        if (strncmp(stage, l.prefix, strlen(l.prefix)) == 0) return l;
+    return kStageLooks[sizeof kStageLooks / sizeof kStageLooks[0] - 1];
+}
+
 /** @brief Draw the progress screen: banner, stage line, bar and footer.
  *
- * A stage starting "COMPILING MODS" takes the mods banner and footer and
- * shows done/total after the stage; any other stage takes the first-time
- * setup banner. The bar fills done/total, clamped to 1, and is empty when
- * total is 0.
+ * The stage's row of kStageLooks gives the banner and footer. A counted
+ * stage shows done/total after the stage text, or done alone while total
+ * is 0 and done is not. The bar fills done/total, clamped to 1, and is
+ * empty when total is 0.
  * @param f The frame mapping.
  * @param v The view. */
 void draw_progress(const Frame& f, const View& v) {
-    const bool mods = strncmp(v.stage, "COMPILING MODS", 14) == 0;
-    text_centred(f, 160 + kBandY, 14, IM_COL32(220, 210, 240, 255),
-                 mods ? "PREPARING MODS" : "FIRST-TIME SETUP");
+    const StageLook& look = stage_look(v.stage);
+    text_centred(f, 160 + kBandY, 14, IM_COL32(220, 210, 240, 255), look.banner);
     char line[160];
-    if (mods && v.total > 0) snprintf(line, sizeof line, "%s %d/%d", v.stage, v.done, v.total);
+    if (look.counted && v.total > 0) snprintf(line, sizeof line, "%s %d/%d", v.stage, v.done, v.total);
+    else if (look.counted && v.done > 0) snprintf(line, sizeof line, "%s %d", v.stage, v.done);
     else snprintf(line, sizeof line, "%s", v.stage);
     text_centred(f, 196 + kBandY, 14, IM_COL32_WHITE, line);
     float frac = v.total > 0 ? (float)v.done / (float)v.total : 0.0f;
@@ -141,9 +177,7 @@ void draw_progress(const Frame& f, const View& v) {
     ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(50, 38, 80, 255));
     ImGui::ProgressBar(frac, ImVec2((kLayoutW - 160) * f.scale, 22 * f.scale), "");
     ImGui::PopStyleColor(2);
-    text_centred(f, 292 + kBandY, 8, IM_COL32(150, 130, 190, 255),
-                 mods ? "CHANGED MOD SOURCES ARE COMPILED FOR THIS PC."
-                      : "YOUR DISC IS REBUILT FOR THIS PC. THIS HAPPENS ONCE.");
+    text_centred(f, 292 + kBandY, 8, IM_COL32(150, 130, 190, 255), look.footer);
 }
 
 /** @brief Draw the drop screen: the request for the disc image, the browse button and the quit hint.
@@ -151,7 +185,7 @@ void draw_progress(const Frame& f, const View& v) {
  * @param f The frame mapping.
  * @param v The view; browse is set when the button is pressed. */
 void draw_drop(const Frame& f, View& v) {
-    const std::string name = upper_name();
+    const std::string name = upper_name(v);
     const std::string drag = name.empty() ? "DRAG YOUR" : "DRAG YOUR " + name;
     text_centred(f, 160 + kBandY, 14, IM_COL32_WHITE, drag.c_str());
     text_centred(f, 186 + kBandY, 14, IM_COL32_WHITE, "DISC IMAGE (.CUE / .BIN) HERE");
@@ -211,7 +245,7 @@ void draw_view(void* ud) {
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
     const Frame f = frame_map();
     text_centred(f, 36 + kBandY, 28, IM_COL32(240, 138, 30, 255), "OPENPETE");
-    if (const std::string name = upper_name(); !name.empty()) {
+    if (const std::string name = upper_name(v); !name.empty()) {
         const std::string sub = name + " PC PORT";
         text_centred(f, 72 + kBandY, 14, IM_COL32(150, 130, 190, 255), sub.c_str());
     }
@@ -221,27 +255,45 @@ void draw_view(void* ud) {
     ImGui::End();
 }
 
-/** @brief Read back the first frame of a screen when OPENPETE_LAUNCHER_SHOT is set, logging how many pixels it drew.
+/* Shot tags, indexed by Screen, then the precompile's progress screen. */
+constexpr const char* kShotTag[] = {"progress", "drop", "selector", "precompile"};
+constexpr int kShotPrecompile = 3;
+
+/** @brief Read back the first frame of a shot tag when OPENPETE_LAUNCHER_SHOT is set, logging how many pixels it drew.
  *
- * @param v The view just presented. */
-void maybe_shot(const View& v) {
-    static const char* const k_tag[] = {"progress", "drop", "selector"};
-    const unsigned bit = 1u << (unsigned)v.screen;
+ * @param dev The device the frame was presented on; NULL for the launcher's.
+ * @param tag The kShotTag index. */
+void maybe_shot(struct rhi_device* dev, int tag) {
+    const unsigned bit = 1u << (unsigned)tag;
     const char* base = getenv("OPENPETE_LAUNCHER_SHOT");
     if (!base || !*base || (s.shot_done & bit)) return;
     s.shot_done |= bit;
-    const std::string path = std::string(base) + "." + k_tag[(int)v.screen] + ".png";
+    const std::string path = std::string(base) + "." + kShotTag[tag] + ".png";
     unsigned differ = 0, total = 0;
-    const int rc = openpete_native_launcher_shot(path.c_str(), kBg, &differ, &total);
+    const int rc = openpete_native_launcher_shot(dev, path.c_str(), kBg, &differ, &total);
     OPL_INFO_F("launcher", "screen %s: %u of %u pixels drawn over the clear (shot %s, rc %d)",
-               k_tag[(int)v.screen], differ, total, path.c_str(), rc);
+               kShotTag[tag], differ, total, path.c_str(), rc);
 }
 
-/** @brief Present one frame of a view on the launcher's device. */
+/** @brief Present one frame of a view on a device.
+ *
+ * @param dev The device; NULL for the launcher's.
+ * @param v The view.
+ * @param tag The kShotTag index of its first-frame readback.
+ * @return true when a frame was drawn. */
+bool present_on(struct rhi_device* dev, View& v, int tag) {
+    const bool drawn = openpete_native_launcher_present(dev, kBg[0] / 255.0f, kBg[1] / 255.0f,
+                                                        kBg[2] / 255.0f, draw_view, &v) != 0;
+    if (drawn) maybe_shot(dev, tag);
+    return drawn;
+}
+
+/** @brief Present one frame of a view on the launcher's device, naming the launcher's game.
+ *
+ * @param v The view. */
 void present(View& v) {
-    if (openpete_native_launcher_present(kBg[0] / 255.0f, kBg[1] / 255.0f, kBg[2] / 255.0f,
-                                         draw_view, &v))
-        maybe_shot(v);
+    v.name = game_name();
+    (void)present_on(nullptr, v, (int)v.screen);
 }
 
 /** @brief Opens the first connected gamepad unless one is already open. */
@@ -642,6 +694,16 @@ int openpete_launcher_handoff(openpete_options_t* opts) {
     }
     OPL_INFO_F("launcher", "%s", "window, device and imgui handed to the game");
     return OPENPETE_EXIT_OK;
+}
+
+int openpete_launcher_draw_progress(struct rhi_device* dev, const char* name,
+                                    const char* stage, int done, int total) {
+    View v;
+    v.name = name;
+    v.stage = stage ? stage : "";
+    v.done = done;
+    v.total = total;
+    return present_on(dev, v, kShotPrecompile) ? 1 : 0;
 }
 
 void openpete_launcher_close(void) {

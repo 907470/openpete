@@ -53,6 +53,15 @@ changed since the last compile, shows **PREPARING MODS** with a
 THIS PC.** before the game starts. Mods made only of assets do not compile.
 See [Mods](../customizing/mods.md).
 
+## Shaders compile on start
+
+The game's graphics pipelines are compiled for the graphics card and driver
+before the game starts, and kept in a cache. A start whose compile takes
+longer than 0.4 seconds (the first start after a new graphics driver or a
+new release) shows **PREPARING GRAPHICS** with a **COMPILING SHADERS**
+progress line and **SHADERS ARE COMPILED FOR THIS PC'S GRAPHICS DRIVER.**
+Other starts finish the compile without showing it.
+
 ## Upgrades
 
 Install a new release over the old one, or beside it (see

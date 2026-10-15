@@ -257,10 +257,13 @@ typedef struct {
  * capacity row (no level has loaded yet), and the 1x1 stand-in for the
  * HD-fold atlas and the globals and sectors UBO are made here on the
  * device-owning thread. Any failure leaves the cache disabled and terrain
- * on the CPU walk.
+ * on the CPU walk. The pipeline creates are bracketed by @p batch: called
+ * with 1 before the first create and with 0 after the last, before any
+ * pipeline is read, so the caller can run them in a pipeline batch.
  * @param dev Device; NULL leaves the cache disabled.
+ * @param batch Opens (1) and closes (0) the creates' bracket; NULL for none.
  * @return 1 when the cache is ready, 0 otherwise. */
-int  openpete_tercache_init(struct rhi_device *dev);
+int  openpete_tercache_init(struct rhi_device *dev, void (*batch)(int open));
 /** @brief Destroy the terrain cache's device objects and zero its state, keeping the final stats.
  *
  * The stats are snapshotted first so a census printed after teardown

@@ -32,6 +32,7 @@
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 #include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
 #include "openpete_paths.h"         /* pipeline cache directory */
+#include "openpete_launcher.h"      /* the progress screen the compile stage draws */
 #include "openpete_config.h"        /* device-creation knobs from the game-neutral tiers */
 #include "openpete_atomic_file.h"   /* pipeline cache write-back */
 
@@ -4569,14 +4570,15 @@ static void blend_family_destroy(rhi_device* dev, rhi_pipeline** fam, int nsel) 
     }
 }
 
-/** @brief Create a pipeline family from one description, one member per listed blend class and STP selection row.
+static void nr_eager_pipe(rhi_device *dev, const rhi_pipeline_desc *desc, rhi_pipeline **out);
+
+/** @brief Create a pipeline family from one description, one member per listed blend class and STP selection row, now or at the end of the open eager batch.
  *
  * Member sel * NR_BLEND_CLASSES + b is created for each class b that
  * k_stp_sel_classes lists for row sel, with blend k_blend_class_rhi[b],
  * texel_stp_select sel, and every other field of @p base; unlisted members
- * are NULL. The family is all or none: a missing member would draw its
- * class through another member's blend, so on any failure the whole family
- * is destroyed and left NULL.
+ * are NULL. The family is all or none: blend_family_settle, once the
+ * creates have installed, destroys it when a member is missing.
  * @param dev Device to create on.
  * @param base Pipeline description the members share.
  * @param fam Receives the members, @p nsel times NR_BLEND_CLASSES slots.
@@ -4584,17 +4586,29 @@ static void blend_family_destroy(rhi_device* dev, rhi_pipeline** fam, int nsel) 
 static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
                                 rhi_pipeline** fam, int nsel) {
     rhi_pipeline_desc d = *base;
-    int ok = 1;
     for (int k = 0; k < nsel * NR_BLEND_CLASSES; k++) {
         const int sel = k / NR_BLEND_CLASSES, b = k % NR_BLEND_CLASSES;
         fam[k] = NULL;
         if (!((k_stp_sel_classes[sel] >> b) & 1u)) continue;
         d.blend = k_blend_class_rhi[b];
         d.texel_stp_select = sel;
-        fam[k] = rhi_create_pipeline(dev, &d);
-        ok = ok && fam[k];
+        nr_eager_pipe(dev, &d, &fam[k]);
     }
-    if (!ok) blend_family_destroy(dev, fam, nsel);
+}
+
+/** @brief Keep a family blend_family_create built all or none: a missing listed member would draw its class through another member's blend, so the whole family is destroyed and left NULL.
+ *
+ * @param dev Device the family was created on.
+ * @param fam The members.
+ * @param nsel Number of texel STP selection rows. */
+static void blend_family_settle(rhi_device* dev, rhi_pipeline** fam, int nsel) {
+    for (int k = 0; k < nsel * NR_BLEND_CLASSES; k++) {
+        const int sel = k / NR_BLEND_CLASSES, b = k % NR_BLEND_CLASSES;
+        if (((k_stp_sel_classes[sel] >> b) & 1u) && !fam[k]) {
+            blend_family_destroy(dev, fam, nsel);
+            return;
+        }
+    }
 }
 
 /** @brief The _cover or _rim variant of a scene fragment stage, by its stock SPIR-V name.
@@ -4625,10 +4639,10 @@ typedef struct {
 /** @brief Build the portal twin of each scene pipeline that must yield to a portal preview.
  *
  * Each twin is its stock description with the fragment stage's _cover or
- * _rim variant (cover_frag_of) and the cover planes' UBO at set 5. A NULL
- * stock pipeline is skipped; a stage without the variant, and a twin that
- * fails to build, leave the twin NULL, and that pipeline draws without the
- * test.
+ * _rim variant (cover_frag_of) and the cover planes' UBO at set 5, created
+ * now or at the end of the open eager batch. A NULL stock pipeline is
+ * skipped; a stage without the variant, and a twin that fails to build,
+ * leave the twin NULL, and that pipeline draws without the test.
  * @param dev Device.
  * @param src The stock pipelines and their descriptions.
  * @param n Entries in @p src; at most NR_COVER_TWINS are kept.
@@ -4644,7 +4658,8 @@ static int cover_family_create(rhi_device* dev, const nr_cover_src* src, int n,
         d.uniform_set5 = true;
         out[k].stock = src[i].stock;
         out[k].rim = src[i].rim;
-        out[k].cover = d.frag_spv ? rhi_create_pipeline(dev, &d) : NULL;
+        out[k].cover = NULL;
+        if (d.frag_spv) nr_eager_pipe(dev, &d, &out[k].cover);
         k++;
     }
     return k;
@@ -4702,7 +4717,7 @@ typedef struct {
  *
  * Each twin is its stock description with the fragment stage's _shell
  * variant (shell_frag_of) and the shell and intruder image pairs at sets 5
- * and 6. A NULL stock
+ * and 6, created now or at the end of the open eager batch. A NULL stock
  * pipeline is skipped; a stage without the variant or a twin that fails to
  * build leaves the twin NULL, and that pipeline draws stock.
  * @param dev Device.
@@ -4720,7 +4735,8 @@ static int shell_family_create(rhi_device* dev, const nr_shell_src* src, int n,
         d.frag_spv = shell_frag_of(src[i].desc->frag_spv);
         d.pair_set56 = true;
         out[k].stock = src[i].stock;
-        out[k].twin = d.frag_spv ? rhi_create_pipeline(dev, &d) : NULL;
+        out[k].twin = NULL;
+        if (d.frag_spv) nr_eager_pipe(dev, &d, &out[k].twin);
         k++;
     }
     return k;
@@ -4730,16 +4746,19 @@ static int shell_family_create(rhi_device* dev, const nr_shell_src* src, int n,
  *
  * The pre-pass draws the blended faces of every front-shell record through
  * the scene vertex stage (psx_scene.vert), so its depth is the main pass's
- * own for the same faces. Nothing is built with OPENPETE_MOBY_SHELL=0 or
- * without the rank pass; a missing pre-pass pipeline or buffer is logged and
- * leaves every ACTOR draw stock (native_moby_shell_pass never draws).
+ * own for the same faces. The pipelines are created now or at the end of
+ * the open eager batch. Nothing is built with OPENPETE_MOBY_SHELL=0 or
+ * without the rank pass; a missing pre-pass pipeline or buffer
+ * (shell_pipes_report) leaves every ACTOR draw stock
+ * (native_moby_shell_pass never draws).
  * @param dev Device.
  * @param src The opaque ACTOR pipelines and their descriptions.
  * @param n Entries in @p src.
- * @param rank_ok Nonzero when the rank pass pipeline exists. */
-static void shell_pipes_create(rhi_device* dev, const nr_shell_src* src, int n, int rank_ok)
+ * @param rank_ok Nonzero when the rank pass pipeline exists.
+ * @return 1 when the shell was built, 0 when nothing was. */
+static int shell_pipes_create(rhi_device* dev, const nr_shell_src* src, int n, int rank_ok)
 {
-    if (!moby_shell_on() || !rank_ok) return;
+    if (!moby_shell_on() || !rank_ok) return 0;
     s_nr.shell_twin_n = shell_family_create(dev, src, n, s_nr.shell_twins);
     const rhi_pipeline_desc shell_desc = {
         .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell.frag.spv",
@@ -4749,10 +4768,18 @@ static void shell_pipes_create(rhi_device* dev, const nr_shell_src* src, int n, 
         .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell_intr.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true, .push_const_size = 0, .pair_set56 = true,
     };
-    s_nr.moby_shell_pipe = rhi_create_pipeline(dev, &shell_desc);
-    s_nr.moby_shell_intr_pipe = rhi_create_pipeline(dev, &intr_desc);
+    nr_eager_pipe(dev, &shell_desc, &s_nr.moby_shell_pipe);
+    nr_eager_pipe(dev, &intr_desc, &s_nr.moby_shell_intr_pipe);
     s_nr.moby_shell_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * 768u, 4u);
-    if (!s_nr.moby_shell_pipe || !s_nr.moby_shell_intr_pipe || !s_nr.moby_shell_vb)
+    return 1;
+}
+
+/** @brief Log a front shell shell_pipes_create built without its pre-pass pipelines or buffer, once their creates have installed.
+ *
+ * @param built shell_pipes_create's result. */
+static void shell_pipes_report(int built)
+{
+    if (built && (!s_nr.moby_shell_pipe || !s_nr.moby_shell_intr_pipe || !s_nr.moby_shell_vb))
         OPL_ERROR_F("native", "moby front-shell pass unavailable; opaque ACTOR faces draw at true depth");
 }
 
@@ -4836,6 +4863,140 @@ static void nr_apply_scoped_present(rhi_device *dev, const openpete_options_t *o
 
 static void nr_precompile(void);
 
+/** @brief Return whether the pipeline precompile runs in this run.
+ *
+ * OPENPETE_PRECOMPILE_FORCE set to a value starting with 0 skips it, any
+ * other non-empty value runs it, in any run mode. Unset, it runs in a
+ * windowed run on a hardware device and is skipped in a synchronous run
+ * (headless or deterministic capture), whose pipelines compile at first
+ * draw, and on a software device, whose pipeline cache keeps nothing it
+ * could reuse. Read once, by nr_compile_stage_begin.
+ * @param dev The renderer's device.
+ * @return 1 to run the precompile. */
+static int nr_precompile_wanted(const rhi_device *dev) {
+    const char* e = getenv("OPENPETE_PRECOMPILE_FORCE");
+    if (e && *e) return *e != '0';
+    return !s_nr.sync_run && !rhi_device_is_software(dev);
+}
+
+/* The compile stage's progress screen appears once bring-up's pipeline
+ * compiles have run this long. Warm and app-cold boots on the timing hosts
+ * finish well inside it and draw nothing; a driver-cold boot runs past it.
+ * The harness variable OPENPETE_PRECOMPILE_PANEL_MS replaces it (0 draws
+ * from the first pump). */
+#define NR_PRECOMPILE_PANEL_NS (400ll * 1000000ll)
+/* The screen redraws at most this often. */
+#define NR_PRECOMPILE_PANEL_PERIOD_NS (16ll * 1000000ll)
+
+/* The compile stage of bring-up: the eager pipeline batches, then the
+ * precompile's lazy-slot batch and variant walk, counted as one stage on one
+ * progress screen. A run that does not precompile opens no batch and draws
+ * nothing. */
+static struct {
+    rhi_device *dev;           /* the device the stage counts and draws on     */
+    const char *name;          /* the game's display name for the subtitle     */
+    int         wanted;        /* nr_precompile_wanted, latched at the begin   */
+    Uint64      t0_ns, last_ns;
+    Uint64      panel_ns;      /* wait before the first draw                   */
+    unsigned    draws;         /* progress screens presented                   */
+    unsigned    base_done;     /* creates finished by the closed batches       */
+    unsigned    base_queued;   /* creates queued by the closed batches         */
+    unsigned    held_total;    /* the bar's total once final; 0 before         */
+    bool        walk;          /* the variant walk runs: nothing is queued after it */
+} s_pre;
+
+/** @brief Draw one present of the compile stage: the launcher's progress screen with the stage "COMPILING SHADERS".
+ *
+ * @param done Compiles finished.
+ * @param total The bar's total; 0 for an empty bar with the finished count. */
+static void nr_precompile_panel(unsigned done, unsigned total) {
+    if (openpete_launcher_draw_progress(s_pre.dev, s_pre.name, "COMPILING SHADERS",
+                                        (int)done, (int)total))
+        s_pre.draws++;
+}
+
+/** @brief Pump the window's events between compiles, and draw the compile stage once it has run past its panel wait.
+ *
+ * The finished and queued counts are the closed batches' plus the open
+ * batch's or the variant walk's (rhi_precompile_progress). The bar's total
+ * is held from the first draw inside the variant walk, whose total is known
+ * before its first submit and after which nothing is queued; before it the
+ * screen shows the finished count over an empty bar, so the bar never moves
+ * back. Runs on the display owner (bring-up, before the first tick).
+ * @param ctx Unused. */
+static void nr_precompile_pump(void* ctx) {
+    (void)ctx;
+    SDL_PumpEvents();
+    const Uint64 now = SDL_GetTicksNS();  /* clock-guard: wall: compile duration for the progress screen */
+    if (now - s_pre.t0_ns < s_pre.panel_ns ||
+        now - s_pre.last_ns < (Uint64)NR_PRECOMPILE_PANEL_PERIOD_NS)
+        return;
+    s_pre.last_ns = now;
+    unsigned done = 0, queued = 0;
+    rhi_precompile_progress(s_pre.dev, &done, &queued);
+    done += s_pre.base_done;
+    queued += s_pre.base_queued;
+    if (s_pre.walk && !s_pre.held_total) s_pre.held_total = queued;
+    if (s_pre.held_total && done > s_pre.held_total) done = s_pre.held_total;
+    nr_precompile_panel(done, s_pre.held_total);
+}
+
+/** @brief Open the compile stage on the renderer's device before bring-up's first pipeline create.
+ *
+ * Latches nr_precompile_wanted and starts the panel wait; the harness
+ * variable OPENPETE_PRECOMPILE_PANEL_MS, read here, replaces the wait.
+ * @param dev The renderer's device.
+ * @param name The game's display name for the screen's subtitle; NULL for none. */
+static void nr_compile_stage_begin(rhi_device *dev, const char *name) {
+    memset(&s_pre, 0, sizeof s_pre);
+    s_pre.dev = dev;
+    s_pre.name = name;
+    s_pre.wanted = nr_precompile_wanted(dev);
+    s_pre.t0_ns = SDL_GetTicksNS();  /* clock-guard: wall: compile duration for the progress screen */
+    const char* e = getenv("OPENPETE_PRECOMPILE_PANEL_MS");
+    s_pre.panel_ns = (e && *e) ? (Uint64)strtoull(e, NULL, 10) * 1000000ull
+                               : (Uint64)NR_PRECOMPILE_PANEL_NS;
+}
+
+/** @brief Open a pipeline batch for bring-up's eager creates when the run precompiles.
+ *
+ * Inside it nr_eager_pipe queues each create on the compile pool; a run
+ * that does not precompile creates each one at once. No pipeline the batch
+ * fills may be read before nr_eager_batch_end. */
+static void nr_eager_batch_begin(void) {
+    if (s_pre.wanted) rhi_pipeline_batch_begin(s_pre.dev);
+}
+
+/** @brief Close the eager pipeline batch: wait for its creates, pumping the compile stage, install each into its variable, and add its counts to the stage's. */
+static void nr_eager_batch_end(void) {
+    if (!s_pre.wanted) return;
+    rhi_pipeline_batch_stats bs;
+    rhi_pipeline_batch_end(s_pre.dev, s_nr.headless ? NULL : nr_precompile_pump, NULL, &bs);
+    s_pre.base_queued += bs.queued;
+    s_pre.base_done += bs.installed + bs.failed + bs.duplicate;
+}
+
+/** @brief Open (1) or close (0) an eager pipeline batch, for a bracket another module's creates run in.
+ *
+ * @param open 1 for nr_eager_batch_begin, 0 for nr_eager_batch_end. */
+static void nr_eager_batch(int open) {
+    if (open) nr_eager_batch_begin();
+    else nr_eager_batch_end();
+}
+
+/** @brief Create one of bring-up's eager pipelines into a variable: now, or at the end of the open eager batch.
+ *
+ * The create is the one rhi_create_pipeline makes (rhi_create_pipeline_slot
+ * outside a batch). The variable is NULL until the create installs, and
+ * stays NULL when it fails.
+ * @param dev Device.
+ * @param desc Pipeline description, copied.
+ * @param out The variable. */
+static void nr_eager_pipe(rhi_device *dev, const rhi_pipeline_desc *desc, rhi_pipeline **out) {
+    *out = NULL;
+    (void)rhi_create_pipeline_slot(dev, desc, NULL, 0, NULL, 0, (void **)out, NULL);
+}
+
 /** @brief Report whether this run compiles its pipelines synchronously at first draw.
  *
  * A headless run and a run that captures intermediate presents are
@@ -4896,10 +5057,10 @@ int openpete_native_launcher_active(void) { return s_launch.dev != NULL; }
 
 struct SDL_Window *openpete_native_launcher_window(void) { return s_launch.win; }
 
-int openpete_native_launcher_present(float r, float g, float b,
+int openpete_native_launcher_present(struct rhi_device *on, float r, float g, float b,
                                      void (*draw)(void *ud), void *ud)
 {
-    rhi_device *dev = s_launch.dev;
+    rhi_device *dev = on ? on : s_launch.dev;
     if (!dev) return 0;
     int drawn = 0;
     rhi_boot_launcher_frames(true);
@@ -4916,11 +5077,11 @@ int openpete_native_launcher_present(float r, float g, float b,
     return drawn;
 }
 
-int openpete_native_launcher_shot(const char *path, const uint8_t bg[3],
+int openpete_native_launcher_shot(struct rhi_device *on, const char *path, const uint8_t bg[3],
                                   unsigned *differ, unsigned *total)
 {
     *differ = *total = 0;
-    rhi_device *dev = s_launch.dev;
+    rhi_device *dev = on ? on : s_launch.dev;
     int w = 0, h = 0;
     if (!dev) return -1;
     (void)rhi_read_offscreen(dev, NULL, 0, &w, &h);
@@ -5598,41 +5759,78 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = true, .push_const_size = 2 * sizeof(int),   /* ssaa, outline */
     };
     wireframe_report(dev);
-    rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
-    rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
-    rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
-    rhi_pipeline *gouraud_blend_pipe = rhi_create_pipeline(dev, &gouraud_blend_desc);
-    rhi_pipeline *gouraud_sub_pipe = rhi_create_pipeline(dev, &gouraud_sub_desc);
-    rhi_pipeline *gouraud_sub_ztest_pipe = rhi_create_pipeline(dev, &gouraud_sub_ztest_desc);
-    rhi_pipeline *gouraud_sub_fade_pipe = rhi_create_pipeline(dev, &gouraud_sub_fade_desc);
-    rhi_pipeline *prepass_pipe = rhi_create_pipeline(dev, &prepass_desc);
-    rhi_pipeline *prepass_depth_pipe = rhi_create_pipeline(dev, &prepass_depth_desc);
-    rhi_pipeline *prepass_tex_pipe = rhi_create_pipeline(dev, &prepass_tex_desc);
-    rhi_pipeline *gouraud_add_pipe = rhi_create_pipeline(dev, &gouraud_add_desc);
-    rhi_pipeline *gouraud_noz_pipe = rhi_create_pipeline(dev, &gouraud_noz_desc);
-    rhi_pipeline *portal_mask_pipe = rhi_create_pipeline(dev, &portal_mask_desc);
-    rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
-    rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
-    rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
-    rhi_pipeline *scene_tex_qadd_pipe = rhi_create_pipeline(dev, &scene_tex_qadd_desc);
-    rhi_pipeline *gouraud_qadd_pipe = rhi_create_pipeline(dev, &gouraud_qadd_desc);
-    rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
-    rhi_pipeline *scene_tex_sub_decal_pipe = rhi_create_pipeline(dev, &scene_tex_sub_decal_desc); /* optional: NULL -> fall back to scene_tex_sub_pipe */
+    /* The eager creates run in pipeline batches when the run precompiles,
+     * counted on the compile stage's progress screen with the precompile.
+     * Each batch ends before anything reads the pipelines it fills; the
+     * terrain cache's init brackets its own creates in one more. */
+    nr_compile_stage_begin(dev, opts->display_name);
+    nr_eager_batch_begin();
+    rhi_pipeline *blit_pipe;
+    nr_eager_pipe(dev, &blit_desc, &blit_pipe);
+    rhi_pipeline *vram_pipe;
+    nr_eager_pipe(dev, &vram_desc, &vram_pipe);
+    rhi_pipeline *gouraud_pipe;
+    nr_eager_pipe(dev, &gouraud_desc, &gouraud_pipe);
+    rhi_pipeline *gouraud_blend_pipe;
+    nr_eager_pipe(dev, &gouraud_blend_desc, &gouraud_blend_pipe);
+    rhi_pipeline *gouraud_sub_pipe;
+    nr_eager_pipe(dev, &gouraud_sub_desc, &gouraud_sub_pipe);
+    rhi_pipeline *gouraud_sub_ztest_pipe;
+    nr_eager_pipe(dev, &gouraud_sub_ztest_desc, &gouraud_sub_ztest_pipe);
+    rhi_pipeline *gouraud_sub_fade_pipe;
+    nr_eager_pipe(dev, &gouraud_sub_fade_desc, &gouraud_sub_fade_pipe);
+    rhi_pipeline *prepass_pipe;
+    nr_eager_pipe(dev, &prepass_desc, &prepass_pipe);
+    rhi_pipeline *prepass_depth_pipe;
+    nr_eager_pipe(dev, &prepass_depth_desc, &prepass_depth_pipe);
+    rhi_pipeline *prepass_tex_pipe;
+    nr_eager_pipe(dev, &prepass_tex_desc, &prepass_tex_pipe);
+    rhi_pipeline *gouraud_add_pipe;
+    nr_eager_pipe(dev, &gouraud_add_desc, &gouraud_add_pipe);
+    rhi_pipeline *gouraud_noz_pipe;
+    nr_eager_pipe(dev, &gouraud_noz_desc, &gouraud_noz_pipe);
+    rhi_pipeline *portal_mask_pipe;
+    nr_eager_pipe(dev, &portal_mask_desc, &portal_mask_pipe);
+    rhi_pipeline *scene_tex_pipe;
+    nr_eager_pipe(dev, &scene_tex_desc, &scene_tex_pipe);
+    rhi_pipeline *scene_tex_blend_pipe;
+    nr_eager_pipe(dev, &scene_tex_blend_desc, &scene_tex_blend_pipe);
+    rhi_pipeline *scene_tex_add_pipe;
+    nr_eager_pipe(dev, &scene_tex_add_desc, &scene_tex_add_pipe);
+    rhi_pipeline *scene_tex_qadd_pipe;
+    nr_eager_pipe(dev, &scene_tex_qadd_desc, &scene_tex_qadd_pipe);
+    rhi_pipeline *gouraud_qadd_pipe;
+    nr_eager_pipe(dev, &gouraud_qadd_desc, &gouraud_qadd_pipe);
+    rhi_pipeline *scene_tex_sub_pipe;
+    nr_eager_pipe(dev, &scene_tex_sub_desc, &scene_tex_sub_pipe);
+    rhi_pipeline *scene_tex_sub_decal_pipe; /* optional: NULL -> fall back to scene_tex_sub_pipe */
+    nr_eager_pipe(dev, &scene_tex_sub_decal_desc, &scene_tex_sub_decal_pipe);
     rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES];
     blend_family_create(dev, &gouraud_hud_desc, gouraud_hud_pipes, 1);
     rhi_pipeline *scene_tex_hud_pipes[NR_HUD_TEX_PIPES];
     blend_family_create(dev, &scene_tex_hud_desc, scene_tex_hud_pipes, OPENPETE_STP_SELS);
-    rhi_pipeline *hd_tex_pipe = rhi_create_pipeline(dev, &hd_tex_desc);   /* HD pipes: allowed to fail (NULL = feature off) */
-    rhi_pipeline *hd_cutout_pipe = rhi_create_pipeline(dev, &hd_cutout_desc);
-    rhi_pipeline *hd_cutout_mark_pipe = rhi_create_pipeline(dev, &hd_cutout_mark_desc);
-    rhi_pipeline *gouraud_punch_pipe   = rhi_create_pipeline(dev, &gouraud_punch_desc);
-    rhi_pipeline *scene_tex_punch_pipe = rhi_create_pipeline(dev, &scene_tex_punch_desc);
-    rhi_pipeline *hd_cutout_punch_pipe = rhi_create_pipeline(dev, &hd_cutout_punch_desc);
-    rhi_pipeline *hd_scene_blend_pipe = rhi_create_pipeline(dev, &hd_scene_blend_desc);
-    rhi_pipeline *hd_scene_add_pipe   = rhi_create_pipeline(dev, &hd_scene_add_desc);
-    rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
-    rhi_pipeline *freeze_plain_pipe = rhi_create_pipeline(dev, &freeze_plain_desc);
-    rhi_pipeline *resolve_pipe = rhi_create_pipeline(dev, &resolve_desc);
+    rhi_pipeline *hd_tex_pipe;   /* HD pipes: allowed to fail (NULL = feature off) */
+    nr_eager_pipe(dev, &hd_tex_desc, &hd_tex_pipe);
+    rhi_pipeline *hd_cutout_pipe;
+    nr_eager_pipe(dev, &hd_cutout_desc, &hd_cutout_pipe);
+    rhi_pipeline *hd_cutout_mark_pipe;
+    nr_eager_pipe(dev, &hd_cutout_mark_desc, &hd_cutout_mark_pipe);
+    rhi_pipeline *gouraud_punch_pipe;
+    nr_eager_pipe(dev, &gouraud_punch_desc, &gouraud_punch_pipe);
+    rhi_pipeline *scene_tex_punch_pipe;
+    nr_eager_pipe(dev, &scene_tex_punch_desc, &scene_tex_punch_pipe);
+    rhi_pipeline *hd_cutout_punch_pipe;
+    nr_eager_pipe(dev, &hd_cutout_punch_desc, &hd_cutout_punch_pipe);
+    rhi_pipeline *hd_scene_blend_pipe;
+    nr_eager_pipe(dev, &hd_scene_blend_desc, &hd_scene_blend_pipe);
+    rhi_pipeline *hd_scene_add_pipe;
+    nr_eager_pipe(dev, &hd_scene_add_desc, &hd_scene_add_pipe);
+    rhi_pipeline *freeze_overlay_pipe;
+    nr_eager_pipe(dev, &freeze_overlay_desc, &freeze_overlay_pipe);
+    rhi_pipeline *freeze_plain_pipe;
+    nr_eager_pipe(dev, &freeze_plain_desc, &freeze_plain_pipe);
+    rhi_pipeline *resolve_pipe;
+    nr_eager_pipe(dev, &resolve_desc, &resolve_pipe);
     /* Per-present-rewritten buffers (scene/prepass/overlay) are frame-in-flight
      * RINGS: their every-present rhi_update_buffer used to race the
      * frame two presents ago, previously masked only by the per-present VRAM
@@ -5646,7 +5844,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Mod draw-service overlay (optional - NULL just disables mod draws). */
     rhi_buffer   *mod_ovl_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MOD_OVL_MAX_VERTS);
     /* Optional overlay-supersample resources (graceful fallback if NULL). */
-    rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
+    rhi_pipeline *ovl_resolve_pipe;
+    nr_eager_pipe(dev, &ovl_resolve_desc, &ovl_resolve_pipe);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *menu_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     /* OSD toast layer. Both are per-present RINGS: a sliding toast rewrites
@@ -5662,26 +5861,34 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * would overwrite the bytes the first draw reads at execution time. */
     rhi_buffer   *osd_panel_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OPENPETE_OSD_MAX * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL -> no culling). */
-    rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
+    rhi_pipeline *occl_pipe;
+    nr_eager_pipe(dev, &occl_desc, &occl_pipe);
     /* Optional hole-fill pipes (graceful fallback: any NULL -> WORLD uses
      * the plain pipes and the FILL layer is skipped - the pre-fill look). */
-    rhi_pipeline *gouraud_mark_pipe = rhi_create_pipeline(dev, &gouraud_mark_desc);
-    rhi_pipeline *scene_tex_mark_pipe = rhi_create_pipeline(dev, &scene_tex_mark_desc);
-    rhi_pipeline *gouraud_fill_pipe = rhi_create_pipeline(dev, &gouraud_fill_desc);
-    if (!gouraud_mark_pipe || !scene_tex_mark_pipe || !gouraud_fill_pipe) {
-        if (gouraud_mark_pipe)   { rhi_destroy_pipeline(dev, gouraud_mark_pipe);   gouraud_mark_pipe = NULL; }
-        if (scene_tex_mark_pipe) { rhi_destroy_pipeline(dev, scene_tex_mark_pipe); scene_tex_mark_pipe = NULL; }
-        if (gouraud_fill_pipe)   { rhi_destroy_pipeline(dev, gouraud_fill_pipe);   gouraud_fill_pipe = NULL; }
-        OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
-    }
+    rhi_pipeline *gouraud_mark_pipe;
+    nr_eager_pipe(dev, &gouraud_mark_desc, &gouraud_mark_pipe);
+    rhi_pipeline *scene_tex_mark_pipe;
+    nr_eager_pipe(dev, &scene_tex_mark_desc, &scene_tex_mark_pipe);
+    rhi_pipeline *gouraud_fill_pipe;
+    nr_eager_pipe(dev, &gouraud_fill_desc, &gouraud_fill_pipe);
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
     /* Optional key-pass resources (graceful fallback: NULL -> the feeder
      * emits koff=0, LP fragments never sample, terrain contests at raw true
      * depth - the OT_BIAS=0 look). The key IMAGE allocates lazily per target
      * size (ensure_terrain_key_depth). */
-    rhi_pipeline *terrain_key_pipe = rhi_create_pipeline(dev, &terrain_key_desc);
+    rhi_pipeline *terrain_key_pipe;
+    nr_eager_pipe(dev, &terrain_key_desc, &terrain_key_pipe);
     rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
+    nr_eager_batch_end();
+    blend_family_settle(dev, gouraud_hud_pipes, 1);
+    blend_family_settle(dev, scene_tex_hud_pipes, OPENPETE_STP_SELS);
+    if (!gouraud_mark_pipe || !scene_tex_mark_pipe || !gouraud_fill_pipe) {
+        if (gouraud_mark_pipe)   { rhi_destroy_pipeline(dev, gouraud_mark_pipe);   gouraud_mark_pipe = NULL; }
+        if (scene_tex_mark_pipe) { rhi_destroy_pipeline(dev, scene_tex_mark_pipe); scene_tex_mark_pipe = NULL; }
+        if (gouraud_fill_pipe)   { rhi_destroy_pipeline(dev, gouraud_fill_pipe);   gouraud_fill_pipe = NULL; }
+        OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
+    }
     if (!terrain_key_pipe || !terrain_key_vb) {
         if (terrain_key_pipe) { rhi_destroy_pipeline(dev, terrain_key_pipe); terrain_key_pipe = NULL; }
         if (terrain_key_vb)   { rhi_destroy_buffer(dev, terrain_key_vb);     terrain_key_vb = NULL; }
@@ -5699,11 +5906,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = true, .uses_vram2 = true,   /* set 1: drain records */
         .push_const_size = sizeof(psx_material),
     };
-    rhi_pipeline *terrain_key_tex_pipe = terrain_key_pipe
-        ? rhi_create_pipeline(dev, &terrain_key_tex_desc) : NULL;
-    if (terrain_key_pipe && !terrain_key_tex_pipe)
-        OPL_ERROR_F("native", "textured key cutout pipe unavailable; "
-                              "textured faces key full-footprint");
     /* Moby RANK pass (same-moby painter select): rasterise ranked moby faces
      * with depth = their og OT walk rank into an RGBA8 (rank, ordinal) image;
      * ranked scene fragments discard where a LATER-ranked face of the SAME
@@ -5721,10 +5923,18 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
-    rhi_pipeline *moby_rank_pipe = terrain_key_pipe
-        ? rhi_create_pipeline(dev, &moby_rank_desc) : NULL;
-    rhi_pipeline *moby_rank_cutout_pipe = moby_rank_pipe
-        ? rhi_create_pipeline(dev, &moby_rank_cutout_desc) : NULL;
+    rhi_pipeline *terrain_key_tex_pipe = NULL, *moby_rank_pipe = NULL;
+    rhi_pipeline *moby_rank_cutout_pipe = NULL;
+    nr_eager_batch_begin();
+    if (terrain_key_pipe) nr_eager_pipe(dev, &terrain_key_tex_desc, &terrain_key_tex_pipe);
+    if (terrain_key_pipe) nr_eager_pipe(dev, &moby_rank_desc, &moby_rank_pipe);
+    nr_eager_batch_end();
+    nr_eager_batch_begin();
+    if (moby_rank_pipe) nr_eager_pipe(dev, &moby_rank_cutout_desc, &moby_rank_cutout_pipe);
+    nr_eager_batch_end();
+    if (terrain_key_pipe && !terrain_key_tex_pipe)
+        OPL_ERROR_F("native", "textured key cutout pipe unavailable; "
+                              "textured faces key full-footprint");
     if (terrain_key_pipe && !moby_rank_pipe)
         OPL_ERROR_F("native", "moby rank pass unavailable; same-moby painter select disabled");
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_TEX_H);
@@ -5820,6 +6030,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
     s_nr.scene_tex_qadd_pipe = scene_tex_qadd_pipe;
     s_nr.gouraud_qadd_pipe = gouraud_qadd_pipe;
+    int shell_built = 0;
+    nr_eager_batch_begin();
     {
         const nr_cover_src cover_src[] = {
             { &gouraud_blend_desc, gouraud_blend_pipe, 0 }, { &gouraud_add_desc, gouraud_add_pipe, 0 },
@@ -5845,9 +6057,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             { &scene_tex_desc, scene_tex_pipe }, { &scene_tex_mark_desc, scene_tex_mark_pipe },
             { &hd_cutout_desc, hd_cutout_pipe }, { &hd_cutout_mark_desc, hd_cutout_mark_pipe },
         };
-        shell_pipes_create(dev, shell_src, (int)(sizeof shell_src / sizeof shell_src[0]),
-                           moby_rank_pipe != NULL);
+        shell_built = shell_pipes_create(dev, shell_src,
+                                         (int)(sizeof shell_src / sizeof shell_src[0]),
+                                         moby_rank_pipe != NULL);
     }
+    nr_eager_batch_end();
+    shell_pipes_report(shell_built);
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL -> plain sub pipe */
     memcpy(s_nr.gouraud_hud_pipes, gouraud_hud_pipes, sizeof gouraud_hud_pipes);
@@ -5913,7 +6128,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (opts->terrain_cache) {
         const char* fe = getenv("OPENPETE_TERRAIN_CACHE_FORCE");
         if ((fe && *fe && *fe != '0') || !rhi_device_is_software(dev))
-            openpete_tercache_init(dev);
+            openpete_tercache_init(dev, nr_eager_batch);
     }
 
     /* Replacement atlas up front when a pack is active. Created lazily it
@@ -17158,65 +17373,6 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
     return ran;
 }
 
-/** @brief Return whether the pipeline precompile runs in this run.
- *
- * OPENPETE_PRECOMPILE_FORCE set to a value starting with 0 skips it, any
- * other non-empty value runs it, in any run mode. Unset, it runs in a
- * windowed run on a hardware device and is skipped in a synchronous run
- * (headless or deterministic capture), whose pipelines compile at first
- * draw, and on a software device, whose pipeline cache keeps nothing it
- * could reuse. Read at the one call, during bring-up.
- * @return 1 to run the precompile. */
-static int nr_precompile_wanted(void) {
-    const char* e = getenv("OPENPETE_PRECOMPILE_FORCE");
-    if (e && *e) return *e != '0';
-    return !s_nr.sync_run && !rhi_device_is_software(s_nr.dev);
-}
-
-/* The precompile's progress panel appears once the precompile has run this
- * long. Warm and app-cold boots on the timing hosts finish well inside it
- * and draw nothing; a driver-cold boot runs past it. */
-#define NR_PRECOMPILE_PANEL_NS (400ll * 1000000ll)
-/* The panel redraws at most this often. */
-#define NR_PRECOMPILE_PANEL_PERIOD_NS (16ll * 1000000ll)
-
-/* Precompile pump state: start, last panel draw, panel draws. */
-static struct {
-    Uint64   t0_ns, last_ns;
-    unsigned draws;
-} s_pre_panel;
-
-/** @brief Draw one present of the precompile progress panel: a cleared window with the imgui panel.
- *
- * @param done Compiles finished.
- * @param total Compiles queued. */
-static void nr_precompile_panel(unsigned done, unsigned total) {
-    if (!rhi_begin_frame(s_nr.dev)) return;
-    rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
-    openpete_devui_render_progress(s_nr.dev, "Compiling shaders", done, total);
-    rhi_end_offscreen(s_nr.dev);
-    rhi_blit_to_swapchain(s_nr.dev);
-    rhi_end_frame(s_nr.dev);
-    s_pre_panel.draws++;
-}
-
-/** @brief Pump the window's events between precompile creates, and draw the progress panel once the precompile has run past NR_PRECOMPILE_PANEL_NS.
- *
- * Runs on the display owner (bring-up, before the first tick).
- * @param ctx Unused. */
-static void nr_precompile_pump(void* ctx) {
-    (void)ctx;
-    SDL_PumpEvents();
-    const Uint64 now = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the progress panel */
-    if (now - s_pre_panel.t0_ns < (Uint64)NR_PRECOMPILE_PANEL_NS ||
-        now - s_pre_panel.last_ns < (Uint64)NR_PRECOMPILE_PANEL_PERIOD_NS)
-        return;
-    s_pre_panel.last_ns = now;
-    unsigned done = 0, total = 0;
-    rhi_precompile_progress(s_nr.dev, &done, &total);
-    nr_precompile_panel(done, total);
-}
-
 /** @brief Install the current variant of every mod material slot a scene or terrain draw site can request for one material, enabled or not.
  *
  * Scene contract: the four blend classes, the MARK twin, the portal sky,
@@ -17325,13 +17481,14 @@ static void late_present_begin(void) {
  * rhi_precompile_variants compiles every other reachable variant of every
  * registered pipeline into the cache on the pool and saves the cache when
  * it changed. Creates count in the precompile phase; creates after it count as
- * first use. The window's events are pumped between creates. */
+ * first use. The window's events are pumped between creates, and the
+ * compile stage's progress screen continues from bring-up's eager batches;
+ * the stage closes here. */
 static void nr_precompile(void) {
-    if (!s_nr.dev || !nr_precompile_wanted()) return;
+    if (!s_nr.dev || !s_pre.wanted) { s_pre.dev = NULL; return; }
     void (*pump)(void*) = s_nr.headless ? NULL : nr_precompile_pump;
     openpete_boot_mark(OP_BOOT_PRECOMPILE_START);
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: precompile duration for the log */
-    s_pre_panel.t0_ns = t0;
     rhi_pipe_phase_set(RHI_PIPE_PHASE_PRECOMPILE);
     openpete_mods_registry_read_lock();
     rhi_pipeline_batch_begin(s_nr.dev);
@@ -17353,8 +17510,11 @@ static void nr_precompile(void) {
     rhi_pipeline_batch_stats bs;
     rhi_pipeline_batch_end(s_nr.dev, pump, NULL, &bs);
     openpete_mods_registry_read_unlock();
+    s_pre.base_queued += bs.queued;
+    s_pre.base_done += bs.installed + bs.failed + bs.duplicate;
     const double install_ms = (double)(SDL_GetTicksNS() - t0) / 1e6;  /* clock-guard: wall: precompile duration for the log */
     rhi_precompile_stats st;
+    s_pre.walk = true;
     rhi_precompile_variants(s_nr.dev, pump, NULL, &st);
     rhi_pipe_phase_set(RHI_PIPE_PHASE_AUTO);
     rhi_pipe_precompile_done();
@@ -17364,11 +17524,13 @@ static void nr_precompile(void) {
     OPL_INFO_F("native", "precompile: installed %u lazy slots (%u mod postfx passes, %u mod "
                "materials; %u queued, %u installed, %u failed, %u duplicate) in %.1f ms; "
                "%u distinct create infos, %u created, %u probe hits, %u manifest skips, "
-               "%u failed; %u compile worker(s); %.1f ms total; progress panel %u present(s)",
+               "%u failed; %u compile worker(s); %.1f ms total; progress screen %u present(s) "
+               "(bar total %u, %u eager creates batched)",
                slots + fx, fx, mats, bs.queued, bs.installed, bs.failed, bs.duplicate, install_ms,
                st.keys, st.created, st.probe_hits, st.manifest_skips, st.failed, ps.workers,
                (double)(SDL_GetTicksNS() - t0) / 1e6,  /* clock-guard: wall: precompile duration for the log */
-               s_pre_panel.draws);
+               s_pre.draws, s_pre.held_total, s_pre.base_queued - bs.queued);
+    s_pre.dev = NULL;
 }
 
 /* GPU per-pass zone report (OPENPETE_GPU_TIMERS=1): EMA per zone name over

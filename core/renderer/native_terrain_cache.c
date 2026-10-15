@@ -617,18 +617,32 @@ int openpete_tercache_build_drawn(uint32_t stamp)
     return n;
 }
 
+/** @brief Create one cache pipeline into its slot: now, or at the end of the caller's open pipeline batch.
+ *
+ * The create is the one rhi_create_pipeline makes; the slot is NULL until
+ * it installs, and stays NULL when it fails.
+ * @param dev Device.
+ * @param d Pipeline description, copied.
+ * @param out The slot. */
+static void tc_pipe(rhi_device *dev, const rhi_pipeline_desc *d, rhi_pipeline **out)
+{
+    *out = NULL;
+    (void)rhi_create_pipeline_slot(dev, d, NULL, 0, NULL, 0, (void **)out, NULL);
+}
+
 /** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
  *
  * The slots share terrain.frag and depth test and differ as the world
  * pipelines do: stencil MARK, the three blend equations with depth writes
- * off, the colour-off depth prepass, and the OT-key emit.
+ * off, the colour-off depth prepass, and the OT-key emit. Each create is
+ * made now, or at the end of the open pipeline batch (tc_cell_pipes_ok
+ * then reads the set).
  * @param dev Device.
  * @param vert Vertex stage SPIR-V name (the near or anim cell stage).
  * @param anim Nonzero for the anim record layout, 0 for the near layout.
- * @param out Receives the pipelines; a failed slot is NULL.
- * @return 1 when every slot built, else 0. */
-static int tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
-                              rhi_pipeline *out[TC_CP_N])
+ * @param out Receives the pipelines; a failed slot is NULL. */
+static void tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
+                               rhi_pipeline *out[TC_CP_N])
 {
     const rhi_pipeline_desc base = {
         .vert_spv = vert, .frag_spv = "terrain.frag.spv",
@@ -650,19 +664,26 @@ static int tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
     d[TC_CP_PREPASS_DEPTH].depth_class = RHI_DEPTH_FORWARD;
     d[TC_CP_KEY].frag_spv = "terrain_key_cache.frag.spv";
     d[TC_CP_KEY].depth_class = RHI_DEPTH_FORWARD;
+    for (int i = 0; i < TC_CP_N; i++) tc_pipe(dev, &d[i], &out[i]);
+}
+
+/** @brief Report whether every slot of a cell-record pipeline set built.
+ *
+ * @param set The set tc_make_cell_pipes filled.
+ * @return 1 when every slot holds a pipeline, else 0. */
+static int tc_cell_pipes_ok(rhi_pipeline *const set[TC_CP_N])
+{
     int ok = 1;
-    for (int i = 0; i < TC_CP_N; i++) {
-        out[i] = rhi_create_pipeline(dev, &d[i]);
-        ok &= out[i] != NULL;
-    }
+    for (int i = 0; i < TC_CP_N; i++) ok &= set[i] != NULL;
     return ok;
 }
 
-int openpete_tercache_init(rhi_device *dev)
+int openpete_tercache_init(rhi_device *dev, void (*batch)(int open))
 {
     memset(&s_tc, 0, sizeof(s_tc));
     s_tc.dev = dev;
     if (!dev) return 0;
+    if (batch) batch(1);
 
     const rhi_pipeline_desc world_desc = {
         .vert_spv = "terrain.vert.spv", .frag_spv = "terrain.frag.spv",
@@ -671,29 +692,29 @@ int openpete_tercache_init(rhi_device *dev)
     };
     rhi_pipeline_desc d;
     d = world_desc;
-    s_tc.pipe_world = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_world);
     d = world_desc; d.stencil = RHI_STENCIL_MARK;
-    s_tc.pipe_world_mark = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_world_mark);
     d = world_desc; d.blend = RHI_BLEND_ALPHA; d.depth_write_off = true;
-    s_tc.pipe_alpha = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_alpha);
     d = world_desc; d.blend = RHI_BLEND_ADD; d.depth_write_off = true;
-    s_tc.pipe_add = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_add);
     d = world_desc; d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true;
-    s_tc.pipe_sub = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_sub);
     d = world_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
-    s_tc.pipe_fill = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_fill);
     /* Pre-pass pair: the WORLD run writes its packed depth to colour (the
      * occlusion grid's source) where terrain.frag would paint, its
      * transparent texels cut out (terrain_prepass_cutout.frag); the depth
      * run writes depth only, over whole footprints. */
     d = world_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
-    s_tc.pipe_prepass = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_prepass);
     d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
-    s_tc.pipe_prepass_depth = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_prepass_depth);
     d = world_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
-    s_tc.pipe_key = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_key);
     /* Anim variants: identical state, the anim vertex stage + the
      * binding-1 prev twin. The FILL variant serves the env-anim colour
      * sectors' LP hole-fill backing; a poly-anim sector never publishes
@@ -705,25 +726,25 @@ int openpete_tercache_init(rhi_device *dev)
         .push_const_size = sizeof(tc_pc),
     };
     d = anim_desc;
-    s_tc.pipe_a_world = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_world);
     d = anim_desc; d.stencil = RHI_STENCIL_MARK;
-    s_tc.pipe_a_world_mark = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_world_mark);
     d = anim_desc; d.blend = RHI_BLEND_ALPHA; d.depth_write_off = true;
-    s_tc.pipe_a_alpha = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_alpha);
     d = anim_desc; d.blend = RHI_BLEND_ADD; d.depth_write_off = true;
-    s_tc.pipe_a_add = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_add);
     d = anim_desc; d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true;
-    s_tc.pipe_a_sub = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_sub);
     d = anim_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
-    s_tc.pipe_a_prepass = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_prepass);
     d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
-    s_tc.pipe_a_prepass_depth = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_prepass_depth);
     d = anim_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
-    s_tc.pipe_a_key = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_key);
     d = anim_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
-    s_tc.pipe_a_fill = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_a_fill);
     /* Near variants: identical state, the clip-fan vertex stage + the
      * binding-1 member-context twin. Includes FILL - near sectors keep the
      * LP hole-fill backing (unlike poly-anim, which is excluded from it). */
@@ -734,29 +755,31 @@ int openpete_tercache_init(rhi_device *dev)
         .push_const_size = sizeof(tc_pc),
     };
     d = near_desc;
-    s_tc.pipe_n_world = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_world);
     d = near_desc; d.stencil = RHI_STENCIL_MARK;
-    s_tc.pipe_n_world_mark = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_world_mark);
     d = near_desc; d.blend = RHI_BLEND_ALPHA; d.depth_write_off = true;
-    s_tc.pipe_n_alpha = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_alpha);
     d = near_desc; d.blend = RHI_BLEND_ADD; d.depth_write_off = true;
-    s_tc.pipe_n_add = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_add);
     d = near_desc; d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true;
-    s_tc.pipe_n_sub = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_sub);
     d = near_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
-    s_tc.pipe_n_fill = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_fill);
     d = near_desc; d.frag_spv = "terrain_prepass_cutout.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
-    s_tc.pipe_n_prepass = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_prepass);
     d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
-    s_tc.pipe_n_prepass_depth = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_prepass_depth);
     d = near_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     d.depth_class = RHI_DEPTH_FORWARD;
-    s_tc.pipe_n_key = rhi_create_pipeline(dev, &d);
+    tc_pipe(dev, &d, &s_tc.pipe_n_key);
 
     /* Cell-record variants: the same states over the instanced cell stages. */
-    const int cells_ok = tc_make_cell_pipes(dev, "terrain_cells_near.vert.spv", 0, s_tc.pipe_cn)
-                       & tc_make_cell_pipes(dev, "terrain_cells_anim.vert.spv", 1, s_tc.pipe_ca);
+    tc_make_cell_pipes(dev, "terrain_cells_near.vert.spv", 0, s_tc.pipe_cn);
+    tc_make_cell_pipes(dev, "terrain_cells_anim.vert.spv", 1, s_tc.pipe_ca);
+    if (batch) batch(0);
+    const int cells_ok = tc_cell_pipes_ok(s_tc.pipe_cn) & tc_cell_pipes_ok(s_tc.pipe_ca);
 
     int ok = cells_ok && s_tc.pipe_world && s_tc.pipe_world_mark && s_tc.pipe_alpha &&
              s_tc.pipe_add && s_tc.pipe_sub && s_tc.pipe_fill && s_tc.pipe_prepass &&

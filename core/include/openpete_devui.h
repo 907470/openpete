@@ -241,21 +241,6 @@ int  openpete_devui_wants_mouse(void);
  * @param dev The device the overlay was initialised on. */
 void openpete_devui_render(struct rhi_device *dev);
 
-/** @brief Record one imgui frame holding only a centred progress panel into the current offscreen pass.
- *
- * Used while the pipeline precompile runs before the first tick, between
- * rhi_begin_offscreen and rhi_end_offscreen. The panel shows @p title, a
- * bar at @p done of @p total and the two counts; it takes no input. Queued
- * SDL events are not drained.
- * @param dev The device the overlay was initialised on.
- * @param title Line above the bar.
- * @param done Finished count.
- * @param total Total count; 0 draws an empty bar.
- * @return 1 when a frame was recorded, 0 when the overlay is not initialised
- *         on @p dev or no command buffer is recording. */
-int  openpete_devui_render_progress(struct rhi_device *dev, const char *title,
-                                    unsigned done, unsigned total);
-
 /** @brief The state notes a mod row's tooltip can show.
  *
  * The table the tooltip draws from, exposed so the surface vocabulary check

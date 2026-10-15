@@ -59,6 +59,8 @@ typedef struct {
     const char* (*game_name)(const char* game_id);
 } openpete_launcher_game;
 
+struct rhi_device;
+
 typedef int (*openpete_launcher_task_fn)(void* userdata);
 
 /** @brief Start the launcher for one game and set whether its screens may show.
@@ -143,6 +145,27 @@ int  openpete_launcher_run_task(openpete_launcher_task_fn fn, void* userdata);
  * @param opts The options from the full resolution.
  * @return OPENPETE_EXIT_OK. */
 int  openpete_launcher_handoff(openpete_options_t* opts);
+
+/** @brief Present one frame of the launcher's progress screen on a device: the title, the game's subtitle, the stage's banner, the stage line, the bar and the footer.
+ *
+ * The launcher's own waits and the renderer's pipeline precompile (after
+ * the hand-off, on the device it adopted) draw through this one screen. It
+ * reads no launcher state besides the OPENPETE_LAUNCHER_SHOT readback
+ * marks, so it draws on a start that never showed a launcher screen. The
+ * stage's banner and footer follow its text ("COMPILING MODS",
+ * "COMPILING SHADERS", any other stage the first-time setup); a counted
+ * stage shows done/total, or done alone while total is 0. The first frame
+ * drawn this way is read back as the screen "precompile" when
+ * OPENPETE_LAUNCHER_SHOT is set. Display owner only.
+ * @param dev The device presented on; NULL for the launcher's own.
+ * @param name The game's display name for the subtitle; NULL or "" for none.
+ * @param stage The stage text.
+ * @param done Completed units.
+ * @param total Total units, or 0 for an empty bar.
+ * @return 1 when a frame was drawn, 0 when the frame begin was refused or
+ *         the device has no imgui context. */
+int  openpete_launcher_draw_progress(struct rhi_device* dev, const char* name,
+                                     const char* stage, int done, int total);
 
 /** @brief Destroy whatever the launcher opened, for a run that ends before the hand-off. */
 void openpete_launcher_close(void);
