@@ -484,6 +484,14 @@ struct rhi_device {
     bool           has_fill_non_solid;   /* fillModeNonSolid feature enabled */
     bool           has_creation_feedback; /* VK_EXT_pipeline_creation_feedback enabled */
     bool           has_cache_control;    /* pipelineCreationCacheControl enabled */
+    bool           has_gpl;              /* graphicsPipelineLibrary enabled, with fast linking */
+    /* Graphics pipeline libraries (pipe_uses_library): every part library
+     * created this run, keyed by its create info, guarded by gpl_mx; gpl_cv
+     * is broadcast when an entry leaves the building state. Destroyed with
+     * the device. */
+    SDL_Mutex     *gpl_mx;
+    SDL_Condition *gpl_cv;
+    struct gpl_lib *gpl_head;
     VkExtent2D     sc_extent;
     uint32_t       sc_count;
     VkImage        sc_images[RHI_MAX_SC_IMAGES];
@@ -1244,13 +1252,24 @@ static bool ext_offered(const VkExtensionProperties *avail, uint32_t n, const ch
     return false;
 }
 
-/* Feature and property structs of VK_EXT_extended_dynamic_state3 and
- * VK_EXT_graphics_pipeline_library, which the pinned Vulkan headers predate;
- * layouts and structure types from the Vulkan registry. Queried for the
- * pipeline feature report only, never enabled. */
-#define RHI_ST_EDS3_FEATURES ((VkStructureType)1000455000)
-#define RHI_ST_GPL_FEATURES  ((VkStructureType)1000320000)
-#define RHI_ST_GPL_PROPS     ((VkStructureType)1000320001)
+/* Feature, property and create-info structs of VK_EXT_extended_dynamic_state3
+ * and VK_EXT_graphics_pipeline_library, which the pinned Vulkan headers
+ * predate; layouts, structure types and flag bits from the Vulkan registry.
+ * The first is queried for the pipeline feature report only; the second is
+ * enabled with fast linking (pipeline_exts_select) for the library path. */
+#define RHI_ST_EDS3_FEATURES   ((VkStructureType)1000455000)
+#define RHI_ST_GPL_FEATURES    ((VkStructureType)1000320000)
+#define RHI_ST_GPL_PROPS       ((VkStructureType)1000320001)
+#define RHI_ST_GPL_CREATE_INFO ((VkStructureType)1000320002)
+#define RHI_GPL_VERTEX_INPUT_INTERFACE   0x1u
+#define RHI_GPL_PRE_RASTERIZATION        0x2u
+#define RHI_GPL_FRAGMENT_SHADER          0x4u
+#define RHI_GPL_FRAGMENT_OUTPUT          0x8u
+typedef struct {
+    VkStructureType sType;
+    const void     *pNext;
+    VkFlags         flags;   /* RHI_GPL_* */
+} rhi_gpl_create_info;
 typedef struct {
     VkStructureType sType;
     void           *pNext;
@@ -1312,48 +1331,107 @@ static rhi_pipe_features query_pipe_features(VkPhysicalDevice phys, bool cc, boo
     return out;
 }
 
-/** @brief Select the pipeline-instrument extensions a device offers, record them, and log the pipeline feature report.
+/** @brief Select the pipeline extensions a device offers, record them, and log the pipeline feature report.
  *
  * VK_EXT_pipeline_creation_feedback is enabled when listed (it adds a
  * per-create report and nothing to any other call), and
  * VK_EXT_pipeline_creation_cache_control when listed with its feature (no
  * create passes its flags unless asked); OPENPETE_PIPE_EXTS starting with 0
- * declines both, for pricing them against a run without. The report line
- * names, beside them, extendedDynamicState3PolygonMode,
- * graphicsPipelineLibrary and its fast-link property, which are queried and
- * never enabled.
- * @param dev Device whose phys is read and has_creation_feedback and
- *            has_cache_control are written.
+ * declines both, for pricing them against a run without.
+ * VK_EXT_graphics_pipeline_library and its dependency VK_KHR_pipeline_library
+ * are enabled when the device lists both, has graphicsPipelineLibrary and
+ * reports graphicsPipelineLibraryFastLinking: the terrain-cache pipelines
+ * are then linked from libraries (pipe_uses_library).
+ * OPENPETE_PIPELINE_LIBRARY starting with 0 declines the pair, so every
+ * pipeline is created whole, for an A/B against the library path. The
+ * report line also names extendedDynamicState3PolygonMode, queried only.
+ * @param dev Device whose phys is read and has_creation_feedback,
+ *            has_cache_control and has_gpl are written.
  * @param avail The device's extension list.
  * @param n Its length.
- * @param out Receives the names to enable (room for two).
+ * @param out Receives the names to enable (room for four).
  * @return How many names were written. */
 static uint32_t pipeline_exts_select(rhi_device *dev, const VkExtensionProperties *avail,
                                      uint32_t n, const char **out)
 {
     static const char k_fb[] = "VK_EXT_pipeline_creation_feedback";
     static const char k_cc[] = "VK_EXT_pipeline_creation_cache_control";
+    static const char k_gpl[] = "VK_EXT_graphics_pipeline_library";
+    static const char k_pl[] = "VK_KHR_pipeline_library";
     const bool cc_ext = ext_offered(avail, n, k_cc);
     const bool eds3 = ext_offered(avail, n, "VK_EXT_extended_dynamic_state3");
-    const bool gpl = ext_offered(avail, n, "VK_EXT_graphics_pipeline_library");
+    const bool gpl = ext_offered(avail, n, k_gpl) && ext_offered(avail, n, k_pl);
     const rhi_pipe_features f = query_pipe_features(dev->phys, cc_ext, eds3, gpl);
     uint32_t k = 0;
     const char *x_env = rhi_knob("OPENPETE_PIPE_EXTS");
     const bool declined = x_env && *x_env == '0';
+    const char *l_env = rhi_knob("OPENPETE_PIPELINE_LIBRARY");
+    const bool gpl_declined = l_env && *l_env == '0';
     const bool fb_listed = ext_offered(avail, n, k_fb);
     dev->has_creation_feedback = fb_listed && !declined;
     dev->has_cache_control = cc_ext && f.cache_control && !declined;
+    dev->has_gpl = gpl && f.gpl && f.gpl_fast_link && !gpl_declined;
     if (dev->has_creation_feedback) out[k++] = k_fb;
     if (dev->has_cache_control) out[k++] = k_cc;
+    if (dev->has_gpl) { out[k++] = k_pl; out[k++] = k_gpl; }
     RHI_LOG("pipeline features: creation_feedback=%s cache_control=%s "
             "eds3_polygon_mode=%s graphics_pipeline_library=%s gpl_fast_link=%s\n",
             dev->has_creation_feedback ? "enabled" : fb_listed ? "declined" : "absent",
             dev->has_cache_control ? "enabled" : !cc_ext ? "absent"
                                    : declined ? "declined" : "listed-no-feature",
             eds3 ? (f.eds3_polygon ? "yes" : "no") : "absent",
-            gpl ? (f.gpl ? "yes" : "no") : "absent",
+            dev->has_gpl ? "enabled" : !gpl ? "absent" : !f.gpl ? "no"
+                         : !f.gpl_fast_link ? "no-fast-link" : "declined",
             gpl ? (f.gpl_fast_link ? "yes" : "no") : "absent");
     return k;
+}
+
+/* The feature structs of the pipeline extensions pipeline_exts_select
+ * enabled, chained onto vkCreateDevice. */
+typedef struct {
+    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT cc;
+    rhi_gpl_features                                        gpl;
+} pipe_feature_chain;
+
+/** @brief Chain the feature structs of the enabled pipeline extensions in front of a device-create chain.
+ *
+ * pipelineCreationCacheControl when has_cache_control, graphicsPipelineLibrary
+ * when has_gpl; the counterpart of pipeline_exts_select, which chose them.
+ * @param dev Device whose has_cache_control and has_gpl are read.
+ * @param c Storage for the structs, which must outlive vkCreateDevice.
+ * @param next The rest of the chain, or NULL.
+ * @return The chain's head: @p next when neither is enabled. */
+static void *pipeline_features_chain(const rhi_device *dev, pipe_feature_chain *c, void *next)
+{
+    c->cc = (VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT){
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT,
+        .pNext = next,
+        .pipelineCreationCacheControl = VK_TRUE,
+    };
+    if (dev->has_cache_control) next = &c->cc;
+    c->gpl = (rhi_gpl_features){
+        .sType = RHI_ST_GPL_FEATURES,
+        .pNext = next,
+        .graphicsPipelineLibrary = VK_TRUE,
+    };
+    if (dev->has_gpl) next = &c->gpl;
+    return next;
+}
+
+/** @brief Create the library cache's lock and condition on a device with the graphics pipeline library enabled.
+ *
+ * A failed creation turns the library path off (has_gpl false): the
+ * extension stays enabled and every pipeline is created whole.
+ * @param dev Device, created; its has_gpl is read and may be cleared, gpl_mx
+ *            and gpl_cv are written. */
+static void pipeline_library_locks(rhi_device *dev)
+{
+    if (!dev->has_gpl) return;
+    dev->gpl_mx = SDL_CreateMutex();
+    dev->gpl_cv = SDL_CreateCondition();
+    if (dev->gpl_mx && dev->gpl_cv) return;
+    RHI_LOG("pipeline libraries: lock creation failed; every pipeline is created whole\n");
+    dev->has_gpl = false;
 }
 
 /** @brief Choose the physical device and queue family and create the logical device and its graphics queue.
@@ -1371,9 +1449,10 @@ static uint32_t pipeline_exts_select(rhi_device *dev, const VkExtensionPropertie
  * extension, only on a windowed device that has both and whose
  * OPENPETE_PRESENT_TIMING, OPENPETE_PACE_FLIP_LOG or OPENPETE_EAGER_LATTICE
  * asks for them (OPENPETE_PRESENT_TIMING=0 declines); dev->has_present_timing
- * records the outcome. pipeline_exts_select adds the pipeline-instrument
- * extensions on every device, headless included, and logs the pipeline
- * feature report; a headless device enables no other extension.
+ * records the outcome. pipeline_exts_select adds the pipeline extensions on
+ * every device, headless included, and logs the pipeline feature report; a
+ * headless device enables no other extension. With the graphics pipeline
+ * library enabled, its feature is chained and its lock created.
  * @param dev Device whose instance, headless flag and surface are read and
  *            whose phys, gfx_family, device, gfx_queue, depth and feature
  *            fields are written.
@@ -1530,8 +1609,8 @@ static bool pick_physical_and_device(rhi_device *dev)
     dev->has_present_timing = pt_want && !dev->headless &&
                               have_present_id && have_present_wait;
     /* Swapchain first, the present-timing pair after it, then the pipeline
-     * instrument extensions; a headless device takes only the last. */
-    const char *dev_ext[5] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+     * extensions; a headless device takes only the last. */
+    const char *dev_ext[7] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                "VK_KHR_present_id", "VK_KHR_present_wait" };
     uint32_t ext_n = dev->headless ? 0u : (dev->has_present_timing ? 3u : 1u);
     ext_n += pipeline_exts_select(dev, dev_avail, dev_ext_n, dev_ext + ext_n);
@@ -1545,14 +1624,10 @@ static bool pick_physical_and_device(rhi_device *dev)
         .pNext = &feat_wait,
         .presentId = VK_TRUE,
     };
-    VkPhysicalDevicePipelineCreationCacheControlFeaturesEXT feat_cc = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES_EXT,
-        .pNext = dev->has_present_timing ? (void *)&feat_id : NULL,
-        .pipelineCreationCacheControl = VK_TRUE,
-    };
+    pipe_feature_chain pf;
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = dev->has_cache_control ? (const void *)&feat_cc : feat_cc.pNext,
+        .pNext = pipeline_features_chain(dev, &pf, dev->has_present_timing ? &feat_id : NULL),
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
         .enabledExtensionCount = ext_n,
@@ -1562,6 +1637,7 @@ static bool pick_physical_and_device(rhi_device *dev)
     VkResult r = vkCreateDevice(dev->phys, &dci, NULL, &dev->device);
     if (r != VK_SUCCESS) { RHI_LOG("vkCreateDevice failed: %d\n", (int)r); return false; }
     vkGetDeviceQueue(dev->device, chosen_family, 0, &dev->gfx_queue);
+    pipeline_library_locks(dev);
     return true;
 }
 
@@ -3619,6 +3695,8 @@ static void upload_ring_free(rhi_device *dev)
     }
 }
 
+static void gpl_destroy_all(rhi_device *dev);
+
 void rhi_destroy(rhi_device *dev)
 {
     if (ring_gen_dbg())
@@ -3629,6 +3707,7 @@ void rhi_destroy(rhi_device *dev)
     rhi_compile_pool_stop(dev);   /* no thread may use the cache or the device past here */
     rhi_pc_report();
     if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); retired_reclaim(dev, true); }
+    gpl_destroy_all(dev);
 
     if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
     upload_ring_free(dev);
@@ -6669,7 +6748,7 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     return rhi_max_u32(n, lo);
 }
 
-/* Creation feedback for one create: the whole pipeline and its two stages. */
+/* Creation feedback for one create: the pipeline and up to two stages. */
 typedef struct {
     VkPipelineCreationFeedbackEXT           pipe;
     VkPipelineCreationFeedbackEXT           stages[2];
@@ -6680,16 +6759,18 @@ typedef struct {
  *
  * @param dev Device whose has_creation_feedback is read.
  * @param fb Storage, zeroed here.
+ * @param stages The create's stage count (0 to 2), which the stage feedback
+ *               count must equal.
  * @return The struct to chain onto VkGraphicsPipelineCreateInfo, or NULL
  *         when the extension is not enabled. */
-static const void *pipe_feedback_chain(const rhi_device *dev, pipe_feedback *fb)
+static const void *pipe_feedback_chain(const rhi_device *dev, pipe_feedback *fb, uint32_t stages)
 {
     memset(fb, 0, sizeof *fb);
     if (!dev->has_creation_feedback) return NULL;
     fb->info.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT;
     fb->info.pPipelineCreationFeedback = &fb->pipe;
-    fb->info.pipelineStageCreationFeedbackCount = 2;
-    fb->info.pPipelineStageCreationFeedbacks = fb->stages;
+    fb->info.pipelineStageCreationFeedbackCount = stages;
+    fb->info.pPipelineStageCreationFeedbacks = stages ? fb->stages : NULL;
     return &fb->info;
 }
 
@@ -6717,10 +6798,11 @@ static rhi_pc_phase pipe_phase_now(void)
  * delays none and records 0. A first-use create not reported a hit arms the
  * debounced cache save (pcache_autosave).
  * @param dev Device the pipeline was created on.
- * @param job The job whose desc and stage sources were compiled.
+ * @param site The site class of the pipeline the create builds or serves.
+ * @param kind What the create builds: a whole pipeline, a library part or a link.
  * @param fb Its creation feedback.
  * @param wall_ns Time inside the call. */
-static void pipe_create_record(rhi_device *dev, const rhi_compile_job *job,
+static void pipe_create_record(rhi_device *dev, rhi_pipe_site site, rhi_pc_kind kind,
                                const pipe_feedback *fb, uint64_t wall_ns)
 {
     atomic_fetch_add_explicit(&s_census.pipe_builds, 1u, memory_order_relaxed);
@@ -6731,7 +6813,8 @@ static void pipe_create_record(rhi_device *dev, const rhi_compile_job *job,
     const bool owner = !owner_id || SDL_GetCurrentThreadID() == owner_id;
     const rhi_pc_create c = {
         .phase = pipe_phase_now(),
-        .site = rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words),
+        .site = site,
+        .kind = kind,
         .fb = !valid ? RHI_PC_FB_UNKNOWN : hit ? RHI_PC_FB_HIT : RHI_PC_FB_MISS,
         .owner = owner,
         .present = owner ? s_frame_serial + (dev->frame_active ? 0u : 1u) : 0u,
@@ -6917,15 +7000,711 @@ static int pipeline_create_failed(rhi_device *dev, VkResult r, VkPipeline pipeli
     return uncached ? 1 : -1;
 }
 
+/* Every create-info part of one pipeline: what a whole create passes, and the
+ * subsets each graphics pipeline library part takes. The parts point at one
+ * another, so a pipe_state is filled in place and never copied. */
+typedef struct {
+    stage_spec                             vspec, fspec;
+    VkPipelineShaderStageCreateInfo        stages[2];
+    VkVertexInputBindingDescription        bind;
+    VkVertexInputAttributeDescription      attrs[6];
+    VkPipelineVertexInputStateCreateInfo   vi;
+    VkPipelineInputAssemblyStateCreateInfo ia;
+    VkPipelineViewportStateCreateInfo      vp;
+    VkPipelineRasterizationStateCreateInfo rs;
+    VkPipelineMultisampleStateCreateInfo   ms;
+    VkPipelineColorBlendAttachmentState    cba;
+    VkPipelineColorBlendStateCreateInfo    cb;
+    VkPipelineDepthStencilStateCreateInfo  dss;
+    VkDynamicState                         dyn[3];
+    VkPipelineDynamicStateCreateInfo       ds;
+    VkPushConstantRange                    pcr;
+    VkDescriptorSetLayout                  set_layouts[8];
+    VkPipelineLayoutCreateInfo             plci;
+} pipe_state;
+
+/** @brief Fill the blend attachment of a pipeline from its desc's blend mode and colour-write switch.
+ *
+ * @param desc Pipeline description.
+ * @param cba Receives the attachment state. */
+static void pipe_blend_fill(const rhi_pipeline_desc *desc, VkPipelineColorBlendAttachmentState *cba)
+{
+    *cba = (VkPipelineColorBlendAttachmentState){
+        .blendEnable = (desc->blend != RHI_BLEND_NONE) ? VK_TRUE : VK_FALSE,
+        /* color_write_off = an invisible pass (stencil-mask rasterization). */
+        .colorWriteMask = desc->color_write_off ? 0u :
+                          (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT),
+        .colorBlendOp = VK_BLEND_OP_ADD, .alphaBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+    };
+    if (desc->blend == RHI_BLEND_ALPHA) {
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    } else if (desc->blend == RHI_BLEND_ADD) {
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    } else if (desc->blend == RHI_BLEND_SUBTRACT) {
+        /* PSX ABR mode 2: dst = B - F  (reverse-subtract, src ONE, dst ONE). */
+        cba->colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->alphaBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+    } else if (desc->blend == RHI_BLEND_ADD_QUARTER) {
+        /* PSX ABR mode 3: dst = B + F/4. The quarter rides the pipeline's
+         * static blend constant, so no shader or vertex scaling is involved
+         * and the source keeps its own clamp. */
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    } else {
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    }
+}
+
+/** @brief Fill the depth and stencil state of a pipeline from its desc.
+ *
+ * Depth: the offscreen target always carries a depth attachment; a pipeline
+ * opts into testing and writing it via desc->depth_test. The compare is the
+ * pipeline's depth class's (depth_convention_init), an OR_EQUAL op so
+ * equal-depth later draws still paint; depth_overwrite swaps it for ALWAYS
+ * with the test left enabled, because Vulkan forces depth writes off
+ * whenever depthTestEnable is VK_FALSE. Stencil roles: MARK writes 1 where
+ * the fragment passes the depth test; TEST draws only where stencil == 1;
+ * TEST_ZERO draws where it is not 1 (the hole fill). The reference is a fixed
+ * 1; per-object isolation is rhi_clear_stencil between groups.
+ * @param dev Device whose depth compare per class is read.
+ * @param desc Pipeline description.
+ * @param dss Receives the state. */
+static void pipe_depth_stencil_fill(const rhi_device *dev, const rhi_pipeline_desc *desc,
+                                    VkPipelineDepthStencilStateCreateInfo *dss)
+{
+    const VkCompareOp cmp = desc->depth_overwrite ? VK_COMPARE_OP_ALWAYS
+                                                  : dev->depth_cmp[desc->depth_class];
+    *dss = (VkPipelineDepthStencilStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable  = desc->depth_test ? VK_TRUE : VK_FALSE,
+        .depthWriteEnable = (desc->depth_test && !desc->depth_write_off) ? VK_TRUE : VK_FALSE,
+        .depthCompareOp = cmp,
+    };
+    VkStencilOpState sop = {
+        .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_KEEP,
+        .depthFailOp = VK_STENCIL_OP_KEEP, .compareMask = 0xFFu, .reference = 1u,
+    };
+    if (desc->stencil == RHI_STENCIL_MARK) {
+        sop.passOp = VK_STENCIL_OP_REPLACE;
+        sop.compareOp = VK_COMPARE_OP_ALWAYS;
+        sop.writeMask = 0xFFu;
+    } else if (desc->stencil == RHI_STENCIL_TEST) {
+        sop.compareOp = VK_COMPARE_OP_EQUAL;
+    } else if (desc->stencil == RHI_STENCIL_TEST_ZERO) {
+        sop.compareOp = VK_COMPARE_OP_NOT_EQUAL;
+    } else {
+        return;
+    }
+    dss->stencilTestEnable = VK_TRUE;
+    dss->front = sop;
+    dss->back = sop;
+}
+
+/** @brief Fill every create-info part of a pipeline from its desc, stage facts and variant view, with no shader module set.
+ *
+ * Any thread: reads the arguments and device fields fixed at device
+ * creation. Each stage receives only the specialization constants it
+ * declares, with the values the variant view gives: 0 DEPTH_REVERSED (per
+ * depth class), 1 AFFINE_UV, 2 NOTEX, 3 MOBY_TRUESCOPE, 4 SLOT_CONTEST,
+ * 5 STP_SELECT. The fragment stage gets the same values as the vertex
+ * stage: the terrain key-resolve fragments invert gl_FragCoord.z back to
+ * view-Z, and the inversion follows the encoding the vertex stage selected.
+ * The caller sets stages[0].module and stages[1].module.
+ * @param dev Device the pipeline is created on.
+ * @param desc Pipeline description.
+ * @param info Its stage facts (the declared constant ids).
+ * @param var Its variant view (pipe_variant_view).
+ * @param st Receives the parts, in place.
+ * @return false when the layout needs more descriptor sets than the device
+ *         allows (logged). */
+static bool pipe_state_fill(const rhi_device *dev, const rhi_pipeline_desc *desc,
+                            const pipe_stage_info *info, const rhi_pc_variant *var,
+                            pipe_state *st)
+{
+    memset(st, 0, sizeof *st);
+    const uint32_t *cvals = var->consts;
+    st->stages[0] = (VkPipelineShaderStageCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT, .pName = "main",
+        .pSpecializationInfo = stage_spec_fill(&st->vspec, info->vs_ids, cvals) };
+    st->stages[1] = (VkPipelineShaderStageCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .pName = "main",
+        .pSpecializationInfo = stage_spec_fill(&st->fspec, info->fs_ids, cvals) };
+    st->bind = (VkVertexInputBindingDescription){
+        .binding = 0, .stride = sizeof(rhi_vertex), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX };
+    /* The vertex STRUCT keeps all fields (stable buffer layout), but a pipeline
+     * only needs to declare the attributes its shaders consume - an attribute
+     * declared here yet not read by a shader merely warns "not consumed", so one
+     * superset attribute list serves every pipeline. Location 3 (the moby paint
+     * rank/ordinal pair) is read by the scene vertex stages' same-moby painter
+     * select; every other shader ignores it. Location 4 is the perspective W (true
+     * view-Z), read by the scene vertex stages. Location 5 is the terrain
+     * og-key slot offset (rhi_vertex.koff), read by the scene vertex stages
+     * and the terrain key pass. */
+    static const VkVertexInputAttributeDescription k_attrs[6] = {
+        { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(rhi_vertex, x) },
+        { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, u) },
+        { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,   .offset = offsetof(rhi_vertex, rgba) },
+        { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, sx) },
+        { .location = 4, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, w) },
+        { .location = 5, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, koff) },
+    };
+    memcpy(st->attrs, k_attrs, sizeof k_attrs);
+    st->vi = (VkPipelineVertexInputStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &st->bind,
+        .vertexAttributeDescriptionCount = 6, .pVertexAttributeDescriptions = st->attrs,
+    };
+    if (desc->terrain_pipeline) terrain_vertex_input(desc, &st->vi);
+    if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
+        st->vi.vertexBindingDescriptionCount = 0;
+        st->vi.pVertexBindingDescriptions = NULL;
+        st->vi.vertexAttributeDescriptionCount = 0;
+        st->vi.pVertexAttributeDescriptions = NULL;
+    }
+    st->ia = (VkPipelineInputAssemblyStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+    st->vp = (VkPipelineViewportStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1, .scissorCount = 1,
+    };
+    st->rs = (VkPipelineRasterizationStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = (VkPolygonMode)var->poly_mode,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        /* Decal pipelines (desc->depth_bias) enable the hardware polygon
+         * offset with DYNAMIC factors (VK_DYNAMIC_STATE_DEPTH_BIAS below);
+         * both pass begins set the factors to 0 so state is always defined. */
+        .depthBiasEnable = desc->depth_bias ? VK_TRUE : VK_FALSE,
+        .lineWidth = 1.0f,
+    };
+    st->ms = (VkPipelineMultisampleStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+    pipe_blend_fill(desc, &st->cba);
+    st->cb = (VkPipelineColorBlendStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1, .pAttachments = &st->cba,
+        .blendConstants = { 0.25f, 0.25f, 0.25f, 0.25f },
+    };
+    pipe_depth_stencil_fill(dev, desc, &st->dss);
+    st->dyn[0] = VK_DYNAMIC_STATE_VIEWPORT;
+    st->dyn[1] = VK_DYNAMIC_STATE_SCISSOR;
+    st->dyn[2] = VK_DYNAMIC_STATE_DEPTH_BIAS;
+    st->ds = (VkPipelineDynamicStateCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = desc->depth_bias ? 3u : 2u, .pDynamicStates = st->dyn,
+    };
+    /* Optional VRAM sampler set (0) + a push-constant block (the per-draw PSX
+     * material: tpage/clut/bpp). Terrain pipelines read the per-draw block
+     * (clip affine + class select) in the VERTEX stage too; everything else
+     * is fragment-only. A pipeline that uses neither keeps an empty layout. */
+    st->pcr = (VkPushConstantRange){
+        .stageFlags = desc->terrain_pipeline
+                          ? (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+                          : VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0, .size = desc->push_const_size,
+    };
+    const uint32_t set_count = pipeline_set_layouts(dev, desc, st->set_layouts);
+    if (set_count > dev->max_desc_sets) {
+        /* Degrade, never crash: the caller treats a NULL pipeline as "draw
+         * this run stock", so a device too small for the material layout
+         * loses reshading rather than the frame. */
+        RHI_LOG("pipeline needs %u descriptor sets, device allows %u\n",
+                set_count, dev->max_desc_sets);
+        return false;
+    }
+    st->plci = (VkPipelineLayoutCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = set_count,
+        .pSetLayouts = set_count ? st->set_layouts : NULL,
+        .pushConstantRangeCount = desc->push_const_size ? 1u : 0u,
+        .pPushConstantRanges = desc->push_const_size ? &st->pcr : NULL,
+    };
+    return true;
+}
+
+/* ---- graphics pipeline libraries ----------------------------------------- */
+
+/* The three library parts a linked pipeline is made of: vertex input with
+ * pre-rasterization (the vertex stage), the fragment shader state, and the
+ * fragment output interface. */
+enum { GPL_PRERASTER = 0, GPL_FRAGMENT, GPL_OUTPUT, GPL_PARTS };
+
+/* A library entry's state: QUEUED nobody builds it yet (the first thread to
+ * need it claims it), BUILDING one thread creates it, READY created, FAILED
+ * its create failed (every pipeline needing it is created whole). */
+enum { GPL_ST_QUEUED = 0, GPL_ST_BUILDING, GPL_ST_READY, GPL_ST_FAILED };
+
+/* One library part, created once per run and shared by every link whose part
+ * create info hashes to its key. Lives until the device is destroyed. */
+struct gpl_lib {
+    struct gpl_lib  *next;
+    uint64_t         key;
+    int              state;    /* GPL_ST_*, under dev->gpl_mx */
+    VkPipeline       lib;
+    VkPipelineLayout layout;   /* its create's layout; VK_NULL_HANDLE for the output part */
+};
+
+/* What building one library part reads: the desc, stage facts and variant
+ * view of a pipeline that uses the part, and the bytes of the part's shader
+ * stage. The desc's stage names are not read. */
+typedef struct {
+    rhi_pipeline_desc desc;
+    pipe_stage_info   info;
+    rhi_pc_variant    var;
+    rhi_pipe_site     site;
+    const void       *spv;   /* the part's stage bytes; NULL for the output part */
+    size_t            n;
+    void             *own;   /* an owned copy behind spv, or NULL */
+} gpl_src;
+
+/* XOR'd into the key-manifest key of a pipeline linked from libraries: the
+ * pipeline cache holds its libraries and its link, not the whole create of
+ * the same key, so the two are listed apart. */
+#define GPL_MANIFEST_SALT 0x9e3779b97f4a7c15ull
+
+/** @brief Return whether a pipeline is created by linking graphics pipeline libraries rather than whole.
+ *
+ * The terrain-cache pipelines are, on a device with the library extension
+ * and fast linking enabled (pipeline_exts_select): their large vertex
+ * stages then compile once per pre-rasterization create info instead of
+ * once per (vertex, fragment, state) pairing.
+ * @param dev Device.
+ * @param desc Pipeline description.
+ * @param words True when a stage was given as SPIR-V words.
+ * @return true for the library path. */
+static bool pipe_uses_library(const rhi_device *dev, const rhi_pipeline_desc *desc, bool words)
+{
+    return dev->has_gpl && rhi_pc_site_of(desc, words) == RHI_PIPE_SITE_TERRAIN_CACHE;
+}
+
+/** @brief Return the key-manifest key of a variant created by the given path.
+ *
+ * @param v The variant.
+ * @param linked True when the pipeline is linked from libraries.
+ * @return The key. */
+static uint64_t pipe_manifest_key_as(const rhi_pc_variant *v, bool linked)
+{
+    const uint64_t k = pipe_manifest_key(v);
+    return linked ? k ^ GPL_MANIFEST_SALT : k;
+}
+
+/** @brief Fold n bytes into an FNV-1a 64 hash.
+ *
+ * @param h Running hash.
+ * @param p The bytes.
+ * @param n Their count.
+ * @return The updated hash. */
+static uint64_t gpl_mix(uint64_t h, const void *p, size_t n)
+{
+    const uint8_t *b = p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
+    return h;
+}
+
+/** @brief Fold a stage's specialization data into a hash: its entry count, constant ids and values.
+ *
+ * @param h Running hash.
+ * @param s The stage's specialization, as stage_spec_fill left it.
+ * @return The updated hash. */
+static uint64_t gpl_mix_spec(uint64_t h, const stage_spec *s)
+{
+    const uint32_t n = s->info.mapEntryCount;
+    h = gpl_mix(h, &n, sizeof n);
+    for (uint32_t i = 0; i < n; i++) {
+        h = gpl_mix(h, &s->e[i].constantID, sizeof s->e[i].constantID);
+        h = gpl_mix(h, &s->d[i], sizeof s->d[i]);
+    }
+    return h;
+}
+
+/** @brief Fold a pipeline layout's create info into a hash: its set layouts and push-constant range.
+ *
+ * Two layouts with equal hashes are identically defined, the compatibility
+ * a link without independent sets requires of its libraries' layouts.
+ * @param h Running hash.
+ * @param st The pipeline's parts.
+ * @return The updated hash. */
+static uint64_t gpl_mix_layout(uint64_t h, const pipe_state *st)
+{
+    h = gpl_mix(h, &st->plci.setLayoutCount, sizeof st->plci.setLayoutCount);
+    h = gpl_mix(h, st->set_layouts, st->plci.setLayoutCount * sizeof st->set_layouts[0]);
+    h = gpl_mix(h, &st->plci.pushConstantRangeCount, sizeof st->plci.pushConstantRangeCount);
+    if (st->plci.pushConstantRangeCount) h = gpl_mix(h, &st->pcr, sizeof st->pcr);
+    return h;
+}
+
+/** @brief Compute the key of each library part of a pipeline from the create-info parts that part takes.
+ *
+ * Pre-rasterization: the vertex stage's bytes hash and constants, the
+ * vertex input, input assembly, rasterization and dynamic state, the
+ * layout and the render pass. Fragment shader: the fragment stage's hash
+ * and constants, depth-stencil and multisample state, the layout and the
+ * render pass. Output: the blend attachment and constants, multisample
+ * state and the render pass. Any thread.
+ * @param dev Device whose offscreen render pass is read.
+ * @param st The pipeline's parts (pipe_state_fill).
+ * @param info Its stage facts.
+ * @param key Receives the three keys. */
+static void gpl_part_keys(const rhi_device *dev, const pipe_state *st, const pipe_stage_info *info,
+                          uint64_t key[GPL_PARTS])
+{
+    const uint64_t basis = 0xcbf29ce484222325ull;
+    const uint64_t rp = (uint64_t)(uintptr_t)dev->off_rp;
+    for (int p = 0; p < GPL_PARTS; p++) {
+        key[p] = gpl_mix(basis, &p, sizeof p);
+        key[p] = gpl_mix(key[p], &rp, sizeof rp);
+    }
+    uint64_t h = key[GPL_PRERASTER];
+    h = gpl_mix(h, &info->vs_hash, sizeof info->vs_hash);
+    h = gpl_mix_spec(h, &st->vspec);
+    const VkPipelineVertexInputStateCreateInfo *vi = &st->vi;
+    h = gpl_mix(h, &vi->vertexBindingDescriptionCount, sizeof vi->vertexBindingDescriptionCount);
+    h = gpl_mix(h, vi->pVertexBindingDescriptions,
+                vi->vertexBindingDescriptionCount * sizeof vi->pVertexBindingDescriptions[0]);
+    h = gpl_mix(h, &vi->vertexAttributeDescriptionCount, sizeof vi->vertexAttributeDescriptionCount);
+    h = gpl_mix(h, vi->pVertexAttributeDescriptions,
+                vi->vertexAttributeDescriptionCount * sizeof vi->pVertexAttributeDescriptions[0]);
+    const uint32_t rs[6] = { (uint32_t)st->ia.topology, (uint32_t)st->rs.polygonMode,
+                             (uint32_t)st->rs.cullMode, (uint32_t)st->rs.frontFace,
+                             st->rs.depthBiasEnable, st->ds.dynamicStateCount };
+    h = gpl_mix(h, rs, sizeof rs);
+    h = gpl_mix(h, &st->rs.lineWidth, sizeof st->rs.lineWidth);
+    h = gpl_mix(h, st->dyn, st->ds.dynamicStateCount * sizeof st->dyn[0]);
+    key[GPL_PRERASTER] = gpl_mix_layout(h, st);
+
+    h = key[GPL_FRAGMENT];
+    h = gpl_mix(h, &info->fs_hash, sizeof info->fs_hash);
+    h = gpl_mix_spec(h, &st->fspec);
+    const uint32_t ds[5] = { st->dss.depthTestEnable, st->dss.depthWriteEnable,
+                             (uint32_t)st->dss.depthCompareOp, st->dss.stencilTestEnable,
+                             (uint32_t)st->ms.rasterizationSamples };
+    h = gpl_mix(h, ds, sizeof ds);
+    h = gpl_mix(h, &st->dss.front, sizeof st->dss.front);
+    h = gpl_mix(h, &st->dss.back, sizeof st->dss.back);
+    key[GPL_FRAGMENT] = gpl_mix_layout(h, st);
+
+    h = key[GPL_OUTPUT];
+    h = gpl_mix(h, &st->cba, sizeof st->cba);
+    h = gpl_mix(h, st->cb.blendConstants, sizeof st->cb.blendConstants);
+    key[GPL_OUTPUT] = gpl_mix(h, &st->ms.rasterizationSamples, sizeof st->ms.rasterizationSamples);
+}
+
+/** @brief Create one library part from a source, through the pipeline cache.
+ *
+ * Any thread. The part takes the subset of the pipeline's create-info parts
+ * its library flags name; the shader parts carry the layout, which is
+ * created here and kept with the library. The create is counted by
+ * pipe_create_record under its part's kind.
+ * @param dev Device.
+ * @param part GPL_PRERASTER, GPL_FRAGMENT or GPL_OUTPUT.
+ * @param src The source.
+ * @param out_lib Receives the library.
+ * @param out_layout Receives its layout, VK_NULL_HANDLE for the output part.
+ * @return true when the library was created. */
+static bool gpl_build(rhi_device *dev, int part, const gpl_src *src, VkPipeline *out_lib,
+                      VkPipelineLayout *out_layout)
+{
+    static const VkFlags k_flags[GPL_PARTS] = {
+        RHI_GPL_VERTEX_INPUT_INTERFACE | RHI_GPL_PRE_RASTERIZATION,
+        RHI_GPL_FRAGMENT_SHADER, RHI_GPL_FRAGMENT_OUTPUT };
+    static const rhi_pc_kind k_kind[GPL_PARTS] = {
+        RHI_PC_KIND_LIB_PRERASTER, RHI_PC_KIND_LIB_FRAGMENT, RHI_PC_KIND_LIB_OUTPUT };
+    *out_lib = VK_NULL_HANDLE;
+    *out_layout = VK_NULL_HANDLE;
+    pipe_state st;
+    if (!pipe_state_fill(dev, &src->desc, &src->info, &src->var, &st)) return false;
+    VkShaderModule m = VK_NULL_HANDLE;
+    if (part != GPL_OUTPUT) {
+        m = create_shader_module(dev, src->spv, src->n, part == GPL_PRERASTER
+                                 ? "(library vertex stage)" : "(library fragment stage)");
+        if (!m) return false;
+        if (vkCreatePipelineLayout(dev->device, &st.plci, NULL, out_layout) != VK_SUCCESS) {
+            RHI_LOG("vkCreatePipelineLayout failed (pipeline library)\n");
+            vkDestroyShaderModule(dev->device, m, NULL);
+            return false;
+        }
+    }
+    rhi_gpl_create_info li = { .sType = RHI_ST_GPL_CREATE_INFO, .flags = k_flags[part] };
+    VkGraphicsPipelineCreateInfo gp = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &li,
+        .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR,
+        .layout = *out_layout,
+        .renderPass = dev->off_rp,
+        .subpass = 0,
+    };
+    if (part == GPL_PRERASTER) {
+        st.stages[0].module = m;
+        gp.stageCount = 1;
+        gp.pStages = &st.stages[0];
+        gp.pVertexInputState = &st.vi;
+        gp.pInputAssemblyState = &st.ia;
+        gp.pViewportState = &st.vp;
+        gp.pRasterizationState = &st.rs;
+        gp.pDynamicState = &st.ds;
+    } else if (part == GPL_FRAGMENT) {
+        st.stages[1].module = m;
+        gp.stageCount = 1;
+        gp.pStages = &st.stages[1];
+        gp.pDepthStencilState = &st.dss;
+        gp.pMultisampleState = &st.ms;
+    } else {
+        gp.pColorBlendState = &st.cb;
+        gp.pMultisampleState = &st.ms;
+    }
+    pipe_feedback fb;
+    li.pNext = pipe_feedback_chain(dev, &fb, gp.stageCount);
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: pipeline create timing for the census */
+    const VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, out_lib);
+    pipe_create_record(dev, src->site, k_kind[part], &fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
+    if (m) vkDestroyShaderModule(dev->device, m, NULL);
+    if (r != VK_SUCCESS) {
+        RHI_LOG("vkCreateGraphicsPipelines failed: %d (pipeline library part %d)\n", (int)r, part);
+        if (*out_lib) vkDestroyPipeline(dev->device, *out_lib, NULL);
+        if (*out_layout) vkDestroyPipelineLayout(dev->device, *out_layout, NULL);
+        *out_lib = VK_NULL_HANDLE;
+        *out_layout = VK_NULL_HANDLE;
+        return false;
+    }
+    SDL_LockMutex(dev->pc_mx);
+    dev->pcache_unhit += !(fb.pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
+    SDL_UnlockMutex(dev->pc_mx);
+    return true;
+}
+
+/** @brief Return the library entry with a key, inserting a QUEUED one when none exists.
+ *
+ * Caller holds dev->gpl_mx.
+ * @param dev Device.
+ * @param key The part's key.
+ * @param inserted Receives whether the entry is new.
+ * @return The entry, or NULL on allocation failure. */
+static struct gpl_lib *gpl_entry(rhi_device *dev, uint64_t key, bool *inserted)
+{
+    *inserted = false;
+    for (struct gpl_lib *e = dev->gpl_head; e; e = e->next)
+        if (e->key == key) return e;
+    struct gpl_lib *e = calloc(1, sizeof *e);
+    if (!e) return NULL;
+    e->key = key;
+    e->state = GPL_ST_QUEUED;
+    e->next = dev->gpl_head;
+    dev->gpl_head = e;
+    *inserted = true;
+    return e;
+}
+
+/** @brief Return a library part, building it on the calling thread when no thread has claimed it, or waiting for the thread that has.
+ *
+ * Any thread. An entry is built once per run; a failed build stays failed.
+ * @param dev Device.
+ * @param part The part.
+ * @param key Its key (gpl_part_keys).
+ * @param src What building it reads.
+ * @return The library, or VK_NULL_HANDLE when its build failed. */
+static VkPipeline gpl_acquire(rhi_device *dev, int part, uint64_t key, const gpl_src *src)
+{
+    bool inserted;
+    SDL_LockMutex(dev->gpl_mx);
+    struct gpl_lib *e = gpl_entry(dev, key, &inserted);
+    while (e && e->state == GPL_ST_BUILDING) SDL_WaitCondition(dev->gpl_cv, dev->gpl_mx);
+    if (e && e->state == GPL_ST_QUEUED) {
+        e->state = GPL_ST_BUILDING;
+        SDL_UnlockMutex(dev->gpl_mx);
+        VkPipeline lib;
+        VkPipelineLayout layout;
+        const bool ok = gpl_build(dev, part, src, &lib, &layout);
+        SDL_LockMutex(dev->gpl_mx);
+        e->lib = lib;
+        e->layout = layout;
+        e->state = ok ? GPL_ST_READY : GPL_ST_FAILED;
+        SDL_BroadcastCondition(dev->gpl_cv);
+    }
+    const VkPipeline out = (e && e->state == GPL_ST_READY) ? e->lib : VK_NULL_HANDLE;
+    SDL_UnlockMutex(dev->gpl_mx);
+    return out;
+}
+
+/** @brief Destroy every library entry and the library lock (device destruction, after the pool stopped and the device idled).
+ *
+ * @param dev Device. */
+static void gpl_destroy_all(rhi_device *dev)
+{
+    unsigned n = 0, failed = 0;
+    for (struct gpl_lib *e = dev->gpl_head, *next; e; e = next) {
+        next = e->next;
+        if (e->lib) vkDestroyPipeline(dev->device, e->lib, NULL);
+        if (e->layout) vkDestroyPipelineLayout(dev->device, e->layout, NULL);
+        n++;
+        failed += e->state == GPL_ST_FAILED;
+        free(e);
+    }
+    dev->gpl_head = NULL;
+    if (dev->has_gpl) RHI_LOG("pipeline libraries: %u parts (%u failed) destroyed\n", n, failed);
+    if (dev->gpl_cv) SDL_DestroyCondition(dev->gpl_cv);
+    if (dev->gpl_mx) SDL_DestroyMutex(dev->gpl_mx);
+    dev->gpl_cv = NULL;
+    dev->gpl_mx = NULL;
+}
+
+/** @brief Describe what building one library part of a job's pipeline reads.
+ *
+ * The part's stage is the job's vertex stage for pre-rasterization, its
+ * fragment stage for the fragment part, and none for the output part.
+ * @param job The job, its stage bytes resolved.
+ * @param var Its variant view.
+ * @param part The part.
+ * @param own true: the stage bytes are copied into src->own and the desc's
+ *            stage names cleared, so the source outlives the job; false:
+ *            the source points into the job.
+ * @param src Receives the source.
+ * @return false when the copy could not be allocated (nothing is held). */
+static bool gpl_src_of(const rhi_compile_job *job, const rhi_pc_variant *var, int part, bool own,
+                       gpl_src *src)
+{
+    *src = (gpl_src){ .desc = job->desc, .info = job->info, .var = *var,
+                      .site = rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words) };
+    if (part == GPL_PRERASTER) { src->spv = job->vb; src->n = job->vbn; }
+    if (part == GPL_FRAGMENT)  { src->spv = job->fb; src->n = job->fbn; }
+    if (!own) return true;
+    src->desc.vert_spv = src->desc.frag_spv = NULL;
+    if (!src->n) return true;
+    src->own = malloc(src->n);
+    if (!src->own) return false;
+    memcpy(src->own, src->spv, src->n);
+    src->spv = src->own;
+    return true;
+}
+
+/** @brief Link a job's pipeline from its three library parts, acquiring each part first (gpl_acquire).
+ *
+ * Any thread. The link names no link-time optimization: it is the fast
+ * link the device reported. The create is counted by pipe_create_record as
+ * a link.
+ * @param dev Device.
+ * @param job The job.
+ * @param st The pipeline's parts (pipe_state_fill).
+ * @param var Its variant view.
+ * @param layout The linked pipeline's layout, identically defined to its parts'.
+ * @param flags Pipeline create flags (the probe's FAIL_ON_PIPELINE_COMPILE_REQUIRED).
+ * @param out Receives the pipeline.
+ * @param fb Receives the link's creation feedback.
+ * @return 0 when linked, 1 when a probe found the link uncached, -1 when a
+ *         part or the link failed (the caller creates the pipeline whole). */
+static int pipeline_link(rhi_device *dev, const rhi_compile_job *job, const pipe_state *st,
+                         const rhi_pc_variant *var, VkPipelineLayout layout,
+                         VkPipelineCreateFlags flags, VkPipeline *out, pipe_feedback *fb)
+{
+    uint64_t key[GPL_PARTS];
+    gpl_part_keys(dev, st, &job->info, key);
+    VkPipeline libs[GPL_PARTS];
+    for (int p = 0; p < GPL_PARTS; p++) {
+        gpl_src src;
+        (void)gpl_src_of(job, var, p, false, &src);
+        libs[p] = gpl_acquire(dev, p, key[p], &src);
+        if (!libs[p]) return -1;
+    }
+    VkPipelineLibraryCreateInfoKHR lci = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR,
+        .pNext = pipe_feedback_chain(dev, fb, 0),
+        .libraryCount = GPL_PARTS, .pLibraries = libs,
+    };
+    const VkGraphicsPipelineCreateInfo gp = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &lci,
+        .flags = flags,
+        .layout = layout,
+        .renderPass = dev->off_rp,
+        .subpass = 0,
+    };
+    *out = VK_NULL_HANDLE;
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: pipeline create timing for the census */
+    const VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, out);
+    pipe_create_record(dev, rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words),
+                       RHI_PC_KIND_LINK, fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
+    if (r == VK_SUCCESS) return 0;
+    if (*out) vkDestroyPipeline(dev->device, *out, NULL);
+    *out = VK_NULL_HANDLE;
+    if (r == VK_PIPELINE_COMPILE_REQUIRED_EXT) return 1;
+    RHI_LOG("vkCreateGraphicsPipelines failed: %d (library link); creating the pipeline whole\n",
+            (int)r);
+    return -1;
+}
+
+/** @brief Create a job's pipeline whole from its two shader stages and every create-info part.
+ *
+ * Any thread. The create is counted by pipe_create_record as a pipeline.
+ * @param dev Device.
+ * @param job The job, its stage bytes resolved.
+ * @param st The pipeline's parts (pipe_state_fill); the stage modules are set here.
+ * @param layout The pipeline's layout.
+ * @param flags Pipeline create flags.
+ * @param out Receives the pipeline, or a pipeline a failing driver returned.
+ * @param fb Receives the creation feedback.
+ * @return The create's result; VK_ERROR_INITIALIZATION_FAILED when a module failed. */
+static VkResult pipeline_create_whole(rhi_device *dev, const rhi_compile_job *job, pipe_state *st,
+                                      VkPipelineLayout layout, VkPipelineCreateFlags flags,
+                                      VkPipeline *out, pipe_feedback *fb)
+{
+    *out = VK_NULL_HANDLE;
+    VkShaderModule vs, fs;
+    if (!pipe_stage_modules(dev, job, &vs, &fs)) return VK_ERROR_INITIALIZATION_FAILED;
+    st->stages[0].module = vs;
+    st->stages[1].module = fs;
+    VkGraphicsPipelineCreateInfo gp = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2, .pStages = st->stages,
+        .pVertexInputState = &st->vi,
+        .pInputAssemblyState = &st->ia,
+        .pViewportState = &st->vp,
+        .pRasterizationState = &st->rs,
+        .pMultisampleState = &st->ms,
+        .pDepthStencilState = &st->dss,
+        .pColorBlendState = &st->cb,
+        .pDynamicState = &st->ds,
+        .layout = layout,
+        .renderPass = dev->off_rp,
+        .subpass = 0,
+        .flags = flags,
+    };
+    gp.pNext = pipe_feedback_chain(dev, fb, 2);
+    const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: pipeline create timing for the census */
+    const VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, out);
+    pipe_create_record(dev, rhi_pc_site_of(&job->desc, job->vert_words || job->frag_words),
+                       RHI_PC_KIND_PIPELINE, fb, SDL_GetTicksNS() - t0);  /* clock-guard: wall: pipeline create timing for the census */
+    vkDestroyShaderModule(dev->device, vs, NULL);
+    vkDestroyShaderModule(dev->device, fs, NULL);
+    return r;
+}
+
 /** @brief Compile a job's Vulkan pipeline and layout from its desc, resolved stage bytes and variant.
  *
  * Any thread: reads the job, the device fields fixed at device creation and
  * the pipeline cache (internally synchronized); writes only the job's
- * result and the atomic or locked instruments. Each stage receives only the
- * specialization constants it declares, with the values the job's variant
- * and SLOT_CONTEST give. The create carries a creation-feedback chain when
- * the extension is enabled and is counted by pipe_create_record; a
- * successful create adds its manifest key to dev->pc_keys under dev->pc_mx.
+ * result, the library entries (under their lock) and the atomic or locked
+ * instruments. A pipeline pipe_uses_library selects is linked from its
+ * library parts (pipeline_link), each built at most once per run; a part
+ * or link failure creates it whole instead. Every create carries a
+ * creation-feedback chain when the extension is enabled and is counted by
+ * pipe_create_record; a successful create adds its manifest key (salted
+ * for a linked pipeline) to dev->pc_keys under dev->pc_mx.
  * @param dev Device the objects are created on.
  * @param job The job; job->out receives the pipeline, layout,
  *            push-constant stage flags and dedupe key on success.
@@ -6938,247 +7717,34 @@ static int pipeline_compile(rhi_device *dev, rhi_compile_job *job, VkPipelineCre
                             bool variant)
 {
     const rhi_pipeline_desc *desc = &job->desc;
-    VkShaderModule vs, fs;
-    if (!pipe_stage_modules(dev, job, &vs, &fs)) return -1;
-    VkPipelineLayout layout = VK_NULL_HANDLE;
     rhi_pc_variant var;
     pipe_variant_view(dev, desc, &job->info, job->variant, job->slot_contest, &var);
-    /* Constant values before declaration masking: 0 DEPTH_REVERSED (per depth
-     * class), 1 AFFINE_UV, 2 NOTEX, 3 MOBY_TRUESCOPE, 4 SLOT_CONTEST,
-     * 5 STP_SELECT (the desc's texel STP selection of psx_scene.frag). The
-     * fragment stage gets the same values as the vertex stage: the terrain
-     * key-resolve fragments invert gl_FragCoord.z back to view-Z, and the
-     * inversion follows the encoding the vertex stage selected. */
-    const uint32_t cvals[6] = { var.consts[0], var.consts[1], var.consts[2],
-                                var.consts[3], var.consts[4], var.consts[5] };
-    stage_spec vspec, fspec;
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-          .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vs, .pName = "main",
-          .pSpecializationInfo = stage_spec_fill(&vspec, job->info.vs_ids, cvals) },
-        { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-          .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fs, .pName = "main",
-          .pSpecializationInfo = stage_spec_fill(&fspec, job->info.fs_ids, cvals) },
-    };
-    VkVertexInputBindingDescription bind = {
-        .binding = 0, .stride = sizeof(rhi_vertex),
-        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
-    };
-    /* The vertex STRUCT keeps all fields (stable buffer layout), but a pipeline
-     * only needs to declare the attributes its shaders consume - an attribute
-     * declared here yet not read by a shader merely warns "not consumed", so one
-     * superset attribute list serves every pipeline. Location 3 (the moby paint
-     * rank/ordinal pair) is read by the scene vertex stages' same-moby painter
-     * select; every other shader ignores it. Location 4 is the perspective W (true
-     * view-Z), read by the scene vertex stages. Location 5 is the terrain
-     * og-key slot offset (rhi_vertex.koff), read by the scene vertex stages
-     * and the terrain key pass. */
-    VkVertexInputAttributeDescription attrs[6] = {
-        { .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(rhi_vertex, x) },
-        { .location = 1, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, u) },
-        { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,   .offset = offsetof(rhi_vertex, rgba) },
-        { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,    .offset = offsetof(rhi_vertex, sx) },
-        { .location = 4, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, w) },
-        { .location = 5, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, koff) },
-    };
-    VkPipelineVertexInputStateCreateInfo vi = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-        .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
-        .vertexAttributeDescriptionCount = 6, .pVertexAttributeDescriptions = attrs,
-    };
-    if (desc->terrain_pipeline) terrain_vertex_input(desc, &vi);
-    if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
-        vi.vertexBindingDescriptionCount = 0;
-        vi.pVertexBindingDescriptions = NULL;
-        vi.vertexAttributeDescriptionCount = 0;
-        vi.pVertexAttributeDescriptions = NULL;
-    }
-    VkPipelineInputAssemblyStateCreateInfo ia = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-    };
-    VkPipelineViewportStateCreateInfo vp = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1, .scissorCount = 1,
-    };
-    VkPipelineRasterizationStateCreateInfo rs = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = (VkPolygonMode)var.poly_mode,
-        .cullMode = VK_CULL_MODE_NONE,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        /* Decal pipelines (desc->depth_bias) enable the hardware polygon
-         * offset with DYNAMIC factors (VK_DYNAMIC_STATE_DEPTH_BIAS below);
-         * both pass begins set the factors to 0 so state is always defined. */
-        .depthBiasEnable = desc->depth_bias ? VK_TRUE : VK_FALSE,
-        .lineWidth = 1.0f,
-    };
-    VkPipelineMultisampleStateCreateInfo ms = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-    };
-    VkPipelineColorBlendAttachmentState cba = {
-        .blendEnable = (desc->blend != RHI_BLEND_NONE) ? VK_TRUE : VK_FALSE,
-        /* color_write_off = an invisible pass (stencil-mask rasterization). */
-        .colorWriteMask = desc->color_write_off ? 0u :
-                          (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT),
-        .colorBlendOp = VK_BLEND_OP_ADD, .alphaBlendOp = VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
-    };
-    if (desc->blend == RHI_BLEND_ALPHA) {
-        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    } else if (desc->blend == RHI_BLEND_ADD) {
-        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    } else if (desc->blend == RHI_BLEND_SUBTRACT) {
-        /* PSX ABR mode 2: dst = B - F  (reverse-subtract, src ONE, dst ONE). */
-        cba.colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
-        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba.alphaBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
-    } else if (desc->blend == RHI_BLEND_ADD_QUARTER) {
-        /* PSX ABR mode 3: dst = B + F/4. The quarter rides the pipeline's
-         * static blend constant, so no shader or vertex scaling is involved
-         * and the source keeps its own clamp. */
-        cba.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
-        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
-        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    } else {
-        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-    }
-    VkPipelineColorBlendStateCreateInfo cb = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .attachmentCount = 1, .pAttachments = &cba,
-        .blendConstants = { 0.25f, 0.25f, 0.25f, 0.25f },
-    };
-    /* Depth: the offscreen target always carries a depth attachment;
-     * a pipeline opts into testing/writing it via desc->depth_test. The 2D
-     * panels (depth_test=false) ignore it and never write it. The compare is
-     * the pipeline's depth class's (depth_convention_init), an OR_EQUAL op so
-     * equal-depth later draws (e.g. coincident prims) still paint.
-     * depth_overwrite swaps the compare for ALWAYS (unconditional replace);
-     * the test stays ENABLED because Vulkan forces depth writes off whenever
-     * depthTestEnable is VK_FALSE. */
-    const VkCompareOp cmp = desc->depth_overwrite ? VK_COMPARE_OP_ALWAYS
-                                                  : dev->depth_cmp[desc->depth_class];
+    pipe_state st;
+    if (!pipe_state_fill(dev, desc, &job->info, &var, &st)) return -1;
     if (!variant)
-        atomic_fetch_add_explicit(&dev->pipes_by_cmp[cmp], (unsigned)desc->depth_test,
-                                  memory_order_relaxed);
-    VkPipelineDepthStencilStateCreateInfo dss = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable  = desc->depth_test ? VK_TRUE : VK_FALSE,
-        .depthWriteEnable = (desc->depth_test && !desc->depth_write_off) ? VK_TRUE : VK_FALSE,
-        .depthCompareOp = cmp,
-    };
-    /* Stencil roles: MARK writes 1 where the fragment passes the depth
-     * test (depth-fail keeps 0, so nearer world geometry punches the mask
-     * out); TEST draws only where stencil==1 and never writes it. Reference is
-     * a fixed 1 - per-object isolation is rhi_clear_stencil between groups. */
-    if (desc->stencil == RHI_STENCIL_MARK) {
-        VkStencilOpState sop = {
-            .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_REPLACE,
-            .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = VK_COMPARE_OP_ALWAYS,
-            .compareMask = 0xFFu, .writeMask = 0xFFu, .reference = 1u,
-        };
-        dss.stencilTestEnable = VK_TRUE;
-        dss.front = sop; dss.back = sop;
-    } else if (desc->stencil == RHI_STENCIL_TEST) {
-        VkStencilOpState sop = {
-            .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_KEEP,
-            .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = VK_COMPARE_OP_EQUAL,
-            .compareMask = 0xFFu, .writeMask = 0u, .reference = 1u,
-        };
-        dss.stencilTestEnable = VK_TRUE;
-        dss.front = sop; dss.back = sop;
-    } else if (desc->stencil == RHI_STENCIL_TEST_ZERO) {
-        /* Pass where stencil != 1, i.e. ==0 (only 0/1 are ever written): the
-         * hole-fill role - paint only pixels the MARK pass left uncovered. */
-        VkStencilOpState sop = {
-            .failOp = VK_STENCIL_OP_KEEP, .passOp = VK_STENCIL_OP_KEEP,
-            .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = VK_COMPARE_OP_NOT_EQUAL,
-            .compareMask = 0xFFu, .writeMask = 0u, .reference = 1u,
-        };
-        dss.stencilTestEnable = VK_TRUE;
-        dss.front = sop; dss.back = sop;
-    }
-    VkDynamicState dyn[3] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                              VK_DYNAMIC_STATE_DEPTH_BIAS };
-    VkPipelineDynamicStateCreateInfo ds = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount = desc->depth_bias ? 3u : 2u, .pDynamicStates = dyn,
-    };
-    /* Optional VRAM sampler set (0) + a fragment-stage push-constant block
-     * (the per-draw PSX material: tpage/clut/bpp). A pipeline that uses
-     * neither keeps an empty layout. */
-    VkPushConstantRange pcr = {
-        /* Terrain pipelines read the per-draw block (clip affine + class
-         * select) in the VERTEX stage too; everything else is fragment-only
-         * (the per-draw PSX material). */
-        .stageFlags = desc->terrain_pipeline
-                          ? (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
-                          : VK_SHADER_STAGE_FRAGMENT_BIT,
-        .offset = 0, .size = desc->push_const_size,
-    };
-    VkDescriptorSetLayout set_layouts[8];
-    uint32_t set_count = pipeline_set_layouts(dev, desc, set_layouts);
-    if (set_count > dev->max_desc_sets) {
-        /* Degrade, never crash: the caller treats a NULL pipeline as "draw
-         * this run stock", so a device too small for the material layout
-         * loses reshading rather than the frame. */
-        RHI_LOG("pipeline needs %u descriptor sets, device allows %u\n",
-                set_count, dev->max_desc_sets);
-        vkDestroyShaderModule(dev->device, vs, NULL);
-        vkDestroyShaderModule(dev->device, fs, NULL);
-        return -1;
-    }
-    VkPipelineLayoutCreateInfo plci = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = set_count,
-        .pSetLayouts = set_count ? set_layouts : NULL,
-        .pushConstantRangeCount = desc->push_const_size ? 1u : 0u,
-        .pPushConstantRanges = desc->push_const_size ? &pcr : NULL,
-    };
-    if (vkCreatePipelineLayout(dev->device, &plci, NULL, &layout) != VK_SUCCESS) {
+        atomic_fetch_add_explicit(&dev->pipes_by_cmp[st.dss.depthCompareOp],
+                                  (unsigned)desc->depth_test, memory_order_relaxed);
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(dev->device, &st.plci, NULL, &layout) != VK_SUCCESS) {
         RHI_LOG("vkCreatePipelineLayout failed\n");
-        vkDestroyShaderModule(dev->device, vs, NULL);
-        vkDestroyShaderModule(dev->device, fs, NULL);
         return -1;
     }
-    VkGraphicsPipelineCreateInfo gp = {
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .stageCount = 2, .pStages = stages,
-        .pVertexInputState = &vi,
-        .pInputAssemblyState = &ia,
-        .pViewportState = &vp,
-        .pRasterizationState = &rs,
-        .pMultisampleState = &ms,
-        .pDepthStencilState = &dss,
-        .pColorBlendState = &cb,
-        .pDynamicState = &ds,
-        .layout = layout,
-        .renderPass = dev->off_rp,
-        .subpass = 0,
-        .flags = flags,
-    };
     VkPipeline pipeline = VK_NULL_HANDLE;
     pipe_feedback fb;
-    gp.pNext = pipe_feedback_chain(dev, &fb);
-    const Uint64 pipe_t0 = SDL_GetTicksNS();
-    VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, &pipeline);
-    pipe_create_record(dev, job, &fb, SDL_GetTicksNS() - pipe_t0);
-    vkDestroyShaderModule(dev->device, vs, NULL);
-    vkDestroyShaderModule(dev->device, fs, NULL);
-    if (r != VK_SUCCESS) return pipeline_create_failed(dev, r, pipeline, layout);
+    int linked = pipe_uses_library(dev, desc, job->vert_words || job->frag_words)
+                     ? pipeline_link(dev, job, &st, &var, layout, flags, &pipeline, &fb) : -1;
+    if (linked == 1) return pipeline_create_failed(dev, VK_PIPELINE_COMPILE_REQUIRED_EXT,
+                                                   VK_NULL_HANDLE, layout);
+    if (linked != 0) {
+        const VkResult r = pipeline_create_whole(dev, job, &st, layout, flags, &pipeline, &fb);
+        if (r != VK_SUCCESS) return pipeline_create_failed(dev, r, pipeline, layout);
+    }
     SDL_LockMutex(dev->pc_mx);
-    rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key(&var));
+    rhi_pc_keyset_insert(&dev->pc_keys, pipe_manifest_key_as(&var, linked == 0));
     dev->pcache_unhit += !(fb.pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT_EXT);
     SDL_UnlockMutex(dev->pc_mx);
     job->out = (pipe_compiled){ .pipeline = pipeline, .layout = layout,
-                                .pc_stages = desc->push_const_size ? pcr.stageFlags : 0,
+                                .pc_stages = desc->push_const_size ? st.pcr.stageFlags : 0,
                                 .key = rhi_pc_variant_key(&var) };
     return 0;
 }
@@ -7604,10 +8170,14 @@ void rhi_env_write_guard(int begin)
 
 #define POOL_MAX_WORKERS 32
 
-/* One submitted job and what its run returned. */
+/* One submitted job and what its run returned, or one graphics pipeline
+ * library part to build (gpl non-NULL, job NULL). */
 typedef struct pool_item {
     struct pool_item   *next;
     rhi_compile_job    *job;
+    gpl_src            *gpl;       /* a library part's source, owned */
+    int                 gpl_part;
+    uint64_t            gpl_key;
     unsigned            flags;     /* RHI_COMPILE_* */
     rhi_pool_install_fn fn;        /* NULL: a precompile variant */
     void               *tag;
@@ -7625,12 +8195,96 @@ struct compile_pool {
     SDL_Thread    *thr[POOL_MAX_WORKERS];
     int            n;              /* worker threads; 0 runs jobs at submit */
     pool_item     *q_head, *q_tail;   /* queued */
+    pool_item     *l_head, *l_tail;   /* library parts queued, taken before q_head */
     pool_item     *s_head, *s_tail;   /* staged for the display owner */
-    unsigned       queued, running;
+    unsigned       queued, running;   /* both count library parts too */
     bool           stop;
     rhi_compile_pool_stats st;     /* under mx */
     uint64_t       run_ns;         /* under mx */
+    unsigned       libs_run;       /* library part items run, under mx */
+    uint64_t       libs_ns;        /* their run time, under mx */
 };
+
+/** @brief Free a library part item and its source.
+ *
+ * @param it The item. */
+static void gpl_item_free(pool_item *it)
+{
+    if (it->gpl) free(it->gpl->own);
+    free(it->gpl);
+    free(it);
+}
+
+/** @brief Mark a library part queued when no thread has claimed or queued it yet.
+ *
+ * Any thread.
+ * @param dev Device.
+ * @param key The part's key.
+ * @return true when the call inserted the entry, so its caller owes it a pool item. */
+static bool gpl_claim_new(rhi_device *dev, uint64_t key)
+{
+    bool inserted = false;
+    SDL_LockMutex(dev->gpl_mx);
+    const struct gpl_lib *e = gpl_entry(dev, key, &inserted);
+    SDL_UnlockMutex(dev->gpl_mx);
+    return e && inserted;
+}
+
+/** @brief Make the pool item that builds one library part of a job's pipeline from an owned copy of its source.
+ *
+ * @param job The job.
+ * @param var Its variant view.
+ * @param part The part.
+ * @param key The part's key.
+ * @param phase The submitter's create phase.
+ * @param rebuild Whether the submitter is in a live rebuild.
+ * @return The item, or NULL on allocation failure (the entry stays QUEUED,
+ *         and the link builds it). */
+static pool_item *gpl_item_new(const rhi_compile_job *job, const rhi_pc_variant *var, int part,
+                               uint64_t key, rhi_pipe_phase phase, bool rebuild)
+{
+    pool_item *it = calloc(1, sizeof *it);
+    gpl_src *src = it ? calloc(1, sizeof *src) : NULL;
+    if (!src || !gpl_src_of(job, var, part, true, src)) {
+        free(src);
+        free(it);
+        return NULL;
+    }
+    *it = (pool_item){ .gpl = src, .gpl_part = part, .gpl_key = key, .phase = phase,
+                       .rebuild = rebuild };
+    return it;
+}
+
+/** @brief Make one pool item per library part of a job's pipeline that no thread has claimed or queued yet, each entry marked queued.
+ *
+ * Display owner (a pool submit). The items run before any job on the pool
+ * (pool_worker), so a link that waits on a part waits only on a part some
+ * worker is building. A job off the library path gets none.
+ * @param dev Device.
+ * @param job The job about to be queued.
+ * @param phase The submitter's create phase.
+ * @param rebuild Whether the submitter is in a live rebuild.
+ * @return A list of items linked by next, or NULL. */
+static pool_item *gpl_items_for(rhi_device *dev, const rhi_compile_job *job, rhi_pipe_phase phase,
+                                bool rebuild)
+{
+    if (!pipe_uses_library(dev, &job->desc, job->vert_words || job->frag_words)) return NULL;
+    rhi_pc_variant var;
+    pipe_variant_view(dev, &job->desc, &job->info, job->variant, job->slot_contest, &var);
+    pipe_state st;
+    if (!pipe_state_fill(dev, &job->desc, &job->info, &var, &st)) return NULL;
+    uint64_t key[GPL_PARTS];
+    gpl_part_keys(dev, &st, &job->info, key);
+    pool_item *head = NULL;
+    for (int p = 0; p < GPL_PARTS; p++) {
+        pool_item *it = gpl_claim_new(dev, key[p])
+                            ? gpl_item_new(job, &var, p, key[p], phase, rebuild) : NULL;
+        if (!it) continue;
+        it->next = head;
+        head = it;
+    }
+    return head;
+}
 
 /** @brief Run one pool item: probe first when asked, compile on a miss, and destroy a variant's result.
  *
@@ -7643,6 +8297,13 @@ static void pool_run_item(rhi_device *dev, pool_item *it)
     t_pipe_phase = it->phase;
     t_in_rebuild = it->rebuild;
     const Uint64 t0 = SDL_GetTicksNS();  /* clock-guard: wall: worker run time for the pool report */
+    if (it->gpl) {
+        it->rc = gpl_acquire(dev, it->gpl_part, it->gpl_key, it->gpl) ? 0 : -1;
+        it->run_ns = SDL_GetTicksNS() - t0;  /* clock-guard: wall: worker run time for the pool report */
+        t_pipe_phase = RHI_PIPE_PHASE_AUTO;
+        t_in_rebuild = false;
+        return;
+    }
     int rc = 1;
     if (it->flags & RHI_COMPILE_PROBE) {
         t_pipe_phase = RHI_PIPE_PHASE_PROBE;
@@ -7667,6 +8328,13 @@ static void pool_run_item(rhi_device *dev, pool_item *it)
  * @param it The item, run. */
 static void pool_finish_locked(struct compile_pool *pl, pool_item *it)
 {
+    if (it->gpl) {
+        pl->libs_run++;
+        pl->libs_ns += it->run_ns;
+        gpl_item_free(it);
+        SDL_BroadcastCondition(pl->done);
+        return;
+    }
     pl->st.run++;
     pl->run_ns += it->run_ns;
     if (!it->fn) {
@@ -7693,11 +8361,18 @@ static int SDLCALL pool_worker(void *arg)
     struct compile_pool *pl = dev->cpool;
     SDL_LockMutex(pl->mx);
     for (;;) {
-        while (!pl->q_head && !pl->stop) SDL_WaitCondition(pl->work, pl->mx);
+        while (!pl->q_head && !pl->l_head && !pl->stop) SDL_WaitCondition(pl->work, pl->mx);
         if (pl->stop) break;
-        pool_item *it = pl->q_head;
-        pl->q_head = it->next;
-        if (!pl->q_head) pl->q_tail = NULL;
+        pool_item *it;
+        if (pl->l_head) {   /* library parts first: a link waits only on parts already taken */
+            it = pl->l_head;
+            pl->l_head = it->next;
+            if (!pl->l_head) pl->l_tail = NULL;
+        } else {
+            it = pl->q_head;
+            pl->q_head = it->next;
+            if (!pl->q_head) pl->q_tail = NULL;
+        }
         pl->queued--;
         pl->running++;
         SDL_UnlockMutex(pl->mx);
@@ -7791,13 +8466,21 @@ int rhi_compile_pool_submit(rhi_device *dev, rhi_compile_job *job, unsigned flag
         SDL_UnlockMutex(pl->mx);
         return 0;
     }
+    pool_item *libs = gpl_items_for(dev, job, it->phase, it->rebuild);
     SDL_LockMutex(pl->mx);
+    for (pool_item *l = libs, *next; l; l = next) {
+        next = l->next;
+        l->next = NULL;
+        if (pl->l_tail) pl->l_tail->next = l; else pl->l_head = l;
+        pl->l_tail = l;
+        pl->queued++;
+    }
     if (pl->q_tail) pl->q_tail->next = it; else pl->q_head = it;
     pl->q_tail = it;
     pl->queued++;
     pl->st.submitted++;
     if (pl->queued > pl->st.max_queued) pl->st.max_queued = pl->queued;
-    SDL_SignalCondition(pl->work);
+    if (libs) SDL_BroadcastCondition(pl->work); else SDL_SignalCondition(pl->work);
     SDL_UnlockMutex(pl->mx);
     return 0;
 }
@@ -7895,12 +8578,18 @@ void rhi_compile_pool_stop(rhi_device *dev)
         for (int i = 0; i < pl->n; i++) SDL_WaitThread(pl->thr[i], NULL);
         pl->st.cancelled += pool_cancel_list(dev, pl->q_head);
         pl->st.cancelled += pool_cancel_list(dev, pl->s_head);
-        pl->q_head = pl->q_tail = pl->s_head = pl->s_tail = NULL;
+        for (pool_item *l = pl->l_head, *next; l; l = next) {   /* their entries stay QUEUED */
+            next = l->next;
+            gpl_item_free(l);
+        }
+        pl->q_head = pl->q_tail = pl->s_head = pl->s_tail = pl->l_head = pl->l_tail = NULL;
         RHI_LOG("compile pool: stopped; %u workers, %u submitted, %u run (%.1f ms), %u staged, "
-                "variants %u created %u probe hits %u failed, %u cancelled, queue max %u\n",
+                "variants %u created %u probe hits %u failed, %u cancelled, queue max %u, "
+                "%u library parts run (%.1f ms)\n",
                 pl->st.workers, pl->st.submitted, pl->st.run, (double)pl->run_ns / 1e6,
                 pl->st.staged, pl->st.variant_created, pl->st.variant_probe_hits,
-                pl->st.variant_failed, pl->st.cancelled, pl->st.max_queued);
+                pl->st.variant_failed, pl->st.cancelled, pl->st.max_queued, pl->libs_run,
+                (double)pl->libs_ns / 1e6);
         dev->cpool_final = pl->st;
         dev->cpool_final.run_ms = (double)pl->run_ns / 1e6;
         dev->cpool = NULL;
@@ -8351,7 +9040,8 @@ static void walk_collect(rhi_device *dev, struct precompile_walk *w, rhi_pc_keys
     w->st.keys++;
     if (!dev->has_cache_control && dev->manifest_trusted) {
         SDL_LockMutex(dev->pc_mx);
-        const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key(&v));
+        const bool linked = pipe_uses_library(dev, &p->desc, p->vert_words || p->frag_words);
+        const int listed = rhi_pc_keyset_has(&dev->pc_keys, pipe_manifest_key_as(&v, linked));
         SDL_UnlockMutex(dev->pc_mx);
         if (listed) { w->st.manifest_skips++; return; }
     }

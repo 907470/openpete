@@ -15,6 +15,9 @@
 static const char *const k_phase_name[RHI_PC_PHASES] = {
     "bringup", "precompile", "rebuild", "first_use", "probe"
 };
+static const char *const k_kind_name[RHI_PC_KINDS] = {
+    "pipeline", "lib_preraster", "lib_fragment", "lib_output", "link"
+};
 static const char *const k_site_name[RHI_PIPE_SITES] = {
     "builtin", "terrain_cache", "builtin_lazy", "mod_postfx",
     "mod_material", "terrain_material", "rebuild"
@@ -38,6 +41,7 @@ static SDL_Mutex  *s_mx;
 static atomic_int  s_mx_init;     /* 0 none, 1 creating, 2 ready; release publishes s_mx */
 static SDL_AtomicInt s_visits[RHI_PIPE_SITES];
 static pc_tally    s_tally[RHI_PC_PHASES];
+static pc_tally    s_kind[RHI_PIPE_SITES][RHI_PC_KINDS];
 static pc_hitch    s_hitch[RHI_PIPE_SITES];
 static rhi_pc_create s_events[PC_EVENTS];
 static unsigned    s_event_n;
@@ -263,25 +267,37 @@ static void pc_hitch_add(const rhi_pc_create *c)
     s_event_n++;
 }
 
-void rhi_pc_record_create(const rhi_pc_create *c)
+/** @brief Add one create to a tally row.
+ *
+ * Caller holds the mutex.
+ * @param t The row.
+ * @param c The create. */
+static void pc_tally_add(pc_tally *t, const rhi_pc_create *c)
 {
-    if ((unsigned)c->phase >= RHI_PC_PHASES || (unsigned)c->site >= RHI_PIPE_SITES) return;
-    static const char *const k_fb[3] = { "unknown", "hit", "miss" };
-    pc_lock();
-    pc_tally *t = &s_tally[c->phase];
     t->creates++;
     t->hit += c->fb == RHI_PC_FB_HIT;
     t->miss += c->fb == RHI_PC_FB_MISS;
     t->unknown += c->fb == RHI_PC_FB_UNKNOWN;
     t->wall_ns += c->wall_ns;
     t->driver_ns += c->driver_ns;
+}
+
+void rhi_pc_record_create(const rhi_pc_create *c)
+{
+    if ((unsigned)c->phase >= RHI_PC_PHASES || (unsigned)c->site >= RHI_PIPE_SITES ||
+        (unsigned)c->kind >= RHI_PC_KINDS) return;
+    static const char *const k_fb[3] = { "unknown", "hit", "miss" };
+    pc_lock();
+    pc_tally_add(&s_tally[c->phase], c);
+    pc_tally_add(&s_kind[c->site][c->kind], c);
     if (c->phase == RHI_PC_PHASE_FIRST_USE || c->phase == RHI_PC_PHASE_REBUILD) pc_hitch_add(c);
     pc_unlock();
     if (rhi_pc_level() >= 2)
-        PC_LOG("pipe-create: phase=%s site=%s cache=%s wall_ms=%.3f driver_ms=%.3f "
+        PC_LOG("pipe-create: phase=%s site=%s kind=%s cache=%s wall_ms=%.3f driver_ms=%.3f "
                "thread=%s present=%llu\n", k_phase_name[c->phase], k_site_name[c->site],
-               k_fb[c->fb], (double)c->wall_ns / 1e6, (double)c->driver_ns / 1e6,
-               c->owner ? "owner" : "worker", (unsigned long long)c->present);
+               k_kind_name[c->kind], k_fb[c->fb], (double)c->wall_ns / 1e6,
+               (double)c->driver_ns / 1e6, c->owner ? "owner" : "worker",
+               (unsigned long long)c->present);
 }
 
 void rhi_pipe_site_visit(rhi_pipe_site site, int count)
@@ -322,6 +338,22 @@ static void pc_report_tally(void)
                k_phase_name[p], t->creates, t->hit, t->miss, t->unknown,
                (double)t->wall_ns / 1e6, (double)t->driver_ns / 1e6);
     }
+}
+
+/** @brief Print one line per site class and create kind that counted a create, every phase together.
+ *
+ * Caller holds the mutex. */
+static void pc_report_kinds(void)
+{
+    for (int s = 0; s < RHI_PIPE_SITES; s++)
+        for (int k = 0; k < RHI_PC_KINDS; k++) {
+            const pc_tally *t = &s_kind[s][k];
+            if (!t->creates) continue;
+            PC_LOG("pipe-kind: class=%s kind=%s creates=%u hit=%u miss=%u unknown=%u "
+                   "wall_ms=%.1f driver_ms=%.1f\n", k_site_name[s], k_kind_name[k], t->creates,
+                   t->hit, t->miss, t->unknown, (double)t->wall_ns / 1e6,
+                   (double)t->driver_ns / 1e6);
+        }
 }
 
 /** @brief Print one hitch line per site class with its engagement verdict, then the first events.
@@ -373,6 +405,7 @@ void rhi_pc_report(void)
     if (!rhi_pc_level()) return;
     pc_lock();
     pc_report_tally();
+    pc_report_kinds();
     pc_report_hitch();
     pc_report_census();
     pc_unlock();

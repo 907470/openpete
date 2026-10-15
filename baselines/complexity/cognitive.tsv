@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: b87de384903a56a22ed905d58105e36e88999a79
+# head: 9761684fb81b9e151aefcb9743458ea1604b39b6
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -78,8 +78,7 @@ core/renderer/native_terrain_cache.c	openpete_tercache_draw	32	0
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_begin	30	0	
 core/renderer/openpete_interp.c	openpete_interp_capture	27	0	
 core/rhi/rhi_vulkan.c	create_render_target_impl	33	0	
-core/rhi/rhi_vulkan.c	pick_physical_and_device	39	0	
-core/rhi/rhi_vulkan.c	pipeline_compile	28	0	
+core/rhi/rhi_vulkan.c	pick_physical_and_device	38	0	
 core/rhi/rhi_vulkan.c	pipeline_set_layouts	45	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	28	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	

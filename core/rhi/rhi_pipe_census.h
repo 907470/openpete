@@ -13,6 +13,8 @@
  *     deduped across bases on the full pipeline description, once with every
  *     specialization constant handed to a stage and once with only the
  *     constants its stages declare.
+ * Each create is also counted per site class and kind (a complete pipeline,
+ * one of the three graphics-pipeline-library parts, or a link of them).
  * The records are reported at device destruction when OPENPETE_PIPE_CENSUS
  * is set (2 adds one line per create). Every entry point is safe on any
  * thread: one mutex guards the records. */
@@ -42,6 +44,18 @@ typedef enum {
     RHI_PC_FB_MISS              /* valid, hit bit clear                      */
 } rhi_pc_feedback;
 
+/* What one create builds: a complete pipeline, a graphics pipeline library
+ * (VK_EXT_graphics_pipeline_library) of one part, or a complete pipeline
+ * linked from libraries. */
+typedef enum {
+    RHI_PC_KIND_PIPELINE = 0,   /* a complete pipeline from its shader stages  */
+    RHI_PC_KIND_LIB_PRERASTER,  /* library: vertex input + pre-rasterization   */
+    RHI_PC_KIND_LIB_FRAGMENT,   /* library: fragment shader state              */
+    RHI_PC_KIND_LIB_OUTPUT,     /* library: fragment output interface          */
+    RHI_PC_KIND_LINK,           /* a complete pipeline linked from libraries   */
+    RHI_PC_KINDS
+} rhi_pc_kind;
+
 /* One variant's create info, reduced to the fields the dedupe keys read. */
 typedef struct {
     uint64_t desc_hash;     /* rhi_pc_desc_hash of the pipeline's desc       */
@@ -57,6 +71,7 @@ typedef struct {
 typedef struct {
     rhi_pc_phase    phase;
     rhi_pipe_site   site;
+    rhi_pc_kind     kind;
     rhi_pc_feedback fb;
     bool            owner;          /* ran on the display owner                */
     uint64_t        present;        /* frame serial of the present it delayed  */
@@ -144,7 +159,7 @@ void rhi_pc_keyset_free(rhi_pc_keyset *s);
  * @param nv Their count (at most 8). */
 void rhi_pc_add_base(rhi_pipe_site site, const rhi_pc_variant *v, int nv);
 
-/** @brief Count one pipeline create in the tally and, in the first-use and rebuild phases, in the hitch metric.
+/** @brief Count one pipeline create in the tally, the per-kind tally and, in the first-use and rebuild phases, in the hitch metric.
  *
  * At OPENPETE_PIPE_CENSUS=2 the create is also logged on one line.
  * @param c The create. */
@@ -158,7 +173,7 @@ void rhi_pc_rebuild_visit(void);
  * @return 0 off, 1 the end-of-run report, 2 the report plus one line per create. */
 int rhi_pc_level(void);
 
-/** @brief Print the tally, the hitch metric with each class's engagement verdict, and the census row.
+/** @brief Print the tally, the per-kind tally, the hitch metric with each class's engagement verdict, and the census row.
  *
  * Prints nothing unless rhi_pc_level is nonzero. */
 void rhi_pc_report(void);
