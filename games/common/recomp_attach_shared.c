@@ -213,7 +213,7 @@ static const openpete_recomp_module* rebuild_module(const char* path,
                         "from your disc\n", *why);
     struct build_task bt = { disc_path, path };
     *why = NULL;
-    if (openpete_launcher_run_task(build_task_fn, &bt) != 0) {
+    if (openpete_launcher_run_task_exclusive(build_task_fn, &bt) != 0) {
         *why = "could not be rebuilt";
         return NULL;
     }

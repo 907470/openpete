@@ -4743,41 +4743,9 @@ static int shell_family_create(rhi_device* dev, const nr_shell_src* src, int n,
     return k;
 }
 
-/** @brief Build the moby front-shell and intruder pre-pass pipelines, their vertex buffer and the opaque ACTOR twins, when the shell is on.
+/** @brief Log a front shell nr_eager_twins built without its pre-pass pipelines or buffer, once their creates have installed.
  *
- * The pre-pass draws the blended faces of every front-shell record through
- * the scene vertex stage (psx_scene.vert), so its depth is the main pass's
- * own for the same faces. The pipelines are created now or at the end of
- * the open eager batch. Nothing is built with OPENPETE_MOBY_SHELL=0 or
- * without the rank pass; a missing pre-pass pipeline or buffer
- * (shell_pipes_report) leaves every ACTOR draw stock
- * (native_moby_shell_pass never draws).
- * @param dev Device.
- * @param src The opaque ACTOR pipelines and their descriptions.
- * @param n Entries in @p src.
- * @param rank_ok Nonzero when the rank pass pipeline exists.
- * @return 1 when the shell was built, 0 when nothing was. */
-static int shell_pipes_create(rhi_device* dev, const nr_shell_src* src, int n, int rank_ok)
-{
-    if (!moby_shell_on() || !rank_ok) return 0;
-    s_nr.shell_twin_n = shell_family_create(dev, src, n, s_nr.shell_twins);
-    const rhi_pipeline_desc shell_desc = {
-        .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .push_const_size = 0,
-    };
-    const rhi_pipeline_desc intr_desc = {
-        .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell_intr.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .push_const_size = 0, .pair_set56 = true,
-    };
-    nr_eager_pipe(dev, &shell_desc, &s_nr.moby_shell_pipe);
-    nr_eager_pipe(dev, &intr_desc, &s_nr.moby_shell_intr_pipe);
-    s_nr.moby_shell_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * 768u, 4u);
-    return 1;
-}
-
-/** @brief Log a front shell shell_pipes_create built without its pre-pass pipelines or buffer, once their creates have installed.
- *
- * @param built shell_pipes_create's result. */
+ * @param built Nonzero when the front shell was built. */
 static void shell_pipes_report(int built)
 {
     if (built && (!s_nr.moby_shell_pipe || !s_nr.moby_shell_intr_pipe || !s_nr.moby_shell_vb))
@@ -4958,13 +4926,18 @@ static void nr_precompile_pump(void* ctx) {
     nr_precompile_panel(done, s_pre.held_total);
 }
 
+static void nr_ahead_end(rhi_device *dev);
+
 /** @brief Open the compile stage on the renderer's device before bring-up's first pipeline create.
  *
- * Latches nr_precompile_wanted and starts the panel wait; the harness
+ * Ends the launcher's precompile first (nr_ahead_end), so bring-up's
+ * creates queue behind at most the ahead jobs the workers hold. Latches
+ * nr_precompile_wanted and starts the panel wait; the harness
  * variable OPENPETE_PRECOMPILE_PANEL_MS, read here, replaces the wait.
  * @param dev The renderer's device.
  * @param name The game's display name for the screen's subtitle; NULL for none. */
 static void nr_compile_stage_begin(rhi_device *dev, const char *name) {
+    nr_ahead_end(dev);
     memset(&s_pre, 0, sizeof s_pre);
     s_pre.dev = dev;
     s_pre.name = name;
@@ -5012,6 +4985,764 @@ static void nr_eager_batch(int open) {
 static void nr_eager_pipe(rhi_device *dev, const rhi_pipeline_desc *desc, rhi_pipeline **out) {
     *out = NULL;
     (void)rhi_create_pipeline_slot(dev, desc, NULL, 0, NULL, 0, (void **)out, NULL);
+}
+
+/* The descriptions of bring-up's eager pipelines (nr_eager_descs_init). */
+typedef struct {
+    rhi_pipeline_desc blit_desc;
+    rhi_pipeline_desc vram_desc;
+    rhi_pipeline_desc gouraud_desc;
+    rhi_pipeline_desc gouraud_mark_desc;
+    rhi_pipeline_desc gouraud_fill_desc;
+    rhi_pipeline_desc gouraud_blend_desc;
+    rhi_pipeline_desc gouraud_sub_desc;
+    rhi_pipeline_desc gouraud_sub_ztest_desc;
+    rhi_pipeline_desc gouraud_sub_fade_desc;
+    rhi_pipeline_desc prepass_desc;
+    rhi_pipeline_desc prepass_depth_desc;
+    rhi_pipeline_desc prepass_tex_desc;
+    rhi_pipeline_desc terrain_key_desc;
+    rhi_pipeline_desc gouraud_add_desc;
+    rhi_pipeline_desc gouraud_noz_desc;
+    rhi_pipeline_desc portal_mask_desc;
+    rhi_pipeline_desc scene_tex_desc;
+    rhi_pipeline_desc scene_tex_mark_desc;
+    rhi_pipeline_desc scene_tex_blend_desc;
+    rhi_pipeline_desc scene_tex_add_desc;
+    rhi_pipeline_desc scene_tex_qadd_desc;
+    rhi_pipeline_desc gouraud_qadd_desc;
+    rhi_pipeline_desc scene_tex_sub_desc;
+    rhi_pipeline_desc scene_tex_sub_decal_desc;
+    rhi_pipeline_desc gouraud_hud_desc;
+    rhi_pipeline_desc scene_tex_hud_desc;
+    rhi_pipeline_desc hd_tex_desc;
+    rhi_pipeline_desc hd_cutout_desc;
+    rhi_pipeline_desc hd_cutout_mark_desc;
+    rhi_pipeline_desc gouraud_punch_desc;
+    rhi_pipeline_desc scene_tex_punch_desc;
+    rhi_pipeline_desc hd_cutout_punch_desc;
+    rhi_pipeline_desc hd_scene_blend_desc;
+    rhi_pipeline_desc hd_scene_add_desc;
+    rhi_pipeline_desc freeze_overlay_desc;
+    rhi_pipeline_desc freeze_plain_desc;
+    rhi_pipeline_desc resolve_desc;
+    rhi_pipeline_desc occl_desc;
+    rhi_pipeline_desc ovl_resolve_desc;
+    rhi_pipeline_desc terrain_key_tex_desc;
+    rhi_pipeline_desc moby_rank_desc;
+    rhi_pipeline_desc moby_rank_cutout_desc;
+    rhi_pipeline_desc moby_shell_desc;
+    rhi_pipeline_desc moby_shell_intr_desc;
+} nr_eager_descs;
+
+/** @brief Fill the descriptions of bring-up's eager pipelines.
+ *
+ * Every field is a constant of the build: no option, game or device state
+ * enters a description, so the launcher describes the same pipelines bring-up
+ * creates before any game is picked.
+ * @param d Receives the descriptions. */
+static void nr_eager_descs_init(nr_eager_descs *d)
+{
+    d->blit_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */
+        .frag_spv = "blit.frag.spv",       /* sampler2D at set 0 */
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 0,
+    };
+    d->vram_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "psx_sample.frag.spv", /* usampler2D + material push const */
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
+    /* Gouraud pipeline for the native 3D scene: vertex-coloured, untextured
+     * (quad.vert/quad.frag) - exactly the cyclorama dome's shading. */
+    d->gouraud_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .blend = RHI_BLEND_NONE, .depth_test = true,  /* sort actors near->far */
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
+    };
+    /* WORLD-group variants that also stencil-MARK their coverage: the
+     * WORLD-opaque group rasterizes normally AND writes stencil=1 wherever a
+     * fragment passes the depth test, defining "pixels real world geometry
+     * covered". The terrain LP hole-fill layer (WORLD_FILL, TEST_ZERO below)
+     * then paints only the uncovered pixels - LP<->HP T-junction seams - and can
+     * never poke through the HP. The SKY category (cyclorama dome) deliberately
+     * does NOT use these: the sky showing through a seam is exactly what the
+     * fill must repaint. */
+    d->gouraud_mark_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
+    };
+    /* Hole-fill pipe (WORLD_FILL): opaque untextured gouraud, depth-tested and
+     * depth-written at TRUE depth, gated on stencil==0 (only pixels the WORLD
+     * mark left uncovered). LP is untextured, so no textured variant needed. */
+    d->gouraud_fill_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_TEST_ZERO,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* Semi-transparent UNTEXTURED gouraud pipeline: the Spyro silhouette
+     * shadow (func_80059A48) is a POLY_G3 strip with ABE set (ABR mode 0,
+     * (B+F)/2) - untextured, so it can't go through the textured-blend pipe.
+     * RHI_BLEND_ALPHA = src*a + dst*(1-a); the feeder sets vertex alpha = 128
+     * (~0.5) so the result is (B+F)/2, reproducing mode 0. depth_write_off: the
+     * shadow tests against opaque geometry (a wall/ground occludes it) but
+     * never occludes another transparent layer. Same quad.vert/quad.frag as the
+     * opaque gouraud pipe - quad.frag emits the full vertex rgba incl. alpha. */
+    d->gouraud_blend_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
+        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
+    };
+    /* Subtractive UNTEXTURED gouraud pipeline (the Spyro silhouette
+     * shadow): POLY_G3 with ABR mode 2 (dst = B - F). RHI_BLEND_SUBTRACT
+     * reverse-subtracts the vertex colour from the framebuffer, darkening the
+     * ground (the shadow grey is subtracted; black vertices leave it
+     * unchanged).
+     * DEPTH-AWARE DECAL: shadow_decal.frag samples the WORLD-opaque pre-pass
+     * depth (opaque_depth, set 0) and rejects only pixels whose terrain stands
+     * ABOVE the shadow's ground plane by more than wall_height (a wall/ledge)
+     * - replacing the retired ×0.70 view-Z pull, which punched through walls.
+     * depth_test = false: the shader OWNS occlusion, so the flat fan never
+     * self-culls against its own bumpy/slanted ground (the artifact the pull
+     * used to mask). */
+    d->gouraud_sub_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "shadow_decal.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
+        /* set 0 = opaque_depth; set 1 = VRAM (unread) + the terrain key
+         * image; set 2 = the player fan's footprint block */
+        .uses_vram = true, .set1_vram_depth = true, .uniform_set2 = true,
+        .push_const_size = sizeof(shadow_decal_pc),
+    };
+    /* Fallback for a device whose depth format is not sampleable (the pre-pass
+     * RT can't be created): the pre-decal behaviour - plain depth test + the
+     * hardware depth bias (correct against walls, may slice on steep ground). */
+    d->gouraud_sub_ztest_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
+        .depth_bias = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* The full-screen mode-2 fade (func_800190D4) is also ABR-2 subtractive but
+     * is NOT a ground decal - it tints the whole frame. It used to share the
+     * shadow pipe; now that the shadow pipe is the depth-aware decal (which
+     * would sample opaque_depth and discard), the fade gets its own plain
+     * subtractive pipe (quad.frag, depth-test off - the z=0 quad passed the
+     * old LEQUAL test everywhere anyway). */
+    d->gouraud_sub_fade_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* WORLD-opaque depth PRE-PASS pipe: rasterize the opaque world geometry
+     * into the depth-sampled RT that shadow_decal.frag reads. prepass.vert
+     * stores TRUE PERSPECTIVE depth (z = 1 - 1/vz, screen-affine for planes)
+     * so the decal's neighbour-texel NORMAL reconstruction is exact - the
+     * canonical vz/(vz+4096) curve interpolates screen-linearly with a
+     * distorted local gradient across large terrain tris (read flat floors as
+     * fronto-parallel). The fragment stage, terrain_prepass.frag (shared with
+     * the retained terrain cache's pre-pass), also writes its depth packed to
+     * 24 bits into the colour attachment; this pipe draws the backstop. The
+     * WORLD occluders draw with colour on through the cutout pipe below, and
+     * the depth pipe redraws textured WORLD faces over their whole footprint
+     * and draws the WORLD_FILL backing with colour off, so the colour
+     * attachment holds the depth of what the WORLD faces paint, which the
+     * occlusion grid reduces, while the depth aspect (the decal's) holds the
+     * full footprints and the backing. */
+    d->prepass_desc = (rhi_pipeline_desc){
+        .vert_spv = "prepass.vert.spv",
+        .frag_spv = "terrain_prepass.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    d->prepass_depth_desc = d->prepass_desc;
+    d->prepass_depth_desc.color_write_off = true;
+    /* WORLD colour run, per material run: prepass_cutout.frag samples the
+     * texel the scene draw does and drops the transparent texels it
+     * discards, so the colour attachment marks an occluder only where a
+     * face paints. */
+    d->prepass_tex_desc = d->prepass_desc;
+    d->prepass_tex_desc.frag_spv = "prepass_cutout.frag.spv";
+    d->prepass_tex_desc.uses_vram = true;
+    d->prepass_tex_desc.push_const_size = sizeof(psx_material);
+    /* Terrain HP KEY pass: rasterise opaque HP terrain with depth = the
+     * og OT key (true view-Z + authored slot offset) into a private depth
+     * image; the scene's LP fragments key-contest it (quad_key.frag /
+     * psx_scene_key.frag). Rendered per scene TARGET at that target's size so
+     * texelFetch(gl_FragCoord.xy) aligns exactly. */
+    d->terrain_key_desc = (rhi_pipeline_desc){
+        .vert_spv = "terrain_key.vert.spv",
+        .frag_spv = "key_ident.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* Additive UNTEXTURED gouraud pipeline (the glow rings): POLY_G3 with
+     * ABR mode 1 (dst = B + F). RHI_BLEND_ADD = src ONE + dst ONE. The glow is a
+     * gouraud fan, bright centre colour fading to black ring vertices, so the
+     * additive accumulation peaks at the centre and vanishes at the edge - the
+     * classic halo. depth_write_off like the other transparent passes. */
+    d->gouraud_add_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
+        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
+    };
+    /* Opaque UNTEXTURED gouraud, depth-test ON but depth-WRITE OFF: the portal-sky
+     * previews (portal.c, OPENPETE_SCENE_PORTAL_CYCLORAMA). They are a far
+     * background seen through the arch window - the arch stone's depth (written by
+     * the WORLD group, drawn first) must occlude them, but they must never write
+     * depth, so the actors/player drawn afterward are never per-pixel cut by the
+     * portal sky as Spyro flies into/through the portal. Same quad.vert/quad.frag
+     * as the opaque pipe; only the depth-write differs. */
+    d->gouraud_noz_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        /* Portal-sky colours - depth-TEST ON (LEQUAL at the
+         * portal-plane z, write OFF) + stencil TEST, drawn AFTER the ACTOR
+         * group. The depth test is what lets the sky repaint over mobys
+         * BEHIND the plane while losing to geometry/mobys in front of it;
+         * the stencil mask confines it to the aperture footprint. (A fully
+         * depth-free variant was tried and replaced - with a depth STAMP it
+         * clipped Spyro mid-entry, and without one it needed the stamp.) */
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_write_off = true,
+        .stencil = RHI_STENCIL_TEST,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* The portal aperture mask: rasterize the portal's sky footprint
+     * invisibly (colour-write-off), depth-TESTED against the world written by
+     * the WORLD group (depth-write off, so the mask pass can't perturb it),
+     * marking stencil=1 where the sky is actually visible (arch stone / a
+     * nearer wall punches the mask out via depth-fail). Carries the decal
+     * depth-bias so the coincident inner-frame tie-break lives HERE, in the
+     * invisible pass, not in the colours. */
+    d->portal_mask_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_write_off = true,
+        .depth_bias = true, .stencil = RHI_STENCIL_MARK, .color_write_off = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* Textured scene pipeline: samples the PSX VRAM mirror via the ported
+     * decoder + per-draw material, modulates by the vertex colour (tex*col/128).
+     * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
+    d->scene_tex_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
+        .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
+    };
+    /* Textured WORLD-group stencil-MARK variant - most terrain is
+     * textured, so the coverage mark must come from this pipe too. */
+    d->scene_tex_mark_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
+        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
+    };
+    /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
+     * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha.
+     * depth_write_off: transparent tris Z-TEST against opaque but do NOT write
+     * depth, so they never occlude each other (ordering among them needs a
+     * back-to-front sort on top of this). */
+    d->scene_tex_blend_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
+        .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
+        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
+    };
+    /* Additive (ABR mode 1, dst = B + F) textured pipeline: the first
+     * additive consumer is Spyro's flame (func_80058D64 / r_flame.s), a textured
+     * gouraud quad ribbon whose tpage selects ABR=1. RHI_BLEND_ADD = src ONE +
+     * dst ONE; depth_write_off so the glow tests against opaque geometry (a wall
+     * occludes the flame) but additive layers never occlude each other. The
+     * grey-ramp vertex colour modulates the flame sprite (tex*col/128) and the
+     * result accumulates into the framebuffer - bright core, never darkens. */
+    d->scene_tex_add_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
+        .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
+        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
+    };
+    /* Quarter-additive (ABR mode 3, dst = B + F/4) pipelines: the faint-overlay
+     * class - glass, the butterfly-bottle panes. The modulated source is scaled
+     * by the pipeline's blend constant, so the layer tints what is behind it
+     * instead of blowing it out (full additive) or blacking it out (the
+     * reverse-subtract an ABR-2 pipe would apply). depth_write_off with the
+     * other transparent classes. */
+    d->scene_tex_qadd_desc = d->scene_tex_add_desc;
+    d->scene_tex_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
+    d->gouraud_qadd_desc = d->gouraud_add_desc;
+    d->gouraud_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
+    /* Subtractive (ABR mode 2, dst = B - F) textured pipeline: moby
+     * shadows (func_80059F8C), a textured FT3 fan whose tpage selects ABR=2.
+     * RHI_BLEND_SUBTRACT reverse-subtracts the modulated shadow sprite from the
+     * framebuffer (tex*col/128 darkens the ground), depth_write_off so the
+     * shadow tests against opaque geometry but never occludes another layer. */
+    d->scene_tex_sub_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
+        .depth_bias = true, /* shadow decal: hardware coplanar tie-break */
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
+    /* DEPTH-AWARE moby-shadow decal (the same fix Spyro's silhouette shadow got,
+     * textured): shadow_decal_tex.frag samples the shared WORLD-opaque pre-pass
+     * depth (opaque_depth, set 0) AND the shadow-sprite VRAM (u_vram, set 1),
+     * rejecting per pixel the wall / steep-face / raised-in-front terrain a flat
+     * fan can't separate with a plain depth test. depth_test OFF: the shader OWNS
+     * occlusion, so the flat fan never Z-fights the slanted/bumpy ground it drapes.
+     * Preferred over scene_tex_sub_desc whenever the depth pre-pass is available;
+     * NULL (unsupported device) falls back to it. */
+    d->scene_tex_sub_decal_desc = (rhi_pipeline_desc){
+        .vert_spv = "shadow_decal_tex.vert.spv",
+        .frag_spv = "shadow_decal_tex.frag.spv",
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
+        /* set 0 = opaque_depth; set 1 = VRAM + the terrain key image */
+        .uses_vram = true, .set1_vram_depth = true,
+        .push_const_size = sizeof(shadow_decal_tex_pc),
+    };
+    /* HUD overlay pipelines (depth_test = false): HUD/UI mobys are a 2D overlay
+     * drawn LAST, ignoring the depth buffer so they sit on top of all world/actor
+     * geometry regardless of their world-space view-Z (the PSX draws HUD in a
+     * separate near-OT pass). Painter's order = submission order. One untextured
+     * (gouraud) + one textured (VRAM sampler), mirroring the opaque pair.
+     *
+     * The untextured HUD pipe is a blend family (blend_family_create sets
+     * .blend per member). Entry 0 draws the glyphs and the letterbox bars.
+     * The semi-transparent 2D panels (0x2A POLY_F4) draw through the member of
+     * the ABR their DR_MODE selects: ABR 0 (B+F)/2 is the alpha member at
+     * vertex alpha 0x80 (quad.frag emits the full vertex rgba); ABR 2 (B-F) is
+     * the reverse-subtract member, which darkens the framebuffer by the box
+     * colour (the in-game shaded box behind HUD text, func_8001860C, and the
+     * pause/inventory panel, func_8001A40C, both emit their F4 under
+     * SetDrawMode(getTPage(0, 2, ..))); ABR 1 and 3 are the additive and
+     * quarter-additive members. The subtract member also draws the menu and
+     * toast panels. */
+    d->gouraud_hud_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    /* Textured HUD layer: the screen-space 2D sprites and quads. A 2D
+     * primitive carries its own semi-transparency bit and the ABR of its
+     * texture page, so the layer is a family, one pipe per texel STP
+     * selection and blend class (blend_family_create sets .blend and
+     * .texel_stp_select per member; entry 0 is the opaque pipe). */
+    d->scene_tex_hud_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "psx_scene.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
+    /* HD texture-replacement pipe:
+     * samples a host RGBA8 replacement (hd_tex.frag) with real per-texel alpha
+     * instead of the PSX VRAM decode. Depth OFF (the target is a HUD-layer
+     * 2D quad); push constants carry the replaced texel box. */
+    d->hd_tex_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
+    };
+    /* Opaque-scene HD replacement: depth-tested cutout (true blending on
+     * opaque groups would break Z ordering); the MARK twin keeps the
+     * hole-fill stencil coverage intact when replacing WORLD-group runs. */
+    d->hd_cutout_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
+    };
+    d->hd_cutout_mark_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .stencil = RHI_STENCIL_MARK,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
+    };
+    /* Dragon-rescue front pass, step 1 of 2 - the DEPTH PUNCH twins of the
+     * three ACTOR_FRONT opaque pipes: same shaders (so the same fragments
+     * survive the key/cutout discards), colour writes off, depth compare
+     * ALWAYS. Rasterizing the actors through these replaces the stored depth
+     * on exactly the pixels they cover; the normal draw that follows then wins
+     * over terrain it interpenetrates, while every pixel the actors do NOT
+     * cover keeps its true depth for the transparent groups drawn later. */
+    d->gouraud_punch_desc = (rhi_pipeline_desc){
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad_key.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
+        .color_write_off = true,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
+    };
+    d->scene_tex_punch_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "psx_scene_key.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
+        .color_write_off = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
+    };
+    d->hd_cutout_punch_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
+        .color_write_off = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
+    };
+    /* HD twins of the transparent scene pipes: alpha (ABR 0) and
+     * additive (ABR 1) - depth-tested, no depth write, mirroring their SD
+     * counterparts. STP encoding: dumps bake STP texels at alpha 128, so
+     * src-over on the alpha pipe reproduces (B+F)/2 while non-STP texels
+     * stay opaque. The SUBTRACTIVE group keeps SD (its draws depend on the
+     * caller's dynamic depth-bias state, which an HD rebind would
+     * invalidate - and shadow-fan replacement is out of scope). */
+    d->hd_scene_blend_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
+    };
+    d->hd_scene_add_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex.frag.spv",
+        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
+        .uses_vram = true, .push_const_size = sizeof(hd_pc),
+    };
+    d->freeze_overlay_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "freeze_overlay.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 0,
+    };
+    /* Retained-framebuffer freeze backdrop: the same full-panel quad over the same
+     * snapshot, drawn through blit.frag so the frozen frame reaches the screen
+     * unaltered (the game applied no CLUT and no tint - it simply did not clear). */
+    d->freeze_plain_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "blit.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 0,
+    };
+    /* SSAA resolve pipeline (--ssaa N): samples the supersampled scene RT (set 0)
+     * and box-averages the N×N block in linear light into the 1× offscreen
+     * (resolve.frag). No depth, no blend; the ssaa factor rides a push constant. */
+    d->resolve_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "resolve.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = sizeof(int),
+    };
+    /* Occlusion-grid downsample (moby occlusion culling): reduces the WORLD-
+     * opaque depth pre-pass to a coarse conservative farthest-depth grid the
+     * CPU reads back to cull fully-hidden mobys before re-extraction. Optional
+     * (graceful fallback: no grid -> no culling). */
+    d->occl_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "occl_downsample.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 4 * sizeof(int),
+    };
+    /* FPS-overlay supersample resolve: like resolve_desc but alpha-aware
+     * (overlay_resolve.frag) and alpha-blended, to composite the downsampled
+     * glyphs over the scene. Optional - draw_perf_overlay falls back to a direct
+     * 1× draw if this (or ovl_quad_vb) didn't come up. */
+    d->ovl_resolve_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "overlay_resolve.frag.spv",
+        .blend = RHI_BLEND_ALPHA, .depth_test = false,
+        .uses_vram = true, .push_const_size = 2 * sizeof(int),   /* ssaa, outline */
+    };
+    /* Alpha-aware key stage for TEXTURED keyed faces: same key depth as
+     * terrain_key_desc, but the fragment samples the face's PSX texels and
+     * drops the p==0 transparent ones, so a face's og key occupies exactly
+     * the pixels its opaque texels paint. NULL degrades to the flat pipe
+     * (full-footprint keys, the pre-cutout behaviour). */
+    d->terrain_key_tex_desc = (rhi_pipeline_desc){
+        .vert_spv = "terrain_key.vert.spv",
+        .frag_spv = "psx_key_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
+        .uses_vram = true, .uses_vram2 = true,   /* set 1: drain records */
+        .push_const_size = sizeof(psx_material),
+    };
+    /* Moby RANK pass (same-moby painter select): rasterise ranked moby faces
+     * with depth = their og OT walk rank into an RGBA8 (rank, ordinal) image;
+     * ranked scene fragments discard where a LATER-ranked face of the SAME
+     * moby covers the pixel. Optional (NULL -> rank image stays cleared, every
+     * ranked face decodes "no cover" and resolves at true depth). */
+    d->moby_rank_desc = (rhi_pipeline_desc){
+        .vert_spv = "moby_rank.vert.spv",
+        .frag_spv = "moby_rank.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
+        .uses_vram = false, .push_const_size = 0,
+    };
+    d->moby_rank_cutout_desc = (rhi_pipeline_desc){
+        .vert_spv = "moby_rank.vert.spv",
+        .frag_spv = "moby_rank_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
+        .uses_vram = true, .push_const_size = sizeof(psx_material),
+    };
+    /* The moby front-shell pre-pass: the blended faces of every front-shell
+     * record through the scene vertex stage (psx_scene.vert), so its depth is
+     * the main pass's own for the same faces; and the intruder pre-pass. */
+    d->moby_shell_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .push_const_size = 0,
+    };
+    d->moby_shell_intr_desc = (rhi_pipeline_desc){
+        .vert_spv = "psx_scene.vert.spv", .frag_spv = "moby_shell_intr.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .push_const_size = 0, .pair_set56 = true,
+    };
+}
+
+/* Bring-up's eager pipelines (nr_eager_core); a member is NULL when its
+ * create failed or its prerequisite is missing. */
+typedef struct {
+    rhi_pipeline *blit_pipe;
+    rhi_pipeline *vram_pipe;
+    rhi_pipeline *gouraud_pipe;
+    rhi_pipeline *gouraud_blend_pipe;
+    rhi_pipeline *gouraud_sub_pipe;
+    rhi_pipeline *gouraud_sub_ztest_pipe;
+    rhi_pipeline *gouraud_sub_fade_pipe;
+    rhi_pipeline *prepass_pipe;
+    rhi_pipeline *prepass_depth_pipe;
+    rhi_pipeline *prepass_tex_pipe;
+    rhi_pipeline *gouraud_add_pipe;
+    rhi_pipeline *gouraud_noz_pipe;
+    rhi_pipeline *portal_mask_pipe;
+    rhi_pipeline *scene_tex_pipe;
+    rhi_pipeline *scene_tex_blend_pipe;
+    rhi_pipeline *scene_tex_add_pipe;
+    rhi_pipeline *scene_tex_qadd_pipe;
+    rhi_pipeline *gouraud_qadd_pipe;
+    rhi_pipeline *scene_tex_sub_pipe;
+    rhi_pipeline *scene_tex_sub_decal_pipe;
+    rhi_pipeline *hd_tex_pipe;
+    rhi_pipeline *hd_cutout_pipe;
+    rhi_pipeline *hd_cutout_mark_pipe;
+    rhi_pipeline *gouraud_punch_pipe;
+    rhi_pipeline *scene_tex_punch_pipe;
+    rhi_pipeline *hd_cutout_punch_pipe;
+    rhi_pipeline *hd_scene_blend_pipe;
+    rhi_pipeline *hd_scene_add_pipe;
+    rhi_pipeline *freeze_overlay_pipe;
+    rhi_pipeline *freeze_plain_pipe;
+    rhi_pipeline *resolve_pipe;
+    rhi_pipeline *ovl_resolve_pipe;
+    rhi_pipeline *occl_pipe;
+    rhi_pipeline *gouraud_mark_pipe;
+    rhi_pipeline *scene_tex_mark_pipe;
+    rhi_pipeline *gouraud_fill_pipe;
+    rhi_pipeline *terrain_key_pipe;
+    rhi_pipeline *terrain_key_tex_pipe;
+    rhi_pipeline *moby_rank_pipe;
+    rhi_pipeline *moby_rank_cutout_pipe;
+    rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES];
+    rhi_pipeline *scene_tex_hud_pipes[NR_HUD_TEX_PIPES];
+} nr_eager_set;
+
+
+/* One eager pipeline of the first batch: its description and its member,
+ * as offsets into nr_eager_descs and nr_eager_set. */
+typedef struct { size_t desc, pipe; } nr_eager_row;
+#define NR_EAGER_ROW(n) { offsetof(nr_eager_descs, n##_desc), offsetof(nr_eager_set, n##_pipe) }
+
+/* The first batch before the HUD families, in create order. */
+static const nr_eager_row k_eager_first[] = {
+    NR_EAGER_ROW(blit), NR_EAGER_ROW(vram), NR_EAGER_ROW(gouraud), NR_EAGER_ROW(gouraud_blend),
+    NR_EAGER_ROW(gouraud_sub), NR_EAGER_ROW(gouraud_sub_ztest), NR_EAGER_ROW(gouraud_sub_fade),
+    NR_EAGER_ROW(prepass), NR_EAGER_ROW(prepass_depth), NR_EAGER_ROW(prepass_tex),
+    NR_EAGER_ROW(gouraud_add), NR_EAGER_ROW(gouraud_noz), NR_EAGER_ROW(portal_mask),
+    NR_EAGER_ROW(scene_tex), NR_EAGER_ROW(scene_tex_blend), NR_EAGER_ROW(scene_tex_add),
+    NR_EAGER_ROW(scene_tex_qadd), NR_EAGER_ROW(gouraud_qadd), NR_EAGER_ROW(scene_tex_sub),
+    NR_EAGER_ROW(scene_tex_sub_decal),
+};
+/* The first batch after the HUD families, in create order. The HD pipes,
+ * the overlay resolve, the occlusion downsample, the hole-fill set and the
+ * key pass are optional: NULL turns their feature off. */
+static const nr_eager_row k_eager_rest[] = {
+    NR_EAGER_ROW(hd_tex), NR_EAGER_ROW(hd_cutout), NR_EAGER_ROW(hd_cutout_mark),
+    NR_EAGER_ROW(gouraud_punch), NR_EAGER_ROW(scene_tex_punch), NR_EAGER_ROW(hd_cutout_punch),
+    NR_EAGER_ROW(hd_scene_blend), NR_EAGER_ROW(hd_scene_add), NR_EAGER_ROW(freeze_overlay),
+    NR_EAGER_ROW(freeze_plain), NR_EAGER_ROW(resolve), NR_EAGER_ROW(ovl_resolve),
+    NR_EAGER_ROW(occl), NR_EAGER_ROW(gouraud_mark), NR_EAGER_ROW(scene_tex_mark),
+    NR_EAGER_ROW(gouraud_fill), NR_EAGER_ROW(terrain_key),
+};
+
+/** @brief Create the eager pipelines of a row table, now or at the end of the open eager batch.
+ *
+ * @param dev Device.
+ * @param d The descriptions.
+ * @param p Receives the pipelines.
+ * @param rows The rows.
+ * @param n Their count. */
+static void nr_eager_rows(rhi_device *dev, const nr_eager_descs *d, nr_eager_set *p,
+                          const nr_eager_row *rows, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        nr_eager_pipe(dev, (const rhi_pipeline_desc *)((const char *)d + rows[i].desc),
+                      (rhi_pipeline **)((char *)p + rows[i].pipe));
+}
+
+/** @brief Drop the first batch's partial features once its creates installed: a HUD family missing a member, the hole-fill set unless whole, the key pass without its vertex buffer.
+ *
+ * @param dev Device.
+ * @param p The pipelines.
+ * @param key_vb_ok Nonzero when the key pass's vertex buffer exists. */
+static void nr_eager_settle(rhi_device *dev, nr_eager_set *p, int key_vb_ok)
+{
+    blend_family_settle(dev, p->gouraud_hud_pipes, 1);
+    blend_family_settle(dev, p->scene_tex_hud_pipes, OPENPETE_STP_SELS);
+    if (!p->gouraud_mark_pipe || !p->scene_tex_mark_pipe || !p->gouraud_fill_pipe) {
+        rhi_pipeline **fill[3] = { &p->gouraud_mark_pipe, &p->scene_tex_mark_pipe,
+                                   &p->gouraud_fill_pipe };
+        for (int i = 0; i < 3; i++) {
+            if (*fill[i]) rhi_destroy_pipeline(dev, *fill[i]);
+            *fill[i] = NULL;
+        }
+        OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
+    }
+    if (!p->terrain_key_pipe || !key_vb_ok) {
+        if (p->terrain_key_pipe) rhi_destroy_pipeline(dev, p->terrain_key_pipe);
+        p->terrain_key_pipe = NULL;
+        OPL_ERROR_F("native", "terrain key pass unavailable; LP key-resolve disabled");
+    }
+}
+
+/** @brief Create bring-up's eager pipelines from their descriptions in three dependency-ordered batches.
+ *
+ * The first batch holds every pipeline that needs no other
+ * (k_eager_first, the two HUD blend families, k_eager_rest), settled by
+ * nr_eager_settle; the textured key cutout and the moby rank pass need the
+ * key pass, the rank cutout needs the rank pass. Each batch is a pipeline
+ * batch when the run precompiles (nr_eager_batch_begin), else every create
+ * runs at once. Inside rhi_pipeline_describe_begin each create is recorded
+ * instead and every member reads as created, so every batch is described.
+ * @param dev Device.
+ * @param d The descriptions.
+ * @param p Receives the pipelines.
+ * @param key_vb_ok Nonzero when the key pass's vertex buffer exists. */
+static void nr_eager_core(rhi_device *dev, const nr_eager_descs *d, nr_eager_set *p,
+                          int key_vb_ok)
+{
+    memset(p, 0, sizeof *p);
+    nr_eager_batch_begin();
+    nr_eager_rows(dev, d, p, k_eager_first, sizeof k_eager_first / sizeof k_eager_first[0]);
+    blend_family_create(dev, &d->gouraud_hud_desc, p->gouraud_hud_pipes, 1);
+    blend_family_create(dev, &d->scene_tex_hud_desc, p->scene_tex_hud_pipes, OPENPETE_STP_SELS);
+    nr_eager_rows(dev, d, p, k_eager_rest, sizeof k_eager_rest / sizeof k_eager_rest[0]);
+    nr_eager_batch_end();
+    nr_eager_settle(dev, p, key_vb_ok);
+    nr_eager_batch_begin();
+    if (p->terrain_key_pipe) nr_eager_pipe(dev, &d->terrain_key_tex_desc, &p->terrain_key_tex_pipe);
+    if (p->terrain_key_pipe) nr_eager_pipe(dev, &d->moby_rank_desc, &p->moby_rank_pipe);
+    nr_eager_batch_end();
+    nr_eager_batch_begin();
+    if (p->moby_rank_pipe) nr_eager_pipe(dev, &d->moby_rank_cutout_desc, &p->moby_rank_cutout_pipe);
+    nr_eager_batch_end();
+    if (p->terrain_key_pipe && !p->terrain_key_tex_pipe)
+        OPL_ERROR_F("native", "textured key cutout pipe unavailable; "
+                              "textured faces key full-footprint");
+    if (p->terrain_key_pipe && !p->moby_rank_pipe)
+        OPL_ERROR_F("native", "moby rank pass unavailable; same-moby painter select disabled");
+}
+
+/** @brief Destroy every pipeline of an eager set and clear its members.
+ *
+ * The set holds only pipeline pointers, so it is walked as an array of them.
+ * @param dev Device.
+ * @param p The set. */
+static void nr_eager_set_destroy(rhi_device *dev, nr_eager_set *p)
+{
+    rhi_pipeline **m = (rhi_pipeline **)p;
+    for (size_t i = 0; i < sizeof *p / sizeof *m; i++) {
+        if (m[i]) rhi_destroy_pipeline(dev, m[i]);
+        m[i] = NULL;
+    }
+}
+
+/* Where nr_eager_twins puts the portal and front-shell twins: the renderer's
+ * own fields at bring-up, scratch storage when describing. */
+typedef struct {
+    nr_cover_twin *cover;
+    int           *cover_n;
+    nr_shell_twin *shell;
+    int           *shell_n;
+    rhi_pipeline **shell_pipe, **intr_pipe;   /* the shell and intruder pre-passes */
+} nr_twin_out;
+
+/** @brief Create the portal twins of the scene pipelines and, when asked, the moby front shell's pre-passes and opaque ACTOR twins, now or at the end of the open eager batch.
+ *
+ * Runs after nr_eager_core: each twin is its stock pipeline's description
+ * with another fragment stage (cover_family_create, shell_family_create),
+ * skipped when the stock pipeline is missing.
+ * @param dev Device.
+ * @param d The descriptions.
+ * @param p The stock pipelines.
+ * @param shell Nonzero to build the front shell.
+ * @param o Receives the twins.
+ * @return @p shell. */
+static int nr_eager_twins(rhi_device *dev, const nr_eager_descs *d, const nr_eager_set *p,
+                          int shell, const nr_twin_out *o)
+{
+    const nr_cover_src cover_src[] = {
+        { &d->gouraud_blend_desc, p->gouraud_blend_pipe, 0 }, { &d->gouraud_add_desc, p->gouraud_add_pipe, 0 },
+        { &d->gouraud_sub_ztest_desc, p->gouraud_sub_ztest_pipe, 0 }, { &d->gouraud_qadd_desc, p->gouraud_qadd_pipe, 0 },
+        { &d->scene_tex_blend_desc, p->scene_tex_blend_pipe, 0 }, { &d->scene_tex_add_desc, p->scene_tex_add_pipe, 0 },
+        { &d->scene_tex_sub_desc, p->scene_tex_sub_pipe, 0 }, { &d->scene_tex_qadd_desc, p->scene_tex_qadd_pipe, 0 },
+        { &d->hd_scene_blend_desc, p->hd_scene_blend_pipe, 0 }, { &d->hd_scene_add_desc, p->hd_scene_add_pipe, 0 },
+        { &d->gouraud_desc, p->gouraud_pipe, 1 }, { &d->gouraud_mark_desc, p->gouraud_mark_pipe, 1 },
+        { &d->scene_tex_desc, p->scene_tex_pipe, 1 }, { &d->scene_tex_mark_desc, p->scene_tex_mark_pipe, 1 },
+        { &d->hd_cutout_desc, p->hd_cutout_pipe, 1 }, { &d->hd_cutout_mark_desc, p->hd_cutout_mark_pipe, 1 },
+        { &d->gouraud_fill_desc, p->gouraud_fill_pipe, 1 },
+    };
+    *o->cover_n = cover_family_create(dev, cover_src,
+                                      (int)(sizeof cover_src / sizeof cover_src[0]), o->cover);
+    if (!shell) return 0;
+    const nr_shell_src shell_src[] = {
+        { &d->gouraud_desc, p->gouraud_pipe }, { &d->gouraud_mark_desc, p->gouraud_mark_pipe },
+        { &d->scene_tex_desc, p->scene_tex_pipe }, { &d->scene_tex_mark_desc, p->scene_tex_mark_pipe },
+        { &d->hd_cutout_desc, p->hd_cutout_pipe }, { &d->hd_cutout_mark_desc, p->hd_cutout_mark_pipe },
+    };
+    *o->shell_n = shell_family_create(dev, shell_src,
+                                      (int)(sizeof shell_src / sizeof shell_src[0]), o->shell);
+    nr_eager_pipe(dev, &d->moby_shell_desc, o->shell_pipe);
+    nr_eager_pipe(dev, &d->moby_shell_intr_desc, o->intr_pipe);
+    return 1;
+}
+
+/** @brief Describe every pipeline bring-up creates before the mods' slots: the eager pipelines with their twins and the terrain cache's, through their own builders in describe mode.
+ *
+ * Every optional pipeline is described (the front shell whatever
+ * OPENPETE_MOBY_SHELL holds, the terrain cache whatever --terrain-cache
+ * holds); a description that never compiles costs a compile and draws
+ * nothing. Display owner only.
+ * @param dev Device.
+ * @return The descriptions recorded. */
+static unsigned nr_describe_pipelines(rhi_device *dev)
+{
+    nr_eager_descs d;
+    nr_eager_descs_init(&d);
+    nr_eager_set p;
+    nr_cover_twin cover[NR_COVER_TWINS];
+    nr_shell_twin shell[NR_SHELL_TWINS];
+    int cover_n = 0, shell_n = 0;
+    rhi_pipeline *shell_pipe = NULL, *intr_pipe = NULL;
+    const nr_twin_out o = { cover, &cover_n, shell, &shell_n, &shell_pipe, &intr_pipe };
+    rhi_pipeline_describe_begin(dev);
+    nr_eager_core(dev, &d, &p, 1);
+    (void)nr_eager_twins(dev, &d, &p, 1, &o);
+    openpete_tercache_describe(dev);
+    return rhi_pipeline_describe_end(dev);
 }
 
 /** @brief Report whether this run compiles its pipelines synchronously at first draw.
@@ -5070,6 +5801,76 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
 
 const char *openpete_native_launcher_error(void) { return s_launch_error; }
 
+/* The launcher's precompile (openpete_native_launcher_precompile_start): the
+ * ahead walk on the launcher's device until bring-up stops it. */
+static struct {
+    int started;   /* the start ran (once per run)                         */
+    int on;        /* the ahead walk runs: each launcher present steps it   */
+    int paused;    /* the pool is paused (openpete_native_launcher_compile_pause) */
+    Uint64 pause_ns;
+} s_ahead;
+
+/** @brief Return whether the launcher precompiles before the pick.
+ *
+ * The harness variable OPENPETE_PRECOMPILE_AHEAD decides when set: a value
+ * starting with 0 skips it, any other non-empty value runs it. Unset, it
+ * follows the bring-up precompile's rule (nr_precompile_wanted): it runs when
+ * OPENPETE_PRECOMPILE_FORCE asks for it, else on a hardware device in a run
+ * that is not synchronous.
+ * @param dev The launcher's device.
+ * @param opts The game-neutral options.
+ * @return 1 to precompile. */
+static int nr_ahead_wanted(const rhi_device *dev, const openpete_options_t *opts)
+{
+    const char *e = getenv("OPENPETE_PRECOMPILE_AHEAD");
+    if (e && *e) return *e != '0';
+    e = getenv("OPENPETE_PRECOMPILE_FORCE");
+    if (e && *e) return *e != '0';
+    return !nr_run_is_synchronous(false, opts) && !rhi_device_is_software(dev);
+}
+
+int openpete_native_launcher_precompile_start(const openpete_options_t *opts)
+{
+    rhi_device *dev = s_launch.dev;
+    if (!dev || !opts || s_ahead.started) return 0;
+    s_ahead.started = 1;
+    if (!nr_ahead_wanted(dev, opts)) {
+        OPL_INFO_F("native", "%s", "launcher precompile: off for this run");
+        return 0;
+    }
+    const unsigned described = nr_describe_pipelines(dev);
+    rhi_compile_pool_pause(dev, s_ahead.paused != 0);
+    const int keys = rhi_precompile_ahead_start(dev);
+    s_ahead.on = keys >= 0;
+    OPL_INFO_F("native", "launcher precompile: %u pipeline descriptions, %d create infos queued "
+               "(both SLOT_CONTEST values; perspective, then affine)%s", described, keys,
+               s_ahead.paused ? "; the compile pool is paused" : "");
+    return keys > 0 ? keys : 0;
+}
+
+void openpete_native_launcher_compile_pause(int on)
+{
+    if (s_ahead.paused == (on != 0)) return;
+    s_ahead.paused = on != 0;
+    const Uint64 now = SDL_GetTicksNS();  /* clock-guard: wall: pause duration for the log */
+    if (on) s_ahead.pause_ns = now;
+    else
+        OPL_INFO_F("native", "launcher precompile: the compile pool resumes after %.1f ms paused",
+                   (double)(now - s_ahead.pause_ns) / 1e6);
+    if (s_launch.dev) rhi_compile_pool_pause(s_launch.dev, on != 0);
+}
+
+/** @brief End the launcher's precompile when bring-up starts on its device: stop the ahead walk (its running jobs finish into the cache) and resume a paused pool, whose waits bring-up's batches run.
+ *
+ * @param dev The renderer's device. */
+static void nr_ahead_end(rhi_device *dev)
+{
+    if (s_ahead.paused) openpete_native_launcher_compile_pause(0);
+    rhi_compile_pool_pause(dev, false);
+    rhi_precompile_ahead_stop(dev);
+    s_ahead.on = 0;
+}
+
 int openpete_native_launcher_active(void) { return s_launch.dev != NULL; }
 
 struct SDL_Window *openpete_native_launcher_window(void) { return s_launch.win; }
@@ -5079,6 +5880,7 @@ int openpete_native_launcher_present(struct rhi_device *on, float r, float g, fl
 {
     rhi_device *dev = on ? on : s_launch.dev;
     if (!dev) return 0;
+    if (!on && s_ahead.on) (void)rhi_precompile_walk_step(dev);
     int drawn = 0;
     rhi_boot_launcher_frames(true);
     rhi_set_present_blocking(dev, true);
@@ -5369,497 +6171,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * the dev overlay snapshotted knob boot values - so every pipeline below
      * bakes the right AFFINE_UV constant.) */
 
-    rhi_pipeline_desc blit_desc = {
-        .vert_spv = "psx_sample.vert.spv", /* passthrough pos + UV */
-        .frag_spv = "blit.frag.spv",       /* sampler2D at set 0 */
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = true, .push_const_size = 0,
-    };
-    rhi_pipeline_desc vram_desc = {
-        .vert_spv = "psx_sample.vert.spv",
-        .frag_spv = "psx_sample.frag.spv", /* usampler2D + material push const */
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = true, .push_const_size = sizeof(psx_material),
-    };
-    /* Gouraud pipeline for the native 3D scene: vertex-coloured, untextured
-     * (quad.vert/quad.frag) - exactly the cyclorama dome's shading. */
-    rhi_pipeline_desc gouraud_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
-        .blend = RHI_BLEND_NONE, .depth_test = true,  /* sort actors near->far */
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
-    };
-    /* WORLD-group variants that also stencil-MARK their coverage: the
-     * WORLD-opaque group rasterizes normally AND writes stencil=1 wherever a
-     * fragment passes the depth test, defining "pixels real world geometry
-     * covered". The terrain LP hole-fill layer (WORLD_FILL, TEST_ZERO below)
-     * then paints only the uncovered pixels - LP<->HP T-junction seams - and can
-     * never poke through the HP. The SKY category (cyclorama dome) deliberately
-     * does NOT use these: the sky showing through a seam is exactly what the
-     * fill must repaint. */
-    rhi_pipeline_desc gouraud_mark_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
-        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
-    };
-    /* Hole-fill pipe (WORLD_FILL): opaque untextured gouraud, depth-tested and
-     * depth-written at TRUE depth, gated on stencil==0 (only pixels the WORLD
-     * mark left uncovered). LP is untextured, so no textured variant needed. */
-    rhi_pipeline_desc gouraud_fill_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_TEST_ZERO,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* Semi-transparent UNTEXTURED gouraud pipeline: the Spyro silhouette
-     * shadow (func_80059A48) is a POLY_G3 strip with ABE set (ABR mode 0,
-     * (B+F)/2) - untextured, so it can't go through the textured-blend pipe.
-     * RHI_BLEND_ALPHA = src*a + dst*(1-a); the feeder sets vertex alpha = 128
-     * (~0.5) so the result is (B+F)/2, reproducing mode 0. depth_write_off: the
-     * shadow tests against opaque geometry (a wall/ground occludes it) but
-     * never occludes another transparent layer. Same quad.vert/quad.frag as the
-     * opaque gouraud pipe - quad.frag emits the full vertex rgba incl. alpha. */
-    rhi_pipeline_desc gouraud_blend_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
-        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
-    };
-    /* Subtractive UNTEXTURED gouraud pipeline (the Spyro silhouette
-     * shadow): POLY_G3 with ABR mode 2 (dst = B - F). RHI_BLEND_SUBTRACT
-     * reverse-subtracts the vertex colour from the framebuffer, darkening the
-     * ground (the shadow grey is subtracted; black vertices leave it
-     * unchanged).
-     * DEPTH-AWARE DECAL: shadow_decal.frag samples the WORLD-opaque pre-pass
-     * depth (opaque_depth, set 0) and rejects only pixels whose terrain stands
-     * ABOVE the shadow's ground plane by more than wall_height (a wall/ledge)
-     * - replacing the retired ×0.70 view-Z pull, which punched through walls.
-     * depth_test = false: the shader OWNS occlusion, so the flat fan never
-     * self-culls against its own bumpy/slanted ground (the artifact the pull
-     * used to mask). */
-    rhi_pipeline_desc gouraud_sub_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "shadow_decal.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
-        /* set 0 = opaque_depth; set 1 = VRAM (unread) + the terrain key
-         * image; set 2 = the player fan's footprint block */
-        .uses_vram = true, .set1_vram_depth = true, .uniform_set2 = true,
-        .push_const_size = sizeof(shadow_decal_pc),
-    };
-    /* Fallback for a device whose depth format is not sampleable (the pre-pass
-     * RT can't be created): the pre-decal behaviour - plain depth test + the
-     * hardware depth bias (correct against walls, may slice on steep ground). */
-    rhi_pipeline_desc gouraud_sub_ztest_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
-        .depth_bias = true,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* The full-screen mode-2 fade (func_800190D4) is also ABR-2 subtractive but
-     * is NOT a ground decal - it tints the whole frame. It used to share the
-     * shadow pipe; now that the shadow pipe is the depth-aware decal (which
-     * would sample opaque_depth and discard), the fade gets its own plain
-     * subtractive pipe (quad.frag, depth-test off - the z=0 quad passed the
-     * old LEQUAL test everywhere anyway). */
-    rhi_pipeline_desc gouraud_sub_fade_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* WORLD-opaque depth PRE-PASS pipe: rasterize the opaque world geometry
-     * into the depth-sampled RT that shadow_decal.frag reads. prepass.vert
-     * stores TRUE PERSPECTIVE depth (z = 1 - 1/vz, screen-affine for planes)
-     * so the decal's neighbour-texel NORMAL reconstruction is exact - the
-     * canonical vz/(vz+4096) curve interpolates screen-linearly with a
-     * distorted local gradient across large terrain tris (read flat floors as
-     * fronto-parallel). The fragment stage, terrain_prepass.frag (shared with
-     * the retained terrain cache's pre-pass), also writes its depth packed to
-     * 24 bits into the colour attachment; this pipe draws the backstop. The
-     * WORLD occluders draw with colour on through the cutout pipe below, and
-     * the depth pipe redraws textured WORLD faces over their whole footprint
-     * and draws the WORLD_FILL backing with colour off, so the colour
-     * attachment holds the depth of what the WORLD faces paint, which the
-     * occlusion grid reduces, while the depth aspect (the decal's) holds the
-     * full footprints and the backing. */
-    rhi_pipeline_desc prepass_desc = {
-        .vert_spv = "prepass.vert.spv",
-        .frag_spv = "terrain_prepass.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    rhi_pipeline_desc prepass_depth_desc = prepass_desc;
-    prepass_depth_desc.color_write_off = true;
-    /* WORLD colour run, per material run: prepass_cutout.frag samples the
-     * texel the scene draw does and drops the transparent texels it
-     * discards, so the colour attachment marks an occluder only where a
-     * face paints. */
-    rhi_pipeline_desc prepass_tex_desc = prepass_desc;
-    prepass_tex_desc.frag_spv = "prepass_cutout.frag.spv";
-    prepass_tex_desc.uses_vram = true;
-    prepass_tex_desc.push_const_size = sizeof(psx_material);
-    /* Terrain HP KEY pass: rasterise opaque HP terrain with depth = the
-     * og OT key (true view-Z + authored slot offset) into a private depth
-     * image; the scene's LP fragments key-contest it (quad_key.frag /
-     * psx_scene_key.frag). Rendered per scene TARGET at that target's size so
-     * texelFetch(gl_FragCoord.xy) aligns exactly. */
-    rhi_pipeline_desc terrain_key_desc = {
-        .vert_spv = "terrain_key.vert.spv",
-        .frag_spv = "key_ident.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* Additive UNTEXTURED gouraud pipeline (the glow rings): POLY_G3 with
-     * ABR mode 1 (dst = B + F). RHI_BLEND_ADD = src ONE + dst ONE. The glow is a
-     * gouraud fan, bright centre colour fading to black ring vertices, so the
-     * additive accumulation peaks at the centre and vanishes at the edge - the
-     * classic halo. depth_write_off like the other transparent passes. */
-    rhi_pipeline_desc gouraud_add_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad_key.frag.spv",   /* + og-key contest (transparent LP terrain contests, never emits) */
-        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
-    };
-    /* Opaque UNTEXTURED gouraud, depth-test ON but depth-WRITE OFF: the portal-sky
-     * previews (portal.c, OPENPETE_SCENE_PORTAL_CYCLORAMA). They are a far
-     * background seen through the arch window - the arch stone's depth (written by
-     * the WORLD group, drawn first) must occlude them, but they must never write
-     * depth, so the actors/player drawn afterward are never per-pixel cut by the
-     * portal sky as Spyro flies into/through the portal. Same quad.vert/quad.frag
-     * as the opaque pipe; only the depth-write differs. */
-    rhi_pipeline_desc gouraud_noz_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        /* Portal-sky colours - depth-TEST ON (LEQUAL at the
-         * portal-plane z, write OFF) + stencil TEST, drawn AFTER the ACTOR
-         * group. The depth test is what lets the sky repaint over mobys
-         * BEHIND the plane while losing to geometry/mobys in front of it;
-         * the stencil mask confines it to the aperture footprint. (A fully
-         * depth-free variant was tried and replaced - with a depth STAMP it
-         * clipped Spyro mid-entry, and without one it needed the stamp.) */
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_write_off = true,
-        .stencil = RHI_STENCIL_TEST,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* The portal aperture mask: rasterize the portal's sky footprint
-     * invisibly (colour-write-off), depth-TESTED against the world written by
-     * the WORLD group (depth-write off, so the mask pass can't perturb it),
-     * marking stencil=1 where the sky is actually visible (arch stone / a
-     * nearer wall punches the mask out via depth-fail). Carries the decal
-     * depth-bias so the coincident inner-frame tie-break lives HERE, in the
-     * invisible pass, not in the colours. */
-    rhi_pipeline_desc portal_mask_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_write_off = true,
-        .depth_bias = true, .stencil = RHI_STENCIL_MARK, .color_write_off = true,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* Textured scene pipeline: samples the PSX VRAM mirror via the ported
-     * decoder + per-draw material, modulates by the vertex colour (tex*col/128).
-     * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
-    rhi_pipeline_desc scene_tex_desc = {
-        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
-        .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
-        .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
-    };
-    /* Textured WORLD-group stencil-MARK variant - most terrain is
-     * textured, so the coverage mark must come from this pipe too. */
-    rhi_pipeline_desc scene_tex_mark_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "psx_scene_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
-        .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
-    };
-    /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
-     * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha.
-     * depth_write_off: transparent tris Z-TEST against opaque but do NOT write
-     * depth, so they never occlude each other (ordering among them needs a
-     * back-to-front sort on top of this). */
-    rhi_pipeline_desc scene_tex_blend_desc = {
-        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
-        .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
-        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
-    };
-    /* Additive (ABR mode 1, dst = B + F) textured pipeline: the first
-     * additive consumer is Spyro's flame (func_80058D64 / r_flame.s), a textured
-     * gouraud quad ribbon whose tpage selects ABR=1. RHI_BLEND_ADD = src ONE +
-     * dst ONE; depth_write_off so the glow tests against opaque geometry (a wall
-     * occludes the flame) but additive layers never occlude each other. The
-     * grey-ramp vertex colour modulates the flame sprite (tex*col/128) and the
-     * result accumulates into the framebuffer - bright core, never darkens. */
-    rhi_pipeline_desc scene_tex_add_desc = {
-        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
-        .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
-        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
-    };
-    /* Quarter-additive (ABR mode 3, dst = B + F/4) pipelines: the faint-overlay
-     * class - glass, the butterfly-bottle panes. The modulated source is scaled
-     * by the pipeline's blend constant, so the layer tints what is behind it
-     * instead of blowing it out (full additive) or blacking it out (the
-     * reverse-subtract an ABR-2 pipe would apply). depth_write_off with the
-     * other transparent classes. */
-    rhi_pipeline_desc scene_tex_qadd_desc = scene_tex_add_desc;
-    scene_tex_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
-    rhi_pipeline_desc gouraud_qadd_desc = gouraud_add_desc;
-    gouraud_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
-    /* Subtractive (ABR mode 2, dst = B - F) textured pipeline: moby
-     * shadows (func_80059F8C), a textured FT3 fan whose tpage selects ABR=2.
-     * RHI_BLEND_SUBTRACT reverse-subtracts the modulated shadow sprite from the
-     * framebuffer (tex*col/128 darkens the ground), depth_write_off so the
-     * shadow tests against opaque geometry but never occludes another layer. */
-    rhi_pipeline_desc scene_tex_sub_desc = {
-        .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
-        .frag_spv = "psx_scene.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
-        .depth_bias = true, /* shadow decal: hardware coplanar tie-break */
-        .uses_vram = true, .push_const_size = sizeof(psx_material),
-    };
-    /* DEPTH-AWARE moby-shadow decal (the same fix Spyro's silhouette shadow got,
-     * textured): shadow_decal_tex.frag samples the shared WORLD-opaque pre-pass
-     * depth (opaque_depth, set 0) AND the shadow-sprite VRAM (u_vram, set 1),
-     * rejecting per pixel the wall / steep-face / raised-in-front terrain a flat
-     * fan can't separate with a plain depth test. depth_test OFF: the shader OWNS
-     * occlusion, so the flat fan never Z-fights the slanted/bumpy ground it drapes.
-     * Preferred over scene_tex_sub_desc whenever the depth pre-pass is available;
-     * NULL (unsupported device) falls back to it. */
-    rhi_pipeline_desc scene_tex_sub_decal_desc = {
-        .vert_spv = "shadow_decal_tex.vert.spv",
-        .frag_spv = "shadow_decal_tex.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
-        /* set 0 = opaque_depth; set 1 = VRAM + the terrain key image */
-        .uses_vram = true, .set1_vram_depth = true,
-        .push_const_size = sizeof(shadow_decal_tex_pc),
-    };
-    /* HUD overlay pipelines (depth_test = false): HUD/UI mobys are a 2D overlay
-     * drawn LAST, ignoring the depth buffer so they sit on top of all world/actor
-     * geometry regardless of their world-space view-Z (the PSX draws HUD in a
-     * separate near-OT pass). Painter's order = submission order. One untextured
-     * (gouraud) + one textured (VRAM sampler), mirroring the opaque pair.
-     *
-     * The untextured HUD pipe is a blend family (blend_family_create sets
-     * .blend per member). Entry 0 draws the glyphs and the letterbox bars.
-     * The semi-transparent 2D panels (0x2A POLY_F4) draw through the member of
-     * the ABR their DR_MODE selects: ABR 0 (B+F)/2 is the alpha member at
-     * vertex alpha 0x80 (quad.frag emits the full vertex rgba); ABR 2 (B-F) is
-     * the reverse-subtract member, which darkens the framebuffer by the box
-     * colour (the in-game shaded box behind HUD text, func_8001860C, and the
-     * pause/inventory panel, func_8001A40C, both emit their F4 under
-     * SetDrawMode(getTPage(0, 2, ..))); ABR 1 and 3 are the additive and
-     * quarter-additive members. The subtract member also draws the menu and
-     * toast panels. */
-    rhi_pipeline_desc gouraud_hud_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* Textured HUD layer: the screen-space 2D sprites and quads. A 2D
-     * primitive carries its own semi-transparency bit and the ABR of its
-     * texture page, so the layer is a family, one pipe per texel STP
-     * selection and blend class (blend_family_create sets .blend and
-     * .texel_stp_select per member; entry 0 is the opaque pipe). */
-    rhi_pipeline_desc scene_tex_hud_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "psx_scene.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = true, .push_const_size = sizeof(psx_material),
-    };
-    /* HD texture-replacement pipe:
-     * samples a host RGBA8 replacement (hd_tex.frag) with real per-texel alpha
-     * instead of the PSX VRAM decode. Depth OFF (the target is a HUD-layer
-     * 2D quad); push constants carry the replaced texel box. */
-    rhi_pipeline_desc hd_tex_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "hd_tex.frag.spv",
-        .blend = RHI_BLEND_ALPHA, .depth_test = false,
-        .uses_vram = true, .push_const_size = sizeof(hd_pc),
-    };
-    /* Opaque-scene HD replacement: depth-tested cutout (true blending on
-     * opaque groups would break Z ordering); the MARK twin keeps the
-     * hole-fill stencil coverage intact when replacing WORLD-group runs. */
-    rhi_pipeline_desc hd_cutout_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "hd_tex_cutout.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
-    };
-    rhi_pipeline_desc hd_cutout_mark_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "hd_tex_cutout.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
-        .stencil = RHI_STENCIL_MARK,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
-    };
-    /* Dragon-rescue front pass, step 1 of 2 - the DEPTH PUNCH twins of the
-     * three ACTOR_FRONT opaque pipes: same shaders (so the same fragments
-     * survive the key/cutout discards), colour writes off, depth compare
-     * ALWAYS. Rasterizing the actors through these replaces the stored depth
-     * on exactly the pixels they cover; the normal draw that follows then wins
-     * over terrain it interpenetrates, while every pixel the actors do NOT
-     * cover keeps its true depth for the transparent groups drawn later. */
-    rhi_pipeline_desc gouraud_punch_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad_key.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
-        .color_write_off = true,
-        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
-    };
-    rhi_pipeline_desc scene_tex_punch_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "psx_scene_key.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
-        .color_write_off = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
-    };
-    rhi_pipeline_desc hd_cutout_punch_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "hd_tex_cutout.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
-        .color_write_off = true,
-        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
-    };
-    /* HD twins of the transparent scene pipes: alpha (ABR 0) and
-     * additive (ABR 1) - depth-tested, no depth write, mirroring their SD
-     * counterparts. STP encoding: dumps bake STP texels at alpha 128, so
-     * src-over on the alpha pipe reproduces (B+F)/2 while non-STP texels
-     * stay opaque. The SUBTRACTIVE group keeps SD (its draws depend on the
-     * caller's dynamic depth-bias state, which an HD rebind would
-     * invalidate - and shadow-fan replacement is out of scope). */
-    rhi_pipeline_desc hd_scene_blend_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "hd_tex.frag.spv",
-        .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .push_const_size = sizeof(hd_pc),
-    };
-    rhi_pipeline_desc hd_scene_add_desc = {
-        .vert_spv = "psx_scene.vert.spv",
-        .frag_spv = "hd_tex.frag.spv",
-        .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
-        .uses_vram = true, .push_const_size = sizeof(hd_pc),
-    };
-    rhi_pipeline_desc freeze_overlay_desc = {
-        .vert_spv = "psx_sample.vert.spv",
-        .frag_spv = "freeze_overlay.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = true, .push_const_size = 0,
-    };
-    /* Retained-framebuffer freeze backdrop: the same full-panel quad over the same
-     * snapshot, drawn through blit.frag so the frozen frame reaches the screen
-     * unaltered (the game applied no CLUT and no tint - it simply did not clear). */
-    rhi_pipeline_desc freeze_plain_desc = {
-        .vert_spv = "psx_sample.vert.spv",
-        .frag_spv = "blit.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = true, .push_const_size = 0,
-    };
-    /* SSAA resolve pipeline (--ssaa N): samples the supersampled scene RT (set 0)
-     * and box-averages the N×N block in linear light into the 1× offscreen
-     * (resolve.frag). No depth, no blend; the ssaa factor rides a push constant. */
-    rhi_pipeline_desc resolve_desc = {
-        .vert_spv = "psx_sample.vert.spv",
-        .frag_spv = "resolve.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = true, .push_const_size = sizeof(int),
-    };
-    /* Occlusion-grid downsample (moby occlusion culling): reduces the WORLD-
-     * opaque depth pre-pass to a coarse conservative farthest-depth grid the
-     * CPU reads back to cull fully-hidden mobys before re-extraction. Optional
-     * (graceful fallback: no grid -> no culling). */
-    rhi_pipeline_desc occl_desc = {
-        .vert_spv = "psx_sample.vert.spv",
-        .frag_spv = "occl_downsample.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = false,
-        .uses_vram = true, .push_const_size = 4 * sizeof(int),
-    };
-    /* FPS-overlay supersample resolve: like resolve_desc but alpha-aware
-     * (overlay_resolve.frag) and alpha-blended, to composite the downsampled
-     * glyphs over the scene. Optional - draw_perf_overlay falls back to a direct
-     * 1× draw if this (or ovl_quad_vb) didn't come up. */
-    rhi_pipeline_desc ovl_resolve_desc = {
-        .vert_spv = "psx_sample.vert.spv",
-        .frag_spv = "overlay_resolve.frag.spv",
-        .blend = RHI_BLEND_ALPHA, .depth_test = false,
-        .uses_vram = true, .push_const_size = 2 * sizeof(int),   /* ssaa, outline */
-    };
+    nr_eager_descs D;
+    nr_eager_descs_init(&D);
     wireframe_report(dev);
     /* The eager creates run in pipeline batches when the run precompiles,
      * counted on the compile stage's progress screen with the precompile.
      * Each batch ends before anything reads the pipelines it fills; the
      * terrain cache's init brackets its own creates in one more. */
     nr_compile_stage_begin(dev, opts->display_name);
-    nr_eager_batch_begin();
-    rhi_pipeline *blit_pipe;
-    nr_eager_pipe(dev, &blit_desc, &blit_pipe);
-    rhi_pipeline *vram_pipe;
-    nr_eager_pipe(dev, &vram_desc, &vram_pipe);
-    rhi_pipeline *gouraud_pipe;
-    nr_eager_pipe(dev, &gouraud_desc, &gouraud_pipe);
-    rhi_pipeline *gouraud_blend_pipe;
-    nr_eager_pipe(dev, &gouraud_blend_desc, &gouraud_blend_pipe);
-    rhi_pipeline *gouraud_sub_pipe;
-    nr_eager_pipe(dev, &gouraud_sub_desc, &gouraud_sub_pipe);
-    rhi_pipeline *gouraud_sub_ztest_pipe;
-    nr_eager_pipe(dev, &gouraud_sub_ztest_desc, &gouraud_sub_ztest_pipe);
-    rhi_pipeline *gouraud_sub_fade_pipe;
-    nr_eager_pipe(dev, &gouraud_sub_fade_desc, &gouraud_sub_fade_pipe);
-    rhi_pipeline *prepass_pipe;
-    nr_eager_pipe(dev, &prepass_desc, &prepass_pipe);
-    rhi_pipeline *prepass_depth_pipe;
-    nr_eager_pipe(dev, &prepass_depth_desc, &prepass_depth_pipe);
-    rhi_pipeline *prepass_tex_pipe;
-    nr_eager_pipe(dev, &prepass_tex_desc, &prepass_tex_pipe);
-    rhi_pipeline *gouraud_add_pipe;
-    nr_eager_pipe(dev, &gouraud_add_desc, &gouraud_add_pipe);
-    rhi_pipeline *gouraud_noz_pipe;
-    nr_eager_pipe(dev, &gouraud_noz_desc, &gouraud_noz_pipe);
-    rhi_pipeline *portal_mask_pipe;
-    nr_eager_pipe(dev, &portal_mask_desc, &portal_mask_pipe);
-    rhi_pipeline *scene_tex_pipe;
-    nr_eager_pipe(dev, &scene_tex_desc, &scene_tex_pipe);
-    rhi_pipeline *scene_tex_blend_pipe;
-    nr_eager_pipe(dev, &scene_tex_blend_desc, &scene_tex_blend_pipe);
-    rhi_pipeline *scene_tex_add_pipe;
-    nr_eager_pipe(dev, &scene_tex_add_desc, &scene_tex_add_pipe);
-    rhi_pipeline *scene_tex_qadd_pipe;
-    nr_eager_pipe(dev, &scene_tex_qadd_desc, &scene_tex_qadd_pipe);
-    rhi_pipeline *gouraud_qadd_pipe;
-    nr_eager_pipe(dev, &gouraud_qadd_desc, &gouraud_qadd_pipe);
-    rhi_pipeline *scene_tex_sub_pipe;
-    nr_eager_pipe(dev, &scene_tex_sub_desc, &scene_tex_sub_pipe);
-    rhi_pipeline *scene_tex_sub_decal_pipe; /* optional: NULL -> fall back to scene_tex_sub_pipe */
-    nr_eager_pipe(dev, &scene_tex_sub_decal_desc, &scene_tex_sub_decal_pipe);
-    rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES];
-    blend_family_create(dev, &gouraud_hud_desc, gouraud_hud_pipes, 1);
-    rhi_pipeline *scene_tex_hud_pipes[NR_HUD_TEX_PIPES];
-    blend_family_create(dev, &scene_tex_hud_desc, scene_tex_hud_pipes, OPENPETE_STP_SELS);
-    rhi_pipeline *hd_tex_pipe;   /* HD pipes: allowed to fail (NULL = feature off) */
-    nr_eager_pipe(dev, &hd_tex_desc, &hd_tex_pipe);
-    rhi_pipeline *hd_cutout_pipe;
-    nr_eager_pipe(dev, &hd_cutout_desc, &hd_cutout_pipe);
-    rhi_pipeline *hd_cutout_mark_pipe;
-    nr_eager_pipe(dev, &hd_cutout_mark_desc, &hd_cutout_mark_pipe);
-    rhi_pipeline *gouraud_punch_pipe;
-    nr_eager_pipe(dev, &gouraud_punch_desc, &gouraud_punch_pipe);
-    rhi_pipeline *scene_tex_punch_pipe;
-    nr_eager_pipe(dev, &scene_tex_punch_desc, &scene_tex_punch_pipe);
-    rhi_pipeline *hd_cutout_punch_pipe;
-    nr_eager_pipe(dev, &hd_cutout_punch_desc, &hd_cutout_punch_pipe);
-    rhi_pipeline *hd_scene_blend_pipe;
-    nr_eager_pipe(dev, &hd_scene_blend_desc, &hd_scene_blend_pipe);
-    rhi_pipeline *hd_scene_add_pipe;
-    nr_eager_pipe(dev, &hd_scene_add_desc, &hd_scene_add_pipe);
-    rhi_pipeline *freeze_overlay_pipe;
-    nr_eager_pipe(dev, &freeze_overlay_desc, &freeze_overlay_pipe);
-    rhi_pipeline *freeze_plain_pipe;
-    nr_eager_pipe(dev, &freeze_plain_desc, &freeze_plain_pipe);
-    rhi_pipeline *resolve_pipe;
-    nr_eager_pipe(dev, &resolve_desc, &resolve_pipe);
     /* Per-present-rewritten buffers (scene/prepass/overlay) are frame-in-flight
      * RINGS: their every-present rhi_update_buffer used to race the
      * frame two presents ago, previously masked only by the per-present VRAM
@@ -5873,8 +6192,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Mod draw-service overlay (optional - NULL just disables mod draws). */
     rhi_buffer   *mod_ovl_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MOD_OVL_MAX_VERTS);
     /* Optional overlay-supersample resources (graceful fallback if NULL). */
-    rhi_pipeline *ovl_resolve_pipe;
-    nr_eager_pipe(dev, &ovl_resolve_desc, &ovl_resolve_pipe);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *menu_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     /* OSD toast layer. Both are per-present RINGS: a sliding toast rewrites
@@ -5890,100 +6207,29 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * would overwrite the bytes the first draw reads at execution time. */
     rhi_buffer   *osd_panel_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OPENPETE_OSD_MAX * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL -> no culling). */
-    rhi_pipeline *occl_pipe;
-    nr_eager_pipe(dev, &occl_desc, &occl_pipe);
-    /* Optional hole-fill pipes (graceful fallback: any NULL -> WORLD uses
-     * the plain pipes and the FILL layer is skipped - the pre-fill look). */
-    rhi_pipeline *gouraud_mark_pipe;
-    nr_eager_pipe(dev, &gouraud_mark_desc, &gouraud_mark_pipe);
-    rhi_pipeline *scene_tex_mark_pipe;
-    nr_eager_pipe(dev, &scene_tex_mark_desc, &scene_tex_mark_pipe);
-    rhi_pipeline *gouraud_fill_pipe;
-    nr_eager_pipe(dev, &gouraud_fill_desc, &gouraud_fill_pipe);
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
     /* Optional key-pass resources (graceful fallback: NULL -> the feeder
      * emits koff=0, LP fragments never sample, terrain contests at raw true
      * depth - the OT_BIAS=0 look). The key IMAGE allocates lazily per target
      * size (ensure_terrain_key_depth). */
-    rhi_pipeline *terrain_key_pipe;
-    nr_eager_pipe(dev, &terrain_key_desc, &terrain_key_pipe);
     rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
-    nr_eager_batch_end();
-    blend_family_settle(dev, gouraud_hud_pipes, 1);
-    blend_family_settle(dev, scene_tex_hud_pipes, OPENPETE_STP_SELS);
-    if (!gouraud_mark_pipe || !scene_tex_mark_pipe || !gouraud_fill_pipe) {
-        if (gouraud_mark_pipe)   { rhi_destroy_pipeline(dev, gouraud_mark_pipe);   gouraud_mark_pipe = NULL; }
-        if (scene_tex_mark_pipe) { rhi_destroy_pipeline(dev, scene_tex_mark_pipe); scene_tex_mark_pipe = NULL; }
-        if (gouraud_fill_pipe)   { rhi_destroy_pipeline(dev, gouraud_fill_pipe);   gouraud_fill_pipe = NULL; }
-        OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
+    nr_eager_set P;
+    nr_eager_core(dev, &D, &P, terrain_key_vb != NULL);
+    if (!P.terrain_key_pipe && terrain_key_vb) {
+        rhi_destroy_buffer(dev, terrain_key_vb);
+        terrain_key_vb = NULL;
     }
-    if (!terrain_key_pipe || !terrain_key_vb) {
-        if (terrain_key_pipe) { rhi_destroy_pipeline(dev, terrain_key_pipe); terrain_key_pipe = NULL; }
-        if (terrain_key_vb)   { rhi_destroy_buffer(dev, terrain_key_vb);     terrain_key_vb = NULL; }
-        OPL_ERROR_F("native", "terrain key pass unavailable; LP key-resolve disabled");
-    }
-    /* Alpha-aware key stage for TEXTURED keyed faces: same key depth as
-     * terrain_key_desc, but the fragment samples the face's PSX texels and
-     * drops the p==0 transparent ones, so a face's og key occupies exactly
-     * the pixels its opaque texels paint. NULL degrades to the flat pipe
-     * (full-footprint keys, the pre-cutout behaviour). */
-    rhi_pipeline_desc terrain_key_tex_desc = {
-        .vert_spv = "terrain_key.vert.spv",
-        .frag_spv = "psx_key_cutout.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
-        .uses_vram = true, .uses_vram2 = true,   /* set 1: drain records */
-        .push_const_size = sizeof(psx_material),
-    };
-    /* Moby RANK pass (same-moby painter select): rasterise ranked moby faces
-     * with depth = their og OT walk rank into an RGBA8 (rank, ordinal) image;
-     * ranked scene fragments discard where a LATER-ranked face of the SAME
-     * moby covers the pixel. Optional (NULL -> rank image stays cleared, every
-     * ranked face decodes "no cover" and resolves at true depth). */
-    rhi_pipeline_desc moby_rank_desc = {
-        .vert_spv = "moby_rank.vert.spv",
-        .frag_spv = "moby_rank.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    rhi_pipeline_desc moby_rank_cutout_desc = {
-        .vert_spv = "moby_rank.vert.spv",
-        .frag_spv = "moby_rank_cutout.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
-        .uses_vram = true, .push_const_size = sizeof(psx_material),
-    };
-    rhi_pipeline *terrain_key_tex_pipe = NULL, *moby_rank_pipe = NULL;
-    rhi_pipeline *moby_rank_cutout_pipe = NULL;
-    nr_eager_batch_begin();
-    if (terrain_key_pipe) nr_eager_pipe(dev, &terrain_key_tex_desc, &terrain_key_tex_pipe);
-    if (terrain_key_pipe) nr_eager_pipe(dev, &moby_rank_desc, &moby_rank_pipe);
-    nr_eager_batch_end();
-    nr_eager_batch_begin();
-    if (moby_rank_pipe) nr_eager_pipe(dev, &moby_rank_cutout_desc, &moby_rank_cutout_pipe);
-    nr_eager_batch_end();
-    if (terrain_key_pipe && !terrain_key_tex_pipe)
-        OPL_ERROR_F("native", "textured key cutout pipe unavailable; "
-                              "textured faces key full-footprint");
-    if (terrain_key_pipe && !moby_rank_pipe)
-        OPL_ERROR_F("native", "moby rank pass unavailable; same-moby painter select disabled");
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_TEX_H);
     rhi_texture  *drain_tex = rhi_create_u32x4(dev, DRAIN_REC_PER_ROW * 4, DRAIN_REC_ROWS);
     /* The CPU mirror IS the owned native VRAM model (static storage in
      * native_vram.c) - written by the native ops at op time and shadow-synced
      * from PsyCross's mirror per dirty rect at present time. */
     uint16_t     *mirror    = openpete_vram_data();
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !prepass_depth_pipe || !prepass_tex_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipes[0] || !scene_tex_hud_pipes[0] || !panels_vb || !scene_vb || !vram_tex || !mirror ||
-        !freeze_overlay_pipe || !freeze_plain_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
+    if (!P.blit_pipe || !P.vram_pipe || !P.gouraud_pipe || !P.gouraud_blend_pipe || !P.gouraud_sub_pipe || !P.gouraud_sub_ztest_pipe || !P.gouraud_sub_fade_pipe || !P.prepass_pipe || !P.prepass_depth_pipe || !P.prepass_tex_pipe || !P.gouraud_add_pipe || !P.scene_tex_pipe || !P.scene_tex_blend_pipe || !P.scene_tex_add_pipe || !P.scene_tex_sub_pipe || !P.gouraud_hud_pipes[0] || !P.scene_tex_hud_pipes[0] || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+        !P.freeze_overlay_pipe || !P.freeze_plain_pipe || !P.resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         if (prepass_vb)    rhi_destroy_buffer(dev, prepass_vb);
-        if (prepass_pipe)  rhi_destroy_pipeline(dev, prepass_pipe);
-        if (prepass_depth_pipe) rhi_destroy_pipeline(dev, prepass_depth_pipe);
-        if (prepass_tex_pipe) rhi_destroy_pipeline(dev, prepass_tex_pipe);
-        if (gouraud_sub_fade_pipe) rhi_destroy_pipeline(dev, gouraud_sub_fade_pipe);
-        if (gouraud_sub_ztest_pipe) rhi_destroy_pipeline(dev, gouraud_sub_ztest_pipe);
-        if (resolve_pipe) rhi_destroy_pipeline(dev, resolve_pipe);
-        if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
-        if (freeze_plain_pipe) rhi_destroy_pipeline(dev, freeze_plain_pipe);
         if (overlay_vb)    rhi_destroy_buffer(dev, overlay_vb);
         if (mod_ovl_vb)    rhi_destroy_buffer(dev, mod_ovl_vb);
         if (ovl_quad_vb)   rhi_destroy_buffer(dev, ovl_quad_vb);
@@ -5992,34 +6238,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
-        blend_family_destroy(dev, scene_tex_hud_pipes, OPENPETE_STP_SELS);
-        if (hd_tex_pipe) rhi_destroy_pipeline(dev, hd_tex_pipe);
-        if (hd_cutout_pipe) rhi_destroy_pipeline(dev, hd_cutout_pipe);
-        if (hd_cutout_mark_pipe) rhi_destroy_pipeline(dev, hd_cutout_mark_pipe);
-        if (gouraud_punch_pipe) rhi_destroy_pipeline(dev, gouraud_punch_pipe);
-        if (scene_tex_punch_pipe) rhi_destroy_pipeline(dev, scene_tex_punch_pipe);
-        if (hd_cutout_punch_pipe) rhi_destroy_pipeline(dev, hd_cutout_punch_pipe);
-        if (hd_scene_blend_pipe) rhi_destroy_pipeline(dev, hd_scene_blend_pipe);
-        if (hd_scene_add_pipe) rhi_destroy_pipeline(dev, hd_scene_add_pipe);
-        blend_family_destroy(dev, gouraud_hud_pipes, 1);
-        if (scene_tex_sub_decal_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_decal_pipe);
-        if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
-        if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
-        if (scene_tex_qadd_pipe) rhi_destroy_pipeline(dev, scene_tex_qadd_pipe);
-        if (gouraud_qadd_pipe) rhi_destroy_pipeline(dev, gouraud_qadd_pipe);
-        if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
-        if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
-        if (gouraud_noz_pipe) rhi_destroy_pipeline(dev, gouraud_noz_pipe);
-        if (portal_mask_pipe) rhi_destroy_pipeline(dev, portal_mask_pipe);
-        if (gouraud_mark_pipe)   rhi_destroy_pipeline(dev, gouraud_mark_pipe);
-        if (scene_tex_mark_pipe) rhi_destroy_pipeline(dev, scene_tex_mark_pipe);
-        if (gouraud_fill_pipe)   rhi_destroy_pipeline(dev, gouraud_fill_pipe);
-        if (gouraud_add_pipe) rhi_destroy_pipeline(dev, gouraud_add_pipe);
-        if (gouraud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_sub_pipe);
-        if (gouraud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_blend_pipe);
-        if (gouraud_pipe)  rhi_destroy_pipeline(dev, gouraud_pipe);
-        if (vram_pipe)     rhi_destroy_pipeline(dev, vram_pipe);
-        if (blit_pipe)     rhi_destroy_pipeline(dev, blit_pipe);
+        nr_eager_set_destroy(dev, &P);
         rhi_destroy(dev);
         SDL_DestroyWindow(win);
         return 1;
@@ -6032,78 +6251,58 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.dev         = dev;
     s_nr.win_w       = w;
     s_nr.win_h       = h;
-    s_nr.blit_pipe    = blit_pipe;
-    s_nr.vram_pipe    = vram_pipe;
-    s_nr.gouraud_pipe = gouraud_pipe;
-    s_nr.gouraud_blend_pipe = gouraud_blend_pipe;
-    s_nr.gouraud_sub_pipe = gouraud_sub_pipe;
-    s_nr.gouraud_sub_ztest_pipe = gouraud_sub_ztest_pipe;
-    s_nr.gouraud_sub_fade_pipe = gouraud_sub_fade_pipe;
-    s_nr.prepass_pipe = prepass_pipe;
-    s_nr.prepass_depth_pipe = prepass_depth_pipe;
-    s_nr.prepass_tex_pipe = prepass_tex_pipe;
+    s_nr.blit_pipe    = P.blit_pipe;
+    s_nr.vram_pipe    = P.vram_pipe;
+    s_nr.gouraud_pipe = P.gouraud_pipe;
+    s_nr.gouraud_blend_pipe = P.gouraud_blend_pipe;
+    s_nr.gouraud_sub_pipe = P.gouraud_sub_pipe;
+    s_nr.gouraud_sub_ztest_pipe = P.gouraud_sub_ztest_pipe;
+    s_nr.gouraud_sub_fade_pipe = P.gouraud_sub_fade_pipe;
+    s_nr.prepass_pipe = P.prepass_pipe;
+    s_nr.prepass_depth_pipe = P.prepass_depth_pipe;
+    s_nr.prepass_tex_pipe = P.prepass_tex_pipe;
     s_nr.prepass_vb   = prepass_vb;
-    s_nr.terrain_key_pipe = terrain_key_pipe;
-    s_nr.terrain_key_tex_pipe = terrain_key_tex_pipe;
+    s_nr.terrain_key_pipe = P.terrain_key_pipe;
+    s_nr.terrain_key_tex_pipe = P.terrain_key_tex_pipe;
     s_nr.terrain_key_vb   = terrain_key_vb;
-    s_nr.moby_rank_pipe = moby_rank_pipe;
-    s_nr.moby_rank_cutout_pipe = moby_rank_cutout_pipe;
-    s_nr.gouraud_add_pipe = gouraud_add_pipe;
-    s_nr.gouraud_noz_pipe = gouraud_noz_pipe;
-    s_nr.portal_mask_pipe = portal_mask_pipe;
-    s_nr.gouraud_mark_pipe = gouraud_mark_pipe;     /* may be NULL -> no hole-fill */
-    s_nr.scene_tex_mark_pipe = scene_tex_mark_pipe; /* may be NULL -> no hole-fill */
-    s_nr.gouraud_fill_pipe = gouraud_fill_pipe;     /* may be NULL -> no hole-fill */
-    s_nr.scene_tex_pipe = scene_tex_pipe;
-    s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
-    s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
-    s_nr.scene_tex_qadd_pipe = scene_tex_qadd_pipe;
-    s_nr.gouraud_qadd_pipe = gouraud_qadd_pipe;
-    int shell_built = 0;
+    s_nr.moby_rank_pipe = P.moby_rank_pipe;
+    s_nr.moby_rank_cutout_pipe = P.moby_rank_cutout_pipe;
+    s_nr.gouraud_add_pipe = P.gouraud_add_pipe;
+    s_nr.gouraud_noz_pipe = P.gouraud_noz_pipe;
+    s_nr.portal_mask_pipe = P.portal_mask_pipe;
+    s_nr.gouraud_mark_pipe = P.gouraud_mark_pipe;     /* may be NULL -> no hole-fill */
+    s_nr.scene_tex_mark_pipe = P.scene_tex_mark_pipe; /* may be NULL -> no hole-fill */
+    s_nr.gouraud_fill_pipe = P.gouraud_fill_pipe;     /* may be NULL -> no hole-fill */
+    s_nr.scene_tex_pipe = P.scene_tex_pipe;
+    s_nr.scene_tex_blend_pipe = P.scene_tex_blend_pipe;
+    s_nr.scene_tex_add_pipe = P.scene_tex_add_pipe;
+    s_nr.scene_tex_qadd_pipe = P.scene_tex_qadd_pipe;
+    s_nr.gouraud_qadd_pipe = P.gouraud_qadd_pipe;
+    /* Moby front shell, built when the rank pass (the key images' companion)
+     * came up and OPENPETE_MOBY_SHELL leaves it on: the twins replace the
+     * opaque ACTOR pipes on a present that drew a shell. */
+    const int shell_built = moby_shell_on() && P.moby_rank_pipe != NULL;
+    const nr_twin_out twins = { s_nr.cover_twins, &s_nr.cover_twin_n, s_nr.shell_twins,
+                                &s_nr.shell_twin_n, &s_nr.moby_shell_pipe,
+                                &s_nr.moby_shell_intr_pipe };
     nr_eager_batch_begin();
-    {
-        const nr_cover_src cover_src[] = {
-            { &gouraud_blend_desc, gouraud_blend_pipe, 0 }, { &gouraud_add_desc, gouraud_add_pipe, 0 },
-            { &gouraud_sub_ztest_desc, gouraud_sub_ztest_pipe, 0 }, { &gouraud_qadd_desc, gouraud_qadd_pipe, 0 },
-            { &scene_tex_blend_desc, scene_tex_blend_pipe, 0 }, { &scene_tex_add_desc, scene_tex_add_pipe, 0 },
-            { &scene_tex_sub_desc, scene_tex_sub_pipe, 0 }, { &scene_tex_qadd_desc, scene_tex_qadd_pipe, 0 },
-            { &hd_scene_blend_desc, hd_scene_blend_pipe, 0 }, { &hd_scene_add_desc, hd_scene_add_pipe, 0 },
-            { &gouraud_desc, gouraud_pipe, 1 }, { &gouraud_mark_desc, gouraud_mark_pipe, 1 },
-            { &scene_tex_desc, scene_tex_pipe, 1 }, { &scene_tex_mark_desc, scene_tex_mark_pipe, 1 },
-            { &hd_cutout_desc, hd_cutout_pipe, 1 }, { &hd_cutout_mark_desc, hd_cutout_mark_pipe, 1 },
-            { &gouraud_fill_desc, gouraud_fill_pipe, 1 },
-        };
-        s_nr.cover_twin_n = cover_family_create(dev, cover_src,
-                                                (int)(sizeof cover_src / sizeof cover_src[0]),
-                                                s_nr.cover_twins);
-    }
-    {
-        /* Moby front shell, built when the rank pass (the key images'
-         * companion) came up: the twins replace the opaque ACTOR pipes on a
-         * present that drew a shell. */
-        const nr_shell_src shell_src[] = {
-            { &gouraud_desc, gouraud_pipe }, { &gouraud_mark_desc, gouraud_mark_pipe },
-            { &scene_tex_desc, scene_tex_pipe }, { &scene_tex_mark_desc, scene_tex_mark_pipe },
-            { &hd_cutout_desc, hd_cutout_pipe }, { &hd_cutout_mark_desc, hd_cutout_mark_pipe },
-        };
-        shell_built = shell_pipes_create(dev, shell_src,
-                                         (int)(sizeof shell_src / sizeof shell_src[0]),
-                                         moby_rank_pipe != NULL);
-    }
+    nr_eager_twins(dev, &D, &P, shell_built, &twins);
     nr_eager_batch_end();
+    if (shell_built)
+        s_nr.moby_shell_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * 768u, 4u);
     shell_pipes_report(shell_built);
-    s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
-    s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL -> plain sub pipe */
-    memcpy(s_nr.gouraud_hud_pipes, gouraud_hud_pipes, sizeof gouraud_hud_pipes);
-    memcpy(s_nr.scene_tex_hud_pipes, scene_tex_hud_pipes, sizeof scene_tex_hud_pipes);
-    s_nr.hd_tex_pipe  = hd_tex_pipe;
-    s_nr.hd_cutout_pipe = hd_cutout_pipe;
-    s_nr.hd_cutout_mark_pipe = hd_cutout_mark_pipe;
-    s_nr.gouraud_punch_pipe = gouraud_punch_pipe;       /* may be NULL -> front pass draws in place */
-    s_nr.scene_tex_punch_pipe = scene_tex_punch_pipe;
-    s_nr.hd_cutout_punch_pipe = hd_cutout_punch_pipe;
-    s_nr.hd_scene_blend_pipe = hd_scene_blend_pipe;
-    s_nr.hd_scene_add_pipe = hd_scene_add_pipe;
+    s_nr.scene_tex_sub_pipe = P.scene_tex_sub_pipe;
+    s_nr.scene_tex_sub_decal_pipe = P.scene_tex_sub_decal_pipe; /* may be NULL -> plain sub pipe */
+    memcpy(s_nr.gouraud_hud_pipes, P.gouraud_hud_pipes, sizeof P.gouraud_hud_pipes);
+    memcpy(s_nr.scene_tex_hud_pipes, P.scene_tex_hud_pipes, sizeof P.scene_tex_hud_pipes);
+    s_nr.hd_tex_pipe  = P.hd_tex_pipe;
+    s_nr.hd_cutout_pipe = P.hd_cutout_pipe;
+    s_nr.hd_cutout_mark_pipe = P.hd_cutout_mark_pipe;
+    s_nr.gouraud_punch_pipe = P.gouraud_punch_pipe;       /* may be NULL -> front pass draws in place */
+    s_nr.scene_tex_punch_pipe = P.scene_tex_punch_pipe;
+    s_nr.hd_cutout_punch_pipe = P.hd_cutout_punch_pipe;
+    s_nr.hd_scene_blend_pipe = P.hd_scene_blend_pipe;
+    s_nr.hd_scene_add_pipe = P.hd_scene_add_pipe;
     /* Material draws bind op_pack_tex (set 1) unconditionally - a shader that
      * references it statically needs a valid RGBA descriptor even on draws
      * with no pack replacement. Opaque white keeps it inert if sampled. */
@@ -6114,9 +6313,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
-    s_nr.freeze_overlay_pipe = freeze_overlay_pipe;
-    s_nr.freeze_plain_pipe = freeze_plain_pipe;
-    s_nr.resolve_pipe = resolve_pipe;
+    s_nr.freeze_overlay_pipe = P.freeze_overlay_pipe;
+    s_nr.freeze_plain_pipe = P.freeze_plain_pipe;
+    s_nr.resolve_pipe = P.resolve_pipe;
     s_nr.fs_quad_vb   = fs_quad_vb;
     s_nr.overlay_vb   = overlay_vb;
     s_nr.mod_ovl_vb   = mod_ovl_vb;
@@ -6124,13 +6323,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * a NULL here just disables the menu draw, it doesn't fail the renderer). */
     s_nr.menu_vb      = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MENU_MAX_VERTS);
     s_nr.menu_glyph_vb= rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * MENU_GLYPH_MAX);
-    s_nr.ovl_resolve_pipe = ovl_resolve_pipe;   /* may be NULL -> 1× fallback */
+    s_nr.ovl_resolve_pipe = P.ovl_resolve_pipe;   /* may be NULL -> 1× fallback */
     s_nr.ovl_quad_vb  = ovl_quad_vb;            /* may be NULL -> 1× fallback */
     s_nr.menu_quad_vb = menu_quad_vb;           /* may be NULL -> 1× fallback */
     s_nr.osd_glyph_vb = osd_glyph_vb;           /* may be NULL -> no OSD layer  */
     s_nr.osd_quad_vb  = osd_quad_vb;
     s_nr.osd_panel_vb = osd_panel_vb;
-    s_nr.occl_pipe    = occl_pipe;              /* may be NULL -> no moby occlusion culling */
+    s_nr.occl_pipe    = P.occl_pipe;              /* may be NULL -> no moby occlusion culling */
     s_nr.occl_grid    = occl_grid;              /* may be NULL -> no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
     s_nr.drain_tex    = drain_tex;

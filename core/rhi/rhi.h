@@ -1291,7 +1291,8 @@ void          rhi_pipe_site_visit(rhi_pipe_site site, int count);
 typedef enum {
     RHI_PIPE_PHASE_AUTO = 0,   /* bring-up before the first frame, first use after */
     RHI_PIPE_PHASE_PRECOMPILE, /* the precompile                                   */
-    RHI_PIPE_PHASE_PROBE       /* warm-boot probe creates, counted apart           */
+    RHI_PIPE_PHASE_PROBE,      /* warm-boot probe creates, counted apart           */
+    RHI_PIPE_PHASE_LAUNCHER    /* the ahead walk, before the game is picked        */
 } rhi_pipe_phase;
 
 /** @brief Set the phase the calling thread's pipeline creates are counted in until the next call.
@@ -1464,6 +1465,50 @@ rhi_walk_state rhi_precompile_walk_step(rhi_device *dev);
  * @return The walk's state. */
 rhi_walk_state rhi_precompile_walk_get(const rhi_device *dev, unsigned *done, unsigned *total,
                                        rhi_precompile_stats *st);
+
+/** @brief Open description mode: until rhi_pipeline_describe_end, rhi_create_pipeline_slot records each description instead of creating its pipeline.
+ *
+ * Display owner only. Inside it rhi_create_pipeline_slot copies a
+ * description whose stages are both .spv names (one given SPIR-V words is
+ * counted and skipped), queues nothing and sets the slot to a non-NULL
+ * marker that is never bound, read or destroyed, so a builder's tests for a
+ * created pipeline pass and it describes every pipeline it would create.
+ * The descriptions feed rhi_precompile_ahead_start.
+ * @param dev Device. */
+void           rhi_pipeline_describe_begin(rhi_device *dev);
+
+/** @brief Close description mode.
+ *
+ * Display owner only.
+ * @param dev Device.
+ * @return The descriptions recorded on the device so far. */
+unsigned       rhi_pipeline_describe_end(rhi_device *dev);
+
+/** @brief Start the ahead walk: compile every recorded description into the pipeline cache on the compile pool, before any pipeline of the game exists.
+ *
+ * The walk is the background variant walk's state machine
+ * (rhi_precompile_walk_step advances it, rhi_precompile_walk_get reads it)
+ * over the descriptions rhi_pipeline_describe_begin recorded instead of the
+ * registry: each description at both SLOT_CONTEST values, every
+ * perspective create info before any affine one, at the textured view and
+ * the current MOBY_TRUESCOPE, each key once. A key is skipped as the
+ * variant walk skips one (probe hit, manifest), and its creates count in the
+ * launcher create phase. Up to two jobs per worker are out at a time, so a
+ * step per present keeps the workers fed. Display owner only.
+ * @param dev Device.
+ * @return The create infos queued, or -1 for a NULL device, a walk already
+ *         running or no recorded description. */
+int            rhi_precompile_ahead_start(rhi_device *dev);
+
+/** @brief Stop the ahead walk: submit nothing more, drop its jobs still queued on the pool, and log what it did.
+ *
+ * Jobs a worker holds run to the end into the cache; a create of the same
+ * key submitted meanwhile waits for it on its worker (rhi_compile_pool_submit).
+ * The keys it did not reach are compiled by bring-up's creates and the
+ * game's background walk. No-op unless the ahead walk runs. Display owner
+ * only.
+ * @param dev Device, or NULL. */
+void           rhi_precompile_ahead_stop(rhi_device *dev);
 
 /* ---- variant-explicit compile jobs ------------------------------------
  * A compile job owns every input of one pipeline compile: a copy of the
@@ -1670,13 +1715,17 @@ typedef struct {
     unsigned variant_created, variant_probe_hits, variant_failed; /* callback-less jobs */
     unsigned cancelled;      /* jobs the stop dropped, run or not                */
     unsigned max_queued;     /* deepest queue                                    */
+    unsigned same_key_waits; /* jobs that waited for another worker's run of the same create info */
     double   run_ms;         /* summed run time over the workers                 */
 } rhi_compile_pool_stats;
 
 /** @brief Queue a compile job on the device's compile pool, starting the pool on first use.
  *
  * Display owner only. The job runs in the create phase the submitting
- * thread is in (rhi_pipe_phase_set, a rebuild). Without a pool (start
+ * thread is in (rhi_pipe_phase_set, a rebuild). A worker that takes a job
+ * whose create info another worker is compiling waits for that run and then
+ * creates from the pipeline cache, so one create info never compiles twice
+ * at once (counted as same_key_waits). Without a pool (start
  * failure) the job runs at once and @p fn is called before return.
  * @param dev Device the job was made for.
  * @param job The job, consumed.
@@ -1718,6 +1767,16 @@ void          rhi_compile_pool_stats_get(const rhi_device *dev, rhi_compile_pool
  * @param dev Device, or NULL. */
 void          rhi_compile_pool_stop(rhi_device *dev);
 
+/** @brief Pause or resume the compile pool: paused, each worker finishes the item it holds and takes no other, and the queue keeps the rest.
+ *
+ * Display owner only. A pool not started yet starts paused. A stop while
+ * paused drops the queue as rhi_compile_pool_stop does; a wait for the pool
+ * (rhi_compile_pool_wait, rhi_pipeline_batch_end) does not return while it
+ * is paused with work queued, so only a caller that runs no batch pauses it.
+ * @param dev Device, or NULL.
+ * @param on true to pause, false to resume. */
+void          rhi_compile_pool_pause(rhi_device *dev, bool on);
+
 /* What one pipeline batch did (rhi_pipeline_batch_end). */
 typedef struct {
     unsigned queued;      /* creates queued on the pool                         */
@@ -1751,7 +1810,9 @@ void          rhi_pipeline_batch_end(rhi_device *dev, void (*pump)(void *ctx), v
  * @p failed when the create fails. Inside a batch the create is queued and
  * @p slot is left unchanged; rhi_pipeline_batch_end sets it to the
  * installed pipeline or to @p failed, or discards the result when the slot
- * was filled first.
+ * was filled first. In description mode (rhi_pipeline_describe_begin) the
+ * description is recorded, nothing is created or queued and @p slot is set
+ * to a non-NULL marker that is no pipeline.
  * @param dev Device.
  * @param desc Pipeline description, copied.
  * @param vert_words Vertex SPIR-V words, or NULL to use desc->vert_spv.
@@ -1760,7 +1821,7 @@ void          rhi_pipeline_batch_end(rhi_device *dev, void (*pump)(void *ctx), v
  * @param frag_n Word count of @p frag_words.
  * @param slot The slot.
  * @param failed The value a failed create leaves in the slot.
- * @return 0 created, 1 queued, -1 failed. */
+ * @return 0 created, 1 queued or described, -1 failed. */
 int           rhi_create_pipeline_slot(rhi_device *dev, const rhi_pipeline_desc *desc,
                                        const uint32_t *vert_words, size_t vert_n,
                                        const uint32_t *frag_words, size_t frag_n,

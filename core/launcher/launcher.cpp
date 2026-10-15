@@ -315,7 +315,10 @@ void close_gamepad() {
 /** @brief Open the launcher's window, device and imgui context unless they exist, telling the player once when the device cannot be created.
  *
  * The window takes the game window's size, or the 640x448 layout space
- * before a game is installed.
+ * before a game is installed. A device created for a screen, before the
+ * hand-off, starts the pipeline precompile on it
+ * (openpete_native_launcher_precompile_start); one created at the hand-off
+ * leaves the compile to bring-up.
  * @param opts The options the window is created from.
  * @param continues Non-zero when the run can continue without the device
  *                  (a disc is or will be named); passed to the message.
@@ -339,6 +342,7 @@ int launcher_open(const openpete_options_t* opts, int continues) {
         return -1;
     }
     open_first_gamepad();
+    if (!s.handed_off) (void)openpete_native_launcher_precompile_start(opts);
     return 0;
 }
 
@@ -424,6 +428,25 @@ Ask wait_input() {
         if (first == Ask::None) first = a;
     } while (SDL_PollEvent(&e));
     return first;
+}
+
+/** @brief Harness: whether the scripted pick or drop may act yet.
+ *
+ * OPENPETE_LAUNCHER_PICK_DELAY_MS=<ms> holds OPENPETE_LAUNCHER_SELECT and
+ * OPENPETE_LAUNCHER_DROP until that long after the first call, which the
+ * selector and the drop screen make after their first frame; the screens
+ * keep presenting meanwhile. Unset, or without screens, they act at once.
+ * @return true when the scripted action may run. */
+bool scripted_due() {
+    static Uint64 first_ms = 0;
+    const char* e = getenv("OPENPETE_LAUNCHER_PICK_DELAY_MS");
+    if (!e || !*e || !s.ui) return true;
+    const Uint64 now = SDL_GetTicks();
+    if (!first_ms) {
+        first_ms = now ? now : 1;
+        OPL_INFO_F("launcher", "scripted pick held for %s ms", e);
+    }
+    return now - first_ms >= strtoull(e, nullptr, 10);
 }
 
 /** @brief Harness: the index OPENPETE_LAUNCHER_SELECT names, or -1 when unset or out of range.
@@ -558,7 +581,7 @@ bool launcher_neutral(void) { return !s.game || !s.game->game_id; }
 const char* launcher_scripted_drop(void) {
     if (s.scripted_taken) return nullptr;
     const char* e = getenv("OPENPETE_LAUNCHER_DROP");
-    if (!e || !*e) return nullptr;
+    if (!e || !*e || !scripted_due()) return nullptr;
     s.scripted_taken = true;
     snprintf(s.drop_path, sizeof s.drop_path, "%s", e);
     OPL_INFO_F("launcher", "scripted drop: %s", s.drop_path);
@@ -578,7 +601,7 @@ int launcher_select(const char* const* labels, int count) {
         v.clicked = -1;
         present(v);
         if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
-        if (scripted >= 0) return scripted;
+        if (scripted >= 0 && scripted_due()) return scripted;
         if (v.clicked >= 0) return v.clicked;
         if (SDL_GetAtomicInt(&s.dialog_got)) {
             SDL_SetAtomicInt(&s.dialog_got, 0);
@@ -676,6 +699,13 @@ int openpete_launcher_run_task(openpete_launcher_task_fn fn, void* userdata) {
     SDL_WaitThread(th, nullptr);
     s.task_active = false;
     return ctx.rc;
+}
+
+int openpete_launcher_run_task_exclusive(openpete_launcher_task_fn fn, void* userdata) {
+    openpete_native_launcher_compile_pause(1);
+    const int rc = openpete_launcher_run_task(fn, userdata);
+    openpete_native_launcher_compile_pause(0);
+    return rc;
 }
 
 int openpete_launcher_handoff(openpete_options_t* opts) {

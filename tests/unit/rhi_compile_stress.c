@@ -44,7 +44,11 @@
  * rebuilds, superseded one, discarded stale results, lost a member to
  * retirement in flight and failed none; no seam violation was seen; a link
  * and unlink made off the display owner each counted one seam violation (the
- * negative control); and a pool stopped with jobs queued and in flight
+ * negative control); the launcher's precompile recorded one built-in
+ * description and skipped one given SPIR-V words, ran nothing while the
+ * pool was paused, compiled every key it queued once resumed, and copies of
+ * one create info submitted together waited for each other (the ahead
+ * control); and a pool stopped with jobs queued and in flight
  * accounted every job as run or cancelled (the stop control);
  * 1 otherwise; 77 when no Vulkan device can be created.
  *
@@ -1004,6 +1008,73 @@ static int stale_control(void)
     return ok ? 0 : 1;
 }
 
+/** @brief Wait until the pool has run a number of jobs since a snapshot, or a second passes.
+ *
+ * @param p0 The snapshot.
+ * @param n The jobs to wait for.
+ * @return The jobs run since the snapshot. */
+static unsigned pool_ran_since(const rhi_compile_pool_stats *p0, unsigned n)
+{
+    rhi_compile_pool_stats p;
+    for (int i = 0; i < 100; i++) {
+        rhi_compile_pool_stats_get(s_dev, &p);
+        if (p.run - p0->run >= n) break;
+        SDL_Delay(10);
+    }
+    rhi_compile_pool_stats_get(s_dev, &p);
+    return p.run - p0->run;
+}
+
+/** @brief The launcher's precompile on the pool: description mode records without creating, a paused pool runs nothing until resumed, the ahead walk compiles every recorded key, and copies of one create info submitted at once wait for each other.
+ *
+ * @return 1 when a step misbehaves or is not engaged, else 0. */
+static int ahead_control(void)
+{
+    void *slot[2] = { NULL, NULL };
+    rhi_pipeline_describe_begin(s_dev);
+    rhi_create_pipeline_slot(s_dev, &k_scene_desc, NULL, 0, NULL, 0, &slot[0], NULL);
+    rhi_create_pipeline_slot(s_dev, &k_postfx_desc, NULL, 0, s_frag_words, s_frag_n, &slot[1], NULL);
+    const unsigned described = rhi_pipeline_describe_end(s_dev);
+    const bool marked = slot[0] && slot[1];
+
+    rhi_compile_pool_stats p0;
+    rhi_compile_pool_stats_get(s_dev, &p0);
+    rhi_compile_pool_pause(s_dev, true);
+    const int keys = rhi_precompile_ahead_start(s_dev);
+    (void)rhi_precompile_walk_step(s_dev);
+    const unsigned paused_ran = pool_ran_since(&p0, 1);
+    rhi_compile_pool_pause(s_dev, false);
+    for (int i = 0; i < 500 && rhi_precompile_walk_step(s_dev) == RHI_WALK_RUNNING; i++) SDL_Delay(10);
+    unsigned done = 0, total = 0;
+    rhi_precompile_stats st;
+    const rhi_walk_state ws = rhi_precompile_walk_get(s_dev, &done, &total, &st);
+
+    /* Copies of one create info submitted together: the workers that take a
+     * copy while another runs it wait. */
+    rhi_compile_pool_stats q0;
+    rhi_compile_pool_stats_get(s_dev, &q0);
+    const unsigned copies = 4;
+    rhi_pipe_variant var = rhi_pipe_variant_current();
+    var.notex = !var.notex;
+    for (unsigned i = 0; i < copies; i++)
+        rhi_compile_pool_submit(s_dev, rhi_compile_job_new(s_dev, &k_scene_desc, NULL, 0, NULL, 0,
+                                                           var, 0, 0),
+                                RHI_COMPILE_VARIANT, NULL, NULL);
+    rhi_compile_pool_wait(s_dev, NULL, NULL);
+    rhi_compile_pool_stats q1;
+    rhi_compile_pool_stats_get(s_dev, &q1);
+    const unsigned waits = q1.same_key_waits - q0.same_key_waits;
+
+    const bool ok = described == 1 && marked && keys > 0 && paused_ran == 0 &&
+                    ws == RHI_WALK_DONE && st.created + st.probe_hits == (unsigned)keys &&
+                    waits >= 1 && q1.variant_failed == q0.variant_failed;
+    printf("ahead_control: described %u (marked %d), keys %d, run while paused %u, walk %s "
+           "created %u probe hits %u of %u, same-key waits %u of %u copies: %s\n", described,
+           marked, keys, paused_ran, ws == RHI_WALK_DONE ? "done" : "NOT DONE", st.created,
+           st.probe_hits, total, waits, copies, ok ? "engaged" : "NOT ENGAGED");
+    return ok ? 0 : 1;
+}
+
 /** @brief Stop the pool with jobs queued and in flight: every job must be run or cancelled, none lost.
  *
  * @return 1 when the counts do not add up or nothing was cancelled, else 0. */
@@ -1140,6 +1211,7 @@ int main(int argc, char **argv)
            seam_hits == 2 ? "engaged" : "NOT ENGAGED");
     if (seam_hits != 2) fail = 1;
     fail |= stale_control();
+    fail |= ahead_control();
     fail |= stop_control();
 
     openpete_mods_postfx_retire_all();

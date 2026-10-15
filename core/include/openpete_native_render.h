@@ -85,7 +85,9 @@ struct SDL_Window *openpete_native_launcher_window(void);
  * The begin waits for the frame slot (blocking present); a refused begin (a
  * pending swapchain rebuild, a minimized window) draws nothing. The frame
  * is a launcher frame for the boot facts (rhi_boot_launcher_frames), so it
- * neither sets the first-frame fact nor ends the bring-up create phase.
+ * neither sets the first-frame fact nor ends the bring-up create phase. On
+ * the launcher's own device it first steps the launcher's precompile
+ * (openpete_native_launcher_precompile_start).
  * @param dev The device; NULL for the launcher's own.
  * @param r Clear red, 0..1.
  * @param g Clear green, 0..1.
@@ -109,6 +111,31 @@ int openpete_native_launcher_present(struct rhi_device *dev, float r, float g, f
  *         fails, or the PNG cannot be written. */
 int openpete_native_launcher_shot(struct rhi_device *dev, const char *path, const uint8_t bg[3],
                                   unsigned *differ, unsigned *total);
+
+/** @brief Start compiling bring-up's pipelines into the pipeline cache on the launcher's device, before a game is picked.
+ *
+ * Runs once per run, on the display owner, after the launcher's device
+ * exists. Bring-up's eager pipeline builders and the terrain cache's run in
+ * description mode (rhi_pipeline_describe_begin) and the descriptions start
+ * the ahead walk (rhi_precompile_ahead_start): both SLOT_CONTEST values,
+ * perspective before affine, on the compile pool, stepped by each launcher
+ * present (openpete_native_launcher_present). Mod pipelines are not known
+ * before the pick and are left to bring-up. Bring-up stops the walk before
+ * its first create; the keys it did not reach compile at bring-up or in the
+ * game's background walk. Skipped where bring-up skips its precompile (a
+ * synchronous run, a software device) unless OPENPETE_PRECOMPILE_AHEAD or
+ * OPENPETE_PRECOMPILE_FORCE asks for it.
+ * @param opts The game-neutral options.
+ * @return The create infos queued; 0 when skipped or already started. */
+int openpete_native_launcher_precompile_start(const openpete_options_t *opts);
+
+/** @brief Pause or resume the launcher's pipeline compile pool around work that uses every core (the first-boot module build).
+ *
+ * Paused, each worker finishes the pipeline it holds and starts no other;
+ * the queue is kept. A pause requested before the pool or the device exists
+ * applies when the precompile starts. Bring-up resumes a paused pool.
+ * @param on Nonzero to pause, 0 to resume. */
+void openpete_native_launcher_compile_pause(int on);
 
 /** @brief Destroy the launcher's imgui context, device and window when the run ends before bring-up adopts them.
  *

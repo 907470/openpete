@@ -136,6 +136,15 @@ void openpete_launcher_progress(const char* stage, int done, int total);
  * @return fn's return value. */
 int  openpete_launcher_run_task(openpete_launcher_task_fn fn, void* userdata);
 
+/** @brief Run a stage that uses every core (the first-boot module build) as openpete_launcher_run_task does, with the launcher's pipeline compile paused for its duration.
+ *
+ * Each compile worker finishes the pipeline it holds and starts no other
+ * until the stage returns (openpete_native_launcher_compile_pause).
+ * @param fn The stage.
+ * @param userdata Passed to fn.
+ * @return fn's return value. */
+int  openpete_launcher_run_task_exclusive(openpete_launcher_task_fn fn, void* userdata);
+
 /** @brief Hand the window, the device and the imgui context to the game, creating them now when no screen did.
  *
  * Windowed runs only; a headless run hands over nothing. After the hand-off

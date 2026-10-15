@@ -265,6 +265,12 @@ typedef struct {
  * @param batch Opens (1) and closes (0) the creates' bracket; NULL for none.
  * @return 1 when the cache is ready, 0 otherwise. */
 int  openpete_tercache_init(struct rhi_device *dev, void (*batch)(int open));
+/** @brief Describe the terrain cache's pipelines without creating them: run the builder openpete_tercache_init runs inside the caller's rhi_pipeline_describe_begin.
+ *
+ * Touches no cache state, so it runs before bring-up (the launcher's
+ * precompile). Display owner only.
+ * @param dev Device in description mode; NULL does nothing. */
+void openpete_tercache_describe(struct rhi_device *dev);
 /** @brief Destroy the terrain cache's device objects and zero its state, keeping the final stats.
  *
  * The stats are snapshotted first so a census printed after teardown

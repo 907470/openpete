@@ -34,6 +34,7 @@ typedef enum {
     RHI_PC_PHASE_REBUILD,       /* a live rebuild (rhi_rebuild_request)      */
     RHI_PC_PHASE_FIRST_USE,     /* after the first frame, outside the above  */
     RHI_PC_PHASE_PROBE,         /* inside rhi_pipe_phase_set(PROBE)           */
+    RHI_PC_PHASE_LAUNCHER,      /* the ahead walk (rhi_precompile_ahead_start) */
     RHI_PC_PHASES
 } rhi_pc_phase;
 
@@ -164,6 +165,15 @@ void rhi_pc_add_base(rhi_pipe_site site, const rhi_pc_variant *v, int nv);
  * At OPENPETE_PIPE_CENSUS=2 the create is also logged on one line.
  * @param c The create. */
 void rhi_pc_record_create(const rhi_pc_create *c);
+
+/** @brief Count a successful create whose create info the pipeline cache already holds, in its phase.
+ *
+ * Reported as the known= field of the phase's pipe-tally line: the creates
+ * whose key the cache file's manifest listed at load or an earlier create
+ * of the run compiled, whatever the driver's creation feedback says (a
+ * driver without a pipeline cache reports no hit). Safe on any thread.
+ * @param phase The create's phase. */
+void rhi_pc_known_add(rhi_pc_phase phase);
 
 /** @brief Count one rebuild call as a visit of the rebuild class. */
 void rhi_pc_rebuild_visit(void);

@@ -13,7 +13,7 @@
 #define PC_EVENTS   24   /* hitch events listed individually per run */
 
 static const char *const k_phase_name[RHI_PC_PHASES] = {
-    "bringup", "precompile", "rebuild", "first_use", "probe"
+    "bringup", "precompile", "rebuild", "first_use", "probe", "launcher"
 };
 static const char *const k_kind_name[RHI_PC_KINDS] = {
     "pipeline", "lib_preraster", "lib_fragment", "lib_output", "link"
@@ -41,6 +41,7 @@ static SDL_Mutex  *s_mx;
 static atomic_int  s_mx_init;     /* 0 none, 1 creating, 2 ready; release publishes s_mx */
 static SDL_AtomicInt s_visits[RHI_PIPE_SITES];
 static pc_tally    s_tally[RHI_PC_PHASES];
+static unsigned    s_known[RHI_PC_PHASES];   /* rhi_pc_known_add */
 static pc_tally    s_kind[RHI_PIPE_SITES][RHI_PC_KINDS];
 static pc_hitch    s_hitch[RHI_PIPE_SITES];
 static rhi_pc_create s_events[PC_EVENTS];
@@ -300,6 +301,14 @@ void rhi_pc_record_create(const rhi_pc_create *c)
                (unsigned long long)c->present);
 }
 
+void rhi_pc_known_add(rhi_pc_phase phase)
+{
+    if ((unsigned)phase >= RHI_PC_PHASES) return;
+    pc_lock();
+    s_known[phase]++;
+    pc_unlock();
+}
+
 void rhi_pipe_site_visit(rhi_pipe_site site, int count)
 {
     if ((unsigned)site < RHI_PIPE_SITES && count > 0) SDL_AddAtomicInt(&s_visits[site], count);
@@ -334,9 +343,9 @@ static void pc_report_tally(void)
 {
     for (int p = 0; p < RHI_PC_PHASES; p++) {
         const pc_tally *t = &s_tally[p];
-        PC_LOG("pipe-tally: phase=%s creates=%u hit=%u miss=%u unknown=%u wall_ms=%.1f driver_ms=%.1f\n",
-               k_phase_name[p], t->creates, t->hit, t->miss, t->unknown,
-               (double)t->wall_ns / 1e6, (double)t->driver_ns / 1e6);
+        PC_LOG("pipe-tally: phase=%s creates=%u hit=%u miss=%u unknown=%u known=%u wall_ms=%.1f "
+               "driver_ms=%.1f\n", k_phase_name[p], t->creates, t->hit, t->miss, t->unknown,
+               s_known[p], (double)t->wall_ns / 1e6, (double)t->driver_ns / 1e6);
     }
 }
 
