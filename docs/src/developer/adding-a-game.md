@@ -258,10 +258,11 @@ which carries the three games today:
 
 ## 8. What stays Spyro-1-specific
 
-- Spyro 1 has its own entry (`games/spyro-1/main.cpp`, `spyro1_main`) and
-  the Win32 application manifest and VERSIONINFO resource
-  (`openpete-spyro1.rc.in`, `openpete-spyro1.manifest`); it is the one game
-  `games/shipped.toml` lists. Every game has the launcher
+- Spyro 1 has its own entry (`games/spyro-1/main.cpp`, `spyro1_main`); it
+  is the one game `games/shipped.toml` lists. The executable's Win32 icon,
+  application manifest and VERSIONINFO are OpenPete's, from
+  `games/common/openpete.rc.in` and `games/common/openpete.manifest`, and
+  belong to no game. Every game has the launcher
   (`core/launcher/`) and, with `MOD_SDK`, the mod SDK.
 - The dragon-rescue golden tier (`tests/golden/spyro-1/dragons/`) exists
   for Spyro 1 alone. The presentation golden itself is per game

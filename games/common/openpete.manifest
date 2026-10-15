@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- Application manifest of the executable that runs Spyro 1, embedded as resource
-     1 of type 24 (RT_MANIFEST) by openpete-spyro1.rc.in.
+<!-- Application manifest of an OpenPete executable, embedded as resource
+     1 of type 24 (RT_MANIFEST) by openpete.rc.in.
      activeCodePage UTF-8: the narrow (A) Win32 and CRT file APIs take
        UTF-8, the encoding SDL returns, so an install path or user name
        outside the legacy code page resolves (Windows 10 1903 and later).
@@ -8,7 +8,7 @@
      supportedOS: Windows 10/11, so no compatibility shims apply.
      asInvoker: no elevation. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="OpenPete.Spyro1" version="1.0.0.0" processorArchitecture="amd64"/>
+  <assemblyIdentity type="win32" name="OpenPete" version="1.0.0.0" processorArchitecture="amd64"/>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

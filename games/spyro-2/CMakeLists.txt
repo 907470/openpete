@@ -112,19 +112,3 @@ add_custom_command(
 add_custom_target(spyro2_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro2_sfx_names.h)
 add_dependencies(${OPENPETE_GAME_HOST} spyro2_sfx_names)
 add_dependencies(openpete_generated_headers spyro2_sfx_names)
-
-# The Win32 icon resource: the same source as the window icon, upscaled into
-# a multi-size .ico. The one executable carries the first linked game's
-# resources (openpete_game_win32_resource).
-if(WIN32)
-    set(_spyro2_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro2.ico)
-    set(_spyro2_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro2.rc)
-    add_custom_command(
-        OUTPUT  ${_spyro2_icon_ico}
-        COMMAND python3 ${_spyro2_icon_tool} ${_spyro2_icon_args}
-                --ico ${_spyro2_icon_ico}
-        DEPENDS ${_spyro2_icon_deps}
-        COMMENT "Generating openpete-spyro2.ico")
-    file(WRITE ${_spyro2_icon_rc} "1 ICON \"${_spyro2_icon_ico}\"\n")
-    openpete_game_win32_resource(RC ${_spyro2_icon_rc} GENERATED ${_spyro2_icon_ico})
-endif()

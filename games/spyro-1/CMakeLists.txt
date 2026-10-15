@@ -3,8 +3,8 @@
 # The module and executable skeleton come from cmake/openpete_game.cmake;
 # this file adds what only this game has: its first-boot extraction, the
 # mod SDK and its docs, the build-time mod compile,
-# the decomp-derived icon, the SoundTable names, the state-region tables,
-# the Windows subsystem choice, and the browser link.
+# the decomp-derived window icon, the SoundTable names, the state-region
+# tables, the Windows subsystem choice, and the browser link.
 
 set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
 
@@ -29,9 +29,9 @@ endif()
 #   OPENPETE_ROM_FREE_ICON=ON (dist presets) - original procedural icon
 #     from tools/gen_dist_icon.py; also drops the build's dependency on
 #     the private decomp submodule's assets.
-# Either path emits a C source for SDL_SetWindowIcon (Linux/macOS +
-# live-window fallback on Windows), passed to openpete_add_game as the
-# ICON_SOURCE, and (below the call) a .ico for the Win32 resource.
+# Either path emits the C source of the game window's icon
+# (SDL_SetWindowIcon), passed to openpete_add_game as the ICON_SOURCE. The
+# executable's own icon is OpenPete's (cmake/openpete_game.cmake).
 option(OPENPETE_ROM_FREE_ICON
        "Use the original (non-ROM) distribution icon" OFF)
 set(_spyro_icon_c ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_spyro1_icon.c)
@@ -118,34 +118,6 @@ openpete_add_game(spyro-1
         # above), recompile, compile, link.
         ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp
     FIRST_BOOT_EXTRACT spyro1_extract_first_boot_inputs)
-
-# The Win32 icon, application manifest and VERSIONINFO resources
-# (openpete-spyro1.rc.in, openpete-spyro1.manifest), on the executable that
-# runs Spyro 1, whose file name the VERSIONINFO names. The
-# version (OPENPETE_VERSION_NUM / OPENPETE_VERSION_STR) comes from
-# core/CMakeLists.txt, derived from the build version the game displays.
-if(WIN32)
-    get_filename_component(_spyro_rc_image ${OPENPETE_GAME_BIN} NAME_WE)
-    set(_spyro_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.ico)
-    set(_spyro_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.rc)
-    if(OPENPETE_ROM_FREE_ICON)
-        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} --ico ${_spyro_icon_ico})
-    else()
-        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
-            --ico ${_spyro_icon_ico})
-    endif()
-    add_custom_command(
-        OUTPUT  ${_spyro_icon_ico}
-        COMMAND ${_spyro_icon_ico_cmd}
-        DEPENDS ${_spyro_icon_deps}
-        COMMENT "Generating openpete-spyro1.ico")
-    set(_spyro_manifest ${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.manifest)
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.rc.in
-                   ${_spyro_icon_rc} @ONLY)
-    openpete_game_win32_resource(RC ${_spyro_icon_rc}
-        GENERATED ${_spyro_icon_ico}
-        DEPENDS   ${_spyro_manifest})
-endif()
 
 # SoundTable slot names (tools/gen_sfx_names.py over the decomp's
 # sound_table.h): one table shared by the sfx resolver, the sfx pack's

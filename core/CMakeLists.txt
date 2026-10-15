@@ -421,7 +421,7 @@ if(NOT DEFINED OPENPETE_BUILD_DISTRIBUTED)
         set(OPENPETE_BUILD_DISTRIBUTED 0)
     endif()
 endif()
-# The Windows VERSIONINFO resource (games/*/openpete-*.rc.in) takes the same
+# The Windows VERSIONINFO resource (games/common/openpete.rc.in) takes the same
 # version as four integers: a `vX.Y.Z` or `vX.Y.Z-N-gSHA` describe string
 # becomes X,Y,Z,N (N = commits past the tag, 0 on the tag); a version that is
 # not in that form (a bare SHA, "unknown") becomes 0,0,0,0. The string fields

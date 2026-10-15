@@ -276,29 +276,37 @@ function(_openpete_merge_module_defs OUT_DEF DEFS DEF_TARGETS)
     add_dependencies(openpete_module_def ${DEF_TARGETS})
 endfunction()
 
-# The Win32 resource script (icon, application manifest, VERSIONINFO) of the
-# executable that runs the calling game: RC, compiled with GENERATED (files
-# custom commands of the calling directory write) and DEPENDS (other files
-# RC includes) as object dependencies. Called in the game's directory after
-# openpete_add_game. A per-game executable takes its game's script. The one
-# executable takes the first registered (OPENPETE_GAMES order), since every
-# game's script defines resource 1 of each type and two would collide at
-# link; openpete_link_games attaches it.
-function(openpete_game_win32_resource)
-    cmake_parse_arguments(R "" "RC" "GENERATED;DEPENDS" ${ARGN})
-    if(NOT OPENPETE_ONE_EXECUTABLE)
-        set_source_files_properties(${R_RC} PROPERTIES OBJECT_DEPENDS "${R_DEPENDS}")
-        target_sources(${OPENPETE_GAME_EXE} PRIVATE ${R_GENERATED} ${R_RC})
-        return()
+# The Win32 resources (icon, application manifest, VERSIONINFO) of the
+# executable TARGET, whose file name is IMAGE.exe: games/common/openpete.rc.in
+# configured with the OpenPete icon (tools/gen_dist_icon.py, original art
+# with no game bytes, on every preset), games/common/openpete.manifest and
+# the version core/CMakeLists.txt derives (OPENPETE_VERSION_NUM /
+# OPENPETE_VERSION_STR). The .ico is written at configure time, so the
+# resource has no custom-command dependency across directories; the
+# generator is a configure dependency. Called for the one executable by
+# openpete_link_games and for a per-game executable by openpete_add_game.
+function(_openpete_exe_win32_resource TARGET IMAGE)
+    set(_tool ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py)
+    set(_rc_icon ${CMAKE_BINARY_DIR}/gen/openpete.ico)
+    set(_rc_manifest ${CMAKE_SOURCE_DIR}/games/common/openpete.manifest)
+    set(_rc_image ${IMAGE})
+    get_property(_have_icon GLOBAL PROPERTY OPENPETE_EXE_ICON_WRITTEN)
+    if(NOT _have_icon)
+        file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/gen)
+        execute_process(
+            COMMAND python3 ${_tool} --ico ${_rc_icon}
+            RESULT_VARIABLE _rc)
+        if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR "gen_dist_icon.py --ico failed (${_rc})")
+        endif()
+        set_property(GLOBAL PROPERTY OPENPETE_EXE_ICON_WRITTEN ON)
     endif()
-    get_property(_have GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC SET)
-    if(_have)
-        return()
-    endif()
-    add_custom_target(${OPENPETE_GAME_TAG}_win32_resource DEPENDS ${R_GENERATED})
-    set_property(GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC ${R_RC})
-    set_property(GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_DEPENDS ${R_GENERATED} ${R_DEPENDS})
-    set_property(GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_TARGET ${OPENPETE_GAME_TAG}_win32_resource)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_tool})
+    set(_rc ${CMAKE_BINARY_DIR}/gen/${IMAGE}.rc)
+    configure_file(${CMAKE_SOURCE_DIR}/games/common/openpete.rc.in ${_rc} @ONLY)
+    set_source_files_properties(${_rc} PROPERTIES
+        OBJECT_DEPENDS "${_rc_icon};${_rc_manifest}")
+    target_sources(${TARGET} PRIVATE ${_rc})
 endfunction()
 
 # ELF: <tag>_module_imports runs tools/check_module_imports.py over the
@@ -861,6 +869,9 @@ function(openpete_add_game GAME_ID)
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW AND NOT OPENPETE_ONE_EXECUTABLE)
         _openpete_stage_openal(${_exe} ${_exe_dir})
     endif()
+    if(WIN32 AND NOT OPENPETE_ONE_EXECUTABLE)
+        _openpete_exe_win32_resource(${_exe} ${_exe})
+    endif()
 
     # Variables the mod SDK and the game's CMakeLists read.
     set(OPENPETE_GAME_EXE     ${_exe})
@@ -895,9 +906,8 @@ endfunction()
 # <tag>_module_imports; on PE each module's link against the implib of the
 # merged .def, and the executable's link of that .def) and the include-path
 # invariant over every host TU (openpete_game_include_check,
-# tools/check_game_includes.py). On PE it also carries the first registered
-# Win32 resource script (openpete_game_win32_resource) and OpenAL32.dll
-# beside it.
+# tools/check_game_includes.py). On PE it also carries the OpenPete Win32
+# resources (_openpete_exe_win32_resource) and OpenAL32.dll beside it.
 function(openpete_link_games)
     if(NOT OPENPETE_ONE_EXECUTABLE)
         # A tree reconfigured from the one executable keeps its file.
@@ -940,14 +950,7 @@ function(openpete_link_games)
             add_dependencies(openpete_first_boot_kit openpete_module_implib)
         endif()
         _openpete_stage_openal(openpete ${CMAKE_BINARY_DIR})
-        get_property(_rc GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC)
-        if(_rc)
-            get_property(_rc_deps GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_DEPENDS)
-            get_property(_rc_target GLOBAL PROPERTY OPENPETE_EXE_WIN32_RC_TARGET)
-            set_source_files_properties(${_rc} PROPERTIES OBJECT_DEPENDS "${_rc_deps}")
-            target_sources(openpete PRIVATE ${_rc})
-            add_dependencies(openpete ${_rc_target})
-        endif()
+        _openpete_exe_win32_resource(openpete openpete)
     else()
         # Each module's imports against the one executable; the forwarders
         # are every linked game's, since the executable defines them all.

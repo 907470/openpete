@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Generate the ROM-free distribution icon (original art, authored here -
-no game bytes). Emits the same artifacts as
-mcs_icon_to_ico.py: a C file defining the runtime descriptor's icon
-(openpete_game_icon_t, named by --c-name) for SDL_SetWindowIcon, a Windows .ico (32-bit BMP-format entry), and/or a PNG
-for the Linux .desktop / AppImage icon.
+"""Generate the OpenPete icon (original art, authored here - no game bytes).
+
+Emits the same artifacts as mcs_icon_to_ico.py: a C file defining a runtime
+descriptor's icon (openpete_game_icon_t, named by --c-name) for
+SDL_SetWindowIcon, a Windows .ico (16, 32, 48 and 256 px entries scaled
+nearest-neighbour from the mark), and/or a PNG for the Linux .desktop /
+AppImage icon. Without --game the mark is the executable's own (the Win32
+resource and the AppImage icon); --game selects a game's ROM-free window
+icon, which is the same mark for every game today.
 
 The design is a 16x16 pixel mark: dark-purple rounded tile, two orange
 "horn" triangles and eyes - abstract, geometric, original.
@@ -46,8 +50,9 @@ PALETTE = {
 
 W = H = 16
 
-# The mark per game. Every game currently ships the one mark above; a game
-# gains its own by naming a different grid here.
+# The ROM-free window icon per game. Every game currently shows the
+# executable's mark above; a game gains its own by naming a different grid
+# here.
 GAME_GRIDS = {
     "spyro-1": GRID,
     "spyro-2": GRID,
@@ -80,21 +85,64 @@ def write_c(path: Path, px, name: str):
                 f"const openpete_game_icon_t {name} = {{ k_rgba, {W}, {H} }};\n")
 
 
-def write_ico(path: Path, px):
-    # Single 16x16 32-bit BMP-format entry.
-    xor_rows = b""
-    for y in range(H - 1, -1, -1):          # bottom-up
-        for x in range(W):
-            r, g, b, a = px[y * W + x]
+ICO_SIZES = (16, 32, 48, 256)
+
+
+def scaled(px, size: int):
+    """The mark scaled nearest-neighbour to size x size (an integer multiple
+    of the 16px grid), as a row-major RGBA list."""
+    k = size // W
+    return [px[(y // k) * W + (x // k)] for y in range(size) for x in range(size)]
+
+
+def bmp_entry(px, size: int) -> bytes:
+    """One 32-bit BMP-format .ico image: the header, the bottom-up BGRA rows
+    and an all-zero AND mask (the alpha channel governs)."""
+    xor_rows = bytearray()
+    for y in range(size - 1, -1, -1):
+        for x in range(size):
+            r, g, b, a = px[y * size + x]
             xor_rows += struct.pack("<BBBB", b, g, r, a)
-    and_stride = ((W + 31) // 32) * 4
-    and_rows = b"\x00" * (and_stride * H)   # alpha channel governs
-    bmp = struct.pack("<IiiHHIIiiII", 40, W, H * 2, 1, 32, 0,
+    and_rows = b"\x00" * (((size + 31) // 32) * 4 * size)
+    bmp = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0,
                       len(xor_rows) + len(and_rows), 0, 0, 0, 0)
-    img = bmp + xor_rows + and_rows
-    hdr = struct.pack("<HHH", 0, 1, 1)
-    entry = struct.pack("<BBBBHHII", W, H, 0, 0, 1, 32, len(img), 22)
-    path.write_bytes(hdr + entry + img)
+    return bmp + bytes(xor_rows) + and_rows
+
+
+def write_ico(path: Path, px):
+    # 16-48 px as BMP entries; 256 px as a PNG entry, the form Windows
+    # (Vista and later) reads for that size.
+    images = []
+    for size in ICO_SIZES:
+        big = scaled(px, size)
+        images.append(png_bytes(big, size, size) if size == 256
+                      else bmp_entry(big, size))
+    hdr = struct.pack("<HHH", 0, 1, len(images))
+    offset = 6 + 16 * len(images)
+    entries = b""
+    for size, img in zip(ICO_SIZES, images):
+        dim = 0 if size == 256 else size    # 0 encodes 256
+        entries += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32,
+                               len(img), offset)
+        offset += len(img)
+    path.write_bytes(hdr + entries + b"".join(images))
+
+
+def png_bytes(px, w: int, h: int) -> bytes:
+    """An 8-bit RGBA PNG of the row-major w x h image px."""
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)                        # filter type 0 (None)
+        for x in range(w):
+            raw += bytes(px[y * w + x])
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)   # 8-bit RGBA
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+            + chunk(b"IEND", b""))
 
 
 def write_png(path: Path, px, scale: int):
@@ -105,21 +153,8 @@ def write_png(path: Path, px, scale: int):
     resampled to mush by someone else's filter. Integer nearest-neighbour
     keeps the pixel mark crisp at any size the desktop asks for.
     """
-    w, h = W * scale, H * scale
-    raw = bytearray()
-    for y in range(h):
-        raw.append(0)                        # filter type 0 (None)
-        row = px[(y // scale) * W:(y // scale) * W + W]
-        for x in range(w):
-            raw += bytes(row[x // scale])
-    def chunk(tag, data):
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)   # 8-bit RGBA
-    path.write_bytes(b"\x89PNG\r\n\x1a\n"
-                     + chunk(b"IHDR", ihdr)
-                     + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-                     + chunk(b"IEND", b""))
+    size = W * scale
+    path.write_bytes(png_bytes(scaled(px, size), size, size))
 
 
 def main() -> int:
@@ -129,13 +164,14 @@ def main() -> int:
                     help="the openpete_game_icon_t the --c file defines")
     ap.add_argument("--ico", type=Path)
     ap.add_argument("--png", type=Path)
-    ap.add_argument("--game", choices=sorted(GAME_GRIDS), default="spyro-1",
-                    help="which game's mark to emit")
+    ap.add_argument("--game", choices=sorted(GAME_GRIDS),
+                    help="emit this game's window icon instead of the "
+                         "executable's mark")
     ap.add_argument("--png-size", type=int, default=256,
                     help="PNG edge in pixels; rounded down to a whole "
                          "multiple of the 16px mark")
     args = ap.parse_args()
-    px = pixels(GAME_GRIDS[args.game])
+    px = pixels(GAME_GRIDS[args.game] if args.game else GRID)
     if args.c and not args.c_name:
         ap.error("--c needs --c-name")
     if args.c:
