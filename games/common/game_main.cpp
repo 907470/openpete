@@ -45,13 +45,15 @@ static int identify(const openpete_options_t* opts, const char* library_game,
     return openpete_identify(&in, id);
 }
 
-/** @brief The launcher's view of this game: its id, name and library module path; no known discs.
+/** @brief The launcher's view of this game: its id, name, known discs (the runtime descriptor's) and library module path.
  *
  * @return The descriptor, built on first call. */
 static const openpete_launcher_game* launcher_game_desc(void) {
     static openpete_launcher_game g;
     g.game_id = game_get_id();
     g.display_name = game_get_display_name();
+    g.known_discs = openpete_game_runtime()->known_discs;
+    g.known_disc_count = openpete_game_runtime()->known_disc_count;
     g.module_path = openpete_game_library_module_path;
     return &g;
 }

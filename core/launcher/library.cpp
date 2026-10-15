@@ -238,19 +238,36 @@ bool entry_is_ours(const Meta& m) {
 
 /* Static storage for the strings the options point into. */
 char s_disc_path[4096];
+/* The directory of the entry boot_entry last booted. */
+char s_entry_dir[4096];
 /* The game recorded on the entry boot_entry last booted; s_booted is 0 until
  * an entry boots. */
 char s_selected_game[32];
 int  s_booted;
 
+/** @brief Write the module path the launcher's game names for a library entry.
+ *
+ * @param entry_dir The entry's directory.
+ * @param out Receives the path, "" when the game names none (a static
+ *        build, or no game installed yet); NULL for none.
+ * @param cap The capacity of out. */
+void entry_module_path(const char* entry_dir, char* out, size_t cap) {
+    if (!out || !cap) return;
+    out[0] = 0;
+    const openpete_launcher_game* g = launcher_game();
+    if (g && g->module_path && g->module_path(entry_dir, out, cap) != 0)
+        out[0] = 0;   /* static build: no module in the library */
+}
+
 /** @brief Points the options at a library entry's cue and module path and stamps the entry played.
  *
- * Copies the entry's disc.cue path into static storage and sets
- * opts->disc_path to it, records the entry's game for
+ * Copies the entry's disc.cue path and directory into static storage and
+ * sets opts->disc_path to the cue, records the entry's game for
  * openpete_launcher_selected_game, and writes the module path the game's
  * module_path hook names ("" without one). The entry's last_played is
- * rewritten only for this game's entries: another game's disc is refused by
- * identification and stays unplayed.
+ * rewritten only for this game's entries, or for every entry while no game
+ * is installed: another game's disc is refused by identification and stays
+ * unplayed.
  * @param opts Receives disc_path.
  * @param m The entry to boot.
  * @param module_path_out Receives the module path, or NULL for none.
@@ -260,14 +277,9 @@ int boot_entry(openpete_options_t* opts, Meta& m,
                char* module_path_out, size_t module_path_cap) {
     std::snprintf(s_disc_path, sizeof s_disc_path, "%s",
                   (m.dir / "disc.cue").string().c_str());
+    std::snprintf(s_entry_dir, sizeof s_entry_dir, "%s", m.dir.string().c_str());
     opts->disc_path = s_disc_path;
-    const openpete_launcher_game* g = launcher_game();
-    if (module_path_out && module_path_cap) {
-        module_path_out[0] = 0;
-        if (g && g->module_path &&
-            g->module_path(m.dir.string().c_str(), module_path_out, module_path_cap) != 0)
-            module_path_out[0] = 0;   /* static build: no module in the library */
-    }
+    entry_module_path(s_entry_dir, module_path_out, module_path_cap);
     if (entry_is_ours(m))
         write_meta(m.dir, m.label, m.source, m.sha, (long long)time(nullptr), m.game);
     std::snprintf(s_selected_game, sizeof s_selected_game, "%s", m.game.c_str());
@@ -387,6 +399,18 @@ std::vector<Meta> scan_entries() {
     return entries;
 }
 
+/** @brief The selector's label of an entry: its label, marked when unidentified, and prefixed with its game's name when the launcher names games and the label does not already start with it.
+ *
+ * @param m The entry.
+ * @return The label. */
+std::string entry_label(const Meta& m) {
+    if (m.game.empty()) return m.label + " (unidentified)";
+    const openpete_launcher_game* g = launcher_game();
+    const char* name = (g && g->game_name) ? g->game_name(m.game.c_str()) : nullptr;
+    if (!name || !*name || m.label.rfind(name, 0) == 0) return m.label;
+    return std::string(name) + " - " + m.label;
+}
+
 /** @brief Pick the entry to boot: the version selector among several when a screen can show, else the most recently played.
  *
  * @param entries The scanned entries; not empty.
@@ -404,7 +428,7 @@ int pick_entry(std::vector<Meta>& entries, Meta*& pick) {
         if (&m != pick) order.push_back(&m);
     std::vector<std::string> label_store;
     for (auto* m : order)
-        label_store.push_back(m->game.empty() ? m->label + " (unidentified)" : m->label);
+        label_store.push_back(entry_label(*m));
     std::vector<const char*> labels;
     for (auto& l : label_store) labels.push_back(l.c_str());
     const int sel = launcher_select(labels.data(), (int)labels.size());
@@ -421,6 +445,17 @@ int pick_entry(std::vector<Meta>& entries, Meta*& pick) {
 
 int library_resolve(openpete_options_t* opts, char* module_path_out, size_t module_path_cap) {
     if (module_path_out && module_path_cap) module_path_out[0] = 0;
+
+    /* An entry booted before the game was installed: the installed game's
+     * entry boots it again, with the module path that game names for it. */
+    if (s_booted && !opts->ingest_path && !opts->disc_path && !opts->exe_path) {
+        opts->disc_path = s_disc_path;
+        entry_module_path(s_entry_dir, module_path_out, module_path_cap);
+        OPL_INFO_F("library", "booting the picked entry %s (%s)",
+                   fs::path(s_entry_dir).filename().string().c_str(),
+                   s_selected_game[0] ? s_selected_game : "unidentified");
+        return 0;
+    }
 
     /* --ingest PATH (or a drop): copy into the library, then boot that entry. */
     if (opts->ingest_path) {

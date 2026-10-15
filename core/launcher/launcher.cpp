@@ -78,9 +78,10 @@ State s;
 
 /** @brief Return the display name the screens show, upper-cased for their headings.
  *
- * @return The game's display name in capitals, or "THE GAME" without one. */
+ * @return The game's display name in capitals, or "" while the launcher
+ *         names no game (no game is installed yet). */
 std::string upper_name() {
-    std::string n = (s.game && s.game->display_name) ? s.game->display_name : "the game";
+    std::string n = (s.game && s.game->display_name) ? s.game->display_name : "";
     for (char& c : n) c = (char)toupper((unsigned char)c);
     return n;
 }
@@ -147,7 +148,8 @@ void draw_progress(const Frame& f, const View& v) {
  * @param f The frame mapping.
  * @param v The view; browse is set when the button is pressed. */
 void draw_drop(const Frame& f, View& v) {
-    const std::string drag = "DRAG YOUR " + upper_name();
+    const std::string name = upper_name();
+    const std::string drag = name.empty() ? "DRAG YOUR" : "DRAG YOUR " + name;
     text_centred(f, 160 + kBandY, 14, IM_COL32_WHITE, drag.c_str());
     text_centred(f, 186 + kBandY, 14, IM_COL32_WHITE, "DISC IMAGE (.CUE / .BIN) HERE");
     text_centred(f, 232 + kBandY, 8, IM_COL32(220, 210, 240, 255),
@@ -186,6 +188,7 @@ void draw_select(const Frame& f, View& v) {
 
 /** @brief Draw one frame of a screen: the title lines, then the screen's content, in one borderless window over the whole display.
  *
+ * The game's subtitle line is left out while the launcher names no game.
  * The per-present callback openpete_native_launcher_present runs between
  * imgui's NewFrame and Render.
  * @param ud The View. */
@@ -200,8 +203,10 @@ void draw_view(void* ud) {
                      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus);
     const Frame f = frame_map();
     text_centred(f, 36 + kBandY, 28, IM_COL32(240, 138, 30, 255), "OPENPETE");
-    const std::string sub = upper_name() + " PC PORT";
-    text_centred(f, 72 + kBandY, 14, IM_COL32(150, 130, 190, 255), sub.c_str());
+    if (const std::string name = upper_name(); !name.empty()) {
+        const std::string sub = name + " PC PORT";
+        text_centred(f, 72 + kBandY, 14, IM_COL32(150, 130, 190, 255), sub.c_str());
+    }
     if (v.screen == Screen::Progress) draw_progress(f, v);
     else if (v.screen == Screen::Drop) draw_drop(f, v);
     else draw_select(f, v);
@@ -249,6 +254,8 @@ void close_gamepad() {
 
 /** @brief Open the launcher's window, device and imgui context unless they exist, telling the player once when the device cannot be created.
  *
+ * The window takes the game window's size, or the 640x448 layout space
+ * before a game is installed.
  * @param opts The options the window is created from.
  * @param continues Non-zero when the run can continue without the device
  *                  (a disc is or will be named); passed to the message.
@@ -264,6 +271,8 @@ int launcher_open(const openpete_options_t* opts, int continues) {
     }
     int w, h;
     openpete_game_window_size(opts, &w, &h);
+    /* No game installed yet: no game window size, so the layout space's. */
+    if (w <= 0 || h <= 0) { w = (int)kLayoutW; h = (int)kLayoutH; }
     if (openpete_native_launcher_open(opts, w, h, "OpenPete") != 0) {
         s.failed = true;
         openpete_launcher_vk_failure(openpete_native_launcher_error(), continues);

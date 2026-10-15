@@ -64,20 +64,33 @@ typedef struct openpete_game_build {
 extern const openpete_game_build_t* const openpete_game_builds[];
 extern const size_t openpete_game_build_count;
 
-/** @brief Select the game this process runs among the linked games.
+/** @brief Return the linked game the command line names.
  *
  * With one linked game, that game. Otherwise, in order: the game whose
  * serial the SYSTEM.CNF of the image named by --disc or --ingest carries;
  * the --game selector; the game whose exe_name is the invoked name (a
- * copy of the one executable renamed to a game's executable name); else
- * the first linked game. A
+ * copy of the one executable renamed to a game's executable name). A
  * source naming a game this executable does not link is passed over; the
  * selected game's entry then identifies the session and refuses a
  * contradiction.
  * @param argc The argument count.
  * @param argv The arguments.
+ * @return The game, or NULL when several games are linked and no source
+ *         names one of them (the launcher then picks, game_pick.h). */
+const openpete_game_build_t* openpete_game_build_named(int argc, char** argv);
+
+/** @brief Select the game this process runs: the game the command line names, else the first linked game.
+ *
+ * @param argc The argument count.
+ * @param argv The arguments.
  * @return The selected game, never NULL while a game is linked. */
 const openpete_game_build_t* openpete_game_build_select(int argc, char** argv);
+
+/** @brief Return the linked game with an id.
+ *
+ * @param id A game id, or NULL.
+ * @return The game, or NULL when this executable links none under that id. */
+const openpete_game_build_t* openpete_game_build_linked(const char* id);
 
 /** @brief Make a game the running game: record its build and register its runtime descriptor.
  *

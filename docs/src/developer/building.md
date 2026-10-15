@@ -613,10 +613,10 @@ and a bundled compiler). `scripts/package-dist.sh` assembles the shippable
 archive from a `*-launcher` build tree, staging `packaging/openpete-dist.toml` as
 the shipped `openpete.toml`. The archive, `openpete-<ver>-<platform>-x86_64`,
 carries the one executable under its build name (`openpete`, `openpete.exe`)
-and the first-boot inputs and SDK tree of the game `games/shipped.toml`
-lists. A list of more than one game is refused: without `--disc` the
-executable runs its first linked game, and the launcher lists and accepts
-only that game's library entries.
+and the first-boot inputs (manifests) and SDK trees of every game
+`games/shipped.toml` lists. Without `--disc` the executable's launcher lists
+every game's library entries and runs the game of the entry it boots or of
+the disc dropped on it.
 
 ```bash
 scripts/setup_linux_clang.sh          # -> .tools/clang (bundled compiler)

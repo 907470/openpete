@@ -132,8 +132,15 @@ forwarders, its first-boot pipeline, and the registration of the tables
 generated from its manifests. The executable's entry
 (`games/common/game_entry.cpp`) selects one record among the linked games,
 in order by the serial of the disc named by `--disc` or `--ingest`, by
-`--game`, by the invoked executable name, else the first linked game,
-installs it and runs its entry.
+`--game`, by the invoked executable name, installs it and runs its entry.
+When the executable links several games and none of these names one, the
+launcher picks before any game is installed (`games/common/game_pick.cpp`):
+it lists every game's library entries, and the game recorded on the entry
+it boots (a selector pick or a dropped disc) is installed; that game's entry
+then boots the same entry. `--help`, the reports, `--compile-mods`, the
+batch modes and the surface dump take the first linked game. A game's
+known disc hashes, which label library entries, sit on its runtime
+descriptor (`known_discs`).
 
 Keywords: `MAIN` names the game's entry (default `openpete_game_main`,
 `games/common/game_main.cpp`, which Spyro 2 and 3 use; Spyro 1 has

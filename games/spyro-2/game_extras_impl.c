@@ -12,6 +12,7 @@
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "game_mod_desc.h"
+#include "openpete_launcher.h"
 #include "psyq/psyq_thunk_state.h"
 #include "openpete_fiber.h"
 #include "openpete_psx.h"
@@ -207,6 +208,12 @@ static const game_host_desc_t k_host = {
     .interp_register = spyro2_interp_register,
 };
 
+/* The disc image the User docs pin, labelled by name in the library. */
+static const openpete_launcher_known_disc k_known_discs[] = {
+    {"b3fd9fdb24b115fee4583dbe3c36ab788fd8679fb4592dbec8736392dec64551",
+     "Spyro 2: Ripto's Rage! (NTSC-U)"},
+};
+
 /* Unset: the pad-read site is not localised for this game yet, so the
  * pacing census reports the pad-read phase as unmeasured rather than as
  * zero reads; no load-read classifier, so loads are instant; no WAD disc
@@ -238,6 +245,8 @@ const openpete_game_runtime_t spyro2_game_runtime = {
     .layout               = &spyro2_game_layout,
     .sony_image_base      = 0x8006FCF4u,
     .loop_anchor_pc       = 0x8001B140u,
+    .known_discs          = k_known_discs,
+    .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = game_overlay_resync_on_boot,
     .on_frame_pre         = spyro2_on_frame_pre,

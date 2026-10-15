@@ -3,8 +3,8 @@
 ## Giving OpenPete the disc
 
 With no disc in the library, OpenPete opens a window reading **DRAG YOUR
-SPYRO THE DRAGON DISC IMAGE (.CUE / .BIN) HERE**. Any of these hands it the
-image:
+DISC IMAGE (.CUE / .BIN) HERE**. The disc of any game OpenPete runs is
+accepted; the game is read from the disc. Any of these hands it the image:
 
 - Drag the `.bin` or `.cue` onto the window.
 - Press ++space++ or the pad's ++a++ button to browse for it.
@@ -34,8 +34,8 @@ HAPPENS ONCE.** Measured times: about 26 seconds on a 16-thread desktop, 45 to
 90 seconds on a four-core laptop. The game then starts.
 
 Later runs boot the library entry straight into the game. With more than one
-entry in the library, a **CHOOSE A VERSION** screen lists them, most recently
-played first: ++up++ / ++down++ or the stick select, ++enter++ or ++a++ plays,
+entry in the library, a **CHOOSE A VERSION** screen lists them, every game's
+entries together, most recently played first, each named with its game: ++up++ / ++down++ or the stick select, ++enter++ or ++a++ plays,
 ++esc++ or ++b++ quits. Dropping a new image on this screen ingests it.
 
 ## Mods compile on start

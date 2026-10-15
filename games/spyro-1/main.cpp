@@ -30,21 +30,15 @@ extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
 
 #include <cstdio>
 
-/* The README-pinned retail NTSC-U disc, labelled by name in the library. */
-static const openpete_launcher_known_disc k_known_discs[] = {
-    {"fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37",
-     "Spyro the Dragon (NTSC-U)"},
-};
-
-/** @brief The launcher's view of this game: its id, name, known discs and library module path.
+/** @brief The launcher's view of this game: its id, name, known discs (the runtime descriptor's) and library module path.
  *
  * @return The descriptor, built on first call. */
 static const openpete_launcher_game* launcher_game_desc(void) {
     static openpete_launcher_game g;
     g.game_id = game_get_id();
     g.display_name = game_get_display_name();
-    g.known_discs = k_known_discs;
-    g.known_disc_count = (int)(sizeof k_known_discs / sizeof k_known_discs[0]);
+    g.known_discs = openpete_game_runtime()->known_discs;
+    g.known_disc_count = openpete_game_runtime()->known_disc_count;
     g.module_path = openpete_game_library_module_path;
     return &g;
 }
@@ -228,7 +222,7 @@ static int start_session(int argc, char** argv, openpete_options_t* neutral,
     if (rc != OPENPETE_EXIT_OK) return rc;
     rc = openpete_options_require_exe_source(opts);
     if (rc != OPENPETE_EXIT_OK)
-        return fatal_start(rc, "No Spyro the Dragon disc image was found.");
+        return fatal_start(rc, "No game disc image was found.");
 
     /* The mod layer, once, at identification: before the compile-on-boot
      * pass below and the load inside openpete_run(). */

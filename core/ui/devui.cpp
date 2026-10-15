@@ -121,9 +121,9 @@ int openpete_devui_seed_ini(void)
 {
     static bool s_done = false;
     if (s_done) return 0;
-    s_done = true;
     const char *game = game_get_id();
     if (!game || !*game) return 0;
+    s_done = true;
     char shared[1024], own[1024];
     devui_ini_path(shared, sizeof shared, NULL);
     devui_ini_path(own, sizeof own, game);
@@ -151,10 +151,27 @@ int openpete_devui_seed_ini(void)
 static void devui_save_ini(bool force)
 {
     ImGuiIO &io = ImGui::GetIO();
+    if (!s_ini_path[0]) return;   /* no game installed: no ini is loaded or written */
     if (force ? !ImGui::GetCurrentContext()->SettingsLoaded : !io.WantSaveIniSettings) return;
     size_t n = 0;
     const char *text = ImGui::SaveIniSettingsToMemory(&n);
     if (op_atomic_write_file(s_ini_path, text, n) == 0) io.WantSaveIniSettings = false;
+}
+
+/** @brief Seed and load the running game's ini once a game is installed.
+ *
+ * UI state (window pos/collapse) lives next to the exe, not the CWD, one
+ * file per game: the games' overlays differ in their windows. A context
+ * created before a game is installed (the launcher of an executable linking
+ * several games) loads, seeds and writes no ini until a later call finds
+ * the game. */
+static void devui_load_game_ini(void)
+{
+    const char *game = game_get_id();
+    if (s_ini_path[0] || !game || !*game) return;
+    (void)openpete_devui_seed_ini();
+    devui_ini_path(s_ini_path, sizeof s_ini_path, game);
+    ImGui::LoadIniSettingsFromDisk(s_ini_path);
 }
 
 int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
@@ -172,12 +189,8 @@ int openpete_devui_create(struct rhi_device *dev, struct SDL_Window *win)
     /* Gamepad navigation reads the KM_CTX_DEVUI actions the host loop
      * publishes (devui_feed_padnav), never the backend's own pad reads. */
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    /* UI state (window pos/collapse) next to the exe, not the CWD, one
-     * file per game: the games' overlays differ in their windows. */
-    (void)openpete_devui_seed_ini();
-    devui_ini_path(s_ini_path, sizeof s_ini_path, game_get_id());
     io.IniFilename = nullptr;   /* saved by devui_save_ini */
-    ImGui::LoadIniSettingsFromDisk(s_ini_path);
+    devui_load_game_ini();
     ImGui::StyleColorsDark();
     ImGui::GetStyle().Alpha = 0.96f;
 
@@ -229,6 +242,7 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
 {
     if (s_inited) return 1;
     if (!openpete_devui_create(dev, win)) return 0;
+    devui_load_game_ini();
 
     knob_registry_init(opts);
     s_inject_mouse =
@@ -248,6 +262,7 @@ void openpete_devui_shutdown(void)
 {
     if (!s_ctx) return;
     devui_save_ini(true);
+    s_ini_path[0] = '\0';
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();

@@ -1,7 +1,8 @@
 # games/common/CMakeLists.txt - the host code every game links, compiled once.
 #
 # openpete_game_common holds the sources every game's executable links: the
-# process entry and game selection (game_entry.cpp, game_build.c), the entry
+# process entry and game selection (game_entry.cpp, game_pick.cpp,
+# game_build.c), the entry
 # of a game with none of its own (game_main.cpp), the shared PSYQ-to-PsyCross
 # layer with its per-game hooks forwarded to the running game's descriptor,
 # the freecam body, the censuses, and the shared renderer TUs (the GTE float
@@ -14,6 +15,7 @@
 
 set(OPENPETE_GAME_COMMON_SOURCES
     game_entry.cpp
+    game_pick.cpp
     game_build.c
     game_main.cpp
     game_extras_default.c

@@ -41,8 +41,11 @@ const char* launcher_dropped_path(void);
 
 /** @brief Resolve this boot's disc and module path through the library.
  *
- * --ingest copies the image in (on a launcher task, with progress) and
- * boots its entry; --disc or --exe-path bypasses the library; otherwise the
+ * An entry already booted in this process (the pick made before a game was
+ * installed) boots again, without a scan or a stamp, when the options name
+ * no image. --ingest copies the image in (on a launcher task, with
+ * progress) and boots its entry; --disc or --exe-path bypasses the
+ * library; otherwise the
  * entries recorded for this game, and the unidentified ones, are scanned,
  * and the one entry, the selector's pick, or (without screens) the most
  * recently played boots. Booting points opts->disc_path at the entry's

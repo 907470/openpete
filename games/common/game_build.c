@@ -64,14 +64,24 @@ static const openpete_game_build_t* named_game(const char* argv0) {
     return NULL;
 }
 
-const openpete_game_build_t* openpete_game_build_select(int argc, char** argv) {
+const openpete_game_build_t* openpete_game_build_named(int argc, char** argv) {
     if (openpete_game_build_count == 0) return NULL;
     if (openpete_game_build_count == 1) return openpete_game_builds[0];
     const openpete_game_build_t* b = disc_game(flag_value(argc, argv, "--disc"));
     if (!b) b = disc_game(flag_value(argc, argv, "--ingest"));
     if (!b) b = linked(flag_value(argc, argv, "--game"));
     if (!b) b = named_game(argc > 0 ? argv[0] : NULL);
-    return b ? b : openpete_game_builds[0];
+    return b;
+}
+
+const openpete_game_build_t* openpete_game_build_select(int argc, char** argv) {
+    const openpete_game_build_t* b = openpete_game_build_named(argc, argv);
+    if (b || openpete_game_build_count == 0) return b;
+    return openpete_game_builds[0];
+}
+
+const openpete_game_build_t* openpete_game_build_linked(const char* id) {
+    return linked(id);
 }
 
 void openpete_game_build_install(const openpete_game_build_t* b) {

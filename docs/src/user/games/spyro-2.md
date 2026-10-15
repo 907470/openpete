@@ -22,8 +22,9 @@ OpenPete is built and tested against has these hashes of the `.bin`:
 | SHA-1 | `b3a28f8c5ec02dfbd1f9bd47adbe1d75186a5d3f` |
 | MD5 | `9771d273c498e29aa9543c30ec00aa35` |
 
-The [library](../help/glossary.md#library) lists a Spyro 2 image under its
-file name. Drag the image onto the window, or pass it on the command line,
+The [library](../help/glossary.md#library) names an image with this SHA-256
+"Spyro 2: Ripto's Rage! (NTSC-U)"; any other image is listed under its file
+name. Drag the image onto the window, or pass it on the command line,
 as for Spyro 1 ([First run](../getting-started/first-run.md)):
 
 ```

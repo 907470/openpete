@@ -37,31 +37,40 @@ extern "C" {
 #endif
 
 /* A disc image the game knows by content hash, labelled in the library. */
-typedef struct {
+typedef struct openpete_launcher_known_disc {
     const char* sha256;   /* 64 lowercase hex digits */
     const char* label;
 } openpete_launcher_known_disc;
 
 /* What the launcher needs from the game that calls it. */
 typedef struct {
-    const char* game_id;        /* registered game id: the entries it lists */
-    const char* display_name;   /* the screens' subtitle */
+    /* Registered game id: the entries it lists. NULL before a game is
+     * installed: every entry is listed, and the screens carry no game name. */
+    const char* game_id;
+    const char* display_name;   /* the screens' subtitle; NULL for none */
     const openpete_launcher_known_disc* known_discs;   /* NULL for none */
     int known_disc_count;
     /* The recompiled module path of a library entry, written into out;
      * returns 0, or -1 when the game loads no module from the library (a
      * static build). NULL for a game with none. */
     int (*module_path)(const char* entry_dir, char* out, size_t cap);
+    /* The display name of a registered game id, prefixed to the selector's
+     * label of an entry recorded for it; NULL for no prefix. */
+    const char* (*game_name)(const char* game_id);
 } openpete_launcher_game;
 
 typedef int (*openpete_launcher_task_fn)(void* userdata);
 
 /** @brief Start the launcher for one game and set whether its screens may show.
  *
- * Call once, before any other launcher call. The window opens at the
- * game window's size (openpete_game_window_size) from the options it is
- * opened with: the game-neutral ones for a screen before identification,
- * the full resolution at the hand-off.
+ * Call before any other launcher call. An executable linking several games
+ * calls it first with a descriptor naming no game, before any game is
+ * installed, to pick the disc; the installed game's entry then calls it
+ * again with its own descriptor, and the window and device opened so far
+ * stay. The window opens at the game window's size
+ * (openpete_game_window_size), the 640x448 layout space before a game is
+ * installed, from the options it is opened with: the game-neutral ones for
+ * a screen before identification, the full resolution at the hand-off.
  * @param game The calling game; must outlive the launcher.
  * @param neutral The game-neutral options; must outlive the launcher.
  * @param ui Non-zero when screens may show (a windowed run); 0 for a headless
@@ -75,7 +84,9 @@ void openpete_launcher_begin(const openpete_launcher_game* game,
  * --disc or --exe-path leaves the library untouched; otherwise the library's
  * one entry boots, the version selector picks among several (the most
  * recently played without screens), and an empty library opens the drop
- * screen. When the launcher's device cannot be created the player is told
+ * screen. A second call after an entry booted (the pick made before a game
+ * was installed) boots that entry again without a scan or a screen, with
+ * the module path the now-installed game names for it. When the launcher's device cannot be created the player is told
  * (openpete_launcher_vk_failure) and the selector falls back to the most
  * recent entry; the drop screen then has no fallback and the run ends.
  * @param opts The options; receives disc_path, and ingest_path from a drop.

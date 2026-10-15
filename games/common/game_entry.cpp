@@ -1,13 +1,15 @@
 // games/common/game_entry.cpp - the process entry of every executable.
 //
 // Reconnects stdio on Windows, selects the game among the games the
-// executable links (game_build.h), installs it, and runs its entry. SDL3's
+// executable links (game_build.h, or the launcher's pick, game_pick.h),
+// installs it, and runs its entry. SDL3's
 // SDL_main.h re-#defines main -> SDL_main and supplies the platform entry
 // shim; it must be included by the TU defining main().
 
 #include <SDL3/SDL_main.h>
 
 #include "game_build.h"
+#include "game_pick.h"
 
 #include <cstdio>
 
@@ -66,15 +68,23 @@ static void attach_parent_console(void) {}
 /** @brief Select and install the game this process runs, then run its entry.
  *
  * stdio is reconnected first, before any output and whichever game runs.
+ * The game is the one the command line names, else the launcher's pick
+ * over every linked game's library entries (game_pick.h); it is installed
+ * once.
  * @param argc The argument count.
  * @param argv The arguments.
  * @return The game entry's exit status, or 1 when the executable links no game. */
 int main(int argc, char** argv) {
     attach_parent_console();
-    const openpete_game_build_t* b = openpete_game_build_select(argc, argv);
-    if (!b) {
+    if (openpete_game_build_count == 0) {
         std::fprintf(stderr, "openpete: this executable links no game\n");
         return 1;
+    }
+    const openpete_game_build_t* b = openpete_game_build_named(argc, argv);
+    if (!b) {
+        int rc = 0;
+        b = openpete_game_pick(argc, argv, &rc);
+        if (!b) return rc;
     }
     openpete_game_build_install(b);
     return b->main(argc, argv);

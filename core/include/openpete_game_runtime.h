@@ -34,6 +34,8 @@ struct game_host_desc;
 /* The shared PSYQ thunk layer's per-game hooks and tables
  * (games/common/psyq/psyq_game_hooks.h); opaque to core. */
 struct psyq_game_hooks;
+/* A disc image the launcher labels by content hash (openpete_launcher.h). */
+struct openpete_launcher_known_disc;
 
 /* The identity a game's recomp.conf declares (tools/gen_game_identity.py). */
 typedef struct openpete_game_identity {
@@ -66,6 +68,9 @@ typedef struct openpete_game_runtime {
     uint32_t sony_image_base;      /* psx_runtime_g_sony_image_base */
     uint32_t feed_key;             /* openpete_feed_key_t; 0 = openpete_frame */
     uint32_t loop_anchor_pc;       /* the main loop's first call, entered once per game tick; 0 = none */
+    /* The disc images the launcher's library labels by content hash. */
+    const struct openpete_launcher_known_disc* known_discs;   /* NULL: none */
+    int known_disc_count;
 
     /* Host-loop hooks (game_extras.h). */
     void     (*on_boot)(CPUState* cpu);

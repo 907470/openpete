@@ -24,8 +24,9 @@ hashes of the `.bin`:
 | MD5 | `edd092fecba64c7a79d4412d3b38eba1` |
 
 Other versions of the disc with the same serial are untested. The
-[library](../help/glossary.md#library) lists a Spyro 3 image under its file
-name. Drag the image onto the window, or pass it on the command line, as
+[library](../help/glossary.md#library) names an image with the SHA-256 above
+"Spyro: Year of the Dragon (NTSC-U, v1.0)"; any other image is listed under
+its file name. Drag the image onto the window, or pass it on the command line, as
 for Spyro 1 ([First run](../getting-started/first-run.md)):
 
 ```

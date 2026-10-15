@@ -46,6 +46,7 @@
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "game_mod_desc.h"
+#include "openpete_launcher.h"
 #include "psyq/psyq_thunk_state.h"
 #include "openpete_psx.h"
 #include "spyro_overlay_table.h"
@@ -350,6 +351,12 @@ static const game_host_desc_t k_host = {
     .interp_register = spyro3_interp_register,
 };
 
+/* The disc image the User docs pin, labelled by name in the library. */
+static const openpete_launcher_known_disc k_known_discs[] = {
+    {"a313c9b1306a08e950edddc152280a443796e68052c8e0454b5d76d69354d157",
+     "Spyro: Year of the Dragon (NTSC-U, v1.0)"},
+};
+
 /* Unset: the pad-read site is not localised for this game yet, so the
  * pacing census reports the pad-read phase as unmeasured rather than as
  * zero reads; no WAD disc layout; no cheats, so --cheats is refused.
@@ -383,6 +390,8 @@ const openpete_game_runtime_t spyro3_game_runtime = {
     .load_delay_default   = 66u,
     .sony_image_base      = 0x8006FCF4u,
     .loop_anchor_pc       = 0x80055400u,
+    .known_discs          = k_known_discs,
+    .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
     .feed_key             = OPENPETE_FEED_KEY_VBL,
     .on_boot              = spyro3_on_boot,
     .on_frame_pre         = spyro3_on_frame_pre,

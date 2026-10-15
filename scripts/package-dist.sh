@@ -12,12 +12,12 @@
 #
 # One archive, openpete-<ver>-<platform>-x86_64, carrying the one
 # executable (`openpete`, `openpete.exe`) from the *-launcher build and the
-# first-boot inputs of the game games/shipped.toml lists. A list of more
-# than one game is refused: a discless launch of the one executable selects
-# its first linked game, and its launcher lists and accepts only that
-# game's library entries. --dry-run prints the game, the build input, and
-# each archive with the executable's path inside it, and exits without
-# packaging anything.
+# first-boot inputs (manifests) and SDK trees of every game
+# games/shipped.toml lists. A discless launch of the one executable shows
+# the launcher over every game's library entries and runs the game of the
+# entry it boots or the disc dropped on it. --dry-run prints the games, the
+# build input, and each archive with the executable's path inside it, and
+# exits without packaging anything.
 #
 # --appimage additionally emits OpenPete-<ver>-x86_64.AppImage from the
 # SAME staged tree the tarball is made from, so the two artifacts can
@@ -151,18 +151,13 @@ for g in tomllib.load(open(sys.argv[1], "rb"))["games"]:
     print(g)
 ' games/shipped.toml)
 [[ ${#GAMES[@]} -gt 0 ]] || { echo "[package] games/shipped.toml lists no game" >&2; exit 1; }
-# The archive carries one game's first-boot inputs and SDK tree. Without
-# --disc the one executable runs its first linked game, and the launcher
-# lists and accepts only that game's library entries, so a second game in
-# the archive would be reachable only from a command line naming its disc.
-if [[ ${#GAMES[@]} -gt 1 ]]; then
-    echo "[package] games/shipped.toml lists ${#GAMES[@]} games (${GAMES[*]});" \
-         "an archive carries one: the launcher does not select the game of a" \
-         "library entry across games, so a discless launch runs only the" \
-         "first linked game" >&2
-    exit 1
-fi
-GAME="${GAMES[0]}"
+
+# shipped <game>: whether games/shipped.toml lists the game.
+shipped() {
+    local g
+    for g in "${GAMES[@]}"; do [[ "$g" == "$1" ]] && return 0; done
+    return 1
+}
 
 # Absolute: the example-staging loop below runs inside `cd mods/<id>`
 # subshells, where a relative --out no longer resolves.
@@ -171,7 +166,16 @@ OUT=$(realpath -m "$OUT")
 stage_common() {  # stage_common <exe-dir>
     local B="$1"
     mkdir -p "$STAGE/recomp/manifest"
-    cp -a "$B/recomp/manifest/$GAME" "$STAGE/recomp/manifest/"
+    local g
+    for g in "${GAMES[@]}"; do
+        [[ -d "$B/recomp/manifest/$g" ]] \
+            || { echo "[package-dist] $B/recomp/manifest/$g missing: shipped" \
+                      "game $g has no first-boot inputs in this build (it is" \
+                      "not linked, or its openpete_add_game names no" \
+                      "FIRST_BOOT_SOURCES), so the archive could not build its" \
+                      "module from the player's disc" >&2; exit 1; }
+        cp -a "$B/recomp/manifest/$g" "$STAGE/recomp/manifest/"
+    done
     cp -a "$B/recomp/src"      "$STAGE/recomp/"
     # The kit is compiled on the user's machine, so it ships as readable
     # C - but its comments are engineering notes about the host tree.
@@ -181,24 +185,25 @@ stage_common() {  # stage_common <exe-dir>
         # src/ and compile at boot against <exe>/sdk with the bundled
         # toolchain. The SDK is a handful of headers, and read-only -
         # unlike mods/ it belongs in the install. The game-neutral headers
-        # sit at sdk/ root and the packaged game's generated headers
+        # sit at sdk/ root and each packaged game's generated headers
         # (symbols, wrappers, structs, openpete_game.h) under
         # sdk/games/<game>/; the compile line puts -I sdk/games/<game>
-        # before -I sdk, so an archive whose SDK lacks its game's tree
-        # compiles no mod and is refused here. The root's dispatchers of
-        # the per-game headers stay: on a line with -I sdk alone they
-        # include the packaged game's tree, or stop with #error naming a
-        # game whose tree this archive does not carry.
+        # before -I sdk, so an archive whose SDK lacks a shipped game's
+        # tree compiles no mod for it and is refused here. The root's
+        # dispatchers of the per-game headers stay: on a line with -I sdk
+        # alone they include a packaged game's tree, or stop with #error
+        # naming a game whose tree this archive does not carry.
         cp -a "$B/sdk" "$STAGE/sdk"
         # The one executable's SDK holds every built game's tree; the
-        # archive carries its own game's.
-        local g
+        # archive carries the shipped games'.
         for g in "$STAGE"/sdk/games/*/; do
-            [[ "$(basename "$g")" == "$GAME" ]] || rm -rf "${g:?}"
+            shipped "$(basename "$g")" || rm -rf "${g:?}"
         done
-        [[ -f "$STAGE/sdk/games/$GAME/openpete_game.h" ]] \
-            || { echo "[package-dist] $B/sdk has no games/$GAME/openpete_game.h:" \
-                      "build the ${GAME} sdk stage target" >&2; exit 1; }
+        for g in "${GAMES[@]}"; do
+            [[ -f "$STAGE/sdk/games/$g/openpete_game.h" ]] \
+                || { echo "[package-dist] $B/sdk has no games/$g/openpete_game.h:" \
+                          "build the $g sdk stage target" >&2; exit 1; }
+        done
         # The example mods named in mods/examples.txt ride with the SDK,
         # so a zip holder has working mods without the repository; the
         # Modding section of docs/ (below) is their reference. Examples
@@ -206,7 +211,7 @@ stage_common() {  # stage_common <exe-dir>
         # the next boot, and an example is copied there on purpose.
         # An example whose manifest selects no packaged game (the loader's
         # rule, tools/gen_mod_docs.py mod_games) would be dropped at
-        # discovery on this game, so it stays out of this game's SDK.
+        # discovery on every shipped game, so it stays out of the SDK.
         mkdir -p "$STAGE/sdk/examples"
         while read -r ex; do
             [[ -z "$ex" || "$ex" == \#* ]] && continue
@@ -219,10 +224,11 @@ stage_common() {  # stage_common <exe-dir>
 import sys
 sys.path.insert(0, "tools")
 from gen_mod_docs import mod_games
-sys.exit(0 if sys.argv[2] in mod_games(open(sys.argv[1], encoding="utf-8").read()) else 3)
-' "mods/$ex/mod.toml" "$GAME" || sel=$?
+games = mod_games(open(sys.argv[1], encoding="utf-8").read())
+sys.exit(0 if any(g in games for g in sys.argv[2:]) else 3)
+' "mods/$ex/mod.toml" "${GAMES[@]}" || sel=$?
             if [[ $sel -eq 3 ]]; then
-                echo "[package-dist] example $ex selects no $GAME; not staged"
+                echo "[package-dist] example $ex selects no shipped game; not staged"
                 continue
             fi
             [[ $sel -eq 0 ]] \
@@ -592,9 +598,9 @@ DOCS="$TREE/games/spyro-1"
 if [[ $DRY_RUN -eq 1 ]]; then
     # The tarball wraps its payload in $NAME/; the zip has no wrapping folder.
     inner="$NAME/"; [[ $PLATFORM == windows ]] && inner=""
-    echo "[package] dry run: $GAME: $BIN -> $OUT/$ART:$inner$(basename "$BIN")"
+    echo "[package] dry run: ${GAMES[*]}: $BIN -> $OUT/$ART:$inner$(basename "$BIN")"
     [[ $PLATFORM == linux && $APPIMAGE -eq 1 ]] && echo "[package] dry run:" \
-        "$GAME: $BIN -> $OUT/OpenPete-${VERSION}-x86_64.AppImage:usr/$EXE"
+        "${GAMES[*]}: $BIN -> $OUT/OpenPete-${VERSION}-x86_64.AppImage:usr/$EXE"
     exit 0
 fi
 "package_$PLATFORM" "$B"

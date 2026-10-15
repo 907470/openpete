@@ -14,6 +14,7 @@
 #include "game_mod_desc.h"
 #include "feature_registry.h"
 #include "features/levelwarp_ui.h"
+#include "openpete_launcher.h"
 #include "openpete_mods.h"
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
@@ -753,6 +754,12 @@ static const game_host_desc_t k_host = {
     .interp_register = spyro1_interp_register,
 };
 
+/* The README-pinned retail NTSC-U disc, labelled by name in the library. */
+static const openpete_launcher_known_disc k_known_discs[] = {
+    {"fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37",
+     "Spyro the Dragon (NTSC-U)"},
+};
+
 /* pad_read_pc: PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68, the game's
  * once-per-VSync consumption of g_PadBuffer: it reads status, size_type,
  * inputs[] and sticks and folds them into g_Pad. Every other reader in the
@@ -780,6 +787,8 @@ const openpete_game_runtime_t spyro1_game_runtime = {
     .pad_read_pc          = 0x80053C68u,
     .sony_image_base      = 0x8006FCF4u,
     .loop_anchor_pc       = 0x8001ED5Cu,
+    .known_discs          = k_known_discs,
+    .known_disc_count     = (int)(sizeof k_known_discs / sizeof k_known_discs[0]),
     .on_boot              = spyro1_on_boot,
     .on_frame_pre         = spyro1_on_frame_pre,
     .on_state_loaded      = spyro1_on_state_loaded,
