@@ -37,3 +37,6 @@
 0037-regtest-bk2-movie-playback-on-the-port-1-controller-.patch
 0038-regtest-card-export-card-export-SLOT-FRAME-PATH.patch
 0039-regtest-card-import-card1-PATH.patch
+0040-regtest-psxtrace-record-pad1-holds-the-anchor-s-tick-.patch
+0041-regtest-card-window-S-and-T-rows-card-driver-stores-.patch
+0042-regtest-card-transfer-start-recorder-psxtrace-card-a.patch

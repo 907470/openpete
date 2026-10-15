@@ -209,6 +209,14 @@ static uint64_t s_lq_ref_insns = 0, s_lq_op_insns = 0;
 static uint32_t s_lq_rows = 0;
 
 void openpete_sched_set_stamps(const uint32_t* stamps, uint32_t count) { s_stamps = stamps; s_stamps_n = count; }
+static const uint32_t* s_anchor_ticks = NULL; static uint32_t s_anchor_ticks_n = 0;
+void openpete_sched_set_anchor_ticks(const uint32_t* ticks, uint32_t count) { s_anchor_ticks = ticks; s_anchor_ticks_n = count; }
+int openpete_sched_anchor(uint32_t rec, uint32_t* vbl_out, uint32_t* tick_out) {
+    if (!s_stamps || !s_anchor_ticks || rec >= s_stamps_n || rec >= s_anchor_ticks_n) return 0;
+    *vbl_out = s_stamps[rec];
+    *tick_out = s_anchor_ticks[rec];
+    return 1;
+}
 uint32_t openpete_sched_pos(void) { return s_pos; }
 void openpete_sched_advance_pos(uint32_t vbls) { s_pos += vbls; }
 int openpete_sched_pos_known(void) { return s_pos_set; }
@@ -437,6 +445,39 @@ int openpete_sched_cdsync_peek(uint32_t* ra_out, uint64_t* tick_out) {
     return 1;
 }
 
+/* The reference's card transfer starts (.card): per start the VBLANK and
+ * the tick offset from it, in VBLANK order. */
+typedef struct { uint32_t vbl, off; } sched_card_t;
+static sched_card_t* s_card = NULL; static uint32_t s_card_n = 0;
+
+/** @brief Load the `.card` sidecar into s_card, the reference's card transfer starts.
+ * @param trace Path of the golden trace.
+ * @return 1 when at least one start loaded, else 0. */
+static int load_card(const char* trace) {
+    char* buf = read_sidecar(trace, ".card", "psxtrace-card");
+    if (!buf) return 0;
+    uint32_t cap = 256;
+    s_card = (sched_card_t*)malloc(cap * sizeof(*s_card));
+    for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+        if (line[0] == '#' || line[0] == 'p') continue;
+        unsigned idx, rec, vbl; unsigned long long off;
+        if (sscanf(line, "%u %u %u %llu", &idx, &rec, &vbl, &off) != 4) continue;
+        if (s_card_n == cap) { cap *= 2; s_card = (sched_card_t*)realloc(s_card, cap * sizeof(*s_card)); }
+        s_card[s_card_n].vbl = vbl; s_card[s_card_n].off = (uint32_t)off; s_card_n++;
+    }
+    free(buf);
+    return s_card_n != 0;
+}
+
+int openpete_sched_card_start(uint32_t vbl, uint32_t* off_out) {
+    if (!s_active || !s_card_n) return 0;
+    uint32_t lo = 0, hi = s_card_n;
+    while (lo < hi) { const uint32_t mid = (lo + hi) / 2u; if (s_card[mid].vbl < vbl) lo = mid + 1u; else hi = mid; }
+    if (lo >= s_card_n || s_card[lo].vbl != vbl) return 0;
+    *off_out = s_card[lo].off;
+    return 1;
+}
+
 int openpete_sched_sio0_served(uint32_t vbl, int* known) { return vbl_set_has(&s_sio0, vbl, known); }
 /* Before the first recorded command the game had not started polling the
  * controller, so the sidecar says nothing about those vblanks. */
@@ -450,6 +491,7 @@ int openpete_sched_open(const char* trace_path) {
     int pc = load_padcmd(trace_path);
     int so = load_sio0(trace_path);
     int cs = load_cdsync(trace_path);
+    int cd = load_card(trace_path);
     if (!vs && !rd && !sd) return 0;
     s_active = 1;
     clock_open(trace_path);
@@ -457,6 +499,7 @@ int openpete_sched_open(const char* trace_path) {
     if (pc) OPL_INFO_F("psxtrace", "schedule: controller commands known from vblank %u to %u", s_padcmd.first, s_padcmd.n - 1u);
     if (so) OPL_INFO_F("psxtrace", "schedule: controller handler vblanks known from %u to %u", s_sio0.first, s_sio0.n - 1u);
     if (cs) OPL_INFO_F("psxtrace", "schedule: %u CdSync poll rows", s_cs_n);
+    if (cd) OPL_INFO_F("psxtrace", "schedule: %u card transfer starts", s_card_n);
     { const char* lp = getenv("OPENPETE_SCHED_LOG"); if (lp && *lp) { s_log = fopen(lp, "w"); if (s_log) setvbuf(s_log, NULL, _IOLBF, 0); } }
     /* The position starts at the first event; the game-visible counter is
      * the VBLANK count minus a constant the first query row gives

@@ -269,7 +269,7 @@ BK2="${TRACE}.bk2"
     echo "[psx-oracle] bk2:      $BK2"
 # The reference's schedule: openpete consumes these beside the golden and
 # runs under the reference's VBL, read and seed timing (psxtrace_schedule.c).
-for _sc in vsync loads srand cdctl cdirq padcmd cdsync sio0 watch; do
+for _sc in vsync loads srand cdctl cdirq padcmd cdsync sio0 card watch; do
     [[ -f "$TRACE.$_sc" ]] && echo "[psx-oracle] schedule: $TRACE.$_sc"
 done
 # The GTE hash row: whenever the golden carries a <trace>.gte sidecar the

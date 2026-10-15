@@ -3,6 +3,7 @@
 #include "openpete_psxtrace.h"
 #include "openpete_cdrom_mmio.h"
 #include "openpete_log.h"
+#include "openpete_memcard.h"
 #include "openpete_psx.h"
 
 #include <errno.h>
@@ -26,9 +27,10 @@ extern uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region);
 #define PSXTRACE_FLAG_TABLE_HASH 0x4u
 #define PSXTRACE_FLAG_SCM_HASH   0x8u
 #define PSXTRACE_FLAG_VBL_STAMP  0x10u
+#define PSXTRACE_FLAG_ANCHOR_TICK 0x20u   /* pad1 = CPU ticks from the stamped VBLANK to the hit */
 #define PSXTRACE_FLAGS_KNOWN     (PSXTRACE_FLAG_ZSTD | PSXTRACE_FLAG_HAS_RAM | \
                                   PSXTRACE_FLAG_TABLE_HASH | PSXTRACE_FLAG_SCM_HASH | \
-                                  PSXTRACE_FLAG_VBL_STAMP)
+                                  PSXTRACE_FLAG_VBL_STAMP | PSXTRACE_FLAG_ANCHOR_TICK)
 
 /** @brief Read four bytes from fp as a little-endian u32 into *out.
  *
@@ -319,6 +321,34 @@ static void gte_hash_summary(void) {
     if (s_gh.dump) { fclose(s_gh.dump); s_gh.dump = NULL; }
 }
 
+/** @brief Read every record's VBL stamp (pad2) and, under header flag bit 5, its anchor tick (pad1) ahead, and give them to the schedule.
+ *
+ * The reference's VBLANK at each anchor hit is charged before that
+ * record's hash, and a card transfer the reference had in flight at an
+ * anchor is stepped to that anchor's tick. Hash-only traces have
+ * fixed-size records; the file position is left anywhere.
+ * @param t Trace being opened, with its header read.
+ * @param save File offset of the first record. */
+static void read_ahead_stamps(openpete_psxtrace_t* t, long save) {
+    const long rec_size = 5 * 4 + 8 + 8 * (long)t->region_count;
+    const uint32_t cap = t->frame_count ? t->frame_count : 1u;
+    t->stamps = (uint32_t*)calloc(cap, sizeof(uint32_t));
+    if (!t->stamps) return;
+    if (t->flags & PSXTRACE_FLAG_ANCHOR_TICK) t->anchor_ticks = (uint32_t*)calloc(cap, sizeof(uint32_t));
+    uint32_t n = 0;
+    for (; n < t->frame_count; n++) {
+        uint32_t m, f, p1, p2;
+        if (fseek(t->fp, save + rec_size * (long)n, SEEK_SET) != 0) break;
+        if (read_u32_le(t->fp, &m) || m != PSXTRACE_FRMR_MAGIC || read_u32_le(t->fp, &f) ||
+            read_u32_le(t->fp, &p1) || read_u32_le(t->fp, &p2)) break;
+        t->stamps[n] = p2;
+        if (t->anchor_ticks) t->anchor_ticks[n] = p1;
+    }
+    t->stamp_count = n;
+    openpete_sched_set_stamps(t->stamps, n);
+    if (t->anchor_ticks) openpete_sched_set_anchor_ticks(t->anchor_ticks, n);
+}
+
 int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     memset(t, 0, sizeof(*t));
     t->path = path;
@@ -530,23 +560,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         read_u32_le(t->fp, &peek_pc)    == 0) {
         t->inferred_anchor_pc = peek_pc;
     }
-    /* The VBL stamps of every record, read ahead for the schedule: the
-     * reference's VBLANK at each anchor hit is charged before that
-     * record's hash. Hash-only traces have fixed-size records. */
-    if (t->has_vbl_stamps && !(t->flags & PSXTRACE_FLAG_HAS_RAM) && save >= 0) {
-        const long rec_size = 5 * 4 + 8 + 8 * (long)t->region_count;
-        t->stamps = (uint32_t*)calloc(t->frame_count ? t->frame_count : 1u, sizeof(uint32_t));
-        uint32_t n = 0;
-        for (; t->stamps && n < t->frame_count; n++) {
-            uint32_t m, f, p1, p2;
-            if (fseek(t->fp, save + rec_size * (long)n, SEEK_SET) != 0) break;
-            if (read_u32_le(t->fp, &m) || m != PSXTRACE_FRMR_MAGIC || read_u32_le(t->fp, &f) ||
-                read_u32_le(t->fp, &p1) || read_u32_le(t->fp, &p2)) break;
-            t->stamps[n] = p2;
-        }
-        t->stamp_count = n;
-        openpete_sched_set_stamps(t->stamps, n);
-    }
+    if (t->has_vbl_stamps && !(t->flags & PSXTRACE_FLAG_HAS_RAM) && save >= 0) read_ahead_stamps(t, save);
     if (save >= 0) fseek(t->fp, save, SEEK_SET);
     gte_hash_open(path, t->frame_count);
     OPL_INFO_F("psxtrace",
@@ -580,6 +594,10 @@ int openpete_psxtrace_skip_to(openpete_psxtrace_t* t, uint32_t rec) {
 
 int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
     if (!t->fp) return -1;
+    /* A card transfer the reference had in flight at this record's anchor
+     * shows the bytes it had left at the anchor tick; it completes after
+     * the compare (openpete_psx_bios_card_anchor_end). */
+    openpete_psx_bios_card_anchor(t->records_consumed);
     uint32_t magic = 0, frame_no = 0, pad1 = 0, pad2 = 0, pc = 0;
     uint64_t total_oracle = 0;
     if (read_u32_le(t->fp, &magic)) {
@@ -731,6 +749,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
         t->prev_op_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
         t->frames_compared++;
         t->records_consumed++;
+        openpete_psx_bios_card_anchor_end();
         return 1;
     }
     /* OPENPETE_PSXTRACE_RAM_DUMP=FRAME:PATH writes openpete's RAM as it is
@@ -875,8 +894,10 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
     gte_hash_on_record(t->records_consumed, 1, (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device));
     t->frames_compared++;
     t->records_consumed++;
+    openpete_psx_bios_card_anchor_end();
     return 1;
 }
+
 
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     /* A transient burst still open when the WHOLE trace was consumed never
@@ -945,6 +966,12 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     openpete_sched_summary();
     openpete_cdrom_mmio_summary();
     gte_hash_summary();
+    {
+        uint32_t held, steps, fallbacks;
+        openpete_psx_bios_card_anchor_counts(&held, &steps, &fallbacks);
+        OPL_INFO_F("psxtrace", "card: transfers held for an anchor=%u steps run to an anchor tick=%u completed without their anchor=%u",
+                   held, steps, fallbacks);
+    }
     if (t->hard_failed) {
         int32_t r = t->hard_fail_region;
         OPL_INFO_F("psxtrace",
@@ -969,4 +996,6 @@ void openpete_psxtrace_close(openpete_psxtrace_t* t) {
     t->ram_buf = NULL;
     free(t->stamps);
     t->stamps = NULL;
+    free(t->anchor_ticks);
+    t->anchor_ticks = NULL;
 }

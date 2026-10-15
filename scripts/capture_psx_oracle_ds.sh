@@ -63,6 +63,12 @@
 #                                  card handler served (its stores to the port-
 #                                  flip word HEX; 0x80007264 on the SCPH-1001
 #                                  kernel) to <out>.sio0
+#           --card-active HEX      record each card transfer's start (a nonzero
+#                                  store to the card driver's transfer-active
+#                                  byte HEX; 0x8000755A on the SCPH-1001
+#                                  kernel) with its tick offset from the
+#                                  VBLANK to <out>.card; refuses a capture
+#                                  that recorded none
 #           --vblpos               record every VBLANK interrupt taken outside a
 #                                  waited VSync to <out>.vblpos (EPC, the first
 #                                  game-code call target after the handler and
@@ -119,7 +125,7 @@ ANCHOR_PC="0x8001ED5C"
 HIT=1
 MAX_RUNTIME=""
 VBLPOS=0; SPUQ=(); SPUREG=()
-CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
+CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; CARD_ACTIVE=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
 PAD_SCRIPT=""; SPU_DUMP=0; CARD_EXPORT=""
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
@@ -168,6 +174,7 @@ while [[ $# -gt 0 ]]; do
         --pad-cmds) PAD_CMDS=1; shift ;;
         --cdsync-pc) CDSYNC_PC="$2"; shift 2 ;;
         --sio0-word) SIO0_WORD="$2"; shift 2 ;;
+        --card-active) CARD_ACTIVE="$2"; shift 2 ;;
         --vsync-query-skip) VSYNC_QUERY_SKIP="$2"; shift 2 ;;
         --cd-read-pc-min) CD_READ_PC_MIN="$2"; shift 2 ;;
         --no-card) NO_CARD=1; shift ;;
@@ -239,6 +246,7 @@ for pc in "${VSYNC_CB_PCS[@]}"; do REC_ARGS+=(-psxtrace-vsync-cb-pc "$pc"); done
 [[ "$PAD_CMDS" == 1 ]] && REC_ARGS+=(-psxtrace-pad-cmds)
 [[ -n "$CDSYNC_PC" ]] && REC_ARGS+=(-psxtrace-cdsync-pc "$CDSYNC_PC")
 [[ -n "$SIO0_WORD" ]] && REC_ARGS+=(-psxtrace-sio0-word "$SIO0_WORD")
+[[ -n "$CARD_ACTIVE" ]] && REC_ARGS+=(-psxtrace-card-active "$CARD_ACTIVE")
 [[ -n "$VSYNC_QUERY_SKIP" ]] && REC_ARGS+=(-psxtrace-vsync-query-skip "$VSYNC_QUERY_SKIP")
 [[ -n "$CD_READ_PC_MIN" ]] && REC_ARGS+=(-psxtrace-cd-read-pc-min "$CD_READ_PC_MIN")
 [[ "$NO_CARD" == 1 ]] && REC_ARGS+=(-card1 none)
@@ -267,7 +275,7 @@ DUMP_ENV=()
 [[ "$SPU_DUMP" == 1 ]] && DUMP_ENV=(OPENPETE_SPU_DUMP="$OUT.wav")
 
 mkdir -p "$(dirname "$OUT")"
-rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" \
+rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" "$OUT.card" \
       "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg" "$OUT.wav" "$OUT.log"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
@@ -408,6 +416,15 @@ if [[ -n "$SIO0_WORD" ]]; then
         exit 1
     fi
     echo "[capture-ds] recorded $SERVED served vblanks -> $OUT.sio0"
+fi
+if [[ -n "$CARD_ACTIVE" ]]; then
+    [[ -f "$OUT.card" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.card" >&2; exit 1; }
+    STARTS="$(sed -n 's/^# starts=\([0-9]*\).*/\1/p' "$OUT.card")"
+    if [[ -z "$STARTS" || "$STARTS" == 0 ]]; then
+        echo "[capture-ds] FAIL: recorder saw no card transfer start at $CARD_ACTIVE" >&2
+        exit 1
+    fi
+    echo "[capture-ds] recorded $STARTS card transfer starts -> $OUT.card"
 fi
 if [[ "$VBLPOS" == 1 ]]; then
     [[ -f "$OUT.vblpos" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.vblpos" >&2; exit 1; }

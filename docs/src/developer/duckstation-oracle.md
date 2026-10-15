@@ -142,7 +142,15 @@ the game's own register reads above `-psxtrace-cd-read-pc-min`).
 SIO0 (controller and memory card) handler served, from a write breakpoint
 on its port-flip word (`0x80007264` on the SCPH-1001 kernel), run-length
 encoded; a vblank whose interrupt an earlier handler took, and the card
-driver's abort vblanks, are absent. `-psxtrace-watch-word HEX` rows
+driver's abort vblanks, are absent. `-psxtrace-card-active HEX` writes
+`<trace>.card` (`psxtrace-card 1`, columns `idx rec vbl off`): one row
+per card transfer start, a write breakpoint on the card driver's
+transfer-active byte (`0x8000755A` on the SCPH-1001 kernel) catching the
+nonzero store the read, write and info handlers make as the select byte
+goes out, with its CPU-tick offset from the VBLANK. Every record's `pad1`
+holds the anchor hit's CPU-tick offset from the VBLANK its `pad2` counts
+(header flag bit 5); a trace without the flag keeps `0xFFFFFFFF` there,
+which no reader uses. `-psxtrace-watch-word HEX` rows
 (`psxtrace-watch 2`) end with the clock, so a store's place among the
 other recorded events of its record is readable.
 
@@ -292,6 +300,13 @@ interrupt fired on the reference:
   did, the VBLs to that poll's VBLANK passing first; the kernel's card
   driver steps on the vblanks `.sio0` marks served and libpad's command
   sequence on the vblanks `.padcmd` holds a command for.
+- A present card's transfer steps byte by byte (`psx_bios.c`, the
+  mcHandler states and the fast track) at the SIO0 cadence measured on
+  the reference. Free-running, every step runs in the VBL body. When the
+  `.card` start of the step's VBLANK and the next record's `pad1` put
+  that record's anchor inside the transfer, the steps run to the anchor
+  tick before the record is compared and the rest, with the completion's
+  events, after it.
 - A VBL the reference spent inside a tick's work (a long frame) is charged
   by the next wait, so openpete reaches that record one VBL behind and the
   next one ahead; the verifier's exact VBL policy admits a deficit that

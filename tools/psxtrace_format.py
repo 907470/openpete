@@ -21,7 +21,8 @@ Layout (little-endian throughout):
     16   4   ram_size         u32 = 0x200000
     20   4   flags            u32   (bit 0: ram zstd-compressed; bit 1: has-ram;
                                     bit 2: table-hash block; bit 3: scm-hash block;
-                                    bit 4: record pad2 holds the VBLANK count)
+                                    bit 4: record pad2 holds the VBLANK count;
+                                    bit 5: record pad1 holds the anchor tick)
     24   4   region_count     u32 = N
     28   4   names_total_len  u32 = sum of (1 + len(name)) over the N names
     32   4   reserved         u32 = 0
@@ -36,7 +37,9 @@ Layout (little-endian throughout):
 
      0   4   record_magic     u32 = 'FRMR' (0x524D5246 LE)
      4   4   frame_no         u32
-     8   4   pad1             u32
+     8   4   pad1             u32   (flag bit 5: CPU ticks from the VBLANK
+                                    pad2 counts to the anchor hit; else
+                                    0xFFFFFFFF, read by nothing)
     12   4   pad2             u32
     16   4   pc               u32
     20   8   total_hash       u64
@@ -90,6 +93,7 @@ FLAG_HAS_RAM    = 1 << 1
 FLAG_TABLE_HASH = 1 << 2
 FLAG_SCM_HASH   = 1 << 3
 FLAG_VBL_STAMP  = 1 << 4   # record pad2 = capturing side's VBLANK count at the hit
+FLAG_ANCHOR_TICK = 1 << 5  # record pad1 = CPU ticks from that VBLANK to the hit
 
 
 @dataclass(frozen=True)
@@ -410,7 +414,7 @@ SIDECAR_TICK_COLUMNS = {
     ".watch": (6,),      # tick
 }
 SIDECARS = (".vsync", ".loads", ".cdsync", ".watch", ".srand", ".rand", ".cdctl",
-            ".cdirq", ".padcmd", ".sio0", ".gte", ".vblpos", ".spuq")
+            ".cdirq", ".padcmd", ".sio0", ".card", ".gte", ".vblpos", ".spuq")
 
 
 def _sidecar_lines(path: str) -> List[List[str]]:

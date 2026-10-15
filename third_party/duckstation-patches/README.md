@@ -4,7 +4,7 @@ The openpete project's own changes to DuckStation: the `duckstation-regtest`
 psxtrace capture module and its recorders, which write the reference trace
 the oracle gate (`tests/harness/check_psx_oracle.sh`) replays and the
 per-record GTE hash sidecar (`<trace>.gte`, patch 0028) it compares, plus a
-headless EGL build fix, an SPU final-mix WAV dump, and the card probes (PC-keyed RAM snapshots, the card window recorder, bk2 playback, card export and import). Each file is
+headless EGL build fix, an SPU final-mix WAV dump, and the card probes (PC-keyed RAM snapshots, the card window recorder, bk2 playback, card export and import) and the card transfer start recorder. Each file is
 `git format-patch` output, one commit per file, applied in the order
 `series` lists.
 
@@ -36,6 +36,9 @@ Patches that change what a capture records, by number:
 | 0037 | `-bk2 PATH`: a BizHawk Octoshock movie on the port 1 analog controller, one Input Log line per frame |
 | 0038 | `-card-export SLOT:FRAME:PATH`: the card image (131072 raw bytes) after FRAME frames, `0` before the first, `end` at shutdown |
 | 0039 | `-card1 PATH`: slot 1's non-persistent card holds the image at PATH, never written back |
+| 0040 | header flag bit 5: each record's `pad1` is the anchor hit's CPU-tick offset from the VBLANK its `pad2` counts (the frame start tick, set where the frame number advances); before it `pad1` was `0xFFFFFFFF` |
+| 0041 | `-card-window` S rows (stores to card-driver kernel bytes) and T rows (bytes stored to `JOY_TX_DATA`), each with its tick offset from the VBLANK |
+| 0042 | `-psxtrace-card-active HEX`: `<trace>.card`, each card transfer's start (a nonzero store to the driver's transfer-active byte) with its tick offset from the VBLANK |
 
 Apply (from the openpete checkout root; `--no-build` skips the build):
 

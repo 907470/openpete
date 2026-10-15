@@ -495,12 +495,11 @@ static void int_deq(uint32_t pri, uint32_t node) {
  * transfer: the fast-track pointers, the handler node on exception queue 1,
  * and the handler's first byte (the select), which marks the transfer in
  * progress. A present card answers through the SIO0 interrupt, which on
- * hardware completes the transfer about 0.3 VBL later, after the VBLANK
- * handlers have returned; openpete_psx_bios_vbl_complete runs that
- * completion after the VBL's VSync callbacks, leaving the bytes the
- * handler's last byte leaves (mcHandler, RAM 0x4D6C), and delivers HwCARD.
- * An empty port leaves the transfer in progress for the next step's abort.
- * The handlers' per-byte states between those points are not modelled. */
+ * hardware completes the transfer about half a VBL later, after the VBLANK
+ * handlers have returned; openpete_psx_bios_vbl_complete steps that
+ * transfer byte by byte after the VBL's VSync callbacks (the transfer in
+ * flight, below) and delivers HwCARD at its end. An empty port leaves the
+ * transfer in progress for the next step's abort. */
 #define K_MC_FLIP        0x7264u  /* byte: the port the step serves */
 #define K_MC_FT_COUNT    0x72F0u  /* fast track: bytes moved */
 #define K_MC_SIO_MASK    0x74A0u  /* the port select bit, 0 or 0x2000 */
@@ -624,91 +623,296 @@ static void mc_handler_error(CPUState* cpu, uint32_t flag_addr, uint32_t spec) {
     kw_set(K_MC_GOT_ERROR, 1u);
 }
 
-/** @brief Move a sector's 128 data bytes through the fast track, leaving its counter, pointer and the checksum as its last byte does.
+/* --- The transfer in flight -----------------------------------------------
+ * A present card's transfer is a sequence of steps, one per byte the SIO0
+ * interrupt services after the select byte: mcHandler's states 2 onward
+ * (it increments the handler's byte counter, then runs the command's
+ * handler state) and, between them, the exception handler's card patch
+ * (RAM 0x641C), which moves the sector's data bytes one per interrupt
+ * while the fast track is active (OpenBIOS sio0/driver.c mcHandler,
+ * sio0/card.c mcReadHandler, mcWriteHandler and mcInfoHandler,
+ * sio0/cardfasttrack.s). A step leaves the bytes its interrupt leaves; the
+ * last one ends the transfer (mc_end). Steps are timed from the store
+ * that marks the transfer active (state 1, as the select byte goes out)
+ * at the byte cadence the SIO0 port and the card give the kernel.
  *
- * The exception handler's card patch (RAM 0x641C) moves the data bytes one
- * per interrupt: a read stores 127 of them (the handler's last state
- * stores the 128th), a write sends 128; each byte advances the pointer
- * and the halfword counter and is XORed into the port's checksum, and
- * the patch stops itself at the end.
- * @param port The port.
- * @param data The 128 data bytes.
- * @param moved 127 for a read, 128 for a write. */
-static void mc_fast_track(int port, const uint8_t* data, uint32_t moved) {
-    uint32_t sum = kw(K_MC_CHECKSUM + 4u * (uint32_t)port);
-    for (uint32_t i = 0; i < moved; i++) sum ^= data[i];
-    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, sum);
-    kw_set(K_MC_FT_BUFFER, kw(K_MC_FT_BUFFER) + moved);
-    kh_set(K_MC_FT_COUNT, moved);
-    kh_set(K_MC_FT_ACTIVE, 0u);
+ * openpete_psx_bios_vbl_complete runs every step in the VBL body. Under
+ * the oracle, when the reference's anchor of the next record falls inside
+ * the transfer (the trace's anchor tick and the `.card` start of the same
+ * VBLANK), the steps run up to the anchor tick before the record is
+ * compared (openpete_psx_bios_card_anchor) and the rest after it
+ * (openpete_psx_bios_card_anchor_end), as on the reference, where the
+ * anchor reads the transfer half done and the completion's events follow
+ * it. */
+
+/* Steps after state 1: write: states 2-6, 128 fast-track bytes, states
+ * 7-10; read: states 2-11, 127 fast-track bytes, states 12-13; info:
+ * states 2-4. */
+#define MC_W_FT_FIRST  5u      /* write step of the first fast-track byte */
+#define MC_W_STEPS     137u
+#define MC_R_FT_FIRST  10u
+#define MC_R_STEPS     139u
+#define MC_I_STEPS     3u
+/* The byte cadence in CPU ticks, measured on the reference (DuckStation
+ * SCPH-1001, Spyro 3's card-present attract demo, the median over the
+ * transfers its anchors fall in, with the main thread idle in its VSync
+ * wait): from the active store to state 2, between handler states, from
+ * the last state before the fast track to its first byte, between
+ * fast-track bytes, and from the last fast-track byte to the next state.
+ * Info commands take the read cadence. */
+typedef struct { uint32_t first, state, ft_in, ft, ft_out; } mc_cadence_t;
+static const mc_cadence_t k_mc_cadence_write = { 5202u, 2978u, 1958u, 1530u, 2806u };
+static const mc_cadence_t k_mc_cadence_read  = { 5163u, 2989u, 1977u, 1525u, 2784u };
+
+typedef struct {
+    int       live;        /* steps remain */
+    int       port;
+    uint32_t  handler;
+    uint32_t  step;        /* next step */
+    uint32_t  steps;       /* the step that ends the transfer, plus one */
+    int       read_ok;     /* read: the host card delivered the sector */
+    uint8_t   data[MC_FRAME_BYTES];   /* read: the sector the card sends */
+    int       held;        /* oracle: steps wait for the record's anchor */
+    uint32_t  hold_rec;    /* the record whose anchor falls inside */
+    uint32_t  hold_ticks;  /* that anchor's ticks after the active store */
+    CPUState* cpu;         /* the CPU the completion's handlers run on */
+} mc_xfer_t;
+static mc_xfer_t s_xf;
+static uint32_t s_xf_held = 0, s_xf_anchor_steps = 0, s_xf_fallbacks = 0;
+
+static void mc_end(CPUState* cpu, int result);
+
+/** @brief Return the ticks from the active store to a step of a transfer.
+ *
+ * @param handler MC_HANDLER_WRITE, MC_HANDLER_READ or MC_HANDLER_INFO.
+ * @param k Step index.
+ * @return The step's tick offset. */
+static uint32_t mc_step_ticks(uint32_t handler, uint32_t k) {
+    const mc_cadence_t* c = handler == MC_HANDLER_WRITE ? &k_mc_cadence_write : &k_mc_cadence_read;
+    const uint32_t ft0 = handler == MC_HANDLER_WRITE ? MC_W_FT_FIRST : handler == MC_HANDLER_READ ? MC_R_FT_FIRST : 0xFFFFu;
+    const uint32_t ftn = handler == MC_HANDLER_WRITE ? MC_FRAME_BYTES : MC_FRAME_BYTES - 1u;
+    if (k < ft0) return c->first + k * c->state;
+    const uint32_t ft_start = c->first + (ft0 - 1u) * c->state + c->ft_in;
+    if (k < ft0 + ftn) return ft_start + (k - ft0) * c->ft;
+    return ft_start + (ftn - 1u) * c->ft + c->ft_out + (k - ft0 - ftn) * c->state;
 }
 
-/** @brief Run an info command's remaining bytes on a present card (handler RAM 0x5B64, states 2-4).
+/** @brief Report whether a transfer stops at its FLAG byte (state 3): a new card, a write error on info, or a sector the host card cannot give.
+ * @return 1 when state 3 ends the transfer. */
+static int mc_xfer_fails_at_flag(void) {
+    const uint32_t flag = card_flag(s_xf.port);
+    if (s_xf.handler == MC_HANDLER_READ && !s_xf.read_ok) return 1;
+    if (kw(K_MC_SKIP_NEW)) return 0;
+    if (s_xf.handler == MC_HANDLER_INFO) return (flag & (MC_FLAG_NEW | MC_FLAG_WRITE_ERROR)) != 0;
+    return (flag & MC_FLAG_NEW) != 0;
+}
+
+/** @brief Run one fast-track byte (the exception handler's card patch, RAM 0x641C).
+ *
+ * The byte goes to the read buffer or comes from the write buffer, the
+ * pointer and the halfword counter advance, the byte is XORed into the
+ * port's checksum, and the patch stops itself after its last byte.
+ * @param i The byte's index, 0 first.
+ * @param last The index of the patch's last byte. */
+static void mc_ft_byte(uint32_t i, uint32_t last) {
+    const uint32_t buf = kw(K_MC_FT_BUFFER);
+    uint8_t b = 0;
+    if (s_xf.handler == MC_HANDLER_READ) {
+        b = s_xf.data[i];
+        uint8_t* dst = guest_ptr(buf, 1u);
+        if (dst) *dst = b;
+    } else {
+        const uint8_t* src = guest_ptr(buf, 1u);
+        b = src ? *src : 0u;
+    }
+    kw_set(K_MC_FT_BUFFER, buf + 1u);
+    const uint32_t sum = K_MC_CHECKSUM + 4u * (uint32_t)s_xf.port;
+    kw_set(sum, kw(sum) ^ b);
+    kh_set(K_MC_FT_COUNT, i + 1u);
+    if (i == last) kh_set(K_MC_FT_ACTIVE, 0u);
+}
+
+/** @brief Run step k of an info command (handler RAM 0x5B64, states 2-4).
  *
  * The FLAG byte is checked unless _new_card set the skip flag: bit 2
  * (write error) delivers EvSpERROR, bit 3 (new card) EvSpNEW.
  * @param cpu Guest CPU the event handlers run on.
- * @param port The port.
- * @return 1 when the command succeeded, -1 when it failed. */
-static int mc_info_transfer(CPUState* cpu, int port) {
-    const uint32_t flag = card_flag(port);
-    kw_set(K_MC_OPERATION, 3u);
-    if (!kw(K_MC_SKIP_NEW) && (flag & MC_FLAG_WRITE_ERROR)) { mc_handler_error(cpu, 0xB9D4u, EV_SPEC_ERROR); return -1; }
-    if (!kw(K_MC_SKIP_NEW) && (flag & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
-    kw_set(K_MC_OPERATION, 4u);
+ * @param k Step index.
+ * @return 0 to continue, 1 or -1 when the transfer ends. */
+static int mc_info_step(CPUState* cpu, uint32_t k) {
+    kw_set(K_MC_OPERATION, 2u + k);
+    if (k != 1u || kw(K_MC_SKIP_NEW)) return k == 2u ? 1 : 0;
+    const uint32_t flag = card_flag(s_xf.port);
+    if (flag & MC_FLAG_WRITE_ERROR) { mc_handler_error(cpu, 0xB9D4u, EV_SPEC_ERROR); return -1; }
+    if (flag & MC_FLAG_NEW) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
+    return 0;
+}
+
+/** @brief Run step k of a read command (handler RAM 0x5688, states 2-13, and the fast track).
+ *
+ * State 3 checks the FLAG byte (bit 3 delivers EvSpNEW unless skipped),
+ * state 10 seeds the checksum with the sector bytes and clears the pad
+ * byte, state 11 starts the fast track, which stores 127 data bytes, and
+ * state 12 stores the 128th.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param k Step index.
+ * @return 0 to continue, 1 or -1 when the transfer ends. */
+static int mc_read_step(CPUState* cpu, uint32_t k) {
+    const uint32_t port = (uint32_t)s_xf.port;
+    if (k >= MC_R_FT_FIRST && k < MC_R_FT_FIRST + MC_FRAME_BYTES - 1u) {
+        mc_ft_byte(k - MC_R_FT_FIRST, MC_FRAME_BYTES - 2u);
+        return 0;
+    }
+    const uint32_t state = k < MC_R_FT_FIRST ? 2u + k : k - (MC_FRAME_BYTES - 1u) + 2u;
+    kw_set(K_MC_OPERATION, state);
+    const uint32_t sector = kw(K_MC_SECTOR + 4u * port);
+    switch (state) {
+    case 3u:
+        if (!kw(K_MC_SKIP_NEW) && (card_flag(s_xf.port) & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
+        return s_xf.read_ok ? 0 : -1;
+    case 10u:
+        kw_set(K_MC_CHECKSUM + 4u * port, ((sector >> 8) & 0xFFu) ^ (sector & 0xFFu));
+        kb_set(K_MC_RD_BYTE + port, 0u);
+        return 0;
+    case 11u:
+        kw_set(K_MC_FT_ACTIVE, 1u);
+        return 0;
+    case 12u: {
+        uint8_t* dst = guest_ptr(kw(K_MC_BUFFER + 4u * port) + MC_FRAME_BYTES - 1u, 1u);
+        if (dst) *dst = s_xf.data[MC_FRAME_BYTES - 1u];
+        kw_set(K_MC_CHECKSUM + 4u * port, kw(K_MC_CHECKSUM + 4u * port) ^ s_xf.data[MC_FRAME_BYTES - 1u]);
+        return 0;
+    }
+    case 13u:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/** @brief Run step k of a write command (handler RAM 0x51F4, states 2-10, and the fast track).
+ *
+ * State 3 stores the FLAG byte for the port (bit 3 delivers EvSpNEW unless
+ * skipped), states 5 and 6 seed the checksum with the sector bytes and
+ * start the fast track, which sends the 128 data bytes; state 10 delivers
+ * the handler's 0x8001 on a stored write-error bit, the sector goes to the
+ * host card and the card clears its new-card bit.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param k Step index.
+ * @return 0 to continue, 1 or -1 when the transfer ends. */
+static int mc_write_step(CPUState* cpu, uint32_t k) {
+    const uint32_t port = (uint32_t)s_xf.port;
+    if (k >= MC_W_FT_FIRST && k < MC_W_FT_FIRST + MC_FRAME_BYTES) {
+        mc_ft_byte(k - MC_W_FT_FIRST, MC_FRAME_BYTES - 1u);
+        return 0;
+    }
+    const uint32_t state = k < MC_W_FT_FIRST ? 2u + k : k - MC_FRAME_BYTES + 2u;
+    kw_set(K_MC_OPERATION, state);
+    const uint32_t sector = kw(K_MC_SECTOR + 4u * port);
+    switch (state) {
+    case 3u:
+        kw_set(K_MC_WFLAG + 4u * port, card_flag(s_xf.port));
+        if (!kw(K_MC_SKIP_NEW) && (card_flag(s_xf.port) & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
+        return 0;
+    case 5u:
+        kw_set(K_MC_CHECKSUM + 4u * port, (sector >> 8) & 0xFFu);
+        return 0;
+    case 6u:
+        kw_set(K_MC_CHECKSUM + 4u * port, kw(K_MC_CHECKSUM + 4u * port) ^ (sector & 0xFFu));
+        kw_set(K_MC_FT_ACTIVE, 1u);
+        return 0;
+    case 10u: {
+        const uint8_t* src = guest_ptr(kw(K_MC_BUFFER + 4u * port), MC_FRAME_BYTES);
+        if (!src) return -1;
+        if (!kw(K_MC_SKIP_NEW) && (kw(K_MC_WFLAG + 4u * port) & MC_FLAG_WRITE_ERROR))
+            mc_handler_error(cpu, 0xB9E0u, 0x8001u);
+        if (openpete_memcard_write_frame(s_xf.port, (int)sector, src) != 0) return -1;
+        s_card_flag[port & 1u] &= (uint8_t)~MC_FLAG_NEW;
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+/** @brief Run the in-flight transfer's steps up to a tick, ending the transfer with its last.
+ *
+ * @param cpu Guest CPU the event handlers run on.
+ * @param until The last tick after the active store to run steps at;
+ *        UINT32_MAX runs every step. */
+static void mc_xfer_run(CPUState* cpu, uint32_t until) {
+    while (s_xf.live && (until == UINT32_MAX || mc_step_ticks(s_xf.handler, s_xf.step) <= until)) {
+        const uint32_t k = s_xf.step++;
+        const int r = s_xf.handler == MC_HANDLER_WRITE ? mc_write_step(cpu, k)
+                    : s_xf.handler == MC_HANDLER_READ  ? mc_read_step(cpu, k)
+                                                       : mc_info_step(cpu, k);
+        if (until != UINT32_MAX) s_xf_anchor_steps++;
+        if (r != 0 || s_xf.step >= s_xf.steps) {
+            s_xf.live = 0;
+            s_xf.held = 0;
+            mc_end(cpu, r != 0 ? r : -1);
+        }
+    }
+}
+
+/** @brief Start stepping the transfer the vblank step began on a present card's port.
+ *
+ * A read takes its sector from the host card here, the card's answer to
+ * the read command. The transfer ends at its FLAG state when that state
+ * fails, else at its last state.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port The served port.
+ * @param handler The command's handler. */
+static void mc_xfer_begin(CPUState* cpu, int port, uint32_t handler) {
+    memset(&s_xf, 0, sizeof(s_xf));
+    s_xf.live = 1;
+    s_xf.port = port;
+    s_xf.handler = handler;
+    s_xf.cpu = cpu;
+    if (handler == MC_HANDLER_READ) {
+        const uint32_t sector = kw(K_MC_SECTOR + 4u * (uint32_t)port);
+        s_xf.read_ok = guest_ptr(kw(K_MC_BUFFER + 4u * (uint32_t)port), MC_FRAME_BYTES) != NULL
+                    && openpete_memcard_read_frame(port, (int)sector, s_xf.data) == 0;
+    }
+    s_xf.steps = mc_xfer_fails_at_flag() ? 2u
+               : handler == MC_HANDLER_WRITE ? MC_W_STEPS : handler == MC_HANDLER_READ ? MC_R_STEPS : MC_I_STEPS;
+}
+
+/** @brief Under the oracle, hold the transfer when the reference's next record anchors inside it.
+ *
+ * The record the next anchor hit compares must carry the VBLANK of the
+ * step that began the transfer, the `.card` sidecar must hold that
+ * VBLANK's start, and the anchor tick must fall after the start and
+ * before the transfer's last step.
+ * @param vbl The reference VBLANK of the step.
+ * @return 1 when the transfer is held for the anchor. */
+static int mc_xfer_hold(uint32_t vbl) {
+    const uint32_t rec = openpete_sched_current_record();
+    uint32_t start, rvbl, rtick;
+    if (!openpete_sched_card_start(vbl, &start) || !openpete_sched_anchor(rec, &rvbl, &rtick)) return 0;
+    if (rvbl != vbl || rtick <= start || rtick - start >= mc_step_ticks(s_xf.handler, s_xf.steps - 1u)) return 0;
+    s_xf.held = 1;
+    s_xf.hold_rec = rec;
+    s_xf.hold_ticks = rtick - start;
+    s_xf_held++;
     return 1;
 }
 
-/** @brief Run a read command's remaining bytes on a present card (handler RAM 0x5688, states 2-13).
- *
- * After the FLAG check (bit 3 delivers EvSpNEW unless skipped) the sector
- * comes from the host card into the buffer, and the checksum, the pad byte
- * and the fast track end as the handler leaves them.
- * @param cpu Guest CPU the event handlers run on.
- * @param port The port.
- * @return 1 when the sector was read, -1 otherwise. */
-static int mc_read_transfer(CPUState* cpu, int port) {
-    kw_set(K_MC_OPERATION, 3u);
-    if (!kw(K_MC_SKIP_NEW) && (card_flag(port) & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
-    const uint32_t sector = kw(K_MC_SECTOR + 4u * (uint32_t)port);
-    uint8_t* dst = guest_ptr(kw(K_MC_BUFFER + 4u * (uint32_t)port), MC_FRAME_BYTES);
-    uint8_t data[MC_FRAME_BYTES];
-    if (!dst || openpete_memcard_read_frame(port, (int)sector, data) != 0) return -1;
-    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, ((sector >> 8) & 0xFFu) ^ (sector & 0xFFu));
-    kb_set(K_MC_RD_BYTE + (uint32_t)port, 0u);
-    kw_set(K_MC_FT_ACTIVE, 1u);
-    mc_fast_track(port, data, MC_FRAME_BYTES - 1u);
-    memcpy(dst, data, MC_FRAME_BYTES);
-    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, kw(K_MC_CHECKSUM + 4u * (uint32_t)port) ^ data[MC_FRAME_BYTES - 1u]);
-    kw_set(K_MC_OPERATION, 13u);
-    return 1;
+void openpete_psx_bios_card_anchor(uint32_t rec) {
+    if (!s_xf.live || !s_xf.held) return;
+    if (rec == s_xf.hold_rec) { mc_xfer_run(s_xf.cpu, s_xf.hold_ticks); return; }
+    s_xf_fallbacks++;
+    mc_xfer_run(s_xf.cpu, UINT32_MAX);
 }
 
-/** @brief Run a write command's remaining bytes on a present card (handler RAM 0x51F4, states 2-10).
- *
- * The FLAG byte is stored for the port; bit 3 delivers EvSpNEW unless
- * skipped. The buffer goes to the host card, the checksum and fast track
- * end as the handler leaves them, a stored write-error bit delivers the
- * handler's 0x8001, and the card clears its new-card bit.
- * @param cpu Guest CPU the event handlers run on.
- * @param port The port.
- * @return 1 when the sector was written, -1 otherwise. */
-static int mc_write_transfer(CPUState* cpu, int port) {
-    kw_set(K_MC_OPERATION, 3u);
-    kw_set(K_MC_WFLAG + 4u * (uint32_t)port, card_flag(port));
-    if (!kw(K_MC_SKIP_NEW) && (card_flag(port) & MC_FLAG_NEW)) { mc_handler_error(cpu, 0xB9DCu, EV_SPEC_NEW); return -1; }
-    const uint32_t sector = kw(K_MC_SECTOR + 4u * (uint32_t)port);
-    const uint8_t* src = guest_ptr(kw(K_MC_BUFFER + 4u * (uint32_t)port), MC_FRAME_BYTES);
-    kw_set(K_MC_CHECKSUM + 4u * (uint32_t)port, ((sector >> 8) & 0xFFu) ^ (sector & 0xFFu));
-    kw_set(K_MC_FT_ACTIVE, 1u);
-    if (!src) return -1;
-    mc_fast_track(port, src, MC_FRAME_BYTES);
-    kw_set(K_MC_OPERATION, 10u);
-    if (!kw(K_MC_SKIP_NEW) && (kw(K_MC_WFLAG + 4u * (uint32_t)port) & MC_FLAG_WRITE_ERROR))
-        mc_handler_error(cpu, 0xB9E0u, 0x8001u);
-    if (openpete_memcard_write_frame(port, (int)sector, src) != 0) return -1;
-    s_card_flag[port & 1] &= (uint8_t)~MC_FLAG_NEW;
-    return 1;
+void openpete_psx_bios_card_anchor_end(void) {
+    if (s_xf.live && s_xf.held) mc_xfer_run(s_xf.cpu, UINT32_MAX);
+}
+
+void openpete_psx_bios_card_anchor_counts(uint32_t* held, uint32_t* anchor_steps, uint32_t* fallbacks) {
+    *held = s_xf_held;
+    *anchor_steps = s_xf_anchor_steps;
+    *fallbacks = s_xf_fallbacks;
 }
 
 /** @brief End the served port's transfer with the handler's result (mcHandler's result arms, RAM 0x4DE4 and 0x4E34).
@@ -802,6 +1006,8 @@ void openpete_psx_bios_vbl(CPUState* cpu) {
 }
 
 void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
+    /* A held transfer whose anchor never came ends before the next step. */
+    if (s_xf.live) { s_xf_fallbacks++; mc_xfer_run(cpu, UINT32_MAX); }
     if (!kw(K_MC_STARTED)) return;
     s_step_key = vbl;
     int known = 0;
@@ -819,17 +1025,14 @@ void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
 }
 
 void openpete_psx_bios_vbl_complete(CPUState* cpu) {
-    if (!kb(K_MC_ACTIVE)) return;
+    if (!kb(K_MC_ACTIVE) || s_xf.live) return;
     const int port = (int)(kb(K_MC_FLIP) & 1u);
     if (!openpete_memcard_present(port)) return;
-    int result;
-    switch (kw(K_MC_HANDLER + 4u * (uint32_t)port)) {
-    case MC_HANDLER_INFO:  result = mc_info_transfer(cpu, port); break;
-    case MC_HANDLER_READ:  result = mc_read_transfer(cpu, port); break;
-    case MC_HANDLER_WRITE: result = mc_write_transfer(cpu, port); break;
-    default:               result = -1; break;
-    }
-    mc_end(cpu, result);
+    const uint32_t handler = kw(K_MC_HANDLER + 4u * (uint32_t)port);
+    if (handler != MC_HANDLER_INFO && handler != MC_HANDLER_READ && handler != MC_HANDLER_WRITE) { mc_end(cpu, -1); return; }
+    mc_xfer_begin(cpu, port, handler);
+    if (mc_xfer_hold(s_step_key)) return;
+    mc_xfer_run(cpu, UINT32_MAX);
 }
 
 /** @brief Handle the B0 card driver services 0x4A-0x4F, 0x50, 0x58 and 0x5B-0x5D over the driver's RAM.
@@ -852,6 +1055,7 @@ static int bios_b0_card(CPUState* cpu, uint32_t fn) {
         kw_set(K_SIO0_NODE + 8u, SIO0_NODE_VERIFIER);
         kw_set(K_SIO0_NODE + 12u, 0u);
         kb_set(K_MC_ACTIVE, 0u);
+        s_xf.live = 0;
         kb_set(K_MC_FLIP, 0u);
         kb_set(K_MC_FLAGS, 1u);
         kb_set(K_MC_FLAGS + 1u, 1u);
@@ -1745,6 +1949,7 @@ void openpete_psx_bios_card_state_load_legacy(const uint32_t w[PSX_BIOS_CARD_STA
     kw_set(K_MC_STARTED, w[0] & 1u);
     kb_set(K_MC_FLIP, (w[0] >> 1) & 1u);
     kb_set(K_MC_ACTIVE, (w[0] >> 2) & 1u);
+    s_xf.live = 0;
     kw_set(K_MC_LAST_PORT, (w[0] >> 30) & 1u);
     for (uint32_t p = 0; p < 2u; p++) {
         const uint32_t op = (w[0] >> (26u + 2u * p)) & 3u, flags = (w[0] >> (8u + 8u * p)) & 0xFFu;

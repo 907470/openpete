@@ -219,14 +219,31 @@ void openpete_psx_bios_vbl_at(struct CPUState* cpu, uint32_t vbl);
 /** @brief Run the completion of the card transfer the vblank step started, when a card answers on the port it serves.
  *
  * The kernel completes a present card's transfer in the SIO0 interrupt
- * about 0.3 VBL after the VBLANK that started it, after the VBLANK
+ * about half a VBL after the VBLANK that started it, after the VBLANK
  * handlers; the VBL body calls this after the VSync callbacks and the
  * CD-ROM controller's step and before the deferred disc completion. The
- * sector moves between the host card and guest RAM here, the bu layer
- * chains or finishes its operation, and HwCARD is signalled. A transfer to
- * an empty port stays in progress for the next step's abort.
+ * transfer runs byte by byte: the sector moves between the host card and
+ * guest RAM, the bu layer chains or finishes its operation, and HwCARD is
+ * signalled. Under the oracle, a transfer the reference's next record
+ * anchors inside is held and stepped by openpete_psx_bios_card_anchor. A
+ * transfer to an empty port stays in progress for the next step's abort.
  * @param cpu Guest CPU the event handlers run on. */
 void openpete_psx_bios_vbl_complete(struct CPUState* cpu);
+/** @brief Run the held card transfer's steps up to the reference's anchor tick of a record, before the record is compared.
+ *
+ * The oracle verifier calls this at each anchor. A transfer
+ * openpete_psx_bios_vbl_complete held for this record shows the bytes the
+ * reference's SIO0 interrupts had left at the anchor; a transfer held for
+ * another record completes. Does nothing without a held transfer.
+ * @param rec The trace record about to be compared. */
+void openpete_psx_bios_card_anchor(uint32_t rec);
+/** @brief Complete the held card transfer after the record is compared: its remaining bytes, the bu layer's step and HwCARD's event. */
+void openpete_psx_bios_card_anchor_end(void);
+/** @brief Read the counts of transfers held for an anchor, steps run at anchors, and held transfers completed without their anchor.
+ * @param held Receives the transfers held.
+ * @param anchor_steps Receives the steps run up to an anchor tick.
+ * @param fallbacks Receives the held transfers completed at another record's anchor or at the next vblank step. */
+void openpete_psx_bios_card_anchor_counts(uint32_t* held, uint32_t* anchor_steps, uint32_t* fallbacks);
 /** @brief Close the five events the ROM's boot opened, as libetc's ResetCallback does through _96_remove (A0 0x72).
  *
  * The thunked ResetCallback calls this so the event table's first entries

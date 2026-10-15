@@ -72,6 +72,10 @@ typedef struct {
     /* Every record's VBL stamp (pad2), read ahead at open for the schedule. */
     uint32_t* stamps;
     uint32_t  stamp_count;
+    /* Every record's anchor tick (pad1, header flag bit 5: CPU ticks from
+     * the stamped VBLANK to the hit), read ahead with the stamps; NULL
+     * when the trace carries no anchor ticks. */
+    uint32_t* anchor_ticks;
     uint32_t records_skipped;     /* reference records passed over at load-window ends */
     uint32_t records_uncompared;  /* records consumed inside a load window, not compared */
     int      strict_diverged;
@@ -231,6 +235,30 @@ int  openpete_sched_active(void);
  * @param stamps Stamp per record index.
  * @param count Records in stamps. */
 void     openpete_sched_set_stamps(const uint32_t* stamps, uint32_t count); /* the trace's pad2 column */
+/** @brief Give the schedule the reference's anchor tick of every trace record.
+ *
+ * The ticks are the trace's pad1 column under header flag bit 5: the CPU
+ * ticks from the VBLANK the record's stamp counts to the anchor hit. The
+ * array is borrowed, not copied, and indexed like the stamps.
+ * @param ticks Anchor tick per record index.
+ * @param count Records in ticks. */
+void     openpete_sched_set_anchor_ticks(const uint32_t* ticks, uint32_t count);
+/** @brief Return the reference VBLANK and anchor tick of a record.
+ * @param rec Record index.
+ * @param vbl_out Receives the record's VBLANK stamp.
+ * @param tick_out Receives the CPU ticks from that VBLANK to the anchor hit.
+ * @return 1 when the trace carries both for rec, else 0. */
+int      openpete_sched_anchor(uint32_t rec, uint32_t* vbl_out, uint32_t* tick_out);
+/** @brief Return the reference's start of the card transfer the driver began on a VBLANK.
+ *
+ * The `.card` sidecar holds one row per transfer start: the CPU ticks from
+ * the VBLANK to the store that marked the transfer active, which the
+ * read, write and info handlers' first state makes as the select byte goes
+ * out.
+ * @param vbl Reference VBLANK the card step ran on.
+ * @param off_out Receives the start's tick offset from that VBLANK.
+ * @return 1 when the sidecar has a start on vbl, else 0. */
+int      openpete_sched_card_start(uint32_t vbl, uint32_t* off_out);
 /** @brief Return the reference VBLANK count openpete has reached.
  *
  * The position is set when the schedule opens or a consumer first meets it
