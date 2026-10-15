@@ -26,6 +26,7 @@
 #include "openpete_native_render.h"   /* set_tag_split arming (material selectors) */
 #include "../host/sha256.h"
 #include "mod_glsl.h"
+#include "mod_spv_cdata.h"
 
 #ifndef OPENPETE_NO_GLSLANG
 #include <glslang/build_info.h>
@@ -121,6 +122,11 @@ typedef struct {
     /* OPENPETE_MATERIAL_CONTRACT_* of the stock profile, read from its
      * SPIR-V at registration (shader_spv_contract). */
     int         contract;
+    /* The constant tables moved out of each fragment profile (stock,
+     * terrain, portal; mod_spv_cdata.h) and the renderer's cache slot for
+     * each one's device copy. */
+    openpete_mod_spv_cdata_t cdata[3];
+    void*       cdata_gpu[3];
     int         live;        /* 0 = swept slot (stale handle) */
 } mod_shader_t;
 
@@ -137,6 +143,28 @@ static mod_shader_t* shader_at(int i) {
     return (mod_shader_t*)mod_cvec_at(&s_shaders, (size_t)i);
 }
 
+/** @brief Return 1 when a SPIR-V module has an OpName whose string starts with the given bytes.
+ *
+ * A trailing NUL included in @p len makes the match exact. The walk stops
+ * at a zero word count or one that runs past the module.
+ * @param w The SPIR-V words, starting with the magic number.
+ * @param n The word count.
+ * @param name The bytes to match.
+ * @param len Their count.
+ * @return 1 on a match, 0 otherwise. */
+static int shader_spv_names(const uint32_t* w, size_t n, const char* name, size_t len) {
+    if (!w || n < 5 || w[0] != 0x07230203u) return 0;
+    for (size_t i = 5; i < n;) {
+        const uint32_t wc = w[i] >> 16;
+        if (wc == 0 || wc > n - i) break;
+        if ((w[i] & 0xFFFFu) == 5u && wc >= 2u && (wc - 2u) * 4u >= len &&
+            memcmp(&w[i + 2], name, len) == 0)
+            return 1;
+        i += wc;
+    }
+    return 0;
+}
+
 /** @brief Return the shading contract a SPIR-V module was compiled against.
  *
  * Scans the module's OpName instructions (opcode 5) for the decal
@@ -150,16 +178,44 @@ static mod_shader_t* shader_at(int i) {
  * @return The OPENPETE_MATERIAL_CONTRACT_* value. */
 static int shader_spv_contract(const uint32_t* w, size_t n) {
     static const char k_decal_block[] = "OP_DECAL_PC";
-    if (!w || n < 5 || w[0] != 0x07230203u) return OPENPETE_MATERIAL_CONTRACT_SCENE;
-    for (size_t i = 5; i < n;) {
-        const uint32_t wc = w[i] >> 16;
-        if (wc == 0 || wc > n - i) break;
-        if ((w[i] & 0xFFFFu) == 5u && (wc - 2u) * 4u >= sizeof k_decal_block &&
-            memcmp(&w[i + 2], k_decal_block, sizeof k_decal_block) == 0)
-            return OPENPETE_MATERIAL_CONTRACT_DECAL;
-        i += wc;
+    return shader_spv_names(w, n, k_decal_block, sizeof k_decal_block)
+        ? OPENPETE_MATERIAL_CONTRACT_DECAL : OPENPETE_MATERIAL_CONTRACT_SCENE;
+}
+
+/** @brief Move the large run-time-indexed constant tables of a material fragment's profiles into storage-block data.
+ *
+ * Applies to a fragment module that names the contract function
+ * `op_material(` (both material contracts; a module with stripped names
+ * keeps its tables). Each profile's SPIR-V is rewritten in place by
+ * openpete_mod_spv_cdata_extract and its table block kept in sh->cdata;
+ * the cache files stay the glslang output, so the rewrite runs on every
+ * registration, prebuilt modules included. A profile the rewrite rejects
+ * as malformed keeps its module. OPENPETE_MOD_SPV_CDATA=0 skips the
+ * rewrite (an A/B instrument for the moved and unmoved module).
+ * @param sh The shader, its profiles loaded.
+ * @param id The mod id, for log lines. */
+static void shader_move_tables(mod_shader_t* sh, const char* id) {
+    static const char k_material_fn[] = "op_material(";
+    const char* off = getenv("OPENPETE_MOD_SPV_CDATA");
+    if ((off && strcmp(off, "0") == 0) || sh->stage != OPENPETE_MOD_GLSL_STAGE_FRAG ||
+        !shader_spv_names(sh->spv, sh->spv_words, k_material_fn, sizeof k_material_fn - 1))
+        return;
+    uint32_t** spv[3] = { &sh->spv, &sh->spv_ter, &sh->spv_portal };
+    size_t* words[3] = { &sh->spv_words, &sh->spv_ter_words, &sh->spv_portal_words };
+    for (int p = 0; p < 3; p++) {
+        uint32_t* out = NULL;
+        size_t out_n = 0;
+        if (!*spv[p] ||
+            openpete_mod_spv_cdata_extract(*spv[p], *words[p], &out, &out_n, &sh->cdata[p]) <= 0)
+            continue;
+        free(*spv[p]);
+        *spv[p] = out;
+        *words[p] = out_n;
+        OPL_INFO_F("mods", "%s: shader %s%s: %d constant table(s), %zu B, moved to "
+                   "the material table block", id, sh->path,
+                   p == 1 ? ".terrain" : p == 2 ? ".portal" : "",
+                   sh->cdata[p].tables, sh->cdata[p].len);
     }
-    return OPENPETE_MATERIAL_CONTRACT_SCENE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -563,6 +619,9 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     sh->spv_portal = prof.spv_portal;
     sh->spv_portal_words = prof.spv_portal_words;
     sh->contract = shader_spv_contract(words, n_words);
+    memset(sh->cdata, 0, sizeof sh->cdata);
+    memset(sh->cdata_gpu, 0, sizeof sh->cdata_gpu);
+    shader_move_tables(sh, id);
     sh->live = 1;
     return shader_count() - 1;
 }
@@ -600,6 +659,22 @@ const uint32_t* openpete_mods_shader_spv_portal(int handle, size_t* words) {
     return sh->spv_portal;
 }
 
+/** @brief Describe one fragment profile's moved constant tables for the renderer.
+ *
+ * @param handle Shader handle; out of range, swept or negative gives none.
+ * @param profile 0 stock, 1 terrain, 2 portal.
+ * @param out Receives the table block bytes, their length (0 = none) and
+ *        the renderer's cache slot for the device copy. */
+static void shader_cdata(int handle, int profile, openpete_mod_cdata_t* out) {
+    memset(out, 0, sizeof *out);
+    if (handle < 0 || handle >= shader_count()) return;
+    mod_shader_t* sh = shader_at(handle);
+    if (!sh->live || !sh->cdata[profile].len) return;
+    out->bytes = sh->cdata[profile].bytes;
+    out->len = sh->cdata[profile].len;
+    out->gpu = &sh->cdata_gpu[profile];
+}
+
 /** @brief Body of openpete_mods_shader_remove_owner, run under the registry write lock.
  *
  * Frees both SPIR-V profiles of every live shader the mod owns and marks
@@ -618,6 +693,10 @@ static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
         free(sh->spv_portal);
         sh->spv_portal = NULL;
         sh->spv_portal_words = 0;
+        for (int p = 0; p < 3; p++) {
+            free(sh->cdata[p].bytes);
+            memset(&sh->cdata[p], 0, sizeof sh->cdata[p]);
+        }
         sh->live = 0;   /* slot stays dead: stale handles error */
     }
 }
@@ -1263,6 +1342,7 @@ int openpete_mods_material_terrain_bucket_gpu(
     out->frag_spv = openpete_mods_shader_spv_terrain(m->frag, &out->frag_words);
     if (!out->frag_spv || out->frag_words == 0) return -1;
     out->pipeline_slot = &m->pipeline_ter[pipe_idx];
+    shader_cdata(m->frag, 1, &out->frag_cdata);
     out->owner = m->owner;
     out->generation = m->generation;
     out->index = bucket - 1;
@@ -1780,6 +1860,8 @@ static int material_fill_gpu(int best, int uniform_slot,
     if (!out->frag_portal_spv) out->frag_portal_words = 0;
     for (int b = 0; b < OPENPETE_MATERIAL_PORTAL_PIPES; b++)
         out->pipeline_portal_slot[b] = &m->pipeline_portal[b];
+    shader_cdata(m->frag, 0, &out->frag_cdata);
+    shader_cdata(m->frag, 2, &out->frag_portal_cdata);
     out->owner = m->owner;
     out->generation = m->generation;
     out->index = best;
@@ -1970,6 +2052,7 @@ int openpete_mods_material_enum_terrain(int i, int pipe_idx,
     out->frag_spv = openpete_mods_shader_spv_terrain(m->frag, &out->frag_words);
     if (!out->frag_spv || out->frag_words == 0) return -1;
     out->pipeline_slot = &m->pipeline_ter[pipe_idx];
+    shader_cdata(m->frag, 1, &out->frag_cdata);
     out->owner = m->owner;
     out->generation = m->generation;
     out->index = i;

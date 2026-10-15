@@ -1915,6 +1915,47 @@ void     rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set,
  * @param ubo Set to destroy. */
 void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
 
+/* ---- read-only table data at set 3 binding 2 ------------------------
+ * The contract set's layout carries a third binding: a fragment-visible
+ * read-only storage buffer. A material fragment whose large constant
+ * tables the mod SDK moved out of its SPIR-V (mod_spv_cdata.h) reads them
+ * there. A rhi_ubo's own descriptor set points binding 2 at a 16-byte
+ * zero buffer, so a shader that declares nothing there binds as before. A
+ * rhi_ubo_data is one device-resident copy of a table block plus a
+ * descriptor set of the contract layout whose bindings 0 and 1 view the
+ * rhi_ubo it was made for and whose binding 2 views the copy. */
+typedef struct rhi_ubo_data rhi_ubo_data;
+/** @brief Upload a read-only table block and make a contract-set descriptor set over a uniform block set and it.
+ *
+ * The buffer prefers DEVICE_LOCAL host-visible memory and falls back to
+ * host-visible memory; the bytes are copied once and never change.
+ * @param dev Device.
+ * @param ubo The uniform block set whose blocks bindings 0 and 1 view; it
+ *        must outlive the result.
+ * @param bytes The table block; at least 4 bytes.
+ * @param len Its byte count.
+ * @return The data, or NULL when the buffer or the set cannot be allocated
+ *         (logged). */
+rhi_ubo_data *rhi_ubo_data_create(rhi_device *dev, rhi_ubo *ubo,
+                                  const void *bytes, size_t len);
+/** @brief Bind two blocks of a set as bindings 0 and 1 of descriptor set 3, with a table block at binding 2.
+ *
+ * rhi_ubo_bind with @p data's descriptor set in place of the set's own;
+ * NULL @p data is rhi_ubo_bind.
+ * @param dev Device whose current frame records the bind.
+ * @param ubo Set; the one @p data was created for.
+ * @param block_a Block at binding 0.
+ * @param block_b Block at binding 1.
+ * @param data Table block at binding 2, or NULL for the zero buffer. */
+void     rhi_ubo_bind_data(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
+                           uint32_t block_b, const rhi_ubo_data *data);
+/** @brief Free a table block's descriptor set and buffer; NULL is ignored.
+ *
+ * The caller guarantees no submitted frame still reads it.
+ * @param dev Device the data was created on.
+ * @param data Data to destroy. */
+void     rhi_ubo_data_destroy(rhi_device *dev, rhi_ubo_data *data);
+
 /* ---- offscreen-as-input (the COMPOSITE postfx point) ----------------
  * rhi_bind_offscreen_tex: bind off_image as the sampler at `set` (inside a
  * pass, after the pipeline bind). resume_attachment: the return barrier

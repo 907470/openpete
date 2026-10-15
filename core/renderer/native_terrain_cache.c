@@ -2089,11 +2089,9 @@ static int tc_bind_material(int bucket, int variant, int slot,
                                          mg.frag_words, mg.owner, mg.index, mg.generation))
         goto draw_stock;
     {
-        rhi_ubo *mu = openpete_native_material_ubo();
-        if (!mu) goto draw_stock;   /* no uniform source yet */
+        if (!openpete_native_material_ubo()) goto draw_stock;   /* no uniform source yet */
         rhi_bind_pipeline(s_tc.dev, (rhi_pipeline *)*mg.pipeline_slot);
-        rhi_ubo_bind(s_tc.dev, mu, 0,
-                     mg.uniform_slot > 0 ? (uint32_t)(1 + mg.uniform_slot) : 0u);
+        openpete_native_material_bind(s_tc.dev, mg.uniform_slot, &mg.frag_cdata);
         return 1;
     }
 draw_stock:

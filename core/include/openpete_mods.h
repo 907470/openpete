@@ -1488,6 +1488,16 @@ void openpete_mods_registry_read_unlock(void);
 #define OPENPETE_MATERIAL_PORTAL_RIM    5
 #define OPENPETE_MATERIAL_PORTAL_RIM_MARK 6
 
+/* The moved constant tables of one fragment profile (mod_spv_cdata.h):
+ * the std430 bytes the profile's SPIR-V reads at set 3 binding 2, and the
+ * slot where the renderer caches the device copy it binds for them. len 0
+ * = the profile reads nothing there. Both live as long as the shader. */
+typedef struct openpete_mod_cdata {
+    const void* bytes;
+    size_t      len;
+    void**      gpu;
+} openpete_mod_cdata_t;
+
 /* Material selectors (declarative and per-instance) - draw-time resolve
  * for the batcher.
  * NULL spv side = keep the stock stage (executor falls back to the
@@ -1511,6 +1521,8 @@ typedef struct {
      * OPENPETE_MATERIAL_PORTAL_PIPES describes. */
     const uint32_t* frag_portal_spv; size_t frag_portal_words;
     void** pipeline_portal_slot[OPENPETE_MATERIAL_PORTAL_PIPES];
+    /* The moved tables of the stock and portal fragment profiles. */
+    openpete_mod_cdata_t frag_cdata, frag_portal_cdata;
     const char* owner;
     int   uniform_slot;
     unsigned generation;  /* the material's slot generation: moves when its pipelines are retired */
@@ -1675,6 +1687,7 @@ typedef struct {
     const uint32_t* frag_spv;    /* the OP_PROFILE_TERRAIN module          */
     size_t          frag_words;
     void**          pipeline_slot; /* cached rhi_pipeline* for this variant */
+    openpete_mod_cdata_t frag_cdata; /* the terrain module's moved tables     */
     const char*     owner;
     int             uniform_slot;  /* material-UBO block (0 = no params)    */
     unsigned        generation;    /* the material's slot generation        */

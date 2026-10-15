@@ -347,6 +347,7 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
     add_executable(mod_shader_compile_test
         mod_shader_compile_test.c
         ${CMAKE_SOURCE_DIR}/core/mods/mod_glsl.c
+        ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_cdata.c
         ${CMAKE_SOURCE_DIR}/core/diag/log.c)
     target_include_directories(mod_shader_compile_test PRIVATE
         ${CMAKE_SOURCE_DIR}/core/include
@@ -360,10 +361,22 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
     add_dependencies(mod_shader_compile_test spyro1_sdk_stage)
     openpete_game_bin(spyro-1 _shader_bin _shader_args)
     get_filename_component(_shader_dir "${_shader_bin}" DIRECTORY)
+    # spirv-val, when the host has it, validates every module the
+    # constant-table move rewrites; the fixture run requires one to move.
+    find_program(OPENPETE_SPIRV_VAL spirv-val)
+    set(_spirv_val "${OPENPETE_SPIRV_VAL}")
+    if(NOT OPENPETE_SPIRV_VAL)
+        set(_spirv_val "")
+    endif()
     add_test(NAME mod_shader_compile
              COMMAND mod_shader_compile_test ${CMAKE_SOURCE_DIR}/mods
-                     ${_shader_dir}/sdk)
+                     ${_shader_dir}/sdk "${_spirv_val}")
     set_tests_properties(mod_shader_compile PROPERTIES LABELS "mods")
+    add_test(NAME mod_shader_table_move
+             COMMAND mod_shader_compile_test
+                     ${CMAKE_CURRENT_SOURCE_DIR}/data/spv-cdata-mods
+                     ${_shader_dir}/sdk "${_spirv_val}" --expect-moved)
+    set_tests_properties(mod_shader_table_move PROPERTIES LABELS "mods")
 endif()
 
 # rhi_memtype_candidates_test - the memory-type preference order behind the
@@ -511,6 +524,7 @@ add_test(NAME sfx_smpl_walk_test COMMAND sfx_smpl_walk_test)
 set(RHI_STRESS_SOURCES
     rhi_compile_stress.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_shader.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_spv_cdata.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
     ${CMAKE_SOURCE_DIR}/core/host/sha256.c
     ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c

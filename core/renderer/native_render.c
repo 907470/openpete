@@ -837,6 +837,7 @@ static rhi_ubo* s_mat_ubo;
 static void fill_material_ubo(void);
 /* Shared with the retained terrain cache's material pass. */
 struct rhi_ubo *openpete_native_material_ubo(void) { return s_mat_ubo; }
+
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
@@ -11012,9 +11013,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                 if (s_nr.mat_pack_dummy)   /* op_pack_tex: no pack art for gouraud */
                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
                 bind_material_keys();
-                if (s_mat_ubo)
-                    rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
-                                 mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
+                openpete_native_material_bind(s_nr.dev, mg.uniform_slot, &mg.frag_cdata);
                 psx_material_hd zm;                     /* bpp 0 = untextured */
                 memset(&zm, 0, sizeof zm);
                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
@@ -11763,9 +11762,8 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     bind_material_keys();
     /* engine block 0 + the per-instance slot's mod block (block 1+slot;
      * slot 0 = declarative binds the engine block as the mod block too). */
-    if (s_mat_ubo)
-        rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
-                     mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
+    openpete_native_material_bind(s_nr.dev, mg.uniform_slot,
+                                  portal ? &mg.frag_portal_cdata : &mg.frag_cdata);
     psx_material_hd mh;
     memset(&mh, 0, sizeof mh);
     mh.tpage_x = r->m.tpage_x; mh.tpage_y = r->m.tpage_y;
@@ -14427,9 +14425,8 @@ static bool draw_native_scene(bool full_extent)
                 bind_scene_pipe(dpipe);
                 rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
                 pc.key_contest = shadow_decal_bind_keys();              /* set 1 */
-                if (dslot_ok && s_mat_ubo)
-                    rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
-                                 dmg.uniform_slot > 0 ? 1 + dmg.uniform_slot : 0);
+                if (dslot_ok)
+                    openpete_native_material_bind(s_nr.dev, dmg.uniform_slot, &dmg.frag_cdata);
                 rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)txg_count[1], (uint32_t)txg_first[1]);
@@ -14621,9 +14618,8 @@ static bool draw_native_scene(bool full_extent)
                                 if (s_nr.mat_pack_dummy)
                                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
                                 bind_material_keys();
-                                if (s_mat_ubo)
-                                    rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
-                                                 mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
+                                openpete_native_material_bind(s_nr.dev, mg.uniform_slot,
+                                                              &mg.frag_cdata);
                                 psx_material_hd zm;
                                 memset(&zm, 0, sizeof zm);
                                 rhi_push_constants(s_nr.dev, &zm, sizeof zm);
@@ -17039,6 +17035,75 @@ static void write_engine_block(rhi_ubo* u, int blk, int w, int h)
 }
 
 #define MAT_UBO_BLOCKS 129   /* 1 engine + 128 slots (MOD_MATERIAL_SLOTS) */
+/* Device copies of material table blocks (set 3 binding 2), one per
+ * distinct block content. A profile's cache slot holds
+ * (s_cdata_epoch << 16) | (index + 1), so a slot written before a renderer
+ * shutdown never resolves to an entry made after it. */
+typedef struct { void* bytes; size_t len; rhi_ubo_data* data; } nr_cdata_t;
+static nr_cdata_t* s_cdata;
+static int         s_cdata_n, s_cdata_cap;
+static uintptr_t   s_cdata_epoch = 1;
+
+/** @brief Return the entry holding a table block's bytes, adding and uploading it when no entry matches.
+ *
+ * @param cd The block.
+ * @return The entry index, or -1 when the copy or the upload fails. */
+static int nr_cdata_intern(const openpete_mod_cdata_t* cd) {
+    for (int i = 0; i < s_cdata_n; i++)
+        if (s_cdata[i].len == cd->len && memcmp(s_cdata[i].bytes, cd->bytes, cd->len) == 0)
+            return i;
+    if (s_cdata_n == s_cdata_cap) {
+        int cap = s_cdata_cap ? s_cdata_cap * 2 : 8;
+        nr_cdata_t* n = (nr_cdata_t*)realloc(s_cdata, (size_t)cap * sizeof *n);
+        if (!n) return -1;
+        s_cdata = n;
+        s_cdata_cap = cap;
+    }
+    nr_cdata_t* e = &s_cdata[s_cdata_n];
+    e->bytes = malloc(cd->len);
+    e->len = cd->len;
+    e->data = e->bytes ? rhi_ubo_data_create(s_nr.dev, s_mat_ubo, cd->bytes, cd->len) : NULL;
+    if (!e->data) { free(e->bytes); return -1; }
+    memcpy(e->bytes, cd->bytes, cd->len);
+    OPL_INFO_F("native", "material table block %d: %zu B uploaded", s_cdata_n, cd->len);
+    return s_cdata_n++;
+}
+
+/** @brief Return the device copy of a profile's table block, resolving and caching it in the profile's slot on first use.
+ *
+ * @param cd The profile's moved tables; NULL or len 0 for none.
+ * @return The copy, or NULL for none or a failed upload. */
+static rhi_ubo_data* nr_material_cdata(const openpete_mod_cdata_t* cd) {
+    if (!cd || !cd->len || !cd->bytes || !cd->gpu || !s_mat_ubo) return NULL;
+    uintptr_t v = (uintptr_t)*cd->gpu;
+    if ((v >> 16) != s_cdata_epoch) {
+        const int i = nr_cdata_intern(cd);
+        if (i < 0) return NULL;
+        v = (s_cdata_epoch << 16) | (uintptr_t)(i + 1);
+        *cd->gpu = (void*)v;
+    }
+    return s_cdata[(v & 0xFFFFu) - 1].data;
+}
+
+/** @brief Free every table block copy and invalidate every profile slot that names one. */
+static void nr_cdata_shutdown(void) {
+    for (int i = 0; i < s_cdata_n; i++) {
+        rhi_ubo_data_destroy(s_nr.dev, s_cdata[i].data);
+        free(s_cdata[i].bytes);
+    }
+    free(s_cdata);
+    s_cdata = NULL;
+    s_cdata_n = s_cdata_cap = 0;
+    s_cdata_epoch++;
+}
+
+void openpete_native_material_bind(struct rhi_device *dev, int uniform_slot,
+                                   const struct openpete_mod_cdata *cd) {
+    if (!s_mat_ubo) return;
+    rhi_ubo_bind_data(dev, s_mat_ubo, 0, uniform_slot > 0 ? 1u + (uint32_t)uniform_slot : 0u,
+                      nr_material_cdata(cd));
+}
+
 /** @brief Refill the material UBO: the engine block and each interned slot's uniform bytes.
  *
  * Block 0 takes the engine block and block 1 + s the uniform bytes of
@@ -19664,6 +19729,7 @@ void openpete_native_render_shutdown(void)
     if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
     if (s_shfoot_ubo) { rhi_destroy_ubo(s_nr.dev, s_shfoot_ubo); s_shfoot_ubo = NULL; }
     if (s_cover_ubo) { rhi_destroy_ubo(s_nr.dev, s_cover_ubo); s_cover_ubo = NULL; }
+    nr_cdata_shutdown();
     if (s_mat_ubo) { rhi_destroy_ubo(s_nr.dev, s_mat_ubo); s_mat_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     late_shutdown();

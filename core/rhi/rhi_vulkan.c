@@ -653,6 +653,9 @@ struct rhi_device {
      * after every offscreen recreate), and the UBO offset alignment. */
     VkDescriptorSetLayout ubo_set_layout;
     VkDescriptorSetLayout ubo1_set_layout;            /* one dynamic binding    */
+    /* The 16-byte zero storage buffer every rhi_ubo set shows at binding 2
+     * (rhi_ubo_data); created with the first rhi_ubo. */
+    struct rhi_buffer *ubo_data_zero;
     VkDescriptorSet off_sampled_set[RHI_FRAMES_IN_FLIGHT];
     uint32_t        off_gen;                          /* bumped per create_offscreen */
     uint32_t        off_sampled_gen[RHI_FRAMES_IN_FLIGHT];
@@ -2416,15 +2419,17 @@ static bool desc_pool_add(rhi_device *dev)
                 "allocation is refused\n", RHI_DESC_POOLS_MAX, RHI_DESC_POOL_SETS);
         return false;
     }
-    VkDescriptorPoolSize ps[2] = {
+    VkDescriptorPoolSize ps[3] = {
         { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4096 },
         /* off_image sampled sets (per frame slot) + rhi_ubo pairs. */
         { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 64 },
+        /* binding 2 of every rhi_ubo set and rhi_ubo_data set */
+        { .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 64 },
     };
     VkDescriptorPoolCreateInfo pi = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = RHI_DESC_POOL_SETS, .poolSizeCount = 2, .pPoolSizes = ps,
+        .maxSets = RHI_DESC_POOL_SETS, .poolSizeCount = 3, .pPoolSizes = ps,
     };
     VkDescriptorPool pool;
     if (vkCreateDescriptorPool(dev->device, &pi, NULL, &pool) != VK_SUCCESS) {
@@ -2476,10 +2481,11 @@ static bool desc_alloc(rhi_device *dev, VkDescriptorSetLayout layout,
  * for high-res replacement art. Layouts: vram_set_layout (one
  * combined-image-sampler at binding 0, shared by every VRAM-sampling
  * pipeline), pair_set_layout (two at bindings 0 and 1), ubo_set_layout (two
- * dynamic UBOs, vertex and fragment visible) and ubo1_set_layout (one
- * dynamic UBO). Records ubo_align (minUniformBufferOffsetAlignment, 256 when
+ * dynamic UBOs, vertex and fragment visible, and a fragment-visible storage
+ * buffer at binding 2) and ubo1_set_layout (one dynamic UBO). Records ubo_align (minUniformBufferOffsetAlignment, 256 when
  * the device reports 0) and max_desc_sets. The pool holds 4096
- * combined-image-samplers and 64 dynamic UBOs in at most 4160 sets, with
+ * combined-image-samplers, 64 dynamic UBOs and 64 storage buffers in at
+ * most 4160 sets, with
  * FREE_DESCRIPTOR_SET, because every rhi_texture, including each texture-pack
  * replacement, holds one set for its lifetime.
  * @param dev Device whose samplers, layouts, limits and first descriptor pool are written.
@@ -2526,19 +2532,23 @@ static bool create_descriptor_infra(rhi_device *dev)
     if (vkCreateDescriptorSetLayout(dev->device, &pli, NULL, &dev->pair_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (pair) failed\n"); return false;
     }
-    /* Dynamic-UBO pair layout (postfx set 3: binding 0 = engine block,
-     * binding 1 = mod block), vertex+fragment visible. */
-    VkDescriptorSetLayoutBinding ub[2] = {
+    /* The contract set (set 3): binding 0 = engine block, binding 1 = mod
+     * block, both dynamic UBOs visible to vertex and fragment; binding 2 =
+     * the read-only table block a material fragment's moved constant tables
+     * live in (rhi_ubo_data; mod_spv_cdata.h), fragment visible. */
+    VkDescriptorSetLayoutBinding ub[3] = {
         { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
           .descriptorCount = 1,
           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
         { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
           .descriptorCount = 1,
           .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
+        { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
     };
     VkDescriptorSetLayoutCreateInfo uli = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2, .pBindings = ub,
+        .bindingCount = 3, .pBindings = ub,
     };
     if (vkCreateDescriptorSetLayout(dev->device, &uli, NULL, &dev->ubo_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (ubo) failed\n"); return false;
@@ -3641,6 +3651,7 @@ void rhi_destroy(rhi_device *dev)
     desc_pools_free(dev);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
     if (dev->ubo_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo_set_layout, NULL);
+    if (dev->ubo_data_zero) { rhi_destroy_buffer(dev, dev->ubo_data_zero); dev->ubo_data_zero = NULL; }
     if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
     /* A device that failed before vkCreateDevice has no device-level
      * dispatch to call through, so even a null handle is not destroyed. */
@@ -4850,7 +4861,19 @@ static VkResult tc_alloc_try(rhi_device *dev, const VkMemoryAllocateInfo *mai,
     return vkAllocateMemory(dev->device, mai, NULL, out);
 }
 
-rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
+/** @brief Create a host-mapped buffer of the given usage, preferring device-local memory.
+ *
+ * Every host-visible, host-coherent memory type the buffer accepts is tried,
+ * DEVICE_LOCAL types first (rhi_memtype_candidates); the first that
+ * allocates wins, and every attempt is logged under @p what.
+ * @param dev Device the buffer is created on.
+ * @param bytes Buffer size in bytes.
+ * @param usage Vulkan buffer usage flags.
+ * @param what Name of the buffer kind in log lines.
+ * @return The mapped buffer, or NULL when every candidate type fails. */
+static rhi_buffer *create_device_mapped_buffer(rhi_device *dev, size_t bytes,
+                                               VkBufferUsageFlags usage,
+                                               const char *what)
 {
     rhi_buffer *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
@@ -4858,7 +4881,7 @@ rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
     VkBufferCreateInfo bi = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = bytes,
-        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     if (vkCreateBuffer(dev->device, &bi, NULL, &b->buffer) != VK_SUCCESS) {
@@ -4880,22 +4903,28 @@ rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
         };
         r = tc_alloc_try(dev, &mai, &b->memory);
         if (r == VK_SUCCESS) {
-            RHI_LOG("device vertex buffer %zu B: type %u flags %x\n", bytes,
+            RHI_LOG("%s %zu B: type %u flags %x\n", what, bytes,
                     cand[i], (unsigned)mp.memoryTypes[cand[i]].propertyFlags);
             break;
         }
-        RHI_LOG("device vertex buffer %zu B: type %u failed (%d)\n", bytes,
+        RHI_LOG("%s %zu B: type %u failed (%d)\n", what, bytes,
                 cand[i], (int)r);
     }
     if (r != VK_SUCCESS) {
-        RHI_LOG("device vertex buffer %zu B: no memory type of %d allocated\n",
-                bytes, ncand);
+        RHI_LOG("%s %zu B: no memory type of %d allocated\n",
+                what, bytes, ncand);
         vkDestroyBuffer(dev->device, b->buffer, NULL); free(b); return NULL;
     }
     vkBindBufferMemory(dev->device, b->buffer, b->memory, 0);
     vkMapMemory(dev->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped);
     b->dev = dev;
     return b;
+}
+
+rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
+{
+    return create_device_mapped_buffer(dev, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                       "device vertex buffer");
 }
 
 rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
@@ -8605,6 +8634,38 @@ struct rhi_ubo {
     rhi_device     *dev;
 };
 
+/** @brief Write a contract-set descriptor set: bindings 0 and 1 view one block of a uniform block set, binding 2 the whole of a table buffer.
+ *
+ * The dynamic offsets at bind time select (frame slot, block) per UBO
+ * binding.
+ * @param dev Device.
+ * @param set Descriptor set of ubo_set_layout.
+ * @param u Uniform block set.
+ * @param table Storage buffer shown at binding 2. */
+static void contract_set_write(rhi_device *dev, VkDescriptorSet set, const rhi_ubo *u,
+                               const rhi_buffer *table)
+{
+    VkDescriptorBufferInfo bi = {
+        .buffer = u->buf->buffer, .offset = 0, .range = u->block_size,
+    };
+    VkDescriptorBufferInfo ti = { .buffer = table->buffer, .offset = 0, .range = VK_WHOLE_SIZE };
+    VkWriteDescriptorSet wr[3] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+          .dstBinding = 0, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+          .pBufferInfo = &bi },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+          .dstBinding = 1, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+          .pBufferInfo = &bi },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+          .dstBinding = 2, .descriptorCount = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .pBufferInfo = &ti },
+    };
+    vkUpdateDescriptorSets(dev->device, 3, wr, 0, NULL);
+}
+
 rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
 {
     if (!dev || block_size == 0 || blocks == 0) return NULL;
@@ -8625,27 +8686,22 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
     }
     memset(u->buf->mapped, 0, total);   /* unwritten blocks read as zeros */
 
-    if (!desc_alloc(dev, dev->ubo_set_layout, &u->set, &u->set_pool)) {
+    if (!dev->ubo_data_zero) {
+        dev->ubo_data_zero = create_device_mapped_buffer(dev, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                         "zero table block");
+        if (dev->ubo_data_zero) memset(dev->ubo_data_zero->mapped, 0, 16);
+    }
+    if (!dev->ubo_data_zero ||
+        !desc_alloc(dev, dev->ubo_set_layout, &u->set, &u->set_pool)) {
         RHI_LOG("rhi_create_ubo: descriptor alloc failed\n");
         rhi_destroy_buffer(dev, u->buf);
+        free(u->gen); free(u->bound);
         free(u); return NULL;
     }
-    /* Both bindings view the same buffer; the dynamic offsets at bind time
-     * select (frame slot, block) per binding. Range = one block. */
+    contract_set_write(dev, u->set, u, dev->ubo_data_zero);
     VkDescriptorBufferInfo bi = {
         .buffer = u->buf->buffer, .offset = 0, .range = u->block_size,
     };
-    VkWriteDescriptorSet wr[2] = {
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set,
-          .dstBinding = 0, .descriptorCount = 1,
-          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-          .pBufferInfo = &bi },
-        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set,
-          .dstBinding = 1, .descriptorCount = 1,
-          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-          .pBufferInfo = &bi },
-    };
-    vkUpdateDescriptorSets(dev->device, 2, wr, 0, NULL);
 
     /* Second view of the same buffer through the single-binding layout, so a
      * block can also be bound at a set index outside the contract set. Its
@@ -8713,8 +8769,41 @@ void rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data, uint32_t len)
     }
 }
 
-void rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
-                  uint32_t block_b)
+struct rhi_ubo_data {
+    rhi_buffer     *buf;         /* the table block, STORAGE usage */
+    VkDescriptorSet set;         /* contract set: the rhi_ubo's blocks + buf */
+    VkDescriptorPool set_pool;
+};
+
+rhi_ubo_data *rhi_ubo_data_create(rhi_device *dev, rhi_ubo *ubo,
+                                  const void *bytes, size_t len)
+{
+    if (!dev || !ubo || !bytes || len < 4) return NULL;
+    rhi_ubo_data *d = calloc(1, sizeof(*d));
+    if (!d) return NULL;
+    d->buf = create_device_mapped_buffer(dev, len, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                         "table block");
+    if (!d->buf || !desc_alloc(dev, dev->ubo_set_layout, &d->set, &d->set_pool)) {
+        RHI_LOG("rhi_ubo_data_create: %zu B table block allocation failed\n", len);
+        if (d->buf) rhi_destroy_buffer(dev, d->buf);
+        free(d);
+        return NULL;
+    }
+    memcpy(d->buf->mapped, bytes, len);
+    contract_set_write(dev, d->set, ubo, d->buf);
+    return d;
+}
+
+void rhi_ubo_data_destroy(rhi_device *dev, rhi_ubo_data *data)
+{
+    if (!data) return;
+    if (data->set) vkFreeDescriptorSets(dev->device, data->set_pool, 1, &data->set);
+    rhi_destroy_buffer(dev, data->buf);
+    free(data);
+}
+
+void rhi_ubo_bind_data(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
+                       uint32_t block_b, const rhi_ubo_data *data)
 {
     if (!dev || !ubo || !dev->frame_active || !dev->cur_layout) return;
     if (block_a >= ubo->blocks || block_b >= ubo->blocks) return;
@@ -8724,8 +8813,15 @@ void rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
         (uint32_t)ubo_phys(ubo, block_a) * ubo->block_size,
         (uint32_t)ubo_phys(ubo, block_b) * ubo->block_size,
     };
+    const VkDescriptorSet set = data ? data->set : ubo->set;
     vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            dev->cur_layout, 3, 1, &ubo->set, 2, offs);
+                            dev->cur_layout, 3, 1, &set, 2, offs);
+}
+
+void rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
+                  uint32_t block_b)
+{
+    rhi_ubo_bind_data(dev, ubo, block_a, block_b, NULL);
 }
 
 void rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set, uint32_t block)

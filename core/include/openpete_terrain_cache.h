@@ -28,6 +28,7 @@ struct rhi_texture;
 struct rhi_terrain_vertex;
 struct rhi_terrain_prev;
 struct rhi_terrain_nearctx;
+struct openpete_mod_cdata;
 
 /* Vertex arenas, one per draw class. OPAQUE carries every HP face (textured
  * or flat, incl. HQ-subdivide variants and blend-4 "B+F/4" faces - the scene
@@ -597,6 +598,21 @@ struct rhi_texture *openpete_native_hdfold_atlas(void);
  * material tag split is armed.
  * @return The UBO, or NULL before the first present with the split armed. */
 struct rhi_ubo *openpete_native_material_ubo(void);
+
+/** @brief Bind the material contract set: the engine block, a material's uniform block and its fragment profile's table block.
+ *
+ * Binds set 3 of the bound pipeline: binding 0 the material UBO's engine
+ * block, binding 1 block 1 + @p uniform_slot (the engine block for slot 0),
+ * binding 2 the device copy of @p cd's table block, or the RHI's zero
+ * buffer when @p cd carries none. The device copy is made on the first
+ * bind of a block, shared by every profile with identical bytes, cached in
+ * the profile's slot and freed at renderer shutdown; a failed upload binds
+ * the zero buffer. Does nothing before the material UBO exists.
+ * @param dev Device whose current frame records the bind.
+ * @param uniform_slot The material's uniform slot (0 = no params).
+ * @param cd The profile's moved tables; NULL or len 0 for none. */
+void openpete_native_material_bind(struct rhi_device *dev, int uniform_slot,
+                                   const struct openpete_mod_cdata *cd);
 
 /** @brief Return the number of fold atlas uploads still queued.
  *
