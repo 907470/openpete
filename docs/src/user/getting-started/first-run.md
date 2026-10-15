@@ -33,10 +33,17 @@ for your machine, with the line **YOUR DISC IS REBUILT FOR THIS PC. THIS
 HAPPENS ONCE.** Measured times: about 26 seconds on a 16-thread desktop, 45 to
 90 seconds on a four-core laptop. The game then starts.
 
-Later runs boot the library entry straight into the game. With more than one
-entry in the library, a **CHOOSE A VERSION** screen lists them, every game's
-entries together, most recently played first, each named with its game: ++up++ / ++down++ or the stick select, ++enter++ or ++a++ plays,
-++esc++ or ++b++ quits. Dropping a new image on this screen ingests it.
+Later runs open the **CHOOSE A GAME** screen, which lists every disc in the
+library, of every game, most recently played first, each named with its
+game. It shows with a single disc in the library too, so the disc of
+another game can be added: ++up++ / ++down++ or the stick select,
+++enter++ or ++a++ plays, ++esc++ or ++b++ quits. Dragging a `.bin` or
+`.cue` onto this screen, or pressing ++space++ or the pad's ++x++ button
+to browse for one, adds that disc to the library and starts its game.
+
+A launch that names its game with `--game`, or a build that runs one game
+only, skips this screen when the library holds one disc of that game and
+starts it directly; with several, the screen reads **CHOOSE A VERSION**.
 
 ## Mods compile on start
 

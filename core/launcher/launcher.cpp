@@ -5,7 +5,8 @@
 // (openpete_native_launcher_present):
 //   drop      - the library is empty and no disc was named: drag a .cue/.bin
 //               onto the window, or browse for one.
-//   selector  - several library entries: pick one.
+//   selector  - several library entries, or any while no game is named:
+//               pick one, or drop a disc image to add and boot it.
 //   progress  - the ingest copy, the first-boot module build and the mod
 //               compile report a stage and a bar.
 // Every screen draws in a 640x448 layout space scaled into the window. The
@@ -51,6 +52,7 @@ struct View {
     int sel = 0;
     int clicked = -1;   /* the label the mouse picked this frame */
     bool browse = false;   /* the browse button was pressed this frame */
+    bool games = false;    /* the selector lists every game's entries */
 };
 
 struct State {
@@ -61,6 +63,7 @@ struct State {
     bool handed_off = false;
     SDL_Gamepad* pad = nullptr;
     char drop_path[4096] = {};
+    bool scripted_taken = false;   /* OPENPETE_LAUNCHER_DROP was consumed */
     SDL_AtomicInt dialog_pending = {};
     SDL_AtomicInt dialog_got = {};
     unsigned shot_done = 0;    /* one bit per Screen already read back */
@@ -163,15 +166,18 @@ void draw_drop(const Frame& f, View& v) {
     text_centred(f, 300 + kBandY, 8, IM_COL32(110, 95, 150, 255), "ESC / (B) TO QUIT");
 }
 
-/** @brief Draw the version selector: the heading, up to six entries with the selection marked, and the controls hint.
+/** @brief Draw the selector: the heading, up to six entries with the selection marked, the drop and browse hint, and the controls hint.
  *
+ * The heading reads CHOOSE A GAME while the selector lists every game's
+ * entries, else CHOOSE A VERSION.
  * @param f The frame mapping.
  * @param v The view; clicked is set to the entry the mouse picked. */
 void draw_select(const Frame& f, View& v) {
-    text_centred(f, 140 + kBandY, 14, IM_COL32(220, 210, 240, 255), "CHOOSE A VERSION");
+    text_centred(f, 136 + kBandY, 14, IM_COL32(220, 210, 240, 255),
+                 v.games ? "CHOOSE A GAME" : "CHOOSE A VERSION");
     ImGui::PushFont(nullptr, 14 * f.scale);
-    float y = 180 + kBandY;
-    for (int i = 0; i < v.count && i < 6; i++, y += 26) {
+    float y = 168 + kBandY;
+    for (int i = 0; i < v.count && i < 6; i++, y += 22) {
         ImGui::SetCursorPos(ImVec2(f.ox + 120 * f.scale, f.oy + y * f.scale));
         const bool on = i == v.sel;
         ImGui::PushStyleColor(ImGuiCol_Text, on ? IM_COL32(255, 214, 120, 255)
@@ -182,6 +188,8 @@ void draw_select(const Frame& f, View& v) {
         ImGui::PopStyleColor();
     }
     ImGui::PopFont();
+    text_centred(f, 304 + kBandY, 8, IM_COL32(150, 130, 190, 255),
+                 "DRAG A DISC IMAGE (.CUE / .BIN) HERE TO ADD IT - SPACE / (X) TO BROWSE");
     text_centred(f, 320 + kBandY, 8, IM_COL32(110, 95, 150, 255),
                  "UP/DOWN OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT");
 }
@@ -336,6 +344,7 @@ Ask ask_of(const SDL_Event& e) {
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
             static const struct { Uint8 b; Ask a; } k_buttons[] = {
                 {SDL_GAMEPAD_BUTTON_SOUTH, Ask::Pick}, {SDL_GAMEPAD_BUTTON_EAST, Ask::Quit},
+                {SDL_GAMEPAD_BUTTON_WEST, Ask::Browse},
                 {SDL_GAMEPAD_BUTTON_DPAD_UP, Ask::Up}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, Ask::Down}};
             for (const auto& b : k_buttons) if (e.gbutton.button == b.b) return b.a;
             return Ask::None;
@@ -379,19 +388,15 @@ int scripted_pick(int count) {
 /** @brief Run the drop screen until a disc image is dropped or chosen, or the player quits.
  *
  * The harness variable OPENPETE_LAUNCHER_DROP=<path> acts as a drop of that
- * path after the first frame.
+ * path after the first frame (launcher_scripted_drop).
  * @return The path, owned by the launcher, or NULL on quit. */
 const char* wait_for_disc() {
     View v;
     v.screen = Screen::Drop;
-    const char* scripted = getenv("OPENPETE_LAUNCHER_DROP");
     for (;;) {
         v.browse = false;
         present(v);
-        if (scripted && *scripted) {
-            snprintf(s.drop_path, sizeof s.drop_path, "%s", scripted);
-            return s.drop_path;
-        }
+        if (const char* scripted = launcher_scripted_drop()) return scripted;
         if (v.browse) open_file_dialog();
         if (SDL_GetAtomicInt(&s.dialog_got)) return s.drop_path;
         const Ask a = wait_input();
@@ -496,22 +501,41 @@ const openpete_launcher_game* launcher_game(void) { return s.game; }
 
 const char* launcher_dropped_path(void) { return s.drop_path; }
 
+bool launcher_neutral(void) { return !s.game || !s.game->game_id; }
+
+const char* launcher_scripted_drop(void) {
+    if (s.scripted_taken) return nullptr;
+    const char* e = getenv("OPENPETE_LAUNCHER_DROP");
+    if (!e || !*e) return nullptr;
+    s.scripted_taken = true;
+    snprintf(s.drop_path, sizeof s.drop_path, "%s", e);
+    OPL_INFO_F("launcher", "scripted drop: %s", s.drop_path);
+    return s.drop_path;
+}
+
 int launcher_select(const char* const* labels, int count) {
-    if (!s.ui || s.handed_off || count <= 0) return LAUNCHER_SEL_NOSCREEN;
-    if (launcher_open(s.opts, 1) != 0) return LAUNCHER_SEL_NOSCREEN;
+    const bool screen = s.ui && !s.handed_off && count > 0 && launcher_open(s.opts, 1) == 0;
+    if (!screen) return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : LAUNCHER_SEL_NOSCREEN;
     View v;
     v.screen = Screen::Select;
     v.labels = labels;
     v.count = count;
+    v.games = launcher_neutral();
     const int scripted = scripted_pick(count);
     for (;;) {
         v.clicked = -1;
         present(v);
+        if (launcher_scripted_drop()) return LAUNCHER_SEL_DROPPED;
         if (scripted >= 0) return scripted;
         if (v.clicked >= 0) return v.clicked;
+        if (SDL_GetAtomicInt(&s.dialog_got)) {
+            SDL_SetAtomicInt(&s.dialog_got, 0);
+            return LAUNCHER_SEL_DROPPED;
+        }
         switch (wait_input()) {
             case Ask::Quit: return LAUNCHER_SEL_QUIT;
             case Ask::Dropped: return LAUNCHER_SEL_DROPPED;
+            case Ask::Browse: open_file_dialog(); break;
             case Ask::Pick: return v.sel;
             case Ask::Up: if (v.sel > 0) v.sel--; break;
             case Ask::Down: if (v.sel < count - 1) v.sel++; break;
@@ -536,12 +560,19 @@ int openpete_launcher_resolve(openpete_options_t* opts, char* module_path,
         openpete_fatal_message("OpenPete could not start", "The game library could not be read.");
         return 1;
     }
-    if (opts->disc_path || opts->exe_path || !s.ui) return OPENPETE_EXIT_OK;
+    if (opts->disc_path || opts->exe_path) return OPENPETE_EXIT_OK;
     /* Nothing to boot anywhere: first run, the drop screen. With no device
-     * there is no screen and no disc, so the run ends after the message. */
-    if (launcher_open(opts, 0) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-    const char* dropped = wait_for_disc();
-    if (!dropped) { *exit_now = 1; return OPENPETE_EXIT_OK; }   /* window closed */
+     * there is no screen and no disc, so the run ends after the message.
+     * Without screens only the scripted drop names a disc. */
+    const char* dropped = nullptr;
+    if (!s.ui) {
+        dropped = launcher_scripted_drop();
+        if (!dropped) return OPENPETE_EXIT_OK;
+    } else {
+        if (launcher_open(opts, 0) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        dropped = wait_for_disc();
+        if (!dropped) { *exit_now = 1; return OPENPETE_EXIT_OK; }   /* window closed */
+    }
     opts->ingest_path = dropped;
     if (library_resolve(opts, module_path, module_cap) != 0) {
         openpete_fatal_message("OpenPete could not start",

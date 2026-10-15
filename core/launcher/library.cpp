@@ -4,8 +4,11 @@
 // Resolution order at boot: --ingest PATH stream-hashes and copies the image
 // in (dedup by content), then boots the entry; else an explicit --disc or
 // exe path is the dev path and leaves the library untouched; else the
-// library is scanned and the one entry, the version selector's pick, or the
-// most recently played boots. After ingest the player's original file is
+// library is scanned and the selector's pick boots: the selector shows for
+// several entries, and for any number while no game is named (an executable
+// linking several games, so a second game's disc can be dropped); one entry
+// of a named game boots without it, and without a screen the most recently
+// played boots. After ingest the player's original file is
 // never needed again: engine updates rebuild a module from the library's
 // own copy.
 #include "launcher_internal.h"
@@ -411,8 +414,12 @@ std::string entry_label(const Meta& m) {
     return std::string(name) + " - " + m.label;
 }
 
-/** @brief Pick the entry to boot: the version selector among several when a screen can show, else the most recently played.
+/** @brief Pick the entry to boot: the selector when a screen can show, else the most recently played.
  *
+ * One entry of a named game boots without the selector. While the launcher
+ * names no game the selector shows for one entry too, so a second game's
+ * disc can be dropped on it. The scripted drop (launcher_scripted_drop) is
+ * taken in every case, ahead of any pick.
  * @param entries The scanned entries; not empty.
  * @param pick Receives the entry.
  * @return 0, LAUNCHER_SEL_QUIT when the player quit, or
@@ -421,7 +428,8 @@ int pick_entry(std::vector<Meta>& entries, Meta*& pick) {
     pick = &entries[0];
     for (auto& m : entries)
         if (m.last_played > pick->last_played) pick = &m;
-    if (entries.size() == 1) return 0;
+    if (entries.size() == 1 && !launcher_neutral())
+        return launcher_scripted_drop() ? LAUNCHER_SEL_DROPPED : 0;
     /* Version selector: most recent first, then the rest. */
     std::vector<Meta*> order{pick};
     for (auto& m : entries)
@@ -434,8 +442,8 @@ int pick_entry(std::vector<Meta>& entries, Meta*& pick) {
     const int sel = launcher_select(labels.data(), (int)labels.size());
     if (sel == LAUNCHER_SEL_QUIT || sel == LAUNCHER_SEL_DROPPED) return sel;
     if (sel == LAUNCHER_SEL_NOSCREEN)
-        std::fprintf(stderr, "[library] %zu versions installed - booting most recent '%s'\n",
-                     entries.size(), pick->label.c_str());
+        std::fprintf(stderr, "[library] %zu entr%s, no screen - booting the most recently played '%s'\n",
+                     entries.size(), entries.size() == 1 ? "y" : "ies", pick->label.c_str());
     else
         pick = order[(size_t)sel];
     return 0;

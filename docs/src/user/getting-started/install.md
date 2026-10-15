@@ -88,7 +88,8 @@ The flag spelling is `--ingest PATH` <!-- id: flag:--ingest -->.
 
 `--disc PATH` <!-- id: flag:--disc --> boots the image at PATH where it is,
 without copying it into the [library](../help/glossary.md#library). Without
-it, the program boots the library's most recent disc.
+it, the program starts from the library; see
+[First run](first-run.md#the-one-time-compile).
 
 `--game ID` <!-- id: flag:--game --> names the game to run: `spyro-1`,
 `spyro-2` or `spyro-3`. Without it the game is read from the disc. A disc of

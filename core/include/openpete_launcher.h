@@ -2,9 +2,9 @@
  * the launcher window and its Vulkan device, and the screens drawn on it.
  *
  * Before the game runs, the launcher resolves which disc boots (an --ingest
- * copy into the library, an explicit --disc, the library's one entry, the
- * version selector among several, or the drop screen when the library is
- * empty), shows the waits of the ingest copy, the first-boot module build
+ * copy into the library, an explicit --disc, the library's one entry of a
+ * named game, the selector, or the drop screen when the library is empty),
+ * shows the waits of the ingest copy, the first-boot module build
  * and the mod compile, and hands the game the window, the Vulkan device and
  * the imgui context it created (openpete_launcher_handoff). The screens draw
  * through imgui on that device (openpete_native_launcher_present); there is
@@ -81,10 +81,13 @@ void openpete_launcher_begin(const openpete_launcher_game* game,
 /** @brief Resolve the disc this boot runs through the library, showing the drop screen or the version selector when one is needed.
  *
  * --ingest copies the image into the library and boots it; an explicit
- * --disc or --exe-path leaves the library untouched; otherwise the library's
- * one entry boots, the version selector picks among several (the most
- * recently played without screens), and an empty library opens the drop
- * screen. A second call after an entry booted (the pick made before a game
+ * --disc or --exe-path leaves the library untouched; otherwise the selector
+ * picks among several entries, and among any number while the launcher
+ * names no game (a disc dropped on it is ingested and boots instead), one
+ * entry of a named game boots without it, the most recently played boots
+ * without screens, and an empty library opens the drop screen. The harness
+ * variable OPENPETE_LAUNCHER_DROP acts as a drop on whichever of these
+ * applies, and without screens names the disc itself. A second call after an entry booted (the pick made before a game
  * was installed) boots that entry again without a scan or a screen, with
  * the module path the now-installed game names for it. When the launcher's device cannot be created the player is told
  * (openpete_launcher_vk_failure) and the selector falls back to the most
