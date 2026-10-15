@@ -21,6 +21,16 @@
 # on the decomp's rebuilt disc image by content. Spyro 1's extractor reads
 # the entries from the WAD header's own layout instead.
 #
+# A game whose disc copy of a binary went through post-link mastering
+# transforms names them in recomp.conf: FIRST_BOOT_DECRYPT=1 (an overlay may
+# be XORed with the le32 at its byte 4), FIRST_BOOT_RESTORE_SYMBOLS (psx.map
+# symbol templates, {name} = the overlay, whose words the disc copy may
+# carry rewritten) and FIRST_BOOT_EXE_RESTORE_SYMBOLS (the same for the main
+# executable). tools/wad_entry_map.py finds, per binary, which of them turn
+# the disc's bytes into the decomp's, and the manifest records the inverse
+# the extractor applies after each carve: `decrypt = true` and
+# `restore = [[<file offset>, <word>], ...]` (the decomp's words).
+#
 # The committed snapshot is a distribution input, so it never changes as a
 # side effect of a regen: the snapshot is emitted to a scratch directory and
 # compared with the committed one, and a difference fails the run. The only
@@ -67,6 +77,41 @@ emit_funcs() {  # emit_funcs <name> <final_funcs_file>
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 
+# restore_toml <offset:word,...|->: the `restore = [...]` line, or nothing.
+restore_toml() {
+    [[ "$1" == "-" ]] && return 0
+    local out="" p
+    local -a rows
+    IFS=',' read -r -a rows <<< "$1"
+    for p in "${rows[@]}"; do out+="${out:+, }[${p%%:*}, ${p#*:}]"; done
+    echo "restore = [$out]"
+}
+
+# --- disc map: WAD entry and mastering inverse per binary ------------------
+declare -A WAD_ENTRY=() DECRYPT=() RESTORE=()
+MAIN_RESTORE="-"
+if [[ "${FIRST_BOOT_CARVE:-}" == "wad_entry" ]]; then
+    [[ -f "$DISC_BIN" ]] || { echo "[emit-manifest] $DISC_BIN missing" >&2; exit 1; }
+    map_args=()
+    if [[ -n "${FIRST_BOOT_DECRYPT:-}${FIRST_BOOT_RESTORE_SYMBOLS:-}${FIRST_BOOT_EXE_RESTORE_SYMBOLS:-}" ]]; then
+        map_args=(--map "$DECOMP_DIR/build/psx.map" --load-addr "$OVERLAY_LOAD_ADDR")
+        if [[ "${FIRST_BOOT_DECRYPT:-0}" == "1" ]]; then map_args+=(--decrypt); fi
+        for s in ${FIRST_BOOT_RESTORE_SYMBOLS:-}; do map_args+=(--restore-symbol "$s"); done
+        if [[ -n "${FIRST_BOOT_EXE_RESTORE_SYMBOLS:-}" ]]; then
+            map_args+=(--exe "$EXE" --exe-name "$EXE_FILENAME")
+            for s in $FIRST_BOOT_EXE_RESTORE_SYMBOLS; do map_args+=(--exe-restore-symbol "$s"); done
+        fi
+    fi
+    MAP_LINES=$(python3 tools/wad_entry_map.py "$DISC_BIN" "$REGISTRY_LIST" "${map_args[@]}") \
+        || { echo "[emit-manifest] tools/wad_entry_map.py: not every binary maps to the disc" >&2; exit 1; }
+    while read -r _name _entry _decrypt _restore; do
+        if [[ "$_name" == "@main_exe" ]]; then MAIN_RESTORE=$_entry; continue; fi
+        WAD_ENTRY[$_name]=$_entry
+        DECRYPT[$_name]=${_decrypt:-0}
+        RESTORE[$_name]=${_restore:--}
+    done <<< "$MAP_LINES"
+fi
+
 # --- main EXE -------------------------------------------------------------
 emit_funcs main_exe "$OUT/main_exe_extra_funcs.txt"
 MAIN_SHA=$(sha "$EXE")
@@ -87,6 +132,7 @@ mapfile -t ROWS < <(grep -oP '\{\s*\d+,\s*"[^"]+"' "$REGISTRY_SRC" \
     echo "funcs = \"main_exe.funcs.txt\""
     if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then echo "channel_sites = true"
     else echo "channel_sites = false"; fi
+    restore_toml "$MAIN_RESTORE"
 } > "$MAN/manifest.toml"
 
 # The overlay blob regen translated, by section name (overlay_registry.txt
@@ -95,14 +141,6 @@ declare -A OVL_PATH=()
 while read -r _magic _name _path; do
     [[ -n "${_name:-}" ]] && OVL_PATH[$_name]=$_path
 done < "$REGISTRY_LIST"
-
-declare -A WAD_ENTRY=()
-if [[ "${FIRST_BOOT_CARVE:-}" == "wad_entry" ]]; then
-    [[ -f "$DISC_BIN" ]] || { echo "[emit-manifest] $DISC_BIN missing" >&2; exit 1; }
-    while read -r _name _entry; do
-        WAD_ENTRY[$_name]=$_entry
-    done < <(python3 tools/wad_entry_map.py "$DISC_BIN" "$REGISTRY_LIST")
-fi
 
 count=0
 for row in "${ROWS[@]}"; do
@@ -126,6 +164,8 @@ for row in "${ROWS[@]}"; do
         if [[ "${FIRST_BOOT_CARVE:-}" == "wad_entry" ]]; then
             [[ -n "${WAD_ENTRY[$name]:-}" ]] || { echo "[emit-manifest] no WAD entry holds $name" >&2; exit 1; }
             echo "wad_entry = ${WAD_ENTRY[$name]}"
+            if [[ "${DECRYPT[$name]:-0}" == "1" ]]; then echo "decrypt = true"; fi
+            restore_toml "${RESTORE[$name]:--}"
         fi
         echo "sha256 = \"$(sha "$ovl")\""
         echo "funcs = \"$name.funcs.txt\""

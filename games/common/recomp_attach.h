@@ -71,7 +71,9 @@ int openpete_recomp_first_boot_module_path(const char* entry_dir, char* out, siz
 /** @brief Writes a game's first-boot inputs to a directory: PSX.EXE and one <name>.ovl per overlay of the staged converged manifest, each the bytes of the WAD.WAD entry the manifest names.
  *
  * games/common/recomp_extract_wad_entry.cpp; the extract_recomp_inputs of
- * a game whose manifest names each overlay's WAD entry.
+ * a game whose manifest names each overlay's WAD entry. The manifest's
+ * `decrypt` and `restore` keys, when present, are applied to the carved
+ * bytes before each file is written.
  * @param cue_path The disc image (a .cue or .bin).
  * @param out_dir The output directory, created when absent.
  * @param manifest_path The staged manifest.toml naming the overlays.

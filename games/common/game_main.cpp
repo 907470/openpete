@@ -21,12 +21,14 @@
 #include "game_extras.h"
 #include "game_host_desc.h"
 #include "openpete_mods.h"
+#include "openpete_paths.h"
 #include "openpete_psx.h"
 #include "psyq/psyq_game_hooks.h"
 #include "recomp_attach.h"
 #include "renderer/orchestrator.h"   /* game_interp_register, game_reextract_init */
 
 #include <cstdio>
+#include <string>
 
 /** @brief Name the game from the game-neutral options and an optional library pick: the disc image, else --game, else this executable's game.
  *
@@ -74,6 +76,41 @@ static int report_mode(int argc, char** argv, const openpete_options_t* neutral)
     if (opts.config_report) openpete_config_report(stdout);
     else openpete_keymap_report(stdout);
     return 0;
+}
+
+/** @brief Answer --extract-recomp-inputs: carve the first-boot inputs from the named disc with the staged manifest and exit.
+ *
+ * The carve is the game build's extract_recomp_inputs, the first stage of
+ * the first-boot pipeline, reading recomp/manifest/<id>/manifest.toml beside
+ * the executable; it runs before any module attach, so it works where no
+ * module exists. A build without the first-boot pipeline refuses.
+ * @param argc The argument count.
+ * @param argv The arguments.
+ * @param neutral The game-neutral options.
+ * @return 0 when every input was written, the identification's or the
+ *         parser's exit code, else 1. */
+static int extract_mode(int argc, char** argv, const openpete_options_t* neutral) {
+    openpete_ident_t id;
+    int rc = identify(neutral, nullptr, &id);
+    if (rc == OPENPETE_EXIT_OK) rc = openpete_identify_require_linked(&id, game_get_id());
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    openpete_options_t opts;
+    rc = openpete_options_parse_identified(&opts, argc, argv, &id, game_get_display_name());
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    const openpete_game_build_t* b = openpete_game_build();
+    if (!b->extract_recomp_inputs) {
+        std::fprintf(stderr, "openpete: --extract-recomp-inputs: this build has no first-boot "
+                             "pipeline for %s (OPENPETE_RECOMP_FIRST_BOOT)\n", b->id);
+        return 1;
+    }
+    char dir[4096];
+    if (!opts.disc_path || openpete_exe_dir(dir, sizeof dir) != 0) {
+        std::fprintf(stderr, "openpete: --extract-recomp-inputs needs --disc\n");
+        return 1;
+    }
+    const std::string manifest = std::string(dir) + "/recomp/manifest/" + b->id + "/manifest.toml";
+    return b->extract_recomp_inputs(opts.disc_path, opts.extract_recomp_inputs_dir,
+                                    manifest.c_str()) == 0 ? 0 : 1;
 }
 
 /** @brief Take the session from the game-neutral options to the hand-off: the launcher's disc, identification, the full parse, the mod layer, the recompiled module and the mod compile.
@@ -180,6 +217,8 @@ int openpete_game_main(int argc, char** argv) {
         if (rc != OPENPETE_EXIT_OK) return rc;
         return openpete_mods_compile_all(&batch) == 0 ? 0 : 1;
     }
+
+    if (neutral.extract_recomp_inputs_dir) return extract_mode(argc, argv, &neutral);
 
     openpete_options_t opts;
     int exit_now = 0;

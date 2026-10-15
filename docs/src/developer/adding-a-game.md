@@ -56,6 +56,7 @@ Copy `games/spyro-2/recomp.conf` and set:
 | `MAIN_EXE_THIRD_PASS`, `RA_SPILL_RETURNS`, `LEVEL_ID_ADDR` | recompiler passes and the level-switch word, per the comments in the file |
 | `JUMPTABLE_UNSWITCHED` | in-image word-table `jr` sites the regen leaves without an index switch; the `jumptable_dispatch_<game>` ctest refuses any other |
 | `FIRST_BOOT`, `FIRST_BOOT_CARVE` | `1` when the game has a first-boot module build: the regen emits its converged manifest into `manifest/recomp/<serial>/` (`scripts/emit-recomp-manifest.sh`); `wad_entry` records each overlay's WAD.WAD entry for the carve |
+| `FIRST_BOOT_DECRYPT`, `FIRST_BOOT_RESTORE_SYMBOLS`, `FIRST_BOOT_EXE_RESTORE_SYMBOLS` | the post-link mastering transforms between the disc's copy of a binary and the decomp's: `1` when an overlay may be XORed with the word at its byte 4 over `[0x1000, key - load address)`; psx.map symbol templates (`{name}` = the overlay) and executable symbols whose words the disc may carry rewritten. The emitter records, per binary, the inverse that turns the disc's bytes into the decomp's (`decrypt = true`, `restore = [[offset, word], ...]`), which the carve applies |
 
 The build generates `game_identity.c` from these (the runtime descriptor's
 identity `<tag>_game_identity`, which `game_get_id`,

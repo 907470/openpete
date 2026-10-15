@@ -96,7 +96,14 @@ openpete_add_game(spyro-3
         ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         ${CMAKE_SOURCE_DIR}/games/common/renderer/wad_subfile.c
         renderer/portal_game.c
-        renderer/terrain_probe.c)
+        renderer/terrain_probe.c
+    FIRST_BOOT_SOURCES
+        # The first-boot module build: each overlay carved from the WAD.WAD
+        # entry its converged manifest names, decrypted and restored as the
+        # manifest records, then recompile, compile, link.
+        ${CMAKE_SOURCE_DIR}/games/common/recomp_build.cpp
+        ${CMAKE_SOURCE_DIR}/games/common/recomp_extract_wad_entry.cpp
+    FIRST_BOOT_EXTRACT openpete_extract_wad_entry_inputs)
 
 # SoundTable slot names (tools/gen_sfx_names.py over the decomp's spu.h,
 # padded to the 256 slots the loader reads): the sfx resolver's names.

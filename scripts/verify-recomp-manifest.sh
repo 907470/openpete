@@ -57,8 +57,9 @@ check "main_exe (full)"     "$OUT/PSX.EXE_full.c"     "$TMP/main_exe/PSX.EXE_ful
 check "main_exe (dispatch)" "$OUT/PSX.EXE_dispatch.c" "$TMP/main_exe/PSX.EXE_dispatch.c"
 
 # --- overlays ---------------------------------------------------------------
-# Boot-shaped invocation: raw .ovl straight from the WAD dir + --raw-bin,
-# exactly what the first-boot pipeline runs against carved segments.
+# Boot-shaped invocation: raw .ovl straight from the WAD dir + --raw-bin and
+# the single-pass main EXE's leaf summary, exactly what the first-boot
+# pipeline (games/common/recomp_build.cpp) runs against carved segments.
 while IFS=$'\t' read -r name wad load; do
     mkdir -p "$TMP/$name"
     "$PSXRECOMP" "$WAD_DIR/$wad" \
@@ -68,6 +69,7 @@ while IFS=$'\t' read -r name wad load; do
         --external-prefix=psyq_ \
         --func-prefix="func_${name}_" \
         --extra-funcs="$MAN/$name.funcs.txt" \
+        --leaf-summary="$TMP/main_exe/PSX.EXE_leaves.tsv" \
         --skip-on-error >/dev/null
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
         "$TMP/$name/$name.bin_dispatch.c"

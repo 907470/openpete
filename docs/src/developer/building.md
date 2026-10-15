@@ -454,7 +454,7 @@ beside it.
 
 `OPENPETE_RECOMP_FIRST_BOOT` (default OFF) adds the first-boot module build
 (`games/common/recomp_build.cpp`) to a shared exe of a game that has one
-(`FIRST_BOOT_SOURCES`: Spyro 1 and Spyro 2; each needs a converged manifest,
+(`FIRST_BOOT_SOURCES`: every game; each needs a converged manifest,
 `games/<game>/manifest/recomp/<serial>/`, from
 `scripts/emit-recomp-manifest.sh`). Such an exe ships with a recompiler
 plus a compiler and builds its module from the user's disc on first run,
