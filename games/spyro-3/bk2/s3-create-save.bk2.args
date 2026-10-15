@@ -1,0 +1,5 @@
+# Synthetic movie: a new game from the title answers Yes to saving and
+# presses Cross every 90 VBLs from VBL 1763, so the game creates and writes
+# its save on the card in slot 1. The slot 1 card is given by the caller
+# (--card1).
+--no-card2

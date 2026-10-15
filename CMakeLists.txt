@@ -1570,7 +1570,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Memory-card gate over the kernel's bu file device, with a formatted card
     # in port A and port B empty: Spyro 3 boots past its title's card probe,
     # and Spyro 2 creates, writes and reads back its save from
-    # games/spyro-2/corpus/s2-create-save.bk2 (directory entry, 40 sectors
+    # games/spyro-2/bk2/s2-create-save.bk2 (directory entry, 40 sectors
     # written and read). VACUOUS (fail) when no bu call is made; skips (exit
     # 64) without the binary, the disc or the card fixture.
     add_test(NAME card_boot

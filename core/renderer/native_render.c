@@ -588,6 +588,8 @@ typedef struct {
     double    alpha; int paired; int kind;   /* OP_PACE_CANONICAL / _INTERMEDIATE */
     int       state;
     uint64_t  presented_serial;    /* rhi frame serial of its present */
+    int       hold_area;           /* display area whose held scene an empty compose of this
+                                    * scene shows, -1 for the VRAM framebuffer (hold_verdict) */
 } scene_slot_t;
 static scene_slot_t s_ring[SCENE_RING];
 static int          s_ring_head = -1;          /* last published */
@@ -603,6 +605,10 @@ static const nr_cover_block *ps_cover(void);
 static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
+static int      hold_verdict(const int geom[8]);
+static void     hold_retain_canonical(void);
+static int      hold_redirect_begin(const scene_slot_t **prev);
+static void     hold_redirect_end(int k, const scene_slot_t *prev);
 static uint32_t     s_eager_stamp;             /* build stamp for the scene being extracted */
 /* Build stamp of an eager scene the ring refused, which stays in the
  * accumulator, and the scene epoch it belongs to (scene_live_stamp). */
@@ -2686,6 +2692,7 @@ void openpete_native_scene_capture_overlay(void) {
     }
     seq_sort_scene_2d(s_scene, s_scene_n);   /* both paths end in emission order */
     held_capture();
+    hold_retain_canonical();                 /* the area this scene was drawn into holds it */
     { extern int scene_2d_count_fwd(const scene_tri_t* sc, int n);
       static int pz = -1;
       if (pz < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); pz = (e && *e && *e != '0'); }
@@ -13760,6 +13767,30 @@ static int backdrop_defer_on(void)
 
 static unsigned s_retained_only_draws;   /* composes drawn for an armed retained backdrop alone */
 
+/** @brief Test whether a present's scene carries content of its own, the test scene_compose_has_content counts.
+ *
+ * The game's own triangles, a selected retained-terrain state with a live
+ * sector, an armed retained backdrop, or, in isolation, a background
+ * colour. Reads the terrain state openpete_tercache_frame_select chose, so
+ * the caller selects the scene's stamp first.
+ * @param scene Scene triangles.
+ * @param n Triangle count.
+ * @param freeze The present's freeze word.
+ * @param bg The present's background colour, 0 for none.
+ * @param retained_only Receives 1 when the retained backdrop alone admits the scene.
+ * @return true when the scene composes. */
+static bool scene_content_test(const scene_tri_t* scene, int n, uint32_t freeze, uint32_t bg,
+                               int *retained_only)
+{
+    *retained_only = 0;
+    if (scene_has_game_tris(scene, n)) return true;
+    if (openpete_tercache_frame_open() && openpete_tercache_frame_content()) return true;
+    int retained_ok = 0;
+    if (ps_freeze_retained() && (freeze & (1u << 31))) (void)active_frozen_tex(&retained_ok);
+    if (retained_ok) { *retained_only = 1; return true; }
+    return s_isolation && bg != 0;
+}
+
 /** @brief Decide whether a present's scene composes natively or falls back to the PSX VRAM framebuffer.
  *
  * An empty scene normally falls back, so load screens, transitions and other
@@ -13783,12 +13814,10 @@ static unsigned s_retained_only_draws;   /* composes drawn for an armed retained
  * @return true when the scene composes. */
 static bool scene_compose_has_content(const scene_tri_t* scene, int n, uint32_t freeze, uint32_t bg)
 {
-    if (scene_has_game_tris(scene, n)) return true;
-    if (openpete_tercache_frame_open() && openpete_tercache_frame_content()) return true;
-    int retained_ok = 0;
-    if (ps_freeze_retained() && (freeze & (1u << 31))) (void)active_frozen_tex(&retained_ok);
-    if (retained_ok) { s_retained_only_draws++; return true; }
-    return s_isolation && bg != 0;
+    int retained_only = 0;
+    const bool content = scene_content_test(scene, n, freeze, bg, &retained_only);
+    if (retained_only) s_retained_only_draws++;
+    return content;
 }
 
 /* Scene composes drawn so far (draw_native_scene calls), and whether the last
@@ -16818,6 +16847,75 @@ void openpete_native_present_census_report(void)
     }
 }
 
+/** @brief Draw the PSX VRAM framebuffer the display shows, the picture of a present that composes no scene.
+ *
+ * Samples the VRAM texture from the current display origin, moved down by
+ * the top overscan band so the sampled rows are the visible clip (the
+ * origin flips per tick with the double buffer), through the first six
+ * vertices of @p vb: panel 0 of panels_vb in the window layout, or the
+ * recompose's full-extent quad (vramfb_prepare).
+ * @param vb Vertex buffer holding the quad. */
+static void draw_vram_fallback(rhi_buffer *vb)
+{
+    int tx = 0, ty = 0;
+    if (s_nr.disp_w > 0 && s_nr.clip_h > 0 && s_nr.clip_h <= s_nr.disp_h) {
+        const int dy = (s_nr.disp_h - s_nr.clip_h) / 2;
+        tx = s_nr.disp_x;
+        ty = s_nr.disp_y + dy;
+    }
+    const psx_material nd_mat = { tx, ty, 0, 0, 16 };
+    bind_scene_pipe(s_nr.vram_pipe);
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
+    rhi_bind_vertex_buffer(s_nr.dev, vb);
+    rhi_draw(s_nr.dev, 6, 0);
+}
+
+/* The recompose's VRAM framebuffer quad: the 4:3 content rect of a
+ * full-extent capture at its widen, with the panel's texel UVs. */
+static rhi_buffer *s_vramfb_vb;
+static float       s_vramfb_key[3];
+
+/** @brief Build the recompose's VRAM framebuffer quad for a capture widen, outside a frame.
+ *
+ * The quad covers clip x -1/wf..1/wf and the full height, the rect the
+ * full-extent scene map puts the 4:3 content in, and samples the display's
+ * disp_w by clip_h texels as panel 0 does. The buffer is created on first
+ * use and rewritten after a wait for idle only when the widen or the
+ * display size changes.
+ * @param wf Widescreen factor of the capture, 1 for 4:3.
+ * @return true when the quad is ready. */
+static bool vramfb_prepare(float wf)
+{
+    if (!s_vramfb_vb) s_vramfb_vb = rhi_create_vertex_buffer(s_nr.dev, sizeof(rhi_vertex) * 6);
+    if (!s_vramfb_vb) return false;
+    const int have_clip = s_nr.disp_w > 0 && s_nr.clip_h > 0;
+    const float uw = (float)(have_clip ? s_nr.disp_w : NR_VRAM_W);
+    const float uh = (float)(have_clip ? s_nr.clip_h : NR_VRAM_H);
+    if (wf < 1.0f) wf = 1.0f;
+    if (s_vramfb_key[0] == wf && s_vramfb_key[1] == uw && s_vramfb_key[2] == uh) return true;
+    rhi_vertex v[6];
+    build_panel(v, 0.0f, 0.0f, 1.0f / wf, 1.0f, 0.0f, 0.0f, uw, uh);
+    rhi_wait_idle(s_nr.dev);
+    rhi_update_buffer(s_vramfb_vb, v, sizeof v);
+    s_vramfb_key[0] = wf; s_vramfb_key[1] = uw; s_vramfb_key[2] = uh;
+    return true;
+}
+
+/** @brief Compose the present's scene full-extent into the bound render target, or the VRAM framebuffer when it composes nothing.
+ *
+ * The capture recompose's draw: the scene through draw_native_scene, and on
+ * an empty scene the full-extent quad vramfb_prepare built, when one exists
+ * and @p vram is set.
+ * @param vram 1 to draw the VRAM framebuffer for an empty scene.
+ * @return true when the scene drew. */
+static bool draw_scene_or_vram(bool vram)
+{
+    const bool drew = draw_native_scene(true);
+    if (!drew && vram && s_vramfb_vb) draw_vram_fallback(s_vramfb_vb);
+    return drew;
+}
+
 /** @brief Compose one present's display image into the window-sized offscreen pass.
  *
  * With no live native scene (PsyCross display mode) the reference texture is
@@ -16941,17 +17039,7 @@ static void compose_variant(void)
             rhi_gpu_zone_end(s_nr.dev);
         } else {
             /* Empty scene -> PSX VRAM framebuffer fallback (1× direct, no SSAA). */
-            int tx = 0, ty = 0;
-            if (s_nr.disp_w > 0 && s_nr.clip_h > 0 && s_nr.clip_h <= s_nr.disp_h) {
-                int dy = (s_nr.disp_h - s_nr.clip_h) / 2;
-                tx = s_nr.disp_x; ty = s_nr.disp_y + dy;
-            }
-            const psx_material nd_mat = { tx, ty, 0, 0, 16 };
-            bind_scene_pipe(s_nr.vram_pipe);
-            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-            rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
-            rhi_draw(s_nr.dev, 6, 0);
+            draw_vram_fallback(s_nr.panels_vb);
         }
         scene_postfx_split();                     /* SCENE point: scene->chain->HUD */
         draw_mod_overlay();                       /* mod HUD (content - records too) */
@@ -16988,27 +17076,11 @@ static void compose_variant(void)
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
     s_pc_cur = PC_CLEAR;                 /* no layout yet: the clear is the picture */
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
-        /* tpage = the CURRENT front-buffer origin (flips per frame via the double
-         * buffer) + the top overscan band so the sampled rows are the visible clip. */
-        int tx = 0, ty = 0;
-        if (s_nr.disp_w > 0 && s_nr.clip_h > 0 && s_nr.clip_h <= s_nr.disp_h) {
-            int dy = (s_nr.disp_h - s_nr.clip_h) / 2;
-            tx = s_nr.disp_x;
-            ty = s_nr.disp_y + dy;
-        }
         rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
         bool scene_drew = draw_native_scene(false);
         rhi_gpu_zone_end(s_nr.dev);
         s_pc_cur = scene_drew ? PC_SCENE : PC_VRAM;
-        if (!scene_drew) {
-            const psx_material nd_mat = { tx, ty, 0, 0, 16 };
-            bind_scene_pipe(s_nr.vram_pipe);
-            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-            rhi_push_constants(s_nr.dev, &nd_mat, sizeof(nd_mat));
-            rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
-            rhi_draw(s_nr.dev, 6, 0);
-        }
-
+        if (!scene_drew) draw_vram_fallback(s_nr.panels_vb);
     }
 
     /* SCENE point then mod HUD - vk variant, live + record composes. */
@@ -18173,6 +18245,7 @@ static void slot_capture_inputs(scene_slot_t *sl) {
     openpete_glitch_mark_last_walk(&sl->gwalk);
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
     openpete_mods_material_view_capture(&sl->matview);
+    sl->hold_area = hold_verdict(s_geom_in);
 }
 /* Publish into any free ring slot; see the header. */
 int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
@@ -18343,7 +18416,11 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * (gating it off for vk blanked the captured native-intermediate frames). */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
-    { const uint64_t b0 = rhi_frame_serial(s_nr.dev); render_frame_common(record_pts_us, have_ref); pt_dump_maybe(rhi_frame_serial(s_nr.dev) != b0, s_scene_frame, s_scene_frame, s_scene_freeze, -1, 0, 0.0, 0, s_scene_n); }
+    { const uint64_t b0 = rhi_frame_serial(s_nr.dev);
+      const scene_slot_t *prev; const int hk = hold_redirect_begin(&prev);
+      render_frame_common(record_pts_us, have_ref);
+      hold_redirect_end(hk, prev);
+      pt_dump_maybe(rhi_frame_serial(s_nr.dev) != b0, s_scene_frame, s_scene_frame, s_scene_freeze, -1, 0, 0.0, 0, s_scene_n); }
 }
 
 /* Compose and present one ring slot. The present thread's entry: no VRAM or
@@ -18454,7 +18531,9 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     openpete_mods_material_view_set(&sl->matview);
     s_stage_target = stage;
     const uint64_t before = rhi_frame_serial(s_nr.dev);
-    render_frame_common(record_pts_us, false);
+    { const scene_slot_t *prev; const int hk = hold_redirect_begin(&prev);
+      render_frame_common(record_pts_us, false);
+      hold_redirect_end(hk, prev); }
     const uint64_t after = rhi_frame_serial(s_nr.dev);
     { static int sync = -1;   /* OPENPETE_PT_SYNC=1 (diagnostic): device idle after every render */
       if (sync < 0) { const char *e = getenv("OPENPETE_PT_SYNC"); sync = (e && *e && *e != '0'); }
@@ -19070,6 +19149,342 @@ static bool freeze_src_retain(float cap_wf) {
     return true;
 }
 
+/* ---- held scenes per draw area --------------------------------------------
+ * A PSX framebuffer keeps the last image drawn into it: a tick on which the
+ * game draws nothing (a blocking memory-card call, a menu step that skips its
+ * render) shows that image again. The VRAM mirror holds it only where a
+ * rasterizing GPU wrote it; under a native render nothing rasterizes, so a
+ * display buffer the game only ever drew into still holds whatever the last
+ * LoadImage, ClearImage or MoveImage left there (the boot logo).
+ *
+ * Each draw area (a DRAWENV clip rect) therefore records its last writer on
+ * the guest's timeline. A canonical capture whose scene carries content marks
+ * the area it was drawn into SCENE and keeps a copy of that scene, with every
+ * compose input (the copy a ring publish makes) and its retained-terrain
+ * state; an image op writing into the area marks it VRAM, or, for a copy of
+ * one whole area onto another, gives the destination the source's writer and
+ * scene. A present that composes nothing of its own shows the VRAM
+ * framebuffer when the area its display shows was last written by an image
+ * op, and otherwise composes that area's kept scene through the ordinary
+ * compose, at the present's own window, aspect, widen and postfx, as if it
+ * were the present's scene. The verdict is taken when the scene is captured
+ * into a ring slot (slot_capture_inputs) or, for a compose of the live scene,
+ * at the compose; both read the guest's state as of the scene, so the VRAM
+ * journal the compose applies agrees with it.
+ *
+ * Under OPENPETE_HOLD=0 (negative control) every empty compose shows the VRAM
+ * framebuffer, as before the store existed. OPENPETE_HOLD_CENSUS=1 logs every
+ * retain, mark and redirect. */
+#define HOLD_AREAS 4
+#define HOLD_POOL  OPENPETE_TERCACHE_HOLDS
+/* Scenes retained into other areas after which an area's kept scene is
+ * dropped: a double-buffered game refreshes each area every other tick, so
+ * an area this far behind has left the buffer rotation. */
+#define HOLD_STALE 4
+enum { HOLD_W_NONE = 0, HOLD_W_VRAM, HOLD_W_SCENE };
+typedef struct {
+    int      x, y, w, h;   /* DRAWENV clip rect, VRAM texels */
+    int      live;
+    int      writer;       /* HOLD_W_*: what wrote the buffer last */
+    int      entry;        /* pool entry holding the area's scene, -1 none */
+    unsigned stale;        /* scenes retained into other areas since this one's */
+} hold_area_t;
+typedef struct {
+    scene_slot_t sl;       /* the kept scene and its compose inputs */
+    int          refs;     /* areas naming the entry */
+    int          busy;     /* composes reading it */
+} hold_entry_t;
+static struct {
+    hold_area_t  a[HOLD_AREAS];
+    int          a_next;
+    hold_entry_t e[HOLD_POOL];
+    void        *mx;       /* SDL_Mutex, openpete_mutex_once */
+    unsigned     retained, nofree, vram_marks, inherits, stale_drops;
+    unsigned     c_vram, c_held, c_lost;   /* empty composes by branch */
+    unsigned     c_vram_area;              /* of c_vram: an area whose writer was VRAM */
+} s_hold;
+
+/** @brief The hold store's lock, created on first use without a creation race. */
+static SDL_Mutex *hold_mx(void) { return openpete_mutex_once(&s_hold.mx); }
+
+/** @brief Report whether the held-scene store is enabled, reading OPENPETE_HOLD once.
+ *
+ * @return 0 under OPENPETE_HOLD=0, else 1. */
+static int hold_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_HOLD"); on = !(e && *e == '0'); }
+    return on;
+}
+
+/** @brief Report whether the held-scene census is on, reading OPENPETE_HOLD_CENSUS once.
+ *
+ * @return 1 when every retain, mark and redirect is logged. */
+static int hold_census(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_HOLD_CENSUS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/** @brief Drop an area's reference to its kept scene; an entry no area names and no compose reads releases its terrain state.
+ *
+ * The caller holds the store's lock.
+ * @param a The area. */
+static void hold_area_release(hold_area_t *a)
+{
+    const int k = a->entry;
+    a->entry = -1;
+    if (k < 0) return;
+    if (--s_hold.e[k].refs <= 0) {
+        s_hold.e[k].refs = 0;
+        if (!s_hold.e[k].busy) openpete_tercache_hold_drop(k);
+    }
+}
+
+/** @brief Find the live area whose clip rect is exactly a rect.
+ *
+ * The caller holds the store's lock.
+ * @param x Rect left, VRAM texels.
+ * @param y Rect top.
+ * @param w Rect width.
+ * @param h Rect height.
+ * @return The area, or NULL. */
+static hold_area_t *hold_area_exact(int x, int y, int w, int h)
+{
+    for (int i = 0; i < HOLD_AREAS; i++) {
+        hold_area_t *a = &s_hold.a[i];
+        if (a->live && a->x == x && a->y == y && a->w == w && a->h == h) return a;
+    }
+    return NULL;
+}
+
+/** @brief Find the area with a clip rect, or claim one for it: a free slot, else round-robin.
+ *
+ * The caller holds the store's lock.
+ * @param x Clip left, VRAM texels.
+ * @param y Clip top.
+ * @param w Clip width.
+ * @param h Clip height.
+ * @return The area. */
+static hold_area_t *hold_area_claim(int x, int y, int w, int h)
+{
+    hold_area_t *found = hold_area_exact(x, y, w, h);
+    if (found) return found;
+    int idx = -1;
+    for (int i = 0; i < HOLD_AREAS && idx < 0; i++) if (!s_hold.a[i].live) idx = i;
+    if (idx < 0) { idx = s_hold.a_next; s_hold.a_next = (s_hold.a_next + 1) % HOLD_AREAS; }
+    hold_area_t *a = &s_hold.a[idx];
+    hold_area_release(a);
+    *a = (hold_area_t){ x, y, w, h, 1, HOLD_W_NONE, -1, 0 };
+    return a;
+}
+
+/** @brief Find the area a display rect shows: the first whose clip rect lies inside it.
+ *
+ * The caller holds the store's lock.
+ * @param geom Display x, y, w, h then clip x, y, w, h (the s_geom_in layout).
+ * @return The area index, or -1. */
+static int hold_area_shown(const int geom[8])
+{
+    if (geom[2] <= 0 || geom[3] <= 0) return -1;
+    for (int i = 0; i < HOLD_AREAS; i++) {
+        const hold_area_t *a = &s_hold.a[i];
+        if (a->live && a->x >= geom[0] && a->y >= geom[1] &&
+            a->x + a->w <= geom[0] + geom[2] && a->y + a->h <= geom[1] + geom[3]) return i;
+    }
+    return -1;
+}
+
+/** @brief Decide what an empty compose of a scene captured under a geometry shows.
+ *
+ * The area the display shows, when it was last written by a captured
+ * scene and still holds it; -1 (the VRAM framebuffer) when an image op
+ * wrote it last, no scene was ever captured into it, or the store is off.
+ * @param geom Display x, y, w, h then clip x, y, w, h at the scene's capture.
+ * @return The area index, or -1. */
+static int hold_verdict(const int geom[8])
+{
+    if (!hold_on()) return -1;
+    SDL_LockMutex(hold_mx());
+    int i = hold_area_shown(geom);
+    if (i >= 0 && (s_hold.a[i].writer != HOLD_W_SCENE || s_hold.a[i].entry < 0)) i = -1;
+    SDL_UnlockMutex(hold_mx());
+    return i;
+}
+
+/** @brief Keep the game's canonical scene as the content of the draw area it was drawn into.
+ *
+ * Runs at the canonical capture, after the tick's 2D is in. A re-extracted
+ * scene, or one with neither a game triangle nor retained terrain of its
+ * own, keeps nothing. The copy goes into a pool entry no area names and no
+ * compose reads; its scene id is the next ring id, the id the VRAM journal
+ * tags this tick's image ops with, so a compose of the copy applies the
+ * texels the scene was drawn against. Every other area holding a scene ages
+ * by one; past HOLD_STALE it drops its scene. */
+static void hold_retain_canonical(void)
+{
+    if (!hold_on() || !s_nr.enabled || s_scene_replay) return;
+    const uint32_t stamp = scene_live_stamp();
+    const int tc = openpete_tercache_build_content(stamp) > 0;
+    if (!tc && !scene_has_game_tris(s_scene, s_scene_n)) return;
+    const int g[8] = { s_geom_in[0], s_geom_in[1], s_geom_in[2], s_geom_in[3],
+                       s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7] };
+    if (g[6] <= 0 || g[7] <= 0) return;
+    SDL_LockMutex(hold_mx());
+    int k = -1;
+    for (int i = 0; i < HOLD_POOL && k < 0; i++)
+        if (s_hold.e[i].refs == 0 && s_hold.e[i].busy == 0) k = i;
+    SDL_UnlockMutex(hold_mx());
+    if (k < 0) { s_hold.nofree++; return; }
+    /* Entry k is named by no area, so no compose can reach it: fill it unlocked. */
+    scene_slot_t *sl = &s_hold.e[k].sl;
+    if (scene_run_fit(&sl->tri_v, "scene.hold", s_scene_n) < s_scene_n) { s_hold.nofree++; return; }
+    sl->tri = (scene_tri_t*)sl->tri_v.data;
+    if (s_scene_n > 0) memcpy(sl->tri, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
+    sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;
+    sl->hud_under = s_scene_hud_under; sl->actor_front = s_scene_actor_front;
+    sl->stamp = stamp; sl->replay = 0;
+    slot_capture_inputs(sl);
+    sl->hold_area = -1;
+    sl->cover = s_cover_live;
+    sl->scene_id = s_scene_id_next;
+    sl->kind = OP_PACE_CANONICAL; sl->alpha = 0.0; sl->paired = 0; sl->target_ns = 0;
+    openpete_tercache_hold_take(k, stamp);
+    SDL_LockMutex(hold_mx());
+    hold_area_t *a = hold_area_claim(g[4], g[5], g[6], g[7]);
+    hold_area_release(a);
+    a->entry = k; s_hold.e[k].refs++;
+    a->writer = HOLD_W_SCENE; a->stale = 0;
+    for (int i = 0; i < HOLD_AREAS; i++) {
+        hold_area_t *o = &s_hold.a[i];
+        if (o == a || !o->live || o->writer != HOLD_W_SCENE) continue;
+        if (++o->stale > HOLD_STALE) { hold_area_release(o); o->writer = HOLD_W_NONE; s_hold.stale_drops++; }
+    }
+    s_hold.retained++;
+    SDL_UnlockMutex(hold_mx());
+    if (hold_census())
+        fprintf(stderr, "[hold] retain f=%u stamp=%u n=%d tc=%d area=%d,%d %dx%d disp=%d,%d entry=%d\n",
+                s_scene_frame, stamp, s_scene_n, tc, g[4], g[5], g[6], g[7], g[0], g[1], k);
+}
+
+void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y)
+{
+    if (!hold_on() || w <= 0 || h <= 0) return;
+    SDL_LockMutex(hold_mx());
+    /* A copy of one whole area onto another whole area moves the image the
+     * source holds: the destination takes the source's writer and scene. */
+    hold_area_t *from = src_x >= 0 ? hold_area_exact(src_x, src_y, w, h) : NULL;
+    for (int i = 0; i < HOLD_AREAS; i++) {
+        hold_area_t *a = &s_hold.a[i];
+        if (!a->live || a == from) continue;
+        if (x >= a->x + a->w || y >= a->y + a->h || x + w <= a->x || y + h <= a->y) continue;
+        hold_area_release(a);
+        if (from && a->x == x && a->y == y && a->w == w && a->h == h) {
+            a->writer = from->writer; a->stale = from->stale;
+            if (from->entry >= 0) { a->entry = from->entry; s_hold.e[a->entry].refs++; }
+            s_hold.inherits++;
+        } else {
+            a->writer = HOLD_W_VRAM;
+            s_hold.vram_marks++;
+        }
+        if (hold_census())
+            fprintf(stderr, "[hold] %s f=%u rect=%d,%d %dx%d src=%d,%d area=%d,%d %dx%d\n",
+                    a->writer == HOLD_W_VRAM ? "vram" : "inherit", s_scene_frame,
+                    x, y, w, h, src_x, src_y, a->x, a->y, a->w, a->h);
+    }
+    SDL_UnlockMutex(hold_mx());
+}
+
+/** @brief Take the held scene an empty compose's verdict names, counting the compose by branch.
+ *
+ * The area's entry is marked busy, so no retain refills it while the
+ * compose reads it. An area that no longer holds a scene counts as lost
+ * and composes the VRAM framebuffer.
+ * @param area The verdict: an area index, or -1 for the VRAM framebuffer.
+ * @param stamp The empty scene's stamp, for the census line.
+ * @return The pool entry, or -1 for the VRAM framebuffer. */
+static int hold_take_for_compose(int area, unsigned stamp)
+{
+    int k = -1;
+    SDL_LockMutex(hold_mx());
+    if (area >= 0 && s_hold.a[area].writer == HOLD_W_SCENE) k = s_hold.a[area].entry;
+    if (k >= 0) { s_hold.e[k].busy++; s_hold.c_held++; }
+    else {
+        const int shown = hold_area_shown(s_ps_slot ? s_ps_slot->geom : s_geom_in);
+        s_hold.c_vram++;
+        s_hold.c_lost += area >= 0;
+        s_hold.c_vram_area += area < 0 && shown >= 0 && s_hold.a[shown].writer == HOLD_W_VRAM;
+    }
+    SDL_UnlockMutex(hold_mx());
+    if (hold_census())
+        fprintf(stderr, "[hold] empty f=%u stamp=%u slot=%d area=%d -> %s\n",
+                s_scene_frame, stamp, s_ps_slot ? 1 : 0, area,
+                k >= 0 ? "held" : (area >= 0 ? "lost" : "vram"));
+    return k;
+}
+
+/** @brief Print the held-scene census line at shutdown.
+ *
+ * Printed unconditionally, so a run whose empty composes took no branch is
+ * told from one that never had an empty compose: the empty composes by
+ * branch, then the store's retains, marks and drops and the terrain holds. */
+static void hold_report(void)
+{
+    unsigned tk = 0, tm = 0, td = 0;
+    openpete_tercache_hold_counts(&tk, &tm, &td);
+    fprintf(stderr, "hold-scene: empty composes vram=%u held=%u lost=%u (vram by an image op=%u); "
+            "retained=%u nofree=%u vram_marks=%u inherits=%u stale_drops=%u tc_takes=%u tc_misses=%u tc_drops=%u%s\n",
+            s_hold.c_vram, s_hold.c_held, s_hold.c_lost, s_hold.c_vram_area,
+            s_hold.retained, s_hold.nofree, s_hold.vram_marks, s_hold.inherits,
+            s_hold.stale_drops, tk, tm, td, hold_on() ? "" : " (OPENPETE_HOLD=0)");
+}
+
+/** @brief Point the compose at the held scene of the area an empty present shows.
+ *
+ * Runs at the entry of every compose: the live present (ring slot or live
+ * scene) and the capture recompose. A present whose own scene carries
+ * content (scene_content_test, against the scene's own retained-terrain
+ * state) composes it. An empty one reads its verdict, the ring slot's or,
+ * for the live scene, one taken now: the VRAM framebuffer, or the held
+ * scene, which then stands in for the present's scene (s_ps_slot, the
+ * material view and the geometry) until hold_redirect_end. Counts the
+ * empty composes by branch.
+ * @param prev Receives the compose source to restore.
+ * @return The pool entry composed, or -1 when the present composes as it is. */
+static int hold_redirect_begin(const scene_slot_t **prev)
+{
+    *prev = s_ps_slot;
+    const scene_view_t v = scene_present_view();
+    if (scene_has_game_tris(v.tri, v.n)) return -1;
+    openpete_tercache_frame_select(v.stamp);
+    const uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : v.bg;
+    int retained_only = 0;
+    if (scene_content_test(v.tri, v.n, v.freeze, bg, &retained_only)) return -1;
+    const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in);
+    const int k = hold_take_for_compose(area, v.stamp);
+    if (k < 0) return -1;
+    s_ps_slot = &s_hold.e[k].sl;
+    openpete_mods_material_view_set(&s_hold.e[k].sl.matview);
+    ps_apply_geometry();
+    return k;
+}
+
+/** @brief Restore the compose source hold_redirect_begin replaced and release the held entry.
+ *
+ * @param k The entry hold_redirect_begin returned; -1 does nothing.
+ * @param prev The source it saved. */
+static void hold_redirect_end(int k, const scene_slot_t *prev)
+{
+    if (k < 0) return;
+    s_ps_slot = prev;
+    openpete_mods_material_view_set(prev ? &prev->matview : NULL);
+    ps_apply_geometry();
+    SDL_LockMutex(hold_mx());
+    if (--s_hold.e[k].busy == 0 && s_hold.e[k].refs == 0) openpete_tercache_hold_drop(k);
+    SDL_UnlockMutex(hold_mx());
+}
+
 void openpete_native_render_snapshot_present_begin(void)
 {
     if (!s_nr.enabled || !s_nr.headless || !s_frz.pending) return;
@@ -19296,6 +19711,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     s_render_freeze_wf = cap_wf;
     shot_chrome_setup(Wc, H);
     int menu_verts = 0;
+    vramfb_prepare(cap_wf);   /* an empty compose shows the VRAM framebuffer */
     for (int attempt = 0; ; attempt++) {
         if (!rhi_begin_frame(s_nr.dev)) { s_render_freeze_wf = prev_wf; return 1; }
         upload_synced_textures();
@@ -19308,7 +19724,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
           native_terrain_key_pass(1, kw, kh); }
         shot_chrome_prepare(Wc, H);
         rhi_begin_render_target(s_nr.dev, rt, 0.0f, 0.0f, 0.0f, 1.0f);
-        draw_native_scene(true);
+        (void)draw_scene_or_vram(true);
         draw_mod_overlay();
         menu_verts = shot_chrome_draw(Wc, H);
         rhi_end_render_target(s_nr.dev, rt);
@@ -19362,6 +19778,8 @@ int openpete_native_render_screenshot_all(const char *base)
     truescope_apply_pending();
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
+    const scene_slot_t *hold_prev;
+    const int hold_k = hold_redirect_begin(&hold_prev);
     /* Retained terrain rides the same scene selection: the state whose stamp
      * equals the composed scene's stamp (live, else staged). */
     openpete_tercache_frame_select(scene_present_stamp());
@@ -19384,6 +19802,7 @@ int openpete_native_render_screenshot_all(const char *base)
         }
       } }
     int r = native_render_screenshot_all_impl(base, NULL, NULL, NULL);
+    hold_redirect_end(hold_k, hold_prev);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;
     return r;
@@ -19397,8 +19816,11 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
     truescope_apply_pending();
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
+    const scene_slot_t *hold_prev;
+    const int hold_k = hold_redirect_begin(&hold_prev);
     openpete_tercache_frame_select(scene_present_stamp());
     int r = native_render_screenshot_all_impl("ident-audit", out, w, h);
+    hold_redirect_end(hold_k, hold_prev);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;
     if (r != 0 && *out) { free(*out); *out = NULL; }
@@ -19775,6 +20197,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     shot_chrome_setup(W, H);
     int menu_verts = 0;
     bool scene_drew = false;
+    vramfb_prepare(1.0f);
     for (int attempt = 0; ; attempt++) {
         if (!rhi_begin_frame(s_nr.dev)) return 1;
         upload_synced_textures();  /* pending VRAM/ref uploads ride this frame */
@@ -19791,7 +20214,9 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
           native_terrain_key_pass(1, kw, kh); }
         shot_chrome_prepare(W, H);
         rhi_begin_render_target(s_nr.dev, s_nr.native_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
-        scene_drew = draw_native_scene(true);
+        /* Without a reference an empty compose shows the VRAM framebuffer, as
+         * the live present does; with one, the reference stands in for it below. */
+        scene_drew = draw_scene_or_vram(!with_ref);
         /* Mod draw-service content (3D meshes under the mod HUD) - the live
          * compose draws these into the offscreen after the scene; without them
          * the dump showed a mod-free frame while the window showed mod content.
@@ -19911,6 +20336,7 @@ void openpete_native_render_shutdown(void)
     if (s_retained_only_draws || s_area_fade_presents)
         fprintf(stderr, "held-fade: retained-only composes=%u held-sum captures=%u\n",
                 s_retained_only_draws, s_area_fade_presents);
+    hold_report();
     if (s_frz.retained || s_frz.settled || s_frz.flips)
         fprintf(stderr, "freeze-src: retained=%u settled=%u superseded=%u flips=%u verify_match=%u verify_differ=%u\n",
                 s_frz.retained, s_frz.settled, s_frz.superseded, s_frz.flips,
@@ -20014,6 +20440,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_buffer(s_nr.dev, s_nr.osd_panel_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
+    if (s_vramfb_vb) { rhi_destroy_buffer(s_nr.dev, s_vramfb_vb); s_vramfb_vb = NULL; }
     rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_plain_pipe);
     rhi_destroy_pipeline(s_nr.dev, s_nr.resolve_pipe);

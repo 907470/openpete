@@ -23,7 +23,7 @@
 #         spinning lseek writes one line per call).
 #         Pass: exit 0 with opens >= 1 (engagement: the title's card probe
 #         ran); opens = 0 is VACUOUS.
-#   save  Spyro 2, games/spyro-2/corpus/s2-create-save.bk2 (a new game that
+#   save  Spyro 2, games/spyro-2/bk2/s2-create-save.bk2 (a new game that
 #         creates and writes its save), --frame-limit 1400.
 #         Instrument: the card window (OPENPETE_CARD_WINDOW: every bu call
 #         with its result, every card command the vblank step starts) and
@@ -108,7 +108,7 @@ row_boot() {
 
 # row_save: Spyro 2 creates, writes and reads back its save. Prints the verdict line; returns 0, 1 or 64.
 row_save() {
-    local GAME=spyro-2 LIMIT=1400 MOVIE=games/spyro-2/corpus/s2-create-save.bk2
+    local GAME=spyro-2 LIMIT=1400 MOVIE=games/spyro-2/bk2/s2-create-save.bk2
     pg_resolve "$GAME"
     [[ -x "$PG_BIN" && -f "$PG_DISC" && -f "$MOVIE" ]] ||
         { echo "[card-boot] row=save SKIP (binary, disc or movie missing)"; return 64; }

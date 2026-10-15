@@ -137,3 +137,10 @@ attract-demo-spawn-jump|14612|2||14614,14615,14616,14617,14618
 # box too small off-axis and culled sector 69 at the left edge (pink
 # background). Blessed on the headless-occlusion build, before the fix.
 glimmer-32x9-leftedge|2471|2||2473|--skip-to-level glimmer --aspect 32:9 OPENPETE_FREECAM_POSE=30338,87973,7965,-194,52
+#
+# s2-create-save: a new game on a blank card in slot 1 (provisioned formatted
+# by the binary in the leg's directory) creates and writes its save. 1022
+# ("Accessing MEMORY CARDS") and 1104 ("Creating save block") are presents
+# where the game draws nothing: the display shows the last image drawn into
+# the buffer it shows, the world under the card box.
+s2-create-save|1022|82||1022,1104|--card1 {legdir}/card1.mcr --no-card2

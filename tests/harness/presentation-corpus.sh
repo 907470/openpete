@@ -155,6 +155,20 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
   local out="$OUTDIR/${name}__${tag}${leg}__{n}.png"
   local legdir; legdir="$(pg_leg_begin)" || return 1
   local log="$legdir/leg.log"
+  # A row argument may name a per-leg file as {legdir}/<file>: the leg's own
+  # directory, deleted with it, so a file the run writes (a memory card the
+  # movie saves to, provisioned formatted by the binary when absent) starts
+  # absent on every leg and no two legs share it. A row giving --card1 runs
+  # with that card in slot 1: the game's --no-card boot flag is dropped for
+  # the leg, and the row says --no-card2 itself when slot 2 stays empty.
+  local -a run_args=() row_args=(); local ra card1=0
+  for ra in "${ROW_ARGS[@]}"; do
+    row_args+=("${ra//\{legdir\}/$legdir}"); [[ "$ra" == --card1 ]] && card1=1
+  done
+  for ra in "${PG_RUN_ARGS[@]}"; do
+    (( card1 )) && [[ "$ra" == --no-card ]] && continue
+    run_args+=("$ra")
+  done
   # A freeze-marked row (a bk2 that reaches a pause / flight-results / level-exit
   # state) needs the green freeze backdrop maintained during capture, else the
   # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
@@ -179,10 +193,10 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
   local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
-    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}"
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${run_args[@]}"
     "${bk2_arg[@]}" --screenshot-native-only
     "$flag" "$targets" --screenshot-output "$out"
-    --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${ROW_ARGS[@]}")
+    --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${row_args[@]}")
   "${cmd[@]}" >"$log" 2>&1
   local rc=$?
   pg_note_device "$log" "$OUTDIR"

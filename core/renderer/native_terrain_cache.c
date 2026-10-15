@@ -287,6 +287,8 @@ static struct {
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
     tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
+    tc_state      hold[OPENPETE_TERCACHE_HOLDS]; /* copies kept for held scenes (openpete_tercache_hold_take) */
+    unsigned      hold_takes, hold_misses, hold_drops; /* hold census */
     int           ring_next;
     unsigned      ring_builds;        /* scene-id builds that took a ring state */
     unsigned      ring_reuses;        /* of those, rebuilds of an id holding a state */
@@ -583,6 +585,7 @@ void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, i
 }
 
 static const tc_state *tc_state_for_stamp(uint32_t stamp, int *src);
+static void tc_state_copy(tc_state *dst, const tc_state *src);
 
 /** @brief Test whether a retained state holds a live sector: a nonzero flag word on any slot but the dead one.
  * @param T The state.
@@ -621,6 +624,30 @@ int openpete_tercache_build_drawn(uint32_t stamp)
         n += (w.u & OPTC_SF_DRAWN) != 0;
     }
     return n;
+}
+
+void openpete_tercache_hold_take(int idx, uint32_t stamp)
+{
+    if (idx < 0 || idx >= OPENPETE_TERCACHE_HOLDS) return;
+    s_tc.hold[idx].valid = 0;
+    if (!s_tc.ready) return;
+    int src = 0;
+    const tc_state *T = tc_state_for_stamp(stamp, &src);
+    if (!T || src == 4) { s_tc.hold_misses++; return; }
+    tc_state_copy(&s_tc.hold[idx], T);
+    s_tc.hold_takes++;
+}
+
+void openpete_tercache_hold_drop(int idx)
+{
+    if (idx >= 0 && idx < OPENPETE_TERCACHE_HOLDS) s_tc.hold[idx].valid = 0;
+}
+
+void openpete_tercache_hold_counts(unsigned *takes, unsigned *misses, unsigned *drops)
+{
+    if (takes) *takes = s_tc.hold_takes;
+    if (misses) *misses = s_tc.hold_misses;
+    if (drops) *drops = s_tc.hold_drops;
 }
 
 /** @brief Create one cache pipeline into its slot: now, or at the end of the caller's open pipeline batch.
@@ -1342,6 +1369,28 @@ static void tc_adopt_overflow(void)
     }
 }
 
+/** @brief Find the oldest build serial a state still drawn may read ranges of: the release floor.
+ *
+ * A range freed at build serial F was drawn by states built before F. The
+ * states still drawn are the ring states whose scene is unretired (eager)
+ * and the held states (openpete_tercache_hold_take); nothing freed at or
+ * after the oldest of their build serials may be reused yet. With neither
+ * there is no floor, and the release condition is the build-count window
+ * alone.
+ * @param floor_serial Receives the floor when there is one.
+ * @return 1 when a floor exists, else 0. */
+static int tc_release_floor(uint32_t *floor_serial)
+{
+    int have = 0;
+    for (int i = 0; i < TC_RING + OPENPETE_TERCACHE_HOLDS; i++) {
+        const int held = i >= TC_RING;
+        const tc_state *R = held ? &s_tc.hold[i - TC_RING] : &s_tc.ring[i];
+        if (!R->valid || (!held && !openpete_native_scene_stamp_live(R->stamp))) continue;
+        if (!have || (int32_t)(R->build_serial - *floor_serial) < 0) { *floor_serial = R->build_serial; have = 1; }
+    }
+    return have;
+}
+
 /** @brief Adopt a fulfilled level-edge replacement.
  *
  * Builder thread, from frame_begin and frame_skip; no-op unless the
@@ -1378,6 +1427,9 @@ static void tc_adopt_pending(void)
      * than drained: re-inserting those spans into an empty free list would
      * hand the allocator ranges it already owns. */
     s_tc.defer_n = 0;
+    /* A held state's ranges address the outgoing pairs too. */
+    for (int i = 0; i < OPENPETE_TERCACHE_HOLDS; i++)
+        if (s_tc.hold[i].valid) { s_tc.hold[i].valid = 0; s_tc.hold_drops++; }
     /* The registry described the outgoing buffers. */
     tc_reg_clear();
     s_tc.reg_broken = 0;
@@ -1612,17 +1664,8 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     s_tc.draws_last = 0;
     /* release deferred ranges older than the in-flight window */
     int w = 0;
-    /* Eager: a range freed at build serial F was drawn by ring states built
-     * before F. Find the oldest build serial among ring states whose scene
-     * is still unretired; nothing freed at or after it may be reused yet.
-     * With no eager scenes in flight this is "no floor" and the release
-     * condition is the build-count window alone, exactly as before. */
-    uint32_t floor_serial = 0; int have_floor = 0;
-    for (int i = 0; i < TC_RING; i++) {
-        const tc_state *R = &s_tc.ring[i];
-        if (!R->valid || !openpete_native_scene_stamp_live(R->stamp)) continue;
-        if (!have_floor || (int32_t)(R->build_serial - floor_serial) < 0) { floor_serial = R->build_serial; have_floor = 1; }
-    }
+    uint32_t floor_serial = 0;
+    const int have_floor = tc_release_floor(&floor_serial);
     for (int i = 0; i < s_tc.defer_n; i++) {
         const int aged   = s_tc.present_ctr - s_tc.defer[i].stamp > TC_DEFER_PRESENTS;
         const int unread = !have_floor || (int32_t)(s_tc.defer[i].stamp - floor_serial) <= 0;
@@ -1747,6 +1790,8 @@ static const tc_state *tc_state_for_stamp(uint32_t stamp, int *src)
             if (s_tc.ring[i].valid && s_tc.ring[i].stamp == stamp) { *src = 1; return &s_tc.ring[i]; }
     if (s_tc.live.valid && stamp == s_tc.live.stamp) { *src = 2; return &s_tc.live; }
     if (s_tc.staged.valid && stamp == s_tc.staged.stamp) { *src = 3; return &s_tc.staged; }
+    for (int i = 0; i < OPENPETE_TERCACHE_HOLDS; i++)
+        if (s_tc.hold[i].valid && stamp == s_tc.hold[i].stamp) { *src = 4; return &s_tc.hold[i]; }
     return NULL;
 }
 

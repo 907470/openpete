@@ -208,3 +208,9 @@ second-warning-held-particles|2372|264||2372,2562,2636|--skip-to-cutscene the_se
 # read's completion hangs the reader's no-VSync spin (watchdog exit at VBL
 # 5916). 5973 is the game-over screen, 7873 the reloaded level live.
 cloud-spires-game-over|5973|1000||5973,7873
+#
+# s3-create-save: a new game on a blank card in slot 1 (provisioned formatted
+# by the binary in the leg's directory) creates and writes its save. 1678 and
+# 2341 are presents where the game draws nothing: the display shows the last
+# image drawn into the buffer it shows, the world under the card dialogue.
+s3-create-save|1678|663||1678,2341|--card1 {legdir}/card1.mcr --no-card2

@@ -205,6 +205,7 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
 
 void openpete_fb_snapshot_on_fill(int x, int y, int w, int h)
 {
+    openpete_native_hold_note_vram(x, y, w, h, -1, 0);
     if (!openpete_fb_snapshot_enabled()) return;
     for (int i = 0; i < FB_AREA_MAX; i++) {
         fb_area_t *a = &s_area[i];
@@ -394,6 +395,7 @@ const uint16_t *openpete_fb_snapshot_under(int idx, int *x, int *y, int *w, int 
 int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
                                  int dst_x, int dst_y)
 {
+    openpete_native_hold_note_vram(dst_x, dst_y, w, h, src_x, src_y);
     if (!openpete_fb_snapshot_enabled()) return 0;
     if (w <= 0 || h <= 0) return 0;
     if (src_x + w > FB_BUFFER_W) return 0;

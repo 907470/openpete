@@ -467,6 +467,33 @@ int  openpete_tercache_build_content(uint32_t stamp);
  * @return The drawn-sector count; 0 when no state carries @p stamp; -1 when
  *         the cache is not ready. */
 int  openpete_tercache_build_drawn(uint32_t stamp);
+/* Retained states kept for held scenes: one per hold-store entry of the
+ * native compose (OPENPETE_NATIVE_HOLD_POOL). */
+#define OPENPETE_TERCACHE_HOLDS 6
+/** @brief Keep a copy of the retained state a stamp's build wrote, so a scene held past its build still draws its terrain.
+ *
+ * Copies the state openpete_tercache_build_content would read for @p stamp
+ * (eager ring, live or staged) into hold @p idx. A held state answers
+ * openpete_tercache_frame_select for its stamp after the state it was copied
+ * from is reused, and its build serial joins the release floor, so the arena
+ * ranges it draws are not reused while it is held. A level-edge arena
+ * replacement drops every hold, since their ranges address the outgoing
+ * buffers. Builder thread. With no state for @p stamp the hold is left empty
+ * and the miss is counted.
+ * @param idx Hold index, 0 to OPENPETE_TERCACHE_HOLDS - 1.
+ * @param stamp Stamp of the held scene. */
+void openpete_tercache_hold_take(int idx, uint32_t stamp);
+/** @brief Release a hold taken by openpete_tercache_hold_take.
+ *
+ * @param idx Hold index; out of range is ignored. */
+void openpete_tercache_hold_drop(int idx);
+/** @brief Read the hold census since boot.
+ *
+ * Any output pointer may be NULL.
+ * @param takes Receives the holds that copied a state.
+ * @param misses Receives the takes that found no state for their stamp.
+ * @param drops Receives the holds a level-edge replacement dropped. */
+void openpete_tercache_hold_counts(unsigned *takes, unsigned *misses, unsigned *drops);
 /** @brief Report which retained state the last openpete_tercache_frame_select() chose.
  *
  * @return 0 when the draws are closed, 1 for the scene-ring state, 2 for the

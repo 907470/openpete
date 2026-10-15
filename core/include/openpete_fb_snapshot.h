@@ -297,6 +297,22 @@ int openpete_fb_snapshot_area_holds(int x, int y, int w, int h);
  *         mechanism is disabled. */
 int openpete_fb_snapshot_retained_area(unsigned *epoch);
 
+/** @brief Record an image op's write into the VRAM model for the native compose's held scenes.
+ *
+ * Defined by the native renderer. A draw area the rect overlaps was last
+ * written by an image op, so an empty present showing it re-displays the
+ * VRAM framebuffer; a copy of one whole draw area onto another whole draw
+ * area instead gives the destination the source's last writer and held
+ * scene. Called for every LoadImage, ClearImage and MoveImage, before the
+ * snapshot store's own handling and whether or not that store is enabled.
+ * @param x Destination left, VRAM texels, post-clamp.
+ * @param y Destination top.
+ * @param w Width.
+ * @param h Height.
+ * @param src_x Copy source left, or -1 for a fill or load.
+ * @param src_y Copy source top; unused for a fill or load. */
+void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int src_y);
+
 /** @brief Report whether the snapshot mechanism is enabled.
  *
  * OPENPETE_FBSNAP=0 disables it (the negative control: every quad keeps the
