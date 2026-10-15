@@ -10,7 +10,7 @@ reproducible record of a run.
 ### Recording
 
 ```
-openpete-spyro1 --bk2-record
+openpete --bk2-record
 ```
 
 `--bk2-record [PATH]` <!-- id: flag:--bk2-record home --> writes the live pad
@@ -35,7 +35,7 @@ recording live input after its end, extending it into the new file.
 ### Replaying
 
 ```
-openpete-spyro1 --bk2 movie.bk2
+openpete --bk2 movie.bk2
 ```
 
 `--bk2 PATH` <!-- id: knob:bk2 --> replays the movie into the pad. A

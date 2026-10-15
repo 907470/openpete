@@ -21,7 +21,7 @@
   <launchable type="desktop-id">com.openpete.OpenPete.desktop</launchable>
   <url type="homepage">https://openpete.com/</url>
   <provides>
-    <binary>openpete-spyro1</binary>
+    <binary>openpete</binary>
   </provides>
   <content_rating type="oars-1.1">
     <content_attribute id="violence-cartoon">mild</content_attribute>

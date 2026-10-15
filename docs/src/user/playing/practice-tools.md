@@ -51,7 +51,7 @@ prints the list. The game pages list each game's names:
 behind a black window with the audio muted until the level is playable.
 
 ```
-openpete-spyro1 --skip-to-level stone_hill
+openpete --skip-to-level stone_hill
 ```
 
 To change level during a session, use the level warp in the

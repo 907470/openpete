@@ -26,4 +26,4 @@ export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # chdir here would silently resolve them against the mount. Arguments
 # pass through verbatim so a desktop file's %f, a drag onto the icon and
 # a terminal invocation all behave identically.
-exec "$HERE/usr/openpete-spyro1" "$@"
+exec "$HERE/usr/openpete" "$@"

@@ -1,6 +1,6 @@
 # Spyro the Dragon
 
-The program is `openpete-spyro1` (`openpete-spyro1.exe` on Windows). Its
+The program is `openpete` (`openpete.exe` on Windows). Its
 config sections are `[game.spyro-1]` and `[disc.SCUS-94228]`
 ([Config file](../customizing/config-file.md)).
 

@@ -1,6 +1,6 @@
 # File locations
 
-`openpete-spyro1 --config-report`<!-- id: flag:--config-report --> prints
+`openpete --config-report`<!-- id: flag:--config-report --> prints
 every location below as this install resolves it, then exits.
 
 ## What OpenPete writes
@@ -28,7 +28,7 @@ program's folder is not writable, per-user is used and the log says so.
 === "Windows"
 
     Portable is the default. Everything is in the install folder, next to
-    `openpete-spyro1.exe`:
+    `openpete.exe`:
 
     ```
     openpete.toml  gamecontrollerdb.txt

@@ -1,11 +1,9 @@
 # Spyro 2: Ripto's Rage!
 
-No OpenPete release package includes Spyro 2 yet; the release packages
-contain only `openpete-spyro1`. A build from source runs it with
-`openpete` on Linux, the one program that runs every game and picks the
-game from the disc, and with `openpete-spyro2.exe` on Windows. Its config
-sections
-are `[game.spyro-2]` and `[disc.SCUS-94425]`
+No OpenPete release package includes Spyro 2 yet. A build from source
+runs it with `openpete` (`openpete.exe` on Windows), the one program that
+runs every game and picks the game from the disc. Its config sections are
+`[game.spyro-2]` and `[disc.SCUS-94425]`
 ([Config file](../customizing/config-file.md)).
 
 Flags, keys, menus and the config file work as on Spyro the Dragon; this

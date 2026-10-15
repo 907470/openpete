@@ -230,9 +230,10 @@ A clone builds at two scopes:
 - The engine: `openpete_core`, `openpete_rhi` and the unit tests. It needs
   the clone (step 1) and the prerequisites above, and no disc image,
   decompilation build or PSYQ SDK. See [Engine only](#engine-only).
-- A game: its module and its share of the executable (`build/<preset>/openpete`
-  on Linux; `openpete-spyro1`, `openpete-spyro2`, `openpete-spyro3` per game
-  elsewhere), built by the game's target `openpete-<tag>` from recompiled C under
+- A game: its module and its share of the executable (`build/<preset>/openpete`,
+  `openpete.exe` on MinGW; under static linkage
+  `games/<game>/openpete-<tag>` per game), built by the game's target
+  `openpete-<tag>` from recompiled C under
   `games/<game>/generated/`, which is gitignored (`.gitignore:8`) and
   produced outside CMake by steps 2 and 3 from the game's decompilation
   build. Building the decompilation needs your own copy of the PSYQ SDK
@@ -430,8 +431,9 @@ game's recompiled module joins the runtime (`cmake/openpete_game.cmake`):
   to exactly one definition; on Windows the module's link against the exe's
   export implib is that check.
 
-With shared linkage on Linux (`linux-release`, `linux-release-launcher`)
-every game links into one executable, `build/<preset>/openpete`. Each
+With shared linkage (`linux-release`, `windows-mingw` and their `-launcher`
+presets) every game links into one executable, `build/<preset>/openpete`
+(`openpete.exe` on MinGW). Each
 game's host sources compile once into its object library `<tag>_host`, the
 code the games share compiles once into `openpete_game_common`
 (`games/common/CMakeLists.txt`), and the executable's entry
@@ -445,8 +447,8 @@ with no `--recomp-module`. Each game's target `openpete-<tag>` builds the
 executable and that game's files. The build refuses a host TU whose include
 path leads into a game's directory (`tools/check_game_includes.py`,
 target `openpete_game_include_check`): a game's header is named relative to
-the including file or by its game-qualified path (`spyro-1/gen/...`). Other
-presets build one executable per game,
+the including file or by its game-qualified path (`spyro-1/gen/...`). The
+static-linkage presets build one executable per game,
 `build/<preset>/games/<game>/openpete-<tag>[.exe]`, with the game's files
 beside it.
 
@@ -471,7 +473,7 @@ Both linkages build from the same sources.
 |--------------------------|---------------------------------|---------|-------|
 | `linux-debug`            | Linux native, Debug             | static  | dev build at -O0 with assertions |
 | `linux-release`          | Linux native, RelWithDebInfo    | shared  | the default dev build and the gates' tree |
-| `windows-mingw`          | Windows x64 cross (MinGW)       | static  | dev build, run via WSL2 interop |
+| `windows-mingw`          | Windows x64 cross (MinGW)       | shared  | dev build, run via WSL2 interop |
 | `linux-release-launcher` | Linux native, RelWithDebInfo    | shared  | distribution build, first-boot module build |
 | `windows-mingw-launcher` | Windows x64 cross (MinGW)       | shared  | distribution build, first-boot module build |
 | `windows-msvc`           | Windows native MSVC             | static  | placeholder, unvalidated |
@@ -510,7 +512,7 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 | `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA (not left implicit - toolchains differ in their default) so the distributable runs on any x86-64 CPU. `x86-64-v3` (AVX2/FMA/BMI2) measures flat: the hot path is the recompiled game's scalar integer code with no vectorizable loops, so the pre-Haswell/Zen1 cutoff would buy nothing |
 | `-ffile-prefix-map` on source and binary dir | `*-launcher` | `__FILE__`/assert strings are referenced `.rdata` that package-time stripping cannot remove; without the mapping they leak the build machine's username and layout |
 | `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-launcher` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `cmake/openpete_game.cmake` (`_openpete_game_shared_link`) forces IPO off on every shared-linkage Windows exe target as a guard, and keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
-| `OPENPETE_RECOMP_LINKAGE=shared` | `linux-release*`, `windows-mingw-launcher` | the linkage axis |
+| `OPENPETE_RECOMP_LINKAGE=shared` | `linux-release*`, `windows-mingw*` | the linkage axis |
 | `OPENPETE_RECOMP_FIRST_BOOT=ON` | `*-launcher` | the exe builds a missing module from the disc |
 | `OPENPETE_ROM_FREE_ICON=ON` | `*-launcher` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-launcher` | compiles out `--record`, dropping the libav dependency |
@@ -609,9 +611,12 @@ This does not produce a playable folder by itself: the shared exe needs its
 recomp inputs staged next to it (manifests, module source kit, PSXRecomp,
 and a bundled compiler). `scripts/package-dist.sh` assembles the shippable
 archive from a `*-launcher` build tree, staging `packaging/openpete-dist.toml` as
-the shipped `openpete.toml`. It packages one archive per game listed in
-`games/shipped.toml`; an AppImage carries one game, so `--appimage` refuses
-a list of more than one.
+the shipped `openpete.toml`. The archive, `openpete-<ver>-<platform>-x86_64`,
+carries the one executable under its build name (`openpete`, `openpete.exe`)
+and the first-boot inputs and SDK tree of the game `games/shipped.toml`
+lists. A list of more than one game is refused: without `--disc` the
+executable runs its first linked game, and the launcher lists and accepts
+only that game's library entries.
 
 ```bash
 scripts/setup_linux_clang.sh          # -> .tools/clang (bundled compiler)
@@ -635,8 +640,8 @@ Archives land in `dist/`. Flags:
 - `--with-mod-sdk`: stage the mod SDK headers the boot-time mod compiler
   needs. Releases ship without it; the dist gate passes it to keep the path
   exercised.
-- `--dry-run`: print each shipped game's build input and archive name, and
-  exit.
+- `--dry-run`: print the shipped game, the build input, and each archive
+  with the executable's path inside it, and exit.
 - `--sign '<command>'` (Windows): Authenticode hook, invoked once per
   first-party PE with the file path appended; a nonzero exit fails the
   package. The RFC3161 timestamp is not optional with Azure Artifact

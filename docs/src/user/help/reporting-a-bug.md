@@ -11,7 +11,7 @@
 2. **The settings.** The output of
 
     ```
-    openpete-spyro1 --config-report
+    openpete --config-report
     ```
     <!-- id: flag:--config-report -->
 

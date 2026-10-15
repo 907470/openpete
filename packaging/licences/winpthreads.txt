@@ -1,4 +1,4 @@
-winpthreads 8.0.0 (statically linked into openpete-spyro1.exe)
+winpthreads 8.0.0 (statically linked into openpete.exe)
 https://www.mingw-w64.org
 
 mingw-w64-libraries/winpthreads/COPYING from upstream tag v8.0.0,

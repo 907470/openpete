@@ -20,7 +20,7 @@ so a sound mod never moves gameplay state.
 ## Dump, edit, drop in
 
 ```
-openpete-spyro1 --dump-sfx-pack dump/
+openpete --dump-sfx-pack dump/
 ```
 
 reads every sample from the disc's WAD (every level, the cutscenes, the

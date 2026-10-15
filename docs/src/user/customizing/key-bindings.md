@@ -29,7 +29,7 @@ rewind         = "none"         # unbind
 screenshot = "F11"              # Spyro 1 only
 ```
 
-`openpete-spyro1 --keys-report`<!-- id: flag:--keys-report home --> prints every
+`openpete --keys-report`<!-- id: flag:--keys-report home --> prints every
 action, its binding, the section that set it and the action's purpose, then
 exits.
 

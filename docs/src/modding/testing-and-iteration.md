@@ -20,13 +20,13 @@ Alternatively, compile every mod with a `src/` directory without booting the gam
 === "Linux"
 
     ```
-    openpete-spyro1 --compile-mods [--mods-dir mods]
+    openpete --compile-mods [--mods-dir mods]
     ```
 
 === "Windows"
 
     ```
-    openpete-spyro1.exe --compile-mods [--mods-dir mods]
+    openpete.exe --compile-mods [--mods-dir mods]
     ```
 
 Exit status is nonzero if any mod failed to compile.
@@ -58,7 +58,7 @@ the parent console and binds stdout and stderr to whatever the standard
 handles point at, so the log streams live. Page it with `more`:
 
 ```
-openpete-spyro1.exe --mods your_mod 2>&1 | more
+openpete.exe --mods your_mod 2>&1 | more
 ```
 
 The log file is written either way.
@@ -141,7 +141,7 @@ disappeared.
 === "Linux"
 
     ```
-    openpete-spyro1 --headless \
+    openpete --headless \
       --mods your_mod \
       --skip-to-level stone_hill \
       --screenshot-on-frame 1756 \
@@ -154,7 +154,7 @@ disappeared.
 === "Windows"
 
     ```
-    openpete-spyro1.exe --headless `
+    openpete.exe --headless `
       --mods your_mod `
       --skip-to-level stone_hill `
       --screenshot-on-frame 1756 `
@@ -201,7 +201,7 @@ That prints the freecam pose, which is what `--freecam-pose` takes:
 === "Linux"
 
     ```
-    openpete-spyro1 --headless \
+    openpete --headless \
       --mods your_mod \
       --skip-to-level stone_hill \
       --freecam-pose "pos=(12480, -8032, 1216) yaw=1024 pitch=-256" \
@@ -215,7 +215,7 @@ That prints the freecam pose, which is what `--freecam-pose` takes:
 === "Windows"
 
     ```
-    openpete-spyro1.exe --headless `
+    openpete.exe --headless `
       --mods your_mod `
       --skip-to-level stone_hill `
       --freecam-pose "pos=(12480, -8032, 1216) yaw=1024 pitch=-256" `
@@ -246,7 +246,7 @@ reason=...` instead. Paste the line back with the level:
 === "Linux"
 
     ```
-    openpete-spyro1 --headless \
+    openpete --headless \
       --mods your_mod \
       --skip-to-level 11 \
       --player-pose "pos=(134640, 121826, 21007) yaw=2048" \
@@ -256,7 +256,7 @@ reason=...` instead. Paste the line back with the level:
 === "Windows"
 
     ```
-    openpete-spyro1.exe --headless `
+    openpete.exe --headless `
       --mods your_mod `
       --skip-to-level 11 `
       --player-pose "pos=(134640, 121826, 21007) yaw=2048" `
@@ -280,7 +280,7 @@ Record. Play to the state under test, then quit:
 === "Linux"
 
     ```
-    openpete-spyro1 --mods your_mod \
+    openpete --mods your_mod \
       --skip-to-level stone_hill \
       --bk2-record test.bk2
     ```
@@ -288,7 +288,7 @@ Record. Play to the state under test, then quit:
 === "Windows"
 
     ```
-    openpete-spyro1.exe --mods your_mod `
+    openpete.exe --mods your_mod `
       --skip-to-level stone_hill `
       --bk2-record test.bk2
     ```
@@ -298,7 +298,7 @@ Replay:
 === "Linux"
 
     ```
-    openpete-spyro1 --headless \
+    openpete --headless \
       --mods your_mod \
       --bk2 test.bk2 \
       --bk2-stop-on-end \
@@ -309,7 +309,7 @@ Replay:
 === "Windows"
 
     ```
-    openpete-spyro1.exe --headless `
+    openpete.exe --headless `
       --mods your_mod `
       --bk2 test.bk2 `
       --bk2-stop-on-end `
@@ -332,14 +332,14 @@ Extract the count:
 === "Linux"
 
     ```
-    openpete-spyro1 --bk2 test.bk2 2>/dev/null | grep -oE 'frames=[0-9]+' | cut -d= -f2
+    openpete --bk2 test.bk2 2>/dev/null | grep -oE 'frames=[0-9]+' | cut -d= -f2
     # 2000
     ```
 
 === "Windows"
 
     ```
-    (openpete-spyro1.exe --bk2 test.bk2 2>$null |
+    (openpete.exe --bk2 test.bk2 2>$null |
       Select-String -Pattern 'frames=(\d+)').Matches.Groups[1].Value
     # 2000
     ```
@@ -352,7 +352,7 @@ reaches the engine empty, so every capture overwrites one file.
 === "Linux"
 
     ```
-    openpete-spyro1 --headless \
+    openpete --headless \
       --mods your_mod \
       --bk2 test.bk2 \
       --bk2-stop-on-end \
@@ -365,7 +365,7 @@ reaches the engine empty, so every capture overwrites one file.
 === "Windows"
 
     ```
-    openpete-spyro1.exe --headless `
+    openpete.exe --headless `
       --mods your_mod `
       --bk2 test.bk2 `
       --bk2-stop-on-end `
@@ -392,7 +392,7 @@ material whose effect is hard to pick out of a full scene. The paths are
 === "Linux"
 
     ```
-    openpete-spyro1 --headless \
+    openpete --headless \
       --mods your_mod \
       --skip-to-level stone_hill \
       --render-paths terrain \
@@ -406,7 +406,7 @@ material whose effect is hard to pick out of a full scene. The paths are
 === "Windows"
 
     ```
-    openpete-spyro1.exe --headless `
+    openpete.exe --headless `
       --mods your_mod `
       --skip-to-level stone_hill `
       --render-paths terrain `

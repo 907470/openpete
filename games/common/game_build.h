@@ -69,8 +69,8 @@ extern const size_t openpete_game_build_count;
  * With one linked game, that game. Otherwise, in order: the game whose
  * serial the SYSTEM.CNF of the image named by --disc or --ingest carries;
  * the --game selector; the game whose exe_name is the invoked name (a
- * packaged copy of the one executable carries its game's name); else the
- * first linked game. A
+ * copy of the one executable renamed to a game's executable name); else
+ * the first linked game. A
  * source naming a game this executable does not link is passed over; the
  * selected game's entry then identifies the session and refuses a
  * contradiction.

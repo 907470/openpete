@@ -1,4 +1,4 @@
-MinGW-w64 CRT 8.0.0 (statically linked into openpete-spyro1.exe)
+MinGW-w64 CRT 8.0.0 (statically linked into openpete.exe)
 https://www.mingw-w64.org
 
 COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt from upstream tag

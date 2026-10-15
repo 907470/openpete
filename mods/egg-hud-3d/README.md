@@ -40,7 +40,7 @@ entries.
 ## Repro
 
 ```
-openpete-spyro1 --mods egg-hud-3d --bk2 games/spyro-1/bk2/egg-inventory.bk2
+openpete --mods egg-hud-3d --bk2 games/spyro-1/bk2/egg-inventory.bk2
 ```
 
 HUD egg from ~frame 3603; inventory open from ~frame 3760.

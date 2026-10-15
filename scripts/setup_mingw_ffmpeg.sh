@@ -12,7 +12,7 @@
 #
 # Output prefix: third_party/ffmpeg-mingw/{lib,include}  (gitignored; ~30 MB).
 # Re-run is idempotent-ish (it re-clones/re-extracts into the build dir). The
-# libs are STATIC + GPL (x264) - the resulting openpete-spyro1.exe is GPL.
+# libs are STATIC + GPL (x264) - the resulting openpete.exe is GPL.
 #
 # Requires: x86_64-w64-mingw32-gcc toolchain, nasm, git, curl, tar.
 set -euo pipefail

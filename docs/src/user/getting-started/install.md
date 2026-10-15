@@ -5,9 +5,9 @@ beside it:
 
 | Package | File |
 | --- | --- |
-| Windows | `openpete-spyro1-<version>-windows-x86_64.zip` |
+| Windows | `openpete-<version>-windows-x86_64.zip` |
 | Linux AppImage | `OpenPete-<version>-x86_64.AppImage` |
-| Linux tar.xz | `openpete-spyro1-<version>-linux-x86_64.tar.xz` |
+| Linux tar.xz | `openpete-<version>-linux-x86_64.tar.xz` |
 
 The AppImage is a single read-only file that carries its own compiler. The
 tar.xz is an extracted folder that can run portable; see
@@ -20,7 +20,7 @@ tar.xz is an extracted folder that can run portable; see
     1. Extract the zip to a folder with a short path, for example
        `C:\Games\OpenPete`. Very deep folders can exceed the Windows
        path-length limit during the first run's compile.
-    2. Run `openpete-spyro1.exe`.
+    2. Run `openpete.exe`.
 
     !!! note "SmartScreen"
         The download is unsigned, so Windows shows "Windows protected your
@@ -50,9 +50,9 @@ tar.xz is an extracted folder that can run portable; see
 === "Linux tar.xz"
 
     ```
-    tar xJf openpete-spyro1-*-linux-x86_64.tar.xz
-    cd openpete-spyro1-*-linux-x86_64
-    ./openpete-spyro1
+    tar xJf openpete-*-linux-x86_64.tar.xz
+    cd openpete-*-linux-x86_64
+    ./openpete
     ```
 
     Without a bundled compiler the first run needs a system `cc`; see
@@ -69,7 +69,7 @@ A disc image passed as the only argument is ingested, so opening a `.cue` or
 === "Windows"
 
     ```
-    openpete-spyro1.exe mydisc.cue
+    openpete.exe mydisc.cue
     ```
 
 === "Linux AppImage"
@@ -81,7 +81,7 @@ A disc image passed as the only argument is ingested, so opening a `.cue` or
 === "Linux tar.xz"
 
     ```
-    ./openpete-spyro1 mydisc.cue
+    ./openpete mydisc.cue
     ```
 
 The flag spelling is `--ingest PATH` <!-- id: flag:--ingest -->.

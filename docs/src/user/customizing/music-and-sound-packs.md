@@ -61,7 +61,7 @@ original sounds, so start from a dump:
 
 1. Write every sound on the disc into a folder:
    ```
-   openpete-spyro1 --dump-sfx-pack dumps
+   openpete --dump-sfx-pack dumps
    ```
    <!-- id: flag:--dump-sfx-pack -->
    It reads the most recently played disc in your [library](../help/glossary.md#library), or the image

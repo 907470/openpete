@@ -123,7 +123,7 @@ if [[ $APPIMAGE -eq 1 ]]; then
     ( cd "$WORK" && "$image" --appimage-extract >/dev/null )
     appdir="$WORK/squashfs-root"
     APP=("$appdir/AppRun")
-    BIN="$appdir/usr/openpete-spyro1"
+    BIN="$appdir/usr/openpete"
     # Content manifest of the payload, to be re-checked after the run.
     ( cd "$appdir" && find . -type f -exec sha256sum {} + | sort -k2 ) \
         > "$WORK/payload-before.txt"
@@ -133,8 +133,8 @@ else
     mkdir -p "$WORK/install"
     tar xJf "$archive" -C "$WORK/install"
     appdir=$(ls -d "$WORK"/install/*/)
-    APP=("$appdir/openpete-spyro1")
-    BIN="$appdir/openpete-spyro1"
+    APP=("$appdir/openpete")
+    BIN="$appdir/openpete"
 fi
 
 echo "[dist-gate] glibc floor (every ELF in the payload)..."

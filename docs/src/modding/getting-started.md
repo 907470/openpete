@@ -4,7 +4,7 @@
 
 | Install | `mods/` location |
 |---|---|
-| Windows | Next to `openpete-spyro1.exe` |
+| Windows | Next to `openpete.exe` |
 | Linux `.tar.xz`, AppImage | `~/.local/share/openpete/mods/` (`$XDG_DATA_HOME/openpete/mods/` when set) |
 | `portable = true` at the top level of `openpete.toml` | Next to the executable, when that directory is writable |
 

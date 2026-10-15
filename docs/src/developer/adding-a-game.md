@@ -12,12 +12,13 @@ game is `games/<game>/` holding a `recomp.conf`, a `game_extras_impl.c`, a
 `openpete_add_game`, plus the registration rows of
 [step 7](#7-registration).
 
-On Linux under shared linkage (`linux-release` and `linux-release-launcher`)
-every game's host code links into one executable, `build/<preset>/openpete`,
-and each game's recompiled code is a module, `<tag>-recomp.so`, beside it;
-the executable selects the game at startup and loads that game's module.
-Under static linkage, and on Windows until its shared linkage is measured,
-each game has its own executable `build/<preset>/games/<game>/openpete-<tag>`
+Under shared linkage (`linux-release`, `windows-mingw` and their `-launcher`
+presets) every game's host code links into one executable,
+`build/<preset>/openpete` (`openpete.exe` on MinGW), and each game's
+recompiled code is a module, `<tag>-recomp.so` (`.dll`), beside it; the
+executable selects the game at startup and loads that game's module. Under
+static linkage (the MSVC, macOS and wasm presets) each game has its own
+executable `build/<preset>/games/<game>/openpete-<tag>`
 with the same sources. `<tag>` is the game id without its hyphen
 (`spyro-2` -> `spyro2`).
 

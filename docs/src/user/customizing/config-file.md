@@ -37,7 +37,7 @@ OpenPete reads two files, both named `openpete.toml`:
     `$XDG_CONFIG_HOME/openpete/openpete.toml` when `XDG_CONFIG_HOME` is set.
 
 Where one setting appears in both files at the same scope, the per-user
-file wins. `openpete-spyro1 --config-report` prints both paths, which of them
+file wins. `openpete --config-report` prints both paths, which of them
 exist, and which one the menus save to.
 
 ### Which file the menus save to
@@ -59,7 +59,7 @@ so. The same choice decides where memory cards, [savestates](../help/glossary.md
 
 !!! warning "Windows upgrades replace the shipped file"
     In the portable layout the menus save into the `openpete.toml` next to
-    `openpete-spyro1.exe`. A release zip contains an `openpete.toml`, so
+    `openpete.exe`. A release zip contains an `openpete.toml`, so
     extracting a new release over the folder replaces the file and the
     settings saved in it. Copy the `[saved]` block out before upgrading, or
     write your own settings into `%APPDATA%\openpete\openpete.toml`, which no

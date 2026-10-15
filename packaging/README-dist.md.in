@@ -33,15 +33,15 @@ In the AppImage it sits inside the read-only image: run
 
 1. Dump your disc to a `.bin`/`.cue` pair.
 <!-- @windows -->
-2. Run `openpete-spyro1.exe`.
+2. Run `openpete.exe`.
 3. Drag your `.bin` or `.cue` onto the window, or press Space (or A on a pad)
    to browse for it. You can also pass the path on the command line
-   (`openpete-spyro1.exe mydisc.cue`) or open the image from Explorer with
+   (`openpete.exe mydisc.cue`) or open the image from Explorer with
    "Open with".
 <!-- @end -->
 <!-- @linux -->
 2. Make it executable and run it: `chmod +x OpenPete-*.AppImage` then
-   `./OpenPete-*.AppImage` for the AppImage, or `./openpete-spyro1` from the
+   `./OpenPete-*.AppImage` for the AppImage, or `./openpete` from the
    extracted `.tar.xz`.
 3. Drag your `.bin` or `.cue` onto the window, or press Space (or A on a pad)
    to browse for it. You can also pass the path on the command line
@@ -90,14 +90,14 @@ camera, and the enabled mods; its SETTINGS row writes your choices into
 holding one line, `fullscreen = true`.
 
 Everything else is a command-line flag or an `openpete.toml` key of the same
-name. `openpete-spyro1 --help` lists the flags; `--config-report` prints which
+name. `openpete --help` lists the flags; `--config-report` prints which
 setting won and what it overrode.
 
 ## Where your files go
 
 <!-- @windows -->
 Windows keeps everything in the program's own folder, next to
-`openpete-spyro1.exe`:
+`openpete.exe`:
 
 ```
 openpete.toml         your settings
@@ -142,7 +142,7 @@ in the wrong places, you can add a mapping without touching anything that
 ships with the game.
 
 <!-- @windows -->
-Edit `gamecontrollerdb.txt` next to `openpete-spyro1.exe` and add a line for
+Edit `gamecontrollerdb.txt` next to `openpete.exe` and add a line for
 your pad. Keep a copy of that line somewhere else: extracting a new release
 over this folder replaces the file.
 <!-- @end -->

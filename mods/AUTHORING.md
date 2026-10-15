@@ -2,8 +2,8 @@
 
 Self-contained reference for writing openpete (Spyro the Dragon, SCUS-94228)
 mods against the shipped SDK. Assumes no access to engine source. Paths are
-relative to `<exe>`, the directory holding `openpete-spyro1` /
-`openpete-spyro1.exe`. Authoritative sources when this file and the SDK
+relative to `<exe>`, the directory holding `openpete` /
+`openpete.exe`. Authoritative sources when this file and the SDK
 disagree: `sdk/openpete_mod_api.h` (contract), the Modding section of
 `docs/index.html` (generated reference, offline), `sdk/examples/<id>/`
 (working mods).
@@ -402,7 +402,7 @@ loaded whole.
 
 **Sounds** `assets/sfx/`: substitution at the SPU voice's PCM handoff; sound
 tables, SPU RAM, addresses, pitch, and the tick the game sees the sound end
-stay stock. Census: `openpete-spyro1 --disc X.cue --dump-sfx-pack dump/`
+stay stock. Census: `openpete --disc X.cue --dump-sfx-pack dump/`
 (+ `--dump-sfx-wads a.wad`) writes `<label>-<hash>-p<pitch>.wav` + `index.txt`.
 Forms: `<label>-<hash>-p<pitch>.wav` (that sample at that base pitch),
 `<label>-<hash>.wav` (raw 44.1 kHz, game pitches), `<slot>.wav` (role, e.g.
@@ -452,7 +452,7 @@ Run from `<exe>`. Every unattended launch: `--vibration 0 --mute 1`
 carry `mod:<id>`; `--log-level 'mods:debug,*:info'`.
 
 ```
-openpete-spyro1 --disc <game>.cue --mods-dir mods --mods my-mod \
+openpete --disc <game>.cue --mods-dir mods --mods my-mod \
   --headless --frame-limit 6000 --vibration 0 --mute 1 2>&1 | tee run.log
 ```
 

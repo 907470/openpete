@@ -34,7 +34,7 @@ each row to its text, and packaging fails on a row with no text.
 ## Bundled data - shipped alongside the binary
 
 Data files copied into every release archive. Not linked into
-`openpete-spyro1`; read at runtime.
+`openpete`; read at runtime.
 
 | Component                                | License | Upstream                                          |
 | ---------------------------------------- | ------- | ------------------------------------------------- |
@@ -46,7 +46,7 @@ Refreshed with `scripts/update_gamecontrollerdb.sh`.
 
 Shipped as separate executables under `recomp/tools/`, invoked as
 subprocesses to recompile the user's disc at first boot. Each is an
-independent program (mere aggregation), not linked into `openpete-spyro1`.
+independent program (mere aggregation), not linked into `openpete`.
 
 | Component                                | License                                                          | Notes                                                      |
 | ---------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------- |
@@ -66,7 +66,7 @@ satisfies the loader without shipping a terminal library (see
 
 Present only in archives packaged with the mod SDK. Each example is a
 separate directory the loader compiles or reads at boot; none is linked
-into `openpete-spyro1`.
+into `openpete`.
 
 | Component                          | License | Notes                                                                 |
 | ---------------------------------- | ------- | --------------------------------------------------------------------- |

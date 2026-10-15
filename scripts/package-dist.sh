@@ -10,9 +10,14 @@
 #   scripts/package-dist.sh windows [--out DIR] [--toolchain DIR]
 #   scripts/package-dist.sh {linux|windows} --dry-run
 #
-# One archive per game listed in games/shipped.toml, each from that game's
-# *-launcher build. --dry-run prints the games, each build input and archive
-# name, and exits without packaging anything.
+# One archive, openpete-<ver>-<platform>-x86_64, carrying the one
+# executable (`openpete`, `openpete.exe`) from the *-launcher build and the
+# first-boot inputs of the game games/shipped.toml lists. A list of more
+# than one game is refused: a discless launch of the one executable selects
+# its first linked game, and its launcher lists and accepts only that
+# game's library entries. --dry-run prints the game, the build input, and
+# each archive with the executable's path inside it, and exits without
+# packaging anything.
 #
 # --appimage additionally emits OpenPete-<ver>-x86_64.AppImage from the
 # SAME staged tree the tarball is made from, so the two artifacts can
@@ -27,11 +32,9 @@
 # path exercised.
 #
 # Inputs: the corresponding *-launcher preset build (linux-release-launcher /
-# windows-mingw-launcher) with its staged recomp/ directory: on Linux the one
-# executable `openpete` at the tree root, staged into the archive under the
-# game's executable name (openpete-<tag>, which selects the game when no disc
-# does), with the files beside it; on Windows the game's own executable in
-# games/<game>/. --toolchain
+# windows-mingw-launcher) with its staged recomp/ directory: the one
+# executable `openpete` (`openpete.exe`) at the tree root, staged into the
+# archive under the same name, with the files beside it. --toolchain
 # points at an UNPACKED compiler tree to bundle: llvm-mingw (ucrt
 # x86_64) for Windows, a trimmed llvm.org clang for Linux
 # (scripts/setup_linux_clang.sh produces one in .tools/clang). Without
@@ -56,7 +59,7 @@ WITH_MOD_SDK=0
 APPIMAGE=0
 DRY_RUN=0
 # --sign '<command>' - Authenticode hook, Windows platform only. Invoked
-# once per first-party PE (openpete-spyro1.exe, PSXRecomp.exe) with the
+# once per first-party PE (openpete.exe, PSXRecomp.exe) with the
 # file path appended; a nonzero exit fails the package. Evaluated per
 # file so embedded $(...) (e.g. a fresh az access token) re-runs each
 # time. The bundled llvm-mingw binaries are NOT signed (SmartScreen
@@ -137,7 +140,7 @@ linux|windows) ;;
 esac
 
 # The shipped games: games/shipped.toml, the list the User docs and the
-# surface audience are computed for. Each game ships as its own archive.
+# surface audience are computed for.
 mapfile -t GAMES < <(python3 -c '
 import sys
 try:
@@ -148,13 +151,18 @@ for g in tomllib.load(open(sys.argv[1], "rb"))["games"]:
     print(g)
 ' games/shipped.toml)
 [[ ${#GAMES[@]} -gt 0 ]] || { echo "[package] games/shipped.toml lists no game" >&2; exit 1; }
-# The AppImage's file name, desktop entry and AppRun name no game, so an
-# image carries one game.
-if [[ $APPIMAGE -eq 1 && ${#GAMES[@]} -gt 1 ]]; then
-    echo "[package] --appimage packages one game; games/shipped.toml lists" \
-         "${#GAMES[@]}: ${GAMES[*]}" >&2
+# The archive carries one game's first-boot inputs and SDK tree. Without
+# --disc the one executable runs its first linked game, and the launcher
+# lists and accepts only that game's library entries, so a second game in
+# the archive would be reachable only from a command line naming its disc.
+if [[ ${#GAMES[@]} -gt 1 ]]; then
+    echo "[package] games/shipped.toml lists ${#GAMES[@]} games (${GAMES[*]});" \
+         "an archive carries one: the launcher does not select the game of a" \
+         "library entry across games, so a discless launch runs only the" \
+         "first linked game" >&2
     exit 1
 fi
+GAME="${GAMES[0]}"
 
 # Absolute: the example-staging loop below runs inside `cd mods/<id>`
 # subshells, where a relative --out no longer resolves.
@@ -520,12 +528,15 @@ package_windows() {  # package_windows <exe-dir>
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
     cp third_party/psxrecomp/build-mingw/PSXRecomp.exe "$STAGE/recomp/tools/"
-    # A PE module names the image it imports from, and the loader binds that
-    # name only to a loaded module of the same file name: the build tree's
-    # implib names openpete.exe, so the archive's is rebuilt from the same
-    # .def naming the shipped file name.
-    x86_64-w64-mingw32-dlltool -d "$TREE/gen/openpete_module_exports.def" \
-        -l "$STAGE/recomp/tools/libopenpete-exe-exports.a" -D "$EXE.exe"
+    # The implib the first-boot module links against. A PE module names the
+    # image it imports from and the loader binds that name only to a loaded
+    # module of the same file name, so -D is the shipped file name. dlltool
+    # derives its internal symbol names from the -l path, so it runs inside
+    # the output directory: the build tree's copy names the build path.
+    local def
+    def=$(realpath "$TREE/gen/openpete_module_exports.def")
+    ( cd "$STAGE/recomp/tools" && x86_64-w64-mingw32-dlltool -d "$def" \
+        -l libopenpete-exe-exports.a -D "$EXE.exe" )
     if [[ -n "$TOOLCHAIN" ]]; then
         echo "[package] trimming toolchain from $TOOLCHAIN"
         T="$STAGE/recomp/tools/llvm-mingw"
@@ -565,25 +576,28 @@ package_windows() {  # package_windows <exe-dir>
     ( cd "$OUT" && sha256sum "$NAME.zip" > "$NAME.zip.sha256" )
 }
 
-for GAME in "${GAMES[@]}"; do
-    EXE="openpete-${GAME//-/}"
-    NAME="${EXE}-${VERSION}-${PLATFORM}-x86_64"
-    STAGE="$OUT/$NAME"
-    # B: the directory of the executable that runs the game, where its
-    # recomp/ and sdk/ stage; BIN: that executable; DOCS: the directory the
-    # docs target writes the sites into.
-    case "$PLATFORM" in
-    linux)   TREE=build/linux-release-launcher; B="$TREE"; BIN="$B/openpete"
-             ART="$NAME.tar.xz" ;;
-    windows) TREE=build/windows-mingw-launcher; B="$TREE"; BIN="$B/openpete.exe"
-             ART="$NAME.zip" ;;
-    esac
-    DOCS="$TREE/games/spyro-1"
-    if [[ $DRY_RUN -eq 1 ]]; then
-        echo "[package] dry run: $GAME: $BIN -> $OUT/$ART"
-        continue
-    fi
-    "package_$PLATFORM" "$B"
-    echo "[package] $OUT/$NAME ready"
-    ls -la "$OUT" | grep "$NAME"
-done
+EXE=openpete
+NAME="${EXE}-${VERSION}-${PLATFORM}-x86_64"
+STAGE="$OUT/$NAME"
+# B: the build tree root, where the executable, recomp/ and sdk/ stage;
+# BIN: the executable; DOCS: the directory the docs target writes the
+# sites into.
+case "$PLATFORM" in
+linux)   TREE=build/linux-release-launcher; B="$TREE"; BIN="$B/$EXE"
+         ART="$NAME.tar.xz" ;;
+windows) TREE=build/windows-mingw-launcher; B="$TREE"; BIN="$B/$EXE.exe"
+         ART="$NAME.zip" ;;
+esac
+DOCS="$TREE/games/spyro-1"
+if [[ $DRY_RUN -eq 1 ]]; then
+    # The tarball wraps its payload in $NAME/; the zip has no wrapping folder.
+    inner="$NAME/"; [[ $PLATFORM == windows ]] && inner=""
+    echo "[package] dry run: $GAME: $BIN -> $OUT/$ART:$inner$(basename "$BIN")"
+    [[ $PLATFORM == linux && $APPIMAGE -eq 1 ]] && echo "[package] dry run:" \
+        "$GAME: $BIN -> $OUT/OpenPete-${VERSION}-x86_64.AppImage:usr/$EXE"
+    exit 0
+fi
+"package_$PLATFORM" "$B"
+echo "[package] $OUT/$NAME ready"
+ls -la "$OUT" | grep "$NAME"
+
