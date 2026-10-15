@@ -395,10 +395,11 @@ writes `games/<game>/generated/psxrecomp.id`, a hash of that recompiler
 source. Each game's build refuses while its stamp is missing or names
 other source, so a recompiler change regenerates every game the build
 configures (`scripts/fences/recomp_stamp.py`; the escape is
-`OPENPETE_RECOMP_STAMP_SKIP="<reason>"`). For the Windows distribution build,
-`package-dist.sh` also needs the cross-built recompiler at
-`third_party/psxrecomp/build-mingw/PSXRecomp.exe` (same source tree,
-configured with `-DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64.cmake`).
+`OPENPETE_RECOMP_STAMP_SKIP="<reason>"`). A Windows tree with the
+first-boot module build (`windows-mingw-launcher`) cross-builds its own
+`PSXRecomp.exe` from the same source into `<build>/psxrecomp/` on every
+build (target `openpete_psxrecomp`), stages it in `recomp/tools/`, and
+`package-dist.sh` ships that copy.
 
 ### 4. Place a disc image
 

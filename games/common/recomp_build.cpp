@@ -15,7 +15,8 @@
 // (CMake): recomp/manifest/<game id>/ (converged funcs lists +
 // manifest.toml + psyq.toml + channel_sites.txt; one directory per game,
 // since one executable stages every game's), recomp/src/ (the 5-file module source
-// kit), recomp/tools/PSXRecomp when packaged. The host compiler is
+// kit), recomp/tools/PSXRecomp (staged by the build, shipped by the
+// packages). The host compiler is
 // the bundled clang when packaged, else $OPENPETE_CC or `cc`.
 //
 // Cross-platform: POSIX uses the bundled clang / $OPENPETE_CC / cc;
@@ -308,22 +309,21 @@ bool emit_overlay_table(const fs::path& out, const std::vector<Overlay>& ovls) {
 
 #ifdef _WIN32
 #define PSXRECOMP_NAME "PSXRecomp.exe"
-#define PSXRECOMP_DEVDIR "build-mingw"
 #else
 #define PSXRECOMP_NAME "PSXRecomp"
-#define PSXRECOMP_DEVDIR "build"
 #endif
 
+/** @brief Return the PSXRecomp path: $OPENPETE_PSXRECOMP, else recomp/tools/ under base.
+ *
+ * The build stages recomp/tools/ beside the executable (the Windows tree
+ * builds its own PSXRecomp.exe there) and the packages ship it, so no
+ * repository path is searched.
+ * @param base The install directory.
+ * @return The path, or "" when neither names a file. */
 std::string find_psxrecomp(const fs::path& base) {
     if (const char* env = getenv("OPENPETE_PSXRECOMP")) return env;
     fs::path staged = base / "recomp" / "tools" / PSXRECOMP_NAME;
     if (fs::exists(staged)) return staged.string();
-    /* dev fallback: the repo build */
-    fs::path repo = base / ".." / ".." / ".." / ".." /
-                    "third_party" / "psxrecomp" / PSXRECOMP_DEVDIR / PSXRECOMP_NAME;
-    std::error_code ec;
-    fs::path canon = fs::canonical(repo, ec);
-    if (!ec && fs::exists(canon)) return canon.string();
     return "";
 }
 
@@ -515,8 +515,8 @@ extern "C" int openpete_recomp_first_boot_build(const char* disc_path,
     }
     const std::string psxrecomp = find_psxrecomp(base);
     if (psxrecomp.empty()) {
-        std::fprintf(stderr, "openpete: PSXRecomp not found (recomp/tools/, "
-                             "$OPENPETE_PSXRECOMP, or the repo build)\n");
+        std::fprintf(stderr, "openpete: PSXRecomp not found (recomp/tools/ "
+                             "or $OPENPETE_PSXRECOMP)\n");
         return -1;
     }
 

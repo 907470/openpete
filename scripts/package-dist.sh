@@ -533,7 +533,12 @@ package_windows() {  # package_windows <exe-dir>
     cp third_party/OpenAL-mingw/COPYING "$STAGE/OpenAL-COPYING.txt"
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
-    cp third_party/psxrecomp/build-mingw/PSXRecomp.exe "$STAGE/recomp/tools/"
+    # The tree builds PSXRecomp.exe from third_party/psxrecomp/recompiler on
+    # every build (target openpete_psxrecomp), so this copy is as current as
+    # the executable beside it.
+    [[ -f "$B/psxrecomp/PSXRecomp.exe" ]] || { echo "no $B/psxrecomp/PSXRecomp.exe:" \
+        "cmake --build --preset windows-mingw-launcher" >&2; exit 64; }
+    cp "$B/psxrecomp/PSXRecomp.exe" "$STAGE/recomp/tools/"
     # The implib the first-boot module links against. A PE module names the
     # image it imports from and the loader binds that name only to a loaded
     # module of the same file name, so -D is the shipped file name. dlltool

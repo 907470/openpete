@@ -342,8 +342,9 @@ endfunction()
 # The first-boot module build's inputs, staged next to the executable as
 # <exe dir>/recomp/: manifest/<id>/ (the game's converged manifest
 # manifest/recomp/<serial>/, its psyq.toml and, when the regen wrote one, its
-# channel_sites.txt), src/ (the module source kit) and tools/ (PSXRecomp when
-# built; on Windows the exe-export implib the module links against). The
+# channel_sites.txt), src/ (the module source kit) and tools/ (PSXRecomp: on
+# Windows the tree's own build of it, on Linux the host build when present; on
+# Windows also the exe-export implib the module links against). The
 # serial is recomp.conf's EXE_FILENAME with `_` -> `-` and the dot dropped.
 # The game-neutral src/ and tools/ stage once per executable directory: with
 # the one executable, by the target openpete_first_boot_kit, which every
@@ -376,8 +377,45 @@ function(_openpete_game_stage_first_boot GAME_ID EXE EXE_DIR GENERATED SERIAL)
     endif()
 endfunction()
 
+# PSXRecomp built for the target platform from third_party/psxrecomp/recompiler
+# into <build>/psxrecomp, with this tree's toolchain and compile flags; OUT_VAR
+# receives the executable's path. The target openpete_psxrecomp is declared
+# once per build tree. BUILD_ALWAYS hands every build to the sub-build, whose
+# own dependency scan rebuilds the executable after any recompiler source
+# changes, so the copy the first-boot kit stages is never older than its
+# sources.
+function(_openpete_psxrecomp_target_build OUT_VAR)
+    set(_dir ${CMAKE_BINARY_DIR}/psxrecomp)
+    set(_bin ${_dir}/PSXRecomp${CMAKE_EXECUTABLE_SUFFIX})
+    if(NOT TARGET openpete_psxrecomp)
+        include(ExternalProject)
+        set(_args
+            -DCMAKE_BUILD_TYPE:STRING=Release
+            -DCMAKE_C_FLAGS:STRING=${CMAKE_C_FLAGS}
+            -DCMAKE_CXX_FLAGS:STRING=${CMAKE_CXX_FLAGS})
+        if(CMAKE_TOOLCHAIN_FILE)
+            list(APPEND _args -DCMAKE_TOOLCHAIN_FILE:FILEPATH=${CMAKE_TOOLCHAIN_FILE})
+        else()
+            list(APPEND _args
+                -DCMAKE_C_COMPILER:FILEPATH=${CMAKE_C_COMPILER}
+                -DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER})
+        endif()
+        ExternalProject_Add(openpete_psxrecomp
+            SOURCE_DIR ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/recompiler
+            PREFIX ${_dir}-ep
+            BINARY_DIR ${_dir}
+            CMAKE_CACHE_ARGS ${_args}
+            BUILD_COMMAND ${CMAKE_COMMAND} --build ${_dir} --target PSXRecomp
+            BUILD_ALWAYS ON
+            INSTALL_COMMAND ""
+            BUILD_BYPRODUCTS ${_bin})
+    endif()
+    set(${OUT_VAR} ${_bin} PARENT_SCOPE)
+endfunction()
+
 # The game-neutral half of the first-boot inputs: src/ and tools/ under RDIR,
-# staged after TGT builds.
+# staged after TGT builds; on Windows, PSXRecomp.exe comes from
+# _openpete_psxrecomp_target_build.
 function(_openpete_stage_first_boot_kit TGT RDIR)
     set(_rdir ${RDIR})
     add_custom_command(TARGET ${TGT} POST_BUILD
@@ -391,14 +429,19 @@ function(_openpete_stage_first_boot_kit TGT RDIR)
             ${CMAKE_SOURCE_DIR}/core/include/psxrt/psx_runtime_internal.h
             ${_rdir}/src
         VERBATIM)
-    if(WIN32)
-        set(_psxrecomp_bin ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build-mingw/PSXRecomp.exe)
-    else()
-        set(_psxrecomp_bin ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp)
-    endif()
     set(_tools "")
-    if(EXISTS ${_psxrecomp_bin})
+    if(WIN32)
+        _openpete_psxrecomp_target_build(_psxrecomp_bin)
+        add_dependencies(${TGT} openpete_psxrecomp)
         list(APPEND _tools ${_psxrecomp_bin})
+    else()
+        # The host recompiler: scripts/regen-recomp.sh builds it before
+        # translating, and the recomp_stamp fence refuses generated C from
+        # other recompiler source.
+        set(_psxrecomp_bin ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/build/PSXRecomp)
+        if(EXISTS ${_psxrecomp_bin})
+            list(APPEND _tools ${_psxrecomp_bin})
+        endif()
     endif()
     if(WIN32)
         list(APPEND _tools ${OPENPETE_GAME_MODULE_IMPLIB})
