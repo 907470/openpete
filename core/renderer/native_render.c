@@ -858,6 +858,8 @@ static mod_fvec           s_scene_hist[SCENE_HIST];   /* completed-frame ring (s
 static int                s_scene_hist_n[SCENE_HIST];
 static unsigned           s_scene_hist_frame[SCENE_HIST]; /* completed frame's stamp */
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
+static uint32_t           s_scene_hist_clear[SCENE_HIST]; /* draw-environment clear the snapshot was presented under */
+static uint32_t           s_drawenv_clear;               /* defined with the clear-colour setter */
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
 static int                s_scene_hist_replay[SCENE_HIST]; /* built by a re-extract, per snapshot */
@@ -1353,6 +1355,7 @@ static void scene_hist_push(void) {
             s_scene_hist_n[slot] = hn;
         }
         s_scene_hist_bg[slot] = sl->bg;
+        s_scene_hist_clear[slot] = sl->drawenv_clear;
         s_scene_hist_frame[slot] = s_scene_frame;
         s_scene_hist_fade[slot] = sl->fade;
         s_scene_hist_freeze[slot] = sl->freeze;
@@ -1366,6 +1369,7 @@ static void scene_hist_push(void) {
     }
     scene_run_swap(&s_scene_hist[slot], &s_scene_v);
     s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
+    s_scene_hist_clear[slot] = s_drawenv_clear;
     s_scene_hist_frame[slot] = s_scene_frame;
     s_scene_hist_fade[slot] = s_scene_fade;
     s_scene_hist_freeze[slot] = s_scene_freeze;
@@ -1476,6 +1480,9 @@ void openpete_native_scene_begin_frame(unsigned frame) {
          * uniforms dedup so the leak stays invisible - until the table fills
          * and the material silently falls back to stock. */
         openpete_mods_material_frame_reset();
+        /* 2D held back from the scene just closed belongs to the table this
+         * scene draws. */
+        if (game_feed) openpete_native_scene_undefer_2d();
     }
 }
 void openpete_native_scene_mark_replay(void) { s_scene_replay = 1; }
@@ -2073,6 +2080,112 @@ void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim)) {
         if (s_scene[t].prim) s_scene[t].seq = rank_of(s_scene[t].prim);
     for (int t = 0; t < s_overlay_accum_n; t++)
         if (s_overlay_accum[t].prim) s_overlay_accum[t].seq = rank_of(s_overlay_accum[t].prim);
+}
+
+/* 2D triangles held back from the scene they were fed into because their
+ * table had not been drawn when that scene was presented
+ * (openpete_native_scene_defer_2d); they re-enter the next scene the game
+ * opens, or the live scene at their table's stitch. */
+static scene_tri_t *s_defer;
+static int          s_defer_n, s_defer_cap;
+static unsigned     s_defer_out, s_defer_in, s_defer_lost;   /* triangles held back, put back, dropped */
+
+/** @brief Report whether the hold-back census is on, reading OPENPETE_UI_DEFER_CENSUS once.
+ *
+ * @return 1 when each hold-back and put-back is logged with the running totals. */
+static int defer_census(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_UI_DEFER_CENSUS"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/** @brief Append a stored triangle to the live scene as the feed path would, joining the carry accumulation when it is carry 2D.
+ *
+ * The triangle keeps every routing field it was stored with. A full scene
+ * store refuses it and counts it in s_scene_dropped, as add_tri does.
+ * @param t The stored triangle. */
+static void scene_append_stored(const scene_tri_t *t) {
+    if (!(s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1))) { s_scene_dropped++; return; }
+    s_scene[s_scene_n] = *t;
+    s_scene_fam_n[t->tag >> 28]++;
+    if ((t->category == OPENPETE_SCENE_OVERLAY || t->category == OPENPETE_SCENE_HUD_PANEL ||
+         t->carry == 1) && t->carry != 2) {
+        if (s_overlay_accum_n < OVERLAY_CARRY_MAX) {
+            s_overlay_accum_epoch[s_overlay_accum_n] = s_scene_epoch;
+            s_overlay_accum[s_overlay_accum_n++] = *t;
+        } else
+            s_overlay_accum_dropped++;
+    }
+    s_scene_n++;
+}
+
+/** @brief Keep a copy of one triangle in the hold-back store, growing it as needed.
+ *
+ * @param q The triangle.
+ * @return 1 when kept, 0 when the store could not grow (counted in s_defer_lost). */
+static int defer_hold(const scene_tri_t *q) {
+    if (s_defer_n >= s_defer_cap) {
+        const int cap = s_defer_cap ? s_defer_cap * 2 : 256;
+        scene_tri_t *nv = (scene_tri_t*)realloc(s_defer, (size_t)cap * sizeof *nv);
+        if (!nv) { s_defer_lost++; return 0; }
+        s_defer = nv; s_defer_cap = cap;
+    }
+    s_defer[s_defer_n++] = *q;
+    return 1;
+}
+
+/** @brief Move the live scene's triangles of primitives a predicate names into the hold-back store, compacting the scene.
+ *
+ * A triangle the store cannot keep stays in the scene.
+ * @param later Returns nonzero for a primitive whose triangles are held back.
+ * @return The number of triangles moved. */
+static int scene_defer_live(int (*later)(uint32_t prim)) {
+    int w = 0, moved = 0;
+    for (int t = 0; t < s_scene_n; t++) {
+        const scene_tri_t q = s_scene[t];
+        const int held = q.prim && later(q.prim) && defer_hold(&q);
+        if (!held) { s_scene[w++] = q; continue; }
+        if (s_scene_fam_n[q.tag >> 28]) s_scene_fam_n[q.tag >> 28]--;
+        moved++;
+    }
+    s_scene_n = w;
+    return moved;
+}
+
+/** @brief Drop the carry accumulation's triangles of primitives a predicate names, compacting it with its epochs.
+ *
+ * @param later Returns nonzero for a primitive whose triangles are held back. */
+static void accum_drop(int (*later)(uint32_t prim)) {
+    int w = 0;
+    for (int t = 0; t < s_overlay_accum_n; t++) {
+        if (s_overlay_accum[t].prim && later(s_overlay_accum[t].prim)) continue;
+        s_overlay_accum[w] = s_overlay_accum[t];
+        s_overlay_accum_epoch[w] = s_overlay_accum_epoch[t];
+        w++;
+    }
+    s_overlay_accum_n = w;
+}
+
+int openpete_native_scene_defer_2d(int (*later)(uint32_t prim)) {
+    if (!later) return 0;
+    const int moved = scene_defer_live(later);
+    if (!moved) return 0;
+    accum_drop(later);
+    s_defer_out += (unsigned)moved;
+    if (defer_census())
+        fprintf(stderr, "[uidefer f=%u] out=%d held=%d totals out=%u in=%u lost=%u\n",
+                s_scene_frame, moved, s_defer_n, s_defer_out, s_defer_in, s_defer_lost);
+    return moved;
+}
+
+void openpete_native_scene_undefer_2d(void) {
+    if (!s_defer_n) return;
+    for (int i = 0; i < s_defer_n; i++) scene_append_stored(&s_defer[i]);
+    s_defer_in += (unsigned)s_defer_n;
+    if (defer_census())
+        fprintf(stderr, "[uidefer f=%u] in=%d totals out=%u in=%u lost=%u\n",
+                s_scene_frame, s_defer_n, s_defer_out, s_defer_in, s_defer_lost);
+    s_defer_n = 0;
 }
 
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
@@ -18288,8 +18401,20 @@ static void ps_apply_geometry(void) {
     s_nr.clip_x = g[4]; s_nr.clip_y = g[5]; s_nr.clip_w = g[6]; s_nr.clip_h = g[7];
 
 }
-/** @brief The draw-environment clear colour of the composed scene: the slot's copy, or the live value inline. */
-static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_clear : s_drawenv_clear; }
+/** @brief The draw-environment clear colour of the composed scene: the slot's copy, the history entry's under a framebuffer resolve, else the live value.
+ *
+ * A framebuffer resolve composes an earlier scene from the completed-scene
+ * ring; the buffer it stands for was cleared with that scene's clear, not
+ * with the one the live present carries.
+ * @return The clear colour word (0: no auto-clear). */
+static uint32_t ps_drawenv_clear(void) {
+    if (s_ps_slot) return s_ps_slot->drawenv_clear;
+    if (s_fbsnap_want_frame && !s_fbsnap_game_sel) {
+        const int slot = scene_hist_slot_at(scene_delay_depth());
+        if (slot >= 0) return s_scene_hist_clear[slot];
+    }
+    return s_drawenv_clear;
+}
 /** @brief The shadow decal parameters of the composed scene: the slot's snapshot, or the live block inline. */
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
 /** @brief The player shadow fan footprint of the composed scene: the slot's snapshot, or the live block inline. */

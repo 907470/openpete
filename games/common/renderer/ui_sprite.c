@@ -1323,6 +1323,7 @@ static int ui_ram_word(uint32_t a) { return a >= UI_RAM_LO && a <= UI_RAM_HI && 
 
 static uint32_t s_walk_addr[UI_OT_WALK_MAX];   /* sorted by address */
 static uint32_t s_walk_rank[UI_OT_WALK_MAX];   /* traversal position of that address */
+static uint64_t s_walk_period[UI_OT_WALK_MAX]; /* table period of that address's link (link rank only) */
 static int      s_walk_n;
 static int      s_walk_hits;                   /* tris the map ranked at the last release:
                                                 * the engagement counter (0 = the walk found
@@ -1482,7 +1483,8 @@ static void build_link_rank_map(const uint32_t* known, int kn) {
     qsort(sorted, (size_t)sn, sizeof sorted[0], link_draw_cmp);
     for (int i = 0; i < sn; i++) sorted[i].ord = (uint64_t)(i + 1);   /* the rank */
     qsort(sorted, (size_t)sn, sizeof sorted[0], link_addr_cmp);
-    for (int i = 0; i < sn; i++) { s_walk_addr[i] = sorted[i].addr; s_walk_rank[i] = (uint32_t)sorted[i].ord; }
+    for (int i = 0; i < sn; i++) { s_walk_addr[i] = sorted[i].addr; s_walk_rank[i] = (uint32_t)sorted[i].ord;
+                                   s_walk_period[i] = sorted[i].period; }
     s_walk_n = sn;
 }
 
@@ -1612,13 +1614,67 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
     }
 }
 
+/** @brief Report whether the scene's 2D of a table the game has not stitched yet is held back to a later scene.
+ *
+ * OPENPETE_UI_PERIOD_DEFER=0, read once, keeps it in the scene (the in-binary
+ * A/B of the hold-back).
+ * @return 1 when held back, else 0. */
+static int period_defer_on(void) {
+    static int off = -1;
+    if (off < 0) { const char* e = getenv("OPENPETE_UI_PERIOD_DEFER"); off = (e && *e == '0'); }
+    return !off;
+}
+
+/** @brief Report whether a primitive was linked into the table the game is still building.
+ *
+ * Reads the link map build_link_rank_map left: the primitive's newest link
+ * is in the current table period (no stitch since it was linked).
+ * @param prim The primitive's guest address.
+ * @return 1 for a link in the open period, else 0 (also when unlinked). */
+static int prim_in_open_period(uint32_t prim) {
+    int lo = 0, hi = s_walk_n - 1;
+    while (lo <= hi) {
+        const int mid = (lo + hi) / 2;
+        if (s_walk_addr[mid] == prim) return s_walk_period[mid] == s_link_period;
+        if (s_walk_addr[mid] < prim) lo = mid + 1; else hi = mid - 1;
+    }
+    return 0;
+}
+
+/** @brief Report whether the game is parked at one of its mid-table VSync waits (ui_game.mid_table_wait).
+ *
+ * @return 1 when the fiber's final yield is at a listed return address, else 0. */
+static int at_mid_table_wait(void) {
+    if (!openpete_yield_final) return 0;
+    for (int i = 0; i < (int)(sizeof ui_game.mid_table_wait / sizeof ui_game.mid_table_wait[0]); i++) {
+        if (!ui_game.mid_table_wait[i]) break;
+        if (ui_game.mid_table_wait[i] == openpete_yield_site.ra) return 1;
+    }
+    return 0;
+}
+
+/** @brief Hold back the scene's 2D of the table still being linked when the capture is at a mid-table VSync wait.
+ *
+ * A game that waits a VSync between linking two parts of one table
+ * (ui_game.mid_table_wait) is captured before that table is drawn: the
+ * buffer still holds the previous table's result. The open table's 2D is
+ * moved out of the scene (openpete_native_scene_defer_2d) and re-enters the
+ * next scene the game opens, or the live scene at the table's stitch, with
+ * the rest of its table. Reads the link map build_link_rank_map left. */
+static void defer_open_period_2d(void) {
+    if (!rank_by_link_on() || !period_defer_on() || !at_mid_table_wait()) return;
+    openpete_native_scene_defer_2d(prim_in_open_period);
+}
+
 /** @brief Ranks every 2D triangle of the scene by the draw order of the primitive it was decoded from.
  *
  * The scene's 2D primitive addresses, the released batch's and the glyphs
  * fed at emission alike, are sorted and mapped to ranks once: by
  * build_link_rank_map on a link-rank game (rank_by_link_on), by
- * build_ot_rank_map otherwise; openpete_native_scene_rank_2d then stamps
- * them, and the hits are kept in s_ot_ranked. OPENPETE_OT_RING_PROBE prints
+ * build_ot_rank_map otherwise; on a link-rank game a table still being
+ * linked at a mid-table VSync wait is first held back (defer_open_period_2d);
+ * openpete_native_scene_rank_2d then stamps the
+ * rest, and the hits are kept in s_ot_ranked. OPENPETE_OT_RING_PROBE prints
  * each unranked primitive, OPENPETE_UISPRITE_TRACE the map size and hits.
  * @param cpu The guest CPU state. */
 static void rank_scene_2d(CPUState* cpu) {
@@ -1631,6 +1687,7 @@ static void rank_scene_2d(CPUState* cpu) {
           known[j+1] = a; }
       if (rank_by_link_on()) build_link_rank_map(known, kn);
       else build_ot_rank_map(cpu, known, kn); }
+    defer_open_period_2d();
     openpete_native_scene_rank_2d(ot_rank_of);
     s_ot_ranked = s_walk_hits;
     { static int pz2 = -1; ENV_FLAG_LATCH(pz2, "OPENPETE_OT_RING_PROBE");
@@ -1987,6 +2044,9 @@ static int on_ot_rank_link(CPUState* cpu, uint32_t addr) {
 /** @brief Hooks the game's ordering-table stitch and starts a new table period for the link rank.
  *
  * The links recorded after it belong to the next table (ui_sprite_link_note).
+ * 2D held back because its table was still being linked is drawn by this
+ * stitch, so it is put back into the live scene
+ * (openpete_native_scene_undefer_2d) when no later scene took it.
  * Reads no guest state; the ordinary dispatch then runs the stitch.
  * @param cpu The guest CPU state; unused.
  * @param addr The hooked entry address; unused.
@@ -1994,6 +2054,7 @@ static int on_ot_rank_link(CPUState* cpu, uint32_t addr) {
 static int on_ot_stitch(CPUState* cpu, uint32_t addr) {
     (void)cpu; (void)addr;
     s_link_period++;
+    openpete_native_scene_undefer_2d();   /* the held-back table is drawn now */
     return 0;
 }
 

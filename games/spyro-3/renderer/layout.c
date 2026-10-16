@@ -674,4 +674,8 @@ const ui_game_t spyro3_ui_game = {
      * slot argument; the SPRT chain hook above feeds them. */
     .ot_rank_slot_insert = F_UI_OT_INSERT_SLOT,
     .ot_stitch           = F_UI_OT_STITCH,
+    /* func_80059038 load screen: the strip copy (func_800289C8) is linked,
+     * then VSync(0), then the labels (func_loading_80075114) into the same
+     * table (warp.c:524-531). */
+    .mid_table_wait      = { 0x8005927Cu },
 };

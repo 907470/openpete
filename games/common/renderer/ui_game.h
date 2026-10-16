@@ -111,6 +111,12 @@ typedef struct ui_game {
      * walks and clears them. Hooked for the link rank: the links after it
      * belong to the next table, drawn after the current one. 0 = none. */
     uint32_t ot_stitch;
+    /* VSync waits the game makes between linking two parts of one table: the
+     * return address of each such VSync call (openpete_yield_site.ra). The
+     * capture at such a wait presents the buffer before the table is drawn,
+     * so the table's 2D linked so far waits for the scene the table is
+     * finished in. 0 ends the list. */
+    uint32_t mid_table_wait[2];
 } ui_game_t;
 
 /* The running game's table: game_runtime_install (game_host_desc.h) copies

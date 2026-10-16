@@ -111,6 +111,9 @@ typedef struct {
     uint64_t key;             /* unique per stored image (see the header) */
     int retained;             /* last put with auto-clear off: the buffer keeps what it holds */
     unsigned epoch;           /* bumped whenever the buffer's held content is replaced */
+    unsigned drawn;           /* stamp of the scene the last put drew into the buffer */
+    int drawn_valid;          /* a put has named a completed scene for the buffer */
+    int sampled;              /* the image was taken for a quad sampling the buffer (fb_pend_sampled_area) */
 } fb_area_t;
 static fb_area_t s_area[FB_AREA_MAX];
 static int       s_area_next;   /* the slot a new clip rect takes when all are live */
@@ -197,6 +200,13 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
      * retained run each start the buffer's content afresh. */
     const int same = a->live && a->x == clip_x && a->y == clip_y && a->w == clip_w && a->h == clip_h;
     if (!same || isbg || !a->retained) a->epoch++;
+    /* The scene the put draws is the one completed last: the game captures
+     * a scene at its VSync and then puts the area and draws that scene's
+     * ordering table into it. An image taken for a sampling quad stood for
+     * the buffer before this draw, so it is dropped. */
+    if (a->sampled) { fb_area_drop(a); a->sampled = 0; }
+    a->drawn = s_done_frame;
+    a->drawn_valid = s_done_frame != 0xFFFFFFFFu;
     a->retained = !isbg;
     a->x = clip_x; a->y = clip_y; a->w = clip_w; a->h = clip_h;
     a->ofx = ofs_x; a->ofy = ofs_y; a->live = 1;
@@ -643,6 +653,40 @@ static int fb_find_area(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1
     return -1;
 }
 
+/** @brief Leave the draw area a quad samples waiting for the image of the scene last drawn into it, and find it.
+ *
+ * Runs after a quad's texel box matched no stored image. A 16-bit quad
+ * whose texels lie in a live draw area samples that buffer as the GPU
+ * holds it when the quad is drawn: what the scene last drawn into the
+ * buffer left there. The area is marked pending with that scene's stamp,
+ * so the canonical capture that follows the feed composes the scene and
+ * stores the crop (openpete_native_render_snapshot_fb_window) before the
+ * present draws the quad, whether or not the guest reference is
+ * rasterised. An area no put has drawn a completed scene into, or one
+ * already holding an image or waiting for one, is left as it is.
+ * @param tpage_x Texture page origin x, VRAM texels.
+ * @param tpage_y Texture page origin y.
+ * @param u0 Texel box left.
+ * @param v0 Texel box top.
+ * @param u1 Texel box right edge.
+ * @param v1 Texel box bottom edge.
+ * @param su Receives the x scale.
+ * @param sv Receives the y scale.
+ * @param ox Receives the mapped x of the page origin.
+ * @param oy Receives the mapped y of the page origin.
+ * @param texel_space Receives 1 when the mapping is to rect texels.
+ * @return FB_SNAP_MAX plus the area index, or -1 when no area was marked. */
+static int fb_pend_sampled_area(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1,
+                                float *su, float *sv, float *ox, float *oy, int *texel_space)
+{
+    fb_area_t *a = fb_area_holding(tpage_x + u0, tpage_y + v0, u1 - u0, v1 - v0);
+    if (!a || !a->drawn_valid || a->px || a->pending) return -1;
+    a->pending = 1;
+    a->frame = a->drawn;
+    a->sampled = 1;
+    return fb_find_area(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy, texel_space);
+}
+
 int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
                              int u0, int v0, int u1, int v1,
                              float *su, float *sv, float *ox, float *oy, int *texel_space)
@@ -650,6 +694,7 @@ int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
     if (!openpete_fb_snapshot_enabled() || bpp != 16) return -1;
     int idx = fb_find_window(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy, texel_space);
     if (idx < 0) idx = fb_find_area(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy, texel_space);
+    if (idx < 0) idx = fb_pend_sampled_area(tpage_x, tpage_y, u0, v0, u1, v1, su, sv, ox, oy, texel_space);
     if (idx >= 0) s_quads++;
     return idx;
 }

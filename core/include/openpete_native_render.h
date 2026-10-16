@@ -1481,6 +1481,22 @@ void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
  * @param max Capacity of @p out.
  * @return The number written; 0 when @p out is NULL or @p max is not positive. */
 int openpete_native_scene_collect_2d_prims(uint32_t* out, int max);
+
+/** @brief Move the live scene's 2D triangles of primitives a predicate names out of the scene, to re-enter a later one.
+ *
+ * Each triangle with a nonzero primitive address that @p later accepts
+ * leaves the live scene and the carry accumulation and is kept until
+ * openpete_native_scene_undefer_2d puts it back: at the next scene the
+ * game's render opens, or when the feeder calls it at the table's stitch.
+ * A triangle that cannot be kept (allocation failure) stays in the scene.
+ * @param later Returns nonzero for a primitive whose triangles are held back.
+ * @return The number of triangles held back; 0 when @p later is NULL. */
+int openpete_native_scene_defer_2d(int (*later)(uint32_t prim));
+
+/** @brief Append every held-back 2D triangle to the live scene and the carry accumulation, in the order they were held back.
+ *
+ * No-op when none is held. */
+void openpete_native_scene_undefer_2d(void);
 /* Append one screen-space triangle to the current native scene. `category`
  * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/...) and `carry` are passed EXPLICITLY per
  * call - there is NO ambient/global scene category (the old set_category /
