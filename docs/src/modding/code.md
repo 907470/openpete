@@ -128,6 +128,12 @@ do not roll back; keep them for caches, file handles, and UI drafts.
 - `OP_GALLOC_IMMUTABLE` declares a block written once and never again
   (a parked model payload). The engine checksums it at each snapshot and
   logs a changed block with the mod's name.
+- `OP_GALLOC_NO_DMA` (api 13) states that no address inside the block is
+  truncated to 24 bits: no ordering-table link, no libgpu call that links
+  or walks it, no pointer to it in a 24-bit field. The block may then be
+  placed in the general pool (480 MiB above physical 16 MiB). Without the
+  flag a block lands below physical 16 MiB, where a GPU packet must lie.
+  The flag combines with `OP_GALLOC_IMMUTABLE`.
 
 On reload the allocation sequence is replayed: the i-th call with the
 same size, alignment, and flags returns the same address and view with

@@ -581,7 +581,11 @@ fi
 
 # ── 13. arena timeline canary: guest_alloc memory IS timeline state ───
 # arena-canary mirrors g_GameTick in a MUTABLE arena block and logs
-# DESYNC whenever guest RAM moves back in time without the arena. Every
+# DESYNC whenever guest RAM moves back in time without the arena; it also
+# holds blocks in the lower DMA-reachable segment and the general pool,
+# whose copies of the mirror log DESYNC when a range moves without the
+# others. The file load restores all three ranges (64 B mirror plus a
+# 4 MiB filler upper, 5 MiB lower, 64 KiB general: 9502784 B). Every
 # timeline feature must restore both together: the stress-rewind
 # harness, runahead rollback (with the prediction oracle hashing the
 # arena), a file save/load, and the reload cases - an Apply that keeps
@@ -596,6 +600,11 @@ if printf '%s\n' "$out" | grep -q "arena-canary: armed" && \
     ok "canary armed and the harness rolled the timeline back (engaged)"
 else
     bad "canary never armed or the stress harness never rolled back"
+fi
+if printf '%s\n' "$out" | grep -q "arena-canary: pools placed"; then
+    ok "canary holds blocks in the upper and lower segments and the general pool"
+else
+    bad "canary pool blocks missing or placed outside their ranges"
 fi
 if printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
     bad "stress-rewind: DESYNC - the arena did not roll back with guest RAM"
@@ -657,7 +666,7 @@ else
 fi
 out="$(run_game "$WORK/canary" 3000 --skip-to-level 10 \
         --state-load-on-frame 2400 --state-load-input "$WORK/canary.state")"
-if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 64 B restored" && \
+if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 9502784 B restored" && \
    printf '%s\n' "$out" | grep -q "savestate: loaded" && \
    ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
     ok "file load restored the arena with guest RAM (no DESYNC)"

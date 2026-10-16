@@ -311,6 +311,18 @@ int      psx_runtime_register_region(uint32_t psx_base,
                                      uint32_t size,
                                      void*    host_buffer);
 
+/** @brief Extend a registered region in place to a larger size over the same host buffer.
+ *
+ * The caller has already backed the new bytes. The size is published with
+ * a release store, so a lookup on another thread sees either extent and
+ * never reads past backed memory.
+ * @param psx_base The base the region was registered at, in any segment.
+ * @param new_size The new length in bytes, at least the current one.
+ * @return 0 on success; 3, 4 or 5 when the grown range would overlap main
+ *         RAM, the scratchpad or another region; 6 for a smaller size; 7
+ *         when no region is registered at @p psx_base. */
+int      psx_runtime_grow_region(uint32_t psx_base, uint32_t new_size);
+
 /** @brief Remove the region registered at a base address; does nothing when none is.
  *
  * Bases are compared by physical address, so any segment's spelling of
@@ -320,6 +332,9 @@ void     psx_runtime_unregister_region(uint32_t psx_base);
 
 /**
  * @brief Find the host pointer for a guest address inside a registered region.
+ *
+ * Only a KUSEG address below 0x20000000, a KSEG0 or a KSEG1 address
+ * resolves; a KSEG2 address never does.
  * @param psx_addr The guest address.
  * @param out_host Receives the host pointer when not NULL.
  * @param out_remaining Receives the byte count to the region's end when not NULL.

@@ -1793,6 +1793,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_guard_enter(mod->id);
     const int entry_rc = entry(&s_api, mod);
     openpete_mods_guard_leave();
+    openpete_mods_arena_entry_end(mod->id);
     if (entry_rc != 0) {
         OPL_ERROR_F("mods", "%s: reload entry failed - mod is now INERT",
                     mod->id);
@@ -2645,7 +2646,8 @@ static void mod_register_key_defaults(const struct openpete_mod* mod, int enable
 /** @brief Allocate from the guest scratch arena for a mod; tick context only.
  *
  * The arena is sim-visible state, so a present-hook call is refused.
- * Flags other than OP_GALLOC_IMMUTABLE are refused with an error.
+ * Flags other than OP_GALLOC_IMMUTABLE and OP_GALLOC_NO_DMA are refused
+ * with an error.
  * @return the guest vaddr from openpete_mods_guest_alloc, or 0 on refusal;
  *         *host_view is NULL on refusal. */
 static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
@@ -2654,7 +2656,7 @@ static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
     if (host_view) *host_view = NULL;
     if (!self) return 0;
     if (purity_violation("guest_alloc")) return 0;
-    if (flags & ~(uint32_t)OP_GALLOC_IMMUTABLE) {
+    if (flags & ~(uint32_t)(OP_GALLOC_IMMUTABLE | OP_GALLOC_NO_DMA)) {
         OPL_ERROR_F("mods", "%s: guest_alloc: unknown flags %#x", self->id,
                     flags);
         return 0;
@@ -4243,6 +4245,7 @@ static int mod_run_entry(struct openpete_mod* mod) {
     openpete_mods_guard_enter(mod->id);
     int rc = entry(&s_api, mod);
     openpete_mods_guard_leave();
+    openpete_mods_arena_entry_end(mod->id);
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d - disabled",
                     mod->id, rc);

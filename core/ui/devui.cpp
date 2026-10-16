@@ -1262,12 +1262,52 @@ const char *const *openpete_devui_mod_notes(size_t *count)
     return k_mod_notes;
 }
 
+/** @brief Draw a mod's guest memory use in each arena pool as one disabled-colour line, nothing when it holds none.
+ *
+ * The figures are the mod's ledger rows (openpete_mods_arena_owner_use),
+ * IMMUTABLE bytes included and also shown apart.
+ * @param id The mod id. */
+static void draw_mod_memory_line(const char *id)
+{
+    openpete_mods_arena_use_t u;
+    if (!openpete_mods_arena_owner_use(id, &u)) return;
+    ImGui::TextDisabled("Guest memory: %.1f KiB DMA-reachable, %.1f KiB general "
+                        "(%.1f KiB immutable)",
+                        u.dma_bytes / 1024.0, u.general_bytes / 1024.0,
+                        (u.dma_immutable + u.general_immutable) / 1024.0);
+}
+
+/** @brief Draw the Mods section's memory line: every mod's pool use summed, and runahead's snapshot cost once it has run.
+ *
+ * Nothing is drawn while no mod holds guest memory and runahead has not
+ * speculated.
+ * @param n The loaded mod count. */
+static void draw_mods_memory_summary(int n)
+{
+    uint64_t dma = 0, gen = 0;
+    for (int i = 0; i < n; i++) {
+        openpete_mods_menu_info_t mi;
+        openpete_mods_arena_use_t u;
+        if (!openpete_mods_menu_info(i, &mi) ||
+            !openpete_mods_arena_owner_use(mi.id, &u))
+            continue;
+        dma += u.dma_bytes;
+        gen += u.general_bytes;
+    }
+    const uint32_t ra = openpete_mods_runahead_snapshot_us();
+    if (dma || gen)
+        ImGui::TextDisabled("Mod memory: %.2f of 14 MiB DMA-reachable, %.2f MiB general",
+                            dma / 1048576.0, gen / 1048576.0);
+    if (ra)
+        ImGui::TextDisabled("Runahead snapshot: %.2f ms per tick", ra / 1000.0);
+}
+
 /** @brief Draw the hover tooltip of a mod's row: id and version plus the state notes that apply.
  *
  * Notes cover a mod not yet started, an asset overlay, an enabled mod that
- * cannot be disabled while its level is active, and an enabled mod with no
- * controls. A build with the debug flags compiled in adds last present's
- * ImGui call count. */
+ * cannot be disabled while its level is active, an enabled mod with no
+ * controls, and the guest memory the mod holds. A build with the debug
+ * flags compiled in adds last present's ImGui call count. */
 static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
 {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
@@ -1282,6 +1322,7 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
         ImGui::TextDisabled("%s", k_mod_notes[MOD_NOTE_OWNER_BUSY]);
     if (mi->enabled && !mi->has_ui && !mi->has_cfg)
         ImGui::TextDisabled("%s", k_mod_notes[MOD_NOTE_NO_CONTROLS]);
+    draw_mod_memory_line(mi->id);
 #ifndef OPENPETE_HIDE_DEBUG_FLAGS
     if (mi->imgui_calls)
         ImGui::TextDisabled("ImGui: %llu calls last present",
@@ -1715,6 +1756,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         draw_mod_row(i, mi);
         ImGui::PopID();
     }
+    draw_mods_memory_summary(n);
 }
 
 /** @brief Report whether a mod declares any [[level]] custom level.

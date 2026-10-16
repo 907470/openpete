@@ -847,10 +847,10 @@ if [ "$PG_GAME" != "spyro-1" ]; then
     fi
     out="$(run_game "$WORK/canary-$PG_GAME" $((6000 + KEY0)) --state-load-on-frame $((5000 + KEY0)) \
             --state-load-input "$st")"
-    if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 64 B restored" &&
+    if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 9502784 B restored" &&
        printf '%s\n' "$out" | grep -q "savestate: loaded" &&
        ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
-        ok "file load restored the 64 B arena block, no DESYNC"
+        ok "file load restored the three arena ranges (9502784 B), no DESYNC"
     else
         bad "file load: arena not restored, or DESYNC"
         printf '%s\n' "$out" | grep -E 'arena|savestate' | head -5

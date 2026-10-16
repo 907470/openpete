@@ -321,6 +321,28 @@ target_include_directories(vstream_test PRIVATE
 set_target_properties(vstream_test PROPERTIES C_STANDARD 99)
 add_test(NAME vstream_test COMMAND vstream_test)
 
+# mod_arena_test - the guest arena's two pools (core/mods/mod_arena.c):
+# pool selection by flag, the upper-then-lower segment order, per-segment
+# exhaustion naming every owner, the version-3 section mapped onto the
+# upper segment, the version-4 and in-memory snapshot round trips, KSEG2
+# refusal, and a read past a committed extent answered by the ROM model.
+# Links the region table, the bus accessors, the stream-handle table and
+# the flat vector; the logger, CD-ROM registers and BIOS ROM are stubs.
+add_executable(mod_arena_test
+    mod_arena_test.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_arena.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
+    ${CMAKE_SOURCE_DIR}/core/psx/vstream.c
+    ${CMAKE_SOURCE_DIR}/core/psx/cpu.c
+    ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
+target_include_directories(mod_arena_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/include/psxrt
+    ${CMAKE_SOURCE_DIR}/core/mods)
+set_target_properties(mod_arena_test PROPERTIES C_STANDARD 11)
+add_test(NAME mod_arena_test COMMAND mod_arena_test)
+set_tests_properties(mod_arena_test PROPERTIES LABELS "mods")
+
 # text_moby_id_test - the HUD text-glyph provenance table
 # (games/spyro-1/renderer/text_moby_id.c): keys are the emitter call, not
 # the pool address; a generation survives its own draw's drain and is

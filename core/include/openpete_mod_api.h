@@ -226,6 +226,17 @@ enum {
      * model data, never for scratch.
      */
     OP_GALLOC_IMMUTABLE = 1u << 0,
+    /**
+     * The mod states that nothing truncates an address inside the block to
+     * 24 bits: no ordering-table link, no block passed to a libgpu call
+     * that links or walks it, and no pointer to it stored in a 24-bit
+     * field. The engine may then place the block anywhere in 32-bit guest
+     * space (today the general pool, physical 0x01000000-0x1EFFFFFF,
+     * 480 MiB). Without the flag a block lands below physical 16 MiB,
+     * where a GPU packet must lie. Combines with #OP_GALLOC_IMMUTABLE.
+     * @since api 13
+     */
+    OP_GALLOC_NO_DMA = 1u << 1,
 };
 
 /** @brief Post-process injection points for openpete_mod_api::postfx_register. */

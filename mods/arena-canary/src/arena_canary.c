@@ -19,13 +19,24 @@
  * checks only that the block is allocated, written every tick, saved and
  * restored.
  *
+ * With `pools` on (the default) the mod also holds a block in each other
+ * arena range: a 4 MiB filler in the DMA-reachable pool's upper segment,
+ * then a 5 MiB block that no longer fits there and lands in the lower
+ * segment, then a 64 KiB OP_GALLOC_NO_DMA block in the general pool. The
+ * lower and general blocks start with a copy of the mirror, rewritten each
+ * tick; a copy that differs from the mirror at the next tick means a
+ * timeline feature restored one range and not another, logged as a
+ * DESYNC naming the range.
+ *
  * Nothing here writes canonical guest RAM; the only state is the arena
- * block, so a DESYNC can only come from the engine carrying guest RAM
+ * blocks, so a DESYNC can only come from the engine carrying guest RAM
  * and the arena on different timelines.
  */
 
 #include <openpete_mod_api.h>
 #include "openpete_sdk_symbols.h"
+
+#include <string.h>
 
 static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
@@ -40,6 +51,13 @@ static uint32_t  g_va;      /* arena block vaddr */
 static mirror_t* g_mirror;  /* host view of the same bytes */
 static uint32_t  g_bytes;
 static int       g_armed_logged;
+
+#define FILLER_BYTES  (4u * 1024u * 1024u)  /* upper segment, leaves < 5 MiB there */
+#define LOWER_BYTES   (5u * 1024u * 1024u)  /* fits only the lower segment */
+#define GENERAL_BYTES (64u * 1024u)
+static uint32_t  g_va_lower, g_va_general;
+static mirror_t* g_copy[2];                  /* lower and general copies */
+static uint32_t  g_pool_desyncs;
 
 static void publish_status(void) {
     g_api->ui_status(g_self, "mirror block: 0x%08X (%u B, mutable)", g_va,
@@ -88,8 +106,23 @@ static void on_camera_update(CPUState* cpu) {
                        "guest RAM moved back in time, the arena did not",
                        g_mirror->desyncs, g_mirror->last_tick, g);
     }
+    for (int i = 0; i < 2; i++) {
+        if (!g_copy[i]) continue;
+        if (memcmp(g_copy[i], g_mirror, sizeof *g_mirror) != 0) {
+            g_pool_desyncs++;
+            if (g_pool_desyncs == 1 || (g_pool_desyncs & 63u) == 0)
+                g_api->log(g_self, OP_MOD_LOG_ERROR,
+                           "arena-canary: DESYNC in the %s range #%u (copy "
+                           "ticks %u, mirror ticks %u) - one arena range moved "
+                           "without the other",
+                           i ? "general" : "lower", g_pool_desyncs,
+                           g_copy[i]->ticks_seen, g_mirror->ticks_seen);
+        }
+    }
     g_mirror->last_tick = g;
     g_mirror->ticks_seen++;
+    for (int i = 0; i < 2; i++)
+        if (g_copy[i]) memcpy(g_copy[i], g_mirror, sizeof *g_mirror);
     if ((g_mirror->ticks_seen & 255u) == 0) publish_status();
     g_api->base(cpu);
 }
@@ -99,11 +132,14 @@ static void on_camera_update(CPUState* cpu) {
  * @brief LoadLevelScene pass-through: zeroes the mirror's last tick, then runs the load.
  *
  * LoadLevelScene (0x8001364C, src/loaders.c) is g_GameTick's only reset
- * site; the mirror follows it so the next observed tick is not below it.
+ * site; the mirror follows it so the next observed tick is not below it,
+ * and the pool copies follow the mirror so they stay equal to it.
  * @param cpu The guest register file at the call.
  */
 static void on_load_level_scene(CPUState* cpu) {
     g_mirror->last_tick = 0;
+    for (int i = 0; i < 2; i++)
+        if (g_copy[i]) g_copy[i]->last_tick = 0;
     g_api->base(cpu);
 }
 #endif
@@ -141,6 +177,38 @@ static int bind_tick_clock(const openpete_mod_api_t* api, openpete_mod_t* self,
  * @param self This mod's handle.
  * @return -1 when the allocation fails, else the first non-zero override registration result, 0 on success.
  */
+/**
+ * @brief Allocate one block in each other arena range and check where each landed.
+ *
+ * Call order is fixed (filler, lower, general), so a reload replays the
+ * same rows. The blocks' copies start equal to the mirror.
+ * @param api The engine table.
+ * @param self This mod's handle.
+ * @return 0 when every block landed in its range, else -1 (logged).
+ */
+static int alloc_pools(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    void* host = 0;
+    const uint32_t filler = api->guest_alloc(self, FILLER_BYTES, 16, 0, &host);
+    void* lower = 0;
+    g_va_lower = api->guest_alloc(self, LOWER_BYTES, 16, 0, &lower);
+    void* general = 0;
+    g_va_general = api->guest_alloc(self, GENERAL_BYTES, 16, OP_GALLOC_NO_DMA,
+                                    &general);
+    const int ok = filler >= 0x80700000u && filler < 0x81000000u &&
+                   g_va_lower >= 0x80200000u && g_va_lower < 0x80700000u &&
+                   g_va_general >= 0x81000000u && g_va_general < 0x9F000000u &&
+                   lower && general;
+    api->log(self, ok ? OP_MOD_LOG_INFO : OP_MOD_LOG_ERROR,
+             "arena-canary: pools %s (upper filler 0x%08X, lower 0x%08X, "
+             "general 0x%08X)", ok ? "placed" : "placement FAILED", filler,
+             g_va_lower, g_va_general);
+    if (!ok) return -1;
+    g_copy[0] = (mirror_t*)lower;
+    g_copy[1] = (mirror_t*)general;
+    for (int i = 0; i < 2; i++) memcpy(g_copy[i], g_mirror, sizeof *g_mirror);
+    return 0;
+}
+
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
     int64_t slots = api->config_int(self, "slots", 4);
@@ -154,6 +222,9 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         return -1;
     }
     g_mirror = (mirror_t*)host;
+    g_copy[0] = g_copy[1] = 0;
+    if (api->config_bool(self, "pools", 1) && alloc_pools(api, self) != 0)
+        return -1;
     /* Replayed on re-entry: the block keeps its bytes, so the mirror
      * continues rather than restarting - a restart would itself look
      * like a rollback to the check above. */

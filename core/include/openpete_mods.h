@@ -338,8 +338,10 @@ void openpete_mods_game_state_sample(CPUState* cpu, unsigned canonical_tick);
 void openpete_mods_game_state_sampled(openpete_mods_game_state_t* out);
 
 /* Guest scratch arena (core/mods/mod_arena.c): session-lifetime bump
- * allocator in the >2MB expansion window, registered as a psx_runtime
- * region - guest-addressable through the standard accessors, host-
+ * allocator above the 2 MB of RAM in two pools, the DMA-reachable pool
+ * [0x80200000, 0x81000000) and the general pool [0x81000000, 0x9F000000),
+ * each segment registered as a psx_runtime region at its committed
+ * extent - guest-addressable through the standard accessors, host-
  * addressable via *host_view. flags = OP_GALLOC_*. Every allocation is ledgered by
  * (owner, per-owner call index); the ledger is what the carry gate,
  * re-entry replay and the savestate verdict all consume. Returns the
@@ -350,22 +352,26 @@ void openpete_mods_game_state_sampled(openpete_mods_game_state_t* out);
  * Runs the owner's next call index. When the owner's live row at that
  * index is an allocation with the same size, align and flags, that row is
  * served again: same vaddr, same host view, bytes as last written. A row
- * of another shape is marked superseded and the call takes a fresh block
- * at the arena cursor, aligned up and zeroed. The first call that passes
- * argument validation registers the arena as a psx_runtime region at
- * 0x80700000. A failure
- * logs and returns 0, except a bad argument, which returns 0 silently.
- * @param size the block size in bytes; 0 or more than the 8 MiB arena
- *        fails.
+ * of another shape is marked superseded and the call takes a fresh block,
+ * aligned up and zeroed. Without OP_GALLOC_NO_DMA the block goes to the
+ * DMA-reachable pool: the upper segment [0x80700000, 0x81000000) when it
+ * fits at that segment's cursor, else the lower segment
+ * [0x80200000, 0x80700000) when it fits there. With the flag it goes to
+ * the general pool [0x81000000, 0x9F000000). A segment registers as a
+ * psx_runtime region on its first block and grows in 64 KiB granules. A
+ * failure logs and returns 0, except a bad argument, which returns 0
+ * silently; an exhausted pool logs every owner's use of it.
+ * @param size the block size in bytes; 0 fails, as does more than 9 MiB
+ *        in the DMA-reachable pool or 480 MiB in the general pool.
  * @param align the alignment, a power of two; 0 selects 8, any other
  *        value fails.
  * @param flags OP_GALLOC_* flags, stored in the row as passed.
  * @param host_view receives the block's host address, or NULL on failure;
  *        may be NULL.
  * @param owner the calling mod's id; NULL or empty fails.
- * @return the block's guest vaddr, or 0 on failure: a bad argument,
- *         region registration failure, exhausted arena, or an owner or
- *         ledger table allocation failure. */
+ * @return the block's guest vaddr, or 0 on failure: a bad argument, a
+ *         host reservation, commit or region registration failure, an
+ *         exhausted pool, or an owner or ledger table allocation failure. */
 uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
                                    uint32_t flags, void** host_view,
                                    const char* owner);
@@ -380,35 +386,102 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
  *        does nothing. */
 void openpete_mods_arena_entry_begin(const char* owner);
 
-/* Snapshot support: the arena's used prefix is timeline state. save
- * copies [0, used); restore is a RE-ANCHOR - bytes allocated after the
- * snapshot keep their contents and the cursor never moves backwards.
+/** @brief Close an owner's entry run, logging the owner's pool use once per session when it holds any.
+ *
+ * The loader calls this immediately after openpete_mod_entry returns, at
+ * load and on hot reload. The line names the bytes the owner's ledger rows
+ * hold in each pool, mutable and IMMUTABLE. An owner whose first block
+ * comes later, from a tick or toggle hook, is logged after that block.
+ * @param owner the mod id; NULL or empty does nothing. */
+void openpete_mods_arena_entry_end(const char* owner);
+
+/** @brief One owner's bytes in each pool, from its ledger rows. */
+typedef struct {
+    uint32_t dma_bytes;          /* DMA-reachable pool, every row */
+    uint32_t dma_immutable;      /* of which OP_GALLOC_IMMUTABLE rows */
+    uint32_t general_bytes;      /* general pool, every row */
+    uint32_t general_immutable;  /* of which OP_GALLOC_IMMUTABLE rows */
+} openpete_mods_arena_use_t;
+
+/** @brief Read an owner's pool use, safe from any thread.
+ *
+ * The figures are the sizes of the owner's allocation rows, superseded
+ * rows included (their bytes stay allocated), alignment padding excluded.
+ * They are published per owner with atomic stores by the allocating
+ * thread; an owner past the first 256 that allocated reads as zero.
+ * @param owner the mod id.
+ * @param out receives the use; all zero when the owner holds nothing.
+ * @return 1 when the owner holds a block, else 0. */
+int  openpete_mods_arena_owner_use(const char* owner,
+                                   openpete_mods_arena_use_t* out);
+
+/** @brief Record one runahead tick's in-memory snapshot cost, save plus restore.
+ *
+ * Called by the runahead driver on the simulation thread; the figure is an
+ * exponential mean (weight 1/16) published with an atomic store.
+ * @param us the tick's save plus restore time in microseconds. */
+void     openpete_mods_runahead_snapshot_note(uint64_t us);
+/** @brief Return the mean runahead snapshot cost per tick, safe from any thread.
+ *
+ * @return microseconds, save plus restore; 0 before the first speculation. */
+uint32_t openpete_mods_runahead_snapshot_us(void);
+
+/* Snapshot support: the arena's three used ranges are timeline state,
+ * in the order upper segment, lower segment, general pool. save copies
+ * each [base, base + used); restore is a RE-ANCHOR - bytes allocated
+ * after the snapshot keep their contents and no cursor moves backwards.
  * immutable_check verifies every IMMUTABLE row's checksum (captured on
  * first check) and warns once per broken promise; call it once per
  * keyframe / file save, never per speculative tick. */
-/** @brief Return the arena watermark: the end offset of the last allocation, alignment padding included.
+enum {
+    OPENPETE_ARENA_RANGE_UPPER = 0,   /* DMA-reachable [0x80700000, 0x81000000) */
+    OPENPETE_ARENA_RANGE_LOWER,       /* DMA-reachable [0x80200000, 0x80700000) */
+    OPENPETE_ARENA_RANGE_GENERAL,     /* general [0x81000000, 0x9F000000) */
+    OPENPETE_ARENA_RANGES
+};
+/** @brief Return the arena's used bytes per range and in total.
  *
- * Snapshots copy the arena bytes [0, used); the runahead hash covers the
- * same span. A restore raises the watermark, never lowers it.
- * @return the used prefix in bytes. */
-uint32_t       openpete_mods_arena_used(void);
-/** @brief Return the arena's backing bytes.
+ * A range's used bytes run from its guest base to the end of its last
+ * allocation, alignment padding included. Snapshots copy these ranges and
+ * the runahead hash covers them; a restore raises a range's cursor, never
+ * lowers it.
+ * @param used receives each range's used bytes, indexed by
+ *        OPENPETE_ARENA_RANGE_*; may be NULL.
+ * @return the sum over the three ranges. */
+uint32_t       openpete_mods_arena_used(uint32_t used[OPENPETE_ARENA_RANGES]);
+/** @brief Return a range's guest base vaddr.
  *
- * The buffer spans the whole 8 MiB arena and stays valid for the process
- * lifetime; offsets [0, openpete_mods_arena_used()) hold allocated data.
- * The runahead hash and the in-memory snapshot read that prefix.
- * @return the arena's first byte. */
-const uint8_t* openpete_mods_arena_bytes(void);
-/** @brief Copy a snapshot's arena bytes over the arena's prefix and raise the watermark to cover them.
+ * @param range OPENPETE_ARENA_RANGE_*.
+ * @return the base, or 0 for a range out of bounds. */
+uint32_t       openpete_mods_arena_range_vaddr(unsigned range);
+/** @brief Return a range's host bytes: its first byte, valid for the process lifetime.
  *
- * Bytes past @p used keep their contents and the watermark never
- * decreases, so a handle a mod took after the snapshot stays valid. The
- * arena region is not registered here.
- * @param bytes the snapshot's arena bytes; NULL does nothing.
- * @param used the byte count; 0 does nothing, and a value above the arena
- *        size is clamped to it. */
+ * Offsets [0, used) of the range hold allocated data (see
+ * openpete_mods_arena_used).
+ * @param range OPENPETE_ARENA_RANGE_*.
+ * @return the first byte, or NULL while the range's pool has no host
+ *         reservation (it then has no used bytes) or for a range out of
+ *         bounds. */
+const uint8_t* openpete_mods_arena_range_bytes(unsigned range);
+/** @brief Copy the three used ranges, upper, lower then general, into one buffer.
+ *
+ * @param dst a buffer of at least openpete_mods_arena_used(NULL) bytes.
+ * @param used receives each range's byte count, as
+ *        openpete_mods_arena_used reports it. */
+void           openpete_mods_arena_mem_save(void* dst,
+                                            uint32_t used[OPENPETE_ARENA_RANGES]);
+/** @brief Copy snapshot bytes over each range's prefix and raise each cursor to cover them.
+ *
+ * Bytes past a range's saved count keep their contents and no cursor
+ * decreases, so a handle a mod took after the snapshot stays valid. A
+ * range whose saved count exceeds its committed extent is committed (and
+ * registered) first; a range that cannot be is skipped with an error.
+ * @param bytes the ranges as openpete_mods_arena_mem_save wrote them; NULL
+ *        does nothing.
+ * @param used each range's byte count; a count above the range's capacity
+ *        is clamped to it. */
 void           openpete_mods_arena_mem_restore(const void* bytes,
-                                               uint32_t used);
+                                               const uint32_t used[OPENPETE_ARENA_RANGES]);
 /** @brief Check every live IMMUTABLE row's bytes against its first-seen checksum.
  *
  * The first check of a row records the FNV-1a 64-bit hash of its bytes; a
@@ -1215,9 +1288,6 @@ typedef struct {
      * the native renderer does not rasterize; an override on one warns
      * under pure vk. NULL-terminated; NULL for none. */
     const char* const*           psx_render_fns;
-    /* Guest base of the mod arena; 0 keeps the core default,
-     * 0x80700000. */
-    uint32_t                     arena_base;
     /* The game's overlays (generated mod_overlay_entries.c) and their
      * shared vaddr window [window_lo, window_hi); NULL, 0 and an empty
      * window for a game with no overlays. */
@@ -2165,24 +2235,29 @@ int openpete_mods_runahead_capable(const char** offender);
  * @return 1 when every enabled code mod declares a posture, else 0. */
 int openpete_mods_state_safe(const char** offender);
 
-/** @brief Size of the arena state section: a header, the ledger rows, and the arena's used bytes.
+/** @brief Size of the arena state section: a header, the ledger rows, and the three used ranges.
  *
  * core/record/savestate.c serializes the section with the engine state.
  * @return Section size in bytes. */
 uint32_t openpete_mods_arena_state_size(void);
 /** @brief Write the arena state section to a buffer.
  *
- * The layout is a version-3 header (version, row count, used bytes), one
+ * The layout is a version-4 header (version, row count, used bytes of
+ * the upper segment, the lower segment and the general pool), one
  * fixed-width record per ledger row, superseded marks included, then the
- * arena's used prefix. Host-only row state (the immutable digest) is not
- * written.
+ * three used ranges in that order. A row's offset is from 0x80200000 for
+ * a DMA-reachable row and from 0x81000000 for an OP_GALLOC_NO_DMA row.
+ * Host-only row state (the immutable digest) is not written.
  * @param dst a buffer of at least openpete_mods_arena_state_size() bytes. */
 void     openpete_mods_arena_state_save(void* dst);
 /** @brief Check a saved arena section against the live ledger before a state load commits.
  *
  * The saved rows must equal the live rows over their common prefix,
  * superseded marks included, or the restored bytes would sit under a
- * different layout; a mismatch is logged naming the mod and entry.
+ * different layout; a mismatch is logged naming the mod and entry. A
+ * version-3 section, written before the pools, reads as upper-segment
+ * rows at their offsets plus 0x500000 and upper-segment bytes, so every
+ * byte lands at the vaddr it was saved from.
  * @param src Saved section bytes.
  * @param size Section size in bytes.
  * @return 0 when the load may proceed (also when there is no section), -1
@@ -2191,8 +2266,9 @@ int      openpete_mods_arena_state_verdict(const void* src, uint32_t size);
 /** @brief Adopt a saved arena section after a state load commits.
  *
  * Saved rows beyond the live ledger are appended, so a mod's later call at
- * that index replays the saved row; the saved bytes are copied over the
- * arena and the cursor moves to max(live, saved).
+ * that index replays the saved row; each saved range is copied over its
+ * segment and that cursor moves to max(live, saved). Version 3 and 4
+ * sections are read.
  * @param src Saved section bytes.
  * @param size Section size in bytes. */
 void     openpete_mods_arena_state_apply(const void* src, uint32_t size);

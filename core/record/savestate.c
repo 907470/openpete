@@ -1033,12 +1033,13 @@ struct openpete_state_mem {
      * touched VRAM costs one compare, no GPU traffic. */
     uint8_t*   vram;       /* PsyX_VRAM_GetSize() */
     uint32_t   vram_bytes;
-    /* Mod arena: the used prefix [0, watermark). The watermark only
-     * grows, so the buffer is realloc'd grow-only at save time (the
-     * ARENA itself is never realloc'd - only this snapshot copy). */
+    /* Mod arena: its three used ranges (upper and lower DMA-reachable
+     * segment, general pool) back to back. The cursors only grow, so the
+     * buffer is realloc'd grow-only at save time (the arena itself never
+     * moves - only this snapshot copy). */
     uint8_t*   arena;
     uint32_t   arena_cap;
-    uint32_t   arena_used;
+    uint32_t   arena_used[OPENPETE_ARENA_RANGES];
 };
 
 openpete_state_mem_t* openpete_state_mem_new(void) {
@@ -1097,15 +1098,14 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     if (m->gx_bytes) game_state_extra_save(m->gx);
     if (PsyX_VRAM_Snapshot(m->vram, m->vram_bytes) != 0) return -1;
     {
-        uint32_t used = openpete_mods_arena_used();
+        uint32_t used = openpete_mods_arena_used(NULL);
         if (used > m->arena_cap) {
             uint8_t* grown = (uint8_t*)realloc(m->arena, used);
             if (!grown) return -1;
             m->arena = grown;
             m->arena_cap = used;
         }
-        if (used) memcpy(m->arena, openpete_mods_arena_bytes(), used);
-        m->arena_used = used;
+        openpete_mods_arena_mem_save(m->arena, m->arena_used);
     }
     m->valid = 1;
     return 0;

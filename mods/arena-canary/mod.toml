@@ -1,10 +1,12 @@
 # arena-canary - CI fixture: proves guest_alloc memory is timeline state.
 #
 # Holds one mutable arena block and mirrors the game's tick counter into
-# it from a tick hook. Savestate load, rewind, runahead rollback and the
-# --state-stress-rewind harness move guest RAM back in time; if the arena
-# did not move with it the mirror would run ahead of the guest counter and
-# the mod logs DESYNC. The allocation size is config-driven so the reload
+# it from a tick hook; with `pools` on it also keeps copies of the mirror
+# in the lower DMA-reachable segment and the general pool. Savestate
+# load, rewind, runahead rollback and the --state-stress-rewind harness
+# move guest RAM back in time; if the arena did not move with it the
+# mirror would run ahead of the guest counter and the mod logs DESYNC, and
+# a copy that moved apart from the mirror logs DESYNC naming its range. The allocation size is config-driven so the reload
 # harness can change the allocation pattern and check that the ledger
 # refuses a savestate written under the old layout.
 
@@ -13,7 +15,7 @@ id      = "arena-canary"
 name    = "Arena Timeline Canary"
 version = "0.1.0"
 game    = ["spyro-1", "spyro-2", "spyro-3"]
-api     = 8
+api     = 13
 state    = "none"      # no host residue: everything lives in the arena
 runahead = "pure"      # tick hook reads guest RAM and writes the arena only
 sim_mutative = false  # writes no canonical guest RAM
@@ -26,3 +28,10 @@ min = 1
 max = 64
 label = "Mirror slots"
 help = "Size of the arena block in 16-byte slots (changes the allocation pattern)."
+
+[[config]]
+key = "pools"
+type = "bool"
+default = true
+label = "Blocks in every arena range"
+help = "Also hold a block in the lower DMA-reachable segment and the general pool, each checked against the mirror every tick."

@@ -985,12 +985,45 @@ static int ra_pc_on(void) {
 #define RA_PC_PENDING 8
 static struct { uint32_t target; uint64_t hash; int valid; uint8_t* led; } s_ra_pc[RA_PC_PENDING];
 static unsigned s_ra_pc_checked = 0, s_ra_pc_mismatches = 0, s_ra_pc_invalidated = 0;
+/* Wall time of the last runahead snapshot save, added to its restore's for
+ * the Mods panel's snapshot cost. */
+static op_time_t s_ra_save_ns = 0;
+
+/** @brief Take runahead's per-tick snapshot, timing the save for the snapshot cost the Mods panel shows.
+ *
+ * @param snap The runahead snapshot.
+ * @param cpu The guest register file.
+ * @param frame The committed frame the snapshot records.
+ * @return openpete_state_mem_save's result, 0 on success. */
+static int ra_snapshot_save(openpete_state_mem_t* snap, const CPUState* cpu,
+                            unsigned frame) {
+    const op_time_t t0 = op_now();
+    const int rc = openpete_state_mem_save(snap, cpu, frame);
+    s_ra_save_ns = op_now() - t0;
+    return rc;
+}
+
+/** @brief Roll back to runahead's snapshot quietly, recording that tick's save plus restore time.
+ *
+ * @param snap The runahead snapshot.
+ * @param cpu The guest register file, restored.
+ * @param frame Receives the snapshot's frame.
+ * @return openpete_state_mem_load's result, 0 on success. */
+static int ra_snapshot_rollback(const openpete_state_mem_t* snap, CPUState* cpu,
+                                unsigned* frame) {
+    const op_time_t t0 = op_now();
+    const int rc = openpete_state_mem_load(snap, cpu, frame, 1);
+    if (rc == 0)
+        openpete_mods_runahead_snapshot_note(
+            (uint64_t)(s_ra_save_ns + (op_now() - t0)) / 1000u);
+    return rc;
+}
 /** @brief Drop every pending runahead prediction, counting each one dropped. */
 static void ra_pc_invalidate_all(void) {
     for (int i = 0; i < RA_PC_PENDING; i++)
         if (s_ra_pc[i].valid) { s_ra_pc[i].valid = 0; s_ra_pc_invalidated++; }
 }
-/** @brief Hash guest RAM, the scratchpad and the used part of the mod arena with FNV-1a-64.
+/** @brief Hash guest RAM, the scratchpad and the mod arena's three used ranges with FNV-1a-64.
  *
  * @return The hash the runahead prediction check compares. */
 static uint64_t ra_pc_hash(void) {
@@ -999,8 +1032,12 @@ static uint64_t ra_pc_hash(void) {
     h = openpete_fnv1a64_update(h, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
     /* The mod arena is inside the rollback boundary: a led/committed
      * split there is the same class of misprediction as one in RAM. */
-    return openpete_fnv1a64_update(h, openpete_mods_arena_bytes(),
-                                   openpete_mods_arena_used());
+    uint32_t used[OPENPETE_ARENA_RANGES];
+    (void)openpete_mods_arena_used(used);
+    for (unsigned r = 0; r < OPENPETE_ARENA_RANGES; r++)
+        if (used[r])
+            h = openpete_fnv1a64_update(h, openpete_mods_arena_range_bytes(r), used[r]);
+    return h;
 }
 
 /** @brief Record the led prediction in a free pending slot while RAM is the speculation head, keyed by the led tick.
@@ -5720,8 +5757,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                 const int ra_now = ra_due && openpete_yield_final;
                 ra_owed = ra_note_owed(ra_due && !ra_now, ra_owed);
                 if (ra_now &&
-                    openpete_state_mem_save(ra_snap, &g_game.cpu,
-                                            openpete_frame) == 0) {
+                    ra_snapshot_save(ra_snap, &g_game.cpu,
+                                     openpete_frame) == 0) {
                     /* Input-edge detection: the led branch changes exactly
                      * when the input we speculate with differs from last
                      * tick's. Flag the tick so presentation consumers can
@@ -5978,8 +6015,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * the committed tick before anything else observes RAM. */
                 if (ra_speculated) {
                     unsigned ra_lf = openpete_frame;
-                    if (openpete_state_mem_load(ra_snap, &g_game.cpu,
-                                                &ra_lf, 1) == 0) {
+                    if (ra_snapshot_rollback(ra_snap, &g_game.cpu,
+                                             &ra_lf) == 0) {
                         openpete_frame = ra_lf;
                         /* Committed-timeline regions (g_Camera): replace
                          * their led bytes in the ring's newest slot with

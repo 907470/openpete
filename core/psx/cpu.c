@@ -34,8 +34,10 @@ uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
 /* --- Above-RAM access census (OPENPETE_ARENA_CENSUS) ----------------------
  * Counts accesses whose physical address lies above the 2 MB of main RAM
  * and below expansion region 1 (0x1F000000), reached through the KUSEG,
- * KSEG0 or KSEG1 alias, in three bands around the guest arena window
- * (mod_arena.c ARENA_BASE 0x80700000, ARENA_SIZE 8 MB). Kinds: a bus read
+ * KSEG0 or KSEG1 alias, in three bands, one per guest arena segment
+ * (mod_arena.c): the DMA-reachable pool's lower segment
+ * [0x00200000, 0x00700000) and upper segment [0x00700000, 0x01000000), and
+ * the general pool [0x01000000, 0x1F000000). Kinds: a bus read
  * or write no host region maps (miss), a host span lookup that resolves
  * nothing, a lookup a registered region resolves (span_ptr_region, bus and
  * host together), and the host share of those hits. Counters are relaxed
@@ -44,13 +46,13 @@ uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
  * the list may hold a duplicate. Off unless the variable is set; the
  * report runs at exit (census_report). */
 #define CENSUS_LO       0x00200000u
-#define CENSUS_ARENA_LO 0x00700000u
-#define CENSUS_ARENA_HI 0x00F00000u
+#define CENSUS_UPPER_LO 0x00700000u
+#define CENSUS_GEN_LO   0x01000000u
 #define CENSUS_HI       0x1F000000u
 #define CENSUS_SEEN_MAX 32u
 
 enum { CK_READ_MISS, CK_WRITE_MISS, CK_HOST_MISS, CK_REGION_HIT, CK_HOST_HIT, CK_KINDS };
-enum { CB_BELOW, CB_ARENA, CB_ABOVE, CB_BANDS };
+enum { CB_LOWER, CB_UPPER, CB_GENERAL, CB_BANDS };
 enum { CS_KUSEG, CS_KSEG0, CS_KSEG1, CS_SEGS };
 
 typedef struct {
@@ -67,7 +69,7 @@ static uint32_t        s_census_seen_count = 0;
 /** @brief Classify an address into a census band and alias segment.
  *
  * @param addr Guest virtual address.
- * @param band Receives CB_BELOW, CB_ARENA or CB_ABOVE.
+ * @param band Receives CB_LOWER, CB_UPPER or CB_GENERAL.
  * @param seg Receives CS_KUSEG, CS_KSEG0 or CS_KSEG1.
  * @return 1 when the address is a RAM-segment alias above 2 MB and below
  *         0x1F000000, else 0. */
@@ -79,7 +81,7 @@ static int census_classify(uint32_t addr, unsigned* band, unsigned* seg) {
     else return 0;
     uint32_t phys = addr & 0x1FFFFFFFu;
     if (phys < CENSUS_LO || phys >= CENSUS_HI) return 0;
-    *band = phys < CENSUS_ARENA_LO ? CB_BELOW : (phys < CENSUS_ARENA_HI ? CB_ARENA : CB_ABOVE);
+    *band = phys < CENSUS_UPPER_LO ? CB_LOWER : (phys < CENSUS_GEN_LO ? CB_UPPER : CB_GENERAL);
     return 1;
 }
 
@@ -367,7 +369,15 @@ static const char* const k_census_kind[CK_KINDS] = {
     "read_miss", "write_miss", "host_miss", "region_hit", "host_hit"
 };
 static const char* const k_census_band[CB_BANDS] = {
-    "below_arena", "arena", "above_arena"
+    "dma_lower", "dma_upper", "general"
+};
+
+/* The exit probe's two pools: the DMA-reachable pool, probed in its upper
+ * segment (the segment its first block registers), and the general pool. */
+enum { CP_DMA, CP_GENERAL, CP_POOLS };
+static const struct { const char* name; uint32_t base; unsigned band; } k_census_probe[CP_POOLS] = {
+    { "dma",     0x00700000u, CB_UPPER },
+    { "general", 0x01000000u, CB_GENERAL },
 };
 
 /** @brief Sum one kind of one band over the three alias segments.
@@ -384,13 +394,15 @@ static uint64_t census_sum(const census_counts_t* c, unsigned kind, unsigned ban
  *
  * One line per band with each kind as total(kuseg/kseg0/kseg1), one line
  * per recorded bus-miss word address, the probe line, and a summary line
- * whose game_miss counts bus reads and writes in every band.
+ * whose game_miss counts bus reads and writes in every band and whose
+ * arena_ counts sum every band.
  * @param f Destination stream.
  * @param c Counts taken before the probe.
- * @param probe Count deltas the probe produced, arena band summed over segments.
- * @param control The probe verdict text. */
-static void census_emit(FILE* f, const census_counts_t* c, const uint64_t probe[CK_KINDS],
-                        const char* control) {
+ * @param probe Count deltas each pool's probe produced in its band, summed over segments.
+ * @param control The probe verdict text per pool. */
+static void census_emit(FILE* f, const census_counts_t* c,
+                        const uint64_t probe[CP_POOLS][CK_KINDS],
+                        const char* const control[CP_POOLS]) {
     uint64_t game_miss = 0;
     for (unsigned b = 0; b < CB_BANDS; b++) {
         fprintf(f, "[arena-census] band=%s", k_census_band[b]);
@@ -407,45 +419,66 @@ static void census_emit(FILE* f, const census_counts_t* c, const uint64_t probe[
     for (uint32_t i = 0; i < seen; i++)
         fprintf(f, "[arena-census] addr=0x%08X kind=%s n=%llu\n", s_census_seen_addr[i],
                 k_census_kind[s_census_seen_kind[i]], (unsigned long long)s_census_seen_n[i]);
-    fprintf(f, "[arena-census] probe read_miss=+%llu write_miss=+%llu host_miss=+%llu "
-               "region_hit=+%llu host_hit=+%llu control=%s\n",
-            (unsigned long long)probe[CK_READ_MISS], (unsigned long long)probe[CK_WRITE_MISS],
-            (unsigned long long)probe[CK_HOST_MISS], (unsigned long long)probe[CK_REGION_HIT],
-            (unsigned long long)probe[CK_HOST_HIT], control);
+    for (unsigned p = 0; p < CP_POOLS; p++)
+        fprintf(f, "[arena-census] probe pool=%s read_miss=+%llu write_miss=+%llu "
+                   "host_miss=+%llu region_hit=+%llu host_hit=+%llu control=%s\n",
+                k_census_probe[p].name,
+                (unsigned long long)probe[p][CK_READ_MISS], (unsigned long long)probe[p][CK_WRITE_MISS],
+                (unsigned long long)probe[p][CK_HOST_MISS], (unsigned long long)probe[p][CK_REGION_HIT],
+                (unsigned long long)probe[p][CK_HOST_HIT], control[p]);
+    uint64_t hit = 0, host_hit = 0;
+    for (unsigned b = 0; b < CB_BANDS; b++) {
+        hit += census_sum(c, CK_REGION_HIT, b);
+        host_hit += census_sum(c, CK_HOST_HIT, b);
+    }
+    const int pass = strncmp(control[CP_DMA], "PASS", 4) == 0 &&
+                     strncmp(control[CP_GENERAL], "PASS", 4) == 0;
     fprintf(f, "[arena-census] summary game_miss=%llu arena_miss=%llu arena_region_hit=%llu "
-               "arena_host_hit=%llu control=%s\n",
-            (unsigned long long)game_miss,
-            (unsigned long long)(census_sum(c, CK_READ_MISS, CB_ARENA) +
-                                 census_sum(c, CK_WRITE_MISS, CB_ARENA)),
-            (unsigned long long)census_sum(c, CK_REGION_HIT, CB_ARENA),
-            (unsigned long long)census_sum(c, CK_HOST_HIT, CB_ARENA), control);
+               "arena_host_hit=%llu control=%s dma=%s general=%s\n",
+            (unsigned long long)game_miss, (unsigned long long)game_miss,
+            (unsigned long long)hit, (unsigned long long)host_hit,
+            pass ? "PASS" : "FAIL", control[CP_DMA], control[CP_GENERAL]);
 }
 
-/** @brief Report the census at exit after a probe control inside the arena window.
+/** @brief Run the probe control on one pool and return its verdict.
  *
- * Snapshots the counts, then reads the window's first words through the
- * KUSEG, KSEG0 and KSEG1 aliases, rewrites one word with the value it
- * holds (no byte changes; dropped when no region maps it) and makes one
- * host span lookup. With the arena unregistered the probe must add 4 read
- * misses, 1 write miss and 1 host miss; with it registered, 6 region hits
- * (4 reads, 1 write, 1 host) of which 1 host hit. Anything else is FAIL.
- * The report goes to stderr and, when OPENPETE_ARENA_CENSUS is a path
- * rather than 1, is appended to that file. */
+ * Reads the pool's first words through the KUSEG, KSEG0 and KSEG1
+ * aliases, rewrites one word with the value it holds (no byte changes;
+ * dropped when no region maps it) and makes one host span lookup. With
+ * the pool unregistered the probe must add 4 read misses, 1 write miss
+ * and 1 host miss in its band; with it registered, 6 region hits (4
+ * reads, 1 write, 1 host) of which 1 host hit. Anything else is FAIL.
+ * @param p CP_DMA or CP_GENERAL.
+ * @param delta Receives the count deltas in the pool's band, summed over segments.
+ * @return "PASS(unregistered)", "PASS(registered)" or "FAIL". */
+static const char* census_probe(unsigned p, uint64_t delta[CK_KINDS]) {
+    const uint32_t b = k_census_probe[p].base;
+    const unsigned band = k_census_probe[p].band;
+    census_counts_t before = s_census;
+    (void)read_word(b);
+    (void)read_word(OPENPETE_PSX_KSEG0_BASE | (b + 4u));
+    (void)read_word(OPENPETE_PSX_KSEG1_BASE | (b + 8u));
+    write_word(OPENPETE_PSX_KSEG0_BASE | (b + 12u), read_word(OPENPETE_PSX_KSEG0_BASE | (b + 12u)));
+    (void)openpete_psx_to_host_span(OPENPETE_PSX_KSEG0_BASE | (b + 16u), 4u);
+    for (unsigned k = 0; k < CK_KINDS; k++)
+        delta[k] = census_sum(&s_census, k, band) - census_sum(&before, k, band);
+    const int miss = delta[CK_READ_MISS] == 4u && delta[CK_WRITE_MISS] == 1u &&
+                     delta[CK_HOST_MISS] == 1u && delta[CK_REGION_HIT] == 0u;
+    const int hit = delta[CK_REGION_HIT] == 6u && delta[CK_HOST_HIT] == 1u &&
+                    delta[CK_READ_MISS] == 0u && delta[CK_WRITE_MISS] == 0u;
+    return miss ? "PASS(unregistered)" : (hit ? "PASS(registered)" : "FAIL");
+}
+
+/** @brief Report the census at exit after a probe control in each pool.
+ *
+ * Snapshots the counts, then runs census_probe on the DMA-reachable pool
+ * and the general pool. The report goes to stderr and, when
+ * OPENPETE_ARENA_CENSUS is a path rather than 1, is appended to that file. */
 static void census_report(void) {
     census_counts_t before = s_census;
-    (void)read_word(0x00700000u);
-    (void)read_word(0x80700004u);
-    (void)read_word(0xA0700008u);
-    write_word(0x8070000Cu, read_word(0x8070000Cu));
-    (void)openpete_psx_to_host_span(0x80700010u, 4u);
-    uint64_t probe[CK_KINDS];
-    for (unsigned k = 0; k < CK_KINDS; k++)
-        probe[k] = census_sum(&s_census, k, CB_ARENA) - census_sum(&before, k, CB_ARENA);
-    const int miss = probe[CK_READ_MISS] == 4u && probe[CK_WRITE_MISS] == 1u &&
-                     probe[CK_HOST_MISS] == 1u && probe[CK_REGION_HIT] == 0u;
-    const int hit = probe[CK_REGION_HIT] == 6u && probe[CK_HOST_HIT] == 1u &&
-                    probe[CK_READ_MISS] == 0u && probe[CK_WRITE_MISS] == 0u;
-    const char* control = miss ? "PASS(unregistered)" : (hit ? "PASS(registered)" : "FAIL");
+    uint64_t probe[CP_POOLS][CK_KINDS];
+    const char* control[CP_POOLS];
+    for (unsigned p = 0; p < CP_POOLS; p++) control[p] = census_probe(p, probe[p]);
     census_emit(stderr, &before, probe, control);
     const char* e = getenv("OPENPETE_ARENA_CENSUS");
     if (e && strcmp(e, "1") != 0) {
