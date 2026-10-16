@@ -7,7 +7,11 @@
  * advance) or exceed it, but a guest value BELOW the mirror means guest
  * RAM went back in time and the arena did not - a rollback, rewind or
  * load that restored one and not the other. That is logged as DESYNC.
- * Zero is excluded: a level load legitimately resets the counter.
+ * On Spyro 1 a level load legitimately zeroes the counter in
+ * LoadLevelScene, and GS_Playing increments it before the first
+ * CameraUpdate after the load, so a pass-through link on LoadLevelScene
+ * zeroes the mirror's last tick, in the arena with the guest RAM it
+ * accompanies.
  *
  * Spyro 2 and 3 name no tick counter yet, so on those games the observed
  * value is the hook's own call count, kept in the arena block: it moves
@@ -76,7 +80,7 @@ static void on_camera_update(CPUState* cpu) {
                    "arena-canary: armed (%u B mutable @0x%08X, guest tick %u)",
                    g_bytes, g_va, g);
     }
-    if (g && g < g_mirror->last_tick) {
+    if (g < g_mirror->last_tick) {
         g_mirror->desyncs++;
         if (g_mirror->desyncs == 1 || (g_mirror->desyncs & 63u) == 0)
             g_api->log(g_self, OP_MOD_LOG_ERROR,
@@ -89,6 +93,20 @@ static void on_camera_update(CPUState* cpu) {
     if ((g_mirror->ticks_seen & 255u) == 0) publish_status();
     g_api->base(cpu);
 }
+
+#if OPENPETE_GAME_SPYRO1
+/**
+ * @brief LoadLevelScene pass-through: zeroes the mirror's last tick, then runs the load.
+ *
+ * LoadLevelScene (0x8001364C, src/loaders.c) is g_GameTick's only reset
+ * site; the mirror follows it so the next observed tick is not below it.
+ * @param cpu The guest register file at the call.
+ */
+static void on_load_level_scene(CPUState* cpu) {
+    g_mirror->last_tick = 0;
+    g_api->base(cpu);
+}
+#endif
 
 /**
  * @brief Attach @p fn to the running game's once-per-gameplay-tick camera update.
@@ -121,7 +139,7 @@ static int bind_tick_clock(const openpete_mod_api_t* api, openpete_mod_t* self,
  * @brief Mod entry: allocates the mutable mirror block and attaches the check to the camera clock.
  * @param api The engine table.
  * @param self This mod's handle.
- * @return -1 when the allocation fails, else the override registration's result, 0 on success.
+ * @return -1 when the allocation fails, else the first non-zero override registration result, 0 on success.
  */
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
@@ -143,5 +161,9 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
              "arena-canary: block 0x%08X (%u B) ticks so far %u", g_va,
              g_bytes, g_mirror->ticks_seen);
     publish_status();
+#if OPENPETE_GAME_SPYRO1
+    int rc = api->override_name(self, "LoadLevelScene", on_load_level_scene);
+    if (rc) return rc;
+#endif
     return bind_tick_clock(api, self, on_camera_update);
 }
