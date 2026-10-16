@@ -14,7 +14,14 @@
 #include "openpete_psxtrace.h"
 #include "openpete_recomp_module.h"
 
+#include <SDL3/SDL_thread.h>
+#include <SDL3/SDL_timer.h>
+
 #include <errno.h>
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -305,13 +312,14 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
 
 /* Hang watchdog: psx_override_dispatch fires at every translated-function
  * entry, so it sees roughly the full call sequence the game fiber walks
- * each frame. Because the host/game fibers are cooperatively scheduled in
- * one OS thread (libco), an infinite loop in the game fiber blocks the
- * host fiber too - no host-side timer can fire. Watching `openpete_vbl`
- * here lets the game fiber notice it hasn't called VSync(0) in a long time
- * and dump where it's been before we lose the trace. (We key off vbl rather
- * than `openpete_frame` so fast-boot iterations - which advance vbl but not
- * frame - don't look like hangs.)
+ * each frame. The host and game fibers are cooperatively scheduled on one
+ * OS thread (libco), so an infinite loop in the game fiber also blocks the
+ * host fiber. Three trips end such a loop: the entry count here and the
+ * loop quanta in loop_hang_quantum, both counted on the game fiber since
+ * `openpete_vbl` last changed, and the stall monitor, a separate thread
+ * that measures wall time with the game fiber running and `openpete_vbl`
+ * unchanged. (They key off vbl rather than `openpete_frame` so fast-boot
+ * iterations - which advance vbl but not frame - don't look like hangs.)
  *
  * On trip: write three rings of (addr, ra, sp) to `OPENPETE_HANG_TRACE`
  * (default hang-trace.bin in the logs state directory, beside the log
@@ -342,7 +350,25 @@ static uint32_t s_hang_calls_since_tick = 0u;
 static uint32_t s_hang_last_vbl = 0u;
 static int s_hang_threshold_inited = 0;
 static uint32_t s_hang_threshold = 50000000u;  /* env-overridable */
-static int s_hang_tripped = 0;
+/* HANG_ARMED, HANG_STALL_REQUESTED (the stall monitor asks the game fiber to
+ * dump at its next function entry or loop poll) or HANG_TRIPPED (one caller
+ * owns the dump). Moves to HANG_TRIPPED only by compare-and-swap, so the
+ * game fiber and the monitor thread never write the dump files together. */
+enum { HANG_ARMED = 0, HANG_STALL_REQUESTED = 1, HANG_TRIPPED = 2 };
+static SDL_AtomicInt s_hang_state = {HANG_ARMED};
+/* Loop quanta counted at s_hang_quanta_vbl (loop_hang_quantum). */
+static uint32_t s_hang_quanta = 0u, s_hang_quanta_max = 0u;
+static int32_t  s_hang_quanta_vbl = -1;
+
+/** @brief Take ownership of the hang dump.
+ * @return 1 when the caller moved the state to HANG_TRIPPED, 0 when another caller owns it. */
+static int hang_claim(void) {
+    for (;;) {
+        const int st = SDL_GetAtomicInt(&s_hang_state);
+        if (st == HANG_TRIPPED) return 0;
+        if (SDL_CompareAndSwapAtomicInt(&s_hang_state, st, HANG_TRIPPED)) return 1;
+    }
+}
 
 /** @brief Write the default path of a hang-watchdog output file, `leaf` in the logs state directory, into out.
  *
@@ -368,12 +394,21 @@ static void hang_output_path(const char* leaf, char* out, size_t cap) {
 
 /** @brief Trip the hang watchdog: write the dispatch rings and guest RAM, tell the player, and exit with code 2.
  *
+ * The caller owns the dump (hang_claim). Called on the game fiber for every
+ * trip but one: the stall monitor's fallback, which runs on the monitor
+ * thread when the game fiber reaches no function entry and no loop poll
+ * within STALL_HANDOFF_MS of the request. No entry or poll means the rings
+ * are not being written; guest RAM may still be, so that image can be torn.
  * @param trip_addr The guest function whose entry crossed the threshold, or
- *     the header of the call-free loop whose quanta crossed theirs.
- * @param quanta 0 for an entry trip; else the loop quanta counted since
- *     `openpete_vbl` last changed. */
-static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta) {
-    s_hang_tripped = 1;
+ *     the header of the call-free loop whose quanta crossed theirs, or the
+ *     entry or header that took a stall request; 0 for the fallback.
+ * @param quanta For an entry or quanta trip, 0 or the loop quanta counted
+ *     since `openpete_vbl` last changed.
+ * @param stall_ms 0 for an entry or quanta trip; else the wall milliseconds
+ *     the game fiber ran with `openpete_vbl` unchanged.
+ * @param off_thread Nonzero when called on the stall monitor thread. */
+static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
+                                        uint32_t stall_ms, int off_thread) {
     char trace_default[1100], ram_default[1100];
     hang_output_path("hang-trace.bin", trace_default, sizeof trace_default);
     hang_output_path("hang-ram.bin", ram_default, sizeof ram_default);
@@ -406,7 +441,17 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta) {
         fwrite(openpete_psx_get_ram(), 1, ram_size, rp);
         fclose(rp);
     }
-    if (quanta)
+    if (stall_ms)
+        OPL_ERROR_F("watchdog",
+                    "hang detected: game fiber ran %u.%03u s wall with openpete_vbl=%d unchanged "
+                    "(%u dispatch entries, %u loop quanta), %s at 0x%08X, wrote trace=%s ram=%s%s - exiting",
+                    stall_ms / 1000u, stall_ms % 1000u, SDL_GetAtomicInt(&openpete_vbl),
+                    s_hang_calls_since_tick,
+                    s_hang_quanta_vbl == SDL_GetAtomicInt(&openpete_vbl) ? s_hang_quanta : 0u,
+                    off_thread ? "dumped off-thread, no entry or poll took the request" : "taken",
+                    trip_addr, path, rampath,
+                    off_thread ? " (ram written while the guest ran: may be torn)" : "");
+    else if (quanta)
         OPL_ERROR_F("watchdog",
                     "hang detected: %u loop quanta at header 0x%08X since openpete_vbl=%d "
                     "(%u dispatch entries), wrote trace=%s ram=%s - exiting",
@@ -426,6 +471,13 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta) {
     /* stderr is a pipe drained by the log pump thread; _Exit would take the
      * watchdog's own diagnosis down with the process before it is copied. */
     openpete_log_file_sync();
+#ifdef _WIN32
+    /* The CRT's _Exit leaves through ExitProcess, which ends the other
+     * threads where they stand and then runs every DLL's static
+     * destructors: a C++ condition variable whose waiter was ended mid-wait
+     * asserts there. TerminateProcess runs no DLL code. */
+    TerminateProcess(GetCurrentProcess(), 2);
+#endif
     _Exit(2);
 }
 
@@ -536,12 +588,139 @@ static void spin_tick(CPUState* cpu, uint32_t vbl_now, uint32_t addr) {
     openpete_psxtrace_gate_host_leave();
 }
 
-/** @brief Read OPENPETE_HANG_THRESHOLD on the first call; 0 disarms both watchdog trips. */
+/* Stall monitor: a host thread that samples, every STALL_SAMPLE_MS of wall
+ * time, `openpete_vbl` and openpete_game_running. It counts the wall time
+ * the game fiber runs with `openpete_vbl` unchanged and trips at
+ * OPENPETE_HANG_STALL_SECONDS. This catches the loops the game-fiber trips
+ * miss or reach late: a loop with neither calls nor polled back-edges
+ * (a storing loop), and a loop that polls on few of its back-edges. A
+ * parked game fiber (the host loop runs: a host pause, the devui, a window
+ * drag, the pacer's sleep) adds no time and keeps the count; only a change
+ * of `openpete_vbl` resets it. One sample adds at most 4 * STALL_SAMPLE_MS,
+ * so a process stopped by a debugger or a system suspend adds one capped
+ * sample, not the time it stood still.
+ *
+ * On a trip the monitor sets HANG_STALL_REQUESTED; the game fiber takes it at
+ * its next function entry or loop poll (stall_take) and dumps there with the
+ * rings it writes. When none comes within STALL_HANDOFF_MS the game fiber is
+ * in a loop with neither, which writes no ring, and the monitor dumps itself.
+ * The monitor reads only atomics and stores into no guest RAM. */
+#define STALL_SAMPLE_MS     25u
+#define STALL_HANDOFF_MS    2000u
+#define STALL_SECONDS_DEFAULT 30u
+static uint32_t      s_stall_ms_limit = STALL_SECONDS_DEFAULT * 1000u;
+static SDL_AtomicInt s_stall_ms;           /* the current stretch, ms */
+static SDL_AtomicInt s_stall_max_ms;       /* the longest stretch this run, ms */
+static SDL_AtomicInt s_stall_max_vbl;      /* openpete_vbl during it */
+static SDL_AtomicInt s_stall_samples;      /* samples taken, the engagement count */
+
+/** @brief Take the stall monitor's dump request on the game fiber and dump at this entry or loop poll.
+ * @param addr The function entered or the loop header polled. */
+static void stall_take(uint32_t addr) {
+    if (!SDL_CompareAndSwapAtomicInt(&s_hang_state, HANG_STALL_REQUESTED, HANG_TRIPPED)) return;
+    openpete_hang_dump_and_exit(addr, 0u, (uint32_t)SDL_GetAtomicInt(&s_stall_ms), 0);
+}
+
+/** @brief Body of the stall monitor thread: sample the game fiber's progress until a trip exits the process.
+ * @param arg Unused.
+ * @return Never returns while the process runs. */
+static int SDLCALL stall_monitor_main(void* arg) {
+    (void)arg;
+    int32_t  last_vbl = SDL_GetAtomicInt(&openpete_vbl);
+    uint32_t flat_ms = 0u, request_ms = 0u;
+    uint64_t prev = SDL_GetTicksNS();  /* clock-guard: wall */
+    for (;;) {
+        SDL_Delay(STALL_SAMPLE_MS);
+        const uint64_t now = SDL_GetTicksNS();  /* clock-guard: wall */
+        uint64_t dt = (now - prev) / 1000000u;
+        prev = now;
+        if (dt > 4u * STALL_SAMPLE_MS) dt = 4u * STALL_SAMPLE_MS;
+        const int32_t vbl = SDL_GetAtomicInt(&openpete_vbl);
+        SDL_AddAtomicInt(&s_stall_samples, 1);
+        if (vbl != last_vbl) {
+            last_vbl = vbl;
+            flat_ms = 0u;
+            request_ms = 0u;
+            SDL_CompareAndSwapAtomicInt(&s_hang_state, HANG_STALL_REQUESTED, HANG_ARMED);
+        } else if (SDL_GetAtomicInt(&openpete_game_running)) {
+            flat_ms += (uint32_t)dt;
+        }
+        SDL_SetAtomicInt(&s_stall_ms, (int)flat_ms);
+        if ((int)flat_ms > SDL_GetAtomicInt(&s_stall_max_ms)) {
+            SDL_SetAtomicInt(&s_stall_max_ms, (int)flat_ms);
+            SDL_SetAtomicInt(&s_stall_max_vbl, vbl);
+        }
+        if (!s_stall_ms_limit || flat_ms < s_stall_ms_limit) continue;
+        if (!request_ms) {
+            if (SDL_CompareAndSwapAtomicInt(&s_hang_state, HANG_ARMED, HANG_STALL_REQUESTED))
+                request_ms = flat_ms;
+            continue;
+        }
+        if (flat_ms - request_ms < STALL_HANDOFF_MS) continue;
+        if (SDL_CompareAndSwapAtomicInt(&s_hang_state, HANG_STALL_REQUESTED, HANG_TRIPPED))
+            openpete_hang_dump_and_exit(0u, 0u, flat_ms, 1);
+    }
+    return 0;
+}
+
+/** @brief Read OPENPETE_HANG_STALL_SECONDS and start the stall monitor thread; 0 seconds still measures but never trips. */
+static void stall_monitor_start(void) {
+    const char* env = getenv("OPENPETE_HANG_STALL_SECONDS");
+    if (env && *env) s_stall_ms_limit = (uint32_t)strtoul(env, NULL, 0) * 1000u;
+    SDL_Thread* th = SDL_CreateThread(stall_monitor_main, "openpete-stall", NULL);
+    if (!th) {
+        OPL_WARN_F("watchdog", "stall monitor thread not started: %s", SDL_GetError());
+        return;
+    }
+    SDL_DetachThread(th);
+}
+
+/** @brief Read OPENPETE_HANG_THRESHOLD on the first call and start the stall monitor; 0 disarms every watchdog trip. */
 static void hang_threshold_init(void) {
     if (s_hang_threshold_inited) return;
     const char* env = getenv("OPENPETE_HANG_THRESHOLD");
     if (env && *env) s_hang_threshold = (uint32_t)strtoul(env, NULL, 0);
     s_hang_threshold_inited = 1;
+    if (s_hang_threshold) stall_monitor_start();
+}
+
+/** @brief Note a function entry for the hang watchdog: take a stall request, count the entry, and record it in the rings.
+ *
+ * Counts entries since `openpete_vbl` last changed and trips the watchdog
+ * past OPENPETE_HANG_THRESHOLD of them; at each change it snapshots the
+ * entry ring. Does nothing while the watchdog is disarmed or has tripped.
+ * @param cpu Guest CPU state; may be NULL.
+ * @param addr The entered function's guest address.
+ * @param vbl_now `openpete_vbl` at this entry. */
+static inline void hang_note_entry(CPUState* cpu, uint32_t addr, uint32_t vbl_now) {
+    const int hang_state = SDL_GetAtomicInt(&s_hang_state);
+    if (!s_hang_threshold || hang_state == HANG_TRIPPED) return;
+    if (hang_state == HANG_STALL_REQUESTED) stall_take(addr);
+    if (vbl_now != s_hang_last_vbl) {
+        /* Vbl boundary: snapshot the ring before the next vbl interval's
+         * dispatches overwrite it. If a hang trips during the next
+         * interval, the snapshot still shows what got us here. */
+        memcpy(s_hang_ring_prev, s_hang_ring, sizeof(s_hang_ring));
+        s_hang_head_prev = s_hang_head;
+        s_hang_last_vbl = vbl_now;
+        s_hang_calls_since_tick = 0u;
+    } else if (++s_hang_calls_since_tick > s_hang_threshold && hang_claim()) {
+        openpete_hang_dump_and_exit(addr, 0u, 0u, 0);
+    }
+    /* Only fill the ring for the first HANG_RING dispatches of each
+     * frame. A tight loop produces 2-3 distinct addrs and trivially
+     * overwrites useful state; capping per-frame writes preserves the
+     * path *into* the loop. */
+    if (s_hang_calls_since_tick < HANG_RING) {
+        s_hang_ring[s_hang_head].addr = addr;
+        s_hang_ring[s_hang_head].ra   = cpu ? cpu->ra : 0u;
+        s_hang_ring[s_hang_head].sp   = cpu ? cpu->sp : 0u;
+        s_hang_head = (s_hang_head + 1u) % HANG_RING;
+    }
+    s_hang_recent[s_hang_recent_head].addr = addr;
+    s_hang_recent[s_hang_recent_head].ra   = cpu ? cpu->ra : 0u;
+    s_hang_recent[s_hang_recent_head].sp   = cpu ? cpu->sp : 0u;
+    s_hang_recent_head = (s_hang_recent_head + 1u) % HANG_RECENT;
 }
 
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
@@ -551,33 +730,7 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
      * link's base(), a hook that runs the original) is not a guest entry:
      * the observers below already saw this call at its first entry. */
     const int redispatch = (addr == s_gate_redispatch);
-    if (s_hang_threshold && !s_hang_tripped) {
-        if (vbl_now != s_hang_last_vbl) {
-            /* Vbl boundary: snapshot the ring before the next vbl interval's
-             * dispatches overwrite it. If a hang trips during the next
-             * interval, the snapshot still shows what got us here. */
-            memcpy(s_hang_ring_prev, s_hang_ring, sizeof(s_hang_ring));
-            s_hang_head_prev = s_hang_head;
-            s_hang_last_vbl = vbl_now;
-            s_hang_calls_since_tick = 0u;
-        } else if (++s_hang_calls_since_tick > s_hang_threshold) {
-            openpete_hang_dump_and_exit(addr, 0u);
-        }
-        /* Only fill the ring for the first HANG_RING dispatches of each
-         * frame. A tight loop produces 2-3 distinct addrs and trivially
-         * overwrites useful state; capping per-frame writes preserves the
-         * path *into* the loop. */
-        if (s_hang_calls_since_tick < HANG_RING) {
-            s_hang_ring[s_hang_head].addr = addr;
-            s_hang_ring[s_hang_head].ra   = cpu ? cpu->ra : 0u;
-            s_hang_ring[s_hang_head].sp   = cpu ? cpu->sp : 0u;
-            s_hang_head = (s_hang_head + 1u) % HANG_RING;
-        }
-        s_hang_recent[s_hang_recent_head].addr = addr;
-        s_hang_recent[s_hang_recent_head].ra   = cpu ? cpu->ra : 0u;
-        s_hang_recent[s_hang_recent_head].sp   = cpu ? cpu->sp : 0u;
-        s_hang_recent_head = (s_hang_recent_head + 1u) % HANG_RECENT;
-    }
+    hang_note_entry(cpu, addr, vbl_now);
     if (redispatch) {
         s_redispatch_skips++;
         gate_clock(cpu, addr);
@@ -772,13 +925,15 @@ static void loop_site_note(uint32_t header, int quantum) {
  * openpete_vbl last changed. A call-free loop enters no function, so the
  * entry count in psx_override_dispatch never moves while one spins; a VBL
  * delivered and held (the critical-section flag set) leaves openpete_vbl
- * where it is, so a spin the held VBLs cannot end still counts here. One
- * quantum is one VBL of instructions; HANG_LOOP_QUANTA of them is about
- * 100 s of guest time with no VBL taken. Armed with the entry watchdog
- * (OPENPETE_HANG_THRESHOLD=0 disarms both). */
+ * where it is, so a spin the held VBLs cannot end still counts here. A
+ * quantum is LOOP_QUANTUM / LOOP_SCALE (about 566,121) instructions summed
+ * over polled back-edges only: a loop body with stores does not poll, and a
+ * loop that polls on few of its back-edges reaches a quantum only after many
+ * times that many instructions, so the guest and wall time to
+ * HANG_LOOP_QUANTA quanta have no fixed bound (the stall monitor bounds the
+ * wall time). Armed with the entry watchdog (OPENPETE_HANG_THRESHOLD=0
+ * disarms every trip). */
 #define HANG_LOOP_QUANTA 6000u
-static uint32_t s_hang_quanta = 0u, s_hang_quanta_max = 0u;
-static int32_t  s_hang_quanta_vbl = -1;
 
 /** @brief Count a quantum against the hang watchdog and trip it at HANG_LOOP_QUANTA quanta with `openpete_vbl` unchanged.
  * @param header The loop's header address, the trip address. */
@@ -787,8 +942,8 @@ static void loop_hang_quantum(uint32_t header) {
     if (vbl != s_hang_quanta_vbl) { s_hang_quanta_vbl = vbl; s_hang_quanta = 0u; }
     if (++s_hang_quanta > s_hang_quanta_max) s_hang_quanta_max = s_hang_quanta;
     hang_threshold_init();
-    if (s_hang_threshold && !s_hang_tripped && s_hang_quanta >= HANG_LOOP_QUANTA)
-        openpete_hang_dump_and_exit(header, s_hang_quanta);
+    if (s_hang_threshold && s_hang_quanta >= HANG_LOOP_QUANTA && hang_claim())
+        openpete_hang_dump_and_exit(header, s_hang_quanta, 0u, 0);
 }
 
 /* Idle check of loops classified pure (OPENPETE_LOOP_PURE_CHECK=1): a store-free
@@ -859,6 +1014,10 @@ void openpete_loop_site_census_log(void) {
                "trip at %u; re-dispatches past the entry observers: %llu",
                s_loop_sites, s_loop_sites_dropped, s_hang_quanta_max, HANG_LOOP_QUANTA,
                (unsigned long long)s_redispatch_skips);
+    OPL_INFO_F("watchdog", "stall monitor: %d samples, longest game-fiber run with openpete_vbl unchanged %d ms "
+               "at openpete_vbl=%d; trip at %u ms%s",
+               SDL_GetAtomicInt(&s_stall_samples), SDL_GetAtomicInt(&s_stall_max_ms), SDL_GetAtomicInt(&s_stall_max_vbl), s_stall_ms_limit,
+               s_hang_threshold ? "" : " (watchdog disarmed, monitor not started)");
     for (uint32_t i = 0; i < s_loop_sites; i++) {
         const struct loop_site* r = &s_loop_site[i];
         OPL_INFO_F("delivery", "loop site 0x%08X: %llu polls, %u runs, %u quanta, first poll at vbl %d, "
@@ -898,6 +1057,7 @@ void openpete_loop_report(uint64_t* polls, uint64_t* trips, uint64_t* acc_max_in
 
 void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure) {
     s_loop_polls++;
+    if (SDL_GetAtomicInt(&s_hang_state) == HANG_STALL_REQUESTED) stall_take(header);
     if (pure == 1u) loop_pure_check(cpu, header);
     s_loop_insns_anchor += insns;
     s_loop_acc += (uint64_t)insns * LOOP_SCALE;

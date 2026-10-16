@@ -2043,6 +2043,12 @@ static const knob_desc_t g_builtin_debug[] = {
       "instructions has run without one, so a driver spinning on a word its "
       "own VBL handler writes can finish. Set 0 to stop the loop deliveries "
       "and keep only their count (the oracle's control run)."),
+    ENVROW_LATCHED("HANG_STALL_SECONDS", "Debug", "30",
+      "Wall seconds the game may run without a VBL before the hang "
+      "watchdog writes hang-trace.bin and hang-ram.bin and exits with code "
+      "2. Time the game is paused or parked in the host loop does not "
+      "count. 0 measures without tripping; OPENPETE_HANG_THRESHOLD=0 "
+      "disarms every watchdog trip."),
     ENVROW_LATCHED("THREAD_SPLIT", "Debug", "1",
       "Run the sim on a worker thread while the main thread owns the window "
       "and the event pump, so dragging or resizing the window cannot stall "

@@ -2307,8 +2307,10 @@ static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
  *
  * Applies the --test-recomp-gp override to cpu.gp first, and gives
  * OPENPETE_CRASH_TEST its chance to fault on the fiber's stack. Sets
- * g_game.dispatch_ok and g_game.done. */
+ * g_game.dispatch_ok and g_game.done; sets openpete_game_running at entry
+ * and clears it before the permanent yield. */
 static void game_fiber_entry(void) {
+    SDL_SetAtomicInt(&openpete_game_running, 1);
     openpete_crash_test();
     if (g_game.gp != 0u) {
         OPL_INFO_F("boot",
@@ -2327,6 +2329,7 @@ static void game_fiber_entry(void) {
                    g_game.cpu.v0);
     }
     g_game.done = 1;
+    SDL_SetAtomicInt(&openpete_game_running, 0);
     /* Permanent yield - never resume. */
     while (1) co_switch((cothread_t)openpete_host_fiber);
 }

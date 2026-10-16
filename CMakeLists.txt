@@ -1599,6 +1599,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Hang watchdog stall monitor: an inline mod that spins without a VBL
+    # trips within the stall limit (Linux, and Windows when the MinGW exe is
+    # built), the community-mod triple trips on Windows when
+    # OPENPETE_HANG_STALL_MODS names its copies, and the attract demo and the
+    # level-transition movie never trip. VACUOUS (fail) when the monitor took
+    # no sample; skips (exit 64) when every row lacks its binary or inputs.
+    add_test(NAME hang_stall
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_hang_stall.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(hang_stall PROPERTIES
+        LABELS "slow;watchdog"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Sub-tick present gameplay-state gate. The psx oracle replays canonical
     # ticks only, so an intermediate present that writes gameplay-readable RAM
     # and mis-restores it is invisible to it. Per movie, two headless legs of

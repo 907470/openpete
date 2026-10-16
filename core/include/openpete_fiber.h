@@ -64,6 +64,14 @@ extern SDL_AtomicInt openpete_vbl;
  * per-record VBL delta and the device-side log labels) reads it. */
 extern SDL_AtomicInt openpete_vbl_device;
 
+/* 1 while the game fiber runs (recompiled code, the thunks and mod overrides
+ * it calls), 0 while it is parked at a yield and the host fiber runs (the
+ * host loop, a host pause, the devui, the pacer's sleep). Written by the game
+ * fiber on each side of its switches to the host: set at its entry, cleared
+ * before each yield and set again on resume. Read by the hang watchdog's
+ * stall monitor thread. */
+extern SDL_AtomicInt openpete_game_running;
+
 /* Host-facing render-frame counter. Stays at 0 until the first DrawOTag
  * (i.e. until the game actually starts rendering), then increments on each
  * VSync(0) yield. Every host-side consumer - frame-limit, screenshot/RAM-dump

@@ -20,6 +20,7 @@ void*        openpete_host_fiber       = NULL;
 void*        openpete_game_fiber       = NULL;
 SDL_AtomicInt openpete_vbl             = {0};
 SDL_AtomicInt openpete_vbl_device      = {0};
+SDL_AtomicInt openpete_game_running    = {0};
 int openpete_speculative               = 0;
 int openpete_yield_final               = 0;
 openpete_park_site_t openpete_yield_site = {0u, 0u};
@@ -87,6 +88,13 @@ int openpete_fiber_guard_contains(uintptr_t addr) {
 }
 #endif
 
+/** @brief Park the game fiber at a yield: clear openpete_game_running, switch to the host fiber, and set it again on resume. */
+static void switch_to_host(void) {
+    SDL_SetAtomicInt(&openpete_game_running, 0);
+    co_switch((cothread_t)openpete_host_fiber);
+    SDL_SetAtomicInt(&openpete_game_running, 1);
+}
+
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */
     /* `openpete_vbl` belongs to psyq_VSync, which advances it once per
@@ -94,7 +102,7 @@ void openpete_yield_to_host(void) {
      * so frame-limit / screenshot / bk2 alignment stay yield-driven. */
     openpete_frame++;
     op_functrace_pause();     /* exclude host render+sleep from func-trace */
-    co_switch((cothread_t)openpete_host_fiber);
+    switch_to_host();
     op_functrace_resume();
 }
 
@@ -116,7 +124,7 @@ int openpete_fiber_in_game(void) {
 void openpete_yield_to_host_no_tick(void) {
     if (!openpete_host_fiber) return;
     op_functrace_pause();
-    co_switch((cothread_t)openpete_host_fiber);
+    switch_to_host();
     op_functrace_resume();
 }
 
