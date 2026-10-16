@@ -151,6 +151,8 @@
 "knob:freecam" = "playing/settings-menu.md#rows"
 "knob:freecam_pose" = "playing/dev-overlay.md#sections"
 "knob:fullscreen" = "graphics/display.md#fullscreen"
+"knob:launcher_fullscreen" = "graphics/display.md#launcher-window"
+"knob:launcher_window" = "graphics/display.md#launcher-window"
 "knob:load_delay" = "playing/recording.md#replaying"
 "knob:lod" = "graphics/quality.md#level-of-detail"
 "knob:mouse" = "playing/controls.md#the-mouse"

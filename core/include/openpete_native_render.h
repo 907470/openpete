@@ -42,6 +42,10 @@ struct rhi_device;
  * @param h Height in pixels. */
 void openpete_native_set_icon(const void* rgba32, int w, int h);
 
+/* The state a window opens in (openpete_native_launcher_open). */
+#define OPENPETE_WINDOW_OPEN_MAXIMIZED  1   /* maximized */
+#define OPENPETE_WINDOW_OPEN_FULLSCREEN 2   /* borderless-desktop fullscreen; dropped under --background */
+
 /** @brief Create the launcher's window, the Vulkan device on it and the imgui context, on the calling thread.
  *
  * The one windowed device of a run: the launcher draws on it before the
@@ -54,13 +58,16 @@ void openpete_native_set_icon(const void* rgba32, int w, int h);
  * exists.
  * @param opts Session options; window flags and the synchronous-run class.
  * @param win_w Requested width in pixels, or <= 0 for the default.
- * @param win_h Requested height in pixels, or <= 0 for the default.
+ * @param win_h Requested height in pixels, or <= 0 for the default; the size
+ *              a maximized or fullscreen window returns to.
+ * @param open OPENPETE_WINDOW_OPEN_* bits for a window created here; a
+ *             precreated window keeps its own state.
  * @param title Window title; NULL selects "openpete".
  * @return 0 when the device exists, -1 when the window or the device could
  *         not be created (openpete_native_launcher_error names why; the
  *         window is destroyed). */
 int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int win_h,
-                                  const char *title);
+                                  int open, const char *title);
 
 /** @brief Return why the last openpete_native_launcher_open failed, as a sentence for the player.
  *

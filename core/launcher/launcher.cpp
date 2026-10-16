@@ -17,6 +17,16 @@
 // harness variable OPENPETE_LAUNCHER_SHOT=<base> reads back the first frame
 // of each screen, logs how many pixels it drew, and writes <base>.<screen>.png;
 // the precompile's progress screen is the screen "precompile".
+//
+// The window is resizable and can be maximized; Alt+Enter and a double-click
+// outside the screen's buttons and entries toggle borderless fullscreen.
+// --launcher-fullscreen and --launcher-window set its first state. A toggle,
+// resize or maximize the player makes here replaces the booted game's
+// fullscreen and window settings at the hand-off (carry_window_state). The
+// harness variable OPENPETE_LAUNCHER_INPUT=<ms>:<action>[,...] performs each
+// action that long after the first launcher frame: altenter and dblclick
+// post the input events, maximize, restore and resize=WxH call the window
+// operations a window manager answers.
 #include "launcher_internal.h"
 
 #include "imgui.h"
@@ -86,6 +96,17 @@ struct State {
     Uint32 wake_event = 0;       /* posted by the scan worker when it returns */
     SDL_AtomicInt scan_done = {};
     SDL_AtomicInt scan_wakeable = {};   /* the event queue runs: the worker may post */
+    /* The window's state as the player left it (window_event), and the
+     * state it opened in. A fullscreen toggle counts as touched; the size
+     * counts when the maximized state or the windowed size at the hand-off
+     * differs from the opening one. */
+    bool fs_now = false, max_now = false;
+    int win_w = 0, win_h = 0;    /* the windowed size last seen */
+    bool max_open = false;
+    int open_w = 0, open_h = 0;
+    bool fs_touched = false;
+    bool fs_pending = false;     /* a toggle's enter or leave event is due */
+    bool item_hovered = false;   /* the last frame's mouse was over a button or entry */
     SDL_ThreadID ui_tid = 0;
     char stage[128] = {};
     int done = 0, total = 0;
@@ -273,6 +294,7 @@ void draw_view(void* ud) {
     else if (v.screen == Screen::Drop) draw_drop(f, v);
     else if (v.screen == Screen::Pending) draw_pending(f);
     else draw_select(f, v);
+    s.item_hovered = ImGui::IsAnyItemHovered();
     ImGui::End();
 }
 
@@ -309,13 +331,16 @@ bool present_on(struct rhi_device* dev, View& v, int tag) {
     return drawn;
 }
 
-/** @brief Present one frame of a view on the launcher's device, naming the launcher's game.
+void scripted_input_poll();
+
+/** @brief Present one frame of a view on the launcher's device, naming the launcher's game, then run the harness input that is due.
  *
  * @param v The view. */
 void present(View& v) {
     v.name = game_name();
     if (!present_on(nullptr, v, (int)v.screen)) return;
     launcher_stamp(LAUNCHER_EV_FIRST_PRESENT);
+    scripted_input_poll();
     if (v.screen == Screen::Select && v.count > 0) launcher_stamp(LAUNCHER_EV_LIST_SHOWN);
 }
 
@@ -333,6 +358,44 @@ void open_first_gamepad() {
 /** @brief Closes the gamepad the launcher opened. */
 void close_gamepad() {
     if (s.pad) { SDL_CloseGamepad(s.pad); s.pad = nullptr; }
+}
+
+/** @brief Return the launcher window's first size and state: --launcher-window, else the game window's (--window, maximized included); --launcher-fullscreen.
+ *
+ * @param opts The options.
+ * @param w Receives the width; the size a maximized or fullscreen window returns to.
+ * @param h Receives the height.
+ * @param open Receives the OPENPETE_WINDOW_OPEN_* bits. */
+void launcher_window_request(const openpete_options_t* opts, int* w, int* h, int* open) {
+    *open = 0;
+    if (opts->launcher_window_maximized == 0) {
+        *w = opts->launcher_window_w;
+        *h = opts->launcher_window_h;
+    } else {
+        openpete_game_window_size(opts, w, h);
+        /* No game installed yet: no game window size, so the layout space's. */
+        if (*w <= 0 || *h <= 0) { *w = (int)kLayoutW; *h = (int)kLayoutH; }
+    }
+    if (opts->launcher_window_maximized > 0 ||
+        (opts->launcher_window_maximized < 0 && opts->window_maximized > 0))
+        *open |= OPENPETE_WINDOW_OPEN_MAXIMIZED;
+    if (opts->launcher_fullscreen > 0) *open |= OPENPETE_WINDOW_OPEN_FULLSCREEN;
+}
+
+/** @brief Take the state the launcher window was asked to open in as the untouched state.
+ *
+ * The request, not the window's flags: a window manager applies a maximize
+ * or fullscreen after the window maps, and its event then confirms the
+ * state instead of changing it.
+ * @param opts The options; --background drops a fullscreen request.
+ * @param w The requested width, the windowed size while the window opens maximized or fullscreen.
+ * @param h The requested height.
+ * @param open The OPENPETE_WINDOW_OPEN_* bits it was created with. */
+void window_state_init(const openpete_options_t* opts, int w, int h, int open) {
+    s.fs_now = (open & OPENPETE_WINDOW_OPEN_FULLSCREEN) != 0 && opts->background <= 0;
+    s.max_now = s.max_open = (open & OPENPETE_WINDOW_OPEN_MAXIMIZED) != 0;
+    s.win_w = s.open_w = w;
+    s.win_h = s.open_h = h;
 }
 
 /** @brief Record a failed open: tell the player now, or hold the message for the next open when @p continues is negative.
@@ -377,14 +440,13 @@ int launcher_open(const openpete_options_t* opts, int continues) {
                     continues);
         return -1;
     }
-    int w, h;
-    openpete_game_window_size(opts, &w, &h);
-    /* No game installed yet: no game window size, so the layout space's. */
-    if (w <= 0 || h <= 0) { w = (int)kLayoutW; h = (int)kLayoutH; }
-    if (openpete_native_launcher_open(opts, w, h, "OpenPete") != 0) {
+    int w, h, open = 0;
+    launcher_window_request(opts, &w, &h, &open);
+    if (openpete_native_launcher_open(opts, w, h, open, "OpenPete") != 0) {
         open_failed(openpete_native_launcher_error(), continues);
         return -1;
     }
+    window_state_init(opts, w, h, open);
     launcher_stamp(LAUNCHER_EV_WINDOW);
     open_first_gamepad();
     if (!s.handed_off) (void)openpete_native_launcher_precompile_start(opts);
@@ -418,17 +480,150 @@ void open_file_dialog() {
                            filters, 2, nullptr, false);
 }
 
+/** @brief Toggle the launcher window between windowed and borderless-desktop fullscreen. */
+void toggle_fullscreen() {
+    SDL_Window* win = openpete_native_launcher_window();
+    if (!win) return;
+    const bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
+    if (!fs) SDL_SetWindowFullscreenMode(win, nullptr);
+    s.fs_pending = true;
+    SDL_SetWindowFullscreen(win, !fs);
+    OPL_INFO_F("launcher", "fullscreen %s", fs ? "off" : "on (borderless desktop)");
+}
+
+/** @brief Record the window's fullscreen, maximized and windowed-size state that a window event reports.
+ *
+ * The flags are read at the event, so the order of a platform's resize and
+ * state events does not matter. A fullscreen change marks the fullscreen
+ * touched. A resize while fullscreen, or while a toggle's enter or leave
+ * event is due, is the toggle's and leaves the windowed size alone.
+ * @param e The event. */
+void window_event(const SDL_Event& e) {
+    if (e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN || e.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN)
+        s.fs_pending = false;
+    else if (e.type != SDL_EVENT_WINDOW_RESIZED && e.type != SDL_EVENT_WINDOW_MAXIMIZED &&
+             e.type != SDL_EVENT_WINDOW_RESTORED)
+        return;
+    SDL_Window* win = openpete_native_launcher_window();
+    if (!win) return;
+    const SDL_WindowFlags f = SDL_GetWindowFlags(win);
+    const bool fs = (f & SDL_WINDOW_FULLSCREEN) != 0;
+    if (fs != s.fs_now) {
+        s.fs_now = fs;
+        s.fs_touched = true;
+    }
+    if (fs || s.fs_pending) return;
+    s.max_now = (f & SDL_WINDOW_MAXIMIZED) != 0;
+    int w = 0, h = 0;
+    if (s.max_now || !SDL_GetWindowSize(win, &w, &h)) return;
+    s.win_w = w;
+    s.win_h = h;
+}
+
+/** @brief Act on the window gestures of one event: Alt+Enter and a double-click outside the buttons and entries toggle fullscreen; window events update the recorded state.
+ *
+ * @param e The event.
+ * @return true when the event was a gesture and is consumed. */
+bool window_gesture(const SDL_Event& e) {
+    window_event(e);
+    const bool alt_enter = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                           (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER) &&
+                           (e.key.mod & SDL_KMOD_ALT) != 0;
+    const bool dbl = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT &&
+                     e.button.clicks == 2 && !s.item_hovered;
+    if (!alt_enter && !dbl) return false;
+    toggle_fullscreen();
+    return true;
+}
+
+/** @brief Harness: run the OPENPETE_LAUNCHER_INPUT actions that are due, timed from the first call (the first launcher frame).
+ *
+ * altenter and dblclick post the key and mouse events a player's input
+ * produces (the double-click at the bottom centre of the window, below the
+ * screens' buttons and entries); maximize, restore and resize=WxH call the
+ * window operations. Each action runs once. */
+void scripted_input_poll() {
+    static Uint64 first_ms = 0;
+    static unsigned done = 0;   /* one bit per action, in list order */
+    const char* spec = getenv("OPENPETE_LAUNCHER_INPUT");
+    SDL_Window* win = openpete_native_launcher_window();
+    if (!spec || !*spec || !win) return;
+    const Uint64 now = SDL_GetTicks();
+    if (!first_ms) first_ms = now ? now : 1;
+    unsigned idx = 0;
+    for (const char* p = spec; *p && idx < 32; idx++) {
+        unsigned long ms = strtoul(p, nullptr, 10);
+        const char* act = strchr(p, ':');
+        const char* end = strchr(p, ',');
+        const std::string a = act ? std::string(act + 1, end ? (size_t)(end - act - 1) : strlen(act + 1)) : "";
+        p = end ? end + 1 : p + strlen(p);
+        if ((done & (1u << idx)) || now - first_ms < ms) continue;
+        done |= 1u << idx;
+        OPL_INFO_F("launcher", "scripted input: %s", a.c_str());
+        SDL_Event e = {};
+        int w = 0, h = 0;
+        if (a == "altenter") {
+            e.type = SDL_EVENT_KEY_DOWN;
+            e.key.windowID = SDL_GetWindowID(win);
+            e.key.key = SDLK_RETURN;
+            e.key.scancode = SDL_SCANCODE_RETURN;
+            e.key.mod = SDL_KMOD_LALT;
+            e.key.down = true;
+            (void)SDL_PushEvent(&e);
+        } else if (a == "dblclick") {
+            SDL_GetWindowSize(win, &w, &h);
+            e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            e.button.windowID = SDL_GetWindowID(win);
+            e.button.button = SDL_BUTTON_LEFT;
+            e.button.down = true;
+            e.button.clicks = 2;
+            e.button.x = (float)w * 0.5f;
+            e.button.y = (float)h - 4.0f;
+            (void)SDL_PushEvent(&e);
+        } else if (a == "maximize") {
+            SDL_MaximizeWindow(win);
+        } else if (a == "restore") {
+            SDL_RestoreWindow(win);
+        } else if (sscanf(a.c_str(), "resize=%dx%d", &w, &h) == 2) {
+            SDL_SetWindowSize(win, w, h);
+        }
+    }
+}
+
+/** @brief Write the launcher window's state the player changed into the booted game's options: fullscreen when toggled, the size or maximized when resized or maximized.
+ *
+ * @param opts The game's options. */
+void carry_window_state(openpete_options_t* opts) {
+    const bool size_touched = s.max_now != s.max_open ||
+                              (!s.max_now && (s.win_w != s.open_w || s.win_h != s.open_h));
+    if (!s.fs_touched && !size_touched) return;
+    if (s.fs_touched) opts->fullscreen = s.fs_now ? 1 : 0;
+    if (size_touched) {
+        opts->window_maximized = s.max_now ? 1 : 0;
+        opts->window_w = s.max_now ? 0 : s.win_w;
+        opts->window_h = s.max_now ? 0 : s.win_h;
+    }
+    char size[32];
+    if (!size_touched) snprintf(size, sizeof size, "untouched");
+    else if (s.max_now) snprintf(size, sizeof size, "maximized");
+    else snprintf(size, sizeof size, "%dx%d", s.win_w, s.win_h);
+    OPL_INFO_F("launcher", "the launcher window's state carries to the game: fullscreen %s, window %s",
+               s.fs_touched ? (s.fs_now ? "on" : "off") : "untouched", size);
+}
+
 /* What one input event asks of a waiting screen. */
 enum class Ask { None, Quit, Pick, Browse, Up, Down, Dropped };
 
 /** @brief Read one event as a launcher command: keys, gamepad buttons, the left stick, a dropped file, the window closing.
  *
- * A dropped file's path is stored for launcher_dropped_path; an added
+ * A window gesture (window_gesture) is acted on first and is no command:
+ * Alt+Enter toggles fullscreen and does not pick. A dropped file's path is stored for launcher_dropped_path; an added
  * gamepad is opened.
  * @param e The event.
  * @return The command. */
 Ask ask_of(const SDL_Event& e) {
     static bool armed = true;   /* left-stick debounce: re-centre to move again */
+    if (window_gesture(e)) return Ask::None;
     switch (e.type) {
         case SDL_EVENT_QUIT: return Ask::Quit;
         case SDL_EVENT_DROP_FILE:
@@ -535,8 +730,12 @@ const char* wait_for_disc() {
 void drain_events() {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_EVENT_QUIT) s.quit_pending = true;
-        else openpete_devui_process_event(&e);
+        if (e.type == SDL_EVENT_QUIT) {
+            s.quit_pending = true;
+            continue;
+        }
+        openpete_devui_process_event(&e);
+        (void)window_gesture(e);
     }
 }
 
@@ -822,6 +1021,7 @@ int openpete_launcher_run_task_exclusive(openpete_launcher_task_fn fn, void* use
 }
 
 int openpete_launcher_handoff(openpete_options_t* opts) {
+    carry_window_state(opts);
     close_gamepad();
     s.handed_off = true;
     if (s.quit_pending) {

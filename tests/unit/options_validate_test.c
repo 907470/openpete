@@ -289,6 +289,48 @@ static void effective_resolves_sentinels(void) {
     CHECK(e.mouse == 0 && e.load_delay == 5, "mouse %d load_delay %d", e.mouse, e.load_delay);
 }
 
+/** @brief --window and --launcher-window take WxH or maximized from the CLI, the config file and the env twin; the typed flag beats OPENPETE_LAUNCHER_WINDOW and OPENPETE_LAUNCHER_FULLSCREEN. */
+static void window_values(void) {
+    openpete_options_t o;
+    static const char* const none[] = { "--no-config" };
+    static const char* const wmax[] = { "--no-config", "--window", "maximized" };
+    static const char* const wbad[] = { "--no-config", "--window", "huge" };
+    static const char* const lw[] = { "--no-config", "--launcher-window", "700x500",
+                                      "--launcher-fullscreen", "0" };
+    unsetenv_portable("OPENPETE_LAUNCHER_WINDOW");
+    unsetenv_portable("OPENPETE_LAUNCHER_FULLSCREEN");
+
+    g_case = "window maximized";
+    CHECK(parse(&o, 3, wmax) == OPENPETE_EXIT_OK && o.window_maximized == 1 &&
+          o.window_w == 0 && o.window_h == 0,
+          "window_maximized %d %dx%d", o.window_maximized, o.window_w, o.window_h);
+    CHECK(parse(&o, 3, wbad) == OPENPETE_EXIT_SETUP_ERROR, "typed --window huge parsed");
+    CHECK(parse_cfg(&o, "window = \"maximized\"\n", 0, NULL) == OPENPETE_EXIT_OK &&
+          o.window_maximized == 1, "config window = maximized: %d", o.window_maximized);
+
+    g_case = "launcher knobs unset";
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.launcher_window_maximized == -1 &&
+          o.launcher_fullscreen == -1,
+          "launcher_window_maximized %d launcher_fullscreen %d",
+          o.launcher_window_maximized, o.launcher_fullscreen);
+
+    g_case = "launcher knobs from the env";
+    setenv_portable("OPENPETE_LAUNCHER_WINDOW", "maximized");
+    setenv_portable("OPENPETE_LAUNCHER_FULLSCREEN", "1");
+    CHECK(parse(&o, 1, none) == OPENPETE_EXIT_OK && o.launcher_window_maximized == 1 &&
+          o.launcher_fullscreen == 1,
+          "launcher_window_maximized %d launcher_fullscreen %d",
+          o.launcher_window_maximized, o.launcher_fullscreen);
+
+    g_case = "typed launcher knobs beat the env";
+    CHECK(parse(&o, 5, lw) == OPENPETE_EXIT_OK && o.launcher_window_maximized == 0 &&
+          o.launcher_window_w == 700 && o.launcher_window_h == 500 && o.launcher_fullscreen == 0,
+          "launcher_window %d %dx%d launcher_fullscreen %d", o.launcher_window_maximized,
+          o.launcher_window_w, o.launcher_window_h, o.launcher_fullscreen);
+    unsetenv_portable("OPENPETE_LAUNCHER_WINDOW");
+    unsetenv_portable("OPENPETE_LAUNCHER_FULLSCREEN");
+}
+
 /** @brief Run every case; exit 1 on any failure. */
 int main(void) {
     const char* tmp = getenv("TMPDIR");
@@ -298,6 +340,7 @@ int main(void) {
     typed_refuses_config_falls_back();
     refusals_that_stand();
     env_spellings();
+    window_values();
     resolved_env_fields();
     effective_resolves_sentinels();
     remove(g_toml);

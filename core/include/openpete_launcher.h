@@ -148,7 +148,9 @@ int  openpete_launcher_run_task_exclusive(openpete_launcher_task_fn fn, void* us
 /** @brief Hand the window, the device and the imgui context to the game, creating them now when no screen did.
  *
  * Windowed runs only; a headless run hands over nothing. After the hand-off
- * no launcher screen shows. When the device cannot be created the player
+ * no launcher screen shows. A fullscreen toggle the player made in the
+ * launcher sets opts->fullscreen, and a resize or maximize sets
+ * opts->window_w/h or opts->window_maximized, over every other source. When the device cannot be created the player
  * is told and opts->native_unavailable is set: the disc is named by now, so
  * the run continues on PsyCross's GL window.
  * @param opts The options from the full resolution.

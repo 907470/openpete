@@ -9,7 +9,8 @@ the flag without the leading dashes, with `-` as `_`.
 The window opens at the game's drawn picture at twice its size: 640x448
 <!-- id: knob:window --> for Spyro 1. `--window WxH`
 <!-- id: knob:window --> sets another starting size, for example
-`--window 1920x1080`. Drag the window's edges to resize it at any time.
+`--window 1920x1080`, and `--window maximized` opens the window maximized.
+Drag the window's edges to resize it at any time.
 
 `--background` <!-- id: flag:--background --> opens the window at its
 normal size without taking focus, behind the other windows where the
@@ -25,6 +26,27 @@ Fullscreen is borderless, at the desktop's resolution.
 | Toggle | ++alt+enter++, a double-click in the window, the settings menu's **DISPLAY** row, the dev overlay's **Fullscreen** row |
 | Start fullscreen | `--fullscreen 1` <!-- id: knob:fullscreen home --> |
 | Default | windowed <!-- id: knob:fullscreen -->; the Spyro 1 package's `openpete.toml` sets `fullscreen = true` <!-- id: knob:fullscreen @spyro-1 home --> |
+
+## Launcher window
+
+The launcher opens windowed at the game window's size, maximized when that
+is maximized. Its window resizes and maximizes like the game's, and
+++alt+enter++ or a double-click outside its buttons and entries toggles
+fullscreen.
+
+A fullscreen toggle, resize or maximize made in the launcher carries to the
+game started from it, over `--fullscreen`, `--window` and `openpete.toml`.
+A launcher left as it opened leaves the game's own settings in force. The
+carried state lasts for that start only; the next start of OpenPete uses the
+settings again.
+
+| | |
+| --- | --- |
+| Start the launcher fullscreen | `--launcher-fullscreen 1` <!-- id: knob:launcher_fullscreen home -->; default windowed <!-- id: knob:launcher_fullscreen --> |
+| Launcher size | `--launcher-window WxH` or `--launcher-window maximized` <!-- id: knob:launcher_window home -->; default the game window's size <!-- id: knob:launcher_window --> |
+
+Neither setting changes the game's window unless the window is changed in
+the launcher.
 
 ## Aspect ratio
 

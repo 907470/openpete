@@ -460,12 +460,38 @@ void openpete_knob_default_window_set(int w, int h) {
  * once the host has supplied it, else "(default)". */
 static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
-    if (g_opts && g_opts->window_w > 0)
+    if (g_opts && g_opts->window_maximized > 0)
+        snprintf(buf, cap, "maximized");
+    else if (g_opts && g_opts->window_w > 0)
         snprintf(buf, cap, "%dx%d", g_opts->window_w, g_opts->window_h);
     else if (s_default_win_w > 0 && s_default_win_h > 0)
         snprintf(buf, cap, "%dx%d (default)", s_default_win_w, s_default_win_h);
     else
         snprintf(buf, cap, "(default)");
+}
+
+/** @brief Format the launcher window's first size: WxH, "maximized", or "(the game window's)" when unset.
+ *
+ * @param k The row; unused.
+ * @param buf Receives the text.
+ * @param cap The capacity of buf. */
+static void launcher_window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    if (g_opts && g_opts->launcher_window_maximized > 0)
+        snprintf(buf, cap, "maximized");
+    else if (g_opts && g_opts->launcher_window_maximized == 0)
+        snprintf(buf, cap, "%dx%d", g_opts->launcher_window_w, g_opts->launcher_window_h);
+    else
+        snprintf(buf, cap, "(the game window's)");
+}
+
+/** @brief Return 1 when the launcher opens fullscreen (--launcher-fullscreen 1), else 0.
+ *
+ * @param k The row; unused.
+ * @return The value. */
+static double launcher_fullscreen_get(const knob_desc_t *k) {
+    (void)k;
+    return (g_opts && g_opts->launcher_fullscreen > 0) ? 1.0 : 0.0;
 }
 
 /* ---- Pacing ---- */
@@ -1244,9 +1270,11 @@ static const knob_desc_t g_builtin[] = {
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, window_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .default_note = "the game's drawn viewport at two window rows per VRAM row, widened to a fixed --aspect",
-      .help_arg = "WxH", .help_order = 60,
-      .help_text = "window size (default: the game's drawn viewport at 2x,\n"
-          "640x448 on Spyro 1, 640x432 on Spyro 2 and 3)" },
+      .help_arg = "WxH|maximized", .help_order = 60,
+      .help_text = "window size, or maximized to open the window maximized (default:\n"
+          "the game's drawn viewport at 2x, 640x448 on Spyro 1, 640x432 on\n"
+          "Spyro 2 and 3). A size, maximize or fullscreen set in the launcher\n"
+          "replaces this and --fullscreen for the game it starts" },
 
     { "background", "Background window", "Display", "--background", "OPENPETE_BACKGROUND",
       "Open the window visible and at its normal size but unfocused, not "
@@ -1265,6 +1293,31 @@ static const knob_desc_t g_builtin[] = {
           "unchanged; clicking the window or its taskbar button focuses it. Wins over\n"
           "--fullscreen. For an unattended windowed run alongside\n"
           "--input-lock (default {def} = off; ignored with --headless)." },
+
+    { "launcher_fullscreen", "Launcher fullscreen", "Display", "--launcher-fullscreen",
+      "OPENPETE_LAUNCHER_FULLSCREEN",
+      "Open the launcher in borderless-desktop fullscreen. The game keeps "
+      "its own Fullscreen setting unless fullscreen is toggled in the launcher.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      launcher_fullscreen_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .def_str = "0",
+      .help_arg = "0|1", .help_order = 112,
+      .help_text = "open the launcher in borderless-desktop fullscreen (default {def}\n"
+          "= windowed; on|off also accepted). Alt+Enter or a double-click\n"
+          "toggles it in the launcher; a toggle there carries to the game." },
+
+    { "launcher_window", "Launcher window size", "Display", "--launcher-window",
+      "OPENPETE_LAUNCHER_WINDOW",
+      "The launcher window's first size, WxH or maximized. Unset, the "
+      "launcher opens at the game window's size. A resize or maximize "
+      "made in the launcher carries to the game; this setting alone does not.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, launcher_window_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .default_note = "the game window's size and state (--window)",
+      .help_arg = "WxH|maximized", .help_order = 62,
+      .help_text = "the launcher window's first size, or maximized (default: the\n"
+          "game window's, --window). A resize or maximize in the launcher\n"
+          "carries to the game" },
 
     /* -------- Pacing -------- */
     { "render_fps", "Render FPS", "Pacing", "--render-fps", NULL,

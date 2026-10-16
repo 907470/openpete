@@ -48,6 +48,8 @@ static const cfg_knob_t g_schema[] = {
     { "renderer",         "--renderer",         NULL,                    CFG_ENUM,   v_renderer, NULL,       NULL,       0 },
     { "window",           "--window",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "background",       "--background",       "OPENPETE_BACKGROUND",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "launcher_fullscreen", "--launcher-fullscreen", "OPENPETE_LAUNCHER_FULLSCREEN", CFG_BOOL, NULL, NULL, NULL,     0 },
+    { "launcher_window",  "--launcher-window",  "OPENPETE_LAUNCHER_WINDOW", CFG_STRING, NULL,     NULL,       NULL,       0 },
     { "fov",              "--fov",              NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
 
     /* -------- Pacing -------- */

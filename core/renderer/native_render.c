@@ -4397,7 +4397,10 @@ static int s_background_requested;
 
 /** @brief Return the creation flags of the game window and set the --background activation hints.
  *
- * The flags are SDL_WINDOW_VULKAN and SDL_WINDOW_RESIZABLE. --background
+ * The flags are SDL_WINDOW_VULKAN and SDL_WINDOW_RESIZABLE, plus
+ * SDL_WINDOW_MAXIMIZED and SDL_WINDOW_FULLSCREEN (borderless desktop, no
+ * mode set) as @p open asks; --background drops the fullscreen, which it
+ * wins over. --background
  * turns off activate-on-show and activate-on-raise, so the window maps at
  * its normal size without taking focus. It stays focusable: a not-focusable
  * window is WS_EX_NOACTIVATE on Win32, which also removes its taskbar
@@ -4405,10 +4408,13 @@ static int s_background_requested;
  * closed. The hints are read by SDL_CreateWindow, so they are set here
  * rather than at option-parse time.
  * @param opts Session options; background above 0 sets the hints.
+ * @param open OPENPETE_WINDOW_OPEN_* bits.
  * @return The window flags. */
-static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
+static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts, int open)
 {
     SDL_WindowFlags f = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+    if (open & OPENPETE_WINDOW_OPEN_MAXIMIZED) f |= SDL_WINDOW_MAXIMIZED;
+    if ((open & OPENPETE_WINDOW_OPEN_FULLSCREEN) && opts->background <= 0) f |= SDL_WINDOW_FULLSCREEN;
     if (opts->background > 0) {
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
@@ -4421,8 +4427,8 @@ static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
  *
  * Called at bring-up and again at exit, since a window manager may focus or
  * restack a window on its own after it maps. The line carries the
- * --background request, input focus, focusability, hidden and minimized
- * flags, the size in pixels and the video driver. It is printed only for a
+ * --background request, input focus, focusability, hidden, minimized,
+ * maximized and fullscreen flags, the size in pixels and the video driver. It is printed only for a
  * --background window or when OPENPETE_WINDOW_STATE is set to a value other
  * than 0.
  * @param win Window to report; NULL prints nothing.
@@ -4440,12 +4446,15 @@ static void nr_log_window_state(SDL_Window *win, const char *when)
     int pw = 0, ph = 0;
     SDL_GetWindowSizeInPixels(win, &pw, &ph);
     OPL_INFO_F("native", "window state (%s): background=%d input_focus=%d "
-               "focusable=%d hidden=%d minimized=%d pixels=%dx%d driver=%s",
+               "focusable=%d hidden=%d minimized=%d maximized=%d fullscreen=%d "
+               "pixels=%dx%d driver=%s",
                when, s_background_requested,
                (f & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0,
                (f & SDL_WINDOW_NOT_FOCUSABLE) ? 0 : 1,
                (f & SDL_WINDOW_HIDDEN) ? 1 : 0,
-               (f & SDL_WINDOW_MINIMIZED) ? 1 : 0, pw, ph,
+               (f & SDL_WINDOW_MINIMIZED) ? 1 : 0,
+               (f & SDL_WINDOW_MAXIMIZED) ? 1 : 0,
+               (f & SDL_WINDOW_FULLSCREEN) ? 1 : 0, pw, ph,
                SDL_GetCurrentVideoDriver());
 }
 
@@ -4479,7 +4488,9 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
 
     const char *title = (opts->display_name && opts->display_name[0])
                         ? opts->display_name : "openpete";
-    s_precreated_win = SDL_CreateWindow(title, w, h, nr_window_flags(opts));
+    s_precreated_win = SDL_CreateWindow(
+        title, w, h,
+        nr_window_flags(opts, opts->window_maximized > 0 ? OPENPETE_WINDOW_OPEN_MAXIMIZED : 0));
     if (!s_precreated_win) {
         /* Not fatal: bring-up falls back to creating its own window. */
         OPL_WARN_F("native", "precreate SDL_CreateWindow failed: %s", SDL_GetError());
@@ -6084,7 +6095,7 @@ static bool nr_run_is_synchronous(bool headless, const openpete_options_t *opts)
 }
 
 int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int win_h,
-                                  const char *title)
+                                  int open, const char *title)
 {
     if (s_launch.dev) return 0;
     int w, h;
@@ -6093,7 +6104,7 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
      * events: Win32 delivers a window's messages only to its creator. */
     SDL_Window *win = s_precreated_win;
     s_precreated_win = NULL;
-    if (!win) win = SDL_CreateWindow(title ? title : "openpete", w, h, nr_window_flags(opts));
+    if (!win) win = SDL_CreateWindow(title ? title : "openpete", w, h, nr_window_flags(opts, open));
     if (!win) {
         snprintf(s_launch_error, sizeof s_launch_error,
                  "The window could not be created (%s).", SDL_GetError());
@@ -6119,8 +6130,10 @@ int openpete_native_launcher_open(const openpete_options_t *opts, int win_w, int
     s_launch.win = win;
     s_launch.dev = dev;
     s_launch.created_vsync = created_vsync;
-    OPL_INFO_F("native", "launcher device %p created on window %p (%dx%d)",
-               (void *)dev, (void *)win, w, h);
+    OPL_INFO_F("native", "launcher device %p created on window %p (%dx%d%s%s)",
+               (void *)dev, (void *)win, w, h,
+               (open & OPENPETE_WINDOW_OPEN_MAXIMIZED) ? ", maximized" : "",
+               (open & OPENPETE_WINDOW_OPEN_FULLSCREEN) && opts->background <= 0 ? ", fullscreen" : "");
     return 0;
 }
 
@@ -6367,6 +6380,8 @@ static void nr_apply_game_window_placement(SDL_Window *win, const openpete_optio
          * the background window must not do, so the background wins. */
         OPL_WARN_F("native", "%s", "--background with --fullscreen 1: "
                    "--background wins, staying windowed");
+    } else if (opts->fullscreen && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN)) {
+        OPL_INFO_F("native", "%s", "--fullscreen: the window is already fullscreen");
     } else if (opts->fullscreen) {
         nr_present_black_shown(s_nr.dev);
         SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
@@ -6386,6 +6401,54 @@ static void nr_apply_game_window_placement(SDL_Window *win, const openpete_optio
     }
     openpete_native_publish_fullscreen();
     nr_log_window_state(win, "bring-up");
+}
+
+/** @brief Bring the adopted window to the game's size and state: --window's size or maximized, out of a fullscreen the game does not open in.
+ *
+ * A window already fullscreen that the game opens fullscreen stays so, and
+ * takes the game's size as the size it returns to (a maximized request
+ * then applies only from the windowed state the launcher left). Any other
+ * change shows black at the old size first and presents at the new size
+ * after it (nr_present_black_shown, nr_present_at_window_size), so the
+ * compositor never holds the launcher image at a mismatched size. A window
+ * already in the requested state is left alone.
+ * @param win The window.
+ * @param dev Its device.
+ * @param opts The session options: fullscreen, background, window_maximized.
+ * @param w The game window's width.
+ * @param h The game window's height. */
+static void nr_adopt_window_state(SDL_Window *win, rhi_device *dev,
+                                  const openpete_options_t *opts, int w, int h)
+{
+    const SDL_WindowFlags f = SDL_GetWindowFlags(win);
+    const bool fs = (f & SDL_WINDOW_FULLSCREEN) != 0;
+    const bool max = (f & SDL_WINDOW_MAXIMIZED) != 0;
+    const bool want_max = opts->window_maximized > 0;
+    if (fs && opts->fullscreen && opts->background <= 0) {
+        if (!want_max) SDL_SetWindowSize(win, w, h);
+        return;
+    }
+    int cur_w = 0, cur_h = 0;
+    SDL_GetWindowSize(win, &cur_w, &cur_h);
+    if (!fs && max == want_max && (want_max || (cur_w == w && cur_h == h))) return;
+    rhi_present_trace_arm(dev, "adopt resize");
+    nr_present_black_shown(dev);
+    if (fs) {
+        /* Leaving fullscreen returns to the state before it, which may be
+         * maximized: the state below is read after the window settles. */
+        SDL_SetWindowFullscreen(win, false);
+        SDL_SyncWindow(win);
+    }
+    const bool max_now = (SDL_GetWindowFlags(win) & SDL_WINDOW_MAXIMIZED) != 0;
+    if (want_max) {
+        if (!max_now) SDL_MaximizeWindow(win);
+    } else {
+        if (max_now) SDL_RestoreWindow(win);
+        SDL_SetWindowSize(win, w, h);
+    }
+    nr_present_at_window_size(win, dev);
+    OPL_INFO_F("native", "adopted window: %s%s", fs ? "left fullscreen, " : "",
+               want_max ? "maximized" : "resized to the game's size");
 }
 
 /** @brief Take the launcher's window and device for the game, creating them first when no launcher did.
@@ -6414,7 +6477,9 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     }
     const char *title = (opts->display_name && opts->display_name[0])
                         ? opts->display_name : "openpete";
-    if (!s_launch.dev && openpete_native_launcher_open(opts, w, h, title) != 0) {
+    if (!s_launch.dev &&
+        openpete_native_launcher_open(
+            opts, w, h, opts->window_maximized > 0 ? OPENPETE_WINDOW_OPEN_MAXIMIZED : 0, title) != 0) {
         OPL_ERROR_F("native", "rhi_create failed (%s); continuing without native A/B",
                     s_launch_error);
         return 1;
@@ -6427,14 +6492,7 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
                (void *)dev, (void *)win);
     SDL_SetWindowTitle(win, title);
     SDL_SetWindowResizable(win, true);
-    int cur_w = 0, cur_h = 0;
-    SDL_GetWindowSize(win, &cur_w, &cur_h);
-    if (cur_w != w || cur_h != h) {
-        rhi_present_trace_arm(dev, "adopt resize");
-        nr_present_black_shown(dev);
-        SDL_SetWindowSize(win, w, h);
-        nr_present_at_window_size(win, dev);
-    }
+    nr_adopt_window_state(win, dev, opts, w, h);
     nr_apply_game_window_icon(win);
     nr_apply_scoped_present(dev, opts, created_vsync);
     /* M-key dev config overlay: attaches to the imgui context the launcher

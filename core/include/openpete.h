@@ -169,6 +169,22 @@ typedef struct openpete_options {
      * letterbox/pillarbox margins of the final present-blit to the window. */
     int window_w;
     int window_h;
+    /* --window maximized: the window opens maximized (window_w/h stay 0,
+     * the size it restores to is the default). 1 = maximized, 0 = not. */
+    int window_maximized;
+
+    /* The launcher window's first state. --launcher-fullscreen 0|1
+     * (OPENPETE_LAUNCHER_FULLSCREEN): -1 = unset, the launcher opens
+     * windowed. --launcher-window WxH|maximized (OPENPETE_LAUNCHER_WINDOW):
+     * launcher_window_maximized -1 = unset, the launcher takes the game
+     * window's size and state; 0 = launcher_window_w x launcher_window_h;
+     * 1 = maximized. A fullscreen toggle, resize or maximize made in the
+     * launcher replaces fullscreen, window_w/h and window_maximized of the
+     * game it boots (openpete_launcher_handoff). */
+    int launcher_fullscreen;
+    int launcher_window_w;
+    int launcher_window_h;
+    int launcher_window_maximized;
 
     /* Vertical FOV of the visible band in degrees, native renderer only
      * (0 = the game's projection, 55° vertical). Applied through
@@ -972,7 +988,8 @@ void openpete_options_set_strict(int on);
 
 /** @brief Copy in to out, resolving each unset field whose unset and resolved values behave the same at every consumer.
  *
- * mouse -1 becomes 1, input_lock, background and pad_unfocused -1 become 0,
+ * mouse -1 becomes 1, input_lock, background, pad_unfocused and
+ * launcher_fullscreen -1 become 0,
  * mouse_sensitivity -1 becomes 1.0, load_delay -1 becomes
  * game_get_load_delay_default(), and notex, wireframe, terrain_cache,
  * disc_cache, scan_guard and terrain_visibility take their built-in defaults

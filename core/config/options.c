@@ -81,6 +81,32 @@ static int parse_finite_clamped(const char* flag, const char* v, float lo, float
     return 0;
 }
 
+/** @brief Parse a window-size value: WxH or maximized.
+ *
+ * @param name The flag or env var, for the message.
+ * @param v The value.
+ * @param w Receives the width; 0 for maximized.
+ * @param h Receives the height; 0 for maximized.
+ * @param maximized Receives 1 for maximized, else 0.
+ * @return 0, or -1 after printing why the value is refused (nothing is written). */
+static int parse_window_value(const char* name, const char* v, int* w, int* h, int* maximized) {
+    if (strcmp(v, "maximized") == 0) {
+        *w = *h = 0;
+        *maximized = 1;
+        return 0;
+    }
+    int pw = 0, ph = 0;
+    if (sscanf(v, "%dx%d", &pw, &ph) != 2 || pw <= 0 || ph <= 0) {
+        fprintf(stderr, "openpete: %s expects WxH (e.g. 1280x720) or maximized, got: %s\n",
+                name, v);
+        return -1;
+    }
+    *w = pw;
+    *h = ph;
+    *maximized = 0;
+    return 0;
+}
+
 /** @brief Parse a --sfx, --music or --vibration value on the game's 0..10 slider scale.
  *
  * "off" is 0 and "on" is 10; -1 means the game's own setting stands. On
@@ -875,6 +901,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->render_fps          = -1;    /* -1 = unset; resolved at startup: display refresh (windowed) /
                                         * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
     opts->fullscreen          = 0;     /* windowed by default; --fullscreen 1 = borderless-desktop launch */
+    opts->launcher_fullscreen = -1;    /* -1 = unset; the launcher opens windowed */
+    opts->launcher_window_maximized = -1;  /* -1 = unset; the launcher takes the game window's size */
     opts->tick_scale          = 1.0;   /* engine speed multiplier: 1.0 = real-time */
     opts->record_encoder      = "libx264";
     opts->record_crf          = 23;
@@ -1132,13 +1160,24 @@ static int parse_one_flag(openpete_options_t* opts, int argc, char** argv,
         }
     } else if (strcmp(a, "--window") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-        int w = 0, h = 0;
-        if (sscanf(v, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
-            fprintf(stderr, "openpete: --window expects WxH (e.g. 1280x720), got: %s\n", v);
+        if (parse_window_value(a, v, &opts->window_w, &opts->window_h,
+                               &opts->window_maximized) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--launcher-window") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if (parse_window_value(a, v, &opts->launcher_window_w, &opts->launcher_window_h,
+                               &opts->launcher_window_maximized) != 0)
+            return OPENPETE_EXIT_SETUP_ERROR;
+        i++;
+    } else if (strcmp(a, "--launcher-fullscreen") == 0) {
+        if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+        if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->launcher_fullscreen = 1;
+        else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->launcher_fullscreen = 0;
+        else {
+            fprintf(stderr, "openpete: --launcher-fullscreen expects 0|1 (on|off also accepted), got: %s\n", v);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
-        opts->window_w = w;
-        opts->window_h = h;
         i++;
     } else if (strcmp(a, "--aspect") == 0) {
         if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
@@ -1989,8 +2028,16 @@ static int apply_env_spellings(openpete_options_t* opts) {
         || env_onoff_fallback("OPENPETE_BACKGROUND", &opts->background) != 0
         || env_onoff_fallback("OPENPETE_PAD_UNFOCUSED", &opts->pad_unfocused) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
-    if (env_onoff_fallback("OPENPETE_SCREENSHOT_OVERLAYS", &opts->screenshot_overlays) != 0)
+    if (env_onoff_fallback("OPENPETE_SCREENSHOT_OVERLAYS", &opts->screenshot_overlays) != 0
+        || env_onoff_fallback("OPENPETE_LAUNCHER_FULLSCREEN", &opts->launcher_fullscreen) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
+    if (opts->launcher_window_maximized < 0) {
+        const char* v = openpete_config_env("OPENPETE_LAUNCHER_WINDOW");
+        if (v && *v && parse_window_value("OPENPETE_LAUNCHER_WINDOW", v, &opts->launcher_window_w,
+                                          &opts->launcher_window_h,
+                                          &opts->launcher_window_maximized) != 0)
+            return env_value_refused("OPENPETE_LAUNCHER_WINDOW", v);
+    }
 
     /* The legacy input path hands the event pump and the pad decode to
      * PsyCross, where the lock has no filter. */
@@ -2059,6 +2106,7 @@ void openpete_options_effective(const openpete_options_t* in,
     if (out->mouse < 0)                 out->mouse = 1;
     if (out->input_lock < 0)            out->input_lock = 0;
     if (out->background < 0)            out->background = 0;
+    if (out->launcher_fullscreen < 0)   out->launcher_fullscreen = 0;
     if (out->screenshot_overlays < 0)   out->screenshot_overlays = 0;
     if (out->pad_unfocused < 0)         out->pad_unfocused = 0;
     if (out->mouse_sensitivity < 0.0f)  out->mouse_sensitivity = 1.0f;
