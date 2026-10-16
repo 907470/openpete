@@ -5,6 +5,7 @@
 // (the per-function intercept hook), and `psx_syscall`, supplied here on
 // top of the generated dispatch table.
 
+#include "openpete_crash.h"
 #include "openpete_fiber.h"
 #include "openpete_fatal.h"
 #include "openpete_log.h"
@@ -18,10 +19,6 @@
 #include <SDL3/SDL_timer.h>
 
 #include <errno.h>
-#ifdef _WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  include <windows.h>
-#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -324,7 +321,7 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * On trip: write three rings of (addr, ra, sp) to `OPENPETE_HANG_TRACE`
  * (default hang-trace.bin in the logs state directory, beside the log
  * file) and guest RAM to `OPENPETE_HANG_RAM` (default hang-ram.bin there),
- * tell the player (openpete_fatal_message) and `_Exit(2)`. Format: u32
+ * tell the player (openpete_fatal_message) and exit 2 (openpete_crash_terminate_now). Format: u32
  * magic 'HNG2', then
  * for each ring a u32 count, a u32 head index, and count*{u32 addr, u32 ra,
  * u32 sp}: the entry ring for the tripping interval, the entry ring as it
@@ -468,17 +465,11 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta,
              "Diagnostic files were written to %s and %s.", path, rampath);
     openpete_fatal_message("OpenPete stopped responding", msg);
     fflush(stdout); fflush(stderr);
-    /* stderr is a pipe drained by the log pump thread; _Exit would take the
+    /* stderr is a pipe drained by the log pump thread; exiting first would take the
      * watchdog's own diagnosis down with the process before it is copied. */
     openpete_log_file_sync();
-#ifdef _WIN32
-    /* The CRT's _Exit leaves through ExitProcess, which ends the other
-     * threads where they stand and then runs every DLL's static
-     * destructors: a C++ condition variable whose waiter was ended mid-wait
-     * asserts there. TerminateProcess runs no DLL code. */
-    TerminateProcess(GetCurrentProcess(), 2);
-#endif
-    _Exit(2);
+    /* Other threads may be mid-wait; leave without running any destructor. */
+    openpete_crash_terminate_now(2);
 }
 
 /* Per-function intercept gate emitted at the top of every generated body.

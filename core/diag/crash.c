@@ -305,6 +305,10 @@ void openpete_psx_install_crash_handler(void) {
                "alternate stack)");
 }
 
+void openpete_crash_terminate_now(int code) {
+    _Exit(code);
+}
+
 #else  /* _WIN32 - Win32 SEH unhandled-exception filter */
 
 #include <windows.h>
@@ -444,6 +448,11 @@ void openpete_psx_install_crash_handler(void) {
     SetUnhandledExceptionFilter(on_seh);
     OPL_INFO_F("boot", "crash handler installed (Win32 SEH unhandled-exception filter, "
                "minidump to the logs directory)");
+}
+
+void openpete_crash_terminate_now(int code) {
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+    _Exit(code);
 }
 
 #endif  /* !_WIN32 */
