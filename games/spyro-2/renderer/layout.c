@@ -21,6 +21,8 @@
  * overlay region, the value the dispatcher matches it by (generated/
  * spyro_overlay_table.c). */
 #define OVL_TITLESCREEN_AND_LOADING 34u
+/* The guidebook overlay's id word, matched the same way. */
+#define OVL_GUIDEBOOK 36u
 
 const game_layout_t spyro2_game_layout = {
     .display = {
@@ -707,4 +709,14 @@ const ui_game_t spyro2_ui_game = {
      * the canonical capture. Both inserts are hooked above. */
     .rank_by_link = 1,
     .ot_stitch    = F_UI_OT_STITCH,
+    /* The four callers of func_8001B2A8, each stitching after its own
+     * VSync: the state draw func_800145AC (draw.s, stitch at 0x800146AC and
+     * 0x80014A54), func_800156FC (0x800159A4), the blocking fade
+     * func_8004D810 (drawutil.s, 0x8004D938) and the guidebook's
+     * func_guidebook_8006DB50 (0x8006DF58), resident only with that
+     * overlay. */
+    .stitch_routine = { { 0x800145ACu, 0x800151F0u, 0u },
+                        { 0x800156FCu, 0x800159C8u, 0u },
+                        { 0x8004D810u, 0x8004D984u, 0u },
+                        { 0x8006DB50u, 0x8006DF80u, OVL_GUIDEBOOK } },
 };

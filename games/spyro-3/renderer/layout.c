@@ -674,8 +674,13 @@ const ui_game_t spyro3_ui_game = {
      * slot argument; the SPRT chain hook above feeds them. */
     .ot_rank_slot_insert = F_UI_OT_INSERT_SLOT,
     .ot_stitch           = F_UI_OT_STITCH,
-    /* func_80059038 load screen: the strip copy (func_800289C8) is linked,
-     * then VSync(0), then the labels (func_loading_80075114) into the same
-     * table (warp.c:524-531). */
-    .mid_table_wait      = { 0x8005927Cu },
+    /* The two callers of func_8004E664, both in the base binary: Draw
+     * (draw.s, VSync at 0x8001E88C-0x8001E8F8, stitch at 0x8001E994-
+     * 0x8001EB74) and func_80020168 (drawutil.s, VSync at 0x80020268, stitch
+     * at 0x80020290). Every other wait is outside them, such as
+     * func_80059038's load screen, which links the strip copy
+     * (func_800289C8), waits VSync(0) and links the labels
+     * (func_loading_80075114) into the same table (warp.c:524-531). */
+    .stitch_routine = { { 0x8001E638u, 0x8001EBACu, 0u },
+                        { 0x80020168u, 0x800202DCu, 0u } },
 };

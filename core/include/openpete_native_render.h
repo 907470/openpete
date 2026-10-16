@@ -1472,6 +1472,29 @@ void openpete_native_scene_set_stp_select(int sel);
  * @param rank_of Maps a primitive address to its traversal rank. */
 void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
 
+/** @brief Record the guest address of the fade POLY_F4 the game linked into this frame's ordering table.
+ *
+ * The fade itself is set from the emitter's arguments
+ * (openpete_native_scene_set_fade); the address lets the feeder rank the
+ * fade among the frame's 2D. Cleared at each game-feed frame boundary.
+ * @param prim The fade quad's guest address; 0 = none. */
+void openpete_native_scene_set_fade_prim(uint32_t prim);
+
+/** @brief Return the guest address of this frame's fade POLY_F4, as openpete_native_scene_set_fade_prim recorded it.
+ *
+ * @return The address, or 0 when the frame linked no fade quad. */
+uint32_t openpete_native_scene_fade_prim(void);
+
+/** @brief Mark every 2D triangle of this frame that ranks after the fade quad as drawn over the fade.
+ *
+ * A triangle with a primitive address whose rank (scene_tri_t::seq, set by
+ * openpete_native_scene_rank_2d) exceeds @p fade_rank is marked, every other
+ * one with a primitive address is cleared; the compose draws the marked ones
+ * after the fade pass. Covers the live scene and the carry accumulation.
+ * @param fade_rank The fade quad's rank in the same order; 0 (unranked or no
+ *        fade) clears every mark. */
+void openpete_native_scene_mark_over_fade(uint32_t fade_rank);
+
 /** @brief Collect the guest primitive addresses the current scene's 2D was decoded from.
  *
  * A feeder uses them to tell which of the VBL's ordering-table walks is the

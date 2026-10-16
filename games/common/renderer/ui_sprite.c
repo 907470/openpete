@@ -1641,28 +1641,56 @@ static int prim_in_open_period(uint32_t prim) {
     return 0;
 }
 
-/** @brief Report whether the game is parked at one of its mid-table VSync waits (ui_game.mid_table_wait).
+/** @brief Report whether the VSync the game is parked at was called from one of its stitching routines (ui_game.stitch_routine).
  *
- * @return 1 when the fiber's final yield is at a listed return address, else 0. */
-static int at_mid_table_wait(void) {
-    if (!openpete_yield_final) return 0;
-    for (int i = 0; i < (int)(sizeof ui_game.mid_table_wait / sizeof ui_game.mid_table_wait[0]); i++) {
-        if (!ui_game.mid_table_wait[i]) break;
-        if (ui_game.mid_table_wait[i] == openpete_yield_site.ra) return 1;
+ * A range qualified by an overlay matches only while that overlay is
+ * resident (feature_registry_overlay_probe): the same addresses are other
+ * code in every other overlay.
+ * @return 1 when openpete_yield_site.ra lies in a listed range, else 0. */
+static int wait_in_stitch_routine(void) {
+    const uint32_t ra = openpete_yield_site.ra;
+    const int n = (int)(sizeof ui_game.stitch_routine / sizeof ui_game.stitch_routine[0]);
+    for (int i = 0; i < n && ui_game.stitch_routine[i].lo; i++) {
+        if (ra < ui_game.stitch_routine[i].lo || ra >= ui_game.stitch_routine[i].hi) continue;
+        if (!ui_game.stitch_routine[i].overlay) return 1;
+        uint32_t (*probe)(void) = feature_registry_overlay_probe();
+        if (probe && probe() == ui_game.stitch_routine[i].overlay) return 1;
     }
     return 0;
+}
+
+/** @brief Report whether the game is parked at a VSync wait between linking two parts of one table.
+ *
+ * That is a final VSync yield whose caller is not a routine that stitches
+ * the table after its wait (wait_in_stitch_routine): the caller goes on
+ * linking into the open table after the wait.
+ * @return 1 at such a wait, else 0. */
+static int at_mid_table_wait(void) {
+    return openpete_yield_final && !wait_in_stitch_routine();
 }
 
 /** @brief Hold back the scene's 2D of the table still being linked when the capture is at a mid-table VSync wait.
  *
  * A game that waits a VSync between linking two parts of one table
- * (ui_game.mid_table_wait) is captured before that table is drawn: the
+ * (at_mid_table_wait) is captured before that table is drawn: the
  * buffer still holds the previous table's result. The open table's 2D is
  * moved out of the scene (openpete_native_scene_defer_2d) and re-enters the
  * next scene the game opens, or the live scene at the table's stitch, with
  * the rest of its table. Reads the link map build_link_rank_map left. */
 static void defer_open_period_2d(void) {
-    if (!rank_by_link_on() || !period_defer_on() || !at_mid_table_wait()) return;
+    if (!rank_by_link_on()) return;
+    static int cen = -1;
+    ENV_FLAG_LATCH(cen, "OPENPETE_UI_DEFER_CENSUS");
+    if (cen) {   /* every capture holding open-table 2D, with the wait it is parked at */
+        static uint32_t kp[UI_CLAIM_MAX * 2];
+        const int k = openpete_native_scene_collect_2d_prims(kp, (int)(sizeof kp / sizeof kp[0]));
+        int open = 0;
+        for (int i = 0; i < k; i++) open += prim_in_open_period(kp[i]);
+        if (open)
+            fprintf(stderr, "[uiwait f=%u] ra=%08X final=%d stitch=%d open=%d\n", openpete_frame,
+                    openpete_yield_site.ra, openpete_yield_final, wait_in_stitch_routine(), open);
+    }
+    if (!period_defer_on() || !at_mid_table_wait()) return;
     openpete_native_scene_defer_2d(prim_in_open_period);
 }
 
@@ -1674,13 +1702,19 @@ static void defer_open_period_2d(void) {
  * build_ot_rank_map otherwise; on a link-rank game a table still being
  * linked at a mid-table VSync wait is first held back (defer_open_period_2d);
  * openpete_native_scene_rank_2d then stamps the
- * rest, and the hits are kept in s_ot_ranked. OPENPETE_OT_RING_PROBE prints
+ * rest, and the hits are kept in s_ot_ranked. The frame's fade quad
+ * (openpete_native_scene_fade_prim) is ranked with them, and every 2D
+ * triangle ranked after it is marked to draw over the fade
+ * (openpete_native_scene_mark_over_fade); OPENPETE_UI_FADE_CENSUS prints the
+ * fade's rank and the count of primitives after it. OPENPETE_OT_RING_PROBE prints
  * each unranked primitive, OPENPETE_UISPRITE_TRACE the map size and hits.
  * @param cpu The guest CPU state. */
 static void rank_scene_2d(CPUState* cpu) {
     s_walk_hits = 0;
-    { static uint32_t known[UI_CLAIM_MAX * 2];
-      int kn = openpete_native_scene_collect_2d_prims(known, (int)(sizeof known / sizeof known[0]));
+    const uint32_t fade_prim = openpete_native_scene_fade_prim();
+    { static uint32_t known[UI_CLAIM_MAX * 2 + 1];
+      int kn = openpete_native_scene_collect_2d_prims(known, UI_CLAIM_MAX * 2);
+      if (fade_prim) known[kn++] = fade_prim;   /* ranked so the 2D after it is known */
       for (int i = 1; i < kn; i++) {            /* sorted for the chain scoring */
           uint32_t a = known[i]; int j = i - 1;
           while (j >= 0 && known[j] > a) { known[j+1] = known[j]; j--; }
@@ -1690,6 +1724,17 @@ static void rank_scene_2d(CPUState* cpu) {
     defer_open_period_2d();
     openpete_native_scene_rank_2d(ot_rank_of);
     s_ot_ranked = s_walk_hits;
+    const uint32_t fade_rank = fade_prim ? ot_rank_of_quiet(fade_prim) : 0u;
+    openpete_native_scene_mark_over_fade(fade_rank);
+    { static int fc = -1; ENV_FLAG_LATCH(fc, "OPENPETE_UI_FADE_CENSUS");
+      if (fc && fade_prim) {
+          static uint32_t kp[UI_CLAIM_MAX * 2];
+          const int k = openpete_native_scene_collect_2d_prims(kp, (int)(sizeof kp / sizeof kp[0]));
+          int over = 0;
+          for (int i = 0; i < k; i++) over += fade_rank && ot_rank_of_quiet(kp[i]) > fade_rank;
+          fprintf(stderr, "[uifade f=%u] prim=%08X rank=%u over=%d of=%d\n", openpete_frame,
+                  fade_prim, fade_rank, over, k);
+      } }
     { static int pz2 = -1; ENV_FLAG_LATCH(pz2, "OPENPETE_OT_RING_PROBE");
       if (pz2) { static uint32_t kn2[UI_CLAIM_MAX * 2];
         int k2 = openpete_native_scene_collect_2d_prims(kn2, (int)(sizeof kn2 / sizeof kn2[0]));
@@ -1931,7 +1976,9 @@ static void ui_path_record(CPUState* cpu, uint32_t prim) {
  * line (counted, not claimed), FT4, draw mode, opaque F4 bar (keyed by its
  * emission ordinal inside the framebuffer grid emitter), semi-transparent
  * F4 panel (not inside the fade emitter), SPRT, LINE_G2, POLY_G, LINE_F2;
- * anything else is counted as unclaimed. Reads guest RAM only.
+ * anything else is counted as unclaimed. The semi-transparent F4 the fade
+ * emitter links is recorded as the frame's fade quad
+ * (openpete_native_scene_set_fade_prim). Reads guest RAM only.
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address. */
 static void claim_linked(CPUState* cpu, uint32_t prim) {
@@ -1953,6 +2000,8 @@ static void claim_linked(CPUState* cpu, uint32_t prim) {
     else if (!s_in_fade) unclaimed_note(cpu, prim);   /* no decoder for this encoding: linked, not fed
                                                       * (a prim linked inside the fade emitter is the
                                                       * fade's own F4, drawn from its arguments) */
+    if (s_in_fade && is_f4_semitrans(cpu, prim))      /* the fade's F4: ranked with the 2D */
+        openpete_native_scene_set_fade_prim(prim);
 }
 
 /** @brief Hooks the game's 2D ordering-table insert: claims the primitive being linked, then runs the real insert.

@@ -111,12 +111,15 @@ typedef struct ui_game {
      * walks and clears them. Hooked for the link rank: the links after it
      * belong to the next table, drawn after the current one. 0 = none. */
     uint32_t ot_stitch;
-    /* VSync waits the game makes between linking two parts of one table: the
-     * return address of each such VSync call (openpete_yield_site.ra). The
-     * capture at such a wait presents the buffer before the table is drawn,
-     * so the table's 2D linked so far waits for the scene the table is
-     * finished in. 0 ends the list. */
-    uint32_t mid_table_wait[2];
+    /* The routines that call `ot_stitch`, each as its code range [lo, hi)
+     * and the id of the overlay it lives in (0 = the base binary). Each waits
+     * its VSync and then stitches, so the table open at a capture inside one
+     * is the table the present shows. A capture at a VSync wait whose call
+     * (openpete_yield_site.ra) lies outside every range presents the buffer
+     * before the open table is drawn: its caller links more into that table
+     * after the wait, and the table's 2D linked so far waits for the scene
+     * the table is finished in. lo 0 ends the list. */
+    struct { uint32_t lo, hi, overlay; } stitch_routine[4];
 } ui_game_t;
 
 /* The running game's table: game_runtime_install (game_host_desc.h) copies

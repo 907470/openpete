@@ -369,6 +369,9 @@ typedef struct {
                        * to tick while the tri's screen box scales. The 2D
                        * carry pairs a scaled framebuffer copy by it
                        * (carry_pair_snapshot). */
+    int over_fade;  /* 1 = a 2D tri the game links after the frame's fade quad
+                     * (openpete_native_scene_mark_over_fade): the compose draws
+                     * it after the fade pass, over the fade, as the GPU does. */
     uint32_t seq;   /* the ordering-table traversal rank for this frame (sticky
                      * set_seq value; 0 for everything that is not 2D). The 2D
                      * layer is screen-space with the depth test off, so the
@@ -961,6 +964,10 @@ static int scene_delay_depth(void) {
  * bit31 = active, bits[25:24] = PSX ABR mode (0..3), bits[23:0] = rgb (R in 16..23,
  * G in 8..15, B in 0..7). Reset every frame; the present draws it dead last. */
 static uint32_t s_scene_fade = 0;
+/* The guest address of the fade's POLY_F4 the game linked into this frame's
+ * ordering table (openpete_native_scene_set_fade_prim); 0 = none. Reset with
+ * the fade at every game-feed frame. */
+static uint32_t s_scene_fade_prim = 0;
 
 /* Freeze-frame green overlay for the current frame (pause / inventory / flight
  * results). 0 = inactive; else bit31 = active, bits[23:0] = green tint rgb (the
@@ -1472,6 +1479,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_cur_prim = 0;
         s_cur_fb_cell = 0;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); s_scene_frame = frame; s_scene_key = openpete_feed_key_now();
+        s_scene_fade_prim = 0;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
@@ -1733,6 +1741,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene_fam_n[s_cur_tag >> 28]++;
         s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
         s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
+        s_scene[s_scene_n].over_fade = 0;                /* set at the 2D rank */
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
         s_scene[s_scene_n].fb_cell = s_cur_fb_cell;      /* sticky (set_fb_cell) */
@@ -2072,6 +2081,18 @@ int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
     for (int t = 0; t < s_overlay_accum_n && n < max; t++)
         if (s_overlay_accum[t].prim) out[n++] = s_overlay_accum[t].prim;
     return n;
+}
+
+void openpete_native_scene_set_fade_prim(uint32_t prim) { s_scene_fade_prim = prim; }
+
+uint32_t openpete_native_scene_fade_prim(void) { return s_scene_fade_prim; }
+
+void openpete_native_scene_mark_over_fade(uint32_t fade_rank) {
+    for (int t = 0; t < s_scene_n; t++)
+        if (s_scene[t].prim) s_scene[t].over_fade = fade_rank && s_scene[t].seq > fade_rank;
+    for (int t = 0; t < s_overlay_accum_n; t++)
+        if (s_overlay_accum[t].prim)
+            s_overlay_accum[t].over_fade = fade_rank && s_overlay_accum[t].seq > fade_rank;
 }
 
 void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim)) {
@@ -10888,6 +10909,14 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
 /* The untextured buckets past the numbered groups (0..5): SKY draws before
  * the group loop, WORLD_FILL right after the WORLD group. */
 #define UT_BUCKET_SKY 11
+/* The over-fade 2D buckets (s_cz_lift): the OVERLAY, HUD_PANEL and untextured
+ * HUD triangles the game links after the fade quad, drawn after the fade
+ * pass. Empty unless s_cz_lift is set. */
+#define UT_BUCKET_OVER_OVERLAY 18
+#define UT_BUCKET_OVER_PANEL   19
+#define UT_BUCKET_OVER_HUD     20
+/* The textured over-fade HUD triangles' bucket of the textured block. */
+#define TX_BUCKET_OVER_HUD     8
 static struct { int gi; uint32_t tag; int first, count; } s_utmat[UT_MAT_SPANS];
 static int s_utmat_n;
 #define s_utdef_idx ((int *)s_cz_utdef.data)
@@ -12577,6 +12606,24 @@ static int hud_panel_inverted(const hud_tex_cursor* c, int from, const scene_tri
     return 0;
 }
 
+/* 1 while the present being composed draws a fade and holds 2D triangles the
+ * game links after the fade quad (scene_tri_t::over_fade): the bucket build
+ * then packs those triangles into the over-fade buckets and the compose draws
+ * them after the fade pass. Set once per compose by draw_native_scene. */
+static int s_cz_lift;
+
+/** @brief Report whether a 2D triangle belongs to a pass of the flat HUD layer.
+ *
+ * @param t The triangle.
+ * @param over 1 for the pass drawn after the fade, 0 for the one before it.
+ * @return 1 when the triangle draws in that pass: every triangle draws in
+ *         pass 0 unless s_cz_lift is set, when an over-fade triangle draws in
+ *         pass 1 and every other in pass 0. */
+static int tri_in_fade_pass(const scene_tri_t* t, int over)
+{
+    return (s_cz_lift && t->over_fade) == (over != 0);
+}
+
 /** @brief Report whether the HUD-panel order census is on, reading OPENPETE_HUD_ORDER_CENSUS once.
  *
  * @return 1 when on, else 0. */
@@ -12600,12 +12647,13 @@ static int hud_order_census_on(void)
  * digests. A scene without 2D triangles prints nothing.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
- * @param panels Panel triangles in the slot-8 vertex range.
- * @param c The cursor at the start of the range. */
+ * @param panels Panel triangles in the pass's panel vertex range.
+ * @param c The cursor at the start of the range.
+ * @param over The layer pass (tri_in_fade_pass); pass 1 prints nothing. */
 static void hud_order_census(const scene_tri_t* scene, int scene_n, int panels,
-                             hud_tex_cursor c)
+                             hud_tex_cursor c, int over)
 {
-    if (!hud_order_census_on()) return;
+    if (!hud_order_census_on() || over) return;
     uint32_t h = 2166136261u;
     int n2d = 0;
     for (int t = 0; t < scene_n; t++) {
@@ -12620,7 +12668,8 @@ static void hud_order_census(const scene_tri_t* scene, int scene_n, int panels,
     if (!n2d) return;
     int n = 0, after = 0, inv_first = 0, inv_drawn = 0;
     for (int t = 0; t < scene_n && n < panels; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL ||
+            !tri_in_fade_pass(&scene[t], 0)) continue;
         c.done = hud_tex_run_end(&c, &scene[t]);
         h ^= (uint32_t)c.done; h *= 16777619u;
         n++; after += c.done > 0;
@@ -12664,15 +12713,20 @@ static void hud_tex_draw_to(hud_tex_cursor* c, int end)
  * @param scene_n Triangle count.
  * @param ut_first First vertex of each untextured bucket.
  * @param ut_count Vertex count of each untextured bucket.
- * @param c The cursor at the start of the textured HUD range. */
+ * @param c The cursor at the start of the textured HUD range.
+ * @param over The layer pass (tri_in_fade_pass): 0 reads the panel range of
+ *        bucket 8, 1 that of UT_BUCKET_OVER_PANEL. */
 static void draw_hud_panels_and_tex(const scene_tri_t* scene, int scene_n,
-                                    const int* ut_first, const int* ut_count, hud_tex_cursor c)
+                                    const int* ut_first, const int* ut_count, hud_tex_cursor c,
+                                    int over)
 {
-    hud_order_census(scene, scene_n, ut_count[8] / 3, c);
-    int voff = ut_first[8];
-    const int vend = ut_first[8] + ut_count[8];
+    const int pb = over ? UT_BUCKET_OVER_PANEL : 8;
+    hud_order_census(scene, scene_n, ut_count[pb] / 3, c, over);
+    int voff = ut_first[pb];
+    const int vend = ut_first[pb] + ut_count[pb];
     for (int t = 0; t < scene_n && voff + 3 <= vend; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL ||
+            !tri_in_fade_pass(&scene[t], over)) continue;
         hud_tex_draw_to(&c, hud_tex_run_end(&c, &scene[t]));
         const int b = scene[t].blend;
         rhi_pipeline *pipe = s_nr.gouraud_hud_pipes[(b > 0 && b < NR_BLEND_CLASSES) ? b : NR_BLEND_AVG];
@@ -12699,26 +12753,30 @@ static void draw_hud_panels_and_tex(const scene_tri_t* scene, int scene_n,
  * @param tx_start First vertex of the textured block that draw_tex_runs
  *        indexes.
  * @param hud_tex_first First vertex of the textured HUD range.
- * @param hud_tex_count Vertex count of the textured HUD range. */
+ * @param hud_tex_count Vertex count of the textured HUD range.
+ * @param over The layer pass (tri_in_fade_pass): 0 draws buckets 8 and 6, 1
+ *        the over-fade buckets UT_BUCKET_OVER_PANEL and UT_BUCKET_OVER_HUD;
+ *        the caller passes the matching textured range. */
 static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                                 const int* ut_first, const int* ut_count, int tx_start,
-                                int hud_tex_first, int hud_tex_count)
+                                int hud_tex_first, int hud_tex_count, int over)
 {
     draw_hud_panels_and_tex(scene, scene_n, ut_first, ut_count,
-                            hud_tex_cursor_open(scene, tx_start, hud_tex_first, hud_tex_count));
+                            hud_tex_cursor_open(scene, tx_start, hud_tex_first, hud_tex_count), over);
+    const int hb = over ? UT_BUCKET_OVER_HUD : 6;
     {   /* OPENPETE_HUD6_ZPIPE=1 (A/B): draw the glyph bucket through the opaque
          * depth-tested pipe after a depth clear - isolates the HUD pipe state. */
         static int s_zp = -1;
         if (s_zp < 0) { const char* e = getenv("OPENPETE_HUD6_ZPIPE"); s_zp = (e && *e && *e != '0'); }
-        if (s_zp && s_nr.gouraud_pipe && ut_count[6] > 0) {
+        if (s_zp && s_nr.gouraud_pipe && ut_count[hb] > 0) {
             rhi_clear_depth(s_nr.dev);
             bind_scene_pipe(s_nr.gouraud_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
+            rhi_draw(s_nr.dev, (uint32_t)ut_count[hb], (uint32_t)ut_first[hb]);
             return;
         }
     }
-    if (s_nr.gouraud_hud_pipes[0] && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
+    if (s_nr.gouraud_hud_pipes[0] && ut_count[hb] > 0) {                 /* untextured HUD text/glyphs */
         /* The slot-6 VB range is depth-sorted back-to-front at build time (see
          * the bucket-6 build in render_scene) so rotating near-OT mobys - the
          * inventory letters/icons - self-occlude correctly despite the
@@ -12727,7 +12785,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
          * rotating TEXTURED near-OT moby ever appears.) */
         bind_scene_pipe(s_nr.gouraud_hud_pipes[0]);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count[hb], (uint32_t)ut_first[hb]);
     }
 }
 
@@ -13771,11 +13829,13 @@ static int tx_bucket_belongs(int b, const scene_tri_t* scene, int t, int gblend,
     const int cat = st->category;
     const int bl = (st->blend < 0 || st->blend > 4) ? 0 : st->blend;
     switch (b) {
-    case 4: case 5: case 8: case 10: return 0;
+    case 4: case 5: case 10: return 0;
+    /* The textured HUD triangles linked after the fade quad (s_cz_lift). */
+    case TX_BUCKET_OVER_HUD: return s_cz_lift && st->over_fade && cat == OPENPETE_SCENE_HUD;
     /* PORTAL_RIM (opaque): WORLD faces carrying the portal inner-rim mark,
      * drawn beside the WORLD group through its inner-rim twins. */
     case 13: return cat == OPENPETE_SCENE_WORLD && bl == 0 && st->portal_rim;
-    case 6:  return cat == OPENPETE_SCENE_HUD;
+    case 6:  return cat == OPENPETE_SCENE_HUD && !(s_cz_lift && st->over_fade);
     case 7:  return cat == OPENPETE_SCENE_PORTAL_GUARD;
     /* ACTOR_FRONT (opaque): the rescue actors' textured faces, the ACTOR
      * textured group's class split out for the front pass. */
@@ -13924,10 +13984,11 @@ static void draw_portal_rim_fill(int first, int count, int holefill_on, int gi) 
 /* Untextured single-category buckets of draw_native_scene, in vertex-buffer
  * order; k_utc_bucket maps each to its ut_first/ut_count slot. */
 enum { UTC_OVERLAY, UTC_HUD_PANEL, UTC_HUD3D, UTC_PORTAL_GUARD, UTC_WORLD_FILL,
-       UTC_ACTOR_FRONT, UTC_WORLD_RIM, UTC_FILL_RIM, UTC_N };
-static const int k_utc_bucket[UTC_N] = { 7, 8, 9, 10, 12, 14, 16, 17 };
+       UTC_ACTOR_FRONT, UTC_WORLD_RIM, UTC_FILL_RIM, UTC_OVER_OVERLAY, UTC_OVER_PANEL, UTC_N };
+static const int k_utc_bucket[UTC_N] = { 7, 8, 9, 10, 12, 14, 16, 17,
+                                          UT_BUCKET_OVER_OVERLAY, UT_BUCKET_OVER_PANEL };
 /* Untextured bucket slots of draw_native_scene (ut_first / ut_count). */
-#define UT_BUCKETS 18
+#define UT_BUCKETS 21
 
 /** @brief The single-category untextured bucket a scene triangle packs into, or -1.
  *
@@ -13935,12 +13996,17 @@ static const int k_utc_bucket[UTC_N] = { 7, 8, 9, 10, 12, 14, 16, 17 };
  * triangles of any blend class, and untextured ACTOR_FRONT triangles of
  * blend class 0 (a class outside 0 to 4 counts as 0). An opaque WORLD or
  * WORLD_FILL triangle carrying the portal inner-rim mark takes the matching
- * inner-rim bucket instead.
+ * inner-rim bucket instead. While s_cz_lift is set, an OVERLAY or HUD_PANEL
+ * triangle linked after the fade quad takes its over-fade bucket.
  * @param st The triangle.
  * @return A UTC_* index, or -1. */
 static int utc_class(const scene_tri_t *st)
 {
     if (st->textured) return -1;
+    if (s_cz_lift && st->over_fade) {
+        if (st->category == OPENPETE_SCENE_OVERLAY)   return UTC_OVER_OVERLAY;
+        if (st->category == OPENPETE_SCENE_HUD_PANEL) return UTC_OVER_PANEL;
+    }
     const int opaque = st->blend <= 0 || st->blend > 4;
     if (st->portal_rim && opaque && st->category == OPENPETE_SCENE_WORLD) return UTC_WORLD_RIM;
     if (st->portal_rim && opaque && st->category == OPENPETE_SCENE_WORLD_FILL) return UTC_FILL_RIM;
@@ -14110,6 +14176,74 @@ unsigned openpete_native_compose_serial(int *vram)
     return s_compose_serial;
 }
 
+/** @brief Report whether a present lifts 2D over its fade: it draws a fade and holds a triangle the game links after the fade quad.
+ *
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param fade The present's fade word (openpete_native_scene_set_fade layout).
+ * @return 1 when the fade is active and a triangle carries over_fade, else 0. */
+static int scene_lifts_over_fade(const scene_tri_t* scene, int scene_n, uint32_t fade)
+{
+    if (!(fade & (1u << 31))) return 0;
+    for (int t = 0; t < scene_n; t++)
+        if (scene[t].over_fade) return 1;
+    return 0;
+}
+
+/** @brief Pack the untextured HUD triangles of the over-fade pass, in scene order, from vertex n.
+ *
+ * They are 2D at one depth, so the back-to-front sort of bucket 6 would keep
+ * that order. Packs nothing unless s_cz_lift is set; stops where the vertex
+ * buffer is full.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param buf The compose vertex buffer.
+ * @param n The first free vertex.
+ * @return The first free vertex after the packed triangles. */
+static int pack_over_fade_hud(const scene_tri_t* scene, int scene_n, rhi_vertex* buf, int n)
+{
+    if (!s_cz_lift) return n;
+    for (int t = 0; t < scene_n && n + 3 <= s_cz_verts; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD) continue;
+        if (!tri_in_fade_pass(&scene[t], 1)) continue;
+        pack_scene_tri(&buf[n], &scene[t]);
+        n += 3;
+    }
+    return n;
+}
+
+/** @brief Draw an untextured OVERLAY bucket (the letterbox bars and other 2D flat quads) through the opaque untextured HUD pipe, depth-test off.
+ *
+ * @param first First vertex of the bucket.
+ * @param count Vertex count of the bucket; 0 draws nothing. */
+static void draw_overlay_quads(int first, int count)
+{
+    if (!s_nr.gouraud_hud_pipes[0] || count <= 0) return;
+    bind_scene_pipe(s_nr.gouraud_hud_pipes[0]);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    rhi_draw(s_nr.dev, (uint32_t)count, (uint32_t)first);
+}
+
+/** @brief Draw the 2D the game links after the fade quad, over the fade, in the layer order of the 2D before it.
+ *
+ * Panels and the textured HUD interleaved by rank, the untextured HUD, then
+ * the overlay quads (draw_hud_flat_layer pass 1, draw_overlay_quads). Draws
+ * nothing unless s_cz_lift is set.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param ut_first First vertex of each untextured bucket.
+ * @param ut_count Vertex count of each untextured bucket.
+ * @param tx_start First vertex of the textured block.
+ * @param tex_first First vertex of the over-fade textured HUD range.
+ * @param tex_count Vertex count of the over-fade textured HUD range. */
+static void draw_over_fade_2d(const scene_tri_t* scene, int scene_n, const int* ut_first,
+                              const int* ut_count, int tx_start, int tex_first, int tex_count)
+{
+    if (!s_cz_lift) return;
+    draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, tex_first, tex_count, 1);
+    draw_overlay_quads(ut_first[UT_BUCKET_OVER_OVERLAY], ut_count[UT_BUCKET_OVER_OVERLAY]);
+}
+
 /** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
  *
  * Packs the scene triangles into the vertex buffer and draws the world
@@ -14125,6 +14259,7 @@ static bool draw_native_scene(bool full_extent)
     scene_probes((scene_tri_t*)scene, scene_n);   /* per-present: sees intermediates too */
     depth_transport_census_scene(scene, scene_n);
     fbsnap_present_census(scene, scene_n);
+    s_cz_lift = scene_lifts_over_fade(scene, scene_n, scene_fade);
 
     /* OPENPETE_TERRAIN_KEY_IDENT=1: prove the hoisted key pass and this draw
      * packed from the SAME scene snapshot + clip mapping - repack here and
@@ -14368,7 +14503,8 @@ static bool draw_native_scene(bool full_extent)
         hud_paint_t *ho = (hud_paint_t *)s_cz_hud.data;
         int hn = 0;
         for (int t = 0; t < scene_n; t++) {
-            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD) continue;
+            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD ||
+                !tri_in_fade_pass(&scene[t], 0)) continue;
             ho[hn].z = hud_paint_depth(&scene[t]);
             ho[hn].t = t; hn++;
         }
@@ -14409,6 +14545,9 @@ static bool draw_native_scene(bool full_extent)
         }
     }
     ut_count[6] = n - ut_first[6];
+    ut_first[UT_BUCKET_OVER_HUD] = n;
+    n = pack_over_fade_hud(scene, scene_n, buf, n);
+    ut_count[UT_BUCKET_OVER_HUD] = n - ut_first[UT_BUCKET_OVER_HUD];
     /* The single-category untextured buckets, packed from one classifying
      * count pass and two scatter passes instead of one full scan each:
      *   7  OVERLAY: HUD-OT 2D flat quads (letterbox bars), drawn dead last
@@ -15172,7 +15311,7 @@ static bool draw_native_scene(bool full_extent)
          * fly-in Spyro draws in front of the revealed "THE ADVENTURE BEGINS" text.
          * In every other state the flat HUD draws OVER the player (after the loop). */
         if (gi == 2 && hud_under)
-            draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
+            draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6], 0);
         /* (Dragon-rescue front pass now runs at the TOP of gi==3, before PLAYER -
          * per-pixel depth punch, so it never wipes terrain depth for the
          * transparent groups below, and Spyro sorts against the dragon by
@@ -15190,7 +15329,7 @@ static bool draw_native_scene(bool full_extent)
      * the player (handled at gi==2 above). */
     rhi_gpu_zone_begin(s_nr.dev, "sc.hud");
     if (!hud_under)
-        draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
+        draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6], 0);
 
     hud3d_tex_census(scene, scene_n,
                      draw_hud3d_layer(scene, tx_start, ut_first[9], ut_count[9],
@@ -15200,11 +15339,7 @@ static bool draw_native_scene(bool full_extent)
      * after every scene group, over everything incl. the player, depth-test off
      * (the opaque untextured HUD pipe). Before the fade, matching the PSX HUD-OT order (the fade
      * F4 is linked after the border, so it draws on top of the bars). */
-    if (s_nr.gouraud_hud_pipes[0] && ut_count[7] > 0) {
-        bind_scene_pipe(s_nr.gouraud_hud_pipes[0]);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_count[7], (uint32_t)ut_first[7]);
-    }
+    draw_overlay_quads(ut_first[7], ut_count[7]);
 
     /* Draw the full-screen fade overlay last (over every layer above), in the PSX
      * ABR blend: mode 2 (B-F) subtract -> fade to black; mode 1 (B+F) add -> fade to
@@ -15224,6 +15359,8 @@ static bool draw_native_scene(bool full_extent)
             rhi_draw(s_nr.dev, 6, (uint32_t)fade_first);
         }
     }
+    draw_over_fade_2d(scene, scene_n, ut_first, ut_count, tx_start,
+                      txg_first[TX_BUCKET_OVER_HUD], txg_count[TX_BUCKET_OVER_HUD]);
     rhi_gpu_zone_end(s_nr.dev);   /* sc.hud */
     NR_PROF_END();   /* cmp.record */
 
