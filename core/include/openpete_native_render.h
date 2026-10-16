@@ -1883,19 +1883,18 @@ void openpete_native_note_draw_otag(void);
  * @return 1 when a DrawOTag since the last canonical capture submitted fed
  *         primitives, else 0 (the scene's PutDrawEnv has not run yet). */
 int openpete_native_drawn_env(uint8_t env[4]);
-/** @brief Report whether the yield the game is parked at owes a canonical present because the display shows a buffer holding an unpresented scene.
+/** @brief Return whether the yield the game is parked at owes a canonical present, given whether one is pending already.
  *
- * A DrawOTag that submits a scene no capture has taken draws it into the
- * area of the last PutDrawEnv; a capture of that scene marks the area
- * presented. When the game opens its next scene first (it draws other
- * tables into the shown buffer before it swaps), the area stays
- * unpresented until the game's DISPENV shows it. A yield at which the
- * DISPENV rect holds such an area, moved there from where it stood at that
- * DrawOTag, and the game has fed a scene since the last capture, owes that
- * scene a capture: the screen changes on this VBL. Reporting 1 marks the
- * area presented.
- * @return 1 when the yield owes the capture, else 0. */
-int openpete_native_scene_display_unpresented(void);
+ * A present is owed beyond a pending one only when the game fed a scene
+ * since the last capture, and then when either the screen changes on this
+ * VBL without a DrawOTag of that scene: the DISPENV moved onto an area
+ * holding a drawn scene no present has shown (that area is then marked
+ * presented), or the game draws the fed scene into the buffer on screen,
+ * the DRAWENV clip it put since the last capture lying inside the DISPENV
+ * rect (OPENPETE_FRONT_DRAW_PRESENT=0 disables this rule).
+ * @param pending 1 when a present is pending already.
+ * @return 1 when the yield takes a canonical present, else 0. */
+int openpete_native_scene_yield_owes_present(int pending);
 /** @brief Return the id of the scene whose primitives the last DrawOTag submitted.
  *
  * A scene's id is the ordinal of the canonical capture that presents it

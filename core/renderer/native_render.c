@@ -1275,10 +1275,13 @@ static int s_game_fed;
 static uint8_t s_drawenv_put[4];
 static uint8_t s_drawenv_drawn[4];
 static int     s_drawenv_drawn_valid;
+/* 1 when the game put a DRAWENV since the last canonical capture
+ * (front_draw_owed). */
+static int     s_draw_clip_put;
 /* Draw areas a DrawOTag submitted an uncaptured scene into: the clip rect,
  * the display origin at that DrawOTag, the scene's stamp, and 1 until a
  * capture presents that scene or the display comes to show the area
- * (openpete_native_scene_display_unpresented). */
+ * (display_swap_owed). */
 #define DRAWN_AREA_MAX 2
 static struct { int x, y, w, h, disp_x, disp_y; unsigned frame; int unpresented; } s_drawn_area[DRAWN_AREA_MAX];
 /* Scene identity of the DrawOTag stream. A scene's id is the ordinal of the
@@ -2030,21 +2033,68 @@ static void drawn_area_presented(unsigned frame) {
         if (s_drawn_area[i].frame == frame) s_drawn_area[i].unpresented = 0;
 }
 
-int openpete_native_scene_display_unpresented(void) {
-    if (!openpete_native_scene_enabled() || !s_game_scene_pending || !s_game_fed) return 0;
-    if (!scene_has_game_tris(s_scene, s_scene_n)) return 0;
+/** @brief Report whether a VRAM rect lies inside the DISPENV rect the game last put.
+ *
+ * @param x Rect left, VRAM texels.
+ * @param y Rect top.
+ * @param w Rect width.
+ * @param h Rect height.
+ * @return 1 when the rect is non-empty and inside a non-empty display rect, else 0. */
+static int rect_on_display(int x, int y, int w, int h) {
     const int dx = s_geom_in[0], dy = s_geom_in[1], dw = s_geom_in[2], dh = s_geom_in[3];
+    if (dw <= 0 || dh <= 0 || w <= 0 || h <= 0) return 0;
+    return x >= dx && y >= dy && x + w <= dx + dw && y + h <= dy + dh;
+}
+
+/** @brief Report whether the display came to show a buffer holding a drawn scene no present has shown.
+ *
+ * A DrawOTag that submits a scene no capture has taken draws it into the
+ * area of the last PutDrawEnv (note_drawn_area); a capture of that scene
+ * marks the area presented. When the game opens its next scene first, the
+ * area stays unpresented until the DISPENV shows it, moved there from where
+ * it stood at that DrawOTag; a display that showed the area when it was
+ * drawn into shows the draw itself, not a swap to it. Reporting 1 marks the
+ * area presented. The caller checks that the game fed a scene since the
+ * last capture.
+ * @return 1 when the swap owes the fed scene a capture, else 0. */
+static int display_swap_owed(void) {
+    if (!scene_has_game_tris(s_scene, s_scene_n)) return 0;
     for (int i = 0; i < DRAWN_AREA_MAX; i++) {
         if (!s_drawn_area[i].unpresented) continue;
-        /* A display that showed the area when it was drawn into shows the
-         * draw itself, not a swap to it. */
-        if (s_drawn_area[i].disp_x == dx && s_drawn_area[i].disp_y == dy) continue;
-        const int x = s_drawn_area[i].x, y = s_drawn_area[i].y;
-        if (x < dx || y < dy || x + s_drawn_area[i].w > dx + dw || y + s_drawn_area[i].h > dy + dh) continue;
+        if (s_drawn_area[i].disp_x == s_geom_in[0] && s_drawn_area[i].disp_y == s_geom_in[1]) continue;
+        if (!rect_on_display(s_drawn_area[i].x, s_drawn_area[i].y, s_drawn_area[i].w, s_drawn_area[i].h)) continue;
         s_drawn_area[i].unpresented = 0;
         return 1;
     }
     return 0;
+}
+
+/** @brief Report whether the game draws its fed scene into the buffer on screen.
+ *
+ * A PSX table drawn into the displayed buffer shows on the next scanout.
+ * The draw target is the DRAWENV clip the game put since the last canonical
+ * capture: a put older than that capture belongs to a table already drawn,
+ * and a game that puts its DRAWENV after the wait has not named the target
+ * yet. Owed when that clip lies inside the DISPENV rect and the fed scene
+ * holds content once the 2D feeder's deferred primitive is flushed into it,
+ * as the capture flushes it. OPENPETE_FRONT_DRAW_PRESENT=0 disables it
+ * (negative control). The caller checks that the game fed a scene since the
+ * last capture.
+ * @return 1 when the draw owes the fed scene a capture, else 0. */
+static int front_draw_owed(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_FRONT_DRAW_PRESENT"); on = !(e && *e == '0'); }
+    if (!on || !s_draw_clip_put) return 0;
+    if (!rect_on_display(s_geom_in[4], s_geom_in[5], s_geom_in[6], s_geom_in[7])) return 0;
+    if (s_overlay_precapture) s_overlay_precapture();
+    return s_overlay_accum_n > 0 || scene_has_game_tris(s_scene, s_scene_n);
+}
+
+int openpete_native_scene_yield_owes_present(int pending) {
+    if (!openpete_native_scene_enabled() || !s_game_scene_pending || !s_game_fed) return pending;
+    /* The swap is evaluated even with a present pending: it marks its area presented. */
+    const int swap = display_swap_owed();
+    return pending || swap || front_draw_owed();
 }
 
 void openpete_native_note_draw_otag(void) {
@@ -2903,6 +2953,7 @@ void openpete_native_scene_capture_overlay(void) {
     const int repeat = openpete_native_scene_canon_repeat();
     s_capture_seq++;
     s_canon_repeat = -1;
+    s_draw_clip_put = 0;
     s_game_fed = 0;
     /* A DrawOTag that already drew this scene has folded its fade into the area it drew into. */
     s_capture_drawn = s_drawenv_drawn_valid;
@@ -7060,6 +7111,7 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h)
                        game_layout.display.clip_h);
     }
     s_geom_in[4] = x; s_geom_in[5] = y; s_geom_in[6] = w; s_geom_in[7] = h;
+    s_draw_clip_put = 1;
 }
 
 /* ---- native VRAM model: dirty-rect tracked mirror ------------------------
