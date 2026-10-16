@@ -6217,6 +6217,24 @@ int openpete_native_launcher_active(void) { return s_launch.dev != NULL; }
 
 struct SDL_Window *openpete_native_launcher_window(void) { return s_launch.win; }
 
+int openpete_native_launcher_window_op(openpete_launcher_window_op_t op, int w, int h)
+{
+    SDL_Window *win = s_launch.win;
+    if (!win) return -1;
+    switch (op) {
+    case OPENPETE_LAUNCHER_WINDOW_FULLSCREEN_TOGGLE: {
+        const bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
+        if (!fs) SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
+        SDL_SetWindowFullscreen(win, !fs);
+        return fs ? 0 : 1;
+    }
+    case OPENPETE_LAUNCHER_WINDOW_MAXIMIZE: SDL_MaximizeWindow(win); break;
+    case OPENPETE_LAUNCHER_WINDOW_RESTORE:  SDL_RestoreWindow(win); break;
+    case OPENPETE_LAUNCHER_WINDOW_RESIZE:   if (w > 0 && h > 0) SDL_SetWindowSize(win, w, h); break;
+    }
+    return 0;
+}
+
 int openpete_native_launcher_present(struct rhi_device *on, float r, float g, float b,
                                      void (*draw)(void *ud), void *ud)
 {

@@ -79,6 +79,28 @@ const char *openpete_native_launcher_error(void);
  * @return 1 while the launcher holds the device, else 0. */
 int openpete_native_launcher_active(void);
 
+/* A window operation on the launcher's window (openpete_native_launcher_window_op). */
+typedef enum {
+    OPENPETE_LAUNCHER_WINDOW_FULLSCREEN_TOGGLE,  /* windowed <-> borderless-desktop fullscreen */
+    OPENPETE_LAUNCHER_WINDOW_MAXIMIZE,
+    OPENPETE_LAUNCHER_WINDOW_RESTORE,
+    OPENPETE_LAUNCHER_WINDOW_RESIZE              /* to w x h */
+} openpete_launcher_window_op_t;
+
+/** @brief Perform a window operation on the launcher's window, on the thread that created it.
+ *
+ * The launcher's window belongs to the thread that called
+ * openpete_native_launcher_open (main) until bring-up adopts it; the
+ * launcher's screens run on that thread, so the operation runs in the call.
+ * After the adoption the launcher holds no window and nothing happens.
+ * @param op The operation.
+ * @param w The width for OPENPETE_LAUNCHER_WINDOW_RESIZE.
+ * @param h The height for OPENPETE_LAUNCHER_WINDOW_RESIZE.
+ * @return For the fullscreen toggle, 1 when it requested fullscreen and 0
+ *         when it requested windowed; 0 for the others; -1 when the
+ *         launcher holds no window. */
+int openpete_native_launcher_window_op(openpete_launcher_window_op_t op, int w, int h);
+
 /** @brief Return the launcher's window, for a dialog parent.
  *
  * @return The window, or NULL when the launcher holds none. */

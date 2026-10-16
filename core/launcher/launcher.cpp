@@ -480,15 +480,12 @@ void open_file_dialog() {
                            filters, 2, nullptr, false);
 }
 
-/** @brief Toggle the launcher window between windowed and borderless-desktop fullscreen. */
+/** @brief Toggle the launcher window between windowed and borderless-desktop fullscreen (openpete_native_launcher_window_op). */
 void toggle_fullscreen() {
-    SDL_Window* win = openpete_native_launcher_window();
-    if (!win) return;
-    const bool fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) != 0;
-    if (!fs) SDL_SetWindowFullscreenMode(win, nullptr);
+    const int on = openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_FULLSCREEN_TOGGLE, 0, 0);
+    if (on < 0) return;
     s.fs_pending = true;
-    SDL_SetWindowFullscreen(win, !fs);
-    OPL_INFO_F("launcher", "fullscreen %s", fs ? "off" : "on (borderless desktop)");
+    OPL_INFO_F("launcher", "fullscreen %s", on ? "on (borderless desktop)" : "off");
 }
 
 /** @brief Record the window's fullscreen, maximized and windowed-size state that a window event reports.
@@ -581,11 +578,11 @@ void scripted_input_poll() {
             e.button.y = (float)h - 4.0f;
             (void)SDL_PushEvent(&e);
         } else if (a == "maximize") {
-            SDL_MaximizeWindow(win);
+            (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_MAXIMIZE, 0, 0);
         } else if (a == "restore") {
-            SDL_RestoreWindow(win);
+            (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESTORE, 0, 0);
         } else if (sscanf(a.c_str(), "resize=%dx%d", &w, &h) == 2) {
-            SDL_SetWindowSize(win, w, h);
+            (void)openpete_native_launcher_window_op(OPENPETE_LAUNCHER_WINDOW_RESIZE, w, h);
         }
     }
 }
