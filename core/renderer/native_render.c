@@ -1863,13 +1863,15 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
  * area the game last put (openpete_fb_snapshot_retained_area); the fold keys
  * the sum to that area's content epoch, so a new retained run, an auto-clear
  * put or a full-area fill starts it afresh, and an OT that carries the world
- * restarts it, since the world repaints the buffer under the quad. A fade of
+ * restarts it at zero, since the world repaints the buffer under the quad
+ * and the world scene's own fade is the one its held entry keeps. A fade of
  * any other blend mode drawn into the area does not compose with the sum and
  * stops the area's sum until its epoch changes. Reads the emitter's arguments
  * and the game's draw-env puts only; writes no PSX RAM. */
 static int      s_fade_unput[3];       /* B-F colour sum emitted since the last DrawOTag */
 static int      s_fade_unput_other;    /* a non-subtractive fade emitted since then */
 static int      s_fade_ot_world;       /* the captured scene the next DrawOTag draws holds the world */
+static int      s_capture_drawn;       /* the captured scene's DrawOTag ran before its capture */
 typedef struct {
     int      sum[3];       /* per-channel B-F total drawn into the area, 0..255 */
     unsigned epoch;        /* the area content epoch the sum belongs to */
@@ -1892,7 +1894,9 @@ static void area_fade_fold(void) {
             F->epoch = ep; F->valid = 1;
         }
         if (s_fade_unput_other) F->valid = 0;
-        for (int c = 0; c < 3 && F->valid; c++) {
+        /* A world OT's own fade is the fade its scene was kept with
+         * (hold_retain_canonical), which the held compose adds itself. */
+        for (int c = 0; c < 3 && F->valid && !s_fade_ot_world; c++) {
             const int s = F->sum[c] + s_fade_unput[c];
             F->sum[c] = s > 255 ? 255 : s;
         }
@@ -1900,6 +1904,59 @@ static void area_fade_fold(void) {
     s_fade_unput[0] = s_fade_unput[1] = s_fade_unput[2] = 0;
     s_fade_unput_other = 0;
     s_fade_ot_world = 0;
+}
+
+/* The draw area the presented scene's OT draws into
+ * (openpete_native_note_present_draw_area), for the next canonical capture. */
+static int s_present_area[4];
+static int s_present_area_isbg;
+static int s_present_area_valid;
+
+void openpete_native_note_present_draw_area(int clip_x, int clip_y, int clip_w, int clip_h, int isbg) {
+    s_present_area[0] = clip_x; s_present_area[1] = clip_y;
+    s_present_area[2] = clip_w; s_present_area[3] = clip_h;
+    s_present_area_isbg = isbg;
+    s_present_area_valid = clip_w > 0 && clip_h > 0;
+}
+
+/** @brief Return the fade word for a per-channel B-F sum, or 0 when every channel is zero.
+ *
+ * @param sum Per-channel sums, each 0..255.
+ * @return A mode-2 fade word (see openpete_native_scene_set_fade), or 0. */
+static uint32_t fade_sum_word(const int sum[3]) {
+    if (!(sum[0] | sum[1] | sum[2])) return 0;
+    return (1u << 31) | (2u << 24) | ((uint32_t)sum[0] << 16)
+         | ((uint32_t)sum[1] << 8) | (uint32_t)sum[2];
+}
+
+/** @brief Return the B-F sum the presented scene's draw area holds once the scene's OT is drawn, as a fade word.
+ *
+ * The area is the one openpete_native_note_present_draw_area named. Its put
+ * continues the area's retained run when the area is retained now
+ * (openpete_fb_snapshot_area_find) and the put keeps auto-clear off;
+ * otherwise the run starts afresh at that put. The OT then adds the
+ * subtractive quads emitted since the last DrawOTag. A fade of another blend
+ * mode in the run or pending does not compose with a sum.
+ * @param known Receives 1 when an area was named for this capture, else 0.
+ * @return A mode-2 fade word, or 0 when the area is cleared or holds no sum. */
+static uint32_t present_area_fade_word(int *known) {
+    *known = s_present_area_valid;
+    if (!s_present_area_valid || s_present_area_isbg || s_fade_unput_other) return 0;
+    unsigned ep = 0;
+    int retained = 0;
+    const int t = openpete_fb_snapshot_area_find(s_present_area[0], s_present_area[1],
+                                                 s_present_area[2], s_present_area[3],
+                                                 &ep, &retained);
+    int sum[3] = { 0, 0, 0 };
+    if (t >= 0 && t < OPENPETE_FB_SNAPSHOT_AREA_MAX && retained && s_area_fade[t].epoch == ep) {
+        if (!s_area_fade[t].valid) return 0;
+        memcpy(sum, s_area_fade[t].sum, sizeof sum);
+    }
+    for (int c = 0; c < 3; c++) {
+        const int v = sum[c] + s_fade_unput[c];
+        sum[c] = v > 255 ? 255 : v;
+    }
+    return fade_sum_word(sum);
 }
 
 /** @brief Return the fade word for the held B-F sum of a retained area, or 0 when it holds none.
@@ -1910,9 +1967,8 @@ static void area_fade_fold(void) {
 static uint32_t area_fade_word(int a, unsigned ep) {
     if (a < 0 || a >= OPENPETE_FB_SNAPSHOT_AREA_MAX) return 0;
     const area_fade_t* F = &s_area_fade[a];
-    if (!F->valid || F->epoch != ep || !(F->sum[0] | F->sum[1] | F->sum[2])) return 0;
-    return (1u << 31) | (2u << 24) | ((uint32_t)F->sum[0] << 16)
-         | ((uint32_t)F->sum[1] << 8) | (uint32_t)F->sum[2];
+    if (!F->valid || F->epoch != ep) return 0;
+    return fade_sum_word(F->sum);
 }
 
 void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) {
@@ -2503,7 +2559,8 @@ void openpete_native_scene_front_end(void) {
  * (openpete_native_scene_apply_overlay). A tick without the world whose
  * present shows the area's held content (the retained freeze backdrop, or
  * the held scene an empty compose stands in, hold_redirect_begin) presents
- * the area's held fade sum (area_fade_word) as its fade. Records whether the scene holds the world for
+ * as its fade the sum the buffer it shows holds once its OT is drawn
+ * (present_area_fade_word, else area_fade_word). Records whether the scene holds the world for
  * the next DrawOTag's fold. OPENPETE_FBSNAP_CENSUS prints the
  * list per capture. */
 static void held_capture(void) {
@@ -2511,27 +2568,30 @@ static void held_capture(void) {
     const int a = openpete_fb_snapshot_retained_area(&ep);
     const bool world = scene_accum_has_world();
     s_fade_ot_world = world;   /* the OT the next DrawOTag draws carries this scene */
-    if (a < 0) s_held_cover_n = 0;
-    s_held_area = a;
-    s_held_replay = 0;
-    if (a < 0) return;
-    /* The area holds the fade quads already drawn into it: the present shows
-     * their sum in place of the tick's own quad, which its DrawOTag has not
-     * drawn yet. Only while the present shows the area's held content: the
+    /* The present shows the buffer the scene's OT draws into, with every fade
+     * quad drawn into it: the run's sum and the tick's own quads. A game that
+     * submits after its VSync puts that buffer's env only after this capture,
+     * so the area is the one g_CurDB names (present_area_fade_word); one that
+     * submitted before it drew into the last put area, whose sum already
+     * holds the quads. Only while the present shows the held content: the
      * retained backdrop armed for this present (commit_fade's freeze word),
      * or a scene with no game triangle, which composes the area's held scene.
-     * The area named by the last put stays retained until the game's next
-     * put, after the game has already turned auto-clear back on in the env
-     * the present reads, and a present drawing content of its own then draws
-     * it over a cleared buffer. */
+     * A present drawing content of its own draws it over the buffer. */
     const bool armed = s_freeze_retained && (s_overlay_carry_freeze & (1u << 31));
     const bool shows_held = armed || !scene_has_game_tris(s_scene, s_scene_n);
-    const uint32_t held_fade = (shows_held && !world) ? area_fade_word(a, ep) : 0u;
+    int known = 0;
+    const uint32_t ahead = s_capture_drawn ? 0u : present_area_fade_word(&known);
+    const uint32_t sum = known ? ahead : (a >= 0 ? area_fade_word(a, ep) : 0u);
+    const uint32_t held_fade = (shows_held && !world) ? sum : 0u;
     if (held_fade) {
         s_scene_fade = held_fade;
         s_fade_curr = held_fade;
         s_area_fade_presents++;
     }
+    if (a < 0) s_held_cover_n = 0;
+    s_held_area = a;
+    s_held_replay = 0;
+    if (a < 0) return;
     held_list_t* L = &s_held[a];
     if (!L->valid || L->epoch != ep) { L->n = 0; L->epoch = ep; L->valid = 1; }
     /* A tick that renders the world repaints the buffer under its 2D (the
@@ -2595,6 +2655,8 @@ void openpete_native_scene_capture_overlay(void) {
     s_capture_seq++;
     s_canon_repeat = -1;
     s_game_fed = 0;
+    /* A DrawOTag that already drew this scene has folded its fade into the area it drew into. */
+    s_capture_drawn = s_drawenv_drawn_valid;
     s_drawenv_drawn_valid = 0;   /* the commit before this capture consumed it */
     /* A repeat present shows the scene the previous capture took: the carry
      * stays that scene's 2D, standing still. */

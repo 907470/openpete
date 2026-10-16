@@ -320,6 +320,22 @@ void openpete_native_hold_note_vram(int x, int y, int w, int h, int src_x, int s
  * @return 1 when enabled, 0 otherwise. */
 int openpete_fb_snapshot_enabled(void);
 
+/** @brief Find the live draw area whose clip rect is exactly the given rect, with its content epoch and auto-clear state.
+ *
+ * Reads the state openpete_fb_snapshot_note_draw_env and the fills keep; a
+ * put of the same rect with auto-clear off continues the area's content
+ * when the area is retained now, and starts it afresh otherwise.
+ * @param clip_x Clip rect left, VRAM texels.
+ * @param clip_y Clip rect top.
+ * @param clip_w Clip rect width.
+ * @param clip_h Clip rect height.
+ * @param epoch Receives the area's content epoch; may be NULL.
+ * @param retained Receives 1 when the area's last put kept the buffer (auto-clear off); may be NULL.
+ * @return The area index (0 to OPENPETE_FB_SNAPSHOT_AREA_MAX - 1), or -1 when
+ *         no live area has that rect or the mechanism is disabled. */
+int openpete_fb_snapshot_area_find(int clip_x, int clip_y, int clip_w, int clip_h,
+                                   unsigned *epoch, int *retained);
+
 #ifdef __cplusplus
 }
 #endif

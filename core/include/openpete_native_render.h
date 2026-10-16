@@ -1785,6 +1785,20 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b);
  * @param g Clear green, 0..255.
  * @param b Clear blue, 0..255. */
 void openpete_native_note_put_draw_env(int isbg, int r, int g, int b);
+/** @brief Record the draw area the scene being presented will be drawn into, for the next canonical capture.
+ *
+ * Called once per canonical present, before the capture, with the clip rect
+ * and auto-clear flag of the DRAWENV g_CurDB points at: the env the
+ * presented scene's DrawOTag applies after the VSync, which the PutDrawEnv
+ * latch reaches only one VSync later. The capture reads it to predict the
+ * subtractive fade sum that area holds once the scene's OT is drawn. A
+ * nonpositive width or height records that no area is known.
+ * @param clip_x Clip rect left, VRAM texels.
+ * @param clip_y Clip rect top.
+ * @param clip_w Clip rect width.
+ * @param clip_h Clip rect height.
+ * @param isbg The DRAWENV auto-clear flag. */
+void openpete_native_note_present_draw_area(int clip_x, int clip_y, int clip_w, int clip_h, int isbg);
 /** @brief Note a DrawOTag: when the game fed primitives since the last canonical capture, that content's env is the last PutDrawEnv's.
  *
  * Called by the DrawOTag thunk. A game that submits its OT before the VSync

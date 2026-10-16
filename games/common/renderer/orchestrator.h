@@ -88,8 +88,10 @@ int cyclorama_native_present_env(uint8_t env[4]);
  * therefore trails the presented scene by one VSync. Every gamestate writes
  * its clear into that struct before building the OT. The env's isbg and
  * r0/g0/b0 go to openpete_native_set_clear_color; without an env (no valid
- * g_CurDB) the PutDrawEnv latch stays in effect. Defined by the shared
- * cyclorama feeder (games/common/renderer/cyclorama.c) for every game. */
+ * g_CurDB) the PutDrawEnv latch stays in effect. The same DRAWENV's clip
+ * rect and isbg go to openpete_native_note_present_draw_area (no area
+ * without a valid g_CurDB). Defined by the shared cyclorama feeder
+ * (games/common/renderer/cyclorama.c) for every game. */
 void cyclorama_native_env_clear_commit(void);
 
 /* Canonical-render epoch. A feeder that snapshots transient render-pass

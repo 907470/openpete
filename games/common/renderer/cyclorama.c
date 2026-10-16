@@ -842,23 +842,32 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
 static uint8_t s_site_env[4];
 static int     s_site_env_valid;
 
+/** @brief Return the PSYQ DRAWENV in the draw buffer g_CurDB points at, read through the sub-tick view.
+ *
+ * Reads g_CurDB (game_layout.db.cur_ptr), then the 0x1C-byte DRAWENV at the
+ * buffer's game_layout.db.drawenv offset: the clip RECT at +0x00, isbg at
+ * +0x18, r0/g0/b0 at +0x19..+0x1B.
+ * @return The DRAWENV bytes, or NULL when the layout names no pair or
+ *         g_CurDB points at neither of its two buffers. */
+static const uint8_t* cur_db_drawenv(void) {
+    if (!game_layout.db.cur_ptr) return NULL;   /* no draw-buffer pair located */
+    const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
+    if (!curp) return NULL;
+    uint32_t curdb;
+    memcpy(&curdb, curp, 4);
+    if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
+        return NULL;   /* not a valid DB* yet */
+    /* PSYQ DRAWENV through b0 @+0x1B: 0x1C bytes. */
+    return (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.drawenv, 0x1Cu);
+}
+
 /** @brief Read isbg, r0, g0, b0 of the DRAWENV in the draw buffer g_CurDB points at.
  *
- * Reads g_CurDB (game_layout.db.cur_ptr) and the PSYQ DRAWENV through the
- * sub-tick view: isbg at +0x18, r0/g0/b0 at +0x19..+0x1B.
  * @param env Receives isbg, r0, g0, b0 when the function returns 1.
  * @return 1 when the layout names the pair and g_CurDB points at one of its
  *         two buffers, else 0. */
 static int cur_db_env(uint8_t env[4]) {
-    if (!game_layout.db.cur_ptr) return 0;   /* no draw-buffer pair located */
-    const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
-    if (!curp) return 0;
-    uint32_t curdb;
-    memcpy(&curdb, curp, 4);
-    if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
-        return 0;   /* not a valid DB* yet */
-    /* PSYQ DRAWENV through b0 @+0x1B: 0x1C bytes. */
-    const uint8_t* e = (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.drawenv, 0x1Cu);
+    const uint8_t* e = cur_db_drawenv();
     if (!e) return 0;
     memcpy(env, e + 0x18, 4);
     return 1;
@@ -902,6 +911,16 @@ int cyclorama_native_present_env(uint8_t env[4]) {
 }
 
 void cyclorama_native_env_clear_commit(void) {
+    /* The area the presented scene's OT draws into: the held-fade sum the
+     * capture presents is that area's, not the PutDrawEnv latch's. */
+    const uint8_t* de = cur_db_drawenv();
+    if (de) {
+        int16_t clip[4];
+        memcpy(clip, de, sizeof clip);
+        openpete_native_note_present_draw_area(clip[0], clip[1], clip[2], clip[3], de[0x18]);
+    } else {
+        openpete_native_note_present_draw_area(0, 0, 0, 0, 1);
+    }
     uint8_t env[4];
     if (!cyclorama_native_present_env(env)) return;   /* the PutDrawEnv latch stays */
     openpete_native_set_clear_color(env[0], env[1], env[2], env[3]);

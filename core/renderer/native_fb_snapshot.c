@@ -735,3 +735,17 @@ void openpete_fb_snapshot_counts(unsigned *taken, unsigned *resolved,
     if (resolved) *resolved = s_resolved;
     if (quads)    *quads    = s_quads;
 }
+
+int openpete_fb_snapshot_area_find(int clip_x, int clip_y, int clip_w, int clip_h,
+                                   unsigned *epoch, int *retained)
+{
+    if (!openpete_fb_snapshot_enabled()) return -1;
+    for (int i = 0; i < FB_AREA_MAX; i++) {
+        const fb_area_t *a = &s_area[i];
+        if (!a->live || a->x != clip_x || a->y != clip_y || a->w != clip_w || a->h != clip_h) continue;
+        if (epoch) *epoch = a->epoch;
+        if (retained) *retained = a->retained;
+        return i;
+    }
+    return -1;
+}
