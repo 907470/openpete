@@ -40,21 +40,23 @@ BIN="$PG_BIN"
 DISC="$PG_DISC"
 
 # Each game's legs beside its rows: the runahead and rewind-driver movie, the
-# transition movie, the rewind hold point (the game's feed key) and the portal
-# leg. Spyro 3 has rows only. Every other slug is refused rather than replayed
-# against movies recorded for a different game.
-RA_MOVIE=""; XL_MOVIE=""; HOLD=""; PORTAL=0
+# rewind hold point (the game's feed key) and the transition legs, each
+# `movie:expect` (see the runahead-transition section). Spyro 3 has no
+# runahead or rewind-driver leg. Every other slug is refused rather than
+# replayed against movies recorded for a different game.
+RA_MOVIE=""; HOLD=""; XL_LEGS=()
 case "$PG_GAME" in
     spyro-1)
         RA_MOVIE=games/spyro-1/bk2/beast_makers_wall.bk2
-        XL_MOVIE=games/spyro-1/bk2/exit-level.bk2
-        HOLD=1700:40
-        PORTAL=1 ;;
+        XL_LEGS=(games/spyro-1/bk2/exit-level.bk2:clean
+                 games/spyro-1/bk2/town-square-portal-entry.bk2:carve-out)
+        HOLD=1700:40 ;;
     spyro-2)
         RA_MOVIE=games/spyro-2/bk2/shady-oasis-flame.bk2
-        XL_MOVIE=games/spyro-2/bk2/autumn-plains-skelos-badlands-portal-entry.bk2
+        XL_LEGS=(games/spyro-2/bk2/autumn-plains-skelos-badlands-portal-entry.bk2:rollback)
         HOLD=1500:40 ;;
-    spyro-3) ;;
+    spyro-3)
+        XL_LEGS=(games/spyro-3/bk2/sunrise-spring-sunny-villa-portal-entry.bk2:rollback) ;;
     *) echo "SKIP: $PG_GAME has no savestate corpus"; exit 64 ;;
 esac
 MANIFEST="$(pg_corpus_manifest "$PG_GAME" state-roundtrip.manifest)"
@@ -268,39 +270,78 @@ else
     echo "  predict-check: ${pc:-no summary emitted} FAIL"; fail=1
 fi
 
-# Runahead × transitions. Speculation that crosses out of gameplay-live
-# is ADOPTED, not rolled back: the fiber parks at a transition-code yield
-# whose host stack differs structurally from the gameplay yield the
-# snapshot was taken at (the fiber stack is not snapshottable), and
-# restoring under that continuation collapses the game's VSync pacing -
-# the failure mode was a full tick's work every VBL and a level load that
-# never completes. Gate both directions:
-#   - portal entry (walk-in, speculation crosses mid-tick -> adoption):
-#     the level MUST still load under --runahead 2;
-#   - level exit (crossing lands between ticks, no adoption): committed
-#     timeline MUST stay byte-identical to clean.
-if [ "$PORTAL" = 1 ]; then
-echo "== runahead-transitions (town-square portal, exit-level)"
-PG_CAPTURE_TIMEOUT=600 pg_capture "$OUT/tsq-ra.log" "$OUT/tsq-ra.csv" -- \
-    --bk2 games/spyro-1/bk2/town-square-portal-entry.bk2 --frame-limit 12000 \
-    --unlock-frames 0-12000 --runahead 2 \
-    --gameplay-hash-log "$OUT/tsq-ra.csv" \
-    || { echo "  portal runahead run FAILED"; fail=1; }
-if grep -q "level_10 -> level_13" "$OUT/tsq-ra.log"; then
-    echo "  portal entry under runahead(2): level loaded PASS"
-else
-    echo "  portal entry under runahead(2): LEVEL NEVER LOADED FAIL"; fail=1
-fi
-fi
-echo "== runahead-transition ($(basename "$XL_MOVIE" .bk2))"
-run "$XL_MOVIE" "$OUT/xl-ra.csv" --runahead 2 \
-    || { echo "  exit runahead run FAILED"; fail=1; }
-if cmp -s "$OUT/$(basename "$XL_MOVIE" .bk2)-clean.csv" "$OUT/xl-ra.csv"; then
-    echo "  $(basename "$XL_MOVIE" .bk2) under runahead(2): byte-identical PASS"
-else
-    echo "  $(basename "$XL_MOVIE" .bk2) under runahead(2): DIVERGED FAIL"; fail=1
 fi
 
+# Runahead x transitions. A speculation that leaves gameplay (a portal, a
+# level exit) rolls back when the game fiber parks at the snapshot's park
+# site (the psyq_VSync call it was taken under) and is adopted when the
+# fiber parks at another site, since the fiber's host stack is not
+# snapshotted. An adopted speculation's VBLs ran on held input, so its
+# movie rows are not played and the hash log has no row for them. Each
+# leg's run reports `left gameplay: R rolled back, A adopted` and the
+# adoptions; its expectation:
+#   rollback  - byte-identical to clean, 0 adoptions, R > 0 (engaged);
+#   clean     - byte-identical to clean, 0 adoptions;
+#   carve-out - adoptions counted and reported (the transition moves the
+#               park site); every shared row equal to clean, and the level
+#               after the transition loads.
+for leg in "${XL_LEGS[@]}"; do
+    xl_movie="${leg%:*}"; xl_expect="${leg##*:}"
+    xl_name=$(basename "$xl_movie" .bk2)
+    echo "== runahead-transition ($xl_name, --runahead 2, $xl_expect)"
+    [ -f "$xl_movie" ] || { echo "  no movie at $xl_movie FAIL"; fail=1; continue; }
+    xl_clean="$OUT/$xl_name-clean.csv"
+    if [ ! -f "$xl_clean" ]; then
+        run "$xl_movie" "$xl_clean" || { echo "  clean run FAILED"; fail=1; continue; }
+    fi
+    run "$xl_movie" "$OUT/xl-$xl_name.csv" --runahead 2 \
+        || { echo "  runahead run FAILED"; fail=1; continue; }
+    xl_log="$OUT/xl-$xl_name.csv.log"
+    xl_line="$(deferred "$xl_log")"
+    xl_adopt=$(sed -n 's/.* \([0-9]*\) adopted at another park site.*/\1/p' <<<"$xl_line")
+    xl_rolled=$(sed -n 's/.*left gameplay: \([0-9]*\) rolled back.*/\1/p' <<<"$xl_line")
+    if [ -z "$xl_adopt" ] || [ -z "$xl_rolled" ]; then
+        echo "  no runahead summary line FAIL"; fail=1; continue
+    fi
+    echo "  left gameplay: $xl_rolled rolled back; adopted: $xl_adopt"
+    xl_ident=0
+    cmp -s "$xl_clean" "$OUT/xl-$xl_name.csv" && xl_ident=1
+    case "$xl_expect" in
+        rollback|clean)
+            if [ $xl_ident = 1 ] && [ "$xl_adopt" -eq 0 ] &&
+               { [ "$xl_expect" = clean ] || [ "$xl_rolled" -gt 0 ]; }; then
+                echo "  $xl_name under runahead(2): byte-identical, 0 adopted PASS"
+            elif [ $xl_ident = 0 ]; then
+                echo "  $xl_name under runahead(2): DIVERGED FAIL"; fail=1
+            elif [ "$xl_adopt" -ne 0 ]; then
+                echo "  $xl_name under runahead(2): $xl_adopt adopted FAIL"; fail=1
+            else
+                echo "  $xl_name under runahead(2): no speculation left gameplay VACUOUS FAIL"; fail=1
+            fi ;;
+        carve-out)
+            python3 - "$xl_clean" "$OUT/xl-$xl_name.csv" "$xl_adopt" "$xl_name" <<'EOF' || fail=1
+import csv, sys
+clean = {r[0]: r[1:] for r in csv.reader(open(sys.argv[1])) if r and r[0] != 'frame'}
+ra = {r[0]: r[1:] for r in csv.reader(open(sys.argv[2])) if r and r[0] != 'frame'}
+missing = sorted(int(f) for f in clean if f not in ra)
+div = sorted(int(f) for f in ra if f in clean and clean[f] != ra[f])
+adopt = int(sys.argv[3])
+ok = adopt > 0 and not div
+span = f"{missing[0]}-{missing[-1]}" if missing else "none"
+print(f"  {sys.argv[4]} under runahead(2): CARVE-OUT {adopt} adopted, {len(missing)} "
+      f"row(s) absent (frames {span}), {len(div)} shared row(s) diverged -> "
+      + ("PASS" if ok else "FAIL"))
+sys.exit(0 if ok else 1)
+EOF
+            if grep -q "level_10 -> level_13" "$xl_log"; then
+                echo "  $xl_name under runahead(2): level loaded PASS"
+            else
+                echo "  $xl_name under runahead(2): LEVEL NEVER LOADED FAIL"; fail=1
+            fi ;;
+    esac
+done
+
+if [ -n "$RA_MOVIE" ]; then
 # Rewind driver gate: hold rewind for 40 iterations mid-gameplay via
 # --rewind-hold; the scrub must be a single backward jump and the
 # post-release timeline must match the clean run bit-for-bit (movie

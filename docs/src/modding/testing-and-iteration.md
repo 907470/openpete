@@ -126,10 +126,13 @@ interpolation and overlays.
 The final line of a run goes to stdout, not to the log file:
 
 ```
-openpete-exit: reason=frame-limit frames=1760 ms=8311 code=0
+openpete-exit: reason=frame-limit frames=1760 key=1760 key_kind=frame ms=8311 code=0
 ```
 
-`frames` is a VBL count, so this run covered 880 ticks.
+`frames` is a VBL count, so this run covered 880 ticks. `key` is the
+counter `--frame-limit` and `--screenshot-on-frame` read, named by
+`key_kind`: `frame` on Spyro 1, where it equals `frames`, and `vbl` on
+Spyro 2 and 3, where it also counts the VBLs of the fast boot.
 
 ## Recipes
 
@@ -235,7 +238,7 @@ Every run ends with its player pose on stdout, after the `openpete-exit:`
 line, in the grammar `--player-pose` takes:
 
 ```
-openpete-exit: reason=frame-limit frames=2400 ms=8698 code=0
+openpete-exit: reason=frame-limit frames=2400 key=2400 key_kind=frame ms=8698 code=0
 openpete-pose: level=11 pos=(134640, 121826, 21007) yaw=2048
 ```
 
@@ -324,7 +327,7 @@ To find a VBL to capture, pause with ++f7++, step with ++f8++ to the
 target state, and quit. The run's last line reports it:
 
 ```
-openpete-exit: reason=user-quit frames=2000 ms=33430 code=0
+openpete-exit: reason=user-quit frames=2000 key=2000 key_kind=frame ms=33430 code=0
 ```
 
 Extract the count:
@@ -332,7 +335,7 @@ Extract the count:
 === "Linux"
 
     ```
-    openpete --bk2 test.bk2 2>/dev/null | grep -oE 'frames=[0-9]+' | cut -d= -f2
+    openpete --bk2 test.bk2 2>/dev/null | grep -oE ' key=[0-9]+' | cut -d= -f2
     # 2000
     ```
 
@@ -340,7 +343,7 @@ Extract the count:
 
     ```
     (openpete.exe --bk2 test.bk2 2>$null |
-      Select-String -Pattern 'frames=(\d+)').Matches.Groups[1].Value
+      Select-String -Pattern ' key=(\d+)').Matches.Groups[1].Value
     # 2000
     ```
 

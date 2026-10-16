@@ -36,9 +36,10 @@
 # OPENPETE_RA_PREDICT_CHECK=1, which counts led predictions retired against
 # the committed timeline. A run that never speculated would meet the pixel
 # criterion trivially, so it is VACUOUS instead of PASS. A row whose
-# speculation was adopted into the real timeline (`crossed into a transition`,
-# or `reached no final yield`) before its VBL is also VACUOUS: nothing led
-# that capture.
+# speculation left gameplay (`speculation left gameplay`: rolled back or
+# adopted, its led state is not captured) or was adopted into the real
+# timeline (`adopted the led timeline`) before its VBL is also VACUOUS:
+# nothing led that capture.
 #
 # Deferral: the runahead leg's `deferred to a final yield:` line is printed
 # per row; its `runahead:` part counts the speculation snapshots owed to a
@@ -126,7 +127,7 @@ while IFS='|' read -r bk2 vbl depth want_def; do
     armed=0
     grep -q 'armed: leading presentation by' "$RA_LOG" && armed=1
     adopted=0
-    grep -q 'crossed into a transition\|reached no final yield' "$RA_LOG" && adopted=1
+    grep -q 'speculation left gameplay\|adopted the led timeline' "$RA_LOG" && adopted=1
     checked=$(grep -o '\[ra-predict\] checked=[0-9]*' "$RA_LOG" | tail -1)
     checked="${checked##*checked=}"
     [[ -n "$checked" ]] || checked=0

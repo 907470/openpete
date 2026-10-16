@@ -694,6 +694,12 @@ static const char* bk2_row_key_name(bk2_row_key_t key) {
     return key == BK2_ROW_KEY_VBL ? "openpete_vbl" : "openpete_frame";
 }
 
+/** @brief Name the game's feed key, the counter --frame-limit and the one-shot triggers read.
+ * @return "vbl" for openpete_vbl, "frame" for openpete_frame. */
+static const char* feed_key_kind_name(void) {
+    return openpete_feed_key() == OPENPETE_FEED_KEY_VBL ? "vbl" : "frame";
+}
+
 /** @brief Load the --bk2 movie and check that this run can replay it.
  *
  * Refuses a movie recorded under another load delay, and a consume-keyed
@@ -995,6 +1001,29 @@ static uint64_t ra_pc_hash(void) {
      * split there is the same class of misprediction as one in RAM. */
     return openpete_fnv1a64_update(h, openpete_mods_arena_bytes(),
                                    openpete_mods_arena_used());
+}
+
+/** @brief Record the led prediction in a free pending slot while RAM is the speculation head, keyed by the led tick.
+ *
+ * Nothing when the check is off or every slot is pending. At level 2 the
+ * slot also keeps a copy of the led RAM and scratchpad for the mismatch
+ * dump. */
+static void ra_pc_record_led(void) {
+    if (!ra_pc_on()) return;
+    for (int i = 0; i < RA_PC_PENDING; i++) {
+        if (s_ra_pc[i].valid) continue;
+        s_ra_pc[i].target = openpete_frame;
+        s_ra_pc[i].hash   = ra_pc_hash();
+        s_ra_pc[i].valid  = 1;
+        if (ra_pc_on() < 2) return;
+        if (!s_ra_pc[i].led)
+            s_ra_pc[i].led = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE + OPENPETE_PSX_SCRATCH_SIZE);
+        if (!s_ra_pc[i].led) return;
+        memcpy(s_ra_pc[i].led, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);
+        memcpy(s_ra_pc[i].led + OPENPETE_PSX_RAM_SIZE, openpete_psx_get_scratch(),
+               OPENPETE_PSX_SCRATCH_SIZE);
+        return;
+    }
 }
 
 /** @brief Write the CSV header of the gameplay hash log: frame, vbl, fnv1a64 and one column per region.
@@ -3619,7 +3648,8 @@ static void overlay_input_suspend(void) {
  * is refused after them; the rewind seek takes the newest keyframe saved
  * at the current site; the stress rollback waits up to its bound and then
  * re-arms; the runahead rollback continues the speculation to the
- * snapshot's site and adopts it at the bound.
+ * snapshot's site, through a transition when the speculation leaves
+ * gameplay, and adopts it at the bound.
  *
  * One-shot requests (the save and load hotkeys, a mod's request, the
  * scheduled --state-save-on-frame / --state-load-on-frame) enter a queue
@@ -3666,7 +3696,8 @@ static unsigned long long s_state_yields_skipped = 0;  /* drains at an intermedi
  * yield (ra_owed), [1] rollbacks whose speculation ended below a non-final
  * yield. */
 static unsigned long long s_ra_deferred[2];
-static unsigned long long s_ra_adopted_nofinal = 0;  /* speculations adopted: no final yield within the bound */
+static unsigned long long s_ra_adopted = 0;  /* speculations adopted: no rollback at the snapshot's park site */
+static unsigned long long s_ra_left[2];  /* speculations that left gameplay: [0] rolled back, [1] adopted */
 
 /** @brief Count one runahead snapshot (kind 0) or rollback (kind 1) deferred to a final yield.
  * @param kind 0 for a snapshot, 1 for a rollback. */
@@ -3775,55 +3806,60 @@ static int state_ops_drain(void) {
  * the snapshot continues from. The speculation loop ends at a final yield
  * when it breaks on the tick count, but that yield can be another site
  * than the snapshot's (a game with two frame-wait sites), and its yield
- * bound and its no-advance break (the no-tick yield after a stubbed
- * dispatch) can leave the fiber at an intermediate yield. Speculation then
- * continues with the same held input, the rollback counted as deferred
- * (and as a park-site deferral when the fiber was at a final yield), until
- * the site or the bound. A site that does not recur within the bound
- * leaves the speculation adopted: no rollback can be applied at another
- * site.
- * @param live_lost Nonzero when the speculation already left gameplay (it is
- *        adopted; nothing runs).
+ * bound, its no-advance break (the no-tick yield after a stubbed dispatch)
+ * and its break on leaving gameplay can leave the fiber at an intermediate
+ * yield or at another site. Speculation then continues with the same held
+ * input, the rollback counted as deferred (and as a park-site deferral when
+ * the fiber was at a final yield), until the site or the bound. A
+ * speculation that has left gameplay waits only to its first final yield:
+ * a transition that waits at the snapshot's psyq_VSync site rolls back
+ * there, and one that waits at another site has moved its frame wait, so
+ * the speculation is adopted at once rather than after further held-input
+ * VBLs. A site that does not recur within the bound leaves the speculation
+ * adopted: no rollback can be applied at another site.
  * @param site The snapshot's park site.
  * @param cap Further yields allowed.
- * @param nofinal Set to 1 when the site did not recur within `cap`.
+ * @param left In: nonzero when the speculation already left gameplay. Out:
+ *        also set when the continuation leaves it.
  * @return 0 when parked at the site (the rollback may load), 1 when the
- *         speculation is adopted instead: gameplay stopped being live, or
- *         the site did not recur within `cap`. */
-static int ra_speculate_to_final(int live_lost, openpete_park_site_t site, int cap, int* nofinal) {
-    if (live_lost) return 1;
+ *         speculation is adopted. */
+static int ra_speculate_to_final(openpete_park_site_t site, int cap, int* left) {
     if (openpete_park_site_matches(&site)) return 0;
     ra_count_deferral(1);
     if (openpete_yield_final) s_site_deferred[SITE_DEF_RUNAHEAD]++;
     OPL_DEBUG_F("runahead", "speculation ended at f=%u %s; rollback deferred to the "
                 "snapshot's park site", openpete_frame,
                 openpete_yield_final ? "at another park site" : "below an intermediate yield");
-    for (int v = 0; v < cap && !openpete_park_site_matches(&site); v++) {
+    for (int v = 0; v < cap && !(*left && openpete_yield_final); v++) {
         game_on_frame_pre(&g_game.cpu, openpete_frame);
         g_openpete_guest_running = 1;
         co_switch((cothread_t)openpete_game_fiber);
         g_openpete_guest_running = 0;
-        if (!game_is_gameplay_live(&g_game.cpu)) return 1;
+        if (!game_is_gameplay_live(&g_game.cpu)) *left = 1;
+        if (openpete_park_site_matches(&site)) return 0;
     }
-    if (openpete_park_site_matches(&site)) return 0;
-    s_ra_adopted_nofinal++;
-    *nofinal = 1;
+    s_ra_adopted++;
     return 1;
 }
 
-/** @brief Log the adoption of a speculation into the real timeline, naming why no rollback ran.
- * @param nofinal Nonzero when no final yield came within the bound; zero when
- *        the speculation crossed out of gameplay. */
-static void ra_adopt_log(int nofinal) {
-    if (nofinal)
+/** @brief Log the end of a speculation that left gameplay or was adopted, and count it.
+ * @param left Nonzero when the speculation left gameplay.
+ * @param adopted Nonzero when it became the timeline (its park site did not
+ *        recur within the bound); zero when it was rolled back. */
+static void ra_end_log(int left, int adopted) {
+    if (left) s_ra_left[adopted ? 1 : 0]++;
+    if (!adopted)
+        OPL_INFO_F("runahead", "speculation left gameplay; rolled back at the snapshot's "
+                   "park site (led f=%u)", openpete_frame);
+    else if (left)
+        OPL_INFO_F("runahead",
+                   "speculation left gameplay and parked at another site than the "
+                   "snapshot's; adopted the led timeline through f=%u (runahead idle "
+                   "until gameplay resumes)", openpete_frame);
+    else
         OPL_WARN_F("runahead",
                    "speculation reached no final yield at the snapshot's park site within "
                    "its bound; adopted the led timeline through f=%u", openpete_frame);
-    else
-        OPL_INFO_F("runahead",
-                   "speculation crossed into a transition; adopted "
-                   "the led timeline through f=%u (runahead idle "
-                   "until gameplay resumes)", openpete_frame);
 }
 
 /** @brief Queue the savestate requests raised this iteration: the hotkeys, a mod's request and the scheduled one-shots.
@@ -5667,8 +5703,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * state or it would pair backward. */
                 int ra_want = (runahead_n > 0 && ra_snap &&
                                game_is_gameplay_live(&g_game.cpu));
-                int ra_live_lost = 0;
-                int ra_nofinal = 0;   /* adopted: no final yield within the bound */
+                int ra_left = 0;      /* the speculation left gameplay */
+                int ra_adopted = 0;   /* the snapshot's park site did not recur: no rollback */
                 /* The snapshot is taken at a final yield only: a tick whose
                  * draw is first seen at an intermediate yield of its wait
                  * owes its speculation to the wait's final yield. */
@@ -5787,40 +5823,29 @@ static int run_host_loop(const openpete_options_t* opts) {
                         co_switch((cothread_t)openpete_game_fiber);
                         g_openpete_guest_running = 0;
                         if (openpete_frame == bf) break;   /* safety */
-                        /* Speculation crossed into a load/cutscene. The
-                         * rollback contract is void here: the game fiber
-                         * is now parked at a TRANSITION-code yield whose
-                         * host call stack differs structurally from the
-                         * gameplay yield the snapshot was taken at, and
-                         * the fiber stack is not snapshottable (Windows
-                         * libco = opaque OS fibers). Restoring guest
-                         * state under the mismatched continuation
-                         * corrupts the game's own VSync pacing - the
-                         * committed timeline then runs a full tick's
-                         * work every VBL and the load never completes.
-                         * So the speculation is ADOPTED instead: these
-                         * VBLs become the real timeline (their held
-                         * input is exactly what the input log records
-                         * for them - the per-VBL append below covers
-                         * every VBL this iteration consumed), and
-                         * runahead disengages until gameplay is live
-                         * again. Costs at most 2N VBLs of held-input
-                         * substitution at the moment a fade begins. */
+                        /* Speculation left gameplay (a load, a cutscene):
+                         * stop counting ticks. The rollback below still
+                         * loads when the transition waits at the
+                         * snapshot's psyq_VSync site. */
                         if (!game_is_gameplay_live(&g_game.cpu)) {
-                            ra_live_lost = 1;
+                            ra_left = 1;
                             break;
                         }
                     }
                     /* The rollback below loads only at a final yield. */
-                    ra_live_lost = ra_speculate_to_final(ra_live_lost, openpete_state_mem_site(ra_snap),
-                                                         8 * runahead_n + 16, &ra_nofinal);
+                    ra_adopted = ra_speculate_to_final(openpete_state_mem_site(ra_snap),
+                                                       8 * runahead_n + 16, &ra_left);
                     openpete_speculative = 0;
                     openpete_pace_vbl_suspend(0);
+                    /* An adopted speculation's pad writes and consumer
+                     * entries reach the recorder; a rolled-back one's are
+                     * run again by the committed ticks. */
+                    bk2_feed_speculation_end(ra_adopted);
                     /* An adopted speculation is the timeline: its frames
                      * are fed. A rolled-back one is rendered again by the
                      * committed ticks. */
-                    PsyX_SPUAL_Speculate(0, ra_live_lost);
-                    if (!ra_live_lost) {
+                    PsyX_SPUAL_Speculate(0, ra_adopted);
+                    if (!ra_adopted) {
                         openpete_present_pending  = ra_pp;
                         openpete_primitives_drawn = ra_prims;
                     }
@@ -5828,49 +5853,38 @@ static int run_host_loop(const openpete_options_t* opts) {
                      * speculation head (the rollback happens below, after
                      * the interp captures); openpete_frame is the led
                      * frame here. */
-                    if (ra_pc_on() && !ra_live_lost) {
-                        for (int i = 0; i < RA_PC_PENDING; i++) {
-                            if (s_ra_pc[i].valid) continue;
-                            s_ra_pc[i].target = openpete_frame;
-                            s_ra_pc[i].hash   = ra_pc_hash();
-                            s_ra_pc[i].valid  = 1;
-                            if (ra_pc_on() >= 2) {
-                                if (!s_ra_pc[i].led)
-                                    s_ra_pc[i].led = (uint8_t*)malloc(
-                                        OPENPETE_PSX_RAM_SIZE + OPENPETE_PSX_SCRATCH_SIZE);
-                                if (s_ra_pc[i].led) {
-                                    memcpy(s_ra_pc[i].led, openpete_psx_get_ram(),
-                                           OPENPETE_PSX_RAM_SIZE);
-                                    memcpy(s_ra_pc[i].led + OPENPETE_PSX_RAM_SIZE,
-                                           openpete_psx_get_scratch(),
-                                           OPENPETE_PSX_SCRATCH_SIZE);
-                                }
-                            }
-                            break;
-                        }
-                    }
+                    if (!ra_left && !ra_adopted) ra_pc_record_led();
                     ra_speculated = true;
                     pace_flags |= OP_PACE_F_SPECULATIVE;
                 }
-                ra_skip_capture = (ra_want && !ra_speculated) || ra_live_lost;
-                if (ra_live_lost) {
-                    /* Adoption (see the spec-loop comment): the led VBLs
-                     * are the real timeline now. No rollback; predictions
-                     * pending against the abandoned branch die; the
-                     * presentation drops its pre-adoption pairs and snaps
-                     * (invisible - a fade is starting). */
-                    ra_speculated = false;             /* skip the rollback below */
+                if (ra_left && !ra_adopted) {
+                    /* A speculation that left gameplay leads into a
+                     * transition the committed ticks reach N ticks later:
+                     * roll back now, so the capture below takes the
+                     * committed state as on a tick without speculation. */
+                    unsigned ra_lf = openpete_frame;
+                    if (openpete_state_mem_load(ra_snap, &g_game.cpu, &ra_lf, 1) == 0)
+                        openpete_frame = ra_lf;
+                }
+                ra_skip_capture = (ra_want && !ra_speculated && !ra_left) || ra_adopted;
+                if (ra_left || ra_adopted) {
+                    /* An adopted speculation's VBLs are the real timeline;
+                     * a rolled-back one was restored above. Either way the
+                     * rollback below is skipped, predictions pending
+                     * against the led branch die, and the presentation
+                     * drops its pairs and snaps (a fade is starting), so
+                     * no lerp pairs a led state with the committed ticks
+                     * that follow. */
+                    ra_speculated = false;   /* skip the rollback below */
                     ra_pc_invalidate_all();
                     openpete_ra_input_edge = 0;
                     /* Presentation-only reset (NOT the guest-discontinuity
                      * broadcast - the timeline is continuous forward, and
                      * the broadcast would finalize an in-progress bk2
-                     * recording): drop the pre-adoption interp pairs so
-                     * the next present snaps instead of sweeping a lerp
-                     * across the adopted VBLs. */
+                     * recording). */
                     openpete_interp_reset();
                     openpete_interp_objs_reset();
-                    ra_adopt_log(ra_nofinal);
+                    ra_end_log(ra_left, ra_adopted);
                 }
 
                 /* Snapshot the transform-bearing regions into the
@@ -7092,8 +7106,8 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     Uint64 elapsed = SDL_GetTicks() - start;
     OPL_INFO_F("exit",
-               "reason=%s frames=%u elapsed_ms=%llu dispatch_ok=%d",
-               exit_reason, openpete_frame,
+               "reason=%s frames=%u key=%u key_kind=%s elapsed_ms=%llu dispatch_ok=%d",
+               exit_reason, openpete_frame, openpete_feed_key_now(), feed_key_kind_name(),
                (unsigned long long)elapsed, g_game.dispatch_ok);
 
     {
@@ -7247,11 +7261,13 @@ static int run_host_loop(const openpete_options_t* opts) {
     OPL_INFO_F("savestate", "deferred to a final yield: %llu snapshot request(s), %llu load request(s); "
                "periodic state work sat out %llu intermediate yield(s); "
                "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "
-               "%llu adopted with no final yield; "
+               "%llu adopted at another park site; "
+               "left gameplay: %llu rolled back, %llu adopted; "
                "park site: loads=%llu rewind=%llu stress=%llu runahead=%llu "
                "refused=%llu stress-abandoned=%llu",
                s_state_ops_deferred[0], s_state_ops_deferred[1], s_state_yields_skipped,
-               s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted_nofinal,
+               s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted,
+               s_ra_left[0], s_ra_left[1],
                s_site_deferred[SITE_DEF_LOAD], s_site_deferred[SITE_DEF_REWIND],
                s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
                s_site_refused, s_site_abandoned);
@@ -7316,8 +7332,9 @@ static int run_host_loop(const openpete_options_t* opts) {
     }
 
     fprintf(stdout,
-            "openpete-exit: reason=%s frames=%u ms=%llu code=%d\n",
-            exit_reason, openpete_frame, (unsigned long long)elapsed, exit_code);
+            "openpete-exit: reason=%s frames=%u key=%u key_kind=%s ms=%llu code=%d\n",
+            exit_reason, openpete_frame, openpete_feed_key_now(), feed_key_kind_name(),
+            (unsigned long long)elapsed, exit_code);
     /* Host-input end state, printed when the lock or the injection script is
      * in play: what the lock discarded and what the host-side consumers a
      * stray key or pointer reaches ended up as. */

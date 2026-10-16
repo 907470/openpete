@@ -8,7 +8,9 @@
  * conversion tools/bk2_rekey.py writes to the consume key.
  *
  * The module observes every pad write of a yield and consumer entry
- * (openpete_feed_observer_t), outside runahead speculation, to:
+ * (openpete_feed_observer_t) to the following ends; the events of a runahead
+ * speculation are held and delivered only when the speculation is adopted
+ * (bk2_feed_speculation_end):
  *   - collect each iteration's writes for the recorder (bk2_feed_iter_take);
  *   - write the OPENPETE_FEED_MAP log: `W row e j` per write, with the row
  *     the host stamped before it (as bk2_feed_row returned it; -1 with no
@@ -32,6 +34,15 @@ extern "C" {
  *        the run.
  * @param offset The counter value at which row 0 (group 0) plays. */
 void bk2_feed_open(const bk2_movie_t* m, int offset);
+
+/** @brief End a runahead speculation's hold on the observer events it ran.
+ *
+ * Adopted: its pad writes and consumer entries are the timeline, delivered
+ * in order with the rows stamped before them (the recorder, the map and the
+ * group instrument see them as if run outside speculation). Rolled back:
+ * they are dropped.
+ * @param adopted Nonzero when the speculation became the timeline. */
+void bk2_feed_speculation_end(int adopted);
 
 /** @brief Return the movie row the host stamps at the current row position.
  *
@@ -60,7 +71,7 @@ void bk2_feed_map_present(void);
  * once the movie ended, the last group. Logged as `bk2 feed groups:` with
  * the groups compared, those with fewer writes than rows (unread trailing
  * rows) and those with more (held rows). Nothing for a movie on an older
- * key or with no movie. */
+ * key or with no movie. Closes the map and frees the speculation hold. */
 void bk2_feed_report(void);
 
 #ifdef __cplusplus

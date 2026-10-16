@@ -19,11 +19,40 @@ static struct {
     FILE*     map;
 } s_feed = { NULL, 0, -1, 0, 0u, 0u, 0u, 0u, NULL, NULL, NULL };
 
+/* Observer events of the current runahead speculation, held until it is
+ * rolled back (dropped) or adopted (delivered in order). */
+typedef struct {
+    unsigned char close;  /* 1: a consumer entry; 0: a pad write */
+    int      stamped;     /* the row stamped before the event's yield */
+    unsigned e, n;        /* (E, j) of a write; (E, writes) of a close */
+} feed_spec_ev_t;
+
+static struct {
+    feed_spec_ev_t* ev;
+    size_t n, cap;
+    unsigned long long lost;  /* events dropped when the buffer could not grow */
+} s_spec = { NULL, 0u, 0u, 0ull };
+
+/** @brief Hold one observer event of a speculation for delivery at adoption.
+ * @param close 1 for a consumer entry, 0 for a pad write.
+ * @param e The event's E.
+ * @param n The write's j, or the closing group's writes. */
+static void feed_spec_hold(unsigned char close, unsigned e, unsigned n) {
+    if (s_spec.n == s_spec.cap) {
+        const size_t cap = s_spec.cap ? s_spec.cap * 2u : 64u;
+        feed_spec_ev_t* ev = (feed_spec_ev_t*)realloc(s_spec.ev, cap * sizeof *ev);
+        if (!ev) { s_spec.lost++; return; }
+        s_spec.ev = ev;
+        s_spec.cap = cap;
+    }
+    s_spec.ev[s_spec.n++] = (feed_spec_ev_t){ close, s_feed.stamped, e, n };
+}
+
 /** @brief Observer: count a pad write of a yield for the recorder and write its map line.
  * @param e openpete_consume at the write.
  * @param j openpete_consume_write at the write. */
 static void feed_on_write(unsigned e, unsigned j) {
-    if (openpete_speculative) return;
+    if (openpete_speculative) { feed_spec_hold(0u, e, j); return; }
     if (s_feed.iter_writes++ == 0u) { s_feed.iter_e = e; s_feed.iter_j = j; }
     s_feed.iter_e_last = e;
     if (s_feed.map) fprintf(s_feed.map, "W %d %u %u\n", s_feed.stamped, e, j);
@@ -44,7 +73,7 @@ static void feed_group_taken(unsigned e, unsigned writes) {
  * @param e The closing group's E.
  * @param writes The writes the run took in it. */
 static void feed_on_close(unsigned e, unsigned writes) {
-    if (openpete_speculative) return;
+    if (openpete_speculative) { feed_spec_hold(1u, e, writes); return; }
     feed_group_taken(e, writes);
 }
 
@@ -69,6 +98,24 @@ void bk2_feed_open(const bk2_movie_t* m, int offset) {
         else OPL_ERROR_F("bk2", "OPENPETE_FEED_MAP: cannot open %s", path);
     }
     openpete_feed_observer_set(&k_feed_obs);
+}
+
+void bk2_feed_speculation_end(int adopted) {
+    if (adopted) {
+        const int stamped = s_feed.stamped;
+        for (size_t i = 0; i < s_spec.n; i++) {
+            const feed_spec_ev_t* ev = &s_spec.ev[i];
+            s_feed.stamped = ev->stamped;
+            if (ev->close) feed_on_close(ev->e, ev->n);
+            else           feed_on_write(ev->e, ev->n);
+        }
+        s_feed.stamped = stamped;
+        if (s_spec.lost)
+            OPL_ERROR_F("bk2", "adopted speculation: %llu observer event(s) lost (out of "
+                        "memory); the recorder and the group instrument miss them", s_spec.lost);
+    }
+    s_spec.n = 0u;
+    s_spec.lost = 0ull;
 }
 
 int bk2_feed_row(void) {
@@ -105,6 +152,8 @@ void bk2_feed_map_present(void) {
 
 void bk2_feed_report(void) {
     if (s_feed.map) { fclose(s_feed.map); s_feed.map = NULL; }
+    free(s_spec.ev);
+    s_spec.ev = NULL; s_spec.n = s_spec.cap = 0u;
     if (!s_feed.taken) return;
     const bk2_movie_t* m = s_feed.m;
     /* The movie ended inside its last group: that group's writes are final. */
