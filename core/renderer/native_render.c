@@ -2495,40 +2495,94 @@ static void seq_sort_carry(scene_tri_t* tri, uint32_t* epoch, int n) {
     }
 }
 
-/** @brief Sort each run of numbered triangles in the scene by emission sequence, leaving every other triangle in place.
+/** @brief Report whether a scene triangle belongs to the 2D layer the carry holds.
  *
- * The 2D layer draws in array order, so this restores the order in which
- * the game emitted the two 2D producers, including when one of them was fed
- * from a deferred release. A run is a contiguous stretch of triangles with a
- * nonzero scene_tri_t::seq, produced consecutively by one feed; sorting
- * within it (stable insertion sort) gives the painter order the ordering
- * table asks for, and no triangle crosses the unnumbered geometry between
- * two runs, which would change the background a blended sprite composes
- * against. No-op when OPENPETE_SEQ_SORT=0.
+ * That is an overlay or HUD-panel triangle, or one fed with a carry flag
+ * (fresh 2D, or a re-applied carry copy): the triangles the feed-time
+ * accumulation collects into the carry, plus the copies composed back from
+ * it.
+ * @param q The triangle.
+ * @return 1 when it is a 2D-layer triangle, else 0. */
+static int scene_tri_2d_layer(const scene_tri_t* q) {
+    return q->category == OPENPETE_SCENE_OVERLAY || q->category == OPENPETE_SCENE_HUD_PANEL || q->carry;
+}
+
+/** @brief Sort runs of numbered triangles by emission sequence over a subsequence of the scene, permuting them among their own slots.
+ *
+ * The subsequence is every triangle when @p all is set, else the 2D-layer
+ * triangles (scene_tri_2d_layer) in scene order. Each run of its numbered
+ * members (nonzero scene_tri_t::seq) is sorted within itself by a stable
+ * insertion sort; a member with seq 0 bounds a run, and a triangle outside
+ * the subsequence neither bounds a run nor moves.
+ * @param sc Scene triangles.
+ * @param n Triangle count.
+ * @param all 1 to take every triangle, 0 for the 2D layer only. */
+static void seq_sort_runs(scene_tri_t* sc, int n, int all) {
+    static int* ix; static int ix_cap;
+    if (n > ix_cap) {
+        int* nv = (int*)realloc(ix, (size_t)n * sizeof *nv);
+        if (!nv) return;
+        ix = nv; ix_cap = n;
+    }
+    int m = 0;
+    for (int t = 0; t < n; t++) if (all || scene_tri_2d_layer(&sc[t])) ix[m++] = t;
+    int i = 0;
+    while (i < m) {
+        if (!sc[ix[i]].seq) { i++; continue; }
+        int j = i;
+        while (j < m && sc[ix[j]].seq) j++;           /* [i, j) is one run */
+        for (int a = i + 1; a < j; a++) {             /* stable insertion sort */
+            scene_tri_t t = sc[ix[a]];
+            int b = a - 1;
+            while (b >= i && sc[ix[b]].seq > t.seq) { sc[ix[b + 1]] = sc[ix[b]]; b--; }
+            sc[ix[b + 1]] = t;
+        }
+        i = j;
+    }
+}
+
+/** @brief Print how many scene triangles the 2D-layer sort places differently from the whole-scene run sort, on stderr, under OPENPETE_SEQ_SORT_CENSUS.
+ *
+ * Sorts a copy of the unsorted scene both ways (seq_sort_runs) and counts
+ * the slots whose triangle differs; prints one line per scene with a
+ * nonzero count, naming the scene's frame and feed key. Read once.
+ * @param sc Scene triangles, before sorting.
+ * @param n Triangle count. */
+static void seq_sort_census(const scene_tri_t* sc, int n) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_SEQ_SORT_CENSUS"); on = (e && *e && *e != '0'); }
+    if (!on || n <= 0) return;
+    scene_tri_t* a = (scene_tri_t*)malloc((size_t)n * sizeof *a);
+    scene_tri_t* b = (scene_tri_t*)malloc((size_t)n * sizeof *b);
+    if (a && b) {
+        memcpy(a, sc, (size_t)n * sizeof *a); memcpy(b, sc, (size_t)n * sizeof *b);
+        seq_sort_runs(a, n, 1); seq_sort_runs(b, n, 0);
+        int moved = 0;
+        for (int t = 0; t < n; t++) moved += memcmp(&a[t], &b[t], sizeof a[t]) != 0;
+        if (moved) fprintf(stderr, "[seqsort f=%u key=%u] moved=%d of=%d\n", s_scene_frame, s_scene_key, moved, n);
+    }
+    free(a); free(b);
+}
+
+/** @brief Sort the scene's 2D-layer triangles by emission sequence over their own subsequence, leaving every other triangle in place.
+ *
+ * The 2D-layer triangles are taken in scene order as one subsequence, the
+ * set and order the carry holds, and sorted run by run (seq_sort_runs). The
+ * 2D a game feeds at emission and the batch it releases later can sit on
+ * both sides of world geometry fed between them; sorting over the
+ * subsequence orders them as seq_sort_carry orders the carry, so the
+ * canonical present and the sub-tick re-extract compose the same 2D order.
+ * OPENPETE_SEQ_SORT_RUNS=scene, read once, sorts runs of the whole scene
+ * instead, where any unnumbered triangle bounds a run (the in-binary A/B).
+ * No-op when OPENPETE_SEQ_SORT=0.
  * @param sc Scene triangles.
  * @param n Triangle count. */
 static void seq_sort_scene_2d(scene_tri_t* sc, int n) {
     if (!seq_sort_on()) return;
-    /* Order each contiguous run of numbered tris within itself. Gathering every
-     * numbered tri and permuting it across the whole scene would let a 2D tri
-     * move past unnumbered geometry lying between two runs, and a blended
-     * sprite that crosses the geometry behind it composes against a different
-     * background, which is a visible change nothing asked for. A run is what
-     * one feed produced consecutively, so ordering inside it is exactly the
-     * painter order the ordering table asks for and nothing else moves. */
-    int i = 0;
-    while (i < n) {
-        if (!sc[i].seq) { i++; continue; }
-        int j = i;
-        while (j < n && sc[j].seq) j++;               /* [i, j) is one run */
-        for (int a = i + 1; a < j; a++) {             /* stable insertion sort */
-            scene_tri_t t = sc[a];
-            int b = a - 1;
-            while (b >= i && sc[b].seq > t.seq) { sc[b + 1] = sc[b]; b--; }
-            sc[b + 1] = t;
-        }
-        i = j;
-    }
+    static int whole = -1;
+    if (whole < 0) { const char* e = getenv("OPENPETE_SEQ_SORT_RUNS"); whole = (e && !strcmp(e, "scene")); }
+    seq_sort_census(sc, n);
+    seq_sort_runs(sc, n, whole);
 }
 
 /** @brief Count the scene's 2D faces: HUD, HUD panel and overlay categories plus carried overlay copies.
@@ -20323,10 +20377,11 @@ int openpete_native_render_screenshot_all(const char *base)
             const scene_tri_t* q = &b[t];
             if (!(q->category == OPENPETE_SCENE_HUD || q->category == OPENPETE_SCENE_HUD_PANEL ||
                   q->category == OPENPETE_SCENE_OVERLAY || q->carry)) continue;
-            fprintf(stderr, "[2dtri] seq=%u cat=%d bl=%d tex=%d bpp=%d v=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) rgba=%08X\n",
+            fprintf(stderr, "[2dtri] seq=%u cat=%d bl=%d tex=%d bpp=%d v=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) rgba=%08X"
+                            " t=%d prim=%08X carry=%d\n",
                     q->seq, q->category, q->blend, q->textured, q->bpp,
                     q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy,
-                    q->v[0].rgba);
+                    q->v[0].rgba, t, q->prim, q->carry);
         }
       } }
     int r = native_render_screenshot_all_impl(base, NULL, NULL, NULL);

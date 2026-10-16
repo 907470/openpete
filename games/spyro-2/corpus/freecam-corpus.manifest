@@ -40,6 +40,12 @@ mystic_marsh | pos=(112622, 35105, 9155) yaw=1648 pitch=160
 canyon_speedway | pos=(66451, 83321, 27812) yaw=1839 pitch=0
 metropolis | pos=(115904, 59478, 40916) yaw=1696 pitch=160
 riptos_arena | pos=(44103, 72307, 8612) yaw=-1040 pitch=160
+# The same pose with the canonical leg at 2523, while Ripto's dialogue box
+# shows its continue arrow: the arrow's fill, a glyph the game feeds at
+# emission, draws over the box's translucent corner piece, a quad of the
+# batch released after the world, at full brightness, as the guest
+# reference draws it; blessed pre-fix with the corner over the arrow.
+riptos_arena@arrow | pos=(44103, 72307, 8612) yaw=-1040 pitch=160 | 2523
 # retained terrain face at a bucket-boundary key loses the contest to itself (hardware only; the windowed cache-off/on harness separates the builds)
 glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243
 # --lod extended: animated-kind mobys (eggs, enemies) outside the cull's
