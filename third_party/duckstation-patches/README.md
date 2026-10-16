@@ -39,6 +39,7 @@ Patches that change what a capture records, by number:
 | 0040 | header flag bit 5: each record's `pad1` is the anchor hit's CPU-tick offset from the VBLANK its `pad2` counts (the frame start tick, set where the frame number advances); before it `pad1` was `0xFFFFFFFF` |
 | 0041 | `-card-window` S rows (stores to card-driver kernel bytes) and T rows (bytes stored to `JOY_TX_DATA`), each with its tick offset from the VBLANK |
 | 0042 | `-psxtrace-card-active HEX`: `<trace>.card`, each card transfer's start (a nonzero store to the driver's transfer-active byte) with its tick offset from the VBLANK |
+| 0045 | `-bk2-groups-out PATH`: the inputs each consume group took; `-bk2-lead-groups PATH`: `-bk2-lead 1` predicts from those counts instead of the movie's (`scripts/capture_psx_oracle_ds.sh` reruns a consume-keyed capture until no row is mispredicted, writing `<trace>.bk2groups`) |
 
 Apply (from the openpete checkout root; `--no-build` skips the build):
 

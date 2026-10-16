@@ -126,9 +126,18 @@
 #                                  early (regtest -bk2-lead): the kernel's pad
 #                                  handler writes the buffer from the previous
 #                                  vsync's exchange, openpete delivers a row at
-#                                  the vsync it stamps it; the run is refused
-#                                  when a predicted row differs from the row
-#                                  of the position taken
+#                                  the vsync it stamps it. The consumer's
+#                                  entries follow the reference's own schedule,
+#                                  so a group can close after another count
+#                                  than the movie's: each pass writes the
+#                                  counts it took to <out>.bk2groups
+#                                  (regtest -bk2-groups-out) and, while a
+#                                  predicted row differs from the row of the
+#                                  position taken, the capture runs again
+#                                  predicting from the previous pass's counts
+#                                  (regtest -bk2-lead-groups), at most
+#                                  BK2_PASSES (default 4) passes; the run is
+#                                  refused when the last pass still mispredicts
 #           --pad-script PATH      drive the port 1 controller from PATH
 #                                  (RAM-conditioned steps, regtest -pad-script);
 #                                  the full log is kept in <out>.log and a run
@@ -315,6 +324,7 @@ if [[ -n "$BK2" ]]; then
     REC_ARGS+=(-bk2 "$BK2")
     [[ -n "$BK2_CONSUME_PC" ]] && REC_ARGS+=(-bk2-consume-pc "$BK2_CONSUME_PC")
     [[ -n "$BK2_LEAD" ]] && REC_ARGS+=(-bk2-lead "$BK2_LEAD")
+    [[ -n "$BK2_CONSUME_PC" ]] && REC_ARGS+=(-bk2-groups-out "$OUT.bk2groups")
 fi
 REC_ARGS+=(-psxtrace-gte)
 if [[ "$VBLPOS" == 1 ]]; then
@@ -339,6 +349,14 @@ DUMP_ENV=()
 [[ "$SPU_DUMP" == 1 ]] && DUMP_ENV=(OPENPETE_SPU_DUMP="$OUT.wav")
 
 mkdir -p "$(dirname "$OUT")"
+rm -f "${OUT:?}.bk2groups" "${OUT:?}.bk2groups.prev"
+# Passes of a consume-keyed movie under the lead: each pass after the first
+# predicts from the counts the previous pass took.
+BK2_PASS_MAX=1
+[[ -n "$BK2" && -n "$BK2_CONSUME_PC" && "${BK2_LEAD:-0}" != 0 ]] && BK2_PASS_MAX="${BK2_PASSES:-4}"
+BK2_PASS=1
+BK2_PASS_ARGS=()
+while :; do
 rm -f "${OUT:?}.cardwin" "${OUT:?}.rcnt2"
 rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" "$OUT.card" \
       "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg" "$OUT.wav" "$OUT.log"
@@ -366,11 +384,21 @@ sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
     -psxtrace-frames "$FRAMES" \
     -psxtrace-regions "$REGIONS_FLAT" \
     "${REC_ARGS[@]}" \
+    "${BK2_PASS_ARGS[@]}" \
     "${CARD_WINDOW_ARGS[@]}" \
     -console \
     "$DISC" \
   | { grep -avE "I/CPU|ReportDebuggerEvent" || true; } > "$OUT.log"
 grep -E "psxtrace|FPS|Exiting" "$OUT.log" | tail -5
+(( BK2_PASS < BK2_PASS_MAX )) || break
+B_LMISS="$(sed -n 's/^.*bk2: consume summary: .* lead_misses=\([0-9]*\).*/\1/p' "$OUT.log" | tail -1)"
+[[ "${B_LMISS:-1}" != 0 && -s "$OUT.bk2groups" ]] || break
+echo "[capture-ds] bk2 pass $BK2_PASS: lead_misses=$B_LMISS; pass $((BK2_PASS + 1)) predicts from the counts it took"
+mv "$OUT.bk2groups" "$OUT.bk2groups.prev"
+BK2_PASS_ARGS=(-bk2-lead-groups "$OUT.bk2groups.prev")
+BK2_PASS=$((BK2_PASS + 1))
+done
+rm -f "${OUT:?}.bk2groups.prev"
 echo "[capture-ds] done"
 if [[ -n "$PAD_SCRIPT" ]]; then
     grep -E "pad-script" "$OUT.log" | sed 's/^.*pad-script/[capture-ds] pad-script/; s/\x1b\[[0-9;]*m//g'
@@ -418,11 +446,11 @@ if [[ -n "$BK2" ]]; then
         fi
         B_LMISS="$(sed -n 's/.* lead_misses=\([0-9]*\).*/\1/p' <<<"$B_SUM")"
         if [[ "${BK2_LEAD:-0}" != 0 && "${B_LMISS:-1}" != 0 ]]; then
-            echo "[capture-ds] FAIL: bk2 lead predicted a row other than the one taken: $B_SUM (see $OUT.log)" >&2
+            echo "[capture-ds] FAIL: bk2 lead predicted a row other than the one taken after $BK2_PASS pass(es): $B_SUM (see $OUT.log)" >&2
             exit 1
         fi
     fi
-    echo "[capture-ds] bk2: $BK2 ${B_SUM:+($B_SUM)}"
+    echo "[capture-ds] bk2: $BK2 ${B_SUM:+($B_SUM)} passes=$BK2_PASS"
 fi
 if [[ "$SPU_DUMP" == 1 ]]; then
     WAV_FRAMES="$(python3 -c 'import sys, wave; print(wave.open(sys.argv[1]).getnframes())' "$OUT.wav" 2>/dev/null || true)"
