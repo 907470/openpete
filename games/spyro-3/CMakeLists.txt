@@ -57,6 +57,8 @@ openpete_add_game(spyro-3
     PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c
     SOURCES
         skip_to_level.c
+        # The moby ops of the mod content registry.
+        mods/mod_moby_ops.c
 
         # The watch and mod guard over the anti-piracy scans' code ranges.
         scan_watch.c

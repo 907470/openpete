@@ -183,7 +183,11 @@ def dox_to_md(text: str) -> str:
 
 def split_members(body: str):
     """Yield (comments, decl) for struct members: every /** */ block
-    between one declaration and the next, then the declaration."""
+    between one declaration and the next, then the declaration. A member
+    declared under `#if ... #else ... #endif` is documented by its `#else`
+    branch, the declaration every build without the condition sees; the
+    `#if` branch and the directive lines are skipped, and a trailing
+    attribute macro (`OPENPETE_*_ATTR`) is dropped from the declaration."""
     i, n = 0, len(body)
     comments = []
     while i < n:
@@ -197,8 +201,19 @@ def split_members(body: str):
             comments.append(body[i:end])
             i = end
             continue
+        if body.startswith("#", i):
+            line_end = body.find("\n", i)
+            line_end = n if line_end < 0 else line_end
+            if body.startswith("#if", i):
+                els = body.find("\n#else", i)
+                if els >= 0:
+                    line_end = body.find("\n", els + 1)
+            i = line_end
+            continue
         end = body.index(";", i) + 1
-        yield comments, " ".join(body[i:end].split())
+        decl = " ".join(body[i:end].split())
+        decl = re.sub(r"\s+OPENPETE_\w+_ATTR;$", ";", decl)
+        yield comments, decl
         comments = []
         i = end
     if comments:

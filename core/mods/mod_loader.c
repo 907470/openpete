@@ -2663,17 +2663,6 @@ static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
                                      self->id);
 }
 
-/** @brief Return the stream handle for a guest stream address; tick context only.
- *
- * Handle numbering is sim-visible, so a present-hook call is refused.
- * @return the handle from openpete_mods_vstream_handle, or 0 on refusal. */
-static uint32_t api_vstream_handle(openpete_mod_t* self,
-                                   uint32_t stream_vaddr) {
-    if (!self) return 0;
-    if (purity_violation("vstream_handle")) return 0;
-    return openpete_mods_vstream_handle(stream_vaddr, self->id);
-}
-
 
 /** @brief Play `<asset dir>/sfx/own/<name>.wav` once through openpete_mod_sound_play.
  *
@@ -2707,15 +2696,41 @@ const char* openpete_mods_sdk_dir(void) {
 
 /* ---- pillar 9: game data + texture packs (api 2) ----------------------- */
 
-/* api entries that answer OPENPETE_MOD_ERR_UNSUPPORTED on a game whose
- * descriptor leaves their member NULL; each logs that once per mod. */
-enum { UNSUP_READ_LEVEL_DATA, UNSUP_MOBY_CLASSES, UNSUP_ENTRIES };
+/* api entries whose surface a game's descriptor may leave out; each logs
+ * that once per mod. */
+enum { UNSUP_READ_LEVEL_DATA, UNSUP_MOBY_CLASSES, UNSUP_VSTREAM_HANDLE,
+       UNSUP_ENTRIES };
 
-/** @brief Log an api entry the running game does not serve once per mod, and return OPENPETE_MOD_ERR_UNSUPPORTED.
+/** @brief Log once per mod that the running game does not serve an api entry, and return the entry's refusal value.
  *
  * Mods are remembered by id, so a reloaded mod stays silent; the first 64
  * ids are remembered per entry and a mod past that logs on every call. A
- * NULL self logs under "?" on every call.
+ * NULL self logs under "mods" on every call.
+ * @param self The calling mod, or NULL.
+ * @param entry The UNSUP_* index of the entry.
+ * @param call The entry's api member name.
+ * @param what The surface the game leaves out, for the log line.
+ * @param ret The value the entry returns, printed in the log line.
+ * @return @p ret. */
+static int api_unsupported_ret(const openpete_mod_t* self, int entry,
+                               const char* call, const char* what, int ret) {
+    static char s_noted[UNSUP_ENTRIES][64][MOD_ID_MAX];
+    static int  s_noted_n[UNSUP_ENTRIES];
+    if (self) {
+        for (int i = 0; i < s_noted_n[entry]; i++)
+            if (strcmp(s_noted[entry][i], self->id) == 0)
+                return ret;
+        if (s_noted_n[entry] < 64)
+            snprintf(s_noted[entry][s_noted_n[entry]++], MOD_ID_MAX, "%s",
+                     self->id);
+    }
+    OPL_WARN_F(self ? self->log_tag : "mods", "%s: %s serves no %s - "
+               "unsupported (%d)", call, game_get_id(), what, ret);
+    return ret;
+}
+
+/** @brief Log once per mod that the running game does not serve an api entry, and return OPENPETE_MOD_ERR_UNSUPPORTED.
+ *
  * @param self The calling mod, or NULL.
  * @param entry The UNSUP_* index of the entry.
  * @param call The entry's api member name.
@@ -2723,20 +2738,27 @@ enum { UNSUP_READ_LEVEL_DATA, UNSUP_MOBY_CLASSES, UNSUP_ENTRIES };
  * @return OPENPETE_MOD_ERR_UNSUPPORTED. */
 static int api_unsupported(const openpete_mod_t* self, int entry,
                            const char* call, const char* what) {
-    static char s_noted[UNSUP_ENTRIES][64][MOD_ID_MAX];
-    static int  s_noted_n[UNSUP_ENTRIES];
-    if (self) {
-        for (int i = 0; i < s_noted_n[entry]; i++)
-            if (strcmp(s_noted[entry][i], self->id) == 0)
-                return OPENPETE_MOD_ERR_UNSUPPORTED;
-        if (s_noted_n[entry] < 64)
-            snprintf(s_noted[entry][s_noted_n[entry]++], MOD_ID_MAX, "%s",
-                     self->id);
-    }
-    OPL_WARN_F(self ? self->log_tag : "mods", "%s: %s serves no %s - "
-               "unsupported (%d)", call, game_get_id(), what,
-               OPENPETE_MOD_ERR_UNSUPPORTED);
-    return OPENPETE_MOD_ERR_UNSUPPORTED;
+    return api_unsupported_ret(self, entry, call, what,
+                               OPENPETE_MOD_ERR_UNSUPPORTED);
+}
+
+/** @brief Return the stream handle for a guest stream address; tick context only.
+ *
+ * Handle numbering is sim-visible, so a present-hook call is refused. On a
+ * game whose descriptor clears vstream_handles, whose frame words carry no
+ * vertex-stream field, the call returns 0 and logs once per mod: a mod
+ * built for that game is refused at compile time by the member's
+ * attribute, so only an any-game object reaches this.
+ * @return the handle from openpete_mods_vstream_handle, or 0 on refusal. */
+static uint32_t api_vstream_handle(openpete_mod_t* self,
+                                   uint32_t stream_vaddr) {
+    if (!self) return 0;
+    if (!openpete_mods_game_desc()->vstream_handles)
+        return (uint32_t)api_unsupported_ret(self, UNSUP_VSTREAM_HANDLE,
+                                             "vstream_handle",
+                                             "vertex-stream field", 0);
+    if (purity_violation("vstream_handle")) return 0;
+    return openpete_mods_vstream_handle(stream_vaddr, self->id);
 }
 
 /** @brief Copy a level's data blob through openpete_mods_read_level_data.
@@ -2772,17 +2794,53 @@ static int api_texpack_fog_shift(openpete_mod_t* self, const float scale_rgb[3],
     return 0;
 }
 
+/** @brief Test whether the running game's material channel mask serves a selector channel.
+ *
+ * A named channel needs its bit in game_mod_desc_t.channel_mask; channel
+ * -1 ("any") needs a nonempty mask. Declarative [[material]] rows and the
+ * C registration entries share this one test. The harness variable
+ * OPENPETE_MOD_CHANNEL_MASK (a number, base prefix honoured) is ANDed
+ * into the mask, so a test can withhold a channel on a game that serves
+ * every one.
+ * @param channel An OP_CHAN_* value, or -1 for any channel.
+ * @return 1 when served, 0 otherwise. */
+static int material_channel_served(int channel) {
+    uint32_t mask = openpete_mods_game_desc()->channel_mask;
+    const char* env = getenv("OPENPETE_MOD_CHANNEL_MASK");
+    if (env && *env) mask &= (uint32_t)strtoul(env, NULL, 0);
+    if (channel < 0) return mask != 0;
+    return channel < 32 && ((mask >> channel) & 1u);
+}
+
+/** @brief Refuse a C-registered material whose channel the running game does not serve.
+ *
+ * Logs one line naming the mod, the entry, the channel and the game.
+ * @param self The calling mod.
+ * @param call The api entry name, for the log line.
+ * @param sel The selector; non-NULL.
+ * @return 1 when the channel is served, 0 when the registration is refused. */
+static int material_sel_channel_served(const openpete_mod_t* self,
+                                       const char* call,
+                                       const openpete_mod_material_selector_t* sel) {
+    if (material_channel_served(sel->channel)) return 1;
+    OPL_WARN_F(self ? self->log_tag : "mods", "%s: channel %d unsupported on "
+               "%s - refused", call, sel->channel, game_get_id());
+    return 0;
+}
+
 /** @brief Register a fragment-only material for a mod.
  *
  * The mod-facing form takes a frag shader only; vertex-stage overrides
  * stay engine-internal, so a material can reshade geometry but never move
- * it.
- * @return the material handle, or -1 for a NULL selector or a failed
- *         registration. */
+ * it. A selector channel the game's channel mask does not serve is
+ * refused, as a declarative [[material]] row on it is skipped.
+ * @return the material handle, or -1 for a NULL selector, an unserved
+ *         channel or a failed registration. */
 static int api_material_register(openpete_mod_t* self,
                                  const openpete_mod_material_selector_t* sel,
                                  int shader) {
-    if (!sel) return -1;
+    if (!sel || !material_sel_channel_served(self, "material_register", sel))
+        return -1;
     return openpete_mods_material_register(self, sel, -1, shader, NULL);
 }
 
@@ -2814,13 +2872,15 @@ static int api_moby_classes(openpete_mod_t* self, uint16_t* out, int cap) {
  * @param sel Face selector; NULL returns -1.
  * @param shader Fragment shader handle.
  * @param refine Per-instance callback, or NULL.
- * @return The material handle, or -1 for a NULL selector or a failed
- *         registration. */
+ * @return The material handle, or -1 for a NULL selector, a channel the
+ *         game's channel mask does not serve, or a failed registration. */
 static int api_material_register_refine(openpete_mod_t* self,
                                         const openpete_mod_material_selector_t* sel,
                                         int shader,
                                         openpete_mod_refine_fn refine) {
-    if (!sel) return -1;
+    if (!sel ||
+        !material_sel_channel_served(self, "material_register_refine", sel))
+        return -1;
     return openpete_mods_material_register(self, sel, -1, shader, refine);
 }
 
@@ -3444,18 +3504,16 @@ static int material_row_selects_game(toml_table_t* mt, const char* path,
 
 /** @brief Test whether the running game's material channel mask serves a row's channel.
  *
- * A named channel needs its bit in game_mod_desc_t.channel_mask; channel
- * "any" needs a nonempty mask. A row the game cannot serve is logged,
- * naming the game, and dropped; the rest of the mod loads.
+ * Applies material_channel_served, the test the C registration entries
+ * share. A row the game cannot serve is logged, naming the game, and
+ * dropped; the rest of the mod loads.
  * @param r The parsed row.
  * @param path Manifest path for log lines.
  * @param row Row index, for log lines.
  * @return 1 when the row's channel is served, 0 otherwise. */
 static int material_row_channel_served(const mod_material_row_t* r,
                                        const char* path, int row) {
-    const uint32_t mask = openpete_mods_game_desc()->channel_mask;
-    const int served = r->channel < 0 ? mask != 0
-                                      : (mask >> r->channel) & 1u;
+    const int served = material_channel_served(r->channel);
     if (!served)
         OPL_WARN_F("mods", "%s: [[material]] row %d: channel %d unsupported "
                    "on %s - skipped", path, row, r->channel, game_get_id());

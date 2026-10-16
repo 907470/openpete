@@ -23,6 +23,14 @@ code span renders as <code><a>...</a></code>.
   the flag has no effect on Spyro 1 and 2.
 - Mod SDK: `OPENPETE_MOD_ERR_UNSUPPORTED` (-2) is returned by `read_level_data` and `moby_classes` on a game that
   does not provide them; every other return value is unchanged.
+- Mod SDK: `draw_text` draws on Spyro 2 and 3, in the game's own font.
+- Mod SDK: materials (`[[material]]` rows and `material_register`) apply on every render channel of Spyro 2 and 3,
+  and `moby_classes` works on Spyro 3, where class ids run to 767. `material_register` and
+  `material_register_refine` now refuse a channel the running game does not serve, with one log line and -1, as
+  `[[material]]` rows on that channel are skipped.
+- Mod SDK: `vstream_handle` is Spyro 1 only. A mod built for Spyro 2 or 3 that uses it no longer compiles, with
+  an error naming the alternative, moving the stream through the animation header's pointers; a mod built for
+  every game gets 0 and one log line on Spyro 2 and 3.
 - Mod SDK: the headers at the root of `sdk/` now include the selected game's headers from `sdk/games/<game>/`;
   a build line using `-I sdk` alone still compiles as Spyro 1, and naming a game the SDK does not carry stops
   with an error naming that game.

@@ -129,8 +129,9 @@ Every selector key is optional; an omitted key matches everything:
 A key the engine does not recognise is refused with an error, since a
 typo that silently widened a selector would repaint geometry the row
 never named. A row whose channel the running game does not serve, or
-with channel `any` on a game that serves none, is logged and skipped;
-today Spyro 1 serves every channel and Spyro 2 and 3 serve none.
+with channel `any` on a game that serves none, is logged and skipped,
+and `material_register` refuses the same channel with one log line and
+-1; today every game serves every channel.
 `declarative-example` is a complete example: one manifest,
 asset files and one `.frag`.
 
@@ -173,8 +174,13 @@ selection is constant across a present; the material keeps its old key
 until then.
 
 `api->moby_classes(self, buf, cap)` returns the moby classes the current
-level has loaded, from an engine-side snapshot refreshed once per tick,
-so it is safe from a UI section and gives a class picker no dead entries.
+level's load placed in the game's model table, ascending, from an
+engine-side snapshot refreshed once per tick, so it is safe from a UI
+section and gives a class picker no dead entries. On Spyro 3, whose
+model table keeps the rows of earlier levels, the set is the classes of
+the load's own model lists, not every filled row. Class ids run to 767
+on Spyro 3; the call copies at most `cap` entries, so a buffer of any
+size is safe, and `moby_classes(self, NULL, 0)` returns the count.
 
 ### Write a material shader
 

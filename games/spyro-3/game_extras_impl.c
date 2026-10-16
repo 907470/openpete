@@ -316,23 +316,28 @@ static const psyq_game_hooks_t k_psyq = {
 };
 
 GAME_MOD_TABLES_DECLARE(spyro3);
+const openpete_moby_ops_t* spyro3_moby_ops(void);
 
 /** @brief Return Spyro 3's mod-layer descriptor: its generated SDK symbol table and overlay entry arrays, and the scanned-range guard.
  *
  * Built on the first call into static storage. Overlay-window overrides
  * bind through override_ovl or a name scoped to one overlay only
- * (legacy_window_links 0). Moby ops, level ops, the text rasterizer, the sfx
- * canonicaliser and the render-function list stay NULL and the material
- * channel mask stays 0, so the loader treats those surfaces as unsupported
- * on this game; the arena keeps the core default base. The guest-byte
- * guard is scan_watch.h's spyro3_scan_guard.
+ * (legacy_window_links 0). The moby ops are mods/mod_moby_ops.c's, every
+ * render channel is a material channel, and mod text draws through the
+ * text-moby rasterizer. Level ops, the sfx canonicaliser and the
+ * render-function list stay NULL, so the loader treats those surfaces as
+ * unsupported on this game; the arena keeps the core default base. The guest-byte guard is
+ * scan_watch.h's spyro3_scan_guard.
  * @return The descriptor, never NULL. */
 static const game_mod_desc_t* spyro3_mod_desc(void) {
     static game_mod_desc_t s_desc;
     static int             s_built = 0;
     if (!s_built) {
         GAME_MOD_TABLES_FILL(&s_desc, spyro3);
-        s_desc.guest_guard = &spyro3_scan_guard;
+        s_desc.moby_ops     = spyro3_moby_ops();
+        s_desc.channel_mask = OPENPETE_MODS_CHANNELS_ALL;
+        s_desc.text_emit    = text_moby_native_mod_emit;
+        s_desc.guest_guard  = &spyro3_scan_guard;
         s_built = 1;
     }
     return &s_desc;

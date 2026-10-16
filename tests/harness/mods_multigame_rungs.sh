@@ -13,10 +13,9 @@
 #   postfx          crt-beans, crt-filter and scene-sepia from copies with no
 #                   .build/ (so no shader cache hit, which logs nothing):
 #                   every one of their 5 shaders logs `compiled`, none logs
-#                   `compile FAILED`, each mod logs armed; on a game whose
-#                   descriptor serves no text rasterizer, scene-sepia's
-#                   present-hook draw_text logs unsupported exactly once
-#                   (the run renders one screenshot, so the hook runs).
+#                   `compile FAILED`, each mod logs armed; scene-sepia's
+#                   present-hook draw_text lays out overlay vertices (the
+#                   run renders one screenshot, so the hook runs).
 #   compile-mods    --compile-mods against the test SDK writes a crt-beans
 #                   object under .build/<game>/ for every staged game.
 #   assets          a mod with assets/ and assets/spyro-2/ registers
@@ -25,10 +24,20 @@
 #                   material channel mask.
 #   levels          (a game with no level ops) a [[level]] row is refused
 #                   with one line naming the game; the mod still loads.
+#   channel refusal under OPENPETE_MOD_CHANNEL_MASK withholding moby, a
+#                   [[material]] row and both C registration entries on moby
+#                   are refused with one line each; terrain registers.
 #   unsupported     read_level_data and moby_classes, called twice each,
 #                   return OPENPETE_MOD_ERR_UNSUPPORTED on a game whose
 #                   descriptor leaves their member NULL, with one log line
 #                   per entry naming the game; none on Spyro 1.
+#   vstream refusal (Spyro 2 and 3) a per-game object using vstream_handle
+#                   is refused at compile time; a "*" object gets 0 from two
+#                   calls with one log line.
+#   classes cap     (Spyro 1 and 3) a mod built with a 512-entry buffer gets
+#                   min(size, capacity) ascending ids from moby_classes, ids
+#                   of 512 and above on Spyro 3, and its link on the moby
+#                   ops' update anchor counts calls above 0.
 #   engagement      every in-tree mod with per-game arms (the camera-clock
 #                   mods, double-gems, natural-gems, raw-probe) loads and its own
 #                   override link counts calls above 0 on the attract demo
@@ -55,6 +64,8 @@
 #                   level id, gameplay live, the pose's level equal to
 #                   level_id, and at least two distinct positions.
 #   arms copies     (Spyro 2 and 3; Spyro 1 runs its own in check_mods.sh)
+#                   observer-neutrality (hello-anchor, raw-probe and
+#                   chain-duo vs the game's oracle on the smoke window),
 #                   chain-duo nesting in both enabled orders, crash-dummy
 #                   attribution, arena-canary armed with no DESYNC across a
 #                   file save and load that restores its 64 B block.
@@ -162,16 +173,12 @@ else
 fi
 n_text="$(printf '%s\n' "$out" |
     grep -c "scene-sepia: draw_text unsupported on $PG_GAME")"
-if [ "$PG_GAME" = "spyro-1" ]; then
-    if [ "$n_text" -eq 0 ]; then
-        ok "draw_text served (no unsupported line)"
-    else
-        bad "draw_text logged unsupported on $PG_GAME"
-    fi
-elif [ "$n_text" -eq 1 ]; then
-    ok "scene-sepia draw_text logged unsupported once"
+n_verts="$(printf '%s\n' "$out" |
+    sed -n 's/.*draw service live: \([0-9]*\) overlay verts.*/\1/p' | head -1)"
+if [ "$n_text" -eq 0 ] && [ "${n_verts:-0}" -gt 0 ]; then
+    ok "draw_text served: ${n_verts} overlay verts, no unsupported line"
 else
-    bad "scene-sepia draw_text unsupported lines: $n_text (want 1)"
+    bad "draw_text on $PG_GAME: ${n_verts:-0} overlay verts, $n_text unsupported lines"
 fi
 
 # ── M4. --compile-mods: one crt-beans object per staged game ─────────────
@@ -214,9 +221,9 @@ fi
 
 # ── M6. [[material]] game key and channel mask ───────────────────────────
 # Row 0 names spyro-1 on terrain, row 1 names spyro-2 and spyro-3 on moby,
-# row 2 has no game key on channel "any". Spyro 1 serves every channel and
-# keeps rows 0 and 2; Spyro 2 and 3 serve no material channel, so row 0
-# leaves by its game key and rows 1 and 2 by the channel mask.
+# row 2 has no game key on channel "any". Every game serves every channel,
+# so one row leaves by its game key and two stay: rows 0 and 2 on Spyro 1,
+# rows 1 and 2 on Spyro 2 and 3.
 say "materials: [[material]] game key and channel mask on $PG_GAME"
 d="$WORK/matsrc/mat-games"
 mod_toml "$d" mat-games 'game = ["spyro-1", "spyro-2", "spyro-3"]'
@@ -246,17 +253,73 @@ out="$(run_game "$WORK/mat" $((60 + KEY0)))"
 n_game="$(printf '%s\n' "$out" | grep -c "\[\[material\]\] row [0-9] targets other games - skipped (this is $PG_GAME)")"
 n_chan="$(printf '%s\n' "$out" | grep -c "\[\[material\]\] row [0-9]: channel -\?[0-9] unsupported on $PG_GAME - skipped")"
 n_kept="$(printf '%s\n' "$out" | sed -n 's/.*mat-games: \([0-9]*\) declarative material row(s).*/\1/p' | head -1)"
-if [ "$PG_GAME" = "spyro-1" ]; then
-    want_game=1 want_chan=0 want_kept=2
-else
-    want_game=1 want_chan=2 want_kept=0
-fi
+want_game=1 want_chan=0 want_kept=2
 if [ "$n_game" -eq "$want_game" ] && [ "$n_chan" -eq "$want_chan" ] &&
    [ "${n_kept:-0}" -eq "$want_kept" ]; then
     ok "rows kept ${n_kept:-0}, skipped by game $n_game, by channel $n_chan"
 else
     bad "rows kept ${n_kept:-0}/$want_kept, by game $n_game/$want_game, by channel $n_chan/$want_chan"
     printf '%s\n' "$out" | grep -E 'material' | head -6
+fi
+
+# ── M6b. a withheld channel is refused on both registration paths ────────
+# OPENPETE_MOD_CHANNEL_MASK=0x3FC withholds the moby channel (bit 1) from the
+# running game's mask. The mod carries a declarative moby row and, from C,
+# registers one material on moby through material_register, one through
+# material_register_refine, and one on terrain. The declarative row is
+# skipped with its line; both C moby registrations return -1 with one
+# refusal line each; the terrain registration returns a handle.
+say "materials: a withheld channel is refused by [[material]] and material_register on $PG_GAME"
+d="$WORK/chanref/chan-refuse"
+mod_toml "$d" chan-refuse 'game = ["spyro-1", "spyro-2", "spyro-3"]'
+mkdir -p "$d/shaders" "$d/.build/any"
+cp "$MODS_SRC/declarative-reshade/shaders/tint.frag" "$d/shaders/"
+cat >> "$d/mod.toml" <<'TEOF'
+
+[[material]]
+channel = "moby"
+frag    = "shaders/tint.frag"
+TEOF
+cat > "$WORK/chan-refuse.c" <<'CEOF'
+#include <openpete_mod_api.h>
+static int refine(const openpete_mod_material_key_t* key, void* out, uint32_t cap) {
+    (void)key; (void)out; (void)cap; return -1;
+}
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    int sh = api->shader_register(self, "shaders/tint.frag");
+    openpete_mod_material_selector_t sel = openpete_mod_material_sel_any();
+    sel.channel = OP_CHAN_MOBY;
+    int a = api->material_register(self, &sel, sh);
+    int b = api->material_register_refine(self, &sel, sh, refine);
+    sel.channel = OP_CHAN_TERRAIN;
+    int c = api->material_register(self, &sel, sh);
+    api->log(self, OP_MOD_LOG_INFO, "chan-refuse shader %d moby %d moby-refine %d terrain %d",
+             sh, a, b, c);
+    return 0;
+}
+CEOF
+echo chan-refuse > "$WORK/chanref/enabled.txt"
+if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
+        -I"$SDK_ROOT" "$SDK_ROOT/openpete_mod_abi.c" "$WORK/chan-refuse.c" \
+        -o "$d/.build/any/chan-refuse.so" > "$WORK/chan-refuse-cc.log" 2>&1; then
+    out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_CHANNEL_MASK=0x3FC)
+            run_game "$WORK/chanref" $((60 + KEY0)) )"
+    res="$(printf '%s\n' "$out" | sed -n 's/.*chan-refuse shader \(-\?[0-9]*\) moby \(-\?[0-9]*\) moby-refine \(-\?[0-9]*\) terrain \(-\?[0-9]*\).*/\1 \2 \3 \4/p')"
+    n_c="$(printf '%s\n' "$out" | grep -c "material_register: channel 1 unsupported on $PG_GAME - refused")"
+    n_cr="$(printf '%s\n' "$out" | grep -c "material_register_refine: channel 1 unsupported on $PG_GAME - refused")"
+    n_row="$(printf '%s\n' "$out" | grep -c "\[\[material\]\] row 0: channel 1 unsupported on $PG_GAME - skipped")"
+    read -r r_sh r_a r_b r_c <<<"${res:-x x x x}"
+    if [ "$r_sh" -ge 0 ] 2>/dev/null && [ "$r_a" = -1 ] && [ "$r_b" = -1 ] &&
+       [ "$r_c" -ge 0 ] 2>/dev/null && [ "$n_c" -eq 1 ] && [ "$n_cr" -eq 1 ] &&
+       [ "$n_row" -eq 1 ]; then
+        ok "moby refused: register $r_a, refine $r_b, row skipped; terrain handle $r_c; refusal lines $n_c + $n_cr + $n_row"
+    else
+        bad "returns [${res:-none}] (want shader>=0 -1 -1 terrain>=0), refusal lines $n_c/1 $n_cr/1 row $n_row/1"
+        printf '%s\n' "$out" | grep -E 'chan-refuse|material' | head -8
+    fi
+else
+    bad "chan-refuse \"*\" build failed"
+    head -5 "$WORK/chan-refuse-cc.log"
 fi
 
 # ── M7. [[level]] rows on a game with no level ops ───────────────────────
@@ -288,9 +351,10 @@ fi
 
 # ── M7b. OPENPETE_MOD_ERR_UNSUPPORTED from descriptor-backed entries ─────
 # A "*" object calls read_level_data and moby_classes twice each at entry.
-# A game whose descriptor leaves the member NULL (Spyro 2 and 3) returns
-# OPENPETE_MOD_ERR_UNSUPPORTED from all four calls and logs one line per
-# entry naming the game; Spyro 1 returns no such code and logs none.
+# A game whose descriptor leaves the member NULL returns
+# OPENPETE_MOD_ERR_UNSUPPORTED from both calls of that entry and logs one
+# line naming the game: neither on Spyro 1, both on Spyro 2,
+# read_level_data alone on Spyro 3, which serves the moby class census.
 say "unsupported: read_level_data and moby_classes on $PG_GAME"
 d="$WORK/unsup/unsup-probe"
 mod_toml "$d" unsup-probe
@@ -320,17 +384,149 @@ if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
     n_unsup="$(printf '%s\n' "$calls" | awk 'NF { n += ($1 == $3) + ($2 == $3) } END { print n + 0 }')"
     n_rld="$(printf '%s\n' "$out" | grep -c "read_level_data: $PG_GAME serves no level data - unsupported")"
     n_moby="$(printf '%s\n' "$out" | grep -c "moby_classes: $PG_GAME serves no moby class census - unsupported")"
-    if [ "$PG_GAME" = "spyro-1" ]; then want_unsup=0 want_log=0; else want_unsup=4 want_log=1; fi
+    case "$PG_GAME" in
+        spyro-1) want_unsup=0 want_rld=0 want_moby=0 ;;
+        spyro-3) want_unsup=2 want_rld=1 want_moby=0 ;;
+        *)       want_unsup=4 want_rld=1 want_moby=1 ;;
+    esac
     if [ "$n_calls" -eq 2 ] && [ "$n_unsup" -eq "$want_unsup" ] &&
-       [ "$n_rld" -eq "$want_log" ] && [ "$n_moby" -eq "$want_log" ]; then
+       [ "$n_rld" -eq "$want_rld" ] && [ "$n_moby" -eq "$want_moby" ]; then
         ok "unsupported returns $n_unsup/4, log lines read_level_data $n_rld moby_classes $n_moby; returns [$(printf '%s\n' "$calls" | paste -sd ';')]"
     else
-        bad "calls $n_calls/2, unsupported returns $n_unsup/$want_unsup, log lines $n_rld/$want_log and $n_moby/$want_log"
+        bad "calls $n_calls/2, unsupported returns $n_unsup/$want_unsup, log lines $n_rld/$want_rld and $n_moby/$want_moby"
         printf '%s\n' "$out" | grep -E 'unsup-probe|unsupported' | head -8
     fi
 else
     bad "unsup-probe \"*\" build failed"
     head -5 "$WORK/unsup-cc.log"
+fi
+
+# ── M7d. vstream_handle on a game without the vertex-stream field ───────
+# Spyro 2 and 3 frame words carry no 21-bit stream field. A per-game object
+# using the member fails to compile with the reason in the error: the
+# `unavailable` message under clang, the missing explanatory member name
+# under a compiler without that attribute. A "*" object compiles, and its
+# two calls return 0 with one log line naming the game.
+if [ "$PG_GAME" != "spyro-1" ]; then
+    say "vstream_handle: refused at compile time per game, 0 at run time for \"*\" on $PG_GAME"
+    cat > "$WORK/vs-probe.c" <<'CEOF'
+#include <openpete_mod_api.h>
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    uint32_t a = api->vstream_handle(self, 0x80100000u);
+    uint32_t b = api->vstream_handle(self, 0x80100040u);
+    api->log(self, OP_MOD_LOG_INFO, "vs-probe handles %u %u", a, b);
+    return 0;
+}
+CEOF
+    "$CC_MOD" -c -O2 -Wall -I"$SDK_GAME_DIR" -I"$SDK_ROOT" "$WORK/vs-probe.c" \
+        -o "$WORK/vs-probe-game.o" > "$WORK/vs-probe-game.log" 2>&1
+    vs_rc=$?
+    n_msg="$(grep -cE "vstream_handle is Spyro 1 only|vstream_handle_is_spyro1_only__move_streams_through_the_animation_header" "$WORK/vs-probe-game.log")"
+    if [ "$vs_rc" -ne 0 ] && [ "$n_msg" -ge 1 ]; then
+        ok "per-game build refused (rc $vs_rc, $n_msg error line(s) naming the reason)"
+    else
+        bad "per-game build: rc $vs_rc, message lines $n_msg"
+        head -5 "$WORK/vs-probe-game.log"
+    fi
+    d="$WORK/vsrun/vs-probe"
+    mod_toml "$d" vs-probe
+    mkdir -p "$d/.build/any"
+    echo vs-probe > "$WORK/vsrun/enabled.txt"
+    if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
+            -I"$SDK_ROOT" "$SDK_ROOT/openpete_mod_abi.c" "$WORK/vs-probe.c" \
+            -o "$d/.build/any/vs-probe.so" > "$WORK/vs-probe-cc.log" 2>&1; then
+        out="$(run_game "$WORK/vsrun" $((60 + KEY0)))"
+        n_line="$(printf '%s\n' "$out" | grep -c "vstream_handle: $PG_GAME serves no vertex-stream field - unsupported (0)")"
+        if printf '%s\n' "$out" | grep -q "vs-probe handles 0 0" && [ "$n_line" -eq 1 ]; then
+            ok "\"*\" object: both calls 0, $n_line log line"
+        else
+            bad "\"*\" object: handles line missing or log lines $n_line (want 1)"
+            printf '%s\n' "$out" | grep -E 'vs-probe|vstream' | head -4
+        fi
+    else
+        bad "vs-probe \"*\" build failed"
+        head -5 "$WORK/vs-probe-cc.log"
+    fi
+fi
+
+# ── M7c. moby_classes through a buffer of the pre-768 cap ────────────────
+# On a game with moby ops (Spyro 1 and 3) a "*" object built with a
+# 512-entry buffer links the master update the ops anchor on (Spyro 1
+# GamestateUpdate 0x8003385C, Spyro 3 Update 0x80055400) and, each time the
+# set's size changes, sizes it (NULL, 0), copies it into the 512-entry buffer
+# and into an 8-entry one. Every copy returns min(size, capacity) ids in
+# ascending order, the link counts calls above 0, and a nonempty set is seen
+# on the attract demo. On Spyro 3, whose model table has 768 rows, a class id
+# of 512 or above arrives through the 512-entry buffer.
+case "$PG_GAME" in
+    spyro-1) upd=0x8003385Cu cls_frames=6000 ;;
+    spyro-3) upd=0x80055400u cls_frames=6573 ;;
+    *)       upd="" ;;
+esac
+if [ -n "$upd" ]; then
+    say "moby_classes: a mod built with a 512-entry buffer on $PG_GAME"
+    d="$WORK/clscap/classes-cap"
+    mod_toml "$d" classes-cap
+    mkdir -p "$d/.build/any"
+    cat > "$WORK/classes-cap.c" <<'CEOF'
+#include <stddef.h>
+#include <openpete_mod_api.h>
+#define OLD_CAP 512 /* OPENPETE_MOBY_CLASSES_MAX before Spyro 3's 768 rows */
+static const openpete_mod_api_t* A; static openpete_mod_t* S;
+static uint16_t buf[OLD_CAP], small[8];
+static int last = -1;
+static void update_link(CPUState* cpu) {
+    A->base(cpu);
+    int n = A->moby_classes(S, NULL, 0);
+    if (n == last) return;
+    last = n;
+    int got = A->moby_classes(S, buf, OLD_CAP);
+    int got8 = A->moby_classes(S, small, 8);
+    int asc = 1, max = -1;
+    for (int i = 0; i < got; i++) {
+        if (i && buf[i] <= buf[i - 1]) asc = 0;
+        if (buf[i] > max) max = buf[i];
+    }
+    for (int i = 0; i < got8; i++) if (small[i] != buf[i]) asc = 0;
+    A->log(S, OP_MOD_LOG_INFO, "classes-cap n %d got %d got8 %d ordered %d max %d",
+           n, got, got8, asc, max);
+}
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    A = api; S = self;
+    return api->override_addr(self, UPDATE_ADDR, update_link);
+}
+CEOF
+    echo classes-cap > "$WORK/clscap/enabled.txt"
+    if "$CC_MOD" -shared -fPIC -O2 -Wall -Werror -DOPENPETE_MOD_ANY_GAME \
+            -DUPDATE_ADDR="$upd" -I"$SDK_ROOT" "$SDK_ROOT/openpete_mod_abi.c" \
+            "$WORK/classes-cap.c" -o "$d/.build/any/classes-cap.so" \
+            > "$WORK/classes-cap-cc.log" 2>&1; then
+        out="$( PG_CAPTURE_ENV=(OPENPETE_MOD_LINK_CALLS=1)
+                RUN_TIMEOUT=600 run_game "$WORK/clscap" "$cls_frames" )"
+        rows="$(printf '%s\n' "$out" | sed -n 's/.*classes-cap n \(-\?[0-9]*\) got \(-\?[0-9]*\) got8 \(-\?[0-9]*\) ordered \([01]\) max \(-\?[0-9]*\).*/\1 \2 \3 \4 \5/p')"
+        verdict="$(printf '%s\n' "$rows" | awk -v game="$PG_GAME" '
+            NF { lines++
+                 want = $1 < 512 ? $1 : 512; want8 = $1 < 8 ? $1 : 8
+                 if ($2 != want || $3 != want8 || $4 != 1) badrow++
+                 if ($1 > 0) live++
+                 if ($5 > peak) peak = $5 }
+            END { ok = lines > 0 && badrow == 0 && live > 0
+                  if (game == "spyro-3" && peak < 512) ok = 0
+                  printf "%d %d %d %d %d\n", ok, lines + 0, badrow + 0, live + 0, peak + 0 }')"
+        read -r v_ok v_lines v_bad v_live v_peak <<<"$verdict"
+        n_link="$(printf '%s\n' "$out" |
+            sed -n "s/.*link-calls owner=classes-cap addr=${upd%u} .* calls=\([0-9]*\)$/\1/Ip" |
+            awk '{n += $1} END {print n + 0}')"
+        if [ "$v_ok" -eq 1 ] && [ "$n_link" -gt 0 ]; then
+            ok "$v_lines set sizes, $v_live nonempty, every copy min(size, cap) and ascending; highest id $v_peak; link at $upd: $n_link calls"
+        else
+            bad "set sizes $v_lines, bad copies $v_bad, nonempty $v_live, highest id $v_peak, link calls $n_link"
+            printf '%s\n' "$out" | grep -E 'classes-cap' | head -6
+        fi
+    else
+        bad "classes-cap \"*\" build failed"
+        head -5 "$WORK/classes-cap-cc.log"
+    fi
 fi
 
 # ── M8. per-game arms: engagement on the attract demo ────────────────────
@@ -573,6 +769,27 @@ if [ "$PG_GAME" != "spyro-1" ]; then
     else
         bad "crash-dummy: rc=$rc or attribution line missing"
         printf '%s\n' "$out" | grep -A3 "openpete crash" | head -6
+    fi
+
+    say "observer-neutrality: hello-anchor + raw-probe + chain-duo vs the $PG_GAME oracle"
+    # The moby class census reads guest RAM at every tick boundary while any
+    # mod is loaded, so these four drive it on a game with moby ops. The
+    # classes-cap object is left out: it links the oracle's anchor function
+    # (Update on Spyro 3), and a pass-through link there fails the oracle
+    # at record 1 as well.
+    fixture "$WORK/observers-$PG_GAME" hello-anchor raw-probe chain-duo-a chain-duo-b
+    out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES tests/harness/check_psx_oracle.sh \
+            --game "$PG_GAME" -- --mods-dir "$WORK/observers-$PG_GAME" 2>&1)"
+    if printf '%s\n' "$out" | grep -q "verdict: PASS"; then
+        ok "oracle PASS with 4 observer mods enabled"
+    else
+        bad "oracle did not PASS with observers enabled"
+        printf '%s\n' "$out" | grep -E "verdict|hard_fail|diverg" | head -3
+    fi
+    if printf '%s\n' "$out" | grep -q "raw probe #"; then
+        ok "raw-probe fired"
+    else
+        bad "raw-probe never fired"
     fi
 
     say "arena-canary: armed, saved and restored on $PG_GAME"

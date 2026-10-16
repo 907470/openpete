@@ -51,8 +51,7 @@ Spyro 1 only. Bind an overlay function with `override_ovl` or the
 `deps`, `sim_mutative`, `state`, `runahead` and `assets/` work on every
 game. `assets/<game>/` (for example `assets/spyro-2/`), when present, is
 used in place of `assets/` on that game. `[[material]]` rows take their
-own `game` key; Spyro 1 serves every render channel and Spyro 2 and 3
-serve none, so a row reaching Spyro 2 or 3 is logged and skipped
+own `game` key; every game serves every render channel
 ([Shaders](shaders.md#declare-a-material-in-the-manifest)). `[[level]]`
 rows load on Spyro 1 only; on Spyro 2 and 3 they are refused with one
 log line and the rest of the mod loads ([Custom levels](levels.md)).

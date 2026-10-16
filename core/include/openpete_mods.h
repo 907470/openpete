@@ -893,8 +893,10 @@ typedef struct {
 /* Host-side snapshot of the loaded-class set, refreshed once per tick from
  * the ops above. Mods read it through the api's moby_classes, which must be
  * callable from a UI section - i.e. inside a present, where guest access is
- * refused - so the read never touches guest RAM. */
-#define OPENPETE_MOBY_CLASSES_MAX 512
+ * refused - so the read never touches guest RAM. Sized to the largest model
+ * table of any game (Spyro 1 512 rows, Spyro 3 768); a mod passes its own
+ * capacity, so this size is not part of the mod ABI. */
+#define OPENPETE_MOBY_CLASSES_MAX 768
 /** @brief Refresh the host-side copy of the loaded moby class set from the game ops.
  *
  * Reads guest RAM, so it runs at the tick boundary; the run loop calls it
@@ -1224,6 +1226,11 @@ typedef struct {
      * a channel outside the mask, or channel "any" under an empty mask, is
      * logged and skipped. 0 serves no channel. */
     uint32_t                     channel_mask;
+    /* Nonzero when the game's animation frame words carry the 21-bit
+     * vertex-stream field that vstream_handle's handles are written into
+     * and its frame readers resolve; 0 makes vstream_handle return 0 and
+     * log once per mod. */
+    int                          vstream_handles;
     /* The guard over guest bytes a mod may not change
      * (openpete_mods_guest_guard_t), installed before any mod's entry
      * runs; NULL for none. */

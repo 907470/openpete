@@ -21,9 +21,10 @@
 # Usage: tests/harness/check_mod_channels.sh [--game SLUG]
 # Exit: 0 pass, 1 failures, 64 skip (no binary / disc / vulkan / PIL).
 #
-# The gallery mod, the bk2 corpus and every pinned frame below are Spyro 1's,
-# so --game names the game whose binary and disc are used and refuses every
-# other slug rather than replaying Spyro 1 frame pins against another game.
+# The gallery mod, the bk2 corpus and the pinned frames of the gallery rungs
+# are Spyro 1's. --game spyro-2 or spyro-3 runs that game's per-channel
+# engagement rungs instead: one declarative row per render channel against
+# a disabled-row baseline, at pins from the game's own corpus.
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -43,15 +44,113 @@ say() { printf '\n[modchan] %s\n' "$*"; }
 ok()  { printf '[modchan]   PASS: %s\n' "$*"; }
 bad() { printf '[modchan]   FAIL: %s\n' "$*"; fail=1; }
 
-[ "$PG_GAME" = "spyro-1" ] || {
-    echo "[modchan] SKIP: the gallery mod, the bk2 corpus and the frame pins" \
-         "are spyro-1's, not $PG_GAME's"; exit 64; }
 [ -x "$BIN" ] || { echo "[modchan] SKIP: no binary at $BIN"; exit 64; }
 [ -f "$DISC" ] || { echo "[modchan] SKIP: no disc at $DISC"; exit 64; }
 python3 -c "import PIL" 2>/dev/null || { echo "[modchan] SKIP: PIL unavailable"; exit 64; }
 
 mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
+
+# ── Spyro 2 and 3: per-channel engagement ─────────────────────────────
+# The gallery mod and the frame pins of the rungs after this block are
+# Spyro 1's. On Spyro 2 and 3 each render channel is proven live by one
+# declarative [[material]] row on that channel (a full-strength magenta
+# tint; on the shadow channel the decal-contract shader, since shadow draws
+# resolve only decal materials) against a baseline whose row is disabled,
+# at a pin from the game's own subtick corpus where the channel's geometry
+# is on screen. The "ctl" leg repeats the baseline: a nonzero count there
+# means the capture does not repeat and every other count is void.
+if [ "$PG_GAME" != "spyro-1" ]; then
+    case "$PG_GAME" in
+        spyro-2) S23_RUNGS="
+moby|shady-oasis-flame|1421
+terrain|shady-oasis-flame|1421
+player|shady-oasis-flame|1421
+flame|shady-oasis-flame|1421
+particle|shady-oasis-flame|1421
+shadow|shady-oasis-flame|1421
+ctl|shady-oasis-flame|1421
+sky|autumn-plains-skelos-badlands-portal-entry|1425
+portal|autumn-plains-skelos-badlands-portal-entry|1669
+tracer|attract|14575" ;;
+        spyro-3) S23_RUNGS="
+moby|crystal-islands-flame|1653
+terrain|crystal-islands-flame|1653
+player|crystal-islands-flame|1653
+flame|crystal-islands-flame|1653
+particle|crystal-islands-flame|1653
+sky|crystal-islands-flame|1653
+ctl|crystal-islands-flame|1653
+shadow|sheilas-alp-sheila-water-invisible|5105
+portal|sunrise-spring-sunny-villa-portal-entry|3103
+tracer|attract|5074" ;;
+        *) echo "[modchan] SKIP: no channel pins for $PG_GAME"; exit 64 ;;
+    esac
+    # s23_leg <tag> <scene> <frame> <channel> <enabled>: one capture with a
+    # one-row chan-probe mod; scene "attract" is the plain boot.
+    s23_leg() {
+        local tag="$1" scene="$2" frame="$3" ch="$4" en="$5"
+        local md="$WORK/mods-$tag" frag=tint.frag
+        local -a movie=() extra=()
+        if [ "$scene" != attract ]; then
+            movie=(--bk2 "$PG_BK2_DIR/$scene.bk2")
+            read -ra extra < <(grep -v '^#' "$PG_BK2_DIR/$scene.bk2.args" | tr '\n' ' ')
+            movie+=("${extra[@]}")
+        fi
+        rm -rf "${md:?}"
+        mkdir -p "$md/chan-probe/shaders"
+        cp mods/declarative-reshade/shaders/tint.frag "$md/chan-probe/shaders/"
+        if [ "$ch" = shadow ]; then
+            cp mods/channel-gallery/shaders/highlight_decal.frag "$md/chan-probe/shaders/"
+            frag=highlight_decal.frag
+        fi
+        printf '[mod]\nid = "chan-probe"\nversion = "0.0.1"\napi = 13\ngame = ["%s"]\n\n[[material]]\nfrag = "shaders/%s"\nchannel = "%s"\nparams = [1.0, 0.0, 1.0, 1.0]\nenabled = %s\n' \
+            "$PG_GAME" "$frag" "$ch" "$en" > "$md/chan-probe/mod.toml"
+        echo chan-probe > "$md/enabled.txt"
+        local PG_CAPTURE_TIMEOUT=900
+        pg_capture "$WORK/$tag.log" "$WORK/$tag-$frame-vk.png" -- \
+            --renderer vk --mute 1 --aspect 4:3 --lod original --no-card \
+            "${movie[@]}" --screenshot-native-only --mods-dir "$md" \
+            --screenshot-on-frame "$frame" \
+            --screenshot-output "$WORK/$tag-{n}.png" --frame-limit $((frame + 2))
+    }
+    s23_diffpx() {
+        python3 - "$1" "$2" <<'PY'
+import sys
+from PIL import Image, ImageChops
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+print(sum(1 for p in ImageChops.difference(a, b).getdata() if p != (0, 0, 0)))
+PY
+    }
+    while IFS='|' read -r ch scene frame; do
+        [ -z "${ch// }" ] && continue
+        base="$WORK/base-$scene-$frame-vk.png"
+        if [ ! -s "$base" ] && ! s23_leg "base-$scene" "$scene" "$frame" moby false; then
+            bad "no baseline capture for $scene at $frame (see $WORK/base-$scene.log)"; continue
+        fi
+        tag="$ch-$scene"
+        if [ "$ch" = ctl ]; then
+            s23_leg "$tag" "$scene" "$frame" moby false
+        else
+            s23_leg "$tag" "$scene" "$frame" "$ch" true
+        fi || { bad "no capture for $ch at $scene $frame (see $WORK/$tag.log)"; continue; }
+        n=$(s23_diffpx "$base" "$WORK/$tag-$frame-vk.png")
+        if [ "$ch" = ctl ]; then
+            if [ "${n:-1}" -eq 0 ]; then ok "control: the baseline repeats exactly at $scene $frame"
+            else bad "control: the baseline differs by ${n:-?} px at $scene $frame; the counts are void"; fi
+        elif ! grep -q "chan-probe: 1 declarative material row" "$WORK/$tag.log"; then
+            bad "$ch: the row was not kept (see $WORK/$tag.log)"
+        elif [ "${n:-0}" -gt 0 ]; then
+            ok "$ch: $n px repainted at $scene $frame"
+        else
+            bad "$ch: 0 px repainted at $scene $frame"
+        fi
+    done <<< "$S23_RUNGS"
+    echo
+    if [ "$fail" -eq 0 ]; then echo "[modchan] ALL GREEN"; else echo "[modchan] FAILURES - see above"; fi
+    exit $fail
+fi
 
 # Stage one gallery copy per config so runs never share a config.toml.
 # `extra` is appended verbatim, so a rung can drive gallery.class etc.

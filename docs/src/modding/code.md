@@ -140,6 +140,11 @@ through a 21-bit field that cannot hold an arena address. Request a
 handle with `api->vstream_handle(self, stream_vaddr)` and write the handle
 into the field; the game's readers resolve it. Request handles at entry,
 in a fixed order, once per stream: they are ledgered like allocations.
+Spyro 1 only: Spyro 2 and 3 frame words hold a halfword offset from the
+animation header, not a stream field, so a mod moves a stream there
+through the header's pointers. A mod built for Spyro 2 or 3 does not
+compile a use of `vstream_handle`; the error states the reason. A `"*"`
+object gets 0 and one log line.
 
 ### Spyro 3's checked code
 
@@ -233,7 +238,11 @@ missing on a game returns the value the table names.
 of an entry whose surface the running game does not serve; the entry
 logs one line naming the game the first time each mod calls it. Every
 other failure returns -1, so `rc < 0` tests for any failure and
-`rc == OPENPETE_MOD_ERR_UNSUPPORTED` for the missing surface.
+`rc == OPENPETE_MOD_ERR_UNSUPPORTED` for the missing surface. A material
+on a render channel the running game does not serve is refused the same
+way on both paths: a `[[material]]` row is logged and skipped, and
+`material_register` or `material_register_refine` logs one line and
+returns -1.
 
 | Entry | Spyro 1 | Spyro 2 and Spyro 3 |
 |---|---|---|
@@ -243,13 +252,13 @@ other failure returns -1, so `rc < 0` tests for any failure and
 | `game_id`, `gameplay_live`, `player_pose`, `level_id` | yes | yes |
 | `shader_register`, `postfx_*` | yes | yes |
 | `sfx_replace`, `sfx_play` | yes | yes; slot names per game ([Sounds](sounds.md)) |
-| `draw_text` | yes | no text rasterizer: draws nothing, logs once per mod naming the game |
-| `[[material]]` rows | every render channel | no render channel is served: rows logged and skipped |
-| `material_register`, `material_register_refine`, `material_enable`, `material_set_params`, `material_set_selector` | yes | register, but the renderer applies no material on these games |
-| `moby_classes` | yes | no moby census: returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
+| `draw_text` | yes | yes |
+| `[[material]]` rows | every render channel | every render channel |
+| `material_register`, `material_register_refine`, `material_enable`, `material_set_params`, `material_set_selector` | yes | yes |
+| `moby_classes` | yes | Spyro 3: yes. Spyro 2: no moby census, returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
 | `read_level_data` | yes | returns `OPENPETE_MOD_ERR_UNSUPPORTED` |
 | `[[level]]` rows | yes | refused with one log line |
-| `vstream_handle` | yes | returns a handle, but the game's frame readers do not resolve handles |
+| `vstream_handle` | yes | no vertex-stream field: a per-game build is refused at compile time; a `"*"` object gets 0 and one log line |
 | `texpack_fog_shift` | yes | applies to the terrain the native renderer draws |
 | music replacement ([Music](music.md)) | yes | no |
 

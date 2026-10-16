@@ -241,7 +241,11 @@ the arena: `api->vstream_handle(self, stream_vaddr)` returns a handle
 (< 0x8000, never 0) to write into the field as-is in both encodings; readers
 resolve it. Request at entry, fixed order, once per stream (ledgered like
 allocations; a route-dependent order makes savestates from other routes
-refuse). `guest()` on a handle-bearing field returns NULL.
+refuse). `guest()` on a handle-bearing field returns NULL. Spyro 1 only:
+S2/S3 frame words carry a halfword offset from the animation header, so move
+a stream through the header's pointers; a per-game S2/S3 build using the
+member does not compile (the error states why), a "*" object gets 0 + one
+log line.
 
 S1 animated-model ceilings: 255 verts per tier (count byte at header +8,
 +9 = low-detail count); ~1600 faces overflows the game's polygon buffer and
@@ -366,11 +370,13 @@ Selector keys (manifest row or `openpete_mod_material_selector_t`; omitted
 
 C tier (api 3+): `sel = openpete_mod_material_sel_any();` then assign
 (never zero-init: that means channel 0 class 0). `material_register(self,
-&sel, frag)` (tick context; refused in present/UI section) ->
+&sel, frag)` (tick context; refused in present/UI section and on a channel
+the game does not serve, as `[[material]]` rows are) ->
 `material_set_params(self, mat, &blk, len ≤ 256)`, `material_enable`,
 `material_set_selector` (re-key a live material; from present/UI applies at
-next tick), `moby_classes(self, out, cap)` (classes the current level
-loaded, tick-boundary snapshot, safe from UI; NULL,0 sizes). Manifest rows
+next tick), `moby_classes(self, out, cap)` (classes the current level's
+load placed, ids to 767 on Spyro 3, at most cap copied, tick-boundary
+snapshot, safe from UI; NULL,0 sizes). Manifest rows
 arm before entry, so C registrations win overlapping pixels.
 `material_register_refine(self, &sel, frag, cb)`: `cb(key, out, cap)`
 returns bytes written (0 = claim, no params) or -1 = stock; runs at

@@ -50,6 +50,41 @@
 #endif
 #endif
 
+/* vstream_handle on a game whose frame words carry no vertex-stream field
+ * (Spyro 2 and 3): in a mod built for that game a use of the member fails
+ * to compile on every compiler, with the reason in the error, and the
+ * struct layout stays the same. Where the compiler has the `unavailable`
+ * attribute (clang) the member carries it; elsewhere (GCC before 12) the
+ * slot is declared as vstream_handle_reserved_slot and the name
+ * vstream_handle is defined to an explanatory name the struct lacks, so the
+ * error reads "no member named vstream_handle_is_spyro1_only__...". An
+ * OPENPETE_MOD_ANY_GAME object keeps the member, and the call returns 0
+ * there with one log line per mod. */
+#define OPENPETE_VSTREAM_ATTR
+#define OPENPETE_VSTREAM_SLOT_RESERVED 0
+#if !defined(OPENPETE_ENGINE_BUILD) && defined(OPENPETE_GAME_ID) && \
+    (OPENPETE_GAME_SPYRO2 || OPENPETE_GAME_SPYRO3)
+#if defined(__has_attribute)
+#if __has_attribute(unavailable)
+#undef OPENPETE_VSTREAM_ATTR
+#define OPENPETE_VSTREAM_ATTR __attribute__((unavailable( \
+    "vstream_handle is Spyro 1 only: " OPENPETE_GAME_ID " animation frame " \
+    "words carry no vertex-stream field; move a stream through the " \
+    "animation header's pointers")))
+#endif
+#endif
+#if !defined(__has_attribute)
+#undef OPENPETE_VSTREAM_SLOT_RESERVED
+#define OPENPETE_VSTREAM_SLOT_RESERVED 1
+#elif !__has_attribute(unavailable)
+#undef OPENPETE_VSTREAM_SLOT_RESERVED
+#define OPENPETE_VSTREAM_SLOT_RESERVED 1
+#endif
+#if OPENPETE_VSTREAM_SLOT_RESERVED
+#define vstream_handle vstream_handle_is_spyro1_only__move_streams_through_the_animation_header
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -805,6 +840,10 @@ typedef struct openpete_mod_api {
      * belongs to: it cannot change blending, depth policy or draw order.
      * Unmatched or failed builds keep stock shading; a material cannot
      * make geometry invisible.
+     *
+     * A channel the running game does not serve (see the game's channel
+     * list in the modding docs) is refused with one log line, as a
+     * `[[material]]` row on that channel is skipped.
      * @param shader A frag handle from shader_register().
      * @return A material handle, registered enabled, or -1.
      * @since api 3
@@ -846,7 +885,8 @@ typedef struct openpete_mod_api {
      * Available on the moby channel (keyed per instance) and on terrain
      * (keyed per texture id or the untextured band, asked once per
      * present); on other channels register declaratively and drive the
-     * material with material_set_params().
+     * material with material_set_params(). A channel the running game does
+     * not serve is refused as material_register() refuses it.
      * @since api 4
      */
     int (*material_register_refine)(openpete_mod_t* self,
@@ -868,13 +908,16 @@ typedef struct openpete_mod_api {
                                  const openpete_mod_material_selector_t* sel);
 
     /**
-     * @brief The moby classes the current level has loaded, ascending.
+     * @brief The moby classes the current level's load placed in the model table, ascending.
      *
      * Level-scoped, not visibility-scoped: a superset of the classes with
      * a live instance at this instant, and the set worth offering a user
-     * to choose from. Reads an engine-side snapshot refreshed once per
-     * tick, so it is safe from a UI section. Empty before the first level
-     * finishes loading.
+     * to choose from. On Spyro 3, whose model table keeps the rows of
+     * earlier levels, the set is the classes of the load's own model
+     * lists. Class ids run to 511 on Spyro 1 and 767 on Spyro 3; at most
+     * @p cap entries are copied. Reads an engine-side snapshot refreshed
+     * once per tick, so it is safe from a UI section. Empty before the
+     * first level finishes loading.
      * @param out  Destination of @p cap entries; `out = NULL, cap = 0`
      *             sizes the buffer.
      * @return The count; #OPENPETE_MOD_ERR_UNSUPPORTED on a game that
@@ -902,11 +945,23 @@ typedef struct openpete_mod_api {
      * a savestate loads, so a sequence that depends on the order levels
      * were visited makes a savestate from another route refuse to load.
      * Tick context only.
-     * @return The handle, or 0 for vaddr 0, a kernel-area vaddr, or an
-     *         exhausted table.
+     *
+     * Spyro 1 only. Spyro 2 and 3 frame words carry a halfword offset from
+     * the animation header instead of a stream field, so a mod moves a
+     * stream there through the header's pointers. A mod built for Spyro 2
+     * or 3 does not compile a use of this member, on any compiler; an
+     * any-game object gets 0 and one log line.
+     * @return The handle, or 0 for vaddr 0, a kernel-area vaddr, an
+     *         exhausted table, or a game without the stream field.
      * @since api 9
      */
-    uint32_t (*vstream_handle)(openpete_mod_t* self, uint32_t stream_vaddr);
+#if OPENPETE_VSTREAM_SLOT_RESERVED
+    uint32_t (*vstream_handle_reserved_slot)(openpete_mod_t* self,
+                                             uint32_t stream_vaddr);
+#else
+    uint32_t (*vstream_handle)(openpete_mod_t* self, uint32_t stream_vaddr)
+        OPENPETE_VSTREAM_ATTR;
+#endif
     /** @} */
 
     /** @name Notifications

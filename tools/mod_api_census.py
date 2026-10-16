@@ -26,11 +26,29 @@ def strip_comments(text: str) -> str:
     return re.sub(r"//[^\n]*", "", text)
 
 
+def drop_if_branches(body: str) -> str:
+    """Keep the `#else` branch of each `#if ... #else ... #endif` group and
+    drop the `#if` branch and every directive line, so a member declared
+    twice under a condition counts once, as builds without it see it."""
+    out, skipping = [], False
+    for line in body.split("\n"):
+        s = line.strip()
+        if s.startswith("#if"):
+            skipping = True
+        elif s.startswith("#else"):
+            skipping = False
+        elif s.startswith("#endif"):
+            skipping = False
+        elif not skipping and not s.startswith("#"):
+            out.append(line)
+    return "\n".join(out)
+
+
 def struct_members(text: str, struct_start: str, struct_end: str):
     """Top-level function-pointer members only: a nested (*name)( inside a
     member's parameter list sits at paren depth > 0 and is skipped."""
-    body = strip_comments(
-        text.split(struct_start, 1)[1].split(struct_end, 1)[0])
+    body = drop_if_branches(strip_comments(
+        text.split(struct_start, 1)[1].split(struct_end, 1)[0]))
     out = []
     for m in MEMBER_RE.finditer(body):
         depth = body.count("(", 0, m.start()) - body.count(")", 0, m.start())

@@ -362,6 +362,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The same gate on Spyro 2 and 3: one declarative row per render channel
+    # repaints pixels against a disabled-row baseline at a corpus pin, with
+    # a repeat-baseline control.
+    foreach(_chg spyro-2 spyro-3)
+        string(REPLACE "-" "" _chtag "${_chg}")
+        add_test(NAME mod_channel_selectors_${_chtag}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mod_channels.sh
+                         --game ${_chg})
+        set_tests_properties(mod_channel_selectors_${_chtag} PROPERTIES
+            LABELS "slow;mods"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 3600
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # A Windows mod may include the SDK headers and <windows.h>, whose
     # windef.h defines RECT. The SDK's PSYQ types carry a PSX_ prefix to
     # keep clear of it; this cross-compiles one such translation unit and

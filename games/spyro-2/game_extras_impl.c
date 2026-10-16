@@ -180,16 +180,19 @@ GAME_MOD_TABLES_DECLARE(spyro2);
  *
  * Built on the first call into static storage. Overlay-window overrides
  * bind through override_ovl or a name scoped to one overlay only
- * (legacy_window_links 0). Moby ops, level ops, the text rasterizer, the sfx
- * canonicaliser and the render-function list stay NULL and the material
- * channel mask stays 0, so the loader treats those surfaces as unsupported
- * on this game; the arena keeps the core default base.
+ * (legacy_window_links 0). Every render channel is a material channel,
+ * and mod text draws through the text-moby rasterizer. Moby ops, level
+ * ops, the sfx canonicaliser and the render-function list stay NULL, so
+ * the loader treats those surfaces as unsupported on this game; the arena
+ * keeps the core default base.
  * @return The descriptor, never NULL. */
 static const game_mod_desc_t* spyro2_mod_desc(void) {
     static game_mod_desc_t s_desc;
     static int             s_built = 0;
     if (!s_built) {
         GAME_MOD_TABLES_FILL(&s_desc, spyro2);
+        s_desc.channel_mask = OPENPETE_MODS_CHANNELS_ALL;
+        s_desc.text_emit    = text_moby_native_mod_emit;
         s_built = 1;
     }
     return &s_desc;
