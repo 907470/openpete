@@ -637,16 +637,26 @@ else
     ok "runahead armed over mutable arena memory; prediction oracle exact" \
        "($ra_checked prediction(s) retired, 0 mismatch); no DESYNC"
 fi
+# The file legs below run in one loaded level's gameplay. A load applies
+# only while the game fiber is parked at the psyq_VSync call site its
+# state was saved at, and each game state draws through its own VSync
+# call, so a save and a load in different game states (the attract
+# demo's level changes, the title screen at boot) never meet: the load
+# waits 1800 final yields and is refused for the site, before the modset
+# and ledger verdicts run. --skip-to-level 10 reaches gameplay near
+# --state-save-on-frame 1200 and Spyro then stands idle at one site, so
+# every save and load here, with the config Apply at tick 1400 between
+# them, shares it.
 rm -f "$WORK/canary.state"
-out="$(run_game "$WORK/canary" 5000 --state-save-on-frame 4500 \
-        --state-save-output "$WORK/canary.state")"
+out="$(run_game "$WORK/canary" 2600 --skip-to-level 10 \
+        --state-save-on-frame 2000 --state-save-output "$WORK/canary.state")"
 if printf '%s\n' "$out" | grep -q "savestate: saved" && [ -e "$WORK/canary.state" ]; then
     ok "file save with mutable arena memory: written"
 else
     bad "file save with mutable arena memory failed"
 fi
-out="$(run_game "$WORK/canary" 6000 --state-load-on-frame 5000 \
-        --state-load-input "$WORK/canary.state")"
+out="$(run_game "$WORK/canary" 3000 --skip-to-level 10 \
+        --state-load-on-frame 2400 --state-load-input "$WORK/canary.state")"
 if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 64 B restored" && \
    printf '%s\n' "$out" | grep -q "savestate: loaded" && \
    ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
@@ -655,8 +665,8 @@ else
     bad "file load: arena not restored, or DESYNC after the load"
 fi
 fixture "$WORK/canary-ms" double-gems
-out="$(run_game "$WORK/canary-ms" 1500 --state-load-on-frame 1000 \
-        --state-load-input "$WORK/canary.state")"
+out="$(run_game "$WORK/canary-ms" 2700 --skip-to-level 10 \
+        --state-load-on-frame 2200 --state-load-input "$WORK/canary.state")"
 if printf '%s\n' "$out" | grep -q "MODSET MISMATCH.*load refused"; then
     ok "modset mismatch: load refused, running state untouched"
 else
@@ -670,10 +680,10 @@ for v in same diff; do
     echo arena-canary > "$WORK/canary-$v/enabled.txt"
 done
 rm -f "$WORK/same.state" "$WORK/diff.state"
-out="$(OPENPETE_MODS_CFG_APPLY=2700:arena-canary:slots=4 \
-       run_game "$WORK/canary-same" 6500 \
-        --state-save-on-frame 4500 --state-save-output "$WORK/same.state" \
-        --state-load-on-frame 5500 --state-load-input "$WORK/same.state")"
+out="$(OPENPETE_MODS_CFG_APPLY=1400:arena-canary:slots=4 \
+       run_game "$WORK/canary-same" 3300 --skip-to-level 10 \
+        --state-save-on-frame 2000 --state-save-output "$WORK/same.state" \
+        --state-load-on-frame 2800 --state-load-input "$WORK/same.state")"
 if printf '%s\n' "$out" | grep -q "arena-canary call #0 replayed" && \
    printf '%s\n' "$out" | grep -q "savestate: loaded" && \
    ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
@@ -681,10 +691,10 @@ if printf '%s\n' "$out" | grep -q "arena-canary call #0 replayed" && \
 else
     bad "Apply (same shape): no replay, load refused, or DESYNC"
 fi
-out="$(OPENPETE_MODS_CFG_APPLY=2700:arena-canary:slots=8 \
-       run_game "$WORK/canary-diff" 6500 \
-        --state-save-on-frame 4500 --state-save-output "$WORK/diff.state" \
-        --state-load-on-frame 5500 --state-load-input "$WORK/diff.state")"
+out="$(OPENPETE_MODS_CFG_APPLY=1400:arena-canary:slots=8 \
+       run_game "$WORK/canary-diff" 3300 --skip-to-level 10 \
+        --state-save-on-frame 2000 --state-save-output "$WORK/diff.state" \
+        --state-load-on-frame 2800 --state-load-input "$WORK/diff.state")"
 if printf '%s\n' "$out" | grep -q "row #0 superseded" && \
    printf '%s\n' "$out" | grep -q 'entry #0 .* was superseded by a reload .* REFUSING the load'; then
     ok "Apply (changed shape): row superseded, pre-Apply file REFUSED naming the mod and entry"
