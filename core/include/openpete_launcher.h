@@ -210,6 +210,23 @@ void openpete_launcher_vk_failure(const char* why, int continues);
 int  openpete_library_disc_identity(const char* disc_path, char* serial, size_t serial_cap,
                                     char* sha, size_t sha_cap);
 
+/** @brief Find a disc of a game in the library: the most recently played entry recorded for it.
+ *
+ * Reads each entry's meta.toml; an entry recorded for no game is
+ * identified by its disc's serial without rewriting meta.toml. Any disc
+ * of the game qualifies; no release is checked. Reads only, so it runs
+ * from any thread and outside the launcher.
+ * @param game A game id ("spyro-2").
+ * @param cue Receives the entry's disc.cue path.
+ * @param cue_cap Its capacity.
+ * @return 0 when an entry's disc.cue exists, -1 otherwise. */
+int  openpete_library_game_disc(const char* game, char* cue, size_t cue_cap);
+
+/** @brief Set the note the version selector shows under its entries, or clear it.
+ *
+ * @param note One line, copied; NULL or empty clears it. */
+void openpete_launcher_set_note(const char* note);
+
 #ifdef __cplusplus
 }
 #endif

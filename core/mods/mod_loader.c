@@ -46,6 +46,7 @@
 #include "openpete_input_log.h"
 #include "openpete_psx.h"   /* openpete_psx_resolve_disc_bin */
 #include "openpete_disc_image.h"   /* read_sector */
+#include "openpete_disc_trace.h"   /* OPENPETE_DISC_TAG_NONE */
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
@@ -56,6 +57,9 @@
 #include "openpete_rumble.h"   /* pad_rumble: the one byte-to-motor path */
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "game_extras.h"      /* game_get_id: [mod] game targeting */
+#include "mod_games.h"        /* requires_games / optional_games */
+#include "openpete_identify.h" /* registered game ids */
+#include "openpete_launcher.h" /* the library's disc of another game */
 #include "../ui/openpete_imgui_guard.h" /* ImGui table bind */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
@@ -263,6 +267,9 @@ struct openpete_mod {
                                           * "<dir>/assets"; set at load */
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
     mod_fvec deps;       /* mod_dep_t */
+    mod_game_list_t games; /* [mod] requires_games and optional_games */
+    int   disc_refused_logged; /* a disc call for an unlisted game was
+                                * logged (once per mod) */
     int   raw_warned;  /* raw-tier warning issued (once per mod) */
     uint32_t api_pin;  /* [mod] api, the minimum api the mod's calls need;
                         * 0 when the key is absent. Below MOD_API_SCOPED
@@ -1397,16 +1404,118 @@ static const char* api_disc_path(openpete_mod_t* self, int want_bin) {
     return s_disc_bin_state > 0 ? s_disc_bin : NULL;
 }
 
-/** @brief Read one raw sector of the booted disc through disc_image.
+/* Handles of other games' discs, by installed-disc table slot, opened on
+ * first read. Direct mode: the reads go to the image file and never reach
+ * the disc cache, which holds only the booted disc. */
+static _Atomic(disc_image_t*) s_other_disc[MOD_GAMES_TABLE_MAX];
+
+/** @brief Route a mod's disc call for a game, logging a refusal once per mod.
+ *
+ * @param self The calling mod.
+ * @param game The game id the call names.
+ * @param call The api entry's name, for the log line.
+ * @return The route. */
+static mod_disc_route_t mod_disc_route(openpete_mod_t* self, const char* game,
+                                       const char* call) {
+    const mod_disc_route_t r = mod_games_route(&self->games, game_get_id(), game);
+    if (r == MOD_DISC_UNLISTED && !self->disc_refused_logged) {
+        self->disc_refused_logged = 1;
+        OPL_ERROR_F(self->log_tag, "%s(\"%s\") refused: the manifest names "
+                    "\"%s\" in neither requires_games nor optional_games",
+                    call, game, game);
+    }
+    return r;
+}
+
+/** @brief Return the open handle of another game's disc, opening it on first use.
+ *
+ * Two threads opening at once both open; the first to publish keeps its
+ * handle and the other closes its own.
+ * @param slot The game's installed-disc table slot.
+ * @return The handle, or NULL when the image does not open. */
+static disc_image_t* other_disc(int slot) {
+    disc_image_t* img = atomic_load(&s_other_disc[slot]);
+    if (img) return img;
+    disc_image_t* fresh = disc_image_open(mod_games_slot_path(slot, 0),
+                                          DISC_READ_DIRECT, OPENPETE_DISC_TAG_NONE);
+    if (!fresh) return NULL;
+    disc_image_t* expect = NULL;
+    if (atomic_compare_exchange_strong(&s_other_disc[slot], &expect, fresh))
+        return fresh;
+    disc_image_close(fresh);
+    return expect;
+}
+
+/** @brief Read one raw sector of a game's disc: the booted disc through disc_image's game reader, another game's through its own direct handle.
  *
  * @param self The calling mod; NULL fails.
+ * @param game The game id.
  * @param lba The sector.
  * @param buf Receives 2352 bytes.
- * @return 0, or -1 when there is no caller, no disc or no buffer, or the
- *         read fails. */
-static int api_read_sector(openpete_mod_t* self, uint32_t lba, uint8_t* buf) {
+ * @return 0, or -1 when there is no caller, no buffer, no disc, a refused
+ *         game, a sector past the end, or a failed read. */
+static int api_read_sector(openpete_mod_t* self, const char* game, uint32_t lba,
+                           uint8_t* buf) {
     if (!self || !buf) return -1;
-    return disc_image_game_read_sector(lba, buf);
+    const mod_disc_route_t r = mod_disc_route(self, game, "read_sector");
+    if (r == MOD_DISC_BOOTED) return disc_image_game_read_sector(lba, buf);
+    if (r != MOD_DISC_OTHER) return -1;
+    disc_image_t* img = other_disc(mod_games_slot(game));
+    if (!img) return -1;
+    const uint64_t off = (uint64_t)lba * DISC_IMAGE_RAW_SECTOR;
+    if (off + DISC_IMAGE_RAW_SECTOR > disc_image_size(img)) return -1;
+    return disc_image_read_bytes(img, off, buf, DISC_IMAGE_RAW_SECTOR,
+                                 OPENPETE_DISC_TAG_NONE) < 0 ? -1 : 0;
+}
+
+/** @brief Return a game's disc path: api_disc_path for the running game, the library entry's for another.
+ *
+ * @param self The calling mod; NULL returns NULL.
+ * @param game The game id.
+ * @param want_bin Nonzero for the sector image.
+ * @return The path, or NULL for a refused game, no disc or an unresolved image. */
+static const char* api_game_disc_path(openpete_mod_t* self, const char* game,
+                                      int want_bin) {
+    if (!self) return NULL;
+    const mod_disc_route_t r = mod_disc_route(self, game, "game_disc_path");
+    if (r == MOD_DISC_BOOTED) return api_disc_path(self, want_bin);
+    if (r != MOD_DISC_OTHER) return NULL;
+    const char* p = mod_games_slot_path(mod_games_slot(game), want_bin);
+    return p && *p ? p : NULL;
+}
+
+/** @brief Report whether a game is installed, for the game_installed api entry.
+ *
+ * @param self The calling mod; unused, since the answer is the session's.
+ * @param game The game id.
+ * @return 1 for the running game or a game with a library disc, else 0. */
+static int api_game_installed(openpete_mod_t* self, const char* game) {
+    (void)self;
+    return mod_games_installed(game_get_id(), game);
+}
+
+/** @brief Library lookup for the installed-disc table: the entry's cue and the sector image behind it.
+ *
+ * @param game The game id.
+ * @param cue Receives the cue path.
+ * @param cue_cap Its capacity.
+ * @param bin Receives the sector image; "" when it does not resolve.
+ * @param bin_cap Its capacity.
+ * @return 0 when the library holds a disc of @p game, -1 otherwise. */
+static int mods_library_lookup(const char* game, char* cue, size_t cue_cap,
+                               char* bin, size_t bin_cap) {
+    if (openpete_library_game_disc(game, cue, cue_cap) != 0) return -1;
+    if (openpete_psx_resolve_disc_bin(cue, bin, bin_cap, NULL, 0) != 0) bin[0] = 0;
+    OPL_INFO_F("mods", "library disc of %s: %s", game, cue);
+    return 0;
+}
+
+/** @brief Fill the installed-disc table with every registered game but the running one. */
+static void mods_games_snapshot(void) {
+    const char* ids[MOD_GAMES_TABLE_MAX];
+    int n = 0;
+    while (n < MOD_GAMES_TABLE_MAX && (ids[n] = openpete_game_id_at(n)) != NULL) n++;
+    mod_games_snapshot(game_get_id(), ids, n, mods_library_lookup);
 }
 
 /** @brief Return the running game's id for the game_id api entry.
@@ -2930,6 +3039,9 @@ static const openpete_mod_api_t s_api = {
     .disc_path     = api_disc_path,
     .read_sector   = api_read_sector,
     .override_ovl  = api_override_ovl,
+    /* other games' discs (api 13) */
+    .game_disc_path = api_game_disc_path,
+    .game_installed = api_game_installed,
     /* game-neutral services (api 13) */
     .game_id       = api_game_id,
     .gameplay_live = api_gameplay_live,
@@ -3151,6 +3263,46 @@ static void parse_deps(toml_table_t* t, struct openpete_mod* mod) {
         free(d.u.s);
         if (!slot) break;
     }
+}
+
+/** @brief Add the ids one manifest key names to a mod's game list.
+ *
+ * The key is one id or an array of ids; non-string elements are ignored.
+ * An id that names no registered game is kept, with a warning: as a
+ * required game it refuses the mod, since no library disc supplies it.
+ * @param t The [mod] table.
+ * @param key "requires_games" or "optional_games".
+ * @param required 1 for requires_games.
+ * @param l The list the ids are added to.
+ * @param mod_id The mod id, for log lines. */
+static void parse_game_key(toml_table_t* t, const char* key, int required,
+                           mod_game_list_t* l, const char* mod_id) {
+    toml_array_t* a = toml_array_in(t, key);
+    toml_datum_t one = a ? (toml_datum_t){0} : toml_string_in(t, key);
+    const int n = a ? toml_array_nelem(a) : (one.ok ? 1 : 0);
+    for (int i = 0; i < n; i++) {
+        toml_datum_t d = a ? toml_string_at(a, i) : one;
+        if (!d.ok) continue;
+        if (!openpete_game_registered(d.u.s))
+            OPL_WARN_F("mods", "%s: %s names \"%s\", which is no game this "
+                       "build knows", mod_id, key, d.u.s);
+        if (mod_game_list_add(l, d.u.s, required) < 0)
+            OPL_ERROR_F("mods", "%s: %s \"%s\" not added (an id is at most "
+                        "%d bytes, and a mod names at most %d games)",
+                        mod_id, key, d.u.s, MOD_GAME_ID_MAX - 1, MOD_GAMES_MAX);
+        free(d.u.s);
+    }
+}
+
+/** @brief Parse [mod] requires_games and optional_games into a game list, replacing its rows.
+ *
+ * @param t The [mod] table.
+ * @param l The list.
+ * @param mod_id The mod id, for log lines. */
+static void parse_games(toml_table_t* t, mod_game_list_t* l, const char* mod_id) {
+    memset(l, 0, sizeof *l);
+    parse_game_key(t, "requires_games", 1, l, mod_id);
+    parse_game_key(t, "optional_games", 0, l, mod_id);
 }
 
 /** @brief Parse the [[binding]] tables (name, key, optional purpose) into the mod's binding rows.
@@ -3657,6 +3809,7 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
     }
     if (parse_mod_header(t, mod, mod_dir, path) != 0) goto out;
     parse_deps(t, mod);
+    parse_games(t, &mod->games, mod->id);
     parse_bindings(root, mod, path);
     parse_config(root, mod, path);
     parse_levels(root, mod, path);
@@ -4597,6 +4750,30 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
     return 0;
 }
 
+/** @brief Refuse each pending mod a required game of which has no disc in the library.
+ *
+ * Marks the row TS_FAILED before the topo sort, so it never loads and a
+ * mod depending on it is disabled as for a failed dependency. Each refusal
+ * logs one error and adds a Mods panel row naming the game.
+ * @param c Sort context, its state sized to the pending rows. */
+static void mods_refuse_missing_games(topo_ctx_t* c) {
+    for (int i = 0; i < c->n_pending; i++) {
+        const struct openpete_mod* m = pend_at(c->pending, i);
+        const char* g = mod_games_first_missing(&m->games, game_get_id());
+        if (!g) continue;
+        char why[160];
+        if (openpete_game_registered(g))
+            snprintf(why, sizeof why, "requires %s, which has no disc in the "
+                     "library - add its disc to load this mod", g);
+        else
+            snprintf(why, sizeof why, "requires %s, which is no game this "
+                     "build knows", g);
+        OPL_ERROR_F("mods", "\"%s\" %s; \"%s\" disabled", m->id, why, m->id);
+        mod_games_refused_add(m->id, why);
+        int_row_set(&c->state, i, TS_FAILED);
+    }
+}
+
 /** @brief Remove a directory tree (or a file) at path, depth first.
  *
  * Entries that cannot be removed (a DLL the process holds on Windows) are
@@ -5265,6 +5442,72 @@ static int mods_discover(const openpete_options_t* opts,
     return n_out;
 }
 
+/** @brief Report one mod's required games with no disc in the library, for openpete_mods_missing_games.
+ *
+ * @param mod_dir The mod's directory.
+ * @param id The mod id.
+ * @param running The game about to run, or NULL.
+ * @param fn Called once per missing game.
+ * @param ud Passed to @p fn.
+ * @return The number of calls made. */
+static int mod_missing_games(const char* mod_dir, const char* id, const char* running,
+                             openpete_mods_missing_game_fn fn, void* ud) {
+    char path[MOD_PATH_MAX + 12];
+    snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return 0;
+    char errbuf[256];
+    toml_table_t* root = toml_parse_file(fp, errbuf, sizeof errbuf);
+    fclose(fp);
+    toml_table_t* t = root ? toml_table_in(root, "mod") : NULL;
+    char want[96] = "";
+    int implied = 0, calls = 0;
+    if (t && (!running || mod_table_selects_game(t, running, want, sizeof want,
+                                                 &implied))) {
+        toml_datum_t own = toml_string_in(t, "game");
+        mod_game_list_t games;
+        parse_games(t, &games, id);
+        for (int i = 0; i < games.n; i++) {
+            const char* g = games.rows[i].id;
+            const char* skip = running ? running : (own.ok ? own.u.s : "");
+            char cue[MOD_PATH_MAX];
+            if (!games.rows[i].required || strcmp(g, skip) == 0 ||
+                !openpete_game_registered(g) ||
+                openpete_library_game_disc(g, cue, sizeof cue) == 0)
+                continue;
+            fn(ud, id, g);
+            calls++;
+        }
+        if (own.ok) free(own.u.s);
+    }
+    if (root) toml_free(root);
+    return calls;
+}
+
+int openpete_mods_missing_games(const openpete_options_t* opts, const char* running,
+                                openpete_mods_missing_game_fn fn, void* ud) {
+    char mods_dir[MOD_PATH_MAX];
+    if (!fn || mods_root(opts, mods_dir, sizeof mods_dir) != 0) return 0;
+    const char* list = opts && opts->mods_enabled ? opts->mods_enabled
+                                                  : getenv("OPENPETE_MODS");
+    mod_fvec order;
+    mod_fvec_init(&order, sizeof(mod_id_row_t), 64, NULL, 0);
+    char en_path[MOD_PATH_MAX + 16];
+    snprintf(en_path, sizeof en_path, "%s/enabled.txt", mods_dir);
+    FILE* en = list ? NULL : fopen(en_path, "r");
+    const int n = list ? order_from_mods_flag(list, &order)
+                       : en ? order_from_enabled_txt(en, &order) : 0;
+    if (en) fclose(en);
+    int calls = 0;
+    for (int i = 0; i < n; i++) {
+        mod_ref_t r;
+        mod_ref_resolve(mods_dir, id_row(&order, i), &r);
+        calls += mod_missing_games(r.dir, r.id, running, fn, ud);
+    }
+    mod_fvec_free(&order);
+    return calls;
+}
+
 /** @brief Write the staged SDK directory, <exe dir>/sdk, into @p out.
  *
  * Falls back to ./sdk when SDL reports no base path. The path is
@@ -5641,6 +5884,8 @@ int openpete_mods_init(const openpete_options_t* opts) {
     mod_fvec_init(&tc.state, sizeof(int), 64, NULL, 0);
     mod_fvec_init(&tc.topo, sizeof(int), 64, NULL, 0);
     (void)mod_fvec_resize(&tc.state, (size_t)n_pending);
+    mods_games_snapshot();
+    mods_refuse_missing_games(&tc);
     for (int i = 0; i < n_pending; i++) (void)topo_visit(&tc, i);
 
     /* Entry policy: boot-enabled mods enter at load, and so do their

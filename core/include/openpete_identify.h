@@ -61,6 +61,11 @@ const char* openpete_game_for_serial(const char* serial);
  * @return 1 when registered, else 0. */
 int openpete_game_registered(const char* id);
 
+/** @brief The registered game id at an index, in registration order.
+ * @param i The index, from 0.
+ * @return The id, or NULL past the last registered game. */
+const char* openpete_game_id_at(int i);
+
 /** @brief The label of an identification source ("disc", "library", "selector", "executable", "none").
  * @param s The source.
  * @return The label, never NULL. */

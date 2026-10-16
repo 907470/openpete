@@ -434,6 +434,20 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
  */
 #define OPENPETE_MOD_ERR_UNSUPPORTED (-2)
 
+/** @name Game ids
+ * The id strings the disc calls and the manifest's `game`,
+ * `requires_games` and `optional_games` keys take. A raw string is
+ * accepted in their place, and `api->game_id(self)` returns the running
+ * game's.
+ * @{ */
+/** @brief Spyro the Dragon (SCUS-94228). @since api 13 */
+#define OPENPETE_MOD_GAME_SPYRO1 "spyro-1"
+/** @brief Spyro 2: Ripto's Rage! (SCUS-94425). @since api 13 */
+#define OPENPETE_MOD_GAME_SPYRO2 "spyro-2"
+/** @brief Spyro: Year of the Dragon (SCUS-94467). @since api 13 */
+#define OPENPETE_MOD_GAME_SPYRO3 "spyro-3"
+/** @} */
+
 /** @brief The engine's function table, passed to the mod entry point. */
 typedef struct openpete_mod_api {
     /** @brief The engine's #OPENPETE_MOD_API_VERSION; compare with `<`, never `!=`.
@@ -1133,20 +1147,32 @@ typedef struct openpete_mod_api {
      */
     const char* (*disc_path)(openpete_mod_t* self, int want_bin);
     /**
-     * @brief Read one raw 2352-byte sector of the booted disc by LBA.
+     * @brief Read one raw 2352-byte sector of a game's disc by LBA.
      *
-     * The engine's own reader: the read is served from the disc cache when
-     * the sector is resident, from the image file otherwise, and never
-     * reorders the cache's loading. Sector 0 is the image's first sector;
-     * a Mode 2 Form 1 sector's 2048 user-data bytes start at byte 24.
-     * Legal from any context.
+     * @p game is the running game's id (`api->game_id(self)`), or a game
+     * the manifest names in `requires_games` or `optional_games`
+     * (#OPENPETE_MOD_GAME_SPYRO1 and its siblings, or the raw string).
+     * The running game's disc is the booted one, read through the engine's
+     * own reader: served from the disc cache when the sector is resident,
+     * from the image file otherwise, never reordering the cache's loading.
+     * Another game's disc is its library entry, any release of that game,
+     * read from the image file alone: the read never touches the booted
+     * disc's cache or its loading order. Sector 0 is the image's first
+     * sector; a Mode 2 Form 1 sector's 2048 user-data bytes start at
+     * byte 24. Legal from any context.
+     *
+     * A game named in neither list is refused, with one log line per mod
+     * naming the game; a listed game with no disc in the library returns
+     * -1 without a line (query `game_installed`).
+     * @param game The game id.
      * @param lba The sector.
      * @param buf Receives 2352 bytes.
-     * @return 0, or -1 when no disc is open, @p buf is NULL or the sector
-     *         lies past the end of the image.
+     * @return 0, or -1 when @p game is NULL, refused or has no disc, @p buf
+     *         is NULL or the sector lies past the end of the image.
      * @since api 13
      */
-    int (*read_sector)(openpete_mod_t* self, uint32_t lba, uint8_t* buf);
+    int (*read_sector)(openpete_mod_t* self, const char* game, uint32_t lba,
+                       uint8_t* buf);
     /** @} */
 
     /** @name Overlay-scoped overrides
@@ -1237,6 +1263,43 @@ typedef struct openpete_mod_api {
      * @since api 13
      */
     int (*level_id)(openpete_mod_t* self, CPUState* cpu);
+    /** @} */
+
+    /** @name Other games' discs
+     * A mod reads another game's disc when its manifest names that game
+     * in `requires_games` (the mod is refused at load while the game has
+     * no disc in the library) or `optional_games` (the mod loads; the
+     * calls for the game fail until a disc is added). `read_sector` reads
+     * sectors of either.
+     * @{ */
+    /**
+     * @brief The disc image of a game: the booted one for the running game, the library's for another.
+     *
+     * The `disc_path` of @p game: for the running game the same string
+     * `disc_path` returns. Another game resolves to its library entry,
+     * the most recently played one when the library holds several, any
+     * release of that game. Refused like `read_sector` for a game the
+     * manifest names in neither list. The string is owned by the engine
+     * and stays valid for the session. Legal from any context.
+     * @param game The game id.
+     * @param want_bin Non-zero for the sector image (`.bin`), zero for the
+     *                 path as given (the `.cue` where one was named).
+     * @return The path, or NULL when @p game is NULL, refused or has no
+     *         disc, or the sector image cannot be resolved.
+     * @since api 13
+     */
+    const char* (*game_disc_path)(openpete_mod_t* self, const char* game,
+                                  int want_bin);
+    /**
+     * @brief Whether a game is installed: the running game, or a game with a disc in the library.
+     *
+     * Answers for any game id, listed in the manifest or not, from the
+     * library as it stood when mods loaded. Legal from any context.
+     * @param game The game id.
+     * @return 1 when installed, 0 otherwise or for NULL.
+     * @since api 13
+     */
+    int (*game_installed)(openpete_mod_t* self, const char* game);
     /** @} */
 } openpete_mod_api_t;
 

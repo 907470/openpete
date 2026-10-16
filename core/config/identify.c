@@ -39,6 +39,10 @@ int openpete_game_registered(const char* id) {
     return 0;
 }
 
+const char* openpete_game_id_at(int i) {
+    return i >= 0 && (size_t)i < GAME_COUNT ? k_games[i].id : NULL;
+}
+
 const char* openpete_ident_source_name(openpete_ident_source_t s) {
     switch (s) {
     case OPENPETE_IDENT_DISC:       return "disc";

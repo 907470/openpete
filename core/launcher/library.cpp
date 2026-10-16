@@ -18,10 +18,12 @@
 #include "openpete_disc_trace.h"
 #include "openpete_identify.h" /* openpete_game_for_serial */
 #include "openpete_log.h"
+#include "openpete_mods.h"   /* openpete_mods_missing_games */
 #include "openpete_paths.h"    /* library root: portable vs per-user data dir */
 #include "openpete_psx.h"      /* openpete_psx_read_disc_serial */
 #include "sha256.h"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -452,6 +454,32 @@ int pick_entry(std::vector<Meta>& entries, Meta*& pick) {
     return 0;
 }
 
+/** @brief Log each enabled mod's required game that has no disc in the library, and set the selector's note from the first.
+ *
+ * The note reads "MOD <ID> NEEDS <GAME> - ADD ITS DISC", with the count of
+ * further pairs when there are more; it is cleared when there are none.
+ * @param opts The options naming the mods root and the enabled list. */
+void note_missing_games(const openpete_options_t* opts) {
+    struct Acc { std::string first; int n = 0; } acc;
+    const openpete_launcher_game* lg = launcher_game();
+    openpete_mods_missing_games(
+        opts, lg ? lg->game_id : nullptr,
+        [](void* ud, const char* mod_id, const char* game) {
+            Acc* a = static_cast<Acc*>(ud);
+            const openpete_launcher_game* g = launcher_game();
+            const char* name = (g && g->game_name) ? g->game_name(game) : nullptr;
+            OPL_WARN_F("library", "mod %s requires %s, which has no disc in the library",
+                       mod_id, game);
+            if (a->n++ == 0)
+                a->first = std::string("MOD ") + mod_id + " NEEDS " +
+                           (name && *name ? name : game) + " - ADD ITS DISC";
+        },
+        &acc);
+    for (char& c : acc.first) c = (char)std::toupper((unsigned char)c);
+    if (acc.n > 1) acc.first += " (+" + std::to_string(acc.n - 1) + " MORE)";
+    openpete_launcher_set_note(acc.first.c_str());
+}
+
 }  // namespace
 
 int library_resolve(openpete_options_t* opts, char* module_path_out, size_t module_path_cap) {
@@ -501,6 +529,7 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
     }
     std::vector<Meta>& entries = scan.entries;
     if (entries.empty()) return 0;
+    note_missing_games(opts);
     Meta* pick = nullptr;
     const int rc = pick_entry(entries, pick);
     if (rc == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
@@ -513,6 +542,26 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
 
 const char* openpete_launcher_selected_game(void) {
     return s_booted ? s_selected_game : nullptr;
+}
+
+int openpete_library_game_disc(const char* game, char* cue, size_t cue_cap) {
+    if (!game || !*game || !cue || !cue_cap) return -1;
+    std::error_code ec;
+    fs::path best;
+    long long best_played = -1;
+    for (auto& e : fs::directory_iterator(library_root(), ec)) {
+        Meta m;
+        if (!e.is_directory() || !read_meta(e.path(), m)) continue;
+        const fs::path c = m.dir / "disc.cue";
+        if (!fs::exists(c, ec)) continue;
+        const std::string g = m.game.empty() ? game_of_image(c) : m.game;
+        if (g != game || m.last_played <= best_played) continue;
+        best = c;
+        best_played = m.last_played;
+    }
+    if (best.empty()) return -1;
+    std::snprintf(cue, cue_cap, "%s", best.string().c_str());
+    return 0;
 }
 
 int openpete_library_disc_identity(const char* disc_path, char* serial, size_t serial_cap,

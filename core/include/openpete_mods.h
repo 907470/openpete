@@ -633,6 +633,44 @@ typedef struct {
  * @return 1 when filled, 0 for an index out of range or a NULL @p out. */
 int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out);
 
+/** @brief Return the number of mods refused at load for a game their manifest requires.
+ *
+ * A refused mod is not in the loaded table; the Mods panel lists these
+ * rows beside it, each with its reason.
+ * @return The row count. */
+int openpete_mods_refused_count(void);
+/** @brief Read refused row i: the mod id and the reason it did not load.
+ *
+ * @param i Index, 0 <= i < openpete_mods_refused_count().
+ * @param id Receives the mod id, owned by the loader for the session; may be NULL.
+ * @param reason Receives the reason, owned likewise; may be NULL.
+ * @return 1 when filled, 0 for an index out of range. */
+int openpete_mods_refused_at(int i, const char** id, const char** reason);
+
+/** @brief Callback of openpete_mods_missing_games: one enabled mod and one game it requires with no disc in the library.
+ *
+ * @param ud The caller's pointer.
+ * @param mod_id The mod id.
+ * @param game The game id. */
+typedef void (*openpete_mods_missing_game_fn)(void* ud, const char* mod_id,
+                                              const char* game);
+/** @brief Report each enabled mod's required games that have no disc in the library, before any game boots.
+ *
+ * The launcher's note on its library screen. Reads the enabled order
+ * (--mods, else enabled.txt; with neither nothing is reported) and each
+ * listed mod's manifest; compiles and loads nothing. A mod whose `game`
+ * key does not select @p running is skipped, as is a required game equal
+ * to @p running, or, while @p running is NULL, equal to the mod's one
+ * `game`. Ids that name no registered game are skipped: no disc supplies
+ * them.
+ * @param opts The options naming the mods root and the enabled list.
+ * @param running The game about to run, or NULL while the launcher names none.
+ * @param fn Called once per mod and missing game.
+ * @param ud Passed to @p fn.
+ * @return The number of calls made. */
+int openpete_mods_missing_games(const openpete_options_t* opts, const char* running,
+                                openpete_mods_missing_game_fn fn, void* ud);
+
 /* ── Config schema ([[config]] rows in mod.toml) ─────────────────────
  * The author declares what is configurable; the ENGINE renders each
  * mod's settings section in the Mods panel from these rows. Values

@@ -20,7 +20,9 @@
 # identity rungs (tests/harness/mods_sdk_rungs.sh) and the rungs of the
 # in-tree mods that load on every game (tests/harness/mods_multigame_rungs.sh:
 # lib-and-client, arena-probe, the postfx mods, per-game asset roots,
-# [[material]] and [[level]] rows by game). The rest of this
+# [[material]] and [[level]] rows by game), and the other-games rungs
+# (tests/harness/mods_games_rungs.sh: requires_games, optional_games and
+# the disc calls against a scratch library). The rest of this
 # script is Spyro 1's corpus: its fixtures, level names and golden are
 # Spyro 1's, so it runs under --game spyro-1 only.
 
@@ -118,6 +120,8 @@ finish() {
 source tests/harness/mods_sdk_rungs.sh
 # shellcheck source=tests/harness/mods_multigame_rungs.sh
 source tests/harness/mods_multigame_rungs.sh
+# shellcheck source=tests/harness/mods_games_rungs.sh
+source tests/harness/mods_games_rungs.sh
 [ "$PG_GAME" = "spyro-1" ] || finish
 
 # ── 1+2. chain-duo matrix (order A,B then B,A) - also observer-neutral ──

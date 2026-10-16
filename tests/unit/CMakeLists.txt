@@ -434,6 +434,20 @@ set_target_properties(mod_vec_test PROPERTIES C_STANDARD 99)
 add_test(NAME mod_vec_test COMMAND mod_vec_test)
 set_tests_properties(mod_vec_test PROPERTIES LABELS "mods")
 
+# mod_games_test - the games a mod names besides the one it runs on
+# (core/mods/mod_games.c): list merging and limits, the route of a disc call
+# for every role and install state against a fake library lookup, the first
+# missing required game, the installed query and the refused-mod rows.
+add_executable(mod_games_test
+    mod_games_test.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_games.c)
+target_include_directories(mod_games_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/mods)
+set_target_properties(mod_games_test PROPERTIES C_STANDARD 11)
+add_test(NAME mod_games_test COMMAND mod_games_test)
+set_tests_properties(mod_games_test PROPERTIES LABELS "mods")
+
 # tracer_snapshot_test - the Spyro 1 tracer set copy clamps the guest set
 # count to the game's four-entry tables (fake bus, no game link).
 add_executable(tracer_snapshot_test

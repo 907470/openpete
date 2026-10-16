@@ -12,6 +12,8 @@ game    = "spyro-1"       # or ["spyro-1", "spyro-3"]; omitted: see below
 version = "0.1.0"
 api     = 13              # minimum OPENPETE_MOD_API_VERSION; also selects the overlay-address rules
 deps    = ["other-mod"]   # hard dependencies: their entry points run first
+requires_games = ["spyro-2"]  # other games' discs the mod needs; see below
+optional_games = ["spyro-3"]  # other games' discs the mod reads when present
 sim_mutative = false      # see below
 state    = "none"         # "none" | "rebuildable": permits rewind with this mod loaded
 runahead = "pure"         # "pure" | "host-fx": permits runahead with this mod loaded
@@ -29,6 +31,29 @@ targets every game; below 13, or with no `api` key, it targets Spyro 1
 only, since every such mod was written against the Spyro 1 SDK. A mod
 with `src/` compiles once per game it names, against that game's SDK
 (see [Code mods](code.md#one-mod-for-several-games)).
+
+**`requires_games`, `optional_games`.** Other games whose discs the mod
+reads with `read_sector` and `game_disc_path` (see
+[Code mods](code.md#other-games-discs)). Each is one id or an array of
+ids, the same ids as `game`. The running game is implied and need not be
+listed. A game is installed when the player's library holds a disc of
+it; any release of the game counts, and the disc booted with `--disc`
+counts for the running game only.
+
+- `requires_games`: while a listed game is not installed the mod does
+  not load. The log names the mod and the game, the Mods section lists
+  the mod as not loaded with the same reason, and the launcher's version
+  selector, when it shows, reads `MOD <ID> NEEDS <GAME> - ADD ITS DISC`;
+  dropping that game's disc on it adds the disc to the library. A mod that depends on a refused mod is
+  disabled as for a failed dependency. An id that names no game this
+  build knows is warned about and, in `requires_games`, refuses the mod.
+- `optional_games`: the mod loads either way. While a listed game is not
+  installed, `read_sector` returns -1 and `game_disc_path` NULL for it;
+  `game_installed` tells the mod which case it is in, so it can drop the
+  feature that game supplies.
+
+A game in both lists is required. A disc call naming a game in neither
+list is refused (see [Code mods](code.md#other-games-discs)).
 
 **`api`.** The lowest engine API version the mod needs (see
 [Publishing](publishing.md#pin-the-api-as-a-minimum)). The pin also
@@ -48,7 +73,7 @@ Spyro 1 only. Bind an overlay function with `override_ovl` or the
 [functions page](reference/spyro-1/functions.md)).
 
 **Per-game support of the other keys.** `[[binding]]`, `[[config]]`,
-`deps`, `sim_mutative`, `state`, `runahead` and `assets/` work on every
+`deps`, `requires_games`, `optional_games`, `sim_mutative`, `state`, `runahead` and `assets/` work on every
 game. `assets/<game>/` (for example `assets/spyro-2/`), when present, is
 used in place of `assets/` on that game. `[[material]]` rows take their
 own `game` key; every game serves every render channel

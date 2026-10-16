@@ -256,6 +256,7 @@ returns -1.
 | `override_addr` | yes | main-executable addresses; an address inside the overlay window is refused, use `override_ovl` |
 | `guest`, `guest_addr`, `guest_alloc`, `log`, `data_dir`, `register_toggle_hook`, `config_*`, `ui_status`, `register_present_hook`, `binding_down`, `notify`, `mouse_*`, `pad_*`, `disc_path`, `read_sector` | yes | yes |
 | `game_id`, `gameplay_live`, `player_pose`, `level_id` | yes | yes |
+| `game_disc_path`, `game_installed` | yes | yes |
 | `shader_register`, `postfx_*` | yes | yes |
 | `sfx_replace`, `sfx_play` | yes | yes; slot names per game ([Sounds](sounds.md)) |
 | `draw_text` | yes | yes |
@@ -289,7 +290,9 @@ returns -1.
 | Re-target texture-pack fog | `texpack_fog_shift` | No |
 | Persistent files | `data_dir` | No |
 | Find the booted disc image | `disc_path` (the path the engine opened, in any layout) | No |
-| Read a sector of the booted disc | `read_sector` (2352 raw bytes by LBA, through the engine's disc cache) | No |
+| Read a sector of a game's disc | `read_sector` (2352 raw bytes by LBA; the booted disc through the engine's disc cache, another game's from its library image) | No |
+| Find another game's disc image | `game_disc_path` | No |
+| Ask whether a game is installed | `game_installed` | No |
 
 **`ui_status` or `notify`.** `ui_status` reports state: lines in the mod's
 block of the Mods section, visible while that overlay is open, repainted
@@ -318,5 +321,44 @@ ImGui's default debug window. With the overlay closed its windows take no
 mouse and no keyboard, so the game keeps both; `ui->overlay_open()` says
 which state the present is in. `ui_status` lines still appear in the mod's
 node. The pass is skipped while the in-game settings menu is open.
+
+### Other games' discs
+
+A mod reads the disc of another Spyro game, such as Spyro 2's models in a
+Spyro 1 mod, by naming that game in its manifest
+([`requires_games` or `optional_games`](manifest.md#modtoml)) and passing
+its id to the disc calls. The ids are strings; the SDK names them:
+
+| Constant | Value |
+|---|---|
+| `OPENPETE_MOD_GAME_SPYRO1` | `"spyro-1"` |
+| `OPENPETE_MOD_GAME_SPYRO2` | `"spyro-2"` |
+| `OPENPETE_MOD_GAME_SPYRO3` | `"spyro-3"` |
+
+`api->game_id(self)` returns the running game's id, and a raw string is
+accepted in place of a constant.
+
+``` c
+uint8_t sec[2352];
+if (api->game_installed(self, OPENPETE_MOD_GAME_SPYRO2) &&
+    api->read_sector(self, OPENPETE_MOD_GAME_SPYRO2, 16, sec) == 0) {
+    /* sec + 24 holds the primary volume descriptor of Spyro 2's disc */
+}
+api->read_sector(self, api->game_id(self), 16, sec);   /* the booted disc */
+```
+
+| Call | Running game | Listed game, installed | Listed game, not installed | Game in neither list |
+|---|---|---|---|---|
+| `read_sector(self, game, lba, buf)` | the booted disc, through the disc cache | the library's disc, read from its image file | -1 | -1, one log line per mod |
+| `game_disc_path(self, game, want_bin)` | as `disc_path` | the library entry's `.cue`, or its `.bin` | NULL | NULL, one log line per mod |
+| `game_installed(self, game)` | 1 | 1 | 0 | 1 or 0, never refused |
+
+A game is installed when the player's library holds a disc of it, any
+release; the library is read once, when mods load. A read of another
+game's disc goes to that disc's image file alone: it never touches the
+booted disc's cache or the order in which the cache loads. No call
+writes a disc. All three calls are legal from any context. A mod refused at load for a missing `requires_games` game never
+runs, so its calls need no check for that game; an `optional_games` game
+needs `game_installed` or the -1.
 
 Full contracts: [API reference](reference/api.md).

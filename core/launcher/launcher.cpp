@@ -71,6 +71,7 @@ struct View {
     int clicked = -1;   /* the label the mouse picked this frame */
     bool browse = false;   /* the browse button was pressed this frame */
     bool games = false;    /* the selector lists every game's entries */
+    const char* note = nullptr;   /* the selector's note line; NULL or "" for none */
 };
 
 struct State {
@@ -81,6 +82,7 @@ struct State {
     bool handed_off = false;
     SDL_Gamepad* pad = nullptr;
     char drop_path[4096] = {};
+    char note[160] = {};       /* the selector's note (openpete_launcher_set_note) */
     bool scripted_taken = false;   /* OPENPETE_LAUNCHER_DROP was consumed */
     SDL_AtomicInt dialog_pending = {};
     SDL_AtomicInt dialog_got = {};
@@ -234,7 +236,7 @@ void draw_drop(const Frame& f, View& v) {
     text_centred(f, 300 + kBandY, 8, IM_COL32(110, 95, 150, 255), "ESC / (B) TO QUIT");
 }
 
-/** @brief Draw the selector: the heading, up to six entries with the selection marked, the drop and browse hint, and the controls hint.
+/** @brief Draw the selector: the heading, up to six entries with the selection marked, the note, the drop and browse hint, and the controls hint.
  *
  * The heading reads CHOOSE A GAME while the selector lists every game's
  * entries, else CHOOSE A VERSION.
@@ -256,6 +258,8 @@ void draw_select(const Frame& f, View& v) {
         ImGui::PopStyleColor();
     }
     ImGui::PopFont();
+    if (v.note && *v.note)
+        text_centred(f, 293 + kBandY, 8, IM_COL32(240, 138, 30, 255), v.note);
     text_centred(f, 304 + kBandY, 8, IM_COL32(150, 130, 190, 255),
                  "DRAG A DISC IMAGE (.CUE / .BIN) HERE TO ADD IT - SPACE / (X) TO BROWSE");
     text_centred(f, 320 + kBandY, 8, IM_COL32(110, 95, 150, 255),
@@ -905,6 +909,7 @@ int launcher_select(const char* const* labels, int count) {
     v.labels = labels;
     v.count = count;
     v.games = launcher_neutral();
+    v.note = s.note;
     const int scripted = scripted_pick(count);
     for (;;) {
         v.clicked = -1;
@@ -926,6 +931,10 @@ int launcher_select(const char* const* labels, int count) {
             default: break;
         }
     }
+}
+
+void openpete_launcher_set_note(const char* note) {
+    snprintf(s.note, sizeof s.note, "%s", note ? note : "");
 }
 
 void openpete_launcher_begin(const openpete_launcher_game* game,

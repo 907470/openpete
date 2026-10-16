@@ -1715,6 +1715,29 @@ static void draw_mod_row(int i, const openpete_mods_menu_info_t &mi)
     }
 }
 
+/** @brief Draw one row per mod refused at load whose id passes the filter: a cleared, disabled checkbox, the id, and the reason.
+ *
+ * @param filter The panel's search filter. */
+static void draw_refused_mod_rows(const ImGuiTextFilter &filter)
+{
+    const int n = openpete_mods_refused_count();
+    for (int i = 0; i < n; i++) {
+        const char *id = nullptr, *why = nullptr;
+        if (!openpete_mods_refused_at(i, &id, &why) || !filter.PassFilter(id)) continue;
+        ImGui::PushID(i);
+        ImGui::PushID("refused");
+        bool off = false;
+        ImGui::BeginDisabled();
+        ImGui::Checkbox("##en", &off);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s - not loaded: %s", id, why);
+        ImGui::PopID();
+        ImGui::PopID();
+    }
+}
+
 /** @brief Draw the Mods header with an Open folder button and one row per loaded mod that passes the filter.
  *
  * Draws nothing when an active filter matches no mod. With no mod loaded and
@@ -1723,8 +1746,9 @@ static void draw_mod_row(int i, const openpete_mods_menu_info_t &mi)
  * an enable checkbox that queues the toggle (disabled while the mod owns the
  * level being played) and a name; an enabled mod with a UI section, config
  * rows or custom levels gets a tree node holding its config rows, its
- * bracketed UI body and its level rows. An active filter or the boot reveal
- * forces the header open. */
+ * bracketed UI body and its level rows. Mods refused at load follow, each
+ * with its reason. An active filter or the boot reveal forces the header
+ * open. */
 static void draw_mods_section(const ImGuiTextFilter &filter)
 {
     const int n = openpete_mods_count();
@@ -1743,7 +1767,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         "Mods", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
     draw_mods_folder_button(right);
     if (!open) return;
-    if (n == 0) {
+    if (n == 0 && openpete_mods_refused_count() == 0) {
         ImGui::TextDisabled("No mods installed. Open folder shows where they go.");
         return;
     }
@@ -1756,6 +1780,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         draw_mod_row(i, mi);
         ImGui::PopID();
     }
+    draw_refused_mod_rows(filter);
     draw_mods_memory_summary(n);
 }
 

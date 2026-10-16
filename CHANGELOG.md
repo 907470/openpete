@@ -18,6 +18,11 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
+- Mod SDK: a mod can read the discs of other Spyro games in the library. The manifest keys `requires_games` (the
+  mod does not load while a listed game has no disc in the library, and the log, the Mods section and the launcher's
+  version selector name the game) and `optional_games` (the mod loads; the disc calls for a missing game fail) name
+  them. `read_sector` takes a game id (`OPENPETE_MOD_GAME_SPYRO1`, `_SPYRO2`, `_SPYRO3`, or `game_id`), and
+  `game_disc_path` and `game_installed` are new.
 - Spyro 3: a code mod's change to the program code the game's anti-piracy checks hash is reverted, and the log
   names the mod. `--scan-guard 0` (config key `scan_guard`, variable `OPENPETE_SCAN_GUARD`) lets the change stay;
   the flag has no effect on Spyro 1 and 2.
