@@ -16,6 +16,24 @@
 #define LAUNCHER_SEL_DROPPED  (-2)  /* a disc image was dropped instead */
 #define LAUNCHER_SEL_NOSCREEN (-3)  /* no screen can show: take the most recent */
 
+/* The launcher's start-up events, each logged once by launcher_stamp. */
+enum launcher_event {
+    LAUNCHER_EV_WINDOW,          /* the launcher's window and device exist */
+    LAUNCHER_EV_FIRST_PRESENT,   /* the first launcher frame was presented */
+    LAUNCHER_EV_SCAN_START,      /* the library scan began */
+    LAUNCHER_EV_SCAN_END,        /* the library scan returned */
+    LAUNCHER_EV_LIST_SHOWN,      /* the first selector frame with its entries was presented */
+    LAUNCHER_EV_COUNT
+};
+
+/** @brief Log a start-up event once, in ms after process start.
+ *
+ * Process start is the launcher translation unit's static initialization,
+ * before main. A later call for the same event is ignored. Safe on any
+ * thread.
+ * @param ev The event. */
+void launcher_stamp(launcher_event ev);
+
 /** @brief Report whether the launcher names no game: an executable linking several games, before one is installed.
  *
  * @return true while the descriptor passed to openpete_launcher_begin
@@ -50,6 +68,22 @@ const openpete_launcher_game* launcher_game(void);
  * @param count Their number, at least one; at most six show.
  * @return The picked index, or a LAUNCHER_SEL_* value. */
 int launcher_select(const char* const* labels, int count);
+
+/** @brief Run the library scan on a worker while the launcher shows its pending screen.
+ *
+ * With screens (a windowed run before the hand-off) the scan starts on a
+ * worker thread, then the launcher's window and device are created and the
+ * pending screen (the title and a reading line) presents until the scan
+ * returns; a quit or a dropped disc during the wait is returned for the
+ * caller to act on once the scan is done. A device that cannot be created
+ * is reported by the next launcher_open that knows whether the run can
+ * continue. Without screens, or when the worker cannot start, @p fn runs on
+ * the calling thread. @p fn must not touch SDL video or the launcher's
+ * screens.
+ * @param fn The scan.
+ * @param userdata Its argument.
+ * @return 0, LAUNCHER_SEL_QUIT or LAUNCHER_SEL_DROPPED. */
+int launcher_await_scan(openpete_launcher_task_fn fn, void* userdata);
 
 /** @brief The disc image path of the last drop or file-dialog choice.
  *

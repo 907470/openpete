@@ -7,6 +7,8 @@
 //               onto the window, or browse for one.
 //   selector  - several library entries, or any while no game is named:
 //               pick one, or drop a disc image to add and boot it.
+//   pending   - the library scan runs: the title and a reading line, drawn
+//               from the first frame until the scan returns.
 //   progress  - the ingest copy, the first-boot module build and the mod
 //               compile report a stage and a bar; after the hand-off the
 //               renderer's pipeline precompile draws the same screen on the
@@ -25,7 +27,9 @@
 #include "openpete_fatal.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
+#include "openpete_time.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -43,7 +47,7 @@ constexpr float kBandY = (kLayoutH - 360.0f) / 2.0f;
 
 constexpr uint8_t kBg[3] = {24, 16, 40};   /* deep purple */
 
-enum class Screen { Progress, Drop, Select };
+enum class Screen { Progress, Drop, Select, Pending };
 
 /* One screen's content for one frame, and what the player did in it. */
 struct View {
@@ -77,11 +81,20 @@ struct State {
     bool task_done = false;
     bool have_progress = false;
     bool quit_pending = false;   /* a quit arrived while a wait was drawn */
+    bool fail_deferred = false;  /* the device failed; its message waits for the next open */
+    std::string fail_why;        /* the deferred message's reason */
+    Uint32 wake_event = 0;       /* posted by the scan worker when it returns */
+    SDL_AtomicInt scan_done = {};
+    SDL_AtomicInt scan_wakeable = {};   /* the event queue runs: the worker may post */
     SDL_ThreadID ui_tid = 0;
     char stage[128] = {};
     int done = 0, total = 0;
 };
 State s;
+
+/* Process start for launcher_stamp: this translation unit's static
+ * initialization, which runs before main. */
+const op_time_t k_process_start_ns = op_now();
 
 /** @brief Return the display name a view shows, upper-cased for the screens' headings.
  *
@@ -228,6 +241,13 @@ void draw_select(const Frame& f, View& v) {
                  "UP/DOWN OR STICK - ENTER/(A) PLAY - ESC/(B) QUIT");
 }
 
+/** @brief Draw the pending screen's line where the selector's first entry goes.
+ *
+ * @param f The frame mapping. */
+void draw_pending(const Frame& f) {
+    text_centred(f, 168 + kBandY, 14, IM_COL32(110, 95, 150, 255), "READING YOUR LIBRARY...");
+}
+
 /** @brief Draw one frame of a screen: the title lines, then the screen's content, in one borderless window over the whole display.
  *
  * The game's subtitle line is left out while the launcher names no game.
@@ -251,13 +271,14 @@ void draw_view(void* ud) {
     }
     if (v.screen == Screen::Progress) draw_progress(f, v);
     else if (v.screen == Screen::Drop) draw_drop(f, v);
+    else if (v.screen == Screen::Pending) draw_pending(f);
     else draw_select(f, v);
     ImGui::End();
 }
 
 /* Shot tags, indexed by Screen, then the precompile's progress screen. */
-constexpr const char* kShotTag[] = {"progress", "drop", "selector", "precompile"};
-constexpr int kShotPrecompile = 3;
+constexpr const char* kShotTag[] = {"progress", "drop", "selector", "pending", "precompile"};
+constexpr int kShotPrecompile = 4;
 
 /** @brief Read back the first frame of a shot tag when OPENPETE_LAUNCHER_SHOT is set, logging how many pixels it drew.
  *
@@ -293,7 +314,9 @@ bool present_on(struct rhi_device* dev, View& v, int tag) {
  * @param v The view. */
 void present(View& v) {
     v.name = game_name();
-    (void)present_on(nullptr, v, (int)v.screen);
+    if (!present_on(nullptr, v, (int)v.screen)) return;
+    launcher_stamp(LAUNCHER_EV_FIRST_PRESENT);
+    if (v.screen == Screen::Select && v.count > 0) launcher_stamp(LAUNCHER_EV_LIST_SHOWN);
 }
 
 /** @brief Opens the first connected gamepad unless one is already open. */
@@ -312,6 +335,20 @@ void close_gamepad() {
     if (s.pad) { SDL_CloseGamepad(s.pad); s.pad = nullptr; }
 }
 
+/** @brief Record a failed open: tell the player now, or hold the message for the next open when @p continues is negative.
+ *
+ * @param why The reason.
+ * @param continues As launcher_open's. */
+void open_failed(const std::string& why, int continues) {
+    s.failed = true;
+    if (continues < 0) {
+        s.fail_deferred = true;
+        s.fail_why = why;
+        return;
+    }
+    openpete_launcher_vk_failure(why.c_str(), continues);
+}
+
 /** @brief Open the launcher's window, device and imgui context unless they exist, telling the player once when the device cannot be created.
  *
  * The window takes the game window's size, or the 640x448 layout space
@@ -322,14 +359,22 @@ void close_gamepad() {
  * @param opts The options the window is created from.
  * @param continues Non-zero when the run can continue without the device
  *                  (a disc is or will be named); passed to the message.
+ *                  Negative while that is not known yet (the library scan
+ *                  runs): the message waits for the next call that knows.
  * @return 0 when the device exists, -1 when it does not. */
 int launcher_open(const openpete_options_t* opts, int continues) {
     if (openpete_native_launcher_active()) return 0;
-    if (s.failed || !opts) return -1;
+    if (s.failed) {
+        if (s.fail_deferred && continues >= 0) {
+            s.fail_deferred = false;
+            openpete_launcher_vk_failure(s.fail_why.c_str(), continues);
+        }
+        return -1;
+    }
+    if (!opts) return -1;
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        s.failed = true;
-        const std::string why = std::string("The video system could not start (") + SDL_GetError() + ").";
-        openpete_launcher_vk_failure(why.c_str(), continues);
+        open_failed(std::string("The video system could not start (") + SDL_GetError() + ").",
+                    continues);
         return -1;
     }
     int w, h;
@@ -337,10 +382,10 @@ int launcher_open(const openpete_options_t* opts, int continues) {
     /* No game installed yet: no game window size, so the layout space's. */
     if (w <= 0 || h <= 0) { w = (int)kLayoutW; h = (int)kLayoutH; }
     if (openpete_native_launcher_open(opts, w, h, "OpenPete") != 0) {
-        s.failed = true;
-        openpete_launcher_vk_failure(openpete_native_launcher_error(), continues);
+        open_failed(openpete_native_launcher_error(), continues);
         return -1;
     }
+    launcher_stamp(LAUNCHER_EV_WINDOW);
     open_first_gamepad();
     if (!s.handed_off) (void)openpete_native_launcher_precompile_start(opts);
     return 0;
@@ -570,7 +615,75 @@ void task_wait_loop() {
     if (watch) SDL_RemoveEventWatch(task_event_watch, nullptr);
 }
 
+/** @brief Scan worker entry: run the read, flag completion and wake the pending screen's wait.
+ *
+ * @param p The TaskCtx.
+ * @return 0. */
+int SDLCALL scan_main(void* p) {
+    TaskCtx* t = static_cast<TaskCtx*>(p);
+    t->rc = t->fn(t->ud);
+    SDL_SetAtomicInt(&s.scan_done, 1);
+    if (s.wake_event && SDL_GetAtomicInt(&s.scan_wakeable)) {
+        SDL_Event e = {};
+        e.type = s.wake_event;
+        (void)SDL_PushEvent(&e);
+    }
+    return 0;
+}
+
+/** @brief Present the pending screen until the scan worker flags completion, keeping the first quit or drop among the events.
+ *
+ * Each present steps the launcher's precompile; the wait between presents
+ * ends at the first event, the worker's wake event included.
+ * @return 0, LAUNCHER_SEL_QUIT or LAUNCHER_SEL_DROPPED. */
+int pending_loop() {
+    View v;
+    v.screen = Screen::Pending;
+    int ask = 0;
+    while (!SDL_GetAtomicInt(&s.scan_done)) {
+        present(v);
+        if (SDL_GetAtomicInt(&s.scan_done)) break;
+        const Ask a = wait_input();
+        if (ask == 0 && a == Ask::Quit) ask = LAUNCHER_SEL_QUIT;
+        else if (ask == 0 && a == Ask::Dropped) ask = LAUNCHER_SEL_DROPPED;
+    }
+    return ask;
+}
+
 }  // namespace
+
+int launcher_await_scan(openpete_launcher_task_fn fn, void* userdata) {
+    if (!s.ui || s.handed_off) { (void)fn(userdata); return 0; }
+    if (!s.wake_event) s.wake_event = SDL_RegisterEvents(1);
+    SDL_SetAtomicInt(&s.scan_done, 0);
+    SDL_SetAtomicInt(&s.scan_wakeable, 0);
+    TaskCtx ctx = {fn, userdata, -1};
+    SDL_Thread* th = SDL_CreateThread(scan_main, "openpete-scan", &ctx);
+    if (!th) { (void)fn(userdata); return 0; }
+    /* The video system and the device start while the scan runs; without a
+     * device the scan is only waited for, and the failure is told once the
+     * scan decides whether the run can continue. The worker posts its wake
+     * event only once the queue runs: a scan that ends before that is seen
+     * by the loop's check after its first present. */
+    int ask = 0;
+    if (launcher_open(s.opts, -1) == 0) {
+        SDL_SetAtomicInt(&s.scan_wakeable, 1);
+        ask = pending_loop();
+    }
+    SDL_WaitThread(th, nullptr);
+    return ask;
+}
+
+void launcher_stamp(launcher_event ev) {
+    static std::atomic<unsigned> logged{0};
+    static const char* const k_name[LAUNCHER_EV_COUNT] = {
+        "window_shown", "first_present", "scan_start", "scan_end", "list_shown"};
+    if ((unsigned)ev >= LAUNCHER_EV_COUNT) return;
+    const unsigned bit = 1u << (unsigned)ev;
+    if (logged.fetch_or(bit) & bit) return;
+    OPL_INFO_F("launcher", "stamp %s %.1f ms after process start", k_name[ev],
+               (double)(op_now() - k_process_start_ns) / 1e6);
+}
 
 const openpete_launcher_game* launcher_game(void) { return s.game; }
 

@@ -384,12 +384,15 @@ bool ingest(const char* given, fs::path& entry) {
 /** @brief Scan the library for this game's entries and the unidentified ones, recording each entry's game first.
  *
  * Entries recorded for another game are skipped and counted in the log.
+ * Runs on the launcher's scan worker when screens show, so it reads no
+ * process-wide path state: the caller resolves the root.
+ * @param root The library root.
  * @return The entries. */
-std::vector<Meta> scan_entries() {
+std::vector<Meta> scan_entries(const fs::path& root) {
     std::vector<Meta> entries;
     std::error_code ec;
     int others = 0;
-    for (auto& e : fs::directory_iterator(library_root(), ec)) {
+    for (auto& e : fs::directory_iterator(root, ec)) {
         Meta m;
         if (!e.is_directory() || !read_meta(e.path(), m)) continue;
         record_game(m);
@@ -479,7 +482,24 @@ int library_resolve(openpete_options_t* opts, char* module_path_out, size_t modu
 
     /* No disc given: boot from the library. An empty one falls through to
      * the caller's drop screen or its missing-disc diagnostic. */
-    std::vector<Meta> entries = scan_entries();
+    struct ScanTask {
+        fs::path root;
+        std::vector<Meta> entries;
+        static int run(void* p) {
+            ScanTask* t = static_cast<ScanTask*>(p);
+            launcher_stamp(LAUNCHER_EV_SCAN_START);
+            t->entries = scan_entries(t->root);
+            launcher_stamp(LAUNCHER_EV_SCAN_END);
+            return 0;
+        }
+    } scan{library_root(), {}};
+    const int waited = launcher_await_scan(&ScanTask::run, &scan);
+    if (waited == LAUNCHER_SEL_QUIT) return LAUNCHER_LIB_QUIT;
+    if (waited == LAUNCHER_SEL_DROPPED) {
+        opts->ingest_path = launcher_dropped_path();
+        return library_resolve(opts, module_path_out, module_path_cap);
+    }
+    std::vector<Meta>& entries = scan.entries;
     if (entries.empty()) return 0;
     Meta* pick = nullptr;
     const int rc = pick_entry(entries, pick);
