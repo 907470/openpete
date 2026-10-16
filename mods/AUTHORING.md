@@ -236,6 +236,18 @@ marked IMMUTABLE but its bytes changed`). Only truly park-once payloads
 qualify; anything the game rewrites (model headers patched per level) does
 not.
 
+Two pools, picked by flags, never by address. Default: DMA-reachable, 14 MiB
+below physical 16 MiB (9 MiB segment at 0x80700000 first, then 5 MiB at
+0x80200000; largest block 9 MiB); GPU packets, primitives, OTs and anything
+stored in a 24-bit field go here. `OP_GALLOC_NO_DMA` (api 13): general pool,
+480 MiB at 0x81000000, for every block nothing truncates to 24 bits. A full
+pool fails the call (0, `guest arena exhausted: ...` plus every mod's use of
+that pool) and never spills. One `guest arena: <id> holds ...` line per mod
+per session; the dev overlay's Mods section shows the totals. Snapshot cost
+is per used byte in both pools, IMMUTABLE included: savestate files and
+runahead copy the used ranges; rewind keyframes share unchanged 4 KiB pages,
+so only pages rewritten each second cost rewind per second of window.
+
 Animation frame words hold a 21-bit vertex-stream field that cannot address
 the arena: `api->vstream_handle(self, stream_vaddr)` returns a handle
 (< 0x8000, never 0) to write into the field as-is in both encodings; readers

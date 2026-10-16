@@ -31,7 +31,7 @@ overlay's **Performance stats** row sets all three levels.
 | [Supersampling](quality.md#supersampling) | GPU work and memory grow with N squared: 4X draws 16 pixels per shown pixel. |
 | [Level of detail](quality.md#level-of-detail) `extended` | Many more triangles in wide views over large levels. |
 | [Runahead](smoothness.md#runahead) | About N extra ticks of CPU work per tick. |
-| [Rewind](../playing/saves.md#rewind) | About 2 MiB of memory per second of window. |
+| [Rewind](../playing/saves.md#rewind) | About 3 MiB of memory per second of window, plus what enabled code mods change each second. |
 | Window size | GPU work grows with the pixel count. |
 
 To find what limits a slow scene, lower one setting at a time and watch the

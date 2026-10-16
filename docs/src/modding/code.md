@@ -126,20 +126,97 @@ do not roll back; keep them for caches, file handles, and UI drafts.
 - Store guest addresses inside the block, never host pointers: the bytes
   cross a process boundary at handoff.
 - `OP_GALLOC_IMMUTABLE` declares a block written once and never again
-  (a parked model payload). The engine checksums it at each snapshot and
-  logs a changed block with the mod's name.
-- `OP_GALLOC_NO_DMA` (api 13) states that no address inside the block is
-  truncated to 24 bits: no ordering-table link, no libgpu call that links
-  or walks it, no pointer to it in a 24-bit field. The block may then be
-  placed in the general pool (480 MiB above physical 16 MiB). Without the
-  flag a block lands below physical 16 MiB, where a GPU packet must lie.
-  The flag combines with `OP_GALLOC_IMMUTABLE`.
+  (a parked model payload). The engine checksums it at each rewind
+  keyframe and file savestate and logs a changed block once, with the
+  mod's name and call number.
 
 On reload the allocation sequence is replayed: the i-th call with the
 same size, alignment, and flags returns the same address and view with
-its bytes intact. A savestate whose allocation ledger does not
+its bytes intact. A call of another shape takes a fresh block; the old
+block stays allocated. A savestate whose allocation ledger does not
 prefix-match the live session (a config edit changed a size) is refused
 with the mod and entry named.
+
+#### Two pools
+
+The arena is two pools above the 2 MB of RAM. The `flags`
+argument picks the pool; the address is never chosen by the mod.
+
+| Pool | Guest addresses | Capacity | Largest block | Taken by |
+|---|---|---|---|---|
+| [DMA-reachable](glossary.md) | 0x80200000 to 0x80FFFFFF | 14 MiB | 9 MiB | every call without `OP_GALLOC_NO_DMA` |
+| [general](glossary.md) | 0x81000000 to 0x9EFFFFFF | 480 MiB | 480 MiB | calls with `OP_GALLOC_NO_DMA` (api 13) |
+
+The PSX GPU follows packet and ordering-table links through 24-bit
+addresses, so a block the GPU or a libgpu call links into a chain must
+sit below physical 16 MiB. The DMA-reachable pool is every byte below
+that bound that RAM does not use. It has two segments: 9 MiB at
+0x80700000, filled first, then 5 MiB at 0x80200000. A block goes to the
+first segment with room for it at that segment's cursor, so a block
+larger than 5 MiB fits only in the 9 MiB segment.
+
+`OP_GALLOC_NO_DMA` states that no address inside the block is truncated
+to 24 bits: no ordering-table link, no libgpu call that links or walks
+it, no pointer to it in a 24-bit field. Pass it for everything you do
+not link: lookup tables, recordings, decoded assets, per-session state.
+Leave it off for GPU packets, primitives, ordering tables, and any block
+whose address the game stores in a narrow field. The flag combines with
+`OP_GALLOC_IMMUTABLE`. A mod built against api 12 or earlier never
+passes it and gets the DMA-reachable pool: a call sequence that fit the
+single 8 MiB arena of api 12 gets the same addresses.
+
+#### Errors
+
+`guest_alloc` returns 0 and sets `*host_view` to NULL when:
+
+- `size` is 0, or above the pool's largest block (silent);
+- `align` is not 0 or a power of two (silent; 0 means 8);
+- `flags` holds a bit other than the two above (logged);
+- the call comes from a present hook (logged);
+- no segment of the pool has room. The log line names the caller, the
+  request and each segment's use, then lists every mod's bytes in that
+  pool:
+
+```text
+guest arena exhausted: my-mod wanted 1048576 B (align 16) in the DMA-reachable pool, upper 9437184/9437184 used, lower 5000000/5242880 used
+guest arena exhausted: DMA-reachable pool held by other-mod: 9437184 B
+guest arena exhausted: DMA-reachable pool held by third-mod: 5000000 B
+```
+
+A full DMA-reachable pool does not spill into the general pool: move the
+blocks you do not link to `OP_GALLOC_NO_DMA`.
+
+#### Where use is shown
+
+- The log holds one line per mod per session, after its entry returns
+  (or after its first block, when that comes later):
+  `guest arena: my-mod holds 65536 B DMA-reachable (0 B IMMUTABLE), 0 B general (0 B IMMUTABLE)`.
+- The Mods section of the dev overlay shows
+  **Mod memory: X of 14 MiB DMA-reachable, Y MiB general** for all mods,
+  and **Runahead snapshot: Z ms per tick** once runahead has run.
+- Hovering a mod's row shows its own
+  **Guest memory: ... KiB DMA-reachable, ... KiB general (... KiB immutable)**.
+
+#### Snapshot cost
+
+Each pool contributes its used range: from its base to the end of its
+last block, alignment padding included. The two pools cost the same per
+byte, and `OP_GALLOC_IMMUTABLE` blocks are copied like the rest.
+
+| Feature | Cost of the arena |
+|---|---|
+| File savestate | The used ranges and the allocation ledger, written to the file. |
+| Runahead | The used ranges copied out and back once per tick. |
+| Rewind | Each keyframe (one per second) copies the used ranges, then over the following ticks shares every 4 KiB page equal to the previous keyframe's. The window keeps the arena once plus the 4 KiB pages that change each second. |
+
+Bytes a mod rewrites every tick cost rewind their pages per second of
+window; bytes it writes once cost them once. A restore puts back the
+bytes the snapshot held; a block allocated after the snapshot keeps its
+contents, and no allocation moves.
+
+Savestates written by engines with the single 8 MiB arena (api 12 and
+earlier) still load: their blocks restore into the 9 MiB segment at the
+addresses they had.
 
 **Vertex streams.** An animation frame word references its vertex stream
 through a 21-bit field that cannot hold an arena address. Request a

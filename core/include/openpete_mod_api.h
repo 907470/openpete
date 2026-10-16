@@ -222,8 +222,10 @@ enum {
     /**
      * The mod promises that after the allocating tick neither it nor the
      * game writes these bytes. The engine may leave them out of savestates
-     * and rewind history and may abort on a detected write. Use for parked
-     * model data, never for scratch.
+     * and rewind history and may abort on a detected write; today it
+     * snapshots them like other blocks, checksums them at each rewind
+     * keyframe and file savestate, and logs a changed block once. Use for
+     * parked model data, never for scratch.
      */
     OP_GALLOC_IMMUTABLE = 1u << 0,
     /**
@@ -545,6 +547,16 @@ typedef struct openpete_mod_api {
      * reuse. Tick context only: call it, and write through @p host_view,
      * only from entry, tick hooks and toggle hooks.
      *
+     * The flags pick one of two pools by intent. Without
+     * #OP_GALLOC_NO_DMA the block comes from the DMA-reachable pool
+     * (14 MiB below physical 16 MiB), where anything the GPU or a libgpu
+     * call links must lie, since packet and ordering-table links hold 24
+     * bits of address. With it the block comes from the general pool
+     * (480 MiB above physical 16 MiB); pass it for every block nothing
+     * truncates to 24 bits. A full pool fails the call and never spills
+     * into the other. The largest block is 9 MiB in the DMA-reachable
+     * pool and 480 MiB in the general pool.
+     *
      * Contents are zero on first allocation. On reload the allocation
      * sequence is replayed: the i-th call with the same size, alignment
      * and flags returns the same vaddr and view, holding the bytes as
@@ -562,6 +574,14 @@ typedef struct openpete_mod_api {
      * and store guest vaddrs rather than host pointers, since carried
      * bytes cross process boundaries at handoff.
      *
+     * Snapshot cost is per used byte, the same in both pools and for
+     * #OP_GALLOC_IMMUTABLE blocks: a pool's used range runs from its base
+     * to the end of its last block. A file savestate writes the used
+     * ranges; runahead copies them out and back each tick; a rewind
+     * keyframe copies them once and then keeps only the 4 KiB pages that
+     * differ from the previous keyframe, so bytes rewritten every tick
+     * cost rewind their pages per second of window.
+     *
      * Not promised: the arena's base or layout (never hardcode a vaddr; a
      * savestate whose allocation sequence does not prefix-match the live
      * session is refused, naming the mod and entry), survival of
@@ -571,12 +591,16 @@ typedef struct openpete_mod_api {
      * parked here too; the frame word carries a handle from
      * vstream_handle(), not an address.
      *
-     * @param size       Bytes to allocate.
-     * @param align      Power of two; 0 = default.
+     * @param size       Bytes to allocate; 0 or above the pool's largest
+     *                   block fails.
+     * @param align      Power of two; 0 = 8.
      * @param flags      `OP_GALLOC_*`. An unknown flag fails the call and
      *                   logs the flag.
-     * @param host_view  Receives a host alias of the same bytes.
-     * @return The guest vaddr; 0 = exhausted, unavailable or invalid.
+     * @param host_view  Receives a host alias of the same bytes; NULL on
+     *                   failure.
+     * @return The guest vaddr; 0 = exhausted, unavailable or invalid. An
+     *         exhausted pool logs the request and every mod's use of the
+     *         pool.
      * @since api 1
      */
     uint32_t (*guest_alloc)(openpete_mod_t* self, uint32_t size,

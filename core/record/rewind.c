@@ -73,7 +73,7 @@ static void slot_drop(int i) {
 void openpete_rewind_configure(int window_seconds) {
     const int was_on = s_ring_n > 0;
     openpete_rewind_clear();
-    /* Keyframes own their snapshot blobs (~3.1 MiB each); clear() only
+    /* Keyframes own their snapshot blobs (~3 MiB each); clear() only
      * invalidates them and releases their arena pages, so a reconfigure
      * frees the blobs and the page store before dropping the ring, or
      * every live resize leaks the whole window. */
@@ -106,7 +106,7 @@ void openpete_rewind_configure(int window_seconds) {
         s_registered = 1;
         (void)openpete_on_guest_discontinuity(rewind_on_guest_discontinuity);
     }
-    OPL_INFO_F("rewind", "window %d s (%d keyframes x ~3.1 MiB + shared arena pages)",
+    OPL_INFO_F("rewind", "window %d s (%d keyframes x ~3 MiB + shared arena pages)",
                window_seconds, s_ring_n);
 }
 

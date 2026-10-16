@@ -16,7 +16,8 @@
  * liveness drops (level transition/loading - the mem snapshot excludes
  * VRAM/SPU-RAM by contract) and on any real savestate load (via the
  * discontinuity broadcast - a loaded state is a different timeline).
- * Memory: ~3.1 MiB per keyframe (RAM, scratchpad, SPU, CD, VRAM), one
+ * Memory: ~3 MiB per keyframe (2 MiB RAM, 1 MiB VRAM, scratchpad, SPU
+ * voice state, CD queue), one
  * keyframe per second of window plus one, plus the mod arena's pages:
  * each keyframe's arena is a table of reference-counted 4 KiB pages
  * (openpete_rewind_pages.h), copied whole at the keyframe and then

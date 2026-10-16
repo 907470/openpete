@@ -1375,13 +1375,15 @@ static const knob_desc_t g_builtin[] = {
 
     { "rewind", "Rewind window", "Pacing", "--rewind", NULL,
       "Rewind window in seconds (0 = off). APPLYING CLEARS the "
-      "accumulated rewind history; ~3.1 MiB per second.",
+      "accumulated rewind history; ~3 MiB per second, plus what "
+      "enabled mods change per second.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 600,
       get_stored, rewind_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
       .def_str = "0",
       .help_arg = "N", .help_order = 200,
       .help_text = "hold the rewind key to rewind up to N seconds (default {def} = off;\n"
-          "~2 MiB RAM per second of window; same-level only)",
+          "~3 MiB RAM per second of window, plus what enabled mods change\n"
+          "per second; same-level only)",
       .key_action = "rewind" },
 
     /* -------- Audio -------- */

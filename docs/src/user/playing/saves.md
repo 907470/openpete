@@ -87,7 +87,8 @@ on with `--rewind N` <!-- id: knob:rewind -->, where N is how many seconds
 of play to keep, or with the **Rewind window** row of the
 [dev overlay](dev-overlay.md) (0 to 600 seconds <!-- id: knob:rewind -->).
 
-- Each second of window costs about 2 MiB of memory.
+- Each second of window costs about 3 MiB of memory. Enabled code mods add
+  the memory they hold once, plus about the amount they change each second.
 - Rewind stays within the current level: loading a level clears the history.
 - Changing the window clears the history.
 - A code mod that does not declare how it keeps its own state blocks rewind;
