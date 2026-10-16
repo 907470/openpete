@@ -10,8 +10,10 @@
  *
  * Division of labour, which is the rule and not a style choice:
  *
- * - The tick hook (an override on GamestateUpdate, which runs every tick
- *   from the title screen on) runs on the sim thread inside the tick. It
+ * - The tick hook (Spyro 1: an override on GamestateUpdate, which runs
+ *   every tick from the title screen on; Spyro 2 and 3: the per-tick
+ *   camera update, bound by address, which runs on gameplay ticks) runs
+ *   on the sim thread inside the tick. It
  *   is the only place that touches guest RAM: it walks the level moby
  *   array, counts the live mobys into a ring and copies the ten nearest
  *   to Spyro into host memory.
@@ -53,14 +55,37 @@ static openpete_mod_t*           g_self;
 
 /* ── guest layout ──────────────────────────────────────────────────── */
 
-/** Stride of the level moby array. Field offsets come from the typed Moby
- * view in openpete_game_structs.h, so a layout change fails this compile
- * instead of silently reading the wrong bytes. */
+/* The level moby array: a pointer word naming an array of fixed-stride
+ * records, ended by the first record whose state byte is -1. Every game's
+ * moby draw queue walks it this way (Spyro 2 func_80043858, Spyro 3
+ * func_80030478: lw the pointer, then addi 0x58 / lb 0x48 per record, the
+ * walk ending on a state of -1). Spyro 1 and 3 take the offsets from the
+ * typed Moby view in openpete_game_structs.h, so a layout change fails
+ * this compile; Spyro 2's SDK has no Moby struct yet, so its offsets are
+ * the ones its draw queue reads (lw 0xC/0x10/0x14 position, lhu 0x36
+ * class, lb 0x48 state). */
+#if OPENPETE_GAME_SPYRO1
+#define MOBY_LIST   OP_GADDR_g_LevelMobys
 #define MOBY_STRIDE ((uint32_t)sizeof(Moby))
 #define MOBY_POS    ((uint32_t)offsetof(Moby, m_Position))
 #define MOBY_CLASS  ((uint32_t)offsetof(Moby, m_Class))
 #define MOBY_STATE  ((uint32_t)offsetof(Moby, m_State))
-/** The array ends at the first moby whose m_State is -1. This bounds the
+#elif OPENPETE_GAME_SPYRO2
+#define MOBY_LIST   OP_GADDR_D_80066F14   /* func_80043858: lw D_80066F14 */
+#define MOBY_STRIDE 0x58u
+#define MOBY_POS    0x0Cu
+#define MOBY_CLASS  0x36u
+#define MOBY_STATE  0x48u
+#elif OPENPETE_GAME_SPYRO3
+#define MOBY_LIST   OP_GADDR_D_8006C550   /* func_80030478: lw D_8006C550 */
+#define MOBY_STRIDE ((uint32_t)sizeof(Moby))
+#define MOBY_POS    ((uint32_t)offsetof(Moby, position))
+#define MOBY_CLASS  ((uint32_t)offsetof(Moby, mobyClass))
+#define MOBY_STATE  ((uint32_t)offsetof(Moby, state))
+#else
+#error "imgui-panel: no moby array layout for this game"
+#endif
+/** The array ends at the first moby whose state is -1. This bounds the
  * walk in case a mid-load array has no terminator yet. */
 #define MOBY_SCAN_MAX 4096
 
@@ -132,7 +157,7 @@ static void near_insert(int cls, int x, int y, int z, unsigned dist) {
  * own player-object reader, so the distance needs no player layout.
  * @param cpu The tick hook's CPU, which player_pose reads through. */
 static void sample_mobys(CPUState* cpu) {
-    uint32_t m = op_read_u32(g_api, OP_GADDR_g_LevelMobys);
+    uint32_t m = op_read_u32(g_api, MOBY_LIST);
     openpete_mod_pose_t p = { .struct_size = sizeof(openpete_mod_pose_t) };
     const int have_pose = g_api->player_pose(g_self, cpu, &p) == 0;
     int n;
@@ -178,8 +203,8 @@ static void on_gamestate_update(CPUState* cpu) {
     if (s_ticks - s_hover_logged >= HOVER_LOG_TICKS) {
         s_hover_logged = s_ticks;
         g_api->log(g_self, OP_MOD_LOG_INFO,
-                    "imgui-panel: hovered %u/%u presents",
-                    s_hover_n, s_present_n);
+                    "imgui-panel: hovered %u/%u presents, %d live mobys",
+                    s_hover_n, s_present_n, s_live_count);
     }
     g_api->base(cpu);
 }
@@ -302,6 +327,31 @@ static void ui_draw(const openpete_mod_ui_t* ui) {
 }
 OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
 
+/**
+ * @brief Attach the sampler to the running game's per-tick hook.
+ *
+ * Spyro 1 binds GamestateUpdate by name. Spyro 2 and 3 name no tick
+ * function yet, so their arms bind the per-gameplay-tick camera update by
+ * address: Spyro 2 func_8001D87C, Spyro 3 func_8001204C (the
+ * UPDATE_CAMERA arm of func_80055294). Those run once per gameplay tick
+ * and not on the title screen, in a pause or through a level load, so the
+ * ring holds gameplay ticks only there.
+ * @param api The engine table.
+ * @param self This mod's handle.
+ * @return The override call's result, 0 on success.
+ */
+static int bind_tick(const openpete_mod_api_t* api, openpete_mod_t* self) {
+#if OPENPETE_GAME_SPYRO1
+    return api->override_name(self, "GamestateUpdate", on_gamestate_update);
+#elif OPENPETE_GAME_SPYRO2
+    return api->override_addr(self, 0x8001D87Cu, on_gamestate_update);
+#elif OPENPETE_GAME_SPYRO3
+    return api->override_addr(self, 0x8001204Cu, on_gamestate_update);
+#else
+#error "imgui-panel: no tick binding for this game"
+#endif
+}
+
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
     if (api->api_version < 13u) return -1;
@@ -316,5 +366,5 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         api->ui_status(self, "hook_call: a present hook calls into ImGui");
         if (api->register_present_hook(self, on_present) != 0) return -1;
     }
-    return api->override_name(self, "GamestateUpdate", on_gamestate_update);
+    return bind_tick(api, self);
 }

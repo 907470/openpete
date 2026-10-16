@@ -31,7 +31,7 @@
 id      = "declarative-reshade"
 name    = "Declarative Reshade"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 5            # [[material]] rows
 state    = "none"      # GPU-only; nothing to carry across a state load
 runahead = "pure"      # no tick hooks

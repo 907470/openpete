@@ -215,7 +215,9 @@ subtractively, so a brighter tint darkens the ground more.
 
 `mods/channel-gallery` registers one highlight shader once per channel
 with a different selector each time, toggled live; it shows what each
-selector claims.
+selector claims. It loads on all three games from one source; on Spyro 2,
+which serves no `moby_classes` census, its class picker stays empty and
+the class rows take `gallery.class` from `config.toml`.
 
 ### Refine callbacks
 
@@ -233,6 +235,11 @@ static int refine(const openpete_mod_material_key_t* key, void* out, uint32_t ca
 ...
 api->material_register_refine(self, &sel, frag, refine);
 ```
+
+The typed `Moby` view names the state byte (offset `0x48`) `m_State` on
+Spyro 1 and `state` on Spyro 3; Spyro 2's `openpete_game_structs.h` has no
+`Moby` struct yet, so a Spyro 2 build reads the byte at `vaddr + 0x48`
+(`mods/channel-gallery` carries the three arms).
 
 Available on the moby channel (keyed per instance) and on terrain (keyed
 per texture ID or the untextured band, asked once per present). Scope the

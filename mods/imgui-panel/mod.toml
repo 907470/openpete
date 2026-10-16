@@ -1,6 +1,7 @@
 # imgui-panel: the full ImGui C API (openpete_imgui.h) driving a real panel.
 #
-# A tick hook counts the level's live mobys into a host-side ring and
+# A tick hook (Spyro 1 GamestateUpdate; Spyro 2 and 3 the per-tick camera
+# update, by address) counts the level's live mobys into a host-side ring and
 # copies the ten nearest to Spyro. The UI section then draws that copy: a
 # plot over the ring, a table of the ten, a floating window with a colour
 # editor, and a foreground draw-list marker. Every guest read happens in
@@ -18,7 +19,8 @@
 # uses: `OPENPETE_MOD_UI_SECTION_FLAGS` - registers the body as an always section, running on every present rather than only inside the Mods panel
 # uses: `ui->overlay_open` - draws the interactive half only while the overlay is up, since an always window takes no input when it is closed
 # uses: `ui->text`, `ui->text_disabled` - the vtable and the ImGui calls mix freely in one body
-# uses: `api->override_name` - a GamestateUpdate hook, the per-tick sampler
+# uses: `api->override_name` - a GamestateUpdate hook, the per-tick sampler on Spyro 1
+# uses: `api->override_addr` - the Spyro 2 and 3 arms, which bind the per-tick camera update by address until the decomp names a tick function
 # uses: `api->base` - hands control back after sampling
 # uses: `api->player_pose` - Spyro's position for the nearest-ten distances, through the game's own player reader
 # uses: `api->register_present_hook` - registered only by the containment toggle, to make a call from the wrong context
@@ -30,7 +32,7 @@
 id      = "imgui-panel"
 name    = "ImGui Panel"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 13
 state   = "none"       # host-side ring only; nothing to save
 runahead = "pure"      # reads guest RAM, writes none

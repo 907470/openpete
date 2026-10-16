@@ -4,10 +4,15 @@ The ImGui escape hatch (`openpete_imgui.h`) driving a real panel. The
 eleven-widget vtable in `openpete_mod_ui.h` is the simple path; this mod is
 what the other path looks like.
 
-A tick hook - an override on `GamestateUpdate`, which runs every tick from
-the title screen on - walks the level moby array, counts the live mobys
+A tick hook walks the level moby array, counts the live mobys
 into a host-side ring and copies the ten nearest to Spyro, whose position
-it reads through `api->player_pose`. The UI section
+it reads through `api->player_pose`. On Spyro 1 the hook is an override
+on `GamestateUpdate`, which runs every tick from the title screen on. Spyro
+2 and 3 name no tick function yet, so their arms bind the per-tick camera
+update by address (`func_8001D87C`, `func_8001204C`), which runs on
+gameplay ticks only. The moby array layout comes from the typed `Moby`
+view on Spyro 1 and 3 and from the offsets the game's own draw queue reads
+on Spyro 2. The UI section
 then draws that copy with the full C API: `ImGui_PlotLines` over the ring,
 an `ImGui_BeginTable` of the ten nearest, an `ImGui_ColorEdit3`, and a
 circle on the foreground draw list.
@@ -28,7 +33,7 @@ The stats window carries a button and the mod logs, once a second, the
 presents in which that button was hovered:
 
 ```
-imgui-panel: hovered N/M presents
+imgui-panel: hovered N/M presents, L live mobys
 ```
 
 N is 0 for every present drawn with the overlay closed, which is the

@@ -43,12 +43,27 @@
 #include <openpete_mod_api.h>
 #include <openpete_mod_ui.h>
 #include <openpete_game_structs.h>   /* typed Moby view, for the refine row */
+#include <stddef.h>   /* offsetof: the refine row's state byte */
 #include <string.h>
 #include <stdio.h>    /* snprintf: class picker labels */
 #include <stdlib.h>   /* strtol: gallery.rows parsing */
 
 static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
+
+/* The moby state byte the refine row reads. Spyro 1 and 3 take it from
+ * the typed Moby view, so a layout change fails this compile; Spyro 2's
+ * SDK has no Moby struct yet, so its offset is the one its moby draw
+ * queue reads (func_80043858: lb 0x48 per 0x58-byte record). */
+#if OPENPETE_GAME_SPYRO1
+#define MOBY_STATE ((uint32_t)offsetof(Moby, m_State))
+#elif OPENPETE_GAME_SPYRO2
+#define MOBY_STATE 0x48u
+#elif OPENPETE_GAME_SPYRO3
+#define MOBY_STATE ((uint32_t)offsetof(Moby, state))
+#else
+#error "channel-gallery: no moby state offset for this game"
+#endif
 
 /* Particle rows key on the kind alone (sel 0): the kinds a row names
  * carry no game class, so kind << 8 is their whole ident. */
@@ -152,7 +167,7 @@ static row_t g_rows[] = {
    * alone cannot express "and in this state". */
   { "Moby class + state (refine)",
     "The selector prunes to a moby class, then a callback reads each "
-    "instance's m_State and declines the ones that do not match. Set the "
+    "instance's state byte (Moby +0x48) and declines the ones that do not match. Set the "
     "state slider to -1 to claim every instance of the class, which is what "
     "the plain class row already does - the point is what happens when you "
     "narrow it.",
@@ -191,16 +206,18 @@ static int   g_class_row = 3;      /**< Mobys of one class */
 /**
  * @name Class picker
  * Lists only the classes the current level loaded. A slider over the
- * full 0..767 range was almost all dead travel: a level loads a few
- * dozen classes, and every other value selects nothing anywhere.
+ * full class range was almost all dead travel: a level loads a few
+ * dozen classes, and every other value selects nothing anywhere. Sized
+ * for Spyro 3's 768 class ids, the largest of the three games.
  * @{
  */
-#define CLASSES_MAX 512
+#define CLASSES_MAX 768
 static uint16_t    g_classes[CLASSES_MAX];
 static char        g_class_lbl[CLASSES_MAX][8];
 static const char* g_class_items[CLASSES_MAX];
 static int         g_class_n;
 static int         g_class_idx;    /**< Index into g_classes, not a class id. */
+static int         g_class_unsupported; /**< The game serves no class census. */
 /** @} */
 
 /**
@@ -215,9 +232,19 @@ static int         g_class_idx;    /**< Index into g_classes, not a class id. */
  * class this level does not load keeps its value and is called out in
  * the UI; snapping the picker elsewhere would retune the rows to a
  * class the user never chose.
+ *
+ * A game with no class census (moby_classes returns
+ * OPENPETE_MOD_ERR_UNSUPPORTED) leaves the picker empty and is not asked
+ * again; the class rows keep the class gallery.class names.
  */
 static void class_list_refresh(void) {
+    if (g_class_unsupported) return;
     int n = g_api->moby_classes(g_self, g_classes, CLASSES_MAX);
+    if (n < 0) {
+        g_class_unsupported = 1;
+        g_class_n = 0;
+        return;
+    }
     for (int i = 0; i < n; i++) {
         snprintf(g_class_lbl[i], sizeof g_class_lbl[i], "%u",
                  (unsigned)g_classes[i]);
@@ -236,7 +263,7 @@ static void class_list_refresh(void) {
  * candidate and either supplies the uniform block or declines it.
  *
  * The engine's contract is that selection is a pure function of the key
- * plus tick-stable guest RAM. m_State qualifies. The state slider does
+ * plus tick-stable guest RAM. The moby state byte qualifies. The state slider does
  * not: it is host state, and it works here only because refine runs at
  * canonical extraction, where a slider value is stable for the tick. A
  * shipping mod authors its predicate as a constant or from guest RAM;
@@ -265,8 +292,9 @@ static int refine_state(const openpete_mod_material_key_t* key,
 {
     if (cap < 16 || key->channel != OP_CHAN_MOBY) return -1;
     if (g_refine_state >= 0) {
-        const Moby* m = (const Moby*)g_api->guest(key->u.moby.vaddr);
-        if (!m || (int)m->m_State != g_refine_state) return -1;
+        const uint8_t* st =
+            (const uint8_t*)g_api->guest(key->u.moby.vaddr + MOBY_STATE);
+        if (!st || (int)*st != g_refine_state) return -1;
     }
     float* v = (float*)out;
     v[0] = 0.10f; v[1] = 1.00f; v[2] = 0.35f; v[3] = g_strength;
@@ -423,7 +451,10 @@ static void ui(const openpete_mod_ui_t* ui) {
     }
     ui->separator();
     class_list_refresh();
-    if (g_class_n == 0) {
+    if (g_class_unsupported) {
+        ui->text_disabled("Moby class %d: this game lists no loaded classes; "
+                          "set gallery.class in config.toml", g_class);
+    } else if (g_class_n == 0) {
         ui->text_disabled("Moby class: no level loaded yet");
     } else if (ui->combo("Moby class", &g_class_idx,
                          (const char* const*)g_class_items, g_class_n)) {
@@ -442,7 +473,7 @@ static void ui(const openpete_mod_ui_t* ui) {
     ui->slider_int("Moby state (refine row)", &g_refine_state, -1, 255);
     ui->tooltip("-1 claims every instance of the class (same as the plain "
                 "class row). Any other value makes the callback decline "
-                "every instance whose m_State differs - narrowing the "
+                "every instance whose state byte differs - narrowing the "
                 "selector could never express this.");
     ui->separator();
     ui->text("%d of %d rows live", live, NROWS);

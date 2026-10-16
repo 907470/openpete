@@ -7,14 +7,19 @@
 # reshade what the renderer already drew and cannot move, reorder or
 # re-composite anything.
 #
+# One source serves all three games; the refine row's state byte offset is
+# the only per-game arm. Row labels name Spyro 1 content (Gnasty's zaps, the
+# dragon rescue star); on Spyro 2 and 3 a row lights whatever that game
+# draws on the channel and ident.
+#
 # uses: `api->shader_register` - compiles the one highlight shader every row shares
 # uses: `api->material_register` - registers a row's selector against that shader
 # uses: `api->material_register_refine` - the rows that need a per-instance decision, where a callback supplies the block or declines the match
 # uses: `api->material_set_selector` - re-keys a live row when the class combo changes, instead of tearing the material down
 # uses: `api->material_set_params` - pushes the highlight strength slider into the shared block
 # uses: `api->material_enable` - a row's checkbox, since a material is registered disabled
-# uses: `api->moby_classes` - lists the classes the current level actually loaded, so the combo offers only rows that can light
-# uses: `api->guest` - reads the matched moby inside a refine callback to decide the instance's block
+# uses: `api->moby_classes` - lists the classes the current level actually loaded, so the combo offers only rows that can light (Spyro 2 serves no census; the picker stays empty there)
+# uses: `api->guest` - reads the matched moby's state byte inside a refine callback to decide the instance's block
 # uses: `api->register_present_hook` - counts what lit this present for the row tally
 # uses: `api->config_float`, `api->config_int`, `api->config_str` - the rows the harness drives from config.toml
 # uses: `openpete_mod_ui.h` widget vtable - checkbox, combo, sliders, tooltips and separators build the panel with no ImGui version in the mod's build
@@ -23,7 +28,7 @@
 id      = "channel-gallery"
 name    = "Channel Gallery"
 version = "0.1.0"
-game    = "spyro-1"
+game    = ["spyro-1", "spyro-2", "spyro-3"]
 api     = 6            # material_set_selector (live class picker)
 state    = "none"      # GPU-only; nothing to carry across a state load
 runahead = "pure"      # no tick hooks

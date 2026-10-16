@@ -77,6 +77,13 @@
 #                   tick or the pad-ring consumer a second time. The link
 #                   counts calls above 0 and the census counts re-dispatches
 #                   that skipped the entry observers above 0.
+#   render mods     (Spyro 2 and 3) declarative-reshade, moby-instance-tint,
+#                   channel-gallery (every row lit) and late-pipes each
+#                   repaint pixels at a corpus pin against a no-mod baseline
+#                   that a control leg repeats exactly; each logs its rows
+#                   or passes armed and none is refused. imgui-panel's tick
+#                   arm counts calls above 0 and live mobys between 1 and
+#                   4095 with the oracle at PASS on the smoke run.
 #   scan watch      (Spyro 3) the mod guard restores and names a mod's store
 #                   into a scanned code range, a store below the range
 #                   lands, a host poke is reported, the overlay load is not;
@@ -847,6 +854,111 @@ if [ "$PG_GAME" != "spyro-1" ]; then
     else
         bad "file load: arena not restored, or DESYNC"
         printf '%s\n' "$out" | grep -E 'arena|savestate' | head -5
+    fi
+fi
+
+# ── M9b. (Spyro 2 and 3) the render-surface mods ─────────────────────────
+# declarative-reshade, moby-instance-tint, channel-gallery and late-pipes
+# each repaint pixels at a pin from the game's own corpus where terrain,
+# mobys, the player and the flame are on screen, against a baseline with
+# no mod; a control leg repeats the baseline, so a nonzero count there
+# voids the others. imgui-panel's per-game tick arm and moby array walk
+# count live mobys on the attract demo with the oracle at PASS.
+if [ "$PG_GAME" != "spyro-1" ]; then
+    case "$PG_GAME" in
+        spyro-2) P7_SCENE=shady-oasis-flame; P7_PIN=1421 ;;
+        spyro-3) P7_SCENE=crystal-islands-flame; P7_PIN=1653 ;;
+    esac
+    read -ra P7_ARGS < <(grep -v '^#' "$PG_BK2_DIR/$P7_SCENE.bk2.args" | tr '\n' ' ')
+    # p7_leg <tag> <mod>...: copies of the named mods (no .build/, so each
+    # compiles for this game) and one screenshot at the pin. A mod's
+    # config.toml is written by the caller into $WORK/p7-<tag>/<mod>/.
+    p7_stage() {
+        local dir="$WORK/p7-$1"; shift
+        rm -rf "${dir:?}"
+        mkdir -p "$dir"
+        : > "$dir/enabled.txt"
+        local m
+        for m in "$@"; do
+            cp -r "$MODS_SRC/$m" "$dir/$m"
+            rm -rf "${dir:?}/$m/.build" "${dir:?}/$m/config.toml"
+            echo "$m" >> "$dir/enabled.txt"
+        done
+    }
+    p7_shoot() {
+        local tag="$1" png="$WORK/p7-$1-$P7_PIN-vk.png"
+        RUN_OUTS="$png" RUN_TIMEOUT=900 run_game "$WORK/p7-$tag" $((P7_PIN + 2)) \
+            --renderer vk --mute 1 --aspect 4:3 --lod original \
+            --bk2 "$PG_BK2_DIR/$P7_SCENE.bk2" "${P7_ARGS[@]}" \
+            --screenshot-native-only --screenshot-on-frame "$P7_PIN" \
+            --screenshot-output "$WORK/p7-$tag-{n}.png"
+    }
+    p7_diffpx() {
+        python3 - "$1" "$2" <<'PY_P7'
+import sys
+from PIL import Image, ImageChops
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+print(sum(1 for p in ImageChops.difference(a, b).getdata() if p != (0, 0, 0)))
+PY_P7
+    }
+    say "render-surface mods: repaint at $P7_SCENE VBL $P7_PIN on $PG_GAME"
+    p7_stage base
+    p7_stage ctl
+    p7_stage reshade declarative-reshade
+    p7_stage tint moby-instance-tint
+    p7_stage gallery channel-gallery
+    printf 'gallery.rows = "all"\n' > "$WORK/p7-gallery/channel-gallery/config.toml"
+    p7_stage late late-pipes
+    p7_base="$WORK/p7-base-$P7_PIN-vk.png"
+    p7_shoot base > "$WORK/p7-base.log" 2>&1
+    for tag in ctl reshade tint gallery late; do
+        out="$(p7_shoot "$tag")"; rc=$?
+        if [ "$rc" -ne 0 ] || [ ! -s "$p7_base" ] || [ ! -s "$WORK/p7-$tag-$P7_PIN-vk.png" ]; then
+            bad "$tag: no capture (rc=$rc)"
+            printf '%s\n' "$out" | grep -iE "error|refused|fail" | head -4
+            continue
+        fi
+        n="$(p7_diffpx "$p7_base" "$WORK/p7-$tag-$P7_PIN-vk.png")"
+        case "$tag" in
+            ctl)
+                if [ "${n:-1}" -eq 0 ]; then ok "control: the baseline repeats exactly"
+                else bad "control: the baseline differs by ${n:-?} px; the counts are void"; fi
+                continue ;;
+            reshade) want="declarative-reshade: 3 declarative material row(s)" ;;
+            tint)    want="loaded moby-instance-tint " ;;
+            gallery) want="21 selector rows armed, 21 lit" ;;
+            late)    want="late-pipes: registered 3 postfx passes, 2 materials" ;;
+        esac
+        if ! printf '%s\n' "$out" | grep -q "$want"; then
+            bad "$tag: log line missing: $want"
+            printf '%s\n' "$out" | grep -iE "refused|$tag" | head -4
+        elif printf '%s\n' "$out" | grep -qE "row '.*' refused|selector inert|failed to build"; then
+            bad "$tag: a row or shader was refused"
+            printf '%s\n' "$out" | grep -E "refused|inert|failed" | head -4
+        elif [ "${n:-0}" -gt 0 ]; then
+            ok "$tag: $n px repainted"
+        else
+            bad "$tag: 0 px repainted"
+        fi
+    done
+
+    say "imgui-panel: the tick arm samples the moby array on $PG_GAME"
+    fixture "$WORK/imgui-$PG_GAME" imgui-panel
+    out="$(OPENPETE_MOD_LINK_CALLS=1 OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES \
+            tests/harness/check_psx_oracle.sh --game "$PG_GAME" -- \
+            --mods-dir "$WORK/imgui-$PG_GAME" 2>&1)"
+    n="$(link_calls "$out" imgui-panel)"
+    live="$(printf '%s\n' "$out" |
+        sed -n 's/.*imgui-panel: hovered [0-9]*\/[0-9]* presents, \([0-9]*\) live mobys.*/\1/p' |
+        sort -n | tail -1)"
+    if printf '%s\n' "$out" | grep -q "verdict: PASS" &&
+       printf '%s\n' "$out" | grep -q "imgui-panel: ImGui bound" &&
+       [ "$n" -gt 0 ] && [ "${live:-0}" -gt 0 ] && [ "${live:-0}" -lt 4096 ]; then
+        ok "imgui-panel: oracle PASS, $n tick calls, at most $live live mobys in a sample"
+    else
+        bad "imgui-panel: oracle, bind, $n tick calls or ${live:-no} live mobys"
+        printf '%s\n' "$out" | grep -E "verdict|imgui-panel" | head -5
     fi
 fi
 
