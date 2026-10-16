@@ -688,23 +688,31 @@ void openpete_mods_arena_mem_save(void* dst,
     }
 }
 
-void openpete_mods_arena_mem_restore(const void* bytes,
-                                     const uint32_t used[OPENPETE_ARENA_RANGES]) {
-    if (!bytes || !used) return;
+uint8_t* openpete_mods_arena_range_reanchor(unsigned range, uint32_t* n) {
+    if (range >= OPENPETE_ARENA_RANGES || !n || !*n) return NULL;
     /* Re-anchor, never replace: bytes allocated after the snapshot keep
      * their contents and no cursor moves backwards, so a handle a mod
      * took mid-window stays valid across the restore. */
+    arena_seg_t* s = &s_seg[range];
+    if (*n > s->cap) *n = s->cap;
+    if (!*n) return NULL;
+    if (!seg_commit(s, *n)) {
+        OPL_ERROR_F("mods", "guest arena: %s segment: %u B of snapshot "
+                    "bytes not restored", s->name, *n);
+        return NULL;
+    }
+    if (*n > s->used) s->used = *n;
+    return seg_host(s);
+}
+
+void openpete_mods_arena_mem_restore(const void* bytes,
+                                     const uint32_t used[OPENPETE_ARENA_RANGES]) {
+    if (!bytes || !used) return;
     const uint8_t* p = (const uint8_t*)bytes;
     for (unsigned i = 0; i < OPENPETE_ARENA_RANGES; i++) {
-        arena_seg_t* s = &s_seg[i];
-        const uint32_t n = used[i] > s->cap ? s->cap : used[i];
-        if (n && seg_commit(s, n)) {
-            memcpy(seg_host(s), p, n);
-            if (n > s->used) s->used = n;
-        } else if (n) {
-            OPL_ERROR_F("mods", "guest arena: %s segment: %u B of snapshot "
-                        "bytes not restored", s->name, n);
-        }
+        uint32_t n = used[i];
+        uint8_t* dst = openpete_mods_arena_range_reanchor(i, &n);
+        if (dst) memcpy(dst, p, n);
         p += used[i];
     }
 }

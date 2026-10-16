@@ -325,12 +325,14 @@ add_test(NAME vstream_test COMMAND vstream_test)
 # pool selection by flag, the upper-then-lower segment order, per-segment
 # exhaustion naming every owner, the version-3 section mapped onto the
 # upper segment, the version-4 and in-memory snapshot round trips, KSEG2
-# refusal, and a read past a committed extent answered by the ROM model.
+# refusal, a read past a committed extent answered by the ROM model, and
+# the rewind page tables (core/record/rewind_pages.c) over the three ranges.
 # Links the region table, the bus accessors, the stream-handle table and
 # the flat vector; the logger, CD-ROM registers and BIOS ROM are stubs.
 add_executable(mod_arena_test
     mod_arena_test.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_arena.c
+    ${CMAKE_SOURCE_DIR}/core/record/rewind_pages.c
     ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
     ${CMAKE_SOURCE_DIR}/core/psx/vstream.c
     ${CMAKE_SOURCE_DIR}/core/psx/cpu.c

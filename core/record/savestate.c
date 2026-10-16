@@ -1094,6 +1094,7 @@ struct openpete_state_mem {
     uint8_t*   arena;
     uint32_t   arena_cap;
     uint32_t   arena_used[OPENPETE_ARENA_RANGES];
+    int        arena_external;  /* the owner carries the arena itself */
 };
 
 openpete_state_mem_t* openpete_state_mem_new(void) {
@@ -1151,7 +1152,7 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     PsyX_CD_QueueSnapshot(m->cdq);
     if (m->gx_bytes) game_state_extra_save(m->gx);
     if (PsyX_VRAM_Snapshot(m->vram, m->vram_bytes) != 0) return -1;
-    {
+    if (!m->arena_external) {
         uint32_t used = openpete_mods_arena_used(NULL);
         if (used > m->arena_cap) {
             uint8_t* grown = (uint8_t*)realloc(m->arena, used);
@@ -1191,7 +1192,8 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
      * (the dispatcher setter no-ops when the id already matches). */
     if (m->gx_bytes) game_state_extra_load(m->gx, m->gx_bytes);
     (void)PsyX_VRAM_RestoreDelta(m->vram, m->vram_bytes);
-    openpete_mods_arena_mem_restore(m->arena, m->arena_used);
+    if (!m->arena_external)
+        openpete_mods_arena_mem_restore(m->arena, m->arena_used);
     SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
     SDL_SetAtomicInt(&openpete_vbl_device, (int)m->vbl_device);
     openpete_consume = m->consume;
@@ -1202,6 +1204,15 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     }
     if (out_frame) *out_frame = m->frame;
     return 0;
+}
+
+void openpete_state_mem_arena_external(openpete_state_mem_t* m) {
+    if (!m) return;
+    m->arena_external = 1;
+    free(m->arena);
+    m->arena = NULL;
+    m->arena_cap = 0;
+    memset(m->arena_used, 0, sizeof m->arena_used);
 }
 
 openpete_park_site_t openpete_state_mem_site(const openpete_state_mem_t* m) {

@@ -735,6 +735,94 @@ early_refusal "modset mismatch" "$WORK/canary-ms" "$WORK/canary.state" \
 early_refusal "ledger prefix mismatch" "$WORK/canary-diff" "$WORK/diff.state" \
     "arena ledger: row #0 diverges.*REFUSING"
 
+# ── 13c. rewind keyframes share arena pages ─────────────────────────────
+# A rewind keyframe stores the arena as reference-counted 4 KiB pages: a
+# full copy at the keyframe, then a compare against the newest other valid
+# keyframe, sliced over the ticks before the next one, that shares equal
+# pages. Rung 13's --state-stress-rewind never enters the keyframe ring,
+# so these legs drive --rewind with a held key over arena-canary (9.5 MB
+# used, mostly static) and read the ring's exit counters (`rewind: arena
+# pages:`). OPENPETE_REWIND_HOLD_PHASE starts the hold at a fixed VBL
+# after a keyframe: 0 is the keyframe's own iteration, whose seek restores
+# fully compared keyframes only; 10 restores the newest keyframe while its
+# compare is still running, then discards that compare when the seek moves
+# behind it. Every leg also requires no canary DESYNC.
+say "rewind keyframes: arena pages shared, restores exact"
+rw_field() { # rw_field <log text> <counter name> -> value (empty when absent)
+    printf '%s\n' "$1" | grep -o "rewind: arena pages: .*" | tail -1 |
+        grep -oE "(^| )$2=[0-9]+" | tail -1 | sed 's/.*=//'
+}
+rw_hold_leg() { # rw_hold_leg <label> <phase> <pending-restore check: zero|nonzero>
+    local o sh rs pr dc
+    o="$(OPENPETE_REWIND_HOLD_PHASE=$2 RUN_TIMEOUT=900 run_game "$WORK/canary" 3400 \
+        --skip-to-level 10 --rewind 30 --rewind-hold 2200:40)"
+    sh="$(rw_field "$o" shared)"; rs="$(rw_field "$o" restores)"
+    pr="$(rw_field "$o" pending-restores)"; dc="$(rw_field "$o" discarded)"
+    if ! printf '%s\n' "$o" | grep -q "hold phase met" || \
+       ! printf '%s\n' "$o" | grep -q "hold 40/40"; then
+        bad "$1: VACUOUS - the hold never started at its phase or never finished"
+    elif [ "${sh:-0}" -eq 0 ] || [ "${rs:-0}" -eq 0 ]; then
+        bad "$1: VACUOUS - shared=${sh:-none} restores=${rs:-none}"
+    elif printf '%s\n' "$o" | grep -q "arena-canary: DESYNC"; then
+        bad "$1: DESYNC after a keyframe restore"
+    elif [ "$3" = zero ] && [ "${pr:-1}" -ne 0 ]; then
+        bad "$1: the hold restored a partly compared keyframe (pending-restores=$pr)"
+    elif [ "$3" = nonzero ] && { [ "${pr:-0}" -eq 0 ] || [ "${dc:-0}" -eq 0 ]; }; then
+        bad "$1: VACUOUS - pending-restores=${pr:-none} discarded=${dc:-none}"
+    else
+        ok "$1: shared=$sh restores=$rs pending-restores=$pr discarded=$dc, no DESYNC"
+    fi
+}
+rw_hold_leg "hold on a keyframe iteration" 0 zero
+rw_hold_leg "hold 10 VBLs after a keyframe" 10 nonzero
+# --rewind 1 holds two keyframes, so each new keyframe overwrites the
+# other slot's predecessor; the hold runs back past the oldest. A compare
+# target is never pending, invalid, or newer than the new keyframe.
+o="$(OPENPETE_REWIND_HOLD_PHASE=10 RUN_TIMEOUT=900 run_game "$WORK/canary" 3400 \
+    --skip-to-level 10 --rewind 1 --rewind-hold 2200:120)"
+cb="$(rw_field "$o" compares)"; pt="$(rw_field "$o" pending-target)"
+bt="$(rw_field "$o" bad-target)"; nt="$(rw_field "$o" no-target)"
+if [ "${cb:-0}" -eq 0 ] || [ -z "$pt" ] || [ -z "$bt" ]; then
+    bad "--rewind 1: VACUOUS - compares=${cb:-none}"
+elif [ "$pt" -ne 0 ] || [ "$bt" -ne 0 ]; then
+    bad "--rewind 1: compared against a pending ($pt) or dropped/overwritten ($bt) slot"
+elif printf '%s\n' "$o" | grep -q "arena-canary: DESYNC"; then
+    bad "--rewind 1: DESYNC after a keyframe restore"
+else
+    ok "--rewind 1 + hold past the oldest: compares=$cb no-target=$nt pending-target=0 bad-target=0"
+fi
+# Turning rewind off through the live knob releases the page store.
+o="$(OPENPETE_REWIND_OFF_AT=3000 RUN_TIMEOUT=900 run_game "$WORK/canary" 3400 \
+    --skip-to-level 10 --rewind 30)"
+rel="$(printf '%s\n' "$o" | grep -oE 'page store [0-9]+ slab\(s\) \([0-9]+ MiB\) unmapped; RSS [0-9]+ -> [0-9]+' | tail -1)"
+if [ -z "$rel" ]; then
+    bad "rewind off: no page-store release line"
+else
+    slabs="$(printf '%s' "$rel" | sed -E 's/page store ([0-9]+) .*/\1/')"
+    rss0="$(printf '%s' "$rel" | sed -E 's/.*RSS ([0-9]+) -> .*/\1/')"
+    rss1="$(printf '%s' "$rel" | sed -E 's/.*-> ([0-9]+)$/\1/')"
+    if [ "$slabs" -gt 0 ] && [ $((rss0 - rss1)) -ge $((slabs * 2048 * 9 / 10)) ]; then
+        ok "rewind off: $slabs slab(s) unmapped, RSS $rss0 -> $rss1 KiB"
+    else
+        bad "rewind off: RSS did not fall by the store ($rel)"
+    fi
+fi
+# A file load replaces the timeline and clears the ring; the keyframes
+# taken after it compare and restore the loaded arena bytes.
+o="$(OPENPETE_REWIND_HOLD_PHASE=10 RUN_TIMEOUT=900 run_game "$WORK/canary" 3600 \
+    --skip-to-level 10 --rewind 30 \
+    --state-load-on-frame 2400 --state-load-input "$WORK/canary.state" \
+    --rewind-hold 3000:40)"
+sh="$(rw_field "$o" shared)"; rs="$(rw_field "$o" restores)"
+if ! printf '%s\n' "$o" | grep -q "savestate: loaded" || [ "${rs:-0}" -eq 0 ] || \
+   [ "${sh:-0}" -eq 0 ]; then
+    bad "rewind across a file load: VACUOUS - load, restores=${rs:-none} or shared=${sh:-none} missing"
+elif printf '%s\n' "$o" | grep -q "arena-canary: DESYNC"; then
+    bad "rewind across a file load: DESYNC after a keyframe restore"
+else
+    ok "rewind across a file load: restores=$rs shared=$sh, no DESYNC"
+fi
+
 # ── 13b. stream handles: every 21-bit field reader resolves handles ───
 # vstream-rehandle rewrites EVERY animated model's frame words in the level
 # to stream handles - mode 1 bound to the streams in place, mode 2 bound to

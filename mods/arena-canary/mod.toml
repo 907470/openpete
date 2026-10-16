@@ -8,7 +8,9 @@
 # mirror would run ahead of the guest counter and the mod logs DESYNC, and
 # a copy that moved apart from the mirror logs DESYNC naming its range. The allocation size is config-driven so the reload
 # harness can change the allocation pattern and check that the ledger
-# refuses a savestate written under the old layout.
+# refuses a savestate written under the old layout. `bulk_kib` adds a
+# mostly static general-pool block (one page rewritten per tick) that
+# sizes the arena for rewind and runahead cost measurements.
 
 [mod]
 id      = "arena-canary"
@@ -35,3 +37,12 @@ type = "bool"
 default = true
 label = "Blocks in every arena range"
 help = "Also hold a block in the lower DMA-reachable segment and the general pool, each checked against the mirror every tick."
+
+[[config]]
+key = "bulk_kib"
+type = "int"
+default = 0
+min = 0
+max = 491520
+label = "Bulk block (KiB)"
+help = "A general-pool block of this many KiB, filled once and then rewritten one 4 KiB page per tick; 0 allocates none."

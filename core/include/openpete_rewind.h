@@ -16,8 +16,12 @@
  * liveness drops (level transition/loading - the mem snapshot excludes
  * VRAM/SPU-RAM by contract) and on any real savestate load (via the
  * discontinuity broadcast - a loaded state is a different timeline).
- * Memory: ~3.1 MiB per keyframe plus the mod arena's watermark, one
- * keyframe per second of window plus one. */
+ * Memory: ~3.1 MiB per keyframe (RAM, scratchpad, SPU, CD, VRAM), one
+ * keyframe per second of window plus one, plus the mod arena's pages:
+ * each keyframe's arena is a table of reference-counted 4 KiB pages
+ * (openpete_rewind_pages.h), copied whole at the keyframe and then
+ * compared, a slice per call over the following ticks, against the newest
+ * other valid keyframe, whose equal pages it shares. */
 
 #ifndef OPENPETE_REWIND_H
 #define OPENPETE_REWIND_H
@@ -37,7 +41,7 @@ typedef struct {
     int                   valid;
 } openpete_rewind_kf_t;
 
-/** @brief Size the keyframe ring for a rewind window, freeing the previous ring and its snapshots.
+/** @brief Size the keyframe ring for a rewind window, freeing the previous ring, its snapshots and the arena page store.
  *
  * The ring holds window_seconds + 1 keyframes, each snapshot allocated on
  * first capture. The first enabling call registers a guest-discontinuity
@@ -53,14 +57,19 @@ void openpete_rewind_configure(int window_seconds);
  *         positive window, 0 otherwise. */
 int  openpete_rewind_enabled(void);
 
-/** @brief Capture a keyframe when one is due, or clear the ring when gameplay is not live.
+/** @brief Capture a keyframe when one is due, else run one slice of the arena compare; clear the ring when gameplay is not live.
  *
  * A keyframe is due on the first call after a clear and then every
- * OPENPETE_REWIND_KF_VBLS VBLs; it overwrites the oldest slot and records
- * input_log_count() beside the snapshot. A failed snapshot allocation or
- * save skips the capture and retries on the next call. Called once per
- * host iteration at the savestate quiescent point, with the game fiber
- * yielded. No effect when rewind is disabled.
+ * OPENPETE_REWIND_KF_VBLS VBLs. It first finishes the previous keyframe's
+ * compare, releases the slot it overwrites, copies the snapshot and the
+ * arena's used pages, records input_log_count(), and starts the compare
+ * against the newest other valid keyframe. A failed snapshot allocation
+ * or save skips the capture and retries on the next call; a page store
+ * that cannot grow drops the keyframe (counted) and the next one is due a
+ * full interval later. Between keyframes each call compares the pages left
+ * divided by the calls left before the next keyframe (one call per tick,
+ * two VBLs). Called once per host iteration at the savestate quiescent
+ * point, with the game fiber yielded. No effect when rewind is disabled.
  * @param cpu Guest CPU state to snapshot.
  * @param frame Current openpete_frame (VBL count).
  * @param live Non-zero while gameplay is live; 0 during a level
@@ -79,16 +88,42 @@ void openpete_rewind_on_iter(const CPUState* cpu, unsigned frame, int live);
  *         NULL when none is valid there. */
 const openpete_rewind_kf_t* openpete_rewind_pick(unsigned target, const openpete_park_site_t* site);
 
+/** @brief Restore a keyframe from openpete_rewind_pick: the snapshot quietly, then its arena pages.
+ *
+ * A keyframe whose arena compare is still running restores from its
+ * partly compared table, which names every page.
+ * @param kf A valid keyframe of the ring.
+ * @param cpu Guest CPU state whose register prefix is overwritten.
+ * @param out_frame Receives the keyframe's frame; may be NULL.
+ * @return openpete_state_mem_load's result (0 restored, 1 park site
+ *         mismatch, -1 refused); -1 for a keyframe not in the ring. */
+int  openpete_rewind_restore(const openpete_rewind_kf_t* kf, CPUState* cpu, unsigned* out_frame);
+
+/** @brief Report whether a --rewind-hold may start at this VBL under OPENPETE_REWIND_HOLD_PHASE.
+ *
+ * Harness: with OPENPETE_REWIND_HOLD_PHASE=n set, a hold starts only at
+ * the VBL n after the newest keyframe (0: the keyframe's own iteration,
+ * which restores fully compared keyframes; about 10: a keyframe whose
+ * arena compare is still running). Unset, always 1.
+ * @param frame Current openpete_frame.
+ * @return 1 when the hold may start. */
+int  openpete_rewind_hold_phase_ready(unsigned frame);
+
+/** @brief Log the arena page counters, the keyframes' arena memory and the keyframe-copy and compare-slice costs (median, p99, max); silent when no keyframe was taken. */
+void openpete_rewind_report(void);
+
 /** @brief Invalidate every keyframe captured after a VBL.
  *
  * Called after a rewind lands, since those keyframes describe the
- * discarded future. Their snapshots stay allocated for reuse.
+ * discarded future. Their snapshots stay allocated for reuse; their arena
+ * pages are released.
  * @param frame openpete_frame the rewind landed on. */
 void openpete_rewind_drop_after(unsigned frame);
 
 /** @brief Invalidate every keyframe and make the next call to openpete_rewind_on_iter capture one.
  *
- * Snapshots stay allocated. Called on liveness loss, on a savestate load
+ * Snapshots stay allocated; arena pages are released to the page store,
+ * which keeps its slabs. Called on liveness loss, on a savestate load
  * through the discontinuity handler, on a mod-set change, and by
  * openpete_rewind_configure. */
 void openpete_rewind_clear(void);

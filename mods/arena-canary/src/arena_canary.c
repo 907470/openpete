@@ -58,6 +58,8 @@ static int       g_armed_logged;
 static uint32_t  g_va_lower, g_va_general;
 static mirror_t* g_copy[2];                  /* lower and general copies */
 static uint32_t  g_pool_desyncs;
+static uint8_t*  g_bulk;                     /* bulk block host view, or NULL */
+static uint32_t  g_bulk_pages;
 
 static void publish_status(void) {
     g_api->ui_status(g_self, "mirror block: 0x%08X (%u B, mutable)", g_va,
@@ -121,6 +123,9 @@ static void on_camera_update(CPUState* cpu) {
     }
     g_mirror->last_tick = g;
     g_mirror->ticks_seen++;
+    if (g_bulk)   /* one rewritten page per tick; the rest stays static */
+        memcpy(g_bulk + (size_t)(g_mirror->ticks_seen % g_bulk_pages) * 4096u,
+               g_mirror, sizeof *g_mirror);
     for (int i = 0; i < 2; i++)
         if (g_copy[i]) memcpy(g_copy[i], g_mirror, sizeof *g_mirror);
     if ((g_mirror->ticks_seen & 255u) == 0) publish_status();
@@ -209,6 +214,37 @@ static int alloc_pools(const openpete_mod_api_t* api, openpete_mod_t* self) {
     return 0;
 }
 
+/**
+ * @brief Allocate the bulk general-pool block when `bulk_kib` is nonzero and fill it with a fixed pattern.
+ *
+ * Every 4 KiB page of the pattern differs from the others, so a keyframe
+ * shares a page only with the same page of another keyframe.
+ * @param api The engine table.
+ * @param self This mod's handle.
+ * @return 0 when no block is configured or it was allocated, else -1 (logged).
+ */
+static int alloc_bulk(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    int64_t kib = api->config_int(self, "bulk_kib", 0);
+    if (kib <= 0) return 0;
+    if (kib > 491520) kib = 491520;
+    const uint32_t bytes = (uint32_t)kib * 1024u;
+    void* host = 0;
+    const uint32_t va = api->guest_alloc(self, bytes, 4096, OP_GALLOC_NO_DMA, &host);
+    if (!va || !host) {
+        api->log(self, OP_MOD_LOG_ERROR, "arena-canary: bulk %u B alloc FAILED", bytes);
+        return -1;
+    }
+    g_bulk = (uint8_t*)host;
+    g_bulk_pages = (bytes + 4095u) / 4096u;
+    uint32_t x = 0x9E3779B9u;
+    for (uint32_t i = 0; i < bytes / 4u; i++) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        memcpy(g_bulk + (size_t)i * 4u, &x, 4);
+    }
+    api->log(self, OP_MOD_LOG_INFO, "arena-canary: bulk %u B @0x%08X", bytes, va);
+    return 0;
+}
+
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
     int64_t slots = api->config_int(self, "slots", 4);
@@ -225,6 +261,8 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_copy[0] = g_copy[1] = 0;
     if (api->config_bool(self, "pools", 1) && alloc_pools(api, self) != 0)
         return -1;
+    g_bulk = 0;
+    if (alloc_bulk(api, self) != 0) return -1;
     /* Replayed on re-entry: the block keeps its bytes, so the mirror
      * continues rather than restarting - a restart would itself look
      * like a rollback to the check above. */

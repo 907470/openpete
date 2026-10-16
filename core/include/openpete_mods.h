@@ -482,6 +482,18 @@ void           openpete_mods_arena_mem_save(void* dst,
  *        is clamped to it. */
 void           openpete_mods_arena_mem_restore(const void* bytes,
                                                const uint32_t used[OPENPETE_ARENA_RANGES]);
+/** @brief Commit a range's first n bytes, raise its cursor to cover them, and return its host bytes for a snapshot restore to fill.
+ *
+ * The re-anchor step of openpete_mods_arena_mem_restore for one range:
+ * bytes past n keep their contents and the cursor never decreases. A
+ * count above the range's capacity is clamped to it.
+ * @param range OPENPETE_ARENA_RANGE_*.
+ * @param n in: the snapshot's byte count for the range; out: the count
+ *        clamped to the range's capacity.
+ * @return the range's first host byte, writable for the clamped count, or
+ *         NULL for a zero count, a range out of bounds, or a commit
+ *         failure (logged). */
+uint8_t*       openpete_mods_arena_range_reanchor(unsigned range, uint32_t* n);
 /** @brief Check every live IMMUTABLE row's bytes against its first-seen checksum.
  *
  * The first check of a row records the FNV-1a 64-bit hash of its bytes; a

@@ -6,7 +6,10 @@
  * vaddrs it was saved from, the version-4 round trip and in-memory
  * snapshot over the three ranges, KSEG2 and high-KUSEG refusal on region
  * resolution, and a bus read one byte past a segment's committed extent
- * answered by the ROM model.
+ * answered by the ROM model; the rewind page tables over the three
+ * ranges (core/record/rewind_pages.c): copy, compare-and-share against a
+ * target, restore from an encoded and from a partly compared table, a
+ * compare discarded when its target is released, and the store's release.
  *
  * Compiles mod_arena.c with the region table, the bus accessors, the
  * stream-handle table and the flat vector; the logger, the CD-ROM register
@@ -17,6 +20,7 @@
 #include "openpete_log.h"
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
+#include "openpete_rewind_pages.h"
 #include "psx_runtime.h"
 #include "psx_runtime_internal.h"
 
@@ -223,6 +227,74 @@ static void test_sections(void) {
     free(v4);
 }
 
+/** @brief Fill @p n bytes at guest @p va with the word sequence seed, seed+1, ... */
+static void fill_words(uint32_t va, uint32_t n, uint32_t seed) {
+    for (uint32_t i = 0; i + 4u <= n; i += 4u) s_cpu.write_word(va + i, seed + i);
+}
+
+/** @brief Checks the rewind page tables: capture, compare-and-share, restore (encoded and pending), discard on target release, store release. */
+static void test_rewind_pages(void) {
+    uint32_t used[OPENPETE_ARENA_RANGES];
+    (void)openpete_mods_arena_used(used);
+    /* Distinct page contents, so only the same page of another table can match. */
+    fill_words(0x80700000u, used[OPENPETE_ARENA_RANGE_UPPER], 0x10000000u);
+    fill_words(0x80200000u, used[OPENPETE_ARENA_RANGE_LOWER], 0x20000000u);
+    fill_words(0x81000000u, used[OPENPETE_ARENA_RANGE_GENERAL], 0x30000000u);
+    rwp_table_t a, b, c;
+    memset(&a, 0, sizeof a); memset(&b, 0, sizeof b); memset(&c, 0, sizeof c);
+    CHECK(rwp_capture(&a) == 0, "capture a");
+    const uint32_t np = a.npages;
+    CHECK(np > 4u, "the ranges span several pages");
+    rwp_compare_begin(&a, NULL);
+    rwp_stats_t st = rwp_stats();
+    CHECK(st.compares_no_target == 1u && rwp_pending() == NULL, "no target: encoded at once");
+    CHECK(st.pages_live == np, "one store page per table page");
+
+    s_cpu.write_word(0x80200000u + 4096u, 0xDEADBEEFu);   /* one lower page changes */
+    CHECK(rwp_capture(&b) == 0, "capture b");
+    rwp_compare_begin(&b, &a);
+    CHECK(rwp_compare_remaining() == np, "compare covers every page");
+    CHECK(rwp_compare_step(3u) == 3u && rwp_compare_remaining() == np - 3u, "slice of three pages");
+    while (rwp_compare_remaining()) (void)rwp_compare_step(5u);
+    st = rwp_stats();
+    CHECK(st.pages_shared == np - 1u, "every unchanged page shared");
+    CHECK(st.pages_live == np + 1u, "store holds a's pages plus b's changed page");
+    CHECK(b.flat == NULL && b.nruns <= 4u, "b encodes as a few runs");
+
+    s_cpu.write_word(0x80700000u, 0u);
+    s_cpu.write_word(0x80200000u + 4096u, 0u);
+    s_cpu.write_word(0x81000000u, 0u);
+    rwp_restore(&a);
+    CHECK(s_cpu.read_word(0x80700000u) == 0x10000000u, "a restores the upper range");
+    CHECK(s_cpu.read_word(0x80200000u + 4096u) == 0x20000000u + 4096u, "a restores its own lower page");
+    CHECK(s_cpu.read_word(0x81000000u) == 0x30000000u, "a restores the general range");
+    rwp_restore(&b);
+    CHECK(s_cpu.read_word(0x80200000u + 4096u) == 0xDEADBEEFu, "b restores its changed page");
+    CHECK(s_cpu.read_word(0x81000000u) == 0x30000000u, "b restores a shared page");
+
+    s_cpu.write_word(0x81000000u, 0x77777777u);
+    CHECK(rwp_capture(&c) == 0, "capture c");
+    rwp_compare_begin(&c, &b);
+    (void)rwp_compare_step(1u);
+    s_cpu.write_word(0x81000000u, 0u);
+    rwp_restore(&c);
+    st = rwp_stats();
+    CHECK(st.restores_pending == 1u, "restore of a partly compared table counted");
+    CHECK(s_cpu.read_word(0x81000000u) == 0x77777777u, "partly compared c restores its bytes");
+    rwp_release(&b);
+    st = rwp_stats();
+    CHECK(st.discards == 1u && rwp_pending() == NULL, "releasing the target discards the compare");
+    rwp_restore(&c);
+    CHECK(s_cpu.read_word(0x80200000u + 4096u) == 0xDEADBEEFu, "c keeps a page it shared with released b");
+    CHECK(rwp_store_trim() == 0u, "a referenced store is not released");
+    rwp_release(&a);
+    rwp_release(&c);
+    st = rwp_stats();
+    CHECK(st.pages_live == 0u, "every page returned");
+    CHECK(rwp_store_trim() > 0u && rwp_stats().slabs == 0u, "an empty store unmaps its slabs");
+    rwp_table_free(&a); rwp_table_free(&b); rwp_table_free(&c);
+}
+
 /** @brief Runs the arena checks in order.
  * @return 0 when every check passes. */
 int main(void) {
@@ -232,6 +304,7 @@ int main(void) {
     test_committed_extent();
     test_mem_snapshot();
     test_sections();
+    test_rewind_pages();
     if (s_fail) { fprintf(stderr, "mod_arena_test: %d FAILED\n", s_fail); return 1; }
     printf("mod_arena_test: OK\n");
     return 0;

@@ -4056,7 +4056,7 @@ static bool rewind_seek_one_tick(bool bk2_active) {
         return false;
     }
     unsigned lf = openpete_frame;
-    if (openpete_state_mem_load(kf->mem, &g_game.cpu, &lf, 1) != 0) return false;
+    if (openpete_rewind_restore(kf, &g_game.cpu, &lf) != 0) return false;
     openpete_frame = lf;
     openpete_interp_reset();
     openpete_interp_objs_reset();
@@ -4100,8 +4100,9 @@ static bool rewind_mods_allow(void) {
 
 /** @brief Report whether the rewind key is held this iteration: the key, or the --rewind-hold A:N driver once feed key A is reached.
  *
- * The driver latches at A (a held key does not release when the frame
- * drops below the trigger) and holds for N iterations.
+ * The driver latches at A, or at the first VBL from A on that meets
+ * OPENPETE_REWIND_HOLD_PHASE (a held key does not release when the frame
+ * drops below the trigger), and holds for N iterations.
  * @param opts Run options (--rewind-hold).
  * @param live The game is in live gameplay.
  * @param paused The host is paused.
@@ -4110,7 +4111,8 @@ static bool rewind_key_held(const openpete_options_t* opts, int live, bool pause
     static int held = 0, armed = 0;
     bool k = openpete_key_down(OPK_REWIND);
     if (opts->rewind_hold_frame >= 0 && !armed &&
-        (int)openpete_feed_key_now() >= opts->rewind_hold_frame)
+        (int)openpete_feed_key_now() >= opts->rewind_hold_frame &&
+        openpete_rewind_hold_phase_ready(openpete_frame))
         armed = 1;
     if (armed && held < opts->rewind_hold_iters) {
         k = true;
@@ -7306,6 +7308,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     s_p1_stage_first_read_axes[2], s_p1_stage_first_read_axes[3]);
 
     rumble_census_report();
+    openpete_rewind_report();
     OPL_INFO_F("savestate", "deferred to a final yield: %llu snapshot request(s), %llu load request(s); "
                "periodic state work sat out %llu intermediate yield(s); "
                "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "

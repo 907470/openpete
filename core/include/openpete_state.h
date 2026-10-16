@@ -162,6 +162,15 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);
 
+/** @brief Exclude the mod arena from an in-memory snapshot: save no longer copies it and load no longer restores it.
+ *
+ * For an owner that stores and restores the arena's used ranges itself
+ * (the rewind keyframe ring's shared page tables); that owner restores
+ * them after a successful openpete_state_mem_load. Frees any arena copy
+ * the snapshot holds. Irreversible for the snapshot.
+ * @param m Snapshot from openpete_state_mem_new; NULL is ignored. */
+void openpete_state_mem_arena_external(openpete_state_mem_t* m);
+
 /** @brief Return the park site an in-memory snapshot was saved at.
  * @param m A snapshot (valid or not).
  * @return The site; ra 0 when the save was not at a final yield. */
