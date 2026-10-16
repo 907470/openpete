@@ -214,3 +214,10 @@ cloud-spires-game-over|5973|1000||5973,7873
 # 2341 are presents where the game draws nothing: the display shows the last
 # image drawn into the buffer it shows, the world under the card dialogue.
 s3-create-save|1678|663||1678,2341|--card1 {legdir}/card1.mcr --no-card2
+
+# credits-cheat: the pause-menu credits cheat from Sunrise Spring. The credits
+# overlay emits one subtractive full-width quad of grey D_8006C598 << 4 per
+# tick while D_8006C598 != 0: the fade-in from black at VBL 2013-2043 and the
+# fade through black at each scene change (3695-3757). 2025, 3708 and 3720
+# are fade presents; 3690 precedes the fade.
+credits-cheat|2013|200||2025,3690,3708,3720
