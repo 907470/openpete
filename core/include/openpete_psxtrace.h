@@ -365,6 +365,14 @@ int      openpete_sched_registration(uint32_t ra, uint32_t* target_out);
  * re-alignment offset is added and the result is floored at 0.
  * @return The record index. */
 uint32_t openpete_sched_current_record(void);
+/** @brief Answer a game read of root counter 2's count register from the reference's `.rcnt2` rows.
+ *
+ * Takes the next unread row of the current record; rows of records
+ * openpete has passed are skipped. Without the sidecar, or with no row
+ * left in the record, the caller keeps its own value.
+ * @param value_out Receives the count the reference read.
+ * @return 1 when a row answered, else 0. */
+int openpete_sched_rcnt2_read(uint16_t* value_out);
 /** @brief Answer a waited VSync call with the reference VBLANK it returns at.
  *
  * The answer is the return VBLANK of the next waited row of the current

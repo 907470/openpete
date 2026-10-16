@@ -96,6 +96,39 @@
 #                                  -card-export 1:0:PATH), to PATH: the card
 #                                  fixture openpete's card-present runs copy;
 #                                  refuses a run that wrote no 131072-byte image
+#           --rcnt2-pc HEX         record every read of root counter 2's
+#                                  current-count register by the instruction
+#                                  at HEX to <out>.rcnt2 (record, VBLANK,
+#                                  address, value; repeatable, up to 8): the
+#                                  game's own reads, which openpete under the
+#                                  schedule answers from it (the libraries'
+#                                  reads are inside functions openpete
+#                                  replaces); refuses a capture that recorded
+#                                  none
+#           --card-import PATH     slot 1 holds the 131072-byte image at PATH
+#                                  (regtest -card1 PATH; the file is never
+#                                  written), in place of the formatted card
+#           --card-export-end PATH write the slot 1 card at shutdown, after the
+#                                  last record (regtest -card-export
+#                                  1:end:PATH): the card the run left;
+#                                  refuses a run that wrote no 131072-byte image
+#           --card-window          log every card command and card handler
+#                                  entry to <out>.cardwin (regtest -card-window)
+#           --bk2 PATH             play the movie at PATH on the port 1
+#                                  controller (regtest -bk2); a movie keyed
+#                                  `OpenpeteFeedKey consume` needs
+#                                  --bk2-consume-pc, and a run whose consumer
+#                                  closed no group of the movie is refused
+#           --bk2-consume-pc HEX   the game's pad-ring consumer, whose entries
+#                                  key a consume-keyed movie (the descriptor's
+#                                  consume_pc; Spyro 2 0x8001271C)
+#           --bk2-lead N           set each consume-keyed row N (0 or 1) frames
+#                                  early (regtest -bk2-lead): the kernel's pad
+#                                  handler writes the buffer from the previous
+#                                  vsync's exchange, openpete delivers a row at
+#                                  the vsync it stamps it; the run is refused
+#                                  when a predicted row differs from the row
+#                                  of the position taken
 #           --pad-script PATH      drive the port 1 controller from PATH
 #                                  (RAM-conditioned steps, regtest -pad-script);
 #                                  the full log is kept in <out>.log and a run
@@ -128,6 +161,7 @@ VBLPOS=0; SPUQ=(); SPUREG=()
 CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; WATCH_WORD=""; NO_CARD=0; CD_IRQ=0; CD_READ_PC_MIN=""; PAD_CMDS=0; CDSYNC_PC=""; SIO0_WORD=""; CARD_ACTIVE=""; VSYNC_QUERY_SKIP=""; GTE_DUMP=""
 VSYNC_CB_PCS=()
 PAD_SCRIPT=""; SPU_DUMP=0; CARD_EXPORT=""
+RCNT2_PCS=(); CARD_IMPORT=""; CARD_EXPORT_END=""; CARD_WINDOW=0; BK2=""; BK2_CONSUME_PC=""; BK2_LEAD=""
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 MANIFEST="${OPENPETE_REGIONS_MANIFEST:-games/spyro-1/manifest/gameplay_state_regions.toml}"
 
@@ -179,6 +213,13 @@ while [[ $# -gt 0 ]]; do
         --cd-read-pc-min) CD_READ_PC_MIN="$2"; shift 2 ;;
         --no-card) NO_CARD=1; shift ;;
         --card-export) CARD_EXPORT="$2"; shift 2 ;;
+        --card-import) CARD_IMPORT="$2"; shift 2 ;;
+        --rcnt2-pc) RCNT2_PCS+=("$2"); shift 2 ;;
+        --card-export-end) CARD_EXPORT_END="$2"; shift 2 ;;
+        --card-window) CARD_WINDOW=1; shift ;;
+        --bk2) BK2="$2"; shift 2 ;;
+        --bk2-consume-pc) BK2_CONSUME_PC="$2"; shift 2 ;;
+        --bk2-lead) BK2_LEAD="$2"; shift 2 ;;
         --vblpos) VBLPOS=1; shift ;;
         --spuq) SPUQ+=("$2"); shift 2 ;;
         --spureg) SPUREG+=("$2"); shift 2 ;;
@@ -243,6 +284,7 @@ for pc in "${VSYNC_CB_PCS[@]}"; do REC_ARGS+=(-psxtrace-vsync-cb-pc "$pc"); done
 [[ -n "$CD_READ_CB_SLOT" ]] && REC_ARGS+=(-psxtrace-cd-read-cb-slot "$CD_READ_CB_SLOT")
 [[ -n "$CD_CONTROL_PC" ]] && REC_ARGS+=(-psxtrace-cd-control-pc "$CD_CONTROL_PC")
 [[ "$CD_IRQ" == 1 ]] && REC_ARGS+=(-psxtrace-cd-irq)
+for pc in "${RCNT2_PCS[@]}"; do REC_ARGS+=(-psxtrace-rcnt2-pc "$pc"); done
 [[ "$PAD_CMDS" == 1 ]] && REC_ARGS+=(-psxtrace-pad-cmds)
 [[ -n "$CDSYNC_PC" ]] && REC_ARGS+=(-psxtrace-cdsync-pc "$CDSYNC_PC")
 [[ -n "$SIO0_WORD" ]] && REC_ARGS+=(-psxtrace-sio0-word "$SIO0_WORD")
@@ -255,6 +297,24 @@ if [[ -n "$CARD_EXPORT" ]]; then
     mkdir -p "$(dirname "$CARD_EXPORT")"
     rm -f "${CARD_EXPORT:?}"
     REC_ARGS+=(-card-export "1:0:$CARD_EXPORT")
+fi
+if [[ -n "$CARD_IMPORT" ]]; then
+    [[ "$NO_CARD" == 1 ]] && { echo "[capture-ds] --card-import needs a card in slot 1 (drop --no-card)" >&2; exit 64; }
+    [[ "$(stat -L -c %s "$CARD_IMPORT" 2>/dev/null || echo 0)" == 131072 ]] ||
+        { echo "[capture-ds] --card-import $CARD_IMPORT is missing or not 131072 bytes" >&2; exit 64; }
+    REC_ARGS+=(-card1 "$CARD_IMPORT")
+fi
+if [[ -n "$CARD_EXPORT_END" ]]; then
+    [[ "$NO_CARD" == 1 ]] && { echo "[capture-ds] --card-export-end needs a card in slot 1 (drop --no-card)" >&2; exit 64; }
+    mkdir -p "$(dirname "$CARD_EXPORT_END")"
+    rm -f "${CARD_EXPORT_END:?}"
+    REC_ARGS+=(-card-export "1:end:$CARD_EXPORT_END")
+fi
+if [[ -n "$BK2" ]]; then
+    [[ -f "$BK2" ]] || { echo "[capture-ds] movie missing: $BK2" >&2; exit 64; }
+    REC_ARGS+=(-bk2 "$BK2")
+    [[ -n "$BK2_CONSUME_PC" ]] && REC_ARGS+=(-bk2-consume-pc "$BK2_CONSUME_PC")
+    [[ -n "$BK2_LEAD" ]] && REC_ARGS+=(-bk2-lead "$BK2_LEAD")
 fi
 REC_ARGS+=(-psxtrace-gte)
 if [[ "$VBLPOS" == 1 ]]; then
@@ -271,10 +331,15 @@ if [[ -n "$PAD_SCRIPT" ]]; then
     [[ -f "$PAD_SCRIPT" ]] || { echo "[capture-ds] pad script missing: $PAD_SCRIPT" >&2; exit 64; }
     REC_ARGS+=(-pad-script "$PAD_SCRIPT")
 fi
+# -card-window installs chained instruction and exception hooks and must
+# follow every other recorder's option.
+CARD_WINDOW_ARGS=()
+[[ "$CARD_WINDOW" == 1 ]] && CARD_WINDOW_ARGS=(-card-window "$OUT.cardwin")
 DUMP_ENV=()
 [[ "$SPU_DUMP" == 1 ]] && DUMP_ENV=(OPENPETE_SPU_DUMP="$OUT.wav")
 
 mkdir -p "$(dirname "$OUT")"
+rm -f "${OUT:?}.cardwin" "${OUT:?}.rcnt2"
 rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand" "$OUT.watch" "$OUT.cdirq" "$OUT.padcmd" "$OUT.cdsync" "$OUT.sio0" "$OUT.card" \
       "$OUT.gte" "$OUT.gtedump" "$OUT.vblpos" "$OUT.spuq" "$OUT.spureg" "$OUT.wav" "$OUT.log"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
@@ -301,6 +366,7 @@ sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
     -psxtrace-frames "$FRAMES" \
     -psxtrace-regions "$REGIONS_FLAT" \
     "${REC_ARGS[@]}" \
+    "${CARD_WINDOW_ARGS[@]}" \
     -console \
     "$DISC" \
   | { grep -avE "I/CPU|ReportDebuggerEvent" || true; } > "$OUT.log"
@@ -321,6 +387,42 @@ if [[ -n "$CARD_EXPORT" ]]; then
         exit 1
     fi
     echo "[capture-ds] card fixture: $CARD_EXPORT"
+fi
+if [[ ${#RCNT2_PCS[@]} -gt 0 ]]; then
+    [[ -f "$OUT.rcnt2" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.rcnt2" >&2; exit 1; }
+    R2="$(sed -n 's/^# reads=\([0-9]*\).*/\1/p' "$OUT.rcnt2")"
+    if [[ -z "$R2" || "$R2" == 0 ]]; then
+        echo "[capture-ds] FAIL: root counter 2 recorder saw no read" >&2
+        exit 1
+    fi
+    echo "[capture-ds] recorded $R2 root counter 2 reads -> $OUT.rcnt2"
+fi
+if [[ -n "$CARD_EXPORT_END" ]]; then
+    if [[ "$(stat -c %s "$CARD_EXPORT_END" 2>/dev/null || echo 0)" != 131072 ]]; then
+        echo "[capture-ds] FAIL: end-of-run card export $CARD_EXPORT_END is missing or not 131072 bytes" >&2
+        exit 1
+    fi
+    echo "[capture-ds] card at the end: $CARD_EXPORT_END"
+fi
+if [[ "$CARD_WINDOW" == 1 ]]; then
+    [[ -s "$OUT.cardwin" ]] || { echo "[capture-ds] FAIL: --card-window wrote no $OUT.cardwin" >&2; exit 1; }
+    echo "[capture-ds] card window: $(grep -c '^C ' "$OUT.cardwin") card commands -> $OUT.cardwin"
+fi
+if [[ -n "$BK2" ]]; then
+    B_SUM="$(sed -n 's/^.*bk2: consume summary: //p' "$OUT.log" | sed 's/\x1b\[[0-9;]*m//g' | tail -1)"
+    if [[ -n "$BK2_CONSUME_PC" ]]; then
+        B_CLOSED="$(sed -n 's/.* closed=\([0-9]*\).*/\1/p' <<<"$B_SUM")"
+        if [[ -z "$B_SUM" || "${B_CLOSED:-0}" == 0 ]]; then
+            echo "[capture-ds] FAIL: bk2 consume key never engaged: ${B_SUM:-no summary line} (see $OUT.log)" >&2
+            exit 1
+        fi
+        B_LMISS="$(sed -n 's/.* lead_misses=\([0-9]*\).*/\1/p' <<<"$B_SUM")"
+        if [[ "${BK2_LEAD:-0}" != 0 && "${B_LMISS:-1}" != 0 ]]; then
+            echo "[capture-ds] FAIL: bk2 lead predicted a row other than the one taken: $B_SUM (see $OUT.log)" >&2
+            exit 1
+        fi
+    fi
+    echo "[capture-ds] bk2: $BK2 ${B_SUM:+($B_SUM)}"
 fi
 if [[ "$SPU_DUMP" == 1 ]]; then
     WAV_FRAMES="$(python3 -c 'import sys, wave; print(wave.open(sys.argv[1]).getnframes())' "$OUT.wav" 2>/dev/null || true)"

@@ -40,3 +40,5 @@
 0040-regtest-psxtrace-record-pad1-holds-the-anchor-s-tick-.patch
 0041-regtest-card-window-S-and-T-rows-card-driver-stores-.patch
 0042-regtest-card-transfer-start-recorder-psxtrace-card-a.patch
+0043-regtest-bk2-rows-keyed-on-the-consume-key-bk2-consum.patch
+0044-regtest-root-counter-2-read-recorder-psxtrace-rcnt2-pc.patch

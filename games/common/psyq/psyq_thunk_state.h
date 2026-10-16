@@ -63,6 +63,12 @@
  *   [53]     latch_key      that VBLANK's reference index
  *   [54]     dropped        D: VBLANKs the schedule position counts that the
  *                           CPU has not taken, as int32 (pack_ver 9)
+ *   [55]     pad_flags      bit 0: the card driver held SIO0 at the previous
+ *                           VBLANK, so this vsync's exchange data is none;
+ *                           bit 1: pad_last holds an exchange (pack_ver 11)
+ *   [56..57] pad_last       the first pad buffer as the last exchange with
+ *                           pad data left it, which libpad rewrites at a
+ *                           vsync whose exchange returned none (pack_ver 11)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -73,8 +79,8 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 10u
-#define PSYQ_THUNK_STATE_WORDS    55u
+#define PSYQ_THUNK_STATE_PACK_VER 11u
+#define PSYQ_THUNK_STATE_WORDS    58u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_RESERVED_FIRST 31u
 #define PSYQ_THUNK_STATE_RESERVED_LAST  37u
@@ -86,6 +92,7 @@ extern "C" {
 #define PSYQ_THUNK_STATE_V6_BYTES 180u
 #define PSYQ_THUNK_STATE_V7_BYTES 184u
 #define PSYQ_THUNK_STATE_V8_BYTES 204u
+#define PSYQ_THUNK_STATE_V10_BYTES 220u
 
 /** @brief Return the byte length of a pack whose first word is `ver`.
  *

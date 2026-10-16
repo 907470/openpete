@@ -29,7 +29,10 @@
 # and the missing-golden capture uses the same recipe. A recipe that sets
 # CARD1_FIXTURE (the slot 1 card image its capture exported) runs openpete
 # with a scratch copy of that image as --card1, so the fixture itself is
-# never written; a missing fixture beside a present golden exits 64.
+# never written; a missing fixture beside a present golden exits 64. A
+# recipe that also sets CARD1_END (the slot 1 card the capture exported
+# after its last record) fails the run unless the card openpete left is
+# byte-identical to it; OPENPETE_ORACLE_CARD_OUT=PATH keeps openpete's card.
 #
 # Anything after `--` is forwarded verbatim to the openpete binary, so the
 # same golden can be used to prove a feature with a game-side producer is
@@ -143,7 +146,7 @@ CONF="${RECIPE:-games/$GAME/oracle.conf}"
 [[ -f "$CONF" ]] || { echo "[psx-oracle] no recipe: $CONF" >&2; exit 64; }
 CAPTURE_RECIPE=()
 [[ -n "$RECIPE" ]] && CAPTURE_RECIPE=(--recipe "$RECIPE")
-GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""
+GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""; CARD1_FIXTURE=""; CARD1_END=""; CONSTANT_REGIONS_REASON=""
 # shellcheck disable=SC1090
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
@@ -389,6 +392,25 @@ fi
 set -e
 echo "[psx-oracle] exit code=$rc"
 
+# The card openpete left against the card the reference left.
+if [[ -n "$CARD_DIR" ]]; then
+    [[ -n "${OPENPETE_ORACLE_CARD_OUT:-}" ]] && cp "$CARD_DIR/card1.mcr" "$OPENPETE_ORACLE_CARD_OUT"
+    if [[ -n "$CARD1_END" ]]; then
+        if [[ ! -f "$CARD1_END" ]]; then
+            echo "[psx-oracle] card image: no reference card $CARD1_END; recapture the golden" >&2
+            [[ "$rc" == 0 ]] && rc=2
+        else
+            CARD_DIFF="$( (cmp -l "$CARD_DIR/card1.mcr" "$CARD1_END" 2>/dev/null || true) | wc -l)"
+            if [[ "$CARD_DIFF" != 0 ]]; then
+                echo "[psx-oracle] card image: $CARD_DIFF byte(s) differ from $CARD1_END" >&2
+                [[ "$rc" == 0 ]] && rc=2
+            else
+                echo "[psx-oracle] card image: identical to $CARD1_END"
+            fi
+        fi
+    fi
+fi
+
 # GTE hash row engagement: the row counts only when instructions were hashed
 # on compared intervals; zero is VACUOUS (exit 3), not a pass.
 if [[ "$GTE_ROW" == 1 ]]; then
@@ -482,7 +504,9 @@ fi
 
 # Region engagement: a region whose oracle hash never changed over
 # the run was compared on a constant. The verifier names them; a row may be
-# constant only with `constant_ok = true` and its reason on the manifest row.
+# constant only with `constant_ok = true` and its reason on the manifest row,
+# or over a whole run whose recipe sets CONSTANT_REGIONS_REASON (a capture
+# too short to reach the code that changes them).
 # Runs that reach EOF only: a truncated smoke run leaves late-changing rows
 # constant for no reason of their own.
 if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; then
@@ -512,6 +536,9 @@ if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; th
     if [[ -z "$UNJUST" ]]; then
         echo "[psx-oracle] region engagement: no zero-change summary line" >&2
         rc=2
+    elif [[ "$UNJUST" != "none" && -n "$CONSTANT_REGIONS_REASON" ]]; then
+        echo "[psx-oracle] region engagement: constant over the run without constant_ok: $UNJUST;" \
+             "accepted by the recipe: $CONSTANT_REGIONS_REASON"
     elif [[ "$UNJUST" != "none" ]]; then
         echo "[psx-oracle] region engagement: constant over the run without constant_ok: $UNJUST" >&2
         rc=2

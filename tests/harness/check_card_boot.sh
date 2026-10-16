@@ -35,12 +35,28 @@
 #         a read of 0x1400 bytes from that fd returns 0 and its 40 sectors
 #         are read. Engagement: bu calls (B(32h)-B(36h)) seen; 0 is
 #         VACUOUS.
+#   save-ref  The save row's movie on both sides: openpete against the
+#         DuckStation fork's capture along it (games/spyro-2/oracle-card-save.conf,
+#         consume-keyed, the fork one VBL early). The capture is generated on
+#         the first run (needs scripts/setup_duckstation.sh).
+#         Instrument: the oracle's per-tick region compare over the capture's
+#         records (tests/harness/check_psx_oracle.sh, every record compared),
+#         the card image each side left after the last record, and the card
+#         command census of each side (openpete OPENPETE_CARD_WINDOW, the
+#         fork's <golden>.cardwin).
+#         Pass: the verifier's PASS with 0 hard failures (a cd_load_transient
+#         region may differ only while a load re-converges); the two card
+#         images are byte-identical;
+#         each side wrote the 40 sectors of the save's block. Engagement: a
+#         side that wrote none of them is VACUOUS. Run by name only
+#         (--row=save-ref); ctest card_save_reference.
 #
 # Verdict lines:
 #   [card-boot] row=boot game=spyro-3 exit=<rc> opens=<n> lseeks=<n> watchdog_vbl=<v|-> verdict=...
 #   [card-boot] row=save game=spyro-2 exit=<rc> bu_calls=<n> creat=<fd|-1|-> ... verdict=...
+#   [card-boot] row=save-ref game=spyro-2 records=<n> verifier=<PASS|FAIL> hard_failed=<n> ... card_bytes_differ=<n> written=<op>/<ref> verdict=...
 #
-# Usage: tests/harness/check_card_boot.sh [--build-dir=DIR] [--row=boot|save]
+# Usage: tests/harness/check_card_boot.sh [--build-dir=DIR] [--row=boot|save|save-ref]
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, movie or fixture missing).
 set -u
 cd "$(dirname "$0")/../.."
@@ -165,12 +181,69 @@ sys.exit(0 if ok else 1)
 PY
 }
 
+# row_save_ref: the save row's movie against the fork's capture along it. Prints the verdict line; returns 0, 1 or 64.
+row_save_ref() {
+    local GAME=spyro-2 RECIPE=games/spyro-2/oracle-card-save.conf
+    pg_resolve "$GAME"
+    [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
+        { echo "[card-boot] row=save-ref SKIP (binary or disc missing)"; return 64; }
+    local GOLDEN CARD1_END
+    GOLDEN="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$GOLDEN"' _ "$RECIPE")"
+    CARD1_END="$(bash -c 'source "$1" >/dev/null 2>&1; echo "$CARD1_END"' _ "$RECIPE")"
+    local OUT="${PG_BUILD_DIR:-build/linux-release}/card-boot/$GAME"
+    mkdir -p "$OUT"
+    local LOG="$OUT/save-ref.log" CW="$OUT/save-ref-card-window.txt" CARD="$OUT/save-ref-card1.mcr"
+    rm -f "${OUT:?}/save-ref.log" "${OUT:?}/save-ref-card-window.txt" "${OUT:?}/save-ref-card1.mcr" "${OUT:?}/save-ref.out"
+    # Every record is compared (keep going), so the run reaches the capture's
+    # end and the card it leaves is the whole save.
+    env OPENPETE_BIN="$PG_BIN" OPENPETE_CARD_WINDOW="$CW" OPENPETE_ORACLE_CARD_OUT="$CARD" \
+        OPENPETE_ORACLE_LOG="$LOG" PSXTRACE_KEEP_GOING=1 \
+        tests/harness/check_psx_oracle.sh --game "$GAME" --recipe "$RECIPE" > "$OUT/save-ref.out" 2>&1
+    local rc=$?
+    (( rc == 64 )) && { echo "[card-boot] row=save-ref SKIP (no capture and DuckStation not built; see $OUT/save-ref.out)"; return 64; }
+    [[ -f "$LOG" && -f "$CW" && -f "$CARD" && -f "$CARD1_END" && -f "$GOLDEN.cardwin" ]] ||
+        { echo "[card-boot] row=save-ref game=$GAME verdict=FAIL: missing log, card window or card (oracle exit $rc; $OUT/save-ref.out)"; return 1; }
+    python3 - "$LOG" "$CW" "$CARD" "$CARD1_END" "$GOLDEN.cardwin" "$rc" <<'PY'
+import re, sys
+log, cw, card, ref_card, ref_cw, rc = sys.argv[1:7]
+text = open(log, errors='replace').read()
+m = re.findall(r'psxtrace: summary: records=(\d+) frames_compared=\d+ hash_mismatches=(\d+)', text)
+records, mism = (int(m[-1][0]), int(m[-1][1])) if m else (0, -1)
+div = sorted({int(x) for x in re.findall(r'DIVERGED[^\n]*?at frame=(\d+)', text)})
+v = re.findall(r'psxtrace: verdict: (PASS|FAIL) \(hard_failed=(\d+)', text)
+verdict, hard = (v[-1][0], int(v[-1][1])) if v else ('none', -1)
+a, b = open(card, 'rb').read(), open(ref_card, 'rb').read()
+diff = [i for i in range(min(len(a), len(b))) if a[i] != b[i]] + list(range(min(len(a), len(b)), max(len(a), len(b))))
+# The save's block: the directory frame naming it gives the block index.
+first = None
+for i in range(1, 16):
+    if b[i * 128 + 10:i * 128 + 30].split(b'\0')[0] == b'BASCUS-94425SP2RR':
+        first = i - 1
+        break
+lo, hi = (64 + 64 * first, 64 + 64 * first + 40) if first is not None else (0, 0)
+opw = {int(r.split()[5]) for r in open(cw) if r[:2] == 'C ' and r.split()[3] == '0' and r.split()[4] == '4'}
+refw = {int(r.split()[5]) for r in open(ref_cw) if r[:2] == 'C ' and r.split()[3] == '0' and r.split()[4] == '57'}
+opn, refn = len({s for s in opw if lo <= s < hi}), len({s for s in refw if lo <= s < hi})
+secs = sorted({i // 128 for i in diff})
+head = ('[card-boot] row=save-ref game=spyro-2 records=%d verifier=%s hard_failed=%d hash_mismatches=%d '
+        'first_differing=%s card_bytes_differ=%d card_sectors_differ=%s written=%d/%d oracle_exit=%s'
+        % (records, verdict, hard, mism, div[0] if div else '-', len(diff),
+           ','.join(map(str, secs[:12])) or '-', opn, refn, rc))
+if opn == 0 or refn == 0:
+    print(head + ' verdict=VACUOUS: a side wrote none of the save block'); sys.exit(1)
+ok = records > 0 and verdict == 'PASS' and hard == 0 and not diff and opn == 40 and refn == 40 and rc == '0'
+print(head + (' verdict=PASS' if ok else ' verdict=FAIL'))
+sys.exit(0 if ok else 1)
+PY
+}
+
 # Exit 1 on any failing row, 64 when every row skipped, else 0.
 failed=0; ran=0
 for row in "${ROWS[@]}"; do
     case "$row" in
         boot) row_boot; r=$? ;;
         save) row_save; r=$? ;;
+        save-ref) row_save_ref; r=$? ;;
         *) echo "card-boot: unknown row $row" >&2; exit 64 ;;
     esac
     (( r == 1 )) && failed=1

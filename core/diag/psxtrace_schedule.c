@@ -18,6 +18,7 @@
  * fail with the record.
  */
 #include "openpete_psxtrace.h"
+#include "openpete_psx.h"
 #include "openpete_log.h"
 
 #include <stdio.h>
@@ -39,6 +40,10 @@ static uint32_t s_reg_total = 0, s_reg_charged = 0, s_reg_matched = 0;   /* regi
 static uint64_t s_q_total = 0;        /* queries the sidecar holds (runs expanded) */
 static sched_read_t*  s_rd = NULL;   static uint32_t s_rd_n = 0, s_rd_next = 0;
 static uint32_t*      s_seed = NULL; static uint32_t s_seed_n = 0, s_seed_next = 0;
+/* `.rcnt2`: the game's reads of root counter 2's count register, in order. */
+typedef struct { uint32_t rec; uint16_t value; } sched_rcnt2_t;
+static sched_rcnt2_t* s_rc2 = NULL; static uint32_t s_rc2_n = 0, s_rc2_next = 0;
+static uint32_t s_rc2_answered = 0, s_rc2_unmade = 0, s_rc2_skipped = 0;
 static int      s_active = 0;
 static FILE*    s_log = NULL;        /* OPENPETE_SCHED_LOG=path: every consumed row */
 static uint32_t s_query_logged = 0;
@@ -181,6 +186,31 @@ static int load_seeds(const char* trace) {
         if (sscanf(line, "%u %u %u %x", &idx, &rec, &vbl, &seed) != 4) continue;
         if (s_seed_n == cap) { cap *= 2; s_seed = (uint32_t*)realloc(s_seed, cap * sizeof(*s_seed)); }
         s_seed[s_seed_n++] = seed;
+    }
+    free(buf);
+    return 1;
+}
+
+/** @brief Load the `.rcnt2` sidecar into s_rc2: the game's reads of root counter 2's count register.
+ *
+ * The capture records the reads of the instructions its recipe names, the
+ * game code's own reads that openpete executes.
+ * @param trace Path of the golden trace.
+ * @return 1 when the sidecar was read, else 0. */
+static int load_rcnt2(const char* trace) {
+    char* buf = read_sidecar(trace, ".rcnt2", "psxtrace-rcnt2");
+    if (!buf) return 0;
+    uint32_t cap = 16;
+    s_rc2 = (sched_rcnt2_t*)malloc(cap * sizeof(*s_rc2));
+    for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+        if (line[0] == '#' || line[0] == 'p') continue;
+        unsigned idx, rec, vbl, pc, value;
+        if (sscanf(line, "%u %u %u %x %x", &idx, &rec, &vbl, &pc, &value) != 5) continue;
+        (void)pc;
+        if (s_rc2_n == cap) { cap *= 2; s_rc2 = (sched_rcnt2_t*)realloc(s_rc2, cap * sizeof(*s_rc2)); }
+        s_rc2[s_rc2_n].rec = rec;
+        s_rc2[s_rc2_n].value = (uint16_t)value;
+        s_rc2_n++;
     }
     free(buf);
     return 1;
@@ -487,6 +517,7 @@ int openpete_sched_open(const char* trace_path) {
     int vs = load_vsync(trace_path);
     int rd = load_reads(trace_path);
     int sd = load_seeds(trace_path);
+    int r2 = load_rcnt2(trace_path);
     int wt = load_watch(trace_path);
     int pc = load_padcmd(trace_path);
     int so = load_sio0(trace_path);
@@ -500,6 +531,10 @@ int openpete_sched_open(const char* trace_path) {
     if (so) OPL_INFO_F("psxtrace", "schedule: controller handler vblanks known from %u to %u", s_sio0.first, s_sio0.n - 1u);
     if (cs) OPL_INFO_F("psxtrace", "schedule: %u CdSync poll rows", s_cs_n);
     if (cd) OPL_INFO_F("psxtrace", "schedule: %u card transfer starts", s_card_n);
+    if (r2) {
+        openpete_psx_set_root_counter2_reader(openpete_sched_rcnt2_read);
+        OPL_INFO_F("psxtrace", "schedule: %u game reads of root counter 2", s_rc2_n);
+    }
     { const char* lp = getenv("OPENPETE_SCHED_LOG"); if (lp && *lp) { s_log = fopen(lp, "w"); if (s_log) setvbuf(s_log, NULL, _IOLBF, 0); } }
     /* The position starts at the first event; the game-visible counter is
      * the VBLANK count minus a constant the first query row gives
@@ -866,6 +901,16 @@ int openpete_sched_read(int sectors, uint32_t dst, uint32_t* issue_vbl_out, uint
         *sync_out = 1;
     }
     if (*sync_out) s_reads_sync++; else s_reads_async++;
+    return 1;
+}
+
+int openpete_sched_rcnt2_read(uint16_t* value_out) {
+    if (!s_active || !s_rc2) return 0;
+    const uint32_t rec = sched_cur_rec();
+    while (s_rc2_next < s_rc2_n && s_rc2[s_rc2_next].rec < rec) { s_rc2_next++; s_rc2_skipped++; }
+    if (s_rc2_next >= s_rc2_n || s_rc2[s_rc2_next].rec != rec) { s_rc2_unmade++; return 0; }
+    *value_out = s_rc2[s_rc2_next++].value;
+    s_rc2_answered++;
     return 1;
 }
 
@@ -1271,6 +1316,10 @@ void openpete_sched_summary(void) {
                s_sio0.served, s_sio0.skipped, s_padcmd.served, s_padcmd.skipped,
                s_cs_answered, s_cs_unmade, s_cs_charged,
                s_failed ? "; FAILED: " : "", s_failed ? s_fail_reason : "");
+    if (s_rc2)
+        OPL_INFO_F("psxtrace", "schedule: root counter 2: %u/%u game reads answered from the reference, "
+                   "%u read(s) with no row in their record, %u row(s) passed unread",
+                   s_rc2_answered, s_rc2_n, s_rc2_unmade, s_rc2_skipped + (s_rc2_n - s_rc2_next));
     clock_summary();
     loop_summary();
 }

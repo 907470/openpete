@@ -614,6 +614,10 @@ static void cd_defer_before_call(CPUState* cpu);
 static void cd_defer_after_call(CPUState* cpu);
 static void pad_busy_tick(uint32_t vbls);
 static int pad_polls(uint32_t vbls);
+static uint32_t s_pad_card_free_prev = 1u; /* the card driver left SIO0 free at the previous VBLANK */
+static uint8_t  s_pad_last[8];            /* the first pad buffer as the last exchange with pad data left it */
+static uint32_t s_pad_last_ok = 0u;       /* s_pad_last holds such an exchange */
+static void pad_poll_census(CPUState* cpu, uint32_t key, int pad_cmd, int ref, int held, const uint8_t prev[8]);
 static void cd_events_tick(uint32_t vbls);
 static int s_cd_at_anchor = 0;           /* inside the anchor hook, before the record's hash */
 static uint32_t s_pad_buf0 = 0;          /* the first port's pad buffer (PadInitDirect) */
@@ -895,29 +899,106 @@ static void vbl_device_mmio(void) {
     openpete_cdrom_mmio_vbl(1u);
 }
 
+/* One vsync's pad verdicts, taken at its VBLANK before the card step. */
+typedef struct {
+    int card_free;      /* the card driver left SIO0 free at this VBLANK */
+    int ref_known;      /* the schedule's controller log covers this VBLANK */
+    int ref_cmd;        /* the controller log records a command at it (1 off the schedule) */
+    int pad_cmd;        /* the controller takes a command on this vsync */
+    int card_held_prev; /* the card held SIO0 at the previous VBLANK */
+    int fresh;          /* the slots see this vsync's pad data */
+    uint8_t prev[8];    /* the first pad buffer as the game left it */
+} pad_vsync_t;
+
+/** @brief Write the eight bytes at src to the first pad buffer.
+ * @param cpu Guest CPU state.
+ * @param src The bytes. */
+static void pad_buf_put(CPUState* cpu, const uint8_t* src) {
+    for (uint32_t k = 0; k < 8u; k++) cpu->write_byte(s_pad_buf0 + k, src[k]);
+}
+
+/** @brief Take a vsync's pad verdicts after the card step.
+ *
+ * When the card driver held SIO0 at the VBLANK, the controller is sent no
+ * command on that vsync; nor on one the schedule's controller log records
+ * none at. A command that carries pad data (pad_polls) makes the vsync
+ * fresh.
+ * @param cpu Guest CPU state.
+ * @param key Reference VBLANK index of this VBLANK.
+ * @param card_free Whether the card driver left SIO0 free at the VBLANK, read before the step.
+ * @param pv Receives the verdicts and the pad buffer as the game left it. */
+static void pad_vsync_begin(CPUState* cpu, uint32_t key, int card_free, pad_vsync_t* pv) {
+    pv->card_free = card_free;
+    pv->ref_known = 0;
+    pv->ref_cmd = openpete_sched_padcmd_at(key, &pv->ref_known);
+    pv->pad_cmd = pv->card_free && pv->ref_cmd;
+    pv->card_held_prev = !s_pad_card_free_prev;
+    memset(pv->prev, 0, sizeof pv->prev);
+    if (s_pad_buf0) for (uint32_t k = 0; k < 8u; k++) pv->prev[k] = (uint8_t)cpu->read_byte(s_pad_buf0 + k);
+    pv->fresh = pv->pad_cmd ? pad_polls(1u) : 0;
+}
+
+/** @brief Count the host's pad write of a yield and choose what the slots see.
+ *
+ * The pad data an exchange returns reaches the slots at the next vsync, so
+ * a vsync after one the card held is not fresh. A fresh vsync keeps the
+ * host's write and records it as the last pad data; any other shows the
+ * slots the last pad data (libpad rewrites the buffer at every vsync from
+ * the last exchange that returned data), or the buffer as the game left
+ * it before any.
+ * @param cpu Guest CPU state; the pad buffer holds the host's write.
+ * @param key Reference VBLANK index of this VBLANK.
+ * @param pv The vsync's verdicts; fresh is updated. */
+static void pad_vsync_after_yield(CPUState* cpu, uint32_t key, pad_vsync_t* pv) {
+    pv->fresh = pv->fresh && !pv->card_held_prev;
+    const uint8_t* shown = s_pad_last_ok ? s_pad_last : pv->prev;
+    pad_poll_census(cpu, key, pv->pad_cmd, pv->ref_known ? pv->ref_cmd : -1, !pv->fresh, shown);
+    openpete_feed_pad_write();
+    if (!s_pad_buf0) return;
+    if (!pv->fresh) { pad_buf_put(cpu, shown); return; }
+    for (uint32_t k = 0; k < 8u; k++) s_pad_last[k] = (uint8_t)cpu->read_byte(s_pad_buf0 + k);
+    s_pad_last_ok = 1u;
+}
+
+/** @brief Close a vsync's pad work after the slots ran.
+ *
+ * libpad's command sequence advances one command per vsync the controller
+ * accepted one on. After a vsync with no pad data the buffer holds what
+ * the game left in it before the VBLANK.
+ * @param cpu Guest CPU state.
+ * @param pv The vsync's verdicts. */
+static void pad_vsync_end(CPUState* cpu, const pad_vsync_t* pv) {
+    if (pv->pad_cmd) pad_busy_tick(1u);
+    s_pad_card_free_prev = pv->card_free ? 1u : 0u;
+    if (s_pad_buf0 && !pv->fresh) pad_buf_put(cpu, pv->prev);
+}
+
 /** @brief Run the CPU half's interrupt work for one VBLANK: the yield, then libetc's VSync slots, with the pad buffer kept unless libpad polled.
  *
  * The kernel's card step runs first, keyed on reference VBLANK `key` (its
  * handler precedes libetc's in the kernel's chain, so an event it delivers
  * is visible to the slots of the same VBLANK). Under fast boot the slots
  * run without yielding; with no host fiber the wait goes through
- * PsyCross's VSync. libpad's command sequence advances when the schedule
- * records a pad command at `key`; a VBLANK without a poll restores the
- * first pad buffer. A final yield publishes the innermost wait's park site
- * before it switches. The host's pad write during a yield, and its first
- * stamp at the first fast-boot VBL, advance the bk2 row position
- * (openpete_feed_pad_write).
+ * PsyCross's VSync. The controller takes no command on a vsync whose
+ * VBLANK finds the card driver holding SIO0 with an unfinished transfer,
+ * nor on one the schedule records none at; a command advances libpad's
+ * command sequence. The pad data a vsync's exchange returns reaches the
+ * game's slots at the next one, so after a vsync the card held, the
+ * host's write during the yield is taken back before the slots read it. A
+ * vsync whose command carries no pad data (pad_polls) restores the first
+ * pad buffer after the slots. A final yield publishes the innermost
+ * wait's park site before it switches. The host's pad write during a
+ * yield, and its first stamp at the first fast-boot VBL, advance the bk2
+ * row position (openpete_feed_pad_write) whether or not the vsync polls.
  * @param cpu Guest CPU state.
  * @param key Reference VBLANK index the card step and pad command belong to.
  * @param final_wait Nonzero when this yield ends a psyq_VSync wait. */
 static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
+    /* A transfer the card driver left unfinished holds SIO0 at this VBLANK. */
+    const int card_free = !openpete_psx_bios_card_busy();
     openpete_psx_bios_vbl_at(cpu, key);
-
-    /* The port's pad buffer as the game left it: libpad's handler rewrites
-     * it only from a poll (0x42), and a vblank spent on a configuration
-     * command of a running sequence leaves it untouched. */
-    uint8_t pad_prev[8] = {0};
-    if (s_pad_buf0) for (uint32_t k = 0; k < 8u; k++) pad_prev[k] = cpu->read_byte(s_pad_buf0 + k);
+    pad_vsync_t pv;
+    pad_vsync_begin(cpu, key, card_free, &pv);
 
     if (openpete_fast_boot_active) {
         /* The host's first stamp, made before the fiber first ran, is the
@@ -943,9 +1024,7 @@ static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
         openpete_yield_final = final_wait ? 1 : 0;
         openpete_yield_to_host();
         openpete_yield_final = 0;
-        /* The host wrote the pad buffer from its stamp during the yield; the
-         * slots below read it whether or not libpad polls this VBL. */
-        openpete_feed_pad_write();
+        pad_vsync_after_yield(cpu, key, &pv);
         psyq_run_vsync_slots(cpu);
     } else {
         /* No fiber loop (smoke-test path) - fall back to PsyCross's busy
@@ -960,16 +1039,7 @@ static void vbl_cpu_interrupt(CPUState* cpu, uint32_t key, int final_wait) {
      * present there. Mirror real PSYQ's empty-slot output before the
      * game's next read. */
     psyq_libpad_mirror_canonical_slot2(cpu);
-
-    /* libpad's command sequence advances one command per vsync the
-     * controller accepted one on. */
-    int polls = 0;
-    if (openpete_sched_padcmd_at(key, NULL)) {
-        polls = pad_polls(1u);
-        pad_busy_tick(1u);
-    }
-    if (s_pad_buf0 && polls == 0)
-        for (uint32_t k = 0; k < 8u; k++) cpu->write_byte(s_pad_buf0 + k, pad_prev[k]);
+    pad_vsync_end(cpu, &pv);
 }
 
 /** @brief Run one VBL: the counters, the device half, the CPU's interrupt work, the CD-ROM controller and the deferred disc read, in the console's order.
@@ -1475,6 +1545,65 @@ static int pad_polls(uint32_t vbls) {
     return n;
 }
 
+/* OPENPETE_PAD_POLL_CENSUS=1: per yield VBLANK, whether the controller took
+ * a command and whether the slots see the host's write or the last pad
+ * data; a line per host write replaced by the last pad data while their
+ * buttons or sticks differ (input the game never sees), and under the
+ * oracle schedule a line per VBLANK the card holds while the reference's
+ * controller log records a command. The totals print at exit. */
+static struct {
+    int on;                 /* -1 unread, 0 off, 1 on */
+    unsigned long vbls, no_cmd, held, lost, ref_known, ref_differ;
+} s_pp = { -1, 0, 0, 0, 0, 0, 0 };
+
+/** @brief Print the pad poll census totals. */
+static void pad_poll_census_report(void) {
+    OPL_INFO_F("pad-poll", "census: vbls=%lu no_command=%lu no_data=%lu lost_writes=%lu "
+               "reference_known=%lu card_held_against_reference=%lu",
+               s_pp.vbls, s_pp.no_cmd, s_pp.held, s_pp.lost, s_pp.ref_known, s_pp.ref_differ);
+}
+
+/** @brief Count one yield VBLANK's pad verdict for the census, before the host write is taken back.
+ * @param cpu Guest CPU state; the pad buffer holds the host's write.
+ * @param key Reference VBLANK index of this VBLANK.
+ * @param pad_cmd Whether the controller takes a command on this vsync.
+ * @param ref Whether the reference's controller log records a command at `key`; -1 unknown.
+ * @param held Whether this vsync's slots see the last pad data instead of the host's write.
+ * @param prev The buffer the slots see when `held`: the last pad data, else the buffer before the yield. */
+static void pad_poll_census(CPUState* cpu, uint32_t key, int pad_cmd, int ref, int held, const uint8_t prev[8]) {
+    if (s_pp.on < 0) {
+        const char* e = getenv("OPENPETE_PAD_POLL_CENSUS");
+        s_pp.on = (e && *e && *e != '0') ? 1 : 0;
+        if (s_pp.on) atexit(pad_poll_census_report);
+    }
+    if (!s_pp.on) return;
+    s_pp.vbls++;
+    if (!pad_cmd) s_pp.no_cmd++;
+    if (ref >= 0) {
+        s_pp.ref_known++;
+        if (ref && !pad_cmd) {
+            s_pp.ref_differ++;
+            OPL_INFO_F("pad-poll", "card held against the reference: key=%u", key);
+        }
+    }
+    if (!held) return;
+    s_pp.held++;
+    if (!s_pad_buf0) return;
+    uint8_t w[8];
+    int same = 1;
+    for (uint32_t k = 2; k < 8u; k++) {
+        w[k] = (uint8_t)cpu->read_byte(s_pad_buf0 + k);
+        if (w[k] != prev[k]) same = 0;
+    }
+    if (same) return;
+    s_pp.lost++;
+    OPL_INFO_F("pad-poll", "lost: vbl=%d key=%u e=%u j=%u shown=%02x%02x/%02x%02x%02x%02x "
+               "write=%02x%02x/%02x%02x%02x%02x",
+               SDL_GetAtomicInt(&openpete_vbl), key, openpete_consume, openpete_consume_write,
+               prev[2], prev[3], prev[4], prev[5], prev[6], prev[7],
+               w[2], w[3], w[4], w[5], w[6], w[7]);
+}
+
 extern "C" uint32_t openpete_psxtrace_anchor_hits;
 
 /* The reference's completion VBLANK of the last command issued through
@@ -1833,6 +1962,33 @@ static uint32_t get_word(const uint8_t* p, uint32_t i) {
     return v;
 }
 
+/** @brief Store the pad words of the latch pack: the card's hold at the previous VBLANK and the last pad data.
+ * @param p The pack. */
+static void pad_state_save(uint8_t* p) {
+    put_word(p, 55, (s_pad_card_free_prev ? 0u : 1u) | (s_pad_last_ok ? 2u : 0u));
+    uint32_t w0, w1;
+    memcpy(&w0, s_pad_last, 4);
+    memcpy(&w1, s_pad_last + 4, 4);
+    put_word(p, 56, w0);
+    put_word(p, 57, w1);
+}
+
+/** @brief Load the pad words of a latch pack of version ver.
+ *
+ * A pack before version 11 predates the card's hold on SIO0 and the last
+ * pad data: the previous VBLANK left SIO0 free, and a vsync without data
+ * keeps the buffer as the game left it until the next fresh one.
+ * @param p The pack.
+ * @param ver Its pack_ver. */
+static void pad_state_load(const uint8_t* p, uint32_t ver) {
+    const uint32_t w = (ver >= 11u) ? get_word(p, 55) : 0u;
+    s_pad_card_free_prev = (w & 1u) ? 0u : 1u;
+    s_pad_last_ok = (w & 2u) ? 1u : 0u;
+    const uint32_t w0 = (ver >= 11u) ? get_word(p, 56) : 0u, w1 = (ver >= 11u) ? get_word(p, 57) : 0u;
+    memcpy(s_pad_last, &w0, 4);
+    memcpy(s_pad_last + 4, &w1, 4);
+}
+
 extern "C" uint32_t psyq_thunk_state_size(void) { return PSYQ_THUNK_STATE_BYTES; }
 
 extern "C" void psyq_thunk_state_save(void* dst) {
@@ -1872,6 +2028,7 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 52, (uint32_t)s_latched);
     put_word(p, 53, s_latch_key);
     put_word(p, 54, (uint32_t)openpete_sched_dropped());
+    pad_state_save(p);
 }
 
 extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
@@ -1883,7 +2040,8 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 6u) return PSYQ_THUNK_STATE_V6_BYTES;
     if (ver == 7u) return PSYQ_THUNK_STATE_V7_BYTES;
     if (ver == 8u) return PSYQ_THUNK_STATE_V8_BYTES;
-    if (ver == 9u || ver == 10u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 9u || ver == 10u) return PSYQ_THUNK_STATE_V10_BYTES;
+    if (ver == 11u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -1986,6 +2144,7 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     s_latched   = (ver >= 9u) ? (int)get_word(p, 52) : 0;
     s_latch_key = (ver >= 9u) ? get_word(p, 53) : 0u;
     openpete_sched_set_dropped((ver >= 9u) ? (int32_t)get_word(p, 54) : 0);
+    pad_state_load(p, ver);
     return 0;
 }
 
@@ -2010,6 +2169,8 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_cd_load_prev     = 0xBu;
     s_pad_busy_vbls    = 0xD5D5000Du;
     s_pad_seq_vbls     = 0xD5D5000Fu;
+    s_pad_card_free_prev     = s_pad_card_free_prev ? 0u : 1u;
+    for (uint32_t k = 0; k < 8u; k++) s_pad_last[k] = (uint8_t)(s_pad_last[k] ^ (0x5Au + k));
     s_cd_defer_rec     = 0xD5D50011u;
     s_cd_defer_vbl     = 0xD5D50013u;
     s_cd_defer_clock   = 0xD5D50017D5D50015ull;

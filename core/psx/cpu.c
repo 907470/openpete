@@ -222,13 +222,16 @@ static uint8_t* mem_ptr(uint32_t addr, uint32_t n) {
 /* Root counter 2's current count (0x1F801120), a constant per game. */
 static uint16_t s_root_counter2 = 0;
 void     openpete_psx_set_root_counter2(uint16_t value) { s_root_counter2 = value; }
+static int (*s_root_counter2_reader)(uint16_t* value_out) = NULL;
+void     openpete_psx_set_root_counter2_reader(int (*reader)(uint16_t* value_out)) { s_root_counter2_reader = reader; }
 uint16_t openpete_psx_root_counter2(void) { return s_root_counter2; }
 #define ROOT_COUNTER2_COUNT 0x1F801120u
 
 /** @brief Read an unmapped address: the BIOS ROM window, root counter 2's count, or 0.
  *
  * Root counter 2's count register (0x1F801120) answers the per-game
- * constant. Otherwise the value composes little-endian from the ROM
+ * constant, or the count the reader set by
+ * openpete_psx_set_root_counter2_reader answers. Otherwise the value composes little-endian from the ROM
  * identification model (psx_bios.c) one byte at a time; when any byte
  * lies outside the ROM window (physical 0x1FC00000..0x1FC7FFFF) the whole
  * read is 0. Out of line so that the address-taken byte it reads into
@@ -239,7 +242,10 @@ uint16_t openpete_psx_root_counter2(void) { return s_root_counter2; }
 static __attribute__((noinline, cold)) uint32_t rom_read(uint32_t addr, unsigned n) {
     uint32_t v = 0;
     census_note(addr, CK_READ_MISS);
-    if ((addr & 0x1FFFFFFFu) == ROOT_COUNTER2_COUNT) return s_root_counter2;
+    if ((addr & 0x1FFFFFFFu) == ROOT_COUNTER2_COUNT) {
+        uint16_t ref;
+        return (s_root_counter2_reader && s_root_counter2_reader(&ref)) ? ref : s_root_counter2;
+    }
     for (unsigned i = 0; i < n; i++) {
         uint8_t b;
         if (!openpete_psx_bios_rom_read8((addr + i) & 0x1FFFFFFFu, &b)) return 0;

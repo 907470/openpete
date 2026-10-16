@@ -208,6 +208,13 @@ struct CPUState;
  * schedule position plus one (openpete_psx_bios_vbl_at).
  * @param cpu Guest CPU the event handlers run on. */
 void openpete_psx_bios_vbl(struct CPUState* cpu);
+/** @brief Report whether the card driver holds SIO0 with a transfer it started and has not finished.
+ *
+ * Reads the driver's transfer-active byte (RAM 0x755A). At a VBLANK the
+ * byte is set, the kernel's step aborts that transfer and the controller
+ * is sent no command on that vsync, so libpad's handler polls no pad data.
+ * @return 1 when a transfer is in progress, else 0. */
+int openpete_psx_bios_card_busy(void);
 /** @brief Run the BIOS card driver's vblank step for reference VBLANK vbl.
  *
  * openpete_psx_bios_vbl with the VBLANK given: a VBLANK a critical section

@@ -1615,6 +1615,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The Spyro 2 save along s2-create-save.bk2 against the DuckStation fork's
+    # capture of the same movie (games/spyro-2/oracle-card-save.conf): every
+    # record's gameplay-state regions, the card image each side left, and
+    # the 40 sectors of the save each side wrote. The capture is generated on
+    # the first run; skips (exit 64) without DuckStation, the binary or the
+    # disc.
+    add_test(NAME card_save_reference
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_card_boot.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=save-ref)
+    set_tests_properties(card_save_reference PROPERTIES
+        LABELS "slow;card;oracle"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 2400
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Sub-tick present gameplay-state gate. The psx oracle replays canonical
     # ticks only, so an intermediate present that writes gameplay-readable RAM
     # and mis-restores it is invisible to it. Per movie, two headless legs of

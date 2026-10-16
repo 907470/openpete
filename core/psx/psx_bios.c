@@ -1005,6 +1005,8 @@ void openpete_psx_bios_vbl(CPUState* cpu) {
     openpete_psx_bios_vbl_at(cpu, openpete_sched_pos() + 1u);
 }
 
+int openpete_psx_bios_card_busy(void) { return kw(K_MC_STARTED) && kb(K_MC_ACTIVE) != 0u; }
+
 void openpete_psx_bios_vbl_at(CPUState* cpu, uint32_t vbl) {
     /* A held transfer whose anchor never came ends before the next step. */
     if (s_xf.live) { s_xf_fallbacks++; mc_xfer_run(cpu, UINT32_MAX); }

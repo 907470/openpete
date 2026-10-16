@@ -266,6 +266,13 @@ void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
  * it from psyq_game_root_counter2() before the run.
  * @param value Counter value. */
 void     openpete_psx_set_root_counter2(uint16_t value);
+/** @brief Set the function that may answer a read of root counter 2's count register before the constant does.
+ *
+ * The oracle schedule sets it to answer the game's reads with the counts
+ * the hardware reference read (openpete_sched_rcnt2_read); a reader that
+ * returns 0 leaves the read to the constant.
+ * @param reader The function, or NULL for none. */
+void     openpete_psx_set_root_counter2_reader(int (*reader)(uint16_t* value_out));
 /** @brief Return the value set by openpete_psx_set_root_counter2(), 0 until set.
  *
  * @return The counter value. */
