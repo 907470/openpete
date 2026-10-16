@@ -710,6 +710,30 @@ if printf '%s\n' "$out" | grep -q "row #0 superseded" && \
 else
     bad "Apply (changed shape): file written against a superseded row was not refused"
 fi
+# A file the running mods can never load is refused before the park-site
+# wait. Loaded at frame 1000 of the attract run, where the fiber is not
+# parked at the files' in-level site, a modset mismatch (canary.state
+# under double-gems) and a ledger prefix mismatch (diff.state, saved with
+# slots=4, under the slots=8 config the Apply above wrote) are each
+# refused at the first final yield: the census counts no park-site
+# deferral and 0 final yields waited. A refusal held behind the site wait
+# instead logs no verdict within the run and counts the yields it waited.
+early_refusal() { # early_refusal <label> <mods_dir> <state> <verdict regex>
+    local o
+    o="$(run_game "$2" 1500 --state-load-on-frame 1000 --state-load-input "$3")"
+    local census; census="$(printf '%s\n' "$o" | grep -o 'park site: loads=[0-9]* ([0-9]* final yield(s) waited)')"
+    if printf '%s\n' "$o" | grep -q "$4" && \
+       [ "$census" = "park site: loads=0 (0 final yield(s) waited)" ] && \
+       ! printf '%s\n' "$o" | grep -q "savestate: loaded"; then
+        ok "$1 at another park site: refused at once ($census)"
+    else
+        bad "$1 at another park site: not refused before the site wait (${census:-no census})"
+    fi
+}
+early_refusal "modset mismatch" "$WORK/canary-ms" "$WORK/canary.state" \
+    "MODSET MISMATCH.*load refused"
+early_refusal "ledger prefix mismatch" "$WORK/canary-diff" "$WORK/diff.state" \
+    "arena ledger: row #0 diverges.*REFUSING"
 
 # ── 13b. stream handles: every 21-bit field reader resolves handles ───
 # vstream-rehandle rewrites EVERY animated model's frame words in the level

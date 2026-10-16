@@ -753,14 +753,14 @@ static int state_site_check(const char* path, const openpete_state_header_t* hdr
     return 0;
 }
 
-/** @brief Check a state file's header against this build: magic, version, game, identity, the fixed section sizes, the variable sections against the file's length, and the park site.
+/** @brief Check a state file's header against this build: magic, version, game, identity, the fixed section sizes, and the variable sections against the file's length.
  *
- * Each refusal is logged with the values that differ.
+ * Each refusal is logged with the values that differ. The park site is
+ * not checked here: it is the one verdict that changes while a load waits.
  * @param fp The state file, positioned just past the header.
  * @param path Its path, for the log lines.
  * @param hdr The header read from it.
- * @return 0 when the file can be loaded by this build now, 1 when the fiber
- *         is not parked at the file's park site, -1 otherwise. */
+ * @return 0 when this build can read the file, -1 otherwise. */
 static int state_header_check(FILE* fp, const char* path, const openpete_state_header_t* hdr) {
     if (hdr->magic != OPENPETE_STATE_MAGIC) {
         OPL_ERROR_F("savestate", "%s: bad magic 0x%08X (expected 0x%08X)",
@@ -811,8 +811,80 @@ static int state_header_check(FILE* fp, const char* path, const openpete_state_h
                     hdr->cd_state_bytes, (uint32_t)sizeof(state_cd_t));
         return -1;
     }
-    if (state_sections_fit(fp, path, hdr) != 0) return -1;
-    return state_site_check(path, hdr);
+    return state_sections_fit(fp, path, hdr);
+}
+
+/** @brief Read a state file's arena and modset-tag sections, the last two in the file.
+ *
+ * Seeks past every earlier section from the end of the header, so a load
+ * judges the mod sections without reading the guest memory images.
+ * @param fp The state file.
+ * @param path Its path, for the log lines.
+ * @param body Offset of the first section (the end of the header).
+ * @param hdr The header, already checked against the file's length.
+ * @param arena_out Receives the arena section (NULL when it is empty); the caller frees it.
+ * @param tag_out Receives the NUL-terminated modset tag; the caller frees it.
+ * @return 0 when both sections were read, -1 otherwise (logged; nothing to free). */
+static int state_mod_sections_read(FILE* fp, const char* path, long body,
+                                   const openpete_state_header_t* hdr,
+                                   uint8_t** arena_out, char** tag_out) {
+    const uint64_t skip = (uint64_t)hdr->cpu_bytes + hdr->ram_bytes + hdr->scratch_bytes +
+                          hdr->vram_bytes + hdr->spu_state_bytes + hdr->spu_mem_bytes +
+                          hdr->cd_state_bytes + hdr->game_extra_bytes;
+    uint8_t* arena = hdr->arena_bytes ? (uint8_t*)malloc(hdr->arena_bytes) : NULL;
+    char*    tag   = (char*)malloc((size_t)hdr->modset_tag_bytes + 1);
+    int rc = (!tag || (hdr->arena_bytes && !arena)) ? -1 : 0;
+    if (rc != 0) OPL_ERROR_F("savestate", "%s: out of memory", path);
+    if (rc == 0 && fseek(fp, body + (long)skip, SEEK_SET) != 0) {
+        OPL_ERROR_F("savestate", "%s: cannot seek to the arena section", path);
+        rc = -1;
+    }
+    if (rc == 0 && hdr->arena_bytes)
+        rc = read_section(fp, path, "arena", arena, hdr->arena_bytes);
+    if (rc == 0 && hdr->modset_tag_bytes)
+        rc = read_section(fp, path, "modset-tag", tag, hdr->modset_tag_bytes);
+    if (rc != 0) {
+        free(arena); free(tag);
+        return -1;
+    }
+    tag[hdr->modset_tag_bytes] = '\0';
+    *arena_out = arena;
+    *tag_out = tag;
+    return 0;
+}
+
+/** @brief Refuse a state the running mods cannot restore: an arena ledger that is not a prefix match of the live one, or another modset.
+ *
+ * Both verdicts read only the file and the session's mod state, so they
+ * run before the park-site wait: a file they refuse is refused at once
+ * instead of after the wait. The live ledger only grows and its rows only
+ * gain superseded marks, so a refusal here is final; a pass is re-judged
+ * at the attempt that commits. Each refusal is logged.
+ * @param path The state file, for the log lines.
+ * @param arena The arena section, NULL when the file has none.
+ * @param arena_bytes Its size.
+ * @param tag The modset tag the state was saved under.
+ * @return 0 when the mod state admits the file, -1 otherwise. */
+static int state_mod_verdict(const char* path, const uint8_t* arena, uint32_t arena_bytes,
+                             const char* tag) {
+    if (openpete_mods_arena_state_verdict(arena, arena_bytes) != 0) {
+        OPL_ERROR_F("savestate", "%s: load refused - running state untouched", path);
+        return -1;
+    }
+    /* Guest RAM and the arena carry mod-parked payloads and pointers into
+     * them, so a file saved under a different mutative modset restores a
+     * world the running mods did not build. The ledger verdict covers the
+     * layout, this covers the set. */
+    const char* now_tag = openpete_mods_modset_tag();
+    if (!now_tag) now_tag = "";
+    if (strcmp(now_tag, tag) == 0) return 0;
+    OPL_ERROR_F("savestate",
+                "%s: MODSET MISMATCH - state saved under [%s], "
+                "running [%s]; load refused - running state "
+                "untouched. Enable the same mods (and versions) "
+                "the state was saved with.",
+                path, tag, now_tag);
+    return -1;
 }
 
 /** @brief Refuse a state load, with a logged error, while the run follows the reference's schedule.
@@ -848,8 +920,29 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         return -1;
     }
 
-    const int hrc = state_header_check(fp, path, &hdr);
+    /* Every verdict that reads only the file and the session runs before
+     * the park-site check, so a file that can never load is refused at
+     * the first attempt rather than after the site wait. */
+    const long body = ftell(fp);
+    if (body < 0 || state_header_check(fp, path, &hdr) != 0) {
+        fclose(fp);
+        return -1;
+    }
+    uint8_t* arena_buf = NULL;
+    char*    tag_buf   = NULL;
+    if (state_mod_sections_read(fp, path, body, &hdr, &arena_buf, &tag_buf) != 0) {
+        fclose(fp);
+        OPL_ERROR_F("savestate", "%s: load refused - running state untouched", path);
+        return -1;
+    }
+    int hrc = state_mod_verdict(path, arena_buf, hdr.arena_bytes, tag_buf);
+    if (hrc == 0) hrc = state_site_check(path, &hdr);
+    if (hrc == 0 && fseek(fp, body, SEEK_SET) != 0) {
+        OPL_ERROR_F("savestate", "%s: cannot seek to the cpu section", path);
+        hrc = -1;
+    }
     if (hrc != 0) {
+        free(arena_buf); free(tag_buf);
         fclose(fp);
         return hrc;
     }
@@ -862,22 +955,15 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     uint8_t* spu_buf    = (uint8_t*)malloc(hdr.spu_state_bytes);
     uint8_t* spumem_buf = (uint8_t*)malloc(hdr.spu_mem_bytes);
     uint8_t* extra_buf  = hdr.game_extra_bytes ? (uint8_t*)malloc(hdr.game_extra_bytes) : NULL;
-    uint8_t* arena_buf  = hdr.arena_bytes ? (uint8_t*)malloc(hdr.arena_bytes) : NULL;
-    char*    tag_buf    = (char*)malloc((size_t)hdr.modset_tag_bytes + 1);
     uint8_t  scratch_buf[OPENPETE_PSX_SCRATCH_SIZE];
     state_cd_t cd;
 
-    if (!ram_buf || !vram_buf || !spu_buf || !spumem_buf || !tag_buf ||
-        (hdr.game_extra_bytes && !extra_buf) ||
-        (hdr.arena_bytes && !arena_buf)) {
-        free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
-        free(extra_buf); free(arena_buf); free(tag_buf);
-        fclose(fp);
-        OPL_ERROR_F("savestate", "%s: out of memory", path);
-        return -1;
-    }
-
     int rc = 0;
+    if (!ram_buf || !vram_buf || !spu_buf || !spumem_buf ||
+        (hdr.game_extra_bytes && !extra_buf)) {
+        OPL_ERROR_F("savestate", "%s: out of memory", path);
+        rc = -1;
+    }
     if (rc == 0) rc = read_section(fp, path, "cpu",     cpu_buf,     CPU_REG_BYTES);
     if (rc == 0) rc = read_section(fp, path, "ram",     ram_buf,     OPENPETE_PSX_RAM_SIZE);
     if (rc == 0) rc = read_section(fp, path, "scratch", scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
@@ -887,18 +973,7 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     if (rc == 0) rc = read_section(fp, path, "cd",      &cd,         sizeof(cd));
     if (rc == 0 && hdr.game_extra_bytes)
         rc = read_section(fp, path, "game-extra", extra_buf, hdr.game_extra_bytes);
-    if (rc == 0 && hdr.arena_bytes)
-        rc = read_section(fp, path, "arena", arena_buf, hdr.arena_bytes);
-    if (rc == 0 && hdr.modset_tag_bytes)
-        rc = read_section(fp, path, "modset-tag", tag_buf, hdr.modset_tag_bytes);
-    tag_buf[hdr.modset_tag_bytes] = '\0';
     fclose(fp);
-
-    /* PRE-COMMIT verdict: the arena ledger must pass BEFORE any guest
-     * byte is touched - a refused load leaves the timeline untouched. */
-    if (rc == 0 && openpete_mods_arena_state_verdict(arena_buf,
-                                                     hdr.arena_bytes) != 0)
-        rc = -1;
 
     if (rc != 0) {
         free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
@@ -906,27 +981,6 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         OPL_ERROR_F("savestate", "%s: load refused - running state untouched",
                     path);
         return -1;
-    }
-
-    /* Modset check, pre-commit: guest RAM and the arena carry mod-parked
-     * payloads and pointers into them, so a file saved under a DIFFERENT
-     * mutative modset restores a world the running mods did not build.
-     * Refuse rather than proceed; the ledger verdict above covers the
-     * layout, this covers the set. */
-    {
-        const char* now_tag = openpete_mods_modset_tag();
-        if (!now_tag) now_tag = "";
-        if (strcmp(now_tag, tag_buf) != 0) {
-            OPL_ERROR_F("savestate",
-                        "%s: MODSET MISMATCH - state saved under [%s], "
-                        "running [%s]; load refused - running state "
-                        "untouched. Enable the same mods (and versions) "
-                        "the state was saved with.",
-                        path, tag_buf, now_tag);
-            free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
-            free(extra_buf); free(arena_buf); free(tag_buf);
-            return -1;
-        }
     }
 
     /* Commit. Only the register file is overwritten on cpu - the

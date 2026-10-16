@@ -3725,6 +3725,7 @@ typedef struct {
 enum { SITE_DEF_LOAD, SITE_DEF_REWIND, SITE_DEF_STRESS, SITE_DEF_RUNAHEAD, SITE_DEF_N };
 static unsigned long long s_site_deferred[SITE_DEF_N];
 static unsigned long long s_site_refused = 0;    /* queued loads refused at STATE_LOAD_SITE_WAIT */
+static unsigned long long s_site_wait_yields = 0; /* final yields queued loads spent at another site */
 static unsigned long long s_site_abandoned = 0;  /* stress rollbacks re-armed at their bound */
 
 #define STATE_OP_QUEUE_LEN 8
@@ -3800,6 +3801,7 @@ static int state_op_run(const state_op_t* op) {
  * @param op The load request.
  * @return 1 when the request stays queued, 0 when it was refused. */
 static int state_op_site_wait(state_op_t* op) {
+    s_site_wait_yields++;
     if (op->site_waits++ == 0u) s_site_deferred[SITE_DEF_LOAD]++;
     if (op->site_waits < STATE_LOAD_SITE_WAIT) return 1;
     s_site_refused++;
@@ -7309,12 +7311,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                "runahead: %llu snapshot(s) owed, %llu rollback(s) deferred, "
                "%llu adopted at another park site; "
                "left gameplay: %llu rolled back, %llu adopted; "
-               "park site: loads=%llu rewind=%llu stress=%llu runahead=%llu "
-               "refused=%llu stress-abandoned=%llu",
+               "park site: loads=%llu (%llu final yield(s) waited) rewind=%llu stress=%llu "
+               "runahead=%llu refused=%llu stress-abandoned=%llu",
                s_state_ops_deferred[0], s_state_ops_deferred[1], s_state_yields_skipped,
                s_ra_deferred[0], s_ra_deferred[1], s_ra_adopted,
                s_ra_left[0], s_ra_left[1],
-               s_site_deferred[SITE_DEF_LOAD], s_site_deferred[SITE_DEF_REWIND],
+               s_site_deferred[SITE_DEF_LOAD], s_site_wait_yields, s_site_deferred[SITE_DEF_REWIND],
                s_site_deferred[SITE_DEF_STRESS], s_site_deferred[SITE_DEF_RUNAHEAD],
                s_site_refused, s_site_abandoned);
     {

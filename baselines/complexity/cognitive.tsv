@@ -47,7 +47,7 @@ core/record/bk2_movie.c	bk2_decode_port	28	0
 core/record/bk2_movie.c	bk2_movie_parse_log	42	0	
 core/record/bk2_movie.c	bk2_parse_groups	30	0	
 core/record/record.c	rec_lazy_init	32	0	
-core/record/savestate.c	openpete_state_load_file	30	0	
+core/record/savestate.c	openpete_state_load_file	26	0	
 core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0	
 core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	
