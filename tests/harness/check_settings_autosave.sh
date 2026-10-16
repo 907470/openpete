@@ -82,8 +82,8 @@ run_leg() {
     while [[ $# -gt 0 && "$1" != "--" ]]; do env+=("$1"); shift; done
     [[ "${1:-}" == "--" ]] && shift
     rm -f "$OUT/$tag.log"
-    env OPENPETE_VIBRATION=0 OPENPETE_MOUSE_INJECT="$script" ${env[@]+"${env[@]}"} \
-        timeout 600 "$PG_BIN" --headless --config "$OUT/$tag.toml" \
+    op_own_run env OPENPETE_VIBRATION=0 OPENPETE_MOUSE_INJECT="$script" ${env[@]+"${env[@]}"} \
+        timeout -k 10 600 "$PG_BIN" --headless --config "$OUT/$tag.toml" \
         --disc "$PG_DISC" --disc-cache 0 ${PG_RUN_ARGS[@]+"${PG_RUN_ARGS[@]}"} \
         --renderer vk --no-card --mute 1 --skip-to-level artisans \
         --frame-limit "$FRAME_LIMIT" "$@" >"$OUT/$tag.log" 2>&1 ||

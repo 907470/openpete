@@ -75,7 +75,7 @@ row_boot() {
     local rc
     rc="$(
         set -o pipefail
-        env OPENPETE_VIBRATION=0 OPENPETE_BIOS_CENSUS=2 timeout 900 \
+        env OPENPETE_VIBRATION=0 OPENPETE_BIOS_CENSUS=2 timeout -k 10 900 \
             "$PG_BIN" --game "$GAME" --headless --no-config --disc "$PG_DISC" --disc-cache 0 \
             --no-log-file --mute 1 --vibration 0 \
             --card1 "$CARD" --no-card2 --frame-limit "$LIMIT" </dev/null 2>&1 |
@@ -117,7 +117,7 @@ row_save() {
     local CARD="$OUT/card1.mcr" LOG="$OUT/save.log" CW="$OUT/card-window.txt"
     rm -f "${OUT:?}/card1.mcr" "${OUT:?}/card1.mcr.modset" "${OUT:?}/save.log" "${OUT:?}/card-window.txt"
     cp "$FIXTURE" "$CARD"
-    env OPENPETE_VIBRATION=0 OPENPETE_CARD_WINDOW="$CW" timeout 900 \
+    op_own_run env OPENPETE_VIBRATION=0 OPENPETE_CARD_WINDOW="$CW" timeout -k 10 900 \
         "$PG_BIN" --game "$GAME" --headless --no-config --disc "$PG_DISC" --disc-cache 0 \
         --no-log-file --mute 1 --vibration 0 --bk2 "$MOVIE" \
         --card1 "$CARD" --no-card2 --frame-limit "$LIMIT" </dev/null > "$LOG" 2>&1

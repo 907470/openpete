@@ -131,8 +131,8 @@ run_row() {  # tag movie frame-limit
     local log="$OUT/$tag.log"
     rm -f "$log"
     local -a bk2_arg=(); [[ -n "$movie" ]] && bk2_arg=(--bk2 "$movie")
-    env OPENPETE_VIBRATION=0 OPENPETE_FREEZE_DBG=1 "${ROW_ENV[@]}" \
-        timeout "$ROW_TIMEOUT" "$PG_BIN" \
+    op_own_run env OPENPETE_VIBRATION=0 OPENPETE_FREEZE_DBG=1 "${ROW_ENV[@]}" \
+        timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
         --no-config --disc "$PG_DISC" --disc-cache 0 --no-card --mute 1 \
         --vibration 0 --input-lock --background 1 \
         --renderer vk --window "${WIDTH}x${HEIGHT}" --vsync 0 \

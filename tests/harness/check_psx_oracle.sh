@@ -115,6 +115,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/../.."
 # The player's memory cards are never opened: runs boot on scratch cards.
 source scripts/lib/scratch_cards.sh
+# A signal to this script stops the game process it started (op_own_run).
+source scripts/lib/own_children.sh
 
 # Split args at `--`: an optional [trace-path] before, openpete pass-through
 # flags after. Lets `check_psx_oracle.sh -- --no-lod` test a feature flag
@@ -287,7 +289,8 @@ fi
 # and every run starts from the captured image.
 CARD_DIR=""
 if [[ -n "$CARD1_FIXTURE" ]]; then
-    if [[ "$(stat -c %s "$CARD1_FIXTURE" 2>/dev/null || echo 0)" != 131072 ]]; then
+    # -L: a worktree links its fixtures; the size is the target's.
+    if [[ "$(stat -L -c %s "$CARD1_FIXTURE" 2>/dev/null || echo 0)" != 131072 ]]; then
         echo "[psx-oracle] card fixture $CARD1_FIXTURE is missing or not 131072 bytes; recapture (rm $GOLDEN*)" >&2
         exit 64
     fi
@@ -360,7 +363,11 @@ MODS_OFF=(--mods "")
 for _a in "${PASSTHRU[@]}"; do
     [[ $_a == --mods-dir || $_a == --mods-dir=* ]] && MODS_OFF=()
 done
-"$BIN" "${MODE[@]}" \
+# The run and its tee are one background job the script waits on, so a
+# TERM, INT or HUP to the script stops them (scripts/lib/own_children.sh);
+# pipefail makes the job's status the binary's.
+op_own_run bash -c 'set -o pipefail; log="$1"; shift; "$@" 2>&1 | tee "$log"' _ "$LOG" \
+    "$BIN" "${MODE[@]}" \
     --no-config \
     "${MODS_OFF[@]}" \
     --disc "$DISC" --disc-cache 0 \
@@ -368,8 +375,8 @@ done
     --psxtrace-verify "$TRACE" \
     --frame-limit "$LIMIT" \
     "${EXTRA[@]}" \
-    "${PASSTHRU[@]}" 2>&1 | tee "$LOG"
-rc=${PIPESTATUS[0]}
+    "${PASSTHRU[@]}"
+rc=$?
 
 # The run must have entered through the EXE header's entry (the crt0); an
 # explicit OPENPETE_RUN_RECOMP at main leaves the stack 8 bytes lower than hardware.

@@ -80,7 +80,7 @@ fi
 run() {
     local tag="$1" args="$2" frames="$3"; shift 3
     local -a argv; read -ra argv <<<"$args"
-    env "$@" timeout 900 "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
+    env "$@" timeout -k 10 900 "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
         "${PG_RUN_ARGS[@]}" --no-card --mute 1 "${argv[@]}" \
         --frame-limit "$frames" >"$OUT/$tag.log" 2>&1
     echo $? >"$OUT/$tag.rc"

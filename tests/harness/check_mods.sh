@@ -485,7 +485,7 @@ else
 fi
 
 say "sfx pack round-trip: a fresh census loaded unmodified verifies bit-identical"
-if timeout 300 "$BIN" --disc "$DISC" --disc-cache 0 --dump-sfx-pack "$WORK/sfxdump" > "$WORK/sfxdump.log" 2>&1 &&
+if op_own_run timeout -k 10 300 "$BIN" --disc "$DISC" --disc-cache 0 --dump-sfx-pack "$WORK/sfxdump" > "$WORK/sfxdump.log" 2>&1 &&
    grep -q "no_end=0 failed=0" "$WORK/sfxdump.log"; then
     ok "census: $(grep -o 'entries=[0-9]* sources=[0-9]* dumped=[0-9]*' "$WORK/sfxdump.log")"
     mkdir -p "$WORK/nomods"; : > "$WORK/nomods/enabled.txt"
@@ -1073,7 +1073,7 @@ fi
 say "mod shaders: SCENE point processes the scene under the HUD"
 if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
     fixture "$WORK/sepia" scene-sepia
-    timeout 300 "$BIN" --disc "$DISC" --disc-cache 0 \
+    op_own_run timeout -k 10 300 "$BIN" --disc "$DISC" --disc-cache 0 \
         --skip-to-level 10 --frame-limit 2600 --mods-dir "$WORK/sepia" \
         --record "$WORK/sepia/probe.mkv" > "$WORK/sepia.log" 2>&1 || true
     if [ -s "$WORK/sepia/probe.mkv" ] &&

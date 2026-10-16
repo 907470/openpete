@@ -92,7 +92,7 @@ for game in "${GAMES[@]}"; do
         [[ "$name" != "boot" ]] && skip=("$flag" "$name")
         [[ "$name" == "boot" ]] && frames="$OPENPETE_BOOT_FRAMES_RESOLVED"
         OPENPETE_DISPATCH_CENSUS="$dir/$name.census" \
-        timeout 900 "$exe" --headless --no-card --mute 1 --vibration 0 \
+        op_own_run timeout -k 10 900 "$exe" --headless --no-card --mute 1 --vibration 0 \
             --disc "$disc" --disc-cache 0 "${skip[@]}" --frame-limit "$frames" --no-log-file \
             > "$dir/$name.log" 2>&1 || echo "[overlay-callbacks] $name: exit $?" >> "$dir/$name.log"
     }

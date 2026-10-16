@@ -35,6 +35,10 @@
 # memory cards, never the player's.
 # shellcheck source=scripts/lib/scratch_cards.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/scratch_cards.sh"
+# A TERM, INT or HUP to the sourcing script stops every process it started;
+# a game run started through op_own_run is stopped at once.
+# shellcheck source=scripts/lib/own_children.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/own_children.sh"
 
 PG_GAMES="spyro-1 spyro-2 spyro-3"
 

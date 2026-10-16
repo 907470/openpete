@@ -99,9 +99,9 @@ mkdir -p "$OUT"
 LOG="$OUT/$GAME.log"
 rm -f "$LOG"
 
-env OPENPETE_VIBRATION=0 OPENPETE_PRESENT_TRACE=1 OPENPETE_TERRAIN_CACHE_FORCE=1 \
+op_own_run env OPENPETE_VIBRATION=0 OPENPETE_PRESENT_TRACE=1 OPENPETE_TERRAIN_CACHE_FORCE=1 \
     OPENPETE_PAUSE_AT_VBL="$PAUSE_VBL,$EVERY,$STEPS" \
-    timeout "$ROW_TIMEOUT" "$PG_BIN" \
+    timeout -k 10 "$ROW_TIMEOUT" "$PG_BIN" \
     --no-config --disc "$PG_DISC" --disc-cache 0 --no-card --mute 1 \
     --vibration 0 --input-lock --background 1 \
     --renderer vk --window 640x448 \

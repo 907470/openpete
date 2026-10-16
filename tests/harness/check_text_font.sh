@@ -58,7 +58,7 @@ while IFS='|' read -r name level expect; do
     rows=$((rows + 1))
     log="$OUT/$name.log"
     OPENPETE_OSD_DEMO=3 OPENPETE_MENU_DEMO=1 OPENPETE_TEXT_GLYPH_CENSUS=1 \
-        timeout 600 "$PG_BIN" --no-config --vibration 0 --mouse 0 --input-lock --disc "$PG_DISC" \
+        op_own_run timeout -k 10 600 "$PG_BIN" --no-config --vibration 0 --mouse 0 --input-lock --disc "$PG_DISC" \
         --renderer vk --aspect 4:3 --lod original --no-card --mute 1 \
         --perf-stats fps --skip-to-level "$level" --frame-limit "$FRAMES" \
         > "$log" 2>&1

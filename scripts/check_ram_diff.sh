@@ -28,6 +28,8 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 # The player's memory cards are never opened: runs boot on scratch cards.
 source scripts/lib/scratch_cards.sh
+# A signal to this script stops the processes it started (op_own_run).
+source scripts/lib/own_children.sh
 
 GAME="${1:-}"; shift || true
 [[ -n "$GAME" ]] || { sed -n 's/^# //p' "$0" | head -16; exit 64; }
@@ -176,7 +178,7 @@ sh -c '"$@" >/dev/null 2>&1; exit 0' _ "$DS_BIN" \
 DS_PID=$!
 
 set +e
-OPENPETE_VIBRATION=0 timeout 900 "$BIN" --headless --no-config --mods "" --mute 1 --vibration 0 \
+OPENPETE_VIBRATION=0 op_own_run timeout -k 10 900 "$BIN" --headless --no-config --mods "" --mute 1 --vibration 0 \
     "${OP_CARD[@]}" --disc "$DISC" --disc-cache 0 $RUN_ARGS \
     --halt-at-pc "$PC" --halt-hit "$HIT" --ram-dump-output "$OP" \
     "${SCHED[@]}" "${EXTRA_ARGS[@]}" \

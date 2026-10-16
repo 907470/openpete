@@ -82,7 +82,7 @@ run_row() {
   local bk2="$PG_BK2_DIR/${name%%@*}.bk2"
   local -a bk2_arg=(); [[ -f "$bk2" && "$name" != attract ]] && bk2_arg=(--bk2 "$bk2")
   local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "${LAUNCH[$name]:-}"
-  env "${ROW_ENV[@]}" OPENPETE_JUMP_CENSUS=900 timeout 1500 "$PG_BIN" --headless --no-config \
+  op_own_run env "${ROW_ENV[@]}" OPENPETE_JUMP_CENSUS=900 timeout -k 10 1500 "$PG_BIN" --headless --no-config \
       --disc "$PG_DISC" --disc-cache 0 --renderer vk --mute 1 --aspect 16:9 --lod original \
       "${PG_RUN_ARGS[@]}" "${bk2_arg[@]}" --render-fps 120 --frame-limit "$flim" \
       --max-runtime-seconds 1400 "${ROW_ARGS[@]}" > "$log" 2>&1

@@ -192,12 +192,12 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch row-line
   # to be independent of any openpete.toml on the machine capturing them.
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
-  local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
+  local -a cmd=(env "${leg_env[@]}" "${run_env[@]}" timeout -k 10 "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${run_args[@]}"
     "${bk2_arg[@]}" --screenshot-native-only
     "$flag" "$targets" --screenshot-output "$out"
     --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${row_args[@]}")
-  "${cmd[@]}" >"$log" 2>&1
+  op_own_run "${cmd[@]}" >"$log" 2>&1
   local rc=$?
   pg_note_device "$log" "$OUTDIR"
   # Assert every requested target produced a -vk PNG (fail loudly, never silently

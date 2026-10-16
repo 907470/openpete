@@ -68,7 +68,7 @@ if (( record )); then
         echo "[audio-host-mix] SKIP (--record needs a display)"; exit 64
     fi
     rm -f "$OUT/rec.mkv" "$OUT/rec.log"
-    OPENPETE_VIBRATION=0 timeout 1200 "$PG_BIN" --no-config --disc "$PG_DISC" --disc-cache 0 \
+    OPENPETE_VIBRATION=0 op_own_run timeout -k 10 1200 "$PG_BIN" --no-config --disc "$PG_DISC" --disc-cache 0 \
         --input-lock --vibration 0 --window 640x480 --mods-dir "$OUT/mods" --no-card --mute 0 \
         --frame-limit 8000 --record "$OUT/rec.mkv" >"$OUT/rec.log" 2>&1 </dev/null
     [[ -f "$OUT/rec.mkv" ]] || { echo "[audio-host-mix] verdict=FAIL: no recording (see $OUT/rec.log)"; exit 2; }

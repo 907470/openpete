@@ -50,7 +50,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/../presentation-game.sh"
 #
 # Optional, set by the caller before the call:
 #   PG_CAPTURE_ENV      array of KEY=VALUE assignments for the run
-#   PG_CAPTURE_TIMEOUT  wall-clock seconds; unset or 0 runs untimed
+#   PG_CAPTURE_TIMEOUT  wall-clock seconds; unset or 0 runs untimed. At the
+#                       limit the run gets TERM, then KILL OP_OWN_GRACE
+#                       seconds later if it is still alive.
 #   PG_CAPTURE_STDOUT   file for stdout; unset sends it to LOG with stderr
 #
 # Returns the run's exit status, or 1 when a named output is missing.
@@ -72,16 +74,18 @@ pg_capture() {
     local -a pre=(env OPENPETE_VIBRATION=0 "OPENPETE_CARD_DIR=$cards")
     [[ -n "${PG_CAPTURE_ENV+set}" ]] && pre+=("${PG_CAPTURE_ENV[@]}")
     [[ -n "${PG_CAPTURE_TIMEOUT:-}" && "${PG_CAPTURE_TIMEOUT:-0}" != 0 ]] &&
-        pre+=(timeout "$PG_CAPTURE_TIMEOUT")
+        pre+=(timeout -k "$OP_OWN_GRACE" "$PG_CAPTURE_TIMEOUT")
 
+    # op_own_run: a signal to the calling script stops the run
+    # (scripts/lib/own_children.sh).
     local rc=0
     if [[ -n "${PG_CAPTURE_STDOUT:-}" ]]; then
-        "${pre[@]}" "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
+        op_own_run "${pre[@]}" "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
             --disc-cache 0 "${PG_RUN_ARGS[@]}" "$@" \
             >"$PG_CAPTURE_STDOUT" 2>"$log"
         rc=$?
     else
-        "${pre[@]}" "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
+        op_own_run "${pre[@]}" "$PG_BIN" --headless --no-config --disc "$PG_DISC" \
             --disc-cache 0 "${PG_RUN_ARGS[@]}" "$@" >"$log" 2>&1
         rc=$?
     fi

@@ -19,8 +19,9 @@
 #          never block removal.
 # inputs   Prints the relative path of every untracked build input a
 #          worktree lacks (regen output, the decomp build directories, the
-#          oracle goldens the root checkout holds, the psxrecomp build), one
-#          per line, for every game with a games/<g>/CMakeLists.txt.
+#          oracle goldens and card fixtures the root checkout holds, the
+#          psxrecomp build), one per line, for every game with a
+#          games/<g>/CMakeLists.txt.
 #
 # Root: $OPENPETE_ROOT, else the parent of the git common directory of the
 # repository holding this script (the main checkout, also when the script
@@ -77,7 +78,7 @@ cmd_inputs() {
         echo "games/$g/manifest/globals.toml"
         echo "games/$g/manifest/symbols.toml"
         echo "games/$g/$g/build"
-        for f in "$ROOT"/tests/golden/"$g"/psxtrace-*; do
+        for f in "$ROOT"/tests/golden/"$g"/psxtrace-* "$ROOT"/tests/golden/"$g"/card-*.mcd; do
             [[ -e "$f" ]] || continue
             echo "tests/golden/$g/$(basename "$f")"
         done

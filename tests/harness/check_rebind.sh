@@ -109,8 +109,8 @@ run() {
     while [[ $# -gt 0 && "$1" != "--" ]]; do env+=("$1"); shift; done
     [[ "${1:-}" == "--" ]] && shift
     rm -f "${OUT:?}/$tag.log" "${OUT:?}/$tag.bk2" "${OUT:?}/$tag.bk2.args"
-    env OPENPETE_VIBRATION=0 OPENPETE_INPUT_VGAMEPAD=1 OPENPETE_MOUSE_INJECT="$script" \
-        ${env[@]+"${env[@]}"} timeout 600 "$PG_BIN" --headless \
+    op_own_run env OPENPETE_VIBRATION=0 OPENPETE_INPUT_VGAMEPAD=1 OPENPETE_MOUSE_INJECT="$script" \
+        ${env[@]+"${env[@]}"} timeout -k 10 600 "$PG_BIN" --headless \
         --disc "$PG_DISC" --disc-cache 0 ${PG_RUN_ARGS[@]+"${PG_RUN_ARGS[@]}"} \
         --renderer vk --no-card --mute 1 --vibration 0 --pad-unfocused 1 \
         --bk2-record "$OUT/$tag.bk2" "$@" >"$OUT/$tag.log" 2>&1
