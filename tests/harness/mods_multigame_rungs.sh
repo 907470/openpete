@@ -69,11 +69,53 @@
 #                   chain-duo nesting in both enabled orders, crash-dummy
 #                   attribution, arena-canary armed with no DESYNC across a
 #                   file save and load that restores its 64 B block.
+#   anchor link     a pass-through link (its body only calls base()) on the
+#                   game's oracle anchor (games/<game>/oracle.conf
+#                   ANCHOR_PC) leaves the oracle at PASS on the smoke run:
+#                   base() re-enters the anchor's prologue, and that
+#                   re-dispatch must not count the anchor hit, the loop
+#                   tick or the pad-ring consumer a second time. The link
+#                   counts calls above 0 and the census counts re-dispatches
+#                   that skipped the entry observers above 0.
 #   scan watch      (Spyro 3) the mod guard restores and names a mod's store
 #                   into a scanned code range, a store below the range
 #                   lands, a host poke is reported, the overlay load is not;
 #                   under --scan-guard 0 the store persists with no compare.
 #                   (Spyro 1 and 2) --scan-guard 0 is accepted and inert.
+
+# link_calls <log text> <owner>: the summed calls of the owner's links.
+link_calls() {
+    printf '%s\n' "$1" |
+        sed -n "s/.*link-calls owner=$2 addr=.* calls=\([0-9]*\)$/\1/p" |
+        awk '{n += $1} END {print n + 0}'
+}
+
+# ── anchor link: a pass-through link on the oracle anchor is neutral ─────
+ANCHOR="$(sed -n 's/^ANCHOR_PC=\(0x[0-9A-Fa-f]*\).*/\1/p' "games/$PG_GAME/oracle.conf" | head -1)"
+say "anchor link: a pass-through link on $PG_GAME's oracle anchor $ANCHOR vs the oracle"
+mkdir -p "$WORK/anchorlink/anchor-link/src"
+mod_toml "$WORK/anchorlink/anchor-link" anchor-link \
+    "game = [\"$PG_GAME\"]"$'\n'"state = \"none\""$'\n'"runahead = \"pure\""$'\n'"sim_mutative = false"
+cat > "$WORK/anchorlink/anchor-link/src/main.c" <<EOF_ANCHOR
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* api;
+static void pass_through(CPUState* cpu) { api->base(cpu); }
+int openpete_mod_entry(const openpete_mod_api_t* a, openpete_mod_t* self) {
+    api = a;
+    return a->override_addr(self, ${ANCHOR}u, pass_through);
+}
+EOF_ANCHOR
+echo anchor-link > "$WORK/anchorlink/enabled.txt"
+out="$(OPENPETE_MOD_LINK_CALLS=1 OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES \
+        tests/harness/check_psx_oracle.sh --game "$PG_GAME" -- --mods-dir "$WORK/anchorlink" 2>&1)"
+n_link="$(link_calls "$out" anchor-link)"
+n_redis="$(printf '%s\n' "$out" | sed -n 's/.*re-dispatches past the entry observers: \([0-9]*\).*/\1/p' | tail -1)"
+if printf '%s\n' "$out" | grep -q "verdict: PASS" && [ "$n_link" -gt 0 ] && [ "${n_redis:-0}" -gt 0 ]; then
+    ok "anchor link on $ANCHOR: oracle PASS, $n_link link calls, $n_redis re-dispatches past the observers"
+else
+    bad "anchor link on $ANCHOR: oracle not PASS or not engaged ($n_link link calls, ${n_redis:-?} re-dispatches)"
+    printf '%s\n' "$out" | grep -E "verdict|hard_fail|first divergence|anchor-link" | head -4
+fi
 
 # Copy an in-tree mod into <dest dir> without its .build/.
 copy_mod() { # copy_mod <id> <dest dir>
@@ -539,13 +581,6 @@ case "$PG_GAME" in
     spyro-3) DEMO_FRAMES=6573 ;;
     *)       DEMO_FRAMES=6000 ;;
 esac
-
-# link_calls <log text> <owner>: the summed calls of the owner's links.
-link_calls() {
-    printf '%s\n' "$1" |
-        sed -n "s/.*link-calls owner=$2 addr=.* calls=\([0-9]*\)$/\1/p" |
-        awk '{n += $1} END {print n + 0}'
-}
 
 # double_chain <log text> <pattern>: 1 when two consecutive doubling lines
 # show the second pickup starting from the first one's written total

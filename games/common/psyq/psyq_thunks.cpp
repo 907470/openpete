@@ -776,8 +776,8 @@ void psyq_VSync(CPUState* cpu) {
          * counter keeps moving. */
         s_vsync_waits_by_n[(wait >= 4) ? 3 : wait - 1]++;
         if (wait > 1)
-            OPL_INFO_F("delivery", "VSync(%d) off the schedule: %d VBLs from vbl %d (ra=0x%08X)",
-                       mode, wait, SDL_GetAtomicInt(&openpete_vbl), cpu->ra);
+            OPL_INFO_F("delivery", "VSync(%d) off the schedule: %d VBLs from vbl %d frame %u (ra=0x%08X)",
+                       mode, wait, SDL_GetAtomicInt(&openpete_vbl), openpete_frame, cpu->ra);
         for (int i = 0; i < wait; i++) deliver_vbl(cpu, VBL_SRC_VSYNC, i == wait - 1);
     }
     {
@@ -1009,12 +1009,15 @@ static int      s_latched = 0;
 static uint32_t s_latch_key = 0;        /* reference VBLANK index of the first held VBLANK */
 static int      s_dlv_outer_crit = 1;   /* the interrupted code's flag while a delivery runs */
 
-/* OPENPETE_VBL_HOLD=<source>:<skip>:<count>: a diagnostic critical
+/* OPENPETE_VBL_HOLD=<source>:<skip>:<count>[:dry]: a diagnostic critical
  * section over a window of gated deliveries. After `skip` deliveries of
  * <source> (a vbl_src name, or "any") the next `count` are held as if the
  * flag were set, and the window's end flushes as ExitCriticalSection
- * would. */
+ * would. With `dry` the same deliveries are counted and taken, and the
+ * window's end records the same drive-head and VBL counters: the no-hold
+ * leg a hold leg's head is compared against. */
 static int      s_hw_parsed = 0;
+static int      s_hw_dry = 0;
 static int      s_hw_src = -1;          /* -1 off, VBL_SRC_N any */
 static uint32_t s_hw_skip = 0, s_hw_count = 0;
 static uint64_t s_hw_held = 0, s_hw_flushes = 0;
@@ -1028,21 +1031,26 @@ static void hold_window_parse(void) {
     s_hw_parsed = 1;
     const char* e = std::getenv("OPENPETE_VBL_HOLD");
     if (!e || !*e) return;
-    char name[16] = {0};
+    char name[16] = {0}, mode[8] = {0};
     unsigned skip = 0, count = 0;
-    if (std::sscanf(e, "%15[^:]:%u:%u", name, &skip, &count) != 3) {
-        OPL_WARN_F("delivery", "OPENPETE_VBL_HOLD=%s: expected <source>:<skip>:<count>", e);
+    const int n = std::sscanf(e, "%15[^:]:%u:%u:%7s", name, &skip, &count, mode);
+    if (n < 3 || (n == 4 && std::strcmp(mode, "dry"))) {
+        OPL_WARN_F("delivery", "OPENPETE_VBL_HOLD=%s: expected <source>:<skip>:<count>[:dry]", e);
         return;
     }
+    s_hw_dry = (n == 4);
     if (!std::strcmp(name, "any")) s_hw_src = VBL_SRC_N;
     for (int i = 1; i < VBL_SRC_N; i++) if (!std::strcmp(name, k_vbl_src_name[i])) s_hw_src = i;
     if (s_hw_src < 0) { OPL_WARN_F("delivery", "OPENPETE_VBL_HOLD: unknown source %s", name); return; }
     s_hw_skip = skip;
     s_hw_count = count;
-    OPL_INFO_F("delivery", "hold window: %s after %u, %u VBL(s)", name, skip, count);
+    OPL_INFO_F("delivery", "hold window: %s after %u, %u VBL(s)%s", name, skip, count,
+               s_hw_dry ? ", dry (taken)" : "");
 }
 
 /** @brief Report whether the diagnostic hold window holds this gated delivery, consuming it.
+ *
+ * A dry window consumes the delivery the same way and returns 0.
  * @param src The delivery's source.
  * @return 1 when the delivery is held by the window. */
 static int hold_window_takes(vbl_src src) {
@@ -1053,7 +1061,7 @@ static int hold_window_takes(vbl_src src) {
     if (!s_hw_held) s_hw_vbl_before = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     s_hw_count--;
     s_hw_held++;
-    return 1;
+    return !s_hw_dry;
 }
 
 /** @brief Hold one VBLANK: run its device half, count it on the position and in D, latch it.
@@ -1098,19 +1106,27 @@ extern "C" void psyq_crit_flush(CPUState* cpu) {
     openpete_guest_regs_restore(cpu, &saved);
 }
 
-/** @brief End the diagnostic hold window when its last VBLANK was held: flush as ExitCriticalSection would, and record the drive head and the VBL counters there.
+/** @brief End the diagnostic hold window when its last VBLANK was consumed: flush as ExitCriticalSection would (not for a dry window), and record the drive head and the VBL counters there.
+ *
+ * The head line carries every input of the head's position (time, base
+ * LBA, start time, rate) and the position, so a hold leg and its dry leg
+ * compare field by field.
  * @param cpu Guest CPU state. */
 static void hold_window_close(CPUState* cpu) {
     if (s_hw_src < 0 || s_hw_count || !s_hw_held || s_hw_flushes) return;
-    if (!openpete_crit_masked()) psyq_crit_flush(cpu);
+    if (!s_hw_dry && !openpete_crit_masked()) psyq_crit_flush(cpu);
     s_hw_flushes++;
     s_hw_vbl_after = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     s_hw_dev_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl_device);
     s_hw_head_after = cd_head_now();
-    OPL_INFO_F("delivery", "hold window closed: %llu held, flush at device vbl %u, vbl %u -> %u, "
+    OPL_INFO_F("delivery", "hold window closed: %llu %s, flush at device vbl %u, vbl %u -> %u, "
                "head t=%llu lba=%u, D=%d",
-               (unsigned long long)s_hw_held, s_hw_dev_vbl, s_hw_vbl_before, s_hw_vbl_after,
-               (unsigned long long)s_hw_head_after, s_head_lba, openpete_sched_dropped());
+               (unsigned long long)s_hw_held, s_hw_dry ? "taken (dry)" : "held", s_hw_dev_vbl,
+               s_hw_vbl_before, s_hw_vbl_after, (unsigned long long)s_hw_head_after, s_head_lba,
+               openpete_sched_dropped());
+    OPL_INFO_F("delivery", "hold window head: device vbl %u pos=%lld base=%u start=%llu rate=%u",
+               s_hw_dev_vbl, (long long)cd_head_at(s_hw_head_after, 1u), s_head_lba,
+               (unsigned long long)s_head_t, s_head_rate);
 }
 
 /** @brief Deliver one VBLANK from `src`: taken (one VBL body, the position advanced under a schedule) or, for a gated source while interrupts are masked, held.
@@ -1148,18 +1164,30 @@ static void deliver_vbl(CPUState* cpu, vbl_src src, int final_wait) {
     if (src == VBL_SRC_VSYNC) s_dlv_since_wait = 0;
     else if (++s_dlv_since_wait > s_dlv_since_wait_max) s_dlv_since_wait_max = s_dlv_since_wait;
     if (!crit) psyq_crit_flush(cpu);
+    if (s_hw_dry) hold_window_close(cpu);
 }
 
+/* Blocking CdSync calls off the schedule, and those made while a stream
+ * read's closing CdlPause was owed: the inputs the pause wait engages on
+ * (cd_stream_pause_wait). */
+static uint64_t s_cd_sync0_calls = 0, s_cd_sync0_pause_owed = 0;
 /* Polling-loop quanta off the schedule at counted polls: counted, not
  * delivered, until a guest cycle clock supplies their quantum. */
 static uint64_t s_loop_counted_only = 0;
+/* Polling-loop quanta under the schedule before the first anchor hit at a
+ * pure spin or device-status poll: one VBL each, on openpete's own count. */
+static uint64_t s_loop_pre_anchor = 0;
 
 /** @brief Act on the quantum an emitted polling-loop back-edge reached (psx_loop_poll).
  *
  * Under the schedule a quantum is a charge, never a count of its own: it
  * charges to the VBLANK the reference's rows show due before their next
- * row point (openpete_sched_loop_due), or delivers nothing; before the
- * first anchor hit nothing is due. Off the schedule a pure spin, where the
+ * row point (openpete_sched_loop_due), or delivers nothing. Before the
+ * first anchor hit no row is due and the boot runs under openpete's own
+ * count (sched_charge_to): a pure spin or a device-status poll there takes
+ * one VBL, as off the schedule, since nothing the spin reads changes until
+ * a VBLANK runs (a card driver's completion word, set by its interrupt
+ * handler); a counted poll delivers nothing. Off the schedule a pure spin, where the
  * iteration a VBL lands on is unobservable, and a device-status poll, which
  * spins on a device the VBLs pass for, take one VBL; a counted poll, where
  * the static instruction count is not the CPU's time, is counted only.
@@ -1173,6 +1201,10 @@ extern "C" void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t p
         if (openpete_sched_loop_due(openpete_loop_insns_since_anchor(), &target) &&
             target > openpete_sched_pos())
             sched_charge_to(cpu, target, "loop", VBL_SRC_LOOP);
+        else if (pure && openpete_psxtrace_anchor_hits < openpete_psxtrace_anchor_hit_target) {
+            s_loop_pre_anchor++;
+            sched_charge_to(cpu, openpete_sched_pos() + 1u, "loop before anchor 0", VBL_SRC_LOOP);
+        }
         return;
     }
     if (!pure) { s_loop_counted_only++; return; }
@@ -1217,8 +1249,11 @@ extern "C" void psyq_vbl_delivery_report(void) {
                "last header=0x%08X delivery=%s",
                (unsigned long long)polls, (unsigned long long)trips, (unsigned long long)acc_max, qmax, hdr,
                on ? "on" : "off");
-    OPL_INFO_F("delivery", "loop quanta at counted polls off the schedule, counted only: %llu",
-               (unsigned long long)s_loop_counted_only);
+    OPL_INFO_F("delivery", "loop quanta at counted polls off the schedule, counted only: %llu; "
+               "at spins before anchor 0 under the schedule, one VBL each: %llu",
+               (unsigned long long)s_loop_counted_only, (unsigned long long)s_loop_pre_anchor);
+    OPL_INFO_F("delivery", "blocking CdSync off the schedule: %llu, with a stream CdlPause owed: %llu",
+               (unsigned long long)s_cd_sync0_calls, (unsigned long long)s_cd_sync0_pause_owed);
     openpete_loop_site_census_log();
     uint32_t hits[4], bad[4];
     openpete_sched_conv_report(hits, bad);
@@ -1227,8 +1262,8 @@ extern "C" void psyq_vbl_delivery_report(void) {
                openpete_sched_dropped(), hits[0], bad[0], hits[1], bad[1], hits[2], bad[2], hits[3], bad[3],
                SDL_GetAtomicInt(&openpete_vbl), SDL_GetAtomicInt(&openpete_vbl_device));
     if (s_hw_src >= 0)
-        OPL_INFO_F("delivery", "hold window: held=%llu flushes=%llu vbl %u -> %u device=%u head=%llu",
-                   (unsigned long long)s_hw_held, (unsigned long long)s_hw_flushes,
+        OPL_INFO_F("delivery", "hold window%s: held=%llu flushes=%llu vbl %u -> %u device=%u head=%llu",
+                   s_hw_dry ? " (dry, taken)" : "", (unsigned long long)s_hw_held, (unsigned long long)s_hw_flushes,
                    s_hw_vbl_before, s_hw_vbl_after, s_hw_dev_vbl, (unsigned long long)s_hw_head_after);
 }
 
@@ -3712,6 +3747,8 @@ void psyq_CD_initvol(CPUState* cpu) { cpu->v0 = 0u; }
  * @param mode The CdSync mode. */
 static void cd_stream_pause_wait(CPUState* cpu, int mode) {
     if (mode != 0 || openpete_sched_active()) return;
+    s_cd_sync0_calls++;
+    if (s_cd_pause_owed) s_cd_sync0_pause_owed++;
     while (s_cd_pause_owed && !s_cd_defer_pending) deliver_vbl(cpu, VBL_SRC_PAUSE, 0);
 }
 /** @brief Answer a CdSync poll as libcd does while a stream read's closing CdlPause is in flight: no command complete.

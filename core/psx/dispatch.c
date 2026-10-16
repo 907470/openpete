@@ -368,8 +368,11 @@ static void hang_output_path(const char* leaf, char* out, size_t cap) {
 
 /** @brief Trip the hang watchdog: write the dispatch rings and guest RAM, tell the player, and exit with code 2.
  *
- * @param trip_addr The guest function whose entry crossed the threshold. */
-static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
+ * @param trip_addr The guest function whose entry crossed the threshold, or
+ *     the header of the call-free loop whose quanta crossed theirs.
+ * @param quanta 0 for an entry trip; else the loop quanta counted since
+ *     `openpete_vbl` last changed. */
+static void openpete_hang_dump_and_exit(uint32_t trip_addr, uint32_t quanta) {
     s_hang_tripped = 1;
     char trace_default[1100], ram_default[1100];
     hang_output_path("hang-trace.bin", trace_default, sizeof trace_default);
@@ -403,11 +406,18 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
         fwrite(openpete_psx_get_ram(), 1, ram_size, rp);
         fclose(rp);
     }
-    OPL_ERROR_F("watchdog",
-                "hang detected: %u dispatch entries since openpete_vbl=%u "
-                "(trip addr=0x%08X), wrote trace=%s ram=%s - exiting",
-                s_hang_calls_since_tick, s_hang_last_vbl, trip_addr,
-                path, rampath);
+    if (quanta)
+        OPL_ERROR_F("watchdog",
+                    "hang detected: %u loop quanta at header 0x%08X since openpete_vbl=%d "
+                    "(%u dispatch entries), wrote trace=%s ram=%s - exiting",
+                    quanta, trip_addr, SDL_GetAtomicInt(&openpete_vbl),
+                    s_hang_calls_since_tick, path, rampath);
+    else
+        OPL_ERROR_F("watchdog",
+                    "hang detected: %u dispatch entries since openpete_vbl=%u "
+                    "(trip addr=0x%08X), wrote trace=%s ram=%s - exiting",
+                    s_hang_calls_since_tick, s_hang_last_vbl, trip_addr,
+                    path, rampath);
     char msg[2600];
     snprintf(msg, sizeof msg, "The game stopped responding and was closed. "
              "Diagnostic files were written to %s and %s.", path, rampath);
@@ -437,6 +447,7 @@ void psx_set_override_dispatch_game(int (*fn)(CPUState* cpu, uint32_t addr)) {
  * address runs. */
 static int      s_gate_depth = 0;
 static uint32_t s_gate_redispatch = 0;
+static uint64_t s_redispatch_skips = 0;   /* re-dispatches that skipped the entry observers */
 
 void openpete_psxtrace_gate_host_enter(void) { s_gate_depth++; }
 void openpete_psxtrace_gate_host_leave(void) { s_gate_depth--; }
@@ -525,13 +536,21 @@ static void spin_tick(CPUState* cpu, uint32_t vbl_now, uint32_t addr) {
     openpete_psxtrace_gate_host_leave();
 }
 
+/** @brief Read OPENPETE_HANG_THRESHOLD on the first call; 0 disarms both watchdog trips. */
+static void hang_threshold_init(void) {
+    if (s_hang_threshold_inited) return;
+    const char* env = getenv("OPENPETE_HANG_THRESHOLD");
+    if (env && *env) s_hang_threshold = (uint32_t)strtoul(env, NULL, 0);
+    s_hang_threshold_inited = 1;
+}
+
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
-    if (!s_hang_threshold_inited) {
-        const char* env = getenv("OPENPETE_HANG_THRESHOLD");
-        if (env && *env) s_hang_threshold = (uint32_t)strtoul(env, NULL, 0);
-        s_hang_threshold_inited = 1;
-    }
+    hang_threshold_init();
     const uint32_t vbl_now = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    /* A body the running override re-enters for the guest's own call (a mod
+     * link's base(), a hook that runs the original) is not a guest entry:
+     * the observers below already saw this call at its first entry. */
+    const int redispatch = (addr == s_gate_redispatch);
     if (s_hang_threshold && !s_hang_tripped) {
         if (vbl_now != s_hang_last_vbl) {
             /* Vbl boundary: snapshot the ring before the next vbl interval's
@@ -542,7 +561,7 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
             s_hang_last_vbl = vbl_now;
             s_hang_calls_since_tick = 0u;
         } else if (++s_hang_calls_since_tick > s_hang_threshold) {
-            openpete_hang_dump_and_exit(addr);
+            openpete_hang_dump_and_exit(addr, 0u);
         }
         /* Only fill the ring for the first HANG_RING dispatches of each
          * frame. A tight loop produces 2-3 distinct addrs and trivially
@@ -558,6 +577,11 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         s_hang_recent[s_hang_recent_head].ra   = cpu ? cpu->ra : 0u;
         s_hang_recent[s_hang_recent_head].sp   = cpu ? cpu->sp : 0u;
         s_hang_recent_head = (s_hang_recent_head + 1u) % HANG_RECENT;
+    }
+    if (redispatch) {
+        s_redispatch_skips++;
+        gate_clock(cpu, addr);
+        return gate_override(cpu, addr);
     }
     spin_tick(cpu, vbl_now, addr);
     count_entry_anchors(addr);
@@ -684,22 +708,87 @@ static int loop_delivery_enabled(void) {
     return s_loop_delivery;
 }
 
-/* Quanta per loop header, the first LOOP_SITES distinct headers. */
-#define LOOP_SITES 64u
-static uint32_t s_loop_site_hdr[LOOP_SITES], s_loop_site_trips[LOOP_SITES];
-static int32_t  s_loop_site_first_vbl[LOOP_SITES];
-static uint32_t s_loop_sites = 0u;
+/* Per-site census over every classified loop header that polls, in first
+ * poll order (open addressing on the header). A row's polls count its taken
+ * back-edges; its runs count polls whose previous poll was at another header
+ * (an entry that iterated at least once; each outer iteration of a nested
+ * loop is one run of the outer header); its quanta count the quanta reached
+ * there. A site with no row never took its back-edge: it was not entered, or
+ * its loop closed on its first test. */
+#define LOOP_SITES     1024u   /* > the largest game's emission sites (Spyro 3: 372) */
+#define LOOP_SITE_HASH 2048u
+struct loop_site {
+    uint32_t hdr;
+    uint32_t runs, quanta;
+    uint64_t polls;
+    int32_t  first_poll_vbl, first_quantum_vbl;
+};
+static struct loop_site s_loop_site[LOOP_SITES];
+static uint16_t s_loop_site_slot[LOOP_SITE_HASH];   /* index + 1, 0 empty */
+static uint32_t s_loop_sites = 0u, s_loop_sites_dropped = 0u;
+static uint32_t s_loop_site_last = UINT32_MAX;     /* row of the previous poll's header */
 
-/** @brief Count one quantum against its loop header in the per-site census.
- * @param header The loop's header address. */
-static void loop_site_note(uint32_t header) {
-    for (uint32_t i = 0; i < s_loop_sites; i++)
-        if (s_loop_site_hdr[i] == header) { s_loop_site_trips[i]++; return; }
-    if (s_loop_sites == LOOP_SITES) return;
-    s_loop_site_hdr[s_loop_sites] = header;
-    s_loop_site_trips[s_loop_sites] = 1u;
-    s_loop_site_first_vbl[s_loop_sites] = SDL_GetAtomicInt(&openpete_vbl);
-    s_loop_sites++;
+/** @brief Find or add the census row of a loop header.
+ * @param header The loop's header address.
+ * @return The row index, or UINT32_MAX when the table is full. */
+static uint32_t loop_site_row(uint32_t header) {
+    uint32_t h = (header >> 2) * 2654435761u;
+    for (uint32_t probe = 0; probe < LOOP_SITE_HASH; probe++) {
+        const uint32_t slot = (h + probe) & (LOOP_SITE_HASH - 1u);
+        const uint32_t idx = s_loop_site_slot[slot];
+        if (idx && s_loop_site[idx - 1u].hdr == header) return idx - 1u;
+        if (idx) continue;
+        if (s_loop_sites == LOOP_SITES) break;
+        struct loop_site* r = &s_loop_site[s_loop_sites];
+        memset(r, 0, sizeof *r);
+        r->hdr = header;
+        r->first_poll_vbl = SDL_GetAtomicInt(&openpete_vbl);
+        r->first_quantum_vbl = -1;
+        s_loop_site_slot[slot] = (uint16_t)(++s_loop_sites);
+        return s_loop_sites - 1u;
+    }
+    s_loop_sites_dropped++;
+    return UINT32_MAX;
+}
+
+/** @brief Count one back-edge poll against its loop header: the poll, a run when the previous poll was at another header, and the quantum it reached.
+ * @param header The loop's header address.
+ * @param quantum Nonzero when this poll reached a quantum. */
+static void loop_site_note(uint32_t header, int quantum) {
+    uint32_t i = s_loop_site_last;
+    const int same = (i != UINT32_MAX && s_loop_site[i].hdr == header);
+    if (!same) i = loop_site_row(header);
+    s_loop_site_last = i;
+    if (i == UINT32_MAX) return;
+    struct loop_site* r = &s_loop_site[i];
+    r->polls++;
+    if (!same) r->runs++;
+    if (!quantum) return;
+    if (!r->quanta) r->first_quantum_vbl = SDL_GetAtomicInt(&openpete_vbl);
+    r->quanta++;
+}
+
+/* Hang watchdog over the call-free loop class: quanta reached since
+ * openpete_vbl last changed. A call-free loop enters no function, so the
+ * entry count in psx_override_dispatch never moves while one spins; a VBL
+ * delivered and held (the critical-section flag set) leaves openpete_vbl
+ * where it is, so a spin the held VBLs cannot end still counts here. One
+ * quantum is one VBL of instructions; HANG_LOOP_QUANTA of them is about
+ * 100 s of guest time with no VBL taken. Armed with the entry watchdog
+ * (OPENPETE_HANG_THRESHOLD=0 disarms both). */
+#define HANG_LOOP_QUANTA 6000u
+static uint32_t s_hang_quanta = 0u, s_hang_quanta_max = 0u;
+static int32_t  s_hang_quanta_vbl = -1;
+
+/** @brief Count a quantum against the hang watchdog and trip it at HANG_LOOP_QUANTA quanta with `openpete_vbl` unchanged.
+ * @param header The loop's header address, the trip address. */
+static void loop_hang_quantum(uint32_t header) {
+    const int32_t vbl = SDL_GetAtomicInt(&openpete_vbl);
+    if (vbl != s_hang_quanta_vbl) { s_hang_quanta_vbl = vbl; s_hang_quanta = 0u; }
+    if (++s_hang_quanta > s_hang_quanta_max) s_hang_quanta_max = s_hang_quanta;
+    hang_threshold_init();
+    if (s_hang_threshold && !s_hang_tripped && s_hang_quanta >= HANG_LOOP_QUANTA)
+        openpete_hang_dump_and_exit(header, s_hang_quanta);
 }
 
 /* Idle check of loops classified pure (OPENPETE_LOOP_PURE_CHECK=1): a store-free
@@ -766,9 +855,17 @@ static void loop_pure_check(const CPUState* cpu, uint32_t header) {
 }
 
 void openpete_loop_site_census_log(void) {
-    for (uint32_t i = 0; i < s_loop_sites; i++)
-        OPL_INFO_F("delivery", "loop site 0x%08X: %u quanta, first at vbl %d",
-                   s_loop_site_hdr[i], s_loop_site_trips[i], s_loop_site_first_vbl[i]);
+    OPL_INFO_F("delivery", "loop sites: %u polled, %u dropped (table full); watchdog: max %u quanta at one vbl, "
+               "trip at %u; re-dispatches past the entry observers: %llu",
+               s_loop_sites, s_loop_sites_dropped, s_hang_quanta_max, HANG_LOOP_QUANTA,
+               (unsigned long long)s_redispatch_skips);
+    for (uint32_t i = 0; i < s_loop_sites; i++) {
+        const struct loop_site* r = &s_loop_site[i];
+        OPL_INFO_F("delivery", "loop site 0x%08X: %llu polls, %u runs, %u quanta, first poll at vbl %d, "
+                   "first quantum at vbl %d",
+                   r->hdr, (unsigned long long)r->polls, r->runs, r->quanta, r->first_poll_vbl,
+                   r->first_quantum_vbl);
+    }
     if (s_pure_check <= 0) return;
     /* Register numbering: 1..31 = at..ra, 32 = hi, 33 = lo. */
     uint32_t flagged = 0u;
@@ -805,13 +902,15 @@ void psx_loop_poll(CPUState* cpu, uint32_t header, uint32_t insns, uint32_t pure
     s_loop_insns_anchor += insns;
     s_loop_acc += (uint64_t)insns * LOOP_SCALE;
     if (s_loop_acc > s_loop_acc_max) s_loop_acc_max = s_loop_acc;
-    if (s_loop_acc < LOOP_QUANTUM) return;
+    const int quantum = s_loop_acc >= LOOP_QUANTUM;
+    loop_site_note(header, quantum);
+    if (!quantum) return;
     /* One VBL of instructions has run since the last VBL. */
     s_loop_trips++;
     s_loop_last_header = header;
-    loop_site_note(header);
     s_loop_acc -= LOOP_QUANTUM;
     if (++s_loop_quanta > s_loop_quanta_max) s_loop_quanta_max = s_loop_quanta;
+    loop_hang_quantum(header);
     if (!loop_delivery_enabled()) return;
     extern void psyq_deliver_loop_vbl(CPUState* cpu, uint32_t header, uint32_t pure) __attribute__((weak));
     if (psyq_deliver_loop_vbl) psyq_deliver_loop_vbl(cpu, header, pure);

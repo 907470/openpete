@@ -425,7 +425,14 @@ void openpete_loop_anchor_set(uint32_t pc);
  * @return The entry count; 0 without an anchor. */
 uint32_t openpete_loop_anchor_ticks(void);
 
-/** @brief Log the per-site quantum census: each loop header that reached a quantum, its count and the VBL of its first. */
+/** @brief Log the per-site loop census and the loop watchdog's maximum.
+ *
+ * One line per classified loop header that took its back-edge: its polls,
+ * runs (polls whose previous poll was at another header) and quanta, and
+ * the VBLs of its first poll and first quantum. A header with no line never
+ * polled: not entered, or closed on its first test. The summary line holds
+ * the most quanta counted at one `openpete_vbl`, the watchdog's trip count
+ * and the re-dispatches that skipped the entry observers. */
 void openpete_loop_site_census_log(void);
 
 /** @brief Return the classified-loop instructions counted since the loop anchor's last entry.
