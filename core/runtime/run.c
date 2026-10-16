@@ -5245,6 +5245,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             if (state_ops_drain()) {
                 state_stress_step(opts);
                 rewound_this_iter = rewind_step(opts, g_paused, bk2_active);
+                openpete_mods_arena_page_census_tick();
                 openpete_handoff_poll(&g_game.cpu);
             }
 

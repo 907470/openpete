@@ -418,6 +418,16 @@ void           openpete_mods_arena_mem_restore(const void* bytes,
  *        "snapshot". */
 void           openpete_mods_arena_immutable_check(const char* when);
 
+/** @brief Sample the arena's changed 4 KiB pages at a final yield when OPENPETE_ARENA_PAGE_CENSUS is set.
+ *
+ * Diagnostic: compares the used prefix with a shadow copy, groups the
+ * changed pages by game tick (openpete_canon_tick), attributes them to
+ * every owner with a live allocation row on them, and reports per-owner
+ * mean, p99 and max pages per tick and per 30-tick window at exit
+ * (core/mods/arena_page_census.c). Off, it reads the variable once and
+ * returns. Call at each final yield on the simulation thread. */
+void           openpete_mods_arena_page_census_tick(void);
+
 /** @brief Return the stream handle for a stream vaddr, the index a mod writes into a frame word's 21-bit field in place of the vaddr.
  *
  * The same vaddr, from any owner, gets the same handle; handle 0 is never
