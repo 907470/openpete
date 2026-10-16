@@ -224,6 +224,15 @@ void openpete_fb_snapshot_on_fill(int x, int y, int w, int h)
     }
 }
 
+void openpete_fb_snapshot_note_area_drawn(unsigned frame)
+{
+    if (!openpete_fb_snapshot_enabled() || s_area_cur < 0) return;
+    fb_area_t *a = &s_area[s_area_cur];
+    if (!a->live) return;
+    a->drawn = frame;
+    a->drawn_valid = 1;
+}
+
 int openpete_fb_snapshot_retained_area(unsigned *epoch)
 {
     if (!openpete_fb_snapshot_enabled() || s_area_cur < 0) return -1;

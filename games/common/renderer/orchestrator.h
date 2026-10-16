@@ -54,7 +54,7 @@ void spyro_native_canon_epoch_supersede(void);
  * current draw buffer's DRAWENV (as cyclorama_native_env_clear_commit reads
  * it) unless game_layout.db.repeat_site has a row for the VSync wait the
  * game is parked in (openpete_yield_site.ra): REPEAT_SITE_HOLD holds,
- * REPEAT_SITE_CLEAR_BLACK takes isbg 1 and black, REPEAT_SITE_CLEAR_DB takes
+ * with the env the last canonical present cleared under, REPEAT_SITE_CLEAR_BLACK takes isbg 1 and black, REPEAT_SITE_CLEAR_DB takes
  * isbg 1 and the buffer's colour; a row's env is what
  * cyclorama_native_present_env reports for this present. With isbg 1 the
  * present becomes an empty scene (openpete_native_scene_open_empty) cleared

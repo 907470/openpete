@@ -5643,6 +5643,11 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
             pace_exec_end_ns = op_now();
             ticked_this_iter = (openpete_frame != frame_before_yield);
+            /* A VBL on which the display comes to show a buffer holding a
+             * scene no present has shown changes the screen: the scene the
+             * game fed since the last capture is owed a present, DrawOTag or
+             * none. */
+            openpete_present_pending |= openpete_native_scene_display_unpresented();
             step_after_vbl(stepping, &g_step_one);
 
             /* Sample the actuator buffer the tick just wrote. Here, rather

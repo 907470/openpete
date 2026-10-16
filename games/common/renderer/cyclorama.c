@@ -841,6 +841,10 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
  * next one. */
 static uint8_t s_site_env[4];
 static int     s_site_env_valid;
+/* The env the last canonical present cleared under (isbg, r0, g0, b0), kept
+ * for a hold row; valid after the first commit that named one. */
+static uint8_t s_presented_env[4];
+static int     s_presented_env_valid;
 
 /** @brief Return the PSYQ DRAWENV in the draw buffer g_CurDB points at, read through the sub-tick view.
  *
@@ -890,7 +894,15 @@ void cyclorama_native_repeat_resolve(void) {
     uint8_t env[4];
     if (!cur_db_env(env)) return;              /* nothing names the env: hold */
     const int mode = repeat_site_mode();
-    if (mode == REPEAT_SITE_HOLD) return;
+    if (mode == REPEAT_SITE_HOLD) {
+        /* The screen keeps the presented frame, background included: an env
+         * the game puts after the wait clears a later table, not this one. */
+        if (s_presented_env_valid) {
+            memcpy(s_site_env, s_presented_env, sizeof s_site_env);
+            s_site_env_valid = 1;
+        }
+        return;
+    }
     if (mode == REPEAT_SITE_CLEAR_BLACK) {
         env[0] = 1; env[1] = env[2] = env[3] = 0;
     } else if (mode == REPEAT_SITE_CLEAR_DB) {
@@ -923,6 +935,8 @@ void cyclorama_native_env_clear_commit(void) {
     }
     uint8_t env[4];
     if (!cyclorama_native_present_env(env)) return;   /* the PutDrawEnv latch stays */
+    memcpy(s_presented_env, env, sizeof s_presented_env);
+    s_presented_env_valid = 1;
     openpete_native_set_clear_color(env[0], env[1], env[2], env[3]);
 }
 

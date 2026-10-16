@@ -70,6 +70,15 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
  * tick and receive its 2D after the copy. */
 void openpete_fb_snapshot_note_scene_complete(void);
 
+/** @brief Record that the draw area of the last PutDrawEnv holds the scene with a given stamp.
+ *
+ * Called when a DrawOTag submits a scene no canonical capture has taken
+ * yet: the put before it named the scene completed last
+ * (openpete_fb_snapshot_note_draw_env), but the table drawn is the open one.
+ * A quad that later samples the area resolves to this scene.
+ * @param frame The stamp of the scene the DrawOTag drew. */
+void openpete_fb_snapshot_note_area_drawn(unsigned frame);
+
 /** @brief Record a MoveImage out of a display buffer.
  *
  * The source must lie in the display buffers (x + w <= 512). Its drawing

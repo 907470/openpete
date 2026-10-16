@@ -1275,6 +1275,12 @@ static int s_game_fed;
 static uint8_t s_drawenv_put[4];
 static uint8_t s_drawenv_drawn[4];
 static int     s_drawenv_drawn_valid;
+/* Draw areas a DrawOTag submitted an uncaptured scene into: the clip rect,
+ * the display origin at that DrawOTag, the scene's stamp, and 1 until a
+ * capture presents that scene or the display comes to show the area
+ * (openpete_native_scene_display_unpresented). */
+#define DRAWN_AREA_MAX 2
+static struct { int x, y, w, h, disp_x, disp_y; unsigned frame; int unpresented; } s_drawn_area[DRAWN_AREA_MAX];
 /* Scene identity of the DrawOTag stream. A scene's id is the ordinal of the
  * canonical capture that presents it: s_capture_seq counts the captures taken
  * (openpete_native_scene_capture_overlay), so the scene being fed is
@@ -1462,6 +1468,9 @@ void openpete_native_scene_begin_frame(unsigned frame) {
          * so what the earlier render recorded for the sub-tick re-extract
          * belongs to an image no present showed. */
         if (game_feed) {
+            /* The env a DrawOTag drew the superseded scene with is not the
+             * env of the scene opened here, which the next capture presents. */
+            if (s_game_scene_pending) s_drawenv_drawn_valid = 0;
             if (s_game_scene_pending && s_scene_superseded_cb) s_scene_superseded_cb(frame);
             s_game_scene_pending = 1;
         }
@@ -1991,6 +2000,53 @@ void openpete_native_note_put_draw_env(int isbg, int r, int g, int b) {
     s_drawenv_put[0] = (uint8_t)isbg; s_drawenv_put[1] = (uint8_t)r;
     s_drawenv_put[2] = (uint8_t)g;    s_drawenv_put[3] = (uint8_t)b;
 }
+static int s_geom_in[8];   /* disp x,y,w,h, clip x,y,w,h - guest-side */
+
+/** @brief Record that a DrawOTag submitted the uncaptured scene with a given stamp into the current draw clip.
+ *
+ * Reuses the entry of the same clip origin, else the first presented one,
+ * else entry 0.
+ * @param frame The stamp of the submitted scene. */
+static void note_drawn_area(unsigned frame) {
+    int k = -1;
+    for (int i = 0; i < DRAWN_AREA_MAX && k < 0; i++)
+        if (s_drawn_area[i].w > 0 && s_drawn_area[i].x == s_geom_in[4] && s_drawn_area[i].y == s_geom_in[5]) k = i;
+    for (int i = 0; i < DRAWN_AREA_MAX && k < 0; i++)
+        if (!s_drawn_area[i].unpresented) k = i;
+    if (k < 0) k = 0;
+    s_drawn_area[k].x = s_geom_in[4]; s_drawn_area[k].y = s_geom_in[5];
+    s_drawn_area[k].w = s_geom_in[6]; s_drawn_area[k].h = s_geom_in[7];
+    s_drawn_area[k].disp_x = s_geom_in[0]; s_drawn_area[k].disp_y = s_geom_in[1];
+    s_drawn_area[k].frame = frame;
+    s_drawn_area[k].unpresented = 1;
+    openpete_fb_snapshot_note_area_drawn(frame);
+}
+
+/** @brief Mark presented every drawn area whose scene a canonical capture of a given stamp presents.
+ *
+ * @param frame The stamp of the scene the capture presents. */
+static void drawn_area_presented(unsigned frame) {
+    for (int i = 0; i < DRAWN_AREA_MAX; i++)
+        if (s_drawn_area[i].frame == frame) s_drawn_area[i].unpresented = 0;
+}
+
+int openpete_native_scene_display_unpresented(void) {
+    if (!openpete_native_scene_enabled() || !s_game_scene_pending || !s_game_fed) return 0;
+    if (!scene_has_game_tris(s_scene, s_scene_n)) return 0;
+    const int dx = s_geom_in[0], dy = s_geom_in[1], dw = s_geom_in[2], dh = s_geom_in[3];
+    for (int i = 0; i < DRAWN_AREA_MAX; i++) {
+        if (!s_drawn_area[i].unpresented) continue;
+        /* A display that showed the area when it was drawn into shows the
+         * draw itself, not a swap to it. */
+        if (s_drawn_area[i].disp_x == dx && s_drawn_area[i].disp_y == dy) continue;
+        const int x = s_drawn_area[i].x, y = s_drawn_area[i].y;
+        if (x < dx || y < dy || x + s_drawn_area[i].w > dx + dw || y + s_drawn_area[i].h > dy + dh) continue;
+        s_drawn_area[i].unpresented = 0;
+        return 1;
+    }
+    return 0;
+}
+
 void openpete_native_note_draw_otag(void) {
     area_fade_fold();
     /* Until the game's first feed since the capture opens a new scene,
@@ -2003,9 +2059,14 @@ void openpete_native_note_draw_otag(void) {
     /* A fed scene is the one the next capture presents; an unfed one means
      * the game submits the OT of the scene the last capture presented. */
     s_otag_scene = s_capture_seq + (unsigned)fed;
+    /* A DrawOTag of the presented scene overdraws what the area held. */
+    if (!fed_tris)
+        for (int i = 0; i < DRAWN_AREA_MAX; i++)
+            if (s_drawn_area[i].x == s_geom_in[4] && s_drawn_area[i].y == s_geom_in[5]) s_drawn_area[i].unpresented = 0;
     if (!fed) return;
     memcpy(s_drawenv_drawn, s_drawenv_put, sizeof s_drawenv_drawn);
     s_drawenv_drawn_valid = 1;
+    if (fed_tris) note_drawn_area(s_scene_frame);
 }
 unsigned openpete_native_otag_scene(void) { return s_otag_scene; }
 unsigned openpete_native_scene_presenting(void) { return s_capture_seq + 1u; }
@@ -2799,6 +2860,7 @@ void openpete_native_scene_capture_overlay(void) {
         openpete_fb_snapshot_note_scene_complete();
         return;
     }
+    drawn_area_presented(s_scene_frame);
     s_game_scene_pending = 0;
     /* Roll curr -> prev so apply_overlay can interpolate animated 2D-UI positions
      * (the logo slide-in) across sub-ticks. Runs on the CANONICAL present only, so
@@ -6832,8 +6894,6 @@ int openpete_native_fullscreen_active(void)
  * a guest-side staging copy, and every compose entry copies its source's
  * rects into s_nr at its start (ps_apply_geometry): a scene composed from
  * the ring carries the rects that were current when it was extracted. */
-static int s_geom_in[8];   /* disp x,y,w,h, clip x,y,w,h - guest-side */
-
 void openpete_native_set_display_rect(int x, int y, int w, int h)
 {
     /* Log size changes only; the disp origin flips every frame (double buffer). */
