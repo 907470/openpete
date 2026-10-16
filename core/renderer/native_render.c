@@ -1850,8 +1850,8 @@ void openpete_native_set_clear_color(int isbg, int r, int g, int b) {
 /* ---- subtractive fade held in a retained draw area ----------------------
  *
  * A draw area the game puts with auto-clear off keeps every primitive drawn
- * into it, the full-screen fade quad included: the held-frame fade loops (S2
- * func_8004D810, S3 func_80020168) copy the last frame into both buffers,
+ * into it, the full-screen fade quad included: the held-frame fade loops (S1
+ * func_8001CA38, S2 func_8004D810, S3 func_80020168) copy the last frame into both buffers,
  * zero both DRAWENV.isbg bytes, then per VBL swap the draw buffer, emit one
  * B-F quad (0x10 on the first pass, 0x20 after) and DrawOTag it into that
  * buffer while the other one is displayed. Each buffer therefore shows the
@@ -1975,10 +1975,11 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
     }
     s_scene_fade = v;                       /* raw (no-interp) present path */
     s_game_fade = v; s_game_fade_seen = 1;  /* the game set the fade this tick */
-    /* Held for the next DrawOTag (area_fade_fold). */
-    if (s_freeze_retained && mode == 2) {
+    /* Held for the next DrawOTag (area_fade_fold), which keeps it only for
+     * an area put with auto-clear off. */
+    if (mode == 2) {
         s_fade_unput[0] += r; s_fade_unput[1] += g; s_fade_unput[2] += b;
-    } else if (s_freeze_retained && mode >= 0 && (r | g | b)) {
+    } else if (mode >= 0 && (r | g | b)) {
         s_fade_unput_other = 1;
     }
 }
@@ -2499,9 +2500,10 @@ void openpete_native_scene_front_end(void) {
  * epoch or when the tick renders the world, and extended by the tick's entries; entries painted over by what
  * follows them are dropped (held_prune); the surviving entries of earlier
  * ticks are replayed in front of the scene's 2D. The replay count is kept for the tick's re-extracts
- * (openpete_native_scene_apply_overlay). Under the retained freeze mode, a
- * tick without the world presents the area's held fade sum
- * (area_fade_word) as its fade. Records whether the scene holds the world for
+ * (openpete_native_scene_apply_overlay). A tick without the world whose
+ * present shows the area's held content (the retained freeze backdrop, or
+ * the held scene an empty compose stands in, hold_redirect_begin) presents
+ * the area's held fade sum (area_fade_word) as its fade. Records whether the scene holds the world for
  * the next DrawOTag's fold. OPENPETE_FBSNAP_CENSUS prints the
  * list per capture. */
 static void held_capture(void) {
@@ -2515,12 +2517,16 @@ static void held_capture(void) {
     if (a < 0) return;
     /* The area holds the fade quads already drawn into it: the present shows
      * their sum in place of the tick's own quad, which its DrawOTag has not
-     * drawn yet. Only while the retained backdrop is armed for this present
-     * (commit_fade's freeze word): the area named by the last put stays
-     * retained until the game's next put, after the game has already turned
-     * auto-clear back on in the env the present reads. */
+     * drawn yet. Only while the present shows the area's held content: the
+     * retained backdrop armed for this present (commit_fade's freeze word),
+     * or a scene with no game triangle, which composes the area's held scene.
+     * The area named by the last put stays retained until the game's next
+     * put, after the game has already turned auto-clear back on in the env
+     * the present reads, and a present drawing content of its own then draws
+     * it over a cleared buffer. */
     const bool armed = s_freeze_retained && (s_overlay_carry_freeze & (1u << 31));
-    const uint32_t held_fade = (armed && !world) ? area_fade_word(a, ep) : 0u;
+    const bool shows_held = armed || !scene_has_game_tris(s_scene, s_scene_n);
+    const uint32_t held_fade = (shows_held && !world) ? area_fade_word(a, ep) : 0u;
     if (held_fade) {
         s_scene_fade = held_fade;
         s_fade_curr = held_fade;
@@ -19520,6 +19526,37 @@ static void hold_report(void)
             s_hold.stale_drops, tk, tm, td, hold_on() ? "" : " (OPENPETE_HOLD=0)");
 }
 
+/* The held scene an empty compose stands in, with its fade composed with
+ * the present's (hold_redirect_begin); read only through s_ps_slot between
+ * hold_redirect_begin and hold_redirect_end. */
+static scene_slot_t s_hold_view;
+
+/** @brief Compose the fade a held scene was kept with and the fade of the present it stands in for.
+ *
+ * The buffer holds the kept picture under its own fade quad, then every
+ * quad drawn into it since; the present's fade carries their sum
+ * (held_capture). Two subtractive words add per channel, clamped at 255,
+ * since clamped subtraction composes. A word that is off or zero leaves the
+ * other. Any other pair is not one fade word; the present's, drawn last,
+ * is kept.
+ * @param kept The held scene's fade word (openpete_native_scene_set_fade layout).
+ * @param present The present's fade word.
+ * @return The fade word the held scene composes with. */
+static uint32_t held_fade_compose(uint32_t kept, uint32_t present)
+{
+    const int kept_on = (kept >> 31) && (kept & 0xFFFFFFu);
+    const int present_on = (present >> 31) && (present & 0xFFFFFFu);
+    if (!present_on) return kept;
+    if (!kept_on) return present;
+    if (((kept >> 24) & 3u) != 2u || ((present >> 24) & 3u) != 2u) return present;
+    uint32_t out = (1u << 31) | (2u << 24);
+    for (int sh = 0; sh <= 16; sh += 8) {
+        const uint32_t c = ((kept >> sh) & 0xFFu) + ((present >> sh) & 0xFFu);
+        out |= (c > 255u ? 255u : c) << sh;
+    }
+    return out;
+}
+
 /** @brief Point the compose at the held scene of the area an empty present shows.
  *
  * Runs at the entry of every compose: the live present (ring slot or live
@@ -19528,8 +19565,11 @@ static void hold_report(void)
  * state) composes it. An empty one reads its verdict, the ring slot's or,
  * for the live scene, one taken now: the VRAM framebuffer, or the held
  * scene, which then stands in for the present's scene (s_ps_slot, the
- * material view and the geometry) until hold_redirect_end. Counts the
- * empty composes by branch.
+ * material view and the geometry) until hold_redirect_end. The held scene
+ * composes with its kept fade and the present's (held_fade_compose): the
+ * buffer holds the kept picture under every quad drawn into it since, and
+ * the present's fade carries their sum (held_capture). Counts the empty
+ * composes by branch.
  * @param prev Receives the compose source to restore.
  * @return The pool entry composed, or -1 when the present composes as it is. */
 static int hold_redirect_begin(const scene_slot_t **prev)
@@ -19544,7 +19584,13 @@ static int hold_redirect_begin(const scene_slot_t **prev)
     const int area = s_ps_slot ? s_ps_slot->hold_area : hold_verdict(s_geom_in);
     const int k = hold_take_for_compose(area, v.stamp);
     if (k < 0) return -1;
-    s_ps_slot = &s_hold.e[k].sl;
+    s_hold_view = s_hold.e[k].sl;
+    const uint32_t kept_fade = s_hold_view.fade;
+    s_hold_view.fade = held_fade_compose(kept_fade, v.fade);
+    if (hold_census())
+        fprintf(stderr, "[hold] fade f=%u kept=%08x present=%08x composed=%08x\n",
+                s_scene_frame, kept_fade, v.fade, s_hold_view.fade);
+    s_ps_slot = &s_hold_view;
     openpete_mods_material_view_set(&s_hold.e[k].sl.matview);
     ps_apply_geometry();
     return k;
