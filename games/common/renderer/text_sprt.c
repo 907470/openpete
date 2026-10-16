@@ -58,10 +58,14 @@ static int census_on(void) {
  * (0x64..0x67) after it; a SPRT before any DR_MODE is skipped. A POLY_FT4
  * (0x2C..0x2F) carries its own page. The walk stops at a zero length or a
  * packet that overruns the range. Counts the chain and each glyph fed.
+ * A chain the emitter linked itself is one link appended to the 2D entry
+ * when the emitter returns, so each glyph is recorded there for the link
+ * rank, in chain order, before it is fed.
  * @param cpu The guest CPU state.
  * @param start The first packet's guest address.
- * @param end The primitive cursor after the emitter ran. */
-static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end) {
+ * @param end The primitive cursor after the emitter ran.
+ * @param self_linked 1 when no hooked insert linked any of the chain. */
+static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end, int self_linked) {
     unsigned tpage = 0;                 /* set by the chain's own DR_MODE */
     int have_tpage = 0;
     uint32_t p = start;
@@ -76,9 +80,11 @@ static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end) {
             tpage = cpu->read_word(p + 4) & 0x7FFu;
             have_tpage = 1;
         } else if ((code & 0xFCu) == 0x64u && have_tpage) {   /* SPRT 0x64..0x67 */
+            if (self_linked) ui_sprite_link_note(p, -1);
             ui_sprite_feed_sprt(cpu, p, tpage);
             s_glyphs++;
         } else if ((code & 0xFCu) == 0x2Cu) {   /* POLY_FT4 0x2C..0x2F, len 9 -> 0x28 bytes */
+            if (self_linked) ui_sprite_link_note(p, -1);
             ui_sprite_feed_ft4(cpu, p);         /* the packet carries its own tpage */
             s_glyphs++;
         }
@@ -94,7 +100,8 @@ static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end) {
  * from its own dispatch. Otherwise reads the polybuf cursor, dispatches the
  * real emitter and reads the cursor again; under a selection the advanced
  * range is recorded as RP_UI, and with the native scene on and RP_UI
- * selected it is walked with feed_chain. Reads guest RAM only. Prints a
+ * selected it is walked with feed_chain, told whether a hooked insert
+ * recorded a link during the call. Reads guest RAM only. Prints a
  * census line at most once per 100 openpete_frame values under
  * OPENPETE_TEXT_SPRT_CENSUS.
  * @param cpu The guest CPU state.
@@ -109,13 +116,17 @@ static int on_text_emitter(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
+    const uint64_t links = ui_sprite_link_count();
     openpete_recomp_module_get()->dispatch(cpu, addr); /* the real emitter (ref unchanged) */
     uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
+    /* No hooked insert ran: the emitter linked its chain into the 2D entry
+     * itself (the loading picture's chain goes through the slotted insert). */
+    const int self_linked = ui_sprite_link_count() == links;
 
     /* The chain is the 2D layer's: its range keeps it in the OT walk while
      * RP_UI is selected, and RP_UI deselected keeps it out of the native feed. */
     if (rec) render_path_record(RP_UI, start, end);
-    if (feed && end > start && render_path_enabled(RP_UI)) feed_chain(cpu, start, end);
+    if (feed && end > start && render_path_enabled(RP_UI)) feed_chain(cpu, start, end, self_linked);
 
     if (census_on()) {
         static unsigned last = 0xFFFFFFFFu;

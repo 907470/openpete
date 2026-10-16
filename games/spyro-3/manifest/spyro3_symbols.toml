@@ -210,6 +210,18 @@ kind = "function"
 note = "func_8004E758 (asm/stdutil.s:84-100) - links a0 into the 2D ordering table at D_8006C638, instruction-for-instruction Spyro 1's func_800168DC with a different head global; called by drawutil, hud and updatepause and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
 
 [[symbol]]
+name = "F_UI_OT_INSERT_SLOT"
+addr = 0x8004E71C
+kind = "function"
+note = "func_8004E71C(prim, slot) (asm/stdutil.s:65-82, handwritten) - the slotted form of func_8004E758: it loads the table base from D_8006C634, adds slot << 3, and appends a0 at that entry's tail by the same three-store splice. Its call sites are the loading-screen image func_80059358 (src/warp.c:568,580) and the credits overlay (src/overlays/credits/credits.c:17,31), so it carries 2D only; the 2D layer hooks it to record the slot of the loading picture's sprites for the link rank"
+
+[[symbol]]
+name = "F_UI_OT_STITCH"
+addr = 0x8004E664
+kind = "function"
+note = "func_8004E664(n) (asm/stdutil.s:11-62, handwritten) - the ordering-table stitch: from min(slot n, D_8006C7D4 + 8) down to the 2D entry D_8006C638 (D_8006C634 - 8) it links each non-empty slot's tail to the next non-empty slot's head and clears the slot, ends the chain at D_8006529C and returns the first head; called by Draw (draw/Draw.s:271,314,351,386,399) and drawutil/func_80020168.s:85 before DrawOTag"
+
+[[symbol]]
 name = "F_UI_FADE"
 addr = 0x800200A0
 kind = "function"

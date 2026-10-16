@@ -188,6 +188,12 @@ kind = "function"
 note = "func_8001B354(prim, slot) (stdutil.s:66-82, handwritten) - the slotted form of func_8001B390: it loads the table base from the word at D_80066FFC, adds slot << 3, and runs the same three-store tag splice on that entry instead of on a fixed head word. Eight call sites in five files, all screen emitters in the titlescreen_and_loading and credits overlays and no 3D translation unit, so it is a second chokepoint of the same shape; the title screen's func_titlescreen_and_loading_80079878 links its DR_MODE and its SPRT through it"
 
 [[symbol]]
+name = "F_UI_OT_STITCH"
+addr = 0x8001B2A8
+kind = "function"
+note = "func_8001B2A8(n) (stdutil.s:13-61, handwritten) - the ordering-table stitch, instruction-for-instruction the other game's func_8004E664 with D_80066FFC/D_80067168 as base and top: from min(slot n, top + 8) down to the 2D entry D_80067000 (base - 8) it links each non-empty slot's tail to the next non-empty slot's head and clears the slot, ends the chain at D_8006012C and returns the first head; called by draw/func_800145AC.s:99,340, draw/func_800156FC.s:220, drawutil/func_8004D810.s:87 and the guidebook overlay before DrawOTag"
+
+[[symbol]]
 name = "F_UI_FADE"
 addr = 0x8004D748
 kind = "function"

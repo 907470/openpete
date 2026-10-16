@@ -34,7 +34,7 @@ typedef struct ui_game {
      * head word. The primitive pointer is in a0 exactly as above, so the same
      * hook body serves both; the slot only decides where in the table the
      * primitive lands, and the feeder takes its draw order from the DrawOTag
-     * walk rather than from the insert. The screen emitters that build their
+     * walk, or on a `rank_by_link` game from the slot and the link's order. The screen emitters that build their
      * own depth order call this one and never the head insert, so a game that
      * names only `ot_insert` loses their 2D entirely. 0 = the game has one
      * insert. */
@@ -88,6 +88,29 @@ typedef struct ui_game {
      * function in every other overlay of the game, so its hook carries the id
      * and fires only while that overlay is resident. */
     uint32_t sprt_chain_overlay[3];
+
+    /* Set when the game's 2D draw order is its own link order: its table is
+     * an array of {tail, head} slots, every insert appends at a slot's tail
+     * (first linked, first drawn), and its Draw stitches the slots highest
+     * first, then the 2D entry, the head word `ot_insert` links into, one
+     * slot below slot 0. The stitch runs after the canonical capture, so the
+     * DrawOTag chain the capture can walk is the previous VBL's. The feeder
+     * then ranks each 2D primitive by (table period; slot descending, the 2D
+     * entry as slot -1 last; then link order) recorded where it is linked:
+     * the inserts, and the return of a chain emitter that links its chain
+     * into the 2D entry itself. 0 = rank by the DrawOTag walk. */
+    int      rank_by_link;
+
+    /* A slotted insert of the same shape as `ot_insert_slot` (a0 = the
+     * primitive, a1 = the slot) that is hooked only to record the slot for
+     * the link rank: the primitives it links reach the feeder another way
+     * (the loading picture's SPRT chain), so it claims none. 0 = none. */
+    uint32_t ot_rank_slot_insert;
+
+    /* The routine that stitches the table's slots into the chain DrawOTag
+     * walks and clears them. Hooked for the link rank: the links after it
+     * belong to the next table, drawn after the current one. 0 = none. */
+    uint32_t ot_stitch;
 } ui_game_t;
 
 /* The running game's table: game_runtime_install (game_host_desc.h) copies
@@ -121,6 +144,22 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage);
  * @param cpu The guest CPU state.
  * @param prim The POLY_FT4's guest address. */
 void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim);
+
+/** @brief Records one 2D primitive's link into the game's ordering table for the link rank.
+ *
+ * Inert unless ui_game.rank_by_link is set. Each call takes the next link
+ * ordinal and the count of stitches before it (ui_game.ot_stitch); a later
+ * link of the same address supersedes an earlier one.
+ * @param prim The primitive's guest address.
+ * @param slot The table slot it is appended to; -1 for the 2D entry. */
+void ui_sprite_link_note(uint32_t prim, int slot);
+
+/** @brief Returns the count of links ui_sprite_link_note has recorded since boot.
+ *
+ * A chain emitter compares it across its call to tell whether its chain was
+ * linked through a hooked insert or by the emitter itself.
+ * @return The count. */
+uint64_t ui_sprite_link_count(void);
 
 /** @brief Returns the SPRTs fed into the native HUD layer since boot.
  *

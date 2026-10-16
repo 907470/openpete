@@ -662,4 +662,16 @@ const ui_game_t spyro3_ui_game = {
     /* All three emitters are base-binary functions, resident whatever overlay
      * is loaded, so none is overlay-qualified. */
     .sprt_chain_overlay = { 0u, 0u, 0u },
+
+    /* The table is 0x580 {tail, head} slots off D_8006C634 with the 2D entry
+     * D_8006C638 one slot below slot 0 (init/func_8002AA34.s:16-50: base
+     * X - 0x2C00, entry X - 0x2C08). func_8004E758 and func_8004E71C append
+     * at a slot's tail (stdutil.s:65-100) and func_8004E664, called by Draw,
+     * stitches the slots highest first and the 2D entry last
+     * (stdutil.s:11-62), after the canonical capture. */
+    .rank_by_link = 1,
+    /* func_8004E71C links the loading picture's DR_MODE and SPRT pairs at its
+     * slot argument; the SPRT chain hook above feeds them. */
+    .ot_rank_slot_insert = F_UI_OT_INSERT_SLOT,
+    .ot_stitch           = F_UI_OT_STITCH,
 };

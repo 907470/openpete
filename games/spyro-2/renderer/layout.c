@@ -698,4 +698,13 @@ const ui_game_t spyro2_ui_game = {
      * id and the hook fires only while those bytes are the resident ones. */
     .sprt_chain_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH, F_LOADING_SPRT },
     .sprt_chain_overlay = { 0u, 0u, OVL_TITLESCREEN_AND_LOADING },
+
+    /* The table is {tail, head} slots off D_80066FFC with the 2D entry
+     * D_80067000 one slot below slot 0 (init/func_80011DD4.s:20-29: base
+     * X - 0x2C00, entry X - 0x2C08). func_8001B390 and func_8001B354 append
+     * at a slot's tail (stdutil.s:66-103) and func_8001B2A8 stitches the
+     * slots highest first and the 2D entry last (stdutil.s:13-61), after
+     * the canonical capture. Both inserts are hooked above. */
+    .rank_by_link = 1,
+    .ot_stitch    = F_UI_OT_STITCH,
 };

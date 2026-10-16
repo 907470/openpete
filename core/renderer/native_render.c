@@ -12417,8 +12417,12 @@ static int hud_order_census_on(void)
  * Replays the schedule draw_hud_panels_and_tex draws on a copy of the
  * cursor and prints the panel triangles, those drawn after at least one
  * textured triangle (engagement), and the inverted ones (hud_panel_inverted)
- * under a panels-first schedule and under the drawn one. A scene without
- * panel triangles prints nothing.
+ * under a panels-first schedule and under the drawn one. It also prints the
+ * 2D triangle count and an FNV-1a digest of the 2D draw order: every HUD,
+ * HUD panel and overlay triangle in scene order (primitive address,
+ * category, texturing, first vertex) and the textured run drawn before each
+ * panel triangle, so two runs whose 2D order differs print different
+ * digests. A scene without 2D triangles prints nothing.
  * @param scene Scene triangles.
  * @param scene_n Triangle count.
  * @param panels Panel triangles in the slot-8 vertex range.
@@ -12426,17 +12430,31 @@ static int hud_order_census_on(void)
 static void hud_order_census(const scene_tri_t* scene, int scene_n, int panels,
                              hud_tex_cursor c)
 {
-    if (!hud_order_census_on() || panels <= 0) return;
+    if (!hud_order_census_on()) return;
+    uint32_t h = 2166136261u;
+    int n2d = 0;
+    for (int t = 0; t < scene_n; t++) {
+        const scene_tri_t* q = &scene[t];
+        if (q->category != OPENPETE_SCENE_HUD && q->category != OPENPETE_SCENE_HUD_PANEL &&
+            q->category != OPENPETE_SCENE_OVERLAY) continue;
+        const uint32_t w[4] = { q->prim, (uint32_t)q->category | ((uint32_t)q->textured << 8),
+                                (uint32_t)(int32_t)q->v[0].sx, (uint32_t)(int32_t)q->v[0].sy };
+        for (int k = 0; k < 4; k++) { h ^= w[k]; h *= 16777619u; }
+        n2d++;
+    }
+    if (!n2d) return;
     int n = 0, after = 0, inv_first = 0, inv_drawn = 0;
     for (int t = 0; t < scene_n && n < panels; t++) {
         if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
         c.done = hud_tex_run_end(&c, &scene[t]);
+        h ^= (uint32_t)c.done; h *= 16777619u;
         n++; after += c.done > 0;
         inv_first += hud_panel_inverted(&c, 0, &scene[t]);
         inv_drawn += hud_panel_inverted(&c, c.done, &scene[t]);
     }
     fprintf(stderr, "[hudorder] stamp=%u panels=%d after_tex=%d inverted_panel_first=%d "
-                    "inverted_drawn=%d\n", scene_present_stamp(), n, after, inv_first, inv_drawn);
+                    "inverted_drawn=%d tris2d=%d order=%08x\n", scene_present_stamp(), n, after,
+                    inv_first, inv_drawn, n2d, h);
 }
 
 /** @brief Draw the cursor's textured HUD triangles up to an index through the per-class textured HUD pipes, and advance it.

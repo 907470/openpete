@@ -1395,6 +1395,97 @@ static void build_ot_rank_map(CPUState* cpu, const uint32_t* known, int kn) {
     if (pz) fprintf(stderr, "[otring f=%u] union=%d of known=%d\n", openpete_frame, s_walk_n, kn);
 }
 
+/* The link rank (ui_game.rank_by_link): the order the game's own stitch
+ * draws its 2D in, from where each primitive was linked rather than from the
+ * table. A ring of the most recent links, oldest overwritten; the scene's 2D
+ * of one VBL is a few hundred links, far inside it. Each link carries the
+ * table period it was made in (the stitches before it): a scene can hold 2D
+ * linked on both sides of a stitch, which the game draws as two successive
+ * tables, the earlier one first. */
+#define UI_LINK_RING 16384
+typedef struct { uint32_t addr; int32_t slot; uint64_t period; uint64_t ord; } ui_link_t;
+static ui_link_t s_link[UI_LINK_RING];
+static uint64_t  s_link_n;          /* links recorded since boot */
+static uint64_t  s_link_period;     /* stitches since boot */
+
+void ui_sprite_link_note(uint32_t prim, int slot) {
+    if (!ui_game.rank_by_link) return;
+    ui_link_t* l = &s_link[s_link_n % UI_LINK_RING];
+    l->addr = prim; l->slot = slot;
+    l->period = s_link_period;
+    l->ord = s_link_n++;
+}
+
+uint64_t ui_sprite_link_count(void) { return s_link_n; }
+
+/** @brief Reports whether the 2D is ranked by link (ui_game.rank_by_link) rather than by the DrawOTag walk.
+ *
+ * OPENPETE_UI_RANK_WALK, read once, forces the walk on a link-rank game:
+ * the in-binary A/B of the two ranks.
+ * @return 1 for the link rank, else 0. */
+static int rank_by_link_on(void) {
+    static int walk = -1;
+    ENV_FLAG_LATCH(walk, "OPENPETE_UI_RANK_WALK");
+    return ui_game.rank_by_link && !walk;
+}
+
+/** @brief Orders two link records by primitive address.
+ *
+ * @param a A ui_link_t.
+ * @param b A ui_link_t.
+ * @return Negative, zero or positive as @p a's address is below, equal to or above @p b's. */
+static int link_addr_cmp(const void* a, const void* b) {
+    const uint32_t x = ((const ui_link_t*)a)->addr, y = ((const ui_link_t*)b)->addr;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/** @brief Orders two link records as the game draws them: table period, then slot descending, then link order.
+ *
+ * @param a A ui_link_t.
+ * @param b A ui_link_t.
+ * @return Negative when @p a draws first, positive when @p b does. */
+static int link_draw_cmp(const void* a, const void* b) {
+    const ui_link_t* x = (const ui_link_t*)a;
+    const ui_link_t* y = (const ui_link_t*)b;
+    if (x->period != y->period) return x->period < y->period ? -1 : 1;
+    if (x->slot != y->slot) return x->slot > y->slot ? -1 : 1;
+    return x->ord < y->ord ? -1 : (x->ord > y->ord ? 1 : 0);
+}
+
+/** @brief Builds the address-to-rank map of the scene's 2D primitives from their recorded links.
+ *
+ * Each known address takes its newest link in the ring. The linked ones are
+ * sorted by link_draw_cmp and ranked 1.. in that order: table periods in
+ * turn, and within one the order the game's stitch appends the slots
+ * (highest first, the 2D entry last) with each slot's links first-in
+ * first-out.
+ * Reads no guest RAM. The map is left sorted by address for ot_rank_of; an
+ * address with no link is left out and ranks 0.
+ * @param known The scene's 2D primitive addresses, sorted ascending.
+ * @param kn The count of known addresses. */
+static void build_link_rank_map(const uint32_t* known, int kn) {
+    static ui_link_t got[UI_OT_WALK_MAX];
+    static ui_link_t sorted[UI_OT_WALK_MAX];
+    int un = 0;
+    for (int i = 0; i < kn && un < UI_OT_WALK_MAX; i++)      /* distinct addresses */
+        if (!un || got[un - 1].addr != known[i]) { got[un].addr = known[i]; got[un].ord = UINT64_MAX; un++; }
+    const uint64_t n = s_link_n < UI_LINK_RING ? s_link_n : UI_LINK_RING;
+    for (uint64_t k = s_link_n - n; k < s_link_n; k++) {     /* oldest first: the newest link wins */
+        const ui_link_t* l = &s_link[k % UI_LINK_RING];
+        int lo = 0, hi = un - 1;
+        while (lo <= hi) { int mid = (lo + hi) / 2;
+            if (got[mid].addr == l->addr) { got[mid] = *l; break; }
+            if (got[mid].addr < l->addr) lo = mid + 1; else hi = mid - 1; }
+    }
+    int sn = 0;
+    for (int i = 0; i < un; i++) if (got[i].ord != UINT64_MAX) sorted[sn++] = got[i];
+    qsort(sorted, (size_t)sn, sizeof sorted[0], link_draw_cmp);
+    for (int i = 0; i < sn; i++) sorted[i].ord = (uint64_t)(i + 1);   /* the rank */
+    qsort(sorted, (size_t)sn, sizeof sorted[0], link_addr_cmp);
+    for (int i = 0; i < sn; i++) { s_walk_addr[i] = sorted[i].addr; s_walk_rank[i] = (uint32_t)sorted[i].ord; }
+    s_walk_n = sn;
+}
+
 /** @brief Looks up a primitive's traversal rank in the ordering-table map without counting a hit.
  *
  * @param prim The primitive's guest address.
@@ -1521,14 +1612,46 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
     }
 }
 
-/** @brief Feeds the first n claimed primitives into the native scene and ranks the scene's 2D by the ordering-table traversal.
+/** @brief Ranks every 2D triangle of the scene by the draw order of the primitive it was decoded from.
+ *
+ * The scene's 2D primitive addresses, the released batch's and the glyphs
+ * fed at emission alike, are sorted and mapped to ranks once: by
+ * build_link_rank_map on a link-rank game (rank_by_link_on), by
+ * build_ot_rank_map otherwise; openpete_native_scene_rank_2d then stamps
+ * them, and the hits are kept in s_ot_ranked. OPENPETE_OT_RING_PROBE prints
+ * each unranked primitive, OPENPETE_UISPRITE_TRACE the map size and hits.
+ * @param cpu The guest CPU state. */
+static void rank_scene_2d(CPUState* cpu) {
+    s_walk_hits = 0;
+    { static uint32_t known[UI_CLAIM_MAX * 2];
+      int kn = openpete_native_scene_collect_2d_prims(known, (int)(sizeof known / sizeof known[0]));
+      for (int i = 1; i < kn; i++) {            /* sorted for the chain scoring */
+          uint32_t a = known[i]; int j = i - 1;
+          while (j >= 0 && known[j] > a) { known[j+1] = known[j]; j--; }
+          known[j+1] = a; }
+      if (rank_by_link_on()) build_link_rank_map(known, kn);
+      else build_ot_rank_map(cpu, known, kn); }
+    openpete_native_scene_rank_2d(ot_rank_of);
+    s_ot_ranked = s_walk_hits;
+    { static int pz2 = -1; ENV_FLAG_LATCH(pz2, "OPENPETE_OT_RING_PROBE");
+      if (pz2) { static uint32_t kn2[UI_CLAIM_MAX * 2];
+        int k2 = openpete_native_scene_collect_2d_prims(kn2, (int)(sizeof kn2 / sizeof kn2[0]));
+        for (int i = 0; i < k2; i++) if (!ot_rank_of_quiet(kn2[i]))
+            fprintf(stderr, "[otmiss f=%u] prim=%08X words=%08X %08X %08X\n", openpete_frame, kn2[i],
+                    cpu->read_word(kn2[i]), cpu->read_word(kn2[i]+4), cpu->read_word(kn2[i]+8)); } }
+    { static int tr2 = -1; ENV_FLAG_LATCH(tr2, "OPENPETE_UISPRITE_TRACE");
+      if (tr2) fprintf(stderr, "[uirank f=%u] chain=%d ranked=%d by=%s\n",
+                       openpete_frame, s_walk_n, s_walk_hits,
+                       rank_by_link_on() ? "link" : "walk"); }
+}
+
+/** @brief Feeds the first n claimed primitives into the native scene and ranks the scene's 2D.
  *
  * Each released primitive is re-summed (a changed sum counts in s_mutated),
  * recorded for ui_sprite_ot_verify and fed through feed_one_claim, tagged
- * with its address. Every 2D primitive address in the scene, the batch's
- * and the glyphs fed at emission, is then ranked by build_ot_rank_map and
- * openpete_native_scene_rank_2d. The unreleased tail moves to the front of
- * the claim array. With no CPU, no n or the native scene off, the n claims
+ * with its address. Every 2D triangle in the scene, the batch's and the
+ * glyphs fed at emission, is then ranked by rank_scene_2d. The unreleased
+ * tail moves to the front of the claim array. With no CPU, no n or the native scene off, the n claims
  * are dropped unfed, as they are while a render-path selection leaves RP_UI
  * out. Every caller releases the whole batch.
  * @param n The count to release, clamped to the claimed count. */
@@ -1558,27 +1681,7 @@ static void release_batch(unsigned n) {
         feed_one_claim(cpu, prim, s_claim[i].kind, s_claim[i].aux);
     }
     openpete_native_scene_set_prim(0u);
-    /* One walk of the table, then rank every 2D tri of the frame by the address
-     * it came from, the batch just fed and the glyphs fed at emission alike. */
-    s_walk_hits = 0;
-    { static uint32_t known[UI_CLAIM_MAX * 2];
-      int kn = openpete_native_scene_collect_2d_prims(known, (int)(sizeof known / sizeof known[0]));
-      for (int i = 1; i < kn; i++) {            /* sorted for the chain scoring */
-          uint32_t a = known[i]; int j = i - 1;
-          while (j >= 0 && known[j] > a) { known[j+1] = known[j]; j--; }
-          known[j+1] = a; }
-      build_ot_rank_map(cpu, known, kn); }
-    openpete_native_scene_rank_2d(ot_rank_of);
-    s_ot_ranked = s_walk_hits;
-    { static int pz2 = -1; ENV_FLAG_LATCH(pz2, "OPENPETE_OT_RING_PROBE");
-      if (pz2) { static uint32_t kn2[UI_CLAIM_MAX * 2];
-        int k2 = openpete_native_scene_collect_2d_prims(kn2, (int)(sizeof kn2 / sizeof kn2[0]));
-        for (int i = 0; i < k2; i++) if (!ot_rank_of_quiet(kn2[i]))
-            fprintf(stderr, "[otmiss f=%u] prim=%08X words=%08X %08X %08X\n", openpete_frame, kn2[i],
-                    cpu->read_word(kn2[i]), cpu->read_word(kn2[i]+4), cpu->read_word(kn2[i]+8)); } }
-    { static int tr2 = -1; ENV_FLAG_LATCH(tr2, "OPENPETE_UISPRITE_TRACE");
-      if (tr2) fprintf(stderr, "[uirank f=%u] chain=%d ranked=%d\n",
-                       openpete_frame, s_walk_n, s_walk_hits); }
+    rank_scene_2d(cpu);
     /* Carry the unreleased tail to the front for its own release. */
     s_claim_n -= n;
     for (unsigned i = 0; i < s_claim_n; i++) s_claim[i] = s_claim[i + n];
@@ -1720,13 +1823,24 @@ static uint32_t grid_elem_key(unsigned ord) {
     return h | 1u;
 }
 
+/** @brief Opens the scene an emission feed appends to before its primitive address is set.
+ *
+ * Opening a scene clears the sticky primitive address, so a feed that opens
+ * the VBL's scene inside its decoder would add its triangles with address 0
+ * and the release could not rank them. Under OPENPETE_UI_RANK_WALK the
+ * scene is left to the decoder, as the DrawOTag-walk rank always did. */
+static void prim_scene_open(void) {
+    if (rank_by_link_on()) scene_begin_for_feed();
+}
+
 /* Feeds one glyph SPRT at emission, tagged with its address for the release's ranking. */
 void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
     if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_sprt++;
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
     if (!s_cpu) s_cpu = cpu;
-    openpete_native_scene_set_prim(prim);   /* ranked by the release's table walk */
+    prim_scene_open();
+    openpete_native_scene_set_prim(prim);   /* ranked at the release */
     feed_sprt_now(cpu, prim, tpage);
     openpete_native_scene_set_prim(0u);
 }
@@ -1736,7 +1850,8 @@ void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) {
     if (openpete_frame == s_cap_frame) s_post_sprt++;
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_UI)) return;
     if (!s_cpu) s_cpu = cpu;
-    openpete_native_scene_set_prim(prim);   /* ranked by the release's table walk */
+    prim_scene_open();
+    openpete_native_scene_set_prim(prim);   /* ranked at the release */
     feed_ft4(cpu, prim, cpu->read_word(prim + 4));
     openpete_native_scene_set_prim(0u);
 }
@@ -1753,19 +1868,47 @@ static void ui_path_record(CPUState* cpu, uint32_t prim) {
     if (len) render_path_record(RP_UI, prim, prim + (len + 1u) * 4u);
 }
 
+/** @brief Classifies the 2D primitive being linked and claims it by kind for the batch release.
+ *
+ * In order: freeze backdrop FT4 (also widens the freeze band), freeze mask
+ * line (counted, not claimed), FT4, draw mode, opaque F4 bar (keyed by its
+ * emission ordinal inside the framebuffer grid emitter), semi-transparent
+ * F4 panel (not inside the fade emitter), SPRT, LINE_G2, POLY_G, LINE_F2;
+ * anything else is counted as unclaimed. Reads guest RAM only.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address. */
+static void claim_linked(CPUState* cpu, uint32_t prim) {
+    const unsigned grid_ord = s_grid_ord++;   /* meaningful inside the grid emitter only */
+    /* Claimed here, fed at the batch release: the primitive's words are
+     * not final yet (see the dispatch header). */
+    if (is_freeze_backdrop(cpu, prim)) { freeze_band_note(cpu, prim); claim(cpu, prim, QK_FREEZE); }
+    else if (is_freeze_mask_line(cpu, prim)) s_freeze_mask_dropped++;   /* see is_freeze_mask_line */
+    else if (is_ft4(cpu, prim))        claim(cpu, prim, QK_FT4);
+    else if (is_dr_mode(cpu, prim))    claim(cpu, prim, QK_DR_MODE);   /* the GPU draw-mode's ABR */
+    else if (is_f4_opaque(cpu, prim))                                   /* letterbox bars, */
+        claim_aux(cpu, prim, QK_F4_BAR, s_in_grid ? grid_elem_key(grid_ord) : 0u); /* grid borders */
+    else if (is_f4_semitrans(cpu, prim) && !s_in_fade)
+                                       claim(cpu, prim, QK_F4_PANEL);  /* HUD shaded box / menu panel */
+    else if (is_sprt(cpu, prim))       claim(cpu, prim, QK_SPRT);      /* HUD icons and digits */
+    else if (is_line_g2(cpu, prim))    claim(cpu, prim, QK_LINE_G2);   /* UI separator lines */
+    else if (is_poly_g(cpu, prim))     claim(cpu, prim, QK_POLY_G);    /* gouraud health-bar fills */
+    else if (is_line_f2(cpu, prim))    claim(cpu, prim, QK_LINE_F2);   /* health-bar borders */
+    else if (!s_in_fade) unclaimed_note(cpu, prim);   /* no decoder for this encoding: linked, not fed
+                                                      * (a prim linked inside the fade emitter is the
+                                                      * fade's own F4, drawn from its arguments) */
+}
+
 /** @brief Hooks the game's 2D ordering-table insert: claims the primitive being linked, then runs the real insert.
  *
  * Inert (returns 0) while the native scene is off, apart from recording the
  * primitive's range under a render-path selection, and on re-entry from its
  * own dispatch. The first call registers the frame-close and overlay
  * precapture callbacks and names the UI atlas for the texture pack. The
- * primitive at a0 is classified in order: freeze backdrop FT4 (also
- * widens the freeze band), freeze mask line (counted, not claimed), FT4,
- * draw mode, opaque F4 bar (keyed by its emission ordinal inside the
- * framebuffer grid emitter), semi-transparent F4 panel (not inside the fade
- * emitter), SPRT, LINE_G2, POLY_G, LINE_F2; anything else is counted as
- * unclaimed. The real insert then runs unchanged, so the reference link is
- * intact. Reads guest RAM only; writes none.
+ * primitive at a0 is claimed by claim_linked, and its link is recorded for
+ * the link rank (ui_sprite_link_note) at slot a1 for the slotted insert and
+ * at the 2D entry otherwise. The real
+ * insert then runs unchanged, so the reference link is intact. Reads guest
+ * RAM only; writes none.
  * @param cpu The guest CPU state; a0 is the primitive pointer.
  * @param addr The hooked entry address.
  * @return 0 when the ordinary dispatch runs the insert, 1 having run it. */
@@ -1797,28 +1940,11 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
 
     uint32_t prim = cpu->a0;                     /* a0 = prim pointer being linked */
     ui_path_record(cpu, prim);
+    /* The slotted insert appends to slot a1, the head insert to the 2D entry. */
+    ui_sprite_link_note(prim, addr == ui_game.ot_insert_slot ? (int)cpu->a1 : -1);
     if (openpete_frame != s_unclaimed_frame) { unclaimed_flush_tick(); s_unclaimed_frame = openpete_frame; }
 
-    if (feed) {
-        const unsigned grid_ord = s_grid_ord++;   /* meaningful inside the grid emitter only */
-        /* Claimed here, fed at the batch release: the primitive's words are
-         * not final yet (see the dispatch header). */
-        if (is_freeze_backdrop(cpu, prim)) { freeze_band_note(cpu, prim); claim(cpu, prim, QK_FREEZE); }
-        else if (is_freeze_mask_line(cpu, prim)) s_freeze_mask_dropped++;   /* see is_freeze_mask_line */
-        else if (is_ft4(cpu, prim))        claim(cpu, prim, QK_FT4);
-        else if (is_dr_mode(cpu, prim))    claim(cpu, prim, QK_DR_MODE);   /* the GPU draw-mode's ABR */
-        else if (is_f4_opaque(cpu, prim))                                   /* letterbox bars, */
-            claim_aux(cpu, prim, QK_F4_BAR, s_in_grid ? grid_elem_key(grid_ord) : 0u); /* grid borders */
-        else if (is_f4_semitrans(cpu, prim) && !s_in_fade)
-                                           claim(cpu, prim, QK_F4_PANEL);  /* HUD shaded box / menu panel */
-        else if (is_sprt(cpu, prim))       claim(cpu, prim, QK_SPRT);      /* HUD icons and digits */
-        else if (is_line_g2(cpu, prim))    claim(cpu, prim, QK_LINE_G2);   /* UI separator lines */
-        else if (is_poly_g(cpu, prim))     claim(cpu, prim, QK_POLY_G);    /* gouraud health-bar fills */
-        else if (is_line_f2(cpu, prim))    claim(cpu, prim, QK_LINE_F2);   /* health-bar borders */
-        else if (!s_in_fade) unclaimed_note(cpu, prim);   /* no decoder for this encoding: linked, not fed
-                                                          * (a prim linked inside the fade emitter is the
-                                                          * fade's own F4, drawn from its arguments) */
-    }
+    claim_linked(cpu, prim);
 
     { OP_PROF_ACCUM_SCOPE("ui_sprite.srend");
       openpete_recomp_module_get()->dispatch(cpu, addr); }  /* the real OT insert (ref unchanged) */
@@ -1842,6 +1968,33 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     bbox_report();
     s_in = 0;
     return 1;
+}
+
+/** @brief Hooks a slotted insert that claims nothing and records its link for the link rank.
+ *
+ * The primitive (a0) and slot (a1) are recorded through ui_sprite_link_note
+ * while the native scene is on; the ordinary dispatch then runs the insert.
+ * Reads the argument registers only; writes no guest RAM.
+ * @param cpu The guest CPU state; a0 is the primitive, a1 the slot.
+ * @param addr The hooked entry address; unused.
+ * @return 0, so the ordinary dispatch runs the insert. */
+static int on_ot_rank_link(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    if (openpete_native_scene_enabled()) ui_sprite_link_note(cpu->a0, (int)cpu->a1);
+    return 0;
+}
+
+/** @brief Hooks the game's ordering-table stitch and starts a new table period for the link rank.
+ *
+ * The links recorded after it belong to the next table (ui_sprite_link_note).
+ * Reads no guest state; the ordinary dispatch then runs the stitch.
+ * @param cpu The guest CPU state; unused.
+ * @param addr The hooked entry address; unused.
+ * @return 0, so the ordinary dispatch runs the stitch. */
+static int on_ot_stitch(CPUState* cpu, uint32_t addr) {
+    (void)cpu; (void)addr;
+    s_link_period++;
+    return 0;
 }
 
 /* ---- full-screen fade overlay (ui_game.fade_emitter) --------------------- */
@@ -1911,6 +2064,8 @@ static feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0u, on_ot_insert },
     { 0u, on_fade_emitter },
     { 0u, on_fb_grid_emitter },
+    { 0u, on_ot_rank_link },
+    { 0u, on_ot_stitch },
     { 0u, NULL },
 };
 
@@ -1949,8 +2104,9 @@ static void ui_freeze_retain_census(void) {
  *
  * When ui_game.freeze_retained is set, turns on the scene's retained
  * freeze mode and registers the exit census. The named ot_insert,
- * ot_insert_slot, fade_emitter and fb_grid_emitter addresses are packed to
- * the front of the table and a zero address ends it.
+ * ot_insert_slot, fade_emitter, fb_grid_emitter, ot_rank_slot_insert and
+ * (on a rank_by_link game) ot_stitch addresses are packed to the front of
+ * the table and a zero address ends it.
  * @param opts The options; unused. */
 static void ui_sprite_apply_options(const openpete_options_t* opts) {
     (void)opts;
@@ -1976,6 +2132,14 @@ static void ui_sprite_apply_options(const openpete_options_t* opts) {
     if (ui_game.fb_grid_emitter) {
         ui_sprite_dispatch[n].addr = ui_game.fb_grid_emitter;
         ui_sprite_dispatch[n].fn   = on_fb_grid_emitter; n++;
+    }
+    if (ui_game.ot_rank_slot_insert) {
+        ui_sprite_dispatch[n].addr = ui_game.ot_rank_slot_insert;
+        ui_sprite_dispatch[n].fn   = on_ot_rank_link; n++;
+    }
+    if (ui_game.rank_by_link && ui_game.ot_stitch) {
+        ui_sprite_dispatch[n].addr = ui_game.ot_stitch;
+        ui_sprite_dispatch[n].fn   = on_ot_stitch; n++;
     }
     ui_sprite_dispatch[n].addr = 0u;
     ui_sprite_dispatch[n].fn   = NULL;
