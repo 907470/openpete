@@ -228,6 +228,12 @@ kind = "function"
 note = "func_800200A0(abrMode, r, g, b) (asm/nonmatchings/drawutil/func_800200A0.s:4-55) - the full-screen fade emitter: func_8005C564(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4, each linked through func_8004E758; src/draw.c:121 drives it from D_8006C598"
 
 [[symbol]]
+name = "F_CREDITS_FADE"
+addr = 0x800744BC
+kind = "function"
+note = "func_credits_800744BC(abrMode, r, g, b) (src/overlays/credits/credits.c:10-33, MATCHING) - the credits overlay's fade emitter, the shape of F_UI_FADE: func_8005C564(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4, each linked through func_8004E71C at slot 8; its one caller func_credits_80076118 (asm 0x800762A8-0x800762C8) passes (2, D_8006C598 << 4 x3) while D_8006C598 != 0. Overlay-window address: credits magic 7 only"
+
+[[symbol]]
 name = "F_TEXT_SPRT"
 addr = 0x8002E748
 kind = "function"

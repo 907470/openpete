@@ -45,6 +45,15 @@ typedef struct ui_game {
      * POLY_F4. The feeder drives the native fade from the arguments. */
     uint32_t fade_emitter;
 
+    /* A second fade emitter of the same (abr_mode, r, g, b) shape inside the
+     * overlay window, which links its DR_MODE and POLY_F4 through
+     * `ot_rank_slot_insert` rather than `ot_insert`. Its hook carries the
+     * overlay id `fade_emitter_overlay` and fires only while that overlay is
+     * resident; the address is a different function in every other overlay.
+     * 0 = the game has none. */
+    uint32_t fade_emitter_ovl;
+    uint32_t fade_emitter_overlay;
+
     /* The emitter that draws a draw buffer's frame back as a grid of cells
      * inside an untextured border, once per tick of a window's shrink or
      * grow, every primitive linked through `ot_insert`. Its opaque F4s are

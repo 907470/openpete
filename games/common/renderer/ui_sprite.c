@@ -2079,14 +2079,20 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
 /** @brief Hooks a slotted insert that claims nothing and records its link for the link rank.
  *
  * The primitive (a0) and slot (a1) are recorded through ui_sprite_link_note
- * while the native scene is on; the ordinary dispatch then runs the insert.
- * Reads the argument registers only; writes no guest RAM.
+ * while the native scene is on; inside a fade emitter the primitive is also
+ * recorded as the fade quad by its address, so the emitter's F4, linked
+ * after its DR_MODE, is the one kept. The ordinary dispatch then runs the
+ * insert. Reads the argument registers only; writes no guest RAM.
  * @param cpu The guest CPU state; a0 is the primitive, a1 the slot.
  * @param addr The hooked entry address; unused.
  * @return 0, so the ordinary dispatch runs the insert. */
 static int on_ot_rank_link(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (openpete_native_scene_enabled()) ui_sprite_link_note(cpu->a0, (int)cpu->a1);
+    if (!openpete_native_scene_enabled()) return 0;
+    ui_sprite_link_note(cpu->a0, (int)cpu->a1);
+    /* Inside a fade emitter that links here (ui_game.fade_emitter_ovl), the
+     * last link of the call is its F4: ranked with the 2D as the fade quad. */
+    if (s_in_fade) openpete_native_scene_set_fade_prim(cpu->a0);
     return 0;
 }
 
@@ -2119,7 +2125,10 @@ static int on_ot_stitch(CPUState* cpu, uint32_t addr) {
  * preceding DR_MODE. The fade clears each VBL, so it is set whenever the
  * emitter runs, unless a render-path selection leaves RP_UI out. The real
  * emitter then runs unchanged with s_in_fade set, so
- * the chokepoint does not claim its F4 as a dark panel. Reads the
+ * the chokepoint does not claim its F4 as a dark panel. The same hook
+ * serves the overlay's copy of the emitter (ui_game.fade_emitter_ovl),
+ * whose F4 the slotted insert records as the fade quad;
+ * OPENPETE_UI_FADE_CENSUS prints each of that copy's calls. Reads the
  * arguments only; writes no PSX RAM.
  * @param cpu The guest CPU state.
  * @param addr The hooked entry address.
@@ -2137,6 +2146,10 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
         if ((int)cpu->a1 | (int)cpu->a2 | (int)cpu->a3)
             bbox_note(UICLS_FADE, 0.0f, 0.0f, 512.0f, 240.0f);
     }
+    { static int fc = -1; ENV_FLAG_LATCH(fc, "OPENPETE_UI_FADE_CENSUS");
+      if (fc && addr == ui_game.fade_emitter_ovl)
+          fprintf(stderr, "[uifade-ovl f=%u] mode=%d rgb=%d,%d,%d\n", openpete_frame,
+                  (int)cpu->a0, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3); }
     /* The real fade emit links its 0x2A F4 through the chokepoint; flag it so
      * the chokepoint hook treats that F4 as the fade (already handled) and NOT
      * a dark panel (also a 0x2A F4). */
@@ -2172,6 +2185,7 @@ static int on_fb_grid_emitter(CPUState* cpu, uint32_t addr) {
 static feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0u, on_ot_insert },
     { 0u, on_ot_insert },
+    { 0u, on_fade_emitter },
     { 0u, on_fade_emitter },
     { 0u, on_fb_grid_emitter },
     { 0u, on_ot_rank_link },
@@ -2214,9 +2228,10 @@ static void ui_freeze_retain_census(void) {
  *
  * When ui_game.freeze_retained is set, turns on the scene's retained
  * freeze mode and registers the exit census. The named ot_insert,
- * ot_insert_slot, fade_emitter, fb_grid_emitter, ot_rank_slot_insert and
- * (on a rank_by_link game) ot_stitch addresses are packed to the front of
- * the table and a zero address ends it.
+ * ot_insert_slot, fade_emitter, fade_emitter_ovl (with its overlay id),
+ * fb_grid_emitter, ot_rank_slot_insert and (on a rank_by_link game)
+ * ot_stitch addresses are packed to the front of the table and a zero
+ * address ends it.
  * @param opts The options; unused. */
 static void ui_sprite_apply_options(const openpete_options_t* opts) {
     (void)opts;
@@ -2238,6 +2253,11 @@ static void ui_sprite_apply_options(const openpete_options_t* opts) {
     if (ui_game.fade_emitter) {
         ui_sprite_dispatch[n].addr = ui_game.fade_emitter;
         ui_sprite_dispatch[n].fn   = on_fade_emitter; n++;
+    }
+    if (ui_game.fade_emitter_ovl) {   /* overlay-qualified: resident overlay only */
+        ui_sprite_dispatch[n].addr    = ui_game.fade_emitter_ovl;
+        ui_sprite_dispatch[n].fn      = on_fade_emitter;
+        ui_sprite_dispatch[n].overlay = ui_game.fade_emitter_overlay; n++;
     }
     if (ui_game.fb_grid_emitter) {
         ui_sprite_dispatch[n].addr = ui_game.fb_grid_emitter;

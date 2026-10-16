@@ -631,6 +631,12 @@ const game_layout_t spyro3_game_layout = {
 const ui_game_t spyro3_ui_game = {
     .ot_insert    = F_UI_OT_INSERT,
     .fade_emitter = F_UI_FADE,
+    /* The credits overlay (magic 7, recomp manifest) fades the credits in from
+     * black and through black at each scene change with its own copy of the
+     * fade emitter, linked at slot 8 of the slotted table
+     * (credits.c:10-33), driven by D_8006C598 (func_credits_80076118.s, 0x800762A8-0x800762C8). */
+    .fade_emitter_ovl     = F_CREDITS_FADE,
+    .fade_emitter_overlay = 7u,
 
     /* No freeze-frame backdrop quad is located on this game: the pause screen
      * is not reproduced from the native renderer's last world frame yet. */
