@@ -108,6 +108,13 @@ pause-unpause|2173|200||2189,2191,2193,2195,2197,2199
 # from VBL 2328 on the tick writer stores 0xA0000090 at g_Spyro+0x20: the player
 # draw cues the model colour table toward far colour (0x90, 0, 0) at IR0 0xA00.
 colour-cheat-red|2400|100||2400,2401,2500,2600
+# credits-cheat: the pause-menu credits cheat from Summer Forest (Square,
+# Circle x3, then Left, Right x3) reaches the credits at VBL 2264. 3678 and
+# 4572 are sub-tick presents with credits letters flying in and departing:
+# the draw compacts the CreditsLetter records in states 1-3 into consecutive
+# moby slots, so a departing or reused record moves every later letter to
+# another slot.
+credits-cheat|2300|200||3678,4572
 #
 # start-new-game: same-moby self-interpenetration. Two faces of one
 # moby that cross in 3D show their crossing contour under true depth, where
