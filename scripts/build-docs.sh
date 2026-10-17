@@ -73,9 +73,12 @@ if [ "$SERVE" = 1 ]; then
 fi
 
 # mkdocs build empties the site directory first (its --clean default), so
-# a page dropped from the source does not survive in the output.
+# a page dropped from the source does not survive in the output. No
+# --quiet: mkdocs 1.6 counts --strict's warnings from the log records it
+# emits, and --quiet raises the log level above WARNING, so a strict build
+# under --quiet passes every warning.
 SITE_DIR="$(realpath -m "$SITE_DIR")"
-python3 -m mkdocs build --strict -f docs/mkdocs.yml -d "$SITE_DIR" --quiet
+python3 -m mkdocs build --strict -f docs/mkdocs.yml -d "$SITE_DIR"
 [ -f "$SITE_DIR/index.html" ] \
     || { echo "build-docs: mkdocs wrote no $SITE_DIR/index.html" >&2; exit 1; }
 echo "[docs] site built: $SITE_DIR/index.html${SECTIONS:+ (sections: $SECTIONS)}"
