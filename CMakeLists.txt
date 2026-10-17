@@ -316,18 +316,29 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # presentation-labelled per-feature tests keep their parallelism:
     # they carry no timing threshold and run under `ctest -L presentation`.
 
-    # Modding-framework PoC-ladder gate (modtest v0): chain-order matrix,
-    # observer-neutrality vs the PSX oracle, raw-tier warning, and the
-    # double-gems expected-divergence assertion. Slow (four headless
-    # sessions); `ctest -L mods` or tests/harness/check_mods.sh directly.
-    add_test(NAME mod_poc_ladder
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mods.sh)
-    set_tests_properties(mod_poc_ladder PROPERTIES
-        LABELS "slow;mods"
-        RESOURCE_LOCK openpete_game
-        TIMEOUT 1800
-        ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # Modding-framework PoC-ladder gate, one test per check_mods.sh
+    # section (games: the per-game SDK, multigame, other-games, shader,
+    # material and table-census rungs; matrix: the cross-mod matrix, asset
+    # and wad overlays and the [test]-block runner; timeline: the arena
+    # canary, rewind, stream handles, save safety and session rungs). No
+    # section reads another's output. Each TIMEOUT is twice the section's
+    # measured wall time on an idle machine (games 283 s, matrix 481 s,
+    # timeline 342 s). `ctest -L mods`, or tests/harness/check_mods.sh
+    # with no --section for the whole ladder.
+    foreach(_sec_to games:570 matrix:970 timeline:690)
+        string(REPLACE ":" ";" _sec_to "${_sec_to}")
+        list(GET _sec_to 0 _sec)
+        list(GET _sec_to 1 _to)
+        add_test(NAME mod_ladder_${_sec}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mods.sh
+                         --section ${_sec})
+        set_tests_properties(mod_ladder_${_sec} PROPERTIES
+            LABELS "slow;mods"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT ${_to}
+            ENVIRONMENT "OPENPETE_BIN=${_spyro1_bin}"
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
 
     # ImGui containment gate: the mods fixture proves the table binds
     # headless, but every guard it installs runs only inside a UI section

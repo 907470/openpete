@@ -58,7 +58,7 @@ sub-tick is invisible to a headless capture.
 |---|---|---|
 | Oracle | `tests/harness/check_psx_oracle.sh` | Gameplay state matches the PSX reference capture, tick for tick. |
 | Presentation golden | `tests/harness/check_presentation_golden.sh` | The rendered screenshot corpus is unchanged, or intentionally re-blessed with `--bless`. |
-| Mods | `tests/harness/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_poc_ladder`, ~10 min). |
+| Mods | `tests/harness/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_ladder_games`, `mod_ladder_matrix` and `mod_ladder_timeline`, one `--section` each; ~19 min together). |
 
 Oracle internals are in [`duckstation-oracle.md`](duckstation-oracle.md).
 The presentation golden runs across several machines through

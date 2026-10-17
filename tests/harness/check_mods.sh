@@ -12,19 +12,31 @@
 #   - decomp promotion: legacy raw alias resolves + warns (churn test)
 # plus the tools/modtest.py run over every [test]-block rung.
 #
-# Usage: tests/harness/check_mods.sh [--game SLUG]
-#        (repo root; ~10 min - ctest mod_poc_ladder)
+# Usage: tests/harness/check_mods.sh [--game SLUG] [--section NAME]
+#        (repo root; ctest mod_ladder_games, mod_ladder_matrix and
+#        mod_ladder_timeline run one section each)
 # Env:   OPENPETE_BIN / OPENPETE_DISC - forwarded to runs + oracle.
 #
-# Fixture sets are per game. Every game runs the mod SDK and object
-# identity rungs (tests/harness/mods_sdk_rungs.sh) and the rungs of the
-# in-tree mods that load on every game (tests/harness/mods_multigame_rungs.sh:
-# lib-and-client, arena-probe, the postfx mods, per-game asset roots,
-# [[material]] and [[level]] rows by game), and the other-games rungs
-# (tests/harness/mods_games_rungs.sh: requires_games, optional_games and
-# the disc calls against a scratch library). The rest of this
-# script is Spyro 1's corpus: its fixtures, level names and golden are
-# Spyro 1's, so it runs under --game spyro-1 only.
+# Sections (--section; none runs all three in this order):
+#   games     runs on every game: the mod SDK and object identity rungs
+#             (tests/harness/mods_sdk_rungs.sh), the rungs of the in-tree
+#             mods that load on every game (tests/harness/mods_multigame_rungs.sh:
+#             lib-and-client, arena-probe, the postfx mods, per-game asset
+#             roots, [[material]] and [[level]] rows by game), the
+#             other-games rungs (tests/harness/mods_games_rungs.sh:
+#             requires_games, optional_games and the disc calls against a
+#             scratch library), the declarative materials and the table
+#             census, each with per-game fixture values; and on Spyro 1 the
+#             mod shader rungs.
+#   matrix    Spyro 1 only: the chain-duo matrix, observer-neutrality, crash
+#             attribution, decomp promotion, prebuilt objects, the asset and
+#             wad overlays, and the [test]-block runner.
+#   timeline  Spyro 1 only: the arena canary, rewind keyframes, stream
+#             handles, save safety, zip mods, live toggle, process handoff
+#             and hot reload.
+# No section reads a $WORK file another section writes. matrix and
+# timeline use Spyro 1's corpus (its fixtures, level names and golden),
+# so under another --game they run nothing.
 
 set -u
 
@@ -44,6 +56,21 @@ source scripts/lib/game.sh
 
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
+SECTION=""
+_next=0
+for _a in "$@"; do
+    if [ "$_next" -eq 1 ]; then SECTION="$_a"; _next=0
+    elif [ "$_a" = "--section" ]; then _next=1
+    elif [[ "$_a" == --section=* ]]; then SECTION="${_a#--section=}"
+    fi
+done
+case "$SECTION" in
+    ""|games|matrix|timeline) ;;
+    *) echo "unknown --section '$SECTION' (expected games, matrix or timeline)" >&2
+       exit 64 ;;
+esac
+# section_on <name>: true when the run includes that section.
+section_on() { [ -z "$SECTION" ] || [ "$SECTION" = "$1" ]; }
 # Every frame number the rungs pass is the feed key's (--frame-limit,
 # --screenshot-on-frame, --state-*-on-frame, OPENPETE_S3_SCAN_POKE). Spyro 1 keys
 # on openpete_frame; Spyro 2 and 3 key on openpete_vbl, which counts the boot's
@@ -115,14 +142,18 @@ finish() {
     exit $fail
 }
 
-# ── 0. per-game fixture set: SDK tree, header edits, object identity ────
+# ══ section games (part 1): per-game fixture set ══════════════════════
+if section_on games; then
 # shellcheck source=tests/harness/mods_sdk_rungs.sh
 source tests/harness/mods_sdk_rungs.sh
 # shellcheck source=tests/harness/mods_multigame_rungs.sh
 source tests/harness/mods_multigame_rungs.sh
 # shellcheck source=tests/harness/mods_games_rungs.sh
 source tests/harness/mods_games_rungs.sh
-[ "$PG_GAME" = "spyro-1" ] || finish
+fi
+
+# ══ section matrix: Spyro 1's cross-mod matrix and [test]-block runner ═
+if [ "$PG_GAME" = "spyro-1" ] && section_on matrix; then
 
 # ── 1+2. chain-duo matrix (order A,B then B,A) - also observer-neutral ──
 say "chain-duo matrix: order [a,b] (b outermost)"
@@ -583,6 +614,11 @@ else
     bad "modtest runner reported failures"
 fi
 
+fi # section matrix
+
+# ══ section timeline: Spyro 1's timeline, save and session rungs ════════
+if [ "$PG_GAME" = "spyro-1" ] && section_on timeline; then
+
 # ── 13. arena timeline canary: guest_alloc memory IS timeline state ───
 # arena-canary mirrors g_GameTick in a MUTABLE arena block and logs
 # DESYNC whenever guest RAM moves back in time without the arena; it also
@@ -660,15 +696,21 @@ fi
 # --state-save-on-frame 1200 and Spyro then stands idle at one site, so
 # every save and load here, with the config Apply at tick 1400 between
 # them, shares it.
+# A state records the card file each slot holds, and a load is refused
+# when no slot of the loading run holds that file; pg_capture gives every
+# run a card directory of its own. Every leg that saves or loads a state
+# file across runs therefore names one shared directory, CANARY_CARDS.
+CANARY_CARDS="$WORK/canary-cards"
+mkdir -p "$CANARY_CARDS"
 rm -f "$WORK/canary.state"
-out="$(run_game "$WORK/canary" 2600 --skip-to-level 10 \
+out="$(run_game "$WORK/canary" 2600 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
         --state-save-on-frame 2000 --state-save-output "$WORK/canary.state")"
 if printf '%s\n' "$out" | grep -q "savestate: saved" && [ -e "$WORK/canary.state" ]; then
     ok "file save with mutable arena memory: written"
 else
     bad "file save with mutable arena memory failed"
 fi
-out="$(run_game "$WORK/canary" 3000 --skip-to-level 10 \
+out="$(run_game "$WORK/canary" 3000 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
         --state-load-on-frame 2400 --state-load-input "$WORK/canary.state")"
 if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 9502784 B restored" && \
    printf '%s\n' "$out" | grep -q "savestate: loaded" && \
@@ -678,7 +720,7 @@ else
     bad "file load: arena not restored, or DESYNC after the load"
 fi
 fixture "$WORK/canary-ms" double-gems
-out="$(run_game "$WORK/canary-ms" 2700 --skip-to-level 10 \
+out="$(run_game "$WORK/canary-ms" 2700 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
         --state-load-on-frame 2200 --state-load-input "$WORK/canary.state")"
 if printf '%s\n' "$out" | grep -q "MODSET MISMATCH.*load refused"; then
     ok "modset mismatch: load refused, running state untouched"
@@ -694,7 +736,7 @@ for v in same diff; do
 done
 rm -f "$WORK/same.state" "$WORK/diff.state"
 out="$(OPENPETE_MODS_CFG_APPLY=1400:arena-canary:slots=4 \
-       run_game "$WORK/canary-same" 3300 --skip-to-level 10 \
+       run_game "$WORK/canary-same" 3300 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
         --state-save-on-frame 2000 --state-save-output "$WORK/same.state" \
         --state-load-on-frame 2800 --state-load-input "$WORK/same.state")"
 if printf '%s\n' "$out" | grep -q "arena-canary call #0 replayed" && \
@@ -705,7 +747,7 @@ else
     bad "Apply (same shape): no replay, load refused, or DESYNC"
 fi
 out="$(OPENPETE_MODS_CFG_APPLY=1400:arena-canary:slots=8 \
-       run_game "$WORK/canary-diff" 3300 --skip-to-level 10 \
+       run_game "$WORK/canary-diff" 3300 --skip-to-level 10 --card-dir "$CANARY_CARDS" \
         --state-save-on-frame 2000 --state-save-output "$WORK/diff.state" \
         --state-load-on-frame 2800 --state-load-input "$WORK/diff.state")"
 if printf '%s\n' "$out" | grep -q "row #0 superseded" && \
@@ -724,7 +766,8 @@ fi
 # instead logs no verdict within the run and counts the yields it waited.
 early_refusal() { # early_refusal <label> <mods_dir> <state> <verdict regex>
     local o
-    o="$(run_game "$2" 1500 --state-load-on-frame 1000 --state-load-input "$3")"
+    o="$(run_game "$2" 1500 --card-dir "$CANARY_CARDS" \
+        --state-load-on-frame 1000 --state-load-input "$3")"
     local census; census="$(printf '%s\n' "$o" | grep -o 'park site: loads=[0-9]* ([0-9]* final yield(s) waited)')"
     if printf '%s\n' "$o" | grep -q "$4" && \
        [ "$census" = "park site: loads=0 (0 final yield(s) waited)" ] && \
@@ -814,7 +857,7 @@ fi
 # A file load replaces the timeline and clears the ring; the keyframes
 # taken after it compare and restore the loaded arena bytes.
 o="$(OPENPETE_REWIND_HOLD_PHASE=10 RUN_TIMEOUT=900 run_game "$WORK/canary" 3600 \
-    --skip-to-level 10 --rewind 30 \
+    --skip-to-level 10 --rewind 30 --card-dir "$CANARY_CARDS" \
     --state-load-on-frame 2400 --state-load-input "$WORK/canary.state" \
     --rewind-hold 3000:40)"
 sh="$(rw_field "$o" shared)"; rs="$(rw_field "$o" restores)"
@@ -1119,6 +1162,13 @@ else
     grep -E "hot" "$WORK/hot.log" | head -5
 fi
 
+fi # section timeline
+
+# ══ section games (part 2): shaders (Spyro 1), materials, table census ═
+# The shader rungs sample Spyro 1 frames (a title-screen VBL, level 10's
+# scene and HUD); materials and the census carry per-game values.
+if [ "$PG_GAME" = "spyro-1" ] && section_on games; then
+
 # ── mod shaders: engine-compiled GLSL postfx visibly present in the
 # headless dump. The headless
 # screenshot path composes native_rtt, which BYPASSES off_image - a
@@ -1248,6 +1298,10 @@ else
     ok "ffmpeg/PIL unavailable - SCENE recording assertion skipped"
 fi
 
+fi # section games: shaders
+
+if section_on games; then
+
 # ── declarative materials: a shader mod with NO C at all ───────────────
 # The zero-C tier's whole claim is that a manifest plus a .frag is a
 # complete mod, so the rung asserts exactly that: the mod loads down the
@@ -1258,7 +1312,7 @@ fi
 # colour they moved to is the mod's business, not the gate's.
 say "declarative materials: manifest-only mod arms rows without compiling"
 fixture "$WORK/decl" declarative-reshade
-out="$(run_game "$WORK/decl" 400 --renderer vk 2>&1)"
+out="$(run_game "$WORK/decl" $((400 + KEY0)) --renderer vk 2>&1)"
 if printf '%s\n' "$out" | grep -q "declarative-reshade: 3 declarative material row(s)"; then
     ok "manifest [[material]] rows parsed"
 else
@@ -1279,13 +1333,18 @@ fi
 # A bad channel name must be REFUSED, never defaulted to "any": silently
 # widening a typo'd selector would repaint geometry the author never asked
 # for, which is the one failure mode the selector contract exists to stop.
+# The manifest names the running game: a manifest with no game key and an
+# api pin below 13 targets Spyro 1, so another game would skip the mod
+# before parsing its rows. Both verdicts therefore need the refusal line
+# and the mod's load line; without them the row was never parsed.
 say "declarative materials: an unknown channel is refused, not widened"
 mkdir -p "$WORK/declbad/typo/shaders"
 cp mods/declarative-reshade/shaders/tint.frag "$WORK/declbad/typo/shaders/"
-cat > "$WORK/declbad/typo/mod.toml" <<'TOML'
+cat > "$WORK/declbad/typo/mod.toml" <<TOML
 [mod]
 id = "typo"
 version = "0.0.1"
+game = "$PG_GAME"
 api = 3
 [[material]]
 frag = "shaders/tint.frag"
@@ -1294,33 +1353,41 @@ TOML
 mkdir -p "$WORK/decl2"
 ln -sfn "$WORK/declbad/typo" "$WORK/decl2/typo"
 echo "typo" > "$WORK/decl2/enabled.txt"
-out="$(run_game "$WORK/decl2" 300 2>&1)"
-if printf '%s\n' "$out" | grep -q "unknown channel \"terrian\""; then
-    ok "typo'd channel rejected by name"
-else
-    bad "typo'd channel was not rejected"
-fi
-if printf '%s\n' "$out" | grep -q "typo: material selector armed"; then
+out="$(run_game "$WORK/decl2" $((300 + KEY0)) 2>&1)"
+if ! printf '%s\n' "$out" | grep -q "unknown channel \"terrian\""; then
+    bad "typo'd channel was not rejected (no refusal line)"
+    printf '%s\n' "$out" | grep -E "typo|terrian" | head -3
+elif ! printf '%s\n' "$out" | grep -q "loaded typo v0.0.1"; then
+    bad "typo'd channel: refusal logged but the mod did not load"
+elif printf '%s\n' "$out" | grep -q "typo: material selector armed"; then
     bad "the refused row armed anyway - it would match every channel"
 else
-    ok "no selector armed from the refused row"
+    ok "typo'd channel rejected by name; mod loaded, no selector armed"
 fi
 
+# One flame breath per game, sampled at a feed-key VBL inside the breath:
+# the player and flame rows both have geometry on screen. The Spyro 2 and
+# 3 VBLs are the flame peaks their presentation corpus pins.
 say "declarative materials: the rows actually repaint their geometry"
+case "$PG_GAME" in
+    spyro-1) DECL_BK2=games/spyro-1/bk2/flame.bk2               DECL_VBL=1800 ;;
+    spyro-2) DECL_BK2=games/spyro-2/bk2/shady-oasis-flame.bk2     DECL_VBL=1419 ;;
+    spyro-3) DECL_BK2=games/spyro-3/bk2/crystal-islands-flame.bk2 DECL_VBL=1651 ;;
+esac
 if python3 -c "import PIL" 2>/dev/null; then
     mkdir -p "$WORK/declnone"; : > "$WORK/declnone/enabled.txt"
     for leg in none decl; do
         d="$WORK/decl"; [ "$leg" = none ] && d="$WORK/declnone"
-        RUN_OUTS="$WORK/decl-$leg-1800-vk.png" \
-        run_game "$d" 1802 --renderer vk --mute 1 \
-            --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
-            --screenshot-on-frame 1800 \
+        RUN_OUTS="$WORK/decl-$leg-$DECL_VBL-vk.png" \
+        run_game "$d" $((DECL_VBL + 2)) --renderer vk --mute 1 \
+            --bk2 "$DECL_BK2" --screenshot-native-only \
+            --screenshot-on-frame "$DECL_VBL" \
             --screenshot-output "$WORK/decl-$leg-{n}.png" \
             --max-runtime-seconds 280 \
             > "$WORK/decl-$leg.log" 2>&1 || true
     done
-    if [ -s "$WORK/decl-none-1800-vk.png" ] && [ -s "$WORK/decl-decl-1800-vk.png" ]; then
-        n_changed=$(python3 - "$WORK/decl-none-1800-vk.png" "$WORK/decl-decl-1800-vk.png" <<'PYEOF'
+    if [ -s "$WORK/decl-none-$DECL_VBL-vk.png" ] && [ -s "$WORK/decl-decl-$DECL_VBL-vk.png" ]; then
+        n_changed=$(python3 - "$WORK/decl-none-$DECL_VBL-vk.png" "$WORK/decl-decl-$DECL_VBL-vk.png" <<'PYEOF'
 import sys
 from PIL import Image, ImageChops
 a = Image.open(sys.argv[1]).convert("RGB")
@@ -1356,6 +1423,22 @@ fi
 # more shaders and post-process passes than the old tables did.
 say "table census: every converted table grows past its former cap"
 
+# Per-game fixture values. CEN_LEVEL is the level the run skips to (level
+# 10, each game's first homeworld) and CEN_DONOR the [[level]] rows'
+# donor; only Spyro 1's descriptor serves level ops, so on Spyro 2 and 3
+# the rows parse (mod_levels) and are refused at registration
+# (custom_levels stays empty). CEN_ANCHOR is a named EXE function that
+# the update units call: Spyro 1 CameraUpdate, Spyro 2 func_8001D87C and
+# Spyro 3 func_8001204C, each in its game's camera unit. The 65 raw
+# override_addr targets 0x80010000 + 4i lie in every
+# game's EXE text (each PSX.EXE loads at 0x80010000) below its overlay
+# window, so one base serves all three.
+case "$PG_GAME" in
+    spyro-1) CEN_LEVEL=artisans       CEN_DONOR=dark_hollow    CEN_ANCHOR=CameraUpdate ;;
+    spyro-2) CEN_LEVEL=summer_forest  CEN_DONOR=summer_forest  CEN_ANCHOR=func_8001D87C ;;
+    spyro-3) CEN_LEVEL=sunrise_spring CEN_DONOR=sunrise_spring CEN_ANCHOR=func_8001204C ;;
+esac
+
 CEN="$WORK/census"
 mkdir -p "$CEN"
 : > "$CEN/enabled.txt"
@@ -1365,8 +1448,8 @@ cen_mod() { # cen_mod <id> -- manifest header + enabled.txt row
     mkdir -p "$CEN/$id"
     printf '[mod]\nid = "%s"\nname = "%s"\nversion = "0.1.0"\n' "$id" "$id" \
         > "$CEN/$id/mod.toml"
-    printf 'game = "spyro-1"\napi = %s\nstate = "none"\nrunahead = "pure"\n' \
-        "$API_VER" >> "$CEN/$id/mod.toml"
+    printf 'game = "%s"\napi = %s\nstate = "none"\nrunahead = "pure"\n' \
+        "$PG_GAME" "$API_VER" >> "$CEN/$id/mod.toml"
     echo "$id" >> "$CEN/enabled.txt"
 }
 
@@ -1378,8 +1461,8 @@ for i in $(seq 0 64); do
     cen_mod "$id"
     printf '\n[[config]]\nkey = "on"\ntype = "bool"\ndefault = true\n' \
         >> "$CEN/$id/mod.toml"
-    printf '\n[[level]]\nname = "Cen %d"\nfiles = "cen%02d"\ndonor = "dark_hollow"\n' \
-        "$i" "$i" >> "$CEN/$id/mod.toml"
+    printf '\n[[level]]\nname = "Cen %d"\nfiles = "cen%02d"\ndonor = "%s"\n' \
+        "$i" "$i" "$CEN_DONOR" >> "$CEN/$id/mod.toml"
     mkdir -p "$CEN/$id/src"
     {
         echo '#include <openpete_mod_api.h>'
@@ -1391,7 +1474,7 @@ for i in $(seq 0 64); do
         echo '                       openpete_mod_t* self) {'
         echo '    g_api = api;'
         echo '    api->register_present_hook(self, present);'
-        echo '    api->override_name(self, "CameraUpdate", shared);'
+        echo "    api->override_name(self, \"$CEN_ANCHOR\", shared);"
         printf '    api->override_addr(self, 0x%08Xu, mine);\n' \
             "$((0x80010000 + i * 4))"
         # One allocation each: the arena's owner ledger carries a row per
@@ -1431,7 +1514,7 @@ cen_mod cenrows
         printf '\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "player"\nparams = [1.0, 0.5, 0.2, 0.01]\n'
     done
     for l in $(seq 1 5); do
-        printf '\n[[level]]\nname = "Rows %d"\nfiles = "rows%d"\ndonor = "dark_hollow"\n' "$l" "$l"
+        printf '\n[[level]]\nname = "Rows %d"\nfiles = "rows%d"\ndonor = "%s"\n' "$l" "$l" "$CEN_DONOR"
     done
 } >> "$CEN/cenrows/mod.toml"
 mkdir -p "$CEN/cenrows/shaders"
@@ -1516,9 +1599,9 @@ rm -f "$CEN_TXT"
 cen_t0=$SECONDS
 OPENPETE_MOD_TABLE_CENSUS="$CEN_TXT" OPENPETE_MODS_TOGGLE="$cen_toggles" \
     OPENPETE_TERRAIN_CACHE_FORCE=1 RUN_TIMEOUT=300 \
-    run_game "$CEN" 900 --skip-to-level artisans \
-    --screenshot-on-frame 880 \
-    --screenshot-output "$WORK/census-{n}.png" > /dev/null 2>&1
+    run_game "$CEN" $((900 + KEY0)) --skip-to-level "$CEN_LEVEL" \
+    --screenshot-on-frame $((880 + KEY0)) \
+    --screenshot-output "$WORK/census-{n}.png" > "$WORK/census.log" 2>&1
 CEN_SECS=$((SECONDS - cen_t0))
 cen_out="$(cat "$CEN_TXT" 2>/dev/null || true)"
 
@@ -1534,11 +1617,14 @@ else
 fi
 
 # name:former-capacity. Each row must show a high-water above the cap the
-# table used to carry.
+# table used to carry. custom_levels fills only on a game that serves
+# level ops (Spyro 1).
+cen_level_row=custom_levels:64
+[ "$PG_GAME" = "spyro-1" ] || cen_level_row=""
 for row in \
     mods:64 cfg_slots:64 mod_time:24 present_hooks:16 chains:64 \
     chain_owner_state:32 toggle_queue:16 toggle_sched:16 \
-    custom_levels:64 arena_rows:8192 arena_owners:64 materials:32 \
+    $cen_level_row arena_rows:8192 arena_owners:64 materials:32 \
     shaders:256 postfx:64 mod_deps:8 mod_bindings:8 mod_cfg_rows:32 \
     mod_cfg_items:8 mod_material_rows:16 mod_levels:4 mod_srcs:64
 do
@@ -1560,5 +1646,19 @@ done
 # fills only when a WAV decodes, and a headless run has no audio device
 # to open. Covered by the mod_vec unit test on the same container.
 ok "snd_cache CARVE-OUT: no audio device headless, covered by mod_vec_test"
+# On a game without level ops the 66 mods carrying [[level]] rows (cen00
+# to cen64 and cenrows) each log one refusal; the count proves the rows
+# reached registration.
+if [ "$PG_GAME" != "spyro-1" ]; then
+    n_lref="$(grep -c "\[\[level\]\] row(s) refused - $PG_GAME serves no level ops" \
+        "$WORK/census.log" || true)"
+    if [ "$n_lref" -eq 66 ]; then
+        ok "custom_levels CARVE-OUT: $PG_GAME serves no level ops ($n_lref/66 mods refused their rows)"
+    else
+        bad "custom_levels: $n_lref/66 level-row refusals on $PG_GAME"
+    fi
+fi
+
+fi # section games: materials and census
 
 finish
