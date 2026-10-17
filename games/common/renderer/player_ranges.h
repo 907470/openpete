@@ -7,12 +7,11 @@
  * staged over their own address for each sub-tick present, so the player
  * replay decodes the records the tick drew instead of whatever overwrote them.
  *
- * Two slots, not one: the hook captures the part records and the pre-blend
- * colour table in the same tick, and a single slot would leave one of them
- * unstaged. An unstaged span is not merely stale: the replay's two-pass decode
- * writes each rendered pose into the block it reads, and outside the sub-tick
- * view that host pointer is live PSX RAM, so the present would edit gameplay
- * memory. Slots are keyed by the scratch offset the hook named.
+ * A slot per range the hook names in a tick, up to two, so no named range
+ * is left unstaged. An unstaged span is not merely stale: the replay's
+ * two-pass decode writes each rendered pose into the block it reads, and
+ * outside the sub-tick view that host pointer is live PSX RAM, so the present
+ * would edit gameplay memory. Slots are keyed by the scratch offset the hook named.
  *
  * Two generations: the slots as of the last canonical epoch that captured, and
  * as of the capturing epoch before it, so a held camera cut stages tick N-1's

@@ -469,8 +469,8 @@ const game_layout_t spyro3_game_layout = {
         .anim_off = { 0x14u, 0x18u },           /* bodyAnimation, headAnimation
                                                  * (spyrodraw.s:15,118) */
         .sort_depth_off    = 0x1Eu,             /* spyrodraw.s:250 lb 0x1E: the ordering bias */
-        .colour_filter_off = 0x20u,             /* byte 3 selects the pre-blend colour table
-                                                 * (spyrodraw.s:740-743) */
+        .colour_filter_off = 0x20u,             /* the tint word: byte 3 non-zero cues the colour
+                                                 * block toward bytes 0-2 (spyrodraw.s:740-743) */
         .emit_mode_off     = 0u,                /* one emit path */
         .hook_draw = F_PLAYER_DRAW,
 
@@ -498,9 +498,6 @@ const game_layout_t spyro3_game_layout = {
         .part_matrix_sign  = 0x80000000u,       /* spyrodraw.s:375 bgez skips the reload */
         .blend_mask        = 0x0FFFu,           /* the blend byte << 4, 1.12 (spyrodraw.s:400) */
 
-        /* No colour_scratch: the walk cues the model colour block by the tint
-         * word itself (player_faces_t.tint) rather than reading the table the
-         * draw builds in its scratch. */
         .sxy_base = 0x1F800000u,                /* the draw writes every projected vertex's
                                                  * int16 screen position here as it goes
                                                  * (spyrodraw.s:361,443-448); the walk does not

@@ -352,7 +352,8 @@ const game_layout_t spyro1_game_layout = {
         .rot_off = { 0x0Cu, 0x10u, 0x14u },   /* body / head / tail packed byte euler */
         .anim_off = { 0x18u, 0x1Au, 0x1Cu },  /* per-part animation index byte */
         .sort_depth_off    = 0x27u,      /* r_pete.s 80023F8C lbu 0x27: the ordering-table bias */
-        .colour_filter_off = 0x28u,      /* byte 3 non-zero selects the pre-blend colour table */
+        .colour_filter_off = 0x28u,      /* the tint word: byte 3 non-zero cues the colour
+                                          * block toward bytes 0-2 (r_pete.s 80024B60-80024C2C) */
         .emit_mode_off     = 0x30u,      /* non-zero selects the interpolated emit path */
         .hook_draw = F_PLAYER_DRAW,
 
@@ -374,8 +375,6 @@ const game_layout_t spyro1_game_layout = {
         .part_matrix_sign  = 0x80000000u,/* the record carries its own matrix */
         .blend_mask        = 0x0FFFu,    /* the keyframe blend weight, 1.12 */
 
-        .colour_scratch_off = 0x1D00u,   /* the pre-blend colour table, read to +0x1EEC */
-        .colour_scratch_len = 0x300u,
         .sxy_base = 0x1F800000u,         /* the PSX scratchpad: every projected vertex's SXY */
         .sxy_len  = 0x400u,
 

@@ -815,9 +815,10 @@ typedef struct game_layout {
      * block base: past the terminating flags word and inside
      * `part_block_len`, bytes the guest's own block never defines.
      *
-     * `colour_scratch_off`/`_len` is the pre-blend colour table the draw
-     * builds in the same scratch when `colour_filter_off` selects it;
-     * `sxy_base`/`sxy_len` is where the draw leaves every projected vertex's
+     * `colour_filter_off` is the state's tint word: bytes 0-2 a far colour,
+     * byte 3 a weight; a non-zero weight makes the draw cue every entry of
+     * the model colour block toward the far colour, which the walk computes
+     * itself from the word. `sxy_base`/`sxy_len` is where the draw leaves every projected vertex's
      * int16 screen position, which the walk reads as the game's own cull
      * verdict and the record store snapshots.
      *
@@ -853,7 +854,6 @@ typedef struct game_layout {
         uint32_t part_matrix_sign;
         uint32_t blend_mask;
 
-        uint32_t colour_scratch_off, colour_scratch_len;
         uint32_t sxy_base, sxy_len;
 
         uint32_t flame_base, flame_len;

@@ -142,25 +142,6 @@ uint32_t player_rec_seam_word(int k) {
     return (off + 4u <= PL.part_block_len) ? blk_get(s_blk + off) : 0u;
 }
 
-/** @brief The guest base of the pre-blend colour table the draw builds.
- *
- * A layout with a fixed render scratch names it as part_base +
- * colour_scratch_off; one that carves the scratch out of the polybuf every tick
- * leaves part_base 0 and the table starts at *polybuf.end -
- * part_base_polybuf_off + colour_scratch_off.
- * @param cpu Reads the polybuf end pointer.
- * @return The table's guest address, or 0 when the layout has no table
- *         (colour_scratch_len 0), names neither form, or the polybuf end is not
- *         a RAM address. */
-static uint32_t player_colour_scratch(CPUState* cpu) {
-    if (!PL.colour_scratch_len) return 0;
-    if (PL.part_base) return PL.part_base + PL.colour_scratch_off;
-    if (!game_layout.polybuf.end || !PL.part_base_polybuf_off) return 0;
-    uint32_t end = cpu->read_word(game_layout.polybuf.end);
-    if (end < 0x80000000u) return 0;
-    return end - PL.part_base_polybuf_off + PL.colour_scratch_off;
-}
-
 /** @brief The part count the walk iterates.
  *
  * The provider's part_count when it has one, else the layout's part_count,
@@ -328,16 +309,29 @@ static uint32_t player_tint_cue(uint32_t rgb, uint32_t tint) {
     return out;
 }
 
+/** @brief Whether OPENPETE_PLAYER_VERIFY_NOTINT, the tint cue's negative control, is set.
+ *
+ * Latched on the first call. When set, player_face_colour returns every
+ * colour block entry uncued, so on a tick whose tint weight is non-zero the
+ * verify probe's colour leg collapses.
+ * @return 1 when set, else 0. */
+static int player_tint_disabled(void) {
+    static int v = -1;
+    ENV_FLAG_LATCH(v, "OPENPETE_PLAYER_VERIFY_NOTINT");
+    return v;
+}
+
 /** @brief One face vertex's colour: the colour block's entry at a byte offset, cued by the block's tint.
  *
- * A tint whose weight byte is zero leaves the entry as read.
+ * A tint whose weight byte is zero, or OPENPETE_PLAYER_VERIFY_NOTINT, leaves
+ * the entry as read.
  * @param cpu Reads the colour block.
  * @param F The part's streams and tint.
  * @param off The entry's byte offset in the block.
  * @return The packed 0x00BBGGRR colour. */
 static uint32_t player_face_colour(CPUState* cpu, const player_faces_t* F, uint32_t off) {
     uint32_t c = cpu->read_word(F->colours + off) & 0xFFFFFFu;
-    return (F->tint >> 24) ? player_tint_cue(c, F->tint) : c;
+    return ((F->tint >> 24) && !player_tint_disabled()) ? player_tint_cue(c, F->tint) : c;
 }
 
 /** @brief Whether OPENPETE_PLAYER_VERIFY_NOPLANE, the water-plane split's negative control, is set.
@@ -1301,15 +1295,6 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
          * draw's later passes keep). */
         if (is_player && spyro_native_canon_capture_open()) {
             spyro_native_canon_capture_range(cpu, PL.part_off, PL.part_block_len);
-            /* The pre-blend colour table the draw builds above when the
-             * state's colour filter selects it. It lives inside the record
-             * region the sub-tick restore takes at an EARLIER hook, so that
-             * restore leaves it stale and the avatar's colours strobe above
-             * the tick rate. Capture it fresh here and overlay it for this
-             * feeder. */
-            if (PL.colour_scratch_len)
-                spyro_native_canon_capture_range(cpu, PL.colour_scratch_off,
-                                                 PL.colour_scratch_len);
             spyro_native_canon_capture_sxy(cpu);
             spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SPYRO);
         }
@@ -1566,10 +1551,8 @@ int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_en
     if (L->n >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
     const uint8_t* sp  = (const uint8_t*)openpete_psx_to_host_span(PL.base, PL.rec_len);
     uint32_t block = player_part_block_base(cpu);
-    uint32_t colb  = player_colour_scratch(cpu);
     const uint8_t* seg = block ? (const uint8_t*)openpete_psx_to_host_span(block, PL.part_block_len) : NULL;
     if (player_game.part_record) seg = s_blk;   /* set below, from gamestate */
-    const uint8_t* fk  = colb  ? (const uint8_t*)openpete_psx_to_host_span(colb, PL.colour_scratch_len)  : NULL;
     const uint8_t* sxy = PL.sxy_base ? (const uint8_t*)openpete_psx_to_host_span(PL.sxy_base, PL.sxy_len) : NULL;
     if (!sp || !seg) return -1;
     player_model_rec_t* r = &L->r[L->n];
@@ -1578,7 +1561,6 @@ int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_en
     memcpy(r->src,   sp,  PL.rec_len);
     if (player_game.part_record) player_block_derive(cpu, r->seg);
     else memcpy(r->seg, seg, PL.part_block_len);
-    if (fk)  memcpy(r->fk,  fk,  PL.colour_scratch_len);
     if (sxy) memcpy(r->sxy, sxy, PL.sxy_len);
     r->rp_start = rp_start; r->rp_end = rp_end;
     r->drawn = 1; r->pair = -1; r->pair2 = -1;
@@ -1652,7 +1634,7 @@ int player_records_flame_append(CPUState* cpu) {
 /** @brief Whether two record lists differ in any byte the store compares.
  *
  * Compares the model, shadow and flame counts, and each model record's drawn
- * flag and state bytes; a drawn record's part block, colour table and SXY block
+ * flag and state bytes; a drawn record's part block and SXY block
  * as well; each shadow and flame record's model index, drawn flag and state.
  * The shown-state copies, polybuf ranges and pairing fields are not compared.
  * @param a The first list.
@@ -1665,7 +1647,6 @@ static int lists_differ(const rec_list_t* a, const rec_list_t* b) {
         if (x->drawn != y->drawn) return 1;
         if (memcmp(x->spyro, y->spyro, PL.rec_len) != 0) return 1;
         if (x->drawn && (memcmp(x->seg, y->seg, PL.part_block_len) != 0 ||
-                         memcmp(x->fk,  y->fk,  PL.colour_scratch_len)  != 0 ||
                          memcmp(x->sxy, y->sxy, PL.sxy_len) != 0)) return 1;
     }
     if (a->nsh != b->nsh) return 1;
@@ -1780,7 +1761,7 @@ void player_records_epoch_commit(void) {
             if (memcmp(epoch.r[k].spyro + PL.pos_off, ring + PL.pos_off, 12) == 0) { seen = 1; break; }
         /* --runahead: the hooks fire on the committed tick and on the
          * speculative ticks; the ring and the canonical present hold the led
-         * one. Every record takes its shown state (src, seg, fk, sxy) from the
+         * one. Every record takes its shown state (src, seg, sxy) from the
          * led list, the speculative fires of the ring's capture tick, index for
          * index; the committed bytes stay the pairing key. A led list from
          * another frame or of another shape leaves the records committed and
@@ -1795,7 +1776,6 @@ void player_records_epoch_commit(void) {
                     memcpy(epoch.r[k].src, s_led.r[k].spyro, PL.rec_len);
                     if (epoch.r[k].drawn) {
                         memcpy(epoch.r[k].seg, s_led.r[k].seg, PL.part_block_len);
-                        memcpy(epoch.r[k].fk,  s_led.r[k].fk,  PL.colour_scratch_len);
                         memcpy(epoch.r[k].sxy, s_led.r[k].sxy, PL.sxy_len);
                     }
                 }

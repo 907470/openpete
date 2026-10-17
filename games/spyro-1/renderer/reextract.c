@@ -853,7 +853,7 @@ int spyro_cutpath_jump(uint32_t m, const uint8_t* prev_rec, const uint8_t* curr_
  *   in PSX space and are overlaid only AFTER those feeders consumed the
  *   records (scratch_bracket_seg_restore) - reproducing the .s's temporal
  *   reuse of [0x1900,..): the moby pass fills cull records there, then the
- *   Spyro pass overwrites them with its seg scratch / Fairy-Kiss table once
+ *   Spyro pass overwrites them with its seg scratch once
  *   the records are consumed. (A single-shot restore would clobber records
  *   >=14 at 0x1910+, dropping Sparx and distant chests on sub-ticks.)
  *
@@ -887,7 +887,6 @@ static uint8_t s_recs_buf[2][0xE00];
 static uint8_t s_shaded_buf[2][0x800];
 static uint8_t s_sxy_buf[2][0x400];
 static uint8_t s_seg_buf[2][0x100];
-static uint8_t s_fk_buf[2][0x300];
 
 static scratch_region_t s_scratch_rows[] = {
     /* per-vertex fog-lit colour scratch [0x1100,0x1600) */
@@ -907,12 +906,6 @@ static scratch_region_t s_scratch_rows[] = {
     /* Spyro per-segment scratch [0x1900,0x1A00) - overlaps recs */
     { "seg",    G_SCRATCH + 0x1900u, 0x100u, SPROD_SPYRO,  SPHASE_SEG_OVERLAY,
       s_seg_buf[0], s_seg_buf[1], 0, 0, 0 },
-    /* Fairy-Kiss pre-blend colour table [0x1D00,0x2000) - overlaps recs;
-     * written by the Spyro pass AFTER the moby records, like the seg scratch.
-     * When Fairy-Kiss is inactive it's harmless (build_spyro_walk reads
-     * m_Colors, not 0x1D00). */
-    { "fk",     G_SCRATCH + 0x1D00u, 0x300u, SPROD_SPYRO,  SPHASE_SEG_OVERLAY,
-      s_fk_buf[0], s_fk_buf[1], 0, 0, 0 },
 };
 #define SCRATCH_ROWS ((int)(sizeof s_scratch_rows / sizeof s_scratch_rows[0]))
 static int s_any_captured = 0;
@@ -1267,8 +1260,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
  *
  * Runs after the moby and shadow feeders have read the regular records,
  * and writes the rows at 0x1900 onward as the .s reuses that memory, so
- * the Spyro body feeder reads its seg scratch and the Fairy-Kiss
- * pre-blend colour table instead of record bytes. Only rows captured by a
+ * the Spyro body feeder reads its seg scratch instead of record bytes. Only rows captured by a
  * producer that ran in the last canonical present are written, into the
  * staged copy when one exists, else into guest memory. No-op when the
  * bracket is not open.
@@ -1313,7 +1305,7 @@ static void scratch_bracket_leave(CPUState* cpu) {
  * lerped g_Spyro (player 1, the modless singleton) for the feeders that read
  * G_SPYRO per present (the moby feeder's gem gates); this loop restages
  * record k's bytes, its position / anim-clock / rotation brackets against
- * the record it paired from, its scratch rows (seg, Fairy-Kiss colour, SXY)
+ * the record it paired from, its scratch rows (seg, SXY)
  * and its tag slot, runs the feeder, and after the last record restores the
  * ambient bytes and fractional-position entry. No feeder after this loop
  * reads G_SPYRO. Modless the list holds one drawn record whose bytes are the
@@ -1484,7 +1476,6 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
              * copies (the bracket staged the same spans; the seg row overlays the
              * consumed records at 0x1900 like the .s does). */
             spyro_record_overlay(PLAYER_L.part_base + PLAYER_L.part_off, rec->seg, PLAYER_L.part_block_len);
-            spyro_record_overlay(PLAYER_L.part_base + PLAYER_L.colour_scratch_off, rec->fk, PLAYER_L.colour_scratch_len);
             spyro_record_overlay(PLAYER_L.sxy_base, rec->sxy, PLAYER_L.sxy_len);
 
             spyro_native_prod_camera_enter(SPROD_SPYRO);   /* Spyro's own draw camera when the tick ended under another */

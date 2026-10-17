@@ -390,13 +390,16 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
 /** @brief Returns the face and colour streams the whole skeleton shares, from the body's animation header.
  *
  * The header is the model's +0x38 table entry for the body's animation
- * index; faces are at +0x14, colours at +0x18. When the colour filter's
- * top byte is non-zero (the filter is interpolating), the colours come from
- * the pre-blend table the draw built in the render scratch instead of the
- * model's static block.
+ * index; faces are at +0x14, colours at +0x18. The tint is g_Spyro+0x28:
+ * with byte 3 non-zero the draw runs one sf = 1 INTPL per entry of the
+ * header's colour block (count at +0x02) with IR = channel << 4, IR0 = byte 3
+ * << 4 and the far colour bytes 0-2 << 4, into a table at render scratch
+ * +0x1D00 it indexes instead (r_pete.s 80024B60-80024C2C). That chain reduces
+ * to floor(c + (f - c) * w / 256), the cue the walk applies to the model
+ * block, so the walk never reads the table the draw built.
  * @param cpu The guest CPU state.
  * @param part Unused: every part shares the body's streams.
- * @param out Receives the face and colour stream addresses.
+ * @param out Receives the face and colour stream addresses and the tint.
  * @return 1 when the header is a KSEG0 pointer, else 0. */
 static int s1_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     (void)part;
@@ -406,9 +409,7 @@ static int s1_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     if (animHdr < 0x80000000u) return 0;
     out->faces   = cpu->read_word(animHdr + 0x14u);
     out->colours = cpu->read_word(animHdr + 0x18u);
-    if (PL.colour_filter_off &&
-        (cpu->read_word(PL.base + PL.colour_filter_off) >> 24) != 0)
-        out->colours = PL.part_base + PL.colour_scratch_off;
+    out->tint    = cpu->read_word(PL.base + PL.colour_filter_off);
     return 1;
 }
 

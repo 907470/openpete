@@ -9,7 +9,7 @@
  *
  * The record store below holds one record per draw-hook call. Every canonical
  * draw-hook call appends a record (the state bytes the extractor reads, the
- * part-transform block, the pre-blend colour table, the projected-SXY block
+ * part-transform block, the projected-SXY block
  * and the polybuf range) to the epoch's list. The
  * canonical-epoch commit closes the list into a three-deep store (curr, prev,
  * prev2) with one clock per store, pairs each record with a record of the
@@ -41,7 +41,6 @@ enum { PLAYER_REC_MODEL = 0, PLAYER_REC_SHADOW = 1, PLAYER_REC_FLAME = 2,
 #define PLAYER_REC_MAX        16      /* per feeder per epoch */
 #define PLAYER_REC_STATE_MAX  0x2E8u  /* the largest state span a record copies */
 #define PLAYER_REC_PART_MAX   0x100u  /* the part-transform block */
-#define PLAYER_REC_COL_MAX    0x300u  /* the pre-blend colour table */
 #define PLAYER_REC_SXY_MAX    0x400u  /* the projected-SXY block */
 #define PLAYER_REC_AUX_MAX    0xD0u   /* the largest auxiliary feeder's state */
 
@@ -50,9 +49,8 @@ typedef struct {
     uint8_t  src[PLAYER_REC_STATE_MAX];    /* the shown state, staged and lerped by the re-extract:
                                             * the same bytes, except under --runahead where the led
                                             * list's record (the tick the canonical present shows)
-                                            * goes here; seg, fk and sxy follow it */
+                                            * goes here; seg and sxy follow it */
     uint8_t  seg[PLAYER_REC_PART_MAX];
-    uint8_t  fk[PLAYER_REC_COL_MAX];
     uint8_t  sxy[PLAYER_REC_SXY_MAX];
     uint32_t rp_start, rp_end;   /* polybuf range of the call (0,0 = pairing-only) */
     uint8_t  drawn;              /* 1 = a hook call; 0 = pairing-only (never rendered) */
@@ -175,11 +173,11 @@ void player_reextract_record(struct CPUState* cpu, int mirror);
  *
  * Copies the state block (as both the pairing key and the shown state), the
  * part-transform block (derived from gamestate when the provider answers
- * part_record), the pre-blend colour table and the projected-SXY block, and
+ * part_record) and the projected-SXY block, and
  * marks the record drawn with its is_player answer. A speculative fire under
  * runahead appends to the led list instead of the canonical one. Called by the
  * shared hook; an auxiliary feeder calls its own append below.
- * @param cpu Reads the part block and colour scratch bases.
+ * @param cpu Reads the part block base.
  * @param rp_start The call's polybuf start.
  * @param rp_end The call's polybuf end.
  * @return The record's index (the tag slot), or -1 when the list holds
@@ -213,7 +211,7 @@ int  player_records_flame_append(struct CPUState* cpu);
  * pairing-only model record is appended from the ring's bytes, and shadow and
  * flame pairing-only records for the ring's avatar when their hooks did not
  * fire; pairing-only records are never rendered. Under --runahead each record's
- * shown state (src, seg, fk, sxy) is taken from the led list when that list
+ * shown state (src, seg, sxy) is taken from the led list when that list
  * has the committed list's shape. The list becomes the store's newest entry and
  * is paired against the previous one only when the ring rolled or the list
  * differs from the newest; otherwise it is dropped as a duplicate. Returns at
