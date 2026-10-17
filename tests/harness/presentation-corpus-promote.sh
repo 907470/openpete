@@ -10,10 +10,12 @@
 # adjudicated divergences). A tile whose digest equals its row's keeps its row.
 #
 # The blessed revision is read from the candidate's capture-record.txt, which
-# the gate writes before it captures: HEAD is written when HEAD's tree over the
-# build's source roots equals the recorded tree, and the promote is refused
-# otherwise, naming the first differing path (scripts/presentation-blessed.py
-# promote).
+# the gate writes before it captures: the first-parent ancestor of HEAD (500
+# deep) whose tree over the build's source roots equals the recorded tree is
+# written (the record's head when it matches), and the promote is refused
+# otherwise, naming the nearest commit and its first differing path
+# (scripts/presentation-blessed.py promote). A capture taken at a revision main
+# has since moved past therefore promotes at that revision.
 #
 # Usage:
 #   tests/harness/presentation-corpus-promote.sh <candidate_dir> [tile ...] [--game SLUG]
@@ -34,7 +36,8 @@
 #
 # A golden-fleet run leaves each unit's promotable candidate in
 # build/fleet-stream/<run-id>/<unit>/ (its pulled tiles, verdict report,
-# capture-device.txt and capture record), so after a run:
+# capture-device.txt and capture record); a capture from any fleet host is
+# admitted on the Environment surface, so after a run:
 #   tests/harness/presentation-corpus-promote.sh build/fleet-stream/<run-id>/<unit> <tile>...
 #
 # The promote runs inside the capture image, on a candidate captured there:
@@ -45,13 +48,8 @@
 # `scripts/golden-capture-container.sh run` (pg_enter_capture_image
 # --no-engine), which passes the machine's hostname as OPENPETE_CAPTURE_HOST;
 # the container mounts this tree and the reference store's parent directory,
-# so candidate_dir lies under one of them. A candidate pulled by
-# scripts/golden-fleet.py names the coordinator's run directory as
-# fleet-run-dir in its capture-record.txt; that directory, which holds the
-# run's canary-verdict.txt (written at the run's end, after every pull), is
-# mounted read-only at its own path through OPENPETE_CAPTURE_RO_MOUNTS so the
-# promote reads the verdict where the record names it. Exit 64 when no
-# container engine is present.
+# so candidate_dir lies under one of them. Exit 64 when no container engine
+# is present.
 #
 # After running, review `git -C <openpete> diff --cached` and commit deliberately.
 #
@@ -72,10 +70,6 @@ fi
 if [[ -n "$rec_tier" && -z "${PRESENTATION_TIER:-}" ]]; then export PRESENTATION_TIER="$rec_tier"; fi
 
 if ! pg_in_capture_image; then
-  run_dir="$(sed -n 's/^fleet-run-dir=//p' "${1:-}/capture-record.txt" 2>/dev/null | tail -1)"
-  if [[ -n "$run_dir" && -d "$run_dir" ]]; then
-    export OPENPETE_CAPTURE_RO_MOUNTS="$run_dir${OPENPETE_CAPTURE_RO_MOUNTS:+:$OPENPETE_CAPTURE_RO_MOUNTS}"
-  fi
   pg_enter_capture_image --no-engine tests/harness/presentation-corpus-promote.sh "$@"
   exit $?
 fi

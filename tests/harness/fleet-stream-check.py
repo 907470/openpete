@@ -38,8 +38,7 @@ write. Cases (each prints its counts):
               capture (it fails, the lone captured host fails with no
               cross-host comparison) and one host (canary=off); a pulled
               capture record stamped with fleet-run, fleet-host and
-              fleet-run-dir, and presentation-blessed.py's fleet_refusal
-              admitting it only on the passing verdict
+              fleet-run-dir
 
   move        `move` requests: an unknown unit, an unadmitted host and the
               unit's own host refused; an accepted move to a second host of
@@ -807,8 +806,17 @@ def case_ledger(tmp):
           f"before, {after:.0f} s after (norm_s {norm:.0f} / 0.25 x 2)")
 
 
+def read_verdict(run_dir):
+    """The `key=value` lines of a run directory's canary-verdict.txt as a dict; None when absent."""
+    try:
+        with open(os.path.join(run_dir, gf.CANARY_VERDICT), encoding="utf-8") as f:
+            return dict(ln.rstrip("\n").partition("=")[::2] for ln in f if "=" in ln)
+    except OSError:
+        return None
+
+
 def case_canary_verdict(tmp):
-    """canary-verdict.txt per host, the pulled record's fleet stamp, and fleet_refusal reading both."""
+    """canary-verdict.txt per host and the pulled record's fleet stamp."""
     from PIL import Image
     pb = gf.load_pb(TREE)
     co = FakeCo(tmp, "canary-verdict")
@@ -827,7 +835,7 @@ def case_canary_verdict(tmp):
             jobs.append(j)
         co.hosts = [co.hs] * len(rcs)
         rrc = co.compare_canaries(jobs)
-        got = pb.read_canary_verdict(co.local_run_dir)
+        got = read_verdict(co.local_run_dir)
         return rrc, got
 
     rc_same, same = scenario({"a": 1, "b": 1}, {"a": 0, "b": 1})
@@ -855,14 +863,7 @@ def case_canary_verdict(tmp):
                and recd.get("fleet-run-dir") == os.path.abspath(co.local_run_dir)
                and recd.get("host") == "remote-box"
                and open(os.path.join(pull, gf.RECORD_NAME)).read().count("fleet-run=") == 1)
-    header = {"image-digest": "sha256:i", "libvulkan": "1.3", "recipe-hash": "r"}
-    scenario({"a": 1, "b": 1}, {"a": 0, "b": 0})
-    admitted = pb.fleet_refusal(recd, header)
-    scenario({"a": 1, "b": 2}, {"a": 0, "b": 0})
-    refused = pb.fleet_refusal(recd, header)
-    check("canary-verdict-record", stamped and admitted is None and refused
-          and "failed on host b" in refused,
-          f"record {recd}; pass verdict -> {admitted}; differing verdict -> {refused}")
+    check("canary-verdict-record", stamped, f"record {recd}")
 
 
 def case_run_candidate(tmp):

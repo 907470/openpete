@@ -156,9 +156,8 @@ coordinator:
      unit whose report's blessed.tsv or identity-baseline hash or census
      differs from the local files, appends fleet-run=<run-id>,
      fleet-host=<host> and fleet-run-dir=<local run dir> to the pulled
-     capture record (presentation-blessed.py promote reads the canary
-     verdict of a capture from another host through them), prints the
-     report's census (captured,
+     capture record (presentation-blessed.py promote prints them), prints
+     the report's census (captured,
      imported and compared tiles), and renders heat diffs locally
      (presentation-corpus-diff.py --expect-subset); an accepted pull is then
      copied (hard links) into build/fleet-stream/<run-id>/<unit>/, the run's

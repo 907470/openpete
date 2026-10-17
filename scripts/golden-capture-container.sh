@@ -77,8 +77,7 @@
 #
 # OPENPETE_CAPTURE_RO_MOUNTS=<dir>[:<dir>...] mounts each named absolute
 # directory read-only at its own path, for a host file an in-container step
-# reads outside the tree and the store (a golden-fleet run directory's canary
-# verdict, read by a promote of a fleet pull).
+# reads outside the tree and the store.
 #
 # Every container runs with --network=none. OPENPETE_CAPTURE_LABEL=<value>
 # adds the container label org.openpete.fleet=<value>. OPENPETE_CAPTURE_FIELDS

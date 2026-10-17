@@ -99,12 +99,15 @@ Subcommands:
           [--exclude SUBSTR]... [--create] [--environment-accept REASON]
                                   rewrite the rows of changed candidate tiles
                                   and file them into the store; the blessed
-                                  revision is HEAD when HEAD's tree equals the
-                                  record's source tree, else a refusal naming
-                                  the first differing path; refused outside
-                                  the pinned capture environment (Environment)
-                                  and when the record's host is not this
-                                  machine (a record without a host is local)
+                                  revision is the first-parent ancestor of
+                                  HEAD (500 deep) whose tree equals the
+                                  record's source tree (the record's head when
+                                  it matches), else a refusal naming the
+                                  nearest commit and its first differing path;
+                                  refused outside the pinned capture
+                                  environment (Environment); a capture from
+                                  any host is admitted (a golden-fleet run's
+                                  build/fleet-stream/<run-id>/<unit>/)
 
 Environment: each header records the capture environment. The comparison
 surface (SURFACE_KEYS) is the hash of the image recipe the capture ran in, the
@@ -159,14 +162,11 @@ DIGEST_RULE = ('sha256(b"RGB\\n" + width + b"\\n" + height + b"\\n" + '
 # --environment-accept records the reason. image-digest (the capture image's
 # ID, `sha256:` and the digest of its config, identical on every host the
 # image is shipped to) and libvulkan are recorded and not compared for a
-# local capture: two builds of one recipe produce different image IDs, and
-# the loader version is fixed by the recipe hash; a capture from another host
-# must equal both (REMOTE_PINNED_KEYS). host
-# (the machine's hostname, host_here) and cpu (the /proc/cpuinfo model name)
-# are written to the capture record only, never to a manifest header or row:
-# they name the machine that captured, a promote admits a capture record whose
-# host is not its own only from a golden-fleet pull (fleet_refusal), and a
-# committed file names no machine.
+# capture: two builds of one recipe produce different image IDs, and the
+# loader version is fixed by the recipe hash. host (the machine's hostname,
+# host_here) and cpu (the /proc/cpuinfo model name) are written to the capture
+# record only, never to a manifest header or row: they name the machine that
+# captured, a promote prints them, and a committed file names no machine.
 # lp-num-threads (the llvmpipe thread count of the capture) is recorded the
 # same way: every value is pixel-identical and it only sets throughput.
 ENV_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
@@ -1624,25 +1624,62 @@ def resolve_reference(row, tdir, arch=None):
     return None, None
 
 
-def blessed_revision(rec):
-    """HEAD when HEAD's tree equals the capture record's source tree over
-    SOURCE_ROOTS, other games' corpus directories aside. Returns (sha, None)
-    or (None, reason)."""
+# First-parent ancestors of HEAD a promote searches for the capture's source
+# tree, newest first.
+ANCESTOR_DEPTH = 500
+
+
+def capture_tree_diff(rev_tree, tree, game):
+    """Paths under SOURCE_ROOTS at which a commit's tree differs from a
+    capture's source tree, other games' corpus directories aside: another
+    game's corpus (its manifests, bk2s and args) feeds no capture of this
+    game, so a row added there does not invalidate the capture."""
+    return [p for p in source_tree_diff(rev_tree, tree)
+            if not (game and p.startswith("games/") and "/corpus/" in p
+                    and not p.startswith("games/%s/" % game))]
+
+
+def blessed_revision(rec, depth=ANCESTOR_DEPTH):
+    """The commit whose tree equals the capture record's source tree over
+    SOURCE_ROOTS (capture_tree_diff), searched among the first `depth`
+    first-parent ancestors of HEAD, HEAD included. The record's own head
+    is taken when it is among the matches, else the newest match. Commits
+    sharing a root tree are compared once. Returns (sha, None) or
+    (None, reason); the reason names the nearest commit by differing-path
+    count."""
     tree = rec.get("source-tree")
     if not tree:
         return None, "the candidate carries no %s" % RECORD_NAME
     if git("cat-file", "-e", tree + "^{tree}", check=False) is None:
         return None, "source tree %s is not in this repository" % tree
-    # Another game's corpus (its manifests, bk2s and args) feeds no capture of
-    # this game, so a row added there does not invalidate this candidate.
     game = rec.get("game", "")
-    diff = [p for p in source_tree_diff("HEAD^{tree}", tree)
-            if not (game and p.startswith("games/") and "/corpus/" in p
-                    and not p.startswith("games/%s/" % game))]
-    if diff:
-        return None, ("HEAD's tree differs from the capture's source tree "
-                      "at %s (%d path(s))" % (diff[0], len(diff)))
-    return git("rev-parse", "HEAD").strip(), None
+    log = git("log", "--first-parent", "-n", str(depth), "--format=%H %T",
+              "HEAD") or ""
+    commits = [ln.split() for ln in log.splitlines()]
+    diffs = {}
+
+    def diff(root_tree):
+        if root_tree not in diffs:
+            diffs[root_tree] = capture_tree_diff(root_tree, tree, game)
+        return diffs[root_tree]
+
+    head = rec.get("head", "")
+    for sha, root_tree in commits:
+        if sha == head and not diff(root_tree):
+            return sha, None
+    nearest = None
+    for sha, root_tree in commits:
+        d = diff(root_tree)
+        if not d:
+            return sha, None
+        if nearest is None or len(d) < len(nearest[1]):
+            nearest = (sha, d)
+    if nearest is None:
+        return None, "HEAD has no commits"
+    sha, d = nearest
+    return None, ("no first-parent ancestor of HEAD within %d commits has "
+                  "the capture's source tree; the nearest, %s, differs at "
+                  "%s (%d path(s))" % (depth, sha[:12], d[0], len(d)))
 
 
 def promote_select(cand, all_tiles, filters, excludes=()):
@@ -1676,86 +1713,6 @@ def promote_manifest(a, rec):
         return None
 
 
-def foreign_host(rec):
-    """Why a capture record was not captured on this machine, or None. A
-    record without a host (written before records named one, or captured
-    where the host was not passed in) counts as local; a record naming a
-    host is refused when that host differs from host_here(), or when this
-    process cannot name its own host."""
-    theirs = rec.get("host", "unrecorded")
-    if theirs == "unrecorded":
-        return None
-    ours = host_here()
-    if ours == theirs:
-        return None
-    if ours == "unrecorded":
-        return ("the candidate was captured on host %s and this process "
-                "cannot name its own host (inside the capture image, pass "
-                "OPENPETE_CAPTURE_HOST); promote from a capture taken on "
-                "this machine" % theirs)
-    return ("the candidate was captured on host %s, not on this host %s; "
-            "re-capture the rows here (--filter / --freecam-filter) and "
-            "promote from that capture" % (theirs, ours))
-
-
-# A golden-fleet pull appends these to the pulled capture record: the run id,
-# the fleet host name the unit ran on (the hosts-file table name, which the
-# canary verdict is keyed by) and the coordinator's local run directory, which
-# holds CANARY_VERDICT_NAME.
-FLEET_KEYS = ("fleet-run", "fleet-host", "fleet-run-dir")
-CANARY_VERDICT_NAME = "canary-verdict.txt"
-# Header fields a capture from another host must equal: the image recipe and
-# the image and loader it ran. A local promote compares only SURFACE_KEYS.
-REMOTE_PINNED_KEYS = ("recipe-hash", "image-digest", "libvulkan")
-
-
-def read_canary_verdict(run_dir):
-    """The `key=value` lines of a fleet run directory's canary verdict
-    file as a dict; None when the file is absent or unreadable."""
-    try:
-        with open(os.path.join(run_dir, CANARY_VERDICT_NAME)) as fh:
-            return dict(ln.rstrip("\n").partition("=")[::2] for ln in fh
-                        if "=" in ln)
-    except OSError:
-        return None
-
-
-def fleet_refusal(rec, header):
-    """Why a capture record taken on another host may not be promoted, or
-    None. The record must come from a golden-fleet pull (FLEET_KEYS), the
-    run's canary verdict file must name the same run and record `pass` for
-    the fleet host the unit ran on, and each REMOTE_PINNED_KEYS field must
-    be measured and equal to the manifest header's."""
-    run, fhost, rdir = (rec.get(k, "") for k in FLEET_KEYS)
-    if not run:
-        return ("the capture record carries no fleet-run id; a capture from "
-                "another host is promoted only from a golden-fleet pull")
-    if not fhost or not rdir:
-        return ("the capture record of fleet run %s names no %s" % (
-            run, "fleet-host" if not fhost else "fleet-run-dir"))
-    verdict = read_canary_verdict(rdir)
-    if verdict is None:
-        return ("fleet run %s has no %s in %s; the run's canary verdict is "
-                "missing" % (run, CANARY_VERDICT_NAME, rdir))
-    if verdict.get("run") != run:
-        return ("%s in %s names run %s, not %s" % (
-            CANARY_VERDICT_NAME, rdir, verdict.get("run", "none"), run))
-    v = verdict.get("canary." + fhost, "").strip()
-    if not v:
-        return ("fleet run %s recorded no canary verdict for host %s "
-                "(canary=%s)" % (run, fhost, verdict.get("canary", "absent")))
-    if v.split()[0] != "pass":
-        return "the canary of fleet run %s failed on host %s: %s" % (
-            run, fhost, v)
-    for k in REMOTE_PINNED_KEYS:
-        h, c = header.get(k, "unrecorded"), rec.get(k, "unrecorded")
-        if c == "unrecorded" or h != c:
-            return ("the capture's %s %s differs from the manifest header's "
-                    "%s; a capture from another host must run the pinned "
-                    "image" % (k, c, h))
-    return None
-
-
 def cmd_promote(a):
     """Rewrite the manifest rows of promoted candidate tiles (digest,
     blessed revision, recomp identity, origin) and file the tiles into the
@@ -1764,10 +1721,10 @@ def cmd_promote(a):
     size and its environment fields set from the capture's. A capture
     whose comparison surface departs from the header's, or a promote run
     outside the capture image, is refused unless --environment-accept
-    names the reason, which the header records. A capture from another
-    host is admitted only under fleet_refusal's conditions, which
-    --environment-accept does not relax; its host and fleet run are
-    printed, and the rows and header it writes name neither."""
+    names the reason, which the header records. A capture from any host
+    is admitted on that surface; the fleet run and host a golden-fleet
+    pull stamps into the record are printed, and the rows and header
+    name neither. The blessed revision is blessed_revision's."""
     root = repo_root()
     rec = read_record(a.candidate)
     if not rec:
@@ -1776,19 +1733,13 @@ def cmd_promote(a):
               "or build/fleet-stream/<run-id>/<unit>/ of a golden-fleet run)"
               % (a.candidate, RECORD_NAME), file=sys.stderr)
         return 1
-    foreign = foreign_host(rec)
     m = promote_manifest(a, rec)
     if m is None:
         return 1
-    if foreign:
-        why = fleet_refusal(rec, m.header)
-        if why:
-            print("[presentation-promote] REFUSED: %s; %s" % (foreign, why),
-                  file=sys.stderr)
-            return 1
-        print("[presentation-promote] capture from fleet host %s (host %s), "
-              "fleet run %s, canary passed" % (
-                  rec["fleet-host"], rec.get("host"), rec["fleet-run"]))
+    if rec.get("fleet-run"):
+        print("[presentation-promote] capture from fleet run %s, fleet host "
+              "%s (host %s)" % (rec["fleet-run"], rec.get("fleet-host", "?"),
+                                rec.get("host", "unrecorded")))
     env = capture_environment(a.candidate)
     if environment_refused("presentation-promote",
                            environment_problems(m.header, env),

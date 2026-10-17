@@ -10,10 +10,11 @@ rebless-identity in a scratch repository: refused outside the capture image
 (the image recipe file absent), refused on a recomp input that differs from
 HEAD, and otherwise rewriting only the two identity columns. PromoteTest
 runs promote in a scratch repository with a scratch store over synthetic
-capture records: a local record promotes as before; a record from another
-host promotes only with a fleet-run id whose run's canary verdict passed for
-its fleet host and with the header's recipe hash, image digest and libvulkan,
-and the rewritten manifest names no host, CPU or run id.
+capture records: a local record and a record from another host promote
+alike on the comparison surface, and the rewritten manifest names no host,
+CPU or run id; a record whose source tree is that of an earlier first-parent
+commit promotes at that commit, and one matching no ancestor is refused,
+naming the nearest commit, with the store and manifest untouched.
 
 Run: python3 scripts/fences/tests/test_presentation_identity.py
 """
@@ -388,14 +389,6 @@ class PromoteTest(Scratch):
                                           "fleet-run-dir": self.run_dir},
                                          **extra))
 
-    def verdict(self, b="pass 2 tile(s) identical on a, b", run=None):
-        """Write the run's canary verdict file with FLEET_HOST's verdict
-        `b` (no line when None)."""
-        write(os.path.join(self.run_dir, pb.CANARY_VERDICT_NAME),
-              "run=%s\ncanary=on\ncanary.a=pass 2 tile(s) identical on a, b\n"
-              "%s" % (run or self.RUN, "canary.%s=%s\n" % (self.FLEET_HOST, b)
-                       if b else ""))
-
     def promote(self):
         """Run promote --all; (rc, manifest text, stdout, stderr)."""
         out, err = io.StringIO(), io.StringIO()
@@ -431,70 +424,65 @@ class PromoteTest(Scratch):
         self.record("unrecorded")
         self.assert_promoted(self.promote())
 
-    def test_remote_passed_canary(self):
+    def test_remote_record_admitted(self):
         self.fleet()
-        self.verdict()
         res = self.promote()
         self.assert_promoted(res)
-        self.assertIn("fleet host %s (host %s), fleet run %s, canary passed"
-                      % (self.FLEET_HOST, self.REMOTE, self.RUN), res[2])
+        self.assertIn("fleet run %s, fleet host %s (host %s)"
+                      % (self.RUN, self.FLEET_HOST, self.REMOTE), res[2])
 
     def test_remote_writes_no_machine_names(self):
         self.fleet()
-        self.verdict()
         rc, text, _out, err = self.promote()
         self.assertEqual(rc, 0, err)
         for word in (self.REMOTE, self.CPU, self.RUN, "fleet",
                      self.FLEET_HOST, self.HERE_HOST, self.run_dir):
             self.assertNotIn(word, text)
 
-    def test_remote_failed_canary(self):
+    def commit(self, rel, text):
+        """Write `rel` and commit it; return the new HEAD."""
+        write(self.path(rel), text)
+        run_git(self.top, "add", rel)
+        run_git(self.top, "-c", "user.name=t", "-c", "user.email=t@t",
+                "commit", "-qm", rel)
+        return subprocess.run(["git", "-C", self.top, "rev-parse", "HEAD"],
+                              capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def test_ancestor_revision(self):
         self.fleet()
-        self.verdict(b="fail 1 of 2 tile(s) differ between a, b")
-        self.assert_refused(self.promote(), "canary of fleet run %s failed "
-                            "on host %s" % (self.RUN, self.FLEET_HOST))
+        self.commit("core/b.c", "/* after the capture */\n")
+        self.assert_promoted(self.promote())
 
-    def test_remote_missing_canary(self):
-        self.fleet()
-        self.verdict(b=None)
-        self.assert_refused(self.promote(), "no canary verdict for host %s"
-                            % self.FLEET_HOST)
+    def test_ancestor_newest_match_without_head(self):
+        self.record(self.HERE_HOST, head="0" * 40)
+        self.commit("tests/x.txt", "outside the source roots\n")
+        top = self.commit("core/b.c", "/* after the capture */\n")
+        rc, text, _out, err = self.promote()
+        self.assertEqual(rc, 0, err)
+        row = pb.parse_manifest(text).rows[0]
+        self.assertNotIn(row["revision"], (self.rev, top))
+        self.assertEqual(pb.git("rev-parse", "HEAD~1").strip(),
+                         row["revision"])
 
-    def test_remote_missing_verdict_file(self):
-        self.fleet()
-        self.assert_refused(self.promote(), "canary verdict is missing")
-
-    def test_remote_verdict_of_other_run(self):
-        self.fleet()
-        self.verdict(run="20261009-000000-ffff")
-        self.assert_refused(self.promote(), "not %s" % self.RUN)
-
-    def test_remote_no_run_id(self):
-        self.record(self.REMOTE)
-        self.verdict()
-        self.assert_refused(self.promote(), "carries no fleet-run id")
-
-    def test_remote_image_digest_mismatch(self):
-        self.fleet(**{"image-digest": "sha256:" + "0" * 64})
-        self.verdict()
-        self.assert_refused(self.promote(), "image-digest")
-
-    def test_remote_mismatch_not_admitted_by_accept(self):
-        self.fleet(**{"libvulkan": "1.3.999"})
-        self.verdict()
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = pb.main(["promote", GAME, self.cand, "--all",
-                          "--environment-accept", "test"])
-        self.assertEqual(rc, 1)
-        self.assertIn("libvulkan", err.getvalue())
+    def test_no_ancestor_refused(self):
+        write(self.path("core/x.c"), "/* never committed */\n")
+        tree = pb.source_tree()
+        os.unlink(self.path("core/x.c"))
+        self.record(self.HERE_HOST, **{"source-tree": tree})
+        top = self.commit("core/b.c", "/* after the capture */\n")
+        self.assert_refused(self.promote(), "the nearest, %s, differs at "
+                            "core/x.c (1 path(s))" % self.rev[:12])
+        self.assertNotEqual(top, self.rev)
+        self.assertEqual([], [f for _d, _s, fs in
+                              os.walk(os.path.join(self.work, "store"))
+                              for f in fs])
 
     def test_no_record_refused(self):
         self.assert_refused(self.promote(), "holds no %s" % pb.RECORD_NAME)
 
     def test_remote_device_mismatch(self):
         self.fleet()
-        self.verdict()
         write(os.path.join(self.cand, pb.DEVICE_NAME),
               "[rhi/vk] device='other' api=1.3 driver-info='Mesa 99.0.0'\n")
         self.assert_refused(self.promote(), "capture environment is not the "
@@ -502,7 +490,6 @@ class PromoteTest(Scratch):
 
     def test_remote_other_source_tree(self):
         self.fleet(**{"source-tree": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"})
-        self.verdict()
         self.assert_refused(self.promote(), "source tree")
 
 

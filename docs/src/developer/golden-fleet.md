@@ -474,25 +474,59 @@ and image records, every fleet-labelled container and the `:fleet` tag
 nothing else is in it. On the local host `clean` also removes the
 checkout's `build/fleet-stream/<run-id>/` whose run directory is gone.
 
+## Gate worktree
+
+A batch golden runs from a worktree pinned at the batch commit, so the
+main checkout's build directories stay free for landings while the batch
+runs. From `openpete/`:
+
+```sh
+../.claude/skills/orchestrate/scripts/worktree-setup.sh gate-<batch> --ref <batch-sha>   # detached at the batch commit, configured, not built
+cd worktrees/gate-<batch> && python3 scripts/golden-fleet.py run --all --expect <file>
+```
+
+The run's in-image build writes the worktree's
+`build/linux-release-container`; `worktree-setup.sh --build` is not needed
+(it builds `build/linux-release`, which no fleet unit reads). The fleet
+marker `golden-fleet-sync` names the worktree and every unit, the local
+host's included, runs in its host's snapshot under `fleet_root`, so
+`build-gate-lock.py` refuses only builds into the worktree's own build
+directories while the run builds and syncs; a build in the main checkout
+proceeds. The worktree
+links `games/<g>/generated` and `manifest/{globals,symbols}.toml` to the
+main checkout, so a regen on main before the run's sync recheck changes
+the gated sources; the capture record's `generated-tree` records what was
+captured. The run's candidates land in the worktree's
+`build/fleet-stream/<run-id>/<unit>/`; promote them (below) before
+`worktree-teardown.sh gate-<batch>` removes the worktree and its fleet
+trees.
+
 ## Promote
 
 A pull appends `fleet-run`, `fleet-host` and `fleet-run-dir` to the pulled
-`capture-record.txt`. `presentation-corpus-promote.sh` admits a candidate
-captured on another host only when `canary-verdict.txt` in that run
-directory names the same run and records `pass` for the fleet host, and the
-record's `recipe-hash`, `image-digest` and `libvulkan` equal the manifest
-header's; `--environment-accept` does not relax this. The coordinator writes
-the verdict at the run's end, after every pull, so the promote reads it in
-the run directory: started on the host, the script enters the capture image
-with that directory mounted read-only at its own path
-(`OPENPETE_CAPTURE_RO_MOUNTS`). Promote on the coordinator, before
+`capture-record.txt`; `build/fleet-stream/<run-id>/<unit>/` holds the
+unit's divergent tiles, verdict report, `capture-device.txt` and that
+record, and is the promote's candidate directory. A promote admits a
+capture from any host; it is refused only on the Environment surface
+(`presentation-blessed.py`, Environment) and on the source tree. The
+blessed revision is the first-parent ancestor of the promoting checkout's
+HEAD, at most 500 commits deep, whose tree over the source roots equals
+the record's `source-tree` (other games' corpus directories aside): the
+record's `head` when it matches, else the newest match. A batch captured
+at a commit main has since moved past therefore promotes at that commit.
+A record matching no ancestor is refused, naming the nearest commit by
+differing-path count, and nothing is filed into the store. Promote from
+any checkout whose first-parent history holds the batch commit, before
 `clean` removes the run directory:
 
 ```sh
+tests/harness/presentation-corpus-promote.sh worktrees/gate-<batch>/build/fleet-stream/<run-id>/<unit> <tile>...
 tests/harness/presentation-corpus-promote.sh build/presentation-candidate-spyro-2 <tile>... --game spyro-2
 ```
 
-A full re-bless (`--bless`) runs on the dev box.
+The candidate directory lies under the promoting checkout or the store's
+parent directory, which the capture image mounts. A full re-bless
+(`--bless`) runs on the dev box.
 
 ## Environment
 
