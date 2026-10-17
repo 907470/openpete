@@ -26,7 +26,9 @@ extern "C" {
  * produce.
  * @param module_path_override The --recomp-module path or a library
  *     entry's module, or NULL for the default (shared linkage: the
- *     platform library name next to the exe).
+ *     platform library name next to the exe when present, else, for a
+ *     game with the first-boot pipeline, the stamped module under the
+ *     "modules" data directory, openpete_paths_data_dir).
  * @param disc_path The disc a missing or unusable module is rebuilt from.
  * @param allow_build Nonzero to permit that rebuild.
  * @return 0 on success, -1 when no usable module could be registered. */

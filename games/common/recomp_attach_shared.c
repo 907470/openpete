@@ -6,7 +6,9 @@
 // game's build record (game_build.h) names its module and forwarders:
 //
 //   1. dlopen/LoadLibrary the module (default: the platform library name
-//      next to the exe; --recomp-module or a library entry overrides).
+//      next to the exe, else a first-boot game's stamped module under the
+//      "modules" data directory; --recomp-module or a library entry
+//      overrides).
 //   2. Resolve and register the `openpete_game_recomp_module` descriptor
 //      (openpete_recomp_register refuses an ABI-version mismatch).
 //   3. Resolve the host->module forwarders.
@@ -144,6 +146,33 @@ static int file_readable(const char* p) {
     return 1;
 }
 
+/** @brief Write the module path a run with no library entry and no --recomp-module loads, into buf.
+ *
+ * The module beside the executable when it is there (a build tree stages
+ * one). Otherwise, for a game with the first-boot pipeline, the stamped
+ * path the pipeline names for the directory <modules data dir>/<game id>:
+ * openpete_paths_data_dir resolves the "modules" leaf as it resolves the
+ * library, beside the executable in a writable portable install and in the
+ * per-user data directory otherwise, so a read-only install (an AppImage
+ * mount, Program Files) never receives the build, and the codegen stamp in
+ * the path rebuilds the module after an update that changes the generated
+ * code. A game without the pipeline, or a data directory that does not
+ * resolve, keeps the path beside the executable.
+ * @param buf Receives the path.
+ * @param n Capacity of buf. */
+static void disc_module_path(char* buf, size_t n) {
+    default_module_path(buf, n);
+    const openpete_game_build_t* b = openpete_game_build();
+    if (file_readable(buf) || !b->build_module || !b->library_module_path) return;
+    char dir[3800];
+    char game_dir[3900];
+    if (openpete_paths_data_dir("modules", dir, sizeof dir, 1) != 0) return;
+    openpete_paths_join(game_dir, sizeof game_dir, dir, b->id);
+    char stamped[4096];
+    if (b->library_module_path(game_dir, stamped, sizeof stamped) == 0)
+        snprintf(buf, n, "%s", stamped);
+}
+
 /** @brief Load the module at path and bind the descriptor and every forwarder.
  *
  * The module is closed again on failure: a second dlopen of a path already
@@ -233,7 +262,7 @@ int openpete_game_recomp_attach(const char* module_path_override,
     char pathbuf[4096];
     const char* path = module_path_override;
     if (!path) {
-        default_module_path(pathbuf, sizeof pathbuf);
+        disc_module_path(pathbuf, sizeof pathbuf);
         path = pathbuf;
     }
 

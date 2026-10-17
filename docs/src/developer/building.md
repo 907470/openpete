@@ -617,7 +617,12 @@ carries the one executable under its build name (`openpete`, `openpete.exe`)
 and the first-boot inputs (manifests) and SDK trees of every game
 `games/shipped.toml` lists. Without `--disc` the executable's launcher lists
 every game's library entries and runs the game of the entry it boots or of
-the disc dropped on it.
+the disc dropped on it. A packaged `--disc` run builds its module into
+`modules/<game>/modules/<codegen stamp>/` under the data directory
+`openpete_paths_data_dir` resolves (beside the executable in a writable
+portable install, the per-user data directory otherwise), never beside a
+read-only executable; a module staged beside the executable, as a build
+tree has, loads first.
 
 ```bash
 scripts/setup_linux_clang.sh          # -> .tools/clang (bundled compiler)
