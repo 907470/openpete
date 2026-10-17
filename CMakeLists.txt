@@ -472,8 +472,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # on a vbl-delta of D VBLs, holds 4 and flushes once with D = 3, both
     # in-binary window checks pass, the drive head matches across legs, and
     # the device-row leaf check ran with no guest write. held=0 is VACUOUS
-    # and fails (exit 2). The hold-off and cadence rows reach no corpus
-    # input and are not run here. Exit 64 = no golden, binary or disc.
+    # and fails (exit 2). The cadence row reaches no corpus input and is
+    # not run here. Exit 64 = no golden, binary or disc.
     add_test(NAME vbl_hold
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_vbl_hold.sh
                      --build-dir=${CMAKE_BINARY_DIR} --row=hold-on)

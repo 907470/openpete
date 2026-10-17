@@ -14,21 +14,24 @@
 # head at the window's end (device VBL, position, base LBA, start time,
 # rate) is the same in both legs; and the device-half leaf check ran its
 # rows (nonzero runs, the countdown row included in the hold leg) with no
-# device row writing guest RAM or the scratchpad.
-# Row hold/off-schedule (spyro-2 and spyro-3 corpus bk2s, free-running):
-# OPENPETE_VBL_HOLD=pause:0:2 over a blocking CdSync waiting out a stream
-# read's closing CdlPause. Pass: 2 held, one flush, openpete_vbl advanced by
-# one over the window. A run whose census shows no blocking CdSync made with
-# a CdlPause owed reaches no such wait; the row is VACUOUS when no run of
-# the corpus does, which fails the harness (LAW §8).
+# device row writing guest RAM or the scratchpad. The head compare is blind
+# while the head is at rest: a window whose head rate is 0 adds the line
+# `hold-on/moving-head VACUOUS`, which reports the gap and leaves the
+# exit status to the hold-on verdict.
+# No off-schedule row covers a blocking CdSync: every guest CdSync site of
+# the three games passes mode 1, the poll, which cd_stream_pause_answer
+# answers CdlNoIntr while a stream read's closing CdlPause is owed; the
+# blocking wait that delivers VBLs (cd_stream_pause_wait) runs for mode 0
+# only, so no input can engage such a row.
 # Row cadence (spyro-2, headless under OPENPETE_FORCE_PACING=1 with
 # --pace-log): every VSync(n > 1) the game makes off the schedule after the
 # first paced VBL. Pass: the wait's n VBLs each have a VBL record, and the
 # records' deadlines step one VBL period each (n periods for the wait).
-# Engagement: waits checked, nonzero.
+# Engagement: waits checked, nonzero; a wait with no paced VBL record
+# counts as unpaced, and checked = 0 is VACUOUS, which fails the harness.
 #
 # Verdict line per row: [vbl-hold] <row> <verdict> <numbers>.
-# Usage: tests/harness/check_vbl_hold.sh [--build-dir=DIR] [--row=hold-on|hold-off|cadence]
+# Usage: tests/harness/check_vbl_hold.sh [--build-dir=DIR] [--row=hold-on|cadence]
 # Exit 0 PASS, 2 FAIL or VACUOUS, 64 SKIP (binary, disc or golden missing).
 set -u
 export OPENPETE_VIBRATION=0
@@ -107,38 +110,9 @@ if want hold-on; then
     else
         verdict hold-on FAIL "$nums"
     fi
-fi
-
-# ── hold/off-schedule ────────────────────────────────────────────────────
-if want hold-off; then
-    engaged=0 checked=0 bad=0 owed=0
-    for game in spyro-2 spyro-3; do
-        pg_resolve "$game"
-        for b in games/$game/bk2/*.bk2; do
-            name="$(basename "$b" .bk2)"
-            log="$ROOT/hold-off-$game-$name.log"
-            args=()
-            [[ -f "$b.args" ]] && eval "args=($(grep -v '^#' "$b.args" | tr '\n' ' '))"
-            PG_CAPTURE_ENV=(OPENPETE_VBL_HOLD=pause:0:2)
-            pg_capture "$log" "" -- "${args[@]}" --bk2 "$b" --bk2-stop-on-end >/dev/null 2>&1
-            checked=$((checked + 1))
-            n=$(field "$log" 's/.*with a stream CdlPause owed: \([0-9]*\).*/\1/p')
-            owed=$((owed + ${n:-0}))
-            held=$(field "$log" 's/.*hold window closed: \([0-9]*\) held.*/\1/p')
-            [[ -n "$held" ]] || continue
-            engaged=$((engaged + 1))
-            vb=$(field "$log" 's/.*hold window closed: .* vbl \([0-9]*\) -> [0-9]*,.*/\1/p')
-            va=$(field "$log" 's/.*hold window closed: .* vbl [0-9]* -> \([0-9]*\),.*/\1/p')
-            fl=$(field "$log" 's/.*hold window: held=[0-9]* flushes=\([0-9]*\).*/\1/p')
-            if [[ "$held" != 2 || "$fl" != 1 || $((va - vb)) != 1 ]]; then
-                bad=$((bad + 1)); echo "[vbl-hold] hold-off $game/$name: held=$held flushes=$fl vbl $vb -> $va" >&2
-            fi
-        done
-    done
-    nums="runs=$checked engaged=$engaged blocking-CdSync-with-CdlPause-owed=$owed bad=$bad"
-    if [[ $engaged -eq 0 ]]; then verdict hold-off VACUOUS "$nums"
-    elif [[ $bad -eq 0 ]]; then verdict hold-off PASS "$nums"
-    else verdict hold-off FAIL "$nums"; fi
+    rate=$(sed -n 's/.* rate=\([0-9]*\)$/\1/p' <<<"$head_h")
+    [[ -n "$head_h" && "${rate:-0}" == 0 ]] &&
+        echo "[vbl-hold] hold-on/moving-head VACUOUS head rate=${rate:-?}: the head compare ran on a head at rest"
 fi
 
 # ── cadence ──────────────────────────────────────────────────────────────
@@ -185,7 +159,7 @@ v = "VACUOUS" if checked == 0 else ("PASS" if fails == 0 else "FAIL")
 print(v, "waits=%d checked=%d unpaced=%d fails=%d" % (len(waits), checked, unpaced, fails), "; ".join(detail))
 EOF
 )
-    verdict cadence $line
+    verdict cadence ${line:-FAIL the pace-log check printed no verdict}
 fi
 
 [[ $ran -gt 0 ]] || exit 64
