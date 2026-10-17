@@ -192,7 +192,11 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
  *
  * Not brought up, returning 0, when @p opts is NULL, under --headless with
  * the PsyCross renderer, and under --headless with the vk renderer unless
- * screenshots or the identity audit need a surfaceless device. Otherwise it
+ * screenshots, the identity audit or OPENPETE_HEADLESS_NATIVE=1 need a
+ * surfaceless device. OPENPETE_HEADLESS_NATIVE=1 brings the device up with
+ * no capture consumer: the game-side scene feeders, the canonical capture
+ * and the per-VBL headless device services then run every tick as they do
+ * under a window, and nothing is composed unless a capture asks. Otherwise it
  * applies the texture-mapping, notex, wireframe and aspect settings, creates
  * the device (adopting a precreated window when one was handed over), the
  * scene pipelines and buffers, subscribes to PsyCross VRAM writes, starts

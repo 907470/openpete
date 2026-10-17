@@ -1292,6 +1292,11 @@ static struct { int x, y, w, h, disp_x, disp_y; unsigned frame; int unpresented;
  * last DrawOTag submitted (openpete_native_note_draw_otag). */
 static unsigned s_capture_seq;
 static unsigned s_otag_scene;
+/* Feed engagement over the run: canonical captures taken, the captures whose
+ * scene the game's render fed since the previous capture, and the triangles
+ * those fed scenes held. Reported at shutdown as the `native-feed:` line,
+ * which a harness reads to prove the native feed ran. */
+static struct { uint64_t captures, fed, tris; } s_feed_census;
 /* The canonical present's repeat verdict (openpete_native_scene_canon_repeat),
  * -1 until it is first asked for and again after the capture. */
 static int s_canon_repeat = -1;
@@ -2944,6 +2949,14 @@ void openpete_native_scene_open_empty(void) {
     s_canon_repeat = 0;
 }
 
+/** @brief Count one canonical capture into the feed census, and the scene the game's render fed since the previous capture when there is one. */
+static void feed_census_note(void) {
+    s_feed_census.captures++;
+    if (!s_game_fed) return;
+    s_feed_census.fed++;
+    s_feed_census.tris += (uint64_t)s_scene_n;
+}
+
 void openpete_native_scene_capture_overlay(void) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first - by the canonical present every post-link prim
@@ -2952,6 +2965,7 @@ void openpete_native_scene_capture_overlay(void) {
      * prim then) defers that sprite a whole tick and misses this capture. The
      * repeat verdict runs that flush. */
     const int repeat = openpete_native_scene_canon_repeat();
+    feed_census_note();
     s_capture_seq++;
     s_canon_repeat = -1;
     s_draw_clip_put = 0;
@@ -6602,6 +6616,16 @@ static int nr_adopt_launcher(const openpete_options_t *opts, int w, int h,
     return 0;
 }
 
+/** @brief Return whether OPENPETE_HEADLESS_NATIVE asks for the surfaceless native bring-up under --headless without a capture consumer.
+ *
+ * Read once at bring-up; any value other than empty or "0" arms it.
+ * @return True when armed. */
+static bool nr_headless_native_armed(void)
+{
+    const char *e = getenv("OPENPETE_HEADLESS_NATIVE");
+    return e && *e && strcmp(e, "0") != 0;
+}
+
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
     if (!opts)
@@ -6620,16 +6644,20 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Under --headless, bring the native renderer up SURFACELESS purely to
      * service screenshots (CI visual-regression capture under lavapipe) - but
      * only when a native renderer is selected (checked above) AND screenshots
-     * are requested. Plain --headless (the oracle / determinism gates) keeps
-     * native OFF, so those gates are unaffected. The live present loop never runs
-     * headless; only openpete_native_render_screenshot_all is driven (run.c). */
+     * are requested. Plain --headless keeps native off. The live present loop
+     * never runs headless; only openpete_native_render_screenshot_all is
+     * driven (run.c). */
     const bool headless = opts->headless;
     /* The identity audit is a headless native consumer too: it composes the
      * scene twice per canonical present and never writes a PNG, so it arms the
      * surfaceless bring-up on its own. */
+    /* OPENPETE_HEADLESS_NATIVE=1 arms the bring-up with no capture consumer,
+     * so a headless gate runs the per-tick native feed a windowed run runs:
+     * the game-side feeders and canonical capture are gated on the scene
+     * being live, and the headless device services run once per VBL. */
     if (headless && opts->screenshot_frame_count <= 0 &&
                     opts->screenshot_intermediate_count <= 0 &&
-                    !openpete_ident_audit_armed()) {
+                    !openpete_ident_audit_armed() && !nr_headless_native_armed()) {
         OPL_WARN_F("native", "--renderer vk ignored under --headless (no screenshots requested)");
         scene_box_note_inactive("native renderer not brought up (--headless without screenshots)");
         return 0;
@@ -21103,6 +21131,10 @@ void openpete_native_render_shutdown(void)
 
     if (!s_nr.enabled)
         return;
+    OPL_INFO_F("native-feed", "captures=%llu fed=%llu tris=%llu headless=%d",
+               (unsigned long long)s_feed_census.captures,
+               (unsigned long long)s_feed_census.fed,
+               (unsigned long long)s_feed_census.tris, s_nr.headless ? 1 : 0);
     /* Every thread that drew is joined by now (under the thread split this
      * runs on main after the host-loop thread's join), so the calling thread
      * owns the display for the teardown's pipeline unlinks. */

@@ -45,9 +45,14 @@
 #   tests/harness/check_psx_oracle.sh -- --no-lod
 #   tests/harness/check_psx_oracle.sh -- --renderer psycross
 #   tests/harness/check_psx_oracle.sh custom.bin -- --no-lod
-# A native-renderer display flag (--aspect, --fov, --ssaa) has no game-side
-# producer: the run hashes the stock gameplay stream whatever its value and
-# proves nothing about the flag; the windowed oracle row covers that class.
+# Every run feeds the native renderer: OPENPETE_HEADLESS_NATIVE=1 brings it
+# up surfaceless, so the game-side scene feeders and the per-VBL headless
+# device services run every tick as under a window, and a native-path flag
+# (--aspect, --fov, --lod, --ssaa) reaches the feed it configures. Nothing is
+# composed. The run must print a `native-feed:` exit row with fed > 0, else
+# the verdict is VACUOUS (exit 3); a forwarded `--renderer psycross` runs no
+# native renderer and is exempt. The sub-tick re-extract and the live
+# compose run only under a window: the windowed row covers them.
 # (Flags with values need the `--` separator so the value isn't mistaken
 #  for the trace path.)
 #
@@ -104,7 +109,8 @@
 #   3   the GTE hash row is VACUOUS: the golden has a <trace>.gte sidecar
 #       and the run hashed zero GTE instructions or printed no row; or the
 #       clock row delivered no in-work VBLANK or charged no libspu call or
-#       SPU register access
+#       SPU register access; or a vk run printed no `native-feed:` row or fed
+#       no scene
 #   64  prerequisites missing (trace / binary / disc) - ctest treats as SKIP
 #   *   build/runtime error
 set -euo pipefail
@@ -127,6 +133,10 @@ source scripts/lib/own_children.sh
 # shellcheck source=scripts/lib/swrender.sh
 source scripts/lib/swrender.sh
 sw_render_env
+
+# The native feed rides every run (see the header); the exit row is checked
+# below.
+export OPENPETE_HEADLESS_NATIVE=1
 
 # Split args at `--`: an optional [trace-path] before, openpete pass-through
 # flags after. Lets `check_psx_oracle.sh -- --no-lod` test a feature flag
@@ -574,6 +584,30 @@ if [[ "$SCAN_WATCH" == 1 ]]; then
     else
         echo "[psx-oracle] $WATCH_ROW"
     fi
+fi
+
+# Native feed engagement: the renderer the run selected (the last
+# --renderer among the forwarded flags, vk by default) decides whether a
+# feed is owed. A vk run whose game render never fed a scene ran the gate
+# without the native path under its name.
+NATIVE_OWED=1
+for (( _i = 0; _i < ${#PASSTHRU[@]}; _i++ )); do
+    case "${PASSTHRU[$_i]}" in
+        --renderer)   NATIVE_OWED=$([[ "${PASSTHRU[$((_i + 1))]:-}" == psycross ]] && echo 0 || echo 1) ;;
+        --renderer=*) NATIVE_OWED=$([[ "${PASSTHRU[$_i]#--renderer=}" == psycross ]] && echo 0 || echo 1) ;;
+    esac
+done
+if [[ "$NATIVE_OWED" == 1 ]]; then
+    FEED_ROW=$(grep -o 'native-feed: captures=.*' "$LOG" | tail -1 || true)
+    FEED_FED=$(sed -n 's/.* fed=\([0-9]*\).*/\1/p' <<<"$FEED_ROW")
+    if [[ -z "$FEED_ROW" || "${FEED_FED:-0}" == 0 ]]; then
+        echo "[psx-oracle] native feed: ${FEED_ROW:-no exit row (renderer never up)}; VACUOUS" >&2
+        [[ "$rc" == 0 ]] && rc=3
+    else
+        echo "[psx-oracle] $FEED_ROW"
+    fi
+else
+    echo "[psx-oracle] native feed: none owed (--renderer psycross)"
 fi
 
 # Engaged form: with OPENPETE_IDENT_AUDIT=<VBL> set, the native

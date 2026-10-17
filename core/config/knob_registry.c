@@ -2067,6 +2067,14 @@ static const knob_desc_t g_builtin_debug[] = {
         "charged to the reference's exact clock at every wait, poll, query "
         "and libspu call. "
         "tests/harness/check_psx_oracle.sh sets it under OPENPETE_ORACLE_CLOCK=1."),
+    ENVROW_LATCHED("HEADLESS_NATIVE", "Debug", "0",
+        "1 = under --headless with the vk renderer, bring the native renderer "
+        "up surfaceless with no screenshot requested, so the game-side scene "
+        "feed and the per-VBL device services run every tick as under a "
+        "window; nothing is composed unless a capture asks. The exit line "
+        "`native-feed: captures= fed= tris=` counts the feed. "
+        "tests/harness/check_psx_oracle.sh and check_determinism_matrix.sh "
+        "set it."),
     ENVROW_LATCHED("CRASH_TEST", "Debug", "",
         "Fault injection for the crash handler: segv (a null store) or "
         "overflow (unbounded recursion) on the game fiber before the game's "

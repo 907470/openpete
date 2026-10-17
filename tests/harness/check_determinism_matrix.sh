@@ -70,6 +70,12 @@
 # fov) only: the scans read code and data, never the presentation knobs, so
 # the other cells would repeat the same verdict.
 #
+# Native feed: every cell runs with OPENPETE_HEADLESS_NATIVE=1, so the
+# native renderer is up surfaceless and the game-side scene feeders run
+# every tick under the cell's --aspect and --fov, as under a window; a cell
+# whose `native-feed:` exit row is missing or fed no scene is BROKEN, since
+# its hashes never saw the native path the knobs configure.
+#
 # Exit codes:
 #   0 - every cell either matches its baseline or diverges only in
 #       open-status channels (documented expected red), and at least one
@@ -205,11 +211,28 @@ declare -i antipiracy_failures=0 scan_passes_total=0 scan_cells=0
 # anti-piracy scans hash (games/spyro-3/scan_watch.h); a store there logs an
 # `antipiracy: FAIL watch:` line, and a cell without the watch's exit row
 # never armed it.
+PG_CAPTURE_ENV=(OPENPETE_HEADLESS_NATIVE=1)
 SCAN_WATCH=0
 if [[ "$GAME" == "spyro-3" ]]; then
-    PG_CAPTURE_ENV=(OPENPETE_S3_SCAN_WATCH=1)
+    PG_CAPTURE_ENV+=(OPENPETE_S3_SCAN_WATCH=1)
     SCAN_WATCH=1
 fi
+declare -i feed_scenes_total=0
+
+# Check a cell's log for the native feed's exit row; prints the row and
+# adds its fed count to the total. Returns 1 when the row is missing or the
+# game fed no scene.
+check_native_feed() {
+    local tag="$1" log="$2" row fed
+    row=$(grep -o 'native-feed: captures=.*' "$log" | tail -1 || true)
+    fed=$(sed -n 's/.* fed=\([0-9]*\).*/\1/p' <<<"$row")
+    if [[ -z "$row" || "${fed:-0}" == 0 ]]; then
+        echo "    cell $tag: ${row:-no native-feed exit row (renderer never up)}; VACUOUS" >&2
+        return 1
+    fi
+    feed_scenes_total+=fed
+    echo "    cell $tag: $row"
+}
 declare -i watch_hits_total=0
 
 # Check a cell's log for anti-piracy verdicts: any FAIL line fails the cell,
@@ -275,6 +298,7 @@ run_cell() {
     local rc=$?
     [[ -s "$hash" ]] || { echo "    cell $tag: openpete rc=$rc, no hash log produced" >&2; return 1; }
     check_antipiracy "$scenario" "$tag" "$log"
+    check_native_feed "$tag" "$log" || return 1
     return 0
 }
 
@@ -376,7 +400,7 @@ fi
 echo
 WATCH_SUMMARY=""
 (( SCAN_WATCH )) && WATCH_SUMMARY="  watch-hits=$watch_hits_total"
-echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared  antipiracy-failures=$antipiracy_failures  scan-row-cells=$scan_cells  scans-passed=$scan_passes_total$WATCH_SUMMARY"
+echo "[$mode_tag] game=$GAME cells: $total_cells  clean=$clean  expected-red=$expected_red  regressions=$regressions  broken=$broken_runs  rows-compared=$rows_compared  antipiracy-failures=$antipiracy_failures  scan-row-cells=$scan_cells  scans-passed=$scan_passes_total  native-fed-scenes=$feed_scenes_total$WATCH_SUMMARY"
 
 if [[ $KEEP_LOGS -eq 0 ]]; then
     rm -f "$OUT_DIR"/log-*.txt
