@@ -5,7 +5,10 @@
 # Row hold/on-schedule (spyro-2, cardless oracle, full 20k): two runs under
 # OPENPETE_VBL_HOLD=charge:6000:4 with OPENPETE_VBL_LEAF_CHECK=1, one holding
 # the window and one dry (the same four deliveries counted and taken). Pass:
-# the hold leg holds 4, flushes once, leaves D = 3 after the flush; each
+# the dry leg passes the oracle against the stock golden; the hold leg's
+# oracle run diverges in no region and fails only on the anchor record after
+# the flush, with openpete ahead of the reference by exactly D VBLs (the
+# held VBLs the schedule does not place); the hold leg holds 4, flushes once, leaves D = 3 after the flush; each
 # leg's in-binary hold window check passes (device VBL count advanced by 4,
 # drive-head time at that count, openpete_vbl +1 held or +4 dry); the drive
 # head at the window's end (device VBL, position, base LBA, start time,
@@ -52,13 +55,20 @@ field() { sed -n "$2" "$1" | tail -1; }
 
 # ── hold/on-schedule ─────────────────────────────────────────────────────
 if want hold-on; then
+    # The oracle runs the binary of --build-dir; its verdict decides with the
+    # census (the dry leg passes; the hold leg fails only on the held VBLs).
+    [[ -n "${PG_BUILD_DIR:-}" && -z "${OPENPETE_BIN:-}" ]] && export OPENPETE_BIN="$PG_BUILD_DIR/openpete"
+    declare -A orc_of
     for leg in hold dry; do
-        rm -f "$ROOT/hold-on-$leg.log"
+        rm -f "${ROOT:?}/hold-on-$leg.log" "${ROOT:?}/hold-on-$leg.oracle"
         spec="charge:6000:4"; [[ $leg == dry ]] && spec="charge:6000:4:dry"
         OPENPETE_VBL_HOLD="$spec" OPENPETE_VBL_LEAF_CHECK=1 \
             OPENPETE_ORACLE_LOG="$ROOT/hold-on-$leg.log" \
-            tests/harness/check_psx_oracle.sh --game spyro-2 >/dev/null 2>&1
+            tests/harness/check_psx_oracle.sh --game spyro-2 >"$ROOT/hold-on-$leg.oracle" 2>&1
+        orc=$?
+        [[ $orc -eq 64 ]] && { echo "[vbl-hold] hold-on: $leg oracle SKIP ($ROOT/hold-on-$leg.oracle)" >&2; exit 64; }
         [[ -s "$ROOT/hold-on-$leg.log" ]] || { echo "[vbl-hold] hold-on: no $leg log" >&2; exit 64; }
+        orc_of[$leg]=$orc
     done
     h="$ROOT/hold-on-hold.log" d="$ROOT/hold-on-dry.log"
     held=$(field "$h" 's/.*hold window closed: \([0-9]*\) held.*/\1/p')
@@ -76,8 +86,19 @@ if want hold-on; then
         leaf_runs=$((leaf_runs + ${r:-0})); leaf_bad=$((leaf_bad + ${b:-0}))
     done
     leaf_cd=$(field "$h" 's/.*leaf check row countdown: \([0-9]*\) runs.*/\1/p')
-    nums="held=${held:-0} dry=${dry:-0} flushes=${flushes:-?} D=${dval:-?} check(hold)=${chk_h:-none} check(dry)=${chk_d:-none} leaf runs=$leaf_runs countdown=${leaf_cd:-0} writes=$leaf_bad head(hold)=[${head_h:-none}] head(dry)=[${head_d:-none}]"
-    if [[ "${held:-0}" == 4 && "${dry:-0}" == 4 && "${flushes:-}" == 1 && "${dval:-}" == 3 &&
+    # The hold leg's oracle: no region diverges, one hard fail, a vbl-delta
+    # whose openpete-minus-reference VBL count equals D.
+    nonneutral=$(field "$h" 's/.*first_non_neutral_div=\([a-z0-9]*\).*/\1/p')
+    hard=$(grep -c 'psxtrace:   hard fail:' "$h")
+    hard_vd=$(grep -c 'psxtrace:   hard fail: vbl-delta' "$h")
+    vd_ref=$(field "$h" 's/.*first vbl-delta mismatch: record [0-9]* reference \([0-9]*\) openpete [0-9]*.*/\1/p')
+    vd_op=$(field "$h" 's/.*first vbl-delta mismatch: record [0-9]* reference [0-9]* openpete \([0-9]*\).*/\1/p')
+    vd_ahead=$(( ${vd_op:-0} - ${vd_ref:-0} ))
+    oracle_ok=0
+    [[ ${orc_of[dry]} -eq 0 && ${orc_of[hold]} -eq 2 && "$nonneutral" == none && $hard -eq 1 &&
+       $hard_vd -eq 1 && -n "$vd_op" && "$vd_ahead" == "${dval:-x}" ]] && oracle_ok=1
+    nums="oracle(dry)=rc${orc_of[dry]} oracle(hold)=rc${orc_of[hold]} non-neutral=${nonneutral:-?} hard=$hard vbl-delta ahead=$vd_ahead held=${held:-0} dry=${dry:-0} flushes=${flushes:-?} D=${dval:-?} check(hold)=${chk_h:-none} check(dry)=${chk_d:-none} leaf runs=$leaf_runs countdown=${leaf_cd:-0} writes=$leaf_bad head(hold)=[${head_h:-none}] head(dry)=[${head_d:-none}]"
+    if [[ $oracle_ok -eq 1 && "${held:-0}" == 4 && "${dry:-0}" == 4 && "${flushes:-}" == 1 && "${dval:-}" == 3 &&
           "$chk_h" == PASS && "$chk_d" == PASS && $leaf_runs -gt 0 && "${leaf_cd:-0}" -gt 0 &&
           $leaf_bad -eq 0 && -n "$head_h" && "$head_h" == "$head_d" ]]; then
         verdict hold-on PASS "$nums"

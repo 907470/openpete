@@ -466,6 +466,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # VBL delivery hold on the schedule: two Spyro 2 full-20k oracle runs
+    # under OPENPETE_VBL_HOLD=charge:6000:4 (held and dry); the dry leg
+    # passes the oracle, the hold leg diverges in no region and fails only
+    # on a vbl-delta of D VBLs, holds 4 and flushes once with D = 3, both
+    # in-binary window checks pass, the drive head matches across legs, and
+    # the device-row leaf check ran with no guest write. held=0 is VACUOUS
+    # and fails (exit 2). The hold-off and cadence rows reach no corpus
+    # input and are not run here. Exit 64 = no golden, binary or disc.
+    add_test(NAME vbl_hold
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_vbl_hold.sh
+                     --build-dir=${CMAKE_BINARY_DIR} --row=hold-on)
+    set_tests_properties(vbl_hold PROPERTIES
+        LABELS "slow;oracle;cd"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Disc boot-order profiles: per game, the committed profile equals the
     # generator's output over the committed boot trace, and the loader
     # simulation (tools/disc_boot_order.py) finds the lowest modelled
