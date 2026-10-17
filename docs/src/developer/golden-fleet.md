@@ -354,17 +354,22 @@ after one `# skew <host> <seconds> bound <seconds>` line per remote host
 (the host clock minus this machine's, measured at run start). A DIVERGE,
 EXTRA or EXCEED line is printed in the coordinator log with its latency
 (receipt minus the host epoch, skew removed). Per poll, at most 20
-divergent tiles and identity pairs (both members) are pulled in one rsync
-into `build/fleet-stream/<run-id>/<unit>/`, outside every candidate
-directory, and their heat diffs are rendered into its `diff/` against the
-local store (a divergent tile) or canon against ident (an identity pair);
-the rest wait for the next poll in stream order. A pull or render failure
+divergent tiles, extra tiles and identity pairs (both members) are pulled
+in one rsync into `build/fleet-stream/<run-id>/<unit>/`, outside every
+candidate directory, and their heat diffs are rendered into its `diff/`
+against the local store (a divergent tile) or canon against ident (an
+identity pair); an extra tile, a new row's with no blessed digest, has no
+reference and gets no heat diff; the rest wait for the next poll in stream order. A pull or render failure
 is logged and changes no result. `clean` removes the directory with its run.
 
 Unit-end check. When the accepted attempt's stream holds `END`, its lines
 must satisfy SAME + DIVERGE = the report's `compared`, and its DIVERGE,
 EXTRA and EXCEED tiles and CREDITS rc must equal the report's `divergent`,
-`extra`, `identity-exceed`/`identity-nocanon` and `credits-rc`. A mismatch
+`extra`, `identity-exceed`/`identity-nocanon` and `credits-rc`; and,
+after the accepted pull, every DIVERGE and EXTRA tile must be at the top
+level of `build/fleet-stream/<run-id>/<unit>/` and both members of every
+EXCEED pair under its `identity/` (a tile only under `stream-only/` is
+absent). A mismatch
 sets the unit's rc to 1 and prints `stream mismatch: ...` beside the
 report's own status. Stopped and SKIP units and an attempt without `END`
 (a capture that timed out or failed before its verdict) are exempt.
@@ -505,8 +510,10 @@ trees.
 
 A pull appends `fleet-run`, `fleet-host` and `fleet-run-dir` to the pulled
 `capture-record.txt`; `build/fleet-stream/<run-id>/<unit>/` holds the
-unit's divergent tiles, verdict report, `capture-device.txt` and that
-record, and is the promote's candidate directory. A promote admits a
+unit's divergent tiles, its extra tiles (new rows, which the promote
+adds), verdict report, `capture-device.txt` and that record, and is the
+promote's candidate directory; the unit-end check fails a unit whose
+streamed DIVERGE or EXTRA tile is absent from it. A promote admits a
 capture from any host; it is refused only on the Environment surface
 (`presentation-blessed.py`, Environment) and on the source tree. The
 blessed revision is the first-parent ancestor of the promoting checkout's

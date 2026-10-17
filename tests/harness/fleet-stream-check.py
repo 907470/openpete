@@ -15,6 +15,11 @@ write. Cases (each prints its counts):
               compared; DIVERGE, EXTRA, EXCEED, CREDITS sets)
   drop-div    OPENPETE_STREAM_DROP of a DIVERGE line: stream mismatch, rc 1
   drop-same   OPENPETE_STREAM_DROP of a SAME line on a passing unit: rc 0 -> 1
+  extra       a unit whose only moves are EXTRA tiles (new rows): the stream
+              pulls each tile without a heat diff, the accepted pull keeps
+              it in the stream directory, promote_select sees it
+  absent      a streamed and reported tile absent from the capture: the
+              stream directory lacks it, stream mismatch names it
   exempt      an attempt without END (a timed-out leg) and a SKIP unit
   kill        lines written in the last poll interval are read before the
               kill; the re-queued attempt's lines equal the uninterrupted
@@ -132,6 +137,8 @@ class FakeCo(gf.Coordinator):
         os.makedirs(os.path.join(hs.run_dir, "ship"))
         with open(os.path.join(hs.run_dir, "ship", "supervise.sh"), "w") as f:
             f.write(FAKE_SUP)
+        from PIL import Image
+        Image.new("RGB", (4, 4), (7, 0, 0)).save(os.path.join(hs.run_dir, "ship", "tile.png"))
         self.hosts = [hs]
         self.hs = hs
         self.skew = {"local": 0.0}
@@ -153,13 +160,18 @@ class FakeCo(gf.Coordinator):
         return os.path.join(self.tmp, "stream", job.name)
 
     def pull_unit(self, job, hs):
-        """Pull the fake report only; no manifest-hash refusal."""
+        """Pull the fake report and its tiles, keep the run candidate; no manifest-hash refusal."""
         local = self.pull_target(job.game, job.tier)
         shutil.rmtree(local, ignore_errors=True)
-        rc, err = gf.rsync_pull(hs.host, f"{job.result['unit_dir']}/cand", local,
-                                names=["verdict-report.txt"])
-        self.note_census(job, gf.parse_report(os.path.join(local, "verdict-report.txt")))
-        return [] if rc == 0 else [err]
+        rdir = f"{job.result['unit_dir']}/cand"
+        rc, err = gf.rsync_pull(hs.host, rdir, local, names=["verdict-report.txt"])
+        if rc != 0:
+            return [err]
+        report = gf.parse_report(os.path.join(local, "verdict-report.txt"))
+        self.note_census(job, report)
+        self.pull_tiles(hs, rdir, local, report)
+        self.keep_run_candidate(job, local)
+        return []
 
     def poll(self, hs, pending, on_done):
         """Skip the first skip_polls polls (the host looks unreachable), then poll."""
@@ -196,11 +208,17 @@ class FakeCo(gf.Coordinator):
         return [ln for ln in open(self.stream_log).read().splitlines() if not ln.startswith("#")]
 
 
-def full_unit(div, same, extra, ident, exceed, credits_rc=0):
-    """A plan streaming a full unit and writing the matching report and done marker (rc 1 when anything moved)."""
+def full_unit(div, same, extra, ident, exceed, credits_rc=0, absent=()):
+    """A plan streaming a full unit and writing the matching report and done marker (rc 1 when anything moved).
+
+    Each moved tile (both members of an EXCEED pair) is written into the
+    candidate directory before the stream lines, except the tiles in absent.
+    """
     moved = bool(div or extra or exceed or credits_rc not in (0, 64))
     rc = 1 if moved else 0
-    lines = [f"emit SAME {t} 0123456789abcdef" for t in same]
+    files = list(div) + list(extra) + [n for t in exceed for n in (t, t.replace("__ident__", "__canon__"))]
+    lines = [f'cp "$RUN_DIR/ship/tile.png" "$UNIT_DIR/cand/{t}"' for t in files if t not in absent]
+    lines += [f"emit SAME {t} 0123456789abcdef" for t in same]
     lines += [f"emit DIVERGE {t} '0123456789abcdef->fedcba9876543210'" for t in div]
     lines += [f"emit EXTRA {t} '->fedcba9876543210'" for t in extra]
     lines += [f"emit IDENT {t} pixels=0/0" for t in ident]
@@ -314,6 +332,43 @@ def case_equality(tmp):
         check(name, r["rc"] == 1 and "stream mismatch" not in r["status"] and bool(r.get("stream_mismatch")),
               f"dropped {drop}; report rc {want_rc0} -> unit rc {r['rc']}; "
               f"mismatch: {r.get('stream_mismatch')}")
+
+
+def case_extra(tmp):
+    """EXTRA tiles are streamed, pulled without a heat diff and kept promotable; an absent moved tile is a stream mismatch."""
+    import contextlib
+    import io
+    pb = gf.load_pb(TREE)
+    new = ["zz-new__canon__1-vk.png", "zz-new__canon__2-vk.png"]
+    co = FakeCo(tmp, "extra")
+    co.plan(UNIT, full_unit(div=[], same=TILES[:4], extra=new, ident=[], exceed=[]))
+    job = gf.Job("unit", GAME, TIER)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        co.go([job])
+    log = out.getvalue()
+    sys.stdout.write(log)
+    dest = co.stream_dir(job)
+    pulled = [t for t in new if f"stream pulled {t}: new row 4x4, no reference, no heat diff" in log]
+    kept = [t for t in new if os.path.isfile(os.path.join(dest, t))]
+    heat = os.listdir(os.path.join(dest, "diff")) if os.path.isdir(os.path.join(dest, "diff")) else []
+    sel = pb.promote_select(dest, True, [])
+    r = job.result
+    check("extra", r["rc"] == 1 and not r.get("stream_mismatch") and pulled == new and kept == new
+          and not heat and sel == new,
+          f"rc {r['rc']} (the report's), mismatch: {r.get('stream_mismatch') or 'none'}; streamed "
+          f"pulls {len(pulled)} of {len(new)}, kept {len(kept)}, heat diffs {len(heat)}, "
+          f"promote_select {sel}")
+
+    co = FakeCo(tmp, "absent")
+    co.plan(UNIT, full_unit(div=TILES[:1], same=TILES[1:4], extra=new, ident=[], exceed=[],
+                            absent=new[1:]))
+    job = gf.Job("unit", GAME, TIER)
+    co.go([job])
+    mm = job.result.get("stream_mismatch") or ""
+    check("absent", job.result["rc"] == 1 and "EXTRA 1 tile(s) absent" in mm and new[1] in mm
+          and "DIVERGE" not in mm and "stream mismatch" not in job.result["status"],
+          f"rc {job.result['rc']}; mismatch: {mm or 'none'}")
 
 
 def case_exempt(tmp):
@@ -912,7 +967,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="fleet-stream-check.")
     gf.ledger_path = lambda: os.path.join(tmp, "ledger.tsv")
     try:
-        for case in (case_framing, case_pool, case_stream_off, case_equality, case_exempt,
+        for case in (case_framing, case_pool, case_stream_off, case_equality, case_extra, case_exempt,
                      case_kill, case_stop, case_stop_cli, case_stop_sync, case_reap, case_clean,
                      case_expect, case_canary_verdict, case_run_candidate, case_move, case_move_cli,
                      case_keep_and_resume_inputs, case_keep_exhausted, case_ledger):

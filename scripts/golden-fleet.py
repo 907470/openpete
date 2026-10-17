@@ -149,7 +149,8 @@ coordinator:
      on two or more hosts);
   6. decides each unit on its capturing host (the harness's capture, then
      --verdict-only in the image), pulls verdict-report.txt, the capture
-     record, capture-device.txt, credits-verdict.txt, the divergent tiles
+     record, capture-device.txt, credits-verdict.txt, the divergent and
+     extra tiles (an extra tile is a new row's, with no blessed digest)
      and both members of each identity pair over baseline (identity/) into
      the cleared local candidate directory (build/presentation-candidate and
      its per-game and dragon forms, or PRESENTATION_GOLDEN_OUT), refuses a
@@ -181,11 +182,13 @@ imported rows their lines tagged `imported`, and the capture's verdict `END`.
 Each poll returns the done marker, then the stream's new bytes from the
 attempt's offset (POLL_SCRIPT); complete lines go to <local run
 dir>/stream.log tagged with unit, host, attempt and receipt time; at most
-STREAM_K divergent tiles and identity pairs per poll are pulled into
-build/fleet-stream/<run-id>/<unit>/ and their heat diffs rendered. At unit
-end, when the accepted attempt's stream holds END, SAME + DIVERGE must equal
-the report's compared count and the DIVERGE, EXTRA, EXCEED and CREDITS sets
-the report's; a mismatch sets the unit's rc to 1 (`stream mismatch`).
+STREAM_K divergent and extra tiles and identity pairs per poll are pulled
+into build/fleet-stream/<run-id>/<unit>/ and the heat diffs of the divergent
+tiles and pairs rendered. At unit end, when the accepted attempt's stream
+holds END, SAME + DIVERGE must equal the report's compared count, the
+DIVERGE, EXTRA, EXCEED and CREDITS sets the report's, and every DIVERGE and
+EXTRA tile and both members of every EXCEED pair must be in the unit's
+stream directory; a mismatch sets the unit's rc to 1 (`stream mismatch`).
 Stopped and SKIP units and attempts without END are exempt.
 --filter S / --freecam-filter S: each unit captures only the bk2 rows whose
 name contains S and the freecam rows whose level contains the freecam
@@ -368,7 +371,7 @@ RUN_KEEP_PREFIX = ("coordinator-resume-", "done.", "stop-request.", "move-reques
 CANARY_VERDICT = "canary-verdict.txt"
 RECORD_NAME = "capture-record.txt"
 FLEET_RECORD_KEYS = ("fleet-run", "fleet-host", "fleet-run-dir")
-STREAM_K = 20                 # divergent tiles and identity pairs pulled per poll per unit
+STREAM_K = 20                 # divergent and extra tiles and identity pairs pulled per poll per unit
 STREAM_DIR = os.path.join("build", "fleet-stream")
 TILE_VERBS = ("SAME", "DIVERGE", "EXTRA", "IDENT", "EXCEED")
 MOVED_VERBS = ("DIVERGE", "EXTRA", "EXCEED")
@@ -2217,7 +2220,7 @@ class Attempt:
         self.stream_off = 0       # bytes of <base>.stream read so far
         self.stream_tail = b""    # a line not yet complete at the last read
         self.lines = []           # parsed stream records, in receipt order
-        self.backlog = []         # DIVERGE and EXCEED records not yet pulled
+        self.backlog = []         # DIVERGE, EXTRA and EXCEED records not yet pulled
         job.atts[self.n] = self
 
     @property
@@ -3215,11 +3218,10 @@ class Coordinator:
                 lat = f", received {rec['receipt'] - rec['epoch'] + self.skew[att.hs.name]:.1f} s after it was written"
             print(f"[fleet] {att.job.name}: stream: {rec['verb']} {rec['tile']} {rec['detail']}"
                   f"{' ' + tag if tag else ''}{' (imported)' if rec['imported'] else ''}{lat}")
-        if rec["verb"] in ("DIVERGE", "EXCEED"):
             att.backlog.append(rec)
 
     def pull_stream(self, att):
-        """Pull up to STREAM_K queued divergent tiles and identity pairs in one rsync and render their heat diffs."""
+        """Pull up to STREAM_K queued divergent and extra tiles and identity pairs in one rsync and render their heat diffs."""
         take, att.backlog = att.backlog[:STREAM_K], att.backlog[STREAM_K:]
         names = []
         for rec in take:
@@ -3265,10 +3267,19 @@ class Coordinator:
         return self.rows_cache[job.unit]
 
     def stream_heat(self, job, rec, dest):
-        """Render one pulled record's heat diff into <dest>/diff: a DIVERGE tile against its reference, an identity pair canon against ident."""
+        """Render one pulled record's heat diff into <dest>/diff: a DIVERGE tile against its reference, an identity pair canon against ident.
+
+        An EXTRA tile has no blessed row and so no reference: it is decoded
+        and its size reported, and no heat diff is rendered.
+        """
         diff = self.load_diffmod()
         name = rec["tile"]
         heat_dir = os.path.join(dest, "diff")
+        if rec["verb"] == "EXTRA":
+            dig = self.pb.digest_file(os.path.join(dest, name))
+            if dig is None:
+                return "undecodable"
+            return f"new row {dig[1][0]}x{dig[1][1]}, no reference, no heat diff"
         if rec["verb"] == "EXCEED":
             canon = name.replace("__ident__", "__canon__")
             res = diff.diff_images(os.path.join(dest, canon), os.path.join(dest, name),
@@ -3285,7 +3296,7 @@ class Coordinator:
                                    job.game, sizes)
 
     def check_stream(self, job, report_path):
-        """Unit-end check: the accepted attempt's stream equals its verdict report; a mismatch sets rc 1.
+        """Unit-end check: the accepted attempt's stream equals its verdict report and its moved tiles are in the stream directory; a mismatch sets rc 1.
 
         Exempt: stopped and SKIP units, and an attempt whose stream holds no
         END (its capture did not reach the verdict).
@@ -3298,6 +3309,7 @@ class Coordinator:
                   f"{job.result.get('attempt', '-')})")
             return
         bad = stream_mismatches(lines, report_path)
+        bad += stream_absent(lines, self.stream_dir(job))
         sets, credits = stream_sets(lines)
         print(f"[fleet] {job.name}: stream: {len(sets['SAME'])} SAME + {len(sets['DIVERGE'])} "
               f"DIVERGE, {len(sets['EXTRA'])} EXTRA, {len(sets['IDENT'])} IDENT, "
@@ -3398,25 +3410,35 @@ class Coordinator:
             rsync_pull(hs.host, rdir, local, names=first)
         report = parse_report(os.path.join(local, "verdict-report.txt"))
         self.note_census(job, report)
-        tiles, pairs = report["divergent"], report["identity"]
-        if self.a.pull != "all":
-            rsync_pull(hs.host, rdir, local, names=tiles)
-            if pairs:
-                rsync_pull(hs.host, rdir, os.path.join(local, "identity"), names=pairs)
-        want = first + tiles + [os.path.join("identity" if self.a.pull != "all" else "", p)
-                                for p in pairs]
+        tiles, pairs = report["divergent"] + report["extra"], report["identity"]
+        want = first + self.pull_tiles(hs, rdir, local, report)
         errs = [f"pulled file absent: {f}" for f in want
                 if not os.path.exists(os.path.join(local, f))]
         errs += self.check_report(job, report)
         if os.path.exists(os.path.join(local, RECORD_NAME)):
             self.stamp_record(local, hs)
         print(f"[fleet] {job.name}: pulled into {local}: report, record, device, credits, "
-              f"{len(tiles)} divergent tile(s), {len(pairs)} identity tile(s)")
+              f"{len(report['divergent'])} divergent tile(s), {len(report['extra'])} extra tile(s), "
+              f"{len(pairs)} identity tile(s)")
         if tiles and not errs:
             self.heat_diffs(job, local)
         if not errs:
             self.keep_run_candidate(job, local)
         return errs
+
+    def pull_tiles(self, hs, rdir, local, report):
+        """Pull a report's divergent and extra tiles and identity-pair members; return their paths relative to local.
+
+        Under --pull all the whole candidate directory is already local, its
+        identity pairs at the top level; otherwise the pairs go to identity/.
+        """
+        tiles, pairs = report["divergent"] + report["extra"], report["identity"]
+        if self.a.pull != "all":
+            if tiles:
+                rsync_pull(hs.host, rdir, local, names=tiles)
+            if pairs:
+                rsync_pull(hs.host, rdir, os.path.join(local, "identity"), names=pairs)
+        return tiles + [os.path.join("identity" if self.a.pull != "all" else "", p) for p in pairs]
 
     def keep_run_candidate(self, job, local):
         """Copy an accepted unit pull into build/fleet-stream/<run id>/<unit>/, the run's own promotable candidate.
@@ -4189,16 +4211,16 @@ def first_hex(value):
 
 
 def parse_report(path):
-    """Parse verdict-report.txt into fields, divergent tiles and identity-pair members."""
-    out = {"fields": {}, "divergent": [], "identity": []}
+    """Parse verdict-report.txt into fields, divergent and extra tiles and identity-pair members."""
+    out = {"fields": {}, "divergent": [], "extra": [], "identity": []}
     try:
         text = open(path, encoding="utf-8").read()
     except OSError:
         return out
     for line in text.splitlines():
         key, _sep, val = line.partition(": ")
-        if key == "divergent":
-            out["divergent"].append(val.split()[0])
+        if key in ("divergent", "extra") and val.split():
+            out[key].append(val.split()[0])
         elif key.startswith("identity-"):
             out["identity"] += [t for t in val.split()[:2] if t.endswith(".png")]
         elif key:
@@ -4320,6 +4342,28 @@ def stream_mismatches(lines, report_path):
     got_rc = credits if credits is not None else "64"
     if got_rc != rep["credits-rc"]:
         out.append(f"CREDITS rc={got_rc}, the report's credits-rc {rep['credits-rc']}")
+    return out
+
+
+def stream_absent(lines, dest):
+    """Return one mismatch per moved verb whose streamed tiles are absent from the unit's stream directory.
+
+    A DIVERGE or EXTRA tile is at dest's top level, where promote reads it;
+    both members of an EXCEED pair are under dest/identity/ or at the top
+    level (a --pull all candidate). A tile only under stream-only/ counts as
+    absent: the accepted pull did not hold it.
+    """
+    sets, _credits = stream_sets(lines)
+    out = []
+    for verb in MOVED_VERBS:
+        absent = []
+        for t in sorted(sets[verb]):
+            names = (t, t.replace("__ident__", "__canon__")) if verb == "EXCEED" else (t,)
+            dirs = (dest, os.path.join(dest, "identity")) if verb == "EXCEED" else (dest,)
+            absent += [n for n in names if not any(os.path.isfile(os.path.join(d, n)) for d in dirs)]
+        if absent:
+            out.append(f"{verb} {len(absent)} tile(s) absent from {dest}: "
+                       f"{' '.join(absent[:3])}{' ...' if len(absent) > 3 else ''}")
     return out
 
 
