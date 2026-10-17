@@ -28,8 +28,9 @@ at --at REV. Per blessed revision the rows name:
  3. decomp inputs: the decomp's own submodules (tools/maspsx) as worktrees
     of the main checkout's nested module repositories at the decomp's pins,
     and the PSY-Q SDK files the decomp ignores (psyq/include, psyq/lib),
-    copied from $OPENPETE_PSYQ_DIR or else the main checkout's decomp psyq/;
-    then the disc .cue and .bin into the decomp's build directory.
+    copied from $OPENPETE_PSYQ_DIR or else the main checkout's decomp psyq/
+    (empty in a fresh clone: the decomp's readme has the user supply the
+    headers, so a run sets OPENPETE_PSYQ_DIR); then the disc .cue and .bin into the decomp's build directory.
  4. decomp: re-make the decomp in its own pinned image (the decomp's
     Dockerfile, the tag its docker_env.sh names; the image is built when
     absent) with the decomp tree bind-mounted, by the decomp's documented
@@ -91,7 +92,10 @@ _spec.loader.exec_module(pb)
 ROOT = pb.repo_root()
 STEPS = ("disc", "worktree", "decomp", "psxrecomp", "regen", "identity",
          "build")
+# Oracle goldens, memory-card fixtures and DuckStation trees: inputs of the
+# oracle and card checks, never of a regen or a presentation capture.
 EXCLUDED_LINK_RE = re.compile(r"^(tests/golden/[^/]+/psxtrace-|"
+                              r"tests/golden/[^/]+/card-[^/]*\.mcd$|"
                               r"third_party/duckstation/)")
 CTEST_MARKERS = ("CTEST_INTERACTIVE_DEBUG_MODE", "DASHBOARD_TEST_FROM_CTEST")
 
@@ -397,7 +401,10 @@ def sha256sum_check(decomp, pre, logf):
         listing = fh.read()
     fixed, nfix = re.subn(r"^(\S+\s+\*?)build\.wad/", r"\1build/wad/",
                           listing, flags=re.M)
-    cmd = pre[:2] + ["-i"] + pre[2:] if pre else []
+    # -i goes after `run`: engine_args() may put global options between the
+    # engine and `run`, and an -i spliced among them leaves stdin detached.
+    at = pre.index("run") + 1 if pre else 0
+    cmd = pre[:at] + ["-i"] + pre[at:] if pre else []
     p = subprocess.run(cmd + ["sha256sum", "-c", "-"], cwd=decomp,
                        input=fixed, capture_output=True, text=True)
     with open(logf, "a") as fh:
@@ -807,11 +814,18 @@ def materialize(a, rev, m, rows, timer, logf):
         log("decomp inputs: %d PSY-Q SDK file(s) carried in, %d nested "
             "submodule worktree(s)" % (n, len(nested)))
         if not os.path.isdir(os.path.join(decomp, "psyq", "include")):
-            raise Refusal("no PSY-Q SDK headers at %s/psyq/include: the "
-                          "decomp's compiler would read the host's "
+            near = os.path.join(os.path.dirname(main), game, "psyq")
+            hint = ("; %s holds include/" % near
+                    if os.path.isdir(os.path.join(near, "include")) else "")
+            raise Refusal("no PSY-Q SDK headers at %s/psyq/include "
+                          "(OPENPETE_PSYQ_DIR %s; %s/psyq/include absent): "
+                          "the decomp's compiler would read the host's "
                           "mips-linux-gnu headers and fail every file; set "
-                          "OPENPETE_PSYQ_DIR to a psyq/ holding include/ and "
-                          "lib/" % decomp)
+                          "OPENPETE_PSYQ_DIR to a psyq/ holding include/ "
+                          "(and lib/ for NEW_PSYQ=1)%s" % (
+                              decomp,
+                              os.environ.get("OPENPETE_PSYQ_DIR") or "unset",
+                              main_decomp, hint))
         if disc:
             with timer.step("disc-carry"):
                 carry_disc(disc, decomp)
