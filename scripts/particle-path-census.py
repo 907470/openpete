@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import corpus_manifest
-from hostenv import scratch_cards  # noqa: E402
+from hostenv import scratch_cards, sw_render_env  # noqa: E402
 
 # The player's memory cards are never opened: runs boot on scratch cards.
 scratch_cards()
@@ -56,11 +56,8 @@ def bk2_frames(name):
 
 def run_row(slug, args, frame_limit, outdir, timeout_s):
     env = dict(os.environ)
-    env.update({"OPENPETE_PARTICLE_PATH_CENSUS": "1", "OPENPETE_VIBRATION": "0",
-                "MESA_LOADER_DRIVER_OVERRIDE": env.get("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe")})
-    lvp = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-    if os.path.exists(lvp):
-        env.setdefault("VK_ICD_FILENAMES", lvp)
+    env.update({"OPENPETE_PARTICLE_PATH_CENSUS": "1", "OPENPETE_VIBRATION": "0"})
+    sw_render_env(env)
     logs = os.path.join(outdir, "logs"); os.makedirs(logs, exist_ok=True)
     shots = os.path.join(outdir, "shots"); os.makedirs(shots, exist_ok=True)
     # The hooks run headless only when a native capture is requested.

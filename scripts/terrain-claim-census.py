@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "lib"))
-from hostenv import scratch_cards  # noqa: E402
+from hostenv import scratch_cards, sw_render_env  # noqa: E402
 
 # The player's memory cards are never opened: runs boot on scratch cards.
 scratch_cards()
@@ -110,11 +110,8 @@ def run_row(kind, slug, args, target_frame, lod, outdir, mods_dir=""):
     env.update({
         "OPENPETE_TERRAIN_CACHE_FORCE": "1",
         "OPENPETE_TERRAIN_GPU_CENSUS": "1",
-        "MESA_LOADER_DRIVER_OVERRIDE": env.get("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe"),
     })
-    lvp = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-    if os.path.exists(lvp):
-        env.setdefault("VK_ICD_FILENAMES", lvp)
+    sw_render_env(env)
     # Headless runs engage the native feed (and therefore the terrain hook)
     # only when a native capture is requested - without the screenshot flags
     # the run is flat-out sim with no census lines at all.

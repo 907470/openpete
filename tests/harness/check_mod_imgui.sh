@@ -114,9 +114,9 @@ fi
 # The verdict is log text, not pixels, so the software rasterizer is the
 # right device: it keeps the run off whatever GPU the machine happens to
 # have and off the user's compositor budget.
-LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-if [[ -e "$LVP_ICD" ]]; then export VK_ICD_FILENAMES="$LVP_ICD"; fi
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 
 # Stale outputs and a stale staged fixture both produce false verdicts, so
 # both go before the first run.

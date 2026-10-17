@@ -8,8 +8,8 @@ source "$REPO/scripts/lib/scratch_cards.sh"
 S="${FIELD_CENSUS_CACHE:-$REPO/build/field-census}"; mkdir -p "$S"; S="$(cd "$S" && pwd)"
 BIN=$REPO/build/linux-release/openpete
 DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
-export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+source "$REPO/scripts/lib/swrender.sh"
+sw_render_env
 
 LEVELS="artisans stone_hill dark_hollow town_square toasty sunny_flight \
 peace_keepers dry_canyon cliff_town ice_cavern doctor_shemp night_flight \

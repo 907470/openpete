@@ -25,7 +25,8 @@ except ModuleNotFoundError:
     print("[gapfill-corpus] SKIP: python3-PIL missing", file=sys.stderr)
     sys.exit(64)
 
-LVP_ICD = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "lib"))
+from hostenv import sw_render_env  # noqa: E402
 
 
 def run_game(binary, disc, case, gapfill, outdir, tag):
@@ -41,9 +42,7 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
     # (e.g. the actor-front pass vs the moby OT-bias pull).
     for k, v in case.get("pin_env", {}).items():
         env[str(k)] = str(v)
-    if os.path.exists(LVP_ICD):          # deterministic software raster
-        env["VK_ICD_FILENAMES"] = LVP_ICD
-        env["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
+    sw_render_env(env)                    # deterministic software raster
     if case.get("pose"):
         env["OPENPETE_FREECAM_POSE"] = case["pose"]
     args = [binary, "--headless", "--disc", disc, "--disc-cache", "0",

@@ -30,8 +30,8 @@ BIN=build/linux-release/openpete
 DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
 OUT=${1:-build/moby-contact}
 mkdir -p "$OUT"
-export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.x86_64.json}
-export MESA_LOADER_DRIVER_OVERRIDE=${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}
+source scripts/lib/swrender.sh
+sw_render_env
 
 # name|level|freecam pose ("" = canonical camera)|frame
 POSES=(

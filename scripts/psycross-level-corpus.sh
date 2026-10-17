@@ -44,12 +44,12 @@ set -u
 # environment to a Windows child: an exported knob would silently not arrive
 # for the --exe windows leg and the run would use the default.
 export OPENPETE_VIBRATION=0
-# PsyCross rasterizes through software GL headless, so the capture needs no GPU
-# and does not race whatever the user has on screen.
-export LIBGL_ALWAYS_SOFTWARE=1
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
-
 cd "$(dirname "$0")/.."
+# PsyCross rasterizes through llvmpipe headless, so the capture needs no GPU
+# and does not race whatever the user has on screen.
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 # shellcheck source=scripts/corpus-jobs.sh
 source scripts/corpus-jobs.sh
 # shellcheck source=scripts/lib/wslenv.sh
@@ -83,12 +83,12 @@ esac
 case "$EXE" in
   linux)   BIN="build/linux-release/openpete";;
   windows) BIN="build/windows-mingw/openpete.exe"
-           # The Mesa overrides below are Linux loader settings and do not
+           # The renderer selection above is Linux loader settings that do not
            # reach a Windows child (see scripts/lib/wslenv.sh); the exe uses
            # whatever GL its own driver provides, which is the point of this
            # leg. --vibration 0 is passed on the command line, so the
            # unattended-launcher rule does not depend on the environment.
-           unset LIBGL_ALWAYS_SOFTWARE MESA_LOADER_DRIVER_OVERRIDE;;
+           unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER VK_ICD_FILENAMES;;
   *) echo "unknown --exe: $EXE (want linux|windows)" >&2; exit 64;;
 esac
 # Per-game default; --tick still wins.

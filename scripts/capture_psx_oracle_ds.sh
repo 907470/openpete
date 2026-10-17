@@ -375,9 +375,11 @@ echo "[capture-ds] capturing $FRAMES records @ PC=$ANCHOR_PC hit=$HIT -> $OUT"
 # bash's job-control "Aborted" line doesn't leak into the wrapper's
 # output.
 ulimit -c 0
+# DuckStation's GL runs on llvmpipe.
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 env "${DUMP_ENV[@]}" \
-LIBGL_ALWAYS_SOFTWARE=1 \
-MESA_LOADER_DRIVER_OVERRIDE=llvmpipe \
 sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
     -frames "$MAX_RUNTIME" \
     -psxtrace "$OUT" \

@@ -95,9 +95,9 @@ ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1' ||
 python3 -c 'import PIL' 2>/dev/null ||
     { echo "walk-cache: SKIP (python3 or PIL missing)"; exit 64; }
 
-LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-[[ -e "$LVP_ICD" ]] && export VK_ICD_FILENAMES="$LVP_ICD"
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 
 OUT="$BUILD_DIR/walk-cache/$PG_GAME"
 mkdir -p "$OUT"

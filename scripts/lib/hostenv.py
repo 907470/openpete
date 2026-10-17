@@ -56,3 +56,24 @@ def scratch_cards():
     os.environ["OPENPETE_CARD_DIR"] = d
     atexit.register(shutil.rmtree, d, True)
     return d
+
+
+LVP_ICD = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+
+
+def sw_render_env(env):
+    """Pin `env`'s GL and Vulkan to Mesa's CPU rasterizers; returns `env`.
+
+    The Python side of scripts/lib/swrender.sh, same selection:
+    VK_ICD_FILENAMES names the lavapipe ICD when installed,
+    LIBGL_ALWAYS_SOFTWARE=1 keeps the GL loader off hardware DRI drivers,
+    GALLIUM_DRIVER=llvmpipe (unless already set) keeps swrast_dri.so off d3d12
+    on WSL, and MESA_LOADER_DRIVER_OVERRIDE is removed (Mesa ships no
+    llvmpipe_dri.so, so that value selects nothing).
+    """
+    if os.path.exists(LVP_ICD):
+        env["VK_ICD_FILENAMES"] = LVP_ICD
+    env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+    env.setdefault("GALLIUM_DRIVER", "llvmpipe")
+    env.pop("MESA_LOADER_DRIVER_OVERRIDE", None)
+    return env

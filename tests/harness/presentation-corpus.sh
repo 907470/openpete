@@ -114,9 +114,9 @@ if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
   echo "[presentation-corpus] SKIP: no Vulkan loader (libvulkan.so.1)"; exit 64; fi
 
 # Deterministic software raster: the golden digests pin one rasterizer.
-LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-if [[ -e "$LVP_ICD" ]]; then export VK_ICD_FILENAMES="$LVP_ICD"; fi
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 # `default` leaves OPENPETE_DEPTH_AFFINE unset so the binary's compiled default
 # applies (the golden basis); off/on force the A/B legs.
 if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi

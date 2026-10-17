@@ -98,12 +98,11 @@ if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; then
         echo "SKIP: no Vulkan loader (libvulkan.so.1)" >&2; exit 64; }
 fi
 
-# Force the software rasterizer: deterministic, no GPU, no display. Prefer an
-# explicit lavapipe ICD if present (bypasses any real ICDs that WSL/CI may also
-# expose); otherwise fall back to the Mesa driver override.
-LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-if [[ -e "$LVP_ICD" ]]; then export VK_ICD_FILENAMES="$LVP_ICD"; fi
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+# Force the software rasterizers (lavapipe, llvmpipe): deterministic, no GPU,
+# no display.
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 
 # The candidate directory is emptied first, so no tile, record or device line
 # of an earlier run can be read as this run's.

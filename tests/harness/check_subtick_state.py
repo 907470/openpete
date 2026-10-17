@@ -78,7 +78,7 @@ os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
-from hostenv import scratch_cards  # noqa: E402
+from hostenv import scratch_cards, sw_render_env  # noqa: E402
 
 # The player's memory cards are never opened: runs boot on scratch cards.
 scratch_cards()
@@ -168,10 +168,7 @@ def run_leg(bk2, hashlog, frames, armed, shotdir, verbose, head=0):
                 "--screenshot-output", str(shotdir / bk2)]
     env = dict(os.environ)
     env.update(env_extra)
-    icd = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-    if Path(icd).exists():
-        env.setdefault("VK_ICD_FILENAMES", icd)
-    env.setdefault("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe")
+    sw_render_env(env)
     p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=600)
     if verbose and p.returncode != 0:
         sys.stderr.write(p.stderr[-2000:])

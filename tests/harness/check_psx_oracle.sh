@@ -123,6 +123,10 @@ cd "$(dirname "$0")/../.."
 source scripts/lib/scratch_cards.sh
 # A signal to this script stops the game process it started (op_own_run).
 source scripts/lib/own_children.sh
+# PsyCross's GL and the native renderer's Vulkan run on the CPU rasterizers.
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 
 # Split args at `--`: an optional [trace-path] before, openpete pass-through
 # flags after. Lets `check_psx_oracle.sh -- --no-lod` test a feature flag
@@ -353,13 +357,10 @@ if [[ "$WINDOWED" != "0" ]]; then
         echo "[psx-oracle] windowed row needs a display (DISPLAY/WAYLAND_DISPLAY unset)" >&2
         exit 64
     fi
-    LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-    if [[ ! -e "$LVP_ICD" ]]; then
-        echo "[psx-oracle] windowed row needs the llvmpipe Vulkan driver ($LVP_ICD)" >&2
+    if [[ "${VK_ICD_FILENAMES:-}" != *lvp_icd* ]]; then
+        echo "[psx-oracle] windowed row needs the llvmpipe Vulkan driver (lvp_icd.x86_64.json)" >&2
         exit 64
     fi
-    export VK_ICD_FILENAMES="$LVP_ICD"
-    export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
     MODE=(--renderer vk --window 640x480)
     echo "[psx-oracle] windowed: native renderer under llvmpipe, present thread active"
 fi

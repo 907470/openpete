@@ -30,6 +30,10 @@ ROOT="$(pwd)"
 source scripts/lib/scratch_cards.sh
 # A signal to this script stops the processes it started (op_own_run).
 source scripts/lib/own_children.sh
+# DuckStation's GL runs on llvmpipe.
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 
 GAME="${1:-}"; shift || true
 [[ -n "$GAME" ]] || { sed -n 's/^# //p' "$0" | head -16; exit 64; }
@@ -163,7 +167,6 @@ python3 "$ROOT/tools/gen_state_regions.py" --manifest "$REGIONS_TOML" --out-flat
 echo "[ram-diff] $GAME anchor=$ANCHOR pc=$PC hit=$HIT ref-hit=$REF_HIT card=${CARD:-nonpersistent}"
 ulimit -c 0
 # The module aborts on exit after a capture; its exit status is not the verdict.
-LIBGL_ALWAYS_SOFTWARE=1 MESA_LOADER_DRIVER_OVERRIDE=llvmpipe \
 sh -c '"$@" >/dev/null 2>&1; exit 0' _ "$DS_BIN" \
     -frames 20000 \
     -psxtrace "$WORK/throwaway.psxtrace" \

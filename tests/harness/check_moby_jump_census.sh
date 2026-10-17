@@ -63,9 +63,9 @@ OUT="${OUT:-build/moby-jump-census/$GAME}"
 TRUTH="games/$GAME/corpus/moby-jump-truth.tsv"
 [[ -f "$TRUTH" ]] || { echo "[jump-census] SKIP: no truth file $TRUTH"; exit 64; }
 
-LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-if [[ -e "$LVP_ICD" ]]; then export VK_ICD_FILENAMES="$LVP_ICD"; fi
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 
 declare -A LAUNCH
 while IFS='|' read -r name _start _interval _freeze _pins launch; do

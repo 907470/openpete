@@ -44,18 +44,16 @@ except ModuleNotFoundError:
     print("[fill-sweep] SKIP: python3-PIL missing", file=sys.stderr)
     sys.exit(64)
 
-LVP_ICD = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "lib"))
+from hostenv import sw_render_env  # noqa: E402
+
 FRAME = 2101
 MIN_M3 = 4.0        # walk units: skip faces with a corner nearer than 64 world units
 MIN_OV = 16         # px of need_data overlap to become a candidate
 
 
 def base_env():
-    env = dict(os.environ)
-    if os.path.exists(LVP_ICD):
-        env["VK_ICD_FILENAMES"] = LVP_ICD
-        env["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
-    return env
+    return sw_render_env(dict(os.environ))
 
 
 def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):

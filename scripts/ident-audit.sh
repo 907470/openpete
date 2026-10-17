@@ -69,9 +69,9 @@ if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
   echo "[ident-audit] SKIP: no Vulkan loader (libvulkan.so.1)"; exit 64; fi
 
 # Deterministic software raster, matching the presentation corpus.
-LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-if [[ -e "$LVP_ICD" ]]; then export VK_ICD_FILENAMES="$LVP_ICD"; fi
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+# shellcheck source=scripts/lib/swrender.sh
+source scripts/lib/swrender.sh
+sw_render_env
 
 mkdir -p "$OUTDIR"
 echo "[ident-audit] bin=$BIN aspect=$CAP_ASPECT lods=[$CAP_LODS] jobs=$CORPUS_JOBS filter='$FILTER' -> $OUTDIR"

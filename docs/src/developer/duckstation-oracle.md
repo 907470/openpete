@@ -518,8 +518,8 @@ four VBLs per tick, while the attract demo itself is 1:1.
 overrides the cap.
 
 The script checks build provenance, generates the region file, runs the
-capture with software GL (`LIBGL_ALWAYS_SOFTWARE=1`,
-`MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`), asserts the trace exists and
+capture with GL on llvmpipe (`scripts/lib/swrender.sh`:
+`LIBGL_ALWAYS_SOFTWARE=1`, `GALLIUM_DRIVER=llvmpipe`), asserts the trace exists and
 carries the build hash, deletes a RAM-carrying trace under `tests/golden/`,
 and prints `tools.psxtrace_format info` on it.
 
