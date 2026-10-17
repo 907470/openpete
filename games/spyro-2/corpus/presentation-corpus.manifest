@@ -58,6 +58,14 @@ summer-forest-collect-orb|1455|2||1443,1455,1467
 # intermediate leg inside the first breath.
 shady-oasis-flame|1413|200||1419,1421,1423,1537
 #
+# flame-charge: a flame breath in Autumn Plains followed at once by a charge,
+# with the breath's smoke puffs on screen through the charge. Over VBL
+# 1433-1479 the particle routine stamps class-0 records whose ordering key
+# (SZ3 >> 5) - size - 2 is not positive and then appends no primitive for
+# them (partsdraw.s:745, :753), up to 8 per tick. 1449 and 1450 are ticks with
+# such records; 1430 and 1466 bracket the stretch, 1434 opens it.
+flame-charge|1425|25||1430,1434,1449,1450,1466
+#
 # open-pause-menu: the pause menu open over Summer Forest, 1473 and 1491. The
 # menu box is an opaque flat quad under ten tiled panels, a frame and six
 # rows of sprite text; the guidebook page beside it carries quad-form glyphs
