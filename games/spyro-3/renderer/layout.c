@@ -634,6 +634,26 @@ const game_layout_t spyro3_game_layout = {
         .fixed_light     = { -0.404f, -0.646f, 0.648f },
         .fixed_tint      = 0x404000u,
     },
+    /* The credits letter roll: game state 10 draws through func_8001E374
+     * (Draw.s's table jtbl_800102F0), which calls func_credits_80076118.
+     * While D_8006C510 is not -1 it walks the D_8006C5A4 (lh) CreditsLetter
+     * records at *D_8006C5F0 (stride 0x1C, state byte +0x04) and writes one
+     * class-0x3B moby per record in state 1, 2 or 3 into consecutive slots up
+     * from *D_8006C550, then the 0xFF sentinel
+     * (func_credits_80076118.s:48-100); state 1 is flying in, 2 settled, 3
+     * departing, 4 once its y reaches 0x119, 0 free. The update
+     * (func_credits_80074BA0) clears 100 records and gives a new letter the
+     * first state-0 record or appends one. */
+    .credits = {
+        .gamestate = 0x8006E344u, .gamestate_value = 10u,
+        .stage = 0u, .stage_below = 0,
+        .draw_gate = 0x8006C510u,
+        .recs = 0x8006C5F0u, .count = 0x8006C5A4u, .count_width = 2u,
+        .rec_stride = 0x1Cu, .state_off = 0x04u, .rec_max = 100u,
+        .drawn_states = (1u << 1) | (1u << 2) | (1u << 3), .flyin_state = 1u,
+        .slot_base = 0x8006C550u, .slot_dir = 1, .slot_stride = 0x58u,
+        .letter_class = 0x3Bu,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

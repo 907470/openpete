@@ -427,6 +427,22 @@ const game_layout_t spyro1_game_layout = {
         .fixed_light = { -0.34f, 0.50f, 0.80f },    /* unit, front-dominant */
         .fixed_tint  = 0x606000u,
     },
+    /* The credits letter roll (func_credits_8007BFD0): while g_Gamestate
+     * (0x800757D8) is GS_Credits and g_CreditsStage (0x80075704) is below 99,
+     * the draw bump-allocates one HUD-pool moby per CreditsLetter record
+     * (D_8007589C, count word D_800756E4), in record order, down from the
+     * pool top D_800756FC. A record's state byte at +0x04 is 1 flying in, 2
+     * settled, 0 departing and free for reuse. */
+    .credits = {
+        .gamestate = 0x800757D8u, .gamestate_value = 15u,
+        .stage = 0x80075704u, .stage_below = 99,
+        .draw_gate = 0u,
+        .recs = 0x8007589Cu, .count = 0x800756E4u, .count_width = 4u,
+        .rec_stride = 0x1Cu, .state_off = 0x04u, .rec_max = 128u,
+        .drawn_states = 0u, .flyin_state = 1u,
+        .slot_base = 0x800756FCu, .slot_dir = -1, .slot_stride = 0x58u,
+        .letter_class = 0u,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). */

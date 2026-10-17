@@ -1075,6 +1075,41 @@ typedef struct game_layout {
         float    fixed_light[3];
         unsigned fixed_tint;
     } font;
+
+    /* The credits letter roll (renderer/credits_key.h): `gamestate` is the
+     * game-state word, which holds `gamestate_value` while the roll runs;
+     * `stage` (0 = none) is a word the roll runs while it reads below
+     * `stage_below`, and `draw_gate` (0 = none) a halfword the letters are
+     * drawn while it is not -1. `recs` is the word holding the
+     * CreditsLetter array's address, `count` the record count (a word when
+     * `count_width` is 4, a signed halfword when 2), each record
+     * `rec_stride` bytes with its state byte at `state_off`, at most
+     * `rec_max` records. `drawn_states` is the bitmask of the states the
+     * draw gives a moby (bit s for state s), 0 when it draws every record;
+     * `flyin_state` is the state a new letter enters. Slot j of the letter
+     * mobys is `slot_stride` bytes, at base + j * stride when `slot_dir` is
+     * +1 and at base - (j + 1) * stride when it is -1, base the word at
+     * `slot_base`. `letter_class` (0 = any) is the class the draw gives
+     * every letter. A game with no roll leaves `slot_base` 0. */
+    struct {
+        uint32_t gamestate;
+        uint32_t gamestate_value;
+        uint32_t stage;
+        int32_t  stage_below;
+        uint32_t draw_gate;
+        uint32_t recs;
+        uint32_t count;
+        uint32_t count_width;
+        uint32_t rec_stride;
+        uint32_t state_off;
+        uint32_t rec_max;
+        uint32_t drawn_states;
+        uint32_t flyin_state;
+        uint32_t slot_base;
+        int      slot_dir;
+        uint32_t slot_stride;
+        uint32_t letter_class;
+    } credits;
 } game_layout_t;
 
 #define GAME_FONT_NONE            0

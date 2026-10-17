@@ -30,6 +30,7 @@
 #include "reextract.h"   /* moby_native_canon_drawn_mobys */
 #include "text_moby_id.h"    /* text_moby_id_lookup */
 #include "renderer/cut_guard.h"     /* cut_jump_census_capture */
+#include "renderer/credits_key.h"   /* game_credits_letter_key */
 
 #include <math.h>
 #include <stdint.h>
@@ -102,55 +103,8 @@ static const game_interp_row_t s_spyro_interp_rows[] = {
 #define G_RECENT_GEMS   0x80077DB8u  /* g_RecentGemsCollected[32] - u_char class per gem */
 #define TRANS_GEM_MAX   32u          /* both the fly-out update and the draw loop stop at 32 */
 #define G_GAMESTATE     0x800757D8u  /* g_Gamestate */
-#define G_CREDITS_STAGE 0x80075704u  /* g_CreditsStage: <99 = the overlay's letter roll */
-#define G_CREDITS_RECS  0x8007589Cu  /* D_8007589C - CreditsLetter[] (overlay space) */
-#define G_CREDITS_COUNT 0x800756E4u  /* D_800756E4 - records in use */
-#define CREDITS_REC_STRIDE 0x1Cu
-#define CREDITS_REC_STATE  0x04u     /* 1 flying in, 2 settled, 0 departing (= free for reuse) */
-#define CREDITS_REC_MAX    128u
-#define GS_CREDITS      15u
 
 static uint32_t rd32(uint32_t addr);
-
-/* Credits letter roll (func_credits_8007BFD0, GS_Credits with g_CreditsStage
- * < 99): the draw allocates exactly one pool moby per CreditsLetter record,
- * in record order, so a moby's absolute pool ordinal IS its record index.
- * The update allocates a new letter into the first record whose state byte
- * is 0 (a letter still flying out) and otherwise appends, so the index is
- * stable for a letter's whole life but is handed to the next line's letter
- * the tick the old one is overwritten. A same-class ordinal fails here: the
- * old line's letters sit at lower indices than the settled title, and each
- * one that departs renames every later letter of its class, pairing a
- * settled letter with the departed one's rotation. Reuse of an index is
- * observed once per tick at capture as the state byte returning to 1
- * (flying in) and bumps a per-index generation folded into the key, so a
- * new letter never pairs with the one it replaced. */
-static uint8_t s_credits_state[CREDITS_REC_MAX];
-static uint8_t s_credits_gen[CREDITS_REC_MAX];
-
-/** @brief Reports whether the credits letter roll is running.
- *
- * @return Nonzero when g_Gamestate is GS_Credits and g_CreditsStage is below
- *     99 (the letter roll, before the final stage). */
-static int credits_roll_active(void) {
-    return rd32(G_GAMESTATE) == GS_CREDITS && (int32_t)rd32(G_CREDITS_STAGE) < 99;
-}
-
-/** @brief Bumps a credits letter's generation when its record enters the flying-in state, so a reused index gets a fresh key. */
-static void credits_track_generations(void) {
-    if (!credits_roll_active()) {
-        memset(s_credits_state, 0, sizeof(s_credits_state));
-        return;
-    }
-    uint32_t recs = rd32(G_CREDITS_RECS), cnt = rd32(G_CREDITS_COUNT);
-    if (recs < 0x80000000u || cnt > CREDITS_REC_MAX) return;
-    for (uint32_t k = 0; k < CREDITS_REC_MAX; k++) {
-        const uint8_t* r = (k < cnt) ? (const uint8_t*)openpete_psx_to_host_span(recs + k * CREDITS_REC_STRIDE, CREDITS_REC_STRIDE) : NULL;
-        uint8_t st = r ? r[CREDITS_REC_STATE] : 0;
-        if (st == 1u && s_credits_state[k] != 1u) s_credits_gen[k]++;
-        s_credits_state[k] = st;
-    }
-}
 
 /* Same-class ordinals of the HUD pool, computed in one pass while a batch is
  * open (game_interp_hud_batch_begin/_end: the tick-end capture and each
@@ -208,19 +162,13 @@ static uint32_t hud_same_class_ordinal(uint32_t top, uint32_t ord, uint16_t cls)
 
 /* Identities tried in the order renderer/interp_regions.h lists them. */
 uint32_t game_interp_moby_key(uint32_t m) {
-    /* Credits letters: (class, record index, generation) - see
-     * credits_track_generations. */
+    /* Credits letters: (class, record index, generation). The roll's draw
+     * (func_credits_8007BFD0) allocates one HUD-pool moby per CreditsLetter
+     * record in record order, so a same-class pool ordinal would rename every
+     * later letter when one departs; game_layout.credits names the layout. */
     {
-        uint32_t top = rd32(G_HUD_POOL_TOP);
-        uint32_t delta = (top >= 0x80000000u && m < top) ? top - m : 0u;
-        if (delta != 0u && delta <= CREDITS_REC_MAX * MOBY_STRIDE &&
-            (delta % MOBY_STRIDE) == 0u && credits_roll_active()) {
-            uint32_t k = delta / MOBY_STRIDE - 1u;
-            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
-            uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36u, 2);
-            return 0x60000000u | ((uint32_t)(cls & 0x3FFu) << 16) |
-                   ((uint32_t)(s_credits_gen[k] & 0x3Fu) << 10) | (k & 0x3FFu);
-        }
+        const uint32_t ck = game_credits_letter_key(m);
+        if (ck != m) return ck;
     }
 
     /* Text glyphs first: a glyph emitted by func_80017FE4 / func_800181AC has a
@@ -341,12 +289,9 @@ static uint32_t rd32(uint32_t addr) {
  * records, the rescue cutscene's state and tick counter (while g_GameState is
  * 8), and the two render lists whose entries the array walk cannot reach. Runs after the shared
  * moby-array walk (game_interp_capture_moby_array), inside the same begin/end
- * tick pair.
- *
- * The credits generation pass comes first because every game_interp_moby_key
- * call below depends on it; the array walk keys by address and does not. */
+ * tick pair, after the shared capture's credits generation pass
+ * (game_credits_track) that the game_interp_moby_key calls below read. */
 static void spyro_interp_extra_pools(void) {
-    credits_track_generations();
     game_interp_hud_batch_begin();   /* HUD pool keys below read one table */
 
     /* Static 3D HUD icons (g_Hud.m_Mobys[12]) - stride-0x58 Mobys OUTSIDE

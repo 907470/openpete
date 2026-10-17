@@ -64,6 +64,7 @@ set(OPENPETE_GAME_COMMON_SOURCES
     # self-linking chain emitter, inert in the others.
     renderer/text_sprt.c
     renderer/interp_regions_gen.c
+    renderer/credits_key.c
     renderer/reextract_view.c
     renderer/cut_guard.c)
 

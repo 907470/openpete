@@ -35,6 +35,7 @@
 #include "spyro_overlay_table.h"       /* the resident overlay, for the cutscene sampler rule */
 #include "renderer/orchestrator.h"     /* the canonical-render epoch */
 #include "renderer/cut_guard.h"        /* cut_census_on */
+#include "renderer/credits_key.h"      /* game_credits_letter_key */
 
 #include <math.h>
 #include <stddef.h>
@@ -2251,7 +2252,10 @@ const moby_game_t moby_game_spyro23 = {
     .renderer_off      = 0x4Eu,
     .renderer_mask     = 0xFFu,
     /* The moby array is fixed with a live sentinel, so a record's Moby address
-     * is its slot and is stable across ticks: the walk's default identity. */
-    .interp_key        = NULL,
+     * is its slot and is stable across ticks, except for the credits letters:
+     * the credits draw compacts the drawn letters into consecutive slots, so
+     * a letter keys by its CreditsLetter record instead (renderer/credits_key.h)
+     * and every other moby by its address. */
+    .interp_key        = game_credits_letter_key,
     .cutpath_jump      = s23_cutpath_jump,
 };

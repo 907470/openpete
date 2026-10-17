@@ -11779,7 +11779,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 static uint64_t t0 = 0; static int n = 0;
                 uint64_t nowp = openpete_phase_now_us();
                 if (nowp - t0 >= 1000000u) { t0 = nowp; n = 0; }
-                const openpete_interp_obj_t* io = openpete_interp_objs_find(mobys[i]);
+                const openpete_interp_obj_t* io = moby_interp_find(mobys[i]);
                 if ((!io || !io->have_prev) && n < 16) {
                     n++;
                     fprintf(stderr, "[moby-interp-%s vbl=%u] moby=%08x cls=%04x pos=(%d,%d,%d)\n",

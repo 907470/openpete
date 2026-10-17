@@ -9,6 +9,7 @@
 #include "game_layout.h"
 #include "renderer/env_knob.h"
 #include "renderer/cut_guard.h"     /* cut_jump_census_capture */
+#include "renderer/credits_key.h"   /* game_credits_track, game_credits_letter_key */
 #include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
 #include "renderer/orchestrator.h" /* the canonical-render epoch the moby stash carries */
 
@@ -366,9 +367,10 @@ void game_interp_capture_moby_array(void) {
         if (st == (uint8_t)game_layout.moby.state_term) break;   /* end of the array */
         if (st < 0x80) {                                         /* 0x80 and above: dormant, skipped */
             const void* src = stash_source(&sw, m, host, blob);
-            openpete_interp_objs_capture(m, src, blob);
+            const uint32_t key = game_credits_letter_key(m);
+            openpete_interp_objs_capture(key, src, blob);
             cut_props_capture((const uint8_t*)src);
-            if (n_live < sizeof s_live / sizeof s_live[0]) s_live[n_live++] = m;
+            if (n_live < sizeof s_live / sizeof s_live[0]) s_live[n_live++] = key;
             if (s_ctc >= 0) captrace_moby(m, (const uint8_t*)host, s_ctc);
         }
         m += stride;
@@ -530,13 +532,15 @@ static void (*s_extra_pools)(void);
 
 /** @brief The per-object capture the game registers: one tick's keyed object snapshots.
  *
- * Between openpete_interp_objs_begin_tick and end_tick it captures the moby
- * array, the game's extra feeder pools when registered, and the scrolling
+ * Between openpete_interp_objs_begin_tick and end_tick it updates the credits
+ * letter generations every key lookup of the capture reads, then captures the
+ * moby array, the game's extra feeder pools when registered, and the scrolling
  * env-anim descriptors. With OPENPETE_INTERP_OBJDBG set it prints the keyed
  * table's population when openpete_frame is a multiple of 120. Reads guest RAM
  * only. */
 static void capture_objs_common(void) {
     openpete_interp_objs_begin_tick();
+    game_credits_track();
     game_interp_capture_moby_array();
     if (s_extra_pools) s_extra_pools();
     capture_env_anim_scroll();
