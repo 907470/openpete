@@ -4,8 +4,10 @@
 - | none | - | 1500 |
 # The check_card_boot.sh fixture boot, saved and loaded at VBL 600: the
 # directory load's read of sector 9 is in flight between the vblank step
-# that started it and its completion.
-- | card-v6-blank.mcd | - | 600 |
+# that started it and its completion. The state, which holds the card, is
+# loaded at 1000 by the saving run, by a fresh process holding the same
+# card path, and by one holding another card path, which refuses it.
+- | card-v6-blank.mcd | - | 600 | - | 1000
 # The title overlay's own drive code (func_title_8007B87C polls the
 # controller's interrupt flag at 0x1F801803) has controller interrupts
 # queued at VBL 620; a state saved there and loaded 380 VBLs later, or by a

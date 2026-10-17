@@ -13,3 +13,11 @@
 # Speculation on this movie is adopted into the real timeline at VBL 2500 (a
 # level transition), so a row past that point would measure nothing.
 sunrise-spring-sunny-villa-portal-entry.bk2 | 2285 | 2
+#
+# Card row (fields: bk2 | vbl | depth | deferral | card): s3-options-save-exit
+# on a blank card creates and writes the save from the pause menu (VBL
+# 1960-2860) and autosaves at the level exit (VBL 3075); the capture at 3760
+# is in Sunrise Spring after both. Card writes run outside live gameplay,
+# where runahead does not speculate, so the row proves the committed card
+# equals the canonical run's, not a speculation spanning a write.
+s3-options-save-exit.bk2 | 3760 | 2 | | card-v6-blank.mcd

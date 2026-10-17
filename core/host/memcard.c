@@ -90,6 +90,7 @@ static char    s_path[2][1280];                /* resolved image path (once load
 static char    s_path_override[2][1024];       /* --card1 / --card2 */
 static char    s_dir_override[1024];           /* --card-dir */
 static int     s_unformatted     = 0;          /* --card-unformatted */
+static unsigned s_commit_epoch   = 0;          /* writes the card file took */
 
 /* Per-modset save safety: a sidecar "<image>.modset"
  * records the modset tag the card's progress belongs to. Mismatch at
@@ -386,6 +387,7 @@ static int mc_flush(int slot)
         return -1;
     }
     memcpy(s_disk[slot], s_card[slot], MC_CARD_SIZE);
+    s_commit_epoch++;
     mc_modset_on_write(slot);
     return 0;
 }
@@ -412,6 +414,7 @@ static int mc_flush_frame(int slot, int frame)
     if (op_file_write_at(s_path[slot], (long)at, s_card[slot] + at, MC_SECTOR_SIZE) != 0)
         return mc_flush(slot);
     memcpy(s_disk[slot] + at, s_card[slot] + at, MC_SECTOR_SIZE);
+    s_commit_epoch++;
     mc_modset_on_write(slot);
     return 0;
 }
@@ -912,6 +915,21 @@ int openpete_memcard_present(int chan)
 {
     int slot = mc_chan_slot(chan);
     return s_present[slot] ? 1 : 0;
+}
+
+int openpete_memcard_held_path(int slot, char* out, size_t cap)
+{
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if ((slot != 0 && slot != 1) || !s_present[slot]) return 0;
+    if (s_loaded[slot] || mc_resolve_path(slot) == 0)
+        snprintf(out, cap, "%s", s_path[slot]);
+    return 1;
+}
+
+unsigned openpete_memcard_commit_epoch(void)
+{
+    return s_commit_epoch;
 }
 
 int openpete_memcard_read_frame(int chan, int frame, void* dst_host)

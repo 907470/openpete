@@ -563,6 +563,17 @@ static uint32_t card_flag(int port) {
     return s_card_flag[port & 1];
 }
 
+void openpete_psx_bios_card_flags_get(uint8_t out[2]) {
+    out[0] = (uint8_t)card_flag(0);
+    out[1] = (uint8_t)card_flag(1);
+}
+
+void openpete_psx_bios_card_flags_set(const uint8_t in[2]) {
+    s_card_flag_init = 1;
+    s_card_flag[0] = in[0];
+    s_card_flag[1] = in[1];
+}
+
 /** @brief Return the card port a device id addresses.
  *
  * The id divided by 16 with truncation toward zero, low bit, so 0x00 is

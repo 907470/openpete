@@ -13,6 +13,7 @@
 #ifndef OPENPETE_MEMCARD_H
 #define OPENPETE_MEMCARD_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -200,6 +201,25 @@ int  openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt);
  * @param chan Slot as 0 or 1, or the raw port encoding 0x00 or 0x10.
  * @return 1 when present, 0 when empty. */
 int  openpete_memcard_present(int chan);
+/** @brief Report whether a slot holds a card and write the card's image path.
+ *
+ * The path is resolved as the first access resolves it (the --card1/--card2
+ * path, else card<slot+1>.mcr in the card directory, with a symbolic link
+ * followed); the image is not loaded. A held card whose path does not
+ * resolve writes an empty path.
+ * @param slot Slot, 0 or 1.
+ * @param out Receives the NUL-terminated path, empty when the slot is empty.
+ * @param cap Size of out in bytes.
+ * @return 1 when the slot holds a card, else 0. */
+int  openpete_memcard_held_path(int slot, char* out, size_t cap);
+/** @brief Return the count of card writes that reached the card file.
+ *
+ * Bumped once per whole-image or frame write that the file took; a
+ * speculative (runahead) write, a refused write and a failed write do not
+ * bump it. The run loop polls it to drop rewind keyframes taken before a
+ * committed write, since rewind restores no card.
+ * @return The count. */
+unsigned openpete_memcard_commit_epoch(void);
 struct CPUState;
 /** @brief Run one vblank interrupt of the BIOS card driver.
  *
@@ -318,6 +338,17 @@ void     openpete_psx_bios_seed_ram(uint8_t* ram);
  * the file calls and the game write it after boot.
  * @param ram Host pointer to guest RAM. */
 void     openpete_psx_bios_reseed_ram(uint8_t* ram);
+/** @brief Copy each card port's FLAG byte, the byte the card answers to every command.
+ *
+ * Bit 3 (new card) is set from insertion until the card's first
+ * successful write; a port never addressed reads as freshly inserted.
+ * Savestates carry the two bytes.
+ * @param out Receives the FLAG byte of port 0 and port 1. */
+void     openpete_psx_bios_card_flags_get(uint8_t out[2]);
+/** @brief Restore both card ports' FLAG bytes, as openpete_psx_bios_card_flags_get returned them.
+ *
+ * @param in The FLAG byte of port 0 and port 1. */
+void     openpete_psx_bios_card_flags_set(const uint8_t in[2]);
 /** @brief Return the number of BIOS ROM window reads served so far.
  *
  * @return The count of openpete_psx_bios_rom_read8 calls that fell in the window. */

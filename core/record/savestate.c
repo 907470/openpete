@@ -40,6 +40,8 @@
 //   uint8_t   spu_state[spu_state_bytes]
 //   uint8_t   spu_mem[spu_mem_bytes]
 //   uint8_t   cd_state[cd_state_bytes]
+//   uint8_t   card[sizeof(state_card_t)] - card port FLAG bytes and the
+//                             card each port held; sized by the ABI
 //   uint8_t   game_extra[game_extra_bytes]
 //   uint8_t   arena[arena_bytes]
 //   char      modset_tag[modset_tag_bytes]
@@ -167,8 +169,9 @@ extern int g_cdXaStartVBL;
  * 9 = header v4 carries the device VBL count; the PSYQ latch pack v9 the
  *     critical-section flag, the latched VBLANK and the dropped count.
  * 10 = the CD section carries the CD-ROM controller model (registers,
- *     response FIFO, interrupt queue, VBL count). */
-#define OPENPETE_STATE_ABI 10u
+ *     response FIFO, interrupt queue, VBL count).
+ * 11 = the card section (port FLAG bytes, the card each port held). */
+#define OPENPETE_STATE_ABI 11u
 
 /* Just the register file - the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
@@ -274,6 +277,55 @@ static void state_cd_apply(const state_cd_t* cd) {
     g_cdXaStartLBA    = cd->xa_start_lba;
     g_cdXaStartVBL    = cd->xa_start_vbl;
     openpete_cdrom_mmio_state_load(&cd->mmio);
+}
+
+/* Card section (fixed layout, ABI-covered, no header field): each card
+ * port's FLAG byte, which the card answers to every command, and the card
+ * each port held at the save, by its resolved image path. The card image
+ * is not carried; a load is refused while no port holds a card the state
+ * held, since the state's kernel RAM caches that card's directory. */
+#define STATE_CARD_PATH_LEN 1280
+typedef struct {
+    uint8_t flag[2];
+    uint8_t held[2];
+    char    path[2][STATE_CARD_PATH_LEN];
+} state_card_t;
+
+/** @brief Capture the card section: both ports' FLAG bytes and the card each port holds.
+ *
+ * @param c Receives the section; every byte is written. */
+static void state_card_capture(state_card_t* c) {
+    memset(c, 0, sizeof *c);
+    openpete_psx_bios_card_flags_get(c->flag);
+    for (int p = 0; p < 2; p++)
+        c->held[p] = (uint8_t)openpete_memcard_held_path(p, c->path[p], sizeof c->path[p]);
+}
+
+/** @brief Refuse a state holding a card that no port of the running session holds.
+ *
+ * A card is matched by its resolved image path, in either port. The
+ * refusal is logged naming the card's path.
+ * @param path The state file, for the log line.
+ * @param c The state's card section.
+ * @return 0 when every card the state held is held now, -1 otherwise. */
+static int state_card_check(const char* path, const state_card_t* c) {
+    for (int p = 0; p < 2; p++) {
+        if (!c->held[p]) continue;
+        char want[STATE_CARD_PATH_LEN];
+        memcpy(want, c->path[p], sizeof want);
+        want[sizeof want - 1] = '\0';
+        int found = 0;
+        for (int q = 0; q < 2 && !found; q++) {
+            char have[STATE_CARD_PATH_LEN];
+            found = openpete_memcard_held_path(q, have, sizeof have) && !strcmp(have, want);
+        }
+        if (found) continue;
+        OPL_ERROR_F("savestate", "%s: the state holds the card %s in slot %d, which no slot "
+                    "holds; load refused - running state untouched", path,
+                    want[0] ? want : "(in-memory card, no file)", p + 1);
+        return -1;
+    }
+    return 0;
 }
 
 /* Chunked fwrite/fread. Some Windows stdio configurations short-write
@@ -663,6 +715,8 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
 
     state_cd_t cd;
     state_cd_capture(&cd);
+    state_card_t card;
+    state_card_capture(&card);
 
     /* The file layout, in order; a zero-length section writes nothing. */
     const struct { const char* what; const void* buf; size_t n; } sections[] = {
@@ -674,6 +728,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
         { "spu",        spu_snap,                   hdr.spu_state_bytes },
         { "spumem",     spumem_snap,                hdr.spu_mem_bytes },
         { "cd",         &cd,                        sizeof(cd) },
+        { "card",       &card,                      sizeof(card) },
         { "game-extra", extra_snap,                 hdr.game_extra_bytes },
         { "arena",      arena_snap,                 hdr.arena_bytes },
         { "modset-tag", modset_tag,                 hdr.modset_tag_bytes },
@@ -689,7 +744,8 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
         return -1;
     }
     if (op_atomic_file_commit(&af) != 0) return -1;
-    OPL_INFO_F("savestate", "saved %s (frame=%u)", path, frame);
+    OPL_INFO_F("savestate", "saved %s (frame=%u) cards held %u/%u flags 0x%02X/0x%02X",
+               path, frame, card.held[0], card.held[1], card.flag[0], card.flag[1]);
     return 0;
 }
 
@@ -719,8 +775,8 @@ static int state_sections_fit(FILE* fp, const char* path, const openpete_state_h
     }
     uint64_t want = (uint64_t)hdr->cpu_bytes + hdr->ram_bytes + hdr->scratch_bytes +
                     hdr->vram_bytes + hdr->spu_state_bytes + hdr->spu_mem_bytes +
-                    hdr->cd_state_bytes + hdr->game_extra_bytes + hdr->arena_bytes +
-                    hdr->modset_tag_bytes;
+                    hdr->cd_state_bytes + sizeof(state_card_t) + hdr->game_extra_bytes +
+                    hdr->arena_bytes + hdr->modset_tag_bytes;
     if (want == (uint64_t)(end - pos)) return 0;
     OPL_ERROR_F("savestate", "%s: header declares %llu section bytes, the file holds %ld "
                 "(game-extra=%u arena=%u modset-tag=%u)", path, (unsigned long long)want,
@@ -863,7 +919,8 @@ static int state_mod_sections_read(FILE* fp, const char* path, long body,
                                    uint8_t** arena_out, char** tag_out) {
     const uint64_t skip = (uint64_t)hdr->cpu_bytes + hdr->ram_bytes + hdr->scratch_bytes +
                           hdr->vram_bytes + hdr->spu_state_bytes + hdr->spu_mem_bytes +
-                          hdr->cd_state_bytes + hdr->game_extra_bytes;
+                          hdr->cd_state_bytes + sizeof(state_card_t) +
+                          hdr->game_extra_bytes;
     uint8_t* arena = hdr->arena_bytes ? (uint8_t*)malloc(hdr->arena_bytes) : NULL;
     char*    tag   = (char*)malloc((size_t)hdr->modset_tag_bytes + 1);
     int rc = (!tag || (hdr->arena_bytes && !arena)) ? -1 : 0;
@@ -884,6 +941,42 @@ static int state_mod_sections_read(FILE* fp, const char* path, long body,
     *arena_out = arena;
     *tag_out = tag;
     return 0;
+}
+
+/** @brief Read a state file's card section, the one after the CD section.
+ *
+ * Seeks past the earlier sections from the end of the header, so a load
+ * judges the card without reading the guest memory images.
+ * @param fp The state file.
+ * @param path Its path, for the log lines.
+ * @param body Offset of the first section (the end of the header).
+ * @param hdr The header, already checked against the file's length.
+ * @param c Receives the section.
+ * @return 0 when the section was read, -1 otherwise (logged). */
+static int state_card_read(FILE* fp, const char* path, long body,
+                           const openpete_state_header_t* hdr, state_card_t* c) {
+    const uint64_t skip = (uint64_t)hdr->cpu_bytes + hdr->ram_bytes + hdr->scratch_bytes +
+                          hdr->vram_bytes + hdr->spu_state_bytes + hdr->spu_mem_bytes +
+                          hdr->cd_state_bytes;
+    if (fseek(fp, body + (long)skip, SEEK_SET) != 0) {
+        OPL_ERROR_F("savestate", "%s: cannot seek to the card section", path);
+        return -1;
+    }
+    return read_section(fp, path, "card", c, sizeof *c);
+}
+
+/** @brief Read a state file's card section and refuse the state when no slot holds a card it held.
+ *
+ * @param fp The state file.
+ * @param path Its path, for the log lines.
+ * @param body Offset of the first section (the end of the header).
+ * @param hdr The header, already checked against the file's length.
+ * @param c Receives the section.
+ * @return 0 when the state may load, -1 when the section cannot be read or the card is not held (logged). */
+static int state_card_admit(FILE* fp, const char* path, long body,
+                            const openpete_state_header_t* hdr, state_card_t* c) {
+    if (state_card_read(fp, path, body, hdr, c) != 0) return -1;
+    return state_card_check(path, c);
 }
 
 /** @brief Refuse a state the running mods cannot restore: an arena ledger that is not a prefix match of the live one, or another modset.
@@ -968,7 +1061,9 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         OPL_ERROR_F("savestate", "%s: load refused - running state untouched", path);
         return -1;
     }
+    state_card_t card;
     int hrc = state_mod_verdict(path, arena_buf, hdr.arena_bytes, tag_buf);
+    if (hrc == 0) hrc = state_card_admit(fp, path, body, &hdr, &card);
     if (hrc == 0) hrc = state_site_check(path, &hdr);
     if (hrc == 0 && fseek(fp, body, SEEK_SET) != 0) {
         OPL_ERROR_F("savestate", "%s: cannot seek to the cpu section", path);
@@ -997,15 +1092,21 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         OPL_ERROR_F("savestate", "%s: out of memory", path);
         rc = -1;
     }
-    if (rc == 0) rc = read_section(fp, path, "cpu",     cpu_buf,     CPU_REG_BYTES);
-    if (rc == 0) rc = read_section(fp, path, "ram",     ram_buf,     OPENPETE_PSX_RAM_SIZE);
-    if (rc == 0) rc = read_section(fp, path, "scratch", scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
-    if (rc == 0) rc = read_section(fp, path, "vram",    vram_buf,    hdr.vram_bytes);
-    if (rc == 0) rc = read_section(fp, path, "spu",     spu_buf,     hdr.spu_state_bytes);
-    if (rc == 0) rc = read_section(fp, path, "spumem",  spumem_buf,  hdr.spu_mem_bytes);
-    if (rc == 0) rc = read_section(fp, path, "cd",      &cd,         sizeof(cd));
-    if (rc == 0 && hdr.game_extra_bytes)
-        rc = read_section(fp, path, "game-extra", extra_buf, hdr.game_extra_bytes);
+    /* The file layout up to the mod sections, in order; a zero-length
+     * section reads nothing. */
+    const struct { const char* what; void* buf; size_t n; } sections[] = {
+        { "cpu",        cpu_buf,     CPU_REG_BYTES },
+        { "ram",        ram_buf,     OPENPETE_PSX_RAM_SIZE },
+        { "scratch",    scratch_buf, OPENPETE_PSX_SCRATCH_SIZE },
+        { "vram",       vram_buf,    hdr.vram_bytes },
+        { "spu",        spu_buf,     hdr.spu_state_bytes },
+        { "spumem",     spumem_buf,  hdr.spu_mem_bytes },
+        { "cd",         &cd,         sizeof(cd) },
+        { "card",       &card,       sizeof(card) },
+        { "game-extra", extra_buf,   hdr.game_extra_bytes },
+    };
+    for (size_t i = 0; rc == 0 && i < sizeof sections / sizeof sections[0]; i++)
+        rc = read_section(fp, path, sections[i].what, sections[i].buf, sections[i].n);
     fclose(fp);
 
     if (rc != 0) {
@@ -1029,6 +1130,9 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     (void)PsyX_SPUAL_RestoreMem(spumem_buf, hdr.spu_mem_bytes);
     (void)PsyX_SPUAL_RestoreState(spu_buf, hdr.spu_state_bytes);
     state_cd_apply(&cd);
+    uint8_t live_flag[2];
+    openpete_psx_bios_card_flags_get(live_flag);
+    openpete_psx_bios_card_flags_set(card.flag);
     free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf); free(tag_buf);
 
     /* Re-anchor the guest-visible VBL counter to the saved value (see the
@@ -1061,7 +1165,9 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     openpete_guest_discontinuity_notify();
 
     if (out_frame) *out_frame = hdr.frame;
-    OPL_INFO_F("savestate", "loaded %s (frame=%u)", path, hdr.frame);
+    OPL_INFO_F("savestate", "loaded %s (frame=%u) cards held %u/%u flags 0x%02X/0x%02X "
+               "-> 0x%02X/0x%02X", path, hdr.frame, card.held[0], card.held[1],
+               live_flag[0], live_flag[1], card.flag[0], card.flag[1]);
     return 0;
 }
 
@@ -1092,6 +1198,7 @@ struct openpete_state_mem {
     uint8_t*   spu;        /* PsyX_SPUAL_StateSize() */
     uint32_t   spu_bytes;
     state_cd_t cd;
+    uint8_t    card_flag[2];  /* card port FLAG bytes; the card is never swapped mid-session */
     /* CD transport (command queue + drain-mode flags) and the game's
      * extra host-state blob. A speculative/rewound tick can run
      * load-transition code - CD commands enqueued, the WAD cursor moved,
@@ -1168,6 +1275,7 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     memcpy(m->scratch_buf, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
     if (PsyX_SPUAL_SnapshotState(m->spu, m->spu_bytes) != 0) return -1;
     state_cd_capture(&m->cd);
+    openpete_psx_bios_card_flags_get(m->card_flag);
     PsyX_CD_QueueSnapshot(m->cdq);
     if (m->gx_bytes) game_state_extra_save(m->gx);
     if (PsyX_VRAM_Snapshot(m->vram, m->vram_bytes) != 0) return -1;
@@ -1196,6 +1304,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
     if (PsyX_SPUAL_RestoreStateEx(m->spu, m->spu_bytes, quiet ? 1 : 0) != 0)
         return -1;
     state_cd_apply(&m->cd);
+    openpete_psx_bios_card_flags_set(m->card_flag);
     PsyX_CD_QueueRestore(m->cdq);
     /* Runs on the QUIET path too (runahead's per-tick rollback): a
      * speculative tick that crossed into a load moved the WAD cursor or

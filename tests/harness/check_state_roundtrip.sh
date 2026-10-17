@@ -34,7 +34,16 @@
 #                                 on both, every row matches the clean row
 #                                 of its (frame, vbl), at least one row
 #                                 after the load is shared with clean, and
-#                                 the log shows the save and the load
+#                                 the log shows the save and the load; on a
+#                                 card row the second process holds the
+#                                 saving run's card path, re-copied from the
+#                                 fixture, and both logs print the card
+#                                 slots held and the FLAG bytes
+#   card-refused                - on a card row, a third process holding
+#                                 another card path asks to load the state
+#                                 at L: the log names the state's card in a
+#                                 refusal and the hash log is byte-identical
+#                                 to clean (nothing was restored)
 #
 # Usage: tests/harness/check_state_roundtrip.sh [--game SLUG] [movie.bk2 ...]
 #   (default: the manifest's rows; a movie argument is the row `movie|-|-|-`)
@@ -160,10 +169,12 @@ run() { # $1 movie  $2 csv  $3 extra-args...
         --gameplay-hash-log "$csv" "$@"
 }
 
-# One run of a row: the row's launch in place of the movie.
+# One run of a row: the row's launch in place of the movie. The scratch card
+# is named after the csv unless ROW_CARD_NAME names it.
+ROW_CARD_NAME=""
 row_run() { # $1 row index  $2 csv  $3 extra-args...
     local i="$1" csv="$2"; shift 2
-    row_launch "$i" "$(basename "$csv").mcr" || return $?
+    row_launch "$i" "${ROW_CARD_NAME:-$(basename "$csv").mcr}" || return $?
     local -a PG_RUN_ARGS=("${ROW_BASE[@]}")
     local PG_CAPTURE_TIMEOUT=600
     pg_capture "$csv.log" "$csv" -- \
@@ -257,15 +268,20 @@ EOF
         --state-save-on-frame "$key" --state-save-output "$lk_state" \
         --state-load-on-frame "$lkey" --state-load-input "$lk_state" \
         || { echo "  load-key run FAILED"; fail=1; continue; }
+    ROW_CARD_NAME="$name-lk.csv.mcr"
     row_run "$i" "$OUT/$name-fl.csv" \
-        --state-load-on-frame "$lkey" --state-load-input "$lk_state" \
-        || { echo "  fresh-load run FAILED"; fail=1; continue; }
+        --state-load-on-frame "$lkey" --state-load-input "$lk_state"
+    fl_rc=$?
+    ROW_CARD_NAME=""
+    [ $fl_rc = 0 ] || { echo "  fresh-load run FAILED"; fail=1; continue; }
     for leg in lk fl; do
         if [ $leg = lk ]; then label="load-key($key->$lkey)"; else label="fresh-load($key->$lkey)"; fi
         if ! grep -q "loaded $lk_state" "$OUT/$name-$leg.csv.log" ||
            { [ $leg = lk ] && ! grep -q "saved $lk_state" "$OUT/$name-$leg.csv.log"; }; then
             echo "  $label: VACUOUS FAIL (save/load not logged)"; fail=1; continue
         fi
+        grep -o "\(saved\|loaded\) $lk_state .*" "$OUT/$name-$leg.csv.log" |
+            sed "s|$lk_state|state|; s/^/  $label: /"
         python3 - "$OUT/$name-clean.csv" "$OUT/$name-$leg.csv" "$label" <<'EOF2' || fail=1
 import csv, sys
 key = lambda r: (r[0], r[1])
@@ -285,6 +301,25 @@ print(f"  {sys.argv[3]}: {len(post)} post-load row(s) shared with clean, "
 sys.exit(0 if ok else 1)
 EOF2
     done
+
+    # Card refusal leg: a process holding another card asks for the state,
+    # which holds the saving run's card; the load is refused and the run
+    # stays on the clean timeline.
+    case "${R_CARD[$i]}" in -|none) continue ;; esac
+    row_run "$i" "$OUT/$name-rf.csv" \
+        --state-load-on-frame "$lkey" --state-load-input "$lk_state" \
+        || { echo "  card-refused run FAILED"; fail=1; continue; }
+    rf_n=$(grep -c "holds the card $OUT/$name-lk.csv.mcr in slot 1, which no slot holds; load refused" \
+           "$OUT/$name-rf.csv.log")
+    if [ "$rf_n" -eq 0 ]; then
+        echo "  card-refused($lkey): no refusal logged VACUOUS FAIL"; fail=1
+    elif grep -q "loaded $lk_state" "$OUT/$name-rf.csv.log"; then
+        echo "  card-refused($lkey): the state loaded FAIL"; fail=1
+    elif cmp -s "$OUT/$name-clean.csv" "$OUT/$name-rf.csv"; then
+        echo "  card-refused($lkey): $rf_n refusal(s), byte-identical to clean PASS"
+    else
+        echo "  card-refused($lkey): $rf_n refusal(s), DIVERGED from clean FAIL"; fail=1
+    fi
 done
 
 # Runahead determinism gate: with --runahead 2 the presented timeline

@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: ac55897d44c9716ab5b2f5c92ed349b2b9f9ee65
+# head: fa085ca8b03eaed0f4696431b5c22cdbaa122489
 file	function	score	marked	accepted
 core/config/config.c	harvest_launch_and_global	40	0	
 core/config/config.c	materialize	32	0	
@@ -46,7 +46,6 @@ core/record/bk2_movie.c	bk2_decode_port	28	0
 core/record/bk2_movie.c	bk2_movie_parse_log	42	0	
 core/record/bk2_movie.c	bk2_parse_groups	30	0	
 core/record/record.c	rec_lazy_init	32	0	
-core/record/savestate.c	openpete_state_load_file	26	0	
 core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0	
 core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	

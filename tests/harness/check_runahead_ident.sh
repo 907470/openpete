@@ -21,7 +21,7 @@
 # of a tick's VBL pair carry the same image.
 #
 # Per row of games/<slug>/corpus/runahead-corpus.manifest
-# (bk2 | vbl | depth | deferral, the last optional), two
+# (bk2 | vbl | depth | deferral | card, the last two optional), two
 # headless replays of the movie:
 #   (a) --runahead <depth>, native capture at <vbl>;
 #   (b) no runahead, native capture at <vbl> + 2*<depth>.
@@ -48,6 +48,15 @@
 # the line is FAIL. A row whose deferral field is `>0` FAILs when both runahead
 # counts are zero: its intermediate yields (a mode-2 tick's VSync(2), an
 # emitted site, the spin tick) never met a snapshot request.
+#
+# Card: a row whose card field names a fixture under tests/golden/<slug>/
+# runs both legs with a scratch copy of it in slot 1 and slot 2 empty (the
+# game's --no-card boot flag dropped). Frame writes under speculation
+# change the in-memory card and suppress only the disk write, so the card
+# the runahead leg leaves on disk must be byte-identical to the canonical
+# leg's (same frame limit), and differ from the fixture: a run that
+# committed no card write is VACUOUS. The row prints the committed card
+# bytes changed and the speculative writes suppressed.
 #
 # Verdict line, one per row:
 #   [runahead-ident] game=<g> row=<bk2>@<vbl> depth=<n> diffpx=<n>
@@ -90,8 +99,9 @@ mkdir -p "$OUT"
 
 fail=0
 rows=0
-while IFS='|' read -r bk2 vbl depth want_def; do
+while IFS='|' read -r bk2 vbl depth want_def card; do
     bk2="${bk2// /}"; vbl="${vbl// /}"; depth="${depth// /}"; want_def="${want_def//[[:space:]]/}"
+    card="${card//[[:space:]]/}"
     [[ -z "$bk2" || "$bk2" == \#* ]] && continue
     [[ -n "$FILTER" && "$bk2" != *"$FILTER"* ]] && continue
     MOVIE="$PG_BK2_DIR/$bk2"
@@ -105,24 +115,42 @@ while IFS='|' read -r bk2 vbl depth want_def; do
     RA_LOG="$OUT/$tag-ra.log"; RA_PNG="$OUT/$tag-ra-$vbl-vk.png"
     CN_LOG="$OUT/$tag-canon.log"; CN_PNG="$OUT/$tag-canon-$led-vk.png"
 
+    # A card row: each leg its own scratch copy of the fixture, deleted first.
+    local_run_args=("${PG_RUN_ARGS[@]}")
+    RA_CARD_ARGS=(); CN_CARD_ARGS=(); FX=""
+    if [[ -n "$card" && "$card" != - ]]; then
+        FX="tests/golden/$GAME/$card"
+        [[ -f "$FX" ]] || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (no card fixture $FX)"; fail=1; continue; }
+        local_run_args=()
+        for t in "${PG_RUN_ARGS[@]}"; do [[ "$t" == --no-card ]] || local_run_args+=("$t"); done
+        rm -f "${OUT:?}/$tag-ra.mcr" "${OUT:?}/$tag-ra.mcr.modset" \
+              "${OUT:?}/$tag-canon.mcr" "${OUT:?}/$tag-canon.mcr.modset"
+        cp "$FX" "$OUT/$tag-ra.mcr"; cp "$FX" "$OUT/$tag-canon.mcr"
+        RA_CARD_ARGS=(--card1 "$OUT/$tag-ra.mcr" --no-card2)
+        CN_CARD_ARGS=(--card1 "$OUT/$tag-canon.mcr" --no-card2)
+    fi
+    saved_run_args=("${PG_RUN_ARGS[@]}")
+    PG_RUN_ARGS=("${local_run_args[@]}")
+
     PG_CAPTURE_ENV=(OPENPETE_RA_PREDICT_CHECK=1)
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$RA_LOG" "$RA_PNG" -- \
         --renderer vk --mute 1 --aspect 4:3 --lod original --vsync 0 \
-        --bk2 "$MOVIE" --runahead "$depth" \
+        --bk2 "$MOVIE" --runahead "$depth" "${RA_CARD_ARGS[@]}" \
         --screenshot-native-only --screenshot-on-frame "$vbl" \
         --screenshot-output "$OUT/$tag-ra-{n}.png" \
         --frame-limit $((led + 30)) \
-        || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (runahead run, see $RA_LOG)"; fail=1; continue; }
+        || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (runahead run, see $RA_LOG)"; fail=1; PG_RUN_ARGS=("${saved_run_args[@]}"); continue; }
 
     PG_CAPTURE_ENV=()
     pg_capture "$CN_LOG" "$CN_PNG" -- \
         --renderer vk --mute 1 --aspect 4:3 --lod original --vsync 0 \
-        --bk2 "$MOVIE" \
+        --bk2 "$MOVIE" "${CN_CARD_ARGS[@]}" \
         --screenshot-native-only --screenshot-on-frame "$led" \
         --screenshot-output "$OUT/$tag-canon-{n}.png" \
         --frame-limit $((led + 30)) \
-        || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (canonical run, see $CN_LOG)"; fail=1; continue; }
+        || { echo "[runahead-ident] game=$GAME row=$bk2@$vbl FAIL (canonical run, see $CN_LOG)"; fail=1; PG_RUN_ARGS=("${saved_run_args[@]}"); continue; }
+    PG_RUN_ARGS=("${saved_run_args[@]}")
 
     armed=0
     grep -q 'armed: leading presentation by' "$RA_LOG" && armed=1
@@ -156,10 +184,20 @@ PYEOF
     ra_rb="$(sed -n 's/.*, \([0-9]*\) rollback.*/\1/p' <<<"$def_line")"
     echo "[runahead-ident] game=$GAME row=$bk2@$vbl ${def_line:-no deferral line}"
 
+    card_ok=1; card_eng=1
+    if [[ -n "$FX" ]]; then
+        card_changed=$(cmp -l "$FX" "$OUT/$tag-canon.mcr" 2>/dev/null | wc -l)
+        spec_wr=$(grep -c 'flush during speculative tick suppressed' "$RA_LOG")
+        cmp -s "$OUT/$tag-ra.mcr" "$OUT/$tag-canon.mcr" || card_ok=0
+        [[ "$card_changed" -gt 0 ]] || card_eng=0
+        echo "[runahead-ident] game=$GAME row=$bk2@$vbl card=$card committed_bytes_changed=$card_changed" \
+             "speculative_writes_suppressed=$spec_wr card_runahead_eq_canonical=$card_ok"
+    fi
+
     verdict=PASS
-    if [[ $armed -eq 0 || "$checked" -eq 0 || $adopted -eq 1 ]]; then
+    if [[ $armed -eq 0 || "$checked" -eq 0 || $adopted -eq 1 || $card_eng -eq 0 ]]; then
         verdict=VACUOUS; fail=1
-    elif [[ "$diffpx" -ne 0 ]]; then
+    elif [[ "$diffpx" -ne 0 || $card_ok -eq 0 ]]; then
         verdict=FAIL; fail=1
     elif [[ -z "$ra_owed" || -z "$ra_rb" ]]; then
         verdict=FAIL; fail=1

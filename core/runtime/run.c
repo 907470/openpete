@@ -4130,6 +4130,26 @@ static bool rewind_key_held(const openpete_options_t* opts, int live, bool pause
     return k;
 }
 
+/** @brief Drop every rewind keyframe when a card write reached the card file since the last call.
+ *
+ * Rewind keyframes carry no card and rewind never writes the card file, so
+ * a keyframe taken before a committed write would restore kernel RAM whose
+ * directory cache is behind the card. Called before each keyframe capture,
+ * so no keyframe older than the latest committed write survives. Logs the
+ * first clear of each burst of writes (writes less than 120 frames apart)
+ * with the session's clear and committed-write counts. */
+static void rewind_card_commit_clear(void) {
+    static unsigned seen = 0, clears = 0, last_f = 0;
+    const unsigned ep = openpete_memcard_commit_epoch();
+    if (ep == seen) return;
+    seen = ep;
+    openpete_rewind_clear();
+    if (clears++ == 0 || openpete_frame - last_f > 120u)
+        OPL_INFO_F("rewind", "card write committed at f=%u - history cleared (%u clear(s), "
+                   "%u card write(s))", openpete_frame, clears, ep);
+    last_f = openpete_frame;
+}
+
 /** @brief Run one quiescent iteration of rewind: the keyframe cadence, then one tick back while the rewind key is held in live, unpaused gameplay.
  * @param opts Run options.
  * @param paused The host is paused.
@@ -4145,6 +4165,7 @@ static bool rewind_step(const openpete_options_t* opts, bool paused, bool bk2_ac
         }
         return false;
     }
+    rewind_card_commit_clear();
     const int live = game_is_gameplay_live(&g_game.cpu);
     openpete_rewind_on_iter(&g_game.cpu, openpete_frame, live);
     const bool held = rewind_key_held(opts, live, paused);
