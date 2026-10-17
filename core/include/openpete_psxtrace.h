@@ -595,6 +595,21 @@ int  openpete_sched_clock_replay(void);
  * @param target_out The reference VBLANK to charge to.
  * @return 1 with target_out set when a VBLANK is due here, else 0. */
 int  openpete_sched_vblpos_gate(uint32_t addr, uint32_t* target_out);
+/** @brief Report whether the clock replay holds `.vblpos` rows that end at a game load of a RAM word.
+ *
+ * Latched at openpete_sched_open(); the read gate is installed only then.
+ * @return 1 when the replay is on and has such rows, else 0. */
+int  openpete_sched_vblpos_read_words(void);
+/** @brief Count one guest load at addr and return the in-work VBLANK due before it.
+ *
+ * A load of a RAM word no `read` row of the golden names returns 0 at
+ * once. Otherwise the loads of the word since the record's anchor are
+ * counted, and at the k-th load the current record's next `read` row for
+ * that word is due; rows sharing the point are consumed together.
+ * @param addr Guest address of the load.
+ * @param target_out The reference VBLANK to charge to.
+ * @return 1 with target_out set when a VBLANK is due here, else 0. */
+int  openpete_sched_vblpos_read_gate(uint32_t addr, uint32_t* target_out);
 /** @brief Consume the `.vblpos` rows whose entry openpete did not reach before an anchor or a wait.
  *
  * At an anchor (bound 0) the rows of every record before the current one

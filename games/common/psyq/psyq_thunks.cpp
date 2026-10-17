@@ -697,6 +697,24 @@ extern "C" void psyq_sched_clock_gate(CPUState* cpu, uint32_t addr) {
  * on hardware a masked VSync wait spins until libetc's timeout. */
 static uint64_t s_masked_vsync_waits = 0, s_masked_query_charges = 0;
 static int s_dlv_depth = 0;              /* deliveries in progress */
+
+/** @brief Deliver the in-work VBLANK the clock replay schedules before this guest load, if any.
+ *
+ * Called by the read gate (dispatch.c) on every guest load outside a
+ * host-initiated call while the replay holds `read` rows; loads the VBL
+ * body itself makes (the pad buffer's save and restore) are not counted.
+ * The VBLs run through the VBL body before the load reads memory, with
+ * every register preserved (deliver_vbl), since a load sits mid-block.
+ * @param cpu Guest CPU state.
+ * @param addr Guest address of the load. */
+extern "C" void psyq_sched_clock_read_gate(CPUState* cpu, uint32_t addr) {
+    uint32_t target = 0;
+    if (s_dlv_depth || !openpete_sched_vblpos_read_gate(addr, &target)) return;
+    openpete_psxtrace_gate_host_enter();
+    sched_charge_to(cpu, target, "in-work VBLANK at a load");
+    openpete_psxtrace_gate_host_leave();
+}
+
 /* VSync waits off the schedule by VBLs waited (1, 2, 3, 4 or more): the
  * waits whose earlier VBLs yield at an intermediate yield. */
 static uint64_t s_vsync_waits_by_n[4];

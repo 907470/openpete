@@ -40,6 +40,7 @@ Patches that change what a capture records, by number:
 | 0041 | `-card-window` S rows (stores to card-driver kernel bytes) and T rows (bytes stored to `JOY_TX_DATA`), each with its tick offset from the VBLANK |
 | 0042 | `-psxtrace-card-active HEX`: `<trace>.card`, each card transfer's start (a nonzero store to the driver's transfer-active byte) with its tick offset from the VBLANK |
 | 0045 | `-bk2-groups-out PATH`: the inputs each consume group took; `-bk2-lead-groups PATH`: `-bk2-lead 1` predicts from those counts instead of the movie's (`scripts/capture_psx_oracle_ds.sh` reruns a consume-keyed capture until no row is mispredicted, writing `<trace>.bk2groups`) |
+| 0046 | `<trace>.vblpos` version 2: each row gains `rt rk`, the first game-code load (outside exception handlers, between the `rfe` and `t`, in `t`'s record) of a main-RAM word game code stored inside the row's handler (the VSync callback) and its ordinal among the record's game-code loads of the word, or `- -`; the trailer gains `read_resolved` |
 
 Apply (from the openpete checkout root; `--no-build` skips the build):
 

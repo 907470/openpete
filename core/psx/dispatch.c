@@ -503,9 +503,61 @@ void openpete_psxtrace_gate_host_leave(void) { s_gate_depth--; }
  * psyq_sched_clock_gate.
  * @param cpu Guest CPU state.
  * @param addr Guest address of the function entered. */
+/* The clock replay's read gate: while the golden holds `.vblpos` rows that
+ * end at a game load of a RAM word, the guest's loads run through these
+ * wrappers, which pass each load outside a host-initiated call to
+ * psyq_sched_clock_read_gate before the load reads memory. Installed once,
+ * at the first counted gate hit; never installed off the clock replay. */
+static CPUState* s_rg_cpu = NULL;
+static int       s_rg_state = 0;   /* 0 undecided, 1 installed, -1 not needed */
+static uint32_t (*s_rg_read_word)(uint32_t);
+static uint16_t (*s_rg_read_half)(uint32_t);
+static uint8_t  (*s_rg_read_byte)(uint32_t);
+static uint32_t (*s_rg_lwl)(uint32_t, uint32_t);
+static uint32_t (*s_rg_lwr)(uint32_t, uint32_t);
+
+/** @brief Pass one guest load to the clock replay's read gate unless it is inside a host-initiated call.
+ * @param addr Guest address of the load. */
+static void read_gate(uint32_t addr) {
+    if (s_gate_depth) return;
+    extern void psyq_sched_clock_read_gate(CPUState* cpu, uint32_t addr) __attribute__((weak));
+    if (psyq_sched_clock_read_gate) psyq_sched_clock_read_gate(s_rg_cpu, addr);
+}
+/** @brief Read gate, then the word load it wraps. @param addr Guest address. @return The word. */
+static uint32_t rg_read_word(uint32_t addr) { read_gate(addr); return s_rg_read_word(addr); }
+/** @brief Read gate, then the halfword load it wraps. @param addr Guest address. @return The halfword. */
+static uint16_t rg_read_half(uint32_t addr) { read_gate(addr); return s_rg_read_half(addr); }
+/** @brief Read gate, then the byte load it wraps. @param addr Guest address. @return The byte. */
+static uint8_t rg_read_byte(uint32_t addr) { read_gate(addr); return s_rg_read_byte(addr); }
+/** @brief Read gate, then the `lwl` it wraps. @param addr Guest address. @param rt Register value. @return The merged value. */
+static uint32_t rg_lwl(uint32_t addr, uint32_t rt) { read_gate(addr); return s_rg_lwl(addr, rt); }
+/** @brief Read gate, then the `lwr` it wraps. @param addr Guest address. @param rt Register value. @return The merged value. */
+static uint32_t rg_lwr(uint32_t addr, uint32_t rt) { read_gate(addr); return s_rg_lwr(addr, rt); }
+
+/** @brief Install the read gate's wrappers over cpu's load functions when the clock replay has `read` rows; decided once.
+ * @param cpu Guest CPU state. */
+static void read_gate_install(CPUState* cpu) {
+    if (!openpete_sched_vblpos_read_words()) { s_rg_state = -1; return; }
+    s_rg_state = 1;
+    s_rg_cpu = cpu;
+    s_rg_read_word = cpu->read_word; cpu->read_word = rg_read_word;
+    s_rg_read_half = cpu->read_half; cpu->read_half = rg_read_half;
+    s_rg_read_byte = cpu->read_byte; cpu->read_byte = rg_read_byte;
+    s_rg_lwl = cpu->lwl;             cpu->lwl = rg_lwl;
+    s_rg_lwr = cpu->lwr;             cpu->lwr = rg_lwr;
+}
+
+/** @brief Offer a function entry to the clock replay's VBL delivery gate.
+ *
+ * Skipped for the re-entry a re-dispatch makes, inside a nested gate, and
+ * off clock replay. The first counted entry installs the guest load
+ * wrappers that let a delivery land at a read target instead of an entry.
+ * @param cpu Guest CPU state.
+ * @param addr Guest address of the function entered. */
 static void gate_clock(CPUState* cpu, uint32_t addr) {
     if (addr == s_gate_redispatch) { s_gate_redispatch = 0; return; }
     if (s_gate_depth || !openpete_sched_clock_replay()) return;
+    if (!s_rg_state) read_gate_install(cpu);
     extern void psyq_sched_clock_gate(CPUState* cpu, uint32_t addr) __attribute__((weak));
     if (psyq_sched_clock_gate) psyq_sched_clock_gate(cpu, addr);
 }

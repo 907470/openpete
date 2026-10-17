@@ -937,11 +937,14 @@ int openpete_sched_next_srand(uint32_t* seed_out) {
 /* The clock replay (OPENPETE_PSXTRACE_CLOCK_REPLAY=1). `.vblpos` holds
  * every VBLANK interrupt the reference took outside a waited VSync, with
  * the first game-code function entered after its handler (t), that entry's
- * ordinal since the record's anchor (k) and the record it fell in (t_rec);
+ * ordinal since the record's anchor (k) and the record it fell in (t_rec),
+ * and, when the game loaded a word its VSync callback stored before
+ * reaching t, that word (rt) and the load's ordinal among the record's
+ * loads of the word (rk): the row is due at whichever comes first;
  * `.spuq` holds every libspu call that reads or moves envelope state with
  * the exact clock. Gate hits are counted per target, so a guest call a
  * presentation flag adds or removes elsewhere does not move a delivery. */
-typedef struct { uint32_t rec, vbl, t, t_rec, k, insns; } sched_vblpos_t;
+typedef struct { uint32_t rec, vbl, t, t_rec, k, insns, rt, rk; uint8_t has_rt; } sched_vblpos_t;
 typedef struct { uint32_t rec, ra, a0, a1, idx, reg_first, reg_n; uint64_t tick; uint8_t kind, used; } sched_spuq_t;
 /* A `.spureg` row: one SPU register access inside the libspu call of `.spuq`
  * row `spuq`; unit is the KON half (0 low, 1 high) for a key-on store and
@@ -956,6 +959,11 @@ static sched_vblpos_t* s_vp = NULL;  static uint32_t s_vp_n = 0, s_vp_next = 0;
 static uint32_t s_vp_delivered = 0, s_vp_covered = 0, s_vp_late = 0, s_vp_skipped = 0;
 static uint32_t s_vp_rec = 0xFFFFFFFFu;              /* record the target counters belong to */
 static uint32_t s_vp_tgt[VBLPOS_TARGETS], s_vp_cnt[VBLPOS_TARGETS], s_vp_ntgt = 0;
+static uint8_t  s_vp_tread[VBLPOS_TARGETS];          /* the target is a RAM word (a row's rt) */
+/* Every RAM word a row's rt names, one bit per word: the read gate's
+ * filter. */
+static uint8_t  s_vp_read_bits[0x200000u >> 5];
+static uint32_t s_vp_read_rows = 0, s_vp_read_counted = 0, s_vp_read_delivered = 0;
 static sched_spuq_t* s_sq = NULL;    static uint32_t s_sq_n = 0, s_sq_next = 0;
 static uint32_t s_sq_charged = 0, s_sq_unmatched = 0, s_sq_unmade = 0;
 static uint32_t s_sq_last = 0xFFFFFFFFu;  /* s_sq index of the last matched call, or none */
@@ -972,7 +980,9 @@ void openpete_sched_clock_seeded(uint64_t tick) { if (!s_clock_seed_tick) s_cloc
  *
  * A row whose target column is `-` (the reference reached no game-code
  * entry before the trace ended) keeps target 0, which no gate hit
- * matches, so it is consumed late.
+ * matches, so it is consumed late. A row with rt and rk columns
+ * (recorder version 2) also targets that load; the word's bit is set in
+ * s_vp_read_bits. A version 1 sidecar has neither column.
  * @param trace Path of the golden trace.
  * @return 1 when at least one row loaded, else 0. */
 static int load_vblpos(const char* trace) {
@@ -982,9 +992,10 @@ static int load_vblpos(const char* trace) {
     s_vp = (sched_vblpos_t*)malloc(cap * sizeof(*s_vp));
     for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
         if (line[0] == '#' || line[0] == 'p') continue;
-        unsigned idx, rec, vbl; char via[16], epc[16], entry[16], insns[16], t[16], t_rec[16], k[16];
-        if (sscanf(line, "%u %u %u %15s %15s %15s %15s %15s %15s %15s", &idx, &rec, &vbl, via, epc, entry, insns,
-                   t, t_rec, k) != 10)
+        unsigned idx, rec, vbl;
+        char via[16], epc[16], entry[16], insns[16], t[16], t_rec[16], k[16], tick[24], rt[16] = "-", rk[16] = "-";
+        if (sscanf(line, "%u %u %u %15s %15s %15s %15s %15s %15s %15s %23s %15s %15s", &idx, &rec, &vbl, via, epc,
+                   entry, insns, t, t_rec, k, tick, rt, rk) < 10)
             continue;
         if (s_vp_n == cap) { cap *= 2; s_vp = (sched_vblpos_t*)realloc(s_vp, cap * sizeof(*s_vp)); }
         sched_vblpos_t* r = &s_vp[s_vp_n++];
@@ -993,6 +1004,14 @@ static int load_vblpos(const char* trace) {
         r->t_rec = (t_rec[0] == '-') ? rec : (uint32_t)strtoul(t_rec, NULL, 10);
         r->k = (uint32_t)strtoul(k, NULL, 10);
         r->insns = (uint32_t)strtoul(insns, NULL, 10);
+        r->has_rt = (uint8_t)(rt[0] == '0');
+        r->rt = r->has_rt ? (uint32_t)strtoul(rt, NULL, 16) & 0x1FFFFCu : 0u;  /* offset in main RAM */
+        r->rk = r->has_rt ? (uint32_t)strtoul(rk, NULL, 10) : 0u;
+        if (r->has_rt) {
+            const uint32_t w = r->rt >> 2;
+            s_vp_read_bits[w >> 3] |= (uint8_t)(1u << (w & 7u));
+            s_vp_read_rows++;
+        }
     }
     free(buf);
     return s_vp_n != 0;
@@ -1108,8 +1127,8 @@ static void clock_open(const char* trace) {
     }
     if (!load_spureg(trace))
         OPL_WARN_F("psxtrace", "clock replay: no .spureg rows; the SPU clock charges at libspu entries only");
-    OPL_INFO_F("psxtrace", "clock replay: %u in-work VBLANK rows, %u libspu rows, %u SPU register rows (%u unlinked)",
-               s_vp_n, s_sq_n, s_sr_n, s_sr_unlinked);
+    OPL_INFO_F("psxtrace", "clock replay: %u in-work VBLANK rows (%u at a load), %u libspu rows, %u SPU register rows (%u unlinked)",
+               s_vp_n, s_vp_read_rows, s_sq_n, s_sr_n, s_sr_unlinked);
 }
 
 /** @brief Skip the rows of the records a load window's end jumps over and re-seed the SPU clock.
@@ -1118,6 +1137,16 @@ static void clock_skip_to(uint32_t rec) {
     s_clock_reseed = 1;
     while (s_vp && s_vp_next < s_vp_n && s_vp[s_vp_next].t_rec <= rec) { s_vp_next++; s_vp_skipped++; }
     while (s_sq && s_sq_next < s_sq_n && s_sq[s_sq_next].rec <= rec) s_sq_next++;
+}
+
+/** @brief Add target t (an entry, or a load when read is set) to the record's counted targets at 0, unless present or the table is full.
+ * @param t The function's entry address, or the word's offset in main RAM.
+ * @param read 1 for a load, 0 for an entry. */
+static void vblpos_add_target(uint32_t t, uint8_t read) {
+    uint32_t j = 0;
+    while (j < s_vp_ntgt && (s_vp_tgt[j] != t || s_vp_tread[j] != read)) j++;
+    if (j < s_vp_ntgt || s_vp_ntgt == VBLPOS_TARGETS) return;
+    s_vp_tgt[j] = t; s_vp_tread[j] = read; s_vp_cnt[j] = 0; s_vp_ntgt++;
 }
 
 /** @brief Start counting the entries of rec's `.vblpos` targets: the distinct targets of its pending rows, each at 0.
@@ -1129,33 +1158,66 @@ static void vblpos_begin_record(uint32_t rec) {
     s_vp_rec = rec;
     s_vp_ntgt = 0;
     while (s_vp_next < s_vp_n && s_vp[s_vp_next].t_rec < rec) { s_vp_next++; s_vp_skipped++; }
-    for (uint32_t i = s_vp_next; i < s_vp_n && s_vp[i].t_rec == rec && s_vp_ntgt < VBLPOS_TARGETS; i++) {
-        uint32_t j = 0;
-        while (j < s_vp_ntgt && s_vp_tgt[j] != s_vp[i].t) j++;
-        if (j == s_vp_ntgt) { s_vp_tgt[j] = s_vp[i].t; s_vp_cnt[j] = 0; s_vp_ntgt++; }
+    for (uint32_t i = s_vp_next; i < s_vp_n && s_vp[i].t_rec == rec; i++) {
+        vblpos_add_target(s_vp[i].t, 0);
+        if (s_vp[i].has_rt) vblpos_add_target(s_vp[i].rt, 1);
     }
 }
 
-int openpete_sched_vblpos_gate(uint32_t addr, uint32_t* target_out) {
+/** @brief Return 1 when `.vblpos` row r is due at the k-th hit of target t (an entry, or a load when read is set).
+ * @param r The row.
+ * @param t The function's entry address, or the word's offset in main RAM.
+ * @param read 1 for a load, 0 for an entry.
+ * @param k The hit's ordinal in the record.
+ * @return 1 when the row names that hit, else 0. */
+static int vblpos_row_at(const sched_vblpos_t* r, uint32_t t, uint8_t read, uint32_t k) {
+    return read ? (r->has_rt && r->rt == t && r->rk == k) : (r->t == t && r->k == k);
+}
+
+/** @brief Count one hit of target t (a function entry, or a load of a RAM word when read is set) and return the in-work VBLANK due at it.
+ * @param t The function's entry address, or the word's offset in main RAM.
+ * @param read 1 for a load, 0 for an entry.
+ * @param target_out The reference VBLANK to charge to.
+ * @return 1 with target_out set when a VBLANK is due here, else 0. */
+static int vblpos_hit(uint32_t t, uint8_t read, uint32_t* target_out) {
     if (!s_clock || s_failed || s_in_load) return 0;
     const uint32_t rec = sched_cur_rec();
     if (rec != s_vp_rec) vblpos_begin_record(rec);
     uint32_t j = 0;
-    while (j < s_vp_ntgt && s_vp_tgt[j] != addr) j++;
+    while (j < s_vp_ntgt && (s_vp_tgt[j] != t || s_vp_tread[j] != read)) j++;
     if (j == s_vp_ntgt) return 0;
     const uint32_t k = ++s_vp_cnt[j];
+    s_vp_read_counted += read;
     uint32_t target = 0, n = 0;
-    while (s_vp_next < s_vp_n && s_vp[s_vp_next].t_rec == rec && s_vp[s_vp_next].t == addr && s_vp[s_vp_next].k == k) {
+    while (s_vp_next < s_vp_n && s_vp[s_vp_next].t_rec == rec && vblpos_row_at(&s_vp[s_vp_next], t, read, k)) {
         target = s_vp[s_vp_next++].vbl;
         n++;
     }
     if (!n) return 0;
-    if (s_log) fprintf(s_log, "vblpos rec=%u t=0x%08X k=%u vbl=%u pos=%u rows=%u\n", rec, addr, k, target, s_pos, n);
+    if (s_log) fprintf(s_log, "vblpos rec=%u t=0x%08X%s k=%u vbl=%u pos=%u rows=%u\n", rec, t, read ? " read" : "", k,
+                       target, s_pos, n);
     if (target <= s_pos) { s_vp_covered += n; return 0; }
     s_vp_delivered += n;
+    if (read) s_vp_read_delivered += n;
     if (rec == s_lq_rec) s_lq_after += n;
     *target_out = target;
     return 1;
+}
+
+int openpete_sched_vblpos_gate(uint32_t addr, uint32_t* target_out) {
+    return vblpos_hit(addr, 0, target_out);
+}
+
+int openpete_sched_vblpos_read_words(void) {
+    return s_clock && s_vp_read_rows != 0;
+}
+
+int openpete_sched_vblpos_read_gate(uint32_t addr, uint32_t* target_out) {
+    const uint32_t m = addr & 0x1FFFFFFFu;
+    if (m >= 0x800000u) return 0;
+    const uint32_t w = (m & 0x1FFFFFu) >> 2;
+    if (!(s_vp_read_bits[w >> 3] & (1u << (w & 7u)))) return 0;
+    return vblpos_hit(w << 2, 1, target_out);
 }
 
 uint32_t openpete_sched_vblpos_late(uint32_t bound) {
@@ -1299,10 +1361,10 @@ static void clock_summary(void) {
         keyons_before += (s_sq[i].kind == 0 && s_sq[i].a0 == 1u);
     OPL_INFO_F("psxtrace", "clock: vblpos delivered=%u covered=%u late=%u skipped=%u pending=%u of %u; "
                "spuq charged=%u unmatched=%u unmade=%u of %u; key-on rows before the SPU clock's seed=%u (seed tick %llu); "
-               "spureg charged=%u of %u",
+               "spureg charged=%u of %u; vblpos read rows=%u loads counted=%u delivered=%u",
                s_vp_delivered, s_vp_covered, s_vp_late, s_vp_skipped, s_vp_n - s_vp_next, s_vp_n,
                s_sq_charged, s_sq_unmatched, s_sq_unmade, s_sq_n, keyons_before, (unsigned long long)s_clock_seed_tick,
-               s_sr_charged, s_sr_n);
+               s_sr_charged, s_sr_n, s_vp_read_rows, s_vp_read_counted, s_vp_read_delivered);
 }
 
 void openpete_sched_summary(void) {

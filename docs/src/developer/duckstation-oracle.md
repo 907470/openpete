@@ -184,6 +184,8 @@ on the VSync recorder's stack, so it needs `--vsync-pc`. Columns:
 | `t_rec` | record being accumulated when `t` was entered |
 | `k` | `t`'s ordinal in `t_rec`: executions at pc == `t` since that record's anchor, outside exception handlers, each preceded by a game-code instruction |
 | `tick` | exact tick of the dispatch (for `nested`, of the enclosing dispatch) |
+| `rt` | the main-RAM word (KSEG0, word-aligned) of the first game-code load, between the `rfe` and `t` and in `t_rec`, of a word the row's VSync callback stored (below); `-` when none (patch 0046; version 1 sidecars have neither column) |
+| `rk` | `rt`'s ordinal: game-code loads of that word outside exception handlers since `t_rec`'s anchor, the load included |
 
 Game code is RAM at or above `0x10000` outside the library spans:
 `tools/psxtrace_selfentry.py library GAME` lists, from
@@ -199,9 +201,20 @@ the recorder skips a listed address whichever overlay is loaded. The
 anchor breakpoint restarts the counts before the anchor instruction
 executes, so the anchor's own entry counts in the new record. Rows of
 interrupts taken before one `t` is reached share it; a row whose `t` is
-never reached prints `-` for `t`, `t_rec` and `k`. The trailer
+never reached prints `-` for `t`, `t_rec` and `k`. A row carries `rt`
+when, before its call target, game code outside exception handlers loads
+a main-RAM word whose last store was made by game code inside the
+outermost exception that opened the row or a later row-opening one (the
+game's VSync callback: its VBL counters): the interrupt's work is
+observable at that load. The row is due at `rt`'s `rk`-th load or `t`'s
+`k`-th entry, whichever a host reaches first; `t` is the fallback for a
+host whose path skips the load. Any other store (outside exception handlers, by kernel or library
+code, or inside an exception that opened no row) clears the word's mark;
+library and kernel state is left out because openpete's thunks keep it
+their own way. The trailer
 `# rows= resolved= unresolved= vbl_irqs= nested= in_wait=
-self_entry_skipped= shadow_dropped= records=` accounts for every VBLANK
+self_entry_skipped= shadow_dropped= records= read_resolved=` (rows with
+an `rt`) accounts for every VBLANK
 after arming (`vbl_irqs = rows + in_wait`, and equals the VBLANK span of
 the capture); the capture refuses `vbl_irqs=0`. The recorder runs on the
 interpreter through two hooks the patch adds to the CPU core: one called
@@ -349,7 +362,15 @@ engine does not model, from `.vblpos`, `.spuq` and `.spureg`:
   re-dispatch of the body the guest called is not counted again. A row
   whose VBL a query or poll already charged counts as covered; a row whose
   entry openpete does not reach is charged at the next wait that covers
-  its VBL, or before the next anchor's hash, and counts as late.
+  its VBL, or before the next anchor's hash, and counts as late. When
+  rows carry `rt`, the guest's load functions (`read_word`, `read_half`,
+  `read_byte`, `lwl`, `lwr`) are wrapped at the first counted gate hit:
+  each load of a word an `rt` names, outside a host-initiated call and
+  outside a VBL delivery, is counted since the record's anchor, and at the
+  `rk`-th the row's VBL runs before the load reads memory, every register
+  preserved; a row whose load is not reached stays due at its entry.
+  Without `rt` rows, and off the clock row, the load functions are not
+  wrapped.
 - The SPU clock. The envelope is charged to the reference's exact clock
   divided by 768 at every waited row's return, answered query, answered
   CdSync poll and libspu call matched to a `.spuq` row (same record, kind,
@@ -365,8 +386,9 @@ engine does not model, from `.vblpos`, `.spuq` and `.spureg`:
   `ENVX != 0 ? 2 : 0`.
 
 The summary line `clock: vblpos delivered= covered= late= ...; spuq
-charged= unmatched= unmade= ...; spureg charged= of ...` is the
-engagement; the gate reports a run with no VBL delivered, no libspu call
+charged= unmatched= unmade= ...; spureg charged= of ...; vblpos read
+rows= loads counted= delivered=` is the engagement (the last three: rows
+with an `rt`, loads of their words counted, rows delivered at a load); the gate reports a run with no VBL delivered, no libspu call
 or no register access charged as VACUOUS (exit 3).
 `scripts/check_psx_oracle_all.sh` runs a `clock` row per game after the
 `stock` rows; the stock row's GTE mismatch count and `vbl deltas` measure
