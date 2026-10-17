@@ -1208,11 +1208,15 @@ int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_sky
  * outcode bit of func_8001C0F4, and the X bits test the 4:3 frame (X <= 0,
  * X >= 512) (S2 func_8004C66C.s:215-336, S3 func_8001EDEC.s:294-482). A
  * portal lying wholly in a widescreen side band is therefore never drawn by
- * the game. After the pass, every record it did not draw is evaluated again
- * from game state: the record gates, the depth and fade terms the pass would
- * have written, and the outcode test with the X bits against the view's
- * screen-X range. A record whose test fails at 4:3 and passes at the view's
- * range is added to the tick's previews as the pass would have captured it.
+ * the game. The depth gate's lateral cone (slope 1 about the view axis, at
+ * vertex 2) holds the 4:3 frustum (half-tangent 256 / H, 0.75 at H 341) but
+ * not the outer band of a frame wider than 16:9, so a portal there is
+ * rejected before its outcodes are taken. After the pass, every record it
+ * did not draw is evaluated again from game state: the record gates with the
+ * cone scaled to the view, the depth and fade terms the pass would have
+ * written, and the outcode test with the X bits against the view's screen-X
+ * range. A record whose tests fail at 4:3 and pass for the view is added to
+ * the tick's previews as the pass would have captured it.
  * A record the pass drew keeps the pass's own capture. The integer helpers
  * below are the pass's math routines, which are instruction-identical in
  * the two games; the S2 address is named first, the S3 one second. */
@@ -1333,13 +1337,17 @@ typedef struct {
  * Vertex 2 minus the camera, Z lowered 0x540, shifted right 2, rotated by the
  * world matrix and shifted back gives the depth d and the lateral term l.
  * The record passes when +0x40 is nonzero, d >= -0x7FF, d < +0x40 << 10,
- * d > l - 0xA00 and d > -(l + 0x800) (func_8004C66C.s:28-83,
- * func_8001EDEC.s:30-142).
+ * c > l - 0xA00 and c > -(l + 0x800) (func_8004C66C.s:28-83,
+ * func_8001EDEC.s:30-142), c the cone depth: d at 4:3, where the last two
+ * are the pass's lateral cone of slope 1 about the view axis, and d * k for
+ * d > 0 under a view whose screen-X half-tangent is k times the 4:3 one
+ * (p3_cone_scale), so the cone keeps its margin to the visible frustum edge.
  * @param cpu Reads the record, the camera and the world matrix.
  * @param rec The record.
+ * @param k The cone slope scale, 1.0 for the pass's own test.
  * @param g Receives the floored depth and the shift.
  * @return 1 when the record passes, else 0. */
-static int p3_gate_depth(CPUState* cpu, uint32_t rec, p3_gate* g) {
+static int p3_gate_depth(CPUState* cpu, uint32_t rec, double k, p3_gate* g) {
     const uint32_t en = cpu->read_byte(rec + 0x40);
     if (!en) return 0;
     const uint32_t cp = game_layout.cam.position;
@@ -1353,7 +1361,8 @@ static int p3_gate_depth(CPUState* cpu, uint32_t rec, p3_gate* g) {
     p3g_rotate(M, v, v);
     const int32_t d = (int32_t)((uint32_t)v[0] << 2), l = (int32_t)((uint32_t)v[1] << 2);
     if (d < -0x7FF || d >= (int32_t)(en << 10)) return 0;
-    if (!(l - 0xA00 < d) || !(-(l + 0x800) < d)) return 0;
+    const double c = d > 0 ? (double)d * k : (double)d;
+    if (!((double)(l - 0xA00) < c) || !((double)-(l + 0x800) < c)) return 0;
     g->d = d < 0 ? 0 : d;
     g->sh = g->d >= 0x4000 ? 3 : 0;
     return 1;
@@ -1522,15 +1531,32 @@ static int p3_tick_has(const p3_tick* T, uint32_t rec, uint32_t mesh) {
     return 0;
 }
 
-/** @brief Adds one record the pass did not draw to the tick when only the 4:3 frame's X bounds rejected it.
+/** @brief The ratio of the view's screen-X half-tangent to the 4:3 frame's, floored at 1.
  *
- * The depth and facing gates, then per call the outcode test at
- * [P3_FRAME_X0, P3_FRAME_X1] under the canonical view and at the view's
- * screen-X range under its own. A call that fails the first and passes the
- * second is appended as the pass would have captured it (the background
- * first, the picture only below depth 0x5000) under the next slot. A call
- * that passes the 4:3 test is counted in s_band_disagree and not added,
- * since the pass's verdict stands; under p3_band_ab the 4:3 test is skipped.
+ * The half-tangent is the larger screen-X distance from OFX to a bound,
+ * over the projection distance: [xlo, xhi] over H_eff for the view, [0, 512]
+ * over H_canon for the frame the pass tests. Scaling the pass's cone slope by
+ * it keeps the cone's angular margin to the frustum edge of the view.
+ * @param v The view.
+ * @return The scale, 1.0 for a view no wider than the 4:3 frame. */
+static double p3_cone_scale(const ngte_view* v) {
+    const double wide = fmax(v->ofx - (double)v->xlo, (double)v->xhi - v->ofx) / v->H_eff;
+    const double canon = fmax(v->ofx - (double)P3_FRAME_X0, (double)P3_FRAME_X1 - v->ofx) / v->H_canon;
+    const double k = canon > 0.0 ? wide / canon : 1.0;
+    return k > 1.0 ? k : 1.0;
+}
+
+/** @brief Adds one record the pass did not draw to the tick when only the 4:3 frame's cone or X bounds rejected it.
+ *
+ * The depth and facing gates, then per call the outcode test, each twice:
+ * as the pass runs them (the cone at slope 1, the X bits at [P3_FRAME_X0,
+ * P3_FRAME_X1] under the canonical view) and for the view (the cone scaled
+ * by p3_cone_scale, the X bits at the view's screen-X range under its own).
+ * A call that fails the first and passes the second is appended as the pass
+ * would have captured it (the background first, the picture only below
+ * depth 0x5000) under the next slot. A call that passes the 4:3 evaluation
+ * is counted in s_band_disagree and not added, since the pass's verdict
+ * stands; under p3_band_ab the 4:3 evaluation is skipped.
  * @param cpu Reads the record and game state.
  * @param T The tick; receives the previews.
  * @param vw The view being presented.
@@ -1540,12 +1566,14 @@ static int p3_tick_has(const p3_tick* T, uint32_t rec, uint32_t mesh) {
  * @return 1 when a preview was added, else 0. */
 static int p3_band_record(CPUState* cpu, p3_tick* T, const ngte_view* vw, const ngte_view* vc,
                           uint32_t rec, uint32_t idx) {
-    p3_gate g;
-    if (!p3_gate_depth(cpu, rec, &g) || !p3_gate_facing(cpu, rec, &g)) return 0;
+    p3_gate g, g43;
+    if (!p3_gate_depth(cpu, rec, p3_cone_scale(vw), &g) || !p3_gate_facing(cpu, rec, &g)) return 0;
+    const int ok43 = p3_gate_depth(cpu, rec, 1.0, &g43) && p3_gate_facing(cpu, rec, &g43);
     int added = 0;
     for (int call = 1; call >= 0 && T->n < P3_MAX_PORTALS * 2; call--) {
         if (call == 0 && g.d >= 0x5000) break;
-        if (!p3_band_ab() && p3_gate_call(cpu, vc, rec, &g, call, (float)P3_FRAME_X0, (float)P3_FRAME_X1)) {
+        if (!p3_band_ab() && ok43 &&
+            p3_gate_call(cpu, vc, rec, &g43, call, (float)P3_FRAME_X0, (float)P3_FRAME_X1)) {
             s_band_disagree++;
             continue;
         }
@@ -1557,7 +1585,7 @@ static int p3_band_record(CPUState* cpu, p3_tick* T, const ngte_view* vw, const 
     return added;
 }
 
-/** @brief Adds to the tick every record the pass rejected only because the 4:3 frame's X bounds culled it.
+/** @brief Adds to the tick every record the pass rejected only because the 4:3 frame's cone or X bounds culled it.
  *
  * Runs p3_band_record on every record the tick's capture does not name and
  * marks RP_PORTAL drawn when it added any. Returns at once when the view is
@@ -1614,7 +1642,7 @@ typedef struct { int calls, agree, fields, fmis; } p3_gate_census;
 static void p3_band_census_record(CPUState* cpu, const p3_tick* T, const ngte_view* vc, uint32_t rec,
                                   uint32_t idx, p3_gate_census* c) {
     p3_gate g;
-    const int ok = p3_gate_depth(cpu, rec, &g) && p3_gate_facing(cpu, rec, &g);
+    const int ok = p3_gate_depth(cpu, rec, 1.0, &g) && p3_gate_facing(cpu, rec, &g);
     for (int call = 1; call >= 0; call--) {
         const p3_preview* cap = p3_tick_find(T, rec, call);
         const int mine = ok && !(call == 0 && g.d >= 0x5000) &&
