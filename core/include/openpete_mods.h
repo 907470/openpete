@@ -1672,7 +1672,11 @@ typedef struct {
  *
  * Takes no lock; the compose calls it under the registry read lock. Only
  * materials whose shading contract equals @p contract take part. A moby
- * slot (bits 27:16) selects its material directly. A terrain slot (bits
+ * slot (bits 27:16) selects its material directly: an interned refine
+ * outcome, or OPENPETE_MATERIAL_SLOT_DECL | index for a declarative
+ * landing, which draws with that material's static block; a moby tag with
+ * slot 0 resolves through the extraction walk's predicate over the
+ * declarative materials. A held owner draws stock. A terrain slot (bits
  * 24:16) keeps its refine material unless the declarative winner of the
  * tag's keys ranks above it; an OPENPETE_MATERIAL_TERRAIN_STOCK decline
  * draws stock only while the walked refine winner of the tag's texid or
@@ -1683,8 +1687,8 @@ typedef struct {
  * registration order selected by its api pin (later from 13, earlier
  * below). The level a level key tests is the installed view's. An
  * OPENPETE_MATERIAL_SLOT_STOCK slot, a slot past the view, a slot whose
- * material is swept or owner disabled, and a slot whose material has
- * another contract resolve to none.
+ * material is swept, user-disabled or owner disabled, and a slot whose
+ * material has another contract resolve to none.
  *
  * @param tag Provenance tag; 0 resolves to none.
  * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*.
@@ -1715,30 +1719,41 @@ void openpete_mods_material_retire_all(void);
  * it is 0.
  * @return 1 or 0. */
 int  openpete_mods_material_has_instance(void);
-/* Moby tag slot field: 0 defers to the draw-time class resolve,
- * OPENPETE_MATERIAL_SLOT_STOCK marks a declined callback (draw stock),
- * anything else is an interned per-instance slot. */
+/* Moby tag slot field [27:16], the extraction walk's outcome: 0 defers to
+ * the draw-time resolve (no live refine material at extraction);
+ * 1..OPENPETE_MODS_MATERIAL_VIEW_SLOTS-1 is an interned refine outcome;
+ * OPENPETE_MATERIAL_SLOT_DECL | index is a declarative landing (the
+ * material draws with its static uniform block); OPENPETE_MATERIAL_SLOT_STOCK
+ * is an exhausted walk (draw stock). */
 #define OPENPETE_MATERIAL_SLOT_STOCK 0xFFF
+#define OPENPETE_MATERIAL_SLOT_DECL  0x800
 /* Terrain-untextured twin of SLOT_STOCK: the terrain tag's slot field is
  * 9 bits ([24:16]), so its "declined -> stock" sentinel is 0x1FF. */
 #define OPENPETE_MATERIAL_TERRAIN_STOCK 0x1FF
-/** @brief Resolve the per-instance material slot of one moby at extraction.
+/** @brief Walk the materials matching one moby at extraction and return the outcome stamped into its tag.
  *
- * Takes no lock. Returns 0 when no live selector has a callback, or the
- * winning material for the class is declarative or absent. Otherwise runs
- * the winner's callback with a moby key, inside a guarded stretch owned by
- * the material's mod (openpete_mods_guard_enter); its block, capped at
- * OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned slot of the same
- * material with identical bytes, else takes a new one. The slot table is
- * reset by openpete_mods_material_frame_reset(), so a slot is valid for one
- * present.
+ * Takes no lock. Returns 0 when no live selector has a callback. Otherwise
+ * walks the materials one predicate accepts for the moby (channel -1 or
+ * moby, class and identity equal to the class or -1, level key in scope,
+ * scene contract, enabled; a texture key or an env, tier or untextured
+ * flag rejects) from the highest ranked down: a declarative material
+ * lands; a refine material's callback runs, inside a guarded stretch
+ * owned by its mod (openpete_mods_guard_enter), and lands on acceptance,
+ * while its -1 passes the moby to the next material. An accepted block,
+ * capped at OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned slot of
+ * the same material with identical bytes, else takes a new one; the slot
+ * table is reset by openpete_mods_material_frame_reset(), so a slot is
+ * valid for one present. The walk's outcome is kept for the tick: a later
+ * present of the same tick (a sub-tick re-extract) with an unchanged
+ * material table replays it without calling a callback.
  *
  * @param cpu Unused.
  * @param moby_class Moby class id.
  * @param moby_vaddr Guest address of the moby.
- * @return 0 to defer to the draw-time resolve, OPENPETE_MATERIAL_SLOT_STOCK
- *         when the callback declined or the slot table is full, else the
- *         slot. */
+ * @return 0 to defer to the draw-time resolve, an interned slot,
+ *         OPENPETE_MATERIAL_SLOT_DECL | material index for a declarative
+ *         landing, or OPENPETE_MATERIAL_SLOT_STOCK when every material
+ *         declined or none matched, or the slot table is full. */
 int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
                                       uint32_t moby_vaddr);
 /** @brief Resolve the per-instance material of the untextured terrain band to a uniform slot.
@@ -1914,8 +1929,12 @@ int  openpete_mods_postfx_enum_at(int i, openpete_postfx_pass_t* out);
  * refine memo keys on, and re-interns the static uniform block of every
  * live material with params whose owner is enabled, so a declarative
  * material has a slot for the whole present; once the table is full the
- * remaining materials get static slot 0 (no params). */
-void openpete_mods_material_frame_reset(void);
+ * remaining materials get static slot 0 (no params).
+ * @param tick_open Nonzero when the game's own render opens the scene of a
+ *        new tick: the refine outcomes kept for the previous tick are
+ *        dropped. Zero for a re-extract of the same tick, which replays
+ *        them. */
+void openpete_mods_material_frame_reset(int tick_open);
 /** @brief Set the level being rendered, for level-scoped material selector keys.
  *
  * Sector and texture ids are per-level, and the mods layer cannot read the

@@ -1248,7 +1248,7 @@ void openpete_native_scene_begin(void) {
      * names its frame. A later re-extract of the same tick must not
      * overwrite either with its own (already reordered) scene. */
     if (!s_scene_replay) { bw_key_order_record(s_scene, s_scene_n); scene_game_retain(); }
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); openpete_mods_material_frame_reset(); /* per-present interned slots */
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; cover_planes_clear(); openpete_mods_material_frame_reset(0); /* per-present interned slots; the tick's refine outcomes replay */
     /* Stamp the rebuild with the VBL it is built on, the stamp the terrain
      * builder tags its build with outside an eager scene
      * (openpete_native_scene_build_stamp). The present's retained-terrain
@@ -1518,8 +1518,9 @@ void openpete_native_scene_begin_frame(unsigned frame) {
          * one). Without this, a TIME-VARYING per-instance uniform (e.g. an
          * animated pulse) mints a fresh slot every canonical feed - constant
          * uniforms dedup so the leak stays invisible - until the table fills
-         * and the material silently falls back to stock. */
-        openpete_mods_material_frame_reset();
+         * and the material silently falls back to stock. The game's own
+         * feed opens a new tick, whose refine outcomes are asked afresh. */
+        openpete_mods_material_frame_reset(game_feed);
         /* 2D held back from the scene just closed belongs to the table this
          * scene draws. */
         if (game_feed) openpete_native_scene_undefer_2d();
@@ -13569,20 +13570,27 @@ static const char *const k_tag_path_name[16] = {
  * texture page and CLUT, bit depth, provenance tag with its decoded owner,
  * ordering fields (mordinal, rank, koff, seq, prim) and the three vertices
  * (screen x, y, z, colour). The owner decode reads tag bits 31:28 as the path;
- * a terrain tag (path 2) prints sector, LP tier, env-anim bit and texture
- * record, any other path its name from k_tag_path_name with id and slot.
+ * a terrain tag (path 2) prints sector, LP tier, env-anim bit, texture
+ * record and refine slot, any other path its name from k_tag_path_name with
+ * id and slot; a moby slot prints a declarative landing as decl:<material>
+ * and the stock outcome with a stock: prefix.
  * @param f VBL the scene was extracted at.
  * @param idx Triangle index in the composed list.
  * @param T The triangle. */
 static void scene_box_log_tri(unsigned f, int idx, const scene_tri_t *T) {
     const uint32_t tag = T->tag, path = tag >> 28;
     char who[96];
-    if (path == 2u)   /* terrain: sector, LP tier, env-anim, texture record */
-        snprintf(who, sizeof who, "terrain sec=%u lp=%u env=%u texrec=%u",
-                 tag & 0x1FFu, (tag >> 26) & 1u, (tag >> 27) & 1u, (tag >> 9) & 0x7Fu);
+    const unsigned mslot = (tag >> 16) & 0xFFFu, tslot = (tag >> 16) & 0x1FFu;
+    if (path == 2u)   /* terrain: sector, LP tier, env-anim, texture record, refine slot */
+        snprintf(who, sizeof who, "terrain sec=%u lp=%u env=%u texrec=%u slot=%s%u",
+                 tag & 0x1FFu, (tag >> 26) & 1u, (tag >> 27) & 1u, (tag >> 9) & 0x7Fu,
+                 tslot == OPENPETE_MATERIAL_TERRAIN_STOCK ? "stock:" : "", tslot);
+    else if (path == 1u && mslot != OPENPETE_MATERIAL_SLOT_STOCK && (mslot & OPENPETE_MATERIAL_SLOT_DECL))
+        snprintf(who, sizeof who, "moby id=%u slot=decl:%u", tag & 0xFFFFu,
+                 mslot & (OPENPETE_MATERIAL_SLOT_DECL - 1u));
     else
-        snprintf(who, sizeof who, "%s id=%u slot=%u", k_tag_path_name[path],
-                 tag & 0xFFFFu, (tag >> 16) & 0xFFFu);
+        snprintf(who, sizeof who, "%s id=%u slot=%s%u", k_tag_path_name[path], tag & 0xFFFFu,
+                 path == 1u && mslot == OPENPETE_MATERIAL_SLOT_STOCK ? "stock:" : "", mslot);
     fprintf(stderr, "[sbox] f=%u #%d cat=%d bl=%d tex=%d tp=%d,%d cl=%d,%d bpp=%d "
             "tag=%08X %s mord=%d rank=%.0f koff=%.1f seq=%u prim=%08X "
             "v=(%.1f,%.1f,z%.5f,%08X)(%.1f,%.1f,z%.5f,%08X)(%.1f,%.1f,z%.5f,%08X)\n",

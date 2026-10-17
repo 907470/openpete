@@ -20,6 +20,15 @@ openpete.com; the changelog page of the shipped docs makes it relative.
 
 ## Unreleased
 
+- Mod SDK: material priority follows the enabled list, later mods first, on every channel including terrain, where a
+  refine no longer outranks a later declarative. Between two materials of one mod, a mod pinned at `api = 13` or later
+  gives the later registration priority; a mod pinned below 13 keeps the first registration, as before. Postfx
+  truncation keeps the highest-priority passes.
+- Mod SDK: a refine callback's `-1` on the moby channel means "not mine" for every mod: the moby passes to the next
+  material in priority order that matches it, where it used to draw stock and hide every lower-priority material.
+  `material_register_refine` and `material_set_selector` refuse, with one log line and -1, a refine that cannot take
+  effect (a channel other than moby, terrain or any; a decal shader; a terrain selector with neither a texture key nor
+  `OP_SEL_UNTEXTURED`). A moby selector with `OP_SEL_HP_TIER` no longer matches. A refine is asked once per tick.
 - Settings menu: a line above **EXIT GAME** names what the selected row changes, and the **DOCUMENTATION** row
   opens the documentation in the browser: the copy in `docs/` beside the program, or openpete.com from the
   AppImage. `--help` ends with the documentation's address.

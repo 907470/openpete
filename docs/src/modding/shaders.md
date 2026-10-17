@@ -118,12 +118,12 @@ Every selector key is optional; an omitted key matches everything:
 |---|---|
 | `frag`, `vert` | Shader paths relative to the mod |
 | `channel` | `any`, `moby`, `terrain`, `player`, `flame`, `particle`, `sky`, `shadow`, `tracer`, `portal` |
-| `ident` | Channel-local identity: flame ribbon (0) or caps (1); particle `(kind << 8) \| sel` with kinds 0 quads, 1 lines, 2 glow rings, 3 sparkle flares, 4 sparkle lines, 5 dragon star (`OP_PART_*`); shadow caster kind; portal preview kind |
+| `ident` | Channel-local identity: flame ribbon (0) or caps (1); particle `(kind << 8) \| sel` with kinds 0 quads, 1 lines, 2 glow rings, 3 sparkle flares, 4 sparkle lines, 5 dragon star (`OP_PART_*`); shadow caster kind; portal preview kind; on `moby`, the moby class |
 | `class` | Moby class |
 | `texture` | Terrain texture-record ID, 0 to 127 |
 | `level` | Level ID. Texture IDs are per level, so a `texture` row usually needs this |
-| `tier` | `"hp"` or `"lp"`; omit for both |
-| `textured` | `true` or `false`; omit for both |
+| `tier` | `"hp"` or `"lp"`; omit for both. Terrain only: a row with it never matches a moby |
+| `textured` | `true` or `false`; omit for both. On `moby`, `true` matches every moby triangle and `false` none |
 | `env_anim` | `true` selects only animated terrain env faces |
 | `params` | Floats handed to the shader as its uniform block |
 | `enabled` | `false` ships the row switched off |
@@ -167,11 +167,24 @@ first one does. Manifest rows arm before the entry point runs, so from
 `api = 13` a C registration wins over a manifest row on the same
 selector, and below 13 the row wins.
 
+On the moby channel a refine callback's `-1` means "not mine": the moby
+passes to the next material in this order that matches it. A declarative
+material takes it; a refine material is asked in turn. The moby keeps
+stock shading only when every matching material declines, and a refine
+ranked below the material that takes a moby is not asked. A material
+matches a moby when its channel is `moby` or any, its class and `ident`
+are the moby's class or unset, its `level` is the current level or
+unset, its shader is not a decal shader, and it has no terrain key
+(`texture`, `tier`, `env_anim`, `textured = false`).
+
 A mod first enabled during a session (from the Mods panel) ranks above
 every mod in the enabled list, and such mods rank among themselves by id;
 its function overrides take the chain tail in the order the mods were
 enabled. A restart applies `enabled.txt` order. A dependency ranks below
-the mods that depend on it.
+the mods that depend on it. In a windowed run, on the present that
+enables such a mod, mobys keep the material outcome computed before it
+entered, and its materials draw stock on the presents that follow until
+their pipelines finish compiling.
 
 `material_register` is refused inside a present, and a UI section runs
 inside one. A material that follows a value the player is changing
@@ -237,7 +250,8 @@ the class rows take `gallery.class` from `config.toml`.
 
 A selector prunes cheaply; a refine callback decides per instance. It
 runs during extraction in tick context and returns the instance's uniform
-block, or `-1` to leave the instance stock:
+block, or `-1` for "not mine": a moby passes to the next matching
+material (see the ordering above), a terrain key keeps stock shading:
 
 ```c
 static int refine(const openpete_mod_material_key_t* key, void* out, uint32_t cap) {
@@ -256,13 +270,17 @@ Spyro 1 and `state` on Spyro 3; Spyro 2's `openpete_game_structs.h` has no
 (`mods/channel-gallery` carries the three arms).
 
 Available on the moby channel (keyed per instance) and on terrain (keyed
-per texture ID or the untextured band, asked once per present). Scope the
-selector as tightly as possible first; the callback is the expensive
-half.
+per texture ID or the untextured band). Registration and
+`material_set_selector` refuse, with one log line and -1, a refine that
+cannot take effect: one on another channel, one with a decal shader, and
+a terrain refine with neither a `texture` key nor `OP_SEL_UNTEXTURED`. A
+refine on channel any takes effect on mobys and, when keyed, on terrain.
+Scope the selector as tightly as possible first; the callback is the
+expensive half.
 
-Results are memoised per instance and the call count is not part of the
-contract, so the callback must be a pure function of its key and
-tick-stable guest state. Instances whose blocks are byte-identical share
+The callback is asked once per tick per key; the presents between ticks
+reuse its answer. The call count is not part of the contract, so the
+callback must be a pure function of its key and tick-stable guest state. Instances whose blocks are byte-identical share
 one slot and one batch, so cost follows the number of distinct outcomes,
 not the number of matches; one distinct block per instance is the
 worst case. `channel-gallery` (shipped under `sdk/examples/`) registers

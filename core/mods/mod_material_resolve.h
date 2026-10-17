@@ -76,6 +76,12 @@ typedef struct {
      * the whole material. */
     int           refine_slot;
     unsigned      refine_present;
+    /* The same outcome kept for the tick (memo stamp), so a later present
+     * of the tick re-interns it without a call: the block, or -1 bytes for
+     * a decline. */
+    unsigned      refine_stamp;
+    int           refine_kept_len;
+    unsigned char refine_kept[OPENPETE_MATERIAL_UNIFORMS_MAX];
     /* Set once the retained bake has stamped this refine's bucket into a
      * face; kept for the session, since a retained face keeps its bucket
      * until a rebake that need not restamp it. The sim-thread refine pass
@@ -119,6 +125,22 @@ void mod_mat_reset(void);
  * @param sel The selector.
  * @return 1 when valid, 0 when refused. */
 int mod_mat_sel_valid(const char* id, const openpete_mod_material_selector_t* sel);
+
+/** @brief Check that a refine material can take effect where its selector points.
+ *
+ * Refine callbacks are asked on the moby and terrain channels only, and
+ * only for scene-contract materials. Refuses, with an error log naming
+ * the rule, a channel other than -1, OP_CHAN_MOBY and OP_CHAN_TERRAIN, a
+ * contract other than OPENPETE_MATERIAL_CONTRACT_SCENE, and a terrain
+ * selector with neither a texture key nor OP_SEL_UNTEXTURED. Registration
+ * of a refine material and every retune of one (before a retune is parked)
+ * share it; a refusal leaves a retuned material's selector in force.
+ * @param id Mod id for log lines.
+ * @param sel The selector.
+ * @param contract OPENPETE_MATERIAL_CONTRACT_* of the material's fragment stage.
+ * @return 1 when the refine can take effect, 0 when refused. */
+int mod_mat_refine_valid(const char* id, const openpete_mod_material_selector_t* sel,
+                         int contract);
 
 /** @brief Append a validated material to the table, registered enabled.
  *
@@ -171,13 +193,14 @@ int mod_mat_set_params(int material, const void* block, uint32_t len);
 /** @brief Replace a live material's selector; the caller holds the registry write lock.
  *
  * Only the owning mod may retune, and the selector must pass
- * mod_mat_sel_valid. Inside a present the new selector is parked for
+ * mod_mat_sel_valid and, for a refine material, mod_mat_refine_valid. Inside a present the new selector is parked for
  * mod_mat_apply_pending; outside one it applies at once.
  * @param id The calling mod's id.
  * @param material Material handle.
  * @param sel The new selector.
  * @return 0, or -1 for a NULL argument, an unknown or swept material, a
- *         material another mod owns, or an invalid selector. */
+ *         material another mod owns, an invalid selector, or a refine
+ *         selector mod_mat_refine_valid refuses. */
 int mod_mat_set_selector(const char* id, int material,
                          const openpete_mod_material_selector_t* sel);
 
@@ -288,6 +311,10 @@ void mod_mat_census_print(void);
 void mod_mat_census_force(int on);
 /** @brief Zero every census counter, for the unit test. */
 void mod_mat_census_reset(void);
+/** @brief Return the number of extraction outcomes replayed from the tick memo instead of asking a refine.
+ *
+ * @return The count since boot or the last mod_mat_census_reset. */
+unsigned mod_mat_census_memo_replays(void);
 /** @brief Return the number of draw-time resolves made with a material view installed.
  *
  * @return The count since boot or the last mod_mat_census_reset. */
@@ -296,11 +323,11 @@ unsigned mod_mat_census_view_resolves(void);
 enum {
     MOD_MAT_CENSUS_DRAWS = 0,        /* draw-time resolves won (walked runs) */
     MOD_MAT_CENSUS_BUCKET_PASSES,    /* retained-terrain passes bound */
-    MOD_MAT_CENSUS_EXTRACT_WINS,     /* moby extraction winner (refine or decl) */
+    MOD_MAT_CENSUS_EXTRACT_WINS,     /* moby extraction walk landed on it (refine or decl) */
     MOD_MAT_CENSUS_REFINE_CALLS,     /* refine callback invocations */
     MOD_MAT_CENSUS_DECLINES,         /* refine returned -1 */
-    MOD_MAT_CENSUS_FALLTHROUGHS,     /* decline handed to a lower material */
-    MOD_MAT_CENSUS_DECLINE_SHADOWS,  /* decline drawn stock while a lower material matched */
+    MOD_MAT_CENSUS_FALLTHROUGHS,     /* moby decline the walk carried to a lower material */
+    MOD_MAT_CENSUS_DECLINE_SHADOWS,  /* terrain decline drawn stock while another material matched */
     MOD_MAT_CENSUS_OUTRANKED,        /* refine called while a higher declarative matched its key */
     MOD_MAT_CENSUS_STALE_MEMO,       /* bucket pass found no outcome of the present it composes */
     MOD_MAT_CENSUS_N

@@ -325,7 +325,7 @@ enum {
     OP_SEL_HP_TIER    = 1u << 1,  /**< High-poly tier only; neither tier bit = both. */
     OP_SEL_LP_TIER    = 1u << 2,  /**< Low-poly tier only. */
     OP_SEL_UNTEXTURED = 1u << 3,  /**< Gouraud faces only; neither texture bit = both. */
-    OP_SEL_TEXTURED   = 1u << 4,  /**< Textured faces only. */
+    OP_SEL_TEXTURED   = 1u << 4,  /**< Textured faces only; on the moby channel every moby triangle. */
 };
 /**
  * @brief Every flag the engine understands.
@@ -343,7 +343,8 @@ typedef struct openpete_mod_material_selector {
     int      channel;     /**< `OP_CHAN_*`; -1 = any channel. */
     int      ident;       /**< Channel-local identity, meaning per channel: flame ribbon or cap,
                            *   particle `OP_PART_*` kind `(kind << 8 | sel)`, shadow caster kind,
-                           *   portal preview kind. -1 = any. Player, sky and tracer emit only 0. */
+                           *   portal preview kind, the moby class on the moby channel. -1 = any.
+                           *   Player, sky and tracer emit only 0. */
     int      moby_class;  /**< Moby only; -1 = any. */
     int      texture;     /**< Terrain texture-record id 0..127; -1 = any. */
     int      level;       /**< `g_LevelId`; -1 = any. Sector and texture ids are per level, so a
@@ -407,15 +408,20 @@ typedef struct openpete_mod_material_key {
  *
  * The callback runs during extraction in tick context: guest RAM is
  * readable through `api->guest()` and `op_read_*`; host render state is
- * off limits. Results are memoised per instance, so the callback must be
- * a pure function of the key and tick-stable guest state; the call count
- * is not part of the contract.
+ * off limits. It is asked once per tick per key, and the outcome is
+ * replayed on the presents the tick's sub-tick re-extracts build, so the
+ * callback must be a pure function of the key and tick-stable guest
+ * state; the call count is not part of the contract.
  *
  * @param key  The instance.
  * @param out  Uniform block to fill, at most @p cap bytes.
  * @param cap  #OPENPETE_MATERIAL_UNIFORMS_MAX.
- * @return Bytes written to @p out (0 = claim with no parameters), or -1 to
- *         decline: the instance keeps stock shading.
+ * @return Bytes written to @p out (0 = claim with no parameters), or -1:
+ *         not mine. On the moby channel the instance passes to the next
+ *         material in priority order that matches it (a declarative one
+ *         takes it, a refine one is asked), and keeps stock shading when
+ *         none takes it. On terrain the key keeps stock shading unless a
+ *         higher-priority declarative material matches the face.
  */
 typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);
@@ -925,17 +931,23 @@ typedef struct openpete_mod_api {
      * @brief material_register() with a per-instance refine callback.
      *
      * The engine calls @p refine once per candidate instance during
-     * extraction and it returns that instance's uniform block, or -1 to
-     * leave it stock. Instances with byte-identical blocks share one slot
+     * extraction and it returns that instance's uniform block, or -1 for
+     * "not mine" (openpete_mod_refine_fn). Instances with byte-identical blocks share one slot
      * and one batch, so a callback with few distinct outcomes is cheap and
      * one with a distinct block per instance costs a draw each. Scope the
      * selector tightly and let the callback decide the rare cases.
      *
      * Available on the moby channel (keyed per instance) and on terrain
-     * (keyed per texture id or the untextured band, asked once per
-     * present); on other channels register declaratively and drive the
-     * material with material_set_params(). A channel the running game does
-     * not serve is refused as material_register() refuses it.
+     * (keyed per texture id or the untextured band, asked once per tick);
+     * on other channels register declaratively and drive the material
+     * with material_set_params(). A refine that cannot take effect is
+     * refused with one log line and -1 (an engine below api 13 registered
+     * it and never asked it): a channel other than moby, terrain or -1, a
+     * decal-contract shader, and a terrain selector with neither a texture
+     * key nor #OP_SEL_UNTEXTURED. A channel -1
+     * refine takes effect on mobys and on keyed terrain. A channel the
+     * running game does not serve is refused as material_register()
+     * refuses it.
      * @since api 4
      */
     int (*material_register_refine)(openpete_mod_t* self,
@@ -950,8 +962,10 @@ typedef struct openpete_mod_api {
      * hook or UI section takes effect at the next tick; from entry or a
      * tick hook it applies at once. The material keeps shading under its
      * old key until the new one applies. The selector is validated as
-     * material_register() validates it; a channel the running game does
-     * not serve is refused with -1 and the old selector stays in force.
+     * material_register() validates it, and a refine material's selector
+     * as material_register_refine() refuses one; a refused selector, or a
+     * channel the running game does not serve, returns -1 and the old
+     * selector stays in force.
      * @since api 6
      */
     int (*material_set_selector)(openpete_mod_t* self, int material,

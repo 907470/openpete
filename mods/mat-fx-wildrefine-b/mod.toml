@@ -3,8 +3,9 @@
 #
 # The selector has no class key; the callback claims mobys of odd class
 # id and declines the rest. mat-fx-wildrefine-a and -b claim disjoint
-# classes, so with both enabled the later-listed one decides every moby
-# and the earlier one's claims are never asked. Never enable it to play.
+# classes, so with both enabled the later-listed one's declines fall
+# through to the earlier one, and together they claim every moby. Never
+# enable it to play.
 
 [mod]
 id      = "mat-fx-wildrefine-b"

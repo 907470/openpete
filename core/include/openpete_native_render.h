@@ -1719,8 +1719,9 @@ void openpete_native_scene_mark_terrain_feed(void);
  * by tag hash (visual coverage instrument, no split needed). */
 #define OPENPETE_TAG_MOBY(cls) \
     (0x10000000u | ((uint32_t)(cls) & 0xFFFFu))
-/* moby + a per-instance material slot in the spare bits [27:16];
- * slot 0 == OPENPETE_TAG_MOBY (declarative / no per-instance winner). */
+/* moby + the material walk's outcome in the spare bits [27:16]
+ * (OPENPETE_MATERIAL_SLOT_* in openpete_mods.h); slot 0 == OPENPETE_TAG_MOBY
+ * (no walk ran: the draw-time declarative resolve applies). */
 #define OPENPETE_TAG_MOBY_SLOT(cls, slot) \
     (0x10000000u | (((uint32_t)(slot) & 0xFFFu) << 16) | ((uint32_t)(cls) & 0xFFFFu))
 #define OPENPETE_TAG_TERRAIN(lp, env, sec) \

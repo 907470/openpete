@@ -12,13 +12,14 @@
  * wins; inside one mod the registration order decides, by the owner's api
  * pin (mod_mat_outranks).
  *
- * Per-present, not identity-replayed: reextract_record_pass re-walks
- * every present, and the callback reads TICK-STABLE guest RAM (the
- * sub-tick spine interpolates render-side only, never mutating
- * gameplay RAM - the oracle guarantees it), so per-present invocation
- * yields identical results across a canonical+intermediates span (no
- * strobing). Canonical-compute + identity-replay would only save the
- * callback cost on intermediates; deferred as a pure optimization.
+ * Asked once per tick: the game's render of a tick opens its scene with
+ * openpete_mods_material_frame_reset(1), and the re-extracts that rebuild
+ * the scene for the tick's sub-tick presents replay the outcomes the tick
+ * computed (moby walk outcomes per (address, class), terrain refine
+ * outcomes per material) instead of calling the callbacks again. A
+ * callback reads tick-stable guest RAM through the mod api, which bypasses
+ * the sub-tick view, so a replay equals a second call. Any change to the
+ * material table, the mod toggles or the level drops the kept outcomes.
  *
  * The GPU half (shader handles, pipelines, the registry lock and the
  * public entry points that take it) is in mod_shader.c. */
@@ -84,6 +85,13 @@ int mod_mat_view_static_slot(int m) { return s_mat_view ? s_mat_view->static_slo
  * MOD_MATERIAL_SLOTS means widening that field first. */
 typedef char nr_assert_mat_slots_fit_narrowest_tag_field[
     (MOD_MATERIAL_SLOTS <= OPENPETE_MATERIAL_TERRAIN_STOCK) ? 1 : -1];
+/* The moby field's declarative landing is OPENPETE_MATERIAL_SLOT_DECL |
+ * material index: every index and every slot id stays below the bit, and
+ * the largest landing below OPENPETE_MATERIAL_SLOT_STOCK. */
+_Static_assert(MOD_MATERIAL_MAX - 1 < 0x7FF, "material index fits the declarative landing");
+_Static_assert(MOD_MATERIAL_SLOTS <= OPENPETE_MATERIAL_SLOT_DECL, "slot ids stay below the declarative bit");
+_Static_assert((OPENPETE_MATERIAL_SLOT_DECL | (MOD_MATERIAL_MAX - 1)) < OPENPETE_MATERIAL_SLOT_STOCK,
+               "no declarative landing aliases the stock outcome");
 
 /* ------------------------------------------------------------------ */
 /* Resolve census (OPENPETE_MATERIAL_STATS). */
@@ -104,6 +112,7 @@ static _Atomic int      s_cen_walk_b[CEN_TER_KEYS];
 static _Atomic unsigned s_cen_class[CEN_CLASSES];
 static _Atomic unsigned s_cen_presents;
 static _Atomic unsigned s_cen_view_resolves;   /* draw-time resolves under an installed view */
+static _Atomic unsigned s_cen_memo_replays;    /* walk and terrain outcomes replayed from the tick's memo */
 static int s_cen_atexit;
 
 int mod_mat_census_on(void) {
@@ -125,9 +134,17 @@ void mod_mat_census_reset(void) {
     for (int i = 0; i < CEN_CLASSES; i++) atomic_store_explicit(&s_cen_class[i], 0u, memory_order_relaxed);
     atomic_store_explicit(&s_cen_presents, 0u, memory_order_relaxed);
     atomic_store_explicit(&s_cen_view_resolves, 0u, memory_order_relaxed);
+    atomic_store_explicit(&s_cen_memo_replays, 0u, memory_order_relaxed);
 }
 unsigned mod_mat_census_view_resolves(void) {
     return atomic_load_explicit(&s_cen_view_resolves, memory_order_relaxed);
+}
+unsigned mod_mat_census_memo_replays(void) {
+    return atomic_load_explicit(&s_cen_memo_replays, memory_order_relaxed);
+}
+/** @brief Count one outcome replayed from the tick's memo when the census is on. */
+static void cen_memo_replay(void) {
+    if (mod_mat_census_on()) atomic_fetch_add_explicit(&s_cen_memo_replays, 1u, memory_order_relaxed);
 }
 /** @brief Add one to a material's census counter when the census is on.
  *
@@ -221,8 +238,9 @@ void mod_mat_census_print(void) {
                 m->contract, m->load_index,
                 c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]);
     }
-    fprintf(stderr, "[material-census] view-installed resolves=%u\n",
-            atomic_load_explicit(&s_cen_view_resolves, memory_order_relaxed));
+    fprintf(stderr, "[material-census] view-installed resolves=%u tick-memo replays=%u\n",
+            atomic_load_explicit(&s_cen_view_resolves, memory_order_relaxed),
+            atomic_load_explicit(&s_cen_memo_replays, memory_order_relaxed));
     census_print_terrain();
     census_print_classes();
     fprintf(stderr, "[material-census] engaged=%llu (draws + bucket passes + refine calls)\n", engaged);
@@ -291,6 +309,9 @@ int mod_postfx_rank(mod_postfx_rank_t* v, int n, int cap) {
  * toggling rows (terrain.build 33% -> 73% of sim_tick). Move it only for
  * changes terrain_winner() could actually see. */
 static unsigned s_mat_ter_epoch;
+/* Moves on every material table change (mod_mat_rearm_split) and level
+ * change; the tick memo is void once it moves. */
+static unsigned s_mat_gen;
 
 void mod_mat_ter_epoch_bump(void) { s_mat_ter_epoch++; }
 
@@ -312,6 +333,7 @@ static int terrain_sel_relevant(const mod_material_t* m) {
  * per-instance callback. */
 void mod_mat_rearm_split(void) {
     int any = 0, inst = 0;
+    s_mat_gen++;   /* every table change re-arms: the tick's kept outcomes are void */
     for (int i = 0; i < s_mat_count; i++)
         if (s_mats[i].live) { any = 1; if (s_mats[i].per_instance) inst = 1; }
     s_mat_has_instance = inst;
@@ -354,6 +376,28 @@ int mod_mat_sel_valid(const char* id, const openpete_mod_material_selector_t* se
         OPL_ERROR_F("mods", "%s: material texture selector must be a terrain "
                     "Tiledef id 0..127 on a textured path (got %d)", id,
                     sel->texture);
+        return 0;
+    }
+    return 1;
+}
+
+int mod_mat_refine_valid(const char* id, const openpete_mod_material_selector_t* sel,
+                         int contract) {
+    if (sel->channel != -1 && sel->channel != OP_CHAN_MOBY && sel->channel != OP_CHAN_TERRAIN) {
+        OPL_ERROR_F("mods", "%s: material: a refine callback takes effect on the moby and "
+                    "terrain channels only, not channel %d - refused", id, sel->channel);
+        return 0;
+    }
+    if (contract != OPENPETE_MATERIAL_CONTRACT_SCENE) {
+        OPL_ERROR_F("mods", "%s: material: a refine callback needs a scene-contract shader; "
+                    "a decal material resolves on shadow draws, which take declarative "
+                    "materials only - refused", id);
+        return 0;
+    }
+    if (sel->channel == OP_CHAN_TERRAIN && sel->texture == -1 &&
+        !(sel->flags & (unsigned)OP_SEL_UNTEXTURED)) {
+        OPL_ERROR_F("mods", "%s: material: a terrain refine is keyed on one texture id or on "
+                    "OP_SEL_UNTEXTURED; this selector has neither - refused", id);
         return 0;
     }
     return 1;
@@ -425,6 +469,7 @@ int mod_mat_set_selector(const char* id, int material,
         return -1;
     }
     if (!mod_mat_sel_valid(id, sel)) return -1;
+    if (m->per_instance && !mod_mat_refine_valid(id, sel, m->contract)) return -1;
     /* Inside a present the new key is parked: a selector that changed mid-
      * present would shade part of the image under each key, and the retained
      * terrain bake keys off the material epoch, which may only move between
@@ -477,13 +522,14 @@ void openpete_mods_set_level(int level_id) {
      * are per-level). So a level change has to move the epoch, or a sector
      * latched in one level keeps that answer into the next. */
     if (level_id != s_cur_level) {
-        s_cur_level = level_id; s_mat_ter_epoch++;
+        s_cur_level = level_id; s_mat_ter_epoch++; s_mat_gen++;
     }
 }
 
 /** @brief Clear the pushed level, the slot table, the installed view and the hold list for mod_mat_reset. */
 static void reset_level_and_view(void) {
     s_cur_level = -1;
+    s_mat_gen++;
     s_mat_slot_n = 1;
     s_mat_view = NULL;
     s_hold_n = 0;
@@ -495,10 +541,47 @@ static int openpete_mods_current_level(void) { return s_cur_level; }
 /* Bumped every present, so a per-present memo (the terrain refine slot) can
  * tell "computed this present" from "computed under the last one". */
 static unsigned s_mat_present = 1;
+/* Bumped when the game's render opens a new tick's scene. */
+static unsigned s_mat_tick = 1;
 
-void openpete_mods_material_frame_reset(void) {
+/* The tick memo: refine outcomes kept from the first present of a tick for
+ * the re-extracts of that tick. It is current while the tick, the table
+ * generation and the mod toggle epoch it was opened under still hold;
+ * s_memo_stamp names that state, and an entry stamped with another value
+ * is empty. */
+static unsigned s_memo_tick, s_memo_gen, s_memo_toggle;
+static unsigned s_memo_stamp = 1;
+/* Accepted refine blocks of the tick, deduplicated, for the moby memo to
+ * re-intern on replay. */
+static mat_slot_t s_tick_out[MOD_MATERIAL_SLOTS];
+static int s_tick_out_n;
+/* Moby walk outcomes of the tick by (address, class): open addressing,
+ * filled to at most three quarters. A value below MEMO_REFINE is the tag
+ * field to stamp; MEMO_REFINE | k names s_tick_out[k]. */
+#define MOBY_MEMO_N 2048
+#define MEMO_REFINE 0x10000
+typedef struct { uint32_t vaddr; int cls; unsigned stamp; int out; } moby_memo_t;
+static moby_memo_t s_moby_memo[MOBY_MEMO_N];
+static int s_moby_memo_n;
+
+/** @brief Return the stamp of the current tick memo, opening a new memo when the tick, table or toggles moved.
+ *
+ * @return The stamp an entry of the current memo carries. */
+static unsigned memo_stamp(void) {
+    const unsigned toggle = openpete_mods_toggle_epoch();
+    if (s_memo_tick != s_mat_tick || s_memo_gen != s_mat_gen || s_memo_toggle != toggle) {
+        s_memo_tick = s_mat_tick; s_memo_gen = s_mat_gen; s_memo_toggle = toggle;
+        s_memo_stamp++;
+        s_tick_out_n = 0;
+        s_moby_memo_n = 0;
+    }
+    return s_memo_stamp;
+}
+
+void openpete_mods_material_frame_reset(int tick_open) {
     s_mat_slot_n = 1;
     s_mat_present++;
+    if (tick_open) s_mat_tick++;
     if (mod_mat_census_on()) atomic_fetch_add_explicit(&s_cen_presents, 1u, memory_order_relaxed);
     /* Re-intern every live material's static block, so a declarative
      * material has a slot to point at for the rest of this present. */
@@ -685,48 +768,50 @@ const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len) {
 /* ------------------------------------------------------------------ */
 /* Moby extraction. */
 
-/** @brief Test the moby extraction predicate: whether a material may win a moby class.
+/** @brief Test the one moby predicate: whether a material may shade a moby of a class.
  *
- * Live, user-enabled materials of enabled mods on channel -1 or
- * OP_CHAN_MOBY whose class key is -1 or `cls`. A texture key or an env,
- * HP-tier, LP-tier or untextured flag excludes the material, since those
- * refine terrain only. The level key, the contract and the identity are
- * not tested.
- * @return 1 when the material is a candidate. */
-static int material_moby_candidate(const mod_material_t* m, int cls) {
-    if (!m->live || !m->user_enabled ||
+ * Shared by the extraction walk and the draw-time resolve of a moby tag.
+ * Live, user-enabled materials of enabled mods with the shading contract
+ * @p contract, on channel -1 or OP_CHAN_MOBY, whose class key and identity
+ * are -1 or @p cls (a moby's identity is its class) and whose level key is
+ * -1 or @p level (every level key matches while @p level is negative). A
+ * texture key or an env, HP-tier, LP-tier or untextured flag excludes the
+ * material, since those keys exist on terrain only; OP_SEL_TEXTURED
+ * accepts, since moby tags carry no texturedness. The owner hold is not
+ * tested: the extraction runs outside the compose that holds owners.
+ * @param m The material.
+ * @param cls Moby class.
+ * @param level The level the moby is drawn in, or -1.
+ * @param contract The OPENPETE_MATERIAL_CONTRACT_* of the draw site.
+ * @return 1 when the material matches. */
+static int material_matches_moby(const mod_material_t* m, int cls, int level, int contract) {
+    if (!m->live || !m->user_enabled || m->contract != contract ||
         !openpete_mods_is_enabled(m->owner)) return 0;
     if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_MOBY) return 0;
+    if (m->sel.level != -1 && level >= 0 && m->sel.level != level) return 0;
+    if (m->sel.ident != -1 && m->sel.ident != cls) return 0;
     if (m->sel.moby_class != -1 && m->sel.moby_class != cls) return 0;
-    if (m->sel.texture != -1) return 0;   /* texture keys are terrain-only */
-    if (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER |
-                        OP_SEL_UNTEXTURED))
-        return 0;   /* terrain-only refinements never match a moby */
-    return 1;
+    if (m->sel.texture != -1) return 0;
+    return (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER |
+                            OP_SEL_UNTEXTURED)) == 0;
 }
 
-/** @brief Return the winning material for a moby class, or -1.
+/** @brief Return the highest-ranked scene material matching a moby that ranks below a given one, or -1.
  *
- * Among the materials material_moby_candidate() accepts, the highest
- * ranked (mod_mat_outranks) wins. */
-static int material_moby_winner(int cls) {
+ * One step of the extraction walk down the priority order.
+ * @param cls Moby class.
+ * @param level The pushed level.
+ * @param above The material the step continues below, or -1 for the top.
+ * @return The material index, or -1 when the walk is exhausted. */
+static int moby_walk_next(int cls, int level, int above) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
-        if (material_moby_candidate(&s_mats[i], cls) && mod_mat_outranks(i, best)) best = i;
+        if (above >= 0 && !mod_mat_outranks(above, i)) continue;
+        if (material_matches_moby(&s_mats[i], cls, level, OPENPETE_MATERIAL_CONTRACT_SCENE) &&
+            mod_mat_outranks(i, best))
+            best = i;
     }
     return best;
-}
-
-/** @brief Census: count a moby decline that another candidate for the class could have taken.
- *
- * @param w The declining material.
- * @param cls Moby class. */
-static void census_moby_decline(int w, int cls) {
-    for (int i = 0; i < s_mat_count; i++)
-        if (i != w && material_moby_candidate(&s_mats[i], cls)) {
-            cen_bump(w, MOD_MAT_CENSUS_DECLINE_SHADOWS);
-            return;
-        }
 }
 
 /** @brief Intern a material's uniform block into the slot table, reusing an identical outcome.
@@ -750,36 +835,127 @@ static int slot_intern(int w, const unsigned char* buf, int len) {
     return s;
 }
 
+/** @brief Keep an accepted refine block in the tick's outcome list, reusing an identical entry.
+ *
+ * @param w Material index.
+ * @param buf The block.
+ * @param len Bytes in @p buf.
+ * @return The entry index, or -1 when the list is full. */
+static int tick_out_keep(int w, const unsigned char* buf, int len) {
+    for (int k = 0; k < s_tick_out_n; k++)
+        if (s_tick_out[k].mat == w && s_tick_out[k].len == (uint32_t)len &&
+            memcmp(s_tick_out[k].bytes, buf, (size_t)len) == 0)
+            return k;
+    if (s_tick_out_n >= MOD_MATERIAL_SLOTS) return -1;
+    const int k = s_tick_out_n++;
+    s_tick_out[k].mat = w;
+    s_tick_out[k].len = (uint32_t)len;
+    memcpy(s_tick_out[k].bytes, buf, (size_t)len);
+    return k;
+}
+
+/** @brief Find a moby's entry in the tick memo, or the empty entry it would take.
+ *
+ * @param stamp The current memo stamp.
+ * @param vaddr Guest address of the moby.
+ * @param cls Moby class.
+ * @return The entry, or NULL when the memo holds no entry for the moby and
+ *         is full. */
+static moby_memo_t* moby_memo_find(unsigned stamp, uint32_t vaddr, int cls) {
+    unsigned h = (vaddr >> 2) * 2654435761u ^ (unsigned)cls;
+    for (int n = 0; n < MOBY_MEMO_N; n++, h++) {
+        moby_memo_t* e = &s_moby_memo[h & (MOBY_MEMO_N - 1)];
+        if (e->stamp != stamp) return s_moby_memo_n < MOBY_MEMO_N * 3 / 4 ? e : NULL;
+        if (e->vaddr == vaddr && e->cls == cls) return e;
+    }
+    return NULL;
+}
+
+/** @brief Run the extraction walk for one moby: the first material down the priority order that takes it.
+ *
+ * A declarative material lands; a refine material is asked, inside a
+ * guarded stretch owned by its mod, and lands on acceptance; its -1 passes
+ * the moby on. A decline followed by another candidate counts as a
+ * fall-through in the census.
+ * @param cls Moby class.
+ * @param vaddr Guest address of the moby.
+ * @param buf Receives an accepting refine's block, OPENPETE_MATERIAL_UNIFORMS_MAX bytes.
+ * @param len Receives the block's byte count, or -1 for no refine landing.
+ * @return The material index landed on, or -1 for an exhausted walk. */
+static int moby_walk(int cls, uint32_t vaddr, unsigned char* buf, int* len) {
+    const int level = s_cur_level;
+    int declined = -1;
+    *len = -1;
+    for (int w = moby_walk_next(cls, level, -1); w >= 0; w = moby_walk_next(cls, level, w)) {
+        if (declined >= 0) cen_bump(declined, MOD_MAT_CENSUS_FALLTHROUGHS);
+        mod_material_t* m = &s_mats[w];
+        if (!m->per_instance) { cen_bump(w, MOD_MAT_CENSUS_EXTRACT_WINS); return w; }
+        openpete_mod_material_key_t key;
+        memset(&key, 0, sizeof key);
+        key.struct_size       = (uint32_t)sizeof key;
+        key.version           = OPENPETE_MATERIAL_KEY_VER_MOBY;
+        key.channel           = OP_CHAN_MOBY;
+        key.u.moby.vaddr      = vaddr;
+        key.u.moby.moby_class = cls;
+        openpete_mods_guard_enter(m->owner);
+        const int rc = m->per_instance(&key, buf, OPENPETE_MATERIAL_UNIFORMS_MAX);
+        openpete_mods_guard_leave();
+        cen_bump(w, MOD_MAT_CENSUS_REFINE_CALLS);
+        if (rc >= 0) {
+            cen_bump(w, MOD_MAT_CENSUS_EXTRACT_WINS);
+            *len = rc > (int)OPENPETE_MATERIAL_UNIFORMS_MAX ? (int)OPENPETE_MATERIAL_UNIFORMS_MAX : rc;
+            return w;
+        }
+        cen_bump(w, MOD_MAT_CENSUS_DECLINES);
+        declined = w;
+    }
+    return -1;
+}
+
+/** @brief Turn a refine landing into this present's slot, or stock when the slot table is full.
+ *
+ * @param w Material index.
+ * @param buf The accepted block.
+ * @param len Bytes in @p buf.
+ * @return The slot, or OPENPETE_MATERIAL_SLOT_STOCK. */
+static int moby_refine_slot(int w, const unsigned char* buf, int len) {
+    const int s = slot_intern(w, buf, len);
+    return s < 0 ? OPENPETE_MATERIAL_SLOT_STOCK : s;
+}
+
 int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
                                      uint32_t moby_vaddr) {
+    (void)cpu;   /* refine reads guest RAM through the mod api's accessors */
     if (!s_mat_has_instance) return 0;
     if (mod_mat_census_on() && moby_class >= 0 && moby_class < CEN_CLASSES)
         atomic_fetch_add_explicit(&s_cen_class[moby_class], 1u, memory_order_relaxed);
-    int w = material_moby_winner(moby_class);
-    cen_bump(w, MOD_MAT_CENSUS_EXTRACT_WINS);
-    if (w < 0 || !s_mats[w].per_instance) return 0;   /* declarative -> draw-time */
-
-    (void)cpu;   /* refine reads guest RAM through the mod api's accessors */
-    openpete_mod_material_key_t key;
-    memset(&key, 0, sizeof key);
-    key.struct_size    = (uint32_t)sizeof key;
-    key.version        = OPENPETE_MATERIAL_KEY_VER_MOBY;
-    key.channel        = OP_CHAN_MOBY;
-    key.u.moby.vaddr   = moby_vaddr;
-    key.u.moby.moby_class = moby_class;
-    unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
-    openpete_mods_guard_enter(s_mats[w].owner);
-    int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
-    openpete_mods_guard_leave();
-    cen_bump(w, MOD_MAT_CENSUS_REFINE_CALLS);
-    if (rc < 0) {
-        cen_bump(w, MOD_MAT_CENSUS_DECLINES);
-        if (mod_mat_census_on()) census_moby_decline(w, moby_class);
-        return OPENPETE_MATERIAL_SLOT_STOCK;   /* declined -> stock */
+    const unsigned stamp = memo_stamp();
+    moby_memo_t* e = moby_memo_find(stamp, moby_vaddr, moby_class);
+    if (e && e->stamp == stamp) {
+        cen_memo_replay();
+        if (!(e->out & MEMO_REFINE)) return e->out;
+        const mat_slot_t* o = &s_tick_out[e->out & (MEMO_REFINE - 1)];
+        return moby_refine_slot(o->mat, o->bytes, (int)o->len);
     }
-    if (rc > (int)sizeof buf) rc = (int)sizeof buf;
-    int s = slot_intern(w, buf, rc);
-    return s < 0 ? OPENPETE_MATERIAL_SLOT_STOCK : s;   /* table full -> graceful stock */
+    unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    int len;
+    const int w = moby_walk(moby_class, moby_vaddr, buf, &len);
+    int out = OPENPETE_MATERIAL_SLOT_STOCK, keep;
+    if (w >= 0 && len < 0) out = OPENPETE_MATERIAL_SLOT_DECL | w;
+    if (w >= 0 && len >= 0) {
+        out = moby_refine_slot(w, buf, len);
+        /* A full slot table is this present's limit, not the tick's answer. */
+        keep = out == OPENPETE_MATERIAL_SLOT_STOCK ? -1 : tick_out_keep(w, buf, len);
+        if (keep < 0) e = NULL;
+        else keep |= MEMO_REFINE;
+    } else {
+        keep = out;
+    }
+    if (e) {
+        e->vaddr = moby_vaddr; e->cls = moby_class; e->stamp = stamp; e->out = keep;
+        s_moby_memo_n++;
+    }
+    return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -834,16 +1010,18 @@ static void census_terrain_refine(int w, int declined) {
 }
 
 /* The refine outcome of one per-instance terrain material, computed once
- * per present on the sim thread. A terrain refine selector carries one key,
+ * per tick on the sim thread. A terrain refine selector carries one key,
  * a Tiledef id or the untextured band, so the material's outcome is the
  * outcome of every face it reaches and one memo per material serves the
- * walked and the retained terrain alike. The memo is keyed on the present
- * counter openpete_mods_material_frame_reset() advances; the view captures
- * it for the compose (mod_mat_terrain_bucket_slot). The callback runs inside
- * a guarded stretch owned by the material's mod and receives a
- * terrain key with the selector's texture (-1 for the untextured band);
- * its block, capped at OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned
- * slot of the same material with identical bytes, else takes a new slot. */
+ * walked and the retained terrain alike. The slot memo is keyed on the
+ * present counter openpete_mods_material_frame_reset() advances; the view
+ * captures it for the compose (mod_mat_terrain_bucket_slot). The block
+ * itself is kept for the tick (memo_stamp), and a later present of the tick
+ * re-interns it without a call. The callback runs inside a guarded stretch
+ * owned by the material's mod and receives a terrain key with the
+ * selector's texture (-1 for the untextured band); its block, capped at
+ * OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned slot of the same
+ * material with identical bytes, else takes a new slot. */
 int mod_mat_terrain_refine_slot(int w) {
     if (w < 0 || w >= s_mat_count) return 0;
     mod_material_t* m = &s_mats[w];
@@ -851,6 +1029,13 @@ int mod_mat_terrain_refine_slot(int w) {
     if (m->refine_present == s_mat_present) return m->refine_slot;
     m->refine_present = s_mat_present;
     m->refine_slot = OPENPETE_MATERIAL_TERRAIN_STOCK;
+    const unsigned stamp = memo_stamp();
+    if (m->refine_stamp == stamp) {
+        cen_memo_replay();
+        if (m->refine_kept_len < 0) return m->refine_slot;
+        const int s = slot_intern(w, m->refine_kept, m->refine_kept_len);
+        return s < 0 ? m->refine_slot : (m->refine_slot = s);
+    }
 
     const int untex = (m->sel.flags & OP_SEL_UNTEXTURED) != 0;
     openpete_mod_material_key_t key;
@@ -867,8 +1052,11 @@ int mod_mat_terrain_refine_slot(int w) {
     cen_bump(w, MOD_MAT_CENSUS_REFINE_CALLS);
     if (rc < 0) cen_bump(w, MOD_MAT_CENSUS_DECLINES);
     if (mod_mat_census_on()) census_terrain_refine(w, rc < 0);
-    if (rc < 0) return m->refine_slot;          /* declined -> stock */
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
+    m->refine_stamp = stamp;
+    m->refine_kept_len = rc < 0 ? -1 : rc;
+    if (rc < 0) return m->refine_slot;          /* declined -> stock */
+    memcpy(m->refine_kept, buf, (size_t)rc);
     int s = slot_intern(w, buf, rc);
     if (s < 0) return m->refine_slot;           /* table full -> graceful stock */
     return (m->refine_slot = s);
@@ -924,21 +1112,25 @@ int mod_mat_terrain_bucket_slot(int w) {
 /* ------------------------------------------------------------------ */
 /* Draw-time resolve. */
 
-/** @brief Test whether an interned slot's material is still live and its owner enabled.
+/** @brief Test whether a material stamped at extraction is still live, user-enabled and its owner enabled.
  *
- * An interned slot can outlive its material's usability: extraction
- * interns the slot, the tick boundary (live-toggle apply and hot-reload
- * sweep) runs next, and only then does the present draw. A disabled owner
- * must stop that present. A swept material has freed SPIR-V and a
+ * A stamped outcome can outlive its material's usability: extraction
+ * stamps it, the tick boundary (live-toggle apply and hot-reload sweep)
+ * runs next, and only then does the present draw. A disabled material or
+ * owner must stop that present. A swept material has freed SPIR-V and a
  * retired pipeline slot no later sweep revisits, so a rebuild through it
- * would cache a pipeline nothing destroys. Both cases draw stock.
- * @param slot Slot index in the current view.
+ * would cache a pipeline nothing destroys. Each case draws stock.
+ * @param m Material index.
  * @return Nonzero when usable. */
-static int material_slot_usable(int slot) {
-    int m = view_slot_mat(slot);
-    return m >= 0 && m < s_mat_count && s_mats[m].live &&
+static int material_usable(int m) {
+    return m >= 0 && m < s_mat_count && s_mats[m].live && s_mats[m].user_enabled &&
            openpete_mods_is_enabled(s_mats[m].owner);
 }
+/** @brief Test whether an interned slot's material is usable (material_usable).
+ *
+ * @param slot Slot index in the current view.
+ * @return Nonzero when usable. */
+static int material_slot_usable(int slot) { return material_usable(view_slot_mat(slot)); }
 
 /* Draw-time resolve (native_render draw_tex_runs): the run's provenance tag ->
  * the winning override, or -1. Tag layout: [31:28] path+1; moby class
@@ -985,24 +1177,34 @@ static void material_key_from_tag(uint32_t tag, material_key_t* k) {
     k->level = s_mat_view ? s_mat_view->level : openpete_mods_current_level();
 }
 
-/** @brief Read the interned material slot a tag names directly.
+/** @brief Read the interned material slot or declarative landing a tag names directly.
  *
- * A moby tag carries a per-instance slot in bits [27:16]
- * (OPENPETE_MATERIAL_SLOT_STOCK = declined); a terrain tag carries a
- * per-present slot in bits [24:16] (OPENPETE_MATERIAL_TERRAIN_STOCK =
- * declined). Slot 0 defers to the declarative resolve. A slot at or past
- * the view's slot count is stale, and one whose material is swept or whose
- * owner is disabled no longer resolves.
+ * A moby tag carries the extraction walk's outcome in bits [27:16]
+ * (OPENPETE_MATERIAL_SLOT_STOCK = exhausted, OPENPETE_MATERIAL_SLOT_DECL |
+ * index = a declarative landing, else an interned slot); a terrain tag
+ * carries a per-present slot in bits [24:16]
+ * (OPENPETE_MATERIAL_TERRAIN_STOCK = declined). Slot 0 defers to the
+ * declarative resolve. A slot at or past the view's slot count is stale,
+ * and a slot or landing whose material is no longer usable
+ * (material_usable) does not resolve.
  * @param tag Provenance tag.
  * @param path 0 moby, 1 terrain; other paths carry no slot.
- * @param slot Receives the slot on a hit.
- * @return 1 with the slot, 0 to fall through to the declarative resolve,
- *         -1 when the slot declines the draw or no longer resolves. */
+ * @param slot Receives the slot on a hit, or the material index of a
+ *        declarative landing.
+ * @return 1 with the slot, 2 with a declarative landing's material, 0 to
+ *         fall through to the declarative resolve, -1 when the outcome is
+ *         stock or no longer resolves. */
 static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
     int s;
     if (path == 0) {
         s = (int)((tag >> 16) & 0xFFFu);
-        if (s == OPENPETE_MATERIAL_SLOT_STOCK) return -1;    /* declined */
+        if (s == OPENPETE_MATERIAL_SLOT_STOCK) return -1;    /* exhausted */
+        if (s & OPENPETE_MATERIAL_SLOT_DECL) {
+            s &= OPENPETE_MATERIAL_SLOT_DECL - 1;
+            if (!material_usable(s)) return -1;
+            *slot = s;
+            return 2;
+        }
     } else if (path == 1) {
         s = (int)((tag >> 16) & 0x1FFu);
         if (s == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1; /* declined */
@@ -1055,18 +1257,22 @@ static int material_selector_matches(const mod_material_t* m,
  *
  * Considers live, user-enabled materials of enabled mods with the shading
  * contract @p contract and without a per-instance callback, which resolve
- * through slots only; among those material_selector_matches accepts, the
- * highest ranked (mod_mat_outranks) wins.
+ * through slots only; among those the key's predicate accepts
+ * (material_matches_moby for a moby tag, material_selector_matches
+ * otherwise), the highest ranked (mod_mat_outranks) wins.
  * @param k The decoded tag key.
  * @param contract The draw site's OPENPETE_MATERIAL_CONTRACT_*. */
 static int material_winner(const material_key_t* k, int contract) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
-        if (!m->live || !m->user_enabled || m->contract != contract ||
-            !openpete_mods_is_enabled(m->owner)) continue;
         if (m->per_instance) continue;   /* per-instance winners resolve via slots only */
-        if (material_selector_matches(m, k) && mod_mat_outranks(i, best)) best = i;
+        /* A moby tag resolves through the extraction walk's predicate. */
+        const int match = k->path == 0 ? material_matches_moby(m, k->cls, k->level, contract)
+                                       : m->live && m->user_enabled && m->contract == contract &&
+                                         openpete_mods_is_enabled(m->owner) &&
+                                         material_selector_matches(m, k);
+        if (match && mod_mat_outranks(i, best)) best = i;
     }
     return best;
 }
@@ -1131,8 +1337,11 @@ int mod_mat_resolve_index(uint32_t tag, int contract, int* slot) {
     }
     switch (from_tag) {
     case 1:
-        /* A slot whose material has another contract draws stock. */
-        best = view_slot_mat(*slot);
+    case 2:
+        /* A slot or landing whose material has another contract draws stock;
+         * a landing binds its material's static block. */
+        best = from_tag == 1 ? view_slot_mat(*slot) : *slot;
+        if (from_tag == 2) *slot = 0;
         if (s_mats[best].contract != contract || mod_owner_held(s_mats[best].owner)) best = -1;
         census_resolve(&k, best);
         return best;

@@ -1063,7 +1063,8 @@ int openpete_mods_material_terrain_bucket_gpu(
 
 /** @brief Body of openpete_mods_material_register, run under the registry write lock.
  *
- * Validates the selector and shader handles, then appends the material
+ * Validates the selector, the shader handles and, for a refine material,
+ * where the refine can take effect (mod_mat_refine_valid), then appends the material
  * through mod_mat_append, which registers it enabled, bumps the terrain
  * epoch when it could bucket terrain, and re-arms the tag split. */
 static int openpete_mods_material_register_locked(openpete_mod_t* self,
@@ -1097,13 +1098,13 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
             return -1;
         }
     }
+    const int contract = frag_shader >= 0 ? shader_at(frag_shader)->contract
+                                          : OPENPETE_MATERIAL_CONTRACT_SCENE;
+    if (per_instance && !mod_mat_refine_valid(id, sel, contract)) return -1;
     /* A generation is drawn only for a material the table accepts. */
     const int fits = (vert_shader >= 0 || frag_shader >= 0) && mod_mat_count() < MOD_MATERIAL_MAX;
-    return mod_mat_append(id, sel, vert_shader, frag_shader,
-                          frag_shader >= 0 ? shader_at(frag_shader)->contract
-                                           : OPENPETE_MATERIAL_CONTRACT_SCENE,
-                          per_instance, openpete_mods_load_index_of(self),
-                          openpete_mods_api_pin_of(self),
+    return mod_mat_append(id, sel, vert_shader, frag_shader, contract, per_instance,
+                          openpete_mods_load_index_of(self), openpete_mods_api_pin_of(self),
                           fits ? slot_generation_next() : 0u);
 }
 int openpete_mods_material_register(openpete_mod_t* self,
