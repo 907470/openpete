@@ -41,6 +41,15 @@
 # Verdict line per row:
 #   [cutscene-audio] <game>/<cutscene> body=<kind> <counters> verdict=PASS|FAIL...
 #
+# Pitch row (spyro-3 credits-pitch): one headless run of
+# games/spyro-3/bk2/credits-cheat.bk2 to VBL 9000 on the device feed's
+# synthetic device at drift 0 (OPENPETE_AUDIO_FEED_SIM=0.0,1), whose clock is
+# the frames pushed, so the row is independent of host load. Instrument: the
+# exit line `audio: feed: pitch:`, the feed's resampling ratio at every pump
+# while data plays from the first data start, in cents from its median.
+# Engagement: pumps > 0 and primes >= 1. Pass: p99 <= PITCH_P99_C, |max| <=
+# PITCH_MAX_C, underruns = 0, overflow = 0.
+#
 # Usage: tests/harness/check_cutscene_audio.sh [--build-dir=DIR] [--game=G]
 #            [--row=CUTSCENE] [--ref-dir=DIR (default tests/golden)]
 # Exit 0 PASS, 2 FAIL, 64 SKIP (no row ran: binaries or discs missing).
@@ -114,6 +123,63 @@ for row in "${ROWS[@]}"; do
     fi
     echo "[cutscene-audio] ${line#\[audio-ring\] }"
     (( crc )) && failed=$((failed + 1))
+done
+
+# Pitch bound: ratio p99 and max deviation from the median, in cents.
+PITCH_P99_C=2
+PITCH_MAX_C=5
+PITCH_ROWS=("spyro-3 credits-pitch credits-cheat 9000 0.0")
+for row in "${PITCH_ROWS[@]}"; do
+    read -r game name bk2 limit drift <<<"$row"
+    [[ -n "$only_game" && "$game" != "$only_game" ]] && continue
+    [[ -n "$only_row" && "$name" != "$only_row" ]] && continue
+    pg_resolve "$game"
+    bk2p="games/$game/bk2/$bk2.bk2"
+    if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" || ! -f "$bk2p" ]]; then
+        echo "[cutscene-audio] $game/$name SKIP (binary, disc or bk2 missing)"
+        skipped=$((skipped + 1))
+        continue
+    fi
+    out="$ROOT/$game-$name"
+    mkdir -p "$out"
+    rm -f "${out:?}/run.log" "${out:?}/feed.log"
+    PG_CAPTURE_ENV=("OPENPETE_AUDIO_FEED_SIM=$drift,1" "OPENPETE_AUDIO_FEED_LOG=$out/feed.log")
+    PG_CAPTURE_TIMEOUT=900
+    pg_capture "$out/run.log" "$out/feed.log" -- \
+        --mute 1 --bk2 "$bk2p" --frame-limit "$limit" </dev/null
+    rc=$?
+    ran=$((ran + 1))
+    if (( rc )); then
+        echo "[cutscene-audio] $game/$name verdict=FAIL: run exited $rc (see $out/run.log)"
+        failed=$((failed + 1))
+        continue
+    fi
+    pitch="$(grep -ao 'feed: pitch: .*' "$out/run.log" | tail -n 1)"
+    feed="$(grep -ao 'feed: pushed=.*' "$out/run.log" | tail -n 1)"
+    verdict="$(python3 - "$pitch" "$feed" "$PITCH_P99_C" "$PITCH_MAX_C" <<'PY'
+import re, sys
+pitch, feed, p99_bound, max_bound = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
+def num(key, text):
+    m = re.search(r'\b' + key + r'=([-+0-9.]+)', text)
+    return float(m.group(1)) if m else None
+v = {k: num(k, pitch) for k in ('pumps', 'p99', 'max')}
+v.update({k: num(k, feed) for k in ('underruns', 'overflow', 'primes')})
+if any(x is None for x in v.values()):
+    print('verdict=FAIL: no feed pitch or counter line')
+    sys.exit()
+fails = []
+if v['pumps'] <= 0 or v['primes'] < 1: fails.append('VACUOUS (no data played)')
+if v['p99'] > p99_bound: fails.append(f"p99 {v['p99']:.2f}c > {p99_bound:g}c")
+if abs(v['max']) > max_bound: fails.append(f"max {v['max']:+.2f}c > {max_bound:g}c")
+if v['underruns']: fails.append(f"underruns {v['underruns']:.0f}")
+if v['overflow']: fails.append(f"overflow {v['overflow']:.0f}")
+print(f"pumps={v['pumps']:.0f} p99={v['p99']:.2f}c max={v['max']:+.2f}c underruns={v['underruns']:.0f} "
+      f"overflow={v['overflow']:.0f} bound=p99<={p99_bound:g}c,max<={max_bound:g}c "
+      + ('verdict=PASS' if not fails else 'verdict=FAIL: ' + '; '.join(fails)))
+PY
+)"
+    echo "[cutscene-audio] $game/$name drift=$drift $verdict"
+    [[ "$verdict" == *verdict=PASS* ]] || failed=$((failed + 1))
 done
 
 echo "[cutscene-audio] rows ran=$ran failed=$failed skipped=$skipped" \

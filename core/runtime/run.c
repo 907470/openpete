@@ -1233,6 +1233,8 @@ typedef struct PsyX_SPUFeed_Stats {
     unsigned long long taken, discarded;
     unsigned int fifo;
     unsigned long long data_out, silence_out;
+    unsigned long long pitch_n;
+    double pitch_med_c, pitch_p99_c, pitch_max_c;
     PsyX_SPUFeed_PhaseStats phase[PSYX_SPUFEED_PHASES];
     char phase_name[PSYX_SPUFEED_PHASES][16];
 } PsyX_SPUFeed_Stats;
@@ -1267,6 +1269,8 @@ static void audio_feed_exit_summary(void) {
                st.pushed, st.taken, st.overflow, st.discarded, st.fifo,
                (long long)(st.pushed - st.taken - st.overflow - st.discarded - st.fifo),
                st.consumed, st.data_out, st.silence_out);
+    OPL_INFO_F("audio", "feed: pitch: pumps=%llu median=%+.2fc p99=%.2fc max=%+.2fc",
+               st.pitch_n, st.pitch_med_c, st.pitch_p99_c, st.pitch_max_c);
     for (int i = 0; i < PSYX_SPUFEED_PHASES; i++) {
         const PsyX_SPUFeed_PhaseStats* p = &st.phase[i];
         if (!p->pushed && !p->held) continue;
